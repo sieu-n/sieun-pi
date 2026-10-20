@@ -162,11 +162,13 @@ export class HostCatalogs {
 
   /** Session ids and active session ids of the other boxes' rows to their host; rebuilt after a change, since a frame asks once per row. */
   private ids: Map<string, Host> | null = null;
-  private idsVersion = "";
+  /** The sum of the copies' versions the index was built at: each version only goes up, so a change of any copy changes the sum. */
+  private idsVersion = -1;
 
   /** The host whose daemon lists this session id or active session id; null for this box's own sessions and unknown ids. */
   hostOf(id: string): Host | null {
-    const version = [...this.remotes.values()].map(remote => remote.peer.version).join(",");
+    let version = 0;
+    for (const remote of this.remotes.values()) version += remote.peer.version;
     if (!this.ids || this.idsVersion !== version) {
       this.ids = new Map();
       this.idsVersion = version;

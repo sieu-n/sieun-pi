@@ -676,21 +676,36 @@ export const REPLY_GAP_MS = 5_000;
 export function lastJobMessages(messages: readonly { role: string; customType?: string; content?: unknown; timestamp?: number }[]): Map<string, JobMessage> {
   const last = new Map<string, JobMessage>();
   for (const message of messages) {
-    if (message.role !== "custom" || message.customType !== "agent_message") continue;
-    const text = typeof message.content === "string" ? message.content
-      : Array.isArray(message.content) ? message.content.map(part => typeof part === "object" && part && "text" in part ? String((part as { text: unknown }).text) : "").join("") : "";
-    const header = /^\s*\[agent-message from\s+(?:child:)?([^\]]+)\]/.exec(text);
-    if (!header) continue;
-    const body = text.slice(header[0].length);
-    const name = header[1]!.trim();
-    const at = message.timestamp ?? 0;
-    const before = last.get(name);
-    const factsAt = noteFacts(body).length ? at : before?.factsAt;
-    const parked = parkedWork(body) ?? (before !== undefined && at - before.at <= REPLY_GAP_MS ? before.parked : undefined);
-    last.set(name, { at, text: body.split("\n").map(line => line.trim()).find(Boolean) ?? "", ...(factsAt !== undefined ? { factsAt } : {}),
-      ...(parked !== undefined ? { parked } : {}) });
+    const read = jobMessage(message);
+    if (!read) continue;
+    const before = last.get(read.name);
+    const factsAt = read.facts ? read.at : before?.factsAt;
+    const parked = read.parked ?? (before !== undefined && read.at - before.at <= REPLY_GAP_MS ? before.parked : undefined);
+    last.set(read.name, { at: read.at, text: read.text, ...(factsAt !== undefined ? { factsAt } : {}), ...(parked !== undefined ? { parked } : {}) });
   }
   return last;
+}
+type ReadJobMessage = { name: string; at: number; text: string; facts: boolean; parked: string | undefined };
+/**
+ * One agent message as `lastJobMessages` reads it, kept per message object, since a chat's messages are the same objects on each call. Until
+ * 10-20 every call ran the fact and parked-work patterns over every agent message of the chat again, and the check-in's job pass called it
+ * for each chat on each round: 0.3 to 0.5 s of main thread at a time on a scratch serve on a copy of the live data dir with its chats.
+ */
+const readJobMessages = new WeakMap<object, ReadJobMessage | null>();
+function jobMessage(message: { role: string; customType?: string; content?: unknown; timestamp?: number }): ReadJobMessage | null {
+  if (message.role !== "custom" || message.customType !== "agent_message") return null;
+  const kept = readJobMessages.get(message);
+  if (kept !== undefined) return kept;
+  const text = typeof message.content === "string" ? message.content
+    : Array.isArray(message.content) ? message.content.map(part => typeof part === "object" && part && "text" in part ? String((part as { text: unknown }).text) : "").join("") : "";
+  const header = /^\s*\[agent-message from\s+(?:child:)?([^\]]+)\]/.exec(text);
+  let read: ReadJobMessage | null = null;
+  if (header) {
+    const body = text.slice(header[0].length);
+    read = { name: header[1]!.trim(), at: message.timestamp ?? 0, text: body.split("\n").map(line => line.trim()).find(Boolean) ?? "", facts: noteFacts(body).length > 0, parked: parkedWork(body) };
+  }
+  readJobMessages.set(message, read);
+  return read;
 }
 /** The whole body of the last agent message the job named `name` sent the chat, header cut, as `lastJobMessages` reads it; "" when none. */
 export function jobReport(messages: readonly { role: string; customType?: string; content?: unknown }[], name: string): string {

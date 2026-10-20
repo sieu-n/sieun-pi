@@ -176,6 +176,14 @@ function sameKey(left: readonly unknown[], fixed: readonly unknown[], below: rea
 }
 /** The fixed part of the key `project` builds for each row before it knows whether the row is kept: one array, written over for each row. */
 const scratchKey: unknown[] = Array.from({ length: 13 });
+/**
+ * How long a projection or a frame's fan-out holds the main thread before it lets the loop run (`setImmediate`). On a scratch serve on a copy of
+ * the live data dir with its chats on 10-20, a projection's own code was a median 73 to 85 ms in one piece and the loop's longest delay a minute
+ * was 280 to 510 ms at box load 50; live under load the same work waited behind about 3.7 runnable threads per core and stalled 4.4 to 12.9 s.
+ */
+export const PROJECTION_SLICE_MS = 10;
+/** Rows the projection builds between two looks at the clock: about 2 ms of them on that serve. */
+const BREATHE_ROWS = 256;
 const NO_ROWS: readonly SessionSummary[] = [];
 /** A projected row's sort time, parsed once per row object: a kept row is the same object in each projection. */
 const sortTimes = new WeakMap<SessionRow, number>();
@@ -824,6 +832,13 @@ export class Catalog {
       own += performance.now() - ran;
       try { return await promise; } finally { ran = performance.now(); }
     };
+    // The loop gets a turn once this projection's code ran PROJECTION_SLICE_MS since the last one (`breathe`).
+    let slice = performance.now();
+    const breathe = async (): Promise<void> => {
+      if (performance.now() - slice < PROJECTION_SLICE_MS) return;
+      await wait(new Promise<void>(resolve => { setImmediate(resolve); }));
+      slice = performance.now();
+    };
     const [state, labels, chats, checkIns, briefs, archivedByOwner] = await wait(Promise.all([this.readState.snapshot().catch(() => null), this.labels.snapshot().catch(() => null),
       this.chats.ids().catch(() => null), this.chats.checkIns().catch(() => null), this.chats.briefs?.().catch(() => null) ?? null, this.chats.archivedIds?.().catch(() => null) ?? null]));
     // The reads the chat loop below needs start now and run while the rows are built: one after another, each waited behind whatever else the
@@ -842,7 +857,9 @@ export class Catalog {
     // The read markers by session in a Map: looking each of the 4,500 rows up in the parsed read state's object was 1.9 of 29 ms of a
     // projection's own code on a bench over a copy of the live rows on 10-19.
     const readAts = new Map(Object.entries(state?.sessions ?? {}).map(([id, marker]) => [id, marker?.timestamp] as const));
-    for (const row of this.summaries.values()) {
+    let since = 0;
+    for (const row of [...this.summaries.values()]) {
+      if (++since === BREATHE_ROWS) { since = 0; await breathe(); }
       const remote = this.hostOf(row.sessionId);
       // Another box's saved session is listed by its daemon's word: its file is on that box's disk, not this one.
       if (!(remote ? isListed(row, () => true) : listedHere(row))) continue;
@@ -880,22 +897,30 @@ export class Catalog {
       rows.push(projected);
     }
     this.keptRows = kept;
+    await breathe();
     // Each row's time is read once, not once per comparison: the sort compares about 50,000 pairs of the 4,500 rows.
     const times = new Float64Array(rows.length);
     const order = new Uint32Array(rows.length);
-    for (let at = 0; at < rows.length; at++) { times[at] = sortTime(rows[at]!); order[at] = at; }
+    for (let at = 0; at < rows.length; at++) {
+      if (at % BREATHE_ROWS === 0) await breathe();
+      times[at] = sortTime(rows[at]!); order[at] = at;
+    }
     order.sort((left, right) => times[right]! - times[left]! || left - right);
     const unsorted = rows.slice();
     for (let at = 0; at < order.length; at++) rows[at] = unsorted[order[at]!]!;
+    await breathe();
     // A chat's agents resolve step owners and message partners against every other row, so they are filled in once all rows exist.
-    const agentRows: AgentRow[] = rows.map(row => {
+    const agentRows: AgentRow[] = [];
+    for (const row of rows) {
+      if (agentRows.length % BREATHE_ROWS === 0) await breathe();
       let entry = agentRowOf.get(row);
       if (!entry) { const first = firstTask(this.summaries.get(row.id) ?? {}); entry = first ? { row, first } : { row }; agentRowOf.set(row, entry); }
-      return entry;
-    });
+      agentRows.push(entry);
+    }
     const now = Date.now();
     const chatRows = rows.filter(row => row.chat);
     for (const row of chatRows) {
+      await breathe();
       const links = await wait(linksOf.get(row.id) ?? this.chats.links(row.id).catch(() => null));
       row.agents = keptChatAgents({ self: { id: row.id, name: row.name }, children: links?.children ?? [], childSessions: subagentSessions(children.get(row.id) ?? [], children, this.cuts),
         board: links?.board ?? null, roots: links?.roots ?? [], messages: links?.messages ?? [], rows: agentRows, now });
@@ -913,7 +938,9 @@ export class Catalog {
     const queued = await wait(queuedRead);
     const wakes = await wait(wakesRead);
     const below = (session: string) => (children.get(session) ?? []).map(child => child.sessionId);
+    await breathe();
     for (const row of chatRows) row.agents = withWaits(withQueue(withRates(row.agents ?? [], rates), queued), wakes, below);
+    await breathe();
     for (const agent of chatRows.flatMap(row => row.agents ?? [])) {
       const session = agent.sessionId ? this.find(agent.sessionId) : undefined;
       const folder = session ? subagentFolder(session) : undefined;
@@ -958,8 +985,22 @@ export class Catalog {
    */
   async rows(): Promise<SessionRow[]> {
     const running = this.running;
-    return (await (running && running.inputs === this.inputs ? running.result : this.tracked())).rows;
+    if (running && running.inputs === this.inputs) return (await running.result).rows;
+    if (this.lastFrame?.inputs === this.inputs && Date.now() - this.lastFrame.at < this.emitGapMs) return [...this.lastFrame.rows];
+    // A frame that waits out emitGapMs starts after this call's change, so its rows serve the call too.
+    const waiting = this.emitRun;
+    if (waiting && !waiting.started && this.listeners.size) {
+      const asked = this.inputs;
+      await waiting.promise.catch(() => {});
+      if (this.lastFrame && this.lastFrame.inputs >= asked) return [...this.lastFrame.rows];
+    }
+    return (await this.tracked()).rows;
   }
+  /**
+   * The rows of the last frame and the inputs it began on. Until 10-20 a rows() call between frames built its own projection: on a scratch serve
+   * on a copy of the live data dir with its chats, 140 to 220 projections ran a minute while frames went out at most every emitGapMs (120).
+   */
+  private lastFrame: { inputs: number; rows: SessionRow[]; at: number } | undefined;
   /** Bumped by each change the catalog hears of (new daemon rows, and every emit: notify, schedules, cut ends, rates), so rows() never takes a projection that began before one. */
   private inputs = 0;
   private running: { inputs: number; result: ReturnType<Catalog["project"]> } | undefined;
@@ -1020,9 +1061,16 @@ export class Catalog {
   private async emitOnce(): Promise<void> {
     if (this.listeners.size === 0 || (this.daemon === "up" && !this.peer.listed) || (this.daemon === "down" && !this.lastError)) return;
     this.emittedAt = Date.now();
+    const inputs = this.inputs;
     const event = await this.event();
     this.lastEvent = event;
-    for (const listener of [...this.listeners]) listener(event);
+    this.lastFrame = { inputs, rows: event.sessions, at: Date.now() };
+    // Each listener diffs and sends the frame on its own socket; the loop gets a turn between them once they ran PROJECTION_SLICE_MS.
+    let slice = performance.now();
+    for (const listener of [...this.listeners]) {
+      if (performance.now() - slice >= PROJECTION_SLICE_MS) { await new Promise<void>(resolve => { setImmediate(resolve); }); slice = performance.now(); }
+      if (this.listeners.has(listener)) listener(event);
+    }
   }
 
   notify(): Promise<void> { return this.emit(); }
@@ -1119,7 +1167,7 @@ export class Catalog {
       ...(row.usage && Number.isFinite(row.usage.cost) ? { cost: row.usage.cost } : {}) }));
   }
 
-  forget(sessionId: string): void { this.settle(); this.summaries.delete(sessionId); }
+  forget(sessionId: string): void { this.settle(); this.summaries.delete(sessionId); this.inputs++; }
 
   /** Changes the row of a session this server changed itself, such as a saved session's new name, in the copy of the box that lists it. */
   patchRow(sessionId: string, fields: Partial<SessionSummary>): void {
@@ -1140,7 +1188,7 @@ export class Catalog {
    * new Mac threads in a row answered 502 "Unknown active session" and lost their first message: the prompt right after the create went to
    * this box's daemon, because the Mac's roster had not listed the session yet.
    */
-  place(host: string, ...ids: string[]): void { for (const id of ids) this.placed.set(id, host); }
+  place(host: string, ...ids: string[]): void { for (const id of ids) this.placed.set(id, host); this.inputs++; }
 
   /**
    * The hosts.json box whose daemon runs `id` (a session id or active session id); null for this box and when there is no hosts.json. A session

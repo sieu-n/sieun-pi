@@ -196,9 +196,18 @@ export class SessionPeer {
   /** True when the box's daemon runs the session (a session id or active session id) now. */
   isActive(id: string): boolean {
     if (this.state === "down") return false;
-    for (const row of this.rows.values()) if ((row.sessionId === id || row.activeSessionId === id) && row.activeSessionId !== undefined) return true;
-    return false;
+    if (this.active?.version !== this.version) {
+      const ids = new Set<string>();
+      for (const row of this.rows.values()) if (row.activeSessionId !== undefined) { ids.add(row.sessionId); ids.add(row.activeSessionId); }
+      this.active = { version: this.version, ids };
+    }
+    return this.active.ids.has(id);
   }
+  /**
+   * The session ids and active session ids of the rows with a worker, as of `version`. Until 10-20 each call walked every row, and the catalog
+   * asks for each row this box and the Mac both list on every projection: 2.2 s of a 304 s profile of a scratch serve on a copy of the live data dir.
+   */
+  private active: { version: number; ids: Set<string> } | undefined;
 
   /** Changes the copy's row of a session this server changed itself, such as a saved session's new name. */
   patch(sessionId: string, fields: Partial<SessionSummary>): boolean {

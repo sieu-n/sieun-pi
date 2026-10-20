@@ -59,10 +59,22 @@ function keepsOrder(previous: readonly SessionRow[], next: readonly SessionRow[]
 
 const json = (value: unknown): string | undefined => JSON.stringify(value);
 
+/**
+ * Each agent object's JSON, written once and shared by every feed that compares it: the catalog builds new agent objects on each projection
+ * and changes none after its frame went out. Until 10-20 each agents feed wrote every agent of its chat twice a frame, 23 s of a 308 s profile
+ * of a scratch serve on a copy of the live data dir with its chats and a page per opened thread.
+ */
+const agentTexts = new WeakMap<ChatAgent, string>();
+function agentJson(agent: ChatAgent): string {
+  let text = agentTexts.get(agent);
+  if (text === undefined) { text = JSON.stringify(agent); agentTexts.set(agent, text); }
+  return text;
+}
+
 function diffAgents(before: readonly ChatAgent[], after: readonly ChatAgent[]): NonNullable<SessionRowPatch["agents"]> {
-  const old = new Map(before.map(agent => [agent.key, json(agent)]));
+  const old = new Map(before.map(agent => [agent.key, agentJson(agent)]));
   const keys = new Set(after.map(agent => agent.key));
-  const patch: NonNullable<SessionRowPatch["agents"]> = { upsert: after.filter(agent => old.get(agent.key) !== json(agent)), remove: [...old.keys()].filter(key => !keys.has(key)) };
+  const patch: NonNullable<SessionRowPatch["agents"]> = { upsert: after.filter(agent => old.get(agent.key) !== agentJson(agent)), remove: [...old.keys()].filter(key => !keys.has(key)) };
   const rebuilt = patchAgents(before, patch);
   if (rebuilt.length !== after.length || rebuilt.some((agent, index) => agent.key !== after[index]?.key)) patch.order = after.map(agent => agent.key);
   return patch;
@@ -192,14 +204,25 @@ export interface AgentsView { chat: string | null; open?: string; agents: ChatAg
 export interface AgentsDelta { type: "agents-delta"; chat: string | null; open?: string; upsert: ChatAgent[]; remove: string[]; order?: string[] }
 /** The agents a page asks for with `{ feed: "agents", id }`: `id` is a chat, or a job's session that a chat lists as its subagent or root. */
 export function agentsView(rows: readonly SessionRow[], id: string): AgentsView {
-  const chat = rows.find(row => row.id === id && row.chat);
-  if (chat) return { chat: chat.id, agents: chat.agents ?? [] };
-  for (const row of rows) {
-    if (!row.chat) continue;
-    const agent = row.agents?.find(entry => entry.sessionId === id && (entry.link === "subagent" || entry.link === "root"));
-    if (agent) return { chat: row.id, open: agent.job, agents: row.agents ?? [] };
+  return agentsViews(rows).get(id) ?? { chat: null, agents: [] };
+}
+/**
+ * Each chat's view and each of its jobs' views, by chat id and job session id, built once per list: every agents feed asks on every frame, and
+ * on 10-20 a scratch serve with its chats spent 10.9 s of a 304 s profile walking all 4,600 rows for each ask.
+ */
+const viewsOf = new WeakMap<readonly SessionRow[], Map<string, AgentsView>>();
+function agentsViews(rows: readonly SessionRow[]): Map<string, AgentsView> {
+  let views = viewsOf.get(rows);
+  if (views) return views;
+  views = new Map();
+  const chats = rows.filter(row => row.chat);
+  for (const row of chats) if (!views.has(row.id)) views.set(row.id, { chat: row.id, agents: row.agents ?? [] });
+  for (const row of chats) for (const agent of row.agents ?? []) {
+    if (!agent.sessionId || views.has(agent.sessionId) || (agent.link !== "subagent" && agent.link !== "root")) continue;
+    views.set(agent.sessionId, { chat: row.id, open: agent.job, agents: row.agents ?? [] });
   }
-  return { chat: null, agents: [] };
+  viewsOf.set(rows, views);
+  return views;
 }
 
 /**
@@ -290,9 +313,9 @@ export class AgentsDiff {
       return this.delta(view, kept, view.agents.filter(agent => held.get(agent.key) !== rowHash(agent)), [...held.keys()].filter(key => !now.has(key)));
     }
     if (!previous || !uniqueKeys(previous.agents) || !uniqueKeys(view.agents)) return previous && json(previous) === json(view) ? null : view;
-    const old = new Map(previous.agents.map(agent => [agent.key, json(agent)]));
+    const old = new Map(previous.agents.map(agent => [agent.key, agentJson(agent)]));
     const keys = new Set(view.agents.map(agent => agent.key));
-    const delta = this.delta(view, previous.agents, view.agents.filter(agent => old.get(agent.key) !== json(agent)), [...old.keys()].filter(key => !keys.has(key)));
+    const delta = this.delta(view, previous.agents, view.agents.filter(agent => old.get(agent.key) !== agentJson(agent)), [...old.keys()].filter(key => !keys.has(key)));
     return delta.upsert.length || delta.remove.length || delta.order || view.chat !== previous.chat || view.open !== previous.open ? delta : null;
   }
 

@@ -49,6 +49,26 @@ export async function registerPrintedRoots(registry: Pick<JobRegistry, "add">, t
 }
 const REGISTRY_KEEP_MS = 30 * 24 * 60 * 60_000;
 /**
+ * The job names filed under each chat name and chat id, built once per parsed registry. Until 10-20 each ask walked all 1,050 jobs, and the
+ * catalog asks for each chat on each projection: 8.2 s of a 308 s profile of a scratch serve on a copy of the live data dir with its chats.
+ */
+type RootIndex = { names: string[]; byChat: Map<string, number[]> };
+const rootIndexes = new WeakMap<object, RootIndex>();
+function rootIndex(state: { jobs: Record<string, { chat: string; chatId?: string }> }): RootIndex {
+  let index = rootIndexes.get(state);
+  if (index) return index;
+  index = { names: Object.keys(state.jobs), byChat: new Map() };
+  for (const [at, name] of index.names.entries()) {
+    const entry = state.jobs[name]!;
+    for (const key of entry.chatId !== undefined && entry.chatId !== entry.chat ? [entry.chat, entry.chatId] : [entry.chat]) {
+      const places = index.byChat.get(key);
+      if (places) places.push(at); else index.byChat.set(key, [at]);
+    }
+  }
+  rootIndexes.set(state, index);
+  return index;
+}
+/**
  * `<data dir>/chat-jobs.json`: `{ jobs: { [sessionName or id]: { chat, chatId?, at } } }` through locked-json; entries older than 30 days go on
  * the next add. `chatId` came on 10-18: checkin-precheck.ts --roster drops an idle chat's row, so the precheck had only the chat's id, and
  * slack green guy's own roots, filed under its name, read as held elsewhere.
@@ -73,8 +93,9 @@ export function jobRegistry(path: string, now: () => number = Date.now): JobRegi
     async chatOf(name) { return (await cachedJsonFile(file)).jobs[name]?.chat; },
     async chatIdOf(name) { return (await cachedJsonFile(file)).jobs[name]?.chatId; },
     async rootsOf(chat) {
-      return Object.entries((await cachedJsonFile(file)).jobs).filter(([, entry]) => chat.includes(entry.chat) || (entry.chatId !== undefined && chat.includes(entry.chatId)))
-        .map(([name]) => name);
+      const { names, byChat } = rootIndex(await cachedJsonFile(file));
+      // In the registry's order, as the walk over every job gave them.
+      return [...new Set(chat.flatMap(key => byChat.get(key) ?? []))].sort((left, right) => left - right).map(at => names[at]!);
     },
     async remove(names) { await transactJsonFile(file, state => { for (const name of names) delete state.jobs[name]; }); },
   };
