@@ -4,9 +4,11 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { repeatsBetween, type ChatHistory, type Correction, type Ledger } from "../src/chat-corrections.ts";
+import { ownerSaid, repeatsBetween, type ChatHistory, type Correction, type Ledger } from "../src/chat-corrections.ts";
 import { refineCommand } from "../src/correction-refine.ts";
 import { fileChatHistory } from "../src/owner-history.ts";
+import { chatHistories } from "../scripts/duties/harness-health.ts";
+import { gzipSync } from "node:zlib";
 
 const chat = { id: "01a1164b-4a2d-742d-b27a-82f086ed0200", name: "AI harness developer environment VP" };
 const first = "지금 자꾸 Mac에서 껐다켰다 하는 새끼 누구고 왜 그렇게 하는거야";
@@ -47,4 +49,29 @@ test("fileChatHistory reads the owner's words and the service's /refine commands
   assert.deepEqual(history, { owner: [first, follow], refines: [refine] });
   assert.deepEqual(await count(history), []);
   assert.deepEqual(await fileChatHistory(join(tmpdir(), "no-such-chat.jsonl")), { owner: [], refines: [] });
+});
+
+test("a chat with no session file on this box is read from the Mac, and a failed Mac read is reported (frontend bro, 10-19)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "repeat-corrections-mac-"));
+  const line = (text: string) => JSON.stringify({ type: "message", message: { role: "user", content: [{ type: "text", text }], timestamp: 1 } });
+  writeFileSync(join(dir, "aaaa.jsonl"), line("box words") + "\n");
+  const asked: string[] = [];
+  const errors: string[] = [];
+  const history = chatHistories(dir, async chat => {
+    asked.push(chat);
+    if (chat === "cccc") throw new Error("ssh mac: Connection timed out");
+    return chat === "bbbb" ? gzipSync(line("is any other tabs ready for review?") + "\n") : Buffer.alloc(0);
+  }, errors);
+  assert.deepEqual(await history("aaaa"), { owner: ["box words"], refines: [] });
+  assert.deepEqual(await history("bbbb"), { owner: ["is any other tabs ready for review?"], refines: [] });
+  assert.deepEqual(await history("dddd"), { owner: [], refines: [] });
+  assert.deepEqual(await history("cccc"), { owner: [], refines: [] });
+  assert.deepEqual(asked, ["bbbb", "dddd", "cccc"]);
+  assert.deepEqual(errors, ["cccc: ssh mac: Connection timed out"]);
+});
+
+test("a repeat the chat cut with an ellipsis counts when each piece is in one owner message (c118, frontend bro 10-19)", () => {
+  const owner = ["and it's ugly as fuck. 일단 이거 좀 성의있게 styling 할수 없어? consistent with our actual apps. 니가 보기엔 이게 괜찮아? 이런거 때문에 니가 현실성을 못느껴서 ㅈㄴ 대충하는거 같잖아."];
+  assert.equal(ownerSaid("and it's ugly as fuck. 일단 이거 좀 성의있게 styling 할수 없어? consistent with our actual apps. ... 이런거 때문에 니가 현실성을 못느껴서", owner), true);
+  assert.equal(ownerSaid("consistent with our actual apps. ... use subagent aggressively", owner), false);
 });

@@ -125,10 +125,11 @@ const quoteForm = (text: string): string => normal(text).toLowerCase();
 /**
  * Whether `words` is part of one owner message of the chat (`owner`, from `ownerTexts`), compared with straight quotes, one space per
  * whitespace run and no case. A note in square brackets is the chat's, such as "[screenshot of the duties panel: ...]" for an image the owner
- * sent with c32's repeat: the words around it must each be in that one message.
+ * sent with c32's repeat: the words around it must each be in that one message. An ellipsis is a cut the chat made, the same way: c118's
+ * repeat in frontend bro on 10-19 quotes "consistent with our actual apps. ... 이런거 때문에" from one longer owner message.
  */
 export function ownerSaid(words: string, owner: readonly string[]): boolean {
-  const pieces = words.split(/\[[^\]]*\]/).map(piece => quoteForm(piece).replace(/^["'\s]+|["'\s]+$/g, "")).filter(Boolean);
+  const pieces = words.split(/\[[^\]]*\]|\.\.\.|…/).map(piece => quoteForm(piece).replace(/^["'\s]+|["'\s]+$/g, "")).filter(Boolean);
   return pieces.length > 0 && owner.some(text => { const form = quoteForm(text); return pieces.every(piece => form.includes(piece)); });
 }
 

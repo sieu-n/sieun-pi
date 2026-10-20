@@ -1,10 +1,12 @@
+import { execFile } from "node:child_process";
 import { readdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join, relative, sep } from "node:path";
 import { pathToFileURL } from "node:url";
+import { gunzipSync } from "node:zlib";
 import { loadSkillsFromDir } from "prime-agent";
 import { CorrectionLedger, repeatsBetween, type ChatHistory } from "../../src/chat-corrections.ts";
-import { fileChatHistory } from "../../src/owner-history.ts";
+import { chatHistory, fileChatHistory } from "../../src/owner-history.ts";
 import { readAppended } from "./read-appended.ts";
 import { grafanaPrometheus } from "../../src/usage/lgtm.ts";
 import { measureCache, NO_DATA, WINDOWS, type CacheMetric } from "./cache-ratio.ts";
@@ -290,6 +292,37 @@ export async function primeTranscripts(home: string, since: number): Promise<str
   return found;
 }
 
+const MAC = process.env.MAC_SSH_HOST || "mac";
+/** The ssh read of one Mac chat. On 10-20 at 01:00Z frontend bro's 9.6 MB of owner and refine lines took 54 s plain and 3.5 s gzipped. */
+const MAC_READ_S = 120;
+/** The owner and `/refine` lines of a Mac session file, gzipped on the Mac, as one buffer; empty when the Mac has no such file. */
+export function macSessionLines(chat: string): Promise<Buffer> {
+  if (!/^[0-9a-f-]+$/.test(chat)) return Promise.reject(new Error(`not a session id: ${chat}`));
+  const command = `f="$HOME/.prime/agent/sessions/${chat}.jsonl"; [ -f "$f" ] && grep -h -F -e '"role":"user"' -e '"session_slash_command"' "$f" | gzip -c; true`;
+  return new Promise((resolve, reject) => execFile("timeout", [String(MAC_READ_S), "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=20", MAC, command],
+    { encoding: "buffer", maxBuffer: 1024 * 1024 * 1024 }, (error, stdout, stderr) => error ? reject(new Error(`ssh ${MAC}: ${(stderr.toString() || error.message).trim().slice(0, 300)}`)) : resolve(stdout)));
+}
+
+/**
+ * A chat's history for the repeat count: its session file in `dir`, or, when this box has no such file, the Mac's copy (`mac`), since chats
+ * that never moved to the box live only there. On 10-19 9 of the 21 repeats in the window came from frontend bro and mac-management, which
+ * live only on the Mac, and the box's precheck dropped them as words the owner never wrote. A failed Mac read goes into `errors` and reads as
+ * no history.
+ */
+export function chatHistories(dir: string, mac: ((chat: string) => Promise<Buffer>) | null, errors: string[]): (chat: string) => Promise<ChatHistory> {
+  return async chat => {
+    const file = join(dir, `${chat}.jsonl`);
+    if (!mac || await stat(file).then(() => true, () => false)) return fileChatHistory(file);
+    try {
+      const packed = await mac(chat);
+      return chatHistory(packed.length ? gunzipSync(packed).toString("utf8").split("\n") : []);
+    } catch (error) {
+      errors.push(`${chat}: ${error instanceof Error ? error.message : String(error)}`);
+      return { owner: [], refines: [] };
+    }
+  };
+}
+
 /** The view events since `since` for files under .agents/skills or .claude/skills-native, from the wiki database, opened read only, without the smoke's reads. */
 async function wikiViews(db: string, since: string): Promise<View[]> {
   const { DatabaseSync } = await import("node:sqlite");
@@ -315,8 +348,11 @@ async function main(): Promise<void> {
   const cacheTargets = Object.fromEntries(Object.keys(WINDOWS).map(key => [key, duty.metrics.find(metric => metric.key === key)!.target])) as Record<CacheMetric, number>;
   const python = join(process.env.PRIME_AGENT_KERNEL_VENV || join(homedir(), ".prime/agent/kernel-venv"), "bin/python");
   const cache = () => measureCache(grafanaPrometheus(join(dataDir, "grafana-alerts.json")), cacheTargets);
+  const macErrors: string[] = [];
+  const history = chatHistories(join(homedir(), ".prime/agent/sessions"), process.platform === "darwin" ? null : macSessionLines, macErrors);
   const { skills, smoke, ...result } = await measureHarness({ roots, views: since => wikiViews(db, since), dataDir, now: Date.now(), cache,
-    history: chat => fileChatHistory(join(homedir(), ".prime/agent/sessions", `${chat}.jsonl`)), transcripts: since => primeTranscripts(homedir(), since), smoke: { python } });
+    history, transcripts: since => primeTranscripts(homedir(), since), smoke: { python } });
+  for (const error of macErrors) result.flagged = [...result.flagged ?? [], { kind: "repeat_corrections_mac", excerpt: `no data: the Mac read of a chat's session failed, so its repeats are left out: ${error}`.slice(0, EXCERPT_MAX) }];
   await writeFile(output, JSON.stringify(result, null, 2) + "\n");
   if (process.env.DETAILS_FILE) await writeFile(process.env.DETAILS_FILE, JSON.stringify({ skills: skills.map(({ description: _, ...skill }) => skill), smoke }, null, 2) + "\n");
 }
