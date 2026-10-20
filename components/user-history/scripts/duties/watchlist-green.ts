@@ -441,9 +441,12 @@ const ROWS_SQL = "select w.platform, w.kind, lower(w.target) as target, case whe
   "case when w.last_outcome = 'starved' or w.last_error_code in ('fleet_exhausted', 'no_serveable_persona', 'leased_persona_unavailable', 'fleet_starved') then " +
   "(extract(epoch from coalesce((select max(c.settled_at) from watch_target_claims c where c.platform = w.platform and c.kind = w.kind and c.target = w.target and c.outcome = 'ok'), w.created_at)) * 1000)::bigint::text else '' end as no_account_since, " +
   "(extract(epoch from w.created_at) * 1000)::bigint::text as added_at, ";
-/** Whether the row's last run named a newer handle. Staging's Grafana role (grafana_ro on estate_pg_stg) has no SELECT on
+/** Whether the row's last run named a newer handle. Only a hidden row can read renamed (renamedHidden), so the CASE asks the claims
+ *  join of hidden rows alone: asked of all 19,700 monitor rows it ran past prod's statement_timeout at 17:00Z on 2026-10-20. Staging's Grafana role (grafana_ro on estate_pg_stg) has no SELECT on
  *  watch_target_claims, so the staging read sends 'f' and its rows never read renamed. */
-const RENAMED_SQL = "case when w.platform = 'instagram' and exists (select 1 from watch_target_claims c join crawl_batch_targets t on t.batch_id = c.batch_id " +
+const RENAMED_SQL = "case when w.platform <> 'instagram' or w.last_batch_id is null " +
+  "or not (coalesce(w.last_stop_reason, '') = 'hidden' or coalesce(w.last_error_code, '') = 'timeline_hidden') then 'f' " +
+  "when exists (select 1 from watch_target_claims c join crawl_batch_targets t on t.batch_id = c.batch_id " +
   "and t.index = any(c.op_indexes) where c.batch_id = w.last_batch_id and c.platform = w.platform and c.kind = w.kind and c.target = w.target " +
   "and jsonb_typeof(t.retry_evidence -> 'renamed_to') = 'object') then 't' else 'f' end as renamed from watch_targets w where w.tier = 'monitor'";
 const PROD_ROWS_SQL = ROWS_SQL + RENAMED_SQL;
