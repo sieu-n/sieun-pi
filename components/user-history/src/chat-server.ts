@@ -48,6 +48,7 @@ import { CHECK_IN_MIN_MINUTES, CHECK_IN_PAUSES, isThinkingLevel, type AccountAct
 import { channelNameError } from "./shared/slack-channel.ts";
 import { parseStartSkill } from "./shared/start-skill.ts";
 import { timeRead } from "./chat-latency.ts";
+import { ScheduledJobsLeft } from "./saved-archive.ts";
 
 const maxBodyBytes = 12 * 1024 * 1024;
 const requestIdPattern = /^[a-zA-Z0-9_-]{16,100}$/;
@@ -1035,13 +1036,19 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
         case "archive": {
           const audit = archiveAudit(req, id);
           audit("started");
+          const chat = await backend.chats.archivesAsChat(id);
           try {
-            if ((await backend.chats.ids()).has(id) || (await backend.chats.archivedIds()).has(id)) {
-              await backend.chats.archive(id);
-              await backend.catalog.notify();
-            } else await backend.threads.archive(id);
+            if (chat) await backend.chats.archive(id);
+            else await backend.threads.archive(id);
+          } catch (error) {
+            // The archive holds and the saved archive queue retries the cancel of its scheduled jobs: on 10-20 06:26:34Z that case answered 502.
+            if (!(error instanceof ScheduledJobsLeft && error.retrying)) { audit("failed"); throw error; }
             audit("completed");
-          } catch (error) { audit("failed"); throw error; }
+            if (chat) await backend.catalog.notify();
+            json(res, 200, { ok: true, notice: error.message }); return;
+          }
+          if (chat) await backend.catalog.notify();
+          audit("completed");
           break;
         }
         case "unarchive":

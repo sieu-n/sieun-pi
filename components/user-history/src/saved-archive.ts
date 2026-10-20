@@ -29,10 +29,15 @@ export type SavedArchive =
   | { kind: "resident" }
   | { kind: "failed"; error: string };
 
-/** An archive that holds on the chat service (the row is hidden, a chat stays in archived-chats.json) with part of its stop still open; the archive route answers 502 with the message. */
+/** An archive that holds on the chat service (the row is hidden, a chat stays in archived-chats.json) with part of its stop still open; the archive route answers 502 with the message unless a retry holds it. */
 export class ArchiveLeftWork extends Error {}
-/** The session's daemon did not confirm that its scheduled jobs were cancelled, such as when its box is offline. */
-export class ScheduledJobsLeft extends ArchiveLeftWork {}
+/**
+ * The session's daemon did not confirm that its scheduled jobs were cancelled, such as when its box is offline. `retrying`: the saved archive
+ * queue holds the cancel and retries it, so the archive itself is done and the route answers 200 with the message as a notice.
+ */
+export class ScheduledJobsLeft extends ArchiveLeftWork {
+  constructor(message: string, readonly retrying = false) { super(message); }
+}
 /** The jobs are cancelled and the session archived, and only Prime's stop of a handed-off service waits on a receipt it could not read. */
 export class ServicesStopPending extends ArchiveLeftWork {}
 

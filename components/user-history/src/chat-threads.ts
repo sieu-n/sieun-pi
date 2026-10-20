@@ -1559,7 +1559,7 @@ export class ThreadHub {
       ? `The thread is archived. Its scheduled jobs are not cancelled yet (${left}). The chat service retries the cancel until ${host ?? "this box"} answers, ` +
         "unless the thread is reopened first. If a typed prompt or a message from the chat service reaches the thread before then, the retry cannot tell " +
         "who sent it and waits until you archive or reopen the thread again."
-      : `The thread is archived, but its scheduled jobs may still run (${left}), and the retry could not be recorded.`);
+      : `The thread is archived, but its scheduled jobs may still run (${left}), and the retry could not be recorded.`, queued);
   }
 
   /** A bare kill, which a kill_origin daemon records as the owner's stop, so it ends the session's scheduled jobs. "gone": the daemon no longer holds it. */

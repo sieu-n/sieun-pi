@@ -39,7 +39,7 @@ import { CHECK_IN_DUTY_ID } from "./shared/chat-duties.ts";
 import type { ChatAgent, ChatBoard, ChatBriefState, CheckInState, CheckInView, ChildAgent, FirstMessage, OwnerTodo, PlanItem, QueuePlace, SessionRow, ThinkingLevel, ThreadMessage } from "./shared/types.ts";
 import { chatBrief, type LoadRecord, reloadAction } from "./chat-brief.ts";
 import { BRIEF_CHECK_MAX_AGE_MS, type ChatLinks, type ChatSummary, type ChatThreads, type CheckInSource, CHECK_MAX_AGE_MS, type SubagentDelete } from "./chat-sources.ts";
-import { chatName, fileHasChatMarker } from "./chat-guard.ts";
+import { chatName, fileHasChatMarker, ownerStopSinceActive } from "./chat-guard.ts";
 import { ARTIFACTS, type Leftovers, sessionTree } from "./job-leftovers.ts";
 
 export { TELL_OWNER_TOOL };
@@ -405,7 +405,7 @@ export class Chats {
    * the sidebar. An agent message may resume the session later (10-12 20:38 KST: a relayed broadcast resumed "stripe and payments"); it answers
    * as a plain hidden session, with no brief reload, check-in or duty, and nothing archives it again (owner 10-12: "the thread should be able to
    * respond, but not be in the Chats list"). When the daemon did not confirm that the chat's scheduled jobs were cancelled, the chat still leaves
-   * the index and the archive throws ScheduledJobsLeft, so the owner sees it failed and can archive it again. When only Prime's stop of a
+   * the index and the archive throws ScheduledJobsLeft; the route answers 502 only when no retry of the cancel was recorded. When only Prime's stop of a
    * handed-off service waits on a receipt, the chat leaves the index the same way and the archive throws ServicesStopPending, which says so.
    */
   async archive(id: string): Promise<void> {
@@ -495,14 +495,31 @@ export class Chats {
   }
 
   /**
-   * Why the scan must not take a lost chat back, or null: the owner archived it, or it is a clean-room test chat. Only the owner's unarchive
-   * or send (`restore`, `reopen`) takes such a chat back. An archived session_state in the file is no reason: the daemon's eviction and the
-   * Mac copy write it too, and on 10-18 that rule kept the owner's chats Fable and the metal box owner out of the chat list.
+   * Why the scan must not take a lost chat back, or null: the owner archived it, it is a clean-room test chat, or its file records the owner's
+   * stop or archive after its last active state, which files it in archived-chats.json. Only the owner's unarchive or send (`restore`, `reopen`)
+   * takes such a chat back. An archived session_state with no owner reason is no reason: the daemon's eviction and the Mac copy write it too,
+   * and on 10-18 that rule kept the owner's chats Fable and the metal box owner out of the chat list.
    */
   private async adoptStop(id: string): Promise<string | null> {
     if ((await this.archivedIds()).has(id)) return "the owner archived it";
     if ((await this.source.cleanRoomChats?.ids() ?? []).includes(id)) return "it is a clean-room test chat";
-    return null;
+    const sessionFile = (await this.summary(id))?.sessionFile;
+    const stop = sessionFile && await fileHasChatMarker(sessionFile) ? await ownerStopSinceActive(sessionFile) : null;
+    if (!stop) return null;
+    await this.source.archived?.add(id);
+    return `its session file records the owner's stop (${stop}) after its last active state, so it is filed as archived`;
+  }
+
+  /**
+   * Whether the archive route archives `id` as a chat: one in the index, one the owner archived, or a session whose file carries the chat_mode
+   * entry that the index never took, such as a create whose service restarted before it answered (stray 01a157fb on 10-20). Such an archive
+   * goes through `archive`, in turn with the scan, and archived-chats.json keeps the scan from taking it back.
+   */
+  async archivesAsChat(id: string): Promise<boolean> {
+    if ((await this.ids()).has(id) || (await this.archivedIds()).has(id)) return true;
+    if (!(await this.mine([id])).length) return false;
+    const sessionFile = await this.summary(id).then(summary => summary?.sessionFile, () => undefined);
+    return sessionFile !== undefined && await fileHasChatMarker(sessionFile);
   }
 
   /**

@@ -46,6 +46,28 @@ export async function fileHasChatMarker(sessionFile: string): Promise<boolean> {
   } catch { return false; }
 }
 
+/** The archive reasons Prime writes for the owner's stop or archive; idle_unload and a forced shutdown are the daemon's own. */
+const OWNER_STOPS: ReadonlySet<string> = new Set(["owner_stop", "owner_archive"]);
+
+/**
+ * The owner's stop or archive that a session file records after its last active state, as "<reason> at <time>", or null. On 10-20 06:25:25Z a
+ * clean-room setup archived stray chat 01a157fb (owner_stop), and the scan re-adopted and resumed it at 06:25:28Z from its chat_mode entry.
+ */
+export async function ownerStopSinceActive(sessionFile: string): Promise<string | null> {
+  let stop: string | null = null;
+  try {
+    for await (const line of fileLines(sessionFile)) {
+      if (!line.includes('"type":"session_state"')) continue;
+      let entry: { type?: unknown; timestamp?: unknown; state?: { status?: unknown; reason?: unknown } };
+      try { entry = JSON.parse(line) as typeof entry; } catch { continue; }
+      if (entry.type !== "session_state") continue;
+      if (entry.state?.status === "active") stop = null;
+      else if (entry.state?.status === "archived" && typeof entry.state.reason === "string" && OWNER_STOPS.has(entry.state.reason)) stop = `${entry.state.reason} at ${String(entry.timestamp)}`;
+    }
+  } catch { return null; }
+  return stop;
+}
+
 /** What the extension does at session_start: write the marker (flagged root, not marked yet) and whether the brief tool is active. */
 export function chatModeAt(input: { depth: number; flagged: boolean; marked: boolean }): { mark: boolean; active: boolean } {
   if (input.depth !== 0) return { mark: false, active: false };
