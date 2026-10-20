@@ -1,7 +1,8 @@
 // Guards the Chat system duty's precheck (d9), built 10-19 for the owner's rule that a plan holds only tasks that finish (msg mvfb7zt0).
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { chatSystemOutput, goalsWithNoJob, ownerMessages, planUpkeep, pushList, pushReached, spread } from "../scripts/duties/chat-system.ts";
+import { chatSystemOutput, goalsWithNoJob, jobsByChat, ownerMessages, planUpkeep, pushList, pushReached, spread, withCatalogOwners } from "../scripts/duties/chat-system.ts";
+import { type PlanInputs, planCounts } from "../scripts/duties/whole-system.ts";
 import type { ChatBoard } from "../src/shared/types.ts";
 
 const board = { v: 2, rev: 1, updatedAt: "2026-10-19T13:40:00Z", todos: [], plan: [
@@ -69,4 +70,24 @@ test("a chat whose only miss is plan items with no done line is on the push list
   assert.deepEqual(pushes.map(entry => [entry.chat, entry.duties.length, entry.upkeep.map(item => item.id)]), [["c", 1, []], ["d", 0, ["p453", "p454"]]]);
   const output = chatSystemOutput({ names: new Map(), stuck: [], upkeep, fleet: { pct: 100, red: [] }, stuckDuties: [], idleGoals: [], followUps: [], detail: "/tmp/d.md" });
   assert.ok(output.flagged?.some(slice => slice.kind === "push" && slice.excerpt.includes("plan item")));
+});
+
+// 10-20 00:29Z: frontend bro's p201 and p296 and mcp for chris's p3 had fix jobs working on the Mac, and d9 counted their red check-ins as
+// stuck, because it read only this box's transcripts for a step owner's activity.
+test("a red duty whose fix job works on the other box is not stuck once the catalog rows join the owner reads", () => {
+  const now = Date.parse("2026-10-20T00:29:00Z");
+  const FB = "01a11ba8-9d2c-727c-8ded-38f819ca9f29";
+  const missed = (at: number) => ({ duty: "checkin", at, trigger: "schedule", verdict: "missed", ms: 1,
+    metrics: { goal_gaps: { value: 1, target: 0, op: "<=", met: false } } });
+  const fix = { v: 2, rev: 1, updatedAt: "2026-10-20T00:20:00Z", todos: [], plan: [
+    { id: "p201", text: "Prod Discover loads again", status: "doing", duty: "checkin/goal_gaps", job: "prod release readback", sessionId: "s-mac", children: [] }] } as unknown as ChatBoard;
+  const plan = { now, chats: [{ id: FB, name: "frontend bro", runs: [missed(now - 60_000), missed(now - 900_000), missed(now - 1_800_000)], everyMs: 900_000,
+    paused: false, duties: [{ id: "checkin", name: "Check-in" }] }], boards: new Map([[FB, fix]]), ownerActivity: new Map<string, number>(),
+    waking: new Set<string>(), poolWaiting: new Set<string>(), named: new Map<string, Map<string, string[]>>() } as unknown as PlanInputs;
+  assert.equal(planCounts(plan).redDuties.length, 1);
+  const row = { sessionId: "s-mac", sessionName: "prod release readback", sessionFile: `/Users/x/.prime/agent/session-artifacts/${FB}/sub-1/s-mac.jsonl` };
+  const working = withCatalogOwners(plan, jobsByChat([{ ...row, activity: "working" }]), now);
+  assert.equal(planCounts({ ...plan, ...working }).redDuties.length, 0);
+  const idle = withCatalogOwners(plan, jobsByChat([{ ...row, activity: "idle", lastActivityAt: "2026-10-19T22:00:00Z" }]), now);
+  assert.equal(planCounts({ ...plan, ...idle }).redDuties.length, 1);
 });

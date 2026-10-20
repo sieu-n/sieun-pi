@@ -2,6 +2,8 @@ import type { MetricFact } from "./checkin-done.ts";
 import { keyNamesGoal } from "./goal-readings.ts";
 import { heldByTodo, stepCarrier, stepCarriers } from "./checkin-end-state.ts";
 import { GOAL_PUSH_LINK, openGoals, targetOp, targetStaleMs, walkGoal } from "./shared/chat-board.ts";
+import { CHECK_IN_DUTY_ID } from "./shared/chat-duties.ts";
+import { parseDutyLink } from "./shared/duty-fixes.ts";
 import type { ChatBoard, OwnerTodo, PlanItem } from "./shared/types.ts";
 import { type JobFact, ownerLabel, quote, type StepView, walk } from "./checkin-steps.ts";
 
@@ -58,9 +60,9 @@ export interface GoalPush {
   /**
    * The job a start steers first, with its step: the push step's own job, else the job of the goal's open fix step (a step with a duty link),
    * else the job of any open step under the goal. chat-057a's check-ins on 10-18 added push steps p50, p58, p64 and p67 under p1 while its fix
-   * step p60 (linked to checkin/goal_gaps) had the job "metal agent runtime".
+   * step p60 (linked to checkin/goal_gaps) had the job "metal agent runtime". `duty` is that step's duty field.
    */
-  stepJob?: { step: string; job: string };
+  stepJob?: { step: string; job: string; duty?: string };
   /** The items that wait on the owner's answer in For you (`ownerHeld`): the goal or its push step, or every open step under it. */
   asks?: string[];
   /** What a goal that waits holds on (`goalWait`): "until 10-18 20:00Z", or the owner's pause of the thread that owns its push step. */
@@ -279,7 +281,7 @@ export function goalPushes(board: ChatBoard | null, views: readonly StepView[], 
     const step = pushView?.item.id;
     const under = views.filter(view => view.goal?.id === goal.id && view.item.id !== goal.id && view.item.job);
     const holder = (pushView?.item.job ? pushView : undefined) ?? under.find(view => view.item.duty !== undefined) ?? under[0];
-    const stepJob = holder?.item.job ? { step: holder.item.id, job: holder.owner?.name ?? holder.item.job } : undefined;
+    const stepJob = holder?.item.job ? { step: holder.item.id, job: holder.owner?.name ?? holder.item.job, ...holder.item.duty ? { duty: holder.item.duty } : {} } : undefined;
     const base = { goal, words, ...(owner ? { owner } : {}), ...(working ? { working } : {}), ...(step ? { pushStep: step } : {}), ...(stepJob ? { stepJob } : {}) };
     const number = goalNumber(goal, everyMs, metrics);
     if (!number) return [{ ...base, stale: false, act: "no_number" }];
@@ -418,15 +420,25 @@ export function goalPromptLine(push: GoalPush): string {
   return `${title}: ${numberText(push.number)}${gap ? `, ${gap}` : ""}; ${paceText(push)}; ${owner}.`;
 }
 
+/**
+ * Whether a step's duty field links it to a standing duty's metric, which reads it as that metric's fix (`liveFix`, `dutyFixes`). The check-in
+ * never moves such a step to the goal's push link: between 16:19Z and 18:19Z on 10-19 a check-in set CI and RepoOps' p258 from
+ * d1/push_to_verdict_p90_min to "checkin/goal_gaps", and the CI system duty read off target with no linked step in every d9 run after it.
+ */
+const dutyFixLink = (duty: string | undefined): boolean => { const link = duty ? parseDutyLink(duty) : null; return !!link && link.duty !== CHECK_IN_DUTY_ID; };
+
 /** The action a goal needs this run, with the message to send or brief to open with; null for a goal on pace. */
 export function goalDueLine(push: GoalPush): string | null {
   const title = quote(push.goal.text);
   if (push.act === "no_number") return `Give ${title} a target from the owner's words, with plan_update target.`;
   if (!pushNeeded(push)) return null;
   // A start steers the job that already holds the goal's work before it adds anything: a new step only for an output no open step owns.
+  const held = push.stepJob;
   const ask = push.act === "steer" ? `Steer ${ownerLabel(push.owner!)} on ${title} with this message, and add no step`
-    : push.stepJob ? `Steer the job ${push.stepJob.job} on ${push.stepJob.step}${push.stepJob.step === push.pushStep ? `, the push step of ${title}` : ` of ${title}`} with this message, ` +
-      `restarting it if it ended${push.stepJob.step === push.pushStep ? "" : `, and set the duty of ${push.stepJob.step} to "${GOAL_PUSH_LINK}"`}. Add no new step: add one only when the ` +
+    : held && held.step !== push.pushStep && dutyFixLink(held.duty) ? `Steer the job ${held.job} on ${held.step} of ${title} with this message, restarting it if it ended. ` +
+      `Keep ${held.step} linked to "${held.duty}", the fix its duty reads, and add a push step under ${push.goal.id} with duty "${GOAL_PUSH_LINK}", the job ${held.job} and a Done when line`
+    : held ? `Steer the job ${held.job} on ${held.step}${held.step === push.pushStep ? `, the push step of ${title}` : ` of ${title}`} with this message, ` +
+      `restarting it if it ended${held.step === push.pushStep ? "" : `, and set the duty of ${held.step} to "${GOAL_PUSH_LINK}"`}. Add no new step: add one only when the ` +
       "work needs an output that no open step owns"
     : push.pushStep ? `Set one job on the push step ${push.pushStep} of ${title}, a live job of the goal or a new one, and send it this message`
     : `Add a push step under ${push.goal.id} with duty "${GOAL_PUSH_LINK}" for ${title}, set its job to a live job of the goal or a new one, and send it this message`;

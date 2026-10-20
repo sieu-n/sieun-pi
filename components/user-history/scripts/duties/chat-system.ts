@@ -143,6 +143,26 @@ export function goalsWithNoJob(board: ChatBoard | null, reads: OwnerReads): Plan
   });
 }
 
+/**
+ * `planCounts`' owner reads with both boxes' catalog rows of each chat's jobs added: a row's session wrote at its `lastActivityAt`, now when it
+ * works, and it is a session of the job its name names. `ownerActivity` reads only this box's transcripts, so at 00:29Z on 10-20 the Mac chats
+ * frontend bro (p201, p296) and mcp for chris (p3) read as red duties with no live fix while the Mac's rows showed those fix jobs working.
+ */
+export function withCatalogOwners(plan: { ownerActivity?: ReadonlyMap<string, number>; named?: ReadonlyMap<string, ReadonlyMap<string, readonly string[]>> },
+  jobs: ReadonlyMap<string, readonly CatalogRow[]>, now: number): { ownerActivity: Map<string, number>; named: Map<string, Map<string, string[]>> } {
+  const ownerActivity = new Map(plan.ownerActivity ?? []);
+  const named = new Map([...plan.named ?? []].map(([chat, names]) => [chat, new Map([...names].map(([name, ids]) => [name, [...ids]]))]));
+  for (const [chat, rows] of jobs) {
+    const names = named.get(chat) ?? named.set(chat, new Map()).get(chat)!;
+    for (const row of rows) {
+      const at = row.activity === "working" ? now : ms(row.lastActivityAt);
+      if (at > (ownerActivity.get(row.sessionId) ?? 0)) ownerActivity.set(row.sessionId, at);
+      if (row.sessionName && !names.get(row.sessionName)?.includes(row.sessionId)) names.set(row.sessionName, [...names.get(row.sessionName) ?? [], row.sessionId]);
+    }
+  }
+  return { ownerActivity, named };
+}
+
 /** One push the duty job sent a chat (`PUSHES_FILE`): when, the tag it put in the message, and the items it named. */
 export interface Push { at: number; chat: string; tag: string; items: string[] }
 /** How a push the last run's job sent went: whether its tag reached the chat's transcript, the chat answered after it, and a job started since. */
@@ -239,7 +259,9 @@ async function main(): Promise<void> {
   const listed = listedSessions(copies, ids);
   const names = new Map(ids.map(id => [id, listed.get(id)?.name ?? id.slice(0, 8)] as const));
   const plan = await planInputs(dataDir, now, names);
-  const counts = planCounts(plan);
+  const rows = copies.flatMap(text => { try { const value = JSON.parse(text) as { rows?: CatalogRow[] }; return value.rows ?? []; } catch { return []; } });
+  const jobs = jobsByChat(rows);
+  const counts = planCounts({ ...plan, ...withCatalogOwners(plan, jobs, now) });
   const text = (chat: string, id: string): string | undefined => {
     let found: string | undefined;
     walk(plan.boards.get(chat)?.plan ?? [], item => { if (item.id === id) found = item.text; });
@@ -251,8 +273,6 @@ async function main(): Promise<void> {
   const upkeep = plan.chats.filter(chat => !plan.pausedChats.has(chat.id)).flatMap(chat => planUpkeep(chat.id, plan.boards.get(chat.id) ?? null));
   const fleet = await dutyFleet({ dataDir, now, sessions: daemonSessions });
   const red = fleet.duties.filter(duty => !duty.green && !duty.pending);
-  const rows = copies.flatMap(text => { try { const value = JSON.parse(text) as { rows?: CatalogRow[] }; return value.rows ?? []; } catch { return []; } });
-  const jobs = jobsByChat(rows);
   const idleGoals = plan.chats.filter(chat => !plan.pausedChats.has(chat.id)).map(chat => ({ chat: chat.id, goals: goalsWithNoJob(plan.boards.get(chat.id) ?? null,
     { now, named: plan.named.get(chat.id) ?? new Map(), jobs: jobs.get(chat.id) ?? [], activity: plan.ownerActivity, waking: plan.waking, poolWaiting: plan.poolWaiting }) }));
   // The pushes the last run's job sent: those recorded after the last run of this duty began (LAST_RUNS_FILE, newest first).
