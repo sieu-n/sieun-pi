@@ -52,9 +52,13 @@ const BALANCE_MICROS = 1_000_000;
 /**
  * A call runs until the env answers, with no cut of this run's own: on 10-19 the 70 s page-1 cut this run had left 11 to 59 prod routes
  * unprobed, because the calls past the portal's 100 a minute started at the next clock minute. apps/api-portal sets no maxDuration, so
- * Vercel's function limit (300 s by default with fluid compute) ends a call the portal never answers, as a 504 the run sorts as a portal
- * cause. The precheck's timeoutMs in portal-parity.duty.json is a soft target, and the runner lets a run go past it (c98).
+ * Vercel's function limit (300 s by default with fluid compute) ends a call the portal never answers. Node's fetch gives up on an answer
+ * with no headers after the same 300 s (undici's default headersTimeout), so the run sees that call as UND_ERR_HEADERS_TIMEOUT and counts it
+ * as a portal failure (`NO_ANSWER`): a customer waits as long and gets nothing. At the 10-20 00:00Z daily run 16 prod calls ended this way at
+ * 300.0 to 300.6 s and showed as unprobed. The precheck's timeoutMs in portal-parity.duty.json is a soft target, and the runner lets a run
+ * go past it (c98).
  */
+const NO_ANSWER = new Set(["UND_ERR_HEADERS_TIMEOUT", "UND_ERR_BODY_TIMEOUT"]);
 /**
  * Prod has one org, the VIREV_API_KEY_PROD org, and the portal allows an org 100 REST calls in each clock minute (DEFAULT_REQUESTS_PER_MINUTE.rest
  * and currentWindowStart in apps/virev-demo/convex/apiPortal/rateLimits.ts), so prod calls past 100 in a minute wait for the next one.
@@ -347,7 +351,11 @@ async function probe(base: string, extra: Record<string, string>, org: Org, op: 
     return { op, verdict, status: response.status, ms: Date.now() - start, code, note: message ? `${note}: ${message}` : body === null && text ? `${note}: not JSON: ${text.slice(0, 80)}` : note, body,
       ...(Number.isFinite(retryAfterS) && retryAfterS > 0 ? { retryAfterS } : {}) };
   } catch (error) {
-    return { op, verdict: "unprobed", status: 0, ms: Date.now() - start, note: `${note}: ${error instanceof Error ? error.message : String(error)}`, body: null };
+    const ms = Date.now() - start;
+    const cause = (error as { cause?: { code?: unknown } } | null)?.cause?.code;
+    if (typeof cause === "string" && NO_ANSWER.has(cause))
+      return { op, verdict: "portal", status: 0, ms, code: "no_answer", note: `${note}: the portal sent no answer in ${Math.round(ms / 1000)} s (${cause})`, body: null };
+    return { op, verdict: "unprobed", status: 0, ms, note: `${note}: ${error instanceof Error ? error.message : String(error)}`, body: null };
   }
 }
 
