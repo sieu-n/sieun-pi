@@ -76,6 +76,9 @@ function prepare(run: string): string {
   git(project, "commit", "-q", "-am", "faster writer: WAL and 2,000-row batches");
   git(project, "checkout", "-q", "main");
   mkdirSync(run, { recursive: true });
+  // The starting project, outside the chat's folder, so evaluate times it back to back with the final one: across runs the same start read
+  // 75,368 to 179,161 rows/min with the box's load, and r3-a7b07b1 failed at 17.7x on a start timed 2 h before the final.
+  cpSync(project, join(run, "start"), { recursive: true, filter: source => !source.includes("/.git") && !source.includes("/out") });
   writeFileSync(join(run, "baseline.json"), JSON.stringify({ at: new Date().toISOString(), ...measure(project) }, null, 1) + "\n");
   return project;
 }
@@ -97,13 +100,14 @@ async function judge(run: string, state: RunState): Promise<{ verdict: Verdict; 
   const head = readSessionFile(join(homedir(), ".prime/agent/sessions", `${state.chat.id}.jsonl`));
   const checks: Check[] = [];
   const add = (id: string, ok: boolean | null, detail: string): void => { checks.push({ id, ok, detail }); };
-  const baseline = readJson<{ rowsPerMin: number | null; pauses: number | null }>(join(run, "baseline.json"));
+  const start = join(run, "start");
+  const baseline = existsSync(start) ? measure(start) : readJson<{ rowsPerMin: number | null; pauses: number | null }>(join(run, "baseline.json"));
   const final = existsSync(state.sandbox) ? measure(state.sandbox) : { rowsPerMin: null, pauses: null, output: "the project folder is gone" };
   writeFileSync(join(run, `final-${now}.json`), JSON.stringify(final, null, 1) + "\n");
 
   const need = (baseline?.rowsPerMin ?? 0) * SPEEDUP;
   const fast = final.rowsPerMin !== null && need > 0 && final.rowsPerMin >= need;
-  add("1", fast ? true : ended ? false : null, `baseline ${baseline?.rowsPerMin ?? "?"} rows/min (${baseline?.pauses ?? "?"} pauses); final ${final.rowsPerMin ?? "?"} rows/min ` +
+  add("1", fast ? true : ended ? false : null, `starting project timed just before ${baseline?.rowsPerMin ?? "?"} rows/min (${baseline?.pauses ?? "?"} pauses); final ${final.rowsPerMin ?? "?"} rows/min ` +
     `(${final.pauses ?? "no"} logged pauses), ${baseline?.rowsPerMin && final.rowsPerMin ? (final.rowsPerMin / baseline.rowsPerMin).toFixed(1) : "?"}x against ${SPEEDUP}x; run output "${clip(final.output, 160)}"`);
 
   const config = readJson<Record<string, unknown>>(join(state.sandbox, "config/limits.json")) ?? {};
