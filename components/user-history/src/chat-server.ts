@@ -882,8 +882,13 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
           creation = { fingerprint, result: (async () => {
             // Every send to a chat is a steer, so the owner's text lands after the current tool batch and the queue stays invisible.
             const mode = kind === "chat" ? "steer" : "followUp";
-            // Text with no account to set first rides on the create, which sends it before its attach (ThreadHub.create).
-            const first = !account && !images.length && !message.trimStart().startsWith("/") ? { message, mode } as const : undefined;
+            // Text with no account to set first rides on the create, which sends it before its attach (ThreadHub.create). That includes the text the
+            // New chat box starts with its start skill (startMessage): on 10-20 the owner's start skill was poteto-mode, so every first message he
+            // sent began with "/skill:poteto-mode " and took the old path, the create's answer, then a commands lookup, then the prompt.
+            const slash = message.trimStart().startsWith("/");
+            const startSkill = slash ? (await backend.newChat.read().catch(() => ({ startSkill: null }))).startSkill : null;
+            const plain = !slash || (startSkill !== null && message.startsWith(`/skill:${startSkill} `));
+            const first = !account && !images.length && plain ? { message, mode } as const : undefined;
             const input = { cwd, ...(provider ? { provider } : {}), ...(modelId ? { modelId } : {}), ...(thinkingLevel ? { thinkingLevel } : {}), ...(host ? { host } : {}),
               ...(name ? { name } : {}), ...(first ? { first } : {}) };
             // A chat is created with its name (a job replies to it by name), pinned and set to steering mode all; the server tick does its check-ins.

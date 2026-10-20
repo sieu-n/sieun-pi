@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import WebSocket from "ws";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
+import { parseStartSkill, startMessage } from "../../src/shared/start-skill.ts";
 
 /**
  * The Chat page from the Mac duty's precheck (`node --import tsx scripts/duties/chat-page-mac.ts`): whether the box's chat page on :5182 feels
@@ -172,8 +173,11 @@ async function browse(config: ChatConfig, chatId: string): Promise<BrowserOutput
   return output;
 }
 
-/** `firstReplyMs` bounds the new thread's turn, its slot-wait retries included; tests make it short. */
-export async function sendProbe(config: ChatConfig, firstReplyMs = FIRST_REPLY_MS): Promise<{ id: string; sends: SendTiming[] }> {
+/**
+ * `firstReplyMs` bounds the new thread's turn, its slot-wait retries included; tests make it short. `startSkill` is the New chat box's start
+ * skill (new-chat.json), which the page puts before the owner's first message (startMessage), so the new-thread send takes his path.
+ */
+export async function sendProbe(config: ChatConfig, firstReplyMs = FIRST_REPLY_MS, startSkill: string | null = null): Promise<{ id: string; sends: SendTiming[] }> {
   const origin = `http://127.0.0.1:${config.port}`;
   const base = `${origin}/${config.capability}/`;
   const post = async (route: string, body: unknown): Promise<Record<string, unknown>> => {
@@ -200,7 +204,7 @@ export async function sendProbe(config: ChatConfig, firstReplyMs = FIRST_REPLY_M
   const firstText = marker();
   const createdAt = Date.now();
   const created = await post("api/threads", { requestId: randomUUID().replaceAll("-", ""), host: "mac", cwd: "/Users/sieunpark", kind: "thread", ...MODEL, thinkingLevel: "off",
-    name: `chat page probe ${new Date().toISOString().slice(11, 16)}`, message: `${firstText} Reply with exactly: ok` });
+    name: `chat page probe ${new Date().toISOString().slice(11, 16)}`, message: startMessage(`${firstText} Reply with exactly: ok`, startSkill) });
   const id = String(created.id);
   const sends: SendTiming[] = [];
   try {
@@ -255,7 +259,8 @@ export async function measure(chatId: string): Promise<PrecheckOutput> {
     settle(onMac(`ping -c 5 -q ${host}`, 40)),
     settle(exec("journalctl", ["--user", "-u", "sieun-pi-chat", "--since", `@${Math.floor((at - 25 * 3_600_000) / 1000)}`, "-o", "short-iso-precise", "--no-pager"], { timeoutMs: 60_000 })),
   ]);
-  const replies = await settle(sendProbe(config));
+  const startSkill = await readFile(join(DATA_DIR, "new-chat.json"), "utf8").then(text => parseStartSkill((JSON.parse(text) as { startSkill?: unknown }).startSkill ?? null), () => null);
+  const replies = await settle(sendProbe(config, FIRST_REPLY_MS, startSkill));
   const macSession = replies instanceof Error ? replies : await settle(onMac(`cat .prime/agent/sessions/${replies.id.replace(/[^0-9a-f-]/g, "")}.jsonl`, 40));
   const metrics: Record<string, number> = {};
   const flagged: FlaggedSlice[] = [];
