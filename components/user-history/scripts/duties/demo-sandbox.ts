@@ -15,9 +15,11 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  *   off of internal fake database". The walk is a browser check, so the duty job runs it behind the load gate and writes Playwright's JSON
  *   report to WALK_FILE and its stderr to WALK_ERR_FILE; this script only reads those files.
  * - slowest_page_ms: the slowest app page in the last offline walk, timed in the page itself (offline.spec.ts writes one `page-timing`
- *   annotation per page and scenario). A page's time is the slower of its in-app switch (the click to the first frame whose <main> shows new
- *   text) and the long-task time of its full load (pageMs). The load's own wall time is left out, since the browser runs on us-metal02 and every
- *   module of a cold load crosses the 195 ms link to the Mac. It replaced health_ms on 10-19, because /health answered in 25 ms while the owner
+ *   annotation per page and scenario, with each of its 3 tries). A page's time is the slower of its fastest in-app switch (the click to the
+ *   first frame whose <main> shows new text) and the lowest long-task time of its full loads (pageMs). The walk's browser runs on us-metal02, so
+ *   load on that box only adds time to a try: on 10-20, at load 242 on 80 cores, one try read 12.7 s of long tasks for a page that loads in
+ *   under 2 s. The fastest try is the page's own cost, and the box_load slice names the box's load during the walk. The load's own wall time is
+ *   left out, since every module of a cold load crosses the 195 ms link to the Mac. It replaced health_ms on 10-19, because /health answered in 25 ms while the owner
  *   found switching "infuriatingly slow" (10-09) and Creators slow to load (10-19, 2.3 s of long tasks before 7966ebbfd). A down server fails the
  *   walk, so walk_problems covers it. A page that never showed, a scenario test with no timings, or a missing or stale walk reads as PAGE_TIMEOUT_MS.
  * - restarts_24h: times in 24 h the dev server went down without anyone asking for it (crashes and other exit codes, dev-guard memory
@@ -271,13 +273,37 @@ interface WalkSpec { title?: string; file?: string; tests?: { results?: WalkResu
 interface WalkSuite { file?: string; specs?: WalkSpec[]; suites?: WalkSuite[] }
 export interface WalkReport { stats?: { startTime?: string }; suites?: WalkSuite[] }
 
-/** One page of one scenario as offline.spec.ts times it, in ms; null means it never showed within the spec's 30 s. */
-export interface PageTiming { scenario: string; path: string; switch_ms: number | null; switch_long_ms: number; load_ms: number | null; load_long_ms: number }
+/** One timed try of a switch or a load, in ms: `ms` until the page showed, null when it never showed within the spec's 30 s, and the long-task ms in that span. */
+export interface PageTry { ms: number | null; long_ms: number }
+/** One page of one scenario as offline.spec.ts times it: each try of its in-app switch and of its full load. */
+export interface PageTiming { scenario: string; path: string; switches: PageTry[]; loads: PageTry[] }
 
-/** A page's time: the slower of its in-app switch and the long-task time of its full load, or PAGE_TIMEOUT_MS when either never showed. */
+/** The fastest of `tries` by `cost`, or PAGE_TIMEOUT_MS when no try showed the page. */
+const fastest = (tries: readonly PageTry[], cost: (shown: PageTry & { ms: number }) => number): number =>
+  Math.min(PAGE_TIMEOUT_MS, ...tries.filter((entry): entry is PageTry & { ms: number } => entry.ms !== null).map(cost));
+
+/**
+ * A page's time: the slower of its fastest switch and the lowest long-task time of its loads, since load on the walk's box only adds time to a
+ * try. PAGE_TIMEOUT_MS when every switch or every load never showed.
+ */
 export function pageMs(timing: PageTiming): number {
-  if (timing.switch_ms === null || timing.load_ms === null) return PAGE_TIMEOUT_MS;
-  return Math.max(timing.switch_ms, timing.load_long_ms);
+  return Math.max(fastest(timing.switches, entry => entry.ms), fastest(timing.loads, entry => entry.long_ms));
+}
+
+/** One read of the 1-minute load and core count of the host that ran the walk's browser, or the error that read gave. */
+export type BoxLoad = { scenario: string; pass: string; host: string; load1: number; cores: number } | { scenario: string; pass: string; host: string; error: string };
+
+/** The box_load slice: the load range of the walk's browser host over the walk, so a slow page reads against how busy the box was. */
+export function boxLoadLine(loads: readonly BoxLoad[]): string {
+  const read = loads.filter((entry): entry is Extract<BoxLoad, { load1: number }> => "load1" in entry);
+  const failed = loads.filter((entry): entry is Extract<BoxLoad, { error: string }> => "error" in entry);
+  const reads = (count: number) => `${count} read${count === 1 ? "" : "s"}`;
+  const errors = failed.length ? `; ${reads(failed.length)} failed: ${failed[0]!.error}` : "";
+  if (!read.length) return `no load read of the walk's browser host in the walk report${errors}`;
+  const values = read.map(entry => entry.load1);
+  const range = Math.min(...values) === Math.max(...values) ? `${values[0]}` : `${Math.min(...values)} to ${Math.max(...values)}`;
+  const hosts = [...new Set(read.map(entry => `${entry.host} (${entry.cores} cores)`))].join(", ");
+  return `the walk's browser ran on ${hosts} at 1-min load ${range} over ${reads(read.length)}, one at the start of each timed pass${errors}`;
 }
 
 /**
@@ -285,7 +311,7 @@ export function pageMs(timing: PageTiming): number {
  * entries in the failed `expect(seen.outside)`), the tests that failed for another reason, whose outside count is unknown, every page
  * timing, and the scenario tests (titles with `: every browser and server request`) that left none.
  */
-export function readWalk(report: WalkReport): { at: number; tests: number; outside: string[]; otherFailures: string[]; pages: PageTiming[]; untimed: string[] } {
+export function readWalk(report: WalkReport): { at: number; tests: number; outside: string[]; otherFailures: string[]; pages: PageTiming[]; untimed: string[]; boxLoads: BoxLoad[] } {
   const specs: WalkSpec[] = [];
   const collect = (suite: WalkSuite) => { for (const spec of suite.specs ?? []) if ((spec.file ?? suite.file ?? "").endsWith("offline.spec.ts")) specs.push(spec); suite.suites?.forEach(collect); };
   report.suites?.forEach(collect);
@@ -293,11 +319,15 @@ export function readWalk(report: WalkReport): { at: number; tests: number; outsi
   const otherFailures: string[] = [];
   const pages: PageTiming[] = [];
   const untimed: string[] = [];
+  const boxLoads: BoxLoad[] = [];
   for (const spec of specs) {
     const last = spec.tests?.flatMap(test => test.results ?? []).at(-1);
-    const timings = (last?.annotations ?? spec.tests?.at(-1)?.annotations ?? []).filter(note => note.type === "page-timing" && note.description)
-      .map(note => JSON.parse(note.description!) as PageTiming);
+    const notes = (last?.annotations ?? spec.tests?.at(-1)?.annotations ?? []).filter(note => note.description);
+    // A page-timing from before the walk kept its tries (10-20) has no switches or loads, so it reads as a page that never showed.
+    const timings = notes.filter(note => note.type === "page-timing").map(note => JSON.parse(note.description!) as Partial<PageTiming> & Pick<PageTiming, "scenario" | "path">)
+      .map(timing => ({ scenario: timing.scenario, path: timing.path, switches: timing.switches ?? [], loads: timing.loads ?? [] }));
     pages.push(...timings);
+    boxLoads.push(...notes.filter(note => note.type === "box-load").map(note => JSON.parse(note.description!) as BoxLoad));
     if (!timings.length && (spec.title ?? "").includes(": every browser and server request")) untimed.push(spec.title!);
     if (!last || last.status === "passed" || last.status === "skipped") continue;
     const text = [...(last.errors ?? []), ...(last.error ? [last.error] : [])].map(error => error.message ?? "").join("\n").replace(/\u001b\[[0-9;]*m/g, "");
@@ -306,20 +336,26 @@ export function readWalk(report: WalkReport): { at: number; tests: number; outsi
     else otherFailures.push(`${spec.title ?? "a test"}: ${last.status}: ${text.split("\n").find(line => line.trim()) ?? "no error text"}`);
   }
   const at = report.stats?.startTime ? Date.parse(report.stats.startTime) : NaN;
-  return { at, tests: specs.length, outside: [...outside], otherFailures, pages, untimed };
+  return { at, tests: specs.length, outside: [...outside], otherFailures, pages, untimed, boxLoads };
 }
 
 const iso = (at: number) => new Date(at).toISOString().slice(0, 19) + "Z";
 
+/** A page's tries as the slowest_page slice shows them: `switch 1200/980/1010, load long tasks 850/12692/900`, a dash for a try that never showed. */
+export function triesText(timing: PageTiming): string {
+  const list = (tries: readonly PageTry[], cost: (entry: PageTry) => number) => tries.map(entry => entry.ms === null ? "-" : String(cost(entry))).join("/") || "none";
+  return `switch ${list(timing.switches, entry => entry.ms!)}, load long tasks ${list(timing.loads, entry => entry.long_ms)}`;
+}
+
 /**
  * slowest_page_ms from one walk's timings: the slowest page over both scenarios, with its path and scenario, and each page's slowest time,
- * slowest first. A scenario test that left no timings reads as PAGE_TIMEOUT_MS, since its pages may be the slow ones.
+ * slowest first, with that scenario's tries. A scenario test that left no timings reads as PAGE_TIMEOUT_MS, since its pages may be the slow ones.
  */
-export function slowestPage(pages: readonly PageTiming[], untimed: readonly string[]): { ms: number; name: string; perPage: { path: string; scenario: string; ms: number }[] } {
-  const worst = new Map<string, { path: string; scenario: string; ms: number }>();
+export function slowestPage(pages: readonly PageTiming[], untimed: readonly string[]): { ms: number; name: string; perPage: { path: string; scenario: string; ms: number; tries: string }[] } {
+  const worst = new Map<string, { path: string; scenario: string; ms: number; tries: string }>();
   for (const timing of pages) {
     const ms = pageMs(timing);
-    if (ms > (worst.get(timing.path)?.ms ?? -1)) worst.set(timing.path, { path: timing.path, scenario: timing.scenario, ms });
+    if (ms > (worst.get(timing.path)?.ms ?? -1)) worst.set(timing.path, { path: timing.path, scenario: timing.scenario, ms, tries: triesText(timing) });
   }
   const perPage = [...worst.values()].sort((a, b) => b.ms - a.ms);
   if (untimed.length) return { ms: PAGE_TIMEOUT_MS, name: `no page timings from ${untimed.join("; ")}`, perPage };
@@ -434,7 +470,8 @@ export async function measureSandbox(deps: SandboxDeps): Promise<PrecheckOutput>
       flagged.push({ at, kind: "walk", excerpt: `offline walk started ${iso(walk.at)}: ${walk.tests} tests, ${walk.outside.length} outside requests, ${walk.otherFailures.length} other failures` });
       const slowest = slowestPage(walk.pages, walk.untimed);
       metrics.slowest_page_ms = slowest.ms;
-      flagged.push({ at, kind: "slowest_page", excerpt: `slowest app page ${slowest.name}: ${slowest.ms} ms; every page: ${slowest.perPage.map(page => `${page.path} ${page.ms}`).join(", ") || "none"}` });
+      flagged.push({ at, kind: "slowest_page", excerpt: `slowest app page ${slowest.name}: ${slowest.ms} ms, the fastest of its tries; every page: ${slowest.perPage.map(page => `${page.path} ${page.ms} (${page.tries})`).join("; ") || "none"}` });
+      flagged.push({ at, kind: "box_load", excerpt: boxLoadLine(walk.boxLoads) });
     }
   } catch (error) {
     metrics.walk_problems++;
