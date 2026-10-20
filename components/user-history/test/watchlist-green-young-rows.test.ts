@@ -2,7 +2,7 @@
 // 01:37Z); these cases pin that a row has its first 24 h to be read, as crawler health.py _NO_GOOD_READ gives it, and stays red after that.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { type WatchRow, parseRows, report } from "../scripts/duties/watchlist-green.ts";
+import { type WatchRow, isClosed, parseRows, report, stopReason } from "../scripts/duties/watchlist-green.ts";
 
 const DAY = 24 * 3_600_000;
 const NOW = 30 * DAY;
@@ -10,7 +10,7 @@ const metrics = [{ key: "staging_green_pct", target: 100, direction: "min" }] as
 
 function row(over: Partial<WatchRow>): WatchRow {
   return { platform: "instagram", kind: "tagged", target: "a", paused: false, lastOutcome: "ok", lastRunAt: NOW - 3_600_000, lastStopReason: "",
-    lastErrorCode: "", isPrivate: false, errStreak: 0, due: true, noAccountSince: null, addedAt: NOW - 10 * DAY, ...over };
+    lastErrorCode: "", isPrivate: false, errStreak: 0, due: true, noAccountSince: null, addedAt: NOW - 10 * DAY, renamed: false, ...over };
 }
 
 function staging(rows: WatchRow[]) {
@@ -37,7 +37,16 @@ test("a young row the Watchlist reads Stopped stays red", () => {
 });
 
 test("parseRows reads created_at as addedAt from the 13th column", () => {
-  const [parsed] = parseRows(["instagram", "tagged", "glossier", "f", "", "", "", "", "f", "0", "t", "", String(NOW - 40_000)].join("\t"));
+  const [parsed] = parseRows(["instagram", "tagged", "glossier", "f", "", "", "", "", "f", "0", "t", "", String(NOW - 40_000), "f"].join("\t"));
   assert.equal(parsed!.addedAt, NOW - 40_000);
   assert.equal(parsed!.lastRunAt, null);
+});
+
+test("a hidden row whose last run named a newer handle reads closed, as the screen's Removed on Instagram, and a plain hidden row stays Stopped", () => {
+  const renamed = parseRows(["instagram", "posts", "haruna_kr", "f", "ok", String(NOW - 60_000), "hidden", "", "f", "0", "t", "", String(NOW - 10 * DAY), "t"].join("\t"))[0]!;
+  assert.equal(renamed.renamed, true);
+  assert.equal(isClosed(renamed), true);
+  assert.equal(stopReason(renamed, NOW), null);
+  assert.equal(isClosed(row({ lastOutcome: "ok", lastStopReason: "hidden" })), false);
+  assert.equal(stopReason(row({ lastOutcome: "ok", lastStopReason: "hidden" }), NOW), "Instagram hides this account");
 });

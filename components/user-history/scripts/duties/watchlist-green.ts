@@ -86,6 +86,8 @@ export interface WatchRow {
   errStreak: number; due: boolean; noAccountSince: number | null;
   /** created_at, epoch ms: when the row joined the monitor rows. */
   addedAt: number | null;
+  /** The row's last run named the account's newer handle (crawl_batch_targets.retry_evidence renamed_to, as read.py's renamed_to). */
+  renamed: boolean;
 }
 /** One prod Kafka stream fault watchlist_risks counts: a fill over BUS_FILL_LIMIT, a retention.bytes changed by hand, or missing byte gauges. */
 export interface StreamFault { topic: string; why: string }
@@ -109,7 +111,10 @@ const NOT_FOUND_CODES = new Set(["profile_not_found", "post_not_found", "adverti
 /** A row whose account the platform removed, or holds private: words.ts walkGone and walkPrivate, which read it checked. */
 export const isClosed = (row: WatchRow): boolean =>
   row.lastOutcome === "gone" || (row.lastOutcome === "error" && NOT_FOUND_CODES.has(row.lastErrorCode))
-  || row.isPrivate || (row.lastOutcome === "ok" && row.lastStopReason === "private");
+  || row.isPrivate || (row.lastOutcome === "ok" && row.lastStopReason === "private") || renamedHidden(row);
+/** A hidden row whose last run named the account's newer handle: words.ts hidden() reads it as gone, "Removed on Instagram" with a use-handle action. */
+const renamedHidden = (row: WatchRow): boolean => row.renamed
+  && ((row.lastOutcome === "ok" && row.lastStopReason === "hidden") || (row.lastOutcome === "error" && row.lastErrorCode === "timeline_hidden"));
 /** The codes and limits of words.ts that decide a Stopped chip. */
 const HIDDEN_CODES = new Set(["timeline_hidden"]);
 const TRANSIENT_CODES = new Set(["scrape_blocked", "login_wall", "rate_limited", "challenge", "blocked", "asset_error", "transport", "timeout", "unreachable", "upstream_unavailable", "geo_target_unavailable"]);
@@ -269,12 +274,12 @@ export function parseRows(text: string): WatchRow[] {
   const rows: WatchRow[] = [];
   for (const line of text.split("\n")) {
     const cells = line.split("\t");
-    if (cells.length !== 13) continue;
-    const [platform, kind, target, paused, lastOutcome, lastRunAt, lastStopReason, lastErrorCode, isPrivate, errStreak, due, noAccountSince, addedAt] = cells as
-      [string, string, string, string, string, string, string, string, string, string, string, string, string];
+    if (cells.length !== 14) continue;
+    const [platform, kind, target, paused, lastOutcome, lastRunAt, lastStopReason, lastErrorCode, isPrivate, errStreak, due, noAccountSince, addedAt, renamed] = cells as
+      [string, string, string, string, string, string, string, string, string, string, string, string, string, string];
     rows.push({ platform, kind, target, paused: paused === "t", lastOutcome, lastRunAt: lastRunAt ? Number(lastRunAt) : null,
       lastStopReason, lastErrorCode, isPrivate: isPrivate === "t", errStreak: Number(errStreak) || 0, due: due === "t", noAccountSince: noAccountSince ? Number(noAccountSince) : null,
-      addedAt: addedAt ? Number(addedAt) : null });
+      addedAt: addedAt ? Number(addedAt) : null, renamed: renamed === "t" });
   }
   return rows;
 }
@@ -414,9 +419,16 @@ const ROWS_SQL = "select w.platform, w.kind, lower(w.target) as target, case whe
   "w.err_streak, case when w.next_due_at is null then 'f' else 't' end as due, " +
   "case when w.last_outcome = 'starved' or w.last_error_code in ('fleet_exhausted', 'no_serveable_persona', 'leased_persona_unavailable', 'fleet_starved') then " +
   "(extract(epoch from coalesce((select max(c.settled_at) from watch_target_claims c where c.platform = w.platform and c.kind = w.kind and c.target = w.target and c.outcome = 'ok'), w.created_at)) * 1000)::bigint::text else '' end as no_account_since, " +
-  "(extract(epoch from w.created_at) * 1000)::bigint::text as added_at from watch_targets w where w.tier = 'monitor'";
+  "(extract(epoch from w.created_at) * 1000)::bigint::text as added_at, ";
+/** Whether the row's last run named a newer handle. Staging's Grafana role (grafana_ro on estate_pg_stg) has no SELECT on
+ *  watch_target_claims, so the staging read sends 'f' and its rows never read renamed. */
+const RENAMED_SQL = "case when w.platform = 'instagram' and exists (select 1 from watch_target_claims c join crawl_batch_targets t on t.batch_id = c.batch_id " +
+  "and t.index = any(c.op_indexes) where c.batch_id = w.last_batch_id and c.platform = w.platform and c.kind = w.kind and c.target = w.target " +
+  "and jsonb_typeof(t.retry_evidence -> 'renamed_to') = 'object') then 't' else 'f' end as renamed from watch_targets w where w.tier = 'monitor'";
+const PROD_ROWS_SQL = ROWS_SQL + RENAMED_SQL;
+const STAGING_ROWS_SQL = ROWS_SQL + "'f' as renamed from watch_targets w where w.tier = 'monitor'";
 /** ROWS_SQL's columns in parseRows order, to print Grafana's table rows as the lines psql prints. */
-const ROW_COLUMNS = ["platform", "kind", "target", "paused", "last_outcome", "last_run_at", "last_stop_reason", "last_error_code", "is_private", "err_streak", "due", "no_account_since", "added_at"];
+const ROW_COLUMNS = ["platform", "kind", "target", "paused", "last_outcome", "last_run_at", "last_stop_reason", "last_error_code", "is_private", "err_streak", "due", "no_account_since", "added_at", "renamed"];
 export const rowLines = (rows: Record<string, unknown>[]): string => rows.map(row => ROW_COLUMNS.map(column => String(row[column] ?? "")).join("\t")).join("\n");
 const RECEIPTS_SQL = "select 'receipt', outcome, count(*) from watch_target_claims where settled_at > now() - interval '24 hours' and outcome is not null group by outcome;";
 
@@ -466,8 +478,8 @@ async function main(): Promise<void> {
   try { query = grafanaClient(fetch, await readGrafanaAuth(), now, signal); } catch (error) { authError = error instanceof Error ? error.message : String(error); }
   const data = await measure({ query, authError, now,
     keys: async () => convexKeys(fetch, (JSON.parse(await readFile(join(homedir(), ".convex/config.json"), "utf8")) as { accessToken: string }).accessToken, signal),
-    rows: () => prodReader("watchlist-green-duty", signal)(`${ROWS_SQL};\n${RECEIPTS_SQL}`),
-    staging: async () => { if (!query) throw new Error("not read: no Grafana login"); return rowLines(await sqlRows(query, PG.staging, ROWS_SQL)); },
+    rows: () => prodReader("watchlist-green-duty", signal)(`${PROD_ROWS_SQL};\n${RECEIPTS_SQL}`),
+    staging: async () => { if (!query) throw new Error("not read: no Grafana login"); return rowLines(await sqlRows(query, PG.staging, STAGING_ROWS_SQL)); },
     screen: async keys => screenRead(fetch, await readCrawlerKey(), keys, signal) });
   const result = report(data, dutyMetrics);
   await writeFile(output, JSON.stringify(result, null, 2) + "\n");

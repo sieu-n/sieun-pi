@@ -49,7 +49,7 @@ test("screenFailed keeps chunks that were not a 200 or ran past the budget", () 
 function data(screen: ScreenChunk[]): WatchData {
   return { now: 0, keys: ["instagram:account:a"], errors: [], streams: [], screen,
     rows: [{ platform: "instagram", kind: "posts", target: "a", paused: false, lastOutcome: "ok", lastRunAt: 0, lastStopReason: "", lastErrorCode: "",
-      isPrivate: false, errStreak: 0, due: true, noAccountSince: null, addedAt: 0 }] };
+      isPrivate: false, errStreak: 0, due: true, noAccountSince: null, addedAt: 0, renamed: false }] };
 }
 
 test("a screen read with a late chunk adds one Watchlist risk while every row is green", () => {
