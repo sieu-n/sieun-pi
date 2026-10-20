@@ -30,6 +30,11 @@ export const UNMEASURED = 999_999;
  * new_unindexed_3d <= 0: articles that went live in the last NEW_WINDOW_DAYS days, live INDEX_AFTER_DAYS or more days, that Google has not
  * indexed. A published article that nobody can find is not published, and the older backlog (285 on 10-15) is a detail line, so a fixed
  * new-article pipeline can turn this green while the crawl demand fix job works the backlog.
+ * new_unindexed_3d's `lastEventAt` is this run whenever it is above 0: each run inspects every counted article again, so the count is what
+ * Google said at this run and drops the run an article gets indexed. It is an open count, like repeat-split's after_fix lines, and no
+ * old event waits in it to leave a window. Dating it by the day each article crossed 3 days would read it quiet: on 10-20 at 05:52Z
+ * /blog/instagram-collab-posts, past 3 days since 10-18, read "Discovered - currently not indexed", and a quiet count starts no fix job
+ * for the 9 days before it leaves the 14-day window. A failed inspection or source counts as unindexed, and it failed at this run too.
  * source_errors <= 0: the sitemap, the pages and URL Inspection were read.
  * Detail lines with no target: the older unindexed backlog, sitemap URLs IndexNow has not got, overdue ledger checks and the 30-day ledger
  * win share.
@@ -228,7 +233,7 @@ export async function measureArticles(deps: ArticlesDeps, previous: ArticlesStat
     for (const entry of stats.overdue) flagged.push({ at, kind: "ledger_overdue", excerpt: `${entry.worker ?? "?"}: ${entry.url ?? "?"} was due ${entry.check_date} and has no result` });
   } catch (error) { flagged.push({ at, kind: "detail_error", excerpt: `ledger.jsonl could not be read (${message(error)}), so the ledger detail line is missing` }); }
 
-  return { output: { metrics, flagged }, state };
+  return { output: { metrics, flagged, ...(metrics.new_unindexed_3d! > 0 ? { lastEventAt: { new_unindexed_3d: at } } : {}) }, state };
 }
 
 /** URL Inspection through auto-sns-agent's SEO CLI project: the URLs go on stdin, one JSON object comes back. */
