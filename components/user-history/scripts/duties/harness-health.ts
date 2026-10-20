@@ -8,7 +8,7 @@ import { loadSkillsFromDir } from "prime-agent";
 import { CorrectionLedger, repeatsBetween, type ChatHistory } from "../../src/chat-corrections.ts";
 import { chatHistory, fileChatHistory } from "../../src/owner-history.ts";
 import { readAppended } from "./read-appended.ts";
-import { fixRepos, gitCommitTime, sideLabel, splitMetrics, splitRepeats } from "./repeat-split.ts";
+import { firstFixLanded, fixRepos, gitCommitTime, sideLabel, splitMetrics, splitRepeats } from "./repeat-split.ts";
 import { grafanaPrometheus } from "../../src/usage/lgtm.ts";
 import { measureCache, NO_DATA, WINDOWS, type CacheMetric } from "./cache-ratio.ts";
 import { SMOKE_SESSION, smokeSkills, type SmokeEnv } from "./skill-smoke.ts";
@@ -224,8 +224,8 @@ export async function measureHarness(deps: HarnessDeps): Promise<PrecheckOutput 
   const listed = overlaps(skills, OVERLAP_LIST);
   const pairs = listed.filter(pair => pair.score >= OVERLAP_MIN);
   const unread = skills.filter(skill => skill.lastRead === null);
-  const repeats = await splitRepeats(await repeatsBetween(await new CorrectionLedger(deps.dataDir).read(), deps.now - REPEAT_DAYS * DAY, deps.now, deps.history),
-    deps.now, deps.commitTime);
+  const repeats = await splitRepeats(await repeatsBetween(await new CorrectionLedger(deps.dataDir).read(), deps.now - REPEAT_DAYS * DAY, deps.now, deps.history,
+    entry => firstFixLanded(entry.ref, Date.parse(entry.at), deps.now, deps.commitTime)), deps.now, deps.commitTime);
   const smoke = await smokeSkills(skills, deps.roots, deps.smoke);
   const failures = smoke.filter(result => !result.pass);
   const flagged: FlaggedSlice[] = [

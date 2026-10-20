@@ -19,8 +19,9 @@ const c103: Correction = { id: "c103", at: "2026-10-18T05:20:25.957Z", chat, wor
   theme: ["screen", "window", "focu", "mac"], repeats: [{ at: "2026-10-18T05:21:13.069Z", chat, words: follow }] };
 const since = at("2026-10-12T00:00:00Z");
 const until = at("2026-10-19T21:46:00Z");
-const count = async (ledger: Ledger, histories: Record<string, ChatHistory>) =>
-  (await repeatsBetween(ledger, since, until, async id => histories[id] ?? { owner: [], refines: [] })).map(({ entry, repeat }) => `${entry.id} ${repeat.words}`);
+const count = async (ledger: Ledger, histories: Record<string, ChatHistory>, fixes: Record<string, string> = {}) =>
+  (await repeatsBetween(ledger, since, until, async id => histories[id] ?? { owner: [], refines: [] }, async entry => fixes[entry.id] ? at(fixes[entry.id]!) : undefined))
+    .map(({ entry, repeat }) => `${entry.id} ${repeat.words}`);
 const vpOwner = [{ text: first, at: at("2026-10-18T05:16:29.987Z") }, { text: follow, at: at("2026-10-18T05:21:00.875Z") }];
 const refineAt = (time: string, ...items: { id: string; words: string; rule: string }[]) => ({ text: refineCommand(items), at: at(time) });
 
@@ -29,10 +30,36 @@ test("a follow-up the owner wrote before the first refine ran is not a repeat (c
   assert.deepEqual(await count({ corrections: [c103] }, { [chat.id]: { owner: vpOwner, refines } }), []);
 });
 
-test("a repeat after the first refine counts, and with no refine on record the entry's own time is when it came in force", async () => {
+test("a repeat after the first refine and a landed fix counts, and with no refine on record the entry's own time is when it came in force", async () => {
   const refines = [refineAt("2026-10-18T05:20:40Z", { id: "c103", words: first, rule })];
-  assert.deepEqual(await count({ corrections: [c103] }, { [chat.id]: { owner: vpOwner, refines } }), [`c103 ${follow}`]);
-  assert.deepEqual(await count({ corrections: [c103] }, { [chat.id]: { owner: vpOwner, refines: [] } }), [`c103 ${follow}`]);
+  const fixes = { c103: "2026-10-18T05:20:50Z" };
+  assert.deepEqual(await count({ corrections: [c103] }, { [chat.id]: { owner: vpOwner, refines } }, fixes), [`c103 ${follow}`]);
+  assert.deepEqual(await count({ corrections: [c103] }, { [chat.id]: { owner: vpOwner, refines: [] } }, fixes), [`c103 ${follow}`]);
+});
+
+test("a chase in the correction's own chat within a day and before its first fix landed is not a repeat (c124, frontend bro 10-19 09:17Z)", async () => {
+  const fb = { id: "01a11ba8-9d2c-727c-8ded-38f819ca9f29", name: "frontend bro" };
+  const ask = "오 이런거 좋아, 근데 일단 demo에서 frontend part 다시 만들어보면 안돼?";
+  const chase = "wheres the campaign app i requested?";
+  const c124: Correction = { id: "c124", at: "2026-10-19T08:57:28.230Z", chat: fb, words: ask, rule: "The owner reviews UI work on the 5180 screens.",
+    enforcedBy: "test", ref: "sieun-pi b90f0cc4", status: "active", theme: ["ui", "review"], repeats: [{ at: "2026-10-19T09:17:49.127Z", chat: fb, words: chase }] };
+  const refines = [refineAt("2026-10-19T08:57:45.162Z", { id: "c124", words: ask, rule: c124.rule })];
+  const histories = { [fb.id]: { owner: [{ text: ask, at: at("2026-10-19T08:57:00Z") }, { text: chase, at: at("2026-10-19T09:17:40Z") }], refines } };
+  assert.deepEqual(await count({ corrections: [c124] }, histories, { c124: "2026-10-20T06:26:10Z" }), []);
+  assert.deepEqual(await count({ corrections: [c124] }, histories), []);
+  assert.deepEqual(await count({ corrections: [c124] }, histories, { c124: "2026-10-19T09:10:00Z" }), [`c124 ${chase}`]);
+  const other = { id: "01a1164b-0000-7000-8000-000000000000", name: "another chat" };
+  const elsewhere = { ...c124, repeats: [{ ...c124.repeats[0]!, chat: other }] };
+  assert.deepEqual(await count({ corrections: [elsewhere] }, { ...histories, [other.id]: histories[fb.id]! }, { c124: "2026-10-20T06:26:10Z" }), [`c124 ${chase}`]);
+});
+
+test("the same rule given again in its own chat a day or more later counts before any fix landed (c48, frontend bro 10-19 17:16Z)", async () => {
+  const fb = { id: "01a11ba8-9d2c-727c-8ded-38f819ca9f29", name: "frontend bro" };
+  const words = "the closest reference you must consider for feature and style is the dashboard app";
+  const c48: Correction = { id: "c48", at: "2026-10-12T06:55:55.529Z", chat: fb, words: "use frontend design skill", rule: "UI work follows the frontend design skill.",
+    enforcedBy: "test", ref: "sieun-pi cfd66909", status: "active", theme: ["ui", "design"], repeats: [{ at: "2026-10-19T17:16:30Z", chat: fb, words }] };
+  const histories = { [fb.id]: { owner: [{ text: words, at: at("2026-10-19T17:16:10Z") }], refines: [] } };
+  assert.deepEqual(await count({ corrections: [c48] }, histories, { c48: "2026-10-20T06:26:11Z" }), [`c48 ${words}`]);
 });
 
 test("a line the owner wrote in another chat before the first correction does not count, by its own time and not when it was filed (c110, ops guy 10-18)", async () => {

@@ -395,16 +395,23 @@ export interface ChatHistory { owner: readonly Timed[]; refines: readonly Timed[
  * message (`said`): the repeat_corrections_7d count, which repeat-split.ts splits by when the entry's fix landed. A rule is in force from
  * the first `/refine` that names the entry's first words (`refineCovers`), which the
  * service runs in the entry's chat when the turn that recorded it ends, or from the entry's own time when no refine is on record (before c86,
- * 10-15). Two kinds of recorded repeat do not count.
+ * 10-15). Three kinds of recorded repeat do not count.
  * 1. Words the owner never wrote in the repeat's chat (`ownerSaid`). Before correction_add checked the words (0da3d4a, 10-12 21:59Z), ops guy
  *    recorded its own notes as repeats: "(brief check, twice on 10-12) ..." on c59 and "(owner rule recalled by the release owner ...)" on c4.
  * 2. Words the owner wrote before the rule was in force, judged by his message's own time and not by when a chat filed it. On 10-18 the owner
  *    wrote "지금 자꾸 Mac에서 껐다켰다 하는 새끼 누구고 왜 그렇게 하는거야" (c103) at 05:16Z, then "Aside쓰면 깜빡이지를 않아 커서를 안가져가거든" at 05:21Z in the
  *    same turn, before the 05:22Z refine. ops guy filed his 09:10Z "stop being paranoid in plan" at 10:53Z as a repeat of c110, which he first
  *    gave at 10:43Z.
+ * 3. A chase in the entry's own chat (`chase`): words he wrote there less than a day after the entry and before its first fix landed
+ *    (`firstFix`, undefined while none has). He asked that a correction never come back "the next day" (10-09), so a same-day line in the chat
+ *    that is still doing the work chases it. On 10-19 frontend bro recorded his 08:57Z ask to rebuild the campaign screens on 5180 as c124, and
+ *    at 09:17Z he wrote "wheres the campaign app i requested?"; the fix b90f0cc4 landed on 10-20. A line in another chat, or a day or more
+ *    later, still counts: c48's 10-19 17:16Z line in frontend bro came 7 days after he first gave it there, and c18's 13:51Z line came in
+ *    frontend bro while c18 was first given in the AI harness chat.
  */
 export interface CountedRepeat { entry: Correction; repeat: CorrectionRepeat; /** When the owner wrote it, in ms: his message's own time. */ said: number }
-export async function repeatsBetween(ledger: Ledger, since: number, until: number, history: (chat: string) => Promise<ChatHistory>): Promise<CountedRepeat[]> {
+export async function repeatsBetween(ledger: Ledger, since: number, until: number, history: (chat: string) => Promise<ChatHistory>,
+  firstFix: (entry: Correction) => Promise<number | undefined>): Promise<CountedRepeat[]> {
   const inWindow = ledger.corrections.flatMap(entry => entry.repeats.map(repeat => ({ entry, repeat })))
     .filter(({ repeat }) => { const at = Date.parse(repeat.at); return at >= since && at <= until; });
   const chats = new Map<string, ChatHistory>();
@@ -413,13 +420,19 @@ export async function repeatsBetween(ledger: Ledger, since: number, until: numbe
     const refined = (chats.get(entry.chat.id)?.refines ?? []).filter(command => refineCovers(command.text, entry.id, entry.words)).map(command => command.at);
     return refined.length ? Math.min(...refined) : Date.parse(entry.at);
   };
+  const fixed = new Map<Correction, number | undefined>();
+  for (const entry of new Set(inWindow.filter(({ entry, repeat }) => repeat.chat.id === entry.chat.id).map(({ entry }) => entry))) fixed.set(entry, await firstFix(entry));
+  const chase = (entry: Correction, repeat: CorrectionRepeat, said: number): boolean => repeat.chat.id === entry.chat.id &&
+    said - Date.parse(entry.at) < CHASE_MS && said <= (fixed.get(entry) ?? Infinity);
   return inWindow.flatMap(({ entry, repeat }) => {
     const said = (chats.get(repeat.chat.id)?.owner ?? []).filter(message => ownerSaid(repeat.words, [message.text]));
     const filed = said.filter(message => message.at <= Date.parse(repeat.at));
     const message = (filed.length ? filed : said).at(-1);
-    return message !== undefined && message.at > inForce(entry) ? [{ entry, repeat, said: message.at }] : [];
+    return message !== undefined && message.at > inForce(entry) && !chase(entry, repeat, message.at) ? [{ entry, repeat, said: message.at }] : [];
   }).sort((a, b) => a.repeat.at.localeCompare(b.repeat.at));
 }
+/** How long after a correction a line in its own chat reads as a chase while no fix has landed: a day, the owner's "the next day" (10-09). */
+export const CHASE_MS = 86_400_000;
 
 /** A handoff in force: the correction that set it (not retired), the thread that owns the work, and its topics. */
 export interface HandoffRule extends Handoff { correction: string }

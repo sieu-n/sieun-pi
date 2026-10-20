@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { CountedRepeat, Correction } from "../src/chat-corrections.ts";
-import { fixLanded, fixMarks, gitCommitTime, sideLabel, splitMetrics, splitRepeats } from "../scripts/duties/repeat-split.ts";
+import { firstFixLanded, fixLanded, fixMarks, gitCommitTime, sideLabel, splitMetrics, splitRepeats } from "../scripts/duties/repeat-split.ts";
 import { measureHarness } from "../scripts/duties/harness-health.ts";
 
 const at = Date.parse;
@@ -34,6 +34,12 @@ test("a ref's commits and the chat message ids sent after the correction are its
 test("the newest landed fix a ref names dates it, and a commit no repo knows does not", async () => {
   assert.equal(await fixLanded("06aa1dfb + a46dee3 + fffffff1", at("2026-10-09T00:00:00Z"), now, commitTime), at(commits["06aa1dfb"]!));
   assert.equal(await fixLanded("fffffff1", at("2026-10-09T00:00:00Z"), now, commitTime), undefined);
+});
+
+test("the first landed fix a ref names after the correction dates the chase rule, and a commit from before the correction is no fix for it", async () => {
+  assert.equal(await firstFixLanded("06aa1dfb + a46dee3 + fffffff1", at("2026-10-09T00:00:00Z"), now, commitTime), at(commits.a46dee3!));
+  assert.equal(await firstFixLanded("06aa1dfb + a46dee3", at("2026-10-15T00:00:00Z"), now, commitTime), at(commits["06aa1dfb"]!));
+  assert.equal(await firstFixLanded("a46dee3", at("2026-10-15T00:00:00Z"), now, commitTime), undefined);
 });
 
 test("c79's 10-19 'NONONO' came before 95af01d5, c118's 07:29Z line has no landed fix, and a line after a46dee3 is after its fix", async () => {

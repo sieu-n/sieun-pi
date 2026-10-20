@@ -37,6 +37,16 @@ export async function fixLanded(ref: string, given: number, now: number, commitT
   return times.length ? Math.max(...times) : undefined;
 }
 
+/**
+ * When the first fix a ref names landed: the earliest commit or message id time at or after the correction (`given`), for the chase rule in
+ * repeatsBetween; undefined while none has. A commit from before the correction was no fix for it.
+ */
+export async function firstFixLanded(ref: string, given: number, now: number, commitTime: (hash: string) => Promise<number | undefined>): Promise<number | undefined> {
+  const { commits, messages } = fixMarks(ref, given, now);
+  const times = [...messages, ...(await Promise.all(commits.map(commitTime))).filter((at): at is number => at !== undefined && at >= given && at <= now)];
+  return times.length ? Math.min(...times) : undefined;
+}
+
 /** A repeat the owner wrote after the fix landed is `after_fix`; at or before it, `before_fix`; with no landed fix, `no_fix`. */
 export const repeatSide = (said: number, fixed: number | undefined): RepeatSide => fixed === undefined ? "no_fix" : said > fixed ? "after_fix" : "before_fix";
 
@@ -82,7 +92,9 @@ async function main(): Promise<void> {
   const errors: string[] = [];
   const history = chatHistories(join(homedir(), ".prime/agent/sessions"), process.platform === "darwin" ? null : macSessionLines, errors);
   const ledger = await new CorrectionLedger(process.env.HARNESS_DATA_DIR || join(homedir(), ".prime/agent/browser-chat")).read();
-  const split = await splitRepeats(await repeatsBetween(ledger, now - REPEAT_DAYS * 86_400_000, now, history), now, gitCommitTime(fixRepos(AUTO_SNS)));
+  const commitTime = gitCommitTime(fixRepos(AUTO_SNS));
+  const split = await splitRepeats(await repeatsBetween(ledger, now - REPEAT_DAYS * 86_400_000, now, history,
+    entry => firstFixLanded(entry.ref, Date.parse(entry.at), now, commitTime)), now, commitTime);
   for (const repeat of split) {
     process.stdout.write(`${new Date(repeat.said).toISOString().slice(0, 16)}Z ${repeat.entry.id} ${sideLabel(repeat)} in ${repeat.repeat.chat.name || repeat.repeat.chat.id}: ${repeat.repeat.words.replace(/\s+/g, " ").slice(0, 120)}\n`);
   }
