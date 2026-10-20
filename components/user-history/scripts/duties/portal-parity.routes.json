@@ -1110,18 +1110,6 @@
    ]
   },
   {
-   "crawler": "POST /api/meta-ads/advertisers/{page_id}/track",
-   "group": "meta_ads_tiktok_shop",
-   "portal": [],
-   "byDesign": "Meta ad track writes are skipped behind a global flag (board s7, 2026-10-12)"
-  },
-  {
-   "crawler": "DELETE /api/meta-ads/advertisers/{page_id}/track",
-   "group": "meta_ads_tiktok_shop",
-   "portal": [],
-   "byDesign": "Meta ad track writes are skipped behind a global flag (board s7, 2026-10-12)"
-  },
-  {
    "crawler": "GET /api/meta-ads/advertisers/{page_id}",
    "group": "meta_ads_tiktok_shop",
    "portal": [
