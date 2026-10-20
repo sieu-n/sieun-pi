@@ -1,4 +1,6 @@
 import { readFile } from "node:fs/promises";
+import { request as httpRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
 import { type UsageBucket, type UsageFeed, type UsageGroup, type UsageKind, type UsageMetric, type UsageModelRow, type UsageRate, type UsageSeries, type UsageSummary, type UsageTokens, type UsageWindow, USAGE_BUCKETS, USAGE_GROUPS, USAGE_METRICS, USAGE_WINDOWS } from "../shared/usage.ts";
 import type { TokenRate } from "../shared/types.ts";
 
@@ -56,17 +58,34 @@ function reason(error: unknown): string {
   return cause ? `${error.message} (${[code, cause.message].filter(Boolean).join(": ")})` : error.message;
 }
 
+/**
+ * A GET over HTTP/1.1, with fetch's signature. Node 26's own fetch keeps one HTTP/2 session to obs.virev.ai, and once
+ * the proxy closes that session, queries fail with ERR_HTTP2_GOAWAY_SESSION or ERR_HTTP2_INVALID_SESSION, a retry
+ * included: on 10-20 the sidebar read "err" in 4 of 42 readings from 22:16 to 22:21Z, and in 2 of 60 from 22:33 to
+ * 22:38Z with the retry live. HTTP/1.1 has no shared session to lose.
+ */
+export const http1Fetch = ((input: string | URL | Request, init?: RequestInit) => new Promise<Response>((resolve, reject) => {
+  const url = new URL(String(input));
+  const send = url.protocol === "http:" ? httpRequest : httpsRequest;
+  const req = send(url, { method: "GET", headers: Object.fromEntries(new Headers(init?.headers)) }, res => {
+    const chunks: Buffer[] = [];
+    res.on("data", (chunk: Buffer) => chunks.push(chunk));
+    res.on("end", () => resolve(new Response(Buffer.concat(chunks), { status: res.statusCode ?? 502 })));
+    res.on("error", error => reject(new TypeError("fetch failed", { cause: error })));
+  });
+  req.on("error", error => reject(new TypeError("fetch failed", { cause: error })));
+  req.end();
+})) as typeof fetch;
+
 /** The Prometheus API behind Grafana's datasource proxy. `config` names a JSON file with `url` and `token` (a Viewer service account token), read on each query so a new token needs no restart. */
-export function grafanaPrometheus(config: string, fetcher: typeof fetch = fetch): Prometheus {
+export function grafanaPrometheus(config: string, fetcher: typeof fetch = http1Fetch): Prometheus {
   async function call(path: "query" | "query_range", params: Record<string, string>): Promise<unknown> {
     let url: unknown, token: unknown;
     try { ({ url, token } = JSON.parse(await readFile(config, "utf8")) as Record<string, unknown>); }
     catch (error) { throw new UsageError(503, `No Grafana token: ${config}: ${error instanceof Error ? error.message : String(error)}`); }
     if (typeof url !== "string" || typeof token !== "string") throw new UsageError(503, `No Grafana token: ${config} needs url and token.`);
     const ask = () => fetcher(`${url.replace(/\/$/, "")}/api/datasources/proxy/uid/${DATASOURCE}/api/v1/${path}?${new URLSearchParams(params)}`, { headers: { authorization: `Bearer ${token}` } });
-    // Node 26's fetch keeps one HTTP/2 session to obs.virev.ai. When the proxy closes it, the next query fails with
-    // ERR_HTTP2_GOAWAY_SESSION or ERR_HTTP2_INVALID_SESSION before it is sent, and a second try opens a new session.
-    // On 10-20 from 22:16 to 22:21Z, 4 of 42 sidebar readings showed "err" for that alone. Every query here is a read.
+    // A second try covers a connection that dropped between two queries. Every query here is a read.
     const response = await ask().catch(() => ask())
       .catch((error: unknown) => { throw new UsageError(502, `LGTM unreachable: ${reason(error)}`); });
     const text = await response.text();
