@@ -13,7 +13,7 @@ import { CUT_TAIL_BYTES, tailLines } from "./cut-end.ts";
 import { lastTurnError } from "./held-turns.ts";
 import { dutyLink } from "./shared/duty-fixes.ts";
 import type { MetricStreak } from "./shared/duty-streak.ts";
-import type { SessionRow } from "./shared/types.ts";
+import type { SessionRow, ThreadSchedule } from "./shared/types.ts";
 import { fileLines } from "./file-lines.ts";
 
 /**
@@ -397,6 +397,13 @@ export function dutyJobHost(input: { threads: DutyJobThreads; archives: { add(jo
   saved?: (chatId: string) => Promise<{ name: string; cwd: string } | null>;
   /** A session's transcript file (`sessionFileOf`), which `cut` reads; absent, no job reads as cut. */
   sessionFile?: (id: string) => Promise<string | null>;
+  /**
+   * Each session's active or paused scheduled job, read from the daemon now (`Catalog.schedulesNow`), so `ended` keeps a job that waits on
+   * one; absent: no job waits. A quota-parked session's resume is such a job ("quota-resume"), and an archive cancels it: at 04:27:06Z and
+   * 04:33:30Z on 10-20 the runner archived roots 01a15622 and 01a1571c 2 min and 9 s after each parked on a 429, and the relays they held for
+   * their subagents repeat c129, c110-plan-vs-duty and c48-ui-reference never went out.
+   */
+  schedules?: () => Promise<ReadonlyMap<string, ThreadSchedule>>;
   refresh?: () => Promise<void>; lookupWaitsMs?: readonly number[]; sleep?: (ms: number) => Promise<void>; log?: (line: string) => void; now?: () => number }): DutyJobHost {
   const row = async (id: string) => (await input.rows()).find(candidate => candidate.id === id);
   const waits = input.lookupWaitsMs ?? DUTY_LOOKUP_WAITS_MS;
@@ -483,8 +490,11 @@ export function dutyJobHost(input: { threads: DutyJobThreads; archives: { add(jo
       if (!last.length && !older.length) return [];
       const byId = new Map((await input.rows()).map(candidate => [candidate.id, candidate]));
       const idle = (job: DutyJobRef) => { const found = byId.get(job.id); return found !== undefined && !found.archived && !found.working ? found : undefined; };
-      return [...last.filter(job => { const found = idle(job); return found !== undefined && found.messageCount >= 2 && found.failure === undefined; }),
+      const ended = [...last.filter(job => { const found = idle(job); return found !== undefined && found.messageCount >= 2 && found.failure === undefined; }),
         ...older.filter(job => idle(job) !== undefined)];
+      if (!ended.length || !input.schedules) return ended;
+      const scheduled = await input.schedules().catch(error => { input.log?.(`duty jobs: no job stops this scan, the daemon's scheduled jobs did not read: ${reason(error)}`); return null; });
+      return scheduled === null ? [] : ended.filter(job => !scheduled.has(job.id));
     },
     stop: job => input.archives.add(job),
     async cut(job) {

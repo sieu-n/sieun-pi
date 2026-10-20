@@ -60,6 +60,19 @@ FAKE = textwrap.dedent(
         if mode == "restart-failed":
             status("failed", message="Could not stop the predecessor daemon on x")
             sys.exit(1)
+        if mode == "manifest":
+            folder = os.path.join(os.environ["PRIME_AGENT_CODING_AGENT_DIR"], "daemon-update-restarts")
+            manifest = os.path.join(folder, "5e1f.json")
+            with open(manifest + ".tmp", "w") as f:
+                json.dump({"formatVersion": 1, "createdAt": "2026-10-20T03:08:00.000Z", "sessions": [{"activeSessionId": "b4d32e15dd56", "sessionId": "01a1549e",
+                    "sessionFile": "/s/01a1549e.jsonl", "cwd": "/home/sieun", "config": {"model": "m"}, "clientEnv": {"TOKEN": "secret"},
+                    "queue": {"actions": {}, "nextTurn": [{"content": "queued text"}]}, "shouldResume": True, "hadRunningRlmChildren": True}]}, f)
+            os.rename(manifest + ".tmp", manifest)
+            planned = status_path[:-len(".json")] + ".planned.json"
+            deadline = time.time() + 10
+            while not os.path.exists(planned) and time.time() < deadline:
+                time.sleep(0.01)
+            os.remove(manifest)
         old = int(open(os.environ["FAKE_PIDS"]).read().split()[-1])
         os.kill(old, 15)
         while os.path.exists(sock):
@@ -337,6 +350,21 @@ class DaemonCtlTest(unittest.TestCase):
         self.assertEqual(len(coordinator), 1)
         self.assertEqual(coordinator[0][2:4], ["--daemon-socket", self.sock])
         self.assertTrue(coordinator[0][5].startswith(str(self.dir / "agent/update-restarts") + "/"))
+
+    def test_update_keeps_a_metadata_copy_of_the_planned_restore_after_the_manifest_is_consumed(self):
+        self.serve()
+        (self.dir / "agent").mkdir()
+        result = self.ctl("update", str(self.fake), self.sock, self.pidfile, env=dict(self.env, FAKE_UPDATE_MODE="manifest"))
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(list((self.dir / "agent/daemon-update-restarts").iterdir()), [])
+        copies = list((self.dir / "agent/update-restarts").glob("ctl-*.planned.json"))
+        self.assertEqual(len(copies), 1, result.stdout)
+        plan = json.loads(copies[0].read_text())["manifests"]["5e1f.json"]
+        self.assertEqual(plan["total"], 1)
+        self.assertEqual(plan["sessions"], [{"activeSessionId": "b4d32e15dd56", "sessionId": "01a1549e", "sessionFile": "/s/01a1549e.jsonl", "cwd": "/home/sieun",
+                                             "shouldResume": True, "hadRunningRlmChildren": True}])
+        self.assertNotIn("secret", copies[0].read_text())
+        self.assertNotIn("queued text", copies[0].read_text())
 
     def test_an_install_that_installs_nothing_skips_the_restart(self):
         old = self.serve()

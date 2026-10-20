@@ -37,6 +37,7 @@ import { startTmpSweep } from "./tmp-sweep.ts";
 import { Chats, UNKNOWN_ACTIVE } from "./chats.ts";
 import { extensionBuild, loadRecord } from "./chat-brief.ts";
 import { Duties } from "./chat-duty-run.ts";
+import { primeUpdateRunning } from "./prime-update.ts";
 import { fixLiveReader } from "./shared/duty-fixes.ts";
 import { alertJobBrief, archiveDutyJob, dutyJobHost, dutyJobName, savedChat } from "./chat-duty-job.ts";
 import { ArchiveQueue } from "./chat-archive-queue.ts";
@@ -191,6 +192,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   };
   const dutyJobs = dutyJobHost({ threads, archives, rows: () => catalog.rows(), refresh: () => catalog.refresh(), registry,
     saved: async id => { const file = await sessionFileOf(id, agentDir); return file ? savedChat(file) : null; }, sessionFile: id => sessionFileOf(id, agentDir),
+    schedules: () => catalog.schedulesNow(),
     board: id => join(boards.dir, id + ".json"), log: dutyLog,
     started: async (id, chat, name) => poolPriorities.set(id, dutyJobPriority(name, chatPoolPriority((await labels.snapshot()).threads[chat.id]?.priority ?? 0))) });
   const duties = new Duties(new DutyStore(dataDir), { isChat: async id => (await chats.ids()).has(id), log: dutyLog, ...quiet ? { tickMs: 0 } : {},
@@ -199,7 +201,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     fixLive: fixLiveReader({ rows: () => catalog.rows(), asleep: async now => (await pendingWakes(join(dataDir, "wakes"), now)).map(wake => wake.session),
       pool: poolWaiting, held: () => chats.poolHeldSessions() }),
     priority: async id => chatPoolPriority((await labels.snapshot()).threads[id]?.priority ?? 0),
-    jobs: dutyJobs, poolAdmits,
+    jobs: dutyJobs, poolAdmits, updating: () => primeUpdateRunning(agentDir, socketPath),
     checkIn: { view: id => chats.checkInView(id), run: (id, trigger, rerunOf) => chats.runCheckIn(id, trigger, rerunOf), measure: id => chats.measureCheckIn(id),
       set: async (id, change, actor) => { const view = await chats.setCheckIn(id, change, actor); if (view) await catalog.notify(); return view; } } });
   // A gone job's leftovers end on the box whose daemon runs its folder's session; a replay serve stops nothing anywhere.

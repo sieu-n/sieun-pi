@@ -12,6 +12,7 @@ import { type AfterMeasure, CHECK_IN_DUTY, CHECK_IN_DUTY_ID, dailySlot, dutyDue,
   type DutyCut, type DutyMetric, type DutyRunRecord, type DutySchedule, type DutyTrigger, type DutyView, type FixLink, type FlaggedSlice, type PrecheckOutput, type PrecheckOverrun, verdictMetrics } from "./shared/chat-duties.ts";
 import { briefFindings, headlineWords } from "./shared/brief-cap.ts";
 import { pushMisses } from "./duty-push.ts";
+import type { PrimeUpdate } from "./prime-update.ts";
 import { closedFixes, dutyFixes, missedKeys } from "./shared/duty-fixes.ts";
 import { metricStreaks, type MetricStreak } from "./shared/duty-streak.ts";
 import { type BoardOp, CHECK_IN_MIN_MINUTES, type ChatBoard, type CheckInPause, type CheckInView, type PlanItem, type PoolPriority } from "./shared/types.ts";
@@ -64,6 +65,12 @@ export interface DutyHost {
   applyBoard?: (chatId: string, ops: (board: ChatBoard) => readonly BoardOp[]) => Promise<void>;
   /** Whether pi-pool would give the tree rooted at `tree` a `provider` account now (`poolAdmits`), for a cut run's rerun; absent: it admits. */
   poolAdmits?: (tree: string, provider: string) => Promise<boolean>;
+  /**
+   * The Prime update restoring the daemon's sessions now (`primeUpdateRunning`), or null; absent: none. While one runs no duty job is stopped,
+   * archived or retired: a restored root reads idle until the coordinator restores its subagents, and from 03:08:28Z to 03:09:07Z on 10-20
+   * the runner archived 10 restored roots of update ctl-847650, so 8 of their subagents failed their restore at 03:11:38Z to 03:12:11Z.
+   */
+  updating?: () => Promise<PrimeUpdate | null>;
 }
 
 export const DUTY_TICK_MS = 30_000;
@@ -241,6 +248,8 @@ export class Duties {
   private readonly timer: ReturnType<typeof setInterval> | undefined;
   private readonly now: () => number;
   private ticking: Promise<void> | undefined;
+  /** The update whose hold `updateRunning` logged last. */
+  private heldFor: string | undefined;
 
   constructor(readonly store: DutyStore, private readonly host: DutyHost) {
     this.now = host.now ?? Date.now;
@@ -252,6 +261,14 @@ export class Duties {
   }
 
   private log(line: string): void { this.host.log?.(line); }
+
+  /** The update that holds every job stop now (`DutyHost.updating`), logged once per update; null when none runs or it cannot be read. */
+  private async updateRunning(): Promise<PrimeUpdate | null> {
+    const update = await this.host.updating?.().catch(() => null) ?? null;
+    if (update && this.heldFor !== update.requestId) this.log(`duty jobs: Prime update ${update.requestId} is ${update.phase}; no duty job stops until it ends`);
+    this.heldFor = update?.requestId;
+    return update;
+  }
 
   /**
    * One wake: every duty of every chat that is due starts, and a daily slot too late to run is recorded as skipped. Due duties start first for
@@ -305,9 +322,10 @@ export class Duties {
     }
     const runs = new Map<string, DutyRunRecord[]>();
     for (const chatId of chats) runs.set(chatId, await this.store.runs(chatId));
-    await this.stopEnded(runs);
+    const update = await this.updateRunning();
+    if (!update) await this.stopEnded(runs);
     await this.rerunCut(runs);
-    await this.retireGone(gone);
+    if (!update) await this.retireGone(gone);
   }
 
   /**
@@ -422,6 +440,7 @@ export class Duties {
       const measured = runGoing && (await this.store.runs(chatId)).find(entry => entry.duty === run.duty && entry.at === run.at)?.after;
       if (!measured && !(await this.cutOf(chatId, run))) await this.measureAfter(chatId, run);
       if (!jobs.stop) return;
+      if (await this.updateRunning()) { this.stopped.delete(run.job.id); return; }
       await jobs.stop(run.job);
       this.log(`duty job ${run.job.name}: its turn ended; queued its archive`);
     })()

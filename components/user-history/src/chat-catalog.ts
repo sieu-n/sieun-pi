@@ -744,6 +744,13 @@ export class Catalog {
     this.schedulesTimer.unref();
   }
 
+  /** Each session's active or paused scheduled job as the daemon lists it now, for a stop that must not cancel one (`dutyJobHost.schedules`). */
+  async schedulesNow(): Promise<ReadonlyMap<string, ThreadSchedule>> {
+    const jobs = await this.client.request({ type: "cron_list" }, undefined, { recoverable: false });
+    if (!jobs.success) throw new Error(jobs.error);
+    return parseSchedules(jobs.data);
+  }
+
   private async refreshSchedules(): Promise<void> {
     if (this.schedulesRefreshing) return this.schedulesRefreshing;
     this.schedulesRefreshing = (async () => {

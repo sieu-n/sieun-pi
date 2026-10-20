@@ -47,6 +47,10 @@ directory that a newer Prime build left behind with owner.json in it, when its o
 clear_dead_lock). mem.3 and older only rmdir a stale lock, so after such an owner crashes a rolled-back binary would
 fail with ENOTEMPTY on every start.
 
+While the coordinator runs, update copies the session identities of each restart manifest Prime writes under
+<agent dir>/daemon-update-restarts to <status record>.planned.json beside the coordinator's status record, without each
+session's config, client env or queued messages, because the coordinator consumes the manifest when it completes.
+
 update empties the env file argument, the unit's prime-update.env, before it starts the updater, because systemd
 has already loaded it into this process and a later start or reload must not pick up the same args and feed settings.
 
@@ -424,13 +428,102 @@ def restart_report(status):
     return ""
 
 
+# inotify(7) masks: a manifest Prime writes in place, or renames into the directory (writeFileAtomicSync).
+IN_CLOSE_WRITE = 0x8
+IN_MOVED_TO = 0x80
+PLANNED_FIELDS = ("activeSessionId", "sessionId", "sessionFile", "cwd", "shouldResume", "wasStreaming", "wasCompacting", "wasBashRunning",
+                  "hadRunningRlmChildren", "wasRetrying", "hadAcceptedPromptInFlight")
+
+
+def planned(manifest):
+    """The session identities a restart manifest plans to restore, without each session's config, client env or queued messages."""
+    if not isinstance(manifest, dict) or not isinstance(manifest.get("sessions"), list):
+        return None
+    sessions = [{key: entry[key] for key in PLANNED_FIELDS if key in entry} for entry in manifest["sessions"] if isinstance(entry, dict)]
+    return {"formatVersion": manifest.get("formatVersion"), "createdAt": manifest.get("createdAt"), "total": len(sessions),
+            "discardedActiveSessionIds": manifest.get("discardedActiveSessionIds", []), "sessions": sessions}
+
+
+class PlannedCopy:
+    """Keeps a metadata copy of each restart manifest the update writes under <agent dir>/daemon-update-restarts.
+
+    The coordinator consumes the manifest when it completes, so on 10-20 update ctl-847650 left no record of the 148 sessions it planned
+    to restore, and its 10 stoppedBeforeRestore and 8 failed rows could not be reconciled against the plan. The copy goes to <out>, next to
+    the coordinator's status record, as each manifest lands; an inotify watch wakes the thread, so it waits on no interval.
+    """
+
+    def __init__(self, manifests, out):
+        import select
+        import threading
+        self.manifests, self.out, self.select = Path(manifests), Path(out), select.select
+        self.copies = {}
+        self.manifests.mkdir(mode=0o700, parents=True, exist_ok=True)
+        self.libc = ctypes.CDLL(None, use_errno=True)
+        self.fd = self.libc.inotify_init1(os.O_CLOEXEC)
+        if self.fd < 0 or self.libc.inotify_add_watch(self.fd, str(self.manifests).encode(), IN_CLOSE_WRITE | IN_MOVED_TO) < 0:
+            raise OSError(ctypes.get_errno(), f"inotify watch on {self.manifests} failed")
+        self.wake_read, self.wake_write = os.pipe()
+        for path in self.manifests.glob("*.json"):
+            self.copy(path.name)
+        self.thread = threading.Thread(target=self.watch, daemon=True)
+        self.thread.start()
+
+    def copy(self, name):
+        if not name.endswith(".json"):
+            return
+        try:
+            plan = planned(json.loads((self.manifests / name).read_text()))
+        except (OSError, ValueError):
+            return
+        if plan is None:
+            return
+        self.copies[name] = plan
+        temp = self.out.with_name(self.out.name + ".tmp")
+        temp.write_text(json.dumps({"manifests": self.copies}, indent=1) + "\n")
+        os.chmod(temp, 0o600)
+        os.replace(temp, self.out)
+
+    def watch(self):
+        while True:
+            ready, _, _ = self.select([self.fd, self.wake_read], [], [])
+            if self.wake_read in ready:
+                return
+            data = os.read(self.fd, 65536)
+            offset = 0
+            while offset + 16 <= len(data):
+                length = int.from_bytes(data[offset + 12:offset + 16], sys.byteorder)
+                name = data[offset + 16:offset + 16 + length].split(b"\0", 1)[0].decode(errors="replace")
+                offset += 16 + length
+                self.copy(name)
+
+    def close(self):
+        os.write(self.wake_write, b"x")
+        self.thread.join()
+        for fd in (self.fd, self.wake_read, self.wake_write):
+            os.close(fd)
+
+
+def keep_planned(agent_dir, status_path):
+    """Start the planned-identity copy for one coordinator run, or print why it cannot and go on without it."""
+    try:
+        return PlannedCopy(agent_dir / "daemon-update-restarts", status_path.with_name(status_path.stem + ".planned.json"))
+    except OSError as error:
+        print(f"prime-agent-daemon-ctl: no planned restore copy: {error}", file=sys.stderr, flush=True)
+        return None
+
+
 def restart(prime_agent, sock):
     agent_dir = Path(os.environ.get("PRIME_AGENT_CODING_AGENT_DIR") or "~/.prime/agent").expanduser()
     restarts = agent_dir / "update-restarts"
     restarts.mkdir(mode=0o700, parents=True, exist_ok=True)
     status_path = restarts / f"ctl-{os.getpid()}-{int(time.time())}.json"
     env = target_env(sock, PRIME_AGENT_CODING_AGENT_DIR=str(agent_dir))
-    code, output = run([prime_agent, "update", COORDINATOR_FLAG, "--daemon-socket", sock, STATUS_FLAG, str(status_path)], env)
+    copy = keep_planned(agent_dir, status_path)
+    try:
+        code, output = run([prime_agent, "update", COORDINATOR_FLAG, "--daemon-socket", sock, STATUS_FLAG, str(status_path)], env)
+    finally:
+        if copy:
+            copy.close()
     try:
         status = json.loads(status_path.read_text())
     except (OSError, ValueError):
