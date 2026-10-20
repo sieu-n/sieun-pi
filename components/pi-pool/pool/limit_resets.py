@@ -1,7 +1,7 @@
 """Banked usage-limit resets: `pi-pool resets` and `pi-pool reset`."""
 import concurrent.futures, datetime, json, os, re, shutil, subprocess, time, urllib.request, urllib.error, uuid
 
-from . import base, registry, vending, status_view
+from . import base, registry, vending, status_view, limited
 
 
 # ------------------------------------------------------------- reset grants
@@ -213,7 +213,7 @@ def read_organization(token):
 
 
 def save_reset_status(account_id, entry):
-    with base.Flock(base.LOCK, timeout=base.STATE_LOCK_TIMEOUT):
+    with limited.pool_lock():
         cache = base.load_json(RESETS, {}) or {}
         cache[account_id] = entry
         base.save_json(RESETS, cache)
@@ -269,7 +269,7 @@ def cmd_resets(rest):
     for a, entry in results:
         if "error" in entry:
             # A failed read keeps the last good grants and notes the failure next to them.
-            with base.Flock(base.LOCK, timeout=base.STATE_LOCK_TIMEOUT):
+            with limited.pool_lock():
                 cache = base.load_json(RESETS, {}) or {}
                 cache[a.id] = {**(cache.get(a.id) or {}), "error": entry["error"], "error_at": entry["checked_at"]}
                 base.save_json(RESETS, cache)

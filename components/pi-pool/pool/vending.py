@@ -2,7 +2,7 @@
 refusal probe, and vend()."""
 import dataclasses, os, subprocess, sys, time
 
-from . import base, registry, sched
+from . import base, limited, registry, sched
 
 
 class HookWriter:
@@ -428,7 +428,7 @@ def cmd_adopt_logins(rest=()):
 def apply_refusal(provider, account, refusal, cfg, now):
     """Cool an API-refused account down in the pool."""
     until = now + cfg["refused_cooldown_sec"]
-    with base.Flock(base.LOCK, timeout=base.STATE_LOCK_TIMEOUT):
+    with limited.pool_lock():
         state = registry.load_state()
         HookWriter(state).set_cooldown(provider, account.id, until, refusal)
         base.save_json(base.STATE, state)
@@ -455,7 +455,7 @@ def cmd_probe(rest=()):
     refreshes a token, so it rotates nothing. The extension runs this at session
     start, which is how a refusal is found before any request lands on it."""
     cfg, now = base.config(), time.time()
-    with base.Flock(base.LOCK, timeout=base.STATE_LOCK_TIMEOUT):
+    with limited.pool_lock():
         state = registry.load_state()
         prov = state["providers"]["anthropic"]
         if "--force" not in rest and now - (prov.get("last_probe") or 0) < cfg["probe_interval_sec"]:
@@ -498,7 +498,7 @@ def probe_accounts(accounts, reasons, cfg, now):
         result = base.anthropic_probe(creds["accessToken"], infer=expected[0] == base.NEEDS_TERMS)
         if isinstance(result, base.ProbeUnavailable):
             continue
-        with base.Flock(base.LOCK, timeout=base.STATE_LOCK_TIMEOUT):
+        with limited.pool_lock():
             state = registry.load_state()
             changed = record_probe(state, a.id, result, expected, cfg, now)
             if changed:
@@ -552,18 +552,23 @@ def last_vend_account(state, key, provider, accounts, now):
     return account
 
 
+def decision(state, key, provider, accounts, cfg, now):
+    """(`decide` for this tree on `state`, the tree), with nothing written."""
+    accounts = registry.with_pool_state(accounts, state, provider)
+    accounts = registry.with_models(accounts, registry.session_models(state, key, provider, cfg, now), cfg)
+    tree = sched.tree_for(state, key, provider)
+    cooldowns = dict(state["providers"][provider]["cooldowns"])
+    return sched.decide(tree, accounts, sched.book_for(state, provider, key, cfg, now), cooldowns, cfg, now), tree
+
+
 def schedule(state, key, provider, accounts, cfg, now, admit_now=True):
     """Run `decide` for this tree and write what it takes, under the pool flock
     the caller holds: an admission takes its cell, a wait its slot. With
     `admit_now` false (`pi-pool limited` and `refused`, whose retry vends a second
     later) an admission is held as a wait due now. Returns the decision, the tree
     and whether state changed."""
-    accounts = registry.with_pool_state(accounts, state, provider)
-    accounts = registry.with_models(accounts, registry.session_models(state, key, provider, cfg, now), cfg)
-    tree = sched.tree_for(state, key, provider)
-    cooldowns = dict(state["providers"][provider]["cooldowns"])
+    d, tree = decision(state, key, provider, accounts, cfg, now)
     writer = HookWriter(state)
-    d = sched.decide(tree, accounts, sched.book_for(state, provider, key, cfg, now), cooldowns, cfg, now)
     if key is None or d is None or isinstance(d, sched.Blocked):
         return d, tree, False
     if isinstance(d, sched.Wait):
@@ -635,7 +640,7 @@ def vend(provider):
     parent = (parent_pid, (base.proc_info(parent_pid) or {}).get("start")) if key else None
 
     try:
-        with base.Flock(base.LOCK, timeout=base.STATE_LOCK_TIMEOUT):
+        with limited.pool_lock():
             state = registry.load_state()
             now = time.time()
             pruned = HookWriter(state).prune(cfg, now)
@@ -646,10 +651,9 @@ def vend(provider):
             if pruned or wrote or reads or token:
                 base.save_json(base.STATE, state)
     except TimeoutError:
-        # save_json replaces state.json in one rename, so an unlocked read sees a whole file.
-        unlocked = base.load_json(base.STATE, {}) or {}
-        unlocked["sessions"] = registry.Sessions(unlocked.get("sessions") or {}, time.time(), cfg["pin_ttl_sec"])
-        account = last_vend_account(unlocked, key, provider, accounts, time.time())
+        # save_json replaces state.json in one rename, so an unlocked read sees a whole file. A 429 still in the
+        # limited spool counts, so the tree does not get back an account the provider just refused.
+        account = last_vend_account(limited.unlocked_state(), key, provider, accounts, time.time())
         if account is None:
             raise
         token, source = credential_for(account, cfg)
@@ -683,7 +687,7 @@ def vend(provider):
                 result = (base.anthropic_probe(probe_token, infer=expected[0] == base.NEEDS_TERMS, timeout=remaining)
                           if remaining > 0 else base.ProbeUnavailable())
                 if not isinstance(result, base.ProbeUnavailable):
-                    with base.Flock(base.LOCK, timeout=base.STATE_LOCK_TIMEOUT):
+                    with limited.pool_lock():
                         state = registry.load_state()
                         changed = record_probe(state, selected.id, result, expected, cfg, time.time())
                         if changed:
@@ -738,7 +742,7 @@ def vend(provider):
                 continue
         prev = vended = None
         try:
-            with base.Flock(base.LOCK, timeout=base.STATE_LOCK_TIMEOUT):
+            with limited.pool_lock():
                 state = registry.load_state()
                 writer = HookWriter(state)
                 prev = ((state["sessions"].get(key.key) or {}).get("vends") or {}).get(provider) if key else None

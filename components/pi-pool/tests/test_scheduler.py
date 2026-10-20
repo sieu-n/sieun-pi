@@ -4,7 +4,8 @@ import collections, contextlib, dataclasses, io, json, math, os, random, tempfil
 
 from fixture_isolation import isolate_test_module
 from test_core import CFG, KEY, NOW, account, vend, vend_record
-from vend.pool import base, limit_resets, registry, sched, session_cmds, status_view, vending
+from vend.pool import base, limit_resets, registry, sched, status_view, vending
+from vend.pool import limited as limited_report
 
 
 def setUpModule():
@@ -60,7 +61,7 @@ def limited(state, key, accounts, now, until, cfg=CFG):
     """What `pi-pool limited` does after a 429 on the tree's account."""
     last = state["sessions"][key.key]["vends"][P]["account_id"]
     vending.HookWriter(state).set_limit(P, last, until, key, now)
-    return session_cmds.plan_next(state, key, P, accounts, cfg, now)
+    return limited_report.plan_next(state, key, P, accounts, cfg, now)
 
 
 def decide(state, key, accounts, now=NOW, cooldowns=None, cfg=CFG):
@@ -255,7 +256,7 @@ class R5Wait(unittest.TestCase):
         with draws(1200 / CFG["depleted_backoff_max_sec"]):
             d = limited(state, KEY, accounts, NOW, NOW + 3000)
         self.assertIsInstance(d, sched.Wait)
-        self.assertEqual(session_cmds.next_fields(d), {"next": None, "retry_at": math.ceil(d.slot_at)})
+        self.assertEqual(limited_report.next_fields(d), {"next": None, "retry_at": math.ceil(d.slot_at)})
         self.assertEqual((d.slot_account.id, d.slot_at, d.backoff), ("y", NOW + 1200, True))
         self.assertEqual(state["sessions"][KEY.key]["wait"][P]["slot_at"], NOW + 1200)
         again = request(state, KEY, registry.with_pool_state(accounts, state, P), NOW + 5)

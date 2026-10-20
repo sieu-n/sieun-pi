@@ -8,7 +8,7 @@ goes there the same way. Per --tree session it gives the class `priority --sessi
 that tree's record (`trees`). It writes nothing and takes the locks those commands take."""
 import contextlib, io, json, sys, traceback
 
-from . import base, registry, remote, status_view
+from . import base, registry, remote, status_view, limited
 
 USAGE = 'usage: pi-pool snapshot --json [--thread <session or ""> <model or "">]... [--tree <session>]...'
 
@@ -36,7 +36,7 @@ def tree_classes(sessions):
     the tree has no record yet."""
     if not sessions:
         return []
-    with base.Flock(base.LOCK, timeout=base.STATE_LOCK_TIMEOUT):
+    with limited.pool_lock():
         state = registry.load_state()
         out = []
         for session in sessions:

@@ -1,8 +1,8 @@
-"""ls, model, limited, refused and who for one session tree, and the account admin commands
+"""ls, model, refused and who for one session tree, and the account admin commands
 enable, off, on, unlimited and rm."""
 import json, math, os, shlex, time
 
-from . import base, registry, sched, vending, status_view, limit_resets
+from . import base, limited, registry, sched, vending, status_view, limit_resets
 
 
 def tree_view(state, key, provider, accounts, f, cfg, now):
@@ -11,11 +11,6 @@ def tree_view(state, key, provider, accounts, f, cfg, now):
     accounts = registry.with_models(accounts, [f["model"]] if f.get("model") else registry.session_models(state, key, provider, cfg, now), cfg)
     tree = sched.tree_for(state, key, provider) if key else sched.Tree(pool_pin=state["providers"][provider].get("pin"))
     return accounts, tree, sched.book_for(state, provider, key, cfg, now), state["providers"][provider]["cooldowns"]
-
-
-def selection_view(tree):
-    account_id = tree.pin or tree.pool_pin
-    return {"mode": "manual", "account_id": account_id} if account_id else {"mode": "auto"}
 
 
 def wait_view(d):
@@ -38,7 +33,7 @@ def cmd_ls(rest):
         msg = f"cannot load the {provider} pool: {e}"
         print(json.dumps({"error": msg}) if f["json"] else msg)
         return 1
-    state = registry.load_state()
+    state = limited.unlocked_state()
     key = status_view.session_key_for(f["session"], state)
     if f["session"] is not None and key is None:
         msg = f"--session {f['session']} matches no known session"
@@ -55,7 +50,7 @@ def cmd_ls(rest):
     pin_account = next((a for a in accounts if a.id == state["providers"][provider].get("pin")), None)
     out = {"provider": provider, "session": key.key if key else None,
            "pin": {"id": pin_account.id, "email": pin_account.email, "label": pin_account.label} if pin_account else None,
-           "priority": tree.priority, "selection": selection_view(tree),
+           "priority": tree.priority, "selection": sched.selection_view(tree),
            "wait": wait_view(d) if key else None, "rows": rows}
     if f["json"]:
         print(json.dumps(out, indent=2))
@@ -89,7 +84,7 @@ def cmd_model(rest):
     if key is None:
         return 0
     now = time.time()
-    with base.Flock(base.LOCK, timeout=base.STATE_LOCK_TIMEOUT):
+    with limited.pool_lock():
         state = registry.load_state()
         recs = registry.tree_records(state, key)
         if not recs and f["clear"]:
@@ -110,67 +105,6 @@ def cmd_model(rest):
     return 0
 
 
-def cmd_limited(rest):
-    """Record a provider 429 and report the next Auto account or wait.
-    Manual replies retain the selected identity and the original provider failure."""
-    f = status_view.parse_flags(rest)
-    provider, until = f["provider"], f["until"]
-    if until is None:
-        raise SystemExit("usage: pi-pool limited --until <epoch sec> [--since <epoch sec>] [--provider <p>] [--session <id>]")
-    cfg, now = base.config(), time.time()
-    accounts = registry.load_index(provider)
-    with base.Flock(base.LOCK, timeout=base.STATE_LOCK_TIMEOUT):
-        state = registry.load_state()
-        key = status_view.session_key_for(f["session"], state)
-        rec = state["sessions"].get(key.key) if key else None
-        last = ((rec or {}).get("vends") or {}).get(provider)
-        if not last:
-            print(json.dumps({"error": f"no {provider} vend on file for this session"}))
-            return 2
-        # A request sent before the tree moved to its current account failed on an
-        # earlier one, whose limit an earlier report recorded. 2026-10-08 22:28: the
-        # in-flight requests of one tree re-reported one Codex account's 429 after each
-        # move, and all three codex accounts got its reset (limited 4d16h, at 0% and 8% used).
-        stale = f["since"] is not None and last.get("from", last.get("at", 0)) > f["since"]
-        if not stale:
-            vending.HookWriter(state).set_limit(provider, last["account_id"], until, key, now)
-            d = plan_next(state, key, provider, accounts, cfg, now)
-            base.save_json(base.STATE, state)
-    selection = selection_view(sched.tree_for(state, key, provider))
-    manual = selection["mode"] == "manual"
-    if stale:
-        out = {"account": None, "until": round(until), "next": last["email"], "retry_at": None, "stale": True}
-        out["selection"] = selection
-        if manual:
-            out["next"] = None
-        base.log("limited_stale", provider=provider, current=last["email"], session=key.key,
-                 sent=vending.iso(f["since"]))
-        print(json.dumps(out))
-        return 0
-    out = {"account": last["email"], "until": round(until), "selection": selection, **next_fields(d)}
-    if manual:
-        out.update(selection=selection, next=None, retry_at=None)
-    base.log("limited", provider=provider, account=last["email"], session=key.key,
-             until=vending.iso(until), next=out["next"], retry_at=out["retry_at"] and vending.iso(out["retry_at"]))
-    print(json.dumps(out))
-    return 0
-
-
-def plan_next(state, key, provider, accounts, cfg, now):
-    """The decision for the tree's retry after its account failed, held in
-    state: the cell it enters now, or its slot."""
-    return vending.schedule(state, key, provider, accounts, cfg, now, admit_now=False)[0]
-
-
-def next_fields(d):
-    """{"next", "retry_at"}: the account the retry enters now, or the tree's slot."""
-    if isinstance(d, (sched.Admit, sched.Stay)):
-        return {"next": d.account.label, "retry_at": None}
-    if isinstance(d, sched.Wait):
-        return {"next": None, "retry_at": math.ceil(d.slot_at)}
-    return {"next": None, "retry_at": None}
-
-
 def cmd_refused(rest):
     """A request of this session tree failed with an error whose text names an
     account-level refusal (account_refusal). Cool the account the tree last
@@ -183,11 +117,11 @@ def cmd_refused(rest):
     if reason is None:
         state = registry.load_state()
         key = status_view.session_key_for(f["session"], state)
-        print(json.dumps({"reason": None, "selection": selection_view(sched.tree_for(state, key, provider))}))
+        print(json.dumps({"reason": None, "selection": sched.selection_view(sched.tree_for(state, key, provider))}))
         return 0
     cfg, now = base.config(), time.time()
     accounts = registry.load_index(provider)
-    with base.Flock(base.LOCK, timeout=base.STATE_LOCK_TIMEOUT):
+    with limited.pool_lock():
         state = registry.load_state()
         key = status_view.session_key_for(f["session"], state)
         last = ((state["sessions"].get(key.key) or {}).get("vends") or {}).get(provider) if key else None
@@ -196,12 +130,12 @@ def cmd_refused(rest):
         print(json.dumps({"error": f"no {provider} vend on file for this session"}))
         return 2
     vending.apply_refusal(provider, account, reason, cfg, now)
-    with base.Flock(base.LOCK, timeout=base.STATE_LOCK_TIMEOUT):
+    with limited.pool_lock():
         state = registry.load_state()
-        d = plan_next(state, key, provider, accounts, cfg, now)
+        d = limited.plan_next(state, key, provider, accounts, cfg, now)
         base.save_json(base.STATE, state)
-    out = {"account": account.label, "reason": reason, **next_fields(d)}
-    selection = selection_view(sched.tree_for(state, key, provider))
+    out = {"account": account.label, "reason": reason, **limited.next_fields(d)}
+    selection = sched.selection_view(sched.tree_for(state, key, provider))
     out["selection"] = selection
     if selection["mode"] == "manual":
         out.update(next=None, retry_at=None)
@@ -212,7 +146,7 @@ def cmd_refused(rest):
 
 def cmd_who(rest):
     f = status_view.parse_flags(rest)
-    state = registry.load_state()
+    state = limited.unlocked_state()
     key = status_view.session_key_for(f["session"], state)
     if f["session"] is not None and key is None:
         msg = f"--session {f['session']} matches no known session"
@@ -240,7 +174,7 @@ def cmd_who(rest):
             "label": res.account.label if res else None,
             "reason": res.reason if res else (d.reason if isinstance(d, sched.Blocked) else "wait" if isinstance(d, sched.Wait) else None),
             "pinned": bool(tree.pin or tree.pool_pin),
-            "selection": selection_view(tree),
+            "selection": sched.selection_view(tree),
             "shadowed": list(d.shadowed) if isinstance(d, (sched.Stay, sched.Admit, sched.Wait)) and d.shadowed else None,
             "at": tree.current_at or None,
             "wait": wait_view(d),
@@ -326,7 +260,7 @@ def cmd_toggle(rest, off):
     account = registry.find_account(accounts, positional[0])
     if account is None:
         raise SystemExit(f"{positional[0]} is not in the {provider} pool ({', '.join(a.label for a in accounts)})")
-    with base.Flock(base.LOCK, timeout=base.STATE_LOCK_TIMEOUT):
+    with limited.pool_lock():
         state = registry.load_state()
         was_off = account.id in (state["providers"][provider].get("disabled") or {})
         if was_off == off:
@@ -352,7 +286,7 @@ def cmd_unlimited(rest):
     account = registry.find_account(accounts, positional[0])
     if account is None:
         raise SystemExit(f"{positional[0]} is not in the {provider} pool ({', '.join(a.label for a in accounts)})")
-    with base.Flock(base.LOCK, timeout=base.STATE_LOCK_TIMEOUT):
+    with limited.pool_lock():
         state = registry.load_state()
         limit = (state["providers"][provider].get("limits") or {}).pop(account.id, None)
         if limit is None:
@@ -385,7 +319,7 @@ def cmd_rm(rest):
                 os.unlink(base.codex_secret(account.id))
             except FileNotFoundError:
                 pass
-    with base.Flock(base.LOCK, timeout=base.STATE_LOCK_TIMEOUT):
+    with limited.pool_lock():
         state = registry.load_state()
         vending.IntentWriter(state).forget_account(provider, account.id)
         base.save_json(base.STATE, state)

@@ -8,7 +8,7 @@ import base64, datetime, hashlib, http.server, json, os, queue, re, secrets, sel
 from dataclasses import dataclass
 import urllib.error, urllib.parse, urllib.request
 
-from . import base, registry, remote, status_view
+from . import base, registry, remote, status_view, limited
 
 LOGIN_TIMEOUT_SEC = 15 * 60
 # Claude Code's own OAuth client (claude 2.1.301), the client every pooled grant was issued to.
@@ -333,7 +333,7 @@ def file_login(provider, harvest, target=None, *, off=False):
                             "addedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(), **fresh})
         if off:
             from . import vending
-            with base.Flock(base.LOCK, timeout=base.STATE_LOCK_TIMEOUT):
+            with limited.pool_lock():
                 state = registry.load_state()
                 vending.IntentWriter(state).set_disabled(provider, account_id, True, time.time())
                 base.save_json(base.STATE, state)
@@ -442,7 +442,7 @@ def drop_login_blocks(provider, account):
     (2026-10-08: claude7@slack.green served again right after it signed in
     again). If the terms are still pending, the next request puts the cooldown
     back and moves the turn to another account."""
-    with base.Flock(base.LOCK, timeout=base.STATE_LOCK_TIMEOUT):
+    with limited.pool_lock():
         state = registry.load_state()
         prov = state["providers"][provider]
         limit = prov["limits"].pop(account.id, None)

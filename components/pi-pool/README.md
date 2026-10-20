@@ -85,7 +85,7 @@ not a link.
 Prime's `models.json` names `~/.config/pi-pool/bin/pi-pool-token`, so it follows
 `current` with no edit. `pi-pool enable` writes that same link path when it exists.
 State stays where it is: `state.json`, `pi-pool.log`, `config.json`, `fallback.json`,
-`rotations/`, `backups/` and `accounts/` under `~/.config/pi-pool`. The installer keeps the 10 newest releases plus `current` and `previous`.
+`rotations/`, `backups/`, `limited-spool/` and `accounts/` under `~/.config/pi-pool`. The installer keeps the 10 newest releases plus `current` and `previous`.
 A running session keeps the extension code it loaded, from its own release, until it
 is rebuilt; a new session loads `current`.
 
@@ -486,6 +486,22 @@ own 429 is the first sign that an account is used up. The extension handles it o
    then continues the turn itself. On 2026-10-18 at 08:32:37Z a 15-minute cap made a Mac
    session that waited 23 minutes write its error line twice. On 2026-10-12 15:04 a tree slept 1 h 45 min for claude10's reset while claude7
    came back at 15:30.
+
+When the pool flock stays busy past `STATE_LOCK_TIMEOUT` (2.5 s), `limited` writes the report
+as one file in `limited-spool/` without the lock and logs `limited_spooled`. On 10-19 35 of
+1,927 anthropic 429s on us-metal02 met that busy flock, and each session slept until the
+vendor reset, 72 to 250 minutes. The file names the provider, the account, the session, the
+tree, the vendor reset, the time and the wait the answer promised. `limited` then answers from
+`state.json` with the spool applied on top, so the extension rewrites the 429 the same way.
+`who`, `ls`, `status` and the hook's lock-busy path read the same overlay, so the hook does not
+hand the spooled account back to the tree. The next process that takes the pool flock (a vend,
+`limited`, `refused`, `model`, `probe`, `use` and the rest, through `limited.pool_lock`)
+applies each file to `state.json` before anything else, logs the `limited` line with
+`spool` set to the file's id, and removes the file. The ids it applied go into `state.json` in
+the same write, so a crash before the removal never applies a file twice. Only when the spool
+write fails too (`limited_spool_failed`) does `limited` exit 1. An Auto session then drops the
+vendor reset and Prime's own backoff reports the 429 again; a Manual session keeps the reset.
+`tests/test_extension_limited.py` covers each path with the pool flock held.
 
 The limit lives in `state.json`, so a restarted worker or daemon still skips the account.
 The hook prunes it when it expires. A successful `pi-pool login` for the account drops it,

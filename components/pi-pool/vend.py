@@ -146,7 +146,7 @@ def cli(args):
         "off": lambda rest: pool.session_cmds.cmd_toggle(rest, True),
         "on": lambda rest: pool.session_cmds.cmd_toggle(rest, False),
         "rm": pool.session_cmds.cmd_rm, "login": pool.signin.cmd_login, "model": pool.session_cmds.cmd_model,
-        "limited": pool.session_cmds.cmd_limited, "refused": pool.session_cmds.cmd_refused,
+        "limited": pool.limited.cmd_limited, "refused": pool.session_cmds.cmd_refused,
         "unlimited": pool.session_cmds.cmd_unlimited, "token": pool.session_cmds.cmd_token, "priority": pool.commands.cmd_priority,
         "admit": pool.turns.cmd_admit, "release": pool.turns.cmd_release,
         "owner-turn": pool.turns.cmd_owner_turn, "queue": pool.turns.cmd_queue,

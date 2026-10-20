@@ -1,7 +1,7 @@
 """Flag parsing, ls rows, and the status cards that `pi-pool status` and `watch` draw."""
 import json, os, re, shutil, sys, time
 
-from . import base, registry, sched
+from . import base, limited, registry, sched
 
 
 # ------------------------------------------------------------------------ CLI
@@ -293,7 +293,7 @@ def switches_today(provider, now):
 
 def status_lines(providers, p, term_width, now=None):
     now = time.time() if now is None else now
-    cfg, state = base.config(), registry.load_state()
+    cfg, state = base.config(), limited.unlocked_state()
     out = [p.dim(f"new trees enter under 5h {cfg['admit_5h_max_pct']}% (low {cfg['low_admit_5h_max_pct']}%)"
                  f"  week {cfg['seven_day_max_pct']}%  {'/'.join(cfg['switch_models'])} {cfg['seven_day_max_pct']}%"
                  f"  one per {cfg['admit_slot_sec']}s per tier unit"), ""]

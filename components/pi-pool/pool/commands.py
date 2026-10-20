@@ -1,7 +1,7 @@
 """pin, unpin, switch, config, set, log, use, priority, and the usage refresh."""
 import json, os, sys, time
 
-from . import base, registry, sched, usage, vending, status_view
+from . import base, registry, sched, usage, vending, status_view, limited
 
 
 def cmd_pin(rest):
@@ -14,7 +14,7 @@ def cmd_pin(rest):
     if account is None:
         known = ", ".join(a.label for a in accounts)
         raise SystemExit(f"{positional[0]} is not in the {provider} pool ({known})")
-    with base.Flock(base.LOCK, timeout=base.STATE_LOCK_TIMEOUT):
+    with limited.pool_lock():
         state = registry.load_state()
         if state["providers"][provider].get("pin") == account.id:
             print(f"already pinned: {account.label}")
@@ -30,7 +30,7 @@ def cmd_pin(rest):
 def cmd_unpin(rest):
     f = status_view.parse_flags(rest)
     provider = f["provider"]
-    with base.Flock(base.LOCK, timeout=base.STATE_LOCK_TIMEOUT):
+    with limited.pool_lock():
         state = registry.load_state()
         was = state["providers"][provider].get("pin")
         if not was:
@@ -48,7 +48,7 @@ def cmd_switch(rest):
     account that takes it now (R2-R4); with none, it stays."""
     f = status_view.parse_flags(rest)
     provider = f["provider"]
-    with base.Flock(base.LOCK, timeout=base.STATE_LOCK_TIMEOUT):
+    with limited.pool_lock():
         state = registry.load_state()
         key = status_view.session_key_for(f["session"], state)
         tree = sched.tree_for(state, key, provider)
@@ -144,7 +144,7 @@ def write_key(f, state):
 def cmd_use(rest):
     f = status_view.parse_flags(rest)
     provider, positional = f["provider"], f["positional"]
-    with base.Flock(base.LOCK, timeout=base.STATE_LOCK_TIMEOUT):
+    with limited.pool_lock():
         state = registry.load_state()
         known = status_view.session_key_for(f["session"], state)
         if known is None and f["session"] is not None and not f["new_session"]:
@@ -200,7 +200,7 @@ def cmd_priority(rest):
     positional = f["positional"]
     if len(positional) != 1 or positional[0] not in sched.PRIORITIES:
         raise SystemExit("usage: pi-pool priority high|normal|low [--label] [--session <id>] [--provider <p>]")
-    with base.Flock(base.LOCK, timeout=base.STATE_LOCK_TIMEOUT):
+    with limited.pool_lock():
         state = registry.load_state()
         key = write_key(f, state)
         if key is None:

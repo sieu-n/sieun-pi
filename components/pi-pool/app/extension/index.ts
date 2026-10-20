@@ -306,9 +306,10 @@ async function swapAccount(message: AgentMessage): Promise<AgentMessage | undefi
 		const reply = await poolJson<LimitedReply>(["limited", "--provider", message.provider, "--until", String(until), "--since", String(message.timestamp / 1000)]);
 		const { retryAfterMs: _reset, ...rest } = details;
 		if (reply === "failed") {
-			// The run fails when the pool flock stays busy past STATE_LOCK_TIMEOUT. On 10-19 35 of 1,927 anthropic 429s on
-			// us-metal02 kept the reset that way and slept up to 4.2 h. An Auto session drops it, so Prime's backoff pings soon
-			// and that 429 reports again; `who` reads the selection without the lock.
+			// The run fails only when the pool flock stays busy past STATE_LOCK_TIMEOUT and the limited spool cannot take the
+			// report either (pool/limited.py). On 10-19 35 of 1,927 anthropic 429s on us-metal02 kept the reset when the flock
+			// alone was busy and slept up to 4.2 h. An Auto session drops it, so Prime's backoff pings soon and that 429
+			// reports again; `who` reads the selection without the lock.
 			const selection = (await who(true))?.providers?.[message.provider]?.selection;
 			if (selection?.mode === "manual") return manualFailure(message, selection);
 			if (selection?.mode !== "auto") return undefined;

@@ -451,6 +451,12 @@ def tree_for(state, key, provider):
                 backoff=bool(wait and wait.get("backoff")))
 
 
+def selection_view(tree):
+    """The tree's selection as the extension reads it: Manual names its account."""
+    account_id = tree.pin or tree.pool_pin
+    return {"mode": "manual", "account_id": account_id} if account_id else {"mode": "auto"}
+
+
 def book_for(state, provider, key, cfg, now):
     """The admissions and waits of every tree on this provider but `key`'s own."""
     prov = state["providers"].get(provider) or registry.empty_provider_state()
