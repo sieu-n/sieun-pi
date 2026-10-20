@@ -252,16 +252,16 @@ export function chatSystemOutput(facts: ChatSystemFacts): PrecheckOutput {
 }
 
 /**
- * Per chat, what the run's job pushes it on: its open goals with no live job, its red duties with no fix job, and its plan items that are upkeep
- * or have no done line. Until 10-19 a chat with only plan items was on no push list, so no run messaged it: at 20:22Z the 26 items sat in 6
+ * Per chat, what the run's job pushes it on: its open goals with no live job, its red duties with no fix job, its red windowed counts with no
+ * lastEventAt (`unreadWindows`), and its plan items that are upkeep or have no done line. Until 10-19 a chat with only plan items was on no push list, so no run messaged it: at 20:22Z the 26 items sat in 6
  * chats, and 4 of those chats were on no list.
  */
-export function pushList(facts: Pick<ChatSystemFacts, "idleGoals" | "stuckDuties" | "upkeep">):
+export function pushList(facts: Pick<ChatSystemFacts, "idleGoals" | "stuckDuties" | "upkeep"> & { lagging?: readonly { chat: string; line: string }[] }):
   { chat: string; goals: readonly PlanItem[]; duties: string[]; upkeep: PlanFlag[] }[] {
   const chats = new Map<string, { goals: readonly PlanItem[]; duties: string[]; upkeep: PlanFlag[] }>();
   const at = (chat: string) => chats.get(chat) ?? chats.set(chat, { goals: [], duties: [], upkeep: [] }).get(chat)!;
   for (const entry of facts.idleGoals) if (entry.goals.length) at(entry.chat).goals = entry.goals;
-  for (const duty of facts.stuckDuties) at(duty.chat).duties.push(duty.line);
+  for (const duty of [...facts.stuckDuties, ...facts.lagging ?? []]) at(duty.chat).duties.push(duty.line);
   for (const item of facts.upkeep) at(item.chat).upkeep.push(item);
   return [...chats].map(([chat, entry]) => ({ chat, ...entry }));
 }
@@ -339,11 +339,11 @@ async function main(): Promise<void> {
     `7. Append what you found and what you fixed to ${log}, under a heading with the time and the chat's name, and send the owner nothing.`, "",
     "The owner's last messages in it, newest last:", "",
     ...asks.length ? asks.map(ask => `- ${ask.at}: ${JSON.stringify(ask.text)}`) : ["- None found in the transcript's last 4 MB."], "",
-    `## Push list (${pushList({ idleGoals, stuckDuties: counts.redDuties, upkeep }).length} chats)`, "",
+    `## Push list (${pushList({ idleGoals, stuckDuties: counts.redDuties, lagging: owned.lagging, upkeep }).length} chats)`, "",
     `Message each chat below with \`await agent_message.send(text, receiver_role="sibling", receiver_name="<its full session id>")\`, a Mac chat too, ` +
-      `and put ${tag} in the text. Ask it to give each goal a live job this turn, each red duty a fix job on a step linked to it, and each listed plan item a "Done when" note, a duty metric or a close. ` +
+      `and put ${tag} in the text. Ask it to give each goal a live job this turn, each red duty a fix job on a step linked to it, each duty that reads as a lagging window lastEventAt in its precheck, and each listed plan item a "Done when" note, a duty metric or a close. ` +
       `After each send, append one line to ${PUSHES_FILE}: {"at": <ms>, "chat": "<session id>", "tag": "${tag}", "items": ["p1", "d2"]}.`, "",
-    ...pushList({ idleGoals, stuckDuties: counts.redDuties, upkeep }).map((entry, index) => `${index + 1}. ${name(entry.chat)} (${entry.chat})` +
+    ...pushList({ idleGoals, stuckDuties: counts.redDuties, lagging: owned.lagging, upkeep }).map((entry, index) => `${index + 1}. ${name(entry.chat)} (${entry.chat})` +
       (entry.goals.length ? `: goals with no live job ${entry.goals.map(goal => `${goal.id} ${quote(goal.text)}`).join(", ")}` : "") +
       (entry.duties.length ? `${entry.goals.length ? ";" : ":"} ${entry.duties.join("; ")}` : "") +
       (entry.upkeep.length ? `${entry.goals.length || entry.duties.length ? ";" : ":"} plan items to give a "Done when" note, move into a duty metric or close: ` +
@@ -357,6 +357,7 @@ async function main(): Promise<void> {
       `${duty.metric ? `${duty.metric.key} ${show(duty.metric.value)} against ${duty.metric.op} ${show(duty.metric.target)}, ` : ""}${duty.misses === 1 ? "1 run" : `${duty.misses} runs in a row`}` +
       `${duty.fix ? `, fix step ${duty.fix}` : duty.working ? `, its job ${duty.working} works on it` : ""}.`)),
     section(`Red duties with no live fix job (${counts.redDuties.length})`, counts.redDuties.map(duty => `${duty.line}.`)),
+    section(`Red windowed counts with no lastEventAt, read as lagging windows (${owned.lagging.length})`, owned.lagging.map(duty => `${duty.line}.`)),
   ].join("\n");
   await writeFile(detail, md);
   await writeFile(output, JSON.stringify(result, null, 2) + "\n");

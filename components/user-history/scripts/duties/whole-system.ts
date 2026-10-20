@@ -645,27 +645,44 @@ function quietTreeWords(reading: QuietReading, quietWords: number): string {
 const minutes = (ms: number): number => Math.round(ms / MINUTE);
 /** What `planCounts` reads: the chats with their duty runs, their live boards and the owners of their open steps. */
 export type PlanInputs = Pick<Inputs, "now" | "chats" | "boards" | "ownerActivity" | "waking" | "poolWaiting" | "named">;
+/** A red duty whose missed windowed counts give no `lastEventAt` (`unreadWindows`): d9 reads them as lagging and asks the chat to add the field. */
+export interface LaggingDuty { chat: string; duty: string; keys: string[]; line: string }
 /** One chat's open steps that nobody moves (`liveStuck`), with the ids of those its check-in flagged. */
 export interface StuckSteps { chat: PlanInputs["chats"][number]; value: number; at: number | undefined; items: string[] }
 
+/** A metric that counts events over a trailing window, like false_reds_24h or repeat_corrections_7d; a share, a ratio or a volume over a window is no count. */
+export const WINDOW_COUNT = /^(?!.*(?:_pct|_ratio|_p\d\d|_[kmgt]b)_\d+[mhd]$).*_\d+[mhd]$/;
+
 /**
- * The missed metrics of a red duty that still owe a fix job, newest run first in `runs`. Two kinds owe none, as the duty runner itself reads them.
+ * The missed windowed counts of a duty's newest reading whose precheck gives no `lastEventAt`: the runner cannot tell whether a new event
+ * raised them or old events only wait to leave the window. On 10-20 CI and RepoOps' d5 held false_reds_24h at 4 for 8 runs from ci02 reds of
+ * 10-19 17:05Z, after their fix went live at 03:28Z, and 11 other red windowed counts in 6 chats gave no lastEventAt either.
+ */
+export function unreadWindows(missed: readonly string[], metrics: DutyRunRecord["metrics"]): string[] {
+  return missed.filter(key => WINDOW_COUNT.test(key) && metrics[key]?.lastEventAt === undefined);
+}
+
+/**
+ * The missed metrics of a red duty that still owe a fix job, newest run first in `runs`. Three kinds owe none, as the duty runner reads them.
  * A count over a trailing window with no new event since the run before (`MetricStreak.quietSince`) only waits for old events to leave the
  * window, and the duty job's brief says to start no job for it (`missLine`): frontend bro's d1 restarts_24h read 3 from a 14:07Z stop on 10-19
- * and its d6 repeated_design_notes_24h 14 from a 17:33Z note, and d9 counted both as stuck from 03:29Z to 06:16Z on 10-20. A check-in's
+ * and its d6 repeated_design_notes_24h 14 from a 17:33Z note, and d9 counted both as stuck from 03:29Z to 06:16Z on 10-20. A windowed count
+ * with no `lastEventAt` reads as such a lagging window too (`unreadWindows`), and d9's push asks its chat to add the field. A check-in's
  * stuck_steps owes none once none of the steps it flagged is stuck on the live board (`liveStuck`, which stuck_steps_all reads): launch main
  * bro's and CI and RepoOps' check-ins counted at 03:29Z and 03:52Z while stuck_steps_all read 0.
  */
 export function owedKeys(missed: readonly string[], runs: readonly DutyRunRecord[], stepsMoving: boolean): string[] {
   const quiet = new Set(metricStreaks(runs).filter(streak => streak.quietSince !== undefined).map(streak => streak.key));
-  return missed.filter(key => !quiet.has(key) && !(stepsMoving && key === "stuck_steps"));
+  const newest = runs.find(run => { const verdict = effectiveRun(run).verdict; return verdict === "met" || verdict === "missed"; });
+  const unread = new Set(newest ? unreadWindows(missed, effectiveRun(newest).metrics) : []);
+  return missed.filter(key => !quiet.has(key) && !unread.has(key) && !(stepsMoving && key === "stuck_steps"));
 }
 
 /**
  * The open steps nobody moves in each chat and the red duties with no live fix, which the Chat system duty (d9) counts as stuck_steps_all and
  * stuck_duties. They moved there from this duty (d7) on 10-19 (owner msg mvfb7zt0).
  */
-export function planCounts(input: PlanInputs): { stuck: StuckSteps[]; redDuties: { chat: string; duty: string; line: string }[] } {
+export function planCounts(input: PlanInputs): { stuck: StuckSteps[]; redDuties: { chat: string; duty: string; line: string }[]; lagging: LaggingDuty[] } {
   // Each chat's newest measured check-in, only while it is under one check-in interval old, read after its job when that job has finished: the
   // check-in job gives an ended job's step a new owner or a close in the same run, so the run's own count is the board before that work. On 10-17
   // VP of CI's 19:36Z run measured 26 and its after-job measure at 20:09Z read 1, and its next run at 20:04Z (skipped behind that job) read 0.
@@ -692,6 +709,7 @@ export function planCounts(input: PlanInputs): { stuck: StuckSteps[]; redDuties:
   // A fix step's owner asleep on a board.wake or waiting for its pi-pool slot is live: at 16:33Z on 10-18 d7 flagged Vent's check-in while
   // p8's job vent cutover train had ended its last turn on "pi-pool: this session waits for its slot at 2026-10-18T16:45".
   const live = new Set([...input.waking ?? [], ...input.poolWaiting ?? []]);
+  const lagging: LaggingDuty[] = [];
   const redDuties = input.chats.flatMap(chat => chat.duties.flatMap(duty => {
     const own = chat.runs.filter(run => run.duty === duty.id);
     const newest = own.find(run => { const verdict = effectiveRun(run).verdict; return verdict === "met" || verdict === "missed"; });
@@ -699,6 +717,10 @@ export function planCounts(input: PlanInputs): { stuck: StuckSteps[]; redDuties:
     // until 3 missed runs in a row, so at 02:30Z frontend bro d4, metal-management d2, CI and RepoOps d2 and Crawler VP d6 and d8
     // sat red with no fix step and no push. The duty's own run job still at work is left out by the precheck (`withoutWorkingRuns`).
     if (!newest || missStreak(own) < 1) return [];
+    const unread = unreadWindows(missedKeys(effectiveRun(newest)), effectiveRun(newest).metrics);
+    if (unread.length) lagging.push({ chat: chat.id, duty: duty.id, keys: unread, line: `${chat.name}: ${duty.name} misses ${unread.join(" and ")}, ` +
+      `${unread.length === 1 ? "a count" : "counts"} over a trailing window with no lastEventAt, so d9 reads ${unread.length === 1 ? "it" : "them"} as a lagging window. ` +
+      `Add lastEventAt, the time in ms of the newest event each count counts, to the duty's precheck output, so a count no new event raised reads quiet and a fresh one reads live` });
     if (liveFix(newest, duty.id, input.boards?.get(chat.id), input.ownerActivity ?? new Map(), live, input.named?.get(chat.id))) return [];
     const missed = missedKeys(effectiveRun(newest));
     const fresh = chat.everyMs === undefined || input.now - (newest.after?.at ?? newest.at) <= chat.everyMs;
@@ -708,7 +730,7 @@ export function planCounts(input: PlanInputs): { stuck: StuckSteps[]; redDuties:
     return [{ chat: chat.id, duty: duty.id, line: `${chat.name}: ${duty.name} read off target in ${missStreak(own) === 1 ? "its last run" : `its last ${missStreak(own)} runs`}, and no open step linked to it ` +
       `(duty field ${links.length ? links.join(" or ") : `${duty.id}/<metricKey>`}) has a live owner now` }];
   }));
-  return { stuck, redDuties };
+  return { stuck, redDuties, lagging };
 }
 
 /** Minute starts, oldest first, as runs of whole minutes: "15:40Z to 16:09Z, 16:12Z". */

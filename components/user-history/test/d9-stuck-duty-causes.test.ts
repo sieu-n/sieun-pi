@@ -8,8 +8,8 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { withoutWorkingRuns } from "../scripts/duties/chat-system.ts";
-import { owedKeys, type PlanInputs, planCounts } from "../scripts/duties/whole-system.ts";
+import { owedKeys, type PlanInputs, planCounts, unreadWindows } from "../scripts/duties/whole-system.ts";
+import { pushList, withoutWorkingRuns } from "../scripts/duties/chat-system.ts";
 import { Duties } from "../src/chat-duty-run.ts";
 import { DutyStore } from "../src/chat-duty-store.ts";
 import type { Duty, DutyRunRecord } from "../src/shared/chat-duties.ts";
@@ -113,4 +113,21 @@ test("a verify run that still misses reopens the fix step whose close started it
     assert.deepEqual(reopened.map(op => "id" in op ? op.id : ""), ["p774"]);
     assert.equal((await store.runs(HARNESS))[0]!.trigger, "verify");
   } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+// 06:47Z: d9 still read CI and RepoOps' d5 false_reds_24h, 4 ci02 reds of 10-19 17:05Z whose fix was live, since its precheck gave no lastEventAt.
+test("a red windowed count with no lastEventAt reads as a lagging window, not stuck, and d9's push asks its chat to add the field (CI and RepoOps d5)", () => {
+  const run = (clock: string): DutyRunRecord => ({ duty: "d5", at: at(clock), trigger: "push", ms: 1, verdict: "missed", summary: "", metrics: {
+    false_reds_24h: { value: 4, target: 0, op: "<=", met: false }, refused_lands_promotes_7d: { value: 0, target: 0, op: "<=", met: true } } });
+  const out = planCounts(inputs([run("06:12"), run("04:10")], { id: "d5", name: "CI test results" }, at("06:47")));
+  assert.equal(out.redDuties.length, 0);
+  assert.deepEqual(out.lagging.map(duty => [duty.duty, duty.keys]), [["d5", ["false_reds_24h"]]]);
+  assert.match(out.lagging[0]!.line, /^frontend bro: CI test results misses false_reds_24h, a count over a trailing window with no lastEventAt, so d9 reads it as a lagging window\. Add lastEventAt/);
+  assert.deepEqual(pushList({ idleGoals: [], stuckDuties: [], upkeep: [], lagging: out.lagging }).map(entry => [entry.chat, entry.duties.length]), [[FRONTEND, 1]]);
+});
+
+test("a share, ratio or volume over a window is no windowed count, so a red one with no lastEventAt still owes a fix (metal-management d3)", () => {
+  assert.deepEqual(unreadWindows(["cpu_wait_pct_1h", "cache_read_ratio_24h", "nvme0_tb_24h", "profiles_p95_s", "noisy_rules_24h", "new_unindexed_3d"], {}), ["noisy_rules_24h", "new_unindexed_3d"]);
+  const run: DutyRunRecord = { duty: "d3", at: at("06:00"), trigger: "schedule", ms: 1, verdict: "missed", summary: "", metrics: { cpu_wait_pct_1h: { value: 38.7, target: 20, op: "<=", met: false } } };
+  assert.equal(planCounts(inputs([run], { id: "d3", name: "Prod box headroom" }, at("06:47"))).redDuties.length, 1);
 });
