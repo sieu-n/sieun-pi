@@ -12,7 +12,7 @@
     },
     {
       "key": "design_rule_test_failures",
-      "label": "Failed virev-demo design rule tests (shared-ui, form-panel, no-load-more, no-add-cancel, boxed-sections, smooth-motion)",
+      "label": "Failed virev-demo design rule tests (shared-ui, form-panel, no-load-more, no-add-cancel, boxed-sections, smooth-motion, no-filler, section-icons, blue-sparingly)",
       "op": "<=",
       "target": 0
     }

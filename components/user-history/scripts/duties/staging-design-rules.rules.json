@@ -47,7 +47,10 @@
         "mean nothing",
         "쓸모없는 텍스트"
       ],
-      "unless": "slack|채팅|말하|메시지|reply style"
+      "unless": "slack|채팅|말하|메시지|reply style",
+      "tests": [
+        "tests/unit/no-filler.test.ts"
+      ]
     },
     {
       "key": "less_grey",
@@ -115,6 +118,9 @@
         "more black",
         "\\bblue\\b[^.\\n]{0,40}(only|sparingly|too much)",
         "make it black"
+      ],
+      "tests": [
+        "tests/unit/blue-sparingly.test.ts"
       ]
     },
     {
@@ -192,6 +198,9 @@
         "icon supporting",
         "put icons on each",
         "keep icons"
+      ],
+      "tests": [
+        "tests/unit/section-icons.test.ts"
       ]
     },
     {
