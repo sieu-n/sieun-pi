@@ -59,6 +59,7 @@ const OUTBOX_MOVED = /^outbox ([0-9a-f]{8})(?: on [\w.-]+)?: m-\S+ went after it
  * The service.log lines whose calls are opens, status reads or sends, by their prefix. Others, such as the catalog's copies of the Mac's
  * session files (591 "read ECONNRESET" lines from 11:15Z on 10-18) and the session list, are background reads outside the rule.
  */
+const IDLE_WORKER_FAILED = /^idle unload: [0-9a-f-]+: Session worker is failed\b/;
 const PREFIXED = /^(idle unload|wakes: wake|reopen|briefs: child|outbox|pin|chat|job [0-9a-f]{8}: (\w+))\b/;
 const FILE_READ = /The session file on [\w.-]+ (?:did not read|is gone)/;
 const SESSION_IN = /\b(01[0-9a-f]{6})(?:-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})?\b/;
@@ -188,6 +189,9 @@ export function readServiceFaults(lines: readonly string[], local: string): Daem
     // lines from 11:15Z on 10-18) failed on a file read, before any daemon call.
     const reason = prefix && !FILE_READ.test(text) ? faultReason(reopened ?? text) ?? reopened?.slice(0, 80) : undefined;
     if (!prefix || !reason) continue;
+    // An idle check that finds the worker already failed had nothing to stop, and nobody waited on it: the owner meets a failed worker when he
+    // opens the chat, and that open, which resumes it, is counted on its own line. On 10-20 the one at 02:11:23Z made a d7 minute dirty.
+    if (prefix[1] === "idle unload" && IDLE_WORKER_FAILED.test(text)) continue;
     const session = SESSION_IN.exec(text)?.[1];
     const wakeOf = prefix[2] === "wake" ? /^job ([0-9a-f]{8})/.exec(text)?.[1] : undefined;
     const host = SOCKET.exec(text)?.[1] ?? ON_BOX.exec(text)?.[1] ?? (wakeOf ? opened.get(wakeOf) : undefined) ?? local;

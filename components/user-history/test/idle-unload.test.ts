@@ -304,3 +304,14 @@ test("only work moves a chat's idle clock, not a state notice or a message injec
     assert.equal(showsWork({ type }), false, type);
   assert.equal(showsWork({ type: "message_end", message: { role: "custom", customType: "harness_digest" } }), false, "launch main bro's 03:55:30Z harness_digest");
 });
+
+test("a quiet session whose worker failed after the listing is not asked again until its row changes", async () => {
+  const rows = [quietRoot("failed-worker", TEN_MIN + MIN)];
+  const { unloader, calls, clock } = harness(rows, { state: () => ({ success: false, error: "Session worker is failed" }) });
+  await unloader.sweep();
+  await unloader.settled();
+  clock.now += MIN;
+  await unloader.sweep();
+  await unloader.settled();
+  assert.equal(calls.length, 1, "the second sweep skipped the failed worker's row");
+});

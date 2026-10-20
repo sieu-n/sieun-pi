@@ -211,3 +211,13 @@ test("a Prime worker's crash counts, and the refusals for its failed worker that
     "2026-10-18T08:25:10.499Z the supervisor's send_message failed, its session worker was failed",
   ]);
 });
+
+test("an idle check that finds the worker already failed is no fault, while a timed-out idle check still is", () => {
+  const faults = readServiceFaults([
+    "2026-10-20T02:11:23.736Z idle unload: 01a11b0b-7c15-73da-9481-8de15903eab4: Session worker is failed",
+    MAC_HANG[0]!,
+  ], "us-metal02");
+  assert.equal(faults.length, 1);
+  assert.match(faults[0]!.what, /^an idle check failed/);
+  assert.equal(faults[0]!.session, "01a14d93");
+});

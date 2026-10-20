@@ -378,7 +378,11 @@ const within = <T>(work: Promise<T>, ms: number, late: T): Promise<T> => {
   let timer: ReturnType<typeof setTimeout> | undefined;
   return Promise.race([work, new Promise<T>(resolve => { timer = setTimeout(() => resolve(late), ms); timer.unref?.(); })]).finally(() => clearTimeout(timer));
 };
-const skipUntilRowChanges = (error: string): boolean => /Unknown active session/.test(error) || error === NO_BARE_KILL;
+/**
+ * An answer that leaves the session nothing to free until its row changes: a session the daemon does not know, a bare kill it refuses, and a
+ * worker that failed after the row was listed (10-20 02:11:23Z: slack green guy 01a11b0b), which holds no live session to stop.
+ */
+const skipUntilRowChanges = (error: string): boolean => /Unknown active session|Session worker is failed/.test(error) || error === NO_BARE_KILL;
 
 /**
  * Runs the idle unload once a minute without letting one slow kill hold up the rest. Up to 10-18 every kill of a sweep waited for the one
