@@ -1041,7 +1041,7 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
           const chat = await backend.chats.archivesAsChat(id);
           try {
             if (chat) await backend.chats.archive(id);
-            else await backend.threads.archive(id);
+            else await backend.chats.archiveJob(id);
           } catch (error) {
             // The archive holds and the saved archive queue retries the cancel of its scheduled jobs: on 10-20 06:26:34Z that case answered 502.
             if (!(error instanceof ScheduledJobsLeft && error.retrying)) { audit("failed"); throw error; }

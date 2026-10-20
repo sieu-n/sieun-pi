@@ -1,8 +1,8 @@
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { open, readFile } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
 import { homedir } from "node:os";
 import type { IdIndex } from "./id-index.ts";
-import { ArchiveLeftWork } from "./saved-archive.ts";
+import { ArchiveLeftWork, ScheduledJobsLeft } from "./saved-archive.ts";
 import { artifactsDir } from "./moved-images.ts";
 import { agentChildren } from "./chat-agents.ts";
 import { activeCorrections, handoffRules } from "./chat-corrections.ts";
@@ -153,6 +153,22 @@ function copiesNote(left: Leftovers): string {
     (left.artifacts.length ? `, deleted ${left.artifacts.length} kernel states and repo copies in session-artifacts (${left.artifacts.slice(0, 5).join(", ")}${left.artifacts.length > 5 ? ` and ${left.artifacts.length - 5} more` : ""})` : "") +
     (left.units.length ? `, stopped its units ${left.units.join(", ")}` : "") +
     (left.owned.length ? `, deleted ${left.owned.length} paths it owned (${left.owned.slice(0, 5).join(", ")}${left.owned.length > 5 ? ` and ${left.owned.length - 5} more` : ""})` : "");
+}
+
+/** Whether a session file's last session_state entry is "archived" and was written at or after `since`; read from its last 256 KB. */
+export async function endsArchivedSince(file: string, since: number): Promise<boolean> {
+  const handle = await open(file, "r").catch(() => null);
+  if (!handle) return false;
+  try {
+    const size = (await handle.stat()).size;
+    const length = Math.min(size, 256 * 1024);
+    const buffer = Buffer.alloc(length);
+    await handle.read(buffer, 0, length, size - length);
+    const last = buffer.toString("utf8").split("\n").filter(line => line.includes('"type":"session_state"')).at(-1);
+    if (!last) return false;
+    const entry = JSON.parse(last) as { timestamp?: string; state?: { status?: string } };
+    return entry.state?.status === "archived" && Date.parse(entry.timestamp ?? "") >= since;
+  } catch { return false; } finally { await handle.close(); }
 }
 
 export class Chats {
@@ -421,6 +437,42 @@ export class Chats {
       await this.forget(id);
       if (left) throw left;
     });
+  }
+
+  /**
+   * The owner's archive of a job (the agents dialog's Archive, or Stop then Archive): the job's session is archived as before, and then what the
+   * job owns is released through the same `endLeftovers` a deleted job gets, its default folder ~/scratch/<session id> and what its own
+   * owned.json records name, with the processes that still use a path kept. On 10-20 the clean-room cancel of job "user history test run" at
+   * 11:20:16Z archived it while its folder held a 0.6 GB export, and nothing released it, since only a deleted job's end and the deleted-jobs
+   * sweep ran endLeftovers and the job ended "completed". Only a session under the session-artifacts folder of a chat this service owns counts,
+   * and the release runs only while the session's own file still ends archived at or after this archive began, so a reopen (the chat's
+   * "finish the task" at 11:20:49Z brought this job back) keeps its new work. The job is not marked ended, so its later delete releases again.
+   */
+  async archiveJob(id: string): Promise<void> {
+    await this.load();
+    const since = this.now();
+    const sessionFile = await this.summary(id).then(summary => summary?.sessionFile, () => undefined);
+    let archived = false;
+    try { await this.threads.archive(id); archived = true; }
+    catch (error) { if (error instanceof ScheduledJobsLeft) archived = true; throw error; }
+    finally { if (archived && sessionFile) await this.releaseArchivedJob(id, sessionFile, since); }
+  }
+
+  private async releaseArchivedJob(id: string, sessionFile: string, since: number): Promise<void> {
+    if (!sessionFile.startsWith(ARTIFACTS + "/") || !sessionFile.endsWith(`/${id}.jsonl`)) return;
+    const chat = sessionFile.slice(ARTIFACTS.length + 1).split("/")[0]!;
+    const dir = dirname(sessionFile);
+    if (chat === id || !basename(dir).startsWith("sub-")) return;
+    if (!this.chatIds.has(chat) && !(await this.mine([chat])).length) return;
+    if (!this.chatIds.has(chat) && !(await this.archivedIds()).has(chat)) return;
+    if (!(await endsArchivedSince(sessionFile, since))) { this.log(`chat ${chat.slice(0, 8)}: kept what archived job ${id.slice(0, 8)} owns: its session is no longer archived`); return; }
+    if (!this.source.leftovers) return;
+    const left = await this.source.leftovers(dir).catch(error => {
+      this.log(`chat ${chat.slice(0, 8)}: leftovers of archived job ${id.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
+    });
+    if (left && (left.stopped.length || left.tabs || left.copies.length || left.artifacts.length || left.owned.length || left.units.length))
+      this.log(`chat ${chat.slice(0, 8)}: archived job ${id.slice(0, 8)} ended; stopped ${left.stopped.map(entry => entry.pid).join(", ") || "no process"}, closed ${left.tabs} Aside tabs${copiesNote(left)}`);
   }
 
   /** How many times the owner archived the chat since the service started; a send that began at another count stops before it goes. */
