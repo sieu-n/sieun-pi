@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -135,30 +136,78 @@ class PrimeSyncTests(unittest.TestCase):
         self.assertIn("pulled", self.sync(box)["code"])
         self.assertEqual((skill / "SKILL.md").read_text(), "v2\n")
 
-    def test_installed_runtime_links_survive_source_updates_and_follow_activation(self):
-        # 10-20: frontend bro's compiled worker could not read Documents, so its image context hook never loaded.
-        box = self.box("mac", [], [])
+    def install_runtime(self, box):
+        """A stand-in for scripts/install-runtime.mjs: export the ref into releases/<sha>, switch current and log the activation."""
+        installer = self.root / "fake-install.py"
+        installer.write_text("""import json, subprocess, sys, time
+from pathlib import Path
+args = dict(zip(sys.argv[1::2], sys.argv[2::2]))
+runtime = Path(args["--home"]) / ".local/share/sieun-pi-runtime"
+release = runtime / "releases" / args["--ref"]
+release.mkdir(parents=True)
+archive = subprocess.run(["git", "-C", args["--repo"], "archive", args["--ref"]], capture_output=True, check=True).stdout
+subprocess.run(["tar", "-x", "-C", str(release)], input=archive, check=True)
+(release / "release.json").write_text(json.dumps({"sha": args["--ref"], "source": args["--repo"]}))
+(runtime / "next").symlink_to(Path("releases") / args["--ref"])
+(runtime / "next").rename(runtime / "current")
+with open(runtime / "history.jsonl", "a") as log:
+    log.write(json.dumps({"sha": args["--ref"], "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}) + "\\n")
+""")
+        config = box / ".config/prime-sync/sync.json"
+        config.write_text(json.dumps({**json.loads(config.read_text()), "runtimeInstaller": ["python3", "-B", str(installer)]}))
         checkout = box / "src/sieun-pi"
-        runtime = box / ".local/share/sieun-pi-runtime"
-        release = runtime / "releases/first"
-        shutil.copytree(checkout, release, ignore=shutil.ignore_patterns(".git"))
-        (release / "release.json").write_text(json.dumps({"source": str(checkout.resolve())}))
-        (runtime / "current").symlink_to(release, target_is_directory=True)
+        subprocess.run(["python3", "-B", str(installer), "--repo", str(checkout), "--home", str(box), "--ref", git("-C", str(checkout), "rev-parse", "HEAD")], check=True)
+        return box / ".local/share/sieun-pi-runtime"
+
+    def test_installed_runtime_follows_main_when_rules_or_skills_change(self):
+        # 10-20: the Mac read ~/.prime/agent/AGENTS.md from a runtime pinned to an old commit until two hand installs.
+        box = self.box("mac", [], [])
+        runtime = self.install_runtime(box)
+        first = (runtime / "current").resolve()
         self.sync(box)
-        skill = box / ".prime/agent/skills/unslop"
-        self.assertEqual(skill.resolve(), release / "skills/unslop")
+        skill, rules = box / ".prime/agent/skills/unslop", box / ".prime/agent/AGENTS.md"
+        self.assertEqual(skill.resolve(), first / "skills/unslop")
+        (self.seed / "components").mkdir()
+        (self.seed / "components/extension.ts").write_text("code\n")
+        self.commit(self.seed, "code only")
+        self.assertEqual(self.sync(box)["runtime"], [])
+        self.assertEqual((runtime / "current").resolve(), first)
+        (self.seed / "config/AGENTS.md").write_text("new rules\n")
         (self.seed / "skills/unslop/SKILL.md").write_text("v2\n")
-        self.commit(self.seed, "new source")
-        self.sync(box)
-        self.assertEqual((skill / "SKILL.md").read_text(), "v1\n")
-        next_release = runtime / "releases/second"
-        shutil.copytree(checkout, next_release, ignore=shutil.ignore_patterns(".git"))
-        (next_release / "release.json").write_text(json.dumps({"source": str(checkout.resolve())}))
-        (runtime / "current").unlink()
-        (runtime / "current").symlink_to(next_release, target_is_directory=True)
-        self.sync(box)
+        self.commit(self.seed, "rules")
+        main = git("-C", str(self.seed), "rev-parse", "HEAD")
+        report = self.sync(box)
+        self.assertIn(f"installed {main[:7]} over {first.name[:7]}", report["runtime"])
+        self.assertEqual(rules.read_text(), "new rules\n")
         self.assertEqual((skill / "SKILL.md").read_text(), "v2\n")
-        self.assertEqual(skill.resolve(), next_release / "skills/unslop")
+        self.assertEqual(skill.resolve(), runtime / "releases" / main / "skills/unslop")
+        self.assertEqual(self.sync(box)["runtime"], [])
+
+    def test_a_retired_release_goes_only_when_nothing_can_read_it(self):
+        box = self.box("mac", [], [])
+        runtime = self.install_runtime(box)
+        releases = runtime / "releases"
+        for name in ("pinned", "argv", "old"):
+            (releases / name).mkdir()
+        history = runtime / "history.jsonl"
+        current = (runtime / "current").resolve().name
+        history.write_text(json.dumps({"sha": "old", "at": "2001-01-01T00:00:00Z"}) + "\n" + json.dumps({"sha": current, "at": "2001-01-02T00:00:00Z"}) + "\n")
+        site = box / ".prime/agent/kernel-venv/lib/python3.12/site-packages"
+        site.mkdir(parents=True)
+        (site / "skills.pth").write_text(str(releases / "pinned/skills/board/src") + "\n")
+        holder = subprocess.Popen(["python3", "-c", "import time; time.sleep(60)", str(releases / "argv/components/global-rules/send-check.ts")])
+        self.addCleanup(lambda: (holder.kill(), holder.wait()))
+        report = self.sync(box)
+        self.assertEqual(report["runtime"], ["removed release old"])
+        self.assertEqual(sorted(path.name for path in releases.iterdir()), sorted(["argv", "pinned", current]))
+        later = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 5))
+        session = subprocess.Popen([str(self.root / "bin/prime-agent"), "-c", "import time; time.sleep(60)"], executable=sys.executable)
+        self.addCleanup(lambda: (session.kill(), session.wait()))
+        time.sleep(1)
+        (releases / "late").mkdir()
+        history.write_text(json.dumps({"sha": "late", "at": later}) + "\n" + json.dumps({"sha": current, "at": later}) + "\n")
+        self.assertEqual(self.sync(box)["runtime"], [])
+        self.assertTrue((releases / "late").is_dir())
 
     def test_runtime_install_lock_preserves_links(self):
         box = self.box("mac", [], [])

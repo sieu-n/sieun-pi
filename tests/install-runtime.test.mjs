@@ -98,9 +98,24 @@ test("activation applies the completed release, preserves settings and credentia
   assert.equal(readFileSync(join(f.home, ".prime/agent/sessions/fixture.jsonl"), "utf8"), "untouched history fixture\n");
 });
 
+test("a release whose lockfiles match the active one clones its dependencies, and each activation is logged", t => {
+  const f = fixture(t);
+  const initial = installRuntime(f.options, f.hooks);
+  f.write(join(f.repo, "components/user-history/package-lock.json"), JSON.stringify({ lockfileVersion: 3, changed: true }));
+  const next = installRuntime({ ...f.options, ref: second }, f.hooks);
+  assert.deepEqual(f.calls.filter(call => call.command === "npm").map(call => call.cwd.endsWith("components/user-history")), [false, true, true]);
+  assert.equal(f.calls.filter(call => call.command === "cp").length, 1);
+  assert.equal(readFileSync(join(next.release, "node_modules/runtime-fixture/index.js"), "utf8"), "export const loaded = true;\n");
+  assert(realpathSync(join(next.release, "node_modules")).startsWith(next.release));
+  const history = readFileSync(join(f.root, "history.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line));
+  assert.deepEqual(history.map(row => row.sha), [first, second]);
+  assert.equal(readlinkSync(initial.current), `releases/${second}`);
+});
+
 test("a failed dependency build leaves the existing runtime and manifest links active", t => {
   const f = fixture(t);
   const initial = installRuntime(f.options, f.hooks);
+  f.write(join(f.repo, "components/user-history/package-lock.json"), JSON.stringify({ lockfileVersion: 3, changed: true }));
   const execute = (command, ...args) => {
     if (command === "npm") throw new Error("dependency install failed");
     return f.hooks.execute(command, ...args);

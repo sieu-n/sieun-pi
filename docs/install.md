@@ -198,7 +198,7 @@ The first command prepares `~/.local/share/sieun-pi-runtime/releases/<sha>` with
 
 Activation uses the release's existing `manage.py` plan, apply and verify commands, retains their rollback receipt, then atomically switches `current`. Existing settings, credentials and session history remain untouched. The command never restarts Prime. A completed release is reused without rebuilding; passing an older explicit `--ref` rolls back by the same process.
 
-This runtime stays pinned to its installed commit. Prime-sync uses `current` for manifest links and must not relink them into the source checkout after pulling newer source. Run the runtime installer again to release an update. Its `.installing/owner.json` records the exclusive install lock; after an interrupted install, confirm that PID has exited before removing the stale `.installing` directory.
+Prime-sync uses `current` for manifest links and never relinks them into the source checkout. It installs `origin/main` as the runtime on its own when `main` changes `config/`, `skills/` or `install-manifest.json`, clones the active release's `node_modules` when the package files match, and deletes releases that no link, kernel pin, command line or older Prime session can still read (`components/prime-sync/README.md`). Each activation appends its commit and time to `~/.local/share/sieun-pi-runtime/history.jsonl`. Run the runtime installer yourself to release an extension-only change sooner. Its `.installing/owner.json` records the exclusive install lock; after an interrupted install, confirm that PID has exited before removing the stale `.installing` directory.
 
 ### Packed npm installation
 

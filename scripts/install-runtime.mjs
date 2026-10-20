@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -66,6 +66,20 @@ function validate(root, execute) {
   }
 }
 
+function sameDependencies(installed, staged) {
+  try {
+    physicalDirectory(join(realpathSync(installed), "node_modules"));
+    return ["package.json", "package-lock.json"].every(name => readFileSync(join(installed, name)).equals(readFileSync(join(staged, name))));
+  } catch {
+    return false;
+  }
+}
+
+function cloneTree(source, target, execute) {
+  const args = process.platform === "darwin" ? ["-c", "-R", realpathSync(source), target] : ["-a", "--reflink=auto", realpathSync(source), target];
+  execute("cp", args, dirname(target));
+}
+
 function exportCommit(repo, sha, directory, execute) {
   const archive = join(dirname(directory), "source.tar");
   execute("git", ["archive", "--format=tar", "--output", archive, sha], repo);
@@ -99,7 +113,11 @@ export function installRuntime({ repo = checkout, home = homedir(), ref = "HEAD"
       const staging = join(scratch, "release");
       mkdirSync(staging);
       archive(repo, sha, staging, execute);
-      for (const directory of packageDirs) execute("npm", ["ci", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund", "--cache", join(scratch, "npm-cache")], join(staging, directory));
+      for (const directory of packageDirs) {
+        const installed = join(root, "current", directory);
+        if (sameDependencies(installed, join(staging, directory))) cloneTree(join(installed, "node_modules"), join(staging, directory, "node_modules"), execute);
+        else execute("npm", ["ci", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund", "--cache", join(scratch, "npm-cache")], join(staging, directory));
+      }
       validate(staging, execute);
       writeFileSync(join(staging, "release.json"), JSON.stringify({ sha, source: repo, builtAt: new Date().toISOString() }, null, 2) + "\n");
       renameSync(staging, release);
@@ -122,6 +140,7 @@ export function installRuntime({ repo = checkout, home = homedir(), ref = "HEAD"
       manage("verify", "--home", home);
       symlinkSync(join("releases", sha), next);
       renameSync(next, current);
+      appendFileSync(join(root, "history.jsonl"), JSON.stringify({ sha, at: new Date().toISOString() }) + "\n");
     } catch (error) {
       rmSync(next, { force: true });
       if (existsSync(receipt)) {

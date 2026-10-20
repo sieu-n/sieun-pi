@@ -3,12 +3,13 @@
 
 1. The sieun-pi checkout on main moves to GitHub main, with its unpushed commits replayed on top and its live edits carried onto the new bytes.
    First each shared index entry that holds an older committed version of its path goes back to HEAD's, with its file when the file holds it too.
-2. Every home link in install-manifest.json points at the installed runtime when present, otherwise the checkout.
+2. An installed runtime moves to origin/main when main changed config/, skills/ or install-manifest.json, and releases nothing can read go.
+3. Every home link in install-manifest.json points at the installed runtime when present, otherwise the checkout.
    This keeps Prime's extensions and dependencies outside macOS-protected source folders.
-3. config/settings.shared.json sets its keys in ~/.prime/agent/settings.json.
-4. Global harness entries (harness_state.json) and the corrections ledger (browser-chat/corrections.json)
+4. config/settings.shared.json sets its keys in ~/.prime/agent/settings.json.
+5. Global harness entries (harness_state.json) and the corrections ledger (browser-chat/corrections.json)
    merge three ways with the private state repo, one file per entry, and the newer side wins a clash.
-5. When the checkout has not followed main for 10 min, the session that wrote a blocking path hears of it, and at 30 min the AI harness chat gets a todo.
+6. When the checkout has not followed main for 10 min, the session that wrote a blocking path hears of it, and at 30 min the AI harness chat gets a todo.
 
 Prime and the chat only read local files, so this run writes them in place, the way each of them writes:
 harness_state.json by atomic replace, the ledger under the chat's <file>.lock directory.
@@ -374,7 +375,100 @@ def _ancestor(repo: Path, older: str, newer: str) -> bool:
     return subprocess.run(["git", "-C", str(repo), "merge-base", "--is-ancestor", older, newer], env=GIT_ENV).returncode == 0
 
 
-# 2. Links
+# 2. The installed runtime
+
+
+RUNTIME_SOURCES = ("config", "skills", "install-manifest.json")
+NOT_A_HOST = re.compile(r"--daemon-socket \S*/daemon\.sock\b| --version$")
+
+
+def follow_runtime(checkout: Path, home: Path, agent_dir: Path, installer: list[str] | None) -> list[str]:
+    """Install origin/main as the runtime when it changed the rules, skills or manifest since the installed commit, then prune releases.
+
+    A box with no installed runtime links into the checkout and has nothing to do. A runtime on a commit that origin/main does not
+    hold stays where the coordinator put it. On 10-20 the Mac kept the old ~/.prime/agent/AGENTS.md until two hand installs."""
+    runtime = home / ".local/share/sieun-pi-runtime"
+    current = runtime / "current"
+    if not os.path.lexists(current) or (runtime / ".installing").exists():
+        return []
+    try:
+        installed = json.loads((current.resolve(strict=True) / "release.json").read_text())["sha"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return []
+    changes = []
+    remote = rev(checkout, "origin/main")
+    if remote and remote != installed and _ancestor(checkout, installed, remote) \
+            and git(checkout, "diff", "--name-only", installed, remote, "--", *RUNTIME_SOURCES):
+        env = dict(os.environ)
+        if not installer:
+            node = shutil.which("node", path=os.pathsep.join([env.get("PATH", ""), str(home / ".local/bin")]))
+            if not node:
+                raise Alert("origin/main changed the runtime's rules or skills, and no node is on PATH or in ~/.local/bin to install it")
+            env["PATH"] = os.pathsep.join([str(Path(node).parent), env.get("PATH", "")])
+            installer = [node, str(checkout / "scripts/install-runtime.mjs")]
+        done = subprocess.run([*installer, "--repo", str(checkout), "--home", str(home), "--ref", remote], capture_output=True, text=True, env=env)
+        if done.returncode != 0:
+            raise Alert(f"installing origin/main {remote[:9]} as the runtime failed: {(done.stderr or done.stdout).strip()[-400:]}")
+        changes.append(f"installed {remote[:7]} over {installed[:7]}")
+    return changes + prune_releases(runtime, agent_dir)
+
+
+def retirements(history: Path) -> dict[str | None, float]:
+    """When each release stopped being current, from install-runtime's history.jsonl. Key None is the bound for a release the log
+    never names: it was retired by the first logged activation at the latest. The release still current has no entry."""
+    try:
+        rows = [json.loads(line) for line in history.read_text().splitlines() if line.strip()]
+    except (OSError, ValueError):
+        return {}
+    times = [(row["sha"], datetime.fromisoformat(row["at"].replace("Z", "+00:00")).timestamp()) for row in rows]
+    retired: dict[str | None, float] = {None: times[0][1]} if times else {}
+    for index, (sha, _) in enumerate(times):
+        later = [at for other, at in times[index + 1:] if other != sha]
+        if later:
+            retired[sha] = later[0]
+        else:
+            retired.pop(sha, None)
+    return retired
+
+
+def processes() -> list[tuple[float, str]]:
+    out = subprocess.run(["ps", "-axww", "-o", "lstart=,command="], capture_output=True, text=True, check=True, env={**os.environ, "LC_ALL": "C"}).stdout
+    found = []
+    for line in out.splitlines():
+        match = re.match(r"\s*(\w{3} \w{3} +\d+ [\d:]{8} \d{4}) +(.*)", line)
+        if match:
+            found.append((time.mktime(time.strptime(" ".join(match.group(1).split()), "%a %b %d %H:%M:%S %Y")), match.group(2)))
+    return found
+
+
+def prune_releases(runtime: Path, agent_dir: Path) -> list[str]:
+    """Delete a release nothing can still read: it is not current, no link in the agent folder, kernel .pth pin or process command
+    line names it, and every Prime process that hosts sessions started after it was retired, since a session that loaded an
+    extension from a release spawns helpers from that release's path later. The Prime supervisor and a `--version` probe host no session."""
+    releases = runtime / "releases"
+    if (runtime / ".installing").exists() or not releases.is_dir():
+        return []
+    current = (runtime / "current").resolve()
+    retired = retirements(runtime / "history.jsonl")
+    running = processes()
+    hosts = [start for start, command in running if Path(command.split(" ")[0]).name == "prime-agent" and not NOT_A_HOST.search(command)]
+    held = [command for _, command in running]
+    for path in [*agent_dir.glob("*"), *agent_dir.glob("skills/*"), *agent_dir.glob("extensions/*")]:
+        if path.is_symlink():
+            held.append(os.readlink(path))
+    held += [pth.read_text(errors="replace") for pth in agent_dir.glob("kernel-venv/lib/python*/site-packages/*.pth")]
+    names = "\n".join(held)
+    removed = []
+    for release in sorted(releases.iterdir()):
+        at = retired.get(release.name, retired.get(None))
+        if release == current or at is None or str(release) in names or any(start <= at for start in hosts):
+            continue
+        shutil.rmtree(release)
+        removed.append(f"removed release {release.name[:7]}")
+    return removed
+
+
+# 3. Links
 
 
 def remove_path(path: Path) -> None:
@@ -429,7 +523,7 @@ def link_manifest(checkout: Path, home: Path, agent_dir: Path) -> list[str]:
     return changes
 
 
-# 3. Shared settings
+# 4. Shared settings
 
 
 def apply_settings(checkout: Path, agent_dir: Path) -> list[str]:
@@ -446,7 +540,7 @@ def apply_settings(checkout: Path, agent_dir: Path) -> list[str]:
     return [f"set {key}" for key in changed]
 
 
-# 4. Harness entries and the corrections ledger
+# 5. Harness entries and the corrections ledger
 
 
 def canonical(value) -> bytes:
@@ -656,7 +750,7 @@ def _diff(before: dict, after: dict) -> str:
     return f"{added} added, {changed} changed, {removed} removed"
 
 
-# 5. The block watch
+# 6. The block watch
 
 
 # The AI harness chat asked on 10-18 for asa-mac-sync's two steps here: the session that wrote a blocking path hears of it after 10 min,
@@ -796,6 +890,7 @@ def run() -> dict:
             return report
         steps = [("index", lambda: heal_index(config["checkout"])),
                  ("code", lambda: pull_checkout(config["checkout"])),
+                 ("runtime", lambda: follow_runtime(config["checkout"], HOME, config["agentDir"], config.get("runtimeInstaller"))),
                  ("links", lambda: link_manifest(config["checkout"], HOME, config["agentDir"])),
                  ("settings", lambda: apply_settings(config["checkout"], config["agentDir"])),
                  ("state", lambda: sync_state(config))]
@@ -815,7 +910,7 @@ def run() -> dict:
         except Exception as error:
             report["watch"] = f"error: {type(error).__name__}: {error}"
     write_atomic(SHARE / "status.json", (json.dumps(report, indent=2) + "\n").encode(), 0o644)
-    if any(report.get(key) for key in ("index", "links", "settings", "state")) or str(report.get("code")).startswith(("pulled", "rebased", "skipped", "alert")) or "error" in json.dumps(report):
+    if any(report.get(key) for key in ("index", "runtime", "links", "settings", "state")) or str(report.get("code")).startswith(("pulled", "rebased", "skipped", "alert")) or "error" in json.dumps(report):
         with open(SHARE / "sync.log", "a") as log:
             log.write(json.dumps(report) + "\n")
     return report
