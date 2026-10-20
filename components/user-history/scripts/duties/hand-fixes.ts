@@ -318,9 +318,15 @@ export function scriptOf(command: string): string | null {
  */
 export const isCiOrTest = (script: string): boolean =>
   /\/(?:gates|tests?|__tests__|ci)\/[^/]+$|\/(?:ci|tests?)[-_][^/]*$|\.(?:test|spec)\.\w+$|_tests?\.\w+$/.test(script);
+/**
+ * A helper a job keeps under ~/work/<job>/ or its ~/scratch/<session>/ folder, where job briefs put helpers since 10-19. At 13:10Z on
+ * 10-20 three such prod writers ran on us-metal02 as transient systemd-run units the read never saw: census-hold-renew,
+ * census-tts-climb-stopgap and geonode-racers-guard, each posting /ops/controls.
+ */
+const SESSION_DIRS = /\/llm-wiki\/content\/sessions\/|\/session-artifacts\/|(?:^|\s)\/home\/[^/\s]+\/(?:work|scratch)\//;
 export const isSessionProcess = (command: string): boolean => {
   const script = scriptOf(command);
-  return /\/llm-wiki\/content\/sessions\/|\/session-artifacts\//.test(command) && !/^(?:\/usr)?(?:\/bin\/)?(?:ba|z|da)?sh -c\b|^tar\b/.test(command) && script !== null && !isCiOrTest(script);
+  return SESSION_DIRS.test(command) && !/^(?:\/usr)?(?:\/bin\/)?(?:ba|z|da)?sh -c\b|^tar\b/.test(command) && script !== null && !isCiOrTest(script);
 };
 
 export interface HandData {

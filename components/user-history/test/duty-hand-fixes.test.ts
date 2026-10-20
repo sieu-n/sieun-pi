@@ -122,6 +122,10 @@ test("a CI gate or test script in a session folder and an exited container are n
   assert.equal(isSessionProcess(`python3 ${session}/0900-x/data/watch_proxy.py --act`), true);
   // 21:04Z on 10-18 the census guard read as 2 writers, its python and the /usr/bin/sh -c that started it.
   assert.equal(isSessionProcess(`/usr/bin/sh -c python ${session}/1934-x/data/profile_guard.py x.log > x.out 2>&1`), false);
+  // 13:10Z on 10-20 three prod writers under ~/work ran as systemd-run units and read as 0.
+  assert.equal(isSessionProcess("/home/sieun/.prime/agent/kernel-venv/bin/python /home/sieun/work/geonode-port-drop/racers_guard.py /home/sieun/work/geonode-port-drop/racers_guard.log"), true);
+  assert.equal(isSessionProcess("python3 /home/sieun/scratch/01a1/rig/watch.py"), true);
+  assert.equal(isSessionProcess("/usr/bin/sh -c python /home/sieun/work/census-canary/hold_renew.py x.log > x.out 2>&1"), false);
   const left = oneOffs([{ name: "posts-backfill-handrun", status: "exited", service: "" }, { name: "virev-prod-remote-gw", status: "running", service: "" },
     { name: "virev-prod-crawler-worker", status: "running", service: "crawler-worker" }], Date.parse("2026-10-18T16:00:00Z"));
   assert.deepEqual(left.map(container => container.name), ["virev-prod-remote-gw"]);
