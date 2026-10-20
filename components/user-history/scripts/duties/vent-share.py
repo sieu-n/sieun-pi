@@ -114,6 +114,9 @@ COMMENT_RE = re.compile(r"^\s*(//|#|\*|/\*|<!--)")
 ALLOW_RE = re.compile(r"\bSTRIPE_ORIGIN\s*=|googleapis\.com/auth/")
 # An SDK built with an empty key cannot call its provider (the @convex-dev/resend component).
 KEYLESS_RE = re.compile(r"apiKey:\s*(''|\"\")")
+# A TypeScript type-only import is erased at build, so it cannot call a provider
+# (convex/search/campaigns/scheduler.ts imports the EmailId type from @convex-dev/resend).
+TYPE_IMPORT_RE = re.compile(r"^\s*import\s+type\b")
 
 
 def code_lines(path: str, text: str) -> list[tuple[int, str]]:
@@ -291,20 +294,30 @@ def judge(site: Site, tree: Tree, sites: list[Site] | None = None, seen: frozens
                 continue
             if ALLOW_RE.search(l):
                 continue
-            if strong.search(l) or (not has_vent and sdk.search(l)):
+            if strong.search(l) or (not has_vent and sdk.search(l) and not TYPE_IMPORT_RE.match(l)):
                 v.direct.append(f"{path}:{n}: {l.strip()[:140]}")
-    if not v.direct and not v.vent:
-        # No sign in the site's own files: look one level into the modules they import.
-        for path, text in list(texts.items()):
+    # No sign in the site's own files: look into the modules they import, two levels deep, since
+    # on 10-20 fd764e4449 moved the Google OAuth code exchange to route -> google-oauth.ts -> google-token.ts.
+    frontier, looked = list(texts.items()), set(texts)
+    for _ in range(2):
+        if v.direct or v.vent:
+            break
+        nxt = []
+        for path, text in frontier:
             for dep in imported_files(path, text, tree):
+                if dep in looked:
+                    continue
+                looked.add(dep)
                 dep_text = tree.read(dep) or ""
+                nxt.append((dep, dep_text))
                 lines = code_lines(dep, dep_text)
                 has_vent = any(VENT_RE.search(l) for _, l in lines) or bool(KEYLESS_RE.search(dep_text))
                 for n, l in lines:
                     if VENT_RE.search(l):
                         v.vent.append(f"{dep}:{n}")
-                    elif not ALLOW_RE.search(l) and (strong.search(l) or (not has_vent and sdk.search(l))):
+                    elif not ALLOW_RE.search(l) and (strong.search(l) or (not has_vent and sdk.search(l) and not TYPE_IMPORT_RE.match(l))):
                         v.direct.append(f"{dep}:{n}: {l.strip()[:140]}")
+        frontier = nxt
     if len(v.missing) == len(site.files):
         v.status = "removed"
     elif v.direct and v.vent:
