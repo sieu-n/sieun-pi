@@ -39,10 +39,18 @@ export const TOKEN_EMAIL_REMOVED_AT = Date.parse("2026-10-14T01:22:18Z");
 
 export type Template = "connect_reminder" | "setup_link" | "token_expired" | "trial_d7" | "trial_d2" | "trial_d0" | "trial_followup" |
   "signup_confirm" | "password_reset" | "other";
-/** Subjects as sent today: the connect reminder from PR #225, the setup link from the onboarding route, the rest from the Resend log. */
+/**
+ * Subjects as sent today: the connect reminder from PR #225, the setup link from the onboarding route, the rest from the Resend log.
+ * PR #285 gave the setup link a subject naming the saved workspace and hours, and added SETUP_EMAIL_PERSONAL_COPY subjects that the setup link
+ * and the 24 h reminder share word for word. A personal subject counts as setup_link: both are nudges, so the connected check and the nudge cap
+ * still see it, but a personal reminder to an opted-out user would not show as marketing. The flag was unset on Railway on 2026-10-20.
+ */
 const SUBJECTS: [Template, RegExp][] = [
   ["connect_reminder", /^Connect Slack to finish setting up Slack Green$/],
   ["setup_link", /^Finish your Slack Green setup on a computer$/],
+  ["setup_link", / stays green .+ after one more step$/],
+  ["setup_link", /^Open this on your laptop to connect /],
+  ["setup_link", /^Connect Slack to keep .+ green$/],
   ["token_expired", /^Action needed: .+ needs updated tokens$/],
   ["trial_d7", /Trial Ends in a Week/],
   ["trial_d2", /Trial Ends Soon/],
@@ -148,7 +156,8 @@ export function emailMetrics(sources: Sources, now: number, previous: EmailState
       if (fresh.length) flagged.push({ at: now, kind: "unsubscribe", item: "p68", excerpt: `turned marketing email off since ${iso(previous.at)}: users ${fresh.join(", ")}` });
     }
   }
-  if (sources.deploys) {
+  // Once the live backend deploy is newer than #233 the removal is live, and a later token_expired send already counts as a wrong send above.
+  if (sources.deploys && !(sources.deploys.live && sources.deploys.live.at > TOKEN_EMAIL_REMOVED_AT)) {
     const { live, sinceRemoval } = sources.deploys;
     flagged.push({ at: now, kind: "token_email_removal", item: "p68", excerpt: `#233 merged ${iso(TOKEN_EMAIL_REMOVED_AT)}; Railway deploys of main since then: ` +
       `${sinceRemoval.length ? sinceRemoval.join("; ") : "none"}; the live backend deploy is ${live ? `${live.commit.slice(0, 7)} from ${iso(live.at)}` : "unknown"}` });
