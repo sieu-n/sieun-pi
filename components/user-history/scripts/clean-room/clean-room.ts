@@ -69,6 +69,7 @@ import { planAndDuties } from "./plan-and-duties.ts";
 import { taskAndUpkeep } from "./task-and-upkeep.ts";
 import { type RunState, type Scenario, sessionFiles } from "./session-read.ts";
 import { endUnits, recordUnits, userSystemd } from "./trial-units.ts";
+import { fileTrialHarness, keepTrialHarness, seedTrialHarness } from "../../src/trial-harness.ts";
 import { softCaps } from "./soft-caps.ts";
 import { stepIds } from "./step-ids.ts";
 import { archiveTestPages } from "./wiki-pages.ts";
@@ -76,6 +77,8 @@ import { killHooks, tokenHookResume } from "./token-hook-resume.ts";
 import { wakeLive } from "./wake-live.ts";
 
 const DATA = process.env.AGENT_CHAT_DATA_DIR ?? join(homedir(), ".prime/agent/browser-chat");
+/** Prime's agent dir, whose harness/ folder holds the published global harness store. */
+const AGENT_DIR = process.env.PRIME_AGENT_CODING_AGENT_DIR || join(homedir(), ".prime/agent");
 const RELEASES = join(homedir(), ".local/share/sieun-pi-chat");
 const SCENARIOS: Record<string, Scenario> = { "checkin-goal-push": checkinGoalPush, "checkin-real-task": checkinRealTask, "checkin-push-control": checkinPushControl, "correction-refine": correctionRefine, "dm-replies": dmReplies, "english-jobs": englishJobs, "everyday-task": everydayTask, "import-speed": importSpeed,
   "checkin-job-steer": checkinJobSteer, "chat-tools-reopen": chatToolsReopen, "reopen-first-message": reopenFirstMessage, "kernel-revive": kernelRevive, "lost-brief": lostBrief, "ordinary-hour": ordinaryHour, "idle-unload": idleUnload, "owner-asks": ownerAsks, "plan-and-duties": planAndDuties, "task-and-upkeep": taskAndUpkeep, "soft-caps": softCaps, "step-ids": stepIds, "token-hook-resume": tokenHookResume, "wake-live": wakeLive, "box-browser-default": boxBrowserDefault, "box-tools": boxTools,
@@ -205,6 +208,7 @@ async function setup(flags: Record<string, string>): Promise<void> {
   }
   const pending: Pending = earlier ?? { sandbox, creates: {} };
   writeJson(pendingFile(run), pending);
+  const harness = seedTrialHarness(run, AGENT_DIR);
   const everyMin = Number(need(flags, "every-min"));
   const srv = await server();
   const control = scenario.control && flags["control-name"] ? { ...scenario.control, name: flags["control-name"] } : scenario.control;
@@ -222,6 +226,8 @@ async function setup(flags: Record<string, string>): Promise<void> {
   const adoptedAt = pending.creates.chat!.adopted ? sessionFacts(join(SESSIONS, `${chat}.jsonl`))?.at ?? NaN : NaN;
   for (const id of [chat, ...(controlId ? [controlId] : [])]) await new IdIndex(join(DATA, CLEAN_ROOM_CHATS_FILE), "Clean-room chat index").add(id);
   log(run, `${pending.creates.chat!.adopted ? "adopted" : "created"} chat ${chat} "${name}" in ${sandbox}, filed in ${CLEAN_ROOM_CHATS_FILE} so its corrections go to the scratch ledger and it stays out of the owner's sidebar and For you`);
+  await fileTrialHarness(DATA, [{ id: chat, name }, ...(madeControl ? [madeControl] : [])], harness);
+  log(run, `filed ${harness}, seeded from the published global harness store, as the global harness store of the trial's sessions`);
   if (control && madeControl) {
     await setCheckIn(srv, madeControl.id, { pause: "forever" });
     log(run, `created control chat ${controlId} "${madeControl.name}", filed the same way, and paused its check-in`);
@@ -754,6 +760,8 @@ async function teardown(flags: Record<string, string>): Promise<void> {
   }
   if (failed.length) throw new Error(`kept ${run}, because ${failed.length} archives failed; run teardown again`);
   if (scenario?.cleanup) { scenario.cleanup(state); log(run, `removed the project folder ${state.sandbox}`); }
+  const harness = keepTrialHarness(run);
+  if (harness) log(run, `kept the trial's global harness store as ${harness}`);
   rmSync(run, { recursive: true, force: true });
   process.stdout.write(`${new Date().toISOString()} deleted the run folder ${run}\n`);
 }

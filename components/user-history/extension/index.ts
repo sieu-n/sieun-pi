@@ -18,6 +18,7 @@ import { shortNotices } from "../src/prime-notices.ts";
 import { chatCheckIn, checkInLine, checkInSettings, parseChatCheckIn } from "../src/checkin-settings.ts";
 import { CLEAN_ROOM_CHATS_FILE, CLEAN_ROOM_CORRECTIONS_FILE, CORRECTION_TOOL, CorrectionLedger, correctionResult, ENFORCEMENTS, type Ledger, parseCorrectionCall } from "../src/chat-corrections.ts";
 import { IdIndex } from "../src/id-index.ts";
+import { trialHarnessDir, withTrialHarness } from "../src/trial-harness.ts";
 import { CORRECTION_CHECKPOINT, deliverCorrections } from "../src/correction-delivery.ts";
 import { withMessageCheck } from "../src/message-limit-check.ts";
 import { movedReason, movedTo } from "../src/moved-copy.ts";
@@ -296,10 +297,33 @@ export default function historyExtension(pi: ExtensionAPI): void {
     const add = [guideline, line].filter((line): line is string => line !== null && !event.systemPrompt.includes(line));
     return add.length ? { systemPrompt: `${event.systemPrompt}\n\n${add.join("\n")}` } : undefined;
   });
+  // A session of a clean-room trial chat (the chat, a job filed under it, or a subagent below either) keeps its global harness writes in the
+  // trial's own store (src/trial-harness.ts). The top session is read once; the job registry again at each cell until a trial store is found.
+  let trialTop: Promise<{ id: string; name: string } | null> | null = null;
+  let trialStore: string | undefined;
+  const trialStoreOf = async (ctx: ExtensionContext): Promise<string | undefined> => {
+    if (trialStore) return trialStore;
+    trialStore = await trialHarnessDir(dataDir(), async () => {
+      const header = ctx.sessionManager.getHeader();
+      const self = { id: ctx.sessionManager.getSessionId(), name: ctx.sessionManager.getSessionName()?.trim() ?? "" };
+      trialTop ??= depthOf(header) > 0 && typeof header?.parentSession === "string" ? topSession(header.parentSession)
+        : Promise.resolve(pi.getFlag(OWNER_THREAD_FLAG) === true ? null : self);
+      const top = await trialTop;
+      if (!top) return [];
+      const name = top.name || (top.id === self.id ? self.name : "");
+      const filed = await Promise.all([top.id, name].filter(Boolean).map(key => jobs().chatIdOf(key)));
+      return [top.id, ...filed.filter((id): id is string => id !== undefined)];
+    });
+    return trialStore;
+  };
   /** The soft-cap notes of each tool call: the call runs, and its result gets them (a chat's shell past look-ups, a load-wait loop). */
   const callNotes = new Map<string, string[]>();
   pi.on("tool_call", async (event, ctx) => {
     if (moved) return { block: true, reason: movedReason(moved) };
+    if (event.toolName === "ipython" && typeof event.input.code === "string") {
+      const store = await trialStoreOf(ctx).catch(() => undefined);
+      if (store) event.input.code = withTrialHarness(event.input.code, store);
+    }
     try {
       const notes = [chatShellNote({ toolName: event.toolName, input: event.input, depth: depthOf(ctx.sessionManager.getHeader()), marked }),
         marked || job || underChat ? loadWaitNote(event.toolName, event.input) : undefined].filter((note): note is string => note !== undefined);
