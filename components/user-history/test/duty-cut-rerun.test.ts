@@ -263,3 +263,71 @@ test("a cut run waits for the slot pi-pool gave its job, though pi-pool reads as
     run.duties.close();
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
+
+// 10-20 on us-metal02 with dhx.3 Prime and the p692 hook: a cut duty job's last turn is Prime's credential wait marker, whose text names no
+// pi-pool slot. Check-in mac-management 01:53 (01a15a3b) got it at 17:02:00Z with retryAt 17:13:00Z, the runner archived the job, and check-in
+// mac-management 02:24 started at 17:24:23Z. Check-in mac-management 02:39 (01a15a65) got it at 17:50:00Z with retryAt 18:00:00Z.
+const MAC = "01a15427-145f-751d-ba15-d27b6c30f65f";
+const markerLine = (id: string, at: string, retryAt: string) => ({ type: "message", timestamp: at, message: { role: "assistant", content: [], api: "anthropic-messages",
+  provider: "anthropic", model: "claude-opus-5-5", stopReason: "error", timestamp: Date.parse(at),
+  errorMessage: `API key for provider "anthropic" is temporarily unavailable until ${retryAt}: waiting for an account slot`,
+  diagnostics: [{ type: "provider_stream_failure", timestamp: Date.parse(at), details: { kind: "credential_unavailable", retryAtMs: Date.parse(retryAt), retryAfterMs: Date.parse(retryAt) - Date.parse(at) } }] } });
+function markerTranscript(id: string, briefAt: string, failedAt: string, retryAt: string, unloadedAt: string, archivedAt: string): string {
+  return [
+    { type: "session", version: 3, id, timestamp: briefAt, cwd: "/home/sieun" },
+    { type: "message", timestamp: briefAt, message: { role: "user", content: [{ type: "text", text: "# the duty brief" }] } },
+    markerLine(id, failedAt, retryAt),
+    { type: "session_state", timestamp: unloadedAt, state: { status: "archived", reason: "idle_unload" } },
+    { type: "session_state", timestamp: unloadedAt, state: { status: "active" } },
+    { type: "session_state", timestamp: archivedAt, state: { status: "archived", reason: "owner_archive" } },
+  ].map(line => JSON.stringify(line)).join("\n") + "\n";
+}
+
+test("a cut check-in whose credential wait comes due after a newer check-in started gets no rerun (mac-management 01:53, 10-20 17:02Z)", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "duty-cut-marker-newer-"));
+  try {
+    const store = new DutyStore(dir);
+    await store.updateFile(MAC, file => { file.checkIn = { createdAt: Date.parse("2026-10-19T01:00:00Z"), runCount: 30 }; });
+    const old = { id: "01a15a3b-c9ce-7088-9f0f-a4543a9cc566", name: "check-in mac-management 01:53" };
+    const newer = { id: "01a15a55-0000-7000-8000-000000000224", name: "check-in mac-management 02:24" };
+    const oldAt = Date.parse("2026-10-20T16:53:53.700Z");
+    const newerAt = Date.parse("2026-10-20T17:24:23.498Z");
+    const met = { verdict: "met" as const, metrics: { ...CHECK_IN_MISS, goal_gaps: { value: 0, target: 0, op: "<=" as const, met: true } }, summary: "goal_gaps 0 (on target)" };
+    await store.appendRun(MAC, { duty: "checkin", at: oldAt, slot: oldAt, trigger: "schedule", ms: 8000, ...met, job: old,
+      cut: { error: "API key for provider \"anthropic\" is temporarily unavailable until 2026-10-20T17:13:00.000Z: waiting for an account slot", at: Date.parse("2026-10-20T17:02:00.113Z"), provider: "anthropic" } });
+    await store.appendRun(MAC, { duty: "checkin", at: newerAt, slot: newerAt, trigger: "schedule", ms: 8000, ...met, job: newer, after: { at: Date.parse("2026-10-20T17:30:00Z"), ...met } });
+    const clock = { now: Date.parse("2026-10-20T17:40:00.000Z") };
+    const run = checkInDuties(dir, store, clock, {});
+    await run.addJob(old.id, old.name, markerTranscript(old.id, "2026-10-20T16:53:53.795Z", "2026-10-20T17:02:00.113Z", "2026-10-20T17:13:00.000Z",
+      "2026-10-20T17:09:28.674Z", "2026-10-20T17:10:02.392Z"));
+    run.rows.get(old.id)!.archived = true;
+    await run.duties.tick();
+    await run.duties.tick();
+    assert.deepEqual(run.reruns, [], "the old run's retryAt passed and pi-pool admits, but the newer run of the duty is the one to look at");
+    assert.ok(!run.logs.some(line => line.includes("reruns")), run.logs.join("\n"));
+    run.duties.close();
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("a cut check-in whose job ended on a credential wait reruns only once its retryAt has come (mac-management 02:39, 10-20 17:50Z)", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "duty-cut-marker-slot-"));
+  try {
+    const store = new DutyStore(dir);
+    await store.updateFile(MAC, file => { file.checkIn = { createdAt: Date.parse("2026-10-19T01:00:00Z"), runCount: 30 }; });
+    const job = { id: "01a15a65-7936-743f-a563-582a3ab5740b", name: "check-in mac-management 02:39" };
+    const at = Date.parse("2026-10-20T17:39:20.183Z");
+    await store.appendRun(MAC, { duty: "checkin", at, slot: at, trigger: "schedule", ms: 8000, verdict: "missed", metrics: CHECK_IN_MISS, summary: "goal_gaps 1 (target at most 0)", job });
+    const clock = { now: Date.parse("2026-10-20T17:55:20.392Z") };
+    const run = checkInDuties(dir, store, clock, {});
+    await run.addJob(job.id, job.name, markerTranscript(job.id, "2026-10-20T17:39:25.400Z", "2026-10-20T17:50:00.092Z", "2026-10-20T18:00:00.000Z",
+      "2026-10-20T17:54:49.986Z", "2026-10-20T17:55:21.224Z"));
+    await run.duties.tick();
+    const [cut] = await store.runs(MAC);
+    assert.equal(cut!.cut?.slotAt, Date.parse("2026-10-20T18:00:00.000Z"), "the cut carries the marker's retryAtMs as its pi-pool slot");
+    assert.deepEqual(run.reruns, [], "pi-pool admits the tree, but the slot the hook gave is still ahead");
+    clock.now = Date.parse("2026-10-20T18:00:19.854Z");
+    await run.duties.tick();
+    assert.deepEqual(run.reruns, [[MAC, "rerun", at]]);
+    run.duties.close();
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});

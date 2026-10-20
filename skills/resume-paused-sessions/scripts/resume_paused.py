@@ -59,8 +59,9 @@ with the subagent's name, id and last step, asking it to send the message on
 through its rlm handle (agent_message), which reopens the subagent in its tree.
 A parent the daemon does not hold either gets that note through its own parent.
 A run named with --only is read from its file under session-artifacts when the
-daemon does not list it, and an archive or abort before its cut turn does not
-hide it, so `--direct --only <id>` resumes a subagent stopped mid-turn.
+daemon does not list it, so `--direct --only <id>` resumes a subagent stopped
+mid-turn. An archive with no cause, or the idle unload's, does not hide a named
+run, but its stop records and stop reasons hold as for any other run.
 Only a run the list did not show live is relayed: a live job whose root came
 back after it can answer "Unknown active session" for a while, and its
 continue waits for the next pass.
@@ -1692,8 +1693,9 @@ def find_paused(sessions, since_minutes, state, now, direct=False, only=frozense
         if only and full not in only:
             continue
         owner = full in OWNERS
-        # A run named with --only is the caller's pick: it is read from its file when the daemon does not hold it, and an archive or abort
-        # before its cut turn does not hide it (a deleted job still does).
+        # A run named with --only is read from its file when the daemon does not hold it. Its stop records hold as for any run: on 10-20 a
+        # --direct --only dry run over the 15 runs the idle unload stopped in a credential wait listed 12 as paused, 9 of them duty jobs the
+        # chat service had archived and rerun.
         named = full in only
         unloaded_at = UNLOADED.get(full)
         seen_at = parse_ts(s.get("lastActivityAt") or s.get("modified"))
@@ -1753,13 +1755,13 @@ def find_paused(sessions, since_minutes, state, now, direct=False, only=frozense
             verdict = ("never_started", "Its worker stopped before its first task reached it.")
         else:
             unstuck = full in UNSTUCK
-            if not unstuck and not named and stopped_on_purpose(entries_of(sid), last, restarts, unloaded_at):
+            if not unstuck and stopped_on_purpose(entries_of(sid), last, restarts, unloaded_at):
                 continue
             verdict = ("hung", "Was hung; the Resume button aborted it.") if unstuck else classify(last, now, entries_of(sid), shutdowns, owner or named, restarts)
             if not verdict:
                 continue
             stopper = stop_archive(entries_of(sid), last)
-            if stopper and not unstuck and not named:
+            if stopper and not unstuck:
                 try:
                     recorded = stop_record(s.get("sessionFile"))
                     kind, why = ("stopped", recorded) if recorded else archive_verdict(stopper, full, s.get("sessionFile"), unloaded_at, entries_of(sid))
@@ -1769,12 +1771,13 @@ def find_paused(sessions, since_minutes, state, now, direct=False, only=frozense
                 if kind == "stopped":
                     stopped(s, sid, why, stopper.get("timestamp"), verdict, last)
                     continue
-                if kind == "unresolved":
+                # A run the caller named is its pick when no record says who stopped it: an archive with no cause, or the idle unload's.
+                if not named and kind == "unresolved":
                     UNRESOLVED.append({"id": sid, "session_id": full, "name": s.get("sessionName") or "(unnamed)", "head": head_of(sid, by_id),
                                        "head_session_id": head_session(head_of(sid, by_id), s), "archived_at": stopper.get("timestamp"),
                                        "error": why, **({"host": BOX.name} if BOX.remote else {})})
                     continue
-                if unload_stop_holds(s, verdict):
+                if not named and unload_stop_holds(s, verdict):
                     stopped(s, sid, f"{why} after a turn that did not fail on the token hook", stopper.get("timestamp"))
                     continue
         try:

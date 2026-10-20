@@ -831,6 +831,75 @@ class ResumePausedTests(unittest.TestCase):
             rows = resume_paused.with_saved_owners([], resume_paused.saved_rows({self.MARKED}), {self.MARKED})
             return resume_paused.resume(rows, args, now)
 
+    def run_named(self, sid, entries, now, unloaded=None, owners=frozenset(), dry_run=False):
+        sessions = self.root / "sessions"
+        sessions.mkdir(exist_ok=True)
+        (sessions / f"{sid}.jsonl").write_text("\n".join(json.dumps(entry) for entry in entries) + "\n")
+        args = argparse.Namespace(message="continue", since_minutes=1440, dry_run=dry_run, include_children=False, direct=True,
+                                  only="" if owners else sid, state=str(self.root / "state.json"))
+        with patch.object(resume_paused, "SESSIONS_DIR", sessions), patch.object(resume_paused, "ARTIFACTS_DIR", self.root / "artifacts"), \
+                patch.object(resume_paused, "DELETED_JOBS", self.root / "deleted-jobs.json"), \
+                patch.dict(resume_paused.UNLOADED, unloaded or {}, clear=True), patch.object(resume_paused, "OWNERS", set(owners)), \
+                patch.object(resume_paused, "hook_blocker", return_value=None), patch.object(resume_paused, "pool_bin", return_value=None), \
+                patch.object(resume_paused, "daemon_restarts", return_value=[]), patch.object(resume_paused, "worker_shutdowns", return_value=[]), \
+                patch.object(resume_paused.time, "time", return_value=now.timestamp()), \
+                patch.object(resume_paused, "send", side_effect=lambda target, text: self.sent.append((target, text)) or {"deliveryStatus": "delivered"}):
+            rows = resume_paused.with_saved_owners([], resume_paused.saved_rows({sid}), {sid})
+            return resume_paused.resume(rows, args, now)
+
+    def marked_then(self, *states):
+        """The incident's shape: the brief, the credential wait marker at 17:30:08Z, the idle unload's archive and reopen, then `states`."""
+        return [{"type": "message", "timestamp": "2026-10-20T17:30:07.900Z", "message": {"role": "user", "content": [{"type": "text", "text": "# the duty brief"}]}},
+                self.MARKER,
+                {"type": "session_state", "timestamp": "2026-10-20T17:31:50.392Z", "state": {"status": "archived", "reason": "idle_unload"}},
+                {"type": "session_state", "timestamp": "2026-10-20T17:31:50.791Z", "state": {"status": "active"}}, *states]
+
+    def test_a_run_named_with_only_keeps_a_newer_owner_stop(self):
+        # A --direct --only send, as the chat server's job sweep runs it, named a run the owner stopped after its credential wait.
+        now = dt.datetime(2026, 10, 20, 18, 20, tzinfo=dt.timezone.utc)
+        stop = {"type": "session_state", "timestamp": "2026-10-20T17:32:22.121Z", "state": {"status": "archived", "reason": "owner_stop"}}
+        report = self.run_named(self.MARKED, self.marked_then(stop), now, {self.MARKED: resume_paused.parse_ts("2026-10-20T17:31:50.341Z")})
+        self.assertEqual((report["paused"], self.sent), ([], []))
+        self.assertEqual([(entry["session_id"], entry["stopped_by"]) for entry in resume_paused.STOPPED],
+                         [(self.MARKED, "the owner stopped it (archive reason owner_stop, at 2026-10-20T17:32:22.121Z)")])
+
+    def test_a_run_named_with_only_keeps_a_newer_ledger_delete(self):
+        chat, child = "01a11af8-962e-773d-a19a-ee4104011987", "01a15a32-5cc7-720c-8ee6-7cf9182ebad8"
+        folder = self.root / "artifacts" / chat / "sub-5a325cc7"
+        folder.mkdir(parents=True)
+        ledger = self.root / "artifacts" / chat / "rlm-ledger" / "0123456789abcdef.jsonl"
+        ledger.parent.mkdir(parents=True)
+        ledger.write_text(json.dumps({"v": 1, "op": "delete", "at": "2026-10-20T17:26:02.872Z", "childId": "sub-5a325cc7", "child": str(folder / f"{child}.jsonl"), "reason": "user"}) + "\n")
+        entries = self.marked_then({"type": "session_state", "timestamp": "2026-10-20T17:26:02.893Z", "state": {"status": "archived", "reason": "subagent_deleted"}})
+        (folder / f"{child}.jsonl").write_text("\n".join(json.dumps(entry) for entry in entries) + "\n")
+        now = dt.datetime(2026, 10, 20, 18, 20, tzinfo=dt.timezone.utc)
+        args = argparse.Namespace(message="continue", since_minutes=1440, dry_run=False, include_children=False, direct=True, only=child, state=str(self.root / "state.json"))
+        with patch.object(resume_paused, "SESSIONS_DIR", self.root / "sessions"), patch.object(resume_paused, "ARTIFACTS_DIR", self.root / "artifacts"), \
+                patch.object(resume_paused, "DELETED_JOBS", self.root / "deleted-jobs.json"), patch.dict(resume_paused.UNLOADED, {}, clear=True), \
+                patch.object(resume_paused, "hook_blocker", return_value=None), patch.object(resume_paused, "pool_bin", return_value=None), \
+                patch.object(resume_paused, "daemon_restarts", return_value=[]), patch.object(resume_paused, "worker_shutdowns", return_value=[]), \
+                patch.object(resume_paused, "list_sessions", return_value=[]), \
+                patch.object(resume_paused, "send", side_effect=lambda target, text: self.sent.append((target, text)) or {"deliveryStatus": "delivered"}):
+            rows = resume_paused.with_saved_owners([], resume_paused.saved_rows({child}), {child})
+            report = resume_paused.resume(rows, args, now)
+        self.assertEqual((report["paused"], self.sent), ([], []))
+        self.assertEqual([entry["session_id"] for entry in resume_paused.STOPPED], [child])
+
+    def test_a_superseded_duty_job_stays_stopped_when_its_credential_wait_comes_due(self):
+        # check-in mac-management 01:53 (01a15a3b): marker at 17:02:00Z with retryAt 17:13:00Z, the idle unload at 17:09:28Z, the duty runner's
+        # archive (owner_archive) at 17:10:02Z after "queued its archive", and check-in 02:24 started at 17:24:23Z. At 18:20Z its retryAt is long past.
+        now = dt.datetime(2026, 10, 20, 18, 20, tzinfo=dt.timezone.utc)
+        runner = {"type": "session_state", "timestamp": "2026-10-20T17:32:22.121Z", "state": {"status": "archived", "reason": "owner_archive"}}
+        unloaded = {self.MARKED: resume_paused.parse_ts("2026-10-20T17:31:50.341Z")}
+        sweep_plan = self.run_named(self.MARKED, self.marked_then(runner), now, unloaded, owners={self.MARKED}, dry_run=True)
+        self.assertEqual(sweep_plan["paused"], [], "the job sweep's plan pass (--dry-run --direct --owners)")
+        for found in (resume_paused.STOPPED, resume_paused.HELD):
+            found.clear()
+        sweep_send = self.run_named(self.MARKED, self.marked_then(runner), now, unloaded)
+        self.assertEqual((sweep_send["paused"], self.sent), ([], []), "the job sweep's send pass (--direct --only)")
+        self.assertEqual([entry["session_id"] for entry in resume_paused.STOPPED], [self.MARKED])
+
+
     def test_a_run_the_idle_unload_stopped_in_a_credential_wait_is_resumed(self):
         report = self.run_marked()
         self.assertEqual([(p["reason"], p["target"], p["errored_at"]) for p in report["paused"]],
