@@ -99,9 +99,13 @@ async function tailOf(file: string): Promise<string> {
  * queue), as the owner's hand fix did at 20:56Z on 10-18, and a pool wait in the error keeps the check-in's own pushes off it (`poolWait`).
  * A wake or a held continue it had goes, since its stopped queue would hold that message too. A thread's transcript is
  * `<agentDir>/sessions/<id>.jsonl`, a sub-job's `<agentDir>/sessions/<session id>.jsonl` when rlm.create_session started it, or
- * `<agentDir>/session-artifacts/<chat>/sub-*\/<session id>.jsonl`.
+ * `<agentDir>/session-artifacts/<chat>/sub-*\/<session id>.jsonl`, else the file the catalog lists for that session (`fileOf`). A subagent of a
+ * duty job sits under that job's folder: ops guy's hyperdx error logs (01a154a4) under check-in 23:40's sub-299e90d1 waited on pi-pool slots
+ * from 08:20Z to 13:15Z on 10-20, and with only the agents panel's cut line to read, the check-ins at 10:03Z and 11:23Z read it failed and p439
+ * stuck, and the server restarted it into another 429.
  */
-export async function withFailedTurns(facts: readonly JobFact[], agentDir: string, chat: string, sessionOf: (key: string) => string | undefined = () => undefined): Promise<JobFact[]> {
+export async function withFailedTurns(facts: readonly JobFact[], agentDir: string, chat: string, sessionOf: (key: string) => string | undefined = () => undefined,
+  fileOf: (session: string) => Promise<string | undefined> = async () => undefined): Promise<JobFact[]> {
   const artifacts = join(agentDir, "session-artifacts", chat);
   const subs = (await readdir(artifacts).catch(() => [] as string[])).filter(name => name.startsWith("sub-"));
   const tail = async (file: string): Promise<string> => tailOf(file).catch(() => "");
@@ -117,6 +121,7 @@ export async function withFailedTurns(facts: readonly JobFact[], agentDir: strin
       // A job started with rlm.create_session is a root under sessions/; a spawned one sits under its chat's session-artifacts.
       text = await tail(join(agentDir, "sessions", `${session}.jsonl`));
       for (const sub of subs) { if (text) break; text = await tail(join(artifacts, sub, `${session}.jsonl`)); }
+      if (!text) { const file = await fileOf(session).catch(() => undefined); if (file) text = await tail(file); }
     }
     const error = lastTurnError(text);
     if (error === undefined) return fact;

@@ -1403,7 +1403,8 @@ export class Chats {
       wakes, key => sessions.get(key), this.below), dead, key => sessions.get(key), this.below), held?.sessions ?? new Map(), key => sessions.get(key)), unstarted);
     const pool = await this.source.queue?.().catch(() => undefined);
     const queued = pool?.queued ?? new Map<string, QueuePlace>();
-    const pooled = await withFailedTurns(threads, join(this.source.home ?? homedir(), ".prime", "agent"), id, key => sessions.get(key));
+    const pooled = await withFailedTurns(threads, join(this.source.home ?? homedir(), ".prime", "agent"), id, key => sessions.get(key),
+      async session => (await this.summary(session))?.sessionFile);
     const facts = withQueuePlaces(pooled.map(fact => {
       // A thread's report to the chat counts like a job's: at 16:10Z on 10-18 the check-in restarted "wiki memory moves 10-18b" for "nothing
       // moved" one minute after its 16:09Z report ("243 repo-fact memories are deleted ... 127 wiki-dream skill commits").
