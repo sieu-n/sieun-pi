@@ -1668,6 +1668,14 @@ def find_paused(sessions, since_minutes, state, now, direct=False, only=frozense
             hung = hung_since(s, now, (lambda: entries_of(sid)) if BOX.remote else None)
             if hung is None or (since_minutes and hung > since_minutes):
                 continue
+            try:
+                recorded = stop_record(s.get("sessionFile"))
+            except RecordError:
+                recorded = None  # asleep_in_retry reports a record that did not read
+            if recorded:
+                # The daemon's row can still read working after a delete: on 10-20 virev mcp db tier was deleted at 00:54:43Z.
+                stopped(s, sid, recorded, cut=("hung", f"Showed working with no activity for {hung:.0f} min."))
+                continue
             head = head_of(sid, by_id)
             wait = asleep_in_retry(s, sid, head)
             if waits_for_pool(s, sid, head, hung, wait):

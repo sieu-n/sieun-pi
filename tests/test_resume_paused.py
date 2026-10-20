@@ -1122,7 +1122,18 @@ class ResumePausedTests(unittest.TestCase):
         self.assertTrue(marked())
         self.assertFalse(marked(blocker="pi-pool holds the tree until 2026-10-18T12:40:00+00:00"))
         self.assertFalse(marked(blocker="unknown: pi-pool did not answer (TimeoutExpired)"))
-        self.assertFalse(marked(record="deleted on purpose"))
+
+    def test_a_deleted_run_the_daemon_still_shows_working_is_stopped_not_hung(self):
+        # 10-20: the d1 check-in asked that a deleted subagent never read as hung; virev mcp db tier was deleted at 00:54:43Z.
+        self.session("asleepasleep", [assistant(81, "toolUse"), role(80, "toolResult"),
+                                      assistant(80, "error", "429 This request would exceed your account's rate limit.")],
+                     activity="working", isStreaming=True, lastActivityAt=at(80))
+        os.utime(self.sessions[0]["sessionFile"], (NOW.timestamp() - 80 * 60,) * 2)
+        with patch.object(resume_paused, "account_blocker", return_value=(None, None)), \
+                patch.object(resume_paused, "stop_record", return_value="its parent deleted it (rlm-subagent.json status deleted)"):
+            report = self.run_resume(dry_run=True)
+        self.assertEqual(report["paused"], [])
+        self.assertEqual([(entry["id"], entry["cut"]) for entry in resume_paused.STOPPED], [("asleepasleep", "hung")])
 
     def test_a_hung_run_that_only_waits_for_pi_pool_is_held_not_stopped(self):
         # 10-20, the Mac: every Claude account was limited from 23:34Z, and d1 (stopped_runs) read 32 runs of chat 01a15427 as stopped for
