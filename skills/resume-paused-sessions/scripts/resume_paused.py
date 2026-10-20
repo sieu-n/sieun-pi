@@ -1267,16 +1267,34 @@ def stopped_on_purpose(entries, last, restarts=list, unloaded_at=None):
         isinstance(part, dict) and part.get("text") == "Request was aborted" for part in msg.get("content") or [])
 
 
-def pool_error(entries):
-    """The error text when a run's last entry is an assistant reply that failed on an interruption error or on the token hook (pi-pool's own
-    hold), the two failures Prime sleeps on before it tries the turn again; else None."""
+def retry_cut(entries):
+    """The assistant entry a hung run's turn failed on, or None. Its last entry is that error, or a message reached the run while it slept
+    on the error and Prime ended the request with "Request was aborted" yet left the run working. On 10-20 the parents of signup-page and
+    dash-intel messaged them at 00:37Z and 00:39Z while they slept on a 429, and both sat that way for 40 min until a plain continue."""
     last = entries[-1] if entries else {}
     msg = last.get("message") or {}
-    error = str(msg.get("errorMessage") or "")
-    if last.get("type") == "message" and msg.get("role") == "assistant" and msg.get("stopReason") == "error" \
-            and (INTERRUPTION_ERROR.search(error) or TOKEN_HOOK_ERROR.search(error)):
-        return error
+    if last.get("type") != "message" or msg.get("role") != "assistant":
+        return None
+    if msg.get("stopReason") == "error":
+        return last
+    if msg.get("stopReason") != "aborted":
+        return None
+    arrived = False
+    for entry in reversed(entries[:-1]):
+        role = (entry.get("message") or {}).get("role")
+        if entry.get("type") == "custom_message" or (entry.get("type") == "message" and role == "user"):
+            arrived = True
+        elif entry.get("type") == "message":
+            failed = role == "assistant" and (entry.get("message") or {}).get("stopReason") == "error"
+            return entry if failed and arrived else None
     return None
+
+
+def pool_error(entries):
+    """The error text when a hung run's turn failed (retry_cut) on an interruption error or on the token hook (pi-pool's own hold), the two
+    failures Prime sleeps on before it tries the turn again; else None."""
+    error = str(((retry_cut(entries) or {}).get("message") or {}).get("errorMessage") or "")
+    return error if INTERRUPTION_ERROR.search(error) or TOKEN_HOOK_ERROR.search(error) else None
 
 
 def queue_places(reading):
@@ -1289,16 +1307,13 @@ def retry_wait(entries):
     """{"retry_error": text} when a hung run's last entry is an assistant reply that failed on an interruption error: Prime is asleep in its
     provider retry, and the abort waits for account_blocker to say pi-pool would let the tree in now, so it loses no queue place. After the account outage of 10-18 ssh tailnet only,
     admin access land and p3-jobs sat in that state 113 to 144 min after a 429 at 08:20 to 08:51Z, with the accounts back."""
-    last = entries[-1] if entries else {}
-    msg = last.get("message") or {}
-    error = str(msg.get("errorMessage") or "")
+    error = str(((retry_cut(entries) or {}).get("message") or {}).get("errorMessage") or "")
     # A token hook answer is pi-pool's own hold or a hook failure, never a stuck provider retry: a hook failure has its own path once the
     # hook gives the tree a token. A provider error the extension gave a pool hold (its "waits for its slot at", up to the 120 min backoff
     # draw) is marked too: Prime sleeps that whole draw, while the pool lets the tree in as soon as an account takes its class again
     # (032c394b). account_blocker asks `pi-pool who`, which decides live, so a hold the pool still keeps blocks the abort. On 10-18 guard-fix
     # (01a15032) slept on a 429 from 19:48:50Z to 21:13:34Z while its tree moved to claude7 at 20:38Z and claude7 served from 20:00Z.
-    if last.get("type") == "message" and msg.get("role") == "assistant" and msg.get("stopReason") == "error" \
-            and INTERRUPTION_ERROR.search(error) and not TOKEN_HOOK_ERROR.search(error):
+    if INTERRUPTION_ERROR.search(error) and not TOKEN_HOOK_ERROR.search(error):
         return {"retry_error": error}
     return {}
 
@@ -1684,7 +1699,9 @@ def find_paused(sessions, since_minutes, state, now, direct=False, only=frozense
                            "kind": s.get("runtimeKind"), "reason": "hung", "error": (f"Stuck in one tool call for {hung:.0f} min." if any(s.get(flag) for flag in TOOL_FLAGS)
                                      else f"Shows working but did nothing for {hung:.0f} min."),
                            "errored_at": s.get("lastActivityAt") or s.get("modified"), "age_min": round(hung, 1), "head": head,
-                           "head_session_id": head_session(head, s), **wait})
+                           "head_session_id": head_session(head, s), **wait,
+                           # A run whose abort left it working takes a message all the same: --direct sends it once the caller aborted it.
+                           **({"aborted": True} if full in UNSTUCK else {})})
             continue
         seen_at = parse_ts(s.get("lastActivityAt") or s.get("modified"))
         if since_minutes and seen_at and (now - seen_at).total_seconds() / 60 > since_minutes + 5:

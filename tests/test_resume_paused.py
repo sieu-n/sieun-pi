@@ -268,6 +268,32 @@ class ResumePausedTests(unittest.TestCase):
                 patch.object(resume_paused, "pool_bin", return_value=None):
             return resume_paused.resume(self.sessions, args, NOW)
 
+    def test_a_run_a_message_aborted_while_it_slept_on_a_429_gets_the_sweep_continue(self):
+        # signup-page, 10-20: a 429 at 00:01:44Z with a backoff slot at 01:47:32Z, then its parent's message at 00:37:19Z, on which Prime
+        # ended the request ("Request was aborted") and left the run working. It sat 42 min, until a plain continue at 01:19:57Z.
+        limited = ("Provider rate limit exceeded (rate_limit_error, 429): This request would exceed your account's rate limit. Please try again "
+                   "later. pi-pool: claude-virev1@slack.green is limited until 2026-10-20T02:20:04.000Z; this session waits for its slot at "
+                   "2026-10-20T01:47:32.000Z. Try again in 106 minutes.")
+        message = {"type": "custom_message", "customType": "agent_message", "timestamp": at(43),
+                   "content": "[agent-message from parent:signup and add brand]\n\ncontinue. No progress from you since about 23:25Z."}
+        aborted = {"type": "message", "timestamp": at(42), "message": {"role": "assistant", "stopReason": "aborted", "errorMessage": "Request was aborted",
+                                                                      "content": [{"type": "text", "text": ""}]}}
+        tail = [assistant(80, "toolUse"), role(79, "toolResult"), assistant(78, "error", limited), message, aborted]
+        self.assertIn("429", resume_paused.retry_wait(tail)["retry_error"])
+        self.assertEqual(resume_paused.retry_wait([assistant(80, "toolUse"), role(79, "toolResult"), aborted]), {},
+                         "an abort with no failed request before it is no retry")
+        self.assertEqual(resume_paused.retry_wait([assistant(78, "error", limited), aborted]), {}, "an abort no message caused is no retry")
+        self.session("signuppagesp", tail, parent="headheadhead", activity="working", lastActivityAt=at(42))
+        os.utime(self.sessions[0]["sessionFile"], (NOW.timestamp() - 42 * 60,) * 2)
+        with patch.object(resume_paused, "account_blocker", return_value=(None, None)), patch.object(resume_paused, "stop_record", return_value=None):
+            found = self.run_direct(dry_run=True)
+            self.assertEqual([(p["id"], p["reason"], "retry_error" in p) for p in found["paused"]], [("signuppagesp", "hung", True)])
+            # The sweep aborts it, which leaves it working, and passes it as --unstuck: the send pass gives it its continue.
+            resume_paused.UNSTUCK.add("0" * 24 + "signuppagesp")
+            self.addCleanup(resume_paused.UNSTUCK.clear)
+            self.run_direct(only=["0" * 24 + "signuppagesp"])
+        self.assertEqual(self.sent, [("signuppagesp", "continue")])
+
     def test_direct_messages_each_stopped_job_itself_even_after_its_chat_got_a_message(self):
         # Crawler VP 10-15: alert follow through stopped mid-tool at 13:29Z and curl-multi-gate, a job two levels down, on a token hook
         # failure at 13:48Z. The chat took check-in and alert messages after both, so neither counted, and both sat until a check-in found them.
