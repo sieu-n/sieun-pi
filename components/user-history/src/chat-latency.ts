@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { type IntervalHistogram, monitorEventLoopDelay, performance } from "node:perf_hooks";
+import { constants, type IntervalHistogram, monitorEventLoopDelay, performance, PerformanceObserver } from "node:perf_hooks";
 
 /**
  * How slow the chat service was to the owner each minute, for the Whole system duty's CPU rule (scripts/duties/whole-system.ts): the slowest page
@@ -13,6 +13,23 @@ export interface ChatLatency {
   read?: string;
   /** The event loop's longest delay since the last line, in ms (perf_hooks monitorEventLoopDelay). */
   loopMs: number;
+  /** The longest garbage collection since the last line, in ms, and its kind; absent when none ran. */
+  gcMs?: number;
+  gc?: GcKind;
+}
+
+export type GcKind = "major" | "minor" | "incremental" | "weak";
+const GC_KINDS: ReadonlyMap<number, GcKind> = new Map([[constants.NODE_PERFORMANCE_GC_MAJOR, "major"], [constants.NODE_PERFORMANCE_GC_MINOR, "minor"],
+  [constants.NODE_PERFORMANCE_GC_INCREMENTAL, "incremental"], [constants.NODE_PERFORMANCE_GC_WEAKCB, "weak"]]);
+let longestGc: { ms: number; kind: GcKind } | null = null;
+
+/**
+ * Keeps the longest GC of the window. p769's scratch profile on 10-19 found every main-thread run over 1 s was a major GC, and the live
+ * service takes no profiler (66797edc), so the latency line names a GC that long beside the loop stall it explains.
+ */
+export function noteGc(ms: number, kind: number): void {
+  const named = GC_KINDS.get(kind);
+  if (named && ms > (longestGc?.ms ?? 0)) longestGc = { ms, kind: named };
 }
 
 /** api/hosts waits on each other box's relay over the network, up to 35 s by design (hosts.ts), so its time says nothing about this box. */
@@ -28,7 +45,11 @@ export const readRoute = (url: string, base: string): string => {
 
 /** Times a GET from now until its response is sent, and starts the event loop monitor on the first one. */
 export function timeRead(req: IncomingMessage, res: ServerResponse, base: string): void {
-  if (!loop) { loop = monitorEventLoopDelay({ resolution: 20 }); loop.enable(); }
+  if (!loop) {
+    loop = monitorEventLoopDelay({ resolution: 20 }); loop.enable();
+    new PerformanceObserver(list => { for (const entry of list.getEntries()) noteGc(entry.duration, (entry.detail as { kind?: number } | null)?.kind ?? -1); })
+      .observe({ entryTypes: ["gc"] });
+  }
   if (req.method !== "GET") return;
   const started = performance.now();
   res.once("finish", () => {
@@ -41,8 +62,10 @@ export function timeRead(req: IncomingMessage, res: ServerResponse, base: string
 /** The latency since the last take, then starts a new window; undefined before the server timed its first request. */
 export function takeLatency(): ChatLatency | undefined {
   if (!loop) return undefined;
-  const taken: ChatLatency = { readMs: slowest.ms, ...slowest.route ? { read: slowest.route } : {}, loopMs: Math.round(loop.max / 1e6) };
+  const taken: ChatLatency = { readMs: slowest.ms, ...slowest.route ? { read: slowest.route } : {}, loopMs: Math.round(loop.max / 1e6),
+    ...longestGc ? { gcMs: Math.round(longestGc.ms), gc: longestGc.kind } : {} };
   slowest = { ms: 0, route: "" };
+  longestGc = null;
   loop.reset();
   return taken;
 }
