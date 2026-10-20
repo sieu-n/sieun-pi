@@ -176,7 +176,8 @@ test("another box's link never subscribes to its roster and lists the roster eve
   await peer.sync();
   assert.equal(peer.state, "up");
   daemon.state.connected = true;
-  await new Promise(resolve => setTimeout(resolve, 60));
+  // A fixed 60 ms wait saw one poll under a release's full suite at concurrency 20 on 10-20; the polls come every 15 ms, so wait for two.
+  for (const until = Date.now() + 5000; types.filter(type => type === "list").length < 2 && Date.now() < until;) await new Promise(resolve => setTimeout(resolve, 15));
   assert.equal(types.includes("roster_subscribe"), false, "no roster stream from another box");
   assert.equal(types[0], "list all");
   assert.ok(types.filter(type => type === "list").length >= 2, `the roster is listed every poll: ${types.join(", ")}`);
