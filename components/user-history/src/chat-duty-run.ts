@@ -532,12 +532,16 @@ export class Duties {
     return dutyFixes(board, dutyId, metrics, item => live ? live(chatId, item).catch(() => false) : Promise.resolve(false), flagged, goal);
   }
 
-  /** Fills a missed run's `fixes` from the board, and returns its miss streaks with them (`metricStreaks`, from `previous` newest first). */
-  private async missesOf(chatId: string, record: DutyRunRecord, previous: readonly DutyRunRecord[], metrics: readonly DutyMetric[]): Promise<MetricStreak[]> {
+  /**
+   * Fills a missed run's `fixes` from the board, and returns its miss streaks with them (`metricStreaks`, from `previous` newest first). The duty's
+   * own goal (`goal`, its `boardGoal`) is no fix, as in the push: on 10-20 the 20:05 KST d4 run's brief named p200 as wiki_problems' fix step, so
+   * its job set a hold job on the goal that the push ignores.
+   */
+  private async missesOf(chatId: string, record: DutyRunRecord, previous: readonly DutyRunRecord[], metrics: readonly DutyMetric[], goal?: string): Promise<MetricStreak[]> {
     if (record.verdict !== "missed") return [];
     const counted = verdictKeys(metrics);
     const board = this.host.board ? await this.host.board(chatId).catch(error => { this.log(`duty ${chatId.slice(0, 8)}/${record.duty}: read the board: ${message(error)}`); return null; }) : null;
-    const fixes = await this.fixesOn(board, chatId, record.duty, missedKeys(record).filter(key => counted.has(key)), record.flagged);
+    const fixes = await this.fixesOn(board, chatId, record.duty, missedKeys(record).filter(key => counted.has(key)), record.flagged, goal);
     if (Object.keys(fixes).length) record.fixes = fixes;
     const streaks = metricStreaks([record, ...previous]).filter(streak => counted.has(streak.key));
     const reopen = record.trigger === "verify" && record.duty !== CHECK_IN_DUTY_ID ? reopenOps(board, streaks, record.at) : [];
@@ -976,7 +980,7 @@ export class Duties {
     const overrunLine = record.overrun ? `This run went over: ${overrunWords(record.overrun)}. Make the precheck faster or set its timeoutMs to what it needs.` : "";
     const streak = record.verdict === "error" ? errorStreak([record, ...previous]) : 0;
     await markRun();
-    const misses = await this.missesOf(chatId, record, previous, duty.metrics);
+    const misses = await this.missesOf(chatId, record, previous, duty.metrics, duty.boardGoal);
     let findings: string;
     if (record.verdict === "error") {
       findings = [`The precheck failed: ${record.error ?? record.summary}. ${streak >= ERROR_RUNS_TARGET ? `It failed ${streak} runs in a row, over the target of ` +
