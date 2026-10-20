@@ -35,7 +35,7 @@ function deps(journal: string): DreamDeps {
   };
   return {
     now: NOW, node: "node", repos: { wiki: "/wiki", pi: "/pi" },
-    files: { corrections: "corrections", harness: "harness", ledger: "ledger" },
+    files: { corrections: "corrections", harness: "harness", ledger: "ledger", agentDir: "/nonexistent-agent-dir" },
     readText: async path => files[path]!,
     exec: async file => {
       if (file === "node") return JSON.stringify({ facts, items: [], errors: [], dupPairs: [], signals: [], stale: { stale: [] } });

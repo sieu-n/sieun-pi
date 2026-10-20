@@ -13,7 +13,7 @@ const JOURNAL = [
 
 const deps: DreamDeps = {
   now: NOW, node: "node", repos: { wiki: "/wiki", pi: "/pi" },
-  files: { corrections: "corrections", harness: "harness", ledger: "ledger" },
+  files: { corrections: "corrections", harness: "harness", ledger: "ledger", agentDir: "/nonexistent-agent-dir" },
   readText: async path => ({ corrections: "{}", harness: "[]", ledger: "[]" })[path]!,
   exec: async file => {
     if (file === "node") return JSON.stringify({ items: [] });

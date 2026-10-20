@@ -1,8 +1,8 @@
 import { execFile } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
+import { readdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { DutyRunRecord, FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
 
@@ -50,7 +50,8 @@ export interface DreamDeps {
   /** The node binary that runs wiki-health.mjs. */
   node: string;
   repos: { wiki: string; pi: string };
-  files: { corrections: string; harness: string; ledger: string };
+  /** `agentDir` is Prime's agent folder, which holds the clean-room indexes under browser-chat and the session transcripts. */
+  files: { corrections: string; harness: string; ledger: string; agentDir: string };
 }
 
 /** What `wiki-health.mjs` prints (build contract part A). */
@@ -218,19 +219,76 @@ export function staleExcerpt(page: StalePage, now?: number): string {
 export const isRepoFact = (entry: HarnessEntry): boolean => /^auto-sns-agent/i.test(entry.path ?? "") || /^auto-sns-agent/i.test(entry.title ?? "");
 const skillPath = (text: string): string | undefined => /(?:\.agents\/skills|\.claude\/skills-native|skills)\/[\w./-]+?(?:SKILL\.md|\.md)/.exec(text)?.[0];
 
-/** The harness signal: repo-fact global memory count, memories and refinements made since `since`, and memories to move into skills. */
-export function harnessSignal(state: unknown, ledger: Ledger, since: number): {
-  repoFacts: number; fresh: HarnessEntry[]; refinements: Refinement[]; moves: HarnessEntry[];
-} {
+/** The memories of a harness_state.json; throws when it has no entries object. */
+export function harnessMemories(state: unknown): HarnessEntry[] {
   if (!isRecord(state) || !isRecord(state.entries)) throw new Error("harness_state.json has no entries object");
-  const memories = Object.values(isRecord(state.entries.memory) ? state.entries.memory : {}).filter(isRecord) as HarnessEntry[];
+  return Object.values(isRecord(state.entries.memory) ? state.entries.memory : {}).filter(isRecord) as HarnessEntry[];
+}
+
+const HARNESS_WRITE = /\b(?:create|update)_memory\b/;
+const strings = (value: unknown): string[] => typeof value === "string" ? [value] : Array.isArray(value) ? value.flatMap(strings)
+  : isRecord(value) ? Object.values(value).flatMap(strings) : [];
+
+/**
+ * The memories a clean-room trial wrote, each with the session that wrote it. On 10-19 at 22:46Z job sub-6091ecc5 of trial chat 01a155fc
+ * (readme preview run4) saved a global memory that a server the owner keeps running needs RefuseManualStop, from the trial task's "leave it
+ * running", which the owner never said. The 10-20 01:08Z d4 job read it as new, moved it into skills/board/SKILL.md (13377e9a) and deleted it
+ * (~/work/archived-job-cleanup/trial-memory/run4-global-memory.md). A trial session is a chat in browser-chat/clean-room-chats.json or a
+ * session filed in clean-room-harness.json, with every job and subagent under its session-artifacts folder. A memory is its write when one
+ * of their tool calls runs create_memory or update_memory and names the memory's id or title anywhere in that call, so a cell that reads one
+ * memory and writes another keeps both out of the moves. A digest or a cell that only reads a memory is no write. A missing index means no
+ * trial ran on this box.
+ */
+export async function trialWrites(memories: readonly HarnessEntry[], agentDir: string): Promise<Map<string, string>> {
+  const missing = (error: unknown): boolean => (error as NodeJS.ErrnoException)?.code === "ENOENT";
+  const json = (path: string): Promise<unknown> => readFile(path, "utf8").then(text => JSON.parse(text) as unknown, error => { if (missing(error)) return {}; throw error; });
+  const chats = await json(join(agentDir, "browser-chat", "clean-room-chats.json"));
+  const filed = await json(join(agentDir, "browser-chat", "clean-room-harness.json"));
+  const trials = new Set([
+    ...(isRecord(chats) && Array.isArray(chats.ids) ? chats.ids.filter((id): id is string => typeof id === "string") : []),
+    ...(isRecord(filed) && isRecord(filed.trials) ? Object.keys(filed.trials) : []),
+  ]);
+  const found = new Map<string, string>();
+  const wanted = memories.filter(entry => entry.id);
+  if (!trials.size || !wanted.length) return found;
+  for (const trial of trials) {
+    const below = await readdir(join(agentDir, "session-artifacts", trial), { recursive: true }).catch(error => { if (missing(error)) return []; throw error; });
+    const transcripts = [join(agentDir, "sessions", `${trial}.jsonl`), ...below.filter(file => file.endsWith(".jsonl")).map(file => join(agentDir, "session-artifacts", trial, file))];
+    for (const transcript of transcripts) {
+      const text = await readFile(transcript, "utf8").catch(error => { if (missing(error)) return ""; throw error; });
+      for (const line of text.split("\n")) {
+        if (!HARNESS_WRITE.test(line)) continue;
+        let row: unknown;
+        try { row = JSON.parse(line); } catch { continue; }
+        const content = isRecord(row) && isRecord(row.message) && Array.isArray(row.message.content) ? row.message.content : [];
+        const calls = content.filter(isRecord).filter(part => part.type === "toolCall").flatMap(part => strings(part.arguments)).filter(code => HARNESS_WRITE.test(code));
+        for (const entry of wanted) {
+          if (found.has(entry.id!)) continue;
+          if (calls.some(code => code.includes(entry.id!) || (!!entry.title && code.includes(entry.title)))) found.set(entry.id!, basename(transcript, ".jsonl"));
+        }
+      }
+    }
+  }
+  return found;
+}
+
+/**
+ * The harness signal: repo-fact global memory count, memories and refinements made since `since`, memories to move into skills, and the
+ * memories a clean-room trial wrote (`trial`, by id with the writing session), which are left out of every other list so no skill takes them.
+ */
+export function harnessSignal(state: unknown, ledger: Ledger, since: number, trial: ReadonlyMap<string, string> = new Map()): {
+  repoFacts: number; fresh: HarnessEntry[]; refinements: Refinement[]; moves: HarnessEntry[]; trial: { entry: HarnessEntry; session: string }[];
+} {
+  const all = harnessMemories(state);
+  const memories = all.filter(entry => !trial.has(entry.id ?? ""));
   const facts = memories.filter(entry => entry.scope === "global" && isRepoFact(entry));
   const moved = new Set(Object.keys(ledger.memoryMoves ?? {}));
   return {
     repoFacts: facts.length,
     fresh: memories.filter(entry => ms(entry.created_at) >= since).sort((a, b) => Number(isRepoFact(b)) - Number(isRepoFact(a)) || ms(b.created_at) - ms(a.created_at)),
-    refinements: (Array.isArray(state.refinements) ? state.refinements.filter(isRecord) as Refinement[] : []).filter(row => ms(row.created_at) >= since),
+    refinements: (isRecord(state) && Array.isArray(state.refinements) ? state.refinements.filter(isRecord) as Refinement[] : []).filter(row => ms(row.created_at) >= since),
     moves: facts.filter(entry => !moved.has(entry.id ?? "")).sort((a, b) => ms(a.updated_at) - ms(b.updated_at)),
+    trial: all.filter(entry => trial.has(entry.id ?? "")).map(entry => ({ entry, session: trial.get(entry.id!)! })),
   };
 }
 
@@ -296,7 +354,7 @@ export function unlandedPages(runs: readonly BoxRun[]): UnlandedPage[] {
 export const FLAG_ORDER: readonly [string, number][] = [
   ["source_error", 6], ["unlanded", 20], ["unlanded_session", 10], ["recurred", 8], ["open_class", 10], ["hub_orphan", 8], ["dead_link", 8], ["superseded_linked", 8], ["session_link", 8],
   ["missing_meta", 6], ["stale_vs_code", 30], ["dup_pair", 5], ["revert", 5], ["retouched", 5], ["correction", 10], ["signal", 6], ["refinement", 6],
-  ["memory", 10], ["lint_page", 5], ["archive_candidate", 3],
+  ["trial_memory", 10], ["memory", 10], ["lint_page", 5], ["archive_candidate", 3],
 ];
 
 /** Picks the flagged items: each kind in FLAG_ORDER up to its cap, unknown kinds last, FLAGGED_MAX in all. */
@@ -340,7 +398,9 @@ export async function measureDream(deps: DreamDeps, lastRuns: readonly DutyRunRe
     .then(parseHealth).catch(error => fail("wiki-health.mjs", error));
   const ledger = await readJson(deps.files.ledger).then(value => { if (!isRecord(value)) throw new Error("not an object"); return value as Ledger; }).catch(error => fail("ledger", error));
   const corrections = await readJson(deps.files.corrections).then(value => freshCorrections(value, since)).catch(error => fail("corrections.json", error));
-  const harness = await readJson(deps.files.harness).then(value => harnessSignal(value, ledger ?? {}, since)).catch(error => fail("harness_state.json", error));
+  const harness = await readJson(deps.files.harness)
+    .then(async value => harnessSignal(value, ledger ?? {}, since, await trialWrites(harnessMemories(value), deps.files.agentDir)))
+    .catch(error => fail("harness_state.json", error));
   const gitSince = new Date(now - CHURN_MS).toISOString();
   const commits: DreamCommit[] = [];
   let gitOk = true;
@@ -384,7 +444,7 @@ export async function measureDream(deps: DreamDeps, lastRuns: readonly DutyRunRe
   const info: Record<string, number> = {
     since, curated_pages: health?.curatedPages ?? UNMEASURED, lint_failing_pages: lintFailing ?? UNMEASURED, lint_glide_plan: glide(LINT_GLIDE, now),
     repo_fact_memories: harness?.repoFacts ?? UNMEASURED, memory_glide_plan: glide(MEMORY_GLIDE, now), new_corrections: corrections?.length ?? UNMEASURED,
-    new_memories: harness?.fresh.length ?? UNMEASURED, new_refinements: harness?.refinements.length ?? UNMEASURED, signals: health?.signals.length ?? UNMEASURED,
+    new_memories: harness?.fresh.length ?? UNMEASURED, trial_memories: harness?.trial.length ?? UNMEASURED, new_refinements: harness?.refinements.length ?? UNMEASURED, signals: health?.signals.length ?? UNMEASURED,
     open_session_logs: health?.facts.open_session_logs ?? UNMEASURED, open_classes: classes?.open.length ?? UNMEASURED,
     box_runs_24h: box?.runs ?? UNMEASURED, unlanded_sessions: box ? box.pages.filter(page => page.session).length : UNMEASURED,
     recurred_7d: classes?.recurred.length ?? UNMEASURED, dream_commits_7d: commits.filter(commit => !isRevert(commit.subject)).length,
@@ -416,6 +476,10 @@ export async function measureDream(deps: DreamDeps, lastRuns: readonly DutyRunRe
     return { kind: "memory", item: entry.id ?? "?", at: ms(entry.created_at), excerpt: clip(`${why}${isRepoFact(entry) ? ", repo fact" : ""}: ${entry.title ?? ""} [${entry.path ?? ""}]${skill ? ` names ${skill}` : ""}`) };
   };
   const freshIds = new Set((harness?.fresh ?? []).map(entry => entry.id));
+  for (const { entry, session } of harness?.trial ?? []) {
+    slices.push({ kind: "trial_memory", item: entry.id ?? "?", at: ms(entry.created_at),
+      excerpt: clip(`written by clean-room trial session ${session}, so it is trial output: move none of it into a skill: ${entry.title ?? ""} [${entry.path ?? ""}]`) });
+  }
   for (const entry of harness?.fresh ?? []) slices.push(memorySlice(entry, "new since last run"));
   for (const entry of (harness?.moves ?? []).filter(entry => !freshIds.has(entry.id)).slice(0, 10)) slices.push(memorySlice(entry, "move into its skill"));
   for (const page of stalePages ?? []) slices.push({ kind: "stale_vs_code", item: page.path, excerpt: clip(staleExcerpt(page, now)) });
@@ -470,6 +534,7 @@ async function main(): Promise<void> {
     files: {
       corrections: join(home, ".prime/agent/browser-chat/corrections.json"),
       harness: join(home, ".prime/agent/harness/harness_state.json"),
+      agentDir: join(home, ".prime/agent"),
       // The ledger sits in the duty chat's own duties folder, the folder the runner keeps LAST_RUNS_FILE in.
       ledger: process.env.WIKI_DREAM_LEDGER || join(dirname(process.env.LAST_RUNS_FILE || "."), "wiki-dream-ledger.json"),
     },
