@@ -23,7 +23,7 @@ function stub(perKind: Record<string, string>, status = 200) {
     const result = url.pathname.endsWith("/query_range") ? [{ metric: { kind: "output" }, values: [[now / 1000, "7"]] }] : vector;
     return Response.json({ status: "success", data: { resultType: url.pathname.endsWith("/query_range") ? "matrix" : "vector", result } });
   }) as typeof fetch;
-  return { asked, usage: new Usage(grafanaPrometheus(config, fetcher), () => now) };
+  return { asked, fetcher, usage: new Usage(grafanaPrometheus(config, fetcher), () => now) };
 }
 
 test("the per-second output figure is what LGTM answers for prime_agent_tokens_total kind output", async () => {
@@ -52,4 +52,17 @@ test("an unreachable LGTM names the network cause, not only fetch failed", async
   const fetcher = (async () => { throw new TypeError("fetch failed", { cause: Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" }) }); }) as typeof fetch;
   const reading = await new Usage(grafanaPrometheus(config, fetcher), () => now).reading();
   assert.equal(reading.state === "error" ? reading.error : "", "LGTM unreachable: fetch failed (ECONNRESET: read ECONNRESET)");
+});
+
+test("a query on an HTTP/2 session that LGTM's proxy closed is asked again on a new one", async () => {
+  const good = stub({ output: "812", input: "1", cache_read: "2", cache_write: "3" });
+  let calls = 0;
+  const fetcher = (async (input: string | URL | Request, init?: RequestInit) => {
+    calls += 1;
+    if (calls === 1) throw new TypeError("fetch failed", { cause: Object.assign(new Error("New streams cannot be created after receiving a GOAWAY"), { code: "ERR_HTTP2_GOAWAY_SESSION" }) });
+    return good.fetcher(input, init);
+  }) as typeof fetch;
+  const reading = await new Usage(grafanaPrometheus(config, fetcher), () => now).reading();
+  assert.equal(reading.state === "error" ? reading.error : "ok", "ok");
+  assert.equal(reading.state === "error" ? 0 : reading.perSecond.output, 812);
 });
