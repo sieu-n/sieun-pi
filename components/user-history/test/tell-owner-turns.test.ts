@@ -86,3 +86,20 @@ test("on a turn the owner did not start, two tell_owner calls in one step are re
   const one = tellTurn([...settled, job("boards deployed", "05:59:00"), { ...step, content: (two[0] as any).content } as ThreadMessage]);
   assert.equal(tellOwner({ text: "Dashboards are live.", why: "done", about: "crawler dashboards" }, one).kind, "sent");
 });
+
+test("on a turn the owner did not start, a second done on the goal it already reported is refused once, and the same text again goes out", () => {
+  // 10-19 to 10-20: frontend bro sent "demo work landing on staging" at 00:34Z and "later demo work landing on staging" at 01:33Z, ops guy a
+  // correction of its cleanup incident, and AI harness a second usage history line, each after a done on the same goal and no owner message between.
+  const first = tell("d1", { text: "The demo is on staging.", why: "done", about: "demo work landing on staging" }, "06:00:00");
+  const history = [...settled, job("landed", "05:59:00"), first, result("d1", TELL_OWNER_DONE, "06:00:01"), said("", "06:00:02"), job("later land done", "07:00:00")];
+  const again = { text: "Tonight's later demo work is on staging too.", why: "done", about: "later demo work landing on staging" };
+  const refused = tellOwner(again, tellTurn(history));
+  assert.equal(refused.kind, "refused");
+  assert.match(refused.text, /already told him this goal is done/);
+  const call = tell("d2", again, "07:00:05");
+  const insisted = tellTurn([...history, call, result("d2", refused.text, "07:00:06"), tell("d3", again, "07:00:10")]);
+  assert.equal(tellOwner(again, insisted).kind, "sent", "the very same text again goes out, so a real result is never lost");
+  assert.equal(tellOwner({ ...again, about: "Grafana load on prod ClickHouse" }, tellTurn(history)).kind, "sent", "another goal goes out");
+  const asked = tellTurn([...history.slice(0, -1), owner("and the rest?", "06:30:00"), said("checking", "06:30:10"), job("later land done", "07:00:00")]);
+  assert.equal(tellOwner(again, asked).kind, "sent", "an owner message in between starts over");
+});

@@ -146,21 +146,39 @@ export interface TellInput { text?: unknown; why?: unknown; about?: unknown; rep
  * What the check reads of the chat: whether the owner started the running turn or his newest message has no answer yet (the message being
  * sent is left out), and the ids of his messages a `reply_to` may name.
  */
-export interface TellTurn { owner: boolean; ownerIds: ReadonlySet<string>; byOwner?: boolean; tells?: number; ownerText?: string; resent?: ReadonlySet<string> }
+export interface TellTurn { owner: boolean; ownerIds: ReadonlySet<string>; byOwner?: boolean; tells?: number; ownerText?: string; resent?: ReadonlySet<string>; done?: readonly string[] }
+/** The words of an `about` that tell two of them apart: lowercased, three letters or more. */
+const aboutWords = (about: string): Set<string> => new Set(about.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(word => word.length >= 3));
+/** The earlier `done` about this one repeats: every word of the shorter one is in the other, with at least two words. */
+const repeatOf = (about: string, done: readonly string[]): string | undefined => {
+  const words = aboutWords(about);
+  return done.find(earlier => {
+    const before = aboutWords(earlier);
+    const [small, large] = words.size <= before.size ? [words, before] : [before, words];
+    return small.size >= 2 && [...small].every(word => large.has(word));
+  });
+};
+const REPEAT_MARK = "Not sent, you already told him this goal is done";
 
 export function tellTurn(messages: readonly ThreadMessage[]): TellTurn {
   const ownerIds = new Set<string>();
   let ownerText = "";
   const told = new Map<string, string>();
+  const doneAbout = new Map<string, string>();
   const resent = new Set<string>();
+  let done: string[] = [];
   for (const message of messages) {
-    if (message.role === "user" && !serverNote(messageText(message).trim())) { ownerIds.add(ownerMessageId(message.timestamp)); ownerText = messageText(message); }
+    if (message.role === "user" && !serverNote(messageText(message).trim())) { ownerIds.add(ownerMessageId(message.timestamp)); ownerText = messageText(message); done = []; }
     if (message.role === "assistant") for (const part of message.content) {
       if (part.type === "toolCall" && part.name === TELL_OWNER_TOOL && typeof part.arguments?.text === "string") told.set(part.id, part.arguments.text.trim());
+      if (part.type === "toolCall" && part.name === TELL_OWNER_TOOL && part.arguments?.why === "done" && typeof part.arguments?.about === "string") doneAbout.set(part.id, part.arguments.about);
     }
-    if (message.role === "toolResult" && message.toolName === TELL_OWNER_TOOL && messageText(message).startsWith(SHOP_TALK_MARK)) {
+    if (message.role === "toolResult" && message.toolName === TELL_OWNER_TOOL && (messageText(message).startsWith(SHOP_TALK_MARK) || messageText(message).startsWith(REPEAT_MARK))) {
       const text = told.get(message.toolCallId);
       if (text) resent.add(text);
+    }
+    if (message.role === "toolResult" && message.toolName === TELL_OWNER_TOOL && messageText(message) === TELL_OWNER_DONE && doneAbout.has(message.toolCallId)) {
+      done.push(doneAbout.get(message.toolCallId)!);
     }
   }
   const before = messages.at(-1)?.role === "assistant" ? messages.slice(0, -1) : messages;
@@ -169,7 +187,7 @@ export function tellTurn(messages: readonly ThreadMessage[]): TellTurn {
   const byOwner = turnStarter(messages.filter(message => !(message.role === "user" && revival(messageText(message).trim())))) === "owner";
   const last = messages.at(-1);
   const tells = last?.role === "assistant" ? last.content.filter(part => part.type === "toolCall" && part.name === TELL_OWNER_TOOL).length : 0;
-  return { owner: unanswered || byOwner, ownerIds, byOwner, tells, ownerText, resent };
+  return { owner: unanswered || byOwner, ownerIds, byOwner, tells, ownerText, resent, done };
 }
 
 /**
@@ -188,6 +206,9 @@ export function tellOwner(input: TellInput, turn: TellTurn): { kind: "sent" | "r
   const named = (value: unknown): value is string => typeof value === "string" && value.trim() !== "";
   const answers = named(input.reply_to) && turn.ownerIds.has(input.reply_to.trim());
   const declared = TELL_CASES.includes(input.why as TellWhy) && named(input.about);
+  const repeat = !turn.owner && input.why === "done" && named(input.about) && !turn.resent?.has(told) ? repeatOf(input.about, turn.done ?? []) : undefined;
+  if (repeat) return { kind: "refused", text: `${REPEAT_MARK} ("${repeat}") since his last message. Send nothing unless this brings something ` +
+    "new he must see or act on; if it does, send the very same text again and it goes out (c117)." };
   if (turn.owner || answers || declared) {
     const talk = turn.resent?.has(told) ? [] : shopTalk(told, turn.ownerText);
     return talk.length ? { kind: "refused", text: `${SHOP_TALK_MARK} ${talk.join(", ")}. Write it the way a person texts in Slack, with what ` +
