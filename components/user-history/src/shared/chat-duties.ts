@@ -106,6 +106,8 @@ export interface DutyJobRef { id: string; name: string }
 export interface DutyRunRecord {
   duty: string; at: number; slot?: number; trigger: DutyTrigger; ms: number; verdict: DutyVerdict;
   metrics: Record<string, MetricResult>; summary: string; detail?: string; error?: string;
+  /** Per-part readings of counted metrics, which the verdict does not count (`metricParts`). */
+  parts?: Record<string, MetricResult>;
   classes?: Record<string, number>; flagged?: FlaggedSlice[]; job?: DutyJobRef;
   /** Set when the precheck ran past its soft target. */
   overrun?: PrecheckOverrun;
@@ -128,7 +130,7 @@ export interface DutyCut { error: string; at: number; provider?: string; slotAt?
 /** A fix step on the board for one missed metric: its plan step id, the job that owns it, and whether that job was live when the run looked. */
 export interface FixLink { step: string; job?: string; live: boolean }
 /** A run's re-measure after its own job ended. */
-export interface AfterMeasure { at: number; verdict: "met" | "missed" | "error"; metrics: Record<string, MetricResult>; summary: string }
+export interface AfterMeasure { at: number; verdict: "met" | "missed" | "error"; metrics: Record<string, MetricResult>; summary: string; parts?: Record<string, MetricResult> }
 /** The part of a duty the card shows; the check-in duty has the same fields. */
 export type DutyCard = Pick<Duty, "id" | "name" | "ownerWords" | "goal" | "metrics" | "status"> & { boardGoal?: string };
 /**
@@ -255,7 +257,29 @@ function sourceReasons(output: PrecheckOutput): string {
  * ends with the `shapeNote` of a duty over the shape rule. On 10-18 a GitHub 403 left Apps reach staging without demo_ci_ok, and the run must
  * still judge apps_picked and open_review_max_h; a run with no counted metric measured is an error, which counts toward ERROR_RUNS_TARGET.
  */
-export function judge(metrics: readonly DutyMetric[], output: PrecheckOutput): { verdict: "met" | "missed" | "error"; metrics: Record<string, MetricResult>; summary: string } {
+/**
+ * The parts of a duty's counted metrics in a precheck's output: each number under `<metricKey>_<part>` that is no metric of its own, read against
+ * that metric's target. The verdict leaves them out, and a goal can name one as its number (`goalReadingOps`, `metricFacts`). d7's quiet_agent_gb
+ * reads the worst host, so on 10-20 at 02:05Z it read 5.61 GB from the Mac's frontend bro worker while us-metal02 read 0.55 GB, and p717, a
+ * us-metal02 goal, took the Mac's number; it now names quiet_agent_gb_us_metal02. A part is no fifth metric, so the duty keeps its shape (c75).
+ */
+export function metricParts(metrics: readonly DutyMetric[], output: PrecheckOutput): Record<string, MetricResult> | undefined {
+  const own = new Set(metrics.map(metric => metric.key));
+  const parts: Record<string, MetricResult> = {};
+  for (const [key, value] of Object.entries(output.metrics)) {
+    const metric = metrics.find(entry => key.startsWith(`${entry.key}_`));
+    if (!metric || own.has(key) || typeof value !== "number" || !Number.isFinite(value) || isPlaceholder(value)) continue;
+    parts[key] = { value, target: metric.target, op: metric.op, met: met(metric, value) };
+  }
+  return Object.keys(parts).length ? parts : undefined;
+}
+export function judge(metrics: readonly DutyMetric[], output: PrecheckOutput): { verdict: "met" | "missed" | "error"; metrics: Record<string, MetricResult>; summary: string;
+  parts?: Record<string, MetricResult> } {
+  const parts = metricParts(metrics, output);
+  const judged = judgeCounted(metrics, output);
+  return parts && judged.verdict !== "error" ? { ...judged, parts } : judged;
+}
+function judgeCounted(metrics: readonly DutyMetric[], output: PrecheckOutput): { verdict: "met" | "missed" | "error"; metrics: Record<string, MetricResult>; summary: string } {
   const note = shapeNote(metrics);
   const counted = verdictMetrics(metrics);
   const results: Record<string, MetricResult> = {};

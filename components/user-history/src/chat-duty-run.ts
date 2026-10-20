@@ -574,9 +574,9 @@ export class Duties {
   }
 
   /** Writes a measured run's values into the goals they measure (`goalReadingOps`), so the board and the next check-in read the newest number. */
-  private async writeReadings(chatId: string, dutyId: string, run: Pick<DutyRunRecord, "at" | "verdict" | "metrics">): Promise<void> {
+  private async writeReadings(chatId: string, dutyId: string, run: Pick<DutyRunRecord, "at" | "verdict" | "metrics" | "parts">): Promise<void> {
     if (!this.host.applyBoard || (run.verdict !== "met" && run.verdict !== "missed")) return;
-    await this.host.applyBoard(chatId, board => goalReadingOps(board, dutyId, run.at, run.metrics))
+    await this.host.applyBoard(chatId, board => goalReadingOps(board, dutyId, run.at, { ...run.parts, ...run.metrics }))
       .catch(error => this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: write its goal readings: ${message(error)}`));
   }
 
@@ -949,6 +949,7 @@ export class Duties {
       const judged = judge(duty.metrics, output);
       flagged = output.flagged ?? [];
       record = { duty: dutyId, at: started, slot: at, trigger, ms: this.now() - started, verdict: judged.verdict, metrics: judged.metrics, summary: judged.summary, detail,
+        ...(judged.parts ? { parts: judged.parts } : {}),
         ...(judged.verdict === "error" ? { error: judged.summary } : {}), ...overrunOf(), ...link };
     } catch (error) {
       await rm(detail, { force: true });
@@ -972,7 +973,8 @@ export class Duties {
         .filter(Boolean).join("\n\n");
     }
     this.steps.set(key, { at: started, step: "starting its job" });
-    const measured = record.verdict === "met" || record.verdict === "missed" ? { at: started, verdict: record.verdict, metrics: record.metrics, summary: record.summary } : null;
+    const measured = record.verdict === "met" || record.verdict === "missed" ? { at: started, verdict: record.verdict, metrics: record.metrics, summary: record.summary,
+      ...(record.parts ? { parts: record.parts } : {}) } : null;
     await this.startJob(chatId, record, duty, { schedule: duty.schedule, measured,
       brief: { measure: record.verdict === "error" ? `no measure (${record.summary})` : record.summary, findings, misses } });
   }

@@ -62,25 +62,41 @@ export const NO_FACTS: DoneFacts = { metrics: new Map(), prs: new Map() };
 
 /**
  * A duty metric's verdict on a run, with its value and target, which a goal with no target of its own reads as its number (`goalNumber`).
- * `missedAt` is the newest run at or before it on which the metric missed, before or after its job.
+ * `missedAt` is the newest run at or before it on which the metric missed, before or after its job, and `metSince` the oldest run of the met
+ * streak after that miss.
  */
-export interface MetricFact { met: boolean; at: number; value?: number; target?: number; op?: ">=" | "<="; missedAt?: number }
+export interface MetricFact { met: boolean; at: number; value?: number; target?: number; op?: ">=" | "<="; missedAt?: number; metSince?: number }
 /** Each duty metric's verdict on the newest measured run of its duty that has it (`effectiveRun`), from runs newest first, with its newest miss. */
 export function metricFacts(runs: readonly DutyRunRecord[]): Map<string, MetricFact> {
   const facts = new Map<string, MetricFact>();
   for (const run of runs) {
     const judged = effectiveRun(run);
     if (judged.verdict !== "met" && judged.verdict !== "missed") continue;
-    for (const [key, result] of Object.entries(judged.metrics)) {
+    // A metric's parts (`metricParts`) are facts too: p717 reads d7/quiet_agent_gb_us_metal02.
+    for (const [key, result] of Object.entries({ ...judged.parts, ...judged.metrics })) {
       const link = `${run.duty}/${key}`;
       if (!facts.has(link)) facts.set(link, { met: result.met, at: run.after?.at ?? run.at, value: result.value, target: result.target, op: result.op });
       const fact = facts.get(link)!;
-      if (fact.missedAt === undefined && (!result.met || run.metrics[key]?.met === false)) fact.missedAt = run.at;
+      if (fact.missedAt !== undefined) continue;
+      if (!result.met || (run.metrics[key] ?? run.parts?.[key])?.met === false) fact.missedAt = run.at;
+      else fact.metSince = run.at;
     }
   }
   return facts;
 }
 
+/**
+ * How long a met metric must hold before its item looks done when the item's Done when line names no window. AI harness 10-20: p717
+ * (d7/quiet_agent_gb) read 10.86 GB at 00:59Z and 5.61 GB at 02:05Z, and the 03:19Z check-in said to close it after one met run at 02:36Z.
+ */
+export const HOLD_MS = 6 * 60 * 60_000;
+const UNIT_MS: Record<string, number> = { m: 60_000, h: 60 * 60_000, d: 24 * 60 * 60_000 };
+/** The hold window a Done when line names, like p711's "reads queue_holds_30 0 on every run for 24 h", else HOLD_MS. */
+export function holdWindowMs(note: string | undefined): number {
+  const line = /\bdone when\b[^.]*/i.exec(note ?? "")?.[0] ?? "";
+  const named = /\b(?:for|over|across)\s+(?:at\s+least\s+)?(\d+(?:\.\d+)?)\s*(min(?:ute)?s?|h(?:ours?|rs?)?|d(?:ays?)?)\b/i.exec(line);
+  return named ? Number(named[1]) * UNIT_MS[named[2]!.toLowerCase()[0]!]! : HOLD_MS;
+}
 /** Why an open item looks done, and since when (ms): the fact that made it done. */
 export interface DoneReason { reason: string; at: number }
 /**
@@ -113,7 +129,11 @@ export function looksDone(item: Pick<PlanItem, "status" | "text"> & Partial<Pick
     // 10-18 read done when d7/stuck_steps_all went from 27 to 0 at 06:58Z, because a check-in job gave the alert steps a job, while p597's job
     // "d7 ownerless steps root cause" worked and its fix 0c07c5565 was "pushed and waiting on its release".
     if (item.id !== undefined && facts.working?.has(item.id)) return null;
-    return fact?.met && fact.missedAt !== undefined ? { reason: `its metric ${item.duty} moved from a miss to met on the duty's last run`, at: fact.at } : null;
+    // A met metric closes the item only once it held through the item's hold window (`holdWindowMs`), counted from the first met run after its last miss.
+    const hold = holdWindowMs(item.note);
+    if (!fact?.met || fact.missedAt === undefined || fact.metSince === undefined || fact.at - fact.metSince < hold) return null;
+    return { reason: `its metric ${item.duty} has met on every run since ${new Date(fact.metSince).toISOString().slice(5, 16).replace("T", " ")}Z, ` +
+      `its ${Math.round(hold / 60 / 60_000 * 10) / 10} h hold window, after a miss`, at: fact.at };
   }
   const prs = mergeStep(item.text) ? mergedPrs(item.text) : [];
   const states = prs.map(pr => facts.prs.get(pr));

@@ -33,8 +33,8 @@ export interface MetricStreak {
 }
 
 /** The run as judged: its after-job measure when it has one, else its own. */
-export function effectiveRun(run: DutyRunRecord): Pick<DutyRunRecord, "verdict" | "metrics" | "summary"> {
-  return run.after ? { verdict: run.after.verdict, metrics: run.after.metrics, summary: run.after.summary } : run;
+export function effectiveRun(run: DutyRunRecord): Pick<DutyRunRecord, "verdict" | "metrics" | "summary" | "parts"> {
+  return run.after ? { verdict: run.after.verdict, metrics: run.after.metrics, summary: run.after.summary, ...(run.after.parts ? { parts: run.after.parts } : {}) } : run;
 }
 
 const measured = (run: DutyRunRecord): boolean => { const verdict = effectiveRun(run).verdict; return verdict === "met" || verdict === "missed"; };
