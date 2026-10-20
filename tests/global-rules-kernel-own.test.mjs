@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -126,4 +126,33 @@ print("ok")
   assert.equal(run.stdout.trim(), "ok");
   for (const name of ["made-here", "child-rig/tree", "01a10000-0000-7000-8000-0000000000cc", "01a10000-0000-7000-8000-000000000000/tree"]) assert.ok(!existsSync(join(scratch, name)), name);
   assert.ok(!existsSync(outside));
+});
+
+test("a command over ssh to another box in hosts.json records the ~/scratch trees it made there for that box, and nothing that was there or it only named", () => {
+  // 10-20: Mac jobs held 22.4 GB of trees on us-metal02 that they made over ssh, such as ~/scratch/flow-at-scale-convex-scale, and no record named.
+  mkdirSync(session, { recursive: true });
+  rmSync(join(session, "owned.json"), { force: true });
+  const far = join(root, "far-home");
+  const bin = join(root, "fake-ssh-bin");
+  mkdirSync(join(far, "scratch", "old-far"), { recursive: true });
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(join(bin, "ssh"), `#!/bin/sh\nif [ "$1" = "-G" ]; then echo "hostname $2"; exit 0; fi\nfor arg; do last="$arg"; done\nHOME=${far} exec sh -c "$last"\n`);
+  chmodSync(join(bin, "ssh"), 0o755);
+  const hosts = join(root, "hosts.json");
+  writeFileSync(hosts, JSON.stringify({ version: 1, hosts: [{ name: "far", hostname: "far-box", address: "10.9.9.9", ssh: "u@far" }] }));
+  kernel(`
+import os, subprocess, time
+subprocess.run(["sh", "-c", "ssh -o BatchMode=yes u@far 'mkdir -p ~/scratch/far-job/tree && cd ~/scratch/far-job/tree'"], check=True)
+subprocess.run("ssh far 'mkdir -p ~/scratch/old-far/x; ls ~/scratch/only-named 2>/dev/null; mkdir -p ~/scratch/01a10000-0000-7000-8000-0000000000dd/t'", shell=True, check=True)
+os.system("ssh far 'mkdir -p $HOME/scratch/system-far'")
+subprocess.run(["ssh", "elsewhere", "mkdir -p ~/scratch/unknown-box"], check=True)
+bg = subprocess.Popen(["sh", "-c", "ssh far 'sleep 1; mkdir -p ~/scratch/bg-far'"])
+bg.wait()
+time.sleep(2.5)
+`, { RLM_SESSION_DIR: session, SIEUN_PI_HOSTS: hosts, PATH: `${bin}:${process.env.PATH}` });
+  assert.ok(existsSync(join(far, "scratch", "far-job", "tree")) && existsSync(join(far, "scratch", "unknown-box")));
+  const record = JSON.parse(readFileSync(join(session, "owned.json"), "utf8"));
+  assert.deepEqual(record.paths, []);
+  assert.deepEqual(Object.keys(record.hosts), ["far"]);
+  assert.deepEqual(record.hosts.far.sort(), ["~/scratch/bg-far", "~/scratch/far-job", "~/scratch/old-far/x", "~/scratch/system-far"]);
 });

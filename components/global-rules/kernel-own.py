@@ -9,6 +9,10 @@ from 61 to 76 GB in 5 h. So the kernel records what it makes, at creation time:
 2. A command the kernel starts (bash(), subprocess, os.system) that names a path below ~/scratch whose folder chain is missing at its start records
    the first missing part, such as ~/scratch/job for `mkdir -p ~/scratch/job/tree`, once it exists. The watch ends with that process, so a
    path the command only names and another job creates later is never recorded.
+3. A command that runs `ssh <box>` to another box in hosts.json and names a path below ~/scratch records, the same way, the first part of its
+   chain that was missing on that box at the command's start and exists there at its end, with board.own(path, host=<box>), and that box
+   deletes it at the job's end. On 10-20 Mac jobs held 22.4 GB of trees on us-metal02 that they made over ssh and no record named, since
+   a record could only name the Mac's own paths.
 
 A path that existed before is never recorded, since its maker is unknown, and neither is a path in a job's own ~/scratch/<session id>/
 folder, which the job's end deletes as a whole. /tmp is left out: it is a tmpfs on us-metal02 and holds shared
@@ -44,6 +48,12 @@ watched: dict = {}
 mine: set = set()
 lock = threading.Lock()
 wake = threading.Condition(lock)
+# A path a command over ssh names on another box, as that box's home-relative path: the folder chain below ~/scratch, ~ for any home.
+REMOTE_NAMED = re.compile(r"(?:~|\$HOME\b|\$\{HOME\}|/home/[^/\s'\"]+|/Users/[^/\s'\"]+)/scratch/[^\s'\"`;|&()<>{}\\]+")
+SSH_VALUED = set("BbcDEeFIiJLlmOoPpQRSWw")
+own_thread = threading.local()
+remote_hosts: dict = {}
+remote_seen: set = set()
 
 
 def board():
@@ -108,6 +118,113 @@ def first_missing(text: str, env) -> list:
     return found
 
 
+def ssh_targets(text: str) -> list:
+    """The (destination, options) of each `ssh` the command runs, with the options that pick the user, port, key or config."""
+    words = words_of(text)
+    found = []
+    for index, word in enumerate(words):
+        if os.path.basename(word) != "ssh":
+            continue
+        options, rest = [], words[index + 1:]
+        while rest and rest[0].startswith("-") and rest[0] != "--":
+            flag = rest.pop(0)
+            if flag[-1] in SSH_VALUED and rest:
+                value = rest.pop(0)
+                if flag[-1] in "FiJlp" or (flag[-1] == "o" and value.split("=")[0].lower() in ("user", "port", "identityfile", "proxyjump", "hostname")):
+                    options += [flag, value]
+        if rest and rest[0] == "--":
+            rest.pop(0)
+        if rest and not rest[0].startswith("-"):
+            found.append((rest[0], tuple(options)))
+    return found
+
+
+def remote_host(destination: str, options: tuple):
+    """The hosts.json name of the other box an ssh destination reaches, or None for this box or an unknown one."""
+    key = (destination, options)
+    if key not in remote_hosts:
+        name = None
+        try:
+            name = board()._other_host(destination)
+        except Exception:
+            try:
+                run = subprocess.run(["ssh", "-G", *options, destination], capture_output=True, text=True, timeout=5)
+                hostname = next((line.split()[1] for line in run.stdout.splitlines() if line.startswith("hostname ")), "")
+                name = board()._other_host(hostname) if hostname else None
+            except Exception:
+                name = None
+        remote_hosts[key] = name
+    return remote_hosts[key]
+
+
+def remote_exists(destination: str, options: tuple, paths: list):
+    """The home-relative paths that exist on the box, read in one ssh call, or None when the box does not answer."""
+    script = "cd && for p in " + " ".join(shlex.quote(p) for p in paths) + "; do if [ -e \"$p\" ] || [ -L \"$p\" ]; then printf '%s\\n' \"$p\"; fi; done"
+    run = subprocess.run(["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "ControlMaster=auto",
+                          "-o", "ControlPath=/tmp/kernel-own-%C", "-o", "ControlPersist=120", *options, destination, script],
+                         capture_output=True, text=True, timeout=30, stdin=subprocess.DEVNULL)
+    return set(run.stdout.splitlines()) if run.returncode == 0 else None
+
+
+def remote_missing(text: str) -> list:
+    """For each ssh to another box, the first part of each named ~/scratch chain missing there now: (destination, options, host, path)."""
+    named = []
+    for match in REMOTE_NAMED.finditer(text):
+        parts = match.group(0).split("/scratch/", 1)[1].split("/")
+        chain, current = [], "scratch"
+        for part in parts:
+            if not part or part in (".", "..") or GLOB.search(part) or "$" in part:
+                break
+            current += "/" + part
+            chain.append(current)
+        if chain and not SESSION_FOLDER.match(chain[0][len("scratch/"):]):
+            named.append(chain)
+    if not named:
+        return []
+    found = []
+    for destination, options in ssh_targets(text):
+        host = remote_host(destination, options)
+        if not host:
+            continue
+        held = [f"~/{p}" for p in recorded_on(host)]
+        chains = [[p for p in chain if (host, p) not in remote_seen] for chain in named
+                  if not any(f"~/{chain[-1]}" == h or f"~/{chain[-1]}".startswith(h + "/") for h in held)]
+        ask = sorted({p for chain in chains for p in chain})
+        there = remote_exists(destination, options, ask) if ask else set()
+        if there is None:
+            continue
+        remote_seen.update((host, p) for p in there)
+        for chain in chains:
+            first = next((p for p in chain if p not in there), None)
+            if first and (destination, options, host, first) not in found:
+                found.append((destination, options, host, first))
+    return found
+
+
+def recorded_on(host: str) -> list:
+    try:
+        with open(os.path.join(SESSION, "owned.json"), encoding="utf-8") as handle:
+            return [p[2:] for p in json.load(handle).get("hosts", {}).get(host, []) if isinstance(p, str) and p.startswith("~/")]
+    except (OSError, ValueError, AttributeError):
+        return []
+
+
+def claim_remote(entries: list) -> None:
+    """Records the watched paths on other boxes that exist there now. A failure never reaches the cell."""
+    groups: dict = {}
+    for destination, options, host, path in entries:
+        groups.setdefault((destination, options, host), []).append(path)
+    for (destination, options, host), paths in groups.items():
+        try:
+            there = remote_exists(destination, options, paths) or set()
+            made = [f"~/{p}" for p in paths if p in there]
+            if made:
+                board().own(*made, host=host)
+            remote_seen.update((host, p) for p in there)
+        except Exception as error:
+            print(f"global-rules: could not record {paths} on {host} as this session's: {error}", file=sys.stderr)
+
+
 def alive(pid: int) -> bool:
     try:
         with open(f"/proc/{pid}/stat", encoding="utf-8") as handle:
@@ -130,7 +247,19 @@ def watch() -> None:
             while not watched:
                 wake.wait()
             items = list(watched.items())
+        ended = [path for path, pid in items if isinstance(path, tuple) and not alive(pid)]
+        if ended:
+            own_thread.busy = True
+            try:
+                claim_remote(ended)
+            finally:
+                own_thread.busy = False
+            with lock:
+                for path in ended:
+                    watched.pop(path, None)
         for path, pid in items:
+            if isinstance(path, tuple):
+                continue
             running = alive(pid)
             if os.path.lexists(path):
                 claim(path)
@@ -166,10 +295,19 @@ def recording_mkdir(original):
 
 def recording_init(original):
     def __init__(self, args, *rest, **kwargs):
+        mine_now = os.getpid() == KERNEL and not getattr(own_thread, "busy", False)
         try:
-            paths = first_missing(text_of(args), kwargs.get("env")) if os.getpid() == KERNEL else []
+            paths = first_missing(text_of(args), kwargs.get("env")) if mine_now else []
         except Exception:
             paths = []
+        if mine_now and "ssh" in text_of(args):
+            own_thread.busy = True
+            try:
+                paths += remote_missing(text_of(args))
+            except Exception:
+                pass
+            finally:
+                own_thread.busy = False
         original(self, args, *rest, **kwargs)
         if paths:
             with wake:
@@ -187,12 +325,27 @@ def recording_system(original):
             paths = first_missing(text_of(command), None) if os.getpid() == KERNEL else []
         except Exception:
             paths = []
+        away = []
+        if os.getpid() == KERNEL and "ssh" in text_of(command):
+            own_thread.busy = True
+            try:
+                away = remote_missing(text_of(command))
+            except Exception:
+                pass
+            finally:
+                own_thread.busy = False
         try:
             return original(command)
         finally:
             for path in paths:
                 if os.path.lexists(path):
                     claim(path)
+            if away:
+                own_thread.busy = True
+                try:
+                    claim_remote(away)
+                finally:
+                    own_thread.busy = False
 
     system.records_owner = True
     system.__doc__ = original.__doc__

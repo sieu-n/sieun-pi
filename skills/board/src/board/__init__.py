@@ -426,23 +426,70 @@ _OWNED_FILE = "owned.json"
 
 def _owned_roots() -> list[str]:
     """The folders an owned path must lie strictly below, as the chat service's job end reads them (src/job-leftovers.ts OWNED_ROOTS)."""
-    return ["/tmp", str(Path.home() / "scratch"), str(_agent_dir() / "session-artifacts")]
+    return ["/tmp", str(Path.home() / "scratch"), str(Path.home() / "work"), str(_agent_dir() / "session-artifacts")]
 
 
-def own(*paths: str, unit: str | None = None) -> str:
+def _hosts() -> list[dict]:
+    """The boxes in hosts.json, or none without the file."""
+    config = Path(os.environ.get("SIEUN_PI_CONFIG_DIR", str(Path.home() / ".config" / "sieun-pi")))
+    try:
+        hosts = json.loads(Path(os.environ.get("SIEUN_PI_HOSTS", str(config / "hosts.json"))).read_text())["hosts"]
+    except (FileNotFoundError, KeyError, ValueError, TypeError):
+        return []
+    return [host for host in hosts if isinstance(host, dict) and isinstance(host.get("name"), str)]
+
+
+def _other_host(name: str) -> str | None:
+    """The hosts.json name of box `name` (its name, hostname, address or ssh target), or None when it is this box."""
+    hosts = _hosts()
+    bare = name.split("@")[-1].split(".")[0].lower()
+    host = next((host for host in hosts if name == host["name"] or name == host.get("ssh") or bare in {
+        host["name"].lower(), str(host.get("hostname", "")).split(".")[0].lower(), str(host.get("address", ""))}), None)
+    if host is None:
+        address = name.split("@")[-1]
+        host = next((host for host in hosts if address == host.get("address")), None)
+    if host is None:
+        raise ValueError(f"No host {name!r} in hosts.json ({', '.join(host['name'] for host in hosts) or 'no hosts.json'}).")
+    if str(host.get("hostname", "")).split(".")[0].lower() == socket.gethostname().split(".")[0].lower():
+        return None
+    return host["name"]
+
+
+_HOST_ROOTS = ("~/scratch/", "~/work/", "/tmp/")
+
+
+def _host_path(raw: str) -> str:
+    """A path on another box as its record keeps it, `~/...` or `/tmp/...`, so that box resolves it against its own home."""
+    path = re.sub(r"^(?:\$HOME|\$\{HOME\}|/home/[^/]+|/Users/[^/]+)(?=/)", "~", str(raw).strip())
+    if not path.startswith(("~/", "/tmp/")):
+        raise ValueError(f"{raw} is not below ~/scratch, ~/work or /tmp on that box, so a job's end would never delete it.")
+    path = ("~" if path.startswith("~/") else "") + os.path.normpath(path[1:] if path.startswith("~/") else path)
+    if not path.startswith(_HOST_ROOTS) or ".." in path.split("/"):
+        raise ValueError(f"{raw} is not below ~/scratch, ~/work or /tmp on that box, so a job's end would never delete it.")
+    return path
+
+
+def own(*paths: str, unit: str | None = None, host: str | None = None) -> str:
     """Record paths and a systemd user unit this session made to throw away, in <RLM_SESSION_DIR>/owned.json.
 
     When the job is deleted or archived, the chat service stops the recorded units and deletes the recorded paths that no process uses, and
     nothing else: a path a transcript or a command only names is never deleted. Record only what is yours to throw away, such as a git archive
     export, a rig or a systemd-run unit, never a report, evidence or a helper another job runs, and keep reports and evidence under ~/work/<job>/.
-    A path must lie below /tmp, ~/scratch or ~/.prime/agent/session-artifacts.
+    A path must lie below /tmp, ~/scratch, ~/work or ~/.prime/agent/session-artifacts. `host` names the box (a hosts.json name such as
+    "us-metal02", or an ssh target) where the paths lie when this session made them there over ssh; that box deletes them at the job's end.
     """
     folder = Path(os.environ.get("RLM_SESSION_DIR", ""))
     if not folder.name or not folder.is_dir():
         raise LookupError(f"No session folder found from RLM_SESSION_DIR={folder}.")
+    other = _other_host(host) if host else None
+    if other and unit is not None:
+        raise ValueError("Record a unit without host=: the chat host stops the units a record names.")
     roots = _owned_roots()
     found: list[str] = []
     for raw in paths:
+        if other:
+            found.append(_host_path(raw))
+            continue
         path = os.path.normpath(os.path.abspath(os.path.expanduser(str(raw))))
         home = str(Path.home())
         if not any(path.startswith(root + "/") for root in roots) or (path.startswith(home + "/") and not any(
@@ -460,10 +507,15 @@ def own(*paths: str, unit: str | None = None) -> str:
         record = {}
     record_paths = [item for item in record.get("paths", []) if isinstance(item, str)]
     record_units = [item for item in record.get("units", []) if isinstance(item, str)]
-    record = {"paths": record_paths + [path for path in found if path not in record_paths],
-              "units": record_units + ([unit] if unit and unit not in record_units else [])}
+    hosts = {name: [item for item in items if isinstance(item, str)] for name, items in (record.get("hosts") or {}).items() if isinstance(items, list)}
+    if other:
+        hosts[other] = hosts.get(other, []) + [path for path in found if path not in hosts.get(other, [])]
+    else:
+        record_paths += [path for path in found if path not in record_paths]
+    record = {"paths": record_paths, "units": record_units + ([unit] if unit and unit not in record_units else []), **({"hosts": hosts} if hosts else {})}
     tmp = file.with_suffix(".tmp")
     tmp.write_text(json.dumps(record))
     os.replace(tmp, file)
-    return _Text(f"Owned by this session ({file}): {len(record['paths'])} paths, units {', '.join(record['units']) or 'none'}. "
+    away = "".join(f", {len(items)} on {name}" for name, items in hosts.items())
+    return _Text(f"Owned by this session ({file}): {len(record['paths'])} paths{away}, units {', '.join(record['units']) or 'none'}. "
                  "Its end deletes these paths and stops these units, and nothing else.")

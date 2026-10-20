@@ -66,8 +66,8 @@ test("a deleted job releases what it owns under a live chat and under an archive
   job(archived, "sub-a2", "completed", sessionId(3), { paths: [activeTree], units: ["active-rig.service"] });
   const busyTree = tree("busy-job");
   const sharedHelper = write(join(scratch, "shared", "helper.mjs"));
-  const report = write(join(home, "work", "archived-job", "REPORT.md"));
-  job(archived, "sub-a3", "deleted", sessionId(4), { paths: [busyTree, join(scratch, "shared"), join(home, "work", "archived-job")], units: [] });
+  const report = write(join(home, "src", "archived-job", "REPORT.md"));
+  job(archived, "sub-a3", "deleted", sessionId(4), { paths: [busyTree, join(scratch, "shared"), join(home, "src", "archived-job")], units: [] });
   const busy = detached("exec sleep 600", busyTree);
   const reader = detached(`exec tail -f ${sharedHelper}`, home);
   const unknownTree = tree("unknown-job");

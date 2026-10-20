@@ -43,6 +43,7 @@ test("a deleted job's end deletes only the free paths and stops only the transie
   write(join(scratch, "own-job", "busy", "frozen", "release-chat.mjs"));
   const shared = write(join(scratch, "release-applied", "frozen", "release-chat.mjs"));
   const report = write(join(home, "work", "own-job", "REPORT.md"));
+  const source = write(join(home, "src", "own-job", "index.ts"));
   symlinkSync(join(home, "work", "own-job"), join(scratch, "own-job", "link"));
   const busy = detached(`exec tail -f ${join(scratch, "own-job", "busy", "frozen", "release-chat.mjs")}`, home);
   const release = detached(`exec tail -f ${shared}`, join(scratch, "release-applied"));
@@ -51,14 +52,14 @@ test("a deleted job's end deletes only the free paths and stops only the transie
   writeFileSync(join(job, "01a150f1-c33c-753f-9526-0cdb90358874.jsonl"), JSON.stringify({ type: "message", text: `ran ${shared}; wrote ${report}` }) + "\n");
   writeFileSync(join(job, "owned.json"), JSON.stringify({
     paths: [join(scratch, "own-job", "tree"), join(scratch, "own-job", "rig") + "/", join(scratch, "own-job", "busy"), join(scratch, "own-job", "link"),
-      join(home, "work", "own-job"), scratch, job, join(chat, "sub-other"), "relative/tree", 7],
+      join(home, "src", "own-job"), join(home, "work"), scratch, job, join(chat, "sub-other"), "relative/tree", 7],
     units: ["own-rig.service", "sieun-pi-chat.service", "gone-unit.service", "bad unit; rm -rf ~", 3],
   }));
   const left = await endLeftovers(leftoverSource, [job]);
   assert.deepEqual([...left.owned].sort(), [join(scratch, "own-job", "rig"), join(scratch, "own-job", "tree")]);
   assert.deepEqual(left.units, ["own-rig.service"]);
   assert.ok(!existsSync(join(scratch, "own-job", "tree")) && !existsSync(join(scratch, "own-job", "rig")));
-  for (const kept of [shared, report, join(scratch, "own-job", "busy", "frozen", "release-chat.mjs"), join(scratch, "own-job", "link"), job]) assert.ok(existsSync(kept), kept);
+  for (const kept of [shared, report, source, join(scratch, "own-job", "busy", "frozen", "release-chat.mjs"), join(scratch, "own-job", "link"), job]) assert.ok(existsSync(kept), kept);
   assert.ok(alive(busy) && alive(release), "a cleanup signals no process that uses a path");
   const stops = readFileSync(calls, "utf8").split("\n").filter(line => line.startsWith("--user stop"));
   assert.deepEqual(stops, ["--user stop -- own-rig.service"]);

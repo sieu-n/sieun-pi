@@ -51,6 +51,36 @@ test("on a box with no systemd the units its records name come back as elsewhere
   assert.deepEqual(log, [`write ${join(job, "owned.json")}`]);
 });
 
+test("a Mac job's end deletes the box trees its record names for the box and its box job folder, and sends a third box's paths there", async () => {
+  // 10-20: Mac jobs held 22.4 GB of trees on us-metal02 they made over ssh, and no record could name a box path.
+  for (const name of ["flow-at-scale-convex-scale", JOB, "not-named"]) mkdirSync(join(box, "scratch", name), { recursive: true });
+  const removed: string[][] = [];
+  const local = { ...fakeSource(async units => units, []), removeTmp: async (dirs: readonly string[]) => { removed.push([...dirs]); return dirs; } };
+  const calls: [string, readonly string[]][] = [];
+  const other = { ...mac, name: "far", ssh: "u@far" };
+  const ends = hostLeftovers({ local, hostOf: id => id === CHAT ? mac : null, self: () => "us-metal02", hostNamed: name => name === "far" ? other : null,
+    remote: async (host, args) => {
+      calls.push([host.name, args]);
+      return args[0] === "away" ? { stopped: [], tabs: 0, copies: [], artifacts: [], units: [], owned: ["/home/u/scratch/far-tree"] }
+        : { stopped: [], tabs: 0, copies: [], artifacts: [], owned: [], units: [], sessions: [JOB],
+          away: { "us-metal02": ["~/scratch/flow-at-scale-convex-scale", "~/scratch/../src", "~/.ssh"], far: ["~/scratch/far-tree"] } };
+    } });
+  const left = await ends.leftovers(join(ARTIFACTS, CHAT, "sub-77630b38"), JOB);
+  assert.deepEqual(removed, [[join(box, "scratch", "flow-at-scale-convex-scale"), join(box, "scratch", JOB)]]);
+  assert.deepEqual(calls.at(-1), ["far", ["away", "~/scratch/far-tree"]]);
+  assert.deepEqual(left.owned, [join(box, "scratch", "flow-at-scale-convex-scale"), join(box, "scratch", JOB), "/home/u/scratch/far-tree"]);
+});
+
+test("a box record's paths on another box come back as away and stay in the record", async () => {
+  const job = join(ARTIFACTS, "01a1164b-4a2d-742d-b27a-82f086ed0200", "sub-c86d652b");
+  mkdirSync(job, { recursive: true });
+  writeFileSync(join(job, "owned.json"), JSON.stringify({ paths: [], units: [], hosts: { mac: ["~/scratch/mac-tree", "/etc/x"], "bad host": ["~/scratch/y"] } }));
+  const written: unknown[] = [];
+  const left = await endLeftovers({ ...fakeSource(async () => [], []), writeOwned: async (_file, record) => { written.push(record); } }, job);
+  assert.deepEqual(left.away, { mac: ["~/scratch/mac-tree"] });
+  assert.deepEqual(written, [{ paths: [], units: [], hosts: { mac: ["~/scratch/mac-tree"] } }]);
+});
+
 test("the remote end runs the CLI in the other box's sieun-pi checkout over ssh and deletes what that box's record owns", { skip: process.platform !== "linux" }, async t => {
   const other = mkdtempSync(join(tmpdir(), "job-end-host-mac-"));
   t.after(() => { rmSync(other, { recursive: true, force: true }); rmSync(box, { recursive: true, force: true }); });
@@ -73,4 +103,9 @@ test("the remote end runs the CLI in the other box's sieun-pi checkout over ssh 
   const left = await sshLeftovers(mac, ["end", `${CHAT}/sub-63cc71f6`]);
   assert.deepEqual(left.owned, [tree]);
   assert.ok(!existsSync(tree));
+  const boxTree = join(other, "work", "box-build");
+  mkdirSync(boxTree, { recursive: true });
+  const away = await sshLeftovers(mac, ["away", "~/work/box-build", "~/src", "~/scratch/it's-gone"]);
+  assert.deepEqual(away.owned, [boxTree]);
+  assert.ok(!existsSync(boxTree) && existsSync(join(other, ".local")));
 });
