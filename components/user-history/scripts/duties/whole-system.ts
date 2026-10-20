@@ -918,9 +918,9 @@ export async function findCutJobs(artifacts: string, chats: readonly string[], d
   /** Per chat, each job name read in the look-back with the latest session that carries it, for `replacedBy`. */
   const latest = new Map<string, Map<string, string>>();
   const gone = new Set(Object.values(deleted).flatMap(chat => Object.keys(chat ?? {})));
-  const parents = new Map<string, Promise<Buffer>>();
-  const parentBytes = (file: string): Promise<Buffer> => {
-    if (!parents.has(file)) parents.set(file, readFile(file).catch(() => Buffer.alloc(0)));
+  const parents = new Map<string, Promise<Set<string>>>();
+  const deletedBy = (file: string): Promise<Set<string>> => {
+    if (!parents.has(file)) parents.set(file, readFile(file).then(deletedChildren, () => new Set<string>()));
     return parents.get(file)!;
   };
   const metas = new Map<string, Promise<{ sessionName?: unknown; status?: unknown } | null>>();
@@ -930,7 +930,7 @@ export async function findCutJobs(artifacts: string, chats: readonly string[], d
   };
   /** Whether this folder's job was deleted on purpose: the RLM runtime marked it deleted, the chat service deleted or parked it, or its parent's delete_subagent named it. */
   const deletedOnPurpose = async (folder: Folder): Promise<boolean> =>
-    gone.has(basename(folder.dir)) || (await metaOf(folder.dir))?.status === "deleted" || parentDeleted(await parentBytes(folder.parentFile), basename(folder.dir));
+    gone.has(basename(folder.dir)) || (await metaOf(folder.dir))?.status === "deleted" || (await deletedBy(folder.parentFile)).has(basename(folder.dir));
   const walk = async (chat: string, dir: string, parentFile: string, chain: readonly Folder[]): Promise<void> => {
     const entries = (await readdir(dir, { withFileTypes: true }).catch(() => [])).filter(item => item.isDirectory() && item.name.startsWith("sub-"));
     for (let index = 0; index < entries.length; index += WALK_AT_ONCE) {
@@ -980,21 +980,28 @@ export async function findCutJobs(artifacts: string, chats: readonly string[], d
 interface Folder { dir: string; parentFile: string; file: string }
 
 /**
- * Whether a parent transcript holds an rlm.delete_subagent call whose result names `child` (`rlm_child_id='sub-...'`), as resume_paused.py's
- * parent_deleted reads it: the result line is a toolResult, and the call line before it calls delete_subagent. A plain substring of the id
- * missed fair-self-heal (sub-6430b61d) on 10-16.
+ * The children an rlm.delete_subagent call in a parent transcript deleted: each `rlm_child_id='sub-...'` whose line is a toolResult and
+ * whose call line before it calls delete_subagent, as resume_paused.py's parent_deleted reads it. A plain substring of the id missed
+ * fair-self-heal (sub-6430b61d) on 10-16. One scan reads every child of the parent: a scan per child of a 68 to 114 MB chat transcript held
+ * the chat's event loop 0.4 to 0.57 s at a time on us-metal02 on 10-20 (cpu-profiles, 10.7 s of 70 min).
  */
-export function parentDeleted(text: Buffer, child: string): boolean {
-  const named = `rlm_child_id='${child}'`;
-  for (let at = text.indexOf(named); at >= 0; at = text.indexOf(named, at + named.length)) {
+export function deletedChildren(text: Buffer): Set<string> {
+  const marker = "rlm_child_id='";
+  const deleted = new Set<string>();
+  for (let at = text.indexOf(marker); at >= 0; at = text.indexOf(marker, at + marker.length)) {
+    const idAt = at + marker.length;
+    const close = text.indexOf("'", idAt);
+    if (close < 0) break;
+    const child = text.toString("utf8", idAt, close);
+    if (deleted.has(child)) continue;
     const start = text.lastIndexOf(10, at) + 1;
     const result = text.indexOf('"toolResult"', start);
     const call = text.lastIndexOf('"toolCall"', start);
     if (result < 0 || result > at || call < 0) continue;
     const deleteAt = text.indexOf("delete_subagent", text.lastIndexOf(10, call) + 1);
-    if (deleteAt >= 0 && deleteAt < start) return true;
+    if (deleteAt >= 0 && deleteAt < start) deleted.add(child);
   }
-  return false;
+  return deleted;
 }
 
 /**
