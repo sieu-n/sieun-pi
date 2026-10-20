@@ -551,17 +551,23 @@ export default function (pi: ExtensionAPI): void {
 		for (const timer of timers) clearTimeout(timer);
 		timers = [];
 	};
+	// The session's start work, which the first model call awaits (the `context` handler) and session_start does not: the
+	// daemon answers a create only after every session_start handler, and on 10-20 this one held each Mac create about 1.1 s
+	// (adopt-logins, then model, then who), while the first model call of a new thread came 0.3 s after the create's answer.
+	let started: Promise<void> = Promise.resolve();
 	pi.on("session_start", async (_event, ctx) => {
 		clearTimers();
-		await adoptLogins(ctx);
-		await recordModel(ctx);
-		// Refusal check across the pool; the CLI rate-limits itself to once per 6h.
-		void pool(["probe"]);
-		if (!showsStatus(ctx)) return;
-		await refreshStatus(ctx);
-		// A widget set while the TUI client is still attaching can be dropped; set it again once attached.
-		timers.push(setTimeout(() => void refreshStatus(ctx), 3000));
-		timers.push(setInterval(() => void refreshStatus(ctx), STATUS_REFRESH_MS));
+		started = (async () => {
+			await adoptLogins(ctx);
+			await recordModel(ctx);
+			// Refusal check across the pool; the CLI rate-limits itself to once per 6h.
+			void pool(["probe"]);
+			if (!showsStatus(ctx)) return;
+			await refreshStatus(ctx);
+			// A widget set while the TUI client is still attaching can be dropped; set it again once attached.
+			timers.push(setTimeout(() => void refreshStatus(ctx), 3000));
+			timers.push(setInterval(() => void refreshStatus(ctx), STATUS_REFRESH_MS));
+		})().catch(() => {});
 	});
 	// This session's place in the turn queue: no run yet, a run waiting for its slot, a
 	// run that holds one, a run that goes without because the queue is off, or one that goes
@@ -627,6 +633,8 @@ export default function (pi: ExtensionAPI): void {
 		return waiting;
 	};
 	pi.on("context", async (_event, ctx) => {
+		// The pool knows this session's model before it vends for the session's first request.
+		await started;
 		await holdSlot(ctx);
 		return undefined;
 	});
