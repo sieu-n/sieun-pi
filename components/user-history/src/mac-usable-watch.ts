@@ -516,8 +516,10 @@ const unreadHost = (name: string): HostWatchLine => ({ name, usable: null, worke
  * unread and the line goes out with this box's own numbers, so a stop never drops a sample in flight. On 10-18 the Mac's relay timed out at
  * 35 s (hosts.ts relayWatch) while restarts at 10:46:55Z and 10:58:45Z stopped the service, and the 10:46:30Z and 10:58:30Z samples left no line.
  *
- * Each of this box's own reads answers by the end of the sample's minute or by `stopping` (kernel-read.ts `bounded`), and one that did not is
- * named in the line's `unread`, so the minute keeps its line and the Whole system duty judges it from what was read. On 10-20 a hung cgroup
+ * Each of this box's own reads answers by the next tick (`nextSampleAt`) or by `stopping` (kernel-read.ts `bounded`), and one that did not is
+ * named in the line's `unread`, so the minute keeps its line, stamped at the sample's start, and the Whole system duty judges it from what was
+ * read. A cut at the minute's end was too short for a sample that starts late in it: release-5ebd524's start sample at 14:11:59.900Z on 10-20
+ * was cut 100 ms later with its /proc reads unread and replaced the 14:11:30Z line of that minute. On 10-20 a hung cgroup
  * read held the sample, every tick until 13:08:29Z found it running and skipped, and d7's 13:08Z run read 30 of 30 minutes with no line. A
  * minute's next read of a kind still out joins it, so a hung helper or file is not started again each minute. With no footprints the minute
  * judges no call, since each kernel would be missing from them. The relay reads keep their own
@@ -532,7 +534,7 @@ export async function sample(source: WatchSource, stopping?: Promise<void>): Pro
   let own = process.cpuUsage(started);
   const at = now();
   let minuteEnd: NodeJS.Timeout | undefined;
-  const cut = Promise.race([new Promise<void>(resolve => { minuteEnd = setTimeout(resolve, Math.max(0, Math.floor(at / MINUTE) * MINUTE + MINUTE - now())); }),
+  const cut = Promise.race([new Promise<void>(resolve => { minuteEnd = setTimeout(resolve, Math.max(0, nextSampleAt(at) - now())); }),
     ...stopping ? [stopping] : []]);
   const unread: string[] = [];
   const read = <T>(kind: string, value: () => Promise<T>): Promise<T | undefined> => bounded(kind, value, cut, unread);
@@ -604,7 +606,8 @@ export const nextSampleAt = (at: number): number => Math.floor((at - MINUTE / 2)
 
 /**
  * Samples at start, then every `firstMs` until the catalog holds rows and the first line lands, then at each `nextSampleAt` until the returned
- * stop is called; a sample still running when the next tick comes skips that tick. The start samples only fill a minute the last process left
+ * stop is called. A sample's reads are cut at the next tick (`sample`), so a tick that finds it still writing its line runs right after it,
+ * and a start tick that finds a sample running skips. The start samples only fill a minute the last process left
  * without a line, and on Linux their window starts at that process's last reading (`seedSchedstat`). On 10-18 each restart line came about 10 s
  * after the service started, and its window held only the service's boot: 06:07:39Z read 1.48, 06:11:15Z 1.17, 06:15:49Z 1.43 and 06:21:27Z
  * 1.48 runnable a core against 0.6 to 0.9 for the lines around them, and 06:15:49Z was the last line of a minute whose 06:15:30Z line read 0.61.
@@ -633,14 +636,15 @@ export function startMacUsableWatch(source: WatchSource, firstMs = 5_000): () =>
     .then(lines => source.calls!.seed(lines.filter(line => (line.host ?? null) === (source.host ?? null)))).catch(() => {}) : Promise.resolve();
   const run = () => seeded.then(() => sample(source, stopping)).then(line => { if (line) { landed = true; lastAt = Date.parse(line.at); } })
     .catch(error => source.log(`mac usable watch: ${error instanceof Error ? error.message : String(error)}`));
-  const tick = () => {
-    if (running) return;
-    running = run().finally(() => { running = null; });
+  let queued = false;
+  const tick = (queue = false) => {
+    if (running) { queued ||= queue; return; }
+    running = run().finally(() => { running = null; if (queued) { queued = false; tick(); } });
   };
   let due = nextSampleAt(now());
   let timer: NodeJS.Timeout;
   const arm = () => {
-    timer = setTimeout(() => { tick(); due = nextSampleAt(Math.max(now(), due)); arm(); }, Math.max(0, due - now()));
+    timer = setTimeout(() => { tick(true); due = nextSampleAt(Math.max(now(), due)); arm(); }, Math.max(0, due - now()));
     timer.unref();
   };
   arm();
