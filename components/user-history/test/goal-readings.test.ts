@@ -109,3 +109,18 @@ test("an open step's duty metric that shares no word with the goal's metric or u
   const routes = { ...board, plan: [{ ...board.plan[0]!, children: [step("p845", "d6/api_routes_working_pct", "doing")] }] };
   assert.equal(goalReadingOps(routes, "d6", run, { api_routes_working_pct: { value: 93, target: 100, op: ">=", met: false } }).length, 1);
 });
+
+// Chat 01a14d31's p16 at 04:08Z on 10-20: the goal reads the Mac's cold page load in s, and its open step p93 fixes d2/mac_chat_reply_extra_rtt,
+// whose target (1.5) and direction matched, and whose key shares "mac" and "chat" with the goal. d2 wrote 4.6 round trips into it as 4.6 s.
+test("a duty metric in another unit never becomes a goal's number, and the same unit still does", () => {
+  const board: ChatBoard = { v: 2, rev: 1, todos: [], updatedAt: "2026-10-20T03:00:00.000Z", plan: [{
+    id: "p16", text: "Make working from the Mac on this box feel fast", status: "doing",
+    target: { metric: "Cold chat page load from the Mac until the chat shows, median", target: 1.5, unit: "s", current: 0.95, measuredAt: "2026-10-19T22:06:10.822Z", source: "duty d2", direction: "down" },
+    children: [step("p93", "d2/mac_chat_reply_extra_rtt", "doing")],
+  }] };
+  const at4 = Date.parse("2026-10-20T04:08:00.000Z");
+  const metrics = { mac_chat_reply_extra_rtt: { value: 4.6, target: 1.5, op: "<=" as const, met: false } };
+  assert.deepEqual(goalReadingOps(board, "d2", at4, metrics, { mac_chat_reply_extra_rtt: " round trips", cold_load_s: " s" }), []);
+  const same = goalReadingOps(board, "d2", at4, metrics, { mac_chat_reply_extra_rtt: " s" });
+  assert.equal(same.length, 1);
+});

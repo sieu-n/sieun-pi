@@ -561,7 +561,9 @@ export class Duties {
   /** Writes a measured run's values into the goals they measure (`goalReadingOps`), so the board and the next check-in read the newest number. */
   private async writeReadings(chatId: string, dutyId: string, run: Pick<DutyRunRecord, "at" | "verdict" | "metrics" | "parts">): Promise<void> {
     if (!this.host.applyBoard || (run.verdict !== "met" && run.verdict !== "missed")) return;
-    await this.host.applyBoard(chatId, board => goalReadingOps(board, dutyId, run.at, { ...run.parts, ...run.metrics }))
+    const duty = dutyId === CHECK_IN_DUTY_ID ? undefined : (await this.store.list(chatId)).find(entry => entry.id === dutyId);
+    const units = Object.fromEntries((duty?.metrics ?? []).map(metric => [metric.key, metric.unit]));
+    await this.host.applyBoard(chatId, board => goalReadingOps(board, dutyId, run.at, { ...run.parts, ...run.metrics }, units))
       .catch(error => this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: write its goal readings: ${message(error)}`));
   }
 

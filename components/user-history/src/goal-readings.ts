@@ -14,6 +14,13 @@ export const keyNamesGoal = (key: string, target: Pick<GoalTarget, "metric" | "u
   return words(key.slice(key.indexOf("/") + 1)).some(word => goal.has(word));
 };
 type Reading = { key: string; value: number; op: MetricResult["op"] };
+const unitWords = (unit: string | undefined): string => words(unit ?? "").join(" ");
+/**
+ * Whether a duty metric's unit can be the goal's: both name one and they differ, and it cannot. On 10-20 at 04:08Z d2 wrote
+ * mac_chat_reply_extra_rtt 4.6 round trips into p16 "Cold chat page load from the Mac ... median" (1.5 s) through its open fix step p93, because
+ * both targets were 1.5 and down and the key shares "mac" and "chat" with the goal; the check-in then asked for a 4.6 s cold load that read 0.84 s.
+ */
+const unitFits = (unit: string | undefined, target: Pick<GoalTarget, "unit">): boolean => !unitWords(unit) || !unitWords(target.unit) || unitWords(unit) === unitWords(target.unit);
 
 /**
  * The board ops that write a duty run's measures into the goals they measure: an open goal with a target at any depth (`openGoals`), where the
@@ -30,10 +37,12 @@ type Reading = { key: string; value: number; op: MetricResult["op"] };
  * A done step stays a measure only of the number it names: p146 (new unbacked limits) carries the done d2/supply_hold_minutes p700, which d2 runs wrote
  * into it, and the open d3/repo_unbacked_limits p506 (2 on 10-18) beside the done d3/new_unbacked_limits p504 that measures it, while VP of
  * CI's p75 (open repo design review problems) and AI harness p200 (wiki problems) read their duty only through done fix steps.
+ * A metric whose unit (`units`, from the duty's definition) differs from the goal target's unit is never its number (`unitFits`).
  * A goal whose own duty field names `<dutyId>/<key>` reads only that metric, whatever its steps link: VP of CI's p1 (Mac job start wait p90)
  * names d1/air_work_start_wait_p90_min, and on 10-18 d1 wrote push_to_verdict 221 min into it through the open step p258.
  */
-export function goalReadingOps(board: ChatBoard | null, dutyId: string, at: number, metrics: Readonly<Record<string, MetricResult>>): BoardOp[] {
+export function goalReadingOps(board: ChatBoard | null, dutyId: string, at: number, metrics: Readonly<Record<string, MetricResult>>,
+  units: Readonly<Record<string, string | undefined>> = {}): BoardOp[] {
   const ops: BoardOp[] = [];
   if (dutyId === CHECK_IN_DUTY_ID) return ops;
   for (const goal of openGoals(board?.plan ?? [])) {
@@ -51,7 +60,7 @@ export function goalReadingOps(board: ChatBoard | null, dutyId: string, at: numb
       if (named || !item.duty?.startsWith(`${dutyId}/`) || (own && item.duty !== own)) return;
       const key = item.duty.slice(dutyId.length + 1);
       const result = metrics[key];
-      if (!result || result.value < 0 || result.target !== target.target || (known && result.op !== targetOp(target))) return;
+      if (!result || result.value < 0 || result.target !== target.target || (known && result.op !== targetOp(target)) || !unitFits(units[key], target)) return;
       if (own || words(key).every(word => goalWords.has(word))) named = { key, value: result.value, op: result.op };
       else if (item.status !== "done" && item.status !== "dropped" && keyNamesGoal(key, target)) open.set(key, result);
     });
