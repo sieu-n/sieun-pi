@@ -984,7 +984,8 @@ export class Catalog {
     }
     // A chat row that came out as the last projection built it is that projection's object again (`keptChat`).
     const keptChats = new Map<string, SessionRow>();
-    for (const [at, row] of rows.entries()) {
+    for (let at = 0; at < rows.length; at++) {
+      const row = rows[at]!;
       if (!row.chat) continue;
       const kept = keptChat(this.keptChats.get(row.id), row);
       rows[at] = kept;
