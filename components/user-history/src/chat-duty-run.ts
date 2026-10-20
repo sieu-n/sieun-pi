@@ -437,10 +437,12 @@ export class Duties {
     const task = (async () => {
       const runGoing = this.running.get(key);
       if (runGoing) await runGoing;
-      const measured = runGoing && (await this.store.runs(chatId)).find(entry => entry.duty === run.duty && entry.at === run.at)?.after;
+      const measured = run.after !== undefined || runGoing && (await this.store.runs(chatId)).find(entry => entry.duty === run.duty && entry.at === run.at)?.after;
       if (!measured && !(await this.cutOf(chatId, run))) await this.measureAfter(chatId, run);
       if (!jobs.stop) return;
-      if (await this.updateRunning()) { this.stopped.delete(run.job.id); return; }
+      // The measure can take minutes, and the job's tree can wake meanwhile, so it is read again right before the stop; a held stop is tried at a later scan.
+      const still = !jobs.ended || (await jobs.ended([], [run.job])).some(job => job.id === run.job.id);
+      if (!still || await this.updateRunning()) { this.stopped.delete(run.job.id); return; }
       await jobs.stop(run.job);
       this.log(`duty job ${run.job.name}: its turn ended; queued its archive`);
     })()

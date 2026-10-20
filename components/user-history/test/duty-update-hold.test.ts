@@ -4,16 +4,23 @@
 // their 5 subagents failed their restore at 03:11:56Z to 03:12:11Z. At 04:33:30Z the runner archived 01a1571c again 9 s after it parked on a
 // 429, which cancelled its quota-resume job and the two relays it held.
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import type { SessionSummary } from "prime-agent";
+import type { ChatBackend } from "../src/chat-backend.ts";
 import { dutyJobHost } from "../src/chat-duty-job.ts";
+import { type JobTree, treeWait } from "../src/duty-tree-wait.ts";
 import { Duties } from "../src/chat-duty-run.ts";
 import { DutyStore } from "../src/chat-duty-store.ts";
+import { startChatServer } from "../src/chat-server.ts";
 import { processStartId } from "../src/orphan-services.ts";
 import { primeUpdateRunning } from "../src/prime-update.ts";
 import { dailySlot, type Duty } from "../src/shared/chat-duties.ts";
+import type { TargetState } from "../src/send-once.ts";
+import type { Wake } from "../src/wakes.ts";
 import type { SessionRow, ThreadSchedule } from "../src/shared/types.ts";
 
 const CHAT = "01a1164b-4a2d-742d-b27a-82f086ed0200";
@@ -106,4 +113,159 @@ test("a job whose quota-resume job is pending has not ended, and no job ends whe
   schedules = async () => { throw new Error("daemon not connected"); };
   assert.deepEqual(await host.ended!([], [LAST, OLDER]), []);
   assert.match(lines.join("\n"), /no job stops this scan, the daemon's scheduled jobs did not read: daemon not connected/);
+});
+
+// The interval after ctl-847650 wrote "complete" at 03:14:09Z: the coordinator no longer holds anything, and each owner corrections root reads
+// idle on its own row while its subagents come back, sit in the daemon's queue, or wait on input and relays.
+const DONE = Date.parse("2026-10-20T03:14:39Z");
+const C79 = "01a1563d-7362-716f-84e0-244f845d6c91";
+const C110 = "01a15737-6170-771d-b544-29499433f1a9";
+const C48 = "01a15737-69a5-73c0-b238-6746de5acce6";
+
+const summary = (sessionId: string, name: string, parent: string | undefined, fields: Partial<SessionSummary> = {}): SessionSummary => ({ id: sessionId, sessionId,
+  sessionName: name, cwd: "/home/sieun", lifecycle: "live", activity: "idle", isSessionActive: false, isStreaming: false, isCompacting: false, attachedClients: 0,
+  messageCount: 40, sessionActions: { queuedCount: 0, steering: [], followUps: [] }, activeSessionId: `active-${sessionId}`, workerState: "ready",
+  ...parent ? { parentSessionId: parent, runtimeKind: "subagent" as const } : {}, ...fields }) as SessionSummary;
+
+/** The two owner corrections trees as the daemon lists them; `set` and `clear` change one session's fields. */
+function trees() {
+  const rows = new Map<string, SessionSummary>([
+    [OLDER.id, summary(OLDER.id, OLDER.name, undefined)], [LAST.id, summary(LAST.id, LAST.name, undefined)],
+    [C79, summary(C79, "repeat c79", OLDER.id)], [C110, summary(C110, "c110-plan-vs-duty", LAST.id)], [C48, summary(C48, "c48-ui-reference", LAST.id)]]);
+  const queues = new Map<string, TargetState>();
+  let relays: { id: string; threadId: string }[] = [];
+  let wakes: Wake[] = [];
+  let relayCalls = 0;
+  const tree: JobTree = {
+    sessions: id => [...rows.values()].filter(row => row.sessionId === id || row.parentSessionId === id),
+    queue: async session => queues.get(session) ?? { queued: [], busy: false },
+    relay: async sessions => { relayCalls++; return relays.find(entry => sessions.has(entry.threadId)); },
+    wakes: async () => wakes,
+  };
+  return {
+    tree, queues,
+    set: (id: string, fields: Partial<SessionSummary>) => { rows.set(id, { ...rows.get(id)!, ...fields }); },
+    clear: (id: string, field: keyof SessionSummary) => { const { [field]: _dropped, ...rest } = rows.get(id)!; rows.set(id, rest as SessionSummary); },
+    relays: (next: typeof relays) => { relays = next; },
+    wakes: (next: Wake[]) => { wakes = next; },
+    relayCalls: () => relayCalls,
+  };
+}
+
+async function completedRunner(dir: string, tree: JobTree, jobs: readonly { id: string; name: string }[], options: { rows?: () => SessionRow[] } = {}) {
+  const agentDir = join(dir, "agent");
+  await status(agentDir, "complete", { pid: process.pid, processStartId: await processStartId(process.pid) });
+  const measures = join(dir, "measures");
+  const precheck = join(dir, "precheck.mjs");
+  await writeFile(precheck, `import { appendFileSync, writeFileSync } from "node:fs"; appendFileSync(${JSON.stringify(measures)}, "x"); writeFileSync(process.env.OUTPUT_FILE, JSON.stringify({ metrics: { repeats: 0 } }));`);
+  const store = new DutyStore(dir);
+  const lastSlotAt = dailySlot("11:20", DONE);
+  await store.update(CHAT, duties => {
+    duties.push({ id: "d10", name: "Owner corrections", ownerWords: "repeat corrections get fixed", goal: "no correction repeats",
+      metrics: [{ key: "repeats", label: "Repeats", op: "<=", target: 0, headline: true }],
+      schedule: { kind: "daily", at: "11:20" }, precheck: { command: ["node", precheck], cwd: dir, timeoutMs: 30_000 }, onMiss: "fix the repeat",
+      status: "active", createdAt: DONE - 48 * 60 * MIN, updatedAt: DONE - 48 * 60 * MIN, runCount: 2, lastSlotAt, lastRunAt: lastSlotAt });
+  });
+  const missed = { repeats: { value: 3, target: 0, op: "<=" as const, met: false } };
+  for (const [at, job] of [[Date.parse("2026-10-19T06:46:00Z"), OLDER], [Date.parse("2026-10-19T11:20:00Z"), LAST]] as const) {
+    if (jobs.some(entry => entry.id === job.id)) await store.appendRun(CHAT, { duty: "d10", at, slot: at, trigger: "schedule", ms: 900, verdict: "missed", metrics: missed, summary: "repeats 3", job });
+  }
+  const stopped: string[] = [];
+  const lines: string[] = [];
+  const host = dutyJobHost({ threads: {} as never, archives: { add: async job => { stopped.push(job.id); } }, registry: {} as never, board: id => id, log: line => lines.push(line),
+    rows: async () => options.rows?.() ?? jobs.map(job => row(job.id, job.name)), treeWait: id => treeWait(id, tree) });
+  const duties = new Duties(store, {
+    isChat: async () => true, now: () => DONE, tickMs: 0, node: process.execPath, log: line => lines.push(line),
+    updating: () => primeUpdateRunning(agentDir, SOCKET),
+    jobs: { ...host, chat: async id => ({ id, name: "AI harness developer environment", cwd: dir, board: id }), start: async (_chat, name) => ({ id: `job-${name}`, name }) },
+  });
+  const tick = async () => { await duties.tick(); await duties.settled(); };
+  const measured = async () => (await readFile(measures, "utf8").catch(() => "")).length;
+  return { duties, stopped, lines, tick, measured, measures };
+}
+
+test("after the update completes, a restored root that reads idle stays up while a subagent starts, sits queued or sleeps on a wake, or input or a relay waits for its tree (10-20 03:14:09Z)", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "duty-update-after-"));
+  const t = trees();
+  const run = await completedRunner(dir, t.tree, [OLDER, LAST]);
+  try {
+    t.set(C79, { workerState: "starting" });
+    t.set(C110, { statusLabel: "queued" });
+    await run.tick();
+    assert.deepEqual(run.stopped, [], "one tick after the coordinator completed, both roots read idle and neither stops");
+    assert.match(run.lines.join("\n"), /owner corrections AI harness developer environment 06:46: not stopped, its subagent repeat c79 is starting/);
+    assert.match(run.lines.join("\n"), /owner corrections AI harness developer environment 11:20: not stopped, its subagent c110-plan-vs-duty reads queued/);
+    assert.equal(await run.measured(), 0, "a root that has not ended gets no after-job measure");
+
+    t.set(C79, { workerState: "ready" });
+    t.clear(C110, "statusLabel");
+    t.relays([{ id: "relay-c79", threadId: C79 }]);
+    t.queues.set(LAST.id, { queued: ["[agent message from c78-shared-components] report"], busy: false });
+    await run.tick();
+    assert.deepEqual(run.stopped, []);
+    assert.match(run.lines.join("\n"), /06:46: not stopped, agent message relay-c79 waits in the outbox for its subagent repeat c79/);
+    assert.match(run.lines.join("\n"), /11:20: not stopped, its root has 1 queued input/);
+
+    t.set(C48, { activity: "working" });
+    t.relays([]);
+    t.wakes([{ session: C79, root: OLDER.id, on: { kind: "time", at: Date.parse("2026-10-20T09:10:00Z") }, note: "c79 clean-room run-2 window ended", since: Date.parse("2026-10-20T06:03:05Z") }]);
+    t.queues.clear();
+    await run.tick();
+    assert.deepEqual(run.stopped, [], "06:46:06Z: the runner archived the older root while repeat c79 slept on its 09:10Z wake");
+    assert.match(run.lines.join("\n"), /06:46: not stopped, its subagent repeat c79 waits on a board.wake at 09:10Z/);
+    assert.match(run.lines.join("\n"), /11:20: not stopped, its subagent c48-ui-reference runs/);
+
+    t.wakes([]);
+    t.set(C48, { activity: "idle" });
+    await run.tick();
+    assert.deepEqual(run.stopped, [OLDER.id, LAST.id]);
+    assert.equal(await run.measured(), 1);
+    assert.equal(run.lines.filter(line => line.includes("its subagent repeat c79 is starting")).length, 1, "a wait that holds is logged once");
+  } finally { run.duties.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("a job whose tree wakes while its after-job measure runs is not stopped, and the next scan stops it without measuring again", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "duty-update-recheck-"));
+  const t = trees();
+  const run = await completedRunner(dir, t.tree, [LAST]);
+  try {
+    let woke = false;
+    const relay = t.tree.relay;
+    t.tree.relay = async sessions => {
+      if (woke || !existsSync(run.measures)) return relay(sessions);
+      woke = true;
+      return { id: "report-c78", threadId: LAST.id };
+    };
+    await run.tick();
+    assert.deepEqual(run.stopped, [], "the read right before the stop found c78's report on its way to the root");
+    assert.equal(await run.measured(), 1);
+    await run.tick();
+    assert.deepEqual(run.stopped, [LAST.id]);
+    assert.equal(await run.measured(), 1, "the measure the held stop already took counts");
+  } finally { run.duties.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("the hold is the runner's own: the owner's archive of a held root goes through the archive route, and the runner leaves it archived", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "duty-update-owner-"));
+  const t = trees();
+  let archived = false;
+  const run = await completedRunner(dir, t.tree, [LAST], { rows: () => [{ ...row(LAST.id, LAST.name), archived }] });
+  const archives: string[] = [];
+  const asset = { body: Buffer.from(""), etag: '"test"', contentType: "text/plain" };
+  const backend = { chats: { archivesAsChat: async () => false }, threads: { archive: async (id: string) => { archives.push(id); archived = true; } },
+    catalog: { notify: async () => {} }, close: async () => {} } as unknown as ChatBackend;
+  const server = await startChatServer({ backend, bundle: { js: asset, css: asset, version: "test" }, port: 0, capability: "cap", csrfToken: "test-token", stopToken: "test-stop",
+    identity: { pid: process.pid, instanceId: "test", socketPath: "/isolated-duty-hold.sock" }, onStop: async () => {} });
+  try {
+    t.set(C110, { workerState: "starting" });
+    await run.tick();
+    assert.deepEqual(run.stopped, []);
+    const response = await fetch(server.url + `api/threads/${LAST.id}/archive`, {
+      method: "POST", headers: { "content-type": "application/json", origin: new URL(server.url).origin, "x-chat-token": "test-token" }, body: "{}" });
+    assert.equal(response.status, 200);
+    assert.deepEqual(archives, [LAST.id], "the owner's archive reaches the thread while the runner holds its own stop");
+    t.set(C110, { workerState: "ready" });
+    await run.tick();
+    assert.deepEqual(run.stopped, [], "the runner queues no second archive of a root the owner archived");
+  } finally { await server.close(); run.duties.close(); await rm(dir, { recursive: true, force: true }); }
 });

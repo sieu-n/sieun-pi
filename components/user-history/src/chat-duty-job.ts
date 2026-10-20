@@ -47,7 +47,7 @@ export interface DutyJobHost {
    * (10-12 16:07 to 16:27Z the list timed out at 30 s and 14 duty runs of 7 chats lost their job as "the catalog does not list the chat").
    */
   chat(chatId: string): Promise<DutyChat | null>;
-  /** Whether a duty job still works: its own turn, or a subagent below it. False when it is gone. */
+  /** Whether a duty job still works: its own turn, a subagent below it, or anything else its tree waits on (`treeWait`). False when it is gone or archived. */
   working(job: DutyJobRef): Promise<boolean>;
   /**
    * Starts the job: a new root session named `name` in the chat's folder, registered as the chat's job, with `brief` as its first message.
@@ -62,7 +62,8 @@ export interface DutyJobHost {
   /**
    * The duty jobs to archive now, with one catalog read: each `last` job (its duty's newest) whose turn has ended, listed, not archived, not
    * working, past its brief (2 or more messages) and not settled on a failed model call (the chat's revive restarts those), and each `older` job
-   * that is still listed, not archived and not working. A host without it (test fakes) stops no job early.
+   * that is still listed, not archived and not working; neither kind waits on a scheduled job or on its tree (`treeWait`). A host without it
+   * (test fakes) stops no job early.
    */
   ended?(last: readonly DutyJobRef[], older?: readonly DutyJobRef[]): Promise<DutyJobRef[]>;
   /** Queues the archive of an ended duty job, so its worker and Python kernel stop; it stays registered until the next run retires it. */
@@ -404,11 +405,18 @@ export function dutyJobHost(input: { threads: DutyJobThreads; archives: { add(jo
    * their subagents repeat c129, c110-plan-vs-duty and c48-ui-reference never went out.
    */
   schedules?: () => Promise<ReadonlyMap<string, ThreadSchedule>>;
+  /**
+   * What still waits on the job's tree (`treeWait` in src/duty-tree-wait.ts), so `ended` keeps a job whose subagents, queued input or outbox
+   * relays still wait, and `working` counts it as at work; absent: nothing waits. A failed read stops no job that scan.
+   */
+  treeWait?: (id: string) => Promise<string | null>;
   refresh?: () => Promise<void>; lookupWaitsMs?: readonly number[]; sleep?: (ms: number) => Promise<void>; log?: (line: string) => void; now?: () => number }): DutyJobHost {
   const row = async (id: string) => (await input.rows()).find(candidate => candidate.id === id);
   const waits = input.lookupWaitsMs ?? DUTY_LOOKUP_WAITS_MS;
   const sleep = input.sleep ?? (ms => new Promise<void>(resolve => { setTimeout(resolve, ms); }));
   let queue: Promise<unknown> = Promise.resolve();
+  /** The last wait `ended` logged for each job it kept, so a wait that holds over many scans is logged once. */
+  const held = new Map<string, string>();
   const serial = <T>(task: () => Promise<T>): Promise<T> => {
     const next = queue.then(task, task);
     queue = next.catch(() => {});
@@ -468,7 +476,11 @@ export function dutyJobHost(input: { threads: DutyJobThreads; archives: { add(jo
       }
       return found ? { id: chatId, name: found.name.trim() || chatId, cwd: found.cwd, board: input.board(chatId) } : null;
     },
-    async working(job) { return (await row(job.id))?.working === true; },
+    async working(job) {
+      const found = await row(job.id);
+      if (!found || found.archived) return false;
+      return found.working || (input.treeWait !== undefined && await input.treeWait(job.id).catch(() => "unread") !== null);
+    },
     start: (chat, planned, brief, since) => serial(async () => {
       const { id, name } = await createOrAdopt(chat, planned, since);
       try {
@@ -490,11 +502,22 @@ export function dutyJobHost(input: { threads: DutyJobThreads; archives: { add(jo
       if (!last.length && !older.length) return [];
       const byId = new Map((await input.rows()).map(candidate => [candidate.id, candidate]));
       const idle = (job: DutyJobRef) => { const found = byId.get(job.id); return found !== undefined && !found.archived && !found.working ? found : undefined; };
-      const ended = [...last.filter(job => { const found = idle(job); return found !== undefined && found.messageCount >= 2 && found.failure === undefined; }),
+      let ended = [...last.filter(job => { const found = idle(job); return found !== undefined && found.messageCount >= 2 && found.failure === undefined; }),
         ...older.filter(job => idle(job) !== undefined)];
-      if (!ended.length || !input.schedules) return ended;
-      const scheduled = await input.schedules().catch(error => { input.log?.(`duty jobs: no job stops this scan, the daemon's scheduled jobs did not read: ${reason(error)}`); return null; });
-      return scheduled === null ? [] : ended.filter(job => !scheduled.has(job.id));
+      if (ended.length && input.schedules) {
+        const scheduled = await input.schedules().catch(error => { input.log?.(`duty jobs: no job stops this scan, the daemon's scheduled jobs did not read: ${reason(error)}`); return null; });
+        if (scheduled === null) return [];
+        ended = ended.filter(job => !scheduled.has(job.id));
+      }
+      if (!input.treeWait) return ended;
+      const free: DutyJobRef[] = [];
+      for (const job of ended) {
+        const wait = await input.treeWait(job.id).catch(error => `its tree did not read: ${reason(error)}`);
+        if (wait === null) { held.delete(job.id); free.push(job); continue; }
+        if (held.get(job.id) !== wait) input.log?.(`duty job ${job.name}: not stopped, ${wait}`);
+        held.set(job.id, wait);
+      }
+      return free;
     },
     stop: job => input.archives.add(job),
     async cut(job) {

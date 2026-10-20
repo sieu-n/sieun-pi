@@ -49,7 +49,8 @@ fail with ENOTEMPTY on every start.
 
 While the coordinator runs, update copies the session identities of each restart manifest Prime writes under
 <agent dir>/daemon-update-restarts to <status record>.planned.json beside the coordinator's status record, without each
-session's config, client env or queued messages, because the coordinator consumes the manifest when it completes.
+session's config, client env or queued messages, because the coordinator consumes the manifest when it completes. The copy is
+evidence for updates that run with it; nothing rebuilds the manifest an earlier update, such as ctl-847650 on 10-20, consumed.
 
 update empties the env file argument, the unit's prime-update.env, before it starts the updater, because systemd
 has already loaded it into this process and a later start or reload must not pick up the same args and feed settings.
@@ -449,7 +450,8 @@ class PlannedCopy:
 
     The coordinator consumes the manifest when it completes, so on 10-20 update ctl-847650 left no record of the 148 sessions it planned
     to restore, and its 10 stoppedBeforeRestore and 8 failed rows could not be reconciled against the plan. The copy goes to <out>, next to
-    the coordinator's status record, as each manifest lands; an inotify watch wakes the thread, so it waits on no interval.
+    the coordinator's status record, as each manifest lands; an inotify watch wakes the thread, so it waits on no interval. It is evidence
+    for the update it runs beside only, and ctl-847650's plan stays lost.
     """
 
     def __init__(self, manifests, out):

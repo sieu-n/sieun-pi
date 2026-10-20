@@ -38,6 +38,7 @@ import { Chats, UNKNOWN_ACTIVE } from "./chats.ts";
 import { extensionBuild, loadRecord } from "./chat-brief.ts";
 import { Duties } from "./chat-duty-run.ts";
 import { primeUpdateRunning } from "./prime-update.ts";
+import { treeWait } from "./duty-tree-wait.ts";
 import { fixLiveReader } from "./shared/duty-fixes.ts";
 import { alertJobBrief, archiveDutyJob, dutyJobHost, dutyJobName, savedChat } from "./chat-duty-job.ts";
 import { ArchiveQueue } from "./chat-archive-queue.ts";
@@ -53,7 +54,7 @@ import { readOwnersFor, startAlertBridge } from "./alert-bridge.ts";
 import { startBridgeWatch } from "./alert-bridge-health.ts";
 import { startAlertPoll } from "./alert-poll.ts";
 import { promptView, sessionFileFor } from "./prompt-view.ts";
-import { sessionFileOf } from "./send-once.ts";
+import { sessionFileOf, type TargetState } from "./send-once.ts";
 import { AgentOutbox, stopRecords } from "./agent-outbox.ts";
 import { OwnerOutbox } from "./owner-outbox.ts";
 import type { AgentKind } from "./outbox.ts";
@@ -190,9 +191,24 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     const pool = await hostsReading().catch(() => null);
     return new Set([...pool?.working ?? [], ...pool?.queued ?? []].map(entry => entry.session));
   };
+  /** A session's queued input and whether its worker is busy, from the daemon's get_state; null when the daemon did not answer. */
+  const workerQueue = async (session: string): Promise<TargetState | null> => {
+    const client = await catalog.daemonFor(session).catch(() => null);
+    const response = client && await client.request({ type: "get_state", activeSessionId: session }, 30_000, { recoverable: false }).catch(() => null);
+    if (!response) return null;
+    if (!response.success) return REOPENABLE.test(response.error) ? { queued: [], busy: false } : null;
+    const data = response.data as { sessionActions?: { steering?: unknown; followUps?: unknown }; isStreaming?: unknown; isCompacting?: unknown;
+      isRunningTools?: unknown; unfinishedActionCount?: unknown };
+    const actions = data.sessionActions;
+    const unfinished = typeof data.unfinishedActionCount === "number" ? data.unfinishedActionCount : undefined;
+    return { queued: [actions?.steering, actions?.followUps].flatMap(list => Array.isArray(list) ? list.filter((item): item is string => typeof item === "string") : []),
+      busy: data.isStreaming === true || data.isCompacting === true || data.isRunningTools === true || (unfinished ?? 0) > 0, ...unfinished === undefined ? {} : { unfinished } };
+  };
   const dutyJobs = dutyJobHost({ threads, archives, rows: () => catalog.rows(), refresh: () => catalog.refresh(), registry,
     saved: async id => { const file = await sessionFileOf(id, agentDir); return file ? savedChat(file) : null; }, sessionFile: id => sessionFileOf(id, agentDir),
     schedules: () => catalog.schedulesNow(),
+    treeWait: id => treeWait(id, { sessions: tree => catalog.tree(tree), queue: workerQueue, relay: sessions => agentOutbox.outbox.pending(entry => sessions.has(entry.threadId)),
+      wakes: () => pendingWakes(join(dataDir, "wakes"), Date.now()) }),
     board: id => join(boards.dir, id + ".json"), log: dutyLog,
     started: async (id, chat, name) => poolPriorities.set(id, dutyJobPriority(name, chatPoolPriority((await labels.snapshot()).threads[chat.id]?.priority ?? 0))) });
   const duties = new Duties(new DutyStore(dataDir), { isChat: async id => (await chats.ids()).has(id), log: dutyLog, ...quiet ? { tickMs: 0 } : {},
@@ -283,18 +299,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       if (REOPENABLE.test(response.error)) return "gone";
       throw new Error(response.error);
     },
-    target: async session => {
-      const client = await catalog.daemonFor(session).catch(() => null);
-      const response = client && await client.request({ type: "get_state", activeSessionId: session }, 30_000, { recoverable: false }).catch(() => null);
-      if (!response) return null;
-      if (!response.success) return REOPENABLE.test(response.error) ? { queued: [], busy: false } : null;
-      const data = response.data as { sessionActions?: { steering?: unknown; followUps?: unknown }; isStreaming?: unknown; isCompacting?: unknown;
-        isRunningTools?: unknown; unfinishedActionCount?: unknown };
-      const actions = data.sessionActions;
-      const unfinished = typeof data.unfinishedActionCount === "number" ? data.unfinishedActionCount : undefined;
-      return { queued: [actions?.steering, actions?.followUps].flatMap(list => Array.isArray(list) ? list.filter((item): item is string => typeof item === "string") : []),
-        busy: data.isStreaming === true || data.isCompacting === true || data.isRunningTools === true || (unfinished ?? 0) > 0, ...unfinished === undefined ? {} : { unfinished } };
-    },
+    target: workerQueue,
     // Another box's session reads this box's relay copy of its file, since the path on that box does not open here: until 10-19 every landed
     // and obsolete check of a Mac target read nothing, and a lost head to 01a15427 held 15 messages for over an hour.
     fileOf: async session => {

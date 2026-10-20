@@ -52,7 +52,7 @@ writeFileSync(process.env.OUTPUT_FILE, JSON.stringify({ metrics: { followup_answ
         working: async () => false,
         retire: async () => {},
         start: async (_chat, name) => { started.push(name); return { id: `job-${started.length}`, name }; },
-        ended: async last => [...last],
+        ended: async (last, older = []) => [...last, ...older],
         stop: async ended => { stopped.push(ended.id); },
       },
       checkIn: { view: async () => ({ everyMs: 120 * MIN }) as CheckInView, set: async () => null, run: async () => {} },

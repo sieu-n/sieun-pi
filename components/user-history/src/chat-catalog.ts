@@ -1211,6 +1211,23 @@ export class Catalog {
     return times;
   }
 
+  /** The session and every session the daemon lists below it at any depth, as the catalog holds them now; empty when it is not listed. */
+  tree(sessionId: string): SessionSummary[] {
+    const root = this.find(sessionId);
+    if (!root) return [];
+    const children = childrenByParent(this.childSummaries);
+    const rows = [root];
+    const seen = new Set([sessionId]);
+    for (let at = 0; at < rows.length; at++) {
+      for (const child of children.get(rows[at]!.sessionId) ?? []) {
+        if (seen.has(child.sessionId)) continue;
+        seen.add(child.sessionId);
+        rows.push(child);
+      }
+    }
+    return rows;
+  }
+
   /** Native usage cost of each subagent under a parent session, from the daemon summaries of non-top-level sessions. */
   childUsage(parentSessionId: string): ChildUsage[] {
     this.settle();
