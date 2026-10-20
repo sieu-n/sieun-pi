@@ -32,9 +32,12 @@ class RepoGuardAtRunTime(KernelGuardBase):
         git.chmod(0o755)
         self.checkout = self.tmp.resolve() / "auto-sns-agent"
         shutil.copytree(SOURCE, self.checkout / "scripts/repo/agent/guards", ignore=shutil.ignore_patterns("*.test.mjs"))
-        # guards/agent-branch.mjs loads the dev-branch rule from HEAD's scripts/ci/branches.mjs.
+        # guards/agent-branch.mjs loads the dev-branch rule from HEAD's scripts/ci/branches.mjs, and guards/commands.mjs loads
+        # scripts/ci/land-dispatch.mjs the same way since auto-sns-agent b73a860092.
         (self.checkout / "scripts/ci").mkdir(parents=True)
-        shutil.copy(SOURCE.parents[2] / "ci/branches.mjs", self.checkout / "scripts/ci/branches.mjs")
+        for name in ("branches.mjs", "land-dispatch.mjs"):
+            if (SOURCE.parents[2] / "ci" / name).exists():
+                shutil.copy(SOURCE.parents[2] / "ci" / name, self.checkout / "scripts/ci" / name)
         subprocess.run(["/usr/bin/git", "init", "-q", "-b", "sieun/dev", str(self.checkout)], check=True)
         subprocess.run(["/usr/bin/git", "-C", str(self.checkout), "remote", "add", "origin", "https://github.com/sieu-n/auto-sns-agent"], check=True)
         self.commit_guards()
@@ -106,6 +109,20 @@ class RepoGuardAtRunTime(KernelGuardBase):
         self.assertIn("repo guard (git-shared-index-hazard)", out["refused"] or "")
         self.assertIn("git merge-file -p", out["refused"])
         self.assertEqual(self.fake_runs(), [])
+
+    def test_git_apply_without_cached_in_the_marked_checkout_is_refused_and_points_at_a_scratch_tree(self):
+        # 10-20 05:50Z: a plain git apply in the box's shared checkout put 15 stale files in its working tree.
+        self.mark_shared()
+        for command in ("git apply /tmp/land.patch", "git apply --3way /tmp/land.patch"):
+            out = self.run_from_home(command)
+            self.assertIn("repo guard (git-shared-index-hazard)", out["refused"] or "", command)
+            self.assertIn("~/scratch/<job>/<name>", out["refused"])
+        self.assertEqual(self.fake_runs(), [])
+
+    def test_git_apply_check_runs_in_the_marked_checkout(self):
+        self.mark_shared()
+        self.assert_passed(self.run_from_home("git apply --check /tmp/land.patch"))
+        self.assertEqual(self.fake_runs(), ["git apply --check /tmp/land.patch"])
 
     def test_git_rm_cached_and_merge_file_p_run_in_the_marked_checkout(self):
         self.mark_shared()
