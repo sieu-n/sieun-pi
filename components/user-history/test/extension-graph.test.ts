@@ -35,3 +35,10 @@ test("the extension's static imports leave out the chat service and its bundler"
   for (const heavy of ["chat-service.ts", "chat-backend.ts", "chat-server.ts", "chat-assets.ts", "chats.ts"]) assert.ok(!names.includes(heavy), heavy);
   for (const bundler of ["esbuild", "esbuild-svelte"]) assert.ok(!packages.has(bundler), bundler);
 });
+
+test("the extension imports values only from the packages Prime serves as virtual modules, never from prime-agent", () => {
+  // A value import from "prime-agent" made jiti read the whole prime-agent package from the release's node_modules, about 350 ms of each Mac
+  // worker start on 10-20, while @earendil-works/pi-coding-agent comes from Prime's own module instances.
+  const { packages } = staticGraph(EXTENSION);
+  assert.ok(!packages.has("prime-agent"), [...packages].join(", "));
+});

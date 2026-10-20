@@ -1,7 +1,9 @@
 import { open, type FileHandle } from "node:fs/promises";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { SessionEntry } from "prime-agent";
-import { CURRENT_SESSION_VERSION } from "prime-agent";
+// From the package Prime serves to extensions as a virtual module: a value import from "prime-agent" made the extension's loader read the
+// whole prime-agent package from node_modules, about 350 ms of each Mac worker start on 10-20, before a new thread's first turn.
+import { CURRENT_SESSION_VERSION } from "@earendil-works/pi-coding-agent";
 
 /**
  * How much of a session file the server holds for an open thread. The feed draws every message the hub holds and the chat's own logic reads
