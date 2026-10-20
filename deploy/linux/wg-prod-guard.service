@@ -1,0 +1,13 @@
+[Unit]
+Description=nftables guard for wg-prod (crawl lanes link)
+DefaultDependencies=no
+Before=wg-quick@wg-prod.service network-pre.target
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /etc/wireguard/wg-prod-guard.nft
+
+[Install]
+WantedBy=multi-user.target

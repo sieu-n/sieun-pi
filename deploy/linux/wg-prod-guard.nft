@@ -1,0 +1,40 @@
+# wg-prod guard on us-metal02.
+# 1. UDP 51820 only from us-metal01.
+# 2. Only the prod docker subnet 10.92.0.0/24 may forward into wg-prod.
+# 3. Only root may send into wg-prod from the host itself (health checks), plus uid sieun to prod Postgres 5432
+#    and ClickHouse 8123 on remote-gw 10.250.12.1 for the read-only roles (launch VP ask, 2026-10-19).
+# 4. Inbound on wg-prod: replies, ssh (us-metal01 drives the prod runtime), ping, and tcp 8101-8120 from
+#    10.250.12.1, the prod TikTok signers that auto-sns-agent's compose.remote-signers.yml publishes on 10.250.12.2
+#    (port 8100 + n for tiktok-signer-n) for signer-gw on us-metal01 (goal p8, 2026-10-20).
+# 5. Traffic into wg-prod leaves as 10.250.12.2, the only source us-metal01 accepts.
+# The live copy is /etc/wireguard/wg-prod-guard.nft (setup-host.sh installs it), loaded by wg-prod-guard.service.
+table inet wg_prod_guard
+delete table inet wg_prod_guard
+table inet wg_prod_guard {
+  chain input {
+    type filter hook input priority filter - 5; policy accept;
+    udp dport 51820 ip saddr != 64.34.205.243 counter drop
+    iifname "wg-prod" ct state established,related accept
+    iifname "wg-prod" ip saddr 10.250.12.1 tcp dport 22 accept
+    iifname "wg-prod" icmp type echo-request accept
+    iifname "wg-prod" ip saddr 10.250.12.1 tcp dport 8101-8120 accept
+    iifname "wg-prod" counter drop
+  }
+  chain forward {
+    type filter hook forward priority filter - 5; policy accept;
+    oifname "wg-prod" ip saddr != 10.92.0.0/24 counter drop
+    iifname "wg-prod" ct state established,related accept
+    iifname "wg-prod" counter drop
+  }
+  chain output {
+    type filter hook output priority filter - 5; policy accept;
+    oifname "wg-prod" meta skuid 0 accept
+    oifname "wg-prod" meta skuid "sieun" ip daddr 10.250.12.1 tcp dport { 5432, 8123 } accept
+    oifname "wg-prod" ct state established,related accept
+    oifname "wg-prod" counter reject
+  }
+  chain postrouting {
+    type nat hook postrouting priority srcnat + 5; policy accept;
+    oifname "wg-prod" ip saddr 10.92.0.0/24 masquerade
+  }
+}

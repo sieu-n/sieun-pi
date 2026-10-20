@@ -39,6 +39,14 @@ install -m 644 "$here/ssh-public-guard.service" /etc/systemd/system/ssh-public-g
 systemctl daemon-reload
 systemctl enable ssh-public-guard
 systemctl restart ssh-public-guard
+# The wg-prod guard (wg-prod-guard.nft says what it admits) loads before wg-quick@wg-prod. wg-prod.conf and its key are
+# placed by hand; a restart reloads the table in one nft transaction.
+install -d -m 700 /etc/wireguard
+install -m 600 "$here/wg-prod-guard.nft" /etc/wireguard/wg-prod-guard.nft
+install -m 644 "$here/wg-prod-guard.service" /etc/systemd/system/wg-prod-guard.service
+systemctl daemon-reload
+systemctl enable wg-prod-guard
+systemctl restart wg-prod-guard
 
 # ssh to the Mac reuses one of 16 masters (ssh-mac.conf explains why), and ssh-mac-slot picks one by ssh's pid.
 install -d -m 755 -o "$DEV_USER" -g "$DEV_USER" "$home/.local" "$home/.local/bin"
