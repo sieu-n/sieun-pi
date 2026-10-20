@@ -63,6 +63,12 @@ export function ownedNow(jobs: readonly JobDir[]): { paths: string[]; units: str
   }
   return { paths: [...paths], units: [...units] };
 }
+/** The job's default folder ~/scratch/<session id> for each of its sessions (chat-brief.ts `jobScratch`), which its end deletes since 72805cd5. */
+export const scratchOf = (job: JobDir): string[] => job.transcripts.map(file => join(homedir(), "scratch", file.split("/").at(-1)!.slice(0, -".jsonl".length)));
+/** What a job owns: its default folders and what its own board.own record names. */
+export function ownedPaths(job: JobDir): { scratch: string[]; paths: string[]; units: string[] } {
+  return { scratch: scratchOf(job), ...ownedNow([job]) };
+}
 /** The chat's service.log lines (`chat <id8>...`). */
 export function chatLog(chat: string, file = join(DATA, "service.log")): string[] {
   if (!existsSync(file)) return [];

@@ -14,7 +14,7 @@
  *   node --import tsx scripts/clean-room/clean-room.ts archive --run <dir>   (chat-tools-reopen: archives the chat alone once it is idle)
  *   node --import tsx scripts/clean-room/clean-room.ts reopen-check --dir <dir> --cwd <repo> [--window-min <n>]   (the Chat reopen duty's whole run)
  *   node --import tsx scripts/clean-room/clean-room.ts kill-worker --run <dir> --until <ISO time> [--name <chat name>]   (lost-brief: start it before setup)
- *   node --import tsx scripts/clean-room/clean-room.ts cancel-job --run <dir> --until <ISO time>   (job-cancel-cleanup: stops and archives the first job whose own record names a path with files)
+ *   node --import tsx scripts/clean-room/clean-room.ts cancel-job --run <dir> --until <ISO time>   (job-cancel-cleanup: stops and archives the first running job that owns a path with files)
  *   node --import tsx scripts/clean-room/clean-room.ts stall-jobs --run <dir> --until <ISO time> [--after-min <n>]   (checkin-push-control: aborts each chat's first job once)
  *   node --import tsx scripts/clean-room/clean-room.ts kill-hooks --run <dir> --until <ISO time> --window-min <n>   (token-hook-resume: start it before setup)
  *   node --import tsx scripts/clean-room/clean-room.ts advance-release --run <dir> --until <ISO time>   (detached-report: moves the project's tools/current once)
@@ -59,7 +59,7 @@ import { kernelRevive } from "./kernel-revive.ts";
 import { killWorker, lostBrief } from "./lost-brief.ts";
 import { oldCommitTests } from "./old-commit-tests.ts";
 import { cancelFile, type CancelRecord, jobCancelCleanup } from "./job-cancel-cleanup.ts";
-import { jobDirs, ownedNow } from "./owned-evidence.ts";
+import { jobDirs, ownedPaths } from "./owned-evidence.ts";
 import { ordinaryHour } from "./ordinary-hour.ts";
 import { readmePreview } from "./readme-preview.ts";
 import { savedLogin } from "./saved-login.ts";
@@ -631,34 +631,33 @@ async function stallJobs(run: string, until: number, afterMs: number): Promise<v
 }
 
 /**
- * The owner's cancel for job-cancel-cleanup: once a job of the chat has an owned.json (written by its own board.own) naming a path that is
- * there and holds files, it waits 30 s, reads the record again, and stops and archives that job once through the routes the agents dialog's
- * Stop and Archive buttons call. It reads only the job's own record and writes `<run>.cancel.json`; it never writes a record or messages a chat.
+ * The owner's cancel for job-cancel-cleanup: every 15 s it looks at each running job of the chat (rlm-subagent.json status running). Once a
+ * path the job owns holds files, it stops and archives that job once through the routes the agents dialog's Stop and Archive buttons call. A
+ * job owns its default folder ~/scratch/<its session id>/ (chat-brief.ts `jobScratch`, deleted at its end since 72805cd5) and each path its own
+ * board.own record names. It reads only those; it never writes a record or messages a chat, and it writes `<run>.cancel.json`.
  */
 async function cancelJob(run: string, until: number): Promise<void> {
   const srv = await server();
   const state = readJson<RunState>(join(run, "run.json"));
   const files = (dir: string): number => { try { return readdirSync(dir).length; } catch { return 0; } };
   while (Date.now() < until) {
-    for (const job of jobDirs(state.chat.id).filter(job => job.status !== "deleted" && job.transcripts.length)) {
-      const recorded = (): { paths: string[]; units: string[] } => existsSync(join(job.dir, "owned.json")) ? ownedNow([job]) : { paths: [], units: [] };
-      if (!recorded().paths.some(path => files(path) > 0)) continue;
-      await new Promise(resolve => setTimeout(resolve, 30_000));
-      const owned = recorded();
-      const present = owned.paths.filter(path => files(path) > 0);
+    for (const job of jobDirs(state.chat.id).filter(job => job.status === "running" && job.transcripts.length)) {
+      const owned = ownedPaths(job);
+      const present = [...owned.scratch, ...owned.paths].filter(path => files(path) > 0);
       if (!present.length) continue;
       const session = basename(job.transcripts[0]!, ".jsonl");
       const outcome = (step: Promise<unknown>) => step.then(() => "ok", (error: unknown) => `failed: ${error instanceof Error ? error.message : String(error)}`);
       const abort = await outcome(call(srv, "POST", `api/threads/${session}/abort`, {}));
       const archive = await outcome(call(srv, "POST", `api/threads/${session}/archive`, {}));
-      const record: CancelRecord = { at: new Date().toISOString(), job: job.name, childDir: job.dir, session, paths: owned.paths, present, units: owned.units, abort, archive };
+      const record: CancelRecord = { at: new Date().toISOString(), job: job.name, childDir: job.dir, session, scratch: owned.scratch, paths: owned.paths, present,
+        units: owned.units, abort, archive };
       writeJson(cancelFile(run), record);
-      log(run, `cancelled job ${job.name} (${session}) through Stop (${abort}) and Archive (${archive}); its record named ${owned.paths.join(", ")} and ${present.join(", ")} held files`);
+      log(run, `cancelled job ${job.name} (${session}) through Stop (${abort}) and Archive (${archive}); it owned ${[...owned.scratch, ...owned.paths].join(", ")} and ${present.join(", ")} held files`);
       return;
     }
     await new Promise(resolve => setTimeout(resolve, 15_000));
   }
-  log(run, "cancel-job: no job recorded a path that held files before --until");
+  log(run, "cancel-job: no running job owned a path that held files before --until");
 }
 
 /** A spawned helper's session id from its child id's folder under the chat's session-artifacts; undefined when it is not there yet. */
