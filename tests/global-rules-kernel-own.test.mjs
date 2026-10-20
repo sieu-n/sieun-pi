@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -71,4 +71,59 @@ subprocess.run(["sh", "-c", "mkdir -p ~/scratch/ci-sh"], check=True)
 `, {});
   assert.ok(existsSync(join(scratch, "ci-job/tree")));
   assert.ok(!existsSync(join(session, "owned.json")));
+});
+
+test("a recursive delete below ~/scratch of a tree another job owns, or one no record of this job holds, is refused, and the tree stays", () => {
+  rmSync(join(session, "owned.json"), { force: true });
+  const other = join(home, ".prime/agent/session-artifacts/01a10000-0000-7000-8000-0000000000aa/sub-5678abcd");
+  mkdirSync(other, { recursive: true });
+  for (const name of ["crawler-lab/build-b12", "crawler-lab/build-b13", "legacy-tree", "01a10000-0000-7000-8000-0000000000bb/rig"]) mkdirSync(join(scratch, name), { recursive: true });
+  writeFileSync(join(other, "owned.json"), JSON.stringify({ paths: [join(scratch, "crawler-lab")], units: [] }));
+  const run = kernel(`
+import os, shutil, subprocess
+def attempt(label, call):
+    try:
+        call()
+        print(label, "ran")
+    except PermissionError as error:
+        print(label, "refused", type(error).__name__, "c130" in str(error), "sub-5678abcd" in str(error) if label in ("sh", "cd", "rmtree") else "")
+b12 = os.path.expanduser("~/scratch/crawler-lab/build-b12")
+attempt("sh", lambda: subprocess.run(["sh", "-c", "exec 7>&0\\n{\\nrm -rf " + b12 + " 2>/dev/null\\n}"]))
+attempt("cd", lambda: subprocess.run("cd ~/scratch/crawler-lab && rm -fr build-b13", shell=True))
+attempt("rmtree", lambda: shutil.rmtree(b12))
+attempt("system", lambda: os.system("rm -r -f ~/scratch/legacy-tree"))
+attempt("find", lambda: subprocess.run(["find", os.path.expanduser("~/scratch/legacy-tree"), "-delete"]))
+attempt("glob", lambda: subprocess.run("rm -rf $HOME/scratch/*", shell=True))
+attempt("folder", lambda: subprocess.run(["rm", "-rf", "--", os.path.expanduser("~/scratch/01a10000-0000-7000-8000-0000000000bb")]))
+`);
+  assert.deepEqual(run.stdout.trim().split("\n").map((line) => line.trim()), [
+    "sh refused TreeRefused True True", "cd refused TreeRefused True True", "rmtree refused TreeRefused True True",
+    "system refused TreeRefused True", "find refused TreeRefused True", "glob refused TreeRefused True", "folder refused TreeRefused True"]);
+  for (const name of ["crawler-lab/build-b12", "crawler-lab/build-b13", "legacy-tree", "01a10000-0000-7000-8000-0000000000bb/rig"]) assert.ok(existsSync(join(scratch, name)), name);
+});
+
+test("the job deletes the trees it made, its subagents' records and its sessions' own folders, and a path outside ~/scratch is not judged", () => {
+  rmSync(join(session, "owned.json"), { force: true });
+  const child = join(session, "sub-9abcdef0");
+  mkdirSync(child, { recursive: true });
+  writeFileSync(join(child, "01a10000-0000-7000-8000-0000000000cc.jsonl"), "");
+  for (const name of ["child-rig/tree", "01a10000-0000-7000-8000-0000000000cc/tree", "01a10000-0000-7000-8000-000000000000/tree"]) mkdirSync(join(scratch, name), { recursive: true });
+  writeFileSync(join(child, "owned.json"), JSON.stringify({ paths: [join(scratch, "child-rig")], units: [] }));
+  const outside = mkdtempSync(join(root, "outside-"));
+  const run = kernel(`
+import os, shutil, subprocess, tempfile
+made = os.path.expanduser("~/scratch/made-here/tree")
+os.makedirs(made)
+subprocess.run(["sh", "-c", "rm -rf ~/scratch/made-here/tree"], check=True)
+shutil.rmtree(os.path.expanduser("~/scratch/made-here"))
+subprocess.run("rm -rf ~/scratch/child-rig/tree ~/scratch/01a10000-0000-7000-8000-0000000000cc ~/scratch/never-made", shell=True, check=True)
+os.system("rm -rf ~/scratch/01a10000-0000-7000-8000-000000000000/tree")
+with tempfile.TemporaryDirectory(dir=os.path.expanduser("~/scratch")) as rig:
+    open(os.path.join(rig, "f"), "w").write("x")
+subprocess.run(["rm", "-rf", ${JSON.stringify(outside)}], check=True)
+print("ok")
+`);
+  assert.equal(run.stdout.trim(), "ok");
+  for (const name of ["made-here", "child-rig/tree", "01a10000-0000-7000-8000-0000000000cc", "01a10000-0000-7000-8000-000000000000/tree"]) assert.ok(!existsSync(join(scratch, name)), name);
+  assert.ok(!existsSync(outside));
 });
