@@ -374,6 +374,8 @@ async function serve(options: Options): Promise<void> {
   // Every daemon command of a scratch serve goes through a socket that passes only reads (src/read-only-daemon.ts).
   const replay = scratch && options.replayDaemon === true;
   const readOnly = scratch ? await (await import("./read-only-daemon.ts")).readOnlyDaemon(service.config.socketPath, line => process.stderr.write(`${new Date().toISOString()} ${line}\n`), { replay }) : null;
+  // While <data dir>/cpu-profiles exists at start, the run's CPU profile is saved at stop (src/run-profile.ts).
+  const runProfile = await (await import("./run-profile.ts")).startRunProfile({ dataDir: service.directory, log: line => process.stderr.write(`${new Date().toISOString()} ${line}\n`) });
   await recordServe(service);
   const identity = { pid: process.pid, instanceId: randomUUID(), socketPath: service.config.socketPath };
   // The port answers page shells from disk while the rest loads (src/early-shell.ts): a shell during a restart waited 12.1 s at 12:42Z on 10-18.
@@ -443,6 +445,7 @@ async function serve(options: Options): Promise<void> {
         await timed("bridges", () => hosts?.bridge?.close());
         await timed("server", () => server.close());
         await timed("read-only", () => readOnly?.close());
+        await timed("cpu profile", () => runProfile.stop().catch(error => process.stderr.write(`cpu profile: ${error instanceof Error ? error.message : String(error)}\n`)));
         process.stderr.write(`${new Date().toISOString()} stop: ${Date.now() - began} ms: ${parts.join(", ")}\n`);
       }
     })().finally(() => { process.off("SIGTERM", stop); process.off("SIGINT", stop); stopped(); });
