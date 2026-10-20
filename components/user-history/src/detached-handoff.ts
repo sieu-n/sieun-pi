@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { createConnection } from "node:net";
 import { type DaemonAnswer, type UnloadClient, unloadRequest } from "./idle-unload.ts";
 import { type Handoff, type OrphanRecord, type OrphanService, type PreparedGroup, logPath, ORPHAN_SERVICES_DIR, readRecord, unitName, writeRecord } from "./orphan-services.ts";
 
@@ -232,9 +233,56 @@ const codeOf = (answer: Failure): string | undefined => answer.errorInfo?.code;
 export type HandoffSend = (body: Record<string, unknown>) => Promise<unknown>;
 
 /**
+ * Sends one handoff command on a connection of its own to the daemon at `socketPath`, the way `archiveSavedSession` sends its command: only
+ * under that connection's hello (`speaksHandoff`), in a protocol 7 envelope, acknowledged once answered. The pinned 0.9.8 DaemonClient refuses
+ * the three commands before the write ("Cannot read properties of undefined (reading 'minProtocol')", run2 on 10-18), and no public SDK
+ * tarball of a Prime that lists them exists yet, so the chat service sends them here. A hello without the capability answers
+ * `handoff_unsupported` and sends nothing. `timeoutMs` is the 30 s every daemon request of the idle unload already waits.
+ */
+export function handoffSend(socketPath: string, timeoutMs = 30_000): HandoffSend {
+  return body => new Promise(resolve => {
+    const socket = createConnection(socketPath);
+    const clientId = `sieun-pi-handoff-${randomUUID()}`;
+    const id = `handoff_${randomUUID()}`;
+    let settled = false;
+    const done = (answer: unknown, last?: string): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (last) socket.end(last); else socket.destroy();
+      resolve(answer);
+    };
+    const fail = (error: string): void => done({ success: false, error });
+    const timer = setTimeout(() => fail(`The daemon did not answer ${String(body.type)} within ${timeoutMs} ms.`), timeoutMs);
+    socket.once("error", error => fail(error.message));
+    socket.once("close", () => fail(`The daemon connection closed before its answer to ${String(body.type)}.`));
+    const envelope = (command: Record<string, unknown>): string =>
+      `${JSON.stringify({ type: "command", id: command.id, protocol: { name: "prime-agent.daemon", version: HANDOFF_PROTOCOL }, clientId, command })}\n`;
+    let buffer = "";
+    socket.setEncoding("utf8");
+    socket.on("data", (chunk: string) => {
+      buffer += chunk;
+      for (let end = buffer.indexOf("\n"); end >= 0 && !settled; end = buffer.indexOf("\n")) {
+        const line = buffer.slice(0, end);
+        buffer = buffer.slice(end + 1);
+        let message: unknown;
+        try { message = JSON.parse(line); } catch { continue; }
+        if (!isRecord(message)) continue;
+        if (message.type === "daemon_hello") {
+          if (!speaksHandoff(message as never)) { fail("handoff_unsupported: the daemon's hello does not list detached_handoff"); return; }
+          socket.write(envelope({ ...body, id }));
+        } else if (message.type === "response" && message.id === id) {
+          done(message, envelope({ id: `ack_${randomUUID()}`, type: "ack_result", commandId: id }));
+        }
+      }
+    });
+  });
+}
+
+/**
  * The real ports: the record directory, the daemon connection of the session's box, systemd and /proc. Use only when the hello lists
  * HANDOFF_CAPABILITY. `send` defaults to `client.request`, which needs a pinned prime-agent whose command table lists the three handoff
- * commands: 0.9.8's client refuses them before the write ("Cannot read properties of undefined (reading 'minProtocol')", run2 on 10-18).
+ * commands; the chat service passes `handoffSend` instead.
  */
 export function systemPorts(client: UnloadClient, dir = ORPHAN_SERVICES_DIR, send: HandoffSend = body => client.request(body as never, 30_000, { recoverable: false })): HandoffPorts {
   const ask = async (body: Record<string, unknown>): Promise<{ success: true; data?: unknown } | Failure> => {

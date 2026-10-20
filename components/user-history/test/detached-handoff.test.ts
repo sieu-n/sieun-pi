@@ -4,9 +4,11 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { measure } from "../scripts/duties/whole-system.ts";
+import { createServer } from "node:net";
 import { test } from "node:test";
 import type { SessionSummary } from "prime-agent";
-import { type CandidateGroup, handOff, type HandoffPorts, type MovedGroup, parseCandidates, parseReceipt, type Receipt, speaksHandoff } from "../src/detached-handoff.ts";
+import { type CandidateGroup, handOff, type HandoffPorts, handoffSend, type MovedGroup, parseCandidates, parseReceipt, type Receipt, speaksHandoff } from "../src/detached-handoff.ts";
 import { type DaemonAnswer, IdleUnloader, unloadPlan } from "../src/idle-unload.ts";
 import { endLeftovers, type LeftoverSource } from "../src/job-leftovers.ts";
 import { servicesLine } from "../src/mac-usable-watch.ts";
@@ -395,4 +397,69 @@ test("the service is the last member after the shell that writes to a file, so a
   const entry = record(w.disk).handoffs[0]!;
   assert.ok(entry.state === "unloaded");
   assert.deepEqual([entry.services[0]!.pid, entry.services[0]!.log, entry.services[0]!.processStartId], [502, "/tmp/w/srv.log", "proc:50200"]);
+});
+
+test("a row the source cannot hand off now keeps the old rule: its detached process keeps it out of the plan, and no kill or handoff goes out", async () => {
+  const asked: string[] = [];
+  const unloader = new IdleUnloader({
+    rows: () => [holder], localRows: () => [], idleMs: () => TEN_MIN, chats: async () => new Set(), dormant: () => false, pool: async () => new Set(),
+    waking: async () => new Set(), held: async () => new Map(), own: async () => new Map(), restNow: async () => false, release: async () => true, title: () => null,
+    request: async (_row, type) => { asked.push(type); return { success: true, data: { isSessionActive: false, holdsDetachedProcesses: true } }; },
+    handOff: async () => { asked.push("handOff"); return { done: true }; }, handsOff: () => false,
+    stopped: async () => {}, log: () => {}, now: () => at,
+  });
+  await unloader.sweep();
+  await unloader.settled();
+  assert.deepEqual(asked, []);
+});
+
+/** A daemon socket that greets with `capabilities` at protocol 7 and answers each command with `answer`, recording what it got. */
+async function fakeSocket(t: { after: (fn: () => unknown) => void }, capabilities: readonly string[], answer: Record<string, unknown>) {
+  const dir = mkdtempSync(join(tmpdir(), "handoff-send-"));
+  const path = join(dir, "d.sock");
+  const got: Record<string, unknown>[] = [];
+  const server = createServer(socket => {
+    socket.write(`${JSON.stringify({ type: "daemon_hello", protocol: { name: "prime-agent.daemon", version: 7 }, serverCapabilities: capabilities })}\n`);
+    let buffer = "";
+    socket.on("data", chunk => {
+      buffer += chunk;
+      for (let end = buffer.indexOf("\n"); end >= 0; end = buffer.indexOf("\n")) {
+        const line = JSON.parse(buffer.slice(0, end)) as Record<string, unknown> & { id: string; command: Record<string, unknown> };
+        buffer = buffer.slice(end + 1);
+        got.push(line);
+        if (line.command.type !== "ack_result") socket.write(`${JSON.stringify({ type: "response", id: line.id, command: line.command.type, ...answer })}\n`);
+      }
+    });
+    socket.on("error", () => {});
+  });
+  await new Promise<void>(resolve => server.listen(path, resolve));
+  t.after(() => new Promise<void>(resolve => server.close(() => resolve())));
+  return { path, got };
+}
+
+test("handoffSend sends a handoff command in a protocol 7 envelope only under a hello that lists detached_handoff, and acknowledges the answer", async t => {
+  const data = { handoffId: "h-1", sessionId: SESSION, bootId: "b", groups: [] };
+  const speaks = await fakeSocket(t, ["detached_handoff"], { success: true, data });
+  const answer = await handoffSend(speaks.path, 5000)({ type: "prepare_detached_handoff", sessionId: SESSION, handoffId: "h-1" }) as { success: boolean; data: unknown };
+  assert.deepEqual([answer.success, answer.data], [true, data]);
+  await new Promise(resolve => setTimeout(resolve, 50));
+  const [command, ack] = speaks.got as { protocol: unknown; command: Record<string, unknown> }[];
+  assert.deepEqual(command!.protocol, { name: "prime-agent.daemon", version: 7 });
+  assert.deepEqual([command!.command.type, command!.command.sessionId, command!.command.handoffId], ["prepare_detached_handoff", SESSION, "h-1"]);
+  assert.equal(ack?.command.type, "ack_result");
+  const old = await fakeSocket(t, ["kill_origin"], { success: true });
+  const refused = await handoffSend(old.path, 5000)({ type: "prepare_detached_handoff", sessionId: SESSION, handoffId: "h-1" }) as { success: boolean; error: string };
+  assert.equal(refused.success, false);
+  assert.match(refused.error, /^handoff_unsupported/);
+  assert.deepEqual(old.got, [], "a daemon without the capability gets nothing");
+});
+
+test("d7 counts a handoff still open a whole window after it began as stuck, flags it, and reads the watch line's handed-off services", () => {
+  const now = Date.parse("2026-10-20T17:00:30Z");
+  const watch = [{ at: "2026-10-20T16:59:30Z", services: { count: 2, live: 1, top: [] } }] as never;
+  const out = measure({ now, watch, log: { holds: [] }, chats: [], openHandoffs: [
+    { session: SESSION, state: "moving", at: now - 31 * 60_000 }, { session: "01a15036-0000-7000-8000-000000000002", state: "pending", at: now - 60_000 }] });
+  assert.equal(out.metrics.handoffs_stuck, 1);
+  assert.deepEqual([out.metrics.handed_off_services, out.metrics.handed_off_live], [2, 1]);
+  assert.match(out.flagged?.find(slice => slice.kind === "handoff_stuck")?.excerpt ?? "", /^1 detached-service handoffs stayed open over 30 min, .*01a15036 moving since 16:29Z/);
 });

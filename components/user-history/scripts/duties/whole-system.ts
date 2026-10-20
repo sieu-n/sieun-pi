@@ -19,6 +19,7 @@ import { beatStale, type CacheBeat, pendingWakes, readBeat, treeWakes } from "..
 import { processEvidence } from "../../src/proc-evidence.ts";
 import { harnessSlow, workerMisses } from "../../src/harness-slow.ts";
 import { chatNamer, type DaemonFault, faultWords, type ListedSession, listedSessions, type QueueOverrun, readQueueOverruns, readReopenedSends, readServiceFaults, readSupervisorFaults, SLOW_MS } from "../../src/daemon-faults.ts";
+import { readRecords } from "../../src/orphan-services.ts";
 import { deliveryCandidates, outboxLandings, readSessionMarks, type SlotWaitTimeout, splitSlotWaits } from "../../src/slot-wait-timeouts.ts";
 import { CHECK_IN_DUTY_ID, type DutyRunRecord, type FlaggedSlice, type PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import { effectiveRun, metricStreaks, missStreak } from "../../src/shared/duty-streak.ts";
@@ -557,6 +558,8 @@ export interface Inputs {
   named?: ReadonlyMap<string, ReadonlyMap<string, readonly string[]>>;
   /** Opens, status reads, sends and worker starts that failed or ran over SLOW_MS, from service.log and the supervisor's log (src/daemon-faults.ts). */
   daemonFaults?: readonly DaemonFault[];
+  /** The handoffs this box's records hold that have not reached `unloaded` (src/orphan-services.ts), with when each began. */
+  openHandoffs?: readonly { session: string; state: string; at: number }[];
   /** Timed-out sends and status reads the session's file showed waiting for a pi-pool slot and going through, left out of daemonFaults. */
   slotWaits?: readonly SlotWaitTimeout[];
   /** When the supervisor's poll of a worker went unanswered on this box (src/harness-slow.ts `workerMisses`). */
@@ -843,6 +846,8 @@ export function measure(input: Inputs): PrecheckOutput {
   const oversize = oversized(latest, input.day ?? []);
   const browsers = testBrowsers(latest);
   const hung = hungNow(input.watch, start);
+  // Each idle unload sweep (every 60 s) finishes an open handoff (src/idle-unload.ts `resumeUnloaded`), so one still open a whole window later is stuck.
+  const stuckHandoffs = (input.openHandoffs ?? []).filter(entry => entry.at < now - WINDOW_MS);
   const metrics: Record<string, number> = {
     clean_min_30: clean,
     queue_holds_30: queueHolds.length + poolHeld.filter(hold => !hold.cell).length,
@@ -869,6 +874,8 @@ export function measure(input: Inputs): PrecheckOutput {
     stuck_duties: redDuties.length,
     cut_jobs_held: cutHeld.length,
     ...hung ? { hung_calls: hung.calls.length } : {},
+    ...latest?.services ? { handed_off_services: latest.services.count, handed_off_live: latest.services.live } : {},
+    handoffs_stuck: stuckHandoffs.length,
   };
   for (const [name, reading] of worstByHost) metrics[`quiet_agent_gb_${name.replace(/[^A-Za-z0-9]+/g, "_")}`] = reading.gb;
   for (const [name, count] of perHost) {
@@ -891,6 +898,9 @@ export function measure(input: Inputs): PrecheckOutput {
       `${Math.round((now - input.ciCache.fetchedAt) / MINUTE)} min ago at a ${input.ciCache.intervalSeconds} s pace${input.ciCache.error ? ` (last cycle: ${input.ciCache.error})` : ""}. ` +
       "Run wakes read GitHub with gh run view meanwhile; ci-run-status and the gh shim answer from the old cache until it is 10 min old. Read ~/.cache/virev/ci-cache.log and systemctl --user status ci-cache." });
   }
+  if (stuckHandoffs.length) flagged.push({ kind: "handoff_stuck", excerpt: `${stuckHandoffs.length} detached-service handoffs stayed open over ${WINDOW_MS / MINUTE} min, ` +
+    `though each idle unload sweep resumes them: ${stuckHandoffs.slice(0, 5).map(entry => `${entry.session.slice(0, 8)} ${entry.state} since ${clock(entry.at)}`).join(", ")}. ` +
+    "Read ~/.prime/agent/orphan-services/<session>.json and the service log's \"idle unload: <session>\" lines." });
   if (offlineMin.size) flagged.push({ kind: "offline_minutes", excerpt: [...offlineMin].map(([name, at]) => `${name} offline ${spans(at)}`).join("; ") });
   for (const wait of slotWaits) {
     const fault = wait.fault;
@@ -1259,6 +1269,8 @@ async function main(): Promise<void> {
     cut: cutJobsHoldingWork(cut, plan.boards, plan.pausedChats),
     poolHeldJobs: poolHeldCuts(serviceLines),
     ciCache: await readBeat(),
+    openHandoffs: (await readRecords().catch(() => [])).flatMap(record => record.handoffs.filter(handoff => handoff.state !== "unloaded")
+      .map(handoff => ({ session: record.sessionId, state: handoff.state, at: Date.parse(handoff.at) }))),
   });
   // A flagged worker on this box keeps read-only evidence of what it holds beside the run's output (src/proc-evidence.ts).
   const here = watch.at(-1)?.host;
