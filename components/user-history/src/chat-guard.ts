@@ -151,7 +151,11 @@ export interface TellInput { text?: unknown; why?: unknown; about?: unknown; rep
  * What the check reads of the chat: whether the owner started the running turn or his newest message has no answer yet (the message being
  * sent is left out), and the ids of his messages a `reply_to` may name.
  */
-export interface TellTurn { owner: boolean; ownerIds: ReadonlySet<string>; byOwner?: boolean; tells?: number; ownerText?: string; resent?: ReadonlySet<string>; done?: readonly string[] }
+export interface TellTurn { owner: boolean; ownerIds: ReadonlySet<string>; byOwner?: boolean; tells?: number; ownerText?: string; resent?: ReadonlySet<string>; done?: readonly string[]; startedAt?: number; asked?: ReadonlySet<string> }
+/** The open owner todos on the chat's board that it added before the running turn started: a decision already waiting for him. */
+export function askedTodos(todos: readonly { id: string; done?: boolean; at?: string; from?: string }[], startedAt: number | undefined): Set<string> {
+  return new Set(startedAt === undefined ? [] : todos.filter(todo => !todo.done && todo.from !== "owner" && todo.at !== undefined && Date.parse(todo.at) < startedAt).map(todo => todo.id));
+}
 /** The words of an `about` that tell two of them apart: lowercased, three letters or more. */
 const aboutWords = (about: string): Set<string> => new Set(about.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(word => word.length >= 3));
 /** The earlier `done` about this one repeats: every word of the shorter one is in the other, with at least two words. */
@@ -164,6 +168,9 @@ const repeatOf = (about: string, done: readonly string[]): string | undefined =>
   });
 };
 const REPEAT_MARK = "Not sent, you already told him this goal is done";
+const REASK_MARK = "Not sent, this decision already waits for him on For you";
+/** The todo ids a text names, like t4. */
+const todoIds = (text: string): string[] => [...text.matchAll(/\bt(\d+)\b/g)].map(match => `t${match[1]}`);
 
 export function tellTurn(messages: readonly ThreadMessage[]): TellTurn {
   const ownerIds = new Set<string>();
@@ -178,7 +185,7 @@ export function tellTurn(messages: readonly ThreadMessage[]): TellTurn {
       if (part.type === "toolCall" && part.name === TELL_OWNER_TOOL && typeof part.arguments?.text === "string") told.set(part.id, part.arguments.text.trim());
       if (part.type === "toolCall" && part.name === TELL_OWNER_TOOL && part.arguments?.why === "done" && typeof part.arguments?.about === "string") doneAbout.set(part.id, part.arguments.about);
     }
-    if (message.role === "toolResult" && message.toolName === TELL_OWNER_TOOL && (messageText(message).startsWith(SHOP_TALK_MARK) || messageText(message).startsWith(REPEAT_MARK))) {
+    if (message.role === "toolResult" && message.toolName === TELL_OWNER_TOOL && [SHOP_TALK_MARK, REPEAT_MARK, REASK_MARK].some(mark => messageText(message).startsWith(mark))) {
       const text = told.get(message.toolCallId);
       if (text) resent.add(text);
     }
@@ -192,7 +199,8 @@ export function tellTurn(messages: readonly ThreadMessage[]): TellTurn {
   const byOwner = turnStarter(messages.filter(message => !(message.role === "user" && revival(messageText(message).trim())))) === "owner";
   const last = messages.at(-1);
   const tells = last?.role === "assistant" ? last.content.filter(part => part.type === "toolCall" && part.name === TELL_OWNER_TOOL).length : 0;
-  return { owner: unanswered || byOwner, ownerIds, byOwner, tells, ownerText, resent, done };
+  const startedAt = before.findLast(message => message.role === "user" || message.role === "custom")?.timestamp;
+  return { owner: unanswered || byOwner, ownerIds, byOwner, tells, ownerText, resent, done, ...(typeof startedAt === "number" ? { startedAt } : {}) };
 }
 
 /**
@@ -212,6 +220,9 @@ export function tellOwner(input: TellInput, turn: TellTurn): { kind: "sent" | "r
   const answers = named(input.reply_to) && turn.ownerIds.has(input.reply_to.trim());
   const declared = TELL_CASES.includes(input.why as TellWhy) && named(input.about);
   const repeat = !turn.owner && input.why === "done" && named(input.about) && !turn.resent?.has(told) ? repeatOf(input.about, turn.done ?? []) : undefined;
+  const reask = !turn.owner && !turn.resent?.has(told) ? todoIds(`${told} ${typeof input.about === "string" ? input.about : ""}`).find(id => turn.asked?.has(id)) : undefined;
+  if (reask) return { kind: "refused", text: `${REASK_MARK} as ${reask}, which you added in an earlier turn. Put new facts or a changed ` +
+    "pick in that todo with chat_board todo_update instead; if he must see this now, send the very same text again and it goes out (c117)." };
   if (repeat) return { kind: "refused", text: `${REPEAT_MARK} ("${repeat}") since his last message. Send nothing unless this brings something ` +
     "new he must see or act on; if it does, send the very same text again and it goes out (c117)." };
   if (turn.owner || answers || declared) {

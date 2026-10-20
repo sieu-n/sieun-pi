@@ -2,7 +2,7 @@
 // [job] notices, wakes), so his feed was a long list of relays (c117). A tell_owner call on such a turn names its case or stays a note.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { TELL_OWNER_DONE, tellOwner, tellTurn, WAKE_NOTE, withWakeNotes } from "../src/chat-guard.ts";
+import { askedTodos, TELL_OWNER_DONE, tellOwner, tellTurn, WAKE_NOTE, withWakeNotes } from "../src/chat-guard.ts";
 import { chatLines, ownerMessageId, TELL_OWNER_HELD } from "../src/shared/chat-feed.ts";
 import type { AssistantMessage, ThreadMessage } from "../src/shared/types.ts";
 
@@ -102,4 +102,18 @@ test("on a turn the owner did not start, a second done on the goal it already re
   assert.equal(tellOwner({ ...again, about: "Grafana load on prod ClickHouse" }, tellTurn(history)).kind, "sent", "another goal goes out");
   const asked = tellTurn([...history.slice(0, -1), owner("and the rest?", "06:30:00"), said("checking", "06:30:10"), job("later land done", "07:00:00")]);
   assert.equal(tellOwner(again, asked).kind, "sent", "an owner message in between starts over");
+});
+
+test("on a turn the owner did not start, a message naming an open todo the chat added in an earlier turn is refused once", () => {
+  // 10-20: mac-management asked about the metal queue slots at 02:44Z, 03:07Z and 03:14Z, each naming t4, the todo it had put on For you at 23:11Z.
+  const turn = tellTurn([...settled, job("slots cut to 18", "07:00:00")]);
+  const asked = { ...turn, asked: askedTodos([{ id: "t4", done: false, at: "2026-10-19T06:00:00Z", from: "agent" }, { id: "t5", done: false, at: "2026-10-19T07:00:30Z", from: "agent" }], turn.startedAt) };
+  const again = { text: "Slots are at 18 now, pick 18 or 24 in t4.", why: "decision", about: "metal queue slot count (t4)" };
+  const refused = tellOwner(again, asked);
+  assert.equal(refused.kind, "refused");
+  assert.match(refused.text, /already waits for him on For you as t4/);
+  assert.equal(tellOwner({ ...again, text: "Pick one in t5.", about: "new ask (t5)" }, asked).kind, "sent", "a todo added in this turn goes with its question (c96)");
+  assert.equal(tellOwner(again, { ...asked, resent: new Set([again.text]) }).kind, "sent", "the very same text again goes out");
+  assert.equal(tellOwner(again, { ...asked, owner: true }).kind, "sent", "his own turn is never held");
+  assert.deepEqual([...askedTodos([{ id: "t4", done: true, at: "2026-10-19T06:00:00Z" }], turn.startedAt)], [], "an answered todo is no longer waiting");
 });
