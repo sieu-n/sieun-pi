@@ -584,6 +584,7 @@ export class Chats {
       this.lastCheckIn.set(id, now);
       this.queue(checkInLane(id), async () => { await this.checkIn(id); });
     }
+    for (const id of this.reloadWaiting) if (!this.threads.running(id)) this.queue(id, () => this.refreshExtension(id));
     this.queue("#jobs", () => this.jobs(active, woke));
     if (now - this.deletedSweptAt >= JOB_CLEANUP_EVERY_MS) { this.deletedSweptAt = now; this.queue("#deleted", () => this.sweepDeleted()); }
     return due;
@@ -1557,8 +1558,9 @@ export class Chats {
   }
 
   /**
-   * Reloads the chat when the build it last loaded is not the one on disk, or the owner asked to update every chat: now if it is idle, else once
-   * its turn ends. The reload keeps the brief the chat pinned in its system prompt, so its cached prompt stays valid, and the chat reads a
+   * Reloads the chat when the build it last loaded is not the one on disk, or the owner asked to update every chat: now if no turn runs, else
+   * once one does not, at its idle event or the next tick. Input queued for the chat does not hold the reload, since a reload keeps the queue
+   * (10-20: 12 of 17 chats ran an older build for hours because input kept arriving, so tell_owner fixes reached them late or not at all). The reload keeps the brief the chat pinned in its system prompt, so its cached prompt stays valid, and the chat reads a
    * changed brief after its next compaction.
    */
   private async refreshExtension(id: string): Promise<void> {
@@ -1567,7 +1569,7 @@ export class Chats {
     const forced = this.forced.has(id);
     let action: "reload" | "wait" | null = null;
     try {
-      action = reloadAction(await this.loads.get(id), this.build, this.threads.busy(id), forced);
+      action = reloadAction(await this.loads.get(id), this.build, this.threads.running(id), forced);
       if (action === "wait") { this.reloadWaiting.add(id); return; }
       this.reloadWaiting.delete(id);
       if (!action) return;
