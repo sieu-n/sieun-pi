@@ -349,28 +349,37 @@ export function jobLedgerPrompt(ledger: Ledger | null): string {
     ...(ledger ? liveRules(ledger).filter(entry => JOB_RULES.has(entry.id)).map(shortLine) : [])].join("\n");
 }
 
-/** What a chat's session file holds for the repeat count: the owner's words (`ownerTexts`) and the text of each `/refine` the service ran in it. */
-export interface ChatHistory { owner: readonly string[]; refines: readonly string[] }
+/** An owner message or a `/refine` command in a chat's session file, with its time in ms. */
+export interface Timed { text: string; at: number }
+/** What a chat's session file holds for the repeat count: the owner's words (`ownerTexts`) and each `/refine` the service ran in it. */
+export interface ChatHistory { owner: readonly Timed[]; refines: readonly Timed[] }
 
 /**
  * Every repeat in [since, until] the owner gave after the first correction was in force, oldest first, with its entry: the
- * repeat_corrections_7d count. Two kinds of recorded repeat do not count.
+ * repeat_corrections_7d count. A rule is in force from the first `/refine` that names the entry's first words (`refineCovers`), which the
+ * service runs in the entry's chat when the turn that recorded it ends, or from the entry's own time when no refine is on record (before c86,
+ * 10-15). Two kinds of recorded repeat do not count.
  * 1. Words the owner never wrote in the repeat's chat (`ownerSaid`). Before correction_add checked the words (0da3d4a, 10-12 21:59Z), ops guy
  *    recorded its own notes as repeats: "(brief check, twice on 10-12) ..." on c59 and "(owner rule recalled by the release owner ...)" on c4.
- * 2. Words the chat's one `/refine` covered together with the first correction (`refineCovers`). The service refines once, when the turn that
- *    recorded a correction ends, so such a repeat came while the chat was still answering it and before the fix ran. On 10-18 the owner wrote
- *    "지금 자꾸 Mac에서 껐다켰다 하는 새끼 누구고 왜 그렇게 하는거야" (c103) at 05:16Z, then "Aside쓰면 깜빡이지를 않아 커서를 안가져가거든" at 05:21Z in the
- *    same turn, and the 05:22Z refine named both.
+ * 2. Words the owner wrote before the rule was in force, judged by his message's own time and not by when a chat filed it. On 10-18 the owner
+ *    wrote "지금 자꾸 Mac에서 껐다켰다 하는 새끼 누구고 왜 그렇게 하는거야" (c103) at 05:16Z, then "Aside쓰면 깜빡이지를 않아 커서를 안가져가거든" at 05:21Z in the
+ *    same turn, before the 05:22Z refine. ops guy filed his 09:10Z "stop being paranoid in plan" at 10:53Z as a repeat of c110, which he first
+ *    gave at 10:43Z.
  */
 export async function repeatsBetween(ledger: Ledger, since: number, until: number, history: (chat: string) => Promise<ChatHistory>): Promise<{ entry: Correction; repeat: CorrectionRepeat }[]> {
   const inWindow = ledger.corrections.flatMap(entry => entry.repeats.map(repeat => ({ entry, repeat })))
     .filter(({ repeat }) => { const at = Date.parse(repeat.at); return at >= since && at <= until; });
   const chats = new Map<string, ChatHistory>();
-  for (const chat of new Set(inWindow.map(({ repeat }) => repeat.chat.id))) chats.set(chat, await history(chat));
+  for (const chat of new Set(inWindow.flatMap(({ entry, repeat }) => [repeat.chat.id, entry.chat.id]).filter(Boolean))) chats.set(chat, await history(chat));
+  const inForce = (entry: Correction): number => {
+    const refined = (chats.get(entry.chat.id)?.refines ?? []).filter(command => refineCovers(command.text, entry.id, entry.words)).map(command => command.at);
+    return refined.length ? Math.min(...refined) : Date.parse(entry.at);
+  };
   return inWindow.filter(({ entry, repeat }) => {
-    const chat = chats.get(repeat.chat.id) ?? { owner: [], refines: [] };
-    return ownerSaid(repeat.words, chat.owner) &&
-      !chat.refines.some(command => refineCovers(command, entry.id, entry.words) && refineCovers(command, entry.id, repeat.words));
+    const said = (chats.get(repeat.chat.id)?.owner ?? []).filter(message => ownerSaid(repeat.words, [message.text]));
+    const filed = said.filter(message => message.at <= Date.parse(repeat.at));
+    const message = (filed.length ? filed : said).at(-1);
+    return message !== undefined && message.at > inForce(entry);
   }).sort((a, b) => a.repeat.at.localeCompare(b.repeat.at));
 }
 
