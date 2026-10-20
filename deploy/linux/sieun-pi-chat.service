@@ -1,7 +1,11 @@
 [Unit]
 Description=sieun-pi browser chat on 127.0.0.1:5182
 Wants=prime-agent-daemon.service
-After=prime-agent-daemon.service sieun-pi-chat.socket
+# No After= on prime-agent-daemon.service: systemd holds a start job of a unit ordered after another until that unit's
+# running job ends, and a daemon update's ExecReload runs for minutes. On 10-20 a chat release restarted this unit at
+# 03:09:55Z during the 03:07:15Z daemon update, the start waited for its 03:14:09Z end, and no alert reached a chat for
+# 253 s (mac-alert-bridge-stale fired). The chat retries a daemon that does not answer yet, as on the Mac.
+After=sieun-pi-chat.socket
 Requires=sieun-pi-chat.socket
 
 [Service]
