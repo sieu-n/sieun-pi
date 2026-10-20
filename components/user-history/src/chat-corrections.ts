@@ -51,7 +51,8 @@ export interface CorrectionInput { words: string; rule: string; theme: string[];
 /** A fix that landed, a retired rule or a reworded rule: the entry's rule, enforcement, ref, status or handoff change; an absent field stays as it is. */
 export interface CorrectionFix { id: string; rule?: string; enforcedBy?: Enforcement; ref?: string; status?: CorrectionStatus; handoff?: Handoff }
 /** A merge folds entry `id` into `into` as a repeat: the chat's call when a rule it filed as new was the same rule after all. */
-export type CorrectionCall = { kind: "add"; input: CorrectionInput } | { kind: "fix"; fix: CorrectionFix } | { kind: "merge"; id: string; into: string };
+/** `words`, when the call gives them, are the owner words the chat means entry `id` to hold; a merge of an entry with other words is refused. */
+export type CorrectionCall = { kind: "add"; input: CorrectionInput } | { kind: "fix"; fix: CorrectionFix } | { kind: "merge"; id: string; into: string; words?: string };
 export type CorrectionOutcome =
   | { kind: "added"; entry: Correction; closest?: Correction }
   | { kind: "repeat"; entry: Correction; repeat: CorrectionRepeat }
@@ -144,7 +145,7 @@ const nextId = (ledger: Ledger): string => `c${1 + Math.max(0, ...ledger.correct
  * matches an entry records a repeat on it and reopens it; otherwise a new active entry.
  */
 export function applyCorrection(ledger: Ledger, call: CorrectionCall, chat: ChatRef, at: string): CorrectionOutcome {
-  if (call.kind === "merge") return mergeCorrection(ledger, call.id, call.into);
+  if (call.kind === "merge") return mergeCorrection(ledger, call.id, call.into, call.words);
   if (call.kind === "fix") {
     const entry = ledger.corrections.find(item => item.id === call.fix.id);
     if (!entry) throw new Error(`No correction ${call.fix.id}`);
@@ -183,11 +184,20 @@ export function applyCorrection(ledger: Ledger, call: CorrectionCall, chat: Chat
   return { kind: "added", entry, ...(closest ? { closest } : {}) };
 }
 
-/** Folds entry `id` into `into`: its words and repeats become repeats of `into`, which reopens, and `id` leaves the ledger. */
-function mergeCorrection(ledger: Ledger, id: string, into: string): CorrectionOutcome {
+/**
+ * Folds entry `id` into `into`: its words and repeats become repeats of `into`, which reopens, and `id` leaves the ledger. A call whose
+ * `words` are not entry `id`'s is refused: on 10-19 at 14:48Z the AI harness chat guessed its new rule would be c133 and sent id c133,
+ * mergeInto c110 and its owner's words in one call, but c133 was frontend bro's 13:13Z rule that a duty guards a whole system, which the
+ * merge folded into c110 as a repeat the owner never gave, while his own words were lost.
+ */
+function mergeCorrection(ledger: Ledger, id: string, into: string, words?: string): CorrectionOutcome {
   const from = ledger.corrections.find(entry => entry.id === id);
   const target = ledger.corrections.find(entry => entry.id === into);
   if (!from) throw new Error(`No correction ${id}`);
+  if (words !== undefined && !sameWords(from.words, words) && !from.repeats.some(repeat => sameWords(repeat.words, words))) {
+    throw new Error(`${id} holds other words ("${from.words.replace(/\s+/g, " ").slice(0, 160)}"), so it was not merged. To record the owner's ` +
+      `words as a repeat of ${into}, call ${CORRECTION_TOOL} with words, rule, theme and ref and no id; merge only an entry id a result gave you.`);
+  }
   if (!target || target === from) throw new Error(`No other correction ${into} to merge ${id} into`);
   const repeat = { at: from.at, chat: from.chat, words: from.words };
   target.repeats.push(repeat, ...from.repeats);
@@ -234,7 +244,7 @@ export function parseCorrectionCall(value: unknown): CorrectionCall {
   const handoff = input.handoff === undefined ? {} : { handoff: parseHandoff(input.handoff) };
   if (input.id !== undefined) {
     const id = correctionId(input.id, "id");
-    if (input.mergeInto !== undefined) return { kind: "merge", id, into: correctionId(input.mergeInto, "mergeInto") };
+    if (input.mergeInto !== undefined) return { kind: "merge", id, into: correctionId(input.mergeInto, "mergeInto"), ...(input.words === undefined ? {} : { words: text(input.words, "words") }) };
     const landed = input.enforcedBy !== undefined || input.ref !== undefined;
     const status = input.status !== undefined ? oneOf(input.status, CORRECTION_STATUSES, "status") : landed ? "active" : undefined;
     if (!status && !landed && input.handoff === undefined && input.rule === undefined) throw new Error("a fix gives rule, enforcedBy, ref, status or handoff");
