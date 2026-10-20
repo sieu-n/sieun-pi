@@ -113,6 +113,16 @@ test("the prod B2 inventory exec is its declared unit, and the hand-run lane wri
   assert.ok(f17.designs.includes("01a11bd7-072f-7591-ad1d-f123c276cde5/p145"));
 });
 
+// The d3 read at 14:40Z on 10-20: a read-only stdin script with arguments counted as the one hand writer left.
+test("a stdin script with arguments is a session tool, not a hand-run exec", () => {
+  const exec = (command: string) => ({ container: "virev-prod-crawler-worker", service: "crawler-worker", running: true, command, lasted: true });
+  const reads = [exec("dotenvx-start.sh .venv/bin/python - 2026-10-20T14:06:00+00:00/2026-10-20T14:14:00+00:00"), exec("dotenvx-start.sh .venv/bin/python -"),
+    exec("bash -s"), exec("/bin/sh -s x")];
+  const writer = exec("sh -c dotenvx-start.sh /app/apps/crawler-v3/.venv/bin/python /tmp/mw_extra_writer.py >> /tmp/mw_extra_writer.1.log 2>&1");
+  const flagged = exec("/app/apps/crawler-v3/.venv/bin/python -m src.run.run tiktok-shop-writer");
+  assert.deepEqual(handExecs([...reads, writer, flagged]), [writer, flagged]);
+});
+
 // Guards the d3 run after promote 12 on 10-18: the CI reds job's gate script copy read as 3 session writers, and an exited container as a hand-run one.
 test("a CI gate or test script in a session folder and an exited container are not hand-run processes", () => {
   const session = "/home/sieun/Documents/Github/auto-sns-agent/apps/llm-wiki/content/sessions/2026/10/18";

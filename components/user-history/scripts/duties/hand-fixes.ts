@@ -302,8 +302,13 @@ export const oneOffs = (containers: readonly BoxContainer[], now: number): BoxCo
  */
 export const reachesTier = (item: { networks?: readonly string[] }): boolean =>
   item.networks === undefined || item.networks.some(network => /^virev-(?:prod|staging)$|^host$/.test(network));
-/** A one-shot script piped in on stdin (`python -`, `bash -s`), the way session tools read or set controls; session_loops_writing counts those tools. */
-const STDIN_SCRIPT = /\s(?:-|-s)$/;
+/**
+ * A one-shot script piped in on stdin (`python -`, `bash -s`), with or without arguments after it, the way session tools read or set
+ * controls; session_loops_writing counts those tools. At 14:40Z on 10-20 TikTok Shop's read-only Kafka page count
+ * (`.venv/bin/python - <start>/<end>`, about 60 s a window) counted as the one hand writer left, because the rule matched only a
+ * trailing `-`.
+ */
+const STDIN_SCRIPT = /\/(?:python3?|bash|sh)\s+(?:-|-s)(?:\s|$)|\s(?:-|-s)$/;
 /** `exempt` is the registry's exempt.box_exec_regex: an exec a declared unit on the box starts, so a restart does not lose it. */
 export const handExecs = (execs: readonly BoxExec[], exempt?: string): BoxExec[] =>
   execs.filter(exec => exec.running && !DATA_SERVICES.has(exec.service) && !STDIN_SCRIPT.test(exec.command) && !(exempt && new RegExp(exempt).test(exec.command)) && reachesTier(exec) && exec.lasted !== false);
