@@ -191,6 +191,9 @@ const repeatOf = (about: string, done: readonly string[]): string | undefined =>
 };
 const REPEAT_MARK = "Not sent, you already told him this goal is done";
 const REASK_MARK = "Not sent, this decision already waits for him on For you";
+const INCIDENT_MARK = "Not sent, a blocker says what he must do";
+/** Words of a blocker that asks the owner for something: a question, you or your, please, or a Korean ask. */
+const ASKS_HIM = /\?|\byou\b|\byour\b|\bplease\b|주세요|골라|할까요|정해|해줘|하세요|부탁/i;
 const UNLOOKED_MARK = "Not sent, you have not opened a screenshot of this screen in this turn";
 /**
  * A 5180 demo link (localhost or the box's 15180 copy) or a screenshot image in a tell_owner text: a UI result handed to the owner to look at.
@@ -219,7 +222,7 @@ export function tellTurn(messages: readonly ThreadMessage[]): TellTurn {
     }
     if (message.role === "user" || message.role === "custom") looked = false;
     if (message.role === "toolResult" && message.content.some(part => part.type === "image")) looked = true;
-    if (message.role === "toolResult" && message.toolName === TELL_OWNER_TOOL && [SHOP_TALK_MARK, REPEAT_MARK, REASK_MARK, UNLOOKED_MARK].some(mark => messageText(message).startsWith(mark))) {
+    if (message.role === "toolResult" && message.toolName === TELL_OWNER_TOOL && [SHOP_TALK_MARK, REPEAT_MARK, REASK_MARK, UNLOOKED_MARK, INCIDENT_MARK].some(mark => messageText(message).startsWith(mark))) {
       const text = told.get(message.toolCallId);
       if (text) resent.add(text);
     }
@@ -257,6 +260,9 @@ export function tellOwner(input: TellInput, turn: TellTurn): { kind: "sent" | "r
   const declared = TELL_CASES.includes(input.why as TellWhy) && named(input.about);
   const repeat = !turn.owner && input.why === "done" && named(input.about) && !turn.resent?.has(told) ? repeatOf(input.about, turn.done ?? []) : undefined;
   const reask = !turn.owner && !turn.resent?.has(told) ? todoIds(`${told} ${typeof input.about === "string" ? input.about : ""}`).find(id => turn.asked?.has(id)) : undefined;
+  if (!turn.owner && input.why === "blocker" && !turn.resent?.has(told) && !ASKS_HIM.test(told)) return { kind: "refused", text: `${INCIDENT_MARK}, ` +
+    "and this one asks nothing of him. An incident or delay that a job or another chat already handles is update, so put it on the board. If " +
+    "only he can clear it, say what he must do and send it again; if he must see it now as it is, send the very same text again (c117)." };
   if (reask) return { kind: "refused", text: `${REASK_MARK} as ${reask}, which you added in an earlier turn. Put new facts or a changed ` +
     "pick in that todo with chat_board todo_update instead; if he must see this now, send the very same text again and it goes out (c117)." };
   if (repeat) return { kind: "refused", text: `${REPEAT_MARK} ("${repeat}") since his last message. Send nothing unless this brings something ` +

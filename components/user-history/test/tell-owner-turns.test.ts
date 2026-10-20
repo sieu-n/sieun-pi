@@ -129,3 +129,18 @@ test("a Prime quota resume or restart note starts no owner turn, so the chat's p
   assert.equal(tellTurn([...settled, owner("is it live?", "06:50:00"), cut, resume]).owner, true, "a quota pause inside his turn keeps it his");
   assert.equal(tellTurn([owner("Prime Agent restarted after an update. Continue the interrupted task.", "07:10:00")]).owner, false);
 });
+
+test("on a turn the owner did not start, a blocker that asks nothing of him is refused once, and one that says what he must do goes out", () => {
+  // 10-19 to 10-20: ops guy sent its two disk cleanup incidents as blocker while a job handled each, and api portal a crawler outage the crawler
+  // team owned; of 23 blocker calls on such turns, the 8 that asked him for something were real, and 1 of the other 15 was needed.
+  const turn = tellTurn([...settled, job("cleanup stopped", "07:00:00")]);
+  const incident = { text: "Another disk cleanup deleted 60 folders of other chats' work. It's stopped now, and a job is telling each chat what it lost.", why: "blocker", about: "cleanup deleted live work" };
+  const refused = tellOwner(incident, turn);
+  assert.equal(refused.kind, "refused");
+  assert.match(refused.text, /asks nothing of him/);
+  assert.equal(tellOwner(incident, { ...turn, resent: new Set([incident.text]) }).kind, "sent", "the very same text again goes out");
+  assert.equal(tellOwner({ ...incident, text: "The add-on is uploaded, but its last tab needs your sign-in. Sign in once with Touch ID in Aside." }, turn).kind, "sent");
+  assert.equal(tellOwner({ ...incident, text: "Promote 16 failed and my tools broke. Please restart this chat." }, turn).kind, "sent");
+  assert.equal(tellOwner({ ...incident, text: "Cloudflare 로그인이 필요해요, Aside에서 한 번 로그인해 주세요." }, turn).kind, "sent");
+  assert.equal(tellOwner(incident, { ...turn, owner: true }).kind, "sent", "his own turn is never held");
+});
