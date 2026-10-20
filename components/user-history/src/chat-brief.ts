@@ -185,7 +185,7 @@ export function pinnedBrief(branch: readonly { type: string; customType?: string
  * message ids, corrections, notices and images) and global-rules, which runs in every session. A change in any of them is a new
  * build; a chat or a job of a chat that loaded an older one is reloaded. A file missing from a release hashes as missing.
  */
-const BUILD_FILES = ["../extension/index.ts", "chats.ts", "chat-agents.ts", "chat-checkin.ts", "chat-guard.ts", "chat-brief.ts", "chat-sources.ts",
+const BUILD_FILES = ["../extension/index.ts", "chats.ts", "chat-agents.ts", "chat-checkin.ts", "chat-guard.ts", "chat-guard-live.ts", "chat-brief.ts", "chat-sources.ts",
   "checkin-settings.ts", "checkin-steps.ts", "checkin-findings.ts", "shared/chat-board.ts", "shared/chat-feed.ts", "chat-corrections.ts",
   "correction-delivery.ts", "context-images.ts", "prime-notices.ts", "shared/reply-lint.ts", "shared/turns.ts", "shared/types.ts", "message-limit-check.ts",
   "message-limit-check.py", "agent-board.ts", "shared/release-go.ts", "session-tail.ts", "../../global-rules/index.ts"];

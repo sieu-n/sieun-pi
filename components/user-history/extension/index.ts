@@ -6,9 +6,10 @@ import { agentLines } from "../src/chat-agents.ts";
 import { agentOpsViaService, applyAgentOps } from "../src/agent-board.ts";
 import { BRIEF_CORRECTIONS, CHAT_BRIEF, CHAT_BRIEF_ENTRY, type ChatJobOf, createdRootChat, JOB_REPLY_TOOL, jobOf, jobReplyGuideline, PERSONA_TOOL, personaGuideline, pinnedBrief } from "../src/chat-brief.ts";
 import { CHAT_BOARD_TOOL, CHAT_FLAG, CHAT_MODE_ENTRY, OWNER_THREAD_FLAG, chatModeAt, chatShellNote, createSessionNames, hasChatMarker, TELL_OWNER_DESCRIPTION, TELL_OWNER_PARAMETERS,
-  askedTodos, type TellInput, tellOwner, type TellTurn, tellTurn, topSession, withChatTool, withMessageIds, withWakeNotes } from "../src/chat-guard.ts";
+  askedTodos, type TellInput, type TellTurn, topSession, withChatTool, withMessageIds, withWakeNotes } from "../src/chat-guard.ts";
 import { historyMessages } from "../src/session-tail.ts";
 import { registerPrintedRoots } from "../src/chat-sources.ts";
+import { liveGuard } from "../src/chat-guard-live.ts";
 import { chatService, hostJobRegistry, remoteChatService, serviceCall } from "../src/chat-host.ts";
 import { TELL_OWNER_TOOL } from "../src/shared/chat-feed.ts";
 import { BOARD_OP_NAMES, boardRevLine, PLAN_STATUSES, renderOpenPlan } from "../src/shared/chat-board.ts";
@@ -104,15 +105,17 @@ export default function historyExtension(pi: ExtensionAPI): void {
     description: TELL_OWNER_DESCRIPTION,
     parameters: TELL_OWNER_PARAMETERS,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const guard = await liveGuard(getAgentDir());
       let turn: TellTurn = { owner: true, ownerIds: new Set() };
-      try { turn = tellTurn(historyMessages(ctx.sessionManager.getBranch()) as ThreadMessage[]); } catch { /* read as an owner turn, so nothing is held */ }
+      try { turn = guard.tellTurn(historyMessages(ctx.sessionManager.getBranch()) as ThreadMessage[]); } catch { /* read as an owner turn, so nothing is held */ }
+      const asked = guard.askedTodos ?? askedTodos;
       if (!turn.owner) try {
         const sessionId = ctx.sessionManager.getSessionId();
         const service = await chatService(dataDir());
         const { board } = (service?.remote ? await agentOpsViaService(dataDir(), sessionId, [], _signal) : null) ?? await applyAgentOps(dataDir(), sessionId, []);
-        if (board) turn = { ...turn, asked: askedTodos(board.todos, turn.startedAt) };
+        if (board) turn = { ...turn, asked: asked(board.todos, turn.startedAt) };
       } catch { /* no board read, so no todo holds the message */ }
-      const result = tellOwner(params as TellInput, turn);
+      const result = guard.tellOwner(params as TellInput, turn);
       if (result.kind === "refused") throw new Error(result.text);
       return { content: [{ type: "text", text: result.text }], details: undefined };
     },
