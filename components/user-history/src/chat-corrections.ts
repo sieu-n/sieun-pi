@@ -341,8 +341,8 @@ export function ledgerPrompt(ledger: Ledger, brief: ReadonlySet<string>): string
 
 export const OUTSIDE_ACTION_RULE = "Before any outside action (an email, a ticket or support reply, a customer message, a post) check these rules; " +
   "c37: nothing goes out without the owner's ok on a For you todo; c79: never ask a vendor's support for help, and never ask the owner to approve that.";
-/** The rules a job reads as short lines: outside sends, vendor support, acting directly, the model, writing, Convex, merges and staging. */
-export const JOB_RULES: ReadonlySet<string> = new Set(["c18", "c20", "c31", "c35", "c37", "c47", "c49", "c50", "c79"]);
+/** The rules a job reads as short lines: outside sends, vendor support, acting directly, the model and no model fallback, writing, Convex, merges and staging. */
+export const JOB_RULES: ReadonlySet<string> = new Set(["c18", "c20", "c30", "c31", "c35", "c37", "c47", "c49", "c50", "c79"]);
 export function jobLedgerPrompt(ledger: Ledger | null): string {
   return [`[corrections] The owner's corrections that bind jobs, live from the ledger; every other correction holds in this job too. ${OUTSIDE_ACTION_RULE} ${READ_RULE}`,
     ...(ledger ? liveRules(ledger).filter(entry => JOB_RULES.has(entry.id)).map(shortLine) : [])].join("\n");
