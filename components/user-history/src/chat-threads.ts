@@ -289,8 +289,11 @@ export async function disposeConnection(connection: DaemonAgentConnection): Prom
  * and 25 s). Another box's bridge keeps its 3 s: while the Mac's relay did not answer on 10-18, its hello never came (open 01a11ba8 on mac).
  */
 const LOCAL_HELLO_MS = 30_000;
-/** A call that found this box's daemon socket gone or closed, as the SDK words it. */
-const DAEMON_DOWN = /Prime Agent daemon (?:on \S+ )?is not reachable|Failed to connect to the Prime Agent daemon|Connection to the Prime Agent daemon closed/;
+/**
+ * A call that found this box's daemon socket gone before it wrote anything, as the SDK words it, so the daemon never took it. A link that
+ * closed after the write is left out: that call may have landed.
+ */
+const DAEMON_DOWN = /Prime Agent daemon (?:on \S+ )?is not reachable|Failed to connect to the Prime Agent daemon/;
 /** A prompt's wait for the session to take it, as long as the native connection's (DAEMON_LONG_RUNNING_REQUEST_TIMEOUT_MS, 24 h). */
 const PROMPT_REQUEST_MS = 24 * 60 * 60 * 1000;
 
@@ -330,6 +333,8 @@ export class ThreadHub {
   private readonly archiveStarts = new Map<string, number>();
   /** When the owner last pressed Stop on each thread through this server (`ownerStopped`). */
   private readonly ownerStops = new Map<string, number>();
+  /** The update waits of worker starts under way (`startWorker`), each with the session it starts, for a Stop, archive or close to cancel. */
+  private readonly waits = new Set<{ session: string | undefined; controller: AbortController }>();
   /** Pinned chats detached by `rest`. They stay pinned and keep their last state until `resume` wakes them. */
   private readonly dormant: Dormancy;
   private unwatchCatalog: (() => void) | undefined;
@@ -553,7 +558,7 @@ export class ThreadHub {
     if (activeSessionId === undefined) return "saved";
     if (await this.daemonBusy(activeSessionId)) return "busy";
     const response = await this.startWorker(`reload ${id.slice(0, 8)}`, this.catalog.hostOf(activeSessionId), client => client.request({ type: "reload", activeSessionId }, DAEMON_WORKER_START_MS, { recoverable: false }),
-      async () => await this.daemonBusy(activeSessionId) ? "its session is busy now" : null);
+      async () => await this.daemonBusy(activeSessionId) ? "its session is busy now" : null, undefined, id);
     if (!response.success) throw new ThreadError(502, response.error);
     return "reloaded";
   }
@@ -630,15 +635,26 @@ export class ThreadHub {
   /**
    * A daemon create or reload on `host` (this box when null) that waits out the daemon's update prepare and starts again after it
    * (`workerStartThroughUpdates`). This box's prepare ends with its update record (`updates`); another box's with its daemon's next hello or
-   * the daemon's prepare deadline. `dropped` names what makes the start moot meanwhile, and a stopped service drops it too.
+   * the daemon's prepare deadline. `dropped` names what makes the start moot meanwhile. The owner's Stop or archive of `session` and the
+   * service's stop cancel the wait at once (`waits`).
    */
-  private startWorker<T extends { success: boolean; error?: string; errorInfo?: { code?: string } }>(label: string, host: string | null,
-    run: (client: DaemonClient) => Promise<T>, dropped: () => Promise<string | null> = async () => null, refusedStart?: (answer: T) => boolean): Promise<T> {
+  private async startWorker<T extends { success: boolean; error?: string; errorInfo?: { code?: string } }>(label: string, host: string | null,
+    run: (client: DaemonClient) => Promise<T>, dropped: () => Promise<string | null> = async () => null, refusedStart?: (answer: T) => boolean,
+    session?: string): Promise<T> {
     let used: DaemonClient | undefined;
     const other = Boolean(host && this.catalog.isOtherHost(host));
-    return workerStartThroughUpdates(label, async () => run(used = await this.hostDaemon(host)),
-      () => prepareEnd(used!, other ? null : this.updates),
-      async () => this.closed ? "the chat service stopped" : dropped(), refusedStart);
+    const wait = { session, controller: new AbortController() };
+    this.waits.add(wait);
+    try {
+      return await workerStartThroughUpdates(label, async () => run(used = await this.hostDaemon(host)),
+        waitMs => prepareEnd(used!, other ? null : this.updates, { waitMs, signal: wait.controller.signal }),
+        async () => this.closed ? "the chat service stopped" : dropped(), refusedStart);
+    } finally { this.waits.delete(wait); }
+  }
+
+  /** Cancels the update waits of `session`'s starts, or every one when no session is named. */
+  private cancelWaits(session?: string): void {
+    for (const wait of this.waits) if (session === undefined || wait.session === session) wait.controller.abort();
   }
 
   /**
@@ -670,11 +686,15 @@ export class ThreadHub {
     const refused = isPrepareRefusal({ success: false, error: text });
     if (!refused && (!records || !DAEMON_DOWN.test(text) || !await records.running().catch(() => null))) return null;
     const client = other ? await this.catalog.hostClient(host).catch(() => null) : this.catalog.client;
-    return client ? { kind: refused ? "prepare" : "restart", ended: prepareEnd(client, records) } : null;
+    if (!client) return null;
+    const wait = { session: undefined, controller: new AbortController() };
+    this.waits.add(wait);
+    const ended = prepareEnd(client, records, { signal: wait.controller.signal }).finally(() => { this.waits.delete(wait); });
+    return { kind: refused ? "prepare" : "restart", ended };
   }
 
   /** The owner's Stop of `id` through this server, before its abort, for a resume waiting out an update prepare (`ownerStopSince`). */
-  ownerStopped(id: string): void { this.ownerStops.set(id, Date.now()); }
+  ownerStopped(id: string): void { this.ownerStops.set(id, Date.now()); this.cancelWaits(id); }
 
   /** A connected client for the named hosts.json box, this box's own when the name is null. */
   private async hostDaemon(host: string | null): Promise<DaemonClient> {
@@ -1282,7 +1302,8 @@ export class ThreadHub {
     const config = this.catalog.hostOf(id) ? { cwd: summary.cwd } : await stat(summary.cwd).then(found => found.isDirectory() ? { cwd: summary.cwd } : {}, () => ({}));
     const sessionPath = this.catalog.daemonPath(summary) ?? summary.sessionFile;
     const response = await this.startWorker(`resume ${id.slice(0, 8)}${host && this.catalog.isOtherHost(host) ? ` on ${host}` : ""}`, host,
-      client => client.request({ type: "create", lifecycle: "resident", sessionPath, config }, DAEMON_WORKER_START_MS, { recoverable: false }), () => this.ownerStopSince(id, asked));
+      client => client.request({ type: "create", lifecycle: "resident", sessionPath, config }, DAEMON_WORKER_START_MS, { recoverable: false }), () => this.ownerStopSince(id, asked),
+      undefined, id);
     if (!response.success) {
       const running = await this.runningElsewhere(await this.daemon(id), id, response.error);
       if (running) return running;
@@ -1589,6 +1610,7 @@ export class ThreadHub {
    */
   async archive(id: string): Promise<void> {
     this.archiveStarts.set(id, Date.now());
+    this.cancelWaits(id);
     this.archiving.set(id, (this.archiving.get(id) ?? 0) + 1);
     this.archivedAt.set(id, Date.now());
     try { await this.archiveNow(id); } finally {
@@ -1913,6 +1935,7 @@ export class ThreadHub {
 
   async close(): Promise<void> {
     this.closed = true;
+    this.cancelWaits();
     clearInterval(this.sweeper);
     await this.dropSpare().catch(() => {});
     this.cancels?.close();

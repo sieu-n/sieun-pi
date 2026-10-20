@@ -1,4 +1,4 @@
-import { isPrepareRefusal } from "./prime-update.ts";
+import { isPrepareRefusal, type PrepareEnd, UPDATE_WAIT_MS, windowEnded } from "./prime-update.ts";
 
 /**
  * How long a daemon create or reload waits for its answer. Both start a session worker. The bound sits above the longest create the daemon
@@ -38,22 +38,32 @@ type StartAnswer = { success: boolean; error?: string; errorInfo?: { code?: stri
 
 /**
  * Runs a worker start with `timedWorkerStart`, and again each time the daemon refused it because it was preparing an update restart, once that
- * prepare ended (`ended`, src/prime-update.ts `prepareEnd`). The start stays one call to its caller, so a second ask for the same session joins
- * it rather than sending its own (`ThreadHub.resume`). `dropped` names a newer owner stop or archive that ends the wait, and the refusal then
- * stands. On 10-20 the daemons' prepares refused a resume of Mac chat 01a15503 at 15:46:05Z and 15:46:35Z and the create of "alert triage
- * Crawler VP 01:13" at 16:13:12Z, and each refusal made a d7 minute dirty.
+ * prepare ended (`ended`, src/prime-update.ts `prepareEnd`, which gets the time left of UPDATE_WAIT_MS since the first refusal). Only that
+ * refusal goes again: the daemon answered it before it took the call, so nothing of the call ran, while a timeout or a closed link may have
+ * delivered it and fails as before. The start stays one call to its caller, so a second ask for the same session joins it rather than
+ * sending its own (`ThreadHub.resume`). `dropped` names a newer owner stop or archive, and the refusal then stands with no new try. A wait
+ * past UPDATE_WAIT_MS writes the refusal again with the time it waited, which counts as the refused start it is. On 10-20 the daemons'
+ * prepares refused a resume of Mac chat 01a15503 at 15:46:05Z and 15:46:35Z and the create of "alert triage Crawler VP 01:13" at 16:13:12Z,
+ * and each refusal made a d7 minute dirty.
  */
-export async function workerStartThroughUpdates<T extends StartAnswer>(label: string, run: () => Promise<T>, ended: () => Promise<string>,
+export async function workerStartThroughUpdates<T extends StartAnswer>(label: string, run: () => Promise<T>, ended: (waitMs: number) => Promise<PrepareEnd>,
   dropped: () => Promise<string | null> = async () => null, refusedStart: (answer: T) => boolean = isPrepareRefusal,
   log: (line: string) => void = line => { process.stderr.write(`${line}\n`); }, now: () => number = Date.now): Promise<T> {
+  let first: number | undefined;
   for (;;) {
     const answer = await timedWorkerStart(label, run, log, now, refusedStart);
     if (!refusedStart(answer)) return answer;
+    first ??= now();
     const since = now();
-    const end = await ended();
+    const end = await ended(first + UPDATE_WAIT_MS - since);
     const stop = await dropped();
-    const waited = `${new Date(now()).toISOString()} daemon ${label}: the update prepare ended (${end}) after ${((now() - since) / 1000).toFixed(1)} s`;
-    if (stop) { log(`${waited}; ${stop}, so it does not start again`); return answer; }
-    log(`${waited}; it starts again`);
+    const seconds = ((now() - since) / 1000).toFixed(1);
+    const at = new Date(now()).toISOString();
+    if (stop) { log(`${at} daemon ${label}: the wait for the update prepare ended (${end}) after ${seconds} s; ${stop}, so it does not start again`); return answer; }
+    if (!windowEnded(end)) {
+      log(`${at} daemon ${label}: refused in ${((now() - first) / 1000).toFixed(1)} s: ${answer.error ?? "Daemon is preparing an update restart"}; the wait ${end === "gave up" ? "gave up" : "was cancelled"} after ${seconds} s`);
+      return answer;
+    }
+    log(`${at} daemon ${label}: the update prepare ended (${end}) after ${seconds} s; it starts again`);
   }
 }

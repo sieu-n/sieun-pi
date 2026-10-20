@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { CLEAN_ROOM_CHATS_FILE } from "./chat-corrections.ts";
 import type { PeerReach } from "./host-reach.ts";
-import type { UpdateWindow } from "./prime-update.ts";
+import { type UpdateWindow, windowEnded } from "./prime-update.ts";
 import { type AgentKind, type Bundled, MAX_BACKOFF_MS, type Obsolete, Outbox, type Sending, type Stored } from "./outbox.ts";
 import { isSendTimeout, messageAt, QUEUED_PREFIX, sendKey, type TargetState } from "./send-once.ts";
 import { relayNote, type StoppedSubagent, stoppedSubagent } from "./subagent-relay.ts";
@@ -453,7 +453,12 @@ export class AgentOutbox {
         const since = this.now();
         this.deps.log(`outbox ${this.where(session)}: ${id} met the daemon's update ${window.kind}; it and the sends after it wait for it to end`);
         const end = await window.ended;
-        this.deps.log(`outbox ${this.where(session)}: the daemon's update ${window.kind} ended (${end}) after ${Math.round((this.now() - since) / 1000)} s; ${id} goes again`);
+        const seconds = Math.round((this.now() - since) / 1000);
+        if (!windowEnded(end)) {
+          this.deps.log(`outbox ${this.where(session)}: the wait for the daemon's update ${window.kind} ${end === "gave up" ? "gave up" : "was cancelled"} after ${seconds} s; ${id} is tried again as any failed send`);
+          throw error;
+        }
+        this.deps.log(`outbox ${this.where(session)}: the daemon's update ${window.kind} ended (${end}) after ${seconds} s; ${id} goes again`);
         throw new UpdateWaited(`the daemon's update ${window.kind} ended (${end})`);
       }
       const doing = moveOf(error);

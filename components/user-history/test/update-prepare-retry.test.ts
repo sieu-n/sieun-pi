@@ -13,7 +13,7 @@ import { ChatLabels } from "../src/chat-labels.ts";
 import { ChatReadState } from "../src/chat-read-state.ts";
 import { ThreadHub } from "../src/chat-threads.ts";
 import { readServiceFaults } from "../src/daemon-faults.ts";
-import { PREPARE_WAIT } from "../src/daemon-worker-start.ts";
+import { PREPARE_WAIT, workerStartThroughUpdates } from "../src/daemon-worker-start.ts";
 import { processStartId } from "../src/orphan-services.ts";
 import { type PrepareEnd, prepareEnd, updateRecords } from "../src/prime-update.ts";
 import { ThreadOrigins } from "../src/thread-origin.ts";
@@ -93,8 +93,7 @@ test("a resume waiting out a prepare yields to the owner's Stop meanwhile and do
   const resumed = hub.resume(id).then(() => "resumed", (error: Error) => error.message);
   await until(() => creates() === 1);
   hub.ownerStopped(id);
-  await writeRecord(agentDir, "failed");
-  assert.equal(await resumed, "Daemon is preparing an update restart");
+  assert.equal(await resumed, "Daemon is preparing an update restart", "the Stop cancels the wait while the prepare still runs");
   assert.equal(creates(), 1);
 });
 
@@ -117,6 +116,9 @@ test("a send that found this box's daemon down while its update ran waits for th
   await writeRecord(agentDir, "complete");
   assert.equal(await window!.ended, "update ended");
   assert.equal(await hub.updateWindow(null, new Error("The Prime Agent daemon on us-metal02 is not reachable.")), null, "no update runs, so a down daemon is no update window");
+  await writeRecord(agentDir, "starting_daemon");
+  assert.equal(await hub.updateWindow(null, new Error("Connection to the Prime Agent daemon closed")), null, "a link closed after the write may have delivered the send");
+  assert.equal(await hub.updateWindow(null, new Error('Timed out after 30000ms waiting for the Prime Agent daemon response to "send_message".')), null);
 });
 
 test("an agent outbox send refused by the prepare waits for it, goes again with no backoff, and writes no failed try", async t => {
@@ -157,5 +159,16 @@ test("d7 counts no fault for a start that waits out a prepare, and books a resum
 
 test("another box's prepare, whose records this box cannot read, ends by the daemon's own deadline when no new hello comes", async () => {
   const client = { hello: { supervisorGeneration: "generation-1" }, onMessage: () => () => {} } as unknown as Pick<DaemonClient, "hello" | "onMessage">;
-  assert.equal(await prepareEnd(client, null, 20), "deadline passed");
+  assert.equal(await prepareEnd(client, null, { deadlineMs: 20 }), "deadline passed");
+  assert.equal(await prepareEnd(client, null, { deadlineMs: 50, waitMs: 20 }), "gave up", "a wait past UPDATE_WAIT_MS ends with no prepare end");
+});
+
+test("a start whose wait passes UPDATE_WAIT_MS fails as before, and d7 counts that refusal", async () => {
+  const lines: string[] = [];
+  let tries = 0;
+  const answer = await workerStartThroughUpdates("create check-in vent 01:13", async () => { tries++; return PREPARING; }, async () => "gave up", undefined, undefined,
+    line => { lines.push(line); });
+  assert.equal(answer, PREPARING);
+  assert.equal(tries, 1);
+  assert.equal(readServiceFaults(lines, "us-metal02").length, 1, lines.join("\n"));
 });

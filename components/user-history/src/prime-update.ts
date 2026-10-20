@@ -77,25 +77,41 @@ export function updateRecords(agentDir: string, socketPath: string): UpdateRecor
 }
 
 /**
- * How the update prepare that refused a call ended: the daemon came back under a new supervisor (its next hello names a new generation), this
- * box's update record of it ended (the prepare was refused, or the update finished), or, for a daemon whose records this box cannot read, the
- * daemon's own prepare deadline passed.
+ * The longest a caller waits out one daemon's update window before its call fails as it did before: the longest update measured, us-metal02's
+ * second one on 10-20, ran 189 s from its ctl start at 16:11:37Z to result=ok at 16:14:46Z; the first ran 97 s, 15:46:44Z to its refused
+ * prepare at 15:48:21Z.
  */
-export type PrepareEnd = "restarted" | "update ended" | "deadline passed";
+export const UPDATE_WAIT_MS = 189_000;
+
+/**
+ * How the update window a call met ended: the daemon came back under a new supervisor (its next hello names a new generation), this box's
+ * update record of it ended (the prepare was refused, or the update finished), for a daemon whose records this box cannot read the daemon's
+ * own prepare deadline passed, or the wait ended with no prepare end: past UPDATE_WAIT_MS, or cancelled by the caller.
+ */
+export type PrepareEnd = "restarted" | "update ended" | "deadline passed" | "gave up" | "cancelled";
+
+/** Whether a wait ended because the daemon's window ended, so the call goes again; "gave up" and "cancelled" leave the call failed. */
+export const windowEnded = (end: PrepareEnd): boolean => end !== "gave up" && end !== "cancelled";
 
 /** An update window a daemon call met: the daemon refused it while it prepared, or this box's daemon was down while its update ran. */
 export interface UpdateWindow { kind: "prepare" | "restart"; ended: Promise<PrepareEnd> }
 
 /**
- * Resolves once the update prepare that refused a call on `client` ended (`PrepareEnd`). `records` are this box's update records, given only
- * for this box's daemon: a prepare that no running record names, such as another box's, ends by DAEMON_PREPARE_DEADLINE_MS at the latest.
+ * Resolves once the update window a call on `client` met ended (`PrepareEnd`). `records` are this box's update records, given only for this
+ * box's daemon: a prepare that no running record names, such as another box's, ends by `deadlineMs` (DAEMON_PREPARE_DEADLINE_MS) at the
+ * latest. The wait ends unended after `waitMs` or when `signal` aborts.
  */
 export async function prepareEnd(client: Pick<DaemonClient, "hello" | "onMessage">, records: UpdateRecords | null,
-  deadlineMs = DAEMON_PREPARE_DEADLINE_MS): Promise<PrepareEnd> {
+  options: { deadlineMs?: number; waitMs?: number; signal?: AbortSignal } = {}): Promise<PrepareEnd> {
+  const { deadlineMs = DAEMON_PREPARE_DEADLINE_MS, waitMs = UPDATE_WAIT_MS, signal } = options;
+  if (signal?.aborted) return "cancelled";
   const generation = client.hello?.supervisorGeneration;
   let finish: (end: PrepareEnd) => void = () => {};
   const ended = new Promise<PrepareEnd>(resolve => { finish = resolve; });
   const offHello = client.onMessage(message => { if (message.type === "daemon_hello" && message.supervisorGeneration !== generation) finish("restarted"); });
+  const cancel = () => finish("cancelled");
+  signal?.addEventListener("abort", cancel, { once: true });
+  const gaveUp = setTimeout(() => finish("gave up"), Math.max(0, waitMs));
   let offRecords = () => {};
   let timer: ReturnType<typeof setTimeout> | undefined;
   const update = records ? await records.running().catch(() => null) : null;
@@ -103,6 +119,6 @@ export async function prepareEnd(client: Pick<DaemonClient, "hello" | "onMessage
     const check = () => { void records.running().then(now => { if (now?.requestId !== update.requestId) finish("update ended"); }, () => {}); };
     offRecords = records.watch(check);
     check();
-  } else timer = setTimeout(() => finish("deadline passed"), deadlineMs);
-  try { return await ended; } finally { offHello(); offRecords(); clearTimeout(timer); }
+  } else if (deadlineMs < waitMs) timer = setTimeout(() => finish("deadline passed"), deadlineMs);
+  try { return await ended; } finally { offHello(); offRecords(); clearTimeout(timer); clearTimeout(gaveUp); signal?.removeEventListener("abort", cancel); }
 }
