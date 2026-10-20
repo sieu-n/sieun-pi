@@ -10,6 +10,7 @@ import { ownerChats } from "../../src/owner-chats.ts";
 import { chatDataDir } from "../../src/owner-ok.ts";
 import type { DutyRunRecord, FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import type { ChatBoard, PlanItem } from "../../src/shared/types.ts";
+import { metricStreaks } from "../../src/shared/duty-streak.ts";
 import { hasDoneLine, upkeepWords } from "../../src/shared/upkeep-title.ts";
 import { daemonSessions, dutyFleet, type FleetDuty } from "./duty-fleet.ts";
 import { catalogCopies, endsOnPoolWait, planCounts, planInputs, POOL_TAIL_BYTES, stepSessions } from "./whole-system.ts";
@@ -100,6 +101,21 @@ function localCopy(file: string | undefined): { file: string; host: string } | u
     if (existsSync(copy)) return { file: copy, host };
   }
   return undefined;
+}
+
+/** A red duty of the fleet, with the newest event time when every metric it misses is a windowed count that only ages out (`agingSince`). */
+export type RedDuty = FleetDuty & { agingSince?: number };
+
+/**
+ * When a red duty misses only windowed counts with no new event since the run before (`MetricStreak.quietSince`, the duty runner's own quiet
+ * read), the newest event any of them counts; otherwise undefined. Such a duty owes no fix job (`missLine` says to start none), but d9 listed
+ * the AI harness chat's d10, repeat_corrections_7d 16 with every line before its fix, among its red examples, and its job pushed the chat for a
+ * fix step on it at 07:50Z, 10:47Z and 14:12Z on 10-20. `runs` is the duty's own runs, newest first.
+ */
+export function agingSince(runs: readonly DutyRunRecord[]): number | undefined {
+  const streaks = metricStreaks(runs);
+  if (!streaks.length || streaks.some(streak => streak.quietSince === undefined)) return undefined;
+  return Math.max(...streaks.map(streak => streak.quietSince!));
 }
 
 /** A catalog row as the boxes' copies keep it (session-copy.json and src/host-catalogs.ts `copyPath`), with the fields the push reads. */
@@ -227,7 +243,7 @@ export interface ChatSystemFacts {
   names: ReadonlyMap<string, string>;
   stuck: readonly { chat: string; id?: string; text?: string; count?: number }[];
   upkeep: readonly PlanFlag[];
-  fleet: { pct: number; red: readonly FleetDuty[] };
+  fleet: { pct: number; red: readonly RedDuty[] };
   stuckDuties: readonly { chat: string; line: string }[];
   /** Per chat, the open goals with no live job (`goalsWithNoJob`) the run's job pushes it on, beside its stuck duties. */
   idleGoals: readonly { chat: string; goals: readonly PlanItem[] }[];
@@ -253,10 +269,13 @@ export function chatSystemOutput(facts: ChatSystemFacts): PrecheckOutput {
   head("plan_upkeep", facts.upkeep.length, "open plan items that are upkeep or have no done line", chats(facts.upkeep));
   for (const item of spread(facts.upkeep, EXAMPLES)) flagged.push({ kind: "plan_upkeep", chat: item.chat, item: item.id, excerpt: `${name(item.chat)}: ${item.id} ${quote(item.text)} ${item.why}.` });
   head("red_duty", facts.fleet.red.length, "red duties", chats(facts.fleet.red));
-  for (const duty of spread(facts.fleet.red, EXAMPLES)) {
+  for (const duty of spread(facts.fleet.red.filter(duty => duty.agingSince === undefined), EXAMPLES)) {
     flagged.push({ kind: "red_duty", chat: duty.chat, item: duty.duty, excerpt: `${name(duty.chat)}: ${duty.name} (${duty.duty}) is red` +
       (duty.metric ? `, ${duty.metric.key} ${show(duty.metric.value)} against ${duty.metric.op} ${show(duty.metric.target)}` : "") + `, ${duty.misses === 1 ? "1 run" : `${duty.misses} runs in a row`}.` });
   }
+  const aging = facts.fleet.red.filter(duty => duty.agingSince !== undefined);
+  if (aging.length) flagged.push({ kind: "aging_duty", excerpt: `${aging.map(duty => `${name(duty.chat)} ${duty.duty}`).join(", ")} ${aging.length === 1 ? "is" : "are"} red only on ` +
+    "counts over a trailing window with no new event since the run before, which fall as old events leave the window; they owe no fix job, so push nothing for them." });
   head("stuck_duty", facts.stuckDuties.length, "red duties with no live fix job", chats(facts.stuckDuties));
   for (const duty of spread(facts.stuckDuties, EXAMPLES)) flagged.push({ kind: "stuck_duty", chat: duty.chat, excerpt: `${duty.line}.` });
   const pushes = pushList(facts);
@@ -320,7 +339,11 @@ async function main(): Promise<void> {
     : [{ chat: entry.chat.id, count: entry.value }]);
   const upkeep = plan.chats.filter(chat => !plan.pausedChats.has(chat.id)).flatMap(chat => planUpkeep(chat.id, plan.boards.get(chat.id) ?? null));
   const fleet = await dutyFleet({ dataDir, now, sessions: daemonSessions });
-  const red = fleet.duties.filter(duty => !duty.green && !duty.pending);
+  const runsOf = (chat: string, duty: string) => (runsByChat.get(chat) ?? []).filter(run => run.duty === duty);
+  const red = fleet.duties.filter(duty => !duty.green && !duty.pending).map((duty): RedDuty => {
+    const since = agingSince(runsOf(duty.chat, duty.duty));
+    return since === undefined ? duty : { ...duty, agingSince: since };
+  });
   const idleGoals = plan.chats.filter(chat => !plan.pausedChats.has(chat.id)).map(chat => ({ chat: chat.id, goals: goalsWithNoJob(plan.boards.get(chat.id) ?? null,
     { now, named: plan.named.get(chat.id) ?? new Map(), jobs: jobs.get(chat.id) ?? [], activity: plan.ownerActivity, waking: plan.waking, poolWaiting: plan.poolWaiting }) }));
   // The pushes the last run's job sent: those recorded after the last run of this duty began (LAST_RUNS_FILE, newest first).
@@ -358,7 +381,7 @@ async function main(): Promise<void> {
     `3. Its duties are ${join(dataDir, "duties", `${spot}.json`)}, and their runs are ${join(dataDir, "duties", `${spot}.runs.jsonl`)}.`,
     `4. Its transcript is ${transcript?.file ?? "not on this box"}.`,
     "5. Read its open plan, its duties and their last runs, and its last turns, and compare them with the owner's asks below.",
-    "6. Fix what is off: a step that is upkeep, a step with no done line or no live owner, a duty that checks something the owner did not ask for or misses what he did, a red duty with no fix job, and an ask of his that nothing on the board carries.",
+    "6. Fix what is off: a step that is upkeep, a step with no done line or no live owner, a duty that checks something the owner did not ask for or misses what he did, a red duty with no fix job (one this file marks as red only on counts that age out owes none), and an ask of his that nothing on the board carries.",
     `7. Append what you found and what you fixed to ${log}, under a heading with the time and the chat's name, and send the owner nothing.`, "",
     "The owner's last messages in it, newest last:", "",
     ...asks.length ? asks.map(ask => `- ${ask.at}: ${JSON.stringify(ask.text)}`) : ["- None found in the transcript's last 4 MB."], "",
@@ -378,7 +401,8 @@ async function main(): Promise<void> {
     section(`Open plan items that are upkeep or have no done line (${upkeep.length})`, upkeep.map(item => `${name(item.chat)}: ${item.id} ${quote(item.text)} ${item.why}.`)),
     section(`Red duties (${red.length}, ${fleet.metrics.duties_green_pct}% green)`, red.map(duty => `${name(duty.chat)}: ${duty.name} (${duty.duty}), ` +
       `${duty.metric ? `${duty.metric.key} ${show(duty.metric.value)} against ${duty.metric.op} ${show(duty.metric.target)}, ` : ""}${duty.misses === 1 ? "1 run" : `${duty.misses} runs in a row`}` +
-      `${duty.fix ? `, fix step ${duty.fix}` : duty.working ? `, its job ${duty.working} works on it` : ""}.`)),
+      `${duty.fix ? `, fix step ${duty.fix}` : duty.working ? `, its job ${duty.working} works on it` : ""}` +
+      `${duty.agingSince !== undefined ? `, red only on counts that age out (newest event ${new Date(duty.agingSince).toISOString().slice(0, 16)}Z), so it owes no fix job` : ""}.`)),
     section(`Red duties with no live fix job (${counts.redDuties.length})`, counts.redDuties.map(duty => `${duty.line}.`)),
     section(`Red windowed counts with no lastEventAt, read as lagging windows (${owned.lagging.length})`, owned.lagging.map(duty => `${duty.line}.`)),
   ].join("\n");

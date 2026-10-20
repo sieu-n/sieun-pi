@@ -1,7 +1,7 @@
 // Guards the Chat system duty's precheck (d9), built 10-19 for the owner's rule that a plan holds only tasks that finish (msg mvfb7zt0).
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { chatSystemOutput, goalsWithNoJob, jobsByChat, ownerMessages, planUpkeep, pushList, pushReached, spread, withCatalogOwners, withoutWorkingRuns } from "../scripts/duties/chat-system.ts";
+import { agingSince, chatSystemOutput, goalsWithNoJob, jobsByChat, ownerMessages, planUpkeep, pushList, pushReached, spread, withCatalogOwners, withoutWorkingRuns } from "../scripts/duties/chat-system.ts";
 import { type PlanInputs, planCounts } from "../scripts/duties/whole-system.ts";
 import type { ChatBoard } from "../src/shared/types.ts";
 
@@ -140,4 +140,23 @@ test("a red duty whose fix step's create_session job works is not stuck, though 
   const idle = jobsByChat([{ ...row, activity: "idle", lastActivityAt: "2026-10-20T13:50:00Z" }], boards);
   assert.equal(planCounts({ ...plan, ...withCatalogOwners(plan, idle, now) }).redDuties.length, 1);
   assert.equal(jobsByChat([row]).size, 0);
+});
+
+// 10-20: d9 listed the AI harness chat's d10 (repeat_corrections_7d 16, every line before its fix) among its red examples, and its job pushed
+// for a fix step on it three times, while the duty runner's own read said the count only ages out and owes no job.
+test("a red duty that misses only windowed counts with no new event since the run before reads as aging out, not as a red example", () => {
+  const at = Date.parse("2026-10-20T14:08:59Z");
+  const lastEventAt = Date.parse("2026-10-20T06:27:35Z");
+  const run = (when: number, last?: number) => ({ duty: "d10", at: when, trigger: "push", verdict: "missed", ms: 1,
+    metrics: { repeat_corrections_7d: { value: 16, target: 0, op: "<=", met: false, ...last === undefined ? {} : { lastEventAt: last } },
+      repeats_after_fix_7d: { value: 0, target: 0, op: "<=", met: true } } }) as never;
+  assert.equal(agingSince([run(at, lastEventAt), run(at - 3_600_000, lastEventAt)]), lastEventAt);
+  assert.equal(agingSince([run(at, at - 600_000), run(at - 3_600_000, lastEventAt)]), undefined);
+  assert.equal(agingSince([run(at), run(at - 3_600_000)]), undefined);
+  const duty = (id: string, agingAt?: number) => ({ chat: "a", duty: id, name: id, green: false, misses: 12, stuck: false,
+    ...agingAt === undefined ? {} : { agingSince: agingAt } });
+  const out = chatSystemOutput({ names: new Map([["a", "AI harness"]]), stuck: [], upkeep: [], fleet: { pct: 50, red: [duty("d10", lastEventAt), duty("d7")] },
+    stuckDuties: [], idleGoals: [], followUps: [], detail: "/tmp/d9.md" });
+  assert.deepEqual(out.flagged!.filter(slice => slice.kind === "red_duty" && slice.item).map(slice => slice.item), ["d7"]);
+  assert.match(out.flagged!.find(slice => slice.kind === "aging_duty")!.excerpt, /^AI harness d10 is red only on .* owe no fix job, so push nothing for them\.$/);
 });
