@@ -10,7 +10,7 @@ import json
 import os
 import time
 
-from wd_common import LOG_F, STATE_F, WATCH, _run, _tail_events, _ts, chat_ids, log, pa, stop_reason
+from wd_common import LOG_F, STATE_F, WATCH, _run, _tail_events, _ts, chat_ids, credential_wait_at, log, pa, stop_reason
 from wd_daemon import daemon_call, ui_retry, unwedge
 from wd_heartbeats import heartbeat_rearm
 from wd_probe import probe_model, probe_verdict
@@ -67,7 +67,8 @@ def snapshot():
         lm = (last_msg or {}).get('message') or {}
         limited = lm.get('role') == 'assistant' and lm.get('stopReason') == 'error' and (
             'pi-pool' in (lm.get('errorMessage') or '') or
-            any((d.get('details') or {}).get('kind') in ('rate_limit', 'credential_unavailable') for d in (lm.get('diagnostics') or []) if isinstance(d, dict)))
+            credential_wait_at(lm) is not None or
+            any((d.get('details') or {}).get('kind') == 'rate_limit' for d in (lm.get('diagnostics') or []) if isinstance(d, dict)))
         last_asst_min = round((now - last_asst).total_seconds() / 60, 1) if last_asst else None
         # A pending cell that deliberately sleeps/polls (pipeline watching, log tailing) looks
         # identical to a wedge from the outside: read the code before calling it frozen.

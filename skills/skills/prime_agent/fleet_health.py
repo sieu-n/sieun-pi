@@ -16,6 +16,7 @@ import socket
 import subprocess
 import time
 import uuid
+from pathlib import Path
 from typing import Any
 
 FOLLOW_COMMANDS = (
@@ -79,12 +80,29 @@ def read_progress(session_file: str) -> dict:
         "model": last.get("model"),
         "stop": last.get("stopReason"),
         "error": last.get("errorMessage"),
+        "wait_until_ms": credential_wait_at(last) if last.get("stopReason") == "error" else None,
         "at": stamp,
         "age_min": age,
         "has_content": bool(last.get("content")),
         "killed_tool": bool(results) and "Request was aborted" in _text(results[-1]["message"])[:60],
         "tool_args": _tool_args(last),
     }
+
+
+# The resume skill owns the reading of a turn's end. This module sits at <skills>/skills/prime_agent, next to <skills>/resume-paused-sessions.
+RESUME_PAUSED = Path(__file__).resolve().parents[2] / "resume-paused-sessions" / "scripts" / "resume_paused.py"
+_resume_paused = None
+
+
+def credential_wait_at(message: dict) -> float | None:
+    """retryAtMs of Prime's credential wait marker, from resume_paused.py's own reader, else None."""
+    global _resume_paused
+    if _resume_paused is None:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("resume_paused", RESUME_PAUSED)
+        _resume_paused = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(_resume_paused)
+    return _resume_paused.credential_wait_at(message)
 
 
 def subtree(session_id: str, sessions: dict[str, dict]) -> list[dict]:
@@ -131,7 +149,11 @@ def classify(session_id: str, sessions: dict[str, dict], idle_threshold_min: flo
             verdict, detail = "PARKED", "no turn, no tools, no children"
         else:
             verdict, detail = "DONE", "idle"
-    if p["stop"] in ("error", "aborted"):
+    if p["wait_until_ms"] is not None:
+        # dhx.3 Prime's credential wait marker: pi-pool holds the tree until its slot, and Prime continues it then (10-20, us-metal02).
+        until = _dt.datetime.fromtimestamp(p["wait_until_ms"] / 1000, _dt.timezone.utc).isoformat(timespec="seconds")
+        verdict, detail = "POOL_WAIT", f"waits for its pi-pool slot until {until}"
+    elif p["stop"] in ("error", "aborted"):
         verdict, detail = "FAULT", f"last turn ended {p['stop']}: {p['error']}"
     return {"session": session_id, "short": s["id"], "verdict": verdict, "detail": detail,
             "model": p["model"], "age_min": p["age_min"], "stop": p["stop"],

@@ -64,6 +64,18 @@ test("the extra wait is the box's wait less the Mac's own turn, in round trips, 
   assert.match(reading.flagged[2]!.excerpt, /waits for its slot/);
 });
 
+test("a Mac turn that ends on dhx.3's credential wait marker is timed and listed as a pool wait, not a reply error (p692 hook, 10-20)", () => {
+  const marker = { stopReason: "error", errorMessage: "API key for provider \"anthropic\" is temporarily unavailable until 2026-10-20T17:32:00.000Z: waiting for an account slot",
+    diagnostics: [{ type: "provider_stream_failure", details: { kind: "credential_unavailable", retryAtMs: Date.parse("2026-10-20T17:32:00.000Z"), retryAfterMs: 111860 } }] };
+  const session = [
+    entry("user", "2026-10-20T17:30:07.900Z", "chat page probe eeee. Reply with exactly: ok"),
+    entry("assistant", "2026-10-20T17:30:08.140Z", "", marker),
+  ].join("\n");
+  const reading = replyExtra([{ marker: "chat page probe eeee.", sentAt: 1_000, firstTokenAt: 1_000 + 240 + 380 }], session, 190, at);
+  assert.deepEqual(reading.flagged.map(item => item.kind), ["reply_pool_wait", "reply"]);
+  assert.match(reading.flagged[0]!.excerpt, /waits for its pi-pool slot until 2026-10-20T17:32:00.000Z/);
+});
+
 test("the create send is timed from before its POST, listed as a new thread and left out of the median", async t => {
   const server = createServer((req, res) => {
     let body = "";

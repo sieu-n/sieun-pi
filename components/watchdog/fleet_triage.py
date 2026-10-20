@@ -10,6 +10,7 @@ errors, turns that ended after a tool result, and replies that look cut off.
 Verdicts per session (transcript decides, not the list's activity flag):
   WORKING      streaming or running tools, recent output
   FROZEN       streaming, no tools, no real assistant output >= FROZEN_MIN
+  POOL_WAIT    last turn is Prime's credential wait marker: pi-pool holds the tree until its slot, and nothing is done
   ACCOUNT_ERR  last turn ended in an auth/quota/rate/overload provider error
   NET_ERR      last turn ended in a connection error
   DROPPED      idle, last record is a toolResult or user input, >= DROP_MIN old
@@ -28,7 +29,7 @@ import json, os, re, subprocess, sys, time, datetime as dt
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from wd_common import chat_ids, stop_reason  # noqa: E402
+from wd_common import chat_ids, credential_wait_at, stop_reason  # noqa: E402
 
 WATCH = Path.home() / '.prime/agent/watchdog'
 STATE_F = WATCH / 'triage_state.json'
@@ -138,7 +139,9 @@ def classify(s, t, archived=frozenset(), test_chats=frozenset()):
         else:
             v = 'WORKING'
     elif role == 'assistant' and stop == 'error':
-        if ACCOUNT_RE.search(err):
+        if credential_wait_at(lm) is not None:
+            v = 'POOL_WAIT'
+        elif ACCOUNT_RE.search(err):
             v = 'ACCOUNT_ERR'
         elif NET_RE.search(err) or not err:
             v = 'NET_ERR'

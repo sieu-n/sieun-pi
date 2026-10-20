@@ -13,6 +13,22 @@ WATCH.mkdir(parents=True, exist_ok=True)
 STATE_F = WATCH / 'state.json'
 LOG_F = WATCH / 'log.jsonl'
 ENV = dict(os.environ); ENV.pop('FORCE_COLOR', None); ENV['NO_COLOR'] = '1'
+# The resume skill owns the reading of a turn's end, credential_wait_at included: the checkout's copy, else the installed skill, since the
+# watchdog runs from its own installed release.
+RESUME_PAUSED = next((path for path in (Path(__file__).resolve().parents[2] / 'skills/resume-paused-sessions/scripts/resume_paused.py',
+                                        Path.home() / '.prime/agent/skills/resume-paused-sessions/scripts/resume_paused.py') if path.exists()), None)
+_resume_paused = None
+
+
+def credential_wait_at(message):
+    """retryAtMs of Prime's credential wait marker, from resume_paused.py's own reader, else None."""
+    global _resume_paused
+    if _resume_paused is None:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('resume_paused', RESUME_PAUSED)
+        _resume_paused = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(_resume_paused)
+    return _resume_paused.credential_wait_at(message)
 
 
 def log(entry):

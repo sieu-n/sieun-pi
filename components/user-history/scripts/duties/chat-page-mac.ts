@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import WebSocket from "ws";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
+import { credentialWaitAt } from "../../src/shared/credential-wait.ts";
 import { parseStartSkill, startMessage } from "../../src/shared/start-skill.ts";
 
 /**
@@ -89,7 +90,7 @@ export function browserReadings(output: BrowserOutput, at: number, timeoutMs: nu
   return { load, tabs };
 }
 
-interface SessionEntry { type?: string; timestamp?: string; message?: { role?: string; content?: unknown; stopReason?: string; errorMessage?: string } }
+interface SessionEntry { type?: string; timestamp?: string; message?: { role?: string; content?: unknown; stopReason?: string; errorMessage?: string; diagnostics?: unknown } }
 
 /**
  * Extra round trips per send: the box's wait from the send to the first reply frame, less the Mac's own wait from its user entry to its reply
@@ -105,7 +106,10 @@ export function replyExtra(sends: readonly SendTiming[], macSession: string, rtt
     const user = entries.findIndex(entry => entry.message?.role === "user" && JSON.stringify(entry.message.content).includes(send.marker));
     const reply = user < 0 ? undefined : entries.slice(user + 1).find(entry => entry.message?.role === "assistant");
     if (!reply) { reading.flagged.push({ at, kind: "reply_unmatched", excerpt: `${send.marker}: the Mac's session file has no ${user < 0 ? "user entry" : "reply"} for it` }); continue; }
-    if (reply.message?.stopReason === "error") reading.flagged.push({ at, kind: "reply_error", excerpt: `${send.marker}: the Mac's turn ended in an error, timed as its reply: ${reply.message.errorMessage ?? "no message"}`.slice(0, 600) });
+    // A dhx.3 Prime ends a turn the pool holds on its credential wait marker, a wait for the slot and no failed reply.
+    const waitAt = reply.message?.stopReason === "error" ? credentialWaitAt(reply.message) : null;
+    if (waitAt !== null) reading.flagged.push({ at, kind: "reply_pool_wait", excerpt: `${send.marker}: the Mac's turn waits for its pi-pool slot until ${new Date(waitAt).toISOString()}, timed as its reply` });
+    else if (reply.message?.stopReason === "error") reading.flagged.push({ at, kind: "reply_error", excerpt: `${send.marker}: the Mac's turn ended in an error, timed as its reply: ${reply.message.errorMessage ?? "no message"}`.slice(0, 600) });
     const own = Date.parse(reply.timestamp ?? "") - Date.parse(entries[user]!.timestamp ?? "");
     const seen = send.firstTokenAt - send.sentAt;
     const extra = seen - own;
