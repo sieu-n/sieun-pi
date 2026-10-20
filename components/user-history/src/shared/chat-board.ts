@@ -2,7 +2,7 @@ import { isSessionId, normalizeArtifactTarget, parseArtifactTarget } from "./art
 import { CHECK_IN_DUTY_ID } from "./chat-duties.ts";
 import { DUTY_LINK_SHAPE, parseDutyLink } from "./duty-fixes.ts";
 import { JARGON_HINT, jargonTerms } from "./reply-lint.ts";
-import { hasDoneLine, upkeepWords } from "./upkeep-title.ts";
+import { hasDoneLine, keepDoneLine, upkeepWords } from "./upkeep-title.ts";
 import { VENDOR_SUPPORT_ERROR, vendorSupportAsk } from "./vendor-support.ts";
 import { preApprovalText, releaseGo, type PreApproval } from "./release-go.ts";
 import { REQUIREMENT_STATUSES, type ArtifactLink, type BoardActor, type BoardOp, type ChatBoard, type GoalTarget, type OwnerTodo, type PlanItem, type PlanItemInput, type PlanStatus,
@@ -477,6 +477,7 @@ export function parseBoardOp(value: unknown): BoardOp {
       const s = status(value.status); if (s) op.status = s;
       const job = optStr(value.job, "job"); if (job !== undefined) op.job = job;
       const session = parseSessionId(value.sessionId); if (session) op.sessionId = session;
+      const note = optStr(value.note, "note"); if (note !== undefined) op.note = note;
       const until = optWaitUntil(value.waitUntil); if (until !== undefined) op.waitUntil = until;
       const event = optStr(value.waitFor, "waitFor"); if (event !== undefined) op.waitFor = event;
       if (value.target !== undefined) op.target = goalTarget(value.target);
@@ -589,7 +590,7 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
       const job = planJob(op.job);
       const session = op.sessionId ?? jobSession(op.job);
       if (op.target) measuredBy(op.target, now);
-      const item: PlanItem = { id: newId("p"), text: op.text, status: op.status ?? "todo", ...(job ? { job } : {}), ...(session ? { sessionId: session } : {}), ...waits(op), ...gateFields(op), ...(op.target ? { target: storedTarget(op.target, undefined, now) } : {}),
+      const item: PlanItem = { id: newId("p"), text: op.text, status: op.status ?? "todo", ...(job ? { job } : {}), ...(session ? { sessionId: session } : {}), ...(op.note ? { note: op.note } : {}), ...waits(op), ...gateFields(op), ...(op.target ? { target: storedTarget(op.target, undefined, now) } : {}),
         ...(op.duty ? { duty: op.duty } : {}), children: [] };
       if (op.parent === undefined) {
         const area = actor === "agent" ? sameAreaGoal(board.plan, item.text) : undefined;
@@ -624,7 +625,10 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
         parts.push(session ? `linked ${next.job ? `job ${next.job}` : "thread"}${session !== next.job ? ` (thread:${session})` : ""}` : job !== undefined ? `linked job ${job}` : "unlinked its thread");
       }
       if (op.note === null) { delete next.note; if (item.note) parts.push("cleared its note"); }
-      else if (op.note !== undefined && op.note !== item.note) { next.note = op.note; parts.push("updated its note"); }
+      else if (op.note !== undefined && op.note !== item.note) {
+        next.note = OPEN_STATUSES.has(next.status) ? keepDoneLine(item.note, op.note) : op.note;
+        parts.push(next.note === op.note ? "updated its note" : "updated its note and kept its Done when line");
+      }
       if (op.waitUntil === null) { delete next.waitUntil; if (item.waitUntil) parts.push("cleared its wait time"); }
       else if (op.waitUntil !== undefined && op.waitUntil !== item.waitUntil) { next.waitUntil = op.waitUntil; parts.push(`set it to wait until ${op.waitUntil}`); }
       if (op.waitFor === null) { delete next.waitFor; if (item.waitFor) parts.push("cleared what it waits for"); }

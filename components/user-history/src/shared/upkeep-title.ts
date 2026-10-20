@@ -24,3 +24,12 @@ const TASK_VERB = /^\s*(?:fix|build|add|make|find|verify|check|rank|ship|plan|de
  */
 export const hasDoneLine = (item: { target?: unknown; duty?: unknown; note?: string | undefined }): boolean =>
   !!item.target || !!item.duty || /\bdone when\b/i.test(item.note ?? "");
+
+/**
+ * The note a plan_update stores on an open item: a new note with no "Done when" sentence keeps the old note's one in front of it. On 10-19 the
+ * release owner's job rewrote launch main bro's p136 note with a status line at each check, so d9 counted the step in three runs in a row.
+ */
+export function keepDoneLine(old: string | undefined, note: string): string {
+  const line = /\bdone when\b.*?(?:\.(?=\s|$)|$)/is.exec(old ?? "")?.[0];
+  return line && !/\bdone when\b/i.test(note) ? `${line} ${note}` : note;
+}

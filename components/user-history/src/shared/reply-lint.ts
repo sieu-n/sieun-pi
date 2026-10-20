@@ -201,7 +201,7 @@ function withoutNames(text: string, names: readonly string[]): string {
 export function boardLimitClaims(ops: readonly BoardOp[], names: readonly string[] = []): string[] {
   const texts = (op: BoardOp): unknown[] => {
     if (op.op === "todo_add" || op.op === "todo_update") return [op.text];
-    if (op.op === "plan_add") return [op.text, op.waitFor];
+    if (op.op === "plan_add") return [op.text, op.note, op.waitFor];
     if (op.op === "plan_update") return [op.text, op.note, op.waitFor];
     if (op.op === "plan_set") return op.items.flatMap(function items(item): unknown[] { return [item.text, item.note, item.waitFor, ...(item.children ?? []).flatMap(items)]; });
     return [];

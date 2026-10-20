@@ -32,7 +32,7 @@ const clip = (text: string, max = 70): string => text.length > max ? text.slice(
 /** Each sentence of plan text, note or wait that holds work at a level until a land or fix, clipped to quote. */
 export function laneHolds(ops: readonly BoardOp[]): string[] {
   const texts = (op: BoardOp): unknown[] => {
-    if (op.op === "plan_add") return [op.text, op.waitFor];
+    if (op.op === "plan_add") return [op.text, op.note, op.waitFor];
     if (op.op === "plan_update") return [op.text, op.note, op.waitFor];
     if (op.op === "plan_set") return op.items.flatMap(function items(item): unknown[] { return [item.text, item.note, item.waitFor, ...(item.children ?? []).flatMap(items)]; });
     return [];
