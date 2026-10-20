@@ -11,8 +11,9 @@ import { goalReadingOps } from "./goal-readings.ts";
 import { type AfterMeasure, CHECK_IN_DUTY, CHECK_IN_DUTY_ID, dailySlot, dutyDue, ERROR_RUNS_TARGET, errorStreak, headlineMetric, judge, nextRunAt, overrunWords, parseSchedule, type Duty, type DutyJobRef,
   type DutyCut, type DutyMetric, type DutyRunRecord, type DutySchedule, type DutyTrigger, type DutyView, type FixLink, type FlaggedSlice, type PrecheckOutput, type PrecheckOverrun, verdictMetrics } from "./shared/chat-duties.ts";
 import { briefFindings, headlineWords } from "./shared/brief-cap.ts";
+import { pushMisses } from "./duty-push.ts";
 import { closedFixes, dutyFixes, missedKeys } from "./shared/duty-fixes.ts";
-import { effectiveRun, metricStreaks, type MetricStreak } from "./shared/duty-streak.ts";
+import { metricStreaks, type MetricStreak } from "./shared/duty-streak.ts";
 import { type BoardOp, CHECK_IN_MIN_MINUTES, type ChatBoard, type CheckInPause, type CheckInView, type PlanItem, type PoolPriority } from "./shared/types.ts";
 
 /** The check-in duty's side on the chat server (src/chats.ts): its setting (the header's control writes the same one) and a run now. */
@@ -176,22 +177,6 @@ const movesSchedule = (trigger: DutyTrigger): boolean => trigger !== "push" && t
 
 /** The keys of the metrics a duty's verdict counts (`verdictMetrics`); old run records still carry every metric the duty once had. */
 const verdictKeys = (metrics: readonly DutyMetric[]): Set<string> => new Set(verdictMetrics(metrics).map(metric => metric.key));
-
-/**
- * The counted metrics a push run of a standing duty goes after, or null when the duty gets no push now. `runs` are the duty's runs, newest
- * first. The duty is red when its newest met-or-missed run (`effectiveRun`, so a run whose after-job measure is met counts green) missed a
- * counted metric. It gets a push once its newest run of any verdict is `everyMs` old, the chat's check-in interval: the owner's own push
- * cadence for the chat. Without it a red daily duty waited a whole day after its fix job ended, and forever when its job did not start: from
- * 10-16 to 10-18 four daily duties sat red with no job for 1 to 2 days after "the catalog cannot list the chat".
- */
-export function pushMisses(runs: readonly DutyRunRecord[], counted: ReadonlySet<string>, everyMs: number, now: number): string[] | null {
-  const newest = runs[0];
-  if (!newest || now - newest.at < everyMs) return null;
-  const measured = runs.map(effectiveRun).find(run => run.verdict === "met" || run.verdict === "missed");
-  if (measured?.verdict !== "missed") return null;
-  const keys = missedKeys(measured).filter(key => counted.has(key));
-  return keys.length ? keys : null;
-}
 
 /** The findings line for the stuck metrics (`MetricStreak.stuck`): each one names its streak and the fix that did not move it. Empty when none is stuck. */
 export function stuckFindings(misses: readonly MetricStreak[]): string {

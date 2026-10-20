@@ -1,23 +1,30 @@
 // Guards the wiki dream count of 2026-10-20. pages_behind_code re-dated wiki-health's stale list against the end of each
 // last_verified day, so a change later on the check's own day never counted and a last_verified time read as no day at all.
-// The engine now dates both sides on the tip, and the precheck counts its list as given, whatever git says of the refs.
+// The engine now dates both sides on the tip. A page counts once it has been behind longer than one push run and one rewrite
+// (FOLLOW_WINDOW_MS), and a newer one is the part wiki_problems_following, which a push run still goes after.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { measureDream, parseStale, staleExcerpt, type DreamDeps } from "../scripts/duties/wiki-dream.ts";
+import { readFileSync } from "node:fs";
+import { FOLLOW_WINDOW_MS, measureDream, parseStale, staleExcerpt, type DreamDeps } from "../scripts/duties/wiki-dream.ts";
+import { judge, type DutyMetric } from "../src/shared/chat-duties.ts";
 
-const NOW = Date.parse("2026-10-20T03:00:00Z");
+const DUTY = JSON.parse(readFileSync(new URL("../scripts/duties/wiki-dream.duty.json", import.meta.url), "utf8")) as { metrics: unknown[] };
+
+const NOW = Date.parse("2026-10-20T03:30:00Z");
 const sec = (iso: string): string => (Date.parse(iso) / 1000).toFixed(6);
 const JOURNAL = [
   `${sec("2026-10-20T02:55:00Z")} us-metal02 systemd[1]: Starting wiki-box-commit.service - wiki-box-commit`,
   `${sec("2026-10-20T02:55:10Z")} us-metal02 systemd[1]: Finished wiki-box-commit.service - wiki-box-commit`,
 ].join("\n");
 const STALE = {
-  checkable: 3, count: 2,
+  checkable: 4, count: 3,
   stale: [
     { path: "domains/architecture/outside-calls.html", title: "Outside calls", last_verified: "2026-10-20", verified_at: "2026-10-20T01:12:38.000Z",
-      staleRefs: [{ ref: "apps/vent/src/vent/tables.py", modified: "2026-10-20T02:14:30.000Z" }] },
+      staleRefs: [{ ref: "apps/vent/src/vent/tables.py", modified: "2026-10-20T03:20:00.000Z", since: "2026-10-20T02:14:30.000Z" }] },
     { path: "domains/architecture/telemetry-map.html", title: "Telemetry map", last_verified: "2026-10-20T01:00Z", verified_at: "2026-10-20T01:00:00.000Z",
-      staleRefs: [{ ref: "apps/vent/README.md", modified: "2026-10-20T02:14:30.000Z" }, { ref: "apps/vent/gone.py", modified: "missing — ref no longer exists" }] },
+      staleRefs: [{ ref: "apps/vent/README.md", modified: "2026-10-20T03:10:00.000Z", since: "2026-10-20T03:10:00.000Z" }, { ref: "apps/vent/gone.py", modified: "missing — ref no longer exists" }] },
+    { path: "domains/devops/ci-time/index.html", title: "CI time", last_verified: "2026-10-20T02:50Z", verified_at: "2026-10-20T02:50:00.000Z",
+      staleRefs: [{ ref: ".github/workflows/verify-dev.yml", modified: "2026-10-20T03:20:00.000Z", since: "2026-10-20T03:00:00.000Z" }] },
   ],
 };
 
@@ -42,14 +49,24 @@ function deps(): DreamDeps {
   };
 }
 
-test("every page of the engine's stale list counts, a change on the check's own day and a last_verified time included", async () => {
+test("a page behind for longer than the follow window counts, a missing ref at once, and a newer one is a followed part that is still flagged", async () => {
   const result = await measureDream(deps(), []);
-  assert.equal(result.metrics.pages_behind_code, 2);
+  assert.equal(FOLLOW_WINDOW_MS, 70 * 60_000);
+  assert.equal(result.metrics.pages_behind_code, 2, "behind since 02:14:30Z is 75.5 min, and a missing ref counts at once");
   assert.equal(result.metrics.wiki_problems, 2);
+  assert.equal(result.metrics.wiki_problems_following, 1, "behind since 03:00Z is 30 min");
   assert.equal(result.metrics.source_errors, 0);
   const stale = (result.flagged ?? []).filter(slice => slice.kind === "stale_vs_code");
-  assert.deepEqual(stale.map(slice => slice.item), ["domains/architecture/outside-calls.html", "domains/architecture/telemetry-map.html"]);
-  assert.equal(stale[0]!.excerpt, "checked 2026-10-20T01:12Z (last_verified 2026-10-20); code changed since: apps/vent/src/vent/tables.py (2026-10-20T02:14Z)");
+  assert.deepEqual(stale.map(slice => slice.item), ["domains/architecture/outside-calls.html", "domains/architecture/telemetry-map.html", "domains/devops/ci-time/index.html"]);
+  assert.equal(stale[0]!.excerpt, "checked 2026-10-20T01:12Z (last_verified 2026-10-20); code changed since: apps/vent/src/vent/tables.py (2026-10-20T03:20Z)");
+  assert.equal(stale[2]!.excerpt, "checked 2026-10-20T02:50Z (last_verified 2026-10-20T02:50Z); behind since 03:00Z, counted from 04:10Z; code changed since: .github/workflows/verify-dev.yml (2026-10-20T03:20Z)");
+});
+
+test("the duty records the followed pages as a part of wiki_problems, which the verdict leaves out", () => {
+  const output = { metrics: { wiki_problems: 0, open_mistakes: 0, mistakes_back: 0, dup_unjudged: 0, wiki_problems_following: 3 } };
+  const judged = judge(DUTY.metrics as DutyMetric[], output);
+  assert.equal(judged.verdict, "met");
+  assert.deepEqual(judged.parts, { wiki_problems_following: { value: 3, target: 0, op: "<=", met: false } });
 });
 
 test("a stale row with no verified_at, from a cited path git lacks, names its last_verified and the missing ref", () => {

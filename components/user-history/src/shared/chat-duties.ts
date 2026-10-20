@@ -89,7 +89,7 @@ export interface DutyFile { version: 1; duties: Duty[]; checkIn?: CheckInDutySta
 
 /** What started a run: its schedule, a catch-up, or the owner's Run now. */
 /** `verify`: a re-measure after a fix step linked to one of the duty's metrics closed (src/shared/duty-streak.ts). */
-/** `push`: a red standing duty with no job at work on it, run again at the chat's check-in interval (`pushMisses` in src/chat-duty-run.ts). */
+/** `push`: a red standing duty with no job at work on it, run again at the chat's check-in interval (`pushMisses` in src/duty-push.ts). */
 /** `rerun`: the one rerun of a cut run (`DutyRunRecord.cut`), at the first tick pi-pool admits the cut job's tree (`Duties.rerunCut`). */
 export type DutyTrigger = "schedule" | "catch-up" | "owner" | "verify" | "push" | "rerun";
 export type DutyVerdict = "met" | "missed" | "error" | "skipped";

@@ -183,18 +183,35 @@ export function churn(commits: readonly DreamCommit[]): { reverts: DreamCommit[]
  * `source_refs` path changed on the first-parent history of HEAD after the page's check, `verified_at`: its `last_verified` time, or for a
  * bare day the page's own commit on that day. wiki-health adds the pages citing a path git lacks, with no `verified_at`.
  */
-export interface StalePage { path: string; last_verified: string; verified_at?: string; staleRefs: { ref: string; modified: string }[] }
+export interface StalePage { path: string; last_verified: string; verified_at?: string; staleRefs: { ref: string; modified: string; since?: string }[] }
 export function parseStale(value: unknown): StalePage[] {
   if (!isRecord(value) || !Array.isArray(value.stale)) throw new Error("wiki-health gave no stale list");
   return value.stale.filter(isRecord).filter(row => typeof row.path === "string" && typeof row.last_verified === "string" && Array.isArray(row.staleRefs))
     .map(row => ({ path: row.path as string, last_verified: row.last_verified as string, ...typeof row.verified_at === "string" ? { verified_at: row.verified_at } : {},
-      staleRefs: (row.staleRefs as unknown[]).filter(isRecord).filter(ref => typeof ref.ref === "string").map(ref => ({ ref: ref.ref as string, modified: String(ref.modified ?? "") })) }));
+      staleRefs: (row.staleRefs as unknown[]).filter(isRecord).filter(ref => typeof ref.ref === "string")
+        .map(ref => ({ ref: ref.ref as string, modified: String(ref.modified ?? ""), ...typeof ref.since === "string" ? { since: ref.since } : {} })) }));
 }
 
-/** The flagged line of a page behind its code: when it was checked and each ref with the minute the tip changed it, or `(missing)`. */
-export function staleExcerpt(page: StalePage): string {
+/**
+ * How long a page may be behind its code before it counts in pages_behind_code: one push run plus one rewrite, each at its p90. The d4 push
+ * runs of 10-19 came 16.5 min apart at p90 (38 gaps under an hour). A rewrite from the run's start to the page landing took 52.7 min at p90 over
+ * four cycles weighted alike (10-19 14:40Z 53 to 63 min, 20:38Z 34 to 39, 10-20 00:46Z 26, 03:58Z 10 to 20). A page behind for less is
+ * `wiki_problems_following`, a part the verdict leaves out and a push run still goes after (src/duty-push.ts), the way `unlanded` waits 30 min.
+ */
+export const FOLLOW_WINDOW_MS = 70 * 60_000;
+
+/** When the page fell behind: its first ref change after the check (`since`, else the newest `modified`); 0 for a ref git no longer has. */
+export function behindSince(page: StalePage): number {
+  return Math.min(...page.staleRefs.map(ref => { const at = Date.parse(ref.since ?? ref.modified); return Number.isFinite(at) ? at : 0; }));
+}
+
+/** The flagged line of a page behind its code: when it was checked, when it fell behind, and each ref with the minute the tip last changed it, or `(missing)`. */
+export function staleExcerpt(page: StalePage, now?: number): string {
   const minute = (text: string): string => { const at = Date.parse(text); return Number.isFinite(at) ? new Date(at).toISOString().slice(0, 16) + "Z" : "missing"; };
-  return `checked ${page.verified_at ? minute(page.verified_at) : page.last_verified} (last_verified ${page.last_verified}); code changed since: ${page.staleRefs.map(ref => `${ref.ref} (${minute(ref.modified)})`).join(", ")}`;
+  const since = behindSince(page);
+  const following = now !== undefined && since > 0 && now - since <= FOLLOW_WINDOW_MS
+    ? `; behind since ${new Date(since).toISOString().slice(11, 16)}Z, counted from ${new Date(since + FOLLOW_WINDOW_MS).toISOString().slice(11, 16)}Z` : "";
+  return `checked ${page.verified_at ? minute(page.verified_at) : page.last_verified} (last_verified ${page.last_verified})${following}; code changed since: ${page.staleRefs.map(ref => `${ref.ref} (${minute(ref.modified)})`).join(", ")}`;
 }
 
 /** A global memory about the auto-sns-agent repo: its path or title starts with "auto-sns-agent". */
@@ -302,7 +319,8 @@ export function pickFlagged(slices: readonly FlaggedSlice[]): FlaggedSlice[] {
 
 const HEALTH_METRICS = ["hub_orphans", "dead_links", "session_links", "superseded_linked", "missing_meta", "stale_vs_code"] as const;
 /**
- * The sync problems wiki_problems adds up; pages_behind_code counts the pages of wiki-health's stale list (parseStale), and unlanded counts
+ * The sync problems wiki_problems adds up; pages_behind_code counts the pages of wiki-health's stale list (parseStale) behind for longer than
+ * FOLLOW_WINDOW_MS, and unlanded counts
  * curated pages written on the wiki host that its batch keeps out of git, which wiki-health cannot see because it reads HEAD.
  */
 const PROBLEM_METRICS = ["hub_orphans", "dead_links", "session_links", "superseded_linked", "missing_meta", "pages_behind_code", "unlanded"] as const;
@@ -341,7 +359,9 @@ export async function measureDream(deps: DreamDeps, lastRuns: readonly DutyRunRe
   const stalePages = health && (() => { try { return parseStale(health.stale); } catch (error) { return fail("wiki-health.mjs stale", error); } })();
   const metrics: Record<string, number> = {};
   for (const key of HEALTH_METRICS) metrics[key] = health?.facts[key] ?? UNMEASURED;
-  metrics.pages_behind_code = stalePages?.length ?? UNMEASURED;
+  const following = stalePages?.filter(page => { const fell = behindSince(page); return fell > 0 && now - fell <= FOLLOW_WINDOW_MS; });
+  metrics.pages_behind_code = stalePages && following ? stalePages.length - following.length : UNMEASURED;
+  if (following) metrics.wiki_problems_following = following.length;
   metrics.unlanded = box ? box.pages.filter(page => !page.session).length : UNMEASURED;
   metrics.wiki_problems = PROBLEM_METRICS.some(key => metrics[key] === UNMEASURED) ? UNMEASURED : PROBLEM_METRICS.reduce((sum, key) => sum + metrics[key]!, 0);
   const lintFailing = health?.facts.lint_failing_pages;
@@ -398,7 +418,7 @@ export async function measureDream(deps: DreamDeps, lastRuns: readonly DutyRunRe
   const freshIds = new Set((harness?.fresh ?? []).map(entry => entry.id));
   for (const entry of harness?.fresh ?? []) slices.push(memorySlice(entry, "new since last run"));
   for (const entry of (harness?.moves ?? []).filter(entry => !freshIds.has(entry.id)).slice(0, 10)) slices.push(memorySlice(entry, "move into its skill"));
-  for (const page of stalePages ?? []) slices.push({ kind: "stale_vs_code", item: page.path, excerpt: clip(staleExcerpt(page)) });
+  for (const page of stalePages ?? []) slices.push({ kind: "stale_vs_code", item: page.path, excerpt: clip(staleExcerpt(page, now)) });
   for (const item of health?.items ?? []) {
     if (item.kind === "signal" || (item.kind === "stale_vs_code" && stalePages)) continue;
     slices.push({ kind: item.kind, item: item.path, excerpt: clip(`${item.excerpt ?? item.path}${item.target ? ` -> ${item.target}` : ""}`) });
