@@ -1,5 +1,6 @@
 import { replaceableLine } from "./agent-outbox.ts";
 import { type AlertJob, type AlertLine, ruleText } from "./alert-bridge.ts";
+import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { clockTime, localTime } from "./checkin-settings.ts";
 import type { JobRegistry } from "./chat-sources.ts";
@@ -22,8 +23,19 @@ import { fileLines } from "./file-lines.ts";
  * what to fix and what to start. The server only measures and starts it.
  */
 
-/** The folder that holds scripts/board-apply.ts, the command a duty job applies its board ops with. */
-const USER_HISTORY = join(import.meta.dirname, "..");
+/**
+ * The folder that holds scripts/board-apply.ts, the command a duty job applies its board ops with. A release folder is named through the live
+ * `current` link, because a later release prunes it: on 10-20 a job ran add.ts from its brief's release-b8c6bba path, so d2's precheck cwd
+ * pointed at a pruned folder and two runs failed with spawn ENOENT, and release-0575099 was gone 5 minutes after it went live.
+ */
+const USER_HISTORY = liveFolder(join(import.meta.dirname, ".."));
+
+export function liveFolder(dir: string): string {
+  const match = /^(.*\/sieun-pi-chat)\/release-[^/]+(\/.*)?$/.exec(dir);
+  if (!match) return dir;
+  const live = `${match[1]}/current${match[2] ?? ""}`;
+  return existsSync(live) ? live : dir;
+}
 
 /** The chat a duty job works for: its session id and name (the job's reply target), its working folder, and its board file. */
 export interface DutyChat { id: string; name: string; cwd: string; board: string }
