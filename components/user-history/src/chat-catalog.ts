@@ -186,7 +186,7 @@ export const PROJECTION_SLICE_MS = 10;
 const BREATHE_ROWS = 256;
 const NO_ROWS: readonly SessionSummary[] = [];
 
-/** Equal to `depth` levels: the same value, or arrays and plain objects of the same length whose items are equal one level down. */
+/** Equal to `depth` levels: the same value, or arrays and plain objects of the same size whose items are equal one level down. It allocates nothing. */
 function sameValue(left: unknown, right: unknown, depth: number): boolean {
   if (left === right) return true;
   if (depth === 0 || typeof left !== "object" || typeof right !== "object" || left === null || right === null || Array.isArray(left) !== Array.isArray(right)) return false;
@@ -196,10 +196,11 @@ function sameValue(left: unknown, right: unknown, depth: number): boolean {
     for (let at = 0; at < left.length; at++) if (!sameValue(left[at], other[at], depth - 1)) return false;
     return true;
   }
-  const fields = Object.keys(left);
-  if (fields.length !== Object.keys(right).length) return false;
-  for (const field of fields) if (!Object.hasOwn(right, field) || !sameValue((left as Record<string, unknown>)[field], (right as Record<string, unknown>)[field], depth - 1)) return false;
-  return true;
+  const a = left as Record<string, unknown>, b = right as Record<string, unknown>;
+  let fields = 0;
+  for (const field in a) { fields++; if (!Object.hasOwn(b, field) || !sameValue(a[field], b[field], depth - 1)) return false; }
+  for (const _field in b) if (--fields < 0) return false;
+  return fields === 0;
 }
 
 /**
@@ -212,8 +213,12 @@ function keptChat(before: SessionRow | undefined, row: SessionRow): SessionRow {
   if (!before) return row;
   const was = before.agents;
   if (row.agents && was) {
-    const previous = new Map(was.map(agent => [agent.key, agent]));
-    const agents = row.agents.map(agent => { const old = previous.get(agent.key); return old && sameValue(old, agent, 3) ? old : agent; });
+    // Agents mostly keep their places, so the one at the same place is tried first and the map is built only for one that moved.
+    let previous: Map<string, ChatAgent> | undefined;
+    const agents = row.agents.map((agent, at) => {
+      const old = was[at]?.key === agent.key ? was[at] : (previous ??= new Map(was.map(entry => [entry.key, entry]))).get(agent.key);
+      return old && sameValue(old, agent, 3) ? old : agent;
+    });
     row.agents = agents.length === was.length && agents.every((agent, at) => agent === was[at]) ? was : agents;
   }
   return sameValue(before, row, 4) ? before : row;
@@ -994,6 +999,7 @@ export class Catalog {
     for (let at = 0; at < rows.length; at++) {
       const row = rows[at]!;
       if (!row.chat) continue;
+      await breathe();
       const kept = keptChat(this.keptChats.get(row.id), row);
       rows[at] = kept;
       keptChats.set(row.id, kept);
