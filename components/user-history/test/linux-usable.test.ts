@@ -6,7 +6,7 @@ import { test } from "node:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { cpuSides, linuxUsable, parseCpusAllowed, parseSchedstat, parseUsageUsec, runnablePerCore, schedstatMark, seedSchedstat, userSlice } from "../../prime-relay/host-stats.ts";
+import { cpuSides, linuxUsable, parseCpusAllowed, parseSchedstat, parseUsageUsec, runnablePerCore, loadedCgroups, schedstatMark, seedSchedstat, userSlice } from "../../prime-relay/host-stats.ts";
 import { parseLinuxReading, parseUsableRaw, startMacUsableWatch, type Footprints, type WatchSource, unusable, watchFile } from "../src/mac-usable-watch.ts";
 
 // The harness's CPU set on us-metal02 from /proc/<pid>/status, the same for prime-agent-daemon, sieun-pi-chat, pi-pool-serve and prime-relay.
@@ -34,6 +34,7 @@ test("schedstat gives each CPU's run plus wait time, and an unknown version is n
 });
 
 test("a restart's first window starts a cgroup the last process did not read at this module's load, so it never counts the cgroup's life since boot", { skip: process.platform !== "linux" || !userSlice(readFileSync("/proc/self/cgroup", "utf8")) }, async () => {
+  await loadedCgroups;
   const mark = schedstatMark()!;
   assert.ok(mark.cgroups?.["system.slice"] !== undefined, "this box reads system.slice");
   const { "system.slice": _dropped, ...older } = mark.cgroups!;

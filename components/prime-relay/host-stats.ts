@@ -384,11 +384,21 @@ export function cpuSides(before: ReadonlyMap<string, number>, after: ReadonlyMap
 const CGROUP_ROOT = "/sys/fs/cgroup";
 const readText = (path: string): string => { try { return readFileSync(path, "utf8"); } catch { return ""; } };
 const ownSlice = process.platform === "linux" ? userSlice(readText("/proc/self/cgroup")) : null;
-/** The usage_usec of the user slice and of every cgroup SIDE_CGROUPS names, by path; a cgroup that cannot be read is left out. */
-function readCgroups(slice: { slice: string; app: string } | null): Map<string, number> | undefined {
-  if (!slice) return undefined;
-  const paths = [slice.slice, ...Object.values(SIDE_CGROUPS).flat().map(template => template.replace("{app}", slice.app))];
-  return new Map(paths.flatMap(path => { const usec = parseUsageUsec(readText(join(CGROUP_ROOT, path, "cpu.stat"))); return usec === null ? [] : [[path, usec] as const]; }));
+/**
+ * The usage_usec of the user slice and of every cgroup SIDE_CGROUPS names, by path; a cgroup that cannot be read is left out. The reads are
+ * async, off the main thread: on 10-20 from 11:45Z to 13:08Z one readFileSync of a cpu.stat here held the live chat's event loop for 83 min,
+ * while systemd killed hung `ss` reads of the box textfile collector, and the chat's CPU profile ended in readCgroups. A read still pending
+ * from the last call makes this call answer undefined, so a hung cgroup file holds one thread-pool thread and no more.
+ */
+let cgroupsPending = false;
+async function readCgroups(slice: { slice: string; app: string } | null): Promise<Map<string, number> | undefined> {
+  if (!slice || cgroupsPending) return undefined;
+  cgroupsPending = true;
+  try {
+    const paths = [slice.slice, ...Object.values(SIDE_CGROUPS).flat().map(template => template.replace("{app}", slice.app))];
+    const texts = await Promise.all(paths.map(path => readFile(join(CGROUP_ROOT, path, "cpu.stat"), "utf8").catch(() => "")));
+    return new Map(paths.flatMap((path, at) => { const usec = parseUsageUsec(texts[at]!); return usec === null ? [] : [[path, usec] as const]; }));
+  } finally { cgroupsPending = false; }
 }
 /** One avg10 of a /proc/pressure file's `some` or `full` line; null when the line is absent. */
 export function psiAvg10(text: string, kind: "some" | "full"): number | null {
@@ -447,10 +457,12 @@ let lastSwap: { at: number; pages: number } | null = null;
 type Sched = { at: number; times: Map<number, number>; cgroups?: Map<string, number> };
 const loadSchedstat = (): Sched | null => {
   const times = parseSchedstat(readText("/proc/schedstat"));
-  const cgroups = readCgroups(ownSlice);
-  return times ? { at: Date.now(), times, ...cgroups ? { cgroups } : {} } : null;
+  return times ? { at: Date.now(), times } : null;
 };
 let lastSched = process.platform === "linux" ? loadSchedstat() : null;
+/** Resolves once the load-time reading has its cgroups, which `schedstatMark` then carries. */
+export const loadedCgroups: Promise<void> = lastSched
+  ? (first => readCgroups(ownSlice).then(cgroups => { if (cgroups && lastSched === first) first.cgroups = cgroups; }))(lastSched) : Promise.resolve();
 /** The units under app.slice that SIDE_CGROUPS gives another side, which the harness split leaves out. */
 const SIDE_UNITS = new Set(Object.values(SIDE_CGROUPS).flat().filter(path => path.startsWith("{app}/")).map(path => path.slice("{app}/".length)));
 const readRigs = async (now: number): Promise<RigSnapshot | null> => ownSlice && process.getuid ? await rigSnapshot(ownSlice.app, SIDE_UNITS, process.getuid(), now) : null;
@@ -496,7 +508,7 @@ export async function linuxUsable(now = Date.now()): Promise<LinuxUsable | null>
   const swapoutsPerS = pages !== null && previous && now > previous.at ? Math.max(0, (pages - previous.pages) * 1000 / (now - previous.at)) : null;
   const times = parseSchedstat(schedstat!);
   const before = lastSched;
-  const cgroups = readCgroups(ownSlice);
+  const cgroups = await readCgroups(ownSlice);
   lastSched = times ? { at: now, times, ...cgroups ? { cgroups } : {} } : null;
   const cores = parseCpusAllowed(status!);
   const runnable = times && before && cores ? runnablePerCore(before.times, times, cores, now - before.at) : null;
