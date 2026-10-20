@@ -95,8 +95,8 @@ test("a chat with no session file on this box is read from the Mac, and a failed
   assert.deepEqual(errors, ["cccc: ssh mac: Connection timed out"]);
 });
 
-test("a repeat the chat cut with an ellipsis counts when each piece is in one owner message (c118, frontend bro 10-19)", () => {
-  const owner = ["and it's ugly as fuck. 일단 이거 좀 성의있게 styling 할수 없어? consistent with our actual apps. 니가 보기엔 이게 괜찮아? 이런거 때문에 니가 현실성을 못느껴서 ㅈㄴ 대충하는거 같잖아."];
-  assert.equal(ownerSaid("and it's ugly as fuck. 일단 이거 좀 성의있게 styling 할수 없어? consistent with our actual apps. ... 이런거 때문에 니가 현실성을 못느껴서", owner), true);
-  assert.equal(ownerSaid("consistent with our actual apps. ... use subagent aggressively", owner), false);
+test("a repeat the chat cut with an ellipsis or joined with a period counts when each piece is in one owner message (c118, frontend bro 10-19)", () => {
+  const owner = ["and it's ugly as fuck. \n일단 이거 좀 성의있게 styling 할수 없어? consistent with our actual apps. the form fucking sucks.\n\nuse clerk components 이런거 때문에 니가 현실성을 못느껴서 ㅈㄴ 대충하는거 같잖아\n\nuse subagent aggressively. maybe even each agent for each page literally"];
+  assert.equal(ownerSaid("and it's ugly as fuck. 일단 이거 좀 성의있게 styling 할수 없어? consistent with our actual apps. ... 이런거 때문에 니가 현실성을 못느껴서 ㅈㄴ 대충하는거 같잖아. use subagent aggressively. maybe even each agent for each page literally", owner), true);
+  assert.equal(ownerSaid("consistent with our actual apps. ... use subagents for the landing page", owner), false);
 });

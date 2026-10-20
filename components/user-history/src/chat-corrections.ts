@@ -121,12 +121,15 @@ export function closestCorrection(ledger: Ledger, theme: readonly string[], rule
   return best;
 }
 
-const quoteForm = (text: string): string => normal(text).toLowerCase();
+/** A text as `ownerSaid` compares it: straight quotes, no case, and sentence punctuation dropped, with one space per run of whitespace. */
+const quoteForm = (text: string): string => normal(text).toLowerCase().replace(/[.,!?;:]+(?=\s|$)/g, "").replace(/\s+/g, " ").trim();
 /**
- * Whether `words` is part of one owner message of the chat (`owner`, from `ownerTexts`), compared with straight quotes, one space per
- * whitespace run and no case. A note in square brackets is the chat's, such as "[screenshot of the duties panel: ...]" for an image the owner
- * sent with c32's repeat: the words around it must each be in that one message. An ellipsis is a cut the chat made, the same way: c118's
- * repeat in frontend bro on 10-19 quotes "consistent with our actual apps. ... 이런거 때문에" from one longer owner message.
+ * Whether `words` is part of one owner message of the chat (`owner`, from `ownerTexts`), compared in `quoteForm`. A note in square brackets
+ * is the chat's, such as "[screenshot of the duties panel: ...]" for an image the owner sent with c32's repeat: the words around it must each
+ * be in that one message. An ellipsis is a cut the chat made, the same way: ops guy's c110 line of 10-18 quotes "a duty that checks these.
+ * ... things like p240" from one longer owner message. Sentence punctuation does not count, since a chat that joins two of his lines adds a
+ * period: c118's repeat in frontend bro on 10-19 reads "대충하는거 같잖아. use subagent" where he wrote "대충하는거 같잖아" and "use subagen" on
+ * their own lines.
  */
 export function ownerSaid(words: string, owner: readonly string[]): boolean {
   const pieces = words.split(/\[[^\]]*\]|\.\.\.|…/).map(piece => quoteForm(piece).replace(/^["'\s]+|["'\s]+$/g, "")).filter(Boolean);
