@@ -516,10 +516,12 @@ const unreadHost = (name: string): HostWatchLine => ({ name, usable: null, worke
  * unread and the line goes out with this box's own numbers, so a stop never drops a sample in flight. On 10-18 the Mac's relay timed out at
  * 35 s (hosts.ts relayWatch) while restarts at 10:46:55Z and 10:58:45Z stopped the service, and the 10:46:30Z and 10:58:30Z samples left no line.
  *
- * Each of this box's own reads answers by the next tick (`nextSampleAt`) or by `stopping` (kernel-read.ts `bounded`), and one that did not is
+ * Each of this box's own reads answers by the next tick (`nextSampleAt`, kernel-read.ts `bounded`), and one that did not is
  * named in the line's `unread`, so the minute keeps its line, stamped at the sample's start, and the Whole system duty judges it from what was
  * read. A cut at the minute's end was too short for a sample that starts late in it: release-5ebd524's start sample at 14:11:59.900Z on 10-20
- * was cut 100 ms later with its /proc reads unread and replaced the 14:11:30Z line of that minute. On 10-20 a hung cgroup
+ * was cut 100 ms later with its /proc reads unread and replaced the 14:11:30Z line of that minute. A stop leaves these reads to that cut, which
+ * comes within the service's 90 s stop timeout: release-d142c21 cut them at the stop too, and the stop lines at 14:30:03Z and 14:33:00Z read
+ * nothing of this box. On 10-20 a hung cgroup
  * read held the sample, every tick until 13:08:29Z found it running and skipped, and d7's 13:08Z run read 30 of 30 minutes with no line. A
  * minute's next read of a kind still out joins it, so a hung helper or file is not started again each minute. With no footprints the minute
  * judges no call, since each kernel would be missing from them. The relay reads keep their own
@@ -534,8 +536,7 @@ export async function sample(source: WatchSource, stopping?: Promise<void>): Pro
   let own = process.cpuUsage(started);
   const at = now();
   let minuteEnd: NodeJS.Timeout | undefined;
-  const cut = Promise.race([new Promise<void>(resolve => { minuteEnd = setTimeout(resolve, Math.max(0, nextSampleAt(at) - now())); }),
-    ...stopping ? [stopping] : []]);
+  const cut = new Promise<void>(resolve => { minuteEnd = setTimeout(resolve, Math.max(0, nextSampleAt(at) - now())); });
   const unread: string[] = [];
   const read = <T>(kind: string, value: () => Promise<T>): Promise<T | undefined> => bounded(kind, value, cut, unread);
   const chatIds = source.chats();
