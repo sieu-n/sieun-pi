@@ -83,7 +83,7 @@ test("the create send is timed from before its POST, listed as a new thread and 
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   t.after(() => { sockets.close(); server.close(); });
-  const { sends } = await sendProbe({ port: (server.address() as AddressInfo).port, capability: "cap", csrfToken: "token" });
+  const { sends } = await sendProbe({ port: (server.address() as AddressInfo).port, capability: "cap", csrfToken: "token" }, 1_000);
   assert.equal(sends.length, 1);
   assert.equal(sends[0]!.create, true);
   assert.ok(sends[0]!.firstTokenAt - sends[0]!.sentAt >= 400, `the create send read ${sends[0]!.firstTokenAt - sends[0]!.sentAt} ms, so it was timed after its POST answered`);
@@ -197,9 +197,31 @@ test("the new-thread send asks for the spare first and starts with the start ski
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   t.after(() => { sockets.close(); server.close(); });
-  const { sends } = await sendProbe({ port: (server.address() as AddressInfo).port, capability: "cap", csrfToken: "token" }, 60_000, "poteto-mode");
+  const { sends } = await sendProbe({ port: (server.address() as AddressInfo).port, capability: "cap", csrfToken: "token" }, 1_000, "poteto-mode");
   assert.deepEqual(prewarms, [{ host: "mac", cwd: "/Users/sieunpark", provider: "anthropic", modelId: "claude-opus-5-5", thinkingLevel: "off" }], "the spare is asked for before the send");
   assert.match(String(bodies[0]!.message), new RegExp(`^/skill:poteto-mode ${sends[0]!.marker.replace(".", "\\.")} Reply with exactly: ok$`));
+});
+
+test("a subscribe that answers after the first turn ended reads its end from the snapshot and sends the follow-ups", async t => {
+  const prompts: string[] = [];
+  const server = createServer((req, res) => {
+    let body = "";
+    req.on("data", chunk => { body += chunk; });
+    req.on("end", () => {
+      if (req.url!.endsWith("/prompt")) prompts.push(String((JSON.parse(body) as { message: string }).message));
+      res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify({ id: "01a15666-0000-7000-8000-000000000004" }));
+    });
+  });
+  const sockets = new WebSocketServer({ server });
+  sockets.on("connection", socket => socket.on("message", data => {
+    const { sub } = JSON.parse(data.toString()) as { sub: number };
+    socket.send(JSON.stringify({ event: "thread", sub, data: { type: "snapshot", snapshot: { streaming: null, retry: null, messages: [{ role: "user" }, { role: "assistant", stopReason: "stop" }] } } }));
+  }));
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => { sockets.close(); server.close(); });
+  await assert.rejects(sendProbe({ port: (server.address() as AddressInfo).port, capability: "cap", csrfToken: "token" }, 1_000), /no user message/);
+  assert.equal(prompts.length, 1, "the follow-up went at once, with no wait for an agent_end the snapshot already held");
 });
 
 const journal = (lines: string[]) => lines.map(line => `${line.slice(0, 32)} us-metal02 systemd[257985]: ${line.slice(33)}`).join("\n");

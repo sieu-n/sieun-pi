@@ -218,8 +218,17 @@ export async function sendProbe(config: ChatConfig, firstReplyMs = FIRST_REPLY_M
     const first = await until(0, frame => reply(frame) || (mine(frame) && frame.data?.type === "snapshot" && (frame.data.snapshot?.messages ?? []).some(message => message.role === "assistant")),
       firstReplyMs, "first reply frame");
     sends.push({ marker: firstText, sentAt: createdAt, firstTokenAt: first.at, create: true });
-    const end = await until(first.index, frame => mine(frame) && (kind(frame) === "agent_end" || kind(frame) === "auto_retry_start"), 300_000, "first turn end");
-    if (kind(frames[end.index]!.frame) === "auto_retry_start") return { id, sends };
+    // The page's subscribe can answer after the first turn already ended, since the first message leaves with the create: its snapshot then
+    // holds the reply and streams nothing, and no agent_end follows. On 10-20 at 06:46Z that read as "no first turn end within 300 s" and
+    // left p93's metric unread, while the turn had ended in the slot-wait error 2 s after the send.
+    // A snapshot ended the turn only when it says so: nothing streams, no retry waits, and its last reply is no error. A slot wait that outlasts
+    // the bound leaves the follow-ups unsent and the new-thread send still read.
+    const snap = frames[first.index]!.frame.data?.type === "snapshot" ? frames[first.index]!.frame.data!.snapshot as { streaming?: unknown; retry?: unknown; messages?: { role?: string; stopReason?: string }[] } : null;
+    const ended = snap !== null && "retry" in snap && snap.retry === null && !snap.streaming &&
+      (snap.messages ?? []).filter(message => message.role === "assistant").at(-1)?.stopReason !== "error";
+    const end = ended ? first : await until(first.index, frame => mine(frame) && (kind(frame) === "agent_end" || kind(frame) === "auto_retry_start"),
+      Math.max(1, createdAt + firstReplyMs - Date.now()), "first turn end").catch(() => null);
+    if (!end) return { id, sends };
     // A first turn that ended in an error, such as pi-pool's slot wait, goes into a retry after its agent_end, and a follow-up sent then waits
     // behind it: on 10-20 at 05:49Z the follow-up got no user message in 120 s. So the follow-ups wait for a turn that ends with no error,
     // within the new thread's bound; at 05:52Z the slot came after about 1 min, and a probe that sent none left p93's metric unread.
@@ -233,6 +242,8 @@ export async function sendProbe(config: ChatConfig, firstReplyMs = FIRST_REPLY_M
           const last = (frame.data.snapshot?.messages ?? []).filter(message => message.role === "assistant").at(-1);
           if (last) error = last.stopReason === "error";
         } else if (kind(frame) === "message_end" && frame.data?.event?.message?.role === "assistant") error = frame.data.event.message.stopReason === "error";
+        // A retry that starts holds the turn, whatever its last message said; the turn after it decides.
+        else if (kind(frame) === "auto_retry_start") error = true;
       }
       return error;
     };
