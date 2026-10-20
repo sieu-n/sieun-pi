@@ -265,3 +265,38 @@ test("the audit rows keep the box's dropped cua-driver out of tool_rows_off, and
   assert.equal(judge(true).off.length, 1);
   assert.deepEqual([judge(false).off.length, judge(false).unpushed.length], [0, 1]);
 });
+
+test("the AGENTS.md row matches when the Mac's file is one the box checkout held at an ancestor of its HEAD, and stays off for content the box never had", () => {
+  const home = mkdtempSync(join(tmpdir(), "box-parity-blob-"));
+  const repo = join(home, "src/sieun-pi");
+  mkdirSync(join(repo, "config"), { recursive: true });
+  mkdirSync(join(home, ".prime/agent"), { recursive: true });
+  const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8",
+    env: { ...process.env, HOME: home, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" } }).trim();
+  const commit = (text: string) => { writeFileSync(join(repo, "config/AGENTS.md"), text); git("add", "config/AGENTS.md"); git("commit", "-q", "-m", text); };
+  git("init", "-q", "-b", "main");
+  commit("rules v1\n");
+  commit("rules v2\n");
+  git("checkout", "-q", "-b", "side");
+  commit("rules on a side branch\n");
+  git("checkout", "-q", "main");
+  commit("rules v3\n");
+  symlinkSync(join(repo, "config/AGENTS.md"), join(home, ".prime/agent/AGENTS.md"));
+  const rows: Row[] = [{ id: "agents", tool: "~/.prime/agent/AGENTS.md", probes: [{ blob: "~/.prime/agent/AGENTS.md" }] }];
+  const run = (host: "mac" | "box") => {
+    const arg = Buffer.from(JSON.stringify({ host, rows, known: {} })).toString("base64");
+    return (JSON.parse(execFileSync("python3", [join(import.meta.dirname, "../scripts/duties/box-parity-probe.py"), arg], { env: { ...process.env, HOME: home }, encoding: "utf8" })) as ProbeOutput).values.agents![0]!;
+  };
+  const box = run("box");
+  const macWith = (text: string) => {
+    writeFileSync(join(home, "mac-AGENTS.md"), text);
+    return `blobs:${JSON.stringify([git("hash-object", join(home, "mac-AGENTS.md"))])}`;
+  };
+  assert.equal((JSON.parse(run("mac").slice(6)) as string[]).length, 1);
+  assert.equal(run("mac"), macWith("rules v3\n"));
+  assert.equal(shortfall(macWith("rules v3\n"), box), null);
+  assert.equal(shortfall(macWith("rules v1\n"), box), null);
+  assert.match(shortfall(macWith("rules on a side branch\n"), box)!, /is at no commit the box checkout's HEAD descends from/);
+  assert.match(shortfall(macWith("rules only the Mac has\n"), box)!, /is at no commit the box checkout's HEAD descends from/);
+  assert.equal(judgeRows(rows, output("mac", { agents: [macWith("rules v2\n")] }), output("box", { agents: [box] }), new Map()).off.length, 0);
+});

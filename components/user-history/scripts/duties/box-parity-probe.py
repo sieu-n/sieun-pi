@@ -6,7 +6,7 @@ npm package.json); a CLI whose path carries no version is run with `--version` o
 On the box it also makes the real calls: logins, kernel imports and MCP initialize plus tools/list. Python 3.9 stdlib, because ssh on the
 Mac starts /usr/bin/python3.
 Usage: python3 box-parity-probe.py <base64 of {"host": "mac"|"box", "rows": [...], "known": {cli: version read}}>
-A value is "ok", "absent", "fail: <why>", "v:<version>", "=<output>", "sha:<hex>" or "set:<json list>".
+A value is "ok", "absent", "fail: <why>", "v:<version>", "=<output>", "sha:<hex>", "blobs:<json list>" or "set:<json list>".
 """
 import base64, configparser, glob, hashlib, json, os, re, select, socket, subprocess, sys, threading, time
 from concurrent.futures import ThreadPoolExecutor
@@ -17,7 +17,7 @@ REPO = HOME + "/Documents/Github/auto-sns-agent"
 # 80 cores (10-19 at 20:59Z), and at 20:06Z a `cli vercel` call ran past the 25 s limit this replaced. A call that hangs still fails.
 TIMEOUT_S = 60
 VERSION = re.compile(r"\d+(?:\.\d+)+[a-z]?")
-READS = {"const", "path", "which", "glob", "ls", "keys", "sha", "port", "launchd", "version", "distinfo", "gitconfig", "ini", "tip"}
+READS = {"const", "path", "which", "glob", "ls", "keys", "sha", "port", "launchd", "version", "distinfo", "gitconfig", "ini", "tip", "blob"}
 
 
 def nvm_bin():
@@ -372,6 +372,26 @@ def at_tip(paths, host):
     return [path for path in paths if os.path.dirname(path) in set(listed) | {""}]
 
 
+def blobs(path, host):
+    """A file's git blob hash, then on the box every blob its real path held at a commit its checkout's HEAD descends from, as "blobs:<json list>".
+
+    ~/.prime/agent/AGENTS.md links into the sieun-pi checkout on the box and into a runtime release on the Mac, which rolls later, so a Mac file
+    the box checkout once held is the box being ahead. The Mac side sends only its file's hash.
+    """
+    try:
+        data = open(expand(path), "rb").read()
+    except FileNotFoundError:
+        return "absent"
+    found = [hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()]
+    if host == "box":
+        real = os.path.realpath(expand(path))
+        done = subprocess.run(["git", "-C", os.path.dirname(real), "log", "--raw", "--no-abbrev", "--no-renames", "--format=", "HEAD", "--", os.path.basename(real)],
+                              capture_output=True, text=True, timeout=TIMEOUT_S, env=ENV)
+        if done.returncode == 0:
+            found += [line.split()[3] for line in done.stdout.splitlines() if line.startswith(":") and not set(line.split()[3]) <= {"0"}]
+    return "blobs:" + json.dumps(found)
+
+
 def probe(spec, host):
     kind = next(k for k in spec if k not in ("expect", "cwd", "pattern", "at", "depth", "key", "names", "atTip", "intended", "shared"))
     if host == "mac" and kind not in READS:
@@ -401,6 +421,8 @@ def probe(spec, host):
             return "sha:" + hashlib.sha256(open(expand(spec["sha"]), "rb").read()).hexdigest()[:16]
         except FileNotFoundError:
             return "absent"
+    if kind == "blob":
+        return blobs(spec["blob"], host)
     if kind == "distinfo":
         return distinfo(spec["distinfo"])
     if kind == "gitconfig":

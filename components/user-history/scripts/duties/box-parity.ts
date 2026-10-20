@@ -50,6 +50,7 @@ export function shortfall(mac: string | undefined, box: string | undefined): str
   if (failing(mac)) return null;
   if (box === undefined) return "the box gave no value";
   if (mac!.startsWith("commits:")) return commitShortfall(mac!, box);
+  if (mac!.startsWith("blobs:")) return blobShortfall(mac!, box);
   const macSet = setOf(mac!);
   if (macSet) {
     const boxSet = setOf(box);
@@ -59,6 +60,18 @@ export function shortfall(mac: string | undefined, box: string | undefined): str
   }
   if (mac!.startsWith("v:") && box.startsWith("v:") && compareVersions(box.slice(2), mac!.slice(2)) >= 0) return null;
   return mac === box ? null : `Mac ${mac!.slice(0, 80)}, box ${box.slice(0, 160)}`;
+}
+
+/**
+ * A file the box checkout tracks, such as ~/.prime/agent/AGENTS.md: it matches when the box's blobs, its file's and those the file held at the
+ * commits its HEAD descends from, include the Mac file's. The Mac reads it from a runtime release that rolls later, so the box ahead matches.
+ */
+export function blobShortfall(mac: string, box: string): string | null {
+  const [macBlob] = JSON.parse(mac.slice(6)) as string[];
+  if (!box.startsWith("blobs:")) return `Mac blob ${macBlob?.slice(0, 10)}, box ${box.slice(0, 160)}`;
+  const boxBlobs = JSON.parse(box.slice(6)) as string[];
+  return boxBlobs.includes(macBlob!) ? null
+    : `the Mac's file (blob ${macBlob?.slice(0, 10)}) is at no commit the box checkout's HEAD descends from, box blob ${boxBlobs[0]?.slice(0, 10)}`;
 }
 
 type MacCommit = [id: string, patch: string, paths: string[], pushed?: boolean];

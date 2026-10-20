@@ -1471,7 +1471,7 @@
   "tool": "~/.prime/agent/AGENTS.md",
   "probes": [
    {
-    "sha": "~/.prime/agent/AGENTS.md"
+    "blob": "~/.prime/agent/AGENTS.md"
    }
   ]
  },
