@@ -145,9 +145,14 @@ export async function advanceRelease(run: string, until: number): Promise<void> 
   let duty: Awaited<ReturnType<DutyStore["list"]>>[number] | undefined;
   while (Date.now() < until) {
     duty = (await new DutyStore(DATA).list(state.chat.id).catch(() => [])).find(one => one.precheck.cwd.startsWith(state.sandbox) || one.name === DUTY.name);
-    if (duty && !seenAt) { seenAt = Date.now(); log(run, `advance-release: the chat's duty ${duty.id} "${duty.name}" is stored with precheck cwd ${duty.precheck.cwd}`); }
+    if (duty && !seenAt) {
+      seenAt = Date.now();
+      // The duty as it first appears, before the chat can replace it: relative-duty run 20261019-2032's chat swapped its installed duty 40 s later.
+      writeFileSync(join(evidence, "duty-captured.json"), JSON.stringify({ at: seenAt, duty }, null, 1));
+      log(run, `advance-release: the chat's duty ${duty.id} "${duty.name}" is stored with precheck cwd ${duty.precheck.cwd}`);
+    }
     if (duty && (existsSync(join(state.sandbox, SUMMARY)) || Date.now() - seenAt > 15 * 60_000)) break;
-    await new Promise(done => setTimeout(done, 15_000));
+    await new Promise(done => setTimeout(done, 3_000));
   }
   if (!duty) { log(run, "advance-release: the chat stored no duty of the project before the window ended"); return; }
   writeFileSync(join(evidence, "duty-before-advance.json"), JSON.stringify(duty, null, 1));
