@@ -43,12 +43,23 @@ const CENSUS_METER_LANE = "instagram_census";
  */
 export const GROW_SHARE = 0.1;
 export const GROW_MIN = 8_000;
+/**
+ * A queue with a wait gauge grew only when its oldest write also waits longer than this, in seconds. The search sync outbox holds the rows a
+ * search backfill stages in its own lane (auto-sns-agent apps/crawler-v3 src/catalog/search_outbox.py BACKFILL_DUE), which the drain takes only
+ * when no write is due, so a running backfill swells the outbox without holding a write. On 10-20 at 16:15Z the profile outbox held 359,538
+ * rows, 328,299 of them the profile restage's backfill lane, while its oldest write waited 76 s. The number is the line of the repo's alert
+ * crawler-prod-search-sync-backlog (apps/infra/metal/config/obs/grafana/alerting/crawler-health.yaml). Over 48 h of 30-minute points to 10-20
+ * 16:00Z the profile outbox's oldest wait read 61 to 513 s outside its backlogs and 1,262 to 7,705 s inside them (10-18 16:00Z to 21:30Z,
+ * 10-19 18:00Z to 10-20 01:00Z).
+ */
+export const WAIT_LINE_S = 300;
 
 /** The Instagram pipeline queues: Kafka consumer lag, dead letters, search sync outbox and Redis stream lag. */
-export const QUEUES: { family: string; expr: string; by: string[] }[] = [
+export const QUEUES: { family: string; expr: string; by: string[]; wait?: string }[] = [
   { family: "kafka lag", by: ["topic", "group"], expr: 'max by (topic, group) (crawler_v3_bus_group_lag_records{world="prod",topic=~"instagram.*|media.fetch|crawl_profile.instagram|crawl[.](profiles|posts|related_profiles|videos)"})' },
   { family: "dead letters", by: ["topic"], expr: 'max by (topic) (crawler_v3_bus_topic_retained_records{world="prod",topic=~"(instagram.*|media.fetch|crawl_profile.instagram|crawl[.].*)[.]dlq"})' },
-  { family: "search sync outbox", by: ["kind"], expr: 'max by (kind) (crawler_v3_search_sync_outbox_rows{world="prod",kind=~"profile|content"})' },
+  { family: "search sync outbox", by: ["kind"], expr: 'max by (kind) (crawler_v3_search_sync_outbox_rows{world="prod",kind=~"profile|content"})',
+    wait: 'max by (kind) (crawler_v3_search_sync_outbox_oldest_age_seconds{world="prod",kind=~"profile|content"})' },
   { family: "redis stream lag", by: ["stream", "group"], expr: "max by (stream, group) (crawler_v3_stream_group_lag)" },
 ];
 
@@ -138,7 +149,7 @@ export function grafanaApi(fetcher: typeof fetch, auth: string, signal: AbortSig
   };
 }
 
-export interface Queue { family: string; name: string; now: number; ago6h: number | null; slope6h: number | null; low?: number | null; low6h?: number | null }
+export interface Queue { family: string; name: string; now: number; ago6h: number | null; slope6h: number | null; low?: number | null; low6h?: number | null; wait?: number | null }
 export interface CensusWindow { jobs: number; bad: number; att: number; okAtt: number; wire: number }
 export interface ProxyLane { lane: string; wire: number; newSessions: number }
 export interface WireDay { day: number; wire: number; updated: number }
@@ -170,7 +181,8 @@ export function geonodeMbps(census: CensusWindow, proxy: readonly ProxyLane[], a
 
 const rose = (now: number, then: number): boolean => now - then > Math.max(GROW_MIN, GROW_SHARE * then);
 export const grew = (q: Queue): boolean =>
-  q.ago6h !== null && q.slope6h !== null && q.slope6h > 0 && rose(q.now, q.ago6h) && (q.low == null || q.low6h == null || rose(q.low, q.low6h));
+  q.ago6h !== null && q.slope6h !== null && q.slope6h > 0 && rose(q.now, q.ago6h) && (q.low == null || q.low6h == null || rose(q.low, q.low6h))
+  && (q.wait == null || q.wait > WAIT_LINE_S);
 
 const count = (n: number): string => n >= 1e6 ? `${round1(n / 1e6)}M` : n >= 1e4 ? `${Math.round(n / 1e3)}k` : String(Math.round(n));
 
@@ -196,7 +208,7 @@ export function report(d: RunningData, dutyMetrics: readonly DutyMetric[]): Prec
     const growing = d.queues.filter(grew);
     metrics.ig_queues_growing_6h = growing.length;
     const largest = [...d.queues].sort((a, b) => b.now - a.now).slice(0, 3);
-    const trend = (q: Queue): string => `${q.family} ${q.name} ${count(q.now)}${q.ago6h === null ? " (no 6 h history)" : ` from ${count(q.ago6h)} 6 h ago`}`;
+    const trend = (q: Queue): string => `${q.family} ${q.name} ${count(q.now)}${q.ago6h === null ? " (no 6 h history)" : ` from ${count(q.ago6h)} 6 h ago`}${q.wait == null ? "" : `, oldest write ${Math.round(q.wait)} s`}`;
     flagged.push({ at: d.now, kind: "backlog", excerpt: `${growing.length} of ${d.queues.length} Instagram queues grew over 6 h${growing.length ? `: ${growing.map(trend).join("; ")}` : ""}. Largest: ${largest.map(trend).join("; ")}.`.slice(0, 300) });
   }
   if (d.panels) {
@@ -238,19 +250,21 @@ export async function measure(query: DsQuery | null, api: GrafanaApi | null, aut
     step("queues", async () => {
       const out: Queue[] = [];
       for (const q of QUEUES) {
-        const [nowS, agoS, slopeS, lowS, low6hS] = await Promise.all([
+        const [nowS, agoS, slopeS, lowS, low6hS, waitS] = await Promise.all([
           promInstant(query, PROM.prod, `avg_over_time((${q.expr})[15m:1m])`),
           promInstant(query, PROM.prod, `avg_over_time((${q.expr})[15m:1m] offset 6h)`),
           promInstant(query, PROM.prod, `deriv((${q.expr})[6h:5m])`),
           promInstant(query, PROM.prod, `min_over_time((${q.expr})[30m:1m])`),
           promInstant(query, PROM.prod, `min_over_time((${q.expr})[30m:1m] offset 6h)`),
+          q.wait ? promInstant(query, PROM.prod, `avg_over_time((${q.wait})[15m:1m])`) : Promise.resolve(null),
         ]);
         const key = (labels: Record<string, string>): string => q.by.map(name => labels[name] ?? "").join("/");
         const byKey = (series: typeof nowS): Map<string, number> => new Map(series.map(s => [key(s.labels), s.value]));
         const [ago, slope, low, low6h] = [byKey(agoS), byKey(slopeS), byKey(lowS), byKey(low6hS)];
         for (const s of nowS) {
           const name = key(s.labels);
-          out.push({ family: q.family, name, now: s.value, ago6h: ago.get(name) ?? null, slope6h: slope.get(name) ?? null, low: low.get(name) ?? null, low6h: low6h.get(name) ?? null });
+          out.push({ family: q.family, name, now: s.value, ago6h: ago.get(name) ?? null, slope6h: slope.get(name) ?? null, low: low.get(name) ?? null, low6h: low6h.get(name) ?? null,
+            ...(waitS ? { wait: byKey(waitS).get(name) ?? null } : {}) });
         }
       }
       return out;

@@ -33,6 +33,10 @@ test("a queue grows only past 10% and about a minute of census intake, with its 
   assert.equal(grew({ family: "search sync outbox", name: "profile", now: 22_350, ago6h: 11_502, slope6h: 1, low: 14_124, low6h: 7_844 }), false);
   // 10-20 07:30Z: crawl.videos rose at its low point too, so it is a backlog.
   assert.equal(grew({ family: "kafka lag", name: "crawl.videos/video-writers", now: 652_138, ago6h: 447_386, slope6h: 20, low: 532_587, low6h: 437_735 }), true);
+  // 10-20 16:15Z: the profile restage's backfill lane swelled the outbox while its oldest write waited 76 s, so no write is backlogged.
+  assert.equal(grew({ family: "search sync outbox", name: "profile", now: 336_791, ago6h: 23_117, slope6h: 7.6, low: 282_242, low6h: 15_534, wait: 76 }), false);
+  // 10-19 21:00Z: the profile outbox backlog held its oldest write 5,525 s.
+  assert.equal(grew({ family: "search sync outbox", name: "profile", now: 721_958, ago6h: 9_000, slope6h: 30, low: 600_000, low6h: 5_000, wait: 5_525 }), true);
 });
 
 test("the run reads every metric, and a failed source misses instead of reading green", () => {
