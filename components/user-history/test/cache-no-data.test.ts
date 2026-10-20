@@ -54,7 +54,7 @@ test("a window with enough calls reads its share", async () => {
 test("an LGTM failure is a miss with the reason no data", async () => {
   const dataDir = mkdtempSync(join(tmpdir(), "cache-no-data-"));
   const output = await measureHarness({ roots: [], views: async () => [], dataDir, now: Date.parse("2026-10-19T15:30:00Z"),
-    cache: () => Promise.reject(new Error("LGTM unreachable")), history: async () => ({ owner: [], refines: [] }), transcripts: async () => [], smoke: { python: "python3" } });
+    cache: () => Promise.reject(new Error("LGTM unreachable")), history: async () => ({ owner: [], refines: [] }), commitTime: async () => undefined, transcripts: async () => [], smoke: { python: "python3" } });
   for (const key of keys) assert.ok(output.metrics[key]! < targets[key]);
   assert.match(output.flagged!.find(slice => slice.kind === "cache_error")!.excerpt, /^no data: /);
   assert.equal(judge(duty.metrics, withHarness(tools, output)).verdict, "missed");

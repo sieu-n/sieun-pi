@@ -358,8 +358,9 @@ export interface Timed { text: string; at: number }
 export interface ChatHistory { owner: readonly Timed[]; refines: readonly Timed[] }
 
 /**
- * Every repeat in [since, until] the owner gave after the first correction was in force, oldest first, with its entry: the
- * repeat_corrections_7d count. A rule is in force from the first `/refine` that names the entry's first words (`refineCovers`), which the
+ * Every repeat in [since, until] the owner gave after the first correction was in force, oldest first, with its entry and the time of his
+ * message (`said`): the repeat_corrections_7d count, which repeat-split.ts splits by when the entry's fix landed. A rule is in force from
+ * the first `/refine` that names the entry's first words (`refineCovers`), which the
  * service runs in the entry's chat when the turn that recorded it ends, or from the entry's own time when no refine is on record (before c86,
  * 10-15). Two kinds of recorded repeat do not count.
  * 1. Words the owner never wrote in the repeat's chat (`ownerSaid`). Before correction_add checked the words (0da3d4a, 10-12 21:59Z), ops guy
@@ -369,7 +370,8 @@ export interface ChatHistory { owner: readonly Timed[]; refines: readonly Timed[
  *    same turn, before the 05:22Z refine. ops guy filed his 09:10Z "stop being paranoid in plan" at 10:53Z as a repeat of c110, which he first
  *    gave at 10:43Z.
  */
-export async function repeatsBetween(ledger: Ledger, since: number, until: number, history: (chat: string) => Promise<ChatHistory>): Promise<{ entry: Correction; repeat: CorrectionRepeat }[]> {
+export interface CountedRepeat { entry: Correction; repeat: CorrectionRepeat; /** When the owner wrote it, in ms: his message's own time. */ said: number }
+export async function repeatsBetween(ledger: Ledger, since: number, until: number, history: (chat: string) => Promise<ChatHistory>): Promise<CountedRepeat[]> {
   const inWindow = ledger.corrections.flatMap(entry => entry.repeats.map(repeat => ({ entry, repeat })))
     .filter(({ repeat }) => { const at = Date.parse(repeat.at); return at >= since && at <= until; });
   const chats = new Map<string, ChatHistory>();
@@ -378,11 +380,11 @@ export async function repeatsBetween(ledger: Ledger, since: number, until: numbe
     const refined = (chats.get(entry.chat.id)?.refines ?? []).filter(command => refineCovers(command.text, entry.id, entry.words)).map(command => command.at);
     return refined.length ? Math.min(...refined) : Date.parse(entry.at);
   };
-  return inWindow.filter(({ entry, repeat }) => {
+  return inWindow.flatMap(({ entry, repeat }) => {
     const said = (chats.get(repeat.chat.id)?.owner ?? []).filter(message => ownerSaid(repeat.words, [message.text]));
     const filed = said.filter(message => message.at <= Date.parse(repeat.at));
     const message = (filed.length ? filed : said).at(-1);
-    return message !== undefined && message.at > inForce(entry);
+    return message !== undefined && message.at > inForce(entry) ? [{ entry, repeat, said: message.at }] : [];
   }).sort((a, b) => a.repeat.at.localeCompare(b.repeat.at));
 }
 

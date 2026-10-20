@@ -8,6 +8,7 @@ import { loadSkillsFromDir } from "prime-agent";
 import { CorrectionLedger, repeatsBetween, type ChatHistory } from "../../src/chat-corrections.ts";
 import { chatHistory, fileChatHistory } from "../../src/owner-history.ts";
 import { readAppended } from "./read-appended.ts";
+import { fixRepos, gitCommitTime, sideLabel, splitMetrics, splitRepeats } from "./repeat-split.ts";
 import { grafanaPrometheus } from "../../src/usage/lgtm.ts";
 import { measureCache, NO_DATA, WINDOWS, type CacheMetric } from "./cache-ratio.ts";
 import { SMOKE_SESSION, smokeSkills, type SmokeEnv } from "./skill-smoke.ts";
@@ -31,7 +32,7 @@ export const OVERLAP_MIN = 0.2;
 /** Pairs this close are listed for the job to judge, though only pairs at OVERLAP_MIN count in the metric. */
 export const OVERLAP_LIST = 0.1;
 const EXCERPT_MAX = 500;
-const AUTO_SNS = process.env.HARNESS_REPO || join(homedir(), "Documents/Github/auto-sns-agent");
+export const AUTO_SNS = process.env.HARNESS_REPO || join(homedir(), "Documents/Github/auto-sns-agent");
 
 /**
  * Where skills live. `views` is the path prefix the llm-wiki view events use for this root. `transcripts` marks a root whose skills sit one
@@ -57,6 +58,8 @@ export interface HarnessDeps {
   cache: () => Promise<{ metrics: Record<CacheMetric, number>; flagged: FlaggedSlice[] }>;
   /** A chat's owner words and `/refine` commands, for the repeats the owner gave (`repeatsBetween`). */
   history: (chat: string) => Promise<ChatHistory>;
+  /** When a commit a correction's ref names landed (`splitRepeats`), undefined for one no repo knows. */
+  commitTime: (hash: string) => Promise<number | undefined>;
   /** The Prime Agent transcript files that changed since the given time, for the reads of `transcripts` roots. */
   transcripts: (since: number) => Promise<string[]>;
   smoke: SmokeEnv;
@@ -221,13 +224,14 @@ export async function measureHarness(deps: HarnessDeps): Promise<PrecheckOutput 
   const listed = overlaps(skills, OVERLAP_LIST);
   const pairs = listed.filter(pair => pair.score >= OVERLAP_MIN);
   const unread = skills.filter(skill => skill.lastRead === null);
-  const repeats = await repeatsBetween(await new CorrectionLedger(deps.dataDir).read(), deps.now - REPEAT_DAYS * DAY, deps.now, deps.history);
+  const repeats = await splitRepeats(await repeatsBetween(await new CorrectionLedger(deps.dataDir).read(), deps.now - REPEAT_DAYS * DAY, deps.now, deps.history),
+    deps.now, deps.commitTime);
   const smoke = await smokeSkills(skills, deps.roots, deps.smoke);
   const failures = smoke.filter(result => !result.pass);
   const flagged: FlaggedSlice[] = [
     ...failures.map(result => ({ kind: "skill_smoke_failures", excerpt: `${result.skill} failed its smoke check${result.detail ? `: ${result.detail}` : ""}` })),
-    ...repeats.map(({ entry, repeat }) => ({ chat: repeat.chat.id, at: Date.parse(repeat.at), kind: "repeat_corrections_7d",
-      excerpt: `${entry.id} "${entry.rule}" (enforced by ${entry.enforcedBy}: ${entry.ref}) given again in ${repeat.chat.name || repeat.chat.id}: ${repeat.words}`.slice(0, EXCERPT_MAX) })),
+    ...repeats.map(item => ({ chat: item.repeat.chat.id, at: item.said, kind: "repeat_corrections_7d",
+      excerpt: `${sideLabel(item)}: ${item.entry.id} "${item.entry.rule}" (enforced by ${item.entry.enforcedBy}: ${item.entry.ref}) given again in ${item.repeat.chat.name || item.repeat.chat.id}: ${item.repeat.words}`.slice(0, EXCERPT_MAX) })),
     ...unread.map(skill => ({ kind: "unread_14d", excerpt: `${skill.id} (${skill.dir}) has no ${deps.roots.find(root => root.name === skill.root)?.transcripts ? "agent read in a Prime transcript" : "view event"} since ${since.slice(0, 10)}` })),
     ...listed.slice(0, 8).map(pair => ({ kind: "overlap", excerpt: `${pair.a} and ${pair.b} share ${Math.round(pair.score * 100)}% of description words: ${pair.shared.slice(0, 12).join(", ")}` })),
   ];
@@ -240,7 +244,7 @@ export async function measureHarness(deps: HarnessDeps): Promise<PrecheckOutput 
   const skillsToPrune = prune.size + pairs.filter(pair => !prune.has(pair.a) && !prune.has(pair.b)).length;
   return {
     metrics: { skills_to_prune: skillsToPrune, skill_smoke_failures: failures.length, unread_14d: unread.length, overlapping_pairs: pairs.length, ...cache.metrics,
-      repeat_corrections_7d: repeats.length },
+      repeat_corrections_7d: repeats.length, ...splitMetrics(repeats) },
     flagged: [...cache.flagged, ...flagged.slice(0, 40)],
     skills,
     smoke,
@@ -351,7 +355,7 @@ async function main(): Promise<void> {
   const macErrors: string[] = [];
   const history = chatHistories(join(homedir(), ".prime/agent/sessions"), process.platform === "darwin" ? null : macSessionLines, macErrors);
   const { skills, smoke, ...result } = await measureHarness({ roots, views: since => wikiViews(db, since), dataDir, now: Date.now(), cache,
-    history, transcripts: since => primeTranscripts(homedir(), since), smoke: { python } });
+    history, commitTime: gitCommitTime(fixRepos(AUTO_SNS)), transcripts: since => primeTranscripts(homedir(), since), smoke: { python } });
   for (const error of macErrors) result.flagged = [...result.flagged ?? [], { kind: "repeat_corrections_mac", excerpt: `no data: the Mac read of a chat's session failed, so its repeats are left out: ${error}`.slice(0, EXCERPT_MAX) }];
   await writeFile(output, JSON.stringify(result, null, 2) + "\n");
   if (process.env.DETAILS_FILE) await writeFile(process.env.DETAILS_FILE, JSON.stringify({ skills: skills.map(({ description: _, ...skill }) => skill), smoke }, null, 2) + "\n");
