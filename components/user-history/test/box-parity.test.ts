@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { commitGaps, compareVersions, containerLimits, foldName, judgeRows, type LimitContext, managerLimits, parseLayers, parseShow, type ProbeOutput, publicSsh, type Row, shortfall, unitLimits, unpushedNote }
+import { commitGaps, compareVersions, containerLimits, foldName, judgeRows, type LimitContext, managerLimits, parseLayers, parseShow, type ProbeOutput, publicSsh, rcuBoostOff, type Row, shortfall, unitLimits, unpushedNote }
   from "../scripts/duties/box-parity.ts";
 
 const output = (host: "mac" | "box", values: Record<string, string[]>): ProbeOutput => ({ host, values, versions: {}, ms: 1 });
@@ -97,7 +97,7 @@ test("judgeRows takes a panel fail that the probe's shared text names as a match
 
 const deploy = join(import.meta.dirname, "../../../deploy/linux");
 const layers = parseLayers(readFileSync(join(deploy, "cpu/setup-cpu.sh"), "utf8"), readFileSync(join(deploy, "cpu/cpu-protect.py"), "utf8"),
-  readFileSync(join(deploy, "memory/heavy"), "utf8"), 1001);
+  readFileSync(join(deploy, "memory/heavy"), "utf8"), 1001, readFileSync(join(deploy, "cpu/rcu-boost.service"), "utf8"), readFileSync(join(deploy, "cpu/rcu-boost.py"), "utf8"));
 const context = (files: Record<string, string>, nice: Record<number, number> = {}, scope: "system" | "user" = "user"): LimitContext =>
   ({ scope, defaultTasksMax: "272774", memTotal: 1000, layers, read: path => files[path], niceOf: pid => nice[pid] });
 
@@ -142,11 +142,27 @@ test("unitLimits lists a setting the deploy/linux layer scripts set as owner-ask
   assert.deepEqual(asked(heavy, {}, {}, "system"), [["system run-pN-iN.scope MemoryMax", false], ["system run-pN-iN.scope MemorySwapMax", false]]);
 });
 
+test("rcu-boost.service's FIFO is owner-asked CPU layer 3, and rcu_boost_off flags a stopped watcher or another stall timeout (us-metal02 RCU stall 10-20)", () => {
+  assert.deepEqual(layers.rcuBoost, { unit: "rcu-boost.service", policy: "1", stallTimeoutS: 21 });
+  const watcher = { Id: "rcu-boost.service", FragmentPath: "/etc/systemd/system/rcu-boost.service", CPUSchedulingPolicy: "1" };
+  const files = { [watcher.FragmentPath]: "CPUSchedulingPolicy=fifo\n" };
+  assert.match(unitLimits(watcher, context(files, {}, "system"))[0]!.ownerAsked!, /CPU layer 3/);
+  assert.equal(unitLimits({ ...watcher, Id: "other.service" }, context(files, {}, "system"))[0]!.ownerAsked, undefined);
+  assert.equal(unitLimits({ ...watcher, CPUSchedulingPolicy: "2" }, context(files, {}, "system"))[0]!.ownerAsked, undefined);
+  const running = { ActiveState: "active", SubState: "running" };
+  assert.equal(rcuBoostOff(running, "21\n", 21).value, 0);
+  assert.equal(rcuBoostOff(running, "60\n", 21).value, 1);
+  assert.equal(rcuBoostOff({ ActiveState: "failed", SubState: "failed" }, "21\n", 21).value, 1);
+  assert.equal(rcuBoostOff(running, new Error("EACCES"), 21).value, undefined);
+});
+
 test("parseLayers refuses a layer script whose shape it does not know", () => {
-  assert.throws(() => parseLayers("declare -A OTHER=([a]=1)\n", "", "", 1001), /no SYSTEM_WEIGHTS table/);
+  assert.throws(() => parseLayers("declare -A OTHER=([a]=1)\n", "", "", 1001, "", ""), /no SYSTEM_WEIGHTS table/);
   const cpu = "declare -A SYSTEM_WEIGHTS=([a]=1)\ndeclare -A USER_WEIGHTS=([b]=2)\n";
-  assert.throws(() => parseLayers(cpu, "DAEMON = \"x\"\n", "", 1001), /no DAEMON or CORE_NICE/);
-  assert.throws(() => parseLayers(cpu, "DAEMON = \"x\"\nCORE_NICE = -10\n", "exec systemd-run --user --scope -- \"$@\"\n", 1001), /heavy has no systemd-run/);
+  assert.throws(() => parseLayers(cpu, "DAEMON = \"x\"\n", "", 1001, "", ""), /no DAEMON or CORE_NICE/);
+  assert.throws(() => parseLayers(cpu, "DAEMON = \"x\"\nCORE_NICE = -10\n", "exec systemd-run --user --scope -- \"$@\"\n", 1001, "", ""), /heavy has no systemd-run/);
+  const heavy = readFileSync(join(deploy, "memory/heavy"), "utf8");
+  assert.throws(() => parseLayers(cpu, "DAEMON = \"x\"\nCORE_NICE = -10\n", heavy, 1001, "[Service]\n", "STALL_TIMEOUT_S = 21\n"), /rcu-boost.service has no CPUSchedulingPolicy/);
 });
 
 test("foldName folds instance numbers and ids so one setting on many units counts once", () => {

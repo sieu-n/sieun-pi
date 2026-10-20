@@ -1,0 +1,12 @@
+[Unit]
+Description=Runs a thread an RCU stall warning names, so a preempted RCU reader always runs again (CPU layer 3 of deploy/linux/README.md, owner's t84 answer 10-19)
+
+[Service]
+ExecStart=/usr/bin/python3 -B /usr/local/lib/cpu-protect/rcu-boost.py
+CPUSchedulingPolicy=fifo
+CPUSchedulingPriority=1
+CPUSchedulingResetOnFork=true
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

@@ -49,6 +49,13 @@ install -m 644 "$here/cpu-protect.service" /etc/systemd/system/cpu-protect.servi
 systemctl daemon-reload
 systemctl enable cpu-protect.service >/dev/null
 systemctl restart cpu-protect.service
+
+# 3. rcu-boost runs a thread an RCU stall warning names, so a preempted reader always runs again.
+install -m 755 "$here/rcu-boost.py" /usr/local/lib/cpu-protect/rcu-boost.py
+install -m 644 "$here/rcu-boost.service" /etc/systemd/system/rcu-boost.service
+systemctl daemon-reload
+systemctl enable rcu-boost.service >/dev/null
+systemctl restart rcu-boost.service
 sleep 3
 
 app=user.slice/user-$uid.slice/user@$uid.service/app.slice
@@ -56,3 +63,4 @@ for unit in "${!SYSTEM_WEIGHTS[@]}"; do echo "$unit cpu.weight $(cat "/sys/fs/cg
 for unit in "${!USER_WEIGHTS[@]}"; do echo "$unit cpu.weight $(cat "/sys/fs/cgroup/$app/$unit/cpu.weight")"; done
 echo "prime-agent threads at nice -10: $(ps -L -o ni=,args= -u "$DEV_USER" | awk '$2 ~ /prime-agent$/ && $1 == -10' | wc -l) of $(ps -L -o args= -u "$DEV_USER" | awk '$1 ~ /prime-agent$/' | wc -l)"
 echo "cpu-protect $(systemctl is-active cpu-protect)"
+echo "rcu-boost $(systemctl is-active rcu-boost), rcu_cpu_stall_timeout $(cat /sys/module/rcupdate/parameters/rcu_cpu_stall_timeout)"

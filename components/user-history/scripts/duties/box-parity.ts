@@ -21,6 +21,7 @@ import { CHECKS, type Outcome, realDeps, runChecks } from "./skills-and-tools.ts
  *   A setting the owner asked for is listed as `owner_asked` with its layer and not counted: a CPUWeight setup-cpu.sh sets (CPU layer 1), the
  *   daemon's nice from cpu-protect.py (CPU layer 2), and a `heavy` scope (memory layer 4), all in deploy/linux/README.md after the owner's 10-19
  *   asks and his t84 answer. `parseLayers` reads them from those scripts, so a value that differs from its script still counts.
+ * - `rcu_boost_off`: 1 when rcu-boost.service (CPU layer 3) is not running or rcu_cpu_stall_timeout differs from its STALL_TIMEOUT_S, see rcuBoostOff.
  * - `public_ssh_open`: 1 when port 22 on the box's public address answers from us-metal01 (METAL_SSH_HOST), or ssh-public-guard.service is not
  *   active; the probe also dials a closed port, so a refused answer proves the path reaches the box.
  * A source that cannot be read leaves its metric out with a `source_error` item, so the run says not measured instead of a miss.
@@ -194,6 +195,7 @@ export interface Layers {
   weights: ReadonlyMap<string, string>;
   nice: { unit: string; value: number };
   heavy: { swapMax: string; score: number };
+  rcuBoost: { unit: string; policy: string; stallTimeoutS: number };
 }
 export interface LimitContext {
   scope: "system" | "user"; defaultTasksMax: string; memTotal: number; layers: Layers;
@@ -204,11 +206,15 @@ export interface LimitFinding { key: string; excerpt: string; ownerAsked?: strin
 const CPU_LAYERS = "of deploy/linux/README.md, which the owner asked for in his t84 answer of 10-19";
 const MEMORY_LAYERS = "of deploy/linux/README.md, which the owner asked for on 10-19";
 
+/** `systemctl show` gives CPUSchedulingPolicy as the kernel's number for the name a unit file sets. */
+const POLICY_NUMBERS: Record<string, string> = { other: "0", fifo: "1", rr: "2", batch: "3", idle: "5" };
+
 /**
  * The owner-asked layers from deploy/linux/cpu/setup-cpu.sh (its SYSTEM_WEIGHTS and USER_WEIGHTS tables, `$uid` as the box user's), cpu-protect.py
- * (DAEMON and CORE_NICE) and memory/heavy (its systemd-run line). A script whose shape changed throws, so the metric says not measured.
+ * (DAEMON and CORE_NICE), memory/heavy (its systemd-run line) and rcu-boost.service with rcu-boost.py (its policy and STALL_TIMEOUT_S). A script
+ * whose shape changed throws, so the metric says not measured.
  */
-export function parseLayers(setupCpu: string, cpuProtect: string, heavy: string, uid: number): Layers {
+export function parseLayers(setupCpu: string, cpuProtect: string, heavy: string, uid: number, rcuBoostUnit: string, rcuBoost: string): Layers {
   const weights = new Map<string, string>();
   for (const [table, scope] of [["SYSTEM_WEIGHTS", "system"], ["USER_WEIGHTS", "user"]] as const) {
     const body = new RegExp(`^declare -A ${table}=\\(([^)]*)\\)`, "m").exec(setupCpu)?.[1];
@@ -220,7 +226,11 @@ export function parseLayers(setupCpu: string, cpuProtect: string, heavy: string,
   if (!unit || !nice) throw new Error("cpu-protect.py has no DAEMON or CORE_NICE");
   const run = /systemd-run --user --scope .*-p MemoryMax="\$size" -p MemorySwapMax=(\S+) -- choom -n (-?\d+) --/.exec(heavy);
   if (!run) throw new Error("heavy has no systemd-run --user --scope line with MemoryMax, MemorySwapMax and choom");
-  return { weights, nice: { unit, value: Number(nice) }, heavy: { swapMax: run[1]!, score: Number(run[2]) } };
+  const policy = POLICY_NUMBERS[/^CPUSchedulingPolicy=(\w+)$/m.exec(rcuBoostUnit)?.[1] ?? ""];
+  const stall = /^STALL_TIMEOUT_S = (\d+)$/m.exec(rcuBoost)?.[1];
+  if (!policy || !stall) throw new Error("rcu-boost.service has no CPUSchedulingPolicy or rcu-boost.py no STALL_TIMEOUT_S");
+  return { weights, nice: { unit, value: Number(nice) }, heavy: { swapMax: run[1]!, score: Number(run[2]) },
+    rcuBoost: { unit: "rcu-boost.service", policy, stallTimeoutS: Number(stall) } };
 }
 
 /**
@@ -235,6 +245,9 @@ const isHeavyScope = (unit: Record<string, string>, context: LimitContext): bool
 export function layerReason(unit: Record<string, string>, prop: string, value: string, context: LimitContext): string | undefined {
   if (prop === "CPUWeight" && context.layers.weights.get(`${context.scope} ${unit.Id}`) === value) return `setup-cpu.sh sets it as CPU layer 1 ${CPU_LAYERS}`;
   if ((prop === "MemoryMax" || prop === "MemorySwapMax") && isHeavyScope(unit, context)) return `\`heavy\` sets it as memory layer 4 ${MEMORY_LAYERS}`;
+  if (prop === "CPUSchedulingPolicy" && context.scope === "system" && unit.Id === context.layers.rcuBoost.unit && value === context.layers.rcuBoost.policy) {
+    return `rcu-boost.service sets it as CPU layer 3 ${CPU_LAYERS}`;
+  }
   return undefined;
 }
 
@@ -312,6 +325,18 @@ export function publicSsh(answers: { ssh: string; control: string } | Error, gua
   return { excerpt: `${guardText}; from ${OUTSIDE} port 22 gave ${answers.ssh} and the closed port gave ${answers.control}, so the path is unproven` };
 }
 
+/**
+ * `rcu_boost_off`: 1 when rcu-boost.service, CPU layer 3, is not running or the kernel's RCU stall warning delay is not the STALL_TIMEOUT_S it
+ * sets. Without it a reader preempted in an RCU read section can starve, as one did on us-metal02 from 11:23Z to 13:06Z on 10-20 and hung the box.
+ */
+export function rcuBoostOff(unit: Record<string, string>, stallTimeout: string | Error, want: number): { value?: number; excerpt: string } {
+  if (stallTimeout instanceof Error) return { excerpt: `rcu_cpu_stall_timeout could not be read: ${stallTimeout.message}` };
+  const running = unit.ActiveState === "active" && unit.SubState === "running";
+  const timeout = Number(stallTimeout.trim());
+  const text = `rcu-boost.service ${unit.ActiveState ?? "unknown"} (${unit.SubState ?? "?"}), rcu_cpu_stall_timeout ${stallTimeout.trim()} s against ${want} s`;
+  return { value: running && timeout === want ? 0 : 1, excerpt: text };
+}
+
 type Exec = (file: string, args: readonly string[], options?: { input?: string; timeoutMs?: number; cwd?: string }) => Promise<string>;
 const exec: Exec = (file, args, options = {}) => new Promise((resolve, reject) => {
   const child = execFile(file, [...args], { encoding: "utf8", timeout: options.timeoutMs ?? 30_000, maxBuffer: 64 * 1024 * 1024, cwd: options.cwd },
@@ -323,8 +348,9 @@ const PROBE = join(HERE, "box-parity-probe.py");
 const DEPLOY = join(HERE, "../../../../deploy/linux");
 
 async function readLayers(): Promise<Layers> {
-  const [setupCpu, cpuProtect, heavy] = await Promise.all(["cpu/setup-cpu.sh", "cpu/cpu-protect.py", "memory/heavy"].map(file => readFile(join(DEPLOY, file), "utf8")));
-  return parseLayers(setupCpu!, cpuProtect!, heavy!, process.getuid!());
+  const [setupCpu, cpuProtect, heavy, rcuUnit, rcuBoost] = await Promise.all(["cpu/setup-cpu.sh", "cpu/cpu-protect.py", "memory/heavy", "cpu/rcu-boost.service", "cpu/rcu-boost.py"]
+    .map(file => readFile(join(DEPLOY, file), "utf8")));
+  return parseLayers(setupCpu!, cpuProtect!, heavy!, process.getuid!(), rcuUnit!, rcuBoost!);
 }
 
 const probeArg = (host: "mac" | "box", rows: readonly Row[], known: Record<string, unknown>) =>
@@ -403,9 +429,12 @@ const settle = <T>(promise: Promise<T>): Promise<T | Error> => promise.catch((er
 
 export async function measure(rows: readonly Row[], known: Record<string, unknown>): Promise<{ output: PrecheckOutput; versions?: Record<string, unknown> }> {
   const at = Date.now();
-  const [mac, box, panel, limits, outside, guard] = await Promise.all([
+  const showUnit = (unit: string, props: string) =>
+    exec("systemctl", ["show", unit, "-p", props]).then(text => Object.fromEntries(text.trim().split("\n").map(line => line.split("="))) as Record<string, string>, () => ({}));
+  const [mac, box, panel, limits, outside, guard, rcuUnit, stallTimeout, layers] = await Promise.all([
     settle(probeMac(rows, known)), settle(probeBox(rows)), settle(panelOutcomes(rows)), settle(resourceLimits()), settle(outsideSsh()),
-    exec("systemctl", ["show", "ssh-public-guard.service", "-p", "ActiveState,Result"]).then(text => Object.fromEntries(text.trim().split("\n").map(line => line.split("="))) as Record<string, string>, () => ({})),
+    showUnit("ssh-public-guard.service", "ActiveState,Result"), showUnit("rcu-boost.service", "ActiveState,SubState"),
+    settle(readFile("/sys/module/rcupdate/parameters/rcu_cpu_stall_timeout", "utf8")), settle(readLayers()),
   ]);
   const metrics: Record<string, number> = {};
   const flagged: FlaggedSlice[] = [];
@@ -443,6 +472,11 @@ export async function measure(rows: readonly Row[], known: Record<string, unknow
   if (ssh.value === undefined) sourceError(`public ssh: ${ssh.excerpt}`);
   else metrics.public_ssh_open = ssh.value;
   flagged.push({ at, kind: "public_ssh", excerpt: ssh.excerpt.slice(0, 600) });
+
+  const rcu = layers instanceof Error ? { excerpt: `deploy/linux layers: ${layers.message}` } : rcuBoostOff(rcuUnit, stallTimeout, layers.rcuBoost.stallTimeoutS);
+  if (rcu.value === undefined) sourceError(`rcu boost: ${rcu.excerpt}`);
+  else metrics.rcu_boost_off = rcu.value;
+  flagged.push({ at, kind: "rcu_boost", excerpt: rcu.excerpt.slice(0, 600) });
   return { output: { metrics, flagged }, ...(mac instanceof Error ? {} : { versions: mac.versions }) };
 }
 
