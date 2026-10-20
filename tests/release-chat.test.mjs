@@ -103,6 +103,7 @@ function fixture(t) {
   git("config", "user.name", "Test");
   write(".gitignore", "node_modules/\n");
   write("components/user-history/src/chat-assets-prebuild.mjs", "");
+  write("components/user-history/src/chat-service-bundle.mjs", "");
   mkdirSync(path.join(dir, "controls"));
   mkdirSync(path.join(dir, "seen"));
   writeFileSync(path.join(dir, "build-step.mjs"), BUILD_STEP);

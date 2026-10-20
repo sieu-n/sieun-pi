@@ -1,12 +1,16 @@
+import { existsSync } from "node:fs";
 import { startEarlyChild } from "./early-shell-start.mjs";
 
 // The early shell starts before tsx and the service load (src/early-shell-start.mjs).
 globalThis.__chatEarlyShell = startEarlyChild(process.argv.slice(2));
-const { register } = await import("tsx/esm/api");
-register();
+// A release runs the service from its bundle (src/chat-service-bundle.mjs) with no tsx: tsx compiles each .ts file on its first import, keyed
+// on the file's path, so every start in a new release folder compiled them all again, and its hooks then also hash each loaded .mjs.
+const bundle = new URL("./chat-service.bundle.mjs", import.meta.url);
+const bundled = existsSync(bundle);
+if (!bundled) (await import("tsx/esm/api")).register();
 
 try {
-  const { runChatCommand } = await import("./chat-service.ts");
+  const { runChatCommand } = await import(bundled ? bundle.href : "./chat-service.ts");
   await runChatCommand(process.argv.slice(2));
 } catch (error) {
   const message = error instanceof Error ? error.message : String(error);

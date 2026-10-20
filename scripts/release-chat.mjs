@@ -268,6 +268,9 @@ async function build(options, home, sha, dir) {
     await runNamingFailures("npm", ["run", "--silent", "test"], app, env);
     // The packed client bundle, so the service start reads it instead of compiling it (6.5 s at a load of 50 on 10-18) while every shell waits.
     run("node", ["src/chat-assets-prebuild.mjs"], app, env);
+    // The service's own bundle, which chat-service-cli.mjs loads with no tsx: a start in a new release folder compiled every .ts file again,
+    // and on a scratch serve of 10-20 the bundle took the start to listening from 4.1 to 4.3 s of main-thread CPU to 2.3 to 2.4 s.
+    run("node", ["src/chat-service-bundle.mjs"], app, env);
     writeFileSync(join(scratch, "release.json"), JSON.stringify({ sha, id: basename(dir), builtAt: new Date().toISOString() }, null, 2) + "\n");
     renameSync(scratch, dir);
   } catch (error) {

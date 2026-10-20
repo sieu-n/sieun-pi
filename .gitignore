@@ -4,6 +4,8 @@
 node_modules
 dist/
 .client-bundle/
+# The release-time bundles of the user-history extension and chat service (scripts/install-runtime.mjs, src/chat-service-bundle.mjs).
+*.bundle.mjs
 __pycache__/
 *.pyc
 .DS_Store

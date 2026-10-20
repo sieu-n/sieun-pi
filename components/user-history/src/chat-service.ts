@@ -498,6 +498,10 @@ async function serve(options: Options): Promise<void> {
   process.once("SIGTERM", stop);
   process.once("SIGINT", stop);
   process.stdout.write(server.url + "\n");
+  // What a start cost before the port served its pages: wall time since the process began, and this thread's CPU in it.
+  const startCpu = process.threadCpuUsage();
+  process.stderr.write(`${new Date().toISOString()} serve: listening ${Math.round(performance.now())} ms after start, main thread CPU ${Math.round((startCpu.user + startCpu.system) / 1000)} ms, ` +
+    `from ${import.meta.url.endsWith(".bundle.mjs") ? "the bundle" : "source"}\n`);
   process.send?.({ ready: true });
   remote.start();
   void keepRunning?.reconcile();
