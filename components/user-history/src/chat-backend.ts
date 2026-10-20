@@ -232,7 +232,12 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       leftovers: (dir, session) => jobEnds.leftovers(dir, session),
       deletedLeftovers: chat => jobEnds.deleted(chat),
       waking: session => waking(join(dataDir, "wakes"), session), wakes: now => pendingWakes(join(dataDir, "wakes"), now),
-      resumes: { store: jobResumes(join(dataDir, "job-resumes")), applyBoard: (id, ops) => boards.apply(id, ops, "agent") },
+      resumes: { store: jobResumes(join(dataDir, "job-resumes")), applyBoard: (id, ops) => boards.apply(id, ops, "agent"),
+        restart: async (chatId, name, brief) => {
+          const chat = await dutyJobs.chat(chatId);
+          if (!chat) throw new Error(`no chat ${chatId.slice(0, 8)}`);
+          return await dutyJobs.start(chat, name, brief(chat.name));
+        } },
       // resume_paused.py sends its continues to the live daemon itself, so a replay serve only reads the cut jobs.
       interrupted: replay ? async () => { await cutJobs(dataDir, [...await chats.ids()], ARTIFACTS); return null; } : async (isJob, owners) => interruptedRuns.resumeJobs(isJob, id => threads.reopenFailed(id), owners, cut => writeResumePending(dataDir, cut, Date.now()),
         await cutJobs(dataDir, [...await chats.ids()]), async id => {

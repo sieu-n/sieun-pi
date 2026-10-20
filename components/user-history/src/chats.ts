@@ -10,12 +10,13 @@ import { deadWakes, heartbeatsFile, landCarries, liveThreads, readHeartbeats, re
 import { flagStreaks } from "./checkin-repeats.ts";
 import { boardPrs, type DoneFacts, metricFacts } from "./checkin-done.ts";
 import { activePause, changeCheckIn, type CheckInActor, type CheckInChange, CheckInRefused, type CheckInSetting, DEFAULT_CHECK_IN, nextCheckIn } from "./checkin-settings.ts";
-import { checkInDue, childName, childWorking, type JobFact, jobFacts, liveJobs, liveWindowMs, nestedJobs, OPEN, walk } from "./checkin-steps.ts";
+import { checkInDue, childName, childWorking, type JobFact, jobFacts, liveJobs, liveWindowMs, nestedJobs, OPEN, parkedBy, walk } from "./checkin-steps.ts";
 import { treeWakes, type Wake } from "./wakes.ts";
 import { withQueuePlaces } from "./chat-turn-queue.ts";
 import { type CheckInMemory, checkInPrecheck, checkInPrecheckText, classCounts, convergenceMisses, endedJobs, endedWithoutReport, finishedJobs, JOB_CLEANUP_EVERY_MS, ROOT_END_EVERY_MS, jobEnd, jobEndText,
   handBackNote, handBackSteps, handBackText, idleRoots, jobReport, lastJobMessages, leftOpenSteps, noReportNotice, openStepLines, openStepsNotice, reportedRoot, retryDue, waitingJobs } from "./chat-checkin.ts";
-import { jobBrief, savedStateNote, sessionBrief, waitText } from "./job-resume.ts";
+import { jobBrief, resumeBrief, resumedNote, resumeJobName, savedStateNote, sessionBrief, waitText } from "./job-resume.ts";
+import { heldByTodo } from "./checkin-end-state.ts";
 import { PoolHeldJobs, resumeChatJobs } from "./chat-resume.ts";
 import { withFailedTurns, withHeldTurns } from "./held-turns.ts";
 import { withUnstarted } from "./brief-keeper.ts";
@@ -645,7 +646,7 @@ export class Chats {
       if (result === "deleted") this.log(`chat ${id.slice(0, 8)}: deleted finished job ${childName(child)} (reported, quiet ${Math.round((now - child.lastActivityAt!) / 60_000)} min, no open step)`);
     }
     if (!this.source.resumes) return;
-    for (const { child, steps } of waitingJobs(children, board, now, said)) if (!gone?.has(child.id)) await this.parkJob(id, child, steps, jobReport(messages, childName(child)), listed, now);
+    for (const { child, steps } of waitingJobs(children, board, now, said)) if (!gone?.has(child.id)) await this.parkJob(id, child, steps, jobReport(messages, childName(child)), listed, now, board?.todos ?? []);
   }
 
   /**
@@ -742,10 +743,13 @@ export class Chats {
 
   /**
    * Ends a quiet job that open steps name (`waitingJobs`): its brief (`jobBrief`), last report and the steps' waits are saved first
-   * (`<data dir>/job-resumes`), then the job is deleted, then each step's note names the saved state, so the check-in's line for the step once
-   * it is due, stale or has no live owner (`classLine`) tells the chat to spawn a fresh job from it. A job whose brief cannot be read is kept.
+   * (`<data dir>/job-resumes`), then the job is deleted, then a fresh root job starts at once from the saved state (`resumeBrief`) and owns
+   * each step that no correction parks and no open For you todo holds, and each step's note names the saved state. A step whose fresh job
+   * could not start keeps only the note, and the check-in's line for it (`classLine`) tells the chat to spawn one. A job whose brief cannot
+   * be read is kept.
    */
-  private async parkJob(id: string, child: ChildAgent, steps: readonly PlanItem[], report: string, listed: readonly string[], now: number): Promise<void> {
+  private async parkJob(id: string, child: ChildAgent, steps: readonly PlanItem[], report: string, listed: readonly string[], now: number,
+    todos: readonly OwnerTodo[]): Promise<void> {
     const resumes = this.source.resumes!;
     const name = childName(child);
     try {
@@ -753,11 +757,20 @@ export class Chats {
       const brief = sessionFile ? await jobBrief(join(artifactsDir(sessionFile), child.id)) : undefined;
       if (brief === undefined) { this.log(`chat ${id.slice(0, 8)}: kept waiting job ${name}: its brief could not be read`); return; }
       const event = steps.map(waitText).join("; ");
-      const path = await resumes.store.save({ chat: id, childId: child.id, job: name, steps: steps.map(step => step.id), event, brief, report, endedAt: now });
+      const owed = steps.filter(step => parkedBy(step) === undefined && !heldByTodo(step, todos));
+      const resume = { chat: id, childId: child.id, job: name, steps: owed.map(step => step.id), event: owed.map(waitText).join("; "), brief, report, endedAt: now };
+      const path = await resumes.store.save({ ...resume, steps: steps.map(step => step.id), event });
       if (await this.deleteJob(id, child, listed, now) !== "deleted") return;
+      const fresh = owed.length && resumes.restart ? await resumes.restart(id, resumeJobName(name, now), chat => resumeBrief(resume, path, chat, now))
+        .catch(error => { this.log(`chat ${id.slice(0, 8)}: resume waiting job ${name}: ${error instanceof Error ? error.message : String(error)}`); return undefined; }) : undefined;
       const line = savedStateNote(name, now, path);
-      await resumes.applyBoard(id, steps.map(step => ({ op: "plan_update", id: step.id, note: [line, step.note].filter(Boolean).join("\n") })));
-      this.log(`chat ${id.slice(0, 8)}: ended waiting job ${name} (quiet ${Math.round((now - child.lastActivityAt!) / 60_000)} min, ${event}); saved state ${path}`);
+      await resumes.applyBoard(id, steps.map(step => {
+        const taken = fresh !== undefined && owed.includes(step);
+        return { op: "plan_update", id: step.id, ...taken ? { job: fresh.name, sessionId: fresh.id } : {},
+          note: [line, taken ? resumedNote(fresh.name, now) : undefined, step.note].filter(Boolean).join("\n") };
+      }));
+      this.log(`chat ${id.slice(0, 8)}: ended waiting job ${name} (quiet ${Math.round((now - child.lastActivityAt!) / 60_000)} min, ${event}); saved state ${path}` +
+        (fresh ? `; started ${fresh.name} (${fresh.id.slice(0, 8)}) for ${owed.map(step => step.id).join(", ")}` : ""));
     } catch (error) { this.log(`chat ${id.slice(0, 8)}: end waiting job ${name}: ${error instanceof Error ? error.message : String(error)}`); }
   }
 

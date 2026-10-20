@@ -72,6 +72,24 @@ export function waitText(item: PlanItem): string {
   return waits.length ? `${item.id} waits ${waits.join(" and ")}` : `${item.id} is ${item.status}`;
 }
 
+/** The name of the fresh job the cleanup starts in place of a job it ended (`resumeBrief`). */
+export const resumeJobName = (job: string, at: number): string => `${job} resumed ${clockTime(at)}`;
+/**
+ * The brief of the fresh root job the cleanup starts at once in place of a job it ended while that job waited on open steps, so the steps keep
+ * a live owner. launch main bro 10-20: the cleanup ended "g2g accounts setup" at 09:26Z with p105 and p98 waiting on promote 16 and 17, and the
+ * steps had no owner until the d9 run started a job by hand at 09:41Z, since the next check-in waited on provider rate limits.
+ */
+export function resumeBrief(resume: JobResume, path: string, chat: string, now: number): string {
+  const steps = resume.steps.join(", ");
+  return `${resume.brief}\n\n(The chat service started this job at ${clockTime(now)} in place of "${resume.job}", which it ended while that job sat ` +
+    `quiet with ${steps} open: ${resume.event}. Its last report and the waits are saved in ${path}; read that first. ${steps} ${resume.steps.length === 1 ? "is" : "are"} ` +
+    `yours now. Check whether each wait has happened and do the next action. If it has not, push whatever moves it, then sleep on ` +
+    `board.wake(run=...) or board.wake(at=...) and end your turn; never end a turn with a step open and no wake set. You are a root job of the chat ` +
+    `${chat}, so wherever this brief says to send to your parent, send to the chat with agent_message.send(report, receiver_role="sibling", receiver_name="${chat}").)`;
+}
+/** The note line a step gets when the cleanup starts a fresh job for it (`resumeBrief`). */
+export const resumedNote = (job: string, at: number): string => `Resumed: the chat service started job ${job} at ${clockTime(at)} from the saved state, and the step is its.`;
+
 const SAVED = "Saved state: ";
 /** The line the cleanup puts first in a step's note when it ends the step's job, naming the saved state's path. */
 export const savedStateNote = (job: string, endedAt: number, path: string): string =>

@@ -320,7 +320,9 @@ export interface CheckInSource {
    * Where the cleanup saves a job it ends while the job waits on a board step (`JobResumes`, src/job-resume.ts), and how it writes that step's
    * note (the board store's apply). Absent: such a job is kept.
    */
-  resumes?: { store: JobResumes; applyBoard(id: string, ops: readonly BoardOp[]): Promise<unknown> };
+  resumes?: { store: JobResumes; applyBoard(id: string, ops: readonly BoardOp[]): Promise<unknown>;
+    /** Starts a fresh root job of the chat (chat-duty-job.ts start) named `name` with the brief `brief(chat name)`; absent, the steps keep only the note. */
+    restart?(chat: string, name: string, brief: (chatName: string) => string): Promise<{ id: string; name: string }> };
   /**
    * Sends "continue" to each interrupted run that `isJob` keeps, as the resume script finds them at any depth (`InterruptedRuns.resumeJobs`).
    * Absent (tests): the job sweep resumes nothing.
