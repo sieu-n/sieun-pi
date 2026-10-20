@@ -104,3 +104,28 @@ test("a rename the daemon refuses for a taken name kills the new session and thr
   assert.deepEqual(sent.map(command => command.type), ["create", "rename", "kill"]);
   assert.deepEqual(sent[2], { type: "kill", activeSessionId: "fe473a344ace" });
 });
+
+test("a new thread on another box asks that box's relay to send its first message, and sends none itself when the relay did", async (t: TestContext) => {
+  const dir = await mkdtemp(join(tmpdir(), "remote-create-"));
+  const sent: Record<string, unknown>[] = [];
+  const mac = { request: async (command: Record<string, unknown>) => {
+    sent.push(command);
+    return command.type === "create" ? { success: true, data: { sessionId: ID, activeSessionId: "fe473a344ace" }, relayFirstPrompt: { success: true } } : { success: true, data: undefined };
+  } };
+  const catalog = { hostClient: async () => mac, isOtherHost: () => true, place: () => {}, hostOf: () => null, socketPathFor: () => join(dir, "missing.sock"), refresh: async () => {} } as unknown as Catalog;
+  const hub = new ThreadHub(join(dir, "box.sock"), catalog, () => ({ provider: null, modelId: null, thinkingLevel: null }));
+  t.after(() => hub.close());
+  await assert.rejects(hub.create({ cwd: "/Users/sieunpark", host: "mac", first: { message: "hi", mode: "followUp" } }));
+  assert.deepEqual(sent.map(command => command.type), ["create"]);
+  assert.deepEqual(sent[0]!.relayFirstPrompt, { message: "hi", source: "interactive", streamingBehavior: "followUp", queueIfBusy: true, ownerTurn: true });
+});
+
+test("a first message the relay could not deliver fails the create with the relay's reason", async (t: TestContext) => {
+  const dir = await mkdtemp(join(tmpdir(), "remote-create-"));
+  const mac = { request: async (command: Record<string, unknown>) => command.type === "create"
+    ? { success: true, data: { sessionId: ID, activeSessionId: "fe473a344ace" }, relayFirstPrompt: { success: false, error: "Session is busy" } } : { success: true, data: undefined } };
+  const catalog = { hostClient: async () => mac, isOtherHost: () => true, place: () => {}, hostOf: () => null, socketPathFor: () => join(dir, "missing.sock"), refresh: async () => {} } as unknown as Catalog;
+  const hub = new ThreadHub(join(dir, "box.sock"), catalog, () => ({ provider: null, modelId: null, thinkingLevel: null }));
+  t.after(() => hub.close());
+  await assert.rejects(hub.create({ cwd: "/Users/sieunpark", host: "mac", first: { message: "hi", mode: "followUp" } }), /Session is busy/);
+});

@@ -10,6 +10,7 @@ import { dirname, isAbsolute, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { hostStats, usableRaw } from "./host-stats.ts";
 import { DELTA_HEADER, encodeLineDeltas } from "./line-delta.ts";
+import { firstPromptTunnel } from "./first-prompt.mjs";
 import { ownerTurnLines, piPoolOwnerTurn } from "./owner-turn.mjs";
 import { SLIM_HEADER, slimSnapshots } from "./slim-snapshot.mjs";
 
@@ -133,7 +134,8 @@ function send(response, status, body) {
 
 /**
  * The relay: checks the bearer token, tunnels `GET /v1/daemon` upgrades to the daemon socket (byte for byte, unless the client asks for slim
- * snapshots, `slimSnapshots`, or message update deltas, `encodeLineDeltas`, and with a prompt's `ownerTurn` marked first, `ownerTurnLines`),
+ * snapshots, `slimSnapshots`, or message update deltas, `encodeLineDeltas`, with a prompt's `ownerTurn` marked first, `ownerTurnLines`, and with a
+ * create's `relayFirstPrompt` sent as soon as the create answers, `firstPromptTunnel`),
  * serves reads under the roots and the box's CPU, memory and turn queue. `markOwnerTurn` stands in for this box's pi-pool in tests.
  */
 export function createRelay(config, log = () => {}, { markOwnerTurn = piPoolOwnerTurn } = {}) {
@@ -164,15 +166,16 @@ export function createRelay(config, log = () => {}, { markOwnerTurn = piPoolOwne
       if (head.length) daemon.write(head);
       const slim = request.headers[SLIM_HEADER] === "images";
       const deltas = request.headers[DELTA_HEADER] === "1";
-      socket.pipe(ownerTurnLines(markOwnerTurn, log)).pipe(daemon);
+      const firstPrompt = firstPromptTunnel(log);
+      socket.pipe(firstPrompt.outbound).pipe(ownerTurnLines(markOwnerTurn, log)).pipe(daemon);
       // The daemon's bytes are read as they come and wait here for the box, never in the daemon's socket. When its socket backs up, the
       // supervisor drops a session's events and sends the whole snapshot again, and over the Mac link each resent snapshot backed it up anew.
-      const stages = [...(slim ? [slimSnapshots()] : []), ...(deltas ? [encodeLineDeltas()] : [])];
+      const stages = [firstPrompt.inbound, ...(slim ? [slimSnapshots()] : []), ...(deltas ? [encodeLineDeltas()] : [])];
       for (let at = 1; at < stages.length; at++) stages[at - 1].pipe(stages[at]);
       const last = stages.at(-1);
-      last?.on("data", chunk => { socket.write(chunk); });
-      last?.on("end", () => socket.end());
-      const first = stages[0] ?? socket;
+      last.on("data", chunk => { socket.write(chunk); });
+      last.on("end", () => socket.end());
+      const first = stages[0];
       daemon.on("data", chunk => { first.write(chunk); });
       daemon.on("end", () => first.end());
       log(`tunnel open from ${socket.remoteAddress}${slim ? ", snapshots without older images" : ""}${deltas ? ", message updates as deltas" : ""}`);

@@ -291,6 +291,9 @@ const LOCAL_HELLO_MS = 30_000;
 const PROMPT_REQUEST_MS = 24 * 60 * 60 * 1000;
 
 /** A daemon prompt's fields; an owner send to another box carries `ownerTurn`, which that box's relay marks (components/prime-relay/owner-turn.mjs). */
+/** The create field another box's relay reads to send the first prompt itself (components/prime-relay/first-prompt.mjs FIRST_PROMPT_FIELD). */
+export const RELAY_FIRST_PROMPT = "relayFirstPrompt";
+
 function promptFields(id: string, input: { message: string; images: ChatImage[]; mode: SendMode; owner?: boolean }, remote: boolean): Record<string, unknown> {
   return { message: input.message, source: "interactive", streamingBehavior: input.mode, queueIfBusy: true, ...(input.images.length ? { images: input.images } : {}),
     ...(input.owner && remote ? { ownerTurn: id } : {}) };
@@ -1227,10 +1230,14 @@ export class ThreadHub {
     const renamed = input.first && input.kind !== "chat" ? input.name : undefined;
     const named = !input.first && input.kind !== "chat" ? input.name : undefined;
     const name = renamed || named ? undefined : input.name;
+    // Another box's relay sends the first message the moment its daemon answers the create (components/prime-relay/first-prompt.mjs), which
+    // saves the round trip between that answer and this box's prompt: about 190 ms to the Mac on 10-20. The relay adds the prompt's result to
+    // the answer; an answer without it came through an older relay, and the prompt goes from here as before.
+    const relayed = input.first && input.host && this.catalog.isOtherHost(input.host) ? { ...promptFields("", { ...input.first, images: [] }, false), ownerTurn: true } : undefined;
     const response = await timedWorkerStart(`create ${input.name ?? input.cwd}`, async () => {
-      const created = await client.request({ type: "create", lifecycle: "resident", ...(name ? { name } : {}), config: { cwd: input.cwd,
-        ...(input.provider && input.modelId ? { provider: input.provider, model: input.modelId } : {}), ...(input.thinkingLevel ? { thinking: input.thinkingLevel } : {}),
-        ...(Object.keys(flags).length ? { extensionFlagValues: flags } : {}) } }, DAEMON_WORKER_START_MS, { recoverable: false });
+      const created = await client.request({ type: "create", lifecycle: "resident", ...(name ? { name } : {}), ...(relayed ? { [RELAY_FIRST_PROMPT]: relayed } : {}),
+        config: { cwd: input.cwd, ...(input.provider && input.modelId ? { provider: input.provider, model: input.modelId } : {}), ...(input.thinkingLevel ? { thinking: input.thinkingLevel } : {}),
+        ...(Object.keys(flags).length ? { extensionFlagValues: flags } : {}) } } as never, DAEMON_WORKER_START_MS, { recoverable: false });
       const activeSessionId = created.success && typeof created.data === "object" && created.data !== null && "activeSessionId" in created.data ? created.data.activeSessionId : undefined;
       if (!named || typeof activeSessionId !== "string") return created;
       const answer = await client.request({ type: "rename", activeSessionId, name: named } as never, DAEMON_WORKER_START_MS, { recoverable: false })
@@ -1247,7 +1254,9 @@ export class ThreadHub {
     const remote = Boolean(input.host && this.catalog.isOtherHost(input.host));
     if (remote) this.catalog.place(input.host!, data.sessionId, data.activeSessionId);
     let sent: Promise<void> | null = null;
-    if (input.first) {
+    const relayResult = (response as { [RELAY_FIRST_PROMPT]?: { success: boolean; error?: string } })[RELAY_FIRST_PROMPT];
+    if (relayResult && !relayResult.success) throw new ThreadError(502, relayResult.error ?? "The first message did not reach the new thread.");
+    if (input.first && !relayResult) {
       if (!remote) void this.markOwnerTurn(data.sessionId);
       const fields = promptFields(data.sessionId, { ...input.first, images: [], owner: true }, remote);
       sent = client.request({ type: "prompt", activeSessionId: data.activeSessionId, ...fields } as never, PROMPT_REQUEST_MS, { recoverable: false })
