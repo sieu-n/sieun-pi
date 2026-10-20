@@ -3,11 +3,13 @@ import { createRequire, syncBuiltinESMExports } from 'node:module';
 import test from 'node:test';
 
 let active;
+const FAILED = Symbol('failed run');
 const childProcess = createRequire(import.meta.url)('node:child_process');
 childProcess.execFile = (_bin, args, _options, callback) => {
   active.calls.push(args.slice(1));
   const reply = active.reply(args.slice(1));
-  queueMicrotask(() => callback(null, JSON.stringify(reply), ''));
+  if (reply === FAILED) queueMicrotask(() => callback(new Error('exit 1'), '', 'TimeoutError: could not lock pool/lock'));
+  else queueMicrotask(() => callback(null, JSON.stringify(reply), ''));
 };
 syncBuiltinESMExports();
 const { default: extension } = await import('../app/extension/index.ts');
@@ -229,6 +231,23 @@ test('Unknown health reply mode cannot strip a provider reset', async () => {
   const run = session({ replies: { limited: { account: 'off-id', until: 12345, next: 'next@x' } } });
   assert.equal(await run.message(failure(429)), undefined);
 });
+
+for (const selection of [auto, manual]) {
+  test(`${selection.mode} 429 whose limited run fails ${selection.mode === 'auto' ? 'drops' : 'keeps'} the provider reset`, async () => {
+    const run = session({ selection, replies: { limited: FAILED } });
+    const original = failure(429);
+    const result = await run.message(original);
+    assert.deepEqual(run.state.calls.map(([verb]) => verb), ['limited', 'who']);
+    if (selection.mode === 'manual') {
+      assert.deepEqual(result.diagnostics, original.diagnostics);
+      assert.match(result.errorMessage, /Manual off-id remains selected/);
+    } else {
+      assert.equal(result.diagnostics[0].details.retryAfterMs, undefined);
+      assert.doesNotMatch(result.errorMessage, /Try again in 30 minutes/);
+      assert.match(result.errorMessage, /pi-pool: the pool did not record this 429/);
+    }
+  });
+}
 
 test('Manual healthy footer never suggests a next account', async () => {
   const run = session({ selection: manual, info: { current: { ...current(off), next: 'next@x' } } });

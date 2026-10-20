@@ -236,9 +236,10 @@ interface LimitedReply { selection: Selection; account: string | null; until: nu
 /** `pi-pool-token --cli refused` answer. `reason` is null when the text names no account-level refusal. */
 interface RefusedReply { selection: Selection; account?: string; reason: string | null; next?: string | null; retry_at?: number | null }
 
-async function poolJson<T extends { selection: Selection }>(args: string[]): Promise<T | undefined> {
+/** The CLI's JSON answer, undefined when the answer is unreadable, or "failed" when the run itself failed. */
+async function poolJson<T extends { selection: Selection }>(args: string[]): Promise<T | undefined | "failed"> {
 	const res = await pool(args);
-	if (!res.ok) return undefined;
+	if (!res.ok) return "failed";
 	try {
 		const reply = JSON.parse(res.out) as T;
 		return isSelection(reply.selection) ? reply : undefined;
@@ -303,6 +304,16 @@ async function swapAccount(message: AgentMessage): Promise<AgentMessage | undefi
 		const until = (Date.now() + resetMs) / 1000;
 		// The request was sent at the message's timestamp: a 429 from before this tree moved accounts marks nothing.
 		const reply = await poolJson<LimitedReply>(["limited", "--provider", message.provider, "--until", String(until), "--since", String(message.timestamp / 1000)]);
+		const { retryAfterMs: _reset, ...rest } = details;
+		if (reply === "failed") {
+			// The run fails when the pool flock stays busy past STATE_LOCK_TIMEOUT. On 10-19 35 of 1,927 anthropic 429s on
+			// us-metal02 kept the reset that way and slept up to 4.2 h. An Auto session drops it, so Prime's backoff pings soon
+			// and that 429 reports again; `who` reads the selection without the lock.
+			const selection = (await who(true))?.providers?.[message.provider]?.selection;
+			if (selection?.mode === "manual") return manualFailure(message, selection);
+			if (selection?.mode !== "auto") return undefined;
+			return { ...message, errorMessage: `${original} pi-pool: the pool did not record this 429; the retry reports it again.`.trim(), diagnostics: withDetails(rest) };
+		}
 		if (!reply) return undefined;
 		if (reply.selection.mode === "manual") return manualFailure(message, reply.selection);
 		if (!reply.next) {
@@ -310,7 +321,6 @@ async function swapAccount(message: AgentMessage): Promise<AgentMessage | undefi
 			const said = `pi-pool: ${reply.account} is limited until ${new Date(reply.until * 1000).toISOString()}; this session waits for its slot at ${new Date(reply.retry_at * 1000).toISOString()}.`;
 			return waitFailure(message, original, said, details, waitMs(reply.retry_at), failure);
 		}
-		const { retryAfterMs: _reset, ...rest } = details;
 		const said = reply.stale ? `pi-pool: this 429 came from the account the session already left` : `pi-pool: ${reply.account} is limited until ${new Date(reply.until * 1000).toISOString()}`;
 		return {
 			...message,
@@ -320,7 +330,7 @@ async function swapAccount(message: AgentMessage): Promise<AgentMessage | undefi
 	}
 	if (details.status === 400 || details.status === 403) {
 		const reply = await poolJson<RefusedReply>(["refused", "--provider", message.provider, message.errorMessage ?? ""]);
-		if (!reply) return undefined;
+		if (!reply || reply === "failed") return undefined;
 		if (reply.selection.mode === "manual") return manualFailure(message, reply.selection);
 		if (!reply.reason) return undefined;
 		if (!reply.next) {
