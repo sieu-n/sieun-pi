@@ -42,6 +42,13 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	}
 
 	try {
+		const transcriptGuard: typeof import("./transcript-guard.ts") = await import(join(dir, "transcript-guard.ts"));
+		pi.on("tool_call", (event, ctx) => transcriptGuard.onToolCall(event, ctx));
+	} catch (error) {
+		loadFailed("transcript-guard.ts", error);
+	}
+
+	try {
 		const rlmDelete: typeof import("./rlm-delete.ts") = await import(join(dir, "rlm-delete.ts"));
 		pi.on("tool_call", (event, ctx) => rlmDelete.onToolCall(event, ctx));
 	} catch (error) {

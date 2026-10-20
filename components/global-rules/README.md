@@ -12,6 +12,8 @@ auto-sns-agent is the one exception: its rules stay in that repo's `scripts/repo
 | `tool_call` (`ipython`) | `kernel-guard.ts` | Installs `kernel-guard.py` in the Python kernel, which refuses an outside send at run time. |
 | `tool_call` (`ipython`) | `rlm-delete.ts` | In a subagent, makes `rlm.delete_subagent` wait until a child that already replied is idle. |
 | `tool_call` (`ipython`) | `kernel-guard.ts` | Also installs `kernel-own.py`, which records each path under `~/scratch` the kernel makes, on this box or on another one over ssh, in the session's `owned.json`, and refuses a recursive delete below `~/scratch` of a tree the job did not make (c130). |
+| `tool_call` (`ipython`) | `kernel-guard.ts` | Also installs `kernel-read.py`, which refuses reads of another family's session transcripts in the kernel and the Python processes it starts. |
+| `tool_call` (`read`, `grep`, `bash`) | `transcript-guard.ts` | Refuses the same transcript reads through the tools, with `kernel-read.py --judge`. |
 | `session_start`, `tool_call` (`bash`, `ipython`) | `auto-sns-agent.ts` | Registers auto-sns-agent's repo guard (`scripts/repo/agent/guards/prime.mjs` in that checkout) for every session, and judges each git write a Python kernel starts with the kernel's real cwd. |
 
 The extension adds no prompt text. The writing standard is the `unslop` skill, read on demand, and `config/AGENTS.md` (`~/.prime/agent/AGENTS.md`) points at it. Prime loads that file into the base system prompt, so owner turns, agent-message wakes, heartbeats and child notices all send the same prompt. Text added from a `before_agent_start` hook would break that: Prime 0.9.8 skips the hook on an agent-message wake, so the text vanishes on every wake and the prompt cache is rewritten twice. `components/user-history/test/prompt-prefix.test.ts` fails when any turn kind changes the cached prefix.
@@ -52,6 +54,15 @@ A call passes when a cell on the stack carries an approved `OWNER_OK=<chat id>/<
 A Starlette or FastAPI server in such a process, such as a Vent started from a kernel, also takes the token from the `x-owner-ok: <chat id>/<todo id>` header of the request it is answering, and refuses its sends for any request without an approved one.
 Calls made inside the aside_browser skill are left to that skill's page check.
 
+`kernel-read.py` keeps each session to its own family's transcripts.
+On 10-19 the runtime intent trace job and on 10-20 from 15:59Z to 16:10Z p8-prepare-hold, both jobs of chat-057a, opened the transcripts of unrelated roots under `~/.prime/agent/sessions` to read their state lines, and the scope reminder in each brief came too late. agent_observe already limits observation to the parent, siblings and children, but a cell could still open the files.
+A session's family is itself, the sessions above it up to its root, its siblings and every session below it. Every other `<session id>.jsonl` under the Prime agent dir is refused, including copies under `backups/` and `moved-back-to-mac/`, and only `clean-room/` is left out, since a clean-room run reads its own test chats there.
+The kernel refuses `open()`, `io.open()`, `os.open()` and `Path.read_text()` of such a file from cell code or from any code that is not a tool, and a command it starts that names such a file or reads a folder holding one as a whole (`rg`, `grep -r`, `find ... -exec` or `| xargs` a reader, `cp -r`, `rsync`, `tar`).
+A refused call raises `TranscriptRefused`, a `PermissionError`, whose text names the session's own transcripts and the paths that stay open: agent_observe, `prime-agent status`, the board, job-resumes and duty files, the daemon-workers descriptors and logs, and a relay from the chat that owns the session.
+Code in this sieun-pi tree, the chat release, the runtime copy, a skill folder or the Prime release passes, and so does the kernel's `rlm` package for a file read, so the board module, agent_observe, `resume_paused.py` and the d7, d9 and d10 prechecks read what they read before. Listing (`ls`, `find`, `os.listdir`) and counting lines (`wc`) pass, since they show catalog metadata and no content.
+Each refusal is one JSON line in `~/.prime/agent/logs/transcript-refusals.jsonl` (`GLOBAL_RULES_TRANSCRIPT_LOG` moves it), with the session folder, the path and the session it belongs to, so the d10 audit can count repeats.
+With no `RLM_SESSION_DIR` below `session-artifacts` (CI, a person's shell) nothing is judged.
+
 `send-log.ts` keeps the record of outside sends (c37), so "did an agent send anything" has one answer.
 Each layer above writes one JSON line per send it judges to `~/.prime/agent/browser-chat/sends.jsonl`: the tool_call guard, `send-check.ts` for the kernel, the cua-driver proxy and the aside-browser skill.
 A line holds the time, the decision (`allowed` or `refused`), the layer, the chat and session, the target, the guard's reason and the OWNER_OK token.
@@ -84,8 +95,10 @@ A call passes with `owner_ok: "<chat id>/<todo id>"` in its arguments, which the
   -> guard.ts           -> sieun-pi.ts, send-guard.ts, cua-guard.ts -> shell.ts
                             send-guard.ts -> send-targets.json, node --import tsx ../user-history/src/owner-ok.ts (send approvals)
   -> kernel-guard.ts    -> ipython cell prelude -> kernel-guard.py -> send-targets.json, node send-check.ts -> guard.ts, auto-sns-agent.ts
+                            ipython cell prelude -> kernel-read.py (transcript reads), also through python-child/sitecustomize.py
                             ipython cell prelude -> kernel-cwd.py -> $RLM_SESSION_DIR/kernel-cwd.json -> kernel-cwd.ts (guard.ts, auto-sns-agent.ts)
                             python-child/sitecustomize.py -> kernel-guard.py (Python processes the kernel starts)
+  -> transcript-guard.ts -> python3 kernel-read.py --judge (read, grep and bash tools)
   -> auto-sns-agent.ts  -> ~/Documents/Github/auto-sns-agent/scripts/repo/agent/guards/prime.mjs (that repo's rules)
 ```
 
@@ -114,6 +127,7 @@ A chdir to a name an earlier cell set is invisible to the cell text, so the tool
 The send guard misses a command decoded at run time and piped to a shell (`base64 -d | sh`), a Node process that sends from a module the script imports, an HTTP request whose request line is split over several socket writes, HTTP/2, the private `rlm.mcp._registry`, a body-only WHMCS ticket call sent through `http.client`, a desktop send through an app it does not name, a cua-driver drag, `System Events` keystrokes, and a desktop click on a panel or sheet above layer 0, because `list_windows` lists only layer-0 windows.
 It also misses a desktop click on Send in a window that no snapshot has shown and that the guard cannot read, and a desktop click whose coordinates come from a downscaled `get_desktop_state` taken outside the proxy, such as a `cua-driver call` in a shell.
 In the Aside browser it misses Tab then Enter on a webmail page, selectors built at run time (`atob`), Gmail inside another site's iframe, and a mouse call through another name (`const m = page.mouse; m.click(x, y)`).
+The transcript guard misses a shell variable set earlier in the same command (`F=...; cat "$F"`), a Node process that reads a transcript, `rg --hidden` or `grep -r` over the whole home folder, a script that a job puts inside a tool folder itself, and a read through a file descriptor it did not open by name.
 A handler error lets the call run and writes `handler error, failing open` to the log, because a bug here must not stop every tool call on the machine. The kernel guard also lets a call run when Node or `send-check.ts` cannot run.
 
 ## Tests
@@ -125,4 +139,4 @@ uv run --locked --no-sync python -B -m unittest discover -s tests -p "test_kerne
 
 `global-rules-auto-sns-agent.test.mjs`, `global-rules-kernel-push-target.test.mjs` and `test_kernel_repo_guard.py` copy the live checkout's `scripts/repo/agent/guards` into a fixture checkout and commit them there, so they test the rules agents get, and they skip on a machine without that checkout. The kernel test runs a fake `git`, so nothing reaches GitHub.
 
-The Node suites feed command strings to the handlers and run none of them. `test_kernel_send_guard.py` runs `kernel-guard.py` in fresh Python processes against a fake `curl`, a local HTTP server, an `httpx` network transport over a fake connection pool and a fake `rlm.mcp`, so nothing leaves the machine. `global-rules-native.test.mjs` loads the extension through Prime's own resource loader, reloads it after an edit, and checks that a broken guard leaves `rlm-delete.ts` in place. Every suite sets `GLOBAL_RULES_LOG` to a temporary file, so tests never write the live log.
+The Node suites feed command strings to the handlers and run none of them. `test_kernel_send_guard.py` runs `kernel-guard.py` in fresh Python processes against a fake `curl`, a local HTTP server, an `httpx` network transport over a fake connection pool and a fake `rlm.mcp`, so nothing leaves the machine. `global-rules-native.test.mjs` loads the extension through Prime's own resource loader, reloads it after an edit, and checks that a broken guard leaves `rlm-delete.ts` in place. `global-rules-kernel-read.test.mjs` builds two families of fake transcripts under a temporary HOME and runs the prelude in fresh Python processes, so a refused read never touches a live transcript. Every suite sets `GLOBAL_RULES_LOG` to a temporary file, so tests never write the live log.
