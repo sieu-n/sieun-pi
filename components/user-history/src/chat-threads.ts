@@ -226,6 +226,16 @@ function liveSessionId(summary: SessionSummary): string | undefined {
   return summary.workerState === "failed" ? undefined : summary.activeSessionId;
 }
 
+/**
+ * The active id a job's extension reload goes to, or undefined when there is nothing to reload: a saved session, or one whose worker failed,
+ * which starts on a new worker with the current extension when it is next opened. From 01:20Z to 01:29Z on 10-20 the chat reloaded blog signup
+ * push 10-19 (01a14c02, on the Mac) at every catalog update through its attached thread's id of a failed worker, and each of the 74
+ * "Session worker is failed" answers made a d7 minute dirty.
+ */
+export function reloadTarget(summary: Pick<SessionSummary, "workerState" | "activeSessionId">, attached: string | undefined): string | undefined {
+  return summary.workerState === "failed" ? undefined : attached ?? summary.activeSessionId;
+}
+
 /** A user message's text parts, joined and trimmed. */
 function userText(message: { content: string | readonly { type: string; text?: string }[] }): string {
   return (typeof message.content === "string" ? message.content : message.content.map(part => part.type === "text" ? part.text ?? "" : "").join("")).trim();
@@ -516,7 +526,7 @@ export class ThreadHub {
    * no turn, retry, compaction, queued action or background work in its Python kernel, which the reload's kernel rebuild would drop).
    */
   async reloadIdle(id: string): Promise<"reloaded" | "busy" | "saved"> {
-    const activeSessionId = this.threads.get(id)?.live?.activeSessionId ?? (await this.summary(id)).activeSessionId;
+    const activeSessionId = reloadTarget(await this.summary(id), this.threads.get(id)?.live?.activeSessionId);
     if (activeSessionId === undefined) return "saved";
     if (await this.daemonBusy(activeSessionId)) return "busy";
     const response = await timedWorkerStart(`reload ${id.slice(0, 8)}`, async () => (await this.daemon(activeSessionId)).request({ type: "reload", activeSessionId }, DAEMON_WORKER_START_MS, { recoverable: false }));
