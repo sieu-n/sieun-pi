@@ -7,7 +7,10 @@ from conversion_targets.py's own window_report (the funnel dashboard's definitio
 dashboard's test, QA and likely-bot filters) who opened the home page of any locale signed out (no ?noredirect=true, the signed-in path, and
 not after $identify in the same session) in the last 24 h and in the last 7 days, how many of them got an sg-exp-home exposure, and all real home visitors and flag callers in 24 h. It adds a second: the
 cohort of real visitors whose first real public page was 56 to 28 days ago, and how many of them signed up and then started Pro or bought
-the CLI within 28 days of that visit (the duty's headline). <weeks> adds one 7-day row per week before today, like conversion_targets.py --weeks.
+the CLI within 28 days of that visit (the duty's headline). A fourth reads real signups from 44 to 16 days ago and how many of them started Pro
+or bought the CLI within 16 days of signing up, a trial and its charge. <weeks> adds one 7-day row per week before today, like
+conversion_targets.py --weeks, whose Pro or CLI column counts only payments inside that same week, and one signup row per week that ended 16
+days ago or earlier, followed 16 days.
 Prints one JSON object; a query that fails gives its error text instead of numbers.
 """
 
@@ -24,6 +27,9 @@ sys.path.insert(0, str(seo_agent))
 
 HOME_TEST = "^sg-exp-home"
 FOLLOW_DAYS = 28
+# A trial lasts 14 days (223 of 230 trials that started 08-01 to 10-20). Of the 19 accounts made in that time that paid by 10-20, 12 paid
+# within 16 days of signing up, 8 of them at the trial's end 14.2 to 15.9 days in, so 16 days holds a trial and the charge at its end.
+PAY_DAYS = 16
 
 
 def run(fn):
@@ -107,12 +113,23 @@ def cohort():
     today = datetime.now(PROJECT_TZ).date()
     end = today - timedelta(days=FOLLOW_DAYS)
     start = end - timedelta(days=days)
+    # windowFunnel needs the signup after a public pageview. A visitor who opens /auth/login straight away, or signs up on another device,
+    # has user_signed_up before the first public pageview PostHog saw, so the funnel stopped at level 1: in the cohort run of 10-20,
+    # 00fb6658 signed up 09-02 15:11, opened /en at 15:19 and paid 09-28, and the headline read 8 of 1583 instead of 9.
+    # Such a signup counts when it falls before entry + 28 days, and its purchase when it follows the signup inside the same 28 days.
+    late = f"signups > 0 AND signup_at <= entry_at + INTERVAL {FOLLOW_DAYS} DAY"
     rows = hogql(
         f"""
-SELECT {ENTRY_CLASS} AS entry_class, count() AS visitors, countIf(level >= 2) AS signed_up, countIf(level >= 3) AS paid
+SELECT {ENTRY_CLASS} AS entry_class, count() AS visitors,
+       countIf(level >= 2 OR ({late})) AS signed_up,
+       countIf(level >= 3 OR ({late} AND arrayExists(t -> t > signup_at AND t <= entry_at + INTERVAL {FOLLOW_DAYS} DAY, purchases))) AS paid
 FROM (
     SELECT person_id,
            argMinIf(properties.$pathname, timestamp, is_entry) AS entry_path,
+           minIf(timestamp, is_entry) AS entry_at,
+           countIf(event = 'user_signed_up') AS signups,
+           minIf(timestamp, event = 'user_signed_up') AS signup_at,
+           groupArrayIf(timestamp, event IN ({PURCHASES})) AS purchases,
            windowFunnel({FOLLOW_DAYS * 86400})(toDateTime(timestamp), is_entry,
                event = 'user_signed_up', event IN ({PURCHASES})) AS level
     FROM (
@@ -139,14 +156,47 @@ GROUP BY entry_class
             "entry_classes": classes}
 
 
-with ThreadPoolExecutor(max_workers=3 + weeks) as pool:
+def signups(start_days_ago: int, end_days_ago: int):
+    """Real signups from start_days_ago to end_days_ago, and the ones who started Pro or bought the CLI within PAY_DAYS of signing up."""
+    from conversion_targets import FILTERS, PROJECT_TZ, PURCHASES
+    from posthog_blog import hogql
+
+    today = datetime.now(PROJECT_TZ).date()
+    start, end = today - timedelta(days=start_days_ago), today - timedelta(days=end_days_ago)
+    rows = hogql(
+        f"""
+SELECT count() AS signed_up, countIf(arrayExists(t -> t > signup_at AND t <= signup_at + INTERVAL {PAY_DAYS} DAY, purchases)) AS paid
+FROM (
+    SELECT person_id, minIf(timestamp, event = 'user_signed_up') AS signup_at, groupArrayIf(timestamp, event IN ({PURCHASES})) AS purchases
+    FROM events
+    WHERE timestamp >= toDateTime('{start} 00:00:00')
+      AND timestamp < toDateTime('{today} 00:00:00')
+      AND event IN ('user_signed_up', {PURCHASES})
+      AND {{filters}}
+    GROUP BY person_id
+    HAVING countIf(event = 'user_signed_up') > 0 AND signup_at < toDateTime('{end} 00:00:00')
+)
+""",
+        FILTERS,
+    )
+    signed_up, paid = rows[0] if rows else (0, 0)
+    return {"start": str(start), "end": str(end), "follow_days": PAY_DAYS, "signed_up": signed_up, "paid": paid}
+
+
+with ThreadPoolExecutor(max_workers=4 + 2 * weeks) as pool:
     window_job = pool.submit(run, lambda: window(days, 0))
     home_job = pool.submit(run, home_test)
     cohort_job = pool.submit(run, cohort)
+    signups_job = pool.submit(run, lambda: signups(days + PAY_DAYS, PAY_DAYS))
     week_jobs = [pool.submit(run, lambda k=k: window(7 * k, 7 * (k - 1))) for k in range(1, weeks + 1)]
+    signup_week_jobs = [pool.submit(run, lambda k=k: signups(7 * k + PAY_DAYS, 7 * (k - 1) + PAY_DAYS)) for k in range(1, weeks + 1)]
     (report, report_error), (home, home_error), (paid, paid_error) = window_job.result(), home_job.result(), cohort_job.result()
+    signup_paid, signup_paid_error = signups_job.result()
     week_rows = [job.result() for job in week_jobs]
+    signup_week_rows = [job.result() for job in signup_week_jobs]
 print(json.dumps({
     "window": report, "window_error": report_error, "home": home, "home_error": home_error, "cohort": paid, "cohort_error": paid_error,
-    "weeks": [row for row, _ in week_rows], "weeks_errors": [error for _, error in week_rows if error],
+    "signups": signup_paid, "signups_error": signup_paid_error,
+    "weeks": [row for row, _ in week_rows], "weeks_errors": [error for _, error in week_rows + signup_week_rows if error],
+    "signup_weeks": [row for row, _ in signup_week_rows],
 }))

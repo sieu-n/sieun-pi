@@ -40,7 +40,12 @@ export const DAYS = 28;
  *   10-10, so 20 a day missed even with every visitor in the test, while a share holds on any traffic. sg-exp-home-1 went live 10-14 22:51 KST
  *   and about 21 of 24 eligible visitors got it since, so 90% passes a working test and misses one that drops visitors.
  *   The 24 h people count and the 7-day eligible and exposed counts stay in the detail as home_test_people_24h and the home_test slice.
- * signup_to_paid_pct and source_errors stay in the output for the run's detail file and are not declared. A source that fails sets the
+ * - signup_to_paid_16d_pct >= 10: real signups from 44 to 16 days ago who started Pro or bought the CLI within 16 days of signing up, the
+ *   owner's p48 target for signup to Pro or CLI (TARGETS in conversion_targets.py). A trial lasts 14 days and most payers pay at its end, so
+ *   it moves about two weeks after a change to the trial or checkout, where the headline takes four to eight. It replaced signup_to_paid_pct
+ *   on 10-20, which counted only payments inside the same 28-day window: on 10-20 it read 2.63% (2 of 76) while Stripe showed 7 of 78 signups
+ *   from 09-06 to 10-04 paid within 16 days, and a job read the weekly rows' same-week Pro or CLI column as signup to paid falling to 3%.
+ * source_errors stays in the output for the run's detail file and is not declared. A source that fails sets the
  * headline to 0, a miss, with a source_error slice that says to fix the precheck first.
  * The duty JSON sets timeoutMs 120000, the runner's soft target PRECHECK_TARGET_MS; the first cold run took 74.6 s (2026-10-12, PostHog query
  * cache empty), later runs 10 s for the queries and 17.2 s in all.
@@ -61,10 +66,13 @@ export interface CohortReport {
   start: string; end: string; follow_end: string; follow_days: number; on_topic_visitors: number; on_topic_signed_up: number; on_topic_paid: number;
   entry_classes: Record<string, { visitors: number; signed_up: number; paid: number }>;
 }
+/** Real signups from `start` to `end` (exclusive) and the ones who started Pro or bought the CLI within `follow_days` of signing up. */
+export interface SignupCohort { start: string; end: string; follow_days: number; signed_up: number; paid: number }
 /** What slack-green-funnel.py prints. */
 export interface FunnelReport {
   window: WindowReport | null; window_error: string | null; home: HomeTest | null; home_error: string | null;
-  cohort?: CohortReport | null; cohort_error?: string | null; weeks?: (WindowReport | null)[];
+  cohort?: CohortReport | null; cohort_error?: string | null; signups?: SignupCohort | null; signups_error?: string | null;
+  weeks?: (WindowReport | null)[]; signup_weeks?: (SignupCohort | null)[];
 }
 export interface FunnelState { metrics: Record<string, number>; at: number }
 
@@ -74,7 +82,7 @@ export interface FunnelDeps { exec: Exec; now: () => number; repo: string; pytho
 
 const message = (error: unknown): string => (error instanceof Error ? error.message : String(error)).replace(/phx_[A-Za-z0-9]+/g, "phx_***");
 const pct = (part: number, whole: number): number => Math.round(10000 * part / whole) / 100;
-const SOURCES = 3;
+const SOURCES = 4;
 
 /**
  * The metrics from one report. Each source that failed (the cohort query, the 28-day query, the home test query, or a cohort or window with
@@ -83,7 +91,7 @@ const SOURCES = 3;
  * signups, a real 0.
  */
 export function funnelMetrics(report: FunnelReport | null, at: number, sourceError?: string): { metrics: Record<string, number>; flagged: FlaggedSlice[] } {
-  const metrics: Record<string, number> = { [HEADLINE]: 0, on_topic_visit_to_signup_pct: 0, signup_to_workspace_pct: 0, home_test_reach_pct: 0, home_test_people_24h: 0, signup_to_paid_pct: 0, source_errors: 0 };
+  const metrics: Record<string, number> = { [HEADLINE]: 0, on_topic_visit_to_signup_pct: 0, signup_to_workspace_pct: 0, home_test_reach_pct: 0, home_test_people_24h: 0, signup_to_paid_16d_pct: 0, source_errors: 0 };
   const flagged: FlaggedSlice[] = [];
   const fail = (excerpt: string, item = "p48") => {
     metrics.source_errors! += 1;
@@ -111,14 +119,21 @@ export function funnelMetrics(report: FunnelReport | null, at: number, sourceErr
   else {
     metrics.on_topic_visit_to_signup_pct = window.on_topic_visit_to_signup ?? 0;
     metrics.signup_to_workspace_pct = window.signup_to_workspace ?? 0;
-    metrics.signup_to_paid_pct = window.signup_to_pro_or_cli ?? 0;
     flagged.push({ at, kind: "window", item: "p48", excerpt: `${window.start} to ${window.end} (end exclusive, Asia/Seoul): ${window.visitors} real visitors, ` +
       `${window.on_topic_visitors} on-topic, ${window.signed_up} signups (${window.on_topic_signed_up} on-topic), ${window.workspace_added} connected a workspace, ` +
-      `${window.pro_or_cli} started Pro or bought the CLI; off-topic blog share ${window.off_topic_share ?? 0}%, all-visitor signup rate ${window.visit_to_signup ?? 0}%` });
+      `${window.pro_or_cli} started Pro or bought the CLI inside the window (a signup's 14-day trial ends after it for half of them); off-topic blog share ${window.off_topic_share ?? 0}%, all-visitor signup rate ${window.visit_to_signup ?? 0}%` });
     for (const [name, row] of Object.entries(window.entry_classes)) {
       flagged.push({ at, kind: "entry_class", item: "p48", excerpt: `${name}: ${row.visitors} visitors, ${row.signed_up} signups (${row.visit_to_signup ?? 0}%), ` +
         `${row.workspace_added} workspaces, ${row.pro_or_cli} Pro or CLI` });
     }
+  }
+  const signups = report.signups;
+  if (!signups || report.signups_error) fail(`the signup to paid query failed: ${report.signups_error ?? "no rows"}`);
+  else if (!signups.signed_up) fail(`PostHog gave 0 real signups from ${signups.start} to ${signups.end}, so the signup event or the query is broken`);
+  else {
+    metrics.signup_to_paid_16d_pct = pct(signups.paid, signups.signed_up);
+    flagged.push({ at, kind: "signup_cohort", item: "p48", excerpt: `real signups from ${signups.start} to ${signups.end} (end exclusive, Asia/Seoul): ` +
+      `${signups.signed_up} signed up, ${signups.paid} started Pro or bought the CLI within ${signups.follow_days} days of signing up (a 14-day trial and its charge)` });
   }
   const home = report.home;
   if (!home || report.home_error) fail(`the 24 h home test query failed: ${report.home_error ?? "no rows"}`, "p54");

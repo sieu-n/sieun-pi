@@ -26,6 +26,13 @@
       "unit": "%"
     },
     {
+      "key": "signup_to_paid_16d_pct",
+      "label": "Signups who pay within 16 days, signups 44 to 16 days ago",
+      "op": ">=",
+      "target": 10,
+      "unit": "%"
+    },
+    {
       "key": "home_test_reach_pct",
       "label": "Signed-out English home visitors who got the home test, 24 h",
       "op": ">=",
@@ -47,6 +54,6 @@
     "cwd": "../..",
     "timeoutMs": 120000
   },
-  "onMiss": "If a source_error slice shows up, fix the precheck or the PostHog key first, then the rest. Else find the step with the widest gap to its target: visit to signup, signup to workspace, or signup to paid (signup_to_paid_pct and the cohort slice in the detail). Weekly rows come from `node --import tsx scripts/duties/slack-green-funnel.ts --weeks 4` in sieun-pi components/user-history. If a live job already works that gap, message it the new numbers and what to try next. Else start one build job for the next experiment or fix on that step, as a PR behind a PostHog flag at 0%, with its merge and launch on the owner's For you todo. Open PRs that wait on the owner are not work on the gap, and no run ends without a job on it. If home_test_reach_pct misses with no test flag, build the next home test (p54) or put the ready one on that todo; with a live test, start one fix job on the exposure code. Never merge, launch a flag, deploy prod or email users.",
+  "onMiss": "If a source_error slice shows up, fix the precheck or the PostHog key first, then the rest. Else find the step with the widest gap to its target: visit to signup, signup to workspace, or signup to paid (signup_to_paid_16d_pct, the signup_cohort and cohort slices in the detail). Weekly rows come from `node --import tsx scripts/duties/slack-green-funnel.ts --weeks 4` in sieun-pi components/user-history; read signup to paid from its signup_weeks rows, because the weeks rows' pro_or_cli counts only payments inside the same week. If a live job already works that gap, message it the new numbers and what to try next. Else start one build job for the next experiment or fix on that step, as a PR behind a PostHog flag at 0%, with its merge and launch on the owner's For you todo. Open PRs that wait on the owner are not work on the gap, and no run ends without a job on it. If home_test_reach_pct misses with no test flag, build the next home test (p54) or put the ready one on that todo; with a live test, start one fix job on the exposure code. Never merge, launch a flag, deploy prod or email users.",
   "boardGoal": "p48"
 }
