@@ -1,7 +1,7 @@
 // Guards the Chat system duty's precheck (d9), built 10-19 for the owner's rule that a plan holds only tasks that finish (msg mvfb7zt0).
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { agingSince, chatSystemOutput, goalsWithNoJob, jobsByChat, ownerMessages, planUpkeep, pushList, pushReached, spread, withCatalogOwners, withoutWorkingRuns } from "../scripts/duties/chat-system.ts";
+import { agingSince, chatSystemOutput, goalsWithNoJob, jobsByChat, ownerMessages, planUpkeep, pushedFile, pushList, pushReached, spread, withCatalogOwners, withoutWorkingRuns } from "../scripts/duties/chat-system.ts";
 import { type PlanInputs, planCounts } from "../scripts/duties/whole-system.ts";
 import type { ChatBoard } from "../src/shared/types.ts";
 
@@ -159,4 +159,12 @@ test("a red duty that misses only windowed counts with no new event since the ru
     stuckDuties: [], idleGoals: [], followUps: [], detail: "/tmp/d9.md" });
   assert.deepEqual(out.flagged!.filter(slice => slice.kind === "red_duty" && slice.item).map(slice => slice.item), ["d7"]);
   assert.match(out.flagged!.find(slice => slice.kind === "aging_duty")!.excerpt, /^AI harness d10 is red only on .* owe no fix job, so push nothing for them\.$/);
+});
+
+test("a push to a session that is no owner chat is read from its own catalog row", () => {
+  const copies = [JSON.stringify({ rows: [{ sessionId: "01a10810-34b5-710f-88fe-3d369f89a8c9", sessionFile: "/home/u/.prime/agent/sessions/01a10810-34b5-710f-88fe-3d369f89a8c9.jsonl" }] })];
+  const listed = new Map([["c1", { file: "/home/u/.prime/agent/sessions/c1.jsonl" }]]);
+  assert.equal(pushedFile(listed, copies, "c1"), "/home/u/.prime/agent/sessions/c1.jsonl");
+  assert.equal(pushedFile(listed, copies, "01a10810-34b5-710f-88fe-3d369f89a8c9"), "/home/u/.prime/agent/sessions/01a10810-34b5-710f-88fe-3d369f89a8c9.jsonl");
+  assert.equal(pushedFile(listed, copies, "01a11d24-ac9b-757d-ac51-9b2b7598782f"), undefined);
 });

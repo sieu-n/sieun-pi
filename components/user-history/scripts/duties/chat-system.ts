@@ -229,6 +229,15 @@ export interface Push { at: number; chat: string; tag: string; items: string[] }
 /** How a push the last run's job sent went: whether its tag reached the chat's transcript, the chat answered after it, and a job started since. */
 export interface PushCheck { push: Push; delivered: boolean; read: boolean; jobStarted: boolean }
 
+/**
+ * The transcript a push went to. A push can go to a session that is no owner chat, like the release owner 01a10810 or the metal box owner
+ * 01a11d24, so it is looked up in the catalog by its own id; on 10-20 the 15:57Z run read both 13:45Z pushes as never delivered, though
+ * each sat in its transcript from 14:03Z.
+ */
+export function pushedFile(listed: ReadonlyMap<string, { file?: string }>, copies: readonly string[], chat: string): string | undefined {
+  return listed.get(chat)?.file ?? listedSessions(copies, [chat]).get(chat)?.file;
+}
+
 /** The tagged push in a chat's transcript lines: delivered when an agent message carries the tag, read when an assistant line comes after it. */
 export function pushReached(lines: readonly string[], tag: string): { delivered: boolean; read: boolean } {
   let delivered = false;
@@ -354,7 +363,7 @@ async function main(): Promise<void> {
   });
   const followUps: PushCheck[] = [];
   for (const push of sent) {
-    const file = localCopy(listed.get(push.chat)?.file);
+    const file = localCopy(pushedFile(listed, copies, push.chat));
     const reached = file ? pushReached(await tail(file.file, TRANSCRIPT_TAIL_BYTES), push.tag) : { delivered: false, read: false };
     followUps.push({ push, ...reached, jobStarted: (jobs.get(push.chat) ?? []).some(row => ms(row.created) > push.at) });
   }
