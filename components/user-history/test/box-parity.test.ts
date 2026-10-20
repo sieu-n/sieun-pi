@@ -128,7 +128,7 @@ test("unitLimits lists a setting the deploy/linux layer scripts set as owner-ask
   assert.deepEqual(asked({ Id: "ssh.service", CPUWeight: "1000" }, {}, {}, "user"), [["user ssh.service CPUWeight", false]]);
   assert.deepEqual(asked({ Id: "user@1001.service", CPUWeight: "10000" }, {}, {}, "system"), [["system user@N.service CPUWeight", true]]);
   assert.deepEqual(asked({ Id: "dev.slice", CPUWeight: "300" }, {}, {}, "system"), [["system dev.slice CPUWeight", false]]);
-  const daemon = { Id: "prime-agent-daemon.service", ActiveState: "active", MainPID: "7", Nice: "0", CPUWeight: "300" };
+  const daemon = { Id: "prime-agent-daemon.service", ActiveState: "active", MainPID: "7", Nice: "0", CPUWeight: "10000" };
   assert.deepEqual(asked(daemon, {}, { 7: -10 }), [["user prime-agent-daemon.service CPUWeight", true], ["user prime-agent-daemon.service nice", true]]);
   assert.deepEqual(asked({ ...daemon, CPUWeight: "[not set]" }, {}, { 7: -5 }), [["user prime-agent-daemon.service nice", false]]);
   const chat = unitLimits({ ...daemon, Id: "sieun-pi-chat.service", CPUWeight: "[not set]" }, context({}, { 7: -10 }));

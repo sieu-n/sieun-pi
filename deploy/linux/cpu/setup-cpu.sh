@@ -12,8 +12,11 @@ user_ctl=(systemctl --user "--machine=$DEV_USER@")
 # Prime daemon, because a weight only counts against its siblings: user.slice against virev.slice and dev.slice, and the daemon against the
 # other units in app.slice. user@1001.service runs at 10000, the most systemd takes, because its siblings are the ssh login scopes, 69 of them
 # at 100 each from Mac jobs on 10-19 at 21:1xZ, which at 300 left the user manager about 300/7200 of user-1001.slice when all were busy. virev.slice at 400 holds prod at 300 and CI at 100.
+# The Prime daemon runs at 10000 for the same reason one level down: its siblings in app.slice are the job rigs, 67 at 100 on 10-20 at 02:50Z,
+# and at 300 its supervisor waited 0.88 s in the run queue per second (0.31 s on CPU), with cpu.pressure some at 57%, and creates took 31 to 43 s.
+# At 10000 the wait fell to 0.41 s at load 218 to 265.
 declare -A SYSTEM_WEIGHTS=([ssh.service]=1000 [tailscaled.service]=1000 [user.slice]=300 [user@$uid.service]=10000 [virev.slice]=400 [virev-prod.slice]=300)
-declare -A USER_WEIGHTS=([sieun-pi-chat.service]=1000 [pi-pool-serve.service]=1000 [pi-pool-hookd.service]=1000 [prime-agent-daemon.service]=300)
+declare -A USER_WEIGHTS=([sieun-pi-chat.service]=1000 [pi-pool-serve.service]=1000 [pi-pool-hookd.service]=1000 [prime-agent-daemon.service]=10000)
 
 dropin() {
   printf '# CPU layer 1 of deploy/linux/README.md (owner'"'"'s t84 answer 10-19, after https://cho.sh/ko/1983DC). A weight is no cap.\n[%s]\nCPUWeight=%s\n' "$1" "$2"
