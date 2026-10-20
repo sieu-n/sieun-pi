@@ -1214,15 +1214,31 @@ export class ThreadHub {
    * prompt reached the Mac (~/work/mac-new-thread-first-reply/nt1.json, nt2.json). The create still throws when the first send fails. A name
    * on the create held the Mac's session start about 2 s on 10-20 (create 4.5 s against 2.4 to 2.6 s without), and a rename takes about 1 s
    * beside the turn without holding it, so a thread with a first message is named by a rename sent right after that message.
+   *
+   * A named job with no first message is named by a rename the create waits for. On us-metal02 on 10-20 a create with a name took 21.5 s and
+   * one without 3.1 to 3.2 s, and a rename 0.8 s (~/work/d7-slow-creates/probes.md): the new worker checks the name against every saved root
+   * with its own full scan of the session folder, while a rename asks the supervisor's catalog. Each duty job create took 20 to 45 s, they run
+   * one at a time, and d7 counted 6 of its 30 minutes at 02:22Z dirty for them. A rename the daemon refuses, such as a taken name, kills the
+   * new session and throws that refusal, as the create refused it before.
    */
   async create(input: { cwd: string; provider?: string; modelId?: string; thinkingLevel?: ThinkingLevel; name?: string; kind?: "chat"; host?: string; first?: FirstMessage }): Promise<Thread> {
     const client = await this.hostDaemon(input.host ?? null);
     const flags = { ...(input.kind === "chat" ? { [CHAT_FLAG]: true } : {}), ...(input.first ? { [OWNER_THREAD_FLAG]: true } : {}) };
     const renamed = input.first && input.kind !== "chat" ? input.name : undefined;
-    const name = renamed ? undefined : input.name;
-    const response = await timedWorkerStart(`create ${input.name ?? input.cwd}`, () => client.request({ type: "create", lifecycle: "resident", ...(name ? { name } : {}), config: { cwd: input.cwd,
-      ...(input.provider && input.modelId ? { provider: input.provider, model: input.modelId } : {}), ...(input.thinkingLevel ? { thinking: input.thinkingLevel } : {}),
-      ...(Object.keys(flags).length ? { extensionFlagValues: flags } : {}) } }, DAEMON_WORKER_START_MS, { recoverable: false }));
+    const named = !input.first && input.kind !== "chat" ? input.name : undefined;
+    const name = renamed || named ? undefined : input.name;
+    const response = await timedWorkerStart(`create ${input.name ?? input.cwd}`, async () => {
+      const created = await client.request({ type: "create", lifecycle: "resident", ...(name ? { name } : {}), config: { cwd: input.cwd,
+        ...(input.provider && input.modelId ? { provider: input.provider, model: input.modelId } : {}), ...(input.thinkingLevel ? { thinking: input.thinkingLevel } : {}),
+        ...(Object.keys(flags).length ? { extensionFlagValues: flags } : {}) } }, DAEMON_WORKER_START_MS, { recoverable: false });
+      const activeSessionId = created.success && typeof created.data === "object" && created.data !== null && "activeSessionId" in created.data ? created.data.activeSessionId : undefined;
+      if (!named || typeof activeSessionId !== "string") return created;
+      const answer = await client.request({ type: "rename", activeSessionId, name: named } as never, DAEMON_WORKER_START_MS, { recoverable: false })
+        .catch((error: unknown) => ({ success: false as const, error: error instanceof Error ? error.message : String(error) }));
+      if (answer.success) return created;
+      await client.request({ type: "kill", activeSessionId }, 30000, { recoverable: false }).catch(() => {});
+      return answer;
+    });
     if (!response.success) throw new ThreadError(502, response.error);
     const data = response.data;
     if (typeof data !== "object" || data === null || !("sessionId" in data) || typeof data.sessionId !== "string" || !("activeSessionId" in data) || typeof data.activeSessionId !== "string") {

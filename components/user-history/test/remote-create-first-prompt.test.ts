@@ -75,3 +75,32 @@ test("a create with no first message sends no prompt and sets no owner flag, as 
   assert.deepEqual(sent.map(command => command.type), ["create"]);
   assert.equal((sent[0]!.config as { extensionFlagValues?: unknown }).extensionFlagValues, undefined);
 });
+
+test("a named job with no first message is created without its name and named by a rename, since a name on the create held it 18 s", async (t: TestContext) => {
+  const dir = await mkdtemp(join(tmpdir(), "remote-create-"));
+  const sent: Record<string, unknown>[] = [];
+  const mac = { request: async (command: Record<string, unknown>) => { sent.push(command); return { success: true, data: { sessionId: ID, activeSessionId: "fe473a344ace" } }; } };
+  const catalog = { hostClient: async () => mac, isOtherHost: () => true, place: () => {}, hostOf: () => null, socketPathFor: () => join(dir, "missing.sock"), refresh: async () => {} } as unknown as Catalog;
+  const hub = new ThreadHub(join(dir, "box.sock"), catalog, () => ({ provider: null, modelId: null, thinkingLevel: null }));
+  t.after(() => hub.close());
+  await assert.rejects(hub.create({ cwd: "/home/sieun", host: "mac", name: "check-in vent 11:47" }), "the attach to the missing socket still fails");
+  assert.deepEqual(sent.map(command => command.type), ["create", "rename"]);
+  assert.equal(sent[0]!.name, undefined);
+  assert.deepEqual(sent[1], { type: "rename", activeSessionId: "fe473a344ace", name: "check-in vent 11:47" });
+});
+
+test("a rename the daemon refuses for a taken name kills the new session and throws the refusal, as a refused named create did", async (t: TestContext) => {
+  const dir = await mkdtemp(join(tmpdir(), "remote-create-"));
+  const sent: Record<string, unknown>[] = [];
+  const taken = 'Agent name "check-in vent 11:47" is unavailable: an agent of that name already exists at depth 0 under this parent';
+  const mac = { request: async (command: Record<string, unknown>) => {
+    sent.push(command);
+    return command.type === "rename" ? { success: false, error: taken } : { success: true, data: { sessionId: ID, activeSessionId: "fe473a344ace" } };
+  } };
+  const catalog = { hostClient: async () => mac, isOtherHost: () => true, place: () => {}, hostOf: () => null, socketPathFor: () => join(dir, "missing.sock"), refresh: async () => {} } as unknown as Catalog;
+  const hub = new ThreadHub(join(dir, "box.sock"), catalog, () => ({ provider: null, modelId: null, thinkingLevel: null }));
+  t.after(() => hub.close());
+  await assert.rejects(hub.create({ cwd: "/home/sieun", host: "mac", name: "check-in vent 11:47" }), (error: Error) => error.message === taken);
+  assert.deepEqual(sent.map(command => command.type), ["create", "rename", "kill"]);
+  assert.deepEqual(sent[2], { type: "kill", activeSessionId: "fe473a344ace" });
+});
