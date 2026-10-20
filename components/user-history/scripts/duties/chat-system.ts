@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { planRiskSteps } from "../../src/checkin-findings.ts";
-import { LIVE_GAP_MS, OPEN, walk } from "../../src/checkin-steps.ts";
+import { LIVE_GAP_MS, OPEN, waitsOnOwner, walk } from "../../src/checkin-steps.ts";
 import { listedSessions } from "../../src/daemon-faults.ts";
 import { ownerChats } from "../../src/owner-chats.ts";
 import { chatDataDir } from "../../src/owner-ok.ts";
@@ -124,12 +124,16 @@ export interface OwnerReads {
 }
 
 /**
- * The open goals none of whose open items has a live owner: a job working now or within LIVE_GAP_MS, asleep on a board.wake, or waiting for its
- * pi-pool slot. A Mac chat's jobs write their transcripts on the Mac, so their catalog rows (by session id or by the step's job name) count too.
+ * The open goals none of whose open items has a live owner: a job working now or within LIVE_GAP_MS, asleep on a board.wake, waiting for its
+ * pi-pool slot, an open For you todo that links the item, or a blocked wait on the owner (`waitsOnOwner`, as the check-in's stuck steps read it). A Mac chat's jobs write their transcripts on the Mac, so their catalog rows (by
+ * session id or by the step's job name) count too. The duty's goal names "a job moving it or a For you question that links it", and on 10-20
+ * the 06:16Z run pushed frontend bro on p208 and p272 and slack green guy on p179, whose open steps each wait on an open todo (t39, t40, t28).
  */
 export function goalsWithNoJob(board: ChatBoard | null, reads: OwnerReads): PlanItem[] {
   const fresh = (at: number | undefined) => at !== undefined && reads.now - at <= LIVE_GAP_MS;
+  const asked = new Set((board?.todos ?? []).filter(todo => !todo.done && todo.step).map(todo => todo.step));
   const live = (item: PlanItem): boolean => {
+    if (asked.has(item.id) || waitsOnOwner(item)) return true;
     const sessions = stepSessions(item, reads.named);
     if (sessions.some(id => reads.waking.has(id) || reads.poolWaiting.has(id) || fresh(reads.activity.get(id)))) return true;
     return reads.jobs.some(row => (sessions.includes(row.sessionId) || (!!item.job && row.sessionName === item.job)) &&

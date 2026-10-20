@@ -51,6 +51,17 @@ test("a goal counts as having no live job only when none of its open items has a
   assert.deepEqual(goalsWithNoJob(goals, { ...reads, jobs: [], activity: new Map([["s-local", now - 3 * 3_600_000]]) }).map(goal => goal.id), ["p1", "p3", "p5"]);
 });
 
+// 10-20 06:16Z: the duty's goal counts "a For you question that links it" as an owner, so a goal waiting on an open todo is not pushed.
+test("a goal whose open step an open For you todo links has an owner, and an answered todo does not count", () => {
+  const now = Date.parse("2026-10-20T06:16:00Z");
+  const reads = { now, named: new Map(), activity: new Map(), waking: new Set<string>(), poolWaiting: new Set<string>(), jobs: [] };
+  const board = (done: boolean) => ({ v: 2, rev: 1, updatedAt: "2026-10-20T06:00:00Z",
+    todos: [{ id: "t40", text: "Check Campaigns", done, step: "p297", from: "agent", at: "2026-10-19T22:45:28Z" }],
+    plan: [{ id: "p272", text: "Campaigns ready for you", status: "doing", children: [{ id: "p297", text: "You check Campaigns", status: "blocked", children: [] }] }] }) as unknown as ChatBoard;
+  assert.deepEqual(goalsWithNoJob(board(false), reads).map(goal => goal.id), []);
+  assert.deepEqual(goalsWithNoJob(board(true), reads).map(goal => goal.id), ["p272"]);
+});
+
 test("the push list joins a chat's idle goals and stuck duties, and the follow-up reads the tag and an answer after it", () => {
   const goal = { id: "p5", text: "Ship C", status: "doing", children: [] } as unknown as ChatBoard["plan"][number];
   assert.deepEqual(pushList({ idleGoals: [{ chat: "a", goals: [goal] }, { chat: "b", goals: [] }], stuckDuties: [{ chat: "a", line: "a: d1 red" }, { chat: "c", line: "c: d2 red" }], upkeep: [] })
