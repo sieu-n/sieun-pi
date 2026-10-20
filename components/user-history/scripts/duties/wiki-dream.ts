@@ -12,7 +12,7 @@ import type { DutyRunRecord, FlaggedSlice, PrecheckOutput } from "../../src/shar
  * - the mistake signal comes from the owner corrections ledger and the continual-harness memories and refinements made since the last run;
  * - the duty's own ledger says which duplicate pairs were judged and which mistake classes are open, fixed or back;
  * - `git log` in both repos says which `(wiki-dream)` commits were reverted and which files the dream edited twice in 7 days;
- * - wiki-health's stale list plus `git log --first-parent` and `git ls-tree` in auto-sns-agent say which pages are behind their code (pagesBehindCode);
+ * - wiki-health's stale list says which pages are behind their code, both sides dated on the first-parent history of auto-sns-agent's HEAD;
  * - the wiki host batch's journal (`journalctl --user -u wiki-box-commit`) says which written pages it keeps leaving out of git (unlandedPages).
  * wiki-health judges the pages as committed at HEAD, so an uncommitted page edit in the shared checkout neither hides nor adds a problem.
  * The headline `wiki_problems` adds up the sync problems the owner asked to keep at 0; the run detail file keeps every other number.
@@ -178,59 +178,23 @@ export function churn(commits: readonly DreamCommit[]): { reverts: DreamCommit[]
   return { reverts, retouched };
 }
 
-/** One page of wiki-health's `stale` report: the engine lists a page when a `source_refs` file's mtime is after its `last_verified` day. */
-export interface StalePage { path: string; last_verified: string; staleRefs: { ref: string; modified: string }[] }
+/**
+ * One page of wiki-health's `stale` report. The engine (auto-sns-agent apps/llm-wiki/src/lib/server/wiki-stale.ts) lists a page when a
+ * `source_refs` path changed on the first-parent history of HEAD after the page's check, `verified_at`: its `last_verified` time, or for a
+ * bare day the page's own commit on that day. wiki-health adds the pages citing a path git lacks, with no `verified_at`.
+ */
+export interface StalePage { path: string; last_verified: string; verified_at?: string; staleRefs: { ref: string; modified: string }[] }
 export function parseStale(value: unknown): StalePage[] {
   if (!isRecord(value) || !Array.isArray(value.stale)) throw new Error("wiki-health gave no stale list");
   return value.stale.filter(isRecord).filter(row => typeof row.path === "string" && typeof row.last_verified === "string" && Array.isArray(row.staleRefs))
-    .map(row => ({ path: row.path as string, last_verified: row.last_verified as string,
+    .map(row => ({ path: row.path as string, last_verified: row.last_verified as string, ...typeof row.verified_at === "string" ? { verified_at: row.verified_at } : {},
       staleRefs: (row.staleRefs as unknown[]).filter(isRecord).filter(ref => typeof ref.ref === "string").map(ref => ({ ref: ref.ref as string, modified: String(ref.modified ?? "") })) }));
 }
 
-/** Parses `git log --format=%x1e%ct --name-only` (newest first) into the newest commit time in ms per file. */
-export function lastChanged(text: string): Map<string, number> {
-  const changed = new Map<string, number>();
-  for (const block of text.split("\x1e").map(part => part.trim()).filter(Boolean)) {
-    const [head = "", ...files] = block.split("\n");
-    const at = Number(head.trim()) * 1000;
-    if (!Number.isFinite(at)) continue;
-    for (const file of files.map(line => line.trim()).filter(Boolean)) if (!changed.has(file)) changed.set(file, at);
-  }
-  return changed;
-}
-
-/** The engine's rule: a page is checked through the end of its `last_verified` day, UTC. */
-export const verifiedUntil = (lastVerified: string): number => Date.parse(`${lastVerified}T23:59:59Z`);
-
-/**
- * Pages behind their code: a `source_refs` path (a file, or any file under a folder) changed on the tip after the page's `last_verified`
- * day. `changed` must date each file by the tip commit that brought the change (`git log --first-parent --diff-merges=first-parent`):
- * on 2026-10-16 merge 10ca745578 brought side commits dated 10-15 01:02Z, and 7 pages checked on 10-15 cited files they changed.
- * Every behind page counts, however recent the change. The run's verdict is its re-measure after its own job (`effectiveRun`), and a
- * cutoff at the last run's start hid the newest changes from the brief that the re-measure then counted: on 10-17 the brief listed 2
- * pages and the re-measure 9. The engine compares file mtimes, and a checkout or stash in the shared tree rewrites them with no content
- * change, so a tracked ref with no tip commit after the check is not behind (`tracked` lists HEAD's files under the refs). On 2026-10-15
- * 30 of the 75 refs the engine listed had no commit after the page's check. An untracked ref keeps the engine's verdict.
- */
-export function pagesBehindCode(pages: readonly StalePage[], changed: ReadonlyMap<string, number>, tracked: ReadonlySet<string>): { path: string; lastVerified: string; refs: { ref: string; at: number }[] }[] {
-  const under = (ref: string, file: string): boolean => file === ref || file.startsWith(`${ref.replace(/\/+$/, "")}/`);
-  const commitAt = (ref: string): number | undefined => {
-    let newest: number | undefined;
-    for (const [file, at] of changed) if (under(ref, file) && (newest === undefined || at > newest)) newest = at;
-    return newest;
-  };
-  const isTracked = (ref: string): boolean => { for (const file of tracked) if (under(ref, file)) return true; return false; };
-  return pages.map(page => {
-    const until = verifiedUntil(page.last_verified);
-    const refs = page.staleRefs.flatMap(({ ref, modified }) => {
-      const at = commitAt(ref);
-      if (at !== undefined) return at > until ? [{ ref, at }] : [];
-      if (isTracked(ref)) return [];
-      const engineAt = Date.parse(modified);
-      return [{ ref, at: Number.isFinite(engineAt) ? engineAt : 0 }];
-    });
-    return { path: page.path, lastVerified: page.last_verified, refs };
-  }).filter(page => page.refs.length);
+/** The flagged line of a page behind its code: when it was checked and each ref with the minute the tip changed it, or `(missing)`. */
+export function staleExcerpt(page: StalePage): string {
+  const minute = (text: string): string => { const at = Date.parse(text); return Number.isFinite(at) ? new Date(at).toISOString().slice(0, 16) + "Z" : "missing"; };
+  return `checked ${page.verified_at ? minute(page.verified_at) : page.last_verified} (last_verified ${page.last_verified}); code changed since: ${page.staleRefs.map(ref => `${ref.ref} (${minute(ref.modified)})`).join(", ")}`;
 }
 
 /** A global memory about the auto-sns-agent repo: its path or title starts with "auto-sns-agent". */
@@ -338,7 +302,7 @@ export function pickFlagged(slices: readonly FlaggedSlice[]): FlaggedSlice[] {
 
 const HEALTH_METRICS = ["hub_orphans", "dead_links", "session_links", "superseded_linked", "missing_meta", "stale_vs_code"] as const;
 /**
- * The sync problems wiki_problems adds up; pages_behind_code replaces the engine's mtime-based stale_vs_code, and unlanded counts
+ * The sync problems wiki_problems adds up; pages_behind_code counts the pages of wiki-health's stale list (parseStale), and unlanded counts
  * curated pages written on the wiki host that its batch keeps out of git, which wiki-health cannot see because it reads HEAD.
  */
 const PROBLEM_METRICS = ["hub_orphans", "dead_links", "session_links", "superseded_linked", "missing_meta", "pages_behind_code", "unlanded"] as const;
@@ -375,21 +339,9 @@ export async function measureDream(deps: DreamDeps, lastRuns: readonly DutyRunRe
   }).catch(error => fail(`journalctl ${BOX_UNIT}`, error));
 
   const stalePages = health && (() => { try { return parseStale(health.stale); } catch (error) { return fail("wiki-health.mjs stale", error); } })();
-  let behind: ReturnType<typeof pagesBehindCode> | undefined;
-  if (stalePages) {
-    const refs = [...new Set(stalePages.flatMap(page => page.staleRefs.map(ref => ref.ref)))];
-    const oldest = Math.min(...stalePages.map(page => verifiedUntil(page.last_verified)).filter(Number.isFinite));
-    const git = (args: readonly string[]): Promise<string> => deps.exec("git", ["-C", deps.repos.wiki, ...args], { cwd: deps.repos.wiki, timeoutMs: GIT_TIMEOUT_MS });
-    behind = !refs.length ? [] : await Promise.all([
-      git(["log", "HEAD", "--first-parent", "--diff-merges=first-parent", "--format=%x1e%ct", "--name-only", "--no-renames",
-        ...(Number.isFinite(oldest) ? [`--since=${new Date(oldest).toISOString()}`] : []), "--", ...refs]),
-      git(["ls-tree", "-r", "-z", "--name-only", "HEAD", "--", ...refs]),
-    ]).then(([log, files]) => pagesBehindCode(stalePages, lastChanged(log), new Set(files.split("\0").filter(Boolean))), error => fail("git log source_refs", error));
-  }
-
   const metrics: Record<string, number> = {};
   for (const key of HEALTH_METRICS) metrics[key] = health?.facts[key] ?? UNMEASURED;
-  metrics.pages_behind_code = behind?.length ?? UNMEASURED;
+  metrics.pages_behind_code = stalePages?.length ?? UNMEASURED;
   metrics.unlanded = box ? box.pages.filter(page => !page.session).length : UNMEASURED;
   metrics.wiki_problems = PROBLEM_METRICS.some(key => metrics[key] === UNMEASURED) ? UNMEASURED : PROBLEM_METRICS.reduce((sum, key) => sum + metrics[key]!, 0);
   const lintFailing = health?.facts.lint_failing_pages;
@@ -446,11 +398,9 @@ export async function measureDream(deps: DreamDeps, lastRuns: readonly DutyRunRe
   const freshIds = new Set((harness?.fresh ?? []).map(entry => entry.id));
   for (const entry of harness?.fresh ?? []) slices.push(memorySlice(entry, "new since last run"));
   for (const entry of (harness?.moves ?? []).filter(entry => !freshIds.has(entry.id)).slice(0, 10)) slices.push(memorySlice(entry, "move into its skill"));
-  for (const page of behind ?? []) {
-    slices.push({ kind: "stale_vs_code", item: page.path, excerpt: clip(`last_verified ${page.lastVerified}; code changed since: ${page.refs.map(ref => `${ref.ref}${ref.at ? ` (${new Date(ref.at).toISOString().slice(0, 10)})` : " (missing)"}`).join(", ")}`) });
-  }
+  for (const page of stalePages ?? []) slices.push({ kind: "stale_vs_code", item: page.path, excerpt: clip(staleExcerpt(page)) });
   for (const item of health?.items ?? []) {
-    if (item.kind === "signal" || (item.kind === "stale_vs_code" && behind)) continue;
+    if (item.kind === "signal" || (item.kind === "stale_vs_code" && stalePages)) continue;
     slices.push({ kind: item.kind, item: item.path, excerpt: clip(`${item.excerpt ?? item.path}${item.target ? ` -> ${item.target}` : ""}`) });
   }
   for (const pair of unjudged ?? []) slices.push({ kind: "dup_pair", item: pairKey(pair.a, pair.b), excerpt: `${pair.a} and ${pair.b} look alike (score ${pair.score})` });
