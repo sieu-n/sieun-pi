@@ -66,11 +66,16 @@ export const LOOP_STALL_S = 300;
 /** The owner's org on prod, from findings.md ("the only prod org with about 9,846 watched accounts"). */
 export const OWNER_ORG = "org_3IrtoOAEP0nk1aCQHGVME02Dy6E";
 export const PROD_CONVEX = "befitting-sparrow-356";
+/** Staging's Convex and the owner's org on it (Adapt Korea, the 23,877-key org t17 keeps about 10 accounts of on): staging_green_pct
+ *  judges only the rows of this org's watch keys, so a sign-up check's throwaway org (mac-management, 2026-10-20 16:17Z and 17:0xZ, which
+ *  unpaused about 1,000 and 21 old rows for minutes) never moves it. */
+export const STAGING_CONVEX = "tremendous-eel-825";
+export const STAGING_OWNER_ORG = "org_3FLEJTtegZpZqZPYYByywRFfDjI";
 
 /** The unread-records fill of a stream's byte cap that the bus-unread-near-cap alert fires at (crawler-bus-retention.yaml, 2b5d936b50). */
 export const BUS_FILL_LIMIT = 0.8;
 
-export type Source = "grafana auth" | "prod gauges" | "prod config" | "convex keys" | "prod rows" | "staging rows" | "prod streams" | "screen read";
+export type Source = "grafana auth" | "prod gauges" | "prod config" | "convex keys" | "prod rows" | "staging rows" | "prod streams" | "screen read" | "staging keys";
 export const NEEDS: Readonly<Record<string, readonly Source[]>> = {
   owner_green_pct: ["convex keys", "prod rows"], staging_green_pct: ["staging rows"],
   prod_read_error_pct: ["prod rows", "grafana auth", "prod gauges", "prod config"],
@@ -94,7 +99,7 @@ export interface StreamFault { topic: string; why: string }
 export interface Gauges { rows: Record<string, number>; overdue: Record<string, number>; loopAge?: number }
 export interface WatchData {
   now: number;
-  keys?: string[]; rows?: WatchRow[]; receipts?: Record<string, number>; staging?: WatchRow[]; prod?: Gauges; pauseWatch?: string; streams?: StreamFault[];
+  keys?: string[]; stagingKeys?: string[]; rows?: WatchRow[]; receipts?: Record<string, number>; staging?: WatchRow[]; prod?: Gauges; pauseWatch?: string; streams?: StreamFault[];
   screen?: ScreenChunk[];
   errors: { source: Source; message: string }[];
 }
@@ -190,6 +195,17 @@ export function rowsGreen(rows: readonly WatchRow[], now: number, kinds: readonl
   return { rows: live.length, green: Object.values(byKind).reduce((sum, kind) => sum + kind.green, 0), byKind, why: tally(why), young };
 }
 
+/** The staging rows of the owner org's watch keys, and the rest. With no keys read (the Convex read failed), every row is the owner's,
+ *  as before 2026-10-20, so a failed key read never empties staging_green_pct. */
+export function splitByKeys(rows: readonly WatchRow[], keys: readonly string[] | undefined): { owned: WatchRow[]; others: WatchRow[] } {
+  if (!keys?.length) return { owned: [...rows], others: [] };
+  const wanted = new Set(keys.map(rowKeyOf).filter(key => key !== null).map(key => id(key!)));
+  const owned: WatchRow[] = [];
+  const others: WatchRow[] = [];
+  for (const row of rows) (wanted.has(id(row)) ? owned : others).push(row);
+  return { owned, others };
+}
+
 /** Rows read ok in 24 h, in percent, from the monitor-tier rows and overdue_24h gauges of one kind; 0 rows reads 0. */
 export function freshPct(gauges: Gauges, kind: string): number {
   const rows = gauges.rows[`${kind}/monitor`] ?? 0;
@@ -233,14 +249,18 @@ export function report(data: WatchData, dutyMetrics: readonly DutyMetric[]): Pre
     if (!owner.accounts) flagged.push({ at, kind: "no_keys", excerpt: `Convex pageKeys returned no watch key for ${OWNER_ORG}` });
   }
   if (data.staging) {
-    const staging = rowsGreen(data.staging, now);
+    const { owned, others } = splitByKeys(data.staging, data.stagingKeys);
+    const staging = rowsGreen(owned, now);
     metrics.staging_green_pct = staging.rows ? round1(100 * staging.green / staging.rows) : 0;
     const posts = staging.byKind.posts!;
     const tagged = staging.byKind.tagged!;
     detail.staging_posts_green_pct = posts.rows ? round1(100 * posts.green / posts.rows) : 0;
     detail.staging_tagged_not_green = tagged.rows - tagged.green;
     flagged.push({ at, kind: "staging_monitor_rows", excerpt: `${staging.green} of ${staging.rows} unpaused staging monitor rows read ok in 24 h: posts ${posts.green} of ${posts.rows}, collabs ${tagged.green} of ${tagged.rows}` +
-      (staging.why.length ? `; not green: ${listWhy(staging.why)}` : "") + (staging.young ? `; ${staging.young} added under 24 h ago and not read ok yet` : "") + `; ${data.staging.length - staging.rows} paused or other rows are left out (t17: "only like 10 accounts" in staging)` });
+      (staging.why.length ? `; not green: ${listWhy(staging.why)}` : "") + (staging.young ? `; ${staging.young} added under 24 h ago and not read ok yet` : "") + `; ${owned.length - staging.rows} paused or other rows are left out (t17: "only like 10 accounts" in staging)` });
+    const leaking = rowsGreen(others, now);
+    detail.staging_other_org_unpaused = leaking.rows;
+    if (leaking.rows) flagged.push({ at, kind: "staging_other_orgs", excerpt: `${leaking.rows} unpaused staging monitor rows (posts ${leaking.byKind.posts!.rows}, collabs ${leaking.byKind.tagged!.rows}) belong to no key of ${STAGING_OWNER_ORG}; they are not scored in staging_green_pct, and a test org left after its check shows here` });
     if (!staging.rows) flagged.push({ at, kind: "no_staging_rows", excerpt: "staging watch_targets has no unpaused posts or tagged monitor row, so the staging Watchlist is empty" });
   }
   if (data.receipts) {
@@ -337,18 +357,19 @@ export async function streamFaults(query: DsQuery): Promise<StreamFault[]> {
 }
 
 /** Every distinct watch key of one org on prod Convex, read with the owner's Convex CLI login. */
-export async function convexKeys(fetcher: typeof fetch, accessToken: string, signal: AbortSignal): Promise<string[]> {
+export async function convexKeys(fetcher: typeof fetch, accessToken: string, signal: AbortSignal,
+  deployment: string = PROD_CONVEX, orgId: string = OWNER_ORG): Promise<string[]> {
   const headers = { authorization: `Bearer ${accessToken}`, "content-type": "application/json", "convex-client": "npm-cli-1.34.0" };
   const auth = await fetcher("https://api.convex.dev/api/deployment/authorize_within_current_project", { method: "POST", headers, signal,
-    body: JSON.stringify({ selectedDeploymentName: PROD_CONVEX, projectSelection: { kind: "deploymentName", deploymentName: PROD_CONVEX, deploymentType: null } }) });
+    body: JSON.stringify({ selectedDeploymentName: deployment, projectSelection: { kind: "deploymentName", deploymentName: deployment, deploymentType: null } }) });
   const credentials = await auth.json().catch(() => null) as { adminKey?: string; url?: string } | null;
-  if (!auth.ok || !credentials?.adminKey || !credentials.url) throw new Error(`Convex authorize for ${PROD_CONVEX} gave HTTP ${auth.status}`);
+  if (!auth.ok || !credentials?.adminKey || !credentials.url) throw new Error(`Convex authorize for ${deployment} gave HTTP ${auth.status}`);
   const keys = new Set<string>();
   let cursor: string | null = null;
   for (;;) {
     const response = await fetcher(`${credentials.url}/api/query`, { method: "POST", signal,
       headers: { authorization: `Convex ${credentials.adminKey}`, "content-type": "application/json", "convex-client": "npm-cli-1.34.0" },
-      body: JSON.stringify({ path: "search/watchTargets:pageKeys", args: { orgId: OWNER_ORG, cursor }, format: "json" }) });
+      body: JSON.stringify({ path: "search/watchTargets:pageKeys", args: { orgId, cursor }, format: "json" }) });
     const body = await response.json().catch(() => null) as { status?: string; errorMessage?: string; value?: { keys: string[]; continueCursor: string; isDone: boolean } } | null;
     if (body?.status !== "success" || !body.value) throw new Error(`pageKeys: HTTP ${response.status} ${String(body?.errorMessage ?? "no value").slice(0, 200)}`);
     body.value.keys.forEach(key => keys.add(key));
@@ -434,6 +455,7 @@ const RECEIPTS_SQL = "select 'receipt', outcome, count(*) from watch_target_clai
 
 export interface WatchDeps {
   query: DsQuery | null; authError: string | null; keys: () => Promise<string[]>; rows: () => Promise<string>; staging: () => Promise<string>;
+  stagingKeys: () => Promise<string[]>;
   screen: (keys: string[]) => Promise<ScreenChunk[]>; now: number;
 }
 
@@ -448,7 +470,7 @@ export async function measure(deps: WatchDeps): Promise<WatchData> {
     for (const source of ["prod gauges", "prod config"] as const) data.errors.push({ source, message: "not read: no Grafana login" });
   }
   const keysRead = step("convex keys", deps.keys);
-  const [keys, screen, prodText, stagingText, prod, pause, streams] = await Promise.all([
+  const [keys, screen, prodText, stagingText, prod, pause, streams, stagingKeys] = await Promise.all([
     keysRead,
     keysRead.then(read => read?.length ? step("screen read", () => deps.screen(screenKeys(read))) : undefined),
     step("prod rows", deps.rows),
@@ -456,16 +478,20 @@ export async function measure(deps: WatchDeps): Promise<WatchData> {
     query ? step("prod gauges", () => gauges(query)) : undefined,
     query ? step("prod config", async () => String((await sqlRows(query, PG.prod, "select value from config where key = 'pause.watch'"))[0]?.value ?? "")) : undefined,
     query ? step("prod streams", () => streamFaults(query)) : undefined,
+    step("staging keys", deps.stagingKeys),
   ]);
   const rows = prodText === undefined ? undefined : parseRows(prodText);
   const staging = stagingText === undefined ? undefined : parseRows(stagingText);
   if (rows && !rows.length) data.errors.push({ source: "prod rows", message: "the owner_ro read returned no prod watch_targets monitor row" });
   if (staging && !staging.length) data.errors.push({ source: "staging rows", message: "estate_pg_stg returned no staging watch_targets monitor row" });
   if (screen && !screen.length) data.errors.push({ source: "screen read", message: "the screen read sent no chunk to crawler.virev.ai" });
-  Object.assign(data, keys && { keys }, screen?.length && { screen }, rows?.length && { rows, receipts: parseReceipts(prodText!) }, staging?.length && { staging },
+  Object.assign(data, keys && { keys }, screen?.length && { screen }, rows?.length && { rows, receipts: parseReceipts(prodText!) }, staging?.length && { staging }, stagingKeys?.length && { stagingKeys },
     prod && { prod }, pause !== undefined && { pauseWatch: pause }, streams && { streams });
   return data;
 }
+
+const convexToken = async (): Promise<string> =>
+  (JSON.parse(await readFile(join(homedir(), ".convex/config.json"), "utf8")) as { accessToken: string }).accessToken;
 
 async function main(): Promise<void> {
   const output = process.env.OUTPUT_FILE;
@@ -477,7 +503,8 @@ async function main(): Promise<void> {
   let authError: string | null = null;
   try { query = grafanaClient(fetch, await readGrafanaAuth(), now, signal); } catch (error) { authError = error instanceof Error ? error.message : String(error); }
   const data = await measure({ query, authError, now,
-    keys: async () => convexKeys(fetch, (JSON.parse(await readFile(join(homedir(), ".convex/config.json"), "utf8")) as { accessToken: string }).accessToken, signal),
+    keys: async () => convexKeys(fetch, await convexToken(), signal),
+    stagingKeys: async () => convexKeys(fetch, await convexToken(), signal, STAGING_CONVEX, STAGING_OWNER_ORG),
     rows: () => prodReader("watchlist-green-duty", signal)(`${PROD_ROWS_SQL};\n${RECEIPTS_SQL}`),
     staging: async () => { if (!query) throw new Error("not read: no Grafana login"); return rowLines(await sqlRows(query, PG.staging, STAGING_ROWS_SQL)); },
     screen: async keys => screenRead(fetch, await readCrawlerKey(), keys, signal) });

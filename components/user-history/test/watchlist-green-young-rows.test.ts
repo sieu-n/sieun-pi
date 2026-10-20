@@ -50,3 +50,14 @@ test("a hidden row whose last run named a newer handle reads closed, as the scre
   assert.equal(isClosed(row({ lastOutcome: "ok", lastStopReason: "hidden" })), false);
   assert.equal(stopReason(row({ lastOutcome: "ok", lastStopReason: "hidden" }), NOW), "Instagram hides this account");
 });
+
+test("staging_green_pct scores only the owner org's keys and lists another org's unpaused rows unscored", () => {
+  const owner = row({ kind: "posts", target: "adapt_owned" });
+  const leak = row({ kind: "posts", target: "ship_leak", lastOutcome: "ok", lastRunAt: NOW - 3 * DAY });
+  const out = report({ now: NOW, errors: [], staging: [owner, leak], stagingKeys: ["instagram:account:adapt_owned"] }, metrics);
+  assert.equal(out.metrics.staging_green_pct, 100);
+  assert.equal(out.metrics.staging_other_org_unpaused, 1);
+  assert.match((out.flagged ?? []).find(flag => flag.kind === "staging_other_orgs")!.excerpt, /^1 unpaused staging monitor rows \(posts 1, collabs 0\)/);
+  const unread = report({ now: NOW, errors: [], staging: [owner, leak] }, metrics);
+  assert.equal(unread.metrics.staging_green_pct, 50, "no keys read: every row counts, as before");
+});
