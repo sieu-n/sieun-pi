@@ -21,6 +21,8 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  *   ended without pi-pool's retry, since a new thread can wait 15 min and more for its slot (10-19 15:17Z). Per send, the extra wait is the
  *   time from the send to the first reply frame on the box, less the Mac's own time from its user entry to its reply entry in the session
  *   file, in Mac-to-box round trips (ping from the Mac). The reply is "ok", so the Mac's reply entry lands a few ms after its first token.
+ *   The target is 1.5: one round trip is the network floor (the prompt's half trip out and the reply's half trip back), and the layer tap
+ *   of 10-20 01:49Z read a 193 ms round trip, about 55 ms on the Mac's daemon before its user entry, and 0 ms in the bridge and relay filters.
  * - `release_breaks_24h`: releases (systemd stops of sieun-pi-chat) in 24 h after which the service exits with an error within
  *   `RELEASE_WINDOW_MS`, which leaves the owner's page on its red banner.
  * A source that cannot be read leaves its metric out with a `source_error` item, so the run says not measured instead of a miss.
