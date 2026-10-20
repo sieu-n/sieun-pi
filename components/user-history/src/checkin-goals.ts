@@ -30,7 +30,9 @@ export interface GoalReading { value: number; at: number;
   /** The reading's source names a backfill (`GoalNumber.backfill`). */
   backfill?: true }
 /** What the check-in keeps per goal across runs: its distinct readings, oldest first, and how many runs in a row the number did not move toward target. */
-export interface GoalMemo { readings: GoalReading[]; still: number }
+export interface GoalMemo { readings: GoalReading[]; still: number;
+  /** When the check-in last steered or started the goal's owner, and the newest reading's time then (`quietPush`). */
+  pushed?: { at: number; reading: number } }
 
 /** A goal's number: from its `target`, in its direction (`targetOp`), or from the last run of the duty metric the goal links. */
 export interface GoalNumber { metric: string; target: number; unit: string; op: ">=" | "<="; value?: number; measuredAt?: number; source: string; staleMs: number;
@@ -75,6 +77,8 @@ export interface GoalPush {
   waits?: string;
   /** A goal at target: the open items under it (`openUnder`), which keep it open. */
   left?: string[];
+  /** A push already sent with no new reading since: when, and when the next one is due (`quietPush`). The goal still counts in goal_gaps. */
+  quiet?: { pushedAt: number; nextAt: number };
   act: GoalAct;
   /** The owner's words for the goal: its open and unmet requirement lines. */
   words: string[];
@@ -302,6 +306,36 @@ export const goalWords = (goal: PlanItem): string[] => {
   return open.length ? open : [goal.text];
 };
 
+/** A metric of time held, like "hours metal held 70 to 80% CPU" or "days in a row with no failed run": only the clock moves it. */
+const HELD_UNIT_MS: Record<string, number> = { minute: 60_000, minutes: 60_000, min: 60_000, hour: 3_600_000, hours: 3_600_000, h: 3_600_000, day: 86_400_000, days: 86_400_000 };
+export function heldTimeMs(number: Pick<GoalNumber, "metric" | "unit" | "op">): number | undefined {
+  const unit = HELD_UNIT_MS[number.unit.trim().toLowerCase()];
+  return unit !== undefined && number.op === ">=" && /\b(?:held|hold|holds|in a row|straight|streak|without|with no|uptime|stayed|stays|clean)\b/i.test(number.metric) ? unit : undefined;
+}
+/**
+ * A push the check-in already sent, with no new reading since, is an empty steer the next run: from 10-19 21:00Z to 10-20 21:00Z the check-ins
+ * sent 168 repeats to goals that did not move, 43 of them to 01a15427 p22 "hours metal held 70 to 80% CPU", which only the clock can move,
+ * 28 to Crawler VP p827 and 13 each to Vent p22 and p1, all three read once a day, and 19 to VP of CI p293, whose number waits on a promote.
+ * The next push is due at a new reading, or once the number could have changed: one unit of a held-time metric, else the reading's stale time.
+ */
+/** The goal memos with each push made at `at` set back to the push before it: a check-in that did not start sent none. */
+export function unpushed(memos: Readonly<Record<string, GoalMemo>> | undefined, before: Readonly<Record<string, GoalMemo>> | undefined, at: number): Record<string, GoalMemo> {
+  return Object.fromEntries(Object.entries(memos ?? {}).map(([id, memo]) => {
+    if (memo.pushed?.at !== at) return [id, memo];
+    const { pushed: _, ...rest } = memo;
+    const prior = before?.[id]?.pushed;
+    return [id, prior ? { ...rest, pushed: prior } : rest];
+  }));
+}
+export function quietPush(memo: GoalMemo | undefined, number: GoalNumber, now: number): { pushedAt: number; nextAt: number } | undefined {
+  const pushed = memo?.pushed;
+  if (!pushed) return undefined;
+  const newest = Math.max(...(memo!.readings.map(reading => reading.at)), number.measuredAt ?? 0);
+  if (newest > pushed.reading) return undefined;
+  const nextAt = pushed.at + (heldTimeMs(number) ?? number.staleMs);
+  return now < nextAt ? { pushedAt: pushed.at, nextAt } : undefined;
+}
+
 /**
  * Each open goal's push for this run (`openGoals`: a goal with a target under an area goal gets its own), and the memos to keep. Goals the
  * check-in folds into a duty (`folded`) are left out, because the duty carries their number. Order: goals to start a job for, then to steer,
@@ -334,7 +368,13 @@ export function goalPushes(board: ChatBoard | null, views: readonly StepView[], 
     const asks = trend.kind !== "met" || left.length ? held : undefined;
     const waits = trend.kind === "met" || asks ? undefined : goalWait(goal, pushView, now, paused, views, board);
     const act: GoalAct = trend.kind === "met" ? "on_pace" : asks ? "owner" : waits ? "waiting" : !owner ? "start" : offPace(trend, stale) ? "steer" : "on_pace";
-    return [{ ...base, number, trend, stale: trend.kind !== "met" && stale, ...(asks ? { asks } : {}), ...(waits ? { waits } : {}), ...(left.length ? { left } : {}), act }];
+    // goalTrend's memo is a new object, so the push time carries over from the saved one.
+    const before = memos?.[goal.id]?.pushed;
+    const quiet = pushNeeded({ act } as GoalPush) && memo ? quietPush({ ...memo, ...before ? { pushed: before } : {} }, number, now) : undefined;
+    if (memo && quiet && before) memo.pushed = before;
+    else if (memo && pushNeeded({ act } as GoalPush)) memo.pushed = { at: now, reading: Math.max(...memo.readings.map(reading => reading.at), number.measuredAt ?? 0) };
+    return [{ ...base, number, trend, stale: trend.kind !== "met" && stale, ...(asks ? { asks } : {}), ...(waits ? { waits } : {}), ...(left.length ? { left } : {}),
+      ...(quiet ? { quiet } : {}), act }];
   });
   const rank: Record<GoalAct, number> = { start: 0, steer: 1, no_number: 2, owner: 3, waiting: 4, on_pace: 5 };
   const short = (push: GoalPush): number => !push.number || push.number.value === undefined ? 1
@@ -478,6 +518,8 @@ export function goalDueLine(push: GoalPush): string | null {
   const title = quote(push.goal.text);
   if (push.act === "no_number") return `Give ${title} a target from the owner's words, with plan_update target.`;
   if (!pushNeeded(push)) return null;
+  if (push.quiet) return `${title} was pushed at ${zTime(push.quiet.pushedAt)} and has no new reading since, so send nothing about it this run; ` +
+    `its next push is due at a new reading or at ${zTime(push.quiet.nextAt)}.`;
   // A start steers the job that already holds the goal's work before it adds anything: a new step only for an output no open step owns.
   const held = push.stepJob;
   const ask = push.act === "steer" ? `Steer ${ownerLabel(push.owner!)} on ${title} with this message, and add no step`

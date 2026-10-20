@@ -2,7 +2,7 @@
 // while the fix step p60 "Make message sends finish without blocking updates", linked to checkin/goal_gaps, had the job "metal agent runtime".
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { goalDueLine, goalPushes } from "../src/checkin-goals.ts";
+import { goalDueLine, goalPushes, unpushed } from "../src/checkin-goals.ts";
 import type { JobFact, StepView } from "../src/checkin-steps.ts";
 import type { ChatBoard, PlanItem } from "../src/shared/types.ts";
 
@@ -41,4 +41,34 @@ test("a goal still after its steers gets its blocker acted on, not the same stee
   const first = { p1: { readings: [{ value: 1, at: now - 600_000 }], still: 0 } };
   const [moving] = goalPushes(board, views("working"), first as never, 30 * 60_000, now).pushes;
   assert.doesNotMatch(goalDueLine(moving!) ?? "", /did not move in the last/);
+});
+
+// 01a15427 p22 "hours metal held 70 to 80% CPU" (0 of 2 hours) was steered 43 times from 10-19 21:00Z to 10-20 21:00Z with no new reading between
+// most of them, and Vent p1 (read once a day) 13 times.
+test("a pushed goal with no new reading since gets no new push until its number could change", () => {
+  const held = { ...board, plan: board.plan.map(item => item.id === "p1" ? { ...item, target: { metric: "hours metal held 70 to 80% CPU with no memory stall", target: 2, unit: "hours", current: 0,
+    measuredAt: new Date(now - 7_200_000).toISOString(), direction: "up" as const } } : item) };
+  const prior = { p1: { readings: [{ value: 0, at: now - 10_800_000 }], still: 1 } };
+  const first = goalPushes(held as never, views("working"), prior as never, 15 * 60_000, now);
+  assert.equal(first.pushes[0]!.quiet, undefined);
+  assert.match(goalDueLine(first.pushes[0]!) ?? "", /^Steer/);
+  const second = goalPushes(held as never, views("working"), first.memos, 15 * 60_000, now + 15 * 60_000);
+  assert.ok(second.pushes[0]!.quiet);
+  assert.match(goalDueLine(second.pushes[0]!) ?? "", /send nothing about it this run; its next push is due at a new reading or at \d\d-\d\d \d\d:\d\dZ/);
+  // One hour, the unit of the held time, later the push is due again.
+  const third = goalPushes(held as never, views("working"), second.memos, 15 * 60_000, now + 61 * 60_000);
+  assert.equal(third.pushes[0]!.quiet, undefined);
+  // A new reading makes the next run push again at once.
+  const read = { ...held, plan: held.plan.map(item => item.id === "p1" ? { ...item, target: { ...item.target!, measuredAt: new Date(now + 10 * 60_000).toISOString() } } : item) };
+  const fourth = goalPushes(read as never, views("working"), second.memos, 15 * 60_000, now + 20 * 60_000);
+  assert.equal(fourth.pushes[0]!.quiet, undefined);
+});
+
+test("a check-in that did not start gives back the goal pushes it marked", () => {
+  const before = { p1: { readings: [], still: 0, pushed: { at: 1, reading: 0 } }, p2: { readings: [], still: 0 } };
+  const after = { p1: { readings: [], still: 0, pushed: { at: 9, reading: 0 } }, p2: { readings: [], still: 0, pushed: { at: 9, reading: 0 } }, p3: { readings: [], still: 0, pushed: { at: 5, reading: 0 } } };
+  const back = unpushed(after, before, 9);
+  assert.deepEqual(back.p1!.pushed, { at: 1, reading: 0 });
+  assert.equal(back.p2!.pushed, undefined);
+  assert.deepEqual(back.p3!.pushed, { at: 5, reading: 0 });
 });

@@ -25,7 +25,7 @@ import { noticeStands } from "./no-report.ts";
 import { statusAsks } from "./status-ask.ts";
 import { owedLinkLines } from "./owed-links.ts";
 import { tailMessages } from "./checkin-ops.ts";
-import { linkedTodoRefs, withLinkedTodos } from "./checkin-goals.ts";
+import { linkedTodoRefs, unpushed, withLinkedTodos } from "./checkin-goals.ts";
 import { BRIEF_ITEMS } from "./shared/brief-cap.ts";
 import { spawnRecord } from "./spawn-record.ts";
 import { pooledProviders } from "./chat-pool.ts";
@@ -1362,6 +1362,8 @@ export class Chats {
       const start = await this.source.duty?.checkIn(id, { at, trigger, everyMs, output, classes: classCounts(precheck.steps),
         findings: checkInPrecheckText(precheck, facts, output.flagged, at, flags), prompt: checkInPrompt(precheck, pushed), ...rerunOf === undefined ? {} : { rerunOf } });
       if (start === "failed" && everyMs > CHECK_IN_RETRY_MS) this.lastCheckIn.set(id, at - everyMs + CHECK_IN_RETRY_MS);
+      // A check-in that did not start sent no goal push, so its retry pushes again (quietPush).
+      if (start === "failed") await this.source.memory.set(id, { ...precheck.memory, flags, goals: unpushed(precheck.memory.goals, previous?.goals, at) });
     } catch (error) {
       this.log(`chat ${id.slice(0, 8)}: check-in: ${error instanceof Error ? error.message : String(error)}`);
     }
