@@ -37,6 +37,9 @@ const CENSUS_METER_LANE = "instagram_census";
  * sync profile outbox swung 6k to 38k within an hour at 13k census reads a minute, so its 07:30Z mean read 22k against 11k 6 h earlier while its
  * 30-minute low read 14k against 7.8k. Real backlogs rise at their low point too: census-pg at 04:00Z on 10-20 (103k against 0), crawl.videos
  * at 07:30Z on 10-20 (532k against 438k) and the profile outbox at 21:30Z on 10-19 (731k against 2.6k).
+ * ig_queues_growing_6h's `lastEventAt` is this run whenever it is above 0: each run reads every queue's mean, low and slope again at its own
+ * time, so a counted queue grows now and drops out the run it stops. It is an open count, like seo-new-articles' new_unindexed_3d, and no
+ * old event waits in it to leave a window. A failed queue read counts as unmeasured, and it failed at this run too. A count of 0 gives none.
  */
 export const GROW_SHARE = 0.1;
 export const GROW_MIN = 8_000;
@@ -206,7 +209,7 @@ export function report(d: RunningData, dutyMetrics: readonly DutyMetric[]): Prec
   const unmeasured = new Set<string>();
   const replaced = settle(dutyMetrics, metrics, unmeasured);
   if (replaced.length) flagged.unshift(unmeasuredFlag(replaced, d.now));
-  return { metrics, flagged };
+  return { metrics, flagged, ...(metrics.ig_queues_growing_6h! > 0 ? { lastEventAt: { ig_queues_growing_6h: d.now } } : {}) };
 }
 
 export async function measure(query: DsQuery | null, api: GrafanaApi | null, authError: string | null, now: number): Promise<RunningData> {

@@ -52,6 +52,14 @@ test("the run reads every metric, and a failed source misses instead of reading 
   assert.equal(broken.flagged![0]!.kind, "unmeasured");
 });
 
+test("ig_queues_growing_6h dates a growing or unread queue count at this run and gives no lastEventAt at 0 (10-20 07:40Z d9 push)", () => {
+  const videos = { family: "kafka lag", name: "crawl.videos/video-writers", now: 652_138, ago6h: 447_386, slope6h: 20, low: 532_587, low6h: 437_735 };
+  const run = (queues: RunningData["queues"], errors: RunningData["errors"] = []) => report({ now: NOW, from: FROM, to: TO, errors, queues }, METRICS);
+  assert.deepEqual(run([videos]).lastEventAt, { ig_queues_growing_6h: NOW });
+  assert.deepEqual(run(undefined, [{ source: "queues", message: "Grafana HTTP 502" }]).lastEventAt, { ig_queues_growing_6h: NOW });
+  assert.equal(run([{ ...videos, low: 440_000 }]).lastEventAt, undefined);
+});
+
 test("a panel runs as Grafana draws it: quoted variables, hidden targets an expression reads, and a value in any shown query", () => {
   // The Crawler and data dashboard's jobs panel filters on ${env:sqlstring}, which ClickHouse rejected as a bare word before it was quoted.
   assert.equal(interpolate("WHERE ${env:sqlstring} = 'production' AND $service = x", new Map([["env", "production"], ["service", "crawler-v3"]])),
