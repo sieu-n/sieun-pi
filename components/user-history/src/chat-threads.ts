@@ -1211,12 +1211,16 @@ export class ThreadHub {
    * turn runs while the attach and its snapshot cross the relay. It also sets OWNER_THREAD_FLAG, so the extension skips its job registry
    * lookups. On 10-20 a new Mac thread's first reply reached the box 8.8 to 12.2 s after the send, while the Mac's own turn took 2.1 to 3.2 s:
    * the create took 3.6 to 4.1 s, and the attach, the bookkeeping, a rename and the prompt's own lookups another 4.5 to 6.6 s before the
-   * prompt reached the Mac (~/work/mac-new-thread-first-reply/nt1.json, nt2.json). The create still throws when the first send fails.
+   * prompt reached the Mac (~/work/mac-new-thread-first-reply/nt1.json, nt2.json). The create still throws when the first send fails. A name
+   * on the create held the Mac's session start about 2 s on 10-20 (create 4.5 s against 2.4 to 2.6 s without), and a rename takes about 1 s
+   * beside the turn without holding it, so a thread with a first message is named by a rename sent right after that message.
    */
   async create(input: { cwd: string; provider?: string; modelId?: string; thinkingLevel?: ThinkingLevel; name?: string; kind?: "chat"; host?: string; first?: FirstMessage }): Promise<Thread> {
     const client = await this.hostDaemon(input.host ?? null);
     const flags = { ...(input.kind === "chat" ? { [CHAT_FLAG]: true } : {}), ...(input.first ? { [OWNER_THREAD_FLAG]: true } : {}) };
-    const response = await timedWorkerStart(`create ${input.name ?? input.cwd}`, () => client.request({ type: "create", lifecycle: "resident", ...(input.name ? { name: input.name } : {}), config: { cwd: input.cwd,
+    const renamed = input.first && input.kind !== "chat" ? input.name : undefined;
+    const name = renamed ? undefined : input.name;
+    const response = await timedWorkerStart(`create ${input.name ?? input.cwd}`, () => client.request({ type: "create", lifecycle: "resident", ...(name ? { name } : {}), config: { cwd: input.cwd,
       ...(input.provider && input.modelId ? { provider: input.provider, model: input.modelId } : {}), ...(input.thinkingLevel ? { thinking: input.thinkingLevel } : {}),
       ...(Object.keys(flags).length ? { extensionFlagValues: flags } : {}) } }, DAEMON_WORKER_START_MS, { recoverable: false }));
     if (!response.success) throw new ThreadError(502, response.error);
@@ -1234,6 +1238,8 @@ export class ThreadHub {
         .then(answer => { if (!answer.success) throw new ThreadError(502, answer.error); });
       sent.catch(() => {});
     }
+    // A failed rename leaves the thread unnamed and the message sent, as the rename after a create always did.
+    const naming = renamed ? client.request({ type: "rename", activeSessionId: data.activeSessionId, name: renamed } as never, undefined, { recoverable: false }).catch(() => {}) : null;
     this.evict("live");
     const connection = await this.attach(data.activeSessionId, input.host ?? null);
     let thread: Thread;
@@ -1244,7 +1250,7 @@ export class ThreadHub {
     this.threads.set(thread.id, thread);
     void this.catalog.refresh().catch(() => {});
     this.attached(thread);
-    await sent;
+    await Promise.all([sent, naming]);
     return thread;
   }
 

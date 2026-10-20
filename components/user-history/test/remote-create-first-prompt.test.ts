@@ -56,8 +56,9 @@ test("a new thread's first message goes to its box right after the create, befor
   const hub = new ThreadHub(join(dir, "box.sock"), catalog, () => ({ provider: null, modelId: null, thinkingLevel: null }));
   t.after(() => hub.close());
   await assert.rejects(hub.create({ cwd: "/Users/sieunpark", host: "mac", name: "probe", first: { message: "hi", mode: "followUp" } }), "the attach to the missing socket still fails");
-  assert.deepEqual(sent.map(command => command.type), ["create", "prompt"]);
-  assert.equal(sent[0]!.name, "probe");
+  assert.deepEqual(sent.map(command => command.type), ["create", "prompt", "rename"], "the name follows the message, since a name on the create holds the session start");
+  assert.equal(sent[0]!.name, undefined);
+  assert.deepEqual(sent[2], { type: "rename", activeSessionId: "fe473a344ace", name: "probe" });
   assert.deepEqual((sent[0]!.config as { extensionFlagValues?: unknown }).extensionFlagValues, { [OWNER_THREAD_FLAG]: true });
   assert.deepEqual({ ...sent[1], id: undefined }, { type: "prompt", activeSessionId: "fe473a344ace", message: "hi", source: "interactive", streamingBehavior: "followUp",
     queueIfBusy: true, ownerTurn: ID, id: undefined });
