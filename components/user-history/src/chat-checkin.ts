@@ -381,7 +381,7 @@ export const stepSig = (item: PlanItem): string => JSON.stringify([item.status, 
  * by a ledger handoff (`scopeMisses`, correction c7). `stalled_steps` is a step on a passive wait (`stalledSteps`, c23). `go_missing` and
  * `requirements_missing` are the broken hard gates (`gateFindings`, W50), `merges_without_go` a merge step done without the owner's go on its PR (c49). `goal_gaps`, the headline, is an open goal no live job works on (`goalGap`, owner 10-15 on p71), and `goals_off_pace` one a live job works on whose number is off pace, which the check-in steers and the duty does not judge.
  * `blocked_on_others` is a step blocked on CI, a release or another thread for over an hour with no live job (`blockedOnOthers`, W56).
- * `finished_open` is an open item that looks done (`looksDone`), `loose_goals` an open goal with no step under it (`looseGoals`) and
+ * `finished_open` is an open item that looks done (`looksDone`), `loose_goals` an open top-level item with no step under it (`looseGoals`) and
  * `extra_goals` an open goal past BOARD_LIMITS.openGoals with no number or no live owner job (`extraGoals`), `open_under_closed` an open item right under a closed one
  * (`openUnderClosed`), the plan's shape (c44). `held_elsewhere` is a goal whose every open step another thread holds (`heldElsewhere`) and
  * `wait_met` a step whose named wait is over (`waitsMet`), finished work left open behind a wait (c45). `no_progress` is 1 when no plan

@@ -59,8 +59,12 @@ export function riskStepsLine(items: readonly PlanItem[]): string {
   ].join(". ") + " (board skill, references/plan-and-duties.md)";
 }
 
-/** The open goals with no step under them: a step filed as a goal. */
-export const looseGoals = (board: ChatBoard | null): PlanItem[] => openGoals(board?.plan ?? []).filter(goal => !goal.children.length);
+/**
+ * The open top-level items with no step under them: a step filed as a goal. An item below the top level with a target and no steps is a step
+ * whose done line is measured, and goal_gaps reads its number: Crawler VP's p683 "Refresh every read Instagram account at least weekly" under
+ * goal p829 has a target, a live job and a dated wait, and loose_goals told the chat to give it a step in 9 check-ins in a row on 10-21.
+ */
+export const looseGoals = (board: ChatBoard | null): PlanItem[] => openTops(board?.plan ?? []).filter(goal => !goal.children.length);
 /** An open goal past BOARD_LIMITS.openGoals that has no number, or no live job to push it: `open` is how many open goals the board holds. */
 export interface ExtraGoal { goal: PlanItem; lacks: "number" | "owner"; open: number }
 /**
@@ -83,9 +87,8 @@ export const underClosedLine = ({ item, parent }: { item: PlanItem; parent: Plan
   `${item.id} ${quote(item.text)} is open under closed ${parent.id}: close it, or reopen ${parent.id} if the work is real`;
 export const lookDoneLine = ({ item, reason }: { item: PlanItem; reason: string }): string => `${item.id} ${quote(item.text)} ${item.status}, looks done: ${reason}; close it with a note that names this`;
 /**
- * A goal with a target gets a step under it rather than a move: launch main bro 10-15 14:08Z was told to move p125 and p126, its top-level d1
- * and d2 duty metric items, "with plan_update parent", and p126 carries d2's target. A move under an area would keep its number (`openGoals`),
- * but the goal would still have no step.
+ * A top-level goal with a target gets a step under it rather than a move: launch main bro 10-15 14:08Z was told to move p125 and p126, its
+ * top-level d1 and d2 duty metric items, "with plan_update parent", and p126 carries d2's target.
  */
 export const looseGoalLine = (goal: PlanItem): string => goal.target
   ? `${goal.id} ${quote(goal.text)} is a goal with a target and no steps: add a step under it (plan_add with parent ${goal.id}) whose job moves ` +
