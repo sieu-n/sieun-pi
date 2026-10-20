@@ -67,7 +67,8 @@ import { ownerAsks } from "./owner-asks.ts";
 import { plainWords } from "./plain-words.ts";
 import { planAndDuties } from "./plan-and-duties.ts";
 import { taskAndUpkeep } from "./task-and-upkeep.ts";
-import type { RunState, Scenario } from "./session-read.ts";
+import { type RunState, type Scenario, sessionFiles } from "./session-read.ts";
+import { endUnits, recordUnits, userSystemd } from "./trial-units.ts";
 import { softCaps } from "./soft-caps.ts";
 import { stepIds } from "./step-ids.ts";
 import { archiveTestPages } from "./wiki-pages.ts";
@@ -350,6 +351,10 @@ async function collectOnce(run: string, state: RunState, srv: Server, logOffset:
     const mine = fd.split("\n").filter(line => line.includes(short) || line.includes(state.chat.name) || Object.values(state.fixtures).some(id => line.includes(id.slice(0, 8))));
     if (mine.length) appendFileSync(join(run, "service.log"), mine.join("\n") + "\n");
   }
+  const own = [state.chat.id, ...(state.control ? [state.control.id] : []), ...await ownSessions(run, state, () => {})];
+  for (const proof of recordUnits(run, [...new Set(own.flatMap(sessionFiles))], state.setupAt)) {
+    log(run, `recorded ${proof.kind === "transient" ? `unit ${proof.unit} invocation ${proof.invocationId}` : `unit file ${proof.file} sha256 ${proof.sha256.slice(0, 12)}`} as made by ${proof.session}`);
+  }
 }
 
 async function collect(flags: Record<string, string>): Promise<void> {
@@ -531,7 +536,7 @@ async function evaluate(flags: Record<string, string>): Promise<void> {
  * the realtime layer thread among its agents, and teardown archived it. A child keeps its child: key after a later snapshot lists it as a
  * step thread, since the feature-cut run on 10-18 kept its finished job "duty failure page" open that way.
  */
-async function ownSessions(run: string, state: RunState): Promise<string[]> {
+async function ownSessions(run: string, state: RunState, say: (line: string) => void = line => log(run, line)): Promise<string[]> {
   const registry = jobRegistry(join(DATA, "chat-jobs.json"));
   const agents = join(run, "agents");
   const listed = new Map<string, { key: string; name: string }>();
@@ -547,7 +552,7 @@ async function ownSessions(run: string, state: RunState): Promise<string[]> {
     const agent = listed.get(id);
     const filed = await registry.chatOf(id) ?? (agent?.name ? await registry.chatOf(agent.name) : undefined);
     if (fixtures.has(id) || duty.has(id) || agent?.key.startsWith("child:") || filed === state.chat.name || filed === state.chat.id) own.push(id);
-    else log(run, `kept ${id}${agent ? ` (${agent.name})` : ""}: not a session of the test chat`);
+    else say(`kept ${id}${agent ? ` (${agent.name})` : ""}: not a session of the test chat`);
   }
   return own;
 }
@@ -681,7 +686,7 @@ function archivedOnDisk(chats: readonly string[], id: string): boolean {
 }
 
 /**
- * Ends a run whatever its verdict: stops its processes, pauses the chat's check-in for good and deletes its duties, archives the chat and every job it had through the archive route, marks the wiki
+ * Ends a run whatever its verdict: stops its processes and the units it proved it made (trial-units.ts), pauses the chat's check-in for good and deletes its duties, archives the chat and every job it had through the archive route, marks the wiki
  * pages the chat made as test output (wiki-pages.ts), removes its todos, corrections and wakes, and deletes the run folder. The verdict file next to the folder stays. A failed archive keeps the folder, so the
  * command can run again; a run already torn down is left as it is.
  */
@@ -735,6 +740,11 @@ async function teardown(flags: Record<string, string>): Promise<void> {
     for (const duty of await duties.list(id)) if (await duties.remove(id, duty.id)) log(run, `removed duty ${duty.id} "${duty.name}" of ${id}`);
   }
   for (const id of chats) await archive(id, "chat");
+  // The units go after the jobs and chats are archived, so no session of the trial starts one after this look.
+  try {
+    recordUnits(run, [...new Set([...chats, ...jobs].flatMap(sessionFiles))], state.setupAt);
+    await endUnits(run, userSystemd, line => log(run, line));
+  } catch (error) { failed.push("units"); log(run, `units: ${error instanceof Error ? error.message : String(error)}`); }
   await transactJsonFile({ path: join(DATA, CLEAN_ROOM_CORRECTIONS_FILE), label: "Corrections ledger", parse: parseLedger, initial: () => ({ corrections: [] }) },
     ledger => { ledger.corrections = ledger.corrections.filter(entry => !chats.includes(entry.chat.id)); });
   await jobRegistry(join(DATA, "chat-jobs.json")).remove(Object.keys(state.fixtures).concat(Object.values(state.fixtures)));
