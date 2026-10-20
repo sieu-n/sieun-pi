@@ -66,13 +66,38 @@ function validate(root, execute) {
   }
 }
 
+/** package.json without its "pi" key, which bundleExtension rewrites in a release. */
+const dependencyFields = path => { const { pi: _pi, ...rest } = JSON.parse(readFileSync(path, "utf8")); return JSON.stringify(rest); };
+
 function sameDependencies(installed, staged) {
   try {
     physicalDirectory(join(realpathSync(installed), "node_modules"));
-    return ["package.json", "package-lock.json"].every(name => readFileSync(join(installed, name)).equals(readFileSync(join(staged, name))));
+    return readFileSync(join(installed, "package-lock.json")).equals(readFileSync(join(staged, "package-lock.json")))
+      && dependencyFields(join(installed, "package.json")) === dependencyFields(join(staged, "package.json"));
   } catch {
     return false;
   }
+}
+
+export const EXTENSION_BUNDLE = "src/extension.bundle.mjs";
+
+/**
+ * Bundles the user-history extension in `dir` into one file with the release's own esbuild and points package.json's pi.extensions at it.
+ * Prime's loader runs every extension module through jiti, and on the Mac on 10-20 the 47 source files took 400 to 610 ms of each worker
+ * start against 22 to 174 ms for one bundle, while a new thread's first turn waits for that start. The bundle sits in src/, so the
+ * paths its modules resolve from their own folder (load-wait-end.py, message-limit-check.py) and the dynamic import of chat-service.ts still
+ * name the same files. A folder with no esbuild keeps the source entry.
+ */
+export function bundleExtension(dir, execute = run) {
+  if (!existsSync(join(dir, "node_modules/esbuild/package.json"))) return false;
+  execute(process.execPath, ["--input-type=module", "--eval", `
+    import { build } from 'esbuild';
+    await build({ entryPoints: ['extension/index.ts'], outfile: '${EXTENSION_BUNDLE}', bundle: true, platform: 'node', format: 'esm', target: 'node22',
+      packages: 'external', external: ['../src/chat-service.ts'], logLevel: 'warning' });
+  `], dir);
+  const manifest = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
+  writeFileSync(join(dir, "package.json"), JSON.stringify({ ...manifest, pi: { ...manifest.pi, extensions: [`./${EXTENSION_BUNDLE}`] } }, null, 2) + "\n");
+  return true;
 }
 
 function cloneTree(source, target, execute) {
@@ -118,6 +143,7 @@ export function installRuntime({ repo = checkout, home = homedir(), ref = "HEAD"
         if (sameDependencies(installed, join(staging, directory))) cloneTree(join(installed, "node_modules"), join(staging, directory, "node_modules"), execute);
         else execute("npm", ["ci", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund", "--cache", join(scratch, "npm-cache")], join(staging, directory));
       }
+      bundleExtension(join(staging, "components/user-history"), execute);
       validate(staging, execute);
       writeFileSync(join(staging, "release.json"), JSON.stringify({ sha, source: repo, builtAt: new Date().toISOString() }, null, 2) + "\n");
       renameSync(staging, release);

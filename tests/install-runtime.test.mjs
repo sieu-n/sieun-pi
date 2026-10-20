@@ -4,7 +4,8 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { installRuntime, run } from "../scripts/install-runtime.mjs";
+import { bundleExtension, EXTENSION_BUNDLE, installRuntime, run } from "../scripts/install-runtime.mjs";
+import { pathToFileURL } from "node:url";
 
 const source = dirname(dirname(fileURLToPath(import.meta.url)));
 const first = "a".repeat(40);
@@ -160,4 +161,40 @@ test("concurrent installation refuses the existing lock without removing it", t 
   assert.throws(() => installRuntime(f.options, f.hooks), /Runtime install is locked/);
   assert.equal(existsSync(join(f.root, ".installing/owner.json")), true);
   assert.equal(f.calls.some(call => call.command === "npm"), false);
+});
+
+test("the user-history extension is bundled into one file in src/ and package.json loads it, with the source folder resolving as before", async t => {
+  const scratch = join(homedir(), "scratch");
+  mkdirSync(scratch, { recursive: true });
+  const root = realpathSync(mkdtempSync(join(scratch, "sieun-pi-bundle-test-")));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const dir = join(root, "components/user-history");
+  const component = join(source, "components/user-history");
+  for (const name of ["extension", "src", "package.json"]) cpSync(join(component, name), join(dir, name), { recursive: true });
+  for (const name of ["prime-relay", "global-rules"]) cpSync(join(source, "components", name), join(root, "components", name), { recursive: true, filter: path => !path.includes("node_modules") });
+  symlinkSync(join(component, "node_modules"), join(dir, "node_modules"));
+  assert.equal(bundleExtension(dir), true);
+  assert.deepEqual(JSON.parse(readFileSync(join(dir, "package.json"), "utf8")).pi.extensions, [`./${EXTENSION_BUNDLE}`]);
+  const text = readFileSync(join(dir, EXTENSION_BUNDLE), "utf8");
+  assert.match(text, /import\("\.\.\/src\/chat-service\.ts"\)/, "chat-service and the server graph stay out of the bundle");
+  assert.doesNotMatch(text, /esbuild-svelte/);
+  const { default: extension } = await import(pathToFileURL(join(dir, EXTENSION_BUNDLE)).href);
+  assert.equal(typeof extension, "function");
+});
+
+test("a folder with no esbuild keeps its source entry", t => {
+  const f = fixture(t);
+  const dir = join(f.repo, "components/user-history");
+  assert.equal(bundleExtension(dir, () => { throw new Error("no build without esbuild"); }), false);
+  assert.equal(JSON.parse(readFileSync(join(dir, "package.json"), "utf8")).pi, undefined);
+});
+
+test("a release whose package.json differs only in the bundle's pi entry still clones its dependencies", t => {
+  const f = fixture(t);
+  const initial = installRuntime(f.options, f.hooks);
+  const installed = join(initial.release, "components/user-history/package.json");
+  writeFileSync(installed, JSON.stringify({ ...JSON.parse(readFileSync(installed, "utf8")), pi: { extensions: [`./${EXTENSION_BUNDLE}`] } }));
+  installRuntime({ ...f.options, ref: second }, f.hooks);
+  assert.equal(f.calls.filter(call => call.command === "npm").length, 2);
+  assert.equal(f.calls.filter(call => call.command === "cp").length, 2);
 });
