@@ -23,7 +23,7 @@ test("a session file read only to its head is closed after the read", { skip: pr
     JSON.stringify({ type: "message", id: "u1", message: { role: "user", content: "[task from parent] the brief" } }), ...filler].join("\n") + "\n");
   assert.equal(await fileHasChatMarker(file), false);
   assert.equal(await sessionBrief(file), "the brief");
-  assert.deepEqual(await topSession(file), { id: "01a151b3-8253-779f-a8b9-9a38ce3cec40", name: "", chat: false });
+  assert.deepEqual(await topSession(file), { id: "01a151b3-8253-779f-a8b9-9a38ce3cec40", name: "", chat: false, at: 0 });
   await new Promise(resolve => setTimeout(resolve, 50));
   assert.equal(await openCount(file), 0);
 });

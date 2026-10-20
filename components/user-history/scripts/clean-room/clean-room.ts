@@ -69,7 +69,7 @@ import { planAndDuties } from "./plan-and-duties.ts";
 import { taskAndUpkeep } from "./task-and-upkeep.ts";
 import { type RunState, type Scenario, sessionFiles } from "./session-read.ts";
 import { endUnits, recordUnits, userSystemd } from "./trial-units.ts";
-import { fileTrialHarness, keepTrialHarness, seedTrialHarness } from "../../src/trial-harness.ts";
+import { fileTrialHarness, fileTrialName, keepTrialHarness, seedTrialHarness } from "../../src/trial-harness.ts";
 import { softCaps } from "./soft-caps.ts";
 import { stepIds } from "./step-ids.ts";
 import { archiveTestPages } from "./wiki-pages.ts";
@@ -149,12 +149,16 @@ async function postCreate(srv: Server, record: CreateRecord): ReturnType<CreateI
   return { kind: "unknown", error: `${status} ${text.slice(0, 300)}` };
 }
 
-/** Creates the test chat, its control or a fixture thread, or adopts the session an earlier try of the same create made (create-reconcile.ts). */
-async function createThread(srv: Server, run: string, pending: Pending, role: string, kind: "chat" | "thread", name: string, cwd: string, message: string): Promise<{ id: string; name: string }> {
+/**
+ * Creates the test chat, its control or a fixture thread, or adopts the session an earlier try of the same create made (create-reconcile.ts).
+ * Each POST starts the session's first turn before its answer gives the id, so the trial's harness store `harness` is filed under the name it
+ * asks for first.
+ */
+async function createThread(srv: Server, run: string, pending: Pending, role: string, kind: "chat" | "thread", name: string, cwd: string, message: string, harness: string): Promise<{ id: string; name: string }> {
   const save = (): void => writeJson(pendingFile(run), pending);
   const record = pending.creates[role] ??= { kind, name, names: [name], cwd, message, requestId: requestId(), since: Date.now() };
   const io: CreateIo = {
-    post: one => postCreate(srv, one),
+    post: async one => { await fileTrialName(DATA, one.name, harness, one.since); return postCreate(srv, one); },
     find: async one => findSession(SESSIONS, one, new Set(await new IdIndex(join(DATA, "chats.json"), "Chat index").ids())),
     archive: async id => { await call(srv, "POST", `api/threads/${id}/archive`, {}).catch((error: unknown) => { if (!/: 404 /.test(String(error))) throw error; }); },
     deliver: async (id, text, rid) => { await call(srv, "POST", `api/threads/${id}/prompt`, { message: text, images: [], mode: "steer", requestId: rid }); },
@@ -217,8 +221,8 @@ async function setup(flags: Record<string, string>): Promise<void> {
     pending.creates.chat = { kind: "chat", name: named, names: [named], cwd: sandbox, message: scenario.headMessage(named), requestId: "", since: adoptedChat.at, id: adopted, adopted: true };
   }
   const asked = pending.creates.chat?.names[0] ?? need(flags, "name");
-  const [made, madeControl] = await Promise.all([createThread(srv, run, pending, "chat", "chat", asked, sandbox, scenario.headMessage(asked)),
-    control ? createThread(srv, run, pending, "control", "chat", control.name, sandbox, control.message(control.name)) : Promise.resolve(undefined)]);
+  const [made, madeControl] = await Promise.all([createThread(srv, run, pending, "chat", "chat", asked, sandbox, scenario.headMessage(asked), harness),
+    control ? createThread(srv, run, pending, "control", "chat", control.name, sandbox, control.message(control.name), harness) : Promise.resolve(undefined)]);
   const chat = made.id;
   const name = made.name;
   const headMessage = pending.creates.chat!.message;
@@ -245,8 +249,9 @@ async function setup(flags: Record<string, string>): Promise<void> {
     for (const fixture of scenario.fixtures) {
       const logFile = join(run, `fixture-${fixture.name.replace(/\W+/g, "-")}.jsonl`);
       const brief = fixture.brief({ chat, chatName: name, logFile, sandbox });
-      const { id } = await createThread(srv, run, pending, `fixture:${fixture.name}`, "thread", fixture.name, sandbox, brief);
+      const { id } = await createThread(srv, run, pending, `fixture:${fixture.name}`, "thread", fixture.name, sandbox, brief, harness);
       await registry.add([fixture.name, id], name, chat);
+      await fileTrialHarness(DATA, [{ id, name: fixture.name }], harness);
       fixtures[fixture.name] = id;
       fixtureBriefs.push(brief);
       log(run, `created fixture ${id} "${fixture.name}", filed under the chat in chat-jobs.json`);

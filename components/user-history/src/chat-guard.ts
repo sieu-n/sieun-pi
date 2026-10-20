@@ -359,11 +359,11 @@ export function chatShellNote({ toolName, input, depth, marked }: GuardInput): s
 }
 
 /**
- * The top of a session's parentSession chain, from `sessionFile` up: its id, its name and whether it is a chat. One header line per level, then
+ * The top of a session's parentSession chain, from `sessionFile` up: its id, its name, whether it is a chat and its header's start time. One header line per level, then
  * one scan of the top file. The name is the last session_info, or for a chat the last before the chat_mode entry (a chat is named at create,
  * before its first session_start writes the entry), where the scan stops. Null when a file is missing or has no header.
  */
-export async function topSession(sessionFile: string): Promise<{ id: string; name: string; chat: boolean } | null> {
+export async function topSession(sessionFile: string): Promise<{ id: string; name: string; chat: boolean; at: number } | null> {
   let file = sessionFile;
   for (let level = 0; level < 16; level++) {
     const header = await fileHeader(file);
@@ -376,21 +376,21 @@ export async function topSession(sessionFile: string): Promise<{ id: string; nam
         if (line.startsWith('{"type":"session_info"')) {
           try { const entry = JSON.parse(line) as { name?: unknown }; if (typeof entry.name === "string" && entry.name.trim()) name = entry.name.trim(); } catch { continue; }
         } else if (line.includes(`"customType":"${CHAT_MODE_ENTRY}"`)) {
-          try { if (hasChatMarker([JSON.parse(line)])) return { id: header.id, name, chat: true }; } catch { continue; }
+          try { if (hasChatMarker([JSON.parse(line)])) return { id: header.id, name, chat: true, at: header.at }; } catch { continue; }
         }
       }
-      return { id: header.id, name, chat: false };
+      return { id: header.id, name, chat: false, at: header.at };
     } catch { return null; }
   }
   return null;
 }
 
-async function fileHeader(sessionFile: string): Promise<{ id: string; parentSession?: unknown } | null> {
+async function fileHeader(sessionFile: string): Promise<{ id: string; parentSession?: unknown; at: number } | null> {
   const lines = fileLines(sessionFile);
   try {
     for await (const line of lines) {
-      const header = JSON.parse(line) as { type?: unknown; id?: unknown; parentSession?: unknown };
-      return header.type === "session" && typeof header.id === "string" ? { id: header.id, parentSession: header.parentSession } : null;
+      const header = JSON.parse(line) as { type?: unknown; id?: unknown; parentSession?: unknown; timestamp?: unknown };
+      return header.type === "session" && typeof header.id === "string" ? { id: header.id, parentSession: header.parentSession, at: Date.parse(String(header.timestamp ?? "")) || 0 } : null;
     }
     return null;
   } catch { return null; }

@@ -298,21 +298,22 @@ export default function historyExtension(pi: ExtensionAPI): void {
     return add.length ? { systemPrompt: `${event.systemPrompt}\n\n${add.join("\n")}` } : undefined;
   });
   // A session of a clean-room trial chat (the chat, a job filed under it, or a subagent below either) keeps its global harness writes in the
-  // trial's own store (src/trial-harness.ts). The top session is read once; the job registry again at each cell until a trial store is found.
-  let trialTop: Promise<{ id: string; name: string } | null> | null = null;
+  // trial's own store (src/trial-harness.ts). The top session is read once; the root's own name and the job registry again at each cell until
+  // a trial store is found. The trial chat and its fixtures are threads with a first message (OWNER_THREAD_FLAG), so they skip the registry and
+  // match by id, or in their first seconds, before setup knows the id, by the name setup filed before their create.
+  let trialTop: Promise<{ id: string; name: string; at: number } | null> | null = null;
   let trialStore: string | undefined;
   const trialStoreOf = async (ctx: ExtensionContext): Promise<string | undefined> => {
     if (trialStore) return trialStore;
     trialStore = await trialHarnessDir(dataDir(), async () => {
       const header = ctx.sessionManager.getHeader();
-      const self = { id: ctx.sessionManager.getSessionId(), name: ctx.sessionManager.getSessionName()?.trim() ?? "" };
-      trialTop ??= depthOf(header) > 0 && typeof header?.parentSession === "string" ? topSession(header.parentSession)
-        : Promise.resolve(pi.getFlag(OWNER_THREAD_FLAG) === true ? null : self);
-      const top = await trialTop;
+      const parent = depthOf(header) > 0 && typeof header?.parentSession === "string" ? header.parentSession : undefined;
+      const top = parent ? await (trialTop ??= topSession(parent))
+        : { id: ctx.sessionManager.getSessionId(), name: ctx.sessionManager.getSessionName()?.trim() ?? "", at: Date.parse(String(header?.timestamp ?? "")) || 0 };
       if (!top) return [];
-      const name = top.name || (top.id === self.id ? self.name : "");
-      const filed = await Promise.all([top.id, name].filter(Boolean).map(key => jobs().chatIdOf(key)));
-      return [top.id, ...filed.filter((id): id is string => id !== undefined)];
+      if (!parent && pi.getFlag(OWNER_THREAD_FLAG) === true) return [top];
+      const filed = await Promise.all([top.id, top.name].filter(Boolean).map(key => jobs().chatIdOf(key)));
+      return [top, ...filed.filter((id): id is string => id !== undefined).map(id => ({ id }))];
     });
     return trialStore;
   };

@@ -1,4 +1,6 @@
 // Guards the 10-19 incident: readme-preview run4's job saved a global harness memory about RefuseManualStop servers, and it loaded into every other live session.
+// The second test guards the gap db4ccbba left: a trial chat is a thread with a first message (OWNER_THREAD_FLAG), so its own cells kept Prime's store,
+// and its first turn starts inside its create, before setup knows its id.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
@@ -34,6 +36,22 @@ function session(id: string, header: Record<string, unknown>, name = ""): unknow
     getEntries: () => [], getBranch: () => [], getSessionFile: () => join(root, `${id}.jsonl`) } };
 }
 
+/** One ipython cell of a new session with extension flags `flags`: Prime loads the extension once per session, and the cell is what its tool_call hooks hand on. */
+async function cells(data: string, flags: Record<string, unknown>): Promise<(ctx: unknown, code: string) => Promise<string>> {
+  const handlers: ((event: unknown, ctx: unknown) => unknown)[] = [];
+  const pi = new Proxy({}, { get: (_target, key) => key === "on" ? (name: string, handler: (event: unknown, ctx: unknown) => unknown) => { if (name === "tool_call") handlers.push(handler); }
+    : key === "getFlag" ? (flag: string) => flag === "agent-chat-data-dir" ? data : flags[flag] : () => undefined });
+  const { default: historyExtension } = await import("../extension/index.ts");
+  return async (ctx, code) => {
+    const loaded = handlers.length;
+    historyExtension(pi as never);
+    const event = { type: "tool_call", toolName: "ipython", toolCallId: "call", input: { code } };
+    for (const handler of handlers.slice(loaded)) await handler(event, ctx);
+    return event.input.code;
+  };
+}
+const last = (output: string): unknown => JSON.parse(output.trim().split("\n").at(-1)!);
+
 test("a trial's global harness write stays in its run, and the trial starts from the published entries", async () => {
   kernel(`import rlm\nrlm.harness.create_memory("published default", "Every session reads this.", global_=True)\n`);
   const { fileTrialHarness, keepTrialHarness, seedTrialHarness } = await import("../src/trial-harness.ts");
@@ -43,19 +61,7 @@ test("a trial's global harness write stays in its run, and the trial starts from
   await jobRegistry(join(data, "chat-jobs.json")).add(["readme job"], "readme preview", "trial-chat");
   writeFileSync(join(root, "trial-chat.jsonl"), `${JSON.stringify({ type: "session", id: "trial-chat" })}\n`);
 
-  const handlers: ((event: unknown, ctx: unknown) => unknown)[] = [];
-  const pi = new Proxy({}, { get: (_target, key) => key === "on" ? (name: string, handler: (event: unknown, ctx: unknown) => unknown) => { if (name === "tool_call") handlers.push(handler); }
-    : key === "getFlag" ? (flag: string) => flag === "agent-chat-data-dir" ? data : undefined : () => undefined });
-  const { default: historyExtension } = await import("../extension/index.ts");
-  /** One ipython cell of a new session: Prime loads the extension once per session, and the cell is what its tool_call hooks hand on. */
-  const cell = async (ctx: unknown, code: string): Promise<string> => {
-    const loaded = handlers.length;
-    historyExtension(pi as never);
-    const event = { type: "tool_call", toolName: "ipython", toolCallId: "call", input: { code } };
-    for (const handler of handlers.slice(loaded)) await handler(event, ctx);
-    return event.input.code;
-  };
-  const last = (output: string): unknown => JSON.parse(output.trim().split("\n").at(-1)!);
+  const cell = await cells(data, {});
 
   assert.deepEqual(last(kernel(await cell(session("trial-chat", {}, "readme preview"), LIST))), ["published default"], "the trial chat starts from the published entries");
   kernel(await cell(session("trial-job", { parentSession: join(root, "trial-chat.jsonl"), rlmDepth: 1 }),
@@ -71,4 +77,25 @@ test("a trial's global harness write stays in its run, and the trial starts from
   const kept = keepTrialHarness(run);
   assert.ok(kept && existsSync(kept));
   assert.deepEqual(titles(kept), ["RefuseManualStop servers", "published default", "trial root note"], "teardown keeps the trial's store next to the verdict");
+});
+
+test("a trial chat's global write in its first turn, before setup knows its id, stays in its run", async () => {
+  const { fileTrialName, seedTrialHarness } = await import("../src/trial-harness.ts");
+  const data2 = join(root, "browser-chat-2");
+  const store = seedTrialHarness(join(root, "clean-room", "run-2"), agentDir);
+  const since = Date.now();
+  // Setup files the name before the create's POST; the daemon starts the session and its first turn before the POST answers with the id.
+  await fileTrialName(data2, "readme preview run6", store, since);
+  const cell = await cells(data2, { "owner-thread": true });
+  const started = (offset: number) => ({ timestamp: new Date(since + offset).toISOString() });
+  writeFileSync(join(root, "new-trial-chat.jsonl"), [{ type: "session", id: "new-trial-chat", ...started(40) }, { type: "session_info", name: "readme preview run6" }]
+    .map(entry => JSON.stringify(entry)).join("\n") + "\n");
+  kernel(await cell(session("new-trial-chat", started(40), "readme preview run6"),
+    `import rlm\nrlm.harness.create_memory("first turn note", "The trial chat wrote this in its first turn.", global_=True)\n`));
+  kernel(await cell(session("new-trial-job", { parentSession: join(root, "new-trial-chat.jsonl"), rlmDepth: 1 }),
+    `import rlm\nrlm.harness.create_memory("first job note", "A job of the trial chat wrote this in its first seconds.", global_=True)\n`));
+  assert.deepEqual(titles(join(store, "harness_state.json")), ["first job note", "first turn note", "published default"]);
+  assert.deepEqual(titles(join(published, "harness_state.json")), ["published default"], "the published store holds no first-turn entry");
+  const older = await cell(session("older-session", started(-60_000), "readme preview run6"), LIST);
+  assert.ok(!older.includes(store), "a session of that name started before setup asked keeps Prime's store");
 });
