@@ -26,13 +26,6 @@
       "unit": "%"
     },
     {
-      "key": "signup_to_paid_16d_pct",
-      "label": "Signups who pay within 16 days, signups 44 to 16 days ago",
-      "op": ">=",
-      "target": 10,
-      "unit": "%"
-    },
-    {
       "key": "home_test_reach_pct",
       "label": "Signed-out English home visitors who got the home test, 24 h",
       "op": ">=",

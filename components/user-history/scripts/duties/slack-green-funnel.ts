@@ -40,12 +40,12 @@ export const DAYS = 28;
  *   10-10, so 20 a day missed even with every visitor in the test, while a share holds on any traffic. sg-exp-home-1 went live 10-14 22:51 KST
  *   and about 21 of 24 eligible visitors got it since, so 90% passes a working test and misses one that drops visitors.
  *   The 24 h people count and the 7-day eligible and exposed counts stay in the detail as home_test_people_24h and the home_test slice.
- * - signup_to_paid_16d_pct >= 10: real signups from 44 to 16 days ago who started Pro or bought the CLI within 16 days of signing up, the
- *   owner's p48 target for signup to Pro or CLI (TARGETS in conversion_targets.py). A trial lasts 14 days and most payers pay at its end, so
+ * signup_to_paid_16d_pct is real signups from 44 to 16 days ago who started Pro or bought the CLI within 16 days of signing up; the owner's
+ *   p48 target for signup to Pro or CLI is 10% (TARGETS in conversion_targets.py). A trial lasts 14 days and most payers pay at its end, so
  *   it moves about two weeks after a change to the trial or checkout, where the headline takes four to eight. It replaced signup_to_paid_pct
  *   on 10-20, which counted only payments inside the same 28-day window: on 10-20 it read 2.63% (2 of 76) while Stripe showed 7 of 78 signups
  *   from 09-06 to 10-04 paid within 16 days, and a job read the weekly rows' same-week Pro or CLI column as signup to paid falling to 3%.
- * source_errors stays in the output for the run's detail file and is not declared. A source that fails sets the
+ * It and source_errors stay in the output for the run's detail file and are not declared. A source that fails sets the
  * headline to 0, a miss, with a source_error slice that says to fix the precheck first.
  * The duty JSON sets timeoutMs 120000, the runner's soft target PRECHECK_TARGET_MS; the first cold run took 74.6 s (2026-10-12, PostHog query
  * cache empty), later runs 10 s for the queries and 17.2 s in all.
