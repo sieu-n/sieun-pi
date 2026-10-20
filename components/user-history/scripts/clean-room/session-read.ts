@@ -47,9 +47,18 @@ const blockText = (content: unknown): string => typeof content === "string" ? co
   : Array.isArray(content) ? content.map(block => typeof block === "object" && block && "text" in block && typeof block.text === "string" ? block.text : "").join("\n") : "";
 
 /** The events of one session file, in order. A missing or unreadable file gives none. */
+/**
+ * The turn Prime writes when a provider usage pause ends (its retry.provider.waitForUsage.pauseUntilReset path), word for word. Prime records
+ * the pause first as a `provider_quota_park` entry in the same file, so a user turn with exactly these words counts as Prime's own only when an
+ * unanswered park comes before it. On 10-20 clean-room run8 was voided by one such resume at 15:44:44.975Z.
+ */
+export const QUOTA_RESUME = "<provider_quota_resumed>\nThe provider usage limit that paused this session has been reported as reset; this resume is automatic " +
+  "(retry.provider.waitForUsage.pauseUntilReset). Continue the interrupted task from where it stopped.\n</provider_quota_resumed>";
+
 export function readSessionFile(file: string): SessionEvent[] {
   if (!existsSync(file)) return [];
   const events: SessionEvent[] = [];
+  let parks = 0;
   for (const line of readFileSync(file, "utf8").split("\n")) {
     if (!line.trim()) continue;
     let entry: Record<string, unknown>;
@@ -62,9 +71,14 @@ export function readSessionFile(file: string): SessionEvent[] {
         ...(details.fromRelationship ? { relation: details.fromRelationship } : {}) });
       continue;
     }
+    if (entry.type === "custom" && entry.customType === "provider_quota_park") { parks += 1; continue; }
     if (entry.type !== "message") continue;
     const message = (entry.message ?? {}) as { role?: string; content?: unknown; details?: { sentAgentMessages?: { message?: string; target?: { sessionId?: string; sessionName?: string } }[] } };
-    if (message.role === "user") events.push({ kind: "text", at, role: "user", text: blockText(message.content) });
+    if (message.role === "user") {
+      const text = blockText(message.content);
+      if (parks > 0 && text.trim() === QUOTA_RESUME) { parks -= 1; events.push({ kind: "text", at, role: "custom", customType: "provider_quota_resumed", text }); }
+      else events.push({ kind: "text", at, role: "user", text });
+    }
     if (message.role === "assistant" && Array.isArray(message.content)) {
       const text = blockText(message.content);
       if (text.trim()) events.push({ kind: "assistant", at, text });
