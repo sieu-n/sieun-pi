@@ -260,7 +260,7 @@ export async function sendProbe(config: ChatConfig, firstReplyMs = FIRST_REPLY_M
       const from = frames.length;
       const sentAt = Date.now();
       await post(`api/threads/${encodeURIComponent(id)}/prompt`, { requestId: randomUUID().replaceAll("-", ""), message: `${text} Reply with exactly: ok`, mode: "followUp", images: [] });
-      const user = await until(from, frame => mine(frame) && kind(frame) === "message_start" && frame.data!.event!.message?.role === "user" && JSON.stringify(frame.data!.event!.message.content).includes(text), 120_000, "user message");
+      const user = await until(from, frame => mine(frame) && kind(frame) === "message_start" && frame.data!.event!.message?.role === "user" && JSON.stringify(frame.data!.event!.message.content).includes(text), Math.min(120_000, firstReplyMs), "user message");
       const token = await until(user.index + 1, reply, 300_000, "reply frame");
       sends.push({ marker: text, sentAt, firstTokenAt: token.at });
       const done = await until(token.index, frame => mine(frame) && (kind(frame) === "agent_end" || kind(frame) === "auto_retry_start"), 300_000, "turn end");
