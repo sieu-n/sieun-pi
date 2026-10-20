@@ -51,10 +51,8 @@ export interface GoalPush {
   number?: GoalNumber;
   trend?: GoalTrend;
   stale: boolean;
-  /** The live job that owns the number: its push step's job (`goalOwner`). */
+  /** The live job that owns the number: its push step's job, else a live job on an open item under the goal (`goalOwner`). */
   owner?: JobFact;
-  /** A live job at work on an open item under the goal, its owner first. A goal with one is no gap (`goalGap`), whatever its pace. */
-  working?: JobFact;
   /** The goal's open push step, live or not: a start sets a job on it instead of adding a second one. */
   pushStep?: string;
   /**
@@ -163,15 +161,19 @@ export const offPace = (trend: GoalTrend, stale: boolean): boolean =>
   trend.kind === "met" ? false : stale || trend.kind !== "moving" || trend.etaMs === null || trend.etaMs > PACE_MS;
 
 /**
- * The live job that owns a goal's number, with the check-in's liveness (`JobFact.state`, a job asleep on a board.wake included): the job of
- * the goal's push step (`GOAL_PUSH_LINK`), which is also the fix step of `goal_gaps`, so the duty runner sees the goal owned, or the job of a
- * goal that is itself a duty fix step with no steps under it (slack green guy p151). A job at work on
- * some other step under the goal does not own the number: on 10-15 Crawler VP's crawler ops train slept on 17 CI runs for p71's steps while
- * p71 sat at 14.9% and no job worked on its biggest blocker.
+ * The live job that owns a goal's number, with the check-in's liveness (`JobFact.state`, a job asleep on a board.wake included), first found of:
+ * the job of the goal's push step (`GOAL_PUSH_LINK`), the job of the goal itself when it is a leaf (slack green guy p151), a live job on a step
+ * under it linked to the goal's own duty metric, a live job on another of its own steps, and a live job on any open step under a goal below it.
+ * AI harness 10-20 02:19Z: p717 (d7/quiet_agent_gb) read "no live job owns it" while p779's thread worked on that same metric under it, and the
+ * check-in told the chat to steer p769's job, asleep on another metric. An off-pace goal with such an owner is steered through it (`pushNeeded`).
  */
 export function goalOwner(goal: PlanItem, views: readonly StepView[]): JobFact | undefined {
-  return views.find(view => view.goal?.id === goal.id && view.item.duty === GOAL_PUSH_LINK && view.owner?.state === "working")?.owner ??
-    views.find(view => view.item.id === goal.id && view.item.duty !== undefined && view.owner?.state === "working")?.owner;
+  const under = new Set([goal.id]);
+  walk(goal.children, item => under.add(item.id));
+  const live = views.filter(view => under.has(view.item.id) && view.owner?.state === "working");
+  const own = goal.duty === GOAL_PUSH_LINK ? undefined : goal.duty;
+  return (live.find(view => view.goal?.id === goal.id && view.item.duty === GOAL_PUSH_LINK) ?? live.find(view => view.item.id === goal.id) ??
+    live.find(view => own !== undefined && view.item.duty === own) ?? live.find(view => view.goal?.id === goal.id) ?? live[0])?.owner;
 }
 
 /**
@@ -276,13 +278,12 @@ export function goalPushes(board: ChatBoard | null, views: readonly StepView[], 
     if (folded.has(goal.id)) return [];
     const words = goalWords(goal);
     const owner = goalOwner(goal, views);
-    const working = owner ?? views.find(view => view.goal?.id === goal.id && view.owner?.state === "working")?.owner;
     const pushView = views.find(view => view.goal?.id === goal.id && view.item.duty === GOAL_PUSH_LINK);
     const step = pushView?.item.id;
     const under = views.filter(view => view.goal?.id === goal.id && view.item.id !== goal.id && view.item.job);
     const holder = (pushView?.item.job ? pushView : undefined) ?? under.find(view => view.item.duty !== undefined) ?? under[0];
     const stepJob = holder?.item.job ? { step: holder.item.id, job: holder.owner?.name ?? holder.item.job, ...holder.item.duty ? { duty: holder.item.duty } : {} } : undefined;
-    const base = { goal, words, ...(owner ? { owner } : {}), ...(working ? { working } : {}), ...(step ? { pushStep: step } : {}), ...(stepJob ? { stepJob } : {}) };
+    const base = { goal, words, ...(owner ? { owner } : {}), ...(step ? { pushStep: step } : {}), ...(stepJob ? { stepJob } : {}) };
     const number = goalNumber(goal, everyMs, metrics);
     if (!number) return [{ ...base, stale: false, act: "no_number" }];
     const { trend, memo } = goalTrend(number, memos?.[goal.id]);
@@ -303,13 +304,13 @@ export function goalPushes(board: ChatBoard | null, views: readonly StepView[], 
 export const pushNeeded = (push: GoalPush): boolean => push.act === "start" || push.act === "steer";
 
 /**
- * Whether a goal counts in the check-in's headline, `goal_gaps`: no live job works on it or on any open item under it, so the check-in has to
- * start or restart one. An off-pace goal with a live job is still steered (`pushNeeded`) and counted in `goals_off_pace`, but it is no gap: a
- * goal is plan work that finishes, and its pace is its own number on the board. On 10-20 at 00:29Z the Chat system duty (d9) read 11 of 12
- * check-ins red, for up to 75 runs in a row, on goals such as Crawler VP p828 (200M creators, about 48 days to target at its rate), which no
- * job can bring within 7 days, and on goals whose working job held a step under them but not their push step.
+ * Whether a goal counts in the check-in's headline, `goal_gaps`: no live job works on it or on any open item under it (`goalOwner`), so the
+ * check-in has to start or restart one. An off-pace goal with a live job is still steered (`pushNeeded`) and counted in `goals_off_pace`, but
+ * it is no gap: a goal is plan work that finishes, and its pace is its own number on the board. On 10-20 at 00:29Z the Chat system duty (d9)
+ * read 11 of 12 check-ins red, for up to 75 runs in a row, on goals such as Crawler VP p828 (200M creators, about 48 days to target at its
+ * rate), which no job can bring within 7 days, and on goals whose working job held a step under them but not their push step.
  */
-export const goalGap = (push: GoalPush): boolean => push.act === "start" && push.working === undefined;
+export const goalGap = (push: GoalPush): boolean => push.act === "start";
 
 const amount = (value: number): string => value.toLocaleString("en-US", { maximumFractionDigits: 2 });
 const unitText = (unit: string): string => !unit ? "" : unit === "%" ? "%" : ` ${unit}`;

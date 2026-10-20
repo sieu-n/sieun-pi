@@ -32,13 +32,13 @@ const byId = (id: string) => pushes.find(push => push.goal.id === id)!;
 test("the check-in still steers or starts every off-pace goal", () => {
   assert.deepEqual(pushes.filter(pushNeeded).map(push => push.goal.id).sort(), ["p26", "p29", "p828"]);
   assert.equal(byId("p828").act, "steer");
-  assert.equal(byId("p26").act, "start");
+  assert.equal(byId("p26").act, "steer", "the live job on a step under it owns it");
 });
 
 test("goal_gaps counts only the goal no live job works on", () => {
   assert.equal(goalGap(byId("p828")), false, "its push step's job works on it");
   assert.equal(goalGap(byId("p26")), false, "a live job works on a step under it");
-  assert.equal(byId("p26").working?.name, "vent cutover train");
+  assert.equal(byId("p26").owner?.name, "vent cutover train");
   assert.equal(goalGap(byId("p29")), true, "its only job ended");
 });
 
