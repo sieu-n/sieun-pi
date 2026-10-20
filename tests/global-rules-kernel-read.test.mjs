@@ -160,6 +160,49 @@ attempt("rg wide", lambda: sh(f"rg -l -i 'prepare' {P}/sessions || true"))
 `, {}), ["rootB ran", "rg wide ran"]);
 });
 
+test("a systemd-run unit a job starts gets the same guard as its direct children, so its Python reads only the chat's transcripts", () => {
+  // On 10-20 at 21:19Z a subagent of 'd5 cache reads' wrote a scan script and ran it with systemd-run --user ... -E PATH sh -c 'python3 scan.py',
+  // as AGENTS.md rule 6 says for a long command. The unit started from the user manager's environment, with no RLM_SESSION_DIR or PYTHONPATH,
+  // so its Python never loaded kernel-read.py and read the usage lines of every transcript changed in 24 hours, other chats' included. The fake
+  // systemd-run below starts its command the way the user manager does: HOME, a default PATH and only the variables passed with -E.
+  const bin = join(root, "fake-bin");
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(join(bin, "systemd-run"), `#!/usr/bin/env -S python3 -I
+import os, sys
+args, env = sys.argv[1:], {"HOME": os.environ["HOME"], "PATH": "/usr/local/bin:/usr/bin:/bin"}
+while args and args[0].startswith("-"):
+    flag = args.pop(0)
+    if flag == "--":
+        break
+    if flag in ("-E", "--setenv") or flag.startswith("--setenv="):
+        value = flag.split("=", 1)[1] if flag.startswith("--setenv=") else args.pop(0)
+        name, has, given = value.partition("=")
+        if has or name in os.environ:
+            env[name] = given if has else os.environ[name]
+    elif flag in ("-u", "--unit", "-p", "--property"):
+        args.pop(0)
+os.execvpe(args[0], args, env)
+`, { mode: 0o755 });
+  const scan = join(root, "scan.py");
+  writeFileSync(scan, `import os, sys
+for top, dirs, names in sorted(os.walk(sys.argv[1])):
+    for name in sorted(names):
+        try:
+            open(os.path.join(top, name)).readline()
+            print(name, "read")
+        except PermissionError as error:
+            print(name, "refused", type(error).__name__)
+`);
+  const out = join(root, "unit.out");
+  assert.deepEqual(kernel(`${ATTEMPT}
+attempt("unit scan", lambda: sh(f"systemd-run --user --unit=d5cache-scan --collect --same-dir -E PATH sh -c 'python3 ${scan} {P}/sessions > ${out} 2>&1'"))
+attempt("unit tail", lambda: sh(f"systemd-run --user --unit=t2 --collect -E PATH sh -c 'tail -1 {F['rootB']}'"))
+attempt("unit own", lambda: sh(f"systemd-run --user -u t3 -E PATH -- tail -1 {F['rootA']}"))
+`, { RLM_SESSION_DIR: me, PATH: `${bin}:${process.env.PATH}` }), ["unit scan ran", "unit tail refused TranscriptRefused True", "unit own ran"]);
+  assert.deepEqual(readFileSync(out, "utf8").trim().split("\n"), [`${A}.jsonl read`, `${B}.jsonl refused TranscriptRefused`,
+    `${J}.jsonl read`, `${K}.jsonl read`]);
+});
+
 test("the read, grep and bash tools get the same answer from the tool_call half", async () => {
   const { judgeTool } = await import("../components/global-rules/transcript-guard.ts");
   process.env.PRIME_AGENT_CODING_AGENT_DIR = prime;
@@ -174,6 +217,7 @@ test("the read, grep and bash tools get the same answer from the tool_call half"
     assert.match(judgeTool("bash", { command: `tail -1 ${files.jobB}` }, home, me) ?? "", /agent_observe/);
     assert.equal(judgeTool("bash", { command: `ls ${join(prime, "sessions")}` }, home, me), undefined);
     assert.equal(judgeTool("bash", { command: "git status" }, home, me), undefined);
+    assert.match(judgeTool("bash", { command: `systemd-run --user --unit=x --collect --same-dir -E PATH sh -c 'cat ${files.rootB}'` }, home, me) ?? "", /agent_observe/);
   } finally {
     delete process.env.PRIME_AGENT_CODING_AGENT_DIR;
     delete process.env.GLOBAL_RULES_TRANSCRIPT_LOG;

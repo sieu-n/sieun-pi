@@ -1,0 +1,22 @@
+#!/bin/sh
+# A systemd-run unit starts from the user manager's environment, so a Python it runs would not load the global-rules guards that a kernel's
+# own children load through PYTHONPATH (python-child/sitecustomize.py). On 10-20 at 21:19Z a subagent of 'd5 cache reads' ran a scan script
+# with systemd-run --user ... -E PATH sh -c 'python3 scan.py', and that Python read other chats' transcripts with no guard. kernel-read.py puts
+# this folder first on PATH, and this file runs the next systemd-run on PATH with the guards' variables passed through -E.
+here=$(cd "$(dirname "$0")" && pwd -P)
+real=""
+rest=$PATH
+while [ -n "$rest" ]; do
+  dir=${rest%%:*}
+  case $rest in *:*) rest=${rest#*:} ;; *) rest="" ;; esac
+  [ -n "$dir" ] && [ -x "$dir/systemd-run" ] && [ "$(cd "$dir" 2>/dev/null && pwd -P)" != "$here" ] && { real=$dir/systemd-run; break; }
+done
+[ -n "$real" ] || { echo "systemd-run: command not found" >&2; exit 127; }
+if [ -n "${RLM_SESSION_DIR:-}" ]; then
+  for name in RLM_SESSION_DIR PYTHONPATH PRIME_AGENT_CODING_AGENT_DIR PI_CODING_AGENT_DIR AGENT_CHAT_DATA_DIR OWNER_OK \
+      $(env | sed -n 's/^\(GLOBAL_RULES_[A-Za-z0-9_]*\)=.*/\1/p'); do
+    eval "given=\${$name+x}"
+    [ "$given" = x ] && set -- -E "$name" "$@"
+  done
+fi
+exec "$real" "$@"

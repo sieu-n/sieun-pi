@@ -14,6 +14,9 @@ catalog, status and relay paths that stay open.
 2. A command the kernel starts (bash(), subprocess, os.system) that names such a file, or that reads a folder holding one as a whole
    (rg, grep -r, find ... -exec or | xargs a reader, cp -r, rsync, tar).
 3. The `read`, `grep` and `bash` tools, through `--judge` (transcript-guard.ts).
+4. A systemd-run unit the kernel starts: its command is judged as in 2, and install() puts unit-env/ first on PATH, whose systemd-run passes
+   RLM_SESSION_DIR, PYTHONPATH and the guard's other variables to the unit with -E, so a Python the unit runs loads this file like a direct
+   child. On 10-20 at 21:19Z a subagent of 'd5 cache reads' ran a scan script that way and read other chats' transcripts.
 
 Code in a sieun-pi tree, a skill folder or the Prime release passes, so the board module, agent_observe, resume_paused.py and the d7, d9
 and d10 prechecks still read what they read. Listing a folder (ls, find without a reader, os.listdir) and counting lines (wc) pass too,
@@ -64,6 +67,12 @@ RECURSE = {"grep", "egrep", "fgrep", "zgrep", "cp", "scp"}
 METADATA = {"ls", "stat", "du", "wc", "file", "test", "[", "realpath", "readlink", "basename", "dirname", "echo", "printf", "touch", "mkdir", "find", "fd"}
 SHELLS = {"sh", "bash", "dash", "zsh"}
 WRAPPERS = {"sudo", "env", "nice", "ionice", "timeout", "command", "exec", "time", "nohup", "heavy", "builtin", "stdbuf"}
+# systemd-run runs its command in a unit, and these of its options take the next word as their value.
+UNIT_VALUES = {"-u", "--unit", "-p", "--property", "-E", "--setenv", "-H", "--host", "-M", "--machine", "-C", "--capsule", "--description",
+               "--slice", "--uid", "--gid", "--nice", "--working-directory", "--service-type", "--path-property", "--socket-property",
+               "--timer-property", "--on-active", "--on-boot", "--on-startup", "--on-unit-active", "--on-unit-inactive", "--on-calendar"}
+# A systemd-run unit starts from the user manager's environment, so this folder's systemd-run passes the guard's variables to it with -E.
+UNIT_ENV = os.path.join(HERE, "unit-env")
 KEYWORDS = {"{", "}", "!", "then", "do", "else", "elif", "if", "while", "until", "time"}
 REDIRECTS = {">", ">>", "<<", "<<<", ">&", "<&", "&>", ">|", "&>>"}
 SEPARATORS = {";", "&", "&&", "||", "(", ")", "\n", ";;"}
@@ -313,7 +322,15 @@ def pipelines(text: str) -> list:
 def bare(words: list) -> list:
     while words and (words[0] in KEYWORDS or re.match(r"^[A-Za-z_]\w*=", words[0])):
         words = words[1:]
-    while words and os.path.basename(words[0]) in WRAPPERS:
+    while words and os.path.basename(words[0]) in WRAPPERS | {"systemd-run"}:
+        if os.path.basename(words[0]) == "systemd-run":
+            words = words[1:]
+            while words and words[0].startswith("-"):
+                if words[0] == "--":
+                    words = words[1:]
+                    break
+                words = words[2:] if words[0] in UNIT_VALUES else words[1:]
+            continue
         words = words[1:]
         while words and (words[0].startswith("-") or re.match(r"^[A-Za-z_]\w*=", words[0]) or re.match(r"^\d+[smhd]?$", words[0])):
             words = words[1:]
@@ -509,6 +526,9 @@ def install() -> None:
         subprocess.Popen.__init__ = guarded_init(subprocess.Popen.__init__)
     if not getattr(os.system, "refuses_transcripts", False):
         os.system = guarded_system(os.system)
+    path = os.environ.get("PATH", "").split(os.pathsep)
+    if UNIT_ENV not in path:
+        os.environ["PATH"] = os.pathsep.join([UNIT_ENV, *path])
     builtins.TranscriptRefused = TranscriptRefused
 
 
