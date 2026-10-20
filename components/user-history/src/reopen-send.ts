@@ -20,6 +20,19 @@ import { sessionFileOf } from "./send-once.ts";
 /** The daemon answers that a reopen clears. */
 export const REOPENABLE = /Session worker is failed|Unknown active session/;
 
+/**
+ * The active id of the worker that the daemon says already runs a session it was asked to open or reach ("Session is already active in
+ * 0aceb76b0e2b: <file>"), else undefined. On 10-20 the Mac's daemon held job 01a156cd ("virev mcp db tools ship") twice: as an inactive
+ * subagent of its chat's tree and as a resident worker 0aceb76b0e2b. A send by its session id went to the subagent entry, whose lease that
+ * worker held, and the outbox sent it again every 30 s from 03:35Z on, 186 refusals, while a send to 0aceb76b0e2b went through.
+ */
+export function activeIn(error: string): string | undefined {
+  return /Session is already active in ([0-9a-f]{12}):/.exec(error)?.[1];
+}
+
+/** The daemon's refusal of a create whose file two of its workers claim, one running it (`activeIn` has the same cause). */
+export const AMBIGUOUS = /Ambiguous resident session path/;
+
 export const isReopenable = (error: unknown): boolean => REOPENABLE.test(error instanceof Error ? error.message : String(error));
 
 export type DaemonAnswer = { success: true; data?: unknown } | { success: false; error: string };
@@ -103,15 +116,23 @@ export function treeRoot(agentDir: string, file: string | undefined): string | n
 }
 
 /**
- * `send`, and when the daemon answers "Session worker is failed" or "Unknown active session", `reopen` and `send` once more. The first answer
- * stands when `reopen` finds nothing to open.
+ * `send` to `session`, and when the daemon answers "Session worker is failed" or "Unknown active session", `reopen` and `send` once more. The
+ * first answer stands when `reopen` finds nothing to open. A send the daemon refuses because another worker already runs the session goes to
+ * that worker (`activeIn`).
  */
-export async function sendReopening(session: string, send: () => Promise<DaemonAnswer>, reopen: (session: string) => Promise<boolean>,
+export async function sendReopening(session: string, send: (target: string) => Promise<DaemonAnswer>, reopen: (session: string) => Promise<boolean>,
   log?: (line: string) => void): Promise<DaemonAnswer> {
-  const first = await send();
-  if (first.success || !REOPENABLE.test(first.error)) return first;
+  const first = await send(session);
+  if (first.success) return first;
+  const running = activeIn(first.error);
+  if (running) {
+    const moved = await send(running);
+    log?.(`send: ${session.slice(0, 8)} answered that worker ${running} runs it; sent there: ${moved.success ? "sent" : moved.error}`);
+    return moved;
+  }
+  if (!REOPENABLE.test(first.error)) return first;
   if (!await reopen(session)) return first;
-  const again = await send();
+  const again = await send(session);
   log?.(`reopen: ${session.slice(0, 8)} answered "${first.error}"; opened it again and sent again: ${again.success ? "sent" : again.error}`);
   return again;
 }

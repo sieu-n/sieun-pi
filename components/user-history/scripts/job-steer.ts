@@ -7,7 +7,7 @@
  */
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { chatService, throughRestart } from "../src/chat-host.ts";
+import { chatService, restartAnswer, throughRestart } from "../src/chat-host.ts";
 
 const [chat, job, ...words] = process.argv.slice(2);
 const message = words.join(" ").trim();
@@ -22,10 +22,11 @@ const response = await throughRestart(async () => {
   const answer = await fetch(`${service.base}api/threads/${encodeURIComponent(chat)}/job-steer`, {
     method: "POST", body: JSON.stringify({ job, message }), signal: AbortSignal.timeout(180_000),
     headers: { "content-type": "application/json", "x-chat-token": service.token, origin: service.origin } });
-  if (answer.status >= 502 && answer.status <= 504) throw new Error(`Chat service answered ${answer.status}`);
-  return answer;
+  const body = await answer.text();
+  if (restartAnswer(answer.status, body)) throw new Error(`Chat service answered ${answer.status}`);
+  return { ok: answer.ok, status: answer.status, text: body };
 });
-const text = await response.text();
+const text = response.text;
 if (!response.ok) { console.error(`job-steer: ${response.status} ${text}`); process.exit(1); }
 const { act, session } = JSON.parse(text) as { act: string; session: string };
 console.log(act === "relay" ? `sent ${job} the message through its chat (session ${session}), because the server cannot reach the job` :

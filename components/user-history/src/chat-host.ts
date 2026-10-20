@@ -60,6 +60,21 @@ const RESTARTING = /fetch failed|ECONNREFUSED|ECONNRESET|socket hang up|Chat ser
 const errorText = (error: unknown): string =>
   error instanceof Error ? `${error.message} ${error.cause instanceof Error ? error.cause.message : String(error.cause ?? "")}` : String(error);
 
+/**
+ * Whether an HTTP answer means the chat service is restarting, so the call goes again: a 503, or a 502 or 504 that does not carry the
+ * service's own JSON error, as a proxy or the early shell gives while the service is away. A 502 with the service's error is its final answer,
+ * such as a daemon refusal: on 10-20 from 05:59Z to 06:03Z a check-in job's job-steer.ts got the service's 502 "Ambiguous resident session
+ * path" for a Mac job and asked again every 3 s for 60 s, three runs and 62 refused daemon creates.
+ */
+export function restartAnswer(status: number, body: string): boolean {
+  if (status === 503) return true;
+  if (status !== 502 && status !== 504) return false;
+  try {
+    const parsed = JSON.parse(body) as unknown;
+    return !(isRecord(parsed) && typeof parsed.error === "string");
+  } catch { return true; }
+}
+
 /** `attempt`'s answer, run again every `stepMs` while it fails the way a restarting chat service fails, for up to `waitMs`. */
 export async function throughRestart<T>(attempt: () => Promise<T>, waitMs = RESTART_WAIT_MS, stepMs = 2_000): Promise<T> {
   const deadline = Date.now() + waitMs;
@@ -83,7 +98,8 @@ export async function serviceCall<T>(service: ChatService, path: string, body?: 
   if (!response.ok) {
     let error = text;
     try { error = (JSON.parse(text) as { error?: string }).error ?? text; } catch { /* plain text */ }
-    throw new Error(`Chat service answered ${response.status}: ${error.slice(0, 300)}`);
+    // "answered 50x" is the restart sign RESTARTING and message-limit-check.py retry on; the service's own refusal reads otherwise.
+    throw new Error(`Chat service ${restartAnswer(response.status, text) ? "answered" : "refused with"} ${response.status}: ${error.slice(0, 300)}`);
   }
   return JSON.parse(text) as T;
 }

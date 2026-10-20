@@ -198,3 +198,18 @@ test("the owner's unarchive of another box's root opens it on that box's daemon,
   const running = { requests: [], client: { name: "mac", request: async () => ({ success: false as const, error: "session_already_active: 3fedc5d47878" }) } };
   assert.equal(await unarchiveOnItsBox(catalog(file, running as unknown as Box, { host: "mac", here }), { agentDir: dir }, REVIEWER), true);
 });
+
+test("a send the daemon refuses because another worker runs the session goes to that worker, with no reopen", async () => {
+  const MAC_JOB = "01a156cd-bbb6-72dd-8f17-943549b9d8a6";
+  const file = `/Users/sieunpark/.prime/agent/session-artifacts/01a15503-17d5-7664-b38b-4bba793ed5cd/sub-dc575798/${MAC_JOB}.jsonl`;
+  const targets: string[] = [];
+  const lines: string[] = [];
+  const send = async (target: string): Promise<DaemonAnswer> => {
+    targets.push(target);
+    return target === "0aceb76b0e2b" ? { success: true, data: { deliveryStatus: "delivered" } } : { success: false, error: `Session is already active in 0aceb76b0e2b: ${file}` };
+  };
+  const answer = await sendReopening(MAC_JOB, send, async () => { throw new Error("no reopen"); }, line => lines.push(line));
+  assert.deepEqual(answer, { success: true, data: { deliveryStatus: "delivered" } });
+  assert.deepEqual(targets, [MAC_JOB, "0aceb76b0e2b"]);
+  assert.match(lines.join("\n"), /worker 0aceb76b0e2b runs it; sent there: sent/);
+});

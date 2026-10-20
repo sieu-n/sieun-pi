@@ -27,7 +27,7 @@ import { randomBytes } from "node:crypto";
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import { chatService, throughRestart } from "../../src/chat-host.ts";
+import { chatService, restartAnswer, throughRestart } from "../../src/chat-host.ts";
 import { jobRegistry } from "../../src/chat-sources.ts";
 import { wikiOrigin } from "../../src/chat-wiki.ts";
 import { DutyStore } from "../../src/chat-duty-store.ts";
@@ -109,7 +109,7 @@ async function call(srv: Server, method: "GET" | "POST", route: string, body?: u
       ...(SELF ? { "x-chat-agent-session": SELF } : {}) },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(180_000) });
     const answer = await response.text();
-    if (response.status >= 502 && response.status <= 504) throw new Error(`Chat service answered ${response.status}`);
+    if (restartAnswer(response.status, answer)) throw new Error(`Chat service answered ${response.status}`);
     if (!response.ok) throw new Error(`${method} ${route}: ${response.status} ${answer.slice(0, 300)}`);
     return answer;
   });

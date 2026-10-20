@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { DaemonAgentConnection, DaemonClient, SessionManager, type SessionEntry, type SessionSummary } from "prime-agent";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { Catalog } from "./chat-catalog.ts";
+import { type Catalog, parseSummaries } from "./chat-catalog.ts";
 import type { SubagentDelete } from "./chat-sources.ts";
 import { childrenStirred, Dormancy, type IdleDetach, showsWork, unsilent } from "./chat-dormancy.ts";
 import "./daemon-snapshot-count.ts";
@@ -11,7 +11,7 @@ import { QUIET_MINUTES } from "./quiet-minutes.ts";
 import { UNKNOWN_ACTIVE } from "./chats.ts";
 import { archiveSavedSession, resumeSince, type ResumeSince, ScheduledJobsLeft, ServicesStopPending, takesSavedArchive } from "./saved-archive.ts";
 import { type CancelTry, type PendingCancel, SavedArchiveQueue } from "./saved-archive-queue.ts";
-import { isReopenable } from "./reopen-send.ts";
+import { activeIn, AMBIGUOUS, isReopenable } from "./reopen-send.ts";
 import { afterMove, type StateAnswer } from "./worker-move.ts";
 import { AttachQueue } from "./attach-queue.ts";
 import { setFileSessionState } from "./session-state-file.ts";
@@ -1196,6 +1196,24 @@ export class ThreadHub {
     return thread;
   }
 
+  /**
+   * The active id of the worker that runs `id` when the daemon refused a create of its file because a worker already runs it, else undefined.
+   * On 10-20 the Mac's daemon held job 01a156cd ("virev mcp db tools ship") as an inactive subagent of its chat's tree and as resident worker
+   * 0aceb76b0e2b, which a resume from this box had opened at 03:01Z while the chat's tree was unloaded. The catalog's row for the job flipped
+   * between the two, so it read saved, and each create answered "Ambiguous resident session path": 62 refused resumes from 05:59Z to 06:03Z,
+   * while the daemon's live list named 0aceb76b0e2b running it.
+   */
+  private async runningElsewhere(client: DaemonClient, id: string, error: string): Promise<string | undefined> {
+    const named = activeIn(error);
+    if (named) return named;
+    if (!AMBIGUOUS.test(error)) return undefined;
+    const rows = await client.request({ type: "list" }, 60_000, { recoverable: false })
+      .then(listed => listed.success ? parseSummaries(listed.data) : []).catch(() => []);
+    const live = rows.find(row => row.sessionId === id && row.activeSessionId && row.workerState !== "failed");
+    if (live) process.stderr.write(`resume ${id.slice(0, 8)}: worker ${live.activeSessionId} runs it, so it attaches there\n`);
+    return live?.activeSessionId;
+  }
+
   /** Opens a saved or failed session from its file with a daemon create, which drops a dead worker's registration; resolves the new active id. */
   private async reopen(id: string, summary: SessionSummary): Promise<string> {
     if (!summary.sessionFile) throw new ThreadError(409, "This thread has no session file to resume.");
@@ -1205,7 +1223,11 @@ export class ThreadHub {
     const config = this.catalog.hostOf(id) ? { cwd: summary.cwd } : await stat(summary.cwd).then(found => found.isDirectory() ? { cwd: summary.cwd } : {}, () => ({}));
     const sessionPath = this.catalog.daemonPath(summary) ?? summary.sessionFile;
     const response = await timedWorkerStart(`resume ${id.slice(0, 8)}`, () => client.request({ type: "create", lifecycle: "resident", sessionPath, config }, DAEMON_WORKER_START_MS, { recoverable: false }));
-    if (!response.success) throw new ThreadError(502, response.error);
+    if (!response.success) {
+      const running = await this.runningElsewhere(client, id, response.error);
+      if (running) return running;
+      throw new ThreadError(502, response.error);
+    }
     const data = response.data;
     if (typeof data !== "object" || data === null || !("sessionId" in data) || data.sessionId !== id ||
       !("activeSessionId" in data) || typeof data.activeSessionId !== "string" || !data.activeSessionId) {

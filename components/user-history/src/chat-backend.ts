@@ -276,7 +276,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const agentOutbox = new AgentOutbox(join(dataDir, quiet ? "agent-outbox-scratch" : "agent-outbox"), { log: dutyLog, hostOf: session => catalog.hostOf(session), reach: host => reach.reach(host),
     stopped: stopRecords(dataDir),
     send: async (session, text) => {
-      const response = await sendReopening(session, async () => (await catalog.daemonFor(session)).request({ type: "send_message", targetActiveSessionId: session, message: text }, 30_000, { recoverable: false }),
+      const response = await sendReopening(session, async target => (await catalog.daemonFor(session)).request({ type: "send_message", targetActiveSessionId: target, message: text }, 30_000, { recoverable: false }),
         id => reopenSession(catalog, { agentDir, ...replay ? {} : { adopt: (root: string) => adoptMoved(root, agentDir) } }, id), dutyLog);
       if (response.success) return "sent";
       // A subagent still unreachable after the reopen is relayed through its parent (AgentOutbox).
