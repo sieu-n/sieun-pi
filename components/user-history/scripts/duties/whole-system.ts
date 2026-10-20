@@ -868,8 +868,11 @@ export function measure(input: Inputs): PrecheckOutput {
     `has run one tool call for ${call.silentMin} min with no output${call.why === "kernel burning" ? `, its kernel burning ${call.kernelCores} cores` : `, its commands at ${call.workCores} cores`}` +
     `${call.command ? ` (${call.command})` : ""}, at ${clock(hung!.at)}.` });
   for (const { at, call } of stoppedSince(input.watch, start)) flagged.push({ kind: "hung_call_stopped", chat: call.root, item: call.session,
-    excerpt: `${call.tree}: ${call.name} (${call.session}) ran one tool call ${call.silentMin} min with no output at ${call.workCores} cores, so the watch stopped ` +
-    `its bash() command at ${clock(at)} and the call returned (${call.handles.map(handle => `${handle.pid} ${handle.command.slice(0, 80)}`).join("; ")}).` });
+    excerpt: call.cell !== undefined
+      ? `${call.tree}: ${call.name} (${call.session}) ran one tool call ${call.silentMin} min with no output, its kernel at ${call.kernelCores} cores, so the ` +
+        `watch interrupted the cell in kernel ${call.cell} at ${clock(at)}${call.command ? ` (${call.command})` : ""}.`
+      : `${call.tree}: ${call.name} (${call.session}) ran one tool call ${call.silentMin} min with no output at ${call.workCores} cores, so the watch stopped ` +
+        `its bash() command at ${clock(at)} and the call returned (${call.handles.map(handle => `${handle.pid} ${handle.command.slice(0, 80)}`).join("; ")}).` });
   const overruns = (input.queueOverruns ?? []).filter(entry => entry.at >= start && entry.at < start + WINDOW_MS);
   if (overruns.length) {
     const byTarget = new Map<string, QueueOverrun[]>();

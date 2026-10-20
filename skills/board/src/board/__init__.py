@@ -12,7 +12,10 @@ from __future__ import annotations
 import json
 import os
 import re
+import signal
 import socket
+import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -519,3 +522,48 @@ def own(*paths: str, unit: str | None = None, host: str | None = None) -> str:
     away = "".join(f", {len(items)} on {name}" for name, items in hosts.items())
     return _Text(f"Owned by this session ({file}): {len(record['paths'])} paths{away}, units {', '.join(record['units']) or 'none'}. "
                  "Its end deletes these paths and stops these units, and nothing else.")
+
+
+# Every Prime kernel pre-imports this module, so it gives the chat service's watch a way to interrupt a hung cell
+# (components/user-history/src/hung-stop.ts). At 05:51Z on 10-20 d7 read rb-api-portal 96 min into one ipython call, a backtracking
+# re.findall at 0.99 cores, and the watch had no bash() command to stop. Prime's kernel (rlm/repl.py) interrupts a cell only on an interrupt
+# frame from its worker, sent when a turn is aborted, and drops a SIGINT from anyone else. Nothing outside the worker can write that frame:
+# the request channel is a socketpair, and ptrace_scope 1 keeps another process from taking its fd.
+#
+# The SIGUSR2 handler runs on the main thread between bytecodes or inside a C loop that checks signals, such as the re engine. It marks the
+# running request as the interrupt's target and calls the SIGINT handler, which raises KeyboardInterrupt into a running cell or cancels an
+# awaiting one, so the call returns a KeyboardInterrupt error and the kernel keeps its variables. A snapshot or restore parks SIGINT under a
+# handler of its own, and the handler calls whatever SIGINT handler is installed, so a park still holds. An awaiting cell leaves the event
+# loop asleep in select(), so the handler wakes it first, as the kernel's own interrupt does. The watch sends SIGUSR2 only to a kernel whose
+# /proc status shows it caught, since the default action ends the process.
+_INTERRUPT = signal.SIGUSR2
+
+
+def _interrupt_cell(signum: int, frame: object) -> None:
+    repl = sys.modules.get("rlm.repl")
+    active = getattr(repl, "_active", None)
+    if not isinstance(active, dict) or active.get("rid") is None:
+        return
+    handler = signal.getsignal(signal.SIGINT)
+    if not callable(handler):
+        return
+    repl._sigint_target = active["rid"]
+    loop = getattr(repl, "_loop", None)
+    if loop is not None:
+        loop.call_soon_threadsafe(lambda: None)
+    handler(signal.SIGINT, frame)
+
+
+def _install_interrupt() -> bool:
+    """Installs the handler on a Prime kernel's main thread; False anywhere else, or when SIGUSR2 already has another handler."""
+    repl = sys.modules.get("rlm.repl")
+    if repl is None or not all(hasattr(repl, name) for name in ("_active", "_sigint_target", "_sigint_handler")):
+        return False
+    current = signal.getsignal(_INTERRUPT)
+    if threading.current_thread() is not threading.main_thread() or (current is not signal.SIG_DFL and getattr(current, "__name__", "") != "_interrupt_cell"):
+        return False
+    signal.signal(_INTERRUPT, _interrupt_cell)
+    return True
+
+
+_install_interrupt()

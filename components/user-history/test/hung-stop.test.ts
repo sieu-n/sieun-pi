@@ -3,13 +3,15 @@
 // "tell the chat to interrupt it" could not reach it. The watch now stops a hung call's bash() commands so the await returns (src/hung-stop.ts).
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { createInterface } from "node:readline";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { measure } from "../scripts/duties/whole-system.ts";
 import { type CallMark, CallWatch, type HungCall } from "../src/hung-calls.ts";
-import { type CallHandle, CallStopper, pidAlive, type StopDeps } from "../src/hung-stop.ts";
+import { type CallHandle, CallStopper, interruptCell, pidAlive, type StopDeps } from "../src/hung-stop.ts";
 import { type Footprints, readCallHandles, sample } from "../src/mac-usable-watch.ts";
 
 const MIN = 60_000;
@@ -21,11 +23,12 @@ const PROBE = "/home/sieun/Documents/Github/auto-sns-agent/apps/crawler-v3/.venv
 const call = (fields: Partial<HungCall> = {}): HungCall => ({ session: SHARE, name: "share-cascade", root: CRAWLER, tree: "Crawler VP", silentMin: 228, workCores: 0,
   kernelCores: 0, command: PROBE, why: "no progress", since: SINCE, ...fields });
 
-function fakeDeps(found: CallHandle[], alive: (pid: number) => boolean = () => true) {
-  const kills: [number, string][] = [], told: [string, string, string][] = [], asked: { kernel: number; since: number }[][] = [];
+function fakeDeps(found: CallHandle[], alive: (pid: number) => boolean = () => true, handled: (kernel: number) => boolean = () => true) {
+  const kills: [number, string][] = [], told: [string, string, string][] = [], asked: { kernel: number; since: number }[][] = [], interrupts: number[] = [];
   const deps: StopDeps = { handles: async wanted => { asked.push([...wanted]); return found; }, kill: (pid, signal) => { kills.push([pid, signal]); }, alive,
+    interrupt: kernel => { if (!handled(kernel)) return false; interrupts.push(kernel); return true; },
     tell: async (session, root, text) => { told.push([session, root, text]); }, log: () => {} };
-  return { deps, kills, told, asked };
+  return { deps, kills, told, asked, interrupts };
 }
 
 test("share-cascade's hung probe gets SIGTERM on its shell and child, the session is told why, and a call still hung a minute later gets SIGKILL", async () => {
@@ -43,7 +46,8 @@ test("share-cascade's hung probe gets SIGTERM on its shell and child, the sessio
   const second = await stopper.stop([call({ silentMin: 229 })], [{ pid: 3141759, session: SHARE }]);
   assert.deepEqual(fake.kills.slice(2), [[3851767, "SIGKILL"], [3851865, "SIGKILL"]]);
   assert.deepEqual(second.stopped, []);
-  assert.deepEqual(second.left.map(entry => entry.session), [SHARE], "a TERM that did not free the call leaves it hung");
+  assert.deepEqual(second.left.map(entry => entry.session), [SHARE], "a TERM that did not free the call leaves it hung, and the minute of its SIGKILL interrupts no cell");
+  assert.deepEqual(fake.interrupts, []);
   assert.equal(fake.told.length, 1, "the session is told once");
 });
 
@@ -58,20 +62,61 @@ test("hdx-metaads-commit's call, which SIGTERM left waiting at 22:47Z and which 
   assert.deepEqual(next, { stopped: [], left: [] });
   assert.deepEqual(fake.kills, [[501, "SIGTERM"], [502, "SIGTERM"], [503, "SIGTERM"], [501, "SIGKILL"], [502, "SIGKILL"]]);
   const later = await stopper.stop([call({ ...hdx, silentMin: 91 })], [{ pid: 500, session: HDX }]);
-  assert.deepEqual(later.left.map(entry => entry.silentMin), [91], "a call still hung after both signals counts as hung");
-  assert.equal(fake.kills.length, 5, "and gets no more signals");
+  assert.deepEqual(later.stopped.map(entry => [entry.silentMin, entry.cell]), [[91, 500]], "a call still hung after both signals gets its cell interrupted");
+  assert.equal(fake.kills.length, 5, "and its handles get no more signals");
 });
 
-test("a burning kernel and a call with no kernel read are left hung and never signaled", async () => {
-  const fake = fakeDeps([]);
+// At 05:51Z on 10-20 d7 read rb-api-portal 96 min into one ipython call, a backtracking re.findall with its kernel at 0.99 cores and no command
+// to stop, and the watch left it hung.
+const RBAP = "01a15748-186e-72b7-a8e6-4c119db52892", RBAP_ROOT = "01a1180e-6567-747f-bf44-452520ebdd1b", RBAP_SINCE = Date.parse("2026-10-20T04:15:34Z");
+const rbap = (fields: Partial<HungCall> = {}): HungCall => call({ session: RBAP, name: "rb-api-portal", root: RBAP_ROOT, tree: "CI and RepoOps", silentMin: 96,
+  workCores: 0, kernelCores: 0.99, command: null, why: "kernel burning", since: RBAP_SINCE, ...fields });
+
+test("rb-api-portal's burning kernel gets its cell interrupted once and the session is told, and a kernel with no handler or no read is left hung", async () => {
+  const fake = fakeDeps([], () => true, kernel => kernel !== 77);
   const stopper = new CallStopper(fake.deps);
-  const burning = call({ session: "burning", why: "kernel burning", kernelCores: 0.99 });
+  const noHandler = call({ session: "old-kernel", why: "kernel burning", kernelCores: 0.99 });
   const unread = call({ session: "unread" });
-  const result = await stopper.stop([burning, unread], [{ pid: 76, session: "burning" }]);
-  assert.deepEqual(fake.kills, []);
-  assert.deepEqual(result.stopped, []);
-  assert.deepEqual(result.left.map(entry => entry.session), ["burning", "unread"]);
-  assert.deepEqual(fake.asked, []);
+  const first = await stopper.stop([rbap(), noHandler, unread], [{ pid: 3141, session: RBAP }, { pid: 77, session: "old-kernel" }]);
+  assert.deepEqual(fake.kills, [], "no process is killed");
+  assert.deepEqual(fake.asked, [], "a burning kernel's handles are not read");
+  assert.deepEqual(fake.interrupts, [3141]);
+  assert.deepEqual(first.stopped.map(entry => [entry.session, entry.cell, entry.handles]), [[RBAP, 3141, []]]);
+  assert.deepEqual(first.left.map(entry => entry.session), ["old-kernel", "unread"]);
+  assert.equal(fake.told.length, 1);
+  assert.deepEqual(fake.told[0]!.slice(0, 2), [RBAP, RBAP_ROOT]);
+  assert.match(fake.told[0]![2], /^\[hung call\] Your tool call ran 96 min with no output while your kernel used 0\.99 cores .*SIGUSR2 to kernel pid 3141.*KeyboardInterrupt\. Your kernel and its variables were kept/);
+  const second = await stopper.stop([rbap({ silentMin: 97 })], [{ pid: 3141, session: RBAP }]);
+  assert.deepEqual(fake.interrupts, [3141], "a cell is interrupted once");
+  assert.deepEqual(second.left.map(entry => entry.silentMin), [97], "a call still hung after its interrupt counts as hung");
+});
+
+test("a call with no handle left to stop, or still hung after SIGTERM and SIGKILL, gets its cell interrupted", async () => {
+  const fake = fakeDeps([{ kernel: 500, pid: 501, started: Math.floor(SINCE / 1000) + 3, command: "uv run python probe.py", pids: [501] }], () => false);
+  const stopper = new CallStopper(fake.deps);
+  const awaiting = call({ session: "awaiting" });
+  await stopper.stop([call(), awaiting], [{ pid: 500, session: SHARE }, { pid: 600, session: "awaiting" }]);
+  assert.deepEqual(fake.kills, [[501, "SIGTERM"]]);
+  assert.deepEqual(fake.interrupts, [600], "a no-progress call with no handle, such as an await on a socket, gets its cell interrupted");
+  await stopper.stop([], [{ pid: 500, session: SHARE }]);
+  const later = await stopper.stop([call({ silentMin: 262 })], [{ pid: 500, session: SHARE }]);
+  assert.deepEqual(fake.interrupts, [600, 500]);
+  assert.deepEqual(later.stopped.map(entry => [entry.session, entry.cell]), [[SHARE, 500]]);
+  assert.equal(fake.kills.length, 1, "no handle gets another signal");
+});
+
+test("interruptCell sends SIGUSR2 only to a kernel whose /proc status shows it caught", () => {
+  const sent: [number, string][] = [];
+  const kill = process.kill;
+  process.kill = ((pid: number, signal: string) => { sent.push([pid, signal]); return true; }) as typeof process.kill;
+  try {
+    assert.equal(interruptCell(41, () => "Name:\tpython\nSigCgt:\t0000000100000802\n"), true);
+    assert.equal(interruptCell(42, () => "Name:\tpython\nSigCgt:\t0000000100000002\n"), false, "a kernel booted before the handler");
+    assert.equal(interruptCell(43, () => { throw new Error("ENOENT"); }), false, "a gone kernel or a box with no /proc");
+  } finally {
+    process.kill = kill;
+  }
+  assert.deepEqual(sent, [[41, "SIGUSR2"]]);
 });
 
 test("li-http-reads's `await hp` on a handle started 42 s before the call went silent is stopped, and a call with a handle of its own spares older ones", async () => {
@@ -120,6 +165,39 @@ test("the watch line leaves a stopped call out of hung, d7's hung_calls reads 0 
   }
 });
 
+
+test("d7 reads hung_calls 0 when the watch interrupted rb-api-portal's cell and flags the interrupt with its chat", async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "hung-cell-"));
+  try {
+    const at = Date.parse("2026-10-20T05:51:30Z");
+    const row = { sessionId: RBAP, activeSessionId: RBAP, sessionName: "rb-api-portal", parentSessionId: RBAP_ROOT, lifecycle: "live", activity: "working",
+      isSessionActive: true, isStreaming: true, isRunningTools: true, workerPid: 2000, lastActivityAt: new Date(RBAP_SINCE).toISOString() };
+    const root = { sessionId: RBAP_ROOT, activeSessionId: RBAP_ROOT, sessionName: "CI and RepoOps", lifecycle: "live", activity: "working", isRunningTools: false,
+      hasRunningRlmChildren: true, workerPid: 2000, lastActivityAt: new Date(at - MIN).toISOString() };
+    const calls = new CallWatch();
+    const seeds: { calls: CallMark[] }[] = [];
+    for (let minute = at - 25 * MIN; minute < at; minute += MIN) seeds.push({ calls: [{ session: RBAP, since: RBAP_SINCE, at: minute, kernelS: 5000 + 0.99 * (minute - at) / 1000, workS: 2, command: null }] });
+    calls.seed(seeds);
+    const fake = fakeDeps([]);
+    const footprints: Footprints = { workers: { 2000: { pids: 2, bytes: 1 } }, swap_used_bytes: 0, pressure_level: null, cpu_s: 0,
+      kernels: [{ pid: 3141, root: RBAP_ROOT, session: RBAP, pids: 1, bytes: 1, own: 1, biggest: null, cpu_s: 5000, work_cpu_s: 2 }] };
+    const line = await sample({ dataDir, rows: () => [root, row], chats: async () => new Set([RBAP_ROOT]), title: id => id === RBAP_ROOT ? "CI and RepoOps" : null,
+      queue: async () => { throw new Error("no queue"); }, log: () => {}, now: () => at, footprints: async () => footprints, feed: async () => null,
+      memory: async () => ({ groups: null }), services: async () => [], calls, stop: new CallStopper(fake.deps) });
+    assert.ok(line);
+    assert.equal(line.hung, undefined);
+    assert.deepEqual(fake.interrupts, [3141]);
+    assert.deepEqual(line.stopped?.map(entry => [entry.name, entry.why, entry.cell]), [["rb-api-portal", "kernel burning", 3141]]);
+    const output = measure({ now: at + 30_000, watch: [line], log: { holds: [] }, chats: [] });
+    assert.equal(output.metrics.hung_calls, 0);
+    const flagged = (output.flagged ?? []).filter(slice => slice.kind === "hung_call_stopped");
+    assert.deepEqual(flagged.map(slice => [slice.chat, slice.item]), [[RBAP_ROOT, RBAP]]);
+    assert.match(flagged[0]!.excerpt, /^CI and RepoOps: rb-api-portal \(01a15748-.*\) ran one tool call 96 min with no output, its kernel at 0\.99 cores, so the watch interrupted the cell in kernel 3141 at 05:51Z\.$/);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
 const KERNEL_PY = join(homedir(), ".prime/agent/kernel-venv/bin/python");
 test("a real rlm.bash await on a silent command returns -15 once the stopper signals the handle the helper finds", { skip: process.platform !== "linux" || !existsSync(KERNEL_PY) }, async () => {
   // The trailing "rlm.repl" argument makes the footprint helper read this python as a kernel; the await is Prime's own rlm.bash. Start times
@@ -138,7 +216,8 @@ test("a real rlm.bash await on a silent command returns -15 once the stopper sig
     }
     assert.equal(found.length, 1);
     assert.match(found[0]!.command, /^sleep 600$/);
-    const stopper = new CallStopper({ handles: readCallHandles, kill: (pid, signal) => { process.kill(pid, signal); }, alive: pidAlive, tell: async () => {}, log: () => {} });
+    const stopper = new CallStopper({ handles: readCallHandles, kill: (pid, signal) => { process.kill(pid, signal); }, interrupt: () => false, alive: pidAlive,
+      tell: async () => {}, log: () => {} });
     const result = await stopper.stop([call({ session: "real", since: since * 1000 })], [{ pid: kernel.pid!, session: "real" }]);
     assert.equal(result.stopped.length, 1);
     assert.equal(await exited, 0);
@@ -146,6 +225,43 @@ test("a real rlm.bash await on a silent command returns -15 once the stopper sig
     assert.deepEqual(await readCallHandles([{ kernel: kernel.pid!, since }]), [], "no handle is left");
   } finally {
     for (const handle of await readCallHandles([{ kernel: kernel.pid!, since: 0 }]).catch(() => [])) for (const pid of handle.pids) process.kill(pid, "SIGKILL");
+    try { process.kill(-kernel.pid!, "SIGKILL"); } catch { /* gone */ }
+  }
+});
+
+const BOARD_SRC = join(dirname(fileURLToPath(import.meta.url)), "../../../skills/board/src");
+test("a real kernel's backtracking regex cell returns KeyboardInterrupt once the stopper interrupts it, and the kernel serves the next cell", { skip: process.platform !== "linux" || !existsSync(KERNEL_PY) }, async () => {
+  // Prime's own kernel with the board skill of this tree pre-imported, as every session's kernel has it; the cell is rb-api-portal's kind of call.
+  const kernel = spawn(KERNEL_PY, ["-m", "rlm.repl"], { stdio: ["pipe", "pipe", "inherit"], detached: true, env: { ...process.env, PYTHONPATH: BOARD_SRC } });
+  const events: Record<string, unknown>[] = [];
+  const waiters: (() => void)[] = [];
+  createInterface({ input: kernel.stdout! }).on("line", line => { events.push(JSON.parse(line) as Record<string, unknown>); for (const wake of waiters.splice(0)) wake(); });
+  const until = async (match: (event: Record<string, unknown>) => boolean, ms: number): Promise<Record<string, unknown> | undefined> => {
+    const end = Date.now() + ms;
+    for (;;) {
+      const found = events.find(match);
+      if (found || Date.now() > end) return found;
+      await new Promise<void>(resolve => { waiters.push(resolve); setTimeout(resolve, 100); });
+    }
+  };
+  const run = (id: string, code: string) => kernel.stdin!.write(JSON.stringify({ type: "execute", id, code }) + "\n");
+  try {
+    assert.ok(await until(event => event.event === "ready", 10_000));
+    run("boot", "import board");
+    assert.equal((await until(event => event.event === "done" && event.id === "boot", 10_000))?.status, "ok");
+    run("regex", "import re\nre.findall(r'(a+)+$', 'a' * 60 + 'b')");
+    await new Promise(resolve => setTimeout(resolve, 500));
+    assert.equal(events.some(event => event.id === "regex" && event.event === "done"), false, "the regex runs on");
+    const stopper = new CallStopper({ handles: readCallHandles, kill: (pid, signal) => { process.kill(pid, signal); }, interrupt: interruptCell, alive: pidAlive,
+      tell: async () => {}, log: () => {} });
+    const result = await stopper.stop([rbap({ session: "real" })], [{ pid: kernel.pid!, session: "real" }]);
+    assert.deepEqual(result.stopped.map(entry => entry.cell), [kernel.pid]);
+    assert.equal((await until(event => event.event === "error" && event.id === "regex", 10_000))?.ename, "KeyboardInterrupt");
+    assert.equal((await until(event => event.event === "done" && event.id === "regex", 10_000))?.status, "error");
+    run("after", "print('alive', 1 + 1)");
+    assert.equal((await until(event => event.event === "done" && event.id === "after", 10_000))?.status, "ok");
+    assert.ok(events.some(event => event.id === "after" && event.event === "stdout" && event.text === "alive"), "the kernel kept serving");
+  } finally {
     try { process.kill(-kernel.pid!, "SIGKILL"); } catch { /* gone */ }
   }
 });

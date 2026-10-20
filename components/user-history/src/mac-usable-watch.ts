@@ -200,7 +200,7 @@ export interface WatchLine {
   calls?: CallMark[];
   /** This box's hung tool calls this minute (`hungCalls`), which `agents` counts as hung instead of working; absent when none. */
   hung?: HungCall[];
-  /** The hung calls whose bash() commands the watch signaled this minute (src/hung-stop.ts), left out of `hung`; absent when none. */
+  /** The hung calls whose bash() commands or cell the watch stopped this minute (src/hung-stop.ts), left out of `hung`; absent when none. */
   stopped?: StoppedCall[];
   /** The services sessions handed off before their kernels were freed (`orphan-services.ts`), the first 5 named; absent when there are none. */
   services?: ServicesLine;

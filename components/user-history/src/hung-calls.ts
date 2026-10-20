@@ -6,8 +6,8 @@ const MINUTE = 60_000;
  * reading 0 working, so d7's quiet_agent_gb had no quiet minute to judge from 01:43Z: restart-cold-start's `await h` on a rig whose tree used
  * 0.01 cores, fix4-ops-d2's node test under a defunct child, and p258-critical-path's kernel at about 1 core with 10 GB for 9 h. At 11:40Z a
  * fourth sat 148 min on an ssh to the Mac that used no CPU (mac-local-keys). d7's hung_calls names each one with its
- * session and chat, src/hung-stop.ts stops the bash() commands of a call with no progress so its await returns, and Settings > Hosts counts a call
- * it could not stop as hung instead of working.
+ * session and chat, src/hung-stop.ts stops the bash() commands of a call with no progress, or else interrupts its cell, so the call returns, and
+ * Settings > Hosts counts a call it could not stop as hung instead of working.
  */
 export const HUNG_SILENT_MS = 60 * MINUTE;
 /** How far back progress is read: the call's marks start this much before it reaches HUNG_SILENT_MS. */
