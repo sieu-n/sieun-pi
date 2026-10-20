@@ -131,3 +131,13 @@ test("a share, ratio or volume over a window is no windowed count, so a red one 
   const run: DutyRunRecord = { duty: "d3", at: at("06:00"), trigger: "schedule", ms: 1, verdict: "missed", summary: "", metrics: { cpu_wait_pct_1h: { value: 38.7, target: 20, op: "<=", met: false } } };
   assert.equal(planCounts(inputs([run], { id: "d3", name: "Prod box headroom" }, at("06:47"))).redDuties.length, 1);
 });
+
+test("a duty whose newest job ended on a pool wait the runner has not recorded as a cut yet waits for its rerun too (CI and RepoOps d4, 07:01Z)", () => {
+  const run: DutyRunRecord = { duty: "d4", at: at("06:56"), trigger: "verify", ms: 1, verdict: "missed", summary: "",
+    metrics: { alerts_firing: { value: 1, target: 0, op: "<=", met: false } }, job: { id: "01a15819-1aa8-7108-b3d1-1331582fc4c7", name: "ci monitoring CI and RepoOps 15:56" } };
+  const stuck = [{ chat: FRONTEND, duty: "d4", line: "d4" }];
+  const read = (runs: DutyRunRecord[], poolCut: string[]) => withoutWorkingRuns(stuck, new Map([[FRONTEND, runs]]), [], at("07:01"), new Set(poolCut)).length;
+  assert.equal(read([run], [run.job!.id]), 0);
+  assert.equal(read([run], []), 1, "a job that ended with no pool wait owes the fix");
+  assert.equal(read([{ ...run, trigger: "rerun", rerunOf: at("05:00") }], [run.job!.id]), 1, "a rerun is not run again");
+});

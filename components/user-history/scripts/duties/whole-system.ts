@@ -1105,7 +1105,7 @@ async function ownerActivity(agentDir: string, boards: ReadonlyMap<string, ChatB
 }
 
 /** How much of a transcript's end `poolWaitingOwners` reads: in 1,448 job transcripts on 10-18 the last assistant line started at most 155 KB before the end. */
-const POOL_TAIL_BYTES = 1_000_000;
+export const POOL_TAIL_BYTES = 1_000_000;
 /** Whether a transcript's last assistant turn ended on a pi-pool slot wait (`POOL_WAIT`), from its last lines. */
 export function endsOnPoolWait(lines: readonly string[]): boolean {
   for (let at = lines.length - 1; at >= 0; at--) {
