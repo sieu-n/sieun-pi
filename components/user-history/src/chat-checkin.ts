@@ -345,7 +345,8 @@ export function checkInPrompt(precheck: Pick<CheckInPrecheck, "goals" | "end" | 
   const due = precheck.goals.flatMap(push => { const line = goalDueLine(push); return line ? [line] : []; });
   const stuck = precheck.end.filter(entry => !OK_STATES.has(entry.state)).length;
   const upkeep = (precheck.risks ?? []).filter(item => upkeepWords(item.text));
-  const metGoals = precheck.goals.filter(push => push.trend?.kind === "met");
+  // A goal at target with an open step under it (`GoalPush.left`) is not finished: its line in Goals names what holds it open.
+  const metGoals = precheck.goals.filter(push => push.trend?.kind === "met" && !push.left?.length);
   const items = [...due.slice(0, BRIEF_ITEMS), ...due.length > BRIEF_ITEMS ? [`${due.length - BRIEF_ITEMS} more goals need the same, listed in the detail file.`] : [],
     ...jobLine ? [`${jobLine.replace(/^Check-in: /, "The server already ")} Check in this run that each one reported; start a job in place of one that did not.`] : [],
     ...stuck ? [`${stuck} open ${stuck === 1 ? "step has" : "steps have"} no live owner. Push each one toward done in this run: resume its job, start a fix job, ` +

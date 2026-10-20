@@ -10,7 +10,7 @@ import { type JobFact, ownerLabel, quote, type StepView, walk } from "./checkin-
 /**
  * The check-in's first job: push each open goal's number to its target (owner 10-15 on Crawler VP p71, Instagram Tier A indexed 14.9 of 100%
  * while the check-in reported only stuck steps: "are you pushing through on this? is it working?", then "Check in 이 일을 쭉쭉 밀어줘야되는데
- * it's deeply flawed. fix this"). Per open goal: its number (the goal's `target`, or a duty metric a step under it fixes), its trend since the
+ * it's deeply flawed. fix this"). Per open goal: its number (the goal's `target`, or the duty metric the goal links), its trend since the
  * check-ins before (`GoalMemo`), its pace, and the live job that owns the number. Code measures; the check-in job steers or starts the owner.
  */
 
@@ -30,7 +30,7 @@ export interface GoalReading { value: number; at: number;
 /** What the check-in keeps per goal across runs: its distinct readings, oldest first, and how many runs in a row the number did not move toward target. */
 export interface GoalMemo { readings: GoalReading[]; still: number }
 
-/** A goal's number: from its `target`, in its direction (`targetOp`), or from the last run of a duty metric a step under it fixes. */
+/** A goal's number: from its `target`, in its direction (`targetOp`), or from the last run of the duty metric the goal links. */
 export interface GoalNumber { metric: string; target: number; unit: string; op: ">=" | "<="; value?: number; measuredAt?: number; source: string; staleMs: number }
 
 export type GoalTrend =
@@ -65,12 +65,14 @@ export interface GoalPush {
   asks?: string[];
   /** What a goal that waits holds on (`goalWait`): "until 10-18 20:00Z", or the owner's pause of the thread that owns its push step. */
   waits?: string;
+  /** A goal at target: the open items under it (`openUnder`), which keep it open. */
+  left?: string[];
   act: GoalAct;
   /** The owner's words for the goal: its open and unmet requirement lines. */
   words: string[];
 }
 
-/** The number of a goal: its target, else the newest measured run of a duty metric it or a step under it fixes; undefined for neither. */
+/** The number of a goal: its target, else the newest measured run of the duty metric the goal links; undefined for neither. */
 export function goalNumber(goal: PlanItem, everyMs: number, metrics: ReadonlyMap<string, MetricFact>): GoalNumber | undefined {
   const target = goal.target;
   if (target) {
@@ -100,17 +102,33 @@ export function goalNumber(goal: PlanItem, everyMs: number, metrics: ReadonlyMap
     return { metric: target.metric, target: target.target, unit: target.unit, op, ...(target.current !== undefined ? { value: target.current } : {}),
       ...(Number.isFinite(at) ? { measuredAt: at } : {}), source: target.source ?? "the goal's target", staleMs: targetStaleMs(target, everyMs) };
   }
-  let found: GoalNumber | undefined;
-  // The goal itself first: slack green guy p151 is a top-level fix step of d1/signup_to_workspace_pct and read as having no number on 10-16.
-  walkGoal(goal, item => {
-    if (found || !item.duty || item.duty === GOAL_PUSH_LINK) return;
-    const fact = metrics.get(item.duty);
-    if (fact?.value === undefined || fact.target === undefined) return;
-    found = { metric: item.duty, target: fact.target, unit: "", op: fact.op ?? ">=", value: fact.value, measuredAt: fact.at, source: `the last run of duty metric ${item.duty}`,
-      staleMs: 24 * 60 * 60_000 };
-  });
-  return found;
+  // A goal with no target reads only the duty metric it links itself: slack green guy p151 is a top-level fix step of
+  // d1/signup_to_workspace_pct. A step's link under it is that step's fix, not the goal's number: frontend bro p62 read 0 of at most 0 on
+  // d1/ssr_timeouts_24h from p143, a done step under its dropped p142, and check-ins on 10-20 told the chat to close p62 while p52 and p31
+  // waited on the owner's word on 5180.
+  const fact = goal.duty && goal.duty !== GOAL_PUSH_LINK ? metrics.get(goal.duty) : undefined;
+  if (fact?.value === undefined || fact.target === undefined) return undefined;
+  return { metric: goal.duty!, target: fact.target, unit: "", op: fact.op ?? ">=", value: fact.value, measuredAt: fact.at, source: `the last run of duty metric ${goal.duty}`,
+    staleMs: 24 * 60 * 60_000 };
 }
+
+/**
+ * The open items under a goal, its push steps left out: a goal at target stays open while one is left, so the check-in does not ask to close it.
+ * frontend bro 10-20: p208 (5 of 5 pages) and p272 (4 of 4 parts) met their targets while p286 and p297 waited on the owner's check on For you
+ * t39 and t40, his answer being their done condition, and every check-in asked the chat to close both.
+ */
+export function openUnder(goal: PlanItem): PlanItem[] {
+  const open: PlanItem[] = [];
+  const down = (item: PlanItem): void => {
+    for (const child of item.children) {
+      if (OPEN_ITEM.has(child.status) && child.duty !== GOAL_PUSH_LINK) open.push(child);
+      down(child);
+    }
+  };
+  down(goal);
+  return open;
+}
+const OPEN_ITEM: ReadonlySet<PlanItem["status"]> = new Set(["todo", "doing", "blocked"]);
 
 /** What a reading's value is in: its metric, unit and direction. A new target in the same unit keeps readings comparable. */
 export const readingBasis = (number: Pick<GoalNumber, "metric" | "unit" | "op">): string => `${number.metric}|${number.unit}|${number.op}`;
@@ -285,14 +303,17 @@ export function goalPushes(board: ChatBoard | null, views: readonly StepView[], 
     const stepJob = holder?.item.job ? { step: holder.item.id, job: holder.owner?.name ?? holder.item.job, ...holder.item.duty ? { duty: holder.item.duty } : {} } : undefined;
     const base = { goal, words, ...(owner ? { owner } : {}), ...(step ? { pushStep: step } : {}), ...(stepJob ? { stepJob } : {}) };
     const number = goalNumber(goal, everyMs, metrics);
-    if (!number) return [{ ...base, stale: false, act: "no_number" }];
+    const held = ownerHeld(goal, views, todos);
+    // A goal with no number that waits on the owner's word needs his answer, not a target (frontend bro p62, its p52 and p31 parked by c40).
+    if (!number) return [{ ...base, stale: false, ...(held ? { asks: held, act: "owner" } : { act: "no_number" }) }];
     const { trend, memo } = goalTrend(number, memos?.[goal.id]);
     if (memo) kept[goal.id] = memo;
     const stale = number.measuredAt === undefined || now - number.measuredAt > number.staleMs;
-    const asks = trend.kind === "met" ? undefined : ownerHeld(goal, views, todos);
+    const left = trend.kind === "met" ? openUnder(goal).map(item => item.id) : [];
+    const asks = trend.kind !== "met" || left.length ? held : undefined;
     const waits = trend.kind === "met" || asks ? undefined : goalWait(goal, pushView, now, paused, views, board);
     const act: GoalAct = trend.kind === "met" ? "on_pace" : asks ? "owner" : waits ? "waiting" : !owner ? "start" : offPace(trend, stale) ? "steer" : "on_pace";
-    return [{ ...base, number, trend, stale: trend.kind !== "met" && stale, ...(asks ? { asks } : {}), ...(waits ? { waits } : {}), act }];
+    return [{ ...base, number, trend, stale: trend.kind !== "met" && stale, ...(asks ? { asks } : {}), ...(waits ? { waits } : {}), ...(left.length ? { left } : {}), act }];
   });
   const rank: Record<GoalAct, number> = { start: 0, steer: 1, no_number: 2, owner: 3, waiting: 4, on_pace: 5 };
   const short = (push: GoalPush): number => !push.number || push.number.value === undefined ? 1
@@ -406,7 +427,8 @@ export function gapText(number: GoalNumber): string {
 const paceText = (push: GoalPush): string => {
   const trend = push.trend;
   if (!trend || trend.kind === "unmeasured") return "not measured yet";
-  if (trend.kind === "met") return "at target";
+  if (trend.kind === "met") return !push.left?.length ? "at target"
+    : `at target, and it stays open for ${push.left[0]}${push.left.length > 1 ? ` and ${push.left.length - 1} more` : ""}${push.asks ? `, which ${push.left.length > 1 ? "wait" : "waits"} on the owner's word` : ""}`;
   const pace = push.act === "owner" ? `waits on the owner's word on ${ownerAsks(push)}` : push.act === "waiting" ? `waits ${push.waits}`
     : pushNeeded(push) ? "off pace" : "on pace";
   return `${trendText(push.number!, trend, push.stale)}, ${pace}`;
@@ -415,7 +437,7 @@ const paceText = (push: GoalPush): string => {
 /** A goal as the check-in prompt shows it, one plain sentence: its title, number, gap, trend, days to target, pace, and who owns it. */
 export function goalPromptLine(push: GoalPush): string {
   const title = `${quote(push.goal.text)} (${push.goal.id})`;
-  if (!push.number) return `${title} has no number yet: no target and no duty metric.`;
+  if (!push.number) return `${title} has no number yet: no target and no duty metric${push.act === "owner" ? `, and it waits on the owner's word on ${ownerAsks(push)}` : ""}.`;
   const gap = gapText(push.number);
   const owner = push.owner ? `${ownerLabel(push.owner)} owns it` : "no live job owns it";
   return `${title}: ${numberText(push.number)}${gap ? `, ${gap}` : ""}; ${paceText(push)}; ${owner}.`;

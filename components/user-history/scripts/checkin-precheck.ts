@@ -5,7 +5,7 @@
  *   cd components/user-history && node --import tsx scripts/checkin-precheck.ts <chat id> [--roster]
  *
  * `--roster` reads only the daemon's live sessions (about 1 MB, under a second); the default full list is what the service reads, and can take
- * a minute under load. The chat's messages are the tail of its session file. Prints the step classes, the flagged items and the findings markdown.
+ * a minute under load. The chat's messages are the tail of its session file. Prints the step classes, the flagged items, the findings markdown and the check-in job's prompt.
  */
 import { copyFile, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -77,6 +77,7 @@ const source: CheckInSource = {
     process.stdout.write(`classes ${JSON.stringify(run.classes)}\n`);
     for (const slice of run.output.flagged) process.stdout.write(`flagged ${slice.kind} ${slice.item ?? ""} ${slice.excerpt}\n`);
     process.stdout.write(`\n${run.findings}\n`);
+    if (run.prompt !== undefined) process.stdout.write(`\n--- check-in prompt ---\n${run.prompt}\n`);
   } },
 };
 const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "precheck", loadRecord(join(scratch, "extension-loads.json")), source,
