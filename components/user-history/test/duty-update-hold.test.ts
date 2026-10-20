@@ -254,7 +254,7 @@ test("the hold is the runner's own: the owner's archive of a held root goes thro
   const run = await completedRunner(dir, t.tree, [LAST], { rows: () => [{ ...row(LAST.id, LAST.name), archived }] });
   const archives: string[] = [];
   const asset = { body: Buffer.from(""), etag: '"test"', contentType: "text/plain" };
-  const backend = { chats: { archivesAsChat: async () => false }, threads: { archive: async (id: string) => { archives.push(id); archived = true; } },
+  const backend = { chats: { archivesAsChat: async () => false, archiveJob: async (id: string) => { archives.push(id); archived = true; } },
     catalog: { notify: async () => {} }, close: async () => {} } as unknown as ChatBackend;
   const server = await startChatServer({ backend, bundle: { js: asset, css: asset, version: "test" }, port: 0, capability: "cap", csrfToken: "test-token", stopToken: "test-stop",
     identity: { pid: process.pid, instanceId: "test", socketPath: "/isolated-duty-hold.sock" }, onStop: async () => {} });
