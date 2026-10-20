@@ -17,6 +17,16 @@ const checkpoint = (entry: SessionEntry): Checkpoint | null => {
     typeof data.text === "string" && (typeof data.after === "string" || data.after === null) ? data as Checkpoint : null;
 };
 
+/** A session's first prompt, a job's brief, read from the whole branch so the block a compaction brings back reads it too; "" with none. */
+function firstPrompt(branch: readonly SessionEntry[]): string {
+  for (const entry of branch) {
+    if (entry.type !== "message" || entry.message.role !== "user") continue;
+    const content = entry.message.content;
+    return typeof content === "string" ? content : content.flatMap(part => part.type === "text" ? [part.text] : []).join("\n");
+  }
+  return "";
+}
+
 export function deliverCorrections(input: {
   messages: AgentMessage[];
   branch: SessionEntry[];
@@ -33,7 +43,7 @@ export function deliverCorrections(input: {
   const previous = checkpoints.at(-1);
   // The block goes in once per context: at the first call, and again after a compaction. A later ledger change is not sent; the session reads
   // the new rule with board.corrections(). Old sessions keep their "update" checkpoints where they were, so their cached prefix holds.
-  const current = previous ? null : job ? jobLedgerPrompt(ledger) : ledger && ledgerPrompt(ledger, input.brief);
+  const current = previous ? null : job ? jobLedgerPrompt(ledger, firstPrompt(branch)) : ledger && ledgerPrompt(ledger, input.brief);
   if (current !== null && (ledger !== null || job)) {
     const after = active.findLast(visible)?.id ?? (compact >= 0 ? branch[compact]!.id : null);
     const data: Checkpoint = { kind: "snapshot", lines: current.split("\n"), text: current, after };

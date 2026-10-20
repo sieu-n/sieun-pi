@@ -347,9 +347,32 @@ export const OUTSIDE_ACTION_RULE = "Before any outside action (an email, a ticke
   "c37: nothing goes out without the owner's ok on a For you todo; c79: never ask a vendor's support for help, and never ask the owner to approve that.";
 /** The rules a job reads as short lines: outside sends, vendor support, acting directly, the model and no model fallback, writing, Convex, merges and staging. */
 export const JOB_RULES: ReadonlySet<string> = new Set(["c18", "c20", "c30", "c31", "c35", "c37", "c47", "c49", "c50", "c79"]);
-export function jobLedgerPrompt(ledger: Ledger | null): string {
+export function jobLedgerPrompt(ledger: Ledger | null, brief: string = ""): string {
+  const ui = uiRuleLine(brief);
   return [`[corrections] The owner's corrections that bind jobs, live from the ledger; every other correction holds in this job too. ${OUTSIDE_ACTION_RULE} ${READ_RULE}`,
-    ...(ledger ? liveRules(ledger).filter(entry => JOB_RULES.has(entry.id)).map(shortLine) : [])].join("\n");
+    ...(ledger ? liveRules(ledger).filter(entry => JOB_RULES.has(entry.id)).map(shortLine) : []), ...(ui ? [ui] : [])].join("\n");
+}
+
+/** A brief about one of auto-sns-agent's app screens: it names the demo or its shared UI, and a word for building or styling a screen. */
+const UI_SURFACE = /\b51(?:80|74)\b|apps\/virev-demo|\bvirev-demo\b|\$lib\/ui\b|overlay\/src\/lib|shot-browser/i;
+const UI_WORK = /\b(?:(?<!on )(?<!his )screens?|layouts?|redesign\w*|restyl\w*|styling|polish\w*|light and dark|dark mode|spacing|padding|page builders?)\b/i;
+const NAMES_DESIGN_SKILL = /frontend[- ]design|frontend-implementation/i;
+const NAMES_SHARED_COMPONENTS = /frontend-implementation|\$lib\/ui\b|shared (?:kit|components?|component set)|\bc78\b/i;
+export const UI_RULE_LINE = "- c48 This job reads as UI work, so before you design or change a screen read auto-sns-agent's frontend-implementation skill " +
+  "(`node scripts/skills/read-skill.mjs workflows/frontend-implementation`), which holds the frontend design rules, the shared $lib/ui components to " +
+  "reuse (c78) and the reference app for sibling screens (the Dashboards app). Keep each screen compact with no gray, padded or boxed tables or " +
+  "containers, and name that skill in the brief of every builder you start.";
+/**
+ * The c48 line for a job's [corrections] block: UI_RULE_LINE when its brief reads as UI work and does not name both the frontend design skill
+ * and the shared components, else null. The owner gave c48 in frontend bro on 10-12 06:55Z ("use frontend design skill ... never use this gray
+ * fat needlessly containerized table") and c78 on 10-15 ("consistent design. always use frontend design skill"), and jobs read neither, since
+ * JOB_RULES leaves them out. On 10-19 frontend bro's UI briefs said "Read the frontend design and frontend-implementation skills first" until
+ * 08:57Z, none it wrote from 09:01 to 17:11Z named the skill, and at 17:14Z the owner gave c48 again: "it doens't do fat-as-fuck containers
+ * fix that ... also frontend design skill please". Of the 2,782 job briefs in us-metal02's session artifacts on 10-20, 5 get the line.
+ */
+export function uiRuleLine(brief: string): string | null {
+  if (!UI_SURFACE.test(brief) || !UI_WORK.test(brief)) return null;
+  return NAMES_DESIGN_SKILL.test(brief) && NAMES_SHARED_COMPONENTS.test(brief) ? null : UI_RULE_LINE;
 }
 
 /** An owner message or a `/refine` command in a chat's session file, with its time in ms. */
