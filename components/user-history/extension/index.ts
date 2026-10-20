@@ -5,7 +5,7 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { agentLines } from "../src/chat-agents.ts";
 import { agentOpsViaService, applyAgentOps } from "../src/agent-board.ts";
 import { BRIEF_CORRECTIONS, CHAT_BRIEF, CHAT_BRIEF_ENTRY, type ChatJobOf, createdRootChat, JOB_REPLY_TOOL, jobOf, jobReplyGuideline, PERSONA_TOOL, personaGuideline, pinnedBrief } from "../src/chat-brief.ts";
-import { CHAT_BOARD_TOOL, CHAT_FLAG, CHAT_MODE_ENTRY, chatModeAt, chatShellNote, createSessionNames, hasChatMarker, TELL_OWNER_DESCRIPTION, TELL_OWNER_PARAMETERS,
+import { CHAT_BOARD_TOOL, CHAT_FLAG, CHAT_MODE_ENTRY, OWNER_THREAD_FLAG, chatModeAt, chatShellNote, createSessionNames, hasChatMarker, TELL_OWNER_DESCRIPTION, TELL_OWNER_PARAMETERS,
   type TellInput, tellOwner, type TellTurn, tellTurn, topSession, withChatTool, withMessageIds, withWakeNotes } from "../src/chat-guard.ts";
 import { historyMessages } from "../src/session-tail.ts";
 import { registerPrintedRoots } from "../src/chat-sources.ts";
@@ -34,6 +34,7 @@ export default function historyExtension(pi: ExtensionAPI): void {
     return messages ? { messages } : undefined;
   });
   pi.registerFlag(CHAT_FLAG, { description: "Create this session as a browser chat (the chat server sets it; the session entry chat_mode is the durable mark)", type: "boolean" });
+  pi.registerFlag(OWNER_THREAD_FLAG, { description: "A thread the owner started with his first message (the chat server sets it), so no job registry lookup", type: "boolean" });
   // The chat brief lives in the board tool's promptGuidelines: when the tool is active the base system prompt carries the bullets, so agent-message
   // wakes and heartbeat turns (which skip before_agent_start) read it too. A chat registers it again at session_start with the brief it pinned
   // (pinnedBrief), so a reload onto an edited brief keeps its cached prompt. The board file is the one the chat server shows and the owner edits.
@@ -210,6 +211,7 @@ export default function historyExtension(pi: ExtensionAPI): void {
     if (job) return;
     const header = ctx.sessionManager.getHeader();
     const depth = depthOf(header);
+    if (depth === 0 && pi.getFlag(OWNER_THREAD_FLAG) === true) return;
     const top = depth > 0 && header?.parentSession ? await topSession(header.parentSession) : null;
     if (top) underChat = top.chat || await jobs().chatOf(top.id) !== undefined || (top.name !== "" && await jobs().chatOf(top.name) !== undefined);
     const parentChat = depth === 1 && top?.chat ? top.name : null;

@@ -6,7 +6,7 @@ import type { Catalog } from "./chat-catalog.ts";
 import type { SubagentDelete } from "./chat-sources.ts";
 import { childrenStirred, Dormancy, type IdleDetach, showsWork, unsilent } from "./chat-dormancy.ts";
 import "./daemon-snapshot-count.ts";
-import { CHAT_FLAG } from "./chat-guard.ts";
+import { CHAT_FLAG, OWNER_THREAD_FLAG } from "./chat-guard.ts";
 import { UNKNOWN_ACTIVE } from "./chats.ts";
 import { archiveSavedSession, resumeSince, type ResumeSince, ScheduledJobsLeft, ServicesStopPending, takesSavedArchive } from "./saved-archive.ts";
 import { type CancelTry, type PendingCancel, SavedArchiveQueue } from "./saved-archive-queue.ts";
@@ -26,7 +26,7 @@ import { ImageStore, Projector, projectChild, projectInfo, projectModel, session
 import type { ChatImage } from "./chat-images.ts";
 import { boardDelta, boardStep, type BoardStep, feedBoard } from "./shared/board-delta.ts";
 import { applyThreadEvent, boardKey, isThreadBusy, isTurnRunning, runStartedAtFromMessages, threadStateFromSnapshot } from "./shared/thread-state.ts";
-import type { ChatBoard, ChatDefaults, ChatWait, ChildAgent, Command, ModelCatalog, ModelInfo, OlderPage, ProjectedSessionEvent, SendMode, SessionRow, ThreadEvent, ThreadHave, ThreadInfo, ThreadMessage, ThreadStats, ThreadSnapshot, ThreadState, ThinkingLevel } from "./shared/types.ts";
+import type { ChatBoard, ChatDefaults, ChatWait, ChildAgent, Command, FirstMessage, ModelCatalog, ModelInfo, OlderPage, ProjectedSessionEvent, SendMode, SessionRow, ThreadEvent, ThreadHave, ThreadInfo, ThreadMessage, ThreadStats, ThreadSnapshot, ThreadState, ThinkingLevel } from "./shared/types.ts";
 
 type Listener = (event: ThreadEvent) => void;
 /** What chats watch on the hub: each attach (with the children known then), every change of a thread's subagent list while attached, and each turn's end. */
@@ -289,6 +289,12 @@ export async function disposeConnection(connection: DaemonAgentConnection): Prom
 const LOCAL_HELLO_MS = 30_000;
 /** A prompt's wait for the session to take it, as long as the native connection's (DAEMON_LONG_RUNNING_REQUEST_TIMEOUT_MS, 24 h). */
 const PROMPT_REQUEST_MS = 24 * 60 * 60 * 1000;
+
+/** A daemon prompt's fields; an owner send to another box carries `ownerTurn`, which that box's relay marks (components/prime-relay/owner-turn.mjs). */
+function promptFields(id: string, input: { message: string; images: ChatImage[]; mode: SendMode; owner?: boolean }, remote: boolean): Record<string, unknown> {
+  return { message: input.message, source: "interactive", streamingBehavior: input.mode, queueIfBusy: true, ...(input.images.length ? { images: input.images } : {}),
+    ...(input.owner && remote ? { ownerTurn: id } : {}) };
+}
 
 export class ThreadHub {
   readonly images = new ImageStore();
@@ -1199,19 +1205,35 @@ export class ThreadHub {
     return data.activeSessionId;
   }
 
-  /** `kind: "chat"` sets the extension flag the user-history extension turns into the session's chat marker at its first session_start. */
-  /** `host` is the hosts.json box whose daemon runs the new session; absent means this box. */
-  async create(input: { cwd: string; provider?: string; modelId?: string; thinkingLevel?: ThinkingLevel; name?: string; kind?: "chat"; host?: string }): Promise<Thread> {
+  /**
+   * `kind: "chat"` sets the extension flag the user-history extension turns into the session's chat marker at its first session_start. `host`
+   * is the hosts.json box whose daemon runs the new session; absent means this box. `first` is the owner's first message, sent the moment the daemon answers the create and before this box attaches, so the session's first
+   * turn runs while the attach and its snapshot cross the relay. It also sets OWNER_THREAD_FLAG, so the extension skips its job registry
+   * lookups. On 10-20 a new Mac thread's first reply reached the box 8.8 to 12.2 s after the send, while the Mac's own turn took 2.1 to 3.2 s:
+   * the create took 3.6 to 4.1 s, and the attach, the bookkeeping, a rename and the prompt's own lookups another 4.5 to 6.6 s before the
+   * prompt reached the Mac (~/work/mac-new-thread-first-reply/nt1.json, nt2.json). The create still throws when the first send fails.
+   */
+  async create(input: { cwd: string; provider?: string; modelId?: string; thinkingLevel?: ThinkingLevel; name?: string; kind?: "chat"; host?: string; first?: FirstMessage }): Promise<Thread> {
     const client = await this.hostDaemon(input.host ?? null);
+    const flags = { ...(input.kind === "chat" ? { [CHAT_FLAG]: true } : {}), ...(input.first ? { [OWNER_THREAD_FLAG]: true } : {}) };
     const response = await timedWorkerStart(`create ${input.name ?? input.cwd}`, () => client.request({ type: "create", lifecycle: "resident", ...(input.name ? { name: input.name } : {}), config: { cwd: input.cwd,
       ...(input.provider && input.modelId ? { provider: input.provider, model: input.modelId } : {}), ...(input.thinkingLevel ? { thinking: input.thinkingLevel } : {}),
-      ...(input.kind === "chat" ? { extensionFlagValues: { [CHAT_FLAG]: true } } : {}) } }, DAEMON_WORKER_START_MS, { recoverable: false }));
+      ...(Object.keys(flags).length ? { extensionFlagValues: flags } : {}) } }, DAEMON_WORKER_START_MS, { recoverable: false }));
     if (!response.success) throw new ThreadError(502, response.error);
     const data = response.data;
     if (typeof data !== "object" || data === null || !("sessionId" in data) || typeof data.sessionId !== "string" || !("activeSessionId" in data) || typeof data.activeSessionId !== "string") {
       throw new ThreadError(502, "Prime Agent returned no session for the new thread.");
     }
-    if (input.host && this.catalog.isOtherHost(input.host)) this.catalog.place(input.host, data.sessionId, data.activeSessionId);
+    const remote = Boolean(input.host && this.catalog.isOtherHost(input.host));
+    if (remote) this.catalog.place(input.host!, data.sessionId, data.activeSessionId);
+    let sent: Promise<void> | null = null;
+    if (input.first) {
+      if (!remote) void this.markOwnerTurn(data.sessionId);
+      const fields = promptFields(data.sessionId, { ...input.first, images: [], owner: true }, remote);
+      sent = client.request({ type: "prompt", activeSessionId: data.activeSessionId, ...fields } as never, PROMPT_REQUEST_MS, { recoverable: false })
+        .then(answer => { if (!answer.success) throw new ThreadError(502, answer.error); });
+      sent.catch(() => {});
+    }
     this.evict("live");
     const connection = await this.attach(data.activeSessionId, input.host ?? null);
     let thread: Thread;
@@ -1222,6 +1244,7 @@ export class ThreadHub {
     this.threads.set(thread.id, thread);
     void this.catalog.refresh().catch(() => {});
     this.attached(thread);
+    await sent;
     return thread;
   }
 
@@ -1262,8 +1285,7 @@ export class ThreadHub {
       if (!command) throw new ThreadError(400, "Unknown slash command. The draft was kept.");
       if (command.source === "extension") throw new ThreadError(400, "Use this extension command in the Prime Agent terminal. Browser dialogs are unavailable.");
     }
-    const fields = { message: input.message, source: "interactive", streamingBehavior: input.mode, queueIfBusy: true, ...(input.images.length ? { images: input.images } : {}),
-      ...(input.owner && remote ? { ownerTurn: id } : {}) };
+    const fields = promptFields(id, input, remote);
     // `sending` marks the outbox entry as maybe delivered from here on (src/outbox.ts): a failure after it is looked for before a resend.
     await input.sending?.();
     try { await ask(activeSessionId, "prompt", fields); } catch (error) {

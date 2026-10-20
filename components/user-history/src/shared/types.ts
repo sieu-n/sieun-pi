@@ -407,6 +407,8 @@ export interface Command { name: string; description?: string; argumentHint?: st
 export interface Workspace { cwd: string; host: string | null; lastUsedAt?: string; count: number }
 export interface ImageInput { type: "image"; mimeType: string; data: string }
 export type SendMode = "steer" | "followUp";
+/** The owner's first message of a new thread: text only, since a picture's model check and a slash command need the attached thread. */
+export interface FirstMessage { message: string; mode: SendMode }
 
 export interface PoolWindow { kind: "session" | "weekly" | "model"; label: string; pct: number; resetsAt: number | null }
 export interface PoolAccount {

@@ -35,7 +35,7 @@ import { correctionStep } from "./correction-refine.ts";
 import { briefCheck, briefCheckNote, ownerSaid } from "./shared/brief-check.ts";
 import { type CheckInRun, runStamp } from "./chat-duty-run.ts";
 import { CHECK_IN_DUTY_ID } from "./shared/chat-duties.ts";
-import type { ChatAgent, ChatBoard, ChatBriefState, CheckInState, CheckInView, ChildAgent, OwnerTodo, PlanItem, QueuePlace, SessionRow, ThinkingLevel, ThreadMessage } from "./shared/types.ts";
+import type { ChatAgent, ChatBoard, ChatBriefState, CheckInState, CheckInView, ChildAgent, FirstMessage, OwnerTodo, PlanItem, QueuePlace, SessionRow, ThinkingLevel, ThreadMessage } from "./shared/types.ts";
 import { chatBrief, type LoadRecord, reloadAction } from "./chat-brief.ts";
 import { BRIEF_CHECK_MAX_AGE_MS, type ChatLinks, type ChatSummary, type ChatThreads, type CheckInSource, CHECK_MAX_AGE_MS, type SubagentDelete } from "./chat-sources.ts";
 import { chatName, fileHasChatMarker } from "./chat-guard.ts";
@@ -351,12 +351,12 @@ export class Chats {
 
   async ids(): Promise<ReadonlySet<string>> { await this.load(); return this.chatIds; }
 
-  /** `host` is the hosts.json box whose daemon runs the chat; absent means this box. */
-  async create(input: { cwd: string; provider?: string; modelId?: string; thinkingLevel?: ThinkingLevel; name?: string; host?: string }): Promise<{ id: string; name: string }> {
+  /** `host` is the hosts.json box whose daemon runs the chat; absent means this box. `first` is the owner's first message, which the thread create sends before its attach (ThreadHub.create). */
+  async create(input: { cwd: string; provider?: string; modelId?: string; thinkingLevel?: ThinkingLevel; name?: string; host?: string; first?: FirstMessage }): Promise<{ id: string; name: string }> {
     await this.load();
     const name = input.name?.trim() || chatName();
     const { id } = await this.threads.create({ cwd: input.cwd, ...(input.provider ? { provider: input.provider } : {}), ...(input.modelId ? { modelId: input.modelId } : {}),
-      ...(input.thinkingLevel ? { thinkingLevel: input.thinkingLevel } : {}), ...(input.host ? { host: input.host } : {}), name, kind: "chat" });
+      ...(input.thinkingLevel ? { thinkingLevel: input.thinkingLevel } : {}), ...(input.host ? { host: input.host } : {}), ...(input.first ? { first: input.first } : {}), name, kind: "chat" });
     await this.source.owned?.add(id);
     await this.index.add(id);
     this.chatIds.add(id);

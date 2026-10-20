@@ -10,6 +10,11 @@ import { SHOP_TALK_MARK, shopTalk } from "./shared/reply-lint.ts";
 
 /** The extension flag the chat server sets on `create`. The extension turns it into the session entry at the first session_start. */
 export const CHAT_FLAG = "chat";
+/**
+ * The extension flag the chat server sets on a thread the owner starts with his first message: such a thread is no job, so the extension skips
+ * the job registry lookups, which on the Mac read the box's 125 KB registry twice over a new TLS link, about 1.4 s of each Mac create on 10-20.
+ */
+export const OWNER_THREAD_FLAG = "owner-thread";
 /** The session entry that defines "this session is a chat". Children get their own session files, so it never reaches them. */
 export const CHAT_MODE_ENTRY = "chat_mode";
 /** The board tool. Its promptGuidelines carry the brief, so it is active only in a marked root. */

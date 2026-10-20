@@ -16,7 +16,7 @@ import type { InterruptedReport, JobOf } from "./shared/interrupted.ts";
 import type { Wake } from "./wakes.ts";
 import type { Leftovers } from "./job-leftovers.ts";
 import type { PoolPlaces } from "./chat-turn-queue.ts";
-import type { BoardOp, ChatBoard, ChatWait, ChildAgent, ModelInfo, QueueState, RetryState, SessionRow, ThinkingLevel, ThreadMessage } from "./shared/types.ts";
+import type { BoardOp, ChatBoard, ChatWait, ChildAgent, FirstMessage, ModelInfo, QueueState, RetryState, SessionRow, ThinkingLevel, ThreadMessage } from "./shared/types.ts";
 
 export type SubagentDelete = "deleted" | "not_held" | "running";
 
@@ -197,7 +197,7 @@ export const BRIEF_CHECK_MAX_AGE_MS = 30 * 60_000;
 
 /** What chats need from the thread hub. ThreadHub satisfies it; tests pass a fake. */
 export interface ChatThreads {
-  create(input: { cwd: string; provider?: string; modelId?: string; thinkingLevel?: ThinkingLevel; name: string; kind: "chat"; host?: string }): Promise<{ id: string }>;
+  create(input: { cwd: string; provider?: string; modelId?: string; thinkingLevel?: ThinkingLevel; name: string; kind: "chat"; host?: string; first?: FirstMessage }): Promise<{ id: string }>;
   /** Keeps the chat attached and resumes it after each daemon restart; every chat is pinned. */
   pin(id: string): void;
   unpin(id: string): void;

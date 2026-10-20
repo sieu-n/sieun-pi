@@ -880,12 +880,16 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
         if (creation && creation.fingerprint !== fingerprint) throw new RequestError(409, "This request ID belongs to another new chat.");
         if (!creation) {
           creation = { fingerprint, result: (async () => {
-            const input = { cwd, ...(provider ? { provider } : {}), ...(modelId ? { modelId } : {}), ...(thinkingLevel ? { thinkingLevel } : {}), ...(host ? { host } : {}) };
+            // Every send to a chat is a steer, so the owner's text lands after the current tool batch and the queue stays invisible.
+            const mode = kind === "chat" ? "steer" : "followUp";
+            // Text with no account to set first rides on the create, which sends it before its attach (ThreadHub.create).
+            const first = !account && !images.length && !message.trimStart().startsWith("/") ? { message, mode } as const : undefined;
+            const input = { cwd, ...(provider ? { provider } : {}), ...(modelId ? { modelId } : {}), ...(thinkingLevel ? { thinkingLevel } : {}), ...(host ? { host } : {}),
+              ...(name ? { name } : {}), ...(first ? { first } : {}) };
             // A chat is created with its name (a job replies to it by name), pinned and set to steering mode all; the server tick does its check-ins.
-            const thread = kind === "chat" ? await backend.chats.create({ ...input, ...(name ? { name } : {}) }) : await backend.threads.create(input);
+            const thread = kind === "chat" ? await backend.chats.create(input) : await backend.threads.create(input);
             // Both kinds go in threads.json: a thread this server created is the person's (origin "user"), whatever its session file says.
-            await backend.created.add(thread.id).catch(() => {});
-            await backend.newChat.remember(host ?? backend.catalog.selfHost() ?? thisBox(), cwd).catch(() => {});
+            await Promise.all([backend.created.add(thread.id).catch(() => {}), backend.newChat.remember(host ?? backend.catalog.selfHost() ?? thisBox(), cwd).catch(() => {})]);
             if (account) {
               // The account is set on the new session before the prompt, so its first model request already uses it. A failed use sends nothing.
               try { await runAccountAction({ action: "use", provider: account.provider, account: account.id, id: thread.id, newSession: true }); }
@@ -895,12 +899,9 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
                 throw new RequestError(502, error instanceof Error ? error.message : String(error));
               }
             }
-            // A thread the owner starts is high in the pool from its first request; a priority label set below re-syncs it.
+            // A thread the owner starts is high in the pool; its first turn is already admitted at once as the owner's (ThreadHub.prompt).
             await backend.poolPriorities?.set(thread.id, "high");
-            // The name is set before the prompt, so the thread never shows the first message as its title. A failed rename still sends the message.
-            if (name && kind !== "chat") await backend.threads.rename(thread.id, name).catch(() => {});
-            // Every send to a chat is a steer, so the owner's text lands after the current tool batch and the queue stays invisible.
-            await backend.threads.prompt(thread.id, { message, images, mode: kind === "chat" ? "steer" : "followUp", owner: true });
+            if (!first) await backend.threads.prompt(thread.id, { message, images, mode, owner: true });
             // The chat exists either way; a Slack refusal comes back as a notice and the header switch can try again.
             if (syncSlack) {
               const failure = !slack ? "This chat instance runs no Slack bridge." : await slack.chat(thread.id, { action: "connect", ...syncSlack }).then(() => null, (error: unknown) => error instanceof Error ? error.message : String(error));
