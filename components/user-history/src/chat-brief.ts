@@ -104,14 +104,25 @@ export const JOB_REPLY_TOOL = "job_reply";
 /** A session that works for a chat: `chat` is the chat's session name (empty when unknown); `root` for a thread the chat started with rlm.create_session. */
 export interface ChatJobOf { chat: string; root: boolean }
 
-export function jobReplyGuideline(job: ChatJobOf): string {
+/**
+ * A job's own scratch folder, `<home>/scratch/<its session id>`, which the job line names and the job's end deletes once no process uses it
+ * (job-leftovers.ts `endLeftovers`). Its name holds the session id, so no other job's tree or a shared one ever has it. Between 10-19 21:30Z and
+ * 10-20 03:40Z jobs left 33 GB of trees under ~/scratch/<job>/ on us-metal02, since a job's end deleted only what board.own had recorded.
+ */
+export function jobScratch(session: string, home = "~"): string {
+  return `${home}/scratch/${session}`;
+}
+
+export function jobReplyGuideline(job: ChatJobOf, session: string): string {
   const send = job.root ? `await agent_message.send(report, receiver_role="sibling", receiver_name="${job.chat}")` : `await agent_message.send(report, receiver_role="parent")`;
+  const scratch = jobScratch(session);
   return `You are a job of the chat${job.chat ? ` ${job.chat}` : ""}. When you finish, fail or get blocked, send your report first with \`${send}\`, ` +
-    `and lead it with the answer. ${MERGE_RULE_SHORT} Put a scratch repo tree (a \`git archive\` export, or a worktree where the repo allows ` +
-    "one) under ~/scratch/<job>/, never in a wiki session folder or under ~/.prime/agent/session-artifacts, export only the paths you build or test " +
+    `and lead it with the answer. ${MERGE_RULE_SHORT} Put every scratch repo tree (a \`git archive\` export, or a worktree where the repo allows ` +
+    `one), rig and data copy you or your subagents make to throw away under ${scratch}/, your own folder, which your end deletes once no process ` +
+    "uses it; never put one in a wiki session folder or under ~/.prime/agent/session-artifacts. Export only the paths you build or test " +
     "(`git archive <commit> -- <paths>`), since a whole tree is 0.6 GB, and commit through a private index, which needs no tree copy. " +
-    "Record each tree, rig or `systemd-run` unit you made to throw away with `board.own(path, unit=...)`, since a job's end deletes and stops " +
-    "only what that record names, and keep reports, evidence and helpers other jobs run under ~/work/<job>/ or the repo. " +
+    "Record a throwaway path outside your folder and each `systemd-run` unit with `board.own(path, unit=...)`, and keep reports, evidence and " +
+    "helpers other jobs run under ~/work/<job>/ or the repo, never in your scratch folder. " +
     `No cap, throttle, timeout, rate or caution line without a measurement, a vendor limit or an incident cited next to the number; remove unbacked ones. ` +
     "Work, reason and write in English, including reports, logs, files, commits, docs and wiki pages, even pages made for the owner; quote the " +
     "owner's words as-is; only chat replies to the owner use his language (c2, c102).";

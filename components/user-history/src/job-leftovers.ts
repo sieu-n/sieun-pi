@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join, normalize, relative } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { Host } from "./hosts.ts";
+import { jobScratch } from "./chat-brief.ts";
 import { WIKI_CONTENT_DIR } from "./chat-wiki.ts";
 import type { RawProcess } from "./mac-usable-watch.ts";
 import { stopOrphanServices } from "./orphan-services.ts";
@@ -131,18 +132,20 @@ async function ours(path: string): Promise<boolean> {
 }
 
 /**
- * Stops the units and deletes the paths the ownership records of gone sessions name (`readOwned`), and keeps a path any process runs in, holds
- * or names. Each record keeps the paths that are still there, so a later sweep deletes one once nothing holds it.
+ * Stops the units and deletes the paths the ownership records of gone sessions name (`readOwned`) and the scratch folders the job line gave
+ * those sessions (`jobScratch`, `~/scratch/<session id>`), and keeps a path any process runs in, holds or names. A kept path stays in its
+ * record or its session's folder name, so a later sweep of deleted jobs deletes it once nothing holds it.
  */
-async function endOwned(source: LeftoverSource, files: readonly string[], dirs: readonly string[]): Promise<{ owned: readonly string[]; units: readonly string[]; elsewhere: readonly string[] }> {
-  if (!files.length) return { owned: [], units: [], elsewhere: [] };
+async function endOwned(source: LeftoverSource, files: readonly string[], dirs: readonly string[], sessions: readonly string[]): Promise<{ owned: readonly string[]; units: readonly string[]; elsewhere: readonly string[] }> {
+  const folders = sessions.filter(session => SESSION.test(session)).map(session => jobScratch(session, homedir()));
+  if (!files.length && !folders.length) return { owned: [], units: [], elsewhere: [] };
   const records = await Promise.all(files.map(file => readOwned(file, dirs)));
   const wanted = [...new Set(records.flatMap(record => record.units))];
   const answer = wanted.length ? await source.stopUnits(wanted).catch(() => []) : [];
   const units = answer ?? [];
   const elsewhere = answer === null ? wanted : [];
   const paths: string[] = [];
-  for (const path of new Set(records.flatMap(record => record.paths))) if (await ours(path)) paths.push(path);
+  for (const path of new Set([...records.flatMap(record => record.paths), ...folders])) if (await ours(path)) paths.push(path);
   const held = new Set(paths.length ? (await source.inside(paths)).map(entry => entry.dir) : []);
   const free = paths.filter(path => !held.has(path));
   const owned = free.length ? await source.removeTmp(free) : [];
@@ -293,8 +296,8 @@ export async function stopProcesses(source: Pick<LeftoverSource, "started" | "ki
  * Stops what gone jobs left: their sessions' detached processes and their Aside tabs, whose records are then emptied so a later sweep does not
  * open Aside for them again, deletes the repo copies they left in the wiki session folders they opened, deletes the kernel states and repo
  * copies they left in their session-artifacts folders (`endArtifacts`), and stops the units and deletes the paths their ownership records name
- * (`endOwned`). With `session`, the processes are read again after KILL_AFTER_MS, since a kernel the daemon is still ending at the
- * delete leaves its children detached only once it exits.
+ * and their own scratch folders (`endOwned`). With `session`, the processes are read again after KILL_AFTER_MS, since a kernel the daemon is
+ * still ending at the delete leaves its children detached only once it exits.
  */
 export async function endLeftovers(source: LeftoverSource, dirs: string | readonly string[], session?: string): Promise<Leftovers> {
   const trees = await Promise.all((typeof dirs === "string" ? [dirs] : dirs).map(sessionTree));
@@ -311,7 +314,7 @@ export async function endLeftovers(source: LeftoverSource, dirs: string | readon
   const transcripts = trees.flatMap(tree => tree.transcripts);
   const copies = await source.removeCopies(transcripts).catch(() => []);
   const artifacts = await endArtifacts(source, transcripts).catch(() => []);
-  const owned = await endOwned(source, trees.flatMap(tree => tree.ownedFiles), typeof dirs === "string" ? [dirs] : dirs).catch(() => ({ owned: [], units: [], elsewhere: [] }));
+  const owned = await endOwned(source, trees.flatMap(tree => tree.ownedFiles), typeof dirs === "string" ? [dirs] : dirs, sessions).catch(() => ({ owned: [], units: [], elsewhere: [] }));
   return { stopped, tabs: Math.max(tabs, 0), copies, artifacts, owned: owned.owned, units: [...handed, ...owned.units], ...owned.elsewhere.length ? { elsewhere: owned.elsewhere } : {} };
 }
 

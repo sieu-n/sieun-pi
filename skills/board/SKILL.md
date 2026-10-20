@@ -48,10 +48,9 @@ A chat and every job under it find the chat from `RLM_SESSION_DIR`. A root job t
 
 ## Record what a job throws away
 
-When a job is deleted or archived, the chat service stops the transient systemd user units (`systemd-run`) and deletes the paths that the job's own record names, and nothing else. A path that a transcript or a command only names is never deleted or signalled, because on 10-19 at 02:06Z the end of job metal agent verification deleted the shared `~/scratch/release-applied` and stopped four release processes of other jobs that ran a helper from it.
+When a job is deleted or archived, the chat service stops the transient systemd user units (`systemd-run`) and deletes the paths that the job's own record names and the job's own scratch folder `~/scratch/<its session id>/`, which its job line names, and nothing else. Put a throwaway tree in that folder and it needs no record. A path that a transcript or a command only names is never deleted or signalled, because on 10-19 at 02:06Z the end of job metal agent verification deleted the shared `~/scratch/release-applied` and stopped four release processes of other jobs that ran a helper from it.
 
 ```python
-board.own("~/scratch/my-job/tree")                              # a git archive export to throw away
 board.own("/tmp/p8iso-a", unit="p8iso-a-daemon.service")        # a rig and the systemd-run unit that serves it
 ```
 

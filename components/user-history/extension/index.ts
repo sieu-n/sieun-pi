@@ -223,7 +223,7 @@ export default function historyExtension(pi: ExtensionAPI): void {
     job = jobOf({ depth, marked, parentChat, registered });
     dutyJob = job !== null && byId !== undefined;
     if (!job) return;
-    const guideline = jobReplyGuideline(job);
+    const guideline = jobReplyGuideline(job, ctx.sessionManager.getSessionId());
     pi.registerTool({
       name: JOB_REPLY_TOOL,
       label: "Report to the chat",
@@ -281,7 +281,7 @@ export default function historyExtension(pi: ExtensionAPI): void {
     rootLooked = true;
     await findJob(ctx).catch(() => {});
     if (!job) return undefined;
-    const guideline = jobReplyGuideline(job);
+    const guideline = jobReplyGuideline(job, ctx.sessionManager.getSessionId());
     let line: string | null = null;
     try { line = registerPersona(); } catch { /* no line */ }
     const add = [guideline, line].filter((line): line is string => line !== null && !event.systemPrompt.includes(line));

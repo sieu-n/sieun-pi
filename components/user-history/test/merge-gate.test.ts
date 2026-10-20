@@ -171,7 +171,7 @@ test("merge gate: while the c74 standing go is on, the brief, the job reply guid
   assert.ok(git.includes(MERGE_RULE), "the full rule sits in the git reference the brief points to");
   assert.ok(git.includes("`releaseGo.preapproval`") && !git.includes("(c49)"), "git.md names the switch and holds no c49 rule while c74 is on");
   assert.ok(CHAT_BRIEF.some(line => line.includes("references/git.md before a sieun-pi commit, release, merge or push")));
-  assert.ok(jobReplyGuideline({ chat: "slack green guy", root: false }).includes(MERGE_RULE_SHORT), "job reply guideline");
+  assert.ok(jobReplyGuideline({ chat: "slack green guy", root: false }, "01a14210-4e7d-72c3-aa67-e3d476f4e728").includes(MERGE_RULE_SHORT), "job reply guideline");
   assert.equal(MERGE_RULE_SHORT, `Never ask the owner to confirm a staging land, a deploy, a merge, a push to main or master or a prod promote. ${preApprovalText(C74)}`);
   const duty = dutyJobBrief({ duty: { ...CHECK_IN_DUTY }, chat: { id: "c1", name: "slack green guy", board: "/b/c1.json" }, job: "check-in slack green guy 14:00", at: 0, measure: "m", findings: "f" });
   assert.ok(duty.includes("(a step whose only target is staging never needs one)"), "duty job brief: staging needs no go");
