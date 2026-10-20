@@ -94,6 +94,29 @@ test("the create send is timed from before its POST, listed as a new thread and 
   assert.deepEqual(reading.flagged.map(item => item.kind), ["reply_new_thread", "reply"]);
 });
 
+test("a first turn that ended in an error sends no follow-up, so the new-thread send is still read while the accounts wait", async t => {
+  const posts: string[] = [];
+  const server = createServer((req, res) => {
+    posts.push(req.url!.replace(/^.*\/api\//, ""));
+    req.resume();
+    req.on("end", () => { res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify({ id: "01a15666-0000-7000-8000-000000000002" })); });
+  });
+  const sockets = new WebSocketServer({ server });
+  sockets.on("connection", socket => socket.on("message", data => {
+    const { sub } = JSON.parse(data.toString()) as { sub: number };
+    const frame = (type: string, message?: Record<string, unknown>) => socket.send(JSON.stringify({ event: "thread", sub, data: { type: "event", event: { type, ...(message ? { message } : {}) } } }));
+    frame("message_end", { role: "assistant", content: [], stopReason: "error", errorMessage: "pi-pool: this session waits for its slot" });
+    frame("agent_end");
+    frame("auto_retry_start");
+  }));
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => { sockets.close(); server.close(); });
+  const { sends } = await sendProbe({ port: (server.address() as AddressInfo).port, capability: "cap", csrfToken: "token" });
+  assert.deepEqual(sends.map(send => send.create), [true]);
+  assert.deepEqual(posts.filter(path => path.endsWith("/prompt")), []);
+});
+
 const journal = (lines: string[]) => lines.map(line => `${line.slice(0, 32)} us-metal02 systemd[257985]: ${line.slice(33)}`).join("\n");
 
 test("a release counts as broken when the service exits after its restart within the window, and message drops do not count", () => {

@@ -212,6 +212,9 @@ export async function sendProbe(config: ChatConfig): Promise<{ id: string; sends
     sends.push({ marker: firstText, sentAt: createdAt, firstTokenAt: first.at, create: true });
     const end = await until(first.index, frame => mine(frame) && (kind(frame) === "agent_end" || kind(frame) === "auto_retry_start"), 300_000, "first turn end");
     if (kind(frames[end.index]!.frame) === "auto_retry_start") return { id, sends };
+    // A first turn that ended in an error, such as pi-pool's slot wait, goes into a retry after its agent_end, and a follow-up then waits behind
+    // it: on 10-20 at 05:49Z every Mac account was limited, and the follow-up got no user message in 120 s, which left the new-thread send unread.
+    if (frames.slice(first.index, end.index + 1).some(({ frame }) => mine(frame) && frame.data?.event?.message?.role === "assistant" && frame.data.event.message.stopReason === "error")) return { id, sends };
     for (let count = 1; count < SENDS; count++) {
       await new Promise(resolve => setTimeout(resolve, 1500));
       const text = marker();
