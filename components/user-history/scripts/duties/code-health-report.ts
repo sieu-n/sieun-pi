@@ -12,7 +12,11 @@ import { loadHosts, roleUrl } from "../../src/hosts.ts";
  * seeing today's numbers for both repos. auto-sns-agent's scripts/dev/code-health-daily.mjs writes them under the systemd user timer
  * code-health.timer (06:00 KST) on the wiki host, into apps/llm-wiki/content/.wiki/code-health.duckdb, the page, and a dated copy on the store box.
  * - report_days_7d reads the store: days of the last 7 KST days with metric rows for both repos.
- * - ranked_metrics_shown reads the page the wiki serves and counts the 8 metrics the agent-code-metrics page ranks whose page rows show the newest store day's numbers for both repos, with code_health_page.py's own formatting.
+ * - ranked_metrics_shown reads the page the wiki serves and counts the 10 tracked metrics whose page rows show the newest store day's numbers, with
+ *   code_health_page.py's own formatting: the 8 the agent-code-metrics page ranks for both repos, plus auto-sns-agent's tests and CI (sieun-pi has
+ *   no GitHub CI). Tests count only when that day's test load holds every suite any test load of the 7 days ending on it held, so a load that read
+ *   2 of 12 suites, as the 16:50Z run on 10-19 did, misses. CI counts only when that day has ci-guarantees rows. The owner asked on 2026-10-15:
+ *   "now the same system will monitor and report test stats, CI stats."
  * - backup_age_h reads the newest dated copy on the store box.
  * - source_errors reads the step lines of the last run in the timer's log.
  * An input it cannot read sets its metric to UNMEASURED, so the run misses and the flagged items say why.
@@ -29,10 +33,11 @@ const LOG = join(homedir(), ".local/state/virev/code-health.log");
 const STORE_BOX = "root@100.84.91.26";
 const BACKUP_DIR = "backups/code-health";
 /**
- * The 8 metrics the agent-code-metrics wiki page ranks, in its order, each with the store metrics of its page rows, or the top files list.
- * New complex functions show as the count of functions over complexity 15, whose 7-day move is the new ones.
+ * The 8 metrics the agent-code-metrics wiki page ranks, in its order, then tests and CI, each with the store metrics of its page rows, or the
+ * top files list, and the repos it covers. New complex functions show as the count of functions over complexity 15, whose 7-day move is the new ones.
  */
-export const RANKED: readonly { name: string; rows: readonly string[] | "hotspots" }[] = [
+export interface Tracked { name: string; rows: readonly string[] | "hotspots"; repos?: readonly string[]; check?: "suites" | "ci" }
+export const TRACKED: readonly Tracked[] = [
   { name: "hotspots", rows: "hotspots" },
   { name: "change size", rows: ["big_commit_share_30d"] },
   { name: "14-day rework", rows: ["rework_share_7d"] },
@@ -41,7 +46,11 @@ export const RANKED: readonly { name: string; rows: readonly string[] | "hotspot
   { name: "new unused exports and import cycles", rows: ["new_unused_exports_1d", "new_import_cycles_1d"] },
   { name: "test files edited", rows: ["test_files_edited_1d", "suppressions_added_1d"] },
   { name: "lines of code", rows: ["source_lines"] },
+  { name: "tests (full suite set)", rows: ["tests_total_1d", "tests_pass_rate_1d"], repos: ["auto-sns-agent"], check: "suites" },
+  { name: "CI", rows: ["ci_land_success_successpct_7d", "ci_queue_wait_heavy_p50_1d", "ci_queue_wait_light_p50_1d"], repos: ["auto-sns-agent"], check: "ci" },
 ];
+/** Days of test loads, ending on the newest day, whose suites set the expected suite list. */
+export const SUITE_DAYS = 7;
 /** The steps one code-health-daily.mjs run logs, in its order. */
 export const STEPS = REPOS.flatMap(repo => [`run ${repo}`, `missing ${repo}`]).concat(["load-ci", "load-tests", "page", "backup"]);
 
@@ -51,9 +60,12 @@ const message = (error: unknown): string => (error instanceof Error ? error.mess
 
 export interface PageRow { repo: string; label: string; now: string }
 export interface Hotspot { repo: string; path: string }
-/** One store day as the helper prints it: repos with rows, backfilled repos, and the table rows and top files code_health_page.py would render for it. */
+/**
+ * One store day as the helper prints it: repos with rows, backfilled repos, the table rows and top files code_health_page.py would render for it,
+ * the junit suites of its test load, and its count of ci-guarantees rows.
+ */
 export interface StoreDay { repos: string[]; backfilled: string[];
-  rows: (PageRow & { metric: string })[]; hotspots: Hotspot[] }
+  rows: (PageRow & { metric: string })[]; hotspots: Hotspot[]; suites: string[]; ciRows: number }
 /** The timer's state from systemd: when it last fired and whether its run is going now. */
 export interface TimerState { lastTrigger: number | null; running: boolean }
 export interface StepLine { at?: string; step: string; ok: boolean; error?: string }
@@ -103,12 +115,22 @@ export function newestDay(days: Record<string, StoreDay>): string | null {
   return Object.keys(days).sort().reverse().find(day => REPOS.every(repo => days[day]!.repos.includes(repo))) ?? null;
 }
 
+/** Every suite a test load held on the `SUITE_DAYS` days ending on `newest`, so a suite that leaves CI stops being expected after a week. */
+export function expectedSuites(days: Record<string, StoreDay>, newest: string): string[] {
+  const window = Array.from({ length: SUITE_DAYS }, (_, n) => addDays(newest, -n));
+  return [...new Set(window.flatMap(day => days[day]?.suites ?? []))].sort();
+}
+
 /**
- * Each ranked metric with what keeps it off the page: a page row that is missing, empty or not the store day's number for a repo, or a repo
- * whose top files on the page are not that day's. An empty list means the page shows it for both repos.
+ * Each tracked metric with what keeps it off the page: a page row that is missing, empty or not the store day's number for a repo, a repo
+ * whose top files on the page are not that day's, an expected suite the day's test load lacks, or a day with no ci-guarantees rows. An empty
+ * list means the page shows it for every repo it covers.
  */
-export function rankedGaps(page: PageRow[], hotspots: Hotspot[], day: StoreDay): { name: string; gaps: string[] }[] {
-  return RANKED.map(({ name, rows }) => ({ name, gaps: REPOS.flatMap(repo => {
+export function rankedGaps(page: PageRow[], hotspots: Hotspot[], day: StoreDay, suites: readonly string[]): { name: string; gaps: string[] }[] {
+  return TRACKED.map(({ name, rows, repos = REPOS, check }) => ({ name, gaps: [
+    ...(check === "suites" ? suites.filter(suite => !day.suites.includes(suite)).map(suite => `auto-sns-agent suite ${suite}: in a test load of the last ${SUITE_DAYS} days, not in this day's (${day.suites.length} of ${suites.length} expected suites)`) : []),
+    ...(check === "ci" && !day.ciRows ? ["auto-sns-agent: no ci-guarantees rows for this day (load-ci)"] : []),
+    ...repos.flatMap(repo => {
     if (rows === "hotspots") {
       const want = day.hotspots.filter(row => row.repo === repo).map(row => row.path);
       const got = hotspots.filter(row => row.repo === repo).map(row => row.path);
@@ -120,7 +142,7 @@ export function rankedGaps(page: PageRow[], hotspots: Hotspot[], day: StoreDay):
       const got = page.find(row => row.repo === repo && row.label === want.label);
       return got?.now === want.now ? [] : [`${repo} "${want.label}": page shows ${got ? `"${got.now}"` : "no row"}, store has "${want.now}"`];
     });
-  }) }));
+  })] }));
 }
 
 /** The step lines of the last run in the timer's log: from the last `run auto-sns-agent` line on. Other lines are skipped. */
@@ -166,6 +188,8 @@ for n in range(count):
         "backfilled": [r for (r,) in q("SELECT DISTINCT repo FROM metrics WHERE day = ? AND metric = 'backfilled' AND value = 1")],
         "rows": [{"repo": r["repo"], "metric": r["metric"], "label": r["label"], "now": ch.shown(r["value"], r["unit"])} for r in ch.headline(con, day)],
         "hotspots": [{"repo": r["repo"], "path": r["path"]} for r in ch.hotspots(con, day)],
+        "suites": [s for (s,) in con.execute("SELECT DISTINCT scope FROM metrics WHERE day = ? AND repo = 'auto-sns-agent' AND run_id = ? AND metric = 'tests_total_1d' AND scope <> '' ORDER BY scope", [day, f"{ch.TEST_SOURCE}-{day}"]).fetchall()],
+        "ciRows": con.execute("SELECT count(*) FROM metrics WHERE day = ? AND repo = 'auto-sns-agent' AND run_id = ? AND metric LIKE 'ci_%'", [day, f"ci-guarantees-{day}"]).fetchone()[0],
     }
 con.close()
 shutil.rmtree(work, ignore_errors=True)
@@ -174,13 +198,13 @@ print(json.dumps(days))
 
 export type Exec = (file: string, args: readonly string[], timeoutMs: number) => Promise<string>;
 
-/** Store days from today back 8 days, read from a copy of the store so the timer's write lock never blocks the read. */
+/** Store days from today back 15 days, so the newest day has its 7 days of earlier test loads, read from a copy of the store so the timer's write lock never blocks the read. */
 async function storeDays(exec: Exec, now: number): Promise<Record<string, StoreDay>> {
   const module = join(tmpdir(), `code-health-page-${process.pid}.py`);
   await writeFile(module, await exec("git", ["-C", CHECKOUT, "show", "origin/sieun/dev:apps/llm-wiki/scripts/code_health_page.py"], 20_000));
   try {
     // measured 12 s on us-metal02 on 2026-10-18 for 9 days
-    const out = await exec("uv", ["run", "-q", "--no-project", "--with", "duckdb", "python", "-c", HELPER, module, STORE, kstDay(now), "9"], 120_000);
+    const out = await exec("uv", ["run", "-q", "--no-project", "--with", "duckdb", "python", "-c", HELPER, module, STORE, kstDay(now), "16"], 120_000);
     return JSON.parse(out.trim().split("\n").at(-1)!) as Record<string, StoreDay>;
   } finally {
     await rm(module, { force: true });
@@ -221,9 +245,10 @@ export async function measure(exec: Exec, fetchPage: () => Promise<string>, read
       const html = await fetchPage();
       const page = pageRows(html);
       const newest = newestDay(days);
-      const ranked = newest ? rankedGaps(page, pageHotspots(html), days[newest]!) : RANKED.map(({ name }) => ({ name, gaps: ["no store day of the last 9 has rows for both repos"] }));
+      const suites = newest ? expectedSuites(days, newest) : [];
+      const ranked = newest ? rankedGaps(page, pageHotspots(html), days[newest]!, suites) : TRACKED.map(({ name }) => ({ name, gaps: ["no store day of the last 16 has rows for both repos"] }));
       metrics.ranked_metrics_shown = ranked.filter(metric => !metric.gaps.length).length;
-      flag("ranked", `${metrics.ranked_metrics_shown} of ${RANKED.length} ranked metrics show ${newest ?? "the newest day"}'s numbers for both repos on the page`);
+      flag("ranked", `${metrics.ranked_metrics_shown} of ${TRACKED.length} tracked metrics show ${newest ?? "the newest day"}'s numbers on the page; its test load holds ${newest ? days[newest]!.suites.length : 0} of the ${suites.length} suites the test loads of the last ${SUITE_DAYS} days held (${suites.join(", ") || "none"})`);
       for (const metric of ranked.filter(metric => metric.gaps.length)) flag("ranked_missing", `${metric.name}: ${metric.gaps.join("; ")}`);
     } catch (error) { flag("source_error", `page ${PAGE_PATH}: ${message(error)}`); }
   }
