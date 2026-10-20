@@ -1,6 +1,7 @@
 import { mergedPrs, mergeStep, prNumbers } from "./shared/chat-board.ts";
 import type { DutyRunRecord } from "./shared/chat-duties.ts";
-import { sessionBornAt } from "./shared/duty-fixes.ts";
+import { CHECK_IN_DUTY_ID } from "./shared/chat-duties.ts";
+import { parseDutyLink, sessionBornAt } from "./shared/duty-fixes.ts";
 import { effectiveRun } from "./shared/duty-streak.ts";
 import type { ChatBoard, PlanItem, PlanStatus } from "./shared/types.ts";
 
@@ -109,7 +110,9 @@ export interface DoneReason { reason: string; at: number }
  * are lower-is-better targets that a ratio would read as met. A step that only names merged PRs is not a merge step: slack green guy p82
  * launches the tests that #229 to #249 merged, and their merge is where it starts. A metric reading taken before the step's job began says
  * nothing about the fix: frontend bro p174 makes d1/walk_problems count server outside calls and 5xx pages, and the metric read 0 on the
- * 10-15 21:04Z run, before the step and its job (born 10-16 00:36Z) existed.
+ * 10-15 21:04Z run, before the step and its job (born 10-16 00:36Z) existed. A link to the check-in's own duty (`checkin/goal_gaps`, the push
+ * step tag `GOAL_PUSH_LINK`, or any other `checkin/*` metric) marks who pushes a goal and is no fix the step makes: mac-management's check-in
+ * flagged p24, p10, p30 and p4 on 10-20 because checkin/goal_gaps had met since 01:00Z, while p24's hours in band on us-metal02 read 0 of 2.
  */
 export function looksDone(item: Pick<PlanItem, "status" | "text"> & Partial<Pick<PlanItem, "id" | "duty" | "waitFor" | "note" | "job" | "sessionId">>, facts: DoneFacts): DoneReason | null {
   if (!OPEN.has(item.status)) return null;
@@ -121,7 +124,7 @@ export function looksDone(item: Pick<PlanItem, "status" | "text"> & Partial<Pick
   if (/\b\d{9,}\b/.test((item.waitFor ?? "").split(/;|,? then |\. /i)[0]!)) return null;
   // A met metric closes its fix step only after it missed on an earlier run: a metric that never missed does not see the problem the step
   // fixes (frontend bro 10-16, p174: d1/walk_problems read 0 on every run while the server still called Stripe, flagged 4 check-ins in a row).
-  if (item.duty) {
+  if (item.duty && parseDutyLink(item.duty)?.duty !== CHECK_IN_DUTY_ID) {
     const fact = facts.metrics.get(item.duty);
     const jobBorn = item.sessionId ? sessionBornAt(item.sessionId) : null;
     if (jobBorn !== null && fact && fact.at < jobBorn) return null;
