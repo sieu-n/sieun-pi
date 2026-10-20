@@ -75,7 +75,13 @@ export function parseUrlSubscriptions(text: string | null): unknown[] {
 }
 
 export class FeedSockets {
-  private readonly server = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024, perMessageDeflate: { threshold: 1024, zlibDeflateOptions: { level: 1 } } });
+  /**
+   * Frames of 1 KB and more go compressed. ws applies the threshold only with `serverNoContextTakeover`; without it every frame was compressed
+   * on libuv's 4-thread pool, which the service shares with its file reads, so on 10-20 at box load 250 a Mac chat's first reply frame reached
+   * a compressing socket 60 to 700 ms after one without compression (test/chat-socket-small-frames.test.ts).
+   */
+  private readonly server = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024,
+    perMessageDeflate: { threshold: 1024, serverNoContextTakeover: true, zlibDeflateOptions: { level: 1 } } });
   private readonly sockets = new Set<WebSocket>();
   private readonly ping: ReturnType<typeof setInterval>;
 
