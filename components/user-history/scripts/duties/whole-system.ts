@@ -21,7 +21,7 @@ import { harnessSlow, workerMisses } from "../../src/harness-slow.ts";
 import { chatNamer, type DaemonFault, faultWords, type ListedSession, listedSessions, type QueueOverrun, readQueueOverruns, readReopenedSends, readServiceFaults, readSupervisorFaults, SLOW_MS } from "../../src/daemon-faults.ts";
 import { deliveryCandidates, outboxLandings, readSessionMarks, type SlotWaitTimeout, splitSlotWaits } from "../../src/slot-wait-timeouts.ts";
 import { CHECK_IN_DUTY_ID, type DutyRunRecord, type FlaggedSlice, type PrecheckOutput } from "../../src/shared/chat-duties.ts";
-import { CHANGE_APPROACH_MISSES, effectiveRun, missStreak } from "../../src/shared/duty-streak.ts";
+import { effectiveRun, missStreak } from "../../src/shared/duty-streak.ts";
 import { missedKeys, parseDutyLink } from "../../src/shared/duty-fixes.ts";
 
 /** One box's numbers in a watch line: the box that wrote the line, then each other box it read through that box's relay (HostWatchLine). */
@@ -682,10 +682,13 @@ export function planCounts(input: PlanInputs): { stuck: StuckSteps[]; redDuties:
   const redDuties = input.chats.flatMap(chat => chat.duties.flatMap(duty => {
     const own = chat.runs.filter(run => run.duty === duty.id);
     const newest = own.find(run => { const verdict = effectiveRun(run).verdict; return verdict === "met" || verdict === "missed"; });
-    if (!newest || missStreak(own) < CHANGE_APPROACH_MISSES) return [];
+    // A red duty needs a live fix from its first miss (c75: every missed metric gets a live fix job each run). Until 10-20 a duty was left out
+    // until 3 missed runs in a row, so at 02:30Z frontend bro d4, metal-management d2, CI and RepoOps d2 and Crawler VP d6 and d8
+    // sat red with no fix step and no push. The duty's own run job still at work is left out by the precheck (`withoutWorkingRuns`).
+    if (!newest || missStreak(own) < 1) return [];
     if (liveFix(newest, duty.id, input.boards?.get(chat.id), input.ownerActivity ?? new Map(), live, input.named?.get(chat.id))) return [];
     const links = missedKeys(effectiveRun(newest)).map(key => `${duty.id}/${key}`);
-    return [{ chat: chat.id, duty: duty.id, line: `${chat.name}: ${duty.name} read off target in its last ${missStreak(own)} runs, and no open step linked to it ` +
+    return [{ chat: chat.id, duty: duty.id, line: `${chat.name}: ${duty.name} read off target in ${missStreak(own) === 1 ? "its last run" : `its last ${missStreak(own)} runs`}, and no open step linked to it ` +
       `(duty field ${links.length ? links.join(" or ") : `${duty.id}/<metricKey>`}) has a live owner now` }];
   }));
   return { stuck, redDuties };
