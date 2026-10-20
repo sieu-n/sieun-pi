@@ -446,14 +446,18 @@ async function probeEnv(target: ProbeTarget, routes: readonly Route[]): Promise<
     return skip.has(baseOp(op)) ? { op, verdict: "skipped", status: 0, ms: 0, note: `not called on ${env}: ${skip.get(baseOp(op))}`, body: null } : undefined;
   };
   const all = operations(doc);
-  const ops = [...all].filter(([op]) => !isDm(op));
+  // A byDesign route is not scored, so its own operations are not called: on 10-20 at 01:52Z the staging Douyin posts call alone ran 147.7 s,
+  // the slowest of the run, and the precheck took 168 s.
+  const scoredOps = new Set(routes.filter(route => !route.byDesign).flatMap(route => route.portal.map(baseOp)));
+  const notScored = new Set(routes.filter(route => route.byDesign).flatMap(route => route.portal.map(baseOp)).filter(op => !scoredOps.has(op)));
+  const ops = [...all].filter(([op]) => !isDm(op) && !notScored.has(op));
   const later: [string, Operation][] = [];
   const first = ops.filter(([op, operation]) => { if (CHAINED.test(op)) { later.push([op, operation]); return false; } return true; });
   // With perMinute, the calls past the first minute's quota start at the next clock minute. The calls slowest at the last run go first, so
   // the run ends sooner, and a call with no time on record counts as slowest.
   const lastMs = (op: string) => target.lastMs?.[`${env} ${op}`] ?? Number.POSITIVE_INFINITY;
   first.sort(([a], [b]) => lastMs(b) - lastMs(a));
-  const jobOps = [...new Set(routes.flatMap(route => route.portal).filter(op => op.endsWith(JOB)))];
+  const jobOps = [...new Set(routes.flatMap(route => route.portal).filter(op => op.endsWith(JOB) && !notScored.has(baseOp(op))))];
   // The portal allows an org 5 open crawl jobs (the 429 rate_limited message, measured on staging 10-12 and prod 10-15), and a run has more
   // job-mode entries than that. So job calls go one at a time, and every job after the first, which the chained calls read, is cancelled
   // as soon as its receipt comes back. The first one is cancelled once the chained calls have read it: on 2026-10-18 a prod run 8 min
