@@ -1,7 +1,8 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, rename } from "node:fs/promises";
 import { dirname } from "node:path";
+import { performance } from "node:perf_hooks";
 import type { DaemonClient, SessionSummary } from "prime-agent";
-import { parseSummaries } from "./chat-catalog.ts";
+import { parseSummaries, PROJECTION_SLICE_MS } from "./chat-catalog.ts";
 
 const LIVE_FIELDS = ["activeSessionId", "rosterStatus", "isStreaming", "isCompacting", "isBashRunning", "isRunningTools", "hasRunningRlmChildren", "isSessionActive",
   "workerState", "workerPid"] as const;
@@ -99,6 +100,8 @@ export function applyRosterUpdate(rows: ReadonlyMap<string, SessionSummary>, age
 export const RESYNC_MS = 30 * 60_000;
 /** A full list writes the copy to disk at once, and other changes at most this often, since the Mac's copy is about 38 MB of JSON to write. */
 const SAVE_MS = 5 * 60_000;
+/** A save writes the copy in pieces of about this many characters, so no piece needs one buffer of the whole file. */
+const SAVE_CHUNK_CHARS = 1 << 20;
 /** Updates the rows cannot place within this wait share one roster list. */
 const CATCH_UP_MS = 1000;
 
@@ -380,15 +383,37 @@ export class SessionPeer {
   }
 
   private saving: Promise<void> | undefined;
+  /**
+   * Each row's JSON from the last save. A row that changes is a new object, so a save writes the cached text of every row that did not.
+   * On 10-20 one JSON.stringify of the whole copy (19 MB for us-metal02, 39 MB for the Mac) held the chat's event loop 0.7 to 1.6 s every
+   * SAVE_MS: 10 of the 12 runs over 0.7 s in the live chat's profile from 04:36Z to 05:47Z.
+   */
+  private readonly rowJson = new WeakMap<SessionSummary, string>();
   private save(): void {
     const file = this.options.file;
     if (!file || !this.listed || this.closed) return;
     clearTimeout(this.saveTimer);
     this.saveTimer = undefined;
-    const copy: SavedCopy = { version: 1, fullAt: this.fullAt, rows: [...this.rows.values()] };
+    const fullAt = this.fullAt;
+    const rows = [...this.rows.values()];
     const run = async () => {
       await mkdir(dirname(file), { recursive: true, mode: 0o700 });
-      await writeFile(`${file}.tmp`, JSON.stringify(copy), { mode: 0o600 });
+      const handle = await open(`${file}.tmp`, "w", 0o600);
+      try {
+        let chunk = `{"version":1,"fullAt":${JSON.stringify(fullAt)},"rows":[`;
+        let slice = performance.now();
+        for (const [index, row] of rows.entries()) {
+          let text = this.rowJson.get(row);
+          if (text === undefined) { text = JSON.stringify(row); this.rowJson.set(row, text); }
+          chunk += index ? `,${text}` : text;
+          if (chunk.length >= SAVE_CHUNK_CHARS || performance.now() - slice >= PROJECTION_SLICE_MS) {
+            await handle.write(chunk);
+            chunk = "";
+            slice = performance.now();
+          }
+        }
+        await handle.write(`${chunk}]}`);
+      } finally { await handle.close(); }
       await rename(`${file}.tmp`, file);
     };
     this.saving = (this.saving ?? Promise.resolve()).then(run).catch(error => {
