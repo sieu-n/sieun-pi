@@ -2,9 +2,9 @@
 // and a pass that started several held it up to 0.44 s (the live chat's CPU profile from 04:36Z to 05:47Z).
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { performance } from "node:perf_hooks";
 import { test } from "node:test";
 import { hostExecFile, type HostExecError, stopSpawnHost } from "../src/spawn-host.ts";
+import { longestLoopCpu } from "./loop-cpu.ts";
 
 type Result = { error: HostExecError | null; stdout: string; stderr: string };
 const viaHost = (file: string, args: string[], options: Parameters<typeof hostExecFile>[2] = {}, input?: string): Promise<Result> => new Promise(resolve => {
@@ -33,19 +33,9 @@ test("commands run through the spawn host leave a big process's event loop free,
   const heap: object[] = [];
   for (let i = 0; i < 4_000_000; i++) heap.push({ i, text: `row ${i}` });
   await viaHost("true", []);
-  const longestGap = async (run: () => Promise<unknown>): Promise<number> => {
-    let last = performance.now();
-    let longest = 0;
-    let done = false;
-    const turn = (): void => { const now = performance.now(); longest = Math.max(longest, now - last); last = now; if (!done) setImmediate(turn); };
-    setImmediate(turn);
-    await run();
-    done = true;
-    return longest;
-  };
   const burst = (exec: typeof direct) => Promise.all(Array.from({ length: 8 }, () => exec("true", [])));
-  const own = await longestGap(() => burst(direct));
-  const host = await longestGap(() => burst(viaHost));
+  const own = await longestLoopCpu(() => burst(direct));
+  const host = await longestLoopCpu(() => burst(viaHost));
   assert.ok(heap.length);
-  assert.ok(host < own / 3, `longest loop gap ${host.toFixed(1)} ms through the host against ${own.toFixed(1)} ms for the process's own spawns`);
+  assert.ok(host < own / 3, `most CPU between loop turns ${host.toFixed(1)} ms through the host against ${own.toFixed(1)} ms for the process's own spawns`);
 });

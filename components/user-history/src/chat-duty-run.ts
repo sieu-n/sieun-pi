@@ -1,5 +1,5 @@
-import { spawn } from "node:child_process";
-import { open as openFile, copyFile, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { hostExecFile } from "./spawn-host.ts";
 import { basename, join } from "node:path";
 import { type DutyJobHost, dutyJobBrief, type DutyJobInput, dutyJobName } from "./chat-duty-job.ts";
 import { type CheckInActor, CHECK_IN_MS } from "./checkin-settings.ts";
@@ -1003,24 +1003,23 @@ export class Duties {
   /**
    * Runs the precheck command with its stderr in `stderrFile` and its stdout dropped, so no output size ends it. Past its soft target it keeps
    * running and the log says so; only `precheckHardStopMs` kills it. Resolves on exit 0 and rejects with the exit or the hard stop otherwise.
+   * It starts from the spawn host (src/spawn-host.ts): a spawn from the chat's own process held its event loop 0.69 s at 05:52Z on 10-20.
    */
   private async spawnPrecheck(duty: Duty, dir: string, file: string, args: string[], stderrFile: string, env: Record<string, string>): Promise<void> {
-    const stderr = await openFile(stderrFile, "w", 0o600);
+    const targetS = Math.round(duty.precheck.timeoutMs / 1000);
+    const hardStopMs = precheckHardStopMs(duty);
+    const pastTarget = setTimeout(() => this.log(`duty ${basename(dir).slice(0, 8)}/${duty.id}: the precheck is past its ${targetS} s target and keeps ` +
+      `running, up to its hard stop of ${Math.round(hardStopMs / 60_000)} min`), duty.precheck.timeoutMs);
     try {
       await new Promise<void>((resolve, reject) => {
-        const child = spawn(file, args, { cwd: duty.precheck.cwd, stdio: ["ignore", "ignore", stderr.fd], env: { ...process.env, ...env } });
-        const targetS = Math.round(duty.precheck.timeoutMs / 1000);
-        const hardStopMs = precheckHardStopMs(duty);
-        let stopped = false;
-        const pastTarget = setTimeout(() => this.log(`duty ${basename(dir).slice(0, 8)}/${duty.id}: the precheck is past its ${targetS} s target and keeps ` +
-          `running, up to its hard stop of ${Math.round(hardStopMs / 60_000)} min`), duty.precheck.timeoutMs);
-        const hardStop = setTimeout(() => { stopped = true; child.kill("SIGKILL"); }, hardStopMs);
-        const end = (error?: Error) => { clearTimeout(pastTarget); clearTimeout(hardStop); if (error) reject(error); else resolve(); };
-        child.once("error", end);
-        child.once("close", (code, signal) => end(code === 0 ? undefined : new Error(stopped
-          ? `stopped at its hard stop after ${Math.round(hardStopMs / 60_000)} min, its schedule gap (target ${targetS} s)` : `exit ${code ?? signal}`)));
+        hostExecFile("/bin/sh", ["-c", 'exec "$0" "$@" </dev/null >/dev/null 2>"$PRECHECK_STDERR_FILE"', file, ...args],
+          { cwd: duty.precheck.cwd, env: { ...process.env, ...env, PRECHECK_STDERR_FILE: stderrFile }, timeout: hardStopMs, killSignal: "SIGKILL" }, error => {
+            if (!error) { resolve(); return; }
+            reject(new Error(error.killed ? `stopped at its hard stop after ${Math.round(hardStopMs / 60_000)} min, its schedule gap (target ${targetS} s)`
+              : typeof error.code === "number" || error.signal ? `exit ${typeof error.code === "number" ? error.code : error.signal}` : error.message));
+          });
       });
-    } finally { await stderr.close(); }
+    } finally { clearTimeout(pastTarget); }
   }
 
   close(): void { clearInterval(this.timer); }
