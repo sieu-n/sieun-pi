@@ -875,8 +875,10 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
         const account = parseNewChatAccount(body.account);
         const name = typeof body.name === "string" ? text(body.name, "name").trim() : "";
         const kind = parseKind(body.kind);
+        // A clean-room fixture's name is set before its first message goes (ThreadHub.create).
+        const nameBeforeFirst = body.nameBeforeFirst === true;
         const syncSlack = kind === "chat" ? parseSlackSetup(body.slack) : undefined;
-        const fingerprint = createHash("sha256").update(JSON.stringify([cwd, host, provider, modelId, thinkingLevel, message, images, account, name, kind, syncSlack])).digest("hex");
+        const fingerprint = createHash("sha256").update(JSON.stringify([cwd, host, provider, modelId, thinkingLevel, message, images, account, name, kind, nameBeforeFirst, syncSlack])).digest("hex");
         let creation = creations.get(id);
         if (creation && creation.fingerprint !== fingerprint) throw new RequestError(409, "This request ID belongs to another new chat.");
         if (!creation) {
@@ -891,7 +893,7 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
             const plain = !slash || (startSkill !== null && message.startsWith(`/skill:${startSkill} `));
             const first = !account && !images.length && plain ? { message, mode } as const : undefined;
             const input = { cwd, ...(provider ? { provider } : {}), ...(modelId ? { modelId } : {}), ...(thinkingLevel ? { thinkingLevel } : {}), ...(host ? { host } : {}),
-              ...(name ? { name } : {}), ...(first ? { first } : {}) };
+              ...(name ? { name } : {}), ...(first ? { first } : {}), ...(nameBeforeFirst ? { nameBeforeFirst } : {}) };
             // A chat is created with its name (a job replies to it by name), pinned and set to steering mode all; the server tick does its check-ins.
             const thread = kind === "chat" ? await backend.chats.create(input) : await backend.threads.create(input);
             // Both kinds go in threads.json: a thread this server created is the person's (origin "user"), whatever its session file says.

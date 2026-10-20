@@ -35,7 +35,7 @@ import { DutyStore } from "../../src/chat-duty-store.ts";
 import { CLEAN_ROOM_CHATS_FILE, CLEAN_ROOM_CORRECTIONS_FILE, parseLedger } from "../../src/chat-corrections.ts";
 import { IdIndex } from "../../src/id-index.ts";
 import { transactJsonFile } from "../../src/locked-json.ts";
-import { adoptedWorkspace, type CreateIo, type CreateRecord, createOrAdopt, findSession, sessionFacts } from "./create-reconcile.ts";
+import { adoptedWorkspace, createBody, type CreateIo, type CreateRecord, createOrAdopt, findSession, sessionFacts } from "./create-reconcile.ts";
 import { emptyBoard, parseBoard } from "../../src/shared/chat-board.ts";
 import type { ChatBoard } from "../../src/shared/types.ts";
 import { checkinGoalPush } from "./checkin-goal-push.ts";
@@ -138,7 +138,7 @@ async function postCreate(srv: Server, record: CreateRecord): ReturnType<CreateI
   try {
     const response = await fetch(srv.base + "api/threads", { method: "POST", headers: { "content-type": "application/json", "x-chat-token": srv.token, origin: srv.origin,
       ...(SELF ? { "x-chat-agent-session": SELF } : {}) },
-      body: JSON.stringify({ requestId: record.requestId, cwd: record.cwd, message: record.message, name: record.name, kind: record.kind, ...MODEL }) });
+      body: JSON.stringify(createBody(record, MODEL)) });
     status = response.status;
     text = await response.text();
   } catch (error) { return { kind: "unknown", error: error instanceof Error ? `${error.message}${error.cause instanceof Error ? `: ${error.cause.message}` : ""}` : String(error) }; }
@@ -152,7 +152,7 @@ async function postCreate(srv: Server, record: CreateRecord): ReturnType<CreateI
 /**
  * Creates the test chat, its control or a fixture thread, or adopts the session an earlier try of the same create made (create-reconcile.ts).
  * Each POST starts the session's first turn before its answer gives the id, so the trial's harness store `harness` is filed under the name it
- * asks for first.
+ * asks for first, and the server names the session before that turn (createBody).
  */
 async function createThread(srv: Server, run: string, pending: Pending, role: string, kind: "chat" | "thread", name: string, cwd: string, message: string, harness: string): Promise<{ id: string; name: string }> {
   const save = (): void => writeJson(pendingFile(run), pending);

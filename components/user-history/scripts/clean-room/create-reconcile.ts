@@ -32,6 +32,13 @@ export interface CreateRecord {
   adopted?: boolean;
 }
 
+/**
+ * The body of one `POST api/threads` for `record`, with the model every trial runs on. `nameBeforeFirst` names a fixture before its first
+ * message, so its first cells already find the trial harness store setup filed under that name (src/trial-harness.ts).
+ */
+export const createBody = (record: CreateRecord, model: Record<string, string>): Record<string, unknown> =>
+  ({ requestId: record.requestId, cwd: record.cwd, message: record.message, name: record.name, kind: record.kind, nameBeforeFirst: true, ...model });
+
 /** What one `POST api/threads` told setup. */
 export type CreateAnswer =
   | { kind: "made"; id: string }
