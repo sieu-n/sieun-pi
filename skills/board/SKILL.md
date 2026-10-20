@@ -59,6 +59,7 @@ board.own("/tmp/p8iso-a", unit="p8iso-a-daemon.service")        # a rig and the 
 2. Never record a report, evidence or a helper another job runs, and keep reports and evidence under `~/work/<job>/`.
 3. A path must lie below `/tmp`, `~/scratch` or `~/.prime/agent/session-artifacts`, outside every session folder.
 4. The record is `owned.json` in `RLM_SESSION_DIR`. A recorded path that a process still runs in, holds or names stays until a later sweep finds it free.
+5. A server the owner asked to keep running is never a `systemd-run` unit and never recorded here, because sweeps stop a transient unit whose job has ended, and `Restart=always` does not undo a manual stop. On 10-19 at 21:34:14Z the Mac's metal agent queue job read its leftover survey on us-metal02, marked the transient unit `readme-4f1c45a` that served a page the owner had said to leave up as gone with its dead kernel, and stopped it with `systemctl --user stop` over ssh. Write `~/.config/systemd/user/<name>.service` with `StartLimitIntervalSec=0` and `RefuseManualStop=yes` under `[Unit]` and `Restart=always` under `[Service]`, put its takedown steps in a comment in that file, run `systemctl --user enable --now <name>`, and check that `loginctl show-user $USER -p Linger` says yes.
 
 ## Rules a VP chat reads on demand
 
