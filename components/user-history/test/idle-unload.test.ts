@@ -315,3 +315,37 @@ test("a quiet session whose worker failed after the listing is not asked again u
   await unloader.settled();
   assert.equal(calls.length, 1, "the second sweep skipped the failed worker's row");
 });
+
+// d7 at 06:01Z on 10-20: the Mac's frontend bro worker 37191 held 6.03 GB for 10 sessions, 0.08 GB of it their work, from 03:39Z on, while
+// only this box's workers were recycled. A box whose daemon takes kill_origin gets the same recycle; one without it is left to its own daemon.
+test("a quiet oversized worker on another box is recycled when that box's daemon takes kill_origin, and left alone when it does not", async () => {
+  const MAC_PID = 37191;
+  const onMac = (id: string, extra: Partial<SessionSummary> = {}): SessionSummary =>
+    ({ ...quietRoot(id, 4 * MIN), workerPid: MAC_PID, attachedClients: 0, ...extra }) as SessionSummary;
+  const chat = onMac("frontend-bro", { attachedClients: 1 });
+  const child = onMac("stale-root", { rlmDepth: 2 });
+  const run = async (recycles: boolean, rows: SessionSummary[]) => {
+    const reads: { pids: readonly number[]; host?: string }[] = [];
+    const rested: string[] = [];
+    const killed: string[] = [];
+    const unloader = new IdleUnloader({
+      rows: () => rows, localRows: () => [], remoteBoxes: () => [{ host: "mac", rows, recycles }], idleMs: () => TEN_MIN,
+      chats: async () => new Set(["frontend-bro"]), dormant: () => false, pool: async () => new Set(), waking: async () => new Set(), held: async () => new Map(),
+      own: async (pids, host) => { reads.push({ pids, ...host === undefined ? {} : { host } }); return new Map([[MAC_PID, 6 * RECYCLE_OWN_BYTES]]); },
+      restNow: async id => { rested.push(id); return true; }, release: async () => true, title: id => id,
+      request: async (row, type) => { if (type === "kill") killed.push(row.sessionId); return type === "get_state" ? { success: true, data: { isSessionActive: false } } : { success: true }; },
+      stopped: async () => {}, log: () => {}, now: () => at15,
+    });
+    await unloader.sweep();
+    await unloader.settled();
+    return { reads, rested, killed };
+  };
+  const attached = await run(true, [chat, child]);
+  assert.deepEqual(attached.reads, [{ pids: [MAC_PID], host: "mac" }], "the footprint is read from the Mac, not from this box");
+  assert.deepEqual(attached.rested, ["frontend-bro"], "the attached chat is detached first");
+  assert.deepEqual(attached.killed, []);
+  const detached = await run(true, [{ ...chat, attachedClients: 0 } as SessionSummary, child]);
+  assert.deepEqual(detached.killed, ["stale-root", "frontend-bro"], "then every session on the worker stops, deepest first");
+  const old = await run(false, [{ ...chat, attachedClients: 0 } as SessionSummary, child]);
+  assert.deepEqual([old.reads, old.rested, old.killed], [[], [], []], "a daemon without kill_origin keeps its sessions");
+});

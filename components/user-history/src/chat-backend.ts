@@ -29,7 +29,7 @@ import { briefCheckRecord, deletedJobRecord, jobRegistry, checkRecord, quietJobR
 import { jobResumes } from "./job-resume.ts";
 import { cutJobs, interruptedRuns } from "./chat-resume.ts";
 import { resumesNow, tailLines } from "./cut-end.ts";
-import { IdleUnloader, providerWaits, unloadRequest } from "./idle-unload.ts";
+import { IdleUnloader, providerWaits, takesKillOrigin, unloadRequest } from "./idle-unload.ts";
 import { readHeldTurns, readTurnSince, writeResumePending } from "./held-turns.ts";
 import { recordUnloaded, writeReceipt } from "./unloaded.ts";
 import { quietMinutes } from "./quiet-minutes.ts";
@@ -344,6 +344,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const unloader_ = new IdleUnloader({
     rows: () => [...catalog.daemonRows(), ...catalog.remoteRows()],
     localRows: () => catalog.daemonRows(),
+    remoteBoxes: () => catalog.remoteHosts().map(({ host, rows }) => ({ host: host.name, rows, recycles: takesKillOrigin(catalog.helloOf(host.name) ?? {}) })),
     // The one quiet window (src/quiet-minutes.ts, 15 min by default) that d7's quiet_agent_gb judges; idle eviction off stops none.
     idleMs: () => defaults.idleEviction() === "off" ? null : quietMinutes(dataDir) * 60_000,
     chats: () => chats.ids(),
@@ -357,8 +358,10 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     held: (rows, now, idleMs, chatIds) => providerWaits(rows, now, idleMs, { all: catalog.daemonRows(), local: row => !catalog.hostOf(row.sessionId),
       tail: async file => (await tailLines(file, 64 * 1024)).join("\n"), read: threads => readPoolStatus(threads, { maxAgeMs: 60_000 }) }, chatIds),
     release: id => threads.restAsleep(id),
-    own: async pids => {
-      const footprints = await readFootprints([...pids]);
+    own: async (pids, host) => {
+      const remote = host === undefined ? undefined : catalog.remoteHosts().find(box => box.host.name === host)?.host;
+      if (host !== undefined && !remote) return new Map();
+      const footprints = remote ? (await relayWatch(remote, pids)).footprints ?? { workers: {} } : await readFootprints([...pids]);
       return new Map(Object.entries(footprints.workers).map(([pid, worker]) => [Number(pid), worker.own ?? 0] as const));
     },
     restNow: (id, quietMs) => threads.restNow(id, quietMs),

@@ -213,7 +213,8 @@ export function idleKillCommand(activeSessionId: string, hello: { serverCapabili
   return takesKillOrigin(hello) ? { type: "kill" as const, activeSessionId, origin: "idle_unload" as const } : { type: "kill" as const, activeSessionId };
 }
 
-const takesKillOrigin = (hello: { serverCapabilities?: readonly string[] }) => (hello.serverCapabilities ?? []).includes(KILL_ORIGIN);
+/** Whether the daemon behind `hello` records a kill named `idle_unload` as an idle unload, so the stopped session stays restorable. */
+export const takesKillOrigin = (hello: { serverCapabilities?: readonly string[] }) => (hello.serverCapabilities ?? []).includes(KILL_ORIGIN);
 
 /**
  * The `daemon_hello` server capability (protocol 7) of a Prime that refuses `{type: "kill", origin: "idle_unload"}` for a session that holds
@@ -261,8 +262,14 @@ export async function unloadRequest(client: UnloadClient, activeSessionId: strin
 export interface UnloadSource {
   /** Every box's daemon rows, which the plan reads. */
   rows(): readonly SessionSummary[];
-  /** This box's rows, which the worker recycle reads, since only this box's footprints are measured. */
+  /** This box's rows, which the worker recycle reads. */
   localRows(): readonly SessionSummary[];
+  /**
+   * Each other box's rows, which the worker recycle reads too when that box's daemon takes `kill_origin` (`recycles`): its stops then keep the
+   * sessions restorable. A box without it is left to its daemon's own eviction (NO_BARE_KILL). Until 10-20 only this box's workers were
+   * recycled, and the Mac's frontend bro worker 37191 held 5.9 to 6.3 GB for 10 sessions from 03:39Z to 06:10Z, 0.08 GB of it their work.
+   */
+  remoteBoxes?(): readonly { host: string; rows: readonly SessionSummary[]; recycles: boolean }[];
   /** The quiet window (src/quiet-minutes.ts) in ms; null when idle eviction is off. */
   idleMs(): number | null;
   chats(): Promise<ReadonlySet<string>>;
@@ -282,8 +289,8 @@ export interface UnloadSource {
    * an agent message or its revive needs it. False when the service keeps it (a duty holds it or an open is under way); then it is not stopped.
    */
   release(id: string): Promise<boolean>;
-  /** Each worker's own footprint in bytes, by pid. */
-  own(pids: readonly number[]): Promise<ReadonlyMap<number, number>>;
+  /** Each worker's own footprint in bytes, by pid, on the named box (this box when `host` is absent). */
+  own(pids: readonly number[], host?: string): Promise<ReadonlyMap<number, number>>;
   restNow(id: string, quietMs: number): Promise<boolean>;
   title(id: string): string | null;
   /** `get_state` or the idle kill (`unloadRequest`) for the row's active session, through the daemon of the row's box. */
@@ -446,21 +453,31 @@ export class IdleUnloader {
     // A quiet worker that grew past RECYCLE_OWN_BYTES of its own is recycled: its attached chat detaches now, and the next sweep stops every
     // session on it so the worker exits. Idle eviction off recycles none.
     if (idleMs === null) return;
-    const quiet = quietWorkers(source.localRows(), { chats, pool, now: source.now() }).filter(worker => !worker.stop.some(row => this.out.has(row.sessionId)));
+    // Pids repeat across boxes, so each box's workers are judged and measured apart.
+    const boxes = [{ host: undefined as string | undefined, rows: source.localRows() },
+      ...(source.remoteBoxes?.() ?? []).filter(box => box.recycles).map(box => ({ host: box.host as string | undefined, rows: box.rows }))];
+    for (const box of boxes) await this.recycle(box.rows, box.host, chats, pool);
+  }
+
+  /** Recycles the quiet workers of one box whose own footprint reached RECYCLE_OWN_BYTES. */
+  private async recycle(rows: readonly SessionSummary[], host: string | undefined, chats: ReadonlySet<string>, pool: ReadonlySet<string>): Promise<void> {
+    const source = this.source;
+    const quiet = quietWorkers(rows, { chats, pool, now: source.now() }).filter(worker => !worker.stop.some(row => this.out.has(row.sessionId)));
     if (!quiet.length) return;
-    const own = await source.own(quiet.map(worker => worker.pid));
+    const own = await (host === undefined ? source.own(quiet.map(worker => worker.pid)) : source.own(quiet.map(worker => worker.pid), host));
+    const on = host === undefined ? "" : ` on ${host}`;
     for (const worker of recyclePlan(quiet, own)) {
       const gb = ((own.get(worker.pid) ?? 0) / 1024 ** 3).toFixed(2);
       if (worker.attached.length) {
         const detached = await Promise.all(worker.attached.map(id => source.restNow(id, RECYCLE_QUIET_MS)));
-        if (detached.some(Boolean)) source.log(`idle unload: worker ${worker.pid} holds ${gb} GB of its own with every session quiet; detached ${worker.attached.filter((_, at) => detached[at]).map(id => source.title(id) ?? id).join(", ")} to recycle it`);
+        if (detached.some(Boolean)) source.log(`idle unload: worker ${worker.pid}${on} holds ${gb} GB of its own with every session quiet; detached ${worker.attached.filter((_, at) => detached[at]).map(id => source.title(id) ?? id).join(", ")} to recycle it`);
         continue;
       }
       // Deepest first, one after another, as before: the worker exits once its last session stops.
       this.track((async () => {
         const names: string[] = [];
         for (const row of worker.stop) if (await this.stop(row, chats)) names.push(row.sessionName?.trim() || row.sessionId);
-        if (names.length) source.log(`idle unload: recycled worker ${worker.pid} (${gb} GB of its own) by stopping ${names.length} quiet sessions: ${names.join(", ")}`);
+        if (names.length) source.log(`idle unload: recycled worker ${worker.pid}${on} (${gb} GB of its own) by stopping ${names.length} quiet sessions: ${names.join(", ")}`);
       })());
     }
   }
