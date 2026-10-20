@@ -73,8 +73,8 @@ export const VIEW_RUNS = 14;
  * tasks to subagent & Jobs actively").
  */
 export const CHECK_IN_FOCUS: readonly string[] = [
-  "Your number is goal_gaps, the open goals whose number is off pace or that no live job owns (owner 10-15: \"Check in 이 일을 쭉쭉 밀어줘야되는데 " +
-    "it's deeply flawed. fix this\"). Spend the run on the goals first. The detail file's Goals section has, for each goal, its number, trend, pace " +
+  "Your number is goal_gaps, the open goals that no live job works on (owner 10-15: \"Check in 이 일을 쭉쭉 밀어줘야되는데 " +
+    "it's deeply flawed. fix this\"), and every goal that says steer or start is yours to push this run. Spend the run on the goals first. The detail file's Goals section has, for each goal, its number, trend, pace " +
     "and owner job, and under each goal to push the message to send: the owner's words for that goal, the measured gap and the ask to name and " +
     "attack the biggest blocker on that number now.",
   `For a goal that says steer, send its owner job that message with agent_message.send in this run. For a goal that says start, add one push ` +

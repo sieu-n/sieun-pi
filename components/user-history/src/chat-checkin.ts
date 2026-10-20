@@ -20,7 +20,7 @@ import { upkeepWords } from "./shared/upkeep-title.ts";
 import { CHECK_IN_MS, clockTime, localTime } from "./checkin-settings.ts";
 import { turnErrorCause } from "./turn-error.ts";
 import { endState, endStateKpi, endStateLine, type EndStateView, heldByTodo, OK_STATES, stepCarriers, stuckLine } from "./checkin-end-state.ts";
-import { goalDueLine, type GoalMemo, goalLine, goalPromptLine, type GoalPush, goalPushes, goalsDetail, goalsHeadline, pushNeeded, threadPaused } from "./checkin-goals.ts";
+import { goalDueLine, goalGap, type GoalMemo, goalLine, goalPromptLine, type GoalPush, goalPushes, goalsDetail, goalsHeadline, pushNeeded, threadPaused } from "./checkin-goals.ts";
 import { type JobMemo, type JobPush, jobPushes } from "./checkin-jobs.ts";
 import type { Wake } from "./wakes.ts";
 export { finishedOpen, looksDone };
@@ -373,7 +373,7 @@ export const stepSig = (item: PlanItem): string => JSON.stringify([item.status, 
  * a stop mid-tool, the length limit) with no report, which the server told the chat at once (the check-in record's told ends), not updated a
  * check-in later; such a step is counted there and not again in `job_end_unrecorded`. `scope_misses` is an open step on another thread's work
  * by a ledger handoff (`scopeMisses`, correction c7). `stalled_steps` is a step on a passive wait (`stalledSteps`, c23). `go_missing` and
- * `requirements_missing` are the broken hard gates (`gateFindings`, W50), `merges_without_go` a merge step done without the owner's go on its PR (c49). `goal_gaps`, the headline, is an open goal whose number is off pace or that no live job owns (`pushNeeded`, owner 10-15 on p71).
+ * `requirements_missing` are the broken hard gates (`gateFindings`, W50), `merges_without_go` a merge step done without the owner's go on its PR (c49). `goal_gaps`, the headline, is an open goal no live job works on (`goalGap`, owner 10-15 on p71), and `goals_off_pace` one a live job works on whose number is off pace, which the check-in steers and the duty does not judge.
  * `blocked_on_others` is a step blocked on CI, a release or another thread for over an hour with no live job (`blockedOnOthers`, W56).
  * `finished_open` is an open item that looks done (`looksDone`), `loose_goals` an open goal with no step under it (`looseGoals`) and
  * `extra_goals` an open goal past BOARD_LIMITS.openGoals with no number or no live owner job (`extraGoals`), `open_under_closed` an open item right under a closed one
@@ -388,12 +388,12 @@ export const stepSig = (item: PlanItem): string => JSON.stringify([item.status, 
  * `goals_without_duty` is 1 for a chat with an open goal and no active duty (`goalsWithoutDuty`).
  */
 export type ConvergenceMisses = { orphan_steps: number; due_late: number; stale_chase_24h: number; job_end_unrecorded: number; job_end_silent: number; scope_misses: number;
-  idle_goals: number; stalled_steps: number; go_missing: number; requirements_missing: number; merges_without_go: number; goal_gaps: number; blocked_on_others: number; finished_open: number;
+  idle_goals: number; stalled_steps: number; go_missing: number; requirements_missing: number; merges_without_go: number; goal_gaps: number; goals_off_pace: number; blocked_on_others: number; finished_open: number;
   loose_goals: number; extra_goals: number; open_under_closed: number; held_elsewhere: number; wait_met: number;
   no_progress: number; stale_steps: number; goals_to_fold: number; one_session_load: number; redundant_heartbeats: number; goals_without_duty: number; stuck_steps: number;
   no_done_line: number; plan_risks: number };
 export const NO_MISSES: ConvergenceMisses = { orphan_steps: 0, due_late: 0, stale_chase_24h: 0, job_end_unrecorded: 0, job_end_silent: 0, scope_misses: 0, idle_goals: 0,
-  stalled_steps: 0, go_missing: 0, requirements_missing: 0, merges_without_go: 0, goal_gaps: 0, blocked_on_others: 0, finished_open: 0, loose_goals: 0, extra_goals: 0, open_under_closed: 0,
+  stalled_steps: 0, go_missing: 0, requirements_missing: 0, merges_without_go: 0, goal_gaps: 0, goals_off_pace: 0, blocked_on_others: 0, finished_open: 0, loose_goals: 0, extra_goals: 0, open_under_closed: 0,
   held_elsewhere: 0, wait_met: 0, no_progress: 0, stale_steps: 0, goals_to_fold: 0, one_session_load: 0, redundant_heartbeats: 0, goals_without_duty: 0, stuck_steps: 0, no_done_line: 0, plan_risks: 0 };
 /** What the precheck found on the board besides the step classes: steps on another thread's work, broken hard gates, stalled waits, the plan's shape. */
 export interface BoardFindings { scope: readonly ScopeMiss[]; gates: readonly GateFinding[]; stalled: readonly StalledStep[]; goals: readonly GoalPush[]; blocked: readonly BlockedStep[];
@@ -458,7 +458,7 @@ export function convergenceMisses(chat: string, steps: readonly StepView[], { sc
   // A goal the check-in folds into a duty gets the fold alone: the duty carries its target. goal_gaps' "push the next step" on it was a second
   // ask (slack green guy p48 at 10-13 00:11 KST, the duty d1 made at 23:58).
   const folded = new Set(fold.map(entry => entry.goal.id));
-  for (const push of goals.filter(push => pushNeeded(push) && !folded.has(push.goal.id))) flag("goal_gaps", push.goal.id, goalLine(push));
+  for (const push of goals.filter(push => pushNeeded(push) && !folded.has(push.goal.id))) flag(goalGap(push) ? "goal_gaps" : "goals_off_pace", push.goal.id, goalLine(push));
   for (const block of blocked) { misses.blocked_on_others++; flagged.push({ chat, at: now, kind: "blocked_on_others", excerpt: blockedLine(block, now), item: block.view.item.id }); }
   for (const entry of fold) flag("goals_to_fold", entry.goal.id, foldLine(entry));
   for (const found of done.filter(found => !folded.has(found.item.id))) { misses.finished_open++; flagged.push({ chat, at: now, kind: "finished_open", excerpt: lookDoneLine(found), item: found.item.id }); }

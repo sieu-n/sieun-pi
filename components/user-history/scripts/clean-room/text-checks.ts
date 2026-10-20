@@ -1,7 +1,7 @@
 /** Text checks shared by the clean-room scenarios: the owner's rule c80 says a chat or job prompt gets a headline number, at most 3 plain items and a detail file path, never a list of step ids or flag kinds. */
 
 /** The finding keys the check-in code names (`rg -o 'kind: "[a-z_]+"' src/chat-checkin.ts src/checkin-*.ts src/shared/chat-duties.ts` in release-293f722). */
-export const FLAG_KINDS = ["stuck_steps", "stalled_steps", "finished_open", "no_progress", "goal_gaps", "loose_goals", "orphan_steps", "stale_steps", "idle_goals",
+export const FLAG_KINDS = ["stuck_steps", "stalled_steps", "finished_open", "no_progress", "goal_gaps", "goals_off_pace", "loose_goals", "orphan_steps", "stale_steps", "idle_goals",
   "blocked_on_others", "due_late", "extra_goals", "goals_to_fold", "goals_without_duty", "held_elsewhere", "open_under_closed", "scope_misses", "wait_met",
   "go_missing", "go_waiting", "job_end_silent", "job_end_unrecorded", "job_ended", "no_owner", "owner_no_todo", "merges_without_go", "requirements_missing",
   "one_session_load", "redundant_heartbeats", "startup_failure"];

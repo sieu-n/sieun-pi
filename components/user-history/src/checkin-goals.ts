@@ -51,6 +51,8 @@ export interface GoalPush {
   stale: boolean;
   /** The live job that owns the number: its push step's job (`goalOwner`). */
   owner?: JobFact;
+  /** A live job at work on an open item under the goal, its owner first. A goal with one is no gap (`goalGap`), whatever its pace. */
+  working?: JobFact;
   /** The goal's open push step, live or not: a start sets a job on it instead of adding a second one. */
   pushStep?: string;
   /**
@@ -272,12 +274,13 @@ export function goalPushes(board: ChatBoard | null, views: readonly StepView[], 
     if (folded.has(goal.id)) return [];
     const words = goalWords(goal);
     const owner = goalOwner(goal, views);
+    const working = owner ?? views.find(view => view.goal?.id === goal.id && view.owner?.state === "working")?.owner;
     const pushView = views.find(view => view.goal?.id === goal.id && view.item.duty === GOAL_PUSH_LINK);
     const step = pushView?.item.id;
     const under = views.filter(view => view.goal?.id === goal.id && view.item.id !== goal.id && view.item.job);
     const holder = (pushView?.item.job ? pushView : undefined) ?? under.find(view => view.item.duty !== undefined) ?? under[0];
     const stepJob = holder?.item.job ? { step: holder.item.id, job: holder.owner?.name ?? holder.item.job } : undefined;
-    const base = { goal, words, ...(owner ? { owner } : {}), ...(step ? { pushStep: step } : {}), ...(stepJob ? { stepJob } : {}) };
+    const base = { goal, words, ...(owner ? { owner } : {}), ...(working ? { working } : {}), ...(step ? { pushStep: step } : {}), ...(stepJob ? { stepJob } : {}) };
     const number = goalNumber(goal, everyMs, metrics);
     if (!number) return [{ ...base, stale: false, act: "no_number" }];
     const { trend, memo } = goalTrend(number, memos?.[goal.id]);
@@ -294,8 +297,17 @@ export function goalPushes(board: ChatBoard | null, views: readonly StepView[], 
   return { pushes: pushes.sort((a, b) => rank[a.act] - rank[b.act] || short(b) - short(a)), memos: kept };
 }
 
-/** Whether a goal counts in the check-in's headline, `goal_gaps`: its number is off pace or no live job owns it. */
+/** Whether the check-in steers or starts a goal's owner job this run: its number is off pace or no live job owns it. */
 export const pushNeeded = (push: GoalPush): boolean => push.act === "start" || push.act === "steer";
+
+/**
+ * Whether a goal counts in the check-in's headline, `goal_gaps`: no live job works on it or on any open item under it, so the check-in has to
+ * start or restart one. An off-pace goal with a live job is still steered (`pushNeeded`) and counted in `goals_off_pace`, but it is no gap: a
+ * goal is plan work that finishes, and its pace is its own number on the board. On 10-20 at 00:29Z the Chat system duty (d9) read 11 of 12
+ * check-ins red, for up to 75 runs in a row, on goals such as Crawler VP p828 (200M creators, about 48 days to target at its rate), which no
+ * job can bring within 7 days, and on goals whose working job held a step under them but not their push step.
+ */
+export const goalGap = (push: GoalPush): boolean => push.act === "start" && push.working === undefined;
 
 const amount = (value: number): string => value.toLocaleString("en-US", { maximumFractionDigits: 2 });
 const unitText = (unit: string): string => !unit ? "" : unit === "%" ? "%" : ` ${unit}`;
