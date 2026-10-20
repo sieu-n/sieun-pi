@@ -1,7 +1,7 @@
 // Guards the Chat system duty's precheck (d9), built 10-19 for the owner's rule that a plan holds only tasks that finish (msg mvfb7zt0).
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { chatSystemOutput, goalsWithNoJob, jobsByChat, ownerMessages, planUpkeep, pushList, pushReached, spread, withCatalogOwners } from "../scripts/duties/chat-system.ts";
+import { chatSystemOutput, goalsWithNoJob, jobsByChat, ownerMessages, planUpkeep, pushList, pushReached, spread, withCatalogOwners, withoutWorkingRuns } from "../scripts/duties/chat-system.ts";
 import { type PlanInputs, planCounts } from "../scripts/duties/whole-system.ts";
 import type { ChatBoard } from "../src/shared/types.ts";
 
@@ -90,4 +90,18 @@ test("a red duty whose fix job works on the other box is not stuck once the cata
   assert.equal(planCounts({ ...plan, ...working }).redDuties.length, 0);
   const idle = withCatalogOwners(plan, jobsByChat([{ ...row, activity: "idle", lastActivityAt: "2026-10-19T22:00:00Z" }]), now);
   assert.equal(planCounts({ ...plan, ...idle }).redDuties.length, 1);
+});
+
+// 10-20 01:2xZ: the AI harness chat's check-in counted as stuck while its own 01:19Z check-in job worked on the step its run flagged.
+test("a stuck duty whose newest run's own job still works is left out, and one whose job ended or was cut stays", () => {
+  const now = Date.parse("2026-10-20T01:25:00Z");
+  const run = (extra: object) => ({ duty: "checkin", at: now - 360_000, trigger: "schedule", verdict: "missed", ms: 1, job: { id: "s-job", name: "check-in x 10:19" },
+    metrics: { stuck_steps: { value: 1, target: 0, op: "<=", met: false } }, ...extra });
+  const stuck = [{ chat: "c", duty: "checkin", line: "x: Check-in red" }];
+  const rows = [{ sessionId: "s-job", activity: "working" }];
+  const left = (runs: object[], over = rows) => withoutWorkingRuns(stuck, new Map([["c", runs as never]]), over, now).length;
+  assert.equal(left([run({})]), 0);
+  assert.equal(left([run({ after: { at: now - 60_000, verdict: "missed", metrics: {} } })]), 1);
+  assert.equal(left([run({ cut: { error: "pi-pool: this session waits for its slot", at: now - 300_000 } })]), 1);
+  assert.equal(left([run({})], [{ sessionId: "s-job", activity: "idle", lastActivityAt: "2026-10-19T20:00:00Z" }] as never), 1);
 });

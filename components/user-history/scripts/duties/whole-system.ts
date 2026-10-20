@@ -652,7 +652,7 @@ export interface StuckSteps { chat: PlanInputs["chats"][number]; value: number; 
  * The open steps nobody moves in each chat and the red duties with no live fix, which the Chat system duty (d9) counts as stuck_steps_all and
  * stuck_duties. They moved there from this duty (d7) on 10-19 (owner msg mvfb7zt0).
  */
-export function planCounts(input: PlanInputs): { stuck: StuckSteps[]; redDuties: { chat: string; line: string }[] } {
+export function planCounts(input: PlanInputs): { stuck: StuckSteps[]; redDuties: { chat: string; duty: string; line: string }[] } {
   // Each chat's newest measured check-in, only while it is under one check-in interval old, read after its job when that job has finished: the
   // check-in job gives an ended job's step a new owner or a close in the same run, so the run's own count is the board before that work. On 10-17
   // VP of CI's 19:36Z run measured 26 and its after-job measure at 20:09Z read 1, and its next run at 20:04Z (skipped behind that job) read 0.
@@ -685,7 +685,7 @@ export function planCounts(input: PlanInputs): { stuck: StuckSteps[]; redDuties:
     if (!newest || missStreak(own) < CHANGE_APPROACH_MISSES) return [];
     if (liveFix(newest, duty.id, input.boards?.get(chat.id), input.ownerActivity ?? new Map(), live, input.named?.get(chat.id))) return [];
     const links = missedKeys(effectiveRun(newest)).map(key => `${duty.id}/${key}`);
-    return [{ chat: chat.id, line: `${chat.name}: ${duty.name} read off target in its last ${missStreak(own)} runs, and no open step linked to it ` +
+    return [{ chat: chat.id, duty: duty.id, line: `${chat.name}: ${duty.name} read off target in its last ${missStreak(own)} runs, and no open step linked to it ` +
       `(duty field ${links.length ? links.join(" or ") : `${duty.id}/<metricKey>`}) has a live owner now` }];
   }));
   return { stuck, redDuties };

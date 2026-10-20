@@ -163,6 +163,20 @@ export function withCatalogOwners(plan: { ownerActivity?: ReadonlyMap<string, nu
   return { ownerActivity, named };
 }
 
+/**
+ * The stuck duties whose newest run's own job still works: it has no after-job measure and no cut, and its session works or wrote within
+ * LIVE_GAP_MS by either box's catalog row. That job is the duty's owner now, and its brief has it fix the miss or start the fix job. At 01:2xZ
+ * on 10-20 the AI harness chat's check-in counted as stuck while its 01:19Z check-in job worked on the step its run flagged.
+ */
+export function withoutWorkingRuns<T extends { chat: string; duty: string }>(stuck: readonly T[], runs: ReadonlyMap<string, readonly DutyRunRecord[]>,
+  rows: readonly CatalogRow[], now: number): T[] {
+  const at = new Map(rows.map(row => [row.sessionId, row.activity === "working" ? now : ms(row.lastActivityAt)] as const));
+  return stuck.filter(entry => {
+    const newest = (runs.get(entry.chat) ?? []).find(run => run.duty === entry.duty && run.verdict !== "skipped");
+    return !(newest?.job && !newest.after && !newest.cut && now - (at.get(newest.job.id) ?? 0) <= LIVE_GAP_MS);
+  });
+}
+
 /** One push the duty job sent a chat (`PUSHES_FILE`): when, the tag it put in the message, and the items it named. */
 export interface Push { at: number; chat: string; tag: string; items: string[] }
 /** How a push the last run's job sent went: whether its tag reached the chat's transcript, the chat answered after it, and a job started since. */
@@ -261,7 +275,8 @@ async function main(): Promise<void> {
   const plan = await planInputs(dataDir, now, names);
   const rows = copies.flatMap(text => { try { const value = JSON.parse(text) as { rows?: CatalogRow[] }; return value.rows ?? []; } catch { return []; } });
   const jobs = jobsByChat(rows);
-  const counts = planCounts({ ...plan, ...withCatalogOwners(plan, jobs, now) });
+  const owned = planCounts({ ...plan, ...withCatalogOwners(plan, jobs, now) });
+  const counts = { ...owned, redDuties: withoutWorkingRuns(owned.redDuties, new Map(plan.chats.map(chat => [chat.id, chat.runs])), rows, now) };
   const text = (chat: string, id: string): string | undefined => {
     let found: string | undefined;
     walk(plan.boards.get(chat)?.plan ?? [], item => { if (item.id === id) found = item.text; });
