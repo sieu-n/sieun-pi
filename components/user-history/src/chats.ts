@@ -22,6 +22,7 @@ import { withUnstarted } from "./brief-keeper.ts";
 import { planJob } from "./shared/chat-board.ts";
 import { noticeStands } from "./no-report.ts";
 import { statusAsks } from "./status-ask.ts";
+import { owedLinkLines } from "./owed-links.ts";
 import { tailMessages } from "./checkin-ops.ts";
 import { linkedTodoRefs, withLinkedTodos } from "./checkin-goals.ts";
 import { BRIEF_ITEMS } from "./shared/brief-cap.ts";
@@ -1216,6 +1217,10 @@ export class Chats {
       const said = this.stall(id) ? undefined : this.messages(id);
       for (const ask of said ? statusAsks(said, facts, key => this.workingSince.get(key), at) : []) {
         await this.threads.prompt(id, { message: ask, images: [], mode: "steer" }).catch(error => this.log(`chat ${id.slice(0, 8)}: status ask: ${error instanceof Error ? error.message : String(error)}`));
+      }
+      // A job whose screens render on 5180 while the owner has no link to them gets one line to the chat (c124, frontend bro 10-19).
+      for (const line of said ? owedLinkLines(said, facts, board?.todos ?? []) : []) {
+        await this.threads.prompt(id, { message: line, images: [], mode: "steer" }).catch(error => this.log(`chat ${id.slice(0, 8)}: owed link: ${error instanceof Error ? error.message : String(error)}`));
       }
       const flags = flagStreaks(previous?.flags, output.flagged);
       await this.source.memory.set(id, { ...precheck.memory, flags });
