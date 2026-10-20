@@ -54,7 +54,7 @@ test("the run reads every metric, and a failed source misses instead of reading 
 
 test("ig_queues_growing_6h dates a growing or unread queue count at this run and gives no lastEventAt at 0 (10-20 07:40Z d9 push)", () => {
   const videos = { family: "kafka lag", name: "crawl.videos/video-writers", now: 652_138, ago6h: 447_386, slope6h: 20, low: 532_587, low6h: 437_735 };
-  const run = (queues: RunningData["queues"], errors: RunningData["errors"] = []) => report({ now: NOW, from: FROM, to: TO, errors, queues }, METRICS);
+  const run = (queues: RunningData["queues"], errors: RunningData["errors"] = []) => report({ now: NOW, from: FROM, to: TO, errors, ...queues ? { queues } : {} }, METRICS);
   assert.deepEqual(run([videos]).lastEventAt, { ig_queues_growing_6h: NOW });
   assert.deepEqual(run(undefined, [{ source: "queues", message: "Grafana HTTP 502" }]).lastEventAt, { ig_queues_growing_6h: NOW });
   assert.equal(run([{ ...videos, low: 440_000 }]).lastEventAt, undefined);
