@@ -115,6 +115,13 @@ export interface FleetDuty {
 }
 export interface DutyFleet { metrics: { duties_green_pct: number; stuck_duties: number }; flagged: FlaggedSlice[]; duties: FleetDuty[] }
 
+/**
+ * A duty that measures `duties_green_pct` reads this share, so it stays out of it. Counted in, its own red verdict held the share under 100,
+ * which made it miss again: the AI harness chat's d9 read 98.3% at best with every other duty green, and each run listed d9 as a red duty with
+ * no fix job and pushed its own chat about it (d9 run of 06:16Z on 10-20).
+ */
+export const readsTheShare = (duty: { metrics: readonly { key: string }[] }): boolean => duty.metrics.some(metric => metric.key === "duties_green_pct");
+
 const measured = (run: DutyRunRecord): boolean => { const verdict = effectiveRun(run).verdict; return verdict === "met" || verdict === "missed"; };
 const show = (value: number): string => String(Math.round(value * 10) / 10);
 const bound = (streak: MetricStreak): string => `${streak.op === "<=" ? "at most" : "at least"} ${show(streak.target)}`;
@@ -153,7 +160,7 @@ export async function dutyFleet(options: { dataDir: string; now: number; session
     const runs = await store.runs(id);
     const setting = await settings.get(id);
     const active = [...(activePause(setting, now) === null ? [{ id: CHECK_IN_DUTY_ID, name: CHECK_IN_DUTY.name, metrics: CHECK_IN_DUTY.metrics }] : []),
-      ...file.duties.filter(duty => duty.status === "active")];
+      ...file.duties.filter(duty => duty.status === "active" && !readsTheShare(duty))];
     let board: ChatBoard | null | undefined;
     let live: ((item: PlanItem) => boolean) | undefined;
     for (const duty of active) {
