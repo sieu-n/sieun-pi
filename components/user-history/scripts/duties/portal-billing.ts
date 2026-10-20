@@ -30,6 +30,9 @@ import { DAY, MINUTE, REPO, SOURCE_DEADLINE_MS, frameRows, grafanaClient, readGr
  * Targets in portal-billing.duty.json (the JSON cannot hold comments): all three are <= 0, because a mismatch is money the customer should
  * not pay or a call the portal gave away, and the gateway's own rule since 10-18 is that both never happen.
  * A source that failed makes the metrics it feeds read missValue() and adds a source_error flag.
+ * Both 24 h counts give `lastEventAt`, the epoch ms of the newest call they count (a served-free call's start, a charge-on-error row's
+ * creation, an uncounted call's newest failure line), and none when the count is 0. On 10-20 uncounted_calls_24h still read prod's
+ * fail-open rate check calls after the fix, so a count no new call raised now reads quiet and a fresh one reads live.
  */
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -76,7 +79,8 @@ export const FEEDS: Readonly<Record<Source, readonly string[]>> = {
   "prod probes": ["empty_charged_probe"],
 };
 
-export interface Uncounted { kind: string; status: string; path: string; calls: number }
+/** One gateway failure group: `lastAt` is the epoch ms of its newest failure line. */
+export interface Uncounted { kind: string; status: string; path: string; calls: number; lastAt: number }
 export interface BillingData {
   now: number;
   sha?: string;
@@ -169,6 +173,7 @@ export function report(data: BillingData, dutyMetrics: readonly DutyMetric[]): P
   const at = data.now;
   const flagged: FlaggedSlice[] = [];
   const metrics: Record<string, number> = {};
+  const lastEventAt: Record<string, number> = {};
   const unmeasured = new Set<string>();
   const sourceError = (source: Source, message: string) => {
     for (const key of FEEDS[source]) unmeasured.add(key);
@@ -182,6 +187,7 @@ export function report(data: BillingData, dutyMetrics: readonly DutyMetric[]): P
     if (share < MIN_PAIRED_SHARE) sourceError("prod requests", `only ${result.paired} of ${result.rows} prod ledger rows paired with a drained request line (${Math.round(share * 1000) / 10}%), so the api-portal drain into otel_logs lost lines`);
     else {
       metrics.billing_mismatches_24h = result.servedFree.length + result.chargedOnError.length;
+      if (metrics.billing_mismatches_24h) lastEventAt.billing_mismatches_24h = Math.max(...result.servedFree.map(entry => entry.line.start), ...result.chargedOnError.map(entry => entry.row.createdAt));
       if (result.servedFree.length) flagged.push({ at, kind: "served_free", excerpt: `${result.servedFree.length} prod 2xx answers of priced operations have no apiPortalUsage row at prod's ${data.sha?.slice(0, 10) ?? "deployed commit"}: ${counts(result.servedFree, entry => entry.op)}; e.g. ${result.servedFree.slice(0, 3).map(entry => `${entry.line.rid} ${entry.line.path} ${utc(entry.line.start)}`).join(", ")}`.slice(0, 300) });
       if (result.chargedOnError.length) flagged.push({ at, kind: "charged_on_error", excerpt: `${result.chargedOnError.length} prod charges pair only with an error answer: ${counts(result.chargedOnError, entry => `${entry.op} ${entry.line.status}`)}; e.g. ${result.chargedOnError.slice(0, 3).map(entry => `${entry.row.requestId} ${entry.row.costMicros} micros ${utc(entry.row.createdAt)}`).join(", ")}`.slice(0, 300) });
     }
@@ -190,6 +196,7 @@ export function report(data: BillingData, dutyMetrics: readonly DutyMetric[]): P
   if (data.uncounted) {
     const served = data.uncounted.filter(row => row.status.startsWith("2"));
     metrics.uncounted_calls_24h = served.reduce((sum, row) => sum + row.calls, 0);
+    if (metrics.uncounted_calls_24h) lastEventAt.uncounted_calls_24h = Math.max(...served.filter(row => row.calls > 0).map(row => row.lastAt));
     if (served.length) {
       const byKind = new Map<string, number>();
       for (const row of served) byKind.set(row.kind, (byKind.get(row.kind) ?? 0) + row.calls);
@@ -207,7 +214,8 @@ export function report(data: BillingData, dutyMetrics: readonly DutyMetric[]): P
 
   const replaced = settle(dutyMetrics, metrics, unmeasured);
   if (replaced.length) flagged.push(unmeasuredFlag(replaced, at));
-  return { metrics, flagged };
+  for (const key of unmeasured) delete lastEventAt[key];
+  return { metrics, flagged, ...Object.keys(lastEventAt).length ? { lastEventAt } : {} };
 }
 
 // ---- I/O ----
@@ -292,8 +300,9 @@ FROM otel_logs WHERE Timestamp >= fromUnixTimestamp64Milli(${now - DAY - EDGE_MS
  AND LogAttributes['vercel.source'] = 'lambda' AND LogAttributes['vercel.type'] = 'stdout' AND Body LIKE 'START RequestId%' AND LogAttributes['vercel.path'] LIKE '/v1/%'
 GROUP BY rid`;
 /** Prod calls of the last 24 h with a gateway count or charge failure line, by failure, the answer's status and route. */
-export const UNCOUNTED_SQL = (now: number) => `SELECT f.kind AS kind, r.status AS status, r.path AS path, count() AS calls FROM
-(SELECT LogAttributes['vercel.requestId'] AS rid, if(Body LIKE '[gateway] rate_check_failed%', 'rate_check_failed', 'deduct_failed') AS kind FROM otel_logs
+export const UNCOUNTED_SQL = (now: number) => `SELECT f.kind AS kind, r.status AS status, r.path AS path, count() AS calls, max(f.at) AS last FROM
+(SELECT LogAttributes['vercel.requestId'] AS rid, if(Body LIKE '[gateway] rate_check_failed%', 'rate_check_failed', 'deduct_failed') AS kind,
+ toUnixTimestamp64Milli(max(Timestamp)) AS at FROM otel_logs
  WHERE Timestamp >= fromUnixTimestamp64Milli(${now - DAY}) AND ${PROD_LOGS} AND LogAttributes['vercel.type'] = 'stderr'
  AND (Body LIKE '[gateway] rate_check_failed%' OR Body LIKE '[gateway] deduct_failed%') GROUP BY rid, kind) AS f
 LEFT JOIN
@@ -370,7 +379,7 @@ async function measure(now: number, signal: AbortSignal): Promise<BillingData> {
     })).filter(line => Number.isFinite(line.start) && line.status > 0))),
     step("prod ledger", async () => ledgerSince(await convexAdmin(deploymentOf(await envFile("prod")), signal), now - DAY - EDGE_MS)),
     clickhouse.then(read => read ? step("gateway failures", async () => (await read(UNCOUNTED_SQL(now))).map((row): Uncounted => ({
-      kind: String(row.kind), status: String(row.status ?? ""), path: String(row.path ?? ""), calls: Number(row.calls),
+      kind: String(row.kind), status: String(row.status ?? ""), path: String(row.path ?? ""), calls: Number(row.calls), lastAt: Number(row.last),
     }))) : (data.errors.push({ source: "gateway failures", message: "no ClickHouse read" }), undefined)),
     step("staging probes", () => stagingProbes(signal)),
     step("prod probes", () => prodProbes(signal)),

@@ -56,7 +56,7 @@ test("the report counts uncounted 2xx calls and probe charges, and a failed sour
   assert.equal(expectedCharge(good, 502, 500), 0);
   const data: BillingData = {
     now: NOW, operations: OPERATIONS, requests: [line("a", "/v1/intelligence/profile", 200, AT)], ledger: [row("r", "intelligence.profile", AT + 1_000, 50_000)],
-    uncounted: [{ kind: "rate_check_failed", status: "200", path: "/v1/tiktok/live/mentions", calls: 2_702 }, { kind: "deduct_failed", status: "", path: "", calls: 4 }],
+    uncounted: [{ kind: "rate_check_failed", status: "200", path: "/v1/tiktok/live/mentions", calls: 2_702, lastAt: AT }, { kind: "deduct_failed", status: "", path: "", calls: 4, lastAt: AT + 5_000 }],
     probes: [
       { env: "prod", probe: "hn missing user", status: 200, requestId: "q1", expected: 0, charged: 500 },
       { env: "staging", probe: "hn missing user", status: 200, requestId: "q2", expected: 0, charged: 0 },
@@ -67,4 +67,29 @@ test("the report counts uncounted 2xx calls and probe charges, and a failed sour
   const broken = report({ ...data, errors: [{ source: "prod ledger", message: "HTTP 500" }] }, METRICS);
   assert.ok(broken.metrics.billing_mismatches_24h! > 0);
   assert.ok(broken.flagged!.some(slice => slice.kind === "source_error"));
+});
+
+test("each 24 h count gives the time of its newest counted call, and a zero count gives none (10-20 d9: uncounted calls stayed red after the fix)", () => {
+  const data: BillingData = {
+    now: NOW, operations: OPERATIONS,
+    requests: [line("a", "/v1/intelligence/profile", 200, AT), line("b", "/v1/intelligence/profile", 200, AT + 60_000), line("x", "/v1/youtube/live/channel/shorts", 404, AT + 120_000),
+      ...Array.from({ length: 20 }, (_, i) => line(`ok${i}`, "/v1/intelligence/profile", 200, AT - 3_600_000 + i * 60_000))],
+    ledger: [row("r1", "live.youtube.channel_shorts", AT + 121_000), ...Array.from({ length: 20 }, (_, i) => row(`ok${i}`, "intelligence.profile", AT - 3_599_000 + i * 60_000, 50_000))],
+    uncounted: [
+      { kind: "rate_check_failed", status: "200", path: "/v1/tiktok/live/mentions", calls: 2_702, lastAt: AT - 7_200_000 },
+      { kind: "rate_check_failed", status: "200", path: "/v1/youtube/live/channel/shorts", calls: 3, lastAt: AT - 3_600_000 },
+      { kind: "deduct_failed", status: "503", path: "/v1/x", calls: 9, lastAt: AT },
+    ],
+    probes: [], errors: [],
+  };
+  const live = report(data, METRICS);
+  assert.equal(live.metrics.billing_mismatches_24h, 3);
+  assert.deepEqual(live.lastEventAt, { billing_mismatches_24h: AT + 121_000, uncounted_calls_24h: AT - 3_600_000 });
+  const quiet = report({ ...data, requests: [line("a", "/v1/intelligence/profile", 200, AT)], ledger: [row("r", "intelligence.profile", AT + 1_000, 50_000)], uncounted: [] }, METRICS);
+  assert.equal(quiet.metrics.billing_mismatches_24h, 0);
+  assert.equal(quiet.metrics.uncounted_calls_24h, 0);
+  assert.equal(quiet.lastEventAt, undefined);
+  const { uncounted: _, ...unread } = data;
+  const broken = report({ ...unread, errors: [{ source: "gateway failures", message: "HTTP 500" }] }, METRICS);
+  assert.equal(broken.lastEventAt?.uncounted_calls_24h, undefined);
 });
