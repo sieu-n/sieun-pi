@@ -13,7 +13,7 @@ import { ownerStopSinceActive } from "../src/chat-guard.ts";
 import { Chats } from "../src/chats.ts";
 import { IdIndex } from "../src/id-index.ts";
 import { jobCancelRecord } from "../src/job-cancels.ts";
-import { serviceArchiveRecord } from "../src/service-archives.ts";
+import { parseServiceArchives, serviceArchiveRecord } from "../src/service-archives.ts";
 import { fakeThreads, row, source } from "./chats-helpers.ts";
 
 const CHAT = "01a15903-32dc-722e-87d3-55af930292fe";
@@ -49,28 +49,49 @@ test("the duty runner's archive and a script's teardown archive record no owner 
   assert.equal(threads.archivedBy.get(OWNER_JOB), "owner");
 });
 
-test("a session file's owner_archive line that service-archives.json names is the service's archive, and an archive after a reopen is the owner's again", async t => {
+test("only the exact line a confirmed service archive wrote is the service's; an owner stop before or after it, or after a reopen, stays his", async t => {
   const root = mkdtempSync(join(tmpdir(), "service-archive-file-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const record = serviceArchiveRecord(join(root, "service-archives.json"));
   const file = join(root, `${DUTY_JOB}.jsonl`);
-  const state = (at: string, status: string, reason?: string) =>
-    appendFileSync(file, JSON.stringify({ type: "session_state", timestamp: at, state: { status, ...reason ? { reason } : {} } }) + "\n");
+  const state = (id: string, at: string, status: string, reason?: string) =>
+    appendFileSync(file, JSON.stringify({ type: "session_state", id, timestamp: at, state: { status, ...reason ? { reason } : {} } }) + "\n");
   writeFileSync(file, JSON.stringify({ type: "session", id: DUTY_JOB }) + "\n");
-  state("2026-10-20T18:01:00.000Z", "active");
+  state("a1", "2026-10-20T18:01:00.000Z", "active");
   const queued = Date.parse("2026-10-20T18:20:11.000Z");
-  await record.add(DUTY_JOB, { at: queued, reason: "duty_job_end" });
-  state("2026-10-20T18:20:11.400Z", "archived", "owner_archive");
-
-  const entry = await record.of(DUTY_JOB);
-  assert.deepEqual(entry, { at: queued, reason: "duty_job_end" });
-  assert.equal(await ownerStopSinceActive(file, entry), null, "the service's archive is no owner stop");
+  await record.add(DUTY_JOB, { op: "op-1", at: queued, reason: "duty_job_end", after: "a1", line: null });
+  state("s1", "2026-10-20T18:20:11.400Z", "archived", "owner_archive");
+  assert.equal(await ownerStopSinceActive(file, await record.of(DUTY_JOB)), "owner_archive at 2026-10-20T18:20:11.400Z",
+    "an operation the daemon has not confirmed covers no line");
+  await record.land(DUTY_JOB, "op-1", "s1");
+  assert.deepEqual(await record.of(DUTY_JOB), [{ op: "op-1", at: queued, reason: "duty_job_end", after: "a1", line: "s1" }]);
+  assert.equal(await ownerStopSinceActive(file, await record.of(DUTY_JOB)), null, "the service's archive is no owner stop");
   assert.equal(await ownerStopSinceActive(file), "owner_archive at 2026-10-20T18:20:11.400Z", "without the record Prime's line reads as the owner's");
 
-  state("2026-10-20T18:30:00.000Z", "active");
-  state("2026-10-20T18:31:00.000Z", "archived", "owner_archive");
-  assert.equal(await ownerStopSinceActive(file, entry), "owner_archive at 2026-10-20T18:31:00.000Z", "an archive after a reopen is not the service's");
+  state("o1", "2026-10-20T18:20:12.000Z", "archived", "owner_stop");
+  assert.equal(await ownerStopSinceActive(file, await record.of(DUTY_JOB)), "owner_stop at 2026-10-20T18:20:12.000Z", "the owner's stop 0.6 s later is his");
+
+  state("a2", "2026-10-20T18:30:00.000Z", "active");
+  state("o2", "2026-10-20T18:31:00.000Z", "archived", "owner_archive");
+  assert.equal(await ownerStopSinceActive(file, await record.of(DUTY_JOB)), "owner_archive at 2026-10-20T18:31:00.000Z", "an archive after a reopen is not the service's");
 
   await record.drop(DUTY_JOB);
-  assert.equal(await record.of(DUTY_JOB), undefined, "the owner's own archive through the service takes the record back");
+  assert.deepEqual(await record.of(DUTY_JOB), [], "the owner's own archive through the service takes the record back");
+});
+
+test("an owner stop before a service archive still holds after the service's line", async t => {
+  const root = mkdtempSync(join(tmpdir(), "service-archive-order-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const file = join(root, `${DUTY_JOB}.jsonl`);
+  writeFileSync(file, [{ type: "session", id: DUTY_JOB }, { type: "session_state", id: "a1", timestamp: "2026-10-20T18:01:00.000Z", state: { status: "active" } },
+    { type: "session_state", id: "o1", timestamp: "2026-10-20T18:10:00.000Z", state: { status: "archived", reason: "owner_stop" } },
+    { type: "session_state", id: "s1", timestamp: "2026-10-20T18:20:00.000Z", state: { status: "archived", reason: "owner_archive" } }].map(entry => JSON.stringify(entry)).join("\n") + "\n");
+  assert.equal(await ownerStopSinceActive(file, [{ op: "op-1", at: Date.parse("2026-10-20T18:19:59.000Z"), reason: "duty_job_end", after: "o1", line: "s1" }]),
+    "owner_stop at 2026-10-20T18:10:00.000Z");
+});
+
+test("4ec60673's { at, reason } entries name no line, so they cover nothing", () => {
+  assert.deepEqual(parseServiceArchives({ [DUTY_JOB]: { at: 1, reason: "duty_job_end" } }), {});
+  assert.deepEqual(parseServiceArchives({ [DUTY_JOB]: [{ op: "x", at: 1, reason: "duty_job_end", after: null, line: null }, { at: 1, reason: "duty_job_end" }] }),
+    { [DUTY_JOB]: [{ op: "x", at: 1, reason: "duty_job_end", after: null, line: null }] });
 });

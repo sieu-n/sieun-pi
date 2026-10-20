@@ -255,8 +255,8 @@ export interface ChatThreads {
   resume(id: string): Promise<unknown>;
   /** Archives the session: its turn stops, its worker ends and its session file records the archived state. `by` is the owner or the service's reason. */
   archive(id: string, by: ArchiveBy): Promise<void>;
-  /** The service's own archive or stop of the session that service-archives.json holds, or undefined. */
-  serviceArchiveOf(id: string): Promise<ServiceArchive | undefined>;
+  /** The service's own archive operations on the session that service-archives.json holds. */
+  serviceArchiveOf(id: string): Promise<readonly ServiceArchive[]>;
   /** A transcript line that starts no turn; the feed shows it as a notice. */
   notice(id: string, text: string): Promise<void>;
   /** What the feed shows under the owner's unanswered message while a restart waits; null clears it. */

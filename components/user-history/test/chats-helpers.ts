@@ -38,7 +38,7 @@ export function fakeThreads(calls: string[]) {
     async resume(id: string) { calls.push(`open ${id}`); },
     archivedBy: new Map<string, string>(),
     async archive(id: string, by: string) { calls.push(`archive ${id}`); this.archivedBy.set(id, by); },
-    async serviceArchiveOf(_id: string): Promise<undefined> { return undefined; },
+    async serviceArchiveOf(_id: string): Promise<readonly never[]> { return []; },
     catalog: { models: [] as ModelInfo[], configuredProviders: [] as string[] },
     async models(_id: string) { return { ...this.catalog, current: null, thinkingLevel: null, availableThinkingLevels: [] }; },
     async setModel(id: string, provider: string, modelId: string) { calls.push(`model ${id} ${provider}/${modelId}`); },

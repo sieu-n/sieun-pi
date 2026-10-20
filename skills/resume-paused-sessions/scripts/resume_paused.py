@@ -32,9 +32,9 @@ archive that stopped the turn counts only when it is the idle unload's, by its
 idle_unload reason or the unload's record. A stop record or a stop reason on the
 archive (owner_stop, owner_archive, subagent_deleted, completed, replaced and
 the like) keeps the run stopped and lists it under "stopped" with that record.
-An owner_stop or owner_archive line that the chat's service-archives.json names
-is listed as the chat service's own archive, since Prime writes those reasons
-for every archive the service sends.
+An owner_stop or owner_archive line whose entry id a confirmed operation in the
+chat's service-archives.json names is listed as the chat service's own archive,
+since Prime writes those reasons for every archive the service sends.
 Any other archive is listed under "unresolved" with its cause and gets nothing:
 a line with no reason, daemon_shutdown, an update discard (named by its discard
 record when exactly one matches), one the update left out under stoppedBeforeRestore,
@@ -156,8 +156,6 @@ ARCHIVED_CHATS = Path.home() / ".prime" / "agent" / "browser-chat" / "archived-c
 JOB_CANCELS = Path.home() / ".prime" / "agent" / "browser-chat" / "job-cancels.json"
 # The chat service's own archives (service-archives.ts): Prime writes owner_stop or owner_archive for every archive the service sends.
 SERVICE_ARCHIVES = Path.home() / ".prime" / "agent" / "browser-chat" / "service-archives.json"
-# A line up to this long before the entry still belongs to it, for a session stamped by another box's clock (SERVICE_ARCHIVE_CLOCK_SLACK_MS).
-SERVICE_ARCHIVE_SLACK = dt.timedelta(seconds=5)
 LOG_DIR = Path.home() / ".prime" / "agent" / "logs"
 SHUTDOWN_LINE = re.compile(r"^\[(\S+Z)\] supervisor: Session worker \w+ stderr: received SIGTERM", re.MULTILINE)
 # A stopped worker writes "Request was aborted" to its running turn. On 10-15 the four such aborts in live chat jobs
@@ -974,7 +972,7 @@ def archive_verdict(archive, session_id, path, unloaded_at, entries):
         if unload_archive(archive, unloaded_at):
             return ("unload", f"the idle unload stopped it (unloaded.json, archive at {at})")
         return ("unresolved", "An archive with no recorded cause stopped its turn, so it is not resumed.")
-    service = service_archive(archive, Path(path).stem if path else session_id, entries)
+    service = service_archive(archive, Path(path).stem if path else session_id)
     if service:
         return ("stopped", service)
     kind, said = ARCHIVE_REASONS.get(reason, (None, None))
@@ -995,33 +993,30 @@ def stopped_since(entries, found_at, session_id=None):
         kind, said = ARCHIVE_REASONS.get(reason, (None, None))
         stamp = parse_ts(entry.get("timestamp"))
         if is_archive(entry) and kind == "stopped" and found_at and stamp and stamp > found_at:
-            return (session_id and service_archive(entry, session_id, entries)) or f"{said} (archive reason {reason}, at {entry.get('timestamp')})"
+            return (session_id and service_archive(entry, session_id)) or f"{said} (archive reason {reason}, at {entry.get('timestamp')})"
     return None
 
 
-def service_archive(archive, session_id, entries):
+def service_archive(archive, session_id):
     """Why the chat service archived the session `session_id` itself, when the owner_stop or owner_archive line `archive` is its archive, else
     None. Prime writes those two reasons for every archive the service sends, such as the duty runner's archive of each cut duty job on 10-20
-    0.4 to 3 s after "its turn ended; queued its archive". The service writes service-archives.json first, so the line belongs to the entry
-    when it is stamped at or after the entry and no active line between them reopened the session. Raises RecordError like read_record."""
+    0.4 to 3 s after "its turn ended; queued its archive". Each service archive is one operation in service-archives.json, and once the daemon
+    confirmed it, the operation names the id of the one archived line it wrote. Only that exact line is the service's: an operation whose send
+    was refused or failed names none, and a later owner stop or archive is a line of its own. No time or session match counts, so a line before
+    the record existed (4ec60673 and older, where a nearby "queued its archive" shows only an attempt) stays the owner's. Raises RecordError
+    like read_record."""
     reason = (archive.get("state") or {}).get("reason")
-    if reason not in ("owner_stop", "owner_archive"):
+    line = archive.get("id")
+    if reason not in ("owner_stop", "owner_archive") or not isinstance(line, str):
         return None
-    record = read_record(SERVICE_ARCHIVES, lambda data: isinstance(data, dict) and all(isinstance(entry, dict) for entry in data.values())) or {}
-    entry = record.get(session_id)
-    if not entry or not isinstance(entry.get("at"), (int, float)) or not isinstance(entry.get("reason"), str):
+    record = read_record(SERVICE_ARCHIVES, lambda data: isinstance(data, dict)) or {}
+    operations = record.get(session_id)
+    entry = next((op for op in operations if isinstance(op, dict) and op.get("line") == line and isinstance(op.get("at"), (int, float))
+                  and isinstance(op.get("reason"), str)), None) if isinstance(operations, list) else None
+    if not entry:
         return None
     since = dt.datetime.fromtimestamp(entry["at"] / 1000, dt.timezone.utc)
-    stamp = parse_ts(archive.get("timestamp"))
-    if not stamp or stamp < since - SERVICE_ARCHIVE_SLACK:
-        return None
-    for line in entries:
-        if line is archive:
-            break
-        active = parse_ts(line.get("timestamp")) if line.get("type") == "session_state" and (line.get("state") or {}).get("status") == "active" else None
-        if active and active >= since:
-            return None
-    return (f"the chat service archived it ({entry['reason']}, service-archives.json at {since.strftime('%Y-%m-%dT%H:%M:%SZ')}; "
+    return (f"the chat service archived it ({entry['reason']}, service-archives.json operation at {since.strftime('%Y-%m-%dT%H:%M:%SZ')}; "
             f"Prime wrote archive reason {reason}, at {archive.get('timestamp')})")
 
 

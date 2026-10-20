@@ -2051,22 +2051,77 @@ class RecordedStops(unittest.TestCase):
         self.assertIn("'a_future_reason'", said["a_future_reason"])
         self.assertEqual(said[None], "An archive with no recorded cause stopped its turn, so it is not resumed.")
 
-    def test_an_owner_archive_line_the_chat_service_wrote_for_its_own_archive_says_the_service_archived_it(self):
-        # 10-20 18:25Z: the duty runner archived each cut duty job 0.4 to 3 s after "its turn ended; queued its archive", and Prime wrote
-        # owner_archive on each, since it takes no reason from a client. The service names its own archive in service-archives.json first.
-        duty = self.reasoned("owner_archive", sid="01a14eaa-0000-7000-8000-0000000000f1")
-        owner = self.reasoned("owner_archive", sid="01a14eaa-0000-7000-8000-0000000000f2")
-        early = self.reasoned("owner_archive", sid="01a14eaa-0000-7000-8000-0000000000f3")
-        queued = int(resume_paused.parse_ts("2026-10-18T10:20:29.600Z").timestamp() * 1000)
+    def service_case(self, sid, *lines):
+        """A duty job whose turn ended at 10:20:00Z, then `lines` as (entry id, time, reason) archived session_state lines."""
+        entries = [{**self.message("2026-10-18T10:19:00.000Z", "user"), "id": "u1"}, {**self.message("2026-10-18T10:20:00.000Z", "toolResult"), "id": "t1"}]
+        entries += [{**self.archive(stamp, reason), "id": line} for line, stamp, reason in lines]
+        return self.job("01a14210-4e7d-72c3-aa67-e3d476f4e728", f"sub-{sid[-8:]}", sid, entries)
+
+    def service_record(self, record):
         (self.agent / "browser-chat").mkdir(parents=True, exist_ok=True)
-        (self.agent / "browser-chat" / "service-archives.json").write_text(json.dumps({
-            duty.stem: {"at": queued, "reason": "duty_job_end"}, early.stem: {"at": queued + 60_000, "reason": "idle_root_end"}}))
-        report = self.run_owners([duty.stem, owner.stem, early.stem])
-        self.assertEqual(report["paused"], [])
+        (self.agent / "browser-chat" / "service-archives.json").write_text(json.dumps(record))
+
+    QUEUED = int(dt.datetime(2026, 10, 18, 10, 20, 29, 600000, tzinfo=dt.timezone.utc).timestamp() * 1000)
+
+    def operation(self, line, reason="duty_job_end"):
+        return {"op": f"op-{line}", "at": self.QUEUED, "reason": reason, "after": "t1", "line": line}
+
+    def test_only_the_exact_line_a_confirmed_service_archive_wrote_is_the_services(self):
+        # 10-20 18:25Z: the duty runner archived each cut duty job 0.4 to 3 s after "its turn ended; queued its archive", and Prime wrote
+        # owner_archive on each, since it takes no reason from a client. The service records each archive as an operation that names its line.
+        duty = self.service_case("01a14eaa-0000-7000-8000-0000000000f1", ("s1", "2026-10-18T10:20:30.000Z", "owner_archive"))
+        owner = self.service_case("01a14eaa-0000-7000-8000-0000000000f2", ("o1", "2026-10-18T10:20:30.000Z", "owner_archive"))
+        other = self.service_case("01a14eaa-0000-7000-8000-0000000000f3", ("o2", "2026-10-18T10:20:30.000Z", "owner_archive"))
+        self.service_record({duty.stem: [self.operation("s1")], other.stem: [self.operation("s1", "idle_root_end")]})
+        report = self.run_owners([duty.stem, owner.stem, other.stem])
+        self.assertEqual((report["paused"], self.sent), ([], []))
         said = {entry["session_id"]: entry["stopped_by"] for entry in resume_paused.STOPPED}
-        self.assertTrue(said[duty.stem].startswith("the chat service archived it (duty_job_end, service-archives.json at 2026-10-18T10:20:29Z"), said[duty.stem])
+        self.assertTrue(said[duty.stem].startswith("the chat service archived it (duty_job_end, service-archives.json operation at 2026-10-18T10:20:29Z"), said[duty.stem])
         self.assertTrue(said[owner.stem].startswith("the owner archived it"), said[owner.stem])
-        self.assertTrue(said[early.stem].startswith("the owner archived it"), "a service entry written after the line is not that archive's")
+        self.assertTrue(said[other.stem].startswith("the owner archived it"), "an operation names its line, not every archive line of the session")
+
+    def test_a_refused_service_archive_then_the_owners_archive_reads_as_the_owners_and_is_not_resumed(self):
+        # The service recorded its archive and the daemon refused it, so the operation names no line; the owner archived the session 1 s later.
+        refused = self.service_case("01a14eaa-0000-7000-8000-0000000000a1", ("o1", "2026-10-18T10:20:30.600Z", "owner_archive"))
+        self.service_record({refused.stem: [self.operation(None)]})
+        report = self.run_owners([refused.stem], dry_run=False)
+        self.assertEqual((report["paused"], self.sent), ([], []))
+        said = {entry["session_id"]: entry["stopped_by"] for entry in resume_paused.STOPPED}
+        self.assertTrue(said[refused.stem].startswith("the owner archived it (archive reason owner_archive, at 2026-10-18T10:20:30.600Z"), said[refused.stem])
+
+    def test_a_service_archive_then_a_newer_owner_stop_reads_as_the_owners_stop_and_is_not_resumed(self):
+        # The duty runner's archive landed (s1), and the owner stopped the session 2 s later with no reopen between.
+        landed = self.service_case("01a14eaa-0000-7000-8000-0000000000b1", ("s1", "2026-10-18T10:20:30.000Z", "owner_archive"),
+                                   ("o1", "2026-10-18T10:20:32.000Z", "owner_stop"))
+        self.service_record({landed.stem: [self.operation("s1")]})
+        report = self.run_owners([landed.stem], dry_run=False)
+        self.assertEqual((report["paused"], self.sent), ([], []))
+        said = {entry["session_id"]: entry["stopped_by"] for entry in resume_paused.STOPPED}
+        self.assertTrue(said[landed.stem].startswith("the owner stopped it (archive reason owner_stop, at 2026-10-18T10:20:32.000Z"), said[landed.stem])
+
+    def test_a_service_record_matched_by_time_alone_covers_no_later_owner_archive_or_stop(self):
+        # 4ec60673 wrote { at, reason } with no line, and its readers took any owner line at or after `at` with no active line between as the
+        # service's. Both cases: a refused archive then the owner's archive 1 s later, and a landed archive then the owner's stop 2 s later.
+        refused = self.service_case("01a14eaa-0000-7000-8000-0000000000d1", ("o1", "2026-10-18T10:20:30.600Z", "owner_archive"))
+        landed = self.service_case("01a14eaa-0000-7000-8000-0000000000d2", ("s1", "2026-10-18T10:20:30.000Z", "owner_archive"),
+                                   ("o1", "2026-10-18T10:20:32.000Z", "owner_stop"))
+        self.service_record({sid.stem: {"at": self.QUEUED, "reason": "duty_job_end"} for sid in (refused, landed)})
+        report = self.run_owners([refused.stem, landed.stem], dry_run=False)
+        self.assertEqual((report["paused"], self.sent), ([], []))
+        said = {entry["session_id"]: entry["stopped_by"] for entry in resume_paused.STOPPED}
+        self.assertTrue(said[refused.stem].startswith("the owner archived it (archive reason owner_archive"), said[refused.stem])
+        self.assertTrue(said[landed.stem].startswith("the owner stopped it (archive reason owner_stop"), said[landed.stem])
+
+    def test_a_queued_its_archive_line_before_an_owner_archive_with_no_operation_is_no_service_archive(self):
+        # Before 4ec60673 no record exists. service.log's "queued its archive" 0.4 s before the line shows the duty runner tried an archive,
+        # not that no owner stop followed, so the line stays the owner's and the run is not resumed.
+        log = self.agent / "browser-chat" / "service.log"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_text("2026-10-18T10:20:29.600Z duty job check-in vent 01:57: its turn ended; queued its archive\n")
+        old = self.service_case("01a14eaa-0000-7000-8000-0000000000c1", ("x1", "2026-10-18T10:20:30.000Z", "owner_archive"))
+        report = self.run_owners([old.stem], dry_run=False)
+        self.assertEqual((report["paused"], self.sent), ([], []))
+        self.assertTrue(resume_paused.STOPPED[0]["stopped_by"].startswith("the owner archived it"), resume_paused.STOPPED[0]["stopped_by"])
 
     def test_an_idle_unload_reason_follows_the_token_hook_rule_without_the_chats_record(self):
         hook = self.reasoned("idle_unload", self.message("2026-10-18T10:20:00.000Z", "assistant", stopReason="error", provider="anthropic", errorMessage=self.HOOK_ERROR))

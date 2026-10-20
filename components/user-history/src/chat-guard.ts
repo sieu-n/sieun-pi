@@ -5,7 +5,7 @@ import type { ThreadMessage } from "./shared/types.ts";
 import { ALLOWED_SHELL, SHELL_LIST } from "./chat-brief.ts";
 import { fileLines } from "./file-lines.ts";
 import { SHOP_TALK_MARK, shopTalk } from "./shared/reply-lint.ts";
-import { type ServiceArchive, serviceArchiveLine } from "./service-archives.ts";
+import { type ServiceArchive, serviceArchiveLines } from "./service-archives.ts";
 
 /** What makes a session a chat and what a chat may run: the chat_mode marker, its tools, the tell_owner tool, the owner message ids, and the shell guard. */
 
@@ -49,29 +49,28 @@ export async function fileHasChatMarker(sessionFile: string): Promise<boolean> {
 
 /**
  * The archive reasons Prime writes for the owner's stop or archive; idle_unload and a forced shutdown are the daemon's own. Prime writes the same
- * two for the chat service's own archives, so a line that service-archives.json names as the service's is no owner stop (service-archives.ts).
+ * two for the chat service's own archives, so the exact line a service archive operation wrote is no owner stop (service-archives.ts).
  */
 const OWNER_STOPS: ReadonlySet<string> = new Set(["owner_stop", "owner_archive"]);
 
 /**
  * The owner's stop or archive that a session file records after its last active state, as "<reason> at <time>", or null. On 10-20 06:25:25Z a
  * clean-room setup archived stray chat 01a157fb (owner_stop), and the scan re-adopted and resumed it at 06:25:28Z from its chat_mode entry.
- * `service` is the service's own archive of the session (service-archives.json): the line it wrote is no owner stop.
+ * `service` holds the service's own archive operations on the session (service-archives.json). Only the line each confirmed one wrote, matched
+ * by its entry id, is skipped, and it neither sets nor clears an owner stop around it.
  */
-export async function ownerStopSinceActive(sessionFile: string, service?: ServiceArchive): Promise<string | null> {
+export async function ownerStopSinceActive(sessionFile: string, service: readonly ServiceArchive[] = []): Promise<string | null> {
+  const serviceLines = serviceArchiveLines(service);
   let stop: string | null = null;
-  let lastActive = -Infinity;
   try {
     for await (const line of fileLines(sessionFile)) {
       if (!line.includes('"type":"session_state"')) continue;
-      let entry: { type?: unknown; timestamp?: unknown; state?: { status?: unknown; reason?: unknown } };
+      let entry: { type?: unknown; id?: unknown; timestamp?: unknown; state?: { status?: unknown; reason?: unknown } };
       try { entry = JSON.parse(line) as typeof entry; } catch { continue; }
       if (entry.type !== "session_state") continue;
-      const at = typeof entry.timestamp === "number" ? entry.timestamp : Date.parse(String(entry.timestamp));
-      if (entry.state?.status === "active") { stop = null; lastActive = at; }
-      else if (entry.state?.status === "archived" && typeof entry.state.reason === "string" && OWNER_STOPS.has(entry.state.reason)) {
-        stop = serviceArchiveLine(at, lastActive, service) ? null : `${entry.state.reason} at ${String(entry.timestamp)}`;
-      }
+      if (entry.state?.status === "active") stop = null;
+      else if (entry.state?.status === "archived" && typeof entry.state.reason === "string" && OWNER_STOPS.has(entry.state.reason)
+        && !(typeof entry.id === "string" && serviceLines.has(entry.id))) stop = `${entry.state.reason} at ${String(entry.timestamp)}`;
     }
   } catch { return null; }
   return stop;

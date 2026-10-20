@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { DaemonAgentConnection, DaemonClient, getAgentDir, SessionManager, type SessionEntry, type SessionSummary } from "prime-agent";
@@ -11,11 +12,11 @@ import { QUIET_MINUTES } from "./quiet-minutes.ts";
 import { UNKNOWN_ACTIVE } from "./chats.ts";
 import { archiveSavedSession, resumeSince, type ResumeSince, ScheduledJobsLeft, ServicesStopPending, takesSavedArchive } from "./saved-archive.ts";
 import { type CancelTry, type PendingCancel, SavedArchiveQueue } from "./saved-archive-queue.ts";
-import type { ArchiveBy, ServiceArchive, ServiceArchiveRecord } from "./service-archives.ts";
+import type { ArchiveBy, ServiceArchive, ServiceArchiveReason, ServiceArchiveRecord } from "./service-archives.ts";
 import { activeIn, AMBIGUOUS, isReopenable } from "./reopen-send.ts";
 import { afterMove, type StateAnswer } from "./worker-move.ts";
 import { AttachQueue } from "./attach-queue.ts";
-import { setFileSessionState } from "./session-state-file.ts";
+import { archivedLinesAfter, lastEntryId, setFileSessionState } from "./session-state-file.ts";
 import { userMessageAt } from "./send-once.ts";
 import type { OutboxEntry } from "./shared/outbox.ts";
 import { CHAT_NOTICE } from "./shared/chat-feed.ts";
@@ -301,6 +302,9 @@ const PROMPT_REQUEST_MS = 24 * 60 * 60 * 1000;
 /** A daemon prompt's fields; an owner send to another box carries `ownerTurn`, which that box's relay marks (components/prime-relay/owner-turn.mjs). */
 /** What a spare session is made for: the box, folder, model and effort of the new thread the owner is writing. */
 export interface SpareInput { host: string; cwd: string; provider?: string; modelId?: string; thinkingLevel?: ThinkingLevel }
+/** One service archive operation in flight: its id, the session file on this box, and the id of that file's last entry before the command. */
+interface ServiceOperation { op: string; file: string | undefined; after: string | null }
+
 interface Spare { key: string; host: string; created: Promise<SessionSummary | null>; timer: ReturnType<typeof setTimeout> }
 const spareKey = (input: SpareInput): string => JSON.stringify([input.host, input.cwd, input.provider && input.modelId ? `${input.provider}/${input.modelId}` : null, input.thinkingLevel ?? null]);
 
@@ -1360,8 +1364,7 @@ export class ThreadHub {
     const data = await spare.created;
     if (!data) return;
     const client = await this.hostDaemon(spare.host).catch(() => null);
-    await this.noteArchive(data.sessionId, "service_cleanup");
-    await client?.request({ type: "kill", activeSessionId: data.activeSessionId! }, 30_000, { recoverable: false }).catch(() => {});
+    if (client) await this.serviceKill(client, data.sessionId, data.activeSessionId!);
     this.catalog.spare(data.sessionId, false);
   }
 
@@ -1406,8 +1409,7 @@ export class ThreadHub {
       const fields = promptFields(spare.sessionId, { ...input.first, images: [], owner: true }, true);
       const answer = await client.request({ type: "prompt", activeSessionId: spare.activeSessionId!, ...fields } as never, PROMPT_REQUEST_MS, { recoverable: false }).catch(() => null);
       if (answer?.success) return this.opened(client, spare, input, input.name, null);
-      void this.noteArchive(spare.sessionId, "service_cleanup");
-      void client.request({ type: "kill", activeSessionId: spare.activeSessionId! }, 30_000, { recoverable: false }).catch(() => {});
+      void this.serviceKill(client, spare.sessionId, spare.activeSessionId!);
     }
     const flags = { ...(input.kind === "chat" ? { [CHAT_FLAG]: true } : {}), ...(input.first ? { [OWNER_THREAD_FLAG]: true } : {}) };
     const name = renamed || named ? undefined : input.name;
@@ -1427,8 +1429,8 @@ export class ThreadHub {
         .catch((error: unknown) => ({ success: false as const, error: error instanceof Error ? error.message : String(error) }));
       if (answer.success) return created;
       const sessionId = created.success && typeof created.data === "object" && created.data !== null && "sessionId" in created.data ? created.data.sessionId : undefined;
-      if (typeof sessionId === "string") await this.noteArchive(sessionId, "service_cleanup");
-      await client.request({ type: "kill", activeSessionId }, 30000, { recoverable: false }).catch(() => {});
+      if (typeof sessionId === "string") await this.serviceKill(client, sessionId, activeSessionId);
+      else await client.request({ type: "kill", activeSessionId }, 30000, { recoverable: false }).catch(() => {});
       return answer;
     }, undefined, answer => answer === made && isPrepareRefusal(answer));
     if (!response.success) throw new ThreadError(502, response.error);
@@ -1616,19 +1618,20 @@ export class ThreadHub {
    * a handed-off service for a receipt it could not read, it throws ServicesStopPending and queues nothing, since Prime finishes that stop itself.
    */
   async archive(id: string, by: ArchiveBy): Promise<void> {
-    await this.noteArchive(id, by);
+    if (by === "owner") await this.ownerArchives(id);
+    const operation = by === "owner" ? undefined : await this.noteArchive(id, by);
     this.archiveStarts.set(id, Date.now());
     this.cancelWaits(id);
     this.archiving.set(id, (this.archiving.get(id) ?? 0) + 1);
     this.archivedAt.set(id, Date.now());
-    try { await this.archiveNow(id); } finally {
+    try { await this.archiveNow(id, operation); } finally {
       const left = (this.archiving.get(id) ?? 1) - 1;
       if (left > 0) this.archiving.set(id, left); else this.archiving.delete(id);
       this.archivedAt.set(id, Date.now());
     }
   }
 
-  private async archiveNow(id: string): Promise<void> {
+  private async archiveNow(id: string, operation?: ServiceOperation): Promise<void> {
     const archivedAt = Date.now();
     const summary = await this.catalog.summary(id);
     if (!summary) throw new ThreadError(404, "Thread not found.");
@@ -1637,7 +1640,10 @@ export class ThreadHub {
     await this.dispose(id);
     const killed = summary.activeSessionId !== undefined && await this.archiveKill(id, summary.activeSessionId) === "stopped";
     const host = this.catalog.hostOf(id), sessionPath = this.catalog.daemonPath(summary);
-    const saved = killed || !sessionPath ? undefined : await this.archiveSaved(id, host, sessionPath);
+    const answer = killed || !sessionPath ? undefined : await this.archiveSaved(id, host, sessionPath);
+    // Only a command the daemon confirmed wrote an archived line, and the service's operation takes that line alone, before this hub writes its own.
+    if (operation && (killed || answer === "archived" || (typeof answer === "object" && "services" in answer))) await this.landArchive(id, operation);
+    const saved = answer === "archived" ? undefined : answer;
     this.setSessionState(summary, "archived");
     this.catalog.holdLifecycle(id, "archived");
     if (summary.lifecycle !== "archived" || summary.activeSessionId) void this.catalog.refresh().catch(() => {});
@@ -1658,20 +1664,50 @@ export class ThreadHub {
   }
 
   /**
-   * Writes who archives or stops `id` before the command goes out: the service's reason (service-archives.ts), since Prime writes owner_stop or
-   * owner_archive for every archive this server sends, or, for the owner's own, drops an older service entry. A record that cannot be written is
-   * logged and the archive goes on.
+   * Records the service's archive or stop of `id` as one operation before the command goes out, with the id of the session file's last entry on
+   * this box (null for another box's session, whose line then reads as the owner's). Prime writes owner_stop or owner_archive for every archive
+   * this server sends, so only `landArchive` makes a line the service's. A record that cannot be written is logged and the archive goes on.
    */
-  private async noteArchive(id: string, by: ArchiveBy): Promise<void> {
+  private async noteArchive(id: string, reason: ServiceArchiveReason): Promise<ServiceOperation | undefined> {
     const record = this.serviceArchives;
-    if (!record) return;
-    await (by === "owner" ? record.drop(id) : record.add(id, { at: Date.now(), reason: by }))
-      .catch(error => process.stderr.write(`${new Date().toISOString()} thread ${id.slice(0, 8)}: the ${by === "owner" ? "owner's" : by} archive was not recorded: ${error instanceof Error ? error.message : String(error)}\n`));
+    if (!record) return undefined;
+    const file = this.catalog.hostOf(id) ? undefined : await this.catalog.summary(id).then(summary => summary?.sessionFile, () => undefined);
+    const operation = { op: randomUUID(), file, after: file ? lastEntryId(file) : null };
+    return record.add(id, { op: operation.op, at: Date.now(), reason, after: operation.after, line: null })
+      .then(() => operation, error => { this.archiveNotRecorded(id, reason, error); return undefined; });
   }
 
-  /** The service's own archive or stop of `id` that service-archives.json holds, or undefined. */
-  serviceArchiveOf(id: string): Promise<ServiceArchive | undefined> {
-    return this.serviceArchives ? this.serviceArchives.of(id).catch(() => undefined) : Promise.resolve(undefined);
+  /**
+   * The daemon confirmed the service's operation on `id`: the one archived line written after the operation's `after` entry is its line. None,
+   * or more than one (an owner archive or stop in the same moment), leaves the operation with no line, so it covers nothing.
+   */
+  private async landArchive(id: string, operation: ServiceOperation): Promise<void> {
+    if (!this.serviceArchives || !operation.file || !operation.after) return;
+    let lines: string[] | null = null;
+    try { lines = archivedLinesAfter(operation.file, operation.after); } catch { /* the file is gone; no line */ }
+    if (lines?.length !== 1) return;
+    await this.serviceArchives.land(id, operation.op, lines[0]!).catch(error => this.archiveNotRecorded(id, `${operation.op} line of the`, error));
+  }
+
+  /** The owner archives `id` himself: no earlier service archive of it stands. */
+  private async ownerArchives(id: string): Promise<void> {
+    await this.serviceArchives?.drop(id).catch(error => this.archiveNotRecorded(id, "owner's", error));
+  }
+
+  private archiveNotRecorded(id: string, what: string, error: unknown): void {
+    process.stderr.write(`${new Date().toISOString()} thread ${id.slice(0, 8)}: the ${what} archive was not recorded: ${error instanceof Error ? error.message : String(error)}\n`);
+  }
+
+  /** The service's kill of a session it made for itself (`service_cleanup`), recorded as its operation like `archive`. */
+  private async serviceKill(client: DaemonClient, sessionId: string, activeSessionId: string): Promise<void> {
+    const operation = await this.noteArchive(sessionId, "service_cleanup");
+    const answer = await client.request({ type: "kill", activeSessionId }, 30_000, { recoverable: false }).catch(() => null);
+    if (operation && answer?.success) await this.landArchive(sessionId, operation);
+  }
+
+  /** The service's own archive operations on `id` that service-archives.json holds. */
+  serviceArchiveOf(id: string): Promise<readonly ServiceArchive[]> {
+    return this.serviceArchives ? this.serviceArchives.of(id).catch(() => []) : Promise.resolve([]);
   }
 
   /** A bare kill, which a kill_origin daemon records as the owner's stop, so it ends the session's scheduled jobs. "gone": the daemon no longer holds it. */
@@ -1691,9 +1727,9 @@ export class ThreadHub {
    * saved tree's jobs. When it refuses the session as resident at the owner's archive, the archive kills that session's own active session,
    * as it kills any resident session, and asks once more if the kill finds it gone again. A session loaded after a confirmed archive is left
    * alone: an archived thread may answer a later agent message. Returns why the jobs may still be armed (`jobs`), the receipts whose service
-   * stop Prime still holds (`services`), or undefined.
+   * stop Prime still holds (`services`), "archived" when the daemon confirmed the archive or the kill, or undefined when nothing went out.
    */
-  private async archiveSaved(id: string, host: string | null, sessionPath: string): Promise<{ jobs: string } | { services: string } | undefined> {
+  private async archiveSaved(id: string, host: string | null, sessionPath: string): Promise<{ jobs: string } | { services: string } | "archived" | undefined> {
     const where = host ? `${host}'s daemon` : "this box's daemon";
     const known = this.catalog.helloOf(host);
     if (known && !takesSavedArchive(known)) return undefined;
@@ -1705,13 +1741,14 @@ export class ThreadHub {
     }
     for (let round = 0; round < 2; round++) {
       const answer = await archiveSavedSession(this.catalog.socketPathFor(host), sessionPath, 30000);
-      if (answer.kind === "unsupported" || answer.kind === "archived") return undefined;
+      if (answer.kind === "unsupported") return undefined;
+      if (answer.kind === "archived") return "archived";
       if (answer.kind === "stopPending") return { services: answer.unresolved };
       if (answer.kind === "failed") return { jobs: `${where} answered: ${answer.error}` };
       await this.catalog.refresh().catch(() => {});
       const active = (await this.catalog.summary(id))?.activeSessionId;
       if (!active) return { jobs: `${where} holds the session in a worker it does not list as this thread's` };
-      if (await this.archiveKill(id, active) === "stopped") return undefined;
+      if (await this.archiveKill(id, active) === "stopped") return "archived";
     }
     return { jobs: `the session loaded and stopped again on ${where} during the archive` };
   }

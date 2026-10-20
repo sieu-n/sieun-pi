@@ -76,6 +76,40 @@ export function setFileSessionState(sessionFile: string, status: "archived" | "a
   appendFileSync(sessionFile, JSON.stringify({ type: "session_state", id: randomUUID(), parentId: fast.leaf, timestamp: new Date().toISOString(), state: { status } }) + "\n");
 }
 
+/** The id of the session file's last whole entry, or null when the file is missing or its last whole line has none. */
+export function lastEntryId(sessionFile: string): string | null {
+  let fd: number;
+  try { fd = openSync(sessionFile, "r"); } catch { return null; }
+  try {
+    const file = { fd, size: fstatSync(fd).size };
+    const whole = file.size > 0 && readAt(file, file.size - 1, file.size)[0] === 0x0a;
+    let first = !whole;
+    const id = fromEnd(file, line => {
+      if (first) { first = false; return undefined; }
+      const value = parsed(line)?.id;
+      return typeof value === "string" ? value : null;
+    });
+    return id ?? null;
+  } finally { closeSync(fd); }
+}
+
+/** The ids of the archived session_state lines after the entry `after`, oldest first; null when `after` is not in the file. */
+export function archivedLinesAfter(sessionFile: string, after: string): string[] | null {
+  const fd = openSync(sessionFile, "r");
+  try {
+    const file = { fd, size: fstatSync(fd).size };
+    const archived: string[] = [];
+    const found = fromEnd(file, line => {
+      const entry = parsed(line);
+      if (entry?.id === after) return true;
+      const state = entry?.state as { status?: unknown } | undefined;
+      if (entry?.type === "session_state" && state?.status === "archived" && typeof entry.id === "string") archived.unshift(entry.id);
+      return undefined;
+    });
+    return found ? archived : null;
+  } finally { closeSync(fd); }
+}
+
 /** The file's first line, parsed; undefined when it does not end within CHUNK bytes or does not parse. */
 function fromStart(file: Read): Record<string, unknown> | undefined {
   const buffer = readAt(file, 0, Math.min(file.size, CHUNK));

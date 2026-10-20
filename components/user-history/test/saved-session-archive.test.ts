@@ -1,7 +1,8 @@
 // Guards p75 (10-18): Prime close-keeps-jobs (3e0130b) keeps a root's heartbeats and cron jobs through an idle unload, so the owner's archive of
 // an unloaded chat must send archive_saved_session to that chat's own box, gated on that connection's hello, or the kept jobs wake the chat.
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { appendFileSync, mkdtempSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
@@ -541,11 +542,51 @@ test("the hub records the service's own archive before it goes out, and the owne
   const { archiveDutyJob } = await import("../src/chat-duty-job.ts");
   f.hub.serviceArchives = serviceArchiveRecord(join(mkdtempSync(join(tmpdir(), "service-archives-")), "service-archives.json"));
   const before = Date.now();
+  const last = SessionManager.open(f.file).getLeafId();
   await archiveDutyJob(f.hub, () => f.catalog.rows())(f.id);
   assert.equal(f.state(), "archived");
-  const entry = await f.hub.serviceArchiveOf(f.id);
+  const [entry, ...more] = await f.hub.serviceArchiveOf(f.id);
+  assert.deepEqual(more, []);
   assert.equal(entry?.reason, "duty_job_end");
   assert.ok(entry!.at >= before, "the record is written as the archive starts");
+  assert.equal(entry!.after, last, "the operation names the file's last entry before the command");
+  assert.equal(entry!.line, null, "a daemon without saved_session_archive gets no command, so the operation names no line");
   await f.hub.archive(f.id, "owner");
-  assert.equal(await f.hub.serviceArchiveOf(f.id), undefined);
+  assert.deepEqual(await f.hub.serviceArchiveOf(f.id), []);
+});
+
+/** Prime's own archived line, with the reason it writes for every archive or stop a client sends (owner_archive or owner_stop). */
+function primeArchive(file: string, reason: "owner_archive" | "owner_stop"): void {
+  const parentId = SessionManager.open(file).getLeafId();
+  appendFileSync(file, JSON.stringify({ type: "session_state", id: randomUUID().slice(0, 8), parentId, timestamp: new Date().toISOString(), state: { status: "archived", reason } }) + "\n");
+}
+
+test("a service archive whose send was refused covers nothing, so the owner's later archive of the session reads as his", async t => {
+  const f = await fixture(t, { known: NEW, box: NEW, answer: () => ({ success: false, error: "The supervisor is draining" }) });
+  const { serviceArchiveRecord } = await import("../src/service-archives.ts");
+  const { archiveDutyJob } = await import("../src/chat-duty-job.ts");
+  const { ownerStopSinceActive } = await import("../src/chat-guard.ts");
+  f.hub.serviceArchives = serviceArchiveRecord(join(mkdtempSync(join(tmpdir(), "service-archives-")), "service-archives.json"));
+  await assert.rejects(archiveDutyJob(f.hub, () => f.catalog.rows())(f.id), ScheduledJobsLeft);
+  assert.equal(f.box!.archives.length, 1, "the service's archive went out and was refused");
+  f.later(1_000);
+  primeArchive(f.file, "owner_archive");
+  const stop = await ownerStopSinceActive(f.file, await f.hub.serviceArchiveOf(f.id));
+  assert.match(stop ?? "", /^owner_archive at /, "the owner's archive 1 s after the refused one is his, not the service's");
+});
+
+test("a service archive that landed covers only its own line, so a newer owner stop with no reopen between still reads as his", async t => {
+  const f = await fixture(t, { known: NEW, box: NEW, answer: path => { primeArchive(path, "owner_archive"); return { success: true }; } });
+  const { serviceArchiveRecord } = await import("../src/service-archives.ts");
+  const { archiveDutyJob } = await import("../src/chat-duty-job.ts");
+  const { ownerStopSinceActive } = await import("../src/chat-guard.ts");
+  f.hub.serviceArchives = serviceArchiveRecord(join(mkdtempSync(join(tmpdir(), "service-archives-")), "service-archives.json"));
+  await archiveDutyJob(f.hub, () => f.catalog.rows())(f.id);
+  const state = SessionManager.open(f.file).getEntries().filter(entry => entry.type === "session_state").at(-1)!;
+  assert.deepEqual((await f.hub.serviceArchiveOf(f.id)).map(entry => entry.line), [state.id], "the operation names the one line its archive wrote");
+  assert.equal(await ownerStopSinceActive(f.file, await f.hub.serviceArchiveOf(f.id)), null, "the duty runner's own line is no owner stop");
+  f.later(2_000);
+  primeArchive(f.file, "owner_stop");
+  const stop = await ownerStopSinceActive(f.file, await f.hub.serviceArchiveOf(f.id));
+  assert.match(stop ?? "", /^owner_stop at /, "the owner's newer stop wins over the service's earlier record");
 });
