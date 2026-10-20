@@ -26,19 +26,27 @@ export const GOAL_READINGS = 6;
 /** One measurement of a goal's number: its value and when it was measured (ms). */
 export interface GoalReading { value: number; at: number;
   /** The metric, unit and direction the value was read in (`readingBasis`); absent on readings kept before 10-19. */
-  basis?: string }
+  basis?: string;
+  /** The reading's source names a backfill (`GoalNumber.backfill`). */
+  backfill?: true }
 /** What the check-in keeps per goal across runs: its distinct readings, oldest first, and how many runs in a row the number did not move toward target. */
 export interface GoalMemo { readings: GoalReading[]; still: number }
 
 /** A goal's number: from its `target`, in its direction (`targetOp`), or from the last run of the duty metric the goal links. */
-export interface GoalNumber { metric: string; target: number; unit: string; op: ">=" | "<="; value?: number; measuredAt?: number; source: string; staleMs: number }
+export interface GoalNumber { metric: string; target: number; unit: string; op: ">=" | "<="; value?: number; measuredAt?: number; source: string; staleMs: number;
+  /** The target's cadence: a daily number moves once a day, so its pace counts whole days (`goalTrend`). */
+  cadence?: "daily";
+  /** The source names a backfill, so the move into this reading is a one-time step, not a rate (`goalTrend`). */
+  backfill?: true }
 
 export type GoalTrend =
   | { kind: "unmeasured" }
   | { kind: "met" }
   | { kind: "first" }
   | { kind: "still"; runs: number }
-  | { kind: "moving"; delta: number; since: number; etaMs: number | null };
+  | { kind: "moving"; delta: number; since: number; etaMs: number | null }
+  /** Every move since `since` came in a backfill, so there is no rate yet. */
+  | { kind: "stepped"; delta: number; since: number };
 
 /**
  * What the check-in does about a goal: steer its owner job, start one, nothing (on pace or met), wait on the owner's answer, wait for a time or
@@ -100,7 +108,8 @@ export function goalNumber(goal: PlanItem, everyMs: number, metrics: ReadonlyMap
     if (newer && same.size === 1) return { metric: target.metric, target: target.target, unit: target.unit, op, value: newer.fact.value, measuredAt: newer.fact.at,
       source: `the last run of duty metric ${newer.key}`, staleMs: targetStaleMs(target, everyMs) };
     return { metric: target.metric, target: target.target, unit: target.unit, op, ...(target.current !== undefined ? { value: target.current } : {}),
-      ...(Number.isFinite(at) ? { measuredAt: at } : {}), source: target.source ?? "the goal's target", staleMs: targetStaleMs(target, everyMs) };
+      ...(Number.isFinite(at) ? { measuredAt: at } : {}), source: target.source ?? "the goal's target", staleMs: targetStaleMs(target, everyMs),
+      ...(target.cadence ? { cadence: target.cadence } : {}), ...(/backfill/i.test(target.source ?? "") ? { backfill: true as const } : {}) };
   }
   // A goal with no target reads only the duty metric it links itself: slack green guy p151 is a top-level fix step of
   // d1/signup_to_workspace_pct. A step's link under it is that step's fix, not the goal's number: frontend bro p62 read 0 of at most 0 on
@@ -146,11 +155,19 @@ export function comparable(readings: readonly GoalReading[], number: GoalNumber,
   return kept.filter(reading => readings.indexOf(reading) > dropped);
 }
 
-/** The trend of a number against the goal's memo, and the memo to keep. */
+const DAY_MS = 24 * 60 * 60_000;
+
+/**
+ * The trend of a number against the goal's memo, and the memo to keep. The rate leaves out each move into the first reading whose source names a
+ * backfill: spec and monitoring system's p12 (days of the last 7 with test and CI numbers, cadence daily) read 1 at 15:15Z and 3 at 16:19Z on
+ * 10-19 after a one-time backfill of 10-16, and the check-ins on 10-20 read "about 2 h to target at this rate" for a number that gains at most
+ * one a day. A daily number's time to target is whole days, at least one. A pair of readings less than a day apart is still a rate: on 10-20
+ * Crawler VP's p680 (Meta advertisers, cadence daily) read 1,826,417 at 03:21Z and 1,960,477 at 10:37Z, and 13 open daily goals moved within a day.
+ */
 export function goalTrend(number: GoalNumber, memo: GoalMemo | undefined): { trend: GoalTrend; memo: GoalMemo | undefined } {
   if (number.value === undefined || number.measuredAt === undefined) return { trend: { kind: "unmeasured" }, memo };
   const sign = number.op === "<=" ? -1 : 1;
-  const reading = { value: number.value, at: number.measuredAt, basis: readingBasis(number) };
+  const reading: GoalReading = { value: number.value, at: number.measuredAt, basis: readingBasis(number), ...(number.backfill ? { backfill: true } : {}) };
   const kept = comparable(memo?.readings ?? [], number, number.value);
   if (memo && kept.length !== memo.readings.length) memo = kept.length ? { readings: kept, still: 0 } : undefined;
   const last = memo?.readings.at(-1);
@@ -158,17 +175,21 @@ export function goalTrend(number: GoalNumber, memo: GoalMemo | undefined): { tre
   // The same reading as last run is no new measure, so it keeps the trend it had: vent p1 (cadence daily) read 6% at 16:15Z, up from 3%, and
   // the 16:40Z check-in on 10-18 counted that same 16:15Z reading as "no move toward target in the last check-in".
   const same = last !== undefined && last.at === reading.at && last.value === reading.value;
-  const readings = !last || !same ? [...memo?.readings ?? [], reading].slice(-GOAL_READINGS) : memo!.readings;
+  const readings = !last || !same ? [...memo?.readings ?? [], reading].slice(-GOAL_READINGS) : [...memo!.readings.slice(0, -1), { ...last, ...reading }];
   const still = !last ? 0 : same ? memo!.still : moved ? 0 : memo!.still + 1;
   const next = { readings, still };
   if ((reading.value - number.target) * sign >= 0) return { trend: { kind: "met" }, memo: next };
   if (!last) return { trend: { kind: "first" }, memo: next };
   if (still > 0) return { trend: { kind: "still", runs: still }, memo: next };
   const first = readings[0]!;
-  const gained = (reading.value - first.value) * sign;
-  const span = reading.at - first.at;
-  const etaMs = gained > 0 && span > 0 ? (number.target - reading.value) * sign / (gained / span) : null;
-  return { trend: { kind: "moving", delta: reading.value - first.value, since: first.at, etaMs }, memo: next };
+  const delta = reading.value - first.value;
+  const rated = readings.slice(1).map((to, index) => ({ from: readings[index]!, to })).filter(({ from, to }) => !to.backfill || from.backfill);
+  if (!rated.length) return { trend: { kind: "stepped", delta, since: first.at }, memo: next };
+  const gained = rated.reduce((sum, { from, to }) => sum + (to.value - from.value) * sign, 0);
+  const span = rated.reduce((sum, { from, to }) => sum + to.at - from.at, 0);
+  const rawMs = gained > 0 && span > 0 ? (number.target - reading.value) * sign / (gained / span) : null;
+  const etaMs = rawMs !== null && number.cadence === "daily" ? Math.max(1, Math.ceil(rawMs / DAY_MS)) * DAY_MS : rawMs;
+  return { trend: { kind: "moving", delta, since: first.at, etaMs }, memo: next };
 }
 
 /**
@@ -357,8 +378,10 @@ export function trendText(number: GoalNumber, trend: GoalTrend, stale: boolean):
     case "still": return `no move toward target in the last ${trend.runs === 1 ? "check-in" : `${trend.runs} check-ins`}${old}`;
     case "moving": {
       const delta = `${trend.delta >= 0 ? "+" : ""}${amount(trend.delta)}${unit} since ${zTime(trend.since)}`;
-      return `${delta}, ${trend.etaMs === null ? "moving away from target" : `${span(trend.etaMs)} to target at this rate`}${old}`;
+      const day = trend.etaMs !== null && number.cadence === "daily" && number.measuredAt !== undefined ? `, about ${zTime(number.measuredAt + trend.etaMs).slice(0, 5)}` : "";
+      return `${delta}, ${trend.etaMs === null ? "moving away from target" : `${span(trend.etaMs)} to target at this rate${day}`}${old}`;
     }
+    case "stepped": return `${trend.delta >= 0 ? "+" : ""}${amount(trend.delta)}${unit} since ${zTime(trend.since)} in a backfill, no rate yet${old}`;
   }
 }
 
