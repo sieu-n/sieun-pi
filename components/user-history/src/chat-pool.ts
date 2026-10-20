@@ -442,6 +442,15 @@ export function poolFreeAt(parts: Pick<ThreadParts, "who" | "ls">, provider: str
   } catch { return null; }
 }
 
+/** `poolFreeAt` for the tree rooted at `tree`, from a fresh shared read; null when the pool cannot be read. */
+export async function treeFreeAt(tree: string, provider: string, read: typeof readPoolStatus = readPoolStatus, now: () => number = Date.now): Promise<number | null> {
+  const thread = { session: tree, model: null };
+  try {
+    const parts = (await read([thread], { maxAgeMs: 0 })).threads.get(threadKey(thread));
+    return parts ? poolFreeAt(parts, provider, now()) : null;
+  } catch { return null; }
+}
+
 /** `poolAdmitsNow` for the tree rooted at `tree`, from a fresh shared read; false when the pool cannot be read. */
 export async function poolAdmits(tree: string, provider: string, read: typeof readPoolStatus = readPoolStatus, now: () => number = Date.now): Promise<boolean> {
   const thread = { session: tree, model: null };

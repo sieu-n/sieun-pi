@@ -32,7 +32,7 @@ test("the job sweep and the idle unload read the marker as a pool wait with its 
   const error = lastTurnError(lines.join("\n"));
   assert.ok(error !== undefined && poolWait({ error }), error);
   assert.equal(poolSlot(error), SLOT);
-  assert.deepEqual(turnSince(lines.join("\n"), 0), { ran: false, error, slotAt: SLOT });
+  assert.deepEqual(turnSince(lines.join("\n"), 0), { ran: false, error, slotAt: SLOT, provider: "anthropic" });
 });
 
 test("the cut a session ends on carries the marker's retryAtMs as its slot", () => {

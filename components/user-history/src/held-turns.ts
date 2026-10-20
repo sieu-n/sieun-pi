@@ -132,8 +132,8 @@ export async function withFailedTurns(facts: readonly JobFact[], agentDir: strin
   }));
 }
 
-/** Whether a job's model turn ended after `since`, or else the pool time the error of its last failed turn names (`slotAt`). */
-export type TurnSince = { ran: true; at: number } | { ran: false; error?: string; slotAt?: number };
+/** Whether a job's model turn ended after `since`, or else the pool time the error of its last failed turn names (`slotAt`) and that turn's provider. */
+export type TurnSince = { ran: true; at: number } | { ran: false; error?: string; slotAt?: number; provider?: string };
 // `at` is the latest turn that ended after `since`, so one read covers every fire the job took before it.
 
 const POOL_TIME = /(?:limited until|waits for its slot at) (\d{4}-\d\d-\d\dT[\d:.]+Z)/g;
@@ -146,9 +146,10 @@ const POOL_TIME = /(?:limited until|waits for its slot at) (\d{4}-\d\d-\d\dT[\d:
  */
 export function turnSince(text: string, since: number): TurnSince {
   let error: string | undefined;
+  let provider: string | undefined;
   let ran: number | undefined;
   for (const raw of text.split("\n")) {
-    let line: { type?: unknown; timestamp?: unknown; message?: { role?: unknown; stopReason?: unknown; errorMessage?: unknown; diagnostics?: unknown } };
+    let line: { type?: unknown; timestamp?: unknown; message?: { role?: unknown; stopReason?: unknown; errorMessage?: unknown; diagnostics?: unknown; provider?: unknown } };
     try { line = JSON.parse(raw); } catch { continue; }
     if (line.type !== "message" || line.message?.role !== "assistant" || typeof line.timestamp !== "string") continue;
     const at = Date.parse(line.timestamp);
@@ -156,11 +157,12 @@ export function turnSince(text: string, since: number): TurnSince {
     if (line.message.stopReason !== "error") { ran = at; error = undefined; continue; }
     const failed = turnError(line.message);
     error = failed?.trim() ? failed : "error";
+    provider = typeof line.message.provider === "string" ? line.message.provider : undefined;
   }
   if (ran !== undefined) return { ran: true, at: ran };
   if (error === undefined) return { ran: false };
   const slots = [...error.matchAll(POOL_TIME)].map(match => Date.parse(match[1]!)).filter(Number.isFinite);
-  return { ran: false, error, ...slots.length ? { slotAt: Math.max(...slots) } : {} };
+  return { ran: false, error, ...slots.length ? { slotAt: Math.max(...slots) } : {}, ...provider ? { provider } : {} };
 }
 
 /** `turnSince` over the transcript at `file`; a missing file has no turn. */

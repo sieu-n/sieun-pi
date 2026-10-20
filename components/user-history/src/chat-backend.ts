@@ -14,7 +14,7 @@ import { checkInRecord, JOB_CLEANUP_EVERY_MS } from "./chat-checkin.ts";
 import { checkInSettings } from "./checkin-settings.ts";
 import { checkInDuties } from "./checkin-findings.ts";
 import { CLEAN_ROOM_CHATS_FILE, CLEAN_ROOM_CORRECTIONS_FILE, CorrectionLedger } from "./chat-corrections.ts";
-import { claudeReader, markOwnerTurn, poolAdmits, readPoolClasses, readPoolStatus, setPoolPriority } from "./chat-pool.ts";
+import { claudeReader, markOwnerTurn, poolAdmits, readPoolClasses, readPoolStatus, setPoolPriority, treeFreeAt } from "./chat-pool.ts";
 import { relayStats } from "./chat-hosts.ts";
 import { boardQueueRead, hostsQueueRead, queueReader } from "./chat-turn-queue.ts";
 import { readCallHandles, readFootprints, startMacUsableWatch } from "./mac-usable-watch.ts";
@@ -357,7 +357,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       const file = await sessionFileFor(job.id, { listed: async id => (await catalog.summary(id))?.sessionFile, dataDir, agentDir }) ?? await sessionFileOf(job.id, agentDir);
       return file ? readTurnSince(file, since) : { ran: false };
     },
-    retryJob: () => chats.interruptedSoon(0),
+    retryJob: () => chats.interruptedSoon(0), poolFreeAt: (tree, provider) => treeFreeAt(tree, provider),
     log: dutyLog, ...agentMessage });
   const stopBridgeWatch = !alertPoll ? () => {} : startBridgeWatch({ health: alertPoll.health, statusFile, configFile: grafanaConfig,
     alerting: alerting => alertPoll.alerting(alerting), log: dutyLog, ...agentMessage });

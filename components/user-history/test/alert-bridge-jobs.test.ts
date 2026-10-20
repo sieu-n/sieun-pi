@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { AlertBridge, ESCALATE_MS, startAlertBridge, REFIRE_MS, REOPEN_MS, firingRules, parseAlerts, parseOwners, parseState, readFiringRules, ruleKey, type AlertLine, type BridgeState, type RuleJob, type TriageJob } from "../src/alert-bridge.ts";
 import { ALERT_ROUTES } from "../src/alert-routes.ts";
-import type { TurnSince } from "../src/held-turns.ts";
+import { turnSince, type TurnSince } from "../src/held-turns.ts";
 
 const NOW = Date.parse("2026-10-18T16:00:00Z");
 const CI = ALERT_ROUTES.find(route => route.chat === "VP of CI")!.session;
@@ -35,6 +35,7 @@ async function fixture(options: { state?: unknown; failStarts?: boolean } = {}) 
   const working = new Set<string>();
   const turns = new Map<string, TurnSince>();
   const retried: string[] = [];
+  const freeAt = new Map<string, number>();
   const bridge = new AlertBridge({ file, now: () => now, log: () => {}, alerts: async () => parseAlerts(list), owners: async () => OWNERS,
     hasBoard: async session => session !== METAL,
     deliver: async (session, text) => { sent.push({ session, text }); },
@@ -47,8 +48,8 @@ async function fixture(options: { state?: unknown; failStarts?: boolean } = {}) 
     },
     jobWorking: async job => working.has(job.id),
     jobTurn: async (job, since) => turns.get(job.id) ?? { ran: true, at: since },
-    retryJob: job => { retried.push(job.id); } });
-  return { file, bridge, started, sent, working, turns, retried, set: (alerts: unknown[]) => { list = alerts; }, at: (ms: number) => { now = ms; },
+    retryJob: job => { retried.push(job.id); }, poolFreeAt: async tree => freeAt.get(tree) ?? null });
+  return { file, bridge, started, sent, working, turns, retried, freeAt, set: (alerts: unknown[]) => { list = alerts; }, at: (ms: number) => { now = ms; },
     state: async () => parseState(JSON.parse(await readFile(file, "utf8"))) };
 }
 
@@ -251,6 +252,41 @@ test("a job pi-pool holds for a slot still ahead reads as waiting, and escalates
   await f.bridge.tick();
   assert.equal(escalations().length, 1, "still no turn a poll after the retry");
   assert.match(escalations()[0]!.text, /has had no model turn \(its last call failed: pi-pool: this session waits for its slot at 2026-10-20T06:06:27/);
+});
+
+// Replays 10-20: triage job 01a15aac of VP of CI took ci-turbo-force-failed at 18:56:56Z and pi-pool held each call. Its last one, at 20:08:08Z,
+// ended on dhx.3's credential wait marker for 20:12:17Z. The bridge escalated at 20:12:54Z, while pi-pool waited for rotation and gave the
+// next call at 20:13:18Z a backoff to 20:27:51Z. The job ran at 20:58:56Z, once an account served.
+test("a job past its slot that pi-pool still holds reads as waiting, and escalates once the pool lets it in with no turn", async () => {
+  const fired = Date.parse("2026-10-20T18:56:53.286Z");
+  const slot = Date.parse("2026-10-20T20:12:17.000Z");
+  const marker = { type: "message", id: "708fdbc3", parentId: "9da3ef81", timestamp: "2026-10-20T20:08:08.600Z",
+    message: { role: "assistant", content: [], api: "anthropic-messages", provider: "anthropic", model: "claude-opus-5-5",
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+      stopReason: "error", errorMessage: "API key for provider \"anthropic\" is temporarily unavailable until 2026-10-20T20:12:17.000Z: waiting for an account slot",
+      timestamp: 1792526888600,
+      diagnostics: [{ type: "provider_stream_failure", timestamp: 1792526888600, details: { kind: "credential_unavailable", retryAtMs: slot, retryAfterMs: 248400 } }] } };
+  const f = await fixture();
+  const escalations = () => f.sent.filter(({ session, text }) => session === OPS && text.startsWith("[alert-escalation]"));
+  f.set([raw("cee6e41218bc6678", { alertname: "CI nightly turbo --force run failed", __alert_rule_uid__: "ci-turbo-force-failed" }, "2026-10-20T18:56:10.000Z")]);
+  f.at(fired);
+  await f.bridge.tick();
+  f.working.clear();
+  f.turns.set("job-1", turnSince(JSON.stringify(marker), fired));
+  f.freeAt.set("job-1", Date.parse("2026-10-20T20:27:51.000Z"));
+  f.at(Date.parse("2026-10-20T20:12:24.188Z"));
+  await f.bridge.tick();
+  assert.deepEqual(f.retried, ["job-1"], "the slot passed, so the resume pass is asked to continue it");
+  f.at(Date.parse("2026-10-20T20:12:54.155Z"));
+  await f.bridge.tick();
+  f.at(Date.parse("2026-10-20T20:27:00Z"));
+  await f.bridge.tick();
+  assert.equal(escalations().length, 0, "pi-pool still names a time ahead for the tree");
+  f.freeAt.set("job-1", Date.parse("2026-10-20T20:28:00Z"));
+  f.at(Date.parse("2026-10-20T20:28:00Z"));
+  await f.bridge.tick();
+  assert.equal(escalations().length, 1, "the pool lets the tree in now and the job still has no turn");
+  assert.match(escalations()[0]!.text, /has had no model turn \(its last call failed: token hook gave no token \(credential_unavailable\): pi-pool: this session waits for its slot at 2026-10-20T20:12:17/);
 });
 
 test("a held job that runs at its slot holds the fire, so nothing escalates", async () => {

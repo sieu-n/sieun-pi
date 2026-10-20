@@ -376,6 +376,8 @@ export interface AlertBridgeDeps {
   jobTurn?: (job: AlertJob, since: number) => Promise<TurnSince>;
   /** Asks the resume pass to continue a job whose first call pi-pool held, once the slot its error names has passed. */
   retryJob?: (job: AlertJob) => void;
+  /** When pi-pool next gives the tree rooted at `tree` a `provider` account (`poolFreeAt`): now when it would now, null when the pool does not say. */
+  poolFreeAt?: (tree: string, provider: string) => Promise<number | null>;
   now?: () => number;
   log: (line: string) => void;
 }
@@ -529,7 +531,9 @@ export class AlertBridge {
    * that. A job whose failed call names a pool slot that has passed, and that does not work, gets one retry per slot through the resume pass,
    * which continues it once pi-pool admits its tree. The errors, by job id, go with the escalation, and `parked` holds each job whose slot is
    * ahead or passed within one tick, so the retry this poll asked for gets a poll to show its turn: the resume pass answered 1 to 2 s after the
-   * slot on 10-20 (05:06:00Z to 05:06:02Z, 05:13:28Z to 05:13:29Z).
+   * slot on 10-20 (05:06:00Z to 05:06:02Z, 05:13:28Z to 05:13:29Z). Past that tick the job stays in `parked` while pi-pool still names a time
+   * ahead for its tree, since its next call meets a new wait: on 10-20 job 01a15aac's slot was 20:12:16Z, the pool waited for rotation, the
+   * bridge escalated at 20:12:54Z, and Prime's next call at 20:13:18Z got a backoff to 20:27:51Z. It ran at 20:58:56Z, once an account served.
    */
   private async watch(state: BridgeState, now: number): Promise<{ state: BridgeState; errors: Map<string, string>; parked: Set<string> }> {
     const errors = new Map<string, string>();
@@ -545,7 +549,7 @@ export class AlertBridge {
       if (!turn) continue;
       if (turn.ran) { jobs[id] = { ...job, ranAt: turn.at }; continue; }
       if (turn.error) errors.set(id, turn.error);
-      if (turn.slotAt !== undefined && now < turn.slotAt + TICK_MS) parked.add(id);
+      if (turn.slotAt !== undefined && (now < turn.slotAt + TICK_MS || await this.poolHolds(id, turn.provider, now))) parked.add(id);
       if (!this.deps.retryJob || turn.slotAt === undefined || turn.slotAt > now || (job.retriedAt ?? -1) >= turn.slotAt) continue;
       if (await this.deps.jobWorking?.(job).catch(() => true)) continue;
       this.deps.retryJob(job);
@@ -553,6 +557,13 @@ export class AlertBridge {
       this.deps.log(`alerts: triage job ${job.name} (${id.slice(0, 8)}) has had no turn and its pool slot ${minute(turn.slotAt)} passed; asked the resume pass to continue it`);
     }
     return { state: { ...state, jobs }, errors, parked };
+  }
+
+  /** Whether pi-pool names a time ahead of `now` for the tree rooted at `tree`; a pool that does not say holds nothing. */
+  private async poolHolds(tree: string, provider: string | undefined, now: number): Promise<boolean> {
+    if (!provider || !this.deps.poolFreeAt) return false;
+    const freeAt = await this.deps.poolFreeAt(tree, provider).catch(() => null);
+    return freeAt !== null && freeAt > now;
   }
 
   /** Marks each rule that still fires REOPEN_MS after its job took it, and whose job has ended, as fired now, so `dispatch` starts a new job. */
