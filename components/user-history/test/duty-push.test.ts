@@ -37,3 +37,13 @@ test("the after-job measure judges the push: its parts replace the run's own", (
   const after = { at: NOW - 20 * MIN, verdict: "met" as const, summary: "", metrics: ran.metrics, parts: { wiki_problems_following: result(0) } };
   assert.equal(pushMisses([{ ...ran, after }], COUNTED, EVERY, NOW), null);
 });
+
+test("an older run's after-job measure that is newer than a later run's reading judges the push", () => {
+  const job = run(NOW - 300 * MIN, "missed", { wiki_problems: 4, open_mistakes: 0 });
+  const after = { at: NOW - 140 * MIN, verdict: "missed" as const, summary: "", metrics: { wiki_problems: result(43), open_mistakes: result(0) } };
+  const skipped = run(NOW - 230 * MIN, "met", { wiki_problems: 0, open_mistakes: 0 });
+  assert.deepEqual(pushMisses([skipped, { ...job, after }], COUNTED, EVERY, NOW), ["wiki_problems"]);
+  const green = { ...after, at: NOW - 250 * MIN, verdict: "met" as const, metrics: { wiki_problems: result(0), open_mistakes: result(0) } };
+  const later = run(NOW - 230 * MIN, "missed", { wiki_problems: 5, open_mistakes: 0 });
+  assert.deepEqual(pushMisses([later, { ...job, after: green }], COUNTED, EVERY, NOW), ["wiki_problems"]);
+});
