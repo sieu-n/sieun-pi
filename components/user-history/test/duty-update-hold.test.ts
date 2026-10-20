@@ -152,7 +152,8 @@ function trees() {
   };
 }
 
-async function completedRunner(dir: string, tree: JobTree, jobs: readonly { id: string; name: string }[], options: { rows?: () => SessionRow[] } = {}) {
+async function completedRunner(dir: string, tree: JobTree, jobs: readonly { id: string; name: string }[],
+  options: { rows?: () => SessionRow[]; schedules?: () => Promise<ReadonlyMap<string, ThreadSchedule>> } = {}) {
   const agentDir = join(dir, "agent");
   await status(agentDir, "complete", { pid: process.pid, processStartId: await processStartId(process.pid) });
   const measures = join(dir, "measures");
@@ -173,7 +174,8 @@ async function completedRunner(dir: string, tree: JobTree, jobs: readonly { id: 
   const stopped: string[] = [];
   const lines: string[] = [];
   const host = dutyJobHost({ threads: {} as never, archives: { add: async job => { stopped.push(job.id); } }, registry: {} as never, board: id => id, log: line => lines.push(line),
-    rows: async () => options.rows?.() ?? jobs.map(job => row(job.id, job.name)), treeWait: id => treeWait(id, tree) });
+    rows: async () => options.rows?.() ?? jobs.map(job => row(job.id, job.name)), treeWait: (id, scheduled) => treeWait(id, tree, scheduled),
+    ...options.schedules ? { schedules: options.schedules } : {} });
   const duties = new Duties(store, {
     isChat: async () => true, now: () => DONE, tickMs: 0, node: process.execPath, log: line => lines.push(line),
     updating: () => primeUpdateRunning(agentDir, SOCKET),
@@ -268,4 +270,46 @@ test("the hold is the runner's own: the owner's archive of a held root goes thro
     await run.tick();
     assert.deepEqual(run.stopped, [], "the runner queues no second archive of a root the owner archived");
   } finally { await server.close(); run.duties.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+// The 06:46 d10 root on 10-20: the runner archived it as an older job at 06:46:06Z, 06:58:23Z and 07:01:28Z while repeat c129 slept on its
+// 07:45Z wake and repeat c79 on its 09:10Z one, and both wakes reach them only through it. A subagent parked on a 429 holds a quota-resume
+// scheduled job instead of a wake, as metal01 cpu of check-in ops guy 23:40 did at 04:19:07Z before the runner's 04:20:24Z archive cancelled it.
+const C129 = "01a1563d-9bed-7683-ace3-571e199d54c7";
+const C72 = "01a1563d-848b-7000-8000-000000000072";
+
+test("an older root stays up while any subagent below it sleeps on a wake or holds a scheduled job, and stops once none does (10-20 06:46:06Z)", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "duty-older-waits-"));
+  const t = trees();
+  const { activeSessionId: _stopped, ...c129 } = summary(C129, "repeat c129", OLDER.id);
+  let listed = true;
+  const sessions = (id: string) => id === OLDER.id ? [...t.tree.sessions(OLDER.id), ...listed ? [c129 as SessionSummary, summary(C72, "repeat c72", C129)] : []] : t.tree.sessions(id);
+  let scheduled = new Map<string, ThreadSchedule>([[C72, { kind: "cron", status: "active", expression: "at 2026-10-20T08:01:00.000Z", label: "quota-resume", nextRunAt: "2026-10-20T08:01:00.000Z" }]]);
+  const run = await completedRunner(dir, { ...t.tree, sessions }, [OLDER, LAST], { schedules: async () => scheduled });
+  try {
+    t.wakes([{ session: C129, root: OLDER.id, on: { kind: "time", at: Date.parse("2026-10-20T07:45:00Z") }, note: "c129 saved-login run-4 window ended", since: Date.parse("2026-10-20T06:13:14Z") },
+      { session: C79, root: OLDER.id, on: { kind: "time", at: Date.parse("2026-10-20T09:10:00Z") }, note: "c79 clean-room run-2 window ended", since: Date.parse("2026-10-20T06:03:05Z") }]);
+    await run.tick();
+    assert.deepEqual(run.stopped, [LAST.id], "only the 11:20 root, whose tree waits on nothing, stops");
+    assert.match(run.lines.join("\n"), /06:46: not stopped, its subagent repeat c72 has an active scheduled job \(quota-resume\)/);
+
+    scheduled = new Map();
+    await run.tick();
+    assert.deepEqual(run.stopped, [LAST.id]);
+    assert.match(run.lines.join("\n"), /06:46: not stopped, its subagent repeat c129 waits on a board.wake at 07:45Z/, "a wake of a subagent the daemon lists only as saved still holds the root it is relayed through");
+
+    listed = false;
+    await run.tick();
+    assert.deepEqual(run.stopped, [LAST.id], "a wake set for the root's tree holds it even when the daemon does not list the subagent that set it");
+    assert.match(run.lines.join("\n"), /06:46: not stopped, 01a1563d waits on a board.wake at 07:45Z/);
+
+    t.wakes([{ session: C79, root: OLDER.id, on: { kind: "time", at: Date.parse("2026-10-20T09:10:00Z") }, note: "c79 clean-room run-2 window ended", since: Date.parse("2026-10-20T06:03:05Z") }]);
+    await run.tick();
+    assert.deepEqual(run.stopped, [LAST.id]);
+    assert.match(run.lines.join("\n"), /06:46: not stopped, its subagent repeat c79 waits on a board.wake at 09:10Z/);
+
+    t.wakes([]);
+    await run.tick();
+    assert.deepEqual(run.stopped, [LAST.id, OLDER.id]);
+  } finally { run.duties.close(); await rm(dir, { recursive: true, force: true }); }
 });

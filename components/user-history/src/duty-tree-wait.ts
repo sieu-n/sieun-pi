@@ -1,6 +1,7 @@
 import type { SessionSummary } from "prime-agent";
 import { nativeStatus } from "./chat-catalog.ts";
 import type { TargetState } from "./send-once.ts";
+import type { ThreadSchedule } from "./shared/types.ts";
 import { type Wake, wakeLabel } from "./wakes.ts";
 
 /** Where `treeWait` reads a duty job's tree. */
@@ -9,9 +10,9 @@ export interface JobTree {
   sessions: (id: string) => readonly SessionSummary[];
   /** A live session's queued input and whether its worker is busy (the outbox's get_state read); null when the daemon did not answer. */
   queue: (session: string) => Promise<TargetState | null>;
-  /** An agent message the service's outbox still holds for one of `sessions` (a relay, a wake, a report), or undefined. */
+  /** An agent message the service's outbox still holds for one of `sessions` or for a tree rooted at one (a relay, a wake, a report), or undefined. */
   relay: (sessions: ReadonlySet<string>) => Promise<{ id: string; threadId: string } | undefined>;
-  /** The board.wakes the service still owes (`pendingWakes`). */
+  /** The board.wakes the service still owes (`pendingWakes`); one whose `root` is the job counts even when the daemon no longer lists its session. */
   wakes: () => Promise<readonly Wake[]>;
 }
 
@@ -31,23 +32,26 @@ export function sessionWait(row: SessionSummary): string | null {
 
 /**
  * What still waits on a duty job's tree, or null when nothing does: a session of it that starts, recovers, sits queued or runs
- * (`sessionWait`), an agent message the outbox holds for one of them, a board.wake one of them set, or input queued in a live one's worker.
+ * (`sessionWait`), a scheduled job of one of them in `scheduled` (the daemon's cron_list), an agent message the outbox holds for one of them, a
+ * board.wake one of them set, or input queued in a live one's worker.
  * The root's own row can read idle meanwhile, as the restored roots of update ctl-847650 did on 10-20 while their subagents were still to come
  * back. An archive of such a root only comes undone: at 06:46:06Z on 10-20 the runner archived owner corrections 06:46 while its subagents
  * repeat c79 and repeat c129 slept on wakes, and a relay to repeat c72 reopened it through its parent 26 s later.
  */
-export async function treeWait(id: string, tree: JobTree): Promise<string | null> {
+export async function treeWait(id: string, tree: JobTree, scheduled: ReadonlyMap<string, ThreadSchedule> = new Map()): Promise<string | null> {
   const sessions = tree.sessions(id);
   const who = (row: SessionSummary) => row.sessionId === id ? "its root" : `its subagent ${row.sessionName?.trim() || row.sessionId.slice(0, 8)}`;
   for (const row of sessions) {
     const wait = sessionWait(row);
     if (wait) return `${who(row)} ${wait}`;
+    const job = scheduled.get(row.sessionId);
+    if (job) return `${who(row)} has ${job.status === "active" ? "an active" : "a paused"} scheduled job${job.label ? ` (${job.label})` : ""}`;
   }
   const ids = new Set([id, ...sessions.map(row => row.sessionId)]);
   const relay = await tree.relay(ids);
   const named = (session: string) => { const row = sessions.find(entry => entry.sessionId === session); return row ? who(row) : session.slice(0, 8); };
   if (relay) return `agent message ${relay.id} waits in the outbox for ${named(relay.threadId)}`;
-  const owed = (await tree.wakes()).filter(wake => ids.has(wake.session));
+  const owed = (await tree.wakes()).filter(wake => ids.has(wake.session) || wake.root === id);
   if (owed.length) return `${named(owed[0]!.session)} waits on ${wakeLabel(owed.filter(wake => wake.session === owed[0]!.session))}`;
   for (const row of sessions) {
     if (row.activeSessionId === undefined || row.lifecycle === "archived") continue;

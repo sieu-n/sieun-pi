@@ -207,8 +207,8 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const dutyJobs = dutyJobHost({ threads, archives, rows: () => catalog.rows(), refresh: () => catalog.refresh(), registry,
     saved: async id => { const file = await sessionFileOf(id, agentDir); return file ? savedChat(file) : null; }, sessionFile: id => sessionFileOf(id, agentDir),
     schedules: () => catalog.schedulesNow(),
-    treeWait: id => treeWait(id, { sessions: tree => catalog.tree(tree), queue: workerQueue, relay: sessions => agentOutbox.outbox.pending(entry => sessions.has(entry.threadId)),
-      wakes: () => pendingWakes(join(dataDir, "wakes"), Date.now()) }),
+    treeWait: (id, scheduled) => treeWait(id, { sessions: tree => catalog.tree(tree), queue: workerQueue, relay: sessions => agentOutbox.outbox.pending(entry => sessions.has(entry.threadId) || (entry.root !== undefined && sessions.has(entry.root))),
+      wakes: () => pendingWakes(join(dataDir, "wakes"), Date.now()) }, scheduled),
     board: id => join(boards.dir, id + ".json"), log: dutyLog,
     started: async (id, chat, name) => poolPriorities.set(id, dutyJobPriority(name, chatPoolPriority((await labels.snapshot()).threads[chat.id]?.priority ?? 0))) });
   const duties = new Duties(new DutyStore(dataDir), { isChat: async id => (await chats.ids()).has(id), log: dutyLog, ...quiet ? { tickMs: 0 } : {},

@@ -406,10 +406,11 @@ export function dutyJobHost(input: { threads: DutyJobThreads; archives: { add(jo
    */
   schedules?: () => Promise<ReadonlyMap<string, ThreadSchedule>>;
   /**
-   * What still waits on the job's tree (`treeWait` in src/duty-tree-wait.ts), so `ended` keeps a job whose subagents, queued input or outbox
-   * relays still wait, and `working` counts it as at work; absent: nothing waits. A failed read stops no job that scan.
+   * What still waits on the job's tree (`treeWait` in src/duty-tree-wait.ts), given the daemon's scheduled jobs by session, so `ended` keeps a
+   * job whose subagents, their scheduled jobs and wakes, queued input or outbox relays still wait, and `working` counts it as at work; absent:
+   * nothing waits. A failed read stops no job that scan.
    */
-  treeWait?: (id: string) => Promise<string | null>;
+  treeWait?: (id: string, scheduled?: ReadonlyMap<string, ThreadSchedule>) => Promise<string | null>;
   refresh?: () => Promise<void>; lookupWaitsMs?: readonly number[]; sleep?: (ms: number) => Promise<void>; log?: (line: string) => void; now?: () => number }): DutyJobHost {
   const row = async (id: string) => (await input.rows()).find(candidate => candidate.id === id);
   const waits = input.lookupWaitsMs ?? DUTY_LOOKUP_WAITS_MS;
@@ -479,7 +480,9 @@ export function dutyJobHost(input: { threads: DutyJobThreads; archives: { add(jo
     async working(job) {
       const found = await row(job.id);
       if (!found || found.archived) return false;
-      return found.working || (input.treeWait !== undefined && await input.treeWait(job.id).catch(() => "unread") !== null);
+      if (found.working || !input.treeWait) return found.working;
+      const scheduled = input.schedules ? await input.schedules().catch(() => null) : new Map<string, ThreadSchedule>();
+      return scheduled === null || await input.treeWait(job.id, scheduled).catch(() => "unread") !== null;
     },
     start: (chat, planned, brief, since) => serial(async () => {
       const { id, name } = await createOrAdopt(chat, planned, since);
@@ -504,15 +507,17 @@ export function dutyJobHost(input: { threads: DutyJobThreads; archives: { add(jo
       const idle = (job: DutyJobRef) => { const found = byId.get(job.id); return found !== undefined && !found.archived && !found.working ? found : undefined; };
       let ended = [...last.filter(job => { const found = idle(job); return found !== undefined && found.messageCount >= 2 && found.failure === undefined; }),
         ...older.filter(job => idle(job) !== undefined)];
+      let scheduled: ReadonlyMap<string, ThreadSchedule> = new Map();
       if (ended.length && input.schedules) {
-        const scheduled = await input.schedules().catch(error => { input.log?.(`duty jobs: no job stops this scan, the daemon's scheduled jobs did not read: ${reason(error)}`); return null; });
-        if (scheduled === null) return [];
-        ended = ended.filter(job => !scheduled.has(job.id));
+        const read = await input.schedules().catch(error => { input.log?.(`duty jobs: no job stops this scan, the daemon's scheduled jobs did not read: ${reason(error)}`); return null; });
+        if (read === null) return [];
+        scheduled = read;
+        ended = ended.filter(job => !read.has(job.id));
       }
       if (!input.treeWait) return ended;
       const free: DutyJobRef[] = [];
       for (const job of ended) {
-        const wait = await input.treeWait(job.id).catch(error => `its tree did not read: ${reason(error)}`);
+        const wait = await input.treeWait(job.id, scheduled).catch(error => `its tree did not read: ${reason(error)}`);
         if (wait === null) { held.delete(job.id); free.push(job); continue; }
         if (held.get(job.id) !== wait) input.log?.(`duty job ${job.name}: not stopped, ${wait}`);
         held.set(job.id, wait);
