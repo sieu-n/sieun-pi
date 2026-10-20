@@ -111,6 +111,18 @@ export function jobRequest(request: ProbeRequest): ProbeRequest {
 }
 /** Operations whose path id comes from an earlier answer in the same run. */
 export const CHAINED = /\{(job_id|snapshot_id)\}/;
+/**
+ * Runs the chained operations of one id with every read answered before any write starts, so a cancel or a delete never ends the job or
+ * snapshot that a read of the same run is about to read. On staging, where the cancel is called, the reads and the cancel used to start
+ * together: on 10-20 at 14:23:57Z POST /v1/jobs/{job_id}/cancel reached staging Convex 33 ms before GET /v1/jobs/{job_id}/results, which
+ * then read a cancelled job and answered 502 upstream_error "The crawl job failed". The cancel came first at every staging run that scored the
+ * results route as a crawler failure (10-19 05:16Z and 06:05Z, 10-20 14:23Z), and at the 14:37Z run both reads came 4 ms before it and passed.
+ */
+export async function readsThenWrites<E extends readonly [string, ...unknown[]], T>(entries: readonly E[], run: (entry: E) => Promise<T>): Promise<T[]> {
+  const isRead = (entry: E) => entry[0].startsWith("GET ");
+  const reads = await Promise.all(entries.filter(isRead).map(run));
+  return [...reads, ...await Promise.all(entries.filter(entry => !isRead(entry)).map(run))];
+}
 
 const exampleOf = (param: Param) => param.example ?? param.schema?.example ?? Object.values(param.examples ?? {})[0]?.value;
 
@@ -511,14 +523,14 @@ async function probeEnv(target: ProbeTarget, routes: readonly Route[]): Promise<
   const sources = [...jobs.map((result, index) => ({ result, org: index % orgs.length })), ...phase1.map((result, index) => ({ result, org: index % orgs.length }))];
   const chained = chainIds(sources.map(source => source.result.body));
   const ids = Object.fromEntries(Object.entries(chained).map(([name, id]) => [name, id.value]));
-  const phase2 = await Promise.all(later.map(async ([op, operation]) => {
+  const phase2 = await readsThenWrites(later, async ([op, operation]) => {
     const before = preset(op);
     if (before) return before;
     const request = buildRequest(op, operation, ids);
     if ("missing" in request) return { op, verdict: "unprobed" as const, status: 0, ms: 0, note: request.missing, body: null };
     const name = CHAINED.exec(op)![1]!;
     return call(orgs[sources[chained[name]!.from]!.org]!, op, request, "id from this run, same test org");
-  }));
+  });
   await Promise.all([...pageTwoRuns, ...opened.map(job => cancel(job.org, job.id))]);
   // A page-2 failure counts against the operation: a customer cannot get past page 1. A page 2 the run did not reach leaves page 1's verdict.
   const out: ProbeResult[] = [];
