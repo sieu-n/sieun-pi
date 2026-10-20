@@ -188,6 +188,15 @@ const WALK_AT_ONCE = 16;
  * queue, the ordinary queueing this duty leaves out, and a continue meets the same refusal (`Cut.slotAt`).
  */
 export const heldFrom = (job: Pick<CutJob, "at" | "slotAt">): number => Math.max(job.at, job.slotAt ?? job.at);
+/** The sessions of the cut jobs the chat's interrupted pass left because pi-pool held their tree (src/chat-resume.ts), from service.log's lines. */
+export function poolHeldCuts(lines: readonly string[]): Set<string> {
+  const out = new Set<string>();
+  for (const line of lines) {
+    const found = /^job .+: held by pi-pool until .*, ([0-9a-f]{8}-[0-9a-f-]{27})(?: on \S+)?\)$/.exec(line);
+    if (found) out.add(found[1]!);
+  }
+  return out;
+}
 /** About 3 h of service.log at 10-16's rate (1.7 MB an hour, most of it held wakes), so a hold that began before the window is seen whole. */
 const LOG_TAIL_BYTES = 6_000_000;
 
@@ -531,6 +540,8 @@ export interface Inputs {
   chats: readonly { id: string; name: string; duties: readonly { id: string; name: string }[]; runs: readonly DutyRunRecord[]; everyMs?: number; paused?: boolean }[];
   /** Jobs in live chats whose last turn was cut and that got no input since (`cutEnd`). */
   cut?: readonly CutJob[];
+  /** The cut jobs whose continue pi-pool held until its tree's accounts served again (`poolHeldCuts`). */
+  poolHeldJobs?: ReadonlySet<string>;
   /** Each chat's live board, for a check-in whose snapshot is older than the board's last write (`liveStuck`). */
   boards?: ReadonlyMap<string, ChatBoard | null>;
   /** When each session that owns an open step last wrote its transcript, ms. */
@@ -692,9 +703,13 @@ export function measure(input: Inputs): PrecheckOutput {
   // The 30 whole wall-clock minutes before `now`'s, each read by the watch line in it; the watch samples at each minute's middle (`nextSampleAt`).
   const start = Math.floor(now / MINUTE) * MINUTE - WINDOW_MS;
   const flagged: FlaggedSlice[] = [];
+  // A cut job whose continue pi-pool holds waits for its tree's accounts to serve again, the cell wait below: at 00:44Z on 10-20 dead-ts of CI
+  // and RepoOps, cut on a provider error at 23:31Z with pi-pool holding its tree to 01:16Z, made all 30 minutes dirty while every box read usable.
+  const poolCut = (input.cut ?? []).filter(job => input.poolHeldJobs?.has(job.session) && (job.resumedAt ?? now) - heldFrom(job) > HOLD_MS && (job.resumedAt ?? now) >= start);
+  const cutWaiting = (input.cut ?? []).filter(job => !poolCut.includes(job));
   const queueHolds: Hold[] = [
     ...input.log.holds,
-    ...(input.cut ?? []).map(job => ({ what: `cut job ${job.name} (${job.session})`, from: heldFrom(job), to: job.resumedAt ?? now })),
+    ...cutWaiting.map(job => ({ what: `cut job ${job.name} (${job.session})`, from: heldFrom(job), to: job.resumedAt ?? now })),
   ].filter(hold => hold.to - hold.from > HOLD_MS && hold.to >= start);
   const poolHeld = (input.pool ?? []).filter(hold => hold.to - hold.from > HOLD_MS && hold.to >= start);
   // A hold that only waited for a cell is pi-pool's R4 pace at work with no slot free, like a turn its tree's cap holds (`freeSlotWait`): it
@@ -703,7 +718,7 @@ export function measure(input: Inputs): PrecheckOutput {
   // queue_holds_30: the owner answered t73 on 10-19 "wait for the limits to reset" for these waits on a short fleet, and at 14:52Z 10 holds
   // there were all cell waits (8 of them his duty fix subagents started at once on claude-virev4 and claude-virev5), with no slot free.
   const poolAt = (from: number, to: number, cell: boolean): PoolHold | undefined => poolHeld.find(hold => hold.cell === cell && hold.from + HOLD_MS < to && hold.to >= from);
-  const cutHeld = (input.cut ?? []).filter(job => job.resumedAt === undefined && now - heldFrom(job) > HOLD_MS);
+  const cutHeld = cutWaiting.filter(job => job.resumedAt === undefined && now - heldFrom(job) > HOLD_MS);
   const heldAt = (at: number): boolean => queueHolds.some(hold => hold.from + HOLD_MS <= at && hold.to >= at - MINUTE);
   // Each box is judged on its own reading. A box with no reading that minute (a stale feed, a relay that did not answer, no line at all) is
   // unknown, never clean or dirty: a minute is dirty when a box read unusable or a hold or free-slot queue happened, else unknown when any box
@@ -762,7 +777,7 @@ export function measure(input: Inputs): PrecheckOutput {
     const waited = line && freeSlotWait(line);
     const parked = poolAt(from, to, false);
     if (waited || parked) freeSlot++;
-    if (poolAt(from, to, true)) cellWait++;
+    if (poolAt(from, to, true) || poolCut.some(job => heldFrom(job) + HOLD_MS < to && (job.resumedAt ?? now) >= from)) cellWait++;
     if (waited) why.push(`a turn of ${waited.tree} queued ${waited.oldestWaitS} s with free slots (${line.queue!.slots} of ${line.queue!.workingMax} in use, its tree at ${waited.slots} of ${line.queue!.treeWorkingMax})`);
     if (parked) why.push(`pi-pool refused ${parked.session.slice(0, 8)} for over 10 min while ${parked.room.join(", ")} took its class`);
     if (offline.size) offlineAny++;
@@ -787,7 +802,7 @@ export function measure(input: Inputs): PrecheckOutput {
   const metrics: Record<string, number> = {
     clean_min_30: clean,
     queue_holds_30: queueHolds.length + poolHeld.filter(hold => !hold.cell).length,
-    cell_holds_30: poolHeld.filter(hold => hold.cell).length,
+    cell_holds_30: poolHeld.filter(hold => hold.cell).length + poolCut.length,
     stuck_steps_all: stuck.reduce((sum, entry) => sum + entry.value, 0),
     ...worst ? { quiet_agent_gb: worst.gb } : {},
     oversized_procs: oversize.length,
@@ -873,6 +888,8 @@ export function measure(input: Inputs): PrecheckOutput {
   for (const entry of stuck) flagged.push({ kind: "stuck_steps", item: entry.chat.id,
     excerpt: `${entry.chat.name}: ${entry.value} open steps nobody moves${entry.items.length ? ` (${entry.items.join(", ")})` : ""}, from its check-in at ${clock(entry.at!)}.` });
   for (const duty of redDuties) flagged.push({ kind: "stuck_duty", chat: duty.chat, excerpt: duty.line });
+  for (const job of poolCut) flagged.push({ kind: "queue_hold", chat: job.chat, item: job.session, excerpt: `cut job ${job.name} (${job.session}) waited from ` +
+    `${clock(heldFrom(job))}${job.resumedAt === undefined ? "" : ` to ${clock(job.resumedAt)}`} for pi-pool to admit its tree again, not counted dirty.` });
   for (const job of cutHeld.sort((a, b) => a.at - b.at)) {
     const grants = (input.log.grants ?? []).filter(grant => grant.session === job.session && grant.at >= job.at);
     const admitted = grants.map(grant => {
@@ -1180,6 +1197,7 @@ async function main(): Promise<void> {
     slotWaits,
     listed,
     cut: cutJobsHoldingWork(cut, plan.boards, plan.pausedChats),
+    poolHeldJobs: poolHeldCuts(serviceLines),
   });
   // A flagged worker on this box keeps read-only evidence of what it holds beside the run's output (src/proc-evidence.ts).
   const here = watch.at(-1)?.host;

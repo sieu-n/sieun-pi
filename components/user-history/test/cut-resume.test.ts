@@ -6,7 +6,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { type CutJob, measure } from "../scripts/duties/whole-system.ts";
+import { type CutJob, measure, poolHeldCuts } from "../scripts/duties/whole-system.ts";
 import { loadRecord } from "../src/chat-brief.ts";
 import { CHECK_IN_TICK_MS, Chats, SUPERVISOR_RESUME_MS } from "../src/chats.ts";
 import { type Cut, cutSpans, resumesNow, SessionCuts } from "../src/cut-end.ts";
@@ -42,6 +42,26 @@ test("a provider error pi-pool holds until its slot carries the slot, and its wa
   const { metrics } = run("09:50:00", spans.map(job));
   assert.equal(metrics.queue_holds_30, 0, "09:20Z to 09:35Z waited on the 10:42Z slot");
   assert.equal(metrics.cut_jobs_held, 0, "the live cut waits on its slot too");
+});
+
+test("a cut job whose continue pi-pool holds until its tree serves again waits on the pool, and its minutes stay clean (dead-ts, 10-20 00:44Z)", () => {
+  const dead = { at: at("09:31:07"), cause: "error" as const };
+  const held = measure({ now: at("10:44:00"), watch: clean(at("10:44:00")), log: { holds: [] }, chats: [], cut: [job(dead)], poolHeldJobs: new Set([job(dead).session]) });
+  assert.equal(held.metrics.clean_min_30, 30);
+  assert.equal(held.metrics.held_min_30, 0);
+  assert.equal(held.metrics.cut_jobs_held, 0);
+  assert.equal(held.metrics.cell_holds_30, 1);
+  assert.equal(held.metrics.cell_wait_min_30, 30);
+  assert.match(held.flagged?.find(slice => slice.kind === "queue_hold")?.excerpt ?? "", /waited from 09:31Z for pi-pool to admit its tree again/);
+  const resumed = measure({ now: at("10:46:00"), watch: clean(at("10:46:00")), log: { holds: [] }, chats: [], cut: [job({ ...dead, resumedAt: at("10:45:00") })],
+    poolHeldJobs: new Set([job(dead).session]) });
+  assert.equal(resumed.metrics.clean_min_30, 30, "its minutes stay clean after its continue went through");
+  assert.deepEqual([...poolHeldCuts([
+    "job dead-ts: held by pi-pool until 2026-10-20T01:16:08+00:00: pi-pool holds the tree until 2026-10-20T01:16:08+00:00 (cut at 2026-10-19T23:31:07.493Z, tree 01a1180e, 01a15662-531d-765d-bd30-f4243a25ddb5)",
+    "job dead-py: interrupted (error at ?); continue: sent"])], ["01a15662-531d-765d-bd30-f4243a25ddb5"]);
+  const free = run("10:44:00", [job(dead)]);
+  assert.equal(free.metrics.clean_min_30, 0, "a cut the pool does not hold is still a hold nobody moves");
+  assert.equal(free.metrics.cut_jobs_held, 1);
 });
 
 test("a cut still not started 10 min after its slot is a hold from the slot on", () => {

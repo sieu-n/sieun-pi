@@ -182,6 +182,19 @@ const SUPERVISOR_LOG = [
   "[2026-10-18T08:25:10.499Z] supervisor: Supervisor command send_message failed: Error: Session worker is failed",
 ];
 
+test("a wait_for_idle that fails because its own client asked the worker to shut down is no fault, as the watchdog's probe ends (10-20 00:23Z)", () => {
+  const probe = [
+    "[2026-10-20T00:23:03.560Z] supervisor: Session worker dbddeb0067f3 stderr: Prime Agent daemon listening on /tmp/prime-agent-1001/worker-ee92e1d8c39e-dbddeb0067f3.sock",
+    "[2026-10-20T00:23:20.221Z] supervisor: Session worker dbddeb0067f3 stderr: shutdown command received over socket; 1 active session(s) will be closed",
+    "[2026-10-20T00:23:20.223Z] supervisor: Supervisor command wait_for_idle failed: Error: Daemon worker client closed",
+    "    at close (/$bunfs/root/prime-agent:1947:21165)",
+  ];
+  assert.deepEqual(readSupervisorFaults(probe, "us-metal02"), []);
+  const unasked = readSupervisorFaults([probe[1]!, "[2026-10-20T00:23:25.000Z] supervisor: Supervisor command wait_for_idle failed: Error: Daemon worker client closed"], "us-metal02");
+  assert.equal(unasked.length, 1, "a close 5 s after the stop is its own fault");
+  assert.equal(readSupervisorFaults([probe[2]!], "us-metal02").length, 1, "a close with no stop asked counts");
+});
+
 test("a reopen that delivered its send is no fault, and one whose second send failed counts with the second answer", () => {
   const faults = readServiceFaults([
     REOPEN_SENT,
