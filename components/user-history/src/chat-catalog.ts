@@ -185,6 +185,39 @@ export const PROJECTION_SLICE_MS = 10;
 /** Rows the projection builds between two looks at the clock: about 2 ms of them on that serve. */
 const BREATHE_ROWS = 256;
 const NO_ROWS: readonly SessionSummary[] = [];
+
+/** Equal to `depth` levels: the same value, or arrays and plain objects of the same length whose items are equal one level down. */
+function sameValue(left: unknown, right: unknown, depth: number): boolean {
+  if (left === right) return true;
+  if (depth === 0 || typeof left !== "object" || typeof right !== "object" || left === null || right === null || Array.isArray(left) !== Array.isArray(right)) return false;
+  if (Array.isArray(left)) {
+    const other = right as unknown[];
+    if (left.length !== other.length) return false;
+    for (let at = 0; at < left.length; at++) if (!sameValue(left[at], other[at], depth - 1)) return false;
+    return true;
+  }
+  const fields = Object.keys(left);
+  if (fields.length !== Object.keys(right).length) return false;
+  for (const field of fields) if (!Object.hasOwn(right, field) || !sameValue((left as Record<string, unknown>)[field], (right as Record<string, unknown>)[field], depth - 1)) return false;
+  return true;
+}
+
+/**
+ * A chat row as the last projection gave it out when it came out the same, else the new row with each agent that came out the same as that
+ * projection's object (and the same list when every agent did). A chat row is built again on each projection, and so is each of its agents:
+ * on 10-20 a scratch serve on a copy of the live data dir with its chats grew its old space 1.0 to 1.3 GB between two major GCs, whose pauses
+ * were 0.4 to 0.6 s, and each feed wrote every new agent and row to JSON again. A kept object is never changed: the next projection builds its own.
+ */
+function keptChat(before: SessionRow | undefined, row: SessionRow): SessionRow {
+  if (!before) return row;
+  const was = before.agents;
+  if (row.agents && was) {
+    const previous = new Map(was.map(agent => [agent.key, agent]));
+    const agents = row.agents.map(agent => { const old = previous.get(agent.key); return old && sameValue(old, agent, 3) ? old : agent; });
+    row.agents = agents.length === was.length && agents.every((agent, at) => agent === was[at]) ? was : agents;
+  }
+  return sameValue(before, row, 4) ? before : row;
+}
 /** A projected row's sort time, parsed once per row object: a kept row is the same object in each projection. */
 const sortTimes = new WeakMap<SessionRow, number>();
 function sortTime(row: SessionRow): number {
@@ -622,6 +655,8 @@ export class Catalog {
   private readonly heldLifecycle = new Map<string, "archived" | "active">();
   /** Each agent folder's spawned count; a count that a background read changed sends the rows again. */
   private readonly spawned = new SpawnedCounts(() => { if (!this.closed) void this.emit(); });
+  /** The chat rows the last projection gave out, by session id (`keptChat`). */
+  private keptChats = new Map<string, SessionRow>();
   /** The rows the last projection built, by session id, that the next one may reuse (`KeptRow`). */
   private keptRows = new Map<string, KeptRow>();
   private schedulesRefreshing: Promise<void> | undefined;
@@ -947,6 +982,15 @@ export class Catalog {
       const spawned = folder ? this.spawned.of(folder, now) : 0;
       if (spawned > (agent.subagentsTotal ?? 0)) agent.subagentsTotal = spawned;
     }
+    // A chat row that came out as the last projection built it is that projection's object again (`keptChat`).
+    const keptChats = new Map<string, SessionRow>();
+    for (const [at, row] of rows.entries()) {
+      if (!row.chat) continue;
+      const kept = keptChat(this.keptChats.get(row.id), row);
+      rows[at] = kept;
+      keptChats.set(row.id, kept);
+    }
+    this.keptChats = keptChats;
     // A queued agent's place moves as the queue drains, so the rows go out again while one waits too.
     this.scheduleRates(chatRows.some(row => row.agents?.some(agent => agent.state === "working" || agent.queued !== undefined)));
     this.projectionOwnMs.push(own + performance.now() - ran);

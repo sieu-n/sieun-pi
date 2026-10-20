@@ -3,7 +3,7 @@ import { type DoneFacts, finishedOpen, looksDone, NO_FACTS } from "./checkin-don
 import { heartbeatLine, oneSessionLoad, type RedundantHeartbeat, redundantHeartbeats, sessionLoadLine, type ScheduledJob, type SessionLoad, type Train, wakeWatches } from "./checkin-load.ts";
 import { flagKey, REPEAT_HEAD, REPEAT_RUNS, repeatLines } from "./checkin-repeats.ts";
 import type { FlaggedSlice, PrecheckOutput } from "./shared/chat-duties.ts";
-import { snapshotJsonFile, transactJsonFile, type JsonFile } from "./locked-json.ts";
+import { cachedJsonFile, snapshotJsonFile, transactJsonFile, type JsonFile } from "./locked-json.ts";
 import { goWaitText, planJob, stepGoWait } from "./shared/chat-board.ts";
 import { BRIEF_ITEMS } from "./shared/brief-cap.ts";
 import type { OwnerMessage } from "./shared/brief-check.ts";
@@ -825,10 +825,11 @@ export function checkInRecord(path: string): CheckInRecord {
         ? [[id, Object.fromEntries(Object.entries(told).filter((entry): entry is [string, ToldEnd] => isToldEnd(entry[1])))]] : [])) };
   } };
   return {
-    async get(id) { return (await snapshotJsonFile(file)).chats[id]; },
+    // Read through the parse cache (`cachedJsonFile`): each check-in round read the 700 KB file once per chat. A caller gets its own copy.
+    async get(id) { const memory = (await cachedJsonFile(file)).chats[id]; return memory && structuredClone(memory); },
     async set(id, memory) { await transactJsonFile(file, state => { state.chats[id] = memory; }); },
     async forget(id) { await transactJsonFile(file, state => { delete state.chats[id]; delete state.ends[id]; }); },
-    async ends(id) { return { ...(await snapshotJsonFile(file)).ends[id] }; },
+    async ends(id) { return { ...(await cachedJsonFile(file)).ends[id] }; },
     async told(id, key, end) {
       await transactJsonFile(file, state => {
         const told = state.ends[id] ??= {};

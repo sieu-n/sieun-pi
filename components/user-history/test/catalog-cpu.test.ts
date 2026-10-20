@@ -21,7 +21,10 @@ test("a hot JSON file is parsed again only after it changes", async () => {
     await transactJsonFile(file, state => { state.jobs.b = 2; });
     const afterWrite = parses;
     assert.deepEqual(await cachedJsonFile(file), { jobs: { a: 1, b: 2 } });
-    assert.equal(parses, afterWrite + 1, "a write through transactJsonFile is seen at the next read");
+    assert.equal(parses, afterWrite, "a write through transactJsonFile is seen at the next read, which parses nothing");
+    await transactJsonFile(file, state => { state.jobs.d = 4; });
+    assert.equal(parses, afterWrite, "a second write starts from the state the first one wrote");
+    assert.deepEqual(await cachedJsonFile(file), { jobs: { a: 1, b: 2, d: 4 } });
     writeFileSync(file.path, JSON.stringify({ jobs: { c: 3 } }));
     assert.deepEqual(await cachedJsonFile(file), { jobs: { c: 3 } }, "a write in place by another process is seen too");
   } finally { rmSync(dir, { recursive: true, force: true }); }

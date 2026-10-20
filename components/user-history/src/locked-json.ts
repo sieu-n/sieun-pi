@@ -55,22 +55,42 @@ export async function withFileLock<R>(path: string, label: string, task: () => P
 }
 
 /** Read, change, and atomically replace a private JSON file under a cross-process lock. The file is written only when the change altered it. */
+/**
+ * Read, change, and atomically replace a private JSON file under a cross-process lock. The file is written only when the change altered it.
+ * A file read through `cachedJsonFile` skips the read and parse while the file is as this process last saw it, and its cache takes the written
+ * state, so the next read parses nothing: on 10-20 a scratch serve on a copy of the live data dir with its chats parsed extension-loads.json
+ * (337 KB) 64 times and check-ins.json (700 KB) 29 times a minute, 1.4 s of main thread, mostly right after its own writes. The state such a
+ * file returns is the cached value, which the caller must not change.
+ */
 export async function transactJsonFile<T, R = void>(file: JsonFile<T>, change: (state: T) => R): Promise<{ state: T; result: R }> {
   await mkdir(dirname(file.path), { recursive: true, mode: 0o700 });
   const lock = await acquire(file);
   const temporary = file.path + "." + randomUUID();
   try {
     let state: T; let before: string | undefined;
-    try { state = await readJsonFile(file); before = JSON.stringify(state); }
-    catch (error) { if (!missing(error)) throw error; state = file.initial(); }
+    const cached = parsed.get(file.path);
+    const hit = cached?.text !== undefined && cached.key === await statKey(file.path) ? cached : undefined;
+    if (hit) { state = structuredClone(hit.value) as T; before = hit.text; }
+    else {
+      try { state = await readJsonFile(file); before = JSON.stringify(state); }
+      catch (error) { if (!missing(error)) throw error; state = file.initial(); }
+    }
     const result = change(state);
     const after = JSON.stringify(state);
     if (after !== before) { await writeFile(temporary, after, { mode: 0o600 }); await rename(temporary, file.path); }
+    if (cached) { const key = await statKey(file.path); if (key) parsed.set(file.path, { key, value: state, text: after }); }
     return { state, result };
   } finally { await rm(temporary, { force: true }); await rm(lock, { recursive: true, force: true }); }
 }
 
-const parsed = new Map<string, { key: string; value: unknown }>();
+/** The file's inode, size, change and modify times, which a rename in `transactJsonFile` always moves; null for a missing file. */
+async function statKey(path: string): Promise<string | null> {
+  try { const info = await stat(path, { bigint: true }); return `${info.ino}:${info.size}:${info.mtimeNs}:${info.ctimeNs}`; }
+  catch (error) { if (!missing(error)) throw error; return null; }
+}
+
+/** Parsed files by path, with their `statKey` and, once this process wrote one, the JSON it wrote. */
+const parsed = new Map<string, { key: string; value: unknown; text?: string }>();
 
 /**
  * `snapshotJsonFile` for a file read on every catalog projection: it parses again only after the file's inode, size or change time moved, and
@@ -79,10 +99,8 @@ const parsed = new Map<string, { key: string; value: unknown }>();
  * and must not change it.
  */
 export async function cachedJsonFile<T>(file: JsonFile<T>): Promise<T> {
-  let info;
-  try { info = await stat(file.path, { bigint: true }); }
-  catch (error) { if (!missing(error)) throw error; return snapshotJsonFile(file); }
-  const key = `${info.ino}:${info.size}:${info.mtimeNs}:${info.ctimeNs}`;
+  const key = await statKey(file.path);
+  if (key === null) return snapshotJsonFile(file);
   const hit = parsed.get(file.path);
   if (hit?.key === key) return hit.value as T;
   const value = await snapshotJsonFile(file);
