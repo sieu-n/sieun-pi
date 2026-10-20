@@ -1,7 +1,7 @@
 // Guards two incidents of the owner's sends to Mac chats. On 10-19 owner turns on Mac sessions queued in the Mac's turn queue, because the
 // chat service skipped the `pi-pool owner-turn` mark for a session on another box. Its fix marked them over ssh before each send, and the daily
 // check "Chat page from the Mac" read each Mac reply 5.2 round trips late at 22:06Z: the ssh took 0.6 to 0.9 s. The mark now rides on the prompt
-// and the Mac's relay makes it locally, right before its daemon reads the line.
+// and the Mac's relay makes it locally; on 10-20 a relay that held the prompt for that local call still cost each send 89 to 98 ms.
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import { mkdtemp, writeFile } from "node:fs/promises";
@@ -47,6 +47,15 @@ test("the owner's send to a Mac chat carries its owner-turn mark in the prompt, 
   assert.equal("ownerTurn" in sent[1]!, false);
 });
 
+test("a box chat's send never waits for its local mark", async t => {
+  const { threads, events } = await hub(t);
+  threads.markOwnerTurn = async id => { events.push(`box mark ${id}`); await new Promise(() => {}); };
+  const started = Date.now();
+  await threads.prompt(BOX_CHAT, { message: "now", images: [], mode: "steer", owner: true });
+  assert.ok(Date.now() - started < 1000, `the send waited ${Date.now() - started} ms for a mark that never ends`);
+  assert.deepEqual(events, [`box mark ${BOX_CHAT}`, "box prompt"]);
+});
+
 test("a check-in or job notice is no owner turn on either box", async t => {
   const { threads, events, sent } = await hub(t);
   await threads.prompt(MAC_CHAT, { message: "[check-in] status?", images: [], mode: "steer" });
@@ -83,35 +92,30 @@ async function relay(t: { after: (fn: () => unknown) => void }, mark: Mark) {
 
 const envelope = (id: string, command: Record<string, unknown>) => JSON.stringify({ type: "command", id, protocol: { name: "prime-daemon", version: 20 }, clientId: "box", command: { ...command, id } }) + "\n";
 
-test("the relay marks the owner turn before the daemon reads the prompt, takes the field off, and keeps every line in order", async t => {
-  const marks: { at: number; session: string }[] = [];
-  const { tunnel, got, until } = await relay(t, async session => { await new Promise(resolve => setTimeout(resolve, 30)); marks.push({ at: Date.now(), session }); });
+test("the relay passes the prompt on without the field and without waiting for its mark, which it starts, and keeps every line in order", async t => {
+  const marks: string[] = [];
+  const { tunnel, got, until } = await relay(t, session => { marks.push(session); return new Promise(() => {}); });
   const prompt = envelope("daemon_7", { type: "prompt", activeSessionId: "worker-01a1", message: "did you miss? \"ownerTurn\" é", source: "interactive", ownerTurn: MAC_CHAT });
   const read = envelope("daemon_8", { type: "get_state", activeSessionId: "worker-01a1" });
   const bytes = Buffer.from(envelope("daemon_6", { type: "list" }) + prompt + read);
+  const started = Date.now();
   for (let at = 0; at < bytes.length; at += 7) tunnel.write(bytes.subarray(at, at + 7));
   await until(3);
+  assert.ok(Date.now() - started < 1000, `the lines took ${Date.now() - started} ms behind a mark that never ends`);
   assert.deepEqual(got.map(entry => JSON.parse(entry.line).id), ["daemon_6", "daemon_7", "daemon_8"]);
-  assert.deepEqual(marks.map(mark => mark.session), [MAC_CHAT]);
-  assert.ok(marks[0]!.at <= got[1]!.at, "the daemon read the prompt before its mark");
+  assert.deepEqual(marks, [MAC_CHAT]);
   const command = JSON.parse(got[1]!.line).command;
   assert.equal("ownerTurn" in command, false);
   assert.equal(command.message, "did you miss? \"ownerTurn\" é");
   assert.equal(got[2]!.line + "\n", read);
 });
 
-test("a mark that hangs or fails holds the prompt at most its wait, and a line without the field passes byte for byte", async t => {
-  const hung = await relay(t, () => new Promise(() => {}));
-  const started = Date.now();
-  hung.tunnel.write(envelope("daemon_1", { type: "prompt", activeSessionId: "w", message: "hi", ownerTurn: MAC_CHAT }));
-  await hung.until(1);
-  const waited = Date.now() - started;
-  assert.equal(hung.got.length, 1);
-  assert.ok(waited >= 2900 && waited < 4500, `the prompt waited ${waited} ms`);
+test("a failed mark is logged, and a line without the field passes byte for byte", async t => {
   const failed = await relay(t, async () => { throw new Error("pi-pool: turns.lock busy"); });
   const plain = envelope("daemon_2", { type: "prompt", activeSessionId: "w", message: "plain" });
   failed.tunnel.write(envelope("daemon_1", { type: "prompt", activeSessionId: "w", message: "hi", ownerTurn: MAC_CHAT }) + plain);
   await failed.until(2);
+  for (let wait = 0; !failed.logged.length && wait < 100; wait++) await new Promise(resolve => setTimeout(resolve, 10));
   assert.match(failed.logged.join("\n"), /owner turn for 01a15427: pi-pool: turns.lock busy/);
   assert.equal(failed.got[1]!.line + "\n", plain);
 });

@@ -1217,9 +1217,10 @@ export class ThreadHub {
 
   /**
    * `owner` marks the send as the owner's turn, so the turn queue of pi-pool on the session's box starts its run at once (pool/turns.py). On this
-   * box `markOwnerTurn` runs while the thread resumes and lands before the prompt goes. On another box the prompt carries `ownerTurn`, and that
-   * box's relay marks it right before the daemon reads the line (components/prime-relay/owner-turn.mjs): the chat service's own ssh mark held
-   * each send to a Mac chat 0.6 to 0.9 s on 10-19, 3 to 5 round trips. The prompt goes by the session's active id on
+   * box `markOwnerTurn` runs beside the send; on another box the prompt carries `ownerTurn`, and that box's relay marks it beside the prompt
+   * (components/prime-relay/owner-turn.mjs). No send waits for its mark: the chat service's ssh mark held each send to a Mac chat 0.6 to 0.9 s
+   * on 10-19, and the Mac's local call 89 to 98 ms on 10-20, while the run's admit comes later, at its first model call, and a mark that lands
+   * after it starts the queued run at once as kind "ahead". The prompt goes by the session's active id on
    * the box's shared daemon client and does not wait for the thread's attach, which goes on behind it: on 10-18 the owner's "did you miss?" to
    * frontend bro on the Mac never left the box, because each attach streams the whole context since the last compaction (9.9 MB, 7.75 MB of it
    * screenshots) over a relay that moves about 0.43 MB/s, and 17 attaches from 07:38Z timed out at 30 s. Over a kept link a send is one round
@@ -1227,7 +1228,7 @@ export class ThreadHub {
    */
   async prompt(id: string, input: { message: string; images: ChatImage[]; mode: SendMode; owner?: boolean; sending?: () => Promise<void> }, trigger = "prompt"): Promise<void> {
     const remote = this.catalog.hostOf(id) !== null;
-    const marked = input.owner && !remote ? this.markOwnerTurn(id) : undefined;
+    if (input.owner && !remote) void this.markOwnerTurn(id);
     const resumed = this.resume(id, false, trigger);
     resumed.catch(() => {});
     const held = this.threads.get(id)?.live?.activeSessionId;
@@ -1238,7 +1239,6 @@ export class ThreadHub {
       return response.data as T;
     };
     let activeSessionId = listed ?? (await resumed).live!.activeSessionId;
-    await marked;
     if (input.images.length) {
       const [state, catalog] = await Promise.all([ask<{ model?: { provider: string; id: string } | null }>(activeSessionId, "get_state"),
         ask<{ models: { provider: string; id: string; input: string[] }[] }>(activeSessionId, "get_model_catalog")]);
