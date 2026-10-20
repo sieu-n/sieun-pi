@@ -354,7 +354,7 @@ export class Duties {
     const misses = pushMisses(own, counted, everyMs, this.now());
     if (!misses) return;
     const board = await this.host.board?.(chatId).catch(() => null) ?? null;
-    if (Object.values(await this.fixesOn(board, chatId, duty.id, misses)).some(fix => fix.live)) return;
+    if (Object.values(await this.fixesOn(board, chatId, duty.id, misses, [], duty.boardGoal)).some(fix => fix.live)) return;
     if (this.afters.has(key)) return;
     if (this.start(chatId, duty.id, "push", this.now())) this.log(`duty ${chatId.slice(0, 8)}/${duty.id}: red on ${misses.join(", ")} with no job at work on it; a push run starts`);
   }
@@ -527,9 +527,9 @@ export class Duties {
     return (await this.store.list(chatId)).some(duty => duty.id === dutyId && duty.status === "active");
   }
 
-  private async fixesOn(board: ChatBoard | null, chatId: string, dutyId: string, metrics: readonly string[], flagged: readonly FlaggedSlice[] = []): Promise<Record<string, FixLink>> {
+  private async fixesOn(board: ChatBoard | null, chatId: string, dutyId: string, metrics: readonly string[], flagged: readonly FlaggedSlice[] = [], goal?: string): Promise<Record<string, FixLink>> {
     const live = this.host.fixLive;
-    return dutyFixes(board, dutyId, metrics, item => live ? live(chatId, item).catch(() => false) : Promise.resolve(false), flagged);
+    return dutyFixes(board, dutyId, metrics, item => live ? live(chatId, item).catch(() => false) : Promise.resolve(false), flagged, goal);
   }
 
   /** Fills a missed run's `fixes` from the board, and returns its miss streaks with them (`metricStreaks`, from `previous` newest first). */

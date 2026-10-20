@@ -40,15 +40,18 @@ function linked(board: ChatBoard | null, duty: string): Map<string, Linked[]> {
  * metric that still misses after its fix closed names that fix. `live` says whether a step's job is at work; a closed step never counts as live.
  * Steps at or under an item the run flagged for that metric (`flagged`, by kind) come first: Crawler VP's check-in at 21:21Z on 10-18 flagged
  * goal_gaps on p681, whose push step p696 has the job "tiktok shop products push", and recorded p671 "linkedin api fixes" under p670 instead.
+ * The duty's own goal (`goal`, its `boardGoal`) is left out when given: a job that holds the goal watches the metric and fixes nothing, and on
+ * 10-20 the job "wiki goal hold" on p200 (d4/wiki_problems) slept on a board.wake from 08:19Z, so it read as a live fix and no d4 push run
+ * started until wiki_problems reached 26 at 09:36Z.
  */
 export async function dutyFixes(board: ChatBoard | null, duty: string, metrics: readonly string[], live: (item: PlanItem) => Promise<boolean>,
-  flagged: readonly FlaggedSlice[] = []): Promise<Record<string, FixLink>> {
+  flagged: readonly FlaggedSlice[] = [], goal?: string): Promise<Record<string, FixLink>> {
   const steps = linked(board, duty);
   const fixes: Record<string, FixLink> = {};
   for (const metric of metrics) {
     const items = new Set(flagged.flatMap(slice => slice.kind === metric && slice.item ? [slice.item] : []));
     const under = (step: Linked) => step.path.some(id => items.has(id));
-    const ranked = steps.get(metric) ?? [];
+    const ranked = (steps.get(metric) ?? []).filter(step => step.item.id !== goal);
     const found = [...ranked.filter(under), ...ranked.filter(step => !under(step))].map(step => step.item);
     const open = found.filter(item => OPEN.has(item.status));
     let pick: { item: PlanItem; live: boolean } | undefined;

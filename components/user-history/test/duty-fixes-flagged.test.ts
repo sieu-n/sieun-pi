@@ -21,3 +21,10 @@ test("with no flagged item for the metric the first live step stays the fix", as
   assert.equal((await dutyFixes(board, "checkin", ["goal_gaps"], live))["goal_gaps"]?.step, "p671");
   assert.equal((await dutyFixes(board, "checkin", ["goal_gaps"], live, [{ kind: "stuck_steps", item: "p681", excerpt: "" }]))["goal_gaps"]?.step, "p671");
 });
+
+test("the duty's own goal is no fix when the push names it, so a job that holds the goal does not stop the push", async () => {
+  // 10-20: "wiki goal hold" on p200 (d4/wiki_problems) slept on a board.wake from 08:19Z, and no d4 push ran until wiki_problems read 26.
+  const held = { plan: [step("p200", { job: "wiki goal hold", duty: "d4/wiki_problems", children: [step("p810", { job: "wiki goal hold" })] })] } as unknown as ChatBoard;
+  assert.equal((await dutyFixes(held, "d4", ["wiki_problems"], live))["wiki_problems"]?.live, true);
+  assert.deepEqual(await dutyFixes(held, "d4", ["wiki_problems"], live, [], "p200"), {});
+});
