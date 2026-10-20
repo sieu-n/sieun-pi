@@ -531,7 +531,7 @@ export async function sample(source: WatchSource, stopping?: Promise<void>): Pro
   const latency = takeLatency();
   const marks = source.calls ? callMarks(rows, footprints.kernels ?? [], at) : [];
   const judged = source.calls ? source.calls.judge(marks, at, callNamer(rows, source.title)) : [];
-  const { stopped, left: hung } = source.stop && judged.length ? await source.stop.stop(judged, footprints.kernels ?? []) : { stopped: [], left: judged };
+  const { stopped, left: hung } = source.stop ? await source.stop.stop(judged, footprints.kernels ?? []) : { stopped: [], left: judged };
   if (stopped.length) source.calls?.release(stopped.map(call => call.session));
   const line = { ...source.host ? { host: source.host } : {}, ...watchLine({ now: at, rows, footprints, queue, chats, title: source.title, cpuMs: 0, usable, memory,
     hung: new Set(hung.map(call => call.session)) }),

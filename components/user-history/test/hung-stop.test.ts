@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { measure } from "../scripts/duties/whole-system.ts";
 import { type CallMark, CallWatch, type HungCall } from "../src/hung-calls.ts";
-import { type CallHandle, CallStopper, type StopDeps } from "../src/hung-stop.ts";
+import { type CallHandle, CallStopper, pidAlive, type StopDeps } from "../src/hung-stop.ts";
 import { type Footprints, readCallHandles, sample } from "../src/mac-usable-watch.ts";
 
 const MIN = 60_000;
@@ -21,9 +21,9 @@ const PROBE = "/home/sieun/Documents/Github/auto-sns-agent/apps/crawler-v3/.venv
 const call = (fields: Partial<HungCall> = {}): HungCall => ({ session: SHARE, name: "share-cascade", root: CRAWLER, tree: "Crawler VP", silentMin: 228, workCores: 0,
   kernelCores: 0, command: PROBE, why: "no progress", since: SINCE, ...fields });
 
-function fakeDeps(found: CallHandle[]) {
+function fakeDeps(found: CallHandle[], alive: (pid: number) => boolean = () => true) {
   const kills: [number, string][] = [], told: [string, string, string][] = [], asked: { kernel: number; since: number }[][] = [];
-  const deps: StopDeps = { handles: async wanted => { asked.push([...wanted]); return found; }, kill: (pid, signal) => { kills.push([pid, signal]); },
+  const deps: StopDeps = { handles: async wanted => { asked.push([...wanted]); return found; }, kill: (pid, signal) => { kills.push([pid, signal]); }, alive,
     tell: async (session, root, text) => { told.push([session, root, text]); }, log: () => {} };
   return { deps, kills, told, asked };
 }
@@ -45,6 +45,21 @@ test("share-cascade's hung probe gets SIGTERM on its shell and child, the sessio
   assert.deepEqual(second.stopped, []);
   assert.deepEqual(second.left.map(entry => entry.session), [SHARE], "a TERM that did not free the call leaves it hung");
   assert.equal(fake.told.length, 1, "the session is told once");
+});
+
+test("hdx-metaads-commit's call, which SIGTERM left waiting at 22:47Z and which was not judged hung again for 30 min, gets SIGKILL on what still runs a minute later", async () => {
+  const HDX = "01a155a9-1a0e-710e-a134-cd82a3372982", hdxSince = 1792446397262;
+  const probe = "cd apps/crawler-v3 && PYTHONPATH=. uv run python /home/sieun/work/alert-meta-writer/revoke_probe.py";
+  const fake = fakeDeps([{ kernel: 500, pid: 501, started: Math.floor(hdxSince / 1000) + 3, command: probe, pids: [501, 502, 503] }], pid => pid !== 503);
+  const stopper = new CallStopper(fake.deps);
+  const hdx = call({ session: HDX, name: "hdx-metaads-commit", silentMin: 61, since: hdxSince });
+  await stopper.stop([hdx], [{ pid: 500, session: HDX }]);
+  const next = await stopper.stop([], [{ pid: 500, session: HDX }]);
+  assert.deepEqual(next, { stopped: [], left: [] });
+  assert.deepEqual(fake.kills, [[501, "SIGTERM"], [502, "SIGTERM"], [503, "SIGTERM"], [501, "SIGKILL"], [502, "SIGKILL"]]);
+  const later = await stopper.stop([call({ ...hdx, silentMin: 91 })], [{ pid: 500, session: HDX }]);
+  assert.deepEqual(later.left.map(entry => entry.silentMin), [91], "a call still hung after both signals counts as hung");
+  assert.equal(fake.kills.length, 5, "and gets no more signals");
 });
 
 test("a burning kernel and a call with no kernel read are left hung and never signaled", async () => {
@@ -107,10 +122,11 @@ test("the watch line leaves a stopped call out of hung, d7's hung_calls reads 0 
 
 const KERNEL_PY = join(homedir(), ".prime/agent/kernel-venv/bin/python");
 test("a real rlm.bash await on a silent command returns -15 once the stopper signals the handle the helper finds", { skip: process.platform !== "linux" || !existsSync(KERNEL_PY) }, async () => {
-  // The trailing "rlm.repl" argument makes the footprint helper read this python as a kernel; the await is Prime's own rlm.bash.
+  // The trailing "rlm.repl" argument makes the footprint helper read this python as a kernel; the await is Prime's own rlm.bash. Start times
+  // come from the whole-second btime, so the helper can read a process up to a second before it started, and `since` sits 2 s early.
   const script = "import asyncio\nfrom rlm.bash import bash\nasync def main():\n    return (await bash('sleep 600')).exit_code\nprint(asyncio.run(main()), flush=True)";
-  const since = Math.floor(Date.now() / 1000);
-  const kernel = spawn(KERNEL_PY, ["-c", script, "rlm.repl"], { stdio: ["ignore", "pipe", "inherit"] });
+  const since = Math.floor(Date.now() / 1000) - 2;
+  const kernel = spawn(KERNEL_PY, ["-c", script, "rlm.repl"], { stdio: ["ignore", "pipe", "inherit"], detached: true });
   let out = "";
   kernel.stdout.on("data", chunk => { out += String(chunk); });
   const exited = new Promise<number | null>(resolve => kernel.on("exit", code => resolve(code)));
@@ -122,13 +138,14 @@ test("a real rlm.bash await on a silent command returns -15 once the stopper sig
     }
     assert.equal(found.length, 1);
     assert.match(found[0]!.command, /^sleep 600$/);
-    const stopper = new CallStopper({ handles: readCallHandles, kill: (pid, signal) => { process.kill(pid, signal); }, tell: async () => {}, log: () => {} });
+    const stopper = new CallStopper({ handles: readCallHandles, kill: (pid, signal) => { process.kill(pid, signal); }, alive: pidAlive, tell: async () => {}, log: () => {} });
     const result = await stopper.stop([call({ session: "real", since: since * 1000 })], [{ pid: kernel.pid!, session: "real" }]);
     assert.equal(result.stopped.length, 1);
     assert.equal(await exited, 0);
     assert.equal(out.trim(), "-15");
     assert.deepEqual(await readCallHandles([{ kernel: kernel.pid!, since }]), [], "no handle is left");
   } finally {
-    kernel.kill("SIGKILL");
+    for (const handle of await readCallHandles([{ kernel: kernel.pid!, since: 0 }]).catch(() => [])) for (const pid of handle.pids) process.kill(pid, "SIGKILL");
+    try { process.kill(-kernel.pid!, "SIGKILL"); } catch { /* gone */ }
   }
 });

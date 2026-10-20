@@ -19,7 +19,7 @@ import { relayStats } from "./chat-hosts.ts";
 import { boardQueueRead, hostsQueueRead, queueReader } from "./chat-turn-queue.ts";
 import { readCallHandles, readFootprints, startMacUsableWatch } from "./mac-usable-watch.ts";
 import { CallWatch } from "./hung-calls.ts";
-import { CallStopper } from "./hung-stop.ts";
+import { CallStopper, pidAlive } from "./hung-stop.ts";
 import { HostReach } from "./host-reach.ts";
 import { relayWatch } from "./hosts.ts";
 import { ARTIFACTS, dryLeftoverSource, hostLeftovers, leftoverSource, sshLeftovers } from "./job-leftovers.ts";
@@ -262,7 +262,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const calls = new CallWatch();
   // A hung call's bash() commands get stopped so its await returns, on a live serve only; the session hears why through the outbox, which is
   // made below and first used once a call has been silent an hour.
-  const stop = new CallStopper({ handles: readCallHandles, kill: (pid, signal) => { process.kill(pid, signal); }, log: dutyLog,
+  const stop = new CallStopper({ handles: readCallHandles, kill: (pid, signal) => { process.kill(pid, signal); }, alive: pidAlive, log: dutyLog,
     tell: (session, root, text) => agentOutbox.deliver(session, text, root) });
   const stopWatch = ownChatsOnly && !replay ? async () => {} : startMacUsableWatch({ dataDir, rows: () => catalog.daemonRows(), chats: () => chats.ids(), title: id => catalog.title(id),
     queue: queueReading, log: dutyLog, calls, ...scratch ? {} : { stop }, ...catalog.selfHostName() ? { host: catalog.selfHostName()! } : {},
