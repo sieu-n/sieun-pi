@@ -296,11 +296,13 @@ export const dueReopens = (state: BridgeState, now: number): string[] =>
  * The rules of chats with a board whose fire no job holds (`held`) ESCALATE_MS after it, once per fire: no job took it, or the job that took it
  * has had no model turn. A fire that resolved before its job had a turn escalates too, since nobody looked at it: metal-prod-crawler-netns-ports
  * fired at 12:14:30Z on 10-19, resolved at 12:28:42Z, and its job had no turn by 14:46Z. ops guy's own rules never escalate, since the
- * escalation goes to ops guy.
+ * escalation goes to ops guy. A job in `parked` waits for a pi-pool slot, and its fires escalate only if it still has no turn once that slot
+ * passed: on 10-20 three escalations (04:56Z, 05:17Z, 05:27Z) named two jobs whose slots at 05:06Z and 06:06Z were still ahead, and both
+ * jobs ran at 05:40Z once pi-pool let them in.
  */
-export function dueEscalations(state: BridgeState, boarded: ReadonlySet<string>, now: number): string[] {
-  return Object.entries(state.rules).flatMap(([key, rule]) => (owed(state, rule) || waiting(state, rule, now)) && boarded.has(rule.chat) && rule.chat !== OPS_ROUTE.session &&
-    now - rule.wokeAt >= ESCALATE_MS && !(rule.escalatedAt !== undefined && rule.escalatedAt >= rule.wokeAt) ? [key] : []);
+export function dueEscalations(state: BridgeState, boarded: ReadonlySet<string>, now: number, parked: ReadonlySet<string> = new Set()): string[] {
+  return Object.entries(state.rules).flatMap(([key, rule]) => (owed(state, rule) || (waiting(state, rule, now) && !parked.has(rule.job!.id))) && boarded.has(rule.chat) &&
+    rule.chat !== OPS_ROUTE.session && now - rule.wokeAt >= ESCALATE_MS && !(rule.escalatedAt !== undefined && rule.escalatedAt >= rule.wokeAt) ? [key] : []);
 }
 
 const ruleIn = (title: string, alertname: string): string => title.includes(alertname) ? "" : `${alertname}, `;
@@ -433,7 +435,7 @@ export class AlertBridge {
       state = await this.reopen(state, boarded, now);
       const watched = await this.watch(state, now);
       state = await this.tell(watched.state, boardless, now);
-      return this.escalate(state, boarded, watched.errors, now);
+      return this.escalate(state, boarded, watched.errors, watched.parked, now);
     });
     return true;
   }
@@ -525,10 +527,13 @@ export class AlertBridge {
   /**
    * Reads each triage job that has a fire with no turn since (`waiting`): its latest turn marks `ranAt`, so it holds every fire it took before
    * that. A job whose failed call names a pool slot that has passed, and that does not work, gets one retry per slot through the resume pass,
-   * which continues it once pi-pool admits its tree. The errors, by job id, go with the escalation.
+   * which continues it once pi-pool admits its tree. The errors, by job id, go with the escalation, and `parked` holds each job whose slot is
+   * ahead or passed within one tick, so the retry this poll asked for gets a poll to show its turn: the resume pass answered 1 to 2 s after the
+   * slot on 10-20 (05:06:00Z to 05:06:02Z, 05:13:28Z to 05:13:29Z).
    */
-  private async watch(state: BridgeState, now: number): Promise<{ state: BridgeState; errors: Map<string, string> }> {
+  private async watch(state: BridgeState, now: number): Promise<{ state: BridgeState; errors: Map<string, string>; parked: Set<string> }> {
     const errors = new Map<string, string>();
+    const parked = new Set<string>();
     const since = new Map<string, number>();
     for (const rule of Object.values(state.rules)) {
       if (waiting(state, rule, now) && state.jobs[rule.job!.id]) since.set(rule.job!.id, Math.min(since.get(rule.job!.id) ?? Infinity, rule.job!.at));
@@ -540,13 +545,14 @@ export class AlertBridge {
       if (!turn) continue;
       if (turn.ran) { jobs[id] = { ...job, ranAt: turn.at }; continue; }
       if (turn.error) errors.set(id, turn.error);
+      if (turn.slotAt !== undefined && now < turn.slotAt + TICK_MS) parked.add(id);
       if (!this.deps.retryJob || turn.slotAt === undefined || turn.slotAt > now || (job.retriedAt ?? -1) >= turn.slotAt) continue;
       if (await this.deps.jobWorking?.(job).catch(() => true)) continue;
       this.deps.retryJob(job);
       jobs[id] = { ...job, retriedAt: turn.slotAt };
       this.deps.log(`alerts: triage job ${job.name} (${id.slice(0, 8)}) has had no turn and its pool slot ${minute(turn.slotAt)} passed; asked the resume pass to continue it`);
     }
-    return { state: { ...state, jobs }, errors };
+    return { state: { ...state, jobs }, errors, parked };
   }
 
   /** Marks each rule that still fires REOPEN_MS after its job took it, and whose job has ended, as fired now, so `dispatch` starts a new job. */
@@ -582,8 +588,8 @@ export class AlertBridge {
     return { ...state, rules };
   }
 
-  private async escalate(state: BridgeState, boarded: ReadonlySet<string>, errors: ReadonlyMap<string, string>, now: number): Promise<BridgeState> {
-    const due = dueEscalations(state, boarded, now);
+  private async escalate(state: BridgeState, boarded: ReadonlySet<string>, errors: ReadonlyMap<string, string>, parked: ReadonlySet<string>, now: number): Promise<BridgeState> {
+    const due = dueEscalations(state, boarded, now, parked);
     if (!due.length) return state;
     try {
       await this.deps.deliver(OPS_ROUTE.session, escalationText(due.map(key => {

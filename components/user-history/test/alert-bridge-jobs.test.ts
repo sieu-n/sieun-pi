@@ -226,6 +226,49 @@ test("a job that never had a turn does not hold the fire: the bridge asks for it
   assert.equal((await f.state()).rules[key]!.job!.id, "job-1");
 });
 
+// Replays 10-20: job 01a1578b for crawler-prod-watch-rows-absent failed every call on a pi-pool slot wait, for 06:06:27Z from 05:13Z, and the
+// bridge escalated it at 05:17Z as a job with no model turn. pi-pool let it in and it ran at 05:40Z.
+test("a job pi-pool holds for a slot still ahead reads as waiting, and escalates only once that slot passed with no turn", async () => {
+  const fired = Date.parse("2026-10-20T04:47:28Z");
+  const slot = Date.parse("2026-10-20T06:06:27Z");
+  const wait = SLOT_WAIT.replace("2026-10-19T12:38:00.000Z", "2026-10-20T06:06:27.000Z");
+  const f = await fixture();
+  const escalations = () => f.sent.filter(({ session, text }) => session === OPS && text.startsWith("[alert-escalation]"));
+  f.set([netns("2026-10-20T04:46:30.000Z")]); f.at(fired);
+  await f.bridge.tick();
+  f.working.clear();
+  f.turns.set("job-1", { ran: false, error: wait, slotAt: slot });
+  f.at(fired + ESCALATE_MS);
+  await f.bridge.tick();
+  f.at(slot - 30_000);
+  await f.bridge.tick();
+  assert.equal(escalations().length, 0, "no escalation while the slot is ahead");
+  f.at(slot + 10_000);
+  await f.bridge.tick();
+  assert.deepEqual(f.retried, ["job-1"], "the slot passed, so the resume pass is asked to continue it");
+  assert.equal(escalations().length, 0, "the retry gets one poll to show its turn");
+  f.at(slot + 40_000);
+  await f.bridge.tick();
+  assert.equal(escalations().length, 1, "still no turn a poll after the retry");
+  assert.match(escalations()[0]!.text, /has had no model turn \(its last call failed: pi-pool: this session waits for its slot at 2026-10-20T06:06:27/);
+});
+
+test("a held job that runs at its slot holds the fire, so nothing escalates", async () => {
+  const fired = Date.parse("2026-10-20T04:26:58Z");
+  const slot = Date.parse("2026-10-20T05:06:00Z");
+  const f = await fixture();
+  f.set([ciAlert("aaaa0000000000d1", "2026-10-20T04:26:00.000Z")]); f.at(fired);
+  await f.bridge.tick();
+  f.working.clear();
+  f.turns.set("job-1", { ran: false, error: SLOT_WAIT, slotAt: slot });
+  f.at(fired + ESCALATE_MS);
+  await f.bridge.tick();
+  f.turns.set("job-1", { ran: true, at: slot + 2_000 });
+  f.at(slot + 30_000);
+  await f.bridge.tick();
+  assert.equal(f.sent.filter(({ session }) => session === OPS).length, 0);
+});
+
 test("a job whose turn ended after it took the fire holds it, so nothing escalates", async () => {
   const f = await fixture();
   f.set([ciAlert()]);
