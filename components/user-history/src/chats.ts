@@ -18,7 +18,7 @@ import { type CheckInMemory, checkInPrecheck, checkInPrecheckText, classCounts, 
 import { jobBrief, resumeBrief, resumedNote, resumeJobName, savedStateNote, sessionBrief, waitText } from "./job-resume.ts";
 import { heldByTodo } from "./checkin-end-state.ts";
 import { PoolHeldJobs, resumeChatJobs } from "./chat-resume.ts";
-import { withFailedTurns, withHeldTurns } from "./held-turns.ts";
+import { readQuotaPark, withFailedTurns, withHeldTurns } from "./held-turns.ts";
 import { withUnstarted } from "./brief-keeper.ts";
 import { planJob } from "./shared/chat-board.ts";
 import { noticeStands } from "./no-report.ts";
@@ -128,6 +128,8 @@ export const JOB_WAKE_WINDOW_MS = 24 * 60 * 60_000;
 export const QUIET_WRITE_MS = 5_000;
 /** A bad job end found later than this after it happened (the first wake after a deploy reads a day of jobs) is left to the check-in. */
 export const JOB_END_NOTE_MAX_AGE_MS = 2 * 60 * 60_000;
+/** The queue lane of a chat's notices (`Chats.tell`): apart from the chat's own lane, since a notice is sent from tasks on that lane. */
+const heldLane = (id: string): string => `notices:${id}`;
 /** A job as the scheduler found it in its chat's row: the chat and its Agents entry. */
 interface ChatJob { chat: string; agent: ChatAgent }
 /** What `gather` read for one check-in measure. */
@@ -551,6 +553,7 @@ export class Chats {
     await this.index.forget(id);
     await this.loads.forget(id);
     await this.source.memory.forget(id);
+    await this.source.heldNotices?.forget(id);
   }
 
   /** The owner's settings, or none when the file cannot be read (logged): every chat then runs at the default interval. */
@@ -605,6 +608,7 @@ export class Chats {
     }
     for (const id of this.reloadWaiting) if (!this.threads.running(id)) this.queue(id, () => this.refreshExtension(id));
     this.queue("#jobs", () => this.jobs(active, woke));
+    if (this.source.heldNotices) this.queue("#held", () => this.releaseHeld());
     if (now - this.deletedSweptAt >= JOB_CLEANUP_EVERY_MS) { this.deletedSweptAt = now; this.queue("#deleted", () => this.sweepDeleted()); }
     return due;
   }
@@ -730,7 +734,7 @@ export class Chats {
       if (this.source.waking && sessionId === undefined) return false;
       if (await this.jobBusy(id, child, sessionId) !== undefined) return false;
       const line = handBackNote(name, child.lastActivityAt ?? this.now());
-      await this.threads.prompt(id, { message: JOB_NOTICE_PREFIX + handBackText(child, steps), images: [], mode: "steer" });
+      await this.tell(id, JOB_NOTICE_PREFIX + handBackText(child, steps));
       await this.source.resumes!.applyBoard(id, steps.map(step => ({ op: "plan_update", id: step.id, job: id,
         note: [line, step.note].filter(Boolean).join("\n") })));
       this.log(`chat ${id.slice(0, 8)}: handed ${steps.map(step => step.id).join(", ")} back to the chat: job ${name} reported with them open`);
@@ -1246,11 +1250,11 @@ export class Chats {
       // A job at work an hour with no report gets one status ask through the chat; the check-in job cannot message the chat's subagents.
       const said = this.stall(id) ? undefined : this.messages(id);
       for (const ask of said ? statusAsks(said, facts, key => this.workingSince.get(key), at) : []) {
-        await this.threads.prompt(id, { message: ask, images: [], mode: "steer" }).catch(error => this.log(`chat ${id.slice(0, 8)}: status ask: ${error instanceof Error ? error.message : String(error)}`));
+        await this.tell(id, ask).catch(error => this.log(`chat ${id.slice(0, 8)}: status ask: ${error instanceof Error ? error.message : String(error)}`));
       }
       // A job whose screens render on 5180 while the owner has no link to them gets one line to the chat (c124, frontend bro 10-19).
       for (const line of said ? owedLinkLines(said, facts, board?.todos ?? []) : []) {
-        await this.threads.prompt(id, { message: line, images: [], mode: "steer" }).catch(error => this.log(`chat ${id.slice(0, 8)}: owed link: ${error instanceof Error ? error.message : String(error)}`));
+        await this.tell(id, line).catch(error => this.log(`chat ${id.slice(0, 8)}: owed link: ${error instanceof Error ? error.message : String(error)}`));
       }
       const flags = flagStreaks(previous?.flags, output.flagged);
       await this.source.memory.set(id, { ...precheck.memory, flags });
@@ -1283,7 +1287,7 @@ export class Chats {
       }
     }
     const line = jobPushLine(pushes, failed);
-    if (line) await this.threads.prompt(chat, { message: CHECK_IN_PREFIX + line, images: [], mode: "steer" })
+    if (line) await this.tell(chat, CHECK_IN_PREFIX + line)
       .catch(error => this.log(`chat ${chat.slice(0, 8)}: check-in job line: ${error instanceof Error ? error.message : String(error)}`));
     return line;
   }
@@ -1323,8 +1327,8 @@ export class Chats {
     } catch (error) {
       // A finished subagent the daemon no longer lists takes no prompt from the server ("blog reader demo" 10-16 08:2xZ), but its chat can message it.
       if ((error as { status?: unknown }).status !== 404 || session === chat) throw error;
-      await this.threads.prompt(chat, { message: `${CHECK_IN_PREFIX}The server cannot reach your job "${name}", so send it this with ` +
-        `agent_message.send(text, receiver_role="child", receiver_name=${JSON.stringify(name)}): ${message}`, images: [], mode: "steer" });
+      await this.tell(chat, `${CHECK_IN_PREFIX}The server cannot reach your job "${name}", so send it this with ` +
+        `agent_message.send(text, receiver_role="child", receiver_name=${JSON.stringify(name)}): ${message}`);
       this.log(`chat ${chat.slice(0, 8)}: check-in job's message for job ${name} went through the chat: ${error instanceof Error ? error.message : String(error)}`);
       return { session: chat, act: "relay" };
     }
@@ -1506,7 +1510,7 @@ export class Chats {
     const line = `${JOB_NOTICE_PREFIX}${noReportNotice(childName(child), lastMessage, wokeAt, end, child.status === "error" ? child.error : undefined)}`;
     if (noticeStands(this.messages(id) ?? [], childName(child), line)) return;
     try {
-      await this.threads.prompt(id, { message: line, images: [], mode: "steer" });
+      await this.tell(id, line);
     } catch (error) { this.log(`chat ${id.slice(0, 8)}: no-report notice: ${error instanceof Error ? error.message : String(error)}`); }
   }
 
@@ -1538,7 +1542,7 @@ export class Chats {
     this.openStepsTold.set(child.id, told);
     try {
       const detail = await this.noticeDetail(id, "open-steps", openStepLines(steps));
-      await this.threads.prompt(id, { message: JOB_NOTICE_PREFIX + openStepsNotice(child, steps, detail), images: [], mode: "steer" });
+      await this.tell(id, JOB_NOTICE_PREFIX + openStepsNotice(child, steps, detail));
       this.log(`chat ${id.slice(0, 8)}: told the chat ${childName(child)} ended with ${steps.map(step => step.id).join(", ")} open`);
     } catch (error) { this.log(`chat ${id.slice(0, 8)}: open-steps notice: ${error instanceof Error ? error.message : String(error)}`); }
   }
@@ -1571,13 +1575,65 @@ export class Chats {
     try {
       if ((await this.source.memory.ends(chat))[key]?.at === end.at) return;
       const name = agent.sender || agent.name;
-      await this.threads.prompt(chat, { message: JOB_NOTICE_PREFIX + jobEndText(name, end), images: [], mode: "steer" });
+      await this.tell(chat, JOB_NOTICE_PREFIX + jobEndText(name, end));
       await this.source.memory.told(chat, key, { at: end.at, cause: end.cause });
       this.log(`chat ${chat.slice(0, 8)}: job ${name} ended (${end.cause}) with no report; told the chat`);
       if (child) this.noticedEnd.set(child.id, { end: child.lastActivityAt ?? end.at });
     } catch (error) {
       this.log(`chat ${chat.slice(0, 8)}: job end note for ${agent.name}: ${error instanceof Error ? error.message : String(error)}`);
     }
+  }
+
+  /**
+   * Sends a server notice to a chat as a steer, or holds it while Prime has the chat parked on a provider wait until a later time
+   * (`readQuotaPark`). A steer to a parked chat starts a turn that fails at once on the same 429, and its messages move the chat's idle clock, so
+   * the idle unload never frees the chat: on 10-20 Crawler VP was parked from 08:35Z to 10:16Z, took 27 notices from 08:57Z to 09:46Z, never
+   * 12 min apart, and kept its 1.05 GB worker throughout. Held notices wait in `heldNotices`, behind any the chat already holds, and the tick
+   * sends them in order once the park ended (`sendHeld`), so they join the resumed turn. The owner's own messages never come here: the owner
+   * outbox sends each at once as an owner turn.
+   */
+  private tell(chat: string, message: string): Promise<void> {
+    const record = this.source.heldNotices;
+    if (!record) return this.threads.prompt(chat, { message, images: [], mode: "steer" });
+    return new Promise((resolve, reject) => this.queue(heldLane(chat), async () => {
+      try {
+        const until = await this.parkedUntil(chat);
+        if (until === null && !(await record.read()).get(chat)?.length) await this.threads.prompt(chat, { message, images: [], mode: "steer" });
+        else {
+          const held = await record.add(chat, message);
+          if (until === null) await this.sendHeld(chat);
+          else this.log(`chat ${chat.slice(0, 8)}: held a notice, Prime parks the chat until ${new Date(until).toISOString()} (${held} held)`);
+        }
+        resolve();
+      } catch (error) { reject(error); }
+    }));
+  }
+
+  /** When Prime resumes the chat it parked on a provider wait, from its session file; null when it is not parked or the file cannot be read. */
+  private async parkedUntil(chat: string): Promise<number | null> {
+    const file = (await this.summary(chat).catch(() => undefined))?.sessionFile;
+    return file ? readQuotaPark(file, this.now()).catch(() => null) : null;
+  }
+
+  /** Sends the notices held for a chat whose park ended, oldest first; each leaves the record once it went, and a failed send waits for the next tick. */
+  private async sendHeld(chat: string): Promise<void> {
+    const record = this.source.heldNotices!;
+    try {
+      const held = (await record.read()).get(chat) ?? [];
+      if (!held.length || await this.parkedUntil(chat) !== null) return;
+      let sent = 0;
+      try { for (const message of held) { await this.threads.prompt(chat, { message, images: [], mode: "steer" }); sent++; } }
+      finally { if (sent) await record.drop(chat, sent); }
+      this.log(`chat ${chat.slice(0, 8)}: the park ended; sent the ${sent} notices held while it was parked`);
+    } catch (error) {
+      this.log(`chat ${chat.slice(0, 8)}: held notices: ${error instanceof Error ? error.message : String(error)}; sent at the next tick`);
+    }
+  }
+
+  /** At each tick: the held notices of every chat whose park ended go now (`sendHeld`). */
+  private async releaseHeld(): Promise<void> {
+    const held = await this.source.heldNotices!.read().catch(error => { this.log(`chats: held notices: ${error instanceof Error ? error.message : String(error)}`); return new Map(); });
+    for (const chat of held.keys()) if (this.chatIds.has(chat)) this.queue(heldLane(chat), () => this.sendHeld(chat));
   }
 
   /** After each attach: steering `all` again (runtime state), and the old daemon check-in heartbeat cleared, since the server tick replaced it. */
@@ -1638,7 +1694,7 @@ export class Chats {
       const scratch = await this.source.cleanRoom?.(id) ?? null;
       const step = correctionStep(id, scratch ?? await this.source.corrections(), messages, this.now(), CHECK_MAX_AGE_MS, scratch === null);
       if (!step || !await record.claim(step.kind === "ask" ? `${id}:ask` : id, step.at)) return;
-      await this.threads.prompt(id, { message: step.message, images: [], mode: "steer" });
+      await this.tell(id, step.message);
       this.log(`chat ${id.slice(0, 8)}: correction ${step.kind === "ask" ? "check sent" : "refine started"}`);
     } catch (error) { this.log(`chat ${id.slice(0, 8)}: correction check: ${error instanceof Error ? error.message : String(error)}`); }
   }
@@ -1663,7 +1719,7 @@ export class Chats {
       if (this.now() - spawn.createdAt > BRIEF_CHECK_MAX_AGE_MS) return;
       const findings = briefCheck(spawn.prompt);
       if (!findings.length || !await record.claim(child.id, spawn.createdAt)) return;
-      await this.threads.prompt(chat, { message: briefCheckNote(childName(child), findings), images: [], mode: "steer" });
+      await this.tell(chat, briefCheckNote(childName(child), findings));
       this.log(`chat ${chat.slice(0, 8)}: brief check for job ${childName(child)}: ${findings.map(finding => finding.kind).join(", ")}`);
     } catch (error) { this.log(`chat ${chat.slice(0, 8)}: brief check: ${error instanceof Error ? error.message : String(error)}`); }
   }

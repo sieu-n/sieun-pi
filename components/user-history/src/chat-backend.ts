@@ -25,7 +25,7 @@ import { relayWatch } from "./hosts.ts";
 import { ARTIFACTS, dryLeftoverSource, hostLeftovers, leftoverSource, sshLeftovers } from "./job-leftovers.ts";
 import { ALERT_TRIAGE_DUTY, chatPoolPriority, dutyJobIds, dutyJobPriority, PoolPriorities } from "./chat-pool-priority.ts";
 import { agentQueue, type AgentQueue, type IdleEviction } from "./chat-agent-queue.ts";
-import { briefCheckRecord, deletedJobRecord, jobRegistry, checkRecord, quietJobRecord } from "./chat-sources.ts";
+import { briefCheckRecord, deletedJobRecord, heldNoticeRecord, jobRegistry, checkRecord, quietJobRecord } from "./chat-sources.ts";
 import { jobResumes } from "./job-resume.ts";
 import { cutJobs, interruptedRuns } from "./chat-resume.ts";
 import { resumesNow, tailLines } from "./cut-end.ts";
@@ -229,6 +229,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     { board: id => boards.read(id), boardView: id => boards.view(id), rows: () => catalog.rows(), memory: checkInRecord(join(dataDir, "check-ins.json")), registry,
       correctionChecks: checkRecord(join(dataDir, "correction-checks.json")),
       briefChecks: briefCheckRecord(join(dataDir, "brief-checks.json")), deletedJobs: deletedJobRecord(join(dataDir, "deleted-jobs.json")), quietJobs: quietJobRecord(join(dataDir, "quiet-jobs.json")),
+      heldNotices: heldNoticeRecord(join(dataDir, "held-notices.json")),
       leftovers: (dir, session) => jobEnds.leftovers(dir, session),
       deletedLeftovers: chat => jobEnds.deleted(chat),
       waking: session => waking(join(dataDir, "wakes"), session), wakes: now => pendingWakes(join(dataDir, "wakes"), now),

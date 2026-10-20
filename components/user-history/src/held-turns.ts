@@ -2,6 +2,7 @@ import { open, readdir, readFile, rename, stat, writeFile } from "node:fs/promis
 import { join } from "node:path";
 import type { JobFact } from "./checkin-steps.ts";
 import { JOB_CLEANUP_EVERY_MS } from "./chat-checkin.ts";
+import { CUT_CONFIRM_BYTES, CUT_TAIL_BYTES, tailLines } from "./cut-end.ts";
 import type { InterruptedRun } from "./shared/interrupted.ts";
 
 /**
@@ -163,4 +164,37 @@ export function turnSince(text: string, since: number): TurnSince {
 /** `turnSince` over the transcript at `file`; a missing file has no turn. */
 export async function readTurnSince(file: string, since: number): Promise<TurnSince> {
   return turnSince(await readFile(file, "utf8").catch(() => ""), since);
+}
+
+const QUOTA_PARK = '"customType":"provider_quota_park"';
+const QUOTA_RESUME = '"customType":"provider_quota_resume"';
+
+/**
+ * When Prime resumes a session it parked on a provider wait, from its transcript lines: the resumeAt of the last provider_quota_park entry
+ * when that is after `now` and no provider_quota_resume entry follows it (agent-session.ts `_parkForQuotaReset`, `_completeQuotaParkResume`).
+ * Null when the session is not parked; undefined when the lines hold neither entry.
+ */
+export function quotaParkEnd(lines: readonly string[], now: number): number | null | undefined {
+  for (let index = lines.length - 1; index >= 0; index--) {
+    const line = lines[index]!;
+    if (line.includes(QUOTA_RESUME)) return null;
+    if (!line.includes(QUOTA_PARK)) continue;
+    let entry: { data?: { resumeAt?: unknown } };
+    try { entry = JSON.parse(line); } catch { continue; }
+    const at = typeof entry.data?.resumeAt === "string" ? Date.parse(entry.data.resumeAt) : NaN;
+    return at > now ? at : null;
+  }
+  return undefined;
+}
+
+/**
+ * `quotaParkEnd` of a session file, from the tails `readCut` reads (CUT_TAIL_BYTES up to CUT_CONFIRM_BYTES) until one holds a park or resume
+ * entry. A parked session writes little after its park, since the chat service holds its notices (`Chats.tell`). Null when the file is gone.
+ */
+export async function readQuotaPark(file: string, now: number): Promise<number | null> {
+  for (const bytes of [CUT_TAIL_BYTES, 1_000_000, CUT_CONFIRM_BYTES]) {
+    const end = quotaParkEnd(await tailLines(file, bytes), now);
+    if (end !== undefined) return end;
+  }
+  return null;
 }

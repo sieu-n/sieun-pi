@@ -192,6 +192,29 @@ export function quietJobRecord(path: string): QuietJobRecord {
   };
 }
 
+/** The server notices held for chats Prime parked on a provider wait (`Chats.tell`), oldest first. */
+export interface HeldNoticeRecord {
+  read(): Promise<ReadonlyMap<string, readonly string[]>>;
+  /** Holds one more notice for the chat, behind the ones it holds; answers how many it holds now. */
+  add(chat: string, message: string): Promise<number>;
+  /** Drops the chat's oldest `count` notices, once they went. */
+  drop(chat: string, count: number): Promise<void>;
+  forget(chat: string): Promise<void>;
+}
+
+/** `<data dir>/held-notices.json`: `{ [chat id]: [notice, ...] }`, oldest first, written whole by rename. */
+export function heldNoticeRecord(path: string): HeldNoticeRecord {
+  const file: JsonFile<Record<string, string[]>> = { path, label: "Held notice record", initial: () => ({}), parse: value => typeof value === "object" && value !== null
+    ? Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string[]] => Array.isArray(entry[1]) && entry[1].every(item => typeof item === "string"))) : {} };
+  const keep = (state: Record<string, string[]>, chat: string, left: string[]) => { if (left.length) state[chat] = left; else delete state[chat]; };
+  return {
+    async read() { return new Map(Object.entries(await snapshotJsonFile(file))); },
+    async add(chat, message) { return (await transactJsonFile(file, state => { keep(state, chat, [...state[chat] ?? [], message]); return state[chat]!.length; })).result; },
+    async drop(chat, count) { await transactJsonFile(file, state => keep(state, chat, (state[chat] ?? []).slice(count))); },
+    async forget(chat) { await transactJsonFile(file, state => keep(state, chat, [])); },
+  };
+}
+
 /** A job spawned longer ago than this when the server first sees it gets no `[brief check]`, so a restart does not check every old job. */
 export const BRIEF_CHECK_MAX_AGE_MS = 30 * 60_000;
 
@@ -304,6 +327,8 @@ export interface CheckInSource {
   deletedJobs?: DeletedJobRecord;
   /** The jobs the failed-turn check found fine (`<data dir>/quiet-jobs.json`). Absent (tests): each serve looks at every job once. */
   quietJobs?: QuietJobRecord;
+  /** The notices held for parked chats (`<data dir>/held-notices.json`, `Chats.tell`). Absent: every notice goes at once. */
+  heldNotices?: HeldNoticeRecord;
   /**
    * Stops what a gone job left (src/job-leftovers.ts `endLeftovers`): the processes its sessions' kernels started detached and the Aside tabs
    * they opened, under its session folder `dir`, the repo copies in the wiki session folders it opened, and the /tmp trees it made with the
