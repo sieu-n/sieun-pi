@@ -117,3 +117,15 @@ test("on a turn the owner did not start, a message naming an open todo the chat 
   assert.equal(tellOwner(again, { ...asked, owner: true }).kind, "sent", "his own turn is never held");
   assert.deepEqual([...askedTodos([{ id: "t4", done: true, at: "2026-10-19T06:00:00Z" }], turn.startedAt)], [], "an answered todo is no longer waiting");
 });
+
+test("a Prime quota resume or restart note starts no owner turn, so the chat's plain answer to it is notes, and an owner turn it interrupts stays his", () => {
+  // 10-20 04:38Z to 05:43Z: vent, api portal, AI harness, CI and RepoOps and Crawler VP answered <provider_quota_resumed> as if the owner wrote.
+  const resume = owner("<provider_quota_resumed>\nThe provider usage limit that paused this session has been reported as reset.", "07:00:00");
+  const lines = chatLines([...settled, resume, said("I resumed and restarted the jobs.", "07:00:30")]);
+  assert.ok(!lines.some(line => line.kind === "agent" && line.text.includes("I resumed")), "the plain answer is not a bubble");
+  assert.ok(!lines.some(line => line.kind === "user" && line.text.includes("provider_quota_resumed")), "the note is not his message");
+  assert.equal(tellTurn([...settled, resume]).owner, false);
+  const cut = { role: "assistant", content: [{ type: "toolCall", id: "c9", name: "ipython", arguments: {} }], stopReason: "toolUse", timestamp: at("06:50:10") } as unknown as ThreadMessage;
+  assert.equal(tellTurn([...settled, owner("is it live?", "06:50:00"), cut, resume]).owner, true, "a quota pause inside his turn keeps it his");
+  assert.equal(tellTurn([owner("Prime Agent restarted after an update. Continue the interrupted task.", "07:10:00")]).owner, false);
+});
