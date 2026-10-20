@@ -375,8 +375,6 @@ async function serve(options: Options): Promise<void> {
   const replay = scratch && options.replayDaemon === true;
   const readOnly = scratch ? await (await import("./read-only-daemon.ts")).readOnlyDaemon(service.config.socketPath, line => process.stderr.write(`${new Date().toISOString()} ${line}\n`), { replay }) : null;
   await recordServe(service);
-  // While <data dir>/stall-profiles exists the service saves a CPU profile of each 20 s window its event loop stalled over 1 s in.
-  const stallProfiles = (await import("./stall-profiles.ts")).startStallProfiles({ dataDir: service.directory, log: line => process.stderr.write(`${new Date().toISOString()} ${line}\n`) });
   const identity = { pid: process.pid, instanceId: randomUUID(), socketPath: service.config.socketPath };
   // The port answers page shells from disk while the rest loads (src/early-shell.ts): a shell during a restart waited 12.1 s at 12:42Z on 10-18.
   // On systemd's socket chat-service-cli.mjs starts it before this module loads; a serve that binds its own port starts it here.
@@ -442,7 +440,6 @@ async function serve(options: Options): Promise<void> {
         const timed = async (name: string, part: () => Promise<unknown> | unknown) => { const at = Date.now(); await part(); parts.push(`${name} ${Date.now() - at} ms`); };
         await timed("sends", () => backend.drainSends?.().catch(error => process.stderr.write(`drain sends: ${error instanceof Error ? error.message : String(error)}\n`)));
         stopPromptPrune(); keeper?.close(); remote.stop(); slack?.close();
-        await timed("stall profiles", () => stallProfiles.stop());
         await timed("bridges", () => hosts?.bridge?.close());
         await timed("server", () => server.close());
         await timed("read-only", () => readOnly?.close());
