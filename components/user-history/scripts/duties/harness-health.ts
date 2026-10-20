@@ -8,7 +8,7 @@ import { loadSkillsFromDir } from "prime-agent";
 import { CorrectionLedger, repeatsBetween, type ChatHistory } from "../../src/chat-corrections.ts";
 import { chatHistory, fileChatHistory } from "../../src/owner-history.ts";
 import { readAppended } from "./read-appended.ts";
-import { firstFixLanded, fixRepos, gitCommitTime, sideLabel, splitMetrics, splitRepeats } from "./repeat-split.ts";
+import { firstFixLanded, fixRepos, gitCommitTime, sideLabel, splitLastEvents, splitMetrics, splitRepeats } from "./repeat-split.ts";
 import { grafanaPrometheus } from "../../src/usage/lgtm.ts";
 import { measureCache, NO_DATA, WINDOWS, type CacheMetric } from "./cache-ratio.ts";
 import { SMOKE_SESSION, smokeSkills, type SmokeEnv } from "./skill-smoke.ts";
@@ -245,6 +245,7 @@ export async function measureHarness(deps: HarnessDeps): Promise<PrecheckOutput 
   return {
     metrics: { skills_to_prune: skillsToPrune, skill_smoke_failures: failures.length, unread_14d: unread.length, overlapping_pairs: pairs.length, ...cache.metrics,
       repeat_corrections_7d: repeats.length, ...splitMetrics(repeats) },
+    lastEventAt: splitLastEvents(repeats, deps.now),
     flagged: [...cache.flagged, ...flagged.slice(0, 40)],
     skills,
     smoke,

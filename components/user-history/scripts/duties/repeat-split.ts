@@ -63,6 +63,25 @@ export function splitMetrics(split: readonly SplitRepeat[]): Record<`repeats_${R
   return { repeats_before_fix_7d: count("before_fix"), repeats_after_fix_7d: count("after_fix"), repeats_no_fix_7d: count("no_fix") };
 }
 
+/**
+ * `lastEventAt` for repeat_corrections_7d and its split: the time of the newest change to a counted line's state. A before_fix line changed last
+ * when its fix landed (`fixed`), so a headline of only such lines reads quiet once a run has passed since the newest fix and starts no job, while
+ * its lines age out of the 7 days. On 10-20 d10 missed 8 runs in a row on 21 before_fix lines and two fix jobs (p770, p793) could not move it.
+ * An after_fix or no_fix line is open: the owner said it again after any fix, and it needs work until a new fix lands and turns it before_fix.
+ * Its `said` would read quiet a run later with the work still undone, so an open line dates its count `now` and keeps it live. An empty count
+ * has no event and no `lastEventAt`.
+ */
+export function splitLastEvents(split: readonly SplitRepeat[], now: number): Partial<Record<"repeat_corrections_7d" | `repeats_${RepeatSide}_7d`, number>> {
+  const fixes = split.filter(repeat => repeat.side === "before_fix").map(repeat => repeat.fixed!);
+  const open = split.some(repeat => repeat.side !== "before_fix");
+  const events: Partial<Record<"repeat_corrections_7d" | `repeats_${RepeatSide}_7d`, number>> = {};
+  if (fixes.length) events.repeats_before_fix_7d = Math.max(...fixes);
+  for (const side of ["after_fix", "no_fix"] as const) if (split.some(repeat => repeat.side === side)) events[`repeats_${side}_7d`] = now;
+  if (open) events.repeat_corrections_7d = now;
+  else if (fixes.length) events.repeat_corrections_7d = Math.max(...fixes);
+  return events;
+}
+
 /** The line's lead in the flagged excerpt, such as "after fix of 10-19 07:16Z". */
 export function sideLabel(repeat: SplitRepeat): string {
   const fixed = repeat.fixed === undefined ? "" : ` of ${new Date(repeat.fixed).toISOString().slice(5, 16).replace("T", " ")}Z`;
