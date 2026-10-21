@@ -309,10 +309,10 @@ export function readServiceLog(lines: readonly string[]): LogFacts {
  */
 export interface PoolHold { session: string; from: number; to: number; room: readonly string[]; cell: boolean }
 /**
- * pi-pool.log on us-metal02 grew 2.6 MB from 21:34Z on 10-17 to 16:38Z on 10-18, about 140 KB an hour, so this tail holds about 14 h, past the
- * window and the longest backoff draw (2 h).
+ * pi-pool.log on us-metal02 grew 24.2 MB from 00:00Z to 19:20Z on 10-21, about 1.25 MB an hour, so this tail holds about 6.4 h, past the window
+ * and a wait for a 5h window's reset.
  */
-const POOL_LOG_TAIL_BYTES = 2_000_000;
+const POOL_LOG_TAIL_BYTES = 8_000_000;
 const POOL_LOG = join(process.env.PI_POOL_DIR || join(homedir(), ".config", "pi-pool"), "pi-pool.log");
 
 /**
@@ -336,7 +336,8 @@ export function readPoolLog(lines: readonly string[], now: number): PoolHold[] {
     // A refusal holds the tree until the slot it names; a tree that asks no more after its slot passed is no longer held by the pool. At 17:24Z
     // on 10-18 four trees given a cell under 2 min ahead asked no more, and the first reader held them open up to the run.
     const until = typeof entry.slot_at === "number" ? Math.max(at, entry.slot_at * 1000) : at;
-    const cell = entry.backoff === false;
+    // pi-pool dropped the random backoff draw on 10-21 and writes no backoff field since; a line without one waited for a cell.
+    const cell = entry.backoff !== true;
     if (room.length) {
       if (hold) { hold.to = Math.max(hold.to, until); hold.cell &&= cell; continue; }
       const fresh = { session: entry.session, from: at, to: until, room, cell };
@@ -350,6 +351,61 @@ export function readPoolLog(lines: readonly string[], now: number): PoolHold[] {
   for (const hold of holds) hold.to = Math.min(hold.to, now);
   return holds;
 }
+
+/** The owner's t86 answer on 10-21: "just make it work smooth". Chat head runs and parked trees, from pi-pool.log, for d7's two smoothness numbers. */
+export interface Smoothness {
+  /** waited_s of each chat head run pi-pool admitted in the window. */
+  headWaits: number[];
+  /** Per park that ended in the window: minutes it stayed parked after a tree of its priority or lower that parked later got an account. */
+  overtaken: { session: string; minutes: number }[];
+}
+const RANK: Readonly<Record<string, number>> = { high: 0, normal: 1, low: 2 };
+const KST_MS = 9 * 60 * MINUTE;
+
+/**
+ * pi-pool stamps `ts` in its writer's local time, and on 10-21 about 45,000 of the lines since 10-19 were KST. `at` on parked and unparked lines is
+ * epoch seconds, so each other line takes whichever of its `ts` read as UTC or as KST lies nearer the last `at` before it.
+ */
+export function readSmoothness(lines: readonly string[], heads: ReadonlySet<string>, from: number, to: number): Smoothness {
+  const headWaits: number[] = [];
+  const parks = new Map<string, { start: number; rank: number }>();
+  const ended: { session: string; start: number; end: number; rank: number }[] = [];
+  let anchor: number | undefined;
+  for (const line of lines) {
+    if (!line.includes('"turn_admitted"') && !line.includes('"parked"') && !line.includes('"unparked"')) continue;
+    let entry: { ts?: unknown; event?: unknown; session?: unknown; at?: unknown; waited_s?: unknown; priority?: unknown; provider?: unknown };
+    try { entry = JSON.parse(line) as typeof entry; } catch { continue; }
+    if (typeof entry.session !== "string") continue;
+    if (entry.event === "turn_admitted") {
+      const local = typeof entry.ts === "string" ? Date.parse(`${entry.ts}Z`) : NaN;
+      const at = anchor === undefined || Math.abs(local - anchor) <= Math.abs(local - KST_MS - anchor) ? local : local - KST_MS;
+      if (heads.has(entry.session) && typeof entry.waited_s === "number" && at >= from && at < to) headWaits.push(entry.waited_s);
+      continue;
+    }
+    if (typeof entry.at !== "number" || entry.provider !== "anthropic") continue;
+    const at = entry.at * 1000;
+    anchor = at;
+    if (entry.event === "parked") {
+      const park = parks.get(entry.session) ?? { start: at, rank: 1 };
+      park.rank = RANK[String(entry.priority)] ?? 1;
+      parks.set(entry.session, park);
+    } else if (entry.event === "unparked") {
+      const park = parks.get(entry.session);
+      parks.delete(entry.session);
+      if (park) ended.push({ session: entry.session, start: park.start, end: at, rank: park.rank });
+    }
+  }
+  const overtaken = ended.filter(park => park.end >= from && park.end < to).map(park => {
+    const passed = ended.find(other => other.end < park.end && other.end > park.start && other.start > park.start && other.rank >= park.rank);
+    return { session: park.session, minutes: passed ? Math.round((park.end - passed.end) / MINUTE * 10) / 10 : 0 };
+  });
+  return { headWaits, overtaken };
+}
+
+const p90 = (values: readonly number[]): number => {
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted.length ? sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * 0.9) - 1)]! : 0;
+};
 
 /**
  * The tree of a turn queued QUEUED_WAIT_S or longer that pi-pool was allowed to admit and did not, by its own rule (`admit_pass` in
@@ -540,6 +596,8 @@ export interface Inputs {
   log: LogFacts;
   /** Trees pi-pool refused while an account took their class (`readPoolLog`). */
   pool?: readonly PoolHold[];
+  /** Chat head queue waits and parks overtaken by later trees in the window (`readSmoothness`); absent, neither number is written. */
+  smooth?: Smoothness;
   /** Every chat's duty runs, newest first, with its active duty ids (the check-in included unless paused), and whether its check-in is paused. */
   chats: readonly { id: string; name: string; duties: readonly { id: string; name: string }[]; runs: readonly DutyRunRecord[]; everyMs?: number; paused?: boolean }[];
   /** Jobs in live chats whose last turn was cut and that got no input since (`cutEnd`). */
@@ -880,7 +938,14 @@ export function measure(input: Inputs): PrecheckOutput {
     ...hung ? { hung_calls: hung.calls.length } : {},
     ...latest?.services ? { handed_off_services: latest.services.count, handed_off_live: latest.services.live } : {},
     handoffs_stuck: stuckHandoffs.length,
+    ...input.smooth ? { head_queue_wait_p90_s: p90(input.smooth.headWaits), parked_overtaken_min_p90: p90(input.smooth.overtaken.map(park => park.minutes)) } : {},
   };
+  if (input.smooth) {
+    const late = input.smooth.overtaken.filter(park => park.minutes > 0).sort((a, b) => b.minutes - a.minutes);
+    flagged.push({ kind: "smoothness", excerpt: `${input.smooth.headWaits.length} chat head runs started in the window, the slowest after ${Math.max(0, ...input.smooth.headWaits)} s in pi-pool's turn queue. ` +
+      `${input.smooth.overtaken.length} parked trees got an account, and ${late.length} of them stayed parked after a tree of their priority or lower that parked later got one` +
+      (late.length ? `: ${late.slice(0, 5).map(park => `${park.session.slice(0, 8)} ${park.minutes} min`).join(", ")}.` : ".") });
+  }
   for (const [name, reading] of worstByHost) {
     const key = name.replace(/[^A-Za-z0-9]+/g, "_");
     metrics[`quiet_agent_gb_${key}`] = reading.gb;
@@ -1266,11 +1331,13 @@ async function main(): Promise<void> {
   const listed = listedSessions(await catalogCopies(dataDir), [...allFaults.flatMap(fault => fault.session ? [fault.session.slice(0, 8)] : []), ...queueOverruns.map(entry => entry.session)]);
   const marks = await readSessionMarks(deliveryCandidates(allFaults), short => listed.get(short)?.file, box, now);
   const { faults: daemonFaults, slotWaits } = splitSlotWaits(allFaults, outboxLandings(serviceLines), fault => marks.get(fault.session!.slice(0, 8)));
+  const poolLines = await tailLines(POOL_LOG, POOL_LOG_TAIL_BYTES);
   const result = measure({
     ...plan,
     watch, day, quietMs,
     log: readServiceLog(serviceLines),
-    pool: readPoolLog(await tailLines(POOL_LOG, POOL_LOG_TAIL_BYTES), now),
+    pool: readPoolLog(poolLines, now),
+    smooth: readSmoothness(poolLines, new Set(live), now - WINDOW_MS, now),
     daemonFaults,
     workerMisses: workerPolls,
     queueOverruns,
