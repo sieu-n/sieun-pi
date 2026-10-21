@@ -568,9 +568,20 @@ export class ThreadHub {
    * `reload` for a job, attached or not, through the daemon: only when the daemon shows its session doing nothing (`isSessionActive` is false:
    * no turn, retry, compaction, queued action or background work in its Python kernel, which the reload's kernel rebuild would drop).
    */
+  /**
+   * A worker that is stopping or starting is waited out (src/worker-move.ts `afterMove`) and the reload asked once more. On 10-21 at 13:21Z the
+   * reload of job 01a15c11 (alert bridge clean day), resumed by its check-in at 13:20:41Z, met "Session worker is stopping" and failed, a dirty d7
+   * minute. A session the stop took with it is no longer resident, so after the wait it reads "saved" and nothing is left to reload.
+   */
   async reloadIdle(id: string): Promise<"reloaded" | "busy" | "saved"> {
     const activeSessionId = reloadTarget(await this.summary(id), this.threads.get(id)?.live?.activeSessionId);
     if (activeSessionId === undefined) return "saved";
+    let moved = false;
+    return await afterMove(() => this.reloadOnce(id, activeSessionId), () => this.stateOf(activeSessionId), () => { moved = true; })
+      .catch(error => { if (moved && isReopenable(error)) return "saved" as const; throw error; });
+  }
+
+  private async reloadOnce(id: string, activeSessionId: string): Promise<"reloaded" | "busy"> {
     if (await this.daemonBusy(activeSessionId)) return "busy";
     const response = await this.startWorker(`reload ${id.slice(0, 8)}`, this.catalog.hostOf(activeSessionId), client => client.request({ type: "reload", activeSessionId }, DAEMON_WORKER_START_MS, { recoverable: false }),
       async () => await this.daemonBusy(activeSessionId) ? "its session is busy now" : null, undefined, id);
@@ -587,8 +598,9 @@ export class ThreadHub {
     return activeSessionId !== undefined && await this.daemonBusy(activeSessionId);
   }
 
-  private async stateOf(activeSessionId: string): Promise<StateAnswer> {
-    return (await this.daemon(activeSessionId)).request({ type: "get_state", activeSessionId }, undefined, { recoverable: false });
+  /** `via` is the id the catalog knows the box by (`daemon`), the session id when the active id is not listed yet. */
+  private async stateOf(activeSessionId: string, via = activeSessionId): Promise<StateAnswer> {
+    return (await this.daemon(via)).request({ type: "get_state", activeSessionId }, undefined, { recoverable: false });
   }
 
   private async daemonBusy(activeSessionId: string): Promise<boolean> {
@@ -1520,11 +1532,15 @@ export class ThreadHub {
     const fields = promptFields(id, input, remote);
     // `sending` marks the outbox entry as maybe delivered from here on (src/outbox.ts): a failure after it is looked for before a resend.
     await input.sending?.();
-    try { await ask(activeSessionId, "prompt", fields); } catch (error) {
+    // The daemon refuses a prompt to a worker that is stopping or starting before it takes it, so the send waits the move out and goes once more
+    // (src/worker-move.ts `afterMove`). On 10-21 at 11:21Z, during the restore after a Prime update, the check-in restart of chat 01a14d31
+    // (metal-management) failed with "Session worker is starting", a dirty d7 minute.
+    const send = (target: string) => afterMove(() => ask(target, "prompt", fields), () => this.stateOf(target, id));
+    try { await send(activeSessionId); } catch (error) {
       if (activeSessionId !== listed || held || !isReopenable(error)) throw error;
       activeSessionId = (await resumed).live!.activeSessionId;
       await input.sending?.();
-      await ask(activeSessionId, "prompt", fields);
+      await send(activeSessionId);
     }
     const thread = this.threads.get(id);
     if (thread?.live) void this.refreshQueue(thread).catch(() => {});
