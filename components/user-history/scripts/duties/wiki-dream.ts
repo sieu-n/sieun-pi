@@ -456,9 +456,9 @@ export async function measureDream(deps: DreamDeps, lastRuns: readonly DutyRunRe
     slices.push({ kind: page.session ? "unlanded_session" : "unlanded", item: page.path, at: page.lastAt,
       excerpt: clip(`the wiki host batch left it out of git in ${page.runs} runs from ${iso(page.firstAt)} to ${iso(page.lastAt)}: ${page.reason}`, 400) });
   }
-  const back = new Set((classes?.back ?? []).map(([slug]) => slug));
-  for (const [slug, row] of classes?.recurred ?? []) {
-    const when = back.has(slug) ? "after its current fix" : `before its current fix (${row.fixedAt})`;
+  // Only a class back after its current fix is work: one that came back before it already has that fix, and recurred_7d counts it.
+  for (const [slug, row] of classes?.back ?? []) {
+    const when = row.fixedAt ? `after its current fix (${row.fixedAt})` : "with no fix date";
     slices.push({ kind: "recurred", item: slug, excerpt: clip(`${row.title ?? slug} came back on ${(row.recurred ?? []).slice(-1)[0]}, ${when} ${row.fixCommit ?? "?"}; skill ${row.skill ?? "?"}`) });
   }
   for (const commit of dream.reverts) slices.push({ kind: "revert", item: `${commit.repo}:${commit.sha.slice(0, 10)}`, excerpt: clip(commit.subject) });
