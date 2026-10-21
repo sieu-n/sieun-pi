@@ -269,7 +269,11 @@ export function tellTurn(messages: readonly ThreadMessage[]): TellTurn {
   const byOwner = turnStarter(messages.filter(message => !(message.role === "user" && revival(messageText(message).trim())))) === "owner";
   const last = messages.at(-1);
   const tells = last?.role === "assistant" ? last.content.filter(part => part.type === "toolCall" && part.name === TELL_OWNER_TOOL).length : 0;
-  const startedAt = before.findLast(message => message.role === "user" || message.role === "custom")?.timestamp;
+  // The turn starts at the first wake after the last settled step: a message steered in mid-turn is no new turn, since on 10-21 at 09:47:43Z a
+  // job's message arrived 1 s after mac-management added t8, and t8 read as added in an earlier turn, so its question was refused once.
+  const settledAt = before.findLastIndex(message => message.role === "assistant" && (message as { stopReason?: string }).stopReason !== "toolUse");
+  const startedAt = before.slice(settledAt + 1).find(message => message.role === "user" || message.role === "custom")?.timestamp
+    ?? before.findLast(message => message.role === "user" || message.role === "custom")?.timestamp;
   return { owner: unanswered || byOwner, ownerIds, byOwner, tells, ownerText, resent, done, looked, ...(typeof startedAt === "number" ? { startedAt } : {}) };
 }
 

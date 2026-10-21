@@ -116,6 +116,11 @@ test("on a turn the owner did not start, a message naming an open todo the chat 
   assert.equal(tellOwner(again, { ...asked, resent: new Set([again.text]) }).kind, "sent", "the very same text again goes out");
   assert.equal(tellOwner(again, { ...asked, owner: true }).kind, "sent", "his own turn is never held");
   assert.deepEqual([...askedTodos([{ id: "t4", done: true, at: "2026-10-19T06:00:00Z" }], turn.startedAt)], [], "an answered todo is no longer waiting");
+  // 10-21 09:47Z: mac-management added t8 at 09:47:42Z, a job's message was steered in at 09:47:43Z, and the question for t8 was refused once.
+  const adding = { role: "assistant", content: [{ type: "toolCall", id: "b1", name: "chat_board", arguments: {} }], stopReason: "toolUse", timestamp: at("07:00:05") } as unknown as ThreadMessage;
+  const steered = tellTurn([...settled, job("slots swing 60 to 89%", "07:00:00"), adding, result("b1", "Added a todo t8", "07:00:06"), job("prod checks started", "07:00:07")]);
+  assert.equal(steered.startedAt, at("07:00:00"), "a message steered in mid-turn starts no new turn");
+  assert.deepEqual([...askedTodos([{ id: "t8", done: false, at: "2026-10-19T07:00:06Z", from: "agent" }], steered.startedAt)], [], "a todo added in this turn goes with its question");
 });
 
 test("a Prime quota resume or restart note starts no owner turn, so the chat's plain answer to it is notes, and an owner turn it interrupts stays his", () => {
