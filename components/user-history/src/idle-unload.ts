@@ -62,8 +62,55 @@ function quiet(row: SessionSummary, input: { attached: ReadonlySet<string>; pool
  * 0.20 to 0.40 GB PSS and a kernel, SEO guy 562 min after its last activity (~/scratch/idle-ram/sessions-0603.json).
  */
 function retrying(row: SessionSummary, input: { attached: ReadonlySet<string>; pool: ReadonlySet<string>; chats?: ReadonlySet<string>; handoff?: (row: SessionSummary) => boolean }): boolean {
-  const own = input.chats?.has(row.sessionId) ? row.attachedClients <= (input.attached.has(row.sessionId) ? 1 : 0) : unheld(row, input.attached);
-  return calm(row, input.pool, input.handoff?.(row)) && row.activity === "working" && own;
+  return calm(row, input.pool, input.handoff?.(row)) && row.activity === "working" && own(row, input);
+}
+
+/** No client holds the session but, for a chat, the service's own attach, which the stop lets go of first (`UnloadSource.release`). */
+function own(row: SessionSummary, input: { attached: ReadonlySet<string>; chats?: ReadonlySet<string> }): boolean {
+  return input.chats?.has(row.sessionId) ? row.attachedClients <= (input.attached.has(row.sessionId) ? 1 : 0) : unheld(row, input.attached);
+}
+
+/**
+ * Prime's quota park (agent-session.ts `_parkForQuotaReset`, `retry.provider.waitForUsage.pauseUntilReset`, and since dhx.3 a provider wait
+ * that outlasts idleEvictionMinutes) ends the failed turn, writes a `provider_quota_park` entry with `resumeAt`, and leaves a durable
+ * `quota-resume` job that the daemon's scheduled wake loads the session for at that time. The session then reads idle, yet it held its worker
+ * and kernel until the unload's usual wait: ENDED_MS for a job the daemon judged, idleEvictionMinutes for a chat until the hub let it go. From
+ * 23:58Z on 10-20 to 00:41Z on 10-21 on us-metal02 no session worked while 86 quota-resume wakes fired; each probe met the same 429 within a
+ * second and parked again, and the woken workers lived a median 157 s and up to 1058 s, about 8 of them resident at any time, while d7 read
+ * 7.18 GB of Agent sessions. 199 of the 290 idle stops in that stretch were of a session parked this way. The AI harness VP chat woke at
+ * 00:21:29Z, parked until 02:03:20Z at 00:21:30Z, and kept its worker until the unload stopped it at 00:37:42Z.
+ */
+export const QUOTA_PARK = "provider_quota_park";
+export const QUOTA_RESUME = "provider_quota_resume";
+
+/**
+ * When a session's transcript tail says it sits in a quota park: its newest turn ended on a failed reply (`lastTurnError`), and its newest
+ * park entry comes after any resume entry and names a `resumeAt` still ahead of `now`, so the daemon's durable wake restores it then. Null
+ * otherwise, such as a park whose time passed or a session that took input or worked since.
+ */
+export function quotaParkedUntil(tail: string, now: number): number | null {
+  if (lastTurnError(tail) === undefined) return null;
+  const lines = tail.split("\n");
+  for (let index = lines.length - 1; index >= 0; index--) {
+    let line: { type?: unknown; customType?: unknown; data?: { resumeAt?: unknown } };
+    try { line = JSON.parse(lines[index]!); } catch { continue; }
+    if (line.type !== "custom") continue;
+    if (line.customType === QUOTA_RESUME) return null;
+    if (line.customType !== QUOTA_PARK) continue;
+    const at = typeof line.data?.resumeAt === "string" ? Date.parse(line.data.resumeAt) : NaN;
+    return Number.isFinite(at) && at > now ? at : null;
+  }
+  return null;
+}
+
+/**
+ * The rows that may sit in a quota park (`quotaParkedUntil`), for the caller to check against their transcripts: nothing runs, waits or is
+ * scheduled in the session but the park's own wake, nothing below it is at work, and no client holds it but a chat's service attach.
+ */
+export function parkCandidates(rows: readonly SessionSummary[], input: PlanInput): SessionSummary[] {
+  if (input.idleMs === null) return [];
+  const busy = busyAncestors(rows);
+  return rows.filter(row => still(row, input.pool, input.handoff?.(row)) && own(row, input) && !busy.has(row.sessionId));
 }
 
 /**
@@ -100,7 +147,9 @@ export interface PlanInput { attached: ReadonlySet<string>; pool: ReadonlySet<st
    * Sessions asleep in Prime's provider retry whose tree pi-pool holds past the unload's minutes, with when the hold ends (`poolHoldsPast`);
    * null for a chat whose tree the pool names no time for.
    */
-  held?: ReadonlyMap<string, number | null> }
+  held?: ReadonlyMap<string, number | null>;
+  /** Of `parkCandidates`, the sessions whose transcript shows a quota park (`quotaParkedUntil`), with its resume time; they stop at once. */
+  parked?: ReadonlyMap<string, number> }
 
 /**
  * The rows that may be asleep in Prime's provider retry (`retrying`), quiet ENDED_MS since their last failed attempt with nothing at work below
@@ -114,8 +163,9 @@ export function retryCandidates(rows: readonly SessionSummary[], input: PlanInpu
 
 /**
  * The rows the daemon lists that `unload` may stop (after ENDED_MS for a session that ended its task): a top-level session (a job, or a chat that is not in `attached`, the chats the service still
- * holds attached), or a subagent, idle for `idleMs` with nothing running, attached, queued or scheduled in it or below it, and each candidate
- * asleep in its provider retry that `held` names. `idleMs` null (idle eviction off) stops none.
+ * holds attached), or a subagent, idle for `idleMs` with nothing running, attached, queued or scheduled in it or below it, each candidate
+ * asleep in its provider retry that `held` names, and at once each session in a quota park that `parked` names, a chat included, since the
+ * park's durable wake loads it again. `idleMs` null (idle eviction off) stops none.
  */
 export function unloadPlan(rows: readonly SessionSummary[], input: PlanInput): SessionSummary[] {
   const { idleMs } = input;
@@ -126,7 +176,9 @@ export function unloadPlan(rows: readonly SessionSummary[], input: PlanInput): S
   const wait = (row: SessionSummary): number => ended(row) ? Math.min(idleMs, ENDED_MS) : idleMs;
   const idle = rows.filter(row => quiet(row, input) && !busy.has(row.sessionId) && input.now - Date.parse(row.lastActivityAt ?? "") >= wait(row));
   const held = input.held ? retryCandidates(rows, input).filter(row => input.held!.has(row.sessionId)) : [];
-  return [...idle, ...held];
+  const parked = input.parked ? parkCandidates(rows, input).filter(row => input.parked!.has(row.sessionId)) : [];
+  const planned = new Map([...idle, ...held, ...parked].map(row => [row.sessionId, row] as const));
+  return [...planned.values()];
 }
 
 /**
@@ -284,6 +336,8 @@ export interface UnloadSource {
    * (`poolHoldsPast`, which judges the `chats` apart), with when the hold ends.
    */
   held(rows: readonly SessionSummary[], now: number, idleMs: number, chats: ReadonlySet<string>): Promise<ReadonlyMap<string, number | null>>;
+  /** Of `rows` (`parkCandidates`), the ones whose transcript shows a quota park (`quotaParkedUntil`), with its resume time. Absent, none. */
+  parked?(rows: readonly SessionSummary[], now: number): Promise<ReadonlyMap<string, number>>;
   /**
    * Lets go of the service's own attach on a chat asleep in its provider retry, right before its kill, and keeps it detached until the owner,
    * an agent message or its revive needs it. False when the service keeps it (a duty holds it or an open is under way); then it is not stopped.
@@ -434,18 +488,25 @@ export class IdleUnloader {
       ? await within(source.held(candidates, now, idleMs, chats).catch(error => { source.log(`idle unload: provider waits: ${error instanceof Error ? error.message : String(error)}`); return new Map<string, number | null>(); }),
         HELD_BOUND_MS, new Map<string, number | null>())
       : new Map<string, number | null>();
-    const plan = unloadPlan(source.rows(), { ...input, held }).filter(fresh);
+    const parkable = source.parked ? parkCandidates(source.rows(), input).filter(fresh) : [];
+    const parked = parkable.length
+      ? await within(source.parked!(parkable, now).catch(error => { source.log(`idle unload: quota parks: ${error instanceof Error ? error.message : String(error)}`); return new Map<string, number>(); }),
+        HELD_BOUND_MS, new Map<string, number>())
+      : new Map<string, number>();
+    const plan = unloadPlan(source.rows(), { ...input, held, parked }).filter(fresh);
     if (source.handOff && source.unfinishedHandoffs) this.track(this.resumeUnloaded(source.handOff.bind(source), source.unfinishedHandoffs()));
     if (plan.length) {
       // Each stop is bounded on its own (STOP_BOUND_MS). The sweep's line names the stops done by then; a later one logs its own line.
       const named = (row: SessionSummary): string => {
         const name = row.sessionName?.trim() || row.sessionId;
+        const park = parked.get(row.sessionId);
+        if (park !== undefined && !held.has(row.sessionId)) return `${name} (parked on its provider quota until ${new Date(park).toISOString().slice(11, 16)}Z)`;
         const until = held.get(row.sessionId);
         if (until === undefined) return name;
         return until === null ? `${name} (waits on pi-pool, which names no time)` : `${name} (waits on pi-pool until ${new Date(until).toISOString().slice(11, 16)}Z)`;
       };
       this.track(Promise.all(plan.map(row => {
-        const stop = this.stop(row, chats, held.has(row.sessionId));
+        const stop = this.stop(row, chats, held.has(row.sessionId) ? "pool wait" : parked.has(row.sessionId) ? "quota park" : "idle");
         return within(stop.then(done => done ? "stopped" as const : "kept" as const), STOP_BOUND_MS, "late" as const).then(outcome => {
           if (outcome === "late") void stop.then(done => { if (done) source.log(`idle unload: stopped ${named(row)} after the sweep's ${STOP_BOUND_MS / 1000} s`); });
           return outcome === "stopped" ? [named(row)] : [];
@@ -516,10 +577,10 @@ export class IdleUnloader {
   }
 
   /** The session's stop, shared by every caller while it is under way; true once the daemon stopped it. */
-  private stop(row: SessionSummary, chats: ReadonlySet<string>, retry = false): Promise<boolean> {
+  private stop(row: SessionSummary, chats: ReadonlySet<string>, why: UnloadReceipt["why"] = "idle"): Promise<boolean> {
     const known = this.out.get(row.sessionId);
     if (known) return known;
-    const run = this.stopNow(row, chats, retry).catch(error => {
+    const run = this.stopNow(row, chats, why).catch(error => {
       this.source.log(`idle unload: ${row.sessionId}: ${error instanceof Error ? error.message : String(error)}`);
       return false;
     }).finally(() => { this.out.delete(row.sessionId); });
@@ -527,8 +588,9 @@ export class IdleUnloader {
     return run;
   }
 
-  private async stopNow(row: SessionSummary, chats: ReadonlySet<string>, retry: boolean): Promise<boolean> {
+  private async stopNow(row: SessionSummary, chats: ReadonlySet<string>, why: UnloadReceipt["why"]): Promise<boolean> {
     const source = this.source;
+    const retry = why === "pool wait";
     const failed = (answer: { error: string }): false => {
       if (skipUntilRowChanges(answer.error)) this.gone.add(goneKey(row));
       source.log(`idle unload: ${row.sessionId}: ${answer.error}${skipUntilRowChanges(answer.error) ? "; skipped until its row changes" : ""}`);
@@ -539,10 +601,10 @@ export class IdleUnloader {
     if (!state.success) return failed(state);
     if (stateBusy(state.data, retry, this.handsOff(row))) { source.log(`idle unload: ${row.sessionId}: the daemon shows it at work since the row was listed; kept`); return false; }
     // The service lets go of a chat first: the kill closes the session under its attach, and the hub would open it again at once.
-    if (retry && chats.has(row.sessionId) && !await source.release(row.sessionId)) { source.log(`idle unload: ${row.sessionId}: the service holds the chat for a duty or an open; kept`); return false; }
+    if (why !== "idle" && chats.has(row.sessionId) && !await source.release(row.sessionId)) { source.log(`idle unload: ${row.sessionId}: the service holds the chat for a duty or an open; kept`); return false; }
     // A handoff a crash left open ends with its own kill: after its commit no detached group is left for the guard to refuse.
     const receipt = (phase: UnloadReceipt["phase"], error?: string) => source.receipt?.({ at: new Date(source.now()).toISOString(), phase, sessionId: row.sessionId,
-      activeSessionId: row.activeSessionId ?? "", why: retry ? "pool wait" : "idle", ...error === undefined ? {} : { error } })
+      activeSessionId: row.activeSessionId ?? "", why, ...error === undefined ? {} : { error } })
       .catch(failure => source.log(`idle unload: ${row.sessionId}: receipt: ${failure instanceof Error ? failure.message : String(failure)}`));
     await receipt("sent");
     const resumed = this.handsOff(row) ? await source.handOff!(row, true) : null;

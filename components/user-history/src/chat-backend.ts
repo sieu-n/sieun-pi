@@ -29,7 +29,7 @@ import { briefCheckRecord, deletedJobRecord, heldNoticeRecord, jobRegistry, chec
 import { jobResumes } from "./job-resume.ts";
 import { cutJobs, interruptedRuns } from "./chat-resume.ts";
 import { resumesNow, tailLines } from "./cut-end.ts";
-import { IdleUnloader, providerWaits, takesKillOrigin, unloadRequest } from "./idle-unload.ts";
+import { IdleUnloader, providerWaits, quotaParkedUntil, takesKillOrigin, unloadRequest } from "./idle-unload.ts";
 import { handOff, handoffSend, handsOffRow, systemPorts } from "./detached-handoff.ts";
 import { unfinishedHandoffs } from "./orphan-services.ts";
 import { readHeldTurns, readTurnSince, writeResumePending } from "./held-turns.ts";
@@ -361,9 +361,9 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     log: dutyLog, ...agentMessage });
   const stopBridgeWatch = !alertPoll ? () => {} : startBridgeWatch({ health: alertPoll.health, statusFile, configFile: grafanaConfig,
     alerting: alerting => alertPoll.alerting(alerting), log: dutyLog, ...agentMessage });
-  // An idle root job, dormant chat or subagent stops after the quiet window, a session that ended its task after ENDED_MS, and a job or chat
-  // asleep in Prime's provider retry once pi-pool holds its tree past the quiet window, since Prime's own sweeps fail under load and count a
-  // retry as work. A quiet worker that grew past RECYCLE_OWN_BYTES is recycled. Each sweep starts its stops at once and does not wait for a slow kill
+  // An idle root job, dormant chat or subagent stops after the quiet window, a session that ended its task after ENDED_MS, a job or chat
+  // asleep in Prime's provider retry once pi-pool holds its tree past the quiet window, and a job or chat in Prime's quota park at once,
+  // since Prime's own sweeps fail under load and count a retry as work. A quiet worker that grew past RECYCLE_OWN_BYTES is recycled. Each sweep starts its stops at once and does not wait for a slow kill
   // (src/idle-unload.ts IdleUnloader). Every box's idle sessions stop from here, since the chat service is the one place that knows which chats
   // a tab or the pool holds.
   const unloader_ = new IdleUnloader({
@@ -382,6 +382,12 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     // the chat once pi-pool admits it (Chats.revive).
     held: (rows, now, idleMs, chatIds) => providerWaits(rows, now, idleMs, { all: catalog.daemonRows(), local: row => !catalog.hostOf(row.sessionId),
       tail: async file => (await tailLines(file, 64 * 1024)).join("\n"), read: threads => readPoolStatus(threads, { maxAgeMs: 60_000 }) }, chatIds),
+    // A session in Prime's quota park stops at once: its durable quota-resume job loads it again at the reset (src/idle-unload.ts
+    // quotaParkedUntil). Only this box's sessions, whose transcripts this box holds.
+    parked: async (rows, now) => new Map((await Promise.all(rows.filter(row => !catalog.hostOf(row.sessionId) && row.sessionFile).map(async row => {
+      const until = quotaParkedUntil((await tailLines(row.sessionFile!, 64 * 1024).catch(() => [] as string[])).join("\n"), now);
+      return until === null ? [] : [[row.sessionId, until] as const];
+    }))).flat()),
     release: id => threads.restAsleep(id),
     own: async (pids, host) => {
       const remote = host === undefined ? undefined : catalog.remoteHosts().find(box => box.host.name === host)?.host;

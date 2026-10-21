@@ -47,7 +47,7 @@ async function write(file: string, sessions: readonly string[], at: number): Pro
  * asked: a `sent` line with no `stopped` line now says exactly that.
  */
 export const UNLOAD_RECEIPTS = "unload-receipts.jsonl";
-export interface UnloadReceipt { at: string; phase: "sent" | "stopped" | "failed"; sessionId: string; activeSessionId: string; why: "idle" | "pool wait"; error?: string }
+export interface UnloadReceipt { at: string; phase: "sent" | "stopped" | "failed"; sessionId: string; activeSessionId: string; why: "idle" | "pool wait" | "quota park"; error?: string }
 
 /** Appends one receipt line; one write per line, so lines from concurrent stops do not interleave. */
 export function writeReceipt(dataDir: string, receipt: UnloadReceipt): Promise<void> {
