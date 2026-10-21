@@ -103,7 +103,7 @@ test("Hosts counts memory the box cannot take back: anon and swap, tmpfs files a
   const groups = cgroupGroups([{ path: "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service", ...held },
     { path: "user.slice/user-1001.slice/user@1001.service/app.slice/sieun-pi-chat.service", bytes: 1.4 * GB, swapBytes: 0, cacheBytes: 0, fileBytes: 0, fileSwapBytes: 0 }])!;
   assert.equal(groups[0]!.id, "agents");
-  assert.equal(Math.round(10 * groups[0]!.bytes / GB) / 10, 51.9);
+  assert.equal(Math.round(10 * groups[0]!.bytes / GB) / 10, 50.5, "the chat service counts in Agent services since 10-21 (agent-services.test.ts)");
   assert.equal(groups[0]!.swapBytes, 6.75 * GB);
   assert.equal(groups.find(group => group.id === "files")!.bytes, 3 * GB);
 });

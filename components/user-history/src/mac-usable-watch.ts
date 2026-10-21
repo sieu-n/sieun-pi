@@ -224,14 +224,17 @@ export function servicesLine(services: readonly OrphanServiceLine[]): ServicesLi
  * A box's "Agent sessions" this minute as Settings > Hosts shows it, from the same reading (host-stats.ts `memoryByGroup`): `gb` is what the
  * agents group holds that the box cannot take back, in RAM or swap, `swapGb` the part in swap and `cacheGb` the box's file cache beside it,
  * with its loaded sessions by state (src/agent-states.ts). `gb` is null when the box's groups could not be read. The Whole system duty's
- * quiet_agent_gb reads `gb` in the minutes no session `working`.
+ * quiet_agent_gb reads `gb` in the minutes no session `working`. `servicesGb` is the Agent services group beside it (host-stats.ts
+ * CGROUP_RULES: the chat service, the relay, pi-pool and the Prime supervisor), which `gb` leaves out since 10-21.
  */
-export interface AgentLine extends AgentCounts { gb: number | null; swapGb?: number; cacheGb?: number }
+export interface AgentLine extends AgentCounts { gb: number | null; swapGb?: number; cacheGb?: number; servicesGb?: number }
 
 /** The agents group of a memory reading and the session counts of `rows`, as one AgentLine. */
 export function agentLine(memory: { groups: readonly MemoryGroup[] | null; cacheBytes?: number | null } | null, rows: readonly unknown[], hung?: ReadonlySet<string>): AgentLine {
   const group = memory?.groups ? memory.groups.find(entry => entry.id === "agents") ?? { bytes: 0, swapBytes: 0 } : null;
+  const services = memory?.groups?.find(entry => entry.id === "services");
   return { gb: group ? round(group.bytes / GB) : null, ...group?.swapBytes !== undefined ? { swapGb: round(group.swapBytes / GB) } : {},
+    ...services ? { servicesGb: round(services.bytes / GB) } : {},
     ...typeof memory?.cacheBytes === "number" ? { cacheGb: round(memory.cacheBytes / GB) } : {}, ...agentCounts(rows, hung) };
 }
 
@@ -496,7 +499,8 @@ export async function hostWatchLine(remote: RemoteWatch, input: { now: number; c
       return { name: remote.name, usable: null, workers: 0, workerGb: 0, top: [], live: 0, working: 0, swapGb: null, offline: true, error: `offline, Tailscale last seen ${seenAgo(input.now, reach.lastSeen)}` };
     const answer = await remote.read(workerPids(remote.rows));
     const usable = parseUsableRaw(answer.usable, input.now);
-    const agents = agentLine(usable && !isLinuxReading(usable) && usable.groups ? { groups: [{ id: "agents", label: "", bytes: (usable.groups.agents ?? 0) * GB, top: [] }] } : null, remote.rows);
+    const agents = agentLine(usable && !isLinuxReading(usable) && usable.groups ? { groups: [{ id: "agents", label: "", bytes: (usable.groups.agents ?? 0) * GB, top: [] },
+      ...usable.groups.services !== undefined ? [{ id: "services" as const, label: "", bytes: usable.groups.services * GB, top: [] }] : []] } : null, remote.rows);
     if (answer.footprints === null) return { name: remote.name, usable, workers: 0, workerGb: 0, top: [], live: 0, working: 0, agents, swapGb: null, error: answer.error.slice(0, 200) };
     const line = watchLine({ now: input.now, rows: remote.rows, footprints: answer.footprints, queue: null, chats: input.chats, title: input.title, cpuMs: 0, usable });
     return { name: remote.name, usable, workers: line.workers, workerGb: line.workerGb, top: line.top, ...line.byWorker ? { byWorker: line.byWorker } : {}, live: line.live,

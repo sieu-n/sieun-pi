@@ -86,7 +86,9 @@ const feedGroups = (usable: HostUsable | null): Partial<Record<MemoryGroupId, nu
 export function memoryShares(view: HostView): Map<MemoryGroupId, number> {
   const shares = new Map<MemoryGroupId, number>();
   for (const [id, gb] of Object.entries(feedGroups(view.usable) ?? {})) shares.set(id as MemoryGroupId, gb);
-  shares.set("agents", Math.max(shares.get("agents") ?? 0, view.workerGb + (view.serviceGb ?? 0)));
+  // The harness's share holds the agent services too, which the feed groups apart from Agent sessions since 10-21.
+  shares.set("agents", Math.max((shares.get("agents") ?? 0) + (shares.get("services") ?? 0), view.workerGb + (view.serviceGb ?? 0)));
+  shares.delete("services");
   return shares;
 }
 
@@ -635,6 +637,7 @@ const clock = (at: number): string => new Date(at).toISOString().slice(11, 16) +
 /** A box's AgentLine in the flag's words: its GB as Settings > Hosts shows them, then its sessions by state. */
 const agentWords = (agents: AgentLine): string => `${agents.gb === null ? "an unread number of" : agents.gb} GB` +
   (agents.swapGb ? ` (${agents.swapGb} GB of it in swap)` : "") + (agents.cacheGb !== undefined ? ` with ${agents.cacheGb} GB of file cache beside it` : "") +
+  (agents.servicesGb !== undefined ? ` and ${agents.servicesGb} GB in Agent services (the chat service, relay, pi-pool and Prime supervisor), counted apart` : "") +
   `, with ${agents.working} sessions working, ${agents.retry} waiting on the provider or the pool, ${agents.children} on their subagents` +
   (agents.hung ? `, ${agents.idle} idle and ${agents.hung} in a hung tool call` : ` and ${agents.idle} idle`);
 /**
@@ -878,7 +881,13 @@ export function measure(input: Inputs): PrecheckOutput {
     ...latest?.services ? { handed_off_services: latest.services.count, handed_off_live: latest.services.live } : {},
     handoffs_stuck: stuckHandoffs.length,
   };
-  for (const [name, reading] of worstByHost) metrics[`quiet_agent_gb_${name.replace(/[^A-Za-z0-9]+/g, "_")}`] = reading.gb;
+  for (const [name, reading] of worstByHost) {
+    const key = name.replace(/[^A-Za-z0-9]+/g, "_");
+    metrics[`quiet_agent_gb_${key}`] = reading.gb;
+    // The agent services in the same minute, a line of their own beside the quiet number, which leaves them out (host-stats.ts CGROUP_RULES).
+    const services = reading.whole?.agents.servicesGb;
+    if (services !== undefined) metrics[`quiet_services_gb_${key}`] = services;
+  }
   for (const [name, count] of perHost) {
     const key = name.replace(/[^A-Za-z0-9]+/g, "_");
     metrics[`usable_min_30_${key}`] = count.usable;

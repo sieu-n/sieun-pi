@@ -190,7 +190,8 @@ const feedGroups = (usable: HostUsable | null): Record<string, number> | undefin
 /** whole-system.ts `memoryShares` and `leads`. */
 function memoryShares(view: HostView): Map<string, number> {
   const shares = new Map<string, number>(Object.entries(feedGroups(view.usable) ?? {}));
-  shares.set("agents", Math.max(shares.get("agents") ?? 0, view.workerGb + (view.serviceGb ?? 0)));
+  shares.set("agents", Math.max((shares.get("agents") ?? 0) + (shares.get("services") ?? 0), view.workerGb + (view.serviceGb ?? 0)));
+  shares.delete("services");
   return shares;
 }
 const leads = (shares: ReadonlyMap<string, number>): boolean => {

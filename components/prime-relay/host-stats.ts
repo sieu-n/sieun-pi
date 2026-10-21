@@ -15,7 +15,7 @@ import { harnessSplit, type HarnessSplit, snapshot as rigSnapshot, type Snapshot
 const run = promisify(execFile);
 
 export type MemoryPressure = "normal" | "warn" | "critical";
-export const MEMORY_GROUPS = ["agents", "dev", "ci", "docker", "browsers", "coding", "system", "files", "other"] as const;
+export const MEMORY_GROUPS = ["agents", "services", "dev", "ci", "docker", "browsers", "coding", "system", "files", "other"] as const;
 export type MemoryGroupId = (typeof MEMORY_GROUPS)[number];
 /**
  * One memory group: its bytes and its 3 largest owners (a chat tree, a pm2 app, an app with its helpers, a systemd unit). On Linux `bytes` is
@@ -82,7 +82,7 @@ function cpuPercent(): { percent: number; cores: number } {
 }
 
 const GB = 1024 ** 3;
-const GROUP_LABELS: Record<MemoryGroupId, string> = { agents: "Agent sessions", dev: "Dev servers and app code", ci: "CI runners", docker: "Docker",
+const GROUP_LABELS: Record<MemoryGroupId, string> = { agents: "Agent sessions", services: "Agent services", dev: "Dev servers and app code", ci: "CI runners", docker: "Docker",
   browsers: "Browsers", coding: "Coding tools", system: "System", files: "Files in /tmp and shared memory", other: "Other" };
 
 function grouped(items: { id: MemoryGroupId; label: string; bytes: number; swapBytes?: number }[], always: MemoryGroupId[]): MemoryGroup[] {
@@ -103,10 +103,11 @@ export const FEED_FRESH_MS = 30_000;
 /**
  * The group of a pressure feed owner key (scripts/sieun/mac/pressure-feed.c in auto-sns-agent), first match. The feed already folds helpers
  * into their app and a process tree into its chat or pm2 app, so the key alone decides. Root processes such as WindowServer and kernel_task
- * have no owner rows, so System gets the feed's wired memory instead.
+ * have no owner rows, so System gets the feed's wired memory instead. The chat service and pi-pool are agent services (CGROUP_RULES).
  */
 export const GROUP_RULES: [MemoryGroupId, RegExp][] = [
-  ["agents", /^chat:|^other:(prime-agent|chat-service|pi-pool|pool\.py|rlm)/i],
+  ["services", /^other:(chat-service|pi-pool|pool\.py)/i],
+  ["agents", /^chat:|^other:(prime-agent|rlm)/i],
   ["docker", /^docker-vm$|^other:(OrbStack|Docker|com\.docker|colima|lima|vfkit|qemu)/i],
   ["dev", /^pm2:|^other:(pm2-daemon|next-server|vite|convex|turbo)/i],
   ["browsers", /^browser:|^other:com\.apple\.WebKit/i],
@@ -181,9 +182,15 @@ export function parsePsi(text: string): MemoryPressure | null {
   return full >= 70 ? "critical" : some >= 7 ? "warn" : "normal";
 }
 
-/** The group of a leaf cgroup path under /sys/fs/cgroup, first match. The dev half of us-metal02 is dev.slice and the CI half is virev.slice. */
+/**
+ * The group of a leaf cgroup path under /sys/fs/cgroup, first match. The dev half of us-metal02 is dev.slice and the CI half is virev.slice.
+ * Agent services are what serves every session and stays up when none works: the chat service, the relay, pi-pool and the Prime supervisor
+ * (split out of the daemon's cgroup by `supervisorMemory`). Until 10-21 they counted in Agent sessions, which the owner's goal "idle agents free
+ * their memory: us-metal02 agent sessions drop under 5 GB" judges: at 03:52Z on 10-21 the chat service held 1.37 GB and the supervisor 0.43 GB.
+ */
 export const CGROUP_RULES: [MemoryGroupId, RegExp][] = [
-  ["agents", /prime-agent|sieun-pi|pi-pool|prime-relay|agent-chat/],
+  ["services", /sieun-pi-chat|pi-pool|prime-relay|agent-chat/],
+  ["agents", /prime-agent|sieun-pi/],
   ["ci", /^virev\.slice\/|virev-ci/],
   ["docker", /docker|containerd|^machine\.slice\//],
   ["dev", /^dev\.slice\//],
@@ -196,7 +203,29 @@ export const cgroupGroupOf = (path: string): MemoryGroupId => CGROUP_RULES.find(
  * One leaf cgroup's memory: what its processes hold that the box cannot take back (`heldBytes`), the part of that in swap, its file cache, and
  * the tmpfs and shared memory files charged to it (`fileBytes`, `fileSwapBytes` of them in swap), which outlive the processes that wrote them.
  */
-export interface LeafMemory { path: string; bytes: number; swapBytes: number; cacheBytes: number; fileBytes: number; fileSwapBytes: number }
+export interface LeafMemory { path: string; bytes: number; swapBytes: number; cacheBytes: number; fileBytes: number; fileSwapBytes: number;
+  /** The part of `bytes` (and `swapBytes`) that the Prime supervisor holds in the daemon's cgroup (`supervisorMemory`), which counts as an agent service. */
+  services?: { bytes: number; swapBytes: number } }
+
+/**
+ * The Prime supervisor's pid file, which prime-agent-daemon.service names as its PIDFile (deploy/linux, `%t/prime-agent-daemon.pid`). The
+ * supervisor runs in the same cgroup as every worker and kernel it starts, so only its pid tells it apart.
+ */
+export const SUPERVISOR_PID_FILE = (): string => join(process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? 0}`, "prime-agent-daemon.pid");
+
+/** The anonymous memory and swap of /proc/<pid>/status in bytes. */
+export function processHeld(status: string): { bytes: number; swapBytes: number } {
+  const kb = (name: string): number => Number(new RegExp(`^${name}:\\s+(\\d+) kB`, "m").exec(status)?.[1] ?? 0) * 1024;
+  const swapBytes = kb("VmSwap");
+  return { bytes: kb("RssAnon") + swapBytes, swapBytes };
+}
+
+/** What the supervisor of `pidFile` holds when it is one of the cgroup's `procs`; null for another cgroup or an unread pid. */
+export async function supervisorMemory(procs: string, pidFile = SUPERVISOR_PID_FILE()): Promise<{ bytes: number; swapBytes: number } | null> {
+  const pid = (await readFile(pidFile, "utf8").catch(() => "")).trim();
+  if (!/^\d+$/.test(pid) || !procs.split("\n").includes(pid)) return null;
+  return kernelFile(`/proc/${pid}/status`).then(processHeld, () => null);
+}
 
 /**
  * A leaf cgroup's memory from its memory.stat, memory.swap.current and the swap its live processes hold (`processSwap`, the sum of their
@@ -243,7 +272,9 @@ export async function leafCgroups(root = "/sys/fs/cgroup"): Promise<LeafMemory[]
       const [stat = null, swap = null, procs = null] = await Promise.all(["memory.stat", "memory.swap.current", "cgroup.procs"].map(name => kernelFile(join(dir, name)).catch(() => null)));
       const swapped = Number(swap?.trim() || 0) > 0;
       const held = heldBytes(stat ?? "", swap ?? "", swapped && procs !== null ? await processSwap(procs) : null);
-      if (held && (held.bytes > 0 || held.cacheBytes > 0 || held.fileBytes > 0)) leaves.push({ path: relative, ...held });
+      const services = held && procs !== null && cgroupGroupOf(relative) === "agents" ? await supervisorMemory(procs) : null;
+      if (held && (held.bytes > 0 || held.cacheBytes > 0 || held.fileBytes > 0)) leaves.push({ path: relative, ...held, ...services ? { services: {
+        bytes: Math.min(services.bytes, held.bytes), swapBytes: Math.min(services.swapBytes, held.swapBytes) } } : {} });
       return;
     }
     await Promise.all(children.map(walk));
@@ -263,7 +294,9 @@ export function cgroupLabel(path: string): string {
 
 export function cgroupGroups(leaves: readonly LeafMemory[]): MemoryGroup[] | null {
   if (!leaves.length) return null;
-  return grouped(leaves.flatMap(leaf => [{ id: cgroupGroupOf(leaf.path), label: cgroupLabel(leaf.path), bytes: leaf.bytes, swapBytes: leaf.swapBytes },
+  return grouped(leaves.flatMap(leaf => [{ id: cgroupGroupOf(leaf.path), label: cgroupLabel(leaf.path), bytes: leaf.bytes - (leaf.services?.bytes ?? 0),
+    swapBytes: leaf.swapBytes - (leaf.services?.swapBytes ?? 0) },
+    ...leaf.services ? [{ id: "services" as const, label: "Prime supervisor", bytes: leaf.services.bytes, swapBytes: leaf.services.swapBytes }] : [],
     ...leaf.fileBytes > 0 ? [{ id: "files" as const, label: cgroupLabel(leaf.path), bytes: leaf.fileBytes, swapBytes: leaf.fileSwapBytes }] : []]), []);
 }
 
