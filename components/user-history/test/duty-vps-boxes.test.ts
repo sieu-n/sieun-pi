@@ -27,7 +27,7 @@ test("disk_days_min is the lowest disk of both boxes, names each disk under 30 d
   const disks = [{ box: "us-metal01", mountpoint: "/", days: 50.9 }, { box: "us-metal01", mountpoint: "/ci", days: 15.47 }, { box: "us-metal02", mountpoint: "/", days: 6.93 }];
   const result = diskDaysMin(disks, 0);
   assert.equal(result.days, 6.9);
-  assert.equal(result.flagged.excerpt, "fills within 30 days at the last 24 h rate: us-metal02's / (6.9 days), us-metal01's /ci (15.5 days)");
+  assert.equal(result.flagged.excerpt, "fills within 30 days at its rule's rate: us-metal02's / (6.9 days), us-metal01's /ci (15.5 days)");
   assert.match(diskDaysMin([{ box: "us-metal01", mountpoint: "/", days: 50.9 }, { box: "us-metal02", mountpoint: "/drive2", days: 71.8 }], 0).flagged.excerpt, /lowest is us-metal01's \/ \(50.9 days\)/);
   assert.throws(() => diskDaysMin(disks.slice(0, 2), 0), /no disk of us-metal02/);
 });

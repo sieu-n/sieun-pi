@@ -12,8 +12,8 @@ import { readFiringRules } from "../../src/alert-bridge.ts";
  * The precheck of the ops chat's duty "VPS and dev boxes" (`node --import tsx scripts/duties/vps-boxes.ts`). The chat's risk list
  * (infra-risks.json, written with the wiki risk page) names each standing risk of the boxes with the Grafana alert rules that check it.
  * risks_firing counts the risks with a rule in Grafana's firing list, read like the alert bridge does (grafana-alerts.json, a Viewer token).
- * disk_days_min is the fewest days until a disk on us-metal01 (/, /ci, /hdd.raid10) or us-metal02 (/, /drive2) is full at its last 24 h rate,
- * the math of the metal-host-disk-fill-30d and metal02-dev-disk-fill-30d rules, and air_runners_online counts the M1 Air's runners up, both from
+ * disk_days_min is the fewest days until a disk on us-metal01 (/, /ci, /hdd.raid10) or us-metal02 (/, /drive2) is full at the rate
+ * its rule reads (DISK_DAYS_QUERY, the math of the metal-host-disk-fill-30d and metal02-dev-disk-fill-30d rules), and air_runners_online counts the M1 Air's runners up, both from
  * the box Prometheus through Grafana ds/query. disk_days_min replaced root_disk_days on 10-19, which read us-metal01's / only (51 days) while
  * us-metal02's / read 6.9. alerts_firing counts the rules the alert bridge holds as firing for this chat, each held
  * by its triage job (prod-alerts.ts). oom_kills_24h sums the OOM kills on us-metal01 and us-metal02 in the last 24 h from node_vmstat_oom_kill,
@@ -33,8 +33,15 @@ export const RISKS_FILE = join(DATA_DIR, "duties", CHAT, "infra-risks.json");
 const GRAFANA_CONFIG = join(DATA_DIR, "grafana-alerts.json");
 const PROMETHEUS = { uid: "estate_prometheus_stg", type: "prometheus" };
 const DISK_BOXES = ["us-metal01", "us-metal02"] as const;
-const DISKS = `node_filesystem_avail_bytes{job=~"host|devbox-linux",box=~"${DISK_BOXES.join("|")}",fstype=~"ext4|xfs|btrfs",mountpoint!="/boot"}`;
-export const DISK_DAYS_QUERY = `${DISKS} / clamp_min(-deriv(${DISKS}[24h]) * 86400, 1)`;
+const diskSeries = (mount: string): string => `node_filesystem_avail_bytes{job=~"host|devbox-linux",box=~"${DISK_BOXES.join("|")}",fstype=~"ext4|xfs|btrfs",${mount}}`;
+const TREND = diskSeries('mountpoint!~"/boot|/hdd.raid10|/drive2"');
+const HDD = diskSeries('mountpoint="/hdd.raid10"');
+const DRIVE2 = diskSeries('mountpoint="/drive2"');
+/** Each disk at the rate its Grafana rule reads (metal-host-disk-fill-30d, metal02-dev-disk-fill-30d): the 24 h deriv, except
+ * us-metal01's /hdd.raid10, which divides by what it lost over the last 24 h, because it changes in one OpenSearch snapshot step a
+ * night and any 24 h window holds exactly one step, and us-metal02's /drive2, which keeps its rule's 7 d deriv for its batch moves.
+ * measured: from 10-18 to 10-21 /hdd.raid10 lost 269, 328 and 514 GB a night while its 24 h deriv read 9 to 739 GB a day. */
+export const DISK_DAYS_QUERY = `${TREND} / clamp_min(-deriv(${TREND}[24h]) * 86400, 1) or ${HDD} / clamp_min(${HDD} offset 24h - ${HDD}, 1) or ${DRIVE2} / clamp_min(-deriv(${DRIVE2}[7d]) * 86400, 1)`;
 const OOM = `node_vmstat_oom_kill{box=~"${DISK_BOXES.join("|")}"}`;
 export const OOM_KILLS_QUERY = `round(increase(${OOM}[1d]))`;
 export const OOM_LAST_QUERY = `max_over_time(timestamp(changes(${OOM}[2m]) > 0)[1d:1m])`;
@@ -96,7 +103,7 @@ export function diskDaysMin(disks: readonly DiskDays[], at: number): { days: num
   if (missing.length) throw new Error(`Prometheus has no disk of ${missing.join(" or ")}`);
   const sorted = [...disks].sort((a, b) => a.days - b.days);
   const low = sorted.filter(disk => disk.days < 30);
-  const excerpt = low.length ? `fills within 30 days at the last 24 h rate: ${low.map(diskName).join(", ")}` : `every disk has 30 days or more; the lowest is ${diskName(sorted[0]!)}`;
+  const excerpt = low.length ? `fills within 30 days at its rule's rate: ${low.map(diskName).join(", ")}` : `every disk has 30 days or more; the lowest is ${diskName(sorted[0]!)}`;
   return { days: Math.round(sorted[0]!.days * 10) / 10, flagged: { at, kind: "disk", excerpt } };
 }
 
