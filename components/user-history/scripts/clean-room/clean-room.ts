@@ -76,6 +76,7 @@ import { archiveTestPages } from "./wiki-pages.ts";
 import { killHooks, tokenHookResume } from "./token-hook-resume.ts";
 import { wakeLive } from "./wake-live.ts";
 import { transcriptBoundary } from "./transcript-boundary.ts";
+import { publishedBuildKeep } from "./published-build-keep.ts";
 
 const DATA = process.env.AGENT_CHAT_DATA_DIR ?? join(homedir(), ".prime/agent/browser-chat");
 /** Prime's agent dir, whose harness/ folder holds the published global harness store. */
@@ -84,7 +85,7 @@ const RELEASES = join(homedir(), ".local/share/sieun-pi-chat");
 const SCENARIOS: Record<string, Scenario> = { "checkin-goal-push": checkinGoalPush, "checkin-real-task": checkinRealTask, "checkin-push-control": checkinPushControl, "correction-refine": correctionRefine, "dm-replies": dmReplies, "english-jobs": englishJobs, "everyday-task": everydayTask, "import-speed": importSpeed,
   "checkin-job-steer": checkinJobSteer, "chat-tools-reopen": chatToolsReopen, "reopen-first-message": reopenFirstMessage, "kernel-revive": kernelRevive, "lost-brief": lostBrief, "ordinary-hour": ordinaryHour, "idle-unload": idleUnload, "owner-asks": ownerAsks, "plan-and-duties": planAndDuties, "task-and-upkeep": taskAndUpkeep, "soft-caps": softCaps, "step-ids": stepIds, "token-hook-resume": tokenHookResume, "wake-live": wakeLive, "box-browser-default": boxBrowserDefault, "box-tools": boxTools,
   "detached-report": detachedReport, "relative-duty": relativeDuty, "old-commit-tests": oldCommitTests, "readme-preview": readmePreview, "history-leftovers": historyLeftovers, "plain-words": plainWords, "saved-login": savedLogin , "job-cancel-cleanup": jobCancelCleanup,
-  "transcript-boundary": transcriptBoundary };
+  "transcript-boundary": transcriptBoundary, "published-build-keep": publishedBuildKeep };
 
 function args(argv: readonly string[]): { command: string; flags: Record<string, string> } {
   const [command = "", ...rest] = argv;
@@ -766,7 +767,7 @@ async function teardown(flags: Record<string, string>): Promise<void> {
     if ([...chats, ...jobs].some(id => file.startsWith(id))) { rmSync(join(wakes, file), { force: true }); log(run, `dropped wake ${file}`); }
   }
   if (failed.length) throw new Error(`kept ${run}, because ${failed.length} archives failed; run teardown again`);
-  if (scenario?.cleanup) { scenario.cleanup(state); log(run, `removed the project folder ${state.sandbox}`); }
+  if (scenario?.cleanup) log(run, scenario.cleanup(state) || `removed the project folder ${state.sandbox}`);
   const harness = keepTrialHarness(run);
   if (harness) log(run, `kept the trial's global harness store as ${harness}`);
   rmSync(run, { recursive: true, force: true });

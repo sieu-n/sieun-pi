@@ -19,7 +19,8 @@ export interface Scenario {
   agentsMd?(sandbox: string): string;
   /** Builds the folder the chat works in outside the run folder and returns it, so the chat sees no run file; `cleanup` removes it at teardown. */
   prepare?(run: string): string;
-  cleanup?(state: RunState): void;
+  /** Removes what `prepare` built, or what else the trial made, and returns the line teardown logs. */
+  cleanup?(state: RunState): void | string;
   headMessage(chatName: string): string;
   /** A control chat with its own ordinary first message, opened with the chat and kept without a check-in. */
   control?: { name: string; message(name: string): string };
