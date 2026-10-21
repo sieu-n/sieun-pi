@@ -5,6 +5,7 @@ import { JOB_CLEANUP_EVERY_MS } from "./chat-checkin.ts";
 import { CUT_CONFIRM_BYTES, CUT_TAIL_BYTES, tailLines } from "./cut-end.ts";
 import { turnError } from "./shared/credential-wait.ts";
 import type { InterruptedRun } from "./shared/interrupted.ts";
+import type { QueuePlace } from "./shared/types.ts";
 
 /**
  * Turns the chat service gives back itself, so the check-in reads their steps as moving: a cut step owner the resume pass continues
@@ -127,9 +128,30 @@ export async function withFailedTurns(facts: readonly JobFact[], agentDir: strin
     }
     const error = lastTurnError(text);
     if (error === undefined) return fact;
+    // A session the daemon still lists at work whose turn failed on a rate limit is in Prime's provider retry, which queues it in pi-pool again
+    // each try: it waits for an account. AI harness 10-21 16:13Z to 16:20Z: digest cache integration failed on a 429 three times, each followed
+    // by a pi-pool-queue entry (50th, 41st, 53rd), and the check-in read it failed and p831 stalled.
+    const place = fact.state === "working" && RATE_LIMIT.test(error) ? retryPlace(text) : undefined;
+    if (place) return { ...fact, queued: place };
     const { wake: _, ...rest } = fact;
     return { ...rest, state: "failed", error };
   }));
+}
+
+const RATE_LIMIT = /\brate_limit_error\b|\b429\b|\brate limit\b|\bpi-pool:/i;
+/** The place of the newest pi-pool-queue entry in a transcript since its last model reply that did not fail; undefined when it has none. */
+export function retryPlace(tail: string): QueuePlace | undefined {
+  const lines = tail.split("\n");
+  for (let index = lines.length - 1; index >= 0; index--) {
+    let line: { type?: unknown; customType?: unknown; data?: { position?: unknown; total?: unknown; at?: unknown }; message?: { role?: unknown; stopReason?: unknown } };
+    try { line = JSON.parse(lines[index]!); } catch { continue; }
+    if (line.type === "message" && line.message?.role === "assistant" && line.message.stopReason !== "error") return undefined;
+    const { position, total, at } = line.data ?? {};
+    if (line.type === "custom" && line.customType === "pi-pool-queue" && typeof position === "number" && typeof total === "number" && typeof at === "number") {
+      return { position, total, since: at };
+    }
+  }
+  return undefined;
 }
 
 /** Whether a job's model turn ended after `since`, or else the pool time the error of its last failed turn names (`slotAt`) and that turn's provider. */

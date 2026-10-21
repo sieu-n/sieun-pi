@@ -11,6 +11,7 @@ import { checkInPrecheck, checkInPrecheckText, convergenceMisses } from "../src/
 import { parkFiles, quotaParks, readHeartbeats, withQuotaParks } from "../src/checkin-load.ts";
 import type { JobFact } from "../src/checkin-steps.ts";
 import { withQueuePlaces } from "../src/chat-turn-queue.ts";
+import { withFailedTurns } from "../src/held-turns.ts";
 import type { ChatBoard, PlanItem } from "../src/shared/types.ts";
 
 const chat = "01a1164b-4a2d-742d-b27a-82f086ed0200";
@@ -93,4 +94,29 @@ test("a job queued in pi-pool after its park resumed reads queued Nth for an acc
   assert.ok(!found.stalled.some(stall => stall.view.item.id === "p795"));
   const text = checkInPrecheckText(found, facts, [], at);
   assert.match(text, /duties green push 10-18 thread: queued 62nd of 114 for an account, in the queue for 7 min,/);
+});
+
+test("a job in Prime's provider retry reads queued Nth for an account from its last pi-pool-queue entry; an idle one with the same 429 reads failed", async () => {
+  // digest cache integration from 16:05Z: each 429 is followed by a pi-pool-queue entry while the daemon lists it working. wiki behind code root
+  // cause failed at 15:25:27Z after its 15:24:16Z queue entry, and the daemon lists it idle.
+  const agentDir = join(home, ".prime", "agent");
+  mkdirSync(join(agentDir, "sessions"), { recursive: true });
+  const line = (entry: object) => JSON.stringify(entry);
+  const failed = (at: string) => line({ type: "message", timestamp: at, message: { role: "assistant", stopReason: "error", errorMessage: error, content: [] } });
+  const queue = (at: string, position: number) => line({ type: "custom", customType: "pi-pool-queue", timestamp: at,
+    data: { text: `Queued for a working slot, ${position}th of ${position}`, position, total: position, at: Date.parse(at) } });
+  const wiki = "01a15cc9-3d6e-71ea-9611-fbbadddc2a2d";
+  writeFileSync(join(agentDir, "sessions", `${digest}.jsonl`), [line({ type: "message", timestamp: "2026-10-21T16:00:00.000Z", message: { role: "assistant", stopReason: "stop", content: [] } }),
+    failed("2026-10-21T16:05:32.471Z"), queue("2026-10-21T16:11:30.061Z", 50), failed("2026-10-21T16:13:35.655Z"), queue("2026-10-21T16:16:30.080Z", 41),
+    failed("2026-10-21T16:19:34.861Z")].join("\n") + "\n");
+  writeFileSync(join(agentDir, "sessions", `${wiki}.jsonl`), [queue("2026-10-21T15:24:16.066Z", 22), failed("2026-10-21T15:25:27.528Z")].join("\n") + "\n");
+  const at = Date.parse("2026-10-21T16:20:00Z");
+  const facts = await withFailedTurns([{ key: `thread:${digest}`, name: "digest cache integration", state: "working" },
+    { key: `thread:${wiki}`, name: "wiki behind code root cause", state: "ended" }], agentDir, chat);
+  assert.equal(facts[0]!.state, "working");
+  assert.deepEqual(facts[0]!.queued, { position: 41, total: 41, since: Date.parse("2026-10-21T16:16:30.080Z") });
+  assert.equal(facts[1]!.state, "failed");
+  const text = checkInPrecheckText(precheck(facts, at), facts, [], at);
+  assert.match(text, /digest cache integration thread: queued 41st of 41 for an account, in the queue for 3 min/);
+  assert.match(text, /wiki behind code root cause thread: failed,/);
 });
