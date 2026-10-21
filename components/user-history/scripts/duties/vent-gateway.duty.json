@@ -5,7 +5,7 @@
   "metrics": [
     {
       "key": "through_vent_pct",
-      "label": "In-scope call sites and webhooks that go through Vent in prod",
+      "label": "In-scope call sites and webhooks whose code at main goes through Vent with no direct call",
       "op": ">=",
       "target": 100,
       "unit": "%",
@@ -17,6 +17,13 @@
       "op": "<=",
       "target": 0,
       "unit": " keys"
+    },
+    {
+      "key": "no_prod_traffic_sites",
+      "label": "Through sites that run in prod with no successful prod vent.call in 7 days (supporting, swings with demand)",
+      "op": "<=",
+      "target": 0,
+      "unit": " sites"
     }
   ],
   "precheck": {
@@ -28,6 +35,6 @@
     ],
     "cwd": "../.."
   },
-  "onMiss": "Read the flagged rows and steer the live job that owns each one, or start one fix job when none is live, with the metric's name in its brief. site_direct and tip_site_direct rows go to the p8 job 'vent cutover train' by app, and webhook_direct rows go to the p4 job 'vent webhooks'; a site counts only once its code is on main, which prod runs. A site_removed row needs no action: the tip removed that call, so it left the count, and prod drops it at the next promote. A no_prod_traffic row means the code at main calls Vent but prod Vent logged no successful vent.call for it in 7 days: check the caller's VENT_URL and VENT_KEY in prod. A new_direct_site row is a direct provider call at the tip that no inventory row covers, and it counts as a direct site until the p8 job moves it to Vent. vent-share.py takes Vent's integrations from apps/vent/src/vent/tables.py, so a provider with no integration there needs one in Vent. provider_keys_outside_vent above 0: each key_outside_vent row names a location and key names, and the p3 job 'vent cutover train' removes a key once no caller there reads it, .bak copies on us-metal01 included. Never print or copy a key value. A source_error row means a source was not read, so fix the read before trusting the number. No outside sends (c37). Merges, pushes and prod promotes need no go before the launch (c74). All on target: end the turn with no message.",
+  "onMiss": "Read the flagged rows and steer the live job that owns each one, or start one fix job when none is live, with the metric's name in its brief. site_direct and tip_site_direct rows go to the p8 job 'vent cutover train' by app, and webhook_direct rows go to the p4 job 'vent webhooks'; a site counts only once its code is on main, which prod runs. A site_removed row needs no action: the tip removed that call, so it left the count, and prod drops it at the next promote. A no_prod_traffic row (the supporting no_prod_traffic_sites number) means the code at main calls Vent but prod Vent logged no successful vent.call for it in 7 days; it still counts as through (owner rule c67). Check the caller's VENT_URL and VENT_KEY in prod and drive one read-only call through Vent. A new_direct_site row is a direct provider call at the tip that no inventory row covers, and it counts as a direct site until the p8 job moves it to Vent. vent-share.py takes Vent's integrations from apps/vent/src/vent/tables.py, so a provider with no integration there needs one in Vent. provider_keys_outside_vent above 0: each key_outside_vent row names a location and key names, and the p3 job 'vent cutover train' removes a key once no caller there reads it, .bak copies on us-metal01 included. Never print or copy a key value. A source_error row means a source was not read, so fix the read before trusting the number. No outside sends (c37). Merges, pushes and prod promotes need no go before the launch (c74). All on target: end the turn with no message.",
   "boardGoal": "p1"
 }

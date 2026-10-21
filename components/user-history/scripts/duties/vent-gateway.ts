@@ -11,11 +11,13 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  *   call sites comes from the code at the sieun/dev tip through vent-share.py beside this file: the inventory rows whose call is still there
  *   (a row whose files are deleted or no longer name the provider leaves, as a site_removed row) plus each direct provider call its call
  *   scan finds that no row covers (new_direct_site, never through Vent). A row counts as through when its code at origin/main, which prod
- *   runs, goes through Vent and, when it runs in prod, prod Vent logged a successful vent.call for it in the script's last 7 days. Row 63
+ *   runs, goes through Vent with no direct call (owner rule c67: the code path, never demand). Row 63
  *   (GeoNode proxy egress) is the one allowed exception and leaves the count. The 4 Convex inbound webhooks count when main's
  *   convex/http.ts no longer routes the provider's own path and convex/webhooks/vent.ts takes the source.
  * - provider_keys_outside_vent: (location, key name) pairs where a provider key still sits in a deployment other than Vent, read with the
  *   cutover's env-name listers (sessions/2026/10/18/1610-vent-cutover-all-callers/data) plus Convex env lists and the tier files at origin/main.
+ * - no_prod_traffic_sites, supporting: of the through sites that run in prod (not CODE_ONLY_ROWS), how many prod Vent logged no successful
+ *   vent.call for in the share script's last 7 days. It proves use, so it swings with demand and never changes the headline.
  * - code_vent_sites and tip_code_vent_sites: of the code_rows call sites at the tip, how many go through Vent by code alone at main and at
  *   the tip, so the cutover's code progress reads before prod runs it; new_direct_sites and tip_removed_sites count the sites the tip added
  *   and dropped.
@@ -147,12 +149,21 @@ export function ventMetrics(reads: VentReads, at: number): PrecheckOutput {
     const sites = (tip?.sites ?? []).filter(site => !site.exception && !GONE.has(site.status));
     const newSites = tip?.new_sites ?? [];
     let through = 0;
+    let quiet = 0;
     for (const site of sites) {
       const prod = atMain.get(site.row);
-      const codeOnly = CODE_ONLY_ROWS.has(site.row);
-      if (prod?.status === "vent" && (codeOnly || live.has(site.row))) { through++; continue; }
-      const why = prod?.status !== "vent" ? `code at main is ${prod?.status ?? "missing"}${prod?.direct?.[0] ? `: ${prod.direct[0]}` : ""}` : "code at main goes through Vent, but prod Vent logged no successful vent.call for it in 7 days";
-      flagged.push({ at, kind: prod?.status === "vent" ? "no_prod_traffic" : "site_direct", item: `row ${site.row}`, excerpt: `#${site.row} ${site.app} ${site.provider}: ${why}`.slice(0, 300) });
+      if (prod?.status === "vent") {
+        // Owner rule c67: the headline measures the code path, not demand. A site whose code at main reaches Vent with no direct
+        // call counts; a prod site with no successful vent.call in 7 days is a supporting number only.
+        through++;
+        if (!CODE_ONLY_ROWS.has(site.row) && !live.has(site.row)) {
+          quiet++;
+          flagged.push({ at, kind: "no_prod_traffic", item: `row ${site.row}`, excerpt: `#${site.row} ${site.app} ${site.provider}: code at main goes through Vent; prod Vent logged no successful vent.call for it in 7 days`.slice(0, 300) });
+        }
+        continue;
+      }
+      const why = `code at main is ${prod?.status ?? "missing"}${prod?.direct?.[0] ? `: ${prod.direct[0]}` : ""}`;
+      flagged.push({ at, kind: "site_direct", item: `row ${site.row}`, excerpt: `#${site.row} ${site.app} ${site.provider}: ${why}`.slice(0, 300) });
     }
     for (const site of newSites) flagged.push({ at, kind: "new_direct_site", item: site.path, excerpt: `${site.app} ${site.provider} at ${TIP}, a direct call no inventory row covers: ${site.direct[0]}`.slice(0, 300) });
     for (const hook of reads.webhooks) {
@@ -160,8 +171,9 @@ export function ventMetrics(reads: VentReads, at: number): PrecheckOutput {
       flagged.push({ at, kind: "webhook_direct", item: `webhook ${hook.source}`, excerpt: `${hook.source} webhook: ${hook.direct ? `convex/http.ts at main still routes the provider's own path` : "no direct route"}${hook.vent ? "" : ", and convex/webhooks/vent.ts at main does not take it"}` });
     }
     const total = sites.length + newSites.length + reads.webhooks.length;
-    metrics.through_vent_pct = main && tip && reads.share.traffic?.production && total ? round(100 * through / total) : UNMEASURED_PCT;
+    metrics.through_vent_pct = main && tip && total ? round(100 * through / total) : UNMEASURED_PCT;
     metrics.through_vent_count = through;
+    metrics.no_prod_traffic_sites = main && tip && reads.share.traffic?.production ? quiet : UNMEASURED_PCT;
     metrics.in_scope_count = total;
     metrics.code_rows = tip ? sites.length + newSites.length : UNMEASURED_PCT;
     metrics.code_vent_sites = main && tip ? sites.filter(site => atMain.get(site.row)?.status === "vent").length : UNMEASURED_PCT;

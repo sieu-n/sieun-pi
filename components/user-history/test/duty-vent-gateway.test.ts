@@ -24,12 +24,14 @@ test("all sites and webhooks on Vent with prod traffic read 100%, and the GeoNod
   assert.equal(metrics.provider_keys_outside_vent, 0);
 });
 
-test("a site whose code is on Vent but has no prod vent.call does not count, unless it runs in no prod deployment", () => {
-  const sites = [site(0, "vent"), site(38, "vent")];
+test("a site whose code at main is on Vent counts with or without prod traffic (c67); no traffic is a supporting number", () => {
+  const sites = [site(0, "vent"), site(38, "vent"), site(1, "direct")];
   const share = { refs: { "origin/main": { sha: "a", sites }, "origin/sieun/dev": { sha: "b", sites } }, traffic: { production: { sites_with_vent_traffic: [] } } };
   const output = ventMetrics(reads({ share, webhooks: [] }), 0);
-  assert.equal(output.metrics.through_vent_pct, 50);
+  assert.equal(output.metrics.through_vent_pct, round(100 * 2 / 3));
+  assert.equal(output.metrics.no_prod_traffic_sites, 1);
   assert.equal(output.flagged!.find(flag => flag.kind === "no_prod_traffic")!.item, "row 0");
+  assert.equal(output.flagged!.find(flag => flag.kind === "site_direct")!.item, "row 1");
 });
 
 test("direct webhook routes on main count as direct even when the Vent route exists", () => {
