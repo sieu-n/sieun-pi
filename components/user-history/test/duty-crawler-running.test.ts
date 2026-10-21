@@ -4,7 +4,7 @@
 // memory share, whose workers have no memory limit.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { type RunningData, geonodeMbps, grew, interpolate, panelQueries, panelState, report } from "../scripts/duties/crawler-running.ts";
+import { REFRESH_SEEDS, type RunningData, geonodeMbps, grew, interpolate, panelQueries, panelState, refreshShares, refreshSql, report } from "../scripts/duties/crawler-running.ts";
 import type { DutyMetric } from "../src/shared/chat-duties.ts";
 
 const METRICS: DutyMetric[] = [
@@ -78,4 +78,21 @@ test("a panel runs as Grafana draws it: quoted variables, hidden targets an expr
   assert.equal(panelState({ results: { share: { frames: [] } } }, shown).state, "no data");
   assert.equal(panelState({ results: { share: { error: "Query data error" } } }, shown).state, "error");
   assert.equal(panelState({ results: { A: frame([[3]]) } }, ["A"]).state, "ok");
+});
+
+test("the refresh age sums ten 0.1% samples, leaves GONE rows out and reads unmeasured when none answered (p683, p829, 10-21)", () => {
+  assert.equal(REFRESH_SEEDS.length, 10);
+  assert.equal(refreshSql(103).match(/state <> 'gone'/g)!.length, 4);
+  assert.match(refreshSql(103), /SYSTEM\(0\.1\) REPEATABLE\(103\)/);
+  // 10-21 06:05Z: 253 of 397,538 sampled read rows past 7 days, 3 past 14.
+  const half = { read: 198_769, past7: 126, past14: 1, past7History: 60 };
+  const shares = refreshShares([half, { ...half, past7: 127, past14: 2 }])!;
+  assert.equal(shares.past7Pct, 0.064);
+  assert.equal(shares.within14Pct, 99.999);
+  assert.equal(refreshShares([]), null);
+  const metrics = [...METRICS, { key: "ig_read_past_7d_pct", label: "7d", op: "<=", target: 1 }, { key: "ig_read_within_14d_pct", label: "14d", op: ">=", target: 99.99 }] as DutyMetric[];
+  const read = report({ now: NOW, from: FROM, to: TO, errors: [], refresh: [half] }, metrics);
+  assert.ok(read.metrics.ig_read_past_7d_pct! < 1 && read.metrics.ig_read_within_14d_pct! > 99.99);
+  const failed = report({ now: NOW, from: FROM, to: TO, errors: [{ source: "refresh age", message: "Grafana HTTP 400: canceling statement due to statement timeout" }] }, metrics);
+  assert.ok(failed.metrics.ig_read_past_7d_pct! > 1000 && failed.metrics.ig_read_within_14d_pct! < 0);
 });

@@ -11,7 +11,8 @@ import { type DsQuery, MINUTE, PG, PROM, grafanaClient, num, promInstant, readGr
  * - prod ClickHouse (estate_ch_prod): crawler.instagram_account_snapshots, one row per Instagram profile read on any path, for profiles a
  *   minute; crawler.instagram_census_reads for the census job failure share and census wire bytes; crawler.proxy_wire_reads for the other
  *   lanes' GeoNode bytes and new connections;
- * - prod Postgres (estate_pg_prod): meta_ads_wire_days, the Ad Library's GeoNode bytes;
+ * - prod Postgres (estate_pg_prod): meta_ads_wire_days, the Ad Library's GeoNode bytes, and instagram_census for how long ago each read account
+ *   was last read (REFRESH_SEEDS);
  * - Prometheus (estate_prometheus): the prod Kafka consumer lag, dead letter, search sync outbox and Redis stream lag series of the
  *   Instagram pipeline, for queues that grew over 6 h;
  * - the crawler dashboards themselves ("Check the Observability and Metrics"): every panel's queries run through Grafana the way the
@@ -53,6 +54,30 @@ export const GROW_MIN = 8_000;
  * 10-19 18:00Z to 10-20 01:00Z).
  */
 export const WAIT_LINE_S = 300;
+
+/**
+ * The refresh age of read Instagram accounts (p683, owner 10-18: "all refreshed at least weekly"; p829, owner 10-19: "Every Instagram profile is
+ * re-read at least once every 2 weeks"). One 1% TABLESAMPLE of instagram_census timed out under grafana_ro's 30 s statement_timeout on 10-20, so
+ * the read sums ten 0.1% samples with fixed seeds, about 1% of rows, read two at a time. A GONE row is an account Instagram no longer serves (the
+ * two-surface rule, auto-sns-agent census crawl.py), so it is left out. On 10-21 at 06:05Z the samples held 397,538 read rows: 253 past 7 days
+ * (0.064%) and 3 past 14 days, all three in a failing streak of 8 to 16 reads (a route-deadline block, a status-only shell, a logged-out null root).
+ */
+export const REFRESH_SEEDS: readonly number[] = [101, 102, 103, 104, 105, 106, 107, 108, 109, 110];
+export const refreshSql = (seed: number): string => `SELECT
+  count(*) FILTER (WHERE last_ok_at IS NOT NULL AND state <> 'gone') AS read,
+  count(*) FILTER (WHERE last_ok_at < now() - interval '7 days' AND state <> 'gone') AS past7,
+  count(*) FILTER (WHERE last_ok_at < now() - interval '14 days' AND state <> 'gone') AS past14,
+  count(*) FILTER (WHERE last_ok_at < now() - interval '7 days' AND state <> 'gone' AND lane = 'history') AS past7History
+FROM instagram_census TABLESAMPLE SYSTEM(0.1) REPEATABLE(${seed})`;
+export interface RefreshSample { read: number; past7: number; past14: number; past7History: number }
+/** Sums the samples; null when none answered, so the metrics stay unmeasured instead of reading 0%. */
+export function refreshShares(samples: readonly RefreshSample[]): { past7Pct: number; within14Pct: number; sum: RefreshSample } | null {
+  const sum = samples.reduce((acc, s) => ({ read: acc.read + s.read, past7: acc.past7 + s.past7, past14: acc.past14 + s.past14, past7History: acc.past7History + s.past7History }),
+    { read: 0, past7: 0, past14: 0, past7History: 0 });
+  if (!sum.read) return null;
+  const pct = (n: number): number => Math.round((100_000 * n) / sum.read) / 1000;
+  return { past7Pct: pct(sum.past7), within14Pct: Math.round(100_000 - (100_000 * sum.past14) / sum.read) / 1000, sum };
+}
 
 /** The Instagram pipeline queues: Kafka consumer lag, dead letters, search sync outbox and Redis stream lag. */
 export const QUEUES: { family: string; expr: string; by: string[]; wait?: string }[] = [
@@ -155,7 +180,7 @@ export interface ProxyLane { lane: string; wire: number; newSessions: number }
 export interface WireDay { day: number; wire: number; updated: number }
 export interface RunningData {
   now: number; from: number; to: number; errors: { source: string; message: string }[];
-  profiles?: number; census?: CensusWindow; proxy?: ProxyLane[]; adLibrary?: WireDay[]; queues?: Queue[]; panels?: PanelRead[];
+  profiles?: number; census?: CensusWindow; proxy?: ProxyLane[]; adLibrary?: WireDay[]; queues?: Queue[]; panels?: PanelRead[]; refresh?: RefreshSample[];
 }
 
 const ms = (t: number): string => `fromUnixTimestamp64Milli(toInt64(${Math.round(t)}), 'UTC')`;
@@ -217,6 +242,13 @@ export function report(d: RunningData, dutyMetrics: readonly DutyMetric[]): Prec
     const dashboards = new Set(d.panels.map(panel => panel.dashboard)).size;
     flagged.push({ at: d.now, kind: "dashboards", excerpt: `${blank.length} of ${d.panels.length} panels on ${dashboards} crawler dashboards show an error or No data${blank.length ? `: ${blank.map(panel => `${panel.dashboard} / ${panel.title} (${panel.state}${panel.detail ? `: ${panel.detail}` : ""})`).join("; ")}` : ""}.`.slice(0, 300) });
   }
+  const shares = d.refresh ? refreshShares(d.refresh) : null;
+  if (shares) {
+    metrics.ig_read_past_7d_pct = shares.past7Pct;
+    metrics.ig_read_within_14d_pct = shares.within14Pct;
+    const { sum } = shares;
+    flagged.push({ at: d.now, kind: "refresh", excerpt: `${sum.past7.toLocaleString("en-US")} of ${sum.read.toLocaleString("en-US")} sampled read Instagram accounts were last read over 7 days ago (${shares.past7Pct}%, ${sum.past7History.toLocaleString("en-US")} in the history lane), and ${sum.past14} over 14 days (${shares.within14Pct}% within 14), in ${d.refresh!.length} of ${REFRESH_SEEDS.length} 0.1% samples.` });
+  }
   for (const error of d.errors) flagged.push({ at: d.now, kind: "source_error", excerpt: `${error.source}: ${error.message}`.slice(0, 300) });
   const unmeasured = new Set<string>();
   const replaced = settle(dutyMetrics, metrics, unmeasured);
@@ -233,7 +265,7 @@ export async function measure(query: DsQuery | null, api: GrafanaApi | null, aut
     try { return await read(); } catch (error) { d.errors.push({ source, message: error instanceof Error ? error.message : String(error) }); return undefined; }
   };
   const window = `observed_at >= ${ms(from)} AND observed_at < ${ms(to)}`;
-  const [panels, profiles, census, proxy, adLibrary, queues] = await Promise.all([
+  const [panels, profiles, census, proxy, adLibrary, queues, refresh] = await Promise.all([
     step("dashboards", () => readPanels(api)),
     step("profiles", async () => num((await sqlRows(query, CH, `SELECT count() AS n FROM crawler.instagram_account_snapshots WHERE ${window}`))[0]?.n) ?? 0),
     step("census reads", async () => {
@@ -269,8 +301,20 @@ export async function measure(query: DsQuery | null, api: GrafanaApi | null, aut
       }
       return out;
     }),
+    step("refresh age", async () => {
+      const read = async (seed: number): Promise<RefreshSample> => {
+        const row = (await sqlRows(query, PG.prod, refreshSql(seed)))[0] ?? {};
+        return { read: num(row.read) ?? 0, past7: num(row.past7) ?? 0, past14: num(row.past14) ?? 0, past7History: num(row.past7History) ?? 0 };
+      };
+      const half = REFRESH_SEEDS.length / 2;
+      const lanes = [REFRESH_SEEDS.slice(0, half), REFRESH_SEEDS.slice(half)];
+      const out: RefreshSample[] = [];
+      await Promise.all(lanes.map(async seeds => { for (const seed of seeds) out.push(await read(seed)); }));
+      return out;
+    }),
   ]);
-  Object.assign(d, panels && { panels }, profiles !== undefined && { profiles }, census && { census }, proxy && { proxy }, adLibrary && { adLibrary }, queues && { queues });
+  Object.assign(d, panels && { panels }, profiles !== undefined && { profiles }, census && { census }, proxy && { proxy }, adLibrary && { adLibrary }, queues && { queues },
+    refresh && { refresh });
   return d;
 }
 
