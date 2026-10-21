@@ -1,7 +1,7 @@
 {
   "name": "Portal matches crawler",
   "ownerWords": "is all apis working that work in crawler api work for api portal?\n\nall working in prod? can you make a spec that calls the api for local-staging-prod?",
-  "goal": "Every customer crawler route works through the api portal on prod (api.virev.ai) and on staging, each called with its own docs example, page 2 included. A board decision (s5, s7) is the only reason a route stays out; DM routes wait for p12.",
+  "goal": "Every customer crawler route works through the api portal on prod (api.virev.ai) and on staging, each called with its own docs example, page 2 included, and the paid intelligence reads count too (p40). A route stays out only when portal-parity.routes.json marks it byDesign with the board decision behind it, such as login-only Xiaohongshu and paused Douyin. DM routes are left out here because d3 DM outreach works checks them. Changed 10-19 in the plan audit: the old text named scratchpad rows s5 and s7, which the board no longer has, and a DM wait on p12, which closed on 10-15. It holds two repeats: crawler errors behind the portal (timeouts, dead proxy exits and archive reads, fixed in p8, p15, p22, p23 and open in p32) in routes_failing_crawler, and portal gaps (missing /v1 routes, wrong answers and page 2 cursors, fixed in p7, p10 and p11 and open in p31) in routes_failing_portal.",
   "metrics": [
     {
       "key": "prod_working_pct",
@@ -43,8 +43,8 @@
       "scripts/duties/portal-parity.ts"
     ],
     "cwd": "../..",
-    "timeoutMs": 120000
+    "timeoutMs": 180000
   },
   "onMiss": "Read the flagged rows. Each missed metric gets one live fix job this run unless one is live; name it on the board. missing_prod rows with a staging route wait only for the next promote, which the release owner runs as soon as staging checks out (c74): name that promote, and nothing waits on the owner. missing_staging and broken_portal rows are portal fixes in apps/api-portal, shipped to staging (c50). broken_crawler rows are crawler fixes in apps/crawler-v3: check the crawler chat 01a115e2 board first and name its job if one owns the cause, else start one. unprobed and skipped rows are gaps in the measure itself: fix the precheck or its docs example. A regression row goes to the chat with the route, status and error. A new /v1 route for a crawler route goes into portal-parity.routes.json in the same job. No outside sends (c37). Merges, pushes and prod promotes need no go before the launch (c74). All on target: end the turn with no message.",
-  "boardGoal": "p1"
+  "boardGoal": "p18"
 }
