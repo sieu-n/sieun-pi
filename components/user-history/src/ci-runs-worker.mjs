@@ -2,7 +2,7 @@
 import { readFile } from "node:fs/promises";
 import { parentPort, workerData } from "node:worker_threads";
 
-const FIELDS = ["id", "name", "path", "head_branch", "head_sha", "event", "status", "conclusion", "created_at", "updated_at"];
+const FIELDS = ["id", "name", "path", "head_branch", "head_sha", "event", "status", "conclusion", "run_attempt", "created_at", "updated_at"];
 try {
   const cache = JSON.parse(await readFile(workerData.file, "utf8"));
   const runs = {};

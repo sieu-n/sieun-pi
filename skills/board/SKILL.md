@@ -29,10 +29,13 @@ Answer "did an agent send X anything" from `board.sends(...)`, never from the wi
 A job that waits for a CI run or a time sets a wake and ends its turn with nothing running. The chat service checks each wake every 30 s and sends the session an agent message that starts with `[wake]` when the run finishes or the time comes. That message reopens the session even after Prime unloaded it. On a box without the chat role in `~/.config/sieun-pi/hosts.json`, such as the Mac, the wake and every read go to the chat host's API, and the chat host delivers the wake through this box's relay.
 
 ```python
-board.wake(run=38556270524, note="land r11 on green")   # read from the local CI cache, so no GitHub call
+board.wake(run=38556270524, note="land r11 on green")   # read from the local CI cache, and once from GitHub when it ends
+board.wake(run=39493311906, attempt=2)                  # wait for the rerun of a finished run, not its old result
 board.wake(run=123, repo="sieu-n/sieun-pi")             # a run in another repo, read with gh every 2 min
 board.wake(at="2026-10-14T22:30:00Z", note="remeasure") # a time, instead of bash("sleep ...")
 ```
+
+A run wake follows the run's latest attempt, and its `[wake]` text names that attempt. A rerun keeps the run id, so a wake set on a run that already finished goes out at once with the old result. When you wait for a rerun, pass `attempt=` with the attempt you wait for.
 
 Never end a turn with `bash("ci-run-status <id> --wait")`, `gh run watch`, or a `sleep` still running. Prime counts a session with a running bash handle as busy, so the session keeps its Python kernel and its worker for the whole wait. On 10-14, 125 of 152 working sessions waited that way and held 8.69 GB of kernels. A wait inside one turn that ends in under a minute can still use `await bash(...)`.
 

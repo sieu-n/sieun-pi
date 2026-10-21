@@ -12,11 +12,16 @@ import type { AgentKind } from "./outbox.ts";
  * evicts its worker. 10-14 20:5xZ: 125 of 152 working sessions were such waits (82 on a CI run, 11 on a sleep), their kernels held 8.69 GB,
  * and 18 of them were root jobs whose Bun worker each stayed up only to wait, 8.92 GB with their kernels.
  */
-export type WakeOn = { kind: "run"; run: number; repo?: string } | { kind: "time"; at: number };
+/**
+ * `attempt`: the lowest run attempt the wake waits for. A rerun keeps the run id and raises its attempt, so a job that waits for the rerun of a
+ * finished run sets attempt to the next one; promote 17 (run 39493311906) on 10-21 had attempt 1 cancelled at 23:16Z and its rerun from 01:02Z,
+ * and wakes set on it at 01:00Z went out at once on attempt 1's cancel.
+ */
+export type WakeOn = { kind: "run"; run: number; repo?: string; attempt?: number } | { kind: "time"; at: number };
 /** `root`: the chat tree's root session, when the wake's session is a child of it; board.wake reads it from RLM_SESSION_DIR. */
 export interface Wake { session: string; root?: string; on: WakeOn; note: string; since: number }
 /** What a run's state read answers: still going, finished with its conclusion, or not readable now (looked at again next tick). */
-export type RunState = { done: false } | { done: true; conclusion: string; url: string; label: string; why?: string } | { error: string };
+export type RunState = { done: false } | { done: true; conclusion: string; attempt?: number; url: string; label: string; why?: string } | { error: string };
 
 export const TICK_MS = 30_000;
 /** The file the ticker rewrites as it starts and on every beat (`startWakes`); board.wake refuses a wake while it is over 2 min old, since no service would deliver it. */
@@ -42,7 +47,8 @@ export function parseWake(value: unknown): Wake | null {
   const root = typeof value.root === "string" && SESSION.test(value.root) && value.root !== value.session ? { root: value.root } : {};
   const on = value.on;
   if (on.kind === "run" && typeof on.run === "number" && Number.isSafeInteger(on.run) && on.run > 0) {
-    return { session: value.session, ...root, note, since, on: { kind: "run", run: on.run, ...(typeof on.repo === "string" && on.repo ? { repo: on.repo } : {}) } };
+    const attempt = typeof on.attempt === "number" && Number.isSafeInteger(on.attempt) && on.attempt > 1 ? { attempt: on.attempt } : {};
+    return { session: value.session, ...root, note, since, on: { kind: "run", run: on.run, ...(typeof on.repo === "string" && on.repo ? { repo: on.repo } : {}), ...attempt } };
   }
   if (on.kind === "time" && typeof on.at === "number" && Number.isFinite(on.at)) return { session: value.session, ...root, note, since, on: { kind: "time", at: on.at } };
   return null;
@@ -57,8 +63,11 @@ export function wakeText(wake: Wake, state: RunState | null, now: number): strin
   }
   if (wake.on.kind === "time") return `[wake] It is ${new Date(now).toISOString()}, the time you set with board.wake (${new Date(wake.on.at).toISOString()}).${note}`;
   const done = state && "done" in state && state.done ? state : null;
-  return `[wake] Run ${wake.on.run}${wake.on.repo ? ` in ${wake.on.repo}` : ""} finished: ${done?.conclusion ?? "unknown"}${done?.label ? ` (${done.label})` : ""}. ` +
-    `${done?.why ? `${done.why} ` : ""}${done?.url ?? ""} You set this wake with board.wake.${note}`.replace(/\s+/g, " ").trim();
+  const about = [done?.attempt ? `attempt ${done.attempt}` : "", done?.label ?? ""].filter(Boolean).join(", ");
+  const rerun = done?.attempt && done.conclusion !== "success"
+    ? ` A rerun keeps this run id: to wait for its next attempt, set board.wake(run=${wake.on.run}, attempt=${done.attempt + 1}).` : "";
+  return `[wake] Run ${wake.on.run}${wake.on.repo ? ` in ${wake.on.repo}` : ""} finished: ${done?.conclusion ?? "unknown"}${about ? ` (${about})` : ""}. ` +
+    `${done?.why ? `${done.why} ` : ""}${done?.url ?? ""}${rerun} You set this wake with board.wake.${note}`.replace(/\s+/g, " ").trim();
 }
 
 export interface WakeDeps {
@@ -119,7 +128,7 @@ export class Wakes {
         state = states.get(wake.on.run) ?? null;
         const failed = this.failing.get(wake.on.run);
         if (failed && now - failed.since >= UNREADABLE_MS) state = { error: failed.error };
-        else if (!state || !("done" in state) || !state.done) continue;
+        else if (!state || !("done" in state) || !state.done || (wake.on.attempt ?? 1) > (state.attempt ?? 1)) continue;
       } else if (wake.on.at > now) continue;
       due.set(wake.session, [...due.get(wake.session) ?? [], { file, wake, state }]);
     }
@@ -249,10 +258,13 @@ const NO_SUCH_RUN = /HTTP 404/;
  * the poller backed off to a 10 min cycle, and run 39083318405, created at 00:35:23Z, read "not in the cache" from 00:38Z to 00:44Z, so its
  * wake counted as unreadable and would have gone out with an error at UNREADABLE_MS while the run was still queued. While `stale` says the cache
  * has not read GitHub for STALE_CYCLES of its pace, or ci-run-status calls it dead, the run is read with the real gh (REAL_GH), past the shims.
+ * A run the cache reads as completed is read once more with the real gh, which answers its latest attempt: a rerun starts between two of the
+ * poller's cycles, and at 01:02:43Z on 10-21 the cache still read promote run 39493311906's attempt 1 as cancelled 6 s after attempt 2 started.
+ * When that read fails, the cache's answer stands.
  */
 export async function readRunState(on: Extract<WakeOn, { kind: "run" }>, exec: (command: string, args: string[]) => Promise<string> = run,
   stale: () => Promise<boolean> = async () => false): Promise<RunState> {
-  const gh = (repo: string, bin = "gh") => exec(bin, ["run", "view", String(on.run), "--repo", repo, "--json", "status,conclusion,url,workflowName,headBranch"]);
+  const gh = (repo: string, bin = "gh") => exec(bin, ["run", "view", String(on.run), "--repo", repo, "--json", "status,conclusion,attempt,url,workflowName,headBranch"]);
   const anyRepo = async (bin = "gh"): Promise<string> => {
     let missing: unknown;
     for (const repo of [CI_CACHE_REPO, ...OTHER_RUN_REPOS]) {
@@ -263,18 +275,23 @@ export async function readRunState(on: Extract<WakeOn, { kind: "run" }>, exec: (
     }
     throw missing;
   };
-  const cached = async (): Promise<string> => await stale() ? anyRepo(REAL_GH)
-    : exec("ci-run-status", [String(on.run)]).catch((error: unknown) => {
-      if (error instanceof Error && NOT_CACHED.test(error.message)) return anyRepo();
-      if (error instanceof Error && DEAD_CACHE.test(error.message)) return anyRepo(REAL_GH);
+  const cached = async (): Promise<{ text: string; cache: boolean }> => {
+    if (await stale()) return { text: await anyRepo(REAL_GH), cache: false };
+    try { return { text: await exec("ci-run-status", [String(on.run)]), cache: true }; } catch (error) {
+      if (error instanceof Error && NOT_CACHED.test(error.message)) return { text: await anyRepo(), cache: false };
+      if (error instanceof Error && DEAD_CACHE.test(error.message)) return { text: await anyRepo(REAL_GH), cache: false };
       throw error;
-    });
-  const raw = JSON.parse(on.repo ? await gh(on.repo) : await cached()) as Record<string, unknown>;
+    }
+  };
+  const read = on.repo ? { text: await gh(on.repo), cache: false } : await cached();
+  let raw = JSON.parse(read.text) as Record<string, unknown>;
+  if (read.cache && raw.status === "completed") raw = JSON.parse(await gh(CI_CACHE_REPO, REAL_GH).catch(() => read.text)) as Record<string, unknown>;
   const ghost = raw.status === NO_RESULT;
   if (raw.status !== "completed" && !ghost) return { done: false };
   const workflow = typeof raw.workflow === "string" ? raw.workflow : typeof raw.workflowName === "string" ? raw.workflowName : "";
   const branch = typeof raw.headBranch === "string" ? raw.headBranch : "";
-  return { done: true, conclusion: ghost ? "no result" : typeof raw.conclusion === "string" ? raw.conclusion : "unknown", url: typeof raw.url === "string" ? raw.url : "",
+  const attempt = typeof raw.attempt === "number" && Number.isSafeInteger(raw.attempt) && raw.attempt > 0 ? { attempt: raw.attempt } : {};
+  return { done: true, conclusion: ghost ? "no result" : typeof raw.conclusion === "string" ? raw.conclusion : "unknown", ...attempt, url: typeof raw.url === "string" ? raw.url : "",
     label: [workflow, branch].filter(Boolean).join(" on "), ...ghost ? { why: NO_RESULT_WHY } : {} };
 }
 

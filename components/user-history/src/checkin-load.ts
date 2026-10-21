@@ -74,7 +74,9 @@ export interface TrainRun { id: string; key: string; running: boolean; conclusio
 /** One run of any workflow as the CI cache last read it, with the branch it ran on (`ref`). */
 export interface CiRun { id: string; running: boolean; conclusion: string | null; updatedAt: number; ref?: string; sha?: string; workflow?: string; event?: string; createdAt?: number;
   /** The CI cache reads it as a ghost (ci-cache.mjs isGhost): GitHub lists it as queued, but it will never run to a result. */
-  ghost?: true }
+  ghost?: true;
+  /** The run's latest attempt (GitHub's run_attempt), which a rerun raises under the same run id. */
+  attempt?: number }
 /**
  * The release train's runs in the CI cache, and when the cache last read GitHub (`fetchedAt`). `all` is every run the cache has by id, the
  * verify-dev runs of ci/ branches too, for the steps that wait on one (`namedRuns`).
@@ -98,7 +100,7 @@ export function parseTrain(cache: unknown): Train | undefined {
   const all = new Map(Object.values(runs).flatMap(({ run, ghost }) => run?.id === undefined ? [] : [[String(run.id), { id: String(run.id), running: run.status !== "completed",
     conclusion: typeof run.conclusion === "string" ? run.conclusion : null, updatedAt: Date.parse(String(run.updated_at)), ref: String(run.head_branch ?? ""),
     sha: String(run.head_sha ?? ""), workflow: String(run.name ?? ""), event: String(run.event ?? ""), createdAt: Date.parse(String(run.created_at)),
-    ...ghost === true ? { ghost: true as const } : {} }] as const]));
+    ...typeof run.run_attempt === "number" ? { attempt: run.run_attempt } : {}, ...ghost === true ? { ghost: true as const } : {} }] as const]));
   return { readAt, all, runs: Object.values(runs).flatMap(({ run }) => {
     const path = String(run?.path ?? "");
     const branch = LAND_BRANCH.exec(String(run?.head_branch ?? ""));
@@ -158,14 +160,15 @@ export interface DeadWake { wake: Wake; why: string }
  * The pending wakes split into the live ones and the dead waits: a run wake on a run of the CI cache's repo that the cache (`train`) reads as
  * ended or a ghost, and whose last update is over RUN_WAKE_DUE_MS old, so a ticking service would have sent it. A job asleep only on dead waits
  * is no live owner. Crawler VP 10-20 07:45Z: about 15 jobs had slept since 10-19 21:07Z on promote run 39323562100, cancelled before any job
- * ran, and the check-in listed each as asleep on it.
+ * ran, and the check-in listed each as asleep on it. A wake for a later attempt than the run's latest waits for a rerun and stays live.
  */
 export function deadWakes(wakes: readonly Wake[], train: Train | undefined, now: number): { live: Wake[]; dead: DeadWake[] } {
   const live: Wake[] = [];
   const dead: DeadWake[] = [];
   for (const wake of wakes) {
     const run = wake.on.kind === "run" && (!wake.on.repo || wake.on.repo === CI_CACHE_REPO) ? train?.all?.get(String(wake.on.run)) : undefined;
-    if (!run || (run.running && !run.ghost) || !(now - run.updatedAt > RUN_WAKE_DUE_MS)) { live.push(wake); continue; }
+    const later = wake.on.kind === "run" && (wake.on.attempt ?? 1) > (run?.attempt ?? 1);
+    if (!run || later || (run.running && !run.ghost) || !(now - run.updatedAt > RUN_WAKE_DUE_MS)) { live.push(wake); continue; }
     const how = run.ghost ? "as a ghost with no result" : run.conclusion ?? "with no conclusion";
     dead.push({ wake, why: `run ${run.id} ended ${how} at ${new Date(run.updatedAt).toISOString().slice(11, 16)}Z` });
   }

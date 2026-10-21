@@ -3,7 +3,7 @@ import { Worker } from "node:worker_threads";
 
 /** One run of the CI cache as `parseTrain` reads it: GitHub's run fields without its jobs. */
 export type CachedRun = { id?: unknown; name?: unknown; path?: unknown; head_branch?: unknown; head_sha?: unknown; event?: unknown; status?: unknown;
-  conclusion?: unknown; created_at?: unknown; updated_at?: unknown };
+  conclusion?: unknown; run_attempt?: unknown; created_at?: unknown; updated_at?: unknown };
 /** The CI cache (`trainFile`) with only what the chat reads: when it was fetched and each run. */
 export type CiRuns = { fetchedAt?: unknown; runs: Record<string, { run: CachedRun; ghost?: true }> };
 

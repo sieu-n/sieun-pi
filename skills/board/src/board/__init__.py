@@ -379,11 +379,13 @@ def _own_session() -> str:
     raise LookupError(f"No session id found from RLM_SESSION_DIR={folder}.")
 
 
-def wake(run: int | str | None = None, at: str | float | None = None, note: str = "", repo: str | None = None) -> str:
+def wake(run: int | str | None = None, at: str | float | None = None, note: str = "", repo: str | None = None, attempt: int | None = None) -> str:
     """Wake this session when CI run `run` finishes or at time `at` (ISO 8601 or epoch seconds), then end the turn with nothing running.
 
     The chat service sends the wake as an agent message, which reopens the session even after Prime passivated it, so the wait holds no
     Python kernel and no worker. `repo` ("owner/name") reads the run with gh instead of the local CI cache. `note` comes back in the wake.
+    A run wake follows the run's latest attempt. `attempt` waits for that attempt or a later one, so a wake on a finished run waits for its rerun
+    instead of going out at once on the old result.
     """
     if (run is None) == (at is None):
         raise ValueError("Pass exactly one of run=<run id> or at=<time>.")
@@ -391,8 +393,11 @@ def wake(run: int | str | None = None, at: str | float | None = None, note: str 
         run_id = int(str(run).strip())
         if run_id <= 0:
             raise ValueError(f"Not a run id: {run!r}")
-        on: dict = {"kind": "run", "run": run_id, **({"repo": repo} if repo else {})}
-        key, what = f"run-{run_id}", f"run {run_id}{' in ' + repo if repo else ''} finishes"
+        if attempt is not None and int(attempt) < 1:
+            raise ValueError(f"Not a run attempt: {attempt!r}")
+        later = int(attempt) if attempt is not None and int(attempt) > 1 else None
+        on: dict = {"kind": "run", "run": run_id, **({"repo": repo} if repo else {}), **({"attempt": later} if later else {})}
+        key, what = f"run-{run_id}", f"run {run_id}{' in ' + repo if repo else ''}{f' attempt {later} or later' if later else ''} finishes"
     else:
         when = float(at) if isinstance(at, (int, float)) else datetime.fromisoformat(str(at).replace("Z", "+00:00")).timestamp()
         on = {"kind": "time", "at": int(when * 1000)}
