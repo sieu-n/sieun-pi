@@ -1112,8 +1112,8 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
           json(res, 200, { board, sent, ...(error ? { error } : {}) }); return;
         }
         case "agent-board": {
-          // A session's chat_board write (agentOpsViaService): this release's gates judge it, whatever extension build the session loaded.
-          try { json(res, 200, await applyAgentOps(dirname(backend.boards.dir), id, body.ops)); return; }
+          // A session's chat_board write (agentOpsViaService), judged by this release's gates; with others, tell_owner's read of other chats' asks.
+          try { json(res, 200, await applyAgentOps(dirname(backend.boards.dir), id, body.ops, body.others === true)); return; }
           catch (error) {
             if (error instanceof BoardError) throw new RequestError(error.kind === "forbidden" ? 403 : error.kind === "unknown" ? 409 : 400, error.message);
             throw error;

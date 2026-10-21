@@ -181,7 +181,10 @@ export interface TellInput { text?: unknown; why?: unknown; about?: unknown; rep
  * What the check reads of the chat: whether the owner started the running turn or his newest message has no answer yet (the message being
  * sent is left out), and the ids of his messages a `reply_to` may name.
  */
-export interface TellTurn { owner: boolean; ownerIds: ReadonlySet<string>; byOwner?: boolean; tells?: number; ownerText?: string; resent?: ReadonlySet<string>; done?: readonly string[]; startedAt?: number; asked?: ReadonlySet<string>; looked?: boolean }
+export interface TellTurn { owner: boolean; ownerIds: ReadonlySet<string>; byOwner?: boolean; tells?: number; ownerText?: string; resent?: ReadonlySet<string>; done?: readonly string[]; startedAt?: number; asked?: ReadonlySet<string>; looked?: boolean;
+  others?: readonly OtherAsk[] }
+/** An open For you todo that another of the owner's chats added: a question already waiting for him. */
+export interface OtherAsk { chat: string; id: string; text: string; at: string }
 /** The open owner todos on the chat's board that it added before the running turn started: a decision already waiting for him. */
 export function askedTodos(todos: readonly { id: string; done?: boolean; at?: string; from?: string }[], startedAt: number | undefined): Set<string> {
   return new Set(startedAt === undefined ? [] : todos.filter(todo => !todo.done && todo.from !== "owner" && todo.at !== undefined && Date.parse(todo.at) < startedAt).map(todo => todo.id));
@@ -197,6 +200,28 @@ const repeatOf = (about: string, done: readonly string[]): string | undefined =>
     return small.size >= 2 && [...small].every(word => large.has(word));
   });
 };
+/**
+ * Words too common to tell two incidents apart, left out of `incidentWords`. On 10-21 the prod crawler restart reached the owner three times in
+ * 7 min: Crawler VP put it on For you as t56 at 06:01:53Z, and launch main bro (06:02:09Z) and metal-management (06:08:09Z) asked him again.
+ */
+const COMMON_WORDS = new Set(("the and for with that this from have has had are was were been but not you your our its his him she they them their there here " +
+  "what when where which who why how can may will would should could does did into over under about after before since until than then also just " +
+  "only now still again more most some any all each every one two three out off yet very much many other same such own too get got let").split(" "));
+const incidentWords = (text: string): Set<string> => new Set([...aboutWords(text)].filter(word => !COMMON_WORDS.has(word)));
+/**
+ * The other chat's open todo an ask repeats: added in the last ASK_WINDOW_MS and sharing SAME_ASK_WORDS incident words with the text and about.
+ * A replay of this check over the 10-13 to 10-21 transcripts of the owner's 16 chats (1,133 calls sent on turns he did not start, 58 of them
+ * decision or blocker, 331 todos) refuses the two restart asks of 10-21, each sharing 7 words with t56, and no other call, for any window from
+ * 1 h to 48 h. At 5 words the 24 h window also refuses a needed line (slack green guy's Chrome add-on sign-in ask of 10-20 03:36Z), and with
+ * no window 6 words refuses 2 more. The window is d11's 24 h. Evidence: ~/work/same-incident-ask/replay.md.
+ */
+const ASK_WINDOW_MS = 24 * 3_600_000;
+const SAME_ASK_WORDS = 6;
+const sameAsk = (text: string, others: readonly OtherAsk[], now: number): OtherAsk | undefined => {
+  const words = incidentWords(text);
+  return others.find(ask => now - Date.parse(ask.at) <= ASK_WINDOW_MS && [...incidentWords(ask.text)].filter(word => words.has(word)).length >= SAME_ASK_WORDS);
+};
+const SAME_ASK_MARK = "Not sent, another chat already asks him this on For you";
 const REPEAT_MARK = "Not sent, you already told him this goal is done";
 const REASK_MARK = "Not sent, this decision already waits for him on For you";
 const INCIDENT_MARK = "Not sent, a blocker says what he must do";
@@ -230,7 +255,7 @@ export function tellTurn(messages: readonly ThreadMessage[]): TellTurn {
     }
     if (message.role === "user" || message.role === "custom") looked = false;
     if (message.role === "toolResult" && message.content.some(part => part.type === "image")) looked = true;
-    if (message.role === "toolResult" && message.toolName === TELL_OWNER_TOOL && [SHOP_TALK_MARK, REPEAT_MARK, REASK_MARK, UNLOOKED_MARK, INCIDENT_MARK].some(mark => messageText(message).startsWith(mark))) {
+    if (message.role === "toolResult" && message.toolName === TELL_OWNER_TOOL && [SHOP_TALK_MARK, REPEAT_MARK, REASK_MARK, UNLOOKED_MARK, INCIDENT_MARK, SAME_ASK_MARK].some(mark => messageText(message).startsWith(mark))) {
       const text = told.get(message.toolCallId);
       if (text) resent.add(text);
     }
@@ -256,9 +281,10 @@ export function tellTurn(messages: readonly ThreadMessage[]): TellTurn {
  * Length and form stay brief rules (c81, c97). A text it would send with shop talk (`shopTalk`: a UTC time, git's land or roll out, a commit
  * id) is refused once with what to say instead, and the very same text sent again goes out, so the check is a soft cap (c98). A text that
  * hands him a 5180 link or a screenshot (`UI_HANDOFF`) when no tool result showed the chat an image since the turn's last owner message or
- * report is refused once the same way, so the chat opens the shots and compares them with the accepted Staging app first (c118).
+ * report is refused once the same way, so the chat opens the shots and compares them with the accepted Staging app first (c118). A decision or
+ * blocker that asks what another chat's open For you todo already asks (`sameAsk`, `turn.others`) is refused once the same way.
  */
-export function tellOwner(input: TellInput, turn: TellTurn): { kind: "sent" | "refused" | "held"; text: string } {
+export function tellOwner(input: TellInput, turn: TellTurn, now = Date.now()): { kind: "sent" | "refused" | "held"; text: string } {
   const told = typeof input.text === "string" ? input.text.trim() : "";
   if (!told) return { kind: "refused", text: "nothing to tell: give text" };
   if (turn.byOwner === false && (turn.tells ?? 0) > 1) return { kind: "refused", text: `${turn.tells} tell_owner calls in one step on a turn ` +
@@ -271,6 +297,11 @@ export function tellOwner(input: TellInput, turn: TellTurn): { kind: "sent" | "r
   if (!turn.owner && input.why === "blocker" && !turn.resent?.has(told) && !ASKS_HIM.test(told)) return { kind: "refused", text: `${INCIDENT_MARK}, ` +
     "and this one asks nothing of him. An incident or delay that a job or another chat already handles is update, so put it on the board. If " +
     "only he can clear it, say what he must do and send it again; if he must see it now as it is, send the very same text again (c117)." };
+  const other = !turn.owner && (input.why === "decision" || input.why === "blocker") && !turn.resent?.has(told)
+    ? sameAsk(`${told} ${typeof input.about === "string" ? input.about : ""}`, turn.others ?? [], now) : undefined;
+  if (other) return { kind: "refused", text: `${SAME_ASK_MARK}, as ${other.id} of chat ${other.chat} ("${other.text.slice(0, 120)}"). Do ` +
+    `not ask him twice. Wait on that todo, and if you know something it lacks, send it to that chat with agent_message so it adds it to ${other.id}. ` +
+    "If yours is a different question he must answer too, send the very same text again and it goes out (c117)." };
   if (reask) return { kind: "refused", text: `${REASK_MARK} as ${reask}, which you added in an earlier turn. Put new facts or a changed ` +
     "pick in that todo with chat_board todo_update instead; if he must see this now, send the very same text again and it goes out (c117)." };
   if (repeat) return { kind: "refused", text: `${REPEAT_MARK} ("${repeat}") since his last message. Send nothing unless this brings something ` +

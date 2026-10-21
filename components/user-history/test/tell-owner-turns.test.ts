@@ -147,3 +147,28 @@ test("on a turn the owner did not start, a blocker that asks nothing of him is r
   assert.equal(tellOwner({ ...incident, text: "Cloudflare 로그인이 필요해요, Aside에서 한 번 로그인해 주세요." }, turn).kind, "sent");
   assert.equal(tellOwner(incident, { ...turn, owner: true }).kind, "sent", "his own turn is never held");
 });
+
+test("on a turn the owner did not start, an ask that another chat already put on For you is refused once, and the same text again goes out", () => {
+  // 10-21: Crawler VP asked to restart the stuck prod crawler worker as t56 at 06:01:53Z, then launch main bro asked at 06:02:09Z and
+  // metal-management at 06:08:09Z, the same incident three times in 7 min.
+  const turn = tellTurn([...settled, job("watchlist green fell to 73.6%", "07:00:00")]);
+  const t56 = { chat: "01a115e2-9544-7204-b8db-8ce4d5319048", id: "t56", at: "2026-10-19T06:59:00Z", text: "Prod TikTok signing and the Instagram jobs " +
+    "worker are stuck, and the metal box owner is out on usage limits until 15:40 KST or later. May I run the two fix commands on us-metal01 myself, this once?" };
+  const others = { ...turn, others: [t56] };
+  const again = { text: "Prod Watchlist has been mostly down since 11:04 KST, and the restart that fixes it is waiting on the metal box owner, who's " +
+    "paused on a usage limit. Your rule c146 keeps me off prod's box, so can I do that one restart myself? Answer on t7.", why: "decision", about: "prod Watchlist outage restart" };
+  const now = at("07:01:00");
+  const refused = tellOwner(again, others, now);
+  assert.equal(refused.kind, "refused");
+  assert.match(refused.text, /another chat already asks him this on For you, as t56 of chat 01a115e2/);
+  const history = [...settled, job("watchlist green fell to 73.6%", "07:00:00"), tell("s1", again, "07:01:00"), result("s1", refused.text, "07:01:01"), tell("s2", again, "07:01:30")];
+  assert.equal(tellOwner(again, { ...tellTurn(history), others: [t56] }, now).kind, "sent", "the very same text again goes out");
+  assert.equal(tellOwner(again, { ...others, owner: true }, now).kind, "sent", "his own turn is never held");
+  assert.equal(tellOwner(again, others, at("07:01:00") + 24 * 3_600_000).kind, "sent", "a todo older than a day is a standing question, not this incident");
+  assert.equal(tellOwner(again, turn, now).kind, "sent", "with no other chat's todo it goes out");
+  assert.equal(tellOwner({ ...again, why: "done", about: "prod Watchlist back" }, others, now).kind, "sent", "only an ask is checked");
+  const addOn = { text: "Chrome add-on 1.3 is uploaded to the Chrome Web Store, but Google only takes the review submission after a sign-in. " +
+    "Can you sign in once in Aside with Touch ID?", why: "blocker", about: "Chrome add-on review" };
+  assert.equal(tellOwner(addOn, { ...turn, others: [{ ...t56, text: "Give your Cloudflare token access to konti.bot, so a job can sign in once in Aside." }] }, now).kind, "sent",
+    "a different ask that shares a few words goes out");
+});
