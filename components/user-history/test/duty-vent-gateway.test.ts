@@ -2,9 +2,10 @@
 // the TLS handshake and 112 provider keys still sat outside Vent, and the duty has to read those as misses, never as a pass.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { inScope, UNMEASURED, UNMEASURED_PCT, ventMetrics, webhookVerdicts, type VentReads } from "../scripts/duties/vent-gateway.ts";
+import { inScope, removedProviderRefs, UNMEASURED, UNMEASURED_PCT, ventMetrics, webhookVerdicts, type VentReads } from "../scripts/duties/vent-gateway.ts";
 
 const site = (row: number, status: string, extra: object = {}) => ({ row, app: "convex", provider: "Stripe", runs_in: "Convex staging, prod", status, ...extra });
+const TABLES = 'INTEGRATIONS: dict[str, Integration] = {\n    "zernio": Integration(ZERNIO, "ZERNIO_API_KEY"),\n    "cliproxy-openai": Integration(OPENAI, "CLIPROXY_API_KEY"),\n}\n';
 const HTTP_DIRECT = "http.route({\n\tpath: '/stripe-webhook',\n})\nhttp.route({ path: '/clerk-webhook' })\nhttp.route({ path: '/resend-webhook' })\nhttp.route({ path: '/zernio-webhook' })\n";
 const VENT_ROUTE = "export const VENT_WEBHOOK_PREFIX = '/webhooks/vent/';\nnew Map([\n\t['stripe', a],\n\t['clerk', b],\n\t['resend', c],\n\t['zernio', d],\n]);\n";
 
@@ -13,6 +14,7 @@ function reads(overrides: Partial<VentReads> = {}): VentReads {
     share: { refs: { "origin/main": { sha: "a", sites: [site(0, "vent"), site(1, "vent"), site(63, "direct", { exception: "GeoNode" })] }, "origin/sieun/dev": { sha: "b", sites: [site(0, "vent"), site(1, "vent"), site(63, "direct", { exception: "GeoNode" })] } }, traffic: { production: { sites_with_vent_traffic: [0, 1] } } },
     webhooks: webhookVerdicts({ http: "", ventRoute: VENT_ROUTE }),
     keys: { locations: { "convex production befitting-sparrow-356": ["VENT_KEY", "PUBLIC_CLERK_PUBLISHABLE_KEY"] }, unreadable: {} },
+    removed: { grep: "", tables: TABLES },
     ...overrides,
   };
 }
@@ -204,4 +206,25 @@ test("vent-share.py follows an import only into a helper that names the provider
     "print(json.dumps({s.row: vs.judge(s, tree).status for s in sites}))";
   const got = JSON.parse(execFileSync("python3", ["-c", code, VENT_SHARE, JSON.stringify(files)], { encoding: "utf8" }));
   assert.deepEqual(got, { "25": "gone", "29": "vent" });
+});
+
+test("removed_provider_refs counts a removed provider named outside the kept guards once per file, and a removed Vent integration listed again", () => {
+  const line = (path: string, text: string) => `origin/sieun/dev:${path}\0${1}\0${text}`;
+  const grep = [
+    line("apps/research-agent-be/src/media.py", "client = HeyGen(); pexels = Pexels()"),
+    line("apps/research-agent-be/src/media.py", "HEYGEN_URL = 'https://api.heygen.com'"),
+    line("scripts/ci/vent-key-scan.mjs", "'HEYGEN', 'ZEROBOUNCE',"),
+    line("apps/infra/ci-server/controller/tests/data/patched/.github/workflows/checks.yml", "- name: research-app / lint"),
+    line("apps/crawler-v3/src/platforms/instagram/transport.py", "INSTAGRAM_GRAPHQL_POST,"),
+    line("apps/crawler-v3/docs/multi-platform-search.md", "The official `graph.facebook.com/ads_archive` API is political-ads-only"),
+    line("apps/blog/content/kr-beauty-collabs-2026/data/kr-beauty-collabs.csv", "@sora_lab,ingredients,76000,6"),
+    line("convex/search/upload.ts", "fetch('https://graph.instagram.com/v25.0/me')"),
+  ].join("\n");
+  const tables = TABLES.replace('    "zernio"', '    "zerobounce": Integration(ZEROBOUNCE, "ZEROBOUNCE_API_KEY"),\n    "zernio"');
+  const result = removedProviderRefs({ grep, tables }, 0);
+  assert.ok(!("error" in result));
+  assert.deepEqual(result.flagged.map(flag => flag.item).sort(), ["apps/research-agent-be/src/media.py", "apps/research-agent-be/src/media.py", "convex/search/upload.ts", "integration zerobounce"]);
+  assert.equal(ventMetrics(reads({ removed: { grep, tables } }), 0).metrics.removed_provider_refs, 4);
+  assert.equal(ventMetrics(reads(), 0).metrics.removed_provider_refs, 0);
+  assert.equal(ventMetrics(reads({ removed: { grep: "", tables: "" } }), 0).metrics.removed_provider_refs, UNMEASURED);
 });

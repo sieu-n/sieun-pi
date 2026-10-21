@@ -21,6 +21,8 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  * - code_vent_sites and tip_code_vent_sites: of the code_rows call sites at the tip, how many go through Vent by code alone at main and at
  *   the tip, so the cutover's code progress reads before prod runs it; new_direct_sites and tip_removed_sites count the sites the tip added
  *   and dropped.
+ * - removed_provider_refs: (provider, file) pairs at the tip that name a provider goal p22 removed (REMOVED_PROVIDERS) outside the guards
+ *   that keep it out (KEPT_GUARDS), plus each removed integration tables.py lists again, so removed code or a removed Vent row that comes back misses.
  * A source it cannot read gives 999999 for a count to drive down, -1 for a share or a count to drive up, a source_errors count and a flagged slice, never a good-looking value.
  * Targets in vent-gateway.duty.json and their sources: through_vent_pct 100 is the owner's "all external API/webhook should pass here", and
  * provider_keys_outside_vent 0 is his "completely remove all legacy sdk, API keys from old deployments". Call success and host health moved
@@ -98,7 +100,83 @@ export interface ShareResult { refs: Record<string, { sha: string; sites: ShareS
 export const GONE = new Set(["removed", "gone"]);
 export interface WebhookVerdict { source: string; direct: boolean; vent: boolean }
 export interface KeyListing { locations: Record<string, string[]>; unreadable: Record<string, string> }
-export interface VentReads { share: ShareResult | { error: string }; webhooks: WebhookVerdict[] | { error: string }; keys: KeyListing }
+/** The tip's text lines that name a removed provider (`git grep -z -n` output) and apps/vent/src/vent/tables.py at the tip. */
+export interface RemovedReads { grep: string; tables: string }
+export interface VentReads { share: ShareResult | { error: string }; webhooks: WebhookVerdict[] | { error: string }; keys: KeyListing; removed: RemovedReads | { error: string } }
+
+/**
+ * The providers goal p22 removed to the root on 2026-10-19 to 10-21 (the owner: "not just from vent but 뿌리째 쭉쭉 지워. 원천 코드, 관련된
+ * 서비스, 테스트 전부 다"): the old konti.bot media stack and its research app, our own Meta Graph app, and ZeroBounce with the Vent
+ * integrations no live code called. `grep` is the coarse ERE git grep reads the tip with, `code` the exact match on each line, and
+ * `integrations` the tables.py INTEGRATIONS rows that left Vent with it (37305513d4, 4c48f09ef1, 038400632a).
+ */
+export interface RemovedProvider { name: string; grep: string; code: RegExp; integrations: readonly string[] }
+export const REMOVED_PROVIDERS: readonly RemovedProvider[] = [
+  { name: "OmniHuman", grep: "omnihuman", code: /omnihuman/i, integrations: [] },
+  { name: "AIMLAPI", grep: "aimlapi", code: /aimlapi/i, integrations: ["aimlapi"] },
+  { name: "ElevenLabs", grep: "eleven_?labs", code: /eleven_?labs/i, integrations: ["elevenlabs"] },
+  { name: "HeyGen", grep: "heygen", code: /heygen/i, integrations: [] },
+  { name: "Pexels", grep: "pexels", code: /pexels/i, integrations: ["pexels"] },
+  { name: "Sora", grep: "sora|/v1/videos", code: /\bsora[- ]?2\b|\b(generate|download|check)_sora|\bsora_(video|status|general)|\/v1\/videos\b/i, integrations: ["openai"] },
+  { name: "konti.bot research app", grep: "p\\.konti\\.bot|research[-_]app", code: /p\.konti\.bot|\bresearch[-_]app\b/i, integrations: [] },
+  {
+    name: "Meta Graph",
+    grep: "graph\\.(instagram|facebook)\\.com|api\\.instagram\\.com|rupload\\.facebook\\.com|instagram_(access_token|app_secret)|instagram[-_](graph|oauth|token)|ig_exchange_token",
+    // Meta's Ad Library API (graph.facebook.com/ads_archive) is crawler research, not our removed Meta app; INSTAGRAM_GRAPHQL is the crawler's scrape.
+    code: /graph\.instagram\.com|graph\.facebook\.com(?!\/(v[\w.]+\/)?ads_archive)|api\.instagram\.com|rupload\.facebook\.com|INSTAGRAM_(ACCESS_TOKEN|APP_SECRET)\b|instagram[-_](graph(?!ql)|oauth|token[-_]exchange)|ig_exchange_token/i,
+    integrations: ["instagram-graph", "instagram-graph-user", "instagram-oauth", "instagram-token-exchange"],
+  },
+  { name: "ZeroBounce", grep: "zerobounce", code: /zerobounce/i, integrations: ["zerobounce"] },
+];
+
+/** Tip paths that may name a removed provider: the guards that keep it out, and frozen copies that never run. A path ending in / covers its folder. */
+export const KEPT_GUARDS: readonly { path: string; reason: string }[] = [
+  { path: "scripts/ci/vent-key-scan.mjs", reason: "the key scan's ban list (VENDOR_WORDS, the meta-removed and llm-media families)" },
+  { path: "scripts/ci/vent-key-scan.test.mjs", reason: "the key scan's test" },
+  { path: "scripts/ci/lint.mjs", reason: "the Vent egress lint's banned hosts of our old Meta app" },
+  { path: "scripts/ci/lint.test.mjs", reason: "the Vent egress lint's test" },
+  { path: "apps/crawler-v3/alembic/versions/0164_drop_email_vendor_verdicts.py", reason: "the ZeroBounce drop migration" },
+  { path: "apps/crawler-v3/tests/unit/test_email_vendor_verdicts_drop.py", reason: "the drop migration's test" },
+  { path: "apps/infra/metal/gates/ci-durable-schema-tests.sh", reason: "the schema gate that checks 0164 dropped the ZeroBounce storage" },
+  { path: "apps/vent/tests/unit/test_integration_route.py", reason: "checks Vent refuses a ZeroBounce call with vent_unknown_integration" },
+  { path: "convex/removed-tables.txt", reason: "the dropped konti.bot research tables the convex-schema land check refuses to see re-added" },
+  { path: "apps/infra/ci-server/controller/tests/data/", reason: "frozen copies of a past checks.yml the ci-server patcher tests against, pinned in SHA256SUMS" },
+  { path: "apps/llm-wiki/tests/fixtures/prose-lint/", reason: "copies of old wiki pages the prose lint tests on" },
+  { path: "ops/health/requests.yaml", reason: "the log of past health requests" },
+];
+const kept = (path: string) => KEPT_GUARDS.some(guard => guard.path.endsWith("/") ? path.startsWith(guard.path) : path === guard.path);
+
+/** The row names of the INTEGRATIONS block in tables.py, or null when the block is missing. */
+export function integrationNames(tablesPy: string): string[] | null {
+  const start = tablesPy.indexOf("INTEGRATIONS: dict[str, Integration] = {");
+  const end = tablesPy.indexOf("\n}\n", start);
+  if (start < 0 || end < 0) return null;
+  return [...tablesPy.slice(start, end).matchAll(/^\s*"([a-z0-9_-]+)"\s*:\s*Integration\(/gm)].map(match => match[1]!);
+}
+
+/** Lines at the tip that name a removed provider outside KEPT_GUARDS, one ref per (provider, file), plus each removed integration tables.py lists again. */
+export function removedProviderRefs({ grep, tables }: RemovedReads, at: number): { refs: number; flagged: FlaggedSlice[] } | { error: string } {
+  const names = integrationNames(tables);
+  if (!names) return { error: `apps/vent/src/vent/tables.py at ${TIP} has no INTEGRATIONS block` };
+  const found = new Map<string, FlaggedSlice>();
+  for (const line of grep.split("\n")) {
+    const [ref, num, text] = line.split("\0");
+    if (text === undefined) continue;
+    const path = ref!.slice(ref!.indexOf(":") + 1);
+    if (kept(path)) continue;
+    for (const provider of REMOVED_PROVIDERS) {
+      const key = `${provider.name}\0${path}`;
+      if (found.has(key) || !provider.code.test(text)) continue;
+      found.set(key, { at, kind: "removed_provider_ref", item: path, excerpt: `${provider.name} named at ${TIP} ${path}:${num}: ${text.trim()}`.slice(0, 300) });
+    }
+  }
+  for (const provider of REMOVED_PROVIDERS) {
+    for (const integration of provider.integrations.filter(name => names.includes(name))) {
+      found.set(`${provider.name}\0integration ${integration}`, { at, kind: "removed_provider_ref", item: `integration ${integration}`, excerpt: `${provider.name}: apps/vent/src/vent/tables.py at ${TIP} lists the removed integration ${integration} again` });
+    }
+  }
+  return { refs: found.size, flagged: [...found.values()] };
+}
 
 const round = (value: number, places = 1) => Math.round(value * 10 ** places) / 10 ** places;
 const failed = <T extends object>(value: T | { error: string }): value is { error: string } => "error" in value && typeof (value as { error: unknown }).error === "string";
@@ -205,6 +283,11 @@ export function ventMetrics(reads: VentReads, at: number): PrecheckOutput {
   metrics.provider_keys_seen = leaks.length;
   metrics.key_locations_with_leaks = new Set(leaks.map(leak => leak.slice(0, leak.lastIndexOf(" ")))).size;
 
+  const removed = failed(reads.removed) ? reads.removed : removedProviderRefs(reads.removed, at);
+  if (failed(removed)) sourceError(`removed provider refs at ${TIP} could not be read: ${removed.error}`);
+  else flagged.push(...removed.flagged);
+  metrics.removed_provider_refs = failed(removed) ? UNMEASURED : removed.refs;
+
   metrics.source_errors = sourceErrors;
   return { metrics, flagged };
 }
@@ -277,6 +360,16 @@ async function keyListing(): Promise<KeyListing> {
   return { locations, unreadable };
 }
 
+/** The tip's lines that name a removed provider, read with git grep (wiki content and binaries skipped), and tables.py at the tip. Exit 1 is no match. */
+async function removedReads(): Promise<RemovedReads> {
+  const pattern = REMOVED_PROVIDERS.map(provider => provider.grep).join("|");
+  const grep = await new Promise<string>((resolve, reject) => {
+    execFile("git", ["grep", "-I", "-n", "-z", "-i", "-E", "-e", pattern, TIP, "--", ".", ":!apps/llm-wiki/content"], { cwd: REPO, encoding: "utf8", maxBuffer: 64 << 20 },
+      (error, stdout, stderr) => error && !(error.code === 1 && !stderr) ? reject(new Error(`git grep: ${String(stderr).trim().slice(-200) || error.message}`)) : resolve(stdout));
+  });
+  return { grep, tables: await run("git", ["show", `${TIP}:apps/vent/src/vent/tables.py`]) };
+}
+
 async function main(): Promise<void> {
   const output = process.env.OUTPUT_FILE;
   if (!output) { process.stderr.write("vent-gateway: OUTPUT_FILE is not set\n"); process.exit(2); }
@@ -286,12 +379,13 @@ async function main(): Promise<void> {
     const fetched = await run("git", ["fetch", "--quiet", "origin", "main", "sieun/dev"]).then(() => null, (error: unknown) => errorText(error));
     const token = await grafanaToken().catch((error: unknown) => ({ error: errorText(error) }));
     const tokenText = typeof token === "string" ? token : undefined;
-    const [shareResult, hooks, keys] = await Promise.all([
+    const [shareResult, hooks, keys, removed] = await Promise.all([
       share(tokenText, dir).catch((error: unknown) => ({ error: errorText(error) })),
       webhooks().catch((error: unknown) => ({ error: errorText(error) })),
       keyListing(),
+      removedReads().catch((error: unknown) => ({ error: errorText(error) })),
     ]);
-    const result = ventMetrics({ share: shareResult, webhooks: hooks, keys }, at);
+    const result = ventMetrics({ share: shareResult, webhooks: hooks, keys, removed }, at);
     if (fetched) result.flagged!.push({ at, kind: "stale_ref", excerpt: `git fetch origin main sieun/dev failed, so ${REF} and ${TIP} may be old: ${fetched}`.slice(0, 300) });
     await writeFile(output, JSON.stringify(result, null, 2) + "\n");
   } finally {
