@@ -1,5 +1,5 @@
 import { type DutyMetric, type DutyRunRecord, type DutyView, type FixLink, MAX_DUTY_METRICS, shapeNote, verdictMetrics } from "../shared/chat-duties.ts";
-import { effectiveRun, metricStreaks } from "../shared/duty-streak.ts";
+import { effectiveRun, metricStreaks, streakRuns } from "../shared/duty-streak.ts";
 import type { ChatAgent } from "../shared/types.ts";
 import { headlineLabel, metricText } from "./duty-cadence.ts";
 
@@ -78,10 +78,10 @@ export function dutyState(view: DutyView): DutyState {
 
 const measured = (run: DutyRunRecord): boolean => { const verdict = effectiveRun(run).verdict; return verdict === "met" || verdict === "missed"; };
 
-/** Measured runs in a row whose counted metrics, after their job, came up short. */
+/** Counted runs in a row (`streakRuns`) whose counted metrics, after their job, came up short. */
 export const missStreak = (runs: readonly DutyRunRecord[], metrics: readonly DutyMetric[]): number => {
   let count = 0;
-  for (const run of runs.filter(measured)) { if (judgedRun(run, metrics).verdict !== "missed") break; count += 1; }
+  for (const run of streakRuns(runs)) { if (judgedRun(run, metrics).verdict !== "missed") break; count += 1; }
   return count;
 };
 

@@ -2,7 +2,8 @@ import type { DutyRunRecord, FixLink, MetricResult } from "./chat-duties.ts";
 
 /**
  * Miss streaks per metric, read from a duty's runs. A run's verdict is its measure after its own job ended when it has one (`effectiveRun`),
- * so a check-in that fixed its own finding is not counted as a miss. Skipped and error runs neither extend nor break a streak.
+ * so a check-in that fixed its own finding is not counted as a miss. Skipped and error runs neither extend nor break a streak, and nor does an
+ * older run whose job was cut (`streakRuns`).
  */
 
 /** After this many misses in a row with no move toward the target, a run must change approach: a new root-cause job, not the same fix. */
@@ -40,9 +41,18 @@ export function effectiveRun(run: DutyRunRecord): Pick<DutyRunRecord, "verdict" 
 const measured = (run: DutyRunRecord): boolean => { const verdict = effectiveRun(run).verdict; return verdict === "met" || verdict === "missed"; };
 const gap = (result: MetricResult): number => Math.abs(result.value - result.target);
 
-/** How many measured runs in a row, newest first, missed (`effectiveRun`); skipped and error runs neither extend nor break it. */
+/**
+ * The measured runs a streak counts, newest first: each met or missed run except an older one whose job was cut (`DutyRunRecord.cut`). A cut
+ * job did no work, so its run tried no fix, and its after-job measure is mostly the next run's own measure written again (`launch`; 549 of
+ * 585 cut runs with one on 10-21). The newest run stays, since it reads the duty's state now. AI harness d11 10-21: the 21:31Z verify run and
+ * its 01:32Z rerun both ended on pi-pool slot waits, their after-job measures read unlabeled_lines 3 and 6, and the 02:32Z push run was told
+ * "missed 3 runs in a row, change approach".
+ */
+export const streakRuns = (runs: readonly DutyRunRecord[]): DutyRunRecord[] => runs.filter(measured).filter((run, index) => index === 0 || !run.cut);
+
+/** How many counted runs in a row, newest first, missed (`effectiveRun`, `streakRuns`). */
 export function missStreak(runs: readonly DutyRunRecord[]): number {
-  const ordered = runs.filter(measured);
+  const ordered = streakRuns(runs);
   const at = ordered.findIndex(run => effectiveRun(run).verdict !== "missed");
   return at < 0 ? ordered.length : at;
 }
@@ -57,7 +67,7 @@ export const fixMisses = (streak: readonly DutyRunRecord[], key: string, fix: Fi
 
 /** The current miss streak of every metric the newest measured run missed, from runs newest first. */
 export function metricStreaks(runs: readonly DutyRunRecord[]): MetricStreak[] {
-  const ordered = runs.filter(measured);
+  const ordered = streakRuns(runs);
   const newest = ordered[0];
   if (!newest) return [];
   const streaks: MetricStreak[] = [];

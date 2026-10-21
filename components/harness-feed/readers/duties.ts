@@ -46,7 +46,7 @@ interface RunsTail { ino: bigint; offset: number; duties: Map<string, DutyLast> 
 
 /** The fields of a run the strip and the streaks read; the summary and flagged items stay out of memory. */
 const slimRun = (run: DutyRunRecord): DutyRunRecord => ({ duty: run.duty, at: run.at, trigger: run.trigger, ms: 0, verdict: run.verdict, metrics: run.metrics ?? {}, summary: "",
-  ...(run.fixes ? { fixes: run.fixes } : {}), ...(run.after ? { after: { ...run.after, summary: "" } } : {}) });
+  ...(run.fixes ? { fixes: run.fixes } : {}), ...(run.after ? { after: { ...run.after, summary: "" } } : {}), ...(run.cut ? { cut: run.cut } : {}) });
 
 /** Folds one run record into its duty's newest records. */
 export function foldRun(duties: Map<string, DutyLast>, record: DutyRunRecord, effective: (run: DutyRunRecord) => { verdict: string }): void {
@@ -59,9 +59,9 @@ export function foldRun(duties: Map<string, DutyLast>, record: DutyRunRecord, ef
   if (last.recent.length > RUN_STRIP) last.recent.shift();
   const verdict = effective(record).verdict;
   if (verdict === "met" || verdict === "missed") last.measured = record;
-  // A run that met every target ends every metric's streak, so nothing older can count.
-  if (verdict === "met") last.streak = [slim];
-  else if (verdict === "missed") last.streak.push(slim);
+  // A run that met every target ends every metric's streak, so nothing older can count, unless its job was cut (`streakRuns`).
+  if (verdict === "met" && !record.cut) last.streak = [slim];
+  else if (verdict === "met" || verdict === "missed") last.streak.push(slim);
   duties.set(record.duty, last);
 }
 

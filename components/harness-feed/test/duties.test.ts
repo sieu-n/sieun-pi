@@ -145,3 +145,16 @@ test("three misses with no move are stuck, and a fix counts live only while its 
     assert.equal(value(samples, "harness.duties.stuck_no_fix", { chat: at.chat }), 1);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
+
+test("a met run whose job was cut does not end the feed's miss streak (streakRuns)", async () => {
+  const dir = await home();
+  try {
+    const runs = join(dir, ".prime/agent/browser-chat/duties", `${CHAT}.runs.jsonl`);
+    const line = (at: number, value: number, cut?: object) => JSON.stringify({ duty: "d1", at, trigger: "schedule", ms: 1, verdict: value ? "missed" : "met",
+      summary: "s", metrics: { k: { value, target: 0, op: "<=", met: !value } }, ...(cut ? { cut } : {}) }) + "\n";
+    const cut = { error: "token hook gave no token (credential_unavailable)", at: NOW - 3 * MIN, provider: "anthropic" };
+    await appendFile(runs, line(NOW - 4 * MIN, 2) + line(NOW - 3 * MIN, 0, cut) + line(NOW - 2 * MIN, 2) + line(NOW - MIN, 2));
+    const samples = await read(ctx(dir));
+    assert.equal(value(samples, "harness.duties.metric_misses", { chat: "fixture chat", duty: "Fast loop", metric: "k" }), 3);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
