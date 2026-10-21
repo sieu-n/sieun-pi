@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import { loadHosts, roleUrl } from "../../src/hosts.ts";
+import { grafanaClient, readGrafanaAuth, sqlRows } from "./estate-reads.ts";
 
 /**
  * The Code health report duty's precheck (`node --import tsx scripts/duties/code-health-report.ts`). No model call.
@@ -15,7 +16,8 @@ import { loadHosts, roleUrl } from "../../src/hosts.ts";
  * - ranked_metrics_shown reads the page the wiki serves and counts the 10 tracked metrics whose page rows show the newest store day's numbers, with
  *   code_health_page.py's own formatting: the 8 the agent-code-metrics page ranks for both repos, plus auto-sns-agent's tests and CI (sieun-pi has
  *   no GitHub CI). Tests count only when that day's test load holds every suite any test load of the 7 days ending on it held, so a load that read
- *   2 of 12 suites, as the 16:50Z run on 10-19 did, misses. CI counts only when that day has ci-guarantees rows. The owner asked on 2026-10-15:
+ *   2 of 12 suites, as the 16:50Z run on 10-19 did, misses. A suite stops being expected once no sieun/dev verify-dev run printed it for 24 h, read
+ *   from otel.ci_test_results on prod ClickHouse, which the ci-history service fills from the same job logs on its own. CI counts only when that day has ci-guarantees rows. The owner asked on 2026-10-15:
  *   "now the same system will monitor and report test stats, CI stats."
  * - backup_age_h reads the newest dated copy on the store box.
  * - source_errors reads the step lines of the last run in the timer's log.
@@ -51,6 +53,13 @@ export const TRACKED: readonly Tracked[] = [
 ];
 /** Days of test loads, ending on the newest day, whose suites set the expected suite list. */
 export const SUITE_DAYS = 7;
+/**
+ * A suite no sieun/dev verify-dev run printed for this long has left CI and stops being expected, as pytest-seo did when ed6e0f5e7f dropped its
+ * leg on 10-19. The test load reads the verify-dev push runs of the last day (code-health.py TESTS_WINDOW), so this is the same window.
+ */
+export const SUITE_GONE_MS = DAY;
+const CI_SUITES_SQL = "SELECT suite, toUnixTimestamp(max(completed_at)) AS last FROM otel.ci_test_results WHERE workflow = 'verify-dev.yml' " +
+  "AND head_branch = 'sieun/dev' AND completed_at > now() - INTERVAL 8 DAY GROUP BY suite";
 /** The steps one code-health-daily.mjs run logs, in its order. */
 export const STEPS = REPOS.flatMap(repo => [`run ${repo}`, `missing ${repo}`]).concat(["load-ci", "load-tests", "page", "backup"]);
 
@@ -115,10 +124,13 @@ export function newestDay(days: Record<string, StoreDay>): string | null {
   return Object.keys(days).sort().reverse().find(day => REPOS.every(repo => days[day]!.repos.includes(repo))) ?? null;
 }
 
-/** Every suite a test load held on the `SUITE_DAYS` days ending on `newest`, so a suite that leaves CI stops being expected after a week. */
-export function expectedSuites(days: Record<string, StoreDay>, newest: string): string[] {
+/**
+ * Every suite a test load held on the `SUITE_DAYS` days ending on `newest`, less the suites whose newest CI result in `lastInCi` (suite to epoch ms)
+ * is older than `SUITE_GONE_MS` before `now`. With no CI read, every suite of the window stays expected.
+ */
+export function expectedSuites(days: Record<string, StoreDay>, newest: string, lastInCi: Record<string, number> | null = null, now = 0): string[] {
   const window = Array.from({ length: SUITE_DAYS }, (_, n) => addDays(newest, -n));
-  return [...new Set(window.flatMap(day => days[day]?.suites ?? []))].sort();
+  return [...new Set(window.flatMap(day => days[day]?.suites ?? []))].filter(suite => !lastInCi || (lastInCi[suite] ?? 0) >= now - SUITE_GONE_MS).sort();
 }
 
 /**
@@ -227,7 +239,8 @@ async function newestBackup(exec: Exec): Promise<{ file: string; at: number }> {
   return { file, at: Number(at) * 1000 };
 }
 
-export async function measure(exec: Exec, fetchPage: () => Promise<string>, readLog: () => Promise<string>, now: number): Promise<PrecheckOutput> {
+export async function measure(exec: Exec, fetchPage: () => Promise<string>, readLog: () => Promise<string>, now: number,
+  readCiSuites: () => Promise<Record<string, number>> = async () => { throw new Error("no CI suite reader"); }): Promise<PrecheckOutput> {
   const flagged: FlaggedSlice[] = [];
   const flag = (kind: string, excerpt: string): void => { flagged.push({ at: now, kind, excerpt: excerpt.slice(0, 400) }); };
   const metrics = { report_days_7d: UNMEASURED, backup_age_h: UNMEASURED, source_errors: UNMEASURED, ranked_metrics_shown: UNMEASURED };
@@ -245,7 +258,10 @@ export async function measure(exec: Exec, fetchPage: () => Promise<string>, read
       const html = await fetchPage();
       const page = pageRows(html);
       const newest = newestDay(days);
-      const suites = newest ? expectedSuites(days, newest) : [];
+      const lastInCi = await readCiSuites().catch((error: unknown) => { flag("source_error", `otel.ci_test_results: ${message(error)}; every suite of the window stays expected`); return null; });
+      const suites = newest ? expectedSuites(days, newest, lastInCi, now) : [];
+      const gone = newest && lastInCi ? expectedSuites(days, newest).filter(suite => !suites.includes(suite)) : [];
+      if (gone.length) flag("suites_gone", `no sieun/dev verify-dev run printed ${gone.map(suite => `${suite} (last ${lastInCi![suite] ? new Date(lastInCi![suite]!).toISOString() : "not in 8 days"})`).join(", ")} in the last 24 h, so they are not expected`);
       const ranked = newest ? rankedGaps(page, pageHotspots(html), days[newest]!, suites) : TRACKED.map(({ name }) => ({ name, gaps: ["no store day of the last 16 has rows for both repos"] }));
       metrics.ranked_metrics_shown = ranked.filter(metric => !metric.gaps.length).length;
       flag("ranked", `${metrics.ranked_metrics_shown} of ${TRACKED.length} tracked metrics show ${newest ?? "the newest day"}'s numbers on the page; its test load holds ${newest ? days[newest]!.suites.length : 0} of the ${suites.length} suites the test loads of the last ${SUITE_DAYS} days held (${suites.join(", ") || "none"})`);
@@ -289,7 +305,14 @@ async function main(): Promise<void> {
     if (response.status !== 200) throw new Error(`GET ${wiki}${PAGE_PATH} gave ${response.status}`);
     return response.text();
   };
-  const output = await measure(exec, fetchPage, () => readFile(LOG, "utf8"), Date.now());
+  const readCiSuites = async (): Promise<Record<string, number>> => {
+    const now = Date.now();
+    // measured: the suite query answered in 0.35 s through Grafana on us-metal02 (3 runs, 2026-10-21)
+    const query = grafanaClient(fetch, await readGrafanaAuth(), now, AbortSignal.timeout(60_000));
+    const rows = await sqlRows(query, "estate_ch_prod", CI_SUITES_SQL);
+    return Object.fromEntries(rows.map(row => [String(row.suite), Number(row.last) * 1000]));
+  };
+  const output = await measure(exec, fetchPage, () => readFile(LOG, "utf8"), Date.now(), readCiSuites);
   const text = JSON.stringify(output, null, 2) + "\n";
   if (process.env.OUTPUT_FILE) await writeFile(process.env.OUTPUT_FILE, text);
   else process.stdout.write(text);
