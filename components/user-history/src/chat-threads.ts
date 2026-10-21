@@ -1680,7 +1680,7 @@ export class ThreadHub {
     }
     const left = saved.jobs;
     if (!this.cancels || !sessionPath) throw new ScheduledJobsLeft(`The thread is archived, but its scheduled jobs may still run: ${left}.`);
-    const queued = await this.cancels.add({ id, host, sessionPath, archivedAt, error: left }).then(() => true, () => false);
+    const queued = await this.cancels.add({ id, host, sessionPath, archivedAt, error: left, ...operation ? { op: operation.op } : {} }).then(() => true, () => false);
     throw new ScheduledJobsLeft(queued
       ? `The thread is archived. Its scheduled jobs are not cancelled yet (${left}). The chat service retries the cancel until ${host ?? "this box"} answers, ` +
         "unless the thread is reopened first. If a typed prompt or a message from the chat service reaches the thread before then, the retry cannot tell " +
@@ -1786,7 +1786,8 @@ export class ThreadHub {
    * ends there with a log line. A user prompt may be a plain cron run or a person's message, an agent message with no sending session may be
    * the chat service's own wake or a held send older than the archive, and a file that does not read says nothing, so the entry stays and
    * nothing is sent until the owner reopens the thread. Heartbeat prompts alone are the kept jobs firing, so the cancel goes out. Another
-   * box's entries carry that box's clock, which NTP keeps within the archive's own timing.
+   * box's entries carry that box's clock, which NTP keeps within the archive's own timing. An entry of the service's own archive (`op`) lands
+   * the archived line the confirmed cancel wrote on that operation, as the archive itself does (`landArchive`), so it never reads as the owner's.
    */
   private async retryCancel(entry: PendingCancel): Promise<CancelTry> {
     const row = (entry.host ? this.catalog.remoteRows() : this.catalog.daemonRows()).find(candidate => candidate.sessionId === entry.id);
@@ -1801,7 +1802,9 @@ export class ThreadHub {
     }
     if (since === "accepted") return { outcome: "done", note: "the session answered a message another agent session sent after the archive, so the cancel would end authorized work" };
     if (since === "unproven") return { outcome: "again", error: "a user prompt or a service-sent message came in after the archive, which may be a cron run or a wake, so the cancel waits for the owner to archive or reopen the thread" };
+    const operation = entry.op && !entry.host ? { op: entry.op, file: entry.sessionPath, after: lastEntryId(entry.sessionPath) } : undefined;
     const answer = await archiveSavedSession(this.catalog.socketPathFor(entry.host), entry.sessionPath, 30000);
+    if (operation && (answer.kind === "archived" || answer.kind === "stopPending")) await this.landArchive(entry.id, operation);
     if (answer.kind === "archived") return { outcome: "done" };
     if (answer.kind === "stopPending") return { outcome: "done", note: `its jobs are cancelled, and Prime keeps the stop of the handed-off services whose receipts it could not read (${answer.unresolved})` };
     if (answer.kind === "unsupported") return { outcome: "done", note: "its daemon no longer lists saved_session_archive" };

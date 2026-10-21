@@ -27,6 +27,7 @@ const { Chats } = await import("../src/chats.ts");
 const { IdIndex } = await import("../src/id-index.ts");
 const { loadRecord } = await import("../src/chat-brief.ts");
 const { ScheduledJobsLeft, ServicesStopPending, SAVED_SESSION_ARCHIVE, archiveSavedSession, resumeSince } = await import("../src/saved-archive.ts");
+const { serviceArchiveRecord } = await import("../src/service-archives.ts");
 const { source } = await import("./chats-helpers.ts");
 test.after(() => rm(home, { recursive: true, force: true }));
 
@@ -589,4 +590,44 @@ test("a service archive that landed covers only its own line, so a newer owner s
   primeArchive(f.file, "owner_stop");
   const stop = await ownerStopSinceActive(f.file, await f.hub.serviceArchiveOf(f.id));
   assert.match(stop ?? "", /^owner_stop at /, "the owner's newer stop wins over the service's earlier record");
+});
+
+test("a service archive's queued cancel lands its line on the service's operation once the daemon confirms it, so it never reads as the owner's (01a159e2, 10-21)", async t => {
+  let refuse = true;
+  const lines: string[] = [];
+  const f = await fixture(t, { known: NEW, box: NEW, answer: path => {
+    if (refuse) return { success: false, error: "The supervisor is draining" };
+    const writer = SessionManager.open(path);
+    writer.appendSessionState({ status: "archived" });
+    writer.flushNow();
+    lines.push(writer.getEntries().at(-1)!.id);
+    return { success: true };
+  } });
+  const record = serviceArchiveRecord(join(home, `service-archives-${randomUUID()}.json`));
+  f.hub.serviceArchives = record;
+  await assert.rejects(f.hub.archive(f.id, "idle_root_end"), ScheduledJobsLeft);
+  const [operation] = await record.of(f.id);
+  assert.equal(operation?.reason, "idle_root_end");
+  assert.equal(operation?.line, null, "the refused send names no line");
+  assert.deepEqual((await f.pending()).map(entry => entry.op), [operation!.op], "the queued cancel keeps the service's operation");
+  refuse = false;
+  f.later(61_000);
+  await f.hub.cancels!.drain();
+  assert.deepEqual(await f.pending(), []);
+  assert.equal(lines.length, 1);
+  assert.deepEqual((await record.of(f.id)).map(entry => [entry.op, entry.reason, entry.line]), [[operation!.op, "idle_root_end", lines[0]]],
+    "the line the retry's cancel wrote is the service's");
+});
+
+test("the owner's archive queues its cancel with no service operation, and its confirmed retry lands nothing", async t => {
+  let refuse = true;
+  const f = await fixture(t, { known: NEW, box: NEW, answer: () => refuse ? { success: false, error: "The supervisor is draining" } : { success: true } });
+  const record = serviceArchiveRecord(join(home, `service-archives-${randomUUID()}.json`));
+  f.hub.serviceArchives = record;
+  await assert.rejects(f.chats.archive(f.id, "owner"), ScheduledJobsLeft);
+  assert.deepEqual((await f.pending()).map(entry => entry.op), [undefined]);
+  refuse = false;
+  f.later(61_000);
+  await f.hub.cancels!.drain();
+  assert.deepEqual(await record.of(f.id), []);
 });
