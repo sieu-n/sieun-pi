@@ -22,7 +22,9 @@ export interface MetricStreak {
   fix?: FixLink;
   /**
    * For a count over a trailing window (its result has `lastEventAt`), the time of the newest counted event when it is older than the previous
-   * measured run: no new event came since, so the number only waits for old events to leave the window.
+   * measured run, cut or not, since a cut run's precheck still measured: no new event came since, so the number only waits for old events to
+   * leave the window. Crawler VP d6 10-21: api_down_minutes_24h's newest down minute was 01:02Z, the 01:32Z and 21:20Z runs were cut, and the
+   * 11:38Z run compared it with the 14:07Z run of 10-20 and read "change approach" though promote 18's 09:35Z deploy had 0 down minutes.
    */
   quietSince?: number;
   /**
@@ -87,7 +89,7 @@ export function metricStreaks(runs: readonly DutyRunRecord[]): MetricStreak[] {
     const moved = gap(result) < gap(oldest);
     const fix = newest.fixes?.[key];
     const judged = fix ? fixMisses(streak, key, fix) : misses;
-    const previous = ordered[1];
+    const previous = runs.filter(measured).find(run => run.at < newest.at);
     const quiet = result.lastEventAt !== undefined && previous !== undefined && result.lastEventAt < previous.at;
     streaks.push({ key, misses, moved, since, value: result.value, target: result.target, op: result.op, ...(fix ? { fix } : {}),
       ...(quiet ? { quietSince: result.lastEventAt } : {}), stuck: judged >= CHANGE_APPROACH_MISSES && !moved && !quiet });

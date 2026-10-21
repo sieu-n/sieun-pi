@@ -47,3 +47,24 @@ test("a new stop after the last run keeps the same streak stuck", () => {
   assert.equal(streak!.quietSince, undefined);
   assert.match(missLine("d1", streak!, restarts.label), /Change approach: the fix p204/);
 });
+
+test("a cut run still dates the quiet window, so Crawler VP d6's 11:38Z run on 10-21 is quiet, not stuck", () => {
+  const api: DutyMetric = { key: "api_down_minutes_24h", label: "Minutes the prod crawler API failed its scrape in 24 h", op: "<=", target: 0 };
+  const p866: FixLink = { step: "p866", job: "crawler deploy downtime root cause", live: true };
+  const cutAt = (at: string) => ({ error: "token hook gave no token (credential_unavailable)", at: t(at), provider: "anthropic", slotAt: t(at) });
+  const measureAt = (at: string, value: number, last: string, extra: Partial<DutyRunRecord> = {}): DutyRunRecord => {
+    const { verdict, metrics, summary } = judge([api], { metrics: { api_down_minutes_24h: value }, lastEventAt: { api_down_minutes_24h: t(last) } });
+    return { duty: "d6", at: t(at), trigger: "schedule", ms: 1, verdict, metrics, summary, fixes: { api_down_minutes_24h: p866 }, ...extra };
+  };
+  const runs = [
+    measureAt("2026-10-21T11:38:43Z", 30, "2026-10-21T01:02:00Z"),
+    measureAt("2026-10-21T01:32:00Z", 32, "2026-10-21T01:02:00Z", { cut: cutAt("2026-10-21T01:47:39Z") }),
+    measureAt("2026-10-20T21:20:00Z", 27, "2026-10-20T15:11:00Z", { cut: cutAt("2026-10-20T21:34:30Z") }),
+    measureAt("2026-10-20T14:07:00Z", 36, "2026-10-20T13:05:00Z"),
+    measureAt("2026-10-20T13:59:00Z", 36, "2026-10-20T13:05:00Z"),
+    measureAt("2026-10-20T13:43:00Z", 36, "2026-10-20T13:05:00Z"),
+  ];
+  const [streak] = metricStreaks(runs);
+  assert.equal(streak!.quietSince, t("2026-10-21T01:02:00Z"));
+  assert.equal(streak!.stuck, false);
+});
