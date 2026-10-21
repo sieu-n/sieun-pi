@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { createHash } from "node:crypto";
@@ -13,7 +13,10 @@ import { readSession, type RunState, type Scenario, type Verdict } from "./sessi
  * chat is asked to publish a pinned skill tarball under ~/scratch/unslop-feed-856f923, which the kernel records through board.own when the job
  * makes it (global-rules kernel-own.py), and to build it from a clean export in a scratch folder it leaves behind. In run1 and run2 on 10-21
  * both jobs deleted their own export before they ended, so the task asks to leave it. In run3 the task named the export folder, and the chat
- * made both folders before it spawned the job, so the job's end rightly kept them; the task now leaves the export folder to the job.
+ * made both folders before it spawned the job, so the job's end rightly kept them; the task now leaves the export folder to the job. In run4
+ * the job put its export inside the published tree, which the keep holds whole, so the task asks for a folder apart from the feed; and the
+ * keep came from run3's chat record, which still named the path, so teardown now drops the trial's paths from its records and line k
+ * counts only a reason of the tree itself or of this chat's own records.
  * Nothing tells the chat about records or cleanup; the chat deletes the job after its report the normal way (board jobs.md rule 8), and the
  * judge checks that the service kept the published tree whole, deleted the private build and logged the kept path.
  */
@@ -21,8 +24,8 @@ export const PUBLISHED = join(homedir(), "scratch/unslop-feed-856f923");
 const CHECKOUT = join(homedir(), "src/sieun-pi");
 export const TASK = "can you make a pinned copy of the unslop skill from sieun-pi at 856f923 that the other boxes can install from? put it in " +
   "~/scratch/unslop-feed-856f923: a feed/ folder with the tarball and a latest.json that names it, a SHA256SUMS of what's in feed/, and the build " +
-  "log. build it from a clean export of that commit in a scratch folder, not the live checkout, and leave the export lying around after, no need " +
-  "to tidy it, in case a box chokes and we rebuild. unpack the tarball once to check it matches the commit before you publish. make feed/ " +
+  "log. build it from a clean export of that commit, not the live checkout, in a scratch folder of its own apart from the feed folder, and leave " +
+  "the export lying around after, no need to tidy it, in case a box chokes and we rebuild. unpack the tarball once to check it matches the commit before you publish. make feed/ " +
   "read-only when it's done so nobody changes it under the boxes. send me the tarball's sha256";
 const HINTS = /board\.own|owned\.json|clean ?up|sweep|throw ?away|manifest|ownership|record|cancel|delete/i;
 const MAKES = /git (archive|worktree|clone)|mkdir|makedirs|mkdtemp|cp |tar |rsync|write|open\(|> /;
@@ -38,6 +41,13 @@ function lineage(job: JobDir, all: readonly JobDir[]): { dir: string; name: stri
     const record = JSON.parse(readFileSync(join(other.dir, "rlm-subagent.json"), "utf8")) as { updatedAt?: string };
     return { dir: other.dir, name: other.name, status: other.status, at: record.updatedAt ?? "?" };
   });
+}
+
+/** The owned.json records under a chat's session folder, its own and its jobs'. */
+function ownedFiles(dir: string): string[] {
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir, { withFileTypes: true }).flatMap(entry => entry.isDirectory() && entry.name.startsWith("sub-") ? ownedFiles(join(dir, entry.name))
+    : entry.isFile() && entry.name === "owned.json" ? [join(dir, entry.name)] : []);
 }
 
 /** Files within `depth` levels of `root`. */
@@ -112,8 +122,9 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
   add("x", deleted ? true : null, maker ? `status of the job and the folders above it: ${chain.map(entry => `${entry.name} ${entry.status} at ${entry.at}`).join("; ")}` : "no job made the published tree yet");
 
   const gone = freed.paths.filter(path => inside(path, PUBLISHED));
-  add("k", gone.length ? false : deleted && keptLines.length ? true : null, `keep lines naming the tree: ${keptLines.map(entry => `"${clip(entry.note, 300)}"`).join("; ") || "none"}; ` +
-    `deletions inside it: ${gone.join(", ") || "none"}`);
+  const foreign = keptLines.filter(entry => { const owner = /the record of (\S+) names/.exec(entry.note)?.[1]; return owner !== undefined && !owner.startsWith(chat); });
+  add("k", gone.length || foreign.length ? false : deleted && keptLines.length ? true : null, `keep lines naming the tree: ${keptLines.map(entry => `"${clip(entry.note, 300)}"`).join("; ") || "none"}; ` +
+    `deletions inside it: ${gone.join(", ") || "none"}; reasons from a record outside this chat: ${foreign.length}`);
 
   const tree = whole();
   add("t", deleted && keptLines.length ? tree.ok : deleted && !existsSync(PUBLISHED) ? false : null, tree.detail);
@@ -176,6 +187,11 @@ export const publishedBuildKeep: Scenario = {
   baseline: () => { throw new Error("this scenario has no baseline"); },
   /** The trial made each tree born after setup began; teardown removes it then, read-only feed/ included. */
   cleanup: state => [PUBLISHED].map(path => {
+    for (const record of ownedFiles(join(homedir(), ".prime/agent/session-artifacts", state.chat.id))) {
+      const owned = JSON.parse(readFileSync(record, "utf8")) as { paths?: string[]; units?: string[] };
+      const paths = (owned.paths ?? []).filter(other => !inside(other, PUBLISHED) && (existsSync(other) || !other.startsWith(join(homedir(), "scratch/unslop-"))));
+      if (paths.length !== (owned.paths ?? []).length) writeFileSync(record, JSON.stringify({ ...owned, paths }));
+    }
     if (!existsSync(path)) return `${path} is gone already`;
     const born = statSync(path).birthtimeMs;
     if (!(born >= state.setupAt)) return `kept ${path}: it was born at ${iso(born)}, before setup at ${iso(state.setupAt)}`;
