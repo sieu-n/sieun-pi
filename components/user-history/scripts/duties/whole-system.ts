@@ -354,8 +354,8 @@ export function readPoolLog(lines: readonly string[], now: number): PoolHold[] {
 
 /** The owner's t86 answer on 10-21: "just make it work smooth". Chat head runs and parked trees, from pi-pool.log, for d7's two smoothness numbers. */
 export interface Smoothness {
-  /** waited_s of each chat head run pi-pool admitted in the window. */
-  headWaits: number[];
+  /** Each chat head run pi-pool admitted in the window, with its queue wait. */
+  headWaits: { session: string; waitedS: number }[];
   /** Per park that ended in the window: minutes it stayed parked after a tree of its priority or lower that parked later got an account. */
   overtaken: { session: string; minutes: number }[];
 }
@@ -367,7 +367,7 @@ const KST_MS = 9 * 60 * MINUTE;
  * epoch seconds, so each other line takes whichever of its `ts` read as UTC or as KST lies nearer the last `at` before it.
  */
 export function readSmoothness(lines: readonly string[], heads: ReadonlySet<string>, from: number, to: number): Smoothness {
-  const headWaits: number[] = [];
+  const headWaits: Smoothness["headWaits"] = [];
   const parks = new Map<string, { start: number; rank: number }>();
   const ended: { session: string; start: number; end: number; rank: number }[] = [];
   let anchor: number | undefined;
@@ -379,7 +379,7 @@ export function readSmoothness(lines: readonly string[], heads: ReadonlySet<stri
     if (entry.event === "turn_admitted") {
       const local = typeof entry.ts === "string" ? Date.parse(`${entry.ts}Z`) : NaN;
       const at = anchor === undefined || Math.abs(local - anchor) <= Math.abs(local - KST_MS - anchor) ? local : local - KST_MS;
-      if (heads.has(entry.session) && typeof entry.waited_s === "number" && at >= from && at < to) headWaits.push(entry.waited_s);
+      if (heads.has(entry.session) && typeof entry.waited_s === "number" && at >= from && at < to) headWaits.push({ session: entry.session, waitedS: entry.waited_s });
       continue;
     }
     if (typeof entry.at !== "number" || entry.provider !== "anthropic") continue;
@@ -401,6 +401,12 @@ export function readSmoothness(lines: readonly string[], heads: ReadonlySet<stri
   });
   return { headWaits, overtaken };
 }
+
+/**
+ * A chat head run that waits longer than this in pi-pool's turn queue counts in queue_holds_30. With heads first, a replay of the 10-20 and 10-21
+ * runs gave chat head runs a p90 wait of 4 to 9 s, against 139 s and 426 s in arrival order (~/work/pool-smooth/BASELINE.md).
+ */
+export const HEAD_WAIT_S = 30;
 
 const p90 = (values: readonly number[]): number => {
   const sorted = [...values].sort((a, b) => a - b);
@@ -910,9 +916,15 @@ export function measure(input: Inputs): PrecheckOutput {
   const hung = hungNow(input.watch, start);
   // Each idle unload sweep (every 60 s) finishes an open handoff (src/idle-unload.ts `resumeUnloaded`), so one still open a whole window later is stuck.
   const stuckHandoffs = (input.openHandoffs ?? []).filter(entry => entry.at < now - WINDOW_MS);
+  // The owner's t86 answer on 10-21, "just make it work smooth": a chat head run slow in the turn queue, and a parked tree passed by a later tree of
+  // its priority or lower for over HOLD_MS, are holds too.
+  const slowHeads = (input.smooth?.headWaits ?? []).filter(run => run.waitedS > HEAD_WAIT_S);
+  const overtakenLong = (input.smooth?.overtaken ?? []).filter(park => park.minutes * MINUTE > HOLD_MS);
   const metrics: Record<string, number> = {
     clean_min_30: clean,
-    queue_holds_30: queueHolds.length + poolHeld.filter(hold => !hold.cell).length,
+    queue_holds_30: queueHolds.length + poolHeld.filter(hold => !hold.cell).length + slowHeads.length + overtakenLong.length,
+    head_waits_over_30s: slowHeads.length,
+    parked_overtaken_over_10min: overtakenLong.length,
     cell_holds_30: poolHeld.filter(hold => hold.cell).length + poolCut.length,
     stuck_steps_all: stuck.reduce((sum, entry) => sum + entry.value, 0),
     ...worst ? { quiet_agent_gb: worst.gb } : {},
@@ -938,13 +950,15 @@ export function measure(input: Inputs): PrecheckOutput {
     ...hung ? { hung_calls: hung.calls.length } : {},
     ...latest?.services ? { handed_off_services: latest.services.count, handed_off_live: latest.services.live } : {},
     handoffs_stuck: stuckHandoffs.length,
-    ...input.smooth ? { head_queue_wait_p90_s: p90(input.smooth.headWaits), parked_overtaken_min_p90: p90(input.smooth.overtaken.map(park => park.minutes)) } : {},
+    ...input.smooth ? { head_queue_wait_p90_s: p90(input.smooth.headWaits.map(run => run.waitedS)), parked_overtaken_min_p90: p90(input.smooth.overtaken.map(park => park.minutes)) } : {},
   };
   if (input.smooth) {
-    const late = input.smooth.overtaken.filter(park => park.minutes > 0).sort((a, b) => b.minutes - a.minutes);
-    flagged.push({ kind: "smoothness", excerpt: `${input.smooth.headWaits.length} chat head runs started in the window, the slowest after ${Math.max(0, ...input.smooth.headWaits)} s in pi-pool's turn queue. ` +
-      `${input.smooth.overtaken.length} parked trees got an account, and ${late.length} of them stayed parked after a tree of their priority or lower that parked later got one` +
-      (late.length ? `: ${late.slice(0, 5).map(park => `${park.session.slice(0, 8)} ${park.minutes} min`).join(", ")}.` : ".") });
+    const late = [...overtakenLong].sort((a, b) => b.minutes - a.minutes);
+    const slow = [...slowHeads].sort((a, b) => b.waitedS - a.waitedS);
+    flagged.push({ kind: "smoothness", excerpt: `${input.smooth.headWaits.length} chat head runs started in the window, ${slow.length} of them after over ${HEAD_WAIT_S} s in pi-pool's turn queue` +
+      (slow.length ? ` (${slow.slice(0, 5).map(run => `${run.session.slice(0, 8)} ${run.waitedS} s`).join(", ")})` : "") + `, p90 ${metrics.head_queue_wait_p90_s} s. ` +
+      `${input.smooth.overtaken.length} parked trees got an account, and ${late.length} of them stayed parked over ${HOLD_MS / MINUTE} min after a tree of their priority or lower that parked later got one` +
+      (late.length ? ` (${late.slice(0, 5).map(park => `${park.session.slice(0, 8)} ${park.minutes} min`).join(", ")})` : "") + `, p90 ${metrics.parked_overtaken_min_p90} min.` });
   }
   for (const [name, reading] of worstByHost) {
     const key = name.replace(/[^A-Za-z0-9]+/g, "_");

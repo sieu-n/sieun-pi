@@ -23,8 +23,12 @@ test("only chat head runs admitted in the window count, and a KST stamp reads as
     admitted(HEAD, "2026-10-21T19:45:00", 20),
     admitted(HEAD, "2026-10-21T10:20:00", 2000),
   ], new Set([HEAD]), FROM, RUN);
-  assert.deepEqual(smooth.headWaits, [300, 20]);
-  assert.equal(measure({ now: RUN, watch: [], log: { holds: [] }, chats: [], smooth }).metrics.head_queue_wait_p90_s, 300);
+  assert.deepEqual(smooth.headWaits.map(run => run.waitedS), [300, 20]);
+  const { metrics } = measure({ now: RUN, watch: [], log: { holds: [] }, chats: [], smooth });
+  assert.equal(metrics.head_queue_wait_p90_s, 300);
+  // The 300 s run is over HEAD_WAIT_S and counts as a hold; the 20 s run does not.
+  assert.equal(metrics.head_waits_over_30s, 1);
+  assert.equal(metrics.queue_holds_30, 1);
 });
 
 test("a park counts the minutes after a later tree of its priority or lower got an account, and a later high tree passes nobody", () => {
@@ -36,7 +40,18 @@ test("a park counts the minutes after a later tree of its priority or lower got 
   assert.deepEqual(smooth.overtaken, [{ session: "hi", minutes: 0 }, { session: "b", minutes: 0 }, { session: "a", minutes: 10 }]);
   const { metrics, flagged } = measure({ now: RUN, watch: [], log: { holds: [] }, chats: [], smooth });
   assert.equal(metrics.parked_overtaken_min_p90, 10);
-  assert.match(flagged?.find(slice => slice.kind === "smoothness")?.excerpt ?? "", /1 of them stayed parked .*: a 10 min\.$/);
+  // a waited exactly 10 min past b, which is not over HOLD_MS.
+  assert.equal(metrics.parked_overtaken_over_10min, 0);
+  assert.equal(metrics.queue_holds_30, 0);
+  assert.match(flagged?.find(slice => slice.kind === "smoothness")?.excerpt ?? "", /0 of them stayed parked over 10 min .*, p90 10 min\.$/);
+});
+
+test("a park passed by a later tree for over 10 min is a hold in queue_holds_30", () => {
+  const smooth = readSmoothness([parked("a", "10:00:00"), parked("b", "10:05:00"), unparked("b", "10:31:00"), unparked("a", "10:52:00")], new Set(), FROM, RUN);
+  const { metrics, flagged } = measure({ now: RUN, watch: [], log: { holds: [] }, chats: [], smooth });
+  assert.equal(metrics.parked_overtaken_over_10min, 1);
+  assert.equal(metrics.queue_holds_30, 1);
+  assert.match(flagged?.find(slice => slice.kind === "smoothness")?.excerpt ?? "", /\(a 21 min\)/);
 });
 
 test("a parked line with no backoff field waited for a cell, as pi-pool writes it since it dropped the random draw", () => {
