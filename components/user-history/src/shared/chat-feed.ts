@@ -40,9 +40,14 @@ export const OPS_STEER_PREFIX = "[board] Ops not applied: ";
 const DECISION_STEER_PREFIX = "[board] Decisions not on the scratchpad: ";
 const SERVER_NOTES: readonly [string, string][] = [[CHECK_IN_PREFIX, "check-in"], [JOB_NOTICE_PREFIX, "jobs"], [REPLY_CHECK_PREFIX, "reply check"], [BRIEF_CHECK_PREFIX, "brief check"],
   [CORRECTION_CHECK_PREFIX, "corrections"], [OPS_STEER_PREFIX, "board"], [DECISION_STEER_PREFIX, "board"],
-  // Prime's own notes in a user message: on 10-20 from 04:38Z to 05:43Z, 5 chats answered a quota resume in plain text as if he had written
-  // to them, and each answer showed as his reply bubble, with no tell_owner check (c117).
-  ["<provider_quota_resumed>", "Prime"], ["Prime Agent restarted after an update", "Prime"], ["Watchdog recovery checkpoint", "watchdog"]];
+  ["Prime Agent restarted after an update", "Prime"], ["Watchdog recovery checkpoint", "watchdog"]];
+/**
+ * Prime's own notes in a user message open with a snake_case tag on its own line: <provider_quota_resumed>, <prime_agent_update_interrupted>,
+ * <prime_agent_worker_interrupted>, <ipython_kernel_reset> (prime-agent 0.9.8). On 10-20 from 04:38Z to 05:43Z, 5 chats answered a quota resume
+ * in plain text as if he had written to them, and each answer showed as his reply bubble, with no tell_owner check (c117). A tag with no
+ * underscore, as in "<b>bold</b> is fine?", is his.
+ */
+const PRIME_NOTE = /^<[a-z]+(?:_[a-z]+)+>\s/;
 /** In a server note that restarts a failed owner turn: the turn it starts stays the owner's, so the chat's answer is a bubble. */
 export const OWNER_RETRY_MARK = "The owner's message is still unanswered: ";
 /** The first line of a chat_board result when the chat changed its own check-in; the feed shows that line as a notice. */
@@ -56,6 +61,7 @@ export const NUDGE_PREFIX = "[from ";
 /** Who sent a server note ("check-in", "jobs", or the chat a nudge asks for), or undefined for a message the owner typed. */
 export function serverNote(text: string): string | undefined {
   if (text.startsWith(NUDGE_PREFIX)) { const end = text.indexOf("]"); return end > NUDGE_PREFIX.length ? text.slice(NUDGE_PREFIX.length, end) : undefined; }
+  if (PRIME_NOTE.test(text)) return "Prime";
   return SERVER_NOTES.find(([prefix]) => text.startsWith(prefix))?.[1];
 }
 

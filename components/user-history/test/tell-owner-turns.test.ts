@@ -128,6 +128,9 @@ test("a Prime quota resume or restart note starts no owner turn, so the chat's p
   const cut = { role: "assistant", content: [{ type: "toolCall", id: "c9", name: "ipython", arguments: {} }], stopReason: "toolUse", timestamp: at("06:50:10") } as unknown as ThreadMessage;
   assert.equal(tellTurn([...settled, owner("is it live?", "06:50:00"), cut, resume]).owner, true, "a quota pause inside his turn keeps it his");
   assert.equal(tellTurn([owner("Prime Agent restarted after an update. Continue the interrupted task.", "07:10:00")]).owner, false);
+  const update = owner("<prime_agent_update_interrupted>\nPrime Agent was updated while this turn ran.\n</prime_agent_update_interrupted>", "07:20:00");
+  assert.equal(tellTurn([...settled, update]).owner, false, "every Prime tag note is Prime's, as d9, d10 and d11 read it");
+  assert.equal(tellTurn([...settled, owner("<b>bold</b> is fine?", "07:30:00")]).owner, true);
 });
 
 test("on a turn the owner did not start, a blocker that asks nothing of him is refused once, and one that says what he must do goes out", () => {

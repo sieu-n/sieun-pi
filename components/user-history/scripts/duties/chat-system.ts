@@ -10,6 +10,7 @@ import { listedSessions } from "../../src/daemon-faults.ts";
 import { ownerChats } from "../../src/owner-chats.ts";
 import { chatDataDir } from "../../src/owner-ok.ts";
 import type { DutyRunRecord, FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
+import { serverNote } from "../../src/shared/chat-feed.ts";
 import type { ChatBoard, PlanItem } from "../../src/shared/types.ts";
 import { metricStreaks } from "../../src/shared/duty-streak.ts";
 import { hasDoneLine, upkeepWords } from "../../src/shared/upkeep-title.ts";
@@ -66,13 +67,10 @@ const quote = (text: string): string => `"${text.length > 80 ? `${text.slice(0, 
 const show = (value: number): string => String(Math.round(value * 10) / 10);
 
 /**
- * Runtime notes Prime writes as user lines: a tag block such as <provider_quota_resumed> or <prime_agent_update_interrupted>, and the restart
- * line. On 10-21 the 06:11Z spot audit of CI and RepoOps quoted 8 "owner's last messages", and all 8 were these notes.
+ * The owner's own messages in a transcript's last lines: user lines that no job, check-in or tool wrote ("[job] ...") and that the feed does not
+ * read as a server or Prime note (`serverNote`), and his board picks. On 10-21 the 06:11Z spot audit of CI and RepoOps quoted 8 "owner's last
+ * messages", and all 8 were Prime's <provider_quota_resumed> and restart notes.
  */
-const RUNTIME_NOTE = /^<([a-z_]+)>[\s\S]*<\/\1>$|^Prime Agent restarted after an update\./;
-
-/** The owner's own messages in a transcript's last lines: user lines that no job, check-in, tool or Prime runtime note wrote ("[job] ...",
- * "<provider_quota_resumed>"), and his board picks. */
 export function ownerMessages(lines: readonly string[], count: number): { at: string; text: string }[] {
   const out: { at: string; text: string }[] = [];
   for (const line of lines) {
@@ -81,7 +79,7 @@ export function ownerMessages(lines: readonly string[], count: number): { at: st
     if (entry.message?.role !== "user") continue;
     const content = entry.message.content;
     const text = (typeof content === "string" ? content : Array.isArray(content) ? content.map(part => (part as { text?: unknown }).text).filter(t => typeof t === "string").join(" ") : "").trim();
-    if (!text || (text.startsWith("[") && !text.startsWith("[board] Owner")) || RUNTIME_NOTE.test(text)) continue;
+    if (!text || (text.startsWith("[") && !text.startsWith("[board] Owner")) || serverNote(text)) continue;
     out.push({ at: entry.timestamp ?? "", text: text.length > 600 ? `${text.slice(0, 599)}…` : text });
   }
   return out.slice(-count);

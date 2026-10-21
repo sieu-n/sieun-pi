@@ -36,6 +36,9 @@ test("the spot audit quotes the owner's own messages and his board picks, never 
     line("<provider_quota_resumed>\nThe provider usage limit that paused this session has been reported as reset.\n</provider_quota_resumed>"),
     line("<prime_agent_update_interrupted>\nPrime Agent was updated.\n</prime_agent_update_interrupted>"),
     line("Prime Agent restarted after an update. Continue the interrupted task from the saved transcript."), line("<b>bold</b> is fine?"),
+    line("<prime_agent_worker_interrupted>\nThe worker stopped mid-turn.\n</prime_agent_worker_interrupted>"),
+    line("<provider_quota_resumed>\nThe provider usage limit that paused this session has been reported as reset."),
+    line("Watchdog recovery checkpoint: the session was idle with a turn open."),
     JSON.stringify({ message: { role: "assistant", content: "ok" } })];
   assert.deepEqual(ownerMessages(lines, 8).map(entry => entry.text), ["keep crawler working", '[board] Owner chose "Keep it"', "<b>bold</b> is fine?"]);
 });
