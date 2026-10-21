@@ -42,7 +42,7 @@ class Order(unittest.TestCase):
         t = turns.empty()
         fill(t, 3)
         queue_up(t, 10, mac=3, late=entry(since=9, tree="c"), mid=entry(since=5, tree="a"), first=entry(since=1, tree="b"))
-        self.assertEqual(turns.order(t["queued"]), ["first", "mid", "late"])
+        self.assertEqual(turns.order(t), ["first", "mid", "late"])
         del t["working"]["w0"], t["working"]["w1"]
         self.assertEqual(turns.admit_pass(t, 10, 3, 8, 1800), [("first", "slot"), ("mid", "slot")])
 
@@ -61,6 +61,31 @@ class Order(unittest.TestCase):
         self.assertEqual(queue_up(t, 1, job=entry(tree="j")), [], "an owner turn fills the 16th slot")
         del t["working"]["w0"]
         self.assertEqual(turns.admit_pass(t, 2, 16, 8, 1800), [("job", "slot")])
+
+    def test_a_lead_run_that_asked_last_takes_the_next_free_slot(self):
+        """10-21: a chat head's run waited behind 100 to 180 job runs, p90 426 s (~/work/pool-smooth/BASELINE.md)."""
+        t = turns.empty()
+        fill(t, 3)
+        jobs = {f"job{i}": entry(since=i, tree=f"j{i}") for i in range(5)}
+        queue_up(t, 10, mac=3, head=entry(since=9, tree="H"), **jobs)
+        t["lead"] = ["head"]
+        self.assertEqual(turns.order(t)[0], "head")
+        self.assertEqual(turns.reply(t, "head")["position"], 1)
+        del t["working"]["w0"]
+        self.assertEqual(turns.admit_pass(t, 10, 3, 8, 1800), [("head", "slot")])
+
+    def test_two_lead_runs_keep_the_order_they_asked_in(self):
+        t = turns.empty()
+        fill(t, 3)
+        queue_up(t, 10, mac=3, job=entry(since=1, tree="j"), late=entry(since=8, tree="L"), early=entry(since=5, tree="E"))
+        t["lead"] = ["late", "early"]
+        self.assertEqual(turns.order(t), ["early", "late", "job"])
+
+    def test_a_lead_run_still_waits_for_its_tree_limit(self):
+        t = turns.empty()
+        t["working"]["h0"] = dict(entry(tree="H"), kind="slot")
+        t["lead"] = ["head"]
+        self.assertEqual(queue_up(t, 5, mac=16, tree=1, head=entry(tree="H", since=1), job=entry(tree="J", since=2)), [("job", "slot")])
 
     def test_a_child_waits_in_line_behind_older_asks(self):
         """No run borrows a slot: a child of a working parent queues like any run."""
@@ -236,11 +261,31 @@ class Cli(unittest.TestCase):
         self.assertEqual([w["session"] for w in view["working"]], ["a", "b"])
         self.assertEqual(set(view["working"][0]), {"session", "tree", "kind", "since"})
         q = view["queued"][0]
-        self.assertEqual(set(q), {"session", "tree", "position", "total", "since", "wait_s"})
+        self.assertEqual(set(q), {"session", "tree", "position", "total", "since", "wait_s", "lead"})
         self.assertEqual((q["session"], q["position"], q["total"]), ("c", 1, 1))
         self.assertEqual(json.loads(self.run_cli("release", "a").stdout), {"released": True})
         self.assertEqual(json.loads(self.run_cli("release", "a").stdout), {"released": False}, "release is idempotent")
         self.assertEqual([w["session"] for w in self.queue()["working"]], ["b", "c"], "the release admitted c")
+
+    def test_lead_replaces_the_list_and_the_same_list_writes_nothing(self):
+        for s in "ab":
+            self.admit(s, "--tree", s.upper())
+        for s in "cde":
+            self.admit(s, "--tree", s.upper())
+        self.assertEqual(json.loads(self.run_cli("lead", "e", "d", "e").stdout), {"lead": ["d", "e"]})
+        view = self.queue()
+        self.assertEqual(view["lead"], ["d", "e"])
+        self.assertEqual([(q["session"], q["lead"]) for q in view["queued"]], [("d", True), ("e", True), ("c", False)])
+        path = os.path.join(self.dir, "turns.json")
+        before = os.stat(path).st_mtime_ns
+        self.assertEqual(json.loads(self.run_cli("lead", "d", "e").stdout), {"lead": ["d", "e"]})
+        self.assertEqual(os.stat(path).st_mtime_ns, before, "the same list again leaves turns.json alone")
+        self.run_cli("lead", "c")
+        self.assertEqual(self.queue()["lead"], ["c"], "a new list replaces the old one")
+        self.run_cli("release", "a")
+        self.assertEqual({w["session"] for w in self.queue()["working"]}, {"b", "c"})
+        self.run_cli("lead")
+        self.assertEqual((self.queue()["lead"], [q["session"] for q in self.queue()["queued"]]), ([], ["d", "e"]))
 
     def test_set_records_who_and_when_in_config_and_the_log(self):
         before = round(time.time())

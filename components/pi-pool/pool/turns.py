@@ -1,4 +1,4 @@
-"""The turn queue of this machine: `admit`, `release`, `owner-turn` and `queue`.
+"""The turn queue of this machine: `admit`, `release`, `owner-turn`, `lead` and `queue`.
 
 One run of one session holds one working slot, from the run's first model call to its
 agent_end. turns.json keeps the queue under its own lock, turns.lock, apart from the
@@ -7,8 +7,10 @@ account state.json and its lock:
     working  {session: {tree, kind, since, queued_since, pid, lease_until}}
     queued   {session: {tree, since, pid, waiter?}}
     owner    {session: epoch sec of the owner-turn mark}
+    lead     [session], the sessions whose queued runs go first (`lead`)
 
-Waiting runs start in the order they asked while the machine has fewer than working_max
+Waiting runs of the `lead` sessions start first, then every other run, each in the order
+they asked, while the machine has fewer than working_max
 runs working and the run's tree fewer than tree_working_max. The owner sets both by hand
 in config.json, and nothing changes them (owner, 10-19: "NO auto-adjusting behaviour").
 
@@ -49,13 +51,15 @@ def limits(cfg):
 
 
 def empty():
-    return {"working": {}, "queued": {}, "owner": {}}
+    return {"working": {}, "queued": {}, "owner": {}, "lead": []}
 
 
 def of(raw):
-    """The three parts of a turns record, with what an older writer left dropped."""
+    """The four parts of a turns record, with what an older writer left dropped."""
     raw = raw if isinstance(raw, dict) else {}
-    return {key: dict(raw.get(key) or {}) for key in ("working", "queued", "owner")}
+    out = {key: dict(raw.get(key) or {}) for key in ("working", "queued", "owner")}
+    out["lead"] = [s for s in raw.get("lead") or [] if isinstance(s, str)]
+    return out
 
 
 def carried(old):
@@ -66,7 +70,7 @@ def carried(old):
                    "since": e["since"], "queued_since": e.get("queued_since", e["since"]), "pid": e.get("pid"),
                    "lease_until": e.get("lease_until", 0)} for s, e in old["working"].items()}
     queued = {s: {k: e[k] for k in ("tree", "since", "pid", "waiter") if e.get(k) is not None} for s, e in old["queued"].items()}
-    return {"working": working, "queued": queued, "owner": old["owner"]}
+    return {"working": working, "queued": queued, "owner": old["owner"], "lead": []}
 
 
 def migrate():
@@ -98,9 +102,10 @@ def alive(pid):
     return True
 
 
-def order(queued):
-    """Queued session ids in admission order: first asked, first in."""
-    return sorted(queued, key=lambda s: (queued[s]["since"], s))
+def order(turns):
+    """Queued session ids in admission order: the lead sessions' runs first, then the rest, each first asked, first in."""
+    queued, lead = turns["queued"], set(turns["lead"])
+    return sorted(queued, key=lambda s: (s not in lead, queued[s]["since"], s))
 
 
 def sweep(turns, now, is_alive=alive):
@@ -129,12 +134,12 @@ def start(turns, session, kind, now, lease):
 
 
 def admit_pass(turns, now, all_max, tree_max, lease):
-    """Start queued runs in the order they asked while slots are free. Returns [(session, "slot")]."""
+    """Start queued runs in `order` while slots are free. Returns [(session, "slot")]."""
     admitted = []
     trees = {}
     for entry in turns["working"].values():
         trees[entry["tree"]] = trees.get(entry["tree"], 0) + 1
-    for session in order(turns["queued"]):
+    for session in order(turns):
         if len(turns["working"]) >= all_max:
             break
         tree = turns["queued"][session]["tree"]
@@ -151,21 +156,21 @@ def reply(turns, session):
     if session in turns["working"]:
         return {"state": "admitted", "kind": turns["working"][session]["kind"], "position": None, "total": None}
     if session in turns["queued"]:
-        queue = order(turns["queued"])
+        queue = order(turns)
         return {"state": "queued", "kind": None, "position": queue.index(session) + 1, "total": len(queue)}
     return {"state": "released", "kind": None, "position": None, "total": None}
 
 
 def view(turns, now, cfg):
     """`pi-pool queue --json`."""
-    queue = order(turns["queued"])
+    queue, lead = order(turns), set(turns["lead"])
     working = [{"session": s, "tree": e["tree"], "kind": e["kind"], "since": e["since"]}
                for s, e in sorted(turns["working"].items(), key=lambda kv: kv[1]["since"])]
     queued = [{"session": s, "tree": turns["queued"][s]["tree"], "position": i + 1, "total": len(queue),
-               "since": turns["queued"][s]["since"], "wait_s": round(now - turns["queued"][s]["since"])} for i, s in enumerate(queue)]
+               "since": turns["queued"][s]["since"], "wait_s": round(now - turns["queued"][s]["since"]), "lead": s in lead} for i, s in enumerate(queue)]
     return {"enabled": limits(cfg)[0] is not None, "working_max": int(cfg["working_max"]),
             "working_max_set": last_set("working_max"), "tree_working_max": int(cfg["tree_working_max"]),
-            "working": working, "queued": queued}
+            "working": working, "queued": queued, "lead": turns["lead"]}
 
 
 def last_set(key):
@@ -380,6 +385,22 @@ def cmd_owner_turn(rest):
         answer, events = mark_owner(turns, rest[0], now, int(cfg["lease_s"]))
         return True, answer, events
     emit(locked(mark))
+    return 0
+
+
+def cmd_lead(rest):
+    """Replace the lead list with these sessions, whose queued runs start before every other run; no sessions clears it.
+    The same list again changes nothing, so turns.json and its waiters are left alone."""
+    if any(s.startswith("-") for s in rest):
+        raise SystemExit("usage: pi-pool lead [<session>...]")
+    sessions = sorted(set(rest))
+
+    def put(turns, now):
+        if turns["lead"] == sessions:
+            return False, {"lead": sessions}, []
+        turns["lead"] = sessions
+        return True, {"lead": sessions}, [("turn_lead_set", {"sessions": len(sessions)})]
+    emit(locked(put))
     return 0
 
 

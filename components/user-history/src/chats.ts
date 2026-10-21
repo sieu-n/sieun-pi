@@ -260,6 +260,9 @@ export class Chats {
   /** The owner's archives of each chat (`archives`), and the last chat-list write of each chat (`membership`). */
   private readonly archiveCounts = new Map<string, number>();
   private readonly membershipTail = new Map<string, Promise<void>>();
+  /** The chat list writes to the turn queue (`leadChats`), one at a time, and whether one waits to start. */
+  private leadTail: Promise<void> = Promise.resolve();
+  private leadWaits = false;
 
   /**
    * `index` is `<data dir>/chats.json`: the session ids that are chats, newest first. The chat side's one definition of "chat"; the session entry
@@ -349,7 +352,19 @@ export class Chats {
     void next.finally(() => { if (this.syncing.get(id) === next) this.syncing.delete(id); });
   }
 
-  async settled(): Promise<void> { while (this.syncing.size) await Promise.all([...this.syncing.values()]); }
+  async settled(): Promise<void> {
+    while (this.syncing.size) await Promise.all([...this.syncing.values()]);
+    await this.leadTail;
+  }
+
+  /** Writes the whole chat list to the turn queue (`CheckInSource.lead`). A write that waits reads the list when it starts, so it covers every change before it. */
+  private leadChats(): void {
+    const lead = this.source.lead;
+    if (!lead || this.leadWaits) return;
+    this.leadWaits = true;
+    this.leadTail = this.leadTail.then(() => { this.leadWaits = false; return lead([...this.chatIds]); })
+      .catch((error: unknown) => { this.log(`turn queue: chat list: ${error instanceof Error ? error.message : String(error)}`); });
+  }
 
   /**
    * The index, and each chat's last check-in, so a service restart keeps every chat's schedule instead of starting it over (10-09: three
@@ -364,6 +379,7 @@ export class Chats {
         const at = this.source.duty ? await this.source.duty.lastCheckIn(id).catch(() => undefined) : (await this.source.memory.get(id).catch(() => undefined))?.at;
         if (at !== undefined && !this.lastCheckIn.has(id)) this.lastCheckIn.set(id, Math.min(at, this.now()));
       }
+      this.leadChats();
     });
   }
 
@@ -385,6 +401,7 @@ export class Chats {
     await this.source.owned?.add(id);
     await this.index.add(id);
     this.chatIds.add(id);
+    this.leadChats();
     this.threads.pin(id);
     await this.threads.setSteeringMode(id, "all");
     await this.loads.set(id, this.build, this.brief);
@@ -639,6 +656,7 @@ export class Chats {
     if (!sessionFile || !(await fileHasChatMarker(sessionFile))) return false;
     await this.index.add(id);
     this.chatIds.add(id);
+    this.leadChats();
     this.threads.pin(id);
     try { await this.threads.setSteeringMode(id, "all"); }
     catch (error) { this.log(`chat ${id.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`); }
@@ -651,6 +669,7 @@ export class Chats {
     this.reloadWaiting.delete(id);
     this.forced.delete(id);
     this.chatIds.delete(id);
+    this.leadChats();
     await this.index.forget(id);
     await this.loads.forget(id);
     await this.source.memory.forget(id);

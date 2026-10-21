@@ -477,6 +477,7 @@ export const poolCommand = {
   priority: (sessionId: string, priority: PoolPriority) => ["priority", priority, "--session", sessionId],
   set: (key: string, value: number) => ["set", key, String(value), "--by", "the Settings pane"],
   ownerTurn: (sessionId: string) => ["owner-turn", sessionId],
+  lead: (sessionIds: readonly string[]) => ["lead", ...sessionIds],
 };
 
 /** `pi-pool queue --json`, parsed at the boundary: the Mac-wide turn queue. Throws on a shape that does not match, so the pane says the pool did not answer. */
@@ -533,6 +534,11 @@ export async function setPoolKey(key: AgentQueueKey, value: number): Promise<voi
  */
 export async function markOwnerTurn(sessionId: string): Promise<void> {
   await run(poolCommand.ownerTurn(sessionId));
+}
+
+/** Puts the queued runs of these sessions ahead of every other queued run in this box's turn queue (`pi-pool lead`); the list replaces the last one. */
+export async function leadSessions(sessionIds: readonly string[]): Promise<void> {
+  await run(poolCommand.lead(sessionIds));
 }
 
 /** The class a tree's pool record holds as the pool reads it, and its sidebar label; null priority for a tree with no record yet. */

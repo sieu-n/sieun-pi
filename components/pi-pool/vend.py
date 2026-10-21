@@ -113,6 +113,8 @@ USAGE = """usage: pi-pool [command]
                                   caller, whose exit ends the run
   release <session>              free the turn's slot or drop its queue entry
   owner-turn <session>           the session's next admit is the owner's and runs at once
+  lead [<session>...]            replace the sessions whose queued runs start first; no
+                                  sessions clears the list
   queue [--json]                 working and queued turns
   snapshot --json [--thread <session> <model>]... [--tree <session>]...
                                   queue --json, config, and per thread who --json and ls --json for
@@ -149,7 +151,7 @@ def cli(args):
         "limited": pool.limited.cmd_limited, "refused": pool.session_cmds.cmd_refused,
         "unlimited": pool.session_cmds.cmd_unlimited, "token": pool.session_cmds.cmd_token, "priority": pool.commands.cmd_priority,
         "admit": pool.turns.cmd_admit, "release": pool.turns.cmd_release,
-        "owner-turn": pool.turns.cmd_owner_turn, "queue": pool.turns.cmd_queue,
+        "owner-turn": pool.turns.cmd_owner_turn, "lead": pool.turns.cmd_lead, "queue": pool.turns.cmd_queue,
         "serve": pool.remote.cmd_serve, "hookd": pool.hookd.cmd_hookd, "sample": pool.usage.cmd_sample, "file-login": pool.signin.cmd_file_login,
         "snapshot": lambda rest: pool.snapshot.cmd_snapshot(rest, cli),
     }

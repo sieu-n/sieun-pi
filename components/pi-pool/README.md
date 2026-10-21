@@ -631,10 +631,14 @@ One run of one session holds one working slot from its first model call to its a
 - `--renew` renews a running session's lease, and a session whose slot lapsed works again at once and never queues.
 - `pi-pool release <session>` frees the slot or drops the queue entry, and a second release does nothing.
 - `pi-pool owner-turn <session>` marks the session's next admit as the owner's, which runs at once, and an agent run of the session already in the queue starts at once as kind `ahead`. While the queue is off it does nothing and prints `{"session","state":"off"}`.
-- `pi-pool queue --json` prints the working runs with their kind (`slot`, `owner` or `ahead`) and the queued runs with their positions and waits.
+- `pi-pool lead [<session>...]` replaces the lead list, the sessions whose queued runs start before every other run, and prints `{"lead": [...]}`. With no sessions it clears the list, and the same list again writes nothing.
+- `pi-pool queue --json` prints the working runs with their kind (`slot`, `owner` or `ahead`), the queued runs with their positions, waits and `lead` flag, and the `lead` list.
 - `pi-pool snapshot --json [--thread <session> <model>]... [--tree <session>]...` prints `queue --json`, `config`, and for each thread `who --json` and `ls --json` per provider as one JSON line of `{code, out, err}` parts, each what the separate command prints. The chat service reads the pool this way, one process per 2 s at most (`pool/snapshot.py`). Each `--tree <session>` adds `{session, priority, label}` to `trees`, the account class (rule R7) that `priority --session <session>` keeps on that tree's record.
 
-Queued runs start in the order they asked.
+Queued runs of the lead sessions start first in the order they asked, and then every other run in the order it asked.
+The lead list holds no kind and skips no limit, so a lead run waits for a free slot like any run.
+pi-pool does not know what a lead session is. The chat service writes the ids of the chats that run on this machine with `pi-pool lead` each time its chat list loads or changes (`leadSessions` in components/user-history/src/chat-pool.ts).
+A replay of the runs of 10-20 and 10-21 with their real arrival times, hold times and slot counts cut the chat heads' p90 queue wait from 139 s and 414 s to 4 s and 6 s, while the job runs' p90 rose 2 to 5%.
 A run starts while the machine has fewer than `working_max` runs working and the run's tree fewer than `tree_working_max`, and every working run counts toward both.
 The owner sets both numbers by hand on each machine with `pi-pool set`, and no code changes them (owner, c88 on 10-16 and again on 10-19).
 An owner run never waits and still counts toward the limit, so background work waits behind it.

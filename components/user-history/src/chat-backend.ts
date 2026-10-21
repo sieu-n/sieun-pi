@@ -14,7 +14,7 @@ import { checkInRecord, JOB_CLEANUP_EVERY_MS } from "./chat-checkin.ts";
 import { checkInSettings } from "./checkin-settings.ts";
 import { checkInDuties } from "./checkin-findings.ts";
 import { CLEAN_ROOM_CHATS_FILE, CLEAN_ROOM_CORRECTIONS_FILE, CorrectionLedger } from "./chat-corrections.ts";
-import { claudeReader, markOwnerTurn, poolAdmits, readPoolClasses, readPoolStatus, setPoolPriority, treeFreeAt } from "./chat-pool.ts";
+import { claudeReader, leadSessions, markOwnerTurn, poolAdmits, readPoolClasses, readPoolStatus, setPoolPriority, treeFreeAt } from "./chat-pool.ts";
 import { relayStats } from "./chat-hosts.ts";
 import { boardQueueRead, hostsQueueRead, queueReader } from "./chat-turn-queue.ts";
 import { readCallHandles, readFootprints, startMacUsableWatch } from "./mac-usable-watch.ts";
@@ -261,7 +261,8 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       dutyJobs: async id => (await duties.store.runs(id)).flatMap(run => run.job ? [run.job.id] : []),
       dutyRuns: id => duties.store.runs(id), prs: replay ? async () => new Map() : prStates(),
       archived: new IdIndex(join(dataDir, "archived-chats.json"), "Archived chat index"), cleanRoomChats,
-      ...(ownChatsOnly ? { owned: new IdIndex(join(dataDir, "own-chats.json"), "Own chat index") } : {}), ...quiet ? { tickMs: 0 } : {} },
+      // Only the serve that owns the live chats writes the turn queue's lead list, with the chats this box runs; another box's chats wait in its own queue.
+      ...(ownChatsOnly ? { owned: new IdIndex(join(dataDir, "own-chats.json"), "Own chat index") } : { lead: ids => leadSessions(ids.filter(id => catalog.hostOf(id) === null)) }), ...quiet ? { tickMs: 0 } : {} },
     line => process.stderr.write(line + "\n"));
   chats.briefChanged = () => { void catalog.notify().catch(() => {}); };
   catalog.onCut(cut => { if (resumesNow(cut, Date.now())) chats.interruptedSoon(0); });
@@ -303,7 +304,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   // Every agent message the service sends waits on disk until the daemon takes it, and one that may have gone is looked for before it goes
   // again (src/agent-outbox.ts). A scratch serve keeps its own folder, so it never delivers the live service's messages.
   const agentOutbox = new AgentOutbox(join(dataDir, quiet ? "agent-outbox-scratch" : "agent-outbox"), { log: dutyLog, hostOf: session => catalog.hostOf(session), reach: host => reach.reach(host),
-    synced: () => catalog.hostsSynced(), subagentOf: async session => rowSubagent(await catalog.summary(session)),
+    synced: () => catalog.hostsSynced(), subagentOf: async session => rowSubagent(await catalog.summary(session)), resident: session => catalog.resident(session),
     stopped: stopRecords(dataDir),
     updateWindow: (host, error) => threads.updateWindow(host, error),
     send: async (session, text, host) => {
