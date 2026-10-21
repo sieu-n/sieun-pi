@@ -1183,6 +1183,16 @@ export class Catalog {
     return { ...saved, lifecycle: "archived" };
   }
 
+  /**
+   * Whether the session has a worker of its own (an activeSessionId) in the row the catalog holds now, with no refresh, null when it is not
+   * listed. The row is a box's that runs it when two boxes list it, so false means no box's list shows it loaded. A stopped subagent stays
+   * listed in its loaded tree with no activeSessionId: 63 of the 114 subagent rows of the 10-18 00:54Z list read so.
+   */
+  resident(sessionId: string): boolean | null {
+    const row = this.find(sessionId);
+    return row ? row.activeSessionId !== undefined : null;
+  }
+
   /** A session's title from what the catalog holds now, with no refresh; null when it is not listed. */
   title(sessionId: string): string | null {
     const row = this.find(sessionId);

@@ -62,6 +62,11 @@ export interface AgentOutboxDeps {
    * among them wakes to the live jobs 01a152a6, 01a15312 and 01a153b7 of frontend bro, which a relay through their parent reaches.
    */
   subagentOf?: (session: string) => Promise<StoppedSubagent | null>;
+  /**
+   * Whether a box's last list shows the session with a worker of its own (`Catalog.resident`), null when no box lists it. A subagent the list
+   * shows with none goes to its parent with no send first: on 10-21 the daemon refused 17 such sends as "Unknown active session" before each relay.
+   */
+  resident?: (session: string) => boolean | null;
   /** Whether that box is up (src/host-reach.ts); a message to a session on a box that reads offline waits with no try until it is back. */
   reach?: (host: string) => Promise<PeerReach>;
   /** The record that stopped the target (`stopRecords`), or null. */
@@ -304,10 +309,13 @@ export class AgentOutbox {
           await this.took(entry, merged);
           return this.send(session, entry.id, text, host);
         };
-        if (await this.inTree(session, go) === "sent") return;
+        const stopped = deps.resident?.(session) === false ? await this.subagent(session) : null;
+        if (stopped) {
+          await sending(merged.change);
+          await this.took(entry, merged);
+        } else if (await this.inTree(session, go) === "sent") return;
         // A stopped subagent is reached through its parent's rlm handle, and a parent that is gone too through its own parent.
-        const file = await deps.fileOf(session).catch(() => null);
-        const child = (file ? await stoppedSubagent(file) : null) ?? await deps.subagentOf?.(session).catch(() => null) ?? null;
+        const child = stopped ?? await this.subagent(session);
         if (child) {
           await this.deliver(child.parents[0]!, relayNote(child, text), entry.root);
           deps.log(`relay: ${session.slice(0, 8)} (${child.name}) is stopped; its message goes through its parent ${child.parents[0]!.slice(0, 8)}`);
@@ -482,6 +490,12 @@ export class AgentOutbox {
       if (sent === "sent") this.deps.log(`outbox ${this.where(session)}: ${id} went after its target's worker was ${moved.doing} for ${Math.round((this.now() - moved.since) / 1000)} s`);
     }
     return sent;
+  }
+
+  /** The session as a subagent, from the spawn record beside its file, else from its row on a box's list (`AgentOutboxDeps.subagentOf`). */
+  private async subagent(session: string): Promise<StoppedSubagent | null> {
+    const file = await this.deps.fileOf(session).catch(() => null);
+    return (file ? await stoppedSubagent(file) : null) ?? await this.deps.subagentOf?.(session).catch(() => null) ?? null;
   }
 
   /** `act` once the send before it into the same tree (`treeOf`) ended. */
