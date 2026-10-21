@@ -577,14 +577,14 @@ export class ThreadHub {
     const activeSessionId = reloadTarget(await this.summary(id), this.threads.get(id)?.live?.activeSessionId);
     if (activeSessionId === undefined) return "saved";
     let moved = false;
-    return await afterMove(() => this.reloadOnce(id, activeSessionId), () => this.stateOf(activeSessionId), () => { moved = true; })
+    return await afterMove(() => this.reloadOnce(id, activeSessionId), () => this.stateOf(id, activeSessionId), () => { moved = true; })
       .catch(error => { if (moved && isReopenable(error)) return "saved" as const; throw error; });
   }
 
   private async reloadOnce(id: string, activeSessionId: string): Promise<"reloaded" | "busy"> {
-    if (await this.daemonBusy(activeSessionId)) return "busy";
-    const response = await this.startWorker(`reload ${id.slice(0, 8)}`, this.catalog.hostOf(activeSessionId), client => client.request({ type: "reload", activeSessionId }, DAEMON_WORKER_START_MS, { recoverable: false }),
-      async () => await this.daemonBusy(activeSessionId) ? "its session is busy now" : null, undefined, id);
+    if (await this.daemonBusy(id, activeSessionId)) return "busy";
+    const response = await this.startWorker(`reload ${id.slice(0, 8)}`, this.catalog.hostOf(id), client => client.request({ type: "reload", activeSessionId }, DAEMON_WORKER_START_MS, { recoverable: false }),
+      async () => await this.daemonBusy(id, activeSessionId) ? "its session is busy now" : null, undefined, id);
     if (!response.success) throw new ThreadError(502, response.error);
     return "reloaded";
   }
@@ -595,16 +595,15 @@ export class ThreadHub {
    */
   async sessionActive(id: string): Promise<boolean> {
     const activeSessionId = this.threads.get(id)?.live?.activeSessionId ?? (await this.summary(id)).activeSessionId;
-    return activeSessionId !== undefined && await this.daemonBusy(activeSessionId);
+    return activeSessionId !== undefined && await this.daemonBusy(id, activeSessionId);
   }
 
-  /** `via` is the id the catalog knows the box by (`daemon`), the session id when the active id is not listed yet. */
-  private async stateOf(activeSessionId: string, via = activeSessionId): Promise<StateAnswer> {
-    return (await this.daemon(via)).request({ type: "get_state", activeSessionId }, undefined, { recoverable: false });
+  private async stateOf(id: string, activeSessionId: string): Promise<StateAnswer> {
+    return (await this.daemon(id)).request({ type: "get_state", activeSessionId }, undefined, { recoverable: false });
   }
 
-  private async daemonBusy(activeSessionId: string): Promise<boolean> {
-    const state = await this.stateOf(activeSessionId);
+  private async daemonBusy(id: string, activeSessionId: string): Promise<boolean> {
+    const state = await this.stateOf(id, activeSessionId);
     if (!state.success) throw new ThreadError(502, state.error);
     const now = state.data as Partial<Pick<SessionSummary, "isSessionActive" | "isStreaming" | "isCompacting" | "isBashRunning">>;
     return now.isSessionActive !== false || now.isStreaming === true || now.isCompacting === true || now.isBashRunning === true;
@@ -730,7 +729,11 @@ export class ThreadHub {
     return this.catalog.client;
   }
 
-  /** A connected client of the daemon that runs `id`, a session id or an active session id. */
+  /**
+   * A connected client of the daemon that runs session `id`. The box goes by the session id: another box's catalog names a new active id only
+   * after its next list, and on 10-21 at 14:06:43Z and 14:10:15Z the resume_queue for Mac chats 01a11b0b and 01a11ba8, sent 4 s after their
+   * resume, went by the new id to this box's daemon, which refused it as an unknown session.
+   */
   private daemon(id: string): Promise<DaemonClient> { return this.hostDaemon(this.catalog.hostOf(id)); }
 
   private async summary(id: string): Promise<SessionSummary> {
@@ -740,7 +743,7 @@ export class ThreadHub {
   }
 
   /** `host` names the box for a session the catalog does not list yet (just created or resumed); else the catalog's row says which box runs it. */
-  private async attach(activeSessionId: string, host: string | null = this.catalog.hostOf(activeSessionId)): Promise<DaemonAgentConnection> {
+  private async attach(activeSessionId: string, host: string | null): Promise<DaemonAgentConnection> {
     const client = new DaemonClient(host ? this.catalog.socketPathFor(host) : this.socketPath);
     try {
       await client.connect(3000);
@@ -1059,7 +1062,7 @@ export class ThreadHub {
       // A worker that is stopping or starting is waited out outside the attach queue, then attached once (src/worker-move.ts).
       const live = activeSessionId === undefined ? null : await afterMove(() => this.attaches.run(id, background, async () => {
         mark("queue");
-        const connection = await this.attach(activeSessionId).catch(error => {
+        const connection = await this.attach(activeSessionId, host).catch(error => {
           const closed = CLOSED_DURING_ATTACH.test(error instanceof Error ? error.message : String(error));
           if (!closed && !isReopenable(error)) throw error;
           marks.push(closed ? `${activeSessionId} closed during its attach: read saved` : `listed active but the daemon has no live ${activeSessionId}: read saved`);
@@ -1069,7 +1072,7 @@ export class ThreadHub {
         mark("attach");
         try { return { connection, snapshot: await this.liveSnapshot(connection, summary) }; }
         catch (error) { await disposeConnection(connection); throw error; }
-      }, host ?? ""), () => this.stateOf(activeSessionId), doing => mark(`worker ${doing}, waited`));
+      }, host ?? ""), () => this.stateOf(id, activeSessionId), doing => mark(`worker ${doing}, waited`));
       await filled;
       if (this.threads.get(id) !== thread) {
         await (live ? disposeConnection(live.connection) : undefined);
@@ -1285,7 +1288,7 @@ export class ThreadHub {
       const connection = await this.attach(activeSessionId, this.catalog.hostOf(id));
       try { return { connection, activeSessionId, snapshot: await this.liveSnapshot(connection, summary) }; }
       catch (error) { await disposeConnection(connection); throw error; }
-    }, this.catalog.hostOf(id) ?? ""), () => this.stateOf(activeSessionId));
+    }, this.catalog.hostOf(id) ?? ""), () => this.stateOf(id, activeSessionId));
     // A row the catalog has not seen fail yet still names the dead worker's id, whose attach answers "Session worker is failed".
     const listed = liveSessionId(summary);
     const live = (listed === undefined ? null : await attachLive(listed).catch(error => { if (!isReopenable(error)) throw error; return null; }))
@@ -1535,7 +1538,7 @@ export class ThreadHub {
     // The daemon refuses a prompt to a worker that is stopping or starting before it takes it, so the send waits the move out and goes once more
     // (src/worker-move.ts `afterMove`). On 10-21 at 11:21Z, during the restore after a Prime update, the check-in restart of chat 01a14d31
     // (metal-management) failed with "Session worker is starting", a dirty d7 minute.
-    const send = (target: string) => afterMove(() => ask(target, "prompt", fields), () => this.stateOf(target, id));
+    const send = (target: string) => afterMove(() => ask(target, "prompt", fields), () => this.stateOf(id, target));
     try { await send(activeSessionId); } catch (error) {
       if (activeSessionId !== listed || held || !isReopenable(error)) throw error;
       activeSessionId = (await resumed).live!.activeSessionId;
@@ -1600,7 +1603,7 @@ export class ThreadHub {
    */
   async resumeQueue(id: string): Promise<void> {
     const { live } = await this.requireResumed(id, "resume_queue");
-    const response = await (await this.daemon(live.activeSessionId)).request({ type: "resume_queue", activeSessionId: live.activeSessionId }, undefined, { recoverable: false });
+    const response = await (await this.daemon(id)).request({ type: "resume_queue", activeSessionId: live.activeSessionId }, undefined, { recoverable: false });
     if (!response.success && response.error !== "No queued work to resume") throw new ThreadError(502, response.error);
   }
 
@@ -1611,7 +1614,7 @@ export class ThreadHub {
   async deleteSubagent(id: string, childId: string): Promise<SubagentDelete> {
     if (this.dormant.has(id)) throw new ThreadError(409, "The chat is dormant; its finished jobs go with its worker, or at the next service start after it wakes.");
     const { live } = await this.requireLive(id, "delete_subagent");
-    const response = await (await this.daemon(live.activeSessionId)).request({ type: "delete_rlm_subagent", activeSessionId: live.activeSessionId, childId }, 30000, { recoverable: false });
+    const response = await (await this.daemon(id)).request({ type: "delete_rlm_subagent", activeSessionId: live.activeSessionId, childId }, 30000, { recoverable: false });
     if (!response.success) throw new ThreadError(502, response.error);
     const data = response.data as { deleted?: boolean; reason?: string } | undefined;
     if (data?.reason === "running") return "running";
@@ -1737,7 +1740,7 @@ export class ThreadHub {
 
   /** A bare kill, which a kill_origin daemon records as the owner's stop, so it ends the session's scheduled jobs. "gone": the daemon no longer holds it. */
   private async archiveKill(id: string, activeSessionId: string): Promise<"stopped" | "gone"> {
-    const response = await (await this.daemon(activeSessionId)).request({ type: "kill", activeSessionId }, 30000, { recoverable: false });
+    const response = await (await this.daemon(id)).request({ type: "kill", activeSessionId }, 30000, { recoverable: false });
     if (response.success) return "stopped";
     if (response.error.startsWith(UNKNOWN_ACTIVE)) return "gone";
     if (!STOP_PENDING.test(response.error)) throw new ThreadError(502, response.error);
@@ -1822,7 +1825,7 @@ export class ThreadHub {
       void (async () => {
         await this.catalog.refresh().catch(() => {});
         if ((await this.catalog.summary(id))?.activeSessionId !== activeSessionId) return;
-        await (await this.daemon(activeSessionId)).request({ type: "kill", activeSessionId }, 30000, { recoverable: false }).catch(() => {});
+        await (await this.daemon(id)).request({ type: "kill", activeSessionId }, 30000, { recoverable: false }).catch(() => {});
         await this.catalog.refresh().catch(() => {});
       })().catch(() => {});
     }, 5000).unref();
@@ -1921,7 +1924,7 @@ export class ThreadHub {
     if (live) return use(live.connection, thread?.live ? thread : null);
     const first = (await this.liveSummaries())[0];
     if (!first?.activeSessionId) throw new ThreadError(409, "Open a live thread once so models and commands can load.");
-    const connection = await this.attach(first.activeSessionId);
+    const connection = await this.attach(first.activeSessionId, this.catalog.hostOf(first.sessionId));
     try { return await use(connection, null); } finally { await disposeConnection(connection); }
   }
 
