@@ -57,12 +57,21 @@ export function deliverCorrections(input: {
     const kept = branch.findIndex(entry => entry.id === compaction.firstKeptEntryId);
     return [compaction, ...(kept < 0 ? [] : branch.slice(kept, compact)), ...active];
   })();
-  const newestDigest = branch.findLastIndex(entry => entry.type === "custom_message" && entry.customType === "harness_digest");
+  // The digests Prime sends, as its buildSessionContext picks them: the newest and every "[harness-digest update]" it stacked on, back to the
+  // first one that replaced its predecessors, and none before a compaction that folded them. Counting only the newest put the block one
+  // message later at each stacked update past the second, and on 10-21 under s3int.1-test those calls rewrote the whole cached prefix.
   const compactedDigest = compact >= 0 && branch[compact]?.type === "compaction" && branch[compact].harnessDigest !== undefined;
-  const keepDigest = compactedDigest && newestDigest <= compact ? null : branch[newestDigest]?.id;
+  const keptDigests = new Set<string>();
+  for (let index = branch.length - 1; index >= 0; index--) {
+    const entry = branch[index]!;
+    if (entry.type !== "custom_message" || entry.customType !== "harness_digest") continue;
+    if (compactedDigest && index < compact) break;
+    keptDigests.add(entry.id);
+    if ((entry.details as { stacked?: unknown } | undefined)?.stacked !== true) break;
+  }
   // Counted back from the newest message, skipping failed replies: Prime keeps a retried call's failed reply in the session but not in the
   // context, so counting from the start put the checkpoint at the end, where it moved on every call and rewrote the prompt cache.
-  const counted = live.filter(entry => !(entry.type === "custom_message" && entry.customType === "harness_digest" && entry.id !== keepDigest) &&
+  const counted = live.filter(entry => !(entry.type === "custom_message" && entry.customType === "harness_digest" && !keptDigests.has(entry.id)) &&
     (entry.type === "compaction" || visible(entry)) && (entry.type !== "message" || sent(entry.message))).map(entry => entry.id);
   const at = (after: string | null) => {
     let index = input.messages.length;
