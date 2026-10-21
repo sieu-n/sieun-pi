@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { parseDutyInput } from "../src/shared/chat-duties.ts";
-import { type AuditRow, type Deploy, type Fault, type HandData, type RefState, auditSql, classifyConfig, designOnProd, gitReleaseHolds, groupAudit, handExecs, isSessionProcess, nextState, hostWriters, oneOffs, parseBox, parseRegistry, releaseAt, report, WRITES, HOST_WRITES } from "../scripts/duties/hand-fixes.ts";
+import { type AuditRow, type Deploy, type Fault, type HandData, type RefState, auditSql, classifyConfig, designOnProd, gitReleaseHolds, groupAudit, handExecs, isSessionProcess, nextState, startedByTest, hostWriters, oneOffs, parseBox, parseRegistry, releaseAt, report, WRITES, HOST_WRITES } from "../scripts/duties/hand-fixes.ts";
 
 const DIR = join(import.meta.dirname, "..", "scripts", "duties");
 const AT = Date.parse("2026-10-16T05:08:27Z");
@@ -328,4 +328,18 @@ test("a change that only empties hand rows hands the keys back to their defaults
   const unpause = groupAudit("prod", [row(14400, "pause.instagram_census", true)]);
   assert.equal(classifyConfig(unpause[0]!, reg).kind, "fault");
   assert.match(auditSql(undefined, AT), /case when coalesce\(new_value, ''\) = '' then 1 else 0 end as cleared/);
+});
+
+test("a session script a test started is no hand writer", () => {
+  const unit = "/usr/bin/bash /home/sieun/scratch/ci-build/lead3/apps/infra/metal/deploy-unit.sh prod 0123456789abcdef0123456789abcdef01234567 crawler=ghcr.io/example/crawler-v3@sha256:aa";
+  const table = new Map([
+    [10, { ppid: 1, command: "timeout 600 bash apps/infra/metal/tests/deploy-unit-stubs.sh" }],
+    [11, { ppid: 10, command: "bash apps/infra/metal/tests/deploy-unit-stubs.sh" }],
+    [12, { ppid: 11, command: unit }],
+    [20, { ppid: 1, command: "bash" }],
+    [21, { ppid: 20, command: unit }],
+  ]);
+  assert.equal(isSessionProcess(unit), true);
+  assert.equal(startedByTest(12, table), true);
+  assert.equal(startedByTest(21, table), false);
 });

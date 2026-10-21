@@ -554,15 +554,31 @@ async function scriptText(path: string): Promise<string> {
   return [text, ...extra].join("\n");
 }
 
+/**
+ * Whether a CI gate or test script started the process: some ancestor runs one. At 01:30Z on 10-21 apps/infra/metal/tests/deploy-unit-stubs.sh
+ * ran deploy-unit.sh from two scratch exports against stub binaries, with a fake sha and a ghcr.io/example image, and counted as 5 hand writers.
+ */
+export function startedByTest(pid: number, table: ReadonlyMap<number, { ppid: number; command: string }>): boolean {
+  const seen = new Set<number>();
+  for (let row = table.get(pid); row && row.ppid > 1 && !seen.has(row.ppid); row = table.get(row.ppid)) {
+    seen.add(row.ppid);
+    const script = scriptOf(table.get(row.ppid)?.command ?? "");
+    if (script && isCiOrTest(script)) return true;
+  }
+  return false;
+}
+
 /** This Mac's processes started from an agent session folder, and whether each script writes to prod or staging. */
 export async function macProcesses(signal: AbortSignal): Promise<MacProcess[]> {
-  const lines = (await run("ps", ["-axww", "-o", "pid=,command="], signal)).split("\n");
-  const found: MacProcess[] = [];
+  const lines = (await run("ps", ["-axww", "-o", "pid=,ppid=,command="], signal)).split("\n");
+  const table = new Map<number, { ppid: number; command: string }>();
   for (const line of lines) {
-    const match = /^\s*(\d+)\s+(.*)$/.exec(line);
-    if (!match || !isSessionProcess(match[2]!)) continue;
-    const pid = Number(match[1]);
-    const command = match[2]!;
+    const match = /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line);
+    if (match) table.set(Number(match[1]), { ppid: Number(match[2]), command: match[3]! });
+  }
+  const found: MacProcess[] = [];
+  for (const [pid, { command }] of table) {
+    if (!isSessionProcess(command) || startedByTest(pid, table)) continue;
     let script = scriptOf(command);
     if (script && !isAbsolute(script)) {
       const cwd = (await run("lsof", ["-a", "-p", String(pid), "-d", "cwd", "-Fn"], signal).catch(() => "")).split("\n").find(item => item.startsWith("n"))?.slice(1);
