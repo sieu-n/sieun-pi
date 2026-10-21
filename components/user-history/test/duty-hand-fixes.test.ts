@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { parseDutyInput } from "../src/shared/chat-duties.ts";
-import { type AuditRow, type Deploy, type Fault, type HandData, type RefState, auditSql, classifyConfig, designOnProd, gitReleaseHolds, groupAudit, handExecs, isSessionProcess, nextState, hostWriters, oneOffs, parseBox, parseRegistry, releaseAt, report } from "../scripts/duties/hand-fixes.ts";
+import { type AuditRow, type Deploy, type Fault, type HandData, type RefState, auditSql, classifyConfig, designOnProd, gitReleaseHolds, groupAudit, handExecs, isSessionProcess, nextState, hostWriters, oneOffs, parseBox, parseRegistry, releaseAt, report, WRITES, HOST_WRITES } from "../scripts/duties/hand-fixes.ts";
 
 const DIR = join(import.meta.dirname, "..", "scripts", "duties");
 const AT = Date.parse("2026-10-16T05:08:27Z");
@@ -111,6 +111,31 @@ test("the prod B2 inventory exec is its declared unit, and the hand-run lane wri
   const f17 = reg.faults.find(fault => fault.id === "F17")!;
   assert.ok(lanes.every(lane => new RegExp(f17.match.box_exec_regex!).test(lane.command)));
   assert.ok(f17.designs.includes("01a11bd7-072f-7591-ad1d-f123c276cde5/p145"));
+});
+
+// The d3 read at 01:10Z on 10-21: the crawler prod read-backs' ro.py counted as 2 writers because it names /ops/controls, though it only
+// sends GET there and POSTs Grafana ds/query reads. The lines below are ro.py's own.
+test("a script that only reads /ops/controls is not a writer; a POST, PUT or PATCH there is", () => {
+  const ro = [
+    '"""Crawler controls go through GET /ops/controls on the crawler API."""',
+    "def http(method, url, headers, body=None):",
+    "    req = urllib.request.Request(url, data=data, method=method,",
+    '    status, res = http("POST", GRAFANA, {"authorization": f"Bearer {secret(\'GRAFANA_AGENT_TOKEN\')}"},',
+    '                       {"queries": [{"refId": "A", **query}], "from": str(now - 3600_000), "to": str(now)})',
+    "def ops(env, method, path, body=None, tier=None):",
+    '    return http(method, f"{host}/ops{path}", headers, body)',
+    '    status, d = ops(env, "GET", "/controls")',
+    '        raise SystemExit(f"/ops/controls {env}: HTTP {status}")',
+  ].join("\n");
+  assert.equal(WRITES.test(ro), false);
+  assert.equal(HOST_WRITES.test(ro), false);
+  for (const write of [
+    'r = requests.post(f"{API}/ops/controls", headers=H, json={"values": {"proxy.connect_racers": v}, "reason": why}, timeout=60)',
+    'r = httpx.patch(\n    f"{API}/ops/config", json=body)',
+    "curl -s -X POST -H @key https://crawler.virev.ai/ops/controls -d @body.json",
+    'status, d = ops(env, "POST", "/controls", {"values": v})',
+    'urllib.request.Request(f"{API}/ops/controls", data=b, method="PUT")',
+  ]) assert.equal(WRITES.test(`${ro}\n${write}`), true, write);
 });
 
 // The d3 read at 14:40Z on 10-20: a read-only stdin script with arguments counted as the one hand writer left.

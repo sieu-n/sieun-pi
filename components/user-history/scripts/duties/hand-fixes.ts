@@ -109,8 +109,18 @@ export const NEEDS: Readonly<Record<string, readonly Source[]>> = {
   faults_without_job: ["registry", "board"], undesigned_hand_fixes: READS, repeats_after_design: [...READS, "board"], hand_run_processes: ["mac", "box"],
 };
 
+/**
+ * An HTTP write to /ops/controls or /ops/config: a POST, PUT, PATCH or DELETE (a requests or httpx call, a method string, curl -X or a
+ * curl body) on the same line as the path or on the line next to it. Naming the path is not a write: at 01:10Z on 10-21 the crawler prod
+ * read-backs' ro.py, which only sends GET /ops/controls through a generic ops(env, method, path) helper and POSTs Grafana ds/query reads,
+ * counted as 2 hand writers. A write through such a helper, `ops(env, "POST", ...)`, still counts.
+ */
+const WRITE_METHOD = String.raw`(?:\.(?:post|put|patch|delete)\(|["'](?:POST|PUT|PATCH|DELETE)["']|-X\s*(?:POST|PUT|PATCH|DELETE)\b|--data(?:-raw|-binary)?\b|\s-d\s)`;
+const OPS_PATH = String.raw`/ops/(?:controls|config)\b`;
+const NEAR = String.raw`[^\n]{0,200}(?:\n[^\n]{0,200})?`;
+export const OPS_WRITE = new RegExp(`${WRITE_METHOD}${NEAR}${OPS_PATH}|\\bops\\([^)\\n]*["'](?:POST|PUT|PATCH|DELETE)["']|${OPS_PATH}${NEAR}(?:method\\s*[=:]\\s*["'](?:POST|PUT|PATCH|DELETE)|-X\\s*(?:POST|PUT|PATCH|DELETE)\\b)`, "i");
 /** A script that changes prod or staging control state: /ops writes, the set_controls API, config table writes, Check now, proxy or engage account rows. */
-export const WRITES = /\/ops\/(?:controls|config)\b|\bset_controls\(|\bUPDATE\s+config\b|\bINSERT\s+INTO\s+config(?:_audit)?\b|watchTargets:refresh|\bUPDATE\s+(?:proxy_endpoints|ig_engage_accounts)\b/i;
+export const WRITES = new RegExp(`${OPS_WRITE.source}|\\bset_controls\\(|\\bUPDATE\\s+config\\b|\\bINSERT\\s+INTO\\s+config(?:_audit)?\\b|watchTargets:refresh|\\bUPDATE\\s+(?:proxy_endpoints|ig_engage_accounts)\\b`, "i");
 /** Data stores where other duties' read-only psql runs through docker exec; an exec there is not a hand-started worker. */
 const DATA_SERVICES = new Set(["postgres", "clickhouse", "redis", "kafka", "opensearch", "langfuse-postgres", "langfuse-redis", "hdx-mongo"]);
 
@@ -271,12 +281,13 @@ export function parseBox(text: string): { containers: BoxContainer[]; execs: Box
 }
 
 /**
- * What a box script writes to prod or staging: WRITES, an SQL write, an /ops/ call, a detached docker exec (a hand-started worker), a
+ * What a box script writes to prod or staging: WRITES, an SQL write, an HTTP write to /ops/, a call to an /ops/ action other than
+ * controls and config (a seed or reconcile), a detached docker exec (a hand-started worker), a
  * docker cp into a container or pg_repack. On 10-18 at 17:2xZ us-metal01 ran 7 such loops that ssh sessions left behind, which the
  * docker exec read never saw: the census, Meta Ads and TikTok Shop watchers that start the /tmp writers again after a restart, two Meta
  * Ads walk UPDATE loops and a census bio seed.
  */
-export const HOST_WRITES = new RegExp(`${WRITES.source}|\\b(?:UPDATE\\s+\\w+(?:\\s+\\w+)?\\s+SET|INSERT\\s+INTO|DELETE\\s+FROM)\\b|/ops/|docker\\s+exec\\s+-d\\b|docker\\s+cp\\b|pg_repack|pkill\\b`, "i");
+export const HOST_WRITES = new RegExp(`${WRITES.source}|\\b(?:UPDATE\\s+\\w+(?:\\s+\\w+)?\\s+SET|INSERT\\s+INTO|DELETE\\s+FROM)\\b|${WRITE_METHOD}${NEAR}/ops/|/ops/(?!controls\\b|config\\b)\\w|docker\\s+exec\\s+-d\\b|docker\\s+cp\\b|pg_repack|pkill\\b`, "i");
 /** Detached session processes on the box whose script writes; read-only probes and monitors do not count. */
 export const hostWriters = (hosts: readonly HostLoop[]): HostLoop[] => hosts.filter(host => HOST_WRITES.test(host.text) && !RELEASE_DEPLOY.test(host.command));
 /**
