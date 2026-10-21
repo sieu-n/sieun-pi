@@ -396,6 +396,25 @@ class ResumePausedTests(unittest.TestCase):
         self.assertEqual([target for target, _ in self.sent], ["reopenedjob1"])
         self.assertEqual([(s["id"], s["stopped_by"]) for s in resume_paused.STOPPED], [("stepownerjob", "the owner stopped it (job-cancels.json, at 2026-10-05T19:39:59Z)")])
 
+    def test_a_job_its_chat_stopped_is_not_resumed_and_says_which_chat_asked(self):
+        # 10-21 08:11:31Z: a job of chat-057a stopped vent's finished job 01a14ffa through the Stop route at vent's request, and job-cancels.json
+        # could only say the owner asked. A chat's request is recorded as by "chat" with its session id and holds like the owner's Stop.
+        vent = "01a14dd5-e9d3-705d-bd63-245c21b2eee2"
+        self.session("chatstopjob1", [role(21, "toolResult"), assistant(20, "aborted", "Request was aborted")])
+        self.session("chatarchjob1", [role(21, "toolResult"), assistant(20, "aborted", "Request was aborted")])
+        stopped = int((NOW - dt.timedelta(minutes=20, seconds=1)).timestamp() * 1000)
+        (self.root / "job-cancels.json").write_text(json.dumps({
+            "chatstopjob1": {"at": stopped, "how": "stop", "by": "chat", "chat": vent},
+            "chatarchjob1": {"at": stopped, "how": "archive", "by": "chat", "chat": vent, "parent": vent, "child": "sub-0000aaaa"}}))
+        self.owners("0" * 24 + "chatstopjob1", "0" * 24 + "chatarchjob1")
+        with patch.object(resume_paused, "worker_shutdowns", return_value=[]):
+            report = self.run_direct()
+        self.assertEqual(report["paused"], [])
+        self.assertEqual(self.sent, [])
+        self.assertEqual(sorted((s["id"], s["stopped_by"]) for s in resume_paused.STOPPED),
+                         [("chatarchjob1", f"chat {vent} archived it (job-cancels.json, at 2026-10-05T19:39:59Z)"),
+                          ("chatstopjob1", f"chat {vent} stopped it (job-cancels.json, at 2026-10-05T19:39:59Z)")])
+
     def test_direct_never_messages_a_hung_or_dead_worker_run(self):
         self.session("hunghunghung", [assistant(80, "toolUse"), role(79, "toolResult")], activity="working", isStreaming=True, lastActivityAt=at(79))
         self.session("deaddeaddead", [assistant(80, "toolUse")], workerState="failed")

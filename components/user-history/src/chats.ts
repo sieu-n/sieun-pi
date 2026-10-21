@@ -42,7 +42,7 @@ import { chatBrief, type LoadRecord, reloadAction } from "./chat-brief.ts";
 import { BRIEF_CHECK_MAX_AGE_MS, type ChatLinks, type ChatSummary, type ChatThreads, type CheckInSource, CHECK_MAX_AGE_MS, type SubagentDelete } from "./chat-sources.ts";
 import { chatName, fileHasChatMarker, ownerStopSinceActive } from "./chat-guard.ts";
 import { ARTIFACTS, type Leftovers, sessionTree } from "./job-leftovers.ts";
-import { cancelWords, type JobCancel, jobPlace } from "./job-cancels.ts";
+import { type CancelBy, cancelAsker, cancelPurpose, cancelWords, type JobCancel, jobPlace } from "./job-cancels.ts";
 import type { ArchiveBy } from "./service-archives.ts";
 
 export { TELL_OWNER_TOOL };
@@ -450,11 +450,12 @@ export class Chats {
    * sweep ran endLeftovers and the job ended "completed". Only a session under the session-artifacts folder of a chat this service owns counts,
    * and the release runs only while the session's own file still ends archived at or after this archive began, so a reopen (the chat's
    * "finish the task" at 11:20:49Z brought this job back) keeps its new work. The job is not marked ended, so its later delete releases again.
-   * Only the owner's archive (`by` "owner") records his cancel; a script's teardown that names a service reason records none.
+   * Only an archive the owner or the job's chat asked for (`by` "owner", with `asker`) records a cancel; a script's teardown that names a
+   * service reason records none.
    */
-  async archiveJob(id: string, by: ArchiveBy): Promise<void> {
+  async archiveJob(id: string, by: ArchiveBy, asker: CancelBy = { by: "owner" }): Promise<void> {
     await this.load();
-    if (by === "owner") await this.cancelJob(id, "archive");
+    if (by === "owner") await this.cancelJob(id, "archive", asker);
     const since = this.now();
     const sessionFile = await this.summary(id).then(summary => summary?.sessionFile, () => undefined);
     let archived = false;
@@ -481,26 +482,26 @@ export class Chats {
   }
 
   /**
-   * The owner's Stop or Archive of a thread that is not a chat, such as a job, recorded as his cancel (`<data dir>/job-cancels.json`) before the
-   * route aborts or archives it. Prime tells the parent "[child-exited: no-reply ...]" within milliseconds of the abort, and the parent's context
+   * A Stop or Archive of a thread that is not a chat, such as a job, by the owner or at its chat's request (`asker`), recorded as a cancel
+   * (`<data dir>/job-cancels.json`) before the route aborts or archives it. Prime tells the parent "[child-exited: no-reply ...]" within milliseconds of the abort, and the parent's context
    * hook rewrites that notice to "stopped by the owner at HH:MM, don't reopen it" (`withCancelledNotices`). The failed-turn wakes, the job-end,
    * no-report and open-steps notices, the check-in's pushes and steers, the waiting-job restart and the resume pass skip the job until the owner
    * sends it a message or unarchives it (`reopenJob`). On 10-20 run7's Stop and Archive of job "user history test run" at 11:20:16Z reached the chat
    * as a plain exit, and its "You exited without a reply. Finish the task" reopened the job 34 s later. A record that cannot be written is logged
    * and the stop goes on. Null for a chat, or when no record is kept.
    */
-  async cancelJob(id: string, how: JobCancel["how"]): Promise<JobCancel | null> {
+  async cancelJob(id: string, how: JobCancel["how"], asker: CancelBy = { by: "owner" }): Promise<JobCancel | null> {
     const record = this.source.cancels;
     if (!record) return null;
     await this.load();
     if (this.chatIds.has(id) || (await this.archivedIds()).has(id)) return null;
     try {
       const sessionFile = await this.summary(id).then(summary => summary?.sessionFile, () => undefined);
-      const cancel = await record.cancel(id, { at: this.now(), how, ...sessionFile ? await jobPlace(sessionFile) : {} });
+      const cancel = await record.cancel(id, { ...asker, at: this.now(), how, ...sessionFile ? await jobPlace(sessionFile) : {} });
       this.log(`thread ${id.slice(0, 8)}: ${cancelWords(cancel)}; no recovery reopens it until the owner sends to it or unarchives it`);
       return cancel;
     } catch (error) {
-      this.log(`thread ${id.slice(0, 8)}: the owner's ${how} was not recorded as a cancel: ${error instanceof Error ? error.message : String(error)}`);
+      this.log(`thread ${id.slice(0, 8)}: the ${how} ${cancelAsker(asker)} asked for was not recorded as a cancel: ${error instanceof Error ? error.message : String(error)}`);
       return null;
     }
   }
@@ -1433,7 +1434,7 @@ export class Chats {
     const cancel = await this.cancelled(session);
     if (cancel) {
       this.log(`chat ${chat.slice(0, 8)}: check-in job's message for job ${fact?.name ?? job.trim()} not sent: ${cancelWords(cancel)}`);
-      return { cancelled: `${fact?.name ?? job.trim()} was ${cancelWords(cancel)}. The owner ended it on purpose, so nothing reopens it; don't start a copy of it.` };
+      return { cancelled: `${fact?.name ?? job.trim()} was ${cancelWords(cancel)}. ${cancelPurpose(cancel)}, so nothing reopens it; don't start a copy of it.` };
     }
     const act = fact && (fact.state === "failed" || (fact.state === "ended" && fact.error !== undefined)) ? "restart" : "steer";
     const name = fact?.name ?? job.trim();

@@ -50,6 +50,7 @@ import { parseStartSkill } from "./shared/start-skill.ts";
 import { timeRead } from "./chat-latency.ts";
 import { ScheduledJobsLeft } from "./saved-archive.ts";
 import { type ArchiveBy, isServiceArchiveReason, SERVICE_ARCHIVES_FILE } from "./service-archives.ts";
+import { type CancelBy, parseCancelBy } from "./job-cancels.ts";
 
 const maxBodyBytes = 12 * 1024 * 1024;
 const requestIdPattern = /^[a-zA-Z0-9_-]{16,100}$/;
@@ -151,6 +152,18 @@ function archiveAudit(req: IncomingMessage, targetSessionId: string): (outcome: 
         unverifiedClientClaims: { sessionId, userAgent } }) + "\n");
     } catch {}
   };
+}
+/**
+ * Who asks for a Stop or Archive of a job: the owner, or the chat that owns the job when the body says `by: "chat"` with that chat's session id
+ * in `chat`. On 10-21 at 08:11:31Z a job of chat-057a stopped vent's finished job at vent's request through this route, and the cancel could only
+ * say the owner asked. The chat must be one this service holds, shown or archived.
+ */
+async function askerOf(body: Record<string, unknown>, chats: { ids(): Promise<ReadonlySet<string>>; archivedIds(): Promise<ReadonlySet<string>> }): Promise<CancelBy> {
+  if (body.by !== "chat") return { by: "owner" };
+  const asker = parseCancelBy(body);
+  if (asker?.by !== "chat") throw new RequestError(400, "Name the asking chat's session id in chat.");
+  if (!(await chats.ids()).has(asker.chat) && !(await chats.archivedIds()).has(asker.chat)) throw new RequestError(400, `${asker.chat} is not a chat of this service.`);
+  return asker;
 }
 function parseImages(value: unknown) {
   try { return parseChatImages(value); }
@@ -1032,10 +1045,11 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
           return;
         }
         case "abort": {
-          // The owner's Stop of a job is his cancel, recorded before the abort so the parent's child-exited notice already reads it. A clean-room
-          // stall that stands in for an interruption sends cancel: false.
+          // The owner's Stop of a job is his cancel, recorded before the abort so the parent's child-exited notice already reads it. A chat that
+          // asks for the Stop names itself (`askerOf`). A clean-room stall that stands in for an interruption sends cancel: false.
           const chat = (await backend.chats.ids()).has(id);
-          if (!chat && body.cancel !== false) await backend.chats.cancelJob(id, "stop");
+          const asker = await askerOf(body, backend.chats);
+          if (!chat && body.cancel !== false) await backend.chats.cancelJob(id, "stop", asker);
           if (body.cancel !== false) backend.threads.ownerStopped(id);
           await backend.threads.abort(id);
           if (chat) await backend.threads.resumeQueue(id);
@@ -1047,9 +1061,10 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
           const chat = await backend.chats.archivesAsChat(id);
           // A script's teardown of a thread it made names a service reason, so neither Prime's owner_archive line nor a job cancel reads as the owner's.
           const by: ArchiveBy = isServiceArchiveReason(body.by) ? body.by : "owner";
+          const asker = await askerOf(body, backend.chats);
           try {
             if (chat) await backend.chats.archive(id, by);
-            else await backend.chats.archiveJob(id, by);
+            else await backend.chats.archiveJob(id, by, asker);
           } catch (error) {
             // The archive holds and the saved archive queue retries the cancel of its scheduled jobs: on 10-20 06:26:34Z that case answered 502.
             if (!(error instanceof ScheduledJobsLeft && error.retrying)) { audit("failed"); throw error; }

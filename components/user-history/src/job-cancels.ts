@@ -4,13 +4,24 @@ import { clockTime } from "./checkin-settings.ts";
 import { type JsonFile, snapshotJsonFile, transactJsonFile } from "./locked-json.ts";
 
 /**
- * The owner's explicit cancel of a job: his Stop or Archive of the job's thread in the chat's controls. On 10-20 run7's Stop and Archive ended
- * job "user history test run" at 11:20:16Z, Prime told the chat "[child-exited: no-reply ...]" 49 ms after the abort and before the archive,
- * and the chat's "You exited without a reply. Finish the task" reopened the job at 11:20:49Z. The service writes the cancel before it aborts or
- * kills the session, so every reader sees it before the notice it explains. `parent` and `child` are the parent session and the RLM child id
- * from the job's session file, for a subagent; a root job has neither. `reopenedAt` is the owner's later send or unarchive, which ends the cancel.
+ * Who asked for a cancel: the owner, by his Stop or Archive in the chat's controls, or a chat that owns the job, by its session id, through the
+ * same route. On 10-21 at 08:11:31Z a job of chat-057a stopped vent's finished job 01a14ffa at vent's request, and the record could only say
+ * "by owner", which told the resume pass and chat-057a that the owner had ended it.
  */
-export interface JobCancel { at: number; how: "stop" | "archive"; by: "owner"; parent?: string; child?: string; name?: string; reopenedAt?: number }
+export type CancelBy = { by: "owner" } | { by: "chat"; chat: string };
+
+/** A cancel as it is asked for: who, when, Stop or Archive, and where the job sits. */
+export type CancelRequest = CancelBy & { at: number; how: "stop" | "archive"; parent?: string; child?: string; name?: string };
+
+/**
+ * An explicit cancel of a job: a Stop or Archive of the job's thread, asked by the owner or by its chat (`CancelBy`). Both hold the same way. On
+ * 10-20 run7's Stop and Archive ended job "user history test run" at 11:20:16Z, Prime told the chat "[child-exited: no-reply ...]" 49 ms after
+ * the abort and before the archive, and the chat's "You exited without a reply. Finish the task" reopened the job at 11:20:49Z. The service
+ * writes the cancel before it aborts or kills the session, so every reader sees it before the notice it explains. `parent` and `child` are the
+ * parent session and the RLM child id from the job's session file, for a subagent; a root job has neither. `reopenedAt` is the owner's later
+ * send or unarchive, which ends the cancel.
+ */
+export type JobCancel = CancelRequest & { reopenedAt?: number };
 export type JobCancelMap = Readonly<Record<string, JobCancel>>;
 
 export const JOB_CANCELS_FILE = "job-cancels.json";
@@ -18,11 +29,20 @@ export const JOB_CANCELS_FILE = "job-cancels.json";
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const optionalString = (value: unknown): value is string | undefined => value === undefined || typeof value === "string";
 
+const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/** Who asked, from a record or a request body; null for anything else. */
+export function parseCancelBy(value: Record<string, unknown>): CancelBy | null {
+  if (value.by === "owner") return { by: "owner" };
+  return value.by === "chat" && typeof value.chat === "string" && SESSION_ID.test(value.chat) ? { by: "chat", chat: value.chat } : null;
+}
+
 function parseCancel(value: unknown): JobCancel | null {
-  if (!isRecord(value) || typeof value.at !== "number" || (value.how !== "stop" && value.how !== "archive") || value.by !== "owner") return null;
-  if (!optionalString(value.parent) || !optionalString(value.child) || !optionalString(value.name)) return null;
+  if (!isRecord(value) || typeof value.at !== "number" || (value.how !== "stop" && value.how !== "archive")) return null;
+  const by = parseCancelBy(value);
+  if (!by || !optionalString(value.parent) || !optionalString(value.child) || !optionalString(value.name)) return null;
   if (value.reopenedAt !== undefined && typeof value.reopenedAt !== "number") return null;
-  return { at: value.at, how: value.how, by: "owner", ...value.parent ? { parent: value.parent } : {}, ...value.child ? { child: value.child } : {},
+  return { at: value.at, how: value.how, ...by, ...value.parent ? { parent: value.parent } : {}, ...value.child ? { child: value.child } : {},
     ...value.name ? { name: value.name } : {}, ...value.reopenedAt !== undefined ? { reopenedAt: value.reopenedAt } : {} };
 }
 
@@ -36,8 +56,8 @@ export function parseJobCancels(value: unknown): Record<string, JobCancel> {
 export const cancelHolds = (cancel: JobCancel | undefined): cancel is JobCancel => cancel !== undefined && cancel.reopenedAt === undefined;
 
 export interface JobCancelRecord {
-  /** Records the owner's cancel of the job session `session`; an earlier cancel that still holds keeps its time and way. */
-  cancel(session: string, cancel: Omit<JobCancel, "by" | "reopenedAt">): Promise<JobCancel>;
+  /** Records a cancel of the job session `session`; an earlier cancel that still holds keeps its time, way and asker. */
+  cancel(session: string, cancel: CancelRequest): Promise<JobCancel>;
   /** Ends a holding cancel at `at`: the owner sent the job a message or unarchived it. False when none held. */
   reopen(session: string, at: number): Promise<boolean>;
   /** The cancel of `session` while it holds. */
@@ -53,7 +73,7 @@ export function jobCancelRecord(path: string): JobCancelRecord {
       let kept!: JobCancel;
       await transactJsonFile(file, state => {
         const held = state[session];
-        kept = cancelHolds(held) ? held : { ...cancel, by: "owner" };
+        kept = cancelHolds(held) ? held : { ...cancel };
         state[session] = kept;
       });
       return kept;
@@ -93,13 +113,21 @@ export async function jobPlace(sessionFile: string): Promise<{ parent?: string; 
   } catch { return { child }; }
 }
 
-/** The words for a cancel in a sentence: "stopped by the owner at 11:20". */
-export const cancelWords = (cancel: Pick<JobCancel, "at" | "how">): string =>
-  `${cancel.how === "archive" ? "archived" : "stopped"} by the owner at ${clockTime(cancel.at)}`;
+/** Who asked for a cancel, in a sentence: "the owner", or "chat 01a14dd5-e9d3-705d-bd63-245c21b2eee2". */
+export const cancelAsker = (cancel: CancelBy): string => cancel.by === "owner" ? "the owner" : `chat ${cancel.chat}`;
+
+/** Who ended the job on purpose, opening a sentence: "The owner ended it on purpose". */
+export const cancelPurpose = (cancel: CancelBy): string => cancel.by === "owner" ? "The owner ended it on purpose" : `Its chat ${cancel.chat} ended it on purpose`;
+
+type Worded = Pick<JobCancel, "at" | "how"> & CancelBy;
+
+/** The words for a cancel in a sentence: "stopped by the owner at 11:20", or "stopped by chat <id> at 08:11". */
+export const cancelWords = (cancel: Worded): string =>
+  `${cancel.how === "archive" ? "archived" : "stopped"} by ${cancelAsker(cancel)} at ${clockTime(cancel.at)}`;
 
 /** The parent's notice for a cancelled child, in place of Prime's "[child-exited: no-reply ...]". */
-export const cancelledNoticeText = (name: string, cancel: Pick<JobCancel, "at" | "how">): string =>
-  `[child-exited: cancelled child:${name}] ${name} was ${cancelWords(cancel)}. The owner ended it on purpose, so don't reopen it, message it to ` +
+export const cancelledNoticeText = (name: string, cancel: Worded): string =>
+  `[child-exited: cancelled child:${name}] ${name} was ${cancelWords(cancel)}. ${cancelPurpose(cancel)}, so don't reopen it, message it to ` +
   "finish, or start a copy of it.";
 
 /** Prime's notices about a child's end: the plain exit and the failed turn. */
@@ -149,7 +177,7 @@ export function withCancelledNotices<T>(messages: readonly T[], cancelOf: (child
     const details = isRecord((message as Notice).details) ? (message as Notice).details as Record<string, unknown> : {};
     const name = typeof details.sessionName === "string" && details.sessionName ? details.sessionName : cancel.name ?? child!;
     changed = true;
-    return { ...message, content: cancelledNoticeText(name, cancel), details: { ...details, kind: "cancelled", by: cancel.by, at: cancel.at, how: cancel.how } };
+    return { ...message, content: cancelledNoticeText(name, cancel), details: { ...details, kind: "cancelled", by: cancel.by, ...cancel.by === "chat" ? { chat: cancel.chat } : {}, at: cancel.at, how: cancel.how } };
   });
   return changed ? out : undefined;
 }

@@ -3,7 +3,7 @@
 // reply. Finish the task" at 11:20:49Z, and that reopened the archived job. Nothing on the service side kept the owner's cancel either, so the
 // job-end note, the check-in's steer and the resume pass treated the Stop like any interruption.
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -105,3 +105,58 @@ test("run7: the owner's Stop of a job reaches its chat as a cancel, and no recov
   assert.deepEqual(await chats.steerJob(CHAT, NAME, "finish the task"), { session: JOB, act: "steer" });
 });
 
+test("10-21: a Stop the job's chat asked for is recorded as the chat's, and holds like the owner's", async t => {
+  // At 08:11:31Z a job of chat-057a stopped vent's finished job 01a14ffa through the Stop route at vent's request, and the record could only
+  // say "by owner". The chat now names itself, and every reader holds the job the same way.
+  const VENT = "01a14dd5-e9d3-705d-bd63-245c21b2eee2";
+  const root = mkdtempSync(join(tmpdir(), "job-cancel-chat-"));
+  process.env.SIEUN_PI_HOSTS = join(root, "no-hosts.json");
+  const data = join(root, "browser-chat");
+  mkdirSync(data, { recursive: true });
+  const jobFile = join(root, "session-artifacts", CHAT, "sub-efba9220", `${JOB}.jsonl`);
+  mkdirSync(join(jobFile, ".."), { recursive: true });
+  writeFileSync(jobFile, JSON.stringify({ type: "session", id: JOB, parentSession: join(root, "sessions", `${CHAT}.jsonl`), rlmDepth: 1 }) + "\n");
+  const calls: string[] = [];
+  const threads = fakeThreads(calls);
+  const index = new IdIndex(join(data, "chats.json"), "Chat index");
+  await index.add(CHAT);
+  let now = Date.parse("2026-10-21T08:11:31.542Z");
+  const stoppedAt = now;
+  const agents: ChatAgent[] = [{ key: "child:sub-efba9220", sessionId: JOB, childId: "sub-efba9220", name: NAME, job: NAME, sender: NAME, link: "subagent",
+    state: "done", lastActivityAt: new Date(stoppedAt).toISOString(), steps: ["p1"] }];
+  const board: ChatBoard = { v: 2, rev: 1, updatedAt: "", todos: [], plan: [{ id: "p1", text: "Count tests", status: "doing", job: NAME, sessionId: JOB, children: [] }] };
+  const record = jobCancelRecord(join(data, "job-cancels.json"));
+  const chats = new Chats(index, threads, async id => id === JOB ? { lifecycle: "live", sessionFile: jobFile } : { lifecycle: "live" }, "b1",
+    loadRecord(join(data, "extension-loads.json")), { ...source(data, { [CHAT]: board }, () => now, () => [row(CHAT, new Date(now).toISOString(), { chat: true, agents })]),
+      cancels: record }, () => {});
+  t.after(() => { chats.close(); rmSync(root, { recursive: true, force: true }); });
+  await chats.adopt();
+  const child: ChildAgent = { id: "sub-efba9220", label: NAME, sessionName: NAME, status: "done", repliedSinceTask: false, lastActivityAt: stoppedAt, sessionId: JOB };
+  threads.fire().children(CHAT, [child]);
+  threads.transcripts.set(CHAT, [ownerAsks("count the tests", stoppedAt - 433_000)]);
+  threads.views.set(JOB, { messages: [ownerAsks("[task from parent] count the tests", stoppedAt - 433_000),
+    { role: "assistant", content: [], provider: "anthropic", model: "claude-opus-5-5", stopReason: "aborted", errorMessage: "Request was aborted", timestamp: stoppedAt }] });
+
+  const cancel = await chats.cancelJob(JOB, "stop", { by: "chat", chat: VENT });
+  assert.deepEqual(cancel, { by: "chat", chat: VENT, at: stoppedAt, how: "stop", parent: CHAT, child: "sub-efba9220" });
+  assert.deepEqual(JSON.parse(readFileSync(join(data, "job-cancels.json"), "utf8"))[JOB], cancel, "the file names the chat that asked");
+  assert.deepEqual(await record.holding(JOB), cancel, "the record reads it back as a holding cancel");
+  assert.deepEqual(await chats.cancelJob(JOB, "archive"), cancel, "a later owner's Archive keeps the holding cancel and its asker");
+
+  const words = `stopped by chat ${VENT} at ${clockTime(stoppedAt)}`;
+  const context = await contextHooks(data);
+  const notice = { role: "custom", customType: "rlm_child_terminal_notice", content: `[child-exited: no-reply child:${NAME}]`, display: true,
+    details: { kind: "completed_without_reply", childId: "sub-efba9220", sessionName: NAME }, timestamp: stoppedAt + 49 };
+  const [seen] = await context(CHAT, [notice]) as { content: string; details: Record<string, unknown> }[];
+  assert.equal(seen!.content, `[child-exited: cancelled child:${NAME}] ${NAME} was ${words}. Its chat ${VENT} ended it on purpose, so don't reopen it, ` +
+    "message it to finish, or start a copy of it.");
+  assert.deepEqual(seen!.details, { kind: "cancelled", childId: "sub-efba9220", sessionName: NAME, by: "chat", chat: VENT, at: stoppedAt, how: "stop" });
+
+  now += 30_000; calls.length = 0; await chats.tick(); await chats.settled();
+  assert.deepEqual(calls.filter(call => !call.startsWith("pin") && !call.startsWith("steering")), [], "no job-end note, wake or restart for the job");
+  assert.deepEqual(await chats.steerJob(CHAT, NAME, "finish the task"),
+    { cancelled: `${NAME} was ${words}. Its chat ${VENT} ended it on purpose, so nothing reopens it; don't start a copy of it.` });
+
+  writeFileSync(join(data, "job-cancels.json"), JSON.stringify({ [JOB]: { at: stoppedAt, how: "stop", by: "chat", chat: "vent" } }));
+  assert.equal(await record.holding(JOB), undefined, "a chat named by anything but its session id is not a cancel");
+});

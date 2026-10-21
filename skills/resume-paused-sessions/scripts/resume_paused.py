@@ -734,7 +734,7 @@ def stop_record(path):
     deleted = deleted_on_purpose(path)
     if deleted:
         return deleted
-    return owner_cancelled(path) or owner_archived(path)
+    return recorded_cancel(path) or owner_archived(path)
 
 
 def deleted_on_purpose(path):
@@ -755,16 +755,19 @@ def deleted_on_purpose(path):
     return next(iter(recorded_deletes(path)), None)
 
 
-def owner_cancelled(path):
-    """Why the owner's Stop or Archive of the session at `path` holds, by job-cancels.json (the chat service's Chats.cancelJob), or None. The
-    service writes the cancel before it aborts or archives the session, and ends it when the owner sends to the session or unarchives it
-    (reopenedAt). A Stop alone writes no archive line: on 10-20 run7's Stop of job "user history test run" at 11:20:16Z wrote only the abort."""
+def recorded_cancel(path):
+    """Why a Stop or Archive of the session at `path` holds, by job-cancels.json (the chat service's Chats.cancelJob), or None. The owner asks
+    for one with his Stop or Archive (by "owner"), and the chat that owns the job through the same route (by "chat", with its session id), and
+    both hold the same way. The service writes the cancel before it aborts or archives the session, and ends it when the owner sends to the
+    session or unarchives it (reopenedAt). A Stop alone writes no archive line: on 10-20 run7's Stop of job "user history test run" at 11:20:16Z
+    wrote only the abort. An entry that names neither asker still holds, so a record the service could not parse never resumes a job."""
     record = read_record(JOB_CANCELS, lambda data: isinstance(data, dict) and all(isinstance(entry, dict) for entry in data.values())) or {}
     cancel = record.get(Path(path).stem)
     if not cancel or cancel.get("reopenedAt") is not None or not isinstance(cancel.get("at"), (int, float)):
         return None
     at = dt.datetime.fromtimestamp(cancel["at"] / 1000, dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    return f"the owner {'archived' if cancel.get('how') == 'archive' else 'stopped'} it (job-cancels.json, at {at})"
+    asker = f"chat {cancel['chat']}" if cancel.get("by") == "chat" and isinstance(cancel.get("chat"), str) else "the owner"
+    return f"{asker} {'archived' if cancel.get('how') == 'archive' else 'stopped'} it (job-cancels.json, at {at})"
 
 
 def owner_archived(path):
