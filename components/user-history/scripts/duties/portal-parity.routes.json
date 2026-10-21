@@ -575,7 +575,8 @@
    "group": "xiaohongshu_douyin",
    "portal": [
     "GET /v1/douyin/live/profile/posts"
-   ]
+   ],
+   "byDesign": "Douyin refuses its posts query without the WebSecSDK signature the crawler does not make: 403 'Uifid Not Found' or 'Signature Not Found' on 6 of 6 direct calls from us-metal02 and 502 douyin_signature_rejected on 13 of 14 prod calls to 2026-10-21 07:00Z, then HTTP 200 status_code 3170 on 5 of 5 prod docs-example calls at 09:5xZ, while live profile and related answer 200. Douyin is a platform we have not integrated (crawler board p672 under p670), so the docs hide the route (auto-sns-agent 5c50fdfb16) and the portal answers every failed call 503 source_paused unbilled (67f81d85d8, ba01650aa); api portal vp p53"
   },
   {
    "crawler": "GET /api/live/douyin/related",
