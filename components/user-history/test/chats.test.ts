@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { checkInRecord } from "../src/chat-checkin.ts";
 import { clockTime } from "../src/checkin-settings.ts";
-import { loadRecord } from "../src/chat-brief.ts";
+import { CHAT_BRIEF, loadRecord } from "../src/chat-brief.ts";
 import { Chats, OLD_CHECK_IN } from "../src/chats.ts";
 import { fileHasChatMarker } from "../src/chat-guard.ts";
 import { Catalog } from "../src/chat-catalog.ts";
@@ -561,4 +561,11 @@ test("chats: a job that ends on a provider error, an abort, a stop mid-tool or t
     "a new end after a re-brief is told once more");
   assert.match(lines.join("\n"), /chat c1: job api audit ended \(error\) with no report; told the chat$/m);
   chats.close();
+});
+
+test("chat brief: a task's owner comes from the owner's own request, not a stale step (c150)", () => {
+  const line = CHAT_BRIEF.find(entry => entry.includes("(c150)"));
+  assert.ok(line, "the brief holds c150");
+  assert.match(line, /only from the owner's own request that assigned it/);
+  assert.match(line, /stale or parked step is no proof/);
 });
