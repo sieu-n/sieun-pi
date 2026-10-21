@@ -1,12 +1,13 @@
 // Guards the 10-18 04:35 to 04:49 incident: websearch, board and aside_browser failed to import while uv reinstalled the kernel's skills.
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { OLD_PIN_FILE, PIN_FILE, pinSkillPaths, skillSourcePaths } from "../scripts/kernel-skill-paths.ts";
+import { ENV_MODULE, OLD_PIN_FILE, PIN_FILE, pinSkillPaths, skillSourcePaths } from "../scripts/kernel-skill-paths.ts";
 
 const run = promisify(execFile);
 
@@ -87,5 +88,24 @@ test("kernel skill paths: the pin wins over a bundled editable install of the sa
     await pinSkillPaths({ home, venv, skillsDir: skills });
     assert.equal((await importToy(site)).out, join(repo, "toy/src/toyskill/__init__.py"));
     await assert.rejects(readFile(join(site, OLD_PIN_FILE), "utf8"), /ENOENT/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("kernel skill paths: a kernel reads agent.env at start, so a stale token from the daemon's env is replaced without a daemon restart", async () => {
+  const { root, repo, skills, site, home, venv } = await layout();
+  try {
+    // 10-21: the daemon started at 11:19Z kept the RAILWAY_API_TOKEN Railway refused, and every job kernel inherited it after agent.env was fixed.
+    const loader = join(dirname(fileURLToPath(import.meta.url)), "../../../skills/board/src", `${ENV_MODULE}.py`);
+    await copyFile(loader, join(repo, "toy/src", `${ENV_MODULE}.py`));
+    const envFile = join(root, "agent.env");
+    await writeFile(envFile, "# comment\nRAILWAY_API_TOKEN=\"new-token\"\n; other comment\nLINEAR_API_KEY=lin\nnot a pair\n");
+    await pinSkillPaths({ home, venv, skillsDir: skills });
+    assert.equal(await readFile(join(site, PIN_FILE), "utf8"), `${join(repo, "toy/src")}\nimport ${ENV_MODULE}\n`);
+    const code = `import site,os; site.addsitedir(${JSON.stringify(site)}); import toyskill; print(os.environ["RAILWAY_API_TOKEN"], os.environ["LINEAR_API_KEY"])`;
+    const startKernel = (env: NodeJS.ProcessEnv) => run("python3", ["-S", "-c", code], { env: { PATH: process.env.PATH, ...env } });
+    assert.equal((await startKernel({ RAILWAY_API_TOKEN: "stale-token", SIEUN_PI_AGENT_ENV: envFile })).stdout.trim(), "new-token lin");
+    const missing = await run("python3", ["-S", "-c", `import site,os; site.addsitedir(${JSON.stringify(site)}); import toyskill; print(os.environ.get("RAILWAY_API_TOKEN"))`],
+      { env: { PATH: process.env.PATH, RAILWAY_API_TOKEN: "stale-token", SIEUN_PI_AGENT_ENV: join(root, "absent.env") } });
+    assert.equal(missing.stdout.trim(), "stale-token", "a missing file leaves the environment and the skill paths as they are");
   } finally { await rm(root, { recursive: true, force: true }); }
 });

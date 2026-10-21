@@ -21,6 +21,11 @@ import { pathToFileURL } from "node:url";
  * Box tools parity read websearch_kernel off. The pin goes first now, so our skills win over a bundled copy of the same module name. A pin
  * left under the old name is removed.
  *
+ * When a pinned folder holds sieun_pi_agent_env.py (skills/board/src), the pin ends with `import sieun_pi_agent_env`, which loads
+ * ~/.config/sieun-pi/agent.env into os.environ at every kernel start. On 10-21 the daemon, started at 11:19Z, still handed every kernel
+ * the RAILWAY_API_TOKEN that Railway refused since 10-18, after agent.env got a working one. The import line comes last because Python's
+ * site module skips the rest of a .pth file after a line that fails.
+ *
  * uv deletes only the files listed in a package's RECORD, so it never deletes this file. Prime deletes it only when it rebuilds the whole
  * venv for a new runtime; the Skills and tools duty check websearch_kernel writes it again on its next run.
  */
@@ -28,6 +33,9 @@ import { pathToFileURL } from "node:url";
 export const PIN_FILE = "00_sieun_pi_skills.pth";
 /** The pin's name before 10-19, which sorted after the editable installs; pinSkillPaths removes it. */
 export const OLD_PIN_FILE = "sieun_pi_skills.pth";
+
+/** The module in skills/board/src that loads ~/.config/sieun-pi/agent.env; the pin imports it when a pinned folder has it. */
+export const ENV_MODULE = "sieun_pi_agent_env";
 
 export interface PinResult { file: string; written: boolean; paths: string[] }
 
@@ -65,7 +73,8 @@ export async function pinSkillPaths(options: { home?: string; venv?: string; ski
   const home = options.home ?? homedir();
   const venv = options.venv ?? kernelVenv(home);
   const paths = await skillSourcePaths(options.skillsDir ?? join(home, ".prime/agent/skills"));
-  const text = `${paths.join("\n")}\n`;
+  const loader = (await Promise.all(paths.map(path => isFile(join(path, `${ENV_MODULE}.py`))))).some(Boolean);
+  const text = `${[...paths, ...loader ? [`import ${ENV_MODULE}`] : []].join("\n")}\n`;
   return Promise.all((await sitePackages(venv)).map(async folder => {
     const file = join(folder, PIN_FILE);
     if (paths.length) await rm(join(folder, OLD_PIN_FILE), { force: true });
