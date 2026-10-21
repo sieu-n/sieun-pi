@@ -33,8 +33,11 @@ test("examples spread over chats and stop at 3, while the count line names every
 test("the spot audit quotes the owner's own messages and his board picks, never a job's or check-in's line", () => {
   const line = (text: string) => JSON.stringify({ type: "message", timestamp: "2026-10-19T13:40:00Z", message: { role: "user", content: [{ type: "text", text }] } });
   const lines = [line("keep crawler working"), line("[job] x failed"), line("[check-in] restarted y"), line('[board] Owner chose "Keep it"'),
+    line("<provider_quota_resumed>\nThe provider usage limit that paused this session has been reported as reset.\n</provider_quota_resumed>"),
+    line("<prime_agent_update_interrupted>\nPrime Agent was updated.\n</prime_agent_update_interrupted>"),
+    line("Prime Agent restarted after an update. Continue the interrupted task from the saved transcript."), line("<b>bold</b> is fine?"),
     JSON.stringify({ message: { role: "assistant", content: "ok" } })];
-  assert.deepEqual(ownerMessages(lines, 8).map(entry => entry.text), ["keep crawler working", '[board] Owner chose "Keep it"']);
+  assert.deepEqual(ownerMessages(lines, 8).map(entry => entry.text), ["keep crawler working", '[board] Owner chose "Keep it"', "<b>bold</b> is fine?"]);
 });
 
 // Owner msg mvffndxl, 10-19: each d9 run pushes the chats, not just scores them.
