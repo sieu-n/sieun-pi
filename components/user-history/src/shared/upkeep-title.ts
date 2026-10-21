@@ -26,8 +26,10 @@ export const hasDoneLine = (item: { target?: unknown; duty?: unknown; note?: str
   !!item.target || !!item.duty || /\bdone when\b/i.test(item.note ?? "");
 
 /**
- * The note a plan_update stores on an open item: a new note with no "Done when" sentence keeps the old note's one in front of it. On 10-19 the
- * release owner's job rewrote launch main bro's p136 note with a status line at each check, so d9 counted the step in three runs in a row.
+ * The note a plan_update stores: a new note with no "Done when" sentence keeps the old note's one in front of it. On 10-19 the release owner's
+ * job rewrote launch main bro's p136 note with a status line at each check, so d9 counted the step in three runs in a row. A closing note keeps
+ * it too, because a step reopened later has only its closed note to keep: Crawler VP's p379 closed with a "Green:" note, a job reopened it on
+ * 10-21 with a status note, and d9 counted it in plan_upkeep_all from 06:11Z.
  */
 export function keepDoneLine(old: string | undefined, note: string): string {
   const line = /\bdone when\b.*?(?:\.(?=\s|$)|$)/is.exec(old ?? "")?.[0];

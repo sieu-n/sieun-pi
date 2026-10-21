@@ -626,7 +626,7 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
       }
       if (op.note === null) { delete next.note; if (item.note) parts.push("cleared its note"); }
       else if (op.note !== undefined && op.note !== item.note) {
-        next.note = OPEN_STATUSES.has(next.status) ? keepDoneLine(item.note, op.note) : op.note;
+        next.note = keepDoneLine(item.note, op.note);
         parts.push(next.note === op.note ? "updated its note" : "updated its note and kept its Done when line");
       }
       if (op.waitUntil === null) { delete next.waitUntil; if (item.waitUntil) parts.push("cleared its wait time"); }
@@ -1103,15 +1103,16 @@ function upkeepTitles(before: ChatBoard, plan: readonly PlanItem[]): string[] {
   return flags;
 }
 /**
- * The agent's plan change against plans that never clear (owner 10-19: "plan should be tasks all eventually clear"): an open item added
- * with no done line, so chat system duty d9 would count it in plan_upkeep_all. An upkeep title already has its own flag.
+ * The agent's plan change against plans that never clear (owner 10-19: "plan should be tasks all eventually clear"): an open item added or
+ * reopened with no done line, so chat system duty d9 would count it in plan_upkeep_all. Crawler VP reopened p379 on 10-21 with a status note,
+ * and d9 counted it in every run from 06:11Z. An upkeep title already has its own flag.
  */
 function noDoneLines(before: ChatBoard, plan: readonly PlanItem[]): string[] {
-  const was = new Set<string>();
-  walk(before.plan, item => was.add(item.id));
+  const wasOpen = new Map<string, boolean>();
+  walk(before.plan, item => wasOpen.set(item.id, OPEN_STATUSES.has(item.status)));
   const flags: string[] = [];
   walk(plan, item => {
-    if (was.has(item.id) || !OPEN_STATUSES.has(item.status) || hasDoneLine(item) || upkeepWords(item.text)) return;
+    if (wasOpen.get(item.id) || !OPEN_STATUSES.has(item.status) || hasDoneLine(item) || upkeepWords(item.text)) return;
     flags.push(`${item.id} ${quote(item.text)} has no done line, so it never clears. Give it a "Done when" note that names the check that ends ` +
       "it, a target, or the duty metric it fixes (plan_update). Standing work belongs in a duty metric (board skill, references/plan-and-duties.md).");
   });

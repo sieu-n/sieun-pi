@@ -53,6 +53,20 @@ test("a plan_update note with no Done when sentence keeps the old one in front, 
   assert.match(kept.summary, /kept its Done when line/);
   const swapped = applyBoardOp(p136, { op: "plan_update", id: "p1", note: "Done when prod reads the new sha." }, "agent", at, () => "p9");
   assert.equal(swapped.board.plan[0]!.note, "Done when prod reads the new sha.");
-  const closed = applyBoardOp(p136, { op: "plan_update", id: "p1", status: "done", note: "Shipped in promote 16." }, "agent", at, () => "p9");
-  assert.equal(closed.board.plan[0]!.note, "Shipped in promote 16.");
+});
+
+test("a closing note keeps the Done when line, so a reopen with a status note still has it (Crawler VP p379, 10-21)", () => {
+  const p379 = { ...board, plan: [{ id: "p1", text: "GeoNode proxy use duty green", status: "doing", children: [],
+    note: "Done when duty d2 reads retry_extra_s 5 s or less. Waits on land 38." }] } as unknown as ChatBoard;
+  const closed = applyBoardOp(p379, { op: "plan_update", id: "p1", status: "done", note: "Green: retry_extra_s reads 4.2 s." }, "agent", at, () => "p9");
+  assert.equal(closed.board.plan[0]!.note, "Done when duty d2 reads retry_extra_s 5 s or less. Green: retry_extra_s reads 4.2 s.");
+  const reopened = applyBoardOp(closed.board, { op: "plan_update", id: "p1", status: "doing", note: "Reopened 10-21: retry_extra_s reads 7.8 s." }, "agent", at, () => "p9");
+  assert.equal(hasDoneLine(reopened.board.plan[0]!), true);
+  assert.doesNotMatch(reopened.summary, /no done line/);
+});
+
+test("a step reopened with no done line gets the flag", () => {
+  const shut = { ...board, plan: [{ id: "p1", text: "GeoNode proxy use duty green", status: "done", children: [], note: "Green: 4.2 s." }] } as unknown as ChatBoard;
+  const { summary } = applyBoardOp(shut, { op: "plan_update", id: "p1", status: "doing", note: "Reopened 10-21: 7.8 s." }, "agent", at, () => "p9");
+  assert.match(summary, /p1 "GeoNode proxy use duty green" has no done line/);
 });
