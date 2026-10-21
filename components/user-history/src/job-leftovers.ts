@@ -3,7 +3,7 @@ import { hostExecFile } from "./spawn-host.ts";
 import { existsSync } from "node:fs";
 import { lstat, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, normalize, relative } from "node:path";
+import { basename, dirname, isAbsolute, join, normalize, relative } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { Host } from "./hosts.ts";
 import { jobScratch } from "./chat-brief.ts";
@@ -192,10 +192,56 @@ async function recordStart(file: string): Promise<number> {
   return (await lstat(dirname(file)).catch(() => null))?.birthtimeMs ?? Infinity;
 }
 
-/** Whether the path was born at or after `start`, so the session that began then can have made it; a path with no birth time has no proof. */
-async function bornSince(path: string, start: number): Promise<boolean> {
-  const birth = (await lstat(path).catch(() => null))?.birthtimeMs;
-  return birth === undefined || (birth > 0 && birth >= start);
+/**
+ * Names that mark a published artifact or evidence within PUBLISHED_DEPTH of a recorded tree: a feed or release folder, an evidence folder,
+ * a feed index, a checksum list, a build log or a report. On 10-21 the end of deleted job p8-detached-on-mem41 (sub-47ae7e89) deleted the
+ * release/, source-rev, feed.SHA256SUMS and inst/ of ~/work/prime-agent-fix-p8/build-s2int1 and build-s2int2 and their whole .script-as-run
+ * copies with build.log and sha256.txt, because the job had recorded its released builds, which other jobs installed and checked from.
+ */
+const PUBLISHED_FOLDER = /^(feed|feeds|release|releases|evidence.*)$/;
+const PUBLISHED_FILE = /^(latest\.json|SHA256SUMS(\.txt)?|.*\.SHA256SUMS(\.txt)?|sha256\.txt|build\.log|.*\.build\.log|EVIDENCE\.md|REPORT\.md|FINDING\.md)$/;
+/** How far below a recorded path the published names are looked for: build-s2int1/release/latest.json is two levels down. */
+const PUBLISHED_DEPTH = 2;
+
+/**
+ * Why a job's end must keep the recorded tree at `path` that a session begun at `start` names, or null when that session made the whole tree
+ * and it publishes nothing: the tree or any entry in it was born before the session began, so another maker had it first; it holds a published
+ * name (`PUBLISHED_FILE`, `PUBLISHED_FOLDER`), which a git checkout's own files never count as; or a folder in it cannot be read.
+ */
+async function keepReason(path: string, start: number): Promise<string | null> {
+  const root = await lstat(path).catch(() => null);
+  if (!root) return null;
+  if (!(root.birthtimeMs > 0 && root.birthtimeMs >= start)) return "it is older than the job whose record names it";
+  if (!root.isDirectory()) return PUBLISHED_FILE.test(basename(path)) ? "it is a published artifact or evidence" : null;
+  const checkout = existsSync(join(path, ".git"));
+  const queue: { dir: string; depth: number }[] = [{ dir: path, depth: 0 }];
+  while (queue.length) {
+    const { dir, depth } = queue.shift()!;
+    const entries = (await readdir(dir, { withFileTypes: true }).catch(() => null))?.sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+    if (!entries) return `it holds ${dir}, which cannot be read`;
+    const stats = await Promise.all(entries.map(entry => lstat(join(dir, entry.name)).catch(() => null)));
+    for (const [index, entry] of entries.entries()) {
+      const file = join(dir, entry.name);
+      const birth = stats[index]?.birthtimeMs;
+      if (!(birth !== undefined && birth > 0 && birth >= start)) return `it holds ${file}, which is older than the job`;
+      const named = entry.isDirectory() ? PUBLISHED_FOLDER.test(entry.name) : PUBLISHED_FILE.test(entry.name);
+      if (!checkout && depth < PUBLISHED_DEPTH && named) return `it holds the published artifact or evidence ${file}`;
+      if (entry.isDirectory()) queue.push({ dir: file, depth: depth + 1 });
+    }
+  }
+  return null;
+}
+
+/** The ownership records under ARTIFACTS other than `own`, read for the paths they name (`readOwned`). */
+function otherRecords(own: readonly string[]): Promise<string[]> {
+  const skip = new Set(own);
+  return new Promise(resolve => {
+    hostExecFile("find", [ARTIFACTS, "-name", OWNED_FILE, "-type", "f"], { maxBuffer: 16 * 1024 * 1024 }, async (_error, stdout) => {
+      const files = String(stdout).split("\n").filter(file => file && !skip.has(file));
+      const records = await Promise.all(files.map(file => readOwned(file).then(record => ({ file, paths: record.paths }))));
+      resolve(records.flatMap(record => record.paths.map(path => `${path}\0${dirname(record.file)}`)));
+    });
+  });
 }
 
 /** The kept paths of `kept` as the log names them. */
@@ -203,7 +249,9 @@ const keptNotes = (kept: ReadonlyMap<string, string>): string[] => [...kept].map
 
 /**
  * Stops the units and deletes the paths the ownership records of gone sessions name (`readOwned`) and the scratch folders the job line gave
- * those sessions (`jobScratch`, `~/scratch/<session id>`), and keeps a path any process runs in, holds or names. A kept path stays in its
+ * those sessions (`jobScratch`, `~/scratch/<session id>`), and keeps a path any process runs in, holds or names. A recorded path outside those
+ * folders is kept for good and leaves its record when another record names it, a path in it or a folder above it, or when `keepReason` finds
+ * no proof that the job made the whole tree or finds a published artifact in it. A kept path stays in its
  * record or its session's folder name, so a later sweep of deleted jobs deletes it once nothing holds it. The paths the records name on other
  * boxes come back as `away` and stay in the records, for the box that runs the cleanup over ssh (`hostLeftovers`).
  */
@@ -216,9 +264,20 @@ async function endOwned(source: LeftoverSource, files: readonly string[], dirs: 
   const units = answer ?? [];
   const elsewhere = answer === null ? wanted : [];
   const unmade = new Map<string, string>();
+  const recorded = records.flatMap(record => record.paths).filter(path => !folders.some(folder => path === folder || path.startsWith(folder + "/")));
+  const others = recorded.length ? await otherRecords(files) : [];
+  for (const entry of others) {
+    const [other, owner] = entry.split("\0") as [string, string];
+    for (const path of recorded) if (path === other || other.startsWith(path + "/") || path.startsWith(other + "/"))
+      unmade.set(path, `the record of ${relative(ARTIFACTS, owner)} names ${other === path ? "it" : other}`);
+  }
   await Promise.all(files.map(async (file, index) => {
     const start = await recordStart(file);
-    for (const path of records[index]!.paths) if (!(await bornSince(path, start))) unmade.set(path, `it is older than the job whose record names it`);
+    for (const path of records[index]!.paths) {
+      if (unmade.has(path) || !recorded.includes(path)) continue;
+      const why = await keepReason(path, start);
+      if (why) unmade.set(path, why);
+    }
   }));
   const { paths, removed: owned, kept } = await removeFree(source, [...records.flatMap(record => record.paths).filter(path => !unmade.has(path)), ...folders]);
   const gone = new Set(owned);
