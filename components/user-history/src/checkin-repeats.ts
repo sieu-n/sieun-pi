@@ -18,13 +18,19 @@ export function flagStreaks(previous: Readonly<Record<string, number>> | undefin
   for (const slice of flagged) { const key = flagKey(slice); streaks[key] ??= (previous?.[key] ?? 0) + 1; }
   return streaks;
 }
+/**
+ * Kinds Flagged again leaves out. A stuck step shows its streak in the Stuck steps section. An off-pace goal with a live owner is steered from
+ * the goal section on its push schedule (quietPush) and is not judged (board skill check-ins.md item 11), so no board op clears it: on 10-21
+ * Crawler VP's check-ins listed p828, p826, p681 and p146 under Flagged again 6 runs in a row while the goal section said to send nothing.
+ */
+const NOT_REPEATED: ReadonlySet<string> = new Set(["stuck_steps", "goals_off_pace"]);
 /** The findings flagged in REPEAT_RUNS or more runs in a row, longest streak first, each with its count. */
 export function repeatLines(streaks: Readonly<Record<string, number>>, flagged: readonly FlaggedSlice[]): string[] {
   const seen = new Set<string>();
   return flagged.flatMap(slice => {
     const key = flagKey(slice);
     const runs = streaks[key] ?? 0;
-    if (runs < REPEAT_RUNS || seen.has(key)) return [];
+    if (NOT_REPEATED.has(slice.kind) || runs < REPEAT_RUNS || seen.has(key)) return [];
     seen.add(key);
     return [{ runs, line: `${slice.kind}: ${slice.excerpt} (flagged in ${runs} check-ins in a row)` }];
   }).sort((a, b) => b.runs - a.runs).map(entry => entry.line);

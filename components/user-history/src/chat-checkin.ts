@@ -308,7 +308,7 @@ export function checkInPrecheckText(precheck: CheckInPrecheck, facts: readonly J
     ...section("Stuck steps (the owner's end state: every open step is moved by a live owner now, held by an open For you todo that links it, or " +
       "parked by his correction. Each step below ends this run with a live owner, a For you todo or a close; a chase, a new wait text or a later " +
       "waitUntil leaves it stuck)", stuck),
-    ...section(REPEAT_HEAD, repeatLines(streaks, flagged.filter(slice => slice.kind !== "stuck_steps"))),
+    ...section(REPEAT_HEAD, repeatLines(streaks, flagged)),
     ...section("Merged without the owner's go (a repo rule breach: report each to the owner in this run; never merge without his go on that PR)", merged),
     ...section("Hard gates broken (the owner's go, the requirements check): fix each now", gated),
     ...section("Goals to fold (apply these board ops in this run, in this order; no goal stays open only to wait)", precheck.fold.map(foldLine)),
