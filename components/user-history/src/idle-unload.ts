@@ -3,6 +3,7 @@ import type { DaemonClient, SessionSummary } from "prime-agent";
 import { poolFreeAt, type PoolStatus, type PoolThread, type ThreadParts, threadKey } from "./chat-pool.ts";
 import { lastTurnError } from "./held-turns.ts";
 import type { UnloadReceipt } from "./unloaded.ts";
+import { afterMove, moveOf } from "./worker-move.ts";
 
 /**
  * Stopping a session that sits idle for the quiet window (src/quiet-minutes.ts, 15 min by default; the daemon's idleEvictionMinutes before
@@ -700,6 +701,21 @@ export class IdleUnloader {
     return run;
   }
 
+  /**
+   * The daemon's answer to `type` for `row`; when it refuses because the session's worker is stopping or starting, get_state is read every
+   * MOVE_READ_MS until it answers otherwise, and `type` goes once more (src/worker-move.ts `afterMove`). `moved` hears that it waited.
+   */
+  private async askedThroughMove(row: SessionSummary, type: "get_state" | "kill", moved?: () => void): Promise<DaemonAnswer> {
+    let refused: DaemonAnswer | undefined;
+    const ask = async (): Promise<DaemonAnswer> => {
+      const answer = await this.source.request(row, type);
+      if (!answer.success && moveOf(answer.error) !== undefined) { refused = answer; throw new Error(answer.error); }
+      return answer;
+    };
+    try { return await afterMove(ask, () => this.source.request(row, "get_state"), () => moved?.()); }
+    catch (error) { if (refused && moveOf(error) !== undefined) return refused; throw error; }
+  }
+
   private async stopNow(row: SessionSummary, chats: ReadonlySet<string>, why: UnloadReceipt["why"]): Promise<boolean> {
     const source = this.source;
     const retry = why === "pool wait";
@@ -709,7 +725,15 @@ export class IdleUnloader {
       return false;
     };
     const since = source.now();
-    const state = await source.request(row, "get_state");
+    // A worker that is stopping or starting is waited out and asked once more (`askedThroughMove`). A session that its worker's stop took
+    // along has nothing left to stop: on 10-21 at 19:46:07Z this check met ops guy (+observability)'s stopping worker and failed, a d7 minute.
+    let moved = false;
+    const state = await this.askedThroughMove(row, "get_state", () => { moved = true; });
+    if (!state.success && moved && skipUntilRowChanges(state.error)) {
+      this.gone.add(goneKey(row));
+      source.log(`idle unload: ${row.sessionId}: its worker exited with it while this check waited; nothing left to stop`);
+      return false;
+    }
     if (!state.success) return failed(state);
     if (stateBusy(state.data, retry, this.handsOff(row))) { source.log(`idle unload: ${row.sessionId}: the daemon shows it at work since the row was listed; kept`); return false; }
     // The service lets go of a chat first: the kill closes the session under its attach, and the hub would open it again at once.
@@ -726,7 +750,7 @@ export class IdleUnloader {
     if (resumed) source.log(`idle unload: ${row.sessionId}: finished the handoff a crash left open`);
     else {
       if (opening()) { await receipt("failed", "an open is attaching to it"); source.log(`idle unload: ${row.sessionId}: an open is attaching to it; kept`); return false; }
-      const killed = await source.request(row, "kill");
+      const killed = await this.askedThroughMove(row, "kill");
       // The daemon's guard kept a detached service. With a handoff source the services move to scopes of their own and the kill goes out
       // again; without one only this sweep skips the session, and once the service exits the next sweep stops it.
       if (!killed.success && killed.detachedHold) {
