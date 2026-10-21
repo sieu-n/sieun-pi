@@ -326,14 +326,14 @@ export function systemPorts(client: UnloadClient, dir = ORPHAN_SERVICES_DIR, sen
 }
 
 /**
- * Whether the idle unload may hand off this row's detached services now: a session on this box (the scope move and the /proc checks run here),
- * a daemon hello that speaks the handoff, and a root session. A subagent stays out: on 10-20 at 16:52Z `rlm.delete_subagent` of the passive
- * subagent 01a15a32, whose http.server had been handed off at 16:46:57Z, left the service running with its receipt committed, and the daemon
- * logged no delete_rlm_subagent (~/work/recovery-evidence/detached-handoff/live-consumer-01a15a32/). Until Prime's RLM delete stops a passive
- * child's transferred services, a subagent keeps the old rule: its detached process keeps it loaded.
+ * Whether the idle unload may hand off this row's detached services now: a session on this box (the scope move and the /proc checks run here)
+ * under a daemon hello that speaks the handoff. A subagent is handed off too. On 10-20 at 16:52Z `rlm.delete_subagent` of a handed-off passive
+ * subagent left its service running on dhx.3, so subagents stayed out until Prime's fix. On 10-21 at 06:45Z on s2int.2 (exe 68f8b026) the same
+ * public delete stopped the transferred service through its receipt (StopRecord delete_rlm_subagent, scope inactive, curl refused) with no
+ * manual step (~/work/detached-handoff-job/recovery-s2int2-delete/verdict.md).
  */
-export function handsOffRow(row: { runtimeKind?: string; rlmDepth?: number }, input: { local: boolean; hello: Parameters<typeof speaksHandoff>[0] }): boolean {
-  return input.local && speaksHandoff(input.hello) && row.runtimeKind !== "subagent" && (row.rlmDepth ?? 0) === 0;
+export function handsOffRow(_row: { runtimeKind?: string; rlmDepth?: number }, input: { local: boolean; hello: Parameters<typeof speaksHandoff>[0] }): boolean {
+  return input.local && speaksHandoff(input.hello);
 }
 
 /** Whether the daemon of this hello speaks the handoff: the capability at protocol 7 or later. */
