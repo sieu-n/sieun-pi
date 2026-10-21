@@ -225,6 +225,34 @@ attempt("log", lambda: sh(f"l=~/.prime/agent/logs; mkdir -p $l && touch $l/trans
     "own ran", "list ran", "loop list ran", "board ran", "log ran"]);
 });
 
+test("a subagent named by its id under sessions/ belongs to the root that Prime's rlm-ledger spawned it in", () => {
+  // On 10-21 at 16:52Z a root of chat-057a opened sessions/<its direct child's id>.jsonl, the form a root's transcript takes, and the guard
+  // refused it as another family's, since only a path under session-artifacts/ named the child's root. Prime keeps each subagent's transcript
+  // in its parent's artifact folder and records every spawn, child path included, in rlm-ledger/<hash>.jsonl.
+  mkdirSync(join(prime, "rlm-ledger"), { recursive: true });
+  const spawn = (parent, child, childId) => JSON.stringify({ v: 1, op: "spawn", at: "2026-10-21T16:40:24.515Z", childId, parent, child, depth: 1, name: childId });
+  writeFileSync(join(prime, "rlm-ledger", "0123456789abcdef.jsonl"), `${spawn(files.me, files.child, "sub-33333333")}\n${spawn(files.rootB, files.jobB, "sub-55555555")}\n`);
+  const named = (n) => join(prime, "sessions", `${id(n)}.jsonl`);
+  const probe = `${ATTEMPT}
+def read(label, path):
+    try:
+        open(path).read()
+        print(label, "ran")
+    except FileNotFoundError:
+        print(label, "missing")
+    except PermissionError as error:
+        print(label, "refused", type(error).__name__)
+`;
+  assert.deepEqual(kernel(`${probe}
+read("child by id", ${JSON.stringify(named("a1"))})
+read("other family's job by id", ${JSON.stringify(named("d1"))})
+read("unknown id", ${JSON.stringify(named("99"))})
+attempt("tail child by id", lambda: sh(f"tail -1 ${named("a1")} 2>/dev/null || true"))
+attempt("tail other job by id", lambda: sh(f"tail -1 ${named("d1")} 2>/dev/null || true"))
+`, { RLM_SESSION_DIR: join(prime, "session-artifacts", A) }), ["child by id missing", "other family's job by id refused TranscriptRefused",
+    "unknown id refused TranscriptRefused", "tail child by id ran", "tail other job by id refused TranscriptRefused True"]);
+});
+
 test("the read, grep and bash tools get the same answer from the tool_call half", async () => {
   const { judgeTool } = await import("../components/global-rules/transcript-guard.ts");
   process.env.PRIME_AGENT_CODING_AGENT_DIR = prime;

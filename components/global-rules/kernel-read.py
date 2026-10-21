@@ -102,14 +102,62 @@ def transcript_id(path: str):
     return match.group(1) if under(real, PRIME) and not under(real, CLEAN_ROOM) else None
 
 
-def root_of(real: str, sid: str) -> str:
-    """The root session whose tree holds a transcript: the folder after session-artifacts/, live or in a copy, else the file's own id."""
-    parts = os.path.relpath(real, PRIME).split(os.sep)
+def artifact_root(path: str):
+    """The folder after session-artifacts/ in a path, live or in a copy, or None."""
+    parts = os.path.relpath(path, PRIME).split(os.sep)
     if "session-artifacts" in parts:
         index = parts.index("session-artifacts")
         if index + 2 < len(parts) and UUID.match(parts[index + 1]):
             return parts[index + 1]
-    return sid
+    return None
+
+
+_ledger = {"key": None, "roots": {}}
+
+
+def spawned_roots() -> dict:
+    """Each subagent's session id and the root whose tree holds its transcript, from the spawn records in Prime's rlm-ledger.
+
+    On 10-21 at 16:52Z a root of chat-057a opened sessions/<its direct child's id>.jsonl, the path a root's transcript has, and was refused
+    as outside its family, since the path named no root. Prime keeps a subagent's transcript in its parent's artifact folder and writes the
+    path in each spawn record.
+    """
+    paths = sorted(glob.glob(os.path.join(PRIME, "rlm-ledger", "*.jsonl")))
+    try:
+        key = tuple((path, os.stat(path).st_mtime_ns) for path in paths)
+    except OSError:
+        key = None
+    if key != _ledger["key"]:
+        roots = {}
+        for path in paths:
+            try:
+                with _open(path, "rb") as handle:
+                    lines = handle.read().decode("utf-8", "replace").splitlines()
+            except OSError:
+                continue
+            for line in lines:
+                if '"op":"spawn"' not in line:
+                    continue
+                try:
+                    child = json.loads(line).get("child")
+                except ValueError:
+                    continue
+                match = TRANSCRIPT.match(os.path.basename(child)) if isinstance(child, str) else None
+                root = artifact_root(child) if match else None
+                if root:
+                    roots[match.group(1)] = root
+        _ledger.update(key=key, roots=roots)
+    return _ledger["roots"]
+
+
+def root_of(real: str, sid: str) -> str:
+    """The root session whose tree holds a transcript: the folder after session-artifacts/, else the root that spawned a subagent's id, else the id."""
+    root = artifact_root(real)
+    if root:
+        return root
+    if os.path.isdir(os.path.join(ARTIFACTS, sid)):
+        return sid
+    return spawned_roots().get(sid, sid)
 
 
 def board_module():
