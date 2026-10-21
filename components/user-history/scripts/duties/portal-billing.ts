@@ -51,6 +51,12 @@ export const EDGE_MS = 10 * MINUTE;
  * 90% paired the drain or the query is broken, and a zero would only mean nothing was read.
  */
 export const MIN_PAIRED_SHARE = 0.9;
+/**
+ * Each probe call ends by this deadline, so one hung route leaves only its own probe unjudged. On 10-21 at 04:15Z prod probes answered in 1.8 to
+ * 5.1 s and staging's Hacker News 502s in 12.7 s, while staging's instagram missing profile call never answered and aborted the whole staging
+ * source at the 110 s source deadline twice; the seed and ledger reads after it took 0.6 s, so 60 s leaves them room.
+ */
+export const PROBE_DEADLINE_MS = 60_000;
 
 export interface Operation { id: string; path: string; method: string; costMicros: number }
 /** One prod request line: its Vercel request id, method, path without query, status, start (proxy timestamp) and duration in ms. */
@@ -322,13 +328,15 @@ async function probeEnv(env: Env, key: string, headers: Record<string, string>, 
     try {
       const cost = doc.paths[probe.path]?.get?.["x-dashboard-cost"];
       if (!cost) throw new Error(`${env} openapi has no x-dashboard-cost for GET ${probe.path}`);
-      const response = await fetch(url, { headers: { ...headers, authorization: `Bearer ${key}` }, signal });
+      const probeSignal = AbortSignal.any([signal, AbortSignal.timeout(PROBE_DEADLINE_MS)]);
+      const response = await fetch(url, { headers: { ...headers, authorization: `Bearer ${key}` }, signal: probeSignal });
       const body = await response.json().catch(() => null) as { meta?: { request_id?: string }; error?: { request_id?: string } } | null;
       const requestId = body?.meta?.request_id ?? body?.error?.request_id;
       const result: ProbeResult = { env, probe: probe.name, status: response.status, expected: expectedCharge(probe, response.status, micros(cost)) };
       return requestId ? { ...result, requestId } : { ...result, error: `HTTP ${response.status} with no request_id` };
     } catch (error) {
-      return { env, probe: probe.name, status: 0, expected: 0, error: error instanceof Error ? error.message : String(error) };
+      const timedOut = error instanceof Error && error.name === "TimeoutError";
+      return { env, probe: probe.name, status: 0, expected: 0, error: timedOut ? `no answer in ${PROBE_DEADLINE_MS / 1000} s` : error instanceof Error ? error.message : String(error) };
     }
   }));
   const rows = await ledgerSince(query, started - MINUTE);
