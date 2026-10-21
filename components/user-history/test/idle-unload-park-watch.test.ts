@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { SessionSummary } from "prime-agent";
-import { type DaemonAnswer, ENDED_MS, IdleUnloader, parkChanges, unloadPlan, wokenByScan } from "../src/idle-unload.ts";
+import { type DaemonAnswer, ENDED_MS, IdleUnloader, parkChanges, SWEEP_EVERY_MS, unloadPlan, wokenByScan } from "../src/idle-unload.ts";
 import type { UnloadReceipt } from "../src/unloaded.ts";
 
 const MIN = 60_000;
@@ -61,7 +61,7 @@ test("quieted stops a session that just parked without the minute sweep, and rec
   const idle: DaemonAnswer = { success: true, data: { activity: "idle", isSessionActive: false, isStreaming: false, isCompacting: false, isBashRunning: false, isRunningTools: false } };
   const unloader = new IdleUnloader({
     rows: () => rows, localRows: () => rows, idleMs: () => 15 * MIN, sessionsDir: SESSIONS, chats: async () => new Set(), dormant: () => false,
-    pool: async () => new Set(), waking: async () => new Set(), held: async () => new Map(),
+    pool: async () => { calls.push("pool"); return new Set(); }, waking: async () => { calls.push("wakes"); return new Set(); }, held: async () => new Map(),
     parked: async candidates => new Map(candidates.filter(found => found.sessionId === id).map(found => [found.sessionId, at + 108 * MIN] as const)),
     release: async () => true, own: async pids => { calls.push(`own ${pids.join(",")}`); return new Map(); }, restNow: async () => false, title: () => null,
     request: async (target, type) => { calls.push(`${type} ${target.sessionId}`); return type === "get_state" ? idle : { success: true }; },
@@ -69,9 +69,33 @@ test("quieted stops a session that just parked without the minute sweep, and rec
   });
   await unloader.quieted([id]);
   await unloader.settled();
-  assert.deepEqual(calls, [`get_state ${id}`, `kill ${id}`], "only the named session, and no recycle read");
+  assert.deepEqual(calls, [`get_state ${id}`, `kill ${id}`], "only the named session, with no pool, wake or recycle read");
   assert.deepEqual(receipts.filter(receipt => receipt.phase === "stopped").map(receipt => receipt.why), ["quota park"]);
   assert.match(lines.join("\n"), /parked on its provider quota until 15:29Z/);
   await unloader.quieted([]);
   assert.equal(calls.length, 2, "an empty call plans nothing");
+});
+
+test("a sweep that runs past SWEEP_EVERY_MS names the read that held it", async () => {
+  let clock = at;
+  const lines: string[] = [];
+  const unloader = new IdleUnloader({
+    rows: () => [], localRows: () => [], idleMs: () => 15 * MIN, chats: async () => new Set(), dormant: () => false,
+    pool: async () => { clock += 318_000; return new Set(); }, waking: async () => new Set(), held: async () => new Map(), parked: async () => new Map(),
+    release: async () => true, own: async () => new Map(), restNow: async () => false, title: () => null, request: async () => ({ success: true }),
+    stopped: async () => {}, log: line => lines.push(line), now: () => clock,
+  });
+  await unloader.sweep();
+  assert.deepEqual(lines, ["idle unload: the sweep took 318 s (chats 0 s, pool 318 s, wakes 0 s, pool waits 0 s, parks 0 s, recycle 0 s)"]);
+  assert.ok(318_000 > SWEEP_EVERY_MS);
+  clock = at;
+  lines.length = 0;
+  const quick = new IdleUnloader({
+    rows: () => [], localRows: () => [], idleMs: () => 15 * MIN, chats: async () => new Set(), dormant: () => false,
+    pool: async () => { clock += 318_000; return new Set(); }, waking: async () => new Set(), held: async () => new Map(), parked: async () => new Map(),
+    release: async () => true, own: async () => new Map(), restNow: async () => false, title: () => null, request: async () => ({ success: true }),
+    stopped: async () => {}, log: line => lines.push(line), now: () => clock,
+  });
+  await quick.quieted(["01a15e31-8dc9-72fc-a3d1-b542164b1a83"]);
+  assert.equal(clock, at, "a park plan never waits on the pool read");
 });

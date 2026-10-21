@@ -29,7 +29,7 @@ import { briefCheckRecord, deletedJobRecord, heldNoticeRecord, jobRegistry, chec
 import { jobResumes } from "./job-resume.ts";
 import { cutJobs, interruptedRuns } from "./chat-resume.ts";
 import { resumesNow, tailLines } from "./cut-end.ts";
-import { IdleUnloader, providerWaits, parkChanges, quotaParkedUntil, takesKillOrigin, unloadRequest } from "./idle-unload.ts";
+import { IdleUnloader, parkChanges, providerWaits, quotaParkedUntil, SWEEP_EVERY_MS, takesKillOrigin, unloadRequest } from "./idle-unload.ts";
 import { handOff, handoffSend, handsOffRow, systemPorts } from "./detached-handoff.ts";
 import { unfinishedHandoffs } from "./orphan-services.ts";
 import { readHeldTurns, readTurnSince, writeResumePending } from "./held-turns.ts";
@@ -429,7 +429,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     if (unloading) return;
     unloading = true;
     void unloader_.sweep().catch(error => dutyLog(`idle unload: ${error instanceof Error ? error.message : String(error)}`)).finally(() => { unloading = false; });
-  }, 60_000);
+  }, SWEEP_EVERY_MS);
   unloader?.unref();
   // A row that reads parked on its provider quota between sweeps is planned for at once, so the session stops seconds after its park.
   const parkSeen = new Map<string, string>();

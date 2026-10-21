@@ -494,6 +494,16 @@ function stateBusy(data: unknown, retry: boolean, handoff = false): boolean {
  * the hung worker 114947 left the `get_state` of 01a150e1 timing out every minute.
  */
 export const STOP_BOUND_MS = 75_000;
+/** How often the service starts a sweep; a tick that finds the last sweep still running is skipped. */
+export const SWEEP_EVERY_MS = 60_000;
+
+/** A slow sweep's time in words: "312 s (chats 0 s, pool 309 s, ...)", from its start and the time each phase ended. */
+export function slowWords(began: number, phases: readonly (readonly [string, number])[]): string {
+  let last = began;
+  const parts = phases.map(([name, at]) => { const part = `${name} ${Math.round((at - last) / 1000)} s`; last = at; return part; });
+  return `${Math.round((last - began) / 1000)} s (${parts.join(", ")})`;
+}
+
 /** How long the sweep waits for `held` (transcript tails and the pool reads, one per WAIT_READ_TREES trees) before it plans without it. */
 export const HELD_BOUND_MS = 45_000;
 
@@ -540,11 +550,20 @@ export class IdleUnloader {
     const source = this.source;
     const idleMs = source.idleMs();
     if (only && (idleMs === null || !only.size)) return;
+    const began = source.now();
+    const phases: [string, number][] = [];
+    const lap = (name: string): void => { phases.push([name, source.now()]); };
     const chats = await source.chats();
     const attached = new Set([...chats].filter(id => !source.dormant(id)));
-    const pool = await source.pool();
+    lap("chats");
+    // A park plan reads neither the pool nor the wakes: a parked session holds no turn in pi-pool, and a wake only sets an idle session's wait.
+    // From 17:30:39Z to 17:35:57Z on 10-21 every sweep and every park plan of us-metal02 sent no stop at all, and 18 parked sessions were
+    // stopped together at 17:35:57Z, so one of these reads held them all.
+    const pool = only ? new Set<string>() : await source.pool();
+    lap("pool");
     const now = source.now();
-    const waking = await source.waking(now);
+    const waking = only ? new Set<string>() : await source.waking(now);
+    lap("wakes");
     const input: PlanInput = { attached, pool, now, idleMs, chats, waking, handoff: row => this.handsOff(row), ...source.sessionsDir === undefined ? {} : { sessionsDir: source.sessionsDir } };
     const fresh = (row: SessionSummary): boolean => (!only || only.has(row.sessionId)) && !this.out.has(row.sessionId) && !this.gone.has(goneKey(row));
     const candidates = retryCandidates(source.rows(), input).filter(fresh);
@@ -552,11 +571,13 @@ export class IdleUnloader {
       ? await within(source.held(candidates, now, idleMs, chats).catch(error => { source.log(`idle unload: provider waits: ${error instanceof Error ? error.message : String(error)}`); return new Map<string, number | null>(); }),
         HELD_BOUND_MS, new Map<string, number | null>())
       : new Map<string, number | null>();
+    lap("pool waits");
     const parkable = source.parked ? parkCandidates(source.rows(), input).filter(fresh) : [];
     const parked = parkable.length
       ? await within(source.parked!(parkable, now).catch(error => { source.log(`idle unload: quota parks: ${error instanceof Error ? error.message : String(error)}`); return new Map<string, number>(); }),
         HELD_BOUND_MS, new Map<string, number>())
       : new Map<string, number>();
+    lap("parks");
     const plan = unloadPlan(source.rows(), { ...input, held, parked }).filter(fresh);
     if (!only && source.handOff && source.unfinishedHandoffs) this.track(this.resumeUnloaded(source.handOff.bind(source), source.unfinishedHandoffs()));
     if (plan.length) {
@@ -587,6 +608,9 @@ export class IdleUnloader {
     const boxes = [{ host: undefined as string | undefined, rows: source.localRows() },
       ...(source.remoteBoxes?.() ?? []).filter(box => box.recycles).map(box => ({ host: box.host as string | undefined, rows: box.rows }))];
     for (const box of boxes) await this.recycle(box.rows, box.host, chats, pool);
+    lap("recycle");
+    // A sweep past SWEEP_EVERY_MS holds off the next one (the service skips a tick while one runs), so it names where its time went.
+    if (source.now() - began > SWEEP_EVERY_MS) source.log(`idle unload: the sweep took ${slowWords(began, phases)}`);
   }
 
   /**
