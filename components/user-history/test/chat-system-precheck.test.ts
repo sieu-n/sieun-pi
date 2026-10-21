@@ -62,6 +62,19 @@ test("a goal whose open step an open For you todo links has an owner, and an ans
   assert.deepEqual(goalsWithNoJob(board(true), reads).map(goal => goal.id), ["p272"]);
 });
 
+// 10-21 08:11Z and 08:23Z: d9 pushed metal-management on p91, whose goal and step wait for "the owner's answer on For you t6", while its check-in held it.
+test("a goal whose wait names an open For you todo has an owner", () => {
+  const now = Date.parse("2026-10-21T08:23:00Z");
+  const reads = { now, named: new Map(), activity: new Map(), waking: new Set<string>(), poolWaiting: new Set<string>(), jobs: [] };
+  const wait = "the owner's answer on For you t6 of how to simplify the web addresses";
+  const board = (done: boolean) => ({ v: 2, rev: 1, updatedAt: "2026-10-21T08:00:00Z",
+    todos: [{ id: "t6", text: "How should the box's 19 web addresses get simpler?", done, from: "agent", at: "2026-10-19T16:41:34Z" }],
+    plan: [{ id: "p91", text: "Simplify the box's web addresses", status: "blocked", waitFor: wait, note: "Done when the addresses match t6's pick.",
+      children: [{ id: "p115", text: "Apply the web address layout the owner picks on t6", status: "blocked", waitFor: wait, children: [] }] }] }) as unknown as ChatBoard;
+  assert.deepEqual(goalsWithNoJob(board(false), reads).map(goal => goal.id), []);
+  assert.deepEqual(goalsWithNoJob(board(true), reads).map(goal => goal.id), ["p91"]);
+});
+
 test("the push list joins a chat's idle goals and stuck duties, and the follow-up reads the tag and an answer after it", () => {
   const goal = { id: "p5", text: "Ship C", status: "doing", children: [] } as unknown as ChatBoard["plan"][number];
   assert.deepEqual(pushList({ idleGoals: [{ chat: "a", goals: [goal] }, { chat: "b", goals: [] }], stuckDuties: [{ chat: "a", line: "a: d1 red" }, { chat: "c", line: "c: d2 red" }], upkeep: [] })
