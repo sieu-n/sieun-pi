@@ -51,6 +51,15 @@ test("a noise line that went out after its kind's fix, or of a kind no fix cover
   assert.equal(agingSince(runs), undefined);
 });
 
+test("the 10-21 restart asks of launch main bro and metal-management went out before the same-ask fix", async () => {
+  const fixed = { ...commits, b084c910: "2026-10-21T09:40:55Z" };
+  const split = await splitNoise([
+    { at: at("2026-10-21T06:02:09Z"), case: "same incident asked again by another chat (prod crawler restart already asked on t56)" },
+    { at: at("2026-10-21T11:00:00Z"), case: "same incident asked again by another chat" },
+  ], async hash => fixed[hash as keyof typeof fixed] ? at(fixed[hash as keyof typeof fixed]!) : undefined);
+  assert.deepEqual(split.map(line => [line.side, line.fix]), [["before_fix", "b084c910"], ["after_fix", "b084c910"]]);
+});
+
 test("no noise line gives no lastEventAt", () => {
   assert.deepEqual(noiseLastEvent([], firstRun), {});
 });
