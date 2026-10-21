@@ -16,7 +16,8 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  *   and the first owner message that asked for it. The rules and the patterns of his words for each are in staging-design-rules.rules.json.
  * - design_rule_test_failures: failed tests in the virev-demo unit tests that catch a design rule by script (each rule's `tests`).
  * Run detail: design_notes_24h (notes that match any rule), rules_not_written (rules he repeated in 24 h with no correction in force and no
- * skill text), source_errors. A source this check cannot read adds 1 to the metric it feeds and a flagged slice.
+ * skill text), search_design_rule_findings (tests of the same rules in the real app, apps/search on us-metal02, each rule's `searchTests`,
+ * that fail with DESIGN_RULES_STRICT=1, which makes the rules still in warn-only mode strict), source_errors. A source this check cannot read adds 1 to the metric it feeds and a flagged slice.
  */
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -25,7 +26,7 @@ const DAY_MS = 24 * 3_600_000;
 /** User lines another agent or the harness wrote that do not open with "[", so only their opening tells them from the owner's own words. */
 const INJECTED = /^(<skill |Prime Agent restarted|This session moved|The owner asked me)/;
 
-export interface DesignRule { key: string; rule: string; corrections: string[]; skill: string | null; skillSince: string | null; match: string[]; unless?: string; tests?: string[] }
+export interface DesignRule { key: string; rule: string; corrections: string[]; skill: string | null; skillSince: string | null; match: string[]; unless?: string; tests?: string[]; searchTests?: string[] }
 export interface OwnerNote { at: number; text: string }
 interface Correction { id: string; at?: string; status?: string }
 
@@ -81,12 +82,27 @@ const exec = (file: string, args: readonly string[], cwd: string): Promise<void>
   execFile(file, [...args], { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 }, () => resolve());
 });
 
+/** The stdout of a command, whatever its exit code: the remote vitest run prints its JSON report there. */
+const capture = (file: string, args: readonly string[]): Promise<string> => new Promise(resolve => {
+  execFile(file, [...args], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 }, (_error, stdout) => resolve(stdout ?? ""));
+});
+
+/** The real app's checkout on us-metal02, where the apps/search design rule tests run. */
+const SEARCH_HOST = "us-metal02";
+const SEARCH_DIR = "/home/sieun/Documents/Github/auto-sns-agent/apps/search";
+
+/** The ssh command that runs the apps/search rule tests strict on us-metal02 and prints vitest's JSON report. */
+export function searchRun(tests: readonly string[], host = SEARCH_HOST, dir = SEARCH_DIR): [string, string[]] {
+  const run = `cd ${dir} && f=$(mktemp) && DESIGN_RULES_STRICT=1 pnpm exec vitest run ${tests.join(" ")} --reporter=json --outputFile=$f >/dev/null 2>&1; cat $f; rm -f $f`;
+  return ["ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", host, `bash -lc '${run}'`]];
+}
+
 interface VitestReport { testResults?: { name?: string; assertionResults?: { fullName?: string; status?: string; failureMessages?: string[] }[] }[] }
 
-export async function measure(opts: { now: number; sessionFile: string; ledgerFile: string; skillFile: string; rulesFile: string; demoDir: string; vitest: string }): Promise<PrecheckOutput> {
+export async function measure(opts: { now: number; sessionFile: string; ledgerFile: string; skillFile: string; rulesFile: string; demoDir: string; vitest: string; search?: (tests: readonly string[]) => Promise<string> }): Promise<PrecheckOutput> {
   const { now } = opts;
   const flagged: FlaggedSlice[] = [];
-  const metrics: Record<string, number> = { repeated_design_notes_24h: 0, design_rule_test_failures: 0, design_notes_24h: 0, rules_not_written: 0, source_errors: 0 };
+  const metrics: Record<string, number> = { repeated_design_notes_24h: 0, design_rule_test_failures: 0, design_notes_24h: 0, rules_not_written: 0, search_design_rule_findings: 0, source_errors: 0 };
   const lastEventAt: Record<string, number> = {};
   const sourceError = (metric: string, excerpt: string): void => { metrics[metric]!++; metrics.source_errors!++; flagged.push({ at: now, kind: "source_error", excerpt }); };
 
@@ -150,6 +166,23 @@ export async function measure(opts: { now: number; sessionFile: string; ledgerFi
     sourceError("design_rule_test_failures", `vitest report for ${tests.join(", ")}: ${error instanceof Error ? error.message : String(error)}`);
   } finally { await rm(report, { force: true }); }
 
+  const searchTests = [...new Set(rules.flatMap(rule => rule.searchTests ?? []))];
+  if (searchTests.length && opts.search) {
+    try {
+      const parsed = JSON.parse(await opts.search(searchTests)) as VitestReport;
+      const seen = new Set((parsed.testResults ?? []).map(file => file.name ?? ""));
+      for (const test of searchTests) if (![...seen].some(name => name.endsWith(test))) sourceError("search_design_rule_findings", `apps/search vitest wrote no result for ${test}`);
+      for (const file of parsed.testResults ?? []) for (const result of file.assertionResults ?? []) {
+        if (result.status !== "failed") continue;
+        metrics.search_design_rule_findings!++;
+        const first = (result.failureMessages?.[0] ?? "").split("\n")[0]!.slice(0, 200);
+        flagged.push({ at: now, kind: "search_design_test_failed", item: (file.name ?? "").replace(`${SEARCH_DIR}/`, "apps/search/"), excerpt: `${result.fullName}: ${first}` });
+      }
+    } catch (error) {
+      sourceError("search_design_rule_findings", `apps/search vitest report on ${SEARCH_HOST} for ${searchTests.join(", ")}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
   return { metrics, flagged, lastEventAt };
 }
 
@@ -165,6 +198,7 @@ async function main(): Promise<void> {
     rulesFile: join(HERE, "staging-design-rules.rules.json"),
     demoDir: join(repo, "apps/virev-demo"),
     vitest: join(repo, "node_modules/.bin/vitest"),
+    search: tests => capture(...searchRun(tests)),
   });
   await writeFile(output, JSON.stringify(result, null, 2) + "\n");
 }

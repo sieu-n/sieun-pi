@@ -1,5 +1,5 @@
 {
-  "_about": "The design rules the Staging design rules duty (scripts/duties/staging-design-rules.ts) matches the owner's notes against. Each rule names the ledger corrections and the frontend-implementation skill phrase that hold it, the date that skill text was written, the patterns of the owner's own words for it, and the virev-demo unit tests that catch it by script. A rule with neither a correction in force nor its skill phrase is not written down yet.",
+  "_about": "The design rules the Staging design rules duty (scripts/duties/staging-design-rules.ts) matches the owner's notes against. Each rule names the ledger corrections and the frontend-implementation skill phrase that hold it, the date that skill text was written, the patterns of the owner's own words for it, the virev-demo unit tests that catch it by script (`tests`), and the same tests in the real app, apps/search on us-metal02 (`searchTests`). A rule with neither a correction in force nor its skill phrase is not written down yet.",
   "rules": [
     {
       "key": "shared_components",
@@ -19,6 +19,9 @@
         "same style"
       ],
       "tests": [
+        "tests/unit/shared-ui.test.ts"
+      ],
+      "searchTests": [
         "tests/unit/shared-ui.test.ts"
       ]
     },
@@ -50,6 +53,9 @@
       "unless": "slack|채팅|말하|메시지|reply style",
       "tests": [
         "tests/unit/no-filler.test.ts"
+      ],
+      "searchTests": [
+        "tests/unit/no-filler.test.ts"
       ]
     },
     {
@@ -67,6 +73,9 @@
         "희미"
       ],
       "tests": [
+        "tests/unit/boxed-sections.test.ts"
+      ],
+      "searchTests": [
         "tests/unit/boxed-sections.test.ts"
       ]
     },
@@ -90,6 +99,9 @@
         "padding\\W{0,15}(too|fat|big|much)"
       ],
       "tests": [
+        "tests/unit/boxed-sections.test.ts"
+      ],
+      "searchTests": [
         "tests/unit/boxed-sections.test.ts"
       ]
     },
@@ -121,6 +133,9 @@
       ],
       "tests": [
         "tests/unit/blue-sparingly.test.ts"
+      ],
+      "searchTests": [
+        "tests/unit/blue-sparingly.test.ts"
       ]
     },
     {
@@ -134,6 +149,9 @@
         "on scroll"
       ],
       "tests": [
+        "tests/unit/no-load-more.test.ts"
+      ],
+      "searchTests": [
         "tests/unit/no-load-more.test.ts"
       ]
     },
@@ -166,6 +184,9 @@
       ],
       "tests": [
         "tests/unit/no-add-cancel.test.ts"
+      ],
+      "searchTests": [
+        "tests/unit/no-add-cancel.test.ts"
       ]
     },
     {
@@ -181,6 +202,9 @@
         "resizing flex"
       ],
       "tests": [
+        "tests/unit/form-panel.test.ts"
+      ],
+      "searchTests": [
         "tests/unit/form-panel.test.ts"
       ]
     },
@@ -200,6 +224,9 @@
         "keep icons"
       ],
       "tests": [
+        "tests/unit/section-icons.test.ts"
+      ],
+      "searchTests": [
         "tests/unit/section-icons.test.ts"
       ]
     },
@@ -228,6 +255,9 @@
         "transition"
       ],
       "tests": [
+        "tests/unit/smooth-motion.test.ts"
+      ],
+      "searchTests": [
         "tests/unit/smooth-motion.test.ts"
       ]
     },
