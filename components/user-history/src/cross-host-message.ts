@@ -13,8 +13,32 @@ import { DAEMON_WORKER_START_MS } from "./daemon-worker-start.ts";
  * local daemon finds no sibling, and adds the other boxes' roots to a root's agent_observe.list_agents roster.
  */
 
-/** A root session on some box of hosts.json. */
-export interface Root { sessionId: string; activeSessionId?: string; name: string; host: string; status: string }
+/**
+ * A root session on some box of hosts.json. `archived` marks a root its daemon lists as archived that this service shows no chat of: a send
+ * still reaches it, since an archived root answers a message (owner 10-12), and the outbox opens it from its file, but no roster lists it.
+ */
+export interface Root { sessionId: string; activeSessionId?: string; name: string; host: string; status: string; archived?: boolean }
+
+/** A daemon's top-level row as `rootsOf` reads it, its name already the sidebar's title. */
+export interface RootRow { sessionId: string; activeSessionId?: string; name: string; host: string; status: string; lifecycle?: string }
+
+/**
+ * The roots of every box's rows, the first row of a session id kept. A chat this service shows stays a full root while its daemon lists it
+ * archived: on 10-21 the Mac's daemon listed slack green guy (01a11b0b) and frontend bro (01a11ba8) archived between the service's unarchives,
+ * and from 08:33Z every send to slack green guy from a us-metal02 session read 'No sibling matches "slack green guy" on any box either'.
+ */
+export function rootsOf(rows: Iterable<RootRow>, chats: ReadonlySet<string>): Root[] {
+  const seen = new Set<string>();
+  const roots: Root[] = [];
+  for (const row of rows) {
+    if (seen.has(row.sessionId)) continue;
+    seen.add(row.sessionId);
+    const archived = row.lifecycle === "archived" && !chats.has(row.sessionId);
+    roots.push({ sessionId: row.sessionId, ...(row.activeSessionId ? { activeSessionId: row.activeSessionId } : {}), name: row.name, host: row.host,
+      status: row.status, ...(archived ? { archived } : {}) });
+  }
+  return roots;
+}
 
 /** What the routes need from the chat service: every box's live roots, and one send_message on the daemon that runs a session. */
 export interface RootDirectory {
@@ -35,16 +59,22 @@ export async function otherBoxRoots(directory: RootDirectory, session: string): 
   const roots = await directory.roots();
   const own = roots.find(root => root.sessionId === session || root.activeSessionId === session);
   if (!own) throw new Error(`No box lists root session ${session.slice(0, 8)}.`);
-  return roots.filter(root => root.host !== own.host);
+  return roots.filter(root => root.host !== own.host && !root.archived);
 }
 
-/** The one root `to` names among `roots`: its session id, an id prefix of 8 or more characters, its active session id or its name (any case). */
+/**
+ * The one root `to` names among `roots`: its session id, an id prefix of 8 or more characters, its active session id or its name (any case).
+ * An archived root counts only when no other root matches.
+ */
 export function pickRoot(roots: readonly Root[], to: string): Root | { error: string } {
   const wanted = to.trim();
   const lower = wanted.toLowerCase();
-  const exact = roots.filter(root => root.sessionId === wanted || root.activeSessionId === wanted);
-  const named = exact.length ? exact : roots.filter(root => root.name.trim().toLowerCase() === lower ||
-    (wanted.length >= 8 && root.sessionId.startsWith(wanted)));
+  const match = (among: readonly Root[]): Root[] => {
+    const exact = among.filter(root => root.sessionId === wanted || root.activeSessionId === wanted);
+    return exact.length ? exact : among.filter(root => root.name.trim().toLowerCase() === lower || (wanted.length >= 8 && root.sessionId.startsWith(wanted)));
+  };
+  const listed = match(roots.filter(root => !root.archived));
+  const named = listed.length ? listed : match(roots.filter(root => root.archived));
   if (named.length === 1) return named[0]!;
   if (!named.length) return { error: `No sibling matches "${wanted}" on any box either.` };
   return { error: `"${wanted}" names ${named.length} roots on other boxes (${named.map(root => `${root.name} ${root.sessionId.slice(0, 8)} on ${root.host}`).join(", ")}); send to one session id.` };

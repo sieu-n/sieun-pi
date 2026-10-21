@@ -10,7 +10,7 @@ import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { otherBoxRoots, pickRoot, type Root, type RootDirectory, sendCrossHost, siblingRow } from "../src/cross-host-message.ts";
+import { otherBoxRoots, pickRoot, type Root, type RootDirectory, rootsOf, sendCrossHost, siblingRow } from "../src/cross-host-message.ts";
 import { messageCheckPrelude } from "../src/message-limit-check.ts";
 
 const VP = "01a11bd7-072f-7591-ad1d-f123c276cde5";
@@ -43,6 +43,33 @@ test("a box chat's send to the release owner on the Mac goes to the Mac's daemon
   assert.deepEqual((await otherBoxRoots(directory, VP)).map(root => root.name), ["release driver", "Untitled"]);
   assert.equal(siblingRow(ROOTS[2]!).relationship, "sibling");
   assert.ok("error" in pickRoot([...ROOTS, { ...ROOTS[3]!, sessionId: "01a0cc5e-ffff-7000-8000-000000000000" }], "untitled"), "two roots of one name need an id");
+});
+
+// On 10-21 from 08:33Z every send from a us-metal02 session to slack green guy read 'No sibling matches "slack green guy" on any box either',
+// since the Mac's daemon listed that chat archived between the chat service's unarchives and the directory left out every archived root.
+test("a chat the Mac's daemon lists archived stays a sibling, and an archived root that is no chat takes a send by name or id", async () => {
+  const SLACK_GREEN = "01a11b0b-7c15-73da-9481-8de15903eab4";
+  const OLD_JOB = "01a14b74-8945-75a0-9848-36b7e352f66d";
+  const roots = rootsOf([
+    { sessionId: VP, activeSessionId: "e61370c1f209", name: "***launch main bro***", host: "us-metal02", status: "idle", lifecycle: "live" },
+    { sessionId: SLACK_GREEN, name: "slack green guy", host: "mac", status: "idle", lifecycle: "archived" },
+    { sessionId: OLD_JOB, name: "land 37 driver", host: "mac", status: "idle", lifecycle: "archived" },
+    { sessionId: OLD_JOB, name: "land 37 driver", host: "us-metal02", status: "idle", lifecycle: "live" },
+  ], new Set([VP, SLACK_GREEN]));
+  assert.equal(roots.length, 3, "a session id two boxes list is one root, the first row's");
+  const sent: string[] = [];
+  const directory: RootDirectory = { roots: () => roots, reopen: async () => false,
+    send: async session => { sent.push(session); return { deliveryStatus: "queued", target: { sessionId: session } }; } };
+  assert.deepEqual((await otherBoxRoots(directory, VP)).map(root => root.name), ["slack green guy"]);
+  assert.equal((await sendCrossHost(directory, VP, "slack green guy", "delayed check-in report")).host, "mac");
+  const archived: Root[] = [{ sessionId: OLD_JOB, name: "land 37 driver", host: "mac", status: "idle", archived: true }];
+  const old: RootDirectory = { ...directory, roots: () => [roots[0]!, ...archived] };
+  assert.deepEqual(await otherBoxRoots(old, VP), [], "an archived root that is no chat stays off the roster");
+  await sendCrossHost(old, VP, "land 37 driver", "x");
+  await sendCrossHost(old, VP, OLD_JOB.slice(0, 8), "y");
+  assert.deepEqual(sent, [SLACK_GREEN, OLD_JOB, OLD_JOB]);
+  const live: Root = { sessionId: "01a15000-0000-7000-8000-000000000000", name: "land 37 driver", host: "mac", status: "idle" };
+  assert.equal((pickRoot([...archived, live], "land 37 driver") as Root).sessionId, live.sessionId, "a listed root wins over an archived one of its name");
 });
 
 test("in a root's kernel agent_message.send and list_agents reach the Mac through the chat service; a subagent keeps the daemon's error", async () => {

@@ -5,7 +5,7 @@ import { readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { parseWake } from "./wakes.ts";
 import { isTopLevel, sessionTitle } from "./chat-catalog.ts";
-import { otherBoxRoots, reopenSibling, type RootDirectory, sendCrossHost, siblingRow } from "./cross-host-message.ts";
+import { otherBoxRoots, reopenSibling, type RootDirectory, rootsOf, sendCrossHost, siblingRow } from "./cross-host-message.ts";
 import { getAgentDir } from "prime-agent";
 import { reopenSession, unarchiveOnItsBox } from "./reopen-send.ts";
 import { jobRegistry } from "./chat-sources.ts";
@@ -116,15 +116,12 @@ function requestId(value: unknown): string {
 function rootDirectory(backend: ChatBackend): RootDirectory {
   const catalog = backend.catalog;
   return {
-    roots: () => {
+    roots: async () => {
       const self = catalog.selfHost() ?? thisBox();
-      const seen = new Set<string>();
-      return [...catalog.daemonRows(), ...catalog.remoteRows()].filter(row => isTopLevel(row) && row.lifecycle !== "archived").flatMap(row => {
-        if (seen.has(row.sessionId)) return [];
-        seen.add(row.sessionId);
-        return [{ sessionId: row.sessionId, ...(row.activeSessionId ? { activeSessionId: row.activeSessionId } : {}), name: sessionTitle(row),
-          host: catalog.hostOf(row.sessionId) ?? self, status: row.activity ?? row.lifecycle ?? "unknown" }];
-      });
+      const chats = await backend.chats.ids();
+      return rootsOf([...catalog.daemonRows(), ...catalog.remoteRows()].filter(isTopLevel).map(row => ({ sessionId: row.sessionId,
+        ...(row.activeSessionId ? { activeSessionId: row.activeSessionId } : {}), name: sessionTitle(row), host: catalog.hostOf(row.sessionId) ?? self,
+        status: row.activity ?? row.lifecycle ?? "unknown", ...(row.lifecycle ? { lifecycle: row.lifecycle } : {}) })), chats);
     },
     // The message waits on disk and the outbox delivers it, so the sender's kernel gets its receipt before the daemon answers (src/agent-outbox.ts).
     send: async (sessionId, message) => {
