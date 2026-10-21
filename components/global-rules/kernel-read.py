@@ -76,6 +76,8 @@ UNIT_ENV = os.path.join(HERE, "unit-env")
 KEYWORDS = {"{", "}", "!", "then", "do", "else", "elif", "if", "while", "until", "time"}
 REDIRECTS = {">", ">>", "<<", "<<<", ">&", "<&", "&>", ">|", "&>>"}
 SEPARATORS = {";", "&", "&&", "||", "(", ")", "\n", ";;"}
+DECLARE = {"export", "local", "declare", "readonly", "typeset"}
+ASSIGN = re.compile(r"^([A-Za-z_]\w*)=(.*)$", re.S)
 GLOB = re.compile(r"[*?\[]")
 
 
@@ -279,14 +281,47 @@ def judge_path(path: str, folder: str):
     return None
 
 
-def resolve(word: str, cwd: str, env) -> list:
-    names = env if isinstance(env, dict) else os.environ
+def shell_names(env) -> dict:
+    """The variables a shell text starts with, each name to the values it can hold: the command's environment, else the kernel's."""
+    return {name: [os.fsdecode(value)] for name, value in (env if isinstance(env, dict) else os.environ).items()}
+
+
+def expand(word: str, names: dict) -> list:
+    """Each text `word` can stand for once ~, $HOME and the variables in `names` are put in; none when it uses a variable the text never set."""
     raw = re.sub(r"^(?:~(?=/|$)|\$HOME\b|\$\{HOME\})", lambda m: HOME, word)
-    raw = re.sub(r"\$\{?([A-Za-z_]\w*)\}?", lambda m: os.fsdecode(names.get(m.group(1), m.group(0))), raw)
-    if "$" in raw or "`" in raw or not raw:
-        return []
-    raw = os.path.normpath(os.path.join(cwd, raw))
-    return [os.path.normpath(p) for p in glob.glob(raw)] if GLOB.search(raw) else [raw]
+    match = re.search(r"\$\{?([A-Za-z_]\w*)\}?", raw)
+    if not match:
+        return [] if "$" in raw or "`" in raw else [raw]
+    return [raw[:match.start()] + value + rest for value in names.get(match.group(1), []) for rest in expand(raw[match.end():], names)]
+
+
+def resolve(word: str, cwd: str, names: dict) -> list:
+    paths = []
+    for raw in expand(word, names):
+        if raw:
+            raw = os.path.normpath(os.path.join(cwd, raw))
+            paths.extend([os.path.normpath(p) for p in glob.glob(raw)] if GLOB.search(raw) else [raw])
+    return paths
+
+
+def assign(words: list, cwd: str, names: dict) -> bool:
+    """Records the variables a command sets (`f=path`, `export f=path`, `for f in paths`) in `names`; whether that is all it does.
+
+    On 10-21 at 08:10Z a job ran `f=~/.prime/agent/sessions/<id>.jsonl; head -c 1500 $f` and read another chat's transcript, because `$f`
+    was not in the environment and the command named no file.
+    """
+    while words and words[0] in KEYWORDS:
+        words = words[1:]
+    if len(words) > 2 and words[0] == "for" and words[2] == "in":
+        names[words[1]] = [p for w in words[3:] for raw in expand(w, names) if raw
+                           for p in (sorted(glob.glob(os.path.join(cwd, raw))) if GLOB.search(raw) else [raw])]
+        return True
+    sets = [ASSIGN.match(w) for w in words[1 if words and words[0] in DECLARE else 0:]]
+    if not sets or not all(sets):
+        return False
+    for match in sets:
+        names[match.group(1)] = expand(match.group(2), names)
+    return True
 
 
 def words_of(text: str) -> list:
@@ -346,24 +381,30 @@ def reads_whole(name: str, words: list) -> bool:
     return False
 
 
-def judge_shell(text: str, cwd: str, env=None, folder: str = "", depth: int = 0):
-    """(transcript, session id, folder read as a whole or "") for the first outside transcript a shell text reads, or None."""
+def judge_shell(text: str, cwd: str, env=None, folder: str = "", depth: int = 0, names=None):
+    """(transcript, session id, folder read as a whole or "") for the first outside transcript a shell text reads, or None.
+
+    `names` holds the shell variables, from `env` and from what the text sets as it goes, so a `$f` the text set reads as its path.
+    """
     if not folder:
         return None
+    names = shell_names(env) if names is None else names
     for pipe in pipelines(text):
         listed = []
         for index, raw in enumerate(pipe):
+            if assign(raw, cwd, names):
+                continue
             words = bare(raw)
             if not words:
                 continue
             name = os.path.basename(words[0])
             if name == "cd" and len(words) > 1:
-                target = resolve(words[1], cwd, env)
+                target = resolve(words[1], cwd, names)
                 if target:
                     cwd = target[0]
                 continue
             if name in SHELLS and "-c" in words[1:-1] and depth < 3:
-                hit = judge_shell(words[words.index("-c", 1) + 1], cwd, env, folder, depth + 1)
+                hit = judge_shell(words[words.index("-c", 1) + 1], cwd, env, folder, depth + 1, dict(names))
                 if hit:
                     return hit
                 continue
@@ -381,7 +422,7 @@ def judge_shell(text: str, cwd: str, env=None, folder: str = "", depth: int = 0)
                             return found[0], found[1], ""
                 continue
             if name in ("find", "fd", "ls"):
-                paths = [p for w in operands for p in resolve(w, cwd, env)] or [cwd]
+                paths = [p for w in operands for p in resolve(w, cwd, names)] or [cwd]
                 execs = [w for w in words if w in ("-exec", "-execdir", "-ok", "-x", "-X", "--exec", "--exec-batch")]
                 if execs:
                     after = words[words.index(execs[0]) + 1:]
@@ -395,7 +436,7 @@ def judge_shell(text: str, cwd: str, env=None, folder: str = "", depth: int = 0)
             if name in METADATA:
                 continue
             whole = reads_whole(name, words)
-            paths = [p for w in operands for p in resolve(w, cwd, env)]
+            paths = [p for w in operands for p in resolve(w, cwd, names)]
             if whole and not [p for p in paths if os.path.isdir(p)] and name in ("rg", "ag", "ack") and len(operands) <= 1:
                 paths.append(cwd)
             for path in paths:

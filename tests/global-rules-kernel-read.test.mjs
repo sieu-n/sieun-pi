@@ -193,14 +193,36 @@ for top, dirs, names in sorted(os.walk(sys.argv[1])):
         except PermissionError as error:
             print(name, "refused", type(error).__name__)
 `);
+  // A guarded kernel running this test has its own unit-env/ on PATH already, after fake-bin, and the guard puts it first only when it is missing.
   const out = join(root, "unit.out");
   assert.deepEqual(kernel(`${ATTEMPT}
 attempt("unit scan", lambda: sh(f"systemd-run --user --unit=d5cache-scan --collect --same-dir -E PATH sh -c 'python3 ${scan} {P}/sessions > ${out} 2>&1'"))
 attempt("unit tail", lambda: sh(f"systemd-run --user --unit=t2 --collect -E PATH sh -c 'tail -1 {F['rootB']}'"))
 attempt("unit own", lambda: sh(f"systemd-run --user -u t3 -E PATH -- tail -1 {F['rootA']}"))
-`, { RLM_SESSION_DIR: me, PATH: `${bin}:${process.env.PATH}` }), ["unit scan ran", "unit tail refused TranscriptRefused True", "unit own ran"]);
+`, { RLM_SESSION_DIR: me, PATH: [bin, ...process.env.PATH.split(":").filter((dir) => !dir.endsWith("global-rules/unit-env"))].join(":") }), ["unit scan ran", "unit tail refused TranscriptRefused True", "unit own ran"]);
   assert.deepEqual(readFileSync(out, "utf8").trim().split("\n"), [`${A}.jsonl read`, `${B}.jsonl refused TranscriptRefused`,
     `${J}.jsonl read`, `${K}.jsonl read`]);
+});
+
+test("a shell variable or loop that names another family's transcript is judged like the path itself", () => {
+  // On 10-21 at 08:10Z the job 'end vent stale triage' (chat 01a1164b) ran bash("f=~/.prime/agent/sessions/<vent's job>.jsonl; ls -la $f;
+  // head -c 1500 $f; tail -c 2500 $f") and read the head and tail of another chat's transcript. resolve() dropped `$f`, since f is not in
+  // the environment, so the command named no transcript. A later command that named the path itself was refused.
+  assert.deepEqual(kernel(`${ATTEMPT}
+attempt("assign", lambda: sh(f"hostname; f=~/.prime/agent/sessions/${B}.jsonl; ls -la $f; head -c 1500 $f; echo; tail -c 2500 $f"))
+attempt("export", lambda: sh(f'export T="{F["jobB"]}"; tail -1 "$T"'))
+attempt("folder", lambda: sh(f"d={P}/sessions && jq -c .type < $d/${B}.jsonl"))
+attempt("braces", lambda: sh(f"S=${B}; tail -1 {P}/sessions/\${{S}}.jsonl"))
+attempt("loop", lambda: sh(f"for f in {P}/sessions/*.jsonl; do tail -1 $f; done"))
+attempt("inner", lambda: sh(f"bash -c 'f={F['rootB']}; cat $f'"))
+attempt("own", lambda: sh(f"f={F['sibling']}; tail -1 $f"))
+attempt("list", lambda: sh(f"f={F['rootB']}; ls -la $f; wc -l $f; stat $f > /dev/null"))
+attempt("loop list", lambda: sh(f"for f in {P}/sessions/*.jsonl; do wc -l $f; done"))
+attempt("board", lambda: sh(f"mkdir -p {P}/browser-chat/boards && b={P}/browser-chat/boards/${A}.json && echo '{{}}' > $b && cat $b"))
+attempt("log", lambda: sh(f"l=~/.prime/agent/logs; mkdir -p $l && touch $l/transcript-refusals.jsonl && tail -1 $l/transcript-refusals.jsonl"))
+`), ["assign refused TranscriptRefused True", "export refused TranscriptRefused True", "folder refused TranscriptRefused True",
+    "braces refused TranscriptRefused True", "loop refused TranscriptRefused True", "inner refused TranscriptRefused True",
+    "own ran", "list ran", "loop list ran", "board ran", "log ran"]);
 });
 
 test("the read, grep and bash tools get the same answer from the tool_call half", async () => {
@@ -216,6 +238,7 @@ test("the read, grep and bash tools get the same answer from the tool_call half"
     assert.match(judgeTool("grep", { pattern: "x", path: join(prime, "sessions") }, home, me) ?? "", /as a whole/);
     assert.match(judgeTool("bash", { command: `tail -1 ${files.jobB}` }, home, me) ?? "", /agent_observe/);
     assert.equal(judgeTool("bash", { command: `ls ${join(prime, "sessions")}` }, home, me), undefined);
+    assert.match(judgeTool("bash", { command: `f=${files.rootB}; head -c 1500 $f` }, home, me) ?? "", /agent_observe/);
     assert.equal(judgeTool("bash", { command: "git status" }, home, me), undefined);
     assert.match(judgeTool("bash", { command: `systemd-run --user --unit=x --collect --same-dir -E PATH sh -c 'cat ${files.rootB}'` }, home, me) ?? "", /agent_observe/);
   } finally {
