@@ -934,7 +934,8 @@ export class Chats {
         this.passWaits = true;
         this.queue("#interrupted", async () => {
           this.passWaits = false;
-          await resumeChatJobs(swept, this.chatIds, resume, line => this.log(line), await this.stepOwners(swept), this.heldJobs);
+          const hidden = new Set(await this.mine([...await this.archivedIds()]).catch(() => []));
+          await resumeChatJobs(swept, this.chatIds, resume, line => this.log(line), await this.stepOwners(swept), this.heldJobs, hidden);
         });
       }
     }

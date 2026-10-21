@@ -1084,11 +1084,11 @@ class ResumePausedTests(unittest.TestCase):
         self.assertEqual(resume_paused.error_free_at(error, now), now + 262)
         self.assertIsNone(resume_paused.error_free_at(error, now + 3600))
 
-    def test_a_job_of_a_chat_the_owner_archived_stays_stopped_after_its_429_even_when_pi_pool_admits_its_tree(self):
-        # legacy socket ownership (01a15525), a job of chat-057a (01a14210) on 10-19. The owner archived chat-057a at 05:31:25Z; agent messages
-        # kept its session working. The job's wake at 18:00:13Z met a 429 on claude18 at the model start, and the idle unload stopped it as a
-        # pool wait at 18:10:40Z. Every sweep from 18:47Z to 20:07Z left it for the chat's archive, and the chat service logged nothing. The report
-        # keeps the 429 that stopped the turn apart from the archive that keeps the sweep off it, and never says the owner stopped the job.
+    def test_a_job_of_a_hidden_chat_resumes_after_its_429_unless_its_own_stop_or_an_archive_after_its_turn_holds_it(self):
+        # legacy socket ownership (01a15525), a job of chat-057a (01a14210) on 10-19. The owner archived chat-057a at 05:31:26Z, and it went on
+        # as a hidden session that agent messages keep working. The job's wake at 18:00:13Z met a 429 on claude18 at the model start, and the idle
+        # unload stopped it as a pool wait at 18:10:40Z. On 10-21 every sweep left such 429 cuts of chat-057a's jobs for the chat's archive. Only
+        # the job's own stop (the owner's Stop, job-cancels.json) or a chat archive after its last message keeps it stopped now.
         chat, job = "01a14210-4e7d-72c3-aa67-e3d476f4e728", "01a15525-4943-735c-bbd4-a7f524a205fd"
         limited = ("Provider rate limit exceeded (rate_limit_error, 429): This request would exceed your account's rate limit. Please try again later. "
                    "[request_id: req_011CgC2pPcMAK6SSx8jUK5Lb] pi-pool: claude18@slack.green is limited until 2026-10-19T21:10:00.000Z; "
@@ -1101,28 +1101,44 @@ class ResumePausedTests(unittest.TestCase):
                    {"type": "session_state", "timestamp": "2026-10-19T18:10:40.189Z", "state": {"status": "archived"}},
                    {"type": "session_state", "timestamp": "2026-10-19T18:10:43.033Z", "state": {"status": "active"}}]
         path.write_text("\n".join(json.dumps(entry) for entry in entries) + "\n")
-        (self.root / "archived-chats.json").write_text(json.dumps({"ids": [chat]}))
         rows = [{"id": "d9abd5ee761c", "sessionId": chat, "lifecycle": "live", "activity": "idle", "sessionName": "chat-057a", "runtimeKind": "top-level",
                  "sessionFile": str(self.root / "sessions" / f"{chat}.jsonl"), "lastActivityAt": "2026-10-19T19:05:00.000Z"},
                 {"id": job, "sessionId": job, "lifecycle": "live", "activity": "idle", "isSessionActive": False, "sessionName": "legacy socket ownership",
                  "runtimeKind": "subagent", "sessionFile": str(path), "lastActivityAt": "2026-10-19T18:10:43.033Z", "parentActiveSessionId": "d9abd5ee761c", "parentSessionId": chat}]
-        args = argparse.Namespace(message="continue", since_minutes=1440, dry_run=False, include_children=False, direct=True, only="", state=str(self.root / "state.json"))
+        hidden_at = int(resume_paused.parse_ts("2026-10-19T05:31:26.246Z").timestamp() * 1000)
+        later_at = int(resume_paused.parse_ts("2026-10-19T18:20:00.000Z").timestamp() * 1000)
+        stopped_by_owner = {job: {"at": int(resume_paused.parse_ts("2026-10-19T18:05:00.000Z").timestamp() * 1000), "how": "stop", "by": "owner"}}
 
         def pool(cmd, **kwargs):
             if cmd[1] == "ls":
                 return resume_paused.subprocess.CompletedProcess(cmd, 0, json.dumps({"rows": [{"id": "claude-virev3", "usable": True}]}), "")
             return resume_paused.subprocess.CompletedProcess(cmd, 0, json.dumps({"providers": {"anthropic": {"account": "claude-virev3", "wait": None}}}), "")
         now = dt.datetime(2026, 10, 19, 19, 7, tzinfo=dt.timezone.utc)
-        with patch.dict(resume_paused.UNLOADED, {job: resume_paused.parse_ts("2026-10-19T18:10:41.112Z")}, clear=True), \
-                patch.object(resume_paused, "SESSIONS_DIR", self.root / "sessions"), patch.object(resume_paused, "ARTIFACTS_DIR", self.root / "artifacts"), \
-                patch.object(resume_paused, "DELETED_JOBS", self.root / "deleted-jobs.json"), patch.object(resume_paused, "ARCHIVED_CHATS", self.root / "archived-chats.json"), \
-                patch.object(resume_paused, "pool_bin", return_value="pi-pool"), patch.object(resume_paused.subprocess, "run", side_effect=pool), \
-                patch.object(resume_paused.time, "time", return_value=now.timestamp()), \
-                patch.object(resume_paused, "send", side_effect=lambda target, text: self.sent.append((target, text)) or {"deliveryStatus": "delivered"}):
-            report = resume_paused.resume(rows, args, now)
-        self.assertEqual((report["paused"], self.sent, resume_paused.HELD), ([], [], []))
-        self.assertEqual([(entry["session_id"], entry["stopped_by"], entry["cut"], entry["cut_error"], entry["cut_at"]) for entry in resume_paused.STOPPED],
-                         [(job, resume_paused.CHAT_ARCHIVED, "error", limited, "2026-10-19T18:00:15.359Z")])
+        cases = (("hidden before its turn", {"ids": [chat], "at": {chat: hidden_at}}, {}, None),
+                 ("archived after its turn", {"ids": [chat], "at": {chat: later_at}}, {}, resume_paused.CHAT_ARCHIVED),
+                 ("archived with no time", {"ids": [chat]}, {}, resume_paused.CHAT_ARCHIVED),
+                 ("stopped by the owner", {"ids": [chat], "at": {chat: hidden_at}}, stopped_by_owner, "the owner stopped it (job-cancels.json, at 2026-10-19T18:05:00Z)"))
+        for name, archived, cancels, stopped_by in cases:
+            with self.subTest(name):
+                self.sent.clear()
+                resume_paused.STOPPED.clear()
+                (self.root / "state.json").unlink(missing_ok=True)
+                (self.root / "archived-chats.json").write_text(json.dumps(archived))
+                (self.root / "job-cancels.json").write_text(json.dumps(cancels))
+                args = argparse.Namespace(message="continue", since_minutes=1440, dry_run=False, include_children=False, direct=True, only="", state=str(self.root / "state.json"))
+                with patch.dict(resume_paused.UNLOADED, {job: resume_paused.parse_ts("2026-10-19T18:10:41.112Z")}, clear=True), \
+                        patch.object(resume_paused, "SESSIONS_DIR", self.root / "sessions"), patch.object(resume_paused, "ARTIFACTS_DIR", self.root / "artifacts"), \
+                        patch.object(resume_paused, "DELETED_JOBS", self.root / "deleted-jobs.json"), patch.object(resume_paused, "ARCHIVED_CHATS", self.root / "archived-chats.json"), \
+                        patch.object(resume_paused, "pool_bin", return_value="pi-pool"), patch.object(resume_paused.subprocess, "run", side_effect=pool), \
+                        patch.object(resume_paused.time, "time", return_value=now.timestamp()), \
+                        patch.object(resume_paused, "send", side_effect=lambda target, text: self.sent.append((target, text)) or {"deliveryStatus": "delivered"}):
+                    report = resume_paused.resume(rows, args, now)
+                if stopped_by is None:
+                    self.assertEqual(([p["session_id"] for p in report["paused"]], [target for target, _ in self.sent], resume_paused.STOPPED), ([job], [job[-12:]], []))
+                    continue
+                self.assertEqual((report["paused"], self.sent, resume_paused.HELD), ([], [], []))
+                self.assertEqual([(entry["session_id"], entry["stopped_by"], entry["cut"], entry["cut_error"], entry["cut_at"]) for entry in resume_paused.STOPPED],
+                                 [(job, stopped_by, "error", limited, "2026-10-19T18:00:15.359Z")])
 
     def fake_hook(self, gives):
         hook = self.root / "pi-pool-token"
@@ -1709,7 +1725,7 @@ class ResumePausedTests(unittest.TestCase):
                 self.assertEqual(sent, [first[-12:]])
                 self.assertEqual(list(state), [first])
                 results = {child["id"]: child["result"] for child in report["children"]}
-                self.assertRegex(results[second[-12:]], r"^skipped: (deleted on purpose|archived by the owner|its chat is on the owner's archived list \(archived-chats\.json\), so the sweep does not restart it) after the pass found it$")
+                self.assertRegex(results[second[-12:]], r"^skipped: (deleted on purpose|archived by the owner|the owner archived its chat after its last message \(archived-chats\.json\), so the sweep does not restart it) after the pass found it$")
                 self.assertEqual(resume_paused.INCOMPLETE, [])
 
     def test_a_run_deleted_after_its_send_failed_is_never_relayed(self):

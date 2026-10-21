@@ -51,7 +51,7 @@ export interface InterruptedReport {
   stopped?: RecordedStop[];
   /** Cut runs left for now because pi-pool holds their tree; the chat service asks the pool again at each one's `pool_at` (`PoolHeldJobs`). */
   held?: PoolHeldRun[];
-  /** Cut runs outside the chats' jobs that the owner's archive of their chat stops (resumeJobs), so the job sweep can name them once. */
+  /** Cut runs that the owner's archive of their chat after their last message stops (resumeJobs), so the job sweep can name them once. */
   archived?: RecordedStop[];
 }
 

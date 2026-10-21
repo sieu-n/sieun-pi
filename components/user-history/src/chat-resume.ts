@@ -197,9 +197,9 @@ export class InterruptedRuns {
       }
       await found?.(jobs).catch(error => { process.stderr.write(`resume: could not record the cut runs: ${error instanceof Error ? error.message : String(error)}\n`); });
       const unresolved = (planned.unresolved ?? []).filter(isJob);
-      const stopped = (planned.stopped ?? []).filter(isJob);
+      const stopped = (planned.stopped ?? []).filter(run => isJob(run) && run.stopped_by !== CHAT_ARCHIVED);
       const pooled = (planned.held ?? []).filter(isJob);
-      const archived = (planned.stopped ?? []).filter(run => !isJob(run) && run.stopped_by === CHAT_ARCHIVED);
+      const archived = (planned.stopped ?? []).filter(run => run.stopped_by === CHAT_ARCHIVED);
       const held = { ...(unresolved.length ? { unresolved } : {}), ...(stopped.length ? { stopped } : {}), ...(pooled.length ? { held: pooled } : {}),
         ...(archived.length ? { archived } : {}) };
       const notes = { ...(planned.incomplete?.length ? { incomplete: planned.incomplete } : {}), ...held };
@@ -261,8 +261,8 @@ export async function cutJobs(dataDir: string, chats: readonly string[], artifac
   return new Set((await findCutJobs(artifacts, chats, deleted, Date.now())).map(job => job.session));
 }
 
-/** resume_paused.py CHAT_ARCHIVED: the chat whose tree holds the run is in archived-chats.json. The job itself may have started after that archive. */
-export const CHAT_ARCHIVED = "its chat is on the owner's archived list (archived-chats.json), so the sweep does not restart it";
+/** resume_paused.py CHAT_ARCHIVED: the owner archived the chat whose tree holds the run after the run's last message (archived-chats.json). */
+export const CHAT_ARCHIVED = "the owner archived its chat after its last message (archived-chats.json), so the sweep does not restart it";
 
 const isGone = (result: InterruptedHead["result"]): boolean => typeof result === "object" && "error" in result && result.error.includes("Unknown active session");
 
@@ -324,9 +324,8 @@ export class PoolHeldJobs {
 }
 
 /**
- * The owner-archived cuts already logged, by session and stop time. A chat the owner archived is no chat of the service, so the sweep's isJob
- * dropped its jobs' verdicts with no line: on 10-19 five jobs of chat-057a (archived 05:31:25Z) got 429s from 18:00Z to 18:40Z and every pass
- * to 20:07Z left them for that archive in silence. Each such cut is logged once per service start, with the turn's own cause first.
+ * The cuts a chat archive holds (CHAT_ARCHIVED) already logged, by session and stop time. Each such cut is logged once per service start, with
+ * the turn's own cause first, since every pass reads it again.
  */
 const archivedTold = new Set<string>();
 
@@ -345,11 +344,15 @@ function cutWords(entry: RecordedStop): string {
  * their steps stalled over 2 h. On 10-18 the 7 roots moved from the Mac to us-metal02 at 21:14Z (the release owner 01a10810, metal box owner
  * 01a11d24 and five more) were neither a chat nor a chat's job, so after their 429s they slept in Prime's usage wait past 01:23Z on 10-19,
  * when pi-pool already admitted their trees, and no sweep looked at them.
+ *
+ * The jobs under `hidden`, the chats the owner archived, count too: a hidden chat still answers agent messages and runs jobs, and the script
+ * keeps a job stopped only by its own stop records or by a chat archive after its last message (resume_paused.py owner_archived). On 10-21
+ * p8-supersede, lrv-s2-hb and metal agent runtime of chat-057a, archived at 05:31:26Z on 10-19, slept after 429s while every pass skipped them.
  */
 export async function resumeChatJobs(chatRows: readonly SessionRow[], chats: ReadonlySet<string>,
   interrupted: (isJob: (run: JobOf) => boolean, owners: ReadonlySet<string>) => Promise<InterruptedReport | null>, log: (line: string) => void,
-  owners: ReadonlySet<string> = new Set(), held?: PoolHeldJobs): Promise<void> {
-  const owned = new Set(chatRows.flatMap(row => [row.id, ...(row.agents ?? []).flatMap(agent => agent.link === "root" && agent.sessionId ? [agent.sessionId] : [])]));
+  owners: ReadonlySet<string> = new Set(), held?: PoolHeldJobs, hidden: ReadonlySet<string> = new Set()): Promise<void> {
+  const owned = new Set([...hidden, ...chatRows.flatMap(row => [row.id, ...(row.agents ?? []).flatMap(agent => agent.link === "root" && agent.sessionId ? [agent.sessionId] : [])])]);
   try {
     const report = await interrupted(run => !chats.has(run.session_id ?? "") && (owned.has(run.head_session_id ?? "") || owners.has(run.session_id ?? "") ||
       (run.session_id !== undefined && run.head_session_id === run.session_id)), owners);

@@ -2,7 +2,8 @@
 // claude18 at the model start, and ended their turns with stopReason error and an empty reply. The agents panel showed the daemon's summary
 // cut 200 characters into the provider's prose, the [job] notice its first 120 characters, and the no-report notice "ended at ... with no
 // report": none of them said the account, its limit or the retry time pi-pool gave. The job sweep then dropped its verdict on them with no log
-// line: the owner archived chat-057a at 05:31:25Z, so it is no chat of the service and the sweep does not restart its jobs.
+// line. On 10-21 the sweep still skipped every cut job of chat-057a for the owner's 10-19 archive of the chat, though the chat had kept running
+// as a hidden session since and the jobs were its later work.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { SessionSummary } from "prime-agent";
@@ -65,7 +66,7 @@ test("the [job] notices of a failed turn say how it failed instead of reading li
     `legacy socket ownership ended at ${clockTime(at("2026-10-19T18:10:43.033Z"))} with no report`, "a quiet end keeps its words");
 });
 
-test("the job sweep logs once each cut job of an owner-archived chat, the turn's cause apart from the archive, and resumes nothing of it", async () => {
+test("the job sweep logs once each cut job an owner's chat archive after its last message holds, the turn's cause apart from the archive, and resumes nothing of it", async () => {
   const archived = { id: JOB.slice(-12), name: "legacy socket ownership", session_id: JOB, head: "d9abd5ee761c", head_session_id: CHAT,
     stopped_at: "2026-10-19T18:10:40.189Z", stopped_by: CHAT_ARCHIVED, cut: "error", cut_error: ERROR, cut_at: "2026-10-19T18:00:15.359Z" };
   const deleted = { ...archived, id: "other", name: "far job", session_id: "01a15000-0000-7000-8000-000000000000", stopped_by: "deleted on purpose" };
@@ -77,7 +78,29 @@ test("the job sweep logs once each cut job of an owner-archived chat, the turn's
   await pass();
   await pass();
   assert.deepEqual(calls, [["--dry-run", "--direct"], ["--dry-run", "--direct"]], "no send pass");
-  assert.deepEqual(lines, [`job legacy socket ownership: turn stopped: ${CAUSE} at 2026-10-19T18:00:15.359Z. Not resumed: its chat is on the owner's archived list `
+  assert.deepEqual(lines, [`job legacy socket ownership: turn stopped: ${CAUSE} at 2026-10-19T18:00:15.359Z. Not resumed: the owner archived its chat after its last message `
     + `(archived-chats.json), so the sweep does not restart it (${JOB})`]);
   assert.ok(!lines[0]!.includes("archived by the owner"), "the job is never said to be stopped by the owner");
+});
+
+test("the job sweep continues a cut job of a hidden chat and leaves the one the owner stopped", async () => {
+  // On 10-21 p8-supersede, lrv-s2-hb and metal agent runtime of chat-057a, which the owner archived at 05:31:26Z on 10-19, slept after 429s on
+  // claude5 while every sweep skipped them. The script now lists such a job as paused once pi-pool admits its tree, and the sweep must send it.
+  const cut = { id: JOB.slice(-12), name: "p8-supersede", reason: "error" as const, session_id: JOB, head: "d9abd5ee761c", head_session_id: CHAT,
+    error: ERROR, errored_at: "2026-10-21T05:31:26.482Z" };
+  const stopped = { id: "a1b2c3d4e5f6", name: "owner stopped job", session_id: "01a15c47-0000-7000-8000-000000000001", head: "d9abd5ee761c", head_session_id: CHAT,
+    stopped_at: "2026-10-21T05:40:00.000Z", stopped_by: "the owner stopped it (job-cancels.json, at 2026-10-21T05:40:00Z)" };
+  const calls: string[][] = [];
+  const runs = new InterruptedRuns(async args => {
+    calls.push([...args]);
+    if (args.includes("--dry-run")) return { paused: [cut], heads: [], checked_at: "now", stopped: [stopped] } satisfies InterruptedReport;
+    return { paused: [cut], heads: [], children: [{ id: cut.id, name: cut.name, head: cut.head, result: { deliveryStatus: "delivered" } }], checked_at: "now" } satisfies InterruptedReport;
+  });
+  const lines: string[] = [];
+  const chat = "01a1164b-4a2d-742d-b27a-82f086ed0200";
+  await resumeChatJobs([row(chat, "2026-10-21T05:47:00Z")], new Set([chat]), (isJob, owners) => runs.resumeJobs(isJob, async () => {}, owners),
+    line => lines.push(line), new Set(), undefined, new Set([CHAT]));
+  assert.deepEqual(calls, [["--dry-run", "--direct"], ["--direct", "--only", JOB, "--this-box"]]);
+  assert.deepEqual(lines, [`job p8-supersede: interrupted (error at 2026-10-21T05:31:26.482Z); continue: {"deliveryStatus":"delivered"}`,
+    `job owner stopped job: not resumed, stopped on purpose: ${stopped.stopped_by} (${stopped.session_id})`]);
 });

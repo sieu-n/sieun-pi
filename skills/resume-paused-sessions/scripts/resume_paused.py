@@ -769,20 +769,30 @@ def owner_cancelled(path):
 
 def owner_archived(path):
     """Why the owner's archive stops the session at `path`: OWNER_ARCHIVED when he archived the session itself, CHAT_ARCHIVED when he archived
-    the chat whose session-artifacts tree holds it (archived-chats.json, written by the chat service's archive), else None. That record wins
-    over the archive line's timing: the owner archived the run-3 test chat python refs per folder at 06:52:53Z on 10-18, and an archive line
-    inside a restart window reads as the restart's. A job of an archived chat may have started after the archive, so its words never say the
-    owner stopped the job: on 10-19 chat-057a, archived at 05:31:25Z, kept spawning jobs through agent messages."""
+    the chat whose session-artifacts tree holds it (archived-chats.json, written by the chat service's archive) after the job's last message,
+    else None. That record wins over the archive line's timing: the owner archived the run-3 test chat python refs per folder at 06:52:53Z on
+    10-18, and an archive line inside a restart window reads as the restart's.
+
+    The chat archive hides the chat and stops what runs at that moment, and the chat still answers agent messages as a hidden session (owner,
+    10-12: "the thread should be able to respond, but not be in the Chats list"). A job with a message after the archive is that hidden chat's
+    own later work, and only its own stop records (job-cancels.json, a delete, Prime's archive reason) stop it: on 10-21 chat-057a, archived at
+    05:31:26Z on 10-19, ran p8-supersede, lrv-s2-hb and metal agent runtime, and every sweep left their 429 cuts for that archive. An archive
+    the record gives no time for holds for every job of the chat."""
     record = read_record(ARCHIVED_CHATS, lambda data: isinstance(data, dict) and isinstance(data.get("ids"), list)
                          and all(isinstance(sid, str) for sid in data["ids"]))
     archived = set(record["ids"]) if record else set()
     if Path(path).stem in archived:
         return OWNER_ARCHIVED
-    return CHAT_ARCHIVED if artifacts_root(path) in archived else None
+    root = artifacts_root(path)
+    if root not in archived:
+        return None
+    at = (record.get("at") or {}).get(root)
+    last = parse_ts((last_message(tail_entries(path)) or {}).get("timestamp")) if isinstance(at, (int, float)) else None
+    return None if last and last.timestamp() * 1000 > at else CHAT_ARCHIVED
 
 
 OWNER_ARCHIVED = "archived by the owner"
-CHAT_ARCHIVED = "its chat is on the owner's archived list (archived-chats.json), so the sweep does not restart it"
+CHAT_ARCHIVED = "the owner archived its chat after its last message (archived-chats.json), so the sweep does not restart it"
 
 
 def artifacts_root(path):
