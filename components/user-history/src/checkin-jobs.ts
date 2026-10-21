@@ -37,7 +37,7 @@ export function jobPushes(facts: readonly JobFact[], views: readonly StepView[],
     kept[fact.key] = memo;
     // A job waiting on the token pool, queued for a working slot, parked on a provider limit or in its turn (streaming or in a tool call) is not pushed, and the wait does
     // not count as time with no progress: a restart aborts the waiting model request and puts the job at the end of the queue again.
-    if (poolWait(fact) || fact.queued || fact.parkedUntil !== undefined || fact.inTurn) { memo.since = now; return []; }
+    if (poolWait(fact) || fact.queued || fact.parkedUntil !== undefined || fact.retrying || fact.inTurn) { memo.since = now; return []; }
     if (fact.wake || (memo.pushed !== undefined && now - memo.pushed < everyMs && memo.pushed >= since)) return [];
     if (held.job?.(fact) || (owned.length && held.step && owned.every(held.step))) return [];
     const idleMs = now - since;

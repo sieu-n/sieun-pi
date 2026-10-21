@@ -25,9 +25,9 @@ export function withQueuePlaces(facts: readonly JobFact[], places: PoolPlaces, c
     if (session === undefined) return fact;
     const queued = places.queued.get(session);
     // A queued turn is newer than a quota park: a message or the park's own resume put it in the queue.
-    if (queued) { const { parkedUntil: _, ...rest } = fact; return fact.cancelled ? fact : { ...rest, state: "working", queued }; }
+    if (queued) { const { parkedUntil: _, retrying: __, ...rest } = fact; return fact.cancelled ? fact : { ...rest, state: "working", queued }; }
     if (!places.working.has(session)) return fact;
-    const { parkedUntil: _, ...rest } = fact;
+    const { parkedUntil: _, retrying: __, ...rest } = fact;
     return { ...rest, inTurn: true as const };
   });
 }

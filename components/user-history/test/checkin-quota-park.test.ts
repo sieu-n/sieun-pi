@@ -96,7 +96,7 @@ test("a job queued in pi-pool after its park resumed reads queued Nth for an acc
   assert.match(text, /duties green push 10-18 thread: queued 62nd of 114 for an account, in the queue for 7 min,/);
 });
 
-test("a job in Prime's provider retry reads queued Nth for an account from its last pi-pool-queue entry; an idle one with the same 429 reads failed", async () => {
+test("a job in Prime's provider retry reads retrying for an account, then queued Nth; an idle one with the same 429 reads failed", async () => {
   // digest cache integration from 16:05Z: each 429 is followed by a pi-pool-queue entry while the daemon lists it working. wiki behind code root
   // cause failed at 15:25:27Z after its 15:24:16Z queue entry, and the daemon lists it idle.
   const agentDir = join(home, ".prime", "agent");
@@ -114,9 +114,14 @@ test("a job in Prime's provider retry reads queued Nth for an account from its l
   const facts = await withFailedTurns([{ key: `thread:${digest}`, name: "digest cache integration", state: "working" },
     { key: `thread:${wiki}`, name: "wiki behind code root cause", state: "ended" }], agentDir, chat);
   assert.equal(facts[0]!.state, "working");
-  assert.deepEqual(facts[0]!.queued, { position: 41, total: 41, since: Date.parse("2026-10-21T16:16:30.080Z") });
+  assert.equal(facts[0]!.retrying, true);
+  assert.equal(facts[0]!.queued, undefined, "the 41st place its 16:19Z try used is not shown");
   assert.equal(facts[1]!.state, "failed");
   const text = checkInPrecheckText(precheck(facts, at), facts, [], at);
-  assert.match(text, /digest cache integration thread: queued 41st of 41 for an account, in the queue for 3 min/);
+  assert.match(text, /digest cache integration thread: retrying for an account after a rate limit$/m);
   assert.match(text, /wiki behind code root cause thread: failed,/);
+  // At 16:20:30Z the retry queued 53rd: the failed turn is over, and pi-pool's live reading gives the place.
+  const queued = withQueuePlaces(facts, { queued: new Map([[digest, { position: 53, total: 53, since: Date.parse("2026-10-21T16:20:30.072Z") }]]), working: new Set() }, []);
+  assert.equal(queued[0]!.retrying, undefined);
+  assert.match(checkInPrecheckText(precheck(queued, at + 60_000), queued, [], at + 60_000), /digest cache integration thread: queued 53rd of 53 for an account,/);
 });
