@@ -17,8 +17,11 @@ test("a run with the cpu-profiles folder saves one profile whose samples cover i
     assert.ok(file);
     assert.equal(await profile.stop(), file);
     const saved = JSON.parse(await readFile(file, "utf8")) as { samples: number[]; timeDeltas: number[]; nodes: unknown[] };
-    assert.ok(saved.samples.length > 50, `${saved.samples.length} samples`);
+    // Under the release's full suite the sampler got 46 samples for the 200 ms burn on 10-21 at 02:5xZ, so the check reads the time the
+    // samples cover, which stays whole when the sampler thread runs less often.
     assert.equal(saved.samples.length, saved.timeDeltas.length);
+    const covered = saved.timeDeltas.reduce((sum, delta) => sum + delta, 0) / 1000;
+    assert.ok(saved.samples.length > 10 && covered >= 180, `${saved.samples.length} samples over ${covered} ms`);
     assert.deepEqual((await readdir(join(dir, CPU_PROFILE_DIR))).length, 1);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
