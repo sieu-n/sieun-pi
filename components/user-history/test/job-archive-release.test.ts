@@ -46,8 +46,10 @@ test("the owner's archive of a job releases its own folder and its recorded path
     return file;
   };
   const cancelled = "01a15903-cd56-7138-b1c6-b06022221d92";
-  const rig = write(join(scratch, "uhf7-rig", "log.txt"));
   job(chat, "sub-efba9220", cancelled, { paths: [join(scratch, "uhf7-rig")], units: [] });
+  // A job's end deletes only a recorded path born after the job's folder, which Prime makes at the spawn.
+  await pause(20);
+  const rig = write(join(scratch, "uhf7-rig", "log.txt"));
   const reopened = "01a15903-0000-7000-8000-000000000002";
   job(chat, "sub-reopened", reopened);
   const held = "01a15903-0000-7000-8000-000000000003";
