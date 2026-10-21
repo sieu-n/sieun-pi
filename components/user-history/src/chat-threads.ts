@@ -1505,6 +1505,9 @@ export class ThreadHub {
    * frontend bro on the Mac never left the box, because each attach streams the whole context since the last compaction (9.9 MB, 7.75 MB of it
    * screenshots) over a relay that moves about 0.43 MB/s, and 17 attaches from 07:38Z timed out at 30 s. Over a kept link a send is one round
    * trip (230 ms to the Mac). Only a session with no live worker, or one whose listed worker is gone, waits for the resume to start it again.
+   * A held binding whose worker the daemon no longer has is dropped and the thread reopened (`reopenFailed`): after the 10-21 S3 Prime update
+   * the hub still held the pre-update workers of chats 01a115e2 and 01a11af8, and from 11:20:18Z to 11:27:46Z their check-in lines and job end
+   * notes went 8 times to ef0b3805c965 and f222d4f77262 and were refused as unknown sessions.
    */
   async prompt(id: string, input: { message: string; images: ChatImage[]; mode: SendMode; owner?: boolean; sending?: () => Promise<void> }, trigger = "prompt"): Promise<void> {
     const remote = this.catalog.hostOf(id) !== null;
@@ -1540,8 +1543,9 @@ export class ThreadHub {
     // (metal-management) failed with "Session worker is starting", a dirty d7 minute.
     const send = (target: string) => afterMove(() => ask(target, "prompt", fields), () => this.stateOf(id, target));
     try { await send(activeSessionId); } catch (error) {
-      if (activeSessionId !== listed || held || !isReopenable(error)) throw error;
-      activeSessionId = (await resumed).live!.activeSessionId;
+      if (activeSessionId !== listed || !isReopenable(error)) throw error;
+      if (held) await this.reopenFailed(id);
+      activeSessionId = (held ? this.threads.get(id)! : await resumed).live!.activeSessionId;
       await input.sending?.();
       await send(activeSessionId);
     }
