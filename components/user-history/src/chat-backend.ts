@@ -238,7 +238,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       heldNotices: heldNoticeRecord(join(dataDir, "held-notices.json")), cancels: jobCancelRecord(join(dataDir, JOB_CANCELS_FILE)),
       leftovers: (dir, session) => jobEnds.leftovers(dir, session),
       deletedLeftovers: chat => jobEnds.deleted(chat),
-      waking: session => waking(join(dataDir, "wakes"), session), wakes: now => pendingWakes(join(dataDir, "wakes"), now),
+      waking: session => waking(join(dataDir, "wakes"), session), updating: () => primeUpdateRunning(agentDir, socketPath), wakes: now => pendingWakes(join(dataDir, "wakes"), now),
       resumes: { store: jobResumes(join(dataDir, "job-resumes")), applyBoard: (id, ops) => boards.apply(id, ops, "agent"),
         restart: async (chatId, name, brief) => {
           const chat = await dutyJobs.chat(chatId);

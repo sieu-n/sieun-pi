@@ -12,6 +12,7 @@ import type { Unstarted } from "./brief-keeper.ts";
 import type { ClaudeState } from "./chat-recovery.ts";
 import type { CheckInRun, CheckInStart } from "./chat-duty-run.ts";
 import type { JobResumes } from "./job-resume.ts";
+import type { PrimeUpdate } from "./prime-update.ts";
 import type { InterruptedReport, JobOf } from "./shared/interrupted.ts";
 import type { Wake } from "./wakes.ts";
 import type { JobCancelRecord } from "./job-cancels.ts";
@@ -345,6 +346,8 @@ export interface CheckInSource {
   deletedLeftovers?: (chat: string) => Promise<Leftovers>;
   /** Whether a session holds a pending `board.wake` (src/wakes.ts); the cleanup keeps such a job, since its wake would reopen it. */
   waking?: (session: string) => Promise<boolean>;
+  /** The Prime update restoring this box's daemon now (`primeUpdateRunning`), or null; the idle-root sweep archives nothing while one runs. Absent: none. */
+  updating?: () => Promise<PrimeUpdate | null>;
   /** The board.wakes the service still owes at a time (`pendingWakes`); the check-in counts a job asleep on one as working. Absent: none. */
   wakes?: (now: number) => Promise<readonly Wake[]>;
   /**

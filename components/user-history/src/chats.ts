@@ -248,6 +248,8 @@ export class Chats {
   private readonly heldJobs: PoolHeldJobs;
   private rootsEndedAt = -Infinity;
   private readonly rootsEnded = new Map<string, string | undefined>();
+  /** The Prime update the idle-root sweep last held for, so it logs each update once. */
+  private rootsHeldFor: string | undefined;
   /** Job threads found gone (`threadGone`) at an activity stamp: never looked at again unless the stamp changes. */
   private readonly jobGone = new Map<string, string>();
   /** When the scheduler last looked for lost chats, and the threads with messages found plain (their head never changes). */
@@ -1013,6 +1015,10 @@ export class Chats {
    * footprint fix, archived 16:03Z to 17:15Z, were archived again at 17:50Z, a minute after the 17:49Z start, each with a second notice).
    * Each root's archive runs on that root's queue key: on 10-18 at 16:35:25Z, the first tick after a service restart, it ran beside the wake
    * check of "repo prod secrets move" and closed the session while the check was attaching to it ("Daemon session closed during attach").
+   * No root ends while a Prime update restores the daemon's sessions (`updating`), as no duty job does: on 10-21 at 11:19:39Z to 11:19:40Z,
+   * during update 723509-1792581529564, the sweep archived 4 roots that were mid-turn when the update began (shouldResume true) and read idle
+   * before their restore. The daemon refused each saved archive, the update listed all 4 under stoppedBeforeRestore with reason unknown, and
+   * none was resumed.
    */
   private async endRoots(row: SessionRow): Promise<void> {
     const resumes = this.source.resumes;
@@ -1032,6 +1038,13 @@ export class Chats {
           const summary = await this.summary(id);
           if (summary?.lifecycle === "archived") return;
           if (await this.source.waking?.(id) || await this.threads.sessionActive(id)) { this.rootsEnded.delete(id); return; }
+          const update = await this.source.updating?.().catch(() => null) ?? null;
+          if (update) {
+            this.rootsEnded.delete(id);
+            if (this.rootsHeldFor !== update.requestId) this.log(`chats: Prime update ${update.requestId} is ${update.phase}; no idle root is archived until it ends`);
+            this.rootsHeldFor = update.requestId;
+            return;
+          }
           const sessionFile = summary?.sessionFile;
           const brief = sessionFile ? await sessionBrief(sessionFile) : undefined;
           if (brief === undefined) { this.log(`chat ${row.id.slice(0, 8)}: kept root ${agent.name}: its brief could not be read`); return; }
