@@ -84,6 +84,23 @@ test("railway_auth names the inline comment when RAILWAY_API_TOKEN carries one",
   assert.ok(outcome.status === "fail" && outcome.fix.includes("inline comment"), JSON.stringify(outcome));
 });
 
+const STATUS_PAGE = (incidents: string) => `<script>$_TSR.router=($R=>$R[0]={entries:$R[1]=[],activeIncidents:$R[2]=[${incidents}],recentIncidents:$R[9]=[],maintenances:$R[10]=[]})</script>`;
+const API_OUTAGE = '$R[3]={id:"9bc9a3c0",slug:"QH8L8B3E",title:"Dashboard and API unavailable, builds paused",status:"IDENTIFIED",createdAt:"2026-10-21T07:24:24.727677+00:00",resolvedAt:null,components:$R[4]=[$R[5]={id:"69b4",name:"Builds",groupName:"US West (California, USA)",impact:"MAJOR_OUTAGE"},$R[6]={id:"2f6f",name:"API \u2014 backboard.railway.com",groupName:"Railway",impact:"PARTIAL_OUTAGE"}],updates:$R[7]=[$R[8]={id:"0c86",status:"IDENTIFIED",message:"Builds remain paused and some API features are still unavailable.",createdAt:"2026-10-21T13:40:38.705388+00:00"}]}';
+
+test("railway_auth reads a refused token as off while status.railway.com shows an open incident that names the API", async () => {
+  const urls: string[] = [];
+  const outcome = await railwayAuth.run({ ...railwayDeps("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"), fetchText: async url => { urls.push(url); return STATUS_PAGE(API_OUTAGE); } });
+  assert.deepEqual(urls, ["https://status.railway.com"]);
+  assert.ok(outcome.status === "off" && outcome.detail.includes('"Dashboard and API unavailable, builds paused" (since 2026-10-21 07:24Z'), JSON.stringify(outcome));
+});
+
+test("railway_auth keeps the fail and its Fix line when status.railway.com shows no open incident", async () => {
+  for (const page of [STATUS_PAGE(""), STATUS_PAGE(API_OUTAGE.replace("resolvedAt:null", 'resolvedAt:"2026-10-21T16:00:00+00:00"')), ""]) {
+    const outcome = await railwayAuth.run({ ...railwayDeps("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"), fetchText: async () => page });
+    assert.ok(outcome.status === "fail" && outcome.fix.includes("railway.com/account/tokens"), JSON.stringify(outcome));
+  }
+});
+
 test("railway_auth without RAILWAY_API_TOKEN keeps the OAuth whoami", async () => {
   const outcome = await railwayAuth.run(railwayDeps(undefined));
   assert.equal(outcome.status, "pass", JSON.stringify(outcome));

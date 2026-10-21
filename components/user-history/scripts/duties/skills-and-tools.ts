@@ -62,6 +62,8 @@ export interface Deps {
   pinSkillPaths?: () => Promise<PinResult[]>;
   /** Absent means process.env. */
   env?: NodeJS.ProcessEnv;
+  /** A page's body, or "" when it does not load; absent in tests that do not cover it. */
+  fetchText?: (url: string) => Promise<string>;
 }
 
 /** The bare-metal box the repo skills reach as root: an ssh config alias (us-metal01 by default) or METAL_SSH_HOST, so no address lives in this repo. */
@@ -257,10 +259,31 @@ async function railwayAuth(deps: Deps): Promise<Outcome> {
   const env = { RAILWAY_API_TOKEN: token, RAILWAY_NO_AUTO_UPDATE: "1", HOME: join(deps.scratchDir, `railway-token-home-${process.pid}`) };
   const result = await deps.exec("railway", ["whoami"], { env, timeoutMs: CALL_TIMEOUT_MS });
   if (result.code === 0 && loggedIn(result)) return PASS(`RAILWAY_API_TOKEN: ${brief(both(result), 120)}`);
-  const fix = /[\s#"']/.test(token)
-    ? `RAILWAY_API_TOKEN holds ${token.length} chars with a space, # or quote; move the inline comment in ~/.config/sieun-pi/agent.env and ~/.zshenv to its own line, since systemd EnvironmentFile keeps it in the value`
-    : "Railway refuses RAILWAY_API_TOKEN; mint an account token at https://railway.com/account/tokens and put it in ~/.config/sieun-pi/agent.env and ~/.zshenv";
-  return FAIL("agent", `railway whoami with RAILWAY_API_TOKEN only: ${failText(result)}`, fix);
+  if (/[\s#"']/.test(token)) {
+    return FAIL("agent", `railway whoami with RAILWAY_API_TOKEN only: ${failText(result)}`, `RAILWAY_API_TOKEN holds ${token.length} chars with a space, # or quote; move the inline comment in ~/.config/sieun-pi/agent.env and ~/.zshenv to its own line, since systemd EnvironmentFile keeps it in the value`);
+  }
+  const outage = railwayActiveIncidents(await (deps.fetchText?.(RAILWAY_STATUS) ?? Promise.resolve(""))).find(incident => /\bAPI\b/.test([incident.title, ...incident.components].join("\n")));
+  if (outage) return { status: "off", detail: `Railway refuses RAILWAY_API_TOKEN during its open incident "${outage.title}" (since ${outage.createdAt.slice(0, 16).replace("T", " ")}Z, ${RAILWAY_STATUS}/incident/${outage.slug}); the token is read again once Railway resolves it` };
+  return FAIL("agent", `railway whoami with RAILWAY_API_TOKEN only: ${failText(result)}`, "Railway refuses RAILWAY_API_TOKEN; mint an account token at https://railway.com/account/tokens and put it in ~/.config/sieun-pi/agent.env and ~/.zshenv");
+}
+
+const RAILWAY_STATUS = "https://status.railway.com";
+export interface RailwayIncident { slug: string; title: string; createdAt: string; components: string[] }
+/**
+ * The unresolved incidents on status.railway.com, read from its server-rendered page. The site has no JSON or RSS feed (/api/v2/*.json and
+ * feed.rss return the HTML app), and its loader data carries `activeIncidents:[{slug,title,createdAt,resolvedAt,components:[{name}],updates}]`.
+ * A page it cannot read gives no incident, so railway_auth fails as before. On 10-21 a token that passed at 01:22Z read "Unauthorized" from 10:32Z
+ * during "Dashboard and API unavailable, builds paused" (07:24Z), while railway.com/account/tokens still listed it.
+ */
+export function railwayActiveIncidents(html: string): RailwayIncident[] {
+  const block = /activeIncidents:([\s\S]*?),recentIncidents:/.exec(html)?.[1] ?? "";
+  const text = (raw: string) => { try { return JSON.parse(`"${raw}"`) as string; } catch { return raw; } };
+  const field = (chunk: string, key: string) => text(new RegExp(`\\b${key}:"((?:[^"\\\\]|\\\\.)*)"`).exec(chunk)?.[1] ?? "");
+  return block.split(/\bslug:"/).slice(1).flatMap(chunk => {
+    if (!/\bresolvedAt:null\b/.test(chunk)) return [];
+    const components = (/\bcomponents:([\s\S]*?)\bupdates:/.exec(chunk)?.[1] ?? "").matchAll(/\bname:"((?:[^"\\]|\\.)*)"/g);
+    return [{ slug: chunk.slice(0, chunk.indexOf('"')), title: field(chunk, "title"), createdAt: field(chunk, "createdAt"), components: [...components].map(match => text(match[1]!)) }];
+  });
 }
 
 async function dotenvFiles(deps: Deps): Promise<string[]> {
@@ -760,6 +783,7 @@ export function realDeps(scratchDir: string): Deps {
     now: Date.now,
     platform: process.platform,
     pinSkillPaths: () => pinSkillPaths({ home }),
+    fetchText: url => fetch(url, { signal: AbortSignal.timeout(CALL_TIMEOUT_MS) }).then(response => response.ok ? response.text() : "").catch(() => ""),
   };
 }
 
