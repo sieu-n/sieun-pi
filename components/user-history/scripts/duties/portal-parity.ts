@@ -61,7 +61,7 @@ const BALANCE_MICROS = 1_000_000;
 const NO_ANSWER = new Set(["UND_ERR_HEADERS_TIMEOUT", "UND_ERR_BODY_TIMEOUT"]);
 /**
  * Prod has one org, the VIREV_API_KEY_PROD org, and the portal allows an org 100 REST calls in each clock minute (DEFAULT_REQUESTS_PER_MINUTE.rest
- * and currentWindowStart in apps/virev-demo/convex/apiPortal/rateLimits.ts), so prod calls past 100 in a minute wait for the next one.
+ * and currentWindowStart in apps/virev-demo/convex/apiPortal/rateLimits.ts), so prod calls start one every 0.6 s (pacedSlot).
  */
 const PROD_PER_MINUTE = 100;
 /** Response keys that carry the next page, and the query parameter that takes it back. */
@@ -427,23 +427,35 @@ export async function cancelLeftovers(base: string, org: Org): Promise<void> {
   }
 }
 
+/**
+ * The start gate of a run with a per-minute quota: one call every 60 s / perMinute, so no clock minute holds more than perMinute starts.
+ * Until 10-21 the gate let a minute's whole quota start at once and held the rest for the next minute, so each prod minute opened with 100
+ * calls in one second. At 03:48:05Z on 10-21 that put 245 api-portal request lines in one second and 72 to 75 crawler-api requests a second
+ * at 03:48:08Z and 03:49:01Z, and the 13 prod /api/profiles reads in those seconds took 1.0 s at p50 and 3.2 s at p95, against 51 ms and
+ * 0.18 s for the other 227 reads of that hour (otel_traces and otel_logs, board goal p8). The spacing is the portal's own limit, spread out.
+ */
+export function pacedSlot(perMinute: number, now: () => number = Date.now, sleep: (ms: number) => Promise<unknown> = ms => new Promise(resolve => setTimeout(resolve, ms))): () => Promise<void> {
+  const gap = 60_000 / perMinute;
+  let next = 0;
+  return async () => {
+    const at = Math.max(now(), next);
+    next = at + gap;
+    const wait = at - now();
+    if (wait > 0) await sleep(wait);
+  };
+}
+
 interface ProbeTarget { env: Env; base: string; doc: OpenApi; orgs: Org[]; headers: Record<string, string>; skip: ReadonlyMap<string, string>; held?: ReadonlyMap<string, ProbeResult>; perMinute?: number; spend?: { usd: number }; lastMs?: Record<string, number> | undefined; ledger?: JobLedger }
 
 /**
  * Calls every documented non-DM operation of one env once with its docs example, the job-mode route entries with max_pages 2, the chained
  * operations with ids from this run, and page 2 of each page-1 answer with a cursor. An operation in `skip` is not called, and one in `held`
- * gives its held result without a call. With `perMinute`, a call waits for the next clock minute once this minute has that many, the way
- * the portal counts its limit. With `spend`, each call's meta.cost goes on its result and into the run's total.
+ * gives its held result without a call. With `perMinute`, calls start one every 60 s / perMinute (pacedSlot), inside the limit the portal
+ * counts per clock minute. With `spend`, each call's meta.cost goes on its result and into the run's total.
  */
 async function probeEnv(target: ProbeTarget, routes: readonly Route[]): Promise<ProbeResult[]> {
   const { env, base, doc, orgs, skip } = target;
-  const minutes = new Map<number, number>();
-  const slot = async () => {
-    for (let minute = Math.floor(Date.now() / 60_000); target.perMinute && (minutes.get(minute) ?? 0) >= target.perMinute; minute++)
-      await new Promise(resolve => setTimeout(resolve, (minute + 1) * 60_000 - Date.now()));
-    const minute = Math.floor(Date.now() / 60_000);
-    minutes.set(minute, (minutes.get(minute) ?? 0) + 1);
-  };
+  const slot = target.perMinute ? pacedSlot(target.perMinute) : async () => {};
   // Another caller on the same key, such as a second run of this duty, also fills the portal's minute: on 10-19 at 15:10Z a push run of d2
   // and a hand run together got 52 prod answers of 429 rate_limit_exceeded. So a 429 rate_limit_exceeded waits its Retry-After and calls again.
   const call = async (org: Org, op: string, request: ProbeRequest, note: string): Promise<Answer> => {
@@ -473,7 +485,7 @@ async function probeEnv(target: ProbeTarget, routes: readonly Route[]): Promise<
   const ops = [...all].filter(([op]) => !isDm(op) && !notScored.has(op));
   const later: [string, Operation][] = [];
   const first = ops.filter(([op, operation]) => { if (CHAINED.test(op)) { later.push([op, operation]); return false; } return true; });
-  // With perMinute, the calls past the first minute's quota start at the next clock minute. The calls slowest at the last run go first, so
+  // With perMinute, calls start one every 60 s / perMinute. The calls slowest at the last run go first, so
   // the run ends sooner, and a call with no time on record counts as slowest.
   const lastMs = (op: string) => target.lastMs?.[`${env} ${op}`] ?? Number.POSITIVE_INFINITY;
   first.sort(([a], [b]) => lastMs(b) - lastMs(a));
