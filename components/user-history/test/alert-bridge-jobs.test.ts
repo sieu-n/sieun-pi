@@ -169,6 +169,14 @@ test("a fire whose job cannot start escalates to ops guy once after 30 min, and 
   assert.equal(escalations().length, 1);
 });
 
+test("an alert labelled notify=none pages no chat, and the same rule without it does", () => {
+  // Crawler ops, 2026-10-21: crawler-acq-interactive-wait owns the writer lag page, and crawler-acquisitions-writer-lag, which
+  // paged the same spikes beside it at 19:22Z, 19:40Z and 00:54Z on 10-20, carries notify=none so it stays on Grafana only.
+  const quiet = raw("bbbb000000000001", { alertname: "Captured pages waiting on crawler:acquisitions (writer lag)", __alert_rule_uid__: "crawler-acquisitions-writer-lag", notify: "none" }, "2026-10-20T19:22:00.000Z");
+  assert.deepEqual(parseAlerts([quiet]), []);
+  assert.equal(parseAlerts([ciAlert()]).length, 1);
+});
+
 test("a version 2 state loses its steps and keeps the job a step carried, so the release starts no second job for a rule a job already held", async () => {
   const [alert] = parseAlerts([ciAlert()]);
   const key = ruleKey(CI, "ci-history-stale");

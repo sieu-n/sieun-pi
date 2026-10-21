@@ -137,7 +137,7 @@ const strings = (value: unknown): Record<string, string> =>
 export function parseAlerts(value: unknown): FiringAlert[] {
   if (!Array.isArray(value)) throw new Error("Grafana's alert list is not a list");
   return value.flatMap(item => {
-    if (!isRecord(item) || !isRecord(item.status) || item.status.state !== "active" || (isRecord(item.labels) && item.labels.severity === "test")) return [];
+    if (!isRecord(item) || !isRecord(item.status) || item.status.state !== "active" || (isRecord(item.labels) && (item.labels.severity === "test" || item.labels.notify === "none"))) return [];
     const at = typeof item.startsAt === "string" ? Date.parse(item.startsAt) : NaN;
     if (typeof item.fingerprint !== "string" || !/^[\w-]{1,64}$/.test(item.fingerprint) || !Number.isFinite(at)) return [];
     const labels = strings(item.labels);
