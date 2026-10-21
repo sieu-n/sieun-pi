@@ -1,3 +1,4 @@
+import { dirname } from "node:path";
 import type { DaemonClient, SessionSummary } from "prime-agent";
 import { poolFreeAt, type PoolStatus, type PoolThread, type ThreadParts, threadKey } from "./chat-pool.ts";
 import { lastTurnError } from "./held-turns.ts";
@@ -33,22 +34,40 @@ const loaded = (row: SessionSummary): boolean => (row.lifecycle === "live" || ro
  */
 export type UnloadRow = SessionSummary & { holdsDetachedProcesses?: boolean };
 
-/** Nothing streams, runs a tool, bash or child, compacts, is queued or scheduled in the session, no detached process of its own lives (unless the unload can hand it off), and no client but the service's own attach (judged by the caller) holds it. */
-function calm(row: UnloadRow, pool: ReadonlySet<string>, handoff = false): boolean {
-  return loaded(row) && row.workerState === "ready" && (handoff || !row.holdsDetachedProcesses) &&
-    !row.isStreaming && !row.isCompacting && !row.isBashRunning && !row.hasRunningRlmChildren && !row.isRunningTools && !row.directAttachedClients &&
-    (row.sessionActions?.queuedCount ?? 0) === 0 && !row.hasRegisteredHeartbeat && !row.hasRegisteredCronJob && !pool.has(row.sessionId);
+/**
+ * A session with a heartbeat or another scheduled job whose file sits in the daemon's sessions root (`sessionsDir`), where the daemon's wake
+ * scan finds it: Prime loads such a session again for its next tick after any stop, and its own idle eviction stops it the same way
+ * (daemon-supervisor.js `isWakeBlindScheduledWorker` keeps only a scheduled worker whose root file lies outside that root resident). Until
+ * 10-21 every scheduled session stayed out of the unload: from 12:57Z to 13:46Z on 10-21, with no session working on us-metal02, the
+ * babysitter and tiktok shop jobs (a 30 min heartbeat each) woke for each tick and kept 0.38 GB each until Prime evicted them 16 to 19 min
+ * later, and from 15:22Z d7 named both as quiet trees. A subagent's file lies under session-artifacts, so its schedule keeps it loaded.
+ */
+export function wokenByScan(row: SessionSummary, sessionsDir: string | undefined): boolean {
+  return sessionsDir !== undefined && row.sessionFile !== undefined && dirname(row.sessionFile) === sessionsDir;
 }
 
-/** Nothing runs, waits or is scheduled in the session (`calm`, and no turn or action open). */
-function still(row: UnloadRow, pool: ReadonlySet<string>, handoff = false): boolean {
-  return calm(row, pool, handoff) && row.activity === "idle" && !row.isSessionActive && !row.unfinishedActionCount;
+const scheduled = (row: SessionSummary): boolean => row.hasRegisteredHeartbeat === true || row.hasRegisteredCronJob === true;
+
+/**
+ * Nothing streams, runs a tool, bash or child, compacts or is queued in the session, no detached process of its own lives (unless the unload
+ * can hand it off), no schedule keeps it that the daemon's wake scan would miss (`wokenByScan`), and no client but the service's own attach
+ * (judged by the caller) holds it.
+ */
+function calm(row: UnloadRow, pool: ReadonlySet<string>, handoff = false, sessionsDir?: string): boolean {
+  return loaded(row) && row.workerState === "ready" && (handoff || !row.holdsDetachedProcesses) &&
+    !row.isStreaming && !row.isCompacting && !row.isBashRunning && !row.hasRunningRlmChildren && !row.isRunningTools && !row.directAttachedClients &&
+    (row.sessionActions?.queuedCount ?? 0) === 0 && (!scheduled(row) || wokenByScan(row, sessionsDir)) && !pool.has(row.sessionId);
+}
+
+/** Nothing runs or waits in the session (`calm`, and no turn or action open). */
+function still(row: UnloadRow, pool: ReadonlySet<string>, handoff = false, sessionsDir?: string): boolean {
+  return calm(row, pool, handoff, sessionsDir) && row.activity === "idle" && !row.isSessionActive && !row.unfinishedActionCount;
 }
 
 const unheld = (row: SessionSummary, attached: ReadonlySet<string>): boolean => !attached.has(row.sessionId) && row.attachedClients === 0;
 
-function quiet(row: SessionSummary, input: { attached: ReadonlySet<string>; pool: ReadonlySet<string>; handoff?: (row: SessionSummary) => boolean }): boolean {
-  return still(row, input.pool, input.handoff?.(row)) && unheld(row, input.attached);
+function quiet(row: SessionSummary, input: { attached: ReadonlySet<string>; pool: ReadonlySet<string>; handoff?: (row: SessionSummary) => boolean; sessionsDir?: string }): boolean {
+  return still(row, input.pool, input.handoff?.(row), input.sessionsDir) && unheld(row, input.attached);
 }
 
 /**
@@ -61,8 +80,8 @@ function quiet(row: SessionSummary, input: { attached: ReadonlySet<string>; pool
  * once pi-pool admits its tree. Until 10-19 every chat stayed: at 06:03Z six chats sat asleep this way, each alone on its own worker with
  * 0.20 to 0.40 GB PSS and a kernel, SEO guy 562 min after its last activity (~/scratch/idle-ram/sessions-0603.json).
  */
-function retrying(row: SessionSummary, input: { attached: ReadonlySet<string>; pool: ReadonlySet<string>; chats?: ReadonlySet<string>; handoff?: (row: SessionSummary) => boolean }): boolean {
-  return calm(row, input.pool, input.handoff?.(row)) && row.activity === "working" && own(row, input);
+function retrying(row: SessionSummary, input: { attached: ReadonlySet<string>; pool: ReadonlySet<string>; chats?: ReadonlySet<string>; handoff?: (row: SessionSummary) => boolean; sessionsDir?: string }): boolean {
+  return calm(row, input.pool, input.handoff?.(row), input.sessionsDir) && row.activity === "working" && own(row, input);
 }
 
 /** No client holds the session but, for a chat, the service's own attach, which the stop lets go of first (`UnloadSource.release`). */
@@ -110,13 +129,40 @@ export function quotaParkedUntil(tail: string, now: number): number | null {
 export function parkCandidates(rows: readonly SessionSummary[], input: PlanInput): SessionSummary[] {
   if (input.idleMs === null) return [];
   const busy = busyAncestors(rows);
-  return rows.filter(row => still(row, input.pool, input.handoff?.(row)) && own(row, input) && !busy.has(row.sessionId));
+  return rows.filter(row => still(row, input.pool, input.handoff?.(row), input.sessionsDir) && own(row, input) && !busy.has(row.sessionId));
+}
+
+/** A daemon row with Prime's own park flag (agent-session.ts `isQuotaParked`, true from `_parkForQuotaReset` on), which the pinned typings lack. */
+type ParkRow = SessionSummary & { isQuotaParked?: boolean };
+
+/** What `parkChanges` compares for a parked row between two reads: its turn state, its clients and its transcript's last write. */
+const parkKey = (row: SessionSummary): string =>
+  JSON.stringify([row.activity, row.isSessionActive, row.unfinishedActionCount ?? 0, row.attachedClients, row.directAttachedClients ?? 0, row.workerState ?? "", row.modified ?? ""]);
+
+/**
+ * The loaded rows that read idle with Prime's park flag set and changed since the last read (`seen`, updated in place): a turn that ended on a
+ * quota park, whose entry Prime appends before it ends the turn (`_parkForQuotaReset`), or a parked row whose client let go since. The idle
+ * unload plans for them at once (`IdleUnloader.quieted`). The first read names every such row.
+ */
+export function parkChanges(seen: Map<string, string>, rows: readonly SessionSummary[]): string[] {
+  const found: string[] = [];
+  const now = new Map<string, string>();
+  for (const row of rows as readonly ParkRow[]) {
+    if (!loaded(row) || row.isQuotaParked !== true) continue;
+    const key = parkKey(row);
+    now.set(row.sessionId, key);
+    if (row.activity === "idle" && !row.isSessionActive && seen.get(row.sessionId) !== key) found.push(row.sessionId);
+  }
+  seen.clear();
+  for (const [id, key] of now) seen.set(id, key);
+  return found;
 }
 
 /**
  * How long a session that ended its task sits quiet before the unload stops it, instead of idleEvictionMinutes: a subagent that replied to its
- * parent (`repliedSinceTask`), a session the daemon judged (`taskState`, set only once a turn ended), or one with a board.wake pending (`waking`),
- * which asked to be unloaded while it waits. A chat keeps idleEvictionMinutes. At 00:52Z on 10-18 the 18 idle subagents that had replied held
+ * parent (`repliedSinceTask`), a session the daemon judged (`taskState`, set only once a turn ended), one with a board.wake pending (`waking`),
+ * which asked to be unloaded while it waits, or one with a heartbeat or scheduled job the daemon's wake scan runs (`wokenByScan`), which waits
+ * the same way. A chat keeps idleEvictionMinutes. At 00:52Z on 10-18 the 18 idle subagents that had replied held
  * 0.85 GB in their Python kernels. At 01:16Z, with swap at 12.56 GB, 14 of the 17 idle sessions that were no chat and had nothing below them at
  * work had ended their task this way, quiet 0.3 to 8.4 min: 9 subagents and 5 root jobs, each root holding a whole worker of 0.30 to 0.51 GB of
  * its own. A stopped session loads again on its next message or wake.
@@ -149,7 +195,9 @@ export interface PlanInput { attached: ReadonlySet<string>; pool: ReadonlySet<st
    */
   held?: ReadonlyMap<string, number | null>;
   /** Of `parkCandidates`, the sessions whose transcript shows a quota park (`quotaParkedUntil`), with its resume time; they stop at once. */
-  parked?: ReadonlyMap<string, number> }
+  parked?: ReadonlyMap<string, number>;
+  /** The daemon's sessions root on this box, which its wake scan reads for schedules (`wokenByScan`); absent, a scheduled session stays. */
+  sessionsDir?: string }
 
 /**
  * The rows that may be asleep in Prime's provider retry (`retrying`), quiet ENDED_MS since their last failed attempt with nothing at work below
@@ -172,7 +220,8 @@ export function unloadPlan(rows: readonly SessionSummary[], input: PlanInput): S
   if (idleMs === null) return [];
   const busy = busyAncestors(rows);
   const ended = (row: SessionSummary): boolean => !input.chats?.has(row.sessionId) &&
-    ((row.runtimeKind === "subagent" && row.repliedSinceTask === true) || row.taskState !== undefined || input.waking?.has(row.sessionId) === true);
+    ((row.runtimeKind === "subagent" && row.repliedSinceTask === true) || row.taskState !== undefined || input.waking?.has(row.sessionId) === true ||
+      (scheduled(row) && wokenByScan(row, input.sessionsDir)));
   const wait = (row: SessionSummary): number => ended(row) ? Math.min(idleMs, ENDED_MS) : idleMs;
   const idle = rows.filter(row => quiet(row, input) && !busy.has(row.sessionId) && input.now - Date.parse(row.lastActivityAt ?? "") >= wait(row));
   const held = input.held ? retryCandidates(rows, input).filter(row => input.held!.has(row.sessionId)) : [];
@@ -224,7 +273,7 @@ export interface QuietWorker { pid: number; attached: string[]; stop: SessionSum
  * The workers where every loaded session has been quiet for `quietMs` with nothing running, queued or scheduled. A session with a client
  * attached that is not the service's own attach to a chat in `chats` keeps its worker. `recyclePlan` picks the ones to recycle.
  */
-export function quietWorkers(rows: readonly SessionSummary[], input: { chats: ReadonlySet<string>; pool: ReadonlySet<string>; now: number; quietMs?: number }): QuietWorker[] {
+export function quietWorkers(rows: readonly SessionSummary[], input: { chats: ReadonlySet<string>; pool: ReadonlySet<string>; now: number; quietMs?: number; sessionsDir?: string }): QuietWorker[] {
   const quietMs = input.quietMs ?? RECYCLE_QUIET_MS;
   const byWorker = new Map<number, SessionSummary[]>();
   for (const row of rows) {
@@ -234,7 +283,7 @@ export function quietWorkers(rows: readonly SessionSummary[], input: { chats: Re
   const depth = (row: SessionSummary): number => row.rlmDepth ?? (row.runtimeKind === "subagent" ? 1 : 0);
   const found: QuietWorker[] = [];
   for (const [pid, on] of byWorker) {
-    const ok = on.every(row => still(row, input.pool) && input.now - Date.parse(row.lastActivityAt ?? "") >= quietMs &&
+    const ok = on.every(row => still(row, input.pool, false, input.sessionsDir) && input.now - Date.parse(row.lastActivityAt ?? "") >= quietMs &&
       (row.attachedClients === 0 || input.chats.has(row.sessionId)));
     if (!ok) continue;
     found.push({ pid, attached: on.filter(row => row.attachedClients > 0).map(row => row.sessionId), stop: [...on].sort((a, b) => depth(b) - depth(a)) });
@@ -324,6 +373,8 @@ export interface UnloadSource {
   remoteBoxes?(): readonly { host: string; rows: readonly SessionSummary[]; recycles: boolean }[];
   /** The quiet window (src/quiet-minutes.ts) in ms; null when idle eviction is off. */
   idleMs(): number | null;
+  /** This box's daemon sessions root (`PlanInput.sessionsDir`); absent, a session with a heartbeat or scheduled job is never stopped. */
+  sessionsDir?: string;
   chats(): Promise<ReadonlySet<string>>;
   /** Whether the hub detached the chat as dormant. */
   dormant(id: string): boolean;
@@ -475,20 +526,27 @@ export class IdleUnloader {
   /** Rows the daemon no longer knows or that were stopped, by active session id and lastActivityAt, so a stale row is not asked again. */
   private readonly gone = new Set<string>();
   private readonly running = new Set<Promise<unknown>>();
+  /** The sessions `quieted` named that its plan under way has not read yet, and that plan. */
+  private readonly pending = new Set<string>();
+  private quick: Promise<void> | undefined;
 
   constructor(private readonly source: UnloadSource) {}
 
-  /** Plans from the rows now and starts each stop and recycle. Resolves once they have started, not once they end (`settled`). */
-  async sweep(): Promise<void> {
+  /**
+   * Plans from the rows now and starts each stop and recycle. Resolves once they have started, not once they end (`settled`). With `only` it
+   * plans for those sessions alone and recycles no worker (`quieted`).
+   */
+  async sweep(only?: ReadonlySet<string>): Promise<void> {
     const source = this.source;
     const idleMs = source.idleMs();
+    if (only && (idleMs === null || !only.size)) return;
     const chats = await source.chats();
     const attached = new Set([...chats].filter(id => !source.dormant(id)));
     const pool = await source.pool();
     const now = source.now();
     const waking = await source.waking(now);
-    const input: PlanInput = { attached, pool, now, idleMs, chats, waking, handoff: row => this.handsOff(row) };
-    const fresh = (row: SessionSummary): boolean => !this.out.has(row.sessionId) && !this.gone.has(goneKey(row));
+    const input: PlanInput = { attached, pool, now, idleMs, chats, waking, handoff: row => this.handsOff(row), ...source.sessionsDir === undefined ? {} : { sessionsDir: source.sessionsDir } };
+    const fresh = (row: SessionSummary): boolean => (!only || only.has(row.sessionId)) && !this.out.has(row.sessionId) && !this.gone.has(goneKey(row));
     const candidates = retryCandidates(source.rows(), input).filter(fresh);
     const held = candidates.length && idleMs !== null
       ? await within(source.held(candidates, now, idleMs, chats).catch(error => { source.log(`idle unload: provider waits: ${error instanceof Error ? error.message : String(error)}`); return new Map<string, number | null>(); }),
@@ -500,7 +558,7 @@ export class IdleUnloader {
         HELD_BOUND_MS, new Map<string, number>())
       : new Map<string, number>();
     const plan = unloadPlan(source.rows(), { ...input, held, parked }).filter(fresh);
-    if (source.handOff && source.unfinishedHandoffs) this.track(this.resumeUnloaded(source.handOff.bind(source), source.unfinishedHandoffs()));
+    if (!only && source.handOff && source.unfinishedHandoffs) this.track(this.resumeUnloaded(source.handOff.bind(source), source.unfinishedHandoffs()));
     if (plan.length) {
       // Each stop is bounded on its own (STOP_BOUND_MS). The sweep's line names the stops done by then; a later one logs its own line.
       const named = (row: SessionSummary): string => {
@@ -524,17 +582,41 @@ export class IdleUnloader {
     }
     // A quiet worker that grew past RECYCLE_OWN_BYTES of its own is recycled: its attached chat detaches now, and the next sweep stops every
     // session on it so the worker exits. Idle eviction off recycles none.
-    if (idleMs === null) return;
+    if (idleMs === null || only) return;
     // Pids repeat across boxes, so each box's workers are judged and measured apart.
     const boxes = [{ host: undefined as string | undefined, rows: source.localRows() },
       ...(source.remoteBoxes?.() ?? []).filter(box => box.recycles).map(box => ({ host: box.host as string | undefined, rows: box.rows }))];
     for (const box of boxes) await this.recycle(box.rows, box.host, chats, pool);
   }
 
+  /**
+   * Plans at once for sessions whose row just read parked (`parkChanges`), between the minute sweeps, so a session that parked on its
+   * provider quota stops seconds after its park instead of at the next sweep. From 13:41:13Z to 13:41:29Z on 10-21, with no session working on
+   * us-metal02, 27 quota-resume wakes fired, each met the same 429 and parked within a second, and all of them kept their workers until the
+   * 13:42:07Z sweep; the 13:41:30Z watch line read 5.07 GB of Agent sessions against 2.95 GB two minutes before (d7 target 5 GB). One such
+   * plan runs at a time, and sessions that read parked meanwhile go into the next.
+   */
+  quieted(ids: Iterable<string>): Promise<void> {
+    for (const id of ids) this.pending.add(id);
+    if (!this.quick && this.pending.size) this.quick = this.drain();
+    return this.quick ?? Promise.resolve();
+  }
+
+  private async drain(): Promise<void> {
+    try {
+      while (this.pending.size) {
+        const only = new Set(this.pending);
+        this.pending.clear();
+        await this.sweep(only).catch(error => this.source.log(`idle unload: ${error instanceof Error ? error.message : String(error)}`));
+      }
+    } finally { this.quick = undefined; }
+  }
+
   /** Recycles the quiet workers of one box whose own footprint reached RECYCLE_OWN_BYTES. */
   private async recycle(rows: readonly SessionSummary[], host: string | undefined, chats: ReadonlySet<string>, pool: ReadonlySet<string>): Promise<void> {
     const source = this.source;
-    const quiet = quietWorkers(rows, { chats, pool, now: source.now() }).filter(worker => !worker.stop.some(row => this.out.has(row.sessionId)));
+    const quiet = quietWorkers(rows, { chats, pool, now: source.now(), ...host === undefined && source.sessionsDir !== undefined ? { sessionsDir: source.sessionsDir } : {} })
+      .filter(worker => !worker.stop.some(row => this.out.has(row.sessionId)));
     if (!quiet.length) return;
     const own = await (host === undefined ? source.own(quiet.map(worker => worker.pid)) : source.own(quiet.map(worker => worker.pid), host));
     const on = host === undefined ? "" : ` on ${host}`;

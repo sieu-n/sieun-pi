@@ -647,6 +647,12 @@ export class Catalog {
   private readonly supervisorListeners = new Set<() => void>();
   /** Runs `listener` when a connect meets a new supervisor (`daemon_hello.supervisorGeneration` changed): a Prime update or a daemon restart, which cut the turns it stopped. */
   onSupervisorChange(listener: () => void): void { this.supervisorListeners.add(listener); }
+  private readonly rowListeners = new Set<() => void>();
+  /** Runs `listener` after each change of this box's daemon rows (`daemonRows`), which the copy lays into one call per 150 ms. */
+  onDaemonRows(listener: () => void): () => void {
+    this.rowListeners.add(listener);
+    return () => { this.rowListeners.delete(listener); };
+  }
   /** A backend can connect before SDK sync is attached. Replay that hello as well as later reconnects. */
   set onDaemonVersion(listener: (version: string | undefined) => void) {
     this.daemonVersionListener = listener;
@@ -715,7 +721,9 @@ export class Catalog {
     if (this.closed) return;
     if (this.peer.state === "down") this.setDaemon("down", this.unreachable(this.peer.error));
     if (this.peer.state === "up") { this.setDaemon("up"); this.scheduleSchedulesRefresh(0); }
-    if (this.peer.listed) void this.apply().catch(() => {});
+    if (!this.peer.listed) return;
+    void this.apply().catch(() => {});
+    for (const listener of this.rowListeners) listener();
   }
 
   private unreachable(cause: string | undefined): string {

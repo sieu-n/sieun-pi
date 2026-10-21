@@ -29,7 +29,7 @@ import { briefCheckRecord, deletedJobRecord, heldNoticeRecord, jobRegistry, chec
 import { jobResumes } from "./job-resume.ts";
 import { cutJobs, interruptedRuns } from "./chat-resume.ts";
 import { resumesNow, tailLines } from "./cut-end.ts";
-import { IdleUnloader, providerWaits, quotaParkedUntil, takesKillOrigin, unloadRequest } from "./idle-unload.ts";
+import { IdleUnloader, providerWaits, parkChanges, quotaParkedUntil, takesKillOrigin, unloadRequest } from "./idle-unload.ts";
 import { handOff, handoffSend, handsOffRow, systemPorts } from "./detached-handoff.ts";
 import { unfinishedHandoffs } from "./orphan-services.ts";
 import { readHeldTurns, readTurnSince, writeResumePending } from "./held-turns.ts";
@@ -372,6 +372,8 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     remoteBoxes: () => catalog.remoteHosts().map(({ host, rows }) => ({ host: host.name, rows, recycles: takesKillOrigin(catalog.helloOf(host.name) ?? {}) })),
     // The one quiet window (src/quiet-minutes.ts, 15 min by default) that d7's quiet_agent_gb judges; idle eviction off stops none.
     idleMs: () => defaults.idleEviction() === "off" ? null : quietMinutes(dataDir) * 60_000,
+    // The daemon's wake scan reads the sessions root for schedules, so a heartbeat job there loads again for its next tick after a stop.
+    sessionsDir: join(agentDir, "sessions"),
     chats: () => chats.ids(),
     dormant: id => threads.isDormant(id),
     pool: () => poolWaiting(),
@@ -428,6 +430,9 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     void unloader_.sweep().catch(error => dutyLog(`idle unload: ${error instanceof Error ? error.message : String(error)}`)).finally(() => { unloading = false; });
   }, 60_000);
   unloader?.unref();
+  // A row that reads parked on its provider quota between sweeps is planned for at once, so the session stops seconds after its park.
+  const parkSeen = new Map<string, string>();
+  const stopQuietWatch = !unloader ? () => {} : catalog.onDaemonRows(() => { void unloader_.quieted(parkChanges(parkSeen, catalog.daemonRows())); });
   // /tmp is a tmpfs on Linux, so what nobody holds or names there is RAM or swap that no work uses (src/tmp-sweep.ts).
   const stopTmpSweep = ownChatsOnly || process.platform !== "linux" ? () => {} : startTmpSweep({ rows: () => catalog.daemonRows(),
     waking: async () => new Set((await pendingWakes(join(dataDir, "wakes"), Date.now()).catch(() => [])).map(wake => wake.session)),
@@ -460,6 +465,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       await watchStopped;
       clearInterval(prioritySync);
       if (unloader) clearInterval(unloader);
+      stopQuietWatch();
       stopTmpSweep();
       stopWakes();
       stopBriefs();
