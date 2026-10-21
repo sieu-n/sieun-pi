@@ -81,6 +81,24 @@ test("a goal whose wait names an open For you todo has an owner", () => {
   assert.deepEqual(goalsWithNoJob(board(true), reads).map(goal => goal.id), ["p91"]);
 });
 
+// Owner rule c64: a step blocked only by an open For you todo is an end state, and any other open step nobody moves is not (metal-management p91, 10-21).
+test("a goal is held on the owner only when every open item under it is held by an open todo or parked by his correction", () => {
+  const now = Date.parse("2026-10-21T08:40:00Z");
+  const reads = { now, named: new Map(), activity: new Map(), waking: new Set<string>(), poolWaiting: new Set<string>(), jobs: [] };
+  const wait = "the owner's answer on For you t6";
+  const step = (id: string, extra: object = {}) => ({ id, text: `Step ${id}`, status: "blocked", children: [], ...extra });
+  const board = (children: object[]) => ({ v: 2, rev: 1, updatedAt: "2026-10-21T08:00:00Z",
+    todos: [{ id: "t6", text: "How should the box's 19 web addresses get simpler?", done: false, from: "agent", at: "2026-10-19T16:41:34Z" }],
+    plan: [{ id: "p91", text: "Simplify the box's web addresses", status: "blocked", children }] }) as unknown as ChatBoard;
+  const gaps = (children: object[]) => goalsWithNoJob(board(children), reads).map(goal => goal.id);
+  assert.deepEqual(gaps([step("p115", { waitFor: wait })]), []);
+  assert.deepEqual(gaps([step("p115", { waitFor: wait }), step("p116", { note: "Parked by owner correction c40 until he says 5180 is good enough." })]), []);
+  assert.deepEqual(gaps([{ ...step("p120"), status: "doing", children: [step("p115", { waitFor: wait })] }]), []);
+  assert.deepEqual(gaps([step("p115", { waitFor: wait }), { ...step("p116"), status: "todo" }]), ["p91"]);
+  assert.deepEqual(gaps([step("p115", { waitFor: wait }), step("p116", { waitFor: "the release owner's next land" })]), ["p91"]);
+  assert.deepEqual(gaps([step("p116", { note: "Waits on the owner's answer, and For you has no question for it yet." })]), ["p91"]);
+});
+
 test("the push list joins a chat's idle goals and stuck duties, and the follow-up reads the tag and an answer after it", () => {
   const goal = { id: "p5", text: "Ship C", status: "doing", children: [] } as unknown as ChatBoard["plan"][number];
   assert.deepEqual(pushList({ idleGoals: [{ chat: "a", goals: [goal] }, { chat: "b", goals: [] }], stuckDuties: [{ chat: "a", line: "a: d1 red" }, { chat: "c", line: "c: d2 red" }], upkeep: [] })

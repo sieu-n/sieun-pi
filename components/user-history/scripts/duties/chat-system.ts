@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { heldByTodo } from "../../src/checkin-end-state.ts";
 import { planRiskSteps } from "../../src/checkin-findings.ts";
-import { LIVE_GAP_MS, OPEN, waitsOnOwner, walk } from "../../src/checkin-steps.ts";
+import { LIVE_GAP_MS, OPEN, parkedBy, walk } from "../../src/checkin-steps.ts";
 import { listedSessions } from "../../src/daemon-faults.ts";
 import { ownerChats } from "../../src/owner-chats.ts";
 import { chatDataDir } from "../../src/owner-ok.ts";
@@ -152,25 +152,33 @@ export interface OwnerReads {
 }
 
 /**
- * The open goals none of whose open items has a live owner: a job working now or within LIVE_GAP_MS, asleep on a board.wake, waiting for its
- * pi-pool slot, an open For you todo that links the item, or a blocked wait on the owner (`waitsOnOwner`, as the check-in's stuck steps read it). A Mac chat's jobs write their transcripts on the Mac, so their catalog rows (by
- * session id or by the step's job name) count too. The duty's goal names "a job moving it or a For you question that links it", and on 10-20
- * the 06:16Z run pushed frontend bro on p208 and p272 and slack green guy on p179, whose open steps each wait on an open todo (t39, t40, t28).
- * A wait that names the todo counts as the check-in's `heldByTodo` reads it: on 10-21 the 08:11Z and 08:23Z runs pushed metal-management on
- * p91, whose goal and step p115 wait for "the owner's answer on For you t6", while its check-in held it.
+ * The open goals with no live owner and not held on the owner's answer. A goal has a live owner when an open item under it has a job working
+ * now or within LIVE_GAP_MS, asleep on a board.wake or waiting for its pi-pool slot. A Mac chat's jobs write their transcripts on the Mac, so
+ * their catalog rows (by session id or by the step's job name) count too. A goal is held when an open For you todo links it (its step field or
+ * `heldByTodo`, which reads a wait that names the todo) or an owner correction parks it (`parkedBy`), or when every open item under it is held
+ * that way: owner rule c64 counts a step blocked only by an open For you todo as an end state, and frontend bro's p62 waits only on c40-parked
+ * p52 and p31. On 10-20 the 06:16Z run pushed frontend bro on p208 and p272 and slack green guy on p179, whose
+ * open steps each wait on an open todo (t39, t40, t28), and on 10-21 the 08:11Z and 08:23Z runs pushed metal-management on p91, whose goal and
+ * only step p115 wait for "the owner's answer on For you t6". A goal with one held step and one step nobody moves still counts, as the
+ * check-in's `ownerHeld` reads it, and so does a blocked wait on the owner with no todo, which the check-in counts as stuck (`owner_no_todo`).
  */
 export function goalsWithNoJob(board: ChatBoard | null, reads: OwnerReads): PlanItem[] {
   const fresh = (at: number | undefined) => at !== undefined && reads.now - at <= LIVE_GAP_MS;
-  const asked = new Set((board?.todos ?? []).filter(todo => !todo.done && todo.step).map(todo => todo.step));
+  const todos = board?.todos ?? [];
+  const asked = new Set(todos.filter(todo => !todo.done && todo.step).map(todo => todo.step));
   const live = (item: PlanItem): boolean => {
-    if (asked.has(item.id) || waitsOnOwner(item) || heldByTodo(item, board?.todos ?? [])) return true;
     const sessions = stepSessions(item, reads.named);
     if (sessions.some(id => reads.waking.has(id) || reads.poolWaiting.has(id) || fresh(reads.activity.get(id)))) return true;
     return reads.jobs.some(row => (sessions.includes(row.sessionId) || (!!item.job && row.sessionName === item.job)) &&
       (row.activity === "working" || fresh(ms(row.lastActivityAt))));
   };
+  const held = (item: PlanItem): boolean => {
+    if (asked.has(item.id) || heldByTodo(item, todos) || parkedBy(item) !== undefined) return true;
+    const open = item.children.filter(child => OPEN.has(child.status));
+    return open.length > 0 && open.every(held);
+  };
   return (board?.plan ?? []).filter(goal => {
-    if (!OPEN.has(goal.status)) return false;
+    if (!OPEN.has(goal.status) || held(goal)) return false;
     let owned = false;
     walk([goal], item => { if (OPEN.has(item.status) && live(item)) owned = true; });
     return !owned;
