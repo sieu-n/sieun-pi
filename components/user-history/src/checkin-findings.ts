@@ -729,17 +729,16 @@ export const stalledLine = ({ view, why }: StalledStep): string => {
 
 /** A step blocked on others this long with no live job needs a fix job (W56). */
 export const BLOCKED_MS = 60 * 60_000;
-/** Words in a step's waitFor or note that name a blocker outside the chat: CI, a land, promote or release, a pin, or another thread. */
+/** Words in a step's waitFor that name a blocker outside the chat: CI, a land, promote or release, a pin, or another thread. */
 const OTHERS = /\b(?:ci|github actions|land(?:\.yml)?|promote(?:\.yml)?|release(?: queue| train| owner)?|pin(?:ned)?|threads?)\b/i;
 /** The OTHERS word in a waitFor or note, read with its paths and dated folder names left out; undefined when there is none. */
 const othersWord = (text: string | undefined): string | undefined =>
   text ? OTHERS.exec(text.split(/\s+/).filter(token => !pathLike(token)).join(" "))?.[0] : undefined;
 /**
  * An open step blocked on CI, the release queue or another thread with nobody fixing it (W56, owner 10-10: when CI or the like blocks
- * a step, work out how to fix it and get involved): it waits (a waitFor, or blocked), its waitFor or note names such a blocker or
- * its waitFor names another thread, it has not changed for BLOCKED_MS, and no job of it is working (an owner thread whose heartbeats keep it
+ * a step, work out how to fix it and get involved): it waits (a waitFor, or blocked), its waitFor names such a blocker or another thread, it has not changed for BLOCKED_MS, and no job of it is working (an owner thread whose heartbeats keep it
  * live works, `liveThreads`). The step's own owner thread is never its blocker; a CI run id its waitFor names is named as the blocker. A step an open For you todo covers
- * waits on the owner, not on others (AI harness 10-12: p288 on t41 and p277 on t42 read as blocked on a release and on SEO guy). A step parked on
+ * (`heldByTodo`, whatever its class) waits on the owner, not on others (AI harness 10-12: p288 on t41 and p277 on t42 read as blocked on a release and on SEO guy). A step parked on
  * schedule or on a release train that moves (`parkedWait`) is not blocked yet, and neither is a step whose owner or blocker thread sleeps on a
  * board.wake the service still owes (`asleep`; launch main bro 10-14: "release driver thread is idle" on p53 and p75 while the release driver
  * waited on its 14:40Z wake). `on` names the blocker.
@@ -866,11 +865,13 @@ export function queueHolds(view: Pick<StepView, "item" | "owner" | "mine">, queu
   return target !== undefined && queued.has(target.id);
 }
 export function blockedOnOthers(views: readonly StepView[], rows: readonly Pick<SessionRow, "id" | "name" | "archived">[], self: ReadonlySet<string>, now: number,
-  train?: Train, queued: ReadonlyMap<string, unknown> = new Map(), asleep: ReadonlySet<string> = new Set()): BlockedStep[] {
+  train?: Train, queued: ReadonlyMap<string, unknown> = new Map(), asleep: ReadonlySet<string> = new Set(), todos: Parameters<typeof heldByTodo>[1] = []): BlockedStep[] {
   return views.flatMap(view => {
     const { item, owner } = view;
+    // A step an open For you todo holds waits on the owner even when `stepClass` reads it live first, for an owner thread active in the last
+    // STEP_STALE_MS (vent 10-21, p7 waits for "t13 answer from the owner ..." and read "blocked on promote for 3 d" in 10 check-ins in a row).
     if ((item.waitFor === undefined && item.status !== "blocked") || owner?.state === "working" || view.cls === "parked" || view.cls === "foryou" ||
-      now - view.changedAt <= BLOCKED_MS || parkedWait(item, view.changedAt, now, train, rows, self) || queueHolds(view, queued, rows, self)) return [];
+      heldByTodo(item, todos) || now - view.changedAt <= BLOCKED_MS || parkedWait(item, view.changedAt, now, train, rows, self) || queueHolds(view, queued, rows, self)) return [];
     // The step's own owner thread is never its blocker (Crawler VP 10-13, p147 read "blocked on the meta ads thread", its owner); a thread its
     // waitFor names is.
     const thread = waitTarget(item.waitFor, rows, self);
@@ -880,7 +881,9 @@ export function blockedOnOthers(views: readonly StepView[], rows: readonly Pick<
     // land-34 loop cancelled at 13:55Z); `deadRunWaits` flags it.
     if (!thread && deadRun(item, train)) return [];
     const run = RUN_ID.exec(item.waitFor ?? "")?.[0];
-    const word = othersWord(item.waitFor) ?? othersWord(item.note) ?? (heldRun(item) ? "a CI run another thread holds" : undefined);
+    // The blocker word comes from the waitFor alone: a note tells what happened ("Prod after promote 17: /app/welcome 200" on vent's p7), not
+    // what the step waits on.
+    const word = othersWord(item.waitFor) ?? (heldRun(item) ? "a CI run another thread holds" : undefined);
     const on = thread ? `the ${clip(thread.name, 40)} thread` : word && run ? `CI run ${run}${heldRun(item) ? ", which another thread holds" : ""}` : word;
     return on ? [{ view, on }] : [];
   });

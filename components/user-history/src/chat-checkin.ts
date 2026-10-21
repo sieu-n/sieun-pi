@@ -19,6 +19,7 @@ import { blockedLine, blockedOnOthers, type BlockedStep, deadRunWaits, type Duty
 import { upkeepWords } from "./shared/upkeep-title.ts";
 import { CHECK_IN_MS, clockTime, localTime } from "./checkin-settings.ts";
 import { turnErrorCause } from "./turn-error.ts";
+import { agentMessageHead } from "./no-report.ts";
 import { endState, endStateKpi, endStateLine, type EndStateView, heldByTodo, OK_STATES, stepCarriers, stuckLine } from "./checkin-end-state.ts";
 import { goalDueLine, goalGap, type GoalMemo, goalLine, goalPromptLine, type GoalPush, goalPushes, goalsDetail, goalsHeadline, pushNeeded, threadPaused } from "./checkin-goals.ts";
 import { type JobMemo, type JobPush, jobPushes } from "./checkin-jobs.ts";
@@ -152,7 +153,7 @@ export function checkInPrecheck(previous: CheckInMemory | undefined, facts: read
   const goaled = withGoals(views, board);
   const since = previous?.since ?? previous?.at ?? now;
   const queued = context.queued ?? new Map<string, unknown>();
-  const blocked = context.boardError ? [] : blockedOnOthers(goaled, context.rows ?? [], self, now, context.train, queued, context.asleep);
+  const blocked = context.boardError ? [] : blockedOnOthers(goaled, context.rows ?? [], self, now, context.train, queued, context.asleep, openTodos);
   // A step blocked on others gets that one finding, which names the blocker and the action; stalled_steps' "act on it" on the same step gave
   // two lines with two different asks (34 steps from 10-13 09:15 to 23:59 KST, VP of CI's nine waits on the secrets cache at 14:29 among them).
   const onOthers = new Set(blocked.map(block => block.view.item.id));
@@ -433,7 +434,10 @@ export function convergenceMisses(chat: string, steps: readonly StepView[], { sc
     if (view.cls === "orphan" && !counted.has(id)) flag("orphan_steps", id, line);
     if (view.cls === "stale-chase" && now - view.changedAt >= CHASE_ESCALATE_MS) flag("stale_chase_24h", id, line);
     const owner = view.owner;
-    const silent = owner && owner.state !== "working" ? told[owner.key] : undefined;
+    // A told end is silent until the job reports: a job that resumed after it and sent the chat a message cleared it (vent 10-21, p7's job "search
+    // flows finish" ended on a provider error at 10-20 19:24Z, then reported at 08:32:59Z and 08:35Z, and read "with no report" for 14 h).
+    const toldEnd = owner && owner.state !== "working" ? told[owner.key] : undefined;
+    const silent = toldEnd && (owner!.lastMessage?.at ?? 0) <= toldEnd.at ? toldEnd : undefined;
     const end = owner && !owner.key.startsWith("thread:") && owner.state !== "working" && !owner.cancelled && !holdsOnWait(view.item, now) ? owner.activityAt : undefined;
     const staleStep = staleById.get(id);
     staleById.delete(id);
@@ -675,7 +679,8 @@ export const parkedWork = (text: string): string | undefined => PARKED_WORK.exec
 export const REPLY_GAP_MS = 5_000;
 
 /**
- * Each job's last agent message to the chat, by the name its header gives (`[agent-message from child:<name>]`, the `child:` cut), with when the
+ * Each job's last agent message to the chat, by the name its header gives (`agentMessageHead`: `[agent-message from child:<name>]` with the
+ * `child:` cut, or the cross-host line of a root on another box), with when the
  * job last sent one that carries a fact (`noteFacts` over the whole message), and the words of its last reply that say it holds parked work
  * (`parkedWork` over the whole message; messages within REPLY_GAP_MS of each other are one reply).
  */
@@ -704,12 +709,9 @@ function jobMessage(message: { role: string; customType?: string; content?: unkn
   if (kept !== undefined) return kept;
   const text = typeof message.content === "string" ? message.content
     : Array.isArray(message.content) ? message.content.map(part => typeof part === "object" && part && "text" in part ? String((part as { text: unknown }).text) : "").join("") : "";
-  const header = /^\s*\[agent-message from\s+(?:child:)?([^\]]+)\]/.exec(text);
-  let read: ReadJobMessage | null = null;
-  if (header) {
-    const body = text.slice(header[0].length);
-    read = { name: header[1]!.trim(), at: message.timestamp ?? 0, text: body.split("\n").map(line => line.trim()).find(Boolean) ?? "", facts: noteFacts(body).length > 0, parked: parkedWork(body) };
-  }
+  const head = agentMessageHead(text);
+  const read: ReadJobMessage | null = head ? { name: head.name, at: message.timestamp ?? 0, text: head.body.split("\n").map(line => line.trim()).find(Boolean) ?? "",
+    facts: noteFacts(head.body).length > 0, parked: parkedWork(head.body) } : null;
   readJobMessages.set(message, read);
   return read;
 }
@@ -720,8 +722,8 @@ export function jobReport(messages: readonly { role: string; customType?: string
     if (message.role !== "custom" || message.customType !== "agent_message") continue;
     const text = typeof message.content === "string" ? message.content
       : Array.isArray(message.content) ? message.content.map(part => typeof part === "object" && part && "text" in part ? String((part as { text: unknown }).text) : "").join("") : "";
-    const header = /^\s*\[agent-message from\s+(?:child:)?([^\]]+)\]/.exec(text);
-    if (header?.[1]!.trim() === name) return text.slice(header[0].length).trim();
+    const head = agentMessageHead(text);
+    if (head?.name === name) return head.body.trim();
   }
   return "";
 }
