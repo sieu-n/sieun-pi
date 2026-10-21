@@ -14,8 +14,8 @@ export const queuedPlaces = (reading: AgentQueueReading | null): Map<string, Que
 export const workingSessions = (reading: AgentQueueReading | null): Set<string> => new Set((reading?.working ?? []).map(entry => entry.session));
 
 /**
- * The check-in's job facts with each one's place in the turn queue, so a job whose turn waits for a slot reads as queued and one whose run
- * holds a slot reads as in its turn, neither stalled: a thread by its own id, a subagent by its session id, or by the one a child in `children`
+ * The check-in's job facts with each one's place in the turn queue, so a job whose turn waits for a slot reads as queued and working (it
+ * waits for an account, whatever its last turn's error) and one whose run holds a slot reads as in its turn, neither stalled nor parked: a thread by its own id, a subagent by its session id, or by the one a child in `children`
  * gives its child id (a hub child has none; the daemon's has).
  */
 export function withQueuePlaces(facts: readonly JobFact[], places: PoolPlaces, children: readonly ChildAgent[]): JobFact[] {
@@ -24,8 +24,11 @@ export function withQueuePlaces(facts: readonly JobFact[], places: PoolPlaces, c
     const session = fact.key.startsWith("thread:") ? fact.key.slice("thread:".length) : fact.sessionId ?? children.find(child => child.id === fact.key && child.sessionId)?.sessionId;
     if (session === undefined) return fact;
     const queued = places.queued.get(session);
-    if (queued) return { ...fact, queued };
-    return places.working.has(session) ? { ...fact, inTurn: true as const } : fact;
+    // A queued turn is newer than a quota park: a message or the park's own resume put it in the queue.
+    if (queued) { const { parkedUntil: _, ...rest } = fact; return fact.cancelled ? fact : { ...rest, state: "working", queued }; }
+    if (!places.working.has(session)) return fact;
+    const { parkedUntil: _, ...rest } = fact;
+    return { ...rest, inTurn: true as const };
   });
 }
 

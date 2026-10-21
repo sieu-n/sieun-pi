@@ -6,7 +6,7 @@ import { ArchiveLeftWork, ScheduledJobsLeft } from "./saved-archive.ts";
 import { artifactsDir } from "./moved-images.ts";
 import { agentChildren } from "./chat-agents.ts";
 import { activeCorrections, handoffRules } from "./chat-corrections.ts";
-import { deadWakes, heartbeatsFile, landCarries, liveThreads, readHeartbeats, readTrain, trainFile, trainRepo, withDeadWakes, withWakes } from "./checkin-load.ts";
+import { deadWakes, heartbeatsFile, landCarries, liveThreads, parkFiles, quotaParks, readHeartbeats, readTrain, trainFile, trainRepo, withDeadWakes, withQuotaParks, withWakes } from "./checkin-load.ts";
 import { flagStreaks } from "./checkin-repeats.ts";
 import { boardPrs, type DoneFacts, metricFacts } from "./checkin-done.ts";
 import { activePause, changeCheckIn, type CheckInActor, type CheckInChange, CheckInRefused, type CheckInSetting, DEFAULT_CHECK_IN, nextCheckIn } from "./checkin-settings.ts";
@@ -1535,11 +1535,14 @@ export class Chats {
     const unstarted = await this.source.unstarted?.(this.now()).catch(error => { this.log(`chat ${id.slice(0, 8)}: check-in unstarted jobs: ${error instanceof Error ? error.message : String(error)}`); return []; }) ?? [];
     const threads = withUnstarted(withHeldTurns(withDeadWakes(withWakes(liveThreads(jobFacts(children, board, rows, id, nested, live), session => readHeartbeats(heartbeatsFile(session, this.source.home)), this.now()),
       wakes, key => sessions.get(key), this.below), dead, key => sessions.get(key), this.below), held?.sessions ?? new Map(), key => sessions.get(key)), unstarted);
+    // A job Prime parked on a provider limit waits for an account until the daemon's quota resume, not failed (`withQuotaParks`).
+    const roots = threads.flatMap(fact => fact.key.startsWith("thread:") ? [fact.key.slice("thread:".length)] : []);
+    const parks = quotaParks(parkFiles(id, roots, this.source.home).flatMap(readHeartbeats), this.now());
     const pool = await this.source.queue?.().catch(() => undefined);
     const queued = pool?.queued ?? new Map<string, QueuePlace>();
     const pooled = await withFailedTurns(threads, join(this.source.home ?? homedir(), ".prime", "agent"), id, key => sessions.get(key),
       async session => (await this.summary(session))?.sessionFile);
-    const facts = withQueuePlaces(pooled.map(fact => {
+    const facts = withQueuePlaces(withQuotaParks(pooled, parks, key => sessions.get(key)).map(fact => {
       // A thread's report to the chat counts like a job's: at 16:10Z on 10-18 the check-in restarted "wiki memory moves 10-18b" for "nothing
       // moved" one minute after its 16:09Z report ("243 repo-fact memories are deleted ... 127 wiki-dream skill commits").
       const lastMessage = said.get(fact.name);

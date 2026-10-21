@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -55,6 +55,8 @@ export const sessionLoadLine = ({ goal, thread, steps, open }: SessionLoad): str
 export interface ScheduledJob {
   id: string; source?: string; status?: string; label?: string; prompt?: string; schedule?: { expression?: string; intervalMs?: number };
   lastRunAt?: string; lastSkippedAt?: string; nextRunAt?: string;
+  /** The session the job runs in: a root's own, or for a subagent's quota resume the subagent's, kept in its root's file. */
+  sessionId?: string;
 }
 /** `<home>/.prime/agent/session-artifacts/<chat id>/scheduled-jobs.json`, where Prime Agent keeps a session's heartbeats. */
 export const heartbeatsFile = (chatId: string, home: string = homedir()): string => join(home, ".prime", "agent", "session-artifacts", chatId, "scheduled-jobs.json");
@@ -152,6 +154,45 @@ export function withWakes(facts: readonly JobFact[], wakes: readonly Wake[], ses
     const session = fact.key.startsWith("thread:") ? fact.key.slice("thread:".length) : fact.sessionId ?? sessionOf(fact.key);
     const owed = session === undefined ? [] : treeWakes(session, below, wakes);
     return owed.length ? { ...fact, state: "working", wake: wakeLabel(owed) } : fact;
+  });
+}
+/**
+ * The sessions Prime parked on a provider limit, by session id, with when the daemon loads each again: every active `quota-resume` job
+ * (agent-session.ts `_parkForQuotaReset`) whose next run is ahead of `now`. A root's file holds its subagents' quota resumes too.
+ */
+export function quotaParks(jobs: readonly ScheduledJob[], now: number): Map<string, number> {
+  const parks = new Map<string, number>();
+  for (const job of jobs) {
+    const at = Date.parse(job.nextRunAt ?? /^at (\S+)$/.exec(job.schedule?.expression ?? "")?.[1] ?? "");
+    if (job.label !== "quota-resume" || job.status !== "active" || job.sessionId === undefined || !(at > now)) continue;
+    parks.set(job.sessionId, Math.max(at, parks.get(job.sessionId) ?? at));
+  }
+  return parks;
+}
+/**
+ * The `scheduled-jobs.json` files that hold the quota resumes of a chat's jobs: the chat's own (its subagents'), each root's it names (`roots`,
+ * session ids, such as its step-owner threads), and the ones a nested subagent keeps under `<chat>/sub-*\/session-artifacts/<session>/`.
+ */
+export function parkFiles(chat: string, roots: readonly string[], home: string = homedir()): string[] {
+  const artifacts = join(home, ".prime", "agent", "session-artifacts", chat);
+  const list = (dir: string): string[] => { try { return readdirSync(dir); } catch { return []; } };
+  const nested = list(artifacts).filter(name => name.startsWith("sub-"))
+    .flatMap(sub => list(join(artifacts, sub, "session-artifacts")).map(session => join(artifacts, sub, "session-artifacts", session, "scheduled-jobs.json")));
+  return [...new Set([chat, ...roots].map(id => heartbeatsFile(id, home))), ...nested];
+}
+/**
+ * The facts with each job parked on a provider limit (`quotaParks`) marked working until the daemon's quota resume (`JobFact.parkedUntil`): it
+ * waits for an account, and the daemon gives its turn back by itself. A job whose turn failed with no pending park still reads failed. AI harness
+ * 10-21 14:00Z: d9 residuals 10-21 sat parked until 14:45Z and digest cache integration until 14:48Z, and the check-in read both failed on
+ * their 429 and flagged p773, p804, p818 and p831 as stalled_steps.
+ */
+export function withQuotaParks(facts: readonly JobFact[], parks: ReadonlyMap<string, number>, sessionOf: (key: string) => string | undefined): JobFact[] {
+  if (!parks.size) return [...facts];
+  return facts.map(fact => {
+    if (fact.cancelled) return fact;
+    const session = fact.key.startsWith("thread:") ? fact.key.slice("thread:".length) : fact.sessionId ?? sessionOf(fact.key);
+    const until = session === undefined ? undefined : parks.get(session);
+    return until === undefined ? fact : { ...fact, state: "working", parkedUntil: until };
   });
 }
 /** A run wake the service owes but should have sent: its run ended (`why`, as in "run 39323562100 ended cancelled at 21:07Z") over RUN_WAKE_DUE_MS ago. */

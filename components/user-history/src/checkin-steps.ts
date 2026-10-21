@@ -40,6 +40,8 @@ export interface JobFact {
   queued?: QueuePlace;
   /** Its run holds a working slot in its box's turn queue: it streams from the model or runs a tool call, within pi-pool's 1,800 s lease. */
   inTurn?: true;
+  /** Prime parked its failed turn on a provider limit, and the daemon's quota-resume job loads it again at this time (`withQuotaParks`). */
+  parkedUntil?: number;
   /** The pending board.wake its session sleeps on (`wakeLabel`): it ended its turn and counts as working until the wake is due (`withWakes`). */
   wake?: string;
   /** The dead waits it sleeps on (`withDeadWakes`): board.wakes on runs that ended long enough ago that the service should have sent them. */
@@ -353,8 +355,19 @@ export const quote = (text: string) => `"${clip(text)}"`;
 export const ownerLabel = (fact: JobFact) => fact.key.startsWith("thread:") ? `${clip(fact.name, 40)} thread` : `job ${fact.name}`;
 export const STATE_WORD: Record<JobState, string> = { working: "working", ended: "idle", failed: "failed", unstarted: "not started" };
 /** An owner's state as a precheck line names it: "ended" when cancelled, "asleep on a board.wake at 14:40Z" while it sleeps on a wake. */
-export const ownerState = (fact: JobFact): string => fact.cancelled ? "ended" : fact.wake ? `asleep on ${fact.wake}` :
-  fact.deadWake ? `${STATE_WORD[fact.state]}, asleep on a dead wait: ${fact.deadWake}` : STATE_WORD[fact.state];
+export const ownerState = (fact: JobFact): string => {
+  if (fact.cancelled) return "ended";
+  const waits = [capacityWait(fact), fact.wake ? `asleep on ${fact.wake}` : undefined].filter(wait => wait !== undefined);
+  return waits.length ? waits.join(", ") : fact.deadWake ? `${STATE_WORD[fact.state]}, asleep on a dead wait: ${fact.deadWake}` : STATE_WORD[fact.state];
+};
+const nth = (n: number): string => `${n}${n % 100 >= 11 && n % 100 <= 13 ? "th" : ["th", "st", "nd", "rd"][n % 10] ?? "th"}`;
+/**
+ * A job that waits for an account, in words: its turn waits in pi-pool's queue ("queued 99th of 114 for an account"), or Prime parked it on a
+ * provider limit until its quota-resume job ("waiting for an account until 10-21 23:45"). Undefined for any other job. Such a job is moving, not failed.
+ */
+export const capacityWait = (fact: Pick<JobFact, "queued" | "parkedUntil">): string | undefined =>
+  fact.queued ? `queued ${nth(fact.queued.position)} of ${fact.queued.total} for an account` :
+  fact.parkedUntil !== undefined ? `waiting for an account until ${localTime(fact.parkedUntil).slice(5)}` : undefined;
 export function ago(ms: number): string {
   const minutes = Math.max(0, Math.round(ms / 60_000));
   if (minutes < 120) return `${minutes} min`;

@@ -2,7 +2,7 @@ import { coversStep, OWNER_WAIT } from "./shared/chat-board.ts";
 import type { OwnerTodo, PlanItem, SessionRow } from "./shared/types.ts";
 import { landWaitCommits, type WakeWatch } from "./checkin-load.ts";
 import { zTime } from "./checkin-goals.ts";
-import { ago, clip, firstClause, type JobFact, ownerLabel, poolWait, quote, STEP_STALE_MS, type StepView, stepOwner, waitCarrier, waitsOnOwner, waitTarget } from "./checkin-steps.ts";
+import { ago, capacityWait, clip, firstClause, type JobFact, ownerLabel, poolWait, quote, STEP_STALE_MS, type StepView, stepOwner, waitCarrier, waitsOnOwner, waitTarget } from "./checkin-steps.ts";
 
 /**
  * The owner's end state for a board (owner 10-14: "all the PLAN list should clear or be stuck in FOR YOU right? check in duty should push forward
@@ -80,7 +80,7 @@ export function endState(view: StepView, todos: Parameters<typeof heldByTodo>[1]
   const { item, owner, mine, cls } = view;
   const out = (state: EndState, reason: string): EndStateView => ({ view, state, reason });
   if (cls === "parked") return out("parked", `parked by ${view.parked ?? "an owner correction"}`);
-  if (owner?.state === "working") return out("moving", `${ownerLabel(owner)} ${owner.wake ? `sleeps on ${owner.wake}` : "works on it"}`);
+  if (owner?.state === "working") return out("moving", `${ownerLabel(owner)} ${capacityWait(owner) ?? (owner.wake ? `sleeps on ${owner.wake}` : "works on it")}`);
   if (poolWait(owner)) return out("moving", `${ownerLabel(owner!)} waits for its slot in the token pool`);
   if (owner?.state === "unstarted" && owner.unstarted) return out("job_ended", `${ownerLabel(owner)} never started: Prime admitted it at ${zTime(owner.unstarted.at)} and its ` +
     `session has no first prompt${owner.unstarted.sentAt !== undefined ? `, though the chat service sent its brief at ${zTime(owner.unstarted.sentAt)}` : ""}`);

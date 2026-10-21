@@ -8,7 +8,7 @@ import { goWaitText, planJob, stepGoWait } from "./shared/chat-board.ts";
 import { BRIEF_ITEMS } from "./shared/brief-cap.ts";
 import type { OwnerMessage } from "./shared/brief-check.ts";
 import type { ChatAgent, ChatBoard, ChildAgent, PlanItem, SessionRow, StopReason, ThreadMessage } from "./shared/types.ts";
-import { ago, CHASE_ESCALATE_MS, childName, childWorking, classLine, clip, type JobFact, type JobMessage, OPEN, ownerLabel, ownerOf, ownerState, parkedBy, quote, readySteps,
+import { ago, capacityWait, CHASE_ESCALATE_MS, childName, childWorking, classLine, clip, type JobFact, type JobMessage, OPEN, ownerLabel, ownerOf, ownerState, parkedBy, quote, readySteps,
   noteFacts, readyReviewLine, readyReviews, recordedAt, STEP_CLASSES, type StepClass, type StepMemo, stepNamesJob, stepOwner, stepView, type StepView, todoForStep,
   waitsOnOwner, walk, withGoals } from "./checkin-steps.ts";
 import { blockedLine, blockedOnOthers, type BlockedStep, deadRunWaits, type DutyRef, type ExtraGoal, extraGoals, extraGoalsLine, type FoldGoal, foldLine, type GateFinding,
@@ -253,12 +253,12 @@ export const STALL_UNTILS = 5;
 /** One job of the chat as the brief lists it: its name, state, last activity, its step and its last message. */
 function jobLine(fact: JobFact, now: number): string {
   const state = fact.cancelled ? "ended (cancelled)" : ownerState(fact);
-  const quiet = fact.state === "working" && !fact.wake && fact.activityAt !== undefined && now - fact.activityAt > STALE_MS ? `, no activity for ${ago(now - fact.activityAt)}` : "";
+  const waiting = capacityWait(fact) !== undefined;
+  const quiet = fact.state === "working" && !fact.wake && !waiting && fact.activityAt !== undefined && now - fact.activityAt > STALE_MS ? `, no activity for ${ago(now - fact.activityAt)}` : "";
   const last = fact.activityAt !== undefined ? `, last activity ${ago(now - fact.activityAt)} ago` : "";
   const step = fact.item ? `, on ${fact.item.id} ${quote(fact.item.text)} (${fact.item.status})` : "";
   const error = fact.state === "failed" && fact.error ? `, error: ${clip(fact.error, 120)}` : "";
-  const queued = fact.queued ? `, queued ${fact.queued.position} of ${fact.queued.total} for a working slot for ${ago(now - fact.queued.since)}` :
-    fact.inTurn ? ", in its turn (streaming or in a tool call)" : "";
+  const queued = fact.queued ? `, in the queue for ${ago(now - fact.queued.since)}` : fact.inTurn ? ", in its turn (streaming or in a tool call)" : "";
   const said = fact.lastMessage ? `, last message at ${clockTime(fact.lastMessage.at)}: ${quote(fact.lastMessage.text)}` : "";
   return `${ownerLabel(fact)}: ${state}${queued}${quiet || last}${step}${error}${said}`;
 }
