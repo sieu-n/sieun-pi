@@ -299,6 +299,7 @@ def judge(site: Site, tree: Tree, sites: list[Site] | None = None, seen: frozens
     # No sign in the site's own files: look into the modules they import, two levels deep, since
     # on 10-20 fd764e4449 moved the Google OAuth code exchange to route -> google-oauth.ts -> google-token.ts.
     frontier, looked = list(texts.items()), set(texts)
+    own_names = any(mentions(site.provider, text) for text in texts.values())
     for _ in range(2):
         if v.direct or v.vent:
             break
@@ -310,6 +311,11 @@ def judge(site: Site, tree: Tree, sites: list[Site] | None = None, seen: frozens
                 looked.add(dep)
                 dep_text = tree.read(dep) or ""
                 nxt.append((dep, dep_text))
+                # When the site's own files never name the provider, a helper that never names it either is not the
+                # site's call: on 10-21 rows 25-27 (search's Resend forms) read as Vent through form-submissions.ts,
+                # whose only Vent call is the slack-sales post.
+                if not own_names and not mentions(site.provider, dep_text):
+                    continue
                 lines = code_lines(dep, dep_text)
                 has_vent = any(VENT_RE.search(l) for _, l in lines) or bool(KEYLESS_RE.search(dep_text))
                 for n, l in lines:

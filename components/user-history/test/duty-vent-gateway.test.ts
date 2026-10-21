@@ -186,3 +186,22 @@ test("vent-share.py reads a row whose files no longer name the provider as gone,
   const got = JSON.parse(execFileSync("python3", ["-c", code, VENT_SHARE, JSON.stringify(files)], { encoding: "utf8" }));
   assert.deepEqual(got, { status: { "62": "gone", "5": "vent" }, new: [["convex/search/newThing.ts", "stripe"]] });
 });
+
+test("vent-share.py follows an import only into a helper that names the provider, so a form whose helper only posts to Slack through Vent reads as gone for Resend", async () => {
+  const { execFileSync } = await import("node:child_process");
+  const { VENT_SHARE } = await import("../scripts/duties/vent-gateway.ts");
+  const files: Record<string, string> = {
+    "apps/search/src/routes/api/contact/+server.ts": "import { submitForm } from '$lib/server/form-submissions';\nexport const POST = submitForm;\n",
+    "apps/search/src/lib/server/form-submissions.ts": "import { readVent } from './vent';\nconst vent = readVent(env);\nawait postSalesSlackMessage(vent, msg);\n",
+    "apps/search/src/routes/api/google/callback/+server.ts": "import { exchange } from '$lib/server/google-token';\nexport const GET = exchange;\n",
+    "apps/search/src/lib/server/google-token.ts": "import { readVent } from './vent';\n// Google OAuth token exchange\nawait ventFetch(vent, 'google-oauth', '/token');\n",
+  };
+  const code = "import importlib.util, json, sys\nspec = importlib.util.spec_from_file_location('vs', sys.argv[1]); vs = importlib.util.module_from_spec(spec)\n" +
+    "sys.modules['vs'] = vs; spec.loader.exec_module(vs)\nclass T:\n  def __init__(s, files): s.files, s.ref, s.text = set(files), 'fixture', files\n" +
+    "  def read(s, p): return s.text.get(p)\n" +
+    "tree = T(json.loads(sys.argv[2]))\nsites = [vs.Site(25, 'search', '', 'Resend', '', 'resend', ['apps/search/src/routes/api/contact/+server.ts']),\n" +
+    "  vs.Site(29, 'search', '', 'Google OAuth', '', 'google-oauth', ['apps/search/src/routes/api/google/callback/+server.ts'])]\n" +
+    "print(json.dumps({s.row: vs.judge(s, tree).status for s in sites}))";
+  const got = JSON.parse(execFileSync("python3", ["-c", code, VENT_SHARE, JSON.stringify(files)], { encoding: "utf8" }));
+  assert.deepEqual(got, { "25": "gone", "29": "vent" });
+});
