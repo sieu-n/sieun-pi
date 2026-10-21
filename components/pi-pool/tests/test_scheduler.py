@@ -1,6 +1,6 @@
 """The admission scheduler (sched.decide, rules R1-R7 in pool/sched.py and the README).
 Each test names the rule it guards; it fails when that rule is taken out."""
-import collections, contextlib, dataclasses, io, json, math, os, random, tempfile, time, unittest, unittest.mock
+import collections, contextlib, dataclasses, io, json, math, os, tempfile, time, unittest, unittest.mock
 
 from fixture_isolation import isolate_test_module
 from test_core import CFG, KEY, NOW, account, vend, vend_record
@@ -67,14 +67,6 @@ def limited(state, key, accounts, now, until, cfg=CFG):
 def decide(state, key, accounts, now=NOW, cooldowns=None, cfg=CFG):
     return sched.decide(sched.tree_for(state, key, P), registry.with_pool_state(accounts, state, P),
                         sched.book_for(state, P, key, cfg, now), cooldowns or {}, cfg, now)
-
-
-@contextlib.contextmanager
-def draws(*values, rest=0.5):
-    """R5's backoff draws, in order, then `rest` for every later one."""
-    seq = iter(values)
-    with unittest.mock.patch.object(sched.random, "random", side_effect=lambda: next(seq, rest)):
-        yield
 
 
 def fresh(id, five, five_reset_in, at, tier="max 20x"):
@@ -155,9 +147,8 @@ class R2AdmitCap(unittest.TestCase):
         state = empty_state()
         put(state, KEY, on="x", at=NOW - 60)
         accounts = [acct("x", five=100), acct("hot", five=CFG["admit_5h_max_pct"], five_reset_in=1800)]
-        with draws(0.0):
-            d = request(state, KEY, accounts, NOW)
-        self.assertEqual((type(d), d.slot_account.id, d.backoff), (sched.Wait, "hot", True))
+        d = request(state, KEY, accounts, NOW)
+        self.assertEqual((type(d), d.slot_account.id, d.slot_at), (sched.Wait, "hot", NOW + 1800))
         self.assertEqual(request(state, KEY, [acct("x", five=100), fresh("hot", 0, FIVE, NOW + 5)], NOW + 5).account.id, "hot")
 
     def test_no_new_tree_into_an_account_at_the_week_cap(self):
@@ -235,12 +226,10 @@ class R4Slots(unittest.TestCase):
             prio = "high" if i % 3 == 2 else "normal"
             k = put(state, tree_key(f"w{i:02d}"), on="x", at=NOW - 60, priority=prio)
             keys.append(k)
-            with draws(0.0):
-                d = limited(state, k, accounts_at(NOW + i), NOW + i, reset)
-            self.assertEqual((type(d), d.backoff), (sched.Wait, True))
-        # Every draw is 0, so every waiter asks again each second: the worst case for R4.
-        with draws(rest=0.0):
-            admitted = run_until_admitted(state, keys, accounts_at, NOW + 20)
+            d = limited(state, k, accounts_at(NOW + i), NOW + i, reset)
+            self.assertEqual((type(d), d.slot_account.id), (sched.Wait, "x"))
+            self.assertGreaterEqual(d.slot_at, reset)
+        admitted = run_until_admitted(state, keys, accounts_at, NOW + 20)
         self.assertEqual(len(admitted), 15)
         self.assertGreaterEqual(admitted[0][0], reset)
         self.assertLessEqual(max(per_bucket(admitted, "x").values()), 4)
@@ -253,11 +242,10 @@ class R5Wait(unittest.TestCase):
         put(state, KEY, on="x", at=NOW - 60)
         accounts = [acct("x", five=100, five_reset_in=3000), acct("y", five=100, five_reset_in=1200),
                     acct("z", five=100, five_reset_in=7000)]
-        with draws(1200 / CFG["depleted_backoff_max_sec"]):
-            d = limited(state, KEY, accounts, NOW, NOW + 3000)
+        d = limited(state, KEY, accounts, NOW, NOW + 3000)
         self.assertIsInstance(d, sched.Wait)
         self.assertEqual(limited_report.next_fields(d), {"next": None, "retry_at": math.ceil(d.slot_at)})
-        self.assertEqual((d.slot_account.id, d.slot_at, d.backoff), ("y", NOW + 1200, True))
+        self.assertEqual((d.slot_account.id, d.slot_at), ("y", NOW + 1200))
         self.assertEqual(state["sessions"][KEY.key]["wait"][P]["slot_at"], NOW + 1200)
         again = request(state, KEY, registry.with_pool_state(accounts, state, P), NOW + 5)
         self.assertEqual((type(again), again.vend.id, again.slot_at), (sched.Wait, "x", NOW + 1200))
@@ -267,30 +255,28 @@ class R5Wait(unittest.TestCase):
         self.assertEqual((type(d), d.account.id, d.reason), (sched.Admit, "y", "switch"))
         self.assertNotIn(P, state["sessions"][KEY.key].get("wait", {}))
 
-    def test_a_tree_that_backs_off_for_its_own_account_comes_back_once_it_serves_again(self):
+    def test_a_tree_that_waits_for_its_own_account_comes_back_at_its_reset(self):
         state = empty_state()
         put(state, KEY, on="x", at=NOW - 60)
-        with draws(0.5):
-            d = limited(state, KEY, [acct("x", five=100, five_reset_in=600)], NOW, NOW + 600)
-        self.assertEqual((d.slot_account.id, d.slot_at), ("x", NOW + CFG["depleted_backoff_max_sec"] / 2))
+        d = limited(state, KEY, [acct("x", five=100, five_reset_in=600)], NOW, NOW + 600)
+        self.assertEqual((d.slot_account.id, d.slot_at), ("x", NOW + 600))
         still = request(state, KEY, [acct("x", five=100, five_reset_in=300)], NOW + 300)
-        self.assertEqual((type(still), still.slot_at, still.backoff), (sched.Wait, d.slot_at, True))
+        self.assertEqual((type(still), still.slot_at), (sched.Wait, NOW + 600))
         back = request(state, KEY, [fresh("x", 0, FIVE, NOW + 600)], NOW + 600)
         self.assertEqual((type(back), back.account.id, back.reason), (sched.Admit, "x", "back"))
         self.assertNotIn(P, state["sessions"][KEY.key].get("wait", {}))
 
-    def test_a_backoff_drawn_on_a_depleted_pool_ends_when_another_account_takes_trees_1018(self):
-        """10-18: 01a14eaf, a high tree, backed off at 15:10:36Z to 16:45:25Z with its
-        draw named on the Virev seat. claude12, its own account, was limited until
-        15:50Z, and from then claude12, krenerd77 and claude3 took new trees, while
-        every check-in restart until 16:04Z met "waits for its slot at 16:45:26"."""
+    def test_a_tree_on_a_depleted_pool_waits_for_the_first_reset_1018(self):
+        """10-18: 01a14eaf, a high tree, waited at 15:10:36Z to 16:45:25Z on the Virev
+        seat. claude12, its own account, was limited until 15:50Z, and from then
+        claude12, krenerd77 and claude3 took new trees, while every check-in restart
+        until 16:04Z met "waits for its slot at 16:45:26"."""
         state = empty_state()
         put(state, KEY, on="c12", at=NOW - 60, priority="high")
         out = [acct("c12", five=100, five_reset_in=2400, limited_until=NOW + 2400),
                acct("kr", five=100, five_reset_in=3000), acct("virev", five=100, five_reset_in=5000, tier="team")]
-        with draws(5689 / CFG["depleted_backoff_max_sec"]):
-            d = limited(state, KEY, out, NOW, NOW + 2400)
-        self.assertEqual((type(d), d.backoff, d.slot_at), (sched.Wait, True, NOW + 5689))
+        d = limited(state, KEY, out, NOW, NOW + 2400)
+        self.assertEqual((type(d), d.slot_account.id, d.slot_at), (sched.Wait, "c12", NOW + 2400))
         later = NOW + 2400 + 840
         revived = [fresh("c12", 3, FIVE, later - 300), fresh("kr", 12, FIVE, later - 300),
                    dataclasses.replace(acct("virev", five=100, five_reset_in=5000 - 3240, tier="team"))]
@@ -298,13 +284,21 @@ class R5Wait(unittest.TestCase):
         self.assertEqual((type(back), back.account.id in ("c12", "kr")), (sched.Admit, True))
         self.assertNotIn(P, state["sessions"][KEY.key].get("wait", {}))
 
-    def test_a_backoff_held_on_a_pool_that_still_waits_for_rotation_keeps_its_draw(self):
+    def test_a_tree_that_asks_again_before_its_reset_keeps_its_slot(self):
         state = empty_state()
         put(state, KEY, on="x", at=NOW - 60, priority="high")
-        with draws(0.75):
-            d = limited(state, KEY, [acct("x", five=100, five_reset_in=600), acct("y", five=100)], NOW, NOW + 600)
-        again = request(state, KEY, [acct("x", five=100, five_reset_in=1800), acct("y", five=100)], NOW + 900)
-        self.assertEqual((type(again), again.slot_at, again.backoff), (sched.Wait, d.slot_at, True))
+        d = limited(state, KEY, [acct("x", five=100, five_reset_in=600), acct("y", five=100)], NOW, NOW + 600)
+        again = request(state, KEY, [acct("x", five=100, five_reset_in=300), acct("y", five=100)], NOW + 300)
+        self.assertEqual((type(again), again.slot_account.id, again.slot_at), (sched.Wait, "x", d.slot_at))
+
+    def test_a_tree_waits_on_its_own_account_when_it_frees_as_early_as_any(self):
+        """A move rewrites the tree's whole prompt cache (300k to 390k tokens on 10-21), so
+        R5 keeps the tree on its own account when no other account frees sooner."""
+        state = empty_state()
+        put(state, KEY, on="mine", at=NOW - 60)
+        out = [acct("first", five=100, five_reset_in=600), acct("mine", five=100, five_reset_in=600)]
+        d = limited(state, KEY, out, NOW, NOW + 600)
+        self.assertEqual((type(d), d.slot_account.id, d.slot_at), (sched.Wait, "mine", NOW + 600))
 
     def test_a_waiter_whose_account_serves_before_its_slot_gets_no_token(self):
         state = empty_state()
@@ -318,11 +312,14 @@ class R5Wait(unittest.TestCase):
 
 
 
-class R5Backoff(unittest.TestCase):
-    """The owner on 10-18: "when 5h limit ends, but next accounts revive like 2 minute at
-    a time, everybody rushes to first thread, cache-write tokens deplete it in 1 second
-    -> prevent that with super long random backoff on depleted". Before R4 the Mac log
-    shows it: 10-10 20:59:59 claude9 took 27 trees in 10 s and answered 429 44 s later."""
+class R5DepletedPool(unittest.TestCase):
+    """Every account is out. The owner on 10-18: "when 5h limit ends, but next accounts
+    revive like 2 minute at a time, everybody rushes to first thread, cache-write tokens
+    deplete it in 1 second". Before R4 the Mac log shows it: 10-10 20:59:59 claude9 took
+    27 trees in 10 s and answered 429 44 s later. A random 0 to 120 min draw then spread
+    the waiters out, and on 10-20 and 10-21 it parked trees 82 min at the median and
+    2.9 h at p90, a median 31 min after another tree had got an account. Now each tree
+    waits for its own R4 cell at the real reset of the account that frees first."""
 
     ACCOUNTS, TREES, SAMPLE_SEC, WORK_MIN = 8, 100, 120, 20
     # A tree's first request on an account writes its whole prompt cache, and a busy
@@ -330,8 +327,7 @@ class R5Backoff(unittest.TestCase):
     # its own, so accounts do run dry.
     ENTRY_PCT, SPEND_PER_MIN = 3.0, 1.0
 
-    def simulate(self, seed):
-        rng = random.Random(seed)
+    def simulate(self):
         names = [f"a{i}" for i in range(self.ACCOUNTS)]
         reset = {a: NOW + 120 * (i + 1) for i, a in enumerate(names)}
         pct = {a: 100.0 for a in names}
@@ -365,84 +361,103 @@ class R5Backoff(unittest.TestCase):
                 drained[a].append(at)
 
         due = {}
-        with unittest.mock.patch.object(sched.random, "random", side_effect=rng.random):
-            for i, k in enumerate(keys):
-                d = limited(state, k, view(NOW + i * 0.1), NOW + i * 0.1, reset[names[i % self.ACCOUNTS]])
-                self.assertEqual((type(d), d.backoff), (sched.Wait, True))
-                due[k.key] = d.slot_at
-            by_key = {k.key: k for k in keys}
-            worked = collections.Counter()
-            on = {}
-            first_token, entries = {}, []
-            clock = NOW
-            while due and len(first_token) < self.TREES:
-                name, at = min(due.items(), key=lambda kv: (kv[1], kv[0]))
-                self.assertLess(at, NOW + 24 * 3600, f"{name} got no token in 24 h")
-                while clock + self.SAMPLE_SEC <= at:
-                    clock += self.SAMPLE_SEC
-                    tick(clock)
-                tick(at)
-                key = by_key[name]
-                a = on.get(name)
-                if a is not None and pct[a] >= 100:
-                    d = limited(state, key, view(at), at, reset[a])
-                    on.pop(name)
-                else:
-                    d = request(state, key, view(at), at)
-                if isinstance(d, sched.Wait):
-                    due[name] = d.slot_at if d.slot_at > at else at + 1
-                    continue
-                if d.account.id != a:
-                    entries.append((at, d.account.id))
-                    spend(d.account.id, self.ENTRY_PCT, at)
-                first_token.setdefault(name, at)
-                on[name] = d.account.id
-                spend(d.account.id, rate, at)
-                worked[name] += 1
-                if worked[name] >= self.WORK_MIN:
-                    del due[name]
-                else:
-                    due[name] = at + 60
+        for i, k in enumerate(keys):
+            d = limited(state, k, view(NOW + i * 0.1), NOW + i * 0.1, reset[names[i % self.ACCOUNTS]])
+            self.assertIsInstance(d, sched.Wait)
+            due[k.key] = d.slot_at
+        by_key = {k.key: k for k in keys}
+        worked = collections.Counter()
+        on = {}
+        first_token, entries = {}, []
+        clock = NOW
+        while due and len(first_token) < self.TREES:
+            name, at = min(due.items(), key=lambda kv: (kv[1], kv[0]))
+            self.assertLess(at, NOW + 24 * 3600, f"{name} got no token in 24 h")
+            while clock + self.SAMPLE_SEC <= at:
+                clock += self.SAMPLE_SEC
+                tick(clock)
+            tick(at)
+            key = by_key[name]
+            a = on.get(name)
+            if a is not None and pct[a] >= 100:
+                d = limited(state, key, view(at), at, reset[a])
+                on.pop(name)
+            else:
+                d = request(state, key, view(at), at)
+            if isinstance(d, sched.Wait):
+                due[name] = d.slot_at if d.slot_at > at else at + 1
+                continue
+            if d.account.id != a:
+                entries.append((at, d.account.id))
+                spend(d.account.id, self.ENTRY_PCT, at)
+            first_token.setdefault(name, at)
+            on[name] = d.account.id
+            spend(d.account.id, rate, at)
+            worked[name] += 1
+            if worked[name] >= self.WORK_MIN:
+                del due[name]
+            else:
+                due[name] = at + 60
         return revived, drained, first_token, entries
 
     def test_a_hundred_waiters_meet_accounts_that_revive_two_minutes_apart(self):
-        for seed in (1, 2, 3):
-            revived, drained, first_token, entries = self.simulate(seed)
-            self.assertEqual(len(first_token), self.TREES, seed)
-            for a, ups in revived.items():
-                for up in ups:
-                    down = [t for t in drained[a] if t >= up]
-                    if down:
-                        self.assertGreaterEqual(down[0] - up, 60, (seed, a, up))
-            per_window = collections.Counter((a, int(at // CFG["admit_slot_sec"])) for at, a in entries)
-            self.assertLessEqual(max(per_window.values()), 4, seed)
-            first_minute = [sum(1 for at, b in entries if b == a and up <= at < up + 60)
-                            for a, ups in revived.items() for up in ups]
-            # R4's 30 s cells of a max 20x account: at most 3 entries start in any minute.
-            self.assertLessEqual(max(first_minute), 3, seed)
+        revived, drained, first_token, entries = self.simulate()
+        self.assertEqual(len(first_token), self.TREES)
+        for a, ups in revived.items():
+            for up in ups:
+                down = [t for t in drained[a] if t >= up]
+                if down:
+                    self.assertGreaterEqual(down[0] - up, 60, (a, up))
+        per_window = collections.Counter((a, int(at // CFG["admit_slot_sec"])) for at, a in entries)
+        self.assertLessEqual(max(per_window.values()), 4)
+        first_minute = [sum(1 for at, b in entries if b == a and up <= at < up + 60)
+                        for a, ups in revived.items() for up in ups]
+        # R4's 30 s cells of a max 20x account: at most 3 entries start in any minute.
+        self.assertLessEqual(max(first_minute), 3)
 
-    def test_a_backoff_is_a_fresh_draw_over_the_whole_window(self):
+    def test_every_waiter_enters_at_its_accounts_real_reset_in_cell_order(self):
+        """100 trees find 8 accounts out, which reset 3 minutes apart. Each tree's slot is at
+        or after its account's reset and no later than its place in that account's R4 cells,
+        it enters on its first wake at that slot, the best account open then, and no account
+        takes a tree before its reset or more per admit_slot_sec than R4 allows. On 10-18 08:11-08:35Z, before the
+        random draw, a displaced tree woke every 30 s and took about 20 429s in 3 minutes."""
+        names = [f"a{i}" for i in range(8)]
+        reset = {a: NOW + 180 * (i + 1) for i, a in enumerate(names)}
+
+        def view(at):
+            return [fresh(a, 0, reset[a] + FIVE - at, at) if at >= reset[a] else fresh(a, 100, reset[a] - at, at)
+                    for a in names]
+
         state = empty_state()
-        accounts = [acct("x", five=100, five_reset_in=600, limited_until=NOW + 600)]
-        slots = []
-        for i in range(200):
-            k = put(state, tree_key(f"w{i:03d}"), on="x", at=NOW - 60)
-            slots.append(limited(state, k, accounts, NOW, NOW + 600).slot_at - NOW)
-        top = CFG["depleted_backoff_max_sec"]
-        self.assertEqual(top, 7200)
-        self.assertTrue(all(0 <= s < top for s in slots))
-        quarters = collections.Counter(int(s // (top / 4)) for s in slots)
-        self.assertEqual(sorted(quarters), [0, 1, 2, 3])
-        self.assertGreater(min(quarters.values()), 25)
-        self.assertGreater(len(set(round(s) for s in slots)), 190)
+        keys = [put(state, tree_key(f"t{i:03d}"), on=names[i % 8], at=NOW - 60) for i in range(100)]
+        slots = {}
+        for i, k in enumerate(keys):
+            at = NOW + i * 0.1
+            d = limited(state, k, view(at), at, reset[names[i % 8]])
+            self.assertIsInstance(d, sched.Wait)
+            slots[k.key] = (d.slot_account.id, d.slot_at)
+        for a in names:
+            mine = sorted(at for b, at in slots.values() if b == a)
+            sp = sched.slot_spacing(acct(a), CFG)
+            for place, at in enumerate(mine):
+                self.assertGreaterEqual(at, reset[a], a)
+                self.assertLessEqual(at, reset[a] + place * sp, (a, place))
+        self.assertGreater(len({b for b, _ in slots.values()}), 1, "the waiters spread over the resets")
+        admitted = run_until_admitted(state, keys, view, NOW + 20)
+        self.assertEqual(len(admitted), 100)
+        for at, name, a in admitted:
+            self.assertEqual(at, slots[name][1], name)
+            self.assertGreaterEqual(at, reset[a])
+        for a in names:
+            if per_bucket(admitted, a):
+                self.assertLessEqual(max(per_bucket(admitted, a).values()), sched.slot_cap(acct(a), CFG), a)
 
-    def test_a_high_tree_backs_off_like_any_other(self):
-        """The owner on 10-18, asked whether his own turns skip the backoff: "no don't"."""
+    def test_a_high_tree_waits_for_the_reset_like_any_other(self):
+        """The owner on 10-18, asked whether his own turns skip the depleted wait: "no don't"."""
         state = empty_state()
         put(state, KEY, on="x", at=NOW - 60, priority="high")
-        with draws(0.9):
-            d = limited(state, KEY, [acct("x", five=100, five_reset_in=600)], NOW, NOW + 600)
-        self.assertEqual((d.backoff, d.slot_at), (True, NOW + 0.9 * CFG["depleted_backoff_max_sec"]))
+        d = limited(state, KEY, [acct("x", five=100, five_reset_in=600)], NOW, NOW + 600)
+        self.assertEqual((type(d), d.slot_account.id, d.slot_at), (sched.Wait, "x", NOW + 600))
 
 class R6MoveBudget(unittest.TestCase):
     ACCOUNTS = [acct("x", five=100, five_reset_in=1800), acct("y", five=5)]
@@ -451,7 +466,7 @@ class R6MoveBudget(unittest.TestCase):
         state = empty_state()
         put(state, KEY, on="x", moves=[NOW - 3600 * h for h in (1, 2, 3)])
         d = decide(state, KEY, self.ACCOUNTS)
-        self.assertEqual((type(d), d.slot_account.id, d.slot_at, d.backoff), (sched.Wait, "x", NOW + 1800, False))
+        self.assertEqual((type(d), d.slot_account.id, d.slot_at), (sched.Wait, "x", NOW + 1800))
 
     def test_a_tree_out_of_moves_whose_account_is_out_past_the_wait_cap_moves_anyway(self):
         state = empty_state()
@@ -574,7 +589,6 @@ class R7PriorityShare(unittest.TestCase):
         h = put(state, tree_key("h"), at=NOW - 60, priority="high")
         dn = request(state, n, accounts, NOW + 1)
         dh = request(state, h, accounts, NOW + 5)
-        self.assertEqual((dn.backoff, dh.backoff), (False, False))
         self.assertEqual(dh.slot_at, dn.slot_at)
         self.assertIsInstance(decide(state, n, accounts, now=dn.slot_at), sched.Wait)
 
@@ -659,8 +673,7 @@ class Cli(unittest.TestCase):
         state = empty_state()
         put(state, KEY, on="x", at=NOW - 60)
         accounts = [acct("x", five=100, five_reset_in=3000), acct("y", five=100, five_reset_in=900)]
-        with draws(900 / CFG["depleted_backoff_max_sec"]):
-            rc, out, saved = self.run_cli(state, accounts, ["limited", "--until", str(NOW + 3000)])
+        rc, out, saved = self.run_cli(state, accounts, ["limited", "--until", str(NOW + 3000)])
         reply = json.loads(out)
         self.assertEqual((rc, reply["next"], reply["retry_at"]), (0, None, round(NOW + 900)))
         self.assertEqual(saved["sessions"][KEY.key]["wait"][P]["account"], "y")
@@ -699,23 +712,23 @@ class Cli(unittest.TestCase):
         self.assertIn("priority low  waits for y", out)
 
     def test_who_shows_no_wait_when_the_next_request_gets_an_account_1018(self):
-        """10-18 16:21Z: `who` printed 01a14eb4's backoff to 16:47Z on the Virev seat
+        """10-18 16:21Z: `who` printed 01a14eb4's wait to 16:47Z on the Virev seat
         while its next request would have entered claude4."""
         state = empty_state()
         put(state, KEY, on="x", priority="high")
-        state["sessions"][KEY.key]["wait"] = {P: {"account": "y", "slot_at": NOW + 1500, "since": NOW - 600, "backoff": True}}
+        state["sessions"][KEY.key]["wait"] = {P: {"account": "y", "slot_at": NOW + 1500, "since": NOW - 600}}
         _, out, _ = self.run_cli(state, [acct("x", five=100, limited_until=NOW + 600), acct("y", five=100), acct("z", five=5)], ["who", "--json"])
         who = json.loads(out)["providers"][P]
         self.assertEqual((who["wait"], who["label"]), (None, "z@x"))
 
-    def test_ls_counts_a_tree_that_backs_off_on_an_account_as_waiting_for_it(self):
-        """10-18 16:04Z: 01a14eaf backed off to 16:45Z on the Virev seat while every
+    def test_ls_counts_every_tree_that_waits_on_an_account(self):
+        """10-18 16:04Z: 01a14eaf waited to 16:45Z on the Virev seat while every
         row of `pi-pool ls --json` read waiting 0."""
         state = empty_state()
         put(state, KEY, on="x")
-        cell, backoff = put(state, tree_key("cell"), on="x"), put(state, tree_key("backoff"), on="x")
-        state["sessions"][cell.key]["wait"] = {P: {"account": "y", "slot_at": NOW + 120, "since": NOW}}
-        state["sessions"][backoff.key]["wait"] = {P: {"account": "y", "slot_at": NOW + 2400, "since": NOW, "backoff": True}}
+        soon, later = put(state, tree_key("soon"), on="x"), put(state, tree_key("later"), on="x")
+        state["sessions"][soon.key]["wait"] = {P: {"account": "y", "slot_at": NOW + 120, "since": NOW}}
+        state["sessions"][later.key]["wait"] = {P: {"account": "y", "slot_at": NOW + 2400, "since": NOW}}
         _, out, _ = self.run_cli(state, [acct("x"), acct("y", five=100)], ["ls", "--json"])
         self.assertEqual({row["id"]: row["waiting"] for row in json.loads(out)["rows"]}, {"x": 0, "y": 2})
 
@@ -992,7 +1005,7 @@ class Drought1019(unittest.TestCase):
             if why is None:
                 self.assertEqual((type(d), d.account.id), (sched.Admit, "seat"))
             else:
-                self.assertEqual((type(d), d.backoff), (sched.Wait, True), five)
+                self.assertEqual((type(d), d.slot_account.id), (sched.Wait, "seat"), five)
 
 
 if __name__ == "__main__":

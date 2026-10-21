@@ -250,8 +250,8 @@ async function poolJson<T extends { selection: Selection }>(args: string[]): Pro
 
 /**
  * The retryAfterMs that makes Prime's usage wait sleep until `slotAt` (epoch sec), in one
- * sleep. The pool holds a backoff draw (up to depleted_backoff_max_sec, 2 h) until it
- * passes while no account takes the tree, so a wake before it only meets the same answer: on 10-18 08:32Z a 15-min cap
+ * sleep. The pool holds the tree's slot, at or after the reset of the account that frees first, so a wake before it
+ * only meets the same answer: on 10-18 08:32Z a 15-min cap
  * put a second error line in a Mac session that waited 23 min for its slot.
  */
 function waitMs(slotAt: number): number {

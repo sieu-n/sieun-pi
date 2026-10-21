@@ -18,12 +18,12 @@ MUTATIONS = {
     "R5 wait, not a hop onto a depleted account": (
         "    candidates = [a for a in ranked if allowed(a)]",
         "    candidates = [a for a in ranked if allowed(a)] + sorted([a for a in accounts if allowed(a) and a not in ranked and serve_reason(a, cooldowns, now) is None], key=lambda a: a.session_pct)"),
-    "R5 backoff on a depleted pool": (
-        "    if waits_for_rotation(accounts, cooldowns, cfg, now, p, manual=bool(manual)):",
-        "    if False:"),
-    "R5 backoff held until its draw": (
-        "    held = by_id.get(tree.wait[0]) if tree.backoff and tree.wait and tree.wait[1] > now else None",
-        "    held = None"),
+    "R5 wait ends at the real reset": (
+        "            at = max(at, window_reset_at(w))",
+        "            at = max(at, window_reset_at(w) + 3600)"),
+    "R5 own account wins a tie": (
+        "        options.append((t, a.id != tree.current, -score(a, cfg, t, p, load), a.label, a))",
+        "        options.append((t, False, -score(a, cfg, t, p, load), a.label, a))"),
     "R6 move budget": ("    stuck = own_ok and moved >= budget and (p != \"high\" or optional)", "    stuck = False"),
     "R6 wait cap": ("    if stuck and (now >= deadline or admissible_at(cur, cooldowns, cfg, now, p) > deadline):",
                     "    if False:"),

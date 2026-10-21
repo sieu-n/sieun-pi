@@ -19,7 +19,7 @@ def setUpModule():
 
 class ManualSelection(unittest.TestCase):
     def choose(self, accounts, **fields):
-        return sched.decide(sched.Tree(**fields), accounts, sched.Book(), {}, CFG, NOW, draw=0.5)
+        return sched.decide(sched.Tree(**fields), accounts, sched.Book(), {}, CFG, NOW)
 
     def test_old_pin_overrides_recent_vend_and_pool_pin(self):
         d = self.choose([A, B], pin="a", pool_pin="b", current="b", current_at=NOW)
@@ -50,8 +50,8 @@ class ManualSelection(unittest.TestCase):
                 d = self.choose([A, B, BROKEN], pin=target, pool_pin="a", current="b")
                 self.assertEqual(d, sched.Blocked(target, reason))
 
-    def test_auth_failure_overrides_old_manual_backoff(self):
-        d = sched.decide(sched.Tree(pin="e", current="e", wait=("e", NOW + 600, NOW - 60), backoff=True),
+    def test_auth_failure_overrides_old_manual_wait(self):
+        d = sched.decide(sched.Tree(pin="e", current="e", wait=("e", NOW + 600, NOW - 60)),
                          [BROKEN, A], sched.Book(), {}, CFG, NOW)
         self.assertEqual(d, sched.Blocked("e", "needs-reauth"))
 
@@ -69,9 +69,9 @@ class ManualSelection(unittest.TestCase):
                 d = self.choose([acct("a", five=99, week=99), B], pin="a", current="b", priority=priority)
                 self.assertEqual((type(d), d.account.id, d.fallbacks), (sched.Admit, "a", ()))
 
-    def test_manual_clears_old_admission_backoff(self):
+    def test_manual_clears_old_admission_wait(self):
         a = acct("a", week=99)
-        tree = sched.Tree(key="mine", pin="a", wait=("a", NOW + 600, NOW - 60), backoff=True)
+        tree = sched.Tree(key="mine", pin="a", wait=("a", NOW + 600, NOW - 60))
         d = sched.decide(tree, [a, B], sched.Book(), {}, CFG, NOW)
         self.assertEqual((type(d), d.account.id), (sched.Admit, "a"))
 
@@ -81,7 +81,6 @@ class ManualSelection(unittest.TestCase):
         tree = sched.Tree(key="mine", pin="a", priority="high")
         d = sched.decide(tree, [a, B], book, {}, CFG, NOW)
         self.assertIsInstance(d, sched.Wait)
-        self.assertFalse(d.backoff)
         self.assertLessEqual(d.slot_at, NOW + sched.slot_spacing(a, CFG))
         resumed = sched.decide(dataclasses.replace(tree, wait=("a", d.slot_at, NOW)), [a, B], book, {}, CFG, d.slot_at)
         self.assertEqual((type(resumed), resumed.account.id), (sched.Admit, "a"))
@@ -131,15 +130,12 @@ class ManualSelection(unittest.TestCase):
                 self.assertNotIn("a", [a.id for a in d.fallbacks])
         self.assertIsNone(self.choose([off], current="a"))
 
-    def test_auto_drops_old_off_backoff_and_wait_target(self):
+    def test_auto_drops_old_off_wait_target(self):
         off = dataclasses.replace(acct("a", five=100), disabled=True)
-        for backoff in (False, True):
-            with self.subTest(backoff=backoff):
-                d = self.choose([off, acct("b", five=100)], current="a", wait=("a", NOW + 100, NOW),
-                                backoff=backoff)
-                self.assertIsInstance(d, sched.Wait)
-                self.assertEqual(d.slot_account.id, "b")
-                self.assertIsNone(d.vend)
+        d = self.choose([off, acct("b", five=100)], current="a", wait=("a", NOW + 100, NOW))
+        self.assertIsInstance(d, sched.Wait)
+        self.assertEqual(d.slot_account.id, "b")
+        self.assertIsNone(d.vend)
 
 
 class Persistence(unittest.TestCase):

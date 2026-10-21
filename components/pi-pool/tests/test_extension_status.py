@@ -95,9 +95,9 @@ class WaitForASlot(unittest.TestCase):
         self.assertEqual((details["retryAfterMs"], details["kind"], details["status"]), (600_000, "rate_limit", 429))
         self.assertIn("Try again in 10 minutes.", message["errorMessage"])
 
-    def test_a_backoff_two_hours_away_is_one_sleep(self):
-        """R5's backoff draw runs up to 2 h and the pool holds it until it passes, so a
-        recheck before it only adds another failed message to the session."""
+    def test_a_slot_two_hours_away_is_one_sleep(self):
+        """R5 holds a slot at the reset of the account that frees first, often hours away,
+        so a recheck before it only adds another failed message to the session."""
         run = drive({"op": "start", "name": "ui"},
                     {"op": "reply", "verb": "limited",
                      "reply": {"selection": {"mode": "auto"}, "account": "x@x", "until": NOW_SEC + 9000, "next": None, "retry_at": NOW_SEC + 7000}},

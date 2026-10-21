@@ -48,16 +48,13 @@ class HookWriter:
         entries = self._state["providers"][provider].setdefault("admissions", {}).setdefault(account_id, [])
         entries.append([now, key.key if key else None])
 
-    def set_wait(self, key, provider, account_id, slot_at, now, backoff=False):
-        """R5: the tree waits for its slot on `account_id`, or with `backoff` until
-        its random draw. Its wait start stays the first one, so a tree keeps its
-        place in the queue."""
+    def set_wait(self, key, provider, account_id, slot_at, now):
+        """R5: the tree waits for its slot on `account_id`. Its wait start stays the
+        first one, so a tree keeps its place in the queue."""
         rec = self._rec(key, now)
         waits = rec.setdefault("wait", {})
         since = (waits.get(provider) or {}).get("since", now)
         waits[provider] = {"account": account_id, "slot_at": slot_at, "since": since}
-        if backoff:
-            waits[provider]["backoff"] = True
 
     def set_cooldown(self, provider, account_id, until, reason=None):
         prov = self._state["providers"][provider]
@@ -575,7 +572,7 @@ def schedule(state, key, provider, accounts, cfg, now, admit_now=True):
         # One line per refused request, for the Whole system duty: `room` names the accounts the rules let this
         # tree enter now but for a cell, so a refusal with room is a turn held while the pool has accounts free.
         base.log("parked", provider=provider, session=key.key, at=round(now, 1), account=d.slot_account.label,
-                 slot_at=round(d.slot_at), backoff=d.backoff, priority=tree.priority, room=[a.label for a in d.room])
+                 slot_at=round(d.slot_at), priority=tree.priority, room=[a.label for a in d.room])
     elif tree.wait and admit_now:
         base.log("unparked", provider=provider, session=key.key, at=round(now, 1), account=d.account.label)
     if isinstance(d, sched.Admit) and admit_now:
@@ -585,10 +582,10 @@ def schedule(state, key, provider, accounts, cfg, now, admit_now=True):
         writer.set_wait(key, provider, d.account.id, now, now)
         return d, tree, True
     if isinstance(d, sched.Wait) and (tree.wait is None or tree.wait[:2] != (d.slot_account.id, d.slot_at)):
-        writer.set_wait(key, provider, d.slot_account.id, d.slot_at, now, d.backoff)
+        writer.set_wait(key, provider, d.slot_account.id, d.slot_at, now)
         base.log("wait", provider=provider, session=key.key, account=d.slot_account.label,
                  slot_at=iso(d.slot_at), priority=tree.priority, vend=d.vend and d.vend.label,
-                 left=d.left and d.left[1], backoff=d.backoff)
+                 left=d.left and d.left[1])
         return d, tree, True
     return d, tree, False
 

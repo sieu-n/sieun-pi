@@ -53,8 +53,7 @@ class Snapshot(unittest.TestCase):
 
     def test_every_part_is_what_the_separate_command_prints(self):
         threads = [("", ""), (KEY.key, ""), (KEY.key, "claude-opus-4-5"), ("no-such-session", "")]
-        # The R5 backoff slot is a random draw on each run, so two runs of the same command differ unless the draw is fixed.
-        with unittest.mock.patch("time.time", return_value=NOW), unittest.mock.patch("random.random", return_value=0.5), \
+        with unittest.mock.patch("time.time", return_value=NOW), \
                 unittest.mock.patch.object(vend.pool.registry, "session_key", lambda: None):
             said = self.cli("snapshot", "--json", *[a for t in threads for a in ("--thread", *t)])
             self.assertEqual(said["code"], 0, said)

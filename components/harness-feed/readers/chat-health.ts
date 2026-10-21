@@ -300,7 +300,7 @@ export function readPoolLog(lines: readonly string[], now: number): PoolHold[] {
     const hold = openHolds.get(entry.session);
     const room = entry.event === "parked" && Array.isArray(entry.room) ? entry.room.filter((name): name is string => typeof name === "string") : [];
     const until = typeof entry.slot_at === "number" ? Math.max(at, entry.slot_at * 1000) : at;
-    const cell = entry.backoff === false;
+    const cell = entry.backoff !== true;
     if (room.length) {
       if (hold) { hold.to = Math.max(hold.to, until); hold.cell &&= cell; continue; }
       const fresh = { session: entry.session, from: at, to: until, room, cell };

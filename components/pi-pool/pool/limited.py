@@ -157,7 +157,7 @@ def mark(state, event):
     writer.set_limit(provider, last["account_id"], event["until"], key, event["at"])
     wait = event.get("wait")
     if wait and not sched.tree_for(state, key, provider).wait:
-        writer.set_wait(key, provider, wait["account"], wait["slot_at"], event["at"], wait["backoff"])
+        writer.set_wait(key, provider, wait["account"], wait["slot_at"], event["at"])
     return last, False
 
 
@@ -180,9 +180,9 @@ def promised(d, now):
     """The wait `schedule(admit_now=False)` writes for decision `d`, which a spooled report carries so the drain
     holds the slot its answer named."""
     if isinstance(d, sched.Admit):
-        return {"account": d.account.id, "slot_at": now, "backoff": False}
+        return {"account": d.account.id, "slot_at": now}
     if isinstance(d, sched.Wait):
-        return {"account": d.slot_account.id, "slot_at": d.slot_at, "backoff": d.backoff}
+        return {"account": d.slot_account.id, "slot_at": d.slot_at}
     return None
 
 

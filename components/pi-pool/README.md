@@ -287,7 +287,7 @@ Both commands report `selection` as `{"mode":"auto"}` or `{"mode":"manual","acco
 per provider. Manual selection remains visible even when the selected account cannot serve. Its
 rows carry `usable` (Auto admission eligibility), `serves` (Auto sticky eligibility),
 `score` (null when it cannot take the tree), `slot_cap`, `admitted_recently`, `waiting` (the other trees whose wait
-names the account, a backoff included), and
+names the account), and
 what `status` draws: `tier` (`max 20x`, `pro`), `windows`
 (one entry per usage window in display order, each with `kind` session, weekly or model,
 `label`, live `pct`, `resets_at` in epoch seconds or null, `window_sec`, `sampled_at`),
@@ -363,7 +363,7 @@ flowchart TD
   B -- yes --> C{an eligible account under the admit cap with a free slot?}
   B -- no --> W
   C -- yes --> A2[admit to the best score]
-  C -- no --> W[wait for a cell, or back off when no account passes R2]
+  C -- no --> W[wait for a cell on the account that frees first]
 ```
 
 | # | rule | effect |
@@ -372,9 +372,8 @@ flowchart TD
 | R2 admit cap | an account takes a tree that is not on it only under `admit_5h_max_pct` (100, the vendor limit) of its 5h window and under `seven_day_max_pct` (98) of its week and its Fable cap, and only on a 5h sample under 20 minutes old | holds for Auto new trees, moves after a 429 and `pi-pool switch`; explicit Manual pins use remaining provider quota. An account whose last read is 99% still takes a tree, and one at 100% or with a 429 `until` on file does not. The owner asked for it on 2026-10-19 ("Yes, take jobs until near the real limit") after a cap of 70% with a projection to the next read held 3 of 6 working accounts at 41 to 63% in a shortage. R4 still spaces the trees an account takes. An account with an older sample is `unsampled`: the hook starts a background `pi-pool refresh` of it, and a tree that waits for it asks again after 180 s |
 | R3 score | among the accounts that pass R2, the highest weekly pace x 5h headroom / load | weekly pace is `(98 - week%) / hours to the weekly reset`, so a week that resets soon with budget left is spent first. Headroom is `(cap - 5h%) / cap`, where cap is the tree's R2 or R7 5h cap. Load is `(trees vended in the last hour + 1) / tier units` |
 | R4 slots | an account admits one tree per `admit_slot_sec / slot_cap` seconds, where `slot_cap` is `admit_per_unit` x tier units (max 20x 4, max 5x and team 1, pro 0.5, at least 1) | a full account is skipped. The admission is written under the pool flock in the same decision, so trees that leave together see each other |
-| R5 wait | an account passes R2 for this tree but R4 has no cell for it now | the tree gets its own `slot_at` on that account's next free cell, ordered by priority, then by wait start |
-| R5 backoff | no account passes R2 for this tree (the pool waits for rotation) | the tree waits a uniform random 0 to `depleted_backoff_max_sec` (7200 s), a fresh draw each time, and nothing admits it before the draw passes while no account passes R2 for it, owner turns included. Once an account passes R2 or is unsampled again, its next request is decided by R1 to R5 at once. The draw takes no cell. The `wait` record carries `backoff: true` and names the account that frees first |
-| R6 move budget | the tree moved `max_moves_per_day[priority]` times in 24 h (high 6, normal 3, low 1) | it waits for its own account while that account takes it within `budget_wait_max_sec` (3600) of the start of its wait, a backoff included, and asks again by then; past that it moves anyway, at R4 slot pace, and logs `why: budget_overrun`. A high tree is refused only an optional move (`pi-pool switch`) |
+| R5 wait | no account has a cell for this tree now, whether R4 has none free or no account passes R2 | the tree gets its own `slot_at` on the account that frees first: that account's first free R4 cell at or after it passes R2 again, which is now, its real 5h or weekly reset, or the `until` of a 429 on file. Cells go out by priority, then by wait start, and owner turns wait like any other. When its own account frees as early as any other, the tree waits on its own account, so it keeps its prompt cache |
+| R6 move budget | the tree moved `max_moves_per_day[priority]` times in 24 h (high 6, normal 3, low 1) | it waits for its own account while that account takes it within `budget_wait_max_sec` (3600) of the start of its wait, and asks again by then; past that it moves anyway, at R4 slot pace, and logs `why: budget_overrun`. A high tree is refused only an optional move (`pi-pool switch`) |
 | R7 priority | low Auto trees enter only under `low_admit_5h_max_pct` (50) | high trees rank first for slots. When one account is left, the last slot of each `admit_slot_sec` window is for high trees |
 
 A tree that waits gets its own account from the hook while the provider refuses that
@@ -392,22 +391,24 @@ when it wakes and is given the next one. So a reset admits the waiting trees at 
 high trees first. On 2026-10-12 15:30, 25 vends landed on claude7 in 4 seconds; at the
 2026-10-10 21:00 reset 26 trees landed on claude9 in 2 seconds.
 
-When every account is out, the trees back off instead (R5 backoff), because the owner
-asked for it on 2026-10-18: "prevent that with super long random backoff on depleted -
-waiting for rotation", then "make it random 0-120m", and "no don't" to letting his own turns
-skip it. Each tree comes back at its own random time, so accounts that revive minutes apart
-meet a trickle of trees, and R2 and R4 admit that trickle at a pace each account takes. A
-tree whose draw passes while every account is still out draws again. A tree that asks before its
-draw, such as a check-in restart, after an account takes its class again gets that account
-or a cell at once: on 2026-10-18 01a14eaf held a draw for 16:45Z from 15:10Z while its own
-account claude12 served again from 15:50Z, and a replay of the 16:10Z state gave 62 of 163
-tree decisions a token or a cell where they had met the refusal, and the other 101 the same answer. Before this, waiters
-were booked into 30-second cells on the one account left, and a tree that a higher one
-displaced woke every 30 s: on 2026-10-18 08:11-08:35Z 33 trees waited so, one tree took
-about 20 429s in 3 minutes, and the pool flock gave 1,875 `vend_lock_busy` lines.
-`tests/test_scheduler.py` `R5Backoff` drives 100 waiting trees against 8 accounts that
-revive 2 minutes apart: every tree gets a token, no account takes more than 3 trees in the
-minute after it revives, and none runs out within a minute of its revival.
+When every account is out, each tree waits for its own cell at the real reset of the
+account that frees first. Accounts that reset minutes apart each take the trees booked on
+them at R4's pace, and a tree that would wait longer on the first account books a cell on
+the next one. From 2026-10-18 to 2026-10-21 a random 0 to 120 min draw spread these trees
+out instead. On 10-20 and 10-21 it parked trees 82 min at the median and 2.9 h at p90, and
+a tree kept sleeping a median 31 min after another tree had got an account. CI's alert
+triage jobs waited 73 to 122 min for their first token behind it. The draw replaced 30-second
+cells on the one account left, where a tree that a higher one displaced woke every 30 s: on
+2026-10-18 08:11-08:35Z 33 trees waited so, one tree took about 20 429s in 3 minutes, and
+the pool flock gave 1,875 `vend_lock_busy` lines. A tree that waits for a reset now sleeps
+until its cell, so it asks before the reset only on a restart.
+`tests/test_scheduler.py` `R5DepletedPool` drives 100 waiting trees against 8 accounts that
+reset 3 minutes apart: each tree's slot is at or after its account's reset and no later
+than its place in that account's cells, each tree enters on its first wake, and no account
+takes a tree before its reset or more per `admit_slot_sec` than R4 allows. A second drive
+has accounts that revive 2 minutes apart and run dry again: every tree gets a token, no
+account takes more than 3 trees in the minute after it revives, and none runs out within a
+minute of its revival.
 
 A Manual selection pins the session tree to one account until `pi-pool use --follow`
 returns it to Auto. The pin survives restarts, quiet sessions, model changes and retry paths.
@@ -427,7 +428,7 @@ Every vend that changes a tree's account logs one `vend` line with `reason` (`ne
 `switch`, `back`, `session_pin`, `pool_pin`, `upgrade`) and the `previous` account, and one `switch`
 line with `why` (the old account's reason, `asked`, `waiting`, `plan`, `pin` or
 `credential`) and the top `scores`. A new wait logs one `wait` line with the slot.
-Every refused request logs one `parked` line with `at` in epoch seconds, the slot, `backoff` and
+Every refused request logs one `parked` line with `at` in epoch seconds, the slot and
 `room`, the accounts R1 to R7 would let the tree enter now but for a cell (R4), so a tree
 held by its move budget (R6) logs no room, and the first request
 that gets an account after a wait logs one `unparked` line. The Whole system duty reads
@@ -480,7 +481,7 @@ own 429 is the first sign that an account is used up. The extension handles it o
 3. When `next` names an account, the extension returns the message without `retryAfterMs`
    and without the "Try again in" phrase. Prime's usage wait then pings after about one
    second instead of sleeping until the reset, and that ping's hook call vends `next`.
-4. When `next` is null, `retry_at` is the tree's own slot or backoff time. The extension
+4. When `next` is null, `retry_at` is the tree's own slot. The extension
    sets the message's `retryAfterMs` to `retry_at - now`, with a matching "Try again in N
    minutes" text, so Prime sleeps once until then and not until the provider's reset, and
    then continues the turn itself. On 2026-10-18 at 08:32:37Z a 15-minute cap made a Mac
@@ -667,13 +668,13 @@ Rollout: `install.py` runs the Python tests and checks only the token hooks, and
 
 `~/.config/pi-pool/config.json`, defaults in `DEFAULTS` (pool/base.py): `refresh_skew_sec`,
 `admit_5h_max_pct`, `low_admit_5h_max_pct`, `seven_day_max_pct`, `admit_slot_sec`,
-`admit_per_unit`, `depleted_backoff_max_sec`, `tier_units`, `max_moves_per_day`, `cooldown_sec`,
+`admit_per_unit`, `tier_units`, `max_moves_per_day`, `cooldown_sec`,
 `switch_models`, `pin_ttl_sec`, `active_session_sec`,
 `refused_cooldown_sec`, `probe_interval_sec`, and the turn queue's `agent_queue_on`,
 `working_max`, `tree_working_max` and `lease_s`. `pi-pool set` takes a JSON object for
 `tier_units` and `max_moves_per_day`. `five_hour_max_pct`, the runway keys
 (`burn_5h_pct_per_hour`, `burn_week_pct_per_hour`, `runway_horizon_hours`,
-`min_runway_hours`), the R2 projection keys `tree_5h_pct_per_min` and `spending_tree_sec`, `allow_active_account`, the prod keys `prod_deploy_owners`, `prod_runs_file`, `alert_bridge_file` and `prod_turns_on`, the queue key `queue_aging_s`, the memory keys `memory_governor_on`, `spawn_hold_on` and `pressure_working_max`, and v1's `hold_sec`, `switch_improvement`, `assignment_scope` and `mode`
+`min_runway_hours`), the R2 projection keys `tree_5h_pct_per_min` and `spending_tree_sec`, `allow_active_account`, the prod keys `prod_deploy_owners`, `prod_runs_file`, `alert_bridge_file` and `prod_turns_on`, the queue key `queue_aging_s`, the R5 backoff key `depleted_backoff_max_sec`, the memory keys `memory_governor_on`, `spawn_hold_on` and `pressure_working_max`, and v1's `hold_sec`, `switch_improvement`, `assignment_scope` and `mode`
 are gone; a leftover key in `config.json` is ignored.
 
 ## Safety properties

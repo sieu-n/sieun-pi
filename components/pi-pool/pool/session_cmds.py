@@ -16,7 +16,7 @@ def tree_view(state, key, provider, accounts, f, cfg, now):
 def wait_view(d):
     """The wait the tree's next request gets as {account, slot_at}; None when that
     request gets an account. The wait on file can be stale: on 10-18 at 16:21Z
-    `who` printed 01a14eb4's backoff to 16:47Z on the Virev seat while its next
+    `who` printed 01a14eb4's wait to 16:47Z on the Virev seat while its next
     request would have entered claude4, and resume_paused.py held it for that."""
     if isinstance(d, sched.Wait):
         return {"account": d.slot_account.id, "slot_at": math.ceil(d.slot_at)}

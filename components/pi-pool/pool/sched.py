@@ -1,5 +1,5 @@
 """The admission scheduler: trees, the slot book, and decide() with rules R1-R7."""
-import dataclasses, random, time
+import dataclasses, time
 
 from . import base, registry
 
@@ -19,11 +19,10 @@ from . import base, registry
 #      stops serving it.
 #   R3 score: among admissible accounts the highest weekly pace x 5h headroom / load.
 #   R4 admission slots: an account admits one tree per admit_slot_sec / slot_cap(a).
-#   R5 wait: an account passes R2 but R4 has no cell now, so the tree gets its own
-#      slot_at on it, ordered by priority, then by wait start. When no account
-#      passes R2 (the pool is depleted and waits for rotation), the tree backs off
-#      instead: a fresh uniform draw over depleted_backoff_max_sec, held until it
-#      passes, so trees that wait for one reset come back spread out.
+#   R5 wait: no account has a cell for the tree now, so it gets its own slot_at on
+#      the account that frees first: the first R4 cell at or after the account
+#      passes R2 again (now, or its real reset or 429 `until`), ordered by priority,
+#      then by wait start. Its own account wins a tie, so the tree keeps its cache.
 #   R6 move budget: a tree that moved max_moves_per_day[priority] times in 24 h
 #      waits for its own account, at most budget_wait_max_sec from the start of its
 #      wait; a high tree is refused only optional moves.
@@ -56,8 +55,6 @@ class Tree:
     moves: tuple = ()
     # (account id, slot_at, since) while the tree waits for a slot.
     wait: "tuple | None" = None
-    # The wait is an R5 backoff: slot_at is a random draw, held until it passes.
-    backoff: bool = False
 
 
 @dataclasses.dataclass(frozen=True)
@@ -66,8 +63,7 @@ class Book:
     `admitted`: {account id: ((at, tree key), ...)} over ADMISSION_KEEP_SEC.
     `waiting`: {account id: ((slot_at, tree key, rank), ...)} of the other trees.
     `load`: {account id: trees vended within active_session_sec}.
-    `parked`: {account id: other trees whose wait names it, a backoff included}, for
-    the status counts: a backoff holds no cell, but its tree waits all the same."""
+    `parked`: {account id: other trees whose wait names it}, for the status counts."""
     admitted: dict = dataclasses.field(default_factory=dict)
     waiting: dict = dataclasses.field(default_factory=dict)
     load: dict = dataclasses.field(default_factory=dict)
@@ -106,8 +102,6 @@ class Wait:
     vend: "registry.Account | None" = None
     shadowed: "tuple | None" = None
     left: "tuple | None" = None
-    # slot_at is a backoff draw (R5), no cell on slot_account.
-    backoff: bool = False
     # The accounts R1-R7 would admit this tree onto now but for a cell (R4).
     room: tuple = ()
 
@@ -278,12 +272,6 @@ def first_open(a, t0, tree, rank, book, cfg, sole):
     return float("inf")
 
 
-def waits_for_rotation(accounts, cooldowns, cfg, now, priority, manual=False):
-    """R5 backoff: no account takes this class of tree on its last read, so the pool
-    waits for rotation. An unsampled account clears at the next read."""
-    return not any(admit_reason(a, cooldowns, cfg, now, priority, manual) in (None, "unsampled") for a in accounts)
-
-
 PLAN_TIERS = {"free": 0, "plus": 1, "pro": 2, "team": 3}
 
 
@@ -294,12 +282,11 @@ def plan_tier(a):
     return PLAN_TIERS.get(a.plan, 0)
 
 
-def decide(tree, accounts, book, cooldowns, cfg, now, draw=None):
+def decide(tree, accounts, book, cooldowns, cfg, now):
     """Stay, Admit, Wait or Blocked for one request. Manual selection never
     changes identity; automatic selection returns None when no account can serve.
-    Pure but for `draw`, the R5 backoff's uniform number in [0, 1)
-    (random.random() when None): the caller writes what it decides under the pool
-    flock, so trees that ask together see each other's admissions and waits."""
+    Pure: the caller writes what it decides under the pool flock, so trees that
+    ask together see each other's admissions and waits."""
     manual = tree.pin or tree.pool_pin
     pin_reason = "session_pin" if tree.pin else "pool_pin"
     if manual:
@@ -345,16 +332,6 @@ def decide(tree, accounts, book, cooldowns, cfg, now, draw=None):
     own_ok = cur is not None and credential_reason(cur, cooldowns, now) is None
     vend = cur if own_ok and cur_why is not None else None
 
-    # R5: a backoff holds until its draw passes while the pool still waits for
-    # rotation, for every tree and every account, so a revived account is not met
-    # by every waiter at once. Once an account takes this class again the tree is
-    # decided like any other: on 10-18 01a14eaf held a draw for 16:45Z from 15:10Z
-    # while claude12, its own account, served again from 15:50Z and krenerd77 and
-    # claude3 took new trees, and every check-in restart met the same refusal.
-    held = by_id.get(tree.wait[0]) if tree.backoff and tree.wait and tree.wait[1] > now else None
-    if held is not None and waits_for_rotation(accounts, cooldowns, cfg, now, p, manual=bool(manual)):
-        return Wait(tree.wait[1], held, vend, None, left, backoff=True)
-
     if cur_why is None and cur is not None and not tree.wait and (manual or tree.leave != cur.id):
         better = [a for a in ranked if plan_tier(a) > plan_tier(cur) and open_now(a)]
         if better:
@@ -370,7 +347,7 @@ def decide(tree, accounts, book, cooldowns, cfg, now, draw=None):
     budget = cfg["max_moves_per_day"].get(p, cfg["max_moves_per_day"].get("normal", 3))
     stuck = own_ok and moved >= budget and (p != "high" or optional)
     # R6 holds only while the tree's own account takes it within budget_wait_max_sec
-    # of the start of its wait, a backoff included. Past that the tree moves anyway:
+    # of the start of its wait. Past that the tree moves anyway:
     # a stalled tree costs the owner the work, a move costs one cache rewrite (about
     # 0.5M tokens). On 10-18 01a11a24, a low tree out of moves, waited from 15:09Z to
     # 17:21Z for claude9, since each request measured the hour from itself. Trees
@@ -400,25 +377,19 @@ def decide(tree, accounts, book, cooldowns, cfg, now, draw=None):
     frees = [(a, t0) for a, t0 in frees if t0 != float("inf")]
     options = []
     for a, t0 in frees:
-        if tree.wait and not tree.backoff and tree.wait[0] == a.id and tree.wait[1] >= t0 and not cell_taken(
+        if tree.wait and tree.wait[0] == a.id and tree.wait[1] >= t0 and not cell_taken(
                 a, int(tree.wait[1] // slot_spacing(a, cfg)), tree, rank, book, cfg):
             t = max(tree.wait[1], now)
         else:
             t = first_open(a, t0, tree, rank, book, cfg, len(frees) == 1)
-        options.append((t, -score(a, cfg, t, p, load), a.label, a))
+        options.append((t, a.id != tree.current, -score(a, cfg, t, p, load), a.label, a))
     if not options:
         return Blocked(manual, why_not(by_id[manual]) or "busy") if manual else None
-    slot_at, _, _, slot_account = min(options, key=lambda o: o[:3])
+    slot_at, _, _, _, slot_account = min(options, key=lambda o: o[:4])
     if stuck:
         slot_at = min(slot_at, deadline)
     if slot_at == float("inf"):
         return Blocked(manual, "busy") if manual else None
-    # The backoff is for a pool waiting on rotation: no account takes this class of
-    # tree on its last read. An unsampled account clears at the next read, and a
-    # tree out of moves (R6) waits for its own account, so those keep their short wait.
-    if waits_for_rotation(accounts, cooldowns, cfg, now, p, manual=bool(manual)):
-        u = random.random() if draw is None else draw
-        return Wait(now + u * cfg["depleted_backoff_max_sec"], slot_account, vend, shadowed, left, backoff=True)
     return Wait(slot_at, slot_account, vend, shadowed, left, room=tuple(candidates))
 
 
@@ -447,8 +418,7 @@ def tree_for(state, key, provider):
                 leave=((rec.get("leave") or {}).get(provider) or {}).get("account_id"),
                 priority=rec.get("priority") or "normal",
                 moves=tuple((rec.get("moves") or {}).get(provider) or ()),
-                wait=(wait["account"], wait["slot_at"], wait["since"]) if wait else None,
-                backoff=bool(wait and wait.get("backoff")))
+                wait=(wait["account"], wait["slot_at"], wait["since"]) if wait else None)
 
 
 def selection_view(tree):
@@ -468,9 +438,6 @@ def book_for(state, provider, key, cfg, now):
         if not wait or (key and k == key.key):
             continue
         parked[wait["account"]] = parked.get(wait["account"], 0) + 1
-        # A backoff draw holds no cell.
-        if wait.get("backoff"):
-            continue
         rank = (PRIORITY_RANK.get(rec.get("priority") or "normal", 1), wait["since"], k)
         waiting.setdefault(wait["account"], []).append((wait["slot_at"], k, rank))
     return Book(admitted, {a: tuple(v) for a, v in waiting.items()},

@@ -1,5 +1,5 @@
 """A pool with one Codex account in which one session tree waits for its slot until a given time and any other
-tree is served. The waiting tree is low priority and holds an R5 backoff on the account, whose 5h window reads 60%
+tree is served. The waiting tree is low priority and holds an R5 wait on the account, whose 5h window reads 60%
 until that time: over the 50% a low tree enters under, under the 70% a normal tree enters under. No network: the
 token is a fake JWT good for 30 days, and the window's sample is dated ahead so no usage read starts."""
 import base64, json, os, time
@@ -24,7 +24,7 @@ def make_waiting_pool(path, waiting_tree, until):
     token = jwt({"exp": int(now) + 30 * 86400, "https://api.openai.com/auth": {"chatgpt_account_id": ACCOUNT}})
     with open(os.path.join(path, "accounts", "openai-codex", ACCOUNT + ".json"), "w") as f:
         json.dump({"tokens": {"access_token": token, "refresh_token": "fixture-refresh"}}, f)
-    wait = {"account": ACCOUNT, "slot_at": until, "since": now, "backoff": True}
+    wait = {"account": ACCOUNT, "slot_at": until, "since": now}
     with open(os.path.join(path, "state.json"), "w") as f:
         json.dump({"version": 2, "sessions": {waiting_tree: {
             "uuid": None, "active_id": waiting_tree, "pins": {}, "last_seen": now, "priority": "low",
