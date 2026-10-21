@@ -42,3 +42,19 @@ test("the box tip probe gives the same patch-ids from its cache, computes only n
   assert.ok(warm.patches.includes("cachedpatchid000"), "a cached commit is read, not recomputed");
   assert.match(cache()[second]!, /^[0-9a-f]{40}$/);
 });
+
+test("the box tip probe sends the hash of every commit sieun/dev holds, past its last 2000", () => {
+  const home = mkdtempSync(join(tmpdir(), "box-parity-ids-"));
+  const repo = join(home, "Documents/Github/auto-sns-agent");
+  mkdirSync(repo, { recursive: true });
+  execFileSync("git", ["-C", repo, "init", "-q", "-b", "sieun/dev"]);
+  const stream = Array.from({ length: 2002 }, (_, n) =>
+    `commit refs/heads/sieun/dev\nmark :${n + 1}\ncommitter t <t@t> ${1_700_000_000 + n} +0000\ndata 2\nc${n % 10}\n${n ? `from :${n}\n` : ""}`).join("\n");
+  execFileSync("git", ["-C", repo, "fast-import", "--quiet"], { input: stream });
+  const oldest = execFileSync("git", ["-C", repo, "rev-list", "--max-parents=0", "sieun/dev"], { encoding: "utf8" }).trim();
+  const arg = Buffer.from(JSON.stringify({ host: "box", rows: [{ id: "tip", tool: "checkout tip", probes: [{ tip: true }] }], known: {} })).toString("base64");
+  const tip = (JSON.parse(execFileSync("python3", [PROBE, arg], { env: { ...process.env, HOME: home }, encoding: "utf8" })) as { values: { tip: string[] } }).values.tip[0]!;
+  const ids = (JSON.parse(tip.slice(8)) as { ids: string[] }).ids;
+  assert.equal(ids.length, 2002);
+  assert.ok(ids.includes(oldest.slice(0, 10)), "a commit 2001 back is on the box by hash");
+});

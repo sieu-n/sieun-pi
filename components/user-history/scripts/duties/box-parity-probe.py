@@ -334,8 +334,10 @@ def commits(host):
     Each commit gives its 10-character hash, the `git patch-id --stable` of its diff without context lines (a merge diffs against its first
     parent), so a change carried onto another base keeps its id, and one key per path it touched from the path and the bytes it wrote. The Mac
     sends its last 100 as one list entry each, with whether its own origin/<branch> holds it, so a commit it never pushed is told apart from one the
-    box failed to fetch. The box sends the hashes, patch-ids and path keys of its last 2000 as three flat lists, plus the hashes its fetched origin
-    branches hold beyond sieun/dev, such as the Mac's pushed dev/sieun-mac-a (c119).
+    box failed to fetch. The box sends the hashes of every commit sieun/dev holds, the patch-ids and path keys of its last 2000, plus the hashes
+    its fetched origin branches hold beyond sieun/dev, such as the Mac's pushed dev/sieun-mac-a (c119). Hashes cover all of sieun/dev because on
+    10-21 the box's last 2000 reached back only 33 hours (2214 commits in 34 h), so 8 Mac commits sieun/dev held fell out of the window and
+    turned the row off; the full list is 16148 hashes, 0.4 s and 210 KB.
     """
     count = "100" if host == "mac" else "2000"
     name = branch(host)
@@ -343,6 +345,7 @@ def commits(host):
         raw = git_bytes(["log", "--no-abbrev", "--raw", "--format=@%H", "-n", count, "--no-renames", "--diff-merges=first-parent", name]).decode("utf-8", "replace")
         patch_of = patch_ids([line[1:] for line in raw.splitlines() if line.startswith("@")], host)
         if host == "box":
+            held = git_bytes(["rev-list", name]).decode().split()
             fetched = git_bytes(["rev-list", "--remotes=origin", "--not", name]).decode().split()
         else:
             pushed = "refs/remotes/origin/" + name
@@ -359,7 +362,7 @@ def commits(host):
             meta, path = line.split("\t", 1)
             wrote[order[-1]].append((path, meta.split()[3]))
     if host == "box":
-        return "commits:" + json.dumps({"ids": [sha[:10] for sha in order], "patches": sorted(set(pid[:16] for pid in patch_of.values() if pid)),
+        return "commits:" + json.dumps({"ids": [sha[:10] for sha in held], "patches": sorted(set(pid[:16] for pid in patch_of.values() if pid)),
                                         "bytes": sorted(set(path_key(path, blob) for files in wrote.values() for path, blob in files)),
                                         "fetched": sorted(sha[:10] for sha in fetched)})
     return "commits:" + json.dumps([[sha[:10], patch_of.get(sha, "")[:16], [path_key(path, blob) for path, blob in wrote[sha]], sha not in unpushed] for sha in order])
