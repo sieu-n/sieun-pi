@@ -154,7 +154,8 @@ function copiesNote(left: Leftovers): string {
   return (left.copies.length ? `, deleted ${left.copies.length} repo copies (${left.copies.join(", ")})` : "") +
     (left.artifacts.length ? `, deleted ${left.artifacts.length} kernel states and repo copies in session-artifacts (${left.artifacts.slice(0, 5).join(", ")}${left.artifacts.length > 5 ? ` and ${left.artifacts.length - 5} more` : ""})` : "") +
     (left.units.length ? `, stopped its units ${left.units.join(", ")}` : "") +
-    (left.owned.length ? `, deleted ${left.owned.length} paths it owned (${left.owned.slice(0, 5).join(", ")}${left.owned.length > 5 ? ` and ${left.owned.length - 5} more` : ""})` : "");
+    (left.owned.length ? `, deleted ${left.owned.length} paths it owned (${left.owned.slice(0, 5).join(", ")}${left.owned.length > 5 ? ` and ${left.owned.length - 5} more` : ""})` : "") +
+    (left.kept?.length ? `, kept ${left.kept.length} paths its records name (${left.kept.join("; ")})` : "");
 }
 
 /** Whether a session file's last session_state entry is "archived" and was written at or after `since`; read from its last 256 KB. */
@@ -475,7 +476,7 @@ export class Chats {
       this.log(`chat ${chat.slice(0, 8)}: leftovers of archived job ${id.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`);
       return null;
     });
-    if (left && (left.stopped.length || left.tabs || left.copies.length || left.artifacts.length || left.owned.length || left.units.length))
+    if (left && (left.stopped.length || left.tabs || left.copies.length || left.artifacts.length || left.owned.length || left.units.length || left.kept?.length))
       this.log(`chat ${chat.slice(0, 8)}: archived job ${id.slice(0, 8)} ended; stopped ${left.stopped.map(entry => entry.pid).join(", ") || "no process"}, closed ${left.tabs} Aside tabs${copiesNote(left)}`);
   }
 
@@ -1115,7 +1116,7 @@ export class Chats {
   /** Stops what a gone job left and logs it. */
   private async endLeftovers(chat: string, name: string, dir: string, session: string | undefined, what: string): Promise<void> {
     const left = await this.leftovers(chat, dir, session);
-    if (!left.stopped.length && !left.tabs && !left.copies.length && !left.artifacts.length && !left.owned.length && !left.units.length) return;
+    if (!left.stopped.length && !left.tabs && !left.copies.length && !left.artifacts.length && !left.owned.length && !left.units.length && !left.kept?.length) return;
     this.log(`chat ${chat.slice(0, 8)}: job ${name} ${what.replace(/\.$/, "")}; stopped ${left.stopped.map(entry => entry.pid).join(", ") || "no process"}, closed ${left.tabs} Aside tabs${copiesNote(left)}`);
   }
 
@@ -1130,11 +1131,11 @@ export class Chats {
     const archived = new Set(await this.mine([...await this.archivedIds()]).catch(() => []));
     for (const id of new Set([...this.chatIds, ...archived])) {
       const name = `chat ${id.slice(0, 8)}${this.chatIds.has(id) ? "" : " (archived)"}`;
-      const left = await this.source.deletedLeftovers(id).catch(error => {
+      const left: Leftovers = await this.source.deletedLeftovers(id).catch(error => {
         this.log(`${name}: deleted job leftovers: ${error instanceof Error ? error.message : String(error)}`);
         return { stopped: [], tabs: 0, copies: [], artifacts: [], owned: [], units: [] };
       });
-      if (left.stopped.length || left.tabs || left.copies.length || left.artifacts.length || left.owned.length || left.units.length) this.log(`${name}: deleted jobs ended; stopped ${left.stopped.map(entry => entry.pid).join(", ") || "no process"}, closed ${left.tabs} Aside tabs${copiesNote(left)}`);
+      if (left.stopped.length || left.tabs || left.copies.length || left.artifacts.length || left.owned.length || left.units.length || left.kept?.length) this.log(`${name}: deleted jobs ended; stopped ${left.stopped.map(entry => entry.pid).join(", ") || "no process"}, closed ${left.tabs} Aside tabs${copiesNote(left)}`);
     }
   }
 

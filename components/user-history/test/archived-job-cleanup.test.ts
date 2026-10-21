@@ -56,6 +56,9 @@ test("a deleted job releases what it owns under a live chat and under an archive
   };
   const tree = (name: string) => { write(join(scratch, name, "tree", "note.txt")); return join(scratch, name, "tree"); };
 
+  // Prime makes a job's folder at its spawn, before the job makes anything, and a job's end deletes only a recorded path born after it.
+  for (const [chat, sub] of [[live, "sub-l1"], [archived, "sub-a1"], [archived, "sub-a2"], [archived, "sub-a3"], [unknown, "sub-u1"]]) mkdirSync(join(ARTIFACTS, chat!, sub!), { recursive: true });
+  await pause(20);
   const liveTree = tree("live-job");
   job(live, "sub-l1", "deleted", sessionId(1), { paths: [liveTree], units: ["live-rig.service"] });
   const archivedTree = tree("archived-job");

@@ -40,7 +40,9 @@ const TABS_FILE = "aside-browser-tabs.json";
  * name, and `sessions` the ended session ids, so the box that ran this end over ssh deletes its own share and their `~/scratch/<session id>`.
  */
 export interface Leftovers { stopped: readonly RawProcess[]; tabs: number; copies: readonly string[]; artifacts: readonly string[]; owned: readonly string[]; units: readonly string[];
-  elsewhere?: readonly string[]; away?: Readonly<Record<string, readonly string[]>>; sessions?: readonly string[] }
+  elsewhere?: readonly string[]; away?: Readonly<Record<string, readonly string[]>>; sessions?: readonly string[];
+  /** The recorded paths kept for good and dropped from their records, each with its reason (`endOwned`, `removeFree`). */
+  kept?: readonly string[] }
 /** A process that runs in or holds a /tmp tree (worker-footprint.py `--inside`): the session it carries (none for the rig's own processes), whether it is Prime outside the rig, or a shared service. */
 export interface InsideProcess extends RawProcess { dir: string; session: string | null; prime: boolean; shared: boolean }
 export interface LeftoverSource {
@@ -153,14 +155,51 @@ async function ours(path: string): Promise<boolean> {
   return !!item && !item.isSymbolicLink() && (uid === undefined || item.uid === uid);
 }
 
-/** Deletes the paths our user owns that no process runs in, holds or names, and returns the ones it deleted. */
-async function removeFree(source: Pick<LeftoverSource, "inside" | "removeTmp">, candidates: readonly string[]): Promise<{ paths: string[]; removed: readonly string[] }> {
+/**
+ * The first folder in the tree at `path` that our user cannot write, or the path itself when find cannot read the whole tree; null when every
+ * folder is writable. rm stops at such a folder only after it deleted everything around it: on 10-21 at 02:06:33Z the sweep of chat 01a14210's
+ * deleted jobs emptied ~/work/prime-agent-fix-p8/build-s2int1 and build-s2int2 of release/, inst/, source-rev and feed.SHA256SUMS, 40 ms
+ * apart, and stopped only at their read-only feed/ folders (dr-xr-xr-x), which their maker had frozen for the jobs that still read them.
+ */
+function frozenFolder(path: string): Promise<string | null> {
+  return new Promise(resolve => {
+    hostExecFile("find", [path, "-type", "d", "!", "-perm", "-u=w", "-print", "-quit"], { maxBuffer: 1024 * 1024 }, (error, stdout) => {
+      const found = String(stdout).split("\n")[0]!.trim();
+      resolve(found || (error ? path : null));
+    });
+  });
+}
+
+/**
+ * Deletes the paths our user owns that no process runs in, holds or names, and returns the ones it deleted. A tree with a folder our user
+ * cannot write (`frozenFolder`) is kept whole and comes back in `kept`, since its maker froze it for readers and rm would delete all but it.
+ */
+async function removeFree(source: Pick<LeftoverSource, "inside" | "removeTmp">, candidates: readonly string[]): Promise<{ paths: string[]; removed: readonly string[]; kept: Map<string, string> }> {
   const paths: string[] = [];
   for (const path of new Set(candidates)) if (await ours(path)) paths.push(path);
   const held = new Set(paths.length ? (await source.inside(paths)).map(entry => entry.dir) : []);
-  const free = paths.filter(path => !held.has(path));
-  return { paths, removed: free.length ? await source.removeTmp(free) : [] };
+  const kept = new Map<string, string>();
+  for (const path of paths.filter(path => !held.has(path))) {
+    const frozen = await frozenFolder(path);
+    if (frozen) kept.set(path, `it holds the read-only folder ${frozen}`);
+  }
+  const free = paths.filter(path => !held.has(path) && !kept.has(path));
+  return { paths, removed: free.length ? await source.removeTmp(free) : [], kept };
 }
+
+/** When the session of the ownership record `file` began: the birth of its session folder, where Prime writes the record. */
+async function recordStart(file: string): Promise<number> {
+  return (await lstat(dirname(file)).catch(() => null))?.birthtimeMs ?? Infinity;
+}
+
+/** Whether the path was born at or after `start`, so the session that began then can have made it; a path with no birth time has no proof. */
+async function bornSince(path: string, start: number): Promise<boolean> {
+  const birth = (await lstat(path).catch(() => null))?.birthtimeMs;
+  return birth === undefined || (birth > 0 && birth >= start);
+}
+
+/** The kept paths of `kept` as the log names them. */
+const keptNotes = (kept: ReadonlyMap<string, string>): string[] => [...kept].map(([path, why]) => `${path}: ${why}`);
 
 /**
  * Stops the units and deletes the paths the ownership records of gone sessions name (`readOwned`) and the scratch folders the job line gave
@@ -168,24 +207,29 @@ async function removeFree(source: Pick<LeftoverSource, "inside" | "removeTmp">, 
  * record or its session's folder name, so a later sweep of deleted jobs deletes it once nothing holds it. The paths the records name on other
  * boxes come back as `away` and stay in the records, for the box that runs the cleanup over ssh (`hostLeftovers`).
  */
-async function endOwned(source: LeftoverSource, files: readonly string[], dirs: readonly string[], sessions: readonly string[]): Promise<{ owned: readonly string[]; units: readonly string[]; elsewhere: readonly string[]; away: Record<string, string[]> }> {
+async function endOwned(source: LeftoverSource, files: readonly string[], dirs: readonly string[], sessions: readonly string[]): Promise<{ owned: readonly string[]; units: readonly string[]; elsewhere: readonly string[]; away: Record<string, string[]>; kept: readonly string[] }> {
   const folders = sessions.filter(session => SESSION.test(session)).map(session => jobScratch(session, homedir()));
-  if (!files.length && !folders.length) return { owned: [], units: [], elsewhere: [], away: {} };
+  if (!files.length && !folders.length) return { owned: [], units: [], elsewhere: [], away: {}, kept: [] };
   const records = await Promise.all(files.map(file => readOwned(file, dirs)));
   const wanted = [...new Set(records.flatMap(record => record.units))];
   const answer = wanted.length ? await source.stopUnits(wanted).catch(() => []) : [];
   const units = answer ?? [];
   const elsewhere = answer === null ? wanted : [];
-  const { paths, removed: owned } = await removeFree(source, [...records.flatMap(record => record.paths), ...folders]);
+  const unmade = new Map<string, string>();
+  await Promise.all(files.map(async (file, index) => {
+    const start = await recordStart(file);
+    for (const path of records[index]!.paths) if (!(await bornSince(path, start))) unmade.set(path, `it is older than the job whose record names it`);
+  }));
+  const { paths, removed: owned, kept } = await removeFree(source, [...records.flatMap(record => record.paths).filter(path => !unmade.has(path)), ...folders]);
   const gone = new Set(owned);
   const away: Record<string, string[]> = {};
   for (const record of records) for (const [host, list] of Object.entries(record.hosts ?? {})) away[host] = [...new Set([...away[host] ?? [], ...list])];
   await Promise.all(files.map(async (file, index) => {
     const record = records[index]!;
-    const left = { paths: record.paths.filter(path => !gone.has(path) && paths.includes(path)), units: [], ...record.hosts ? { hosts: record.hosts } : {} };
+    const left = { paths: record.paths.filter(path => !gone.has(path) && !kept.has(path) && paths.includes(path)), units: [], ...record.hosts ? { hosts: record.hosts } : {} };
     await source.writeOwned(file, left).catch(() => {});
   }));
-  return { owned, units, elsewhere, away };
+  return { owned, units, elsewhere, away, kept: keptNotes(new Map([...unmade, ...kept])) };
 }
 
 /**
@@ -345,9 +389,9 @@ export async function endLeftovers(source: LeftoverSource, dirs: string | readon
   const transcripts = trees.flatMap(tree => tree.transcripts);
   const copies = await source.removeCopies(transcripts).catch(() => []);
   const artifacts = await endArtifacts(source, transcripts).catch(() => []);
-  const owned = await endOwned(source, trees.flatMap(tree => tree.ownedFiles), typeof dirs === "string" ? [dirs] : dirs, sessions).catch(() => ({ owned: [], units: [], elsewhere: [], away: {} }));
+  const owned = await endOwned(source, trees.flatMap(tree => tree.ownedFiles), typeof dirs === "string" ? [dirs] : dirs, sessions).catch(() => ({ owned: [], units: [], elsewhere: [], away: {}, kept: [] }));
   return { stopped, tabs: Math.max(tabs, 0), copies, artifacts, owned: owned.owned, units: [...handed, ...owned.units], ...owned.elsewhere.length ? { elsewhere: owned.elsewhere } : {},
-    ...Object.keys(owned.away).length ? { away: owned.away } : {}, ...sessions.length ? { sessions } : {} };
+    ...Object.keys(owned.away).length ? { away: owned.away } : {}, ...sessions.length ? { sessions } : {}, ...owned.kept.length ? { kept: owned.kept } : {} };
 }
 
 /** Deletes the kernel-state.dill files and the repo copies gone sessions left in session-artifacts, and keeps a copy any process runs in or holds. */
@@ -473,18 +517,22 @@ export function hostLeftovers(options: { local: LeftoverSource; hostOf: (session
     const self = options.self?.() ?? null;
     const folders = (left.sessions ?? []).filter(session => SESSION.test(session)).map(session => jobScratch(session, homedir()));
     const here = [...self ? hostPaths(left.away?.[self] ?? []) : [], ...folders];
-    const removed = here.length ? (await removeFree(local, here).catch(() => ({ removed: [] }))).removed : [];
-    return { ...left, owned: [...left.owned, ...removed], units: [...left.units, ...stopped] };
+    const { removed, kept } = here.length ? await removeFree(local, here).catch(() => ({ removed: [], kept: new Map<string, string>() })) : { removed: [], kept: new Map<string, string>() };
+    const notes = [...left.kept ?? [], ...keptNotes(kept)];
+    return { ...left, owned: [...left.owned, ...removed], units: [...left.units, ...stopped], ...notes.length ? { kept: notes } : {} };
   };
   // The paths the records name on a third box, such as the Mac's for a box job that made trees there over ssh, end on that box.
   const far = async (left: Leftovers): Promise<Leftovers> => {
     const self = options.self?.() ?? null;
     const owned = [...left.owned];
+    const kept = [...left.kept ?? []];
     for (const [name, paths] of Object.entries(left.away ?? {})) {
       const host = name !== self && remote ? options.hostNamed?.(name) ?? null : null;
-      if (host && paths.length) owned.push(...(await remote!(host, ["away", ...paths]).catch(() => null))?.owned ?? []);
+      const answer = host && paths.length ? await remote!(host, ["away", ...paths]).catch(() => null) : null;
+      owned.push(...answer?.owned ?? []);
+      kept.push(...answer?.kept ?? []);
     }
-    return { ...left, owned };
+    return { ...left, owned, ...kept.length ? { kept } : {} };
   };
   return {
     leftovers: async (dir, session) => {
@@ -524,7 +572,10 @@ async function main(args: readonly string[]): Promise<void> {
   let left: Leftovers;
   if (kind === "end" && path && ARTIFACT_PATH.test(path) && (session === undefined || SESSION.test(session))) left = await endLeftovers(source, join(ARTIFACTS, path), session);
   else if (kind === "deleted" && path && SESSION.test(path)) left = await endLeftovers(source, await deletedFolders(join(ARTIFACTS, path)));
-  else if (kind === "away") left = { stopped: [], tabs: 0, copies: [], artifacts: [], units: [], owned: (await removeFree(source, hostPaths(args.slice(1)))).removed };
+  else if (kind === "away") {
+    const { removed, kept } = await removeFree(source, hostPaths(args.slice(1)));
+    left = { stopped: [], tabs: 0, copies: [], artifacts: [], units: [], owned: removed, ...kept.size ? { kept: keptNotes(kept) } : {} };
+  }
   else throw new Error("usage: job-leftovers.ts end <session>[/sub-...] [session] | deleted <chat> | away <path>...");
   process.stdout.write(JSON.stringify(left) + "\n");
 }
