@@ -343,6 +343,12 @@ export interface UnloadSource {
    * an agent message or its revive needs it. False when the service keeps it (a duty holds it or an open is under way); then it is not stopped.
    */
   release(id: string): Promise<boolean>;
+  /**
+   * Whether the service has an open of this session under way, chat or job (`ThreadHub.attaching`). Such a session is kept, checked right
+   * before its kill: on 10-21 the quota-park kill of 01a15019 and 01a14fde went out at 08:36:06.434Z while their wake check's open was
+   * attaching, and both attaches failed with "Active session ... closed during attach" at 08:36:06.7Z, a dirty d7 minute. Absent, none is.
+   */
+  attaching?(id: string): boolean;
   /** Each worker's own footprint in bytes, by pid, on the named box (this box when `host` is absent). */
   own(pids: readonly number[], host?: string): Promise<ReadonlyMap<number, number>>;
   restNow(id: string, quietMs: number): Promise<boolean>;
@@ -606,11 +612,14 @@ export class IdleUnloader {
     const receipt = (phase: UnloadReceipt["phase"], error?: string) => source.receipt?.({ at: new Date(source.now()).toISOString(), phase, sessionId: row.sessionId,
       activeSessionId: row.activeSessionId ?? "", why, ...error === undefined ? {} : { error } })
       .catch(failure => source.log(`idle unload: ${row.sessionId}: receipt: ${failure instanceof Error ? failure.message : String(failure)}`));
+    const opening = (): boolean => source.attaching?.(row.sessionId) === true;
+    if (opening()) { source.log(`idle unload: ${row.sessionId}: an open is attaching to it; kept`); return false; }
     await receipt("sent");
     const resumed = this.handsOff(row) ? await source.handOff!(row, true) : null;
     if (resumed && !resumed.done) { await receipt("failed", resumed.error); source.log(`idle unload: ${row.sessionId}: kept, the handoff a crash left open: ${resumed.error}`); return false; }
     if (resumed) source.log(`idle unload: ${row.sessionId}: finished the handoff a crash left open`);
     else {
+      if (opening()) { await receipt("failed", "an open is attaching to it"); source.log(`idle unload: ${row.sessionId}: an open is attaching to it; kept`); return false; }
       const killed = await source.request(row, "kill");
       // The daemon's guard kept a detached service. With a handoff source the services move to scopes of their own and the kill goes out
       // again; without one only this sweep skips the session, and once the service exits the next sweep stops it.

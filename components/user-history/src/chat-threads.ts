@@ -13,7 +13,7 @@ import { UNKNOWN_ACTIVE } from "./chats.ts";
 import { archiveSavedSession, resumeSince, type ResumeSince, ScheduledJobsLeft, ServicesStopPending, takesSavedArchive } from "./saved-archive.ts";
 import { type CancelTry, type PendingCancel, SavedArchiveQueue } from "./saved-archive-queue.ts";
 import type { ArchiveBy, ServiceArchive, ServiceArchiveReason, ServiceArchiveRecord } from "./service-archives.ts";
-import { activeIn, AMBIGUOUS, isReopenable } from "./reopen-send.ts";
+import { activeIn, AMBIGUOUS, CLOSED_DURING_ATTACH, isReopenable } from "./reopen-send.ts";
 import { afterMove, type StateAnswer } from "./worker-move.ts";
 import { AttachQueue } from "./attach-queue.ts";
 import { archivedLinesAfter, lastEntryId, setFileSessionState } from "./session-state-file.ts";
@@ -452,6 +452,14 @@ export class ThreadHub {
    * failed turn and reopens it once pi-pool admits its tree. A duty that holds the chat, or an open or resume under way, keeps it. True when the
    * chat is let go now.
    */
+  /**
+   * Whether an open of this session is under way, from its catalog read to the end of its daemon attach. The idle unload keeps such a session
+   * (src/idle-unload.ts `UnloadSource.attaching`): on 10-21 at 08:36:06Z its kill closed two jobs under their wake check's attach.
+   */
+  attaching(id: string): boolean {
+    return this.opening.has(id) || this.threads.get(id)?.opening === true;
+  }
+
   async restAsleep(id: string): Promise<boolean> {
     if (!this.pinned.has(id) || this.resuming.has(id) || this.opening.has(id) || await this.dormant.held(id)) return false;
     const thread = this.threads.get(id) ?? await this.open(id, true, false);
@@ -1040,8 +1048,9 @@ export class ThreadHub {
       const live = activeSessionId === undefined ? null : await afterMove(() => this.attaches.run(id, background, async () => {
         mark("queue");
         const connection = await this.attach(activeSessionId).catch(error => {
-          if (!isReopenable(error)) throw error;
-          marks.push(`listed active but the daemon has no live ${activeSessionId}: read saved`);
+          const closed = CLOSED_DURING_ATTACH.test(error instanceof Error ? error.message : String(error));
+          if (!closed && !isReopenable(error)) throw error;
+          marks.push(closed ? `${activeSessionId} closed during its attach: read saved` : `listed active but the daemon has no live ${activeSessionId}: read saved`);
           return null;
         });
         if (!connection) return null;

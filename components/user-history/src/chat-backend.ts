@@ -389,6 +389,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       return until === null ? [] : [[row.sessionId, until] as const];
     }))).flat()),
     release: id => threads.restAsleep(id),
+    attaching: id => threads.attaching(id),
     own: async (pids, host) => {
       const remote = host === undefined ? undefined : catalog.remoteHosts().find(box => box.host.name === host)?.host;
       if (host !== undefined && !remote) return new Map();

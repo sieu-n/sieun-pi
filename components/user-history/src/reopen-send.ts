@@ -30,6 +30,13 @@ export function activeIn(error: string): string | undefined {
   return /Session is already active in ([0-9a-f]{12}):/.exec(error)?.[1];
 }
 
+/**
+ * The daemon's answer to an attach whose session a kill or close ended while the attach ran. On 10-21 at 08:36:06Z the idle unload's quota-park
+ * kill of the Crawler VP alert jobs 01a15019 and 01a14fde (sent 08:36:06.434Z) met their wake check's open, and both attaches failed this way
+ * 0.27 s later. The session is no longer live, so an open reads it saved, as it does for "Unknown active session".
+ */
+export const CLOSED_DURING_ATTACH = /Active session [0-9a-f]+ closed during attach/;
+
 /** The daemon's refusal of a create whose file two of its workers claim, one running it (`activeIn` has the same cause). */
 export const AMBIGUOUS = /Ambiguous resident session path/;
 
