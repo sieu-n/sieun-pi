@@ -32,7 +32,7 @@ export interface GoalReading { value: number; at: number;
 /** What the check-in keeps per goal across runs: its distinct readings, oldest first, and how many runs in a row the number did not move toward target. */
 export interface GoalMemo { readings: GoalReading[]; still: number;
   /** When the check-in last steered or started the goal's owner, and the newest reading's time then (`quietPush`). */
-  pushed?: { at: number; reading: number } }
+  pushed?: { at: number; reading: number; value?: number } }
 
 /** A goal's number: from its `target`, in its direction (`targetOp`), or from the last run of the duty metric the goal links. */
 export interface GoalNumber { metric: string; target: number; unit: string; op: ">=" | "<="; value?: number; measuredAt?: number; source: string; staleMs: number;
@@ -330,8 +330,10 @@ export function unpushed(memos: Readonly<Record<string, GoalMemo>> | undefined, 
 export function quietPush(memo: GoalMemo | undefined, number: GoalNumber, now: number): { pushedAt: number; nextAt: number } | undefined {
   const pushed = memo?.pushed;
   if (!pushed) return undefined;
+  // A new reading of the same value is no news: 01a15427's job re-read p22 at 0 hours each half hour, and each re-read let the steer through
+  // again (65 lines from 10-20 22:00Z to 10-21 14:30Z).
   const newest = Math.max(...(memo!.readings.map(reading => reading.at)), number.measuredAt ?? 0);
-  if (newest > pushed.reading) return undefined;
+  if (newest > pushed.reading && (pushed.value === undefined || number.value !== pushed.value)) return undefined;
   const nextAt = pushed.at + (heldTimeMs(number) ?? number.staleMs);
   return now < nextAt ? { pushedAt: pushed.at, nextAt } : undefined;
 }
@@ -372,7 +374,8 @@ export function goalPushes(board: ChatBoard | null, views: readonly StepView[], 
     const before = memos?.[goal.id]?.pushed;
     const quiet = pushNeeded({ act } as GoalPush) && memo ? quietPush({ ...memo, ...before ? { pushed: before } : {} }, number, now) : undefined;
     if (memo && quiet && before) memo.pushed = before;
-    else if (memo && pushNeeded({ act } as GoalPush)) memo.pushed = { at: now, reading: Math.max(...memo.readings.map(reading => reading.at), number.measuredAt ?? 0) };
+    else if (memo && pushNeeded({ act } as GoalPush)) memo.pushed = { at: now, reading: Math.max(...memo.readings.map(reading => reading.at), number.measuredAt ?? 0),
+      ...number.value === undefined ? {} : { value: number.value } };
     return [{ ...base, number, trend, stale: trend.kind !== "met" && stale, ...(asks ? { asks } : {}), ...(waits ? { waits } : {}), ...(left.length ? { left } : {}),
       ...(quiet ? { quiet } : {}), act }];
   });
@@ -462,15 +465,19 @@ export function goalSteer(push: GoalPush): string {
 export function goalsHeadline(pushes: readonly GoalPush[]): string {
   const numbered = pushes.filter(push => push.number);
   const behind = pushes.filter(pushNeeded).length;
+  const quiet = pushes.filter(push => push.quiet).length;
   const none = pushes.length - numbered.length;
   return `Goals: ${behind} of ${pushes.length} open goals are off pace or have no live owner` +
-    `${none ? `, and ${none} ${none === 1 ? "has" : "have"} no number` : ""}.`;
+    `${none ? `, and ${none} ${none === 1 ? "has" : "have"} no number` : ""}${quiet ? `; ${quiet} of them ${quiet === 1 ? "was" : "were"} pushed already and wait for news` : ""}.`;
 }
 
 /** The detail file's Goals section: each goal's line, then for each one to steer or start, its steer message. */
 export function goalsDetail(pushes: readonly GoalPush[]): string {
   if (!pushes.length) return "";
   const parts = pushes.map(push => {
+    // A quiet push shows its due line in place of the steer: on 10-21 this section still carried p22's full steer while the due line said to
+    // send nothing.
+    if (push.quiet) return `- ${goalLine(push)}\n\n  ${goalDueLine(push)}`;
     const steer = pushNeeded(push) ? `\n\n${goalSteer(push).split("\n").map(line => line ? `  ${line}` : "").join("\n")}` : "";
     return `- ${goalLine(push)}${steer}`;
   });

@@ -2,7 +2,7 @@
 // while the fix step p60 "Make message sends finish without blocking updates", linked to checkin/goal_gaps, had the job "metal agent runtime".
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { goalDueLine, goalPushes, unpushed } from "../src/checkin-goals.ts";
+import { goalDueLine, goalPushes, goalsDetail, goalsHeadline, unpushed } from "../src/checkin-goals.ts";
 import type { JobFact, StepView } from "../src/checkin-steps.ts";
 import type { ChatBoard, PlanItem } from "../src/shared/types.ts";
 
@@ -58,8 +58,8 @@ test("a pushed goal with no new reading since gets no new push until its number 
   // One hour, the unit of the held time, later the push is due again.
   const third = goalPushes(held as never, views("working"), second.memos, 15 * 60_000, now + 61 * 60_000);
   assert.equal(third.pushes[0]!.quiet, undefined);
-  // A new reading makes the next run push again at once.
-  const read = { ...held, plan: held.plan.map(item => item.id === "p1" ? { ...item, target: { ...item.target!, measuredAt: new Date(now + 10 * 60_000).toISOString() } } : item) };
+  // A new reading with a new value makes the next run push again at once.
+  const read = { ...held, plan: held.plan.map(item => item.id === "p1" ? { ...item, target: { ...item.target!, current: 0.5, measuredAt: new Date(now + 10 * 60_000).toISOString() } } : item) };
   const fourth = goalPushes(read as never, views("working"), second.memos, 15 * 60_000, now + 20 * 60_000);
   assert.equal(fourth.pushes[0]!.quiet, undefined);
 });
@@ -71,4 +71,20 @@ test("a check-in that did not start gives back the goal pushes it marked", () =>
   assert.deepEqual(back.p1!.pushed, { at: 1, reading: 0 });
   assert.equal(back.p2!.pushed, undefined);
   assert.deepEqual(back.p3!.pushed, { at: 5, reading: 0 });
+});
+
+// 01a15427's job re-read p22 at 0 hours each half hour on 10-21, and the check-in's Goals section kept the full steer under each run.
+test("a re-read of the same value keeps a pushed goal quiet, and the Goals section shows the quiet line in place of the steer", () => {
+  const at = (ms: number) => ({ ...board, plan: board.plan.map(item => item.id === "p1" ? { ...item, target: { metric: "hours metal held 70 to 80% CPU with no memory stall", target: 2, unit: "hours", current: 0,
+    measuredAt: new Date(ms).toISOString(), direction: "up" as const } } : item) });
+  const prior = { p1: { readings: [{ value: 0, at: now - 10_800_000 }], still: 1 } };
+  const first = goalPushes(at(now - 7_200_000) as never, views("working"), prior as never, 15 * 60_000, now);
+  const second = goalPushes(at(now + 10 * 60_000) as never, views("working"), first.memos, 15 * 60_000, now + 15 * 60_000);
+  assert.ok(second.pushes[0]!.quiet);
+  const detail = goalsDetail(second.pushes);
+  assert.match(detail, /send nothing about it this run/);
+  assert.doesNotMatch(detail, /Name the biggest blocker/);
+  assert.match(goalsHeadline(second.pushes), /1 of them was pushed already and wait for news/);
+  const moved = { ...at(now + 10 * 60_000), plan: at(now + 10 * 60_000).plan.map(item => item.id === "p1" ? { ...item, target: { ...item.target!, current: 0.5 } } : item) };
+  assert.equal(goalPushes(moved as never, views("working"), first.memos, 15 * 60_000, now + 15 * 60_000).pushes[0]!.quiet, undefined);
 });
