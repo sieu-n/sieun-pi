@@ -297,6 +297,30 @@ test("a job past its slot that pi-pool still holds reads as waiting, and escalat
   assert.match(escalations()[0]!.text, /has had no model turn \(its last call failed: token hook gave no token \(credential_unavailable\): pi-pool: this session waits for its slot at 2026-10-20T20:12:17/);
 });
 
+// Replays 10-21: triage job 01a15bc4 of vent took vent-health-failure-rate-prod at 00:02:20Z. Its first call failed on the token hook with
+// no slot in its text, pi-pool held its tree until 01:50:03Z, and the bridge escalated the rule at 00:32:12Z.
+test("a job whose failed call names no slot reads as waiting while pi-pool holds its tree", async () => {
+  const fired = Date.parse("2026-10-21T00:02:20.602Z");
+  const failed = { type: "message", id: "a1", parentId: "a0", timestamp: "2026-10-21T00:02:20.000Z",
+    message: { role: "assistant", content: [], api: "anthropic-messages", provider: "anthropic", model: "claude-opus-5-5", stopReason: "error",
+      errorMessage: "Failed to resolve API key for provider \"anthropic\" from shell command: pi-pool-token pi-pool: the token hook gave no token; the retry uses a new hook run." } };
+  const f = await fixture();
+  const escalations = () => f.sent.filter(({ session, text }) => session === OPS && text.startsWith("[alert-escalation]"));
+  f.set([ciAlert("aaaa0000000000e1", "2026-10-21T00:01:10.000Z")]); f.at(fired);
+  await f.bridge.tick();
+  f.working.clear();
+  f.turns.set("job-1", turnSince(JSON.stringify(failed), fired - 60_000));
+  f.freeAt.set("job-1", Date.parse("2026-10-21T01:50:03Z"));
+  f.at(fired + ESCALATE_MS + 30_000);
+  await f.bridge.tick();
+  assert.equal(escalations().length, 0, "pi-pool still names a time ahead for the tree");
+  assert.deepEqual(f.retried, [], "no slot passed, so no retry");
+  f.at(Date.parse("2026-10-21T01:51:00Z"));
+  await f.bridge.tick();
+  assert.equal(escalations().length, 1, "past the pool's time the job still has no turn");
+  assert.match(escalations()[0]!.text, /has had no model turn \(its last call failed: pi-pool: the token hook gave no token/);
+});
+
 test("a held job that runs at its slot holds the fire, so nothing escalates", async () => {
   const fired = Date.parse("2026-10-20T04:26:58Z");
   const slot = Date.parse("2026-10-20T05:06:00Z");

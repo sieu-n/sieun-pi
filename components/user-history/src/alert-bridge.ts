@@ -534,6 +534,8 @@ export class AlertBridge {
    * slot on 10-20 (05:06:00Z to 05:06:02Z, 05:13:28Z to 05:13:29Z). Past that tick the job stays in `parked` while pi-pool still names a time
    * ahead for its tree, since its next call meets a new wait: on 10-20 job 01a15aac's slot was 20:12:16Z, the pool waited for rotation, the
    * bridge escalated at 20:12:54Z, and Prime's next call at 20:13:18Z got a backoff to 20:27:51Z. It ran at 20:58:56Z, once an account served.
+   * A failed call that names no slot stays in `parked` the same way: on 10-21 job 01a15bc4's first call, at 00:02:20Z, failed on "the token
+   * hook gave no token", pi-pool held its tree until 01:50:03Z, and the bridge escalated vent-health-failure-rate-prod at 00:32:12Z.
    */
   private async watch(state: BridgeState, now: number): Promise<{ state: BridgeState; errors: Map<string, string>; parked: Set<string> }> {
     const errors = new Map<string, string>();
@@ -549,7 +551,7 @@ export class AlertBridge {
       if (!turn) continue;
       if (turn.ran) { jobs[id] = { ...job, ranAt: turn.at }; continue; }
       if (turn.error) errors.set(id, turn.error);
-      if (turn.slotAt !== undefined && (now < turn.slotAt + TICK_MS || await this.poolHolds(id, turn.provider, now))) parked.add(id);
+      if ((turn.slotAt !== undefined && now < turn.slotAt + TICK_MS) || await this.poolHolds(id, turn.provider, now)) parked.add(id);
       if (!this.deps.retryJob || turn.slotAt === undefined || turn.slotAt > now || (job.retriedAt ?? -1) >= turn.slotAt) continue;
       if (await this.deps.jobWorking?.(job).catch(() => true)) continue;
       this.deps.retryJob(job);
