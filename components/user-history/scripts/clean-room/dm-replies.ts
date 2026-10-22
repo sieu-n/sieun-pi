@@ -1,7 +1,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { ownerMessageId, serverNote, TELL_OWNER_TOOL } from "../../src/shared/chat-feed.ts";
+import { ownerMessageId, serverNote, TELL_OWNER_HELD, TELL_OWNER_TOOL } from "../../src/shared/chat-feed.ts";
+import { longReply } from "../../src/shared/reply-lint.ts";
 import type { RunState, Scenario, Verdict } from "./session-read.ts";
 
 /**
@@ -84,7 +85,16 @@ export function toldCalls(file: string): Told[] {
   const laterQuoted = new Set<string>();
   const turnOwners = new Set<string>();
   const turnQuoted = new Set<string>();
-  readFileSync(file, "utf8").split("\n").forEach((raw, line) => {
+  const raws = readFileSync(file, "utf8").split("\n");
+  // A call tell_owner refused (a soft check, such as a long reply) or held as a note never reached the owner, so it is not judged.
+  const unsent = new Set(raws.flatMap(raw => {
+    try {
+      const message = (JSON.parse(raw) as { message?: { role?: string; toolName?: string; toolCallId?: string; isError?: boolean; content?: unknown } }).message;
+      return message?.role === "toolResult" && message.toolName === TELL_OWNER_TOOL && (message.isError || blockText(message.content).startsWith(TELL_OWNER_HELD))
+        ? [String(message.toolCallId)] : [];
+    } catch { return []; }
+  }));
+  raws.forEach((raw, line) => {
     if (!raw.trim()) return;
     let entry: Record<string, unknown>;
     try { entry = JSON.parse(raw) as Record<string, unknown>; } catch { return; }
@@ -109,8 +119,8 @@ export function toldCalls(file: string): Told[] {
     if (message.role !== "assistant" || !Array.isArray(message.content)) return;
     const starter = current();
     if (message.stopReason !== "toolUse") inTurn = false;
-    for (const part of message.content as { type?: string; name?: string; arguments?: { text?: unknown; reply_to?: unknown } }[]) {
-      if (part.type !== "toolCall" || part.name !== TELL_OWNER_TOOL) continue;
+    for (const part of message.content as { type?: string; id?: string; name?: string; arguments?: { text?: unknown; reply_to?: unknown } }[]) {
+      if (part.type !== "toolCall" || part.name !== TELL_OWNER_TOOL || unsent.has(String(part.id))) continue;
       const text = typeof part.arguments?.text === "string" ? part.arguments.text : "";
       const replyTo = typeof part.arguments?.reply_to === "string" && part.arguments.reply_to.trim() ? part.arguments.reply_to.trim() : null;
       let quoteFault = "";
@@ -208,6 +218,9 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
   add("a", reports.length >= 3 ? true : null, `${reports.length} job messages reached the chat`);
   const finished = calls.some(call => call.starter.kind !== "owner");
   add("b", !calls.length ? null : n.medianSentences <= 2 ? (finished ? true : null) : false, `median ${n.medianSentences} sentences over ${n.calls} calls`);
+  const long = calls.filter(call => longReply(call.text).length);
+  add("i", long.length ? false : calls.length ? true : null, long.length ? long.map(call => `${iso(call.at)} has ${longReply(call.text).join(" and ")}`).join("; ")
+    : "no message the owner got has a sentence over 35 words or over 80 words in all");
   const packed = calls.filter(call => call.packs || call.piece);
   add("c", packed.length ? false : calls.length ? true : null, packed.length
     ? packed.map(call => `${iso(call.at)} ${call.piece ? "bare piece" : "packs"}: "${quote(call.text, 160)}"`).join("; ")
