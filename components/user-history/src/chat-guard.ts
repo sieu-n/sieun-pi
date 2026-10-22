@@ -158,7 +158,7 @@ export const TELL_OWNER_DESCRIPTION = "Send the owner one chat message, its own 
   "Write \"onboarding works now, but the campaign it makes comes out empty because the AI guessed too small a follower range\", not \"Home " +
   "shows 0 matched after landing because the drafted 2K to 20K follower filter misses most creators\". Name each plan step, goal, todo and duty " +
   "you mention by its id, like p684 or d9, written bare, which shows as a chip he can click; keep hashes, session ids and paths out (c145). Count its sentences and " +
-  "words before you send it, and cut what is over. Call it again for a second point. The rest of an answer is detail, which stays on the " +
+  "words before you send it, and cut what is over. Aim each sentence at about 15 words, so it stays under 25. Two facts joined by \"and\" are two sentences or two calls, such as \"census runs at 8,900 a minute\" and \"the fixes wait on p912\". Call it again for a second point. The rest of an answer is detail, which stays on the " +
   "board or a wiki page, never in more sentences or calls; a status answer gives only the one thing that matters most and the ids of " +
   "the steps that hold the rest. Name a step for the rest only when its title or note already holds that detail. An explanation or diagram goes on a " +
   "wiki page, sent as one message with the one-line takeaway and its wiki: link, which shows as a page card. In your first reply to a new " +

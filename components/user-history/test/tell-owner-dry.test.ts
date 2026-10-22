@@ -19,6 +19,11 @@ test("tell_owner: the tool description asks for the same dry message as the brie
     assert.ok(TELL_OWNER_DESCRIPTION.includes(rule), rule);
     assert.ok(c18.includes(rule), rule);
   }
+  // c18 run4 (10-22) sent two sentences of 26 words, the first joining the census rate and the fixes waiting on p912 with "and".
+  const aim = "Aim each sentence at about 15 words, so it stays under 25. Two facts joined by \"and\" are two sentences or two calls, such as " +
+    "\"census runs at 8,900 a minute\" and \"the fixes wait on p912\".";
+  assert.ok(TELL_OWNER_DESCRIPTION.includes(aim), aim);
+  assert.ok(c18.includes(aim), aim);
   const pulls = [/1 or 2 short casual sentences/, /a question goes in the same message as its context/, /never for the rest of the same answer/,
     /one answer never spreads over several messages/, /plus the question if one is open/, /a short judgment, the concrete cause and the measured cost/];
   for (const text of [TELL_OWNER_DESCRIPTION, ...CHAT_BRIEF]) for (const pull of pulls) assert.doesNotMatch(text, pull);
