@@ -141,6 +141,11 @@ async function probeMac(deps: Deps): Promise<MacReach> {
   if (reach.online) return reach;
   return { online: false, detail: `the owner's MacBook Pro is offline (Tailscale last seen ${seenAgo(deps.now(), reach.lastSeen)}); Aside answers again when it wakes` };
 }
+/**
+ * Aside's reply when the owner closed his last Aside window: on 10-22 at 01:08Z the Mac's log shows his close click and the extension bridge
+ * going down, and the 11:56 KST box parity run then failed aside_tabs on the box alone. His window is his to open (c103), so it is off.
+ */
+const NO_ASIDE_WINDOW = /is not connected to the daemon/;
 const MAC_REACH_FIX = "the box's `aside` runs a Mac's Aside CLI over ssh (~/.local/bin/aside, deploy/linux/aside-remote, its target in ~/.config/aside-remote/host), so check ssh to that Mac, check Aside runs there, and re-check";
 
 const missingServer = (name: string, why: string) => FAIL("agent", why, `re-add the ${name} server with \`prime-agent mcp add\` and the command from its vendor docs`);
@@ -401,9 +406,11 @@ export const CHECKS: readonly Check[] = [
       code: "const sdTabs = await listBrowserTabs(); console.log(JSON.stringify({count: sdTabs.length}))" } }, CALL_TIMEOUT_MS);
     if (answer.error && /ENOENT/.test(answer.error)) return FAIL("owner", `the Aside CLI is missing: ${answer.error}`, "reinstall Aside");
     const result = answer.result as { isError?: boolean; content?: { text?: string }[] } | undefined;
-    const count = Number(/"count"\s*:\s*(\d+)/.exec(result?.content?.[0]?.text ?? "")?.[1] ?? NaN);
+    const text = result?.content?.[0]?.text ?? "";
+    const count = Number(/"count"\s*:\s*(\d+)/.exec(text)?.[1] ?? NaN);
     if (!answer.error && result?.isError !== true && count >= 1) return PASS(`${count} tabs`);
-    return FAIL("agent", answer.error ? `MCP ${answer.error}` : `repl gave ${brief(result?.content?.[0]?.text ?? "no text", 200)}`, deps.platform === "linux"
+    if (NO_ASIDE_WINDOW.test(text)) return { status: "off", detail: `the owner's Aside has no open window, so it answers again when he opens one: ${brief(text, 160)}` };
+    return FAIL("agent", answer.error ? `MCP ${answer.error}` : `repl gave ${brief(text || "no text", 200)}`, deps.platform === "linux"
       ? MAC_REACH_FIX : "open Aside with `open -a Aside` and re-check");
   } },
   /** Only a reply that lists no signed-in account is the owner's; a timeout, an ssh failure or "Aside isn't running" (10-18 04:31Z and 13:24Z) is a reach problem. */

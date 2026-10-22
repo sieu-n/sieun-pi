@@ -37,6 +37,16 @@ test("aside_tabs on macOS keeps the local open -a Aside fix", async () => {
   assert.ok(outcome.status === "fail" && outcome.fix.startsWith("open Aside with `open -a Aside`"), JSON.stringify(outcome));
 });
 
+// 10-22 11:56 KST: the box parity run failed aside_tabs on the box alone after the owner closed his last Aside window at 01:08Z.
+test("aside_tabs is off, with no fix, when the owner's Aside has no open window", async () => {
+  const closed = "Aside Browser profile for account u0 (\"Profile 0\") is not connected to the daemon. Make sure that profile is running";
+  for (const platform of ["linux", "darwin"] as const) {
+    const outcome = await asideTabs.run({ ...deps(platform), exec: async () => ({ code: 0, stdout: "", stderr: "", ms: 0 }),
+      mcp: async () => ({ tools: [], result: { isError: true, content: [{ text: closed }] } }) });
+    assert.ok(outcome.status === "off" && outcome.detail.startsWith("the owner's Aside has no open window"), JSON.stringify(outcome));
+  }
+});
+
 const modelPolicy = CHECKS.find(check => check.id === "model_policy")!;
 const MODEL_LIST = "provider      model                       context  max-out  thinking  images\nanthropic     claude-fable-5              500K     128K     yes       yes\n";
 const policyDeps = (answer: ExecResult, calls: { args: readonly string[]; timeoutMs: number }[]): Deps => ({
