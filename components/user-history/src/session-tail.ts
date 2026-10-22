@@ -192,6 +192,32 @@ export async function readBranchTail(file: string, limits = { messages: TAIL_MES
   return page && { sessionId: page.sessionId, entries: page.entries, whole: page.whole };
 }
 
+/**
+ * The current branch back to the start of the model's context, oldest first: every entry after the newest compaction, the compaction, and the
+ * entries it kept from its `firstKeptEntryId` on, which is all Prime's buildSessionContext reads (a branch with no compaction reads back to the
+ * first entry). `bytes` caps the read as in `readBranchTail`. On frontend bro's 82 MB file the 48 MiB tail parsed 12,836 entries in 0.6 to 1.3 s.
+ */
+export async function readContextTail(file: string, bytes: number): Promise<BranchTail | undefined> {
+  const handle = await open(file, "r");
+  try {
+    const { size } = await handle.stat();
+    const head = await header(handle, size);
+    if (!head) return undefined;
+    const read: { bytes: number; more: () => boolean; stopped?: FilePlace } = { bytes: 0, more: () => read.bytes < bytes };
+    const entries: SessionEntry[] = [];
+    let kept: string | undefined;
+    let whole = true;
+    for await (const line of branchLines(handle, head.first, size, null, read)) {
+      const entry = parse(line);
+      if (!entry) { whole = false; break; }
+      entries.push(entry);
+      if (kept === undefined && entry.type === "compaction") kept = entry.firstKeptEntryId || entry.id;
+      if (entry.id === kept) { whole = entry.parentId === null; break; }
+    }
+    return { sessionId: head.sessionId, entries: entries.reverse(), whole: whole && read.stopped === undefined };
+  } finally { await handle.close(); }
+}
+
 /** How far before a message's time its entry may be written: an assistant reply is stamped when it starts and saved when it ends. */
 const WRITE_LAG_MS = 30 * 60_000;
 /** How far after its message a branch entry's own time may run back (custom entries take a second clock read). */

@@ -26,21 +26,28 @@
   const trail = $derived<{ id: string; name?: string }[]>([{ id: sessionId }, ...below]);
   const current = $derived(trail[trail.length - 1]!);
   let view = $state.raw<PromptView | null>(null);
+  /** True while the view holds only the first screen's texts; the server streams the rest right after (api.promptView). */
+  let pending = $state(false);
   let error = $state<string | null>(null);
   $effect(() => {
     const id = current.id;
     const via = trail.slice(0, -1).map(step => step.id);
     let cancelled = false;
     view = null;
+    pending = false;
     error = null;
     untrack(collapseAll);
-    const load = typeof target !== "string" && !via.length ? api.nextDutyBrief(target.chat, target.duty) : api.promptView(id, via);
-    load.then(result => {
+    const show = (result: PromptView, whole: boolean) => {
       if (cancelled) return;
+      const first = !view;
       view = result;
+      pending = !whole;
+      if (!first) return;
       if (result.title) titles = { ...titles, [id]: result.title };
       if (result.parts.some(part => part.label === DUTY_BRIEF)) rows = { [LEAD_KEY]: true };
-    }, failure => { if (!cancelled) error = failure instanceof Error ? failure.message : String(failure); });
+    };
+    const load = typeof target !== "string" && !via.length ? api.nextDutyBrief(target.chat, target.duty) : api.promptView(id, via, first => show(first, false));
+    load.then(result => show(result, true), failure => { if (!cancelled) { pending = false; error = failure instanceof Error ? failure.message : String(failure); } });
     return () => { cancelled = true; };
   });
 
@@ -87,6 +94,10 @@
 {/snippet}
 
 {#snippet text(part: PromptPart)}
+  {#if pending && part.role}<p class="note"><Spinner /> Reading the text</p>{:else}{@render body(part)}{/if}
+{/snippet}
+
+{#snippet body(part: PromptPart)}
   {@const shown = whole[part.id] ? { text: part.text, more: 0 } : clip(part.text)}
   <div class="text {speakerOf(part)}">
     <pre>{shown.text}</pre>
@@ -161,7 +172,7 @@
         <div class="path" title={view.sessionFile}>{view.sessionFile}</div>
       </div>
 
-      {#if ui.promptMode === "order"}<PromptOrder bind:this={order} {view} />
+      {#if ui.promptMode === "order"}<PromptOrder bind:this={order} {view} {pending} />
       {:else}
         <nav class="outline" aria-label="Prompt parts">
           {#if table.lead}{@render tableRow(table.lead)}{/if}

@@ -1,6 +1,8 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import { DUTY_BRIEF, type PromptPart, type PromptView } from "../shared/prompt-view.ts";
   import Icon from "./Icon.svelte";
+  import Spinner from "./Spinner.svelte";
   import { clip, preview, share, speakerOf, type Speaker } from "./prompt-parts.ts";
   import { API_ORDER, briefTurn, orderTree, stepLabel, turnLabel, when, type HeadRow, type Turn } from "./prompt-order.ts";
   import { tooltip } from "./ui/tooltip.ts";
@@ -10,9 +12,12 @@
    * from, then one row per incoming message that opens into the blocks the context hook added to it and the model's work after it, each tool
    * call with its result under it. A turn renders its rows only when open, and a closed turn is skipped by layout (content-visibility).
    */
-  let { view }: { view: PromptView } = $props();
+  /** `pending` while only the first screen's texts are in (shared/prompt-view.ts `firstScreen`): an opened conversation part waits for its text. */
+  let { view, pending = false }: { view: PromptView; pending?: boolean } = $props();
 
   const tree = $derived(orderTree(view));
+  /** Which view this is: the rows drawn and opened start over for another session, not when the texts of the same one arrive. */
+  const shape = $derived(`${view.threadId}:${view.parts.length}`);
   const total = $derived(view.totalTokens);
   const rebuilt = $derived(view.origin.kind === "rebuild");
 
@@ -31,7 +36,8 @@
   const CHUNK = 80;
   let drawn = $state(FIRST);
   $effect(() => {
-    const count = tree.turns.length;
+    void shape;
+    const count = untrack(() => tree.turns.length);
     drawn = FIRST;
     if (count <= FIRST) return;
     const idle = (step: () => void): (() => void) => {
@@ -46,7 +52,8 @@
   });
 
   $effect(() => {
-    const brief = briefTurn(tree);
+    void shape;
+    const brief = untrack(() => briefTurn(tree));
     open = { ...Object.fromEntries(tree.head.map(section => [section.key, true])), ...brief ? { [brief.key]: true, [brief.lead!.id]: true } : {} };
     whole = {};
   });
@@ -102,7 +109,7 @@
     <span class="lead"><span class="chev" class:open={isOpen}><Icon name="chevronDown" size={10} /></span>{#if SPEAKER[who]}<span class="dot {who}"></span>{/if}<span class="name">{label}</span>{#if part.hook}<span class="tag hook" use:tooltip={part.source}>added by the context hook</span>{/if}{#if source}<span class="source short" title={source}>{source}</span>{/if}<span class="gist">{preview(part)}</span></span>
     <span class="tok">{tokens(part.tokens)}</span>{@render bar(part.tokens)}<span class="at">{part.at ? when(part.at) : ""}</span>
   </button>
-  {#if isOpen}<div class="indent" style:--depth={depth}>{@render text(part.id, part.text, who)}</div>{/if}
+  {#if isOpen}<div class="indent" style:--depth={depth}>{#if pending}<p class="waiting"><Spinner /> Reading the text</p>{:else}{@render text(part.id, part.text, who)}{/if}</div>{/if}
 {/snippet}
 
 {#snippet turnRows(turn: Turn)}
@@ -191,6 +198,7 @@
   .text { margin: 2px 0 8px; padding-left: 10px; border-left: 2px solid var(--border); }
   .text.owner { border-left-color: var(--accent); }
   .text.injected { border-left-color: var(--warning); }
+  .waiting { display: flex; gap: 6px; align-items: center; margin: 2px 0 8px; color: var(--text-faint); }
   .text pre { margin: 0; font-family: var(--mono); font-size: 12px; line-height: 18px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); tab-size: 4; }
   .text.model pre, .text.tool pre { color: var(--text-muted); }
   .more { margin-top: 2px; font-size: 12px; color: var(--accent); }

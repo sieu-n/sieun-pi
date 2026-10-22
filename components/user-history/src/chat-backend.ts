@@ -457,18 +457,19 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const outbox = new OwnerOutbox(join(dataDir, scratch ? "outbox-scratch" : "outbox"), { threads, chats, catalog }, dutyLog);
   // A session on another box has its capture on that box, where its worker's user-history extension writes it, so the Prompt view reads it
   // through that box's relay. On 10-22 frontend bro on the Mac showed "rebuilt" here while its Mac capture was 2 minutes old.
-  const hostCapture = async (id: string): Promise<(() => Promise<PromptCapture | null>) | null> => {
+  // The read starts at once, beside the copy of the session file that `catalog.summary` brings up to date, so the two relay reads overlap:
+  // the row comes from the other box's list, which needs no copy.
+  const hostCapture = async (id: string): Promise<{ read: Promise<PromptCapture | null> } | null> => {
     const name = catalog.hostOf(id);
     const host = name ? catalog.hostEntry(name) : undefined;
-    const summary = host ? await catalog.summary(id) : undefined;
+    if (!host) return null;
+    const summary = catalog.remoteRows().find(row => row.sessionId === id) ?? await catalog.summary(id);
     const path = summary && catalog.daemonPath(summary);
-    if (!host || !path) return null;
-    return async () => {
-      try { return await readHostCapture(host, path, id); } catch (error) {
-        dutyLog(`prompt: capture of ${id} on ${host.name}: ${error instanceof Error ? error.message : String(error)}`);
-        return null;
-      }
-    };
+    if (!path) return null;
+    return { read: readHostCapture(host, path, id).catch(error => {
+      dutyLog(`prompt: capture of ${id} on ${host.name}: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
+    }) };
   };
   let closed = false;
   return {
@@ -476,10 +477,12 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     agentQueue: agentQueue(id => catalog.title(id), defaults),
     drainSends: async () => { stopWakes(); await agentOutbox.close(); },
     prompt: async (id, via) => {
+      const capture = hostCapture(id);
+      capture.catch(() => {});
       const sessionFile = await sessionFileFor(id, { listed: async session => (await catalog.summary(session))?.sessionFile, ...(via ? { via } : {}), dataDir, agentDir });
       const title = catalog.title(id);
-      const remote = await hostCapture(id);
-      return sessionFile ? promptView(id, { sessionFile, dataDir, agentDir, chat: (await chats.ids()).has(id), ...(title ? { title } : {}), ...(remote ? { readCapture: remote } : {}) }) : null;
+      const remote = await capture;
+      return sessionFile ? promptView(id, { sessionFile, dataDir, agentDir, chat: (await chats.ids()).has(id), ...(title ? { title } : {}), ...(remote ? { readCapture: () => remote.read } : {}) }) : null;
     },
     outbox, messages: agentOutbox,
     async close() {

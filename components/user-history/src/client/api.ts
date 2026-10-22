@@ -2,7 +2,7 @@ import type { AccountAction, AccountLogin, AgentQueueInput, AgentQueuePool, Agen
 
 import type { NewChatSettings } from "../shared/start-skill.ts";
 import type { OutboxAccepted } from "../shared/outbox.ts";
-import type { PromptView } from "../shared/prompt-view.ts";
+import { type PromptFrame, type PromptView, withTexts } from "../shared/prompt-view.ts";
 import { subscribeFeed } from "./feeds.ts";
 import type { MessageKey } from "../shared/message-key.ts";
 import type { ThreadSide } from "../shared/thread-side.ts";
@@ -27,6 +27,23 @@ async function parse<T>(response: Response): Promise<T> {
     throw new ApiError(response.status, message);
   }
   return body as T;
+}
+
+/** Each line of an NDJSON body as it arrives. */
+async function readLines(body: ReadableStream<Uint8Array>, onLine: (line: string) => void): Promise<void> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let scanned = 0;
+  for (;;) {
+    const { value, done } = await reader.read();
+    buffer += decoder.decode(value, { stream: !done });
+    let newline: number;
+    while ((newline = buffer.indexOf("\n", scanned)) >= 0) { onLine(buffer.slice(0, newline)); buffer = buffer.slice(newline + 1); scanned = 0; }
+    scanned = buffer.length;
+    if (done) break;
+  }
+  if (buffer.trim()) onLine(buffer);
 }
 
 export async function get<T>(route: string, timeoutMs = 20000): Promise<T> {
@@ -123,8 +140,19 @@ export const api = {
   firstFrame: async (id: string): Promise<unknown[]> => parse<unknown[]>(await fetch("api/threads/" + encodeURIComponent(id) + "/first-frame", { priority: "low", signal: AbortSignal.timeout(20000) })),
   childLabels: (id: string) => get<{ labels: Record<string, string> }>("api/threads/" + encodeURIComponent(id) + "/child-labels").then(body => body.labels),
   stats: (id: string) => get<ThreadStats>("api/threads/" + encodeURIComponent(id) + "/stats"),
-  promptView: (id: string, via: readonly string[] = []) =>
-    get<PromptView>("api/threads/" + encodeURIComponent(id) + "/prompt" + (via.length ? "?via=" + via.map(encodeURIComponent).join(",") : ""), 60000),
+  /** The whole view; `onFirst` gets the first screen's view as soon as its line arrives (shared/prompt-view.ts `PromptFrame`). */
+  promptView: async (id: string, via: readonly string[] = [], onFirst?: (view: PromptView) => void): Promise<PromptView> => {
+    const response = await fetch("api/threads/" + encodeURIComponent(id) + "/prompt" + (via.length ? "?via=" + via.map(encodeURIComponent).join(",") : ""), { signal: AbortSignal.timeout(60000) });
+    if (!response.ok || !response.body) return parse<PromptView>(response);
+    let first: PromptView | null = null;
+    let texts: Record<string, string> | null = null;
+    await readLines(response.body, line => {
+      const frame = JSON.parse(line) as PromptFrame;
+      if ("view" in frame) { first = frame.view; onFirst?.(frame.view); } else texts = frame.texts;
+    });
+    if (!first || !texts) throw new Error("The prompt view ended early.");
+    return withTexts(first, texts);
+  },
   nextDutyBrief: (chat: string, duty: string) => get<PromptView>("api/threads/" + encodeURIComponent(chat) + "/duty-brief?duty=" + encodeURIComponent(duty), 60000),
   toolOutput: (id: string, toolCallId: string) => get<{ toolCallId: string; toolName: string; arguments: unknown; output: string; isError: boolean | null }>(
     "api/threads/" + encodeURIComponent(id) + "/tool-output?toolCallId=" + encodeURIComponent(toolCallId)),

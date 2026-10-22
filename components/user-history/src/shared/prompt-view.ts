@@ -64,3 +64,32 @@ export type PromptView = {
   subagents?: PromptSubagent[];
   parts: PromptPart[];
 };
+
+/**
+ * The two lines of the streamed `GET api/threads/<id>/prompt` answer: first the view whose conversation parts carry only what the first screen
+ * draws (`firstScreen`), then the whole text of each part it cut, by part id (`withTexts` joins them). The chat dialog draws the first line
+ * while the second is on the wire: on 10-22 the AI harness chat's view was 280 KB gzipped, 0.75 s from the Mac, and its first screen 80 KB.
+ */
+export type PromptFrame = { view: PromptView } | { texts: Record<string, string> };
+
+/** How much of a text a row's one-line preview reads (client/prompt-parts.ts `preview`). */
+export const PREVIEW_CHARS = 960;
+
+/**
+ * The view for the first screen and the texts it leaves out. The parts before the conversation keep their text, since the ordered view lists
+ * the skills from it. An incoming block keeps the opening its row's preview reads, since each incoming message is a row of the ordered view,
+ * and the model's blocks and the tool results, which show only inside an opened row, keep none.
+ */
+export function firstScreen(view: PromptView): { view: PromptView; texts: Record<string, string> } {
+  const texts: Record<string, string> = {};
+  const parts = view.parts.map(part => {
+    const keep = !part.role ? Infinity : part.role === "user" ? PREVIEW_CHARS : 0;
+    if (part.text.length <= keep) return part;
+    texts[part.id] = part.text;
+    return { ...part, text: part.text.slice(0, keep) };
+  });
+  return { view: { ...view, parts }, texts };
+}
+
+export const withTexts = (view: PromptView, texts: Record<string, string>): PromptView =>
+  ({ ...view, parts: view.parts.map(part => Object.hasOwn(texts, part.id) ? { ...part, text: texts[part.id]! } : part) });

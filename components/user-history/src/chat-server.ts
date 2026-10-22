@@ -45,6 +45,7 @@ import { loadHosts, relayPool, selfHost, type HostsRegistry } from "./hosts.ts";
 import { TOOL_CHECKS_FILE, toolChecks } from "./chat-tools.ts";
 import { skillsView } from "./chat-skills.ts";
 import { nextBriefView } from "./prompt-view.ts";
+import { firstScreen, type PromptFrame } from "./shared/prompt-view.ts";
 import { feedBoard } from "./shared/board-delta.ts";
 import { CHECK_IN_MIN_MINUTES, CHECK_IN_PAUSES, isThinkingLevel, type AccountAction, type AgentQueueInput, type AgentQueuePool, type ChatDefaultsInput, type HostQueueInput, type LabelAction, type ModelCatalog, type RemoteAccessInput, type SendMode, type SlackChannelSetup, type SlackChatInput, type SlackInput, type ThinkingLevel } from "./shared/types.ts";
 import { channelNameError } from "./shared/slack-channel.ts";
@@ -495,6 +496,21 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
     res.end(body);
   }
   /**
+   * Values as NDJSON, each line flushed through the compressor as it is written, so the page reads the first line while the rest is on the
+   * wire. Brotli when the browser takes it: the AI harness chat's Prompt view was 280 KB in gzip level 1 and 200 KB in brotli 5 on 10-22.
+   */
+  function jsonLines(res: ServerResponse, values: readonly unknown[]) {
+    const accepts = String(res.req?.headers["accept-encoding"] ?? "");
+    const encoding = /\bbr\b/.test(accepts) ? "br" : gzips(res.req) ? "gzip" : null;
+    res.writeHead(200, { "Content-Type": "application/x-ndjson; charset=utf-8", ...(encoding ? { "Content-Encoding": encoding } : {}), Vary: "Accept-Encoding" });
+    if (!encoding) { res.end(values.map(value => JSON.stringify(value) + "\n").join("")); return; }
+    const packer = encoding === "br" ? createBrotliCompress({ params: { [zlibConstants.BROTLI_PARAM_QUALITY]: 5 } }) : createGzip({ level: 1 });
+    packer.pipe(res);
+    packer.on("error", () => { res.destroy(); });
+    for (const value of values) { packer.write(JSON.stringify(value) + "\n"); packer.flush(); }
+    packer.end();
+  }
+  /**
    * The JSON block of a thread's first frames for the shell, or null when it takes longer than `inlineWaitMs`. From Korea the page's own socket brings
    * them about three round trips (560 ms) after the shell, so a shell that waits longer than that for them is slower than going without.
    */
@@ -798,7 +814,8 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
             const via = (url.searchParams.get("via") ?? "").split(",").filter(Boolean).map(threadId);
             const view = backend.prompt ? await backend.prompt(id, via) : null;
             if (!view) throw new RequestError(404, "This session has no session file left.");
-            json(res, 200, view); return;
+            const first = firstScreen(view);
+            jsonLines(res, [{ view: first.view }, { texts: first.texts }] satisfies PromptFrame[]); return;
           }
           if (action === "check-in") {
             const view = await backend.chats.checkInView(id);

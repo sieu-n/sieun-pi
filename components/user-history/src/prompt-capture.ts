@@ -30,7 +30,7 @@ let serial = 0;
  */
 export function recordPrompt(dataDir: string, capture: PromptCapture): Promise<void> {
   const file = captureFile(dataDir, capture.sessionId);
-  const body = JSON.stringify(capture);
+  const body = JSON.stringify(capture, withoutImageData);
   const temporary = `${file}.${process.pid}.${++serial}.tmp`;
   const previous = chains.get(file) ?? Promise.resolve();
   const next = previous.then(async () => {
@@ -43,6 +43,18 @@ export function recordPrompt(dataDir: string, capture: PromptCapture): Promise<v
   chains.set(file, next);
   void next.then(() => { if (chains.get(file) === next) chains.delete(file); });
   return next;
+}
+
+/**
+ * A JSON.stringify replacer that writes each image's base64 data as a note of its length: the Prompt view counts an image by its pixels and
+ * draws "[image]", never its bytes. On 10-22 images were 4.59 MB of frontend bro's 5.07 MB capture, which the chat host read over the Mac
+ * relay in 1.0 to 2.2 s on every Prompt open; without them it is 0.51 MB, and the stringify took 3 to 13 ms against 8 to 42 ms.
+ * Anthropic sends an image as `source: {type: "base64", data}`, OpenAI as a `data:` URL in `image_url` or `image_url.url`.
+ */
+export function withoutImageData(this: unknown, key: string, value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  const image = (key === "data" && (this as { type?: unknown } | null)?.type === "base64") || ((key === "url" || key === "image_url") && value.startsWith("data:"));
+  return image ? `[${value.length} characters of image data left out of the capture]` : value;
 }
 
 export async function readCapture(dataDir: string, sessionId: string): Promise<PromptCapture | null> {

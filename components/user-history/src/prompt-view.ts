@@ -9,7 +9,7 @@ import { CORRECTION_TOOL } from "./chat-corrections.ts";
 import { deliverCorrections } from "./correction-delivery.ts";
 import { shortNotices } from "./prime-notices.ts";
 import { type PromptCapture, readCapture } from "./prompt-capture.ts";
-import { type BranchTail, readBranchTail } from "./session-tail.ts";
+import { type BranchTail, readBranchTail, readContextTail } from "./session-tail.ts";
 import { serverNote, TELL_OWNER_TOOL } from "./shared/chat-feed.ts";
 import { DUTY_BRIEF, type PromptApi, type PromptOrigin, type PromptPart, type PromptPartKind, type PromptSubagent, type PromptView, type ToolRegistrar } from "./shared/prompt-view.ts";
 
@@ -53,18 +53,19 @@ export function nextBriefView(chatId: string, dutyId: string, brief: { text: str
 /** `readCapture` reads the capture in place of `<dataDir>/prompts/<id>.json`, such as another box's capture of a session that runs there. */
 export async function promptView(sessionId: string, options: { sessionFile: string; dataDir: string; chat: boolean; agentDir?: string; title?: string;
   readCapture?: () => Promise<PromptCapture | null> }): Promise<PromptView> {
-  const [capture, tail, subagents] = await Promise.all([options.readCapture ? options.readCapture() : readCapture(options.dataDir, sessionId),
-    branchOf(options.sessionFile, REBUILD_BYTES), subagentsOf(options.sessionFile, sessionId)]);
-  const measured = lastInputTokens(tail?.entries ?? []);
+  const [capture, context, subagents] = await Promise.all([options.readCapture ? options.readCapture() : readCapture(options.dataDir, sessionId),
+    contextOf(options.sessionFile), subagentsOf(options.sessionFile, sessionId)]);
+  const measured = lastInputTokens(context?.entries ?? []);
   let origin: PromptOrigin;
   let drafts: Draft[];
   let api: PromptApi | undefined;
   if (capture) {
     origin = { kind: "exact", capturedAt: capture.capturedAt, provider: capture.provider, model: capture.model };
-    drafts = withTimes(payloadParts(capture.payload), tail?.entries ?? []);
+    drafts = withTimes(payloadParts(capture.payload), context?.entries ?? []);
     api = payloadApi(capture.payload);
   } else {
-    const rebuilt = await rebuild(options.sessionFile, options.chat, options.agentDir ?? join(homedir(), ".prime", "agent"), tail);
+    // The rebuild reads the newest 48 MiB, not only the context: the corrections checkpoints and the pinned brief may sit before it.
+    const rebuilt = await rebuild(options.sessionFile, options.chat, options.agentDir ?? join(homedir(), ".prime", "agent"), await branchOf(options.sessionFile, REBUILD_BYTES));
     origin = { kind: "rebuild", reason: rebuilt.reason };
     drafts = rebuilt.parts;
     api = rebuilt.api;
@@ -500,6 +501,11 @@ function contextParts(body: string): Draft[] {
 
 async function branchOf(sessionFile: string, bytes: number): Promise<BranchTail | undefined> {
   try { return await readBranchTail(sessionFile, { messages: 1_000_000, bytes }); } catch { return undefined; }
+}
+
+/** The entries of the model's current context, for the times of a capture's parts and the measured input: the context alone, not 48 MiB. */
+async function contextOf(sessionFile: string): Promise<BranchTail | undefined> {
+  try { return await readContextTail(sessionFile, REBUILD_BYTES); } catch { return undefined; }
 }
 
 /** input + cacheRead + cacheWrite of the newest assistant reply that reached the provider. */

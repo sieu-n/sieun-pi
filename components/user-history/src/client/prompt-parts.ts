@@ -1,4 +1,4 @@
-import { DUTY_BRIEF, type PromptPart, type PromptView } from "../shared/prompt-view.ts";
+import { DUTY_BRIEF, PREVIEW_CHARS, type PromptPart, type PromptView } from "../shared/prompt-view.ts";
 
 export type Speaker = "prompt" | "owner" | "injected" | "model" | "tool";
 
@@ -74,7 +74,7 @@ export function share(tokens: number, total: number): string {
  * tool call drops its leading `→ <tool>`, because the row's source kind, sender and tool already name them.
  */
 export function preview(part: Pick<PromptPart, "text" | "role" | "source" | "label">, length = 240): string {
-  const text = part.text.slice(0, length * 4);
+  const text = part.text.slice(0, PREVIEW_CHARS);
   const injected = part.role === "user" && !part.source.startsWith("the owner");
   const call = part.role === "assistant" && labelDetail(part.label) !== "";
   return (injected ? text.replace(/^\s*\[[^\]\n]{1,160}\]/, "") : call ? text.replace(/^→ \S+/, "") : text).replace(/\s+/g, " ").trim().slice(0, length);
