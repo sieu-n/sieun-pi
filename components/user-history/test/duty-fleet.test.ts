@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { dutyFleet, readsTheShare } from "../scripts/duties/duty-fleet.ts";
+import { dutyFleet, readsTheShare, verdictNow } from "../scripts/duties/duty-fleet.ts";
 import { CHANGE_APPROACH_MISSES } from "../src/shared/duty-streak.ts";
 import { DutyStore } from "../src/chat-duty-store.ts";
 
@@ -52,4 +52,16 @@ test("an unreadable session list marks the fleet's session data missing and stil
     assert.equal(fleet.metrics.stuck_duties, 0);
     assert.deepEqual(fleet.duties.filter(entry => entry.duty !== "checkin").map(entry => [entry.duty, entry.green, entry.misses]), [["d1", false, CHANGE_APPROACH_MISSES], ["d2", true, 0]]);
   } finally { await rm(dataDir, { recursive: true, force: true }); }
+});
+
+// 10-22 07:40Z: 01a140fb's check-in read red from a 04:16Z goal_gaps miss while its later skipped runs measured a clean board.
+test("a check-in run skipped while its last job works still gives the duty's verdict from its measure, when that measure is the newest", () => {
+  const missed = run("checkin", "goal_gaps", 1, 0, "<=", false, 1_000) as never;
+  const skipped = (met: boolean, at: number) => ({ ...run("checkin", "goal_gaps", met ? 0 : 2, 0, "<=", met, at), verdict: "skipped", summary: "skipped: previous run still working" }) as never;
+  assert.equal(verdictNow([skipped(true, 2_000), missed]), "met");
+  assert.equal(verdictNow([skipped(false, 2_000), run("checkin", "goal_gaps", 0, 0, "<=", true, 1_000) as never]), "missed");
+  assert.equal(verdictNow([{ ...run("checkin", "goal_gaps", 1, 0, "<=", false, 1_000), after: { at: 3_000, verdict: "met", metrics: {}, summary: "" } } as never, skipped(false, 2_000)]), "met",
+    "a job's after-measure newer than the skip wins");
+  assert.equal(verdictNow([{ duty: "d1", at: 2_000, trigger: "schedule", ms: 1, verdict: "skipped", metrics: {}, summary: "late slot" } as never, missed]), "missed",
+    "a skip that measured nothing leaves the older run's verdict");
 });

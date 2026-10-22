@@ -121,6 +121,22 @@ export interface DutyFleet {
 export const readsTheShare = (duty: { metrics: readonly { key: string }[] }): boolean => duty.metrics.some(metric => metric.key === "duties_green_pct");
 
 const measured = (run: DutyRunRecord): boolean => { const verdict = effectiveRun(run).verdict; return verdict === "met" || verdict === "missed"; };
+
+/**
+ * A duty's verdict now: that of its newest reading, a measured run's (after its job, when it has that measure) or a skipped run's that measured
+ * all the same. A check-in whose last job still works records its next run as skipped with the board's measure, and until 10-22 the fleet read
+ * the older run: over the 24 h to 07:40Z the newest measure would have changed the verdict at 126 of 2,592 chat samples, 51 to green and 75 to red.
+ */
+export function verdictNow(runs: readonly DutyRunRecord[]): "met" | "missed" | undefined {
+  let best: { at: number; verdict: "met" | "missed" } | undefined;
+  for (const run of runs) {
+    const metrics = Object.values(run.metrics ?? {});
+    const read = measured(run) ? { at: run.after?.at ?? run.at, verdict: effectiveRun(run).verdict as "met" | "missed" }
+      : run.verdict === "skipped" && metrics.length ? { at: run.at, verdict: metrics.every(metric => metric.met) ? "met" as const : "missed" as const } : undefined;
+    if (read && (!best || read.at > best.at)) best = read;
+  }
+  return best?.verdict;
+}
 const show = (value: number): string => String(Math.round(value * 10) / 10);
 const bound = (streak: MetricStreak): string => `${streak.op === "<=" ? "at most" : "at least"} ${show(streak.target)}`;
 
@@ -169,7 +185,7 @@ export async function dutyFleet(options: { dataDir: string; now: number; session
     for (const duty of active) {
       const own = runs.filter(run => run.duty === duty.id && measured(run));
       const newest = own[0];
-      const green = newest !== undefined && effectiveRun(newest).verdict === "met";
+      const green = verdictNow(runs.filter(run => run.duty === duty.id)) === "met";
       const streak = missStreak(own);
       const streaks = newest ? metricStreaks(own) : [];
       const entry: FleetDuty = { chat: id, duty: duty.id, name: duty.name, green, misses: streak, stuck: false, ...newest ? {} : { pending: true as const } };

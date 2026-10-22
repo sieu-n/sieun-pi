@@ -157,6 +157,13 @@ test("a share, ratio or volume over a window is no windowed count, so a red one 
   assert.equal(planCounts(inputs([run], { id: "d3", name: "Prod box headroom" }, at("06:47"))).redDuties.length, 1);
 });
 
+// 10-22 07:40Z: d9 asked Crawler VP to add lastEventAt to prod_alerts_over_24h, alert kinds firing now for over 24 h, which has no trailing window.
+test("a count of things in a state for over an age, or a count that must reach a floor, is no lagging window (Crawler VP prod_alerts_over_24h)", () => {
+  assert.deepEqual(unreadWindows(["prod_alerts_over_24h", "meta_walks_overdue_1d", "reviews_waiting_24h", "false_reds_24h"], {}), ["false_reds_24h"]);
+  assert.deepEqual(unreadWindows(["report_days_7d", "rule_breaks_24h"], {
+    report_days_7d: { value: 5, target: 7, op: ">=", met: false }, rule_breaks_24h: { value: 2, target: 0, op: "<=", met: false } }), ["rule_breaks_24h"]);
+});
+
 test("a duty whose newest job ended on a pool wait the runner has not recorded as a cut yet waits for its rerun too (CI and RepoOps d4, 07:01Z)", () => {
   const run: DutyRunRecord = { duty: "d4", at: at("06:56"), trigger: "verify", ms: 1, verdict: "missed", summary: "",
     metrics: { alerts_firing: { value: 1, target: 0, op: "<=", met: false } }, job: { id: "01a15819-1aa8-7108-b3d1-1331582fc4c7", name: "ci monitoring CI and RepoOps 15:56" } };

@@ -740,8 +740,13 @@ export interface LaggingDuty { chat: string; duty: string; keys: string[]; line:
 /** One chat's open steps that nobody moves (`liveStuck`), with the ids of those its check-in flagged. */
 export interface StuckSteps { chat: PlanInputs["chats"][number]; value: number; at: number | undefined; items: string[] }
 
-/** A metric that counts events over a trailing window, like false_reds_24h or repeat_corrections_7d; a share, a ratio or a volume over a window is no count. */
-export const WINDOW_COUNT = /^(?!.*(?:_pct|_ratio|_p\d\d|_[kmgt]b)_\d+[mhd]$).*_\d+[mhd]$/;
+/**
+ * A metric that counts events over a trailing window, like false_reds_24h or repeat_corrections_7d; a share, a ratio or a volume over a window
+ * is no count. Nor is a count of things in a state now for longer than an age (`_over_24h`, `_overdue_1d`, `_waiting_24h`): Crawler VP's
+ * prod_alerts_over_24h counts alert kinds firing now for over 24 h, which drop out when they stop firing, and on 10-22 d9 asked the chat to add
+ * a lastEventAt it cannot have.
+ */
+export const WINDOW_COUNT = /^(?!.*(?:_pct|_ratio|_p\d\d|_[kmgt]b|_over|_overdue|_waiting)_\d+[mhd]$).*_\d+[mhd]$/;
 
 /**
  * The missed windowed counts of a duty's newest reading whose precheck gives no `lastEventAt`: the runner cannot tell whether a new event
@@ -749,7 +754,8 @@ export const WINDOW_COUNT = /^(?!.*(?:_pct|_ratio|_p\d\d|_[kmgt]b)_\d+[mhd]$).*_
  * 10-19 17:05Z, after their fix went live at 03:28Z, and 11 other red windowed counts in 6 chats gave no lastEventAt either.
  */
 export function unreadWindows(missed: readonly string[], metrics: DutyRunRecord["metrics"]): string[] {
-  return missed.filter(key => WINDOW_COUNT.test(key) && metrics[key]?.lastEventAt === undefined);
+  // Only a count capped from above waits for old events to leave: a count that must reach a floor, like report_days_7d, misses on too few.
+  return missed.filter(key => WINDOW_COUNT.test(key) && metrics[key]?.op !== ">=" && metrics[key]?.lastEventAt === undefined);
 }
 
 /**
