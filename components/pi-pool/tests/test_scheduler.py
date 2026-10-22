@@ -300,6 +300,28 @@ class R5Wait(unittest.TestCase):
         d = limited(state, KEY, out, NOW, NOW + 600)
         self.assertEqual((type(d), d.slot_account.id, d.slot_at), (sched.Wait, "mine", NOW + 600))
 
+    def test_a_tree_that_comes_back_after_its_cell_went_stale_keeps_its_place(self):
+        """10-21 20:55Z: 01a14df9, high and waiting since 20:00Z, was told 21:24Z on
+        claude-virev5 and asked again at 22:26Z, after its cell went stale. It rejoined the
+        queue as if it had started waiting at 22:26Z and got claude-virev10 at 00:42Z, behind
+        trees that started waiting after it. In that window 25 of the 38 parks that stayed
+        parked over 10 min after a later tree of their class got in had lost their place so."""
+        state = empty_state()
+        early, later = put(state, tree_key("early"), on="x"), put(state, tree_key("later"), on="x")
+        out = acct("x", five=100, five_reset_in=600, tier="max 5x")
+        d = limited(state, early, [out], NOW, NOW + 600)
+        self.assertEqual((d.slot_account.id, d.slot_at), ("x", NOW + 600))
+        again_out = dataclasses.replace(out, limited_until=NOW + 5000)
+        w = request(state, later, [again_out], NOW + 1000)
+        self.assertEqual((type(w), w.slot_at), (sched.Wait, NOW + 5000))
+        back = request(state, early, [again_out], NOW + 600 + sched.WAIT_STALE_SEC + 100)
+        self.assertEqual((type(back), back.slot_at), (sched.Wait, NOW + 5000))
+        self.assertEqual(state["sessions"][early.key]["wait"][P]["since"], NOW)
+        at = NOW + 5000
+        open_x = fresh("x", 0, FIVE, at, tier="max 5x")
+        self.assertIsInstance(request(state, later, [open_x], at), sched.Wait)
+        self.assertEqual(request(state, early, [open_x], at).account.id, "x")
+
     def test_a_waiter_whose_account_serves_before_its_slot_gets_no_token(self):
         state = empty_state()
         put(state, KEY, on="x", at=NOW - 60)
@@ -642,13 +664,17 @@ class StateCleanup(unittest.TestCase):
     def test_prune_drops_old_admissions_moves_and_stale_waits(self):
         state = empty_state()
         put(state, KEY, on="a", moves=[NOW - 2 * 86400, NOW - 60])
-        state["sessions"][KEY.key]["wait"] = {P: {"account": "a", "slot_at": NOW - 2 * sched.WAIT_STALE_SEC, "since": NOW}}
+        stale = NOW - 2 * sched.WAIT_STALE_SEC
+        state["sessions"][KEY.key]["wait"] = {P: {"account": "a", "slot_at": stale, "since": NOW - 7200}}
         state["providers"][P]["admissions"] = {"a": [[NOW - 2 * sched.ADMISSION_KEEP_SEC, "x"], [NOW - 5, "y"]]}
         self.assertTrue(vending.HookWriter(state).prune(CFG, NOW))
         rec = state["sessions"][KEY.key]
-        self.assertEqual((rec["moves"][P], rec["wait"]), ([NOW - 60], {}))
+        self.assertEqual((rec["moves"][P], rec["wait"]), ([NOW - 60], {P: {"slot_at": stale, "since": NOW - 7200}}))
         self.assertEqual(state["providers"][P]["admissions"], {"a": [[NOW - 5, "y"]]})
         self.assertFalse(vending.HookWriter(state).prune(CFG, NOW))
+        self.assertEqual(sched.book_for(state, P, None, CFG, NOW).waiting, {})
+        self.assertTrue(vending.HookWriter(state).prune(CFG, stale + sched.PLACE_KEEP_SEC + 1))
+        self.assertEqual(rec["wait"], {})
 
 
 class Cli(unittest.TestCase):

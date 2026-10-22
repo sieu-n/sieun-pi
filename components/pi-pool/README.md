@@ -391,6 +391,15 @@ when it wakes and is given the next one. So a reset admits the waiting trees at 
 high trees first. On 2026-10-12 15:30, 25 vends landed on claude7 in 4 seconds; at the
 2026-10-10 21:00 reset 26 trees landed on claude9 in 2 seconds.
 
+A tree that asks no more within `WAIT_STALE_SEC` (15 min) of its slot gives up its cell, so
+the cell holds no one, but it keeps its wait start for `PLACE_KEEP_SEC` (3 h) after the slot.
+When it asks again it ranks where it ranked before. A run cut while it waits comes back when
+the chat service resumes it, and a woken run can sit in the turn queue, so on 10-21 and 10-22
+40 trees asked again over 15 min after their slot, 39 of them within 124 min. Until 10-22 the
+wait went with the cell, and such a tree started over behind every tree that began waiting
+after it. 25 of the 38 parks that stayed parked over 10 min after a later tree of their class
+got an account had lost their place this way, and they held 85% of those minutes.
+
 When every account is out, each tree waits for its own cell at the real reset of the
 account that frees first. Accounts that reset minutes apart each take the trees booked on
 them at R4's pace, and a tree that would wait longer on the first account books a cell on

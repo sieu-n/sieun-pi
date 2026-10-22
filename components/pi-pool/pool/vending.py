@@ -77,8 +77,9 @@ class HookWriter:
 
     def prune(self, cfg, now):
         """Drop expired cooldowns and limits, admissions older than
-        ADMISSION_KEEP_SEC, moves older than a day, waits whose slot passed
-        WAIT_STALE_SEC ago, and automatic sessions inactive for pin_ttl_sec.
+        ADMISSION_KEEP_SEC, moves older than a day, the cell of a wait whose slot
+        passed WAIT_STALE_SEC ago (its place stays until PLACE_KEEP_SEC after the
+        slot), and automatic sessions inactive for pin_ttl_sec.
         Moves a record quiet for active_session_sec with no wait to the session
         archive (registry.Sessions). Returns whether anything changed, so a request that prunes nothing does
         not rewrite the file. Liveness is NOT a pid test: a session resumed in a
@@ -121,9 +122,13 @@ class HookWriter:
                 dropped += 1
                 continue
             waits = rec.get("wait") or {}
-            for provider in [p for p, w in waits.items() if w["slot_at"] < now - sched.WAIT_STALE_SEC]:
-                del waits[provider]
-                dropped += 1
+            for provider, w in list(waits.items()):
+                if not w.get("account") and w["slot_at"] < now - sched.PLACE_KEEP_SEC:
+                    del waits[provider]
+                    dropped += 1
+                elif w.get("account") and w["slot_at"] < now - sched.WAIT_STALE_SEC:
+                    waits[provider] = {"slot_at": w["slot_at"], "since": w["since"]}
+                    dropped += 1
             moves = rec.get("moves") or {}
             for provider, times in list(moves.items()):
                 kept = [t for t in times if now - t < sched.MOVE_WINDOW_SEC]

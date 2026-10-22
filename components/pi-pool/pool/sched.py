@@ -23,6 +23,7 @@ from . import base, registry
 #      the account that frees first: the first R4 cell at or after the account
 #      passes R2 again (now, or its real reset or 429 `until`), ordered by priority,
 #      then by wait start. Its own account wins a tie, so the tree keeps its cache.
+#      A tree that comes back after its cell went stale keeps its wait start.
 #   R6 move budget: a tree that moved max_moves_per_day[priority] times in 24 h
 #      waits for its own account, at most budget_wait_max_sec from the start of its
 #      wait; a high tree is refused only optional moves.
@@ -33,8 +34,12 @@ PRIORITY_RANK = {p: i for i, p in enumerate(PRIORITIES)}
 # The tree record the CLI and the hook keep per provider.
 ADMISSION_KEEP_SEC = 1800
 MOVE_WINDOW_SEC = 24 * 3600
-# A wait whose slot passed this long ago with no request from the tree is dropped.
+# A wait whose slot passed this long ago with no request from the tree gives up its cell
+# and keeps only its place in the queue, its wait start.
 WAIT_STALE_SEC = 900
+# How long after its slot a tree that gave up its cell keeps its place.
+# measured: 10-21 22:00Z to 10-22 05:20Z on us-metal02, 39 of the 40 trees that asked again over WAIT_STALE_SEC after their slot asked within 124 min (pi-pool.log).
+PLACE_KEEP_SEC = 3 * 3600
 # How far ahead a slot is searched, in cells.
 SLOT_SEARCH_CELLS = 5000
 
@@ -53,7 +58,8 @@ class Tree:
     priority: str = "normal"
     # Epoch seconds of the tree's moves in the last 24 h.
     moves: tuple = ()
-    # (account id, slot_at, since) while the tree waits for a slot.
+    # (account id, slot_at, since) while the tree waits for a slot; the account id is
+    # None once the cell went stale and the tree keeps only its place (since).
     wait: "tuple | None" = None
 
 
@@ -418,7 +424,7 @@ def tree_for(state, key, provider):
                 leave=((rec.get("leave") or {}).get(provider) or {}).get("account_id"),
                 priority=rec.get("priority") or "normal",
                 moves=tuple((rec.get("moves") or {}).get(provider) or ()),
-                wait=(wait["account"], wait["slot_at"], wait["since"]) if wait else None)
+                wait=(wait.get("account"), wait["slot_at"], wait["since"]) if wait else None)
 
 
 def selection_view(tree):
@@ -435,7 +441,7 @@ def book_for(state, provider, key, cfg, now):
     waiting, parked = {}, {}
     for k, rec in state["sessions"].items():
         wait = (rec.get("wait") or {}).get(provider)
-        if not wait or (key and k == key.key):
+        if not wait or not wait.get("account") or (key and k == key.key):
             continue
         parked[wait["account"]] = parked.get(wait["account"], 0) + 1
         rank = (PRIORITY_RANK.get(rec.get("priority") or "normal", 1), wait["since"], k)
