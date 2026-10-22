@@ -15,6 +15,7 @@ import type { JobResumes } from "./job-resume.ts";
 import type { PrimeUpdate } from "./prime-update.ts";
 import type { InterruptedReport, JobOf } from "./shared/interrupted.ts";
 import type { Wake } from "./wakes.ts";
+import type { ArtifactDisk } from "./checkin-load.ts";
 import type { JobCancelRecord } from "./job-cancels.ts";
 import type { ArchiveBy, ServiceArchive } from "./service-archives.ts";
 import type { Leftovers } from "./job-leftovers.ts";
@@ -328,6 +329,8 @@ export interface CheckInSource {
   registry?: JobRegistry;
   /** The home folder whose `.prime/agent/session-artifacts/<chat id>/scheduled-jobs.json` holds a chat's heartbeats; the user's home when absent. */
   home?: string;
+  /** The disk of the other box that runs a chat (`chatDisk`), where its jobs' quota parks are; null or absent: this box's at `home`. */
+  artifacts?: (chat: string) => Promise<ArtifactDisk | null>;
   memory: CheckInRecord;
   settings: CheckInSettings;
   /** How often the scheduler wakes to run the chats whose interval has passed; 0 starts no timer (tests call `tick`). Default CHECK_IN_TICK_MS. */

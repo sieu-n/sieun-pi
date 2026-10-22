@@ -39,6 +39,7 @@ import { recordUnloaded, writeReceipt } from "./unloaded.ts";
 import { quietMinutes } from "./quiet-minutes.ts";
 import { startTmpSweep } from "./tmp-sweep.ts";
 import { Chats, UNKNOWN_ACTIVE } from "./chats.ts";
+import { chatDisk } from "./checkin-load.ts";
 import { extensionBuild, loadRecord } from "./chat-brief.ts";
 import { Duties } from "./chat-duty-run.ts";
 import { primeUpdateRunning } from "./prime-update.ts";
@@ -259,7 +260,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
           // A native abort holds the session's input until the next human prompt; reopen it so the continue gets through (as Resume does).
           await threads.resumeQueue(id).catch(() => {});
         }),
-      held: now => readHeldTurns(dataDir, now),
+      held: now => readHeldTurns(dataDir, now), artifacts: id => chatDisk(catalog, id),
       unstarted: async now => unstartedJobs(join(dataDir, BRIEFS_DIR), now, treeWorker),
       settings, claude: claudeReader(), poolAdmits, poolHeldFile: join(dataDir, "pool-held.json"), queue: queued,
       awake: working => awake.update(working), corrections: () => corrections.read(), duty: duties,

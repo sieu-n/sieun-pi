@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
-import { readdirSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
+import { readdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -8,6 +9,7 @@ import { CI_CACHE_REPO, RUN_WAKE_DUE_MS, treeWakes, type Wake, wakeLabel } from 
 import { firstClause } from "./shared/chat-board.ts";
 import type { PlanItem } from "./shared/types.ts";
 import { ciRuns } from "./ci-runs.ts";
+import { type Host, listHostDir, readHostFile } from "./hosts.ts";
 
 /*
  * Work spread and stale timers (owner 10-12, c51): "you seem to be using waaay too much on that ONE old session when it will be so much more
@@ -62,8 +64,12 @@ export interface ScheduledJob {
 export const heartbeatsFile = (chatId: string, home: string = homedir()): string => join(home, ".prime", "agent", "session-artifacts", chatId, "scheduled-jobs.json");
 /** The schedules in a `scheduled-jobs.json`; none when the file is missing or unreadable. */
 export function readHeartbeats(file: string): ScheduledJob[] {
+  try { return parseHeartbeats(readFileSync(file, "utf8")); } catch { return []; }
+}
+/** The schedules in a `scheduled-jobs.json` text; none when it does not parse. */
+export function parseHeartbeats(text: string): ScheduledJob[] {
   try {
-    const jobs = (JSON.parse(readFileSync(file, "utf8")) as { jobs?: unknown }).jobs;
+    const jobs = (JSON.parse(text) as { jobs?: unknown }).jobs;
     return Array.isArray(jobs) ? jobs.filter((job): job is ScheduledJob => typeof job === "object" && job !== null && typeof (job as ScheduledJob).id === "string") : [];
   } catch {
     return [];
@@ -170,15 +176,65 @@ export function quotaParks(jobs: readonly ScheduledJob[], now: number): Map<stri
   return parks;
 }
 /**
- * The `scheduled-jobs.json` files that hold the quota resumes of a chat's jobs: the chat's own (its subagents'), each root's it names (`roots`,
- * session ids, such as its step-owner threads), and the ones a nested subagent keeps under `<chat>/sub-*\/session-artifacts/<session>/`.
+ * The disk that holds a chat's Prime artifacts, as the check-in reads it: this box's (`localDisk`), or the chat's box through its relay
+ * (`hostDisk`). sep launch!! runs on the Mac, and on 10-22 the 16:51Z and 17:06Z check-ins on us-metal02 looked on their own disk for its
+ * jobs' quota parks, found none, and called mail integrations and mcp connector failed while Prime held both until 19:20Z.
  */
-export function parkFiles(chat: string, roots: readonly string[], home: string = homedir()): string[] {
-  const artifacts = join(home, ".prime", "agent", "session-artifacts", chat);
-  const list = (dir: string): string[] => { try { return readdirSync(dir); } catch { return []; } };
-  const nested = list(artifacts).filter(name => name.startsWith("sub-"))
-    .flatMap(sub => list(join(artifacts, sub, "session-artifacts")).map(session => join(artifacts, sub, "session-artifacts", session, "scheduled-jobs.json")));
-  return [...new Set([chat, ...roots].map(id => heartbeatsFile(id, home))), ...nested];
+export interface ArtifactDisk {
+  /** The home on that box whose `.prime/agent/session-artifacts` holds the chat's folder. */
+  home: string;
+  /** The entry names of a folder; none when it is missing or cannot be read. */
+  list(dir: string): Promise<string[]>;
+  /** A file's text; null when it is missing or cannot be read. */
+  read(file: string): Promise<string | null>;
+}
+export const localDisk = (home: string = homedir()): ArtifactDisk => ({ home,
+  list: dir => readdir(dir).catch(() => []), read: file => readFile(file, "utf8").catch(() => null) });
+export const hostDisk = (host: Host, home: string): ArtifactDisk => ({ home,
+  list: dir => listHostDir(host, dir).then(entries => entries.map(entry => entry.name), () => []),
+  read: file => readHostFile(host, file).then(found => found.bytes.toString("utf8"), () => null) });
+/** The home a session file on a box lives under, from its path on that box (`/Users/sieunpark/.prime/agent/sessions/<id>.jsonl`). */
+export const homeOfSessionFile = (path: string): string | undefined => /^(.*?)\/\.prime\/agent\//.exec(path)?.[1];
+
+/** What `chatDisk` reads of the catalog: which box runs a session, that box's hosts.json entry, the other boxes' rows, and a row's path there. */
+export interface DiskCatalog {
+  hostOf(id: string): string | null;
+  hostEntry(name: string): Host | undefined;
+  remoteRows(): readonly { sessionId: string; sessionFile?: string }[];
+  daemonPath(summary: { sessionId: string; sessionFile?: string }): string | undefined;
+}
+/**
+ * The disk of the box that runs chat `id`: null for this box's chats and when the other box's home cannot be told from the chat's row. The row
+ * comes from that box's list, so no copy of the chat's transcript is made for it.
+ */
+export async function chatDisk(catalog: DiskCatalog, id: string): Promise<ArtifactDisk | null> {
+  const name = catalog.hostOf(id);
+  const host = name ? catalog.hostEntry(name) : undefined;
+  if (!host) return null;
+  const row = catalog.remoteRows().find(entry => entry.sessionId === id);
+  const home = row ? homeOfSessionFile(catalog.daemonPath(row) ?? "") : undefined;
+  return home ? hostDisk(host, home) : null;
+}
+
+/**
+ * The `scheduled-jobs.json` files on `disk` that hold the quota resumes of a chat's jobs: the chat's own, each root's it names (`roots`, session
+ * ids, such as its step-owner threads), and for each job session in `sessions` the one Prime keeps in the chat's folder, under
+ * `<chat>/session-artifacts/<session>/` for a subagent of the chat or `<chat>/sub-*\/session-artifacts/<session>/` for one below a subagent.
+ * Until 10-23 the first of those two was not read, and on us-metal02 it held 410 of the 494 subagent quota resumes: from 10-20 04:50Z to 10-22
+ * 19:38Z, 141 check-ins in 7 chats called 23 such jobs failed while their park was pending (chat reply speed parked from 04:04Z to 05:06Z on
+ * 10-22, read failed at 04:21Z, 04:36Z and 04:51Z), and on the Mac sep launch!!'s 16:51Z check-in counted 5 steps stuck on its 2
+ * parked jobs, which d9 read as stuck_steps_all 5 at 17:03Z.
+ */
+export async function parkFiles(chat: string, roots: readonly string[], sessions: ReadonlySet<string>, disk: ArtifactDisk = localDisk()): Promise<string[]> {
+  const artifacts = join(disk.home, ".prime", "agent", "session-artifacts", chat);
+  const folders = [join(artifacts, "session-artifacts"), ...(await disk.list(artifacts)).filter(name => name.startsWith("sub-")).map(sub => join(artifacts, sub, "session-artifacts"))];
+  const nested = await Promise.all(folders.map(async folder => (await disk.list(folder)).filter(session => sessions.has(session)).map(session => join(folder, session, "scheduled-jobs.json"))));
+  return [...new Set([...[chat, ...roots].map(id => heartbeatsFile(id, disk.home)), ...nested.flat()])];
+}
+/** The schedules in the files `parkFiles` names, read from `disk`. */
+export async function parkSchedules(chat: string, roots: readonly string[], sessions: ReadonlySet<string>, disk: ArtifactDisk = localDisk()): Promise<ScheduledJob[]> {
+  const files = await parkFiles(chat, roots, sessions, disk);
+  return (await Promise.all(files.map(async file => parseHeartbeats(await disk.read(file) ?? "")))).flat();
 }
 /**
  * The facts with each job parked on a provider limit (`quotaParks`) marked working until the daemon's quota resume (`JobFact.parkedUntil`): it

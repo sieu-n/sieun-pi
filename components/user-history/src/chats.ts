@@ -6,7 +6,7 @@ import { ArchiveLeftWork, ScheduledJobsLeft } from "./saved-archive.ts";
 import { artifactsDir } from "./moved-images.ts";
 import { agentChildren } from "./chat-agents.ts";
 import { activeCorrections, handoffRules } from "./chat-corrections.ts";
-import { deadWakes, heartbeatsFile, landCarries, liveThreads, parkFiles, quotaParks, readHeartbeats, readTrain, trainFile, trainRepo, withDeadWakes, withQuotaParks, withWakes } from "./checkin-load.ts";
+import { deadWakes, heartbeatsFile, landCarries, liveThreads, localDisk, parkSchedules, quotaParks, readHeartbeats, readTrain, trainFile, trainRepo, withDeadWakes, withQuotaParks, withWakes } from "./checkin-load.ts";
 import { flagStreaks } from "./checkin-repeats.ts";
 import { boardPrs, type DoneFacts, metricFacts } from "./checkin-done.ts";
 import { activePause, changeCheckIn, type CheckInActor, type CheckInChange, CheckInRefused, type CheckInSetting, DEFAULT_CHECK_IN, nextCheckIn, planCheckIn } from "./checkin-settings.ts";
@@ -1655,7 +1655,13 @@ export class Chats {
       wakes, key => sessions.get(key), this.below), dead, key => sessions.get(key), this.below), held?.sessions ?? new Map(), key => sessions.get(key)), unstarted);
     // A job Prime parked on a provider limit waits for an account until the daemon's quota resume, not failed (`withQuotaParks`).
     const roots = threads.flatMap(fact => fact.key.startsWith("thread:") ? [fact.key.slice("thread:".length)] : []);
-    const parks = quotaParks(parkFiles(id, roots, this.source.home).flatMap(readHeartbeats), this.now());
+    // A chat on another box keeps its jobs' parks on that box's disk, read through its relay (`chatDisk`).
+    const jobSessions = new Set(threads.flatMap(fact => {
+      const session = fact.key.startsWith("thread:") ? fact.key.slice("thread:".length) : fact.sessionId ?? sessions.get(fact.key);
+      return session ? [session] : [];
+    }));
+    const disk = await this.source.artifacts?.(id).catch(() => null) ?? localDisk(this.source.home);
+    const parks = quotaParks(await parkSchedules(id, roots, jobSessions, disk), this.now());
     const pool = await this.source.queue?.().catch(() => undefined);
     const queued = pool?.queued ?? new Map<string, QueuePlace>();
     const pooled = await withFailedTurns(threads, join(this.source.home ?? homedir(), ".prime", "agent"), id, key => sessions.get(key),
