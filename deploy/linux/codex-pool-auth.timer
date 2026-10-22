@@ -1,0 +1,10 @@
+[Unit]
+Description=Rerun codex-pool-auth every 15 minutes: pi-pool hands out a token with more than its refresh_skew_sec of 900 s left, so each rerun lands before the copied token expires
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=15min
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

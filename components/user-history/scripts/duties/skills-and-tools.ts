@@ -538,7 +538,7 @@ export const CHECKS: readonly Check[] = [
       : FAIL("agent", `claude-sdk-session.py --help: ${failText(result)}`, "fix the script's inline dependency or the uv cache");
   } },
   { id: "codex_cli", group: "peers", tool: "codex CLI", run: deps => cliLogin(deps, "codex", ["login", "status"], result => both(result).includes("Logged in"),
-    "sign in with the `codex login` device flow in the owner's Aside browser; a password prompt makes it an owner item") },
+    "run `systemctl --user start codex-pool-auth.service`, which writes ~/.codex/auth.json from the pi-pool Codex account it names (deploy/linux/codex-pool-auth), and read its journal if pi-pool refuses") },
   { id: "gh_auth", group: "service clis", tool: "gh", run: deps => cliLogin(deps, "gh", ["auth", "status"], result => both(result).includes("Logged in to github.com"), "run `gh auth login --web` in the owner's Aside browser") },
   { id: "vercel_auth", group: "service clis", tool: "vercel", run: deps => cliLogin(deps, "vercel", ["whoami"], () => true, "run `vercel login` in the owner's Aside browser") },
   { id: "railway_auth", group: "service clis", tool: "railway", run: railwayAuth },

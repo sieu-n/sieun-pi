@@ -1,0 +1,43 @@
+#!/usr/bin/python3
+"""codex-pool-auth <email|id>: log the codex CLI in with one pi-pool Codex account.
+
+pi-pool holds the account's refresh token, and a refresh rotates it, so a second holder makes the
+pool's next refresh fail with refresh_token_reused. This writes $CODEX_HOME/auth.json (default
+~/.codex) from `pi-pool token`, the access token the pool refreshes when it nears expiry, with a
+refresh token codex cannot spend. codex reads id_token only for its claims, and the access token
+carries the same chatgpt claims, so it fills both. codex-pool-auth.timer reruns this."""
+import base64, datetime, json, os, subprocess, sys, tempfile
+
+UNUSABLE_REFRESH = "pi-pool-owned"
+
+
+def claims(jwt):
+    part = jwt.split(".")[1]
+    return json.loads(base64.urlsafe_b64decode(part + "=" * (-len(part) % 4)))
+
+
+def auth_file(token):
+    account = claims(token)["https://api.openai.com/auth"]["chatgpt_account_id"]
+    now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return {"OPENAI_API_KEY": None, "last_refresh": now,
+            "tokens": {"id_token": token, "access_token": token, "refresh_token": UNUSABLE_REFRESH, "account_id": account}}
+
+
+def main(argv):
+    if len(argv) != 1:
+        raise SystemExit("usage: codex-pool-auth <email|id>")
+    pool = os.environ.get("PI_POOL_BIN", "pi-pool")
+    got = subprocess.run([pool, "token", argv[0], "--provider", "openai-codex"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    if got.returncode != 0 or not got.stdout.strip():
+        raise SystemExit(f"codex-pool-auth: pi-pool token {argv[0]} failed ({got.returncode}): {got.stderr.strip()}")
+    home = os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex")
+    os.makedirs(home, mode=0o700, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=home, prefix=".auth.json.")
+    with os.fdopen(fd, "w") as f:
+        json.dump(auth_file(got.stdout.strip()), f, indent=2)
+    os.replace(tmp, os.path.join(home, "auth.json"))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

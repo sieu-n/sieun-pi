@@ -18,6 +18,7 @@ The chat listens on 127.0.0.1:5182 and the wiki on 127.0.0.1:5176; Tailscale Ser
 | `ci-cache.service`, `ci-head-fetch.timer` | The one GitHub Actions poller for auto-sns-agent, `scripts/dev/ci-cache.mjs poll` run from the head export of `origin/sieun/dev` through `run-from-head.mjs --follow-head`, which writes `~/.cache/virev/ci-runs.json` for `ci-run-status`, the gh shim and `board.wake(run=)`. The timer fetches `origin/sieun/dev` every 5 minutes so the poller follows the pushed head. |
 | `ci-monitor.timer` | `scripts/dev/ci-monitor.mjs run` every 10 minutes through `run-from-head.mjs`, which writes `snapshot.md`, `history.jsonl`, `state.json` and `dashboard/` in the wiki's `sessions/2026/10/08/0624-ci-access-monitor/logs` for `/playground/ci` and the VP of CI duties. It replaced the Mac's launchd `ai.virev.ci-monitor` on 2026-10-18 at 06:16Z. |
 | `secrets-watch.timer` | The secrets check every 15 minutes from the `sessions/2026/10/14/1121-secrets-self-heal/a/run` copy, with its state in `~/.cache/virev/secrets-watch`. It replaced the Mac's launchd `ai.virev.secrets-watch` on 2026-10-18 at 06:23Z. |
+| `codex-pool-auth.timer` | Writes `~/.codex/auth.json` from a pi-pool Codex account every 15 minutes, so the codex CLI uses the pool's live token (see the codex line below). |
 | `prime-sync.timer` | One run of `components/prime-sync` every minute, which keeps skills, `AGENTS.md`, shared settings, harness entries and the corrections ledger equal to every other box's. |
 
 The daemon has its own unit, so a chat restart never stops a running agent, and the chat unit sets `SIEUN_PI_CHAT_START_DAEMON=0` so the chat never starts a daemon in its own cgroup.
@@ -54,7 +55,9 @@ The unit sets `TimeoutStartSec=infinity`, because systemd times ExecReload with 
 `~/.config/sieun-pi/agent.env` (mode 0600) holds keys both units read, such as `LINEAR_API_KEY`. It sets no `PRIME_API_KEY`: no session uses the `prime-inference` provider, and with that key Prime's status summarizer called it after every turn and got 402 for an empty balance, 26,186 times from 07:48Z to 08:36Z on 10-18.
 `~/.config/sieun-pi/chat.env` (mode 0600) holds keys only the chat reads, `SIEUN_PI_SLACK_BOT_TOKEN` and `SIEUN_PI_SLACK_APP_TOKEN`, which the Mac keeps in the Keychain. The daemon never loads it, so no agent sees the Slack tokens.
 Since 10-18 at 03:20Z the box matches the Mac for auto-sns-agent agents: the same env files (mode 0600), Convex data from a Mac export, the cloud CLIs at the Mac's versions, claude and codex, the Mac's ssh key as `~/.ssh/id_ed25519_mac`, a ghcr.io Docker login, and a `/Users/sieunpark` link to `/home/sieun`.
-codex on the box has its own `codex login --device-auth` session, which writes only `~/.codex/auth.json` and leaves pi-pool's account files alone, and vercel has its own device login.
+codex on the box logs in through `codex-pool-auth.timer`, which every 15 minutes writes `~/.codex/auth.json` from `pi-pool token` for the Codex account its service names, now ungsugoe5@gmail.com. The file gets a refresh token codex cannot spend, because pi-pool holds the real one and a second holder's refresh makes the pool's next one fail with refresh_token_reused.
+Until 10-22 codex had its own device login as sieunpark77, and the breach response's "log out of all devices" at 10:02Z ended it, so the login now follows the pool instead. Test the script with `python3 -B deploy/linux/codex-pool-auth.test.py`.
+ungsugoe5 is a free account, which cannot run the `gpt-6-astra` default in `~/.codex/config.toml`, so pass `-m gpt-5.6-terra` until the unit names a pro account. vercel has its own device login.
 
 ## Memory layers
 

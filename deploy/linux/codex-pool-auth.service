@@ -1,0 +1,7 @@
+[Unit]
+Description=codex-pool-auth: log the codex CLI in with the pi-pool Codex account named below, from the token pi-pool refreshes
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/python3 -B %h/src/sieun-pi/deploy/linux/codex-pool-auth ungsugoe5@gmail.com
