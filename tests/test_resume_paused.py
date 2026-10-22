@@ -836,13 +836,12 @@ class ResumePausedTests(unittest.TestCase):
         "timestamp": 1792517408140, "diagnostics": [{"type": "provider_stream_failure", "timestamp": 1792517408140,
                                                       "details": {"kind": "credential_unavailable", "retryAtMs": 1792517520000, "retryAfterMs": 111860}}]}}
 
-    def run_marked(self, dry_run=True, hook=None):
+    def run_marked(self, dry_run=True, hook=None, now=dt.datetime(2026, 10, 20, 17, 31, 55, tzinfo=dt.timezone.utc)):
         sessions = self.root / "sessions"
         sessions.mkdir(exist_ok=True)
         entries = [{"type": "message", "timestamp": "2026-10-20T17:30:07.900Z", "message": {"role": "user", "content": [{"type": "text", "text": "continue"}]}},
                    self.MARKER, {"type": "session_state", "timestamp": "2026-10-20T17:31:50.300Z", "state": {"status": "archived"}}]
         (sessions / f"{self.MARKED}.jsonl").write_text("\n".join(json.dumps(entry) for entry in entries) + "\n")
-        now = dt.datetime(2026, 10, 20, 17, 31, 55, tzinfo=dt.timezone.utc)
         args = argparse.Namespace(message="continue", since_minutes=0, dry_run=dry_run, include_children=False, direct=True,
                                   only="" if dry_run else self.MARKED, state=str(self.root / "state.json"))
         with patch.object(resume_paused, "SESSIONS_DIR", sessions), patch.object(resume_paused, "ARTIFACTS_DIR", self.root / "artifacts"), \
@@ -924,6 +923,10 @@ class ResumePausedTests(unittest.TestCase):
 
     def test_a_run_the_idle_unload_stopped_in_a_credential_wait_is_resumed(self):
         report = self.run_marked()
+        self.assertEqual(report["paused"], [])
+        self.assertEqual([(h["session_id"], h["pool_at"]) for h in resume_paused.HELD], [(self.MARKED, "2026-10-20T17:32:00+00:00")])
+        resume_paused.HELD.clear()
+        report = self.run_marked(now=dt.datetime(2026, 10, 20, 17, 32, 5, tzinfo=dt.timezone.utc))
         self.assertEqual([(p["reason"], p["target"], p["errored_at"]) for p in report["paused"]],
                          [("error", self.MARKED, "2026-10-20T17:30:08.140Z")])
         self.assertIn("waits for its slot at 2026-10-20T17:32:00.000Z", report["paused"][0]["error"])
@@ -934,6 +937,26 @@ class ResumePausedTests(unittest.TestCase):
         self.assertEqual([(h["session_id"], h["pool_at"]) for h in resume_paused.HELD], [(self.MARKED, "2026-10-20T17:32:00+00:00")])
         self.assertEqual(self.sent, [])
 
+
+    def test_a_slot_wait_pi_pool_keyed_under_another_tree_holds_the_run_until_its_slot(self):
+        # lrv-w4-hb (01a15ff2) on us-metal02, 10-22: from 00:05:10Z pi-pool keyed the probe's turns under new trees (2030e00a5d43, be57bb50f3fb),
+        # and at 00:11:01Z the hook answered exit 75 with a slot at 02:09:30Z. The 00:12:5xZ pass asked about the chat's tree 01a14210, which had
+        # an account, so it sent continue, reopened the quota-held probe at 00:12:55.428Z and started worker 0926d2340e47.
+        probe = "01a15ff2-b63f-75a1-9f92-6d53c0dc32d1"
+        marker = json.loads(json.dumps(self.MARKER))
+        marker["timestamp"] = "2026-10-22T00:11:01.370Z"
+        marker["message"]["diagnostics"][0]["details"]["retryAtMs"] = 1792634970000
+        entries = [{"type": "message", "timestamp": "2026-10-22T00:11:01.000Z", "message": {"role": "user", "content": [{"type": "text", "text": "[lrv-w4-cron]"}]}},
+                   marker, {"type": "session_state", "timestamp": "2026-10-22T00:12:38.000Z", "state": {"status": "archived", "reason": "idle_unload"}}]
+        now = dt.datetime(2026, 10, 22, 0, 12, 54, tzinfo=dt.timezone.utc)
+        unloaded = {probe: resume_paused.parse_ts("2026-10-22T00:12:38.000Z")}
+        plan = self.run_named(probe, entries, now, unloaded, owners={probe}, dry_run=True)
+        self.assertEqual(plan["paused"], [], "the job sweep's plan pass")
+        self.assertEqual([(h["session_id"], h["pool_at"]) for h in resume_paused.HELD], [(probe, "2026-10-22T02:09:30+00:00")])
+        resume_paused.HELD.clear()
+        sent = self.run_named(probe, entries, now, unloaded)
+        self.assertEqual((sent["paused"], self.sent), ([], []), "the job sweep's send pass")
+        self.assertEqual([h["session_id"] for h in resume_paused.HELD], [probe])
     def test_credential_wait_at_reads_the_diagnostic_and_not_the_text(self):
         message = self.MARKER["message"]
         self.assertEqual(resume_paused.credential_wait_at(message), 1792517520000)

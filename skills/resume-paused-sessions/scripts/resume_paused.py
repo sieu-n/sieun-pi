@@ -190,6 +190,7 @@ POOLED_PROVIDERS = ("anthropic", "openai-codex")
 # A provider error Prime keeps retrying until an account serves the tree again: a rate limit, a used-up plan, or pi-pool's hold on the tree.
 PROVIDER_WAIT_ERROR = re.compile(r"rate.?limit|\b429\b|usage limit|waits for its slot", re.IGNORECASE)
 POOL_TIME_ERROR = re.compile(r"(?:limited until|waits for its slot at) (\d{4}-\d\d-\d\dT[\d:.]+Z)")
+SLOT_WAIT_ERROR = re.compile(r"waits for its slot at (\d{4}-\d\d-\d\dT[\d:.]+Z)")
 SESSION_ENV = "PRIME_AGENT_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID"
 
 
@@ -1284,6 +1285,19 @@ def pool_free_at(resolved, rows, now):
     return min(frees, default=None)
 
 
+def own_slot_at(error, now):
+    """The slot time pi-pool gave this session itself, when the run's last error is that slot wait and the time is still ahead, in epoch
+    seconds; else None. The hold sits on the tree key pi-pool used for that turn, which can differ from the tree pool_tree names: on 10-22
+    pi-pool keyed lrv-w4-hb (01a15ff2) under 2030e00a5d43, be57bb50f3fb and then itself, the 00:12:5xZ pass asked about its chat's tree
+    01a14210, which had an account, and the continue reopened the probe at 00:12:55Z, 1 h 57 min before its 02:09:30Z slot."""
+    ahead = [stamp.timestamp() for stamp in map(parse_ts, SLOT_WAIT_ERROR.findall(error)) if stamp and stamp.timestamp() > now]
+    return max(ahead, default=None)
+
+
+def own_slot_hold(slot_at):
+    return f"pi-pool gave this session a slot at {dt.datetime.fromtimestamp(slot_at, dt.timezone.utc).isoformat(timespec='seconds')}"
+
+
 def error_free_at(error, now):
     """The latest pool time the run's error names that is still ahead (the extension's "limited until" and "waits for its slot at"), for a
     hold account_blocker found no end for, in epoch seconds; None when there is none."""
@@ -1668,6 +1682,9 @@ def find_paused(sessions, since_minutes, state, now, direct=False, only=frozense
         except RecordError as record_error:
             INCOMPLETE.append({"host": BOX.name, "error": f"not checked {sid}: {record_error}"})
             return {"retry_blocked": f"its stop record did not read: {record_error}"} if mark else {}
+        slot_at = own_slot_at(error, time.time())
+        if slot_at:
+            return {"pool_hold": own_slot_hold(slot_at), "pool_at": slot_at}
         blocker, free_at = account_blocker(pool_tree(s, by_id.get(head, s)), run_provider(entries_of(sid)), accounts, strict=True)
         if blocker and not blocker.startswith("unknown:"):
             return {"pool_hold": blocker, "pool_at": free_at or error_free_at(error, time.time())}
@@ -1845,7 +1862,10 @@ def find_paused(sessions, since_minutes, state, now, direct=False, only=frozense
             if redriven and redriven > ts:
                 continue  # someone sent the head a message after the interruption
         root_id, provider = pool_tree(s, by_id.get(head, s)), run_provider(entries_of(sid))
-        if verdict[0] == "error" and TOKEN_HOOK_ERROR.search(verdict[1]):
+        slot_at = own_slot_at(verdict[1], time.time()) if verdict[0] == "error" else None
+        if slot_at:
+            blocker, free_at = own_slot_hold(slot_at), slot_at
+        elif verdict[0] == "error" and TOKEN_HOOK_ERROR.search(verdict[1]):
             blocker, free_at = (hook_blocker(root_id, provider, hooks) if check_hook else None), None
         else:
             blocker, free_at = account_blocker(root_id, provider, accounts)
