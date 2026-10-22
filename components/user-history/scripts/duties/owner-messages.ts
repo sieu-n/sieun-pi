@@ -16,7 +16,9 @@ import { fixRepos, gitCommitTime } from "./repeat-split.ts";
  * domains/devops/owner-message-precision). No model call: a reply on a turn he started counts as needed, and every other line needs a label
  * the duty job writes to LABELS ({"id","label":"needed"|"noise","case"} per line), which the after-job measure reads.
  * - needed_pct_24h: needed lines of the labelled ones, in percent; 100 when nothing went out.
- * - unlabeled_lines: lines on turns he did not start that have no label yet; each is flagged with its chat, wake and text.
+ * - unlabeled_lines: lines on turns he did not start with no label that a d11 job already had the chance to label, those sent before the newest
+ *   run in LAST_RUNS_FILE that started a job (every line when none did). A line sent after it is the next job's input, not a miss: on 10-22
+ *   verify runs read 57, 67, 14 and 41 while each labelling job left 0 or 1. Every unlabeled line is flagged with its chat, wake and text.
  * - unanswered_bursts: his message bursts with no reply in the window that are older than ANSWER_GRACE_MS.
  * - noise_before_fix_24h, noise_after_fix_24h, noise_no_fix_24h: the noise lines by when the check for their kind landed (noise-split.ts), and
  *   needed_pct_24h's lastEventAt, so a miss on noise that went out before its fix only waits for the lines to leave the 24 h.
@@ -42,6 +44,8 @@ const readJson = <T>(file: string, fallback: T): T => { try { return JSON.parse(
 const testChats = new Set(JSON.stringify(readJson(join(DATA, "clean-room-chats.json"), {})).match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g) ?? []);
 const chats = readJson<{ ids?: string[] }>(join(DATA, "chats.json"), {}).ids?.filter(id => !testChats.has(id)) ?? [];
 const labels = new Map<string, { label: string; case?: string }>();
+const lastRuns = readJson<{ at?: number; job?: unknown }[]>(process.env.LAST_RUNS_FILE ?? "", []);
+const cutoff = lastRuns.find(run => run.job && typeof run.at === "number")?.at ?? Infinity;
 if (existsSync(LABELS)) for (const line of readFileSync(LABELS, "utf8").split("\n")) { try { const row = JSON.parse(line); if (row.id) labels.set(row.id, row); } catch { /* a torn line */ } }
 
 const textOf = (message: any): string => { try { return messageText(message).trim(); } catch { return ""; } };
@@ -91,7 +95,7 @@ for (const chat of chats) {
     const label = labels.get(line.id);
     if (label?.label === "needed") needed++;
     else if (label?.label === "noise") noiseLines.push({ chat, at: line.at, case: label.case ?? "noise", text: line.text });
-    else { unlabeled++; flagged.push({ kind: "unlabeled", chat, at: line.at, excerpt: `id ${line.id}; wake: ${wakeOf[index]!.replace(/\s+/g, " ")}; sent: ${line.text.replace(/\s+/g, " ").slice(0, 600)}` }); }
+    else { if (line.at < cutoff) unlabeled++; flagged.push({ kind: "unlabeled", chat, at: line.at, excerpt: `id ${line.id}; wake: ${wakeOf[index]!.replace(/\s+/g, " ")}; sent: ${line.text.replace(/\s+/g, " ").slice(0, 600)}` }); }
   }
   const seq = lines.filter(line => line.at >= start - 6 * 3_600_000 && line.at < end);
   for (let k = 0; k < seq.length; k++) {

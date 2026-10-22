@@ -12,7 +12,7 @@
     },
     {
       "key": "unlabeled_lines",
-      "label": "Messages on turns he did not start with no needed or noise label yet",
+      "label": "Messages on turns he did not start with no needed or noise label that a d11 job already had the chance to label",
       "op": "<=",
       "target": 0
     },
