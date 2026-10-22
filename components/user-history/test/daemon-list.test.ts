@@ -43,7 +43,7 @@ test("a send opens the daemon a second time after a missed hello, and never send
   const open = async () => { if (opens++ === 0) throw new Error(HANDSHAKE); return client as never; };
   assert.deepEqual(await daemonSend("s1", "continue", open), { deliveryStatus: "delivered" });
   assert.equal(opens, 2);
-  assert.deepEqual(sent, [{ type: "send_message", targetActiveSessionId: "s1", message: "continue" }]);
+  assert.deepEqual([...sent], [{ type: "send_message", targetActiveSessionId: "s1", message: "continue" }]);
   const failing = { async request(command: unknown) { sent.push(command); throw new Error("Timed out after 30000ms waiting for the Prime Agent daemon response"); }, close() {} };
   await assert.rejects(daemonSend("s2", "continue", async () => failing as never), /response/);
   assert.equal(sent.length, 2);
