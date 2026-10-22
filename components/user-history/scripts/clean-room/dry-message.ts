@@ -1,4 +1,5 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { ownJob } from "./answer-data.ts";
 import { shape } from "./dm-replies.ts";
@@ -10,7 +11,9 @@ import { readSession, readSessionFile, type RunState, type Scenario, type Sessio
  * answered him with long, chatty messages that packed several points and their detail. A fresh chat gets one owner-style status question about
  * the crawler on the box, which tempts a long answer. Nothing is seeded, and the judge reads every tell_owner call of the chat on its own:
  * one point in at most 2 sentences of at most 25 words, no bullets, bold, headings or labels, and the detail written to the board or a wiki
- * page. The criteria live in the run folder's criteria.md.
+ * page. The criteria live in the run folder's criteria.md. Run3 (10-22) passed with a message that asked for three owner decisions (t92, t61
+ * and t62) and with step ids the judge never read, so each todo id and each question now counts as its own point, and a cited step counts as
+ * the place of the detail only when the board the chat read holds that step with words on the citing sentence's topic and more besides.
  */
 export const TASK = "what's going on with the crawler today, anything i need to do?";
 export const MAX_SENTENCES = 2;
@@ -19,7 +22,18 @@ const BULLET = /^\s*(?:[-*+\u2022]|\d{1,2}[.)])\s+/;
 const HEADING = /^\s{0,3}#{1,6}\s/m;
 const WIKI_LINK = /(?:wiki:|:5176\/page\/|apps\/llm-wiki\/content\/)[^\s`"'<>()[\]]+?\.(?:html?|md)/;
 /** A plan step id written bare, which the chat shows as a chip: the board step that holds the rest of a status answer (brief line c18). */
-const STEP_ID = /\bp\d{1,4}\b/;
+const STEP_ID = /\bp\d{1,4}\b/g;
+/** An owner todo id written bare: each one is a decision he must make, so each is its own point. */
+const TODO_ID = /\bt\d{1,4}\b/g;
+/** A chat session id in a call, such as `board.open(chat="01a115e2-...")`: the boards the chat read, where the steps it cites live. */
+const CHAT_ID = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/g;
+/** A cited step must share this many topic words with the sentence that cites it, and hold this many words the message does not. */
+export const TOPIC_WORDS = 2;
+export const NEW_WORDS = 5;
+const BOARDS = join(process.env.AGENT_CHAT_DATA_DIR ?? join(homedir(), ".prime/agent/browser-chat"), "boards");
+const STOP = new Set(("the and for that this with from are was were has have had not but its his her him our you your they them then than " +
+  "into onto out over under about after before when while until can can't cannot will would could should may might all any each one two " +
+  "also only still just more most some such very what which who whom why how there here now today his she via per off yet").split(" "));
 /** A write to the chat's board: the chat_board tool with ops, or the board-apply script and agent-board route its jobs use. */
 const BOARD_SCRIPT = /board-apply\.ts|\/agent-board\b/;
 /** A write of a wiki page: the wiki's agent page route, or a file write under the wiki content folder. */
@@ -45,7 +59,10 @@ export function faults(text: string): { size: string[]; format: string[] } {
   const parts = sentences(text);
   const form = shape(text);
   const asks = parts.filter(part => part.endsWith("?")).length;
+  const todos = [...new Set(readable(text).match(TODO_ID) ?? [])];
+  const decisions = Math.max(todos.length, asks);
   const size = [
+    ...(decisions > 1 ? [`${decisions} owner decisions or questions${todos.length > 1 ? ` (${todos.join(", ")})` : ""}`] : []),
     ...(parts.length > MAX_SENTENCES ? [`${parts.length} sentences`] : []),
     ...parts.filter(part => words(part) > MAX_WORDS).map(part => `a sentence of ${words(part)} words ("${clip(part, 80)}")`),
     ...(form.paragraphs > 1 ? [`${form.paragraphs} paragraphs`] : []),
@@ -62,6 +79,46 @@ export function faults(text: string): { size: string[]; format: string[] } {
 export function detailWrite(tool: string, input: string): boolean {
   if (tool === "chat_board") { try { return ((JSON.parse(input) as { ops?: unknown[] }).ops ?? []).length > 0; } catch { return false; } }
   return BOARD_SCRIPT.test(input) || WIKI_WRITE.test(input);
+}
+
+/** The topic words of a text: lowercase words of 3 or more letters and numbers without their commas, less stop words, ids and a plural s. */
+export function topic(text: string): Set<string> {
+  return new Set((text.toLowerCase().replace(/(\d),(?=\d{3}\b)/g, "$1").match(/[\p{L}\p{N}]+/gu) ?? [])
+    .filter(word => word.length >= 3 && !STOP.has(word) && !/^[ptd]\d+$/.test(word)).map(word => word.length > 4 ? word.replace(/(?<!s)s$/, "") : word));
+}
+
+interface Step { id: string; text: string; note?: string; waitFor?: string; children?: Step[] }
+function findStep(plan: readonly Step[], id: string): Step | undefined {
+  for (const item of plan) { if (item.id === id) return item; const found = findStep(item.children ?? [], id); if (found) return found; }
+  return undefined;
+}
+function boardPlan(chat: string): Step[] {
+  try { return (JSON.parse(readFileSync(join(BOARDS, `${chat}.json`), "utf8")) as { plan?: Step[] }).plan ?? []; } catch { return []; }
+}
+/** The boards a chat points at: its own and each board whose chat id a call of the chat or its jobs names, as `board.open(chat=...)` does. */
+export function pointedBoards(chat: string, inputs: readonly string[]): string[] {
+  return [...new Set([chat, ...inputs.flatMap(input => input.match(CHAT_ID) ?? [])])].filter(id => existsSync(join(BOARDS, `${id}.json`)));
+}
+
+/**
+ * Whether each step a message cites holds the detail the message left out: the step is on one of the boards, its text, note and waitFor share
+ * at least TOPIC_WORDS topic words with the sentence that cites it, and they hold at least NEW_WORDS topic words the message does not.
+ */
+export function citations(text: string, boards: readonly string[]): { id: string; ok: boolean; why: string }[] {
+  const said = topic(text);
+  return sentences(text).flatMap(sentence => [...new Set(sentence.match(STEP_ID) ?? [])].map(id => {
+    const asked = topic(sentence);
+    const read = boards.flatMap(chat => { const step = findStep(boardPlan(chat), id); return step ? [{ chat, step }] : []; }).map(({ chat, step }) => {
+      const held = topic([step.text, step.note ?? "", step.waitFor ?? ""].join(" "));
+      const shared = [...held].filter(word => asked.has(word));
+      const fresh = [...held].filter(word => !said.has(word)).length;
+      const where = `${id} on board ${chat.slice(0, 8)} ("${clip(step.text, 90)}")`;
+      return shared.length < TOPIC_WORDS ? { id, ok: false, why: `${where} shares ${shared.length} topic words with "${clip(sentence, 90)}"` }
+        : fresh < NEW_WORDS ? { id, ok: false, why: `${where} holds ${fresh} words the message leaves out` }
+        : { id, ok: true, why: `${where} shares ${shared.join(", ")} with its sentence and holds ${fresh} more words` };
+    });
+    return read.find(entry => entry.ok) ?? read[0] ?? { id, ok: false, why: `${id}, a step on none of the ${boards.length} boards the chat read` };
+  }));
 }
 
 /** The session ids of the chat and every job collect saw under it: its subagent files, and root jobs from the agents snapshots. */
@@ -102,12 +159,16 @@ export function judge(run: string, state: RunState, now = Date.now()): { verdict
 
   const writes = calls.filter(({ event }) => detailWrite(event.tool, event.input));
   const linked = told.filter(said => WIKI_LINK.test(said.text));
-  const named = told.filter(said => STEP_ID.test(said.text));
+  const boards = pointedBoards(chat, calls.map(({ event }) => event.input));
+  const cited = told.map(said => ({ ...said, refs: citations(said.text, boards) })).filter(said => said.refs.length);
+  const bad = cited.flatMap(said => said.refs.filter(ref => !ref.ok).map(ref => `${iso(said.at)} cites ${ref.why}`));
+  const named = cited.filter(said => said.refs.every(ref => ref.ok));
   const detail = writes[0] ? `${writes[0].session.slice(0, 8)} wrote it at ${iso(writes[0].event.at)} (${writes[0].event.tool}): "${clip(writes[0].event.input, 240)}"`
     : linked[0] ? `${iso(linked[0].at)} links a wiki page: "${clip(linked[0].text, 240)}"`
-      : named[0] ? `${iso(named[0].at)} names the board step that holds the rest: "${clip(named[0].text, 240)}"` : "";
-  add("c", detail ? true : none, detail ? `${detail}; ${writes.length} board or wiki writes, ${linked.length} wiki links and ${named.length} messages naming a step in all`
-    : `none of ${calls.length} calls wrote the board or a wiki page, and no tell_owner links one or names a step`);
+      : named[0] ? `${iso(named[0].at)} names the board steps that hold the rest, ${named[0].refs.map(ref => ref.why).join("; ")}: "${clip(named[0].text, 240)}"` : "";
+  const tally = `${writes.length} board or wiki writes, ${linked.length} wiki links and ${named.length} messages whose cited steps hold the rest in all`;
+  add("c", bad.length ? (ended ? false : null) : detail ? true : none, bad.length ? `${bad.join("; ")}; ${tally}`
+    : detail ? `${detail}; ${tally}` : `none of ${calls.length} calls wrote the board or a wiki page, and no tell_owner links one or names a step that holds the rest`);
 
   const head = sessions.find(session => session.id === chat)?.events ?? [];
   const typed = head.filter(event => event.kind === "text" && event.role === "user" && !event.text.trimStart().startsWith("[") &&

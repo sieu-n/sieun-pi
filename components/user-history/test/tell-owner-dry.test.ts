@@ -14,6 +14,11 @@ test("tell_owner: the tool description asks for the same dry message as the brie
   const c18 = CHAT_BRIEF.find(line => line.includes("(c18)")) ?? "";
   assert.match(c18, /best as one dry, plain sentence and at most 2, each of at most 25 words with one fact or ask/);
   assert.match(c18, /A status answer gives only the one thing that matters most/);
+  // c18 run3 (10-22) asked for t92, t61 and t62 in one message and named steps as proof of detail; both texts give the same two rules.
+  for (const rule of ["Each decision or todo he must act on is its own point and its own call, even a small one, so three todos are three messages, never one.", "Name a step for the rest only when its title or note already holds that detail."]) {
+    assert.ok(TELL_OWNER_DESCRIPTION.includes(rule), rule);
+    assert.ok(c18.includes(rule), rule);
+  }
   const pulls = [/1 or 2 short casual sentences/, /a question goes in the same message as its context/, /never for the rest of the same answer/,
     /one answer never spreads over several messages/, /plus the question if one is open/, /a short judgment, the concrete cause and the measured cost/];
   for (const text of [TELL_OWNER_DESCRIPTION, ...CHAT_BRIEF]) for (const pull of pulls) assert.doesNotMatch(text, pull);
