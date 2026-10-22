@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -369,26 +369,57 @@ export async function streamFaults(query: DsQuery): Promise<StreamFault[]> {
   return faults;
 }
 
-/** Every distinct watch key of one org on prod Convex, read with the owner's Convex CLI login. */
+/**
+ * Where convexKeys keeps each org's last key walk with the stamp it read before the walk, shared by every checkout on the host. The duty
+ * server and jobs that run this precheck by hand walked the owner org about 65 times a day per env on 10-19 to 10-21, 19,710 rows on prod and
+ * about 23,900 on staging a walk, 1.49 GB and 2.16 GB of Convex DB I/O in 3 days (otel_logs, search/watchTargets:pageKeys), while the
+ * org's keys had not changed for 9 days.
+ */
+export const KEYS_CACHE_DIR = join(homedir(), ".cache", "watchlist-green");
+
+/**
+ * Every distinct watch key of one org on a Convex deployment, read with the owner's Convex CLI login. It reads the org's watch-key stamp
+ * first (search/watchTargets:watchKeysStamp, 3 documents), and when the stamp equals the one KEYS_CACHE_DIR holds for the org, the keys there
+ * are the answer and nothing is walked. A deployment without the stamp query walks every time and keeps nothing.
+ */
 export async function convexKeys(fetcher: typeof fetch, accessToken: string, signal: AbortSignal,
-  deployment: string = PROD_CONVEX, orgId: string = OWNER_ORG): Promise<string[]> {
+  deployment: string = PROD_CONVEX, orgId: string = OWNER_ORG, cacheDir: string = KEYS_CACHE_DIR): Promise<string[]> {
   const headers = { authorization: `Bearer ${accessToken}`, "content-type": "application/json", "convex-client": "npm-cli-1.34.0" };
   const auth = await fetcher("https://api.convex.dev/api/deployment/authorize_within_current_project", { method: "POST", headers, signal,
     body: JSON.stringify({ selectedDeploymentName: deployment, projectSelection: { kind: "deploymentName", deploymentName: deployment, deploymentType: null } }) });
   const credentials = await auth.json().catch(() => null) as { adminKey?: string; url?: string } | null;
   if (!auth.ok || !credentials?.adminKey || !credentials.url) throw new Error(`Convex authorize for ${deployment} gave HTTP ${auth.status}`);
+  const query = async <T>(path: string, args: Record<string, unknown>): Promise<T> => {
+    const response = await fetcher(`${credentials.url}/api/query`, { method: "POST", signal,
+      headers: { authorization: `Convex ${credentials.adminKey}`, "content-type": "application/json", "convex-client": "npm-cli-1.34.0" },
+      body: JSON.stringify({ path, args, format: "json" }) });
+    const body = await response.json().catch(() => null) as { status?: string; errorMessage?: string; value?: T } | null;
+    if (body?.status !== "success" || body.value === undefined) {
+      throw new Error(`${path.split(":")[1]}: HTTP ${response.status} ${String(body?.errorMessage ?? "no value").slice(0, 200)}`);
+    }
+    return body.value;
+  };
+  const stamp = await query<string>("search/watchTargets:watchKeysStamp", { orgId }).catch(() => null);
+  const file = join(cacheDir, `${deployment}-${orgId}.json`);
+  if (stamp !== null) {
+    const kept = await readFile(file, "utf8").then(text => JSON.parse(text) as { stamp?: unknown; keys?: unknown }).catch(() => null);
+    if (kept?.stamp === stamp && Array.isArray(kept.keys)) return kept.keys as string[];
+  }
   const keys = new Set<string>();
   let cursor: string | null = null;
   for (;;) {
-    const response = await fetcher(`${credentials.url}/api/query`, { method: "POST", signal,
-      headers: { authorization: `Convex ${credentials.adminKey}`, "content-type": "application/json", "convex-client": "npm-cli-1.34.0" },
-      body: JSON.stringify({ path: "search/watchTargets:pageKeys", args: { orgId, cursor }, format: "json" }) });
-    const body = await response.json().catch(() => null) as { status?: string; errorMessage?: string; value?: { keys: string[]; continueCursor: string; isDone: boolean } } | null;
-    if (body?.status !== "success" || !body.value) throw new Error(`pageKeys: HTTP ${response.status} ${String(body?.errorMessage ?? "no value").slice(0, 200)}`);
-    body.value.keys.forEach(key => keys.add(key));
-    if (body.value.isDone) return [...keys];
-    cursor = body.value.continueCursor;
+    const page = await query<{ keys: string[]; continueCursor: string; isDone: boolean }>("search/watchTargets:pageKeys", { orgId, cursor });
+    page.keys.forEach(key => keys.add(key));
+    if (page.isDone) break;
+    cursor = page.continueCursor;
   }
+  if (stamp !== null) {
+    await mkdir(cacheDir, { recursive: true });
+    const tmp = `${file}.${process.pid}.tmp`;
+    await writeFile(tmp, JSON.stringify({ stamp, keys: [...keys] }));
+    await rename(tmp, file);
+  }
+  return [...keys];
 }
 
 /*
