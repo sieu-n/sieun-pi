@@ -267,15 +267,15 @@ export const threadPaused = (owner: Pick<JobFact, "key"> | undefined, item: Pick
   (owner?.key.startsWith("thread:") === true && paused.has(owner.key.slice("thread:".length))) || (item.sessionId !== undefined && paused.has(item.sessionId));
 
 /**
- * The wait of a goal whose job waits for its account slot, or undefined: Prime continues that turn at the slot by itself, and a steer or a
- * restart before it starts a turn the pool refuses again. From 00:45Z to 05:16Z on 10-22, 4 of 40 check-in goal steers went to sessions
+ * The wait of a goal whose job waits for an account slot still ahead, or undefined. The resume pass gives that job its turn at the slot
+ * (PoolHeldJobs), and a steer or restart before then starts a turn the pool refuses again. Past the slot the goal is pushed as before. From 00:45Z to 05:16Z on 10-22, 4 of 40 check-in goal steers went to sessions
  * waiting for a slot: VP of CI at 04:20Z (slot 05:14Z), the AI harness chat at 04:35Z (05:28Z), metal-management at 04:41Z (05:38Z) and the
  * metal box owner at 04:04Z (05:30Z).
  */
-export function slotWait(owner: JobFact | undefined): string | undefined {
+export function slotWait(owner: JobFact | undefined, now: number): string | undefined {
   if (!owner || !poolWait(owner)) return undefined;
   const slot = poolSlot(owner.error ?? "");
-  return `on ${ownerLabel(owner)}, which waits for its account slot${slot === null ? "" : ` until ${zTime(slot)}`}`;
+  return slot !== null && slot > now ? `on ${ownerLabel(owner)}, which waits for its account slot until ${zTime(slot)}` : undefined;
 }
 
 /**
@@ -387,7 +387,7 @@ export function goalPushes(board: ChatBoard | null, views: readonly StepView[], 
     const stale = number.measuredAt === undefined || now - number.measuredAt > number.staleMs;
     const left = trend.kind === "met" ? openUnder(goal).map(item => item.id) : [];
     const asks = trend.kind !== "met" || left.length ? held : undefined;
-    const waits = trend.kind === "met" || asks ? undefined : goalWait(goal, pushView, now, paused, views, board) ?? slotWait(owner ?? holder?.owner);
+    const waits = trend.kind === "met" || asks ? undefined : goalWait(goal, pushView, now, paused, views, board) ?? slotWait(owner ?? holder?.owner, now);
     const act: GoalAct = trend.kind === "met" ? "on_pace" : asks ? "owner" : waits ? "waiting" : !owner ? "start" : offPace(trend, stale) ? "steer" : "on_pace";
     // goalTrend's memo is a new object, so the push time carries over from the saved one.
     const before = memos?.[goal.id]?.pushed;

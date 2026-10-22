@@ -130,10 +130,14 @@ for (const [name, shape, value, away] of [["p892", p892, 2, 3], ["p670", p670, 6
 test("a goal whose job waits for its account slot waits with it, and the check-in gets no steer for it", () => {
   const error = "Provider rate limit exceeded (rate_limit_error, 429). pi-pool: claude3@x is limited until 2026-10-22T06:29:59.000Z; this session waits for its slot at 2026-10-22T05:14:00.000Z. Try again in 58 minutes.";
   const waiting: StepView[] = [{ ...views("failed")[0]!, owner: { ...runtime("failed"), error } } as StepView];
-  const [push] = goalPushes(board, waiting, memo as never, 30 * 60_000, now).pushes;
+  const before = Date.parse("2026-10-22T04:20:00Z");
+  const [push] = goalPushes(board, waiting, memo as never, 30 * 60_000, before).pushes;
   assert.equal(push?.act, "waiting");
   assert.match(push?.waits ?? "", /waits for its account slot until 10-22 05:14Z/);
   assert.equal(goalDueLine(push!), null);
-  const [other] = goalPushes(board, [{ ...waiting[0]!, owner: { ...runtime("failed"), error: "Provider returned 500" } } as StepView], memo as never, 30 * 60_000, now).pushes;
+  const [other] = goalPushes(board, [{ ...waiting[0]!, owner: { ...runtime("failed"), error: "Provider returned 500" } } as StepView], memo as never, 30 * 60_000, before).pushes;
   assert.equal(other?.act, "start");
+  // Past the slot the goal is pushed again, so a job the resume pass missed gets its restart.
+  const [late] = goalPushes(board, waiting, memo as never, 30 * 60_000, Date.parse("2026-10-22T05:20:00Z")).pushes;
+  assert.equal(late?.act, "start");
 });

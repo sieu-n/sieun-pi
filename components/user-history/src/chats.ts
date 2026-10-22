@@ -30,7 +30,7 @@ import { BRIEF_ITEMS } from "./shared/brief-cap.ts";
 import { spawnRecord } from "./spawn-record.ts";
 import { pooledProviders } from "./chat-pool.ts";
 import { checkInLane, type ClaudeState, claudeDown, failureCause, hungMessage, hungTurn, jobWake, type JobWake, ownerPause, revivalMessage, type Stall, stallAction, strandedInput, turnStall, turnViewOf, wokeFromSleep } from "./chat-recovery.ts";
-import { CHECK_IN_PREFIX, JOB_NOTICE_PREFIX, TELL_OWNER_TOOL } from "./shared/chat-feed.ts";
+import { CHECK_IN_PREFIX, JOB_NOTICE_PREFIX, poolSlot, TELL_OWNER_TOOL } from "./shared/chat-feed.ts";
 import { checkInPrompt } from "./chat-checkin.ts";
 import { type JobPush, jobPushLine, jobPushMessage } from "./checkin-jobs.ts";
 import { correctionStep } from "./correction-refine.ts";
@@ -1541,9 +1541,11 @@ export class Chats {
       this.log(`chat ${chat.slice(0, 8)}: check-in job's message for job ${fact?.name ?? job.trim()} not sent: ${cancelWords(cancel)}`);
       return { cancelled: `${fact?.name ?? job.trim()} was ${cancelWords(cancel)}. ${cancelPurpose(cancel)}, so nothing reopens it; don't start a copy of it.` };
     }
-    // A job waiting for its account slot gets the message as a steer, which waits in its turn: Prime continues that turn at the slot, and a
-    // restart now starts a turn the pool refuses again.
-    const act = fact && !poolWait(fact) && (fact.state === "failed" || (fact.state === "ended" && fact.error !== undefined)) ? "restart" : "steer";
+    // A job waiting for an account slot still ahead gets the message as a steer, which waits in its turn: a restart now starts a turn the pool
+    // refuses again. Past the slot a steer would sit in a stopped queue, as on 10-18 until the owner's 20:56Z hand fix, so it restarts.
+    const slot = fact && poolWait(fact) ? poolSlot(fact.error ?? "") : null;
+    const waitsForSlot = slot !== null && slot > this.now();
+    const act = fact && !waitsForSlot && (fact.state === "failed" || (fact.state === "ended" && fact.error !== undefined)) ? "restart" : "steer";
     const name = fact?.name ?? job.trim();
     try {
       if (act === "restart") await this.threads.restart(session, CHECK_IN_PREFIX + message, true);
