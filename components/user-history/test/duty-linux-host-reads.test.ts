@@ -32,7 +32,7 @@ test("the Linux precheck reads dev_tree_mb with no source error", async () => {
   };
   const deps: SandboxDeps = {
     fetch: (async (url: string) => String(url).endsWith("/__demo/health") ? Response.json({ worlds: 1, memory: { heapUsedMb: 400 } }) : new Response("ok")) as unknown as typeof fetch, now: () => Date.parse("2026-10-18T07:50:00Z"), repo: "/repo", platform: "linux",
-    pm2: { bin: "pm2", home: "/pm2", zone: "UTC" },
+    pm2: { bin: "pm2", home: "/pm2", zone: "UTC" }, startWalk: () => 4242,
     read: async path => { if (path in files) return files[path]!; throw enoent(path); },
     mtime: async path => { throw enoent(path); },
     exec: async file => {

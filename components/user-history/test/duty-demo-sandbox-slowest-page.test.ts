@@ -90,6 +90,7 @@ test("the precheck reports slowest_page_ms from the walk's fastest tries in plac
     repo: "/repo",
     platform: "darwin",
     pm2: { bin: "pm2", home: "/pm2", zone: "UTC" },
+    startWalk: () => 4242,
   });
   assert.equal(run.metrics.slowest_page_ms, 2400);
   assert.ok(!("health_ms" in run.metrics));

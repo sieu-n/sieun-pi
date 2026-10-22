@@ -13,6 +13,7 @@ const run = (health: (url: string) => Response) => measureSandbox({
   repo: "/repo",
   platform: "darwin",
   pm2: { bin: "pm2", home: "/pm2", zone: "UTC" },
+  startWalk: () => 4242,
 });
 
 test("the run detail carries the live worlds and the heap from /__demo/health", async () => {

@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { readFile, readlink, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -12,8 +12,10 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  * - walk_problems, the headline: problems in the last offline walk of the 6 apps (tests/e2e/offline.spec.ts walks search, discover,
  *   analytics, campaigns, inbox and connections in two scenarios, plus the marketing pages). Each outside request counts 1, each test that
  *   failed for another reason counts 1, and a missing walk or one over a day old counts 1. The owner: "no external connection should work
- *   off of internal fake database". The walk is a browser check, so the duty job runs it behind the load gate and writes Playwright's JSON
- *   report to WALK_FILE and its stderr to WALK_ERR_FILE; this script only reads those files.
+ *   off of internal fake database". This script reads the walk's Playwright JSON report from WALK_FILE and its stderr from WALK_ERR_FILE,
+ *   and starts the next walk itself, detached (WALK_COMMAND), when the last one started over WALK_REFRESH_MS ago and none is running, so the
+ *   next run reads a fresh walk. Until 10-22 only a missed run's duty job ran the walk, so a run on target never refreshed it: the 21:25Z run on
+ *   10-21 read a 19.6 h old walk and started nothing, and the push run at 02:56Z on 10-22 found it 25 h old and went red with no page at fault.
  * - slowest_page_ms: the slowest app page in the last offline walk, timed in the page itself (offline.spec.ts writes one `page-timing`
  *   annotation per page and scenario, with each of its 3 tries). A page's time is the slower of its fastest in-app switch (the click to the
  *   first frame whose <main> shows new text) and the lowest long-task time of its full loads (pageMs). The walk's browser runs on us-metal02, so
@@ -21,7 +23,8 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  *   under 2 s. The fastest try is the page's own cost, and the box_load slice names the box's load during the walk. The load's own wall time is
  *   left out, since every module of a cold load crosses the 195 ms link to the Mac. It replaced health_ms on 10-19, because /health answered in 25 ms while the owner
  *   found switching "infuriatingly slow" (10-09) and Creators slow to load (10-19, 2.3 s of long tasks before 7966ebbfd). A down server fails the
- *   walk, so walk_problems covers it. A page that never showed, a scenario test with no timings, or a missing or stale walk reads as PAGE_TIMEOUT_MS.
+ *   walk, so walk_problems covers it. A page that never showed or a scenario test with no timings reads as PAGE_TIMEOUT_MS. A missing or stale
+ *   walk gives no reading: slowest_page_ms is left out, so the duty shows it as not measured, and a `gap` slice names the walk's state.
  * - restarts_24h: times in 24 h the dev server went down without anyone asking for it (crashes and other exit codes, dev-guard memory
  *   kills), from pm2.log, so it measures whether the sandbox stays up. A crash loop counts once. A deliberate `pm2 restart` or `pm2 stop`
  *   by an agent or a person, and a restart that a vite config edit asks for ("config changed, exiting so pm2 starts a fresh dev server"),
@@ -120,8 +123,25 @@ export const WALK_ERR_FILE = ".cache/duties/virev-demo-offline.err";
  * browser runs on us-metal02 through apps/virev-demo/scripts/shot-browser.mjs, whose own failures start with `shot-browser: `.
  */
 const WALK_COMMAND_BROKE = /No such file or directory|command not found|Cannot find module|ERR_MODULE_NOT_FOUND|^shot-browser: /;
-/** The duty runs the offline walk once a day, so a report older than a day is stale. */
-export const WALK_STALE_MS = 24 * 3_600_000;
+/**
+ * The precheck starts a walk when the last one started longer ago than this. A daily run (06:25 KST) then always finds a walk that started at
+ * most a day plus this long ago, since a run either starts one or found one under this age. 30 min keeps a burst of push runs (10-20: runs at
+ * 10:48, 11:16 and 11:32Z) from walking more than once per half hour; one walk took 520 s on 10-22.
+ */
+export const WALK_REFRESH_MS = 30 * 60_000;
+/**
+ * A walk older than this is stale. The duty runs daily, and the walk a daily run starts is a day old at the next one, plus the scheduler's lag
+ * (21:25:02Z and 21:25:27Z on 10-20 and 10-21) and up to WALK_REFRESH_MS when a run within that window had already started it. A 24 h limit
+ * left the daily walk a coin flip at each run.
+ */
+export const WALK_STALE_MS = 25 * 3_600_000;
+/** The offline walk as the precheck starts it, run with `sh -c` from apps/virev-demo; its browser runs on us-metal02 through shot-browser.mjs. */
+export const WALK_COMMAND = `PLAYWRIGHT_JSON_OUTPUT_FILE=$PWD/../../${WALK_FILE} node scripts/shot-browser.mjs --run ../../node_modules/.bin/playwright test tests/e2e/offline.spec.ts --reporter=json 2> ../../${WALK_ERR_FILE}`;
+/** The pids of running offline walks, from `ps -axo pid=,ppid=,args=`. */
+export function runningWalks(ps: string): number[] {
+  return ps.split("\n").map(line => /^\s*(\d+)\s+\d+\s+(.*)$/.exec(line)).filter(match => match !== null)
+    .filter(match => match[2]!.includes("tests/e2e/offline.spec.ts")).map(match => Number(match[1]));
+}
 /** The window for restarts and SSR timeouts: the duty runs daily (c66), so each run counts the whole day. */
 const DAY_MS = 24 * 3_600_000;
 /** Log lines of one kind closer than this are one event: a crash loop restarts every 1 to 2 s, and one hung request logs for up to a minute. */
@@ -143,6 +163,8 @@ export interface SandboxDeps {
   platform: NodeJS.Platform;
   /** `zone` is the IANA time zone of the pm2 daemon that writes the logs (pm2Zone), which may differ from this process's TZ. */
   pm2: { bin: string; home: string; zone: string };
+  /** Starts WALK_COMMAND detached, so it outlives this run, and returns its pid. */
+  startWalk: () => number;
 }
 interface Pm2Process { name?: string; pid?: number; pm2_env?: { status?: string } }
 
@@ -375,7 +397,7 @@ export async function measureSandbox(deps: SandboxDeps): Promise<PrecheckOutput>
   const at = deps.now();
   const flagged: FlaggedSlice[] = [];
   const lastEventAt: Record<string, number> = {};
-  const metrics = { walk_problems: 0, slowest_page_ms: PAGE_TIMEOUT_MS, restarts_24h: 0, ssr_timeouts_24h: 0,
+  const metrics = { walk_problems: 0, restarts_24h: 0, ssr_timeouts_24h: 0,
     configure_ms: 0, dev_tree_mb: 0, demo_worlds: 0, heap_used_mb: 0, headless_chrome: 0, guard_restarts_24h: 0, config_restarts_24h: 0, planned_restarts_24h: 0, outside_requests: 0, source_errors: 0 };
   const sourceError = (kind: string, excerpt: string) => { metrics.source_errors++; flagged.push({ at, kind, excerpt }); };
   const readOrError = async (path: string): Promise<string | Error> => { try { return await deps.read(path); } catch (error) { return error instanceof Error ? error : new Error(String(error)); } };
@@ -447,41 +469,67 @@ export async function measureSandbox(deps: SandboxDeps): Promise<PrecheckOutput>
   } catch (error) { sourceError("source", `pm2 or the ${deps.platform === "darwin" ? "footprint" : "smaps_rollup"} read (PM2_HOME ${deps.pm2.home}): ${error instanceof Error ? error.message : String(error)}`); }
 
   // headless_chrome (detail).
+  let psArgs: string | Error = new Error("ps did not run");
   try {
-    const chrome = headlessChrome(await deps.exec("ps", ["-axo", "pid=,ppid=,args="]));
+    psArgs = await deps.exec("ps", ["-axo", "pid=,ppid=,args="]);
+    const chrome = headlessChrome(psArgs);
     metrics.headless_chrome = chrome.browsers;
     flagged.push({ at, kind: "headless_chrome", excerpt: `${chrome.browsers} headless Chrome browsers run on this host in ${chrome.processes} processes; shot scripts run theirs on us-metal02 through apps/virev-demo/scripts/shot-browser.mjs` });
-  } catch (error) { sourceError("source", `ps for headless Chrome: ${error instanceof Error ? error.message : String(error)}`); }
+  } catch (error) {
+    if (error instanceof Error) psArgs = error;
+    sourceError("source", `ps for headless Chrome: ${error instanceof Error ? error.message : String(error)}`);
+  }
 
   // walk_problems (the headline) and outside_requests (detail).
   const walkText = await readOrError(join(deps.repo, WALK_FILE));
+  let slowestPageMs: number | undefined;
+  let walkAt = Number.NaN;
+  const noReading = (state: string) => flagged.push({ at, kind: "gap", excerpt: `slowest_page_ms has no reading, since ${state}` });
   try {
     if (walkText instanceof Error) throw walkText;
     const walk = readWalk(JSON.parse(walkText) as WalkReport);
+    walkAt = walk.at;
     metrics.outside_requests = walk.outside.length;
     metrics.walk_problems = walk.outside.length + walk.otherFailures.length;
     for (const entry of walk.outside) flagged.push({ at, kind: "outside_request", excerpt: entry });
     for (const failure of walk.otherFailures) flagged.push({ at, kind: "walk_failed", excerpt: `offline walk failed before its outside check: ${failure}` });
-    if (!walk.tests) { metrics.walk_problems++; flagged.push({ at, kind: "walk_missing", excerpt: `${WALK_FILE} has no offline.spec.ts result` }); }
-    else if (!Number.isFinite(walk.at) || at - walk.at > WALK_STALE_MS) {
+    if (!walk.tests) {
       metrics.walk_problems++;
-      flagged.push({ at, kind: "walk_stale", excerpt: `the last offline walk in ${WALK_FILE} started ${Number.isFinite(walk.at) ? iso(walk.at) : "at an unknown time"}, over 24 h ago` });
+      flagged.push({ at, kind: "walk_missing", excerpt: `${WALK_FILE} has no offline.spec.ts result` });
+      noReading("the walk report has no offline.spec.ts result");
+    } else if (!Number.isFinite(walk.at) || at - walk.at > WALK_STALE_MS) {
+      metrics.walk_problems++;
+      const started = `the last offline walk in ${WALK_FILE} started ${Number.isFinite(walk.at) ? iso(walk.at) : "at an unknown time"}, over ${WALK_STALE_MS / 3_600_000} h ago`;
+      flagged.push({ at, kind: "walk_stale", excerpt: started });
+      noReading(started);
     } else {
       flagged.push({ at, kind: "walk", excerpt: `offline walk started ${iso(walk.at)}: ${walk.tests} tests, ${walk.outside.length} outside requests, ${walk.otherFailures.length} other failures` });
       const slowest = slowestPage(walk.pages, walk.untimed);
-      metrics.slowest_page_ms = slowest.ms;
+      slowestPageMs = slowest.ms;
       flagged.push({ at, kind: "slowest_page", excerpt: `slowest app page ${slowest.name}: ${slowest.ms} ms, the fastest of its tries; every page: ${slowest.perPage.map(page => `${page.path} ${page.ms} (${page.tries})`).join("; ") || "none"}` });
       flagged.push({ at, kind: "box_load", excerpt: boxLoadLine(walk.boxLoads) });
     }
   } catch (error) {
     metrics.walk_problems++;
     const missing = (error as NodeJS.ErrnoException).code === "ENOENT";
-    flagged.push({ at, kind: "walk_missing", excerpt: missing ? `no offline walk result yet at ${WALK_FILE}` : `${WALK_FILE}: ${error instanceof Error ? error.message : String(error)}` });
+    const excerpt = missing ? `no offline walk result yet at ${WALK_FILE}` : `${WALK_FILE}: ${error instanceof Error ? error.message : String(error)}`;
+    flagged.push({ at, kind: "walk_missing", excerpt });
+    noReading(excerpt);
+  }
+
+  // The next walk, started here and read by the next run.
+  if (!(at - walkAt <= WALK_REFRESH_MS)) {
+    if (psArgs instanceof Error) flagged.push({ at, kind: "walk_start", excerpt: `started no walk, since ps could not tell whether one runs: ${psArgs.message}` });
+    else if (runningWalks(psArgs).length) flagged.push({ at, kind: "walk_start", excerpt: `an offline walk already runs (pids ${runningWalks(psArgs).join(", ")}), so this run started none` });
+    else {
+      try { flagged.push({ at, kind: "walk_start", excerpt: `started the next offline walk (pid ${deps.startWalk()}), detached, for the next run to read` }); }
+      catch (error) { flagged.push({ at, kind: "walk_command", excerpt: `the walk could not start: ${error instanceof Error ? error.message : String(error)}` }); }
+    }
   }
   const broke = await walkCommandBroke(deps);
   if (broke) flagged.push({ at, kind: "walk_command", excerpt: `the walk command failed at ${iso(broke.at)}, after the last walk report, so the walk never ran: ${broke.line} (${WALK_ERR_FILE})` });
 
-  return { metrics, flagged, lastEventAt };
+  return { metrics: slowestPageMs === undefined ? metrics : { ...metrics, slowest_page_ms: slowestPageMs }, flagged, lastEventAt };
 }
 
 const exec: Exec = (file, args, env) => new Promise((resolve, reject) => {
@@ -491,12 +539,21 @@ const exec: Exec = (file, args, env) => new Promise((resolve, reject) => {
     (error, stdout) => error ? reject(error) : resolve(stdout));
 });
 
+/** Runs WALK_COMMAND in its own session with no stdio, so it outlives this run and the `ssh mac` that started it. PATH comes from the precheck's command. */
+function startWalk(): number {
+  const child = spawn("sh", ["-c", WALK_COMMAND], { cwd: join(REPO, "apps/virev-demo"), detached: true, stdio: "ignore" });
+  child.once("error", error => process.stderr.write(`demo-sandbox: the walk did not start: ${error.message}\n`));
+  child.unref();
+  if (!child.pid) throw new Error(`sh -c did not start in ${join(REPO, "apps/virev-demo")}`);
+  return child.pid;
+}
+
 async function main(): Promise<void> {
   const output = process.env.OUTPUT_FILE;
   if (!output) { process.stderr.write("demo-sandbox: OUTPUT_FILE is not set\n"); process.exit(2); }
   const home = join(REPO, ".cache/pm2-dev");
   const result = await measureSandbox({ fetch, exec, now: Date.now, read: path => readFile(path, "utf8"), mtime: async path => (await stat(path)).mtimeMs, repo: REPO, platform: process.platform,
-    pm2: { bin: join(REPO, "node_modules/.bin/pm2"), home, zone: await pm2Zone(home) } });
+    pm2: { bin: join(REPO, "node_modules/.bin/pm2"), home, zone: await pm2Zone(home) }, startWalk });
   await writeFile(output, JSON.stringify(result, null, 2) + "\n");
 }
 
