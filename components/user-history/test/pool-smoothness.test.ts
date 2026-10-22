@@ -73,3 +73,13 @@ test("a chat head that waited for a free slot while no job run started ahead of 
   assert.equal(metrics.queue_holds_30, 0);
   assert.match(flagged?.find(slice => slice.kind === "smoothness")?.excerpt ?? "", /0 of them passed by a job run and the rest waited for a free slot/);
 });
+
+test("a tree that a Manual pin let in passes no parked tree, as sieunpark77's pinned trees did from 05:43Z on 10-22", () => {
+  const vend = (session: string, reason: string): string => JSON.stringify({ ts: "local", event: "vend", provider: "anthropic", account: "x", reason, session });
+  const smooth = readSmoothness([
+    parked("a", "10:00:00"), parked("pin", "10:05:00"), unparked("pin", "10:31:00"), vend("pin", "session_pin"),
+    parked("b", "10:06:00"), unparked("b", "10:35:00"), vend("b", "switch"),
+    unparked("a", "10:52:00"), vend("a", "switch"),
+  ], new Set(), FROM, RUN);
+  assert.deepEqual(smooth.overtaken, [{ session: "b", minutes: 0 }, { session: "a", minutes: 17 }]);
+});

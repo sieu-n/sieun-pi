@@ -376,8 +376,8 @@ export function readSmoothness(lines: readonly string[], heads: ReadonlySet<stri
   const ended: { session: string; start: number; end: number; rank: number }[] = [];
   let anchor: number | undefined;
   for (const line of lines) {
-    if (!line.includes('"turn_admitted"') && !line.includes('"parked"') && !line.includes('"unparked"')) continue;
-    let entry: { ts?: unknown; event?: unknown; session?: unknown; at?: unknown; waited_s?: unknown; priority?: unknown; provider?: unknown };
+    if (!line.includes('"turn_admitted"') && !line.includes('"parked"') && !line.includes('"unparked"') && !line.includes('"vend"')) continue;
+    let entry: { ts?: unknown; event?: unknown; session?: unknown; at?: unknown; waited_s?: unknown; priority?: unknown; provider?: unknown; reason?: unknown };
     try { entry = JSON.parse(line) as typeof entry; } catch { continue; }
     if (typeof entry.session !== "string") continue;
     if (entry.event === "turn_admitted") {
@@ -390,6 +390,13 @@ export function readSmoothness(lines: readonly string[], heads: ReadonlySet<stri
         const asked = at - entry.waited_s * 1000;
         headWaits.push({ session: entry.session, waitedS: entry.waited_s, passed: starts.some(start => !start.head && start.at > asked && start.at < at) });
       }
+      continue;
+    }
+    // pi-pool logs the vend right after the unparked line of the same request: a Manual pin's vend takes its tree out of Auto's order, so its park
+    // neither passes nor is passed. From 05:43Z to 07:40Z on 10-22, 24 of 69 parks read as passed had been passed by trees pinned to sieunpark77.
+    if (entry.event === "vend") {
+      const last = ended.at(-1);
+      if (last?.session === entry.session && (entry.reason === "session_pin" || entry.reason === "pool_pin")) ended.pop();
       continue;
     }
     if (typeof entry.at !== "number" || entry.provider !== "anthropic") continue;
