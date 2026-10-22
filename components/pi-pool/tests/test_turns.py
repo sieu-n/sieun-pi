@@ -6,7 +6,9 @@ import calendar, collections, heapq, json, os, subprocess, sys, tempfile, time, 
 
 from fixture_isolation import isolate_test_module
 from test_core import SOURCE
-from vend.pool import base, turns
+from unittest import mock
+
+from vend.pool import base, sched, turns
 
 
 def setUpModule():
@@ -169,6 +171,78 @@ class Lease(unittest.TestCase):
         t = turns.empty()
         turns.ask(t, ask_args("other", tree="o"), 0, self.CFG)
         self.assertEqual(turns.ask(t, ask_args("next"), 1, self.CFG)[1]["state"], "queued")
+
+
+class AccountWaitPlace(unittest.TestCase):
+    """10-22: a d7 check-in run held from 06:24Z to 08:12Z came back from each account wait
+    104th, 147th and 179th in line, and 23 trees whose claude8 cells came at 11:30Z then queued
+    about 90 min with working_max at 6 (~/work/pool-smooth/reask_replay.py)."""
+    CFG = dict(base.DEFAULTS, working_max=1)
+
+    def let_go(self, t, slot_at):
+        turns.ask(t, ask_args("d7", tree="D"), 0, self.CFG)
+        turns.ask(t, ask_args("job1", tree="j1"), 10, self.CFG)
+        turns.leave(t, "job1", 11, self.CFG)
+        turns.ask(t, ask_args("job1", tree="j1"), 12, self.CFG)
+        changed, answer, events = turns.leave(t, "d7", 20, self.CFG, slot_of=lambda tree: slot_at if tree == "D" else None)
+        turns.ask(t, ask_args("job2", tree="j2"), 30, self.CFG)
+        turns.leave(t, "job1", 40, self.CFG, slot_of=lambda tree: None)
+        return events
+
+    def test_a_run_back_from_an_account_wait_keeps_its_place(self):
+        t = turns.empty()
+        events = self.let_go(t, 1000)
+        self.assertTrue(events[0][1]["account_wait"])
+        changed, answer, events = turns.ask(t, ask_args("d7", tree="D"), 1000, self.CFG)
+        self.assertEqual(turns.order(t), ["d7"], "job2 took the free slot at 40")
+        t["working"].clear()
+        turns.ask(t, ask_args("job3", tree="j3"), 1001, self.CFG)
+        self.assertEqual(turns.order(t), ["job3"], "d7 started first")
+        self.assertEqual(turns.reply(t, "d7")["state"], "admitted")
+
+    def test_the_kept_place_goes_ahead_of_later_asks_and_its_wait_counts_from_its_ask(self):
+        t = turns.empty()
+        turns.ask(t, ask_args("d7", tree="D"), 0, self.CFG)
+        turns.leave(t, "d7", 5, self.CFG, slot_of=lambda tree: 900)
+        turns.ask(t, ask_args("busy", tree="b"), 6, self.CFG)
+        turns.ask(t, ask_args("job", tree="j"), 100, self.CFG)
+        changed, answer, events = turns.ask(t, ask_args("d7", tree="D"), 900, self.CFG)
+        self.assertEqual((answer["position"], answer["total"]), (1, 2))
+        self.assertEqual([f.get("kept_since") for e, f in events if e == "turn_queued"], [0])
+        changed, answer, events = turns.leave(t, "busy", 960, self.CFG, slot_of=lambda tree: None)
+        self.assertEqual([f for e, f in events if e == "turn_admitted"], [{"session": "d7", "tree": "D", "kind": "slot", "waited_s": 60.0}])
+        self.assertEqual(turns.view(t, 960, self.CFG)["queued"][0]["wait_s"], 860)
+        changed, answer, events = turns.leave(t, "d7", 970, self.CFG, slot_of=lambda tree: 2000)
+        self.assertEqual(t["kept"]["d7"], {"since": 0, "slot_at": 2000}, "a second wait keeps the first place")
+
+    def test_a_run_released_with_no_account_wait_asks_at_the_back(self):
+        t = turns.empty()
+        turns.ask(t, ask_args("done", tree="D"), 0, self.CFG)
+        turns.leave(t, "done", 5, self.CFG, slot_of=lambda tree: None)
+        turns.ask(t, ask_args("busy", tree="b"), 6, self.CFG)
+        turns.ask(t, ask_args("job", tree="j"), 100, self.CFG)
+        turns.ask(t, ask_args("done", tree="D"), 200, self.CFG)
+        self.assertEqual(turns.order(t), ["job", "done"])
+
+    def test_the_place_lasts_until_place_keep_sec_after_the_slot(self):
+        t = turns.empty()
+        t["kept"] = {"old": {"since": 0, "slot_at": 100}, "new": {"since": 0, "slot_at": 200}}
+        turns.sweep(t, 150 + sched.PLACE_KEEP_SEC)
+        self.assertEqual(list(t["kept"]), ["new"])
+
+    def test_an_owner_turn_drops_the_kept_place(self):
+        t = turns.empty()
+        t["kept"]["chat"] = {"since": 0, "slot_at": 100}
+        turns.mark_owner(t, "chat", 50, 1800)
+        turns.ask(t, ask_args("chat"), 51, self.CFG)
+        self.assertEqual(t["kept"], {})
+
+    def test_the_tree_waits_while_state_json_has_its_wait(self):
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(base, "STATE", os.path.join(d, "state.json")):
+            self.assertIsNone(turns.waiting_slot("D"))
+            base.save_json(base.STATE, {"sessions": {"D": {"wait": {"anthropic": {"account": "a", "slot_at": 500.0, "since": 1}, "codex": {"slot_at": 300, "since": 2}}},
+                                                     "E": {"vends": {}}}})
+            self.assertEqual((turns.waiting_slot("D"), turns.waiting_slot("E")), (500.0, None))
 
 
 def kst(clock):

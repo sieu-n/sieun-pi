@@ -4,10 +4,22 @@ One run of one session holds one working slot, from the run's first model call t
 agent_end. turns.json keeps the queue under its own lock, turns.lock, apart from the
 account state.json and its lock:
 
-    working  {session: {tree, kind, since, queued_since, pid, lease_until}}
-    queued   {session: {tree, since, pid, waiter?}}
+    working  {session: {tree, kind, since, queued_since, place, pid, lease_until}}
+    queued   {session: {tree, since, asked?, pid, waiter?}}
     owner    {session: epoch sec of the owner-turn mark}
     lead     [session], the sessions whose queued runs go first (`lead`)
+    kept     {session: {since, slot_at}}, the place of a run let go on an account wait
+
+A queued run's `since` is its place in line and `asked` when it asked, which differ only
+for a run that keeps its place. A run released while its tree waits for an account
+(state.json's `wait`) ended on that wait, and the session's next run comes back at the
+slot. That run asks again with the place of the run that let go, so a wait for an account
+never also costs a wait at the back of the line. On 10-22 a d7 check-in run held from 06:24Z
+to 08:12Z came back from each account wait 104th, 147th and 179th, and 23 trees whose
+claude8 cells came at 11:30Z then queued about 90 min with working_max at 6. A replay of
+10-22 00:00Z to 08:14Z (~/work/pool-smooth/reask_replay.py) cut those returns' p90 queue
+wait from 1,154 s to 60 s and all job queue minutes by 11%. The place is kept until
+PLACE_KEEP_SEC after the slot, as long as the tree keeps its place in the account wait.
 
 Waiting runs of the `lead` sessions start first, then every other run, each in the order
 they asked, while the machine has fewer than working_max
@@ -29,7 +41,7 @@ is dropped, and so is a queue entry whose `admit --wait` process (`waiter`) is g
 """
 import json, os, sys, time
 
-from . import base, registry
+from . import base, registry, sched
 
 TURNS = os.path.join(base.POOL, "turns.json")
 TURNS_LOCK = os.path.join(base.POOL, "turns.lock")
@@ -51,13 +63,13 @@ def limits(cfg):
 
 
 def empty():
-    return {"working": {}, "queued": {}, "owner": {}, "lead": []}
+    return {"working": {}, "queued": {}, "owner": {}, "lead": [], "kept": {}}
 
 
 def of(raw):
-    """The four parts of a turns record, with what an older writer left dropped."""
+    """The five parts of a turns record, with what an older writer left dropped."""
     raw = raw if isinstance(raw, dict) else {}
-    out = {key: dict(raw.get(key) or {}) for key in ("working", "queued", "owner")}
+    out = {key: dict(raw.get(key) or {}) for key in ("working", "queued", "owner", "kept")}
     out["lead"] = [s for s in raw.get("lead") or [] if isinstance(s, str)]
     return out
 
@@ -70,7 +82,7 @@ def carried(old):
                    "since": e["since"], "queued_since": e.get("queued_since", e["since"]), "pid": e.get("pid"),
                    "lease_until": e.get("lease_until", 0)} for s, e in old["working"].items()}
     queued = {s: {k: e[k] for k in ("tree", "since", "pid", "waiter") if e.get(k) is not None} for s, e in old["queued"].items()}
-    return {"working": working, "queued": queued, "owner": old["owner"], "lead": []}
+    return {"working": working, "queued": queued, "owner": old["owner"], "lead": [], "kept": {}}
 
 
 def migrate():
@@ -102,6 +114,18 @@ def alive(pid):
     return True
 
 
+def asked(entry):
+    """When a queued run asked; its `since` is its place in line."""
+    return entry.get("asked", entry["since"])
+
+
+def waiting_slot(tree):
+    """The latest slot `tree` waits for on any provider in state.json, read with no lock, or None when it waits for no account."""
+    rec = ((base.load_json(base.STATE, {}) or {}).get("sessions") or {}).get(tree) or {}
+    slots = [w["slot_at"] for w in (rec.get("wait") or {}).values() if isinstance(w, dict) and isinstance(w.get("slot_at"), (int, float))]
+    return max(slots) if slots else None
+
+
 def order(turns):
     """Queued session ids in admission order: the lead sessions' runs first, then the rest, each first asked, first in."""
     queued, lead = turns["queued"], set(turns["lead"])
@@ -123,13 +147,16 @@ def sweep(turns, now, is_alive=alive):
     for session, at in list(turns["owner"].items()):
         if now - at > OWNER_MARK_TTL_SEC:
             del turns["owner"][session]
+    for session, kept in list(turns["kept"].items()):
+        if now - kept["slot_at"] > sched.PLACE_KEEP_SEC:
+            del turns["kept"][session]
     return gone
 
 
 def start(turns, session, kind, now, lease):
     """Move a queued session to working."""
     entry = turns["queued"].pop(session)
-    turns["working"][session] = {"tree": entry["tree"], "kind": kind, "since": now, "queued_since": entry["since"],
+    turns["working"][session] = {"tree": entry["tree"], "kind": kind, "since": now, "queued_since": asked(entry), "place": entry["since"],
                                  "pid": entry.get("pid"), "lease_until": now + lease}
 
 
@@ -167,7 +194,7 @@ def view(turns, now, cfg):
     working = [{"session": s, "tree": e["tree"], "kind": e["kind"], "since": e["since"]}
                for s, e in sorted(turns["working"].items(), key=lambda kv: kv[1]["since"])]
     queued = [{"session": s, "tree": turns["queued"][s]["tree"], "position": i + 1, "total": len(queue),
-               "since": turns["queued"][s]["since"], "wait_s": round(now - turns["queued"][s]["since"]), "lead": s in lead} for i, s in enumerate(queue)]
+               "since": asked(turns["queued"][s]), "wait_s": round(now - asked(turns["queued"][s])), "lead": s in lead} for i, s in enumerate(queue)]
     return {"enabled": limits(cfg)[0] is not None, "working_max": int(cfg["working_max"]),
             "working_max_set": last_set("working_max"), "tree_working_max": int(cfg["tree_working_max"]),
             "working": working, "queued": queued, "lead": turns["lead"]}
@@ -232,17 +259,20 @@ def ask(turns, a, now, cfg, waiter=None):
         turns["queued"][session].update(pid=a["pid"], waiter=waiter)
     elif turns["owner"].pop(session, None) is not None:
         turns["queued"].pop(session, None)
+        turns["kept"].pop(session, None)
         turns["working"][session] = dict(entry, kind="owner", queued_since=now, lease_until=now + lease)
         admitted.append((session, "owner"))
     elif a["renew"]:
         was = turns["queued"].pop(session, None)
-        turns["working"][session] = dict(entry, kind="slot", queued_since=(was or entry)["since"], lease_until=now + lease)
+        turns["working"][session] = dict(entry, kind="slot", queued_since=asked(was or entry), lease_until=now + lease)
         events.append(("turn_renewed_after_lapse", {"session": session, "tree": a["tree"]}))
     else:
-        turns["queued"][session] = dict(entry, waiter=waiter)
+        kept = turns["kept"].pop(session, None)
+        turns["queued"][session] = dict(entry, waiter=waiter, **({"since": kept["since"], "asked": now} if kept else {}))
         admitted += admit_pass(turns, now, all_max, tree_max, lease)
         if session in turns["queued"]:
-            events.append(("turn_queued", {"session": session, "tree": a["tree"], "working": len(turns["working"]), "queued": len(turns["queued"])}))
+            events.append(("turn_queued", {"session": session, "tree": a["tree"], "working": len(turns["working"]), "queued": len(turns["queued"]),
+                                           **({"kept_since": kept["since"]} if kept else {})}))
     return True, reply(turns, session), events + admitted_events(turns, admitted, now)
 
 
@@ -336,15 +366,20 @@ def wait(session, pid, last):
             last = answer
 
 
-def leave(turns, session, now, cfg, reason=None):
-    """Free `session`'s slot or drop its queue entry, then start what fits. Returns (changed, answer, events)."""
+def leave(turns, session, now, cfg, reason=None, slot_of=waiting_slot):
+    """Free `session`'s slot or drop its queue entry, then start what fits. A run let go while its tree
+    waits for an account leaves its place in `kept` for the session's next run. Returns (changed, answer, events)."""
     working = turns["working"].pop(session, None)
     queued = turns["queued"].pop(session, None)
+    slot_at = slot_of(working["tree"]) if working else None
+    if slot_at is not None:
+        turns["kept"][session] = {"since": working.get("place", working["queued_since"]), "slot_at": slot_at}
     changed, events = step(turns, now, cfg)
     if working:
-        events = [("turn_released", {"session": session, "kind": working["kind"], "held_s": round(now - working["since"], 1)})] + events
+        events = [("turn_released", {"session": session, "kind": working["kind"], "held_s": round(now - working["since"], 1),
+                                     **({"account_wait": True} if slot_at is not None else {})})] + events
     elif queued:
-        events = [("turn_dropped", {"session": session, "waited_s": round(now - queued["since"], 1), "reason": reason})] + events
+        events = [("turn_dropped", {"session": session, "waited_s": round(now - asked(queued), 1), "reason": reason})] + events
     return bool(working or queued or changed), {"released": bool(working or queued)}, events
 
 
