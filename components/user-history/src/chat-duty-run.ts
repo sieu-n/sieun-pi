@@ -14,7 +14,7 @@ import { briefFindings, headlineWords } from "./shared/brief-cap.ts";
 import { pushMisses } from "./duty-push.ts";
 import type { PrimeUpdate } from "./prime-update.ts";
 import { closedFixes, dutyFixes, missedKeys, verifyNoteOps } from "./shared/duty-fixes.ts";
-import { metricStreaks, type MetricStreak } from "./shared/duty-streak.ts";
+import { effectiveRun, metricStreaks, type MetricStreak } from "./shared/duty-streak.ts";
 import { type BoardOp, CHECK_IN_MIN_MINUTES, type ChatBoard, type CheckInPause, type CheckInView, type PlanItem, type PoolPriority } from "./shared/types.ts";
 
 /** The check-in duty's side on the chat server (src/chats.ts): its setting (the header's control writes the same one) and a run now. */
@@ -152,6 +152,8 @@ export const precheckHardStopMs = (duty: Pick<Duty, "schedule" | "precheck">): n
 
 /** Why a run has no job when its start failed or a restart cut it off; a run with it is never started again. */
 export const NOT_STARTED = "the duty job did not start";
+/** Why a check-in run started no job and read met: the chat had no job at work, no open plan step and no board error (`Duties.checkInClean`). */
+export const NOTHING_TO_CHECK = "nothing to check: no job at work and no open plan step";
 /** A run's job start in progress, kept in `<dutyId>.pending.json` until the start ends, so a restart can finish it (`Duties.resume`). */
 interface PendingStart {
   at: number; schedule: DutySchedule; measured: AfterMeasure | null;
@@ -784,6 +786,20 @@ export class Duties {
       brief: { measure: judged.summary, findings: [findings, stuckFindings(stepMisses)].filter(Boolean).join("\n\n"), focus: CHECK_IN_FOCUS, misses: stepMisses, report: CHECK_IN_REPORT,
         ...run.prompt !== undefined ? { prompt: `${run.prompt}\n\nThe full precheck, with every step and finding, is in ${detail}. Read it for the work you take on; never paste it into a message.` } : {} } });
     return started === "failed" ? "failed" : "done";
+  }
+
+  /**
+   * Records a met check-in run for a chat with nothing to check (`checkInDue`: no job at work, no open plan step, no board error) when its
+   * newest measured check-in did not read met, so a board that went clean stops reading red. On 10-22 chat 01a140fb closed p25 after its
+   * 04:16Z check-in missed goal_gaps, had nothing to check from then on, and the duty fleet still counted that miss at 08:00Z.
+   */
+  async checkInClean(chatId: string, at: number, trigger: DutyTrigger): Promise<void> {
+    const newest = (await this.store.runs(chatId)).find(run => run.duty === CHECK_IN_DUTY_ID && ["met", "missed"].includes(effectiveRun(run).verdict));
+    if (!newest || effectiveRun(newest).verdict === "met") return;
+    const judged = judge(CHECK_IN_DUTY.metrics, { metrics: Object.fromEntries(CHECK_IN_DUTY.metrics.map(metric => [metric.key, 0])), flagged: [] });
+    await this.store.appendRun(chatId, { duty: CHECK_IN_DUTY_ID, at, slot: at, trigger, ms: 0, verdict: judged.verdict, metrics: judged.metrics,
+      summary: `${judged.summary}; ${NOTHING_TO_CHECK}` });
+    this.log(`duty ${chatId.slice(0, 8)}/${CHECK_IN_DUTY_ID}: ${judged.verdict}, ${NOTHING_TO_CHECK}`);
   }
 
   /** When the chat's newest check-in run was recorded; undefined when it has none. The scheduler reads it at start (`Chats.load`). */

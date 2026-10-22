@@ -400,6 +400,8 @@ export interface CheckInSource {
    * one check-in job with the precheck as context. Absent (tests): the precheck runs and nothing starts.
    */
   duty?: { checkIn(chatId: string, run: CheckInRun): Promise<CheckInStart | void>; lastCheckIn(chatId: string): Promise<number | undefined>;
+    /** Records a met check-in for a chat with nothing to check when its newest one did not read met (`Duties.checkInClean`); absent in test fakes. */
+    checkInClean?(chatId: string, at: number, trigger: CheckInRun["trigger"]): Promise<void>;
     /** Writes a notice's full list next to the chat's duty runs and returns the path (`Duties.writeDetail`); absent in test fakes. */
     writeDetail?(chatId: string, name: string, parts: readonly string[]): Promise<string> };
   /** The chat's duties (`<data dir>/duties/<chat>.json`), for the goals they run (`goalsToFold`) and a chat with goals and no duty (`goalsWithoutDuty`). Absent: neither is counted. */

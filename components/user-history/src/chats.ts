@@ -1450,7 +1450,11 @@ export class Chats {
       for (const fact of facts) {
         if (fact.state === "failed" && fact.key.startsWith("thread:") && !paused.has(fact.key.slice("thread:".length))) this.queue(fact.key, () => this.wakeOwner(fact.key.slice("thread:".length)));
       }
-      if (!checkInDue(facts, board, boardError)) { this.log(`chat ${id.slice(0, 8)}: check-in: nothing to check (no job at work, no open plan step, no board error)`); return; }
+      if (!checkInDue(facts, board, boardError)) {
+        this.log(`chat ${id.slice(0, 8)}: check-in: nothing to check (no job at work, no open plan step, no board error)`);
+        await this.source.duty?.checkInClean?.(id, this.now(), trigger);
+        return;
+      }
       const at = this.now();
       const everyMs = (await this.source.settings.get(id)).everyMs;
       const previous = await this.source.memory.get(id);
