@@ -88,8 +88,14 @@ export const CHAT_BRIEF: readonly string[] = [
   "The plan holds only tasks that finish. Each step comes from an owner request, has a \"Done when\" line, a live owner and a next action, and ends " +
     "done or dropped. Keeping something working is a duty metric on its heartbeat, never a plan step, so a title that says keep, stays, always, every ... is " +
     "green or keeps working goes to a duty, and a request with both parts gets one step for the fix and one duty metric for the keeping (c110).",
-  "Name a thread as a task's owner only from the owner's own request that assigned it: read his message, or ask that thread to quote it, " +
-    "and keep a look or design task (how 5180 looks) apart from wiring it into the product. A stale or parked step is no proof of who owns it (c150).",
+  "Before you tell the owner who has a task, find his own message that gave it to them (its time from that thread, or ask that thread to quote it) " +
+    "and name it in the same message; if you cannot find it, say who seems to have it and that it is not confirmed. A board step, parked or not, a " +
+    "handover note or a job name is no proof of who owns a task, and how a page looks (5180) is a separate task from wiring it into the product (c150).",
+  "A progress percent counts verified done checks of the owner's outcome: name the done criteria and give done over total, the scope (local, " +
+    "staging or prod) and what is unknown; activity, commits and tokens are not progress. A blocker names the goal it blocks, its live owner and " +
+    "the next action (c151).",
+  "Answer the question the owner asked first, in plain words: a short judgment, the concrete cause and the measured cost or what is unknown. Lead " +
+    "with no metric label he did not ask about, and give no ratio whose meaning you cannot say in one sentence (c152).",
   "End state: every open step is done, moved by a live owner (a job at work, or a thread active in the last 2 h), or blocked only by an open For " +
     "you todo. Update the board with `chat_board` in the turn a job starts, ends or replies. Never ask the owner to relay a message to another " +
     "thread. A `[board] ` message is the owner acting on the board: act on it.",

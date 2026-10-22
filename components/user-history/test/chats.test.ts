@@ -563,9 +563,12 @@ test("chats: a job that ends on a provider error, an abort, a stop mid-tool or t
   chats.close();
 });
 
-test("chat brief: a task's owner comes from the owner's own request, not a stale step (c150)", () => {
-  const line = CHAT_BRIEF.find(entry => entry.includes("(c150)"));
-  assert.ok(line, "the brief holds c150");
-  assert.match(line, /only from the owner's own request that assigned it/);
-  assert.match(line, /stale or parked step is no proof/);
+test("chat brief: a task's owner comes from the owner's own message, progress counts done checks, answers are plain (c150, c151, c152)", () => {
+  const line = (id: string) => CHAT_BRIEF.find(entry => entry.includes(`(${id})`)) ?? "";
+  assert.match(line("c150"), /find his own message that gave it to them/);
+  assert.match(line("c150"), /that it is not confirmed/);
+  assert.match(line("c150"), /A board step, parked or not, a handover note or a job name is no proof/);
+  assert.match(line("c151"), /give done over total, the scope/);
+  assert.match(line("c151"), /activity, commits and tokens are not progress/);
+  assert.match(line("c152"), /Lead with no metric label he did not ask about/);
 });
