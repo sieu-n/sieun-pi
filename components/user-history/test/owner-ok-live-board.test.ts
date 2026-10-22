@@ -40,10 +40,10 @@ async function setup(live: boolean) {
 test("a box whose local board is stale gets t26 approved from the chat host's live board", async () => {
   const { data, server, remote } = await setup(true);
   try {
-    const result = await ownerOk(`${CHAT}/t26`, data, remote);
+    const result = await ownerOk(`${CHAT}/t26`, "", data, remote);
     assert.equal(result.ok, true);
     assert.match(result.source ?? "", /chat host http:\/\/127\.0\.0\.1:/);
-    const missing = await ownerOk(`01a00000-0000-7000-8000-000000000000/t1`, data, remote);
+    const missing = await ownerOk(`01a00000-0000-7000-8000-000000000000/t1`, "", data, remote);
     assert.equal(missing.ok, false);
     assert.match(missing.ok ? "" : missing.reason, /no board on the chat host/);
   } finally { server.close(); }
@@ -51,7 +51,7 @@ test("a box whose local board is stale gets t26 approved from the chat host's li
 
 test("when the chat host cannot be reached the local file answers and the reason says so", async () => {
   const { data, remote } = await setup(false);
-  const result = await ownerOk(`${CHAT}/t26`, data, remote);
+  const result = await ownerOk(`${CHAT}/t26`, "", data, remote);
   assert.equal(result.ok, false);
   assert.match(result.ok ? "" : result.reason, /no todo t26.*local file .*could not be reached/);
 });

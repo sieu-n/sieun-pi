@@ -588,14 +588,14 @@ def cell_sends(cell: str, page_url: str = "") -> str | None:
     return None
 
 
-def check_owner_ok(token: str) -> str | None:
-    """None when `<chat id>/<todo id>` is an approved For you todo, else the reason it is not (components/user-history/src/owner-ok.ts)."""
+def check_owner_ok(token: str, target: str = "") -> str | None:
+    """None when `<chat id>/<todo id>` is an approved For you todo for a send to `target` (the page URL), else the reason it is not (components/user-history/src/owner-ok.ts)."""
     script = os.path.join(_REPO, "components", "user-history", "src", "owner-ok.ts")
     if not os.path.exists(script):
         return f"the owner-ok check is missing at {script}"
     try:
         proc = subprocess.run(
-            ["node", "--import", "tsx", script, token],
+            ["node", "--import", "tsx", script, token, target],
             cwd=os.path.dirname(os.path.dirname(script)),
             capture_output=True, text=True, timeout=30,
         )
@@ -637,7 +637,7 @@ def _record_send(decision: str, reason: str, target: str, owner_ok: str | None) 
 
 def _refuse_send(reason: str, owner_ok: str | None, target: str = "") -> None:
     if owner_ok:
-        why = check_owner_ok(owner_ok)
+        why = check_owner_ok(owner_ok, target)
         if why is None:
             _record_send("allowed", reason, target, owner_ok)
             return
@@ -857,7 +857,7 @@ async def _repl(code: str, title: str, owner_ok: str | None = None, plain: str |
         if reason:
             _refuse_send(reason, owner_ok, _page_target(info) or (plain or code)[:300])
             approved = True
-        elif owner_ok and check_owner_ok(owner_ok) is None:
+        elif owner_ok and check_owner_ok(owner_ok, _page_target(info)) is None:
             # The caller says this call sends, though the page check cannot tell (a coordinate click in an Intercom frame); it still gets a line.
             _record_send("allowed", "the call passed owner_ok, so its caller counted it as a send", _page_target(info) or (plain or code)[:300], owner_ok)
             approved = True

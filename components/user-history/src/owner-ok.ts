@@ -7,7 +7,9 @@ import type { OwnerTodo } from "./shared/types.ts";
 
 /**
  * The owner's ok for one outside send (an email or a vendor ticket reply, c37): `<chat id>/<todo id>` names a For you todo on that chat's
- * board that is checked off and answered by the owner with its first choice or another go. The send guards (global-rules, aside-browser) ask this.
+ * board that is checked off and answered by the owner with its first choice or another go. The send guards (global-rules, aside-browser) ask this,
+ * and pass the send's target (the page URL, the URLs in a command) as the second argument, so an answer that splits a two-item todo approves only
+ * the item it says yes to (`approvedTodo`).
  *
  * The board is the live one: the chat service's on the chat host of hosts.json when that is another box, as the board skill reads it. The
  * local file is read only on the chat host, or when the chat host cannot be reached. On 10-18 the Mac's copy had stopped at 08:01Z since the
@@ -47,7 +49,7 @@ async function liveTodos(chat: string, dataDir: string, remote: () => Promise<Ch
   }
 }
 
-export async function ownerOk(token: string, dataDir: string = chatDataDir(), remote: () => Promise<ChatService | null> = () => remoteChatService()): Promise<OwnerOk> {
+export async function ownerOk(token: string, target = "", dataDir: string = chatDataDir(), remote: () => Promise<ChatService | null> = () => remoteChatService()): Promise<OwnerOk> {
   const parts = token.trim().match(/^([\w-]+)\/([\w-]+)$/);
   if (!parts) return { ok: false, reason: `"${token}" is not <chat id>/<todo id>.` };
   const [, chat, id] = parts;
@@ -59,12 +61,12 @@ export async function ownerOk(token: string, dataDir: string = chatDataDir(), re
   if (!todo) return refuse(`Chat ${chat} has no todo ${id}.`);
   if (todo.answeredBy !== "owner" || !todo.reply?.trim()) return refuse(`The owner has not answered todo ${id} yet.`);
   if (!todo.done) return refuse(`Todo ${id} is not checked off.`);
-  if (!approvedTodo(todo)) return refuse(`The owner's answer on todo ${id} ("${todo.reply}") is not a go.`);
+  if (!approvedTodo(todo, target)) return refuse(`The owner's answer on todo ${id} ("${todo.reply}") is not a go${target ? ` for ${target}` : ""}.`);
   return { ok: true, todo, source };
 }
 
 if (process.argv[1] && import.meta.url.endsWith(process.argv[1].split("/").pop()!)) {
-  const result = await ownerOk(process.argv[2] ?? "");
+  const result = await ownerOk(process.argv[2] ?? "", process.argv[3] ?? "");
   if (result.source) process.stderr.write(`owner-ok: read ${process.argv[2]} from ${result.source}\n`);
   process.stdout.write(JSON.stringify(result) + "\n");
   process.exitCode = result.ok ? 0 : 1;

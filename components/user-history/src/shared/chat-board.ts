@@ -807,7 +807,7 @@ export const AGENT_REPLY_ERROR = "Only the owner answers a todo; the agent canno
  * Code holds these two gates for the agent; the agents decide everything else.
  */
 const HOLD = /\b(?:no|nope|not|wait|hold|later|stop|never|cancel|reject(?:ed)?|don['’]?t|do\s+not)\b|아직|아니|잠깐|보류|말고|하지\s*마|안\s*돼|기다|멈춰|나중/i;
-const APPROVE = /\b(?:go|ship|approved?|yes|yep|ok|okay|lgtm|proceed)\b|좋아|ㄱㄱ|고고|승인|진행|ㅇㅋ|오케이|ㅇㅇ/i;
+const APPROVE = /\b(?:go|ship|approved?|yes|yep|sure|ok|okay|lgtm|proceed)\b|좋아|ㄱㄱ|고고|승인|진행|ㅇㅋ|오케이|ㅇㅇ/i;
 /**
  * Whether an owner's answer is a go: it says go, ship, approve, yes, 좋아 or ㄱㄱ, and nothing that holds it back (not yet, wait, no, 아직).
  * A tapped choice is judged by its lead, up to the first comma or dash: the chat writes choices like "Go, 5.5 high with no fallback", whose
@@ -896,12 +896,55 @@ export const prNumbers = (text: string): string[] =>
   [...new Set([...text.matchAll(/(?:#|\bprs?\s*#?\s*|\bpr\s+merge\s+|\bpull(?:\s+requests?)?\s*#?\s*|\/pulls?\/)(\d+)(?!\d)/gi)].map(match => match[1]!))];
 /** Whether a todo's text names the PR: `#123`, `PR 123`, `pull request 123` or a `/pull/123` link. */
 export const namesPr = (text: string, pr: string): boolean => new RegExp(String.raw`(?:#|\bPRs?\s*#?\s*|\bpull(?:\s+request)?\s*#?\s*|/pulls?/)${pr}(?!\d)`, "i").test(text);
+/*
+ * One todo can ask about two sends, and the owner can answer each in one line. On 10-22 t16 asked about a Kaggle listing and a Reddit reply, the
+ * owner said no to Kaggle and yes to Reddit, and the aside-browser guard refused the Reddit post because the answer held a "no". A send guard
+ * passes its target (the page URL, the URLs in a command), and the answer is judged on the clauses that name the target's site.
+ */
+const SITE_PREFIXES = new Set(["www", "old", "new", "m", "mobile", "api", "app"]);
+/** The site names in a send target's URLs: `https://old.reddit.com/r/x` is "reddit". */
+const siteNames = (target: string): string[] =>
+  [...new Set([...target.matchAll(/https?:\/\/([\w.-]+)/gi)].flatMap(match => match[1]!.toLowerCase().split(".").slice(0, -1).filter(label => !SITE_PREFIXES.has(label))))];
+const WORD = /[\p{L}\p{N}'\u2019-]+/gu;
+const VERDICT = (word: string): boolean => HOLD.test(word) || APPROVE.test(word);
+/**
+ * An answer's clauses, one per item it judges. A sentence that names several items splits where a new item follows a verdict when it names the
+ * item first ("kaggle no reddit sure"), or where a new verdict follows an item when it gives the verdict first ("no to kaggle, yes to reddit").
+ * An item is a site name of the target or a word of four letters or more from the todo's text.
+ */
+const answerClauses = (reply: string, todoText: string, sites: readonly string[]): string[] => {
+  const asked = new Set((todoText.toLowerCase().match(WORD) ?? []).filter(word => word.length >= 4));
+  const kind = (word: string): "verdict" | "item" | "other" =>
+    VERDICT(word) ? "verdict" : sites.includes(word) || asked.has(word) ? "item" : "other";
+  return reply.toLowerCase().split(/[.;!?](?=\s|$)|\n/).flatMap(sentence => {
+    const words = sentence.match(WORD) ?? [];
+    const lead = words.map(kind).find(found => found !== "other");
+    const clauses: string[][] = [[]];
+    let last: "verdict" | "item" | undefined;
+    for (const word of words) {
+      const found = kind(word);
+      if (last !== undefined && found !== "other" && found === lead && last !== lead) clauses.push([]);
+      clauses.at(-1)!.push(word);
+      if (found !== "other") last = found;
+    }
+    return clauses.filter(clause => clause.length).map(clause => clause.join(" "));
+  });
+};
+/** Whether the answer approves a send to `target`, judged on the clauses that name its site; null when no clause names it. */
+export const approvesTarget = (reply: string, todoText: string, target: string): boolean | null => {
+  const sites = siteNames(target);
+  const named = answerClauses(reply, todoText, sites).filter(clause => (clause.match(WORD) ?? []).some(word => sites.includes(word)));
+  return named.length ? named.every(clause => approves(clause)) : null;
+};
 /**
  * Whether an owner's answer approves an action the way owner-ok.ts and the global-rules guards read it: the todo is checked off, and the owner
- * tapped its first choice or answered with another go.
+ * tapped its first choice or answered with another go. With a send's target, the clauses of the answer that name the target's site decide
+ * (`approvesTarget`), and an answer that names no site of the target is read whole.
  */
-export const approvedTodo = (todo: Pick<OwnerTodo, "answeredBy" | "reply" | "done" | "choices">): boolean =>
-  todo.answeredBy === "owner" && !!todo.reply?.trim() && todo.done && (tapsFirstChoice(todo.reply, todo.choices ?? []) || approves(todo.reply, todo.choices ?? []));
+export const approvedTodo = (todo: Pick<OwnerTodo, "answeredBy" | "reply" | "done" | "choices"> & Partial<Pick<OwnerTodo, "text">>, target = ""): boolean => {
+  if (todo.answeredBy !== "owner" || !todo.reply?.trim() || !todo.done) return false;
+  return approvesTarget(todo.reply, todo.text ?? "", target) ?? (tapsFirstChoice(todo.reply, todo.choices ?? []) || approves(todo.reply, todo.choices ?? []));
+};
 /*
  * Staging needs no go (owner 10-12, after a chat asked to land 32b to staging: "bro never fucking ask me for any confirmation to deploy to staging
  * ever again"). A step whose target is staging only, by its text, is exempt even when the chat marked it: it names staging, sieun/dev or a dev

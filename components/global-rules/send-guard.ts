@@ -548,12 +548,15 @@ export function ownerOkToken(text: string): string | null {
 	return text.match(OWNER_OK)?.[1] ?? null;
 }
 
-/** The approved For you todo the token names, or why it does not count. Runs components/user-history/src/owner-ok.ts, the one approval rule. */
-export function ownerOkTodo(token: string): { todo: { text: string } } | { reason: string } {
+/**
+ * The approved For you todo the token names, or why it does not count. Runs components/user-history/src/owner-ok.ts, the one approval rule, with
+ * the send's target, so a split answer on a two-item todo approves only the item it says yes to.
+ */
+export function ownerOkTodo(token: string, target = ""): { todo: { text: string } } | { reason: string } {
 	if (!existsSync(OWNER_OK_SCRIPT)) return { reason: `the owner-ok check is missing at ${OWNER_OK_SCRIPT}` };
 	const last = (stdout: string) => JSON.parse(stdout.trim().split("\n").at(-1)!) as { ok?: boolean; reason?: string; todo?: { text: string } };
 	try {
-		const stdout = execFileSync(basename(process.execPath) === "node" ? process.execPath : "node", ["--import", "tsx", OWNER_OK_SCRIPT, token], {
+		const stdout = execFileSync(basename(process.execPath) === "node" ? process.execPath : "node", ["--import", "tsx", OWNER_OK_SCRIPT, token, target], {
 			cwd: join(HERE, "..", "user-history"), encoding: "utf8", timeout: 15000, stdio: ["ignore", "pipe", "pipe"],
 		});
 		const result = last(stdout);
@@ -579,7 +582,7 @@ export function applyOwnerOk(verdicts: Verdict[], text: string): Verdict[] {
 	if (!verdicts.some((v) => v.rule === "send")) return verdicts;
 	const token = ownerOkToken(text);
 	if (!token) return verdicts;
-	const result = ownerOkTodo(token);
+	const result = ownerOkTodo(token, (text.match(/https?:\/\/[^\s"'<>|]+/g) ?? []).join(" "));
 	return verdicts.flatMap((v) => {
 		if (v.rule !== "send") return [v];
 		return "todo" in result ? [] : [{ ...v, reason: `${v.reason} OWNER_OK=${token} does not count: ${result.reason}` }];

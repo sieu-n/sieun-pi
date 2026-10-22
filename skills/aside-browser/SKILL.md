@@ -143,6 +143,7 @@ To send:
 
 The check reads the chat's board through `components/user-history/src/owner-ok.ts` in the sieun-pi repo.
 The todo must be checked off and answered by the owner with its first choice or another go.
+The check also gets the page URL, so when one todo asks about two sites and the answer splits, as in "no to Kaggle, yes to Reddit", only the site he said yes to passes.
 
 ## Which browser opens a page
 
