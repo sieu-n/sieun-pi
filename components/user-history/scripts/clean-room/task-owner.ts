@@ -101,7 +101,15 @@ export function judge(run: string, state: RunState, now = Date.now()): { verdict
     ? [...typed, ...outside].map(event => `at ${iso(event.at)}: "${clip(event.kind === "text" ? event.text : "", 160)}"`).join("; ")
     : "only the owner-style message, server notes, the chat's own jobs and replies to its own asks reached the chat");
 
-  const verdict: Verdict = checks.find(check => check.id === "e")!.ok === false ? "void" : checks.some(check => check.ok === false) ? "fail"
+  // On 10-22 run2's job was held by pi-pool for the whole window ("the token hook gave no anthropic token"), so no session of the chat took
+  // a model turn and a, b and c read as not met. A window with no model turn tested nothing, so it is void and runs again as it is.
+  const turns = all.filter(({ event }) => event.kind === "assistant" || event.kind === "call");
+  add("f", turns.length ? true : ended ? false : null, turns.length
+    ? `${turns.length} model turns and calls in ${new Set(turns.map(turn => turn.session)).size} sessions; first at ${iso(turns[0]!.event.at)}`
+    : "no session of the chat took a model turn in the window");
+
+  const verdict: Verdict = checks.find(check => check.id === "e")!.ok === false || checks.find(check => check.id === "f")!.ok === false ? "void"
+    : checks.some(check => check.ok === false) ? "fail"
     : checks.some(check => check.ok === null) ? "open" : "pass";
   const text = [
     `# Clean-room run ${run.split("/").at(-1)}: ${verdict}`, "",

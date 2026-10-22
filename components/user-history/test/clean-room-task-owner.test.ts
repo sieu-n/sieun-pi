@@ -50,7 +50,11 @@ test("task-owner: an owner named from his quoted request passes, one named from 
 
   const early = await run("4", [], 10);
   assert.equal(early.verdict, "open");
-  assert.equal((await run("5", [], 50)).verdict, "fail", "nothing told by the window's end fails");
+  const held = await run("5", [], 50);
+  assert.equal(held.verdict, "void", "a window with no model turn, as in run2 on 10-22, tested nothing");
+  assert.match(held.line("f"), /^- f not met: no session of the chat took a model turn/);
+  const thought = { type: "message", timestamp: at(3), message: { role: "assistant", content: [{ type: "text", text: "Looking at the boards first." }] } };
+  assert.equal((await run("7", [thought], 50)).verdict, "fail", "a chat that worked but told nothing by the window's end fails");
 
   const typed = await run("6", [user(5, "it was mac-management, check there"), tell(8, "mac-management owns it, as your message says.")]);
   assert.equal(typed.verdict, "void");
