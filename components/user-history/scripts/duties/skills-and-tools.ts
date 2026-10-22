@@ -224,6 +224,9 @@ async function skillPathsAtHead(deps: Deps): Promise<ExecResult> {
 }
 const setDiff = (a: Iterable<string>, b: Iterable<string>) => { const other = new Set(b); return [...new Set(a)].filter(item => !other.has(item)).sort(); };
 
+/** A Sign in with Apple login: ChatGPT sends it to appleid.apple.com, which wants the Apple ID password and a 2FA code on the owner's devices (10-23, fhnyq29tw5). */
+const APPLE_RELAY = "@privaterelay.appleid.com";
+
 async function pool(deps: Deps, provider: "anthropic" | "openai-codex"): Promise<Outcome> {
   const result = await deps.exec("pi-pool", ["ls", "--json", ...(provider === "anthropic" ? [] : ["--provider", provider])], { timeoutMs: CALL_TIMEOUT_MS });
   if (result.code !== 0) return FAIL("agent", `pi-pool ls ${failText(result)}`, "reinstall pi-pool with components/pi-pool/install.py in sieun-pi");
@@ -236,6 +239,8 @@ async function pool(deps: Deps, provider: "anthropic" | "openai-codex"): Promise
   const soon = live.some(row => [row.limited_until, row.cooldown_until, ...(row.windows ?? []).map(window => window.resets_at)]
     .some(at => typeof at === "number" && at > nowSec && at - nowSec <= 86_400));
   const counts = `${usable} of ${live.length} usable, ${rows.length - live.length} off`;
+  if (reauth.length && reauth.every(email => email.endsWith(APPLE_RELAY))) return FAIL("owner", `${reauth.join(", ")} need a new sign-in (${counts})`,
+    `the owner clicks Sign in again on the account in Settings, Accounts and signs in with Apple; Apple asks for his Apple ID password and a 2FA code on his devices, which no agent holds`);
   if (reauth.length) return FAIL("agent", `${reauth.join(", ")} need a new sign-in (${counts})`,
     `sign in again with \`pi-pool login <email> --provider ${provider}\` in the owner's Aside browser; a password or 2FA prompt makes it an owner item`);
   if (!usable && !soon) return FAIL("agent", `no ${provider} account is usable and none resets within 24 h (${counts})`, "read `pi-pool ls --json` and find why every account is stuck");

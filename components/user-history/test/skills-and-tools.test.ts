@@ -246,3 +246,17 @@ test("dailyRun drops a flagged check that CHECKS no longer has", async () => {
   assert.deepEqual(run?.problems.map(problem => problem.id), ["aside_tabs"]);
   await rm(dir, { recursive: true, force: true });
 });
+
+const poolCodex = CHECKS.find(check => check.id === "pool_codex")!;
+const poolDeps = (rows: object[]): Deps => ({ ...deps("linux"), exec: async () => ({ code: 0, stdout: JSON.stringify({ rows }), stderr: "", ms: 0 }) });
+
+// 10-23: fhnyq29tw5's Codex sign-in went to Apple's password page, which no agent can pass.
+test("pool_codex makes a Sign in with Apple account's new sign-in the owner's fix", async () => {
+  const outcome = await poolCodex.run(poolDeps([{ email: "fhnyq29tw5@privaterelay.appleid.com", reason: "needs-reauth" }, { email: "a@gmail.com", usable: true }]));
+  assert.ok(outcome.status === "fail" && outcome.fixer === "owner", JSON.stringify(outcome));
+});
+
+test("pool_codex keeps an email-code account's new sign-in the agent's fix", async () => {
+  const outcome = await poolCodex.run(poolDeps([{ email: "fhnyq29tw5@privaterelay.appleid.com", reason: "needs-reauth" }, { email: "b@gmail.com", reason: "needs-reauth" }]));
+  assert.ok(outcome.status === "fail" && outcome.fixer === "agent", JSON.stringify(outcome));
+});
