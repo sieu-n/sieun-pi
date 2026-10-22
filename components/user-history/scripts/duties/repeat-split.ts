@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import type { CountedRepeat } from "../../src/chat-corrections.ts";
+import { fixRefs, type CountedRepeat } from "../../src/chat-corrections.ts";
 
 /**
  * Splits the repeats repeat_corrections_7d counts by when the correction's current fix landed. On 10-20 the headline read 21 through five d10
@@ -19,21 +19,26 @@ export interface SplitRepeat extends CountedRepeat { side: RepeatSide; /** When 
 const HASH = /(?<![\w./-])(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}(?![\w])/g;
 /** A chat message id: the send time in ms, base 36, such as mvfilflf for 10-19 17:14:48Z. */
 const MESSAGE = /(?<![\w./-])m[0-9a-z]{7}(?![\w])/g;
+/** A /refine id: its UTC time to the ms, such as refine_20261022063009003 for 10-22 06:30:09.003Z. */
+const REFINE = /(?<![\w./-])refine_(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})(\d{3})(?!\d)/g;
 
 /**
- * What a ref names that landed: commit hashes, and chat message ids sent after the correction was given and by `now`. A message id from before
- * the correction is the owner's own message, as c118's ref mvex7ik9 is his 07:16:06Z words, so it is no fix.
+ * What a ref names that landed: commit hashes, and chat message ids and /refine ids from after the correction was given and by `now`. A message
+ * id from before the correction is the owner's own message, as c118's ref mvex7ik9 is his 07:16:06Z words, so it is no fix. A refine id is the
+ * fix itself: on 10-22 c104's ref named refine_20261022063009003 alone, and d10 read its 06:29:54Z repeat as having no landed fix.
  */
-export function fixMarks(ref: string, given: number, now: number): { commits: string[]; messages: number[] } {
+export function fixMarks(ref: string, given: number, now: number): { commits: string[]; messages: number[]; refines: number[] } {
+  const inWindow = (at: number) => at >= given && at <= now;
   const commits = [...new Set(ref.match(HASH) ?? [])];
-  const messages = (ref.match(MESSAGE) ?? []).map(id => parseInt(id, 36)).filter(at => at >= given && at <= now);
-  return { commits, messages };
+  const messages = (ref.match(MESSAGE) ?? []).map(id => parseInt(id, 36)).filter(inWindow);
+  const refines = [...ref.matchAll(REFINE)].map(([, y, mo, d, h, mi, s, ms]) => Date.UTC(+y!, +mo! - 1, +d!, +h!, +mi!, +s!, +ms!)).filter(inWindow);
+  return { commits, messages, refines };
 }
 
-/** When the newest fix a ref names landed: the latest commit time (`commitTime`, undefined for a commit no repo knows) or message id time. */
+/** When the newest fix a ref names landed: the latest message or refine id time or commit time (`commitTime`, undefined for a commit no repo knows) or message id time. */
 export async function fixLanded(ref: string, given: number, now: number, commitTime: (hash: string) => Promise<number | undefined>): Promise<number | undefined> {
-  const { commits, messages } = fixMarks(ref, given, now);
-  const times = [...messages, ...(await Promise.all(commits.map(commitTime))).filter((at): at is number => at !== undefined)];
+  const { commits, messages, refines } = fixMarks(ref, given, now);
+  const times = [...messages, ...refines, ...(await Promise.all(commits.map(commitTime))).filter((at): at is number => at !== undefined)];
   return times.length ? Math.max(...times) : undefined;
 }
 
@@ -42,8 +47,8 @@ export async function fixLanded(ref: string, given: number, now: number, commitT
  * repeatsBetween; undefined while none has. A commit from before the correction was no fix for it.
  */
 export async function firstFixLanded(ref: string, given: number, now: number, commitTime: (hash: string) => Promise<number | undefined>): Promise<number | undefined> {
-  const { commits, messages } = fixMarks(ref, given, now);
-  const times = [...messages, ...(await Promise.all(commits.map(commitTime))).filter((at): at is number => at !== undefined && at >= given && at <= now)];
+  const { commits, messages, refines } = fixMarks(ref, given, now);
+  const times = [...messages, ...refines, ...(await Promise.all(commits.map(commitTime))).filter((at): at is number => at !== undefined && at >= given && at <= now)];
   return times.length ? Math.min(...times) : undefined;
 }
 
@@ -52,7 +57,7 @@ export const repeatSide = (said: number, fixed: number | undefined): RepeatSide 
 
 export async function splitRepeats(repeats: readonly CountedRepeat[], now: number, commitTime: (hash: string) => Promise<number | undefined>): Promise<SplitRepeat[]> {
   return Promise.all(repeats.map(async repeat => {
-    const fixed = await fixLanded(repeat.entry.ref, Date.parse(repeat.entry.at), now, commitTime);
+    const fixed = await fixLanded(fixRefs(repeat.entry), Date.parse(repeat.entry.at), now, commitTime);
     return { ...repeat, side: repeatSide(repeat.said, fixed), ...(fixed === undefined ? {} : { fixed }) };
   }));
 }
@@ -113,7 +118,7 @@ async function main(): Promise<void> {
   const ledger = await new CorrectionLedger(process.env.HARNESS_DATA_DIR || join(homedir(), ".prime/agent/browser-chat")).read();
   const commitTime = gitCommitTime(fixRepos(AUTO_SNS));
   const split = await splitRepeats(await repeatsBetween(ledger, now - REPEAT_DAYS * 86_400_000, now, history,
-    entry => firstFixLanded(entry.ref, Date.parse(entry.at), now, commitTime)), now, commitTime);
+    entry => firstFixLanded(fixRefs(entry), Date.parse(entry.at), now, commitTime)), now, commitTime);
   for (const repeat of split) {
     process.stdout.write(`${new Date(repeat.said).toISOString().slice(0, 16)}Z ${repeat.entry.id} ${sideLabel(repeat)} in ${repeat.repeat.chat.name || repeat.repeat.chat.id}: ${repeat.repeat.words.replace(/\s+/g, " ").slice(0, 120)}\n`);
   }

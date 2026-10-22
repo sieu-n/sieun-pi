@@ -26,6 +26,8 @@ export interface Correction {
   enforcedBy: Enforcement;
   /** The brief bullet, file, commit or test that enforces the rule. */
   ref: string;
+  /** Each ref a later fix replaced, oldest first, so a fix it named still counts as landed (`fixRefs`). */
+  pastRefs?: PastRef[];
   status: CorrectionStatus;
   /** Key words a later correction on the same thing shares. */
   theme: string[];
@@ -33,6 +35,10 @@ export interface Correction {
   /** The thread that owns this work: a step on its topics in any other chat is handed off to it (`handoffSteps`, the check-in's scope line). */
   handoff?: Handoff;
 }
+/** A ref a fix call replaced and when (`until`). On 10-22 at 09:41Z a fix set c18's ref to a prompt-note text and dropped 06aa1dfb, so d10 read its repeats as having no landed fix. */
+export interface PastRef { ref: string; until: string }
+/** Every ref an entry has had, current first, one per line: what d10 reads for the fixes that landed (repeat-split.ts `fixMarks`). */
+export const fixRefs = (entry: Correction): string => [entry.ref, ...(entry.pastRefs ?? []).map(past => past.ref)].join("\n");
 /** A thread (its name or id, as `waitTarget` resolves it) and the key words of the work that belongs to it. */
 /** Where a handed-off job runs. */
 export const ENVIRONMENTS = ["local", "staging", "prod"] as const;
@@ -151,7 +157,10 @@ export function applyCorrection(ledger: Ledger, call: CorrectionCall, chat: Chat
     if (!entry) throw new Error(`No correction ${call.fix.id}`);
     if (call.fix.rule) entry.rule = call.fix.rule;
     if (call.fix.enforcedBy) entry.enforcedBy = call.fix.enforcedBy;
-    if (call.fix.ref) entry.ref = call.fix.ref;
+    if (call.fix.ref && call.fix.ref !== entry.ref) {
+      if (entry.ref.trim()) entry.pastRefs = [...(entry.pastRefs ?? []), { ref: entry.ref, until: at }];
+      entry.ref = call.fix.ref;
+    }
     if (call.fix.status) entry.status = call.fix.status;
     if (call.fix.handoff) entry.handoff = call.fix.handoff;
     return { kind: "fixed", entry };
@@ -289,6 +298,12 @@ const ref = (value: unknown): ChatRef => {
   const record = typeof value === "object" && value !== null ? value as Record<string, unknown> : {};
   return { id: typeof record.id === "string" ? record.id : "", name: typeof record.name === "string" ? record.name : "" };
 };
+/** The stored past refs, each kept only with a string ref and time. */
+const pastRefsField = (value: unknown): { pastRefs?: PastRef[] } => {
+  const list = Array.isArray(value) ? value.flatMap(item => typeof item === "object" && item !== null && typeof (item as PastRef).ref === "string" &&
+    typeof (item as PastRef).until === "string" ? [{ ref: (item as PastRef).ref, until: (item as PastRef).until }] : []) : [];
+  return list.length ? { pastRefs: list } : {};
+};
 /** A stored handoff, dropped (not the entry) when it is bad. */
 const handoffField = (value: unknown): { handoff?: Handoff } => {
   if (value === undefined) return {};
@@ -305,7 +320,7 @@ export function parseLedger(value: unknown): Ledger {
     if (typeof entry.id !== "string" || typeof entry.at !== "string" || typeof entry.words !== "string" || typeof entry.rule !== "string" ||
       !ENFORCEMENTS.includes(entry.enforcedBy as Enforcement) || !CORRECTION_STATUSES.includes(entry.status as CorrectionStatus)) continue;
     corrections.push({ id: entry.id, at: entry.at, chat: ref(entry.chat), words: entry.words, rule: entry.rule, enforcedBy: entry.enforcedBy as Enforcement,
-      ref: typeof entry.ref === "string" ? entry.ref : "", status: entry.status as CorrectionStatus,
+      ref: typeof entry.ref === "string" ? entry.ref : "", ...pastRefsField(entry.pastRefs), status: entry.status as CorrectionStatus,
       theme: Array.isArray(entry.theme) ? entry.theme.filter((word): word is string => typeof word === "string") : [],
       repeats: Array.isArray(entry.repeats) ? entry.repeats.flatMap(repeat => typeof repeat === "object" && repeat !== null &&
         typeof (repeat as CorrectionRepeat).at === "string" && typeof (repeat as CorrectionRepeat).words === "string"

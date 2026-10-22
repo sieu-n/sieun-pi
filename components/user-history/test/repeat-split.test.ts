@@ -6,7 +6,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import type { CountedRepeat, Correction } from "../src/chat-corrections.ts";
+import { applyCorrection, fixRefs, parseLedger, type CountedRepeat, type Correction } from "../src/chat-corrections.ts";
 import { firstFixLanded, fixLanded, fixMarks, gitCommitTime, sideLabel, splitMetrics, splitRepeats } from "../scripts/duties/repeat-split.ts";
 import { measureHarness } from "../scripts/duties/harness-health.ts";
 
@@ -24,11 +24,11 @@ const c118 = entry("c118", "2026-10-19T07:16:44.575Z", "mvex7ik9");
 const c32 = entry("c32", "2026-10-09T21:53:55.449Z", "sieun-pi a46dee3 (c32-review-asks.test.ts: a review, look or pick todo with no link is refused)");
 
 test("a ref's commits and the chat message ids sent after the correction are its fixes; the owner's own message id and a release name are not", () => {
-  assert.deepEqual(fixMarks(c79.ref, at(c79.at), now), { commits: ["95af01d5"], messages: [] });
+  assert.deepEqual(fixMarks(c79.ref, at(c79.at), now), { commits: ["95af01d5"], messages: [], refines: [] });
   // c118's ref is the owner's 07:16:06Z message, from before the 07:16:44Z correction.
-  assert.deepEqual(fixMarks(c118.ref, at(c118.at), now), { commits: [], messages: [] });
-  assert.deepEqual(fixMarks("msg mvfilflf (10-20): written into the brief", at("2026-10-12T06:55:55Z"), now), { commits: [], messages: [at("2026-10-19T17:14:48.243Z")] });
-  assert.deepEqual(fixMarks("live in release-1d6750a, 1792077437 and 12 messages", at("2026-10-12T00:00:00Z"), now), { commits: [], messages: [] });
+  assert.deepEqual(fixMarks(c118.ref, at(c118.at), now), { commits: [], messages: [], refines: [] });
+  assert.deepEqual(fixMarks("msg mvfilflf (10-20): written into the brief", at("2026-10-12T06:55:55Z"), now), { commits: [], messages: [at("2026-10-19T17:14:48.243Z")], refines: [] });
+  assert.deepEqual(fixMarks("live in release-1d6750a, 1792077437 and 12 messages", at("2026-10-12T00:00:00Z"), now), { commits: [], messages: [], refines: [] });
 });
 
 test("the newest landed fix a ref names dates it, and a commit no repo knows does not", async () => {
@@ -74,4 +74,29 @@ test("the d10 precheck reports the split next to repeat_corrections_7d and leads
   const line = output.flagged!.find(slice => slice.kind === "repeat_corrections_7d")!;
   assert.equal(line.at, at("2026-10-19T05:32:49.192Z"));
   assert.match(line.excerpt, /^before fix of 10-19 22:40Z: c79 /);
+});
+
+test("a fix call that replaces a ref keeps the old one, so the landed fix it named still dates c18's repeats (10-22 09:41Z)", async () => {
+  const landed = "sieun-pi 06aa1dfb (10-20 00:49Z: brief c18 line, tell_owner shop-talk refusal)";
+  const ledger = { corrections: [entry("c18", "2026-10-09T14:27:39.767Z", landed)] };
+  applyCorrection(ledger, { kind: "fix", fix: { id: "c18", ref: "Global owner_replies prompt note v8, refined 2026-10-22" } }, vp, "2026-10-22T09:41:00.000Z");
+  const kept = parseLedger(JSON.parse(JSON.stringify(ledger))).corrections[0]!;
+  assert.equal(kept.ref, "Global owner_replies prompt note v8, refined 2026-10-22");
+  assert.deepEqual(kept.pastRefs, [{ ref: landed, until: "2026-10-22T09:41:00.000Z" }]);
+  const split = await splitRepeats([counted(kept, "2026-10-19T13:51:23.127Z", fb), counted(kept, "2026-10-22T09:39:37.171Z", fb)], at("2026-10-22T13:15:00Z"), commitTime);
+  assert.deepEqual(split.map(item => item.side), ["before_fix", "after_fix"]);
+  assert.equal(await firstFixLanded(fixRefs(kept), at(kept.at), at("2026-10-22T13:15:00Z"), commitTime), at(commits["06aa1dfb"]!));
+  applyCorrection(ledger, { kind: "fix", fix: { id: "c18", ref: kept.ref, status: "active" } }, vp, "2026-10-22T10:00:00.000Z");
+  assert.equal(ledger.corrections[0]!.pastRefs!.length, 1);
+});
+
+test("a /refine id is a fix that landed at its UTC time, and one from before the correction is not (c104, 10-22)", async () => {
+  const c104 = entry("c104", "2026-10-18T05:39:20.411Z", "refine_20261022063009003 (global owner-replies prompt notes v7 and v3 fold in c163)");
+  const later = at("2026-10-22T13:15:00Z");
+  assert.deepEqual(fixMarks(c104.ref, at(c104.at), later).refines, [at("2026-10-22T06:30:09.003Z")]);
+  assert.deepEqual(fixMarks("refine_20261017000000000", at(c104.at), later).refines, []);
+  const [split] = await splitRepeats([counted(c104, "2026-10-22T06:29:54.527Z")], later, commitTime);
+  assert.equal(split!.side, "before_fix");
+  assert.equal(sideLabel(split!), "before fix of 10-22 06:30Z");
+  assert.equal(await firstFixLanded(c104.ref, at(c104.at), later, commitTime), at("2026-10-22T06:30:09.003Z"));
 });

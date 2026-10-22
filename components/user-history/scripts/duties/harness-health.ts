@@ -5,7 +5,7 @@ import { basename, join, relative, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { gunzipSync } from "node:zlib";
 import { loadSkillsFromDir } from "prime-agent";
-import { CorrectionLedger, repeatsBetween, type ChatHistory } from "../../src/chat-corrections.ts";
+import { CorrectionLedger, fixRefs, repeatsBetween, type ChatHistory } from "../../src/chat-corrections.ts";
 import { chatHistory, fileChatHistory } from "../../src/owner-history.ts";
 import { readAppended } from "./read-appended.ts";
 import { firstFixLanded, fixRepos, gitCommitTime, sideLabel, splitLastEvents, splitMetrics, splitRepeats } from "./repeat-split.ts";
@@ -225,7 +225,7 @@ export async function measureHarness(deps: HarnessDeps): Promise<PrecheckOutput 
   const pairs = listed.filter(pair => pair.score >= OVERLAP_MIN);
   const unread = skills.filter(skill => skill.lastRead === null);
   const repeats = await splitRepeats(await repeatsBetween(await new CorrectionLedger(deps.dataDir).read(), deps.now - REPEAT_DAYS * DAY, deps.now, deps.history,
-    entry => firstFixLanded(entry.ref, Date.parse(entry.at), deps.now, deps.commitTime)), deps.now, deps.commitTime);
+    entry => firstFixLanded(fixRefs(entry), Date.parse(entry.at), deps.now, deps.commitTime)), deps.now, deps.commitTime);
   const smoke = await smokeSkills(skills, deps.roots, deps.smoke);
   const failures = smoke.filter(result => !result.pass);
   const flagged: FlaggedSlice[] = [
