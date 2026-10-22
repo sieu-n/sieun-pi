@@ -480,6 +480,17 @@ function stateBusy(data: unknown, retry: boolean, handoff = false): boolean {
 }
 
 /**
+ * The inputs queued in the session that its turn has not taken yet, steers and follow-ups, from `get_state`'s `sessionActions`. They live only in
+ * the worker, so a stop drops them, and the daemon's list always reads 0 for them (agent-roster.ts writes `queuedCount: 0`). At 15:26:35Z on
+ * 10-22 the stop of metal box owner (01a11d24-ac9b-757d-ac51-9b2b7598782f), asleep in a pi-pool account wait, dropped its 5 queued steers, and
+ * the agent outbox had marked them delivered, so nobody sent them again. At 19:50Z, 13 of the 61 runs in pi-pool's turn queue held such input.
+ */
+export function queuedInputs(data: unknown): number {
+  const actions = (typeof data === "object" && data !== null ? (data as { sessionActions?: { queuedCount?: unknown } }).sessionActions : undefined);
+  return typeof actions?.queuedCount === "number" ? actions.queuedCount : 0;
+}
+
+/**
  * How long the sweep's line waits for one session's stop, its `get_state` and kill (30 s each) included. A stop still out then logs its own
  * line once it stops the session, and the next sweep does not ask that session again while it is out. From 22Z on 10-18 to 01:03Z on 10-19
  * the hung worker 114947 left the `get_state` of 01a150e1 timing out every minute.
@@ -725,6 +736,8 @@ export class IdleUnloader {
       return false;
     }
     if (!state.success) return failed(state);
+    const queued = queuedInputs(state.data);
+    if (queued > 0) { source.log(`idle unload: ${row.sessionId}: holds ${queued} queued inputs that a stop would drop; kept`); return false; }
     if (stateBusy(state.data, retry, this.handsOff(row))) { source.log(`idle unload: ${row.sessionId}: the daemon shows it at work since the row was listed; kept`); return false; }
     // The service lets go of a chat first: the kill closes the session under its attach, and the hub would open it again at once.
     if (why !== "idle" && chats.has(row.sessionId) && !await source.release(row.sessionId)) { source.log(`idle unload: ${row.sessionId}: the service holds the chat for a duty or an open; kept`); return false; }
