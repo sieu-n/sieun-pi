@@ -1670,7 +1670,7 @@
   "box": [
    {
     "panel": "websearch_query",
-    "shared": "Google is down on the Virev search backend"
+    "shared": "^Google is down on the Virev search backend"
    }
   ]
  },
@@ -1740,9 +1740,11 @@
   ],
   "box": [
    {
-    "panel": "pool_claude"
+    "panel": "pool_claude",
+    "shared": "need a new sign-in \\(|^no \\S+ account is usable"
    }
-  ]
+  ],
+  "note": "The Mac reads the box's pi-pool through ~/.config/pi-pool/remote.json, so an account that needs a new sign-in or a pool with no usable account is the same on both hosts; the Skills and tools duty flags it."
  },
  {
   "id": "tools-panel-check-pool-codex",
@@ -1754,9 +1756,11 @@
   ],
   "box": [
    {
-    "panel": "pool_codex"
+    "panel": "pool_codex",
+    "shared": "need a new sign-in \\(|^no \\S+ account is usable"
    }
-  ]
+  ],
+  "note": "The Mac reads the box's pi-pool through ~/.config/pi-pool/remote.json, so an account that needs a new sign-in or a pool with no usable account is the same on both hosts; the Skills and tools duty flags it."
  },
  {
   "id": "tools-panel-check-claude-peer",
