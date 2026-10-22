@@ -1,5 +1,6 @@
 // d2 walked the owner org's watch keys about 65 times a day per env on 10-19 to 10-21, 20,000 to 24,000 Convex rows a walk, while the keys
-// had not changed for 9 days. These cases pin that convexKeys walks pageKeys only when the org's watch-key stamp moved.
+// had not changed for 9 days. These cases pin that convexKeys walks pageKeys only when the org's watch-key stamp moved, and that it never
+// calls the stamp query on a deployment that does not serve it, because each such call pages ops through search-convex-call-refused.
 import assert from "node:assert/strict";
 import { mkdtemp, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -7,7 +8,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { convexKeys } from "../scripts/duties/watchlist-green.ts";
 
-/** A fake of the Convex authorize route and /api/query: two pages of keys, and the stamp query when `stamp` is set. */
+/** A fake of the Convex authorize route and /api/query: two pages of keys, and the stamp query, listed in apiSpec, when `stamp` is set. */
 function fakeConvex(state: { stamp: string | null; keys: string[] }) {
   const calls: string[] = [];
   const fetcher = (async (url: string, init: RequestInit) => {
@@ -15,6 +16,10 @@ function fakeConvex(state: { stamp: string | null; keys: string[] }) {
     if (url.includes("authorize_within_current_project")) return json({ adminKey: "ak", url: "https://dep.convex.cloud" });
     const { path, args } = JSON.parse(String(init.body)) as { path: string; args: { cursor?: string | null } };
     calls.push(path);
+    if (path === "_system/cli/modules:apiSpec") {
+      const listed = state.stamp === null ? [] : [{ identifier: "search/watchTargets.js:watchKeysStamp", functionType: "Query" }];
+      return json({ status: "success", value: [{ identifier: "search/watchTargets.js:pageKeys", functionType: "Query" }, ...listed] });
+    }
     if (path === "search/watchTargets:watchKeysStamp") {
       return state.stamp === null ? json({ status: "error", errorMessage: "Could not find public function" }) : json({ status: "success", value: state.stamp });
     }
@@ -39,6 +44,7 @@ test("convexKeys walks once per stamp and answers the kept keys while the stamp 
   assert.deepEqual(await read(), state.keys);
   assert.equal(convex.walks(), 4, "a moved stamp walks again");
   assert.deepEqual(await readdir(dir), ["dep-org_x.json"]);
+  assert.equal(convex.calls.filter(path => path.endsWith(":apiSpec")).length, 1, "a deployment with a kept stamp skips the function list");
 });
 
 test("a deployment without the stamp query walks every time and keeps nothing", async () => {
@@ -49,4 +55,5 @@ test("a deployment without the stamp query walks every time and keeps nothing", 
   assert.deepEqual(await read(), ["instagram:account:nike"]);
   assert.equal(convex.walks(), 4);
   assert.deepEqual(await readdir(dir), []);
+  assert.ok(!convex.calls.includes("search/watchTargets:watchKeysStamp"), "a deployment without the stamp query is never asked for it");
 });

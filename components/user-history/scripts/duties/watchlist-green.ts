@@ -381,6 +381,11 @@ export const KEYS_CACHE_DIR = join(homedir(), ".cache", "watchlist-green");
  * Every distinct watch key of one org on a Convex deployment, read with the owner's Convex CLI login. It reads the org's watch-key stamp
  * first (search/watchTargets:watchKeysStamp, 3 documents), and when the stamp equals the one KEYS_CACHE_DIR holds for the org, the keys there
  * are the answer and nothing is walked. A deployment without the stamp query walks every time and keeps nothing.
+ * Before a deployment has answered a stamp, which leaves a file in KEYS_CACHE_DIR, it reads the deployment's function list
+ * (_system/cli/modules:apiSpec, the list `convex run` reads, about 0.6 MB and 0.2 s on staging) and asks for the stamp only when the list has
+ * it. A stamp call to a deployment without the query is a refused call that pages ops through search-convex-call-refused, which happened at
+ * 2026-10-22 16:47:45Z on prod, because sieun-pi 414dba9c went live before auto-sns-agent a6786dc14 reached prod Convex. The apiSpec read
+ * logs no function_execution row.
  */
 export async function convexKeys(fetcher: typeof fetch, accessToken: string, signal: AbortSignal,
   deployment: string = PROD_CONVEX, orgId: string = OWNER_ORG, cacheDir: string = KEYS_CACHE_DIR): Promise<string[]> {
@@ -399,12 +404,12 @@ export async function convexKeys(fetcher: typeof fetch, accessToken: string, sig
     }
     return body.value;
   };
-  const stamp = await query<string>("search/watchTargets:watchKeysStamp", { orgId }).catch(() => null);
   const file = join(cacheDir, `${deployment}-${orgId}.json`);
-  if (stamp !== null) {
-    const kept = await readFile(file, "utf8").then(text => JSON.parse(text) as { stamp?: unknown; keys?: unknown }).catch(() => null);
-    if (kept?.stamp === stamp && Array.isArray(kept.keys)) return kept.keys as string[];
-  }
+  const kept = await readFile(file, "utf8").then(text => JSON.parse(text) as { stamp?: unknown; keys?: unknown }).catch(() => null);
+  const served = kept !== null || await query<{ identifier: string }[]>("_system/cli/modules:apiSpec", {})
+    .then(spec => spec.some(fn => fn.identifier === "search/watchTargets.js:watchKeysStamp"), () => false);
+  const stamp = served ? await query<string>("search/watchTargets:watchKeysStamp", { orgId }).catch(() => null) : null;
+  if (stamp !== null && kept?.stamp === stamp && Array.isArray(kept.keys)) return kept.keys as string[];
   const keys = new Set<string>();
   let cursor: string | null = null;
   for (;;) {
