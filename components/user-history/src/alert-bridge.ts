@@ -5,6 +5,7 @@ import { promisify } from "node:util";
 import { ALERT_ROUTES, OPS_ROUTE, routeAlert } from "./alert-routes.ts";
 import { missing } from "./locked-json.ts";
 import type { TurnSince } from "./held-turns.ts";
+import type { QueuePlace } from "./shared/types.ts";
 import { TICK_MS } from "./wakes.ts";
 
 /**
@@ -335,8 +336,11 @@ export const ownedByText = (rules: readonly string[], owner: AlertJob): string =
 /** The words Prime puts before the token hook's own answer, which say nothing the hook's words do not. */
 const TOKEN_HOOK_PREFIX = /^Failed to resolve API key for provider "[^"]+" from shell command: \S+ /;
 
-/** One rule to escalate: `job` names the job that took its fire and has had no model turn, and `error` that job's last failed call. */
-export type EscalationLine = AlertLine & { chat: string; job?: string; error?: string;
+/**
+ * One rule to escalate: `job` names the job that took its fire and has had no model turn, `error` that job's last failed call, and `queued`
+ * its run's place in pi-pool's turn queue while the queue holds it.
+ */
+export type EscalationLine = AlertLine & { chat: string; job?: string; error?: string; queued?: QueuePlace;
   /** With no job: when the start of the chat's triage job began, while it still runs. */
   waitingSince?: number;
   /** With no job: why the last start of the chat's triage job failed. */
@@ -348,8 +352,9 @@ export function escalationText(lines: readonly EscalationLine[]): string {
   const groups = new Map<string, EscalationLine[]>();
   for (const line of lines) groups.set(`${line.chat}\u0000${line.job ?? ""}`, [...groups.get(`${line.chat}\u0000${line.job ?? ""}`) ?? [], line]);
   const parts = [...groups.values()].map(group => {
-    const { chat, job, error, waitingSince, startError } = group.find(line => line.error) ?? group[0]!;
-    const why = job ? `its triage job ${job} has had no model turn${error ? ` (its last call failed: ${failed(error)})` : ""}`
+    const { chat, job, error, queued, waitingSince, startError } = group.find(line => line.queued) ?? group.find(line => line.error) ?? group[0]!;
+    const why = job && queued ? `its triage job ${job} has had no model turn, because its run waits in pi-pool's turn queue (${queued.position} of ${queued.total}, since ${minute(queued.since)})`
+      : job ? `its triage job ${job} has had no model turn${error ? ` (its last call failed: ${failed(error)})` : ""}`
       : waitingSince !== undefined ? `the start of its triage job has waited since ${minute(waitingSince)} and has not finished`
       : startError ? `the start of its triage job failed (${startError.slice(0, 200)}) and is tried again each poll` : "the alert bridge has not started its triage job yet";
     return `on ${chat}, ${why}: ${group.map(line => ruleText(line)).join(", ")}`;
@@ -378,6 +383,8 @@ export interface AlertBridgeDeps {
   retryJob?: (job: AlertJob) => void;
   /** When pi-pool next gives the tree rooted at `tree` a `provider` account (`poolFreeAt`): now when it would now, null when the pool does not say. */
   poolFreeAt?: (tree: string, provider: string) => Promise<number | null>;
+  /** The session's place in pi-pool's turn queue (`pi-pool queue --json`), null when its run does not wait there. */
+  turnQueued?: (session: string) => Promise<QueuePlace | null>;
   now?: () => number;
   log: (line: string) => void;
 }
@@ -437,7 +444,7 @@ export class AlertBridge {
       state = await this.reopen(state, boarded, now);
       const watched = await this.watch(state, now);
       state = await this.tell(watched.state, boardless, now);
-      return this.escalate(state, boarded, watched.errors, watched.parked, now);
+      return this.escalate(state, boarded, watched, now);
     });
     return true;
   }
@@ -536,9 +543,13 @@ export class AlertBridge {
    * bridge escalated at 20:12:54Z, and Prime's next call at 20:13:18Z got a backoff to 20:27:51Z. It ran at 20:58:56Z, once an account served.
    * A failed call that names no slot stays in `parked` the same way: on 10-21 job 01a15bc4's first call, at 00:02:20Z, failed on "the token
    * hook gave no token", pi-pool held its tree until 01:50:03Z, and the bridge escalated vent-health-failure-rate-prod at 00:32:12Z.
+   * `queued` holds each such job whose run waits in pi-pool's turn queue, so its escalation says the queue holds it: on 10-22 job 01a16080
+   * took crawler-prod-sticky-block-rotations-jump at 11:53:27Z while its run sat in the queue from 11:28:22Z (126 queued, 6 working), the
+   * bridge escalated it at 12:23:43Z as a job with no model turn, and pi-pool let the run in at 12:57:04Z.
    */
-  private async watch(state: BridgeState, now: number): Promise<{ state: BridgeState; errors: Map<string, string>; parked: Set<string> }> {
+  private async watch(state: BridgeState, now: number): Promise<{ state: BridgeState; errors: Map<string, string>; parked: Set<string>; queued: Map<string, QueuePlace> }> {
     const errors = new Map<string, string>();
+    const queued = new Map<string, QueuePlace>();
     const parked = new Set<string>();
     const since = new Map<string, number>();
     for (const rule of Object.values(state.rules)) {
@@ -551,6 +562,8 @@ export class AlertBridge {
       if (!turn) continue;
       if (turn.ran) { jobs[id] = { ...job, ranAt: turn.at }; continue; }
       if (turn.error) errors.set(id, turn.error);
+      const place = await this.deps.turnQueued?.(id).catch(() => null);
+      if (place) queued.set(id, place);
       if ((turn.slotAt !== undefined && now < turn.slotAt + TICK_MS) || await this.poolHolds(id, turn.provider, now)) parked.add(id);
       if (!this.deps.retryJob || turn.slotAt === undefined || turn.slotAt > now || (job.retriedAt ?? -1) >= turn.slotAt) continue;
       if (await this.deps.jobWorking?.(job).catch(() => true)) continue;
@@ -558,7 +571,7 @@ export class AlertBridge {
       jobs[id] = { ...job, retriedAt: turn.slotAt };
       this.deps.log(`alerts: triage job ${job.name} (${id.slice(0, 8)}) has had no turn and its pool slot ${minute(turn.slotAt)} passed; asked the resume pass to continue it`);
     }
-    return { state: { ...state, jobs }, errors, parked };
+    return { state: { ...state, jobs }, errors, parked, queued };
   }
 
   /** Whether pi-pool names a time ahead of `now` for the tree rooted at `tree`; a pool that does not say holds nothing. */
@@ -601,7 +614,7 @@ export class AlertBridge {
     return { ...state, rules };
   }
 
-  private async escalate(state: BridgeState, boarded: ReadonlySet<string>, errors: ReadonlyMap<string, string>, parked: ReadonlySet<string>, now: number): Promise<BridgeState> {
+  private async escalate(state: BridgeState, boarded: ReadonlySet<string>, { errors, parked, queued }: { errors: ReadonlyMap<string, string>; parked: ReadonlySet<string>; queued: ReadonlyMap<string, QueuePlace> }, now: number): Promise<BridgeState> {
     const due = dueEscalations(state, boarded, now, parked);
     if (!due.length) return state;
     try {
@@ -609,9 +622,10 @@ export class AlertBridge {
         const rule = state.rules[key]!;
         const job = rule.job && !owed(state, rule) ? rule.job : undefined;
         const error = job && errors.get(job.id);
+        const place = job && queued.get(job.id);
         const start = job ? {} : this.handing.has(rule.chat) ? { waitingSince: this.handing.get(rule.chat)! }
           : this.startErrors.has(rule.chat) ? { startError: this.startErrors.get(rule.chat)! } : {};
-        return { ...alertLine(rule, this.firing), chat: chatName(rule.chat), ...job ? { job: job.name } : {}, ...error ? { error } : {}, ...start };
+        return { ...alertLine(rule, this.firing), chat: chatName(rule.chat), ...job ? { job: job.name } : {}, ...error ? { error } : {}, ...place ? { queued: place } : {}, ...start };
       })), OPS_ROUTE.session);
       const rules = { ...state.rules };
       for (const key of due) rules[key] = { ...rules[key]!, escalatedAt: now };

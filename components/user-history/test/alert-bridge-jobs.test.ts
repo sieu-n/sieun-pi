@@ -7,6 +7,7 @@ import { test } from "node:test";
 import { AlertBridge, ESCALATE_MS, startAlertBridge, REFIRE_MS, REOPEN_MS, firingRules, parseAlerts, parseOwners, parseState, readFiringRules, ruleKey, type AlertLine, type BridgeState, type RuleJob, type TriageJob } from "../src/alert-bridge.ts";
 import { ALERT_ROUTES } from "../src/alert-routes.ts";
 import { turnSince, type TurnSince } from "../src/held-turns.ts";
+import type { QueuePlace } from "../src/shared/types.ts";
 
 const NOW = Date.parse("2026-10-18T16:00:00Z");
 const CI = ALERT_ROUTES.find(route => route.chat === "VP of CI")!.session;
@@ -36,6 +37,7 @@ async function fixture(options: { state?: unknown; failStarts?: boolean } = {}) 
   const turns = new Map<string, TurnSince>();
   const retried: string[] = [];
   const freeAt = new Map<string, number>();
+  const queue = new Map<string, QueuePlace>();
   const bridge = new AlertBridge({ file, now: () => now, log: () => {}, alerts: async () => parseAlerts(list), owners: async () => OWNERS,
     hasBoard: async session => session !== METAL,
     deliver: async (session, text) => { sent.push({ session, text }); },
@@ -48,8 +50,8 @@ async function fixture(options: { state?: unknown; failStarts?: boolean } = {}) 
     },
     jobWorking: async job => working.has(job.id),
     jobTurn: async (job, since) => turns.get(job.id) ?? { ran: true, at: since },
-    retryJob: job => { retried.push(job.id); }, poolFreeAt: async tree => freeAt.get(tree) ?? null });
-  return { file, bridge, started, sent, working, turns, retried, freeAt, set: (alerts: unknown[]) => { list = alerts; }, at: (ms: number) => { now = ms; },
+    retryJob: job => { retried.push(job.id); }, poolFreeAt: async tree => freeAt.get(tree) ?? null, turnQueued: async session => queue.get(session) ?? null });
+  return { file, bridge, started, sent, working, turns, retried, freeAt, queue, set: (alerts: unknown[]) => { list = alerts; }, at: (ms: number) => { now = ms; },
     state: async () => parseState(JSON.parse(await readFile(file, "utf8"))) };
 }
 
@@ -319,6 +321,24 @@ test("a job whose failed call names no slot reads as waiting while pi-pool holds
   await f.bridge.tick();
   assert.equal(escalations().length, 1, "past the pool's time the job still has no turn");
   assert.match(escalations()[0]!.text, /has had no model turn \(its last call failed: pi-pool: the token hook gave no token/);
+});
+
+// Replays 10-22: Crawler VP's triage job 01a16080 took crawler-prod-sticky-block-rotations-jump at 11:53:27Z while its run sat in pi-pool's
+// turn queue from 11:28:22Z (126 queued, 6 working). The bridge escalated it at 12:23:43Z as a job with no model turn and nothing on the
+// queue, and pi-pool let the run in at 12:57:04Z after 5,321.8 s.
+test("a job whose run waits in pi-pool's turn queue escalates with its place in that queue", async () => {
+  const fired = Date.parse("2026-10-22T11:53:27.222Z");
+  const f = await fixture();
+  const escalations = () => f.sent.filter(({ session, text }) => session === OPS && text.startsWith("[alert-escalation]"));
+  f.set([ciAlert("aaaa0000000000f1", "2026-10-22T11:52:00.000Z")]); f.at(fired);
+  await f.bridge.tick();
+  f.working.clear();
+  f.turns.set("job-1", { ran: false });
+  f.queue.set("job-1", { position: 126, total: 126, since: Date.parse("2026-10-22T11:28:22Z") });
+  f.at(fired + ESCALATE_MS + 30_000);
+  await f.bridge.tick();
+  assert.equal(escalations().length, 1);
+  assert.match(escalations()[0]!.text, /On VP of CI, its triage job alert ci-history-stale 1 has had no model turn, because its run waits in pi-pool's turn queue \(126 of 126, since 2026-10-22T11:28Z\): ci-history-stale/);
 });
 
 test("a held job that runs at its slot holds the fire, so nothing escalates", async () => {

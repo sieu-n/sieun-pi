@@ -362,6 +362,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       return file ? readTurnSince(file, since) : { ran: false };
     },
     retryJob: () => chats.interruptedSoon(0), poolFreeAt: (tree, provider) => treeFreeAt(tree, provider),
+    turnQueued: async session => (await queued()).queued.get(session) ?? null,
     log: dutyLog, ...agentMessage });
   const stopBridgeWatch = !alertPoll ? () => {} : startBridgeWatch({ health: alertPoll.health, statusFile, configFile: grafanaConfig,
     alerting: alerting => alertPoll.alerting(alerting), log: dutyLog, ...agentMessage });
