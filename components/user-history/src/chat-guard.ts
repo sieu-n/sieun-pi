@@ -4,7 +4,7 @@ import { messageText } from "./shared/turns.ts";
 import type { ThreadMessage } from "./shared/types.ts";
 import { ALLOWED_SHELL, SHELL_LIST } from "./chat-brief.ts";
 import { fileLines } from "./file-lines.ts";
-import { SHOP_TALK_MARK, shopTalk } from "./shared/reply-lint.ts";
+import { LONG_REPLY_MARK, longReply, SHOP_TALK_MARK, shopTalk } from "./shared/reply-lint.ts";
 import { type ServiceArchive, serviceArchiveLines } from "./service-archives.ts";
 
 /** What makes a session a chat and what a chat may run: the chat_mode marker, its tools, the tell_owner tool, the owner message ids, and the shell guard. */
@@ -267,7 +267,7 @@ export function tellTurn(messages: readonly ThreadMessage[]): TellTurn {
     }
     if (message.role === "user" || message.role === "custom") looked = false;
     if (message.role === "toolResult" && message.content.some(part => part.type === "image")) looked = true;
-    if (message.role === "toolResult" && message.toolName === TELL_OWNER_TOOL && [SHOP_TALK_MARK, REPEAT_MARK, REASK_MARK, UNLOOKED_MARK, INCIDENT_MARK, SAME_ASK_MARK, PROGRESS_MARK].some(mark => messageText(message).startsWith(mark))) {
+    if (message.role === "toolResult" && message.toolName === TELL_OWNER_TOOL && [SHOP_TALK_MARK, LONG_REPLY_MARK, REPEAT_MARK, REASK_MARK, UNLOOKED_MARK, INCIDENT_MARK, SAME_ASK_MARK, PROGRESS_MARK].some(mark => messageText(message).startsWith(mark))) {
       const text = told.get(message.toolCallId);
       if (text) resent.add(text);
     }
@@ -294,8 +294,9 @@ export function tellTurn(messages: readonly ThreadMessage[]): TellTurn {
  * bubble; a server restart of a failed turn keeps that turn's starter. On any other turn it reaches him only when `why` names a case (done, decision, blocker, answer) and `about` names that goal,
  * decision, blocker or question; else it is held, the feed shows it in the turn's notes, and the answer says how to send it if it is one
  * (c117; on 10-19 469 of 597 messages in a day came on turns the owner did not start, and the brief's rule since c104 had not held them).
- * Length and form stay brief rules (c81, c97). A text it would send with shop talk (`shopTalk`: a UTC time, git's land or roll out, a commit
- * id) is refused once with what to say instead, and the very same text sent again goes out, so the check is a soft cap (c98). A text that
+ * A text it would send with shop talk (`shopTalk`: a UTC time, git's land or roll out, a commit id) is refused once with what to say instead,
+ * and the very same text sent again goes out, so the check is a soft cap (c98). A text with a sentence over 35 words or over 80 words in all
+ * (`longReply`, c18, c104) is refused once the same way, with where the rest goes. A text that
  * hands him a 5180 link or a screenshot (`UI_HANDOFF`) when no tool result showed the chat an image since the turn's last owner message or
  * report is refused once the same way, so the chat opens the shots and compares them with the accepted Staging app first (c118). A decision or
  * blocker that asks what another chat's open For you todo already asks (`sameAsk`, `turn.others`) is refused once the same way, and so is
@@ -330,6 +331,10 @@ export function tellOwner(input: TellInput, turn: TellTurn, now = Date.now()): {
     const talk = turn.resent?.has(told) ? [] : shopTalk(told, turn.ownerText);
     if (talk.length) return { kind: "refused", text: `${SHOP_TALK_MARK} ${talk.join(", ")}. Write it the way a person texts in Slack, with what ` +
       "he would see or can do now in plain words, and call tell_owner again. Sending the very same text again sends it as it is (c18, c98)." };
+    const long = turn.resent?.has(told) ? [] : longReply(told);
+    if (long.length) return { kind: "refused", text: `${LONG_REPLY_MARK}, with ${long.join(" and ")}. Text him like a Slack DM, one point in ` +
+      "one or two short sentences of one fact each. Send what matters most and put the rest on the board or a wiki page with its link, " +
+      "never more clauses in one sentence. Sending the very same text again sends it as it is (c18, c104, c98)." };
     if (turn.looked === false && !turn.resent?.has(told) && UI_HANDOFF.test(told)) return { kind: "refused", text: `${UNLOOKED_MARK}. ` +
       "Before you hand him a 5180 link or screenshots, open each screenshot of what it shows with attach_image and compare it with the " +
       "accepted Staging app it should match, its page frame, title, filter row, row icons and spacing. A screen that looks unlike the accepted " +
