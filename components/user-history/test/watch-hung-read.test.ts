@@ -3,7 +3,7 @@
 // 13:11:30Z to 13:16:30Z, so d7 read all 30 minutes of its 13:08Z run with no watch line.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { closeSync, mkdtempSync, openSync, readFileSync, rmSync } from "node:fs";
+import { closeSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -76,9 +76,21 @@ test("a hung cgroup file leaves the reading its memory and run queue, holds one 
   const dir = mkdtempSync(join(tmpdir(), "watch-hung-cgroup-"));
   const fifo = join(dir, "cgroup");
   execFileSync("mkfifo", [fifo]);
-  let release = () => closeSync(openSync(fifo, "w"));
+  // The test holds the FIFO's only writer, opened read-write so this open never blocks. A read opens at once and then blocks in the thread
+  // pool as the 10-20 cpu.stat read did, and the path puts it in the cgroup lane. The release build of 49cfa599 hung 14 min on 10-22: the
+  // old release() opened a write end with openSync, which blocks the main thread until a read opens the FIFO, and the read still waited in the
+  // lane behind this module's /proc/<pid>/cgroup reads, which need the main thread to move on.
+  const writer = openSync(fifo, "r+");
+  let released = false;
+  // A regular file takes the FIFO's path before the writer closes, so a read that opens after the release finds it instead of a FIFO with no writer.
+  const release = () => {
+    if (released) return;
+    released = true;
+    writeFileSync(join(dir, "file"), "");
+    renameSync(join(dir, "file"), fifo);
+    closeSync(writer);
+  };
   t.after(() => { release(); rmSync(dir, { recursive: true, force: true }); });
-  // A FIFO with no writer blocks its read in the thread pool as the 10-20 cpu.stat read did, and its path puts it in the cgroup lane.
   const hung = kernelFile(fifo);
   for (let call = 0; call < 2; call++) {
     const unread: string[] = [];
@@ -88,7 +100,6 @@ test("a hung cgroup file leaves the reading its memory and run queue, holds one 
     assert.deepEqual(unread, ["cgroups", "rigs"]);
   }
   release();
-  release = () => {};
   await hung;
   const unread: string[] = [];
   await linuxUsable(Date.now(), new Promise(done => setTimeout(done, 30_000)), unread);

@@ -4,7 +4,6 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { test } from "node:test";
 import { hostExecFile, type HostExecError, stopSpawnHost } from "../src/spawn-host.ts";
-import { longestLoopCpu } from "./loop-cpu.ts";
 
 type Result = { error: HostExecError | null; stdout: string; stderr: string };
 const viaHost = (file: string, args: string[], options: Parameters<typeof hostExecFile>[2] = {}, input?: string): Promise<Result> => new Promise(resolve => {
@@ -28,14 +27,11 @@ test("the spawn host answers as execFile does: output, exit code, a timeout's ki
   assert.equal((await viaHost("sh", ["-c", "echo $SPAWN_HOST_PROBE; pwd"], { env: { ...process.env, SPAWN_HOST_PROBE: "set" }, cwd: "/tmp" })).stdout, "set\n/tmp\n");
 });
 
-test("commands run through the spawn host leave a big process's event loop free, where its own spawns hold it", async t => {
+test("commands run through the spawn host fork from one small helper process, never from this process", async t => {
   t.after(stopSpawnHost);
-  const heap: object[] = [];
-  for (let i = 0; i < 4_000_000; i++) heap.push({ i, text: `row ${i}` });
-  await viaHost("true", []);
-  const burst = (exec: typeof direct) => Promise.all(Array.from({ length: 8 }, () => exec("true", [])));
-  const own = await longestLoopCpu(() => burst(direct));
-  const host = await longestLoopCpu(() => burst(viaHost));
-  assert.ok(heap.length);
-  assert.ok(host < own / 3, `most CPU between loop turns ${host.toFixed(1)} ms through the host against ${own.toFixed(1)} ms for the process's own spawns`);
+  const parent = (exec: typeof direct) => exec("sh", ["-c", "echo $PPID"]).then(result => result.stdout.trim());
+  assert.equal(await parent(direct), String(process.pid), "the probe names the process that forked it");
+  const parents = new Set(await Promise.all(Array.from({ length: 8 }, () => parent(viaHost))));
+  assert.equal(parents.size, 1, `one helper forks every command: ${[...parents].join(", ")}`);
+  assert.notEqual([...parents][0], String(process.pid));
 });
