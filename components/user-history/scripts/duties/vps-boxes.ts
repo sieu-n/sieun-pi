@@ -34,14 +34,17 @@ const GRAFANA_CONFIG = join(DATA_DIR, "grafana-alerts.json");
 const PROMETHEUS = { uid: "estate_prometheus_stg", type: "prometheus" };
 const DISK_BOXES = ["us-metal01", "us-metal02"] as const;
 const diskSeries = (mount: string): string => `node_filesystem_avail_bytes{job=~"host|devbox-linux",box=~"${DISK_BOXES.join("|")}",fstype=~"ext4|xfs|btrfs",${mount}}`;
-const TREND = diskSeries('mountpoint!~"/boot|/hdd.raid10|/drive2"');
+const TREND = diskSeries('box="us-metal01",mountpoint!~"/boot|/hdd.raid10|/drive2"');
+const METAL02_HIGH = `max_over_time(${diskSeries('box="us-metal02",mountpoint!~"/boot|/drive2"')}[6h])`;
 const HDD = diskSeries('mountpoint="/hdd.raid10"');
 const DRIVE2 = diskSeries('mountpoint="/drive2"');
 /** Each disk at the rate its Grafana rule reads (metal-host-disk-fill-30d, metal02-dev-disk-fill-30d): the 24 h deriv, except
+ * us-metal02's /, whose rule takes the 24 h deriv of its 6 h high-water mark of free space, so a scratch rig that takes space and gives it
+ * back within 6 h counts for nothing (measured: at 18:15Z on 10-22 the raw deriv read 6.2 days and the rule's rate 15.3), and
  * us-metal01's /hdd.raid10, which divides by what it lost over the last 24 h, because it changes in one OpenSearch snapshot step a
  * night and any 24 h window holds exactly one step, and us-metal02's /drive2, which keeps its rule's 7 d deriv for its batch moves.
  * measured: from 10-18 to 10-21 /hdd.raid10 lost 269, 328 and 514 GB a night while its 24 h deriv read 9 to 739 GB a day. */
-export const DISK_DAYS_QUERY = `${TREND} / clamp_min(-deriv(${TREND}[24h]) * 86400, 1) or ${HDD} / clamp_min(${HDD} offset 24h - ${HDD}, 1) or ${DRIVE2} / clamp_min(-deriv(${DRIVE2}[7d]) * 86400, 1)`;
+export const DISK_DAYS_QUERY = `${TREND} / clamp_min(-deriv(${TREND}[24h]) * 86400, 1) or ${METAL02_HIGH} / clamp_min(-deriv(${METAL02_HIGH}[24h:10m]) * 86400, 1) or ${HDD} / clamp_min(${HDD} offset 24h - ${HDD}, 1) or ${DRIVE2} / clamp_min(-deriv(${DRIVE2}[7d]) * 86400, 1)`;
 const OOM = `node_vmstat_oom_kill{box=~"${DISK_BOXES.join("|")}"}`;
 export const OOM_KILLS_QUERY = `round(increase(${OOM}[1d]))`;
 export const OOM_LAST_QUERY = `max_over_time(timestamp(changes(${OOM}[2m]) > 0)[1d:1m])`;
