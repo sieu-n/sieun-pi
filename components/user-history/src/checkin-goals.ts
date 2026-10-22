@@ -5,7 +5,8 @@ import { GOAL_PUSH_LINK, openGoals, targetOp, targetStaleMs, walkGoal } from "./
 import { CHECK_IN_DUTY_ID } from "./shared/chat-duties.ts";
 import { parseDutyLink } from "./shared/duty-fixes.ts";
 import type { ChatBoard, OwnerTodo, PlanItem } from "./shared/types.ts";
-import { type JobFact, ownerLabel, quote, type StepView, walk } from "./checkin-steps.ts";
+import { type JobFact, ownerLabel, poolWait, quote, type StepView, walk } from "./checkin-steps.ts";
+import { poolSlot } from "./shared/chat-feed.ts";
 
 /**
  * The check-in's first job: push each open goal's number to its target (owner 10-15 on Crawler VP p71, Instagram Tier A indexed 14.9 of 100%
@@ -266,6 +267,18 @@ export const threadPaused = (owner: Pick<JobFact, "key"> | undefined, item: Pick
   (owner?.key.startsWith("thread:") === true && paused.has(owner.key.slice("thread:".length))) || (item.sessionId !== undefined && paused.has(item.sessionId));
 
 /**
+ * The wait of a goal whose job waits for its account slot, or undefined: Prime continues that turn at the slot by itself, and a steer or a
+ * restart before it starts a turn the pool refuses again. From 00:45Z to 05:16Z on 10-22, 4 of 40 check-in goal steers went to sessions
+ * waiting for a slot: VP of CI at 04:20Z (slot 05:14Z), the AI harness chat at 04:35Z (05:28Z), metal-management at 04:41Z (05:38Z) and the
+ * metal box owner at 04:04Z (05:30Z).
+ */
+export function slotWait(owner: JobFact | undefined): string | undefined {
+  if (!owner || !poolWait(owner)) return undefined;
+  const slot = poolSlot(owner.error ?? "");
+  return `on ${ownerLabel(owner)}, which waits for its account slot${slot === null ? "" : ` until ${zTime(slot)}`}`;
+}
+
+/**
  * What a goal waits on, so no job can push its number now, or undefined: a waitUntil still ahead on the goal or its push step, or the owner's
  * pause of the thread that owns its push step (`paused`, the chats whose check-in he paused). The owner's focus pause at 23:03Z on 10-17 stopped
  * every chat but frontend bro, and the check-ins went on asking for jobs on goals whose owners he had stopped.
@@ -374,7 +387,7 @@ export function goalPushes(board: ChatBoard | null, views: readonly StepView[], 
     const stale = number.measuredAt === undefined || now - number.measuredAt > number.staleMs;
     const left = trend.kind === "met" ? openUnder(goal).map(item => item.id) : [];
     const asks = trend.kind !== "met" || left.length ? held : undefined;
-    const waits = trend.kind === "met" || asks ? undefined : goalWait(goal, pushView, now, paused, views, board);
+    const waits = trend.kind === "met" || asks ? undefined : goalWait(goal, pushView, now, paused, views, board) ?? slotWait(owner ?? holder?.owner);
     const act: GoalAct = trend.kind === "met" ? "on_pace" : asks ? "owner" : waits ? "waiting" : !owner ? "start" : offPace(trend, stale) ? "steer" : "on_pace";
     // goalTrend's memo is a new object, so the push time carries over from the saved one.
     const before = memos?.[goal.id]?.pushed;

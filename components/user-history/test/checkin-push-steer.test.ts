@@ -124,3 +124,16 @@ for (const [name, shape, value, away] of [["p892", p892, 2, 3], ["p670", p670, 6
     assert.equal(run(shape(value, read), memos as never, now + 25 * 3_600_000).pushes[0]!.quiet, undefined);
   });
 }
+
+// 10-22 00:45Z to 05:16Z: 4 of 40 check-in goal steers went to sessions waiting for their account slot, among them VP of CI at 04:20Z
+// ("this session waits for its slot at 2026-10-22T05:14:00.000Z").
+test("a goal whose job waits for its account slot waits with it, and the check-in gets no steer for it", () => {
+  const error = "Provider rate limit exceeded (rate_limit_error, 429). pi-pool: claude3@x is limited until 2026-10-22T06:29:59.000Z; this session waits for its slot at 2026-10-22T05:14:00.000Z. Try again in 58 minutes.";
+  const waiting: StepView[] = [{ ...views("failed")[0]!, owner: { ...runtime("failed"), error } } as StepView];
+  const [push] = goalPushes(board, waiting, memo as never, 30 * 60_000, now).pushes;
+  assert.equal(push?.act, "waiting");
+  assert.match(push?.waits ?? "", /waits for its account slot until 10-22 05:14Z/);
+  assert.equal(goalDueLine(push!), null);
+  const [other] = goalPushes(board, [{ ...waiting[0]!, owner: { ...runtime("failed"), error: "Provider returned 500" } } as StepView], memo as never, 30 * 60_000, now).pushes;
+  assert.equal(other?.act, "start");
+});

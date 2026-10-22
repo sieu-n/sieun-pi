@@ -10,7 +10,7 @@ import { deadWakes, heartbeatsFile, landCarries, liveThreads, parkFiles, quotaPa
 import { flagStreaks } from "./checkin-repeats.ts";
 import { boardPrs, type DoneFacts, metricFacts } from "./checkin-done.ts";
 import { activePause, changeCheckIn, type CheckInActor, type CheckInChange, CheckInRefused, type CheckInSetting, DEFAULT_CHECK_IN, nextCheckIn } from "./checkin-settings.ts";
-import { checkInDue, childName, childWorking, type JobFact, jobFacts, liveJobs, liveWindowMs, nestedJobs, OPEN, parkedBy, walk } from "./checkin-steps.ts";
+import { checkInDue, childName, childWorking, type JobFact, jobFacts, liveJobs, liveWindowMs, nestedJobs, OPEN, parkedBy, poolWait, walk } from "./checkin-steps.ts";
 import { treeWakes, type Wake } from "./wakes.ts";
 import { withQueuePlaces } from "./chat-turn-queue.ts";
 import { type CheckInMemory, checkInPrecheck, checkInPrecheckText, classCounts, convergenceMisses, endedJobs, endedWithoutReport, finishedJobs, JOB_CLEANUP_EVERY_MS, ROOT_END_EVERY_MS, jobEnd, jobEndText,
@@ -1541,7 +1541,9 @@ export class Chats {
       this.log(`chat ${chat.slice(0, 8)}: check-in job's message for job ${fact?.name ?? job.trim()} not sent: ${cancelWords(cancel)}`);
       return { cancelled: `${fact?.name ?? job.trim()} was ${cancelWords(cancel)}. ${cancelPurpose(cancel)}, so nothing reopens it; don't start a copy of it.` };
     }
-    const act = fact && (fact.state === "failed" || (fact.state === "ended" && fact.error !== undefined)) ? "restart" : "steer";
+    // A job waiting for its account slot gets the message as a steer, which waits in its turn: Prime continues that turn at the slot, and a
+    // restart now starts a turn the pool refuses again.
+    const act = fact && !poolWait(fact) && (fact.state === "failed" || (fact.state === "ended" && fact.error !== undefined)) ? "restart" : "steer";
     const name = fact?.name ?? job.trim();
     try {
       if (act === "restart") await this.threads.restart(session, CHECK_IN_PREFIX + message, true);
