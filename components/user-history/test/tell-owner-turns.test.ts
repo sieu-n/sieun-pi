@@ -177,3 +177,22 @@ test("on a turn the owner did not start, an ask that another chat already put on
   assert.equal(tellOwner(addOn, { ...turn, others: [{ ...t56, text: "Give your Cloudflare token access to konti.bot, so a job can sign in once in Aside." }] }, now).kind, "sent",
     "a different ask that shares a few words goes out");
 });
+
+test("on a turn the owner did not start, a text that reports work still going is refused once, and the very same text again goes out", () => {
+  // 10-22: Crawler VP sent interim numbers "still being counted" 28 min before its final answer, and (temp) mcp release a scope change that
+  // said it would ask him after that; d11 labelled both, and AI harness's "down to 11 open steps", as progress relays.
+  const turn = tellTurn([...settled, job("sample read done, the new-profile count is running", "06:30:00")]);
+  const interim = { text: "Only about 15% of logged-out profile reads return related profiles. How many of those are new to us is still being counted.",
+    why: "answer", about: "how many related profiles are new" };
+  const refused = tellOwner(interim, turn);
+  assert.equal(refused.kind, "refused");
+  assert.match(refused.text, /work still going \("still being counted"\)/);
+  const later = tellTurn([...settled, job("taken", "06:30:00"), tell("p1", interim, "06:30:10"), result("p1", refused.text, "06:30:11")]);
+  assert.equal(tellOwner(interim, later).kind, "sent", "the very same text again goes out");
+  for (const text of ["The MCP job now ends at a passing staging test, and I'll ask you to walk the prod deploy with it after that.",
+    "My plan is down to 11 open steps, each with a job on it.", "The 6-hour hold clock starts now, and slots are stepping up again toward 20k."])
+    assert.equal(tellOwner({ text, why: "done", about: "plan items" }, turn).kind, "refused", text);
+  assert.equal(tellOwner({ text: "Instagram census reads 12,000 profiles a minute now, past your 10k goal.", why: "done", about: "10k Instagram profiles a minute" }, turn).kind, "sent");
+  assert.equal(tellOwner({ text: "Check Campaigns on 5180 now, everything is in except the template editor, which is still finishing.", why: "done", about: "campaigns demo" }, { ...turn, looked: true }).kind, "sent");
+  assert.equal(tellOwner(interim, { ...turn, owner: true }).kind, "sent", "his own turn is never held");
+});

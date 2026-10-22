@@ -227,6 +227,15 @@ const REASK_MARK = "Not sent, this decision already waits for him on For you";
 const INCIDENT_MARK = "Not sent, a blocker says what he must do";
 /** Words of a blocker that asks the owner for something: a question, you or your, please, or a Korean ask. */
 const ASKS_HIM = /\?|\byou\b|\byour\b|\bplease\b|주세요|골라|할까요|정해|해줘|하세요|부탁/i;
+const PROGRESS_MARK = "Not sent, it reports work still going";
+/**
+ * Words that say the work goes on and its result comes later: a number still being counted, a plan to tell him once something ends, a clock
+ * that starts now, a count of open steps. On 10-22 (temp) mcp release sent "I'll ask you to walk the prod deploy with it after that" at
+ * 05:49Z, Crawler VP an answer whose second half was "still being counted" 28 min before the final one at 06:30Z, and AI harness its "down to
+ * 11 open steps" at 07:05Z. Of the 170 lines d11 labelled from 10-19 to 10-22 these words catch 4 of the 5 progress relays (the fifth, a 10-19
+ * blocker, falls to ASKS_HIM) and none of the 141 needed ones; on the owner's own turns, never held, they mark 9 of 387 sent lines.
+ */
+const PROGRESS = /\bstill being \w+ed\b|\binterim\b|\b(?:I['’]ll|I will|we['’]ll|we will)\b[^.?!]*\b(?:after that|later|once)\b|\b(?:starts|started|begins) now\b|\bstepping up\b|\b\d+ (?:open|remaining) (?:steps|items|jobs|tasks)\b|\b(?:steps|items|jobs|tasks) (?:left|remain(?:ing)?)\b/i;
 const UNLOOKED_MARK = "Not sent, you have not opened a screenshot of this screen in this turn";
 /**
  * A 5180 demo link (localhost or the box's 15180 copy) or a screenshot image in a tell_owner text: a UI result handed to the owner to look at.
@@ -255,7 +264,7 @@ export function tellTurn(messages: readonly ThreadMessage[]): TellTurn {
     }
     if (message.role === "user" || message.role === "custom") looked = false;
     if (message.role === "toolResult" && message.content.some(part => part.type === "image")) looked = true;
-    if (message.role === "toolResult" && message.toolName === TELL_OWNER_TOOL && [SHOP_TALK_MARK, REPEAT_MARK, REASK_MARK, UNLOOKED_MARK, INCIDENT_MARK, SAME_ASK_MARK].some(mark => messageText(message).startsWith(mark))) {
+    if (message.role === "toolResult" && message.toolName === TELL_OWNER_TOOL && [SHOP_TALK_MARK, REPEAT_MARK, REASK_MARK, UNLOOKED_MARK, INCIDENT_MARK, SAME_ASK_MARK, PROGRESS_MARK].some(mark => messageText(message).startsWith(mark))) {
       const text = told.get(message.toolCallId);
       if (text) resent.add(text);
     }
@@ -286,7 +295,8 @@ export function tellTurn(messages: readonly ThreadMessage[]): TellTurn {
  * id) is refused once with what to say instead, and the very same text sent again goes out, so the check is a soft cap (c98). A text that
  * hands him a 5180 link or a screenshot (`UI_HANDOFF`) when no tool result showed the chat an image since the turn's last owner message or
  * report is refused once the same way, so the chat opens the shots and compares them with the accepted Staging app first (c118). A decision or
- * blocker that asks what another chat's open For you todo already asks (`sameAsk`, `turn.others`) is refused once the same way.
+ * blocker that asks what another chat's open For you todo already asks (`sameAsk`, `turn.others`) is refused once the same way, and so is
+ * a text that reports work still going (`PROGRESS`).
  */
 export function tellOwner(input: TellInput, turn: TellTurn, now = Date.now()): { kind: "sent" | "refused" | "held"; text: string } {
   const told = typeof input.text === "string" ? input.text.trim() : "";
@@ -301,6 +311,9 @@ export function tellOwner(input: TellInput, turn: TellTurn, now = Date.now()): {
   if (!turn.owner && input.why === "blocker" && !turn.resent?.has(told) && !ASKS_HIM.test(told)) return { kind: "refused", text: `${INCIDENT_MARK}, ` +
     "and this one asks nothing of him. An incident or delay that a job or another chat already handles is update, so put it on the board. If " +
     "only he can clear it, say what he must do and send it again; if he must see it now as it is, send the very same text again (c117)." };
+  if (!turn.owner && (answers || declared) && !turn.resent?.has(told) && PROGRESS.test(told)) return { kind: "refused", text: `${PROGRESS_MARK} ("${PROGRESS.exec(told)![0]}"). ` +
+    "Progress on work that is not finished is update, so put it on the board and tell him once the result is in, in one message. If he must " +
+    "see this now as it is, send the very same text again and it goes out (c117)." };
   const other = !turn.owner && (input.why === "decision" || input.why === "blocker") && !turn.resent?.has(told)
     ? sameAsk(`${told} ${typeof input.about === "string" ? input.about : ""}`, turn.others ?? [], now) : undefined;
   if (other) return { kind: "refused", text: `${SAME_ASK_MARK}, as ${other.id} of chat ${other.chat} ("${other.text.slice(0, 120)}"). Do ` +
