@@ -37,8 +37,24 @@ const GATES: readonly RegExp[] = [
   /\b(?:go|ok|approval)s?\s+(?:expires?|lapses?|older\s+than|is\s+valid\s+for|lasts?\s+\d)/iu,
 ];
 
-/** "never wait for", "do not ask", "needs no review": a sentence that removes a gate, so the gate words are not one. */
-const NEGATED = /\b(?:never|not|no|don['\u2019]?t|doesn['\u2019]?t|without|stop|instead\s+of)\s+(?:\S+\s+){0,2}$|\bwhether\s+(?:\S+\s+){0,4}$/i;
+/*
+ * "never wait for", "do not ask", "No source redesign or extra review round is needed", "over adding apps one at a time": a negation or a
+ * rejected option earlier in the gate words' own clause removes the gate. A clause ends at a comma, colon, semicolon, bracket or dash, or before
+ * "and", "but", "then", "while", "when", "if", "unless", "so" or "because", so "Never walk the sitemap against prod: check one URL at a time"
+ * keeps its gate. On 10-22 a two-word reach flagged "No source redesign or extra review round is needed." in a chat-2572 brief.
+ */
+const CLAUSE_BREAK = /[,:;()\u2013\u2014]|\b(?:and|but|then|while|when|if|unless|so|because)\b/i;
+const NEGATED = /\b(?:never|not|no|don['\u2019]?t|doesn['\u2019]?t|without|stop|instead\s+of|rather\s+than|whether)\b|\bover\s+\w+ing\b/i;
+const clauseBefore = (sentence: string, at: number): string => sentence.slice(0, at).split(CLAUSE_BREAK).at(-1) ?? "";
+/** A wait named as a quantity to measure ("queue wait for a slot", "time waiting for a working slot"), not a wait the job is told to do. */
+const MEASURED = /\b(?:queue|time|latency|delay)\s+$/i;
+/*
+ * A wait on a production step (c74, c154: a prod deploy is a manual step walked with the owner): "After promote 19's prod deploy ok, read the
+ * writer lag again", "while waiting for the release or approval" in a message job. The release owner's go is a thread's go, so it stays a gate.
+ */
+const PROD_STEP = /\bprod(?:uction)?\b|\bpromot(?:e|es|ed|ion)\b|\brelease\b(?!\s+owner)/i;
+const passes = (sentence: string, found: RegExpExecArray): boolean =>
+  NEGATED.test(clauseBefore(sentence, found.index)) || MEASURED.test(sentence.slice(0, found.index)) || PROD_STEP.test(found[0]);
 /** A sentence about a check that finds gates names gate words without adding one; so does a runner's or worker's own "one job at a time" setting. */
 const NOT_A_GATE = /\b(?:flags?|refuses?|catch(?:es)?|detects?|lints?)\b/i;
 const CAPACITY_SETTING = /\b(?:runners?|workers?|docker)\b/i;
@@ -50,7 +66,7 @@ const OWNER_RULE = new RegExp([
   String.raw`\bc\d{1,3}\b`, String.raw`\b(?:the\s+)?owner\s+(?:asked|said|wants|chose|ruled)\b|\bowner['\u2019]s\s+(?:ruling|rule)\b`,
   String.raw`\b(?:1-?min(?:ute)?\s+)?load\b[^.]{0,30}\b(?:under|below|<)\s*\d|\bload\s+gate\b|\bmemory(?:_pressure)?\b[^.]{0,30}\d+\s*%|\bMac\s+load\b|loadavg`,
   String.raw`\bone\s+(?:test\s+)?file\s+at\s+a\s+time\b|\btest-concurrency\b|\bwith\s+nice\b|\bnice\b,|\bheavy\s+(?:step|process|work)|\bbrowser\s+checks?\b`,
-  String.raw`\b(?:e-?mails?|vendor\s+(?:ticket|reply)|outside\s+send)\b`,
+  String.raw`\b(?:e-?mails?|vendor\s+(?:ticket|reply)|outside[-\s]sends?)\b`,
 ].join("|"), "iu");
 /** The owner's go (c49): it backs a gate on production, never one on a staging-only move (c50). */
 const OWNER_GO = /\bOWNER_OK\b|\bFor\s+you\b|\b(?:his|the\s+owner['\u2019]s|owner['\u2019]s)\s+(?:explicit\s+)?(?:go|ok|approval)\b/iu;
@@ -67,7 +83,7 @@ export function inventedGates(text: string): InventedGate[] {
   for (const raw of text.replace(QUOTED, " \u00a7 ").split(/(?<=[.!?])\s+|\n+/)) {
     const sentence = raw.trim();
     if (!sentence) continue;
-    const match = GATES.map(gate => gate.exec(sentence)).find(found => found && !NEGATED.test(sentence.slice(0, found.index)));
+    const match = GATES.map(gate => gate.exec(sentence)).find(found => found && !passes(sentence, found));
     if (!match || NOT_A_GATE.test(sentence) || (/at\s+a\s+time/i.test(match[0]) && CAPACITY_SETTING.test(sentence))) continue;
     if (CAUSE.test(sentence) && !CAUTION_ONLY.test(sentence)) continue;
     if (OWNER_RULE.test(sentence) || (OWNER_GO.test(sentence) && (PRODUCTION.test(sentence) || !STAGING_MOVE.test(sentence)))) continue;

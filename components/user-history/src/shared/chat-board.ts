@@ -992,6 +992,12 @@ const PR_MERGE = (text: string): boolean => /\bmerg/i.test(text) && (/\b(?:PRs?|
 export const namesProduction = (text: string): boolean =>
   PRODUCTION.test(text) || (mergeStep(text) && !stagingOnly(text)) || PR_MERGE(text) || KEEPS_OWNER_OK.test(text);
 /**
+ * "Send the sha to the release owner (<id>) and ask him to push sieun/dev at once": "him" is the release owner the sentence names, who pushes
+ * sieun/dev by the repo rule, so the job asks him to act and waits on nobody's leave (a 10-22 brief of chat 01a1180e-6567-747f-bf44-452520ebdd1b).
+ */
+const releaseOwnerAsk = (sentence: string, owner: RegExpExecArray): boolean =>
+  /\bhim\b/i.test(owner[0]) && /\brelease\s+owner\b/i.test(sentence.slice(0, owner.index));
+/**
  * The first wait for leave in a text, sentence by sentence. `cued`: the text is a wait already (a step's waitFor), so no wait word is needed.
  * `scope`: the step the wait holds (its text and waitFor). An owner's ok counts when its sentence names a push, land, merge, staging or
  * deploy, or the step's own text does.
@@ -1000,7 +1006,9 @@ export function goWait(text: string, { cued = false, scope }: { cued?: boolean; 
   for (const sentence of text.split(/(?<=[.!?;])\s+|\n+/)) {
     if (RULE_SENTENCE.test(sentence) || namesProduction(scope ?? sentence) || (!cued && !WAIT_CUE.test(sentence))) continue;
     const owner = OWNER_GO.exec(sentence);
-    if (owner && (GIT_MOVE.test(sentence) || (scope !== undefined && GIT_STEP.test(scope)))) return { kind: "owner", phrase: owner[0] };
+    if (owner && !releaseOwnerAsk(sentence, owner) && (GIT_MOVE.test(sentence) || (scope !== undefined && GIT_STEP.test(scope)))) {
+      return { kind: "owner", phrase: owner[0] };
+    }
     const thread = THREAD_GO.exec(sentence) ?? CAPS_GO.exec(sentence);
     if (thread) return { kind: "thread", phrase: thread[0] };
   }
