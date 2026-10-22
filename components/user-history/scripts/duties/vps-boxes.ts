@@ -108,7 +108,7 @@ export function diskDaysMin(disks: readonly DiskDays[], at: number): { days: num
 }
 
 export interface Explained { box: string; until: number; step: string }
-export interface OomKills { box: string; kills: number; lastAt?: number; sinceBootAt?: number; heavy?: number; units?: string[]; explained?: number; by?: Explained }
+export interface OomKills { box: string; kills: number; lastAt?: number; sinceBootAt?: number; heavy?: number; units?: string[]; outsideAt?: number; explained?: number; by?: Explained }
 
 /** The newest entry per box of the duty file's explainedKills list: the fix step that explains the box's OOM kills up to `until`. */
 export function parseExplained(value: unknown): Map<string, Explained> {
@@ -128,15 +128,19 @@ export interface OomLine { at: number; unit: string }
 const OOM_LINE = /^(\d+)(?:\.\d+)? \S+ systemd\[\d+\]: (\S+): The kernel OOM killer killed some processes in this unit\.$/;
 const HEAVY_START = /^Started (run-\S+\.scope) - \[systemd-run\] \S*choom -n 500 -- /;
 
-/** The kills of the journal's OOM lines inside heavy scopes, and the other leaf units it names; a slice line only echoes a kill below it. */
-export function splitOomLines(journal: string, starts: string): { heavy: number; units: string[] } {
+/**
+ * The kills of the journal's OOM lines inside heavy scopes, the other leaf units it names, and the time of the newest of those other lines;
+ * a slice line only echoes a kill below it.
+ */
+export function splitOomLines(journal: string, starts: string): { heavy: number; units: string[]; outsideAt?: number } {
   const heavyScopes = new Set(starts.split("\n").flatMap(line => HEAVY_START.exec(line)?.[1] ?? []));
   const lines = journal.split("\n").flatMap((line): OomLine[] => {
     const match = OOM_LINE.exec(line);
     return match ? [{ at: Number(match[1]) * 1000, unit: match[2]! }] : [];
   });
-  const units = new Set(lines.map(line => line.unit).filter(unit => !unit.endsWith(".slice") && !heavyScopes.has(unit)));
-  return { heavy: lines.filter(line => heavyScopes.has(line.unit)).length, units: [...units] };
+  const outside = lines.filter(line => !line.unit.endsWith(".slice") && !heavyScopes.has(line.unit));
+  const units = new Set(outside.map(line => line.unit));
+  return { heavy: lines.filter(line => heavyScopes.has(line.unit)).length, units: [...units], ...outside.length ? { outsideAt: Math.max(...outside.map(line => line.at)) } : {} };
 }
 
 const stamp = (ms: number): string => `${new Date(ms).toISOString().slice(11, 16)}Z on ${new Date(ms).toISOString().slice(5, 10)}`;
@@ -144,8 +148,11 @@ const stamp = (ms: number): string => `${new Date(ms).toISOString().slice(11, 16
 /**
  * The OOM kills of both boxes outside heavy scopes and after the time a fix step explains summed, the heavy scope and explained kills apart, and
  * one line for each box with a kill outside or an explained kill, naming its count, its last kill, the units the journal names and the step.
+ * `lastEventAt` is the newest counted kill over the boxes with one: the newest outside journal line on this box, else the box's newest kill in
+ * Prometheus, else this run when only /proc/vmstat counts it. A count of 0 gives none. AI harness d9 asked for it on 10-22, because without it
+ * a count of old kills read the same as a fresh one.
  */
-export function oomKills24h(boxes: readonly OomKills[], at: number): { kills: number; heavy: number; explained: number; flagged: FlaggedSlice[] } {
+export function oomKills24h(boxes: readonly OomKills[], at: number): { kills: number; heavy: number; explained: number; flagged: FlaggedSlice[]; lastEventAt?: number } {
   const missing = DISK_BOXES.filter(box => !boxes.some(entry => entry.box === box));
   if (missing.length) throw new Error(`no node_vmstat_oom_kill of ${missing.join(" or ")}`);
   const counted = boxes.map(entry => ({ ...entry, outside: Math.max(0, entry.kills - (entry.explained ?? 0) - (entry.heavy ?? 0)) }));
@@ -160,7 +167,9 @@ export function oomKills24h(boxes: readonly OomKills[], at: number): { kills: nu
     return [{ at, kind: "oom", excerpt: `${entry.box}: ${entry.outside} OOM kills outside heavy scopes${heavy}${window}${units}${fix ? `; ${fix}` : ""}` }];
   });
   const sum = (pick: (entry: typeof counted[number]) => number) => counted.reduce((total, entry) => total + pick(entry), 0);
-  return { kills: sum(entry => entry.outside), heavy: sum(entry => entry.heavy ?? 0), explained: sum(entry => entry.explained ?? 0), flagged };
+  const newest = counted.filter(entry => entry.outside).map(entry => entry.outsideAt ?? entry.lastAt ?? at);
+  return { kills: sum(entry => entry.outside), heavy: sum(entry => entry.heavy ?? 0), explained: sum(entry => entry.explained ?? 0), flagged,
+    ...newest.length ? { lastEventAt: Math.max(...newest) } : {} };
 }
 
 type Frame = { schema?: { fields?: { labels?: Record<string, string> }[] }; data?: { values?: unknown[][] } };
@@ -266,6 +275,7 @@ async function main(): Promise<void> {
     result.metrics.oom_kills_24h = counted.kills;
     result.metrics.heavy_scope_kills = counted.heavy;
     result.metrics.oom_kills_explained = counted.explained;
+    if (counted.lastEventAt !== undefined) result.lastEventAt = { oom_kills_24h: counted.lastEventAt };
     result.flagged!.push(...counted.flagged);
   } catch (error) { flag("source_error", `oom_kills_24h: ${error instanceof Error ? error.message : String(error)}`); }
   try { result.metrics.air_runners_online = await instant(AIR_RUNNERS_QUERY); }

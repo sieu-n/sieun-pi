@@ -61,7 +61,7 @@ test("a kill inside a heavy scope counts as heavy_scope_kills, a slice line only
   assert.equal(heavyOnly.heavy, 2);
   assert.deepEqual(heavyOnly.flagged.map(slice => slice.kind), ["oom_heavy"]);
   const mixed = splitOomLines([journal, line(1792430990, "prime-agent-daemon.service"), line(1792430991, "run-p1-i2.scope")].join("\n"), starts);
-  assert.deepEqual(mixed, { heavy: 2, units: ["prime-agent-daemon.service", "run-p1-i2.scope"] });
+  assert.deepEqual(mixed, { heavy: 2, units: ["prime-agent-daemon.service", "run-p1-i2.scope"], outsideAt: 1792430991000 });
   const outside = oomKills24h([{ box: "us-metal01", kills: 0 }, { box: "us-metal02", kills: 4, ...mixed }], 0);
   assert.equal(outside.kills, 2);
   assert.match(outside.flagged[0]!.excerpt, /^us-metal02: 2 OOM kills outside heavy scopes and 2 more inside heavy scopes in the last 24 h; the journal names prime-agent-daemon.service, run-p1-i2.scope$/);
@@ -89,4 +89,23 @@ test("the checked-in duty file names p456 for the us-metal02 kills up to 16:52Z 
   const explained = parseExplained(JSON.parse(await readFile(DUTY_FILE, "utf8")));
   assert.equal(explained.get("us-metal02")?.step, "p456");
   assert.equal(explained.get("us-metal01")?.step, "p490");
+});
+
+// AI harness d9 read oom_kills_24h as a lagging window on 10-22 because the precheck gave no lastEventAt, so it could not tell a count of
+// old kills from a fresh one. This checks the count is dated by its newest counted kill, and a count of 0 gives no date.
+test("oom_kills_24h's lastEventAt is its newest counted kill: the journal's outside line, else Prometheus' last kill, else this run", () => {
+  const at = Date.parse("2026-10-22T08:00:00Z");
+  const journal = Date.parse("2026-10-22T03:10:00Z");
+  const prometheus = Date.parse("2026-10-22T05:40:00Z");
+  const both = oomKills24h([{ box: "us-metal01", kills: 1, lastAt: prometheus }, { box: "us-metal02", kills: 3, heavy: 1, lastAt: at - 60_000, outsideAt: journal }], at);
+  assert.equal(both.kills, 3);
+  assert.equal(both.lastEventAt, prometheus);
+  const procOnly = oomKills24h([{ box: "us-metal01", kills: 0 }, { box: "us-metal02", kills: 2, sinceBootAt: at - 86_400_000 }], at);
+  assert.equal(procOnly.lastEventAt, at);
+  const heavyOnly = oomKills24h([{ box: "us-metal01", kills: 0 }, { box: "us-metal02", kills: 2, heavy: 2, lastAt: prometheus }], at);
+  assert.equal(heavyOnly.kills, 0);
+  assert.equal(heavyOnly.lastEventAt, undefined);
+  const explained = oomKills24h([{ box: "us-metal01", kills: 1, explained: 1, lastAt: prometheus, by: { box: "us-metal01", until: prometheus, step: "p490" } },
+    { box: "us-metal02", kills: 0 }], at);
+  assert.equal(explained.lastEventAt, undefined);
 });
