@@ -1991,14 +1991,17 @@
   "tool": "Playwright browsers",
   "mac": [
    {
-    "ls": "~/Library/Caches/ms-playwright"
+    "ls": "~/Library/Caches/ms-playwright",
+    "pattern": "^(?!__dirlock$)[^.]"
    }
   ],
   "box": [
    {
-    "ls": "~/.cache/ms-playwright"
+    "ls": "~/.cache/ms-playwright",
+    "pattern": "^(?!__dirlock$)[^.]"
    }
-  ]
+  ],
+  "note": "`__dirlock` is the lock folder `playwright install` holds while it runs (playwright-core 1.58.2 lib/server/registry/index.js), so it is no browser and the box never needs it."
  },
  {
   "id": "ci-cache-cache-virev-ci-cache-poller",

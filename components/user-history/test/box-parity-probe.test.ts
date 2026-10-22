@@ -58,3 +58,19 @@ test("the box tip probe sends the hash of every commit sieun/dev holds, past its
   assert.equal(ids.length, 2002);
   assert.ok(ids.includes(oldest.slice(0, 10)), "a commit 2001 back is on the box by hash");
 });
+
+test("the Playwright browsers row skips the __dirlock folder playwright install holds, so a Mac install in progress asks nothing of the box", async () => {
+  const { shortfall } = await import("../scripts/duties/box-parity.ts");
+  const row = (JSON.parse(readFileSync(join(import.meta.dirname, "../scripts/duties/box-parity.rows.json"), "utf8")) as { id: string }[])
+    .find(entry => entry.id === "playwright-browsers")!;
+  const read = (host: "mac" | "box", folder: string, names: string[]) => {
+    const home = mkdtempSync(join(tmpdir(), "box-parity-pw-"));
+    for (const name of names) mkdirSync(join(home, folder, name), { recursive: true });
+    const arg = Buffer.from(JSON.stringify({ host, rows: [row], known: {} })).toString("base64");
+    return (JSON.parse(execFileSync("python3", [PROBE, arg], { env: { ...process.env, HOME: home }, encoding: "utf8" })) as { values: Record<string, string[]> }).values["playwright-browsers"]![0]!;
+  };
+  const mac = read("mac", "Library/Caches/ms-playwright", ["__dirlock", ".links", "chromium-1243", "ffmpeg-1011"]);
+  assert.equal(mac, 'set:["chromium-1243", "ffmpeg-1011"]');
+  assert.equal(shortfall(mac, read("box", ".cache/ms-playwright", [".links", "chromium-1243", "ffmpeg-1011"])), null);
+  assert.match(shortfall(mac, read("box", ".cache/ms-playwright", ["__dirlock", "chromium-1243"]))!, /box lacks 1 of the Mac's 2: ffmpeg-1011/);
+});
