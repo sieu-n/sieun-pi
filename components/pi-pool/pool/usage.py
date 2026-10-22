@@ -19,6 +19,10 @@ SAMPLE_MAX_SEC = 15 * 60
 READERS = 4
 
 
+class TokenRejected(RuntimeError):
+    """The usage endpoint answered 401: the provider no longer takes this access token."""
+
+
 class RateLimited(Exception):
     def __init__(self, retry_at):
         super().__init__("rate limited")
@@ -46,6 +50,8 @@ def get_json(url, headers):
         if e.code == 429:
             after = (e.headers.get("Retry-After") or "").strip()
             raise RateLimited(time.time() + int(after) if after.isdigit() and int(after) > 0 else None) from None
+        if e.code == 401:
+            raise TokenRejected("usage read failed (HTTP 401)") from None
         raise RuntimeError(f"usage read failed (HTTP {e.code})") from None
     except (OSError, ValueError) as e:
         raise RuntimeError(f"usage read failed ({type(e).__name__})") from None
@@ -107,6 +113,19 @@ def tier_label(creds):
     return f"{sub} {multiplier}" if multiplier else sub
 
 
+def fetch_usage(provider, account, token, started):
+    """(windows, extra index fields) from one usage read with `token`."""
+    if provider == "anthropic":
+        body = get_json(CLAUDE_USAGE_URL + "?" + urllib.parse.urlencode({"at_wall": 1, "skip_spend": 1}),
+                        {"Authorization": f"Bearer {token}", "anthropic-beta": "oauth-2025-04-20"})
+        tier = tier_label(base.KeychainAdapter(account.cred.service).read() or {})
+        return claude_windows(body, started), {"tier": tier} if tier else {}
+    body = get_json(CODEX_USAGE_URL, {"Authorization": f"Bearer {token}", "User-Agent": "codex-cli",
+                                      "ChatGPT-Account-Id": account.id})
+    return codex_windows(body, started), {k: body[v] for k, v in (("email", "email"), ("tier", "plan_type"))
+                                          if isinstance(body.get(v), str)}
+
+
 def read_account(provider, account, cfg):
     """Read one account's usage and save it in the index. Returns
     {"ok": True, "usage_at"} or {"ok": False, "reason", "retry_at"}."""
@@ -122,17 +141,13 @@ def read_account(provider, account, cfg):
     change, outcome = None, None
     try:
         token, _ = vending.credential_for(account, cfg)
-        if provider == "anthropic":
-            body = get_json(CLAUDE_USAGE_URL + "?" + urllib.parse.urlencode({"at_wall": 1, "skip_spend": 1}),
-                            {"Authorization": f"Bearer {token}", "anthropic-beta": "oauth-2025-04-20"})
-            windows = claude_windows(body, started)
-            tier = tier_label(base.KeychainAdapter(account.cred.service).read() or {})
-            extra = {"tier": tier} if tier else {}
-        else:
-            body = get_json(CODEX_USAGE_URL, {"Authorization": f"Bearer {token}", "User-Agent": "codex-cli",
-                                              "ChatGPT-Account-Id": account.id})
-            windows = codex_windows(body, started)
-            extra = {k: body[v] for k, v in (("email", "email"), ("tier", "plan_type")) if isinstance(body.get(v), str)}
+        try:
+            windows, extra = fetch_usage(provider, account, token, started)
+        except TokenRejected:
+            # A revoked grant leaves an access token that still looks live (fhnyq29tw5, 10-22: 58 h left,
+            # 401 on every read). Refreshing it either marks a dead grant needsReauth or reads again.
+            token, _ = vending.credential_for(account, cfg, rejected=token)
+            windows, extra = fetch_usage(provider, account, token, started)
 
         def change(rec):
             rec["lastProbeAt"] = started

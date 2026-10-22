@@ -157,8 +157,12 @@ reads or writes it.
 | `openai-codex/<account id>.json` | A Codex credential, the Codex CLI's `auth.json` shape, mode 0600 |
 
 A missing index is an empty pool; an index of another shape makes every command fail with
-`<file> unreadable`. A dead refresh token (`invalid_grant`, `refresh_token_reused`) sets
-`needsReauth`, and the account shows Sign in again. On a switch or a fresh rotation,
+`<file> unreadable`. A dead refresh token sets `needsReauth`, and the account shows Sign in
+again. Claude's token endpoint says `invalid_grant`. Codex's says 401 or names
+`refresh_token_expired`, `refresh_token_reused`, `refresh_token_invalidated` or `invalid_grant`,
+the Codex CLI's own rule. A revoked grant can leave an access token that still looks live, so
+a usage read that answers 401 refreshes the token at once, and a dead grant then sets
+`needsReauth` on that read. On a switch or a fresh rotation,
 pi-pool also sends one free `/v1/messages/count_tokens` request. A 401 or a 403 such as
 `oauth_not_allowed_for_organization` puts the account on a `refused_cooldown_sec`
 cooldown (24 hours by default).

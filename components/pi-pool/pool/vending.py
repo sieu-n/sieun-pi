@@ -215,10 +215,11 @@ class IntentWriter:
 
 
 # ----------------------------------------------------------------- credentials
-def credential_for_keychain(a, cfg, refresh=True):
+def credential_for_keychain(a, cfg, refresh=True, rejected=None):
     """(access_token, source) from the account's Keychain item. A refresh takes
     the index flock, then re-reads before rotating. With refresh=False, None
-    instead of a refresh."""
+    instead of a refresh. `rejected` is an access token the provider answered 401
+    to: it is refreshed whatever its expiry says."""
     service = a.cred.service
     adapter = base.KeychainAdapter(service)
     creds = adapter.read()
@@ -227,20 +228,20 @@ def credential_for_keychain(a, cfg, refresh=True):
     if not creds.get("accessToken") or not creds.get("refreshToken"):
         raise RuntimeError(f"{a.label}'s store was cleared after a failed refresh (needs reauth)")
     remaining = (creds["expiresAt"] - time.time() * 1000) / 1000
-    if remaining > cfg["refresh_skew_sec"]:
+    if remaining > cfg["refresh_skew_sec"] and creds["accessToken"] != rejected:
         return creds["accessToken"], "store"
     if not refresh:
         return None
 
     with base.index_lock("anthropic"):
         creds2 = base.recover_rotation(service, adapter)
-        if (creds2["expiresAt"] - time.time() * 1000) / 1000 > cfg["refresh_skew_sec"]:
+        if (creds2["expiresAt"] - time.time() * 1000) / 1000 > cfg["refresh_skew_sec"] \
+                and creds2["accessToken"] != rejected:
             return creds2["accessToken"], "store"
         try:
             merged = base.refresh_token(creds2)
-        except RuntimeError as e:
-            if str(e).startswith("invalid_grant"):
-                base.mark_needs_reauth("anthropic", a.id)
+        except base.GrantDead:
+            base.mark_needs_reauth("anthropic", a.id)
             raise
         # A refresh rotates the grant server-side the instant it returns: journal
         # it BEFORE the keychain write, or a crash in between strands the account
@@ -253,15 +254,16 @@ def credential_for_keychain(a, cfg, refresh=True):
         return merged["accessToken"], "refreshed"
 
 
-def credential_for_codex(a, cfg, refresh=True):
-    """(access_token, source) from the account's auth.json; with refresh=False, None instead of a refresh."""
+def credential_for_codex(a, cfg, refresh=True, rejected=None):
+    """(access_token, source) from the account's auth.json; with refresh=False, None instead of a refresh.
+    `rejected` is an access token the provider answered 401 to: it is refreshed whatever its exp says."""
     adapter = base.CodexFileAdapter(a.cred.path)
     store_key = "codex-" + a.id
     blob = adapter.read()
     if not blob or not (blob.get("tokens") or {}).get("access_token"):
         raise RuntimeError(f"no credential in {a.label}'s codex store; run `pi-pool login {a.id} --provider openai-codex`")
     token = blob["tokens"]["access_token"]
-    if base.jwt_claims(token)["exp"] - time.time() > cfg["refresh_skew_sec"]:
+    if base.jwt_claims(token)["exp"] - time.time() > cfg["refresh_skew_sec"] and token != rejected:
         registry.assert_codex_identity(token, a.id)
         return token, "store"
     if not refresh:
@@ -270,14 +272,13 @@ def credential_for_codex(a, cfg, refresh=True):
     with base.index_lock("openai-codex"):
         blob = base.recover_rotation(store_key, adapter)
         token = blob["tokens"]["access_token"]
-        if base.jwt_claims(token)["exp"] - time.time() > cfg["refresh_skew_sec"]:
+        if base.jwt_claims(token)["exp"] - time.time() > cfg["refresh_skew_sec"] and token != rejected:
             registry.assert_codex_identity(token, a.id)
             return token, "store"
         try:
             fresh = base.refresh_codex_token(blob["tokens"]["refresh_token"])
-        except RuntimeError as e:
-            if str(e).startswith("refresh_token_reused"):
-                base.mark_needs_reauth("openai-codex", a.id)
+        except base.GrantDead:
+            base.mark_needs_reauth("openai-codex", a.id)
             raise
         merged = base.merge_codex_tokens(blob, fresh)
         base.journal_write(store_key, merged)
@@ -290,11 +291,11 @@ def credential_for_codex(a, cfg, refresh=True):
         return token, "refreshed"
 
 
-def credential_for(a, cfg, refresh=True):
+def credential_for(a, cfg, refresh=True, rejected=None):
     if isinstance(a.cred, registry.Keychain):
-        return credential_for_keychain(a, cfg, refresh)
+        return credential_for_keychain(a, cfg, refresh, rejected)
     if isinstance(a.cred, registry.CredFile):
-        return credential_for_codex(a, cfg, refresh)
+        return credential_for_codex(a, cfg, refresh, rejected)
     raise RuntimeError(f"unknown credential kind for {a.id}")
 
 

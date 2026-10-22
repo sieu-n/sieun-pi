@@ -1,11 +1,11 @@
 """Usage reads (pool/usage.py): what each provider's body lands in the index, rate
 limits, the refresh command's events, and which accounts the sampler reads. Every
 credential and HTTP call is faked; no network."""
-import contextlib, io, json, os, tempfile, threading, time, unittest, unittest.mock
+import base64, contextlib, io, json, os, tempfile, threading, time, unittest, unittest.mock, urllib.error, urllib.request
 
 from fixture_isolation import isolate_test_module
 import test_core  # noqa: F401  (loads vend.py with an isolated pool folder)
-from vend.pool import base, commands, registry, usage, vending
+from vend.pool import base, commands, registry, sched, usage, vending
 
 
 def setUpModule():
@@ -190,6 +190,71 @@ class Sampler(Store):
         self.assertEqual(len(self.record("anthropic", "b")["windows"]), 3)
         self.assertNotIn("lastProbeAt", self.record("anthropic", "e"))
         self.assertEqual(len(self.record("openai-codex", "c")["windows"]), 3)
+
+
+
+def jwt(claims):
+    payload = base64.urlsafe_b64encode(json.dumps(claims).encode()).rstrip(b"=").decode()
+    return f"h.{payload}.s"
+
+
+class RevokedCodexGrant(unittest.TestCase):
+    """2026-10-22: fhnyq29tw5's grant was revoked at 12:33Z while its access token still
+    had 58 h left. Every usage read answered 401 for 3 h, the pool never refreshed a
+    token it thought live, and sessions kept landing on the account."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        d = self.tmp.name
+        self.refresh_answer = (401, {"error": {"code": "refresh_token_invalidated"}})
+        self.usage_tokens = []
+        for patch in (
+                unittest.mock.patch.dict(base.INDEX, {"openai-codex": os.path.join(d, "openai-codex.json")}),
+                unittest.mock.patch.dict(base.INDEX_LOCK, {"openai-codex": os.path.join(d, "c.lock")}),
+                unittest.mock.patch.object(base, "ACCOUNTS", d),
+                unittest.mock.patch.object(base, "CODEX_SECRETS", os.path.join(d, "openai-codex")),
+                unittest.mock.patch.object(base, "JOURNAL", os.path.join(d, "rotations")),
+                unittest.mock.patch.object(base, "log", lambda *a, **k: None),
+                unittest.mock.patch.object(urllib.request, "urlopen", self.urlopen)):
+            patch.start()
+            self.addCleanup(patch.stop)
+        self.old = jwt({"exp": time.time() + 58 * 3600, "https://api.openai.com/auth": {"chatgpt_account_id": "c"}})
+        base.write_index("openai-codex", {"version": 1, "accounts": [{"id": "c", "label": "c@x", "email": "c@x", "windows": []}]})
+        base.CodexFileAdapter(base.codex_secret("c")).write({"tokens": {"access_token": self.old, "refresh_token": "r"}})
+
+    def urlopen(self, req, timeout=None):
+        if req.full_url == base.CODEX_TOKEN_URL:
+            code, body = self.refresh_answer
+            if code != 200:
+                raise urllib.error.HTTPError(req.full_url, code, "", {}, io.BytesIO(json.dumps(body).encode()))
+            return contextlib.closing(io.BytesIO(json.dumps(body).encode()))
+        token = req.headers["Authorization"].split(" ", 1)[1]
+        self.usage_tokens.append(token)
+        if token == self.old:
+            raise urllib.error.HTTPError(req.full_url, 401, "", {}, io.BytesIO(b"{}"))
+        return contextlib.closing(io.BytesIO(json.dumps(CODEX).encode()))
+
+    def read(self):
+        account = next(a for a in registry.load_index("openai-codex") if a.id == "c")
+        return usage.read_account("openai-codex", account, base.config())
+
+    def record(self):
+        return base.read_index("openai-codex")["accounts"][0]
+
+    def test_a_401_on_a_live_token_whose_refresh_is_revoked_marks_the_account_for_sign_in(self):
+        out = self.read()
+        self.assertFalse(out["ok"])
+        self.assertIs(self.record().get("needsReauth"), True)
+        account = registry.load_index("openai-codex")[0]
+        self.assertEqual(sched.credential_reason(account, {}, time.time()), "needs-reauth")
+
+    def test_a_401_whose_refresh_still_works_reads_with_the_new_token(self):
+        new = jwt({"exp": time.time() + 240 * 3600, "https://api.openai.com/auth": {"chatgpt_account_id": "c"}})
+        self.refresh_answer = (200, {"access_token": new, "refresh_token": "r2"})
+        self.assertTrue(self.read()["ok"])
+        self.assertEqual(self.usage_tokens, [self.old, new])
+        self.assertNotIn("needsReauth", self.record())
 
 
 if __name__ == "__main__":

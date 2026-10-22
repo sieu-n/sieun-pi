@@ -300,6 +300,11 @@ REFRESH_TIMEOUT = 5.0
 USER_AGENT = "claude-cli/2.1.75"
 
 
+class GrantDead(RuntimeError):
+    """The token endpoint refused the refresh token itself; only a new sign-in brings
+    the account back."""
+
+
 def refresh_token(creds):
     """Rotate an anthropic grant. The server may omit refresh_token (reuse the
     old one) and may return updated scope / refresh_token_expires_in. Non-token
@@ -322,7 +327,7 @@ def refresh_token(creds):
     except urllib.error.HTTPError as e:
         text = e.read().decode()
         if e.code == 400 and "invalid_grant" in text:
-            raise RuntimeError("invalid_grant: refresh token is dead (needs reauth)")
+            raise GrantDead("invalid_grant: refresh token is dead (needs reauth)")
         raise RuntimeError(f"refresh failed http {e.code}")
 
     now_ms = int(time.time() * 1000)
@@ -453,6 +458,11 @@ def mark_needs_reauth(provider, account_id):
         log("marked_needs_reauth", provider=provider, account_id=account_id)
 
 
+# The Codex CLI's own rule (codex-rs/login/src/auth/manager.rs): a 401, or one of these
+# codes, is a refresh token that no retry revives.
+CODEX_DEAD_GRANT_CODES = ("refresh_token_expired", "refresh_token_reused", "refresh_token_invalidated", "invalid_grant")
+
+
 def refresh_codex_token(refresh_token_value):
     """Rotate a codex grant. The response has no expiry field; expiry is
     always read back out of the new access token's own exp claim."""
@@ -469,9 +479,10 @@ def refresh_codex_token(refresh_token_value):
         with urllib.request.urlopen(req, timeout=REFRESH_TIMEOUT) as resp:
             return json.loads(resp.read())
     except urllib.error.HTTPError as e:
-        text = e.read().decode()
-        if e.code == 400 and "refresh_token_reused" in text:
-            raise RuntimeError("refresh_token_reused: codex grant is dead (needs reauth)")
+        text = e.read().decode(errors="replace")
+        code = next((c for c in CODEX_DEAD_GRANT_CODES if c in text), None)
+        if e.code == 401 or code:
+            raise GrantDead(f"{code or 'unauthorized'}: codex grant is dead (needs reauth)")
         raise RuntimeError(f"codex refresh failed http {e.code}")
 
 
