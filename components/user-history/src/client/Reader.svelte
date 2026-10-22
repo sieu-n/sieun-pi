@@ -8,7 +8,7 @@
   import { renderSaid, replyExcerpt } from "./reply.ts";
   import { diagrams, pageFrame, type PageHost } from "./diagrams.ts";
   import { brokenImage, proseClick } from "./prose.ts";
-  import { chatFeed, chatLines, updatesLabel, type ChatItem, type ChatLine, type Update } from "../shared/chat-feed.ts";
+  import { catalogNames, chatFeed, chatLines, foldLabel, type ChatLine, type Fold, type FoldEntry } from "../shared/chat-feed.ts";
   import { normalizeArtifactTarget, parseArtifactTarget } from "../shared/artifact-link.ts";
   import { createdSessions } from "../shared/created-sessions.ts";
   import { findJob, jobName, jobNames, jobViews, reportsFor, type JobReport } from "./jobs.ts";
@@ -27,14 +27,14 @@
   /**
    * The one place an artifact opens: a job's latest report with its earlier messages behind a fold and the wiki page it links drawn under
    * it, a text file (markdown rendered, a diff with line colors, code with line numbers), a wiki page through the service (its own HTML in a
-   * sandboxed frame, or its markdown rendered), one message of a thread, or a folded run of a chat's updates as a list (who wrote, when,
-   * the whole text; the chat's own hidden text as "VP notes"). The header names the source, copies a link that pastes back as a note link,
+   * sandboxed frame, or its markdown rendered), one message of a thread, or a fold of a chat's background lines as a list (who wrote, when,
+   * the whole text; the chat's own hidden text as "VP notes", a wait or a restart as "Notice"). The header names the source, copies a link that pastes back as a note link,
    * and offers the way to the full thing (the job's thread, the wiki, the message).
    */
   let { view, narrow, onclose }: { view: ReaderView; narrow: boolean; onclose: () => void } = $props();
 
-  const ICON: Record<ReaderView["kind"], IconName> = { job: "briefcase", file: "file", wiki: "page", message: "message", updates: "list" };
-  const thread = $derived(view.kind === "job" || view.kind === "message" || view.kind === "updates" ? view.thread : null);
+  const ICON: Record<ReaderView["kind"], IconName> = { job: "briefcase", file: "file", wiki: "page", message: "message", fold: "list" };
+  const thread = $derived(view.kind === "job" || view.kind === "message" || view.kind === "fold" ? view.thread : null);
   const snapshot = $derived(thread ? store.thread(thread)?.state ?? null : null);
   const entry = $derived(thread ? store.thread(thread) : undefined);
   const cwd = $derived(snapshot?.info.cwd ?? "");
@@ -47,13 +47,13 @@
     untrack(() => store.open(id));
     return () => { if (store.selectedId !== id) store.release(id); };
   });
-  const nameOf = (sessionId: string): string | undefined => store.session(sessionId)?.name;
+  const nameOf = $derived(catalogNames(store.sessions));
   const lines = $derived(snapshot ? chatLines(snapshot.messages, nameOf) : []);
-  /** The folded run the chat line opened, found by the time of its first line. */
-  const updates = $derived.by((): Extract<ChatItem, { kind: "updates" }> | null => {
-    if (view.kind !== "updates" || !snapshot) return null;
+  /** The fold the chat row opened, found by the time of its first line. */
+  const fold = $derived.by((): Fold | null => {
+    if (view.kind !== "fold" || !snapshot) return null;
     const at = view.at;
-    return chatFeed(snapshot, [], nameOf).find((item): item is Extract<ChatItem, { kind: "updates" }> => item.kind === "updates" && item.at === at) ?? null;
+    return chatFeed(snapshot, [], nameOf).find((item): item is Fold => item.kind === "fold" && item.at === at) ?? null;
   });
 
   const reports = $derived(view.kind === "job" ? reportsFor(lines, view.name) : []);
@@ -70,7 +70,7 @@
   /** The snapshot clips a job's message at 2 KiB; the full text of each one on screen is fetched once and shown instead. */
   let full = $state.raw<Record<string, string>>({});
   const shown = $derived.by((): JobReport[] => view.kind === "job" ? [...(latest ? [latest] : []), ...(earlierOpen ? earlier : [])]
-    : view.kind === "updates" ? (updates?.entries ?? []).filter((entry): entry is JobReport => entry.kind === "job") : message?.kind === "job" ? [message] : []);
+    : view.kind === "fold" ? (fold?.entries ?? []).filter((entry): entry is JobReport => entry.kind === "job") : message?.kind === "job" ? [message] : []);
   const body = (report: JobReport): string => full[report.id] ?? report.body;
   const fetching = new Set<string>();
   $effect(() => {
@@ -142,10 +142,10 @@
       case "file": return fileName(view.path);
       case "wiki": return wiki?.result?.title ?? fileName(view.path);
       case "message": return message ? (message.kind === "user" ? "You" : message.kind === "job" ? "From " + message.from : message.kind === "agent" ? store.session(view.thread)?.name ?? "Chat" : message.kind === "notes" ? "VP notes" : "Notice") + ", " + clockTime(message.at) : "Message";
-      case "updates": return updates ? updatesLabel(updates).count : "Updates";
+      case "fold": return fold ? foldLabel(fold).count : "Updates";
     }
   });
-  const span = (entries: readonly Update[]): string => {
+  const span = (entries: readonly FoldEntry[]): string => {
     const first = entries[0];
     const last = entries.at(-1);
     return first && last ? (first === last ? clockTime(first.at) : clockTime(first.at) + " to " + clockTime(last.at)) : "";
@@ -156,7 +156,7 @@
       case "file": return view.path;
       case "wiki": return wikiUrl(view.path);
       case "message": return (store.session(view.thread)?.name ?? view.thread) + (message ? ", " + new Date(message.at).toLocaleString() : "");
-      case "updates": return (store.session(view.thread)?.name ?? view.thread) + (updates ? ", " + span(updates.entries) : "");
+      case "fold": return (store.session(view.thread)?.name ?? view.thread) + (fold ? ", " + span(fold.entries) : "");
     }
   });
   /** What Copy link puts on the clipboard: a form the Add a note field turns back into the same link. */
@@ -166,7 +166,7 @@
       case "file": return view.path;
       case "wiki": return wikiUrl(view.path);
       case "message": return permalink(view.thread, view.at);
-      case "updates": return permalink(view.thread, view.at);
+      case "fold": return permalink(view.thread, view.at);
     }
   });
   async function copyLink(): Promise<void> {
@@ -187,7 +187,7 @@
         const job = jobSession;
         return [...(fullThread ? [fullThread] : []), ...(job ? [{ label: "Prompt", run: () => { store.prompt = job; } }] : []), ...reply, { label: "Go to message", run: () => { onclose(); store.select(id, at); } }];
       }
-      case "updates": return [];
+      case "fold": return [];
     }
   });
 
@@ -243,7 +243,7 @@
           </section>
         {/if}
         {#if earlier.length}
-          <button type="button" class="fold" aria-expanded={earlierOpen} onclick={() => { earlierOpen = !earlierOpen; }}>
+          <button type="button" class="earlier-fold" aria-expanded={earlierOpen} onclick={() => { earlierOpen = !earlierOpen; }}>
             <span class="chev" class:open={earlierOpen}><Icon name="chevronDown" size={12} /></span>{earlier.length} earlier {earlier.length === 1 ? "message" : "messages"}
           </button>
           {#if earlierOpen}
@@ -280,15 +280,16 @@
       {:else if message.kind === "agent" || message.kind === "notes"}{@render prose(message.text, cwd, true)}
       {:else if message.kind === "job"}{@render prose(body(message), cwd, true)}
       {:else}<p class="snapshot">{message.text}</p>{/if}
-    {:else if view.kind === "updates"}
+    {:else if view.kind === "fold"}
       {#if entry?.error && !snapshot}{@render failure(entry.error)}
       {:else if !snapshot}{@render loading()}
-      {:else if !updates}<p class="snapshot">These updates are no longer in the chat.</p>
+      {:else if !fold}<p class="snapshot">These updates are no longer in the chat.</p>
       {:else}
-        {#each updates.entries as update (update.id)}
+        {#each fold.entries as update (update.id)}
           <article class="update {update.kind}">
-            <div class="update-head"><span class="update-from">{update.kind === "job" ? update.from : "VP notes"}</span><span class="stamp">{clockTime(update.at)}</span></div>
-            {@render prose(update.kind === "job" ? body(update) : update.text, cwd, true)}
+            <div class="update-head"><span class="update-from">{update.kind === "job" ? update.from : update.kind === "notes" ? "VP notes" : "Notice"}</span><span class="stamp">{clockTime(update.at)}</span></div>
+            {#if update.kind === "quiet"}<p class="notice-text">{update.text}</p>
+            {:else}{@render prose(update.kind === "job" ? body(update) : update.text, cwd, true)}{/if}
           </article>
         {/each}
       {/if}
@@ -307,8 +308,8 @@
   .snapshot { display: flex; align-items: center; gap: 8px; margin: 0; padding: 8px 0; color: var(--text-faint); font-size: 13px; }
   .snapshot.error { color: var(--danger); }
   .reader-prose { font-size: 14.5px; }
-  .fold { display: inline-flex; align-items: center; gap: 5px; margin-top: 18px; padding: 3px 6px 3px 2px; border-radius: 4px; font-size: 12.5px; color: var(--text-faint); }
-  .fold:hover { color: var(--text); background: var(--bg-hover); }
+  .earlier-fold { display: inline-flex; align-items: center; gap: 5px; margin-top: 18px; padding: 3px 6px 3px 2px; border-radius: 4px; font-size: 12.5px; color: var(--text-faint); }
+  .earlier-fold:hover { color: var(--text); background: var(--bg-hover); }
   .chev { display: inline-flex; transform: rotate(-90deg); transition: transform 0.12s; }
   .chev.open { transform: none; }
   .earlier { margin-top: 12px; padding: 12px 14px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-sunken); }
@@ -319,6 +320,8 @@
   .update-head .stamp { margin: 0; }
   .update-from { font-size: 13px; color: var(--text); }
   .update.notes .update-from { color: var(--accent-bold); }
+  .update.quiet .update-from { color: var(--text-muted); }
+  .notice-text { margin: 0; color: var(--text-muted); overflow-wrap: anywhere; }
   .lines { margin: 0; font-family: var(--mono); font-size: 12.5px; line-height: 1.55; white-space: pre; overflow-x: auto; tab-size: 4; }
   .line { display: block; }
   .diff .add { background: color-mix(in srgb, var(--success) 14%, transparent); color: light-dark(#0a5a2a, #8fe3ad); }

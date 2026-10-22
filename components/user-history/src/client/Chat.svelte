@@ -10,7 +10,7 @@
   import { mentionIndex, openAgentTodos } from "./board.ts";
   import { dutiesFeed } from "./duties.svelte.ts";
   import { isThreadBusy } from "../shared/thread-state.ts";
-  import { chatFeed, chatLines, settledPending, turnStarter, type ChatItem } from "../shared/chat-feed.ts";
+  import { catalogNames, chatFeed, chatLines, settledPending, turnStarter, type ChatItem, type Fold } from "../shared/chat-feed.ts";
   import { parseArtifactTarget } from "../shared/artifact-link.ts";
   import { replyExcerpt } from "./reply.ts";
   import { proseClick } from "./prose.ts";
@@ -49,8 +49,8 @@
   const row = $derived(store.session(id));
   const EMPTY_SENDS: never[] = [];
   const pendingSends = $derived(store.pendingSends[id] ?? EMPTY_SENDS);
-  /** A sender named by a raw session id in an agent-message header reads as its catalog name. */
-  const nameOf = (sessionId: string): string | undefined => store.session(sessionId)?.name;
+  /** A sender named by a session id or a live agent id in an agent-message header reads as its catalog name. */
+  const nameOf = $derived(catalogNames(store.sessions));
   const feed = $derived(thread ? chatFeed(thread, pendingSends, nameOf) : []);
   /** The feed draws its newest FIRST_ITEMS items, and MORE_ITEMS earlier ones each time the owner scrolls near the top (feed-window.ts). */
   const MORE_ITEMS = 30;
@@ -194,8 +194,8 @@
     else if (click?.kind === "mention") store.openMention(id, click.id);
     else if (click?.kind === "job") store.openArtifact({ kind: "job", name: click.name }, id);
   }
-  /** A folded run of updates opens in the reader as a list: who wrote, when, and the whole text. */
-  const readUpdates = (item: Extract<ChatItem, { kind: "updates" }>) => { store.reader = { kind: "updates", thread: id, at: item.at }; };
+  /** A fold opens in the reader as a list: who wrote, when, and the whole text. */
+  const readFold = (fold: Fold) => { store.reader = { kind: "fold", thread: id, at: fold.at }; };
 
   /** The side panel's left edge: a drag sets its width, a double click puts it back, Left and Right nudge it. The choice holds across chats. */
   let sideNode: HTMLElement | undefined = $state();
@@ -350,7 +350,7 @@
   <div class="scroller" bind:this={scroller} onscroll={onScroll}>
     <div class="column" class:fill={hasEarlier} bind:this={column}>
       {#if hasEarlier}<div class="older muted" aria-live="polite">{entry?.olderLoading ? "Loading earlier messages" : ""}</div>{/if}
-      <ChatLines {id} {feed} {start} {minute} {cwd} {mentions} {typing} {reply} {copyLink} {goToLine} {viewImage} {seeReply} {press} {onProseClick} {readUpdates} />
+      <ChatLines {id} {feed} {start} {minute} {cwd} {mentions} {typing} {reply} {copyLink} {goToLine} {viewImage} {seeReply} {press} {onProseClick} {readFold} />
       {#if !feed.length && !typing}<div class="empty muted">Say what this chat is about. Jobs run in the background while you keep typing.</div>{/if}
     </div>
   </div>

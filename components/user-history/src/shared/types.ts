@@ -253,6 +253,8 @@ export type SessionKind = "live" | "saved";
 export type SessionStatus = "running" | "idle" | "saved";
 export interface SessionRow {
   id: string;
+  /** The 12-hex id the daemon gives the session while it runs; an agent message from it names it by this id. */
+  agent?: string;
   /** The native title: session name, else first message (see sessionTitle). */
   name: string;
   cwd: string;

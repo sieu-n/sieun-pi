@@ -2,8 +2,8 @@
   import { store } from "./store.svelte.ts";
   import { clockTime } from "./format.ts";
   import { boardActionText, isBoardAction, type MentionIndex } from "./board.ts";
-  import { updatesJob } from "./jobs.ts";
-  import { updatesLabel, type ChatItem, type ReplyQuote } from "../shared/chat-feed.ts";
+  import { foldJob } from "./jobs.ts";
+  import { foldLabel, stampedItems, type ChatItem, type Fold, type ReplyQuote } from "../shared/chat-feed.ts";
   import { bubbleBlocks, renderMarkdown } from "./markdown.ts";
   import { ownerExcerpt, renderSaid } from "./reply.ts";
   import { diagrams } from "./diagrams.ts";
@@ -14,20 +14,19 @@
   import { longpress } from "./ui/longpress.ts";
 
   /**
-   * The lines of a chat's feed (Chat.svelte): the owner's bubbles, the chat's replies, folded runs of updates, board actions, notices,
+   * The lines of a chat's feed (Chat.svelte): the owner's bubbles, the chat's replies, fold rows of background lines, board actions, notices,
    * the time stamps between them and the typing dots. `feed` is the whole loaded feed and the lines start at `feed[start]`.
    */
-  let { id, feed, start, minute, cwd, mentions, typing, reply, copyLink, goToLine, viewImage, seeReply, press, onProseClick, readUpdates }: {
+  let { id, feed, start, minute, cwd, mentions, typing, reply, copyLink, goToLine, viewImage, seeReply, press, onProseClick, readFold }: {
     id: string; feed: ChatItem[]; start: number; minute: number; cwd: string; mentions: MentionIndex | null; typing: boolean;
     reply: (text: string) => void; copyLink: (at: number) => Promise<void>; goToLine: (line: string) => Promise<void>;
     viewImage: (item: Extract<ChatItem, { kind: "user" }>, index: number) => void; seeReply: (item: Extract<ChatItem, { kind: "user" }>) => void;
     press: (at: number, text: string) => (anchor: HTMLElement) => void; onProseClick: (event: MouseEvent) => void;
-    readUpdates: (item: Extract<ChatItem, { kind: "updates" }>) => void;
+    readFold: (fold: Fold) => void;
   } = $props();
 
   const shown = $derived(start ? feed.slice(start) : feed);
-  const EXPANDED_MINUTES = 15;
-  const stampBefore = (item: ChatItem, index: number): boolean => index === 0 || item.at - (feed[index - 1]?.at ?? item.at) > EXPANDED_MINUTES * 60_000;
+  const stamped = $derived(stampedItems(feed));
   function stamp(at: number): string {
     const date = new Date(at);
     const today = new Date(minute);
@@ -48,8 +47,8 @@
   <button type="button" class="quote reply-quote" aria-label="Show the message this answers" use:tooltip={"Show your message"} onclick={() => void goToLine(quote.id)}>{ownerExcerpt(quote.text)}</button>
 {/snippet}
 
-{#each shown as item, index (item.id)}
-  {#if stampBefore(item, start + index)}<div class="stamp" data-stamp={item.at}>{stamp(item.at)}</div>{/if}
+{#each shown as item (item.id)}
+  {#if stamped.has(item.id)}<div class="stamp" data-stamp={item.at}>{stamp(item.at)}</div>{/if}
   {#if item.kind === "user" && !item.images.length && isBoardAction(item.text)}
     <div class="owner-action" class:pending={item.pending}><Icon name="check" size={12} /><span>{boardActionText(item.text)}</span></div>
   {:else if item.kind === "user"}
@@ -101,12 +100,13 @@
       </div>
       {#if !item.streaming}{@render actions(item.at, item.text)}{/if}
     </div>
-  {:else if item.kind === "updates"}
-    {@const label = updatesLabel(item)}
-    <div class="line updates" data-at={item.at}>
-      <button type="button" class="updates-line" title="Read these updates" data-preview-chat={id} data-preview-job={updatesJob(item)} onclick={() => readUpdates(item)}>
-        <span class="updates-count">{label.count}</span>{#if label.names}<span class="dot-sep"></span><span class="updates-names">{label.names}</span>{/if}
-        <span class="updates-mark"><Icon name="chevronRight" size={12} /></span>
+  {:else if item.kind === "fold"}
+    {@const label = foldLabel(item)}
+    <div class="line fold" data-at={item.at}>
+      <button type="button" class="fold-line" title="Read these updates" data-preview-chat={id} data-preview-job={foldJob(item)} onclick={() => readFold(item)}>
+        <span class="fold-latest">{label.latest}</span>
+        {#if item.entries.length > 1}<span class="dot-sep"></span><span class="fold-count">{label.count}</span>{#if label.names}<span class="fold-names">from {label.names}</span>{/if}{/if}
+        <span class="fold-mark"><Icon name="chevronRight" size={12} /></span>
       </button>
     </div>
   {:else}
@@ -178,13 +178,14 @@
   .typing span:nth-child(2) { animation-delay: 0.2s; }
   .typing span:nth-child(3) { animation-delay: 0.4s; }
   @keyframes typing { 0%, 60%, 100% { opacity: 0.35; } 30% { opacity: 1; } }
-  /* A folded run of updates: one muted line, centered like a notice, that opens the reader. */
-  .line.updates { justify-content: center; margin: 2px 0; border-radius: 999px; }
-  .updates-line { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; min-width: 0; padding: 3px 8px 3px 10px; border-radius: 999px; font-size: 12.5px; line-height: 1.4; color: var(--text-faint); transition: background-color 0.12s, color 0.12s; }
-  .updates-line:hover { background: var(--bg-hover); color: var(--text-muted); }
-  .updates-count { flex: none; }
-  .updates-names { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .updates-mark { display: inline-flex; flex: none; opacity: 0.7; }
+  /* A fold of background lines: one muted line, centered like a notice, with its latest line and count; it opens the reader. */
+  .line.fold { justify-content: center; margin: 2px 0; border-radius: 999px; }
+  .fold-line { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; min-width: 0; padding: 3px 8px 3px 10px; border-radius: 999px; font-size: 12.5px; line-height: 1.4; color: var(--text-faint); transition: background-color 0.12s, color 0.12s; }
+  .fold-line:hover { background: var(--bg-hover); color: var(--text-muted); }
+  .fold-latest, .fold-names { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fold-count { flex: none; }
+  .fold-names { flex-shrink: 3; margin-left: -2px; }
+  .fold-mark { display: inline-flex; flex: none; opacity: 0.7; }
   .dot-sep { flex: none; width: 3px; height: 3px; border-radius: 50%; background: currentColor; opacity: 0.6; }
   .notice { align-self: center; max-width: 90%; padding: 2px 10px; text-align: center; font-size: 12.5px; color: var(--text-faint); overflow-wrap: anywhere; }
   @container app (max-width: 899px) {

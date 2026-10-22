@@ -519,6 +519,7 @@ export function projectRow(row: SessionSummary, readMarker: number | undefined, 
   const cost = extras.subtree ? extras.subtree.cost : row.usage && Number.isFinite(row.usage.cost) ? row.usage.cost : undefined;
   return {
     id: row.sessionId,
+    ...(row.id !== row.sessionId ? { agent: row.id } : {}),
     name: sessionTitle(row),
     cwd: row.cwd,
     kind: live ? "live" : "saved",

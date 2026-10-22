@@ -3,16 +3,16 @@ import type { WikiPage } from "./api.ts";
 
 /**
  * What the reader modal shows. Every artifact link opens here, except a web URL (a new tab) and a bare `thread:<id>` (the thread itself).
- * `thread` is the thread the link was opened from: a job's reports are the agent messages in that thread's feed. An updates view has no
- * link form; the folded line in the chat opens it.
+ * `thread` is the thread the link was opened from: a job's reports are the agent messages in that thread's feed. A fold view has no
+ * link form; the fold row in the chat opens it.
  */
 export type ReaderView =
   | { kind: "job"; thread: string; name: string }
   | { kind: "file"; path: string }
   | { kind: "wiki"; path: string }
   | { kind: "message"; thread: string; at: number }
-  /** A folded run of quiet lines in a chat's feed, keyed by the time of its first line. */
-  | { kind: "updates"; thread: string; at: number };
+  /** A fold of background lines in a chat's feed, keyed by the time of its first line. */
+  | { kind: "fold"; thread: string; at: number };
 
 export type ReaderAction = { open: "tab"; url: string } | { open: "thread"; sessionId: string } | { open: "reader"; view: ReaderView };
 

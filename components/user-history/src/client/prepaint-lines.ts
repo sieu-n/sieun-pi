@@ -27,7 +27,7 @@ export function prepaintLines(id: string, frames: string): { lines: string; titl
   const mentions = mentionIndex(id, null, jobNames(undefined, thread, () => undefined));
   const { body } = render(ChatLines, { props: {
     id, feed, start, minute: Math.floor(Date.now() / 60_000) * 60_000, cwd: thread.info.cwd ?? "", mentions, typing,
-    reply: ignore, copyLink: ignoreAsync, goToLine: ignoreAsync, viewImage: ignore, seeReply: ignore, press: () => ignore, onProseClick: ignore, readUpdates: ignore,
+    reply: ignore, copyLink: ignoreAsync, goToLine: ignoreAsync, viewImage: ignore, seeReply: ignore, press: () => ignore, onProseClick: ignore, readFold: ignore,
   } });
   return { lines: body, title: thread.info.name ?? "New chat", earlier: start > 0 || thread.older !== undefined };
 }

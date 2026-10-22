@@ -1,6 +1,7 @@
+import { agentMessageHead } from "../no-report.ts";
 import { messageKey } from "./message-key.ts";
 import { isPromptCustom, messageText, toolResults, triggerSummary } from "./turns.ts";
-import type { AssistantMessage, ChatWait, CustomMessage, ImagePart, ThreadMessage, ThreadState, UserMessage } from "./types.ts";
+import type { AssistantMessage, ChatWait, CustomMessage, ImagePart, SessionRow, ThreadMessage, ThreadState, UserMessage } from "./types.ts";
 
 /** A message the owner sent from the chat composer that the thread has not echoed back yet. `images` are data URLs for the bubble. */
 /** An owner send the thread has not echoed: sending (dim), `sent` (delivered, drawn as a normal bubble), or `failed` with the reason. */
@@ -18,7 +19,7 @@ export type TellWhy = typeof TELL_WHY[number];
 export const TELL_OWNER_HELD = "Kept as a note, not sent";
 /**
  * A user message the chat server sends on its own: the restart of a failed turn and the job notices (and, in transcripts from before W44, the
- * check-in digest). The feed folds them into updates and the turn they start is not the owner's.
+ * check-in digest). The feed folds them and the turn they start is not the owner's.
  */
 export const CHECK_IN_PREFIX = "[check-in] ";
 export const JOB_NOTICE_PREFIX = "[job] ";
@@ -72,15 +73,18 @@ export function serverNote(text: string): string | undefined {
  *   (`told`); `streaming` while the model is still writing it.
  * - job: a message another agent sent the chat; `from` is its display name. `clipped` names the message and part to fetch through
  *   `api/threads/:id/part` when the snapshot holds only the first 2 KiB of the body.
- * - notes: the chat's text on a turn another agent, a check-in or a job notice started. The owner sees it only inside an updates list.
- * - notice: an error, a stopped reply, a restart or a compaction, as one muted line.
+ * - notes: the chat's text on a turn another agent, a check-in or a job notice started. The owner sees it only inside a fold.
+ * - notice: a line the owner needs on its own: the error that ended his turn with no answer after it, or the live wait `chatFeed` adds.
+ * - quiet: a background notice that folds: a wait for a Claude account (`wait`), a stopped reply, a restart, a compaction, a check-in change,
+ *   an error on a turn he did not start or one an answer followed.
  */
 export type ChatLine =
   | { kind: "user"; id: string; text: string; images: ImagePart[]; at: number; pending?: true; failed?: string; replies?: string[] }
   | { kind: "agent"; id: string; text: string; at: number; streaming?: true; told?: true; replyTo?: ReplyQuote }
   | { kind: "job"; id: string; from: string; title: string; body: string; at: number; clipped?: { message: number; part: number } }
   | { kind: "notes"; id: string; text: string; at: number }
-  | { kind: "notice"; id: string; text: string; at: number };
+  | { kind: "notice"; id: string; text: string; at: number }
+  | { kind: "quiet"; id: string; text: string; at: number; wait?: true };
 /**
  * An agent line that answers one owner message: that message's feed line id and its text. The owner line lists the agent lines that answer it
  * in `replies`, oldest first, for its "See reply" button.
@@ -107,15 +111,20 @@ export function splitReplyTo(text: string): { replyTo: string | null; text: stri
   return match ? { replyTo: match[1]!, text: text.slice(match[0].length).trim() } : { replyTo: null, text };
 }
 
-/** The quiet lines: between two visible lines they fold into one updates item. */
-export type Update = Extract<ChatLine, { kind: "job" | "notes" }>;
-/** One item of the feed on screen: a visible line, or a run of quiet lines folded into one. */
-export type ChatItem = Exclude<ChatLine, Update> | { kind: "updates"; id: string; at: number; entries: Update[] };
+/** The background lines: between two visible lines they fold into one row. */
+export type FoldEntry = Extract<ChatLine, { kind: "job" | "notes" | "quiet" }>;
+/**
+ * A run of background lines as one row, keyed by its first line so its id holds when a line lands below it. `at` is the first line's time.
+ * Of the account waits only the latest stays in `entries`, since each one says the same thing with a later time.
+ */
+export type Fold = { kind: "fold"; id: string; at: number; entries: FoldEntry[] };
+/** One item of the feed on screen: a visible line, or a fold. */
+export type ChatItem = Exclude<ChatLine, FoldEntry> | Fold;
 
 /** Who started a turn: the owner (a user message, `[board] ` lines included) or something else (an agent message, a check-in, a job notice). */
 export type TurnStarter = "owner" | "agent";
-/** The display name of a session id in an agent-message header; undefined when the catalog does not list it. */
-export type NameOf = (sessionId: string) => string | undefined;
+/** The display name of a session id or a live agent id in an agent-message header; undefined when the catalog does not list it. */
+export type NameOf = (id: string) => string | undefined;
 
 /** A user message echoed by the daemon up to this long before the browser's send time still settles the pending send (clock skew between devices). */
 export const PENDING_SKEW_MS = 5 * 60_000;
@@ -125,13 +134,32 @@ const imagesOf = (message: UserMessage | CustomMessage): ImagePart[] =>
 
 const firstLine = (text: string): string => text.split("\n").map(line => line.trim()).find(Boolean) ?? "";
 
-const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-/** The display name for an agent-message sender: a job by its name, a session by its catalog name, a raw id nobody lists as "another thread". */
+/** A session id, or the 12-hex id the daemon gives a live agent (`SessionRow.agent`); a relay names its sender by either. */
+const THREAD_ID = /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{12})$/i;
+/** The display name for an agent-message sender: a job by its name, a thread id by its catalog name, an id nobody lists as "another thread". */
 export function senderName(from: string, nameOf: NameOf = () => undefined): string {
   const raw = from.replace(/^(?:child|sibling|parent):/, "").trim();
   if (!raw) return "another thread";
-  if (!SESSION_ID.test(raw)) return raw;
+  if (!THREAD_ID.test(raw)) return raw;
   return nameOf(raw)?.trim() || "another thread";
+}
+
+let lastNames: { names: Map<string, string>; nameOf: NameOf } | null = null;
+/**
+ * The catalog's names by session id and by live agent id. On 10-22 the owner's feed showed senders as "0c8dc51ba931" and "34415a8288c4". The page
+ * gets a new rows array on every sessions frame, so the same names give back the same function and a feed built on it is not built again.
+ */
+export function catalogNames(rows: readonly SessionRow[]): NameOf {
+  const names = new Map<string, string>();
+  for (const row of rows) {
+    names.set(row.id, row.name);
+    if (row.agent) names.set(row.agent, row.name);
+  }
+  const last = lastNames;
+  if (last && last.names.size === names.size && [...names].every(([id, name]) => last.names.get(id) === name)) return last.nameOf;
+  const nameOf: NameOf = id => names.get(id);
+  lastNames = { names, nameOf };
+  return nameOf;
 }
 
 type Refused = (toolCallId: string) => boolean;
@@ -160,19 +188,24 @@ function toldText(part: AssistantMessage["content"][number], refused: Refused): 
   return typeof part.arguments.text === "string" ? part.arguments.text.trim() : "";
 }
 
-/** `shown` is how the message's text shows: a reply bubble, or notes (a wake-up, or an owner turn the chat answered with tell_owner). */
-function assistantLines(message: AssistantMessage, id: string, shown: "reply" | "notes", streaming: boolean, refused: Refused, answer: Answer, checkInChanged: CheckInChanged = () => undefined, held: Refused = () => false): ChatLine[] {
+/**
+ * The turn a message belongs to: `shown` is how the chat's text shows, a reply bubble or notes (a wake-up, or an owner turn the chat answered with
+ * tell_owner), and `owner` says the owner started it, so an error that ends it shows on its own.
+ */
+type Turn = { shown: "reply" | "notes"; owner: boolean };
+
+function assistantLines(message: AssistantMessage, id: string, turn: Turn, streaming: boolean, refused: Refused, answer: Answer, checkInChanged: CheckInChanged = () => undefined, held: Refused = () => false): ChatLine[] {
   const lines: ChatLine[] = [];
   const raw = messageText(message).trim();
   const { replyTo, text } = streaming && REPLY_TO_MARKER.startsWith(raw) ? { replyTo: null, text: "" } : splitReplyTo(raw);
-  if (text && shown === "reply") {
+  if (text && turn.shown === "reply") {
     const quote = answer(replyTo, id);
     lines.push({ kind: "agent", id, text, at: message.timestamp, ...(streaming ? { streaming: true } : {}), ...(quote ? { replyTo: quote } : {}) });
   } else if (text && !streaming) lines.push({ kind: "notes", id, text, at: message.timestamp });
   if (streaming) return lines;
   message.content.forEach((part, index) => {
     const changed = part.type === "toolCall" ? checkInChanged(part.id) : undefined;
-    if (changed) lines.push({ kind: "notice", id: `${id}-c${index}`, text: changed, at: message.timestamp });
+    if (changed) lines.push({ kind: "quiet", id: `${id}-c${index}`, text: changed, at: message.timestamp });
     const kept = part.type === "toolCall" && held(part.id) ? toldText(part, () => false) : "";
     if (kept) { lines.push({ kind: "notes", id: `${id}-t${index}`, text: kept, at: message.timestamp }); return; }
     const told = toldText(part, refused);
@@ -180,9 +213,16 @@ function assistantLines(message: AssistantMessage, id: string, shown: "reply" | 
     const quote = answer(part.arguments.reply_to, `${id}-t${index}`);
     lines.push({ kind: "agent", id: `${id}-t${index}`, text: told, at: message.timestamp, told: true, ...(quote ? { replyTo: quote } : {}) });
   });
-  if (message.stopReason === "aborted") lines.push({ kind: "notice", id: id + "-stop", text: "Reply stopped", at: message.timestamp });
-  else if (message.stopReason === "error") lines.push({ kind: "notice", id: id + "-error", text: failureText(message.errorMessage), at: message.timestamp });
+  if (message.stopReason === "aborted") lines.push({ kind: "quiet", id: id + "-stop", text: "Reply stopped", at: message.timestamp });
+  else if (message.stopReason === "error") lines.push(failureLine(message.errorMessage, id + "-error", message.timestamp, turn.owner));
   return lines;
+}
+
+/** A failed assistant message as a line: a pool wait folds as a wait, an error stays visible on the owner's turn and folds on any other. */
+function failureLine(error: string | undefined, id: string, at: number, owner: boolean): ChatLine {
+  const text = failureText(error);
+  if (poolSlot(error ?? "") !== null) return { kind: "quiet", id, text, at, wait: true };
+  return { kind: owner ? "notice" : "quiet", id, text, at };
 }
 
 /** The note pi-pool's extension adds to a failure it turned into a wait for the session's own slot or backoff time (`waitFailure`). */
@@ -204,12 +244,14 @@ export function failureText(error: string | undefined): string {
 function customLines(message: CustomMessage, id: string, index: number, nameOf: NameOf): ChatLine[] {
   if (message.customType === "agent_message") {
     const summary = triggerSummary(message);
-    const from = senderName(summary.detail.replace(/^from\s+/, ""), nameOf);
+    const head = agentMessageHead(messageText(message));
+    const from = senderName(head?.name ?? summary.detail.replace(/^from\s+/, ""), nameOf);
+    const body = head?.body.trim() ?? summary.body;
     const part = typeof message.content === "string" ? -1 : message.content.findIndex(entry => entry.type === "text" && entry.truncated);
-    return [{ kind: "job", id, from, title: firstLine(summary.body) || "(empty message)", body: summary.body, at: message.timestamp, ...(part >= 0 ? { clipped: { message: index, part } } : {}) }];
+    return [{ kind: "job", id, from, title: firstLine(body) || "(empty message)", body, at: message.timestamp, ...(part >= 0 ? { clipped: { message: index, part } } : {}) }];
   }
-  if (message.customType === "prime-agent.update_restart") return [{ kind: "notice", id, text: "Prime Agent restarted", at: message.timestamp }];
-  if (message.customType === CHAT_NOTICE) return [{ kind: "notice", id, text: messageText(message).trim(), at: message.timestamp }];
+  if (message.customType === "prime-agent.update_restart") return [{ kind: "quiet", id, text: "Prime Agent restarted", at: message.timestamp }];
+  if (message.customType === CHAT_NOTICE) return [{ kind: "quiet", id, text: messageText(message).trim(), at: message.timestamp }];
   return [];
 }
 
@@ -226,10 +268,10 @@ export function chatLines(messages: readonly ThreadMessage[], nameOf: NameOf = (
 }
 
 /**
- * `chatLines` with the reply linker and how the running turn's text shows (`current`), for the streaming reply that follows them. An agent
- * line whose `reply_to` names an earlier owner message (`ownerMessageId`) quotes it; an unknown id is dropped.
+ * `chatLines` with the reply linker and the running turn (`current`), for the streaming reply that follows them. An agent line whose `reply_to`
+ * names an earlier owner message (`ownerMessageId`) quotes it; an unknown id is dropped.
  */
-function linesOf(messages: readonly ThreadMessage[], nameOf: NameOf): { lines: ChatLine[]; answer: Answer; current: "reply" | "notes" } {
+function linesOf(messages: readonly ThreadMessage[], nameOf: NameOf): { lines: ChatLine[]; answer: Answer; current: Turn } {
   const lines: ChatLine[] = [];
   const links = replyLinks();
   const track = turnTracker();
@@ -246,11 +288,11 @@ function linesOf(messages: readonly ThreadMessage[], nameOf: NameOf): { lines: C
     return first.startsWith(CHAT_CHECK_IN_LINE) ? first : undefined;
   };
   const told = toldTurns(messages, refused);
-  let current: "reply" | "notes" = "reply";
+  let current: Turn = { shown: "reply", owner: true };
   messages.forEach((message, index) => {
     const id = lineId(messages, index);
     const { starter, turn } = track(message);
-    current = starter === "owner" && !told.has(turn) ? "reply" : "notes";
+    current = { shown: starter === "owner" && !told.has(turn) ? "reply" : "notes", owner: starter === "owner" };
     switch (message.role) {
       case "user": {
         const text = messageText(message).trim();
@@ -263,14 +305,26 @@ function linesOf(messages: readonly ThreadMessage[], nameOf: NameOf): { lines: C
       }
       case "assistant": lines.push(...assistantLines(message, id, current, false, refused, links.answer, checkInChanged, held)); return;
       case "custom": lines.push(...customLines(message, id, index, nameOf)); return;
-      case "compactionSummary": lines.push({ kind: "notice", id, text: "Older messages were summarized to free space", at: message.timestamp }); return;
+      case "compactionSummary": lines.push({ kind: "quiet", id, text: "Older messages were summarized to free space", at: message.timestamp }); return;
       case "toolResult":
       case "bashExecution":
       case "branchSummary":
         return;
     }
   });
-  return { lines, answer: links.answer, current };
+  return { lines: settleAnswered(lines), answer: links.answer, current };
+}
+
+/** Turns each error on the owner's turn that an agent line followed before his next message into a quiet line: the chat went on and answered him. */
+function settleAnswered(lines: ChatLine[]): ChatLine[] {
+  let answered = false;
+  for (let index = lines.length - 1; index >= 0; index--) {
+    const line = lines[index]!;
+    if (line.kind === "user") answered = false;
+    else if (line.kind === "agent") answered = true;
+    else if (line.kind === "notice" && answered) lines[index] = { kind: "quiet", id: line.id, text: line.text, at: line.at };
+  }
+  return lines;
 }
 
 /**
@@ -320,41 +374,69 @@ export function turnStarter(messages: readonly ThreadMessage[]): TurnStarter {
   return starter;
 }
 
-const isUpdate = (line: ChatLine): line is Update => line.kind === "job" || line.kind === "notes";
+const isFoldEntry = (line: ChatLine): line is FoldEntry => line.kind === "job" || line.kind === "notes" || line.kind === "quiet";
+const isWait = (entry: FoldEntry): boolean => entry.kind === "quiet" && entry.wait === true;
 
-/** The lines with every run of quiet ones (job messages, the chat's notes) folded into one updates item, keyed by its first line. */
-export function collapseUpdates(lines: readonly ChatLine[]): ChatItem[] {
+/**
+ * The lines with every run of background ones folded into one row. Owner's ask, 10-22: chats that ran in the background became illegible, so
+ * job messages, notes, waits and restarts between two replies collapse to one row with the most recent line.
+ */
+export function foldLines(lines: readonly ChatLine[]): ChatItem[] {
   const items: ChatItem[] = [];
-  let group: Extract<ChatItem, { kind: "updates" }> | null = null;
+  let fold: Fold | null = null;
   for (const line of lines) {
-    if (isUpdate(line)) {
-      if (!group) { group = { kind: "updates", id: "u" + line.id, at: line.at, entries: [] }; items.push(group); }
-      group.entries.push(line);
-      continue;
-    }
-    group = null;
-    items.push(line);
+    if (!isFoldEntry(line)) { fold = null; items.push(line); continue; }
+    if (!fold) { fold = { kind: "fold", id: "f" + line.id, at: line.at, entries: [] }; items.push(fold); }
+    if (isWait(line)) { const earlier = fold.entries.findIndex(isWait); if (earlier >= 0) fold.entries.splice(earlier, 1); }
+    fold.entries.push(line);
   }
   return items;
 }
 
-/** How many feed rows the owner has not read: the chat's replies and folded update runs with a message after `since` (the read marker, ms). */
+/** How many feed rows the owner has not read: the chat's replies, and folds with a message after `since` (the read marker, ms). */
 export function unreadCount(messages: readonly ThreadMessage[], since: number, nameOf: NameOf = () => undefined): number {
-  return collapseUpdates(chatLines(messages, nameOf)).filter(item =>
-    item.kind === "agent" ? item.at > since : item.kind === "updates" ? item.entries.some(entry => entry.at > since) : false).length;
+  return foldLines(chatLines(messages, nameOf)).filter(item =>
+    item.kind === "agent" ? item.at > since : item.kind === "fold" ? item.entries.some(entry => entry.kind !== "quiet" && entry.at > since) : false).length;
 }
 
-/** A session titled by its first message can run long; the folded line clips each name to this. */
+/** A session titled by its first message can run long; the fold row clips each name to this. */
 const NAME_LIMIT = 32;
 const clipName = (name: string): string => name.length > NAME_LIMIT ? name.slice(0, NAME_LIMIT - 1).trimEnd() + "\u2026" : name;
 
-/** "4 updates" and the senders in the order they wrote, up to three, for the folded line. */
-export function updatesLabel(item: Extract<ChatItem, { kind: "updates" }>): { count: string; names: string } {
-  const count = item.entries.length === 1 ? "1 update" : `${item.entries.length} updates`;
-  const names = [...new Set(item.entries.flatMap(entry => entry.kind === "job" ? [entry.from] : []))].map(clipName);
+/** One fold entry as one line: a job message by its sender and first line, the chat's notes by their first line, a notice as it reads. */
+export function entryLine(entry: FoldEntry): string {
+  switch (entry.kind) {
+    case "job": return `${entry.from}: ${entry.title}`;
+    case "notes": return firstLine(entry.text);
+    case "quiet": return entry.text;
+  }
+}
+
+/** What a fold row says: its most recent line, "4 updates", and the senders newest first, up to three. */
+export function foldLabel(fold: Fold): { latest: string; count: string; names: string } {
+  const last = fold.entries.at(-1);
+  const count = fold.entries.length === 1 ? "1 update" : `${fold.entries.length} updates`;
+  const names = [...new Set(fold.entries.flatMap(entry => entry.kind === "job" ? [entry.from] : []).reverse())].map(clipName);
   const shown = names.slice(0, 3);
   const more = names.length - shown.length;
-  return { count, names: more > 0 ? `${shown.join(", ")} and ${more} more` : shown.join(", ") };
+  return { latest: last ? entryLine(last) : "", count, names: more > 0 ? `${shown.join(", ")} and ${more} more` : shown.join(", ") };
+}
+
+/** A visible item this long after the visible item before it gets a time stamp above it. */
+const STAMP_GAP_MS = 15 * 60_000;
+/**
+ * The ids of the items the feed puts a time stamp above: the first visible item, and each one STAMP_GAP_MS after the visible item before it.
+ * A fold gets none and does not count, so stamps never sit between folded rows and the time between two replies shows.
+ */
+export function stampedItems(feed: readonly ChatItem[]): Set<string> {
+  const stamped = new Set<string>();
+  let last: number | null = null;
+  for (const item of feed) {
+    if (item.kind === "fold") continue;
+    if (last === null || item.at - last > STAMP_GAP_MS) stamped.add(item.id);
+    last = item.at;
+  }
+  return stamped;
 }
 
 /**
@@ -373,13 +455,13 @@ export function settledPending(messages: readonly ThreadMessage[], pending: read
 }
 
 /**
- * The whole chat, oldest first: every message as lines with the quiet runs folded, then the streaming reply when the owner started the turn
+ * The whole chat, oldest first: every message as lines with the background runs folded, then the streaming reply when the owner started the turn
  * and the chat has not answered it with tell_owner, then the sends the thread has not echoed yet.
  */
 export function chatFeed(state: Pick<ThreadState, "messages" | "streaming" | "wait">, pending: readonly PendingSend[] = [], nameOf: NameOf = () => undefined): ChatItem[] {
   const { lines, answer, current } = linesOf(state.messages, nameOf);
   if (state.streaming) lines.push(...assistantLines(state.streaming, "streaming", current, true, () => true, answer));
-  const items = collapseUpdates(lines);
+  const items = foldLines(lines);
   const settled = settledPending(state.messages, pending);
   for (const send of pending) {
     if (settled.has(send.id)) continue;

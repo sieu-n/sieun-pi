@@ -14,8 +14,8 @@ test("a pool wait reads as a wait with its time, not an error", () => {
     { role: "user", content: [{ type: "text", text: "latency-probe af6e50d9. Reply with exactly: ok" }], timestamp: Date.parse("2026-10-18T08:31:33.418Z") },
     { role: "assistant", content: [{ type: "text", text: "" }], api: "anthropic-messages", provider: "anthropic", model: "claude-opus-5-5", usage, stopReason: "error", errorMessage: WAIT, timestamp: Date.parse("2026-10-18T08:32:36.310Z") },
   ] as ThreadMessage[];
-  const notices = chatLines(messages).filter(line => line.kind === "notice").map(line => line.text);
-  assert.deepEqual(notices, [`Waiting for a Claude account until ${hhmm(SLOT)}.`]);
+  const notices = chatLines(messages).filter(line => line.kind === "notice" || line.kind === "quiet").map(line => ({ kind: line.kind, text: line.text }));
+  assert.deepEqual(notices, [{ kind: "quiet", text: `Waiting for a Claude account until ${hhmm(SLOT)}.` }]);
 });
 
 test("any other failure still reads as an error", () => {

@@ -1,4 +1,4 @@
-import type { ChatItem, ChatLine } from "../shared/chat-feed.ts";
+import type { ChatLine, Fold } from "../shared/chat-feed.ts";
 import { createdSessions, type CreatedSession } from "../shared/created-sessions.ts";
 import type { ChatAgent, ChildAgent, ChildUsage, SessionRow, ThreadMessage } from "../shared/types.ts";
 import { childName, isActiveChild } from "./children.ts";
@@ -36,7 +36,7 @@ export function findJob(jobs: readonly JobView[], name: string): JobView | undef
   return jobs.find(job => job.key === raw || job.sessionId === raw) ?? jobs.findLast(job => job.name === jobName(raw));
 }
 
-/** Every message the job sent to the chat, newest first, from the chat's lines (`chatLines`; the feed folds them into updates). */
+/** Every message the job sent to the chat, newest first, from the chat's lines (`chatLines`; the feed folds them). */
 export function reportsFor(lines: readonly ChatLine[], name: string): JobReport[] {
   const wanted = jobName(name);
   return lines.filter((line): line is JobReport => line.kind === "job" && line.from === wanted).reverse();
@@ -173,9 +173,9 @@ export function jobNames(row: SessionRow | undefined, snapshot: { children: read
   return [...new Set([...listed, ...(snapshot?.children ?? []).map(childName)].filter(Boolean))];
 }
 
-/** The job a folded updates line previews: the sender of its last job message, or null when the run holds only the chat's own notes. */
-export function updatesJob(item: Extract<ChatItem, { kind: "updates" }>): string | null {
-  return item.entries.findLast(entry => entry.kind === "job")?.from ?? null;
+/** The job a fold row previews: the sender of its last job message, or null when the fold holds no job message. */
+export function foldJob(fold: Fold): string | null {
+  return fold.entries.findLast(entry => entry.kind === "job")?.from ?? null;
 }
 
 /** The chat a session is a job of, for the breadcrumb on its thread: a chat whose row lists it as its subagent or a root it started, or an open chat whose transcript started it. */

@@ -7,7 +7,7 @@
   import { renderMarkdown, reportExcerpt } from "./markdown.ts";
   import { diagrams } from "./diagrams.ts";
   import { brokenImage, proseClick } from "./prose.ts";
-  import { chatLines } from "../shared/chat-feed.ts";
+  import { catalogNames, chatLines } from "../shared/chat-feed.ts";
   import { parseArtifactTarget } from "../shared/artifact-link.ts";
   import { triggerBody } from "../shared/turns.ts";
   import { jobName, jobNames, jobStatusText, reportsFor, treeJobs } from "./jobs.ts";
@@ -38,7 +38,7 @@
   const snapshot = $derived(entry?.state ?? null);
   const row = $derived(chat ? store.session(chat) : undefined);
   const rowOf = (id: string) => store.session(id);
-  const nameOf = (sessionId: string): string | undefined => store.session(sessionId)?.name;
+  const nameOf = $derived(catalogNames(store.sessions));
   /** A chat the tab has not opened is subscribed for the card and let go on close, unless it is the one on screen. */
   $effect(() => {
     const id = chat;
