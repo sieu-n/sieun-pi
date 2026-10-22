@@ -65,8 +65,12 @@ const ASKED: readonly Template[] = ["signup_confirm", "password_reset"];
 /** Sends that should_send_marketing gates in packages/backend/app/lib/email.py: off for a user who turned marketing email off. */
 const MARKETING: readonly Template[] = ["connect_reminder", "trial_d7", "trial_d2", "trial_d0", "trial_followup"];
 const BAD_EVENTS = ["bounced", "complained"];
-/** QA sign-in accounts, the same pattern as QA_EMAIL in PR #225's packages/backend/app/lib/email.py; our own test sends are left out. */
-const QA_EMAIL = /^(sg-qa-[^@]*@slack\.green|qa\+[^@]*@example\.com|[^@]*\+sgqa[^@]*@.*)$/;
+/**
+ * QA sign-in accounts, the same pattern as QA_EMAIL in PR #225's packages/backend/app/lib/email.py, and Resend's test inboxes (delivered@,
+ * bounced@ and the rest at resend.dev, https://resend.com/docs/dashboard/emails/send-test-emails); our own test sends are left out. On 10-22
+ * the "sg-qa key check" and "slack-green breach check" mails to delivered@resend.dev read as 4 bad sends.
+ */
+const QA_EMAIL = /^(sg-qa-[^@]*@slack\.green|qa\+[^@]*@example\.com|[^@]*\+sgqa[^@]*@.*|[^@]*@resend\.dev)$/;
 
 export const templateOf = (subject: string): Template => SUBJECTS.find(([, pattern]) => pattern.test(subject))?.[0] ?? "other";
 

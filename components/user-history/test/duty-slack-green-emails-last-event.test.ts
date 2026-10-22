@@ -1,5 +1,6 @@
 // AI harness d9 read Slack green emails' bad_sends_24h as a lagging window on 10-22 because its precheck gave no lastEventAt, so it could not
-// tell a count of old sends from a fresh one. This checks each windowed count names its newest counted send.
+// tell a count of old sends from a fresh one. This checks each windowed count names its newest counted send. The same day, key and breach
+// check mails to Resend's delivered@resend.dev test inbox read as 4 bad sends, so the last test checks they are left out as QA sends.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { emailMetrics, type Send } from "../scripts/duties/slack-green-emails.ts";
@@ -24,4 +25,12 @@ test("a clean day gives no lastEventAt, and a failed source dates bad_sends_24h 
   assert.deepEqual(clean.lastEventAt, {});
   const broken = emailMetrics({ errors: ["Resend send log: HTTP 500"] }, NOW, undefined);
   assert.deepEqual(broken.lastEventAt, { bad_sends_24h: NOW });
+});
+
+test("Resend test inbox sends are QA sends, so they count in no metric", () => {
+  const sends = [send("5", "delivered@resend.dev", "other", 5), send("6", "delivered@resend.dev", "other", 1)];
+  const result = emailMetrics({ sends, recipients, optedOut: [], errors: [] }, NOW, undefined);
+  assert.equal(result.metrics.bad_sends_24h, 0);
+  assert.equal(result.metrics.repeat_sends_24h, 0);
+  assert.deepEqual(result.lastEventAt, {});
 });
