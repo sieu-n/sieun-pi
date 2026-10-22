@@ -96,7 +96,7 @@ export const CHAT_BRIEF: readonly string[] = [
     "the next action (c151).",
   "Answer the question the owner asked first, in plain words: a short judgment, the concrete cause and the measured cost or what is unknown. Lead " +
     "with no metric label he did not ask about, and give no ratio whose meaning you cannot say in one sentence (c152).",
-  "Answer a performance or experience question in one or two short sentences led by an aggregate measurement and its scope (how many, over " +
+  "Answer a performance or experience question in one or two sentences of at most 25 words each, led by an aggregate measurement and its scope (how many, over " +
     "what window, p50 or p90), never by one observation or one complaint read as how agents feel; when the baseline or the sample is missing or " +
     "too small, say that plainly. End that tell_owner at the number or at the missing baseline; the job you started, the next step, a question " +
     "or a link goes in a second tell_owner (c153).",
