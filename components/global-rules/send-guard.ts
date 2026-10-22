@@ -23,7 +23,7 @@ const TICKET_CLI_VERB = /^(?:reply|comment|respond|update|create|send)$/i;
 const URL_TEXT = /\b(?:https?|smtps?):\/\/[^\s'"`)<>\\]+/gi;
 const OWNER_OK = /\bOWNER_OK["']?\s*[=:]\s*["']?([\w-]+\/[\w-]+)/i;
 
-interface TargetRow { label: string; host?: string; path?: string; flags?: string; body?: string }
+interface TargetRow { label: string; host?: string; path?: string; flags?: string; body?: string; unless_path?: string; test_inbox?: string }
 
 /** The send targets, shared with kernel-guard.py so a run-time check needs no Node process. */
 const TARGETS = (JSON.parse(readFileSync(join(dirname(realpathSync(fileURLToPath(import.meta.url))), "send-targets.json"), "utf8")) as TargetRow[]).map((row) => ({
@@ -31,6 +31,8 @@ const TARGETS = (JSON.parse(readFileSync(join(dirname(realpathSync(fileURLToPath
 	host: row.host ? new RegExp(row.host) : null,
 	path: row.path ? new RegExp(row.path, row.flags) : null,
 	body: row.body ? new RegExp(row.body) : null,
+	unlessPath: row.unless_path ? new RegExp(row.unless_path) : null,
+	testInbox: row.test_inbox ?? null,
 }));
 
 /** Where a URL sends to, when a write to it is an email, a ticket reply or a message to someone outside. */
@@ -41,8 +43,53 @@ export function sendTarget(url: string, body = ""): string | null {
 	const host = rawHost.toLowerCase();
 	if (/^smtps?$/i.test(scheme)) return `SMTP server ${host}`;
 	if (/^(?:localhost|127\.\d+\.\d+\.\d+|0\.0\.0\.0|\[::1\])$/.test(host)) return null;
-	const row = TARGETS.find((t) => (!t.host || t.host.test(host)) && (!t.path || t.path.test(path)) && (!t.body || t.body.test(body)));
+	const row = TARGETS.find(
+		(t) =>
+			(!t.host || t.host.test(host)) &&
+			(!t.path || t.path.test(path)) &&
+			(!t.body || t.body.test(body)) &&
+			!t.unlessPath?.test(path) &&
+			!(t.testInbox && onlyTestInboxes(body, t.testInbox)),
+	);
 	return row ? row.label.replace("{host}", host) : null;
+}
+
+const RECIPIENT_FIELD = /(?<![\w$-])\\?["']?(?:to|cc|bcc)\\?["']?[^\S\n]*[:=](?!=)[^\S\n]*/gi;
+const QUOTED_VALUE = /^(\\?["'])(.*?)\1(?=\s*(?:[,})\]]|$))/s;
+const LIST_VALUE = /^\[([^\]]*)\](?=\s*(?:[,})\]]|$))/;
+const BARE_VALUE = /^(?!\\?["'[])[^\s,;})\]]+/;
+const ADDRESS = /[\w.+-]+@([\w-]+(?:\.[\w-]+)+)/g;
+const NO_RECIPIENT = /^(?:null|None|undefined)$/;
+
+/**
+ * True when `body` names at least one to, cc or bcc recipient and every one is a literal address at `domain`, a provider's test inbox,
+ * which owner rule c113 lets a real test send reach with no ask. A recipient field whose value is a name, an expression or any other
+ * address keeps the send a send. It reads JSON, a Python or JavaScript literal and httpie's `to=...`, and a batch's every message.
+ */
+export function onlyTestInboxes(body: string, domain: string): boolean {
+	let found = 0;
+	const literalAt = (text: string): boolean => {
+		const inner = text.trim().replace(/^\\?["']|\\?["']$/g, "");
+		if (/[{}$`"'\\]/.test(inner)) return false;
+		const addresses = [...inner.matchAll(ADDRESS)];
+		found += addresses.length;
+		return addresses.length > 0 && addresses.every((a) => a[1].toLowerCase() === domain);
+	};
+	RECIPIENT_FIELD.lastIndex = 0;
+	let field: RegExpExecArray | null;
+	while ((field = RECIPIENT_FIELD.exec(body)) !== null) {
+		const rest = body.slice(field.index + field[0].length);
+		const list = rest.match(LIST_VALUE);
+		const quoted = list ? null : rest.match(QUOTED_VALUE);
+		const bare = list || quoted ? null : rest.match(BARE_VALUE);
+		if (list) {
+			const items = list[1].split(",").filter((item) => item.trim());
+			if (!items.every(literalAt)) return false;
+		} else if (quoted) {
+			if (!literalAt(quoted[2])) return false;
+		} else if (!bare || (!NO_RECIPIENT.test(bare[0]) && !literalAt(bare[0]))) return false;
+	}
+	return found > 0;
 }
 
 function httpWrite(name: string, args: string[]): boolean {
@@ -167,13 +214,23 @@ function ghSend(args: string[], cwd: string): string | null {
 	return `\`gh ${sub} ${verb}\` posts on ${repo ?? "a repo it does not name"}, which the owner does not own`;
 }
 
+const JS_RESEND_SEND = /\.\s*emails\s*\.\s*send\s*\(/g;
+const JS_RESEND_SEND_ANY = /\.\s*(?:emails|batch)\s*\.\s*send\s*\(/g;
+const RESEND_EMAILS = "https://api.resend.com/emails";
+
+/** `sites` with each Resend SDK send in `call` blanked out when its arguments reach only Resend's test inboxes (c113). */
+function blankTestSends(sites: string, code: string, call: RegExp): string {
+	return sites.replace(call, (text: string, offset: number) => (sendTarget(RESEND_EMAILS, balancedSlice(code, offset + text.length - 1)) ? text : " ".repeat(text.length)));
+}
+
 /** Sends written in a JavaScript or TypeScript script: an HTTP write to a send target, nodemailer, or a mail or message SDK. */
 export function judgeSendJs(code: string): string | null {
 	const writes = /\bmethod\s*:\s*["'`](?:POST|PUT|PATCH)["'`]|\.\s*(?:post|put|patch)\s*\(/i.test(code);
 	const target = writes ? (code.match(URL_TEXT) ?? []).map((u) => sendTarget(u, code)).find(Boolean) : null;
 	if (target) return `this script writes to ${target}`;
 	if (/\bcreateTransport\s*\(/.test(code) && /\.\s*sendMail\s*\(/.test(code)) return "this script sends mail with nodemailer";
-	if (/\.\s*emails\s*\.\s*send\s*\(/.test(code) || (/@sendgrid\/mail|\bpostmark\b|\bmailgun/i.test(code) && /\.\s*(?:send|sendEmail\w*|create)\s*\(/.test(code))) return "this script sends mail through a mail SDK";
+	const sdkCall = /\bresend\b/i.test(code) ? JS_RESEND_SEND_ANY : JS_RESEND_SEND;
+	if (new RegExp(sdkCall.source).test(blankTestSends(code, code, sdkCall)) || (/@sendgrid\/mail|\bpostmark\b|\bmailgun/i.test(code) && /\.\s*(?:send|sendEmail\w*|create)\s*\(/.test(code))) return "this script sends mail through a mail SDK";
 	if (/\btwilio\b/i.test(code) && /\.\s*messages\s*\.\s*create\s*\(/.test(code)) return "this script sends a text message through Twilio";
 	return null;
 }
@@ -415,7 +472,8 @@ function callUrls(args: string, code: string): string[] {
 	return assigned?.[1].match(URL_TEXT) ?? [];
 }
 
-const PY_SDK_SEND = /\bEmails\s*\.\s*send\s*\(|\bSendGridAPIClient\b[\s\S]*\.\s*send\s*\(|\bpostmarker\b[\s\S]*\.\s*send\s*\(/;
+const PY_RESEND_SEND = /\b(?:Emails|Batch)\s*\.\s*send\s*\(/g;
+const PY_SDK_SEND = /\b(?:Emails|Batch)\s*\.\s*send\s*\(|\bSendGridAPIClient\b[\s\S]*\.\s*send\s*\(|\bpostmarker\b[\s\S]*\.\s*send\s*\(/;
 const PY_TWILIO_SEND = /\btwilio\b[\s\S]*\.\s*messages\s*\.\s*create\s*\(/;
 
 /** Sends written as Python in an ipython cell: HTTP writes to mail or ticket APIs, SMTP, the Gmail API client, and MCP send tools. */
@@ -434,7 +492,7 @@ function pythonSendList(code: string): { what: string; command: string }[] {
 	const sites = code.replace(new RegExp(`${PY_STRING.source}|#[^\n]*`, "g"), (text) => " ".repeat(text.length));
 	if (PY_SMTP.test(sites) && PY_SMTP_SEND.test(sites)) push("this code sends mail over SMTP", "smtplib send");
 	if (GMAIL_CLIENT_SEND.test(sites)) push("this code calls the Gmail API client's send", "gmail messages().send()");
-	if (PY_SDK_SEND.test(sites)) push("this code sends mail through a mail SDK", "mail SDK send");
+	if (PY_SDK_SEND.test(blankTestSends(sites, code, PY_RESEND_SEND))) push("this code sends mail through a mail SDK", "mail SDK send");
 	if (PY_TWILIO_SEND.test(sites)) push("this code sends a text message through Twilio", "twilio messages.create");
 	PY_WRITE_CALL.lastIndex = 0;
 	let w: RegExpExecArray | null;

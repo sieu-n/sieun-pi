@@ -14,6 +14,7 @@ import re
 import subprocess
 import sys
 import threading
+import weakref
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 CHECK = os.path.join(HERE, "send-check.ts")
@@ -51,6 +52,8 @@ WRITING = contextvars.ContextVar("global_rules_send_guard_writing", default=Fals
 # The OWNER_OK token of the HTTP request a server in this process is answering, from its x-owner-ok header (wrap_asgi).
 REQUEST_OK = contextvars.ContextVar("global_rules_send_guard_request_ok", default="")
 OWNER_OK_HEADER = b"x-owner-ok"
+# An HTTP/1 write request whose head went out before its body, by connection, until the write that completes its body.
+PENDING = weakref.WeakKeyDictionary()
 
 
 def load_targets() -> list:
@@ -62,26 +65,75 @@ def load_targets() -> list:
             re.compile(row["host"]) if row.get("host") else None,
             re.compile(row["path"], re.I if "i" in row.get("flags", "") else 0) if row.get("path") else None,
             re.compile(row["body"]) if row.get("body") else None,
+            re.compile(row["unless_path"]) if row.get("unless_path") else None,
+            row.get("test_inbox"),
         )
         for row in rows
     ]
 
 
 TARGETS = load_targets()
+RECIPIENT_FIELD = re.compile(r"(?<![\w$-])\\?[\"']?(?:to|cc|bcc)\\?[\"']?[^\S\n]*[:=](?!=)[^\S\n]*", re.I | re.A)
+QUOTED_VALUE = re.compile(r"(\\?[\"'])(.*?)\1(?=\s*(?:[,})\]]|$))", re.S)
+LIST_VALUE = re.compile(r"\[([^\]]*)\](?=\s*(?:[,})\]]|$))")
+BARE_VALUE = re.compile(r"(?!\\?[\"'\[])[^\s,;})\]]+")
+ADDRESS = re.compile(r"[\w.+-]+@([\w-]+(?:\.[\w-]+)+)", re.A)
+NO_RECIPIENT = re.compile(r"(?:null|None|undefined)")
+EDGE_QUOTE = re.compile(r"^\\?[\"']|\\?[\"']$")
+NOT_LITERAL = re.compile(r"[{}$`\"'\\]")
+
+
+def only_test_inboxes(body: str, domain: str) -> bool:
+    """send-guard.ts onlyTestInboxes: every to, cc and bcc recipient is a literal address at `domain`, a test inbox (c113)."""
+    found = 0
+
+    def literal_at(text: str) -> bool:
+        nonlocal found
+        inner = EDGE_QUOTE.sub("", text.strip())
+        if NOT_LITERAL.search(inner):
+            return False
+        domains = ADDRESS.findall(inner)
+        found += len(domains)
+        return bool(domains) and all(d.lower() == domain for d in domains)
+
+    for field in RECIPIENT_FIELD.finditer(body):
+        rest = body[field.end():]
+        listed = LIST_VALUE.match(rest)
+        quoted = None if listed else QUOTED_VALUE.match(rest)
+        bare = None if listed or quoted else BARE_VALUE.match(rest)
+        if listed:
+            if not all(literal_at(item) for item in listed.group(1).split(",") if item.strip()):
+                return False
+        elif quoted:
+            if not literal_at(quoted.group(2)):
+                return False
+        elif not bare or (not NO_RECIPIENT.fullmatch(bare.group(0)) and not literal_at(bare.group(0))):
+            return False
+    return found > 0
+
+
+def target_rows(url: str) -> "tuple[str, list]":
+    """The host and the send-targets.json rows a write to `url` may match, whatever its body."""
+    m = re.match(r"^(https?|smtps?)://([^/:?#]+)(?::\d+)?([^?#]*)", url, re.I)
+    if not m:
+        return "", []
+    scheme, host, path = m.group(1), m.group(2).lower(), m.group(3)
+    if scheme.lower().startswith("smtp"):
+        return host, [("SMTP server {host}", None, None)]
+    if LOCAL.match(host):
+        return host, []
+    return host, [
+        (label, body_re, test_inbox)
+        for label, host_re, path_re, body_re, unless_path, test_inbox in TARGETS
+        if (not host_re or host_re.search(host)) and (not path_re or path_re.search(path)) and not (unless_path and unless_path.search(path))
+    ]
 
 
 def send_target(url: str, body: str = "") -> "str | None":
     """send-guard.ts sendTarget over the same send-targets.json, so an HTTP check needs no Node process."""
-    m = re.match(r"^(https?|smtps?)://([^/:?#]+)(?::\d+)?([^?#]*)", url, re.I)
-    if not m:
-        return None
-    scheme, host, path = m.group(1), m.group(2).lower(), m.group(3)
-    if scheme.lower().startswith("smtp"):
-        return f"SMTP server {host}"
-    if LOCAL.match(host):
-        return None
-    for label, host_re, path_re, body_re in TARGETS:
-        if (not host_re or host_re.search(host)) and (not path_re or path_re.search(path)) and (not body_re or body_re.search(body)):
+    host, rows = target_rows(url)
+    for label, body_re, test_inbox in rows:
+        if (not body_re or body_re.search(body)) and not (test_inbox and only_test_inboxes(body, test_inbox)):
             return label.replace("{host}", host)
     return None
 
@@ -311,9 +363,29 @@ def on_shell(args, cwd, env, executable=None) -> None:
     judge({"kind": "shell", "text": expanded, "cwd": where, "repo": repo})
 
 
-def on_http_bytes(data) -> None:
-    """A socket or TLS write that starts an HTTP/1 request: its request line and Host header."""
-    if not isinstance(data, (bytes, bytearray, memoryview)) or bytes(data[:4]) not in (b"POST", b"PUT ", b"PATC", b"DELE"):
+def on_http_bytes(conn, data) -> None:
+    """A socket or TLS write that starts an HTTP/1 request: its request line, Host header and body. When the body comes in later writes, as
+    urllib3 and so requests and the Resend SDK send it, the request is judged at the write that completes its Content-Length."""
+    if not isinstance(data, (bytes, bytearray, memoryview)):
+        return
+    pending = PENDING.get(conn)
+    if pending is not None:
+        method, target, body, length = pending
+        if body is None:
+            raise SendRefused(target)
+        body += bytes(data)
+        if len(body) < length:
+            PENDING[conn] = (method, target, body, length)
+            return
+        del PENDING[conn]
+        try:
+            on_http(method, target, body.decode("utf-8", "replace"))
+        except SendRefused as refused:
+            # The server holds a request without its last bytes; nothing more goes out on this connection.
+            PENDING[conn] = (method, str(refused), None, length)
+            raise
+        return
+    if bytes(data[:4]) not in (b"POST", b"PUT ", b"PATC", b"DELE"):
         return
     head = bytes(data[:8192])
     m = re.match(rb"(POST|PUT|PATCH|DELETE) (\S+) HTTP/", head)
@@ -325,13 +397,19 @@ def on_http_bytes(data) -> None:
         if not host:
             return
         target = f"https://{host.group(1).decode('latin-1').strip()}{target}"
-    body = head.split(b"\r\n\r\n", 1)[1].decode("utf-8", "replace") if b"\r\n\r\n" in head else ""
-    on_http(m.group(1).decode(), target, body)
+    method = m.group(1).decode()
+    whole = bytes(data)
+    headers, _, body = whole.partition(b"\r\n\r\n")
+    length = re.search(rb"\r\nContent-Length: *(\d+)", headers, re.I)
+    if length and len(body) < int(length.group(1)) and method in WRITE and any(body_re or test_inbox for _, body_re, test_inbox in target_rows(target)[1]):
+        PENDING[conn] = (method, target, body, int(length.group(1)))
+        return
+    on_http(method, target, body.decode("utf-8", "replace"))
 
 
 def on_http(method: str, url: str, body: str = "") -> None:
     if method.upper() in WRITE and send_target(url, body) and not owned_by_skill():
-        judge({"kind": "http", "method": method.upper(), "url": url, "body": body[:4000]})
+        judge({"kind": "http", "method": method.upper(), "url": url, "body": body})
 
 
 def on_connect(address) -> None:
@@ -385,7 +463,7 @@ def guarded_write(original):
             return original(self, data, *args, **kwargs)
         token = WRITING.set(True)
         try:
-            on_http_bytes(data)
+            on_http_bytes(self, data)
             return original(self, data, *args, **kwargs)
         finally:
             WRITING.reset(token)

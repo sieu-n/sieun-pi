@@ -157,7 +157,9 @@ def local_post(host, path="/emails", method="POST"):
 class Recorder(BaseHTTPRequestHandler):
     def handle_any(self):
         length = int(self.headers.get("Content-Length") or 0)
-        self.rfile.read(length)
+        if len(self.rfile.read(length)) < length:
+            # A request cut off before its last bytes, as when the guard refuses at the write that completes the body, is never answered.
+            return
         self.server.hits.append([self.command, self.path, self.headers.get("Host", "")])
         self.send_response(200)
         self.send_header("Content-Length", "0")
@@ -317,6 +319,67 @@ class HttpBuiltAtRunTime(KernelGuardBase):
         self.assert_passed(self.run_cells(local_post("api.resend.com", "/emails/abc", "GET")))
         self.assert_passed(self.run_cells(local_post("127.0.0.1", "/api/email/send")))
         self.assertEqual([hit[0] for hit in self.server.hits], ["GET", "POST"])
+
+
+class ResendTestInboxes(KernelGuardBase):
+    """Resend key and domain management and sends to Resend's test inboxes pass (c113); any other recipient keeps the refusal."""
+
+    TEST = {"from": "noreply@slack.green", "to": ["delivered@resend.dev"], "cc": "bounced@resend.dev", "subject": "key rotation test", "html": "ok"}
+
+    def httpx_post(self, path, body):
+        return self.run_cells(f"import httpx\nhttpx.Client(transport=mock_transport()).post('https://api.resend.com{path}', json={body!r})\n")
+
+    def split_post(self, body):
+        """Cell code that writes the request head and then the body in a second write, as urllib3 and so the Resend SDK do."""
+        return textwrap.dedent(f"""
+            import http.client, json, os
+            body = json.dumps({body!r}).encode()
+            conn = http.client.HTTPConnection("127.0.0.1", int(os.environ["PORT"]), timeout=5)
+            conn.putrequest("POST", "/emails", skip_host=True)
+            conn.putheader("Host", "api.resend.com")
+            conn.putheader("Content-Length", str(len(body)))
+            conn.endheaders()
+            conn.send(body[:10])
+            conn.send(body[10:])
+            RESULT = conn.getresponse().status
+        """)
+
+    def test_api_key_and_domain_management_passes(self):
+        out = self.run_cells(
+            "import httpx\nc = httpx.Client(transport=mock_transport())\n"
+            "c.post('https://api.resend.com/api-keys', json={'name': 'slack-green-prod', 'permission': 'sending_access'})\n"
+            "c.delete('https://api.resend.com/api-keys/k1')\n"
+            "c.post('https://api.resend.com/domains', json={'name': 'mail.slack.green'})\n"
+            "c.patch('https://api.resend.com/domains/d1', json={'click_tracking': False})\n"
+            "c.post('https://api.resend.com/domains/d1/verify')\n"
+        )
+        self.assert_passed(out)
+        self.assertEqual([m for m, _ in out["seen"]], ["POST", "DELETE", "POST", "PATCH", "POST"])
+        self.assert_passed(self.run_cells(local_post("api.resend.com", "/api-keys")))
+        self.assertEqual(self.server.hits, [["POST", "/api-keys", "api.resend.com"]])
+
+    def test_a_send_to_resend_test_inboxes_passes(self):
+        out = self.httpx_post("/emails", self.TEST)
+        self.assert_passed(out)
+        self.assertEqual(out["seen"], [["POST", "https://api.resend.com/emails"]])
+        self.assert_passed(self.httpx_post("/emails/batch", [{"to": "delivered@resend.dev"}, {"to": ["complained@resend.dev"], "bcc": None}]))
+        self.assert_passed(self.run_cells(self.split_post(self.TEST)))
+        self.assertEqual(self.server.hits, [["POST", "/emails", "api.resend.com"]])
+
+    def test_a_send_with_any_other_recipient_is_refused(self):
+        for path, body in (
+            ("/emails", {**self.TEST, "to": ["bob@example.com"]}),
+            ("/emails", {**self.TEST, "to": ["delivered@resend.dev", "bob@example.com"]}),
+            ("/emails", {**self.TEST, "bcc": ["bob@example.com"]}),
+            ("/emails", {"from": "noreply@slack.green", "subject": "no recipient"}),
+            ("/emails/batch", [{"to": "delivered@resend.dev"}, {"to": "bob@example.com"}]),
+            ("/emails/batch", [{"to": "delivered@resend.dev", "html": "x" * 9000}, {"to": "bob@example.com"}]),
+        ):
+            out = self.httpx_post(path, body)
+            self.assert_refused(out, "api.resend.com")
+            self.assertEqual(out["seen"], [])
+        self.assert_refused(self.run_cells(self.split_post({**self.TEST, "cc": "bob@example.com"})))
+        self.assertEqual(self.server.hits, [])
 
 
 class ShellBuiltAtRunTime(KernelGuardBase):
@@ -712,7 +775,7 @@ from runner_helpers import mock_transport
 def relay(transport):
     async def handle(request):
         async with httpx.AsyncClient(transport=transport()) as client:
-            reply = await client.post("https://api.resend.com/emails", json={"to": "delivered@resend.dev"})
+            reply = await client.post("https://api.resend.com/emails", json={"to": "bob@example.com"})
         return JSONResponse({"status": reply.status_code})
     return handle
 

@@ -12,7 +12,13 @@
 	},
 	{
 		"label": "the mail API {host}",
-		"host": "(?:^|\\.)(?:api\\.sendgrid\\.com|api\\.(?:eu\\.)?mailgun\\.net|api\\.postmarkapp\\.com|api\\.resend\\.com|api\\.mailjet\\.com|api\\.brevo\\.com|api\\.sendinblue\\.com|api\\.sparkpost\\.com|mandrillapp\\.com|api\\.smtp2go\\.com|send\\.api\\.mailtrap\\.io)$"
+		"host": "(?:^|\\.)api\\.resend\\.com$",
+		"unless_path": "^/(?:api-keys|domains)(?:/|$)",
+		"test_inbox": "resend.dev"
+	},
+	{
+		"label": "the mail API {host}",
+		"host": "(?:^|\\.)(?:api\\.sendgrid\\.com|api\\.(?:eu\\.)?mailgun\\.net|api\\.postmarkapp\\.com|api\\.mailjet\\.com|api\\.brevo\\.com|api\\.sendinblue\\.com|api\\.sparkpost\\.com|mandrillapp\\.com|api\\.smtp2go\\.com|send\\.api\\.mailtrap\\.io)$"
 	},
 	{
 		"label": "Amazon SES",
