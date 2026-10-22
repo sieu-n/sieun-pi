@@ -9,16 +9,22 @@
   import { setLine } from "./agent-queue.ts";
   import { POOL_DEFAULTS } from "./pool-config.ts";
 
-  /** `remote` is another box's card on Settings > Hosts: its pool comes from the Hosts poll, and a change goes to that box through api/hosts/queue. */
-  let { remote }: { remote?: { name: string; pool: AgentQueuePool } } = $props();
+  /**
+   * `remote` is another box's card on Settings > Hosts: its pool comes from the Hosts poll, asked for at `readAt`, and a change goes to that box
+   * through api/hosts/queue.
+   */
+  let { remote }: { remote?: { name: string; pool: AgentQueuePool; readAt: number } } = $props();
   const uid = $props.id();
 
   const POLL_MS = 5000;
   type Field = "mac" | "tree" | "idle";
 
   let view = $state<AgentQueueView | null>(null);
-  /** The pool a remote write answered with, shown while `from` is still the prop's pool, so the next Hosts poll replaces it. */
-  let written = $state.raw<{ from: AgentQueuePool; pool: AgentQueuePool } | null>(null);
+  /**
+   * The pool a remote write answered with, shown until a Hosts reading asked for after the write started. On 10-22 a poll asked for before a write
+   * answered after it, and the limit showed its old value for one poll.
+   */
+  let written = $state.raw<{ at: number; pool: AgentQueuePool } | null>(null);
   let error = $state<string | null>(null);
   let saving = $state<AgentQueueInput["action"] | null>(null);
   let drafts = $state<Record<Field, number | null>>({ mac: null, tree: null, idle: null });
@@ -34,9 +40,9 @@
   async function write(input: AgentQueueInput): Promise<void> {
     if (!remote) { view = await api.setAgentQueue(input); return; }
     if (input.action === "idle") throw new Error("The idle unload time is set on the box itself.");
-    const from = remote.pool;
+    const at = Date.now();
     const host: HostQueueInput = { host: remote.name, ...input };
-    written = { from, pool: await api.setHostQueue(host) };
+    written = { at, pool: await api.setHostQueue(host) };
   }
 
   async function apply(input: AgentQueueInput): Promise<void> {
@@ -49,7 +55,7 @@
     finally { saving = null; }
   }
 
-  const current = $derived<AgentQueuePool | null>(remote ? (written?.from === remote.pool ? written.pool : remote.pool) : view?.pool ?? null);
+  const current = $derived<AgentQueuePool | null>(remote ? (written && remote.readAt < written.at ? written.pool : remote.pool) : view?.pool ?? null);
   const pool = $derived(current?.state === "read" ? current : null);
   const idleSaved = $derived(typeof view?.idleEvictionMinutes === "number" ? view.idleEvictionMinutes : null);
   const saved = $derived<Record<Field, number | null>>({ mac: pool?.workingMax ?? null, tree: pool?.treeWorkingMax ?? null, idle: idleSaved });

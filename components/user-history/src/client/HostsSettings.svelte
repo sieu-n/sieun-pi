@@ -14,11 +14,16 @@
   let cpuHistory = $state<Record<string, number[]>>({});
   /** Which cards the owner opened; every card starts closed on its one-line state, so five boxes fit on one screen. */
   let open = $state<Record<string, boolean>>({});
+  /** When the shown reading was asked for. A poll can answer after a later one (api/hosts took up to 2 s on 10-22), and its older reading is dropped. */
+  let readAt = $state(0);
   let timer: ReturnType<typeof setInterval> | undefined;
 
   async function load(): Promise<void> {
+    const asked = Date.now();
     try {
       const next = await api.hosts();
+      if (asked < readAt) return;
+      readAt = asked;
       view = next;
       const history: Record<string, number[]> = {};
       for (const host of next.hosts) if (host.state === "up") history[host.name] = [...cpuHistory[host.name] ?? [], host.machine.cpu.percent].slice(-HISTORY);
@@ -51,7 +56,7 @@
             {#if host.self}
               <AgentQueueSettings />
             {:else}
-              <AgentQueueSettings remote={{ name: host.name, pool: host.queue }} />
+              <AgentQueueSettings remote={{ name: host.name, pool: host.queue, readAt }} />
             {/if}
           {:else}
             <p class="note problem">The box did not answer at {host.address}. {host.error}</p>

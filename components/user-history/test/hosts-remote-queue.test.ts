@@ -19,7 +19,12 @@ const API_STUB = `
   window.__hostPosts = [];
   window.__selfPosts = [];
   export const api = {
-    hosts: async () => ({ hosts: [card("us-metal02", true, reading(30, true)), card("metal03", false, window.__remote)], registryError: null, checkedAt: Date.now(), lastHost: null, lastWorkspace: {} }),
+    hosts: async () => {
+      const remote = window.__remote;
+      window.__asked = (window.__asked ?? 0) + 1;
+      if (window.__hold) await window.__hold;
+      return { hosts: [card("us-metal02", true, reading(30, true)), card("metal03", false, remote)], registryError: null, checkedAt: Date.now(), lastHost: null, lastWorkspace: {} };
+    },
     agentQueue: async () => ({ pool: reading(30, true), idleEvictionMinutes: 30, history: [{ at: Date.now() - 3600000, finished: 3, medianWaitS: 5 }] }),
     setAgentQueue: async input => { window.__selfPosts.push(input); throw new Error("the self card must not write in this test"); },
     setHostQueue: async input => {
@@ -68,9 +73,15 @@ test("a remote Hosts card sets its queue limits through api/hosts/queue with the
 
   const macInput = `${remote} form.limit:nth-child(1) input`;
   assert.equal(await evaluate(`document.querySelector(${JSON.stringify(macInput)}).value`), "8");
+  // A Hosts poll asked for before the write answers after it with the old limit, as api/hosts did on 10-22, and the card keeps the written 12.
+  await evaluate(`window.__hold = new Promise(resolve => { window.__release = resolve; }); window.__askedBefore = window.__asked`);
+  await until(`window.__asked > window.__askedBefore`);
   await evaluate(`(() => { const input = document.querySelector(${JSON.stringify(macInput)}); input.value = "12"; input.dispatchEvent(new Event("input", { bubbles: true })); })()`);
   await evaluate(`document.querySelector(${JSON.stringify(`${remote} form.limit:nth-child(1) button`)}).click()`);
   await until(`window.__hostPosts.length === 1 && document.querySelector(${JSON.stringify(macInput)}).value === "12" && !document.querySelector(${JSON.stringify(macInput)}).disabled`);
+  await evaluate(`window.__hold = null; window.__release()`);
+  await evaluate(`new Promise(resolve => setTimeout(resolve, 300))`);
+  assert.equal(await evaluate(`document.querySelector(${JSON.stringify(macInput)}).value`), "12", "a poll asked for before the write does not bring the old limit back");
   await evaluate(`document.querySelector(${JSON.stringify(`${remote} button[role=switch]`)}).click()`);
   await until(`window.__hostPosts.length === 2 && document.querySelector(${JSON.stringify(`${remote} button[role=switch]`)}).getAttribute("aria-checked") === "false"`);
   assert.deepEqual(await evaluate(`window.__hostPosts`), [{ host: "metal03", action: "mac", value: 12 }, { host: "metal03", action: "queue", on: false }]);
