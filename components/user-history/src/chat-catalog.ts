@@ -1,4 +1,4 @@
-import { closeSync, existsSync, fstatSync, openSync, readFileSync, readSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, openSync, readFileSync, readSync, statSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { performance as loopPerformance } from "node:perf_hooks";
 import { basename, dirname, join } from "node:path";
@@ -12,7 +12,7 @@ import type { Chats } from "./chats.ts";
 import type { ChatReadState } from "./chat-read-state.ts";
 import type { ThreadOrigin, ThreadOrigins } from "./thread-origin.ts";
 import type { Wake } from "./wakes.ts";
-import { remotePath, type HostCatalogs } from "./host-catalogs.ts";
+import { mirrorPath, remotePath, type HostCatalogs } from "./host-catalogs.ts";
 import { SessionPeer } from "./session-peer.ts";
 import type { Host } from "./hosts.ts";
 import type { ChatAgent, ChatBriefState, CheckInState, ChildAgent, QueuePlace, TokenRate, ChildPulse, ChildUsage, Pulse, RunWait, SessionPulse, SessionRow, SessionsEvent, ThreadLabels, ThreadMessage, ThreadSchedule, Workspace } from "./shared/types.ts";
@@ -1450,6 +1450,21 @@ export class Catalog {
     const name = this.hostOf(summary.sessionId);
     const host = name ? this.hostEntry(name) : undefined;
     return host ? await this.hosts!.mirror(host, remotePath(host, summary.sessionFile)) : summary.sessionFile;
+  }
+
+  /**
+   * The copy this box already holds of another box's session file and its size, read without asking that box; undefined for a session on this
+   * box or one with no copy yet. A session file only grows, so a page before a place inside the copy reads the same from it. On 10-22 the
+   * owner's Show earlier on a Mac chat took 1.6 to 2.4 s in the seconds after each chat release, waiting on the relay behind the restart's
+   * opens, against about 20 ms to read the page from the copy.
+   */
+  heldCopy(summary: Pick<SessionSummary, "sessionId" | "sessionFile">): { file: string; size: number } | undefined {
+    const name = summary.sessionFile ? this.hostOf(summary.sessionId) : null;
+    const host = name ? this.hostEntry(name) : undefined;
+    if (!host || !summary.sessionFile) return undefined;
+    const file = mirrorPath(host, remotePath(host, summary.sessionFile));
+    const size = statSync(file, { throwIfNoEntry: false })?.size ?? 0;
+    return size > 0 ? { file, size } : undefined;
   }
 
   /**

@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { constants, type IntervalHistogram, monitorEventLoopDelay, performance, PerformanceObserver } from "node:perf_hooks";
 
@@ -11,6 +12,9 @@ export interface ChatLatency {
   readMs: number;
   /** That read's route under the chat's base path, with asset hashes cut. */
   read?: string;
+  /** The slowest GET that waited on another box (its relay or its daemon through the bridge), in ms, and its route; absent when none did. */
+  remoteMs?: number;
+  remote?: string;
   /** The event loop's longest delay since the last line, in ms (perf_hooks monitorEventLoopDelay). */
   loopMs: number;
   /** The longest garbage collection since the last line, in ms, and its kind; absent when none ran. */
@@ -41,6 +45,19 @@ export function noteGc(ms: number, kind: number): void {
 /** api/hosts waits on each other box's relay over the network, up to 35 s by design (hosts.ts), so its time says nothing about this box. */
 const REMOTE_READS = new Set(["api/hosts"]);
 let slowest = { ms: 0, route: "" };
+let slowestRemote = { ms: 0, route: "" };
+const reading = new AsyncLocalStorage<{ remote: boolean }>();
+
+/**
+ * Marks the request in progress as one that waited on another box, so its time goes to `remoteMs` and not to this box's `readMs`. The relay
+ * calls (hosts.ts), a copy brought up to date (host-catalogs.ts) and a remote daemon attach (chat-threads.ts) call it. On 10-22 d7 counted
+ * 15:01, 15:16 and 15:27Z as us-metal02 CPU minutes from a Mac chat's older page that waited 1.6 to 2.4 s on the Mac relay, and 16:29 and
+ * 16:30Z from a Prompt view that read a 5 MB capture through it (1.2 to 16.6 s in three reads on 10-22 with the box at its usual load).
+ */
+export function waitedOnHost(): void {
+  const read = reading.getStore();
+  if (read) read.remote = true;
+}
 let loop: IntervalHistogram | null = null;
 
 /** The route of a request path under `base`, its query dropped and a content hash such as app.3f9c1a.js cut to app.js. */
@@ -56,21 +73,26 @@ export function timeRead(req: IncomingMessage, res: ServerResponse, base: string
     new PerformanceObserver(list => { for (const entry of list.getEntries()) noteGc(entry.duration, gcKindOf(entry)); })
       .observe({ entryTypes: ["gc"] });
   }
+  const read = { remote: false };
+  reading.enterWith(read);
   if (req.method !== "GET") return;
   const started = performance.now();
   res.once("finish", () => {
     const route = readRoute(req.url ?? "/", base);
     const ms = Math.round(performance.now() - started);
-    if (!REMOTE_READS.has(route) && ms > slowest.ms) slowest = { ms, route };
+    if (read.remote) { if (ms > slowestRemote.ms) slowestRemote = { ms, route }; }
+    else if (!REMOTE_READS.has(route) && ms > slowest.ms) slowest = { ms, route };
   });
 }
 
 /** The latency since the last take, then starts a new window; undefined before the server timed its first request. */
 export function takeLatency(): ChatLatency | undefined {
   if (!loop) return undefined;
-  const taken: ChatLatency = { readMs: slowest.ms, ...slowest.route ? { read: slowest.route } : {}, loopMs: Math.round(loop.max / 1e6),
+  const taken: ChatLatency = { readMs: slowest.ms, ...slowest.route ? { read: slowest.route } : {},
+    ...slowestRemote.ms ? { remoteMs: slowestRemote.ms, remote: slowestRemote.route } : {}, loopMs: Math.round(loop.max / 1e6),
     ...longestGc ? { gcMs: Math.round(longestGc.ms), gc: longestGc.kind } : {} };
   slowest = { ms: 0, route: "" };
+  slowestRemote = { ms: 0, route: "" };
   longestGc = null;
   loop.reset();
   return taken;

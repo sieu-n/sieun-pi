@@ -2,6 +2,7 @@ import { statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { DaemonClient, type SessionSummary } from "prime-agent";
+import { waitedOnHost } from "./chat-latency.ts";
 import { mirrorFile, pruneMirror } from "./host-mirror.ts";
 import { HostReach, seenAgo } from "./host-reach.ts";
 import { HostBridge, selfHost, type Host, type HostsRegistry } from "./hosts.ts";
@@ -210,6 +211,7 @@ export class HostCatalogs {
     const pending = this.mirrors.get(key) ?? (offline || Date.now() - (this.mirroredAt.get(key) ?? 0) < MIRROR_FRESH_MS ? undefined : this.read(host, path, key, local));
     const peer = this.remotes.get(host.name)?.peer;
     const down = offline ?? this.unanswered.get(host.name) ?? (peer?.state === "down" ? peer.error ?? `${host.name} did not answer` : undefined);
+    if (pending && !down) waitedOnHost();
     if (!down) return pending ?? Promise.resolve(local);
     pending?.catch(() => {});
     // A read that got no answer leaves an empty file where the copy goes (mirrorFile opens it first), so only bytes count as a copy.

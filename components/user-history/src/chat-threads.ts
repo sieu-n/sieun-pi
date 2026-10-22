@@ -4,6 +4,7 @@ import { stat } from "node:fs/promises";
 import { DaemonAgentConnection, DaemonClient, getAgentDir, SessionManager, type SessionEntry, type SessionSummary } from "prime-agent";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { type Catalog, parseSummaries } from "./chat-catalog.ts";
+import { waitedOnHost } from "./chat-latency.ts";
 import type { SubagentDelete } from "./chat-sources.ts";
 import { childrenStirred, Dormancy, type IdleDetach, showsWork, unsilent } from "./chat-dormancy.ts";
 import "./daemon-snapshot-count.ts";
@@ -745,6 +746,7 @@ export class ThreadHub {
 
   /** `host` names the box for a session the catalog does not list yet (just created or resumed); else the catalog's row says which box runs it. */
   private async attach(activeSessionId: string, host: string | null): Promise<DaemonAgentConnection> {
+    if (host) waitedOnHost();
     const client = new DaemonClient(host ? this.catalog.socketPathFor(host) : this.socketPath);
     try {
       await client.connect(3000);
@@ -802,8 +804,8 @@ export class ThreadHub {
    * for a 171 MB transcript as for a small one. `older` is the cursor of the entries before them. A file at another version is read whole
    * through SessionManager, which migrates it: those are the files from before version 3, 3,432 files and 91 MB in all on 10-18.
    */
-  private async entries(summary: SessionSummary, from: FilePlace | null, limits: { messages: number; bytes: number }): Promise<{ entries: SessionEntry[]; older: string | undefined; whole: boolean }> {
-    const file = await this.sessionFile(summary);
+  private async entries(summary: SessionSummary, from: FilePlace | null, limits: { messages: number; bytes: number }, held?: string): Promise<{ entries: SessionEntry[]; older: string | undefined; whole: boolean }> {
+    const file = held ?? await this.sessionFile(summary);
     const page = await readBranchPage(file, from, limits);
     if (!page) return { entries: this.linked(from ? [] : this.branch(summary, file), file), older: undefined, whole: true };
     if (page.sessionId !== summary.sessionId) throw new ThreadError(409, "The saved thread file changed. Refresh the list.");
@@ -879,11 +881,17 @@ export class ThreadHub {
       }
     }
     const summary = await this.summary(id);
+    // Another box's session pages from the copy this box holds when the place is in it, without waiting on that box's relay (heldCopy).
+    const held = this.catalog.heldCopy(summary);
     let from: FilePlace;
-    if (cursor.kind === "file") from = { end: cursor.end, id: cursor.id };
-    else {
-      const file = await this.sessionFile(summary);
-      const found = await findMessage(file, cursor.key.at, cursor.key.n);
+    let file: string | undefined;
+    if (cursor.kind === "file") {
+      from = { end: cursor.end, id: cursor.id };
+      if (held && held.size >= cursor.end) file = held.file;
+    } else {
+      const kept = held && await findMessage(held.file, cursor.key.at, cursor.key.n);
+      file = kept && held ? held.file : await this.sessionFile(summary);
+      const found = kept || await findMessage(file, cursor.key.at, cursor.key.n);
       if (found === undefined) {
         const messages = this.projector.messages(historyMessages(this.branch(summary, file)));
         const index = keyIndex(messages, cursor.key);
@@ -894,7 +902,7 @@ export class ThreadHub {
       if (!found.before) return { messages: [] };
       from = found.before;
     }
-    const { entries, older } = await this.entries(summary, from, { messages: PAGE_MESSAGES, bytes: TAIL_BYTES });
+    const { entries, older } = await this.entries(summary, from, { messages: PAGE_MESSAGES, bytes: TAIL_BYTES }, file);
     return { messages: this.projector.messages(historyMessages(entries)), ...(older ? { older } : {}) };
   }
 
@@ -1925,8 +1933,13 @@ export class ThreadHub {
   /** The thread's own connection, or any live one so the new-chat screen and saved threads can read the catalog and commands. */
   private async withConnection<T>(id: string | null, use: (connection: DaemonAgentConnection, thread: Thread | null) => Promise<T>): Promise<T> {
     const thread = id ? await this.open(id) : null;
-    const live = thread?.live ?? [...this.threads.values()].find(candidate => candidate.live)?.live ?? null;
-    if (live) return use(live.connection, thread?.live ? thread : null);
+    const entry = id && thread?.live ? ([id, thread] as const) : [...this.threads].find(([, candidate]) => candidate.live);
+    const live = entry?.[1].live ?? null;
+    if (live) {
+      // A thread on another box answers through its bridge, so this read waits on that box (chat-latency.ts waitedOnHost).
+      if (this.catalog.hostOf(entry![0])) waitedOnHost();
+      return use(live.connection, thread?.live ? thread : null);
+    }
     const first = (await this.liveSummaries())[0];
     if (!first?.activeSessionId) throw new ThreadError(409, "Open a live thread once so models and commands can load.");
     const connection = await this.attach(first.activeSessionId, this.catalog.hostOf(first.sessionId));

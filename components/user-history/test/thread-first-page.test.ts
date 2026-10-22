@@ -44,7 +44,7 @@ const snapshotOf = (event: ThreadEvent | undefined) => event?.type === "snapshot
 
 test("first page: a new feed gets the newest messages within FIRST_PAGE_BYTES with work-row content cut to previews, then the full page", async () => {
   const file = await sessionFile();
-  const catalog = { summary: async (id: string) => ({ sessionId: id, sessionFile: file, cwd: "/", lifecycle: "saved", messageCount: ROUNDS * 4 }), hostOf: () => null } as unknown as Catalog;
+  const catalog = { summary: async (id: string) => ({ sessionId: id, sessionFile: file, cwd: "/", lifecycle: "saved", messageCount: ROUNDS * 4 }), hostOf: () => null, heldCopy: () => undefined } as unknown as Catalog;
   const hub = new ThreadHub("/nonexistent.sock", catalog, () => ({ provider: null, modelId: null, thinkingLevel: null }));
   const events: ThreadEvent[] = [];
   await hub.subscribe(ID, event => events.push(event));

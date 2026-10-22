@@ -45,7 +45,7 @@ test("thread open: the first frame holds the newest page and older pages read on
   const file = await sessionFile();
   t.after(() => rm(dirname(file), { recursive: true, force: true }));
   const size = readFileSync(file).length;
-  const catalog = { summary: async (id: string) => ({ sessionId: id, sessionFile: file, cwd: "/", lifecycle: "saved", messageCount: MESSAGES }), hostOf: () => null } as unknown as Catalog;
+  const catalog = { summary: async (id: string) => ({ sessionId: id, sessionFile: file, cwd: "/", lifecycle: "saved", messageCount: MESSAGES }), hostOf: () => null, heldCopy: () => undefined } as unknown as Catalog;
   const hub = new ThreadHub("/nonexistent.sock", catalog, () => ({ provider: null, modelId: null, thinkingLevel: null }));
   const events: ThreadEvent[] = [];
   const before = bytesRead();

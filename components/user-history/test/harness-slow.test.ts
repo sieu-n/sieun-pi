@@ -5,7 +5,7 @@ import { test } from "node:test";
 import type { LinuxUsable } from "../../prime-relay/host-stats.ts";
 import { measure } from "../scripts/duties/whole-system.ts";
 import { createServer } from "node:http";
-import { readRoute, takeLatency, timeRead } from "../src/chat-latency.ts";
+import { readRoute, takeLatency, timeRead, waitedOnHost } from "../src/chat-latency.ts";
 import { chatLatency, harnessSlow, waitedOnCpu, workerMisses } from "../src/harness-slow.ts";
 import type { UsableReading, WatchLine } from "../src/mac-usable-watch.ts";
 
@@ -66,4 +66,28 @@ test("the chat times each GET it answers and keeps the slowest, with the event l
     assert.ok(taken!.loopMs >= 0);
     assert.equal(takeLatency()?.readMs, 0, "a new window starts empty");
   } finally { server.close(); }
+});
+
+test("a GET that waited on another box is timed apart from this box's reads, so d7 does not count a slow relay as this box's CPU", async () => {
+  // As the 10-22 15:01Z older page of a Mac chat: the handler awaits, then reads through the Mac relay, which marks the request.
+  const server = createServer((req, res) => {
+    timeRead(req, res, "/cap/");
+    const remote = req.url?.includes("older");
+    void Promise.resolve().then(() => { if (remote) waitedOnHost(); }).then(() => setTimeout(() => res.end("ok"), remote ? 150 : 30));
+  });
+  await new Promise<void>(done => server.listen(0, "127.0.0.1", done));
+  const port = (server.address() as { port: number }).port;
+  try {
+    takeLatency();
+    await Promise.all(["/cap/api/threads/a/older?cursor=m1.0", "/cap/api/labels"].map(path => fetch(`http://127.0.0.1:${port}${path}`).then(res => res.text())));
+    const taken = takeLatency()!;
+    assert.equal(taken.read, "api/labels", "the local read stays this box's");
+    assert.ok(taken.readMs >= 25 && taken.readMs < 140, JSON.stringify(taken));
+    assert.equal(taken.remote, "api/threads/a/older");
+    assert.ok(taken.remoteMs! >= 140, JSON.stringify(taken));
+    assert.equal(takeLatency()?.remoteMs, undefined, "a new window starts empty");
+  } finally { server.close(); }
+  const own = { box: "us-metal02", own: true, from: 0, to: 60_000, misses: [], faults: [] };
+  assert.deepEqual(harnessSlow({ ...own, latency: { readMs: 60, read: "api/agent/siblings", remoteMs: 2105, remote: "api/threads/a/older", loopMs: 279 } }), [],
+    "a read that waited 2.1 s on the Mac relay does not make a busy us-metal02 minute dirty");
 });

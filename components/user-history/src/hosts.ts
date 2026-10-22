@@ -5,6 +5,7 @@ import { homedir, hostname as osHostname } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { DELTA_HEADER, decodeLineDeltas } from "../../prime-relay/line-delta.ts";
 import type { AgentQueueKey } from "./chat-pool.ts";
+import { waitedOnHost } from "./chat-latency.ts";
 
 /**
  * The hosts registry, ~/.config/sieun-pi/hosts.json: every box sieun-pi drives, its relay and the services it holds.
@@ -192,6 +193,7 @@ function agentFor(host: Host): Agent {
 }
 
 async function relayRequest(host: Host, path: string, headers: Record<string, string> = {}, method = "GET", timeoutMs = 15_000): Promise<RelayResponse> {
+  waitedOnHost();
   const token = await hostToken(host);
   return await new Promise((resolve, reject) => {
     const request = httpRequest({ host: host.address, port: host.relayPort, path, method, agent: agentFor(host), headers: { ...headers, authorization: `Bearer ${token}` }, timeout: timeoutMs }, response => {
