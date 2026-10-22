@@ -11,11 +11,14 @@ import { readSession, readSessionFile, type RunState, type Scenario, type Sessio
  * owner, and never named one from a board step alone. The criteria live in the run folder's criteria.md.
  */
 export const TASK = "who's on getting the 5180 designs into 5174 and the real app? i want to know who actually has it right now. check and tell me";
-const THREADS = /\b(frontend bro|mac[- ]management|ops guy|launch main bro|gpt sol|seo guy|ci and repoops|crawler vp|vent|metal-management|api portal vp|AI harness developer environment VP)\b/i;
+const THREAD_NAMES = "frontend bro|mac[- ]management|ops guy|launch main bro|gpt sol|seo guy|ci and repoops|crawler vp|vent|metal-management|api portal vp|AI harness developer environment VP";
+const THREADS = new RegExp(`\\b(${THREAD_NAMES})\\b`, "i");
 const OWNS = /\b(owns?|owner|is on it|is on (?:the|this|that|getting|moving)|responsible|assigned|in charge|handles?|handling|has (?:it|this|that|the))\b/i;
+/** A clause that answers "who's on it" with the thread alone: "It's mac-management", "that's frontend bro" (run3 on 10-22 named its owner so). */
+const NAMED = new RegExp(`^(?:it['’]?s|it is|that['’]?s|that is)\\s+(?:${THREAD_NAMES})\\b`, "i");
 const NEGATED = /\b(not|n't|no longer|never|nobody|no one|unconfirmed)\b/i;
 const INTEGRATION = /\b(5174|real app|product|integrat\w*|move|moving|wir\w+|port\w*)\b/i;
-const FROM_OWNER = /\b(your (?:own |original )?(?:message|words|request|ask|note)|you (?:asked|wrote|said|told|gave|assigned|put)|quot\w+|original (?:request|ask|message)|verbatim)\b/i;
+const FROM_OWNER = /\b(your (?:own |original |[\w:./-]*\d[\w:./-]* )?(?:message|words|request|ask|note)|you (?:asked|wrote|said|told|gave|assigned|put)|quot\w+|original (?:request|ask|message)|verbatim)\b/i;
 const UNSURE = /\b(not (?:yet )?confirmed|unconfirmed|can(?:'|no)?t confirm|could not confirm|couldn't confirm|no (?:one|thread) has quoted|asked \S+(?: \S+)? to quote|waiting (?:on|for) (?:its|their|a) (?:reply|answer|quote))\b/i;
 const FROM_BOARD = /\b(board|step|p\d{1,4}|parked|blocked|stale)\b/i;
 const LOOK_SENT = /quote|original (?:request|ask|message)|(?:owner|sieun|his|the owner's)(?: own)? (?:words|message|request|ask)|exact (?:words|message)|verbatim|who (?:gave|assigned)|assigned (?:you|it|this)|did (?:he|the owner) (?:ask|give|assign)/i;
@@ -31,7 +34,7 @@ const toldText = (input: string): string => { try { const text = (JSON.parse(inp
 
 /** A clause of a tell_owner that names a thread as the one who has the work, and not as the one who does not. */
 export function claims(text: string): string[] {
-  return clauses(text).filter(line => THREADS.test(line) && OWNS.test(line) && !NEGATED.test(line));
+  return clauses(text).filter(line => THREADS.test(line) && (OWNS.test(line) || NAMED.test(line)) && !NEGATED.test(line));
 }
 
 /** The session ids of the chat and every job collect saw under it: its subagent files, and root jobs from the agents snapshots. */

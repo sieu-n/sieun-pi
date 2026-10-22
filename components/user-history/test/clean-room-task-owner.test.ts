@@ -33,6 +33,16 @@ test("task-owner: an owner named from his quoted request passes, one named from 
 
   assert.deepEqual(claims("mac-management has the integration, not frontend bro."), ["mac-management has the integration"]);
   assert.deepEqual(claims("frontend bro is not the owner of the move."), []);
+  assert.deepEqual(claims("It's not mac-management."), []);
+
+  // run3 on 10-22 named its owner as "It's mac-management" with the owner's 10-19 message as its source, and the judge found no claim in it.
+  const RUN3 = "It's mac-management, through its job \"5180 into the real app\" on p34, from your 10-19 message there (\"I APPROVE EVERYTHING, YOU TAKE OWNERSHIP, and ship it\"), and that job restarted at 10:57 KST today with one builder per page. None of the eight pages is in the app yet, only shared UI pieces, which is why 5174 still looks old, but its builders' unsaved edits in the repo were still changing at 11:22 KST, so it looks like they're working.";
+  assert.deepEqual(claims(RUN3), ["It's mac-management"]);
+  const read = { type: "message", timestamp: at(1), message: { role: "assistant", content: [{ type: "toolCall", id: "r1", name: "ipython",
+    arguments: { code: "r=await bash('rg -l mvfdi289 /home/sieun/.prime/agent/sessions/01a15427-145f-751d-ba15-d27b6c30f65f.jsonl /home/sieun/.prime/agent/browser-chat/owner-messages')" } }] } };
+  const quoted = await run("8", [read, tell(3, RUN3)]);
+  assert.equal(quoted.verdict, "pass", [quoted.line("a"), quoted.line("b"), quoted.line("c")].join("\n"));
+  assert.match(quoted.line("a"), /first ownership claim at .*It's mac-management/);
 
   const good = await run("1", [ask(3, "01a15427-145f-751d-ba15-d27b6c30f65f", "the owner asks who has moving 5180 into 5174. can you quote his original request that assigned it?"),
     tell(9, "mac-management owns moving the 5180 designs into 5174 and the real app. It quoted your message from 10-19 that gave it the integration; frontend bro owns how 5180 looks.")]);
