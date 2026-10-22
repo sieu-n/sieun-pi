@@ -817,16 +817,47 @@ export class Chats {
 
   /**
    * Why a job that ended its turn is still at work, or undefined when nothing under it works: a board.wake of its session or of one under it, a
-   * subagent at work under it (`jobLive`), or the daemon showing its session or one under it in a turn, a tool call or a background bash. A job
-   * that ends its turn while its subagents work waits for their replies: metal-management 10-18, crawler lanes to box sent "Step landed: ..." at
-   * 06:53:20Z and ended its turn waiting on crawl-deploy and crawl-verify, and the cleanup deleted it at 06:53:57Z and cut both mid tool call.
+   * subagent at work under it (`jobLive`), a turn it is owed (`jobHeld`), or the daemon showing its session or one under it in a turn, a tool
+   * call or a background bash. A job that ends its turn while its subagents work waits for their replies: metal-management 10-18, crawler lanes
+   * to box sent "Step landed: ..." at 06:53:20Z and ended its turn waiting on crawl-deploy and crawl-verify, and the cleanup deleted it at
+   * 06:53:57Z and cut both mid tool call.
    */
   private async jobBusy(id: string, child: ChildAgent, sessionId: string | undefined): Promise<string | undefined> {
     if (sessionId !== undefined && await this.source.waking?.(sessionId)) return "it waits on a board.wake";
     if (await this.jobLive(id, sessionId !== undefined ? { ...child, sessionId } : child)) return "a session under it waits on a board.wake or a subagent under it works";
     if (sessionId === undefined) return undefined;
+    const held = await this.jobHeld(child, sessionId);
+    if (held !== undefined) return held;
     if (await this.threads.sessionActive(sessionId)) return "its session runs a tool call or a background bash";
     for (const session of this.treeBelow(sessionId)) if (await this.threads.sessionActive(session)) return "a subagent under it runs a turn, a tool call or a background bash";
+    return undefined;
+  }
+
+  /**
+   * Why a quiet job is owed a turn that nothing shows as work yet, or undefined: a message for it or a session under it that went through its
+   * parent after its last activity (`relayed`), a cut turn the resume pass gives back (`held`), a tree pi-pool holds until its pool time, or a
+   * quota park Prime resumes by itself. mac-management 10-21 and 10-22: the cleanup ended metal agent queue at 20:50Z and 01:47Z after its
+   * wakes went through the parked chat at 20:16Z and 01:16Z, and 5180 into the real app at 21:50Z, seconds after its wake went the same way,
+   * and at 01:57Z while pi-pool held its tree until 02:01:30Z. Each delete cut its subagents, and the chat's relays then met "No child matches".
+   */
+  private async jobHeld(child: ChildAgent, sessionId: string): Promise<string | undefined> {
+    const now = this.now();
+    const sessions = [sessionId, ...this.treeBelow(sessionId)];
+    const rows = [...this.subagents.values()].flat();
+    const ranAt = (session: string): number => session === sessionId ? child.lastActivityAt ?? 0 : rows.find(row => row.sessionId === session)?.lastActivityAt ?? 0;
+    const turns = await this.source.held?.(now).catch(() => undefined);
+    const pool = this.heldJobs.sessions();
+    for (const session of sessions) {
+      const whose = session === sessionId ? "its" : "a subagent's";
+      const relayedAt = await this.source.relayed?.at(session).catch(() => undefined);
+      if (relayedAt !== undefined && relayedAt > ranAt(session))
+        return `a message for ${session === sessionId ? "it" : "a subagent under it"} went through its parent at ${new Date(relayedAt).toISOString().slice(11, 19)}Z, and that session has not run since`;
+      if (turns?.sessions.has(session)) return `the resume pass gives back ${whose} cut turn`;
+      if (pool.has(session)) return `pi-pool holds ${whose} tree until its pool time`;
+      const file = await this.summary(session).then(summary => summary?.sessionFile, () => undefined);
+      const parked = file ? await readQuotaPark(file, now).catch(() => null) : null;
+      if (parked !== null) return `Prime parks ${whose} turn on its provider quota until ${new Date(parked).toISOString().slice(11, 16)}Z`;
+    }
     return undefined;
   }
 

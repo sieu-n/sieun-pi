@@ -69,6 +69,8 @@ export interface AgentOutboxDeps {
   resident?: (session: string) => boolean | null;
   /** Whether that box is up (src/host-reach.ts); a message to a session on a box that reads offline waits with no try until it is back. */
   reach?: (host: string) => Promise<PeerReach>;
+  /** Records a message sent to a stopped subagent through its parent (`RelayRecord`), so the job cleanup keeps the subagent until it runs. */
+  relayed?: (session: string, at: number) => Promise<void>;
   /** The record that stopped the target (`stopRecords`), or null. */
   stopped?: (session: string, file: string | null) => Promise<Stop | null>;
   /**
@@ -318,6 +320,7 @@ export class AgentOutbox {
         const child = stopped ?? await this.subagent(session);
         if (child) {
           await this.deliver(child.parents[0]!, relayNote(child, text), entry.root);
+          await deps.relayed?.(session, this.now()).catch(error => deps.log(`relay: ${session.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`));
           deps.log(`relay: ${session.slice(0, 8)} (${child.name}) is stopped; its message goes through its parent ${child.parents[0]!.slice(0, 8)}`);
           return;
         }

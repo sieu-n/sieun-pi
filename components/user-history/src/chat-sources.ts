@@ -177,6 +177,27 @@ export function deletedJobRecord(path: string): DeletedJobRecord {
 }
 
 /**
+ * When the service last sent a message for a stopped subagent through its parent (`AgentOutbox`, `relayNote`), by the subagent's session id.
+ * The relay leaves no wake file, and the subagent runs only once its parent passes the message on, so until then it is still owed that turn.
+ * mac-management 10-22 01:16:36Z: the 30 min wake of metal agent queue went to the chat, which Prime had parked on its quota until 02:00Z,
+ * and the cleanup ended the job at 01:47Z as quiet with no wake.
+ */
+export interface RelayRecord {
+  add(session: string, at: number): Promise<void>;
+  /** The time of the session's last relay, or undefined when none is on record. */
+  at(session: string): Promise<number | undefined>;
+}
+/** `<data dir>/relayed.json`: `{ [session id]: last relay time }`, read without the lock since every write replaces it whole by rename. */
+export function relayRecord(path: string): RelayRecord {
+  const file: JsonFile<Record<string, number>> = { path, label: "Relay record", initial: () => ({}), parse: value => typeof value === "object" && value !== null
+    ? Object.fromEntries(Object.entries(value).filter((entry): entry is [string, number] => typeof entry[1] === "number")) : {} };
+  return {
+    async add(session, at) { await transactJsonFile(file, state => { state[session] = Math.max(at, state[session] ?? at); }); },
+    async at(session) { return (await snapshotJsonFile(file))[session]; },
+  };
+}
+
+/**
  * The jobs the failed-turn check (`Chats.wakeJob`) found fine, each with the activity stamp it had then, on disk so a service restart does not
  * look at them again. The check kept them in memory only, so after each restart it opened every job of the last 24 h with its file page and
  * attach: 384 opens in the first minute after the 21:33:56Z restart on 10-18, while the chat's main thread was 74 to 97% busy for 4 minutes.
@@ -348,6 +369,8 @@ export interface CheckInSource {
   deletedLeftovers?: (chat: string) => Promise<Leftovers>;
   /** Whether a session holds a pending `board.wake` (src/wakes.ts); the cleanup keeps such a job, since its wake would reopen it. */
   waking?: (session: string) => Promise<boolean>;
+  /** The messages sent to stopped subagents through their parents (`<data dir>/relayed.json`); the cleanup keeps a job owed one. Absent: none. */
+  relayed?: RelayRecord;
   /** The Prime update restoring this box's daemon now (`primeUpdateRunning`), or null; the idle-root sweep archives nothing while one runs. Absent: none. */
   updating?: () => Promise<PrimeUpdate | null>;
   /** The board.wakes the service still owes at a time (`pendingWakes`); the check-in counts a job asleep on one as working. Absent: none. */

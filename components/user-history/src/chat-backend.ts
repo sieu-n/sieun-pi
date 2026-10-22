@@ -25,7 +25,7 @@ import { relayWatch } from "./hosts.ts";
 import { ARTIFACTS, dryLeftoverSource, hostLeftovers, leftoverSource, sshLeftovers } from "./job-leftovers.ts";
 import { ALERT_TRIAGE_DUTY, chatPoolPriority, dutyJobIds, dutyJobPriority, PoolPriorities } from "./chat-pool-priority.ts";
 import { agentQueue, type AgentQueue, type IdleEviction } from "./chat-agent-queue.ts";
-import { briefCheckRecord, deletedJobRecord, heldNoticeRecord, jobRegistry, checkRecord, quietJobRecord } from "./chat-sources.ts";
+import { briefCheckRecord, deletedJobRecord, heldNoticeRecord, jobRegistry, checkRecord, quietJobRecord, relayRecord } from "./chat-sources.ts";
 import { jobResumes } from "./job-resume.ts";
 import { cutJobs, interruptedRuns } from "./chat-resume.ts";
 import { resumesNow, tailLines } from "./cut-end.ts";
@@ -234,6 +234,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   // Only the serve that owns the live chats writes the turn queues' lead lists: each box gets the chats it runs, this one locally, the others
   // through their relays.
   const lead = ownChatsOnly ? null : leadWriter({ hostOf: id => catalog.hostOf(id), remotes: () => catalog.remoteHosts().map(({ host }) => host), local: leadSessions, log: dutyLog });
+  const relays = relayRecord(join(dataDir, "relayed.json"));
   chats = new Chats(index, threads, id => catalog.summary(id), extensionBuild(), loadRecord(join(dataDir, "extension-loads.json")),
     { board: id => boards.read(id), boardView: id => boards.view(id), rows: () => catalog.rows(), memory: checkInRecord(join(dataDir, "check-ins.json")), registry,
       correctionChecks: checkRecord(join(dataDir, "correction-checks.json")),
@@ -241,7 +242,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       heldNotices: heldNoticeRecord(join(dataDir, "held-notices.json")), cancels: jobCancelRecord(join(dataDir, JOB_CANCELS_FILE)),
       leftovers: (dir, session) => jobEnds.leftovers(dir, session),
       deletedLeftovers: chat => jobEnds.deleted(chat),
-      waking: session => waking(join(dataDir, "wakes"), session), updating: () => primeUpdateRunning(agentDir, socketPath), wakes: now => pendingWakes(join(dataDir, "wakes"), now),
+      waking: session => waking(join(dataDir, "wakes"), session), relayed: relays, updating: () => primeUpdateRunning(agentDir, socketPath), wakes: now => pendingWakes(join(dataDir, "wakes"), now),
       resumes: { store: jobResumes(join(dataDir, "job-resumes")), applyBoard: (id, ops) => boards.apply(id, ops, "agent"),
         restart: async (chatId, name, brief) => {
           const chat = await dutyJobs.chat(chatId);
@@ -307,7 +308,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   // again (src/agent-outbox.ts). A scratch serve keeps its own folder, so it never delivers the live service's messages.
   const agentOutbox = new AgentOutbox(join(dataDir, quiet ? "agent-outbox-scratch" : "agent-outbox"), { log: dutyLog, hostOf: session => catalog.hostOf(session), reach: host => reach.reach(host),
     synced: () => catalog.hostsSynced(), subagentOf: async session => rowSubagent(await catalog.summary(session)), resident: session => catalog.resident(session),
-    stopped: stopRecords(dataDir),
+    relayed: (session, at) => relays.add(session, at), stopped: stopRecords(dataDir),
     updateWindow: (host, error) => threads.updateWindow(host, error),
     send: async (session, text, host) => {
       const response = await sendReopening(session, async target => (await (host ? catalog.hostClient(host) : catalog.daemonFor(session))).request({ type: "send_message", targetActiveSessionId: target, message: text }, 30_000, { recoverable: false }),
