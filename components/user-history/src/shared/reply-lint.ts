@@ -5,8 +5,9 @@ import type { BoardOp, ThreadMessage } from "./types.ts";
 /**
  * The board text checks: internal terms in a For you todo (c32, owner 10-09: "unslop easy word") and a limit with a rate or size and no
  * evidence in its own sentence, in a todo or a plan step (c43, owner 10-12: "what is the bottleneck actual IOPS? CPU? RAM??????", "r u fucking
- * kidding?"). Length and form of a reply to the owner stay brief rules (c81, c97; owner 10-18: "also is this a hard cap (code-level) or
- * something? if so strip all these"); only the shop talk below gets a check, a soft one (`shopTalk`).
+ * kidding?"). Length and form of a reply to the owner were brief rules (c81, c97; owner 10-18: "also is this a hard cap (code-level) or
+ * something? if so strip all these") until c18 and c104 came back after them; now shop talk (`shopTalk`) and a long reply (`longReply`) get a
+ * soft check each, which refuses a text once.
  */
 
 /**
@@ -284,6 +285,29 @@ export function shopTalk(text: string, ownerText = ""): string[] {
     }
   }
   return [...found.values()];
+}
+
+/**
+ * A message to the owner that runs long (c18, c104): a sentence over LONG_SENTENCE words, which packs several facts into one, or more than
+ * LONG_MESSAGE words in all. c104 came back on 10-22 06:29Z after its brief line and prompt note, on a 168-word answer whose longest sentence
+ * had 39 words. Measured over the owner's chats from 10-08 14:39Z to 10-22 14:34Z (scripts/duties/owner-reply-corpus.ts, then
+ * ~/work/d10-dry-replies/measure.py): 7 of the 23 messages he corrected for length cross one of the two lines, against 114 of the 1,204 he
+ * answered without a correction (9.5%). At 30 words the uncorrected share is 14.1%, and the 33-word sentence he let stand on 10-19 ("onboarding
+ * works now, but ...") stays under 35. A link, code span, URL or quote counts as one word.
+ */
+export const LONG_SENTENCE = 35;
+export const LONG_MESSAGE = 80;
+export const LONG_REPLY_MARK = "Not sent, it runs long";
+
+/** What makes a tell_owner text long, as short phrases with the start of the sentence in question; empty when it is not long. */
+export function longReply(text: string): string[] {
+  const sentences = proseLines(text).flatMap(line => line.words.split(SENTENCE)).map(sentence => sentence.trim().split(/\s+/).filter(Boolean)).filter(words => words.length);
+  const found: string[] = [];
+  const longest = sentences.reduce<string[]>((best, words) => words.length > best.length ? words : best, []);
+  if (longest.length > LONG_SENTENCE) found.push(`a ${longest.length}-word sentence ("${clipQuote(longest.join(" "))}")`);
+  const total = sentences.reduce((sum, words) => sum + words.length, 0);
+  if (total > LONG_MESSAGE) found.push(`${total} words in all`);
+  return found;
 }
 
 /** The part of an owner message the owner wrote: no injected skill text. Undefined for a server note or a message with no text. */
