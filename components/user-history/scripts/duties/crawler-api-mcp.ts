@@ -16,12 +16,15 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  * The MCP half calls prod the way a customer's agent does (JSON-RPC over Streamable HTTP, a bearer token): describe, a sql count, a search
  * count and the owner's follower-bucket sql (10-15 23:58Z: "팔로워 구간별로 좋아요 수 비율 분석해줘" as one group-by sql call), per tier.
  * The identity is the prod test user mcp-duty-checker with orgs org_mcp_duty_standard and org_mcp_duty_full (dataApi allow), made on 10-20
- * for this check; each run mints a fresh access token with the search app's MCP_TOKEN_SIGNING_SECRET (auto-sns-agent apps/search/.env, read
- * with dotenvx), so no token is stored.
+ * for this check; each run mints a fresh access token with the search app's MCP_TOKEN_SIGNING_SECRET, so no token is stored. The secret
+ * comes from apps/search/.env at the commit prod serves (https://virev.ai/health names it), decrypted with the checkout's
+ * apps/search/.env.keys. On 10-22 the incident QH8L8B3E rotation changed the secret on sieun/dev at 10:02Z while prod still served main
+ * 6cdb32f, and a token signed with the checkout's secret read invalid_token on all 8 calls.
  */
 
 const REPO = process.env.LLM_WIKI_REPO || join(homedir(), "Documents/Github/auto-sns-agent");
 const MCP_URL = "https://virev.ai/mcp";
+const HEALTH_URL = "https://virev.ai/health";
 const USER = "mcp-duty-checker";
 const TIERS = ["standard", "full"] as const;
 /** The "could not measure" value, the same one auto-sns-agent scripts/duties/ci/duty-sources.mjs gives a metric it could not read. */
@@ -78,10 +81,29 @@ async function callTool(token: string, call: (typeof CALLS)[number], id: number)
   }
 }
 
+/** The prod search app's MCP_TOKEN_SIGNING_SECRET: apps/search/.env at the revision https://virev.ai/health reports. */
+async function prodSigningSecret(): Promise<string> {
+  const run = promisify(execFile);
+  const health = (await (await fetch(HEALTH_URL, { signal: AbortSignal.timeout(CALL_TIMEOUT_MS) })).json()) as { revision?: string | null };
+  const rev = health.revision;
+  if (!rev || !/^[0-9a-f]{40}$/.test(rev)) throw new Error(`${HEALTH_URL} named no revision (${JSON.stringify(health)})`);
+  await run("git", ["cat-file", "-e", `${rev}^{commit}`], { cwd: REPO }).catch(() => run("git", ["fetch", "-q", "origin", rev], { cwd: REPO }));
+  const dir = await mkdtemp(join(tmpdir(), "crawler-api-mcp-env-"));
+  try {
+    const envFile = join(dir, ".env");
+    await writeFile(envFile, (await run("git", ["show", `${rev}:apps/search/.env`], { cwd: REPO, maxBuffer: 16 << 20 })).stdout, { mode: 0o600 });
+    const { stdout } = await run("npx", ["--no-install", "dotenvx", "get", "MCP_TOKEN_SIGNING_SECRET", "-f", envFile, "-fk", join(REPO, "apps/search/.env.keys")],
+      { cwd: join(REPO, "apps/search") });
+    const secret = stdout.trim();
+    if (!secret || secret.startsWith("encrypted:")) throw new Error(`MCP_TOKEN_SIGNING_SECRET did not decrypt in apps/search/.env at prod revision ${rev.slice(0, 10)}`);
+    return secret;
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
 async function readMcp(): Promise<Record<string, CallResult[]>> {
-  const { stdout } = await promisify(execFile)("npx", ["--no-install", "dotenvx", "get", "MCP_TOKEN_SIGNING_SECRET", "-f", ".env"], { cwd: join(REPO, "apps/search") });
-  const secret = stdout.trim();
-  if (!secret || secret.startsWith("encrypted:")) throw new Error("MCP_TOKEN_SIGNING_SECRET did not decrypt in auto-sns-agent apps/search/.env");
+  const secret = await prodSigningSecret();
   const now = Math.floor(Date.now() / 1000);
   const tiers = await Promise.all(TIERS.map(async tier => {
     const token = mintToken(secret, tier, now);
