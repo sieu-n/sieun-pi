@@ -15,6 +15,13 @@ export type DutySchedule = { kind: "daily"; at: string } | { kind: "every"; minu
  * fundamentals are much more important than the quantitative number of checks"): the brief leads with it, the card and the summary show it first.
  */
 export interface DutyMetric { key: string; label: string; op: "<=" | ">="; target: number; unit?: string; headline?: true }
+/**
+ * A number the precheck prints that a plan goal holds the target of, so the duty measures it every run and never judges it (c110: a finishable
+ * growth goal lives on the plan, and a duty watches only what breaks). Each run writes it into the open item whose own duty link names it
+ * (`goalReadingOps`). On 10-22 slack green guy's d1 read red every day on three growth targets its goal text set, while p145, p151 and p166
+ * held the same numbers as plan goals.
+ */
+export interface DutyReading { key: string; label: string; unit?: string }
 /** The duty's headline metric, or undefined when none is marked. */
 export const headlineMetric = <M extends Pick<DutyMetric, "headline">>(metrics: readonly M[]): M | undefined => metrics.find(metric => metric.headline);
 /**
@@ -68,6 +75,8 @@ export interface Duty {
   /** What good means, in plain words. The metrics are its measurable part. */
   goal: string;
   metrics: DutyMetric[];
+  /** Numbers the precheck prints for plan goals, with no target (`DutyReading`). */
+  readings?: DutyReading[];
   schedule: DutySchedule;
   precheck: DutyPrecheck;
   /** What the duty job does about a miss. */
@@ -108,6 +117,8 @@ export interface DutyRunRecord {
   metrics: Record<string, MetricResult>; summary: string; detail?: string; error?: string;
   /** Per-part readings of counted metrics, which the verdict does not count (`metricParts`). */
   parts?: Record<string, MetricResult>;
+  /** The duty's readings the precheck measured (`outputReadings`). */
+  readings?: Record<string, number>;
   classes?: Record<string, number>; flagged?: FlaggedSlice[]; job?: DutyJobRef;
   /** Set when the precheck ran past its soft target. */
   overrun?: PrecheckOverrun;
@@ -130,7 +141,8 @@ export interface DutyCut { error: string; at: number; provider?: string; slotAt?
 /** A fix step on the board for one missed metric: its plan step id, the job that owns it, and whether that job was live when the run looked. */
 export interface FixLink { step: string; job?: string; live: boolean }
 /** A run's re-measure after its own job ended. */
-export interface AfterMeasure { at: number; verdict: "met" | "missed" | "error"; metrics: Record<string, MetricResult>; summary: string; parts?: Record<string, MetricResult> }
+export interface AfterMeasure { at: number; verdict: "met" | "missed" | "error"; metrics: Record<string, MetricResult>; summary: string; parts?: Record<string, MetricResult>;
+  readings?: Record<string, number> }
 /** The part of a duty the card shows; the check-in duty has the same fields. */
 export type DutyCard = Pick<Duty, "id" | "name" | "ownerWords" | "goal" | "metrics" | "status"> & { boardGoal?: string };
 /**
@@ -273,6 +285,15 @@ export function metricParts(metrics: readonly DutyMetric[], output: PrecheckOutp
   }
   return Object.keys(parts).length ? parts : undefined;
 }
+/** The values of a duty's readings in a precheck's output; a reading left out or written as the `PLACEHOLDER` is not measured. */
+export function outputReadings(readings: readonly DutyReading[] | undefined, output: PrecheckOutput): Record<string, number> | undefined {
+  const found: Record<string, number> = {};
+  for (const { key } of readings ?? []) {
+    const value = output.metrics[key];
+    if (typeof value === "number" && Number.isFinite(value) && !isPlaceholder(value)) found[key] = value;
+  }
+  return Object.keys(found).length ? found : undefined;
+}
 export function judge(metrics: readonly DutyMetric[], output: PrecheckOutput): { verdict: "met" | "missed" | "error"; metrics: Record<string, MetricResult>; summary: string;
   parts?: Record<string, MetricResult> } {
   const parts = metricParts(metrics, output);
@@ -332,7 +353,7 @@ export function parseSchedule(schedule: unknown): DutySchedule {
  */
 export function parseDutyInput(value: unknown, id: string, now: number, schedule?: DutySchedule): Duty {
   if (!isRecord(value)) throw new Error("A duty is an object.");
-  const { name, ownerWords, goal, metrics, precheck, onMiss, boardGoal } = value;
+  const { name, ownerWords, goal, metrics, readings, precheck, onMiss, boardGoal } = value;
   if (!str(name)) throw new Error("name: the system the duty looks after, in plain words.");
   if (!str(ownerWords)) throw new Error("ownerWords: the owner's words, verbatim.");
   if (!str(goal)) throw new Error("goal: what good means, in plain words.");
@@ -348,11 +369,17 @@ export function parseDutyInput(value: unknown, id: string, now: number, schedule
   });
   // A duty of one metric has nothing else to lead, so that metric is its headline.
   if (parsedMetrics.length === 1) parsedMetrics[0]!.headline = true;
+  if (readings !== undefined && !Array.isArray(readings)) throw new Error("readings: a list of { key, label, unit? }.");
+  const parsedReadings = (readings ?? []).map((reading: unknown, index): DutyReading => {
+    if (!isRecord(reading) || typeof reading.key !== "string" || !KEY.test(reading.key) || !str(reading.label) || (reading.unit !== undefined && typeof reading.unit !== "string") ||
+      parsedMetrics.some(metric => metric.key === reading.key)) throw new Error(`readings[${index}]: key, label and unit?, with a key that is no metric's.`);
+    return { key: reading.key, label: reading.label, ...(typeof reading.unit === "string" ? { unit: reading.unit } : {}) };
+  });
   const parsedSchedule = value.schedule === undefined && schedule ? schedule : parseSchedule(value.schedule);
   if (!isRecord(precheck) || !Array.isArray(precheck.command) || !precheck.command.length || !precheck.command.every(word => typeof word === "string" && word.length > 0) ||
     !str(precheck.cwd)) throw new Error("precheck: { command: [argv], cwd, timeoutMs? }.");
   const timeoutMs = typeof precheck.timeoutMs === "number" && precheck.timeoutMs > 0 ? precheck.timeoutMs : PRECHECK_TARGET_MS;
-  return { id, name: name.trim(), ownerWords, goal: goal.trim(), metrics: parsedMetrics, schedule: parsedSchedule,
+  return { id, name: name.trim(), ownerWords, goal: goal.trim(), metrics: parsedMetrics, ...(parsedReadings.length ? { readings: parsedReadings } : {}), schedule: parsedSchedule,
     precheck: { command: precheck.command as string[], cwd: precheck.cwd, timeoutMs }, onMiss: onMiss.trim(), ...(boardGoal ? { boardGoal } : {}),
     status: "active", createdAt: now, updatedAt: now, runCount: 0 };
 }
@@ -369,8 +396,10 @@ export function upsertDuty(duties: Duty[], definition: unknown, now: number, mor
   const existing = duties.find(duty => duty.name === parsed.name);
   if (!existing) { duties.push(parsed); return `added ${parsed.id}`; }
   const { id: _id, status: _status, createdAt: _createdAt, updatedAt: _updatedAt, runCount: _runCount, ...fields } = parsed;
-  if (JSON.stringify({ ...existing, ...fields, updatedAt: existing.updatedAt }) === JSON.stringify(existing)) return `unchanged ${existing.id}`;
+  // A definition with no readings drops the duty's old ones.
+  if (JSON.stringify({ ...existing, ...fields, readings: fields.readings, updatedAt: existing.updatedAt }) === JSON.stringify(existing)) return `unchanged ${existing.id}`;
   Object.assign(existing, fields, { updatedAt: now });
+  if (!fields.readings) delete existing.readings;
   return `updated ${existing.id}`;
 }
 

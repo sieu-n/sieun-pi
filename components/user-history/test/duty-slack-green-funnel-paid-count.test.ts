@@ -52,9 +52,9 @@ test("a signup before the first tracked public pageview counts in the cohort, an
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
-test("a failed signup to paid query is a source error that holds the headline at 0", () => {
+test("a failed source is a source error that leaves its numbers out, and a failed home test query holds the headline at 0", () => {
   const report = { window: null, window_error: "x", home: null, home_error: "x", cohort: null, cohort_error: "x", signups: null, signups_error: "HTTP 500" } as FunnelReport;
   const { metrics, flagged } = funnelMetrics(report, 1);
-  assert.equal(metrics.source_errors, 4);
+  assert.deepEqual(metrics, { home_test_reach_pct: 0, source_errors: 4 });
   assert.match(flagged.map(slice => slice.excerpt).join("\n"), /signup to paid query failed: HTTP 500/);
 });

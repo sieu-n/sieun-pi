@@ -9,9 +9,9 @@ import { parseEnv } from "./local-dev-uptime.ts";
 
 /**
  * The slack green guy's Visitors become paying users duty's precheck (`node --import tsx scripts/duties/slack-green-funnel.ts`). No model call.
- * Its headline is the share of on-topic real visitors who start Pro or buy the CLI within 28 days of their first visit, in the cohort that
- * entered 56 to 28 days ago. It also measures the p48 conversion goals over the last 28 full days in PostHog's project timezone (Asia/Seoul),
- * with slack-green's own scripts/seo-agent/conversion_targets.py, and the real people who got a home page test flag (sg-exp-home*) in the last 24 h.
+ * Its headline is the share of real signed-out home visitors in the last 24 h who got a home page test flag (sg-exp-home*). It also reads the
+ * funnel numbers the plan goals hold, over the last 28 full days in PostHog's project timezone (Asia/Seoul) with slack-green's own
+ * scripts/seo-agent/conversion_targets.py, plus the signup and on-topic visitor cohorts that pay.
  * conversion_targets.py is on origin/main once PR #236 merges and only on its branch until then. The precheck never runs code from the
  * slack-green checkout (it sits on a feature branch): it fetches the remote ref, `git archive`s scripts/seo-agent and scripts/posthog into a
  * temp folder, and runs slack-green-funnel.py there with the PostHog key from scripts/seo-agent/.env. All reads; it sends nothing.
@@ -22,35 +22,34 @@ const REPO = process.env.SLACK_GREEN_REPO || join(homedir(), "Documents/Github/s
 const SCRIPT = "scripts/seo-agent/conversion_targets.py";
 /** Where conversion_targets.py is read from, first match wins: main after PR #236 merges, the PR's branch before. */
 export const REFS = [{ branch: "main", label: "origin/main" }, { branch: "feature/on-topic-visit-target", label: "PR #236 branch" }] as const;
-/** The window: conversion_targets.py's default --days 28, the window the p48 goal and the funnel dashboard tile use. */
+/** The window: conversion_targets.py's default --days 28, the window the p145 and p151 goals and the funnel dashboard tile use. */
 export const DAYS = 28;
 /**
- * The duty JSON's targets and where each comes from (JSON has no comments):
- * - on_topic_visit_to_paid_pct >= 1 is the headline. The owner asked to improve the whole conversion funnel, visitor to paying user, so it
- *   divides by on-topic real visitors, not signups. It is a matured cohort: visitors whose first real page was 56 to 28 days ago, and the
- *   ones who signed up and then started Pro or bought the CLI within 28 days of that visit. PostHog has real pageviews from 2026-06 on, so
- *   the cohort is measurable. On 2026-10-15 it read 0.56% (8 of 1,426, entries 08-20 to 09-17), the cohort before it 0.43% (6 of 1,405);
- *   1% is about double the best one. The owner's p48 goals multiply to 0.2% (2% signup times 10% paid), which this cohort already passes.
- * - on_topic_visit_to_signup_pct >= 2 and signup_to_workspace_pct >= 60 are the owner's p48 goal on the chat's board over the last 28 full
- *   days, the same TARGETS as conversion_targets.py; they move within days of a change, the headline only 4 to 8 weeks later.
- * - home_test_reach_pct >= 90: the share of real people who opened the home page of any locale signed out in the last 24 h (the visitors
+ * The duty JSON's targets, readings and where each comes from (JSON has no comments). Its targets cover only what breaks (c110), and its four
+ * funnel numbers are readings, which the runner writes into the plan goals whose duty link names them each run, with no target here. Until 10-22
+ * the duty targeted all of them from its own goal text, so it read red every day on growth work that p145, p151 and p166 hold.
+ * - home_test_reach_pct >= 90 is the headline: the share of real people who opened the home page of any locale signed out in the last 24 h (the visitors
  *   the home test is for: since slack-green PR #256, 207d4d5 on 10-15, landing-ab-wrapper.tsx sends the exposure on all 11 locales and never on
  *   ?noredirect=true, the signed-in path) who got an sg-exp-home exposure. A home view after $identify in the same session is signed in too
  *   (One Tap on a blog post, then a client-side click to home), so it is left out and counted as signed_in_24h in the home_test slice. Before #256 only /en was in the test and the precheck counted only /en. A count failed on quiet days: PostHog shows 7 to 11 real home visitors a day on the weekends of 09-26, 10-03 and
  *   10-10, so 20 a day missed even with every visitor in the test, while a share holds on any traffic. sg-exp-home-1 went live 10-14 22:51 KST
  *   and about 21 of 24 eligible visitors got it since, so 90% passes a working test and misses one that drops visitors.
  *   The 24 h people count and the 7-day eligible and exposed counts stay in the detail as home_test_people_24h and the home_test slice.
- * signup_to_paid_16d_pct is real signups from 44 to 16 days ago who started Pro or bought the CLI within 16 days of signing up; the owner's
- *   p48 target for signup to Pro or CLI is 10% (TARGETS in conversion_targets.py). A trial lasts 14 days and most payers pay at its end, so
- *   it moves about two weeks after a change to the trial or checkout, where the headline takes four to eight. It replaced signup_to_paid_pct
- *   on 10-20, which counted only payments inside the same 28-day window: on 10-20 it read 2.63% (2 of 76) while Stripe showed 7 of 78 signups
- *   from 09-06 to 10-04 paid within 16 days, and a job read the weekly rows' same-week Pro or CLI column as signup to paid falling to 3%.
- * It and source_errors stay in the output for the run's detail file and are not declared. A source that fails sets the
- * headline to 0, a miss, with a source_error slice that says to fix the precheck first.
+ * - source_errors <= 0: each of the four PostHog sources that failed or gave no rows adds 1 (`funnelMetrics`).
+ * - on_topic_visit_to_signup_pct (p145, 2%) and signup_to_workspace_pct (p151, 60%) are the last 28 full days, the same TARGETS as
+ *   conversion_targets.py; they move within days of a change.
+ * - signup_to_paid_16d_pct (p166, 10%) is real signups from 44 to 16 days ago who started Pro or bought the CLI within 16 days of signing up.
+ *   A trial lasts 14 days and most payers pay at its end, so it moves about two weeks after a change to the trial or checkout. It replaced
+ *   signup_to_paid_pct on 10-20, which counted only payments inside the same 28-day window: on 10-20 it read 2.63% (2 of 76) while Stripe showed
+ *   7 of 78 signups from 09-06 to 10-04 paid within 16 days, and a job read the weekly rows' same-week Pro or CLI column as signup to paid falling to 3%.
+ * - on_topic_visit_to_paid_pct is the whole funnel, on-topic real visitor to paying user, in a matured cohort: visitors whose first real page
+ *   was 56 to 28 days ago who signed up and then started Pro or bought the CLI within 28 days of that visit. On 2026-10-15 it read 0.56% (8 of
+ *   1,426), the cohort before it 0.43%; p166's note keeps 1%, about double the best, as the long-run number. It moves 4 to 8 weeks after a change.
+ * A reading whose source failed is left out of the output, so no goal gets a made-up value, and its source_error slice says to fix the precheck.
  * The duty JSON sets timeoutMs 120000, the runner's soft target PRECHECK_TARGET_MS; the first cold run took 74.6 s (2026-10-12, PostHog query
  * cache empty), later runs 10 s for the queries and 17.2 s in all.
  */
-export const HEADLINE = "on_topic_visit_to_paid_pct";
+export const HEADLINE = "home_test_reach_pct";
 
 /** One window of conversion_targets.py's window_report. Rates are percents, null when the part they divide by is 0. */
 export interface WindowReport {
@@ -85,54 +84,53 @@ const pct = (part: number, whole: number): number => Math.round(10000 * part / w
 const SOURCES = 4;
 
 /**
- * The metrics from one report. Each source that failed (the cohort query, the 28-day query, the home test query, or a cohort or window with
- * no real visitors) adds 1 to source_errors and a source_error slice, and any failure sets the headline to 0, so an unmeasured run is a miss
- * and never a made-up good value. A script that did not run at all counts every source. A null signup rate with real visitors means 0
- * signups, a real 0.
+ * The metrics from one report. Each source that failed (the cohort query, the 28-day query, the signup query, the home test query, or a cohort
+ * or window with no real visitors) adds 1 to source_errors and a source_error slice, and leaves its numbers out, so an unmeasured run is a miss
+ * and no goal gets a made-up value; the headline reads 0 when the home test query failed. A script that did not run at all counts every source.
+ * A null signup rate with real visitors means 0 signups, a real 0.
  */
 export function funnelMetrics(report: FunnelReport | null, at: number, sourceError?: string): { metrics: Record<string, number>; flagged: FlaggedSlice[] } {
-  const metrics: Record<string, number> = { [HEADLINE]: 0, on_topic_visit_to_signup_pct: 0, signup_to_workspace_pct: 0, home_test_reach_pct: 0, home_test_people_24h: 0, signup_to_paid_16d_pct: 0, source_errors: 0 };
+  const metrics: Record<string, number> = { [HEADLINE]: 0, source_errors: 0 };
   const flagged: FlaggedSlice[] = [];
-  const fail = (excerpt: string, item = "p48") => {
+  const fail = (excerpt: string, item: string) => {
     metrics.source_errors! += 1;
-    flagged.push({ at, kind: "source_error", item, excerpt: `${excerpt}; fix the precheck first, ${HEADLINE} reads 0 until it is fixed` });
+    flagged.push({ at, kind: "source_error", item, excerpt: `${excerpt}; fix the precheck first, its numbers are left out until it is fixed` });
   };
   if (!report) {
-    fail(`slack-green-funnel.py did not run: ${sourceError ?? "no report"}`);
+    fail(`slack-green-funnel.py did not run: ${sourceError ?? "no report"}`, "p145");
     metrics.source_errors = SOURCES;
     return { metrics, flagged };
   }
   const cohort = report.cohort;
-  let headline = 0;
-  if (!cohort || report.cohort_error) fail(`the 28-day paid cohort query failed: ${report.cohort_error ?? "no rows"}`);
-  else if (!cohort.on_topic_visitors) fail(`PostHog gave 0 on-topic real visitors who entered ${cohort.start} to ${cohort.end}, so the pageview tracking or the query is broken`);
+  if (!cohort || report.cohort_error) fail(`the 28-day paid cohort query failed: ${report.cohort_error ?? "no rows"}`, "p166");
+  else if (!cohort.on_topic_visitors) fail(`PostHog gave 0 on-topic real visitors who entered ${cohort.start} to ${cohort.end}, so the pageview tracking or the query is broken`, "p166");
   else {
-    headline = pct(cohort.on_topic_paid, cohort.on_topic_visitors);
-    flagged.push({ at, kind: "cohort", item: "p48", excerpt: `on-topic real visitors who entered ${cohort.start} to ${cohort.end} (end exclusive, Asia/Seoul), followed to ` +
+    metrics.on_topic_visit_to_paid_pct = pct(cohort.on_topic_paid, cohort.on_topic_visitors);
+    flagged.push({ at, kind: "cohort", item: "p166", excerpt: `on-topic real visitors who entered ${cohort.start} to ${cohort.end} (end exclusive, Asia/Seoul), followed to ` +
       `${cohort.follow_end}: ${cohort.on_topic_visitors} visitors, ${cohort.on_topic_signed_up} signed up, ${cohort.on_topic_paid} started Pro or bought the CLI ` +
       `within ${cohort.follow_days} days; by entry class ` + Object.entries(cohort.entry_classes).map(([name, row]) => `${name} ${row.visitors}/${row.signed_up}/${row.paid}`).join(", ") +
       " (visitors/signups/paid)" });
   }
   const window = report.window;
-  if (!window || report.window_error) fail(`the ${DAYS}-day funnel query failed: ${report.window_error ?? "no rows"}`);
-  else if (!window.visitors) fail(`PostHog gave 0 real visitors for ${window.start} to ${window.end}, so the pageview tracking or the query is broken`);
+  if (!window || report.window_error) fail(`the ${DAYS}-day funnel query failed: ${report.window_error ?? "no rows"}`, "p145");
+  else if (!window.visitors) fail(`PostHog gave 0 real visitors for ${window.start} to ${window.end}, so the pageview tracking or the query is broken`, "p145");
   else {
     metrics.on_topic_visit_to_signup_pct = window.on_topic_visit_to_signup ?? 0;
     metrics.signup_to_workspace_pct = window.signup_to_workspace ?? 0;
-    flagged.push({ at, kind: "window", item: "p48", excerpt: `${window.start} to ${window.end} (end exclusive, Asia/Seoul): ${window.visitors} real visitors, ` +
+    flagged.push({ at, kind: "window", item: "p145", excerpt: `${window.start} to ${window.end} (end exclusive, Asia/Seoul): ${window.visitors} real visitors, ` +
       `${window.on_topic_visitors} on-topic, ${window.signed_up} signups (${window.on_topic_signed_up} on-topic), ${window.workspace_added} connected a workspace, ` +
       `${window.pro_or_cli} started Pro or bought the CLI inside the window (a signup's 14-day trial ends after it for half of them); off-topic blog share ${window.off_topic_share ?? 0}%, all-visitor signup rate ${window.visit_to_signup ?? 0}%` });
     for (const [name, row] of Object.entries(window.entry_classes)) {
-      flagged.push({ at, kind: "entry_class", item: "p48", excerpt: `${name}: ${row.visitors} visitors, ${row.signed_up} signups (${row.visit_to_signup ?? 0}%), ` +
+      flagged.push({ at, kind: "entry_class", item: "p145", excerpt: `${name}: ${row.visitors} visitors, ${row.signed_up} signups (${row.visit_to_signup ?? 0}%), ` +
         `${row.workspace_added} workspaces, ${row.pro_or_cli} Pro or CLI` });
     }
   }
   const signups = report.signups;
-  if (!signups || report.signups_error) fail(`the signup to paid query failed: ${report.signups_error ?? "no rows"}`);
-  else if (!signups.signed_up) fail(`PostHog gave 0 real signups from ${signups.start} to ${signups.end}, so the signup event or the query is broken`);
+  if (!signups || report.signups_error) fail(`the signup to paid query failed: ${report.signups_error ?? "no rows"}`, "p166");
+  else if (!signups.signed_up) fail(`PostHog gave 0 real signups from ${signups.start} to ${signups.end}, so the signup event or the query is broken`, "p166");
   else {
     metrics.signup_to_paid_16d_pct = pct(signups.paid, signups.signed_up);
-    flagged.push({ at, kind: "signup_cohort", item: "p48", excerpt: `real signups from ${signups.start} to ${signups.end} (end exclusive, Asia/Seoul): ` +
+    flagged.push({ at, kind: "signup_cohort", item: "p166", excerpt: `real signups from ${signups.start} to ${signups.end} (end exclusive, Asia/Seoul): ` +
       `${signups.signed_up} signed up, ${signups.paid} started Pro or bought the CLI within ${signups.follow_days} days of signing up (a 14-day trial and its charge)` });
   }
   const home = report.home;
@@ -146,7 +144,6 @@ export function funnelMetrics(report: FunnelReport | null, at: number, sourceErr
       `${home.home_visitors} real home visitors signed in or out; ${home.signed_in_24h ?? 0} left out as signed in (home view after sign-in in the same visit); ` +
       `last 7 days: ${home.eligible_exposed_7d} of ${home.eligible_7d}` });
   }
-  metrics[HEADLINE] = metrics.source_errors ? 0 : headline;
   return { metrics, flagged };
 }
 

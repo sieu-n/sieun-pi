@@ -8,7 +8,7 @@ import { pooledProviders } from "./chat-pool.ts";
 import { WAIT_READ_TREES } from "./idle-unload.ts";
 import { GOAL_PUSH_LINK } from "./checkin-goals.ts";
 import { goalReadingOps } from "./goal-readings.ts";
-import { type AfterMeasure, CHECK_IN_DUTY, CHECK_IN_DUTY_ID, dailySlot, dutyDue, ERROR_RUNS_TARGET, errorStreak, headlineMetric, judge, nextRunAt, overrunWords, parseSchedule, type Duty, type DutyJobRef,
+import { type AfterMeasure, CHECK_IN_DUTY, CHECK_IN_DUTY_ID, dailySlot, dutyDue, ERROR_RUNS_TARGET, errorStreak, headlineMetric, judge, nextRunAt, outputReadings, overrunWords, parseSchedule, type Duty, type DutyJobRef,
   type DutyCut, type DutyMetric, type DutyRunRecord, type DutySchedule, type DutyTrigger, type DutyView, type FixLink, type FlaggedSlice, type PrecheckOutput, type PrecheckOverrun, verdictMetrics } from "./shared/chat-duties.ts";
 import { briefFindings, headlineWords } from "./shared/brief-cap.ts";
 import { pushMisses } from "./duty-push.ts";
@@ -594,11 +594,11 @@ export class Duties {
   }
 
   /** Writes a measured run's values into the goals they measure (`goalReadingOps`), so the board and the next check-in read the newest number. */
-  private async writeReadings(chatId: string, dutyId: string, run: Pick<DutyRunRecord, "at" | "verdict" | "metrics" | "parts">): Promise<void> {
+  private async writeReadings(chatId: string, dutyId: string, run: Pick<DutyRunRecord, "at" | "verdict" | "metrics" | "parts" | "readings">): Promise<void> {
     if (!this.host.applyBoard || (run.verdict !== "met" && run.verdict !== "missed")) return;
     const duty = dutyId === CHECK_IN_DUTY_ID ? undefined : (await this.store.list(chatId)).find(entry => entry.id === dutyId);
-    const units = Object.fromEntries((duty?.metrics ?? []).map(metric => [metric.key, metric.unit]));
-    await this.host.applyBoard(chatId, board => goalReadingOps(board, dutyId, run.at, { ...run.parts, ...run.metrics }, units))
+    const units = Object.fromEntries([...duty?.metrics ?? [], ...duty?.readings ?? []].map(metric => [metric.key, metric.unit]));
+    await this.host.applyBoard(chatId, board => goalReadingOps(board, dutyId, run.at, { ...run.parts, ...run.metrics }, units, run.readings))
       .catch(error => this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: write its goal readings: ${message(error)}`));
   }
 
@@ -612,7 +612,9 @@ export class Duties {
     if (!duty) return null;
     const lastRuns = (await this.store.runs(chatId)).filter(run => run.duty === dutyId && run.verdict !== "skipped").slice(0, 10);
     const dir = this.store.chatDir(chatId);
-    return { at, ...judge(duty.metrics, await this.precheck(duty, dir, join(dir, `${dutyId}.after.json`), lastRuns, "after")) };
+    const output = await this.precheck(duty, dir, join(dir, `${dutyId}.after.json`), lastRuns, "after");
+    const readings = outputReadings(duty.readings, output);
+    return { at, ...judge(duty.metrics, output), ...readings ? { readings } : {} };
   }
 
   private async skip(chatId: string, duty: Duty, slot: number): Promise<void> {
@@ -983,9 +985,10 @@ export class Duties {
     try {
       const output = await this.precheck(duty, dir, detail, previous.slice(0, 10));
       const judged = judge(duty.metrics, output);
+      const readings = outputReadings(duty.readings, output);
       flagged = output.flagged ?? [];
       record = { duty: dutyId, at: started, slot: at, trigger, ms: this.now() - started, verdict: judged.verdict, metrics: judged.metrics, summary: judged.summary, detail,
-        ...(judged.parts ? { parts: judged.parts } : {}),
+        ...(judged.parts ? { parts: judged.parts } : {}), ...(readings ? { readings } : {}),
         ...(judged.verdict === "error" ? { error: judged.summary } : {}), ...overrunOf(), ...link };
     } catch (error) {
       await rm(detail, { force: true });

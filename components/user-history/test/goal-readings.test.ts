@@ -124,3 +124,25 @@ test("a duty metric in another unit never becomes a goal's number, and the same 
   const same = goalReadingOps(board, "d2", at4, metrics, { mac_chat_reply_extra_rtt: " s" });
   assert.equal(same.length, 1);
 });
+
+// Slack green guy on 10-22: d1 targeted the growth numbers p145, p151 and p166 hold and read red every day, so they became readings with no
+// target. p145 names d1/on_topic_visit_to_signup_pct as its own duty link, and p166 is a step under p177 with a target that names its reading.
+test("a duty reading goes into the open item whose own duty link names it, at any depth, and nowhere else", () => {
+  const target = (metric: string, value: number, current: number) => ({ metric, target: value, unit: "%", current, measuredAt: "2026-10-21T00:30:06.559Z", source: "duty d1" });
+  const board: ChatBoard = { v: 2, rev: 1, todos: [], updatedAt: "2026-10-22T00:00:00.000Z", plan: [
+    { id: "p145", text: "More visitors sign up", status: "doing", duty: "d1/on_topic_visit_to_signup_pct", target: { ...target("on-topic real visitors who sign up, 28 days", 2, 1.22), direction: "up" },
+      children: [step("p190", "d1/on_topic_visit_to_signup_pct", "doing")] },
+    { id: "p177", text: "Trial users pay", status: "doing", target: target("trial users who pay within 14 days", 11.46, 8.75),
+      children: [{ ...step("p166", "d1/signup_to_paid_16d_pct", "blocked"), target: target("signups who pay within 16 days", 10, 8.97) }] },
+    { id: "p151", text: "More signups connect Slack", status: "done", duty: "d1/signup_to_workspace_pct", target: target("signups who connect a Slack workspace", 60, 21.25), children: [] },
+  ] };
+  const run = Date.parse("2026-10-22T09:30:00.000Z");
+  const readings = { on_topic_visit_to_signup_pct: 1.21, signup_to_paid_16d_pct: 8.75, signup_to_workspace_pct: 21.3 };
+  const units = { on_topic_visit_to_signup_pct: "%", signup_to_paid_16d_pct: "%", signup_to_workspace_pct: "%" };
+  const ops = goalReadingOps(board, "d1", run, { home_test_reach_pct: { value: 94.34, target: 90, op: ">=", met: true } }, units, readings);
+  assert.deepEqual(ops.map(op => op.op === "plan_update" ? [op.id, op.target?.current, op.target?.target, op.target?.direction] : []),
+    [["p145", 1.21, 2, "up"], ["p166", 8.75, 10, "up"]]);
+  assert.match(ops[1]!.op === "plan_update" ? ops[1]!.target?.source ?? "" : "", /^duty d1 metric signup_to_paid_16d_pct, its run at 2026-10-22T09:30Z/);
+  assert.deepEqual(goalReadingOps(board, "d1", Date.parse("2026-10-21T00:30:06.559Z"), {}, units, readings), []);
+  assert.deepEqual(goalReadingOps(board, "d2", run, {}, units, readings), []);
+});

@@ -1,6 +1,6 @@
 import { inferredDirection, openGoals, targetOp, walkGoal } from "./shared/chat-board.ts";
 import { CHECK_IN_DUTY_ID, type MetricResult } from "./shared/chat-duties.ts";
-import type { BoardOp, ChatBoard, GoalTarget } from "./shared/types.ts";
+import type { BoardOp, ChatBoard, GoalTarget, PlanItem } from "./shared/types.ts";
 
 const words = (text: string): string[] => text.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
 
@@ -13,6 +13,7 @@ export const keyNamesGoal = (key: string, target: Pick<GoalTarget, "metric" | "u
   const goal = new Set([...words(target.metric), ...words(target.unit)]);
   return words(key.slice(key.indexOf("/") + 1)).some(word => goal.has(word));
 };
+const OPEN: ReadonlySet<PlanItem["status"]> = new Set(["todo", "doing", "blocked"]);
 type Reading = { key: string; value: number; op: MetricResult["op"] };
 const unitWords = (unit: string | undefined): string => words(unit ?? "").join(" ");
 /**
@@ -40,16 +41,32 @@ const unitFits = (unit: string | undefined, target: Pick<GoalTarget, "unit">): b
  * A metric whose unit (`units`, from the duty's definition) differs from the goal target's unit is never its number (`unitFits`).
  * A goal whose own duty field names `<dutyId>/<key>` reads only that metric, whatever its steps link: VP of CI's p1 (Mac job start wait p90)
  * names d1/air_work_start_wait_p90_min, and on 10-18 d1 wrote push_to_verdict 221 min into it through the open step p258.
+ * A duty's readings (`DutyReading`) have no target, so each goes only into an open item with a target whose own duty field names it, at any
+ * depth: slack green guy's p145 names d1/on_topic_visit_to_signup_pct, and the step p166 under p177 names d1/signup_to_paid_16d_pct.
  */
 export function goalReadingOps(board: ChatBoard | null, dutyId: string, at: number, metrics: Readonly<Record<string, MetricResult>>,
-  units: Readonly<Record<string, string | undefined>> = {}): BoardOp[] {
+  units: Readonly<Record<string, string | undefined>> = {}, readings: Readonly<Record<string, number>> = {}): BoardOp[] {
   const ops: BoardOp[] = [];
   if (dutyId === CHECK_IN_DUTY_ID) return ops;
+  const write = (item: PlanItem, target: GoalTarget, key: string, value: number, direction: NonNullable<GoalTarget["direction"]>): void => {
+    ops.push({ op: "plan_update", id: item.id, target: { ...target, direction, current: value, measuredAt: new Date(at).toISOString(),
+      source: `duty ${dutyId} metric ${key}, its run at ${new Date(at).toISOString().slice(0, 16)}Z` } });
+  };
+  const newer = (target: GoalTarget): boolean => { const measured = Date.parse(target.measuredAt ?? ""); return !Number.isFinite(measured) || measured < at; };
+  const visit = (items: readonly PlanItem[]): void => {
+    for (const item of items) {
+      visit(item.children);
+      const key = item.duty?.startsWith(`${dutyId}/`) ? item.duty.slice(dutyId.length + 1) : undefined;
+      const value = key === undefined ? undefined : readings[key];
+      const target = item.target;
+      if (value === undefined || !target || !OPEN.has(item.status) || !newer(target) || !unitFits(units[key!], target)) continue;
+      write(item, target, key!, value, target.direction ?? inferredDirection(target) ?? (targetOp(target) === "<=" ? "down" : "up"));
+    }
+  };
+  visit(board?.plan ?? []);
   for (const goal of openGoals(board?.plan ?? [])) {
     const target = goal.target;
-    if (!target) continue;
-    const measured = Date.parse(target.measuredAt ?? "");
-    if (Number.isFinite(measured) && measured >= at) continue;
+    if (!target || !newer(target)) continue;
     // A target with no direction yet, unmeasured or at its target, takes the direction of the duty metric that measures it.
     const known = target.direction ?? inferredDirection(target);
     const goalWords = new Set(words(target.metric));
@@ -66,9 +83,7 @@ export function goalReadingOps(board: ChatBoard | null, dutyId: string, at: numb
     });
     const only = open.size === 1 ? [...open][0] : undefined;
     const reading = named ?? (only && { key: only[0], value: only[1].value, op: only[1].op });
-    if (!reading) continue;
-    ops.push({ op: "plan_update", id: goal.id, target: { ...target, direction: known ?? (reading.op === "<=" ? "down" : "up"), current: reading.value, measuredAt: new Date(at).toISOString(),
-      source: `duty ${dutyId} metric ${reading.key}, its run at ${new Date(at).toISOString().slice(0, 16)}Z` } });
+    if (reading) write(goal, target, reading.key, reading.value, known ?? (reading.op === "<=" ? "down" : "up"));
   }
   return ops;
 }
