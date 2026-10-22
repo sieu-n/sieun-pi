@@ -350,14 +350,19 @@ export function unlandedPages(runs: readonly BoxRun[]): UnlandedPage[] {
   });
 }
 
-/** The order the job reads flagged items in, with a cap per kind; the list stops at FLAGGED_MAX. */
+/**
+ * The order the job reads flagged items in, with a cap per kind; the capped kinds stop at FLAGGED_MAX in all. A kind wiki_problems counts has
+ * no cap, so the job's list holds every problem the headline counts: at a cap of 30 pages behind code, listed by path, 424 of the 1,221 page-hours
+ * counted from 10-20 07:51Z to 10-22 07:51Z were pages past the 30th, mostly domains/ and projects/ pages that no brief named
+ * (~/work/wiki-problems-follow-fix/replay_stale.py).
+ */
 export const FLAG_ORDER: readonly [string, number][] = [
-  ["source_error", 6], ["unlanded", 20], ["unlanded_session", 10], ["recurred", 8], ["open_class", 10], ["hub_orphan", 8], ["dead_link", 8], ["superseded_linked", 8], ["session_link", 8],
-  ["missing_meta", 6], ["stale_vs_code", 30], ["dup_pair", 5], ["revert", 5], ["retouched", 5], ["correction", 10], ["signal", 6], ["refinement", 6],
-  ["trial_memory", 10], ["memory", 10], ["lint_page", 5], ["archive_candidate", 3],
+  ["source_error", 6], ["unlanded", Infinity], ["unlanded_session", 10], ["recurred", 8], ["open_class", 10], ["hub_orphan", Infinity], ["dead_link", Infinity],
+  ["superseded_linked", Infinity], ["session_link", Infinity], ["missing_meta", Infinity], ["stale_vs_code", Infinity], ["dup_pair", 5], ["revert", 5], ["retouched", 5],
+  ["correction", 10], ["signal", 6], ["refinement", 6], ["trial_memory", 10], ["memory", 10], ["lint_page", 5], ["archive_candidate", 3],
 ];
 
-/** Picks the flagged items: each kind in FLAG_ORDER up to its cap, unknown kinds last, FLAGGED_MAX in all. */
+/** Picks the flagged items: each kind in FLAG_ORDER up to its cap, unknown kinds last, and FLAGGED_MAX items of the capped kinds in all. */
 export function pickFlagged(slices: readonly FlaggedSlice[]): FlaggedSlice[] {
   const order = new Map(FLAG_ORDER.map(([kind], index) => [kind, index]));
   const caps = new Map(FLAG_ORDER);
@@ -365,12 +370,14 @@ export function pickFlagged(slices: readonly FlaggedSlice[]): FlaggedSlice[] {
   const ranked = slices.map((slice, index) => ({ slice, index })).sort((a, b) =>
     (order.get(a.slice.kind) ?? order.size) - (order.get(b.slice.kind) ?? order.size) || a.index - b.index);
   const out: FlaggedSlice[] = [];
+  let capped = 0;
   for (const { slice } of ranked) {
     const count = taken.get(slice.kind) ?? 0;
-    if (count >= (caps.get(slice.kind) ?? 3)) continue;
+    const cap = caps.get(slice.kind) ?? 3;
+    if (count >= cap || (Number.isFinite(cap) && capped >= FLAGGED_MAX)) continue;
     taken.set(slice.kind, count + 1);
     out.push(slice);
-    if (out.length >= FLAGGED_MAX) break;
+    if (Number.isFinite(cap)) capped += 1;
   }
   return out;
 }
@@ -482,7 +489,10 @@ export async function measureDream(deps: DreamDeps, lastRuns: readonly DutyRunRe
   }
   for (const entry of harness?.fresh ?? []) slices.push(memorySlice(entry, "new since last run"));
   for (const entry of (harness?.moves ?? []).filter(entry => !freshIds.has(entry.id)).slice(0, 10)) slices.push(memorySlice(entry, "move into its skill"));
-  for (const page of stalePages ?? []) slices.push({ kind: "stale_vs_code", item: page.path, excerpt: clip(staleExcerpt(page, now)) });
+  // The pages that count come first, longest behind first, then the followed ones, so the job takes the oldest work first.
+  const behindOrder = (page: StalePage): [number, number] => { const fell = behindSince(page); return [fell > 0 && now - fell <= FOLLOW_WINDOW_MS ? 1 : 0, fell]; };
+  const staleOrder = [...stalePages ?? []].sort((a, b) => { const [x, y] = [behindOrder(a), behindOrder(b)]; return x[0] - y[0] || x[1] - y[1]; });
+  for (const page of staleOrder) slices.push({ kind: "stale_vs_code", item: page.path, excerpt: clip(staleExcerpt(page, now)) });
   for (const item of health?.items ?? []) {
     if (item.kind === "signal" || (item.kind === "stale_vs_code" && stalePages)) continue;
     slices.push({ kind: item.kind, item: item.path, excerpt: clip(`${item.excerpt ?? item.path}${item.target ? ` -> ${item.target}` : ""}`) });
