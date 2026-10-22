@@ -9,10 +9,10 @@ import { rememberAccounts } from "./accounts.ts";
 import { dutiesFeed } from "./duties.svelte.ts";
 import { childUsage, pushedAccounts } from "./thread-side.svelte.ts";
 import type { ThreadSide } from "../shared/thread-side.ts";
-import { keepOlder, newestPage, prependOlder, trimToNewest, type NewestPage } from "./thread-pages.ts";
+import { keepOlder, newestPage, olderPages, prependOlder, trimToNewest, type NewestPage } from "./thread-pages.ts";
 import type { PendingSend } from "../shared/chat-feed.ts";
 import { indexedDbStorage, memoryStorage, PageOutbox, pendingOf } from "./outbox.ts";
-import type { BoardOp, ChatBoard, ImageInput, NewChatAccount, SendMode, SessionRow, SlackChannelSetup, SlackChatInput, SlackView, Tag, ThreadEvent, ThreadState } from "../shared/types.ts";
+import type { BoardOp, ChatBoard, ImageInput, NewChatAccount, OlderPage, SendMode, SessionRow, SlackChannelSetup, SlackChatInput, SlackView, Tag, ThreadEvent, ThreadState } from "../shared/types.ts";
 import { hashFor, pageTarget, searchFor } from "./permalink.ts";
 import { cacheBoard, cachedBoardKey, readCachedBoard } from "./board-cache.ts";
 import { readerAction, type ReaderView } from "./reader.ts";
@@ -397,14 +397,17 @@ class Store {
     return api.part(id, messageKey(messages, index), part);
   }
 
-  /** The page before the oldest loaded message, put in front of it; true when it was. A session file that changed under the cursor (409) opens the thread again. */
-  async loadOlder(id: string): Promise<boolean> {
+  /**
+   * The page before the oldest loaded message, and the pages before it while `more` holds for what came, put in front of it at once; true
+   * when they were. A session file that changed under the cursor (409) opens the thread again.
+   */
+  async loadOlder(id: string, more: (page: OlderPage) => boolean = () => false): Promise<boolean> {
     const entry = this.entries[id];
     const cursor = entry?.state?.older;
     if (!entry || cursor === undefined || entry.olderLoading) return false;
     this.patch(id, { olderLoading: true });
     try {
-      const page = await api.olderPage(id, cursor);
+      const page = await olderPages(next => api.olderPage(id, next), cursor, more);
       const current = this.entries[id];
       if (!current?.state || current.state.older !== cursor) return false;
       this.patch(id, { state: prependOlder(current.state, page) });

@@ -4,10 +4,10 @@
 // an 8-frame loop and corrections that a scroll event, a clamp or a row drawn anew could undo.
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
-import { chatFeed } from "../src/shared/chat-feed.ts";
-import { prependOlder } from "../src/client/thread-pages.ts";
+import { chatFeed, ownerTyped } from "../src/shared/chat-feed.ts";
+import { olderPages, prependOlder } from "../src/client/thread-pages.ts";
 import { FIRST_ITEMS, earlierTop, holdPlace, laterBottom, settledFrom, windowEnd, windowStart } from "../src/client/feed-window.ts";
-import type { ThreadMessage, ThreadState } from "../src/shared/types.ts";
+import type { OlderPage, ThreadMessage, ThreadState } from "../src/shared/types.ts";
 
 const user = (at: number, text: string): ThreadMessage => ({ role: "user", content: text, timestamp: at }) as ThreadMessage;
 const reply = (at: number, text: string): ThreadMessage =>
@@ -203,4 +203,25 @@ test("a reply in the middle of the view that grows a quote when its older page l
   f.layout();
   observed!();
   assert.equal(after.offsetTop - f.scroller.scrollTop, onScreen);
+});
+
+test("older pages with no message the owner typed load on and arrive as one page, so the feed merges and draws once", async () => {
+  const jobs = (from: number) => Array.from({ length: 4 }, (_, index) => user(from + index, `[from jobs] step ${from + index} done`));
+  const pages: Record<string, OlderPage> = {
+    c3: { messages: [...jobs(900), reply(910, "noted")], older: "c2" },
+    c2: { messages: jobs(800), older: "c1" },
+    c1: { messages: [user(700, "what is left"), reply(701, "two steps"), ...jobs(710)], older: "c0" },
+    c0: { messages: [user(600, "start")] },
+  };
+  const read: string[] = [];
+  const page = await olderPages(async cursor => { read.push(cursor); return pages[cursor]!; }, "c3", got => !got.messages.some(ownerTyped));
+  assert.deepEqual(read, ["c3", "c2", "c1"], "it stops at the first page with an owner message");
+  assert.equal(page.older, "c0");
+  const newest = thread([...jobs(1000), user(1100, "status?"), reply(1101, "on it")], "c3");
+  const stepped = [pages.c3!, pages.c2!, pages.c1!].reduce(prependOlder, newest);
+  assert.deepEqual(prependOlder(newest, page), stepped, "one merge holds what three merges held");
+  const merged = chatFeed(prependOlder(newest, page));
+  const floor = settledFrom(merged.map(item => item.kind), true);
+  assert.equal(merged[floor]!.at, 700, "the window can draw up to the owner's message on the oldest page");
+  assert.deepEqual(await olderPages(async cursor => pages[cursor]!, "c3", () => false), pages.c3, "a plain load reads one page");
 });

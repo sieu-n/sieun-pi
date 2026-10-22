@@ -10,7 +10,7 @@
   import { mentionIndex, openAgentTodos } from "./board.ts";
   import { dutiesFeed } from "./duties.svelte.ts";
   import { isThreadBusy } from "../shared/thread-state.ts";
-  import { catalogNames, chatFeed, chatLines, settledPending, turnStarter, type ChatItem, type Fold } from "../shared/chat-feed.ts";
+  import { catalogNames, chatFeed, chatLines, ownerTyped, settledPending, turnStarter, type ChatItem, type Fold } from "../shared/chat-feed.ts";
   import { parseArtifactTarget } from "../shared/artifact-link.ts";
   import { replyExcerpt } from "./reply.ts";
   import { proseClick } from "./prose.ts";
@@ -70,7 +70,8 @@
   let growing = false;
   /**
    * Draws the earlier items, after loading the older page when every loaded item already shows; true when anything was added. It loads on
-   * while a page only adds to the top fold, because at the top edge no scroll event comes to ask again. holdPlace keeps the view in place.
+   * until the pages hold a message the owner typed, as one merge, because nothing above the first one may draw (settledFrom) and at the top
+   * edge no scroll event comes to ask again. holdPlace keeps the view in place.
    */
   async function earlier(): Promise<boolean> {
     if (growing || jumping !== null || !scroller || !hasEarlier) return false;
@@ -78,7 +79,7 @@
     let grew = false;
     try {
       top = items[start] ?? null;
-      while (start === floor && thread?.older !== undefined && await store.loadOlder(id)) await tick();
+      while (start === floor && thread?.older !== undefined && await store.loadOlder(id, page => !page.messages.some(ownerTyped))) await tick();
       const next = earlierTop(items, start, MORE_ITEMS, floor);
       if (next !== null) {
         top = next;

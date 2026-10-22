@@ -59,6 +59,9 @@ export const CHAT_NOTICE = "chat_notice";
  * W44 (check-in jobs chase threads themselves now); the feed still reads them in older transcripts as notes the owner did not type.
  */
 export const NUDGE_PREFIX = "[from ";
+/** Whether the owner typed the message, which the feed draws as his bubble ("user" item, linesOf), and so as the first row a window may draw (settledFrom). */
+export const ownerTyped = (message: ThreadMessage): boolean => message.role === "user" && serverNote(messageText(message).trim()) === undefined;
+
 /** Who sent a server note ("check-in", "jobs", or the chat a nudge asks for), or undefined for a message the owner typed. */
 export function serverNote(text: string): string | undefined {
   if (text.startsWith(NUDGE_PREFIX)) { const end = text.indexOf("]"); return end > NUDGE_PREFIX.length ? text.slice(NUDGE_PREFIX.length, end) : undefined; }
