@@ -9,7 +9,6 @@ import { CI_CACHE_REPO, RUN_WAKE_DUE_MS, treeWakes, type Wake, wakeLabel } from 
 import { firstClause } from "./shared/chat-board.ts";
 import type { PlanItem } from "./shared/types.ts";
 import { ciRuns } from "./ci-runs.ts";
-import { type Host, listHostDir, readHostFile } from "./hosts.ts";
 
 /*
  * Work spread and stale timers (owner 10-12, c51): "you seem to be using waaay too much on that ONE old session when it will be so much more
@@ -177,7 +176,7 @@ export function quotaParks(jobs: readonly ScheduledJob[], now: number): Map<stri
 }
 /**
  * The disk that holds a chat's Prime artifacts, as the check-in reads it: this box's (`localDisk`), or the chat's box through its relay
- * (`hostDisk`). sep launch!! runs on the Mac, and on 10-22 the 16:51Z and 17:06Z check-ins on us-metal02 looked on their own disk for its
+ * (`hostDisk` in src/chat-disk.ts). sep launch!! runs on the Mac, and on 10-22 the 16:51Z and 17:06Z check-ins on us-metal02 looked on their own disk for its
  * jobs' quota parks, found none, and called mail integrations and mcp connector failed while Prime held both until 19:20Z.
  */
 export interface ArtifactDisk {
@@ -190,32 +189,6 @@ export interface ArtifactDisk {
 }
 export const localDisk = (home: string = homedir()): ArtifactDisk => ({ home,
   list: dir => readdir(dir).catch(() => []), read: file => readFile(file, "utf8").catch(() => null) });
-export const hostDisk = (host: Host, home: string): ArtifactDisk => ({ home,
-  list: dir => listHostDir(host, dir).then(entries => entries.map(entry => entry.name), () => []),
-  read: file => readHostFile(host, file).then(found => found.bytes.toString("utf8"), () => null) });
-/** The home a session file on a box lives under, from its path on that box (`/Users/sieunpark/.prime/agent/sessions/<id>.jsonl`). */
-export const homeOfSessionFile = (path: string): string | undefined => /^(.*?)\/\.prime\/agent\//.exec(path)?.[1];
-
-/** What `chatDisk` reads of the catalog: which box runs a session, that box's hosts.json entry, the other boxes' rows, and a row's path there. */
-export interface DiskCatalog {
-  hostOf(id: string): string | null;
-  hostEntry(name: string): Host | undefined;
-  remoteRows(): readonly { sessionId: string; sessionFile?: string }[];
-  daemonPath(summary: { sessionId: string; sessionFile?: string }): string | undefined;
-}
-/**
- * The disk of the box that runs chat `id`: null for this box's chats and when the other box's home cannot be told from the chat's row. The row
- * comes from that box's list, so no copy of the chat's transcript is made for it.
- */
-export async function chatDisk(catalog: DiskCatalog, id: string): Promise<ArtifactDisk | null> {
-  const name = catalog.hostOf(id);
-  const host = name ? catalog.hostEntry(name) : undefined;
-  if (!host) return null;
-  const row = catalog.remoteRows().find(entry => entry.sessionId === id);
-  const home = row ? homeOfSessionFile(catalog.daemonPath(row) ?? "") : undefined;
-  return home ? hostDisk(host, home) : null;
-}
-
 /**
  * The `scheduled-jobs.json` files on `disk` that hold the quota resumes of a chat's jobs: the chat's own, each root's it names (`roots`, session
  * ids, such as its step-owner threads), and for each job session in `sessions` the one Prime keeps in the chat's folder, under

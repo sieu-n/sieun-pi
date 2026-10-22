@@ -39,7 +39,7 @@ import { recordUnloaded, writeReceipt } from "./unloaded.ts";
 import { quietMinutes } from "./quiet-minutes.ts";
 import { startTmpSweep } from "./tmp-sweep.ts";
 import { Chats, UNKNOWN_ACTIVE } from "./chats.ts";
-import { chatDisk } from "./checkin-load.ts";
+import { chatDisk } from "./chat-disk.ts";
 import { extensionBuild, loadRecord } from "./chat-brief.ts";
 import { Duties } from "./chat-duty-run.ts";
 import { primeUpdateRunning } from "./prime-update.ts";
