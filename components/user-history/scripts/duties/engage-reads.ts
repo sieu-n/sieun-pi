@@ -36,7 +36,7 @@ const DUTY_FILE = join(dirname(fileURLToPath(import.meta.url)), "engage-reads.du
  *   engage.rate_test_stop_deaths. Its judged slot went to engage_accounts_stuck on 10-18 (c75 keeps 3 supporting metrics).
  * - engage_accounts_stuck <= 0: "without accounts dieing" (10-09). It counts the prod accounts that sit out of reading for over STUCK_HOURS
  *   on a fault our code is meant to heal, the two standing risks on the chat's risk page (wiki apps/crawler-v3/engage-reads-and-watchlist-risks):
- *   frozen for a shared exit IP and not healed (p103), active and reading only 302s, or parked with an invalid jar and not re-logged (p105).
+ *   frozen for a shared exit IP and not healed (p103), active and reading only lost-session 302s, or parked with an invalid jar and not re-logged (p105).
  *   A challenge or a suspension is Instagram's verdict, which fleet_ig_killed_pct counts, so it is no stuck account.
  * - deep_walk_ok_pct >= 99: the owner, 10-09, "reliable logged-in apis including pagination api for up to years". Measured 10-14 02:30Z on
  *   prod: of the 365-day collab walks, 8,960 of 8,978 in the last 72 h reached their end (99.8%), by UTC day 10-12 5,259 of 5,259 and 10-13
@@ -89,7 +89,7 @@ export type Source = "grafana auth" | "prod read log" | "staging read log" | "st
  * (10-18): the accounts job wakes every 2 h, and jar account 16 sat active on 302s for 24 h (55 of 55 reads, 10-14 13:16Z to 10-15 12:00Z).
  */
 export const STUCK_HOURS = 6;
-/** An active account answering at least this many 302s and no page in STUCK_HOURS is stuck on 302s; account 16 answered 10 in 24 h on 10-18. */
+/** An active account answering at least this many lost-session redirects (lostSession) and no page in STUCK_HOURS is stuck on 302s; account 16 answered 10 in 24 h on 10-18. */
 export const STUCK_302S = 3;
 /**
  * The judged metrics each source feeds; a failed source makes each of them read unmeasured(). The staging sources feed only detail lines, so
@@ -394,35 +394,62 @@ where walk_done_at > now() - interval '24 hours'
 group by 1, 2;`;
 
 /**
- * The stuck prod accounts, as stuckOf parses them. A freeze for a shared exit is SHARED_EXIT_FREEZE in
+ * The stuck prod accounts, as stuckOf parses them: kind, account and since, then a redirect's reason, Location and count. A freeze for a shared exit is SHARED_EXIT_FREEZE in
  * apps/crawler-v3/src/platforms/instagram/engage/shared_exit_freeze.py, read on the account's last status change.
  */
 export const STUCK_SQL = `with last_change as (
   select distinct on (e.account_id) e.account_id, e.at, e.outcome, e.error_code from ig_engage_account_events e
   join ig_engage_accounts a on a.id = e.account_id where a.world = 'prod' and e.transition order by e.account_id, e.id desc
 )
-select 'frozen_shared_exit', a.id, round(extract(epoch from e.at) * 1000) from ig_engage_accounts a join last_change e on e.account_id = a.id
+select 'frozen_shared_exit', a.id, round(extract(epoch from e.at) * 1000), '', '', 0 from ig_engage_accounts a join last_change e on e.account_id = a.id
 where a.world = 'prod' and a.status = 'frozen' and e.outcome = 'frozen' and e.at < now() - interval '${STUCK_HOURS} hours' and (
   e.error_code = 'exit_shared' or (coalesce(e.error_code, '') = '' and exists (
     select 1 from ig_engage_session_bindings fb where fb.account_id = e.account_id and fb.started_at <= e.at and fb.expires_at > e.at and (
       exists (select 1 from ig_engage_session_bindings pb where pb.account_id <> fb.account_id and pb.egress_ip = fb.egress_ip and pb.started_at <= e.at and pb.expires_at > e.at)
       or exists (select 1 from ig_engage_accounts pa where pa.id <> fb.account_id and pa.original_egress_ip = fb.egress_ip)))))
 union all
-select 'active_302s', a.id, round(extract(epoch from min(l.at)) * 1000) from ig_engage_accounts a join ig_engage_read_log l on l.account_id = a.id
-where a.world = 'prod' and a.status = 'active' and l.at > now() - interval '${STUCK_HOURS} hours'
-group by a.id having count(*) filter (where l.http_status = 302) >= ${STUCK_302S} and coalesce(sum(l.pages), 0) = 0
+select 'active_redirects', a.id, round(extract(epoch from min(l.at)) * 1000), coalesce(l.reason, ''), coalesce(l.response_headers->>'location', ''), count(*)
+from ig_engage_accounts a join ig_engage_read_log l on l.account_id = a.id
+where a.world = 'prod' and a.status = 'active' and l.at > now() - interval '${STUCK_HOURS} hours' and l.http_status between 300 and 399
+  and not exists (select 1 from ig_engage_read_log p where p.account_id = a.id and p.at > now() - interval '${STUCK_HOURS} hours' and p.pages > 0)
+group by a.id, 4, 5
 union all
-select 'parked_dead_jar', a.id, round(extract(epoch from e.at) * 1000) from ig_engage_accounts a join last_change e on e.account_id = a.id
+select 'parked_dead_jar', a.id, round(extract(epoch from e.at) * 1000), '', '', 0 from ig_engage_accounts a join last_change e on e.account_id = a.id
 join ig_engage_browser_jars j on j.account_id = a.id
 where a.world = 'prod' and a.status = 'parked' and a.login_mode = 'jar' and not j.valid and e.at < now() - interval '${STUCK_HOURS} hours';`;
 
-const STUCK_KINDS: ReadonlySet<string> = new Set<StuckKind>(["frozen_shared_exit", "active_302s", "parked_dead_jar"]);
+const STUCK_KINDS: ReadonlySet<string> = new Set<StuckKind>(["frozen_shared_exit", "parked_dead_jar"]);
+/** The redirect paths that mean a lost session, as _LOGIN_REDIRECT_PATHS in apps/crawler-v3/src/platforms/instagram/engage/classify.py. */
+export const LOST_SESSION_PATHS = ["/accounts/login", "/challenge/"] as const;
+/** The read log codes classify.verdict gives a redirect to the login page or a challenge. */
+const LOST_SESSION_CODES: ReadonlySet<string> = new Set(["login_redirect", "jar_login_redirect"]);
+/**
+ * Whether a logged-in read's redirect means its session is gone, as classify.verdict reads it: a login or challenge code, no Location (the
+ * dead session of accounts 16, 55 and 74 on 10-14), or a Location under the login or challenge paths. Any other Location is about the page.
+ * On 10-22 the story route answered 42 reads on 18 prod accounts with /stories/instagram/?r=1, 9 of those accounts served pages after it,
+ * and that redirect alone made account 201 read as stuck.
+ */
+export function lostSession(reason: string, location: string): boolean {
+  if (LOST_SESSION_CODES.has(reason.split(" ").at(-1) ?? "")) return true;
+  if (!location) return true;
+  const path = URL.parse(location, "https://www.instagram.com")?.pathname ?? location;
+  return LOST_SESSION_PATHS.some(prefix => path.startsWith(prefix));
+}
 export function stuckOf(tsv: string): StuckAccount[] {
-  return tsv.split("\n").filter(Boolean).map(line => {
-    const [kind, id, since, ...rest] = line.split("\t");
-    if (!kind || !STUCK_KINDS.has(kind) || rest.length || !Number.isInteger(Number(id)) || !Number.isFinite(Number(since))) throw new Error(`stuck accounts: unexpected line ${line.slice(0, 80)}`);
-    return { kind: kind as StuckKind, accountId: Number(id), since: Number(since) };
-  });
+  const stuck: StuckAccount[] = [];
+  const redirects = new Map<number, { count: number; since: number }>();
+  for (const line of tsv.split("\n").filter(Boolean)) {
+    const fields = line.split("\t");
+    const [kind = "", id, since, reason = "", location = "", count = ""] = fields;
+    const redirect = kind === "active_redirects" && Number(count) > 0;
+    if (fields.length !== 6 || !(redirect || STUCK_KINDS.has(kind)) || !Number.isInteger(Number(id)) || !Number.isFinite(Number(since)) || !Number.isInteger(Number(count))) throw new Error(`stuck accounts: unexpected line ${line.slice(0, 80)}`);
+    if (!redirect) { stuck.push({ kind: kind as StuckKind, accountId: Number(id), since: Number(since) }); continue; }
+    if (!lostSession(reason, location)) continue;
+    const seen = redirects.get(Number(id)) ?? { count: 0, since: Number(since) };
+    redirects.set(Number(id), { count: seen.count + Number(count), since: Math.min(seen.since, Number(since)) });
+  }
+  for (const [accountId, { count, since }] of redirects) if (count >= STUCK_302S) stuck.push({ kind: "active_302s", accountId, since });
+  return stuck;
 }
 
 /** The oldest due staging collab read, as stagingDueOf parses it: tagged rows past next_due_at, unpaused and with no open claim. */
