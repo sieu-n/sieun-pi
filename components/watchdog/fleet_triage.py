@@ -29,7 +29,7 @@ import json, os, re, subprocess, sys, time, datetime as dt
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from wd_common import chat_ids, credential_wait_at, stop_reason  # noqa: E402
+from wd_common import chat_ids, credential_wait_at, pa, stop_reason  # noqa: E402
 
 WATCH = Path.home() / '.prime/agent/watchdog'
 STATE_F = WATCH / 'triage_state.json'
@@ -63,8 +63,6 @@ def ts(x):
         return None
 
 
-def pa(*args, timeout=120):
-    return subprocess.run(['prime-agent', *args], capture_output=True, text=True, env=ENV, timeout=timeout)
 
 
 def list_sessions():

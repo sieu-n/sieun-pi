@@ -54,6 +54,12 @@ The watchdog finds Prime Agent sessions that stopped making progress and recover
 4. A chat list or board that does not answer never reads work as done.
 5. On 10-22 the Mac's cycles at 03:11Z and 03:22Z woke ten jobs whose turns dropped on 10-15, among them duties green fleet and checkin stuck_steps fix, and each found its work finished; 21 of the Mac's 71 wakes that day were of this kind.
 
+## Daemon reads
+
+1. A `list` or a plain `send` goes through sieun-pi's daemon reader (`components/user-history/src/daemon-cli.mjs` in the installed runtime or chat release), which waits 30 s for the daemon's hello and opens the daemon once more after a failed hello.
+2. Every other command, and every command on a box without the reader, runs the prime-agent CLI and runs once more when the hello missed the CLI's fixed 3 s, since nothing was done then.
+3. On 10-22 65 of 108 probes on us-metal02 got the hello after 3 to 7 s, and at 04:42Z `prime-agent list` failed so twice; the reader's list took 17 s at that load and answered.
+
 ## Install
 
 ```sh

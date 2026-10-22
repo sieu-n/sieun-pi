@@ -32,8 +32,37 @@ def log(entry):
     return entry
 
 
+# sieun-pi's daemon reader (components/user-history/src/daemon-cli.mjs, src/daemon-list.ts) in the installed runtime or chat release. The
+# prime-agent CLI waits a fixed 3 s for the daemon's hello, and on 10-22 65 of 108 probes on us-metal02 got it after 3 to 7 s, and at 04:42Z
+# `prime-agent list` failed so twice. The reader waits 30 s and opens the daemon once more after a failed hello.
+READER_ROOTS = (Path.home() / '.local/share/sieun-pi-runtime/current', Path.home() / '.local/share/sieun-pi-chat/current')
+HANDSHAKE_MISSES = ('waiting for the Prime Agent daemon handshake', 'connecting to the Prime Agent daemon')
+
+
+def daemon_reader():
+    """[node, daemon-cli.mjs] from the first root that has it with its tsx, or None."""
+    import shutil
+    node = next((str(p) for p in (Path.home() / '.local/node/bin/node', Path.home() / '.local/bin/node') if p.exists()), None) or shutil.which('node', path=ENV.get('PATH'))
+    script = next((root / 'components/user-history/src/daemon-cli.mjs' for root in READER_ROOTS
+                   if (root / 'components/user-history/src/daemon-cli.mjs').is_file() and (root / 'components/user-history/node_modules/tsx').is_dir()), None)
+    return [node, str(script)] if node and script else None
+
+
 def pa(*args, timeout=180):
-    return subprocess.run(['prime-agent', *args], capture_output=True, text=True, env=ENV, timeout=timeout)
+    """One prime-agent command. A list or a plain send goes through the daemon reader when this box has it; every other command, or any
+    command on a box without it, runs the CLI and runs once more when the daemon's hello missed its 3 s, since nothing was done then."""
+    reader = daemon_reader()
+    if reader and args[:1] == ('list',) and set(args[1:]) <= {'--all', '--json'}:
+        return subprocess.run([*reader, 'list', *(['--all'] if '--all' in args else [])], capture_output=True, text=True, env=ENV, timeout=timeout)
+    if reader and args[:1] == ('send',) and len(args) == 3 and not args[1].startswith('-'):
+        done = subprocess.run([*reader, 'send', args[1], args[2]], capture_output=True, text=True, env=ENV, timeout=timeout)
+        if done.returncode == 0:
+            done.stdout = f'Sent to {args[1]}'
+        return done
+    done = subprocess.run(['prime-agent', *args], capture_output=True, text=True, env=ENV, timeout=timeout)
+    if done.returncode != 0 and any(miss in (done.stderr or '') + (done.stdout or '') for miss in HANDSHAKE_MISSES):
+        done = subprocess.run(['prime-agent', *args], capture_output=True, text=True, env=ENV, timeout=timeout)
+    return done
 
 
 def _ts(x):
