@@ -153,6 +153,11 @@ export async function relayWatch(host: Host, pids: readonly number[]): Promise<R
   return { usable, footprints: null, error };
 }
 
+/** Sets `host`'s turn queue lead list through its relay (POST /v1/lead, `pi-pool lead` there): those sessions' queued runs start first; [] clears it. */
+export async function relayLead(host: Host, sessions: readonly string[]): Promise<void> {
+  await relayJson(host, "/v1/lead", { method: "POST", body: sessions.map(session => session + "\n").join(""), headers: { "content-type": "text/plain" } });
+}
+
 type RelayResponse = { status: number; headers: Record<string, string | string[] | undefined>; body: Buffer };
 
 /**

@@ -11,10 +11,10 @@ import { fileURLToPath } from "node:url";
 import { hostStats, usableRaw } from "./host-stats.ts";
 import { DELTA_HEADER, encodeLineDeltas } from "./line-delta.ts";
 import { firstPromptTunnel } from "./first-prompt.mjs";
-import { ownerTurnLines, piPoolOwnerTurn } from "./owner-turn.mjs";
+import { ownerTurnLines, piPoolLead, piPoolOwnerTurn, SESSION } from "./owner-turn.mjs";
 import { SLIM_HEADER, slimSnapshots } from "./slim-snapshot.mjs";
 
-const VERSION = 2;
+const VERSION = 3;
 const UPGRADE = "prime-daemon";
 
 const expand = path => path.startsWith("~/") ? join(homedir(), path.slice(2)) : path;
@@ -127,6 +127,18 @@ async function serveWatch(request, response) {
   send(response, 200, { usable, ...measured });
 }
 
+/**
+ * POST /v1/lead: the body lists session ids, one per line, and this box's turn queue starts their queued runs first (`pi-pool lead`); an empty
+ * body clears the list. The chat service on another box sends the chats that run here, since this box's pi-pool gets no list of its own.
+ */
+async function serveLead(request, response, lead) {
+  const sessions = (await readBody(request, WATCH_BODY_BYTES)).split("\n").map(line => line.trim()).filter(Boolean);
+  const bad = sessions.find(session => !SESSION.test(session));
+  if (bad !== undefined) return send(response, 400, { error: `not a session id: ${bad.slice(0, 40)}` });
+  await lead(sessions);
+  send(response, 200, { lead: sessions });
+}
+
 function send(response, status, body) {
   response.writeHead(status, { "Content-Type": "application/json" });
   response.end(JSON.stringify(body));
@@ -136,9 +148,10 @@ function send(response, status, body) {
  * The relay: checks the bearer token, tunnels `GET /v1/daemon` upgrades to the daemon socket (byte for byte, unless the client asks for slim
  * snapshots, `slimSnapshots`, or message update deltas, `encodeLineDeltas`, with a prompt's `ownerTurn` marked first, `ownerTurnLines`, and with a
  * create's `relayFirstPrompt` sent as soon as the create answers, `firstPromptTunnel`),
- * serves reads under the roots and the box's CPU, memory and turn queue. `markOwnerTurn` stands in for this box's pi-pool in tests.
+ * serves reads under the roots and the box's CPU, memory and turn queue, and writes the turn queue's lead list. `markOwnerTurn` and `lead` stand
+ * in for this box's pi-pool in tests.
  */
-export function createRelay(config, log = () => {}, { markOwnerTurn = piPoolOwnerTurn } = {}) {
+export function createRelay(config, log = () => {}, { markOwnerTurn = piPoolOwnerTurn, lead = piPoolLead } = {}) {
   const server = createServer(async (request, response) => {
     try {
       if (!authorized(request, config.token)) return send(response, 401, { error: "unauthorized" });
@@ -148,6 +161,7 @@ export function createRelay(config, log = () => {}, { markOwnerTurn = piPoolOwne
       if (request.method === "GET" && url.pathname === "/v1/usable") return send(response, 200, await usableRaw());
       if ((request.method === "GET" || request.method === "HEAD") && url.pathname === "/v1/file") return await serveFile(request, response, url, config.roots);
       if (request.method === "POST" && url.pathname === "/v1/watch") return await serveWatch(request, response);
+      if (request.method === "POST" && url.pathname === "/v1/lead") return await serveLead(request, response, lead);
       send(response, 404, { error: "unknown route" });
     } catch (error) {
       if (!response.headersSent) send(response, 500, { error: error instanceof Error ? error.message : String(error) });

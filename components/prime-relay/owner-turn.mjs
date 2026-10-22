@@ -11,17 +11,28 @@ import { Transform } from "node:stream";
 export const OWNER_TURN_FIELD = "ownerTurn";
 const KEY = Buffer.from(`"${OWNER_TURN_FIELD}"`);
 const NEWLINE = 10;
-const SESSION = /^[\w-]+$/;
+/** A session id as the relay takes one from a client. */
+export const SESSION = /^[\w-]+$/;
 
-/** `pi-pool owner-turn <session>` on this box; launchd gives the relay no ~/.local/bin on its PATH. */
-export function piPoolOwnerTurn(session) {
+/** One `pi-pool` command on this box, resolving to its stdout; launchd gives the relay no ~/.local/bin on its PATH. */
+function piPool(args) {
   const installed = join(homedir(), ".local/bin/pi-pool");
   return new Promise((resolve, reject) => {
-    execFile(existsSync(installed) ? installed : "pi-pool", ["owner-turn", session], (error, _stdout, stderr) => {
+    execFile(existsSync(installed) ? installed : "pi-pool", args, (error, stdout, stderr) => {
       if (error) reject(new Error((String(stderr).trim() || error.message).replace(/\s+/g, " ").slice(0, 300)));
-      else resolve();
+      else resolve(String(stdout));
     });
   });
+}
+
+/** `pi-pool owner-turn <session>` on this box. */
+export async function piPoolOwnerTurn(session) {
+  await piPool(["owner-turn", session]);
+}
+
+/** `pi-pool lead <session>...` on this box: these sessions' queued runs start first; no sessions clears the list. */
+export async function piPoolLead(sessions) {
+  await piPool(["lead", ...sessions]);
 }
 
 function markedLine(line, mark, log) {

@@ -320,7 +320,7 @@ export interface CheckInSource {
   poolAdmits?: (tree: string, provider: string) => Promise<boolean>;
   /** Where the sessions of the cut jobs pi-pool holds are kept across restarts (`PoolHeldJobs`); absent: kept in memory only. */
   poolHeldFile?: string;
-  /** Gets the whole chat list each time it loads or changes, so this box's turn queue starts the chat heads' runs first (`leadSessions`). Absent: none is written. */
+  /** Gets the whole chat list each time it loads or changes, so each box's turn queue starts the runs of the chats it runs first (`leadWriter`). Absent: none is written. */
   lead?: (chats: readonly string[]) => Promise<void>;
   /** The sessions every box's turn queue holds (`queueReader`), queued or working, which the check-in reads as waiting, not stalled; absent or failing: none. */
   queue?: () => Promise<PoolPlaces>;

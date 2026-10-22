@@ -15,7 +15,7 @@ import { checkInSettings } from "./checkin-settings.ts";
 import { checkInDuties } from "./checkin-findings.ts";
 import { CLEAN_ROOM_CHATS_FILE, CLEAN_ROOM_CORRECTIONS_FILE, CorrectionLedger } from "./chat-corrections.ts";
 import { claudeReader, leadSessions, markOwnerTurn, poolAdmits, readPoolClasses, readPoolStatus, setPoolPriority, treeFreeAt } from "./chat-pool.ts";
-import { relayStats } from "./chat-hosts.ts";
+import { leadWriter, relayStats } from "./chat-hosts.ts";
 import { boardQueueRead, hostsQueueRead, queueReader } from "./chat-turn-queue.ts";
 import { readCallHandles, readFootprints, startMacUsableWatch } from "./mac-usable-watch.ts";
 import { CallWatch } from "./hung-calls.ts";
@@ -231,6 +231,9 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const jobEnds = hostLeftovers({ local: replay ? dryLeftoverSource : leftoverSource, remote: replay ? undefined : sshLeftovers, self: () => catalog.selfHostName(),
     hostNamed: name => catalog.remoteHosts().find(({ host }) => host.name === name)?.host ?? null,
     hostOf: id => { const name = catalog.hostOf(id); return name ? catalog.remoteHosts().find(({ host }) => host.name === name)?.host ?? null : null; } });
+  // Only the serve that owns the live chats writes the turn queues' lead lists: each box gets the chats it runs, this one locally, the others
+  // through their relays.
+  const lead = ownChatsOnly ? null : leadWriter({ hostOf: id => catalog.hostOf(id), remotes: () => catalog.remoteHosts().map(({ host }) => host), local: leadSessions, log: dutyLog });
   chats = new Chats(index, threads, id => catalog.summary(id), extensionBuild(), loadRecord(join(dataDir, "extension-loads.json")),
     { board: id => boards.read(id), boardView: id => boards.view(id), rows: () => catalog.rows(), memory: checkInRecord(join(dataDir, "check-ins.json")), registry,
       correctionChecks: checkRecord(join(dataDir, "correction-checks.json")),
@@ -261,8 +264,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       dutyJobs: async id => (await duties.store.runs(id)).flatMap(run => run.job ? [run.job.id] : []),
       dutyRuns: id => duties.store.runs(id), prs: replay ? async () => new Map() : prStates(),
       archived: new IdIndex(join(dataDir, "archived-chats.json"), "Archived chat index"), cleanRoomChats,
-      // Only the serve that owns the live chats writes the turn queue's lead list, with the chats this box runs; another box's chats wait in its own queue.
-      ...(ownChatsOnly ? { owned: new IdIndex(join(dataDir, "own-chats.json"), "Own chat index") } : { lead: ids => leadSessions(ids.filter(id => catalog.hostOf(id) === null)) }), ...quiet ? { tickMs: 0 } : {} },
+      ...(lead ? { lead } : { owned: new IdIndex(join(dataDir, "own-chats.json"), "Own chat index") }), ...quiet ? { tickMs: 0 } : {} },
     line => process.stderr.write(line + "\n"));
   chats.briefChanged = () => { void catalog.notify().catch(() => {}); };
   catalog.onCut(cut => { if (resumesNow(cut, Date.now())) chats.interruptedSoon(0); });
@@ -433,6 +435,8 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   unloader?.unref();
   // A row that reads parked on its provider quota between sweeps is planned for at once, so the session stops seconds after its park.
   const parkSeen = new Map<string, string>();
+  // A chat that moves box leaves or joins this box's rows, so each row change splits the chat list again and writes the two boxes it changed.
+  const stopLeadWatch = !lead ? () => {} : catalog.onDaemonRows(() => { void chats.ids().then(ids => lead([...ids])).catch(() => {}); });
   const stopQuietWatch = !unloader ? () => {} : catalog.onDaemonRows(() => { void unloader_.quieted(parkChanges(parkSeen, catalog.daemonRows())); });
   // /tmp is a tmpfs on Linux, so what nobody holds or names there is RAM or swap that no work uses (src/tmp-sweep.ts).
   const stopTmpSweep = ownChatsOnly || process.platform !== "linux" ? () => {} : startTmpSweep({ rows: () => catalog.daemonRows(),
@@ -467,6 +471,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       clearInterval(prioritySync);
       if (unloader) clearInterval(unloader);
       stopQuietWatch();
+      stopLeadWatch();
       stopTmpSweep();
       stopWakes();
       stopBriefs();
