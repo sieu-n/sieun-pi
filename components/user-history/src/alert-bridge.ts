@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { ALERT_ROUTES, OPS_ROUTE, routeAlert } from "./alert-routes.ts";
 import { missing } from "./locked-json.ts";
-import type { TurnSince } from "./held-turns.ts";
+import { POOL_WAIT, type TurnSince } from "./held-turns.ts";
 import type { QueuePlace } from "./shared/types.ts";
 import { TICK_MS } from "./wakes.ts";
 
@@ -53,7 +53,9 @@ export interface TriageJob extends AlertJob { chat: string;
   /** When the bridge saw the job's latest model turn end. Absent: the job never had a turn. */
   ranAt?: number;
   /** The pool slot time of the job's failed first call for which the bridge last asked the resume pass to continue it (`AlertBridgeDeps.retryJob`). */
-  retriedAt?: number }
+  retriedAt?: number;
+  /** When the bridge moved this job's fires to a live or fresh job, since it ended with no model turn after it took them (`replaceEnded`). */
+  replacedAt?: number }
 /**
  * One alert rule firing in one owning chat. `rule` is the rule uid, or the alertname when the uid label is missing. The rule resolves when
  * every instance has resolved.
@@ -180,11 +182,11 @@ const firingSets = (rule: Tracked): number => Object.values(rule.instances).filt
 export const firingRules = (state: BridgeState, chat: string): Tracked[] => Object.values(state.rules).filter(rule => rule.chat === chat && !isResolved(rule));
 
 /**
- * Whether the rule's last fire still waits for a job: it has none, the bridge gave it to its job before that fire, or its job is not its
- * chat's triage job and never had a turn, so the chat's job takes it over.
+ * Whether the rule's last fire still waits for a job: it has none, the bridge gave it to its job before that fire, its job is not its
+ * chat's triage job and never had a turn, so the chat's job takes it over, or the bridge replaced its job (`replaceEnded`).
  */
 export const owed = (state: BridgeState, rule: Tracked): boolean => !isResolved(rule) && (rule.job === undefined || rule.job.at < rule.wokeAt ||
-  (state.chats[rule.chat] !== rule.job.id && state.jobs[rule.job.id]?.ranAt === undefined));
+  (state.chats[rule.chat] !== rule.job.id && state.jobs[rule.job.id]?.ranAt === undefined) || state.jobs[rule.job.id]?.replacedAt !== undefined);
 
 /** Whether the rule's job took its last fire and had a model turn end since, so someone works the fire. */
 export const held = (state: BridgeState, rule: Tracked): boolean => {
@@ -341,6 +343,8 @@ const TOKEN_HOOK_PREFIX = /^Failed to resolve API key for provider "[^"]+" from 
  * its run's place in pi-pool's turn queue while the queue holds it.
  */
 export type EscalationLine = AlertLine & { chat: string; job?: string; error?: string; queued?: QueuePlace;
+  /** The job the bridge replaced for this fire, since it ended with no model turn (`replaceEnded`). */
+  replaced?: string;
   /** With no job: when the start of the chat's triage job began, while it still runs. */
   waitingSince?: number;
   /** With no job: why the last start of the chat's triage job failed. */
@@ -352,8 +356,10 @@ export function escalationText(lines: readonly EscalationLine[]): string {
   const groups = new Map<string, EscalationLine[]>();
   for (const line of lines) groups.set(`${line.chat}\u0000${line.job ?? ""}`, [...groups.get(`${line.chat}\u0000${line.job ?? ""}`) ?? [], line]);
   const parts = [...groups.values()].map(group => {
-    const { chat, job, error, queued, waitingSince, startError } = group.find(line => line.queued) ?? group.find(line => line.error) ?? group[0]!;
-    const why = job && queued ? `its triage job ${job} has had no model turn, because its run waits in pi-pool's turn queue (${queued.position} of ${queued.total}, since ${minute(queued.since)})`
+    const { chat, job, error, queued, replaced, waitingSince, startError } = group.find(line => line.queued) ?? group.find(line => line.error) ?? group[0]!;
+    const why = replaced ? `its triage job ${replaced} ended with no model turn after it took the fire${error ? ` (its last call failed: ${failed(error)})` : ""}, ` +
+        "so the bridge gives it to a live or fresh triage job"
+      : job && queued ? `its triage job ${job} has had no model turn, because its run waits in pi-pool's turn queue (${queued.position} of ${queued.total}, since ${minute(queued.since)})`
       : job ? `its triage job ${job} has had no model turn${error ? ` (its last call failed: ${failed(error)})` : ""}`
       : waitingSince !== undefined ? `the start of its triage job has waited since ${minute(waitingSince)} and has not finished`
       : startError ? `the start of its triage job failed (${startError.slice(0, 200)}) and is tried again each poll` : "the alert bridge has not started its triage job yet";
@@ -443,7 +449,7 @@ export class AlertBridge {
       this.boarded = boarded;
       state = await this.reopen(state, boarded, now);
       const watched = await this.watch(state, now);
-      state = await this.tell(watched.state, boardless, now);
+      state = await this.tell(this.replaceEnded(watched.state, watched.ended, now), boardless, now);
       return this.escalate(state, boarded, watched, now);
     });
     return true;
@@ -523,7 +529,7 @@ export class AlertBridge {
       const turn = await this.deps.jobTurn(job, job.ranAt === undefined ? job.at : job.ranAt + 1);
       return job.ranAt === undefined ? !turn.ran : !turn.ran && turn.slotAt !== undefined;
     };
-    if (current && await keep(current)) {
+    if (current && current.replacedAt === undefined && await keep(current)) {
       await this.deps.deliver(current.id, firedAgainText(lines));
       this.deps.log(`alerts: ${chat.slice(0, 8)}: sent ${rules} to triage job ${current.name} (${current.id.slice(0, 8)})`);
       return current;
@@ -547,10 +553,11 @@ export class AlertBridge {
    * took crawler-prod-sticky-block-rotations-jump at 11:53:27Z while its run sat in the queue from 11:28:22Z (126 queued, 6 working), the
    * bridge escalated it at 12:23:43Z as a job with no model turn, and pi-pool let the run in at 12:57:04Z.
    */
-  private async watch(state: BridgeState, now: number): Promise<{ state: BridgeState; errors: Map<string, string>; parked: Set<string>; queued: Map<string, QueuePlace> }> {
+  private async watch(state: BridgeState, now: number): Promise<{ state: BridgeState; errors: Map<string, string>; parked: Set<string>; queued: Map<string, QueuePlace>; ended: Set<string> }> {
     const errors = new Map<string, string>();
     const queued = new Map<string, QueuePlace>();
     const parked = new Set<string>();
+    const ended = new Set<string>();
     const since = new Map<string, number>();
     for (const rule of Object.values(state.rules)) {
       if (waiting(state, rule, now) && state.jobs[rule.job!.id]) since.set(rule.job!.id, Math.min(since.get(rule.job!.id) ?? Infinity, rule.job!.at));
@@ -565,13 +572,33 @@ export class AlertBridge {
       const place = await this.deps.turnQueued?.(id).catch(() => null);
       if (place) queued.set(id, place);
       if ((turn.slotAt !== undefined && now < turn.slotAt + TICK_MS) || await this.poolHolds(id, turn.provider, now)) parked.add(id);
-      if (!this.deps.retryJob || turn.slotAt === undefined || turn.slotAt > now || (job.retriedAt ?? -1) >= turn.slotAt) continue;
-      if (await this.deps.jobWorking?.(job).catch(() => true)) continue;
-      this.deps.retryJob(job);
+      const retry = this.deps.retryJob !== undefined && turn.slotAt !== undefined && turn.slotAt <= now && (job.retriedAt ?? -1) < turn.slotAt;
+      const working = await (this.deps.jobWorking?.(job) ?? Promise.resolve(true)).catch(() => true);
+      if (!working && !retry && !place && !parked.has(id) && !(turn.error && POOL_WAIT.test(turn.error))) ended.add(id);
+      if (!retry || working || turn.slotAt === undefined) continue;
+      this.deps.retryJob!(job);
       jobs[id] = { ...job, retriedAt: turn.slotAt };
       this.deps.log(`alerts: triage job ${job.name} (${id.slice(0, 8)}) has had no turn and its pool slot ${minute(turn.slotAt)} passed; asked the resume pass to continue it`);
     }
-    return { state: { ...state, jobs }, errors, parked, queued };
+    return { state: { ...state, jobs }, errors, parked, queued, ended };
+  }
+
+  /**
+   * Marks each job in `ended` replaced (`replacedAt`) while a fire it took still fires, so `dispatch` gives those fires to the chat's live
+   * triage job, or to a fresh one at once when the ended job was the chat's own. `ended` holds the jobs with no model turn since they took a
+   * fire whose session has ended, was archived or settled on a failed call that names no pool wait. A job pi-pool holds keeps its place: one
+   * in the turn queue would have a fresh job queue behind it, as on 10-22, when 01a16086's run had waited 55 min at 12:21Z behind 193 others,
+   * and one that failed on a pool wait gets its continue from the resume pass.
+   */
+  private replaceEnded(state: BridgeState, ended: ReadonlySet<string>, now: number): BridgeState {
+    const jobs = { ...state.jobs };
+    for (const id of ended) {
+      const job = jobs[id];
+      if (!job || job.replacedAt !== undefined || !Object.values(state.rules).some(rule => rule.job?.id === id && !isResolved(rule))) continue;
+      jobs[id] = { ...job, replacedAt: now };
+      this.deps.log(`alerts: triage job ${job.name} (${id.slice(0, 8)}) ended with no turn after it took a fire; its fires go to a live or fresh job`);
+    }
+    return { ...state, jobs };
   }
 
   /** Whether pi-pool names a time ahead of `now` for the tree rooted at `tree`; a pool that does not say holds nothing. */
@@ -623,9 +650,12 @@ export class AlertBridge {
         const job = rule.job && !owed(state, rule) ? rule.job : undefined;
         const error = job && errors.get(job.id);
         const place = job && queued.get(job.id);
+        const old = rule.job && state.jobs[rule.job.id]?.replacedAt !== undefined ? rule.job : undefined;
+        const oldError = old && errors.get(old.id);
+        const replaced = old ? { replaced: old.name, ...oldError ? { error: oldError } : {} } : {};
         const start = job ? {} : this.handing.has(rule.chat) ? { waitingSince: this.handing.get(rule.chat)! }
           : this.startErrors.has(rule.chat) ? { startError: this.startErrors.get(rule.chat)! } : {};
-        return { ...alertLine(rule, this.firing), chat: chatName(rule.chat), ...job ? { job: job.name } : {}, ...error ? { error } : {}, ...place ? { queued: place } : {}, ...start };
+        return { ...alertLine(rule, this.firing), chat: chatName(rule.chat), ...job ? { job: job.name } : {}, ...error ? { error } : {}, ...place ? { queued: place } : {}, ...replaced, ...old ? {} : start };
       })), OPS_ROUTE.session);
       const rules = { ...state.rules };
       for (const key of due) rules[key] = { ...rules[key]!, escalatedAt: now };

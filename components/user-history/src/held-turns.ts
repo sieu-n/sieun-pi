@@ -131,13 +131,14 @@ export async function withFailedTurns(facts: readonly JobFact[], agentDir: strin
     // it in pi-pool again each try: it waits for an account. AI harness 10-21 16:13Z to 16:20Z: digest cache integration failed on a 429 three times, each followed
     // by a pi-pool-queue entry (50th, 41st, 53rd), and the check-in read it failed and p831 stalled. A place the failed turn already used is
     // not shown: at 16:2xZ wiki behind code root cause would have read "queued 22nd" from its 15:24Z entry, used by its 15:25Z turn.
-    if (fact.state === "working" && RATE_LIMIT.test(error) && inPoolRetry(text)) return { ...fact, retrying: true };
+    if (fact.state === "working" && POOL_WAIT.test(error) && inPoolRetry(text)) return { ...fact, retrying: true };
     const { wake: _, ...rest } = fact;
     return { ...rest, state: "failed", error };
   }));
 }
 
-const RATE_LIMIT = /\brate_limit_error\b|\b429\b|\brate limit\b|\bpi-pool:/i;
+/** A failed call's error that says a provider limit or pi-pool held it. */
+export const POOL_WAIT = /\brate_limit_error\b|\b429\b|\brate limit\b|\bpi-pool:/i;
 /**
  * Whether a session whose transcript ends on a failed turn is in Prime's provider retry with pi-pool: a pi-pool-queue entry came after its last
  * model reply that did not fail. Its newest entry came before the last failure, so that slot was used and the retry has not queued again yet;

@@ -339,6 +339,48 @@ test("a job whose run waits in pi-pool's turn queue escalates with its place in 
   await f.bridge.tick();
   assert.equal(escalations().length, 1);
   assert.match(escalations()[0]!.text, /On VP of CI, its triage job alert ci-history-stale 1 has had no model turn, because its run waits in pi-pool's turn queue \(126 of 126, since 2026-10-22T11:28Z\): ci-history-stale/);
+  assert.equal(f.started.length, 1, "a fresh job would queue behind it, so the queued job keeps the fire");
+});
+
+// Ops guy, 10-22: when a chat's triage job has ended, the bridge should start a fresh one, where before it waited for the next fire or 24 h.
+test("a triage job that ended with no turn after it took a fire hands the fire to a fresh job at once, with the old one as its previous", async () => {
+  const fired = Date.parse("2026-10-22T11:53:27.222Z");
+  const f = await fixture();
+  f.set([ciAlert("aaaa0000000000f2", "2026-10-22T11:52:00.000Z")]); f.at(fired);
+  await f.bridge.tick();
+  f.turns.set("job-1", { ran: false });
+  f.at(fired + 30_000);
+  await f.bridge.tick();
+  assert.equal(f.started.length, 1, "a job that still works keeps the fire");
+  f.working.delete("job-1");
+  f.at(fired + 60_000);
+  await f.bridge.tick();
+  assert.equal(f.started.length, 2, "the ended job's fire goes to a fresh job on the next poll");
+  assert.equal(f.started[1]!.previous?.id, "job-1");
+  assert.equal(f.started[1]!.line.rule, "ci-history-stale");
+  const state = await f.state();
+  assert.equal(state.chats[CI], "job-2");
+  assert.equal(state.rules[ruleKey(CI, "ci-history-stale")]!.job!.id, "job-2");
+  f.at(fired + 90_000);
+  await f.bridge.tick();
+  assert.equal(f.started.length, 2, "one fresh job");
+});
+
+test("a triage job that settled on a failed call naming no pool wait counts as ended, and one that failed on a pool wait keeps its place", async () => {
+  const fired = Date.parse("2026-10-22T11:53:27.222Z");
+  const f = await fixture();
+  f.set([ciAlert("aaaa0000000000f3", "2026-10-22T11:52:00.000Z")]); f.at(fired);
+  await f.bridge.tick();
+  f.working.clear();
+  f.turns.set("job-1", { ran: false, error: "pi-pool: this session waits for its slot at 2026-10-22T11:50:00.000Z", slotAt: Date.parse("2026-10-22T11:50:00Z"), provider: "anthropic" });
+  f.at(fired + 30_000);
+  await f.bridge.tick();
+  assert.equal(f.started.length, 1, "the resume pass continues a job held on a pool wait");
+  f.turns.set("job-1", { ran: false, error: "400 invalid_request_error: messages: text content blocks must be non-empty", provider: "anthropic" });
+  f.at(fired + 60_000);
+  await f.bridge.tick();
+  assert.equal(f.started.length, 2);
+  assert.equal(f.started[1]!.previous?.id, "job-1");
 });
 
 test("a held job that runs at its slot holds the fire, so nothing escalates", async () => {
@@ -362,7 +404,6 @@ test("a job whose turn ended after it took the fire holds it, so nothing escalat
   f.set([ciAlert()]);
   f.turns.set("job-1", { ran: false });
   await f.bridge.tick();
-  f.working.clear();
   f.at(NOW + 5 * 60_000);
   await f.bridge.tick();
   const s1 = await f.state();
