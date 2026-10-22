@@ -6,7 +6,7 @@ import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, normalize, relative } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { Host } from "./hosts.ts";
-import { jobScratch } from "./chat-brief.ts";
+import { jobFolders } from "./chat-brief.ts";
 import { WIKI_CONTENT_DIR } from "./chat-wiki.ts";
 import type { RawProcess } from "./mac-usable-watch.ts";
 import { stopOrphanServices } from "./orphan-services.ts";
@@ -249,14 +249,14 @@ const keptNotes = (kept: ReadonlyMap<string, string>): string[] => [...kept].map
 
 /**
  * Stops the units and deletes the paths the ownership records of gone sessions name (`readOwned`) and the scratch folders the job line gave
- * those sessions (`jobScratch`, `~/scratch/<session id>`), and keeps a path any process runs in, holds or names. A recorded path outside those
- * folders is kept for good and leaves its record when another record names it, a path in it or a folder above it, or when `keepReason` finds
+ * those sessions (`jobFolders`: `~/scratch/<session id>`, and `/drive2/<user>/scratch/<session id>` on us-metal02), and keeps a path any
+ * process runs in, holds or names. A recorded path outside those folders is kept for good and leaves its record when another record names it, a path in it or a folder above it, or when `keepReason` finds
  * no proof that the job made the whole tree or finds a published artifact in it. A kept path stays in its
  * record or its session's folder name, so a later sweep of deleted jobs deletes it once nothing holds it. The paths the records name on other
  * boxes come back as `away` and stay in the records, for the box that runs the cleanup over ssh (`hostLeftovers`).
  */
 async function endOwned(source: LeftoverSource, files: readonly string[], dirs: readonly string[], sessions: readonly string[]): Promise<{ owned: readonly string[]; units: readonly string[]; elsewhere: readonly string[]; away: Record<string, string[]>; kept: readonly string[] }> {
-  const folders = sessions.filter(session => SESSION.test(session)).map(session => jobScratch(session, homedir()));
+  const folders = sessions.filter(session => SESSION.test(session)).flatMap(session => jobFolders(session, homedir()));
   if (!files.length && !folders.length) return { owned: [], units: [], elsewhere: [], away: {}, kept: [] };
   const records = await Promise.all(files.map(file => readOwned(file, dirs)));
   const wanted = [...new Set(records.flatMap(record => record.units))];
@@ -574,7 +574,7 @@ export function hostLeftovers(options: { local: LeftoverSource; hostOf: (session
     const left = await remote!(host, args);
     const stopped = left.elsewhere?.length ? await local.stopUnits(left.elsewhere).catch(() => []) ?? [] : [];
     const self = options.self?.() ?? null;
-    const folders = (left.sessions ?? []).filter(session => SESSION.test(session)).map(session => jobScratch(session, homedir()));
+    const folders = (left.sessions ?? []).filter(session => SESSION.test(session)).flatMap(session => jobFolders(session, homedir()));
     const here = [...self ? hostPaths(left.away?.[self] ?? []) : [], ...folders];
     const { removed, kept } = here.length ? await removeFree(local, here).catch(() => ({ removed: [], kept: new Map<string, string>() })) : { removed: [], kept: new Map<string, string>() };
     const notes = [...left.kept ?? [], ...keptNotes(kept)];

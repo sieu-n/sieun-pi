@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
+import { userInfo } from "node:os";
 import { join } from "node:path";
 import { cachedJsonFile, type JsonFile, transactJsonFile } from "./locked-json.ts";
 import { briefCorrections } from "./chat-corrections.ts";
@@ -134,13 +135,33 @@ export function jobScratch(session: string, home = "~"): string {
   return `${home}/scratch/${session}`;
 }
 
+/** The second disk of a box that has one, us-metal02's /drive2 (2.2 TB SAS, 2.0 TB free on 10-22), whose 30-day forecast reads a 7 d rate. */
+export const RIG_DISK = "/drive2";
+
+/**
+ * A job's folder for database rigs and data copies on `RIG_DISK`, `<disk>/<user>/scratch/<its session id>`, which the job's end deletes like
+ * `jobScratch`. On 10-22 the ClickHouse rigs of two jobs, 87 GB and up to 110 GB under ~/scratch, took the 30-day forecast of us-metal02's /
+ * (rule metal02-dev-disk-fill-30d) from 61 days at 11:00Z to 23 days at 15:00Z, while / grew about 20 GB a day without them.
+ */
+export function jobRigScratch(session: string, disk = RIG_DISK): string {
+  return `${disk}/${userInfo().username}/scratch/${session}`;
+}
+
+/** The folders a job's end deletes for one of its sessions: its scratch folder, and its rig folder on a box with `RIG_DISK`. */
+export function jobFolders(session: string, home: string, disk = RIG_DISK): string[] {
+  return [jobScratch(session, home), ...existsSync(disk) ? [jobRigScratch(session, disk)] : []];
+}
+
 export function jobReplyGuideline(job: ChatJobOf, session: string): string {
   const send = job.root ? `await agent_message.send(report, receiver_role="sibling", receiver_name="${job.chat}")` : `await agent_message.send(report, receiver_role="parent")`;
   const scratch = jobScratch(session);
   return `You are a job of the chat${job.chat ? ` ${job.chat}` : ""}. When you finish, fail or get blocked, send your report first with \`${send}\`, ` +
     `and lead it with the answer. ${MERGE_RULE_SHORT} Put every scratch repo tree (a \`git archive\` export, or a worktree where the repo allows ` +
     `one), rig and data copy you or your subagents make to throw away under ${scratch}/, your own folder, which your end deletes once no process ` +
-    "uses it; never put one in a wiki session folder or under ~/.prime/agent/session-artifacts. Export only the paths you build or test " +
+    "uses it; never put one in a wiki session folder or under ~/.prime/agent/session-artifacts. " +
+    (existsSync(RIG_DISK) ? `Put a database rig's data folder (ClickHouse, Postgres, Kafka) and a data copy under ${jobRigScratch(session)}/ instead, ` +
+      "which your end deletes too, and run the rig's container with `--user \"$(id -u):$(id -g)\"` so your end can delete what it writes. " : "") +
+    "Export only the paths you build or test " +
     "(`git archive <commit> -- <paths>`), since a whole tree is 0.6 GB, and commit through a private index, which needs no tree copy. " +
     "Record a throwaway path outside your folder and each `systemd-run` unit with `board.own(path, unit=...)`, and keep reports, evidence and " +
     "helpers other jobs run under ~/work/<job>/ or the repo, never in your scratch folder. " +
