@@ -16,8 +16,9 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  *   convex/http.ts no longer routes the provider's own path and convex/webhooks/vent.ts takes the source.
  * - provider_keys_outside_vent: (location, key name) pairs where a provider key still sits in a deployment other than Vent, read with the
  *   cutover's env-name listers (sessions/2026/10/18/1610-vent-cutover-all-callers/data) plus Convex env lists and the tier files at origin/main.
- * - no_prod_traffic_sites, supporting: of the through sites that run in prod (not CODE_ONLY_ROWS), how many prod Vent logged no successful
- *   vent.call for in the share script's last 7 days. It proves use, so it swings with demand and never changes the headline.
+ * - no_prod_traffic_sites, shown with no target: of the through sites that run in prod (not CODE_ONLY_ROWS), how many prod Vent logged no
+ *   successful vent.call for in the share script's last 7 days. It proves use, so it swings with demand (c67); the duty JSON lists no metric
+ *   for it, so it never misses (10-22: it read 3 for Notion, Telegram and the Slack incoming webhook, which no customer had connected yet).
  * - code_vent_sites and tip_code_vent_sites: of the code_rows call sites at the tip, how many go through Vent by code alone at main and at
  *   the tip, so the cutover's code progress reads before prod runs it; new_direct_sites and tip_removed_sites count the sites the tip added
  *   and dropped.
