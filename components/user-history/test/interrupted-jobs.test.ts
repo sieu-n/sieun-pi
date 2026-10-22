@@ -1,7 +1,7 @@
 // Guards the 10-15 13:48Z incident: a token hook failure and a worker stop ended about 20 jobs, and nothing restarted them.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -358,4 +358,13 @@ test("a job the send pass holds on its pool wait joins the held list, so its pas
     : { paused: [], heads: [], children: [], checked_at: "now", held: [hold] });
   const report = await runs.resumeJobs(() => true, async () => {});
   assert.deepEqual(report?.held?.map(run => run.session_id).sort(), [other.session_id, cut.session_id].sort());
+});
+
+test("every resume run looks back with no limit, so a cut older than a day still gets its continue", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "resume-look-back-"));
+  try {
+    const echo = join(dir, "echo.py");
+    await writeFile(echo, `import json, sys\nprint(json.dumps({"paused": [], "heads": [], "checked_at": " ".join(sys.argv[1:])}))\n`);
+    assert.equal((await runScript(["--dry-run", "--direct"], echo)).checked_at, "--json --since-minutes 0 --dry-run --direct");
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });

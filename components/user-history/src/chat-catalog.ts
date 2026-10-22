@@ -899,7 +899,7 @@ export class Catalog {
     // The reads the chat loop below needs start now and run while the rows are built: one after another, each waited behind whatever else the
     // main thread ran, and on 10-19 live projections waited about as long as their own code ran (wall p90 100 to 133 ms, own code p90 58 to 66 ms).
     const startedAt = Date.now();
-    const linksOf = new Map([...chats ?? []].map(id => [id, this.chats.links(id).catch(() => null)] as const));
+    const linksOf = new Map([...chats ?? []].map(id => [id, this.chats.links(id, this.title(id) ?? undefined).catch(() => null)] as const));
     const queuedRead = this.queueSource();
     const wakesRead = this.wakesSource(startedAt).catch(() => []);
     const originOf = await wait(this.origins.resolver(chats ?? new Set()));
@@ -976,7 +976,7 @@ export class Catalog {
     const chatRows = rows.filter(row => row.chat);
     for (const row of chatRows) {
       await breathe();
-      const links = await wait(linksOf.get(row.id) ?? this.chats.links(row.id).catch(() => null));
+      const links = await wait(linksOf.get(row.id) ?? this.chats.links(row.id, row.name).catch(() => null));
       row.agents = keptChatAgents({ self: { id: row.id, name: row.name }, children: links?.children ?? [], childSessions: subagentSessions(children.get(row.id) ?? [], children, this.cuts),
         board: links?.board ?? null, roots: links?.roots ?? [], messages: links?.messages ?? [], rows: agentRows, now });
       const sessions = stepSessions(links?.board ?? null, row.agents);

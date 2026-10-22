@@ -15,7 +15,7 @@ import { type PoolPart, type ThreadParts, threadKey } from "../src/chat-pool.ts"
 import { ThreadHub } from "../src/chat-threads.ts";
 import { Chats } from "../src/chats.ts";
 import { IdIndex } from "../src/id-index.ts";
-import { type DaemonAnswer, HOLD_REACH_MS, IdleUnloader, poolHoldsPast, providerWaits, retryCandidates, unloadPlan } from "../src/idle-unload.ts";
+import { type DaemonAnswer, IdleUnloader, poolHoldsPast, providerWaits, retryCandidates, unloadPlan } from "../src/idle-unload.ts";
 import type { ModelInfo, SessionRow } from "../src/shared/types.ts";
 import { fakeThreads, ownerAsks, reply, row, source } from "./chats-helpers.ts";
 
@@ -42,7 +42,7 @@ const reads = (slot: (tree: string) => number | null) => ({
 test("the 06:03Z rows: each of the six chats asleep in its provider retry is planned once pi-pool holds its tree, where none was before", async () => {
   const candidates = retryCandidates(day.rows, input);
   assert.deepEqual(candidates.map(candidate => candidate.sessionId).sort(), [...chats].sort());
-  const held = await providerWaits(candidates, at, QUIET, reads(() => at + 3 * 60 * MIN), chats);
+  const held = await providerWaits(candidates, at, QUIET, reads(() => at + 3 * 60 * MIN));
   assert.deepEqual([...held.keys()].sort(), [...chats].sort());
   const planned = new Set(unloadPlan(day.rows, { ...input, held }).map(planned => planned.sessionId));
   for (const chat of chats) assert.ok(planned.has(chat), chat);
@@ -57,19 +57,15 @@ test("the 06:03Z rows: each of the six chats asleep in its provider retry is pla
   assert.equal(retryCandidates([...others, { ...seo, attachedClients: 0 }], dormant).some(candidate => candidate.sessionId === seo.sessionId), true);
 });
 
-test("a chat stops on a hold past HOLD_REACH_MS or one with no time named, a job does not, and a tree served within the quiet window keeps both", async () => {
-  assert.equal(poolHoldsPast(at + HOLD_REACH_MS + MIN, at, QUIET, true), true, "its revive asks the pool with no look-back");
-  assert.equal(poolHoldsPast(at + HOLD_REACH_MS + MIN, at, QUIET), false, "the resume pass would not look back that far for a job");
-  assert.equal(poolHoldsPast(null, at, QUIET, true), true);
-  assert.equal(poolHoldsPast(null, at, QUIET), false);
-  for (const chat of [true, false]) {
-    assert.equal(poolHoldsPast(at + QUIET - MIN, at, QUIET, chat), false);
-    assert.equal(poolHoldsPast(at, at, QUIET, chat), false, "the pool serves the tree now");
-  }
+test("a session stops on a hold past the quiet window or one with no time named, and a tree served within the quiet window keeps it", async () => {
+  assert.equal(poolHoldsPast(at + 30 * 60 * MIN, at, QUIET), true, "a chat's revive and the job sweep ask the pool with no look-back");
+  assert.equal(poolHoldsPast(null, at, QUIET), true);
+  assert.equal(poolHoldsPast(at + QUIET - MIN, at, QUIET), false);
+  assert.equal(poolHoldsPast(at, at, QUIET), false, "the pool serves the tree now");
   const candidates = retryCandidates(day.rows, input);
-  assert.equal((await providerWaits(candidates, at, QUIET, reads(() => null), chats)).size, 0, "pi-pool serves every tree now");
+  assert.equal((await providerWaits(candidates, at, QUIET, reads(() => null))).size, 0, "pi-pool serves every tree now");
   const unread = { ...reads(() => null), read: async () => ({ threads: new Map() }) };
-  assert.equal((await providerWaits(candidates, at, QUIET, unread, chats)).size, 0, "a tree the pool gave no reading for stops nothing");
+  assert.equal((await providerWaits(candidates, at, QUIET, unread)).size, 0, "a tree the pool gave no reading for stops nothing");
 });
 
 const retryState: DaemonAnswer = { success: true, data: { activity: "working", isSessionActive: true, isStreaming: false, isCompacting: false, isBashRunning: false, isRunningTools: false } };
@@ -79,7 +75,7 @@ test("a chat's stop lets go of the service's attach before the kill, and a chat 
   const calls: string[] = [], stopped: string[] = [], lines: string[] = [];
   const unloader = new IdleUnloader({
     rows: () => day.rows, localRows: () => [], idleMs: () => QUIET, chats: async () => chats, dormant: () => false, pool: async () => new Set(),
-    waking: async () => new Set(), held: async (rows, _now, _idle, chatIds) => new Map(rows.filter(candidate => chatIds.has(candidate.sessionId)).map(candidate => [candidate.sessionId, null])),
+    waking: async () => new Set(), held: async rows => new Map(rows.filter(candidate => chats.has(candidate.sessionId)).map(candidate => [candidate.sessionId, null])),
     own: async () => new Map(), restNow: async () => false, title: () => null,
     release: async id => { calls.push(`release ${id}`); return id !== keep!.sessionId; },
     request: async (candidate, type) => { calls.push(`${type} ${candidate.sessionId}`); return type === "get_state" ? retryState : { success: true }; },

@@ -232,28 +232,18 @@ export function unloadPlan(rows: readonly SessionSummary[], input: PlanInput): S
 }
 
 /**
- * How far ahead a pool hold may end for the unload to stop a job asleep on it: the resume pass reads a failed turn for 24 h after it
- * (resume_paused.py --since-minutes 1440, which skips a run whose last activity or failed reply is older), so a job stopped on a longer hold
- * would get no continue. Such a job keeps Prime's own wait. A chat has no such limit: `Chats.revive` asks pi-pool about a stopped chat at every
- * wake with no look-back (chat-recovery.ts `stallAction`, `stopped`).
- */
-export const HOLD_REACH_MS = 20 * 60 * 60_000;
-
-/**
  * Whether the unload stops a session asleep in its provider retry whose tree pi-pool next serves at `freeAt` (epoch ms, null when the pool
- * names no time), from a pool reading that came back. A job stops only when that comes after the unload's minutes and within HOLD_REACH_MS. A
- * tree the pool would serve sooner is left to Prime's retry and the job sweep's abort (ab65b511), which continue it in place. A chat
- * (`chat`) stops for any hold past the unload's minutes, one with no time included, since its revive reopens it whenever the pool admits it.
+ * names no time), from a pool reading that came back. It stops when that comes after the unload's minutes or the pool names no time. A tree
+ * the pool would serve sooner is left to Prime's retry and the job sweep's abort (ab65b511), which continue it in place. No hold is too long
+ * to stop on: a chat's revive and the job sweep's resume pass (`resumeJobs`, --since-minutes 0) ask pi-pool again with no look-back.
  * A session that already waited the unload's minutes (`waitedMs`, since its last activity) stops on any hold the pool does not lift now, near
  * or not: at 16:18Z on 10-19 13 sessions sat 15 to 26 min in their retry on workers of their own (4.9 GB) while `pi-pool who` named a slot
  * that kept moving to about now (accounts were short, 12 to 81 trees waiting on each of 6), so no reading ever came past the window, and the
  * box OOM-killed 11 processes.
  */
-export function poolHoldsPast(freeAt: number | null, now: number, idleMs: number, chat = false, waitedMs = 0): boolean {
+export function poolHoldsPast(freeAt: number | null, now: number, idleMs: number, waitedMs = 0): boolean {
   if (freeAt === now) return false;
-  if (waitedMs >= idleMs) return chat || freeAt === null || freeAt <= now + HOLD_REACH_MS;
-  if (chat) return freeAt === null || freeAt > now + idleMs;
-  return freeAt !== null && freeAt > now + idleMs && freeAt <= now + HOLD_REACH_MS;
+  return waitedMs >= idleMs || freeAt === null || freeAt > now + idleMs;
 }
 
 /**
@@ -385,9 +375,9 @@ export interface UnloadSource {
   waking(now: number): Promise<ReadonlySet<string>>;
   /**
    * Of `rows` (`retryCandidates`), the ones whose transcript ends on a failed reply and whose tree pi-pool holds past the unload's minutes
-   * (`poolHoldsPast`, which judges the `chats` apart), with when the hold ends.
+   * (`poolHoldsPast`), with when the hold ends.
    */
-  held(rows: readonly SessionSummary[], now: number, idleMs: number, chats: ReadonlySet<string>): Promise<ReadonlyMap<string, number | null>>;
+  held(rows: readonly SessionSummary[], now: number, idleMs: number): Promise<ReadonlyMap<string, number | null>>;
   /** Of `rows` (`parkCandidates`), the ones whose transcript shows a quota park (`quotaParkedUntil`), with its resume time. Absent, none. */
   parked?(rows: readonly SessionSummary[], now: number): Promise<ReadonlyMap<string, number>>;
   /**
@@ -448,10 +438,10 @@ export interface WaitReads {
 
 /**
  * Of `rows` (`retryCandidates`), each one of this box whose transcript ends on a failed reply (`lastTurnError`) and whose tree, keyed by its
- * root session as pi-pool keys it, the pool serves next only past the unload's minutes (`poolFreeAt`, `poolHoldsPast`, with each of `chats`
- * judged as a chat), with when that is. The trees are read WAIT_READ_TREES at a time.
+ * root session as pi-pool keys it, the pool serves next only past the unload's minutes (`poolFreeAt`, `poolHoldsPast`), with when that
+ * is. The trees are read WAIT_READ_TREES at a time.
  */
-export async function providerWaits(rows: readonly SessionSummary[], now: number, idleMs: number, reads: WaitReads, chats: ReadonlySet<string> = new Set()): Promise<Map<string, number | null>> {
+export async function providerWaits(rows: readonly SessionSummary[], now: number, idleMs: number, reads: WaitReads): Promise<Map<string, number | null>> {
   const byId = new Map(reads.all.map(row => [row.sessionId, row] as const));
   const rootOf = (row: SessionSummary): string => {
     const seen = new Set([row.sessionId]);
@@ -473,7 +463,7 @@ export async function providerWaits(rows: readonly SessionSummary[], now: number
     if (!parts) return [];
     const freeAt = poolFreeAt(parts, row.model!.provider, now);
     const waited = now - Date.parse(row.lastActivityAt ?? "");
-    return poolHoldsPast(freeAt, now, idleMs, chats.has(row.sessionId), Number.isFinite(waited) ? waited : 0) ? [[row.sessionId, freeAt] as const] : [];
+    return poolHoldsPast(freeAt, now, idleMs, Number.isFinite(waited) ? waited : 0) ? [[row.sessionId, freeAt] as const] : [];
   }));
 }
 
@@ -569,7 +559,7 @@ export class IdleUnloader {
     const fresh = (row: SessionSummary): boolean => (!only || only.has(row.sessionId)) && !this.out.has(row.sessionId) && !this.gone.has(goneKey(row));
     const candidates = retryCandidates(source.rows(), input).filter(fresh);
     const held = candidates.length && idleMs !== null
-      ? await within(source.held(candidates, now, idleMs, chats).catch(error => { source.log(`idle unload: provider waits: ${error instanceof Error ? error.message : String(error)}`); return new Map<string, number | null>(); }),
+      ? await within(source.held(candidates, now, idleMs).catch(error => { source.log(`idle unload: provider waits: ${error instanceof Error ? error.message : String(error)}`); return new Map<string, number | null>(); }),
         HELD_BOUND_MS, new Map<string, number | null>())
       : new Map<string, number | null>();
     lap("pool waits");

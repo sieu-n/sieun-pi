@@ -1334,15 +1334,17 @@ export class Chats {
 
   /**
    * What `chatAgents` needs from the chat side for one chat: the hub's child snapshots, the board (the hub's copy while attached, else the file),
-   * the roots the registry lists under the chat's name or id, and the transcript the hub holds. Empty for a thread that is not a chat.
+   * the roots the registry lists under the chat's id and each of its names, and the transcript the hub holds. Empty for a thread that is not a
+   * chat. `name` is the catalog's title of the chat: the hub knows a name only while it holds the chat, and a root filed before 10-18 has no
+   * chatId, so on 10-15 the roots filed under a detached chat's name fell back to step links.
    */
-  async links(id: string): Promise<ChatLinks> {
+  async links(id: string, name?: string): Promise<ChatLinks> {
     await this.load();
     if (!this.chatIds.has(id)) return { children: [], board: null, roots: [], messages: [] };
     const state = this.threads.state?.(id);
     const board = state?.board !== undefined ? state.board : await (this.source.boardView ?? this.source.board).call(this.source, id).catch(() => null);
-    const name = state?.info?.name?.trim();
-    const roots = this.source.registry ? await this.source.registry.rootsOf(name ? [id, name] : [id]).catch(() => []) : [];
+    const keys = [...new Set([id, state?.info?.name?.trim(), name?.trim()].filter((key): key is string => !!key))];
+    const roots = this.source.registry ? await this.source.registry.rootsOf(keys).catch(() => []) : [];
     return { children: this.children.get(id) ?? state?.children ?? [], board, roots, messages: state?.messages ?? [] };
   }
 

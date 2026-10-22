@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { SessionSummary } from "prime-agent";
 import { type PoolPart, threadKey } from "../src/chat-pool.ts";
-import { HOLD_REACH_MS, poolHoldsPast, providerWaits } from "../src/idle-unload.ts";
+import { poolHoldsPast, providerWaits } from "../src/idle-unload.ts";
 
 const MIN = 60_000;
 const QUIET = 15 * MIN;
@@ -30,7 +30,6 @@ test("a session that already waited the quiet window stops on a rolling slot, an
   assert.equal(await held(26, at + 15_000), true, "26 min into its wait with the slot 15 s ahead, as at 16:18Z");
   assert.equal(await held(5, at + 15_000), false, "5 min into its wait: Prime's retry may still get it the slot");
   assert.equal(await held(26, null), false, "the pool serves the tree now: Prime's retry and the job sweep continue it in place");
-  assert.equal(poolHoldsPast(at + HOLD_REACH_MS + MIN, at, QUIET, false, 26 * MIN), false, "a job stopped past HOLD_REACH_MS would get no continue");
-  assert.equal(poolHoldsPast(null, at, QUIET, false, 26 * MIN), true, "a job 26 min into a wait with no time named is a hold too");
-  assert.equal(poolHoldsPast(at + MIN, at, QUIET, true, 20 * MIN), true, "a chat stops on it the same way");
+  assert.equal(poolHoldsPast(at + 30 * 60 * MIN, at, QUIET, 26 * MIN), true, "a hold a day away stops it too: the resume pass looks back with no limit");
+  assert.equal(poolHoldsPast(null, at, QUIET, 26 * MIN), true, "a session 26 min into a wait with no time named is a hold too");
 });

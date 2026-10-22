@@ -173,7 +173,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   // While a chat or one of its jobs works, the service keeps the Mac from idle sleep (10-05: a battery sleep stopped every chat and job).
   const awake = new IdleSleepHold(line => process.stderr.write(`${new Date().toISOString()} ${line}\n`));
   const cleanRoomChats = new IdIndex(join(dataDir, CLEAN_ROOM_CHATS_FILE), "Clean-room chat index");
-  const catalog = new Catalog(socketPath, readState, labels, { ids: () => chats.ids(), checkIns: () => chats.checkIns(), links: id => chats.links(id), briefs: () => chats.briefs(), archivedIds: () => chats.archivedIds(), roster: children => chats.roster(children) }, new ThreadOrigins(created, cleanRoomChats), options.hosts ?? null, options.copyFile ?? null);
+  const catalog = new Catalog(socketPath, readState, labels, { ids: () => chats.ids(), checkIns: () => chats.checkIns(), links: (id, name) => chats.links(id, name), briefs: () => chats.briefs(), archivedIds: () => chats.archivedIds(), roster: children => chats.roster(children) }, new ThreadOrigins(created, cleanRoomChats), options.hosts ?? null, options.copyFile ?? null);
   const boards = new BoardStore(dataDir);
   const corrections = new CorrectionLedger(dataDir);
   const threads = new ThreadHub(socketPath, catalog, () => defaults.read(), async id => (await chats.ids()).has(id) ? boards.read(id) : undefined,
@@ -386,8 +386,8 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     // root session) only past the unload's minutes. Only this box's sessions: another box's pool decides for its own. The job sweep's resume
     // pass continues a job once the pool or the token hook lets its tree in (resume_paused.py unload_stop_holds), and a chat's revive reopens
     // the chat once pi-pool admits it (Chats.revive).
-    held: (rows, now, idleMs, chatIds) => providerWaits(rows, now, idleMs, { all: catalog.daemonRows(), local: row => !catalog.hostOf(row.sessionId),
-      tail: async file => (await tailLines(file, 64 * 1024)).join("\n"), read: threads => readPoolStatus(threads, { maxAgeMs: 60_000 }) }, chatIds),
+    held: (rows, now, idleMs) => providerWaits(rows, now, idleMs, { all: catalog.daemonRows(), local: row => !catalog.hostOf(row.sessionId),
+      tail: async file => (await tailLines(file, 64 * 1024)).join("\n"), read: threads => readPoolStatus(threads, { maxAgeMs: 60_000 }) }),
     // A session in Prime's quota park stops at once: its durable quota-resume job loads it again at the reset (src/idle-unload.ts
     // quotaParkedUntil). Only this box's sessions, whose transcripts this box holds.
     parked: async (rows, now) => new Map((await Promise.all(rows.filter(row => !catalog.hostOf(row.sessionId) && row.sessionFile).map(async row => {

@@ -77,13 +77,16 @@ const warnLine = (line: string): void => { process.stderr.write(`${line}\n`); };
 /**
  * Runs the script to its end and answers its report, with a warning once it runs past `warnAfterMs`. A run that failed but printed a report
  * (a stop after its first box) answers that report, with the cause in `incomplete` when the script named none; a run with no report rejects
- * with its flags, exit cause and last output lines.
+ * with its flags, exit cause and last output lines. Every run looks back with no limit (--since-minutes 0): the script's default of 24 h
+ * dropped a cut that no pass had resumed in a day, and nothing looked at it again. 01a14eb4-de62-704f-9d69-46ab73c7268a, cut on the token
+ * hook at 21:06:30Z on 10-20 and held by pi-pool with no time named, left the pass at 21:06Z on 10-21. Stop records, archives and deletes
+ * still keep a run stopped, and on 10-22 a dry run with no limit listed 2 runs more than the default, both such cuts.
  */
 export function runScript(args: readonly string[], file = script, warnAfterMs = OVERRUN_WARN_MS, warn = warnLine): Promise<InterruptedReport> {
   const started = Date.now();
   const overrun = setTimeout(() => warn(`resume: resume_paused.py ${describeArgs(args)} still running after ${(warnAfterMs / 1000).toFixed(1)} s`), warnAfterMs);
   return new Promise((resolve, reject) => {
-    hostExecFile(process.env.PYTHON ?? "python3", ["-B", file, "--json", ...args], { maxBuffer: Infinity }, (error, stdout, stderr) => {
+    hostExecFile(process.env.PYTHON ?? "python3", ["-B", file, "--json", "--since-minutes", "0", ...args], { maxBuffer: Infinity }, (error, stdout, stderr) => {
       clearTimeout(overrun);
       const ms = Date.now() - started;
       if (ms > warnAfterMs) warn(`resume: resume_paused.py ${describeArgs(args)} took ${(ms / 1000).toFixed(1)} s`);
