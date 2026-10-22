@@ -1,4 +1,3 @@
-import { spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -49,13 +48,32 @@ export function parseLooseJson(text: string): unknown {
   return JSON.parse(out);
 }
 
-/** The daemon's session list through the project's own prime-agent CLI. */
-export function daemonSessions(): DaemonSession[] {
-  const bin = join(import.meta.dirname, "..", "..", "node_modules", ".bin", "prime-agent");
-  const run = spawnSync(bin, ["sessions", "--json"], { encoding: "utf8", maxBuffer: 1 << 28, timeout: 60_000 });
-  if (run.status !== 0) throw new Error(`prime-agent sessions --json: exit ${run.status ?? run.signal}: ${String(run.stderr).trim().slice(0, 300)}`);
-  const parsed = parseLooseJson(run.stdout) as { sessions?: DaemonSession[] } | DaemonSession[];
-  return Array.isArray(parsed) ? parsed : parsed.sessions ?? [];
+/**
+ * One read of the daemon's session list, as `prime-agent sessions --json` reads it, with a longer wait for the daemon's hello. The CLI waits a fixed
+ * 3000 ms for that hello and has no option to wait longer. On 10-22 the supervisor's busy main thread held its hello past that at 02:21Z and 02:31Z
+ * and failed both d9 runs, and 11 of 18 probes from 02:44Z to 02:46Z got it after 4.2 to 6.1 s. The 30 s waits are the Prime client's own default
+ * request timeout, and the list's 60 s is the old CLI call's limit.
+ */
+async function readDaemonList(): Promise<DaemonSession[]> {
+  const { DaemonClient, defaultDaemonSocketPath } = await import("prime-agent");
+  const client = new DaemonClient(defaultDaemonSocketPath());
+  try {
+    await client.connect(30_000);
+    await client.waitForHello(30_000);
+    const response = await client.request({ type: "list" }, 60_000, { recoverable: false });
+    if (!response.success) throw new Error(response.error);
+    const data = response.data as { sessions?: DaemonSession[] } | DaemonSession[];
+    return Array.isArray(data) ? data : data.sessions ?? [];
+  } finally { client.close(); }
+}
+
+/** The daemon's session list, read a second time when the first read fails. */
+export async function daemonSessions(read: () => Promise<DaemonSession[]> = readDaemonList): Promise<DaemonSession[]> {
+  const errors: string[] = [];
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try { return await read(); } catch (error) { errors.push((error instanceof Error ? error.message : String(error)).slice(0, 300)); }
+  }
+  throw new Error(`reading the daemon's session list failed twice: ${errors.join("; ")}`);
 }
 
 const ms = (iso: string | undefined): number | undefined => { const at = Date.parse(iso ?? ""); return Number.isFinite(at) ? at : undefined; };
@@ -113,7 +131,11 @@ export interface FleetDuty {
   working?: string;
   stuck: boolean;
 }
-export interface DutyFleet { metrics: { duties_green_pct: number; stuck_duties: number }; flagged: FlaggedSlice[]; duties: FleetDuty[] }
+export interface DutyFleet {
+  metrics: { duties_green_pct: number; stuck_duties: number }; flagged: FlaggedSlice[]; duties: FleetDuty[];
+  /** The daemon's session list could not be read, so no duty with a long miss streak was judged stuck, fixed or worked on this run. */
+  sessionsMissing?: string;
+}
 
 /**
  * A duty that measures `duties_green_pct` reads this share, so it stays out of it. Counted in, its own red verdict held the share under 100,
@@ -144,7 +166,7 @@ function boardSteps(board: ChatBoard | null): { byId: Map<string, PlanItem>; lin
   return { byId, linked };
 }
 
-export async function dutyFleet(options: { dataDir: string; now: number; sessions: () => DaemonSession[] }): Promise<DutyFleet> {
+export async function dutyFleet(options: { dataDir: string; now: number; sessions: () => DaemonSession[] | Promise<DaemonSession[]> }): Promise<DutyFleet> {
   const { dataDir, now } = options;
   const ids = await ownerChats(dataDir);
   const store = new DutyStore(dataDir);
@@ -152,8 +174,13 @@ export async function dutyFleet(options: { dataDir: string; now: number; session
   const settings = checkInSettings(join(dataDir, "check-in-settings.json"));
   const wakes = await pendingWakes(join(dataDir, "wakes"), now);
   const asleep = new Set(wakes.map(wake => wake.session));
-  let sessions: DaemonSession[] | undefined;
-  const roster = (): DaemonSession[] => (sessions ??= options.sessions());
+  let sessions: DaemonSession[] | null | undefined;
+  let sessionsMissing: string | undefined;
+  const roster = async (): Promise<DaemonSession[] | null> => {
+    if (sessions !== undefined) return sessions;
+    try { sessions = await options.sessions(); } catch (error) { sessionsMissing = error instanceof Error ? error.message : String(error); sessions = null; }
+    return sessions;
+  };
   const duties: FleetDuty[] = [];
   for (const id of ids) {
     const file = await store.read(id);
@@ -178,10 +205,10 @@ export async function dutyFleet(options: { dataDir: string; now: number; session
         // A run records its fixes when it runs, so the board says now whether a step closed since: a done or dropped step is never a fix.
         const open = (step: string): boolean => { const item = byId.get(step); return item === undefined || OPEN.has(item.status); };
         if (entry.metric?.fix && !open(entry.metric.fix.step)) delete entry.metric.fix;
-        if (streak >= CHANGE_APPROACH_MISSES) {
+        const all = streak >= CHANGE_APPROACH_MISSES ? await roster() : null;
+        if (all) {
           // The check-in's working test: a running subtree, a session change within the chat's interval capped at LIVE_GAP_MS, or an owed wake.
           live ??= (() => {
-            const all = roster();
             const children = chatChildren(all, id);
             const facts = withWakes(jobFacts(children, board, sessionRows(all), id, [], liveJobs(children, subagentsByParent(all), now, liveWindowMs(setting.everyMs), asleep)),
               wakes, key => children.find(child => child.id === key)?.sessionId);
@@ -209,7 +236,7 @@ export async function dutyFleet(options: { dataDir: string; now: number; session
           }
           // The duty's own job still at work owns its misses this run: on 10-15 at 16:29Z ops guy's check-in read stuck 20 min into its 01:08 job.
           const job = fix === undefined ? runs.find(run => run.duty === duty.id && run.job)?.job : undefined;
-          if (job && sessionRows(roster()).some(row => row.id === job.id && row.working)) entry.working = job.name;
+          if (job && sessionRows(all).some(row => row.id === job.id && row.working)) entry.working = job.name;
           else if (fix === undefined) entry.stuck = true;
           else entry.fix = fix.step;
         }
@@ -219,13 +246,16 @@ export async function dutyFleet(options: { dataDir: string; now: number; session
   }
   const stuck = duties.filter(duty => duty.stuck);
   const judged = duties.filter(duty => !duty.pending);
-  const names = stuck.length ? new Map(sessionRows(roster()).map(row => [row.id, row.name])) : new Map<string, string>();
+  const names = new Map(sessionRows(stuck.length ? await roster() ?? [] : []).map(row => [row.id, row.name]));
+  const missing: FlaggedSlice[] = sessionsMissing === undefined ? [] : [{ kind: "fleet_data_missing", excerpt: `The daemon's session list could not be read ` +
+    `(${sessionsMissing.slice(0, 300)}), so no red duty was judged stuck, fixed or worked on this run; the green share still counts every duty.` }];
   return {
     // Floored to a tenth, so one red duty reads under 100.
     metrics: { duties_green_pct: judged.length ? Math.floor(1000 * judged.filter(duty => duty.green).length / judged.length) / 10 : 100, stuck_duties: stuck.length },
-    flagged: stuck.map(duty => ({ chat: duty.chat, kind: "stuck_duty", item: duty.duty,
-      excerpt: `${names.get(duty.chat) ?? duty.chat}: ${duty.name} missed ${duty.misses} runs, ${duty.metric ? `${duty.metric.key} ${show(duty.metric.value)} against ${bound(duty.metric)}` : "no metric value"}, no live fix job` })),
+    flagged: [...missing, ...stuck.map(duty => ({ chat: duty.chat, kind: "stuck_duty", item: duty.duty,
+      excerpt: `${names.get(duty.chat) ?? duty.chat}: ${duty.name} missed ${duty.misses} runs, ${duty.metric ? `${duty.metric.key} ${show(duty.metric.value)} against ${bound(duty.metric)}` : "no metric value"}, no live fix job` }))],
     duties,
+    ...sessionsMissing === undefined ? {} : { sessionsMissing },
   };
 }
 
@@ -236,7 +266,7 @@ async function main(): Promise<void> {
   const dataDir = arg("--data-dir") ?? join(homedir(), ".prime/agent/browser-chat");
   const sessionsFile = arg("--sessions");
   const loaded = sessionsFile ? parseLooseJson(await readFile(sessionsFile, "utf8")) as { sessions?: DaemonSession[] } | DaemonSession[] : undefined;
-  const sessions = (): DaemonSession[] => loaded ? (Array.isArray(loaded) ? loaded : loaded.sessions ?? []) : daemonSessions();
+  const sessions = (): DaemonSession[] | Promise<DaemonSession[]> => loaded ? (Array.isArray(loaded) ? loaded : loaded.sessions ?? []) : daemonSessions();
   process.stdout.write(JSON.stringify(await dutyFleet({ dataDir, now, sessions }), null, 2) + "\n");
 }
 

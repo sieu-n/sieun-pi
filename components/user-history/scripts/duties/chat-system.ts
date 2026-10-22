@@ -384,6 +384,8 @@ async function main(): Promise<void> {
     followUps.push({ push, ...reached, jobStarted: (jobs.get(push.chat) ?? []).some(row => ms(row.created) > push.at) });
   }
   const result = chatSystemOutput({ names, stuck, upkeep, fleet: { pct: fleet.metrics.duties_green_pct, red }, stuckDuties: counts.redDuties, idleGoals, followUps, detail });
+  const fleetMissing = fleet.flagged.filter(slice => slice.kind === "fleet_data_missing");
+  result.flagged!.push(...fleetMissing);
   const tag = `[d9 push ${new Date(now).toISOString().slice(0, 16)}Z]`;
 
   // The spot audit: one owner chat at random each run, read by the duty job against what the owner asked in it.
@@ -400,6 +402,7 @@ async function main(): Promise<void> {
     `# Chat system run of ${new Date(now).toISOString()}`, "",
     `stuck_steps_all ${result.metrics.stuck_steps_all}, plan_upkeep_all ${result.metrics.plan_upkeep_all}, duties_green_pct ${result.metrics.duties_green_pct}, ` +
       `stuck_duties ${result.metrics.stuck_duties}, over ${ids.length} chats.`, "",
+    ...fleetMissing.map(slice => `${slice.excerpt}\n`),
     `## Spot audit: ${name(spot)}`, "",
     `1. The chat is ${spot}, and it runs on ${transcript?.host ?? "a box whose transcript this box has no copy of"}.`,
     `2. Its plan is ${join(dataDir, "boards", `${spot}.json`)}.`,
