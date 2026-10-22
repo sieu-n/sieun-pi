@@ -30,7 +30,7 @@ test("the server renders the same lines Chat.svelte draws first, inside a frame 
   assert.ok(page);
   assert.equal(page.title, "Fixture <chat>");
   const feed = chatFeed(threadStateFromSnapshot(snapshot), [], () => undefined);
-  const shown = feed.slice(windowStart(feed.map(item => item.id), null, FIRST_ITEMS));
+  const shown = feed.slice(windowStart(feed.map(item => ({ key: item.id, at: item.at })), null, FIRST_ITEMS));
   assert.equal(shown.length, FIRST_ITEMS);
   assert.deepEqual([...page.lines.matchAll(/data-line="([^"]+)"/g)].map(match => match[1]), shown.map(item => item.id));
   assert.ok(page.lines.includes("Question 23 with bold and &lt;b&gt;tags&lt;/b&gt;"));

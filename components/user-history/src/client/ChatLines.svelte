@@ -15,17 +15,17 @@
 
   /**
    * The lines of a chat's feed (Chat.svelte): the owner's bubbles, the chat's replies, fold rows of background lines, board actions, notices,
-   * the time stamps between them and the typing dots. `feed` is the whole loaded feed and the lines start at `feed[start]`.
+   * the time stamps between them and the typing dots. `feed` is the whole loaded feed and the lines are `feed[start]` to before `feed[end]`.
    */
-  let { id, feed, start, minute, cwd, mentions, typing, reply, copyLink, goToLine, viewImage, seeReply, press, onProseClick, readFold }: {
-    id: string; feed: ChatItem[]; start: number; minute: number; cwd: string; mentions: MentionIndex | null; typing: boolean;
+  let { id, feed, start, end, minute, cwd, mentions, typing, reply, copyLink, goToLine, viewImage, seeReply, press, onProseClick, readFold }: {
+    id: string; feed: ChatItem[]; start: number; end: number; minute: number; cwd: string; mentions: MentionIndex | null; typing: boolean;
     reply: (text: string) => void; copyLink: (at: number) => Promise<void>; goToLine: (line: string) => Promise<void>;
     viewImage: (item: Extract<ChatItem, { kind: "user" }>, index: number) => void; seeReply: (item: Extract<ChatItem, { kind: "user" }>) => void;
     press: (at: number, text: string) => (anchor: HTMLElement) => void; onProseClick: (event: MouseEvent) => void;
     readFold: (fold: Fold) => void;
   } = $props();
 
-  const shown = $derived(start ? feed.slice(start) : feed);
+  const shown = $derived(start || end < feed.length ? feed.slice(start, end) : feed);
   const stamped = $derived(stampedItems(feed));
   function stamp(at: number): string {
     const date = new Date(at);

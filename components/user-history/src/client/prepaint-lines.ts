@@ -1,7 +1,7 @@
 import { render } from "svelte/server";
 import ChatLines from "./ChatLines.svelte";
 import { mentionIndex } from "./board.ts";
-import { FIRST_ITEMS, windowStart } from "./feed-window.ts";
+import { FIRST_ITEMS, settledFrom, windowStart } from "./feed-window.ts";
 import { jobNames } from "./jobs.ts";
 import { chatFeed, turnStarter } from "../shared/chat-feed.ts";
 import { isThreadBusy, threadStateFromSnapshot } from "../shared/thread-state.ts";
@@ -22,11 +22,11 @@ export function prepaintLines(id: string, frames: string): { lines: string; titl
   const thread = threadStateFromSnapshot(first.snapshot);
   const feed = chatFeed(thread, [], () => undefined);
   if (!feed.length) return null;
-  const start = windowStart(feed.map(item => item.id), null, FIRST_ITEMS);
+  const start = Math.max(settledFrom(feed.map(item => item.kind), thread.older !== undefined), windowStart(feed.map(item => ({ key: item.id, at: item.at })), null, FIRST_ITEMS));
   const typing = isThreadBusy({ ...thread, children: [] }) && turnStarter(thread.messages) === "owner" && !feed.some(item => item.kind === "agent" && item.streaming);
   const mentions = mentionIndex(id, null, jobNames(undefined, thread, () => undefined));
   const { body } = render(ChatLines, { props: {
-    id, feed, start, minute: Math.floor(Date.now() / 60_000) * 60_000, cwd: thread.info.cwd ?? "", mentions, typing,
+    id, feed, start, end: feed.length, minute: Math.floor(Date.now() / 60_000) * 60_000, cwd: thread.info.cwd ?? "", mentions, typing,
     reply: ignore, copyLink: ignoreAsync, goToLine: ignoreAsync, viewImage: ignore, seeReply: ignore, press: () => ignore, onProseClick: ignore, readFold: ignore,
   } });
   return { lines: body, title: thread.info.name ?? "New chat", earlier: start > 0 || thread.older !== undefined };

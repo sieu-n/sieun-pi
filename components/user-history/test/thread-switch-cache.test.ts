@@ -55,12 +55,13 @@ test("a thread left alone goes back to the newest page of its last snapshot and 
 });
 
 test("the feed draws the newest items first, and its top stays on the same item as items land at either end", () => {
-  const keys = Array.from({ length: 100 }, (_, index) => "k" + index);
+  const item = (key: string, at: number) => ({ key, at });
+  const keys = Array.from({ length: 100 }, (_, index) => item("k" + index, 1000 + index));
   const start = windowStart(keys, null, 30);
   assert.equal(start, 70);
   const top = earlierTop(keys, start, 30);
-  assert.equal(top, "k40");
-  const grown = ["o1", "o2", ...keys, "n1"];
-  assert.equal(grown[windowStart(grown, top, 30)], "k40");
+  assert.equal(top?.key, "k40");
+  const grown = [item("o1", 1), item("o2", 2), ...keys, item("n1", 5000)];
+  assert.equal(grown[windowStart(grown, top, 30)]?.key, "k40");
   assert.equal(earlierTop(keys, 0, 30), null);
 });

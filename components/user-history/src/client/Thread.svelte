@@ -24,7 +24,7 @@
   import { readPulse } from "../shared/pulse.ts";
   import { parentChatOf } from "./jobs.ts";
   import { revealMessage } from "./permalink.ts";
-  import { earlierTop, keepPlace, nearTop, windowStart } from "./feed-window.ts";
+  import { earlierTop, keepPlace, nearTop, windowStart, type WindowItem } from "./feed-window.ts";
 
   let { id, narrow }: { id: string; narrow: boolean } = $props();
   /** A job of a chat (its session is listed under a chat row, or an open chat started it) gets a way back to the chat with its drawer open. */
@@ -48,9 +48,9 @@
   /** The view draws the newest FIRST_TURNS turns and MORE_TURNS earlier ones each time the owner scrolls near the top (feed-window.ts). */
   const FIRST_TURNS = 20;
   const MORE_TURNS = 20;
-  let top = $state<string | null>(null);
-  const keys = $derived(shown.map(turn => turn.key));
-  const start = $derived(windowStart(keys, top, FIRST_TURNS));
+  let top = $state<WindowItem | null>(null);
+  const items = $derived(shown.map(turn => ({ key: turn.key, at: turn.startedAt })));
+  const start = $derived(windowStart(items, top, FIRST_TURNS));
   const drawn = $derived(start ? shown.slice(start) : shown);
   const hasEarlier = $derived(start > 0 || thread?.older !== undefined);
   let growing = false;
@@ -60,9 +60,9 @@
     growing = true;
     try {
       await keepPlace(node, async () => {
-        top = keys[start] ?? null;
+        top = items[start] ?? null;
         if (start === 0) await store.loadOlder(id);
-        top = earlierTop(keys, start, MORE_TURNS) ?? top;
+        top = earlierTop(items, start, MORE_TURNS) ?? top;
       });
     } finally { growing = false; }
   }
@@ -148,7 +148,7 @@
       void (async () => {
         while (store.jump === target && (messages[0]?.timestamp ?? 0) > target.at && thread?.older !== undefined && await store.loadOlder(id)) { /* next page */ }
         const index = shown.findLastIndex(turn => turn.startedAt <= target.at);
-        if (index >= 0 && index < start) top = keys[Math.max(0, index - 1)] ?? null;
+        if (index >= 0 && index < start) top = items[Math.max(0, index - 1)] ?? null;
         await tick();
         if (store.jump !== target) return;
         if (!revealMessage(node, target.at)) store.toast("That link points at a message this thread does not have.", "info");

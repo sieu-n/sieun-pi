@@ -33,7 +33,7 @@
   import { labels } from "./labels.ts";
   import { rowModelId } from "./accounts.ts";
   import { copyPermalink, revealLine, revealMessage } from "./permalink.ts";
-  import { earlierTop, FIRST_ITEMS, keepPlace, nearTop, windowStart } from "./feed-window.ts";
+  import { earlierTop, FIRST_ITEMS, holdPlace, laterBottom, nearTop, settledFrom, windowEnd, windowStart, type FeedPlace, type WindowItem } from "./feed-window.ts";
   import { childUsage } from "./thread-side.svelte.ts";
 
   /**
@@ -52,33 +52,62 @@
   /** A sender named by a session id or a live agent id in an agent-message header reads as its catalog name. */
   const nameOf = $derived(catalogNames(store.sessions));
   const feed = $derived(thread ? chatFeed(thread, pendingSends, nameOf) : []);
-  /** The feed draws its newest FIRST_ITEMS items, and MORE_ITEMS earlier ones each time the owner scrolls near the top (feed-window.ts). */
+  /**
+   * The feed draws a window of its items: the newest FIRST_ITEMS first, MORE_ITEMS earlier ones each time the owner scrolls near the top,
+   * and MORE_ITEMS later ones near the bottom of a window that stopped above the newest (feed-window.ts). A window keeps at most MAX_ITEMS:
+   * drawing on one end takes items off the other, out of view. On 10-22 the AI harness feed with 484 rows drawn after a 12 s scroll up
+   * dropped 23 to 36% of the frames that scrolled down, against 0 to 20% with 107 to 215 rows.
+   */
   const MORE_ITEMS = 30;
-  let top = $state<string | null>(null);
-  const keys = $derived(feed.map(item => item.id));
-  const start = $derived(windowStart(keys, top, FIRST_ITEMS));
+  const MAX_ITEMS = 90;
+  let top = $state<WindowItem | null>(null);
+  let bottom = $state<WindowItem | null>(null);
+  const items = $derived(feed.map(item => ({ key: item.id, at: item.at })));
+  const floor = $derived(settledFrom(feed.map(item => item.kind), thread?.older !== undefined));
+  const start = $derived(Math.max(floor, windowStart(items, top, FIRST_ITEMS)));
+  const end = $derived(Math.max(start, windowEnd(items, bottom)));
   const hasEarlier = $derived(start > 0 || thread?.older !== undefined);
   let growing = false;
-  /** Draws the earlier items, after loading the older page when every loaded item already shows; true when anything was added. */
+  /**
+   * Draws the earlier items, after loading the older page when every loaded item already shows; true when anything was added. It loads on
+   * while a page only adds to the top fold, because at the top edge no scroll event comes to ask again. holdPlace keeps the view in place.
+   */
   async function earlier(): Promise<boolean> {
-    const node = scroller;
-    if (growing || !node || !hasEarlier) return false;
+    if (growing || jumping !== null || !scroller || !hasEarlier) return false;
     growing = true;
     let grew = false;
     try {
-      await keepPlace(node, async () => {
-        top = keys[start] ?? null;
-        if (start === 0) await store.loadOlder(id);
-        const next = earlierTop(keys, start, MORE_ITEMS);
-        if (next !== null) { top = next; grew = true; }
-      });
+      top = items[start] ?? null;
+      while (start === floor && thread?.older !== undefined && await store.loadOlder(id)) await tick();
+      const next = earlierTop(items, start, MORE_ITEMS, floor);
+      if (next !== null) {
+        top = next;
+        grew = true;
+        if (end - start > MAX_ITEMS) bottom = items[start + MAX_ITEMS - 1] ?? null;
+      }
+      await tick();
+      place?.hold();
     } finally { growing = false; }
     if (grew && scroller && !pinned && nearTop(scroller)) void earlier();
     return grew;
   }
-  /** Shows the loaded items from `index` on (with a few above it for context), for a link or a quote that points above the drawn ones. */
+  /** Draws the later items of a window that stopped above the newest. */
+  async function later(): Promise<void> {
+    if (growing || jumping !== null || bottom === null) return;
+    growing = true;
+    try {
+      bottom = laterBottom(items, end, MORE_ITEMS);
+      if (end - start > MAX_ITEMS) top = items[end - MAX_ITEMS] ?? null;
+      await tick();
+      place?.hold();
+    } finally { growing = false; }
+  }
+  /** Shows the loaded items from `index` on (with a few above it for context), for a link or a quote that points outside the drawn ones. */
   function showFrom(index: number): void {
-    if (index >= 0 && index < start) top = keys[Math.max(0, index - 3)] ?? null;
+    if (index < 0 || (index >= start && index < end)) return;
+    const from = Math.max(0, index - 3);
+    top = items[from] ?? null;
+    bottom = laterBottom(items, from, MAX_ITEMS);
   }
   /** Three dots while the chat answers the owner and no reply text has started. A turn a job or a check-in started shows nothing until a tell_owner lands. */
   const busy = $derived(thread ? isThreadBusy({ ...thread, children: [] }) : false);
@@ -247,11 +276,25 @@
   let pinned = $state(true);
   let jumpDismissed = $state(false);
   $effect(() => { if (pinned) jumpDismissed = false; });
-  function scrollToBottom(): void { if (scroller) scroller.scrollTop = scroller.scrollHeight; }
+  /** Where the feed stands; it keeps the view at the bottom or on the rows the owner reads (feed-window.ts). */
+  let place: FeedPlace | null = null;
+  $effect(() => {
+    if (!scroller || !column) return;
+    const held = holdPlace(scroller, column, () => bottom === null, next => { pinned = next; });
+    place = held;
+    return () => { held.stop(); place = null; };
+  });
   function onScroll(): void {
     if (!scroller) return;
-    pinned = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 48;
+    place?.scrolled();
     if (!pinned && nearTop(scroller)) void earlier();
+    else if (bottom !== null && scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < scroller.clientHeight) void later();
+  }
+  /** Back to the newest items at the bottom, for Jump to latest and a send. */
+  function toLatest(): void {
+    top = null;
+    bottom = null;
+    place?.pin();
   }
   const hasState = $derived(thread !== null);
   $effect(() => {
@@ -259,24 +302,7 @@
     untrack(() => requestAnimationFrame(() => { if (performance.getEntriesByName("thread-switch:" + id, "mark").length) performance.measure("thread-paint:" + id, "thread-switch:" + id); }));
   });
   $effect(() => {
-    if (!hasState) return;
-    untrack(() => {
-      let frames = 0;
-      const step = () => { if (pinned) scrollToBottom(); if (++frames < 8) requestAnimationFrame(step); };
-      requestAnimationFrame(step);
-    });
-  });
-  $effect(() => {
-    const node = column;
-    if (!node) return;
-    const observer = new ResizeObserver(() => { if (pinned) scrollToBottom(); });
-    observer.observe(node);
-    return () => observer.disconnect();
-  });
-  $effect(() => {
     void feed;
-    void typing;
-    if (untrack(() => pinned)) void tick().then(scrollToBottom);
     // A feed shorter than the view has no scroll to load earlier items with, so it draws them until it fills the view.
     void tick().then(() => { if (scroller && scroller.scrollHeight <= scroller.clientHeight) void earlier(); });
   });
@@ -288,21 +314,34 @@
     return () => { document.removeEventListener("visibilitychange", onHidden); store.markRead(id); };
   });
 
-  /** A link to a message in this chat (`#<id>@<ms>`): scroll to it and flash it once the feed shows; a link to nothing says so. */
+  /**
+   * A link to a message in this chat (`#<id>@<ms>`): scroll to it and flash it once the feed shows; a link to nothing says so. The window
+   * does not grow on its own meanwhile, so it cannot move off the message, a page already on its way is waited for, and the pages that load
+   * do not start the walk again.
+   */
+  let jumping: typeof store.jump = null;
   $effect(() => {
     const target = store.jump;
     const node = scroller;
-    if (!target || target.id !== id || !feed.length || !node) return;
+    if (!target || target.id !== id || !feed.length || !node || jumping === target) return;
     untrack(() => {
-      pinned = false;
+      place?.unpin();
+      jumping = target;
       void (async () => {
-        // A link older than the loaded pages loads them until it is in them (contract: load older pages until the oldest is at or before it).
-        while (store.jump === target && (feed[0]?.at ?? 0) > target.at && thread?.older !== undefined && await store.loadOlder(id)) { /* next page */ }
-        showFrom(feed.findLastIndex(item => item.at <= target.at));
-        await tick();
-        if (store.jump !== target) return;
-        if (!revealMessage(node, target.at)) store.toast("That link points at a message this chat does not have.", "info");
-        store.jump = null;
+        try {
+          // A link older than the drawable items loads older pages until the first item a window may draw is at or before it.
+          while (store.jump === target && (feed[floor]?.at ?? 0) > target.at && thread?.older !== undefined) {
+            if (!await store.loadOlder(id)) {
+              if (!entry?.olderLoading) break;
+              await new Promise(requestAnimationFrame);
+            }
+          }
+          showFrom(feed.findLastIndex(item => item.at <= target.at));
+          await tick();
+          if (store.jump !== target) return;
+          if (!revealMessage(node, target.at)) store.toast("That link points at a message this chat does not have.", "info");
+          store.jump = null;
+        } finally { if (jumping === target) jumping = null; }
       })();
     });
   });
@@ -318,8 +357,8 @@
   const shownReply = new Map<string, number>();
   async function goToLine(line: string): Promise<void> {
     if (!scroller) return;
-    pinned = false;
-    showFrom(keys.indexOf(line));
+    place?.unpin();
+    showFrom(items.findIndex(item => item.key === line));
     await tick();
     if (scroller && !revealLine(scroller, line)) store.toast("That message is not in this chat any more.", "info");
   }
@@ -335,7 +374,7 @@
   const press = (at: number, text: string) => (anchor: HTMLElement) => { pressed = { anchor, at, text }; };
   const closeMenu = () => { pressed = null; };
 
-  const send = (text: string, images: ImageInput[]) => { pinned = true; return store.sendChat(id, text, images); };
+  const send = (text: string, images: ImageInput[]) => { toLatest(); return store.sendChat(id, text, images); };
 </script>
 
 {#snippet setup()}
@@ -350,14 +389,14 @@
   <div class="scroller" bind:this={scroller} onscroll={onScroll}>
     <div class="column" class:fill={hasEarlier} bind:this={column}>
       {#if hasEarlier}<div class="older muted" aria-live="polite">{entry?.olderLoading ? "Loading earlier messages" : ""}</div>{/if}
-      <ChatLines {id} {feed} {start} {minute} {cwd} {mentions} {typing} {reply} {copyLink} {goToLine} {viewImage} {seeReply} {press} {onProseClick} {readFold} />
+      <ChatLines {id} {feed} {start} {end} {minute} {cwd} {mentions} typing={typing && end === feed.length} {reply} {copyLink} {goToLine} {viewImage} {seeReply} {press} {onProseClick} {readFold} />
       {#if !feed.length && !typing}<div class="empty muted">Say what this chat is about. Jobs run in the background while you keep typing.</div>{/if}
     </div>
   </div>
   <div class="foot">
     {#if !pinned && !jumpDismissed}
       <div class="jump fade-in">
-        <button type="button" class="jump-go" onclick={() => { pinned = true; scrollToBottom(); }}><Icon name="arrowDown" size={14} /> Jump to latest</button>
+        <button type="button" class="jump-go" onclick={toLatest}><Icon name="arrowDown" size={14} /> Jump to latest</button>
         <button type="button" class="jump-close" aria-label="Hide Jump to latest" onclick={() => { jumpDismissed = true; }}><Icon name="x" size={12} /></button>
       </div>
     {/if}
@@ -497,11 +536,13 @@
   .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex: none; }
   .dot.corner { position: absolute; top: 4px; right: 4px; width: 6px; height: 6px; }
   .scroller { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; overflow-anchor: none; }
-  .column { width: 100%; max-width: var(--column); margin: 0 auto; padding: 12px 16px 16px; display: flex; flex-direction: column; gap: 6px; }
+  /* The column is its rows' offset parent, so holdPlace (feed-window.ts) reads a row's place in the feed from its offsetTop. */
+  .column { position: relative; width: 100%; max-width: var(--column); margin: 0 auto; padding: 12px 16px 16px; display: flex; flex-direction: column; gap: 6px; }
   /* A window of a longer feed sits at the bottom of the view, next to the box, so the earlier items that load above it never move the newest ones. */
   .column.fill { min-height: 100%; justify-content: flex-end; }
   .empty { padding: 48px 0; text-align: center; }
-  .older { align-self: center; min-height: 24px; padding: 4px 12px; font-size: 12.5px; }
+  /* A fixed height, so "Loading earlier messages" coming and going moves no row. */
+  .older { align-self: center; height: 24px; padding: 4px 12px; font-size: 12.5px; line-height: 16px; }
   .jump { position: absolute; left: 50%; bottom: calc(100% + 10px); transform: translateX(-50%); z-index: 5; display: inline-flex; align-items: center; border-radius: 999px; background: var(--bg-elevated); border: 1px solid var(--border); box-shadow: var(--shadow); font-size: 13px; }
   .jump-go { display: inline-flex; align-items: center; gap: 6px; padding: 6px 6px 6px 12px; border-radius: 999px 0 0 999px; }
   .jump-close { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; margin-right: 3px; border-radius: 50%; color: var(--text-faint); }
