@@ -119,7 +119,7 @@ export const REMOVED_PROVIDERS: readonly RemovedProvider[] = [
   { name: "HeyGen", grep: "heygen", code: /heygen/i, integrations: [] },
   { name: "Pexels", grep: "pexels", code: /pexels/i, integrations: ["pexels"] },
   { name: "Sora", grep: "sora|/v1/videos", code: /\bsora[- ]?2\b|\b(generate|download|check)_sora|\bsora_(video|status|general)|\/v1\/videos\b/i, integrations: ["openai"] },
-  { name: "konti.bot research app", grep: "p\\.konti\\.bot|research[-_]app", code: /p\.konti\.bot|\bresearch[-_]app\b/i, integrations: [] },
+  { name: "konti.bot research app", grep: "p\\.konti\\.bot|research[-_]app", code: /(?<![\w.-])p\.konti\.bot|\bresearch[-_]app\b/i, integrations: [] },
   {
     name: "Meta Graph",
     grep: "graph\\.(instagram|facebook)\\.com|api\\.instagram\\.com|rupload\\.facebook\\.com|instagram_(access_token|app_secret)|instagram[-_](graph|oauth|token)|ig_exchange_token",
