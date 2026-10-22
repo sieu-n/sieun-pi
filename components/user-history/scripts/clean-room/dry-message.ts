@@ -14,6 +14,8 @@ import { readSession, readSessionFile, type RunState, type Scenario, type Sessio
  * page. The criteria live in the run folder's criteria.md. Run3 (10-22) passed with a message that asked for three owner decisions (t92, t61
  * and t62) and with step ids the judge never read, so each todo id and each question now counts as its own point, and a cited step counts as
  * the place of the detail only when the board the chat read holds that step with words on the citing sentence's topic and more besides.
+ * Run5 (10-22) passed with "They are about 70% of its work, and its queue keeps growing.", two facts in a sentence the brief gives one, so
+ * a sentence whose "and" joins two clauses, each with its own subject and verb, now fails a.
  */
 export const TASK = "what's going on with the crawler today, anything i need to do?";
 export const MAX_SENTENCES = 2;
@@ -54,7 +56,36 @@ export function sentences(text: string): string[] {
 }
 export const words = (line: string): number => line.split(/\s+/).filter(Boolean).length;
 
-/** What breaks c18 in one message: more than one point, too many or too long sentences, or a bullet, bold, heading or label. */
+/** Finite verbs: be, have and do, the modals, and the status verbs chats use, in the third person and a few in the plural or past. */
+const VERBS = new Set(("is are was were am isn't aren't wasn't weren't has have had hasn't haven't hadn't does do did doesn't don't didn't " +
+  "can can't cannot could couldn't will won't would wouldn't shall should shouldn't must may might " +
+  "keeps waits grows stays goes gets seems looks means needs takes makes comes sits runs holds blocks works fails passes moves ships lands " +
+  "sends saves uses wants asks says shows starts stops ends hits drops rises falls checks " +
+  "work wait keep grow stay go get seem need take make come sit hold fail want say went came got took made ran grew fell rose kept held sent").split(" "));
+/** A pronoun with its verb in one word, such as "it's" or "they're". */
+const PRONOUN_VERB = /^(?:(?:it|that|there|here|what|he|she|who)'s|\w+'(?:re|ll|ve|m|d))$/;
+/** Words that may sit between "and" and the verb of the same subject, as in "and still keeps". */
+const ADVERBS = new Set("also still now then so just already yet never again even not soon".split(" "));
+const verb = (word: string): boolean => VERBS.has(word) || PRONOUN_VERB.test(word);
+
+/**
+ * Whether an "and" joins two facts in one sentence (c18 run5: "They are about 70% of its work, and its queue keeps growing."): a comma or a
+ * verb before the "and", and after it a verb with its own subject, a word before that verb other than an adverb. A list of nouns ("t61 and t62"), a
+ * compound verb ("runs at 10k and keeps its fallback") and a name with "and" in it have no second subject and verb. A verb right after "which"
+ * or "who" opens a relative clause, so the search goes on past it. Words in parentheses are left out.
+ */
+export function joinsFacts(sentence: string): boolean {
+  const list = sentence.replace(/\([^)]*\)/g, " ").toLowerCase().replace(/\u2019/g, "'").match(/[\p{L}\p{N}']+|,/gu) ?? [];
+  return list.some((word, at) => {
+    if (word !== "and" || !(list[at - 1] === "," || list.slice(0, at).some(verb))) return false;
+    const after = list.slice(at + 1).filter(next => next !== ",");
+    const found = after.findIndex((next, index) => verb(next) && !["which", "who"].includes(after[index - 1] ?? ""));
+    if (found < 0) return false;
+    return PRONOUN_VERB.test(after[found]!) || after.slice(0, found).some(next => !ADVERBS.has(next));
+  });
+}
+
+/** What breaks c18 in one message: more than one point, too many or too long sentences, a sentence with two facts, or a bullet, bold, heading or label. */
 export function faults(text: string): { size: string[]; format: string[] } {
   const parts = sentences(text);
   const form = shape(text);
@@ -65,6 +96,7 @@ export function faults(text: string): { size: string[]; format: string[] } {
     ...(decisions > 1 ? [`${decisions} owner decisions or questions${todos.length > 1 ? ` (${todos.join(", ")})` : ""}`] : []),
     ...(parts.length > MAX_SENTENCES ? [`${parts.length} sentences`] : []),
     ...parts.filter(part => words(part) > MAX_WORDS).map(part => `a sentence of ${words(part)} words ("${clip(part, 80)}")`),
+    ...parts.filter(joinsFacts).map(part => `a sentence that joins two facts with "and" ("${clip(part, 80)}")`),
     ...(form.paragraphs > 1 ? [`${form.paragraphs} paragraphs`] : []),
     ...(asks && asks < parts.length ? ["a statement and a question in separate sentences"] : []),
   ];
@@ -149,7 +181,7 @@ export function judge(run: string, state: RunState, now = Date.now()): { verdict
   const long = judged.filter(said => said.size.length);
   add("a", long.length ? false : told.length ? true : none, long.length
     ? long.map(said => `${iso(said.at)} has ${said.size.join(", ")}: "${clip(said.text, 400)}"`).join("; ")
-    : told.length ? `${told.length} tell_owner calls, each one point in at most ${MAX_SENTENCES} sentences of at most ${MAX_WORDS} words (${judged.map(said => sentences(said.text).map(words).join("+")).join(", ")} words)`
+    : told.length ? `${told.length} tell_owner calls, each one point in at most ${MAX_SENTENCES} sentences of at most ${MAX_WORDS} words with one fact or ask each (${judged.map(said => sentences(said.text).map(words).join("+")).join(", ")} words)`
       : "no tell_owner yet");
 
   const formatted = judged.filter(said => said.format.length);

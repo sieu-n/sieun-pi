@@ -1,7 +1,8 @@
 // Guards the c18 clean-room judge (owner 10-22: "dry simple message."): one dry sentence with the detail written to the board passes, a
 // long, formatted status message fails, a statement packed with a question is two points, the detail must reach the board or a wiki page, the
 // chat's own check-in job is no one stepping in, a typed turn voids the run, and a window with no model turn is void. Run3's two real messages
-// replay the two holes chat-2572 found in its pass: three owner decisions in one message, and step ids the judge never looked up.
+// replay the two holes chat-2572 found in its pass: three owner decisions in one message, and step ids the judge never looked up. Run5's
+// t61 message replays the third: two facts joined by "and" in one sentence.
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -12,7 +13,7 @@ test("dry-message: one dry sentence with the detail on the board passes, a long 
   const home = mkdtempSync(join(tmpdir(), "dry-message-"));
   t.after(() => rmSync(home, { recursive: true, force: true }));
   process.env.HOME = home;
-  const { judge, TASK, sentences, faults, detailWrite } = await import("./../scripts/clean-room/dry-message.ts");
+  const { judge, TASK, sentences, faults, detailWrite, joinsFacts } = await import("./../scripts/clean-room/dry-message.ts");
   const start = Date.parse("2026-10-22T12:00:00.000Z");
   const at = (minutes: number) => new Date(start + minutes * 60_000).toISOString();
   const user = (minutes: number, text: string) => ({ type: "message", timestamp: at(minutes), message: { role: "user", content: [{ type: "text", text }] } });
@@ -45,7 +46,7 @@ test("dry-message: one dry sentence with the detail on the board passes, a long 
   assert.equal(detailWrite("ipython", JSON.stringify({ code: "await bash(\"node --import tsx scripts/board-apply.ts 01a1 '[]'\")" })), true);
 
   const ownBoard = { own: [{ id: "p1", text: "Crawler reads on pace today", status: "doing", note: "reads 41,200 of 50,000; 3 accounts on login redirects", children: [] }] };
-  const good = await run("1", [board(4), tell(5, "The crawler is on pace today and nothing needs you, with the numbers in p1.")], 90, ownBoard);
+  const good = await run("1", [board(4), tell(5, "The crawler is on pace today, so nothing needs you, with the numbers in p1.")], 90, ownBoard);
   assert.equal(good.verdict, "pass", ["a", "b", "c", "d", "e"].map(good.line).join("\n"));
 
   // The c18 failure: a status message with several points, bullets, bold and the operational detail in chat.
@@ -56,13 +57,13 @@ test("dry-message: one dry sentence with the detail on the board passes, a long 
   assert.match(slop.line("a"), /^- a not met.*sentences.*paragraphs.*statement and a question/);
   assert.match(slop.line("b"), /^- b not met.*bullets.*bold/);
 
-  const nowhere = await run("3", [tell(5, "The crawler is on pace today and nothing needs you.")]);
+  const nowhere = await run("3", [tell(5, "The crawler is on pace today, so nothing needs you.")]);
   assert.equal(nowhere.verdict, "fail", "the detail never reached the board or a wiki page");
   assert.match(nowhere.line("c"), /^- c not met/);
-  const pointed = await run("b", [tell(5, "The crawler is on pace today and nothing needs you, with the numbers in p1.")], 90, ownBoard);
+  const pointed = await run("b", [tell(5, "The crawler is on pace today, so nothing needs you, with the numbers in p1.")], 90, ownBoard);
   assert.equal(pointed.verdict, "pass", "naming the board step that holds the rest puts the detail on the board");
   assert.match(pointed.line("c"), /^- c met.*names the board steps that hold the rest, p1 on board 01a16400/);
-  const linked = await run("4", [tell(5, "The crawler is on pace today and nothing needs you."), tell(6, "The breakdown is on wiki:ops/crawler-today.html for when you want it.")]);
+  const linked = await run("4", [tell(5, "The crawler is on pace today, so nothing needs you."), tell(6, "The breakdown is on wiki:ops/crawler-today.html for when you want it.")]);
   assert.equal(linked.verdict, "pass", ["a", "b", "c"].map(linked.line).join("\n"));
 
   const early = await run("5", [call(1, "ipython", { code: "print(1)" })], 10);
@@ -75,7 +76,7 @@ test("dry-message: one dry sentence with the detail on the board passes, a long 
 
   const checkIn = { type: "custom_message", timestamp: at(20), customType: "agent_message", content: "[agent-message from sibling:check-in crawler today 12 15] report",
     details: { from: { sessionId: "01a16401-0000-7000-8000-000000000000", sessionName: "check-in crawler today 12 15" }, fromRelationship: "sibling" } };
-  const own = await run("8", [board(4), tell(5, "The crawler is on pace today and nothing needs you."), checkIn]);
+  const own = await run("8", [board(4), tell(5, "The crawler is on pace today, so nothing needs you."), checkIn]);
   assert.equal(own.verdict, "pass", own.line("d"));
   const typed = await run("9", [user(5, "and the proxies?"), board(6), tell(8, "The proxies are fine.")]);
   assert.equal(typed.verdict, "void");
@@ -95,7 +96,8 @@ test("dry-message: one dry sentence with the detail on the board passes, a long 
     "'smooth account queue' gives 'crawler only release' the next free Claude account slot; the owner has the capacity question on the AI harness chat's t92", children: [] };
   const read = call(1, "ipython", { code: `cv='${vp}'\no=board.open(chat=cv); print(o[:8000])` });
   assert.deepEqual(faults(status).size, []);
-  assert.deepEqual(faults(picks).size, ["3 owner decisions or questions (t92, t61, t62)"]);
+  assert.deepEqual(faults(picks).size, ["3 owner decisions or questions (t92, t61, t62)",
+    'a sentence that joins two facts with "and" ("Answer t92 on the AI harness chat, because only 2 of 31 Claude accounts work an\u2026")']);
   assert.deepEqual(faults("Should we raise the cap? And keep the fallback?").size, ["2 owner decisions or questions"]);
   const run3 = await run("c", [read, tell(2, status), tell(2, picks)], 90, { [vp]: [{ ...p826, children: [p912] }] });
   assert.equal(run3.verdict, "fail");
@@ -123,4 +125,28 @@ test("dry-message: one dry sentence with the detail on the board passes, a long 
     "per page, 2 of the 8 pages (watchlist and connections) are built but none is on staging or virev.ai yet, and it checks staging again at 12:40 KST.")]);
   assert.equal(run4.verdict, "fail");
   assert.match(run4.line("a"), /^- a not met.*a sentence of \d+ words/);
+
+  // c18 run5 on 10-22 passed with its t61 message, whose second sentence joins two facts with "and"; c18 run4's first sentence did the same.
+  const facts = ["They are about 70% of its work, and its queue keeps growing.",
+    "Instagram census runs at about 8,900 profiles a minute against the 10k goal, and most crawler fixes are built but waiting on one prod release, p912.",
+    "Instagram profiles crawl at about 8,955 a minute toward the 10k goal in p826, and most finished fixes are waiting on the crawler-only release p912.",
+    "Census runs at 8,900 a minute and the fixes wait on p912.", "The crawler is fine and it's on pace."];
+  for (const sentence of facts) assert.ok(joinsFacts(sentence), sentence);
+  const one = ["Census runs at about 10,900 Instagram profiles a minute, above the 10k goal.",
+    "Most other crawler fixes still wait on one prod release, p912, which has not shipped yet.", "Please answer t61, whether the image worker keeps saving Meta ad creatives.",
+    "Please answer t62, whether census keeps its grid-page fallback.", "My pick is keep it, since without it about 1.3M reads a day end blocked.",
+    "Two smaller picks wait for you on the Crawler VP board, t61 on Meta ad images and t62 on the census fallback.", "t61 and t62 wait on you.",
+    "Census and the image worker are slow.", "Census runs at 10,900 a minute and still keeps its fallback.", "Search and Rescue runs fine today.",
+    "Please answer t61 and t62, which are both small.", "2 of the 8 pages (watchlist and connections) are built."];
+  for (const sentence of one) assert.ok(!joinsFacts(sentence), sentence);
+  assert.deepEqual(faults("The crawler is on pace today and nothing needs you.").size, ['a sentence that joins two facts with "and" ("The crawler is on pace today and nothing needs you.")']);
+  const run5 = [tell(2, "Census runs at about 10,900 Instagram profiles a minute, above the 10k goal. Most other crawler fixes still wait on one prod release, p912, which has not shipped yet."),
+    tell(2, "Please answer t61, whether the image worker keeps saving Meta ad creatives. They are about 70% of its work, and its queue keeps growing."),
+    tell(2, "Please answer t62, whether census keeps its grid-page fallback. My pick is keep it, since without it about 1.3M reads a day end blocked.")];
+  const fifth = await run("12", [read, ...run5], 90, { [vp]: [{ ...p826, children: [p912] }] });
+  assert.equal(fifth.verdict, "fail");
+  assert.match(fifth.line("a"), /^- a not met: \S+ has a sentence that joins two facts with "and" \("They are about 70% of its work, and its queue keeps growing\."\)[^;]*$/);
+  const fifthFixed = await run("13", [read, run5[0]!, tell(2, "Please answer t61, whether the image worker keeps saving Meta ad creatives. They are about 70% of its work."), run5[2]!], 90,
+    { [vp]: [{ ...p826, children: [p912] }] });
+  assert.equal(fifthFixed.verdict, "pass", ["a", "b", "c"].map(fifthFixed.line).join("\n"));
 });
