@@ -94,7 +94,12 @@ export function wrongSend(send: Send, recipient: Recipient | undefined, previous
   return null;
 }
 
-export function emailMetrics(sources: Sources, now: number, previous: EmailState | undefined): { metrics: Record<string, number>; flagged: FlaggedSlice[] } {
+/**
+ * `lastEventAt` per windowed count, the newest send it counts: bad_sends_24h's newest wrong or annoying send, or this run when a source failed,
+ * since a failed source is a live event. A count with no event gives none. AI harness d9 read bad_sends_24h as a lagging window on 10-22 because
+ * it had none.
+ */
+export function emailMetrics(sources: Sources, now: number, previous: EmailState | undefined): { metrics: Record<string, number>; flagged: FlaggedSlice[]; lastEventAt: Record<string, number> } {
   const metrics: Record<string, number> = { bad_sends_24h: 0, false_positive_sends: 0, annoying_sends_24h: 0, bounce_or_complaint_pct: 0,
     users_over_cap: 0, repeat_sends_24h: 0, unsubscribes_24h: 0, source_errors: sources.errors.length };
   const wrong = new Set<Send>();
@@ -142,6 +147,12 @@ export function emailMetrics(sources: Sources, now: number, previous: EmailState
     metrics.annoying_sends_24h = annoying.size;
   }
   metrics.bad_sends_24h = new Set([...wrong, ...annoying]).size + sources.errors.length;
+  const newest = (sends: Set<Send>): number | undefined => sends.size ? Math.max(...[...sends].map(send => send.at)) : undefined;
+  const lastEventAt: Record<string, number> = {};
+  const badAt = sources.errors.length ? now : newest(new Set([...wrong, ...annoying]));
+  if (badAt !== undefined) lastEventAt.bad_sends_24h = badAt;
+  if (wrong.size) lastEventAt.false_positive_sends = newest(wrong)!;
+  if (annoying.size) lastEventAt.annoying_sends_24h = newest(annoying)!;
   if (sources.sends) {
     const bad = day.filter(send => BAD_EVENTS.includes(send.lastEvent));
     metrics.bounce_or_complaint_pct = day.length ? Math.round(10000 * bad.length / day.length) / 100 : 0;
@@ -162,7 +173,7 @@ export function emailMetrics(sources: Sources, now: number, previous: EmailState
     flagged.push({ at: now, kind: "token_email_removal", item: "p68", excerpt: `#233 merged ${iso(TOKEN_EMAIL_REMOVED_AT)}; Railway deploys of main since then: ` +
       `${sinceRemoval.length ? sinceRemoval.join("; ") : "none"}; the live backend deploy is ${live ? `${live.commit.slice(0, 7)} from ${iso(live.at)}` : "unknown"}` });
   }
-  return { metrics, flagged };
+  return { metrics, flagged, lastEventAt };
 }
 
 /** Runs a program with no shell and gives its stdout. */
@@ -261,8 +272,8 @@ export async function measureEmails(deps: EmailDeps, previous: EmailState | unde
   }
   sources.optedOut = await query<{ user_id: string }>(deps, "select user_id from email_preferences where marketing_consent = false order by user_id")
     .then(rows => rows.map(row => row.user_id)).catch(fail("Supabase opt-outs"));
-  const { metrics, flagged } = emailMetrics(sources, at, previous);
-  return { output: { metrics, flagged }, ...(sources.optedOut ? { state: { at, optedOut: sources.optedOut } } : {}) };
+  const { metrics, flagged, lastEventAt } = emailMetrics(sources, at, previous);
+  return { output: { metrics, flagged, ...Object.keys(lastEventAt).length ? { lastEventAt } : {} }, ...(sources.optedOut ? { state: { at, optedOut: sources.optedOut } } : {}) };
 }
 
 /** Each command stops 10 s before the runner's PRECHECK_TARGET_MS, so a hung Railway call still ends as a source error with every metric written. */

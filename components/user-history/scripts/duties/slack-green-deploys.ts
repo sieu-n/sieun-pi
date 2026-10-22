@@ -49,8 +49,8 @@ export interface Commit { sha: string; at: number; watched?: boolean | undefined
 export interface Deploy { status: string; at: number; sha?: string | undefined; reason?: string | undefined }
 /** One side of production: the commit it runs, its recent deployments, and the main commits that commit lacks, oldest first. */
 export interface Side { live: string; deploys: Deploy[]; behind: Commit[] }
-/** One slack-green main push CI run (ci.yml) as `gh run list` gives it. `conclusion` is empty while the run is not done. */
-export interface CiRun { id: number; sha: string; at: number; conclusion: string; url: string }
+/** One slack-green main push CI run (ci.yml) as `gh run list` gives it: `at` its start, `end` its last update. `conclusion` is empty while the run is not done. */
+export interface CiRun { id: number; sha: string; at: number; end: number; conclusion: string; url: string }
 /** One job of a run as `gh run view --json jobs` gives it, with each step's conclusion. */
 export interface CiJob { name: string; conclusion: string; url?: string | undefined; steps: { name: string; conclusion: string }[] }
 /**
@@ -104,7 +104,11 @@ export function redeployFor(railway: Side | undefined, now: number, state: Deplo
 
 export type Redeploy = { head: string; error?: string };
 
-export function deployMetrics(sources: Sources, now: number, redeploy?: Redeploy): { metrics: Record<string, number>; flagged: FlaggedSlice[] } {
+/**
+ * main_checks_failed_24h's `lastEventAt` is the newest end of a failed run it counts, or this run when the run list failed, and none with no failed
+ * run. AI harness d9 read it as a lagging window on 10-22 because it had none.
+ */
+export function deployMetrics(sources: Sources, now: number, redeploy?: Redeploy): { metrics: Record<string, number>; flagged: FlaggedSlice[]; lastEventAt?: Record<string, number> } {
   const flagged: FlaggedSlice[] = sources.errors.map(error => ({ at: now, kind: "source_error",
     excerpt: `${error}. The headline counts this run as a miss until the precheck or its login is fixed.` }));
   const notLive = new Set<string>();
@@ -128,8 +132,10 @@ export function deployMetrics(sources: Sources, now: number, redeploy?: Redeploy
     excerpt: `all ${sources.checkRuns ?? 0} finished main push CI runs of the last 24 h passed` });
   const errors = sources.errors.length;
   const failedCommits = sources.checks ? new Set(sources.checks.map(failure => failure.run.sha)).size : 1;
+  const failedAt = !sources.checks ? now : sources.checks.length ? Math.max(...sources.checks.map(failure => failure.run.end)) : undefined;
   return { metrics: { commits_not_live: errors ? Math.max(notLive.size, 1) : notLive.size, main_checks_failed_24h: failedCommits,
-    railway_not_live: counts.railway, vercel_not_live: counts.vercel, source_errors: errors }, flagged };
+    railway_not_live: counts.railway, vercel_not_live: counts.vercel, source_errors: errors }, flagged,
+    ...failedAt === undefined ? {} : { lastEventAt: { main_checks_failed_24h: failedAt } } };
 }
 
 /** Run conclusions that count as broken checks. ci.yml cancels only PR runs for a newer push, so a cancelled main run is a timeout or a stop. */
@@ -185,9 +191,9 @@ export async function readWatchPatterns(deps: DeployDeps): Promise<RegExp[]> {
 /** slack-green's main push runs of ci.yml, newest 100, which covers far more than a day of pushes. */
 export async function readMainRuns(deps: DeployDeps): Promise<CiRun[]> {
   const out = await deps.exec("gh", ["run", "list", "--repo", REPO, "--branch", "main", "--workflow", "ci.yml", "--event", "push", "--limit", "100",
-    "--json", "databaseId,headSha,conclusion,createdAt,url"]);
-  return (JSON.parse(out) as { databaseId: number; headSha: string; conclusion: string; createdAt: string; url: string }[])
-    .map(row => ({ id: row.databaseId, sha: row.headSha, at: Date.parse(row.createdAt), conclusion: row.conclusion ?? "", url: row.url }));
+    "--json", "databaseId,headSha,conclusion,createdAt,updatedAt,url"]);
+  return (JSON.parse(out) as { databaseId: number; headSha: string; conclusion: string; createdAt: string; updatedAt: string; url: string }[])
+    .map(row => ({ id: row.databaseId, sha: row.headSha, at: Date.parse(row.createdAt), end: Date.parse(row.updatedAt), conclusion: row.conclusion ?? "", url: row.url }));
 }
 
 export async function readJobs(deps: DeployDeps, run: number): Promise<CiJob[]> {

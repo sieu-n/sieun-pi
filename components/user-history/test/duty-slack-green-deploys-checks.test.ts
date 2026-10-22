@@ -1,5 +1,6 @@
 // Guards board step p180 (10-19): main's checks broke four times from Oct 9 to Oct 18, so Slack green deploys counts each main push whose CI
-// run failed in the last 24 h (main_checks_failed_24h) and says whether the runner or the repo owns the fix.
+// run failed in the last 24 h (main_checks_failed_24h) and says whether the runner or the repo owns the fix. AI harness d9 read that count as a
+// lagging window on 10-22 because it gave no lastEventAt, so the last test checks it names the newest failed run's end.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { type CiJob, type CiRun, type DeployDeps, measureDeploys } from "../scripts/duties/slack-green-deploys.ts";
@@ -7,7 +8,7 @@ import { type CiJob, type CiRun, type DeployDeps, measureDeploys } from "../scri
 const NOW = Date.parse("2026-10-19T16:30:00Z");
 const HOUR = 3_600_000;
 const run = (id: number, sha: string, hoursAgo: number, conclusion: string): CiRun =>
-  ({ id, sha, at: NOW - hoursAgo * HOUR, conclusion, url: `https://github.com/sieu-n/slack-green/actions/runs/${id}` });
+  ({ id, sha, at: NOW - hoursAgo * HOUR, end: NOW - hoursAgo * HOUR + 600_000, conclusion, url: `https://github.com/sieu-n/slack-green/actions/runs/${id}` });
 const step = (name: string, conclusion: string) => ({ name, conclusion });
 const JOBS: Record<number, CiJob[]> = {
   // 39282206405 on 10-19: the job-started hook refused the job because the M1 Air was under its disk floor.
@@ -24,7 +25,8 @@ function deps(runs: CiRun[], failRunList = false): DeployDeps {
   const exec = async (file: string, args: readonly string[]): Promise<string> => {
     if (file === "gh" && args[0] === "run" && args[1] === "list") {
       if (failRunList) throw new Error("gh run list: HTTP 502");
-      return JSON.stringify(runs.map(item => ({ databaseId: item.id, headSha: item.sha, conclusion: item.conclusion, createdAt: new Date(item.at).toISOString(), url: item.url })));
+      return JSON.stringify(runs.map(item => ({ databaseId: item.id, headSha: item.sha, conclusion: item.conclusion, createdAt: new Date(item.at).toISOString(),
+        updatedAt: new Date(item.end).toISOString(), url: item.url })));
     }
     if (file === "gh" && args[0] === "run" && args[1] === "view") return JSON.stringify({ jobs: JOBS[Number(args[2])] ?? [] });
     if (file === "gh" && args[0] === "api" && String(args[1]).includes("/compare/")) return "[]";
@@ -54,4 +56,14 @@ test("all green main runs read 0 with an ok flag, and a run list that fails is a
   const broken = await measureDeploys(deps([], true), { redeployed: {} });
   assert.equal(broken.output.metrics.main_checks_failed_24h, 1);
   assert.equal(broken.output.metrics.source_errors, 1);
+});
+
+test("main_checks_failed_24h's lastEventAt is the newest failed run's end, this run when the list fails, and absent when all passed", async () => {
+  const runs = [run(2, "bbbbbbb2", 3, "failure"), run(3, "bbbbbbb2", 2, "cancelled"), run(4, "ccccccc3", 1, "success"), run(5, "ddddddd4", 30, "failure")];
+  const failed = await measureDeploys(deps(runs), { redeployed: {} });
+  assert.deepEqual(failed.output.lastEventAt, { main_checks_failed_24h: NOW - 2 * HOUR + 600_000 });
+  const green = await measureDeploys(deps([run(4, "ccccccc3", 5, "success")]), { redeployed: {} });
+  assert.equal(green.output.lastEventAt, undefined);
+  const broken = await measureDeploys(deps([], true), { redeployed: {} });
+  assert.deepEqual(broken.output.lastEventAt, { main_checks_failed_24h: NOW });
 });
