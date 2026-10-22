@@ -1,0 +1,44 @@
+{
+  "name": "Throughput goal achieved",
+  "ownerWords": "Duties suggestion (10-22, msg mvj491h5): \"Crawler running -> Throughput goal achieved ( unified for all platform )\"\n\n<duties>: there are some things that are obvious even now.\n- Keep crawler running actively\n  - Check the Observability and Metrics\n  - Geonode mbps >=100mbps always\n  - (when p1, p2,p4 is achieved, withinnitial stability 6h+ check, they now should come to duty.)\n  - instagram profiles at 10k+/min,\n  - nothing is backlogging: pg -> os/ch, media worker, (... idk you know better.)\n  - ...\n  - when p6 is achieved, it is your duty to keep LGTM and Grafana dashbaords up to date to any changes, and carefully tune the alerts system. if it's false alert -> try to reduce it change condition. if alert missed it (wasn't in place) but found actually meaningful issue, add that alert so we don't have to worry about it. (10-19, msg mvfe8foz)",
+  "goal": "Every platform with a throughput goal on this board crawls at or above it on prod, read the way the crawler Throughput dashboard on obs.virev.ai shows it. Today that is Instagram profiles (p826, 10,000 good a minute, held 6 h), TikTok Shop products (p696, 2,000 good a minute), Meta Ads advertiser re-reads (p850, every due advertiser read within 7 days), and Instagram re-reads (p683, at most 1% of read accounts past 7 days, and p829, every profile re-read within 14 days, kept at 99.99% of a 1% sample). The headline counts the goals prod misses, so a platform joins when its goal is on the board and a row in throughput-goal.ts reads it, with no target change. Each goal number comes from the board item at run time, its target or, when it has none, the number in its title. Instagram and TikTok Shop read the slowest rolling hour of the last 6 h of the rate controller's good results, the dashboard's \"slowest hour, 6 h\" stats; Meta Ads reads advertiser walks finished over 24 h against the walks due now spread over the goal's days. Crawls with no goal on the board (TikTok and YouTube profiles, Instagram posts) are listed in the run detail and left out of the count; LinkedIn runs on demand only (p670). The supporting metrics keep the rest of the owner's 10-19 duties: GeoNode carries at least 100 Mbps in every hour since the last run, no Instagram queue grows over 6 h (p827), and every panel on the crawler dashboards draws. When a goal on the plan holds its number, it closes and this duty keeps it, and a later slip puts a fix step back on the plan. GeoNode retries, supply holds and dropped exits stay with the GeoNode proxy use duty (d2), read cost per profile with the Crawler read cost duty (d1), Meta walk age and overdue walks with the Meta Ads crawl duty (d7), and alert rules with the Crawler alerts duty (d5). The census job failure share is reported in the run detail against the owner's 40 to 70% band, and a rise past it is an alert rule's job.",
+  "metrics": [
+    {
+      "key": "throughput_goals_missed",
+      "label": "Throughput goals on the board that prod misses, every platform",
+      "op": "<=",
+      "target": 0,
+      "headline": true
+    },
+    {
+      "key": "geonode_mbps",
+      "label": "GeoNode Mbps in the slowest hour since the last daily run",
+      "op": ">=",
+      "target": 100,
+      "unit": " Mbps"
+    },
+    {
+      "key": "ig_queues_growing_6h",
+      "label": "Instagram queues whose backlog grew over the last 6 h",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "crawler_panels_blank",
+      "label": "Panels on the crawler dashboards on obs.virev.ai that show an error or No data",
+      "op": "<=",
+      "target": 0
+    }
+  ],
+  "precheck": {
+    "command": [
+      "node",
+      "--import",
+      "tsx",
+      "scripts/duties/throughput-goal.ts"
+    ],
+    "cwd": "../.."
+  },
+  "onMiss": "For each missed metric, start or steer one live fix job this run, and keep it until the metric is met again. A live job that already owns the cause gets the numbers by message: the goal item's own job for its throughput row (census canary run for p826, tiktok shop products push for p696, meta ads overdue walks for p850, instagram weekly refresh for p683 and p829), geonode timeouts our side for GeoNode and transport failures, instagram ingest backlog for the media and OpenSearch queues, crawler prod alerts for the dashboards. Otherwise start one with rlm.create_session and put its fix step under the matching goal with duty \"<id>/<metric>\". throughput_goals_missed: the goal lines name each platform's rate against its goal; for each missed one find what stopped or slowed that crawl (a pause, a deploy, a hold, the gateway, a crashed role, a writer, a cadence control such as weekly_days or small_recheck_days) from the Throughput dashboard and logs, and get it back with a code or config fix through the crawler ops train, or a control write through /ops/controls with a measured reason. A goal line that reads its number from the item's title means the item has no target: give it one with chat_board. geonode_mbps: the geonode line names each hour under 100 Mbps; find which lane lost bandwidth in that hour and why, and fix our side; never contact GeoNode (c37, c79). ig_queues_growing_6h: name the queue and its consumer from the backlog line and fix the consumer. crawler_panels_blank: the dashboards line names each blank panel; fix its query in auto-sns-agent apps/infra/grafana/dashboards/crawler or the exporter it reads, or delete a panel nobody needs, and land it through the crawler ops train. When a throughput goal on the plan has held its number (p826 for 6 h), close it with the reading; its row here keeps it. A source_error comes first: fix the precheck read. The duty job itself only reads prod. All on target: end the turn with no message.",
+  "boardGoal": "p146"
+}
