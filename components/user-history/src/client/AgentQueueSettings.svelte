@@ -5,14 +5,20 @@
   import Checkbox from "./ui/Checkbox.svelte";
   import QueueHistory from "./QueueHistory.svelte";
   import QueueRows from "./QueueRows.svelte";
-  import type { AgentQueueInput, AgentQueueView } from "../shared/types.ts";
+  import type { AgentQueueInput, AgentQueuePool, AgentQueueView, HostQueueInput } from "../shared/types.ts";
   import { setLine } from "./agent-queue.ts";
   import { POOL_DEFAULTS } from "./pool-config.ts";
+
+  /** `remote` is another box's card on Settings > Hosts: its pool comes from the Hosts poll, and a change goes to that box through api/hosts/queue. */
+  let { remote }: { remote?: { name: string; pool: AgentQueuePool } } = $props();
+  const uid = $props.id();
 
   const POLL_MS = 5000;
   type Field = "mac" | "tree" | "idle";
 
   let view = $state<AgentQueueView | null>(null);
+  /** The pool a remote write answered with, shown while `from` is still the prop's pool, so the next Hosts poll replaces it. */
+  let written = $state.raw<{ from: AgentQueuePool; pool: AgentQueuePool } | null>(null);
   let error = $state<string | null>(null);
   let saving = $state<AgentQueueInput["action"] | null>(null);
   let drafts = $state<Record<Field, number | null>>({ mac: null, tree: null, idle: null });
@@ -22,20 +28,29 @@
     try { view = await api.agentQueue(); error = null; }
     catch (reason) { error = reason instanceof Error ? reason.message : String(reason); }
   }
-  onMount(() => { void load(); timer = setInterval(() => { void load(); }, POLL_MS); });
+  onMount(() => { if (remote) return; void load(); timer = setInterval(() => { void load(); }, POLL_MS); });
   onDestroy(() => clearInterval(timer));
+
+  async function write(input: AgentQueueInput): Promise<void> {
+    if (!remote) { view = await api.setAgentQueue(input); return; }
+    if (input.action === "idle") throw new Error("The idle unload time is set on the box itself.");
+    const from = remote.pool;
+    const host: HostQueueInput = { host: remote.name, ...input };
+    written = { from, pool: await api.setHostQueue(host) };
+  }
 
   async function apply(input: AgentQueueInput): Promise<void> {
     saving = input.action;
     try {
-      view = await api.setAgentQueue(input);
+      await write(input);
       error = null;
       if (input.action !== "queue") drafts[input.action] = null;
     } catch (reason) { error = reason instanceof Error ? reason.message : String(reason); }
     finally { saving = null; }
   }
 
-  const pool = $derived(view?.pool.state === "read" ? view.pool : null);
+  const current = $derived<AgentQueuePool | null>(remote ? (written?.from === remote.pool ? written.pool : remote.pool) : view?.pool ?? null);
+  const pool = $derived(current?.state === "read" ? current : null);
   const idleSaved = $derived(typeof view?.idleEvictionMinutes === "number" ? view.idleEvictionMinutes : null);
   const saved = $derived<Record<Field, number | null>>({ mac: pool?.workingMax ?? null, tree: pool?.treeWorkingMax ?? null, idle: idleSaved });
   const shown = (field: Field) => drafts[field] ?? saved[field];
@@ -53,9 +68,9 @@
 
 {#snippet limit(field: Field, label: string, unit: string, max: number, enabled: boolean)}
   <form class="limit" onsubmit={event => submit(event, field)}>
-    <label class="label" for="queue-{field}">{label}</label>
+    <label class="label" for="{uid}-queue-{field}">{label}</label>
     <div class="field-row">
-      <input id="queue-{field}" class="field" type="number" inputmode="numeric" min="1" {max} step="1" disabled={!enabled || saving !== null}
+      <input id="{uid}-queue-{field}" class="field" type="number" inputmode="numeric" min="1" {max} step="1" disabled={!enabled || saving !== null}
         placeholder={field === "idle" && view?.idleEvictionMinutes === "off" ? "Off" : ""}
         value={shown(field)} oninput={event => { drafts[field] = Number.isNaN(event.currentTarget.valueAsNumber) ? null : event.currentTarget.valueAsNumber; }} />
       <span class="unit">{unit}</span>
@@ -66,14 +81,14 @@
   </form>
 {/snippet}
 
-<section class="queue" aria-label="Agent queue">
+<section class="queue" aria-label={remote ? `Agent queue on ${remote.name}` : "Agent queue"}>
   <h3>Agent queue</h3>
-  {#if !view}
+  {#if !current}
     <p class="note">{error ? `The agent queue is unavailable. ${error}` : "Reading the agent queue"}</p>
   {:else}
-    <QueueRows pool={view.pool} />
+    <QueueRows pool={current} />
 
-    <QueueHistory hours={view.history} />
+    {#if view}<QueueHistory hours={view.history} />{/if}
 
     <button type="button" class="toggle" role="switch" aria-checked={pool?.enabled ?? false} aria-busy={saving === "queue"} disabled={!pool || saving !== null}
       onclick={() => { if (pool) void apply({ action: "queue", on: !pool.enabled }); }}>
@@ -85,7 +100,7 @@
     <div class="limits">
       {@render limit("mac", "Agents working on this box", "", 999, pool !== null)}
       {@render limit("tree", "Agents working per chat", "", 999, pool !== null)}
-      {@render limit("idle", "Unload idle sessions after", "min", 1440, true)}
+      {#if !remote}{@render limit("idle", "Unload idle sessions after", "min", 1440, true)}{/if}
     </div>
     {#if pool}<p class="note">{setLine(pool.workingMax, pool.workingMaxSet, POOL_DEFAULTS.working_max)}</p>{/if}
     {#if error}<p class="note problem">The last change failed. {error}</p>{/if}

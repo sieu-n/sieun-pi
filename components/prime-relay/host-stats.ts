@@ -340,8 +340,9 @@ export async function poolReading(bin = poolBin()): Promise<PoolReading> {
   } catch (error) { return { error: `pi-pool: ${(error instanceof Error ? error.message : String(error)).slice(0, 300)}` }; }
 }
 
-export async function hostStats(): Promise<HostStats> {
-  const [machine, pool] = await Promise.all([machineView(), poolReading()]);
+/** The box's machine reading and turn queue; `readPool` stands in for this box's pi-pool in tests. */
+export async function hostStats(readPool: () => Promise<PoolReading> = poolReading): Promise<HostStats> {
+  const [machine, pool] = await Promise.all([machineView(), readPool()]);
   return { machine, pool };
 }
 

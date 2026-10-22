@@ -35,6 +35,11 @@ export async function piPoolLead(sessions) {
   await piPool(["lead", ...sessions]);
 }
 
+/** `pi-pool set <key> <value>` on this box, as the chat's own Settings pane writes it (chat-pool.ts poolCommand.set). */
+export async function piPoolSet(key, value) {
+  await piPool(["set", key, String(value), "--by", "the Settings pane"]);
+}
+
 function markedLine(line, mark, log) {
   let message;
   try { message = JSON.parse(line.toString("utf8")); } catch { return line; }

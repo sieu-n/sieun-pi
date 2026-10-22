@@ -8,13 +8,13 @@ import { createConnection } from "node:net";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { hostStats, usableRaw } from "./host-stats.ts";
+import { hostStats, poolReading, usableRaw } from "./host-stats.ts";
 import { DELTA_HEADER, encodeLineDeltas } from "./line-delta.ts";
 import { firstPromptTunnel } from "./first-prompt.mjs";
-import { ownerTurnLines, piPoolLead, piPoolOwnerTurn, SESSION } from "./owner-turn.mjs";
+import { ownerTurnLines, piPoolLead, piPoolOwnerTurn, piPoolSet, SESSION } from "./owner-turn.mjs";
 import { SLIM_HEADER, slimSnapshots } from "./slim-snapshot.mjs";
 
-const VERSION = 3;
+const VERSION = 4;
 const UPGRADE = "prime-daemon";
 
 const expand = path => path.startsWith("~/") ? join(homedir(), path.slice(2)) : path;
@@ -139,6 +139,28 @@ async function serveLead(request, response, lead) {
   send(response, 200, { lead: sessions });
 }
 
+/**
+ * The turn queue settings another box may write here, each with its whole-number range: the switch takes 0 or 1, and the two limits 1 to 999,
+ * the chat's own input bounds (LIMIT_MAX in components/user-history/src/chat-agent-queue.ts).
+ */
+const POOL_KEYS = { agent_queue_on: [0, 1], working_max: [1, 999], tree_working_max: [1, 999] };
+
+/**
+ * POST /v1/pool: the body is `{"key": ..., "value": ...}`, this box's `pi-pool set <key> <value>` writes it, and the answer is the box's fresh
+ * pool reading, as GET /v1/host gives it. Settings > Hosts on the chat service on another box sends it, so each box's queue limits change from
+ * the chat the owner has open. A key outside POOL_KEYS or a value outside its range gets 400 and never reaches pi-pool.
+ */
+async function servePool(request, response, setPool, readPool) {
+  let body;
+  try { body = JSON.parse(await readBody(request, WATCH_BODY_BYTES)); } catch { return send(response, 400, { error: "send a JSON body with key and value" }); }
+  const { key, value } = typeof body === "object" && body !== null ? body : {};
+  const range = typeof key === "string" && Object.hasOwn(POOL_KEYS, key) ? POOL_KEYS[key] : null;
+  if (!range) return send(response, 400, { error: `key must be one of ${Object.keys(POOL_KEYS).join(", ")}` });
+  if (!Number.isInteger(value) || value < range[0] || value > range[1]) return send(response, 400, { error: `${key} takes a whole number from ${range[0]} to ${range[1]}` });
+  await setPool(key, value);
+  send(response, 200, { pool: await readPool() });
+}
+
 function send(response, status, body) {
   response.writeHead(status, { "Content-Type": "application/json" });
   response.end(JSON.stringify(body));
@@ -148,20 +170,21 @@ function send(response, status, body) {
  * The relay: checks the bearer token, tunnels `GET /v1/daemon` upgrades to the daemon socket (byte for byte, unless the client asks for slim
  * snapshots, `slimSnapshots`, or message update deltas, `encodeLineDeltas`, with a prompt's `ownerTurn` marked first, `ownerTurnLines`, and with a
  * create's `relayFirstPrompt` sent as soon as the create answers, `firstPromptTunnel`),
- * serves reads under the roots and the box's CPU, memory and turn queue, and writes the turn queue's lead list. `markOwnerTurn` and `lead` stand
- * in for this box's pi-pool in tests.
+ * serves reads under the roots and the box's CPU, memory and turn queue, and writes the turn queue's lead list and settings. `markOwnerTurn`,
+ * `lead`, `setPool` and `readPool` stand in for this box's pi-pool in tests.
  */
-export function createRelay(config, log = () => {}, { markOwnerTurn = piPoolOwnerTurn, lead = piPoolLead } = {}) {
+export function createRelay(config, log = () => {}, { markOwnerTurn = piPoolOwnerTurn, lead = piPoolLead, setPool = piPoolSet, readPool = poolReading } = {}) {
   const server = createServer(async (request, response) => {
     try {
       if (!authorized(request, config.token)) return send(response, 401, { error: "unauthorized" });
       const url = new URL(request.url ?? "/", "http://relay");
       if (request.method === "GET" && url.pathname === "/v1/health") return send(response, 200, { ok: true, daemon: await daemonAnswers(config.daemonSocket) ? "answering" : "down", version: VERSION });
-      if (request.method === "GET" && url.pathname === "/v1/host") return send(response, 200, await hostStats());
+      if (request.method === "GET" && url.pathname === "/v1/host") return send(response, 200, await hostStats(readPool));
       if (request.method === "GET" && url.pathname === "/v1/usable") return send(response, 200, await usableRaw());
       if ((request.method === "GET" || request.method === "HEAD") && url.pathname === "/v1/file") return await serveFile(request, response, url, config.roots);
       if (request.method === "POST" && url.pathname === "/v1/watch") return await serveWatch(request, response);
       if (request.method === "POST" && url.pathname === "/v1/lead") return await serveLead(request, response, lead);
+      if (request.method === "POST" && url.pathname === "/v1/pool") return await servePool(request, response, setPool, readPool);
       send(response, 404, { error: "unknown route" });
     } catch (error) {
       if (!response.headersSent) send(response, 500, { error: error instanceof Error ? error.message : String(error) });

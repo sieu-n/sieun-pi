@@ -4,6 +4,7 @@ import { createConnection, createServer, type Server, type Socket } from "node:n
 import { homedir, hostname as osHostname } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { DELTA_HEADER, decodeLineDeltas } from "../../prime-relay/line-delta.ts";
+import type { AgentQueueKey } from "./chat-pool.ts";
 
 /**
  * The hosts registry, ~/.config/sieun-pi/hosts.json: every box sieun-pi drives, its relay and the services it holds.
@@ -130,7 +131,10 @@ export type RelayWatch = { usable: unknown; footprints: import("./mac-usable-wat
 async function relayJson(host: Host, path: string, init: { method?: string; body?: string; headers?: Record<string, string> } = {}): Promise<unknown> {
   const response = await fetch(`http://${host.address}:${host.relayPort}${path}`, { ...init, headers: { ...init.headers, authorization: `Bearer ${await hostToken(host)}` },
     signal: AbortSignal.timeout(35_000) });
-  if (!response.ok) throw new Error(`relay ${host.name} answered ${response.status} to ${path}`);
+  if (!response.ok) {
+    const said = await response.json().then((body: unknown) => isRecord(body) && typeof body.error === "string" ? `: ${body.error}` : "", () => "");
+    throw Object.assign(new Error(`relay ${host.name} answered ${response.status} to ${path}${said}`), { status: response.status });
+  }
   return await response.json() as unknown;
 }
 
@@ -156,6 +160,20 @@ export async function relayWatch(host: Host, pids: readonly number[]): Promise<R
 /** Sets `host`'s turn queue lead list through its relay (POST /v1/lead, `pi-pool lead` there): those sessions' queued runs start first; [] clears it. */
 export async function relayLead(host: Host, sessions: readonly string[]): Promise<void> {
   await relayJson(host, "/v1/lead", { method: "POST", body: sessions.map(session => session + "\n").join(""), headers: { "content-type": "text/plain" } });
+}
+
+/**
+ * Writes one turn queue setting on `host` through its relay (POST /v1/pool, `pi-pool set` there) and returns the box's fresh pool reading,
+ * unparsed. A relay from before version 4 has no such route and answers 404.
+ */
+export async function relayPool(host: Host, key: AgentQueueKey, value: number): Promise<{ pool: unknown }> {
+  try {
+    const reply = await relayJson(host, "/v1/pool", { method: "POST", body: JSON.stringify({ key, value }), headers: { "content-type": "application/json" } });
+    return { pool: isRecord(reply) ? reply.pool : undefined };
+  } catch (error) {
+    if ((error as { status?: number }).status === 404) throw new Error(`The relay on ${host.name} is too old to change its queue limits. Run components/prime-relay/install.mjs there.`);
+    throw error;
+  }
 }
 
 type RelayResponse = { status: number; headers: Record<string, string | string[] | undefined>; body: Buffer };

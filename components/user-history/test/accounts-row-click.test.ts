@@ -2,8 +2,6 @@
 // thread, which is how mac-management and another chat landed on claude16 at 12:33:52Z and 12:57:02Z. A row click now sends no account action;
 // Use in this thread sends one.
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
 import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,9 +9,8 @@ import { test } from "node:test";
 import { pathToFileURL } from "node:url";
 import { build } from "esbuild";
 import esbuildSvelte from "esbuild-svelte";
+import { chrome, devtools } from "./devtools-pipe.ts";
 
-const CHROMES = [process.env.CHROME_BIN, "/usr/bin/google-chrome", "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"].filter((path): path is string => !!path);
-const chrome = CHROMES.find(path => existsSync(path));
 
 const STUBS: Record<string, string> = {
   "./api.ts": `
@@ -36,34 +33,6 @@ const STUBS: Record<string, string> = {
   "./thread-side.svelte.ts": `export const pushedAccounts = { landed: () => {} };`,
 };
 
-/** Talks Chrome DevTools Protocol over --remote-debugging-pipe: fd 3 carries requests, fd 4 carries replies, each a NUL-ended JSON message. */
-function devtools(binary: string, profile: string, url: string) {
-  const child = spawn(binary, ["--headless=new", "--no-sandbox", "--disable-gpu", "--remote-debugging-pipe", `--user-data-dir=${profile}`, "--window-size=1100,800", url],
-    { stdio: ["ignore", "ignore", "pipe", "pipe", "pipe"] });
-  const [input, output] = [child.stdio[3] as NodeJS.WritableStream, child.stdio[4] as NodeJS.ReadableStream];
-  const waiting = new Map<number, { resolve: (value: any) => void; reject: (error: Error) => void }>();
-  const listeners: { method: string; sessionId: string; done: () => void }[] = [];
-  let buffered = "", next = 0;
-  output.on("data", (chunk: Buffer) => {
-    buffered += chunk.toString("utf8");
-    for (let end = buffered.indexOf("\0"); end >= 0; end = buffered.indexOf("\0")) {
-      const message = JSON.parse(buffered.slice(0, end));
-      buffered = buffered.slice(end + 1);
-      if (message.method) { for (const listen of listeners) if (listen.method === message.method && listen.sessionId === message.sessionId) listen.done(); continue; }
-      const entry = waiting.get(message.id);
-      if (!entry) continue;
-      waiting.delete(message.id);
-      if (message.error) entry.reject(new Error(JSON.stringify(message.error))); else entry.resolve(message.result);
-    }
-  });
-  const send = (method: string, params: object = {}, sessionId?: string): Promise<any> => new Promise((resolve, reject) => {
-    const id = ++next;
-    waiting.set(id, { resolve, reject });
-    input.write(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }) + "\0");
-  });
-  const onEvent = (method: string, sessionId: string, done: () => void) => { listeners.push({ method, sessionId, done }); };
-  return { send, onEvent, close: () => new Promise<void>(resolve => { child.once("exit", () => resolve()); child.kill(); }) };
-}
 
 test("a click on an account row sends no account action, and Use in this thread sends exactly one", { skip: chrome ? false : "no Chrome on this host" }, async t => {
   const dir = await mkdtemp(join(tmpdir(), "accounts-row-click-"));

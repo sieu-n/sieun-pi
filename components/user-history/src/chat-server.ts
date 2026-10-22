@@ -39,13 +39,14 @@ import type { RemoteControl } from "./chat-remote.ts";
 import type { SlackControl } from "./chat-slack.ts";
 import type { SdkSync } from "./chat-sdk.ts";
 import type { ThreadSide } from "./shared/thread-side.ts";
-import { hostsView, thisBox } from "./chat-hosts.ts";
-import { parseAgentQueueInput } from "./chat-agent-queue.ts";
+import { hostsView, parsePool, thisBox } from "./chat-hosts.ts";
+import { parseAgentQueueInput, parseHostQueueInput, poolSetting } from "./chat-agent-queue.ts";
+import { loadHosts, relayPool, selfHost, type HostsRegistry } from "./hosts.ts";
 import { TOOL_CHECKS_FILE, toolChecks } from "./chat-tools.ts";
 import { skillsView } from "./chat-skills.ts";
 import { nextBriefView } from "./prompt-view.ts";
 import { feedBoard } from "./shared/board-delta.ts";
-import { CHECK_IN_MIN_MINUTES, CHECK_IN_PAUSES, isThinkingLevel, type AccountAction, type AgentQueueInput, type ChatDefaultsInput, type LabelAction, type ModelCatalog, type RemoteAccessInput, type SendMode, type SlackChannelSetup, type SlackChatInput, type SlackInput, type ThinkingLevel } from "./shared/types.ts";
+import { CHECK_IN_MIN_MINUTES, CHECK_IN_PAUSES, isThinkingLevel, type AccountAction, type AgentQueueInput, type AgentQueuePool, type ChatDefaultsInput, type HostQueueInput, type LabelAction, type ModelCatalog, type RemoteAccessInput, type SendMode, type SlackChannelSetup, type SlackChatInput, type SlackInput, type ThinkingLevel } from "./shared/types.ts";
 import { channelNameError } from "./shared/slack-channel.ts";
 import { parseStartSkill } from "./shared/start-skill.ts";
 import { timeRead } from "./chat-latency.ts";
@@ -398,6 +399,28 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
     rows: name => name === null ? backend.catalog.daemonRows() : backend.catalog.remoteHosts().find(({ host }) => host.name === name)?.rows ?? [],
     ...backend.calls ? { hung: () => backend.calls!.hung() } : {},
     selfQueue: async () => backend.agentQueue ? (await backend.agentQueue.view()).pool : { state: "unread", error: "This chat instance runs no agent queue." } });
+  /**
+   * One Settings > Hosts queue write and that box's fresh pool reading: this box, named as hostsView names its card, writes through its own Agent
+   * queue, and another box in hosts.json through its relay.
+   */
+  async function writeHostQueue(body: unknown): Promise<AgentQueuePool> {
+    const said = (error: unknown): string => error instanceof Error ? error.message : String(error);
+    const failed = (error: unknown): never => { throw new RequestError(502, said(error)); };
+    let input: HostQueueInput;
+    try { input = parseHostQueueInput(body); } catch (error) { throw new RequestError(400, said(error)); }
+    let registry: HostsRegistry | null = null;
+    try { registry = await loadHosts(); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") failed(error); }
+    const self = registry ? selfHost(registry) : null;
+    if (input.host === (self?.name ?? thisBox())) {
+      if (!backend.agentQueue) throw new RequestError(409, "This chat instance runs no agent queue.");
+      return (await backend.agentQueue.apply(input).catch(failed)).pool;
+    }
+    const box = registry?.hosts.find(candidate => candidate.name === input.host);
+    if (!box) throw new RequestError(404, `No host ${input.host} in hosts.json.`);
+    const { key, value } = poolSetting(input);
+    const reply = await relayPool(box, key, value).catch(failed);
+    return parsePool(reply.pool, id => backend.catalog.title(id));
+  }
   const creations = new Bounded<{ fingerprint: string; result: Promise<{ id: string; notice?: string }> }>(200);
   let host = "";
   let closing: Promise<void> | undefined;
@@ -1012,6 +1035,7 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
         try { input = parseAgentQueueInput(body); } catch (error) { throw new RequestError(400, error instanceof Error ? error.message : String(error)); }
         json(res, 200, await backend.agentQueue.apply(input).catch(error => { throw new RequestError(502, error instanceof Error ? error.message : String(error)); })); return;
       }
+      if (route === "api/hosts/queue") { json(res, 200, await writeHostQueue(body)); return; }
       if (route === "api/tools/check") { json(res, 200, await tools.view(true)); return; }
       if (route === "api/remote/check") { await remote.check(); json(res, 200, remote.view(origin === `http://${host}`)); return; }
       if (route === "api/warm") { await backend.threads.warm(threadId(text(body.id, "id", 256))); json(res, 200, { ok: true }); return; }

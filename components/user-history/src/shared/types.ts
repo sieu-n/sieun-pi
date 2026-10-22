@@ -593,6 +593,11 @@ export interface AgentQueueView { pool: AgentQueuePool; idleEvictionMinutes: Idl
 
 /** One Agent queue write: a single `pi-pool set` for the switch or the two limits, or the daemon's idle unload time. */
 export type AgentQueueInput = { action: "queue"; on: boolean } | { action: "mac" | "tree"; value: number } | { action: "idle"; value: IdleEvictionMinutes };
+/**
+ * One turn queue write to a box in hosts.json from Settings > Hosts (POST api/hosts/queue): this box's write goes to its own pi-pool, another box's
+ * through its relay (POST /v1/pool). The idle unload time is the daemon's own setting, so it stays on the box's own card.
+ */
+export type HostQueueInput = { host: string } & Exclude<AgentQueueInput, { action: "idle" }>;
 
 /**
  * Settings > Tools and skills: per box in hosts.json, live checks of the tools agents there are meant to have (its `tools`: web search, a headless

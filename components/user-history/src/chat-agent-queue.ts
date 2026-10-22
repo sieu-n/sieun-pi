@@ -1,5 +1,5 @@
 import { readAgentQueue, setPoolKey, type AgentQueueKey } from "./chat-pool.ts";
-import type { AgentQueueInput, AgentQueueReading, AgentQueueRow, AgentQueueView, IdleEvictionMinutes, TurnHour } from "./shared/types.ts";
+import type { AgentQueueInput, AgentQueueReading, AgentQueueRow, AgentQueueView, HostQueueInput, IdleEvictionMinutes, TurnHour } from "./shared/types.ts";
 import { turnHistory } from "./turn-history.ts";
 
 /** Input bounds for the two limits. A limit above the measured 16 is the owner's call; 999 only catches a typo with extra digits. */
@@ -21,6 +21,20 @@ export function parseAgentQueueInput(body: unknown): AgentQueueInput {
   if ((value.action === "mac" || value.action === "tree") && whole(value.value, LIMIT_MAX)) return { action: value.action, value: value.value };
   if (value.action === "idle" && (value.value === "off" || whole(value.value, IDLE_MAX_MINUTES))) return { action: "idle", value: value.value };
   throw new Error(`Use action queue with on true or false, mac or tree with a whole number from 1 to ${LIMIT_MAX}, or idle with 1 to ${IDLE_MAX_MINUTES} minutes or "off".`);
+}
+
+/** A Settings > Hosts write: the box's name and a queue switch or limit write; the idle unload time stays on the box's own card. */
+export function parseHostQueueInput(body: unknown): HostQueueInput {
+  const value = typeof body === "object" && body !== null ? body as Record<string, unknown> : {};
+  if (typeof value.host !== "string" || !value.host) throw new Error("Name the box in host.");
+  const write = parseAgentQueueInput(body);
+  if (write.action === "idle") throw new Error("Change the idle unload time on the chat app of that box.");
+  return { host: value.host, ...write };
+}
+
+/** The `pi-pool set` key and value of a queue switch or limit write. */
+export function poolSetting(input: Exclude<AgentQueueInput, { action: "idle" }>): { key: AgentQueueKey; value: number } {
+  return input.action === "queue" ? { key: "agent_queue_on", value: input.on ? 1 : 0 } : { key: POOL_KEYS[input.action], value: input.value };
 }
 
 type Title = (sessionId: string) => string | null;
@@ -51,8 +65,7 @@ export function agentQueue(title: Title, idle: IdleEviction,
 
   async function apply(input: AgentQueueInput): Promise<AgentQueueView> {
     switch (input.action) {
-      case "queue": await set("agent_queue_on", input.on ? 1 : 0); break;
-      case "mac": case "tree": await set(POOL_KEYS[input.action], input.value); break;
+      case "queue": case "mac": case "tree": { const { key, value } = poolSetting(input); await set(key, value); break; }
       case "idle": await idle.setIdleEviction(input.value); break;
       default: { const never: never = input; throw new Error(`Unknown action ${String(never)}`); }
     }

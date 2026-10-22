@@ -3,7 +3,6 @@
   import { api } from "./api.ts";
   import AgentQueueSettings from "./AgentQueueSettings.svelte";
   import MachineMeters from "./MachineMeters.svelte";
-  import QueueRows from "./QueueRows.svelte";
   import { hostGlance, hostRoles, hostSessions } from "./hosts.ts";
   import type { HostsView } from "../shared/types.ts";
 
@@ -24,7 +23,7 @@
       const history: Record<string, number[]> = {};
       for (const host of next.hosts) if (host.state === "up") history[host.name] = [...cpuHistory[host.name] ?? [], host.machine.cpu.percent].slice(-HISTORY);
       cpuHistory = history;
-            error = null;
+      error = null;
     } catch (reason) { error = reason instanceof Error ? reason.message : String(reason); }
   }
   onMount(() => { void load(); timer = setInterval(() => { void load(); }, POLL_MS); });
@@ -52,11 +51,7 @@
             {#if host.self}
               <AgentQueueSettings />
             {:else}
-              <section class="queue" aria-label="Agent queue on {host.name}">
-                <h3>Agent queue</h3>
-                <QueueRows pool={host.queue} />
-                <p class="note">Change this box's queue limits from the chat app on the box itself.</p>
-              </section>
+              <AgentQueueSettings remote={{ name: host.name, pool: host.queue }} />
             {/if}
           {:else}
             <p class="note problem">The box did not answer at {host.address}. {host.error}</p>
@@ -84,6 +79,4 @@
   .badge { padding: 1px 6px; border-radius: 999px; background: var(--bg-hover); color: var(--text-muted); font-size: 11.5px; }
   .glance { margin-left: auto; color: var(--text-muted); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .body { display: flex; flex-direction: column; gap: 18px; padding: 12px 14px 14px; }
-  .queue { display: flex; flex-direction: column; gap: 12px; padding-top: 16px; border-top: 1px solid var(--border); }
-  h3 { margin: 0; font-size: 13px; font-weight: 600; }
 </style>

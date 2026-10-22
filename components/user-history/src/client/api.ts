@@ -1,4 +1,4 @@
-import type { AccountAction, AccountLogin, AgentQueueInput, AgentQueueView, AccountsView, BoardOp, ChatBoard, ChatDefaults, ChatDefaultsInput, HostsView, RemoteAccessInput, RemoteAccessView, SdkView, SlackChannelOption, SlackChannelSetup, SlackChatInput, SlackInput, SlackView, ChildUsage, Command, ImageInput, LabelAction, SkillsView, ToolsView, ModelCatalog, NewChatAccount, OlderPage, SendMode, SessionRow, SessionsDelta, SessionsEvent, ThreadEvent, ThreadHave, ThreadStats, UsageRefresh, Workspace } from "../shared/types.ts";
+import type { AccountAction, AccountLogin, AgentQueueInput, AgentQueuePool, AgentQueueView, HostQueueInput, AccountsView, BoardOp, ChatBoard, ChatDefaults, ChatDefaultsInput, HostsView, RemoteAccessInput, RemoteAccessView, SdkView, SlackChannelOption, SlackChannelSetup, SlackChatInput, SlackInput, SlackView, ChildUsage, Command, ImageInput, LabelAction, SkillsView, ToolsView, ModelCatalog, NewChatAccount, OlderPage, SendMode, SessionRow, SessionsDelta, SessionsEvent, ThreadEvent, ThreadHave, ThreadStats, UsageRefresh, Workspace } from "../shared/types.ts";
 
 import type { NewChatSettings } from "../shared/start-skill.ts";
 import type { OutboxAccepted } from "../shared/outbox.ts";
@@ -108,6 +108,7 @@ export const api = {
   hosts: () => get<HostsView>("api/hosts"),
   agentQueue: () => get<AgentQueueView>("api/agent-queue"),
   setAgentQueue: (input: AgentQueueInput) => post<AgentQueueView>("api/agent-queue", input),
+  setHostQueue: (input: HostQueueInput) => post<AgentQueuePool>("api/hosts/queue", input),
   tools: () => get<ToolsView>("api/tools", 120000),
   checkTools: () => post<ToolsView>("api/tools/check", {}, 120000),
   skills: () => get<SkillsView>("api/skills"),
