@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import { daemonList, listRows } from "../src/daemon-list.ts";
+import { daemonList, daemonSend, listRows } from "../src/daemon-list.ts";
 
 const HANDSHAKE = "Timed out after 3000ms waiting for the Prime Agent daemon handshake. Socket: /tmp/prime-agent-1001/daemon.sock.";
 
@@ -34,4 +34,17 @@ test("no script reads the daemon's list through the CLI or its own DaemonClient,
     lines.forEach((line, index) => { if (direct.test(line)) offenders.push(`${file.slice(root.length + 1)}:${index + 1}`); });
   }
   assert.deepEqual(offenders, [], "read the list with daemonList from src/daemon-list.ts");
+});
+
+test("a send opens the daemon a second time after a missed hello, and never sends twice", async () => {
+  const sent: unknown[] = [];
+  const client = { async request(command: unknown) { sent.push(command); return { success: true, data: { deliveryStatus: "delivered" } }; }, close() {} };
+  let opens = 0;
+  const open = async () => { if (opens++ === 0) throw new Error(HANDSHAKE); return client as never; };
+  assert.deepEqual(await daemonSend("s1", "continue", open), { deliveryStatus: "delivered" });
+  assert.equal(opens, 2);
+  assert.deepEqual(sent, [{ type: "send_message", targetActiveSessionId: "s1", message: "continue" }]);
+  const failing = { async request(command: unknown) { sent.push(command); throw new Error("Timed out after 30000ms waiting for the Prime Agent daemon response"); }, close() {} };
+  await assert.rejects(daemonSend("s2", "continue", async () => failing as never), /response/);
+  assert.equal(sent.length, 2);
 });

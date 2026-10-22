@@ -15,7 +15,7 @@ Prime and the chat read only local files, so prime-sync writes those files in pl
 ## When the checkout stops following main
 
 1. `blocked.json` in `~/.local/share/prime-sync/` holds the time the checkout stopped following `main`, which is any run whose `code` is not `at`, `pulled`, `rebased` or `ahead of`.
-2. After 10 min it finds the Prime session that last wrote each blocking path, from the tool calls in `~/.prime/agent/sessions` and `session-artifacts`, and tells it once with `prime-agent send` to commit the edit or put it back.
+2. After 10 min it finds the Prime session that last wrote each blocking path, from the tool calls in `~/.prime/agent/sessions` and `session-artifacts`, and tells it once to commit the edit or put it back, through sieun-pi's `daemon-cli.mjs send` (a 30 s hello wait with a second try) or, on a box with no reader, `prime-agent send` with a second try after a missed hello.
 3. After 30 min it adds one todo to the AI harness chat's For you list with the chat's `scripts/board-apply.ts`, which forwards it to the chat host, and the first run that follows `main` again checks the todo off.
 4. The AI harness chat asked for both on 10-18, after the Mac's checkout sat at 461986e from 08:26Z to 10:45Z with nobody told.
 

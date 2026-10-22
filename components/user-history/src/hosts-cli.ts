@@ -1,5 +1,6 @@
 import { DaemonClient } from "prime-agent";
 import { copyPath, mirrorPath } from "./host-catalogs.ts";
+import { openDaemon, twice } from "./daemon-list.ts";
 import { mirrorFile } from "./host-mirror.ts";
 import { HostBridge, hostHealth, hostNamed, loadHosts, readHostFile, selfHost, type Host } from "./hosts.ts";
 import { mkdtemp, open, readFile, rm } from "node:fs/promises";
@@ -38,10 +39,10 @@ async function clientFor(host: Host, registry: Awaited<ReturnType<typeof loadHos
   const dir = await mkdtemp(join(tmpdir(), "sieun-pi-hosts-"));
   const bridge = new HostBridge(registry, { dir });
   await bridge.start();
-  const client = new DaemonClient(bridge.socketPath(host.name));
-  await client.connect(10_000);
-  await client.waitForHello(10_000);
-  return { client, close: async () => { client.close(); await bridge.close(); await rm(dir, { recursive: true, force: true }); } };
+  const close = async (client?: DaemonClient) => { client?.close(); await bridge.close(); await rm(dir, { recursive: true, force: true }); };
+  // The 30 s waits and the second try are daemon-list.ts's: the hello came after 3 to 7 s on 65 of 108 probes on 10-22.
+  const client = await twice(`opening ${host.name}'s daemon`, () => openDaemon(bridge.socketPath(host.name))).catch(async (error: unknown) => { await close(); throw error; });
+  return { client, close: () => close(client) };
 }
 
 type Summary = { sessionId?: string; activeSessionId?: string; sessionFile?: string; id?: string };

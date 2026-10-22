@@ -805,9 +805,35 @@ def watch_block(report: dict, config: dict, paths: list[str]) -> None:
     write_atomic(path, json.dumps(state).encode(), 0o644)
 
 
+# sieun-pi's daemon reader (components/user-history/src/daemon-cli.mjs) in the installed runtime or chat release. prime-agent's CLI waits a fixed
+# 3 s for the daemon's hello, and on 10-22 65 of 108 probes on us-metal02 got it after 3 to 7 s; the reader waits 30 s and tries a failed hello
+# once more. PRIME_SYNC_PRIME_BIN, or a box with no reader, sends through the CLI, where a missed hello is tried once more.
+READER_ROOTS = (HOME / ".local/share/sieun-pi-runtime/current", HOME / ".local/share/sieun-pi-chat/current")
+READER_S = 120  # the reader's own longest send: two tries of a 30 s connect and a 30 s hello, then a 30 s answer, the client's default
+HANDSHAKE_MISSES = (b"waiting for the Prime Agent daemon handshake", b"connecting to the Prime Agent daemon")
+
+
+def daemon_reader() -> list[str] | None:
+    """`node daemon-cli.mjs` from the first root that has it with its tsx, or None."""
+    if os.environ.get("PRIME_SYNC_PRIME_BIN"):
+        return None
+    node = next((str(p) for p in (HOME / ".local/node/bin/node", HOME / ".local/bin/node") if p.exists()), None) or shutil.which("node")
+    script = next((root / "components/user-history/src/daemon-cli.mjs" for root in READER_ROOTS
+                   if (root / "components/user-history/src/daemon-cli.mjs").is_file() and (root / "components/user-history/node_modules/tsx").is_dir()), None)
+    return [node, str(script)] if node and script else None
+
+
 def send(session: str, text: str) -> bool:
+    reader = daemon_reader()
+    command, timeout, tries = ([*reader, "send", session, text], READER_S, 1) if reader else ([PRIME_BIN, "send", session, text], 60, 2)
     try:
-        return subprocess.run([PRIME_BIN, "send", session, text], capture_output=True, timeout=60).returncode == 0
+        for _ in range(tries):
+            result = subprocess.run(command, capture_output=True, timeout=timeout)
+            if result.returncode == 0:
+                return True
+            if not any(miss in result.stderr for miss in HANDSHAKE_MISSES):
+                return False
+        return False
     except (OSError, subprocess.TimeoutExpired):
         return False
 

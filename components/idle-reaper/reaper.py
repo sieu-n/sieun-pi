@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -111,10 +112,32 @@ def find_daemon(table: dict[int, dict]) -> dict | None:
     return None
 
 
+# sieun-pi's daemon reader (components/user-history/src/daemon-cli.mjs) in the installed runtime or chat release, both outside ~/Documents.
+# prime-agent's CLI waits a fixed 3 s for the daemon's hello, and on 10-22 65 of 108 probes on us-metal02 got it after 3 to 7 s; the reader
+# waits 30 s and tries a failed hello once more. Without it the CLI runs, and a missed hello is tried once more.
+READER_ROOTS = (HOME / ".local/share/sieun-pi-runtime/current", HOME / ".local/share/sieun-pi-chat/current")
+READER_S = 180  # the reader's own longest run: two tries of a 30 s connect and a 30 s hello, then a 60 s list answer
+HANDSHAKE_MISSES = ("waiting for the Prime Agent daemon handshake", "connecting to the Prime Agent daemon")
+
+
+def daemon_reader() -> list[str] | None:
+    """`node daemon-cli.mjs` from the first root that has it with its tsx, or None."""
+    node = next((str(p) for p in (HOME / ".local/node/bin/node", HOME / ".local/bin/node") if p.exists()), None) or shutil.which("node")
+    script = next((root / "components/user-history/src/daemon-cli.mjs" for root in READER_ROOTS
+                   if (root / "components/user-history/src/daemon-cli.mjs").is_file() and (root / "components/user-history/node_modules/tsx").is_dir()), None)
+    return [node, str(script)] if node and script else None
+
+
 def read_sessions(binary: str) -> list[dict]:
-    result = subprocess.run([binary, "sessions", "--json"], capture_output=True, text=True, timeout=60)
+    reader = daemon_reader()
+    command, timeout, tries = ([*reader, "list"], READER_S, 1) if reader else ([binary, "sessions", "--json"], 60, 2)
+    for _ in range(tries):
+        result = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
+        if result.returncode == 0 or not any(miss in result.stderr for miss in HANDSHAKE_MISSES):
+            break
     if result.returncode != 0:
-        raise RuntimeError(f"prime-agent sessions --json exited {result.returncode}: {result.stderr.strip()[:300]}")
+        what = "daemon-cli.mjs list" if reader else "prime-agent sessions --json"
+        raise RuntimeError(f"{what} exited {result.returncode}: {result.stderr.strip()[:300]}")
     data = json.loads(result.stdout)
     return data["sessions"] if isinstance(data, dict) else data
 

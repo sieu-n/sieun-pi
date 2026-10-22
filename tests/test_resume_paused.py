@@ -499,9 +499,9 @@ class ResumePausedTests(unittest.TestCase):
         self.assertEqual((report["paused"], [(entry["name"], entry["session_id"]) for entry in resume_paused.UNRESOLVED]), ([], [("sub-aaaa0001", sid)]))
         calls = []
         self.addCleanup(resume_paused.OWNERS.clear)
-        with patch.object(resume_paused, "run", side_effect=lambda cmd: calls.append(cmd) or '{"sessions": []}'), \
+        with patch.object(resume_paused, "run", side_effect=lambda cmd, **_: calls.append(cmd) or '{"sessions": []}'), \
                 patch.object(resume_paused, "saved_rows", return_value=[]), patch("sys.argv", ["x", "--json", "--dry-run", "--owners", sid]), \
-                patch("builtins.print"):
+                patch("builtins.print"), patch.dict("os.environ", {"PRIME_AGENT_BIN": "prime-agent"}):
             resume_paused.main()
         self.assertEqual([cmd[1:] for cmd in calls], [["list", "--json"]])
 

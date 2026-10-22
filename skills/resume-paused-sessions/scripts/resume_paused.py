@@ -225,6 +225,29 @@ NEVER_STARTED_INTRO = ("[resume] Your parent spawned you, but its worker stopped
                        "Your task, as your parent wrote it:\n\n")
 
 
+# The daemon reader in this checkout (components/user-history/src/daemon-cli.mjs). prime-agent's CLI waits a fixed 3 s for the daemon's hello, and
+# from 10-21 to 10-22 136 passes failed on it and sent nothing until the next tick; the reader waits 30 s and tries a failed hello once more.
+DAEMON_CLI = Path(__file__).resolve().parents[3] / "components" / "user-history" / "src" / "daemon-cli.mjs"
+# The reader's own longest run: two tries of a 30 s connect and a 30 s hello, then a 60 s list answer.
+DAEMON_CLI_S = 180
+HANDSHAKE_MISSES = ("waiting for the Prime Agent daemon handshake", "connecting to the Prime Agent daemon")
+
+
+def local_daemon(*args):
+    """`list [--all]` or `send <target> <message>` on this box's daemon, as JSON text. It goes through the reader when this checkout has one and
+    node, and through prime-agent's CLI otherwise or when PRIME_AGENT_BIN names the binary to use, where a missed hello is tried once more."""
+    node = shutil.which("node")
+    if not os.environ.get("PRIME_AGENT_BIN") and node and DAEMON_CLI.is_file() and (DAEMON_CLI.parents[1] / "node_modules" / "tsx").is_dir():
+        return run([node, str(DAEMON_CLI), *args], timeout=DAEMON_CLI_S)
+    cli = [prime_agent_bin(), args[0], "--json", *args[1:]]
+    try:
+        return run(cli)
+    except CommandError as error:
+        if not any(miss in str(error) for miss in HANDSHAKE_MISSES):
+            raise
+        return run(cli)
+
+
 def prime_agent_bin():
     found = os.environ.get("PRIME_AGENT_BIN") or shutil.which("prime-agent")
     if found:
@@ -276,12 +299,12 @@ def stop_note(where):
             + (f", last step: {DOING[0]}" if DOING[0] else ""))
 
 
-def run(cmd):
+def run(cmd, timeout=60):
     DOING[0] = " ".join([Path(cmd[0]).name, *(Path(part).name if part.endswith((".mjs", ".py")) else part for part in cmd[1:5])])
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
-        raise CommandError(f"{' '.join(cmd[:6])} gave no answer in 60 s") from None
+        raise CommandError(f"{' '.join(cmd[:6])} gave no answer in {timeout} s") from None
     if p.returncode != 0:
         raise CommandError(f"{' '.join(cmd)} failed ({p.returncode}): {p.stderr.strip() or p.stdout.strip()}")
     return p.stdout
@@ -296,10 +319,10 @@ class LocalBox:
         self.home = Path.home()
 
     def list(self, all_rows=False):
-        return json.loads(run([prime_agent_bin(), "list", "--json", *(["--all"] if all_rows else [])]))["sessions"]
+        return json.loads(local_daemon("list", *(["--all"] if all_rows else [])))["sessions"]
 
     def send(self, target, message):
-        return run([prime_agent_bin(), "send", "--json", target, message])
+        return local_daemon("send", target, message)
 
     def read(self, path, start=0):
         with open(path, "rb") as fh:
@@ -372,7 +395,7 @@ class RelayBox:
                     raise OSError(f"relay {self.name}: {error}") from None
 
     def _cli(self, *args):
-        return run([shutil.which("node") or "node", str(HOSTS_CLI), "daemon", self.name, *args])
+        return run([shutil.which("node") or "node", str(HOSTS_CLI), "daemon", self.name, *args], timeout=DAEMON_CLI_S)
 
     def list(self, all_rows=False):
         rows = json.loads(self._cli("list", *(["--all", "1"] if all_rows else [])))["sessions"]
