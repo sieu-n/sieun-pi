@@ -88,3 +88,39 @@ test("a re-read of the same value keeps a pushed goal quiet, and the Goals secti
   const moved = { ...at(now + 10 * 60_000), plan: at(now + 10 * 60_000).plan.map(item => item.id === "p1" ? { ...item, target: { ...item.target!, current: 0.5 } } : item) };
   assert.equal(goalPushes(moved as never, views("working"), first.memos, 15 * 60_000, now + 15 * 60_000).pushes[0]!.quiet, undefined);
 });
+
+// Crawler VP 10-21: p892 "Instagram queues growing over 6 h" (2 queues, last read 14:32Z) and p670 "LinkedIn index gaps passing on prod"
+// (6 of 7, last read 14:23Z) got the same steer every hour from 15:00Z to 00:18Z with no new reading, each time their stale time ran out.
+const shaped = (target: NonNullable<PlanItem["target"]>) => ({ ...board, plan: board.plan.map(item => item.id === "p1" ? { ...item, target } : item) }) as never;
+const p892 = (value: number, at: number, source = "duty d9 metric ig_queues_growing_6h") => shaped({ metric: "Instagram queues growing over 6 h", target: 0, unit: "queues",
+  current: value, measuredAt: new Date(at).toISOString(), source, direction: "down" });
+const p670 = (value: number, at: number) => shaped({ metric: "LinkedIn index gaps passing on prod", target: 7, unit: "gaps", current: value, measuredAt: new Date(at).toISOString(),
+  source: "linkedin gap check", direction: "up" });
+const run = (b: never, memos: never, at: number, state: JobFact["state"] = "working") => goalPushes(b, views(state), memos, 15 * 60_000, at);
+
+for (const [name, shape, value, away] of [["p892", p892, 2, 3], ["p670", p670, 6, 5]] as const) {
+  test(`${name}: a stale goal steered once stays quiet with no news, and a regression gets one push`, () => {
+    const read = now - 30 * 60_000;
+    const prior = { p1: { readings: [{ value, at: read - 7_200_000 }], still: 1 } } as never;
+    const first = run(shape(value, read), prior, now);
+    assert.equal(first.pushes[0]!.quiet, undefined);
+    // Each hour after, with no new reading, the stale time running out is no news.
+    let memos = first.memos;
+    for (let hour = 1; hour <= 9; hour++) {
+      const later = run(shape(value, read), memos as never, now + hour * 3_600_000);
+      assert.ok(later.pushes[0]!.quiet, `${name} hour ${hour}`);
+      memos = later.memos;
+    }
+    // A re-read of the same value, or a backfill, is no news either.
+    assert.ok(run(shape(value, now + 3_600_000), memos as never, now + 4 * 3_600_000).pushes[0]!.quiet);
+    if (name === "p892") assert.ok(run(p892(value, now + 3_600_000, "backfill of the 6 h growth"), memos as never, now + 4 * 3_600_000).pushes[0]!.quiet);
+    // A move away gets one push, and the same value after it is quiet again.
+    const regressed = run(shape(away, now + 3_600_000), memos as never, now + 4 * 3_600_000);
+    assert.equal(regressed.pushes[0]!.quiet, undefined);
+    assert.ok(run(shape(away, now + 7_200_000), regressed.memos as never, now + 5 * 3_600_000).pushes[0]!.quiet);
+    // The owner job ending turns the steer into a start, which is news.
+    assert.equal(run(shape(value, read), memos as never, now + 3 * 3_600_000, "ended").pushes[0]!.quiet, undefined);
+    // A day with no news renews the push.
+    assert.equal(run(shape(value, read), memos as never, now + 25 * 3_600_000).pushes[0]!.quiet, undefined);
+  });
+}

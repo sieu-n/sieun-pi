@@ -32,7 +32,7 @@ export interface GoalReading { value: number; at: number;
 /** What the check-in keeps per goal across runs: its distinct readings, oldest first, and how many runs in a row the number did not move toward target. */
 export interface GoalMemo { readings: GoalReading[]; still: number;
   /** When the check-in last steered or started the goal's owner, and the newest reading's time then (`quietPush`). */
-  pushed?: { at: number; reading: number; value?: number } }
+  pushed?: { at: number; reading: number; value?: number; act?: GoalAct } }
 
 /** A goal's number: from its `target`, in its direction (`targetOp`), or from the last run of the duty metric the goal links. */
 export interface GoalNumber { metric: string; target: number; unit: string; op: ">=" | "<="; value?: number; measuredAt?: number; source: string; staleMs: number;
@@ -312,12 +312,6 @@ export function heldTimeMs(number: Pick<GoalNumber, "metric" | "unit" | "op">): 
   const unit = HELD_UNIT_MS[number.unit.trim().toLowerCase()];
   return unit !== undefined && number.op === ">=" && /\b(?:held|hold|holds|in a row|straight|streak|without|with no|uptime|stayed|stays|clean)\b/i.test(number.metric) ? unit : undefined;
 }
-/**
- * A push the check-in already sent, with no new reading since, is an empty steer the next run: from 10-19 21:00Z to 10-20 21:00Z the check-ins
- * sent 168 repeats to goals that did not move, 43 of them to 01a15427 p22 "hours metal held 70 to 80% CPU", which only the clock can move,
- * 28 to Crawler VP p827 and 13 each to Vent p22 and p1, all three read once a day, and 19 to VP of CI p293, whose number waits on a promote.
- * The next push is due at a new reading, or once the number could have changed: one unit of a held-time metric, else the reading's stale time.
- */
 /** The goal memos with each push made at `at` set back to the push before it: a check-in that did not start sent none. */
 export function unpushed(memos: Readonly<Record<string, GoalMemo>> | undefined, before: Readonly<Record<string, GoalMemo>> | undefined, at: number): Record<string, GoalMemo> {
   return Object.fromEntries(Object.entries(memos ?? {}).map(([id, memo]) => {
@@ -327,14 +321,26 @@ export function unpushed(memos: Readonly<Record<string, GoalMemo>> | undefined, 
     return [id, prior ? { ...rest, pushed: prior } : rest];
   }));
 }
-export function quietPush(memo: GoalMemo | undefined, number: GoalNumber, now: number): { pushedAt: number; nextAt: number } | undefined {
+/**
+ * A push the check-in already sent is an empty steer the next run until there is news. From 10-19 21:00Z to 10-20 21:00Z the check-ins sent 437
+ * repeats to goals that did not move, 43 of them to 01a15427 p22 "hours metal held 70 to 80% CPU", which only the clock can move.
+ * News is one of these:
+ * - a new reading that moves toward the target from the pushed value, or a move away from it (a regression gets one push, and the pushed value
+ *   then follows it), where a backfill and an unchanged value are no news;
+ * - a change of act, such as the owner job ending, so a steer becomes a start;
+ * - for a held-time metric, one unit of time, since only the clock moves it.
+ * With no news the next push waits a day, the cadence of the daily goals. Crawler VP p892 "Instagram queues growing over 6 h" (2 queues, last
+ * read 10-21 14:32Z) and p670 "LinkedIn index gaps" (6 of 7, last read 14:23Z) got a steer every hour from 15:00Z to 00:18Z, each time their
+ * hour-long stale time ran out with no new reading.
+ */
+export function quietPush(memo: GoalMemo | undefined, number: GoalNumber, now: number, act?: GoalAct): { pushedAt: number; nextAt: number } | undefined {
   const pushed = memo?.pushed;
   if (!pushed) return undefined;
-  // A new reading of the same value is no news: 01a15427's job re-read p22 at 0 hours each half hour, and each re-read let the steer through
-  // again (65 lines from 10-20 22:00Z to 10-21 14:30Z).
+  if (act && pushed.act && act !== pushed.act) return undefined;
   const newest = Math.max(...(memo!.readings.map(reading => reading.at)), number.measuredAt ?? 0);
-  if (newest > pushed.reading && (pushed.value === undefined || number.value !== pushed.value)) return undefined;
-  const nextAt = pushed.at + (heldTimeMs(number) ?? number.staleMs);
+  const changed = pushed.value === undefined || (number.value !== undefined && number.value !== pushed.value);
+  if (newest > pushed.reading && changed && !number.backfill) return undefined;
+  const nextAt = pushed.at + (heldTimeMs(number) ?? Math.max(number.staleMs, DAY_MS));
   return now < nextAt ? { pushedAt: pushed.at, nextAt } : undefined;
 }
 
@@ -372,10 +378,10 @@ export function goalPushes(board: ChatBoard | null, views: readonly StepView[], 
     const act: GoalAct = trend.kind === "met" ? "on_pace" : asks ? "owner" : waits ? "waiting" : !owner ? "start" : offPace(trend, stale) ? "steer" : "on_pace";
     // goalTrend's memo is a new object, so the push time carries over from the saved one.
     const before = memos?.[goal.id]?.pushed;
-    const quiet = pushNeeded({ act } as GoalPush) && memo ? quietPush({ ...memo, ...before ? { pushed: before } : {} }, number, now) : undefined;
+    const quiet = pushNeeded({ act } as GoalPush) && memo ? quietPush({ ...memo, ...before ? { pushed: before } : {} }, number, now, act) : undefined;
     if (memo && quiet && before) memo.pushed = before;
     else if (memo && pushNeeded({ act } as GoalPush)) memo.pushed = { at: now, reading: Math.max(...memo.readings.map(reading => reading.at), number.measuredAt ?? 0),
-      ...number.value === undefined ? {} : { value: number.value } };
+      ...number.value === undefined ? {} : { value: number.value }, act };
     return [{ ...base, number, trend, stale: trend.kind !== "met" && stale, ...(asks ? { asks } : {}), ...(waits ? { waits } : {}), ...(left.length ? { left } : {}),
       ...(quiet ? { quiet } : {}), act }];
   });
