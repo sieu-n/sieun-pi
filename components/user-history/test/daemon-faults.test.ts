@@ -221,3 +221,21 @@ test("an idle check that finds the worker already failed is no fault, while a ti
   assert.match(faults[0]!.what, /^an idle check failed/);
   assert.equal(faults[0]!.session, "01a14d93");
 });
+
+// 10-21 21:48Z on us-metal02: a release restart of the chat service (systemd Stopping at 21:48:27Z) closed 6 idle checks and a create that
+// were still out, and d7 read the minute dirty. The service's own stop is no daemon fault; the same answer outside a stop still is.
+const OWN_STOP = [
+  "2026-10-21T21:48:27.277Z idle unload: stopped 1 idle sessions: CI and RepoOps (parked on its provider quota until 00:22Z)",
+  "2026-10-21T21:48:27.300Z stop: begins",
+  "2026-10-21T21:48:32.206Z idle unload: 01a15c2e-d108-74ac-8e75-c28c68a02428: Error: Prime Agent daemon client closed before the operation completed. Socket: /tmp/prime-agent-1001/daemon.sock. Daemon log: /home/sieun/.prime/agent/logs/daemon.sock.ee92e1d8.log.",
+  "2026-10-21T21:48:32.206Z idle unload: 01a15e40-7232-7588-a375-66ba201b6c07: Error: Prime Agent daemon client closed before the operation completed. Socket: /tmp/prime-agent-1001/daemon.sock. Daemon log: /home/sieun/.prime/agent/logs/daemon.sock.ee92e1d8.log.",
+  "2026-10-21T21:48:07.982Z daemon create slack green numbers slack green guy 06:48: refused in 24.2 s: Prime Agent daemon client closed before the operation completed. Socket: /tmp/prime-agent-1001/daemon.sock. Daemon log: /home/sieun/.prime/agent/logs/daemon.sock.ee92e1d8.log.",
+  "2026-10-21T21:48:32.365Z stop: 4383 ms: sends 1 ms, bridges 14 ms, server 1385 ms, read-only 0 ms, cpu profile 2980 ms",
+  "2026-10-21T21:48:35.555Z serve: listening 2771 ms after start, main thread CPU 2621 ms, from the bundle",
+  "2026-10-21T21:50:24.400Z chat 01a1164b: Prime Agent daemon client closed before the operation completed. Socket: /tmp/prime-agent-1001/daemon.sock. Daemon log: /home/sieun/.prime/agent/logs/daemon.sock.ee92e1d8.log.",
+];
+
+test("calls the service's own stop closed count as no fault, and the same answer after the next start still does", () => {
+  const faults = readServiceFaults(OWN_STOP, "us-metal02");
+  assert.deepEqual(faults.map(fault => new Date(fault.at).toISOString().slice(11, 16)), ["21:50"], JSON.stringify(faults));
+});

@@ -435,6 +435,8 @@ async function serve(options: Options): Promise<void> {
       try { if (removeInstance && instance(await readJson(instancePath)).instanceId === identity.instanceId) await unlink(instancePath); }
       catch (error) { if (!hasCode(error, "ENOENT")) throw error; }
       finally {
+        // d7 counts no closed-client answer between this line and the next start's "serve: listening" (src/daemon-faults.ts OWN_STOP_BEGINS).
+        process.stderr.write(`${new Date().toISOString()} stop: begins\n`);
         // Sends still out get their answers before the links close, so a refusal is recorded as one (Outbox.close with drain).
         // Each part's time goes in the log, so a slow stop names what it waited on: 5 of 97 stops from 10-15 to 10-18 reached systemd's 90 s.
         const began = Date.now();

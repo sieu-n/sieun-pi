@@ -71,6 +71,15 @@ const OUTBOX_MOVED = /^outbox ([0-9a-f]{8})(?: on [\w.-]+)?: m-\S+ went after it
  * session files (591 "read ECONNRESET" lines from 11:15Z on 10-18) and the session list, are background reads outside the rule.
  */
 const IDLE_WORKER_FAILED = /^idle unload: [0-9a-f-]+: Session worker is failed\b/;
+/**
+ * The chat service's own stop (src/chat-service.ts `close`) begins with `stop: begins` and the next start ends with `serve: listening`. A
+ * daemon call that answers "client closed before the operation completed" in between was closed by that stop, not by the daemon: on 10-21 the
+ * release restart at 21:48:27Z closed 6 idle checks and a create at 21:48:32Z, and d7 read the minute dirty. The release's own restart is
+ * counted by its own metrics.
+ */
+const OWN_STOP_BEGINS = /^stop: begins\b/;
+const SERVICE_UP = /^serve: listening\b/;
+const OWN_CLIENT_CLOSED = /daemon client closed before the operation completed/;
 const PREFIXED = /^(idle unload|wakes: wake|reopen|briefs: child|outbox|pin|chat|job [0-9a-f]{8}: (\w+))\b/;
 const FILE_READ = /The session file on [\w.-]+ (?:did not read|is gone)/;
 const SESSION_IN = /\b(01[0-9a-f]{6})(?:-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})?\b/;
@@ -160,11 +169,15 @@ export function readServiceFaults(lines: readonly string[], local: string): Daem
   // A job's wake opens the job first, and a failed open writes its line just before the wake's (`job 01a14efc: wake: ...`), which names no box.
   const opened = new Map<string, string>();
   let at = NaN;
+  let stopping = false;
   for (const raw of lines) {
     const stamped = STAMPED.exec(raw);
     if (stamped) at = Date.parse(stamped[1]!);
     if (!Number.isFinite(at)) continue;
     const text = stamped ? stamped[2]! : raw;
+    if (OWN_STOP_BEGINS.test(text)) { stopping = true; continue; }
+    if (SERVICE_UP.test(text)) { stopping = false; continue; }
+    if (stopping && OWN_CLIENT_CLOSED.test(text)) continue;
     let found: RegExpExecArray | null;
     if ((found = OPEN.exec(text))) {
       const marks = found[3]!;

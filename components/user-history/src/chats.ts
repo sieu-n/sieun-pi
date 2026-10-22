@@ -53,6 +53,8 @@ export const UNKNOWN_ACTIVE = "Unknown active session:";
 const threadGone = (error: unknown): boolean =>
   error instanceof Error && ((error as { status?: unknown }).status === 404 || error.message.startsWith(UNKNOWN_ACTIVE));
 /** The prompt of the daemon heartbeat that did the check-in before the server tick; an attach clears a heartbeat whose prompt starts with it. */
+/** The daemon client's answer for a call whose link this side closed. */
+const CLIENT_CLOSED = /daemon client closed before the operation completed/;
 export const OLD_CHECK_IN = "Check-in. Read the board";
 /** A job quiet this long with no report is told to the chat; shorter gaps are a job between tool calls or one that a reply woke again. */
 export const NO_REPORT_GRACE_MS = 90_000;
@@ -1830,6 +1832,13 @@ export class Chats {
         this.log(`chat ${id.slice(0, 8)}: cleared the old check-in heartbeat`);
       }
     } catch (error) {
+      // The idle unload can let go of the chat asleep in its provider retry while this runs (`ThreadHub.restAsleep`), which closes the link the
+      // call was on. Steering is runtime state that the next attach sets again, so nothing is lost: on 10-21 at 21:50:24Z the VP chat's call
+      // failed that way and d7 read the minute dirty.
+      if (this.threads.isLive?.(id) === false && CLIENT_CLOSED.test(error instanceof Error ? error.message : String(error))) {
+        this.log(`chat ${id.slice(0, 8)}: let go asleep before its steering was set; its next attach sets it`);
+        return;
+      }
       this.log(`chat ${id.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
