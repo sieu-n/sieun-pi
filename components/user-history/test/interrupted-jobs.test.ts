@@ -37,7 +37,7 @@ test("resumeJobs messages each interrupted job itself, reopens a dead worker's h
   const owned = new Set(["chat1", "chat2"]);
   await runs.resumeJobs(run => run.session_id !== "chat1" && owned.has(run.head_session_id ?? ""), async id => { reopened.push(id); });
   assert.deepEqual(reopened, ["chat2"]);
-  assert.deepEqual(calls, [["--dry-run", "--direct"], ["--direct", "--only", "j-alert,j-curl,j-dead", "--this-box"]]);
+  assert.deepEqual(calls, [["--dry-run", "--direct", "--owed"], ["--direct", "--only", "j-alert,j-curl,j-dead", "--owed", "--this-box"]]);
 });
 
 test("resumeJobs aborts a hung job asleep in its provider retry and continues it, and leaves other hung runs alone", async () => {
@@ -49,10 +49,10 @@ test("resumeJobs aborts a hung job asleep in its provider retry and continues it
   const aborted: string[] = [];
   await runs.resumeJobs(() => true, async () => {}, new Set(), undefined, new Set(), async id => { aborted.push(id); });
   assert.deepEqual(aborted, ["j-429"]);
-  assert.deepEqual(calls.slice(1), [["--dry-run", "--direct", "--only", "j-429", "--this-box"], ["--direct", "--only", "j-429,j-cut", "--this-box", "--unstuck", "j-429"]]);
+  assert.deepEqual(calls.slice(1), [["--dry-run", "--direct", "--only", "j-429", "--owed", "--this-box"], ["--direct", "--only", "j-429,j-cut", "--owed", "--this-box", "--unstuck", "j-429"]]);
   calls.length = 0;
   await runs.resumeJobs(() => true, async () => {});
-  assert.deepEqual(calls[1], ["--direct", "--only", "j-cut", "--this-box"]);
+  assert.deepEqual(calls[1], ["--direct", "--only", "j-cut", "--owed", "--this-box"]);
 });
 
 test("a job asleep in its retry whose pool answer is unknown is reported and not aborted", async () => {
@@ -79,7 +79,7 @@ test("a job deleted between discovery and abort is neither aborted nor continued
   const aborted: string[] = [];
   assert.equal(await runs.resumeJobs(() => true, async () => {}, new Set(), undefined, new Set(), async id => { aborted.push(id); }), null);
   assert.deepEqual(aborted, []);
-  assert.deepEqual(calls, [["--dry-run", "--direct"], ["--dry-run", "--direct", "--only", "j-429", "--this-box"]]);
+  assert.deepEqual(calls, [["--dry-run", "--direct", "--owed"], ["--dry-run", "--direct", "--only", "j-429", "--owed", "--this-box"]]);
   calls.length = 0;
   const still = new InterruptedRuns(async args => { calls.push([...args]); return planned; });
   assert.equal(await still.resumeJobs(() => true, async () => {}, new Set(), undefined, new Set(), async () => { throw new Error("the turn still runs 30 s after its abort"); }), null);
@@ -92,14 +92,14 @@ test("the send pass reads the other boxes only when a job is on one of them", as
   const calls: string[][] = [];
   const runs = new InterruptedRuns(async args => { calls.push([...args]); return { paused: [job("j-box", "cut_off", "chat1"), onMac], heads: [], checked_at: "now" }; });
   await runs.resumeJobs(() => true, async () => {});
-  assert.deepEqual(calls[1], ["--direct", "--only", "j-box,j-mac"]);
+  assert.deepEqual(calls[1], ["--direct", "--only", "j-box,j-mac", "--owed"]);
 });
 
 test("resumeJobs runs nothing more when no job of a chat is interrupted", async () => {
   const calls: string[][] = [];
   const runs = new InterruptedRuns(async args => { calls.push([...args]); return { paused: [job("j-other", "error", "elsewhere")], heads: [], checked_at: "now" }; });
   assert.equal(await runs.resumeJobs(run => run.head_session_id === "chat1", async () => {}), null);
-  assert.deepEqual(calls, [["--dry-run", "--direct"]]);
+  assert.deepEqual(calls, [["--dry-run", "--direct", "--owed"]]);
 });
 
 test("the server resumes the interrupted jobs of its active chats and their root jobs once per job sweep", async () => {
@@ -319,7 +319,7 @@ test("the job sweep logs an unresolved stop of a chat's job, does not send it, a
     unresolved: [stop("j-mine", "chat1"), stop("j-other", "elsewhere")], stopped: [deleted("j-deleted", "chat1"), deleted("j-far", "elsewhere")] }; });
   const lines: string[] = [];
   await resumeChatJobs([row("chat1", at)], new Set(["chat1"]), (isJob, owners) => runs.resumeJobs(isJob, async () => {}, owners), line => lines.push(line));
-  assert.deepEqual(calls, [["--dry-run", "--direct"]]);
+  assert.deepEqual(calls, [["--dry-run", "--direct", "--owed"]]);
   assert.deepEqual(lines, [
     "job j-mine: not resumed: An archive with no recorded cause stopped its turn, so it is not resumed. (archive at 2026-10-18T06:52:53.805Z, j-mine)",
     "job j-deleted: not resumed, stopped on purpose: its parent deleted it (rlm ledger delete, reason user, at 2026-10-18T10:40:44.763Z) (j-deleted)"]);
@@ -344,7 +344,7 @@ test("the sweep continues a top-level root that is no chat and no chat's job, as
   await resumeChatJobs([row(crawler, at)], new Set([crawler]), (isJob, owners) => runs.resumeJobs(isJob, async () => {}, owners, undefined, new Set(),
     async id => { aborted.push(id); }), () => {});
   assert.deepEqual(aborted, [releaseOwner, metal]);
-  assert.deepEqual(calls.at(-1), ["--direct", "--only", `${releaseOwner},${metal}`, "--this-box", "--unstuck", `${releaseOwner},${metal}`]);
+  assert.deepEqual(calls.at(-1), ["--direct", "--only", `${releaseOwner},${metal}`, "--owed", "--this-box", "--unstuck", `${releaseOwner},${metal}`]);
 });
 
 // The VP of CI's 10-19 triage jobs (01a153d7, 01a153d9, 01a153da, 01a15421, 01a1543c): the dry run listed each as paused on its slot-wait error,
@@ -367,4 +367,19 @@ test("every resume run looks back with no limit, so a cut older than a day still
     await writeFile(echo, `import json, sys\nprint(json.dumps({"paused": [], "heads": [], "checked_at": " ".join(sys.argv[1:])}))\n`);
     assert.equal((await runScript(["--dry-run", "--direct"], echo)).checked_at, "--json --since-minutes 0 --dry-run --direct");
   } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("the job sweep asks for --owed, logs each cut job no work is owed to once, and sends it nothing", async () => {
+  // 10-22: six Mac jobs of 10-15 whose steps other jobs had taken woke with nothing to do, each costing a turn.
+  const moved = { id: "a8a2c9c09b12", name: "fix chat system 23:33", session_id: "01a14000-7c3c-766f-850b-0742bfd5b62b", head: "a8a2c9c09b12",
+    head_session_id: "01a14000-7c3c-766f-850b-0742bfd5b62b", cut: "error", cut_error: "Connection error.", cut_at: "2026-10-15T17:24:10.671Z" };
+  const calls: string[][] = [];
+  const runs = new InterruptedRuns(async args => { calls.push([...args]); return { paused: [], heads: [], checked_at: "now", unowed: [moved] }; });
+  const lines: string[] = [];
+  for (let pass = 0; pass < 2; pass++) {
+    await resumeChatJobs([row("chat1", at)], new Set(["chat1"]), (isJob, owners) => runs.resumeJobs(isJob, async () => {}, owners), line => lines.push(line));
+  }
+  assert.deepEqual(calls, [["--dry-run", "--direct", "--owed"], ["--dry-run", "--direct", "--owed"]], "no send pass");
+  assert.equal(lines.length, 1);
+  assert.match(lines[0]!, /^job fix chat system 23:33: turn stopped: .* at 2026-10-15T17:24:10\.671Z\. Not resumed: no work is owed to it/);
 });

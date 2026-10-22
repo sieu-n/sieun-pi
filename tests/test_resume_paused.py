@@ -91,6 +91,40 @@ class ResumePausedTests(unittest.TestCase):
                 patch.object(resume_paused, "pool_bin", return_value=None):
             return resume_paused.resume(self.sessions, args, NOW)
 
+    def test_the_owed_pass_resumes_a_cut_run_only_while_its_work_is_owed(self):
+        # 10-22: with no look-back, six Mac jobs of 10-15 whose steps other jobs had taken woke and each spent a turn on nothing.
+        def text(minutes_ago, words):
+            return {"type": "message", "timestamp": at(minutes_ago), "message": {"role": "assistant", "stopReason": "stop", "content": [{"type": "text", "text": words}]}}
+        def user(minutes_ago, words):
+            return {"type": "message", "timestamp": at(minutes_ago), "message": {"role": "user", "content": words}}
+        cut = assistant(30, "error", "Connection error.")
+        moved_on = [user(60, "Fix p470."), text(50, "Working on p470."), cut]
+        self.session("movedonmoved", moved_on)
+        self.session("stepownerone", moved_on)
+        self.session("chatchatchat", moved_on)
+        self.session("ownerasked01", [*moved_on[:2], user(40, "Is it done?"), cut])
+        self.session("midtoolcut01", [*moved_on[:2], assistant(31, "toolUse"), role(30, "toolResult")])
+        agent = {"type": "custom_message", "customType": "agent_message", "timestamp": at(40), "content": "child report"}
+        self.session("agenttold001", [*moved_on[:2], agent, cut])
+        for name, status in (("livechild001", "running"), ("donechild001", "completed")):
+            folder = self.root / "tree" / f"sub-{name[:8]}"
+            folder.mkdir(parents=True)
+            (folder / "rlm-subagent.json").write_text(json.dumps({"status": status}))
+            self.session(name, moved_on, parent="headheadhead")
+            self.sessions[-1]["sessionFile"] = str(shutil.copy(self.sessions[-1]["sessionFile"], folder / f"{name}.jsonl"))
+        (self.root / "chats.json").write_text(json.dumps({"ids": ["0" * 24 + "chatchatchat"]}))
+        (self.root / "threads.json").write_text(json.dumps({"ids": []}))
+        with patch.object(resume_paused, "CHAT_INDEX", self.root / "chats.json"), patch.object(resume_paused, "THREAD_INDEX", self.root / "threads.json"), \
+                patch.object(resume_paused, "OWNERS", {"0" * 24 + "stepownerone"}), patch.object(resume_paused, "OWED_ONLY", [True]), \
+                patch.object(resume_paused, "CHAT_SESSIONS", []), patch.object(resume_paused, "UNOWED", []):
+            report = self.run_resume(dry_run=True)
+            unowed = [run["id"] for run in resume_paused.UNOWED]
+        self.assertEqual(sorted(p["id"] for p in report["paused"]),
+                         ["agenttold001", "chatchatchat", "livechild001", "midtoolcut01", "ownerasked01", "stepownerone"])
+        self.assertEqual(sorted(unowed), ["donechild001", "movedonmoved"])
+        with patch.object(resume_paused, "CHAT_SESSIONS", []), patch.object(resume_paused, "UNOWED", []):
+            self.assertEqual(len(self.run_resume(dry_run=True)["paused"]), 8, "without --owed every cut run is resumed")
+
     def test_network_and_sign_in_errors_count_other_errors_do_not(self):
         self.session("aaaaaaaaaaaa", [assistant(30, "error", "Connection error.")])
         self.session("bbbbbbbbbbbb", [assistant(30, "error", 'Failed to resolve API key for provider "anthropic" from shell command: pi-pool-token')])

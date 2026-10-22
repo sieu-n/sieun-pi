@@ -77,7 +77,7 @@ test("the job sweep logs once each cut job an owner's chat archive after its las
     (isJob, owners) => runs.resumeJobs(isJob, async () => {}, owners), line => lines.push(line));
   await pass();
   await pass();
-  assert.deepEqual(calls, [["--dry-run", "--direct"], ["--dry-run", "--direct"]], "no send pass");
+  assert.deepEqual(calls, [["--dry-run", "--direct", "--owed"], ["--dry-run", "--direct", "--owed"]], "no send pass");
   assert.deepEqual(lines, [`job legacy socket ownership: turn stopped: ${CAUSE} at 2026-10-19T18:00:15.359Z. Not resumed: the owner archived its chat after its last message `
     + `(archived-chats.json), so the sweep does not restart it (${JOB})`]);
   assert.ok(!lines[0]!.includes("archived by the owner"), "the job is never said to be stopped by the owner");
@@ -100,7 +100,7 @@ test("the job sweep continues a cut job of a hidden chat and leaves the one the 
   const chat = "01a1164b-4a2d-742d-b27a-82f086ed0200";
   await resumeChatJobs([row(chat, "2026-10-21T05:47:00Z")], new Set([chat]), (isJob, owners) => runs.resumeJobs(isJob, async () => {}, owners),
     line => lines.push(line), new Set(), undefined, new Set([CHAT]));
-  assert.deepEqual(calls, [["--dry-run", "--direct"], ["--direct", "--only", JOB, "--this-box"]]);
+  assert.deepEqual(calls, [["--dry-run", "--direct", "--owed"], ["--direct", "--only", JOB, "--owed", "--this-box"]]);
   assert.deepEqual(lines, [`job p8-supersede: interrupted (error at 2026-10-21T05:31:26.482Z); continue: {"deliveryStatus":"delivered"}`,
     `job owner stopped job: not resumed, stopped on purpose: ${stopped.stopped_by} (${stopped.session_id})`]);
 });

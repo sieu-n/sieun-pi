@@ -154,6 +154,8 @@ ARTIFACTS_DIR = Path.home() / ".prime" / "agent" / "session-artifacts"
 DELETED_JOBS = Path.home() / ".prime" / "agent" / "browser-chat" / "deleted-jobs.json"
 ARCHIVED_CHATS = Path.home() / ".prime" / "agent" / "browser-chat" / "archived-chats.json"
 JOB_CANCELS = Path.home() / ".prime" / "agent" / "browser-chat" / "job-cancels.json"
+CHAT_INDEX = Path.home() / ".prime" / "agent" / "browser-chat" / "chats.json"
+THREAD_INDEX = Path.home() / ".prime" / "agent" / "browser-chat" / "threads.json"
 # The chat service's own archives (service-archives.ts): Prime writes owner_stop or owner_archive for every archive the service sends.
 SERVICE_ARCHIVES = Path.home() / ".prime" / "agent" / "browser-chat" / "service-archives.json"
 LOG_DIR = Path.home() / ".prime" / "agent" / "logs"
@@ -174,6 +176,142 @@ UPDATE_NOTICE = "prime-agent.update_restart"
 UPDATE_ABORT_S = 60.0
 # Full session ids that own an open step of a chat (--owners).
 OWNERS = set()
+# --owed: the chat service's job sweep resumes a cut run only while its work is still owed (`work_owed`). With no look-back (since 10-22) a cut
+# job whose work moved on would otherwise wake for nothing: on 10-22 six Mac jobs of 10-15, whose steps other jobs had taken, woke and each spent
+# a turn finding nothing to do.
+OWED_ONLY = [False]
+# The cut runs --owed leaves alone, with what each was cut by.
+UNOWED = []
+# The chat service's own notes in a user message (components/user-history/src/shared/chat-feed.ts SERVER_NOTES and NUDGE_PREFIX), Prime's
+# snake_case notes (PRIME_NOTE) and the watchdog's notices: none of them is a message the owner typed. The watchdog reads owner input the same way.
+NOTE_PREFIXES = ("[watchdog]", "[check-in] ", "[job] ", "[reply check] ", "[brief check] ", "[correction check] ", "[board] Ops not applied: ",
+                 "[board] Decisions not on the scratchpad: ", "Prime Agent restarted after an update", "Watchdog recovery checkpoint", "[from ",
+                 "[resume]", "[relay]", "[cross-host message")
+PRIME_NOTE = re.compile(r"^<[a-z]+(?:_[a-z]+)+>\s")
+# chat-feed.ts OWNER_RETRY_MARK: a server note that restarts a failed owner turn keeps that turn the owner's.
+OWNER_RETRY_MARK = "The owner's message is still unanswered: "
+
+
+def message_text(message):
+    content = message.get("content")
+    if isinstance(content, str):
+        return content.strip()
+    return " ".join(c.get("text") or "" for c in content if isinstance(c, dict)).strip() if isinstance(content, list) else ""
+
+
+def from_owner(entry):
+    """Whether a transcript entry is a message the owner typed: a user message that is no server, Prime, watchdog or resume note, and not the
+    "continue" this script sends."""
+    message = entry.get("message") or {}
+    if entry.get("type") != "message" or message.get("role") != "user":
+        return False
+    text = message_text(message)
+    if OWNER_RETRY_MARK in text:
+        return True
+    return bool(text) and text != "continue" and not text.startswith(NOTE_PREFIXES) and not PRIME_NOTE.match(text)
+
+
+def replied(message):
+    """Whether an assistant message answered the owner: text he reads, or a tell_owner call."""
+    content = message.get("content")
+    return any(isinstance(c, dict) and ((c.get("type") == "text" and (c.get("text") or "").strip()) or
+                                        (c.get("type") == "toolCall" and c.get("name") == "tell_owner"))
+               for c in (content if isinstance(content, list) else []))
+
+
+def owner_unanswered(entries):
+    """The time of the oldest owner message in `entries` that no later assistant message answered, else None."""
+    owed = None
+    for entry in entries:
+        message = entry.get("message") or {}
+        if entry.get("type") != "message":
+            continue
+        if message.get("role") == "assistant" and replied(message):
+            owed = None
+        elif from_owner(entry):
+            owed = owed or entry.get("timestamp") or "?"
+    return owed
+
+
+def live_child(path):
+    """Whether the parent of the job at `path` still lists it as a live child: its rlm-subagent.json reads "running". A completed or deleted
+    child is no longer one, and a thread (no sub-* folder) has no parent. A record that does not read counts as live, so a read failure never
+    drops a job's work."""
+    folder = Path(path).parent if path else None
+    if not folder or not folder.name.startswith("sub-"):
+        return False
+    try:
+        return json.loads(BOX.read(folder / "rlm-subagent.json")).get("status") == "running"
+    except (OSError, ValueError, AttributeError):
+        return True
+
+
+def agent_unanswered(entries):
+    """The time of the oldest agent message (from the run's parent, a child or a sibling) after which the run said nothing, else None."""
+    owed = None
+    for entry in entries:
+        message = entry.get("message") or {}
+        if entry.get("type") == "message" and message.get("role") == "assistant" and said_something(message):
+            owed = None
+        elif entry.get("type") == "custom_message" and entry.get("customType") == "agent_message":
+            owed = owed or entry.get("timestamp") or "?"
+    return owed
+
+
+def said_something(message):
+    """Whether an assistant message holds text, thinking or a tool call."""
+    content = message.get("content")
+    return any(isinstance(c, dict) and (c.get("type") == "toolCall" or (c.get("text") or "").strip() or (c.get("thinking") or "").strip())
+               for c in (content if isinstance(content, list) else []))
+
+
+def mid_tool(entries):
+    """Whether the run's last turn stopped inside a tool call: its last message is a tool call or a tool result no turn followed."""
+    last = last_message(entries) or {}
+    message = last.get("message") or {}
+    return message.get("role") == "toolResult" or (message.get("role") == "assistant" and message.get("stopReason") == "toolUse")
+
+
+# The chats and threads the chat service lists (chats.json, threads.json), read once a pass; None when a list did not read.
+CHAT_SESSIONS = []
+
+
+def chat_sessions():
+    if not CHAT_SESSIONS:
+        ids = set()
+        try:
+            for path in (CHAT_INDEX, THREAD_INDEX):
+                record = read_record(path, lambda data: isinstance(data, dict) and isinstance(data.get("ids"), list))
+                ids.update(sid for sid in (record or {}).get("ids", []) if isinstance(sid, str))
+        except RecordError:
+            ids = None
+        CHAT_SESSIONS.append(ids)
+    return CHAT_SESSIONS[0]
+
+
+def work_owed(session_id, path, entries, owners=None):
+    """Why the run is still owed work, or None. It is owed when it is a chat or thread the chat service lists (a chat may be mid-way through a
+    job report or another non-owner message, whatever its board says), when an open board step names it (`owners`, --owners), when its last turn
+    stopped inside a tool call, when its parent still lists it as a live child (`live_child`), or when a message to it has no answer: one the
+    owner typed (`owner_unanswered`) or an agent message from its parent, a child or a sibling (`agent_unanswered`). The chat service's job
+    sweep (--owed) and the watchdog (components/watchdog, through wd_common._rp) wake a cut run only when this names a reason."""
+    chats = chat_sessions()
+    if chats is None:
+        return "the chat service's chat list did not read"
+    if session_id in chats:
+        return "it is a chat"
+    if session_id in (OWNERS if owners is None else owners):
+        return "an open board step names it"
+    if mid_tool(entries):
+        return "its turn stopped inside a tool call"
+    if live_child(path):
+        return "its parent lists it as a live child"
+    asked = owner_unanswered(entries)
+    if asked:
+        return f"the owner's message of {asked} is unanswered"
+    told = agent_unanswered(entries)
+    return f"the agent message of {told} is unanswered" if told else None
+
 UNLOADED_FILE = Path.home() / ".prime" / "agent" / "browser-chat" / "unloaded.json"
 # {full session id: when the chat service's idle unload stopped it}, read from UNLOADED_FILE in main().
 UNLOADED = {}
@@ -1771,6 +1909,15 @@ def find_paused(sessions, since_minutes, state, now, direct=False, only=frozense
     if check_hook and only:
         prefetch_hooks(hook_pairs(sessions, only, by_id, entries_of), hooks)
 
+    def owed(s, sid, full, cut, cut_at):
+        """True unless --owed is on and `work_owed` finds no work still owed, in which case the run goes to UNOWED."""
+        if not OWED_ONLY[0] or work_owed(full, s.get("sessionFile"), entries_of(sid)):
+            return True
+        UNOWED.append({"id": sid, "session_id": full, "name": s.get("sessionName") or "(unnamed)", "head": head_of(sid, by_id),
+                       "head_session_id": head_session(head_of(sid, by_id), s), "cut": cut[0], "cut_error": cut[1][:400], "cut_at": cut_at,
+                       **({"host": BOX.name} if BOX.remote else {})})
+        return False
+
     paused = []
     for s in sessions:
         sid = short_id(s)
@@ -1815,6 +1962,8 @@ def find_paused(sessions, since_minutes, state, now, direct=False, only=frozense
             if recorded:
                 # The daemon's row can still read working after a delete: on 10-20 virev mcp db tier was deleted at 00:54:43Z.
                 stopped(s, sid, recorded, cut=("hung", f"Showed working with no activity for {hung:.0f} min."))
+                continue
+            if not owed(s, sid, full, ("hung", f"Showed working with no activity for {hung:.0f} min."), s.get("lastActivityAt") or s.get("modified")):
                 continue
             head = head_of(sid, by_id)
             wait = asleep_in_retry(s, sid, head)
@@ -1873,6 +2022,8 @@ def find_paused(sessions, since_minutes, state, now, direct=False, only=frozense
             continue
         if recorded:
             stopped(s, sid, recorded, cut=verdict, last=last)
+            continue
+        if not owed(s, sid, full, verdict, last.get("timestamp")):
             continue
         ts = parse_ts(last.get("timestamp"))
         age_min = (now - ts).total_seconds() / 60 if ts else None
@@ -2176,7 +2327,9 @@ def main():
     ap.add_argument("--only", default="", help="comma-separated full session ids: act only on these interrupted runs, read from their files when the daemon does not list them")
     ap.add_argument("--this-box", action="store_true", help="look only at this box's daemon, not at the other boxes in hosts.json")
     ap.add_argument("--owners", default="", help="comma-separated full session ids that own an open step of a chat (see above)")
+    ap.add_argument("--owed", action="store_true", help="resume a cut run only while its work is owed (work_owed); list the rest under unowed")
     args = ap.parse_args()
+    OWED_ONLY[0] = args.owed
     UNSTUCK.update(filter(None, args.unstuck.split(",")))
     OWNERS.update(filter(None, args.owners.split(",")))
     since = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=args.since_minutes or 1e7)
@@ -2218,6 +2371,8 @@ def main():
         report["stopped"] = STOPPED
     if HELD:
         report["held"] = HELD
+    if UNOWED:
+        report["unowed"] = UNOWED
     if args.json:
         print(json.dumps(report, indent=1))
         return finish()

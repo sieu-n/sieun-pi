@@ -61,7 +61,9 @@ function parseReport(stdout: string): { report: InterruptedReport } | { malforme
       stopped_at: (at: unknown) => at === null || isOptionalText(at), stopped_by: isText, host: isOptionalText }, true)
     ?? badField("held", value.held, { id: isText, name: isText, session_id: isText, head: isText, head_session_id: isText, tree: isText,
       provider: (provider: unknown) => provider === null || isText(provider), errored_at: (at: unknown) => at === null || isText(at), held_by: isText,
-      pool_at: (at: unknown) => at === null || isText(at), host: isOptionalText }, true);
+      pool_at: (at: unknown) => at === null || isText(at), host: isOptionalText }, true)
+    ?? badField("unowed", value.unowed, { id: isText, name: isText, session_id: isText, head: isText, head_session_id: isText, cut: isText, cut_error: isText,
+      cut_at: (at: unknown) => at === null || isOptionalText(at), host: isOptionalText }, true);
   return bad ? { malformed: `printed a report whose ${bad} is missing or has the wrong type` } : { report: value as unknown as InterruptedReport };
 }
 
@@ -188,7 +190,8 @@ export class InterruptedRuns {
     cut: ReadonlySet<string> = new Set(), unstick?: (sessionId: string) => Promise<void>): Promise<InterruptedReport | null> {
     const report = this.serial(async () => {
       const listed = new Set([...owners, ...cut]);
-      const named = listed.size ? ["--owners", [...listed].join(",")] : [];
+      // --owed: a cut job is continued only while its work is owed (resume_paused.py work_owed), since the pass looks back with no limit.
+      const named = ["--owed", ...listed.size ? ["--owners", [...listed].join(",")] : []];
       const planned = await this.run(["--dry-run", "--direct", ...named]);
       const jobs = planned.paused
         .filter(run => run.session_id !== undefined && (run.reason !== "hung" || (unstick !== undefined && run.retry_error !== undefined)) &&
@@ -203,8 +206,9 @@ export class InterruptedRuns {
       const stopped = (planned.stopped ?? []).filter(run => isJob(run) && run.stopped_by !== CHAT_ARCHIVED);
       const pooled = (planned.held ?? []).filter(isJob);
       const archived = (planned.stopped ?? []).filter(run => run.stopped_by === CHAT_ARCHIVED);
+      const unowed = (planned.unowed ?? []).filter(isJob);
       const held = { ...(unresolved.length ? { unresolved } : {}), ...(stopped.length ? { stopped } : {}), ...(pooled.length ? { held: pooled } : {}),
-        ...(archived.length ? { archived } : {}) };
+        ...(archived.length ? { archived } : {}), ...(unowed.length ? { unowed } : {}) };
       const notes = { ...(planned.incomplete?.length ? { incomplete: planned.incomplete } : {}), ...held };
       if (!jobs.length) return Object.keys(notes).length ? { paused: [], heads: [], checked_at: planned.checked_at, ...notes } : null;
       const reopenAll = async (ids: Iterable<string>): Promise<void> => {
@@ -331,9 +335,10 @@ export class PoolHeldJobs {
  * the turn's own cause first, since every pass reads it again.
  */
 const archivedTold = new Set<string>();
+const unowedTold = new Set<string>();
 
 /** Why the run's turn stopped, from the script's `cut` fields: a provider error by its cause (`turnErrorCause`) and time. */
-function cutWords(entry: RecordedStop): string {
+function cutWords(entry: Pick<RecordedStop, "cut" | "cut_error" | "cut_at">): string {
   const when = entry.cut_at ? ` at ${entry.cut_at}` : "";
   if (entry.cut === "error") return `${turnErrorCause(entry.cut_error)}${when}`;
   return entry.cut ? `${entry.cut}${when}` : "how is not recorded";
@@ -378,6 +383,13 @@ export async function resumeChatJobs(chatRows: readonly SessionRow[], chats: Rea
     }
     for (const entry of report?.held ?? []) {
       log(`job ${entry.name}: held by pi-pool until ${entry.pool_at ?? "a time it does not say"}: ${entry.held_by} (cut at ${entry.errored_at ?? "?"}, tree ${entry.tree.slice(0, 8)}, ${entry.session_id}${entry.host ? ` on ${entry.host}` : ""})`);
+    }
+    for (const entry of report?.unowed ?? []) {
+      const key = `${entry.session_id}|${entry.cut_at ?? ""}`;
+      if (unowedTold.has(key)) continue;
+      unowedTold.add(key);
+      log(`job ${entry.name}: turn stopped: ${cutWords(entry)}. Not resumed: no work is owed to it, since no open step names it, no parent lists it as live, ` +
+        `its turn was not in a tool call and no message to it is unanswered (${entry.session_id}${entry.host ? ` on ${entry.host}` : ""})`);
     }
     await held?.set(report?.held ?? []);
   } catch (error) { log(`chats: interrupted jobs: ${error instanceof Error ? error.message : String(error)}`); }

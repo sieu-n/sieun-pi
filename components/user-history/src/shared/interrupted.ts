@@ -53,6 +53,21 @@ export interface InterruptedReport {
   held?: PoolHeldRun[];
   /** Cut runs that the owner's archive of their chat after their last message stops (resumeJobs), so the job sweep can name them once. */
   archived?: RecordedStop[];
+  /** Cut runs the job sweep's --owed pass leaves alone, since no work is owed to them (resume_paused.py work_owed). */
+  unowed?: UnowedRun[];
+}
+
+/** A cut run whose work moved on: no chat, open step, live parent, tool call or unanswered message holds it. `cut` is how its turn ended. */
+export interface UnowedRun {
+  id: string;
+  name: string;
+  session_id: string;
+  head: string;
+  head_session_id: string;
+  cut: string;
+  cut_error: string;
+  cut_at?: string | null;
+  host?: string;
 }
 
 /**
