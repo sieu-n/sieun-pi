@@ -39,6 +39,13 @@ The watchdog finds Prime Agent sessions that stopped making progress and recover
 6. One owed input gets one resume notice, because each `resume_queue + send` line in `log.jsonl` holds its `owed_since`, and a later cycle reads that input as `NOTICED`. A failed send is tried once more after 5 s and then counts, because on the Mac from 10-20 to 10-22 five sessions got 1011 notices whose sends all failed with "Unknown active session", and those retries took the cycle's resume budget.
 7. On 10-21 the Mac's watchdog woke gpt sol at 20:08Z, 20:43Z, 21:19Z and 22:18Z with "the input was never answered", because each of its silent turn ends on a non-owner notice read as a dropped turn, and each wake ended silent again. On 10-22 the box's watchdog woke gpt sol (metal 02) at 01:47:55Z after it had answered its owner, because the correction refine's notes read as owed input.
 
+## Gone trees and the outbox
+
+1. A job whose tree is gone reads `ARCHIVED` and takes none of the cycle's budget: a record says it or a job above it was deleted or cancelled on purpose (`stop_record` in `resume_paused.py`), or its tree's root is archived or unlisted on its daemon and is no chat or thread of the chat service.
+2. The chat service's records (`archived-chats.json`, `clean-room-chats.json`, `chats.json`, `threads.json` and the stop records) come from the chat host of hosts.json, through `resume_paused.py`'s `chat_file_text`, because the Mac's own copies stopped on 10-18 when the chat moved to us-metal02.
+3. When the daemon refuses a notice for its session uuid ("Unknown active session"), the cycle hands it to the chat service's agent outbox (`api/agent/notice`), which relays it to the parent of a subagent with no worker or opens a root from its file.
+4. From 10-20 to 10-22 the Mac sent 1291 notices, 1203 of them to uuids the daemon refused, and 1011 to five jobs whose trees were gone: box-takeover, douyin duty box sync, vite-mem, discover page errors and limits-flagged-10-16.
+
 ## Install
 
 ```sh

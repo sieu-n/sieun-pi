@@ -22,13 +22,7 @@ _resume_paused = None
 
 def credential_wait_at(message):
     """retryAtMs of Prime's credential wait marker, from resume_paused.py's own reader, else None."""
-    global _resume_paused
-    if _resume_paused is None:
-        import importlib.util
-        spec = importlib.util.spec_from_file_location('resume_paused', RESUME_PAUSED)
-        _resume_paused = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(_resume_paused)
-    return _resume_paused.credential_wait_at(message)
+    return _rp().credential_wait_at(message)
 
 
 def log(entry):
@@ -71,33 +65,135 @@ def _tail_events(path, n=30, window=400_000):
     return out[::-1]
 
 
-# The chat service's records (components/user-history): archived-chats.json holds the chats the owner archived and clean-room-chats.json the
-# clean-room test chats. On 10-18 the watchdog sent plan-and-duties run-1's test chat "[watchdog] Your last turn was dropped" at 14:34:58Z,
-# 6.8 min after its teardown archived it, and the chat went on working into run-2.
-CHAT_DATA = Path(os.environ.get('AGENT_CHAT_DATA_DIR') or Path.home() / '.prime/agent/browser-chat')
+# The chat service's records (components/user-history): archived-chats.json holds the chats the owner archived, clean-room-chats.json the
+# clean-room test chats, and chats.json and threads.json the chats and threads it shows. On 10-18 the watchdog sent plan-and-duties run-1's
+# test chat "[watchdog] Your last turn was dropped" at 14:34:58Z, 6.8 min after its teardown archived it, and the chat went on working into run-2.
+DEFAULT_CHAT_DATA = Path.home() / '.prime/agent/browser-chat'
+CHAT_DATA = Path(os.environ.get('AGENT_CHAT_DATA_DIR') or DEFAULT_CHAT_DATA)
+
+
+def _rp():
+    """resume_paused.py, loaded once."""
+    global _resume_paused
+    if _resume_paused is None:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('resume_paused', RESUME_PAUSED)
+        _resume_paused = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(_resume_paused)
+    return _resume_paused
+
+
+def chat_text(name):
+    """The text of one chat service file, or None. It comes from the chat host when hosts.json puts the chat role on another box
+    (resume_paused.chat_file_text): the Mac's own browser-chat folder stopped on 10-18 when the chat moved to us-metal02, and its
+    archived-chats.json lacked the 10-20 archive of Douyin index gaps, so the Mac's cycles kept waking that chat's job douyin duty box sync.
+    A CHAT_DATA set by a test or AGENT_CHAT_DATA_DIR reads that folder alone."""
+    if CHAT_DATA == DEFAULT_CHAT_DATA and RESUME_PAUSED:
+        import contextlib, io
+        try:
+            with contextlib.redirect_stderr(io.StringIO()):
+                return _rp().chat_file_text(CHAT_DATA / name)[0]
+        except Exception:
+            return None
+    try:
+        return (CHAT_DATA / name).read_text()
+    except OSError:
+        return None
 
 
 def chat_ids(name):
-    """The ids of one chat service record, empty when the file is missing or unreadable."""
+    """The ids of one chat service record, empty when the file is missing or unreadable; None for chats.json and threads.json then, since
+    an empty list of those would read every tree as gone."""
     try:
-        ids = json.loads((CHAT_DATA / name).read_text()).get('ids')
-    except (OSError, ValueError, AttributeError):
-        return set()
-    return {i for i in ids if isinstance(i, str)} if isinstance(ids, list) else set()
+        ids = json.loads(chat_text(name) or 'null').get('ids')
+    except (ValueError, AttributeError):
+        ids = None
+    if not isinstance(ids, list):
+        return None if name in ('chats.json', 'threads.json') else set()
+    return {i for i in ids if isinstance(i, str)}
+
+
+def tree_root(file):
+    """The root session of the session-artifacts tree that holds `file`, or None for a root's own file."""
+    parts = Path(file).parts if file else ()
+    return parts[parts.index('session-artifacts') + 1] if 'session-artifacts' in parts[:-2] else None
 
 
 def stop_reason(sid, file, archived, test_chats):
     """Why no recovery may wake this session, or None: its chat (the session or the root of its session-artifacts tree) is in
     archived-chats.json or clean-room-chats.json. An archived session_state in the file is no reason: the daemon's eviction and the Mac
     copy write it too. Only the owner's unarchive brings such a chat back."""
-    parts = Path(file).parts if file else ()
-    root = parts[parts.index('session-artifacts') + 1] if 'session-artifacts' in parts[:-2] else None
-    ids = {sid, root} - {None}
+    ids = {sid, tree_root(file)} - {None}
     if ids & archived:
         return 'archived by the owner (archived-chats.json)'
     if ids & test_chats:
         return 'a clean-room test chat (clean-room-chats.json)'
     return None
+
+
+def gone_reason(file, root_life, shown):
+    """Why a job's tree is gone, or None: a record says it or a job above it was deleted or cancelled on purpose (resume_paused.stop_record:
+    deleted-jobs.json, the RLM ledger, rlm-subagent.json, job-cancels.json), or its root is archived on this daemon and is no chat or thread
+    the chat service shows (`shown`, None when chats.json or threads.json did not read). From 10-20 to 10-22 the Mac woke box-takeover,
+    vite-mem and limits-flagged-10-16 every cycle, jobs whose roots were archived and in no chat list."""
+    root = tree_root(file)
+    if not root:
+        return None
+    if CHAT_DATA == DEFAULT_CHAT_DATA and RESUME_PAUSED:
+        import contextlib, io
+        try:
+            with contextlib.redirect_stderr(io.StringIO()):
+                why = _rp().stop_record(file)
+        except Exception:
+            why = None
+        if why:
+            return why
+    if shown is not None and root not in shown and root_life in ('archived', None):
+        return f"its tree's root {root} is {root_life or 'not listed'} and no chat or thread of the chat service holds it"
+    return None
+
+
+def chat_service():
+    """(base URL, write token, origin) of the chat service, as components/user-history/src/chat-host.ts chatService finds it: the chat host of
+    hosts.json with ~/.config/sieun-pi/chat-access.json when that is another box, else this box's configuration.json. None when neither is set up."""
+    import socket
+    hosts_file = Path(os.environ.get('SIEUN_PI_HOSTS') or Path.home() / '.config/sieun-pi/hosts.json')
+    try:
+        hosts = json.loads(hosts_file.read_text()).get('hosts') or []
+    except (OSError, ValueError, AttributeError):
+        hosts = []
+    try:
+        holder = next((h for h in hosts if 'chat' in (h.get('roles') or {})), None)
+        if holder and str(holder.get('hostname', '')).split('.')[0].lower() != socket.gethostname().split('.')[0].lower():
+            role = holder['roles']['chat']
+            origin = (role.get('url') or f"http://{holder['address']}:{role['port']}").rstrip('/')
+            access = json.loads((hosts_file.parent / 'chat-access.json').read_text())
+            return f"{origin}/{access['capability']}/", access['csrfToken'], origin
+        config = json.loads((CHAT_DATA / 'configuration.json').read_text())
+        return f"http://127.0.0.1:{config['port']}/{config['capability']}/", config['csrfToken'], f"http://127.0.0.1:{config['port']}"
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return None
+
+
+def outbox_notice(session, root, text, timeout=60):
+    """Hands a notice to the chat service's agent outbox (api/agent/notice, src/agent-outbox.ts), which relays it to the parent of a subagent
+    the daemon holds no worker for and opens a root from its file. The answer, or {'error': ...}."""
+    import urllib.error
+    import urllib.request
+    service = chat_service()
+    if not service:
+        return {'error': 'no chat service is set up on this box or in hosts.json'}
+    base, token, origin = service
+    body = json.dumps({'to': session, 'message': text, **({'root': root} if root else {})}).encode()
+    request = urllib.request.Request(base + 'api/agent/notice', data=body, method='POST', headers={
+        'Content-Type': 'application/json', 'X-Chat-Token': token, 'Origin': origin})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read().decode() or '{}')
+    except urllib.error.HTTPError as error:
+        return {'error': f'{error.code} {error.read().decode(errors="replace")[:200]}'}
+    except (OSError, ValueError) as error:
+        return {'error': f'{type(error).__name__}: {error}'[:200]}
 
 
 def _run(*argv):

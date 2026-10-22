@@ -642,7 +642,8 @@ class JobRecordError(RecordError):
 # The chat service's files that say who stopped a run on purpose. They live on the chat host of hosts.json; another box's copy stopped when
 # the chat moved (us-metal02, 10-18 04:19Z), so a pass on the Mac that read its own deleted-jobs.json could resume a job the owner deleted.
 CHAT_FILES = {"deleted-jobs.json": "api/agent/deleted-jobs", "archived-chats.json": "api/agent/archived-chats", "unloaded.json": "api/agent/unloaded",
-              "job-cancels.json": "api/agent/job-cancels", "service-archives.json": "api/agent/service-archives"}
+              "job-cancels.json": "api/agent/job-cancels", "service-archives.json": "api/agent/service-archives",
+              "clean-room-chats.json": "api/agent/clean-room-chats", "chats.json": "api/agent/chats", "threads.json": "api/agent/threads"}
 # How long the chat host may take to answer, the same wait as every chat service call (components/user-history/src/chat-host.ts serviceCall).
 CHAT_HOST_WAIT_S = 30
 # {file name: (text or None, source)} from the chat host, read once per pass.

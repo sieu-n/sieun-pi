@@ -11,7 +11,8 @@ import os
 import re
 import time
 
-from wd_common import LOG_F, STATE_F, WATCH, _run, _tail_events, _ts, chat_ids, credential_wait_at, log, pa, stop_reason
+from wd_common import (LOG_F, STATE_F, WATCH, _run, _tail_events, _ts, chat_ids, credential_wait_at, gone_reason, log, outbox_notice, pa,
+                       stop_reason, tree_root)
 from wd_daemon import daemon_call, ui_retry, unwedge
 from wd_heartbeats import heartbeat_rearm
 from wd_probe import probe_model, probe_verdict
@@ -467,8 +468,17 @@ def _cycle(dry_run=False, verbose=True):
             prev = {}
     now, recs = snapshot()
     repeats, noticed = read_log()
+    life = {r['sid']: r['life'] for r in recs}
+    shown = None
     for r in recs:
         r['noticed'] = (r['sid'], r.get('owed_since')) in noticed
+        if r['stopped'] or r['life'] != 'live' or not (r['act'] == 'working' or (r.get('awaiting_min') or 0) >= 30):
+            continue
+        if shown is None:
+            chats, threads = chat_ids('chats.json'), chat_ids('threads.json')
+            shown = (chats | threads) if chats is not None and threads is not None else False
+        root = tree_root(r.get('file'))
+        r['stopped'] = root and gone_reason(r['file'], life.get(root), shown if shown is not False else None)
     swap, load = pressure()
     blocked = ('swap', swap, SWAP_CAP_GIB) if swap > SWAP_CAP_GIB else \
         ('load', load, LOAD_CAP) if load > LOAD_CAP else None
@@ -516,12 +526,14 @@ def _cycle(dry_run=False, verbose=True):
                  f"worker restart) and the input was never answered. Nothing in your history was lost. "
                  f"Re-check the state of your last step before trusting it, then continue the task and commit.")
             sd = pa('send', r['sid'], m)
-            if sd.returncode != 0:
-                time.sleep(5)
-                sd = pa('send', r['sid'], m)
             act = {'id': r['id'], 'sid': r['sid'], 'name': r['name'], 'method': 'resume_queue + send',
                    'why': why, 'owed_since': r.get('owed_since'), 'send_rc': sd.returncode, 'send_out': (sd.stdout or sd.stderr).strip()[:120],
                    'at': dt.datetime.now(dt.timezone.utc).isoformat()}
+            if sd.returncode != 0:
+                # The daemon refuses a uuid it holds no worker for ("Unknown active session": an unloaded subagent, a stale live row). The
+                # chat service's outbox relays to the parent or opens the root from its file. From 10-20 to 10-22 the Mac retried 1203 such sends.
+                act['method'] = 'resume_queue + outbox'
+                act['outbox'] = outbox_notice(r['sid'], tree_root(r.get('file')), m)
             actions.append(act)
             with open(LOG_F, 'a') as f:
                 f.write(json.dumps(act, default=str) + '\n')

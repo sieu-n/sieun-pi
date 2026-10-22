@@ -58,10 +58,12 @@ const idPattern = /^[a-zA-Z0-9_.:-]{1,256}$/;
 
 /**
  * The chat files a box without the chat role reads through the service: the corrections ledger and send log for the board skill, and the
- * stop records resume_paused.py reads, since a Mac pass that read its own stale deleted-jobs.json could resume a job deleted after the move.
+ * stop records resume_paused.py reads, since a Mac pass that read its own stale deleted-jobs.json could resume a job deleted after the move. The
+ * watchdog (components/watchdog) reads the chat and thread lists too, to tell a job whose tree is gone.
  */
 const AGENT_FILES = new Map([["api/agent/corrections", "corrections.json"], ["api/agent/sends", "sends.jsonl"], ["api/agent/deleted-jobs", "deleted-jobs.json"],
-  ["api/agent/archived-chats", "archived-chats.json"], ["api/agent/unloaded", "unloaded.json"], ["api/agent/job-cancels", "job-cancels.json"], ["api/agent/service-archives", SERVICE_ARCHIVES_FILE]]);
+  ["api/agent/archived-chats", "archived-chats.json"], ["api/agent/unloaded", "unloaded.json"], ["api/agent/job-cancels", "job-cancels.json"], ["api/agent/service-archives", SERVICE_ARCHIVES_FILE],
+  ["api/agent/clean-room-chats", "clean-room-chats.json"], ["api/agent/chats", "chats.json"], ["api/agent/threads", "threads.json"]]);
 
 class RequestError extends Error {
   constructor(readonly status: number, message: string) { super(message); }
@@ -833,6 +835,13 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
           from: { id: text(from.id, "from.id", 128), name: text(from.name, "from.name") }, role, behind: body.behind === true,
           ...pending === undefined ? {} : { pending }, ...limit === undefined ? {} : { limit },
           ...typeof body.root === "string" ? { root: threadId(body.root) } : {} })); return;
+      }
+      // A watchdog notice the daemon refused for its session uuid ("Unknown active session"): the agent outbox relays it to the parent of a
+      // subagent with no worker or opens a root from its file (components/watchdog/wd_common.py outbox_notice).
+      if (route === "api/agent/notice") {
+        const session = threadId(text(body.to, "to", 128));
+        await backend.messages.deliver(session, text(body.message, "message"), typeof body.root === "string" ? threadId(body.root) : undefined);
+        json(res, 200, { deliveryStatus: "queued", session }); return;
       }
       // The chat tools of a session on a box without the chat role (src/chat-host.ts): its check-in setting, the job registry and the ledger.
       if (route === "api/agent/check-in") {
