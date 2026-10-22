@@ -710,12 +710,13 @@ export class ThreadHub {
     const other = Boolean(host && this.catalog.isOtherHost(host));
     const records = other ? null : this.updates;
     const refused = isPrepareRefusal({ success: false, error: text });
-    if (!refused && (!records || !DAEMON_DOWN.test(text) || !await records.running().catch(() => null))) return null;
+    const running = !refused && records && DAEMON_DOWN.test(text) ? await records.running().catch(() => null) : null;
+    if (!refused && !running) return null;
     const client = other ? await this.catalog.hostClient(host).catch(() => null) : this.catalog.client;
     if (!client) return null;
     const wait = { session: undefined, controller: new AbortController() };
     this.waits.add(wait);
-    const ended = prepareEnd(client, records, { signal: wait.controller.signal }).finally(() => { this.waits.delete(wait); });
+    const ended = prepareEnd(client, records, { signal: wait.controller.signal, update: running }).finally(() => { this.waits.delete(wait); });
     return { kind: refused ? "prepare" : "restart", ended };
   }
 

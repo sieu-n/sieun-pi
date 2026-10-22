@@ -99,10 +99,12 @@ export interface UpdateWindow { kind: "prepare" | "restart"; ended: Promise<Prep
 /**
  * Resolves once the update window a call on `client` met ended (`PrepareEnd`). `records` are this box's update records, given only for this
  * box's daemon: a prepare that no running record names, such as another box's, ends by `deadlineMs` (DAEMON_PREPARE_DEADLINE_MS) at the
- * latest. The wait ends unended after `waitMs` or when `signal` aborts.
+ * latest. The wait ends unended after `waitMs` or when `signal` aborts. `update` is the running record the caller already read: the wait follows
+ * it, so a window that ended before the wait reads the records again ends at once instead of by the deadline. On 10-22 at 02:25Z the release
+ * build of 6b0fd07 failed a test whose record went to complete between the two reads.
  */
 export async function prepareEnd(client: Pick<DaemonClient, "hello" | "onMessage">, records: UpdateRecords | null,
-  options: { deadlineMs?: number; waitMs?: number; signal?: AbortSignal } = {}): Promise<PrepareEnd> {
+  options: { deadlineMs?: number; waitMs?: number; signal?: AbortSignal; update?: PrimeUpdate | null } = {}): Promise<PrepareEnd> {
   const { deadlineMs = DAEMON_PREPARE_DEADLINE_MS, waitMs = UPDATE_WAIT_MS, signal } = options;
   if (signal?.aborted) return "cancelled";
   const generation = client.hello?.supervisorGeneration;
@@ -114,7 +116,7 @@ export async function prepareEnd(client: Pick<DaemonClient, "hello" | "onMessage
   const gaveUp = setTimeout(() => finish("gave up"), Math.max(0, waitMs));
   let offRecords = () => {};
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const update = records ? await records.running().catch(() => null) : null;
+  const update = options.update ?? (records ? await records.running().catch(() => null) : null);
   if (records && update) {
     const check = () => { void records.running().then(now => { if (now?.requestId !== update.requestId) finish("update ended"); }, () => {}); };
     offRecords = records.watch(check);

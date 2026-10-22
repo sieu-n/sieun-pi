@@ -121,6 +121,17 @@ test("a send that found this box's daemon down while its update ran waits for th
   assert.equal(await hub.updateWindow(null, new Error('Timed out after 30000ms waiting for the Prime Agent daemon response to "send_message".')), null);
 });
 
+test("a down daemon's window whose update record ends before the wait reads it again ends at once, not by the 100 s deadline", async t => {
+  const { hub } = await rig(t, []);
+  const update = { requestId: "test-update", phase: "starting_daemon", startedAt: "", file: "ctl-test.json" };
+  let reads = 0;
+  hub.updates = { running: async () => (++reads === 1 ? update : null), watch: () => () => {} };
+  const window = await hub.updateWindow(null, new Error("The Prime Agent daemon on us-metal02 is not reachable."));
+  assert.equal(window?.kind, "restart");
+  const late = new Promise<string>(done => { const timer = setTimeout(() => done("still waiting"), 2000); t.after(() => clearTimeout(timer)); });
+  assert.equal(await Promise.race([window!.ended, late]), "update ended");
+});
+
 test("an agent outbox send refused by the prepare waits for it, goes again with no backoff, and writes no failed try", async t => {
   const dir = await mkdtemp(join(tmpdir(), "update-prepare-outbox-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
