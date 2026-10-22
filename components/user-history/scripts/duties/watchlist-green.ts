@@ -408,7 +408,7 @@ export async function convexKeys(fetcher: typeof fetch, accessToken: string, sig
   const keys = new Set<string>();
   let cursor: string | null = null;
   for (;;) {
-    const page = await query<{ keys: string[]; continueCursor: string; isDone: boolean }>("search/watchTargets:pageKeys", { orgId, cursor });
+    const page: { keys: string[]; continueCursor: string; isDone: boolean } = await query<{ keys: string[]; continueCursor: string; isDone: boolean }>("search/watchTargets:pageKeys", { orgId, cursor });
     page.keys.forEach(key => keys.add(key));
     if (page.isDone) break;
     cursor = page.continueCursor;
