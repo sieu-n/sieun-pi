@@ -66,6 +66,7 @@ const FLAG_WORDS: Record<string, { noun: string; words: string } | string> = {
   goals_without_duty: "open goals with no duty",
   no_done_line: { noun: "goal", words: "with no done line" },
   plan_risks: { noun: "item", words: "holding a standing risk or upkeep" },
+  met_open: { noun: "item", words: "met and still open" },
   stuck_steps: { noun: "step", words: "stuck" },
 };
 

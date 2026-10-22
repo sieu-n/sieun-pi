@@ -549,7 +549,8 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
     if (actor === "agent") {
       flags.push(...softFlags(op));
       if (next.plan) {
-        flags.push(...waitPushes(board, next.plan), ...goWaits(board, next.plan), ...upkeepTitles(board, next.plan), ...noDoneLines(board, next.plan));
+        flags.push(...waitPushes(board, next.plan), ...goWaits(board, next.plan), ...upkeepTitles(board, next.plan), ...noDoneLines(board, next.plan),
+          ...metOpenFlags(board, next.plan));
         const open = openCount(next.plan);
         if (open > BOARD_LIMITS.planItems && open > openCount(board.plan)) flags.push(`The open plan has ${open} goals and steps, over the ${BOARD_LIMITS.planItems} target; mark finished ones done or dropped.`);
         next = { ...next, plan: markMerges(next.plan) };
@@ -1117,6 +1118,68 @@ function noDoneLines(before: ChatBoard, plan: readonly PlanItem[]): string[] {
       "it, a target, or the duty metric it fixes (plan_update). Standing work belongs in a duty metric (board skill, references/plan-and-duties.md).");
   });
   return flags;
+}
+/**
+ * An open item whose target reads met, with nothing left to do (owner rule c110, given the 4th time on 10-22: "that's already being handled by
+ * the duty system. so then close it!!"). The AI harness chat's p850 read wiki problems 0 of at most 0 at 03:57Z on 10-22, and its goal p200,
+ * which duty d4/wiki_problems keeps, stayed open "until d4's next run confirms 0" until the owner said close. The reading is the item's own
+ * target or a newer one of the same metric on an item under it (p850's 0 under p200's stale 4), or a note that says the target is met. An item
+ * stays off this list while an open step under it is unmet (its push step aside, frontend bro p208 and p286 on 10-20), while a requirement line
+ * is not met, or when the owner's words name a hold, like "held 6 h": that hold is part of the target. `keeper` is the duty metric that keeps
+ * the number from now on: the item's own duty link, else the nearest one above it, else one on a step under it that reads the same metric.
+ */
+export interface MetOpen { item: PlanItem; target?: GoalTarget; from?: string; keeper?: string }
+const metricKey = (metric: string): string => metric.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+const OWNER_HOLD = /\b(?:held|holds?|for)\s+(?:a|an|one|\d+(?:\.\d+)?)\s*(?:h|hours?|days?|weeks?)\b/i;
+const NOTE_MET = /\b(?:target|done line|goal)\s+(?:is\s+|was\s+|now\s+)?(?:met|reached)\b|\breads?\s+met\b|\(met\)/i;
+const noteSaysMet = (note: string | undefined): boolean => NOTE_MET.test((note ?? "").replace(/\bdone when\b.*?(?:\.(?=\s|$)|$)/gis, ""));
+const dutyKeeper = (duty: string | undefined): string | undefined => {
+  const link = duty ? parseDutyLink(duty) : null;
+  return link && link.duty !== CHECK_IN_DUTY_ID ? duty : undefined;
+};
+export function metOpenItems(plan: readonly PlanItem[]): MetOpen[] {
+  const found: MetOpen[] = [];
+  const met = new Set<string>();
+  const visit = (item: PlanItem, above: readonly PlanItem[]): void => {
+    for (const child of item.children) visit(child, [item, ...above]);
+    if (!OPEN_STATUSES.has(item.status) || item.requirements?.some(line => line.status !== "met")) return;
+    if ([item.text, ...(item.requirements ?? []).map(line => line.text)].some(words => OWNER_HOLD.test(words))) return;
+    let left = false;
+    const same: PlanItem[] = [];
+    walk(item.children, below => {
+      if (OPEN_STATUSES.has(below.status) && below.duty !== GOAL_PUSH_LINK && !met.has(below.id)) left = true;
+      if (item.target && below.target?.current !== undefined && metricKey(below.target.metric) === metricKey(item.target.metric)) same.push(below);
+    });
+    if (left) return;
+    const time = (target: GoalTarget | undefined) => Date.parse(target?.measuredAt ?? "") || 0;
+    const newest = same.reduce<PlanItem | undefined>((best, below) => time(below.target) > time((best ?? item).target) ? below : best, undefined);
+    const own = item.target;
+    const newer = newest?.target;
+    const reading: GoalTarget | undefined = own && newer?.current !== undefined
+      ? { ...own, current: newer.current, ...newer.measuredAt ? { measuredAt: newer.measuredAt } : {}, direction: targetOp(own) === "<=" ? "down" : "up" } : own;
+    const hit = reading && targetMet(reading) ? reading : undefined;
+    if (!hit && !noteSaysMet(item.note)) return;
+    const keeper = dutyKeeper(item.duty) ?? above.map(up => dutyKeeper(up.duty)).find(Boolean) ?? same.map(below => dutyKeeper(below.duty)).find(Boolean);
+    met.add(item.id);
+    found.push({ item, ...hit ? { target: hit } : {}, ...hit && newest ? { from: newest.id } : {}, ...keeper ? { keeper } : {} });
+  };
+  for (const item of plan) visit(item, []);
+  return found;
+}
+const readTime = (at: string | undefined): string => at ? `, read ${new Date(at).toISOString().slice(5, 16).replace("T", " ")}Z` : "";
+/** The line that asks to close a met item now (`metOpenItems`): its reading, and the duty that keeps the metric (c110). */
+export function metOpenLine({ item, target, from, keeper }: MetOpen): string {
+  const reading = target ? `reads met (${target.metric} ${amountText(target.current!)}${target.unit ? ` ${target.unit}` : ""}, target ${targetOp(target) === "<=" ? "at most" : "at least"} ` +
+    `${amountText(target.target)}${readTime(target.measuredAt)}${from ? ` on ${from}` : ""})` : "has a note that says its target is met";
+  const link = keeper ? parseDutyLink(keeper) : null;
+  return `${item.id} ${quote(item.text)} ${reading}. Close it now with a note that names the reading: ` + (link
+    ? `duty ${link.duty} keeps ${link.metric} (c110), so no reading of its next run is needed, and the duty puts a fix step back when it slips.`
+    : "No duty keeps this metric yet: when it must stay there, add it to a duty as a metric, then close it (c110).");
+}
+/** The agent's plan change that makes an open item met (`metOpenItems`): the close ask goes in the reply, at the write that met it. */
+function metOpenFlags(before: ChatBoard, plan: readonly PlanItem[]): string[] {
+  const was = new Set(metOpenItems(before.plan).map(found => found.item.id));
+  return metOpenItems(plan).filter(found => !was.has(found.item.id)).map(metOpenLine);
 }
 /** The gate fields that are set, for a stored plan item. */
 const gateFields = ({ go, kind, requirements: lines }: { [K in keyof Gates]?: Gates[K] | undefined }): Gates => ({ ...(go ? { go } : {}), ...(kind ? { kind } : {}), ...(lines?.length ? { requirements: lines } : {}) });

@@ -139,7 +139,7 @@ export function checkInJobBrief({ chat, job, at, prompt, report }: Pick<DutyJobI
     "The plan holds only tasks that finish, and this run pushes each open step toward done: resume its job, start a fix job, or close it with the " +
       "evidence you checked. Upkeep is a duty metric, so a goal or step whose title says keep, stays, always or every ... is green leaves the plan. " +
       "Goals are a few measured outcomes in the owner's terms, like \"Instagram profiles crawl at 10k a minute, held 6 h\", with their steps under " +
-      "them. A problem that kept coming back in the thread becomes a duty metric, and a goal met and held long enough closes and moves its metric into a duty.",
+      "them. A problem that kept coming back in the thread becomes a duty metric, and a goal or step whose target reads met closes at once when a duty keeps its metric.",
     `The chat's session id is ${chat.id}. Its board is ${chat.board}, and its conversation is ${join(agentDir, "sessions", `${chat.id}.jsonl`)}.`,
     prompt,
     "## How to act",

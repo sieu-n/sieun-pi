@@ -17,7 +17,7 @@ Read this before you add a goal, a step or a duty, and when the owner says "fix 
 11. Goals are a few outcomes in the owner's terms, 3 to 6 open at a time, each measured with a current value, a target and when it was read, and each one finishes.
 12. The work steps sit under the goal they serve, and a step that no owner intent backs is dropped with a note.
 13. A problem that kept coming back in the thread, fixed or hit more than once, becomes a duty metric, not a plan step.
-14. A goal that is met and held long enough, such as 6 h for a throughput goal, closes, and its metric moves into a duty that puts a fix step back when it slips.
+14. A goal or step whose target reads met closes in the same turn, with a note that names the reading, when a duty keeps its metric. The duty puts a fix step back when it slips, so nothing waits for one more reading (owner 10-22: "that's already being handled by the duty system. so then close it!!"). A hold the owner named in the goal, like "held 6 h", is part of its target. When no duty keeps the metric yet, add it to a duty first, then close the item. chat_board's reply and the check-in's met_open list name each such item.
 
 ## The owner's words
 

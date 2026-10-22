@@ -36,5 +36,5 @@ test("the check-in asks to make an open upkeep goal a duty metric, and a met goa
   assert.deepEqual(risks.map(item => item.id), ["p453"]);
   assert.match(checkInPrompt({ goals: [], end: [], risks }, null), /p453 .* reads like upkeep.*duty metric/);
   const met = { goal: board.plan[0]!, stale: false, act: "on_pace", words: [], trend: { kind: "met" } } as unknown as GoalPush;
-  assert.match(checkInPrompt({ goals: [met], end: [], risks: [] }, null), /meets its target.*move its metric into a duty/);
+  assert.match(checkInPrompt({ goals: [met], end: [], risks: [] }, null), /meets its target\. Close it now.*a duty keeps the metric/);
 });
