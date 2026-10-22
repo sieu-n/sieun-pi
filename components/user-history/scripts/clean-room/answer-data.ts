@@ -47,6 +47,17 @@ export function aggregateLead(line: string): boolean {
   return (stat || COUNT.test(bare)) && (WINDOW.test(line) || COUNT.test(bare));
 }
 
+/**
+ * Whether a message came from one of the chat's own duty jobs, the check-in among them, which src/chat-duty-job.ts names like
+ * `check-in frontend bro 14:00`. They write to the chat as siblings, and on 10-22 run1 read "check-in reply speed 11 50" as someone stepping in.
+ */
+export function ownJob(chatName: string, event: { from?: string; text: string }): boolean {
+  const name = chatName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const duty = new RegExp(`^[a-z][\\w -]* ${name} \\d{2}[: ]\\d{2}$`);
+  const sender = event.from ?? /^\[agent-message from sibling:([^\]]+)\]/.exec(event.text)?.[1] ?? "";
+  return duty.test(sender);
+}
+
 /** The session ids of the chat and every job collect saw under it: its subagent files, and root jobs from the agents snapshots. */
 function family(run: string, chat: string): { id: string; file: string }[] {
   const out = new Map<string, string>();
@@ -85,7 +96,8 @@ export function judge(run: string, state: RunState, now = Date.now()): { verdict
   add("a", answer ? long.length === 0 : missingAnswer, long.length ? long.join("; ")
     : answer ? `${lines.length} sentences of ${lines.map(words).join(" and ")} words; ${quote}` : quote);
 
-  add("b", answer ? aggregateLead(lead) : missingAnswer, answer ? `lead sentence: "${clip(lead, 300)}"` : quote);
+  // On 10-22 run1's first answer led with "I don't have a weekly number yet.", which is what c153 asks when the data does not exist yet.
+  add("b", answer ? aggregateLead(lead) || MISSING.test(lead) : missingAnswer, answer ? `lead sentence: "${clip(lead, 300)}"` : quote);
 
   const single = SINGLE.exec(lead)?.[0];
   const feel = SENTIMENT.exec(answer?.text ?? "")?.[0];
@@ -107,7 +119,7 @@ export function judge(run: string, state: RunState, now = Date.now()): { verdict
   const asked = new Map<string, number>();
   for (const event of head) if (event.kind === "sent" && !asked.has(event.to)) asked.set(event.to, event.at);
   const outside = head.filter(event => event.kind === "text" && event.role === "custom" && (event.relation === "parent" || event.relation === "sibling") &&
-    !(event.fromId && (asked.get(event.fromId) ?? Infinity) < event.at));
+    !ownJob(state.chat.name, event) && !(event.fromId && (asked.get(event.fromId) ?? Infinity) < event.at));
   add("e", typed.length === 0 && outside.length === 0, typed.length || outside.length
     ? [...typed, ...outside].map(event => `at ${iso(event.at)}: "${clip(event.kind === "text" ? event.text : "", 160)}"`).join("; ")
     : "only the owner-style message, server notes, the chat's own jobs and replies to its own asks reached the chat");

@@ -98,7 +98,8 @@ export const CHAT_BRIEF: readonly string[] = [
     "with no metric label he did not ask about, and give no ratio whose meaning you cannot say in one sentence (c152).",
   "Answer a performance or experience question in one or two short sentences led by an aggregate measurement and its scope (how many, over " +
     "what window, p50 or p90), never by one observation or one complaint read as how agents feel; when the baseline or the sample is missing or " +
-    "too small, say that plainly (c153).",
+    "too small, say that plainly. A yes or no goes in the sentence with the number, and the job you started, the next step or a link goes in " +
+    "its own tell_owner (c153).",
   "End state: every open step is done, moved by a live owner (a job at work, or a thread active in the last 2 h), or blocked only by an open For " +
     "you todo. Update the board with `chat_board` in the turn a job starts, ends or replies. Never ask the owner to relay a message to another " +
     "thread. A `[board] ` message is the owner acting on the board: act on it.",

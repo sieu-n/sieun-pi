@@ -1,6 +1,7 @@
 // Guards the c153 clean-room judge (owner 10-22: "unslop tooooooo much fucking text. and talk with data not just one observation god
 // damnit"): a two-sentence answer led by a p90 over a window passes, a long answer built on one chat and a complaint fails, an answer with no
-// baseline passes only when it says so, and a typed turn voids the run.
+// baseline passes only when it says so, a lead that names the missing number passes, the chat's own check-in job is no one stepping in, and a
+// typed turn voids the run.
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -11,7 +12,7 @@ test("answer-data: a short aggregate answer passes, one built on one observation
   const home = mkdtempSync(join(tmpdir(), "answer-data-"));
   t.after(() => rmSync(home, { recursive: true, force: true }));
   process.env.HOME = home;
-  const { judge, TASK, sentences, aggregateLead } = await import("./../scripts/clean-room/answer-data.ts");
+  const { judge, TASK, sentences, aggregateLead, ownJob } = await import("./../scripts/clean-room/answer-data.ts");
   const start = Date.parse("2026-10-22T03:00:00.000Z");
   const at = (minutes: number) => new Date(start + minutes * 60_000).toISOString();
   const user = (minutes: number, text: string) => ({ type: "message", timestamp: at(minutes), message: { role: "user", content: [{ type: "text", text }] } });
@@ -58,6 +59,23 @@ test("answer-data: a short aggregate answer passes, one built on one observation
   assert.match(held.line("f"), /^- f not met: no session of the chat took a model turn/);
   const quiet = { type: "message", timestamp: at(3), message: { role: "assistant", content: [{ type: "text", text: "Reading the session files." }] } };
   assert.equal((await run("7", [quiet], 80)).verdict, "fail", "a chat that worked but answered nothing by the window's end fails");
+
+  // run1 on 10-22: the first answer led with the missing number, which passes b, but it put the job it started in a third sentence.
+  const run1 = await run("9", [tell(1, "I don't have a weekly number yet. Nothing tracks reply time, and the only data so far is a few one-off test sends from Tuesday, which can't show a trend. " +
+    "I started chat reply speed to compare this week with last week across all your chats, with typical and worst-case times and the main cause, tracked as p1."),
+    { type: "custom_message", timestamp: at(66), customType: "agent_message", content: "[agent-message from sibling:check-in 9 11 50] [replaceable: check-in report] The goal is closed.",
+      details: { from: { sessionId: "01a16184-0000-7000-8000-000000000000", sessionName: "check-in 9 11 50" }, fromRelationship: "sibling" } }]);
+  assert.equal(run1.verdict, "fail", "the chat's own check-in job is no one stepping in, so run1 is a fail on a, not void");
+  assert.match(run1.line("a"), /^- a not met.*3 sentences/);
+  assert.match(run1.line("b"), /^- b met: lead sentence: "I don't have a weekly number yet\."/);
+  assert.match(run1.line("e"), /^- e met/);
+  const fixed = await run("a", [tell(1, "I don't have a weekly number yet, because nothing records reply time and the only data is a few test sends from Tuesday."),
+    tell(2, "I started a job to compare this week with last week across all your chats.")]);
+  assert.equal(fixed.verdict, "pass", ["a", "b", "c", "d", "e"].map(fixed.line).join("\n"));
+  assert.equal(ownJob("reply speed", { from: "check-in reply speed 11 50", text: "" }), true);
+  assert.equal(ownJob("reply speed", { text: "[agent-message from sibling:check-in reply speed 11:50] report" }), true);
+  assert.equal(ownJob("reply speed", { from: "frontend bro", text: "" }), false);
+  assert.equal(ownJob("reply speed", { from: "check-in frontend bro 11 50", text: "" }), false);
 
   const typed = await run("6", [user(5, "use the p90 please"), tell(8, "This week the p90 wait was 4.1 min over 312 messages, up from 2.3 min the week before.")]);
   assert.equal(typed.verdict, "void");

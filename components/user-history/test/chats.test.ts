@@ -573,4 +573,5 @@ test("chat brief: a task's owner comes from the owner's own message, progress co
   assert.match(line("c152"), /Lead with no metric label he did not ask about/);
   assert.match(line("c153"), /led by an aggregate measurement and its scope/);
   assert.match(line("c153"), /never by one observation or one complaint/);
+  assert.match(line("c153"), /the job you started, the next step or a link goes in its own tell_owner/);
 });
