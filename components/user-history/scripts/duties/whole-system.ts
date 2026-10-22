@@ -354,8 +354,11 @@ export function readPoolLog(lines: readonly string[], now: number): PoolHold[] {
 
 /** The owner's t86 answer on 10-21: "just make it work smooth". Chat head runs and parked trees, from pi-pool.log, for d7's two smoothness numbers. */
 export interface Smoothness {
-  /** Each chat head run pi-pool admitted in the window, with its queue wait. */
-  headWaits: { session: string; waitedS: number }[];
+  /**
+   * Each chat head run pi-pool admitted in the window, with its queue wait, and whether a job run started from the queue while it waited: the
+   * queue's order at fault, since chat heads go first (pi-pool lead). A head that waited with no such start waited for the box's slot count.
+   */
+  headWaits: { session: string; waitedS: number; passed: boolean }[];
   /** Per park that ended in the window: minutes it stayed parked after a tree of its priority or lower that parked later got an account. */
   overtaken: { session: string; minutes: number }[];
 }
@@ -368,6 +371,7 @@ const KST_MS = 9 * 60 * MINUTE;
  */
 export function readSmoothness(lines: readonly string[], heads: ReadonlySet<string>, from: number, to: number): Smoothness {
   const headWaits: Smoothness["headWaits"] = [];
+  const starts: { at: number; head: boolean }[] = [];
   const parks = new Map<string, { start: number; rank: number }>();
   const ended: { session: string; start: number; end: number; rank: number }[] = [];
   let anchor: number | undefined;
@@ -379,7 +383,13 @@ export function readSmoothness(lines: readonly string[], heads: ReadonlySet<stri
     if (entry.event === "turn_admitted") {
       const local = typeof entry.ts === "string" ? Date.parse(`${entry.ts}Z`) : NaN;
       const at = anchor === undefined || Math.abs(local - anchor) <= Math.abs(local - KST_MS - anchor) ? local : local - KST_MS;
-      if (heads.has(entry.session) && typeof entry.waited_s === "number" && at >= from && at < to) headWaits.push({ session: entry.session, waitedS: entry.waited_s });
+      const head = heads.has(entry.session);
+      // Only a run the queue started counts as passing a head: an owner run or a run its owner turn moved ahead never waits in line.
+      if ((entry as { kind?: unknown }).kind === "slot") starts.push({ at, head });
+      if (head && typeof entry.waited_s === "number" && at >= from && at < to) {
+        const asked = at - entry.waited_s * 1000;
+        headWaits.push({ session: entry.session, waitedS: entry.waited_s, passed: starts.some(start => !start.head && start.at > asked && start.at < at) });
+      }
       continue;
     }
     if (typeof entry.at !== "number" || entry.provider !== "anthropic") continue;
@@ -916,14 +926,18 @@ export function measure(input: Inputs): PrecheckOutput {
   const hung = hungNow(input.watch, start);
   // Each idle unload sweep (every 60 s) finishes an open handoff (src/idle-unload.ts `resumeUnloaded`), so one still open a whole window later is stuck.
   const stuckHandoffs = (input.openHandoffs ?? []).filter(entry => entry.at < now - WINDOW_MS);
-  // The owner's t86 answer on 10-21, "just make it work smooth": a chat head run slow in the turn queue, and a parked tree passed by a later tree of
-  // its priority or lower for over HOLD_MS, are holds too.
-  const slowHeads = (input.smooth?.headWaits ?? []).filter(run => run.waitedS > HEAD_WAIT_S);
+  // The owner's t86 answer on 10-21, "just make it work smooth": a chat head run a job run passed in the turn queue that waited over HEAD_WAIT_S,
+  // and a parked tree passed by a later tree of its priority or lower for over HOLD_MS, are holds too. A head that waited with every slot busy and
+  // no job run started ahead of it waited for the box's slot count, the owner's number, like a cell wait: from 02:19Z to 03:31Z on 10-22, 11
+  // of 688 head runs waited over 30 s while working_max sat at 7 to 16 with about 90 runs queued, and no job run started ahead of any of them.
+  const slowAll = (input.smooth?.headWaits ?? []).filter(run => run.waitedS > HEAD_WAIT_S);
+  const slowHeads = slowAll.filter(run => run.passed);
   const overtakenLong = (input.smooth?.overtaken ?? []).filter(park => park.minutes * MINUTE > HOLD_MS);
   const metrics: Record<string, number> = {
     clean_min_30: clean,
     queue_holds_30: queueHolds.length + poolHeld.filter(hold => !hold.cell).length + slowHeads.length + overtakenLong.length,
     head_waits_over_30s: slowHeads.length,
+    head_waits_full_box: slowAll.length - slowHeads.length,
     parked_overtaken_over_10min: overtakenLong.length,
     cell_holds_30: poolHeld.filter(hold => hold.cell).length + poolCut.length,
     stuck_steps_all: stuck.reduce((sum, entry) => sum + entry.value, 0),
@@ -954,9 +968,10 @@ export function measure(input: Inputs): PrecheckOutput {
   };
   if (input.smooth) {
     const late = [...overtakenLong].sort((a, b) => b.minutes - a.minutes);
-    const slow = [...slowHeads].sort((a, b) => b.waitedS - a.waitedS);
+    const slow = [...slowAll].sort((a, b) => b.waitedS - a.waitedS);
     flagged.push({ kind: "smoothness", excerpt: `${input.smooth.headWaits.length} chat head runs started in the window, ${slow.length} of them after over ${HEAD_WAIT_S} s in pi-pool's turn queue` +
-      (slow.length ? ` (${slow.slice(0, 5).map(run => `${run.session.slice(0, 8)} ${run.waitedS} s`).join(", ")})` : "") + `, p90 ${metrics.head_queue_wait_p90_s} s. ` +
+      (slow.length ? ` (${slow.slice(0, 5).map(run => `${run.session.slice(0, 8)} ${run.waitedS} s${run.passed ? " behind a job run" : ""}`).join(", ")})` : "") +
+      `, ${slowHeads.length} of them passed by a job run and the rest waited for a free slot, p90 ${metrics.head_queue_wait_p90_s} s. ` +
       `${input.smooth.overtaken.length} parked trees got an account, and ${late.length} of them stayed parked over ${HOLD_MS / MINUTE} min after a tree of their priority or lower that parked later got one` +
       (late.length ? ` (${late.slice(0, 5).map(park => `${park.session.slice(0, 8)} ${park.minutes} min`).join(", ")})` : "") + `, p90 ${metrics.parked_overtaken_min_p90} min.` });
   }

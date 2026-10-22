@@ -18,6 +18,7 @@ const unparked = (session: string, clock: string): string =>
 test("only chat head runs admitted in the window count, and a KST stamp reads as its UTC time", () => {
   const smooth = readSmoothness([
     parked("x", "10:31:00"), unparked("x", "10:31:30"),
+    admitted("job", "2026-10-21T10:38:00", 900),
     admitted(HEAD, "2026-10-21T10:40:00", 300),
     admitted("job", "2026-10-21T10:41:00", 900),
     admitted(HEAD, "2026-10-21T19:45:00", 20),
@@ -26,7 +27,7 @@ test("only chat head runs admitted in the window count, and a KST stamp reads as
   assert.deepEqual(smooth.headWaits.map(run => run.waitedS), [300, 20]);
   const { metrics } = measure({ now: RUN, watch: [], log: { holds: [] }, chats: [], smooth });
   assert.equal(metrics.head_queue_wait_p90_s, 300);
-  // The 300 s run is over HEAD_WAIT_S and counts as a hold; the 20 s run does not.
+  // The 300 s run is over HEAD_WAIT_S and a job run started at 10:38 while it waited, so it counts as a hold; the 20 s run does not.
   assert.equal(metrics.head_waits_over_30s, 1);
   assert.equal(metrics.queue_holds_30, 1);
 });
@@ -58,4 +59,17 @@ test("a parked line with no backoff field waited for a cell, as pi-pool writes i
   const line = JSON.stringify({ ts: "local", event: "parked", provider: "anthropic", session: "c", at: at("10:00:00"), slot_at: at("10:20:00"), priority: "normal", room: ["claude5@slack.green"] });
   const [hold] = readPoolLog([line], RUN);
   assert.equal(hold?.cell, true);
+});
+
+test("a chat head that waited for a free slot while no job run started ahead of it is the box's slot count, not a hold, as at 03:27Z on 10-22", () => {
+  const smooth = readSmoothness([
+    JSON.stringify({ ts: "2026-10-21T10:39:00", event: "turn_admitted", session: "owner-run", tree: "owner-run", kind: "owner", waited_s: 0 }),
+    admitted(HEAD, "2026-10-21T10:40:00", 195),
+  ], new Set([HEAD]), FROM, RUN);
+  assert.deepEqual(smooth.headWaits, [{ session: HEAD, waitedS: 195, passed: false }]);
+  const { metrics, flagged } = measure({ now: RUN, watch: [], log: { holds: [] }, chats: [], smooth });
+  assert.equal(metrics.head_waits_over_30s, 0);
+  assert.equal(metrics.head_waits_full_box, 1);
+  assert.equal(metrics.queue_holds_30, 0);
+  assert.match(flagged?.find(slice => slice.kind === "smoothness")?.excerpt ?? "", /0 of them passed by a job run and the rest waited for a free slot/);
 });
