@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
+import { stat } from "node:fs/promises";
 import { basename, dirname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { SessionSummary } from "prime-agent";
@@ -92,7 +93,10 @@ export async function reopenSession(catalog: ReopenCatalog, box: ReopenBox, sess
     const local = !host || exists(here);
     const sessionPath = !host ? summary.sessionFile : local ? here : catalog.daemonPath(summary) ?? summary.sessionFile;
     const daemon = local ? await catalog.hostClient(null) : await catalog.daemonFor(session);
-    const response = await daemon.request({ type: "create", lifecycle: "resident", sessionPath }, DAEMON_WORKER_START_MS, { recoverable: false });
+    // The session's own folder, as the chat Resume passes it (chat-threads.ts reopen): a create without it runs the worker in the daemon's
+    // folder. On 10-22 four us-metal02 threads moved to their repo ran in /home/sieun again after a wake reopened them here.
+    const config = !summary.cwd ? {} : !local ? { cwd: summary.cwd } : await stat(summary.cwd).then(found => found.isDirectory() ? { cwd: summary.cwd } : {}, () => ({}));
+    const response = await daemon.request({ type: "create", lifecycle: "resident", sessionPath, config }, DAEMON_WORKER_START_MS, { recoverable: false });
     if (!response.success) throw new Error(`reopen of ${session.slice(0, 8)} from ${sessionPath}: ${response.error}`);
     await catalog.refresh().catch(() => {});
     return true;

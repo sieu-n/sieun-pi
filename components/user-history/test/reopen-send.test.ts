@@ -43,9 +43,9 @@ function daemon(file: string, name = "mac") {
 type Box = ReturnType<typeof daemon>;
 
 /** The chat service's catalog: the reviewer root and a subagent of a chat tree in `agentDir`; `host` runs the reviewer, `here` is this box. */
-function catalog(file: string, owner: Box, { host = null as string | null, here = owner, agentDir = "/nowhere" } = {}): ReopenCatalog {
+function catalog(file: string, owner: Box, { host = null as string | null, here = owner, agentDir = "/nowhere", cwd = "" } = {}): ReopenCatalog {
   const rows: Record<string, SessionSummary> = {
-    [REVIEWER]: { sessionId: REVIEWER, sessionFile: file, runtimeKind: "top-level", rlmDepth: 0, workerState: "failed", activeSessionId: "6651855423a4" } as SessionSummary,
+    [REVIEWER]: { sessionId: REVIEWER, sessionFile: file, cwd, runtimeKind: "top-level", rlmDepth: 0, workerState: "failed", activeSessionId: "6651855423a4" } as SessionSummary,
     [JOB]: { sessionId: JOB, sessionFile: join(agentDir, "session-artifacts", VP_OF_CI, "sub-881d2ae9", `${JOB}.jsonl`), runtimeKind: "subagent", rlmDepth: 1 } as SessionSummary,
   };
   return { summary: async id => rows[id], daemonPath: summary => summary.sessionFile, hostOf: id => id === REVIEWER ? host : null,
@@ -62,7 +62,7 @@ test("a send to a root whose worker failed opens it from its file and goes out o
   const answer = await sendReopening(REVIEWER, send(REVIEWER), id => reopenSession(catalog(file, box), { agentDir: dir }, id), line => lines.push(line));
   assert.deepEqual(answer, { success: true, data: { deliveryStatus: "delivered" } });
   assert.deepEqual(box.requests.map(request => request.type), ["send_message", "create", "send_message"]);
-  assert.deepEqual(box.requests[1], { type: "create", lifecycle: "resident", sessionPath: file });
+  assert.deepEqual(box.requests[1], { type: "create", lifecycle: "resident", sessionPath: file, config: {} });
   assert.match(lines[0]!, /^reopen: 01a11d25 answered "Session worker is failed"; opened it again and sent again: sent$/);
   // A later send to the open root needs no reopen.
   assert.deepEqual(await sendReopening(REVIEWER, send(REVIEWER), () => { throw new Error("no reopen"); }), { success: true, data: { deliveryStatus: "delivered" } });
@@ -83,7 +83,22 @@ test("a root with no file and a refused create are no reopen; a root moved here 
   await writeFile(local, "{}\n");
   const stale = daemon(file), box = daemon(local, "us-metal02");
   assert.equal(await reopenSession(catalog(file, stale, { host: "mac", here: box }), { agentDir: dir }, REVIEWER), true);
-  assert.deepEqual([stale.requests, box.requests], [[], [{ type: "create", lifecycle: "resident", sessionPath: local }]]);
+  assert.deepEqual([stale.requests, box.requests], [[], [{ type: "create", lifecycle: "resident", sessionPath: local, config: {} }]]);
+});
+
+test("a reopen runs the root in its own folder, as the chat Resume does; a folder gone from this box opens in the daemon's", async () => {
+  // On 10-22 four us-metal02 threads moved to their repo ran in /home/sieun again after a wake reopened them without the folder.
+  const dir = await mkdtemp(join(tmpdir(), "reopen-send-"));
+  const file = join(dir, `${REVIEWER}.jsonl`);
+  await writeFile(file, "{}\n");
+  const repo = join(dir, "auto-sns-agent");
+  await mkdir(repo);
+  const box = daemon(file);
+  assert.equal(await reopenSession(catalog(file, box, { cwd: repo }), { agentDir: dir }, REVIEWER), true);
+  assert.equal(await reopenSession(catalog(file, box, { cwd: join(dir, "gone") }), { agentDir: dir }, REVIEWER), true);
+  // Another box's folder is that box's to check.
+  assert.equal(await reopenSession(catalog(file, box, { host: "mac", cwd: "/Users/x/auto-sns-agent" }), { agentDir: dir }, REVIEWER), true);
+  assert.deepEqual(box.requests.map(request => request.config), [{ cwd: repo }, {}, { cwd: "/Users/x/auto-sns-agent" }]);
 });
 
 test("a moved chat's subagent gets its spawn-ledger edges and the send goes once more; one with every edge is left to the relay", async () => {
@@ -180,7 +195,7 @@ test("a root kernel's sibling send refused as failed asks the chat service to op
   };
   try {
     assert.deepEqual(await kernel(), { deliveryStatus: "delivered", sends: 2 });
-    assert.deepEqual(box.requests, [{ type: "create", lifecycle: "resident", sessionPath: file }]);
+    assert.deepEqual(box.requests, [{ type: "create", lifecycle: "resident", sessionPath: file, config: {} }]);
   } finally { server.close(); }
 });
 
