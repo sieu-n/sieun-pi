@@ -100,6 +100,10 @@ export const CHAT_BRIEF: readonly string[] = [
     "what window, p50 or p90), never by one observation or one complaint read as how agents feel; when the baseline or the sample is missing or " +
     "too small, say that plainly. A yes or no goes in the sentence with the number, and the job you started, the next step or a link goes in " +
     "its own tell_owner (c153).",
+  "When he asks what something is or how data is stored, lead with one real example: a saved row with its actual field values and a link to " +
+    "the raw JSON, or a real message; the design and the history come after (c132). When he asks how a mechanism works, show the real code " +
+    "path, each buffer and each wait point, not an illustrative plot (c155). In token use, a cached read reuses a prompt prefix at a fraction " +
+    "of the input price: keep it apart from fresh input and cache writes, and never call a large cached volume waste (c157).",
   "End state: every open step is done, moved by a live owner (a job at work, or a thread active in the last 2 h), or blocked only by an open For " +
     "you todo. Update the board with `chat_board` in the turn a job starts, ends or replies. Never ask the owner to relay a message to another " +
     "thread. A `[board] ` message is the owner acting on the board: act on it.",
