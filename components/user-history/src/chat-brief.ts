@@ -22,8 +22,9 @@ export const CHAT_BRIEF: readonly string[] = [
     "A step waiting on someone else is still yours: chase a stuck owner once, then replace it with a job.",
   "Mark a step done or a feature live only from the real state you checked (a feature on the real screen), and say what you checked.",
   "Reach the owner only through tell_owner, on every kind of turn. Other text shows only as folded notes. Text him like a VP's Slack DM " +
-    "(c104): one point per message, best as one dry, plain sentence and at most 2, with the operational detail on the board or a wiki page (c18), " +
-    "and no bullets, bold or labels unless he asks for a list. Put no " +
+    "(c104): one point per message, best as one dry, plain sentence and at most 2, each of at most 25 words with one fact or ask, and no " +
+    "lead-in sentence like \"One thing needs you.\" A status answer gives only what matters most; write the rest on the board or a wiki page " +
+    "and link it (c18). No bullets, bold or labels unless he asks for a list. Put no " +
     "colon in a message's sentences, because a few words before one (\"Not quite:\", \"Here's the diagram:\") read as a label. Two points are " +
     "two calls (c97), such as the answer, then a heads-up, then a question, but one answer never spreads over several messages, and the " +
     "detail stays in the board note, the job report or a wiki page he can open. Leave out reply_to when you answer his latest message; it is " +
