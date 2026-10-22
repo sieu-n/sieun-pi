@@ -206,9 +206,11 @@ export function withCatalogOwners(plan: { ownerActivity?: ReadonlyMap<string, nu
 }
 
 /**
- * The stuck duties whose newest run's own job still owns the miss. That job works: it has no after-job measure and no cut, and its session works
- * or wrote within LIVE_GAP_MS by either box's catalog row, and its brief has it fix the miss or start the fix job. At 01:2xZ on 10-20 the AI
- * harness chat's check-in counted as stuck while its 01:19Z check-in job worked on the step its run flagged. Or that job was cut on a failed
+ * The stuck duties whose newest run with a job still owns the miss. That job works: it has no after-job measure, its session works or wrote
+ * within LIVE_GAP_MS by either box's catalog row, after its cut when it has one, and its brief has it fix the miss or start the fix job. At
+ * 01:2xZ on 10-20 the AI harness chat's check-in counted as stuck while its 01:19Z check-in job worked on the step its run flagged. A later run
+ * that found that job still at work measured with no job of its own (STILL_WORKING), and a cut job goes on once pi-pool gives it a slot: at
+ * 07:20Z on 10-22 d9 counted 5 stuck duties, and the jobs of all 5 (AI harness d5, d9 and d11, CI and RepoOps d2, Vent d1) were at work. Or that job was cut on a failed
  * model call and the run waits for its one rerun (`rerunCut`), as the duty runner's push reads it: a cut run that is no rerun and that no rerun
  * names. From 03:52Z to 06:16Z on 10-20 d9 counted its own d9, CI and RepoOps' d4 and frontend bro's check-in while their jobs waited for
  * pi-pool slots up to 07:23Z. A job whose transcript ends on a pool wait the runner has not recorded as a cut yet (`poolCut`) waits the same
@@ -219,9 +221,9 @@ export function withoutWorkingRuns<T extends { chat: string; duty: string }>(stu
   const at = new Map(rows.map(row => [row.sessionId, row.activity === "working" ? now : ms(row.lastActivityAt)] as const));
   return stuck.filter(entry => {
     const own = (runs.get(entry.chat) ?? []).filter(run => run.duty === entry.duty);
-    const newest = own.find(run => run.verdict !== "skipped");
-    if (newest?.job && !newest.after && !newest.cut && now - (at.get(newest.job.id) ?? 0) <= LIVE_GAP_MS) return false;
     const last = own.find(run => run.job !== undefined);
+    const wrote = last?.job ? at.get(last.job.id) ?? 0 : 0;
+    if (last && !last.after && now - wrote <= LIVE_GAP_MS && wrote > (last.cut?.at ?? 0)) return false;
     const cut = last?.cut ?? (last?.job && !last.after && poolCut.has(last.job.id) ? true : undefined);
     return !(cut && last!.trigger !== "rerun" && !own.some(run => run.rerunOf === last!.at));
   });

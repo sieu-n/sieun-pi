@@ -47,3 +47,17 @@ test("an older run's after-job measure that is newer than a later run's reading 
   const later = run(NOW - 230 * MIN, "missed", { wiki_problems: 5, open_mistakes: 0 });
   assert.deepEqual(pushMisses([later, { ...job, after: green }], COUNTED, EVERY, NOW), ["wiki_problems"]);
 });
+
+test("a duty whose non-push job ended red gets its push at once, once, and a quiet windowed count or a push job's end waits the interval (ops guy d1, 10-22)", () => {
+  const job = { id: "01a160b8-dd9a-739a-9bf3-46c3a06aeb8b", name: "local dev servers ops guy (+observability) 10-22 08:08" };
+  const after = { at: NOW - 3 * MIN, verdict: "missed" as const, summary: "", metrics: { wiki_problems: result(2), open_mistakes: result(0) } };
+  const scheduled: DutyRunRecord = { ...run(NOW - 8 * 60 * MIN, "met", { wiki_problems: 0, open_mistakes: 0 }), trigger: "schedule", job, after };
+  const raced: DutyRunRecord = { ...run(NOW - 2 * MIN, "missed", { wiki_problems: 2, open_mistakes: 0 }), summary: "skipped: previous run still working" };
+  assert.deepEqual(pushMisses([raced, scheduled], COUNTED, 120 * MIN, NOW), ["wiki_problems"]);
+  const pushed: DutyRunRecord = { ...raced, job: { id: "push-job", name: "push" } };
+  assert.equal(pushMisses([pushed, scheduled], COUNTED, 120 * MIN, NOW), null, "a push job started since its end");
+  assert.equal(pushMisses([{ ...scheduled, at: NOW - 30 * MIN, trigger: "push" }], COUNTED, 120 * MIN, NOW), null, "a push job that ended red waits the interval");
+  const quietAfter = { ...after, metrics: { wiki_problems: { ...result(2), lastEventAt: NOW - 600 * MIN }, open_mistakes: result(0) } };
+  const before: DutyRunRecord = { ...run(NOW - 9 * 60 * MIN, "missed", { wiki_problems: 2, open_mistakes: 0 }), trigger: "schedule" };
+  assert.equal(pushMisses([{ ...raced, metrics: quietAfter.metrics }, { ...scheduled, after: quietAfter }, before], COUNTED, 120 * MIN, NOW), null, "a quiet windowed count owes no fix job");
+});

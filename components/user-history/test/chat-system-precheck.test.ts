@@ -151,7 +151,9 @@ test("a stuck duty whose newest run's own job still works or waits for its rerun
   assert.equal(left([run({})]), 0);
   assert.equal(left([run({ after: { at: now - 60_000, verdict: "missed", metrics: {} } })]), 1);
   assert.equal(left([run({ cut: { error: "pi-pool: this session waits for its slot", at: now - 300_000 } })]), 0);
-  assert.equal(left([run({ trigger: "rerun", rerunOf: now - 3_600_000, cut: { error: "pi-pool: this session waits for its slot", at: now - 300_000 } })]), 1);
+  const cutRerun = run({ trigger: "rerun", rerunOf: now - 3_600_000, cut: { error: "pi-pool: this session waits for its slot", at: now - 300_000 } });
+  assert.equal(left([cutRerun], [{ sessionId: "s-job", activity: "idle", lastActivityAt: new Date(now - 300_000).toISOString() }] as never), 1);
+  assert.equal(left([cutRerun]), 0, "a cut rerun whose session works again after its cut is at work");
   assert.equal(left([run({})], [{ sessionId: "s-job", activity: "idle", lastActivityAt: "2026-10-19T20:00:00Z" }] as never), 1);
 });
 

@@ -70,6 +70,26 @@ test("a duty whose newest job was cut and waits for its one rerun is owned; a cu
     "the rerun ran and ended, so the miss needs a fix step again");
 });
 
+test("a duty whose job still works stays owned when a later run measured with no job of its own or a cut job went on (d9, 10-22 07:20Z)", () => {
+  const day = (clock: string) => Date.parse(`2026-10-22T${clock}Z`);
+  const missed = { unlabeled_lines: { value: 67, target: 0, op: "<=" as const, met: false } };
+  const run = (clock: string, trigger: DutyRunRecord["trigger"], extra: Partial<DutyRunRecord> = {}): DutyRunRecord => ({ duty: "d11", at: day(clock), trigger, ms: 1,
+    verdict: "missed", summary: "", metrics: missed, ...extra });
+  const job = { id: "01a16199-0000-7000-8000-000000000011", name: "owner messages AI harness developer environment 10-22 06:03" };
+  const stuck = [{ chat: HARNESS, duty: "d11", line: "d11" }];
+  const read = (runs: DutyRunRecord[], wrote: string) => withoutWorkingRuns(stuck, new Map([[HARNESS, runs]]),
+    [{ sessionId: job.id, activity: "idle", lastActivityAt: new Date(day(wrote)).toISOString() }], day("07:20:00")).length;
+  const skipped = run("07:05:16", "verify", { summary: "unlabeled_lines 67 (target at most 0); skipped: previous run still working" });
+  assert.equal(read([skipped, run("21:03:02", "schedule", { at: day("21:03:02") - 86_400_000, job })], "07:19:00"), 0, "AI harness d11: its 06:03 job worked");
+  const cut = { error: "pi-pool: this session waits for its slot at 2026-10-22T06:48:00.000Z.", at: day("06:37:15"), provider: "anthropic", slotAt: day("06:48:00") };
+  const cutRun = run("04:30:01", "schedule", { job, cut });
+  const rerun = run("06:59:08", "rerun", { rerunOf: cutRun.at, summary: "skipped: previous run still working" });
+  assert.equal(read([rerun, cutRun], "07:13:02"), 0, "CI and RepoOps d2: its cut job went on and wrote after the cut");
+  assert.equal(read([rerun, cutRun], "06:37:15"), 1, "a cut job that wrote nothing since its cut and has a rerun owes the fix");
+  assert.equal(read([skipped, run("06:03:00", "schedule", { job, after: { at: day("06:40:00"), verdict: "missed", summary: "", metrics: missed } })], "06:40:00"), 1,
+    "a job that ended owes the fix");
+});
+
 const P804 = "Fix: a step whose job the cleanup ends while it waits keeps a live owner, so d9 stuck_steps_all reads 0";
 const harnessBoard = (status: "doing" | "done", note = "Done (d4c9872c, 4323c96c)."): ChatBoard => ({ v: 2, rev: 1, updatedAt: "2026-10-22T06:34:00Z", todos: [],
   plan: [{ id: "p706", text: "Every chat runs on its own", status: "doing", children: [{ id: "p804", text: P804, status, duty: "d9/stuck_steps_all",
