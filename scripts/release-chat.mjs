@@ -2,7 +2,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { get } from "node:http";
 import { existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
-import { homedir, userInfo } from "node:os";
+import { homedir, hostname, userInfo } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -36,7 +36,10 @@ After each restart it checks that the chat answers http://127.0.0.1:5182/ and is
 current goes back to the release the chat ran before, that release restarts, and the command exits 5 naming the failure.
 After the flip it deletes each release folder except current, the one current named before, the one the chat was last started on, a waiting
 release's and any folder a running process names, so a rollback further back than the release before current builds that commit again.
-Prints the live release id on the last line. Exit 1 on a failed build step, 2 on bad usage, 3 on a refused rollback, 4 on a commit not on origin main, 5 on a start that did not stay up.`;
+A box whose hosts.json entry (SIEUN_PI_HOSTS, else ~/.config/sieun-pi/hosts.json, matched by short hostname) has no chat role runs no chat
+service, so the release there builds nothing and names the box that holds the chat role.
+Prints the live release id on the last line. Exit 1 on a failed build step, 2 on bad usage, 3 on a refused rollback, 4 on a commit not on origin main, 5 on a start that did not stay up,
+6 on a box with no chat role.`;
 
 const LABEL = "com.sieun.agent-chat";
 const UNIT = "sieun-pi-chat.service";
@@ -44,6 +47,7 @@ const RELEASE_NAME = /^release-([0-9a-f]{7,40})(?:-.+)?$/;
 const gitEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !["GIT_DIR", "GIT_INDEX_FILE", "GIT_WORK_TREE"].includes(key)));
 
 class Refused extends Error {}
+class NoChatRole extends Error {}
 class UsageError extends Error {}
 class Unpublished extends Error {}
 
@@ -579,8 +583,25 @@ function prune(home, keep) {
 
 const chatHome = () => resolve(process.env.SIEUN_PI_CHAT_HOME || join(homedir(), ".local/share/sieun-pi-chat"));
 
+/**
+ * Throws NoChatRole when hosts.json lists this box without a chat role. The Mac ran this for b6219fb at 10-21 17:55Z and failed 9 Linux-only tests,
+ * though its boards live on us-metal02's :5182 and nothing on the Mac listens on 5182.
+ */
+function checkChatRole() {
+  let hosts;
+  try { hosts = JSON.parse(readFileSync(process.env.SIEUN_PI_HOSTS || join(homedir(), ".config/sieun-pi/hosts.json"), "utf8")).hosts; } catch { return; }
+  if (!Array.isArray(hosts)) return;
+  const short = name => String(name ?? "").toLowerCase().split(".")[0];
+  const self = hosts.find(host => short(host?.hostname) === short(hostname()));
+  if (!self || self.roles?.chat) return;
+  const holder = hosts.find(host => host?.roles?.chat);
+  throw new NoChatRole(`${self.name} has no chat role in hosts.json, so it runs no chat service and builds no release; ` +
+    (holder ? `the chat runs on ${holder.name}, so run scripts/release-chat.mjs from its sieun-pi checkout (ssh ${holder.ssh})` : "no box holds the chat role"));
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2));
+  checkChatRole();
   const home = chatHome();
   mkdirSync(home, { recursive: true });
   const named = RELEASE_NAME.test(options.target) && existsSync(join(home, options.target)) ? join(home, options.target) : null;
@@ -655,5 +676,5 @@ main().catch(error => {
   log(error.message);
   if (error instanceof Covered) { console.log(liveRelease(chatHome()) ?? ""); process.exit(0); }
   if (error instanceof UsageError) process.stderr.write(`${USAGE}\n`);
-  process.exit(error instanceof Refused ? 3 : error instanceof UsageError ? 2 : error instanceof Unpublished ? 4 : error instanceof StartFailed ? 5 : 1);
+  process.exit(error instanceof Refused ? 3 : error instanceof UsageError ? 2 : error instanceof Unpublished ? 4 : error instanceof StartFailed ? 5 : error instanceof NoChatRole ? 6 : 1);
 });

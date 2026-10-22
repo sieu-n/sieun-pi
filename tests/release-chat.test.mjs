@@ -3,7 +3,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { get } from "node:http";
 import { createServer } from "node:net";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir, userInfo } from "node:os";
+import { hostname, tmpdir, userInfo } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -166,7 +166,7 @@ function fixture(t) {
     const control = Object.fromEntries(Object.entries(extra).filter(([key]) => BUILD_CONTROLS.includes(key)));
     writeFileSync(path.join(dir, "controls", `${id(args[0])}.json`), JSON.stringify(control));
     const rest = Object.fromEntries(Object.entries(extra).filter(([key]) => !BUILD_CONTROLS.includes(key)));
-    return { ...cleanEnv, SIEUN_PI_CHAT_HOME: home, SIEUN_PI_CHAT_LAUNCHCTL: launchctl, SIEUN_PI_CHAT_SYSTEMCTL: launchctl, SIEUN_PI_CHAT_SERVICE_MANAGER: "launchd",
+    return { ...cleanEnv, SIEUN_PI_HOSTS: path.join(dir, "no-hosts.json"), SIEUN_PI_CHAT_HOME: home, SIEUN_PI_CHAT_LAUNCHCTL: launchctl, SIEUN_PI_CHAT_SYSTEMCTL: launchctl, SIEUN_PI_CHAT_SERVICE_MANAGER: "launchd",
       SIEUN_PI_CHAT_URL: `http://127.0.0.1:${port}/`, SIEUN_PI_CHAT_HOLD_MS: "300", ...rest };
   };
   const release = (args, extra) => spawnSync(process.execPath, [script, ...args, "--repo", repo], { encoding: "utf8", env: env(args, extra) });
@@ -906,4 +906,24 @@ test("after a failed build the log names the failing test, and the next waiter r
   assert.doesNotMatch(direct.stderr, /trying origin main's tip/);
   assert.equal(f.current(), id(c5));
   assert.notEqual(c6, c5);
+});
+
+test("a box that hosts.json lists with no chat role builds nothing and names the chat's box, as the Mac's build of b6219fb did at 10-21 17:55Z", { timeout: 60000 }, (t) => {
+  const f = fixture(t);
+  const hosts = (roles) => {
+    const file = path.join(f.dir, "hosts.json");
+    writeFileSync(file, JSON.stringify({ version: 1, hosts: [
+      { name: "us-metal02", hostname: "chat-box-under-test", ssh: "sieun@100.83.139.73", roles: { chat: { port: 5182 } } },
+      { name: "mac", hostname: `${hostname()}.local`, ssh: "sieunpark@100.66.173.18", roles },
+    ] }));
+    return { SIEUN_PI_HOSTS: file };
+  };
+  const refused = f.release([f.c1], hosts({}));
+  assert.equal(refused.status, 6, refused.stderr);
+  assert.match(refused.stderr, /mac has no chat role in hosts\.json, so it runs no chat service and builds no release; the chat runs on us-metal02, so run scripts\/release-chat\.mjs from its sieun-pi checkout \(ssh sieun@100\.83\.139\.73\)/);
+  assert.equal(existsSync(f.home), false, "the release made the chat home or a build on a box with no chat role");
+  assert.deepEqual(f.kicked(), []);
+  const built = f.release([f.c1], hosts({ chat: { port: 5182 } }));
+  assert.equal(built.status, 0, built.stderr);
+  assert.equal(f.current(), id(f.c1));
 });
