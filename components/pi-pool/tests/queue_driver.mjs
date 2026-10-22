@@ -11,7 +11,7 @@ const steps = JSON.parse(stepsJson);
 const CLI = join(new URL('.', import.meta.url).pathname, '..', 'bin', 'pi-pool');
 const { default: extension } = await import(pathToFileURL(file));
 const sessions = new Map();
-const out = { entries: [], context: {}, queues: {} };
+const out = { entries: [], waits: [], context: {}, queues: {} };
 const files = join(process.env.PI_POOL_DIR, 'driver-sessions');
 mkdirSync(files, { recursive: true });
 
@@ -40,6 +40,13 @@ for (const step of steps) {
       get signal() { return state.controller?.signal; },
       isIdle: () => state.idle,
     };
+    // Prime's ctx.setWaiting; `waitApi: false` stands for a Prime that lacks it.
+    if (step.waitApi !== false) {
+      ctx.setWaiting = (label) => {
+        if (step.stale) throw new Error('This extension ctx is stale after session replacement or reload.');
+        out.waits.push({ session: step.name, label: label ?? null });
+      };
+    }
     sessions.set(step.name, { handlers, ctx, state });
   } else if (step.op === 'input') {
     await session.handlers.get('input')?.({ type: 'input', text: 'hi', source: step.source }, session.ctx);

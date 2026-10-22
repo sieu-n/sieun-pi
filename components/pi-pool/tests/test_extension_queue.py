@@ -92,6 +92,52 @@ class Wiring(unittest.TestCase):
         self.assertEqual([w["session"] for w in run["queues"]["running"]["working"]], ["job"])
         self.assertEqual(run["queues"]["ended"]["working"], [], "agent_end released the slot")
 
+    def test_a_queued_run_shows_its_place_as_a_wait_until_it_is_admitted(self):
+        """On 10-22 a chat stopped a queued child that Prime listed as a model stream, and the child went to the
+        back of a queue of 179. The wait label lets Prime list the run as waiting with its place."""
+        run = self.drive({"op": "start", "name": "job"}, {"op": "context", "name": "job"},
+                         {"op": "wait", "name": "job", "ms": 2500, "label": "queued"}, {"op": "queue", "label": "q"},
+                         {"op": "cli", "args": ["release", "blocker"]},
+                         {"op": "wait", "name": "job", "ms": 5000, "label": "freed"})
+        self.assertIsNone(run["context"]["queued"])
+        self.assertIsNotNone(run["context"]["freed"])
+        self.assertEqual(run["waits"], [{"session": "job", "label": "a turn, place 1 of 1"}, {"session": "job", "label": None}])
+
+    def test_a_new_ask_updates_the_place_in_the_wait(self):
+        self.cli("admit", "first", "--pid", str(os.getpid()))
+        run = self.drive({"op": "start", "name": "job"}, {"op": "context", "name": "job"},
+                         {"op": "wait", "name": "job", "ms": 2500, "label": "second"},
+                         {"op": "cli", "args": ["release", "first"]}, {"op": "clock", "ms": 31_000},
+                         {"op": "wait", "name": "job", "ms": 3000, "label": "first"},
+                         {"op": "abort", "name": "job"}, {"op": "wait", "name": "job", "ms": 5000, "label": "stopped"})
+        self.assertIsNone(run["context"]["second"])
+        self.assertIsNone(run["context"]["first"])
+        self.assertEqual([w["label"] for w in run["waits"]], ["a turn, place 2 of 2", "a turn, place 1 of 1", None])
+
+    def test_stop_and_a_failed_pool_clear_the_wait(self):
+        stopped = self.drive({"op": "start", "name": "job"}, {"op": "context", "name": "job"},
+                             {"op": "wait", "name": "job", "ms": 2000, "label": "queued"},
+                             {"op": "abort", "name": "job"}, {"op": "wait", "name": "job", "ms": 5000, "label": "stopped"})
+        self.assertIsNotNone(stopped["context"]["stopped"])
+        self.assertEqual([w["label"] for w in stopped["waits"]], ["a turn, place 1 of 1", None])
+        with open(os.path.join(self.dir, "config.json"), "w") as f:
+            json.dump({"agent_queue_on": "broken"}, f)
+        failed = self.drive({"op": "start", "name": "other"}, {"op": "context", "name": "other"},
+                            {"op": "wait", "name": "other", "ms": 5000, "label": "open"})
+        self.assertIsNotNone(failed["context"]["open"])
+        self.assertEqual(failed["waits"][-1:], [{"session": "other", "label": None}])
+
+    def test_a_prime_without_the_wait_api_still_queues_and_admits_the_run(self):
+        run = self.drive({"op": "start", "name": "job", "waitApi": False}, {"op": "context", "name": "job"},
+                         {"op": "wait", "name": "job", "ms": 2500, "label": "queued"},
+                         {"op": "cli", "args": ["release", "blocker"]},
+                         {"op": "wait", "name": "job", "ms": 5000, "label": "freed"}, {"op": "queue", "label": "running"})
+        self.assertIsNone(run["context"]["queued"])
+        self.assertIsNotNone(run["context"]["freed"])
+        self.assertEqual(run["waits"], [])
+        self.assertEqual(run["entries"], [{"session": "job", "type": "pi-pool-queue", "text": "Queued for a working slot, 1st of 1"}])
+        self.assertEqual([w["session"] for w in run["queues"]["running"]["working"]], ["job"])
+
     def test_a_wait_left_by_a_reload_stops_instead_of_ending_the_worker(self):
         """10-19 15:44:57Z Mac worker 6754cd3496ab died on an unhandled rejection when a wait of a reloaded
         instance called appendEntry (index.ts:619), and its chat and two jobs stopped until 16:17Z."""

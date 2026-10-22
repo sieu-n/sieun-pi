@@ -465,6 +465,16 @@ export function admitReply(out: string): AdmitReply | null {
 	}
 }
 
+/**
+ * Shows the wait in Prime's session lists and agent rosters, so a queued run reads as waiting and not as a model
+ * stream. On 10-22 a chat stopped a queued child it took for a dead stream, which sent it to the back of a queue of
+ * 179. ctx.setWaiting is Prime's API for this; a Prime without it shows the run as a model call, as before.
+ */
+function showWait(ctx: ExtensionContext, label: string | undefined): void {
+	const api = ctx as ExtensionContext & { setWaiting?: (label: string | undefined) => void };
+	if (typeof api.setWaiting === "function") api.setWaiting(label);
+}
+
 function admitWait(sid: string, signal: AbortSignal | undefined, onQueued: (reply: AdmitReply) => void): AdmitWait {
 	let cancel = () => {};
 	const result = new Promise<AdmitReply | "stopped" | "failed">((resolve) => {
@@ -608,13 +618,16 @@ export default function (pi: ExtensionAPI): void {
 		if (!sid) return;
 		let told = false;
 		const wait = admitWait(sid, ctx.signal, (reply) => {
-			if (told || reply.position === null || reply.total === null) return;
-			told = true;
-			const text = `Queued for a working slot, ${ordinal(reply.position)} of ${reply.total}`;
+			const { position, total } = reply;
 			// A reload replaces this instance while its wait runs on; Prime then refuses the old pi and ctx, and the throw
 			// was an unhandled rejection that ended Mac worker 6754cd3496ab at 15:44:57Z on 10-19. A stale instance stops its wait.
 			try {
-				pi.appendEntry(QUEUE_ENTRY, { text, position: reply.position, total: reply.total, at: Date.now() });
+				if (position === null || total === null) return showWait(ctx, "a turn");
+				showWait(ctx, `a turn, place ${position} of ${total}`);
+				if (told) return;
+				told = true;
+				const text = `Queued for a working slot, ${ordinal(position)} of ${total}`;
+				pi.appendEntry(QUEUE_ENTRY, { text, position, total, at: Date.now() });
 				if (showsStatus(ctx)) ctx.ui.notify(`pi-pool: ${text}`, "info");
 			} catch {
 				wait.cancel();
@@ -622,6 +635,11 @@ export default function (pi: ExtensionAPI): void {
 		});
 		cancelWait = wait.cancel;
 		const waiting: Promise<void> = wait.result.then((result) => {
+			try {
+				showWait(ctx, undefined);
+			} catch {
+				// A replaced session's ctx throws, and Prime cleared its wait when the run ended.
+			}
 			if (slot !== waiting) return;
 			if (result === "stopped") {
 				slot = "none";
