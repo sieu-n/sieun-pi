@@ -15,7 +15,7 @@ import type { Wake } from "./wakes.ts";
 import { remotePath, type HostCatalogs } from "./host-catalogs.ts";
 import { SessionPeer } from "./session-peer.ts";
 import type { Host } from "./hosts.ts";
-import type { ChatAgent, ChatBriefState, CheckInState, ChildAgent, QueuePlace, TokenRate, ChildPulse, ChildUsage, Pulse, SessionPulse, SessionRow, SessionsEvent, ThreadLabels, ThreadMessage, ThreadSchedule, Workspace } from "./shared/types.ts";
+import type { ChatAgent, ChatBriefState, CheckInState, ChildAgent, QueuePlace, TokenRate, ChildPulse, ChildUsage, Pulse, RunWait, SessionPulse, SessionRow, SessionsEvent, ThreadLabels, ThreadMessage, ThreadSchedule, Workspace } from "./shared/types.ts";
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
@@ -300,9 +300,16 @@ function runningBelow(row: SessionSummary, running: ReadonlyMap<string, SessionS
   return below;
 }
 
+/** Prime's own wait label on a daemon row (`waitingFor`, set while an extension holds the model call), which the pinned typings lack. */
+function primeWait(row: SessionSummary): RunWait | undefined {
+  const label = (row as SessionSummary & { waitingFor?: unknown }).waitingFor;
+  return typeof label === "string" && label.trim() ? { kind: "prime", label: label.trim() } : undefined;
+}
+
 function pulseOf(row: SessionSummary, running: ReadonlyMap<string, SessionSummary[]>): Pulse {
   const at = latestActivity(row, running);
-  return {
+  const wait = primeWait(row);
+  return { ...(wait ? { wait } : {}),
     streaming: row.isStreaming, tools: row.isRunningTools === true, bash: row.isBashRunning === true, children: row.hasRunningRlmChildren === true,
     ...(at > 0 ? { activityAt: new Date(at).toISOString() } : {}), ...(row.summary?.trim() ? { summary: row.summary.trim().slice(0, 400) } : {}),
     ...(row.taskState !== undefined ? { summaryCurrent: true } : {}),
@@ -315,6 +322,40 @@ export function sessionPulse(row: SessionSummary, running: ReadonlyMap<string, S
   const subagents: ChildPulse[] = (running.get(row.sessionId) ?? []).flatMap(child => child.rlmChildId ? [{ ...pulseOf(child, running), rlmChildId: child.rlmChildId, sessionId: child.sessionId }] : []);
   return { ...pulseOf(row, running), subagents };
 }
+
+/**
+ * A working row's pulse with pi-pool's waits on it and on each running subagent's: the session's place in the turn queue (`places`), else the
+ * time pi-pool gives its tree an account (`accounts`, epoch ms). Prime's own label (`primeWait`) stays where the daemon gave one, so Prime's
+ * field wins and the pool stands in on a Prime without it. The same pulse when nothing waits.
+ */
+export function withPoolWaits(pulse: SessionPulse, session: string, places: ReadonlyMap<string, QueuePlace>, accounts: ReadonlyMap<string, number>): SessionPulse {
+  const waitOf = (id: string): RunWait | undefined => {
+    const place = places.get(id);
+    if (place) return { kind: "turn", ...place };
+    const until = accounts.get(id);
+    return until === undefined ? undefined : { kind: "account", until };
+  };
+  const own = pulse.wait ? undefined : waitOf(session);
+  let below = false;
+  const subagents = pulse.subagents.map(child => {
+    const wait = child.wait ? undefined : waitOf(child.sessionId);
+    if (!wait) return child;
+    below = true;
+    return { ...child, wait };
+  });
+  if (!own && !below) return pulse;
+  return { ...pulse, ...(own ? { wait: own } : {}), subagents };
+}
+
+/** A session pi-pool may hold for an account before its next model call: its tree's root session, as pi-pool keys trees, and its provider. */
+export interface AccountAsk { session: string; tree: string; provider: string }
+
+/**
+ * A running daemon row that neither streams, runs a tool or a command, nor compacts: asleep in Prime's provider retry, which is where a run
+ * waits when pi-pool refuses its call with "this session waits for its slot at".
+ */
+export const asleepInRun = (row: SessionSummary): boolean => row.activeSessionId !== undefined && nativeStatus(row) === "running" && !row.isStreaming &&
+  row.isRunningTools !== true && row.isBashRunning !== true && !row.isCompacting;
 
 /**
  * The daemon writes "Model request failed: ..." with task state "error" when a session settles idle on an assistant error, judged at its present
@@ -622,6 +663,11 @@ export class Catalog {
   ratesSource: (sessionIds: readonly string[]) => Promise<Record<string, TokenRate>> = async () => ({});
   /** The sessions the Mac-wide turn queue holds (`queueReader`), once the backend wires the pool; the default answers with none. It never rejects. */
   queueSource: () => Promise<ReadonlyMap<string, QueuePlace>> = async () => new Map();
+  /**
+   * The sessions of `asks` that pi-pool holds for an account, with the time its tree gets one (epoch ms), once the backend wires the pool
+   * (`treeAccountWaits`); the default answers with none. It answers at once from the readings it has.
+   */
+  accountWaitSource: (asks: readonly AccountAsk[], now: number) => ReadonlyMap<string, number> = () => new Map();
   /** The board.wakes the service still owes (`pendingWakes`), for the wait each job row shows (`withWaits`). */
   wakesSource: (now: number) => Promise<readonly Wake[]> = async () => [];
   /** Stores a chat's step owners' session ids on its board (`stepSessions`), once the backend wires the board store; it never rejects. The default stores none. */
@@ -993,6 +1039,19 @@ export class Catalog {
     const rates = this.ratesFor(chatRows.flatMap(row => (row.agents ?? []).flatMap(agent => agent.sessionId ? [agent.sessionId] : [])), now);
     const queued = await wait(queuedRead);
     const wakes = await wait(wakesRead);
+    // A run that waits in pi-pool's turn queue or for an account emits nothing, so its pulse says why instead of reading stalled. A chat row
+    // is built for this projection alone; another row may be the last projection's object, so it is copied.
+    const accounts = this.accountWaitSource(this.accountAsks(), now);
+    let waiting = false;
+    for (let at = 0; at < rows.length; at++) {
+      const row = rows[at]!;
+      if (!row.pulse) continue;
+      const pulse = withPoolWaits(row.pulse, row.id, queued, accounts);
+      if (pulse.wait || pulse.subagents.some(child => child.wait)) waiting = true;
+      if (pulse === row.pulse) continue;
+      if (row.chat) row.pulse = pulse;
+      else rows[at] = { ...row, pulse };
+    }
     const below = (session: string) => (children.get(session) ?? []).map(child => child.sessionId);
     await breathe();
     for (const row of chatRows) row.agents = withWaits(withQueue(withRates(row.agents ?? [], rates), queued), wakes, below);
@@ -1015,7 +1074,7 @@ export class Catalog {
     }
     this.keptChats = keptChats;
     // A queued agent's place moves as the queue drains, so the rows go out again while one waits too.
-    this.scheduleRates(chatRows.some(row => row.agents?.some(agent => agent.state === "working" || agent.queued !== undefined)));
+    this.scheduleRates(waiting || chatRows.some(row => row.agents?.some(agent => agent.state === "working" || agent.queued !== undefined)));
     this.projectionOwnMs.push(own + performance.now() - ran);
     return { rows, tags: labels?.tags ?? [] };
   }
@@ -1216,6 +1275,20 @@ export class Catalog {
   /** The daemon's rows from the last list as it sent them, live roster rows laid over; empty before the first full list. */
   daemonRows(): readonly SessionSummary[] {
     return this.peer.listed ? this.peer.list() : [];
+  }
+
+  /** The local running rows asleep before their next model call (`asleepInRun`), each with its tree's root session and its provider. */
+  private accountAsks(): AccountAsk[] {
+    const asks: AccountAsk[] = [];
+    for (const row of [...this.summaries.values(), ...this.childSummaries]) {
+      const provider = row.model?.provider;
+      if (!provider || !asleepInRun(row) || this.hostOf(row.sessionId) !== null) continue;
+      let top = row;
+      const seen = new Set([row.sessionId]);
+      for (let up = this.find(top.parentSessionId ?? ""); up && !seen.has(up.sessionId); up = this.find(up.parentSessionId ?? "")) { seen.add(up.sessionId); top = up; }
+      asks.push({ session: row.sessionId, tree: top.sessionId, provider });
+    }
+    return asks;
   }
 
   private find(sessionId: string): SessionSummary | undefined {

@@ -442,6 +442,33 @@ export function poolFreeAt(parts: Pick<ThreadParts, "who" | "ls">, provider: str
   } catch { return null; }
 }
 
+/** The slot of the account wait `who` holds a tree in for `provider` (`{account, slot_at}`), in epoch ms; null when it holds none or `who` fails. */
+export function accountSlot(parts: Pick<ThreadParts, "who">, provider: string): number | null {
+  if (!isPooled(provider)) return null;
+  try {
+    const who: unknown = JSON.parse(partOut(parts.who));
+    const said = isRecord(who) && isRecord(who.providers) ? who.providers[provider] : null;
+    return isRecord(said) ? parsePoolWait(said.wait)?.slotAt ?? null : null;
+  } catch { return null; }
+}
+
+/**
+ * The sessions of `asks` whose tree pi-pool holds in an account wait past `now`, with the wait's slot (epoch ms). It answers at once from the
+ * shared reader's last reading of each tree, and asks for the trees in the reader's next tick, so a later call has them; it starts no read
+ * of its own beside that tick.
+ */
+export function treeAccountWaits(asks: readonly { session: string; tree: string; provider: string }[], now: number, status: PoolStatusReader = poolStatus): Map<string, number> {
+  const trees = [...new Set(asks.map(ask => ask.tree))].map((session): PoolThread => ({ session, model: null }));
+  if (trees.length) status.current(trees).catch(() => {});
+  const waits = new Map<string, number>();
+  for (const ask of asks) {
+    const parts = status.cached({ session: ask.tree, model: null });
+    const until = parts ? accountSlot(parts, ask.provider) : null;
+    if (until !== null && until > now) waits.set(ask.session, until);
+  }
+  return waits;
+}
+
 /** `poolFreeAt` for the tree rooted at `tree`, from a fresh shared read; null when the pool cannot be read. */
 export async function treeFreeAt(tree: string, provider: string, read: typeof readPoolStatus = readPoolStatus, now: () => number = Date.now): Promise<number | null> {
   const thread = { session: tree, model: null };

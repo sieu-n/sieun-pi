@@ -14,7 +14,7 @@ import { checkInRecord, JOB_CLEANUP_EVERY_MS } from "./chat-checkin.ts";
 import { checkInSettings } from "./checkin-settings.ts";
 import { checkInDuties } from "./checkin-findings.ts";
 import { CLEAN_ROOM_CHATS_FILE, CLEAN_ROOM_CORRECTIONS_FILE, CorrectionLedger } from "./chat-corrections.ts";
-import { claudeReader, leadSessions, markOwnerTurn, poolAdmits, readPoolClasses, readPoolStatus, setPoolPriority, treeFreeAt } from "./chat-pool.ts";
+import { claudeReader, leadSessions, markOwnerTurn, poolAdmits, readPoolClasses, readPoolStatus, setPoolPriority, treeAccountWaits, treeFreeAt } from "./chat-pool.ts";
 import { leadWriter, relayStats } from "./chat-hosts.ts";
 import { boardQueueRead, hostsQueueRead, queueReader } from "./chat-turn-queue.ts";
 import { readCallHandles, readFootprints, startMacUsableWatch } from "./mac-usable-watch.ts";
@@ -291,6 +291,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const usage = new Usage(grafanaPrometheus(join(dataDir, "grafana-alerts.json")));
   catalog.ratesSource = ids => usage.rates(ids);
   catalog.queueSource = async () => (await queued()).queued;
+  catalog.accountWaitSource = (asks, now) => treeAccountWaits(asks, now);
   catalog.wakesSource = now => pendingWakes(join(dataDir, "wakes"), now);
   catalog.linkSessions = (id, links) => boards.linkSessions(id, links)
     .catch(error => { process.stderr.write(`boards: ${id}: ${error instanceof Error ? error.message : String(error)}\n`); });

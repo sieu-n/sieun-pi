@@ -20,6 +20,7 @@ export interface ChildDetail { lead: string; text: string; tone: "" | "quiet" | 
 /** Line two of a subagent row: now (activity and recap) for a running child, the outcome for a finished one. `reading` is its pulse while it runs. */
 export function childDetail(child: ChildAgent, reading: PulseReading | null): ChildDetail {
   if (reading?.level === "failed") return { lead: "Failed", text: oneLine(reading.text), tone: "failed" };
+  if (reading?.level === "waiting") return { lead: reading.text.charAt(0).toUpperCase() + reading.text.slice(1), text: child.recap ? oneLine(child.recap) : "", tone: "quiet" };
   if (reading && reading.level !== "live") return { lead: childActivity(child) + ", " + reading.text, text: child.recap ? oneLine(child.recap) : "", tone: reading.level };
   if (isActiveChild(child)) return { lead: childActivity(child), text: child.recap ? oneLine(child.recap) : "", tone: "" };
   if (child.status === "error") return { lead: "Failed", text: oneLine(child.error ?? ""), tone: "failed" };

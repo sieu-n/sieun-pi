@@ -8,7 +8,7 @@
   import { renderMarkdown, copyFromClick } from "./markdown.ts";
   import { messageText, toolDurationMs, triggerSummary, workCounts, type SystemMessage, type Turn, type WorkItem } from "../shared/turns.ts";
   import Icon from "./Icon.svelte";
-  import { span, QUIET_AFTER_MS, STALLED_AFTER_MS } from "../shared/pulse.ts";
+  import { runWaitText, span, QUIET_AFTER_MS, STALLED_AFTER_MS } from "../shared/pulse.ts";
 
   type ToolItem = Extract<WorkItem, { kind: "tool" }>;
   type Output = { text: string; isError: boolean | null; loading: boolean; error: string | null };
@@ -23,8 +23,11 @@
   const worked = $derived(turn.work.some(item => item.kind === "tool" || item.kind === "thinking"));
   const tools = $derived(turn.work.filter((item): item is ToolItem => item.kind === "tool"));
   const runningTool = $derived(tools.find(item => item.run?.status === "running"));
+  /** The thread's wait for a turn or an account while its run holds no tool (`RunWait` on its row's pulse). */
+  const wait = $derived(live && !runningTool ? store.session(threadId)?.pulse?.wait : undefined);
   const verb = $derived.by(() => {
     if (runningTool) return "Running " + runningTool.call.name;
+    if (wait) { const text = runWaitText(wait, clock.now); return text.charAt(0).toUpperCase() + text.slice(1); }
     if (turn.reply?.live) return "Writing";
     if (turn.work.at(-1)?.kind === "thinking") return "Thinking";
     return "Working";
@@ -44,8 +47,8 @@
   });
   const quietMs = $derived(live && lastEventAt ? Math.max(0, now - lastEventAt) : 0);
   const toolMs = $derived(live && runningTool?.run ? Math.max(0, now - runningTool.run.startedAt) : null);
-  const stalled = $derived(quietMs >= STALLED_AFTER_MS);
-  const quiet = $derived(quietMs >= QUIET_AFTER_MS);
+  const stalled = $derived(!wait && quietMs >= STALLED_AFTER_MS);
+  const quiet = $derived(!wait && quietMs >= QUIET_AFTER_MS);
   const elapsedMs = $derived(live ? Math.max(0, now - turn.startedAt) : Math.max(0, turn.endedAt - turn.startedAt));
   const label = $derived(live ? verb : nested ? "" : worked ? "Worked " + duration(elapsedMs) : firstSystem ? systemTitle(firstSystem.message) : "");
   const freshness = $derived.by(() => {

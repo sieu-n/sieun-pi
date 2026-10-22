@@ -74,7 +74,14 @@ export interface Pulse {
   /** The daemon judged `summary` at the session's present message count (it sends `taskState` only then); absent once a later message landed. */
   summaryCurrent?: true;
   silentSince?: string; failed?: boolean;
+  /** What the run waits for before its next model call, while it does (`RunWait`); absent while it streams or works. */
+  wait?: RunWait;
 }
+/**
+ * What a running session waits for before its next model call: Prime's own label while an extension holds the call (`waitingFor` on the
+ * daemon summary, "a turn, place 3 of 7"), else its place in pi-pool's turn queue, else the time pi-pool gives its tree an account (epoch ms).
+ */
+export type RunWait = { kind: "prime"; label: string } | ({ kind: "turn" } & QueuePlace) | { kind: "account"; until: number };
 /** The pool account a new chat starts on. */
 export interface NewChatAccount { provider: string; id: string }
 export interface ChildPulse extends Pulse { rlmChildId: string; sessionId: string }

@@ -1,4 +1,5 @@
-import type { Pulse } from "./types.ts";
+import { clockText } from "./clock.ts";
+import type { Pulse, RunWait } from "./types.ts";
 
 /**
  * Freshness of a running session from the native summary the sessions stream already carries. A running model call or tool emits events at
@@ -7,7 +8,7 @@ import type { Pulse } from "./types.ts";
  */
 export const QUIET_AFTER_MS = 60_000;
 export const STALLED_AFTER_MS = 5 * 60_000;
-export type PulseLevel = "live" | "quiet" | "stalled" | "failed";
+export type PulseLevel = "live" | "quiet" | "waiting" | "stalled" | "failed";
 
 /**
  * The daemon summary line of a failed model call. The daemon writes "Model request failed: ..." when a session settles idle on an assistant error
@@ -28,15 +29,24 @@ export function span(ms: number): string {
 
 export interface PulseReading { level: PulseLevel; quietMs: number; text: string }
 
+/** A run's wait in words: "waiting for a turn, place 3 of 7", or "waiting for an account until 15:42" in the browser's time zone. */
+export function runWaitText(wait: RunWait, now: number): string {
+  if (wait.kind === "prime") return "waiting for " + wait.label;
+  if (wait.kind === "turn") return `waiting for a turn, place ${wait.position} of ${wait.total}`;
+  return "waiting for an account until " + clockText(wait.until, now);
+}
+
 /**
  * Failed: the worker failed, or the daemon's failure line is current, so no message landed after the failed call. A failure line that message
- * activity has passed is stale (the thread ran on) and the activity marks take over. Stalled: the worker went silent, or no activity for five minutes.
+ * activity has passed is stale (the thread ran on) and the activity marks take over. Waiting: the run waits for a turn or an account before its
+ * next model call, so its quiet is expected and its retry line is no failure. Stalled: the worker went silent, or no activity for five minutes.
  */
 export function readPulse(pulse: Pulse, now: number): PulseReading {
   const at = Date.parse(pulse.activityAt ?? "");
   const quietMs = Number.isFinite(at) ? Math.max(0, now - at) : 0;
   const summary = pulse.summary?.trim() ?? "";
   if (pulse.failed) return { level: "failed", quietMs, text: summary || "The worker failed" };
+  if (pulse.wait) return { level: "waiting", quietMs, text: runWaitText(pulse.wait, now) };
   if (pulse.summaryCurrent && FAILURE.test(summary)) return { level: "failed", quietMs, text: summary };
   const silent = Date.parse(pulse.silentSince ?? "");
   if (Number.isFinite(silent)) return { level: "stalled", quietMs, text: "worker silent " + span(Math.max(0, now - silent)) };

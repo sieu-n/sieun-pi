@@ -1,6 +1,7 @@
 import { api } from "./api.ts";
 import type { AccountsView, PoolAccount, PoolConfig, PoolPriority, PoolProvider, PoolWindow } from "../shared/types.ts";
 import { poolValue } from "./pool-config.ts";
+import { clockText } from "../shared/clock.ts";
 
 const MAX_AGE_MS = 60_000;
 const STALE_USAGE_MS = 20 * 60_000;
@@ -95,13 +96,6 @@ const REASON_TEXT: Record<string, string> = {
 export function reasonText(reason: string | null): string | null {
   if (!reason) return null;
   return REASON_TEXT[reason] ?? reason.replaceAll("_", " ");
-}
-
-/** "15:42", or "Oct 14 15:42" when the time is not today. */
-export function clockText(ms: number, now = Date.now()): string {
-  const at = new Date(ms);
-  const time = at.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false });
-  return at.toDateString() === new Date(now).toDateString() ? time : `${at.toLocaleDateString(undefined, { month: "short", day: "numeric" })} ${time}`;
 }
 
 /** The Accounts header: the account the pool holds this thread for and when it comes back, else the account it uses and why. */

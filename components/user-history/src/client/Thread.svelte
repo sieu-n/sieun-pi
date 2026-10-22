@@ -21,7 +21,7 @@
   import { labels } from "./labels.ts";
   import { rowModelId } from "./accounts.ts";
   import { clock } from "./clock.svelte.ts";
-  import { readPulse } from "../shared/pulse.ts";
+  import { readPulse, runWaitText } from "../shared/pulse.ts";
   import { parentChatOf } from "./jobs.ts";
   import { revealMessage } from "./permalink.ts";
   import { earlierTop, keepPlace, nearTop, windowStart, type WindowItem } from "./feed-window.ts";
@@ -78,7 +78,9 @@
   const statusText = $derived.by(() => {
     if (!thread || !busy) return "";
     const parts: string[] = [];
-    if (thread.info.sessionAction) parts.push(thread.info.sessionAction.label);
+    const wait = row?.working && row.pulse?.wait ? runWaitText(row.pulse.wait, clock.now) : "";
+    if (wait) parts.push(wait.charAt(0).toUpperCase() + wait.slice(1));
+    else if (thread.info.sessionAction) parts.push(thread.info.sessionAction.label);
     else if (thread.info.isCompacting) parts.push("Compacting context");
     else if (thread.retry) parts.push(`Retry ${thread.retry.attempt} of ${thread.retry.maxAttempts}${thread.retry.error ? ": " + thread.retry.error : ""}`);
     else if (thread.info.isBashRunning) parts.push("Running a shell command");
