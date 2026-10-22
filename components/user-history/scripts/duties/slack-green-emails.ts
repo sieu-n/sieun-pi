@@ -191,7 +191,9 @@ interface ResendEmail { id: string; to: string[] | null; from: string; created_a
 
 /**
  * Every Slack Green send in Resend's log, newest first, one page of 100 at a time. The log went back 30 days on 2026-10-14 (1,054 sends in
- * 11 pages, read in 0.4 s), well under Resend's default 10 requests per second (https://resend.com/docs/api-reference/rate-limit.md).
+ * 11 pages, read in 0.4 s, so about 27 requests per second). That is over Resend's 10 requests per second per team, which every key of the team
+ * shares with the Virev and Slack Green senders, and on 2026-10-22 07:49Z a page got HTTP 429. A 429 page waits the retry-after (else
+ * ratelimit-reset) seconds Resend sends with it and is read again (https://resend.com/docs/api-reference/rate-limit.md).
  */
 export async function readSends(deps: EmailDeps, key: string): Promise<Send[]> {
   const sends: Send[] = [];
@@ -199,6 +201,12 @@ export async function readSends(deps: EmailDeps, key: string): Promise<Send[]> {
   let more = true;
   while (more) {
     const response = await deps.fetch(`https://api.resend.com/emails?limit=100${after ? `&after=${after}` : ""}`, { headers: { Authorization: `Bearer ${key}` } });
+    const wait = Number(response.headers.get("retry-after") ?? response.headers.get("ratelimit-reset") ?? Number.NaN);
+    if (response.status === 429 && Number.isFinite(wait)) {
+      await response.body?.cancel();
+      await new Promise((resolve) => setTimeout(resolve, wait * 1000));
+      continue;
+    }
     const body = await response.text();
     if (!response.ok) throw new Error(`Resend GET /emails gave HTTP ${response.status}: ${body.slice(0, 200)}`);
     const list = JSON.parse(body) as { has_more?: boolean; data: ResendEmail[] };
