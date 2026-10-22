@@ -1,5 +1,6 @@
-import { realpathSync } from "node:fs";
+import { existsSync, realpathSync, statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { ChatLabels } from "../../src/chat-labels.ts";
@@ -38,6 +39,11 @@ if (!chatId || !file) {
 const definition: unknown = JSON.parse(await readFile(file, "utf8"));
 const precheck = (definition as { precheck?: { cwd?: unknown } }).precheck;
 if (typeof precheck?.cwd === "string") precheck.cwd = resolve(dirname(shellPath(file)), precheck.cwd);
+const missing = typeof precheck?.cwd === "string" ? precheckMisses(precheck.cwd, (precheck as { command?: unknown }).command) : [];
+if (missing.length) {
+  process.stderr.write(`refused ${file}: precheck ${missing.join(", ")} not found from ${precheck!.cwd}\n`);
+  process.exit(1);
+}
 const store = new DutyStore(dataDir);
 const priority = chatPoolPriority((await new ChatLabels(join(dataDir, "labels.json")).snapshot()).threads[chatId]?.priority ?? 0);
 const taken = new Set<string>();
@@ -63,4 +69,18 @@ function shellPath(path: string): string {
   } catch {
     return resolve(path);
   }
+}
+
+/** What the precheck needs and cannot find from `cwd`: the cwd itself, a script argument, or tsx for `--import tsx`. Empty when it can start. */
+function precheckMisses(cwd: string, command: unknown): string[] {
+  if (!existsSync(cwd) || !statSync(cwd).isDirectory()) return ["cwd"];
+  if (!Array.isArray(command)) return [];
+  const argv = command.filter((arg): arg is string => typeof arg === "string");
+  const misses = argv.filter(arg => /^[^\s-]\S*\.(?:[cm]?[jt]s|py|sh)$/.test(arg) && !existsSync(resolve(cwd, arg)));
+  const tsx = argv.some((arg, index) => arg === "--import=tsx" || (arg === "--import" && argv[index + 1] === "tsx"));
+  if (tsx) {
+    try { createRequire(join(cwd, "noop.js")).resolve("tsx"); }
+    catch { misses.push("tsx"); }
+  }
+  return misses;
 }
