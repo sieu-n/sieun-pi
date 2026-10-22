@@ -576,7 +576,7 @@ test("chat brief: a task's owner comes from the owner's own message, progress co
   assert.match(line("c153"), /one or two sentences of at most 25 words each/);
   assert.match(line("c18"), /best as one dry, plain sentence and at most 2/);
   assert.match(line("c18"), /each of at most 25 words with one fact or ask/);
-  assert.match(line("c18"), /write the rest on the board or a wiki page and link it/);
+  assert.match(line("c18"), /the rest stays on the board, named by the ids of the steps that hold it, or on a wiki page a job writes/);
   assert.match(line("c132"), /lead with one real example: a saved row with its actual field values/);
   assert.match(line("c155"), /show the real code path, each buffer and each wait point/);
   assert.match(line("c157"), /never call a large cached volume waste/);

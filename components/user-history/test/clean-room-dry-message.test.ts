@@ -53,6 +53,9 @@ test("dry-message: one dry sentence with the detail on the board passes, a long 
   const nowhere = await run("3", [tell(5, "The crawler is on pace today and nothing needs you.")]);
   assert.equal(nowhere.verdict, "fail", "the detail never reached the board or a wiki page");
   assert.match(nowhere.line("c"), /^- c not met/);
+  const pointed = await run("b", [tell(5, "The crawler is on pace today and nothing needs you, with the numbers in p826.")]);
+  assert.equal(pointed.verdict, "pass", "naming the board step that holds the rest puts the detail on the board");
+  assert.match(pointed.line("c"), /^- c met.*names the board step/);
   const linked = await run("4", [tell(5, "The crawler is on pace today and nothing needs you."), tell(6, "The breakdown is on wiki:ops/crawler-today.html for when you want it.")]);
   assert.equal(linked.verdict, "pass", ["a", "b", "c"].map(linked.line).join("\n"));
 

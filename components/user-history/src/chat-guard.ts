@@ -148,18 +148,21 @@ export const TELL_OWNER_DESCRIPTION = "Send the owner one chat message, its own 
   "act on (a new land order, a move of his sessions or boxes), is done or decision, never update. News he already got, a fix of your own " +
   "earlier message and progress on work still going are update, even when the work is a goal or a decision of his. A blocker is one only " +
   "he can clear, and the message says what he must do; an incident or delay a job or another chat already fixes, and its later status, " +
-  "is update. One answer is one call, so a question goes in the same message as its context. Any other call there, " +
+  "is update. A question is its own call, with only the words he needs to answer it. Any other call there, " +
   "and one with no why, is kept as a note (c117). Write one " +
-  "point in 1 or 2 short casual sentences, with no bullets or bold. Put no colon in its sentences, because \"Not quite:\", \"Quick read:\" " +
+  "point, best as one dry, plain sentence and at most 2, each of at most 25 words with one fact or ask, with no lead-in sentence like " +
+  "\"One thing needs you.\", no bullets and no bold (c18). Put no colon in its sentences, because \"Not quite:\", \"Quick read:\" " +
   "or \"Here's the diagram:\" before the point reads as a label, so use a comma or a period. " +
   "Use the plain words he would use himself, saying what he would see or can do now, never a job report's terms, a UI label or state, a " +
   "clipped verb or git talk like land or roll out, and give a time in KST, like 23:50 KST or 밤 11시 50분, never UTC or a Z (c18, c135, c138). " +
   "Write \"onboarding works now, but the campaign it makes comes out empty because the AI guessed too small a follower range\", not \"Home " +
   "shows 0 matched after landing because the drafted 2K to 20K follower filter misses most creators\". Name each plan step, goal, todo and duty " +
-  "you mention by its id, like p684 or d9, written bare, which shows as a chip he can click; keep hashes, session ids and paths out (c145). Count its sentences before you send it, and " +
-  "cut or split one over 2. Call it again for a second point, never for the rest of the same answer. An explanation or diagram goes on a " +
+  "you mention by its id, like p684 or d9, written bare, which shows as a chip he can click; keep hashes, session ids and paths out (c145). Count its sentences and " +
+  "words before you send it, and cut what is over. Call it again for a second point. The rest of an answer is detail, which stays on the " +
+  "board or a wiki page, never in more sentences or calls; a status answer gives only the one thing that matters most and the ids of " +
+  "the steps that hold the rest. An explanation or diagram goes on a " +
   "wiki page, sent as one message with the one-line takeaway and its wiki: link, which shows as a page card. In your first reply to a new " +
-  "request, answer his question first with what you know, then name the job you started.";
+  "request, answer his question first with what you know, then name the job you started in its own call.";
 export const TELL_OWNER_PARAMETERS = {
   type: "object",
   properties: {

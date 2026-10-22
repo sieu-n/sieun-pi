@@ -18,6 +18,8 @@ export const MAX_WORDS = 25;
 const BULLET = /^\s*(?:[-*+\u2022]|\d{1,2}[.)])\s+/;
 const HEADING = /^\s{0,3}#{1,6}\s/m;
 const WIKI_LINK = /(?:wiki:|:5176\/page\/|apps\/llm-wiki\/content\/)[^\s`"'<>()[\]]+?\.(?:html?|md)/;
+/** A plan step id written bare, which the chat shows as a chip: the board step that holds the rest of a status answer (brief line c18). */
+const STEP_ID = /\bp\d{1,4}\b/;
 /** A write to the chat's board: the chat_board tool with ops, or the board-apply script and agent-board route its jobs use. */
 const BOARD_SCRIPT = /board-apply\.ts|\/agent-board\b/;
 /** A write of a wiki page: the wiki's agent page route, or a file write under the wiki content folder. */
@@ -100,10 +102,12 @@ export function judge(run: string, state: RunState, now = Date.now()): { verdict
 
   const writes = calls.filter(({ event }) => detailWrite(event.tool, event.input));
   const linked = told.filter(said => WIKI_LINK.test(said.text));
+  const named = told.filter(said => STEP_ID.test(said.text));
   const detail = writes[0] ? `${writes[0].session.slice(0, 8)} wrote it at ${iso(writes[0].event.at)} (${writes[0].event.tool}): "${clip(writes[0].event.input, 240)}"`
-    : linked[0] ? `${iso(linked[0].at)} links a wiki page: "${clip(linked[0].text, 240)}"` : "";
-  add("c", detail ? true : none, detail ? `${detail}; ${writes.length} board or wiki writes and ${linked.length} wiki links in all`
-    : `none of ${calls.length} calls wrote the board or a wiki page, and no tell_owner links one`);
+    : linked[0] ? `${iso(linked[0].at)} links a wiki page: "${clip(linked[0].text, 240)}"`
+      : named[0] ? `${iso(named[0].at)} names the board step that holds the rest: "${clip(named[0].text, 240)}"` : "";
+  add("c", detail ? true : none, detail ? `${detail}; ${writes.length} board or wiki writes, ${linked.length} wiki links and ${named.length} messages naming a step in all`
+    : `none of ${calls.length} calls wrote the board or a wiki page, and no tell_owner links one or names a step`);
 
   const head = sessions.find(session => session.id === chat)?.events ?? [];
   const typed = head.filter(event => event.kind === "text" && event.role === "user" && !event.text.trimStart().startsWith("[") &&
