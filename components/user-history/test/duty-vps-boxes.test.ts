@@ -85,7 +85,8 @@ test("oom_kills_24h leaves out the kills up to the newest until a fix step expla
   assert.match(newer.flagged[0]!.excerpt, /^us-metal02: 2 OOM kills outside heavy scopes since 16:52Z on 10-19; the journal names sf-bill-q.service; p456 explains the 41 kills/);
 });
 
-test("the checked-in duty file names p456 for the us-metal02 kills up to 16:52Z on 10-19", async () => {
+test("the checked-in duty file names p456 for the us-metal02 kills up to 16:52Z on 10-19 and p490 for the us-metal01 backup kill at 22:08Z on 10-21", async () => {
   const explained = parseExplained(JSON.parse(await readFile(DUTY_FILE, "utf8")));
   assert.equal(explained.get("us-metal02")?.step, "p456");
+  assert.equal(explained.get("us-metal01")?.step, "p490");
 });

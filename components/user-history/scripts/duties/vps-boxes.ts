@@ -152,7 +152,7 @@ export function oomKills24h(boxes: readonly OomKills[], at: number): { kills: nu
   const flagged = counted.flatMap((entry): FlaggedSlice[] => {
     const heavy = entry.heavy ? ` and ${entry.heavy} more inside heavy scopes` : "";
     const units = entry.units?.length ? `; the journal names ${entry.units.join(", ")}` : "";
-    const fix = entry.explained && entry.by ? `${entry.by.step} explains the ${entry.explained} kills up to ${stamp(entry.by.until)}` : "";
+    const fix = entry.explained && entry.by ? `${entry.by.step} explains ${entry.explained === 1 ? "the 1 kill" : `the ${entry.explained} kills`} up to ${stamp(entry.by.until)}` : "";
     if (!entry.outside && fix) return [{ at, kind: "oom_explained", excerpt: `${entry.box}: no OOM kill outside heavy scopes${entry.heavy ? ` (${entry.heavy} inside)` : ""} since ${stamp(entry.by!.until)}; ${fix}` }];
     if (!entry.outside) return entry.heavy ? [{ at, kind: "oom_heavy", excerpt: `${entry.box}: ${entry.heavy} OOM kills in the last 24 h, all inside heavy scopes that hit their own MemoryMax` }] : [];
     const window = entry.sinceBootAt ? ` in /proc/vmstat since its boot at ${stamp(entry.sinceBootAt)}, because Prometheus has no node_vmstat_oom_kill for it`
