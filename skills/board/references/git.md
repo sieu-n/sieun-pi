@@ -38,9 +38,11 @@ node scripts/release-chat.mjs <sha> [--no-kickstart]
 1. Staging is the trunk, and only land.yml writes it, so nobody pushes staging by hand.
 2. Each dev branch, such as sieun/dev on us-metal02, dev/sieun-mac-a on the Mac or any dev/<name>, takes commits on its own line, and a dev branch never rebases onto staging or takes staging back after a land.
 3. Each green verify-dev push run on a dev branch makes land.yml squash that branch's newest green commit onto staging with a Land-From trailer and no owner ask, and that Land-From sha is the base of the branch's next land.
-4. Only promote.yml moves main, by fast-forward to a checked staging sha, and the release owner runs it as soon as staging checks out (c74).
-5. Demo work goes on dev/sieun-mac-a, and `ci/*` branches and probe refs are throwaway refs that nobody commits on.
-6. The full rules are in auto-sns-agent's `.agents/skills/repo/git-workflow/SKILL.md`, which you read with `node scripts/skills/read-skill.mjs repo/git-workflow` from that repo.
+4. Only promote.yml moves main, by fast-forward to a checked staging sha, and only the release owner runs it.
+5. A job's regular work ends at staging (c154, 2026-10-22). The release owner walks each prod promote with the owner, and a red `staging-check.yml` run, the full check of staging, holds only that walk and never a land.
+6. The crawler, the observability dashboards and alert rules, and demo.virev.ai are the exceptions that jobs still ship to prod themselves, through `metal-deploy.yml`, `apps/infra/metal/deploy-obs.mjs` and the `deploy/virev-demo` ref that every dev push writes.
+7. Demo work goes on dev/sieun-mac-a, and `ci/*` branches and probe refs are throwaway refs that nobody commits on.
+8. The full rules are in auto-sns-agent's `.agents/skills/repo/git-workflow/SKILL.md`, which you read with `node scripts/skills/read-skill.mjs repo/git-workflow` from that repo.
 
 ## Merges, pushes and promotes
 
@@ -48,6 +50,6 @@ The chat brief, the job reply guideline and the duty job brief all state the mer
 
 > Never ask the owner to confirm a staging land, merge or deploy: do it on your own (owner 10-12). Owner rule c74 (2026-10-15): Until the proper launch, the owner pre-approves every prod promote, merge or push to main. Never put a promote, merge or push go on For you and never wait for one; the release owner promotes as soon as staging checks out. An outside send (an email, a ticket or support reply, a customer message, a post) still needs the owner's ok on a For you todo first (c37).
 
-Do the merge, push or promote yourself, and tell the owner what shipped in a chat message. An open todo that asks for a merge, push or promote go can be checked off with a note that c74 covers it.
+Do the merge, push or promote yourself, and tell the owner what shipped in a chat message. An open todo that asks for a merge, push or promote go can be checked off with a note that c74 covers it. In auto-sns-agent, c154 narrows this: a job lands to staging on its own, and a prod promote is the release owner's walk with the owner, outside the three exceptions above.
 
 After launch, an owner rule that takes the standing go back sets `releaseGo.preapproval` in `components/user-history/src/shared/release-go.ts` to null, and the briefs then carry the rule from that code.
