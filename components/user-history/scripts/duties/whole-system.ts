@@ -23,7 +23,7 @@ import { chatNamer, type DaemonFault, faultWords, type ListedSession, listedSess
 import { readRecords } from "../../src/orphan-services.ts";
 import { deliveryCandidates, outboxLandings, readSessionMarks, type SlotWaitTimeout, splitSlotWaits } from "../../src/slot-wait-timeouts.ts";
 import { CHECK_IN_DUTY_ID, type DutyRunRecord, type FlaggedSlice, type PrecheckOutput } from "../../src/shared/chat-duties.ts";
-import { effectiveRun, metricStreaks, missStreak } from "../../src/shared/duty-streak.ts";
+import { effectiveRun, metricStreaks, missStreak, newestReading } from "../../src/shared/duty-streak.ts";
 import { missedKeys, parseDutyLink } from "../../src/shared/duty-fixes.ts";
 
 /** One box's numbers in a watch line: the box that wrote the line, then each other box it read through that box's relay (HostWatchLine). */
@@ -786,7 +786,7 @@ export function unreadWindows(missed: readonly string[], metrics: DutyRunRecord[
  */
 export function owedKeys(missed: readonly string[], runs: readonly DutyRunRecord[], stepsMoving: boolean): string[] {
   const quiet = new Set(metricStreaks(runs).filter(streak => streak.quietSince !== undefined).map(streak => streak.key));
-  const newest = runs.find(run => { const verdict = effectiveRun(run).verdict; return verdict === "met" || verdict === "missed"; });
+  const newest = newestReading(runs);
   const unread = new Set(newest ? unreadWindows(missed, effectiveRun(newest).metrics) : []);
   return missed.filter(key => !quiet.has(key) && !unread.has(key) && !(stepsMoving && key === "stuck_steps"));
 }
@@ -825,11 +825,13 @@ export function planCounts(input: PlanInputs): { stuck: StuckSteps[]; redDuties:
   const lagging: LaggingDuty[] = [];
   const redDuties = input.chats.flatMap(chat => chat.duties.flatMap(duty => {
     const own = chat.runs.filter(run => run.duty === duty.id);
-    const newest = own.find(run => { const verdict = effectiveRun(run).verdict; return verdict === "met" || verdict === "missed"; });
+    // The duty is judged on its newest reading by the time it was taken (`newestReading`), as the duty runner's push and the fleet's green
+    // share judge it, so a skipped run older than another run's after-job measure no longer reads a green duty as red.
+    const newest = newestReading(own);
     // A red duty needs a live fix from its first miss (c75: every missed metric gets a live fix job each run). Until 10-20 a duty was left out
     // until 3 missed runs in a row, so at 02:30Z frontend bro d4, metal-management d2, CI and RepoOps d2 and Crawler VP d6 and d8
     // sat red with no fix step and no push. The duty's own run job still at work is left out by the precheck (`withoutWorkingRuns`).
-    if (!newest || missStreak(own) < 1) return [];
+    if (!newest || effectiveRun(newest).verdict !== "missed" || missStreak(own) < 1) return [];
     const unread = unreadWindows(missedKeys(effectiveRun(newest)), effectiveRun(newest).metrics);
     if (unread.length) lagging.push({ chat: chat.id, duty: duty.id, keys: unread, line: `${chat.name}: ${duty.name} misses ${unread.join(" and ")}, ` +
       `${unread.length === 1 ? "a count" : "counts"} over a trailing window with no lastEventAt, so d9 reads ${unread.length === 1 ? "it" : "them"} as a lagging window. ` +

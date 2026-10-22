@@ -41,6 +41,21 @@ export function effectiveRun(run: DutyRunRecord): Pick<DutyRunRecord, "verdict" 
 }
 
 const measured = (run: DutyRunRecord): boolean => { const verdict = effectiveRun(run).verdict; return verdict === "met" || verdict === "missed"; };
+
+/**
+ * The run that holds a duty's newest met-or-missed reading by the time it was taken: a run's after-job measure at its own `at`, else the run at
+ * its start. Runs are ordered by start, and an older run's after-job measure can be newer than a later run: on 10-20 the Wiki dream's 00:46Z
+ * run read wiki_problems 43 after its job at 03:26Z while a 02:02Z verify run, skipped behind that job, had read 0. The duty runner's push and
+ * d9's stuck_duties both judge on this reading: at 14:45Z on 10-22 d9 counted AI harness d11 and ops guy's d1 as red duties with no fix from
+ * their 13:12Z and 11:43Z skipped verify runs, while the after-job measures of their older runs at 13:30Z and 13:17Z read every metric met.
+ */
+export function newestReading(runs: readonly DutyRunRecord[]): DutyRunRecord | undefined {
+  let best: DutyRunRecord | undefined;
+  for (const run of runs) {
+    if (measured(run) && (!best || (run.after?.at ?? run.at) > (best.after?.at ?? best.at))) best = run;
+  }
+  return best;
+}
 const gap = (result: MetricResult): number => Math.abs(result.value - result.target);
 
 /**

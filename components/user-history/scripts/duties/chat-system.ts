@@ -1,8 +1,11 @@
+import { execFile } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import { appendFile, mkdir, open, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { promisify } from "node:util";
+import { parseAgentQueue, poolExecutable } from "../../src/chat-pool.ts";
 import { heldByTodo } from "../../src/checkin-end-state.ts";
 import { planRiskSteps } from "../../src/checkin-findings.ts";
 import { LIVE_GAP_MS, OPEN, parkedBy, walk } from "../../src/checkin-steps.ts";
@@ -33,6 +36,7 @@ const OWNER_MESSAGES = 8;
 /** How much of a transcript's end the spot audit reads for those messages: the AI harness chat's last 3 MB held 42 user lines on 10-19. */
 const TRANSCRIPT_TAIL_BYTES = 4_000_000;
 const MIRROR_DIR = join(homedir(), ".cache/sieun-pi/hosts");
+const run = promisify(execFile);
 
 /** An open plan item that breaks the plan rule (board skill, references/plan-and-duties.md): its chat, id, title and the reason. */
 export interface PlanFlag { chat: string; id: string; text: string; why: string }
@@ -239,15 +243,18 @@ export function withCatalogOwners(plan: { ownerActivity?: ReadonlyMap<string, nu
  * names. From 03:52Z to 06:16Z on 10-20 d9 counted its own d9, CI and RepoOps' d4 and frontend bro's check-in while their jobs waited for
  * pi-pool slots up to 07:23Z. A job whose transcript ends on a pool wait the runner has not recorded as a cut yet (`poolCut`) waits the same
  * way: at 07:01Z d9 counted CI and RepoOps' d4, whose 06:56Z verify job got a slot wait as its first reply and was parked to 08:16Z.
+ * So does a job whose tree has a turn working or queued in pi-pool (`poolTrees`), as the duty runner's `treeWait` reads a subagent's wait: at
+ * 16:03Z on 10-22 d9 counted Prospect feature bro's d2 while its 21:00 job waited on a subagent queued in pi-pool from 15:17Z to 16:05Z.
  */
 export function withoutWorkingRuns<T extends { chat: string; duty: string }>(stuck: readonly T[], runs: ReadonlyMap<string, readonly DutyRunRecord[]>,
-  rows: readonly CatalogRow[], now: number, poolCut: ReadonlySet<string> = new Set()): T[] {
+  rows: readonly CatalogRow[], now: number, poolCut: ReadonlySet<string> = new Set(), poolTrees: ReadonlySet<string> = new Set()): T[] {
   const at = new Map(rows.map(row => [row.sessionId, row.activity === "working" ? now : ms(row.lastActivityAt)] as const));
   return stuck.filter(entry => {
     const own = (runs.get(entry.chat) ?? []).filter(run => run.duty === entry.duty);
     const last = own.find(run => run.job !== undefined);
     const wrote = last?.job ? at.get(last.job.id) ?? 0 : 0;
     if (last && !last.after && now - wrote <= LIVE_GAP_MS && wrote > (last.cut?.at ?? 0)) return false;
+    if (last?.job && !last.after && poolTrees.has(last.job.id)) return false;
     const cut = last?.cut ?? (last?.job && !last.after && poolCut.has(last.job.id) ? true : undefined);
     return !(cut && last!.trigger !== "rerun" && !own.some(run => run.rerunOf === last!.at));
   });
@@ -264,6 +271,14 @@ async function poolCutJobs(stuck: readonly { chat: string; duty: string }[], run
     if (copy && endsOnPoolWait(await tail(copy.file, POOL_TAIL_BYTES))) out.add(last.job.id);
   }
   return out;
+}
+
+/** The sessions and trees with a turn working or queued in this box's pi-pool, which the Mac's jobs use too; empty when the pool does not answer. */
+async function poolTrees(): Promise<Set<string>> {
+  try {
+    const queue = parseAgentQueue(JSON.parse((await run(poolExecutable(), ["queue", "--json"])).stdout));
+    return new Set([...queue.working, ...queue.queued].flatMap(turn => [turn.session, turn.tree]));
+  } catch { return new Set(); }
 }
 
 /** One push the duty job sent a chat (`PUSHES_FILE`): when, the tag it put in the message, and the items it named. */
@@ -384,7 +399,7 @@ async function main(): Promise<void> {
   const owned = planCounts({ ...plan, ...withCatalogOwners(plan, jobs, now) });
   const runsByChat = new Map(plan.chats.map(chat => [chat.id, chat.runs]));
   const poolCut = await poolCutJobs(owned.redDuties, runsByChat, id => listedSessions(copies, [id]).get(id)?.file);
-  const counts = { ...owned, redDuties: withoutWorkingRuns(owned.redDuties, runsByChat, rows, now, poolCut) };
+  const counts = { ...owned, redDuties: withoutWorkingRuns(owned.redDuties, runsByChat, rows, now, poolCut, await poolTrees()) };
   const text = (chat: string, id: string): string | undefined => {
     let found: string | undefined;
     walk(plan.boards.get(chat)?.plan ?? [], item => { if (item.id === id) found = item.text; });

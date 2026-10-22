@@ -1,35 +1,23 @@
 import { missedKeys } from "./shared/duty-fixes.ts";
 import type { DutyRunRecord } from "./shared/chat-duties.ts";
-import { effectiveRun, metricStreaks } from "./shared/duty-streak.ts";
+import { effectiveRun, metricStreaks, newestReading } from "./shared/duty-streak.ts";
 
 /**
- * The newest met-or-missed reading of the duty by the time it was taken: a run's after-job measure at its own `at`, else the run at its start.
- * Runs are ordered by start, and an older run's after-job measure can be newer than a later run: on 10-20 the Wiki dream's 00:46Z run read
- * wiki_problems 43 after its job at 03:26Z, while a 02:02Z verify run, skipped behind that job, had read 0 under the old stale check. The first
- * run in order read 0, so no push run started from 03:26Z to past 05:52Z while 20 pages sat behind their code.
- */
-function newestReading(runs: readonly DutyRunRecord[]): ReturnType<typeof effectiveRun> | undefined {
-  let best: { at: number; run: ReturnType<typeof effectiveRun> } | undefined;
-  for (const run of runs) {
-    const reading = effectiveRun(run);
-    if (reading.verdict !== "met" && reading.verdict !== "missed") continue;
-    const at = run.after?.at ?? run.at;
-    if (!best || at > best.at) best = { at, run: reading };
-  }
-  return best?.run;
-}
-
-/**
- * Whether the duty's newest job ended with no push job since: that job is no push run's, its after-job measure is in, and no push run started
- * a job after that measure. Its duty then gets its push at once instead of a check-in interval after the newest run. At 07:30:45Z on 10-22 ops
- * guy's 23:08Z Local dev servers job ended on restarts 2 with no fix step, a push at 07:31:42Z found it answering a message and started no job,
- * and the next push waited for 09:31Z, so d9 counted the duty stuck till then. A push job that ends red waits the interval as before.
+ * Whether the duty's newest job ended with no push job since: that job is no push run's, nor a rerun's of a push run, and it ended with an
+ * after-job measure or on a cut. Its duty then gets its push at once instead of a check-in interval after the newest run; the push itself
+ * checks that the job no longer works (`DutyJobHost.working`) and that a cut run has had its rerun. At 07:30:45Z on 10-22 ops guy's 23:08Z
+ * Local dev servers job ended on restarts 2 with no fix step, a push at 07:31:42Z found it answering a message and started no job, and the
+ * next push waited for 09:31Z, so d9 counted the duty stuck till then. A cut job that came back from its pool wait works on and ends with no
+ * after-job measure, since its rerun measured beside it: metal-management's d1 verify job of 14:49Z on 10-22 was cut at 15:23Z, its rerun
+ * at 15:29Z read tool_rows_off 2 behind it, the job ended at 15:42Z and the fix step p142 closed at about 15:50Z, and no run read the duty
+ * again until the 17:29Z push, so d9 counted it stuck at 16:03Z and 17:03Z. AI harness d5 (11:30Z to 12:28Z) and d9 (15:42Z to 16:03Z) sat
+ * the same way after their cut reruns' jobs ended. A push job that ends red, or is cut and rerun, waits the interval as before.
  */
 function endedUnpushed(runs: readonly DutyRunRecord[]): boolean {
   const last = runs.find(run => run.job !== undefined);
-  if (!last?.after || last.trigger === "push") return false;
-  const ended = last.after.at;
-  return !runs.some(run => run.trigger === "push" && run.job !== undefined && run.at >= ended);
+  if (!last || (!last.after && !last.cut)) return false;
+  const origin = last.trigger === "rerun" ? runs.find(run => run.at === last.rerunOf) ?? last : last;
+  return last.trigger !== "push" && origin.trigger !== "push";
 }
 
 /**
@@ -48,8 +36,9 @@ function endedUnpushed(runs: readonly DutyRunRecord[]): boolean {
 export function pushMisses(runs: readonly DutyRunRecord[], counted: ReadonlySet<string>, everyMs: number, now: number): string[] | null {
   const newest = runs[0];
   if (!newest) return null;
-  const measured = newestReading(runs);
-  if (!measured) return null;
+  const holder = newestReading(runs);
+  if (!holder) return null;
+  const measured = effectiveRun(holder);
   if (measured.verdict === "missed") {
     const keys = missedKeys(measured).filter(key => counted.has(key));
     if (now - newest.at >= everyMs) return keys.length ? keys : null;
