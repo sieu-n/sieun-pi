@@ -66,6 +66,7 @@ Errors raise `AsideError`. For a known mistake, the message ends with an `[aside
 
 - Page globals such as `document`, `window` and `location` do not exist in the REPL, so read them with `await page.evaluate(() => document.title)`.
 - REPL helpers such as `sleep` and `page` do not exist inside `page.evaluate`, so wait there with `await new Promise(r => setTimeout(r, ms))`.
+- "Profile 0 is not connected to the daemon" means the owner's Aside has no open window, because the profile's bridge needs one, so it comes back only when he opens a window. Never quit, restart or open Aside windows on his Mac yourself (c103); on 2026-10-22 he closed his last window at 01:08Z and a job blamed its own 1 MB upload.
 
 The Aside REPL lacks some Playwright methods:
 

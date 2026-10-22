@@ -194,8 +194,20 @@ def _called_name(message: str, sent: str | None) -> str | None:
     return found.group(1) if found else None
 
 
+# On 2026-10-22 at 01:08Z the owner closed his last Aside window, the daemon logged the profile's extension bridge closing (code 1001),
+# and every REPL call failed with this text until a window opened again. A job blamed its own 1 MB upload, which had returned OK.
+_NOT_CONNECTED_HINT = (
+    "The Aside profile has no open window. The daemon still runs, but the profile's bridge needs an open browser window, so it is gone "
+    "after the owner closes his last Aside window and comes back when he opens one. Payload size does not cause this. "
+    "Never quit, restart or open Aside windows on his Mac yourself (c103). Pages that need none of his logins work in the box browser; "
+    "for a page that needs his login, tell your parent that Aside waits for a window."
+)
+
+
 def explain(message: str, sent: str | None = None) -> str | None:
     """Return an actionable hint for a known Aside REPL failure, or None."""
+    if "is not connected to the daemon" in message:
+        return _NOT_CONNECTED_HINT
     inside_page = "AsidePage.evaluate" in message or (
         "ReferenceError" in message and "repl.js" not in message and "<anonymous>:" in message
     )

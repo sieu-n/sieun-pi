@@ -23,6 +23,11 @@ LIVE_SLEEP_IN_PAGE = (
     "    at AsidePage.evaluate (file:///Aside%20Daemon.app/Contents/MacOS/aside-daemon:3807:22224)\n"
 )
 LIVE_REDECLARED = "Error: SyntaxError: Identifier 'x' has already been declared\n"
+# Live text from Aside daemon 1.26.1022.144 on 2026-10-22, after the owner closed his last Aside window.
+LIVE_NOT_CONNECTED = (
+    'Aside Browser profile for account u0 \u2014 sieu***@gmail.com ("Profile 0") is not connected to the daemon. '
+    "Make sure that profile is running, or pick another account with --account."
+)
 
 
 class FakeMcp:
@@ -163,6 +168,15 @@ class ErrorTranslationTests(Base):
         with self.assertRaises(ab.AsideError) as caught:
             self.call(ab.run(code))
         self.assertIn("await sleep(ms)", caught.exception.hint)
+
+    def test_a_profile_with_no_open_window_says_why_and_what_not_to_do(self):
+        """10-22 01:08Z: the owner closed his last Aside window, the profile bridge dropped, and a job blamed its 1 MB upload."""
+        self.fake(RuntimeError(LIVE_NOT_CONNECTED))
+        with self.assertRaises(ab.AsideError) as caught:
+            self.call(ab.run("return 1"))
+        self.assertIn("not connected to the daemon", str(caught.exception))
+        self.assertIn("no open window", caught.exception.hint)
+        self.assertIn("c103", caught.exception.hint)
 
 
 class TabOwnershipTests(Base):
