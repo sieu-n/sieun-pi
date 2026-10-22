@@ -22,8 +22,12 @@ const WINDOW = /\b(?:this week|last week|past (?:\d+ |seven |few )?(?:days?|hour
 const SINGLE = /\bfor (?:example|instance)\b|\be\.g\.|\b(?:one|a single|that) (?:chat|turn|reply|answer|job|session|thread|message|run|ask|case|complaint|agent)\b|\bthe slowest (?:one|chat|reply|answer|turn)\b/i;
 const SENTIMENT = /\b(?:agents?|chats?|jobs?|threads?|workers?)\s+(?:feel|felt|seem (?:frustrated|unhappy)|complain\w*|are (?:frustrated|unhappy|annoyed))\b|\bcomplain\w*|\bfrustrat\w*|\bsentiment\b|\bmorale\b/i;
 const COMPARE = /\b(?:vs\.?|versus|than|up from|down from|compared|last week|the week before|previous week|prior week|before|baseline|from \S+ to)\b/i;
-const MISSING = /\bno (?:baseline|earlier|prior|older|previous|history|data|sample)\b|\bbaseline (?:is |was )?(?:missing|absent|unknown|thin)\b|\btoo (?:few|small|thin|short)\b|\bnot enough\b|\bsmall sample\b|\bonly \d+ (?:\w+ )?(?:samples?|messages?|replies|answers|days?|turns|asks)\b|\bcan(?:'t|not) (?:compare|tell|say)\b|\b(?:don't|do not) have\b|\bno (?:\w+ )?(?:to compare|record)\b/i;
+const MISSING = /\bno (?:baseline|earlier|prior|older|previous|history|data|sample)\b|\bbaseline (?:is |was )?(?:missing|absent|unknown|thin)\b|\btoo (?:few|small|thin|short)\b|\bnot enough\b|\bsmall sample\b|\bonly \d+ (?:\w+ )?(?:samples?|messages?|replies|answers|days?|turns|asks)\b|\bcan(?:'t|not) (?:compare|tell|say)\b|\b(?:don't|do not) have\b|\bno (?:\w+ )?(?:to compare|record)\b|\bno (?:\w+ )?(?:numbers?|figures?|measurements?)\b|\bnothing (?:tracks|records|measures|logs)\b|\bcan(?:'t|not) give\b/i;
 const NUMBER = /\d/;
+/** A board or todo id such as t1, p12 or c153 is no number of the answer. */
+const IDS = /\b[a-z]\d+\b/gi;
+/** What c153 sends in its own tell_owner: the job the chat started, the next step, a link or a question. */
+const AFTER = /\b(?:the [\w ]{0,30}? job|a job|I started|I(?:'m| am) (?:measuring|working on|checking|looking)|is working (?:out|on)|will (?:find|report|send|measure|check)|next step|tracked as)\b|\bwiki:|https?:\/\/|\?/i;
 
 const iso = (at: number): string => new Date(at).toISOString();
 const clip = (text: string, length = 200): string => (text.length > length ? text.slice(0, length - 1) + "\u2026" : text).replace(/\s+/g, " ");
@@ -38,7 +42,8 @@ export function sentences(text: string): string[] {
 const words = (line: string): number => line.split(/\s+/).filter(Boolean).length;
 
 /** A message the judge reads as the answer: it holds a number, or it says the data to answer is missing. */
-export const isAnswer = (text: string): boolean => NUMBER.test(text.replace(PERCENTILE, "")) || MISSING.test(text);
+export const isAnswer = (text: string): boolean => !(sentences(text)[0] ?? "").endsWith("?") &&
+  (NUMBER.test(text.replace(PERCENTILE, "").replace(IDS, "")) || MISSING.test(text));
 
 /** Whether a sentence states an aggregate number with its scope: a statistic or a count, over a window or a sample. */
 export function aggregateLead(line: string): boolean {
@@ -93,10 +98,12 @@ export function judge(run: string, state: RunState, now = Date.now()): { verdict
     const over = parts.filter(line => words(line) > MAX_WORDS);
     return parts.length > 2 || over.length ? [`${iso(said.at)} has ${parts.length} sentences${over.length ? `, ${over.length} over ${MAX_WORDS} words` : ""}: "${clip(said.text, 400)}"`] : [];
   });
+  // On 10-22 run2's answer told the job it started in its second sentence, though the brief line sends the job in its own tell_owner.
+  const after = answer ? AFTER.exec(answer.text)?.[0] : undefined;
+  if (after) long.push(`the answer at ${iso(answer!.at)} also holds what goes in its own tell_owner ("${after}"): "${clip(answer!.text, 400)}"`);
   add("a", answer ? long.length === 0 : missingAnswer, long.length ? long.join("; ")
     : answer ? `${lines.length} sentences of ${lines.map(words).join(" and ")} words; ${quote}` : quote);
 
-  // On 10-22 run1's first answer led with "I don't have a weekly number yet.", which is what c153 asks when the data does not exist yet.
   add("b", answer ? aggregateLead(lead) || MISSING.test(lead) : missingAnswer, answer ? `lead sentence: "${clip(lead, 300)}"` : quote);
 
   const single = SINGLE.exec(lead)?.[0];

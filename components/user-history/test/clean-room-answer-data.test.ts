@@ -77,6 +77,18 @@ test("answer-data: a short aggregate answer passes, one built on one observation
   assert.equal(ownJob("reply speed", { from: "frontend bro", text: "" }), false);
   assert.equal(ownJob("reply speed", { from: "check-in frontend bro 11 50", text: "" }), false);
 
+  // run2 on 10-22: two tell_owner calls in one turn, so one timestamp. The answer is the first, and the clarifying question beside it is not.
+  const run2 = await run("b", [tell(1, "I can't give you a yes or no yet, because nothing tracks how fast chats reply to you, so there's no weekly number to compare. " +
+    "The chat reply speed job is working out p50 and p90 reply times for this week and last week from the chat logs, and it will find the cause if replies got slower."),
+    tell(1, "By slower, do you mean the wait for the first reply or the wait for the finished work? I'm measuring the first reply unless you pick something else in t1.")]);
+  assert.equal(run2.verdict, "fail");
+  assert.match(run2.line("a"), /^- a not met.*1 over 30 words.*also holds what goes in its own tell_owner \("The chat reply speed job"\)/);
+  assert.match(run2.line("b"), /^- b met: lead sentence: "I can't give you a yes or no yet/);
+  assert.match(run2.line("d"), /^- d met: the answer names the missing data/);
+  const split = await run("c", [tell(1, "I can't say yet, because nothing tracks how fast chats reply to you, so there is no weekly number to compare."),
+    tell(1, "A job is working out p50 and p90 reply times for this week and last week; do you mean the first reply or the finished work?")]);
+  assert.equal(split.verdict, "pass", ["a", "b", "c", "d"].map(split.line).join("\n"));
+
   const typed = await run("6", [user(5, "use the p90 please"), tell(8, "This week the p90 wait was 4.1 min over 312 messages, up from 2.3 min the week before.")]);
   assert.equal(typed.verdict, "void");
   assert.match(typed.line("e"), /^- e not met.*use the p90/);
