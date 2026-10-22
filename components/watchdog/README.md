@@ -46,6 +46,14 @@ The watchdog finds Prime Agent sessions that stopped making progress and recover
 3. When the daemon refuses a notice for its session uuid ("Unknown active session"), the cycle hands it to the chat service's agent outbox (`api/agent/notice`), which relays it to the parent of a subagent with no worker or opens a root from its file.
 4. From 10-20 to 10-22 the Mac sent 1291 notices, 1203 of them to uuids the daemon refused, and 1011 to five jobs whose trees were gone: box-takeover, douyin duty box sync, vite-mem, discover page errors and limits-flagged-10-16.
 
+## Finished work
+
+1. A dropped turn of a job a chat lists (`api/threads/<chat>/agents`) gets a wake only while its work is owed: an open step of the chat's board names it, the chat shows it working, or an owner message to it has no reply.
+2. Otherwise it reads `WORK_DONE`, and the cycle writes one `"skip": "work_done"` line with the input's `owed_since` to `log.jsonl`, so later cycles read it as `NOTICED`.
+3. A job's brief is no owner message: a subagent's task opens with `[task from parent]`, and a chat brief opens with "Owner's words:".
+4. A chat list or board that does not answer never reads work as done.
+5. On 10-22 the Mac's cycles at 03:11Z and 03:22Z woke ten jobs whose turns dropped on 10-15, among them duties green fleet and checkin stuck_steps fix, and each found its work finished; 21 of the Mac's 71 wakes that day were of this kind.
+
 ## Install
 
 ```sh

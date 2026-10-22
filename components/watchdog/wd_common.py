@@ -196,6 +196,65 @@ def outbox_notice(session, root, text, timeout=60):
         return {'error': f'{type(error).__name__}: {error}'[:200]}
 
 
+def _get(path, timeout=30):
+    """The JSON answer of one GET to the chat service (the capability in the URL is the read key), or None."""
+    import urllib.request
+    service = chat_service()
+    if not service:
+        return None
+    try:
+        with urllib.request.urlopen(service[0] + path, timeout=timeout) as response:
+            return json.loads(response.read().decode() or 'null')
+    except (OSError, ValueError):
+        return None
+
+
+def open_steps(board):
+    """The ids of a board's plan steps that are neither done nor dropped, children included."""
+    found, todo = set(), list((board or {}).get('plan') or [])
+    while todo:
+        step = todo.pop()
+        if isinstance(step, dict):
+            if step.get('status') not in ('done', 'dropped') and isinstance(step.get('id'), str):
+                found.add(step['id'])
+            todo.extend(step.get('children') or [])
+    return found
+
+
+def chat_jobs():
+    """{session id: (chat id, state, open step ids that name it)} for every agent a chat lists (api/threads/<chat>/agents, the chat's agents
+    panel, with its board's open steps), or None when the chat list or any chat did not answer, so no job reads as finished on a failed read."""
+    chats = chat_ids('chats.json')
+    if not chats:
+        return None
+    jobs = {}
+    for chat in sorted(chats):
+        listed, board = _get(f'api/threads/{chat}/agents'), _get(f'api/agent/board?chat={chat}')
+        if not isinstance(listed, dict) or not isinstance(listed.get('agents'), list):
+            return None
+        live = open_steps(board) if isinstance(board, dict) else None
+        for agent in listed['agents']:
+            sid = agent.get('sessionId') if isinstance(agent, dict) else None
+            if isinstance(sid, str) and sid not in jobs:
+                steps = [s for s in agent.get('steps') or [] if isinstance(s, str)]
+                jobs[sid] = (chat, agent.get('state'), steps if live is None else [s for s in steps if s in live], live is None)
+    return jobs
+
+
+def work_done(sid, owner_owed, jobs):
+    """Why a dropped turn of a chat's job owes no work, or None: the chat lists the job, no owner message to it is unanswered, no open step
+    of the chat's board names it, and the chat does not show it working. On 10-22 at 03:11Z and 03:22Z the Mac's cycles woke ten jobs whose
+    turns dropped on 10-15, among them duties green fleet (p456 done) and checkin stuck_steps fix, and each found its work finished or taken
+    over and stopped, a full turn each for nothing."""
+    job = (jobs or {}).get(sid)
+    if not job or owner_owed:
+        return None
+    chat, state, steps, unread = job
+    if state == 'working' or steps or unread:
+        return None
+    return f"the chat {chat} lists it {state or 'with no state'} and no open step of its board names it"
+
+
 def _run(*argv):
     """stdout of argv run directly. A `bash -lc` wrapper sourced nvm.sh and cost ~1 s CPU per call on us-metal02."""
     try:

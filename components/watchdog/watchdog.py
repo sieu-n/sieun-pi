@@ -11,8 +11,8 @@ import os
 import re
 import time
 
-from wd_common import (LOG_F, STATE_F, WATCH, _run, _tail_events, _ts, chat_ids, credential_wait_at, gone_reason, log, outbox_notice, pa,
-                       stop_reason, tree_root)
+from wd_common import (LOG_F, STATE_F, WATCH, _run, _tail_events, _ts, chat_ids, chat_jobs, credential_wait_at, gone_reason, log, outbox_notice,
+                       pa, stop_reason, tree_root, work_done)
 from wd_daemon import daemon_call, ui_retry, unwedge
 from wd_heartbeats import heartbeat_rearm
 from wd_probe import probe_model, probe_verdict
@@ -48,6 +48,10 @@ NOTE_PREFIXES = ('[watchdog]', '[check-in] ', '[job] ', '[reply check] ', '[brie
                  '[board] Decisions not on the scratchpad: ', 'Prime Agent restarted after an update', 'Watchdog recovery checkpoint', '[from ')
 # chat-feed.ts PRIME_NOTE: Prime's notes open with a snake_case tag such as <provider_quota_resumed>.
 PRIME_NOTE = re.compile(r'^<[a-z]+(?:_[a-z]+)+>\s')
+# A job's brief quotes the owner and is no message from him: a subagent's task opens with "[task from parent]", and every chat brief opens
+# with "Owner's words:" (poteto-mode and the chat brief rules).
+BRIEF_PREFIX = '[task from parent]'
+BRIEF_WORDS = "Owner's words:"
 # chat-feed.ts OWNER_RETRY_MARK: a server note that restarts a failed owner turn keeps that turn the owner's.
 OWNER_RETRY_MARK = "The owner's message is still unanswered: "
 
@@ -74,11 +78,14 @@ def from_owner(e):
         return False
     cs = m.get('content')
     text = (cs if isinstance(cs, str) else ' '.join(c.get('text') or '' for c in cs if isinstance(c, dict)) if isinstance(cs, list) else '').strip()
+    if text.startswith(BRIEF_PREFIX) or BRIEF_WORDS in text[:300]:
+        return False
     return OWNER_RETRY_MARK in text or not (text.startswith(NOTE_PREFIXES) or PRIME_NOTE.match(text))
 
 
 def owed_input(evs):
-    """-> (last_input, owed_since): the time of the newest input and of the first input no turn has answered yet, both None when nothing is owed.
+    """-> (last_input, owed_since, owner_owed): the time of the newest input, of the first input no turn has answered yet (None when nothing
+    is owed), and whether an owed input is an owner message with no reply.
 
     An input is a user message, a tool result or a custom message of PROMPT_TYPES. A turn answers its inputs when the assistant said
     something, or when it ended normally (stopReason "stop") with no owner message among them:
@@ -102,7 +109,7 @@ def owed_input(evs):
             last_input = ts
             owed_since = owed_since or ts
             owner_owed = owner_owed or from_owner(e)
-    return (last_input, owed_since) if owed_since else (last_input, None)
+    return (last_input, owed_since, owner_owed) if owed_since else (last_input, None, False)
 
 
 def snapshot():
@@ -120,7 +127,7 @@ def snapshot():
             m = e.get('message') or {}
             if e.get('type') == 'message' and m.get('role') == 'assistant' and said_something(m):
                 last_asst = _ts(e.get('timestamp'))
-        last_input, owed_since = owed_input(evs)
+        last_input, owed_since, owner_owed = owed_input(evs)
         awaiting = round((now - last_input).total_seconds() / 60, 1) if owed_since else None
         lm = (last_msg or {}).get('message') or {}
         limited = lm.get('role') == 'assistant' and lm.get('stopReason') == 'error' and (
@@ -165,6 +172,7 @@ def snapshot():
             stale_min=round((now - last_any).total_seconds() / 60, 1) if last_any else None,
             awaiting_min=awaiting,
             owed_since=owed_since.isoformat() if owed_since else None,
+            owner_owed=owner_owed,
             limited=limited,
             last_asst_min=last_asst_min,
             sleepy=sleepy,
@@ -205,7 +213,7 @@ def read_log(hours=3):
             e = json.loads(ln)
         except Exception:
             continue
-        if e.get('owed_since') and e.get('sid') and not e.get('skip'):
+        if e.get('owed_since') and e.get('sid') and e.get('skip') in (None, 'work_done'):
             noticed.add((e['sid'], e['owed_since']))
         t = _ts(e.get('at'))
         if t and t >= cut and e.get('sid') and not e.get('skip'):
@@ -236,7 +244,7 @@ def classify(r, prev, repeats=None):
         return 'HELD', 'under manual diagnosis, watchdog hands off'
     if r.get('stopped') and r['life'] == 'live':
         return 'ARCHIVED', r['stopped']
-    """-> (verdict, reason). Verdicts: SELF, HELD, ARCHIVED, NOTICED, OK, BUSY_TOOL, SUSPECT, FROZEN_TURN, FROZEN_TOOL, STUCK_TOOL."""
+    """-> (verdict, reason). Verdicts: SELF, HELD, ARCHIVED, NOTICED, WORK_DONE, OK, BUSY_TOOL, SUSPECT, FROZEN_TURN, FROZEN_TOOL, STUCK_TOOL."""
     if r['life'] == 'live' and r['act'] == 'idle' and (r.get('awaiting_min') or 0) >= 30 and r.get('limited'):
         # The turn ended on a 429 or a pi-pool slot refusal, and the chat service's idle unload stops such a session while the pool holds
         # its tree. resume_paused.py and the chat revive continue it once `pi-pool who` admits the tree. From 06:51Z to 08:31Z on 10-19
@@ -245,6 +253,8 @@ def classify(r, prev, repeats=None):
         return 'POOL_WAIT', 'last turn failed on a provider rate limit or a pi-pool hold; the resume sweep continues it once the pool admits its tree'
     if r['life'] == 'live' and r['act'] == 'idle' and (r.get('awaiting_min') or 0) >= 30 and r.get('noticed'):
         return 'NOTICED', f"input owed since {r['owed_since']} already got its one resume notice"
+    if r['life'] == 'live' and r['act'] == 'idle' and (r.get('awaiting_min') or 0) >= 30 and r.get('work_done'):
+        return 'WORK_DONE', r['work_done']
     if r['life'] == 'live' and r['act'] == 'idle' and (r.get('awaiting_min') or 0) >= 30:
         # Idle with input that never got an answer = a turn dropped (machine sleep, worker
         # restart). A session genuinely waiting on its user ends with an ASSISTANT message,
@@ -469,7 +479,7 @@ def _cycle(dry_run=False, verbose=True):
     now, recs = snapshot()
     repeats, noticed = read_log()
     life = {r['sid']: r['life'] for r in recs}
-    shown = None
+    shown = jobs = None
     for r in recs:
         r['noticed'] = (r['sid'], r.get('owed_since')) in noticed
         if r['stopped'] or r['life'] != 'live' or not (r['act'] == 'working' or (r.get('awaiting_min') or 0) >= 30):
@@ -479,6 +489,10 @@ def _cycle(dry_run=False, verbose=True):
             shown = (chats | threads) if chats is not None and threads is not None else False
         root = tree_root(r.get('file'))
         r['stopped'] = root and gone_reason(r['file'], life.get(root), shown if shown is not False else None)
+        if not r['stopped'] and r['act'] == 'idle' and not r['noticed']:
+            if jobs is None:
+                jobs = chat_jobs() or {}
+            r['work_done'] = work_done(r['sid'], r.get('owner_owed'), jobs)
     swap, load = pressure()
     blocked = ('swap', swap, SWAP_CAP_GIB) if swap > SWAP_CAP_GIB else \
         ('load', load, LOAD_CAP) if load > LOAD_CAP else None
@@ -520,6 +534,10 @@ def _cycle(dry_run=False, verbose=True):
         verdicts.append(r)
         if v in ('DROPPED_TURN', 'PHANTOM_TURN', 'FROZEN_TURN', 'FROZEN_TOOL', 'STUCK_TOOL') and not admit(r, v):
             continue
+        if v == 'WORK_DONE' and not dry_run:
+            with open(LOG_F, 'a') as f:
+                f.write(json.dumps({'skip': 'work_done', 'id': r['id'], 'sid': r['sid'], 'name': r['name'], 'owed_since': r.get('owed_since'),
+                                    'why': why, 'at': dt.datetime.now(dt.timezone.utc).isoformat()}) + '\n')
         if v == 'DROPPED_TURN' and not dry_run:
             daemon_call({'type': 'resume_queue', 'activeSessionId': r['id']})
             m = (f"[watchdog] Your last turn was dropped {r.get('awaiting_min')} minutes ago (machine sleep or "
@@ -625,7 +643,7 @@ def _cycle(dry_run=False, verbose=True):
     if verbose:
         print(f'== watchdog {now.isoformat(timespec="seconds")}')
         order = {'FROZEN_TURN': 0, 'FROZEN_TOOL': 0, 'STUCK_TOOL': 0, 'SUSPECT': 1,
-                 'PHANTOM_TURN': 0, 'DROPPED_TURN': 0, 'NOTICED': 1, 'MODEL_STALL': 1, 'POOL_WAIT': 1, 'CHILD_WEDGED': 1, 'BUSY_TOOL': 2, 'IN_FLIGHT': 2,
+                 'PHANTOM_TURN': 0, 'DROPPED_TURN': 0, 'NOTICED': 1, 'WORK_DONE': 1, 'MODEL_STALL': 1, 'POOL_WAIT': 1, 'CHILD_WEDGED': 1, 'BUSY_TOOL': 2, 'IN_FLIGHT': 2,
                  'HELD': 2, 'ARCHIVED': 3, 'OK': 3, 'SELF': 4}
         for r in sorted([x for x in verdicts if x['verdict'] not in ('OK', 'SELF', 'IN_FLIGHT')],
                         key=lambda x: (order[x['verdict']], -(x['stale_min'] or 0))):
