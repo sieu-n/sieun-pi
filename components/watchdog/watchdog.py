@@ -190,7 +190,11 @@ def snapshot():
 
 
 def read_log(hours=3):
-    """-> (session-uuid -> count of watchdog recoveries in the last `hours`, the (session-uuid, owed_since) pairs whose resume notice was sent)."""
+    """-> (session-uuid -> count of watchdog recoveries in the last `hours`, the (session-uuid, owed_since) pairs that got their resume notice).
+
+    A notice whose send failed counts too: on the Mac from 10-20 to 10-22, box-takeover, douyin duty box sync, vite-mem, discover page errors and
+    limits-flagged-10-16 got 1011 notices, every send failed with "Unknown active session", and their retries took the cycle's resume budget.
+    """
     if not LOG_F.exists():
         return {}, set()
     cut = dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=hours)
@@ -200,7 +204,7 @@ def read_log(hours=3):
             e = json.loads(ln)
         except Exception:
             continue
-        if e.get('owed_since') and e.get('sid') and not e.get('skip') and e.get('send_rc') == 0:
+        if e.get('owed_since') and e.get('sid') and not e.get('skip'):
             noticed.add((e['sid'], e['owed_since']))
         t = _ts(e.get('at'))
         if t and t >= cut and e.get('sid') and not e.get('skip'):
@@ -512,6 +516,9 @@ def _cycle(dry_run=False, verbose=True):
                  f"worker restart) and the input was never answered. Nothing in your history was lost. "
                  f"Re-check the state of your last step before trusting it, then continue the task and commit.")
             sd = pa('send', r['sid'], m)
+            if sd.returncode != 0:
+                time.sleep(5)
+                sd = pa('send', r['sid'], m)
             act = {'id': r['id'], 'sid': r['sid'], 'name': r['name'], 'method': 'resume_queue + send',
                    'why': why, 'owed_since': r.get('owed_since'), 'send_rc': sd.returncode, 'send_out': (sd.stdout or sd.stderr).strip()[:120],
                    'at': dt.datetime.now(dt.timezone.utc).isoformat()}

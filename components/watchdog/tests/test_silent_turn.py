@@ -17,6 +17,7 @@ import watchdog  # noqa: E402
 
 SID = '01a15f90-afb8-7434-814a-2e5fbcafb1ec'
 CHAT_FEED = Path(__file__).resolve().parents[2] / 'user-history/src/shared/chat-feed.ts'
+SLEEP = watchdog.time.sleep
 TURNS = Path(__file__).resolve().parents[2] / 'user-history/src/shared/turns.ts'
 
 
@@ -75,6 +76,7 @@ class SilentTurn(unittest.TestCase):
             setattr(watchdog, name, value)
         wd_common.CHAT_DATA = self.saved_data
         shutil.rmtree(self.dir)
+        watchdog.time.sleep = SLEEP
 
     def cycle(self, events, send_rc=0):
         self.file.write_text(''.join(json.dumps(e) + '\n' for e in [{'type': 'session', 'id': SID, 'timestamp': at(400)}, *events]))
@@ -135,11 +137,12 @@ class SilentTurn(unittest.TestCase):
         verdict, sends = self.cycle([user('is the audit done?', 50), tell_owner(49.6), tool_result(49.5), assistant(49.4)])
         self.assertEqual((verdict, sends), ('OK', []))
 
-    def test_a_failed_send_leaves_the_input_recoverable(self):
+    def test_a_failed_send_is_tried_twice_and_then_uses_up_the_notice(self):
+        watchdog.time.sleep = lambda seconds: None
         owed = [*ANSWERED, user('is the audit done?', 80)]
         first = self.cycle(owed, send_rc=1)
         second = self.cycle(owed)
-        self.assertEqual((first[0], second[0], len(self.calls_of('send'))), ('DROPPED_TURN', 'DROPPED_TURN', 2))
+        self.assertEqual((first[0], second[0], len(self.calls_of('send'))), ('DROPPED_TURN', 'NOTICED', 2))
 
     def test_the_prompt_types_match_the_chat_feed(self):
         names = re.search(r'const PROMPT_TYPES = new Set\(\[([^\]]*)\]\)', TURNS.read_text()).group(1)
