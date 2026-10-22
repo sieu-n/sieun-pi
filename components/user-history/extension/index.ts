@@ -17,6 +17,7 @@ import { ImageFitter } from "../src/context-images.ts";
 import { shortNotices } from "../src/prime-notices.ts";
 import { childCancels, childEndId, type JobCancel, JOB_CANCELS_FILE, noticeOfCancel, parseJobCancels, stampOf, withCancelledNotices } from "../src/job-cancels.ts";
 import { chatCheckIn, checkInLine, checkInSettings, parseChatCheckIn } from "../src/checkin-settings.ts";
+import { planHasOpenStep } from "../src/checkin-steps.ts";
 import { CLEAN_ROOM_CHATS_FILE, CLEAN_ROOM_CORRECTIONS_FILE, CORRECTION_TOOL, CorrectionLedger, correctionResult, ENFORCEMENTS, type Ledger, parseCorrectionCall } from "../src/chat-corrections.ts";
 import { IdIndex } from "../src/id-index.ts";
 import { trialHarnessDir, withTrialHarness } from "../src/trial-harness.ts";
@@ -109,7 +110,7 @@ export default function historyExtension(pi: ExtensionAPI): void {
       } else {
         const settings = checkInSettings(join(dataDir(), "check-in-settings.json"));
         changed = change ? [await chatCheckIn(settings, sessionId, change, now)] : [];
-        checkIn = checkInLine(await settings.get(sessionId), now);
+        checkIn = checkInLine(await settings.get(sessionId), now, planHasOpenStep(board));
       }
       if (writes && board) return { content: [{ type: "text", text: [...changed, ...summaries, boardRevLine(board)].join("\n") }], details: undefined };
       const agents = agentLines(await chatAgentsOf(sessionId), now);

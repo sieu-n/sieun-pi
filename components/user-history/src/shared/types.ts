@@ -315,7 +315,11 @@ export interface SessionRow {
  * A chat's check-in schedule in the sessions stream: its interval, the pause in force (`pausedUntil`, "forever" until resumed, null when none) and
  * when the next one runs (null while paused until resumed; after a timed pause it can be later than the pause end).
  */
-export interface CheckInState { everyMs: number; paused: boolean; pausedUntil: number | "forever" | null; nextAt: number | null }
+/**
+ * A chat's check-in as it runs: `everyMs` is the daily interval while the plan has no open step (`planCheckIn`), and then `planEveryMs` is
+ * the chat's own interval, which runs again from its next open step.
+ */
+export interface CheckInState { everyMs: number; planEveryMs?: number; paused: boolean; pausedUntil: number | "forever" | null; nextAt: number | null }
 /** `GET api/threads/<id>/check-in`: the state and the last check-in this service ran (null before its first). */
 export interface CheckInView extends CheckInState { lastAt: number | null }
 /**

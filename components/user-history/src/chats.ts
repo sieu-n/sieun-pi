@@ -9,8 +9,8 @@ import { activeCorrections, handoffRules } from "./chat-corrections.ts";
 import { deadWakes, heartbeatsFile, landCarries, liveThreads, parkFiles, quotaParks, readHeartbeats, readTrain, trainFile, trainRepo, withDeadWakes, withQuotaParks, withWakes } from "./checkin-load.ts";
 import { flagStreaks } from "./checkin-repeats.ts";
 import { boardPrs, type DoneFacts, metricFacts } from "./checkin-done.ts";
-import { activePause, changeCheckIn, type CheckInActor, type CheckInChange, CheckInRefused, type CheckInSetting, DEFAULT_CHECK_IN, nextCheckIn } from "./checkin-settings.ts";
-import { checkInDue, childName, childWorking, type JobFact, jobFacts, liveJobs, liveWindowMs, nestedJobs, OPEN, parkedBy, poolWait, walk } from "./checkin-steps.ts";
+import { activePause, changeCheckIn, type CheckInActor, type CheckInChange, CheckInRefused, type CheckInSetting, DEFAULT_CHECK_IN, nextCheckIn, planCheckIn } from "./checkin-settings.ts";
+import { checkInDue, childName, childWorking, type JobFact, jobFacts, liveJobs, liveWindowMs, nestedJobs, OPEN, parkedBy, planHasOpenStep, poolWait, walk } from "./checkin-steps.ts";
 import { treeWakes, type Wake } from "./wakes.ts";
 import { withQueuePlaces } from "./chat-turn-queue.ts";
 import { type CheckInMemory, checkInPrecheck, checkInPrecheckText, classCounts, convergenceMisses, endedJobs, endedWithoutReport, finishedJobs, JOB_CLEANUP_EVERY_MS, ROOT_END_EVERY_MS, jobEnd, jobEndText,
@@ -684,6 +684,18 @@ export class Chats {
     catch (error) { this.log(`check-in settings: ${error instanceof Error ? error.message : String(error)}`); return {}; }
   }
 
+  /**
+   * Whether each chat's plan has an open step, read before a wake queues anything: the hub's board while it holds the chat, else the file view,
+   * which parses a board again only once its file changed. A board that cannot be read counts as open, so its chat keeps its own interval.
+   */
+  private async plansOpen(ids: Iterable<string>): Promise<Map<string, boolean>> {
+    return new Map(await Promise.all([...ids].map(async id => {
+      const state = this.threads.state?.(id);
+      const board = state?.board !== undefined ? Promise.resolve(state.board) : (this.source.boardView ?? this.source.board).call(this.source, id);
+      return [id, await board.then(planHasOpenStep, () => true)] as const;
+    })));
+  }
+
   /** The chats whose check-in the owner paused now (`ownerPause`): their threads are parked by him, so a check-in asks them for nothing. */
   private async ownerPaused(now: number): Promise<Set<string>> {
     const settings = await this.settings();
@@ -703,6 +715,7 @@ export class Chats {
   async tick(): Promise<string[]> {
     await this.load();
     const settings = await this.settings();
+    const open = await this.plansOpen(this.chatIds);
     const now = this.now();
     const woke = wokeFromSleep(this.lastTick, now);
     if (woke) this.log(`chats: woke after ${Math.round((now - this.lastTick!) / 1000)} s; transient failures restart now`);
@@ -713,7 +726,7 @@ export class Chats {
     const active = new Set<string>();
     for (const id of this.chatIds) {
       if (this.children.has(id) && now - (this.cleanedAt.get(id) ?? -Infinity) >= JOB_CLEANUP_EVERY_MS) { this.cleanedAt.set(id, now); this.queue(id, () => this.cleanJobs(id)); }
-      const setting = settings[id] ?? DEFAULT_CHECK_IN;
+      const setting = planCheckIn(settings[id] ?? DEFAULT_CHECK_IN, open.get(id) ?? true);
       const paused = activePause(setting, now) !== null;
       if (paused && ownerPause(setting)) continue;
       active.add(id);
@@ -1364,10 +1377,13 @@ export class Chats {
     }));
   }
 
-  private state(id: string, setting: CheckInSetting, now: number): CheckInView {
+  /** A chat's check-in as it runs, with the daily interval while its plan has no open step (`planCheckIn`). */
+  private state(id: string, own: CheckInSetting, planOpen: boolean, now: number): CheckInView {
+    const setting = planCheckIn(own, planOpen);
     const pausedUntil = activePause(setting, now);
     const lastAt = this.lastCheckIn.get(id) ?? null;
-    return { everyMs: setting.everyMs, paused: pausedUntil !== null, nextAt: nextCheckIn(setting, lastAt ?? now - setting.everyMs, now), pausedUntil, lastAt };
+    return { everyMs: setting.everyMs, ...(setting !== own ? { planEveryMs: own.everyMs } : {}), paused: pausedUntil !== null,
+      nextAt: nextCheckIn(setting, lastAt ?? now - setting.everyMs, now), pausedUntil, lastAt };
   }
 
   /**
@@ -1390,9 +1406,10 @@ export class Chats {
   async checkIns(): Promise<ReadonlyMap<string, CheckInState>> {
     await this.load();
     const settings = await this.settings();
+    const open = await this.plansOpen(this.chatIds);
     const now = this.now();
     return new Map([...this.chatIds].map(id => {
-      const { lastAt: _lastAt, ...state } = this.state(id, settings[id] ?? DEFAULT_CHECK_IN, now);
+      const { lastAt: _lastAt, ...state } = this.state(id, settings[id] ?? DEFAULT_CHECK_IN, open.get(id) ?? true, now);
       return [id, state];
     }));
   }
@@ -1404,7 +1421,8 @@ export class Chats {
   async checkInView(id: string): Promise<CheckInView | null> {
     await this.load();
     if (!this.chatIds.has(id)) return null;
-    return this.state(id, await this.source.settings.get(id), this.now());
+    const setting = await this.source.settings.get(id);
+    return this.state(id, setting, (await this.plansOpen([id])).get(id) ?? true, this.now());
   }
 
   /**
@@ -1422,7 +1440,7 @@ export class Chats {
       return result.setting;
     });
     if (refused) throw new CheckInRefused(`check-in refused: ${refused}`);
-    return this.state(id, setting, now);
+    return this.state(id, setting, (await this.plansOpen([id])).get(id) ?? true, now);
   }
 
   /**

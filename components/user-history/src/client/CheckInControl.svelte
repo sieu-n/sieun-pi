@@ -10,7 +10,7 @@
   import { clock } from "./clock.svelte.ts";
   import { clockTime } from "./format.ts";
   import { tooltip } from "./ui/tooltip.ts";
-  import { checkInApi, checkInButton, nextNine, pauseNow, previewCheckIn } from "./check-in.ts";
+  import { checkInApi, checkInButton, everyText, nextNine, pauseNow, previewCheckIn } from "./check-in.ts";
   import { CHECK_IN_MIN_MINUTES, CHECK_IN_PRESET_MINUTES, type CheckInPause, type CheckInState } from "../shared/types.ts";
 
   /**
@@ -71,7 +71,8 @@
   const summary = $derived.by(() => {
     if (!current) return "";
     if (pause !== null) return pause === "forever" ? "Paused until you resume it." : `Paused until ${clockTime(pause)}.`;
-    return `Every ${Math.round(current.everyMs / MINUTE)} min${current.nextAt !== null ? `, next at ${clockTime(Math.max(current.nextAt, clock.now))}` : ""}.`;
+    const every = everyText(current);
+    return `${every[0]!.toUpperCase()}${every.slice(1)}${current.nextAt !== null ? `, next at ${clockTime(Math.max(current.nextAt, clock.now))}` : ""}.`;
   });
 </script>
 
@@ -89,7 +90,7 @@
       <div class="label">Every</div>
       <div class="chips" role="group" aria-label="Interval">
         {#each CHECK_IN_PRESET_MINUTES as minutes (minutes)}
-          <button type="button" class="chip" aria-pressed={current.everyMs === minutes * MINUTE} onclick={() => change({ everyMs: minutes * MINUTE })}>{presetLabel(minutes)}</button>
+          <button type="button" class="chip" aria-pressed={(current.planEveryMs ?? current.everyMs) === minutes * MINUTE} onclick={() => change({ everyMs: minutes * MINUTE })}>{presetLabel(minutes)}</button>
         {/each}
       </div>
       <form class="custom" onsubmit={setCustom}>

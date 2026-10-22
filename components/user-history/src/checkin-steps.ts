@@ -335,7 +335,11 @@ export const liveWindowMs = (everyMs: number): number => Math.min(everyMs, LIVE_
  * these has nothing to check, and no duty job starts.
  */
 export function checkInDue(facts: readonly JobFact[], board: ChatBoard | null, boardError?: string): boolean {
-  if (boardError || facts.some(fact => fact.state === "working")) return true;
+  return !!boardError || facts.some(fact => fact.state === "working") || planHasOpenStep(board);
+}
+
+/** Whether the plan has an open step (todo, doing, blocked) at any depth. */
+export function planHasOpenStep(board: ChatBoard | null): boolean {
   let open = false;
   walk(board?.plan ?? [], item => { if (OPEN.has(item.status)) open = true; });
   return open;

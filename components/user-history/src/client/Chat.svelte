@@ -6,7 +6,7 @@
   import { ui, BOARD_DEFAULT, boardMax, BOARD_MIN } from "./ui.svelte.ts";
   import { clock } from "./clock.svelte.ts";
   import { createdSessions } from "../shared/created-sessions.ts";
-  import { briefFor, briefFromCode, findJob, isActiveJob, jobName, jobNames, jobViews, reportsFor, spawnCalls } from "./jobs.ts";
+  import { briefFor, briefFromCode, findJob, jobName, jobNames, jobViews, reportsFor, spawnCalls } from "./jobs.ts";
   import { mentionIndex, openAgentTodos } from "./board.ts";
   import { dutiesFeed } from "./duties.svelte.ts";
   import { isThreadBusy } from "../shared/thread-state.ts";
@@ -14,7 +14,7 @@
   import { parseArtifactTarget } from "../shared/artifact-link.ts";
   import { replyExcerpt } from "./reply.ts";
   import { proseClick } from "./prose.ts";
-  import type { BoardOp, ChatAgent, ChatBoard, ChildAgent, ChildPulse, ChildUsage, ImageInput, ModelCatalog, ModelInfo, PlanItem, ThinkingLevel } from "../shared/types.ts";
+  import type { BoardOp, ChatAgent, ChatBoard, ChildAgent, ChildPulse, ChildUsage, ImageInput, ModelCatalog, ModelInfo, ThinkingLevel } from "../shared/types.ts";
   import ChatComposer from "./ChatComposer.svelte";
   import ChatLines from "./ChatLines.svelte";
   import BoardPanel from "./BoardPanel.svelte";
@@ -140,15 +140,9 @@
     if (count || countSeen !== null) countSeen = count;
   });
   const jobs = $derived(jobViews(children, started, usage, sessionId => store.session(sessionId)));
-  const runningCount = $derived(jobs.filter(isActiveJob).length);
   const pulses = $derived(new Map<string, ChildPulse>((row?.pulse?.subagents ?? []).map(pulse => [pulse.rlmChildId, pulse])));
-  const hasOpenStep = (items: readonly PlanItem[]): boolean => items.some(item => item.status === "todo" || item.status === "doing" || item.status === "blocked" || hasOpenStep(item.children));
-  /** The server's check-in tick runs every 15 minutes by default while a job runs or a plan step is open (todo, doing, blocked), and steers the chat only on a change. */
-  const checkIn = $derived.by(() => {
-    // Before the snapshot nothing says the chat is idle, so the row's check-in shows; the board panel reloads duties when this text changes.
-    if (!thread || runningCount || hasOpenStep(board?.plan ?? [])) return checkInStatus(row?.checkIn, clock.now);
-    return { text: "Check-in paused, nothing open", on: false };
-  });
+  /** The server's check-in at the chat's interval, daily while the plan has no open step; the board panel reloads duties when this text changes. */
+  const checkIn = $derived(checkInStatus(row?.checkIn, clock.now));
 
   /** The phone switch: the feed or the board. A wide window shows the board in the side panel. */
   let view = $state<"chat" | "board">("chat");

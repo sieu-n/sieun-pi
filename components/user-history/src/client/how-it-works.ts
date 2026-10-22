@@ -59,7 +59,7 @@ export function settingText({ setting, default: fallback }: Rule): string {
 
 const CHAT_RULES: Rule[] = [
   { id: "check-in-every", title: "Check-in interval", value: q(CHECK_IN_MS, "ms"), setting: { kind: "chat", where: `the chat's Check-in control (${CHECK_IN_MIN_MINUTES} min or more)` },
-    text: "How often the app runs a chat's check-in. A check-in with nothing open starts no job.", source: { file: USER_HISTORY + "checkin-settings.ts", symbol: "CHECK_IN_MS" } },
+    text: "How often the app runs a chat's check-in. It runs daily while the plan has no open step, and a check-in with nothing open starts no job.", source: { file: USER_HISTORY + "checkin-settings.ts", symbol: "CHECK_IN_MS" } },
   { id: "open-goals", title: "Open goals", value: q(BOARD_LIMITS.openGoals, "count"), setting: CODE,
     text: "Past this many open goals the check-in flags each goal with no number or no live owner job. A goal with a target keeps its number under an area goal. New work goes under the goal it belongs to.", source: { file: USER_HISTORY + "shared/chat-board.ts", symbol: "BOARD_LIMITS.openGoals" } },
   { id: "plan-items", title: "Plan size", value: q(BOARD_LIMITS.planItems, "count"), setting: CODE,

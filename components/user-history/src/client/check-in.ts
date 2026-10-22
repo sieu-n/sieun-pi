@@ -10,10 +10,17 @@ export const checkInApi = {
   set: (id: string, change: { everyMs?: number; pause?: CheckInPause | null }) => post<CheckInView>(route(id), change, undefined, OWNER_UI_HEADERS),
 };
 
-/** "5m", "1h", "90m". */
+/** "5m", "1h", "90m", "daily". */
 export function everyLabel(everyMs: number): string {
   const minutes = Math.round(everyMs / MINUTE);
+  if (minutes === 24 * 60) return "daily";
   return minutes % 60 === 0 ? `${minutes / 60}h` : `${minutes}m`;
+}
+
+/** The interval in a sentence: "every 120 min", or "daily while the plan has no open step, then every 120 min" (`planEveryMs`). */
+export function everyText(state: CheckInState): string {
+  if (state.planEveryMs !== undefined) return `daily while the plan has no open step, then every ${Math.round(state.planEveryMs / MINUTE)} min`;
+  return `every ${Math.round(state.everyMs / MINUTE)} min`;
 }
 
 /** Time left until `at`, rounded up: "45m", "2h". */
@@ -37,7 +44,7 @@ export function checkInButton(state: CheckInState, now: number): { word: string;
 export function checkInStatus(state: CheckInState | undefined, now: number): { text: string; on: boolean } {
   if (!state) return { text: "Check-in every 120 min, one check-in job each", on: true };
   const pause = pauseNow(state, now);
-  if (pause === null) return { text: `Check-in every ${Math.round(state.everyMs / MINUTE)} min, one check-in job each`, on: true };
+  if (pause === null) return { text: `Check-in ${everyText(state)}, one check-in job each`, on: true };
   return { text: pause === "forever" ? "Check-in paused until you resume it" : `Check-in paused until ${clockTime(pause)}`, on: false };
 }
 
@@ -51,10 +58,13 @@ export function nextNine(now: number): number {
 
 /** What the control shows before the server answers a change. */
 export function previewCheckIn(state: CheckInState, change: { everyMs?: number; pause?: CheckInPause | null }, now: number): CheckInState {
-  const everyMs = change.everyMs ?? state.everyMs;
+  const own = change.everyMs ?? state.planEveryMs ?? state.everyMs;
+  // While the plan has no open step the daily interval runs, and an interval under a day waits for the next open step.
+  const idle = state.planEveryMs !== undefined && own < state.everyMs;
+  const everyMs = idle ? state.everyMs : own;
   const lastAt = (state.nextAt ?? now) - state.everyMs;
   const pausedUntil = change.pause === undefined ? pauseNow(state, now) : change.pause === null ? null
     : change.pause === "forever" ? "forever" : change.pause === "1h" ? now + 60 * MINUTE : nextNine(now);
   const nextAt = pausedUntil === "forever" ? null : Math.max(now, lastAt + everyMs, pausedUntil ?? 0);
-  return { everyMs, paused: pausedUntil !== null, pausedUntil, nextAt };
+  return { everyMs, ...(idle ? { planEveryMs: own } : {}), paused: pausedUntil !== null, pausedUntil, nextAt };
 }

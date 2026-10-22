@@ -32,6 +32,15 @@ export class CheckInRefused extends Error {
 }
 export const DEFAULT_CHECK_IN: CheckInSetting = { everyMs: CHECK_IN_MS };
 
+/**
+ * The interval of a chat whose plan has no open step (todo, doing, blocked): once a day. Owner, 10-22: "also for Check in, make it Default to
+ * daily if plan list is empty". The stored setting stays as set, so the chat's own interval runs again from its next open step, and an
+ * interval longer than a day stays too.
+ */
+export const IDLE_CHECK_IN_MS = 24 * 60 * 60_000;
+export const planCheckIn = (setting: CheckInSetting, planOpen: boolean): CheckInSetting =>
+  planOpen || setting.everyMs >= IDLE_CHECK_IN_MS ? setting : { ...setting, everyMs: IDLE_CHECK_IN_MS };
+
 /** An interval the owner may set: whole minutes, 1 or more. */
 export const validCheckInEvery = (ms: unknown): ms is number =>
   typeof ms === "number" && Number.isSafeInteger(ms) && ms % 60_000 === 0 && ms >= CHECK_IN_MIN_MINUTES * 60_000;
@@ -65,14 +74,15 @@ export const localTime = (at: number): string => {
 };
 /** A time as the owner's local "HH:MM", for a notice about one event today. */
 export const clockTime = (at: number): string => localTime(at).slice(11);
-/** The line the chat_board tool shows the chat about its own check-in. */
-export function checkInLine(setting: CheckInSetting, now: number): string {
+/** The line the chat_board tool shows the chat about its own check-in, with the daily interval while its plan has no open step (`planCheckIn`). */
+export function checkInLine(setting: CheckInSetting, now: number, planOpen = true): string {
   const pause = activePause(setting, now);
   if (pause === "forever") {
     if (setting.pausedBy === "agent") return `Check-in: paused by agent ${setting.setter ?? UNKNOWN_AGENT} until resumed; check_in {pause: null} resumes it`;
     return "Check-in: paused until the owner resumes it";
   }
   if (pause !== null) return `Check-in: paused until ${localTime(pause)}`;
+  if (planCheckIn(setting, planOpen) !== setting) return `Check-in: daily while the plan has no open step, then every ${setting.everyMs / 60_000} min`;
   return `Check-in: every ${setting.everyMs / 60_000} min`;
 }
 

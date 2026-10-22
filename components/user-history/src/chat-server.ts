@@ -30,6 +30,7 @@ import { isPriority, LabelError } from "./chat-labels.ts";
 import { AccountLogins, listAccounts, PoolError, runAccountAction, UsageRefreshes } from "./chat-pool.ts";
 import { ThreadError } from "./chat-threads.ts";
 import { OutboxConflict } from "./outbox.ts";
+import { planHasOpenStep } from "./checkin-steps.ts";
 import { chatCheckIn, checkInLine, checkInSettings, type CheckInActor, type CheckInChange, CheckInRefused, OWNER_UI, parseChatCheckIn, UNKNOWN_AGENT, validCheckInEvery } from "./checkin-settings.ts";
 import { chooseFolder, resolveWorkspace, WorkspaceError } from "./chat-workspace.ts";
 import { parseBucket, parseGroup, parseMetric, parseWindow, UsageError } from "./usage/lgtm.ts";
@@ -849,7 +850,8 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
         const settings = checkInSettings(join(dirname(backend.boards.dir), "check-in-settings.json"));
         const now = Date.now();
         const changed = body.change === undefined ? [] : [await chatCheckIn(settings, chat, parseChatCheckIn(body.change), now)];
-        json(res, 200, { changed, line: checkInLine(await settings.get(chat), now) }); return;
+        const planOpen = await backend.boards.view(chat).then(planHasOpenStep, () => true);
+        json(res, 200, { changed, line: checkInLine(await settings.get(chat), now, planOpen) }); return;
       }
       if (route === "api/agent/jobs") {
         const jobs = jobRegistry(join(dirname(backend.boards.dir), "chat-jobs.json"));
