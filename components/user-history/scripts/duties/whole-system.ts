@@ -410,6 +410,10 @@ export function readSmoothness(lines: readonly string[], heads: ReadonlySet<stri
     if (entry.event === "vend") {
       const last = ended.at(-1);
       if (last?.session === entry.session && (entry.reason === "session_pin" || entry.reason === "pool_pin")) ended.pop();
+      // A vend with no unparked line before it means pi-pool had dropped the tree's wait (PLACE_KEEP_SEC after its slot), so the park was over.
+      // 01a15ede parked at 01:50Z on 10-22, asked nothing until 15:41Z, entered claude19 at 16:28Z with no unparked line, and read as passed
+      // for 1,060 min when its next park ended at 17:52Z.
+      parks.delete(entry.session);
       continue;
     }
     if (typeof entry.at !== "number" || entry.provider !== "anthropic") continue;

@@ -114,3 +114,13 @@ test("a tree pinned to its account neither passes nor is passed, as 01a11ba8 on 
   ], new Set(), FROM, RUN);
   assert.deepEqual(smooth.overtaken, [{ session: "b", minutes: 0 }]);
 });
+
+test("a vend with no unparked line before it ends the park, as 01a15ede's claude19 vend at 16:28Z on 10-22", () => {
+  const vend = (session: string): string => JSON.stringify({ ts: "local", event: "vend", provider: "anthropic", account: "x", reason: "switch", session });
+  const smooth = readSmoothness([
+    parked("a", "10:00:00"), vend("a"),
+    parked("b", "10:05:00"), unparked("b", "10:06:00"), vend("b"),
+    parked("a", "10:40:00"), unparked("a", "10:41:00"), vend("a"),
+  ], new Set(), FROM, RUN);
+  assert.deepEqual(smooth.overtaken, [{ session: "a", minutes: 0 }]);
+});
