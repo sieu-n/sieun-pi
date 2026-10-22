@@ -236,15 +236,17 @@ test("removed_provider_refs counts a removed provider named outside the kept gua
     line("apps/crawler-v3/docs/multi-platform-search.md", "The official `graph.facebook.com/ads_archive` API is political-ads-only"),
     line("apps/blog/content/kr-beauty-collabs-2026/data/kr-beauty-collabs.csv", "@sora_lab,ingredients,76000,6"),
     line("convex/search/upload.ts", "fetch('https://graph.instagram.com/v25.0/me')"),
-    // mail-check.mjs's GreenMail host on 10-22: "mailcheck-smtp.konti.bot" ends in "p.konti.bot" but is no research app host.
+    // The owner wants konti.bot gone but its redirect, so any konti.bot host counts, such as mail-check.mjs's old GreenMail host (10-22),
+    // while a Clerk test address @konti.bot names no host.
     line("scripts/staging/mail-check.mjs", "\thost: 'mailcheck-smtp.konti.bot',"),
+    line("scripts/staging/mail-check.mjs", "const MEMBER_EMAIL = 'mail-review+clerk_test@konti.bot';"),
     line("apps/web/src/research.ts", "const RESEARCH = 'https://p.konti.bot/api'"),
   ].join("\n");
   const tables = TABLES.replace('    "zernio"', '    "zerobounce": Integration(ZEROBOUNCE, "ZEROBOUNCE_API_KEY"),\n    "zernio"');
   const result = removedProviderRefs({ grep, tables }, 0);
   assert.ok(!("error" in result));
-  assert.deepEqual(result.flagged.map(flag => flag.item).sort(), ["apps/research-agent-be/src/media.py", "apps/research-agent-be/src/media.py", "apps/web/src/research.ts", "convex/search/upload.ts", "integration zerobounce"]);
-  assert.equal(ventMetrics(reads({ removed: { grep, tables } }), 0).metrics.removed_provider_refs, 5);
+  assert.deepEqual(result.flagged.map(flag => flag.item).sort(), ["apps/research-agent-be/src/media.py", "apps/research-agent-be/src/media.py", "apps/web/src/research.ts", "convex/search/upload.ts", "integration zerobounce", "scripts/staging/mail-check.mjs"]);
+  assert.equal(ventMetrics(reads({ removed: { grep, tables } }), 0).metrics.removed_provider_refs, 6);
   assert.equal(ventMetrics(reads(), 0).metrics.removed_provider_refs, 0);
   assert.equal(ventMetrics(reads({ removed: { grep: "", tables: "" } }), 0).metrics.removed_provider_refs, UNMEASURED);
 });
