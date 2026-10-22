@@ -184,7 +184,8 @@
   .fold-line:hover { background: var(--bg-hover); color: var(--text-muted); }
   .fold-latest, .fold-names { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .fold-count { flex: none; }
-  .fold-names { flex-shrink: 3; margin-left: -2px; }
+  /* The sender names give way before the latest line, so a wait keeps its time ("until 00:26") on a narrow feed. */
+  .fold-names { flex-shrink: 1000000; margin-left: -2px; }
   .fold-mark { display: inline-flex; flex: none; opacity: 0.7; }
   .dot-sep { flex: none; width: 3px; height: 3px; border-radius: 50%; background: currentColor; opacity: 0.6; }
   .notice { align-self: center; max-width: 90%; padding: 2px 10px; text-align: center; font-size: 12.5px; color: var(--text-faint); overflow-wrap: anywhere; }
