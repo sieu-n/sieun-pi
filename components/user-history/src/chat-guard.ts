@@ -239,6 +239,27 @@ const PROGRESS_MARK = "Not sent, it reports work still going";
  * blocker, falls to ASKS_HIM) and none of the 141 needed ones; on the owner's own turns, never held, they mark 9 of 387 sent lines.
  */
 const PROGRESS = /\bstill being \w+ed\b|\binterim\b|\b(?:I['’]ll|I will|we['’]ll|we will)\b[^.?!]*\b(?:after that|later|once)\b|\b(?:starts|started|begins) now\b|\bstepping up\b|\b\d+ (?:open|remaining) (?:steps|items|jobs|tasks)\b|\b(?:steps|items|jobs|tasks) (?:left|remain(?:ing)?)\b/i;
+const NEEDLESS_OK_MARK = "Not sent, no owner rule keeps this for him";
+/**
+ * An ok asked for work the chat may do itself: a restart or a run of its own (`should I restart p5`, `want me to run`), a step handed to a job
+ * (`can my job`, `can a job`), or work it says no outsider sees. A text that names one of his rules, an exception, or an outside send
+ * (`OWNER_KEEPS`) still goes out, since rule 8 and his own rules keep those for him. On 10-20 to 10-22 d11 labelled 5 such asks noise: a DM
+ * between two of our spare accounts, a Tailwind exclude for his Mac's VS Code (c69), a restart of a removed job, another chat's stalled box
+ * swaps and a Codex fallback (c30).
+ * measured: a replay over the 887 tell_owner calls of the owner's chats from 10-19 to 10-22 (787 sent, 232 labelled) refuses all 5, none of
+ * the 189 lines labelled needed and none of the 555 unlabelled ones; the one needed line the ask words catch, a c146 exception for two prod box commands, goes out on
+ * OWNER_KEEPS. Evidence: ~/work/needless-ask-check/.
+ */
+const NEEDLESS_OK = /\b(?:can|could|should|shall|may) (?:a|my|one of my|the) jobs?\b|\b(?:(?:should|can|could|shall|may) I|(?:do you )?want me to) (?:re(?:start|run|try|spawn|launch)|resume|run|start|take over|kick off|spin up)\b|\b(?:nobody|no one) outside\b/i;
+const OWNER_KEEPS = /\bc\d{1,3}\b|\byour rule\b|\bjust this once\b|\bexception\b|\be-?mail\b|\bticket\b|\bsupport\b|\bcustomer|\bpublish|\b5180\b|\bvariant\b|\bboard layout\b/i;
+const WITHDRAW_MARK = "Not sent, it takes back your own ask";
+/**
+ * Words that take back an ask the chat put on For you itself: skip or scratch a todo or idea, or a todo taken off his list. Removing the todo
+ * already took it off his list, so the message asks nothing. On 10-22 Ops guy sent "Skip t9, I removed it", AI harness "Scratch the Codex
+ * idea" and launch main bro "You can skip the push on t14, I took it off your list".
+ * measured: on the same replay these words catch those 3 lines, none of the 189 needed ones, and no other line on a turn he did not start.
+ */
+const WITHDRAW = /\b(?:skip|scratch|ignore|disregard|forget|drop|cancel|withdraw)\b[^.?!]*\b(?:t\d+|idea|ask|todo|request|question)\b|\b(?:removed|took|taken|pulled) (?:it|t\d+|that|this) (?:off|from)\b|\boff your list\b/i;
 const UNLOOKED_MARK = "Not sent, you have not opened a screenshot of this screen in this turn";
 /**
  * A 5180 demo link (localhost or the box's 15180 copy) or a screenshot image in a tell_owner text: a UI result handed to the owner to look at.
@@ -267,7 +288,7 @@ export function tellTurn(messages: readonly ThreadMessage[]): TellTurn {
     }
     if (message.role === "user" || message.role === "custom") looked = false;
     if (message.role === "toolResult" && message.content.some(part => part.type === "image")) looked = true;
-    if (message.role === "toolResult" && message.toolName === TELL_OWNER_TOOL && [SHOP_TALK_MARK, LONG_REPLY_MARK, REPEAT_MARK, REASK_MARK, UNLOOKED_MARK, INCIDENT_MARK, SAME_ASK_MARK, PROGRESS_MARK].some(mark => messageText(message).startsWith(mark))) {
+    if (message.role === "toolResult" && message.toolName === TELL_OWNER_TOOL && [SHOP_TALK_MARK, LONG_REPLY_MARK, REPEAT_MARK, REASK_MARK, UNLOOKED_MARK, INCIDENT_MARK, SAME_ASK_MARK, PROGRESS_MARK, NEEDLESS_OK_MARK, WITHDRAW_MARK].some(mark => messageText(message).startsWith(mark))) {
       const text = told.get(message.toolCallId);
       if (text) resent.add(text);
     }
@@ -300,7 +321,8 @@ export function tellTurn(messages: readonly ThreadMessage[]): TellTurn {
  * hands him a 5180 link or a screenshot (`UI_HANDOFF`) when no tool result showed the chat an image since the turn's last owner message or
  * report is refused once the same way, so the chat opens the shots and compares them with the accepted Staging app first (c118). A decision or
  * blocker that asks what another chat's open For you todo already asks (`sameAsk`, `turn.others`) is refused once the same way, and so is
- * a text that reports work still going (`PROGRESS`).
+ * a text that reports work still going (`PROGRESS`), a text that takes back the chat's own ask (`WITHDRAW`), and a decision or blocker that
+ * asks an ok for work no owner rule keeps for him (`NEEDLESS_OK`).
  */
 export function tellOwner(input: TellInput, turn: TellTurn, now = Date.now()): { kind: "sent" | "refused" | "held"; text: string } {
   const told = typeof input.text === "string" ? input.text.trim() : "";
@@ -327,6 +349,15 @@ export function tellOwner(input: TellInput, turn: TellTurn, now = Date.now()): {
     "pick in that todo with chat_board todo_update instead; if he must see this now, send the very same text again and it goes out (c117)." };
   if (repeat) return { kind: "refused", text: `${REPEAT_MARK} ("${repeat}") since his last message. Send nothing unless this brings something ` +
     "new he must see or act on; if it does, send the very same text again and it goes out (c117)." };
+  if (!turn.owner && (answers || declared) && !turn.resent?.has(told) && WITHDRAW.test(told)) return { kind: "refused", text: `${WITHDRAW_MARK} ` +
+    `("${WITHDRAW.exec(told)![0]}"). The todo you removed is already off his list, so this asks nothing. Put the reason in that step's note on ` +
+    "the board and end the turn. If he must see it now as it is, send the very same text again and it goes out (c117)." };
+  if (!turn.owner && (input.why === "decision" || input.why === "blocker") && !turn.resent?.has(told) && NEEDLESS_OK.test(told) && !OWNER_KEEPS.test(told)) return {
+    kind: "refused", text: `${NEEDLESS_OK_MARK} ("${NEEDLESS_OK.exec(told)![0]}"). Rule 7 and c47 say act on work no owner rule keeps for him, ` +
+      "such as a restart of your own job, a stalled step you can take over or a fix in his dev setup (c69), so do it, put it on the board, and " +
+      "tell him after only when it finishes a goal he asked for. Drop it if one of his rules forbids it, like a model fallback (c30). Only rule 8's " +
+      "list (an outside send, a 5180 design into the app, an accepted variant, the board layout, a thread host move) and an exception to his own " +
+      "rule wait for him; if this is one, send the very same text again and it goes out (c117)." };
   if (turn.owner || answers || declared) {
     const talk = turn.resent?.has(told) ? [] : shopTalk(told, turn.ownerText);
     if (talk.length) return { kind: "refused", text: `${SHOP_TALK_MARK} ${talk.join(", ")}. Write it the way a person texts in Slack, with what ` +

@@ -196,3 +196,44 @@ test("on a turn the owner did not start, a text that reports work still going is
   assert.equal(tellOwner({ text: "Check Campaigns on 5180 now, everything is in except the template editor, which is still finishing.", why: "done", about: "campaigns demo" }, { ...turn, looked: true }).kind, "sent");
   assert.equal(tellOwner(interim, { ...turn, owner: true }).kind, "sent", "his own turn is never held");
 });
+
+test("on a turn the owner did not start, a decision that asks an ok no owner rule needs is refused once, and the very same text again goes out", () => {
+  // 10-22: d11 labelled 5 asks noise, among them AI harness's "Can a job add a Tailwind exclude" for his Mac (c69 says fix it and tell after)
+  // and a chat's "Should I restart p5" for its own removed job; a c146 exception for two prod box commands was labelled needed.
+  const turn = tellTurn([...settled, job("the mcp chatgpt login worker was removed", "07:00:00")]);
+  const restart = { text: "The mcp chatgpt login worker was removed before it could fix the error. Should I restart p5, or leave it stopped, as offered in t5?",
+    why: "decision", about: "restart the removed sign-in fix" };
+  const refused = tellOwner(restart, turn);
+  assert.equal(refused.kind, "refused");
+  assert.match(refused.text, /no owner rule keeps this for him \("Should I restart"\)/);
+  const later = tellTurn([...settled, job("removed", "07:00:00"), tell("o1", restart, "07:00:10"), result("o1", refused.text, "07:00:11")]);
+  assert.equal(tellOwner(restart, later).kind, "sent", "the very same text again goes out");
+  for (const text of ["Can a job add a Tailwind exclude for the wiki content folder to the repo's VS Code settings? I'd say yes, and the choice is on t89.",
+    "One spare account needs to DM another spare account of ours first. Nobody outside sees it, so ok it on t13?",
+    "Want me to run duty and background jobs on Codex until then?"])
+    assert.equal(tellOwner({ text, why: "decision", about: "an ok" }, turn).kind, "refused", text);
+  assert.equal(tellOwner({ text: "The metal box owner is out until 15:40 KST, so can I run those two prod commands myself just this once? It's t56.",
+    why: "decision", about: "prod box commands" }, turn).kind, "sent", "an exception to his own rule waits for him");
+  assert.equal(tellOwner({ text: "Should a job ask GeoNode support to move us to a working host?", why: "decision", about: "GeoNode host" }, turn).kind, "sent",
+    "an outside send waits for him");
+  assert.equal(tellOwner({ text: "Should I remove him from the Railway project before the swap? My pick on t3 is yes.", why: "decision", about: "outside member" }, turn).kind, "sent");
+  assert.equal(tellOwner({ ...restart, why: "done", about: "sign-in fix" }, turn).kind, "sent", "only a decision or blocker is checked");
+  assert.equal(tellOwner(restart, { ...turn, owner: true }).kind, "sent", "his own turn is never held");
+});
+
+test("on a turn the owner did not start, a text that takes back the chat's own ask is refused once, and the very same text again goes out", () => {
+  // 10-22: Ops guy sent "Skip t9, I removed it" after the box chat ran the swaps, and launch main bro "You can skip the push on t14" after the
+  // release owner's push ran; each todo was already off his list.
+  const turn = tellTurn([...settled, job("the release owner's push ran", "07:00:00")]);
+  const skip = { text: "You can skip the push on t14, I took it off your list. The release owner's push already put the swap on GitHub.",
+    why: "blocker", about: "t14 push no longer needed" };
+  const refused = tellOwner(skip, turn);
+  assert.equal(refused.kind, "refused");
+  assert.match(refused.text, /takes back your own ask \("skip the push on t14"\)/);
+  const later = tellTurn([...settled, job("ran", "07:00:00"), tell("w1", skip, "07:00:10"), result("w1", refused.text, "07:00:11")]);
+  assert.equal(tellOwner(skip, later).kind, "sent", "the very same text again goes out");
+  for (const text of ["Skip t9, I removed it, because the box chat ran the Railway key swaps.", "Scratch the Codex idea, its accounts are mostly dead."])
+    assert.equal(tellOwner({ text, why: "decision", about: "an earlier ask" }, turn).kind, "refused", text);
+  assert.equal(tellOwner({ text: "Census reads 12,000 profiles a minute now, past your 10k goal.", why: "done", about: "10k profiles a minute" }, turn).kind, "sent");
+  assert.equal(tellOwner(skip, { ...turn, owner: true }).kind, "sent", "his own turn is never held");
+});
