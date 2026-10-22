@@ -347,8 +347,9 @@ from ig_engage_read_log l join ig_engage_accounts a on a.id = l.account_id
 where a.world = 'prod' and l.at < date_trunc('day', now() at time zone 'UTC') at time zone 'UTC' group by 1, 2 having sum(l.pages) > 0`;
 const STAGING_SQL = `select extract(epoch from max(l.at)) * 1000 as last_read_at from ig_engage_read_log l join ig_engage_accounts a on a.id = l.account_id
 where a.world = 'staging' and l.pages > 0`;
+/** A deploy rewrites each pause row it closes with the same value (pause.meta_ads audit 14478 and 14481 on 2026-10-21 wrote 'true' over 'true'), so the writer named is the last one that changed the value. */
 const STAGING_PAUSES_SQL = `select c.key, w.id, extract(epoch from w.ts) * 1000 as at, w.actor, left(w.reason, 160) as reason from config c
-left join lateral (select id, ts, actor, reason from config_audit a where a.key = c.key order by a.id desc limit 1) w on true
+left join lateral (select id, ts, actor, reason from config_audit a where a.key = c.key and a.old_value is distinct from a.new_value order by a.id desc limit 1) w on true
 where c.key like 'pause.%' and c.value = 'true' order by c.key`;
 const ACCOUNTS_SQL = "select id, status, status_reason as reason from ig_engage_accounts where world = 'prod' order by id";
 const DEATHS_SQL = `select e.account_id, extract(epoch from e.at) * 1000 as at, e.outcome, e.error_code,
