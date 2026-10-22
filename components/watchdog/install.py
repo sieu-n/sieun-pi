@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Install the Prime Agent watchdog from one commit and run it every 10 minutes under systemd.
+"""Install the Prime Agent watchdog from one commit and run it every 10 minutes under systemd or launchd.
 
 usage: python3 -B components/watchdog/install.py --ref <commit>
        python3 -B components/watchdog/install.py rollback
 
 Copies the watchdog's code from <commit> to ~/.local/share/prime-watchdog/releases/<sha>, points `current` at it in one
-rename, writes prime-agent-watchdog.service and .timer into ~/.config/systemd/user and enables the timer. The next timer
-run uses the new code; nothing running is stopped. The state and logs stay in ~/.prime/agent/watchdog, and each code
+rename, and on Linux writes prime-agent-watchdog.service and .timer into ~/.config/systemd/user and enables the timer. On the
+Mac, launchd's com.sieun.prime-agent-watchdog already runs ~/.prime/agent/watchdog/cron_cycle.py. The next run uses the new code; nothing running is stopped. The state and logs stay in ~/.prime/agent/watchdog, and each code
 file name there becomes a link into `current`. Old copies (.bak files, tests, run_cycle.py) are deleted from that
 folder. `rollback` points `current` back at the release it replaced.
 """
@@ -29,7 +29,8 @@ WATCH = HOME / ".prime/agent/watchdog"
 UNITS = HOME / ".config/systemd/user"
 UNIT_FILES = ("prime-agent-watchdog.service", "prime-agent-watchdog.timer")
 NOT_CODE = {"install.py", "README.md", *UNIT_FILES}
-LEGACY = ("run_cycle.py", "test_repl_guard.py", "test_watchdog_pressure.py", "test_watchdog_scan.py", "__pycache__")
+LEGACY = ("run_cycle.py", "test_repl_guard.py", "test_watchdog_pressure.py", "test_watchdog_scan.py", "test_watchdog_budget.py",
+          "test_watchdog_heartbeats.py", "__pycache__")
 
 
 def write(path: Path, text: str, mode: int) -> None:
@@ -72,6 +73,8 @@ def link_watch_folder(names: list[str]) -> list[str]:
 
 
 def install_units() -> None:
+    if platform.system() == "Darwin":
+        return
     for name in UNIT_FILES:
         write(UNITS / name, (Path(__file__).resolve().parent / name).read_text(), 0o644)
     subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
@@ -93,7 +96,7 @@ def install(ref: str) -> int:
             relink(SHARE / "previous", Path(before))
     gone = link_watch_folder(names)
     install_units()
-    print(f"watchdog {sha[:7]} installed in {release}; the next prime-agent-watchdog.timer run uses it")
+    print(f"watchdog {sha[:7]} installed in {release}; the next timer run uses it")
     if gone:
         print("deleted from " + str(WATCH) + ": " + ", ".join(gone))
     return 0
@@ -116,8 +119,8 @@ def main() -> int:
     parser.add_argument("action", nargs="?", default="install", choices=["install", "rollback"])
     parser.add_argument("--ref")
     args = parser.parse_args()
-    if platform.system() != "Linux":
-        parser.error("this installer writes systemd units; the Mac still runs its own copy under launchd")
+    if platform.system() not in ("Linux", "Darwin"):
+        parser.error("this installer knows systemd on Linux and launchd on the Mac")
     if args.action == "rollback":
         return rollback()
     if not args.ref:

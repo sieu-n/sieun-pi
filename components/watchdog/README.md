@@ -29,6 +29,15 @@ The watchdog finds Prime Agent sessions that stopped making progress and recover
 2. Both files come from the chat service's data folder, `$AGENT_CHAT_DATA_DIR` or `~/.prime/agent/browser-chat`. A subagent counts by the root of its session-artifacts tree.
 3. On 10-18 a cycle sent plan-and-duties run-1's test chat "Your last turn was dropped" at 14:34:58Z, 6.8 min after its teardown archived it, and the chat went on working into run-2. `tests/test_archived.py` replays that case.
 
+## Answered turns
+
+1. A session owes an answer from the first input that no turn has answered yet, and `owed_since` in the cycle's record is that input's time.
+2. A turn answers its inputs when the assistant said something, or when it ended with stopReason `stop` and no owner message was among them, so a chat may end a turn on an agent message, a check-in or a notice with no words.
+3. An owner message stays owed until a turn that ends with `stop` says something, and a turn cut by an error, an abort, the length limit or a worker death leaves its inputs owed.
+4. A user message counts as the owner's unless it opens with a chat service note prefix (`SERVER_NOTES` in `components/user-history/src/shared/chat-feed.ts`), a Prime tag or `[watchdog]`, and `tests/test_silent_turn.py` checks the Python list against that file.
+5. One owed input gets one resume notice, because each `resume_queue + send` line in `log.jsonl` holds its `owed_since`, and a later cycle reads that input as `NOTICED`.
+6. On 10-21 the Mac's watchdog woke gpt sol at 20:08Z, 20:43Z, 21:19Z and 22:18Z with "the input was never answered", because each of its silent turn ends on a non-owner notice read as a dropped turn, and each wake ended silent again.
+
 ## Install
 
 ```sh
@@ -37,9 +46,9 @@ python3 -B components/watchdog/install.py rollback
 ```
 
 1. The installer copies the `.py` and `.patch` files of the commit to `~/.local/share/prime-watchdog/releases/<sha>` and points `current` at that folder in one rename, so a later checkout change cannot alter the running code.
-2. It writes `prime-agent-watchdog.service` and `prime-agent-watchdog.timer` into `~/.config/systemd/user` and enables the timer. The next timer run uses the new code, and nothing running is stopped.
+2. On Linux it writes `prime-agent-watchdog.service` and `prime-agent-watchdog.timer` into `~/.config/systemd/user` and enables the timer. The next timer run uses the new code, and nothing running is stopped.
 3. The state and logs stay in `~/.prime/agent/watchdog`: `state.json`, `log.jsonl`, `heartbeats.json`, `cron.jsonl`, `cron.out.log`, `cron.err.log`, `cycle.lock` and `repl_guard_state.json`. Each code file name in that folder becomes a link into `current`, and the old `.bak` copies, tests and `run_cycle.py` are deleted.
-4. The installer runs on Linux only. The Mac ran its own copy under launchd (`com.sieun.prime-agent-watchdog`), which this installer does not touch.
+4. On the Mac the installer writes no units, because launchd's `com.sieun.prime-agent-watchdog` already runs `~/.prime/agent/watchdog/cron_cycle.py` with `/usr/bin/python3`, and that name becomes a link into `current` too. Run the same two commands from the Mac's checkout, `~/Documents/Github/sieun-pi`.
 
 ## Tests
 

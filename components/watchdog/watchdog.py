@@ -8,6 +8,7 @@ re-arm in wd_heartbeats and the model probe in wd_probe.
 import datetime as dt
 import json
 import os
+import re
 import time
 
 from wd_common import LOG_F, STATE_F, WATCH, _run, _tail_events, _ts, chat_ids, credential_wait_at, log, pa, stop_reason
@@ -37,6 +38,60 @@ LAST_COUNTS = {}     # resumed/skipped counts of the latest cycle, read by cron_
 RESUME_NOTES = ('harness_digest', 'ipython_state_restored')
 
 
+# The chat service's own notes in a user message (components/user-history/src/shared/chat-feed.ts SERVER_NOTES and NUDGE_PREFIX) and this
+# watchdog's notices. A turn they start is not the owner's, so the chat may end it silent.
+NOTE_PREFIXES = ('[watchdog]', '[check-in] ', '[job] ', '[reply check] ', '[brief check] ', '[correction check] ', '[board] Ops not applied: ',
+                 '[board] Decisions not on the scratchpad: ', 'Prime Agent restarted after an update', 'Watchdog recovery checkpoint', '[from ')
+# chat-feed.ts PRIME_NOTE: Prime's notes open with a snake_case tag such as <provider_quota_resumed>.
+PRIME_NOTE = re.compile(r'^<[a-z]+(?:_[a-z]+)+>\s')
+# chat-feed.ts OWNER_RETRY_MARK: a server note that restarts a failed owner turn keeps that turn the owner's.
+OWNER_RETRY_MARK = "The owner's message is still unanswered: "
+
+
+def said_something(m):
+    """Whether an assistant message holds text, thinking or a tool call. Empty records also bump messageCount."""
+    cs = m.get('content')
+    return any(isinstance(c, dict) and ((c.get('type') == 'toolCall') or (c.get('text') or '').strip() or (c.get('thinking') or '').strip())
+               for c in (cs if isinstance(cs, list) else []))
+
+
+def from_owner(e):
+    """Whether an input event is a message the owner typed: a user message that is no server, Prime or watchdog note."""
+    m = e.get('message') or {}
+    if e.get('type') != 'message' or m.get('role') != 'user':
+        return False
+    cs = m.get('content')
+    text = (cs if isinstance(cs, str) else ' '.join(c.get('text') or '' for c in cs if isinstance(c, dict)) if isinstance(cs, list) else '').strip()
+    return OWNER_RETRY_MARK in text or not (text.startswith(NOTE_PREFIXES) or PRIME_NOTE.match(text))
+
+
+def owed_input(evs):
+    """-> (last_input, owed_since): the time of the newest input and of the first input no turn has answered yet, both None when nothing is owed.
+
+    A turn answers its inputs when the assistant said something, or when it ended normally (stopReason "stop") with no owner message among them:
+    a chat may end a turn on an agent message, a check-in or a notice with no words. gpt sol (01a15f90-afb8-7434-814a-2e5fbcafb1ec) did that on
+    the Mac on 10-21, and each silent end read as a dropped turn, so the watchdog woke it at 20:08Z, 20:43Z, 21:19Z and 22:18Z with "the input
+    was never answered", and each wake ended silent again. An owner message stays owed until a turn that ends normally says something, and a turn
+    cut by an error, an abort, the length limit or a worker death leaves its inputs owed. `owed_since` keys the one resume notice per input.
+    """
+    last_input = owed_since = None
+    owner_owed = False
+    for e in evs:
+        t, m = e.get('type'), (e.get('message') or {})
+        role, ts = m.get('role'), _ts(e.get('timestamp'))
+        if t == 'message' and role == 'assistant':
+            said, done = said_something(m), m.get('stopReason') == 'stop'
+            if said or (done and not owner_owed):
+                owed_since = None
+            if said and done:
+                owner_owed = False
+        elif (t == 'message' and role in ('user', 'toolResult')) or (t == 'custom_message' and e.get('customType') not in RESUME_NOTES):
+            last_input = ts
+            owed_since = owed_since or ts
+            owner_owed = owner_owed or from_owner(e)
+    return (last_input, owed_since) if owed_since else (last_input, None)
+
+
 def snapshot():
     """One reading of every session + process/journal evidence."""
     sessions = json.loads(pa('list', '--all', '--json').stdout)['sessions']
@@ -47,23 +102,13 @@ def snapshot():
         f = s.get('sessionFile')
         evs = _tail_events(f) if f and os.path.exists(f) else []
         last_msg = next((e for e in reversed(evs) if e.get('type') == 'message'), None)
-        # A model turn only counts if the assistant actually emitted text/thinking/a tool call:
-        # empty assistant records and delivered-input events both bump messageCount without progress.
-        last_asst, last_input = None, None
+        last_asst = None
         for e in evs:
-            t, m = e.get('type'), (e.get('message') or {})
-            role, cs = m.get('role'), m.get('content')
-            ts = _ts(e.get('timestamp'))
-            if t == 'message' and role == 'assistant':
-                real = any((c.get('type') == 'toolCall') or (c.get('text') or '').strip()
-                           or (c.get('thinking') or '').strip()
-                           for c in (cs if isinstance(cs, list) else []))
-                if real:
-                    last_asst = ts
-            elif (t == 'message' and role in ('user', 'toolResult')) or (t == 'custom_message' and e.get('customType') not in RESUME_NOTES):
-                last_input = ts
-        awaiting = round((now - last_input).total_seconds() / 60, 1) \
-            if (last_input and (not last_asst or last_input > last_asst)) else None
+            m = e.get('message') or {}
+            if e.get('type') == 'message' and m.get('role') == 'assistant' and said_something(m):
+                last_asst = _ts(e.get('timestamp'))
+        last_input, owed_since = owed_input(evs)
+        awaiting = round((now - last_input).total_seconds() / 60, 1) if owed_since else None
         lm = (last_msg or {}).get('message') or {}
         limited = lm.get('role') == 'assistant' and lm.get('stopReason') == 'error' and (
             'pi-pool' in (lm.get('errorMessage') or '') or
@@ -106,6 +151,7 @@ def snapshot():
             last_type=(evs[-1].get('type') if evs else None),
             stale_min=round((now - last_any).total_seconds() / 60, 1) if last_any else None,
             awaiting_min=awaiting,
+            owed_since=owed_since.isoformat() if owed_since else None,
             limited=limited,
             last_asst_min=last_asst_min,
             sleepy=sleepy,
@@ -131,21 +177,23 @@ def snapshot():
     return now, recs
 
 
-def recent_recoveries(hours=3):
-    """session-uuid -> count of watchdog recoveries in the last `hours`."""
+def read_log(hours=3):
+    """-> (session-uuid -> count of watchdog recoveries in the last `hours`, the (session-uuid, owed_since) pairs that got a resume notice)."""
     if not LOG_F.exists():
-        return {}
+        return {}, set()
     cut = dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=hours)
-    out = {}
+    out, noticed = {}, set()
     for ln in LOG_F.read_text().splitlines():
         try:
             e = json.loads(ln)
         except Exception:
             continue
+        if e.get('owed_since') and e.get('sid') and not e.get('skip'):
+            noticed.add((e['sid'], e['owed_since']))
         t = _ts(e.get('at'))
         if t and t >= cut and e.get('sid') and not e.get('skip'):
             out[e['sid']] = out.get(e['sid'], 0) + 1
-    return out
+    return out, noticed
 
 
 REPEAT_FREEZE = 12   # a session the watchdog already unstuck gets a shorter leash
@@ -171,13 +219,15 @@ def classify(r, prev, repeats=None):
         return 'HELD', 'under manual diagnosis, watchdog hands off'
     if r.get('stopped') and r['life'] == 'live':
         return 'ARCHIVED', r['stopped']
-    """-> (verdict, reason). Verdicts: SELF, HELD, ARCHIVED, OK, BUSY_TOOL, SUSPECT, FROZEN_TURN, FROZEN_TOOL, STUCK_TOOL."""
+    """-> (verdict, reason). Verdicts: SELF, HELD, ARCHIVED, NOTICED, OK, BUSY_TOOL, SUSPECT, FROZEN_TURN, FROZEN_TOOL, STUCK_TOOL."""
     if r['life'] == 'live' and r['act'] == 'idle' and (r.get('awaiting_min') or 0) >= 30 and r.get('limited'):
         # The turn ended on a 429 or a pi-pool slot refusal, and the chat service's idle unload stops such a session while the pool holds
         # its tree. resume_paused.py and the chat revive continue it once `pi-pool who` admits the tree. From 06:51Z to 08:31Z on 10-19
         # this cycle sent 40 such sessions resume_queue and a message (SEO guy 609 min after its 429), each loaded a worker and a kernel
         # again and met the same limit, and the unload stopped it 15 min later.
         return 'POOL_WAIT', 'last turn failed on a provider rate limit or a pi-pool hold; the resume sweep continues it once the pool admits its tree'
+    if r['life'] == 'live' and r['act'] == 'idle' and (r.get('awaiting_min') or 0) >= 30 and r.get('noticed'):
+        return 'NOTICED', f"input owed since {r['owed_since']} already got its one resume notice"
     if r['life'] == 'live' and r['act'] == 'idle' and (r.get('awaiting_min') or 0) >= 30:
         # Idle with input that never got an answer = a turn dropped (machine sleep, worker
         # restart). A session genuinely waiting on its user ends with an ASSISTANT message,
@@ -400,7 +450,9 @@ def _cycle(dry_run=False, verbose=True):
         except Exception:
             prev = {}
     now, recs = snapshot()
-    repeats = recent_recoveries()
+    repeats, noticed = read_log()
+    for r in recs:
+        r['noticed'] = (r['sid'], r.get('owed_since')) in noticed
     swap, load = pressure()
     blocked = ('swap', swap, SWAP_CAP_GIB) if swap > SWAP_CAP_GIB else \
         ('load', load, LOAD_CAP) if load > LOAD_CAP else None
@@ -449,7 +501,7 @@ def _cycle(dry_run=False, verbose=True):
                  f"Re-check the state of your last step before trusting it, then continue the task and commit.")
             sd = pa('send', r['sid'], m)
             act = {'id': r['id'], 'sid': r['sid'], 'name': r['name'], 'method': 'resume_queue + send',
-                   'why': why, 'send_rc': sd.returncode, 'send_out': (sd.stdout or sd.stderr).strip()[:120],
+                   'why': why, 'owed_since': r.get('owed_since'), 'send_rc': sd.returncode, 'send_out': (sd.stdout or sd.stderr).strip()[:120],
                    'at': dt.datetime.now(dt.timezone.utc).isoformat()}
             actions.append(act)
             with open(LOG_F, 'a') as f:
@@ -542,7 +594,7 @@ def _cycle(dry_run=False, verbose=True):
     if verbose:
         print(f'== watchdog {now.isoformat(timespec="seconds")}')
         order = {'FROZEN_TURN': 0, 'FROZEN_TOOL': 0, 'STUCK_TOOL': 0, 'SUSPECT': 1,
-                 'PHANTOM_TURN': 0, 'DROPPED_TURN': 0, 'MODEL_STALL': 1, 'POOL_WAIT': 1, 'CHILD_WEDGED': 1, 'BUSY_TOOL': 2, 'IN_FLIGHT': 2,
+                 'PHANTOM_TURN': 0, 'DROPPED_TURN': 0, 'NOTICED': 1, 'MODEL_STALL': 1, 'POOL_WAIT': 1, 'CHILD_WEDGED': 1, 'BUSY_TOOL': 2, 'IN_FLIGHT': 2,
                  'HELD': 2, 'ARCHIVED': 3, 'OK': 3, 'SELF': 4}
         for r in sorted([x for x in verdicts if x['verdict'] not in ('OK', 'SELF', 'IN_FLIGHT')],
                         key=lambda x: (order[x['verdict']], -(x['stale_min'] or 0))):
