@@ -16,6 +16,8 @@ export const NOISE_FIXES: readonly { kind: string; fix: string }[] = [
   { kind: "same incident asked again by another chat", fix: "b084c910" },
   { kind: "progress relay", fix: "208a7bb5" },
   { kind: "progress on a goal still going", fix: "208a7bb5" },
+  { kind: "ask for an ok no rule needs", fix: "20cfb99d" },
+  { kind: "incident status (withdraws its own", fix: "20cfb99d" },
 ];
 
 export interface NoiseLine { at: number; case: string; side: RepeatSide; fix?: string; /** When `fix` landed, in ms. */ fixed?: number }
