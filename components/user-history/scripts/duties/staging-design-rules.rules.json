@@ -10,7 +10,7 @@
       "skill": "USE CONSISTENT COMPONENTS",
       "skillSince": "2026-10-15",
       "match": [
-        "consisten",
+        "(?<!like (this|the|that) )consisten",
         "same component",
         "common component",
         "exactly same",
@@ -85,8 +85,8 @@
       "corrections": [
         "c48"
       ],
-      "skill": null,
-      "skillSince": null,
+      "skill": "fat-as-fuck containers",
+      "skillSince": "2026-10-19",
       "match": [
         "too (tall|fat)",
         "\\bfat\\b",
