@@ -13,7 +13,7 @@ import { pushList, withoutWorkingRuns } from "../scripts/duties/chat-system.ts";
 import { Duties } from "../src/chat-duty-run.ts";
 import { DutyStore } from "../src/chat-duty-store.ts";
 import type { Duty, DutyRunRecord } from "../src/shared/chat-duties.ts";
-import { reopenOps } from "../src/shared/duty-fixes.ts";
+import { verifyNoteOps } from "../src/shared/duty-fixes.ts";
 import { metricStreaks } from "../src/shared/duty-streak.ts";
 import type { BoardOp, ChatBoard, CheckInView } from "../src/shared/types.ts";
 
@@ -70,48 +70,53 @@ test("a duty whose newest job was cut and waits for its one rerun is owned; a cu
     "the rerun ran and ended, so the miss needs a fix step again");
 });
 
-const harnessBoard = (status: "doing" | "done"): ChatBoard => ({ v: 2, rev: 1, updatedAt: "2026-10-20T02:59:00Z", todos: [], plan: [{ id: "p706", text: "Every chat runs on its own",
-  status: "doing", children: [{ id: "p774", text: "Find why red duties stay with no live fix job and fix that cause", status, duty: "d9/stuck_duties",
-    job: "d9 stuck duties root cause", note: "Done. d9's 02:30Z run read stuck_duties 0.", children: [] }] }] }) as unknown as ChatBoard;
+const P804 = "Fix: a step whose job the cleanup ends while it waits keeps a live owner, so d9 stuck_steps_all reads 0";
+const harnessBoard = (status: "doing" | "done", note = "Done (d4c9872c, 4323c96c)."): ChatBoard => ({ v: 2, rev: 1, updatedAt: "2026-10-22T06:34:00Z", todos: [],
+  plan: [{ id: "p706", text: "Every chat runs on its own", status: "doing", children: [{ id: "p804", text: P804, status, duty: "d9/stuck_steps_all",
+    job: "d9 residuals 10-21", note, children: [] }] }] }) as unknown as ChatBoard;
 
-test("reopenOps reopens a closed fix step whose metric still misses, and leaves a quiet window and an open step alone", () => {
-  const streak = { key: "stuck_duties", misses: 1, moved: false, since: at("03:00"), value: 1, target: 0, op: "<=" as const, stuck: false,
-    fix: { step: "p774", job: "d9 stuck duties root cause", live: false } };
-  assert.deepEqual(reopenOps(harnessBoard("done"), [streak], at("03:00")), [{ op: "plan_update", id: "p774", status: "todo",
-    note: "Reopened 03:00Z: the verify run read stuck_duties 1, target <= 0, so this fix has not moved the metric to target yet. Done. d9's 02:30Z run read stuck_duties 0." }]);
-  assert.deepEqual(reopenOps(harnessBoard("doing"), [streak], at("03:00")), []);
-  assert.deepEqual(reopenOps(harnessBoard("done"), [{ ...streak, quietSince: at("01:00") }], at("03:00")), []);
+test("verifyNoteOps writes a verify run's reading into a closed fix step's note and leaves it done (p804, 10-22 06:34Z)", () => {
+  const streak = { key: "stuck_steps_all", misses: 1, moved: false, since: at("06:34"), value: 1, target: 0, op: "<=" as const, stuck: false,
+    fix: { step: "p804", job: "d9 residuals 10-21", live: false } };
+  const words = "Done (d4c9872c, 4323c96c). The 06:34Z verify run read stuck_steps_all 1, target <= 0.";
+  assert.deepEqual(verifyNoteOps(harnessBoard("done"), [streak], at("06:34")), [{ op: "plan_update", id: "p804", note: words }]);
+  assert.deepEqual(verifyNoteOps(harnessBoard("done", words), [streak], at("06:34")), [], "the same reading is not written twice");
+  assert.deepEqual(verifyNoteOps(harnessBoard("doing"), [streak], at("06:34")), []);
 });
 
-test("a verify run that still misses reopens the fix step whose close started it (p774, 02:59Z)", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "d9-reopen-"));
+test("a verify run that still misses leaves the fix step whose close started it done (p804, 10-22 06:34Z)", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "d9-verify-"));
   try {
     const precheck = join(dir, "precheck.mjs");
-    await writeFile(precheck, `import { writeFileSync } from "node:fs";\nwriteFileSync(process.env.OUTPUT_FILE, JSON.stringify({ metrics: { stuck_duties: 1 } }));`);
+    await writeFile(precheck, `import { writeFileSync } from "node:fs";\nwriteFileSync(process.env.OUTPUT_FILE, JSON.stringify({ metrics: { stuck_steps_all: 1 } }));`);
     const store = new DutyStore(dir);
-    const now = at("02:59");
+    const now = at("06:34");
     const duty: Duty = { id: "d9", name: "Chat system", ownerWords: "keeping this compliant on it's own your duty", goal: "every red duty has a fix job",
-      metrics: [{ key: "stuck_duties", label: "Stuck duties", op: "<=", target: 0, headline: true }], schedule: { kind: "every", minutes: 120 },
+      metrics: [{ key: "stuck_steps_all", label: "Stuck steps", op: "<=", target: 0, headline: true }], schedule: { kind: "every", minutes: 120 },
       precheck: { command: ["node", precheck], cwd: dir, timeoutMs: 30_000 }, onMiss: "fix it", status: "active", createdAt: now - 86_400_000, updatedAt: now - 86_400_000,
       runCount: 1, lastRunAt: now - 30 * MIN };
     await store.update(HARNESS, duties => { duties.push(duty); });
     let board = harnessBoard("done");
-    const applied: BoardOp[][] = [];
+    const applied: BoardOp[] = [];
     const duties = new Duties(store, {
       isChat: async () => true, now: () => now, tickMs: 0, node: process.execPath,
       jobs: { chat: async id => ({ id, name: "AI harness developer environment VP", cwd: dir, board: id }), working: async () => false, retire: async () => {},
         start: async (_chat, name) => ({ id: "verify-job", name }) },
       checkIn: { view: async () => ({ everyMs: 30 * MIN }) as CheckInView, set: async () => null, run: async () => {} },
       board: async () => board, fixLive: async () => false,
-      applyBoard: async (_chat, ops) => { const list = ops(board); applied.push([...list]); board = harnessBoard("doing"); },
+      applyBoard: async (_chat, ops) => {
+        const list = ops(board);
+        applied.push(...list);
+        for (const op of list) if (op.op === "plan_update" && op.status) board = harnessBoard(op.status === "done" ? "done" : "doing");
+      },
     });
     await duties.boardChanged(HARNESS, harnessBoard("doing"));
     await duties.boardChanged(HARNESS, harnessBoard("done"));
     await duties.settled();
     duties.close();
-    const reopened = applied.flat().filter(op => op.op === "plan_update" && op.status === "todo");
-    assert.deepEqual(reopened.map(op => "id" in op ? op.id : ""), ["p774"]);
     assert.equal((await store.runs(HARNESS))[0]!.trigger, "verify");
+    assert.equal(board.plan[0]!.children[0]!.status, "done");
+    assert.deepEqual(applied.filter(op => op.op === "plan_update" && op.id === "p804").map(op => "status" in op ? op.status : undefined), [undefined]);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 

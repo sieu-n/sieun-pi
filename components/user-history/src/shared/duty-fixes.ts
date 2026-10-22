@@ -4,7 +4,7 @@ import type { BoardOp, ChatBoard, PlanItem, SessionRow } from "./types.ts";
 
 /**
  * Fix steps: a plan step whose `duty` is `<dutyId>/<metricKey>` is the chat's fix for that duty metric. A duty run records them for its missed
- * metrics (`dutyFixes`, with `fixJobLive`), and a fix step that closes starts a verify run of its duty (`closedFixes`). Pure and browser-safe.
+ * metrics (`dutyFixes`, with `fixJobLive`), and a fix step that closes starts a verify run of its duty (`closedFixes`), whose reading goes into its note (`verifyNoteOps`). Pure and browser-safe.
  */
 
 const DUTY_LINK = /^([a-z][a-z0-9_-]{0,39})\/([a-z][a-z0-9_]{0,39})$/;
@@ -71,25 +71,25 @@ export async function dutyFixes(board: ChatBoard | null, duty: string, metrics: 
 export const missedKeys = (run: Pick<DutyRunRecord, "metrics">): string[] => Object.entries(run.metrics).filter(([, result]) => !result.met).map(([key]) => key);
 
 /**
- * The ops that reopen each fix step a verify run finds closed while its metric still misses. The board skill's rule is that a fix step closes
- * when its metric is met again, and closing one starts the verify run (`closedFixes`). On 10-20 the AI harness chat closed p774 at 02:59Z and
- * p775 at 03:29Z with d9's stuck_duties and duties_green_pct still off target, both verify runs missed, their jobs were aborted by a daemon
- * restart and cut by a pi-pool wait, and d9 sat red with no open fix step until 06:20Z. A windowed count with no new event (`quietSince`) is
- * left closed, since its fix may have landed while old events leave the window.
+ * The ops that write a verify run's reading into the note of each fix step it finds closed while its metric still misses. The step stays done:
+ * the duty's push owns the number, through a live fix job or a new fix job on a new step for a new cause. Until 10-22 a verify run reopened
+ * such a step as todo with no job, and closing it again started the next verify run: AI harness closed p804 and p818 at 06:34Z on 10-22, the
+ * verify runs read stuck_steps_all 1 and stuck_duties 4, reopened both, and they reopened again at 06:36Z, so the plan showed four todo steps
+ * nobody worked (owner 10-22: "are they real items? are agents working on all of them actively?").
  */
-export function reopenOps(board: ChatBoard | null, streaks: readonly MetricStreak[], at: number): BoardOp[] {
+export function verifyNoteOps(board: ChatBoard | null, streaks: readonly MetricStreak[], at: number): BoardOp[] {
   const steps = new Map<string, PlanItem>();
   const visit = (items: readonly PlanItem[]) => { for (const item of items) { steps.set(item.id, item); visit(item.children); } };
   visit(board?.plan ?? []);
-  const ops = new Map<string, BoardOp>();
+  const notes = new Map<string, string>();
   for (const streak of streaks) {
     const step = streak.fix && steps.get(streak.fix.step);
-    if (!step || step.status !== "done" || streak.quietSince !== undefined || ops.has(step.id)) continue;
-    const words = `Reopened ${new Date(at).toISOString().slice(11, 16)}Z: the verify run read ${streak.key} ${streak.value}, target ${streak.op} ${streak.target}, ` +
-      "so this fix has not moved the metric to target yet.";
-    ops.set(step.id, { op: "plan_update", id: step.id, status: "todo", note: step.note ? `${words} ${step.note}` : words });
+    if (!step || step.status !== "done") continue;
+    const words = `The ${new Date(at).toISOString().slice(11, 16)}Z verify run read ${streak.key} ${streak.value}, target ${streak.op} ${streak.target}.`;
+    const note = notes.get(step.id) ?? step.note ?? "";
+    if (!note.includes(words)) notes.set(step.id, note ? `${note} ${words}` : words);
   }
-  return [...ops.values()];
+  return [...notes].map(([id, note]) => ({ op: "plan_update", id, note }));
 }
 
 /** The steps with a duty link that were open or absent before and are done after: each starts one verify run of its duty. */
