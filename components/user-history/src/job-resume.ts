@@ -89,6 +89,10 @@ export function resumeBrief(resume: JobResume, path: string, chat: string, now: 
 }
 /** The note line a step gets when the cleanup starts a fresh job for it (`resumeBrief`). */
 export const resumedNote = (job: string, at: number): string => `Resumed: the chat service started job ${job} at ${clockTime(at)} from the saved state, and the step is its.`;
+/** The note line a step gets when the cleanup finds a live session that carries the job it ended, so it starts no copy. */
+export const keptCopyNote = (job: string, at: number): string => `Kept: job ${job} still carries this work at ${clockTime(at)}, so the chat service started no copy, and the step is its.`;
+/** The job a session carries, its name less every " resumed HH:MM" the cleanup added (`resumeJobName`). */
+export const jobBase = (name: string): string => name.replace(/(?:\s+resumed \d\d:\d\d)+$/, "").trim();
 
 const SAVED = "Saved state: ";
 /** The line the cleanup puts first in a step's note when it ends the step's job, naming the saved state's path. */

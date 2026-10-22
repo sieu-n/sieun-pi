@@ -194,6 +194,30 @@ export async function readTurnSince(file: string, since: number): Promise<TurnSi
 
 const QUOTA_PARK = '"customType":"provider_quota_park"';
 const QUOTA_RESUME = '"customType":"provider_quota_resume"';
+const POOL_PLACE = '"customType":"pi-pool-queue"';
+
+/**
+ * Whether a session's last turn ended parked with no reply: from the end of its lines, a failed assistant message, a provider quota park or
+ * resume, or a pi-pool queue place comes before any assistant message that did not fail. Such a job did not end its task, whatever its reply
+ * flag says, so its report is not in. mac-management 10-22 02:17Z: the service handed p24 back to the chat as "job metal agent queue reported
+ * at 11:04", and that 02:04Z turn of 01a16159-1c35-76dd-abc6-77a8686fe2ff had parked on the Claude limit with no output.
+ */
+export function endsParked(lines: readonly string[]): boolean {
+  for (let index = lines.length - 1; index >= 0; index--) {
+    const line = lines[index]!;
+    if (line.includes(QUOTA_PARK) || line.includes(QUOTA_RESUME) || line.includes(POOL_PLACE)) return true;
+    if (!line.includes('"role":"assistant"')) continue;
+    let entry: { type?: unknown; message?: { role?: unknown; stopReason?: unknown } };
+    try { entry = JSON.parse(line); } catch { continue; }
+    if (entry.type === "message" && entry.message?.role === "assistant") return entry.message.stopReason === "error";
+  }
+  return false;
+}
+
+/** `endsParked` over the last CUT_TAIL_BYTES of a session file; a missing file is not parked. */
+export async function readEndsParked(file: string): Promise<boolean> {
+  return endsParked(await tailLines(file, CUT_TAIL_BYTES));
+}
 
 /**
  * When Prime resumes a session it parked on a provider wait, from its transcript lines: the resumeAt of the last provider_quota_park entry

@@ -15,10 +15,10 @@ import { treeWakes, type Wake } from "./wakes.ts";
 import { withQueuePlaces } from "./chat-turn-queue.ts";
 import { type CheckInMemory, checkInPrecheck, checkInPrecheckText, classCounts, convergenceMisses, endedJobs, endedWithoutReport, finishedJobs, JOB_CLEANUP_EVERY_MS, ROOT_END_EVERY_MS, jobEnd, jobEndText,
   handBackNote, handBackSteps, handBackText, idleRoots, jobReport, lastJobMessages, leftOpenSteps, noReportNotice, openStepLines, openStepsNotice, reportedRoot, retryDue, waitingJobs } from "./chat-checkin.ts";
-import { jobBrief, resumeBrief, resumedNote, resumeJobName, savedStateNote, sessionBrief, waitText } from "./job-resume.ts";
+import { jobBase, jobBrief, keptCopyNote, resumeBrief, resumedNote, resumeJobName, savedStateNote, sessionBrief, waitText } from "./job-resume.ts";
 import { heldByTodo } from "./checkin-end-state.ts";
 import { PoolHeldJobs, resumeChatJobs } from "./chat-resume.ts";
-import { readQuotaPark, withFailedTurns, withHeldTurns } from "./held-turns.ts";
+import { readEndsParked, readQuotaPark, withFailedTurns, withHeldTurns } from "./held-turns.ts";
 import { withUnstarted } from "./brief-keeper.ts";
 import { planJob } from "./shared/chat-board.ts";
 import { noticeStands } from "./no-report.ts";
@@ -878,7 +878,8 @@ export class Chats {
    * (`handBackText`), then each step's job becomes the chat and its note names the job. The steer goes first, so a steer that fails leaves the
    * steps on the job for the next sweep: metal-management 10-18 06:46Z, the steer for p11 failed with "Daemon is preparing an update restart"
    * after the board write, and p11 became the chat's without the chat being told. The note keeps the job named, so it is kept and later saved on the
-   * step (`parkJob`) unless the chat steers it. A job still at work (`jobBusy`), or one whose wakes cannot be read yet, keeps its steps.
+   * step (`parkJob`) unless the chat steers it. A job still at work (`jobBusy`), one whose last turn parked with no reply (`endsParked`), or one
+   * whose wakes cannot be read yet, keeps its steps.
    */
   private async handBack(id: string, child: ChildAgent, steps: readonly PlanItem[]): Promise<boolean> {
     const name = childName(child);
@@ -886,6 +887,9 @@ export class Chats {
       const sessionId = child.sessionId ?? this.subagents.get(id)?.find(row => row.id === child.id)?.sessionId;
       if (this.source.waking && sessionId === undefined) return false;
       if (await this.jobBusy(id, child, sessionId) !== undefined) return false;
+      // A job whose last turn parked on a quota or pool wait with no reply has not reported, so it keeps its steps (`endsParked`).
+      const file = sessionId !== undefined ? await this.summary(sessionId).then(summary => summary?.sessionFile, () => undefined) : undefined;
+      if (file && await readEndsParked(file).catch(() => false)) return false;
       const line = handBackNote(name, child.lastActivityAt ?? this.now());
       await this.tell(id, JOB_NOTICE_PREFIX + handBackText(child, steps));
       await this.source.resumes!.applyBoard(id, steps.map(step => ({ op: "plan_update", id: step.id, job: id,
@@ -920,17 +924,51 @@ export class Chats {
       const resume = { chat: id, childId: child.id, job: name, steps: owed.map(step => step.id), event: owed.map(waitText).join("; "), brief, report, endedAt: now };
       const path = await resumes.store.save({ ...resume, steps: steps.map(step => step.id), event });
       if (await this.deleteJob(id, child, listed, now) !== "deleted") return;
-      const fresh = owed.length && resumes.restart ? await resumes.restart(id, resumeJobName(name, now), chat => resumeBrief(resume, path, chat, now))
-        .catch(error => { this.log(`chat ${id.slice(0, 8)}: resume waiting job ${name}: ${error instanceof Error ? error.message : String(error)}`); return undefined; }) : undefined;
+      const live = owed.length ? await this.liveCopy(id, child) : undefined;
+      const fresh = live ?? (owed.length && resumes.restart ? await resumes.restart(id, resumeJobName(name, now), chat => resumeBrief(resume, path, chat, now))
+        .catch(error => { this.log(`chat ${id.slice(0, 8)}: resume waiting job ${name}: ${error instanceof Error ? error.message : String(error)}`); return undefined; }) : undefined);
       const line = savedStateNote(name, now, path);
       await resumes.applyBoard(id, steps.map(step => {
         const taken = fresh !== undefined && owed.includes(step);
         return { op: "plan_update", id: step.id, ...taken ? { job: fresh.name, sessionId: fresh.id } : {},
-          note: [line, taken ? resumedNote(fresh.name, now) : undefined, step.note].filter(Boolean).join("\n") };
+          note: [line, taken ? (live ? keptCopyNote(fresh.name, now) : resumedNote(fresh.name, now)) : undefined, step.note].filter(Boolean).join("\n") };
       }));
       this.log(`chat ${id.slice(0, 8)}: ended waiting job ${name} (quiet ${Math.round((now - child.lastActivityAt!) / 60_000)} min, ${event}); saved state ${path}` +
-        (fresh ? `; started ${fresh.name} (${fresh.id.slice(0, 8)}) for ${owed.map(step => step.id).join(", ")}` : ""));
+        (live ? `; started no copy, since ${live.name} (${live.id}) still carries it: ${live.why}; it takes ${owed.map(step => step.id).join(", ")}`
+          : fresh ? `; started ${fresh.name} (${fresh.id.slice(0, 8)}) for ${owed.map(step => step.id).join(", ")}` : ""));
     } catch (error) { this.log(`chat ${id.slice(0, 8)}: end waiting job ${name}: ${error instanceof Error ? error.message : String(error)}`); }
+  }
+
+  /**
+   * Another session of the chat on any box that carries the same job as `child` (`jobBase` of its name), and works or is owed a turn
+   * (`jobBusy`), so the cleanup starts no copy for it. The chat's row lists its subagents and roots on every box; the hub's children add the
+   * subagents it holds. mac-management 10-22: the cleanup started "metal agent queue resumed 10:47" at 01:47Z and "5180 into the real app
+   * resumed 10:57" at 01:57Z while the copies "resumed 05:50" (01a1603b) and "resumed 06:50" (01a16071) were parked on the Claude limit, and
+   * the new copies sat parked or queued for pi-pool slots beside them.
+   */
+  private async liveCopy(id: string, child: ChildAgent): Promise<{ id: string; name: string; why: string } | undefined> {
+    const base = jobBase(childName(child));
+    const own = child.sessionId ?? this.subagents.get(id)?.find(row => row.id === child.id)?.sessionId;
+    const rows = await this.source.rows().catch(() => [] as SessionRow[]);
+    const archived = new Set(rows.flatMap(row => row.archived ? [row.id] : []));
+    const agents = rows.find(row => row.id === id)?.agents ?? [];
+    const candidates = new Map<string, ChildAgent>();
+    for (const other of this.children.get(id) ?? []) {
+      const session = other.sessionId ?? this.subagents.get(id)?.find(row => row.id === other.id)?.sessionId;
+      if (session !== undefined) candidates.set(session, { ...other, sessionId: session });
+    }
+    for (const agent of agents) {
+      if (agent.sessionId === undefined || candidates.has(agent.sessionId)) continue;
+      const at = Date.parse(agent.lastActivityAt ?? "");
+      candidates.set(agent.sessionId, { id: agent.childId ?? agent.sessionId, label: agent.sender, sessionName: agent.sender, sessionId: agent.sessionId,
+        status: agent.state === "working" ? "running" : agent.state === "failed" ? "error" : "done", ...Number.isFinite(at) ? { lastActivityAt: at } : {} });
+    }
+    for (const [session, other] of candidates) {
+      if (session === own || other.id === child.id || other.status === "cancelled" || archived.has(session) || jobBase(childName(other)) !== base) continue;
+      const why = childWorking(other) ? "it works" : await this.jobBusy(id, other, session);
+      if (why !== undefined) return { id: session, name: childName(other), why };
+    }
+    return undefined;
   }
 
   /**
