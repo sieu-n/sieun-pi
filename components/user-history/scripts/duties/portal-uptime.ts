@@ -10,7 +10,7 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  * The api portal vp chat's "Portal stays up" precheck (`node --import tsx scripts/duties/portal-uptime.ts`). No model call.
  * It reads the prod api probe gauges from Prometheus through Grafana's ds/query on obs.virev.ai (uid estate_prometheus), the way
  * auto-sns-agent scripts/duties/crawler/crawler-pipeline.mjs does. The Convex cron "api health probe" (apps/virev-demo/convex/apiPortal/healthProbe.ts)
- * probes crawler /health, crawler /health/schema and the portal's /openapi.json every 5 min, and Prometheus scrapes the result every 60 s
+ * probes crawler /health, crawler /health/schema and the portal's /openapi.json every minute (every 5 min before auto-sns-agent 2e687fa79), and Prometheus scrapes the result every 60 s
  * from job api-portal-health with the label env="production" (labels checked on 2026-10-12: env, instance, job, target).
  * It also makes one free signed-out GET of https://api.virev.ai/openapi.json as a second view that does not depend on Convex.
  * It reads the api-portal env files apps/api-portal/.env and .env.staging from GitHub at main (what prod runs) and sieun/dev (what the next
@@ -61,7 +61,7 @@ export type Answers = Record<QueryName, Series[] | { error: string }>;
  * The note's portal_openapi_p90_ms <= 2000 is printed for the job but not scored, because no measurement or incident backs 2000 ms
  * (measured p90 on 2026-10-12 was 360 ms). The note's dm_senders_prod is left out, see the header.
  */
-/** The Convex probe counts a target that has not answered in 15 s as failed (PROBE_TIMEOUT_MS in healthProbe.ts); the direct GET uses the same bound so both views agree. */
+/** The direct GET gives up at 15 s. measured: the slowest Convex probe of portal_openapi in the 7 d to 2026-10-22 took 2.2 s (api_probe_latency_ms). */
 const PROBE_TIMEOUT_MS = 15_000;
 /** api-portal-probe-stale's 900 s, in minutes. */
 const STALE_MIN = 15;
@@ -123,7 +123,7 @@ export function uptimeMetrics(answers: Answers, direct: { status: number; ms: nu
 
   const age = read("age", TARGETS);
   metrics.probe_age_min = age ? round(Math.min(...age.map(series => series.value)) / 60) : UNMEASURED;
-  if (age && metrics.probe_age_min > STALE_MIN) flagged.push({ at, kind: "stale", excerpt: `the newest prod api probe is ${metrics.probe_age_min} min old; the Convex cron runs every 5 min` });
+  if (age && metrics.probe_age_min > STALE_MIN) flagged.push({ at, kind: "stale", excerpt: `the newest prod api probe is ${metrics.probe_age_min} min old; the Convex cron runs every minute` });
 
   const p90 = read("p90", ["portal_openapi"]);
   metrics.portal_openapi_p90_ms = p90 ? Math.round(p90[0]!.value) : UNMEASURED;
