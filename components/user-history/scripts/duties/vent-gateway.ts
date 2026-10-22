@@ -68,7 +68,14 @@ export const PROVIDER_KEYS = new Set([
   "GOOGLE_DRIVE_SYNC_CLIENT_SECRET", "CLERK_SECRET_KEY", "CLERK_DEV_SECRET_KEY", "LITELLM_API_KEY", "QDRANT_API_KEY", "YOUTUBE_API_KEY",
   "POSTHOG_KEY", "POSTHOG_API_KEY", "ANYTHING_BUILDER_AUTH_TOKEN", "STRIPE_WEBHOOK_SECRET", "CLERK_WEBHOOK_SIGNING_SECRET",
   "RESEND_WEBHOOK_SECRET", "ZERNIO_WEBHOOK_SECRET",
+  // Found by the p61 env key audit (10-22): B2 keys under a BACKBLAZE_ name, the b2-viewer keys, and the CLIProxy management key.
+  "BACKBLAZE_APPLICATION_KEY", "BACKBLAZE_KEY_ID", "B2_VIEWER_PROD_KEY", "B2_VIEWER_DEV_KEY", "CLIPROXY_MANAGEMENT_KEY",
 ]);
+
+/** Vercel and Railway tokens count on the box, where the host services exporter (/srv/obs/secrets/services.env) calls those APIs at runtime;
+ *  in GitHub, Vercel or Railway stores they are deploy credentials. */
+export const BOX_PLATFORM = /^(VERCEL|RAILWAY)_(API_)?TOKEN$/;
+const onBox = (location: string) => /^(box|container|unit) /.test(location);
 
 /**
  * Where SLACK_BOT_TOKEN_DEV may stay: the alarm paths of rows 69 (metal watch dead-man), 70 (Grafana contact points) and 71 (ci_watch), which
@@ -78,7 +85,7 @@ export const PROVIDER_KEYS = new Set([
  *  and passes it to `vent-mock up` alone (26a36a614f; search / e2e green in verify run 39284928208), as vent-key-scan.mjs exempts it
  *  (2d058da12). Only that name, only as a repo secret. */
 export const CI_VENT_INPUT = (location: string, name: string) => location === "github secrets repo" && name === "CLERK_SECRET_KEY";
-export const ALARM_FALLBACK = /^(tier apps\/infra\/\.env|tier apps\/infra\/metal\/watch\/\.env\.watch|box \/srv\/obs\/secrets\/obs\.env|box \/srv\/[^/]+\/current\/apps\/infra\/metal\/watch\/\.env\.watch|container virev-obs-grafana|railway auto-sns-crawler\/[^/]+\/metal-watch)$/;
+export const ALARM_FALLBACK = /^(unit (opensearch|pgbackrest|redis|clickhouse)[a-z0-9-]*@[a-z]+\.service|tier apps\/infra\/\.env|tier apps\/infra\/metal\/watch\/\.env\.watch|box \/srv\/obs\/secrets\/obs\.env|box \/srv\/[^/]+\/current\/apps\/infra\/metal\/watch\/\.env\.watch|container virev-obs-grafana|railway auto-sns-crawler\/[^/]+\/metal-watch)$/;
 
 /** Vent's own homes: its Railway service, its tier files, its secrets on the box and its containers. */
 export const VENT_OWN = /^(railway .*\/vent|tier apps\/vent\/.*|box .*\/vent[^/]*|container .*-vent(-.*)?)$/;
@@ -90,7 +97,7 @@ export const VENT_OWN = /^(railway .*\/vent|tier apps\/vent\/.*|box .*\/vent[^/]
  */
 export function inScope(location: string): boolean {
   if (VENT_OWN.test(location)) return false;
-  return /^(convex |railway auto-sns-crawler\/|vercel auto-sns-|github (secrets|variables) (repo|env )|tier |box |container )/.test(location);
+  return /^(convex |railway auto-sns-crawler\/|vercel auto-sns-|github (secrets|variables) (repo|env )|tier |box |container |unit )/.test(location);
 }
 
 export interface ShareSite { row: number; app: string; provider: string; runs_in: string; status: string; direct?: string[]; exception?: string | null }
@@ -100,7 +107,8 @@ export interface ShareResult { refs: Record<string, { sha: string; sites: ShareS
 /** Share script statuses for a row whose call is no longer in the code: every file deleted, or the files no longer name the provider. */
 export const GONE = new Set(["removed", "gone"]);
 export interface WebhookVerdict { source: string; direct: boolean; vent: boolean }
-export interface KeyListing { locations: Record<string, string[]>; unreadable: Record<string, string> }
+/** urlKeys: per location, the URL-shaped names whose value carries user:pass@ for an outside host (a B2 key inside RAW_ARCHIVE_URL). */
+export interface KeyListing { locations: Record<string, string[]>; unreadable: Record<string, string>; urlKeys?: Record<string, string[]> }
 /** The tip's text lines that name a removed provider (`git grep -z -n` output) and apps/vent/src/vent/tables.py at the tip. */
 export interface RemovedReads { grep: string; tables: string }
 export interface VentReads { share: ShareResult | { error: string }; webhooks: WebhookVerdict[] | { error: string }; keys: KeyListing; removed: RemovedReads | { error: string } }
@@ -275,7 +283,8 @@ export function ventMetrics(reads: VentReads, at: number): PrecheckOutput {
   const leaks: string[] = [];
   for (const [location, names] of Object.entries(reads.keys.locations)) {
     if (!inScope(location)) continue;
-    const here = names.filter(name => PROVIDER_KEYS.has(name) && !(name === "SLACK_BOT_TOKEN_DEV" && ALARM_FALLBACK.test(location)) && !CI_VENT_INPUT(location, name));
+    const here = [...names.filter(name => (PROVIDER_KEYS.has(name) || (BOX_PLATFORM.test(name) && onBox(location))) && !(name === "SLACK_BOT_TOKEN_DEV" && ALARM_FALLBACK.test(location)) && !CI_VENT_INPUT(location, name)),
+      ...(reads.keys.urlKeys?.[location] ?? [])];
     for (const name of here) leaks.push(`${location} ${name}`);
     if (here.length) flagged.push({ at, kind: "key_outside_vent", item: location, excerpt: `${location} still holds ${here.join(", ")}`.slice(0, 300) });
   }
@@ -331,10 +340,32 @@ async function webhooks(): Promise<WebhookVerdict[]> {
   return webhookVerdicts({ http, ventRoute, registry: { names, paths, routed: /path:\s*source\.path/.test(receive ?? "") } });
 }
 
-/** Every location's env names: the cutover listers, both Convex deployments, the tier files at main and us-metal01. Values never leave this function. */
+/** What BOX_READER of auto-sns-agent scripts/ci/vent-key-scan.mjs prints: env files, containers (stopped ones too) and host systemd units, names only. */
+export interface BoxReaderOut {
+  files: Record<string, string[]>; fileUrls?: Record<string, Record<string, boolean | null>>;
+  docker: Record<string, string[]>; dockerUrls?: Record<string, Record<string, boolean | null>>;
+  units?: Record<string, string[]>; errors?: string[];
+}
+
+/** Adds the box reader's places to `locations` as `box <file>`, `container <name>` and `unit <unit>`, and returns the URL-shaped names whose value carries a key. */
+export function boxLocations(out: BoxReaderOut, locations: Record<string, string[]>): Record<string, string[]> {
+  const urlKeys: Record<string, string[]> = {};
+  const add = (location: string, names: string[], urls: Record<string, boolean | null> = {}) => {
+    locations[location] = names;
+    const keyed = Object.entries(urls).filter(([, flag]) => flag === true).map(([name]) => name);
+    if (keyed.length) urlKeys[location] = keyed;
+  };
+  for (const [file, names] of Object.entries(out.files)) add(`box ${file}`, names, out.fileUrls?.[file]);
+  for (const [name, names] of Object.entries(out.docker)) add(`container ${name}`, names, out.dockerUrls?.[name]);
+  for (const [unit, names] of Object.entries(out.units ?? {})) add(`unit ${unit}`, names);
+  return urlKeys;
+}
+
+/** Every location's env names: the cutover listers, both Convex deployments, the tier files at main and us-metal01 through the key scan's BOX_READER. Values never leave this function. */
 async function keyListing(): Promise<KeyListing> {
   const locations: Record<string, string[]> = {};
   const unreadable: Record<string, string> = {};
+  const urlKeys: Record<string, string[]> = {};
   const tasks: Promise<void>[] = [];
   tasks.push(run("node", [`${LISTERS}/list-store-names.mjs`]).then(stdout => {
     const listed = JSON.parse(stdout) as { out: Record<string, string[]>; unreadable: Record<string, string> };
@@ -352,13 +383,12 @@ async function keyListing(): Promise<KeyListing> {
       .filter(path => /(^|\/)\.env(\.[\w-]+)?$/.test(path) && !/\.env\.(example|local|keys)$/.test(path) && !path.startsWith("apps/llm-wiki/content/"));
     for (const path of files) locations[`tier ${path}`] = envNames(await run("git", ["show", `${REF}:${path}`]));
   })().catch((error: unknown) => { unreadable[`tier files at ${REF}`] = errorText(error); }));
-  for (const [script, prefix] of [["box-secret-names.py", "box"], ["box-container-env-names.py", "container"]] as const) {
-    tasks.push(readFile(join(REPO, LISTERS, script), "utf8").then(source => run("ssh", ["-o", "BatchMode=yes", BOX, "python3", "-"], { input: source })).then(stdout => {
-      for (const [location, names] of Object.entries(JSON.parse(stdout) as Record<string, string[]>)) locations[`${prefix} ${location.replace(/\/$/, "")}`] = names;
-    }, (error: unknown) => { unreadable[`${BOX} ${prefix}`] = errorText(error); }));
-  }
+  tasks.push(run("node", ["--input-type=module", "-e", `import(${JSON.stringify(join(REPO, "scripts/ci/vent-key-scan.mjs"))}).then(m => process.stdout.write(m.BOX_READER))`])
+    .then(reader => run("ssh", ["-o", "BatchMode=yes", BOX, "python3", "-"], { input: reader }))
+    .then(stdout => Object.assign(urlKeys, boxLocations(JSON.parse(stdout.trim().split("\n").pop()!) as BoxReaderOut, locations)),
+      (error: unknown) => { unreadable[`${BOX} box reader`] = errorText(error); }));
   await Promise.all(tasks);
-  return { locations, unreadable };
+  return { locations, unreadable, urlKeys };
 }
 
 /** The tip's lines that name a removed provider, read with git grep (wiki content and binaries skipped), and tables.py at the tip. Exit 1 is no match. */

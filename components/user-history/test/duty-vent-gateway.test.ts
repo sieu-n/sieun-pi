@@ -2,7 +2,7 @@
 // the TLS handshake and 112 provider keys still sat outside Vent, and the duty has to read those as misses, never as a pass.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { inScope, removedProviderRefs, UNMEASURED, UNMEASURED_PCT, ventMetrics, webhookVerdicts, type VentReads } from "../scripts/duties/vent-gateway.ts";
+import { boxLocations, inScope, removedProviderRefs, UNMEASURED, UNMEASURED_PCT, ventMetrics, webhookVerdicts, type VentReads } from "../scripts/duties/vent-gateway.ts";
 
 const site = (row: number, status: string, extra: object = {}) => ({ row, app: "convex", provider: "Stripe", runs_in: "Convex staging, prod", status, ...extra });
 const TABLES = 'INTEGRATIONS: dict[str, Integration] = {\n    "zernio": Integration(ZERNIO, "ZERNIO_API_KEY"),\n    "cliproxy-openai": Integration(OPENAI, "CLIPROXY_API_KEY"),\n}\n';
@@ -59,6 +59,23 @@ test("provider keys count per location outside Vent, the alarm fallback Slack to
   assert.equal(inScope("container virev-prod-vent"), false);
   assert.equal(inScope("box /srv/prod/secrets/vent.env"), false);
   assert.equal(inScope("container virev-prod-crawler-api"), true);
+});
+
+test("the box reader's stopped containers, host units, services.env tokens and keyed URLs count (p61 audit, 10-22)", () => {
+  const locations: Record<string, string[]> = {};
+  const urlKeys = boxLocations({
+    files: { "/srv/obs/secrets/services.env": ["RAILWAY_API_TOKEN", "VERCEL_TOKEN"], "/srv/prod/secrets/vent.env": ["STRIPE_SECRET_KEY"] },
+    docker: { "virev-prod-copy-oneoff": ["SOURCE_RAW_ARCHIVE_URL"], "virev-prod-crawler-api": ["RAW_ARCHIVE_URL"] },
+    dockerUrls: { "virev-prod-copy-oneoff": { SOURCE_RAW_ARCHIVE_URL: true }, "virev-prod-crawler-api": { RAW_ARCHIVE_URL: false } },
+    units: { "opensearch-b2@prod.service": ["SLACK_BOT_TOKEN_DEV", "PATH"], "virev-services.service": ["SLACK_BOT_TOKEN_DEV"] },
+  }, locations);
+  locations["github secrets repo"] = ["VERCEL_TOKEN", "RAILWAY_TOKEN"];
+  locations["box /home/x/.config/b2-viewer/env"] = ["B2_VIEWER_PROD_KEY"];
+  const output = ventMetrics(reads({ keys: { locations, unreadable: {}, urlKeys } }), 0);
+  // services.env 2, the stopped oneoff's keyed URL 1, a non-backup unit's Slack token 1, the b2-viewer key 1. Vent's own file, GitHub deploy tokens
+  // and the backup unit, which runs dotenvx over the infra tier that holds the alarm fallback token, do not count.
+  assert.equal(output.metrics.provider_keys_outside_vent, 5);
+  assert.equal(inScope("unit opensearch-b2@prod.service"), true);
 });
 
 test("a failed share script gives a -1 share and a source error", () => {
