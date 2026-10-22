@@ -103,13 +103,16 @@ class ResumePausedTests(unittest.TestCase):
         self.session("stepownerone", moved_on)
         self.session("chatchatchat", moved_on)
         self.session("ownerasked01", [*moved_on[:2], user(40, "Is it done?"), cut])
+        self.session("briefonly001", [user(60, "[task from parent]\n\nOwner's words: fix it."), assistant(50, "toolUse"), role(49, "toolResult"), cut])
         self.session("midtoolcut01", [*moved_on[:2], assistant(31, "toolUse"), role(30, "toolResult")])
         agent = {"type": "custom_message", "customType": "agent_message", "timestamp": at(40), "content": "child report"}
         self.session("agenttold001", [*moved_on[:2], agent, cut])
-        for name, status in (("livechild001", "running"), ("donechild001", "completed")):
-            folder = self.root / "tree" / f"sub-{name[:8]}"
+        # The runtime marks a cut child "completed" as soon as its turn ends, so the parent's own status decides.
+        for name, parent_status in (("livechild001", "running"), ("donechild001", "completed")):
+            folder = self.root / "tree" / f"sub-p{name[:7]}" / f"sub-{name[:8]}"
             folder.mkdir(parents=True)
-            (folder / "rlm-subagent.json").write_text(json.dumps({"status": status}))
+            (folder.parent / "rlm-subagent.json").write_text(json.dumps({"status": parent_status}))
+            (folder / "rlm-subagent.json").write_text(json.dumps({"status": "completed"}))
             self.session(name, moved_on, parent="headheadhead")
             self.sessions[-1]["sessionFile"] = str(shutil.copy(self.sessions[-1]["sessionFile"], folder / f"{name}.jsonl"))
         (self.root / "chats.json").write_text(json.dumps({"ids": ["0" * 24 + "chatchatchat"]}))
@@ -119,11 +122,10 @@ class ResumePausedTests(unittest.TestCase):
                 patch.object(resume_paused, "CHAT_SESSIONS", []), patch.object(resume_paused, "UNOWED", []):
             report = self.run_resume(dry_run=True)
             unowed = [run["id"] for run in resume_paused.UNOWED]
-        self.assertEqual(sorted(p["id"] for p in report["paused"]),
-                         ["agenttold001", "chatchatchat", "livechild001", "midtoolcut01", "ownerasked01", "stepownerone"])
-        self.assertEqual(sorted(unowed), ["donechild001", "movedonmoved"])
+        self.assertEqual(sorted(p["id"] for p in report["paused"]), ["agenttold001", "chatchatchat", "livechild001", "ownerasked01", "stepownerone"])
+        self.assertEqual(sorted(unowed), ["briefonly001", "donechild001", "midtoolcut01", "movedonmoved"], "a cut inside a tool call owes nothing by itself")
         with patch.object(resume_paused, "CHAT_SESSIONS", []), patch.object(resume_paused, "UNOWED", []):
-            self.assertEqual(len(self.run_resume(dry_run=True)["paused"]), 8, "without --owed every cut run is resumed")
+            self.assertEqual(len(self.run_resume(dry_run=True)["paused"]), 9, "without --owed every cut run is resumed")
 
     def test_network_and_sign_in_errors_count_other_errors_do_not(self):
         self.session("aaaaaaaaaaaa", [assistant(30, "error", "Connection error.")])

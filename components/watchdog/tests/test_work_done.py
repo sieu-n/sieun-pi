@@ -53,6 +53,8 @@ class WorkDone(unittest.TestCase):
         watchdog.outbox_notice = lambda session, root, text: {'deliveryStatus': 'queued'}
         self.file = self.dir / 'sessions' / f'{JOB}.jsonl'
         self.file.parent.mkdir()
+        (self.dir / 'chats.json').write_text(json.dumps({'ids': [CHAT]}))
+        (self.dir / 'threads.json').write_text(json.dumps({'ids': []}))
 
     def tearDown(self):
         for name, value in self.saved.items():
@@ -102,6 +104,18 @@ class WorkDone(unittest.TestCase):
 
     def test_a_board_that_did_not_read_never_reads_work_as_done(self):
         self.assertEqual(self.cycle(DROPPED, {JOB: (CHAT, 'idle', [], True)})[0], 'DROPPED_TURN')
+
+    def test_a_chat_list_that_did_not_read_never_reads_work_as_done(self):
+        (self.dir / 'threads.json').unlink()
+        self.assertEqual(self.cycle(DROPPED, {JOB: (CHAT, 'idle', [], False)})[0], 'DROPPED_TURN')
+
+    def test_an_unanswered_agent_message_keeps_the_job_owed(self):
+        events = [*DROPPED, {'type': 'custom_message', 'customType': 'agent_message', 'timestamp': at(50), 'content': 'are you done?'}]
+        self.assertEqual(self.cycle(events, {JOB: (CHAT, 'idle', [], False)})[0], 'DROPPED_TURN')
+
+    def test_the_watchdog_and_the_job_sweep_read_work_by_one_rule(self):
+        self.assertIsNone(wd_common._rp().work_owed(JOB, str(self.file), DROPPED, owners=set(), chats={CHAT}), "a cut inside a tool call owes nothing by itself")
+        self.assertFalse(watchdog.from_owner(user(BRIEF, 1)) or wd_common._rp().from_owner(user(BRIEF, 1)))
 
     def test_open_steps_walk_children(self):
         board = {'plan': [{'id': 'p1', 'status': 'done', 'children': [{'id': 'p2', 'status': 'doing'}]}, {'id': 'p3', 'status': 'dropped'},

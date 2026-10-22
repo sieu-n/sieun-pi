@@ -270,18 +270,22 @@ def chat_jobs():
     return jobs
 
 
-def work_done(sid, owner_owed, jobs):
-    """Why a dropped turn of a chat's job owes no work, or None: the chat lists the job, no owner message to it is unanswered, no open step
-    of the chat's board names it, and the chat does not show it working. On 10-22 at 03:11Z and 03:22Z the Mac's cycles woke ten jobs whose
-    turns dropped on 10-15, among them duties green fleet (p456 done) and checkin stuck_steps fix, and each found its work finished or taken
-    over and stopped, a full turn each for nothing."""
+def work_done(sid, file, events, jobs, shown):
+    """Why a dropped turn of a chat's job owes no work, or None. Only a job a chat lists (`chat_jobs`) is judged, by the job sweep's own rule
+    (resume_paused.work_owed): it owes work when it is a chat or thread (`shown`), an open step of its chat's board names it, its parent lists
+    it as a live child, or an owner or agent message to it has no answer. A job the chat shows working, a board that did not read, a chat list
+    that did not read, or a missing resume_paused.py reads as owed. On 10-22 at 03:11Z and 03:22Z the Mac's cycles woke ten jobs whose turns
+    dropped on 10-15, among them duties green fleet (p456 done) and checkin stuck_steps fix, and each found its work finished or taken over and
+    stopped, a full turn each for nothing."""
     job = (jobs or {}).get(sid)
-    if not job or owner_owed:
+    if not job or not RESUME_PAUSED or not shown:
         return None
     chat, state, steps, unread = job
-    if state == 'working' or steps or unread:
+    if state == 'working' or unread:
         return None
-    return f"the chat {chat} lists it {state or 'with no state'} and no open step of its board names it"
+    if _rp().work_owed(sid, file, events, owners={sid} if steps else set(), chats=shown):
+        return None
+    return f"the chat {chat} lists it {state or 'with no state'}, and no open step, live parent or unanswered message holds it"
 
 
 def _run(*argv):

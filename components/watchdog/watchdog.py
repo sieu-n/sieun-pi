@@ -11,7 +11,7 @@ import os
 import re
 import time
 
-from wd_common import (LOG_F, STATE_F, WATCH, _run, _tail_events, _ts, chat_ids, chat_jobs, credential_wait_at, gone_reason, log, outbox_notice,
+from wd_common import (LOG_F, STATE_F, WATCH, _rp, _run, _tail_events, _ts, chat_ids, chat_jobs, credential_wait_at, gone_reason, log, outbox_notice,
                        pa, stop_reason, tree_root, work_done)
 from wd_daemon import daemon_call, ui_retry, unwedge
 from wd_heartbeats import heartbeat_rearm
@@ -42,45 +42,18 @@ PROMPT_TYPES = ('agent_message', 'heartbeat_prompt', 'async_bash_completion', 'g
                 'prime-agent.update_restart')
 
 
-# The chat service's own notes in a user message (components/user-history/src/shared/chat-feed.ts SERVER_NOTES and NUDGE_PREFIX) and this
-# watchdog's notices. A turn they start is not the owner's, so the chat may end it silent.
-NOTE_PREFIXES = ('[watchdog]', '[check-in] ', '[job] ', '[reply check] ', '[brief check] ', '[correction check] ', '[board] Ops not applied: ',
-                 '[board] Decisions not on the scratchpad: ', 'Prime Agent restarted after an update', 'Watchdog recovery checkpoint', '[from ')
-# chat-feed.ts PRIME_NOTE: Prime's notes open with a snake_case tag such as <provider_quota_resumed>.
-PRIME_NOTE = re.compile(r'^<[a-z]+(?:_[a-z]+)+>\s')
-# A job's brief quotes the owner and is no message from him: a subagent's task opens with "[task from parent]", and every chat brief opens
-# with "Owner's words:" (poteto-mode and the chat brief rules).
-BRIEF_PREFIX = '[task from parent]'
-BRIEF_WORDS = "Owner's words:"
-# chat-feed.ts OWNER_RETRY_MARK: a server note that restarts a failed owner turn keeps that turn the owner's.
-OWNER_RETRY_MARK = "The owner's message is still unanswered: "
-
-
+# Owner input, replies and silent turns are read by resume_paused.py's one rule (from_owner, replied, said_something), which the job sweep's
+# work_owed uses too, so a session reads the same here and there.
 def said_something(m):
-    """Whether an assistant message holds text, thinking or a tool call. Empty records also bump messageCount."""
-    cs = m.get('content')
-    return any(isinstance(c, dict) and ((c.get('type') == 'toolCall') or (c.get('text') or '').strip() or (c.get('thinking') or '').strip())
-               for c in (cs if isinstance(cs, list) else []))
+    return _rp().said_something(m)
 
 
 def replied(m):
-    """Whether an assistant message gave the owner a reply: text he reads, or a tell_owner call."""
-    cs = m.get('content')
-    return any(isinstance(c, dict) and ((c.get('type') == 'text' and (c.get('text') or '').strip()) or
-                                        (c.get('type') == 'toolCall' and c.get('name') == 'tell_owner'))
-               for c in (cs if isinstance(cs, list) else []))
+    return _rp().replied(m)
 
 
 def from_owner(e):
-    """Whether an input event is a message the owner typed: a user message that is no server, Prime or watchdog note."""
-    m = e.get('message') or {}
-    if e.get('type') != 'message' or m.get('role') != 'user':
-        return False
-    cs = m.get('content')
-    text = (cs if isinstance(cs, str) else ' '.join(c.get('text') or '' for c in cs if isinstance(c, dict)) if isinstance(cs, list) else '').strip()
-    if text.startswith(BRIEF_PREFIX) or BRIEF_WORDS in text[:300]:
-        return False
-    return OWNER_RETRY_MARK in text or not (text.startswith(NOTE_PREFIXES) or PRIME_NOTE.match(text))
+    return _rp().from_owner(e)
 
 
 def owed_input(evs):
@@ -492,7 +465,7 @@ def _cycle(dry_run=False, verbose=True):
         if not r['stopped'] and r['act'] == 'idle' and not r['noticed']:
             if jobs is None:
                 jobs = chat_jobs() or {}
-            r['work_done'] = work_done(r['sid'], r.get('owner_owed'), jobs)
+            r['work_done'] = work_done(r['sid'], r.get('file'), _tail_events(r['file']) if r.get('file') else [], jobs, shown or None)
     swap, load = pressure()
     blocked = ('swap', swap, SWAP_CAP_GIB) if swap > SWAP_CAP_GIB else \
         ('load', load, LOAD_CAP) if load > LOAD_CAP else None

@@ -188,6 +188,10 @@ NOTE_PREFIXES = ("[watchdog]", "[check-in] ", "[job] ", "[reply check] ", "[brie
                  "[board] Decisions not on the scratchpad: ", "Prime Agent restarted after an update", "Watchdog recovery checkpoint", "[from ",
                  "[resume]", "[relay]", "[cross-host message")
 PRIME_NOTE = re.compile(r"^<[a-z]+(?:_[a-z]+)+>\s")
+# A job's brief quotes the owner and is no message from him: a subagent's task opens with "[task from parent]", and every chat brief opens
+# with "Owner's words:" (poteto-mode and the chat brief rules).
+BRIEF_PREFIX = "[task from parent]"
+BRIEF_WORDS = "Owner's words:"
 # chat-feed.ts OWNER_RETRY_MARK: a server note that restarts a failed owner turn keeps that turn the owner's.
 OWNER_RETRY_MARK = "The owner's message is still unanswered: "
 
@@ -200,12 +204,14 @@ def message_text(message):
 
 
 def from_owner(entry):
-    """Whether a transcript entry is a message the owner typed: a user message that is no server, Prime, watchdog or resume note, and not the
-    "continue" this script sends."""
+    """Whether a transcript entry is a message the owner typed: a user message that is no brief, no server, Prime, watchdog or resume note, and
+    not the "continue" this script sends. The watchdog reads owner input through this one rule."""
     message = entry.get("message") or {}
     if entry.get("type") != "message" or message.get("role") != "user":
         return False
     text = message_text(message)
+    if text.startswith(BRIEF_PREFIX) or BRIEF_WORDS in text[:300]:
+        return False
     if OWNER_RETRY_MARK in text:
         return True
     return bool(text) and text != "continue" and not text.startswith(NOTE_PREFIXES) and not PRIME_NOTE.match(text)
@@ -234,16 +240,23 @@ def owner_unanswered(entries):
 
 
 def live_child(path):
-    """Whether the parent of the job at `path` still lists it as a live child: its rlm-subagent.json reads "running". A completed or deleted
-    child is no longer one, and a thread (no sub-* folder) has no parent. A record that does not read counts as live, so a read failure never
-    drops a job's work."""
+    """Whether the parent of the job at `path` still lists it as a live child: the job is not deleted, and its parent is the tree's root or a
+    job whose own rlm-subagent.json reads "running". The job's own status says nothing here: the RLM runtime marks a child "completed" as soon
+    as its turn ends, a failed one included (mig-search-egress on the Mac, cut at 05:42:52.006Z on 10-22 and "completed" at 05:42:52.597Z, while
+    its parent ran). A thread (no sub-* folder) has no parent. A record that does not read counts as live, so a read failure never drops work."""
     folder = Path(path).parent if path else None
     if not folder or not folder.name.startswith("sub-"):
         return False
-    try:
-        return json.loads(BOX.read(folder / "rlm-subagent.json")).get("status") == "running"
-    except (OSError, ValueError, AttributeError):
-        return True
+
+    def status(of):
+        try:
+            return json.loads(BOX.read(of / "rlm-subagent.json")).get("status")
+        except (OSError, ValueError, AttributeError):
+            return None
+    if status(folder) == "deleted":
+        return False
+    above = folder.parent
+    return not above.name.startswith("sub-") or status(above) in ("running", None)
 
 
 def agent_unanswered(entries):
@@ -265,13 +278,6 @@ def said_something(message):
                for c in (content if isinstance(content, list) else []))
 
 
-def mid_tool(entries):
-    """Whether the run's last turn stopped inside a tool call: its last message is a tool call or a tool result no turn followed."""
-    last = last_message(entries) or {}
-    message = last.get("message") or {}
-    return message.get("role") == "toolResult" or (message.get("role") == "assistant" and message.get("stopReason") == "toolUse")
-
-
 # The chats and threads the chat service lists (chats.json, threads.json), read once a pass; None when a list did not read.
 CHAT_SESSIONS = []
 
@@ -289,21 +295,21 @@ def chat_sessions():
     return CHAT_SESSIONS[0]
 
 
-def work_owed(session_id, path, entries, owners=None):
-    """Why the run is still owed work, or None. It is owed when it is a chat or thread the chat service lists (a chat may be mid-way through a
-    job report or another non-owner message, whatever its board says), when an open board step names it (`owners`, --owners), when its last turn
-    stopped inside a tool call, when its parent still lists it as a live child (`live_child`), or when a message to it has no answer: one the
-    owner typed (`owner_unanswered`) or an agent message from its parent, a child or a sibling (`agent_unanswered`). The chat service's job
-    sweep (--owed) and the watchdog (components/watchdog, through wd_common._rp) wake a cut run only when this names a reason."""
-    chats = chat_sessions()
+def work_owed(session_id, path, entries, owners=None, chats=None):
+    """Why the run is still owed work, or None. It is owed when it is a chat or thread the chat service lists (`chats`, else chats.json and
+    threads.json; a chat may be mid-way through a job report or another non-owner message, whatever its board says), when an open board step
+    names it (`owners`, else --owners), when its parent still lists it as a live child (`live_child`), or when a message to it has no answer:
+    one the owner typed (`owner_unanswered`) or an agent message from its parent, a child or a sibling (`agent_unanswered`). A turn cut inside
+    a tool call owes nothing by itself: with none of these, its parent already dropped that work, as with the six Mac jobs of 10-15 that woke
+    on 10-22. The chat service's job sweep (--owed) and the watchdog (components/watchdog wd_common.work_done, through _rp) both wake a cut run
+    only when this names a reason."""
+    chats = chat_sessions() if chats is None else chats
     if chats is None:
         return "the chat service's chat list did not read"
     if session_id in chats:
         return "it is a chat"
     if session_id in (OWNERS if owners is None else owners):
         return "an open board step names it"
-    if mid_tool(entries):
-        return "its turn stopped inside a tool call"
     if live_child(path):
         return "its parent lists it as a live child"
     asked = owner_unanswered(entries)
