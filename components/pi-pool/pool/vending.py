@@ -564,6 +564,13 @@ def decision(state, key, provider, accounts, cfg, now):
     return sched.decide(tree, accounts, sched.book_for(state, provider, key, cfg, now), cooldowns, cfg, now), tree
 
 
+def manual_mark(tree):
+    """{"manual": True} for a tree pinned to one account, for its parked and unparked lines. A pinned tree's return
+    to its own account writes no vend line, so on 10-22 the Whole system duty read 01a11ba8, pinned to claude8 and
+    waiting for its 16:30Z reset, as passed by 01a1180e, an Auto tree that entered claude19 at 15:20Z."""
+    return {"manual": True} if tree.pin or tree.pool_pin else {}
+
+
 def schedule(state, key, provider, accounts, cfg, now, admit_now=True):
     """Run `decide` for this tree and write what it takes, under the pool flock
     the caller holds: an admission takes its cell, a wait its slot. With
@@ -577,10 +584,11 @@ def schedule(state, key, provider, accounts, cfg, now, admit_now=True):
     if isinstance(d, sched.Wait):
         # One line per refused request, for the Whole system duty: `room` names the accounts the rules let this
         # tree enter now but for a cell, so a refusal with room is a turn held while the pool has accounts free.
+        # `manual` marks a tree pinned to one account, which waits for that account outside Auto's order.
         base.log("parked", provider=provider, session=key.key, at=round(now, 1), account=d.slot_account.label,
-                 slot_at=round(d.slot_at), priority=tree.priority, room=[a.label for a in d.room])
+                 slot_at=round(d.slot_at), priority=tree.priority, room=[a.label for a in d.room], **manual_mark(tree))
     elif tree.wait and admit_now:
-        base.log("unparked", provider=provider, session=key.key, at=round(now, 1), account=d.account.label)
+        base.log("unparked", provider=provider, session=key.key, at=round(now, 1), account=d.account.label, **manual_mark(tree))
     if isinstance(d, sched.Admit) and admit_now:
         writer.admit(key, provider, d.account.id, now)
         return d, tree, True

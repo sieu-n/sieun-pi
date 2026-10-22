@@ -322,6 +322,32 @@ class R5Wait(unittest.TestCase):
         self.assertIsInstance(request(state, later, [open_x], at), sched.Wait)
         self.assertEqual(request(state, early, [open_x], at).account.id, "x")
 
+    def test_a_tree_back_after_its_cell_passed_does_not_take_a_cell_held_by_a_tree_ahead_of_it(self):
+        """10-22 on claude19 (30 s cells): 01a15c6c, waiting since 15:24:27Z, came back at 15:30:00Z for its 15:28:00Z
+        cell and entered the 15:30:00Z cell that 01a15984, waiting since 15:23:25Z, held. 01a15984 asked at 15:30:11Z,
+        found that cell taken, and lost its next one the same way before it got in at 15:32:03Z."""
+        state = empty_state()
+        sp = CFG["admit_slot_sec"]
+        cell = math.ceil(NOW / sp) * sp
+        early, late = put(state, tree_key("early"), on="y"), put(state, tree_key("late"), on="y")
+        state["sessions"][late.key]["wait"] = {P: {"account": "x", "slot_at": cell - 2 * sp, "since": NOW - 300}}
+        state["sessions"][early.key]["wait"] = {P: {"account": "x", "slot_at": cell, "since": NOW - 400}}
+        x = acct("x", five=10, tier="max 5x")
+        out = acct("y", five=100, five_reset_in=FIVE)
+        back = request(state, late, [x, out], cell + 5)
+        self.assertEqual((type(back), back.slot_at), (sched.Wait, cell + sp))
+        self.assertEqual(request(state, early, [x, out], cell + 11).account.id, "x")
+        self.assertEqual(request(state, late, [x, out], cell + sp).account.id, "x")
+
+    def test_a_tree_back_late_still_enters_a_cell_nobody_holds(self):
+        state = empty_state()
+        sp = CFG["admit_slot_sec"]
+        cell = math.ceil(NOW / sp) * sp
+        late = put(state, tree_key("late"), on="y")
+        state["sessions"][late.key]["wait"] = {P: {"account": "x", "slot_at": cell - 2 * sp, "since": NOW - 300}}
+        d = request(state, late, [acct("x", five=10, tier="max 5x"), acct("y", five=100, five_reset_in=FIVE)], cell + 5)
+        self.assertEqual(d.account.id, "x")
+
     def test_a_waiter_whose_account_serves_before_its_slot_gets_no_token(self):
         state = empty_state()
         put(state, KEY, on="x", at=NOW - 60)
@@ -827,6 +853,27 @@ class SwitchLog(unittest.TestCase):
         state["providers"][P]["admissions"] = {"c": [[NOW, "busy"]]}
         logged, _ = self.run_vend(state, [acct("b", five=100), acct("c", five=30, tier="max 5x")])
         self.assertEqual([kw["room"] for e, kw in logged if e == "parked"], [["c@x"]])
+
+    def test_a_pinned_tree_marks_its_parked_and_unparked_lines_manual(self):
+        """10-22: 01a11ba8, pinned to claude8, waited from 15:19Z for its 16:30Z reset, and the Whole system duty read it as
+        passed by Auto trees, since its return to its own account wrote no vend line."""
+        state = empty_state()
+        put(state, KEY, on="b")
+        state["sessions"][KEY.key]["pins"] = {P: {"account_id": "b", "at": NOW - 600, "by": "cli"}}
+        logged, _ = self.run_vend(state, [acct("a", five=10), acct("b", five=100, five_reset_in=600)])
+        [parked] = [kw for e, kw in logged if e == "parked"]
+        self.assertEqual((parked["account"], parked.get("manual")), ("b@x", True))
+        state["sessions"][KEY.key]["wait"] = {P: {"account": "b", "slot_at": NOW, "since": NOW - 600}}
+        logged, _ = self.run_vend(state, [acct("a", five=10), acct("b", five=10)])
+        [unparked] = [kw for e, kw in logged if e == "unparked"]
+        self.assertEqual((unparked["account"], unparked.get("manual")), ("b@x", True))
+        self.assertEqual([e for e, _ in logged if e == "vend"], [], "a pinned tree back on its own account writes no vend line")
+
+    def test_an_auto_tree_marks_no_parked_line_manual(self):
+        state = empty_state()
+        put(state, KEY, on="b")
+        logged, _ = self.run_vend(state, [acct("a", five=100), acct("b", five=100)])
+        self.assertNotIn("manual", [kw for e, kw in logged if e == "parked"][0])
 
     def test_a_refusal_by_the_move_budget_logs_no_room(self):
         # 01a11a24 on 10-18: a low tree out of moves (R6) parked on claude9 from 16:50Z to 17:21Z, and every parked line

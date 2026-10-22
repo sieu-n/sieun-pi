@@ -391,7 +391,11 @@ failure into the same wait.
 
 A slot holds one tree. A tree that ranks ahead (higher priority, or the same priority and an
 earlier wait start) may take a slot a later tree was promised; that tree finds its slot taken
-when it wakes and is given the next one. So a reset admits the waiting trees at slot pace,
+when it wakes and is given the next one. A tree that comes back after its slot's cell passed
+asks for the current cell like any other tree, in that same order, so it never takes a cell a
+tree ahead of it holds. On 10-22 01a15c6c came back at 15:30:00Z for its 15:28:00Z cell on
+claude19, took the 15:30:00Z cell that 01a15984 (waiting since 15:23Z) held, and 01a15984
+lost two cells before it got in at 15:32:03Z. So a reset admits the waiting trees at slot pace,
 high trees first. On 2026-10-12 15:30, 25 vends landed on claude7 in 4 seconds; at the
 2026-10-10 21:00 reset 26 trees landed on claude9 in 2 seconds.
 

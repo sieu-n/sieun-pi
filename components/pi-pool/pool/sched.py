@@ -23,7 +23,8 @@ from . import base, registry
 #      the account that frees first: the first R4 cell at or after the account
 #      passes R2 again (now, or its real reset or 429 `until`), ordered by priority,
 #      then by wait start. Its own account wins a tie, so the tree keeps its cache.
-#      A tree that comes back after its cell went stale keeps its wait start.
+#      A tree that comes back after its cell went stale keeps its wait start. A tree
+#      back after its cell passed asks for the current cell in this same order.
 #   R6 move budget: a tree that moved max_moves_per_day[priority] times in 24 h
 #      waits for its own account, at most budget_wait_max_sec from the start of its
 #      wait; a high tree is refused only optional moves.
@@ -321,10 +322,15 @@ def decide(tree, accounts, book, cooldowns, cfg, now):
     scores = tuple((a.label, round(score(a, cfg, now, p, load), 2)) for a in ranked)
 
     def own_cell(a):
-        """The tree's reservation on `a` is due and nobody ranked ahead took its cell."""
+        """The tree's reservation on `a` is due, its cell has not passed, and nobody ranked ahead took it.
+        A tree back after its cell passed asks for the current cell like any other tree (`first_open`). On 10-22
+        01a15c6c, back at 15:30:00Z for its 15:28:00Z cell on claude19, entered the 15:30:00Z cell that 01a15984,
+        waiting since 15:23Z, held, and 01a15984 lost its cell twice before it got in at 15:32:03Z."""
         if not tree.wait or tree.wait[0] != a.id or tree.wait[1] > now + 2:
             return False
-        return not cell_taken(a, int(tree.wait[1] // slot_spacing(a, cfg)), tree, rank, book, cfg)
+        sp = slot_spacing(a, cfg)
+        cell = int(tree.wait[1] // sp)
+        return cell >= int(now // sp) and not cell_taken(a, cell, tree, rank, book, cfg)
 
     def open_now(a):
         return own_cell(a) or first_open(a, now, tree, rank, book, cfg, sole) <= now
