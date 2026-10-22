@@ -13,6 +13,7 @@ import { CHANGE_APPROACH_MISSES, effectiveRun, metricStreaks, missStreak, type M
 import type { ChatBoard, ChildAgent, PlanItem, SessionRow } from "../../src/shared/types.ts";
 import { fixJobLive } from "../../src/shared/duty-fixes.ts";
 import { pendingWakes } from "../../src/wakes.ts";
+import { daemonList, listRows } from "../../src/daemon-list.ts";
 
 /**
  * The duty fleet: every active duty of every chat in `<dataDir>/chats.json`, the built-in check-in included unless its chat's check-in is paused,
@@ -48,33 +49,8 @@ export function parseLooseJson(text: string): unknown {
   return JSON.parse(out);
 }
 
-/**
- * One read of the daemon's session list, as `prime-agent sessions --json` reads it, with a longer wait for the daemon's hello. The CLI waits a fixed
- * 3000 ms for that hello and has no option to wait longer. On 10-22 the supervisor's busy main thread held its hello past that at 02:21Z and 02:31Z
- * and failed both d9 runs, and 11 of 18 probes from 02:44Z to 02:46Z got it after 4.2 to 6.1 s. The 30 s waits are the Prime client's own default
- * request timeout, and the list's 60 s is the old CLI call's limit.
- */
-async function readDaemonList(): Promise<DaemonSession[]> {
-  const { DaemonClient, defaultDaemonSocketPath } = await import("prime-agent");
-  const client = new DaemonClient(defaultDaemonSocketPath());
-  try {
-    await client.connect(30_000);
-    await client.waitForHello(30_000);
-    const response = await client.request({ type: "list" }, 60_000, { recoverable: false });
-    if (!response.success) throw new Error(response.error);
-    const data = response.data as { sessions?: DaemonSession[] } | DaemonSession[];
-    return Array.isArray(data) ? data : data.sessions ?? [];
-  } finally { client.close(); }
-}
-
-/** The daemon's session list, read a second time when the first read fails. */
-export async function daemonSessions(read: () => Promise<DaemonSession[]> = readDaemonList): Promise<DaemonSession[]> {
-  const errors: string[] = [];
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try { return await read(); } catch (error) { errors.push((error instanceof Error ? error.message : String(error)).slice(0, 300)); }
-  }
-  throw new Error(`reading the daemon's session list failed twice: ${errors.join("; ")}`);
-}
+/** The daemon's session list, through `daemonList`'s 30 s hello wait and second read. */
+export const daemonSessions = async (): Promise<DaemonSession[]> => listRows<DaemonSession>(await daemonList());
 
 const ms = (iso: string | undefined): number | undefined => { const at = Date.parse(iso ?? ""); return Number.isFinite(at) ? at : undefined; };
 /**

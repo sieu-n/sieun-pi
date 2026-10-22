@@ -10,7 +10,8 @@
 import { copyFile, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DaemonClient, defaultDaemonSocketPath, getAgentDir } from "prime-agent";
+import { getAgentDir } from "prime-agent";
+import { daemonList } from "../src/daemon-list.ts";
 import { loadRecord } from "../src/chat-brief.ts";
 import { BoardStore } from "../src/chat-board-store.ts";
 import { childrenByParent, isListed, isTopLevel, parseSummaries, projectRow, rosterChildren, subtreeOf } from "../src/chat-catalog.ts";
@@ -35,13 +36,8 @@ const dataDir = join(getAgentDir(), "browser-chat");
 const scratch = await mkdtemp(join(tmpdir(), "checkin-precheck-"));
 const copy = async (name: string) => { await copyFile(join(dataDir, name), join(scratch, name)).catch(() => {}); return join(scratch, name); };
 
-const client = new DaemonClient(defaultDaemonSocketPath());
-await client.connect(30_000);
 const all = !process.argv.includes("--roster");
-const response = await client.request(all ? { type: "list", all: true } : { type: "list" }, 180_000, { recoverable: false });
-client.close();
-if (!response.success) throw new Error(response.error);
-const summaries = parseSummaries(response.data);
+const summaries = parseSummaries(await daemonList({ all, listMs: 180_000 }));
 const children = summaries.filter(row => !isTopLevel(row));
 const byParent = childrenByParent(children);
 const top = new Map<string, (typeof summaries)[number]>();

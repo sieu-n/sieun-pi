@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { daemonSessions, dutyFleet, readsTheShare } from "../scripts/duties/duty-fleet.ts";
+import { dutyFleet, readsTheShare } from "../scripts/duties/duty-fleet.ts";
 import { CHANGE_APPROACH_MISSES } from "../src/shared/duty-streak.ts";
 import { DutyStore } from "../src/chat-duty-store.ts";
 
@@ -34,16 +34,6 @@ test("the duty that reads duties_green_pct stays out of the share, so it can rea
 });
 
 const HANDSHAKE = "Error: Timed out after 3000ms waiting for the Prime Agent daemon handshake. Socket: /tmp/prime-agent-1001/daemon.sock.";
-
-test("a daemon read that fails once is read again, and two failures name both errors", async () => {
-  let calls = 0;
-  const flaky = async () => { if (calls++ === 0) throw new Error(HANDSHAKE); return [{ sessionId: "s1" }]; };
-  assert.deepEqual((await daemonSessions(flaky)).map(session => session.sessionId), ["s1"]);
-  assert.equal(calls, 2);
-  calls = 0;
-  await assert.rejects(daemonSessions(async () => { calls++; throw new Error(HANDSHAKE); }), /failed twice: .*handshake.*; .*handshake/);
-  assert.equal(calls, 2);
-});
 
 test("an unreadable session list marks the fleet's session data missing and still counts the green share", async () => {
   const dataDir = await mkdtemp(join(tmpdir(), "duty-fleet-"));

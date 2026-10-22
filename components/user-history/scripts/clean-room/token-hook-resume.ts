@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { appendFileSync, existsSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { daemonList, listRows } from "../../src/daemon-list.ts";
 import { readSession, readSessionFile, type RunState, type Scenario, type SessionEvent, type Verdict } from "./session-read.ts";
 
 /**
@@ -31,14 +32,14 @@ export interface HookKill { at: number; pid: number; session: string }
 
 /**
  * The short ids the hook names the jobs by: Prime sets the hook's session variable to the active id, the last 12 characters of the session id
- * (pi-pool.log hook_no_token rows, 10-18), or a new one once the daemon reloads the session, read from `prime-agent list`, with the pids of
+ * (pi-pool.log hook_no_token rows, 10-18), or a new one once the daemon reloads the session, read from the daemon's list (`daemonList`), with the pids of
  * the workers that run those sessions, which start their hooks.
  */
-function activeIds(jobs: ReadonlySet<string>): { ids: Set<string>; workers: Set<number> } {
+async function activeIds(jobs: ReadonlySet<string>): Promise<{ ids: Set<string>; workers: Set<number> }> {
   const ids = new Set([...jobs].map(id => id.slice(-12)));
   const workers = new Set<number>();
   try {
-    const rows = (JSON.parse(execFileSync("prime-agent", ["list", "--json"], { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 })) as { sessions: { sessionId?: string; activeSessionId?: string; workerPid?: number }[] }).sessions;
+    const rows = listRows<{ sessionId?: string; activeSessionId?: string; workerPid?: number }>(await daemonList());
     for (const row of rows) {
       if (!row.sessionId || !jobs.has(row.sessionId)) continue;
       if (row.activeSessionId) { ids.add(row.activeSessionId); ids.add(row.activeSessionId.slice(-12)); }
@@ -48,15 +49,15 @@ function activeIds(jobs: ReadonlySet<string>): { ids: Set<string>; workers: Set<
   return { ids, workers };
 }
 /**
- * The chat's create_session root jobs, by the names the chat service files in chat-jobs.json, with their session ids from `prime-agent list`.
+ * The chat's create_session root jobs, by the names the chat service files in chat-jobs.json, with their session ids from the daemon's list (`daemonList`).
  * Each root runs on its own worker, so its hook names it and not the chat: the 16 jobs the 10-16 to 10-17 outage left dead were all such roots.
  */
-function rootJobs(chat: string): { id: string; name: string }[] {
+async function rootJobs(chat: string): Promise<{ id: string; name: string }[]> {
   try {
     const registry = JSON.parse(readFileSync(join(DATA, "chat-jobs.json"), "utf8")) as { jobs?: Record<string, { chatId?: string }> };
     const names = new Set(Object.entries(registry.jobs ?? {}).filter(([, entry]) => entry.chatId === chat).map(([name]) => name));
     if (!names.size) return [];
-    const rows = (JSON.parse(execFileSync("prime-agent", ["list", "--json"], { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 })) as { sessions: { sessionId?: string; sessionName?: string; runtimeKind?: string }[] }).sessions;
+    const rows = listRows<{ sessionId?: string; sessionName?: string; runtimeKind?: string }>(await daemonList());
     return rows.flatMap(row => row.sessionId && row.sessionName && names.has(row.sessionName) && row.runtimeKind !== "subagent" ? [{ id: row.sessionId, name: row.sessionName }] : []);
   } catch { return []; }
 }
@@ -168,12 +169,12 @@ export async function killHooks(run: string, until: number, windowMs: number): P
     if (chat && Date.now() - looked > 5000) {
       looked = Date.now();
       // Only the chat's root jobs: the chat keeps its token, as the chats of the 16 dead roots did, so nothing above a root steers it back.
-      const roots = rootJobs(chat);
+      const roots = await rootJobs(chat);
       if (roots.length) writeFileSync(join(run, "roots.json"), JSON.stringify(roots, null, 1));
       // A read that fails (prime-agent list timed out often on 10-18) keeps what the last one found, and ids only add up: in run-11 the
       // root's hooks went unkilled from 12:19:25Z, and its turn went through at 12:20:11Z inside the window.
       for (const root of roots) jobs.add(root.id);
-      const tree = jobs.size ? activeIds(jobs) : { ids: new Set<string>(), workers: new Set<number>() };
+      const tree = jobs.size ? await activeIds(jobs) : { ids: new Set<string>(), workers: new Set<number>() };
       for (const id of tree.ids) active.add(id);
       parents = new Set([...parents, ...tree.workers, ...active.size ? chatServices() : []]);
       daemons = daemonPids();

@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { daemonList, listRows } from "../../src/daemon-list.ts";
 import { readSession, readSessionFile, sessionFiles, type RunState, type Scenario, type SessionEvent, type Verdict } from "./session-read.ts";
 
 /**
@@ -23,10 +24,7 @@ interface Check { id: string; ok: boolean | null; detail: string }
 const yes = (ok: boolean | null): string => ok === null ? "not reached yet" : ok ? "met" : "not met";
 
 interface Row { sessionId: string; sessionName?: string; activeSessionId?: string; parentSessionId?: string; lifecycle?: string }
-function daemonRows(): Row[] {
-  const out = execFileSync("prime-agent", ["sessions", "--all", "--json"], { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
-  return (JSON.parse(out) as { sessions: Row[] }).sessions;
-}
+const daemonRows = async (): Promise<Row[]> => listRows<Row>(await daemonList({ all: true }));
 /** Each process whose environment names the chat's session folder (RLM_HARNESS_STATE_DIR or RLM_SESSION_DIR of its tree), as its pid and command start. */
 function treeProcesses(chat: string): string[] {
   const out = execFileSync("ps", ["-E", "-ww", "-ax", "-o", "pid=,command="], { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
@@ -60,7 +58,7 @@ export const idleUnload: Scenario = {
   baseline: () => { throw new Error("this scenario has no baseline"); },
 };
 
-function judge(_run: string, state: RunState): { verdict: Verdict; text: string } {
+async function judge(_run: string, state: RunState): Promise<{ verdict: Verdict; text: string }> {
   const chat = state.chat.id;
   const checks: Check[] = [];
   const events = readSession(chat);
@@ -74,7 +72,7 @@ function judge(_run: string, state: RunState): { verdict: Verdict; text: string 
     detail: `${jobs.length} job sessions, ${jobs.filter(job => job.reported).length} reported to the chat; the chat's last answer with a number: ${answer ? `${iso(answer.at)} "${clip(answer.text, 300)}"` : "none yet"}` });
 
   const minutes = idleMinutes();
-  const rows = daemonRows();
+  const rows = await daemonRows();
   const byId = new Map(rows.map(row => [row.sessionId, row] as const));
   const passivated = linesAfter(DAEMON_LOG, state.windowStart).filter(entry => /Passivated idle child|Evicted idle worker/.test(entry.line));
   const unloads = linesAfter(join(DATA, "service.log"), state.windowStart).filter(entry => entry.line.includes("idle unload: stopped"));
