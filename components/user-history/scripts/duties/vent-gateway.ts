@@ -385,7 +385,7 @@ async function keyListing(): Promise<KeyListing> {
   })().catch((error: unknown) => { unreadable[`tier files at ${REF}`] = errorText(error); }));
   tasks.push(run("node", ["--input-type=module", "-e", `import(${JSON.stringify(join(REPO, "scripts/ci/vent-key-scan.mjs"))}).then(m => process.stdout.write(m.BOX_READER))`])
     .then(reader => run("ssh", ["-o", "BatchMode=yes", BOX, "python3", "-"], { input: reader }))
-    .then(stdout => Object.assign(urlKeys, boxLocations(JSON.parse(stdout.trim().split("\n").pop()!) as BoxReaderOut, locations)),
+    .then(stdout => { Object.assign(urlKeys, boxLocations(JSON.parse(stdout.trim().split("\n").pop()!) as BoxReaderOut, locations)); },
       (error: unknown) => { unreadable[`${BOX} box reader`] = errorText(error); }));
   await Promise.all(tasks);
   return { locations, unreadable, urlKeys };
