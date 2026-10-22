@@ -6,7 +6,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import type { Host } from "../src/hosts.ts";
@@ -52,4 +52,36 @@ test("install.mjs adds the prompt captures to the relay roots of a box that alre
   const install = await readFile(fileURLToPath(new URL("../../prime-relay/install.mjs", import.meta.url)), "utf8");
   const roots = /const ROOTS = (\[[^\]]*\]);/.exec(install)?.[1];
   assert.ok(roots && (JSON.parse(roots) as string[]).includes("~/.prime/agent/browser-chat/prompts"), "install.mjs ROOTS lists ~/.prime/agent/browser-chat/prompts");
+});
+
+test("a Mac capture is read once while its size and time hold, without its image data, and again once it changes", async t => {
+  const home = await mkdtemp(join(tmpdir(), "relay-capture-kept-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const agentDir = join(home, ".prime", "agent");
+  const file = join(agentDir, "browser-chat", "prompts", `${SESSION}.json`);
+  const data = "iVBORw0KGgo".repeat(10_000);
+  const capture = (text: string) => ({ capturedAt: "2026-10-22T06:51:02.000Z", sessionId: SESSION, sessionFile: null, provider: "anthropic", model: "m",
+    payload: { system: "s", messages: [{ role: "user", content: [{ type: "text", text }, { type: "image", source: { type: "base64", media_type: "image/png", data } }] }] } });
+  await mkdir(dirname(file), { recursive: true });
+  await writeFile(file, JSON.stringify(capture("first")));
+  await writeFile(join(home, "token"), "t".repeat(40));
+  const relayModule = "../../prime-relay/relay.mjs";
+  const { createRelay } = await import(relayModule) as { createRelay: (config: object) => Server };
+  const relay = createRelay({ listen: "127.0.0.1", port: 0, daemonSocket: "/tmp/none.sock", tokenFile: join(home, "token"), token: "t".repeat(40), roots: [agentDir] });
+  const methods: string[] = [];
+  relay.on("request", (request: { method?: string }) => methods.push(request.method ?? ""));
+  await new Promise<void>(resolve => relay.listen(0, "127.0.0.1", resolve));
+  t.after(() => { relay.closeAllConnections(); relay.close(); });
+  const host: Host = { name: "mac-kept", hostname: "mac", address: "127.0.0.1", relayPort: (relay.address() as AddressInfo).port, token: `file:${join(home, "token")}`,
+    daemonSocket: "/tmp/none.sock", ssh: null, roles: {} };
+  const sessionFile = join(agentDir, "sessions", `${SESSION}.jsonl`);
+
+  const first = await readHostCapture(host, sessionFile, SESSION);
+  assert.ok(!JSON.stringify(first).includes(data), "the image data is left out");
+  assert.equal(await readHostCapture(host, sessionFile, SESSION), first);
+  assert.deepEqual(methods, ["HEAD", "GET", "HEAD"]);
+  await writeFile(file, JSON.stringify(capture("second, longer")));
+  const next = await readHostCapture(host, sessionFile, SESSION);
+  assert.equal((next?.payload as { messages: { content: { text?: string }[] }[] }).messages[0]!.content[0]!.text, "second, longer");
+  assert.deepEqual(methods.slice(3), ["HEAD", "GET"]);
 });

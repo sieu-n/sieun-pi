@@ -238,6 +238,13 @@ export async function readHostFile(host: Host, path: string, options: { from?: n
   return { bytes: response.body, size: Number(response.headers["x-file-size"] ?? response.body.length), from };
 }
 
+/** The size and modified time the relay reports for a file on the host's disk, from a HEAD, so a reader can keep its copy when both match. */
+export async function hostFileStamp(host: Host, path: string): Promise<string> {
+  const response = await relayRequest(host, `/v1/file?path=${encodeURIComponent(path)}`, {}, "HEAD");
+  if (response.status !== 200) throw relayError(host, path, response);
+  return `${String(response.headers["x-file-size"] ?? "")} ${String(response.headers["last-modified"] ?? "")}`;
+}
+
 export type HostDirEntry = { name: string; type: "dir" | "file" | "other"; size: number; mtimeMs: number };
 
 export async function listHostDir(host: Host, path: string): Promise<HostDirEntry[]> {
