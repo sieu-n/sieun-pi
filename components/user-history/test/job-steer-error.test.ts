@@ -30,7 +30,7 @@ test("a transcript that ends on a 429 reads as a failed turn until an input or a
   assert.equal(lastTurnError(tail + ended + "\n"), undefined);
 });
 
-test("a job the daemon lists running whose last turn failed reads failed, loses its wake, and job-steer restarts it the way the 20:56Z hand fix did", async () => {
+test("a job the daemon lists running whose last turn failed reads failed, loses its wake, and job-steer steers it for its slot", async () => {
   const home = await mkdtemp(join(tmpdir(), "job-steer-error-"));
   const folder = join(home, ".prime", "agent", "session-artifacts", "c1", "sub-6ad2ffff");
   await mkdir(folder, { recursive: true });
@@ -59,10 +59,12 @@ test("a job the daemon lists running whose last turn failed reads failed, loses 
   await chats.adopt();
   threads.fire().children("c1", agents.map(entry => ({ id: entry.childId!, label: entry.name, sessionName: entry.name, sessionId: entry.sessionId!, status: "running" as const, lastActivityAt: at })));
   calls.length = 0;
-  assert.deepEqual(await chats.steerJob("c1", "census kafka producer", "Resume your step now."), { session: JOB, act: "restart" });
+  // Its 429 names the slot it waits for, so since c7c9d5ee (10-22) it is a pool wait and gets a steer, which Prime runs at the slot: a restart
+  // starts a turn the pool refuses again.
+  assert.deepEqual(await chats.steerJob("c1", "census kafka producer", "Resume your step now."), { session: JOB, act: "steer" });
   assert.deepEqual(await chats.steerJob("c1", "census writer speed", "Report your numbers."), { session: "w1", act: "steer" }, "a job whose turn runs is steered");
   assert.deepEqual(calls.filter(call => /^(restart|steer|abort|resume) /.test(call)), [
-    `restart ${JOB} [check-in] Resume your step now. (abort)`,
+    `steer ${JOB} [check-in] Resume your step now.`,
     "steer w1 [check-in] Report your numbers."]);
   chats.close();
 });
