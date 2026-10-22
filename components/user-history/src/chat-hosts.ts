@@ -13,31 +13,31 @@ const message = (error: unknown): string => error instanceof Error ? error.messa
 
 /**
  * Writes each box's turn queue lead list from the whole chat list: the chats that run on this box through `local` (`pi-pool lead` here), and
- * each other box's chats through its relay (`relayLead`), so a Mac chat's queued runs start first in the Mac's own queue. A box whose list did
- * not change since its last write gets none, so a call on each row change costs nothing until a chat moves box; a box that did not answer
- * logs one line and gets its list again at the next call. Calls run one at a time, in order.
+ * each other box's chats through its relay (`relayLead`), so a Mac chat's queued runs start first in the Mac's own queue. A call with `every`
+ * writes each box, as a chat list change does; one without writes only a box whose list changed since its last write, so a call on each row
+ * change costs nothing until a chat moves box. A box that did not answer logs one line and gets its list again at the next chat list change:
+ * retried on each row change, a Mac whose pi-pool had no `lead` yet logged a 500 every 0.7 s on 10-22. Calls run one at a time, in order.
  */
 export function leadWriter(options: { hostOf: (id: string) => string | null; remotes: () => readonly Host[]; local: (ids: readonly string[]) => Promise<void>;
-  remote?: (host: Host, ids: readonly string[]) => Promise<void>; log: (line: string) => void }): (ids: readonly string[]) => Promise<void> {
+  remote?: (host: Host, ids: readonly string[]) => Promise<void>; log: (line: string) => void }): (ids: readonly string[], every?: boolean) => Promise<void> {
   const remote = options.remote ?? relayLead;
   const written = new Map<string | null, string>();
   let tail: Promise<void> = Promise.resolve();
-  const write = async (ids: readonly string[]) => {
+  const write = async (ids: readonly string[], every: boolean) => {
     const hosts = options.remotes();
     const boxes = new Map<string | null, string[]>([[null, []], ...hosts.map(host => [host.name, []] as [string, string[]])]);
     for (const id of ids) boxes.get(options.hostOf(id))?.push(id);
     await Promise.all([...boxes].map(async ([name, list]) => {
       const key = list.sort().join("\n");
-      if (written.get(name) === key) return;
-      written.delete(name);
+      if (!every && written.get(name) === key) return;
+      written.set(name, key);
       try {
         const host = hosts.find(candidate => candidate.name === name);
         await (host ? remote(host, list) : options.local(list));
-        written.set(name, key);
       } catch (error) { options.log(`turn queue lead list on ${name ?? "this box"}: ${message(error)}`); }
     }));
   };
-  return ids => (tail = tail.then(() => write(ids)));
+  return (ids, every = false) => (tail = tail.then(() => write(ids, every)));
 }
 
 /** The relay's machine reading, checked at the edge for the numbers the Hosts card draws. */

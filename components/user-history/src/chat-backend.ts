@@ -264,7 +264,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       dutyJobs: async id => (await duties.store.runs(id)).flatMap(run => run.job ? [run.job.id] : []),
       dutyRuns: id => duties.store.runs(id), prs: replay ? async () => new Map() : prStates(),
       archived: new IdIndex(join(dataDir, "archived-chats.json"), "Archived chat index"), cleanRoomChats,
-      ...(lead ? { lead } : { owned: new IdIndex(join(dataDir, "own-chats.json"), "Own chat index") }), ...quiet ? { tickMs: 0 } : {} },
+      ...(lead ? { lead: ids => lead(ids, true) } : { owned: new IdIndex(join(dataDir, "own-chats.json"), "Own chat index") }), ...quiet ? { tickMs: 0 } : {} },
     line => process.stderr.write(line + "\n"));
   chats.briefChanged = () => { void catalog.notify().catch(() => {}); };
   catalog.onCut(cut => { if (resumesNow(cut, Date.now())) chats.interruptedSoon(0); });

@@ -67,5 +67,9 @@ test("the lead lists send a Mac chat's id to the Mac's relay and keep it out of 
   assert.match(logged[0]!, /lead list on mac: relay mac answered 500/);
   macDown = false;
   await write([MAC_CHAT, BOX_CHAT]);
-  assert.deepEqual(mac.at(-1), [MAC_CHAT], "a box that did not answer gets its list at the next call");
+  assert.equal(logged.length, 1, "a row change neither retries nor logs again");
+  assert.deepEqual(mac.at(-1), []);
+  await write([MAC_CHAT, BOX_CHAT], true);
+  assert.deepEqual(mac.at(-1), [MAC_CHAT], "a box that did not answer gets its list at the next chat list change");
+  assert.deepEqual(local.at(-1), [BOX_CHAT], "which writes every box");
 });
