@@ -37,8 +37,9 @@ const DUTY_FILE = join(dirname(fileURLToPath(import.meta.url)), "watchlist-green
  *   24 h, from staging watch_targets itself, so a row whose reads keep failing counts (the overdue gauge misses those, health.py _NO_GOOD_READ).
  *   Paused staging rows are out of the staging Watchlist by design: the owner's t17 answer asked for "only like 10 accounts" in staging.
  * - watchlist_risks <= 0: the standing risks on the chat's risk page (wiki apps/crawler-v3/engage-reads-and-watchlist-risks) that fire, counted
- *   one each: an owner watch whose chip reads Stopped (stopReason below, the rules of apps/search/src/lib/watchlist/words.ts; p119, and a dead
- *   doc_id, F16, shows as a wave of hidden stops), a prod Kafka stream whose unread records fill over BUS_FILL_LIMIT of its byte cap or whose
+ *   one each: an owner watch whose chip reads Stopped (stopReason below, the rules of apps/search/src/lib/watchlist/words.ts; p119) other than
+ *   a hidden account, which the owner's t31 answer of 2026-10-21 keeps Stopped as an accepted state (isAcceptedHidden: green, no risk, its
+ *   own owner_hidden line, where a dead doc_id, F16, shows as a wave), a prod Kafka stream whose unread records fill over BUS_FILL_LIMIT of its byte cap or whose
  *   broker retention.bytes differs from the registry in code (p116, the two crawler-bus-retention.yaml alerts), 1 while those byte gauges are
  *   missing on prod (no alert can fire then), and an owner collab watch with no unpaused prod tagged monitor row (it can never turn green).
  *   It took collab_pushed_pct's slot on 10-18 (c75); collab_pushed_pct stays as run detail.
@@ -117,9 +118,17 @@ const NOT_FOUND_CODES = new Set(["profile_not_found", "post_not_found", "adverti
 export const isClosed = (row: WatchRow): boolean =>
   row.lastOutcome === "gone" || (row.lastOutcome === "error" && NOT_FOUND_CODES.has(row.lastErrorCode))
   || row.isPrivate || (row.lastOutcome === "ok" && row.lastStopReason === "private") || renamedHidden(row);
+/** A row whose last run found the account hidden from every reader we have: words.ts hidden(), a Stopped chip. */
+const isHidden = (row: WatchRow): boolean =>
+  (row.lastOutcome === "ok" && row.lastStopReason === "hidden") || (row.lastOutcome === "error" && HIDDEN_CODES.has(row.lastErrorCode));
 /** A hidden row whose last run named the account's newer handle: words.ts hidden() reads it as gone, "Removed on Instagram" with a use-handle action. */
-const renamedHidden = (row: WatchRow): boolean => row.renamed
-  && ((row.lastOutcome === "ok" && row.lastStopReason === "hidden") || (row.lastOutcome === "error" && row.lastErrorCode === "timeline_hidden"));
+const renamedHidden = (row: WatchRow): boolean => row.renamed && isHidden(row);
+/**
+ * A hidden row that keeps its Stopped chip is an accepted state, not a miss: the owner's t31 answer of 2026-10-21, "Keep them Stopped as they
+ * are now". It counts green and is not a watchlist risk, and the report shows the count on its own line (owner_hidden_watches), so a wave
+ * of them (a dead doc_id, F16) stays visible. A rule about the row's state, never a list of handles.
+ */
+export const isAcceptedHidden = (row: WatchRow): boolean => !row.paused && !renamedHidden(row) && isHidden(row);
 /** The codes and limits of words.ts that decide a Stopped chip. */
 const HIDDEN_CODES = new Set(["timeline_hidden"]);
 const TRANSIENT_CODES = new Set(["scrape_blocked", "login_wall", "rate_limited", "challenge", "blocked", "asset_error", "transport", "timeout", "unreachable", "upstream_unavailable", "geo_target_unavailable"]);
@@ -146,7 +155,7 @@ const readOk = (row: WatchRow, now: number): boolean =>
 /** A row added under 24 h ago that does not read Stopped: its first read is not late yet (crawler health.py _NO_GOOD_READ). */
 export const isYoung = (row: WatchRow, now: number): boolean => row.addedAt !== null && now - row.addedAt < DAY && stopReason(row, now) === null;
 export const isGreen = (row: WatchRow | undefined, now: number): boolean =>
-  !!row && !row.paused && (isClosed(row) || readOk(row, now) || isYoung(row, now));
+  !!row && !row.paused && (isClosed(row) || isAcceptedHidden(row) || readOk(row, now) || isYoung(row, now));
 /** Why a watch is not green, as a flag phrase. */
 const notGreen = (kind: string, row: WatchRow | undefined): string => !row ? `${kind} no monitor row` : row.paused ? `${kind} paused`
   : !row.lastOutcome ? `${kind} never ran` : row.lastOutcome !== "ok" ? `${kind} last ${row.lastOutcome}` : row.lastStopReason === "hidden" ? `${kind} Stopped, hidden` : `${kind} ok but older than 24 h`;
@@ -162,6 +171,7 @@ export function ownerGreen(keys: readonly string[], rows: readonly WatchRow[], n
   let pushed = 0;
   let unread = 0;
   const stops = new Map<string, number>();
+  let hidden = 0;
   for (const key of keys) {
     const want = rowKeyOf(key);
     if (!want) { unread++; continue; }
@@ -171,12 +181,13 @@ export function ownerGreen(keys: readonly string[], rows: readonly WatchRow[], n
     accounts.set(account, (accounts.get(account) ?? true) && green);
     if (want.kind === "tagged") { collabs++; if (row && !row.paused) pushed++; }
     if (!green) { const reason = notGreen(want.kind, row); why.set(reason, (why.get(reason) ?? 0) + 1); }
+    if (row && isAcceptedHidden(row)) { hidden++; continue; }
     const stop = row && stopReason(row, now);
     if (stop) { const reason = `${want.kind} ${stop}`; stops.set(reason, (stops.get(reason) ?? 0) + 1); }
   }
   const green = [...accounts.values()].filter(Boolean).length;
   const stopped = [...stops.values()].reduce((sum, count) => sum + count, 0);
-  return { accounts: accounts.size, green, collabs, pushed, unread, why: tally(why), stopped, stops: tally(stops) };
+  return { accounts: accounts.size, green, collabs, pushed, unread, why: tally(why), stopped, stops: tally(stops), hidden };
 }
 
 /** The unpaused monitor rows of the given kinds (posts and tagged: the Watchlist's posts and collabs), how many are green, and why the rest are not. */
@@ -236,10 +247,12 @@ export function report(data: WatchData, dutyMetrics: readonly DutyMetric[]): Pre
     metrics.owner_green_pct = owner.accounts ? round1(100 * owner.green / owner.accounts) : 0;
     detail.collab_pushed_pct = owner.collabs ? round1(100 * owner.pushed / owner.collabs) : 100;
     detail.owner_stopped_watches = owner.stopped;
+    detail.owner_hidden_watches = owner.hidden;
+    flagged.push({ at, kind: "owner_hidden", excerpt: `${owner.hidden} hidden by Instagram: owner watches that read Stopped because Instagram hides the account, kept Stopped by the owner's t31 answer and counted green; a wave of them can mean a dead doc_id, F16` });
     if (data.streams) {
       metrics.watchlist_risks = owner.stopped + data.streams.length + (owner.collabs - owner.pushed) + (late.length || !screen.length ? 1 : 0);
       flagged.push({ at, kind: "watchlist_risks", excerpt: (`${metrics.watchlist_risks} Watchlist risks firing: ${owner.stopped} owner watches read Stopped`
-        + (owner.stops.length ? ` (${listWhy(owner.stops)}${owner.stops.some(([reason]) => reason.includes("hides")) ? "; a wave of hidden stops on posts can mean a dead doc_id, F16" : ""})` : "")
+        + (owner.stops.length ? ` (${listWhy(owner.stops)})` : "")
         + `; ${data.streams.length} prod Kafka stream faults${data.streams.length ? ` (${data.streams.map(fault => `${fault.topic}: ${fault.why}`).join("; ")})` : ""}`
         + `; ${owner.collabs - owner.pushed} owner collab watches prod does not read`
         + `; ${late.length || !screen.length ? 1 : 0} Watchlist status read failing (${late.length} of ${screen.length} chunks would read Status unavailable). Risk page: wiki apps/crawler-v3/engage-reads-and-watchlist-risks.`).slice(0, 1200) });

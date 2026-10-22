@@ -32,7 +32,7 @@ test("a row added more than 24 h ago that never ran stays red", () => {
 });
 
 test("a young row the Watchlist reads Stopped stays red", () => {
-  const { pct } = staging([row({ lastOutcome: "ok", lastStopReason: "hidden", addedAt: NOW - 60_000 })]);
+  const { pct } = staging([row({ lastOutcome: "error", lastErrorCode: "permanent_error", errStreak: 3, due: false, addedAt: NOW - 60_000 })]);
   assert.equal(pct, 0);
 });
 
