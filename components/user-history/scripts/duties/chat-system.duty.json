@@ -1,7 +1,7 @@
 {
   "name": "Chat system",
   "ownerWords": "(10-19) your NUMBER 1 GOAL. this is your \"Chat system duty\" ... plan should be tasks all eventually clear. duties are things that need constant montiroing thus set a heartbeat. things like \"i need to keep X working\" should NOT be registered as a zombie plan. ALL PLANS SHOULD BE EPHEMERAL, and the Chat (and Chat-check-in) MUST BE DESIGNED SO THAT IT ACTIVELY PERSUES AND CLEARS ALL THE TASKS. ... keeping this compliant on it's own your duty.\n\n(10-14, c64) this is your KPI of chat system duty. look i know there are alot of checks but the fundamentals are much more important than the quantitative number of checks\n\n(10-15, c75) why is duties not all passing? this should not be considered ok, same for ALL other chats.\n\n(10-19, msg mvffndxl) Chat system은 당분간 2hourly check로 바꿔",
-  "goal": "Every chat clears its plan on its own and keeps its duties green. The owner checks this by opening a few chats: each open step has a job moving it or a For you question that links it, each plan holds only tasks that finish, and each red duty has a fix job working on it. It runs every 2 hours for now, as the owner asked on 10-19 (msg mvffndxl). Each run also spot-audits one chat at random, quietly, for now (owner msg mvfb7zt0: \"당분간은 몰래 실사 감시도 하고\").",
+  "goal": "Every chat clears its plan on its own and keeps its duties green. The owner checks this by opening a few chats: each open step has a job moving it or a For you question that links it, each plan holds only tasks that finish, and each red duty has a fix job working on it that moves its number. It runs every 2 hours for now, as the owner asked on 10-19 (msg mvffndxl). Each run also spot-audits one chat at random, quietly, for now (owner msg mvfb7zt0: \"당분간은 몰래 실사 감시도 하고\").",
   "metrics": [
     {
       "key": "stuck_steps_all",
@@ -11,14 +11,14 @@
       "headline": true
     },
     {
-      "key": "plan_upkeep_all",
-      "label": "Open plan items in all chats that hold upkeep or a standing risk, or a goal with no done line",
+      "key": "stuck_duties",
+      "label": "Red duties in any chat with no live fix job after 3 runs",
       "op": "<=",
       "target": 0
     },
     {
-      "key": "stuck_duties",
-      "label": "Red duties in any chat with no live fix job after 3 runs",
+      "key": "fix_not_moving",
+      "label": "Red duties whose live fix job has not moved the number toward its target in 3 or more misses in a row",
       "op": "<=",
       "target": 0
     },
@@ -43,5 +43,5 @@
     ],
     "cwd": "../.."
   },
-  "onMiss": "Read the detail file the flagged lines name first. Every run, on target or not, does three things. 1. Push: message each chat on the detail's push list directly with agent_message.send(receiver_role=\"sibling\", receiver_name=<its full session id>), the Mac chats too, with the run's tag in the text, asking it to give each goal a live job this turn and each red duty a fix job on a step linked to it, and append one line per send to the pushes file the detail names. For each push_followup line, steer that chat again with what it still owes, and when the same chat ignores 3 pushes, fix the chat brief or check-in prompt that let it through, with a clean-room test. 2. Plan upkeep and stuck steps: in the same message, name the chat's upkeep items and stuck step ids and ask it to move each upkeep or risk item into a duty metric or its wiki risk page and give each open step a Done when line and a live owner, following the board skill's plan-and-duties reference. 3. Spot audit: do the audit the detail names, fix what is off in that chat, and append what you found to the log it names. Duties green needs no separate job. A miscount gets a fix in scripts/duties/chat-system.ts with a test. Never send anything outside, and never message the owner about this duty."
+  "onMiss": "Read the detail file the flagged lines name first. Every run, on target or not, does three things. 1. Push: message each chat on the detail's push list directly with agent_message.send(receiver_role=\"sibling\", receiver_name=<its full session id>), the Mac chats too, with the run's tag in the text, asking it to give each goal a live job this turn, each red duty a fix job on a step linked to it, and each red duty whose live fix does not move its number (fix_not_moving) a root-cause job with rlm.create_session that replaces that fix, and append one line per send to the pushes file the detail names. For each push_followup line, steer that chat again with what it still owes, and when the same chat ignores 3 pushes, fix the chat brief or check-in prompt that let it through, with a clean-room test. 2. Plan upkeep and stuck steps: in the same message, name the chat's upkeep items and stuck step ids and ask it to move each upkeep or risk item into a duty metric or its wiki risk page and give each open step a Done when line and a live owner, following the board skill's plan-and-duties reference. 3. Spot audit: do the audit the detail names, fix what is off in that chat, and append what you found to the log it names. Duties green needs no separate job. plan_upkeep_all read 0 in every measured run from 10-21 08:37Z to 10-22 17:03Z, so it stays in the precheck output and on the push list, outside the verdict, which holds at most 4 metrics. A miscount gets a fix in scripts/duties/chat-system.ts with a test. Never send anything outside, and never message the owner about this duty."
 }

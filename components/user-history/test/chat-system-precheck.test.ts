@@ -1,8 +1,9 @@
 // Guards the Chat system duty's precheck (d9), built 10-19 for the owner's rule that a plan holds only tasks that finish (msg mvfb7zt0).
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { agingSince, chatSystemOutput, goalsWithNoJob, jobsByChat, ownerMessages, planUpkeep, pushedFile, pushList, pushReached, spread, withCatalogOwners, withoutWorkingRuns } from "../scripts/duties/chat-system.ts";
+import { agingSince, chatSystemOutput, fixNotMoving, goalsWithNoJob, jobsByChat, ownerMessages, planUpkeep, pushedFile, pushList, pushReached, spread, withCatalogOwners, withoutWorkingRuns } from "../scripts/duties/chat-system.ts";
 import { type PlanInputs, planCounts } from "../scripts/duties/whole-system.ts";
+import type { MetricStreak } from "../src/shared/duty-streak.ts";
 import type { ChatBoard } from "../src/shared/types.ts";
 
 const board = { v: 2, rev: 1, updatedAt: "2026-10-19T13:40:00Z", todos: [], plan: [
@@ -23,7 +24,7 @@ test("examples spread over chats and stop at 3, while the count line names every
   assert.deepEqual(spread(items, 3).map(item => item.chat), ["a", "b", "c"]);
   const out = chatSystemOutput({ names: new Map([["a", "chat A"]]), stuck: [{ chat: "a", id: "p9", text: "Fix X" }], upkeep: items,
     fleet: { pct: 50, red: [] }, stuckDuties: [], idleGoals: [], followUps: [], detail: "/tmp/d9.md" });
-  assert.deepEqual(out.metrics, { stuck_steps_all: 1, plan_upkeep_all: 5, duties_green_pct: 50, stuck_duties: 0 });
+  assert.deepEqual(out.metrics, { stuck_steps_all: 1, plan_upkeep_all: 5, duties_green_pct: 50, stuck_duties: 0, fix_not_moving: 0 });
   const upkeep = out.flagged!.filter(slice => slice.kind === "plan_upkeep");
   assert.equal(upkeep.length, 4);
   assert.match(upkeep[0]!.excerpt, /^5 open plan items .* in 3 chats; every one is in \/tmp\/d9\.md\.$/);
@@ -206,4 +207,22 @@ test("a push to a session that is no owner chat is read from its own catalog row
   assert.equal(pushedFile(listed, copies, "c1"), "/home/u/.prime/agent/sessions/c1.jsonl");
   assert.equal(pushedFile(listed, copies, "01a10810-34b5-710f-88fe-3d369f89a8c9"), "/home/u/.prime/agent/sessions/01a10810-34b5-710f-88fe-3d369f89a8c9.jsonl");
   assert.equal(pushedFile(listed, copies, "01a11d24-ac9b-757d-ac51-9b2b7598782f"), undefined);
+});
+
+test("a red duty whose live fix has not moved its number over 3 or more misses is counted and pushed for a root-cause job", () => {
+  // 10-22 18:00Z: api portal vp's d1 missed 42 runs with probe_uptime_24h_pct never closer to 100 while p52's job was live, and d9 said nothing.
+  const fix = { step: "p52", job: "schema promotes keep serving", live: true };
+  const metric: MetricStreak = { key: "probe_uptime_24h_pct", misses: 42, moved: false, since: 0, value: 97.2, target: 100, op: ">=", fix, stuck: false };
+  const duty = (id: string, change: Partial<MetricStreak> = {}, extra: object = {}) => ({ chat: "a", duty: id, name: id, green: false, misses: 42,
+    stuck: false, fix: "p52", metric: { ...metric, ...change }, ...extra });
+  const red = [duty("d1"), duty("d2", { moved: true }), duty("d3", { misses: 2 }), duty("d4", { quietSince: 1 }), duty("d5", { fix: { ...fix, step: "p9" } }),
+    duty("d6", {}, { fix: undefined }), duty("d7", {}, { agingSince: 1 })];
+  const found = fixNotMoving(red, () => "api portal vp");
+  assert.deepEqual(found.map(entry => entry.duty), ["d1"]);
+  assert.match(found[0]!.line, /^api portal vp: d1 \(d1\) missed probe_uptime_24h_pct 42 runs in a row, 97\.2 against >= 100 and no closer .* fix step p52 has a live job\. Replace that fix: start a root-cause job .* duty "d1\/probe_uptime_24h_pct", and close or drop p52/);
+  const out = chatSystemOutput({ names: new Map([["a", "api portal vp"]]), stuck: [], upkeep: [], fleet: { pct: 50, red }, stuckDuties: [], idleGoals: [], followUps: [], detail: "/tmp/d9.md" });
+  assert.equal(out.metrics.fix_not_moving, 1);
+  assert.ok(out.flagged!.some(slice => slice.kind === "fix_not_moving" && slice.item === "d1"));
+  assert.ok(out.flagged!.some(slice => slice.kind === "push" && slice.excerpt.startsWith("1 chat has")));
+  assert.deepEqual(pushList({ idleGoals: [], stuckDuties: [], upkeep: [], notMoving: found }).map(entry => [entry.chat, entry.duties]), [["a", [found[0]!.line]]]);
 });
