@@ -17,20 +17,32 @@ export function liveRulesFile(agentDir: string, home = homedir()): string {
   return realpathSync(join(dir, "src", "chat-guard.ts"));
 }
 
-const cache = new Map<string, Guard>();
+/**
+ * One load per rules file version, shared by every call that asks while it runs. Prime loads the extension through jiti, which evaluates the
+ * file again on each import and hands a second import that starts mid-load the half-evaluated module. On 10-22 two chats sent two tell_owner
+ * calls in one step as their first after release-03705d8 went live, and the second failed with "Cannot access 'TELL_CASES' before
+ * initialization", so the chat sent it again (chats 01a1636f and 01a16379, 11:50:48Z and 11:59:16Z).
+ */
+const cache = new Map<string, Promise<Guard>>();
 export async function liveGuard(agentDir: string, home = homedir()): Promise<Guard> {
+  let key: string;
+  let file: string;
   try {
-    const file = liveRulesFile(agentDir, home);
-    const key = `${file}@${statSync(file).mtimeMs}`;
-    const hit = cache.get(key);
-    if (hit) return hit;
-    const module = await import(file) as Partial<Guard>;
-    if (typeof module.tellTurn !== "function" || typeof module.tellOwner !== "function") return loaded;
-    const guard: Guard = { tellTurn: module.tellTurn, tellOwner: module.tellOwner, ...(typeof module.askedTodos === "function" ? { askedTodos: module.askedTodos } : {}) };
-    cache.clear();
-    cache.set(key, guard);
-    return guard;
+    file = liveRulesFile(agentDir, home);
+    key = `${file}@${statSync(file).mtimeMs}`;
   } catch {
     return loaded;
   }
+  const hit = cache.get(key);
+  if (hit) return hit;
+  const load = import(file).then((module: Partial<Guard>): Guard => {
+    if (typeof module.tellTurn !== "function" || typeof module.tellOwner !== "function") return loaded;
+    return { tellTurn: module.tellTurn, tellOwner: module.tellOwner, ...(typeof module.askedTodos === "function" ? { askedTodos: module.askedTodos } : {}) };
+  }, () => {
+    cache.delete(key);
+    return loaded;
+  });
+  cache.clear();
+  cache.set(key, load);
+  return load;
 }
