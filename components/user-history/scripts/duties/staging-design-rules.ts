@@ -15,7 +15,11 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  *   rule counts as given from the earliest of its ledger corrections in force, the date its frontend-implementation skill text was written,
  *   and the first owner message that asked for it. The rules and the patterns of his words for each are in staging-design-rules.rules.json.
  * - design_rule_test_failures: failed tests in the virev-demo unit tests that catch a design rule by script (each rule's `tests`).
- * Run detail: design_notes_24h (notes that match any rule), rules_not_written (rules he repeated in 24 h with no correction in force and no
+ *   A repeat stops counting once it is handled: the rules file's `handled` names the note's time and the commits that wrote its skill line and
+ *   fixed its pages, and every one of those commits is on origin/dev/sieun-mac-a. The note itself cannot be unsent, so without this the
+ *   number sat at 1 for a day after the 10-22 08:28Z Settings note was already fixed and written down, and each run asked for a fix job
+ *   with nothing left to fix.
+ * Run detail: design_notes_24h (notes that match any rule), handled_repeats_24h (repeats in 24 h whose handling is on origin), rules_not_written (rules he repeated in 24 h with no correction in force and no
  * skill text), search_design_rule_findings (tests of the same rules in the real app, apps/search on us-metal02, each rule's `searchTests`,
  * that fail with DESIGN_RULES_STRICT=1, which makes the rules still in warn-only mode strict), source_errors. A source this check cannot read adds 1 to the metric it feeds and a flagged slice.
  */
@@ -29,6 +33,8 @@ const INJECTED = /^(<skill |Prime Agent restarted|This session moved|The owner a
 export interface DesignRule { key: string; rule: string; corrections: string[]; skill: string | null; skillSince: string | null; match: string[]; unless?: string; tests?: string[]; searchTests?: string[] }
 export interface OwnerNote { at: number; text: string }
 interface Correction { id: string; at?: string; status?: string }
+/** A repeated note already dealt with: its time (ISO, the log line's timestamp) and the auto-sns-agent commits that handled it. */
+export interface HandledRepeat { at: string; commits: string[]; why: string }
 
 /** The owner's own messages in a session log: user lines no job, check-in or tool wrote, and his board answers. */
 export async function ownerNotes(file: string): Promise<OwnerNote[]> {
@@ -99,14 +105,14 @@ export function searchRun(tests: readonly string[], host = SEARCH_HOST, dir = SE
 
 interface VitestReport { testResults?: { name?: string; assertionResults?: { fullName?: string; status?: string; failureMessages?: string[] }[] }[] }
 
-export async function measure(opts: { now: number; sessionFile: string; ledgerFile: string; skillFile: string; rulesFile: string; demoDir: string; vitest: string; search?: (tests: readonly string[]) => Promise<string> }): Promise<PrecheckOutput> {
+export async function measure(opts: { now: number; sessionFile: string; ledgerFile: string; skillFile: string; rulesFile: string; demoDir: string; vitest: string; search?: (tests: readonly string[]) => Promise<string>; landed?: (commit: string) => Promise<boolean> }): Promise<PrecheckOutput> {
   const { now } = opts;
   const flagged: FlaggedSlice[] = [];
-  const metrics: Record<string, number> = { repeated_design_notes_24h: 0, design_rule_test_failures: 0, design_notes_24h: 0, rules_not_written: 0, search_design_rule_findings: 0, source_errors: 0 };
+  const metrics: Record<string, number> = { repeated_design_notes_24h: 0, design_rule_test_failures: 0, design_notes_24h: 0, handled_repeats_24h: 0, rules_not_written: 0, search_design_rule_findings: 0, source_errors: 0 };
   const lastEventAt: Record<string, number> = {};
   const sourceError = (metric: string, excerpt: string): void => { metrics[metric]!++; metrics.source_errors!++; flagged.push({ at: now, kind: "source_error", excerpt }); };
 
-  const rules = (JSON.parse(await readFile(opts.rulesFile, "utf8")) as { rules: DesignRule[] }).rules;
+  const { rules, handled = [] } = JSON.parse(await readFile(opts.rulesFile, "utf8")) as { rules: DesignRule[]; handled?: HandledRepeat[] };
   const ledger = await readFile(opts.ledgerFile, "utf8").then(text => (JSON.parse(text) as { corrections: Correction[] }).corrections).catch((error: unknown) => {
     sourceError("repeated_design_notes_24h", `corrections ledger ${opts.ledgerFile}: ${error instanceof Error ? error.message : String(error)}`);
     return [] as Correction[];
@@ -131,13 +137,19 @@ export async function measure(opts: { now: number; sessionFile: string; ledgerFi
 
   try {
     const result = repeats(rules, await ownerNotes(opts.sessionFile), givenAt, now - DAY_MS);
-    metrics.repeated_design_notes_24h! += result.repeats.length;
     metrics.design_notes_24h = result.matched;
-    if (result.repeats.length) lastEventAt.repeated_design_notes_24h = Math.max(...result.repeats.map(entry => entry.at));
+    const open: Repeat[] = [];
     for (const entry of result.repeats) {
+      const done = handled.find(item => Date.parse(item.at) === entry.at);
+      const missing = done ? (await Promise.all(done.commits.map(async commit => (await opts.landed?.(commit)) ? null : commit))).filter(c => c !== null) : [];
+      if (done && done.commits.length && !missing.length) { metrics.handled_repeats_24h!++; continue; }
+      open.push(entry);
       const text = entry.text.replace(/\s+/g, " ");
-      flagged.push({ chat: CHAT, at: entry.at, kind: "design_rule_repeat", item: entry.rules.join(","), excerpt: text.length > 240 ? `${text.slice(0, 239)}…` : text });
+      const excerpt = done ? `handled in ${done.commits.join(", ")}, but ${missing.join(", ") || "no commit"} is not on origin/dev/sieun-mac-a yet: ${text}` : text;
+      flagged.push({ chat: CHAT, at: entry.at, kind: "design_rule_repeat", item: entry.rules.join(","), excerpt: excerpt.length > 240 ? `${excerpt.slice(0, 239)}…` : excerpt });
     }
+    metrics.repeated_design_notes_24h! += open.length;
+    if (open.length) lastEventAt.repeated_design_notes_24h = Math.max(...open.map(entry => entry.at));
     const repeatedKeys = new Set(result.repeats.flatMap(entry => entry.rules));
     for (const rule of rules) {
       if (!repeatedKeys.has(rule.key) || written.has(rule.key)) continue;
@@ -199,6 +211,9 @@ async function main(): Promise<void> {
     demoDir: join(repo, "apps/virev-demo"),
     vitest: join(repo, "node_modules/.bin/vitest"),
     search: tests => capture(...searchRun(tests)),
+    landed: commit => new Promise(resolve => {
+      execFile("git", ["merge-base", "--is-ancestor", commit, "origin/dev/sieun-mac-a"], { cwd: repo }, error => resolve(!error));
+    }),
   });
   await writeFile(output, JSON.stringify(result, null, 2) + "\n");
 }

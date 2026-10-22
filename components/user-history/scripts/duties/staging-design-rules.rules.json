@@ -1,5 +1,5 @@
 {
-  "_about": "The design rules the Staging design rules duty (scripts/duties/staging-design-rules.ts) matches the owner's notes against. Each rule names the ledger corrections and the frontend-implementation skill phrase that hold it, the date that skill text was written, the patterns of the owner's own words for it, the virev-demo unit tests that catch it by script (`tests`), and the same tests in the real app, apps/search on us-metal02 (`searchTests`). A rule with neither a correction in force nor its skill phrase is not written down yet.",
+  "_about": "The design rules the Staging design rules duty (scripts/duties/staging-design-rules.ts) matches the owner's notes against. Each rule names the ledger corrections and the frontend-implementation skill phrase that hold it, the date that skill text was written, the patterns of the owner's own words for it, the virev-demo unit tests that catch it by script (`tests`), and the same tests in the real app, apps/search on us-metal02 (`searchTests`). A rule with neither a correction in force nor its skill phrase is not written down yet. `handled` lists repeated notes already dealt with, each by its log timestamp and the auto-sns-agent commits that wrote its skill line and fixed its pages; such a repeat leaves the headline once all those commits are on origin/dev/sieun-mac-a.",
   "rules": [
     {
       "key": "shared_components",
@@ -275,6 +275,16 @@
         "nothing arbitrary",
         "unobvious"
       ]
+    }
+  ],
+  "handled": [
+    {
+      "at": "2026-10-22T08:28:10.609Z",
+      "commits": [
+        "d3e01aa75e",
+        "3dee561ee0"
+      ],
+      "why": "Settings note 'the icon for section titles shouldn't be containerized ... (follow SAME componenet as Connections)': d3e01aa75e moved Settings onto the shared PageSection with bare title icons (p323), and 3dee561ee0 writes the bare section-title icon line into the frontend-implementation skill (p329)."
     }
   ]
 }
