@@ -37,5 +37,6 @@ test("a projection that keeps every row allocates no key per row", async (t: Tes
   }
   const least = Math.min(...perRow);
   console.log(`bytes per kept row: ${perRow.map(bytes => bytes.toFixed(0)).join(", ")}`);
-  assert.ok(least < 300, `a projection allocated ${least.toFixed(0)} bytes per kept row`);
+  // The least of 5 runs read 289 to 318 bytes on Node 26.8.1 at 384d0a8 and 6543ac9 (10-22, 6 runs each), against 849 to 936 before ecae748.
+  assert.ok(least < 500, `a projection allocated ${least.toFixed(0)} bytes per kept row`);
 });
