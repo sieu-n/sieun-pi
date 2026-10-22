@@ -465,7 +465,10 @@
   .chat { display: flex; flex-direction: column; height: 100%; min-height: 0; --column: 720px; }
   .head { display: flex; align-items: center; gap: 6px; padding: 0 8px; height: 40px; border-bottom: 1px solid var(--border); background: var(--bg); }
   .head .icon-button { width: 28px; height: 28px; }
-  .controls { display: flex; align-items: center; gap: 6px; flex: none; }
+  /* The controls shrink too (the account's email ellipsizes), so the title keeps its room on a crowded header. */
+  .controls { display: flex; align-items: center; gap: 6px; flex: 0 1 auto; min-width: 0; }
+  .controls > :global(:not(.account)) { flex: none; }
+  .controls > :global(.account) { overflow: hidden; }
   .controls :global(.bar-button), .controls :global(.account), .setup-row :global(.bar-button), .setup-row :global(.account) { height: 28px; font-size: 12.5px; }
   .panel-toggle { position: relative; }
   .panel-toggle.on { color: var(--accent-bold); background: var(--accent-soft); }

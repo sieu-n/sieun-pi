@@ -73,11 +73,12 @@
 {/if}
 
 <style>
-  .title-wrap { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; }
+  /* The half clips what does not fit, so on a crowded header the path gives way first and nothing runs under the controls (owner's screen, 10-22 at 1280 px). */
+  .title-wrap { flex: 1; min-width: 200px; display: flex; align-items: center; gap: 8px; overflow: hidden; }
   .title { flex: 0 8 auto; max-width: 100%; min-width: 96px; padding: 3px 8px; border-radius: var(--radius-small); font-weight: 600; font-size: 14px; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .title:hover { background: var(--bg-hover); }
   .title-input { font-weight: 600; font-size: 14px; height: 28px; max-width: 480px; }
-  .cwd { flex: none; font-size: 12px; color: var(--text-faint); font-family: var(--mono); white-space: nowrap; }
+  .cwd { flex: 0 100 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: 12px; color: var(--text-faint); font-family: var(--mono); white-space: nowrap; }
   .tags { display: inline-flex; align-items: center; gap: 4px; min-width: 0; flex: 0 1 auto; overflow: hidden; }
   .tag-button { position: relative; display: inline-flex; flex: none; border-radius: 4px; }
   .tag-button .x { position: absolute; right: -3px; top: -4px; display: none; width: 12px; height: 12px; border-radius: 50%; align-items: center; justify-content: center; background: var(--text); color: var(--bg); }
