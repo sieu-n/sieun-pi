@@ -1,15 +1,20 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import Spinner from "./Spinner.svelte";
   import { api } from "./api.ts";
   import { compactNumber } from "./format.ts";
-  import { clip, labelDetail, LEAD_KEY, outline, preview, share, speakerOf, type PromptRow, type Speaker } from "./prompt-parts.ts";
+  import { clip, labelDetail, LEAD_KEY, messageNumbers, outline, preview, share, speakerOf, type PromptRow, type Speaker } from "./prompt-parts.ts";
   import { DUTY_BRIEF, type PromptPart, type PromptTarget, type PromptView } from "../shared/prompt-view.ts";
   import Modal from "./Modal.svelte";
   import Icon from "./Icon.svelte";
+  import { tooltip } from "./ui/tooltip.ts";
+  import PromptOrder from "./PromptOrder.svelte";
+  import { ui, type PromptMode } from "./ui.svelte.ts";
 
   /**
-   * The prompt a session's model gets, as the summary table: the parts before the conversation, then the conversation by source kind. Each row
-   * opens in place: a source kind lists its parts in time order as one line each, and a part opens to its text. A job's subagents link to their
+   * The prompt a session's model gets, in one of two views the header switches between: the summary table (the parts before the conversation, then
+   * the conversation by source kind) or every part in the order the provider gets it (`PromptOrder`). In the summary each row opens in place: a
+   * source kind lists its parts in time order as one line each, and a part opens to its text. A job's subagents link to their
    * own view, opened through `via` so an ended subagent the daemon no longer lists still opens. A duty job's brief (`DUTY_BRIEF`) is listed first
    * and opens with the view; a duty with no job yet (`target` names the chat and duty) shows the brief its next run sends.
    */
@@ -28,7 +33,7 @@
     let cancelled = false;
     view = null;
     error = null;
-    collapseAll();
+    untrack(collapseAll);
     const load = typeof target !== "string" && !via.length ? api.nextDutyBrief(target.chat, target.duty) : api.promptView(id, via);
     load.then(result => {
       if (cancelled) return;
@@ -41,7 +46,7 @@
 
   const table = $derived(view ? outline(view) : null);
   const total = $derived(view?.totalTokens ?? 0);
-  const number = $derived(new Map(view?.parts.filter(part => part.role).map((part, index) => [part.id, index + 1]) ?? []));
+  const number = $derived(messageNumbers(view?.parts ?? []));
   let titles = $state<Record<string, string>>({});
   const nameOf = (step: { id: string; name?: string }): string => titles[step.id] ?? step.name ?? step.id.slice(0, 8);
 
@@ -49,8 +54,16 @@
   let parts = $state<Record<string, boolean>>({});
   let whole = $state<Record<string, boolean>>({});
   let subagentsOpen = $state(false);
-  function collapseAll(): void { rows = {}; parts = {}; whole = {}; subagentsOpen = false; }
-  function expandAll(): void { if (table) rows = Object.fromEntries([...table.lead ? [table.lead] : [], ...table.rows, ...table.groups].map(row => [row.key, true])); }
+  function collapseAll(): void { rows = {}; parts = {}; whole = {}; subagentsOpen = false; order?.collapseAll(); }
+  function expandAll(): void {
+    if (ui.promptMode === "order") order?.expandAll();
+    else if (table) rows = Object.fromEntries([...table.lead ? [table.lead] : [], ...table.rows, ...table.groups].map(row => [row.key, true]));
+  }
+  let order = $state<PromptOrder>();
+  const MODES: { id: PromptMode; label: string; hint: string }[] = [
+    { id: "summary", label: "Summary", hint: "Tokens by source kind" },
+    { id: "order", label: "In order", hint: "Every part in the order the provider gets it" },
+  ];
   const flip = (record: Record<string, boolean>, key: string): Record<string, boolean> => ({ ...record, [key]: !record[key] });
 
   const SPEAKER: Record<Speaker, string> = { prompt: "", owner: "owner", injected: "injected", model: "model", tool: "tool" };
@@ -62,6 +75,12 @@
     return sameDay(date, new Date()) ? time : date.toLocaleDateString(undefined, { month: "short", day: "numeric" }) + " " + time;
   }
 </script>
+
+{#snippet modes()}
+  <div class="segmented" role="radiogroup" aria-label="Prompt view">
+    {#each MODES as mode (mode.id)}<button type="button" role="radio" aria-checked={ui.promptMode === mode.id} class:on={ui.promptMode === mode.id} use:tooltip={mode.hint} onclick={() => ui.setPromptMode(mode.id)}>{mode.label}</button>{/each}
+  </div>
+{/snippet}
 
 {#snippet bar(value: number)}
   <span class="share"><span class="track"><span class="fill" style:width="{total ? Math.max(1, value / total * 100) : 0}%"></span></span><span class="pct">{share(value, total)}</span></span>
@@ -103,6 +122,7 @@
 
 <Modal title="Prompt" icon="layers" width="min(1120px, 94vw)" height="90vh" tall full={narrow} {onclose}>
   {#snippet header()}
+    {#if !narrow}{@render modes()}{/if}
     <span class="summary">{#if view}About {compactNumber(view.totalTokens)} tokens{#if view.measuredInputTokens !== undefined}, {compactNumber(view.measuredInputTokens)} measured{/if}, {view.origin.kind === "exact" ? "captured payload" : "rebuilt"}{/if}</span>
     {#if table}
       <button type="button" class="button small" onclick={expandAll}>Expand all</button>
@@ -110,6 +130,7 @@
     {/if}
   {/snippet}
   <div class="prompt">
+    {#if narrow}<div class="modes">{@render modes()}</div>{/if}
     {#if trail.length > 1 || view?.title}
       <div class="crumbs">
         {#each trail as step, index (step.id)}
@@ -140,14 +161,17 @@
         <div class="path" title={view.sessionFile}>{view.sessionFile}</div>
       </div>
 
-      <nav class="outline" aria-label="Prompt parts">
-        {#if table.lead}{@render tableRow(table.lead)}{/if}
-        <div class="group-head"><span>Before the conversation</span><span class="tok">{tokens(table.headTokens)}</span>{@render bar(table.headTokens)}</div>
-        {#each table.rows as row (row.key)}{@render tableRow(row)}{/each}
-        {#if !table.rows.length}<div class="row empty">None in this view.</div>{/if}
-        <div class="group-head"><span>Conversation, {table.messageParts} parts</span><span class="tok">{tokens(table.messageTokens)}</span>{@render bar(table.messageTokens)}</div>
-        {#each table.groups as row (row.key)}{@render tableRow(row)}{/each}
-      </nav>
+      {#if ui.promptMode === "order"}<PromptOrder bind:this={order} {view} />
+      {:else}
+        <nav class="outline" aria-label="Prompt parts">
+          {#if table.lead}{@render tableRow(table.lead)}{/if}
+          <div class="group-head"><span>Before the conversation</span><span class="tok">{tokens(table.headTokens)}</span>{@render bar(table.headTokens)}</div>
+          {#each table.rows as row (row.key)}{@render tableRow(row)}{/each}
+          {#if !table.rows.length}<div class="row empty">None in this view.</div>{/if}
+          <div class="group-head"><span>Conversation, {table.messageParts} parts</span><span class="tok">{tokens(table.messageTokens)}</span>{@render bar(table.messageTokens)}</div>
+          {#each table.groups as row (row.key)}{@render tableRow(row)}{/each}
+        </nav>
+      {/if}
     {/if}
   </div>
 </Modal>
@@ -155,6 +179,7 @@
 <style>
   .summary { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
   .prompt { padding: 12px 20px 40px; font-size: 13px; }
+  .modes { margin-bottom: 10px; }
   .crumbs { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; margin-bottom: 6px; font-size: 12.5px; color: var(--text-faint); }
   .crumbs .here { font-weight: 600; color: var(--text); }
   .note { display: flex; align-items: center; gap: 8px; margin: 0; padding: 8px 0; color: var(--text-faint); }

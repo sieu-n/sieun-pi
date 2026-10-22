@@ -3,14 +3,15 @@ import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { buildSessionContext, convertToLlm, loadProjectContextFiles, SessionManager, type SessionEntry } from "prime-agent";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { BRIEF_CORRECTIONS, CHAT_BRIEF, pinnedBrief } from "./chat-brief.ts";
-import { withMessageIds } from "./chat-guard.ts";
+import { BRIEF_CORRECTIONS, CHAT_BRIEF, JOB_REPLY_TOOL, PERSONA_TOOL, pinnedBrief } from "./chat-brief.ts";
+import { CHAT_BOARD_TOOL, withMessageIds, withWakeNotes } from "./chat-guard.ts";
+import { CORRECTION_TOOL } from "./chat-corrections.ts";
 import { deliverCorrections } from "./correction-delivery.ts";
 import { shortNotices } from "./prime-notices.ts";
-import { readCapture } from "./prompt-capture.ts";
+import { type PromptCapture, readCapture } from "./prompt-capture.ts";
 import { type BranchTail, readBranchTail } from "./session-tail.ts";
-import { serverNote } from "./shared/chat-feed.ts";
-import { DUTY_BRIEF, type PromptOrigin, type PromptPart, type PromptPartKind, type PromptSubagent, type PromptView } from "./shared/prompt-view.ts";
+import { serverNote, TELL_OWNER_TOOL } from "./shared/chat-feed.ts";
+import { DUTY_BRIEF, type PromptApi, type PromptOrigin, type PromptPart, type PromptPartKind, type PromptSubagent, type PromptView, type ToolRegistrar } from "./shared/prompt-view.ts";
 
 /**
  * `GET api/threads/<id>/prompt`: the prompt a thread's model gets, split into labelled parts in payload order. With a capture (the user-history
@@ -22,9 +23,10 @@ const BRIEF: ReadonlySet<string> = new Set(CHAT_BRIEF.map(line => line.trim()));
 
 /**
  * `keys` find the session entry a payload part came from, for its time: tool call ids and the opening of each text (`entryTimes`). `message` is
- * the index of the payload's user message that holds the part, so a block the context hook added to it takes its time.
+ * the index of the payload message that holds the part, so a block the context hook added to it takes its time.
  */
-type Draft = { kind: PromptPartKind; label: string; source: string; role?: PromptPart["role"]; text: string; tokens?: number; keys?: readonly string[]; message?: number; at?: string };
+type Draft = { kind: PromptPartKind; label: string; source: string; role?: PromptPart["role"]; text: string; tokens?: number; keys?: readonly string[]; message?: number;
+  call?: string; hook?: true; registeredBy?: ToolRegistrar; at?: string };
 type Json = Record<string, unknown>;
 
 /** No tokenizer ships with this package, so a part counts characters / 4; `measuredInputTokens` is the provider's own count of the last call. */
@@ -48,24 +50,59 @@ export function nextBriefView(chatId: string, dutyId: string, brief: { text: str
     parts: [{ id: "brief", kind: "message", label: DUTY_BRIEF, source: "next run (rebuilt now)", role: "user", text: brief.text, tokens: estimateTokens(brief.text) }] };
 }
 
-export async function promptView(sessionId: string, options: { sessionFile: string; dataDir: string; chat: boolean; agentDir?: string; title?: string }): Promise<PromptView> {
-  const [capture, tail, subagents] = await Promise.all([readCapture(options.dataDir, sessionId), branchOf(options.sessionFile, REBUILD_BYTES), subagentsOf(options.sessionFile, sessionId)]);
+/** `readCapture` reads the capture in place of `<dataDir>/prompts/<id>.json`, such as another box's capture of a session that runs there. */
+export async function promptView(sessionId: string, options: { sessionFile: string; dataDir: string; chat: boolean; agentDir?: string; title?: string;
+  readCapture?: () => Promise<PromptCapture | null> }): Promise<PromptView> {
+  const [capture, tail, subagents] = await Promise.all([options.readCapture ? options.readCapture() : readCapture(options.dataDir, sessionId),
+    branchOf(options.sessionFile, REBUILD_BYTES), subagentsOf(options.sessionFile, sessionId)]);
   const measured = lastInputTokens(tail?.entries ?? []);
   let origin: PromptOrigin;
   let drafts: Draft[];
+  let api: PromptApi | undefined;
   if (capture) {
     origin = { kind: "exact", capturedAt: capture.capturedAt, provider: capture.provider, model: capture.model };
     drafts = withTimes(payloadParts(capture.payload), tail?.entries ?? []);
+    api = payloadApi(capture.payload);
   } else {
     const rebuilt = await rebuild(options.sessionFile, options.chat, options.agentDir ?? join(homedir(), ".prime", "agent"), tail);
     origin = { kind: "rebuild", reason: rebuilt.reason };
     drafts = rebuilt.parts;
+    api = rebuilt.api;
   }
-  const parts = drafts.map((draft, index): PromptPart => ({ id: `p${index}`, kind: draft.kind, label: draft.label, source: draft.source,
-    ...(draft.role ? { role: draft.role } : {}), text: draft.text, tokens: draft.tokens ?? estimateTokens(draft.text), ...(draft.at ? { at: draft.at } : {}) }));
-  return { threadId: sessionId, ...(options.title ? { title: options.title } : {}), sessionFile: options.sessionFile, origin, totalTokens: parts.reduce((sum, part) => sum + part.tokens, 0),
-    ...(measured !== undefined ? { measuredInputTokens: measured } : {}), ...(subagents.length ? { subagents } : {}), parts };
+  const parts = drafts.map(toPart);
+  return { threadId: sessionId, ...(options.title ? { title: options.title } : {}), sessionFile: options.sessionFile, origin, ...(api ? { api } : {}),
+    totalTokens: parts.reduce((sum, part) => sum + part.tokens, 0), ...(measured !== undefined ? { measuredInputTokens: measured } : {}), ...(subagents.length ? { subagents } : {}), parts };
 }
+
+export const toPart = (draft: Draft, index: number): PromptPart => ({ id: `p${index}`, kind: draft.kind, label: draft.label, source: draft.source,
+  ...(draft.role ? { role: draft.role } : {}), text: draft.text, tokens: draft.tokens ?? estimateTokens(draft.text), ...(draft.message !== undefined ? { message: draft.message } : {}),
+  ...(draft.call ? { call: draft.call } : {}), ...(draft.hook ? { hook: true } : {}), ...(draft.registeredBy ? { registeredBy: draft.registeredBy } : {}), ...(draft.at ? { at: draft.at } : {}) });
+
+/** The API a payload follows, by its shape. */
+export function payloadApi(payload: unknown): PromptApi | undefined {
+  const body = record(payload);
+  if (!body) return undefined;
+  if ("input" in body || "instructions" in body) return "openai-responses";
+  if ("system" in body || list(body.tools).some(tool => record(tool)?.input_schema !== undefined)) return "anthropic-messages";
+  if (list(body.messages).some(message => ["system", "developer", "tool"].includes(str(record(message)?.role))) || list(body.tools).some(tool => record(tool)?.type === "function")) return "openai-completions";
+  return Array.isArray(body.messages) ? "anthropic-messages" : undefined;
+}
+
+/** pi-ai's `api` of an assistant reply, as a PromptApi. */
+function apiOf(name: string): PromptApi | undefined {
+  if (name.startsWith("anthropic")) return "anthropic-messages";
+  if (name.includes("responses")) return "openai-responses";
+  if (name.includes("completions")) return "openai-completions";
+  return undefined;
+}
+
+/**
+ * The tools the user-history extension registers (extension/index.ts, each `pi.registerTool` by these constants; a test reads that file to keep
+ * the list true), and Prime's own (prime-agent core/tools).
+ */
+export const EXTENSION_TOOLS: ReadonlySet<string> = new Set([CHAT_BOARD_TOOL, TELL_OWNER_TOOL, CORRECTION_TOOL, JOB_REPLY_TOOL, PERSONA_TOOL]);
+export const PRIME_TOOLS: ReadonlySet<string> = new Set(["ipython", "bash", "edit"]);
+const registrar = (name: string): ToolRegistrar => EXTENSION_TOOLS.has(name) ? "user-history" : PRIME_TOOLS.has(name) ? "prime" : "other";
 
 /**
  * The session file of any session the Prompt view opens: the daemon's listing (`listed`), else the file its capture names, else Prime's
@@ -188,8 +225,9 @@ export function payloadParts(payload: unknown, brief: ReadonlySet<string> = BRIE
     const value = record(message);
     if (!value || systemMessages.includes(message)) continue;
     const role = str(value.role);
-    if (role === "assistant") parts.push(...assistantParts(value, names));
-    else if (role === "tool") parts.push({ kind: "message", role: "toolResult", label: `Tool result: ${names.get(str(value.tool_call_id)) ?? "tool"}`, source: "tool output", text: contentText(value.content), keys: ["id:" + str(value.tool_call_id)] });
+    if (role === "assistant") parts.push(...assistantParts(value, names).map(part => ({ ...part, message: index })));
+    else if (role === "tool") parts.push({ kind: "message", role: "toolResult", label: `Tool result: ${names.get(str(value.tool_call_id)) ?? "tool"}`, source: "tool output", text: contentText(value.content),
+      keys: ["id:" + str(value.tool_call_id)], message: index, call: str(value.tool_call_id) });
     else parts.push(...userParts(value.content, names).map(part => ({ ...part, message: index })));
   }
   return parts;
@@ -208,37 +246,36 @@ function toolParts(tools: unknown): Draft[] {
     const name = str(fn.name) || str(value.type);
     const schema = fn.input_schema ?? fn.parameters;
     const text = [str(fn.description), schema === undefined ? "" : JSON.stringify(schema, null, 2)].filter(Boolean).join("\n\n");
-    return [{ kind: "tools" as const, label: `Tool: ${name}`, source: "tool definition (the provider sends tools before the system prompt)", text }];
+    return [{ kind: "tools" as const, label: `Tool: ${name}`, source: "tool definition (the provider sends tools before the system prompt)", text, registeredBy: registrar(name) }];
   });
 }
 
+const THINKING_SOURCE = "model reply (signed thinking; the provider counts it only in the current tool loop)";
+
+/** One part per block of an assistant reply, in its order. Its parts share one `keys` array, so they share one time lookup (withTimes). */
 function assistantParts(message: Json, names: Map<string, string>): Draft[] {
   const content = message.content;
   if (typeof content === "string") return [{ kind: "message", role: "assistant", label: "Assistant", source: "model reply", text: content, keys: [head(content)] }];
-  const thinking: string[] = [];
-  const said: string[] = [];
-  const ids: string[] = [];
-  const texts: string[] = [];
+  const keys: string[] = [];
+  const parts: Draft[] = [];
+  const call = (id: string, name: string, input: unknown) => {
+    names.set(id, name);
+    keys.push("id:" + id);
+    parts.push({ kind: "message", role: "assistant", label: `Assistant tool call: ${name}`, source: "model reply", text: toolCall(name, input), keys, call: id });
+  };
   for (const block of list(content)) {
     const value = record(block);
     if (!value) continue;
     const type = str(value.type);
-    if (type === "thinking") { thinking.push(str(value.thinking)); texts.push(str(value.thinking)); }
-    else if (type === "redacted_thinking") thinking.push("[redacted thinking]");
-    else if (type === "text") { said.push(str(value.text)); texts.push(str(value.text)); }
-    else if (type === "tool_use") { names.set(str(value.id), str(value.name)); ids.push(str(value.id)); said.push(toolCall(str(value.name), value.input)); }
+    if (type === "thinking") { parts.push({ kind: "message", role: "assistant", label: "Assistant thinking", source: THINKING_SOURCE, text: str(value.thinking), keys }); if (str(value.thinking)) keys.push(head(str(value.thinking))); }
+    else if (type === "redacted_thinking") parts.push({ kind: "message", role: "assistant", label: "Assistant thinking", source: THINKING_SOURCE, text: "[redacted thinking]", keys });
+    else if (type === "text") { parts.push({ kind: "message", role: "assistant", label: "Assistant", source: "model reply", text: str(value.text), keys }); if (str(value.text)) keys.push(head(str(value.text))); }
+    else if (type === "tool_use") call(str(value.id), str(value.name), value.input);
   }
-  for (const call of list(message.tool_calls)) {
-    const value = record(call); const fn = record(value?.function);
-    if (!value || !fn) continue;
-    names.set(str(value.id), str(fn.name));
-    ids.push(str(value.id));
-    said.push(toolCall(str(fn.name), parseArguments(fn.arguments)));
+  for (const item of list(message.tool_calls)) {
+    const value = record(item); const fn = record(value?.function);
+    if (value && fn) call(str(value.id), str(fn.name), parseArguments(fn.arguments));
   }
-  const keys = [...ids.map(id => "id:" + id), ...texts.filter(Boolean).map(head)];
-  const parts: Draft[] = [];
-  if (thinking.length) parts.push({ kind: "message", role: "assistant", label: "Assistant thinking", source: "model reply (signed thinking; the provider counts it only in the current tool loop)", text: thinking.join("\n\n"), keys });
-  if (said.length) parts.push({ kind: "message", role: "assistant", label: said.some(line => line.startsWith("→ ")) ? "Assistant tool call" : "Assistant", source: "model reply", text: said.join("\n\n"), keys });
   return parts;
 }
 
@@ -261,35 +298,51 @@ function userParts(content: unknown, names: Map<string, string>): Draft[] {
     if (!value) continue;
     const type = str(value.type);
     if (type === "text") parts.push(...splitDigest(str(value.text)).map(text => userText(text)));
-    else if (type === "image") parts.push({ kind: "message", role: "user", label: "Image", source: "image in a user message", text: "[image]", tokens: IMAGE_TOKENS });
+    else if (type === "image") parts.push(IMAGE);
     else if (type === "tool_result") {
       const inner = typeof value.content === "string" ? [{ type: "text", text: value.content }] : list(value.content);
       const images = inner.filter(item => str(record(item)?.type) === "image").length;
-      parts.push({ kind: "message", role: "toolResult", label: `Tool result: ${names.get(str(value.tool_use_id)) ?? "tool"}${value.is_error === true ? " (error)" : ""}`,
-        source: "tool output", text: contentText(inner), keys: ["id:" + str(value.tool_use_id)], ...(images ? { tokens: estimateTokens(contentText(inner)) + images * IMAGE_TOKENS } : {}) });
+      const id = str(value.tool_use_id);
+      parts.push({ kind: "message", role: "toolResult", label: `Tool result: ${names.get(id) ?? "tool"}${value.is_error === true ? " (error)" : ""}`,
+        source: "tool output", text: contentText(inner), keys: ["id:" + id], call: id, ...(images ? { tokens: estimateTokens(contentText(inner)) + images * IMAGE_TOKENS } : {}) });
     }
   }
   return parts;
 }
 
 function responsesInput(input: unknown, brief: ReadonlySet<string>): Draft[] {
-  if (typeof input === "string") return [userText(input)];
+  if (typeof input === "string") return [{ ...userText(input), message: 0 }];
   const names = new Map<string, string>();
   const parts: Draft[] = [];
-  for (const item of list(input)) {
+  for (const [index, item] of list(input).entries()) {
     const value = record(item);
     if (!value) continue;
     const type = str(value.type) || "message";
     const role = str(value.role);
+    const id = str(value.call_id);
+    const add = (...drafts: Draft[]) => parts.push(...drafts.map(draft => ({ ...draft, message: index })));
     if (type === "message" && (role === "system" || role === "developer")) parts.push(...systemParts(contentText(value.content), brief));
-    else if (type === "message" && role === "assistant") parts.push({ kind: "message", role: "assistant", label: "Assistant", source: "model reply", text: contentText(value.content), keys: [head(contentText(value.content))] });
-    else if (type === "message") parts.push(...splitDigest(contentText(value.content)).map(text => userText(text)));
-    else if (type === "function_call") { names.set(str(value.call_id), str(value.name)); parts.push({ kind: "message", role: "assistant", label: "Assistant tool call", source: "model reply", text: toolCall(str(value.name), parseArguments(value.arguments)), keys: ["id:" + str(value.call_id)] }); }
-    else if (type === "function_call_output") parts.push({ kind: "message", role: "toolResult", label: `Tool result: ${names.get(str(value.call_id)) ?? "tool"}`, source: "tool output", text: contentText(value.output), keys: ["id:" + str(value.call_id)] });
-    else if (type === "reasoning") parts.push({ kind: "message", role: "assistant", label: "Assistant thinking", source: "model reply (reasoning summary; the encrypted part is not shown)", text: list(value.summary).map(entry => str(record(entry)?.text)).join("\n\n") || "[encrypted reasoning]" });
+    else if (type === "message" && role === "assistant") add({ kind: "message", role: "assistant", label: "Assistant", source: "model reply", text: contentText(value.content), keys: [head(contentText(value.content))] });
+    else if (type === "message") add(...messageParts(value.content));
+    else if (type === "function_call") { names.set(id, str(value.name)); add({ kind: "message", role: "assistant", label: `Assistant tool call: ${str(value.name)}`, source: "model reply", text: toolCall(str(value.name), parseArguments(value.arguments)), keys: ["id:" + id], call: id }); }
+    else if (type === "function_call_output") add({ kind: "message", role: "toolResult", label: `Tool result: ${names.get(id) ?? "tool"}`, source: "tool output", text: contentText(value.output), keys: ["id:" + id], call: id });
+    else if (type === "reasoning") add({ kind: "message", role: "assistant", label: "Assistant thinking", source: "model reply (reasoning summary; the encrypted part is not shown)", text: list(value.summary).map(entry => str(record(entry)?.text)).join("\n\n") || "[encrypted reasoning]" });
   }
   return parts;
 }
+
+/** The blocks of an OpenAI Responses user message: each text (`input_text`) and image (`input_image`) in order. */
+function messageParts(content: unknown): Draft[] {
+  if (typeof content === "string") return splitDigest(content).map(text => userText(text));
+  return list(content).flatMap(block => {
+    const value = record(block);
+    if (!value) return [];
+    if (str(value.type).includes("image")) return [IMAGE];
+    return str(value.text) ? splitDigest(str(value.text)).map(text => userText(text)) : [];
+  });
+}
+
+const IMAGE: Draft = { kind: "message", role: "user", label: "Image", source: "image in a user message", text: "[image]", tokens: IMAGE_TOKENS };
 
 function splitDigest(text: string): string[] {
   const cut = text.startsWith("[harness-digest]") ? text.indexOf("\n\n[compaction-summary]") : -1;
@@ -303,11 +356,14 @@ const HOOK = "user-history context hook (added on every call, not in the session
 const PRIME = "Prime (custom message)";
 const PREFIXES: readonly [RegExp, (match: RegExpExecArray) => Source][] = [
   [/^\[harness-digest\]/, () => ({ kind: "harness", label: "Harness digest", source: "Prime harness: memories, prompt notes, skills and subagent specs" })],
+  [/^\[harness-digest update\]/, () => ({ kind: "harness", label: "Harness digest update", source: "Prime harness: the entries that changed since the digest" })],
   [/^# [^\n]+: the (?:check-in|[^\n]+ duty) of the chat "/, () => ({ kind: "message", label: DUTY_BRIEF, source: "chat server duty run: dutyJobBrief (chat-duty-job.ts)" })],
   [/^\[compaction-summary\]/, () => ({ kind: "message", label: "Compaction summary", source: "Prime compaction" })],
   [/^\[branch-summary\]/, () => ({ kind: "message", label: "Branch summary", source: "Prime" })],
   [/^\[corrections\]/, () => ({ kind: "instructions", label: "[corrections]", source: `${HOOK}: the owner's corrections ledger` })],
   [/^\[message id: /, () => ({ kind: "instructions", label: "[message id]", source: `${HOOK}: the owner message's id for tell_owner reply_to` })],
+  [/^\[not from the owner: /, () => ({ kind: "instructions", label: "[wake note]", source: `${HOOK}: the line after each wake-up in a chat (WAKE_NOTE)` })],
+  [/^\[An image (of [0-9]+ x [0-9]+ px )?was left out of this request/, () => ({ kind: "message", label: "Image left out", source: `${HOOK}: an image it could not shrink` })],
   [/^\[reply check\]/, () => ({ kind: "message", label: "[reply check]", source: SERVER })],
   [/^\[brief check\]/, () => ({ kind: "message", label: "[brief check]", source: SERVER })],
   [/^\[check-in\]/, () => ({ kind: "message", label: "[check-in]", source: SERVER })],
@@ -335,8 +391,12 @@ export function userSource(text: string): Source {
   return { kind: "message", label: "Owner", source: "the owner (or the parent's task text)" };
 }
 
+/** True for a block the user-history context hook adds on every call, by its source (userSource). */
+export const hookAdded = (source: string): boolean => source.startsWith(HOOK);
+
 function userText(text: string): Draft {
-  return { ...userSource(text), role: "user", text, keys: [head(text)] };
+  const source = userSource(text);
+  return { ...source, role: "user", text, keys: [head(text)], ...(hookAdded(source.source) ? { hook: true as const } : {}) };
 }
 
 
@@ -472,12 +532,13 @@ async function sessionCwd(sessionFile: string): Promise<string> {
  * steps the user-history context hook runs (shortNotices, the chat's owner message ids, deliverCorrections from the checkpoints in the file), the
  * AGENTS.md files through Prime's loadProjectContextFiles, and a chat's pinned brief.
  */
-export async function rebuild(sessionFile: string, chat: boolean, agentDir: string, read?: BranchTail): Promise<{ reason: string; parts: Draft[] }> {
+export async function rebuild(sessionFile: string, chat: boolean, agentDir: string, read?: BranchTail): Promise<{ reason: string; parts: Draft[]; api?: PromptApi }> {
   const tail = read ?? await readBranchTail(sessionFile, { messages: 1_000_000, bytes: REBUILD_BYTES });
   const entries = tail?.entries ?? SessionManager.open(sessionFile).getBranch();
   const context = buildSessionContext(entries);
   let messages: AgentMessage[] = shortNotices(context.messages) ?? context.messages;
   if (chat) messages = withMessageIds(messages) ?? messages;
+  if (chat) messages = withWakeNotes(messages) ?? messages;
   messages = deliverCorrections({ messages, branch: entries, ledger: null, job: false, brief: BRIEF_CORRECTIONS, append: () => {} });
   const parts: Draft[] = [];
   try {
@@ -489,32 +550,38 @@ export async function rebuild(sessionFile: string, chat: boolean, agentDir: stri
     parts.push({ kind: "instructions", label: "Chat brief", source: "chat_board tool promptGuidelines (pinned brief from the session file)", text: brief.map(line => `- ${line}`).join("\n") });
   }
   const names = new Map<string, string>();
+  let api: PromptApi | undefined;
+  let index = 0;
   for (const message of messages) {
     const at = "timestamp" in message && typeof message.timestamp === "number" ? { at: new Date(message.timestamp).toISOString() } : {};
     const start = parts.length;
     for (const llm of convertToLlm([message])) {
+      const from = parts.length;
       if (llm.role === "assistant") {
+        api = apiOf(llm.api) ?? api;
         parts.push(...assistantParts({ content: llm.content.map(block => block.type === "toolCall" ? { type: "tool_use", id: block.id, name: block.name, input: block.arguments } : block) }, names));
       } else if (llm.role === "toolResult") {
-        parts.push({ kind: "message", role: "toolResult", label: `Tool result: ${llm.toolName}${llm.isError ? " (error)" : ""}`, source: "tool output",
+        parts.push({ kind: "message", role: "toolResult", label: `Tool result: ${llm.toolName}${llm.isError ? " (error)" : ""}`, source: "tool output", call: llm.toolCallId,
           text: llm.content.map(block => block.type === "text" ? block.text : "[image]").join("\n"),
           tokens: llm.content.reduce((sum, block) => sum + (block.type === "text" ? estimateTokens(block.text) : IMAGE_TOKENS), 0) });
       } else {
         const content = typeof llm.content === "string" ? [{ type: "text" as const, text: llm.content }] : llm.content;
         for (const block of content) {
-          if (block.type !== "text") { parts.push({ kind: "message", role: "user", label: "Image", source: "image in a user message", text: "[image]", tokens: IMAGE_TOKENS }); continue; }
+          if (block.type !== "text") { parts.push(IMAGE); continue; }
           for (const text of splitDigest(block.text)) {
             const custom = message.role === "custom" ? message.customType : undefined;
-            const source = userSource(text);
-            parts.push({ ...source, role: "user", text, ...(custom && source.label === "Owner" ? { label: `Custom message: ${custom}`, source: PRIME } : {}) });
+            const part = userText(text);
+            parts.push(custom && part.label === "Owner" ? { ...part, label: `Custom message: ${custom}`, source: PRIME } : part);
           }
         }
       }
+      for (let at = from; at < parts.length; at++) parts[at] = { ...parts[at]!, message: index };
+      index++;
     }
     for (let index = start; index < parts.length; index++) parts[index] = { ...parts[index]!, ...at };
   }
   const missing = "the base system prompt, the MCP and tool guideline sections, the skills list and the tool definitions";
   const reason = `No captured payload for this session yet: it records from its first model call after its worker loads the current user-history extension. ` +
     `Rebuilt from the session file${tail && !tail.whole ? " (its newest 48 MiB)" : ""}; missing: ${missing}, and images the context hook resizes.`;
-  return { reason, parts };
+  return { reason, parts, ...(api ? { api } : {}) };
 }

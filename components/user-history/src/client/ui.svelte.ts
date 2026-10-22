@@ -37,6 +37,7 @@ function storedTree(key = "chat.chatTreeOpen"): Record<string, true> {
     return Array.isArray(saved) ? Object.fromEntries(saved.filter((id): id is string => typeof id === "string").map(id => [id, true])) : {};
   } catch { return {}; }
 }
+export type PromptMode = "summary" | "order";
 const clampWidth = (width: number): number => Math.round(Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, width)));
 /** The board panel beside a chat: dragged from its left edge up to 60% of the window, reset by a double click. */
 export const BOARD_MIN = 280;
@@ -82,6 +83,9 @@ class Ui {
     this.boardShowDone = toggled(this.boardShowDone, `${chatId}/${parent}`, shown);
     store("chat.boardShowDone", JSON.stringify(Object.keys(this.boardShowDone)));
   }
+  /** The Prompt dialog's view, the summary table or the parts in the order the provider gets them; the summary until the person picks, and the choice holds across reloads. */
+  promptMode = $state<PromptMode>(stored("chat.promptMode") === "order" ? "order" : "summary");
+  setPromptMode(mode: PromptMode): void { this.promptMode = mode; store("chat.promptMode", mode); }
   /** Chats whose job list is unfolded in the sidebar. */
   chatTreeOpen = $state.raw<Record<string, true>>(storedTree());
   setChatTreeOpen(id: string, open: boolean): void {

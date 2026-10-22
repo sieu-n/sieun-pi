@@ -22,6 +22,8 @@ import { CallWatch } from "./hung-calls.ts";
 import { CallStopper, interruptCell, pidAlive } from "./hung-stop.ts";
 import { HostReach } from "./host-reach.ts";
 import { relayWatch } from "./hosts.ts";
+import type { PromptCapture } from "./prompt-capture.ts";
+import { readHostCapture } from "./prompt-host-capture.ts";
 import { ARTIFACTS, dryLeftoverSource, hostLeftovers, leftoverSource, sshLeftovers } from "./job-leftovers.ts";
 import { ALERT_TRIAGE_DUTY, chatPoolPriority, dutyJobIds, dutyJobPriority, PoolPriorities } from "./chat-pool-priority.ts";
 import { agentQueue, type AgentQueue, type IdleEviction } from "./chat-agent-queue.ts";
@@ -451,6 +453,21 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   threads.markOwnerTurn = id => markOwnerTurn(id).catch(error => { dutyLog(`turn queue: owner turn for ${id.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`); });
   // A scratch serve's data dir is a copy of the live one, so it keeps its own outbox: the live service delivers the sends in "outbox".
   const outbox = new OwnerOutbox(join(dataDir, scratch ? "outbox-scratch" : "outbox"), { threads, chats, catalog }, dutyLog);
+  // A session on another box has its capture on that box, where its worker's user-history extension writes it, so the Prompt view reads it
+  // through that box's relay. On 10-22 frontend bro on the Mac showed "rebuilt" here while its Mac capture was 2 minutes old.
+  const hostCapture = async (id: string): Promise<(() => Promise<PromptCapture | null>) | null> => {
+    const name = catalog.hostOf(id);
+    const host = name ? catalog.hostEntry(name) : undefined;
+    const summary = host ? await catalog.summary(id) : undefined;
+    const path = summary && catalog.daemonPath(summary);
+    if (!host || !path) return null;
+    return async () => {
+      try { return await readHostCapture(host, path, id); } catch (error) {
+        dutyLog(`prompt: capture of ${id} on ${host.name}: ${error instanceof Error ? error.message : String(error)}`);
+        return null;
+      }
+    };
+  };
   let closed = false;
   return {
     catalog, threads, readState, labels, defaults, newChat, chats, boards, created, usage, duties, poolPriorities, calls,
@@ -459,7 +476,8 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     prompt: async (id, via) => {
       const sessionFile = await sessionFileFor(id, { listed: async session => (await catalog.summary(session))?.sessionFile, ...(via ? { via } : {}), dataDir, agentDir });
       const title = catalog.title(id);
-      return sessionFile ? promptView(id, { sessionFile, dataDir, agentDir, chat: (await chats.ids()).has(id), ...(title ? { title } : {}) }) : null;
+      const remote = await hostCapture(id);
+      return sessionFile ? promptView(id, { sessionFile, dataDir, agentDir, chat: (await chats.ids()).has(id), ...(title ? { title } : {}), ...(remote ? { readCapture: remote } : {}) }) : null;
     },
     outbox, messages: agentOutbox,
     async close() {

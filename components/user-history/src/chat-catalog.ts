@@ -1315,6 +1315,9 @@ export class Catalog {
     return (host && this.hosts?.client(host)) || this.client;
   }
 
+  /** The hosts.json entry of another box; undefined for this box and for a name hosts.json does not list. */
+  hostEntry(name: string): Host | undefined { return this.hosts?.registry.hosts.find(candidate => candidate.name === name); }
+
   /** True for a hosts.json box other than this one, whose folders and files are on its own disk. */
   isOtherHost(name: string | null | undefined): boolean { return !!name && !!this.hosts?.client(name); }
 
@@ -1372,7 +1375,7 @@ export class Catalog {
   async localFile(summary: Pick<SessionSummary, "sessionId" | "sessionFile">): Promise<string | undefined> {
     if (!summary.sessionFile) return undefined;
     const name = this.hostOf(summary.sessionId);
-    const host = name ? this.hosts?.registry.hosts.find(candidate => candidate.name === name) : undefined;
+    const host = name ? this.hostEntry(name) : undefined;
     return host ? await this.hosts!.mirror(host, remotePath(host, summary.sessionFile)) : summary.sessionFile;
   }
 

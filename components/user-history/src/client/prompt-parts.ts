@@ -70,13 +70,22 @@ export function share(tokens: number, total: number): string {
 }
 
 /**
- * A part's text on one line, for its row in an open group. An injected part drops its opening tag, such as `[agent-message from ci bot]`, because
- * the row's source kind and sender already name it.
+ * A part's text on one line, for its row in an open group. An injected part drops its opening tag, such as `[agent-message from ci bot]`, and a
+ * tool call drops its leading `→ <tool>`, because the row's source kind, sender and tool already name them.
  */
-export function preview(part: Pick<PromptPart, "text" | "role" | "source">, length = 240): string {
+export function preview(part: Pick<PromptPart, "text" | "role" | "source" | "label">, length = 240): string {
   const text = part.text.slice(0, length * 4);
   const injected = part.role === "user" && !part.source.startsWith("the owner");
-  return (injected ? text.replace(/^\s*\[[^\]\n]{1,160}\]/, "") : text).replace(/\s+/g, " ").trim().slice(0, length);
+  const call = part.role === "assistant" && labelDetail(part.label) !== "";
+  return (injected ? text.replace(/^\s*\[[^\]\n]{1,160}\]/, "") : call ? text.replace(/^→ \S+/, "") : text).replace(/\s+/g, " ").trim().slice(0, length);
+}
+
+/**
+ * The "#n" of each conversation part: its payload message, counted from 1, so the blocks of one message (thinking, text, tool calls) share a
+ * number and match the ordered view. A part without a message index counts by its place among the conversation parts.
+ */
+export function messageNumbers(parts: readonly PromptPart[]): Map<string, number> {
+  return new Map(parts.filter(part => part.role).map((part, index) => [part.id, (part.message ?? index) + 1]));
 }
 
 /**
