@@ -33,9 +33,12 @@ SWAP_CAP_GIB = 16.0  # ops guy 2026-10-10: the Mac target; at 8 nothing woke for
 LOAD_CAP = 30.0
 LAST_COUNTS = {}     # resumed/skipped counts of the latest cycle, read by cron_cycle.py
 
-# Notes Prime writes when it loads a session (each chat service start resumes chats), not input to answer: on 10-18 at 00:11Z a
-# harness_digest from the 23:40Z resume read as a dropped turn and woke the paused chats SEO guy and spec and monitoring system.
-RESUME_NOTES = ('harness_digest', 'ipython_state_restored')
+# The custom messages that wake the agent (components/user-history/src/shared/turns.ts PROMPT_TYPES). Every other custom message is a note
+# no turn answers: on 10-18 at 00:11Z a harness_digest from the 23:40Z resume woke the paused chats SEO guy and spec and monitoring system,
+# and on 10-22 the correction refine's notes after gpt sol (metal 02)'s answered turn read as input owed since 00:58:56Z, and the cycle at
+# 01:47:55Z sent it "dropped 48.2 minutes ago".
+PROMPT_TYPES = ('agent_message', 'heartbeat_prompt', 'async_bash_completion', 'goal_context', 'rlm_child_terminal_notice', 'rlm_child_failure',
+                'prime-agent.update_restart')
 
 
 # The chat service's own notes in a user message (components/user-history/src/shared/chat-feed.ts SERVER_NOTES and NUDGE_PREFIX) and this
@@ -55,6 +58,14 @@ def said_something(m):
                for c in (cs if isinstance(cs, list) else []))
 
 
+def replied(m):
+    """Whether an assistant message gave the owner a reply: text he reads, or a tell_owner call."""
+    cs = m.get('content')
+    return any(isinstance(c, dict) and ((c.get('type') == 'text' and (c.get('text') or '').strip()) or
+                                        (c.get('type') == 'toolCall' and c.get('name') == 'tell_owner'))
+               for c in (cs if isinstance(cs, list) else []))
+
+
 def from_owner(e):
     """Whether an input event is a message the owner typed: a user message that is no server, Prime or watchdog note."""
     m = e.get('message') or {}
@@ -68,10 +79,11 @@ def from_owner(e):
 def owed_input(evs):
     """-> (last_input, owed_since): the time of the newest input and of the first input no turn has answered yet, both None when nothing is owed.
 
-    A turn answers its inputs when the assistant said something, or when it ended normally (stopReason "stop") with no owner message among them:
+    An input is a user message, a tool result or a custom message of PROMPT_TYPES. A turn answers its inputs when the assistant said
+    something, or when it ended normally (stopReason "stop") with no owner message among them:
     a chat may end a turn on an agent message, a check-in or a notice with no words. gpt sol (01a15f90-afb8-7434-814a-2e5fbcafb1ec) did that on
     the Mac on 10-21, and each silent end read as a dropped turn, so the watchdog woke it at 20:08Z, 20:43Z, 21:19Z and 22:18Z with "the input
-    was never answered", and each wake ended silent again. An owner message stays owed until a turn that ends normally says something, and a turn
+    was never answered", and each wake ended silent again. An owner message stays owed until the chat replies in text or through tell_owner, and a turn
     cut by an error, an abort, the length limit or a worker death leaves its inputs owed. `owed_since` keys the one resume notice per input.
     """
     last_input = owed_since = None
@@ -83,9 +95,9 @@ def owed_input(evs):
             said, done = said_something(m), m.get('stopReason') == 'stop'
             if said or (done and not owner_owed):
                 owed_since = None
-            if said and done:
+            if m.get('stopReason') in ('stop', 'toolUse') and replied(m):
                 owner_owed = False
-        elif (t == 'message' and role in ('user', 'toolResult')) or (t == 'custom_message' and e.get('customType') not in RESUME_NOTES):
+        elif (t == 'message' and role in ('user', 'toolResult')) or (t == 'custom_message' and e.get('customType') in PROMPT_TYPES):
             last_input = ts
             owed_since = owed_since or ts
             owner_owed = owner_owed or from_owner(e)
@@ -178,7 +190,7 @@ def snapshot():
 
 
 def read_log(hours=3):
-    """-> (session-uuid -> count of watchdog recoveries in the last `hours`, the (session-uuid, owed_since) pairs that got a resume notice)."""
+    """-> (session-uuid -> count of watchdog recoveries in the last `hours`, the (session-uuid, owed_since) pairs whose resume notice was sent)."""
     if not LOG_F.exists():
         return {}, set()
     cut = dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=hours)
@@ -188,7 +200,7 @@ def read_log(hours=3):
             e = json.loads(ln)
         except Exception:
             continue
-        if e.get('owed_since') and e.get('sid') and not e.get('skip'):
+        if e.get('owed_since') and e.get('sid') and not e.get('skip') and e.get('send_rc') == 0:
             noticed.add((e['sid'], e['owed_since']))
         t = _ts(e.get('at'))
         if t and t >= cut and e.get('sid') and not e.get('skip'):

@@ -32,11 +32,12 @@ The watchdog finds Prime Agent sessions that stopped making progress and recover
 ## Answered turns
 
 1. A session owes an answer from the first input that no turn has answered yet, and `owed_since` in the cycle's record is that input's time.
-2. A turn answers its inputs when the assistant said something, or when it ended with stopReason `stop` and no owner message was among them, so a chat may end a turn on an agent message, a check-in or a notice with no words.
-3. An owner message stays owed until a turn that ends with `stop` says something, and a turn cut by an error, an abort, the length limit or a worker death leaves its inputs owed.
-4. A user message counts as the owner's unless it opens with a chat service note prefix (`SERVER_NOTES` in `components/user-history/src/shared/chat-feed.ts`), a Prime tag or `[watchdog]`, and `tests/test_silent_turn.py` checks the Python list against that file.
-5. One owed input gets one resume notice, because each `resume_queue + send` line in `log.jsonl` holds its `owed_since`, and a later cycle reads that input as `NOTICED`.
-6. On 10-21 the Mac's watchdog woke gpt sol at 20:08Z, 20:43Z, 21:19Z and 22:18Z with "the input was never answered", because each of its silent turn ends on a non-owner notice read as a dropped turn, and each wake ended silent again.
+2. An input is a user message, a tool result or a custom message that wakes the agent (`PROMPT_TYPES`, from `turns.ts` in `components/user-history/src/shared`), and other custom messages, such as the correction refine's notes, owe nothing.
+3. A turn answers its inputs when the assistant said something, or when it ended with stopReason `stop` and no owner message was among them, so a chat may end a turn on an agent message, a check-in or a notice with no words.
+4. An owner message stays owed until the chat replies in text or through `tell_owner`, and a turn cut by an error, an abort, the length limit or a worker death leaves its inputs owed.
+5. A user message counts as the owner's unless it opens with a chat service note prefix (`SERVER_NOTES` in `components/user-history/src/shared/chat-feed.ts`), a Prime tag or `[watchdog]`, and `tests/test_silent_turn.py` checks both Python lists against those files.
+6. One owed input gets one resume notice, because each `resume_queue + send` line in `log.jsonl` holds its `owed_since`, and a later cycle reads that input as `NOTICED` once a send went through.
+7. On 10-21 the Mac's watchdog woke gpt sol at 20:08Z, 20:43Z, 21:19Z and 22:18Z with "the input was never answered", because each of its silent turn ends on a non-owner notice read as a dropped turn, and each wake ended silent again. On 10-22 the box's watchdog woke gpt sol (metal 02) at 01:47:55Z after it had answered its owner, because the correction refine's notes read as owed input.
 
 ## Install
 
