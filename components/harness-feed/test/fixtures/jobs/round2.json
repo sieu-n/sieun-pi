@@ -1,0 +1,28 @@
+{
+ "service": [
+  "job j six: held by pi-pool until 2026-10-22T08:00:00+00:00: pi-pool holds the tree until 2026-10-22T08:00:00+00:00 (cut at 2026-10-22T06:10:00.000Z, tree 01a0c7c5, 01a1620d-4800-7600-8000-000000000000)",
+  "job j seven: held by pi-pool until a time it does not say: the token hook gave no anthropic token (exit 1) (cut at 2026-10-22T06:15:00.000Z, tree 01a0cceb, 01a16216-6fc0-7700-8000-000000000000 on mac)",
+  "job j four: not resumed, stopped on purpose: its parent deleted it (rlm ledger delete, reason user, at 2026-10-22T05:55:00.000Z) (01a16228-bf40-7400-8000-000000000000)",
+  "job j eight: turn stopped: rate limit 429, claude3 limited until 09:20, retries at 09:20 at 2026-10-22T06:14:00.000Z. Not resumed: no work is owed to it, since no open step names it, no parent lists it as live, its turn was not in a tool call and no message to it is unanswered (01a1621b-03a0-7800-8000-000000000000 on mac)",
+  "job j six: interrupted (error at 2026-10-22T06:10:00.000Z); continue: {\"deliveryStatus\":\"delivered\",\"deliveryMode\":\"steer\"}",
+  "chat 01a0c7c5: check-in restarted job j two: its last turn ended in an error (Provider rate limit exceeded (rate_limit_error, 429): This request would exceed )",
+  "job j nine: not resumed: The update 1-2 did not restore it, since it was stopped at 2026-10-22T05:00:00.000Z after the update began (archive at 2026-10-22T05:10:00.000Z, 01a16204-2040-7900-8000-000000000000 on mac)"
+ ],
+ "ledger": [
+  "{\"v\": 1, \"op\": \"spawn\", \"at\": \"2026-10-22T06:19:00.000Z\", \"childId\": \"sub-a0000000\", \"parent\": \"/home/fixture/.prime/agent/sessions/01a0c7c5-6e80-7aaa-8000-00000000000a.jsonl\", \"child\": \"/home/fixture/.prime/agent/session-artifacts/01a0c7c5-6e80-7aaa-8000-00000000000a/sub-a0000000/01a16243-4c20-7a00-8000-000000000000.jsonl\", \"depth\": 1, \"name\": \"j ten\"}",
+  "{\"v\": 1, \"op\": \"delete\", \"at\": \"2026-10-22T06:19:30.000Z\", \"childId\": \"sub-10000000\", \"child\": \"/home/fixture/.prime/agent/session-artifacts/01a0c7c5-6e80-7aaa-8000-00000000000a/sub-10000000/01a16231-e700-7100-8000-000000000000.jsonl\", \"reason\": \"user\"}"
+ ],
+ "pool": [
+  "{\"ts\": \"2026-10-22T06:19:30\", \"event\": \"turn_swept\", \"session\": \"01a1623b-0ec0-7200-8000-000000000000\", \"part\": \"working\", \"why\": \"lease ran out\"}",
+  "{\"ts\": \"2026-10-22T06:19:40\", \"event\": \"turn_admitted\", \"session\": \"01a16243-4c20-7a00-8000-000000000000\", \"tree\": \"01a0c7c5-6e80-7aaa-8000-00000000000a\", \"kind\": \"slot\", \"waited_s\": 40.0}"
+ ],
+ "cancel": {
+  "01a1623b-0ec0-7200-8000-000000000000": {
+   "at": 1792649960000,
+   "how": "stop",
+   "by": "owner",
+   "parent": "01a0c7c5-6e80-7aaa-8000-00000000000a",
+   "child": "sub-20000000"
+  }
+ }
+}

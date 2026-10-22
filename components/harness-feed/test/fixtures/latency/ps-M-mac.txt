@@ -1,0 +1,4 @@
+USER        PID   TT   %CPU STAT PRI     STIME     UTIME COMMAND
+sieunpark   521   ??    5.4 S    31T  12:58.57  21:42.94 /Users/u/.local/share/prime-agent/releases/x/prime-agent /$bunfs/root/prime-agent --mode daemon --daemon-socket /var/folders/xx/T/prime-agent-501/daemon.sock
+            521         0.1 S    31T   1:25.08   6:45.29 
+            521         0.0 S    31T   0:14.54   0:27.22 

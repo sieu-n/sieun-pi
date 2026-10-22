@@ -1,0 +1,1 @@
+{"socketPath": "/tmp/prime-agent-1001/daemon.sock", "ts": "2026-10-19T17:00:00.000Z", "level": "warn", "component": "coding-agent.daemon-supervisor", "msg": "Supervisor command send_message failed: Error: Unknown active session: 01a10000-0000-7000-8000-000000000000\n    at findWorker (/$bunfs/root/prime-agent:2249:80357)", "pid": 1, "mode": "daemon"}
