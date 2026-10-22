@@ -10,6 +10,7 @@ const at = (clock: string): number => Date.parse(`2026-10-21T${clock}Z`) / 1000;
 const HEAD = "01a115e2-9544-7204-b8db-8ce4d5319048";
 const admitted = (session: string, ts: string, waited: number): string =>
   JSON.stringify({ ts, event: "turn_admitted", session, tree: session, kind: "slot", waited_s: waited });
+const queued = (session: string, ts: string): string => JSON.stringify({ ts, event: "turn_queued", session, tree: session, working: 12, queued: 100 });
 const parked = (session: string, clock: string, priority = "normal"): string =>
   JSON.stringify({ ts: "local", event: "parked", provider: "anthropic", session, at: at(clock), account: "claude5@slack.green", slot_at: at(clock) + 60, priority, room: [] });
 const unparked = (session: string, clock: string): string =>
@@ -18,6 +19,7 @@ const unparked = (session: string, clock: string): string =>
 test("only chat head runs admitted in the window count, and a KST stamp reads as its UTC time", () => {
   const smooth = readSmoothness([
     parked("x", "10:31:00"), unparked("x", "10:31:30"),
+    queued(HEAD, "2026-10-21T10:35:00"),
     admitted("job", "2026-10-21T10:38:00", 900),
     admitted(HEAD, "2026-10-21T10:40:00", 300),
     admitted("job", "2026-10-21T10:41:00", 900),
@@ -82,4 +84,33 @@ test("a tree that a Manual pin let in passes no parked tree, as sieunpark77's pi
     unparked("a", "10:52:00"), vend("a", "switch"),
   ], new Set(), FROM, RUN);
   assert.deepEqual(smooth.overtaken, [{ session: "b", minutes: 0 }, { session: "a", minutes: 17 }]);
+});
+
+test("a job run that took the slot a head's own run let go, before the head's next run queued, passes nobody, as at 15:16:00Z on 10-22", () => {
+  const smooth = readSmoothness([
+    JSON.stringify({ ts: "2026-10-21T10:39:00", event: "turn_released", session: HEAD, kind: "slot", held_s: 40 }),
+    admitted("job", "2026-10-21T10:39:00", 1921),
+    queued(HEAD, "2026-10-21T10:39:00"),
+    admitted(HEAD, "2026-10-21T10:40:16", 76.6),
+  ], new Set([HEAD]), FROM, RUN);
+  assert.deepEqual(smooth.headWaits, [{ session: HEAD, waitedS: 76.6, passed: false }]);
+  const { metrics } = measure({ now: RUN, watch: [], log: { holds: [] }, chats: [], smooth });
+  assert.equal(metrics.head_waits_over_30s, 0);
+  assert.equal(metrics.queue_holds_30, 0);
+});
+
+test("a job run the queue started while a head waited in line passes it", () => {
+  const smooth = readSmoothness([queued(HEAD, "2026-10-21T10:39:00"), admitted("job", "2026-10-21T10:39:30", 900), admitted(HEAD, "2026-10-21T10:40:16", 76.6)],
+    new Set([HEAD]), FROM, RUN);
+  assert.deepEqual(smooth.headWaits, [{ session: HEAD, waitedS: 76.6, passed: true }]);
+});
+
+test("a tree pinned to its account neither passes nor is passed, as 01a11ba8 on claude8 from 15:19Z to 16:30Z on 10-22", () => {
+  const manual = (line: string): string => JSON.stringify({ ...JSON.parse(line) as object, manual: true });
+  const smooth = readSmoothness([
+    manual(parked("pin", "10:00:00", "high")), parked("a", "10:01:00", "high"), unparked("a", "10:02:00"),
+    parked("b", "10:03:00"), manual(parked("pin2", "10:04:00")), manual(unparked("pin2", "10:05:00")),
+    unparked("b", "10:40:00"), manual(unparked("pin", "10:50:00")),
+  ], new Set(), FROM, RUN);
+  assert.deepEqual(smooth.overtaken, [{ session: "b", minutes: 0 }]);
 });

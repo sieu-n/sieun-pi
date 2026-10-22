@@ -371,24 +371,37 @@ const KST_MS = 9 * 60 * MINUTE;
  */
 export function readSmoothness(lines: readonly string[], heads: ReadonlySet<string>, from: number, to: number): Smoothness {
   const headWaits: Smoothness["headWaits"] = [];
-  const starts: { at: number; head: boolean }[] = [];
-  const parks = new Map<string, { start: number; rank: number }>();
+  // Each head run in line, from its turn_queued line on, and whether a job run started from the queue since. pi-pool logs each turn.lock
+  // holder's lines right after it lets go, so the log's order is the queue's: on 10-22 at 15:16:00Z a job run took the slot 01a11a24's ending
+  // run let go, and the head's next run queued the same second after it, which the old second-stamped reading counted as a pass.
+  const inLine = new Map<string, boolean>();
+  const parks = new Map<string, { start: number; rank: number; manual: boolean }>();
   const ended: { session: string; start: number; end: number; rank: number }[] = [];
   let anchor: number | undefined;
   for (const line of lines) {
-    if (!line.includes('"turn_admitted"') && !line.includes('"parked"') && !line.includes('"unparked"') && !line.includes('"vend"')) continue;
-    let entry: { ts?: unknown; event?: unknown; session?: unknown; at?: unknown; waited_s?: unknown; priority?: unknown; provider?: unknown; reason?: unknown };
+    if (!line.includes('"turn_admitted"') && !line.includes('"turn_queued"') && !line.includes('"turn_dropped"') && !line.includes('"parked"') &&
+      !line.includes('"unparked"') && !line.includes('"vend"')) continue;
+    let entry: { ts?: unknown; event?: unknown; session?: unknown; at?: unknown; waited_s?: unknown; priority?: unknown; provider?: unknown; reason?: unknown; manual?: unknown };
     try { entry = JSON.parse(line) as typeof entry; } catch { continue; }
     if (typeof entry.session !== "string") continue;
+    const head = heads.has(entry.session);
+    if (entry.event === "turn_queued") {
+      if (head) inLine.set(entry.session, false);
+      continue;
+    }
+    if (entry.event === "turn_dropped") {
+      inLine.delete(entry.session);
+      continue;
+    }
     if (entry.event === "turn_admitted") {
       const local = typeof entry.ts === "string" ? Date.parse(`${entry.ts}Z`) : NaN;
       const at = anchor === undefined || Math.abs(local - anchor) <= Math.abs(local - KST_MS - anchor) ? local : local - KST_MS;
-      const head = heads.has(entry.session);
       // Only a run the queue started counts as passing a head: an owner run or a run its owner turn moved ahead never waits in line.
-      if ((entry as { kind?: unknown }).kind === "slot") starts.push({ at, head });
-      if (head && typeof entry.waited_s === "number" && at >= from && at < to) {
-        const asked = at - entry.waited_s * 1000;
-        headWaits.push({ session: entry.session, waitedS: entry.waited_s, passed: starts.some(start => !start.head && start.at > asked && start.at < at) });
+      if (!head && (entry as { kind?: unknown }).kind === "slot") for (const session of inLine.keys()) inLine.set(session, true);
+      if (head) {
+        const passed = inLine.get(entry.session) ?? false;
+        inLine.delete(entry.session);
+        if (typeof entry.waited_s === "number" && at >= from && at < to) headWaits.push({ session: entry.session, waitedS: entry.waited_s, passed });
       }
       continue;
     }
@@ -402,14 +415,18 @@ export function readSmoothness(lines: readonly string[], heads: ReadonlySet<stri
     if (typeof entry.at !== "number" || entry.provider !== "anthropic") continue;
     const at = entry.at * 1000;
     anchor = at;
+    // A pinned tree back on its own account writes no vend line, so pi-pool marks its parked and unparked lines `manual` since 10-22: 01a11ba8,
+    // pinned to claude8, waited from 15:19Z for its 16:30Z reset and read as passed for 70 min by Auto trees that entered claude19.
+    const manual = entry.manual === true;
     if (entry.event === "parked") {
-      const park = parks.get(entry.session) ?? { start: at, rank: 1 };
+      const park = parks.get(entry.session) ?? { start: at, rank: 1, manual };
       park.rank = RANK[String(entry.priority)] ?? 1;
+      park.manual ||= manual;
       parks.set(entry.session, park);
     } else if (entry.event === "unparked") {
       const park = parks.get(entry.session);
       parks.delete(entry.session);
-      if (park) ended.push({ session: entry.session, start: park.start, end: at, rank: park.rank });
+      if (park && !park.manual && !manual) ended.push({ session: entry.session, start: park.start, end: at, rank: park.rank });
     }
   }
   const overtaken = ended.filter(park => park.end >= from && park.end < to).map(park => {
