@@ -4,8 +4,8 @@
 // dashboards drawing ("Check the Observability and Metrics"), where on 10-19 at 15:55Z two panels read No data.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { type BoardItem, REFRESH_SEEDS, type ThroughputData, boardGoal, geonodeHours, geonodeMbps, goalRows, grew, interpolate, missed, panelQueries, panelState,
-  refreshShares, refreshSql, report, slowestHour } from "../scripts/duties/throughput-goal.ts";
+import { type BoardItem, GOOD_ROWS, REFRESH_SEEDS, type ThroughputData, backlogged, boardGoal, deploySlots, geonodeHours, geonodeMbps, goalRows, grew, interpolate, lastHalfHour,
+  missed, panelQueries, panelState, refreshShares, refreshSql, report, slowestHour } from "../scripts/duties/throughput-goal.ts";
 import type { DutyMetric } from "../src/shared/chat-duties.ts";
 
 const METRICS: DutyMetric[] = [
@@ -46,6 +46,36 @@ test("the slowest rolling hour counts a slot with no rows as a stop (10-22 01:00
   assert.equal(slowestHour([], from, from + 6 * 3_600_000), 0);
 });
 
+test("prod's deploy lock leaves its slots out of the slowest hour (10-22 00:55 to 01:52Z, when d9 read 920 profiles a minute)", () => {
+  const from = Date.parse("2026-10-22T01:10:00Z");
+  const to = from + 6 * 3_600_000;
+  const slot = (at: string): number => Date.parse(`2026-10-22T${at}:00Z`);
+  // The prod lock gauge's 5-minute max at each point: held at the 01:15 to 01:55 points, then clear, with a stale 7,200 s lock at 04:00.
+  const points: [number, number][] = [["01:10", 732], ["01:15", 1_037], ["01:30", 1_947], ["01:50", 3_130], ["01:55", 3_191], ["02:00", 0], ["04:00", 7_200]]
+    .map(([at, seconds]) => [slot(at as string), seconds as number]);
+  const deploys = deploySlots(points);
+  assert.deepEqual([...deploys].sort(), [slot("01:05"), slot("01:10"), slot("01:25"), slot("01:45"), slot("01:50")]);
+  // Census-sized slots, 50,000 a slot (10,000 a minute), and none while the deploy held the lock from 01:10 to 01:55.
+  const lock = new Set(Array.from({ length: 9 }, (_, index) => from + index * 300_000));
+  const slots = Array.from({ length: 72 }, (_, index) => ({ slot: from + index * 300_000, good: lock.has(from + index * 300_000) ? 0 : 50_000 }));
+  assert.equal(slowestHour(slots, from, to), Math.round((3 * 50_000) / 60));
+  assert.equal(slowestHour(slots, from, to, lock), 10_000);
+  // A stop outside a deploy still counts.
+  const stopped = slots.map(s => s.slot === slot("03:35") ? { ...s, good: 0 } : s);
+  assert.equal(slowestHour(stopped, from, to, lock), Math.round((11 * 50_000) / 60));
+  // Under an hour left outside deploys reads the mean of what is left.
+  assert.equal(slowestHour(slots.slice(0, 15), from, from + 15 * 300_000, lock), 10_000);
+  assert.equal(lastHalfHour(slots, to), 10_000);
+});
+
+test("Instagram counts profile rows on every read path, the table p826's target reads, and TikTok Shop its good products", () => {
+  assert.deepEqual(GOOD_ROWS.instagram, { table: "crawler.instagram_account_snapshots", where: "" });
+  assert.match(GOOD_ROWS.tiktokShop.where, /^kind = 'product' AND outcome = 'ok' AND $/);
+  const rows = goalRows(base({ board: BOARD, igSlowest: 4_423, igLast30: 11_660, deployMinutes: 45 }));
+  assert.match(rows[0]!.reads, /outside 45 min of prod deploys/);
+  assert.match(rows[0]!.extra!, /11,660 a minute in the last 30 min/);
+});
+
 test("every throughput goal on the board is one row, and the headline counts the rows prod misses", () => {
   const data = base({ board: BOARD, igSlowest: 5_157, ttsSlowest: 1_960, meta: { due: 2_780_536, finished24h: 53_570 }, refresh: [HALF, { ...HALF, past7: 127, past14: 2 }] });
   const rows = goalRows(data);
@@ -81,6 +111,17 @@ test("GeoNode Mbps counts HTTP bytes and 8,678 bytes per new connection, with ce
   assert.equal(geonodeMbps({ ...census, wire: 22_500_000_000 }, [{ lane: "instagram_census", wire: 0, newSessions: 0 }], [], FROM, TO), 100);
 });
 
+test("a queue backlogs while its 30-minute low stands over 80k even as it falls (p827; media.fetch at 5.5M read 0 on 10-22)", () => {
+  const media = { family: "kafka lag", name: "media.fetch/image-worker", now: 5_637_727, ago6h: 7_900_000, slope6h: -100, low: 5_534_617, low6h: 7_800_000 };
+  assert.equal(grew(media), false);
+  assert.equal(backlogged(media), true);
+  // 10-22 07:20Z: census-crawl's buffer stood at 12,863 with a low of 8,197; its largest 30-minute low in 3 days was 51,376.
+  assert.equal(backlogged({ family: "kafka lag", name: "instagram.crawl/instagram-census-crawl", now: 12_863, ago6h: 12_000, slope6h: 1, low: 51_376, low6h: 8_000 }), false);
+  // 10-22 07:20Z: the profile outbox held 148k with a low of 88k while its oldest write waited 69 s, a backfill.
+  assert.equal(backlogged({ family: "search sync outbox", name: "profile", now: 147_828, ago6h: 11_000, slope6h: 5, low: 88_227, low6h: 3_000, wait: 69 }), false);
+  assert.equal(backlogged({ family: "dead letters", name: "media.fetch.dlq", now: 90_000, ago6h: 90_000, slope6h: 0 }), true);
+});
+
 test("a queue grows only past 10% and about a minute of census intake, with its slope up", () => {
   assert.equal(grew({ family: "kafka lag", name: "crawl.videos/video-writers", now: 280, ago6h: 97, slope6h: 30 }), false);
   assert.equal(grew({ family: "kafka lag", name: "media.fetch/image-worker", now: 30_400_000, ago6h: 37_400_000, slope6h: -1e6 }), false);
@@ -107,7 +148,8 @@ test("the run reads every metric, and a failed source misses instead of reading 
   assert.equal(out.metrics.throughput_goals_missed, 0);
   assert.equal(out.metrics.ig_job_fail_pct, undefined);
   assert.ok(out.flagged!.some(item => item.kind === "errors" && item.excerpt.includes("75.9%")));
-  assert.equal(out.metrics.ig_queues_growing_6h, 0);
+  assert.equal(out.metrics.ig_queues_growing_6h, 1);
+  assert.ok(out.flagged!.some(item => item.kind === "backlog" && item.excerpt.startsWith("1 of 1 Instagram queues backlog, over 80k")));
   assert.equal(out.metrics.crawler_panels_blank, 1);
   const broken = report(base({ board: BOARD, errors: [{ source: "queues", message: "Grafana HTTP 502" }] }), METRICS);
   assert.ok(broken.metrics.geonode_mbps! < 0 && broken.metrics.ig_queues_growing_6h! > 1000 && broken.metrics.throughput_goals_missed! > 1000);
@@ -119,7 +161,7 @@ test("ig_queues_growing_6h dates a growing or unread queue count at this run and
   const run = (queues: ThroughputData["queues"], errors: ThroughputData["errors"] = []) => report(base({ errors, ...queues ? { queues } : {} }), METRICS);
   assert.deepEqual(run([videos]).lastEventAt, { ig_queues_growing_6h: NOW });
   assert.deepEqual(run(undefined, [{ source: "queues", message: "Grafana HTTP 502" }]).lastEventAt, { ig_queues_growing_6h: NOW });
-  assert.equal(run([{ ...videos, low: 440_000 }]).lastEventAt, undefined);
+  assert.equal(run([{ ...videos, now: 60_000, low: 40_000 }]).lastEventAt, undefined);
 });
 
 test("a panel runs as Grafana draws it: quoted variables, hidden targets an expression reads, and a value in any shown query", () => {

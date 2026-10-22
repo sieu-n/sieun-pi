@@ -60,14 +60,14 @@ export function grafanaAuth(secrets: string): string {
 export const readGrafanaAuth = async (): Promise<string> => grafanaAuth(await readFile(join(REPO, "apps/infra/aws/secrets.env"), "utf8"));
 
 interface Frame { schema: { fields: { name: string; labels?: Record<string, string> }[] }; data: { values: unknown[][] } }
-/** One query through Grafana ds/query (refId A); throws on an HTTP or query error. */
-export type DsQuery = (query: Record<string, unknown>) => Promise<Frame[]>;
+/** One query through Grafana ds/query (refId A) over the hour to now, or over `span`; throws on an HTTP or query error. */
+export type DsQuery = (query: Record<string, unknown>, span?: { from: number; to: number }) => Promise<Frame[]>;
 
 export function grafanaClient(fetcher: typeof fetch, auth: string, now: number, signal: AbortSignal): DsQuery {
-  return async query => {
+  return async (query, span = { from: now - HOUR, to: now }) => {
     const response = await fetcher(GRAFANA_QUERY, {
       method: "POST", signal, headers: { authorization: auth, "content-type": "application/json" },
-      body: JSON.stringify({ queries: [{ refId: "A", ...query }], from: String(now - HOUR), to: String(now) }),
+      body: JSON.stringify({ queries: [{ refId: "A", ...query }], from: String(span.from), to: String(span.to) }),
     });
     const body = await response.json().catch(() => null) as { results?: { A?: { error?: string; frames?: Frame[] } }; message?: string } | null;
     const result = body?.results?.A;
@@ -96,6 +96,12 @@ export const sqlRows = async (query: DsQuery, uid: string, rawSql: string): Prom
 
 export const promInstant = async (query: DsQuery, uid: string, expr: string): Promise<{ labels: Record<string, string>; value: number }[]> =>
   frameSeries(await query({ datasource: { uid }, expr, instant: true, range: false }));
+
+/** Every point of each series in a range-query answer over [from, to], one point every `stepMs`. */
+export const promRange = async (query: DsQuery, uid: string, expr: string, from: number, to: number, stepMs: number): Promise<{ labels: Record<string, string>; points: [number, number][] }[]> =>
+  (await query({ datasource: { uid }, expr, instant: false, range: true, intervalMs: stepMs, maxDataPoints: Math.ceil((to - from) / stepMs) + 1 }, { from, to }))
+    .filter(frame => frame.schema.fields.length > 1)
+    .map(frame => ({ labels: frame.schema.fields[1]!.labels ?? {}, points: (frame.data.values[0] ?? []).map((t, index): [number, number] => [Number(t), Number(frame.data.values[1]![index])]) }));
 
 /** A number from a SQL cell; null and an empty cell stay null. */
 export const num = (value: unknown): number | null => value === null || value === undefined || value === "" ? null : Number(value);
