@@ -23,6 +23,7 @@ import os
 import re
 import subprocess
 import sys
+import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -437,23 +438,56 @@ def app_of(path: str) -> str:
     return parts[1] if parts[0] in ("apps", "packages") and len(parts) > 1 else parts[0]
 
 
-def traffic(days: int) -> list[dict]:
-    """vent.call rows per env, caller and integration from the shared otel ClickHouse via Grafana."""
-    token = os.environ.get("GRAFANA_AGENT_TOKEN") or subprocess.run(
-        ["npx", "--no-install", "dotenvx", "get", "GRAFANA_AGENT_TOKEN", "-f", ".env"],
-        cwd="apps/infra", capture_output=True, text=True).stdout.strip()
-    sql = (
+def traffic_sql(day: int) -> str:
+    """vent.call rows of one day back from now: day 0 is the last 24 h, day 1 the 24 h before it."""
+    window = f"Timestamp > now() - INTERVAL {day + 1} DAY" + (f" AND Timestamp <= now() - INTERVAL {day} DAY" if day else "")
+    return (
         "SELECT ResourceAttributes['deployment.environment.name'] AS env, LogAttributes['vent.caller'] AS caller, "
         "LogAttributes['vent.integration'] AS integration, LogAttributes['vent.operation'] AS operation, "
         "LogAttributes['vent.outcome'] AS outcome, count() AS calls, max(Timestamp) AS last "
-        f"FROM otel_logs WHERE ServiceName = 'vent' AND Body = 'vent.call' AND Timestamp > now() - INTERVAL {days} DAY "
+        f"FROM otel_logs WHERE ServiceName = 'vent' AND Body = 'vent.call' AND {window} "
         "GROUP BY env, caller, integration, operation, outcome ORDER BY env, calls DESC"
     )
+
+
+TRAFFIC_KEY = ("env", "caller", "integration", "operation", "outcome")
+
+
+def merge_traffic(days_rows: list[list[dict]]) -> list[dict]:
+    """One row per env, caller, integration, operation and outcome across the day queries: calls summed, last the newest."""
+    merged: dict[tuple, dict] = {}
+    for rows in days_rows:
+        for row in rows:
+            key = tuple(row.get(k) for k in TRAFFIC_KEY)
+            seen = merged.get(key)
+            if seen is None:
+                merged[key] = dict(row)
+                continue
+            seen["calls"] = (seen.get("calls") or 0) + (row.get("calls") or 0)
+            if row.get("last") is not None and (seen.get("last") is None or row["last"] > seen["last"]):
+                seen["last"] = row["last"]
+    return sorted(merged.values(), key=lambda r: (str(r.get("env")), -(r.get("calls") or 0)))
+
+
+def traffic(days: int) -> list[dict]:
+    """vent.call rows per env, caller and integration from the shared otel ClickHouse via Grafana, one query per day. On 10-22 the one
+    7-day query took 60.2 s and hit Grafana's 60 s datasource deadline (HTTP 400 around a 504 "context deadline exceeded"), while one
+    day took 5.0 s, so each day is its own query and the rows merge."""
+    token = os.environ.get("GRAFANA_AGENT_TOKEN") or subprocess.run(
+        ["npx", "--no-install", "dotenvx", "get", "GRAFANA_AGENT_TOKEN", "-f", ".env"],
+        cwd="apps/infra", capture_output=True, text=True).stdout.strip()
+    return merge_traffic([traffic_day(token, day) for day in range(days)])
+
+
+def traffic_day(token: str, day: int) -> list[dict]:
     body = {"queries": [{"refId": "A", "datasource": {"uid": "grafana_clickhouse", "type": "grafana-clickhouse-datasource"},
-                         "rawSql": sql, "format": 1, "queryType": "sql"}], "from": f"now-{days}d", "to": "now"}
+                         "rawSql": traffic_sql(day), "format": 1, "queryType": "sql"}], "from": f"now-{day + 1}d", "to": f"now-{day}d" if day else "now"}
     req = urllib.request.Request("https://obs.virev.ai/api/ds/query", data=json.dumps(body).encode(),
                                  headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
-    res = json.load(urllib.request.urlopen(req))["results"]["A"]
+    try:
+        res = json.load(urllib.request.urlopen(req))["results"]["A"]
+    except urllib.error.HTTPError as error:
+        raise RuntimeError(f"Grafana answered {error.code} for vent.call day {day}: {error.read().decode(errors='replace')[:400]}") from error
     frames = res.get("frames") or []
     if not frames:
         return []

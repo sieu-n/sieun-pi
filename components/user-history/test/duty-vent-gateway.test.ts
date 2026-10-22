@@ -228,3 +228,15 @@ test("removed_provider_refs counts a removed provider named outside the kept gua
   assert.equal(ventMetrics(reads(), 0).metrics.removed_provider_refs, 0);
   assert.equal(ventMetrics(reads({ removed: { grep: "", tables: "" } }), 0).metrics.removed_provider_refs, UNMEASURED);
 });
+
+test("vent-share.py reads prod traffic one day per query and merges the days, because one 7-day query hit Grafana's 60 s deadline on 10-22", async () => {
+  const { execFileSync } = await import("node:child_process");
+  const { VENT_SHARE } = await import("../scripts/duties/vent-gateway.ts");
+  const code = "import importlib.util, json, sys\nspec = importlib.util.spec_from_file_location('vs', sys.argv[1]); vs = importlib.util.module_from_spec(spec)\n" +
+    "sys.modules['vs'] = vs; spec.loader.exec_module(vs)\nrow = lambda c, n, t: dict(env='production', caller=c, integration='notion', operation='read', outcome='success', calls=n, last=t)\n" +
+    "print(json.dumps({'day0': vs.traffic_sql(0), 'day3': vs.traffic_sql(3), 'merged': vs.merge_traffic([[row('virev', 2, 100)], [row('virev', 3, 50), row('search', 1, 70)]])}))";
+  const got = JSON.parse(execFileSync("python3", ["-c", code, VENT_SHARE], { encoding: "utf8" })) as { day0: string; day3: string; merged: { caller: string; calls: number; last: number }[] };
+  assert.match(got.day0, /Timestamp > now\(\) - INTERVAL 1 DAY GROUP BY/);
+  assert.match(got.day3, /Timestamp > now\(\) - INTERVAL 4 DAY AND Timestamp <= now\(\) - INTERVAL 3 DAY/);
+  assert.deepEqual(got.merged.map(r => [r.caller, r.calls, r.last]), [["virev", 5, 100], ["search", 1, 70]]);
+});
