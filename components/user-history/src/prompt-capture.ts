@@ -48,6 +48,11 @@ export function recordPrompt(dataDir: string, capture: PromptCapture): Promise<v
 export async function readCapture(dataDir: string, sessionId: string): Promise<PromptCapture | null> {
   let raw: string;
   try { raw = await readFile(captureFile(dataDir, sessionId), "utf8"); } catch { return null; }
+  return parseCapture(raw, sessionId);
+}
+
+/** A capture file's text, from this box or read through another box's relay; null when it is not `sessionId`'s capture. */
+export function parseCapture(raw: string, sessionId: string): PromptCapture | null {
   try {
     const value = JSON.parse(raw) as Partial<PromptCapture>;
     if (typeof value !== "object" || value === null || value.sessionId !== sessionId || typeof value.capturedAt !== "string") return null;
