@@ -171,6 +171,10 @@ test("a panel runs as Grafana draws it: quoted variables, hidden targets an expr
   const panel = { targets: [{ refId: "rate", hide: true, datasource: { uid: "estate_ch_prod" } }, { refId: "cap", hide: true, datasource: { uid: "estate_prometheus" } },
     { refId: "share", datasource: { type: "__expr__", uid: "__expr__" }, expression: "$rate / $cap" }] };
   const { queries, shown } = panelQueries(panel, new Map());
+  // Crawler · Sources picks its Postgres source as estate_pg_${env:text}, where env's value is a Prometheus uid and its text is prod.
+  const picked = panelQueries({ targets: [{ refId: "A", datasource: { uid: "estate_pg_${env:text}" }, rawSql: "SELECT '${env:text}'" }] },
+    new Map([["env", "estate_prometheus"], ["env:text", "prod"]]));
+  assert.deepEqual(picked.queries.map(query => [query.datasource, query.rawSql]), [[{ uid: "estate_pg_prod" }, "SELECT 'prod'"]]);
   assert.deepEqual(queries.map(query => query.refId), ["rate", "cap", "share"]);
   assert.deepEqual(shown, ["share"]);
   const frame = (values: unknown[][]) => ({ frames: [{ data: { values } }] });

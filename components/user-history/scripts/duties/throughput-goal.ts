@@ -130,22 +130,30 @@ export type GrafanaApi = (path: string, body?: unknown) => Promise<unknown>;
 export interface PanelTarget { refId?: string; hide?: boolean; datasource?: { type?: string; uid?: string } | null; [field: string]: unknown }
 export interface DashPanel { id?: number; type?: string; title?: string; datasource?: PanelTarget["datasource"]; targets?: PanelTarget[]; panels?: DashPanel[] }
 export interface Dashboard { uid: string; title: string; time?: { from?: string; to?: string }; panels?: DashPanel[];
-  templating?: { list?: { name: string; type?: string; current?: { value?: unknown } }[] } }
+  templating?: { list?: { name: string; type?: string; current?: { value?: unknown; text?: unknown } }[] } }
 export interface PanelRead { dashboard: string; title: string; state: "ok" | "no data" | "error"; detail: string }
 
 /** Every non-row panel, with the panels folded inside a collapsed row. */
 export const leafPanels = (panels: readonly DashPanel[] = []): DashPanel[] =>
   panels.flatMap(panel => panel.type === "row" ? leafPanels(panel.panels) : [panel]);
 
-/** Fills ${name}, ${name:format} and $name with the variable's set value, quoted for the sqlstring, singlequote and doublequote formats. */
+/**
+ * Fills ${name}, ${name:format} and $name with the variable's set value, quoted for the sqlstring, singlequote and doublequote formats.
+ * ${name:text} reads the shown text, kept under "name:text": the Crawler · Sources and Daily brand pipe panels pick estate_pg_${env:text},
+ * whose env value is a Prometheus uid and whose text is prod or stg, and read 26 panels as "Data source not found" on 10-22 13:32Z.
+ */
 export function interpolate(text: string, vars: ReadonlyMap<string, string>): string {
   const format = (value: string, as: string | undefined): string =>
     as === "sqlstring" || as === "singlequote" ? `'${value.replaceAll("'", "''")}'` : as === "doublequote" ? `"${value}"` : value;
   return text.replace(/\$\{(\w+)(?::(\w+))?\}|\$(\w+)\b/g, (whole, braced: string | undefined, as: string | undefined, bare: string | undefined) => {
-    const value = vars.get(braced ?? bare ?? "");
+    const value = (as === "text" ? vars.get(`${braced}:text`) : undefined) ?? vars.get(braced ?? bare ?? "");
     return value === undefined ? whole : format(value, as);
   });
 }
+
+/** A datasource whose uid names a variable, like estate_pg_${env:text}, filled the way Grafana fills it before it picks the source. */
+const withUid = <T extends { uid?: string } | null | undefined>(ref: T, vars: ReadonlyMap<string, string>): T =>
+  ref?.uid === undefined ? ref : { ...ref, uid: interpolate(ref.uid, vars) };
 
 /** The ds/query body a panel sends: its shown targets, plus the hidden ones when a server-side expression reads them. */
 export function panelQueries(panel: DashPanel, vars: ReadonlyMap<string, string>): { queries: Record<string, unknown>[]; shown: string[] } {
@@ -155,7 +163,7 @@ export function panelQueries(panel: DashPanel, vars: ReadonlyMap<string, string>
   const queries = targets.filter(target => expression || !target.hide).map(target => ({
     ...Object.fromEntries(Object.entries(target).map(([key, value]) => [key, fill(value)])),
     // measured: 1 minute is the finest step on these dashboards, and a 6 h range at it is 360 points, inside Prometheus's 11,000-point limit.
-    refId: target.refId ?? "A", datasource: target.datasource ?? panel.datasource, intervalMs: MINUTE,
+    refId: target.refId ?? "A", datasource: withUid(target.datasource ?? panel.datasource, vars), intervalMs: MINUTE,
   }));
   return { queries, shown: targets.filter(target => !target.hide).map(target => target.refId ?? "A") };
 }
@@ -182,7 +190,8 @@ export async function readPanels(api: GrafanaApi): Promise<PanelRead[]> {
     const dash = ((await api(`/api/dashboards/uid/${uid}`)) as { dashboard: Dashboard }).dashboard;
     const variables = dash.templating?.list ?? [];
     if (variables.some(v => v.type === "query")) continue;
-    const vars = new Map(variables.map(v => [v.name, String(Array.isArray(v.current?.value) ? v.current.value[0] ?? "" : v.current?.value ?? "")]));
+    const first = (cell: unknown): string => String(Array.isArray(cell) ? cell[0] ?? "" : cell ?? "");
+    const vars = new Map(variables.flatMap(v => [[v.name, first(v.current?.value)], ...(v.current?.text === undefined ? [] : [[`${v.name}:text`, first(v.current.text)]])] as [string, string][]));
     const range = { from: dash.time?.from ?? "now-6h", to: dash.time?.to ?? "now" };
     reads.push(...await Promise.all(leafPanels(dash.panels).filter(panel => panel.targets?.length).map(async panel => {
       const { queries, shown } = panelQueries(panel, vars);
