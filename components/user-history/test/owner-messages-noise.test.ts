@@ -60,6 +60,16 @@ test("the 10-21 restart asks of launch main bro and metal-management went out be
   assert.deepEqual(split.map(line => [line.side, line.fix]), [["before_fix", "b084c910"], ["after_fix", "b084c910"]]);
 });
 
+test("the 10-22 progress relays went out before the still-going fix, and a later one reads after it", async () => {
+  const fixed = { ...commits, "208a7bb5": "2026-10-22T08:04:48Z" };
+  const split = await splitNoise([
+    { at: at("2026-10-22T06:30:16Z"), case: "progress relay (interim numbers 28 min before the final answer)" },
+    { at: at("2026-10-19T20:19:52Z"), case: "progress on a goal still going" },
+    { at: at("2026-10-22T10:00:00Z"), case: "progress relay" },
+  ], async hash => fixed[hash as keyof typeof fixed] ? at(fixed[hash as keyof typeof fixed]!) : undefined);
+  assert.deepEqual(split.map(line => [line.side, line.fix]), [["before_fix", "208a7bb5"], ["before_fix", "208a7bb5"], ["after_fix", "208a7bb5"]]);
+});
+
 test("no noise line gives no lastEventAt", () => {
   assert.deepEqual(noiseLastEvent([], firstRun), {});
 });
