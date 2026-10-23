@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { link, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 
@@ -10,6 +10,53 @@ export interface JsonFile<T> { path: string; label: string; parse(value: unknown
 
 export async function readJsonFile<T>(file: JsonFile<T>): Promise<T> { return file.parse(JSON.parse(await readFile(file.path, "utf8"))); }
 
+/** Lock and recovery folders older than this with no owner pid are left over from a process that died before it wrote one. */
+const staleMs = 30000;
+
+/** The pid written in `dir`, or null when it has none yet. */
+async function ownerOf(dir: string, label: string): Promise<number | null> {
+  try {
+    const pid = Number(await readFile(dir + "/pid", "utf8"));
+    if (!Number.isSafeInteger(pid) || pid < 1) throw new Error(`Invalid ${label} lock owner`);
+    return pid;
+  } catch (error) { if (missing(error)) return null; throw error; }
+}
+
+/** True when the owner of `dir` is gone, or when `dir` has no owner and is older than `staleMs`. */
+async function abandoned(dir: string, owner: number | null): Promise<boolean> {
+  if (owner !== null) { try { process.kill(owner, 0); return false; } catch (error) { return dead(error); } }
+  try { return Date.now() - (await stat(dir)).mtimeMs > staleMs; } catch (error) { if (missing(error)) return false; throw error; }
+}
+
+/** Writes this process as the owner of `dir`. A hard link fails when the pid file exists, so of two processes only one owns it. */
+async function own(dir: string): Promise<boolean> {
+  const temporary = `${dir}/pid.${randomUUID()}`;
+  await writeFile(temporary, String(process.pid), { mode: 0o600 });
+  try { await link(temporary, dir + "/pid"); return true; }
+  catch (error) { if (exists(error)) return false; throw error; }
+  finally { await rm(temporary, { force: true }); }
+}
+
+/**
+ * Enters `recovery`, which lets one process at a time clear a stale lock. A recovery folder whose owner died, as one did in the chat service
+ * restart on us-metal02 on 10-23 and so failed every archive with "recovery is busy", is taken over in place: its pid file moves aside by a
+ * rename that only one process can win, so no process removes a recovery folder that another process may hold.
+ */
+async function enterRecovery(recovery: string, label: string): Promise<boolean> {
+  try {
+    try { await mkdir(recovery, { mode: 0o700 }); return await own(recovery); } catch (error) { if (!exists(error)) throw error; }
+    const owner = await ownerOf(recovery, label);
+    if (!await abandoned(recovery, owner)) return false;
+    if (owner === null) return await own(recovery);
+    const aside = `${recovery}/${randomUUID()}`;
+    await rename(recovery + "/pid", aside);
+    if (Number(await readFile(aside, "utf8")) === owner) return await own(recovery);
+    await link(aside, recovery + "/pid").catch(error => { if (!exists(error)) throw error; });
+    await rm(aside, { force: true });
+    return false;
+  } catch (error) { if (missing(error)) return false; throw error; }
+}
+
 async function acquire(file: JsonFile<unknown>): Promise<string> {
   const lock = file.path + ".lock";
   const deadline = Date.now() + 3000;
@@ -17,27 +64,15 @@ async function acquire(file: JsonFile<unknown>): Promise<string> {
     try { await mkdir(lock, { mode: 0o700 }); await writeFile(lock + "/pid.tmp", String(process.pid), { mode: 0o600 }); await rename(lock + "/pid.tmp", lock + "/pid"); return lock; }
     catch (error) {
       if (!exists(error)) throw error;
-      let stale = false;
-      try {
-        const pid = Number(await readFile(lock + "/pid", "utf8"));
-        if (!Number.isSafeInteger(pid) || pid < 1) throw new Error(`Invalid ${file.label} lock owner`);
-        try { process.kill(pid, 0); } catch (error) { stale = dead(error); }
-      } catch (error) {
-        if (!missing(error)) throw error;
-        try { stale = Date.now() - (await stat(lock)).mtimeMs > 30000; } catch (error) { if (!missing(error)) throw error; }
-      }
-      if (stale) {
+      if (await abandoned(lock, await ownerOf(lock, file.label))) {
         const recovery = lock + ".recovery";
-        try {
-          await mkdir(recovery, { mode: 0o700 });
-          try {
-            const owner = Number(await readFile(lock + "/pid", "utf8").catch(error => { if (missing(error)) return "0"; throw error; }));
-            let gone = owner === 0 && Date.now() - (await stat(lock)).mtimeMs > 30000;
-            if (owner > 0) try { process.kill(owner, 0); } catch (error) { gone = dead(error); }
-            if (gone) await rm(lock, { recursive: true, force: true });
-          } finally { await rm(recovery, { recursive: true, force: true }); }
-        } catch (error) { if (!exists(error)) throw error; }
+        const entered = await enterRecovery(recovery, file.label);
+        if (entered) {
+          try { if (await abandoned(lock, await ownerOf(lock, file.label))) await rm(lock, { recursive: true, force: true }); }
+          finally { await rm(recovery, { recursive: true, force: true }); }
+        }
         if (Date.now() >= deadline) throw new Error(`${file.label} recovery is busy`);
+        if (!entered) await new Promise(resolve => setTimeout(resolve, 25));
         continue;
       }
       if (Date.now() >= deadline) throw new Error(`${file.label} is busy`);
