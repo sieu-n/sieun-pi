@@ -60,10 +60,20 @@ const BALANCE_MICROS = 1_000_000;
  */
 const NO_ANSWER = new Set(["UND_ERR_HEADERS_TIMEOUT", "UND_ERR_BODY_TIMEOUT"]);
 /**
- * Prod has one org, the VIREV_API_KEY_PROD org, and the portal allows an org 100 REST calls in each clock minute (DEFAULT_REQUESTS_PER_MINUTE.rest
- * and currentWindowStart in apps/virev-demo/convex/apiPortal/rateLimits.ts), so prod calls start one every 0.6 s (pacedSlot).
+ * The portal allows an org 100 REST calls in each clock minute (DEFAULT_REQUESTS_PER_MINUTE.rest and currentWindowStart in
+ * apps/virev-demo/convex/apiPortal/rateLimits.ts), so an env's calls start one every 60 s / (100 x its orgs) (pacedSlot): prod's one org one
+ * every 0.6 s, staging's ORGS one every 0.2 s.
  */
-const PROD_PER_MINUTE = 100;
+const ORG_PER_MINUTE = 100;
+/**
+ * The per-minute pace of an env's calls with these orgs. Staging was unpaced until 10-23: at 08:40:03Z the run started 173 staging calls in
+ * one second, the one crawler-api process took about 233 requests at once, its /api/live reads took 11.8 s at p50 and two Home widget reads
+ * answered 504 at the search app's 4.6 s cut. The same 168 crawler GETs replayed at once on 10-23 13:40Z waited 1.2 s at p50 for a DB
+ * session; started one every 0.2 s they waited 0 ms at p50 and 117 ms at most, and the calls took 164 ms at p50 against 2.7 s.
+ */
+export function perMinute(orgs: readonly unknown[]): number {
+  return ORG_PER_MINUTE * Math.max(1, orgs.length);
+}
 /** Response keys that carry the next page, and the query parameter that takes it back. */
 const CURSOR_KEYS = ["next_cursor", "cursor", "continuationToken", "continuation_token", "next_page_id"] as const;
 
@@ -636,9 +646,9 @@ async function main(): Promise<void> {
       if (seeded) orgs.push(...seeded);
     }
     await Promise.all([
-      orgs.length && staging && bypass ? probeEnv({ env: "staging", base, doc: staging, orgs, headers: { "x-vercel-protection-bypass": bypass }, skip: new Map(), lastMs: previous?.ms }, routes)
+      orgs.length && staging && bypass ? probeEnv({ env: "staging", base, doc: staging, orgs, headers: { "x-vercel-protection-bypass": bypass }, skip: new Map(), perMinute: perMinute(orgs), lastMs: previous?.ms }, routes)
         .then(results => { probes.staging = results; }) : null,
-      prod && prodOrg && skips && prodEnv ? probeEnv({ env: "prod", base: prodEnv.urls.apiPortal!, doc: prod, orgs: [prodOrg], headers: {}, skip: skips.skip, held, perMinute: PROD_PER_MINUTE, spend, lastMs: previous?.ms, ledger: jobLedger(JOBS_DIR) }, routes)
+      prod && prodOrg && skips && prodEnv ? probeEnv({ env: "prod", base: prodEnv.urls.apiPortal!, doc: prod, orgs: [prodOrg], headers: {}, skip: skips.skip, held, perMinute: perMinute([prodOrg]), spend, lastMs: previous?.ms, ledger: jobLedger(JOBS_DIR) }, routes)
         .then(results => { probes.prod = results; }) : null,
     ]);
   } finally {
