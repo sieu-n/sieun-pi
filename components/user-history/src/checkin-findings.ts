@@ -8,7 +8,8 @@ import { upkeepWords } from "./shared/upkeep-title.ts";
 import { ago, clip, CLOSED, type JobFact, OPEN, ownerLabel, ownerOf, ownerState, owns, parkedBy, plural, quote, type StepMemo, stepOwner, type StepView, waitTarget,
   walk } from "./checkin-steps.ts";
 import type { CiRun, Train, TrainRun } from "./checkin-load.ts";
-import { heldByTodo, type Movers, outsideMover } from "./checkin-end-state.ts";
+import { type Movers, outsideMover } from "./checkin-end-state.ts";
+import { heldByTodo } from "./shared/todo-hold.ts";
 import { localTime } from "./checkin-settings.ts";
 import { GOAL_PUSH_LINK, type GoalPush } from "./checkin-goals.ts";
 

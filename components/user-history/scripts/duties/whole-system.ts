@@ -25,6 +25,7 @@ import { deliveryCandidates, outboxLandings, readSessionMarks, type SlotWaitTime
 import { CHECK_IN_DUTY_ID, type DutyRunRecord, type FlaggedSlice, type PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import { effectiveRun, metricStreaks, missStreak, newestReading } from "../../src/shared/duty-streak.ts";
 import { missedKeys, parseDutyLink } from "../../src/shared/duty-fixes.ts";
+import { dutyHold, withLinkedBoards } from "../../src/shared/todo-hold.ts";
 
 /** One box's numbers in a watch line: the box that wrote the line, then each other box it read through that box's relay (HostWatchLine). */
 export interface HostView { name: string; usable: HostUsable | null; workers: number; workerGb: number; top: readonly WorkerLine[]; serviceGb?: number; agents?: AgentLine; error?: string;
@@ -797,7 +798,8 @@ export function owedKeys(missed: readonly string[], runs: readonly DutyRunRecord
 
 /**
  * The open steps nobody moves in each chat and the red duties with no live fix, which the Chat system duty (d9) counts as stuck_steps_all and
- * stuck_duties. They moved there from this duty (d7) on 10-19 (owner msg mvfb7zt0).
+ * stuck_duties. They moved there from this duty (d7) on 10-19 (owner msg mvfb7zt0). A red duty whose owed metrics' fix steps all wait on an
+ * open For you todo (`dutyHold`) waits on the owner and is no red duty here.
  */
 export function planCounts(input: PlanInputs): { stuck: StuckSteps[]; redDuties: { chat: string; duty: string; line: string }[]; lagging: LaggingDuty[] } {
   // Each chat's newest measured check-in, only while it is under one check-in interval old, read after its job when that job has finished: the
@@ -845,6 +847,8 @@ export function planCounts(input: PlanInputs): { stuck: StuckSteps[]; redDuties:
     const fresh = chat.everyMs === undefined || input.now - (newest.after?.at ?? newest.at) <= chat.everyMs;
     const owed = owedKeys(missed, own, duty.id === CHECK_IN_DUTY_ID && fresh && !stuck.some(entry => entry.chat.id === chat.id));
     if (missed.length && !owed.length) return [];
+    const board = input.boards?.get(chat.id);
+    if (board && dutyHold(duty.id, owed, withLinkedBoards(board, chat.id, input.boards!))) return [];
     const links = owed.map(key => `${duty.id}/${key}`);
     return [{ chat: chat.id, duty: duty.id, line: `${chat.name}: ${duty.name} read off target in ${missStreak(own) === 1 ? "its last run" : `its last ${missStreak(own)} runs`}, and no open step linked to it ` +
       `(duty field ${links.length ? links.join(" or ") : `${duty.id}/<metricKey>`}) has a live owner now` }];

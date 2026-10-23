@@ -203,7 +203,8 @@ const owner = (fix: NonNullable<MetricStreak["fix"]>): string => fix.job ? `job 
 /**
  * One line per missed metric: its streak and what this run must do about it. A metric with a live fix job gets a steer, one with none gets a
  * new fix job, and a stuck one (CHANGE_APPROACH_MISSES misses with no move) gets a new root-cause job that names the fix that did not work. A
- * windowed count with no new event since the last run (`quietSince`) gets no job.
+ * windowed count with no new event since the last run (`quietSince`) gets no job, and nor does one whose fix step an open For you todo holds
+ * (`FixLink.hold`) with no live job, stuck or not: on 10-23 d5's runs pushed for a new job on p919, which waited only on Railway Breach's t11.
  */
 export function missLine(dutyId: string, streak: MetricStreak, label: string, unit = ""): string {
   const link = JSON.stringify(dutyLink(dutyId, streak.key));
@@ -213,6 +214,10 @@ export function missLine(dutyId: string, streak: MetricStreak, label: string, un
   if (streak.quietSince !== undefined) {
     return `${where} Its newest counted event is from ${localTime(streak.quietSince)}, before the last run, so no new event came since and the number ` +
       `moves toward its target as older events leave its window. Start no new job for it${fix ? ` and leave ${fix.step} as it is` : ""}; check the source for a new event.`;
+  }
+  if (fix?.hold !== undefined && !fix.live) {
+    return `${where} Its fix step ${fix.step} waits on the owner's open For you todo ${fix.hold}, and only his answer moves this number. Start no job ` +
+      `and steer none for it, and leave ${fix.step} as it is until that todo is done.`;
   }
   if (streak.stuck) {
     return `${where} Change approach: ${fix ? `the fix ${fix.step} (${owner(fix)}) did not move it` : "no fix step moved it"}. Start a new ` +

@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { parseAgentQueue, poolExecutable } from "../../src/chat-pool.ts";
-import { heldByTodo } from "../../src/checkin-end-state.ts";
+import { heldByTodo } from "../../src/shared/todo-hold.ts";
 import { planRiskSteps } from "../../src/checkin-findings.ts";
 import { LIVE_GAP_MS, OPEN, parkedBy, walk } from "../../src/checkin-steps.ts";
 import { listedSessions } from "../../src/daemon-faults.ts";
@@ -139,11 +139,12 @@ export interface NotMoving { chat: string; duty: string; line: string }
  * `stuck`, and so had SEO guy's d2 (16 runs) and CI and RepoOps' d4 (20 runs). A windowed count with no new event (`quietSince`) only waits.
  * measured: over the 7,011 runs in the 118 runs files on 10-22, a missed metric with no move reached its target within 10 more runs 86% of the
  * time after 1 miss, 76% after 2, 67% after 3 and 32% after 12 or more.
+ * A duty whose missed metrics' fix steps all wait on an open For you todo (`FleetDuty.held`) waits on the owner and owes no new job.
  */
 export function fixNotMoving(red: readonly RedDuty[], name: (chat: string) => string): NotMoving[] {
   return red.flatMap(duty => {
     const metric = duty.metric;
-    if (!duty.fix || metric?.fix?.step !== duty.fix || duty.agingSince !== undefined || metric.quietSince !== undefined || metric.moved ||
+    if (duty.held || !duty.fix || metric?.fix?.step !== duty.fix || duty.agingSince !== undefined || metric.quietSince !== undefined || metric.moved ||
       metric.misses < CHANGE_APPROACH_MISSES) return [];
     return [{ chat: duty.chat, duty: duty.duty, line: `${name(duty.chat)}: ${duty.name} (${duty.duty}) missed ${metric.key} ${metric.misses} runs in a row, ` +
       `${show(metric.value)} against ${metric.op} ${show(metric.target)} and no closer than when the streak began, while its fix step ${duty.fix} has a live job. ` +

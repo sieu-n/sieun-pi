@@ -65,9 +65,11 @@ function linked(board: ChatBoard | null, duty: string): Map<string, Linked[]> {
  * The duty's own goal (`goal`, its `boardGoal`) is left out when given: a job that holds the goal watches the metric and fixes nothing, and on
  * 10-20 the job "wiki goal hold" on p200 (d4/wiki_problems) slept on a board.wake from 08:19Z, so it read as a live fix and no d4 push run
  * started until wiki_problems reached 26 at 09:36Z.
+ * With no live step, an open step an open For you todo holds (`held`, the todo's name) comes next and carries `hold`: on 10-23 every d5 run
+ * of the AI harness chat told its job to start a fix job on p919, which waited only on the owner's Apple sign-in, Railway Breach's t11.
  */
 export async function dutyFixes(board: ChatBoard | null, duty: string, metrics: readonly string[], live: (item: PlanItem) => Promise<boolean>,
-  flagged: readonly FlaggedSlice[] = [], goal?: string): Promise<Record<string, FixLink>> {
+  flagged: readonly FlaggedSlice[] = [], goal?: string, held: (item: PlanItem) => string | undefined = () => undefined): Promise<Record<string, FixLink>> {
   const steps = linked(board, duty);
   const fixes: Record<string, FixLink> = {};
   for (const metric of metrics) {
@@ -76,16 +78,20 @@ export async function dutyFixes(board: ChatBoard | null, duty: string, metrics: 
     const ranked = (steps.get(metric) ?? []).filter(step => step.item.id !== goal);
     const found = [...ranked.filter(under), ...ranked.filter(step => !under(step))].map(step => step.item);
     const open = found.filter(item => OPEN.has(item.status));
-    let pick: { item: PlanItem; live: boolean } | undefined;
+    let pick: { item: PlanItem; live: boolean; hold?: string } | undefined;
+    let first: PlanItem | undefined;
     for (const item of open) {
       if (item.job && await live(item)) { pick = { item, live: true }; break; }
-      pick ??= { item, live: false };
+      const hold = held(item);
+      if (hold !== undefined) pick ??= { item, live: false, hold };
+      first ??= item;
     }
+    if (!pick && first) pick = { item: first, live: false };
     if (!pick) {
       const newest = [...found].sort((a, b) => stepNumber(b.id) - stepNumber(a.id))[0];
       if (newest) pick = { item: newest, live: false };
     }
-    if (pick) fixes[metric] = { step: pick.item.id, ...(pick.item.job ? { job: pick.item.job } : {}), live: pick.live };
+    if (pick) fixes[metric] = { step: pick.item.id, ...(pick.item.job ? { job: pick.item.job } : {}), live: pick.live, ...(pick.hold ? { hold: pick.hold } : {}) };
   }
   return fixes;
 }

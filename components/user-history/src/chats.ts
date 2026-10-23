@@ -16,7 +16,7 @@ import { withQueuePlaces } from "./chat-turn-queue.ts";
 import { type CheckInMemory, checkInPrecheck, checkInPrecheckText, classCounts, convergenceMisses, endedJobs, endedWithoutReport, finishedJobs, JOB_CLEANUP_EVERY_MS, ROOT_END_EVERY_MS, jobEnd, jobEndText,
   handBackNote, handBackSteps, handBackText, idleRoots, jobReport, lastJobMessages, leftOpenSteps, noReportNotice, openStepLines, openStepsNotice, reportedRoot, retryDue, waitingJobs } from "./chat-checkin.ts";
 import { jobBase, jobBrief, jobModel, keptCopyNote, replacedJob, resumeBrief, resumedNote, resumeJobName, savedStateNote, sessionBrief, sessionModel, waitText } from "./job-resume.ts";
-import { heldByTodo } from "./checkin-end-state.ts";
+import { heldByTodo, withBoardLinks } from "./shared/todo-hold.ts";
 import { PoolHeldJobs, resumeChatJobs } from "./chat-resume.ts";
 import { readEndsParked, readQuotaPark, withFailedTurns, withHeldTurns } from "./held-turns.ts";
 import { withUnstarted } from "./brief-keeper.ts";
@@ -25,7 +25,7 @@ import { noticeStands } from "./no-report.ts";
 import { statusAsks } from "./status-ask.ts";
 import { owedLinkLines } from "./owed-links.ts";
 import { tailMessages } from "./checkin-ops.ts";
-import { linkedTodoRefs, unpushed, withLinkedTodos } from "./checkin-goals.ts";
+import { unpushed } from "./checkin-goals.ts";
 import { BRIEF_ITEMS } from "./shared/brief-cap.ts";
 import { spawnRecord } from "./spawn-record.ts";
 import { pooledProviders } from "./chat-pool.ts";
@@ -1680,24 +1680,12 @@ export class Chats {
     const train = await readTrain(trainFile(this.source.home));
     const carried = await landCarries(board?.plan ?? [], wakes, train, trainRepo(this.source.home));
     const doneFacts = await this.doneFacts(id, board, rows);
-    const linked = board ? await this.linkedTodos(id, board) : [];
-    const precheck = checkInPrecheck(previous, facts, board && linked.length ? withLinkedTodos(board, linked) : board, at,
+    const read = (chat: string) => (this.source.boardView ?? this.source.board).call(this.source, chat);
+    const precheck = checkInPrecheck(previous, facts, board ? await withBoardLinks(board, id, read) : board, at,
       { self, rows, ...await this.ledger(id), everyMs, doneFacts, ...(duties ? { duties } : {}), jobs, heartbeats, queued, asleep, wakes, carried, ...(train ? { train } : {}), ...(boardError !== undefined ? { boardError } : {}),
         paused: await this.ownerPaused(at),
         owner: ownerSaid(this.messages(id) ?? []) });
     return { precheck, output: convergenceMisses(id, precheck.steps, precheck, await this.source.memory.ends(id), everyMs, at) };
-  }
-
-  /** The other chats' todos that the board's waits name (`linkedTodoRefs`); a board that cannot be read gives none. */
-  private async linkedTodos(id: string, board: ChatBoard): Promise<{ chat: string; todo: OwnerTodo }[]> {
-    const found: { chat: string; todo: OwnerTodo }[] = [];
-    for (const ref of linkedTodoRefs(board.plan)) {
-      if (ref.chat === id) continue;
-      const other = await (this.source.boardView ?? this.source.board).call(this.source, ref.chat).catch(() => null);
-      const todo = other?.todos.find(entry => entry.id === ref.id);
-      if (todo) found.push({ chat: ref.chat, todo });
-    }
-    return found;
   }
 
   /** What a check-in reads: the board (or why it cannot be read), the catalog rows, the chat's name, and its jobs with their last messages. */

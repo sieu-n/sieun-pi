@@ -14,6 +14,7 @@ import { briefFindings, headlineWords } from "./shared/brief-cap.ts";
 import { pushMisses } from "./duty-push.ts";
 import type { PrimeUpdate } from "./prime-update.ts";
 import { closedFixes, dutyFixes, missedKeys, verifyNoteOps } from "./shared/duty-fixes.ts";
+import { holdingTodo, todoName, withBoardLinks } from "./shared/todo-hold.ts";
 import { effectiveRun, metricStreaks, type MetricStreak } from "./shared/duty-streak.ts";
 import { type BoardOp, CHECK_IN_MIN_MINUTES, type ChatBoard, type CheckInPause, type CheckInView, type PlanItem, type PoolPriority } from "./shared/types.ts";
 
@@ -533,7 +534,10 @@ export class Duties {
 
   private async fixesOn(board: ChatBoard | null, chatId: string, dutyId: string, metrics: readonly string[], flagged: readonly FlaggedSlice[] = [], goal?: string): Promise<Record<string, FixLink>> {
     const live = this.host.fixLive;
-    return dutyFixes(board, dutyId, metrics, item => live ? live(chatId, item).catch(() => false) : Promise.resolve(false), flagged, goal);
+    const read = this.host.board;
+    const todos = board && read ? (await withBoardLinks(board, chatId, read)).todos : board?.todos ?? [];
+    const held = (item: PlanItem) => { const todo = holdingTodo(item, todos); return todo && todoName(todo); };
+    return dutyFixes(board, dutyId, metrics, item => live ? live(chatId, item).catch(() => false) : Promise.resolve(false), flagged, goal, held);
   }
 
   /**

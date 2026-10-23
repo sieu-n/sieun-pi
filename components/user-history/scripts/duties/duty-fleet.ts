@@ -12,6 +12,7 @@ import { CHECK_IN_DUTY, CHECK_IN_DUTY_ID, headlineMetric, type DutyMetric, type 
 import { CHANGE_APPROACH_MISSES, effectiveRun, metricStreaks, missStreak, type MetricStreak } from "../../src/shared/duty-streak.ts";
 import type { ChatBoard, ChildAgent, PlanItem, SessionRow } from "../../src/shared/types.ts";
 import { fixJobLive } from "../../src/shared/duty-fixes.ts";
+import { dutyHold, withBoardLinks } from "../../src/shared/todo-hold.ts";
 import { pendingWakes } from "../../src/wakes.ts";
 import { daemonList, listRows } from "../../src/daemon-list.ts";
 
@@ -105,6 +106,8 @@ export interface FleetDuty {
   fix?: string;
   /** The duty's own job, at work now, that owns the misses of this run. */
   working?: string;
+  /** Each missed metric's fix step and the open For you todo that holds it (`dutyHold`): the duty waits on the owner and is neither stuck nor pushed. */
+  held?: string;
   stuck: boolean;
 }
 export interface DutyFleet {
@@ -181,6 +184,7 @@ export async function dutyFleet(options: { dataDir: string; now: number; session
     const active = [...(activePause(setting, now) === null ? [{ id: CHECK_IN_DUTY_ID, name: CHECK_IN_DUTY.name, metrics: CHECK_IN_DUTY.metrics }] : []),
       ...file.duties.filter(duty => duty.status === "active" && !readsTheShare(duty))];
     let board: ChatBoard | null | undefined;
+    let held: ChatBoard | null | undefined;
     let live: ((item: PlanItem) => boolean) | undefined;
     for (const duty of active) {
       const own = runs.filter(run => run.duty === duty.id && measured(run));
@@ -197,7 +201,10 @@ export async function dutyFleet(options: { dataDir: string; now: number; session
         // A run records its fixes when it runs, so the board says now whether a step closed since: a done or dropped step is never a fix.
         const open = (step: string): boolean => { const item = byId.get(step); return item === undefined || OPEN.has(item.status); };
         if (entry.metric?.fix && !open(entry.metric.fix.step)) delete entry.metric.fix;
-        const all = streak >= CHANGE_APPROACH_MISSES ? await roster() : null;
+        held ??= board ? await withBoardLinks(board, id, other => boards.read(other)) : null;
+        const hold = dutyHold(duty.id, streaks.map(item => item.key), held);
+        if (hold) entry.held = hold;
+        const all = streak >= CHANGE_APPROACH_MISSES && !entry.held ? await roster() : null;
         if (all) {
           // The check-in's working test: a running subtree, a session change within the chat's interval capped at LIVE_GAP_MS, or an owed wake.
           live ??= (() => {

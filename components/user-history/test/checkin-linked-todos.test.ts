@@ -2,8 +2,9 @@
 // goal_gaps flagged it in every check-in, because a goal read as held only by the chat's own todos.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { endState, heldByTodo } from "../src/checkin-end-state.ts";
-import { goalPushes, linkedTodoRefs, withLinkedTodos } from "../src/checkin-goals.ts";
+import { endState } from "../src/checkin-end-state.ts";
+import { goalPushes } from "../src/checkin-goals.ts";
+import { heldByTodo, linkedTodoRefs, withLinkedTodos } from "../src/shared/todo-hold.ts";
 import { stepView } from "../src/checkin-steps.ts";
 import type { ChatBoard, OwnerTodo, PlanItem } from "../src/shared/types.ts";
 

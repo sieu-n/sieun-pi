@@ -140,8 +140,11 @@ export interface DutyRunRecord {
  * 2026-10-19T03:42:00.000Z" as its first reply at 03:04:04Z, the idle unload stopped it at 03:06:30Z, and its run read "after its job, missed".
  */
 export interface DutyCut { error: string; at: number; provider?: string; slotAt?: number }
-/** A fix step on the board for one missed metric: its plan step id, the job that owns it, and whether that job was live when the run looked. */
-export interface FixLink { step: string; job?: string; live: boolean }
+/**
+ * A fix step on the board for one missed metric: its plan step id, the job that owns it, whether that job was live when the run looked, and
+ * the open For you todo that holds the step (`hold`, by `todoName`, from src/shared/todo-hold.ts) when only the owner's answer moves it.
+ */
+export interface FixLink { step: string; job?: string; live: boolean; hold?: string }
 /** A run's re-measure after its own job ended. */
 export interface AfterMeasure { at: number; verdict: "met" | "missed" | "error"; metrics: Record<string, MetricResult>; summary: string; parts?: Record<string, MetricResult>;
   readings?: Record<string, number> }
