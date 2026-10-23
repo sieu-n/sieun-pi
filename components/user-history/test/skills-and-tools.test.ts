@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { CALL_TIMEOUT_MS, CHECKS, type Deps, type ExecResult, runChecks, toOutput } from "../scripts/duties/skills-and-tools.ts";
+import { CALL_TIMEOUT_MS, CHECKS, type Deps, type ExecResult, runChecks, toOutput, withHarness } from "../scripts/duties/skills-and-tools.ts";
 import type { DutyStore } from "../src/chat-duty-store.ts";
 import { dailyRun } from "../src/chat-tools.ts";
 import type { Duty, DutyRunRecord } from "../src/shared/chat-duties.ts";
@@ -259,4 +259,19 @@ test("pool_codex makes a Sign in with Apple account's new sign-in the owner's fi
 test("pool_codex keeps an email-code account's new sign-in the agent's fix", async () => {
   const outcome = await poolCodex.run(poolDeps([{ email: "fhnyq29tw5@privaterelay.appleid.com", reason: "needs-reauth" }, { email: "b@gmail.com", reason: "needs-reauth" }]));
   assert.ok(outcome.status === "fail" && outcome.fixer === "agent", JSON.stringify(outcome));
+});
+
+// 10-24 00:13 KST: pool_codex waited on the owner's Apple sign-in, and the headline missed for 10 runs that no agent could move.
+test("skills_or_tools_to_fix leaves out a fail only the owner can fix, which owner_fixes counts", () => {
+  const check = (id: string) => CHECKS.find(entry => entry.id === id)!;
+  const tools = toOutput([
+    { check: check("pool_codex"), outcome: { status: "fail", fixer: "owner", detail: "needs Sign in with Apple", fix: "sign in" }, ms: 0 },
+    { check: check("gh_auth"), outcome: { status: "pass", detail: "ok" }, ms: 0 },
+  ], 0);
+  const harness = { metrics: { skills_to_prune: 0 }, flagged: [] };
+  assert.equal(withHarness(tools, harness).metrics.skills_or_tools_to_fix, 0);
+  assert.equal(withHarness(tools, harness).metrics.owner_fixes, 1);
+  assert.equal(withHarness(tools, new Error("boom")).metrics.skills_or_tools_to_fix, 1);
+  const agent = toOutput([{ check: check("gh_auth"), outcome: { status: "fail", fixer: "agent", detail: "signed out", fix: "gh auth login" }, ms: 0 }], 0);
+  assert.equal(withHarness(agent, { metrics: { skills_to_prune: 2 }, flagged: [] }).metrics.skills_or_tools_to_fix, 3);
 });

@@ -801,15 +801,18 @@ export function realDeps(scratchDir: string): Deps {
 
 /**
  * The Skills and tools duty's output with the harness check folded in (`--with-harness`): the owner merged Skills and harness into it on 10-16.
- * `skills_or_tools_to_fix` is the headline, every tool check that fails plus every skill to prune; both outputs' other metrics and flagged
- * items stay. A harness check that failed to run is one flagged item and counts as one to fix, so a broken check never reads green.
+ * `skills_or_tools_to_fix` is the headline, every tool check that fails with a fix an agent can make plus every skill to prune; a fail only
+ * the owner can fix counts in `owner_fixes` alone, since on 10-24 pool_codex's Apple sign-in held the headline at 1 for 10 runs that no agent
+ * could move. Both outputs' other metrics and flagged items stay. A harness check that failed to run is one flagged item and counts as one to
+ * fix, so a broken check never reads green.
  */
 export function withHarness(tools: PrecheckOutput, harness: PrecheckOutput | Error): PrecheckOutput {
+  const agentFixes = (tools.metrics.checks_failed ?? 0) - (tools.metrics.owner_fixes ?? 0);
   if (harness instanceof Error) {
-    return { metrics: { ...tools.metrics, skills_or_tools_to_fix: (tools.metrics.checks_failed ?? 0) + 1 },
+    return { metrics: { ...tools.metrics, skills_or_tools_to_fix: agentFixes + 1 },
       flagged: [...tools.flagged ?? [], { kind: "harness_error", excerpt: `The skills and cache check (harness-health.ts) did not run: ${harness.message}` }] };
   }
-  return { metrics: { ...harness.metrics, ...tools.metrics, skills_or_tools_to_fix: (tools.metrics.checks_failed ?? 0) + (harness.metrics.skills_to_prune ?? 0) },
+  return { metrics: { ...harness.metrics, ...tools.metrics, skills_or_tools_to_fix: agentFixes + (harness.metrics.skills_to_prune ?? 0) },
     flagged: [...tools.flagged ?? [], ...harness.flagged ?? []] };
 }
 
