@@ -12,6 +12,9 @@ const { PRELUDE } = await import("../components/global-rules/kernel-guard.ts");
 const root = realpathSync(mkdtempSync(join(tmpdir(), "global-rules-kernel-read-")));
 const home = join(root, "home");
 const prime = join(home, ".prime/agent");
+// The chat service's copy of the Mac's files, at <MIRROR_DIR>/<host>/<path on that host> (user-history host-catalogs.ts).
+const mirrors = join(home, ".cache/sieun-pi/hosts");
+const mac = join(mirrors, "mac", "Users/someone/.prime/agent");
 const A = "01a1000a-0000-7000-8000-00000000000a";
 const B = "01a1000b-0000-7000-8000-00000000000b";
 const J = "01a1000d-0000-7000-8000-00000000000d";
@@ -31,6 +34,11 @@ const files = {
   jobJ: join(prime, "sessions", `${J}.jsonl`),
   jobK: join(prime, "sessions", `${K}.jsonl`),
   jobKChild: join(prime, "session-artifacts", K, "sub-66666666", `${id("f1")}.jsonl`),
+  macRootA: join(mac, "sessions", `${A}.jsonl`),
+  macMe: join(mac, "session-artifacts", A, "sub-11111111", `${id("c1")}.jsonl`),
+  macRootB: join(mac, "sessions", `${B}.jsonl`),
+  macJobB: join(mac, "session-artifacts", B, "sub-55555555", `${id("d1")}.jsonl`),
+  macCleanRoom: join(mac, "clean-room", "run1", `${id("e1")}.jsonl`),
 };
 for (const [name, file] of Object.entries(files)) {
   mkdirSync(dirname(file), { recursive: true });
@@ -225,6 +233,34 @@ attempt("log", lambda: sh(f"l=~/.prime/agent/logs; mkdir -p $l && touch $l/trans
     "own ran", "list ran", "loop list ran", "board ran", "log ran"]);
 });
 
+test("a host's copy under ~/.cache/sieun-pi/hosts is judged like the same transcript under ~/.prime/agent", () => {
+  // On 10-23 at about 13:20Z the job 'd9 stuck steps job liveness 10-23' read the transcripts of two other chats through the Mac's copy
+  // under ~/.cache/sieun-pi/hosts/mac after the guard refused the same read under ~/.prime/agent/sessions, since the copy was outside PRIME.
+  rmSync(log, { force: true });
+  assert.deepEqual(kernel(`${ATTEMPT}
+M = ${JSON.stringify(mirrors)}
+attempt("open", lambda: open(F["macRootB"]).read())
+attempt("path", lambda: Path(F["macJobB"]).read_text())
+attempt("tail", lambda: sh(f"tail -1 {F['macRootB']}"))
+attempt("jq", lambda: sh(f"jq -c .type {F['macJobB']}"))
+attempt("sqlite", lambda: sh(f"sqlite3 :memory: \\"select readfile('{F['macRootB']}')\\""))
+attempt("rg copy", lambda: sh(f"rg -l session {M}/mac"))
+attempt("rg cache", lambda: sh("rg -l session ~/.cache"))
+attempt("rg cwd", lambda: sh(f"cd {M} && rg -l session"))
+child = subprocess.run([sys.executable, "-c", f"print(open({F['macRootB']!r}).read())"], capture_output=True, text=True)
+print("child", "refused" if "TranscriptRefused" in child.stderr and child.returncode else "ran")
+attempt("own", lambda: open(F["macMe"]).read())
+attempt("own root", lambda: sh(f"tail -1 {F['macRootA']}"))
+attempt("own tree", lambda: sh(f"rg -l session {os.path.dirname(F['macMe'])}"))
+attempt("clean room", lambda: open(F["macCleanRoom"]).read())
+attempt("ls", lambda: sh(f"ls {M}/mac/Users/someone/.prime/agent/sessions; wc -l {F['macRootB']}"))
+`), ["open refused TranscriptRefused True", "path refused TranscriptRefused True", "tail refused TranscriptRefused True", "jq refused TranscriptRefused True",
+    "sqlite refused TranscriptRefused True", "rg copy refused TranscriptRefused True", "rg cache refused TranscriptRefused True", "rg cwd refused TranscriptRefused True",
+    "child refused", "own ran", "own root ran", "own tree ran", "clean room ran", "ls ran"]);
+  const lines = readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+  assert.ok(lines.every((line) => [B, id("d1")].includes(line.of) && line.path.startsWith(mirrors)), JSON.stringify(lines));
+});
+
 test("a subagent named by its id under sessions/ belongs to the root that Prime's rlm-ledger spawned it in", () => {
   // On 10-21 at 16:52Z a root of chat-057a opened sessions/<its direct child's id>.jsonl, the form a root's transcript takes, and the guard
   // refused it as another family's, since only a path under session-artifacts/ named the child's root. Prime keeps each subagent's transcript
@@ -259,6 +295,8 @@ test("the read, grep and bash tools get the same answer from the tool_call half"
   process.env.GLOBAL_RULES_TRANSCRIPT_LOG = join(root, "tool-refusals.jsonl");
   const data = process.env.AGENT_CHAT_DATA_DIR;
   process.env.AGENT_CHAT_DATA_DIR = join(root, "chat");
+  const realHome = process.env.HOME;
+  process.env.HOME = home;
   try {
     assert.match(judgeTool("read", { path: files.rootB }, home, me) ?? "", /outside this session's family/);
     assert.equal(judgeTool("read", { path: files.sibling }, home, me), undefined);
@@ -268,10 +306,17 @@ test("the read, grep and bash tools get the same answer from the tool_call half"
     assert.equal(judgeTool("bash", { command: `ls ${join(prime, "sessions")}` }, home, me), undefined);
     assert.match(judgeTool("bash", { command: `f=${files.rootB}; head -c 1500 $f` }, home, me) ?? "", /agent_observe/);
     assert.equal(judgeTool("bash", { command: "git status" }, home, me), undefined);
+    assert.match(judgeTool("read", { path: files.macRootB }, home, me) ?? "", /outside this session's family/);
+    assert.equal(judgeTool("read", { path: files.macMe }, home, me), undefined);
+    assert.match(judgeTool("grep", { pattern: "x", path: mirrors }, home, me) ?? "", /as a whole/);
+    assert.match(judgeTool("bash", { command: "rg -l x ~/.cache" }, home, me) ?? "", /as a whole/);
+    assert.match(judgeTool("bash", { command: `cat ${files.macJobB}` }, home, me) ?? "", /agent_observe/);
+    assert.equal(judgeTool("bash", { command: `cat ${files.macRootA}` }, home, me), undefined);
     assert.match(judgeTool("bash", { command: `systemd-run --user --unit=x --collect --same-dir -E PATH sh -c 'cat ${files.rootB}'` }, home, me) ?? "", /agent_observe/);
   } finally {
     delete process.env.PRIME_AGENT_CODING_AGENT_DIR;
     delete process.env.GLOBAL_RULES_TRANSCRIPT_LOG;
+    process.env.HOME = realHome;
     if (data === undefined) delete process.env.AGENT_CHAT_DATA_DIR;
     else process.env.AGENT_CHAT_DATA_DIR = data;
   }

@@ -9,11 +9,12 @@ import { enabled, log } from "./log.ts";
 /*
  * The tool_call half of the transcript guard: a `read`, `grep` or `bash` tool call that reads another family's session transcript is
  * refused with kernel-read.py's own rules (`--judge`), so the tools and the kernel give one answer. An ipython cell is judged in the kernel
- * at run time, where its paths are known. Only a call whose text names a session folder or the Prime agent dir starts the judge.
+ * at run time, where its paths are known. Only a call whose text names a session folder, the Prime agent dir or the ~/.cache that holds
+ * other hosts' copies starts the judge.
  */
 const HERE = dirname(realpathSync(fileURLToPath(import.meta.url)));
 const JUDGE = join(HERE, "kernel-read.py");
-const HINT = /session|\.prime/;
+const HINT = /session|\.prime|\.cache/;
 
 type Ctx = Partial<Pick<ExtensionContext, "cwd" | "sessionManager">> | undefined;
 

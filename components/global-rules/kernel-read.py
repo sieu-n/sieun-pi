@@ -7,7 +7,8 @@ another chat's transcript and 2313 scans of whole transcript folders. agent_obse
 could still open the files. So a session reads only its own chat's transcripts: the chat's root tree (the chat, its jobs and their
 subagents) and the trees of the root jobs the chat started, which chat-jobs.json records. The same scan found 1773 reads by check-in, alert
 and root jobs of their own chat's conversation in another root, as their briefs tell them to, and those stay open. Any other
-`<session id>.jsonl` under the Prime agent dir (sessions/, session-artifacts/ and their copies) raises TranscriptRefused, which names the
+`<session id>.jsonl` under the Prime agent dir (sessions/, session-artifacts/ and their copies), or in the chat service's copy of another
+host's files under ~/.cache/sieun-pi/hosts, raises TranscriptRefused, which names the
 catalog, status and relay paths that stay open.
 
 1. open(), io.open(), os.open() and Path.read_text() of such a file from cell code, or from code that is not a sieun-pi, skill or Prime tool.
@@ -46,6 +47,10 @@ ARTIFACTS = os.path.join(PRIME, "session-artifacts")
 LOG = os.environ.get("GLOBAL_RULES_TRANSCRIPT_LOG") or os.path.join(PRIME, "logs", "transcript-refusals.jsonl")
 # A clean-room run keeps the transcripts of its own test chats here, which its evaluator reads.
 CLEAN_ROOM = os.path.join(PRIME, "clean-room")
+# The chat service keeps a copy of each other host's session files at <this>/<host>/<path on that host> (user-history host-catalogs.ts
+# MIRROR_DIR). On 10-23 at about 13:20Z the job 'd9 stuck steps job liveness 10-23' read two other chats' transcripts through the Mac's copy
+# here, after the guard had refused the same read under sessions/, so a transcript in a host's copy is judged like one under PRIME.
+MIRRORS = os.path.realpath(os.path.join(HOME, ".cache", "sieun-pi", "hosts"))
 TRANSCRIPT = re.compile(r"^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$")
 SUB = re.compile(r"^sub-[0-9a-f]+$")
 UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
@@ -79,6 +84,9 @@ SEPARATORS = {";", "&", "&&", "||", "(", ")", "\n", ";;"}
 DECLARE = {"export", "local", "declare", "readonly", "typeset"}
 ASSIGN = re.compile(r"^([A-Za-z_]\w*)=(.*)$", re.S)
 GLOB = re.compile(r"[*?\[]")
+# A transcript path inside a longer word, such as the SQL of `sqlite3 :memory: "select readfile('<path>')"` or a duckdb read_json(). A Python
+# child loads this guard itself, so its code is left to it.
+EMBEDDED = re.compile(r"(?:~|\$\{?HOME\}?|/)[^\s'\"(),;]*\.jsonl")
 
 
 class TranscriptRefused(PermissionError):
@@ -93,13 +101,30 @@ def under(path: str, root: str) -> bool:
     return path == root or path.startswith(root + os.sep)
 
 
+def prime_of(real: str):
+    """The Prime agent dir that holds a real path: this box's, or another host's in its copy under MIRRORS; None for any other path.
+
+    A copied file outside a `.prime/agent` folder counts as held by its host's copy as a whole.
+    """
+    if under(real, PRIME):
+        return PRIME
+    if not under(real, MIRRORS) or real == MIRRORS:
+        return None
+    parts = os.path.relpath(real, MIRRORS).split(os.sep)
+    for index in range(1, len(parts) - 1):
+        if parts[index] == ".prime" and parts[index + 1] == "agent":
+            return os.path.join(MIRRORS, *parts[:index + 2])
+    return os.path.join(MIRRORS, parts[0])
+
+
 def transcript_id(path: str):
-    """The session id of a transcript under the Prime agent dir, or None for any other file."""
+    """The session id of a transcript under the Prime agent dir or a host's copy of one, or None for any other file."""
     match = TRANSCRIPT.match(os.path.basename(path))
     if not match:
         return None
     real = os.path.realpath(path)
-    return match.group(1) if under(real, PRIME) and not under(real, CLEAN_ROOM) else None
+    prime = prime_of(real)
+    return match.group(1) if prime and not under(real, os.path.join(prime, "clean-room")) else None
 
 
 def artifact_root(path: str):
@@ -214,16 +239,22 @@ _names: dict = {}
 
 
 def name_of(root: str):
-    """A root session's name, from the session_info line near the start of its own transcript; None when it has none."""
+    """A root session's name, from the session_info line near the start of its own transcript here or in a host's copy; None when it has none."""
     if root not in _names:
         _names[root] = None
-        try:
-            with _open(os.path.join(SESSIONS, root + ".jsonl"), "rb") as handle:
-                head = handle.read(65536).decode("utf-8", "replace")
+        copies = sorted(glob.glob(os.path.join(MIRRORS, "*", "**", ".prime", "agent", "sessions", root + ".jsonl"), recursive=True))
+        for path in [os.path.join(SESSIONS, root + ".jsonl"), *copies]:
+            try:
+                with _open(path, "rb") as handle:
+                    head = handle.read(65536).decode("utf-8", "replace")
+            except OSError:
+                continue
             match = re.search(r'"type":"session_info"[^\n]*?"name":"((?:[^"\\]|\\.)*)"', head)
-            _names[root] = json.loads(f'"{match.group(1)}"') if match else None
-        except (OSError, ValueError):
-            pass
+            try:
+                _names[root] = json.loads(f'"{match.group(1)}"') if match else None
+            except ValueError:
+                pass
+            break
     return _names[root]
 
 
@@ -278,15 +309,16 @@ def outside_in(directory: str, folder: str):
     real = os.path.realpath(directory)
     if not os.path.isdir(real) or (folder and under(real, folder)):
         return None
-    if real in (HOME, "/") or not (under(real, PRIME) or under(PRIME, real)):
+    if real in (HOME, "/"):
         return None
-    start = SESSIONS if under(PRIME, real) and real != PRIME else real
-    for top, dirs, files in os.walk(start):
-        dirs.sort()
-        for name in sorted(files):
-            match = TRANSCRIPT.match(name)
-            if match and not in_family(os.path.join(top, name), match.group(1), folder):
-                return os.path.join(top, name)
+    starts = [real if under(real, base) else top for base, top in ((PRIME, SESSIONS), (MIRRORS, MIRRORS)) if under(real, base) or under(base, real)]
+    for start in dict.fromkeys(starts):
+        for top, dirs, files in os.walk(start):
+            dirs.sort()
+            for name in sorted(files):
+                sid = transcript_id(os.path.join(top, name)) if TRANSCRIPT.match(name) else None
+                if sid and not in_family(os.path.join(top, name), sid, folder):
+                    return os.path.join(top, name)
     return None
 
 
@@ -485,6 +517,8 @@ def judge_shell(text: str, cwd: str, env=None, folder: str = "", depth: int = 0,
                 continue
             whole = reads_whole(name, words)
             paths = [p for w in operands for p in resolve(w, cwd, names)]
+            if not name.startswith("python"):
+                paths += [p for w in operands if not w.endswith(".jsonl") for inner in EMBEDDED.findall(w) for p in resolve(inner, cwd, names)]
             if whole and not [p for p in paths if os.path.isdir(p)] and name in ("rg", "ag", "ack") and len(operands) <= 1:
                 paths.append(cwd)
             for path in paths:
