@@ -215,8 +215,10 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
   const calls = toldCalls(file).filter(call => call.at >= state.windowStart);
   const all = readFileSync(file, "utf8").split("\n").flatMap(raw => { try { return [JSON.parse(raw) as Record<string, unknown>]; } catch { return []; } })
     .filter(entry => (Date.parse(String(entry.timestamp ?? "")) || 0) >= state.windowStart);
+  // A report from the chat's own check-in counts: in run-5 on 10-23 the disk job sat 138th of 138 in the account queue with its scans done,
+  // and the check-in finished the step from the scans and reported, so a third subagent report never came.
   const reports = all.filter(entry => entry.type === "custom_message" && entry.customType === "agent_message" &&
-    /^\[agent-message from child:/.test(blockText(entry.content)));
+    (/^\[agent-message from child:/.test(blockText(entry.content)) || ownJob(state.chat.name, { text: blockText(entry.content) })));
   const typed = all.filter(entry => entry.type === "message" && (entry.message as { role?: string }).role === "user").map(entry => blockText((entry.message as { content?: unknown }).content))
     .filter(text => typedByOwner(text, state.seeds));
   // The chat's own check-in writes to it as a sibling named like "check-in box questions 22 20"; run-4 went void on one on 10-23.
