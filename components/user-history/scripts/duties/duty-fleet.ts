@@ -9,7 +9,7 @@ import { withWakes } from "../../src/checkin-load.ts";
 import { activePause, checkInSettings } from "../../src/checkin-settings.ts";
 import { jobFacts, liveJobs, liveWindowMs, ownerOf, OPEN, walk } from "../../src/checkin-steps.ts";
 import { CHECK_IN_DUTY, CHECK_IN_DUTY_ID, headlineMetric, type DutyMetric, type DutyRunRecord, type FixLink, type FlaggedSlice } from "../../src/shared/chat-duties.ts";
-import { CHANGE_APPROACH_MISSES, effectiveRun, metricStreaks, missStreak, type MetricStreak } from "../../src/shared/duty-streak.ts";
+import { CHANGE_APPROACH_MISSES, effectiveRun, metricStreaks, missStreak, newestReading, type MetricStreak } from "../../src/shared/duty-streak.ts";
 import type { ChatBoard, ChildAgent, PlanItem, SessionRow } from "../../src/shared/types.ts";
 import { fixJobLive } from "../../src/shared/duty-fixes.ts";
 import { dutyHold, withBoardLinks } from "../../src/shared/todo-hold.ts";
@@ -98,8 +98,10 @@ export interface FleetDuty {
   green: boolean;
   /** No measured run yet: neither green nor red, and outside `duties_green_pct`. */
   pending?: true;
-  /** Measured runs in a row, newest first, whose verdict is missed. */
+  /** Measured runs in a row, newest first, whose verdict is missed; with `skipped`, the skipped runs in a row whose own measure missed (`skippedMisses`). */
   misses: number;
+  /** Red on skipped runs' measures alone: no measured run missed since the newest one that met. */
+  skipped?: true;
   /** The metric the stuck line names: the headline when it missed, else the longest miss streak. */
   metric?: MetricStreak;
   /** The plan step of a live fix job for a missed metric, the lead metric's first: the run's live `fixes` while the step is open, else an open board step linked `<dutyId>/<metricKey>` whose job works now. */
@@ -139,6 +141,38 @@ export function verdictNow(runs: readonly DutyRunRecord[]): "met" | "missed" | u
     if (read && (!best || read.at > best.at)) best = read;
   }
   return best?.verdict;
+}
+/**
+ * The skipped runs in a row, newest first, whose own measure missed and came after the duty's newest measured reading: the readings that make
+ * `verdictNow` red while no measured run missed. A check-in whose last job still works or waits on pi-pool records each slot this way. Until
+ * 10-23 d9 listed such a duty as red with "0 runs in a row" and no metric: at 04:07Z sep launch!!'s check-in was red on stuck_steps 2 (p62 and
+ * p63) from its 03:55Z skipped run while its 12:39 KST job waited on pi-pool, and at 08:20Z the check-ins of [temp] Railway Breach, vent and
+ * Prospect feature bro read the same way.
+ */
+export function skippedMisses(runs: readonly DutyRunRecord[]): DutyRunRecord[] {
+  const newest = newestReading(runs);
+  const since = newest ? newest.after?.at ?? newest.at : -Infinity;
+  const misses: DutyRunRecord[] = [];
+  for (const run of [...runs].sort((a, b) => b.at - a.at)) {
+    if (run.at <= since) break;
+    const metrics = Object.values(run.metrics ?? {});
+    if (run.verdict !== "skipped" || !metrics.length) continue;
+    if (metrics.every(metric => metric.met)) break;
+    misses.push(run);
+  }
+  return misses;
+}
+/** The missed metric of the newest skipped miss the line names, the headline first, with how many of `misses` in a row missed it. */
+function skippedLead(metrics: readonly DutyMetric[], misses: readonly DutyRunRecord[]): MetricStreak | undefined {
+  const results = misses[0]?.metrics ?? {};
+  const headline = headlineMetric(metrics)?.key;
+  const key = headline !== undefined && results[headline]?.met === false ? headline : Object.keys(results).find(name => results[name]!.met === false);
+  if (key === undefined) return undefined;
+  const run = misses.findIndex(entry => entry.metrics?.[key]?.met !== false);
+  const streak = misses.slice(0, run < 0 ? misses.length : run);
+  const { value, target, op } = results[key]!;
+  const first = streak[streak.length - 1]!.metrics![key]!.value;
+  return { key, misses: streak.length, moved: Math.abs(value - target) < Math.abs(first - target), since: streak[streak.length - 1]!.at, value, target, op };
 }
 const show = (value: number): string => String(Math.round(value * 10) / 10);
 const bound = (streak: MetricStreak): string => `${streak.op === "<=" ? "at most" : "at least"} ${show(streak.target)}`;
@@ -195,6 +229,9 @@ export async function dutyFleet(options: { dataDir: string; now: number; session
       const entry: FleetDuty = { chat: id, duty: duty.id, name: duty.name, green, misses: streak, stuck: false, ...newest ? {} : { pending: true as const } };
       const metric = leadMetric(duty.metrics, streaks);
       if (metric) entry.metric = { ...metric };
+      const skipped = !green && newest && streak === 0 ? skippedMisses(runs.filter(run => run.duty === duty.id)) : [];
+      const lead = skippedLead(duty.metrics, skipped);
+      if (lead) Object.assign(entry, { misses: skipped.length, skipped: true, metric: lead });
       if (!green && newest) {
         board ??= await boards.read(id).catch(() => null);
         const { byId, linked } = boardSteps(board);

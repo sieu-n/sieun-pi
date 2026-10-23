@@ -4,7 +4,8 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { dutyFleet, readsTheShare, verdictNow } from "../scripts/duties/duty-fleet.ts";
+import { dutyFleet, readsTheShare, skippedMisses, verdictNow } from "../scripts/duties/duty-fleet.ts";
+import { missRuns } from "../scripts/duties/chat-system.ts";
 import { CHANGE_APPROACH_MISSES } from "../src/shared/duty-streak.ts";
 import { DutyStore } from "../src/chat-duty-store.ts";
 
@@ -64,4 +65,32 @@ test("a check-in run skipped while its last job works still gives the duty's ver
     "a job's after-measure newer than the skip wins");
   assert.equal(verdictNow([{ duty: "d1", at: 2_000, trigger: "schedule", ms: 1, verdict: "skipped", metrics: {}, summary: "late slot" } as never, missed]), "missed",
     "a skip that measured nothing leaves the older run's verdict");
+});
+
+// 10-23 04:07Z: d9 listed sep launch!!'s check-in as red with "0 runs in a row" and no metric, red on stuck_steps 2 from its 03:55Z skipped run.
+test("a duty red on skipped runs' measures alone names their missed metric and counts them as skipped runs", async () => {
+  const skipped = (value: number, at: number) => ({ ...run("checkin", "stuck_steps", value, 0, "<=", value === 0, at), verdict: "skipped", summary: "skipped: previous run still working" });
+  const unmeasured = { duty: "checkin", at: 3_500, trigger: "schedule", ms: 1, verdict: "skipped", metrics: {}, summary: "late slot" };
+  const runs = [skipped(2, 4_000), unmeasured, skipped(1, 3_000), skipped(0, 2_500), skipped(3, 2_200), run("checkin", "stuck_steps", 0, 0, "<=", true, 2_000)] as never[];
+  assert.deepEqual(skippedMisses(runs).map(entry => (entry as { at: number }).at), [4_000, 3_000], "a skipped run that met ends the count, and one that measured nothing is passed over");
+  assert.deepEqual(skippedMisses([skipped(2, 1_500), { ...run("checkin", "stuck_steps", 0, 0, "<=", true, 1_000), after: { at: 2_000, verdict: "met", metrics: {}, summary: "" } }] as never[]), [],
+    "a skip older than the newest measured reading counts for nothing");
+  const dataDir = await mkdtemp(join(tmpdir(), "duty-fleet-"));
+  try {
+    const chat = "chat-skips";
+    await writeFile(join(dataDir, "chats.json"), JSON.stringify({ ids: [chat] }));
+    await mkdir(join(dataDir, "duties"), { recursive: true });
+    await writeFile(join(dataDir, "duties", `${chat}.json`), JSON.stringify({ version: 1, duties: [] }));
+    const store = new DutyStore(dataDir);
+    await store.appendRun(chat, run("checkin", "stuck_steps", 0, 0, "<=", true, 1_000) as never);
+    await store.appendRun(chat, skipped(3, 2_000) as never);
+    await store.appendRun(chat, skipped(2, 3_000) as never);
+    const fleet = await dutyFleet({ dataDir, now: 4_000, sessions: () => [] });
+    const checkin = fleet.duties.find(entry => entry.duty === "checkin")!;
+    assert.deepEqual([checkin.green, checkin.misses, checkin.skipped, checkin.metric?.key, checkin.metric?.value, checkin.metric?.misses, checkin.metric?.moved],
+      [false, 2, true, "stuck_steps", 2, 2, true]);
+    assert.equal(fleet.metrics.stuck_duties, 0, "skipped runs alone never make a duty stuck");
+    assert.equal(missRuns(checkin), "2 skipped runs in a row");
+    assert.equal(missRuns({ misses: 1 }), "1 run");
+  } finally { await rm(dataDir, { recursive: true, force: true }); }
 });
