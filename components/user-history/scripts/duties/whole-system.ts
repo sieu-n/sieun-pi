@@ -57,6 +57,24 @@ export function usableAround(watch: readonly WatchLine[], box: string, from: num
     && reads(watch.find(line => { const at = Date.parse(line.at); return at >= to && at < to + MINUTE; }));
 }
 
+/**
+ * A relay read that failed on the network, with no answer from the box at all. A relay that answered, even with a 500, says the box was up.
+ */
+export const UNREACHED = /^(?:fetch failed|The operation was aborted due to timeout)/;
+
+/**
+ * Whether Tailscale read `box` offline in the watch line just before [from, to) or in the one just after, each within a minute of it. A box
+ * the relay could not reach (UNREACHED) next to such a minute was falling asleep, waking or flapping, so that minute is offline too. On 10-23
+ * Tailscale read the Mac offline 13:53Z to 13:55Z and 13:57Z to 14:22Z, its relay read "fetch failed" at 13:56Z, and d7 counted the minute
+ * unknown; at 14:29Z, between offline stretches, the same read came with 2 handshake timeouts to the Mac and d7 counted the minute dirty. Of the
+ * Mac's 233 unreached reads from 10-01 to 10-23, 8 sat next to an offline read, 5 of them between two.
+ */
+export function offlineAround(watch: readonly WatchLine[], box: string, from: number, to: number): boolean {
+  const offline = (line: WatchLine | undefined): boolean => !!line && !!hostViews(line).find(candidate => candidate.name === box)?.offline;
+  return offline(watch.findLast(line => { const at = Date.parse(line.at); return at < from && at >= from - MINUTE; }))
+    || offline(watch.find(line => { const at = Date.parse(line.at); return at >= to && at < to + MINUTE; }));
+}
+
 /** The boxes of a watch line, the writer first. Since 04:20Z on 10-18 the chat runs on us-metal02 and reads the Mac through its relay. */
 export function hostViews(line: WatchLine): HostView[] {
   const own = checked(line.usable);
@@ -932,7 +950,8 @@ export function measure(input: Inputs): PrecheckOutput {
   // outbox handshake timeouts made every minute a daemon fault while us-metal02 read usable in all of them.
   const offlineMin = new Map<string, number[]>();
   let offlineAny = 0, offlineFaults = 0;
-  let clean = 0, usable = 0, fed = 0, unwatched = 0, unknownMin = 0, held = 0, freeSlot = 0, cellWait = 0, harness = 0, rigMin = 0, busyMin = 0, other = 0, unattributed = 0, daemonFail = 0;
+  const flappedMin: string[] = [];
+  let clean = 0, usable = 0, fed = 0, unwatched = 0, unknownMin = 0, held = 0, freeSlot = 0, cellWait = 0, harness = 0, rigMin = 0, busyMin = 0, other = 0, unattributed = 0, daemonFail = 0, primeMin = 0;
   const faultName = chatNamer(input.chats, input.named, input.listed);
   const slotWaits = (input.slotWaits ?? []).filter(wait => wait.fault.at >= start && wait.fault.at < start + WINDOW_MS);
   const side = sideOf(input.watch);
@@ -952,7 +971,12 @@ export function measure(input: Inputs): PrecheckOutput {
     if (!line) { unwatched++; unknown.push("no watch line"); }
     else for (const view of hostViews(line)) {
       const count = hostCount(view.name);
-      if (view.offline) { count.offline++; offline.add(view.name); offlineMin.set(view.name, [...offlineMin.get(view.name) ?? [], from]); continue; }
+      const flapped = !view.offline && !view.usable && UNREACHED.test(view.error ?? "") && offlineAround(input.watch, view.name, from, to);
+      if (view.offline || flapped) {
+        count.offline++; offline.add(view.name); offlineMin.set(view.name, [...offlineMin.get(view.name) ?? [], from]);
+        if (flapped) flappedMin.push(`${clock(from)} ${view.name}`);
+        continue;
+      }
       if (!view.usable && view.error === UNREAD_AT_STOP && usableAround(input.watch, view.name, from, to)) { count.usable++; continue; }
       if (!view.usable) { count.unknown++; unknown.push(view.error ? `${view.name} unread (${view.error.slice(0, 80)})` : `${view.name} no reading`); continue; }
       const found = unusable(view.usable);
@@ -988,7 +1012,12 @@ export function measure(input: Inputs): PrecheckOutput {
     const minuteFaults = (input.daemonFaults ?? []).filter(fault => fault.at >= from && fault.at < to);
     const faults = minuteFaults.filter(fault => !offline.has(fault.host));
     offlineFaults += minuteFaults.length - faults.length;
-    if (faults.length) { daemonFail++; why.push(`daemon calls failed or ran over ${SLOW_MS / 1000} s for ${faultWords(faults, faultName)}`); }
+    if (faults.length) {
+      daemonFail++;
+      const prime = faults.some(fault => fault.prime);
+      if (prime) primeMin++;
+      why.push(`${prime ? "a Prime fault, a worker crashed: " : ""}daemon calls failed or ran over ${SLOW_MS / 1000} s for ${faultWords(faults, faultName)}`);
+    }
     if (why.length) dirty.push(`${clock(from)} ${why.join(", ")}`);
     else if (unknown.length) { unknownMin++; unknownLines.push(`${clock(from)} ${unknown.join(", ")}`); }
     else clean++;
@@ -1034,6 +1063,7 @@ export function measure(input: Inputs): PrecheckOutput {
     queued_free_slot_min_30: freeSlot,
     cell_wait_min_30: cellWait,
     daemon_fail_min_30: daemonFail,
+    prime_fault_min_30: primeMin,
     slot_wait_timeouts_30: slotWaits.length,
     offline_min_30: offlineAny,
     unwatched_min_30: unwatched,
@@ -1073,7 +1103,7 @@ export function measure(input: Inputs): PrecheckOutput {
     `(${harness} unusable minutes on the harness side, ${other} on the app or owner side, ${unattributed} with no cause read, ${unwatched} with no watch line, and ${rigMin} harness minutes went mostly to job rigs); a start, wake or parked job was held over ` +
     `10 min in ${held}; a turn sat queued while pi-pool had ${FREE_SLOTS} or more slots it could give it, or pi-pool refused a tree for over 10 min while an account took its class, in ${freeSlot}; ` +
     `a tree waited over 10 min for a pi-pool cell at R4's pace, not counted dirty, in ${cellWait}; ` +
-    `an open, status read, send or worker start failed or ran over ${SLOW_MS / 1000} s in ${daemonFail}.` +
+    `an open, status read, send or worker start failed or ran over ${SLOW_MS / 1000} s in ${daemonFail}, ${primeMin} of them with a Prime worker crash.` +
     (offlineMin.size ? ` Tailscale read ${[...offlineMin].map(([name, at]) => `${name} offline in ${at.length}`).join(" and ")}, and ${offlineFaults} daemon calls to a box while it was offline are left out.` : "") });
   if (input.ciCache) {
     metrics.ci_cache_age_s = Math.max(0, Math.round((now - input.ciCache.fetchedAt) / 1000));
@@ -1084,7 +1114,8 @@ export function measure(input: Inputs): PrecheckOutput {
   if (stuckHandoffs.length) flagged.push({ kind: "handoff_stuck", excerpt: `${stuckHandoffs.length} detached-service handoffs stayed open over ${WINDOW_MS / MINUTE} min, ` +
     `though each idle unload sweep resumes them: ${stuckHandoffs.slice(0, 5).map(entry => `${entry.session.slice(0, 8)} ${entry.state} since ${clock(entry.at)}`).join(", ")}. ` +
     "Read ~/.prime/agent/orphan-services/<session>.json and the service log's \"idle unload: <session>\" lines." });
-  if (offlineMin.size) flagged.push({ kind: "offline_minutes", excerpt: [...offlineMin].map(([name, at]) => `${name} offline ${spans(at)}`).join("; ") });
+  if (offlineMin.size) flagged.push({ kind: "offline_minutes", excerpt: [...offlineMin].map(([name, at]) => `${name} offline ${spans(at)}`).join("; ") +
+    (flappedMin.length ? `; ${flappedMin.length} of these the relay could not reach next to a minute Tailscale read offline (${flappedMin.join(", ")})` : "") });
   for (const wait of slotWaits) {
     const fault = wait.fault;
     flagged.push({ kind: "slot_wait_timeout", excerpt: `${clock(fault.at)} ${faultName(fault) ?? `session ${fault.session!.slice(0, 8)}`} on ${fault.host}: ${fault.what}, ` +

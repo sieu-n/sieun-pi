@@ -25,6 +25,8 @@ export interface DaemonFault {
   timedOut?: { call: string; ms: number };
   /** The outbox's id of the message a send carried (`m-<uuid>`), which its "is landed" line names (src/slot-wait-timeouts.ts). */
   message?: string;
+  /** A Prime worker crashed (WORKER_CRASH or BUN_PANIC): a fault inside Prime, which d7 names as its own cause of a dirty minute. */
+  prime?: true;
 }
 
 const STAMPED = /^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z) (.*)$/;
@@ -112,6 +114,12 @@ const REOPENED = /^reopen: [0-9a-f]{8} answered ".*"; opened it again and sent a
  * 16:37Z, 17:09Z), and none counted while the sends that met the dead worker did.
  */
 const WORKER_CRASH = /^\[(\S+Z)\] supervisor: Session worker (\w+) stderr: (unhandled rejection|uncaught exception): (.*)$/;
+/**
+ * A worker that Bun itself crashed: its stderr carries Bun's crash report, whose panic line names the fault. At 13:54:32Z on 10-23 fresh worker
+ * 0fd0ae876b09 segfaulted 5.7 s after it started (`panic(main thread): Segmentation fault at address 0x24459353BD6`, in JSC's property lookup
+ * under an async function), and the create routed to it failed 1.4 s later with "Daemon worker socket closed".
+ */
+const BUN_PANIC = /^\[(\S+Z)\] supervisor: Session worker (\w+) stderr: panic\(([^)]*)\): (.*)$/;
 
 const TIMED_OUT = /Timed out after (\d+)ms waiting for the Prime Agent daemon response to "(\w+)"/;
 const MESSAGE_ID = /\b(m-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/;
@@ -259,7 +267,13 @@ export function readSupervisorFaults(lines: readonly string[], local: string, re
     const crash = WORKER_CRASH.exec(line);
     if (crash) {
       const at = Date.parse(crash[1]!);
-      if (Number.isFinite(at)) faults.push({ at, host: local, what: `Prime worker ${crash[2]} crashed, ${crash[3]}: ${crash[4]!.slice(0, 80)}` });
+      if (Number.isFinite(at)) faults.push({ at, host: local, what: `Prime worker ${crash[2]} crashed, ${crash[3]}: ${crash[4]!.slice(0, 80)}`, prime: true });
+      continue;
+    }
+    const panic = BUN_PANIC.exec(line);
+    if (panic) {
+      const at = Date.parse(panic[1]!);
+      if (Number.isFinite(at)) faults.push({ at, host: local, what: `Prime worker ${panic[2]} crashed in Bun, panic on its ${panic[3]}: ${panic[4]!.slice(0, 80)}`, prime: true });
       continue;
     }
     const found = SUPERVISOR.exec(line);
