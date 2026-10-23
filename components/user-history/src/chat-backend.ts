@@ -266,6 +266,12 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
           await threads.resumeQueue(id).catch(() => {});
         }),
       held: now => readHeldTurns(dataDir, now), artifacts: id => chatDisk(catalog, id),
+      // `reach` is made below with the watch's; the check-in asks it only from its first tick on.
+      hostAway: async name => {
+        const host = catalog.remoteHosts().find(({ host }) => host.name === name)?.host;
+        const read = host ? await reach.reach(name) : null;
+        return host && read && !read.online ? { name, ...host.hostname ? { hostname: host.hostname } : {}, ...read.lastSeen ? { lastSeen: read.lastSeen } : {} } : null;
+      },
       unstarted: async now => unstartedJobs(join(dataDir, BRIEFS_DIR), now, treeWorker),
       settings, claude: claudeReader(), poolAdmits, poolHeldFile: join(dataDir, "pool-held.json"), queue: queued,
       awake: working => awake.update(working), corrections: () => corrections.read(), duty: duties,

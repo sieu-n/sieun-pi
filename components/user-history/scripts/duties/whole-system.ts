@@ -379,12 +379,7 @@ export function readSmoothness(lines: readonly string[], heads: ReadonlySet<stri
   // A park's rank is its tree's priority at each refusal, since a chat moves its jobs between low and normal: 01a1642b, low from
   // 20:04Z on 10-22, read as passed for 427 min by 01a164b6, a normal tree that entered claude19 at 20:13Z, because its last refusal said normal.
   const parks = new Map<string, { start: number; ranks: { at: number; rank: number }[]; manual: boolean }>();
-  const ended: { session: string; start: number; end: number; ranks: { at: number; rank: number }[]; led: boolean }[] = [];
-  // Whether each session's latest turn was a chat head's or an owner's, which pi-pool's turn queue starts before every job run. Such a tree
-  // asks for its account first by design, so it passes no parked job tree: at 13:52Z on 10-23 all 12 parks read as passed for 22 to 29 min
-  // had been passed by 01a1301d and 01a11af8, chat heads, or 01a168dd, an owner turn, while the job trees sat behind 97 runs whose turn
-  // places dated from 09:18Z to 11:05Z.
-  const led = new Map<string, boolean>();
+  const ended: { session: string; start: number; end: number; ranks: { at: number; rank: number }[] }[] = [];
   let anchor: number | undefined;
   for (const line of lines) {
     if (!line.includes('"turn_admitted"') && !line.includes('"turn_queued"') && !line.includes('"turn_dropped"') && !line.includes('"parked"') &&
@@ -402,8 +397,6 @@ export function readSmoothness(lines: readonly string[], heads: ReadonlySet<stri
       continue;
     }
     if (entry.event === "turn_admitted") {
-      const kind = (entry as { kind?: unknown }).kind;
-      led.set(entry.session, head || kind === "owner" || kind === "ahead");
       const local = typeof entry.ts === "string" ? Date.parse(`${entry.ts}Z`) : NaN;
       const at = anchor === undefined || Math.abs(local - anchor) <= Math.abs(local - KST_MS - anchor) ? local : local - KST_MS;
       // Only a run the queue started counts as passing a head: an owner run or a run its owner turn moved ahead never waits in line.
@@ -440,12 +433,12 @@ export function readSmoothness(lines: readonly string[], heads: ReadonlySet<stri
     } else if (entry.event === "unparked") {
       const park = parks.get(entry.session);
       parks.delete(entry.session);
-      if (park && !park.manual && !manual) ended.push({ session: entry.session, start: park.start, end: at, ranks: park.ranks, led: led.get(entry.session) ?? false });
+      if (park && !park.manual && !manual) ended.push({ session: entry.session, start: park.start, end: at, ranks: park.ranks });
     }
   }
   const rankAt = (park: (typeof ended)[number], at: number) => (park.ranks.findLast(step => step.at <= at) ?? park.ranks[0])?.rank ?? 1;
   const overtaken = ended.filter(park => park.end >= from && park.end < to).map(park => {
-    const passed = ended.find(other => !other.led && other.end < park.end && other.end > park.start && other.start > park.start &&
+    const passed = ended.find(other => other.end < park.end && other.end > park.start && other.start > park.start &&
       rankAt(other, other.end) >= rankAt(park, other.end));
     return { session: park.session, minutes: passed ? Math.round((park.end - passed.end) / MINUTE * 10) / 10 : 0 };
   });
@@ -700,11 +693,14 @@ export function liveStuck(value: number, at: number, flagged: readonly FlaggedSl
   return !board || Date.parse(board.updatedAt) <= at ? value : liveStuckIds(at, flagged, board, activity, waking).length;
 }
 
-/** The ids of the steps a check-in snapshot flagged stuck that `liveStuck` still counts: all of them while the snapshot is up to date. */
+/**
+ * The ids of the steps a check-in snapshot flagged stuck that `liveStuck` still counts: all of them while the snapshot is up to date, unless
+ * `always` asks for the open and owner checks on an up-to-date one too, as a step held on a box that is back needs (`planCounts`).
+ */
 export function liveStuckIds(at: number, flagged: readonly FlaggedSlice[] | undefined, board: ChatBoard | null | undefined,
-  activity: ReadonlyMap<string, number>, waking: ReadonlySet<string> = new Set()): string[] {
+  activity: ReadonlyMap<string, number>, waking: ReadonlySet<string> = new Set(), always = false): string[] {
   const items = [...new Set((flagged ?? []).filter(slice => slice.kind === "stuck_steps" && slice.item).map(slice => slice.item!))];
-  if (!board || Date.parse(board.updatedAt) <= at) return items;
+  if (!board || (!always && Date.parse(board.updatedAt) <= at)) return items;
   const open = new Map<string, { sessionId?: string }>();
   walk(board.plan, item => { if (OPEN.has(item.status)) open.set(item.id, item); });
   return items.filter(id => {
@@ -767,7 +763,12 @@ function quietTreeWords(reading: QuietReading, quietWords: number): string {
 }
 const minutes = (ms: number): number => Math.round(ms / MINUTE);
 /** What `planCounts` reads: the chats with their duty runs, their live boards and the owners of their open steps. */
-export type PlanInputs = Pick<Inputs, "now" | "chats" | "boards" | "ownerActivity" | "waking" | "poolWaiting" | "named">;
+export type PlanInputs = Pick<Inputs, "now" | "chats" | "boards" | "ownerActivity" | "waking" | "poolWaiting" | "named"> & {
+  /** The boxes of hosts.json that Tailscale reads offline now (`awayHosts`); absent: every box reads online, so a held step counts by its job again. */
+  away?: ReadonlySet<string>;
+};
+/** An open step a check-in held on an offline box (`host_held`): its chat, id, the box and the For you todo that asks the owner to bring it back. */
+export interface HostHeldStep { chat: PlanInputs["chats"][number]; id: string; host: string; todo: string }
 /** A red duty whose missed windowed counts give no `lastEventAt` (`unreadWindows`): d9 reads them as lagging and asks the chat to add the field. */
 export interface LaggingDuty { chat: string; duty: string; keys: string[]; line: string }
 /** One chat's open steps that nobody moves (`liveStuck`), with the ids of those its check-in flagged. */
@@ -812,7 +813,8 @@ export function owedKeys(missed: readonly string[], runs: readonly DutyRunRecord
  * stuck_duties. They moved there from this duty (d7) on 10-19 (owner msg mvfb7zt0). A red duty whose owed metrics' fix steps all wait on an
  * open For you todo (`dutyHold`) waits on the owner and is no red duty here.
  */
-export function planCounts(input: PlanInputs): { stuck: StuckSteps[]; redDuties: { chat: string; duty: string; line: string }[]; lagging: LaggingDuty[] } {
+export function planCounts(input: PlanInputs): { stuck: StuckSteps[]; redDuties: { chat: string; duty: string; line: string }[]; lagging: LaggingDuty[]; hostHeld: HostHeldStep[] } {
+  const hostHeld: HostHeldStep[] = [];
   // Each chat's newest measured check-in, only while it is under one check-in interval old, read after its job when that job has finished: the
   // check-in job gives an ended job's step a new owner or a close in the same run, so the run's own count is the board before that work. On 10-17
   // VP of CI's 19:36Z run measured 26 and its after-job measure at 20:09Z read 1, and its next run at 20:04Z (skipped behind that job) read 0.
@@ -828,13 +830,20 @@ export function planCounts(input: PlanInputs): { stuck: StuckSteps[]; redDuties:
     // A check-in whose job still works (it has a job and no after-job measure yet) is the live owner of every step it flagged, so none is stuck
     // until that job ends and its after-job count says what it left: at 06:54Z on 10-18 d7 read 27, 26 of them ops guy's Grafana rule steps
     // that its 06:49Z check-in job was giving jobs, and that chat's after-job measure at 06:55Z read 0.
-    if (run?.job && !run.after) return { chat, value: 0, at: run.at, items: [] as string[] };
     const at = run === undefined ? undefined : after ? Math.max(run.at, run.after!.at) : run.at;
     const fresh = at !== undefined && (chat.everyMs === undefined || input.now - at <= chat.everyMs);
-    const read = fresh ? (after ?? run!.metrics.stuck_steps)?.value ?? 0 : 0;
     const board = input.boards?.get(chat.id);
+    // A step the check-in held on an offline box (`host_held`) waits on the owner while the box stays offline, and counts as stuck again once
+    // the box reads online and its owner has not written since the snapshot, as `liveStuckIds` reads a stuck one.
+    const onHost = fresh ? hostHeldSlices(run!.flagged, board) : [];
+    const back = onHost.filter(slice => !input.away?.has(slice.host!)).map(slice => slice.item!);
+    hostHeld.push(...onHost.filter(slice => input.away?.has(slice.host!)).map(slice => ({ chat, id: slice.item!, host: slice.host!, todo: slice.todo ?? "" })));
+    if (run?.job && !run.after) return { chat, value: 0, at: run.at, items: [] as string[] };
+    const read = fresh ? (after ?? run!.metrics.stuck_steps)?.value ?? 0 : 0;
     const value = read > 0 ? liveStuck(read, at!, run!.flagged, board, input.ownerActivity ?? new Map(), input.waking) : 0;
-    return { chat, value, at, items: value > 0 ? liveStuckIds(at!, run!.flagged, board, input.ownerActivity ?? new Map(), input.waking) : [] };
+    const returned = back.length ? liveStuckIds(at!, back.map(item => ({ kind: "stuck_steps", excerpt: "", item })), board, input.ownerActivity ?? new Map(), input.waking, true) : [];
+    return { chat, value: value + returned.length, at,
+      items: [...value > 0 ? liveStuckIds(at!, run!.flagged, board, input.ownerActivity ?? new Map(), input.waking) : [], ...returned] };
   }).filter(entry => entry.value > 0);
   // A fix step's owner asleep on a board.wake or waiting for its pi-pool slot is live: at 16:33Z on 10-18 d7 flagged Vent's check-in while
   // p8's job vent cutover train had ended its last turn on "pi-pool: this session waits for its slot at 2026-10-18T16:45".
@@ -864,7 +873,19 @@ export function planCounts(input: PlanInputs): { stuck: StuckSteps[]; redDuties:
     return [{ chat: chat.id, duty: duty.id, line: `${chat.name}: ${duty.name} read off target in ${missStreak(own) === 1 ? "its last run" : `its last ${missStreak(own)} runs`}, and no open step linked to it ` +
       `(duty field ${links.length ? links.join(" or ") : `${duty.id}/<metricKey>`}) has a live owner now` }];
   }));
-  return { stuck, redDuties, lagging };
+  return { stuck, redDuties, lagging, hostHeld };
+}
+
+/** The `host_held` slices of a check-in snapshot whose step is still open on the live board, each once. */
+export function hostHeldSlices(flagged: readonly FlaggedSlice[] | undefined, board: ChatBoard | null | undefined): FlaggedSlice[] {
+  const open = new Set<string>();
+  walk(board?.plan ?? [], item => { if (OPEN.has(item.status)) open.add(item.id); });
+  const seen = new Set<string>();
+  return (flagged ?? []).filter(slice => {
+    if (slice.kind !== "host_held" || !slice.item || !slice.host || seen.has(slice.item) || (board && !open.has(slice.item))) return false;
+    seen.add(slice.item);
+    return true;
+  });
 }
 
 /** Minute starts, oldest first, as runs of whole minutes: "15:40Z to 16:09Z, 16:12Z". */
@@ -1365,7 +1386,7 @@ const readJson = async (file: string): Promise<unknown> => JSON.parse(await read
  * The chats, live boards and step owners `planCounts` reads, from the chat service's data dir. Only the owner's chats (`ownerChats`): an archived
  * or clean-room test chat stays out of his counts and the job's messages. `names` titles a chat; one it lacks reads as its short id.
  */
-export async function planInputs(dataDir: string, now: number, names: ReadonlyMap<string, string>): Promise<Required<Omit<PlanInputs, "now">> & { now: number; pausedChats: Set<string> }> {
+export async function planInputs(dataDir: string, now: number, names: ReadonlyMap<string, string>): Promise<Required<Omit<PlanInputs, "now" | "away">> & { now: number; pausedChats: Set<string> }> {
   const ids = await ownerChats(dataDir);
   const store = new DutyStore(dataDir);
   const settings = checkInSettings(join(dataDir, "check-in-settings.json"));

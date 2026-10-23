@@ -13,9 +13,10 @@ import { activePause, changeCheckIn, type CheckInActor, type CheckInChange, Chec
 import { checkInDue, childName, childWorking, type JobFact, jobFacts, liveJobs, liveWindowMs, nestedJobs, OPEN, parkedBy, planHasOpenStep, poolWait, walk } from "./checkin-steps.ts";
 import { treeWakes, type Wake } from "./wakes.ts";
 import { withQueuePlaces } from "./chat-turn-queue.ts";
-import { type CheckInMemory, checkInPrecheck, checkInPrecheckText, classCounts, convergenceMisses, endedJobs, endedWithoutReport, finishedJobs, JOB_CLEANUP_EVERY_MS, ROOT_END_EVERY_MS, jobEnd, jobEndText,
+import { type CheckInContext, type CheckInMemory, checkInPrecheck, checkInPrecheckText, classCounts, convergenceMisses, endedJobs, endedWithoutReport, finishedJobs, JOB_CLEANUP_EVERY_MS, ROOT_END_EVERY_MS, jobEnd, jobEndText,
   handBackNote, handBackSteps, handBackText, idleRoots, jobReport, lastJobMessages, leftOpenSteps, noReportNotice, openStepLines, openStepsNotice, reportedRoot, retryDue, waitingJobs } from "./chat-checkin.ts";
 import { jobBase, jobBrief, jobModel, keptCopyNote, replacedJob, resumeBrief, resumedNote, resumeJobName, savedStateNote, sessionBrief, sessionModel, waitText } from "./job-resume.ts";
+import { type AwayHost, hostHolds } from "./shared/host-hold.ts";
 import { heldByTodo, withBoardLinks } from "./shared/todo-hold.ts";
 import { PoolHeldJobs, resumeChatJobs } from "./chat-resume.ts";
 import { readEndsParked, readQuotaPark, withFailedTurns, withHeldTurns } from "./held-turns.ts";
@@ -1698,11 +1699,30 @@ export class Chats {
     const carried = await landCarries(board?.plan ?? [], wakes, train, trainRepo(this.source.home));
     const doneFacts = await this.doneFacts(id, board, rows);
     const read = (chat: string) => (this.source.boardView ?? this.source.board).call(this.source, chat);
+    const hosts = await this.hostHolds(id, rows);
     const precheck = checkInPrecheck(previous, facts, board ? await withBoardLinks(board, id, read) : board, at,
       { self, rows, ...await this.ledger(id), everyMs, doneFacts, ...(duties ? { duties } : {}), jobs, heartbeats, queued, asleep, wakes, carried, ...(train ? { train } : {}), ...(boardError !== undefined ? { boardError } : {}),
+        ...(hosts ? { hosts } : {}),
         paused: await this.ownerPaused(at),
         owner: ownerSaid(this.messages(id) ?? []) });
     return { precheck, output: convergenceMisses(id, precheck.steps, precheck, await this.source.memory.ends(id), everyMs, at) };
+  }
+
+  /**
+   * The chat's box and each offline box its catalog rows run on, with the open For you todo on any of the owner's chats that asks him to bring
+   * it back (`hostHolds`); undefined while every box reads online. sep launch!!'s and Railway Breach's jobs on the sleeping MacBook Pro read
+   * as 41 stuck steps on 10-23 while For you t96 on the AI harness chat asked the owner to wake it.
+   */
+  private async hostHolds(id: string, rows: readonly SessionRow[]): Promise<CheckInContext["hosts"]> {
+    const away = this.source.hostAway;
+    if (!away) return undefined;
+    const names = [...new Set(rows.flatMap(row => row.host ? [row.host] : []))];
+    const offline = (await Promise.all(names.map(name => away(name).catch(() => null)))).filter((host): host is AwayHost => host !== null);
+    if (!offline.length) return undefined;
+    const read = (chat: string) => (this.source.boardView ?? this.source.board).call(this.source, chat).catch(() => null);
+    const todos = (await Promise.all([...this.chatIds].map(async chat => ((await read(chat))?.todos ?? []).map(todo => ({ chat, todo }))))).flat();
+    const chatHost = rows.find(row => row.id === id)?.host;
+    return { ...chatHost ? { chatHost } : {}, held: hostHolds(offline, todos) };
   }
 
   /** What a check-in reads: the board (or why it cannot be read), the catalog rows, the chat's name, and its jobs with their last messages. */

@@ -21,7 +21,7 @@ import { CHECK_IN_MS, clockTime, localTime } from "./checkin-settings.ts";
 import { turnErrorCause } from "./turn-error.ts";
 import { agentMessageHead } from "./no-report.ts";
 import { heldByTodo } from "./shared/todo-hold.ts";
-import { endState, endStateKpi, endStateLine, type EndStateView, OK_STATES, stepCarriers, stuckLine } from "./checkin-end-state.ts";
+import { endState, endStateKpi, endStateLine, type EndStateView, type Movers, OK_STATES, stepCarriers, stuckLine } from "./checkin-end-state.ts";
 import { goalDueLine, goalGap, type GoalMemo, goalLine, goalPromptLine, type GoalPush, goalPushes, goalsDetail, goalsHeadline, pushNeeded, threadPaused } from "./checkin-goals.ts";
 import { type JobMemo, type JobPush, jobPushes } from "./checkin-jobs.ts";
 import type { Wake } from "./wakes.ts";
@@ -88,7 +88,9 @@ export interface CheckInContext { self?: readonly string[];
   /** What the owner wrote in the chat (`ownerSaid`), for when he last ruled on a review (`readyReviews`); none when not given. */
   owner?: readonly OwnerMessage[];
   /** The duty metric verdicts and PR states that say an item is done (`looksDone`) and that a merge moved work (`noProgress`). Not given: nothing looks done. */
-  doneFacts?: DoneFacts }
+  doneFacts?: DoneFacts;
+  /** The chat's box and the offline boxes an open For you todo asks the owner to bring back (`hostHeld`). Not given: no step is held on a box. */
+  hosts?: Movers["hosts"] }
 
 /** What one check-in precheck found: the memory to keep, every open leaf step with its class, the steps on another thread's work, the open items that look done, and other facts. */
 export interface CheckInPrecheck {
@@ -161,7 +163,7 @@ export function checkInPrecheck(previous: CheckInMemory | undefined, facts: read
   // two lines with two different asks (34 steps from 10-13 09:15 to 23:59 KST, VP of CI's nine waits on the secrets cache at 14:29 among them).
   const onOthers = new Set(blocked.map(block => block.view.item.id));
   const movers = { watches: wakeWatches(context.wakes ?? [], context.train, context.carried), queued,
-    steps: stepCarriers(board, goaled) };
+    steps: stepCarriers(board, goaled), ...context.hosts ? { hosts: context.hosts } : {} };
   const working = new Set<string>();
   walk(board?.plan ?? [], item => { if (OPEN.has(item.status) && ownerOf(item, facts)?.state === "working") working.add(item.id); });
   const doneFacts = { ...context.doneFacts ?? NO_FACTS, working };
@@ -280,9 +282,11 @@ export function checkInPrecheckText(precheck: CheckInPrecheck, facts: readonly J
   /** A stale step is listed once, under Stale steps. */
   const staleIds = new Set(stale.map(slice => slice.item));
   const doneIds = new Set(precheck.done.map(found => found.item.id));
+  const onHost = flagged.filter(slice => slice.kind === "host_held");
+  const hostIds = new Set(onHost.map(slice => slice.item));
   const act = precheck.steps.flatMap(view => {
     /** An orphan that looks done needs a check and a close, not a new job: it is listed under Look done only. */
-    const line = staleIds.has(view.item.id) || (view.cls === "orphan" && doneIds.has(view.item.id)) ? null : classLine(view, now);
+    const line = staleIds.has(view.item.id) || hostIds.has(view.item.id) || (view.cls === "orphan" && doneIds.has(view.item.id)) ? null : classLine(view, now);
     return line ? [view.target ? `${line} (the thread to chase: ${clip(view.target.name, 40)}, thread:${view.target.id})` : line] : [];
   });
   const ended = flagged.filter(slice => slice.kind === "job_end_unrecorded" || slice.kind === "job_end_silent").map(slice => slice.excerpt);
@@ -313,6 +317,7 @@ export function checkInPrecheckText(precheck: CheckInPrecheck, facts: readonly J
     ...section("Stuck steps (the owner's end state: every open step is moved by a live owner now, held by an open For you todo that links it, or " +
       "parked by his correction. Each step below ends this run with a live owner, a For you todo or a close; a chase, a new wait text or a later " +
       "waitUntil leaves it stuck)", stuck),
+    ...section("Held on an offline box (no action here: each job's box is off, and the owner's For you todo asks him to bring it back)", onHost.map(slice => slice.excerpt)),
     ...section(REPEAT_HEAD, repeatLines(streaks, flagged)),
     ...section("Merged without the owner's go (a repo rule breach: report each to the owner in this run; never merge without his go on that PR)", merged),
     ...section("Hard gates broken (the owner's go, the requirements check): fix each now", gated),
@@ -442,9 +447,13 @@ export function convergenceMisses(chat: string, steps: readonly StepView[], { sc
   const flagged: FlaggedSlice[] = [];
   const flag = (kind: keyof ConvergenceMisses, item: string, excerpt: string) => { misses[kind]++; flagged.push({ chat, at: now, kind, excerpt, item }); };
   const counted = new Set([...done.map(found => found.item.id), ...over.map(met => met.view.item.id)]);
-  const staleById = new Map(stale.filter(entry => !counted.has(entry.item.id)).map(entry => [entry.item.id, entry]));
+  // A step held on an offline box gets only its host_held line: no job of the chat can be started, steered or read there until the owner
+  // brings the box back, so "start a job" or "read the job's last report" on it asks for what nobody can do (sep launch!! 10-23 10:12Z on).
+  const onHost = new Set(end.filter(entry => entry.state === "host").map(entry => entry.view.item.id));
+  const staleById = new Map(stale.filter(entry => !counted.has(entry.item.id) && !onHost.has(entry.item.id)).map(entry => [entry.item.id, entry]));
   for (const view of steps) {
     const id = view.item.id;
+    if (onHost.has(id)) continue;
     const line = classLine(view, now) ?? `${id} ${view.cls}`;
     // An item that looks done or whose wait is over gets that finding's "close it" or "act on it"; "start a job" on it too was a second, wrong ask
     // (AI harness 10-13 23:07 KST: p1 had every step closed and read both finished_open and orphan_steps).
@@ -507,6 +516,11 @@ export function convergenceMisses(chat: string, steps: readonly StepView[], { sc
   for (const step of risks) flag("plan_risks", step.id, riskStepsLine([step]));
   for (const found of metOpen.filter(found => !counted.has(found.item.id) && !folded.has(found.item.id))) flag("met_open", found.item.id, metOpenLine(found));
   for (const entry of end) if (!OK_STATES.has(entry.state)) flag("stuck_steps", entry.view.item.id, stuckLine(entry, now));
+  for (const entry of end) {
+    if (!entry.hold) continue;
+    flagged.push({ chat, at: now, kind: "host_held", item: entry.view.item.id, host: entry.hold.host, todo: entry.hold.todo,
+      excerpt: `${entry.view.item.id} ${quote(entry.view.item.text)} waits on the owner: ${entry.reason}. It counts as stuck again once the box is back and its job does not move` });
+  }
   return { metrics: misses, flagged };
 }
 

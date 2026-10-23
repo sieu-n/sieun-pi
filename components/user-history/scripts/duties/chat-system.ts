@@ -19,7 +19,9 @@ import { CHANGE_APPROACH_MISSES, fixStepStreak, metricStreaks } from "../../src/
 import { hasDoneLine, upkeepWords } from "../../src/shared/upkeep-title.ts";
 import { stalledSince } from "../../src/shared/stalled-calls.ts";
 import { daemonSessions, dutyFleet, type FleetDuty } from "./duty-fleet.ts";
-import { catalogCopies, endsOnPoolWait, planCounts, planInputs, POOL_TAIL_BYTES, stepSessions } from "./whole-system.ts";
+import { catalogCopies, endsOnPoolWait, type HostHeldStep, planCounts, planInputs, POOL_TAIL_BYTES, stepSessions } from "./whole-system.ts";
+import { loadHosts, selfHost } from "../../src/hosts.ts";
+import { peerReach, readTailscaleStatus } from "../../src/host-reach.ts";
 
 /**
  * The precheck of the AI harness chat's Chat system duty (d9). The owner on 10-19 (msg mvfb7zt0): "plan should be tasks all eventually clear -
@@ -191,6 +193,8 @@ export function jobsByChat(rows: readonly CatalogRow[], boards: ReadonlyMap<stri
 export interface OwnerReads {
   now: number; named: ReadonlyMap<string, readonly string[]>; jobs: readonly CatalogRow[];
   activity: ReadonlyMap<string, number>; waking: ReadonlySet<string>; poolWaiting: ReadonlySet<string>;
+  /** The chat's steps its check-in held on an offline box that the owner is asked to bring back (`HostHeldStep`); absent: none. */
+  onHost?: ReadonlySet<string>;
 }
 
 /**
@@ -215,7 +219,7 @@ export function goalsWithNoJob(board: ChatBoard | null, reads: OwnerReads): Plan
       (rowWorks(row, reads.now) || fresh(ms(row.lastActivityAt))));
   };
   const held = (item: PlanItem): boolean => {
-    if (asked.has(item.id) || heldByTodo(item, todos) || parkedBy(item) !== undefined) return true;
+    if (asked.has(item.id) || heldByTodo(item, todos) || parkedBy(item) !== undefined || reads.onHost?.has(item.id)) return true;
     const open = item.children.filter(child => OPEN.has(child.status));
     return open.length > 0 && open.every(held);
   };
@@ -329,6 +333,8 @@ export interface ChatSystemFacts {
   upkeep: readonly PlanFlag[];
   fleet: { pct: number; red: readonly RedDuty[] };
   stuckDuties: readonly { chat: string; line: string }[];
+  /** The open steps held on an offline box that a For you todo asks the owner to bring back (`HostHeldStep`), by chat id; absent: none. */
+  hostHeld?: readonly { chat: string; id: string; host: string; todo: string }[];
   /** Per chat, the open goals with no live job (`goalsWithNoJob`) the run's job pushes it on, beside its stuck duties. */
   idleGoals: readonly { chat: string; goals: readonly PlanItem[] }[];
   /** The pushes the last run's job sent, as they went. */
@@ -352,6 +358,12 @@ export function chatSystemOutput(facts: ChatSystemFacts): PrecheckOutput {
   for (const entry of spread(facts.stuck, EXAMPLES)) {
     flagged.push({ kind: "stuck_steps", chat: entry.chat, ...entry.id ? { item: entry.id } : {},
       excerpt: entry.id ? `${name(entry.chat)}: ${entry.id} ${quote(entry.text ?? "")} is open and nobody moves it.` : `${name(entry.chat)}: ${entry.count} open steps nobody moves.` });
+  }
+  for (const group of hostGroups(facts.hostHeld ?? [])) {
+    flagged.push({ kind: "host_held", excerpt: `${group.title}: ${group.steps.length === 1 ? "its job runs" : "their jobs run"} on ${group.host}, which Tailscale reads ` +
+      `offline, and For you ${group.todo} asks the owner to bring it back, so ${group.steps.length === 1 ? "it waits" : "they wait"} on his answer and push nothing; ` +
+      `${group.steps.length === 1 ? "it counts" : "they count"} as stuck again once the box answers and ${group.steps.length === 1 ? "its job does" : "their jobs do"} not move. ` +
+      `Every one is in ${facts.detail}.` });
   }
   head("plan_upkeep", facts.upkeep.length, "open plan items that are upkeep or have no done line", chats(facts.upkeep));
   for (const item of spread(facts.upkeep, EXAMPLES)) flagged.push({ kind: "plan_upkeep", chat: item.chat, item: item.id, excerpt: `${name(item.chat)}: ${item.id} ${quote(item.text)} ${item.why}.` });
@@ -401,6 +413,26 @@ export function pushList(facts: Pick<ChatSystemFacts, "idleGoals" | "stuckDuties
 /** Where each push d9 sends is recorded, one JSON line per message, for the next run to check. */
 const PUSHES_FILE = join(homedir(), "work/plan-audit/pushes.jsonl");
 
+/** The held steps grouped by box and todo, with the detail section's title: "41 steps wait on mac, For you t96". */
+export function hostGroups<T extends { host: string; todo: string }>(steps: readonly T[]): { host: string; todo: string; title: string; steps: T[] }[] {
+  const groups = new Map<string, { host: string; todo: string; steps: T[] }>();
+  for (const step of steps) {
+    const key = `${step.host}\n${step.todo}`;
+    (groups.get(key) ?? groups.set(key, { host: step.host, todo: step.todo, steps: [] }).get(key)!).steps.push(step);
+  }
+  return [...groups.values()].map(group => ({ ...group, title: `${group.steps.length} ${group.steps.length === 1 ? "step waits" : "steps wait"} on ${group.host}, For you ${group.todo}` }));
+}
+
+/** The boxes of hosts.json other than this one that Tailscale reads offline now (`peerReach`); none when hosts.json or Tailscale does not read. */
+async function awayHosts(): Promise<Set<string>> {
+  try {
+    const registry = await loadHosts();
+    const status = await readTailscaleStatus();
+    const self = selfHost(registry)?.name;
+    return new Set(status ? registry.hosts.filter(host => host.name !== self && !peerReach(status, host.address).online).map(host => host.name) : []);
+  } catch { return new Set(); }
+}
+
 /** What a push asks of a chat, after the list of its items. */
 const PUSH_ASK = "Give each goal a live job this turn, each red duty a fix job on a step linked to it, each red duty whose live fix does not move its number a " +
   "root-cause job that replaces that fix, each duty that reads as a lagging window lastEventAt in its precheck, and each listed plan item a \"Done when\" " +
@@ -449,7 +481,7 @@ async function main(): Promise<void> {
   const plan = await planInputs(dataDir, now, names);
   const rows = copies.flatMap(text => { try { const value = JSON.parse(text) as { rows?: CatalogRow[] }; return value.rows ?? []; } catch { return []; } });
   const jobs = jobsByChat(rows, plan.boards);
-  const owned = planCounts({ ...plan, ...withCatalogOwners(plan, jobs, now) });
+  const owned = planCounts({ ...plan, ...withCatalogOwners(plan, jobs, now), away: await awayHosts() });
   const runsByChat = new Map(plan.chats.map(chat => [chat.id, chat.runs]));
   const poolCut = await poolCutJobs(owned.redDuties, runsByChat, id => listedSessions(copies, [id]).get(id)?.file);
   const counts = { ...owned, redDuties: withoutWorkingRuns(owned.redDuties, runsByChat, rows, now, poolCut, await poolTrees()) };
@@ -458,6 +490,7 @@ async function main(): Promise<void> {
     walk(plan.boards.get(chat)?.plan ?? [], item => { if (item.id === id) found = item.text; });
     return found;
   };
+  const hostHeld = owned.hostHeld.map((step: HostHeldStep) => ({ chat: step.chat.id, id: step.id, host: step.host, todo: step.todo, text: text(step.chat.id, step.id) ?? "" }));
   const stuck = counts.stuck.flatMap((entry): ChatSystemFacts["stuck"] => entry.items.length
     ? entry.items.map(id => ({ chat: entry.chat.id, id, text: text(entry.chat.id, id) ?? "" }))
     : [{ chat: entry.chat.id, count: entry.value }]);
@@ -471,7 +504,8 @@ async function main(): Promise<void> {
     return { ...duty, ...under, ...since === undefined ? {} : { agingSince: since } };
   });
   const idleGoals = plan.chats.filter(chat => !plan.pausedChats.has(chat.id)).map(chat => ({ chat: chat.id, goals: goalsWithNoJob(plan.boards.get(chat.id) ?? null,
-    { now, named: plan.named.get(chat.id) ?? new Map(), jobs: jobs.get(chat.id) ?? [], activity: plan.ownerActivity, waking: plan.waking, poolWaiting: plan.poolWaiting }) }));
+    { now, named: plan.named.get(chat.id) ?? new Map(), jobs: jobs.get(chat.id) ?? [], activity: plan.ownerActivity, waking: plan.waking, poolWaiting: plan.poolWaiting,
+      onHost: new Set(hostHeld.filter(step => step.chat === chat.id).map(step => step.id)) }) }));
   // The pushes the last run's job sent: those recorded after the last run of this duty began (LAST_RUNS_FILE, newest first).
   const lastRuns = JSON.parse(await readFile(process.env.LAST_RUNS_FILE ?? "", "utf8").catch(() => "[]")) as DutyRunRecord[];
   const since = lastRuns.find(run => run.verdict !== "skipped")?.at;
@@ -484,7 +518,7 @@ async function main(): Promise<void> {
     const reached = file ? pushReached(await tail(file.file, TRANSCRIPT_TAIL_BYTES), push.tag) : { delivered: false, read: false };
     followUps.push({ push, ...reached, jobStarted: (jobs.get(push.chat) ?? []).some(row => ms(row.created) > push.at) });
   }
-  const result = chatSystemOutput({ names, stuck, upkeep, fleet: { pct: fleet.metrics.duties_green_pct, red }, stuckDuties: counts.redDuties, idleGoals, followUps, detail });
+  const result = chatSystemOutput({ names, stuck, upkeep, fleet: { pct: fleet.metrics.duties_green_pct, red }, stuckDuties: counts.redDuties, idleGoals, followUps, detail, hostHeld });
   const fleetMissing = fleet.flagged.filter(slice => slice.kind === "fleet_data_missing");
   result.flagged!.push(...fleetMissing);
   const tag = `[d9 push ${new Date(now).toISOString().slice(0, 16)}Z]`;
@@ -524,6 +558,8 @@ async function main(): Promise<void> {
       `${check.delivered ? "delivered" : "not delivered"}, ${check.read ? "read" : "not read"}, ${check.jobStarted ? "a job started since" : "no job started since"}.`)),
     section(`Open steps nobody moves (${result.metrics.stuck_steps_all})`, stuck.map(entry => entry.id
       ? `${name(entry.chat)}: ${entry.id} ${quote(entry.text ?? "")}.` : `${name(entry.chat)}: ${entry.count} open steps nobody moves, with no ids in its check-in.`)),
+    ...hostGroups(hostHeld).map(group => section(group.title, group.steps.map(step => `${name(step.chat)}: ${step.id} ${quote(step.text)}.`))),
+    ...hostHeld.length ? [] : [section("Steps that wait on an offline box (0)", [])],
     section(`Open plan items that are upkeep or have no done line (${upkeep.length})`, upkeep.map(item => `${name(item.chat)}: ${item.id} ${quote(item.text)} ${item.why}.`)),
     section(`Red duties (${red.length}, ${fleet.metrics.duties_green_pct}% green)`, red.map(duty => `${name(duty.chat)}: ${duty.name} (${duty.duty}), ` +
       `${duty.metric ? `${duty.metric.key} ${show(duty.metric.value)} against ${duty.metric.op} ${show(duty.metric.target)}, ` : ""}${missRuns(duty)}` +

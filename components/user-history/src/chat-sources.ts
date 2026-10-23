@@ -15,6 +15,7 @@ import type { JobModel, JobResumes } from "./job-resume.ts";
 import type { PrimeUpdate } from "./prime-update.ts";
 import type { InterruptedReport, JobOf } from "./shared/interrupted.ts";
 import type { Wake } from "./wakes.ts";
+import type { AwayHost } from "./shared/host-hold.ts";
 import type { StalledCall } from "./shared/stalled-calls.ts";
 import type { ArtifactDisk } from "./checkin-load.ts";
 import type { JobCancelRecord } from "./job-cancels.ts";
@@ -379,6 +380,11 @@ export interface CheckInSource {
   updating?: () => Promise<PrimeUpdate | null>;
   /** The board.wakes the service still owes at a time (`pendingWakes`); the check-in counts a job asleep on one as working. Absent: none. */
   wakes?: (now: number) => Promise<readonly Wake[]>;
+  /**
+   * The box of hosts.json named `host` when Tailscale reads it offline (src/host-reach.ts), else null; the check-in holds the steps of jobs
+   * there on an open For you todo that asks the owner to bring it back (`hostHolds`). Absent: no box reads offline.
+   */
+  hostAway?: (host: string) => Promise<AwayHost | null>;
   /** The sessions in one tool call past STALL_MS at a time (`stalledCalls`); the check-in counts a job stalled in one as not working. Absent: none. */
   stalls?: (now: number) => ReadonlyMap<string, StalledCall>;
   /**

@@ -1,4 +1,5 @@
 import { OWNER_WAIT } from "./shared/chat-board.ts";
+import { type HostHold, holdWords } from "./shared/host-hold.ts";
 import { heldByTodo } from "./shared/todo-hold.ts";
 import type { OwnerTodo, PlanItem, SessionRow } from "./shared/types.ts";
 import { landWaitCommits, type WakeWatch } from "./checkin-load.ts";
@@ -19,8 +20,8 @@ import { ago, capacityWait, clip, firstClause, type JobFact, ownerLabel, poolWai
  * land, promote or release, and most of the rest on a CI run whose job had gone idle. The step classes (`stepClass`) counted most of them as
  * `waiting`, which broke no check-in target, so 159 of 298 check-ins that met every target in 48 h still had stuck steps.
  */
-export type EndState = "moving" | "foryou" | "parked" | "owner_no_todo" | "release" | "ci" | "thread" | "event" | "time" | "job_ended" | "stalled_call" | "no_owner";
-export const OK_STATES: ReadonlySet<EndState> = new Set(["moving", "foryou", "parked"]);
+export type EndState = "moving" | "foryou" | "parked" | "host" | "owner_no_todo" | "release" | "ci" | "thread" | "event" | "time" | "job_ended" | "stalled_call" | "no_owner";
+export const OK_STATES: ReadonlySet<EndState> = new Set(["moving", "foryou", "parked", "host"]);
 export const STUCK_STATES: readonly EndState[] = ["owner_no_todo", "release", "ci", "thread", "event", "time", "job_ended", "stalled_call", "no_owner"];
 
 const RELEASE = /\b(?:land|lands|landed|promote|release|released|deploys?|redeploys?|cut|train|fable|slot|cas)\b/i;
@@ -57,15 +58,18 @@ const carriedText = ({ id, owners }: { id: string; owners: readonly JobFact[] })
   `its wait is on ${id}, which ${owners.length === 1 ? `${ownerLabel(owners[0]!)} carries` : `${owners.length} live jobs carry`}`;
 
 /** One open leaf step in the end state or stuck, with why. */
-export interface EndStateView { view: StepView; state: EndState; reason: string }
+export interface EndStateView { view: StepView; state: EndState; reason: string;
+  /** The offline box a `host` step's job runs on, with the todo that asks the owner to bring it back. */
+  hold?: HostHold }
 
 /**
  * The end state of one open leaf step, rules in order. A parked step (an owner correction in force), a step whose owner is a working job or a
  * working thread, and a step whose wait names a working job of this chat (`waitCarrier`, from `facts`) are fine; a step the chat owns is moving when it changed within STEP_STALE_MS and waits on nothing. Next an explicit For you
- * link (`heldByTodo`). Every other step is stuck, by what it waits on: the owner with no todo, a release, a CI run, another thread, an event,
+ * link (`heldByTodo`), then a job on a box that reads offline while an open For you todo asks the owner to bring it back (`hostHeld`). Every
+ * other step is stuck, by what it waits on: the owner with no todo, a release, a CI run, another thread, an event,
  * a time; else its job ended or is gone, else it has no owner.
  */
-export function endState(view: StepView, todos: Parameters<typeof heldByTodo>[1], rows: readonly Pick<SessionRow, "id" | "name" | "archived">[],
+export function endState(view: StepView, todos: Parameters<typeof heldByTodo>[1], rows: readonly (Pick<SessionRow, "id" | "name" | "archived"> & Partial<Pick<SessionRow, "host">>)[],
   self: ReadonlySet<string>, now: number, facts: readonly JobFact[] = [], movers: Movers = {}): EndStateView {
   const { item, owner, mine, cls } = view;
   const out = (state: EndState, reason: string): EndStateView => ({ view, state, reason });
@@ -84,6 +88,8 @@ export function endState(view: StepView, todos: Parameters<typeof heldByTodo>[1]
   if (mover) return out("moving", mover);
   if (mine && !wait && !item.waitUntil && now - view.changedAt < STEP_STALE_MS) return out("moving", "the chat changed it within 2 h");
   if (heldByTodo(item, todos)) return out("foryou", "an open For you todo links it");
+  const hold = hostHeld(view, rows, movers.hosts);
+  if (hold) return { ...out("host", `${owner ? ownerLabel(owner) : `its job ${item.job}`} runs on ${holdWords(hold)}`), hold };
   if (wait ? OWNER_WAIT.test(firstClause(wait)) : waitsOnOwner(item)) return out("owner_no_todo", "waits on the owner and no open For you todo links it");
   const thread = owner?.key.startsWith("thread:") === true;
   if (wait || item.waitUntil || thread) {
@@ -95,6 +101,17 @@ export function endState(view: StepView, todos: Parameters<typeof heldByTodo>[1]
   if (owner) return out("job_ended", `${ownerLabel(owner)} ${owner.cancelled ? "was cancelled" : owner.state === "failed" ? "failed" : "ended"} and the step is open`);
   if (item.job && !mine) return out("job_ended", `its job ${item.job} is gone`);
   return out("no_owner", mine ? `the chat owns it and it has not moved for ${ago(now - view.changedAt)}` : "no job, todo or wait");
+}
+
+/**
+ * The hold on a step whose job runs on a box that reads offline while an open For you todo asks the owner to bring it back (`hostHolds`): a
+ * thread owner runs on its catalog row's box, and the chat's own jobs, named or gone, on the chat's box. A step with no job is not held.
+ */
+export function hostHeld(view: Pick<StepView, "item" | "owner">, rows: readonly Pick<SessionRow, "id" | "host">[], hosts: Movers["hosts"]): HostHold | undefined {
+  if (!hosts?.held.size || (!view.owner && !view.item.job)) return undefined;
+  const thread = view.owner?.key.startsWith("thread:") ? view.owner.key.slice("thread:".length) : undefined;
+  const host = thread !== undefined ? rows.find(row => row.id === thread)?.host : hosts.chatHost;
+  return host === undefined ? undefined : hosts.held.get(host);
 }
 
 /** "land 37", "promote 11", "train 12b", "run 38790378691": the work a wait names by number, lower case. */
@@ -142,7 +159,9 @@ export function wakeMover(item: Pick<PlanItem, "waitFor" | "sessionId" | "job" |
  */
 export interface Movers { watches?: ReadonlyMap<string, WakeWatch>; queued?: ReadonlyMap<string, unknown>;
   /** The live owners that carry each plan item (`stepCarriers`), for a step whose wait names another step (`stepCarrier`). Absent: none. */
-  steps?: ReadonlyMap<string, readonly JobFact[]> }
+  steps?: ReadonlyMap<string, readonly JobFact[]>;
+  /** The box the chat runs on (absent: this box) and each offline box an open For you todo asks the owner to bring back (`hostHolds`). Absent: none. */
+  hosts?: { chatHost?: string; held: ReadonlyMap<string, HostHold> } }
 
 /**
  * Who moves a step that no working job of this chat holds: a session asleep on a board.wake (`wakeMover`), or a turn that waits for a working
@@ -180,12 +199,13 @@ export function endStateKpi(states: readonly Pick<EndStateView, "state">[]): End
 /** "End state: 77 of 179 open steps (43%) are moving, in For you or parked; 102 stuck (release 84, ci 10, ...)." */
 export function endStateLine(kpi: EndStateKpi): string {
   const split = STUCK_STATES.filter(state => kpi.byState[state]).map(state => `${state} ${kpi.byState[state]}`).join(", ");
-  return `End state: ${kpi.ok} of ${kpi.open} open steps (${kpi.pct}%) are moving, in For you or parked; ${kpi.stuck} stuck${split ? ` (${split})` : ""}.`;
+  const onHost = kpi.byState.host ? `, ${kpi.byState.host} of them on a box the owner is asked to bring back` : "";
+  return `End state: ${kpi.ok} of ${kpi.open} open steps (${kpi.pct}%) are moving, in For you or parked${onHost}; ${kpi.stuck} stuck${split ? ` (${split})` : ""}.`;
 }
 
 /** What a stuck step needs, by its state: a live owner now, a For you todo when only the owner can unblock it, or a close. */
 const NEXT: Record<EndState, string> = {
-  moving: "", foryou: "", parked: "",
+  moving: "", foryou: "", parked: "", host: "",
   owner_no_todo: "add the For you todo with the choice and links, or do it yourself if you can",
   release: "give it a live owner that drives the land (a job that watches the run and does the next step), or close it if this chat's part shipped",
   ci: "give it a live owner that watches the run and fixes a red one, or check the run now and do the next step",
