@@ -1,5 +1,5 @@
 import { readdir, readFile, stat, writeFile } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { readdirSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { pathToFileURL } from "node:url";
@@ -1405,16 +1405,17 @@ async function main(): Promise<void> {
   const marks = await readSessionMarks(deliveryCandidates(allFaults), short => listed.get(short)?.file, box, now);
   const { faults: daemonFaults, slotWaits } = splitSlotWaits(allFaults, outboxLandings(serviceLines), fault => marks.get(fault.session!.slice(0, 8)));
   const poolLines = await tailLines(POOL_LOG, POOL_LOG_TAIL_BYTES);
-  const archived = (await readJson(join(dataDir, "archived-chats.json")) ?? {}) as { ids?: unknown };
-  const archivedChats = Array.isArray(archived.ids) ? archived.ids.filter((id): id is string => typeof id === "string") : [];
+  const turns = (await readJson(join(dirname(POOL_LOG), "turns.json")) ?? {}) as { lead?: unknown };
+  const poolLead = Array.isArray(turns.lead) ? turns.lead.filter((id): id is string => typeof id === "string") : [];
   const result = measure({
     ...plan,
     watch, day, quietMs,
     log: readServiceLog(serviceLines),
     pool: readPoolLog(poolLines, now),
-    // A chat the owner archived inside the window led pi-pool's queue until then: at 03:31:09Z on 10-23 "three things 3" (01a1664f), archived
-    // before the 03:47Z run, started ahead of 01a1164b and read as a job run that passed a head.
-    smooth: readSmoothness(poolLines, new Set([...live, ...archivedChats]), now - WINDOW_MS, now),
+    // The heads are the sessions pi-pool leads, as its turns.json lists them, beside the owner's chats. At 03:31:09Z on 10-23 "three things 3"
+    // (01a1664f), a lead the owner chat list did not name, started ahead of 01a1164b and read as a job run that passed a head. An archived chat
+    // still runs jobs but leads nothing: counting archived chats as heads read 01a14210's 2,330 s wait as a head held at the 10:21Z run.
+    smooth: readSmoothness(poolLines, new Set([...live, ...poolLead]), now - WINDOW_MS, now),
     daemonFaults,
     workerMisses: workerPolls,
     queueOverruns,
