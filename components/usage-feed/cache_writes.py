@@ -80,6 +80,15 @@ def session_calls(lines: Iterable[str], box: str, since: float, until: float, ro
         if kind in BREAKS:
             between.append(kind)
             continue
+        if kind in ("custom", "custom_message"):
+            name = str(entry.get("customType"))
+            if name == "harness_digest":
+                name += " (update)" if (entry.get("details") or {}).get("stacked") is True else " (full)"
+            between.append(f"{kind}: {name}")
+            continue
+        if kind in ("session_state", "model_change", "thinking_level_change", "service_tier_change"):
+            between.append(kind)
+            continue
         message = entry.get("message") if kind == "message" else None
         if not isinstance(message, dict) or message.get("role") != "assistant" or not isinstance(message.get("usage"), dict):
             continue
@@ -145,13 +154,13 @@ def classify(call: dict, moves: Dict[str, List[tuple]], ttl_s: float = TTL_S) ->
     if lost < 1024:
         return "growth", 0
     gap = call["at"] - previous["at"]
+    if gap >= ttl_s:
+        failed = sorted(item[len("error: "):] for item in call["between"] if item.startswith("error: "))
+        return (f"idle over TTL after a failed call ({', '.join(failed)})" if failed else "idle over TTL"), lost
     keys = {call.get("session") or "", call.get("root") or ""}
     moved = [why for key in keys for at, why in moves.get(key, []) if previous["at"] - 1 <= at <= call["at"] + 1]
     if moved:
         return f"account switch ({moved[-1]})", lost
-    if gap >= ttl_s:
-        failed = sorted(item[len("error: "):] for item in call["between"] if item.startswith("error: "))
-        return (f"idle over TTL after a failed call ({', '.join(failed)})" if failed else "idle over TTL"), lost
     if "compaction" in call["between"] or "branch_summary" in call["between"]:
         return "compaction", lost
     if previous["model"] != call["model"] or "model_change" in call["between"]:
