@@ -273,6 +273,9 @@ export const CHAT_ARCHIVED = "the owner archived its chat after its last message
 
 const isGone = (result: InterruptedHead["result"]): boolean => typeof result === "object" && "error" in result && result.error.includes("Unknown active session");
 
+/** What a pass answered for a held run: its cut, its pool time and why the pool holds it. */
+const answerOf = (run: PoolHeldRun): string => `${run.errored_at ?? ""}|${run.pool_at ?? ""}|${run.held_by}`;
+
 /** The session ids a past serve's `PoolHeldJobs` wrote to `file`; none when it is missing or unreadable. */
 function heldSessionsIn(file: string): string[] {
   try {
@@ -291,6 +294,15 @@ function heldSessionsIn(file: string): string[] {
 export class PoolHeldJobs {
   private runs: readonly PoolHeldRun[] = [];
   private held: ReadonlySet<string>;
+  /** The answers `admitted` released for a pass since the last `set`, by session (`answerOf`). */
+  private released = new Map<string, string>();
+  /**
+   * The held answers a pass started by `admitted` gave back unchanged, by session. Such a run starts no pass of its own until its answer
+   * changes; the sweep's own pass every JOB_CLEANUP_EVERY_MS still reads it. On 10-23 from 01:01Z, census writer lag's tree (01a165b1) was held
+   * with no pool time on "the token hook gave no anthropic token (exit 1)" while `poolAdmits` read its tree as admitted, so every tick started
+   * a dry run and a send pass of resume_paused.py, about one pair a minute at 14 s CPU each, and every send pass held it again.
+   */
+  private answered = new Map<string, string>();
 
   /**
    * `file` keeps the held sessions across a restart: the first pass after the 15:49:20Z release on 10-19 ran at 15:53:04Z, and at 15:50Z the
@@ -303,6 +315,13 @@ export class PoolHeldJobs {
   set(runs: readonly PoolHeldRun[]): Promise<void> {
     this.runs = runs.filter(run => run.provider !== null && run.host === undefined);
     this.held = new Set(runs.map(run => run.session_id));
+    const answered = new Map<string, string>();
+    for (const run of this.runs) {
+      const answer = answerOf(run);
+      if (this.released.get(run.session_id) === answer || this.answered.get(run.session_id) === answer) answered.set(run.session_id, answer);
+    }
+    this.answered = answered;
+    this.released = new Map();
     return this.file ? writeFile(this.file, JSON.stringify([...this.held])).catch(() => {}) : Promise.resolve();
   }
 
@@ -313,10 +332,13 @@ export class PoolHeldJobs {
    */
   sessions(): ReadonlySet<string> { return this.held; }
 
-  /** The held runs at or past their pool time whose tree pi-pool admits at `now`. They leave the list, and the next pass lists them again if the pool still holds them. */
+  /**
+   * The held runs at or past their pool time whose tree pi-pool admits at `now`, each once per held answer (`answered`). They leave the list,
+   * and the next pass lists them again if the pool still holds them.
+   */
   async admitted(now: number): Promise<PoolHeldRun[]> {
     const key = (run: PoolHeldRun): string => `${run.tree}|${run.provider}`;
-    const due = this.runs.filter(run => !(Date.parse(run.pool_at ?? "") > now));
+    const due = this.runs.filter(run => !(Date.parse(run.pool_at ?? "") > now) && this.answered.get(run.session_id) !== answerOf(run));
     const trees = [...new Map(due.map(run => [key(run), run] as const)).values()];
     const open = new Set<string>();
     for (let from = 0; from < trees.length; from += WAIT_READ_TREES) {
@@ -324,8 +346,9 @@ export class PoolHeldJobs {
       const said = await Promise.all(part.map(run => this.admits(run.tree, run.provider!).catch(() => false)));
       part.forEach((run, index) => { if (said[index]) open.add(key(run)); });
     }
-    const admitted = this.runs.filter(run => open.has(key(run)));
-    if (admitted.length) this.runs = this.runs.filter(run => !open.has(key(run)));
+    const admitted = this.runs.filter(run => open.has(key(run)) && this.answered.get(run.session_id) !== answerOf(run));
+    for (const run of admitted) this.released.set(run.session_id, answerOf(run));
+    if (admitted.length) this.runs = this.runs.filter(run => !admitted.includes(run));
     return admitted;
   }
 }
