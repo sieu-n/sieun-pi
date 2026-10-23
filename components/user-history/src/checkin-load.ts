@@ -20,8 +20,11 @@ import { ciRuns } from "./ci-runs.ts";
 const clip = (text: string, max = 60) => text.length > max ? text.slice(0, max - 1) + "\u2026" : text;
 const quote = (text: string) => `"${clip(text)}"`;
 
-/** One other session that holds too much of a goal's open work: `steps` of the goal's `open` open steps, worked by `working` subagents of its own. */
-export interface SessionLoad { goal: { id: string; text: string }; thread: { id: string; name: string }; steps: PlanItem[]; open: number; working: number }
+/**
+ * One other session that holds too much of a goal's open work: `steps` of the goal's `open` open steps, worked by `working` subagents of its
+ * own, and `carried` subagents that finished their part within SESSION_LOAD_CARRIED_MS while the thread is live.
+ */
+export interface SessionLoad { goal: { id: string; text: string }; thread: { id: string; name: string }; steps: PlanItem[]; open: number; working: number; carried: number }
 /** A session holds too much of a goal when it owns more than this many of its open steps. */
 export const SESSION_LOAD_MAX = 3;
 /**
@@ -31,6 +34,12 @@ export const SESSION_LOAD_MAX = 3;
  */
 export const SESSION_LOAD_STEPS_PER_JOB = 3;
 /**
+ * A subagent that finished its task this recently still carries its part while its thread is live, such as when the thread merges the
+ * subagents' branches. On 10-23 the five finished builders of "data model on metal" last acted from 17:18Z to 18:54Z, and at 20:21Z the thread
+ * was merging their branches into dev/sieun-mac-schema-unify, 1.5 to 3.1 h later, while the check-in flagged its p70 to p77 24 runs in a row.
+ */
+export const SESSION_LOAD_CARRIED_MS = 6 * 60 * 60_000;
+/**
  * The other sessions that carry too much of one goal: per open goal, a thread owns more than SESSION_LOAD_MAX of its open steps, or more than
  * half of them when the goal has at least 4, and has fewer working subagents (`subagents`, the daemon's roster by parent session) than one per
  * SESSION_LOAD_STEPS_PER_JOB of those steps. A thread is another session the step names as its owner (a `thread:` link, a session id or name);
@@ -38,12 +47,13 @@ export const SESSION_LOAD_STEPS_PER_JOB = 3;
  * it runs or its session is in `live`, the sessions queued in pi-pool's turn queue or asleep on a board.wake. A step with a `waitFor` or
  * `waitUntil` waits on purpose, such as for a land, and leaves its thread no work, so it is no load. On 10-23 from 15:50Z to 18:31Z the six
  * builders of "data model on metal" waited 1,842 to 2,376 s in pi-pool's turn queue before each turn (pi-pool log), and from 16:00Z to 16:45Z
- * all six sat queued with none running, so the roster read none of them as working.
+ * all six sat queued with none running, so the roster read none of them as working. While the thread itself works, a subagent that finished
+ * its task within SESSION_LOAD_CARRIED_MS of `now` counts too, since the thread is folding its part in.
  */
 export function oneSessionLoad(views: readonly StepView[], jobs: readonly string[] = [], subagents: ReadonlyMap<string, readonly ChildAgent[]> = new Map(),
-  live: ReadonlySet<string> = new Set()): SessionLoad[] {
+  live: ReadonlySet<string> = new Set(), now?: number): SessionLoad[] {
   const own = new Set(jobs);
-  const goals = new Map<string, { goal: { id: string; text: string }; open: number; by: Map<string, { thread: { id: string; name: string }; steps: PlanItem[] }> }>();
+  const goals = new Map<string, { goal: { id: string; text: string }; open: number; by: Map<string, { thread: { id: string; name: string }; steps: PlanItem[]; live: boolean }> }>();
   for (const view of views) {
     const goal = view.goal ?? { id: view.item.id, text: view.item.text };
     const entry = goals.get(goal.id) ?? { goal, open: 0, by: new Map() };
@@ -53,21 +63,31 @@ export function oneSessionLoad(views: readonly StepView[], jobs: readonly string
     if (!owner?.key.startsWith("thread:")) continue;
     const id = owner.key.slice("thread:".length);
     if (own.has(id) || own.has(owner.name) || view.item.waitFor || view.item.waitUntil) continue;
-    const held = entry.by.get(id) ?? { thread: { id, name: owner.name }, steps: [] };
+    const held = entry.by.get(id) ?? { thread: { id, name: owner.name }, steps: [], live: owner.state === "working" };
     held.steps.push(view.item);
     entry.by.set(id, held);
   }
-  return [...goals.values()].flatMap(({ goal, open, by }) => [...by.values()].flatMap(held => {
-    const working = (subagents.get(held.thread.id) ?? []).filter(child => childWorking(child) || (child.sessionId !== undefined && live.has(child.sessionId))).length;
+  return [...goals.values()].flatMap(({ goal, open, by }) => [...by.values()].flatMap(({ live: threadLive, ...held }) => {
+    const children = subagents.get(held.thread.id) ?? [];
+    const works = (child: ChildAgent) => childWorking(child) || (child.sessionId !== undefined && live.has(child.sessionId));
+    const working = children.filter(works).length;
+    const carried = threadLive && now !== undefined ? children.filter(child => !works(child) && child.status === "done" && child.lastActivityAt !== undefined &&
+      now - child.lastActivityAt <= SESSION_LOAD_CARRIED_MS).length : 0;
     const heavy = held.steps.length > SESSION_LOAD_MAX || (open >= 4 && held.steps.length * 2 > open);
-    return heavy && working * SESSION_LOAD_STEPS_PER_JOB < held.steps.length ? [{ goal, ...held, open, working }] : [];
+    return heavy && (working + carried) * SESSION_LOAD_STEPS_PER_JOB < held.steps.length ? [{ goal, ...held, open, working, carried }] : [];
   }));
 }
-export const sessionLoadLine = ({ goal, thread, steps, open, working }: SessionLoad): string =>
+export const sessionLoadLine = ({ goal, thread, steps, open, working, carried }: SessionLoad): string =>
   `${goal.id} ${quote(goal.text)} has ${steps.length} of its ${open} open steps on the ${clip(thread.name, 40)} thread (thread:${thread.id}), ` +
-  `which runs ${working} working ${working === 1 ? "job" : "jobs"} of its own: ` +
+  `which runs ${working} working ${working === 1 ? "job" : "jobs"} of its own${carried ? ` and ${carried} that finished in the last ${SESSION_LOAD_CARRIED_MS / 3_600_000} h` : ""}: ` +
   `${steps.map(item => item.id).join(", ")}. Split these into your own jobs per part: map the parts and their order, start one job or subagent ` +
   "per part with rlm.spawn, set each step's job to it, and tell that thread it no longer owns them";
+/**
+ * What makes one load finding a new situation: its thread, its steps and its job counts. The goal's open count is left out, since it moves
+ * whenever any other step of the goal closes.
+ */
+export const sessionLoadSig = ({ thread, steps, working, carried }: SessionLoad): string =>
+  `thread:${thread.id} ${steps.map(item => item.id).sort().join(",")} working ${working} carried ${carried}`;
 
 /** One entry of a session's `scheduled-jobs.json` (Prime Agent's schedules), as far as the check-in reads it. */
 export interface ScheduledJob {

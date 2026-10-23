@@ -7,7 +7,7 @@ import { artifactsDir } from "./moved-images.ts";
 import { agentChildren } from "./chat-agents.ts";
 import { activeCorrections, handoffRules } from "./chat-corrections.ts";
 import { deadWakes, heartbeatsFile, landCarries, liveThreads, localDisk, parkSchedules, quotaParks, readHeartbeats, readTrain, trainFile, trainRepo, withDeadWakes, withQuotaParks, withStalls, withWakes } from "./checkin-load.ts";
-import { flagStreaks } from "./checkin-repeats.ts";
+import { flagStreaks, sentAfter, unsentFindings } from "./checkin-repeats.ts";
 import { boardPrs, type DoneFacts, metricFacts } from "./checkin-done.ts";
 import { activePause, changeCheckIn, type CheckInActor, type CheckInChange, CheckInRefused, type CheckInSetting, DEFAULT_CHECK_IN, nextCheckIn, planCheckIn } from "./checkin-settings.ts";
 import { checkInDue, childName, childWorking, type JobFact, jobFacts, liveJobs, liveWindowMs, nestedJobs, OPEN, parkedBy, planHasOpenStep, poolWait, walk } from "./checkin-steps.ts";
@@ -1577,14 +1577,19 @@ export class Chats {
       for (const line of said ? owedLinkLines(said, facts, board?.todos ?? []) : []) {
         await this.tell(id, line).catch(error => this.log(`chat ${id.slice(0, 8)}: owed link: ${error instanceof Error ? error.message : String(error)}`));
       }
-      const flags = flagStreaks(previous?.flags, output.flagged);
-      await this.source.memory.set(id, { ...precheck.memory, flags });
+      // A finding with a sig that a started check-in job already got, unchanged since, goes out no more (`unsentFindings`).
+      const flagged = unsentFindings(previous?.sent, output.flagged);
+      const flags = flagStreaks(previous?.flags, flagged);
+      const [unsent, sentNow] = [false, true].map(started => sentAfter(previous?.sent, output.flagged, started));
+      const sent = (next: Record<string, string>) => Object.keys(next).length ? { sent: next } : {};
+      await this.source.memory.set(id, { ...precheck.memory, flags, ...sent(unsent!) });
       const pushed = await this.pushJobs(id, precheck.jobs, gathered.sessions ?? new Map());
-      const start = await this.source.duty?.checkIn(id, { at, trigger, everyMs, output, classes: classCounts(precheck.steps),
-        findings: checkInPrecheckText(precheck, facts, output.flagged, at, flags), prompt: checkInPrompt(precheck, pushed), ...rerunOf === undefined ? {} : { rerunOf } });
+      const start = await this.source.duty?.checkIn(id, { at, trigger, everyMs, output: { ...output, flagged }, classes: classCounts(precheck.steps),
+        findings: checkInPrecheckText(precheck, facts, flagged, at, flags), prompt: checkInPrompt(precheck, pushed), ...rerunOf === undefined ? {} : { rerunOf } });
       if (start === "failed" && everyMs > CHECK_IN_RETRY_MS) this.lastCheckIn.set(id, at - everyMs + CHECK_IN_RETRY_MS);
       // A check-in that did not start sent no goal push, so its retry pushes again (quietPush).
-      if (start === "failed") await this.source.memory.set(id, { ...precheck.memory, flags, goals: unpushed(precheck.memory.goals, previous?.goals, at) });
+      if (start === "failed") await this.source.memory.set(id, { ...precheck.memory, flags, ...sent(unsent!), goals: unpushed(precheck.memory.goals, previous?.goals, at) });
+      if (start === "started" && JSON.stringify(sentNow) !== JSON.stringify(unsent)) await this.source.memory.set(id, { ...precheck.memory, flags, ...sent(sentNow!) });
     } catch (error) {
       this.log(`chat ${id.slice(0, 8)}: check-in: ${error instanceof Error ? error.message : String(error)}`);
     }

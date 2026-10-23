@@ -73,7 +73,9 @@ export interface PrecheckOutput { metrics: Record<string, number>; flagged?: Fla
  */
 export interface FlaggedSlice { chat?: string; at?: number; kind: string; excerpt: string; item?: string; handOff?: true;
   /** A `host_held` step's offline box and the For you todo that asks the owner to bring it back (src/shared/host-hold.ts). */
-  host?: string; todo?: string }
+  host?: string; todo?: string;
+  /** What makes this finding a new situation (`unsentFindings`): a finding with one goes out once, and again only when its sig changes. */
+  sig?: string }
 
 export interface Duty {
   id: string;

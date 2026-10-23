@@ -1,6 +1,6 @@
 import type { HandoffRule } from "./chat-corrections.ts";
 import { type DoneFacts, finishedOpen, looksDone, NO_FACTS } from "./checkin-done.ts";
-import { heartbeatLine, oneSessionLoad, type RedundantHeartbeat, redundantHeartbeats, sessionLoadLine, type ScheduledJob, type SessionLoad, type Train, wakeWatches } from "./checkin-load.ts";
+import { heartbeatLine, oneSessionLoad, type RedundantHeartbeat, redundantHeartbeats, sessionLoadLine, sessionLoadSig, type ScheduledJob, type SessionLoad, type Train, wakeWatches } from "./checkin-load.ts";
 import { flagKey, REPEAT_HEAD, REPEAT_RUNS, repeatLines } from "./checkin-repeats.ts";
 import type { FlaggedSlice, PrecheckOutput } from "./shared/chat-duties.ts";
 import { cachedJsonFile, snapshotJsonFile, transactJsonFile, type JsonFile } from "./locked-json.ts";
@@ -46,6 +46,8 @@ export interface CheckInMemory { at: number; steps: Record<string, StepMemo>;
   since?: number;
   /** How many runs in a row flagged each finding, by `flagKey` (src/checkin-repeats.ts). */
   flags?: Record<string, number>;
+  /** The sig of each finding with one that a started check-in job got, by `flagKey` (`unsentFindings`). */
+  sent?: Record<string, string>;
   /** Each open goal's last readings of its number, for its trend and pace (`goalPushes`). */
   goals?: Record<string, GoalMemo>;
   /** Each job's progress mark and last push (`jobPushes`). */
@@ -193,7 +195,7 @@ export function checkInPrecheck(previous: CheckInMemory | undefined, facts: read
     waitsMet: context.boardError ? [] : [...waitsMet(goaled, board, context.rows ?? [], self), ...deadRunWaits(goaled, context.train, now)],
     stale: context.boardError ? [] : staleSteps(board, facts, item => steps[item.id] ? recordedAt(steps[item.id]!) : now, self, context.everyMs ?? CHECK_IN_MS, now,
       context.rows ?? [], context.train),
-    fold, load: oneSessionLoad(goaled, context.jobs, context.subagents, new Set([...context.queued?.keys() ?? [], ...context.asleep ?? []])),
+    fold, load: oneSessionLoad(goaled, context.jobs, context.subagents, new Set([...context.queued?.keys() ?? [], ...context.asleep ?? []]), now),
     heartbeats: redundantHeartbeats(context.heartbeats ?? [], context.duties ?? []), noDuty: context.boardError || !context.duties ? [] : goalsWithoutDuty(board, context.duties, now), facts: notes,
     noDoneLine: context.boardError ? [] : goalsWithoutDoneLine(board), risks: context.boardError ? [] : planRiskSteps(board),
     metOpen: context.boardError ? [] : metOpenItems(board?.plan ?? []),
@@ -514,7 +516,7 @@ export function convergenceMisses(chat: string, steps: readonly StepView[], { sc
   for (const goal of held.filter(goal => !folded.has(goal.goal.id))) { misses.held_elsewhere++; flagged.push({ chat, at: now, kind: "held_elsewhere", excerpt: heldLine(goal), item: goal.goal.id }); }
   if (still) { misses.no_progress = 1; flagged.push({ chat, at: now, kind: "no_progress", excerpt: noProgressLine(still) }); }
   for (const met of over) { misses.wait_met++; flagged.push({ chat, at: now, kind: "wait_met", excerpt: waitMetLine(met), item: met.view.item.id }); }
-  for (const entry of load) flag("one_session_load", entry.goal.id, sessionLoadLine(entry));
+  for (const entry of load) { misses.one_session_load++; flagged.push({ chat, at: now, kind: "one_session_load", excerpt: sessionLoadLine(entry), item: entry.goal.id, sig: sessionLoadSig(entry) }); }
   for (const entry of heartbeats) { misses.redundant_heartbeats++; flagged.push({ chat, at: now, kind: "redundant_heartbeats", excerpt: heartbeatLine(entry) }); }
   if (noDuty.length) flag("goals_without_duty", noDuty[0]!.id, noDutyLine(noDuty));
   for (const goal of noDoneLine) flag("no_done_line", goal.id, noDoneLineLine([goal]));
@@ -852,10 +854,11 @@ function parseMemory(value: unknown): CheckInMemory | undefined {
   if (!isRecord(value) || typeof value.at !== "number") return undefined;
   const steps = isRecord(value.steps) ? Object.entries(value.steps).flatMap(([id, memo]) => isStepMemo(memo) ? [[id, stepMemoOf(memo)] as const] : []) : [];
   const flags = isRecord(value.flags) ? Object.entries(value.flags).filter((entry): entry is [string, number] => typeof entry[1] === "number") : [];
+  const sent = isRecord(value.sent) ? Object.entries(value.sent).filter((entry): entry is [string, string] => typeof entry[1] === "string") : [];
   const goals = isRecord(value.goals) ? Object.entries(value.goals).filter((entry): entry is [string, GoalMemo] => isGoalMemo(entry[1])) : [];
   const jobs = isRecord(value.jobs) ? Object.entries(value.jobs).filter((entry): entry is [string, JobMemo] => isJobMemo(entry[1])) : [];
   return { at: value.at, steps: Object.fromEntries(steps), ...(typeof value.since === "number" ? { since: value.since } : {}),
-    ...(flags.length ? { flags: Object.fromEntries(flags) } : {}), ...(goals.length ? { goals: Object.fromEntries(goals) } : {}),
+    ...(flags.length ? { flags: Object.fromEntries(flags) } : {}), ...(sent.length ? { sent: Object.fromEntries(sent) } : {}), ...(goals.length ? { goals: Object.fromEntries(goals) } : {}),
     ...(jobs.length ? { jobs: Object.fromEntries(jobs) } : {}) };
 }
 /**

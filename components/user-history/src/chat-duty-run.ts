@@ -113,8 +113,9 @@ export const CHECK_IN_REPORT = "Send the chat one report of at most 3 plain line
 /**
  * How a check-in run ended for the scheduler: `failed` when its job could not start (a daemon create or brief error), so the chat retries in
  * CHECK_IN_RETRY_MS instead of a whole interval (slack green guy 10-12: "daemon client closed" at 04:54Z, and its next try was 05:54Z).
+ * `started` when a new check-in job got the run's findings, so the chat marks them sent (`sentAfter`); `done` for any other end.
  */
-export type CheckInStart = "done" | "failed";
+export type CheckInStart = "started" | "done" | "failed";
 /**
  * Why a run started no job because the duty's last job still works. A standing duty's run still measures and records its verdict, with this
  * after its summary (ops guy 10-10 to 10-12: 220 of 293 Local dev servers runs skipped the precheck too); a check-in run is recorded as skipped.
@@ -806,7 +807,7 @@ export class Duties {
       schedule: { kind: "every", minutes: run.everyMs / 60_000 }, measured: judged.verdict === "error" ? null : { at: run.at, ...judged },
       brief: { measure: judged.summary, findings: [findings, stuckFindings(stepMisses)].filter(Boolean).join("\n\n"), focus: CHECK_IN_FOCUS, misses: stepMisses, report: CHECK_IN_REPORT,
         ...run.prompt !== undefined ? { prompt: `${run.prompt}\n\nThe full precheck, with every step and finding, is in ${detail}. Read it for the work you take on; never paste it into a message.` } : {} } });
-    return started === "failed" ? "failed" : "done";
+    return started === "failed" ? "failed" : started === "started" ? "started" : "done";
   }
 
   /**

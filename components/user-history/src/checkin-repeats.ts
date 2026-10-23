@@ -18,6 +18,29 @@ export function flagStreaks(previous: Readonly<Record<string, number>> | undefin
   for (const slice of flagged) { const key = flagKey(slice); streaks[key] ??= (previous?.[key] ?? 0) + 1; }
   return streaks;
 }
+/** The sig of each finding that has one (`FlaggedSlice.sig`), by `flagKey`; the sigs of findings that share a key join in one. */
+export function findingSigs(flagged: readonly Pick<FlaggedSlice, "kind" | "item" | "sig">[]): Record<string, string> {
+  const sigs = new Map<string, string[]>();
+  for (const slice of flagged) if (slice.sig !== undefined) sigs.set(flagKey(slice), [...sigs.get(flagKey(slice)) ?? [], slice.sig]);
+  return Object.fromEntries([...sigs].map(([key, list]) => [key, [...new Set(list)].sort().join(" | ")]));
+}
+/**
+ * The findings a check-in job still has to get: each one with no sig, and each one whose sig changed since a started check-in job last got it
+ * (`sent`, from the check-in memory). On 10-23 and 10-24 sep launch!!'s check-ins sent the chat the same one_session_load line for goal p2 and
+ * the data model on metal thread 21 runs in a row, with the same steps and counts each time.
+ */
+export function unsentFindings<T extends Pick<FlaggedSlice, "kind" | "item" | "sig">>(sent: Readonly<Record<string, string>> | undefined, flagged: readonly T[]): T[] {
+  const sigs = findingSigs(flagged);
+  return flagged.filter(slice => slice.sig === undefined || sent?.[flagKey(slice)] !== sigs[flagKey(slice)]);
+}
+/**
+ * The sent sigs to keep after a run: this run's sigs when its check-in job started with them (`started`), else the earlier ones of the findings
+ * still flagged. A finding that clears and comes back goes out again.
+ */
+export function sentAfter(sent: Readonly<Record<string, string>> | undefined, flagged: readonly Pick<FlaggedSlice, "kind" | "item" | "sig">[], started: boolean): Record<string, string> {
+  const sigs = findingSigs(flagged);
+  return started ? sigs : Object.fromEntries(Object.entries(sent ?? {}).filter(([key]) => key in sigs));
+}
 /**
  * Kinds Flagged again leaves out. A stuck step shows its streak in the Stuck steps section. An off-pace goal with a live owner is steered from
  * the goal section on its push schedule (quietPush) and is not judged (board skill check-ins.md item 11), so no board op clears it: on 10-21
