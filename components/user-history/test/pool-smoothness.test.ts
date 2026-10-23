@@ -49,6 +49,16 @@ test("a park counts the minutes after a later tree of its priority or lower got 
   assert.match(flagged?.find(slice => slice.kind === "smoothness")?.excerpt ?? "", /0 of them stayed parked over 10 min .*, p90 10 min\.$/);
 });
 
+test("a park reads its tree's priority at the time a later tree got in, since a chat moves its jobs between low and normal", () => {
+  // 10-22: 01a1642b asked as normal at 19:56Z, as low from 20:04Z to 01:08Z and as normal again at 03:01Z; 01a164b6, normal, entered
+  // claude19 at 20:13Z, and the reader that took the last refusal's priority counted 427 min passed.
+  const smooth = readSmoothness([
+    parked("a", "10:00:00"), parked("a", "10:04:00", "low"), parked("b", "10:05:00"), unparked("b", "10:13:00"),
+    parked("c", "10:06:00", "low"), unparked("c", "10:31:00"), parked("a", "10:40:00"), unparked("a", "10:52:00"),
+  ], new Set(), FROM, RUN);
+  assert.deepEqual(smooth.overtaken, [{ session: "c", minutes: 0 }, { session: "a", minutes: 21 }]);
+});
+
 test("a park passed by a later tree for over 10 min is a hold in queue_holds_30", () => {
   const smooth = readSmoothness([parked("a", "10:00:00"), parked("b", "10:05:00"), unparked("b", "10:31:00"), unparked("a", "10:52:00")], new Set(), FROM, RUN);
   const { metrics, flagged } = measure({ now: RUN, watch: [], log: { holds: [] }, chats: [], smooth });

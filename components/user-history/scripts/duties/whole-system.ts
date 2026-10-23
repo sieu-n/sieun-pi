@@ -376,8 +376,10 @@ export function readSmoothness(lines: readonly string[], heads: ReadonlySet<stri
   // holder's lines right after it lets go, so the log's order is the queue's: on 10-22 at 15:16:00Z a job run took the slot 01a11a24's ending
   // run let go, and the head's next run queued the same second after it, which the old second-stamped reading counted as a pass.
   const inLine = new Map<string, boolean>();
-  const parks = new Map<string, { start: number; rank: number; manual: boolean }>();
-  const ended: { session: string; start: number; end: number; rank: number }[] = [];
+  // A park's rank is its tree's priority at each refusal, since a chat moves its jobs between low and normal: 01a1642b, low from
+  // 20:04Z on 10-22, read as passed for 427 min by 01a164b6, a normal tree that entered claude19 at 20:13Z, because its last refusal said normal.
+  const parks = new Map<string, { start: number; ranks: { at: number; rank: number }[]; manual: boolean }>();
+  const ended: { session: string; start: number; end: number; ranks: { at: number; rank: number }[] }[] = [];
   let anchor: number | undefined;
   for (const line of lines) {
     if (!line.includes('"turn_admitted"') && !line.includes('"turn_queued"') && !line.includes('"turn_dropped"') && !line.includes('"parked"') &&
@@ -424,18 +426,20 @@ export function readSmoothness(lines: readonly string[], heads: ReadonlySet<stri
     // pinned to claude8, waited from 15:19Z for its 16:30Z reset and read as passed for 70 min by Auto trees that entered claude19.
     const manual = entry.manual === true;
     if (entry.event === "parked") {
-      const park = parks.get(entry.session) ?? { start: at, rank: 1, manual };
-      park.rank = RANK[String(entry.priority)] ?? 1;
+      const park = parks.get(entry.session) ?? { start: at, ranks: [], manual };
+      park.ranks.push({ at, rank: RANK[String(entry.priority)] ?? 1 });
       park.manual ||= manual;
       parks.set(entry.session, park);
     } else if (entry.event === "unparked") {
       const park = parks.get(entry.session);
       parks.delete(entry.session);
-      if (park && !park.manual && !manual) ended.push({ session: entry.session, start: park.start, end: at, rank: park.rank });
+      if (park && !park.manual && !manual) ended.push({ session: entry.session, start: park.start, end: at, ranks: park.ranks });
     }
   }
+  const rankAt = (park: (typeof ended)[number], at: number) => (park.ranks.findLast(step => step.at <= at) ?? park.ranks[0])?.rank ?? 1;
   const overtaken = ended.filter(park => park.end >= from && park.end < to).map(park => {
-    const passed = ended.find(other => other.end < park.end && other.end > park.start && other.start > park.start && other.rank >= park.rank);
+    const passed = ended.find(other => other.end < park.end && other.end > park.start && other.start > park.start &&
+      rankAt(other, other.end) >= rankAt(park, other.end));
     return { session: park.session, minutes: passed ? Math.round((park.end - passed.end) / MINUTE * 10) / 10 : 0 };
   });
   return { headWaits, overtaken };
@@ -1401,12 +1405,16 @@ async function main(): Promise<void> {
   const marks = await readSessionMarks(deliveryCandidates(allFaults), short => listed.get(short)?.file, box, now);
   const { faults: daemonFaults, slotWaits } = splitSlotWaits(allFaults, outboxLandings(serviceLines), fault => marks.get(fault.session!.slice(0, 8)));
   const poolLines = await tailLines(POOL_LOG, POOL_LOG_TAIL_BYTES);
+  const archived = (await readJson(join(dataDir, "archived-chats.json")) ?? {}) as { ids?: unknown };
+  const archivedChats = Array.isArray(archived.ids) ? archived.ids.filter((id): id is string => typeof id === "string") : [];
   const result = measure({
     ...plan,
     watch, day, quietMs,
     log: readServiceLog(serviceLines),
     pool: readPoolLog(poolLines, now),
-    smooth: readSmoothness(poolLines, new Set(live), now - WINDOW_MS, now),
+    // A chat the owner archived inside the window led pi-pool's queue until then: at 03:31:09Z on 10-23 "three things 3" (01a1664f), archived
+    // before the 03:47Z run, started ahead of 01a1164b and read as a job run that passed a head.
+    smooth: readSmoothness(poolLines, new Set([...live, ...archivedChats]), now - WINDOW_MS, now),
     daemonFaults,
     workerMisses: workerPolls,
     queueOverruns,
