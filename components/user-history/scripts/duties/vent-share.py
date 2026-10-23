@@ -439,13 +439,17 @@ def app_of(path: str) -> str:
 
 
 def traffic_sql(day: int) -> str:
-    """vent.call rows of one day back from now: day 0 is the last 24 h, day 1 the 24 h before it."""
+    """vent.call rows of one day back from now: day 0 is the last 24 h, day 1 the 24 h before it. They come from otel.vent_calls
+    (auto-sns-agent ops/schema/vent-calls.sql), the view of Vent's own records that the Vent boards and alert rules read, and calls
+    sum vent.count, since one tallied record stands for vent.count calls. On 10-23 the same day on otel_logs hit Grafana's 60 s
+    deadline for days 3 and 4 (60.2 s and 60.3 s, through_vent_pct read -1 from 03:44Z), while otel.vent_calls answered each day
+    in 0.2 to 1.0 s."""
     window = f"Timestamp > now() - INTERVAL {day + 1} DAY" + (f" AND Timestamp <= now() - INTERVAL {day} DAY" if day else "")
     return (
-        "SELECT ResourceAttributes['deployment.environment.name'] AS env, LogAttributes['vent.caller'] AS caller, "
-        "LogAttributes['vent.integration'] AS integration, LogAttributes['vent.operation'] AS operation, "
-        "LogAttributes['vent.outcome'] AS outcome, count() AS calls, max(Timestamp) AS last "
-        f"FROM otel_logs WHERE ServiceName = 'vent' AND Body = 'vent.call' AND {window} "
+        "SELECT ResourceAttributes['deployment.environment.name'] AS env, `vent.caller` AS caller, "
+        "`vent.integration` AS integration, `vent.operation` AS operation, "
+        "`vent.outcome` AS outcome, sum(greatest(toUInt64OrZero(`vent.count`), 1)) AS calls, max(Timestamp) AS last "
+        f"FROM otel.vent_calls WHERE ServiceName = 'vent' AND Body = 'vent.call' AND {window} "
         "GROUP BY env, caller, integration, operation, outcome ORDER BY env, calls DESC"
     )
 
