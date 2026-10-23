@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { checkInPrompt, convergenceMisses } from "../src/chat-checkin.ts";
 import { applyBoardOp, GOAL_PUSH_LINK, metOpenItems, metOpenLine } from "../src/shared/chat-board.ts";
+import type { GoalPush } from "../src/checkin-goals.ts";
 import type { ChatBoard, PlanItem } from "../src/shared/types.ts";
 
 const item = (id: string, fields: Partial<PlanItem> = {}): PlanItem => ({ id, text: `Work on ${id}`, status: "doing", children: [], ...fields });
@@ -68,4 +69,15 @@ test("a met item no duty keeps is closed now and its metric goes into a duty fir
   const [found] = metOpenItems(boardOf([item("p5", { target: { metric: "pages done", target: 5, unit: "pages", current: 5, measuredAt: "2026-10-22T03:00:00Z", direction: "up" } })]).plan);
   assert.equal(found!.keeper, undefined);
   assert.match(metOpenLine(found!), /No duty keeps this metric yet: when it must stay there, add it to a duty as a metric, then close it/);
+});
+
+// Check-in "CI and RepoOps 19:40" on 10-23: goal p346 on d2/rule_breaks_24h read met with nothing open under it, and the prompt said no duty keeps it.
+test("a met goal with its own duty link names that duty as its keeper in the check-in prompt", () => {
+  const goal = item("p346", { text: "Rule breaks stay at 0", duty: "d2/rule_breaks_24h" });
+  const push = { goal, stale: false, act: "on_pace", words: [], trend: { kind: "met" } } as unknown as GoalPush;
+  const prompt = checkInPrompt({ goals: [push], end: [], risks: [], metOpen: [] }, null);
+  assert.match(prompt, /p346 "Rule breaks stay at 0" meets its target\. Close it now.*Duty d2 keeps it\./);
+  assert.doesNotMatch(prompt, /No duty keeps it yet/);
+  const loose = { ...push, goal: item("p347") } as GoalPush;
+  assert.match(checkInPrompt({ goals: [loose], end: [], risks: [], metOpen: [] }, null), /No duty keeps it yet/);
 });

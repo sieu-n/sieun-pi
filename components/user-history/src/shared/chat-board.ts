@@ -1194,7 +1194,7 @@ const metricKey = (metric: string): string => metric.toLowerCase().replace(/[^a-
 const OWNER_HOLD = /\b(?:held|holds?|for)\s+(?:a|an|one|\d+(?:\.\d+)?)\s*(?:h|hours?|days?|weeks?)\b/i;
 const NOTE_MET = /\b(?:target|done line|goal)\s+(?:is\s+|was\s+|now\s+)?(?:met|reached)\b|\breads?\s+met\b|\(met\)/i;
 const noteSaysMet = (note: string | undefined): boolean => NOTE_MET.test((note ?? "").replace(/\bdone when\b.*?(?:\.(?=\s|$)|$)/gis, ""));
-const dutyKeeper = (duty: string | undefined): string | undefined => {
+export const dutyKeeper = (duty: string | undefined): string | undefined => {
   const link = duty ? parseDutyLink(duty) : null;
   return link && link.duty !== CHECK_IN_DUTY_ID ? duty : undefined;
 };

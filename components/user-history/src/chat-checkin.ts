@@ -4,7 +4,7 @@ import { heartbeatLine, oneSessionLoad, type RedundantHeartbeat, redundantHeartb
 import { flagKey, REPEAT_HEAD, REPEAT_RUNS, repeatLines } from "./checkin-repeats.ts";
 import type { FlaggedSlice, PrecheckOutput } from "./shared/chat-duties.ts";
 import { cachedJsonFile, snapshotJsonFile, transactJsonFile, type JsonFile } from "./locked-json.ts";
-import { goWaitText, type MetOpen, metOpenItems, metOpenLine, planJob, stepGoWait } from "./shared/chat-board.ts";
+import { dutyKeeper, goWaitText, type MetOpen, metOpenItems, metOpenLine, planJob, stepGoWait } from "./shared/chat-board.ts";
 import { BRIEF_ITEMS } from "./shared/brief-cap.ts";
 import type { OwnerMessage } from "./shared/brief-check.ts";
 import type { ChatAgent, ChatBoard, ChildAgent, PlanItem, SessionRow, StopReason, ThreadMessage } from "./shared/types.ts";
@@ -362,9 +362,11 @@ export function checkInPrompt(precheck: Pick<CheckInPrecheck, "goals" | "end" | 
   // and the AI harness chat held p200 open after p850 read 0 of 0 at 03:57Z, waiting for d4's next run, until the owner said "so then close it!!".
   const metOpen = precheck.metOpen ?? [];
   const metIds = new Set(metOpen.map(found => found.item.id));
-  const met = [...metOpen.map(found => found.item), ...metGoals.filter(push => !metIds.has(push.goal.id)).map(push => push.goal)];
-  const keepers = [...new Set(metOpen.flatMap(found => found.keeper ? [`duty ${found.keeper.split("/")[0]}`] : []))];
-  const unkept = metOpen.filter(found => !found.keeper).length;
+  const metNew = metGoals.filter(push => !metIds.has(push.goal.id));
+  const met = [...metOpen.map(found => found.item), ...metNew.map(push => push.goal)];
+  const kept = [...metOpen.map(found => found.keeper), ...metNew.map(push => dutyKeeper(push.goal.duty))];
+  const keepers = [...new Set(kept.flatMap(keeper => keeper ? [`duty ${keeper.split("/")[0]}`] : []))];
+  const unkept = kept.filter(keeper => !keeper).length;
   const items = [...due.slice(0, BRIEF_ITEMS), ...due.length > BRIEF_ITEMS ? [`${due.length - BRIEF_ITEMS} more goals need the same, listed in the detail file.`] : [],
     ...jobLine ? [`${jobLine.replace(/^Check-in: /, "The server already ")} Check in this run that each one reported; start a job in place of one that did not.`] : [],
     ...stuck ? [`${stuck} open ${stuck === 1 ? "step has" : "steps have"} no live owner. Push each one toward done in this run: resume its job, start a fix job, ` +
