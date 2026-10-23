@@ -7,13 +7,16 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  * The Fixes reach prod duty's precheck (`node --import tsx scripts/duties/fixes-reach-prod.ts`) for the auto-sns-agent chat (Engage reads,
  * Watchlist). No model call, no browser. It reads what the owner would check: GitHub's compare of auto-sns-agent main...staging (main is what
  * prod runs, since promote.yml moves main only after every prod deploy and check passes), the staging and prod crawlers' /health versions, and
- * the newest land.yml and promote.yml runs with the job and step that failed.
+ * the newest land.yml, staging-deploy.yml and promote.yml runs with the job and step that failed.
  * The headline, oldest_fix_wait_h, is how long the oldest commit on staging and not on main has waited, from its committer time, which is when
  * land.yml squashed it onto staging. failed_promotes_24h counts promote.yml runs started in the last 24 h that ended in failure.
  * commits_on_staging_only is the compare's ahead_by. An unreadable compare fails the run, because the headline cannot be read without it; a
  * failed run or health read is flagged as a source_error and counts failed_promotes_24h as at least 1.
  * Incident: promotes 6, 7, 8, 9, 10, 12, 13 and 14 each failed at a gate, and on 10-19 seven board steps of the chat waited a day or more for
  * one promote while land 37 sat on staging from 10-17 22:58Z.
+ * Incident: from 10-23 00:41Z every land that reached basics failed at "basics / search build, types and lint of the squash", and the staging
+ * deploy of staging's head 6e71eb0478 failed at "gate / staging release.env sets every variable compose requires" (run 39856360527), but the
+ * precheck flagged neither, because 53 of the newest 60 land runs were cancelled by newer ones and it took the newest finished run of each branch.
  */
 
 export const REPO = "sieu-n/auto-sns-agent";
@@ -22,10 +25,14 @@ const HOUR_MS = 3_600_000;
 const DAY_MS = 24 * HOUR_MS;
 /** Conclusions that mean a run stopped on a fault; `cancelled` is a person or a newer run stopping it, so it is not counted. */
 const FAILED = ["failure", "timed_out", "startup_failure"];
+/** Conclusions that say nothing about the gate: a newer run cancelled it, or its jobs never ran. */
+const UNDECIDED = ["cancelled", "skipped"];
+/** 89 of the newest 100 land.yml runs on 10-23 04:53Z were cancelled, so gh's default of 20 can hold no decided run of a branch. */
+const LAND_RUNS = 100;
 
 export interface Commit { sha: string; at: number; title: string }
 export interface Compare { mainSha: string; aheadBy: number; behindBy: number; commits: Commit[] }
-export interface Run { id: number; status: string; conclusion: string; createdAt: number; branch: string; url: string }
+export interface Run { id: number; status: string; conclusion: string; createdAt: number; branch: string; sha: string; url: string }
 export interface FailedJob { name: string; steps: string[] }
 export interface Health { world: string; sha?: string; error?: string }
 
@@ -46,10 +53,10 @@ export async function readCompare(deps: ReachDeps): Promise<Compare> {
     commits: raw.commits.map(commit => ({ sha: commit.sha, at: Date.parse(commit.at), title: commit.title })).sort((a, b) => a.at - b.at) };
 }
 
-export async function readRuns(deps: ReachDeps, workflow: string): Promise<Run[]> {
-  const out = await deps.exec("gh", ["run", "list", "--repo", REPO, "--workflow", workflow, "--json", "databaseId,status,conclusion,createdAt,headBranch,url"]);
-  return (JSON.parse(out) as { databaseId: number; status: string; conclusion: string; createdAt: string; headBranch: string; url: string }[])
-    .map(row => ({ id: row.databaseId, status: row.status, conclusion: row.conclusion, createdAt: Date.parse(row.createdAt), branch: row.headBranch, url: row.url }));
+export async function readRuns(deps: ReachDeps, workflow: string, filters: readonly string[] = []): Promise<Run[]> {
+  const out = await deps.exec("gh", ["run", "list", "--repo", REPO, "--workflow", workflow, ...filters, "--json", "databaseId,status,conclusion,createdAt,headBranch,headSha,url"]);
+  return (JSON.parse(out) as { databaseId: number; status: string; conclusion: string; createdAt: string; headBranch: string; headSha: string; url: string }[])
+    .map(row => ({ id: row.databaseId, status: row.status, conclusion: row.conclusion, createdAt: Date.parse(row.createdAt), branch: row.headBranch, sha: row.headSha, url: row.url }));
 }
 
 export async function readFailedJobs(deps: ReachDeps, id: number): Promise<FailedJob[]> {
@@ -71,10 +78,16 @@ export async function readHealth(deps: ReachDeps, world: keyof typeof CRAWLERS):
   }
 }
 
-/** The newest finished run of each head branch: a land runs per dev branch, so each branch's newest result is its land's state. */
+const decided = (runs: readonly Run[]): Run[] =>
+  runs.filter(run => run.status === "completed" && !UNDECIDED.includes(run.conclusion)).sort((a, b) => b.createdAt - a.createdAt);
+
+/** The newest run that passed or failed, skipping cancelled and skipped ones, which say nothing about the gate. */
+export const newestDecided = (runs: readonly Run[]): Run | undefined => decided(runs)[0];
+
+/** The newest decided run of each head branch: a land runs per dev branch, so each branch's newest result is its land's state. */
 export const newestPerBranch = (runs: readonly Run[]): Run[] => {
   const seen = new Map<string, Run>();
-  for (const run of [...runs].filter(run => run.status === "completed").sort((a, b) => b.createdAt - a.createdAt)) if (!seen.has(run.branch)) seen.set(run.branch, run);
+  for (const run of decided(runs)) if (!seen.has(run.branch)) seen.set(run.branch, run);
   return [...seen.values()];
 };
 
@@ -97,6 +110,10 @@ export interface Reading {
   compare: Compare;
   promotes?: Run[];
   lands?: Run[];
+  /** The newest successful land.yml run, read on its own because cancelled runs crowd it out of the land list. */
+  landPassed?: Run;
+  /** staging-deploy.yml runs on the staging branch. */
+  stagingDeploys?: Run[];
   failedJobs: Map<number, FailedJob[]>;
   health: Health[];
   errors: string[];
@@ -122,11 +139,11 @@ export function reachMetrics(reading: Reading, now: number): PrecheckOutput {
   for (const run of reading.promotes ?? []) {
     if (run.status !== "completed") flagged.push({ at: now, kind: "promote_in_flight", item: String(run.id), excerpt: `promote run ${run.id} is ${run.status}, started ${iso(run.createdAt)}: ${run.url}` });
   }
-  const newestPromote = (reading.promotes ?? []).filter(run => run.status === "completed").sort((a, b) => b.createdAt - a.createdAt)[0];
+  const newestPromote = newestDecided(reading.promotes ?? []);
   if (newestPromote) {
     const failed = FAILED.includes(newestPromote.conclusion);
     flagged.push({ at: now, kind: failed ? "promote_failed" : "promote_last", item: String(newestPromote.id),
-      excerpt: `the newest finished promote, run ${newestPromote.id} from ${iso(newestPromote.createdAt)}, ended ${newestPromote.conclusion}` +
+      excerpt: `the newest decided promote, run ${newestPromote.id} from ${iso(newestPromote.createdAt)}, ended ${newestPromote.conclusion}` +
         (failed ? ` in ${jobWords(reading.failedJobs.get(newestPromote.id) ?? [])}` : "") + `: ${newestPromote.url}` });
   }
   for (const run of recentFailed) {
@@ -136,8 +153,16 @@ export function reachMetrics(reading: Reading, now: number): PrecheckOutput {
   for (const run of newestPerBranch(reading.lands ?? [])) {
     if (!FAILED.includes(run.conclusion)) continue;
     flagged.push({ at: now, kind: "land_failed", item: String(run.id),
-      excerpt: `the newest land of ${run.branch}, run ${run.id} from ${iso(run.createdAt)}, ended ${run.conclusion} in ${jobWords(reading.failedJobs.get(run.id) ?? [])}: ${run.url}` });
+      excerpt: `the newest decided land of ${run.branch}, run ${run.id} from ${iso(run.createdAt)}, ended ${run.conclusion} in ${jobWords(reading.failedJobs.get(run.id) ?? [])}: ${run.url}` });
   }
+  const head = compare.commits.at(-1);
+  const headWords = head ? `staging's head ${short(head.sha)} landed ${iso(head.at)}, ${hours(now, head.at)} h ago` : `staging's head is main's tip ${short(compare.mainSha)}`;
+  if (reading.landPassed) {
+    const run = reading.landPassed;
+    flagged.push({ at: now, kind: "land_last_success", item: String(run.id),
+      excerpt: `the newest successful land is run ${run.id} of ${run.branch} from ${iso(run.createdAt)}, ${hours(now, run.createdAt)} h ago, and ${headWords}: ${run.url}` });
+  }
+  flagged.push(...stagingDeployFlags(reading.stagingDeploys, reading.failedJobs, stagingHead, now));
 
   const unread = reading.promotes ? 0 : 1;
   const metrics: Record<string, number> = {
@@ -149,25 +174,51 @@ export function reachMetrics(reading: Reading, now: number): PrecheckOutput {
   return { metrics, flagged, ...(lastFailed ? { lastEventAt: { failed_promotes_24h: lastFailed } } : {}) };
 }
 
+/** The newest staging deploy: a failed one names its job and step and whether it was staging's head, and the newest pass names the sha a walk can take. */
+export function stagingDeployFlags(runs: readonly Run[] | undefined, failedJobs: ReadonlyMap<number, FailedJob[]>, stagingHead: string, now: number): FlaggedSlice[] {
+  if (!runs) return [];
+  const flagged: FlaggedSlice[] = [];
+  for (const run of runs) {
+    if (run.status !== "completed") flagged.push({ at: now, kind: "staging_deploy_in_flight", item: String(run.id), excerpt: `staging deploy run ${run.id} of ${short(run.sha)} is ${run.status}, started ${iso(run.createdAt)}: ${run.url}` });
+  }
+  const newest = newestDecided(runs);
+  if (newest && FAILED.includes(newest.conclusion)) {
+    const which = newest.sha === stagingHead ? "staging's head" : "not staging's head";
+    flagged.push({ at: now, kind: "staging_deploy_failed", item: String(newest.id),
+      excerpt: `the newest decided staging deploy, run ${newest.id} of ${short(newest.sha)} (${which}) from ${iso(newest.createdAt)}, ${hours(now, newest.createdAt)} h ago, ended ${newest.conclusion} in ${jobWords(failedJobs.get(newest.id) ?? [])}: ${newest.url}` });
+  }
+  const passed = decided(runs).find(run => run.conclusion === "success");
+  flagged.push(passed
+    ? { at: now, kind: "staging_deploy_passed", item: passed.sha,
+      excerpt: `the newest staging sha whose staging deploy passed is ${short(passed.sha)}, run ${passed.id} from ${iso(passed.createdAt)}, ${hours(now, passed.createdAt)} h ago: ${passed.url}` }
+    : { at: now, kind: "staging_deploy_passed", excerpt: `none of the ${runs.length} listed staging deploys passed` });
+  return flagged;
+}
+
 export async function measureReach(deps: ReachDeps): Promise<PrecheckOutput> {
   const now = deps.now();
   const errors: string[] = [];
   const fail = (what: string) => (error: unknown): undefined => { errors.push(`${what}: ${message(error)}`); return undefined; };
-  const [compare, promotes, lands, ...health] = await Promise.all([
+  const [compare, promotes, lands, landsPassed, stagingDeploys, ...health] = await Promise.all([
     readCompare(deps),
     readRuns(deps, "promote.yml").catch(fail("promote.yml runs")),
-    readRuns(deps, "land.yml").catch(fail("land.yml runs")),
+    readRuns(deps, "land.yml", ["--limit", String(LAND_RUNS)]).catch(fail("land.yml runs")),
+    readRuns(deps, "land.yml", ["--status", "success", "--limit", "1"]).catch(fail("successful land.yml runs")),
+    readRuns(deps, "staging-deploy.yml", ["--branch", "staging"]).catch(fail("staging-deploy.yml runs")),
     readHealth(deps, "staging"),
     readHealth(deps, "prod"),
   ]);
-  const failedRuns = [...(promotes ?? []).filter(run => run.createdAt >= now - DAY_MS), ...newestPerBranch(promotes ?? []), ...newestPerBranch(lands ?? [])]
+  const newestDeploy = newestDecided(stagingDeploys ?? []);
+  const failedRuns = [...(promotes ?? []).filter(run => run.createdAt >= now - DAY_MS), ...newestPerBranch(promotes ?? []), ...newestPerBranch(lands ?? []),
+    ...(newestDeploy ? [newestDeploy] : [])]
     .filter(run => FAILED.includes(run.conclusion));
   const failedJobs = new Map<number, FailedJob[]>();
   await Promise.all([...new Set(failedRuns.map(run => run.id))].map(async id => {
     const jobs = await readFailedJobs(deps, id).catch(fail(`jobs of run ${id}`));
     if (jobs) failedJobs.set(id, jobs);
   }));
-  return reachMetrics({ compare, ...(promotes ? { promotes } : {}), ...(lands ? { lands } : {}), failedJobs, health, errors }, now);
+  return reachMetrics({ compare, ...(promotes ? { promotes } : {}), ...(lands ? { lands } : {}), ...(landsPassed?.[0] ? { landPassed: landsPassed[0] } : {}),
+    ...(stagingDeploys ? { stagingDeploys } : {}), failedJobs, health, errors }, now);
 }
 
 const exec: Exec = (file, args) => new Promise((resolve, reject) => {
