@@ -56,7 +56,7 @@ const AGENT_KINDS = ["wake", "alert", "relay", "brief", "hung call", "cross-host
 const SIZES = ["1", "2", "3-5", "6-10", "11-20", "21+"];
 const DROPS = ["no such session", "chat archived", "already landed", "job deleted", "newer report waits", "split in parts", "all needless", "other"];
 const REFUSALS = ["unknown session", "no worker found", "worker stopping or starting", "worker not reachable", "sent to itself", "pending limit",
-  "too long", "update restart", "timed out after 30 s", "other"];
+  "too long", "update restart", "timed out after 30 s", "no api key", "other"];
 const DRAIN_TURNS = ["0", "1", "2", "3", "4-5", "6-10", "11+", "no turn record"];
 const DAY_MS = 24 * 3_600_000;
 /** The audit's one target (messaging audit FINDINGS.md): no outbox message waits over 10 min for a live session. */
@@ -117,6 +117,7 @@ export function refusalReason(error: string): string {
   if (/cannot target the sending session/.test(error)) return "sent to itself";
   if (/update restart|update prepare/.test(error)) return "update restart";
   if (/Timed out after \d+ms/.test(error)) return "timed out after 30 s";
+  if (/No API key found for/.test(error)) return "no api key";
   if (/^\s*Error\s*$/.test(error)) return "no worker found";
   return "other";
 }

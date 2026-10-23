@@ -89,9 +89,16 @@ export class OutboxConflict extends Error {}
 class Closed extends Error {}
 
 const KEEP_MS = 7 * 24 * 60 * 60_000;
-/** The longest wait between two tries of one entry. */
+/** The longest wait between two tries of one entry that failed in different ways. */
 export const MAX_BACKOFF_MS = 30_000;
-const backoff = (attempt: number) => Math.min(MAX_BACKOFF_MS, 1_000 * 2 ** Math.min(attempt, 5));
+/**
+ * The longest wait between two tries that failed the same way. On 10-22 a message to chat-057a (01a14210) failed on "No API key found for
+ * openai-codex." from 15:00:17Z and went on try 452 at 18:54:03Z, one try each 30 s for 234 min; with this wait that outage takes about 32.
+ */
+export const SAME_ERROR_MAX_BACKOFF_MS = 10 * 60_000; // measured: the messaging audit's target is no outbox message waits over 10 min (harness-feed messaging.ts LATE_MS)
+/** The wait after a try; a run of `same` tries that failed the same way doubles it past MAX_BACKOFF_MS each time, up to SAME_ERROR_MAX_BACKOFF_MS. */
+const backoff = (attempt: number, same = 0) =>
+  Math.min(SAME_ERROR_MAX_BACKOFF_MS, Math.min(MAX_BACKOFF_MS, 1_000 * 2 ** Math.min(attempt, 5)) * 2 ** Math.max(0, same - 5));
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 
 export function publicEntry(entry: Stored): OutboxEntry {
@@ -109,6 +116,8 @@ export class Outbox {
   private readonly now: () => number;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly timers = new Set<() => void>();
+  /** Each entry's last failure and how many tries in a row failed with it. */
+  private readonly failures = new Map<string, { error: string; times: number }>();
   private last = 0;
   private temp = 0;
   private closed = false;
@@ -234,9 +243,19 @@ export class Outbox {
       const final = this.deps.final(error);
       if (final !== null) return this.finish(current, "failed", final);
       if (current.sentAt !== undefined && this.deps.uncertain && !this.deps.uncertain(error)) { const { sentAt: _at, ...refused } = current; current = refused; }
-      if (!this.deps.quiet?.(error)) this.deps.log(`outbox ${this.where(current.threadId)}: ${current.id} try ${current.attempts}${current.sentAt === undefined ? "" : " (may have gone)"}: ${message(error)}`);
+      // A logged wait, such as a full target, is read again each MAX_BACKOFF_MS, since it ends on its own.
+      const quiet = this.deps.quiet?.(error) ?? false;
+      const said = message(error);
+      const held = this.failures.get(current.id);
+      const times = !quiet && held?.error === said ? held.times + 1 : 1;
+      this.failures.set(current.id, { error: said, times });
+      const wait = backoff(current.attempts, times);
+      if (!quiet) {
+        this.deps.log(`outbox ${this.where(current.threadId)}: ${current.id} try ${current.attempts}${current.sentAt === undefined ? "" : " (may have gone)"}: ${said}` +
+          (wait > MAX_BACKOFF_MS ? ` (the same failure ${times} tries in a row; next try in ${Math.round(wait / 1000)} s)` : ""));
+      }
       current = this.update(current, { state: "queued" });
-      if (!this.closed && !this.deps.again?.(error)) await this.sleep(backoff(current.attempts));
+      if (!this.closed && !this.deps.again?.(error)) await this.sleep(wait);
     } finally { this.out.delete(current.threadId); }
   }
 
@@ -251,6 +270,7 @@ export class Outbox {
   }
 
   private finish(entry: Stored, state: "delivered" | "failed" | "obsolete", error?: string): Promise<void> {
+    this.failures.delete(entry.id);
     const { images: _images, sentAt: _sentAt, ...rest } = entry;
     const done: Stored = { ...rest, images: [], state, doneAt: this.now(), ...(error ? { error } : {}) };
     this.entries.set(done.id, done);

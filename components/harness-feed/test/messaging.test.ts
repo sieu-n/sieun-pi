@@ -88,6 +88,10 @@ test("dropReason and refusalReason sort the outbox notes and daemon errors seen 
   assert.equal(refusalReason(" Error: Agent messaging cannot target the sending session"), "sent to itself");
   assert.equal(refusalReason("Timed out after 30000ms waiting for the Prime Agent daemon response to \"send_message\""), "timed out after 30 s");
   assert.equal(refusalReason("Daemon is preparing an update restart"), "update restart");
+  // 10-22 15:00Z to 18:54Z: 451 tries of one message to chat-057a, which the messaging panel counted as "other".
+  assert.equal(outboxRefusal("2026-10-22T18:53:29.111Z outbox 01a14210: m-d12047e9-55fd-4d48-be84-1072f29204a6 try 451: No API key found for openai-codex."), "no api key");
+  assert.equal(outboxRefusal("2026-10-23T05:00:00.000Z outbox 01a14210: m-d12047e9-55fd-4d48-be84-1072f29204a6 try 12: No API key found for openai-codex. " +
+    "(the same failure 12 tries in a row; next try in 600 s)"), "no api key");
 });
 
 test("daemonRefusal counts the supervisor's and the worker's own lines and skips the supervisor's echo of the worker", () => {

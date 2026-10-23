@@ -4,6 +4,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { findCutJobs } from "../scripts/duties/whole-system.ts";
+import { JOB_CLEANUP_EVERY_MS } from "./chat-checkin.ts";
 import { WAIT_READ_TREES } from "./idle-unload.ts";
 import type { InterruptedHead, InterruptedReport, InterruptedRun, JobOf, PoolHeldRun, RecordedStop } from "./shared/interrupted.ts";
 import { turnErrorCause } from "./turn-error.ts";
@@ -11,13 +12,19 @@ import type { SessionRow } from "./shared/types.ts";
 
 /** The resume-paused-sessions skill owns the rule for which runs count as interrupted; the chat only runs it. */
 const script = fileURLToPath(new URL("../../../skills/resume-paused-sessions/scripts/resume_paused.py", import.meta.url));
-const CHECK_TTL_MS = 15_000;
 /**
  * A pass longer than this logs a warning and keeps running: the dry run took 45 to 58 s on 10-18 and 67 s at 06:58Z, and the old 90 s kill
  * at 06:52Z and 06:57Z threw away a finished pass, 8 sent continues included, and left the Mac's jobs unchecked. Each daemon call and relay
  * read inside the script has its own bound (60 s and 20 s).
  */
 const OVERRUN_WARN_MS = 90_000;
+/**
+ * How long a page check reuses the last report. The job sweep's pass (`resumeJobs`) runs at least every JOB_CLEANUP_EVERY_MS, at once when the
+ * catalog reads a cut job, and its dry run gives the page its report, so a tab runs the script only when no pass ran for that long and the
+ * longest pass, OVERRUN_WARN_MS. On 10-23 an open tab's check ran its own dry run each minute at 20 s of CPU each, and the daemon cpu use job read about 0.25 cores of the
+ * chat service on it.
+ */
+const CHECK_TTL_MS = JOB_CLEANUP_EVERY_MS + OVERRUN_WARN_MS;
 const ID_FLAGS = new Set(["--owners", "--only", "--unstuck"]);
 
 /** The flags of a run, with each id list as its count: the 06:52Z log line on 10-18 named 134 owners and no cause. */
@@ -123,11 +130,24 @@ const withIncomplete = (report: InterruptedReport, ...earlier: readonly Interrup
 
 
 /**
+ * What the page's check shows from a job sweep pass: the dry run's interrupted runs, the cut runs its --owed left alone among them, less each
+ * run a send pass of it gave its continue.
+ */
+export function pageView(planned: InterruptedReport, sends: readonly InterruptedReport[] = []): InterruptedReport {
+  const resumed = new Set(sends.flatMap(pass => (pass.children ?? []).flatMap(child => typeof child.result === "object" && "error" in child.result ? [] : [child.id])));
+  const unowed = (planned.unowed ?? []).flatMap((run): InterruptedRun[] => REASONS.has(run.cut) ? [{ id: run.id, name: run.name, reason: run.cut as InterruptedRun["reason"],
+    session_id: run.session_id, head: run.head, head_session_id: run.head_session_id, error: run.cut_error, errored_at: run.cut_at ?? "",
+    ...run.host === undefined ? {} : { host: run.host } }] : []);
+  return { paused: [...planned.paused, ...unowed].filter(run => !resumed.has(run.id)), heads: [], checked_at: planned.checked_at };
+}
+
+/**
  * Runs one check at a time for every open tab, and never next to a resume, so two clicks or two tabs cannot send "continue" to the same
- * head twice. A check answers with the last finished report and starts a new run once that report is 15 s old. On 10-18 on us-metal02 the
- * dry run took 45 to 58 s and a new run queued every 15 s behind the last one, so the script ran back to back and every page check
- * waited past its 90 s abort. Before the first run ends (after a service start or a resume) a check answers an empty report at once, and the
- * page's next check (each minute and on focus) gets the run's: a page load held a request open for that run for 90 to 120 s on 10-18.
+ * head twice. A check answers with the last finished report, from its own dry run or the job sweep's (`resumeJobs`), and starts its own run
+ * only once that report is CHECK_TTL_MS old. On 10-18 on us-metal02 the dry run took 45 to 58 s and a new run queued every 15 s behind the
+ * last one, so the script ran back to back and every page check waited past its 90 s abort. Before the first run ends (after a service start
+ * or a resume) a check answers an empty report at once, and the page's next check (each minute and on focus) gets the run's: a page load held
+ * a request open for that run for 90 to 120 s on 10-18.
  */
 export class InterruptedRuns {
   private last: { at: number; report: InterruptedReport } | null = null;
@@ -141,11 +161,13 @@ export class InterruptedRuns {
     if (!this.pending && !(this.last && Date.now() - this.last.at < CHECK_TTL_MS)) {
       const epoch = this.epoch;
       const pending = this.pending = this.serial(() => this.run(["--dry-run"]));
-      pending.then(report => { if (this.epoch === epoch) this.last = { at: Date.now(), report }; }, () => {})
+      pending.then(report => { if (this.epoch === epoch) this.keep(report); }, () => {})
         .finally(() => { if (this.pending === pending) this.pending = null; });
     }
     return Promise.resolve(this.last?.report ?? { paused: [], heads: [], checked_at: "" });
   }
+
+  private keep(report: InterruptedReport): void { this.last = { at: Date.now(), report }; }
 
   /** A resume changes what is paused, so the next check waits for a run that starts after it. */
   private forget(): void { this.last = null; this.pending = null; this.epoch++; }
@@ -188,11 +210,14 @@ export class InterruptedRuns {
   resumeJobs(isJob: (run: JobOf) => boolean, reopen: (sessionId: string) => Promise<void>,
     owners: ReadonlySet<string> = new Set(), found?: (cut: readonly InterruptedRun[]) => Promise<void>,
     cut: ReadonlySet<string> = new Set(), unstick?: (sessionId: string) => Promise<void>): Promise<InterruptedReport | null> {
+    const epoch = this.epoch;
+    const passes: InterruptedReport[] = [];
     const report = this.serial(async () => {
       const listed = new Set([...owners, ...cut]);
       // --owed: a cut job is continued only while its work is owed (resume_paused.py work_owed), since the pass looks back with no limit.
       const named = ["--owed", ...listed.size ? ["--owners", [...listed].join(",")] : []];
       const planned = await this.run(["--dry-run", "--direct", ...named]);
+      passes.push(planned);
       const jobs = planned.paused
         .filter(run => run.session_id !== undefined && (run.reason !== "hung" || (unstick !== undefined && run.retry_error !== undefined)) &&
           (isJob(run) || cut.has(run.session_id)));
@@ -236,6 +261,7 @@ export class InterruptedRuns {
       // and the 06:56Z send pass died on the 90 s limit before it reached census writer speed, the last of its 11 jobs.
       const box = jobs.some(run => run.host) ? [] : ["--this-box"];
       const sent = await this.run(["--direct", "--only", jobs.map(run => run.session_id).join(","), ...named, ...box, ...stuck]);
+      passes.push(sent);
       // A job the daemon archived when it went down answers "Unknown active session" to every send, its parent's agent_message included
       // (queue audit, 10-15 22:28Z to 10-16 04:15Z, five failed sends), so it waits forever. Reopening it from its file lets the continue land.
       const gone = new Set((sent.children ?? []).flatMap(child => isGone(child.result) ? [child.id] : []));
@@ -243,10 +269,13 @@ export class InterruptedRuns {
       if (!lost.length) return { ...withIncomplete(sent, planned), ...held, ...heldAlso(pooled, sent) };
       await reopenAll(lost);
       const again = await this.run(["--direct", "--only", lost.join(","), ...named, ...box, ...stuck]);
+      passes.push(again);
       const retried = new Map((again.children ?? []).map(child => [child.id, child]));
       return { ...withIncomplete({ ...sent, children: (sent.children ?? []).map(child => retried.get(child.id) ?? child) }, planned, again), ...held, ...heldAlso(pooled, sent, again) };
     });
-    this.forget();
+    // The pass's dry run is the page's next report, unless a resume came after this call.
+    const keep = () => { if (passes[0] && this.epoch === epoch) this.keep(pageView(passes[0], passes.slice(1))); };
+    void report.then(keep, keep);
     return report;
   }
 
