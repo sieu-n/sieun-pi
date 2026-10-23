@@ -45,6 +45,7 @@ import { Duties } from "./chat-duty-run.ts";
 import { primeUpdateRunning } from "./prime-update.ts";
 import { treeWait } from "./duty-tree-wait.ts";
 import { fixLiveReader } from "./shared/duty-fixes.ts";
+import { stalledCalls } from "./shared/stalled-calls.ts";
 import { alertJobBrief, archiveDutyJob, dutyJobHost, dutyJobName, savedChat } from "./chat-duty-job.ts";
 import { ArchiveQueue } from "./chat-archive-queue.ts";
 import { DutyStore } from "./chat-duty-store.ts";
@@ -214,6 +215,9 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     return { queued: [actions?.steering, actions?.followUps].flatMap(list => Array.isArray(list) ? list.filter((item): item is string => typeof item === "string") : []),
       busy: data.isStreaming === true || data.isCompacting === true || data.isRunningTools === true || (unfinished ?? 0) > 0, ...unfinished === undefined ? {} : { unfinished } };
   };
+  // The sessions in one tool call past STALL_MS on every box, with the process this box's watch (`calls`) sees under each, for the duty
+  // runner's fix steps and the check-in's owners (src/shared/stalled-calls.ts).
+  const stalls = (now: number) => stalledCalls([...catalog.daemonRows(), ...catalog.remoteHosts().flatMap(({ rows }) => rows)], now, session => calls.process(session));
   const dutyJobs = dutyJobHost({ threads, archives, rows: () => catalog.rows(), refresh: () => catalog.refresh(), registry,
     saved: async id => { const file = await sessionFileOf(id, agentDir); return file ? savedChat(file) : null; }, sessionFile: id => sessionFileOf(id, agentDir),
     schedules: () => catalog.schedulesNow(), held: () => chats.poolHeldSessions(), queue: hostsReading,
@@ -225,7 +229,8 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     ...replay ? { precheckCommand: () => ["/bin/sh", "-c", 'printf \'{"metrics":{}}\' > "$OUTPUT_FILE"'] } : {},
     board: id => boards.read(id), applyBoard: async (id, ops) => { await boards.apply(id, ops, "agent"); },
     fixLive: fixLiveReader({ rows: () => catalog.rows(), asleep: async now => (await pendingWakes(join(dataDir, "wakes"), now)).map(wake => wake.session),
-      pool: poolWaiting, held: () => chats.poolHeldSessions() }),
+      pool: poolWaiting, held: () => chats.poolHeldSessions(),
+      stalls }),
     priority: async id => chatPoolPriority((await labels.snapshot()).threads[id]?.priority ?? 0),
     jobs: dutyJobs, poolAdmits, updating: () => primeUpdateRunning(agentDir, socketPath), tell: (id, text) => chats.notice(id, text),
     checkIn: { view: id => chats.checkInView(id), run: (id, trigger, rerunOf) => chats.runCheckIn(id, trigger, rerunOf), measure: id => chats.measureCheckIn(id),
@@ -245,7 +250,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       heldNotices: heldNoticeRecord(join(dataDir, "held-notices.json")), cancels: jobCancelRecord(join(dataDir, JOB_CANCELS_FILE)),
       leftovers: (dir, session) => jobEnds.leftovers(dir, session),
       deletedLeftovers: chat => jobEnds.deleted(chat),
-      waking: session => waking(join(dataDir, "wakes"), session), relayed: relays, updating: () => primeUpdateRunning(agentDir, socketPath), wakes: now => pendingWakes(join(dataDir, "wakes"), now),
+      waking: session => waking(join(dataDir, "wakes"), session), relayed: relays, updating: () => primeUpdateRunning(agentDir, socketPath), wakes: now => pendingWakes(join(dataDir, "wakes"), now), stalls,
       resumes: { store: jobResumes(join(dataDir, "job-resumes")), applyBoard: (id, ops) => boards.apply(id, ops, "agent"),
         restart: async (chatId, name, brief, model) => {
           const chat = await dutyJobs.chat(chatId);

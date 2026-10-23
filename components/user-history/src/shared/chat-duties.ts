@@ -1,4 +1,5 @@
 import type { PoolPriority } from "./types.ts";
+import type { StalledCall } from "./stalled-calls.ts";
 
 /**
  * Duties: standing work a chat owns. A duty is a goal in the owner's words with numeric targets, a schedule, and a code precheck that measures
@@ -152,7 +153,9 @@ export interface DutyCut { error: string; at: number; provider?: string; slotAt?
  * A fix step on the board for one missed metric: its plan step id, the job that owns it, whether that job was live when the run looked, and
  * the open For you todo that holds the step (`hold`, by `todoName`, from src/shared/todo-hold.ts) when only the owner's answer moves it.
  */
-export interface FixLink { step: string; job?: string; live: boolean; hold?: string }
+export interface FixLink { step: string; job?: string; live: boolean; hold?: string;
+  /** The job's session sat in one tool call past STALL_MS when the run looked (src/shared/stalled-calls.ts): not live, and the brief names its process. */
+  stalled?: StalledCall }
 /** A run's re-measure after its own job ended. */
 export interface AfterMeasure { at: number; verdict: "met" | "missed" | "error"; metrics: Record<string, MetricResult>; summary: string; parts?: Record<string, MetricResult>;
   readings?: Record<string, number> }

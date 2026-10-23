@@ -8,6 +8,7 @@ import type { JobFact, StepView } from "./checkin-steps.ts";
 import { CI_CACHE_REPO, RUN_WAKE_DUE_MS, treeWakes, type Wake, wakeLabel } from "./wakes.ts";
 import { firstClause } from "./shared/chat-board.ts";
 import type { PlanItem } from "./shared/types.ts";
+import type { StalledCall } from "./shared/stalled-calls.ts";
 import { ciRuns } from "./ci-runs.ts";
 
 /*
@@ -159,6 +160,20 @@ export function withWakes(facts: readonly JobFact[], wakes: readonly Wake[], ses
     const session = fact.key.startsWith("thread:") ? fact.key.slice("thread:".length) : fact.sessionId ?? sessionOf(fact.key);
     const owed = session === undefined ? [] : treeWakes(session, below, wakes);
     return owed.length ? { ...fact, state: "working", wake: wakeLabel(owed) } : fact;
+  });
+}
+/**
+ * The facts with each working owner whose session sits in one tool call past STALL_MS (`stalls`, from `stalledCalls`) turned to ended, with its
+ * stall: such a job moves nothing until the call returns, so its steps are stuck (end state `stalled_call`). An owner asleep on a board.wake is
+ * left as it is. On 10-23 the job "codex fhnyq29tw5 sign-in" sat 2 h 53 min in one glob over all of home and p919 read moving all that time.
+ */
+export function withStalls(facts: readonly JobFact[], stalls: ReadonlyMap<string, StalledCall>, sessionOf: (key: string) => string | undefined): JobFact[] {
+  if (!stalls.size) return [...facts];
+  return facts.map(fact => {
+    if (fact.state !== "working" || fact.wake !== undefined) return fact;
+    const session = fact.key.startsWith("thread:") ? fact.key.slice("thread:".length) : fact.sessionId ?? sessionOf(fact.key);
+    const call = session === undefined ? undefined : stalls.get(session);
+    return call ? { ...fact, state: "ended", stalled: call } : fact;
   });
 }
 /**

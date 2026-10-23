@@ -1,3 +1,5 @@
+import type { CallProcess } from "./shared/stalled-calls.ts";
+
 const MINUTE = 60_000;
 
 /**
@@ -35,6 +37,9 @@ export interface CallMark {
   workS: number;
   /** The kernel's largest command that is no Prime process, cut to 120 characters. */
   command: string | null;
+  /** That command's pid and start time (epoch s), which a stalled call's brief line names (`CallWatch.process`); absent on lines before 10-23. */
+  pid?: number;
+  started?: number | null;
 }
 
 /** A hung call as d7 and Settings > Hosts read it. */
@@ -44,7 +49,7 @@ export interface HungCall { session: string; name: string; root: string; tree: s
   since?: number }
 
 /** The kernel numbers the footprint helper (src/worker-footprint.py) reports, as the marks read them. */
-export interface KernelCpu { session: string; cpu_s?: number; work_cpu_s?: number; biggest: { command: string } | null }
+export interface KernelCpu { session: string; cpu_s?: number; work_cpu_s?: number; biggest: { command: string; pid?: number; started?: number | null } | null }
 /** The daemon row fields the marks read. */
 export interface CallRow { sessionId: string; lifecycle?: unknown; activeSessionId?: unknown; isRunningTools?: unknown; lastActivityAt?: unknown }
 
@@ -58,7 +63,9 @@ export function callMarks(rows: readonly unknown[], kernels: readonly KernelCpu[
     const since = typeof row.lastActivityAt === "string" ? Date.parse(row.lastActivityAt) : NaN;
     const kernel = byKernel.get(row.sessionId);
     if (!kernel || !Number.isFinite(since) || now - since < HUNG_SILENT_MS - PROGRESS_WINDOW_MS) return [];
-    return [{ session: row.sessionId, since, at: now, kernelS: kernel.cpu_s!, workS: kernel.work_cpu_s!, command: kernel.biggest?.command.slice(0, 120) ?? null }];
+    const biggest = kernel.biggest;
+    return [{ session: row.sessionId, since, at: now, kernelS: kernel.cpu_s!, workS: kernel.work_cpu_s!, command: biggest?.command.slice(0, 120) ?? null,
+      ...typeof biggest?.pid === "number" ? { pid: biggest.pid, started: biggest.started ?? null } : {} }];
   });
 }
 
@@ -109,6 +116,13 @@ export class CallWatch {
 
   /** Drops calls the watch stopped (src/hung-stop.ts) from the newest minute's hung calls. */
   release(sessions: readonly string[]): void { this.latest = this.latest.filter(call => !sessions.includes(call.session)); }
+
+  /** The biggest command under `session`'s kernel in its newest kept mark, for a stalled call's brief line (src/shared/stalled-calls.ts). */
+  process(session: string): CallProcess | undefined {
+    const mark = this.marks.findLast(entry => entry.session === session);
+    if (!mark || mark.pid === undefined || mark.command === null) return undefined;
+    return { pid: mark.pid, command: mark.command, ...typeof mark.started === "number" ? { startedAt: mark.started * 1000 } : {} };
+  }
 
   /** The sessions of the newest minute's hung calls. */
   hung(): ReadonlySet<string> { return new Set(this.latest.map(call => call.session)); }

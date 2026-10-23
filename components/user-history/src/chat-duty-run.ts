@@ -13,7 +13,7 @@ import { type AfterMeasure, CHECK_IN_DUTY, CHECK_IN_DUTY_ID, dailySlot, dutyDue,
 import { briefFindings, headlineWords } from "./shared/brief-cap.ts";
 import { pushMisses } from "./duty-push.ts";
 import type { PrimeUpdate } from "./prime-update.ts";
-import { closedFixes, dutyFixes, missedKeys, verifyNoteOps } from "./shared/duty-fixes.ts";
+import { closedFixes, dutyFixes, type FixLiveness, missedKeys, verifyNoteOps } from "./shared/duty-fixes.ts";
 import { holdingTodo, todoName, withBoardLinks } from "./shared/todo-hold.ts";
 import { effectiveRun, metricStreaks, type MetricStreak } from "./shared/duty-streak.ts";
 import { type BoardOp, CHECK_IN_MIN_MINUTES, type ChatBoard, type CheckInPause, type CheckInView, type PlanItem, type PoolPriority } from "./shared/types.ts";
@@ -60,8 +60,8 @@ export interface DutyHost {
   priority?: (chatId: string) => Promise<PoolPriority>;
   /** The chat's board, where each missed metric's fix step lives (`dutyFixes`); absent: runs record no fixes. */
   board?: (chatId: string) => Promise<ChatBoard | null>;
-  /** Whether a fix step's job is at work now (`fixJobLive`); absent: no fix counts as live. */
-  fixLive?: (chatId: string, item: PlanItem) => Promise<boolean>;
+  /** Whether a fix step's job is at work now, or the stall of its session when it sits in one tool call (`fixJobState`); absent: no fix counts as live. */
+  fixLive?: (chatId: string, item: PlanItem) => Promise<FixLiveness>;
   /** Applies board ops to the chat's board, for each measured run's goal readings (`goalReadingOps`); absent: runs write no reading. */
   applyBoard?: (chatId: string, ops: (board: ChatBoard) => readonly BoardOp[]) => Promise<void>;
   /** Sends a server notice to a chat (`Chats.notice`), for each of a precheck's `tells`; absent: the runner sends none. */

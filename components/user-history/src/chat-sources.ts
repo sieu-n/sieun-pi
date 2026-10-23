@@ -15,6 +15,7 @@ import type { JobModel, JobResumes } from "./job-resume.ts";
 import type { PrimeUpdate } from "./prime-update.ts";
 import type { InterruptedReport, JobOf } from "./shared/interrupted.ts";
 import type { Wake } from "./wakes.ts";
+import type { StalledCall } from "./shared/stalled-calls.ts";
 import type { ArtifactDisk } from "./checkin-load.ts";
 import type { JobCancelRecord } from "./job-cancels.ts";
 import type { ArchiveBy, ServiceArchive } from "./service-archives.ts";
@@ -378,6 +379,8 @@ export interface CheckInSource {
   updating?: () => Promise<PrimeUpdate | null>;
   /** The board.wakes the service still owes at a time (`pendingWakes`); the check-in counts a job asleep on one as working. Absent: none. */
   wakes?: (now: number) => Promise<readonly Wake[]>;
+  /** The sessions in one tool call past STALL_MS at a time (`stalledCalls`); the check-in counts a job stalled in one as not working. Absent: none. */
+  stalls?: (now: number) => ReadonlyMap<string, StalledCall>;
   /**
    * Where the cleanup saves a job it ends while the job waits on a board step (`JobResumes`, src/job-resume.ts), and how it writes that step's
    * note (the board store's apply). Absent: such a job is kept.

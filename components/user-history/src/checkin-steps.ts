@@ -3,6 +3,7 @@ import type { ChatBoard, ChildAgent, OwnerTodo, PlanItem, PlanStatus, QueuePlace
 import { clockTime, localTime } from "./checkin-settings.ts";
 import { savedStatePath } from "./job-resume.ts";
 import type { OwnerMessage } from "./shared/brief-check.ts";
+import type { StalledCall } from "./shared/stalled-calls.ts";
 
 /** The check-in's step classes: the chat's job facts, the class of each open plan step (`stepClass`), and the line the duty job reads for it. */
 
@@ -50,6 +51,8 @@ export interface JobFact {
   deadWake?: string;
   /** Its session has no first prompt (state `unstarted`): when it was spawned, and when the chat service last sent its brief. */
   unstarted?: { at: number; sentAt?: number };
+  /** Its session sits in one tool call past STALL_MS (`withStalls`): state `ended`, since it moves nothing until that call returns. */
+  stalled?: StalledCall;
 }
 /**
  * One agent message a job sent the chat: when, and its first line; `factsAt` is when the job last sent one carrying a fact (`noteFacts`), such as a
@@ -363,6 +366,7 @@ export const STATE_WORD: Record<JobState, string> = { working: "working", ended:
 /** An owner's state as a precheck line names it: "ended" when cancelled, "asleep on a board.wake at 14:40Z" while it sleeps on a wake. */
 export const ownerState = (fact: JobFact): string => {
   if (fact.cancelled) return "ended";
+  if (fact.stalled) return "stalled in one tool call";
   const waits = [capacityWait(fact), fact.wake ? `asleep on ${fact.wake}` : undefined].filter(wait => wait !== undefined);
   return waits.length ? waits.join(", ") : fact.deadWake ? `${STATE_WORD[fact.state]}, asleep on a dead wait: ${fact.deadWake}` : STATE_WORD[fact.state];
 };

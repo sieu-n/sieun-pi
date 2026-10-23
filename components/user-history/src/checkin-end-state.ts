@@ -3,6 +3,7 @@ import { heldByTodo } from "./shared/todo-hold.ts";
 import type { OwnerTodo, PlanItem, SessionRow } from "./shared/types.ts";
 import { landWaitCommits, type WakeWatch } from "./checkin-load.ts";
 import { zTime } from "./checkin-goals.ts";
+import { stallWords } from "./shared/stalled-calls.ts";
 import { ago, capacityWait, clip, firstClause, type JobFact, ownerLabel, poolWait, quote, STEP_STALE_MS, type StepView, stepOwner, waitCarrier, waitsOnOwner, waitTarget } from "./checkin-steps.ts";
 
 /**
@@ -18,9 +19,9 @@ import { ago, capacityWait, clip, firstClause, type JobFact, ownerLabel, poolWai
  * land, promote or release, and most of the rest on a CI run whose job had gone idle. The step classes (`stepClass`) counted most of them as
  * `waiting`, which broke no check-in target, so 159 of 298 check-ins that met every target in 48 h still had stuck steps.
  */
-export type EndState = "moving" | "foryou" | "parked" | "owner_no_todo" | "release" | "ci" | "thread" | "event" | "time" | "job_ended" | "no_owner";
+export type EndState = "moving" | "foryou" | "parked" | "owner_no_todo" | "release" | "ci" | "thread" | "event" | "time" | "job_ended" | "stalled_call" | "no_owner";
 export const OK_STATES: ReadonlySet<EndState> = new Set(["moving", "foryou", "parked"]);
-export const STUCK_STATES: readonly EndState[] = ["owner_no_todo", "release", "ci", "thread", "event", "time", "job_ended", "no_owner"];
+export const STUCK_STATES: readonly EndState[] = ["owner_no_todo", "release", "ci", "thread", "event", "time", "job_ended", "stalled_call", "no_owner"];
 
 const RELEASE = /\b(?:land|lands|landed|promote|release|released|deploys?|redeploys?|cut|train|fable|slot|cas)\b/i;
 const CI = /\b(?:runs?|ci|checks?|green|probe|verify-dev|workflow|tests?|push(?:es|ed)?)\b|\bci\//i;
@@ -69,6 +70,7 @@ export function endState(view: StepView, todos: Parameters<typeof heldByTodo>[1]
   const { item, owner, mine, cls } = view;
   const out = (state: EndState, reason: string): EndStateView => ({ view, state, reason });
   if (cls === "parked") return out("parked", `parked by ${view.parked ?? "an owner correction"}`);
+  if (owner?.stalled) return out("stalled_call", `${ownerLabel(owner)} ${stallWords(owner.stalled, now)}`);
   if (owner?.state === "working") return out("moving", `${ownerLabel(owner)} ${capacityWait(owner) ?? (owner.wake ? `sleeps on ${owner.wake}` : "works on it")}`);
   if (poolWait(owner)) return out("moving", `${ownerLabel(owner!)} waits for its slot in the token pool`);
   if (owner?.state === "unstarted" && owner.unstarted) return out("job_ended", `${ownerLabel(owner)} never started: Prime admitted it at ${zTime(owner.unstarted.at)} and its ` +
@@ -191,6 +193,7 @@ const NEXT: Record<EndState, string> = {
   event: "check whether it happened and do the next step, or give it a live owner",
   time: "do it now if it can run now, or give it a live owner that wakes at that time",
   job_ended: "read the job's last report, then close the step, steer the job, or start a new one",
+  stalled_call: "stop the process it names, then steer the job with the call you stopped and the step's next action, or start a new job if it does not write again",
   no_owner: "start a job on it, do it yourself, or ask the owner in For you",
 };
 /** The precheck line of one stuck step: id, title, why it is stuck, how long it has not changed, and what it needs. */

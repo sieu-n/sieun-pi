@@ -1,6 +1,10 @@
 import { CHECK_IN_DUTY, type Duty, type DutyRunRecord, type FixLink, type FlaggedSlice } from "./chat-duties.ts";
 import type { MetricStreak } from "./duty-streak.ts";
 import type { BoardOp, ChatBoard, PlanItem, SessionRow } from "./types.ts";
+import type { StalledCall } from "./stalled-calls.ts";
+
+/** Whether a fix step's job is at work: true, false, or the stall of its owner session, which counts as not at work and names the process to stop. */
+export type FixLiveness = boolean | StalledCall;
 
 /**
  * Fix steps: a plan step whose `duty` is `<dutyId>/<metricKey>` is the chat's fix for that duty metric. A duty run records them for its missed
@@ -67,10 +71,12 @@ function linked(board: ChatBoard | null, duty: string): Map<string, Linked[]> {
  * started until wiki_problems reached 26 at 09:36Z.
  * With no live step, an open step an open For you todo holds (`held`, the todo's name) comes next and carries `hold`: on 10-23 every d5 run
  * of the AI harness chat told its job to start a fix job on p919, which waited only on the owner's Apple sign-in, Railway Breach's t11.
+ * An open step whose job is stalled in one tool call (`FixLiveness` a `StalledCall`) comes after a live one and before a held one, and carries
+ * `stalled`, so the brief names the process to stop and the job to steer.
  * A step whose owner is a `rlm.create_session` root may carry only its `sessionId`: CI and RepoOps' p360 and p361, the root-cause steps it
  * started on d9's 04:07Z push on 10-23, had no job name, and its 04:14Z d4 and 05:06Z d1 runs recorded them as not live, though both roots were started for them at about 04:10Z.
  */
-export async function dutyFixes(board: ChatBoard | null, duty: string, metrics: readonly string[], live: (item: PlanItem) => Promise<boolean>,
+export async function dutyFixes(board: ChatBoard | null, duty: string, metrics: readonly string[], live: (item: PlanItem) => Promise<FixLiveness>,
   flagged: readonly FlaggedSlice[] = [], goal?: string, held: (item: PlanItem) => string | undefined = () => undefined): Promise<Record<string, FixLink>> {
   const steps = linked(board, duty);
   const fixes: Record<string, FixLink> = {};
@@ -80,10 +86,12 @@ export async function dutyFixes(board: ChatBoard | null, duty: string, metrics: 
     const ranked = (steps.get(metric) ?? []).filter(step => step.item.id !== goal);
     const found = [...ranked.filter(under), ...ranked.filter(step => !under(step))].map(step => step.item);
     const open = found.filter(item => OPEN.has(item.status));
-    let pick: { item: PlanItem; live: boolean; hold?: string } | undefined;
+    let pick: { item: PlanItem; live: boolean; hold?: string; stalled?: StalledCall } | undefined;
     let first: PlanItem | undefined;
     for (const item of open) {
-      if ((item.job !== undefined || item.sessionId !== undefined) && await live(item)) { pick = { item, live: true }; break; }
+      const state = item.job !== undefined || item.sessionId !== undefined ? await live(item) : false;
+      if (state === true) { pick = { item, live: true }; break; }
+      if (state !== false && !pick?.stalled) pick = { item, live: false, stalled: state };
       const hold = held(item);
       if (hold !== undefined) pick ??= { item, live: false, hold };
       first ??= item;
@@ -93,7 +101,8 @@ export async function dutyFixes(board: ChatBoard | null, duty: string, metrics: 
       const newest = [...found].sort((a, b) => stepNumber(b.id) - stepNumber(a.id))[0];
       if (newest) pick = { item: newest, live: false };
     }
-    if (pick) fixes[metric] = { step: pick.item.id, ...(pick.item.job ? { job: pick.item.job } : {}), live: pick.live, ...(pick.hold ? { hold: pick.hold } : {}) };
+    if (pick) fixes[metric] = { step: pick.item.id, ...(pick.item.job ? { job: pick.item.job } : {}), live: pick.live, ...(pick.hold ? { hold: pick.hold } : {}),
+      ...(pick.stalled ? { stalled: pick.stalled } : {}) };
   }
   return fixes;
 }
@@ -139,23 +148,27 @@ export function closedFixes(before: ChatBoard | null, after: ChatBoard): { step:
   return closed;
 }
 
-/** Where `fixLiveReader` reads a fix job's state: the catalog rows, the sessions asleep on a board.wake, in pi-pool's queue, and held by pi-pool after a cut. */
+/**
+ * Where `fixLiveReader` reads a fix job's state: the catalog rows, the sessions asleep on a board.wake, in pi-pool's queue, held by pi-pool after a
+ * cut, and stalled in one tool call (`stalledCalls`).
+ */
 export interface FixLiveSources {
   rows: () => Promise<readonly SessionRow[]>;
   asleep: (now: number) => Promise<Iterable<string>>;
   pool: () => Promise<Iterable<string>>;
   held: () => Iterable<string>;
+  stalls?: (now: number) => ReadonlyMap<string, StalledCall>;
 }
 
 /**
  * The duty runner's `fixLive`: `fixJobLive` with every wait a live job can be in. A job pi-pool holds after a cut waits for its pool time and is
  * in no queue place: on 10-19 api portal vp's d2 runs from 14:09Z to 14:40Z recorded its three parity jobs as not live while pi-pool held them.
  */
-export function fixLiveReader(sources: FixLiveSources, clock: () => number = Date.now): (chatId: string, item: Pick<PlanItem, "id" | "job" | "sessionId">) => Promise<boolean> {
+export function fixLiveReader(sources: FixLiveSources, clock: () => number = Date.now): (chatId: string, item: Pick<PlanItem, "id" | "job" | "sessionId">) => Promise<FixLiveness> {
   return async (chatId, item) => {
     const now = clock();
     const [rows, asleep, pool] = await Promise.all([sources.rows(), sources.asleep(now).catch(() => []), sources.pool().catch(() => [])]);
-    return fixJobLive(item, chatId, rows, new Set(asleep), new Set([...pool, ...sources.held()]), now);
+    return fixJobState(item, chatId, rows, new Set(asleep), new Set([...pool, ...sources.held()]), now, sources.stalls?.(now) ?? new Map());
   };
 }
 
@@ -185,16 +198,27 @@ export function sessionBornAt(id: string): number | null {
  * the old first-match test read only the stopped copy and recorded no live fix.
  */
 export function fixJobLive(item: Pick<PlanItem, "id" | "job" | "sessionId">, chatId: string, rows: readonly SessionRow[], asleep: ReadonlySet<string>,
-  waiting: ReadonlySet<string> = new Set(), now: number = Date.now()): boolean {
+  waiting: ReadonlySet<string> = new Set(), now: number = Date.now(), stalls: ReadonlyMap<string, StalledCall> = new Map()): boolean {
+  return fixJobState(item, chatId, rows, asleep, waiting, now, stalls) === true;
+}
+
+/**
+ * `fixJobLive`, with a stalled owner named: true when the step's job is at work, the owner session's stall (`stalls`, src/shared/stalled-calls.ts)
+ * when it sits in one tool call past STALL_MS and nothing else of it works, else false. A stalled owner is no live owner: on 10-23 p919's job
+ * "codex fhnyq29tw5 sign-in" read live for the 2 h 53 min its glob over all of home ran.
+ */
+export function fixJobState(item: Pick<PlanItem, "id" | "job" | "sessionId">, chatId: string, rows: readonly SessionRow[], asleep: ReadonlySet<string>,
+  waiting: ReadonlySet<string> = new Set(), now: number = Date.now(), stalls: ReadonlyMap<string, StalledCall> = new Map()): FixLiveness {
   const agents = rows.find(row => row.id === chatId)?.agents ?? [];
   const owners = agents.filter(entry => entry.steps.includes(item.id) || (item.sessionId !== undefined && entry.sessionId === item.sessionId) ||
     (item.job !== undefined && (entry.sender === item.job || entry.name === item.job)));
-  if (owners.some(agent => agent.state === "working" || agent.queued !== undefined)) return true;
+  if (owners.some(agent => agent.queued !== undefined || (agent.state === "working" && !(agent.sessionId !== undefined && stalls.has(agent.sessionId))))) return true;
   const sessions = new Set([...owners.flatMap(agent => agent.sessionId ? [agent.sessionId] : []), ...item.sessionId ? [item.sessionId] : []]);
   const named = sessions.size ? undefined : rows.find(row => row.name === item.job && !row.archived)?.id;
   if (named) sessions.add(named);
-  return [...sessions].some(session => {
+  const live = [...sessions].some(session => {
     if (asleep.has(session) || waiting.has(session)) return true;
+    if (stalls.has(session)) return false;
     const row = rows.find(candidate => candidate.id === session);
     if (row === undefined) {
       const born = sessionBornAt(session);
@@ -202,4 +226,5 @@ export function fixJobLive(item: Pick<PlanItem, "id" | "job" | "sessionId">, cha
     }
     return !row.archived && row.working;
   });
+  return live || ([...sessions].map(session => stalls.get(session)).find(call => call !== undefined) ?? false);
 }

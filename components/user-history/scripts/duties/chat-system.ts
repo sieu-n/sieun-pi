@@ -17,6 +17,7 @@ import { serverNote } from "../../src/shared/chat-feed.ts";
 import type { ChatBoard, PlanItem } from "../../src/shared/types.ts";
 import { CHANGE_APPROACH_MISSES, fixStepStreak, metricStreaks } from "../../src/shared/duty-streak.ts";
 import { hasDoneLine, upkeepWords } from "../../src/shared/upkeep-title.ts";
+import { stalledSince } from "../../src/shared/stalled-calls.ts";
 import { daemonSessions, dutyFleet, type FleetDuty } from "./duty-fleet.ts";
 import { catalogCopies, endsOnPoolWait, planCounts, planInputs, POOL_TAIL_BYTES, stepSessions } from "./whole-system.ts";
 
@@ -160,7 +161,13 @@ export function fixNotMoving(red: readonly RedDuty[], name: (chat: string) => st
 }
 
 /** A catalog row as the boxes' copies keep it (session-copy.json and src/host-catalogs.ts `copyPath`), with the fields the push reads. */
-export interface CatalogRow { sessionId: string; sessionName?: string; sessionFile?: string; activity?: string; lastActivityAt?: string; created?: string }
+export interface CatalogRow { sessionId: string; sessionName?: string; sessionFile?: string; activity?: string; lastActivityAt?: string; created?: string;
+  lifecycle?: string; activeSessionId?: string; isRunningTools?: boolean; modified?: string }
+/**
+ * Whether a catalog row works now: its activity says so and it does not sit in one tool call past STALL_MS (`stalledSince`). On 10-23 d9 read
+ * p919 as owned by the job "codex fhnyq29tw5 sign-in" while one glob of it over all of home ran 2 h 53 min.
+ */
+const rowWorks = (row: CatalogRow, now: number): boolean => row.activity === "working" && stalledSince(row, now) === undefined;
 const ROOT_OF = /\/session-artifacts\/([0-9a-f-]{36})\//;
 const ms = (iso: string | undefined): number => { const at = Date.parse(iso ?? ""); return Number.isFinite(at) ? at : 0; };
 
@@ -205,7 +212,7 @@ export function goalsWithNoJob(board: ChatBoard | null, reads: OwnerReads): Plan
     const sessions = stepSessions(item, reads.named);
     if (sessions.some(id => reads.waking.has(id) || reads.poolWaiting.has(id) || fresh(reads.activity.get(id)))) return true;
     return reads.jobs.some(row => (sessions.includes(row.sessionId) || (!!item.job && row.sessionName === item.job)) &&
-      (row.activity === "working" || fresh(ms(row.lastActivityAt))));
+      (rowWorks(row, reads.now) || fresh(ms(row.lastActivityAt))));
   };
   const held = (item: PlanItem): boolean => {
     if (asked.has(item.id) || heldByTodo(item, todos) || parkedBy(item) !== undefined) return true;
@@ -232,7 +239,7 @@ export function withCatalogOwners(plan: { ownerActivity?: ReadonlyMap<string, nu
   for (const [chat, rows] of jobs) {
     const names = named.get(chat) ?? named.set(chat, new Map()).get(chat)!;
     for (const row of rows) {
-      const at = row.activity === "working" ? now : ms(row.lastActivityAt);
+      const at = rowWorks(row, now) ? now : ms(row.lastActivityAt);
       if (at > (ownerActivity.get(row.sessionId) ?? 0)) ownerActivity.set(row.sessionId, at);
       if (row.sessionName && !names.get(row.sessionName)?.includes(row.sessionId)) names.set(row.sessionName, [...names.get(row.sessionName) ?? [], row.sessionId]);
     }
@@ -255,7 +262,7 @@ export function withCatalogOwners(plan: { ownerActivity?: ReadonlyMap<string, nu
  */
 export function withoutWorkingRuns<T extends { chat: string; duty: string }>(stuck: readonly T[], runs: ReadonlyMap<string, readonly DutyRunRecord[]>,
   rows: readonly CatalogRow[], now: number, poolCut: ReadonlySet<string> = new Set(), poolTrees: ReadonlySet<string> = new Set()): T[] {
-  const at = new Map(rows.map(row => [row.sessionId, row.activity === "working" ? now : ms(row.lastActivityAt)] as const));
+  const at = new Map(rows.map(row => [row.sessionId, rowWorks(row, now) ? now : ms(row.lastActivityAt)] as const));
   return stuck.filter(entry => {
     const own = (runs.get(entry.chat) ?? []).filter(run => run.duty === entry.duty);
     const last = own.find(run => run.job !== undefined);

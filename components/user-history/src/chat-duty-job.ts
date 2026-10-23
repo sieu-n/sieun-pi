@@ -13,6 +13,7 @@ import { poolSlot } from "./shared/chat-feed.ts";
 import { CUT_TAIL_BYTES, tailLines } from "./cut-end.ts";
 import { lastTurnError } from "./held-turns.ts";
 import { dutyLink } from "./shared/duty-fixes.ts";
+import { stallWords } from "./shared/stalled-calls.ts";
 import type { MetricStreak } from "./shared/duty-streak.ts";
 import type { JobModel } from "./job-resume.ts";
 import type { AgentQueueReading, SessionRow, ThinkingLevel, ThreadSchedule } from "./shared/types.ts";
@@ -208,11 +209,18 @@ const owner = (fix: NonNullable<MetricStreak["fix"]>): string => fix.job ? `job 
  * windowed count with no new event since the last run (`quietSince`) gets no job, and nor does one whose fix step an open For you todo holds
  * (`FixLink.hold`) with no live job, stuck or not: on 10-23 d5's runs pushed for a new job on p919, which waited only on Railway Breach's t11.
  */
-export function missLine(dutyId: string, streak: MetricStreak, label: string, unit = ""): string {
+export function missLine(dutyId: string, streak: MetricStreak, label: string, unit = "", now: number = Date.now()): string {
   const link = JSON.stringify(dutyLink(dutyId, streak.key));
   const where = `${streak.key} (${label}) is ${streak.value}${unit}, target ${streak.op} ${streak.target}${unit}, missed ${runs(streak.misses)} in a row` +
     `${streak.misses > 1 ? streak.moved ? ", moving toward the target" : ", not moving toward the target" : ""}.`;
   const fix = streak.fix;
+  if (fix?.stalled && !fix.live) {
+    const pid = fix.stalled.process?.pid;
+    return `${where} Its fix step ${fix.step} has the job ${fix.job ?? fix.stalled.session}, which is stalled, not live: it ${stallWords(fix.stalled, now)}. ` +
+      `${pid !== undefined ? `Stop that process with \`kill ${pid}\` (\`kill -9 ${pid}\` if it is still there 10 s later)` : "Stop the process its open call runs"}, then steer ` +
+      `${fix.job ?? `session ${fix.stalled.session}`} with agent_message.send: name the call you stopped and why, this number, and ask it to search a narrow path ` +
+      `(rg with a named folder, never a walk of all of home) and land the code fix. Start a new fix job only when it has not written again by your next run.`;
+  }
   if (streak.quietSince !== undefined) {
     return `${where} Its newest counted event is from ${localTime(streak.quietSince)}, before the last run, so no new event came since and the number ` +
       `moves toward its target as older events leave its window. Start no new job for it${fix ? ` and leave ${fix.step} as it is` : ""}; check the source for a new event.`;
@@ -303,7 +311,7 @@ export function dutyJobBrief({ duty, chat, job, at, measure, findings, focus = [
       "cannot see everything. Check the real state.",
     findings,
     ...(shown.length ? [`## Missed metrics: each one needs a fix step with a live job\n` +
-      shown.map(streak => { const metric = counted.find(entry => entry.key === streak.key); return `- ${missLine(duty.id ?? "<dutyId>", streak, metric?.label ?? streak.key, metric?.unit)}`; }).join("\n") +
+      shown.map(streak => { const metric = counted.find(entry => entry.key === streak.key); return `- ${missLine(duty.id ?? "<dutyId>", streak, metric?.label ?? streak.key, metric?.unit, at)}`; }).join("\n") +
       "\n\nA miss is never accepted as it stands. A fix step is a plan step with `duty` set to `<dutyId>/<metricKey>` and `job` set to a job that " +
       "works on a code change, not a note or a later wait. When a fix step closes, the server runs this duty again at once to check the number moved."] : []),
     "## How to work",

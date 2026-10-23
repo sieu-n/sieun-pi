@@ -5,7 +5,8 @@ import { pathToFileURL } from "node:url";
 import { BoardStore } from "../../src/chat-board-store.ts";
 import { ownerChats } from "../../src/owner-chats.ts";
 import { DutyStore } from "../../src/chat-duty-store.ts";
-import { withWakes } from "../../src/checkin-load.ts";
+import { withStalls, withWakes } from "../../src/checkin-load.ts";
+import { stalledCalls } from "../../src/shared/stalled-calls.ts";
 import { activePause, checkInSettings } from "../../src/checkin-settings.ts";
 import { jobFacts, liveJobs, liveWindowMs, ownerOf, OPEN, walk } from "../../src/checkin-steps.ts";
 import { CHECK_IN_DUTY, CHECK_IN_DUTY_ID, headlineMetric, type DutyMetric, type DutyRunRecord, type FixLink, type FlaggedSlice } from "../../src/shared/chat-duties.ts";
@@ -29,7 +30,7 @@ import { daemonList, listRows } from "../../src/daemon-list.ts";
 /** The fields of one `prime-agent sessions --json` entry the fleet reads. */
 export interface DaemonSession {
   sessionId: string; sessionName?: string; firstMessage?: string; lifecycle?: string; activity?: string; lastActivityAt?: string;
-  messageCount?: number; parentSessionId?: string; rlmChildId?: string;
+  messageCount?: number; parentSessionId?: string; rlmChildId?: string; activeSessionId?: string; isRunningTools?: boolean; modified?: string;
 }
 /** JSON whose strings may hold raw control characters (session titles do): they are escaped before parsing. */
 export function parseLooseJson(text: string): unknown {
@@ -246,12 +247,15 @@ export async function dutyFleet(options: { dataDir: string; now: number; session
           // The check-in's working test: a running subtree, a session change within the chat's interval capped at LIVE_GAP_MS, or an owed wake.
           live ??= (() => {
             const children = chatChildren(all, id);
-            const facts = withWakes(jobFacts(children, board, sessionRows(all), id, [], liveJobs(children, subagentsByParent(all), now, liveWindowMs(setting.everyMs), asleep)),
-              wakes, key => children.find(child => child.id === key)?.sessionId);
+            // A session stalled in one tool call past STALL_MS works on nothing (`withStalls`), as the server reads it.
+            const stalls = stalledCalls(all, now);
+            const sessionOf = (key: string) => children.find(child => child.id === key)?.sessionId;
+            const facts = withStalls(withWakes(jobFacts(children, board, sessionRows(all), id, [], liveJobs(children, subagentsByParent(all), now, liveWindowMs(setting.everyMs), asleep)),
+              wakes, sessionOf), stalls, sessionOf);
             // The server's own test (`fixJobLive`) too: a fix job asleep on a board.wake is live though `prime-agent sessions` no longer lists it
             // (loaded sessions only); on 10-15 at 23:55 KST SEO guy's d1 read stuck here while its fix job slept on a 01:10Z wake.
             const rows = sessionRows(all);
-            return (item: PlanItem) => ownerOf(item, facts)?.state === "working" || fixJobLive(item, id, rows, asleep);
+            return (item: PlanItem) => ownerOf(item, facts)?.state === "working" || fixJobLive(item, id, rows, asleep, new Set(), now, stalls);
           })();
           const working = live;
           // The lead metric's fix first, then the other missed metrics': for each, the live fix the run recorded while its step stays open, else an

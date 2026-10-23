@@ -6,7 +6,7 @@ import { ArchiveLeftWork, ScheduledJobsLeft } from "./saved-archive.ts";
 import { artifactsDir } from "./moved-images.ts";
 import { agentChildren } from "./chat-agents.ts";
 import { activeCorrections, handoffRules } from "./chat-corrections.ts";
-import { deadWakes, heartbeatsFile, landCarries, liveThreads, localDisk, parkSchedules, quotaParks, readHeartbeats, readTrain, trainFile, trainRepo, withDeadWakes, withQuotaParks, withWakes } from "./checkin-load.ts";
+import { deadWakes, heartbeatsFile, landCarries, liveThreads, localDisk, parkSchedules, quotaParks, readHeartbeats, readTrain, trainFile, trainRepo, withDeadWakes, withQuotaParks, withStalls, withWakes } from "./checkin-load.ts";
 import { flagStreaks } from "./checkin-repeats.ts";
 import { boardPrs, type DoneFacts, metricFacts } from "./checkin-done.ts";
 import { activePause, changeCheckIn, type CheckInActor, type CheckInChange, CheckInRefused, type CheckInSetting, DEFAULT_CHECK_IN, nextCheckIn, planCheckIn } from "./checkin-settings.ts";
@@ -1729,8 +1729,10 @@ export class Chats {
     const held = await this.source.held?.(this.now()).catch(error => { this.log(`chat ${id.slice(0, 8)}: check-in held turns: ${error instanceof Error ? error.message : String(error)}`); return undefined; });
     // A job Prime admitted whose session never got its first prompt reads as not started, whatever its RLM status says (`withUnstarted`).
     const unstarted = await this.source.unstarted?.(this.now()).catch(error => { this.log(`chat ${id.slice(0, 8)}: check-in unstarted jobs: ${error instanceof Error ? error.message : String(error)}`); return []; }) ?? [];
-    const threads = withUnstarted(withHeldTurns(withDeadWakes(withWakes(liveThreads(jobFacts(children, board, rows, id, nested, live), session => readHeartbeats(heartbeatsFile(session, this.source.home)), this.now()),
-      wakes, key => sessions.get(key), this.below), dead, key => sessions.get(key), this.below), held?.sessions ?? new Map(), key => sessions.get(key)), unstarted);
+    // A job stalled in one tool call past STALL_MS moves nothing until it returns, so it owns no step (`withStalls`).
+    const threads = withStalls(withUnstarted(withHeldTurns(withDeadWakes(withWakes(liveThreads(jobFacts(children, board, rows, id, nested, live), session => readHeartbeats(heartbeatsFile(session, this.source.home)), this.now()),
+      wakes, key => sessions.get(key), this.below), dead, key => sessions.get(key), this.below), held?.sessions ?? new Map(), key => sessions.get(key)), unstarted),
+      this.source.stalls?.(this.now()) ?? new Map(), key => sessions.get(key));
     // A job Prime parked on a provider limit waits for an account until the daemon's quota resume, not failed (`withQuotaParks`).
     const roots = threads.flatMap(fact => fact.key.startsWith("thread:") ? [fact.key.slice("thread:".length)] : []);
     // A chat on another box keeps its jobs' parks on that box's disk, read through its relay (`chatDisk`).
