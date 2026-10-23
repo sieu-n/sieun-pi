@@ -276,6 +276,39 @@ test("on a turn the owner did not start, a decision that swaps a todo for a new 
   assert.equal(tellOwner(swap, { ...turn, owner: true }).kind, "sent", "his own turn is never held");
 });
 
+test("on a turn the owner did not start, a decision on a todo swapped in for one he never answered is refused once, with no swap words", () => {
+  // 10-23 13:37Z: metal-management removed t10, its second agent-slot ask after t8, added t11 in the same call and sent "pick on t11". The
+  // words "t11 replaces t10" in its about got it refused, and the chat resent it 13 s later because the pick had moved from 12 to 20.
+  const board = (id: string, ops: unknown[], clock: string): AssistantMessage =>
+    ({ role: "assistant", content: [{ type: "toolCall", id, name: "chat_board", arguments: { ops: JSON.stringify(ops) } }], stopReason: "toolUse", timestamp: at(clock) }) as unknown as AssistantMessage;
+  const applied = (id: string, text: string, clock: string): ThreadMessage =>
+    ({ role: "toolResult", toolCallId: id, toolName: "chat_board", content: [{ type: "text", text }], isError: false, timestamp: at(clock) });
+  const asked = [...settled, job("12 slots hold the box under 70%", "06:00:00"),
+    board("b1", [{ op: "todo_add", text: "Pick how many agents us-metal02 runs at once, 12 now or the 32 you set", choices: ["Keep 12", "Go back to 32", "Try 20"] }], "06:00:10"),
+    applied("b1", "Added a todo t10 \"Pick how many agents us-metal02 runs at once, 12 now or the 32 you set\"\nBoard rev 1170: 8 open steps, 1 open todos.", "06:00:11"),
+    said("Asked on t10.", "06:00:20"), job("110 turns wait while the box sits 35-50% busy", "07:00:00")];
+  const swapOps = [{ op: "todo_remove", id: "t10" }, { op: "todo_add", text: "Raise us-metal02's agents at once from 12 to 20, now that the box has room", choices: ["Try 20", "Keep 12"] }];
+  const pick = { text: "us-metal02 now has room for more agents, with 110 turns waiting while the box sits 35-50% busy. I'd raise it from 12 to 20 at once, so pick on t11.",
+    why: "decision", about: "us-metal02 agent slot count" };
+  const sameStep = tellTurn([...asked, board("b2", swapOps, "07:00:10")]);
+  const refused = tellOwner(pick, sameStep, at("07:00:10"));
+  assert.equal(refused.kind, "refused", "the swap and the ask in one step");
+  assert.match(refused.text, /swapped in \(t11 for t10 "Pick how many agents/);
+  assert.match(refused.text, /a changed pick or new numbers on the same question ask him nothing new/);
+  const later = tellTurn([...asked, board("b2", swapOps, "07:00:10"),
+    applied("b2", "Removed the todo \"Pick how many agents us-metal02 runs at once, 12 now or the 32 you set\"\nAdded a todo t11 \"Raise us-metal02's agents at once from 12 to 20, now that the box has room\"\nBoard rev 1222: 9 open steps, 1 open todos.", "07:00:11")]);
+  assert.equal(tellOwner(pick, later, at("07:00:20")).kind, "refused", "the swap in an earlier step");
+  assert.equal(tellOwner(pick, later, at("07:00:20") + 25 * 3_600_000).kind, "sent", "a swap older than 24 h does not hold it");
+  assert.equal(tellOwner({ ...pick, text: "Pick on t12, which asks whether the crawler lanes may move to us-metal02." }, later, at("07:00:20")).kind, "sent",
+    "an ask on another todo goes out");
+  const resent = tellTurn([...asked, board("b2", swapOps, "07:00:10"), tell("s1", pick, "07:00:10"), result("s1", refused.text, "07:00:11")]);
+  assert.equal(tellOwner(pick, resent, at("07:00:22")).kind, "sent", "the very same text again goes out");
+  assert.equal(tellOwner(pick, { ...sameStep, owner: true }, at("07:00:10")).kind, "sent", "his own turn is never held");
+  const answered = tellTurn([...asked.slice(0, -1), owner("[board] Owner chose \"Try 20\" for \"Pick how many agents us-metal02 runs at once, 12 now or the 32 you set\"", "06:30:00"),
+    job("110 turns wait", "07:00:00"), board("b2", swapOps, "07:00:10")]);
+  assert.equal(tellOwner(pick, answered, at("07:00:10")).kind, "sent", "a todo he answered is no ask taken back");
+});
+
 test("on a turn the owner did not start, a blocker whose only you is a promise to tell him later is refused once", () => {
   // 10-22 08:21Z: metal-management sent a prod Postgres outage a job already fixed as a blocker, with "I'll tell you when census is writing again".
   const turn = tellTurn([...settled, job("prod Postgres's container is gone", "07:00:00")]);

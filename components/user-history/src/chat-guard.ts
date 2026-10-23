@@ -190,7 +190,13 @@ export interface TellInput { text?: unknown; why?: unknown; about?: unknown; rep
  * sent is left out), and the ids of his messages a `reply_to` may name.
  */
 export interface TellTurn { owner: boolean; ownerIds: ReadonlySet<string>; byOwner?: boolean; tells?: number; ownerText?: string; resent?: ReadonlySet<string>; done?: readonly string[]; startedAt?: number; asked?: ReadonlySet<string>; looked?: boolean;
-  others?: readonly OtherAsk[]; lastSent?: SentTell }
+  others?: readonly OtherAsk[]; lastSent?: SentTell; dropped?: readonly DroppedTodo[] }
+/**
+ * A For you todo the chat added, then removed or checked itself with no answer from the owner: an ask it took back. `swappedFor` holds the
+ * todos the same call added. A call in the running step has no result yet, so `swappedAfter` holds the highest todo number the chat had
+ * seen, and each todo that call adds gets a higher one.
+ */
+export interface DroppedTodo { id: string; text: string; choices?: readonly string[]; at: number; swappedFor?: readonly string[]; swappedAfter?: number }
 /** The last tell_owner the running turn sent: when its step ran and its why. */
 export interface SentTell { at: number; why?: string }
 /** An open For you todo that another of the owner's chats added: a question already waiting for him. */
@@ -306,6 +312,24 @@ const OWNER_KEEPS = /\bc\d{1,3}\b|\b(?:prod|production)\b[^.?!]*\b(?:deploy|prom
  * never held.
  */
 const REPLACED = /\bt\d+\b[^.?!]*\b(?:replaced|swapped|superseded)\b|\b(?:replaces|supersedes)\b[^.?!]*\bt\d+\b/i;
+/**
+ * The todo an ask names that the chat put in place of one it took back in the last ASK_WINDOW_MS (`droppedTodos`, `swappedFor`): the same
+ * question asked again. On 10-23 at 13:37Z metal-management removed t10, the second version of its us-metal02 agent-slot ask after t8, added
+ * t11 in the same call and sent "I'd raise it from 12 to 20 at once, so pick on t11". REPLACED refused it on the words "t11 replaces t10" in
+ * its about; the chat resent it 13 s later because "the pick moved from 12 to 20", and the owner's labeller marked it noise.
+ * measured: over the 3,106 tell_owner calls of the owner's 15 chats from 10-09 to 10-23 16:36Z (2,676 sent, 255 labelled, 202 needed), the
+ * chats took back 93 todos unanswered, 18 of them in a call that added another, and asks that name a todo swapped in this way are those 3
+ * calls and no other. Evidence: ~/work/tell-owner-todo-swap-p970/replay.md.
+ */
+const swappedIn = (text: string, dropped: readonly DroppedTodo[], now: number): { todo: DroppedTodo; into: string } | undefined => {
+  const named = new Set(todoIds(text));
+  for (const todo of [...dropped].reverse()) {
+    const into = now - todo.at > ASK_WINDOW_MS ? undefined
+      : todo.swappedFor?.find(id => named.has(id)) ?? [...named].find(id => todo.swappedAfter !== undefined && Number(id.slice(1)) > todo.swappedAfter);
+    if (into) return { todo, into };
+  }
+  return undefined;
+};
 const SPLIT_MARK = "Not sent, it splits one answer into two messages";
 /**
  * How soon after an answer or done a second one reads as its tail. On 10-22 a chat sent "I could not substantiate the requested 50% cut" at
@@ -358,6 +382,66 @@ export function brokenWikiLinks(text: string, pageExists: ((path: string) => boo
     return pageExists && !pageExists(path) ? [`${link} (no page ${path} on the wiki)`] : [];
   });
 }
+/**
+ * The todos the chat_board calls in `messages` added and then removed or checked, with when, leaving out each one the owner answered. A call
+ * counts once its result shows the board applied it, and an added todo takes its id from that result. The owner's answer reaches the chat as
+ * a [board] note that quotes the todo as the board does, at most 80 characters. A call in the last message, the running step, has no result
+ * yet, so one that adds a todo counts as applied.
+ */
+export function droppedTodos(messages: readonly ThreadMessage[]): DroppedTodo[] {
+  const calls = new Map<string, { at: number; ops: unknown[] }>();
+  const todos = new Map<string, { id: string; text: string; choices?: readonly string[] }>();
+  const answered = new Set<string>();
+  const dropped: DroppedTodo[] = [];
+  const quoted = (text: string) => `"${text.length > 80 ? text.slice(0, 79) + "…" : text}"`;
+  const strings = (value: unknown): string[] | undefined => Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : undefined;
+  let top = 0;
+  const apply = (ops: unknown[], at: number, ids: string[], swap: Pick<DroppedTodo, "swappedFor" | "swappedAfter">) => {
+    for (const op of ops as { op?: unknown; id?: unknown; text?: unknown; choices?: unknown; done?: unknown }[]) {
+      if (op?.op === "todo_add" && typeof op.text === "string" && ids.length) {
+        const id = ids.shift()!;
+        const choices = strings(op.choices);
+        todos.set(id, { id, text: op.text, ...(choices ? { choices } : {}) });
+      }
+      const todo = typeof op?.id === "string" ? todos.get(op.id) : undefined;
+      if (!todo) continue;
+      if (op.op === "todo_update" && typeof op.text === "string") todo.text = op.text;
+      if (op.op === "todo_update" && strings(op.choices)) todo.choices = strings(op.choices)!;
+      if ((op.op === "todo_remove" || op.op === "todo_update" && op.done === true) && !answered.has(todo.id)) {
+        dropped.push({ ...todo, at, ...swap });
+        todos.delete(todo.id);
+      }
+    }
+  };
+  for (const message of messages) {
+    if (message.role === "assistant") for (const part of message.content) {
+      if (part.type !== "toolCall" || part.name !== CHAT_BOARD_TOOL || typeof message.timestamp !== "number") continue;
+      let ops: unknown = part.arguments?.ops;
+      if (typeof ops === "string") try { ops = JSON.parse(ops); } catch { ops = []; }
+      if (Array.isArray(ops)) calls.set(part.id, { at: message.timestamp, ops });
+      if (Array.isArray(ops)) for (const op of ops as { id?: unknown }[]) if (typeof op?.id === "string" && /^t\d+$/.test(op.id)) top = Math.max(top, Number(op.id.slice(1)));
+    }
+    if (message.role === "user") {
+      const text = messageText(message);
+      if (text.startsWith("[board]")) for (const todo of todos.values()) if (text.includes(quoted(todo.text))) answered.add(todo.id);
+    }
+    if (message.role !== "toolResult" || message.toolName !== CHAT_BOARD_TOOL || !calls.has(message.toolCallId)) continue;
+    const result = messageText(message);
+    if (!/\bBoard rev \d+/.test(result)) continue;
+    const { at, ops } = calls.get(message.toolCallId)!;
+    calls.delete(message.toolCallId);
+    const ids = [...result.matchAll(/\bAdded a todo (t\d+) /g)].map(match => match[1]!);
+    for (const id of ids) top = Math.max(top, Number(id.slice(1)));
+    apply(ops, at, ids, ids.length ? { swappedFor: [...ids] } : {});
+  }
+  const last = messages.at(-1);
+  if (last?.role === "assistant") for (const part of last.content) {
+    const call = part.type === "toolCall" ? calls.get(part.id) : undefined;
+    if (call && (call.ops as { op?: unknown }[]).some(op => op?.op === "todo_add")) apply(call.ops, call.at, [], { swappedAfter: top });
+  }
+  return dropped;
+}
+
 /** The todo ids a text names, like t4. */
 const todoIds = (text: string): string[] => [...text.matchAll(/\bt(\d+)\b/g)].map(match => `t${match[1]}`);
 
@@ -401,7 +485,9 @@ export function tellTurn(messages: readonly ThreadMessage[]): TellTurn {
   const startedAt = before.slice(settledAt + 1).find(message => message.role === "user" || message.role === "custom")?.timestamp
     ?? before.findLast(message => message.role === "user" || message.role === "custom")?.timestamp;
   const lastSent = typeof startedAt === "number" ? sent.findLast(tell => tell.at >= startedAt) : undefined;
-  return { owner: unanswered || byOwner, ownerIds, byOwner, tells, ownerText, resent, done, looked, ...(typeof startedAt === "number" ? { startedAt } : {}), ...(lastSent ? { lastSent } : {}) };
+  const dropped = droppedTodos(messages);
+  return { owner: unanswered || byOwner, ownerIds, byOwner, tells, ownerText, resent, done, looked, ...(typeof startedAt === "number" ? { startedAt } : {}), ...(lastSent ? { lastSent } : {}),
+    ...(dropped.length ? { dropped } : {}) };
 }
 
 /**
@@ -418,7 +504,7 @@ export function tellTurn(messages: readonly ThreadMessage[]): TellTurn {
  * a text that reports work still going (`PROGRESS`), a text that takes back the chat's own ask (`WITHDRAW`), and a decision or blocker that
  * asks an ok for work no owner rule keeps for him (`NEEDLESS_OK`). So is an answer or done that comes within `SPLIT_MS` of one the turn
  * already sent (`lastSent`), a decision or blocker whose about another chat's open todo holds (`sameAbout`), that sends him to another chat's
- * list (`OTHER_LIST`) or that swaps a todo for a new one (`REPLACED`), and a blocker whose only "you" promises to tell him later. A text it would send with a `wiki:` link that opens no page (`brokenWikiLinks`)
+ * list (`OTHER_LIST`) or that swaps a todo for a new one (`REPLACED`, `swappedIn`), and a blocker whose only "you" promises to tell him later. A text it would send with a `wiki:` link that opens no page (`brokenWikiLinks`)
  * is refused once the same way, with the form that works, since on 10-22 two links went out as `wiki:https://...:5176/page/...` and the owner
  * answered "often links to wrong page." on 10-23.
  */
@@ -452,9 +538,11 @@ export function tellOwner(input: TellInput, turn: TellTurn, now = Date.now(), pa
   if (ask && !other && OTHER_LIST.test(told)) return { kind: "refused", text: `${SAME_ASK_MARK}, since this sends him to another chat's list ` +
     `("${OTHER_LIST.exec(told)![0]}"). Do not ask him twice. Wait on that todo, and if you know something it lacks, send it to that chat with ` +
     "agent_message. If yours is a different question he must answer too, send the very same text again and it goes out (c117)." };
-  if (ask && REPLACED.test(`${told} ${about}`)) return { kind: "refused", text: `${REASK_MARK}, as the todo you swapped in ` +
-    `("${REPLACED.exec(`${told} ${about}`)![0]}"). The new todo is on his list, so this asks nothing new. If he must see it now, send the very ` +
-    "same text again and it goes out (c117)." };
+  const swap = ask ? swappedIn(`${told} ${about}`, turn.dropped ?? [], now) : undefined;
+  if (swap || ask && REPLACED.test(`${told} ${about}`)) return { kind: "refused", text: `${REASK_MARK}, as the todo you swapped in ` +
+    `(${swap ? `${swap.into} for ${swap.todo.id} "${swap.todo.text.slice(0, 80)}", which he never answered` : `"${REPLACED.exec(`${told} ${about}`)![0]}"`}). ` +
+    "He reads the new todo with its pick, numbers and choices on For you, and a changed pick or new numbers on the same question ask him " +
+    "nothing new, so end the turn. Only for a different question he must answer now, send the very same text again and it goes out (c117)." };
   if (other) return { kind: "refused", text: `${SAME_ASK_MARK}, as ${other.id} of chat ${other.chat} ("${other.text.slice(0, 120)}"). Do ` +
     `not ask him twice. Wait on that todo, and if you know something it lacks, send it to that chat with agent_message so it adds it to ${other.id}. ` +
     "If yours is a different question he must answer too, send the very same text again and it goes out (c117)." };
