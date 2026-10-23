@@ -22,6 +22,7 @@ import { CLEAN_ROOM_CHATS_FILE, CLEAN_ROOM_CORRECTIONS_FILE, CORRECTION_TOOL, Co
 import { IdIndex } from "../src/id-index.ts";
 import { trialHarnessDir, withTrialHarness } from "../src/trial-harness.ts";
 import { CORRECTION_CHECKPOINT, deliverCorrections } from "../src/correction-delivery.ts";
+import { PARENT_LABEL_ENTRY, storedParentLabel, withParentLabel } from "../src/parent-label.ts";
 import { withMessageCheck } from "../src/message-limit-check.ts";
 import { movedReason, movedTo } from "../src/moved-copy.ts";
 import { endLoadWait, loadWaitNote } from "../src/load-wait.ts";
@@ -153,12 +154,21 @@ export default function historyExtension(pi: ExtensionAPI): void {
   };
   // Each session's last provider payload for the Prompt view (src/prompt-capture.ts). No other extension hooks this event and user-history
   // loads last, so this is the request as sent. The JSON is built here; the file write runs after the request leaves.
+  // A subagent's requests carry the parent name its first load saw (src/parent-label.ts). This hook runs before every request, wakes included.
+  let parentLabel: string | null | undefined;
   pi.on("before_provider_request", (event, ctx) => {
+    let payload = event.payload;
+    if (depthOf(ctx.sessionManager.getHeader()) > 0) try {
+      parentLabel ??= storedParentLabel(ctx.sessionManager.getEntries());
+      const { record, payload: labelled } = withParentLabel(payload, parentLabel);
+      if (record) { pi.appendEntry(PARENT_LABEL_ENTRY, { label: record }); parentLabel = record; }
+      if (labelled) payload = labelled;
+    } catch { /* the payload as Prime built it */ }
     try {
       void recordPrompt(dataDir(), { capturedAt: new Date().toISOString(), sessionId: ctx.sessionManager.getSessionId(),
-        sessionFile: ctx.sessionManager.getSessionFile() ?? null, provider: ctx.model?.provider ?? "", model: ctx.model?.id ?? "", payload: event.payload });
+        sessionFile: ctx.sessionManager.getSessionFile() ?? null, provider: ctx.model?.provider ?? "", model: ctx.model?.id ?? "", payload });
     } catch { /* no capture this call */ }
-    return undefined;
+    return payload === event.payload ? undefined : payload;
   });
   // The chat server computes the agents list (subagents, roots, step owners, message partners) and serves it under its capability URL
   // (chatService). No server, no section.
