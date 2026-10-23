@@ -76,7 +76,7 @@ export function namedPaths(markdown: string): { path: string; strict: boolean }[
 }
 
 /** The paths a skill's markdown names that resolve against none of: the naming file's folder, the skill folder, the repo root. */
-async function missingPaths(dir: string): Promise<string[]> {
+export async function missingPaths(dir: string): Promise<string[]> {
   const repo = await gitRoot(dir);
   const missing: string[] = [];
   for (const file of await markdownFiles(dir)) {

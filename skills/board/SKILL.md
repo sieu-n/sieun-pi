@@ -166,7 +166,7 @@ The check-in lists every goal short of its target or not measured. Push the step
 
 ### Waits
 
-`waitUntil` (an ISO time) or `waitFor` (the event or thread, in a few words) marks a step that waits on purpose. A wait needs something that moves it, or the check-in counts the step in `stuck_steps` from its next run, even when you set the wait a minute before (`endState` in `src/checkin-end-state.ts`). One of these moves it:
+`waitUntil` (an ISO time) or `waitFor` (the event or thread, in a few words) marks a step that waits on purpose. A wait needs something that moves it, or the check-in counts the step in `stuck_steps` from its next run, even when you set the wait a minute before (`endState` in `components/user-history/src/checkin-end-state.ts`). One of these moves it:
 
 1. A working job of this chat owns the step, or the first clause of the wait names a working job of this chat or another step (`p123`) that a working job carries.
 2. The step's job or thread sleeps on a `board.wake`, or some session sleeps on a `board.wake` for the run, land or thread the wait names.
