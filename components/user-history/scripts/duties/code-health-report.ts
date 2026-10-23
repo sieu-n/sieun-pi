@@ -16,7 +16,7 @@ import { grafanaClient, readGrafanaAuth, sqlRows } from "./estate-reads.ts";
  * - ranked_metrics_shown reads the page the wiki serves and counts the 10 tracked metrics whose page rows show the newest store day's numbers, with
  *   code_health_page.py's own formatting: the 8 the agent-code-metrics page ranks for both repos, plus auto-sns-agent's tests and CI (sieun-pi has
  *   no GitHub CI). Tests count only when that day's test load holds every suite any test load of the 7 days ending on it held, so a load that read
- *   2 of 12 suites, as the 16:50Z run on 10-19 did, misses. A suite stops being expected once no sieun/dev verify-dev run printed it for 24 h, read
+ *   2 of 12 suites, as the 16:50Z run on 10-19 did, misses. A suite stops being expected once no sieun/dev verify-dev push run printed it for 24 h, read
  *   from otel.ci_test_results on prod ClickHouse, which the ci-history service fills from the same job logs on its own. CI counts only when that day has ci-guarantees rows. The owner asked on 2026-10-15:
  *   "now the same system will monitor and report test stats, CI stats."
  * - backup_age_h reads the newest dated copy on the store box.
@@ -54,12 +54,18 @@ export const TRACKED: readonly Tracked[] = [
 /** Days of test loads, ending on the newest day, whose suites set the expected suite list. */
 export const SUITE_DAYS = 7;
 /**
- * A suite no sieun/dev verify-dev run printed for this long has left CI and stops being expected, as pytest-seo did when ed6e0f5e7f dropped its
- * leg on 10-19. The test load reads the verify-dev push runs of the last day (code-health.py TESTS_WINDOW), so this is the same window.
+ * A suite no sieun/dev verify-dev push run printed for this long has left CI and stops being expected, as pytest-seo did when ed6e0f5e7f dropped
+ * its leg on 10-19. The test load reads the verify-dev push runs of the last day (code-health.py TESTS_WINDOW), so this is the same window.
  */
 export const SUITE_GONE_MS = DAY;
-const CI_SUITES_SQL = "SELECT suite, toUnixTimestamp(max(completed_at)) AS last FROM otel.ci_test_results WHERE workflow = 'verify-dev.yml' " +
-  "AND head_branch = 'sieun/dev' AND completed_at > now() - INTERVAL 8 DAY GROUP BY suite";
+/**
+ * Counts push runs only, as the test load does. otel.ci_test_results has no event column, so the run ids come from otel.ci_workflow_runs. Counting
+ * every run kept metal-durable-plan expected on 10-24: its path-scoped leg last ran in a push run at 10-22T11:37Z (run 39770844588), but the
+ * workflow_dispatch probe runs 39895441278, 39966570318 and 39972125601 printed it on 10-23, and the push-only load could never hold it.
+ */
+export const CI_SUITES_SQL = "SELECT suite, toUnixTimestamp(max(completed_at)) AS last FROM otel.ci_test_results WHERE workflow = 'verify-dev.yml' " +
+  "AND head_branch = 'sieun/dev' AND completed_at > now() - INTERVAL 8 DAY " +
+  "AND run_id IN (SELECT run_id FROM otel.ci_workflow_runs WHERE workflow = 'verify-dev.yml' AND event = 'push') GROUP BY suite";
 /** The steps one code-health-daily.mjs run logs, in its order. */
 export const STEPS = REPOS.flatMap(repo => [`run ${repo}`, `missing ${repo}`]).concat(["load-ci", "load-tests", "page", "backup"]);
 
@@ -261,7 +267,7 @@ export async function measure(exec: Exec, fetchPage: () => Promise<string>, read
       const lastInCi = await readCiSuites().catch((error: unknown) => { flag("source_error", `otel.ci_test_results: ${message(error)}; every suite of the window stays expected`); return null; });
       const suites = newest ? expectedSuites(days, newest, lastInCi, now) : [];
       const gone = newest && lastInCi ? expectedSuites(days, newest).filter(suite => !suites.includes(suite)) : [];
-      if (gone.length) flag("suites_gone", `no sieun/dev verify-dev run printed ${gone.map(suite => `${suite} (last ${lastInCi![suite] ? new Date(lastInCi![suite]!).toISOString() : "not in 8 days"})`).join(", ")} in the last 24 h, so they are not expected`);
+      if (gone.length) flag("suites_gone", `no sieun/dev verify-dev push run printed ${gone.map(suite => `${suite} (last ${lastInCi![suite] ? new Date(lastInCi![suite]!).toISOString() : "not in 8 days"})`).join(", ")} in the last 24 h, so they are not expected`);
       const ranked = newest ? rankedGaps(page, pageHotspots(html), days[newest]!, suites) : TRACKED.map(({ name }) => ({ name, gaps: ["no store day of the last 16 has rows for both repos"] }));
       metrics.ranked_metrics_shown = ranked.filter(metric => !metric.gaps.length).length;
       flag("ranked", `${metrics.ranked_metrics_shown} of ${TRACKED.length} tracked metrics show ${newest ?? "the newest day"}'s numbers on the page; its test load holds ${newest ? days[newest]!.suites.length : 0} of the ${suites.length} suites the test loads of the last ${SUITE_DAYS} days held (${suites.join(", ") || "none"})`);
