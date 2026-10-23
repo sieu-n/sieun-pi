@@ -904,15 +904,30 @@ export class Duties {
   }
 
   /**
-   * The duty's last job as a run for `slot` finds it: null when a run already started a job for the slot, a skip while the last job still works
-   * and has not worked past `stuckAfterMs(schedule)` since its run started, else the job to retire, with a note when it was stuck.
+   * Why a run must neither retire nor replace the duty's last job now, or null: a Prime update restores the daemon's sessions, or the job is
+   * kept by its host (`DutyJobHost.kept`: pi-pool holds it for its slot, or a quota-resume or other scheduled job waits on it). A failed read
+   * keeps it. The 5 duty jobs Prime update 2004241-1792651168001 recorded as stopped before restore on 10-22 were all archived this way.
+   */
+  private async kept(job: DutyJobRef): Promise<string | null> {
+    const update = await this.updateRunning();
+    if (update) return `is kept while Prime update ${update.requestId} is ${update.phase}`;
+    return await this.host.jobs.kept?.(job).catch(error => `is kept, its pool and schedule holds did not read: ${message(error)}`) ?? null;
+  }
+
+  /**
+   * The duty's last job as a run for `slot` finds it: null when a run already started a job for the slot, a skip while the last job is kept
+   * (`kept`) or still works and has not worked past `stuckAfterMs(schedule)` since its run started, else the job to retire, with a note when it
+   * was stuck.
    */
   private async previous(chatId: string, dutyId: string, schedule: DutySchedule, slot: number): Promise<Previous> {
     const runs = (await this.store.runs(chatId)).filter(run => run.duty === dutyId);
     if (runs.some(run => run.slot === slot && run.job !== undefined)) return null;
     const started = runs.find(run => run.job);
     const last = started?.job;
-    if (!started || !last || !(await this.host.jobs.working(last))) return last ? { last, lastRun: started } : {};
+    if (!started || !last) return {};
+    const kept = await this.kept(last);
+    if (kept) return { skipped: `${STILL_WORKING} (job ${last.name} ${kept})` };
+    if (!(await this.host.jobs.working(last))) return { last, lastRun: started };
     const workingMs = this.now() - started.at;
     if (workingMs <= stuckAfterMs(schedule)) return { skipped: `${STILL_WORKING} (job ${last.name})` };
     return { last, lastRun: started, replaced: ` (replaced stuck job ${last.name}, working ${Math.round(workingMs / 60_000)} min)` };

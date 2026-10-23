@@ -76,6 +76,12 @@ export interface DutyJobHost {
    * it (test fakes) reads no job as cut.
    */
   cut?(job: DutyJobRef): Promise<DutyCut | null>;
+  /**
+   * Why a later run must keep the job up for now, or null: the job waits in pi-pool for its slot (the chat's revive continues it then), or the
+   * daemon holds a scheduled job for it, such as the quota-resume of a session parked on a provider limit. A gone or archived job is never kept,
+   * and a failed read rejects. A host without it (test fakes) keeps no job.
+   */
+  kept?(job: DutyJobRef): Promise<string | null>;
 }
 
 /**
@@ -348,6 +354,9 @@ export const archiveDutyJob = (threads: { archive(id: string, by: ArchiveBy): Pr
   if (found && !found.archived) await threads.archive(id, "duty_job_end");
 };
 
+/** Why a job the chat's revive holds for pi-pool stays up (`DutyJobHost.kept`). */
+const POOL_HELD = "waits on pi-pool for its slot";
+
 /** The waits before each look for a session whose create failed (a timeout, a lost client): about 2 min in all. */
 export const DUTY_LOOKUP_WAITS_MS: readonly number[] = [0, 10_000, 20_000, 30_000, 60_000];
 /**
@@ -417,6 +426,12 @@ export function dutyJobHost(input: { threads: DutyJobThreads; archives: { add(jo
    * nothing waits. A failed read stops no job that scan.
    */
   treeWait?: (id: string, scheduled?: ReadonlyMap<string, ThreadSchedule>) => Promise<string | null>;
+  /**
+   * The sessions the chat's revive holds until pi-pool gives them a slot (`Chats.poolHeldSessions`), so neither `ended` nor `kept` lets a run
+   * archive one; absent: none is held. From 06:41:07Z to 06:44:17Z on 10-22, while Prime update 2004241-1792651168001 restored, the next runs
+   * of d5, d4 and d6 retired 3 cut jobs pi-pool held since 06:32:30Z to 06:37Z, and 2 check-ins replaced their quota-parked jobs as stuck.
+   */
+  held?: () => ReadonlySet<string>;
   refresh?: () => Promise<void>; lookupWaitsMs?: readonly number[]; sleep?: (ms: number) => Promise<void>; log?: (line: string) => void; now?: () => number }): DutyJobHost {
   const row = async (id: string) => (await input.rows()).find(candidate => candidate.id === id);
   const waits = input.lookupWaitsMs ?? DUTY_LOOKUP_WAITS_MS;
@@ -521,6 +536,13 @@ export function dutyJobHost(input: { threads: DutyJobThreads; archives: { add(jo
         scheduled = read;
         ended = ended.filter(job => !read.has(job.id));
       }
+      const pooled = input.held?.();
+      if (pooled?.size) ended = ended.filter(job => {
+        if (!pooled.has(job.id)) return true;
+        if (held.get(job.id) !== POOL_HELD) input.log?.(`duty job ${job.name}: not stopped, it ${POOL_HELD}`);
+        held.set(job.id, POOL_HELD);
+        return false;
+      });
       if (!input.treeWait) return ended;
       const free: DutyJobRef[] = [];
       for (const job of ended) {
@@ -536,6 +558,13 @@ export function dutyJobHost(input: { threads: DutyJobThreads; archives: { add(jo
       if ((await row(job.id))?.working) return null;
       const file = await input.sessionFile?.(job.id);
       return file ? readJobCut(file) : null;
+    },
+    async kept(job) {
+      const found = await row(job.id);
+      if (!found || found.archived) return null;
+      if (input.held?.().has(job.id)) return POOL_HELD;
+      const schedule = input.schedules ? (await input.schedules()).get(job.id) : undefined;
+      return schedule ? `has ${schedule.status === "active" ? "an active" : "a paused"} scheduled job${schedule.label ? ` (${schedule.label})` : ""}` : null;
     },
   };
 }
