@@ -47,7 +47,7 @@ export function jobResumes(dir: string): JobResumes {
       const names = (await readdir(folder).catch(() => [] as string[])).filter(name => name.endsWith(".json"));
       const read = await Promise.all(names.map(async name => {
         const path = join(folder, name);
-        const resume = parseJobResume(await readFile(path, "utf8").then(text => JSON.parse(text) as unknown, () => null));
+        const resume = parseJobResume(await readFile(path, "utf8").then(text => JSON.parse(text) as unknown).catch(() => null));
         return resume ? [{ path, resume }] : [];
       }));
       return read.flat();
@@ -182,21 +182,23 @@ export const keptCopyNote = (job: string, at: number): string => `Kept: job ${jo
 export const jobBase = (name: string): string => name.replace(/(?:\s+resumed \d\d:\d\d)+$/, "").trim();
 
 /**
- * The fresh job a saved state started (`resumed`, else the name `resumeJobName` gave it), when a step it took now names another worker and no
- * step names it any more, with those steps and their workers. chat-2572 10-23: the chat gave p5, p8 and p10 to new workers after the resumed
- * roots 01a16497, 01a16443 and 01a1642b stopped on the Claude limit, and the resume pass kept continuing the old roots each time pi-pool
- * admitted them (00:47Z to 00:51Z), so each wrote a failed turn and the chat got "ended (error) with no report" for work it had moved.
+ * The fresh job a saved state started (`resumed`, which the cleanup writes once that job starts), when a step it took now names another
+ * worker and no step names it any more, with those steps and their workers. A state with no `resumed`, such as every file saved before
+ * fbd5a0a0, names no fresh job, so it never counts as replaced: only the board's current owners decide. chat-2572 10-23: the chat gave p5, p8
+ * and p10 to new workers after the resumed roots 01a16497, 01a16443 and 01a1642b stopped on the Claude limit, and the resume pass kept
+ * continuing the old roots each time pi-pool admitted them (00:47Z to 00:51Z), so each wrote a failed turn and the chat got "ended (error)
+ * with no report" for work it had moved.
  */
-export function replacedJob(resume: JobResume, plan: readonly PlanItem[]): { id?: string; name: string; steps: { id: string; job: string; sessionId?: string }[] } | undefined {
-  const name = resume.resumed?.name ?? resumeJobName(resume.job, resume.endedAt);
-  const id = resume.resumed?.id;
+export function replacedJob(resume: JobResume, plan: readonly PlanItem[]): { id: string; name: string; steps: { id: string; job: string; sessionId?: string }[] } | undefined {
+  if (!resume.resumed) return undefined;
+  const { id, name } = resume.resumed;
   const items: PlanItem[] = [];
   const walk = (list: readonly PlanItem[]): void => { for (const item of list) { items.push(item); walk(item.children ?? []); } };
   walk(plan);
-  if (items.some(item => item.job === name || (id !== undefined && item.sessionId === id))) return undefined;
-  const steps = items.flatMap(item => resume.steps.includes(item.id) && item.job !== undefined && item.job !== resume.job
+  if (items.some(item => item.job === name || item.sessionId === id)) return undefined;
+  const steps = items.flatMap(item => resume.steps.includes(item.id) && item.job !== undefined && item.job !== resume.job && item.job !== name
     ? [{ id: item.id, job: item.job, ...item.sessionId !== undefined ? { sessionId: item.sessionId } : {} }] : []);
-  return steps.length ? { ...id !== undefined ? { id } : {}, name, steps } : undefined;
+  return steps.length ? { id, name, steps } : undefined;
 }
 
 const SAVED = "Saved state: ";

@@ -1015,7 +1015,7 @@ export class Chats {
       for (const { resume } of await store.list(row.id).catch(() => [])) {
         const job = replacedJob(resume, board.plan);
         if (!job) continue;
-        const root = roots.find(agent => job.id !== undefined ? agent.sessionId === job.id : agent.sender === job.name || agent.name === job.name);
+        const root = roots.find(agent => agent.sessionId === job.id);
         if (!root) continue;
         const moved = job.steps.filter(step => step.sessionId !== undefined && step.sessionId !== root.sessionId &&
           agents.some(agent => agent.sessionId === step.sessionId && (agent.link === "subagent" || agent.link === "root")));
