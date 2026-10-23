@@ -87,13 +87,17 @@ export const fixMisses = (streak: readonly DutyRunRecord[], key: string, fix: Fi
  * at the first of them. A fix is judged on its own runs: the whole streak counted the misses before it too, so the root-cause step a chat
  * started on d9's push read as a fix that does not move from its first run. SEO guy 10-23: d9's 04:07Z push replaced p83 with p90, whose job
  * started at 04:10Z, and the 05:06Z d2 run, the first to name p90, made it 18 misses with no move, so d9 asked again to replace p90.
+ * A run that found the step held by an open For you todo (`FixLink.hold`) ends the count, since the fix waited on the owner and starts again
+ * once he answers: AI harness p919 waited on Railway Breach's t11 at 08:37Z on 10-23, t11 closed, and its job started on it again by 09:11Z,
+ * which d9 read as 6 misses under p919 counting 4 from before the hold.
  */
 export function fixStepStreak(runs: readonly DutyRunRecord[], key: string, step: string): { misses: number; moved: boolean } {
   const named: MetricResult[] = [];
   for (const run of streakRuns(runs)) {
     const found = effectiveRun(run).metrics[key];
-    if (!found || found.met) break;
-    if (run.fixes?.[key]?.step === step) named.push(found);
+    const fix = run.fixes?.[key];
+    if (!found || found.met || (fix?.step === step && fix.hold !== undefined)) break;
+    if (fix?.step === step) named.push(found);
   }
   return { misses: named.length, moved: named.length > 0 && gap(named[0]!) < gap(named[named.length - 1]!) };
 }

@@ -55,6 +55,20 @@ test("a new job on the same step keeps the count, and an older cut run does not 
   assert.equal(metricStreaks(runs)[0]!.stuck, false, "stuck counts only the newest job's one run");
 });
 
+test("a run that found the fix step held by a For you todo ends the count", () => {
+  // AI harness p919 10-23: held on Railway Breach's t11 at 08:37Z, then its job worked on it again by 09:11Z once t11 closed.
+  const held = { step: "p83", live: false, hold: "t11 on thread 01a16213-54c6-73fa-b399-20e2713c41ba" };
+  const runs = [
+    run("2026-10-23T09:11:00Z", 151, "p83"),
+    run("2026-10-23T08:37:00Z", 151, "p83", { fixes: { new_unindexed_3d: held } }),
+    run("2026-10-23T04:38:00Z", 151, "p83"),
+    run("2026-10-23T03:37:00Z", 151, "p83"),
+    run("2026-10-22T19:30:00Z", 151, "p83"),
+  ];
+  assert.deepEqual(fixStepStreak(runs, "new_unindexed_3d", "p83"), { misses: 1, moved: false });
+  assert.deepEqual(fixNotMoving([red(runs, "p83")], () => "AI harness"), []);
+});
+
 test("a fix step whose owner carries only a session id is live when its session works", async () => {
   const step = { id: "p360", text: "Find and fix why dev push results still take far over 10 min", status: "todo", duty: "d1/push_to_verdict_p90_min",
     sessionId: "01a166f2-219d-737b-affa-2c2349581de7", children: [] } as unknown as PlanItem;
