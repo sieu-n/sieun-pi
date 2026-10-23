@@ -379,7 +379,12 @@ export function readSmoothness(lines: readonly string[], heads: ReadonlySet<stri
   // A park's rank is its tree's priority at each refusal, since a chat moves its jobs between low and normal: 01a1642b, low from
   // 20:04Z on 10-22, read as passed for 427 min by 01a164b6, a normal tree that entered claude19 at 20:13Z, because its last refusal said normal.
   const parks = new Map<string, { start: number; ranks: { at: number; rank: number }[]; manual: boolean }>();
-  const ended: { session: string; start: number; end: number; ranks: { at: number; rank: number }[] }[] = [];
+  const ended: { session: string; start: number; end: number; ranks: { at: number; rank: number }[]; led: boolean }[] = [];
+  // Whether each session's latest turn was a chat head's or an owner's, which pi-pool's turn queue starts before every job run. Such a tree
+  // asks for its account first by design, so it passes no parked job tree: at 13:52Z on 10-23 all 12 parks read as passed for 22 to 29 min
+  // had been passed by 01a1301d and 01a11af8, chat heads, or 01a168dd, an owner turn, while the job trees sat behind 97 runs whose turn
+  // places dated from 09:18Z to 11:05Z.
+  const led = new Map<string, boolean>();
   let anchor: number | undefined;
   for (const line of lines) {
     if (!line.includes('"turn_admitted"') && !line.includes('"turn_queued"') && !line.includes('"turn_dropped"') && !line.includes('"parked"') &&
@@ -397,6 +402,8 @@ export function readSmoothness(lines: readonly string[], heads: ReadonlySet<stri
       continue;
     }
     if (entry.event === "turn_admitted") {
+      const kind = (entry as { kind?: unknown }).kind;
+      led.set(entry.session, head || kind === "owner" || kind === "ahead");
       const local = typeof entry.ts === "string" ? Date.parse(`${entry.ts}Z`) : NaN;
       const at = anchor === undefined || Math.abs(local - anchor) <= Math.abs(local - KST_MS - anchor) ? local : local - KST_MS;
       // Only a run the queue started counts as passing a head: an owner run or a run its owner turn moved ahead never waits in line.
@@ -433,12 +440,12 @@ export function readSmoothness(lines: readonly string[], heads: ReadonlySet<stri
     } else if (entry.event === "unparked") {
       const park = parks.get(entry.session);
       parks.delete(entry.session);
-      if (park && !park.manual && !manual) ended.push({ session: entry.session, start: park.start, end: at, ranks: park.ranks });
+      if (park && !park.manual && !manual) ended.push({ session: entry.session, start: park.start, end: at, ranks: park.ranks, led: led.get(entry.session) ?? false });
     }
   }
   const rankAt = (park: (typeof ended)[number], at: number) => (park.ranks.findLast(step => step.at <= at) ?? park.ranks[0])?.rank ?? 1;
   const overtaken = ended.filter(park => park.end >= from && park.end < to).map(park => {
-    const passed = ended.find(other => other.end < park.end && other.end > park.start && other.start > park.start &&
+    const passed = ended.find(other => !other.led && other.end < park.end && other.end > park.start && other.start > park.start &&
       rankAt(other, other.end) >= rankAt(park, other.end));
     return { session: park.session, minutes: passed ? Math.round((park.end - passed.end) / MINUTE * 10) / 10 : 0 };
   });

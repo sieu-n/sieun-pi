@@ -59,6 +59,18 @@ test("a park reads its tree's priority at the time a later tree got in, since a 
   assert.deepEqual(smooth.overtaken, [{ session: "c", minutes: 0 }, { session: "a", minutes: 21 }]);
 });
 
+test("a chat head's or an owner's turn starts first by design, so its tree passes no parked job tree", () => {
+  // 10-23 13:52Z: 01a166c3, parked since 11:15Z, read as passed for 28.5 min by 01a1301d, a chat head that parked at 11:21Z and entered
+  // krenerd77 at 13:06Z, and 01a16657 by 01a168dd, an owner turn that entered claude3 at 13:07Z.
+  const owner = JSON.stringify({ ts: "2026-10-21T10:20:00", event: "turn_admitted", session: "o", tree: "o", kind: "owner", waited_s: 0 });
+  const smooth = readSmoothness([
+    parked("a", "10:00:00"), parked(HEAD, "10:05:00"), admitted(HEAD, "2026-10-21T10:10:00", 0), unparked(HEAD, "10:10:00"),
+    parked("o", "10:15:00"), owner, unparked("o", "10:20:00"), unparked("a", "10:45:00"),
+    parked("b", "10:46:00"), parked("j", "10:47:00"), admitted("j", "2026-10-21T10:48:00", 0), unparked("j", "10:48:00"), unparked("b", "10:59:00"),
+  ], new Set([HEAD]), FROM, RUN);
+  assert.deepEqual(smooth.overtaken.filter(park => park.minutes > 0), [{ session: "b", minutes: 11 }]);
+});
+
 test("a park passed by a later tree for over 10 min is a hold in queue_holds_30", () => {
   const smooth = readSmoothness([parked("a", "10:00:00"), parked("b", "10:05:00"), unparked("b", "10:31:00"), unparked("a", "10:52:00")], new Set(), FROM, RUN);
   const { metrics, flagged } = measure({ now: RUN, watch: [], log: { holds: [] }, chats: [], smooth });
