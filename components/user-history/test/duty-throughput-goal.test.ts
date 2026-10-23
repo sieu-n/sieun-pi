@@ -4,7 +4,7 @@
 // dashboards drawing ("Check the Observability and Metrics"), where on 10-19 at 15:55Z two panels read No data.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { type BoardItem, GOOD_ROWS, REFRESH_SEEDS, type ThroughputData, backlogged, boardGoal, deploySlots, geonodeHours, geonodeMbps, goalRows, grew, interpolate, lastHalfHour,
+import { type BoardItem, GOOD_ROWS, REFRESH_SEEDS, type ThroughputData, backlogged, boardGoal, deploySlots, geonodeHours, geonodeMbps, goalLine, goalRows, grew, interpolate, lastHalfHour,
   lagSlots, missed, panelQueries, panelState, refreshShares, refreshSql, report, slowestHour, writerLagAtRate } from "../scripts/duties/throughput-goal.ts";
 import type { DutyMetric } from "../src/shared/chat-duties.ts";
 
@@ -13,7 +13,6 @@ const METRICS: DutyMetric[] = [
   { key: "geonode_mbps", label: "mbps", op: ">=", target: 100 },
   { key: "ig_queues_growing_6h", label: "queues", op: "<=", target: 0 },
   { key: "crawler_panels_blank", label: "panels", op: "<=", target: 0 },
-  { key: "census_pg_writer_lag_max_24h", label: "writer lag", op: "<=", target: 5_000 },
 ] as DutyMetric[];
 const NOW = Date.parse("2026-10-22T06:38:00Z");
 const FROM = Date.parse("2026-10-21T15:03:00Z");
@@ -29,6 +28,9 @@ const BOARD: BoardItem[] = [
   { id: "p683", status: "done", text: "Refresh every read Instagram account at least weekly", target: { target: 1 } },
 ];
 const HALF = { read: 198_769, past7: 126, past14: 1, past7History: 60 };
+// A census writer that kept up: one slot at 11,000 Instagram profiles a minute with 2,613 records of lag, and no deploy.
+const LAG_OK: Partial<ThroughputData> = { igSlots24h: [{ slot: Date.parse("2026-10-22T19:45:00Z"), good: 55_000 }],
+  writerLag: [{ slot: Date.parse("2026-10-22T19:45:00Z"), good: 2_613 }], deploys24h: [] };
 const base = (over: Partial<ThroughputData> = {}): ThroughputData => ({ now: NOW, errors: [], geoFrom: GEO_FROM, geoTo: GEO_TO, ...over });
 
 test("a goal number comes from the item's target, else the number in its title, and a missing item has none", () => {
@@ -69,6 +71,14 @@ test("prod's deploy lock leaves its slots out of the slowest hour (10-22 00:55 t
   assert.equal(lastHalfHour(slots, to), 10_000);
 });
 
+test("TikTok Shop reads live products with a 7-day ok read, not a rate that swings with what is due (10-23: 330 a minute on a finished week)", () => {
+  const quiet = goalRows(base({ board: BOARD, ttsSlowest: 301, ttsWeekly: { read: 6_290_183, live: 6_291_426 } })).find(row => row.item === "p696")!;
+  assert.equal(missed(quiet), false);
+  assert.equal(quiet.goal, 99.5);
+  assert.match(quiet.extra!, /6,290,183 of 6,291,426, gone products left out; 301 good a minute/);
+  assert.equal(goalRows(base({ board: BOARD, ttsSlowest: 2_500 })).find(row => row.item === "p696")!.value, null);
+});
+
 test("Instagram counts profile rows on every read path, the table p826's target reads, and TikTok Shop its good products", () => {
   assert.deepEqual(GOOD_ROWS.instagram, { table: "crawler.instagram_account_snapshots", where: "" });
   assert.match(GOOD_ROWS.tiktokShop.where, /^kind = 'product' AND outcome = 'ok' AND $/);
@@ -78,19 +88,19 @@ test("Instagram counts profile rows on every read path, the table p826's target 
 });
 
 test("every throughput goal on the board is one row, and the headline counts the rows prod misses", () => {
-  const data = base({ board: BOARD, igSlowest: 5_157, ttsSlowest: 1_960, meta: { due: 2_780_536, finished24h: 53_570 }, refresh: [HALF, { ...HALF, past7: 127, past14: 2 }] });
+  const data = base({ board: BOARD, igSlowest: 5_157, ttsSlowest: 1_960, ttsWeekly: { read: 5_900_000, live: 6_000_000 }, meta: { due: 2_780_536, finished24h: 53_570 }, refresh: [HALF, { ...HALF, past7: 127, past14: 2 }], ...LAG_OK });
   const rows = goalRows(data);
-  assert.deepEqual(rows.map(row => [row.item, missed(row)]), [["p826", true], ["p696", true], ["p850", true], ["p683", false], ["p829", false]]);
+  assert.deepEqual(rows.map(row => [row.item, missed(row)]), [["p826", true], ["p696", true], ["p850", true], ["p683", false], ["p829", false], ["p895", false]]);
   assert.equal(Math.round(rows[2]!.goal!), 276);
   const out = report(data, METRICS);
   assert.equal(out.metrics.throughput_goals_missed, 3);
-  assert.ok(out.flagged!.some(item => item.item === "p696" && item.excerpt.includes("from its title")));
-  const met = report(base({ ...data, igSlowest: 10_400, ttsSlowest: 2_100, meta: { due: 300_000, finished24h: 53_570 } }), METRICS);
+  assert.ok(out.flagged!.some(item => item.item === "p696" && item.excerpt.includes("98.333%") && item.excerpt.includes("at least 99.5%")));
+  const met = report(base({ ...data, igSlowest: 10_400, ttsSlowest: 2_100, ttsWeekly: { read: 6_290_183, live: 6_291_426 }, meta: { due: 300_000, finished24h: 53_570 } }), METRICS);
   assert.equal(met.metrics.throughput_goals_missed, 0);
 });
 
 test("a goal whose read or board number failed leaves the headline unmeasured instead of counting a miss", () => {
-  const noBoard = report(base({ igSlowest: 10_400, ttsSlowest: 2_100, meta: { due: 1, finished24h: 53_570 }, refresh: [HALF], errors: [{ source: "board", message: "ENOENT" }] }), METRICS);
+  const noBoard = report(base({ igSlowest: 10_400, ttsSlowest: 2_100, ttsWeekly: { read: 6_290_183, live: 6_291_426 }, meta: { due: 1, finished24h: 53_570 }, refresh: [HALF], errors: [{ source: "board", message: "ENOENT" }] }), METRICS);
   assert.ok(noBoard.metrics.throughput_goals_missed! > 1000);
   assert.equal(noBoard.flagged![0]!.kind, "unmeasured");
 });
@@ -140,7 +150,7 @@ test("a queue grows only past 10% and about a minute of census intake, with its 
 
 test("the run reads every metric, and a failed source misses instead of reading green", () => {
   const census = { jobs: 190_193, bad: 144_356, att: 2_000_000, okAtt: 40_000, wire: 0 };
-  const data = base({ board: BOARD, igSlowest: 10_400, ttsSlowest: 2_100, meta: { due: 300_000, finished24h: 53_570 }, refresh: [HALF],
+  const data = base({ board: BOARD, igSlowest: 10_400, ttsSlowest: 2_100, ttsWeekly: { read: 6_290_183, live: 6_291_426 }, meta: { due: 300_000, finished24h: 53_570 }, refresh: [HALF], ...LAG_OK,
     geoHours: [{ hour: GEO_FROM, census, proxy: [] }], adLibrary: [],
     queues: [{ family: "kafka lag", name: "media.fetch/image-worker", now: 30_400_000, ago6h: 37_400_000, slope6h: -1e6 }],
     panels: [{ dashboard: "Crawler · Throughput", title: "Instagram profiles", state: "no data", detail: "" },
@@ -211,13 +221,18 @@ test("the census writer's worst lag counts only slots at p826's rate outside dep
   assert.equal(writerLagAtRate(ig.map(s => ({ ...s, good: 4_000 * 5 })), lag, new Set(), 10_000), null);
 });
 
-test("the writer lag metric reads 24 h of slots, and no slot at p826's rate leaves it unmeasured", () => {
+test("the census writer is one goal row: its worst lag at p826's rate counts toward the headline, and no slot at that rate reads 0 (p895)", () => {
   const from = NOW - 24 * 3_600_000;
   const slot = Math.floor(from / 300_000) * 300_000 + 300_000;
-  const met = report(base({ board: BOARD, igSlots24h: [{ slot, good: 55_000 }], writerLag: [{ slot, good: 2_613 }], deploys24h: [] }), METRICS);
-  assert.equal(met.metrics.census_pg_writer_lag_max_24h, 2_613);
-  assert.match(met.flagged!.find(f => f.kind === "writer_lag")!.excerpt, /lagged 2,613 records at most over 24 h/);
-  const slow = report(base({ board: BOARD, igSlots24h: [{ slot, good: 20_000 }], writerLag: [{ slot, good: 50_000 }], deploys24h: [] }), METRICS);
-  assert.ok(slow.metrics.census_pg_writer_lag_max_24h! > 5_000);
-  assert.ok(slow.flagged!.some(f => f.kind === "unmeasured" && f.excerpt.includes("census_pg_writer_lag_max_24h")));
+  const row = (over: Partial<ThroughputData>) => goalRows(base({ board: BOARD, deploys24h: [], ...over })).find(r => r.item === "p895")!;
+  const met = row({ igSlots24h: [{ slot, good: 55_000 }], writerLag: [{ slot, good: 2_613 }] });
+  assert.equal(met.value, 2_613);
+  assert.equal(missed(met), false);
+  const over = row({ igSlots24h: [{ slot, good: 55_000 }], writerLag: [{ slot, good: 17_425 }] });
+  assert.equal(missed(over), true);
+  assert.match(goalLine(over), /Census Postgres writer \(p895\): 17,425 records of lag at most over 24 h .* against at most 5,000\b.*Missed\./);
+  const slow = row({ igSlots24h: [{ slot, good: 20_000 }], writerLag: [{ slot, good: 50_000 }] });
+  assert.equal(slow.value, 0);
+  assert.match(slow.reads, /not judged/);
+  assert.equal(row({ writerLag: [{ slot, good: 2_613 }] }).value, null);
 });
