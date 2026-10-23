@@ -1,4 +1,4 @@
-import type { DutyRunRecord, FixLink, FlaggedSlice } from "./chat-duties.ts";
+import { CHECK_IN_DUTY, type Duty, type DutyRunRecord, type FixLink, type FlaggedSlice } from "./chat-duties.ts";
 import type { MetricStreak } from "./duty-streak.ts";
 import type { BoardOp, ChatBoard, PlanItem, SessionRow } from "./types.ts";
 
@@ -15,6 +15,28 @@ export function parseDutyLink(value: string): { duty: string; metric: string } |
   return match ? { duty: match[1]!, metric: match[2]! } : null;
 }
 export const dutyLink = (duty: string, metric: string): string => `${duty}/${metric}`;
+
+/** A chat's duties as a step's duty link can name them: each duty's name and its metric and reading keys, the check-in's included. */
+export type DutyKeys = ReadonlyMap<string, { name: string; keys: readonly string[] }>;
+type LinkedDuty = Pick<Duty, "id" | "name" | "metrics" | "readings">;
+export function dutyKeys(duties: readonly LinkedDuty[]): DutyKeys {
+  const all: readonly LinkedDuty[] = [CHECK_IN_DUTY, ...duties];
+  return new Map(all.map(duty => [duty.id, { name: duty.name, keys: [...duty.metrics.map(metric => metric.key), ...(duty.readings ?? []).map(reading => reading.key)] }]));
+}
+
+/**
+ * Why a duty link names nothing its chat's duties measure, with the real keys; null when the duty has that metric or reading. On 10-22 the AI
+ * harness chat's p919 linked d5/tools_off, a metric d5 no longer had, so d9 read d5 red with no fix step.
+ */
+export function dutyLinkProblem(value: string, duties: DutyKeys): string | null {
+  const link = parseDutyLink(value);
+  if (!link) return `${DUTY_LINK_SHAPE}.`;
+  const duty = duties.get(link.duty);
+  const list = (keys: readonly string[]) => keys.length ? keys.join(", ") : "none";
+  if (!duty) return `duty ${value} names ${link.duty}, which is no duty of this chat; its duties are ${[...duties].map(([id, { name, keys }]) => `${id} ${JSON.stringify(name)} (${list(keys)})`).join("; ")}.`;
+  if (duty.keys.includes(link.metric)) return null;
+  return `duty ${value} names ${link.metric}, which ${link.duty} ${JSON.stringify(duty.name)} does not measure; its metric keys are ${list(duty.keys)}.`;
+}
 
 const OPEN: ReadonlySet<PlanItem["status"]> = new Set(["todo", "doing", "blocked"]);
 const stepNumber = (id: string): number => Number(/\d+$/.exec(id)?.[0] ?? 0);

@@ -1,6 +1,6 @@
 import { isSessionId, normalizeArtifactTarget, parseArtifactTarget } from "./artifact-link.ts";
 import { CHECK_IN_DUTY_ID } from "./chat-duties.ts";
-import { DUTY_LINK_SHAPE, parseDutyLink } from "./duty-fixes.ts";
+import { DUTY_LINK_SHAPE, dutyLinkProblem, parseDutyLink, type DutyKeys } from "./duty-fixes.ts";
 import { JARGON_HINT, jargonTerms } from "./reply-lint.ts";
 import { hasDoneLine, keepDoneLine, upkeepWords } from "./upkeep-title.ts";
 import { VENDOR_SUPPORT_ERROR, vendorSupportAsk } from "./vendor-support.ts";
@@ -536,8 +536,16 @@ const quote = (text: string) => `"${text.length > 80 ? text.slice(0, 79) + "…"
  * then has one "Saved, but ..." line per soft flag: a soft target passed (`softFlags`, the plan or todo count), a c32 todo, a c47 wait, an
  * upkeep title or a new open item with no done line.
  */
-export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, now: string, newId: (kind: IdKind) => string): { board: ChatBoard; summary: string } {
+/**
+ * `duties` is the chat's duties (`dutyKeys`): with it, a duty link that an op sets and that names no metric or reading of them is refused, and
+ * every agent write flags the open steps whose links name none. Without it (the browser's preview), links are only checked for their shape.
+ */
+export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, now: string, newId: (kind: IdKind) => string, duties?: DutyKeys): { board: ChatBoard; summary: string } {
   if (actor === "owner" && !OWNER_OPS.has(op.op)) throw new BoardError("forbidden", "The owner changes the todos; the agent keeps the plan.");
+  const linkable = (link: string | undefined, kept?: string): void => {
+    const problem = duties && link && link !== kept ? dutyLinkProblem(link, duties) : null;
+    if (problem) invalid(problem);
+  };
   // Summaries are written lowercase ("checked ...") and voiced here: "Owner checked ..." for the owner, "Checked ..." for the agent.
   const voice = (sentence: string) => actor === "owner" ? `Owner ${sentence}` : sentence[0]!.toUpperCase() + sentence.slice(1);
   const done = (next: Partial<ChatBoard>, summary: string, extra: readonly string[] = []) => {
@@ -550,7 +558,7 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
       flags.push(...softFlags(op));
       if (next.plan) {
         flags.push(...waitPushes(board, next.plan), ...goWaits(board, next.plan), ...upkeepTitles(board, next.plan), ...noDoneLines(board, next.plan),
-          ...metOpenFlags(board, next.plan));
+          ...metOpenFlags(board, next.plan), ...(duties ? staleLinks(next.plan, duties) : []));
         const open = openCount(next.plan);
         if (open > BOARD_LIMITS.planItems && open > openCount(board.plan)) flags.push(`The open plan has ${open} goals and steps, over the ${BOARD_LIMITS.planItems} target; mark finished ones done or dropped.`);
         next = { ...next, plan: markMerges(next.plan) };
@@ -579,6 +587,7 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
         const session = input.sessionId ?? jobSession(input.job) ?? (job && job === kept?.job ? kept.sessionId : undefined);
         const target = input.target ? storedTarget(input.target, kept?.target, now) : kept?.target;
         const duty = input.duty ?? kept?.duty;
+        linkable(input.duty, kept?.duty);
         if (input.target) measuredBy(input.target, now);
         return { id: itemId, text: input.text, status: input.status ?? "todo", ...(job ? { job } : {}), ...(session ? { sessionId: session } : {}), ...(input.note ? { note: input.note } : {}), ...waits(input),
           ...gateFields({ go: input.go ?? kept?.go, kind: input.kind ?? kept?.kind, requirements: input.requirements ?? kept?.requirements }), ...(target ? { target } : {}), ...(duty ? { duty } : {}),
@@ -591,6 +600,7 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
       const job = planJob(op.job);
       const session = op.sessionId ?? jobSession(op.job);
       if (op.target) measuredBy(op.target, now);
+      linkable(op.duty);
       const item: PlanItem = { id: newId("p"), text: op.text, status: op.status ?? "todo", ...(job ? { job } : {}), ...(session ? { sessionId: session } : {}), ...(op.note ? { note: op.note } : {}), ...waits(op), ...gateFields(op), ...(op.target ? { target: storedTarget(op.target, undefined, now) } : {}),
         ...(op.duty ? { duty: op.duty } : {}), children: [] };
       if (op.parent === undefined) {
@@ -640,7 +650,7 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
       if (op.requirements === null) { delete next.requirements; if (item.requirements) parts.push("cleared its requirements"); }
       else if (op.requirements && JSON.stringify(op.requirements) !== JSON.stringify(item.requirements)) { next.requirements = op.requirements; parts.push(`set its requirements: ${requirementCount(op.requirements)}`); }
       if (op.duty === null) { delete next.duty; if (item.duty) parts.push("unlinked its duty metric"); }
-      else if (op.duty && op.duty !== item.duty) { next.duty = op.duty; parts.push(`linked duty metric ${op.duty}`); }
+      else if (op.duty && op.duty !== item.duty) { linkable(op.duty); next.duty = op.duty; parts.push(`linked duty metric ${op.duty}`); }
       if (op.target === null) { delete next.target; if (item.target) parts.push("cleared its target"); }
       else if (op.target && JSON.stringify(storedTarget(op.target, item.target, now)) !== JSON.stringify(item.target)) {
         measuredBy(op.target, now);
@@ -1235,6 +1245,19 @@ function metOpenFlags(before: ChatBoard, plan: readonly PlanItem[]): string[] {
 /** The gate fields that are set, for a stored plan item. */
 const gateFields = ({ go, kind, requirements: lines }: { [K in keyof Gates]?: Gates[K] | undefined }): Gates => ({ ...(go ? { go } : {}), ...(kind ? { kind } : {}), ...(lines?.length ? { requirements: lines } : {}) });
 const gateText = (item: PlanItem): string => needsGo(item) ? ", which needs the owner's go" : "";
+/** One flag line per open item whose duty link names no metric or reading of the chat's duties (`dutyLinkProblem`), so the chat relinks it. */
+function staleLinks(plan: readonly PlanItem[], duties: DutyKeys): string[] {
+  const flags: string[] = [];
+  const visit = (items: readonly PlanItem[]): void => {
+    for (const item of items) {
+      const problem = item.duty && OPEN_STATUSES.has(item.status) ? dutyLinkProblem(item.duty, duties) : null;
+      if (problem) flags.push(`${item.id} ${quote(item.text)} has a stale duty link: ${problem} Relink it (plan_update {id, duty}) or clear it (duty: null).`);
+      visit(item.children);
+    }
+  };
+  visit(plan);
+  return flags;
+}
 const dutyText = (item: PlanItem): string => item.duty ? `, fixing duty metric ${item.duty}` : "";
 const requirementCount = (lines: readonly Requirement[]): string => `${lines.length} ${lines.length === 1 ? "line" : "lines"}, ${lines.filter(line => line.status === "met").length} met`;
 

@@ -2,6 +2,8 @@ import { watch as watchDir, type FSWatcher } from "node:fs";
 import { mkdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { missing, readJsonFile, transactJsonFile, type JsonFile } from "./locked-json.ts";
+import { DutyStore } from "./chat-duty-store.ts";
+import { dutyKeys } from "./shared/duty-fixes.ts";
 import { applyBoardOp, emptyBoard, idsTop, linkStepSessions, nextIds, parseBoard, releaseClosedAsks } from "./shared/chat-board.ts";
 import type { BoardActor, BoardOp, ChatBoard } from "./shared/types.ts";
 
@@ -14,7 +16,8 @@ const WATCH_DEBOUNCE_MS = 60;
  */
 export class BoardStore {
   readonly dir: string;
-  constructor(dataDir: string) { this.dir = join(dataDir, "boards"); }
+  private readonly duties: DutyStore;
+  constructor(dataDir: string) { this.dir = join(dataDir, "boards"); this.duties = new DutyStore(dataDir); }
 
   private file(id: string): JsonFile<ChatBoard> {
     if (!sessionIdPattern.test(id)) throw new Error(`Not a session id: ${id}`);
@@ -44,16 +47,20 @@ export class BoardStore {
     return board;
   }
 
-  /** Applies the ops in order, all or none: a refused op (BoardError) leaves the file as it was. No ops reads the board. */
+  /**
+   * Applies the ops in order, all or none: a refused op (BoardError) leaves the file as it was. No ops reads the board. A duty link must name a
+   * metric or reading of the chat's duties (`dutyLinkProblem`).
+   */
   async apply(id: string, ops: readonly BoardOp[] | ((board: ChatBoard) => readonly BoardOp[]), actor: BoardActor): Promise<{ board: ChatBoard | null; summaries: string[] }> {
     if (typeof ops !== "function" && !ops.length) return { board: await this.read(id), summaries: [] };
+    const duties = dutyKeys(await this.duties.list(id));
     const { state, result } = await transactJsonFile(this.file(id), state => {
       const now = new Date().toISOString();
       let board = state;
       const summaries: string[] = [];
       for (const op of typeof ops === "function" ? ops(state) : ops) {
         const given = idsTop(board);
-        const next = applyBoardOp(board, op, actor, now, nextIds(board));
+        const next = applyBoardOp(board, op, actor, now, nextIds(board), duties);
         const top = idsTop(next.board);
         board = { ...next.board, lastIds: { p: Math.max(given.p, top.p), t: Math.max(given.t, top.t) } };
         summaries.push(next.summary);
