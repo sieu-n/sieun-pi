@@ -141,6 +141,27 @@ class R1Stay(unittest.TestCase):
         self.assertEqual((child.key, child.active_id), (KEY.key, "ffffffffffff"))
         self.assertEqual(sched.tree_for(state, child, P), sched.tree_for(state, KEY, P))
 
+    def test_a_resumed_worker_asks_under_its_root_before_the_daemon_names_it(self):
+        """10-23 01:05:37Z: 01a162a5's resumed worker asked as a700e3883df7 while its descriptor held only createCommand,
+        so its turn let go with no account wait and queued 21 min. The starting descriptor's session file names the root."""
+        with tempfile.TemporaryDirectory() as workers:
+            session_file = os.path.join(workers, "01a162a5-file.jsonl")
+            with open(session_file, "w") as f:
+                f.write(json.dumps({"type": "session", "id": KEY.key}) + "\n")
+            with open(os.path.join(workers, "w1.json"), "w") as f:
+                json.dump({"lifecycle": "starting", "rootActiveSessionId": "a700e3883df7",
+                           "createCommand": {"type": "create", "sessionPath": session_file}}, f)
+            with open(os.path.join(workers, "w2.json"), "w") as f:
+                json.dump({"lifecycle": "starting", "rootActiveSessionId": "9431c7b9cbcf", "createCommand": {"type": "create"}}, f)
+            env = {base.SESSION_ENV: "a700e3883df7", base.JOURNAL_ENV: os.path.join(workers, "w1.recovery.jsonl")}
+            with unittest.mock.patch.dict(os.environ, env):
+                resumed = registry.session_key()
+            env = {base.SESSION_ENV: "9431c7b9cbcf", base.JOURNAL_ENV: os.path.join(workers, "w2.recovery.jsonl")}
+            with unittest.mock.patch.dict(os.environ, env):
+                fresh = registry.session_key()
+        self.assertEqual((resumed.key, resumed.uuid, resumed.active_id), (KEY.key, KEY.key, "a700e3883df7"))
+        self.assertEqual((fresh.key, fresh.uuid), ("9431c7b9cbcf", None))
+
 
 class R2AdmitCap(unittest.TestCase):
     def test_no_move_into_an_account_at_the_admit_cap(self):

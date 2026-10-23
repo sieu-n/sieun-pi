@@ -220,12 +220,17 @@ def session_key():
         worker_id = os.path.basename(journal).split(".", 1)[0]
         desc = base.load_json(os.path.join(os.path.dirname(journal), worker_id + ".json")) or {}
         uuid = desc.get("rootSessionId") or None
-        if not uuid and desc.get("sessionFile"):
+        # A worker that resumes a session asks before the daemon writes rootSessionId and sessionFile, and only the
+        # starting descriptor's createCommand names the session file. On 10-22 and 10-23, 165 of 7,101 runs on us-metal02
+        # asked under the short active id, so 76 trees each waited as a new tree that had lost its place, and 52 runs let go
+        # of the turn queue with no account wait: 01a162a5 queued 21 min at 01:08Z and passed its claude19 cell.
+        path = desc.get("sessionFile") or (desc.get("createCommand") or {}).get("sessionPath")
+        if not uuid and path:
             # The file NAME is not the session id. A scratch session observed on
             # 2026-09-06 was 01a0759e-4100-... inside a file called
             # 01a0759e-3f5b-....jsonl, so read the id from the header line.
             try:
-                with open(desc["sessionFile"]) as f:
+                with open(path) as f:
                     uuid = json.loads(f.readline()).get("id") or None
             except Exception:
                 uuid = None
