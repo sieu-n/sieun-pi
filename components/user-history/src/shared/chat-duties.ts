@@ -66,8 +66,11 @@ export const overrunWords = (overrun: PrecheckOverrun): string =>
 export interface PrecheckOutput { metrics: Record<string, number>; flagged?: FlaggedSlice[]; lastEventAt?: Record<string, number>;
   /** Server notices the runner sends to other chats when the precheck ends, before the duty's job starts (`DutyHost.tell`): d9's pushes. */
   tells?: { chat: string; text: string }[] }
-/** One thing the precheck found that the duty job should read: the chat (session id), when, what kind, a short excerpt, and the plan item it is about. */
-export interface FlaggedSlice { chat?: string; at?: number; kind: string; excerpt: string; item?: string }
+/**
+ * One thing the precheck found that the duty job should read: the chat (session id), when, what kind, a short excerpt, and the plan item it is
+ * about. `handOff` marks work a run hands to the duty's job while that job still works (`Duties.handOff`), so a later run's finding reaches it.
+ */
+export interface FlaggedSlice { chat?: string; at?: number; kind: string; excerpt: string; item?: string; handOff?: true }
 
 export interface Duty {
   id: string;

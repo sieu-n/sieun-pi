@@ -362,6 +362,12 @@ export const FLAG_ORDER: readonly [string, number][] = [
   ["correction", 10], ["signal", 6], ["refinement", 6], ["trial_memory", 10], ["memory", 10], ["lint_page", 5], ["archive_candidate", 3],
 ];
 
+/**
+ * The kinds wiki_problems counts, the uncapped ones in FLAG_ORDER. Their items carry `handOff`, so a run that finds the last dream job still
+ * working hands it the new ones (sieun-pi src/chat-duty-run.ts `handOff`).
+ */
+export const PROBLEM_KINDS: ReadonlySet<string> = new Set(FLAG_ORDER.filter(([, cap]) => cap === Infinity).map(([kind]) => kind));
+
 /** Picks the flagged items: each kind in FLAG_ORDER up to its cap, unknown kinds last, and FLAGGED_MAX items of the capped kinds in all. */
 export function pickFlagged(slices: readonly FlaggedSlice[]): FlaggedSlice[] {
   const order = new Map(FLAG_ORDER.map(([kind], index) => [kind, index]));
@@ -499,7 +505,7 @@ export async function measureDream(deps: DreamDeps, lastRuns: readonly DutyRunRe
   }
   for (const pair of unjudged ?? []) slices.push({ kind: "dup_pair", item: pairKey(pair.a, pair.b), excerpt: `${pair.a} and ${pair.b} look alike (score ${pair.score})` });
 
-  return { metrics: { ...metrics }, flagged: pickFlagged(slices), info };
+  return { metrics: { ...metrics }, flagged: pickFlagged(slices).map(slice => PROBLEM_KINDS.has(slice.kind) ? { ...slice, handOff: true as const } : slice), info };
 }
 
 /** The metrics the duty judges (wiki-dream.duty.json). A run that cannot measure one of them fails, so the runner records an error, not 999999. */

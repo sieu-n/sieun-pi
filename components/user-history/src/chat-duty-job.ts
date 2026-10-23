@@ -82,6 +82,8 @@ export interface DutyJobHost {
    * and a failed read rejects. A host without it (test fakes) keeps no job.
    */
   kept?(job: DutyJobRef): Promise<string | null>;
+  /** Sends a working job a message into its current turn (a steer); a host without it (test fakes) hands nothing to a working job. */
+  steer?(job: DutyJobRef, text: string): Promise<void>;
 }
 
 /**
@@ -570,6 +572,9 @@ export function dutyJobHost(input: { threads: DutyJobThreads; archives: { add(jo
       if (input.held?.().has(job.id)) return POOL_HELD;
       const schedule = input.schedules ? (await input.schedules()).get(job.id) : undefined;
       return schedule ? `has ${schedule.status === "active" ? "an active" : "a paused"} scheduled job${schedule.label ? ` (${schedule.label})` : ""}` : null;
+    },
+    async steer(job, text) {
+      await input.threads.prompt(job.id, { message: text, images: [], mode: "steer" });
     },
   };
 }

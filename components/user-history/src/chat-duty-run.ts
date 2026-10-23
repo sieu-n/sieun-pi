@@ -161,7 +161,13 @@ export const NOTHING_TO_CHECK = "nothing to check: no job at work and no open pl
 interface PendingStart {
   at: number; schedule: DutySchedule; measured: AfterMeasure | null;
   brief: Pick<DutyJobInput, "measure" | "findings" | "focus" | "misses" | "report" | "prompt">;
+  handOff?: HandOff;
 }
+/** A run's flagged items marked `handOff` and its findings file, which a run hands to the duty's job while that job still works (`Duties.handOff`). */
+interface HandOff { items: FlaggedSlice[]; detail: string }
+/** What `<dutyId>.handed.json` keeps: the duty's job and the keys (`handOffKey`) of the items its brief and the runs since handed it. */
+interface Handed { job: string; keys: string[] }
+const handOffKey = (slice: FlaggedSlice): string => `${slice.kind}|${slice.item ?? slice.excerpt}`;
 async function readPending(file: string): Promise<PendingStart | null> {
   try { const value = JSON.parse(await readFile(file, "utf8")) as PendingStart; return typeof value?.at === "number" && value.schedule && value.brief ? value : null; }
   catch { return null; }
@@ -177,7 +183,7 @@ export function runStamp(at: number): string {
 /** What a run's start of its duty job did: started one (`replaced` notes a stuck job it retired), skipped with why, or nothing (the slot already has its job). */
 type Launched = { job: DutyJobRef; replaced?: string } | { skipped: string } | null;
 /** The duty's last job as a new run finds it: the slot already has its job (null), it still works (skip), or it is the job to retire, if any. */
-type Previous = { last?: DutyJobRef; lastRun?: DutyRunRecord; replaced?: string } | { skipped: string } | null;
+type Previous = { last?: DutyJobRef; lastRun?: DutyRunRecord; replaced?: string } | { skipped: string; working?: DutyJobRef } | null;
 
 /** What a tick reads once per chat for its push runs: the chat's runs, newest first, and its check-in interval. */
 type PushContext = { runs: DutyRunRecord[]; everyMs: number };
@@ -347,12 +353,14 @@ export class Duties {
     let own = runs.filter(run => run.duty === duty.id);
     if (!pushMisses(own, counted, everyMs, this.now())) return;
     const lastRun = own.find((run): run is DutyRunRecord & { job: DutyJobRef } => run.job !== undefined);
-    if (lastRun && await this.host.jobs.working(lastRun.job).catch(() => false)) return;
+    const working = !!lastRun && await this.host.jobs.working(lastRun.job).catch(() => false);
+    // A working job takes the push run's findings (`handOff`), so it gets one when its duty's last measure flagged items to hand off.
+    if (working && !(await this.handsOffBeside(own, lastRun.job))) return;
     // A cut run waits for its rerun once pi-pool admits its tree (`rerunCut`), so it is still going: at 15:50:20Z on 10-19 the AI harness chat's
     // d9 got a push run while its 15:34Z run waited for its slot, and at 16:15:41Z frontend bro's d1 got one while its 15:29Z push run did.
-    if (lastRun && lastRun.trigger !== "rerun" && !own.some(run => run.rerunOf === lastRun.at) && await this.cutOf(chatId, lastRun)) return;
+    if (!working && lastRun && lastRun.trigger !== "rerun" && !own.some(run => run.rerunOf === lastRun.at) && await this.cutOf(chatId, lastRun)) return;
     // The last job has ended, so its after-job measure is the duty's check now: the push judges on its result instead of measuring beside it.
-    if (lastRun && !lastRun.after || this.afters.has(key)) {
+    if (!working && (lastRun && !lastRun.after || this.afters.has(key))) {
       await (this.afters.get(key) ?? (lastRun && !this.stopped.has(lastRun.job.id) ? this.endJob(chatId, lastRun) : undefined));
       own = (await this.store.runs(chatId)).filter(run => run.duty === duty.id);
     }
@@ -855,7 +863,7 @@ export class Duties {
     if (append) { await this.store.appendRun(chatId, record); await this.writeReadings(chatId, record.duty, record); }
     let launched: Launched;
     let failed = false;
-    try { launched = await this.launch(chatId, record.duty, pending.schedule, record.slot ?? record.at, record.at, { duty, ...pending.brief }, pending.measured); }
+    try { launched = await this.launch(chatId, record.duty, pending.schedule, record.slot ?? record.at, record.at, { duty, ...pending.brief }, pending.measured, pending.handOff); }
     catch (error) { failed = true; launched = { skipped: `${NOT_STARTED}: ${message(error).slice(0, 300)}` }; }
     const checkIn = record.duty === CHECK_IN_DUTY_ID;
     const ms = Math.max(0, this.now() - record.at);
@@ -935,7 +943,7 @@ export class Duties {
     if (kept) return { skipped: `${STILL_WORKING} (job ${last.name} ${kept})` };
     if (!(await this.host.jobs.working(last))) return { last, lastRun: started };
     const workingMs = this.now() - started.at;
-    if (workingMs <= stuckAfterMs(schedule)) return { skipped: `${STILL_WORKING} (job ${last.name})` };
+    if (workingMs <= stuckAfterMs(schedule)) return { skipped: `${STILL_WORKING} (job ${last.name})`, working: last };
     return { last, lastRun: started, replaced: ` (replaced stuck job ${last.name}, working ${Math.round(workingMs / 60_000)} min)` };
   }
 
@@ -947,10 +955,14 @@ export class Duties {
    * `stopEnded` did not see, is still judged after its fixes.
    */
   private async launch(chatId: string, dutyId: string, schedule: DutySchedule, slot: number, at: number,
-    brief: Pick<DutyJobInput, "duty" | "measure" | "findings" | "focus" | "misses" | "report" | "prompt">, measured: AfterMeasure | null): Promise<Launched> {
+    brief: Pick<DutyJobInput, "duty" | "measure" | "findings" | "focus" | "misses" | "report" | "prompt">, measured: AfterMeasure | null, handOff?: HandOff): Promise<Launched> {
     const chat = await this.host.jobs.chat(chatId);
     const previous = await this.previous(chatId, dutyId, schedule, slot);
-    if (previous === null || "skipped" in previous) return previous;
+    if (previous === null) return previous;
+    if ("skipped" in previous) {
+      const handed = previous.working && handOff ? await this.handOff(chatId, dutyId, previous.working, handOff, brief.duty.name, at) : 0;
+      return handed ? { skipped: `${previous.skipped}; handed it ${handed} new flagged item${handed === 1 ? "" : "s"}` } : { skipped: previous.skipped };
+    }
     const { last, lastRun, replaced } = previous;
     if (!chat) return { skipped: "skipped: the catalog does not list the chat" };
     if (last) await this.host.jobs.retire(last).catch(error => this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: retire ${last.name}: ${message(error)}`));
@@ -960,7 +972,50 @@ export class Duties {
     }
     const name = dutyJobName(brief.duty.name, chat.name, at);
     const job = await this.host.jobs.start(chat, name, dutyJobBrief({ ...brief, chat, job: name, at }), at);
+    if (handOff) await this.writeHanded(chatId, dutyId, { job: job.id, keys: handOff.items.map(handOffKey) });
     return replaced ? { job, replaced } : { job };
+  }
+
+  private handedFile(chatId: string, dutyId: string): string { return join(this.store.chatDir(chatId), `${dutyId}.handed.json`); }
+
+  private async writeHanded(chatId: string, dutyId: string, handed: Handed): Promise<void> {
+    await writeFile(this.handedFile(chatId, dutyId), JSON.stringify(handed), { mode: 0o600 })
+      .catch(error => this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: write ${dutyId}.handed.json: ${message(error)}`));
+  }
+
+  /**
+   * Whether a push run may start beside the duty's working job `job`: the host can steer it, nothing keeps it (`kept`: a job parked on its
+   * quota or held by pi-pool takes no message), and the duty's newest measured run flagged an item to hand off, read from its precheck output.
+   */
+  private async handsOffBeside(runs: readonly DutyRunRecord[], job: DutyJobRef): Promise<boolean> {
+    if (!this.host.jobs.steer || await this.kept(job)) return false;
+    const detail = runs.find(run => (run.verdict === "met" || run.verdict === "missed") && run.detail)?.detail;
+    if (!detail) return false;
+    const output = await readFile(detail, "utf8").then(text => JSON.parse(text) as PrecheckOutput, () => null);
+    return Array.isArray(output?.flagged) && output.flagged.some(slice => slice?.handOff === true);
+  }
+
+  /**
+   * Hands a working duty job the run's `handOff` items its brief and the runs since did not name, in one steer, and returns how many. A run
+   * that finds the last job working starts no job, so until 10-23 its findings reached nobody: in the 48 h to 10-22 07:51Z, 264 of the
+   * 1,221 page-hours the Wiki dream counted were pages that fell behind after its live job's brief was written, and the 14:23 job held d4
+   * from 05:25Z on 10-22 to 04:16Z on 10-23 on its first brief while the count went from 14 to 44 (~/work/wiki-problems-follow-fix).
+   */
+  private async handOff(chatId: string, dutyId: string, job: DutyJobRef, handOff: HandOff, dutyName: string, at: number): Promise<number> {
+    const steer = this.host.jobs.steer;
+    if (!steer || !handOff.items.length) return 0;
+    const stored = await readFile(this.handedFile(chatId, dutyId), "utf8").then(text => JSON.parse(text) as Handed, () => null);
+    const known = new Set(stored?.job === job.id && Array.isArray(stored.keys) ? stored.keys : []);
+    const fresh = handOff.items.filter(slice => !known.has(handOffKey(slice)));
+    if (!fresh.length) return 0;
+    const text = [`The ${dutyName} run of ${new Date(at).toISOString().slice(0, 16)}Z found ${fresh.length} flagged item${fresh.length === 1 ? "" : "s"} ` +
+      `that your brief and earlier runs did not name. Work them like your brief's items before you end. The run's findings are in ${handOff.detail}.`,
+      ...fresh.map(slice => `- ${slice.kind}${slice.item ? ` ${slice.item}` : ""}: ${slice.excerpt}`)].join("\n");
+    try { await steer(job, text); }
+    catch (error) { this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: hand ${job.name} ${fresh.length} items: ${message(error)}`); return 0; }
+    await this.writeHanded(chatId, dutyId, { job: job.id, keys: [...known, ...fresh.map(handOffKey)] });
+    this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: handed ${job.name} ${fresh.length} new flagged items`);
+    return fresh.length;
   }
 
   /** Resolves once every run going now has ended, for tests. */
@@ -1023,11 +1078,12 @@ export class Duties {
     await markRun();
     const misses = await this.missesOf(chatId, record, previous, duty.metrics, duty.boardGoal);
     let findings: string;
+    let findingsFile = "";
     if (record.verdict === "error") {
       findings = [`The precheck failed: ${record.error ?? record.summary}. ${streak >= ERROR_RUNS_TARGET ? `It failed ${streak} runs in a row, over the target of ` +
         `${ERROR_RUNS_TARGET}: fix the precheck first.` : "Fix the precheck or check the duty by hand."}`, overrunLine, stuckFindings(misses)].filter(Boolean).join("\n\n");
     } else {
-      const file = await this.writeDetail(chatId, `${dutyId}-${runStamp(started)}`, [`# ${duty.name} run of ${new Date(started).toISOString()}`,
+      const file = findingsFile = await this.writeDetail(chatId, `${dutyId}-${runStamp(started)}`, [`# ${duty.name} run of ${new Date(started).toISOString()}`,
         `Measured against the targets: ${record.summary}.`, overrunLine, ...record.detail ? [`The full precheck output is ${record.detail}.`] : [], flaggedSection(flagged)]);
       const headline = headlineOf(duty.metrics, record);
       findings = [briefFindings({ headline: headline?.words ?? null, flagged, ...headline ? { headlineKey: headline.key } : {}, detail: file }), overrunLine, stuckFindings(misses)]
@@ -1036,8 +1092,9 @@ export class Duties {
     this.steps.set(key, { at: started, step: "starting its job" });
     const measured = record.verdict === "met" || record.verdict === "missed" ? { at: started, verdict: record.verdict, metrics: record.metrics, summary: record.summary,
       ...(record.parts ? { parts: record.parts } : {}) } : null;
+    const handOff = findingsFile && flagged.some(slice => slice.handOff) ? { items: flagged.filter(slice => slice.handOff), detail: findingsFile } : undefined;
     await this.startJob(chatId, record, duty, { schedule: duty.schedule, measured,
-      brief: { measure: record.verdict === "error" ? `no measure (${record.summary})` : record.summary, findings, misses } });
+      brief: { measure: record.verdict === "error" ? `no measure (${record.summary})` : record.summary, findings, misses }, ...handOff ? { handOff } : {} });
   }
 
   /**
