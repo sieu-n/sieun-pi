@@ -258,5 +258,17 @@ test("a release counts as broken when the service exits after its restart within
   assert.match(reading.flagged[0]!.excerpt, /1 break, first Main process exited, code=exited, status=1\/FAILURE/);
   assert.equal(reading.flagged[1]!.excerpt, "4 chat releases in 24 h, 1 with a break");
   assert.equal(reading.lastEventAt, Date.parse("2026-10-19T01:14:15.208Z"));
-  assert.equal(releaseBreaks(text.split("\n").filter(line => !line.includes("Main process exited")).join("\n"), at).lastEventAt, undefined);
+});
+
+test("with no break in 24 h, release_breaks_24h's lastEventAt is the newest release, since d9 read the count as a lagging window on 10-23 with none", () => {
+  const text = journal([
+    "2026-10-19T12:46:46.000000+00:00 Stopping sieun-pi-chat.service - sieun-pi browser chat on 127.0.0.1:5182...",
+    "2026-10-19T12:46:49.000000+00:00 Started sieun-pi-chat.service - sieun-pi browser chat on 127.0.0.1:5182.",
+    "2026-10-19T14:12:29.000000+00:00 Stopping sieun-pi-chat.service - sieun-pi browser chat on 127.0.0.1:5182...",
+    "2026-10-19T14:12:31.000000+00:00 Started sieun-pi-chat.service - sieun-pi browser chat on 127.0.0.1:5182.",
+  ]);
+  const reading = releaseBreaks(text, at);
+  assert.equal(reading.value, 0);
+  assert.equal(reading.lastEventAt, Date.parse("2026-10-19T14:12:29.000Z"));
+  assert.equal(releaseBreaks("", at).lastEventAt, undefined);
 });

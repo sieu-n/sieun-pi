@@ -129,8 +129,8 @@ const timeOf = (line: string): number => Date.parse(line.slice(0, line.indexOf("
  * exited" after the release's restart and before the next release or `RELEASE_WINDOW_MS`, which leaves the page on its red banner. The owner
  * outbox keeps a send on disk and retries it across restarts, so a release loses no page message by itself; the agent outbox's "message ...
  * dropped" lines are sends to sessions that are gone, 9 in the 24 h to 10-19 15:30Z and 4 of them away from any release, so they do not count.
- * `lastEventAt` is the newest broken release's stop, the time the 24 h window keys on, and none with no break. AI harness d9 read the count as a
- * lagging window on 10-23 because it had none.
+ * `lastEventAt` is the newest broken release's stop, the time the 24 h window keys on, or with no break the newest release's stop, and none
+ * with no release in 24 h. AI harness d9 read the count as a lagging window on 10-23 because it had none.
  */
 export function releaseBreaks(journal: string, now: number): Reading {
   const reading: Reading = { flagged: [] };
@@ -151,6 +151,7 @@ export function releaseBreaks(journal: string, now: number): Reading {
       excerpt: `the release at ${new Date(stop).toISOString()}: ${found.length} break${found.length > 1 ? "s" : ""}, first ${found[0]!.text}`.slice(0, 600) });
   });
   reading.value = broken;
+  if (!broken && stops.length) reading.lastEventAt = Math.max(...stops);
   reading.flagged.push({ at: now, kind: "releases", excerpt: `${stops.length} chat releases in 24 h, ${broken} with a break` });
   return reading;
 }
