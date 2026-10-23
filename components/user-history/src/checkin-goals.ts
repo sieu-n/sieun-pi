@@ -338,8 +338,9 @@ export function unpushed(memos: Readonly<Record<string, GoalMemo>> | undefined, 
  * A push the check-in already sent is an empty steer the next run until there is news. From 10-19 21:00Z to 10-20 21:00Z the check-ins sent 437
  * repeats to goals that did not move, 43 of them to 01a15427 p22 "hours metal held 70 to 80% CPU", which only the clock can move.
  * News is one of these:
- * - a new reading that moves toward the target from the pushed value, or a move away from it (a regression gets one push, and the pushed value
- *   then follows it), where a backfill and an unchanged value are no news;
+ * - a new reading worse than the pushed value, a regression, which gets one push, and the pushed value then follows it; a move toward the
+ *   target is the job at work, and a backfill or an unchanged value is no news. From 10-22 00:45Z to 10-23 00:45Z, 27 of the 68 repeats on goals
+ *   that did not move came from a value that changed either way, such as VP of CI p1 "push to verdict p90" swinging between 249 and 298 min;
  * - a change of act, such as the owner job ending, so a steer becomes a start;
  * - for a held-time metric, one unit of time, since only the clock moves it.
  * With no news the next push waits a day, the cadence of the daily goals. Crawler VP p892 "Instagram queues growing over 6 h" (2 queues, last
@@ -351,8 +352,8 @@ export function quietPush(memo: GoalMemo | undefined, number: GoalNumber, now: n
   if (!pushed) return undefined;
   if (act && pushed.act && act !== pushed.act) return undefined;
   const newest = Math.max(...(memo!.readings.map(reading => reading.at)), number.measuredAt ?? 0);
-  const changed = pushed.value === undefined || (number.value !== undefined && number.value !== pushed.value);
-  if (newest > pushed.reading && changed && !number.backfill) return undefined;
+  const worse = number.value !== undefined && (pushed.value === undefined || (number.value - pushed.value) * (number.op === "<=" ? 1 : -1) > 0);
+  if (newest > pushed.reading && worse && !number.backfill) return undefined;
   const nextAt = pushed.at + (heldTimeMs(number) ?? Math.max(number.staleMs, DAY_MS));
   return now < nextAt ? { pushedAt: pushed.at, nextAt } : undefined;
 }

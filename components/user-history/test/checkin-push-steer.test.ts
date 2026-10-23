@@ -58,10 +58,10 @@ test("a pushed goal with no new reading since gets no new push until its number 
   // One hour, the unit of the held time, later the push is due again.
   const third = goalPushes(held as never, views("working"), second.memos, 15 * 60_000, now + 61 * 60_000);
   assert.equal(third.pushes[0]!.quiet, undefined);
-  // A new reading with a new value makes the next run push again at once.
+  // A new reading that moves toward the target is the job at work, so it stays quiet too.
   const read = { ...held, plan: held.plan.map(item => item.id === "p1" ? { ...item, target: { ...item.target!, current: 0.5, measuredAt: new Date(now + 10 * 60_000).toISOString() } } : item) };
   const fourth = goalPushes(read as never, views("working"), second.memos, 15 * 60_000, now + 20 * 60_000);
-  assert.equal(fourth.pushes[0]!.quiet, undefined);
+  assert.doesNotMatch(goalDueLine(fourth.pushes[0]!) ?? "", /^Steer/);
 });
 
 test("a check-in that did not start gives back the goal pushes it marked", () => {
@@ -86,7 +86,7 @@ test("a re-read of the same value keeps a pushed goal quiet, and the Goals secti
   assert.doesNotMatch(detail, /Name the biggest blocker/);
   assert.match(goalsHeadline(second.pushes), /1 of them was pushed already and wait for news/);
   const moved = { ...at(now + 10 * 60_000), plan: at(now + 10 * 60_000).plan.map(item => item.id === "p1" ? { ...item, target: { ...item.target!, current: 0.5 } } : item) };
-  assert.equal(goalPushes(moved as never, views("working"), first.memos, 15 * 60_000, now + 15 * 60_000).pushes[0]!.quiet, undefined);
+  assert.doesNotMatch(goalDueLine(goalPushes(moved as never, views("working"), first.memos, 15 * 60_000, now + 15 * 60_000).pushes[0]!) ?? "", /^Steer/);
 });
 
 // Crawler VP 10-21: p892 "Instagram queues growing over 6 h" (2 queues, last read 14:32Z) and p670 "LinkedIn index gaps passing on prod"
@@ -140,4 +140,19 @@ test("a goal whose job waits for its account slot waits with it, and the check-i
   // Past the slot the goal is pushed again, so a job the resume pass missed gets its restart.
   const [late] = goalPushes(board, waiting, memo as never, 30 * 60_000, Date.parse("2026-10-22T05:20:00Z")).pushes;
   assert.equal(late?.act, "start");
+});
+
+// VP of CI p1 "push to verdict p90" (at most 10 min) swung between 249.5 and 298 min on 10-22 and got a steer at each swing either way.
+test("a swinging number gets one push at a new worst value and none for a swing back or a repeat of that worst", () => {
+  const p1 = (value: number, at: number) => shaped({ metric: "push to verdict p90, 24 h", target: 10, unit: "min", current: value, measuredAt: new Date(at).toISOString(),
+    source: "d1 precheck", direction: "down" });
+  const prior = { p1: { readings: [{ value: 249.5, at: now - 7_200_000 }], still: 1 } } as never;
+  const first = run(p1(249.5, now - 3_600_000), prior, now);
+  assert.equal(first.pushes[0]!.quiet, undefined);
+  const worse = run(p1(298.1, now + 30 * 60_000), first.memos as never, now + 60 * 60_000);
+  assert.equal(worse.pushes[0]!.quiet, undefined, "a new worst value is a regression, which gets one push");
+  const back = run(p1(249.5, now + 90 * 60_000), worse.memos as never, now + 2 * 3_600_000);
+  assert.ok(back.pushes[0]!.quiet, "a swing back toward the target is no news");
+  const again = run(p1(298.1, now + 150 * 60_000), back.memos as never, now + 3 * 3_600_000);
+  assert.ok(again.pushes[0]!.quiet, "the same worst value again is no news");
 });
