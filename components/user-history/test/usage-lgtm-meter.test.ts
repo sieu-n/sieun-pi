@@ -90,3 +90,11 @@ test("the default LGTM client asks over HTTP/1.1, which has no HTTP/2 session fo
     assert.ok(versions.length > 0 && versions.every(version => version === "1.1"));
   } finally { server.close(); }
 });
+
+test("the table's speed column reads per-model counters, never the per-session series that took 15 s for 24h on 10-23", async () => {
+  const { asked, usage } = stub({ output: "812" });
+  await usage.models("30d");
+  const queries = asked.map(url => url.searchParams.get("query") ?? "");
+  assert.ok(queries.some(query => query.includes("prime_agent_generation_seconds_total")), queries.join("\n"));
+  assert.ok(queries.every(query => !query.includes("prime_agent_session_")), queries.join("\n"));
+});

@@ -36,39 +36,60 @@
   let series = $state<UsageSeries | null>(null);
   let models = $state<UsageModelRow[] | null>(null);
   let error = $state<string | null>(null);
+  let modelsError = $state<string | null>(null);
   let loading = $state(false);
+  let modelsLoading = $state(false);
   let chartWidth = $state(0);
   let hover = $state<{ bar: Bar; px: number } | null>(null);
   /** When the chart was last loaded; a feed update reloads it at most every 20 s. */
   let loadedAt = 0;
   let request = 0;
+  let modelsRequest = 0;
 
   /** The server sent a summary this page cannot read: it runs another build, and only a reload helps. */
   let unreadable = $state(false);
   $effect(() => api.usageStream(next => { feed = next; feedDown = false; unreadable = false; }, () => { feedDown = true; }, () => { unreadable = true; }));
 
+  const message = (reason: unknown): string => reason instanceof Error ? reason.message : String(reason);
+  /** The chart, on its own: on 10-23 it waited 14 s for the table's speed query, and on 7d and up it showed that query's 502 instead. */
   async function load(): Promise<void> {
     const id = ++request;
-    const picked = { window: window_, bucket, group, metric };
     loading = true;
     try {
-      const [nextSeries, nextModels] = await Promise.all([api.usageSeries(picked.window, picked.bucket, picked.group, picked.metric), api.usageModels(picked.window)]);
+      const next = await api.usageSeries(window_, bucket, group, metric);
       if (id !== request) return;
-      series = nextSeries;
-      models = nextModels;
+      series = next;
       error = null;
       loadedAt = Date.now();
     } catch (reason) {
-      if (id !== request) return;
-      error = reason instanceof Error ? reason.message : String(reason);
+      if (id === request) error = message(reason);
     } finally {
       if (id === request) loading = false;
     }
   }
+  async function loadModels(): Promise<void> {
+    const id = ++modelsRequest;
+    modelsLoading = true;
+    try {
+      const next = await api.usageModels(window_);
+      if (id !== modelsRequest) return;
+      models = next;
+      modelsError = null;
+    } catch (reason) {
+      if (id === modelsRequest) modelsError = message(reason);
+    } finally {
+      if (id === modelsRequest) modelsLoading = false;
+    }
+  }
   $effect(() => { void window_; void bucket; void group; void metric; hover = null; void load(); });
+  $effect(() => { void window_; void loadModels(); });
   $effect(() => {
     const at = summary?.at ?? null;
-    untrack(() => { if (at !== null && Date.now() - loadedAt > 20_000 && !loading) void load(); });
+    untrack(() => {
+      if (at === null || Date.now() - loadedAt <= 20_000) return;
+      if (!loading) void load();
+      if (!modelsLoading) void loadModels();
+    });
   });
 
   function pickWindow(next: UsageWindow): void {
@@ -251,6 +272,8 @@
           {/each}
         </tbody>
       </table>
+    {:else if modelsError}
+      <div class="empty"><div class="error"><Icon name="alert" size={16} /> {modelsError}</div><button class="button small" onclick={() => void loadModels()}>Retry</button></div>
     {/if}
 
     {#if feedDown}<p class="ingest faint">Feed reconnecting</p>{/if}

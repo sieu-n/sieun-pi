@@ -9,6 +9,8 @@ Prime's exporter (prime-agent 973cf9c) writes those series, but on 10-19 no box 
 1. At start it notes the size of every transcript in `~/.prime/agent/sessions` and under each RLM child folder in `~/.prime/agent/session-artifacts`, so only calls that end after it starts count.
 2. Every 10 s it reads the bytes appended since, and a transcript that appears later from its start.
 3. It adds each assistant message's usage to the five counters of Prime's exporter, with the same names and labels plus `feed="transcripts"`.
+   It also writes `prime_agent.generation.output_tokens` and `prime_agent.generation.seconds` per provider and model with no session label, which the speed column of Settings > Usage reads.
+   A session's two counters stop going out 2 min after its last call and come back with its total on its next call, because on 10-23 one feed process sent 4,280 session series every 10 s and the per-model speed query over them took 15 s for 24h.
 4. It sends them as cumulative OTLP sums to the box's Alloy on 127.0.0.1:14318, which writes them to the staging estate Prometheus under `job="prime-agent"`.
 5. Every minute it asks LGTM whether `prime_agent_calls_total` on its box has a series without `feed="transcripts"`, and when one shows up it writes `handed-off`, exits 0 and does not start again.
 

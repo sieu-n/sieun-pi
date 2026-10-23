@@ -37,6 +37,10 @@ INTERVAL_S = 10
 # How often the feed asks LGTM whether Prime's own exporter writes this box's series.
 HANDOFF_EVERY_S = 60
 FEED = "transcripts"
+# A session point goes out for this long after its last call, then stops: lgtm.ts rates() reads a session's live speed over [1m], and two
+# windows of 10 s exports keep two samples in it. Before 10-23 every session point went out every 10 s for the feed's whole life, so one feed
+# process held 4,280 live session series and the 24h per-model speed query read 70.7M samples and took 15 s.
+SESSION_IDLE_S = 2 * 60
 
 Attributes = Tuple[Tuple[str, str], ...]
 
@@ -45,9 +49,9 @@ class Sum:
     """A cumulative monotonic sum. A new attribute set goes out as 0 first and gets its value after that export, because
     Prometheus increase() counts nothing for a series' first sample; Prime's exporter does the same."""
 
-    def __init__(self, name: str, unit: str, integer: bool):
-        self.name, self.unit, self.integer = name, unit, integer
-        self.points: Dict[Attributes, List[float]] = {}  # attributes -> [exported value, held value]
+    def __init__(self, name: str, unit: str, integer: bool, idle_s: Optional[float] = None, clock: Callable[[], float] = time.time):
+        self.name, self.unit, self.integer, self.idle_s, self.clock = name, unit, integer, idle_s, clock
+        self.points: Dict[Attributes, List[float]] = {}  # attributes -> [exported value, held value, time of the last add]
 
     def add(self, attributes: Dict[str, str], value: float) -> None:
         if not (isinstance(value, (int, float)) and value > 0 and value == value and value != float("inf")):
@@ -55,9 +59,10 @@ class Sum:
         key = tuple(sorted({**attributes, "feed": FEED}.items()))
         point = self.points.get(key)
         if point is None:
-            self.points[key] = [0.0, value]
+            self.points[key] = [0.0, value, self.clock()]
         else:
             point[1] += value
+            point[2] = self.clock()
 
     def settle(self) -> None:
         for point in self.points.values():
@@ -69,22 +74,27 @@ class Sum:
             number = {"asInt": str(round(value))} if self.integer else {"asDouble": value}
             return {"attributes": [{"key": k, "value": {"stringValue": v}} for k, v in attributes],
                     "startTimeUnixNano": str(start_ns), "timeUnixNano": str(now_ns), **number}
+        now = self.clock()
+        live = [(k, v) for k, v in self.points.items() if self.idle_s is None or v[1] > 0 or now - v[2] <= self.idle_s]
         return {"name": self.name, "unit": self.unit, "sum": {"aggregationTemporality": 2, "isMonotonic": True,
-                "dataPoints": [point(k, v[0]) for k, v in self.points.items()]}}
+                "dataPoints": [point(k, v[0]) for k, v in live]}}
 
 
 class Usage:
-    """The five counters of Prime's exporter (otlp-usage-exporter.ts), fed one transcript assistant message at a time."""
+    """The five counters of Prime's exporter (otlp-usage-exporter.ts), plus output tokens and generation seconds per model with no session
+    label, which Settings > Usage reads for its speed column. Fed one transcript assistant message at a time."""
 
-    def __init__(self) -> None:
+    def __init__(self, clock: Callable[[], float] = time.time) -> None:
         self.tokens = Sum("prime_agent.tokens", "{token}", True)
         self.cost = Sum("prime_agent.cost", "USD", False)
         self.calls = Sum("prime_agent.calls", "{call}", True)
-        self.session_output = Sum("prime_agent.session.output_tokens", "{token}", True)
-        self.session_seconds = Sum("prime_agent.session.generation_seconds", "s", False)
+        self.session_output = Sum("prime_agent.session.output_tokens", "{token}", True, SESSION_IDLE_S, clock)
+        self.session_seconds = Sum("prime_agent.session.generation_seconds", "s", False, SESSION_IDLE_S, clock)
+        self.generation_output = Sum("prime_agent.generation.output_tokens", "{token}", True)
+        self.generation_seconds = Sum("prime_agent.generation.seconds", "s", False)
 
     def sums(self) -> List[Sum]:
-        return [self.tokens, self.cost, self.calls, self.session_output, self.session_seconds]
+        return [self.tokens, self.cost, self.calls, self.session_output, self.session_seconds, self.generation_output, self.generation_seconds]
 
     def record(self, entry: dict, session: Optional[str]) -> bool:
         message = entry.get("message") if entry.get("type") == "message" else None
@@ -101,19 +111,24 @@ class Usage:
         self.cost.add(labels, cost.get("total") or 0 if isinstance(cost, dict) else 0)
         self.calls.add({**labels, "stop_reason": str(message.get("stopReason") or "unknown")}, 1)
         output = usage.get("output") or 0
-        if session and isinstance(output, (int, float)) and output > 0:
-            self.session_output.add({"session": session, **labels}, output)
+        if isinstance(output, (int, float)) and output > 0:
             ended, started = epoch_ms(entry.get("timestamp")), message.get("timestamp")
-            if ended is not None and isinstance(started, (int, float)):
-                self.session_seconds.add({"session": session, **labels}, max(0.0, ended - started) / 1000)
+            seconds = max(0.0, ended - started) / 1000 if ended is not None and isinstance(started, (int, float)) else None
+            if session:
+                self.session_output.add({"session": session, **labels}, output)
+                if seconds is not None:
+                    self.session_seconds.add({"session": session, **labels}, seconds)
+            if seconds is not None:
+                self.generation_output.add(labels, output)
+                self.generation_seconds.add(labels, seconds)
         return True
 
     def payload(self, resource: Dict[str, str], start_ns: int, now_ns: int) -> Optional[dict]:
-        sums = [s for s in self.sums() if s.points]
+        sums = [m for m in (s.otlp(start_ns, now_ns) for s in self.sums()) if m["sum"]["dataPoints"]]
         if not sums:
             return None
         return {"resourceMetrics": [{"resource": {"attributes": [{"key": k, "value": {"stringValue": v}} for k, v in resource.items()]},
-                "scopeMetrics": [{"scope": {"name": "sieun-pi-usage-feed"}, "metrics": [s.otlp(start_ns, now_ns) for s in sums]}]}]}
+                "scopeMetrics": [{"scope": {"name": "sieun-pi-usage-feed"}, "metrics": sums}]}]}
 
     def settle(self) -> None:
         for s in self.sums():

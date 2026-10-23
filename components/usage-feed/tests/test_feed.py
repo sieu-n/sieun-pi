@@ -77,10 +77,36 @@ class Feed(unittest.TestCase):
         self.tail.read(self.usage)
         metrics = self.usage.payload({}, 0, 1)["resourceMetrics"][0]["scopeMetrics"][0]["metrics"]
         self.assertEqual([m["name"] for m in metrics], ["prime_agent.tokens", "prime_agent.cost", "prime_agent.calls",
-                                                         "prime_agent.session.output_tokens", "prime_agent.session.generation_seconds"])
+                                                         "prime_agent.session.output_tokens", "prime_agent.session.generation_seconds",
+                                                         "prime_agent.generation.output_tokens", "prime_agent.generation.seconds"])
         for metric in metrics:
             for point in metric["sum"]["dataPoints"]:
                 self.assertIn({"key": "feed", "value": {"stringValue": "transcripts"}}, point["attributes"])
+
+    def test_a_session_stops_going_out_once_idle_and_comes_back_with_its_total_on_its_next_call(self):
+        clock = [1000.0]
+        usage = feed.Usage(lambda: clock[0])
+        usage.record(call(), "s1")
+        usage.settle()
+        names = lambda: [m["name"] for m in usage.payload({}, 0, 1)["resourceMetrics"][0]["scopeMetrics"][0]["metrics"]]
+        self.assertIn("prime_agent.session.output_tokens", names())
+        clock[0] += feed.SESSION_IDLE_S + 1
+        self.assertNotIn("prime_agent.session.output_tokens", names())
+        self.assertIn("prime_agent.generation.output_tokens", names())
+        usage.record(call(output=25), "s1")
+        usage.settle()
+        points = [p for m in usage.payload({}, 0, 1)["resourceMetrics"][0]["scopeMetrics"][0]["metrics"] if m["name"] == "prime_agent.session.output_tokens" for p in m["sum"]["dataPoints"]]
+        self.assertEqual([p["asInt"] for p in points], ["200"])
+
+    def test_model_speed_counters_carry_no_session_label(self):
+        self.usage.record(call(), "s1")
+        self.usage.settle()
+        metrics = {m["name"]: m for m in self.usage.payload({}, 0, 1)["resourceMetrics"][0]["scopeMetrics"][0]["metrics"]}
+        for name in ("prime_agent.generation.output_tokens", "prime_agent.generation.seconds"):
+            keys = [a["key"] for a in metrics[name]["sum"]["dataPoints"][0]["attributes"]]
+            self.assertNotIn("session", keys)
+        self.assertEqual(metrics["prime_agent.generation.output_tokens"]["sum"]["dataPoints"][0]["asInt"], "175")
+        self.assertAlmostEqual(metrics["prime_agent.generation.seconds"]["sum"]["dataPoints"][0]["asDouble"], 5.0, places=3)
 
     def test_the_feed_hands_off_when_another_source_writes_this_box(self):
         answers = {"group": [{"metric": {"box": "us-metal02"}}], "count": [{"metric": {}, "value": [0, "3"]}]}

@@ -18,6 +18,12 @@ const CALLS = `prime_agent_calls_total{${JOB}}`;
 const COST = `prime_agent_cost_USD_total{${JOB}}`;
 const SESSION_OUTPUT = "prime_agent_session_output_tokens_total";
 const SESSION_SECONDS = "prime_agent_session_generation_seconds_total";
+/**
+ * Output tokens and generation seconds per box and model with no session label, for the table's speed column. On 10-23 the same sum over the
+ * session series read 70.7M samples from 4,280 session series and took 15 s for 24h, and 7d and up passed the Grafana proxy's 30 s and got 502.
+ */
+const GENERATION_OUTPUT = `prime_agent_generation_output_tokens_total{${JOB}}`;
+const GENERATION_SECONDS = `prime_agent_generation_seconds_total{${JOB}}`;
 /** The exporter's kind label to the page's name for it. */
 const KIND_OF: Record<string, UsageKind> = { input: "input", output: "output", cache_read: "cacheRead", cache_write: "cacheWrite" };
 const LABEL_OF: Record<UsageKind, string> = { input: "input", output: "output", cacheRead: "cache_read", cacheWrite: "cache_write" };
@@ -249,7 +255,7 @@ export class Usage {
       this.prometheus.query(`sum by (${by}, kind) (increase(${tokens("total")}[${span}s]))`),
       this.prometheus.query(`sum by (${by}) (increase(${CALLS}[${span}s]))`),
       this.prometheus.query(`sum by (${by}) (increase(${COST}[${span}s]))`),
-      this.prometheus.query(`sum by (${by}) (increase(${SESSION_OUTPUT}{${JOB}}[${span}s])) / sum by (${by}) (increase(${SESSION_SECONDS}{${JOB}}[${span}s]))`),
+      this.prometheus.query(`sum by (${by}) (increase(${GENERATION_OUTPUT}[${span}s])) / sum by (${by}) (increase(${GENERATION_SECONDS}[${span}s]))`),
     ]);
     const rows = new Map<string, UsageModelRow>();
     const row = (labels: Labels) => {
