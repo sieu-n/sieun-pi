@@ -302,8 +302,12 @@ export const CHAT_ARCHIVED = "the owner archived its chat after its last message
 
 const isGone = (result: InterruptedHead["result"]): boolean => typeof result === "object" && "error" in result && result.error.includes("Unknown active session");
 
-/** What a pass answered for a held run: its cut, its pool time and why the pool holds it. */
-const answerOf = (run: PoolHeldRun): string => `${run.errored_at ?? ""}|${run.pool_at ?? ""}|${run.held_by}`;
+/**
+ * What a pass answered for a held run: its cut, its pool time and why the pool holds it, less its place in pi-pool's queue. On 10-23 from
+ * 08:36Z about 25 cut jobs waited "queued in pi-pool for a working slot, place N of 107", the place moved at each pass, so each read as a
+ * new answer and the sweep ran 16 passes in 10 min, back to back.
+ */
+const answerOf = (run: PoolHeldRun): string => `${run.errored_at ?? ""}|${run.pool_at ?? ""}|${run.held_by.replace(/, place \d+ of \d+/, "")}`;
 
 /** The session ids a past serve's `PoolHeldJobs` wrote to `file`; none when it is missing or unreadable. */
 function heldSessionsIn(file: string): string[] {

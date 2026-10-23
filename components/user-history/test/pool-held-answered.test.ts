@@ -31,3 +31,12 @@ test("a held run the sweep's pass lists, not one admitted released, still starts
   await jobs.set([run()]);
   assert.deepEqual((await jobs.admitted(now)).map(held => held.session_id), [session]);
 });
+
+test("a held run that only moved in pi-pool's queue gave the same answer, so it starts no pass of its own", async () => {
+  const queued = (place: number) => run({ errored_at: "2026-10-23T08:36:57.342Z", held_by: `queued in pi-pool for a working slot, place ${place} of 107` });
+  const jobs = new PoolHeldJobs(async () => true);
+  await jobs.set([queued(7)]);
+  assert.equal((await jobs.admitted(now)).length, 1);
+  await jobs.set([queued(4)]);
+  assert.deepEqual(await jobs.admitted(now + 30_000), [], "on 10-23 the moved place read as a new answer, and the sweep ran 16 passes in 10 min");
+});
