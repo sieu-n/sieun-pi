@@ -48,6 +48,8 @@ const checked = (usable: HostUsable | null | undefined): { usable: HostUsable | 
  * Whether `box` read usable in the watch line just before [from, to) and in the one just after, each within a minute of it. A chat service that
  * stops while a relay read is out writes that box as unread (UNREAD_AT_STOP), which says the harness restarted, not that the box was in doubt:
  * at 14:12:29Z on 10-19 a release's stop wrote the Mac unread, the Mac read usable at 14:11:30Z and 14:13:30Z, and d7 counted 14:12Z unknown.
+ * A stop next to a minute Tailscale read the box offline counts offline instead (`offlineAround`): at 20:46:25Z on 10-23 a release's stop
+ * wrote the Mac unread, Tailscale read it offline 20:22Z to 20:45Z and 20:47Z to 20:51Z, and d7 counted 20:46Z unknown, 29 of 30 clean.
  */
 export function usableAround(watch: readonly WatchLine[], box: string, from: number, to: number): boolean {
   const reads = (line: WatchLine | undefined): boolean => {
@@ -976,7 +978,7 @@ export function measure(input: Inputs): PrecheckOutput {
     if (!line) { unwatched++; unknown.push("no watch line"); }
     else for (const view of hostViews(line)) {
       const count = hostCount(view.name);
-      const flapped = !view.offline && !view.usable && UNREACHED.test(view.error ?? "") && offlineAround(input.watch, view.name, from, to);
+      const flapped = !view.offline && !view.usable && (UNREACHED.test(view.error ?? "") || view.error === UNREAD_AT_STOP) && offlineAround(input.watch, view.name, from, to);
       if (view.offline || flapped) {
         count.offline++; offline.add(view.name); offlineMin.set(view.name, [...offlineMin.get(view.name) ?? [], from]);
         if (flapped) flappedMin.push(`${clock(from)} ${view.name}`);
@@ -1120,7 +1122,7 @@ export function measure(input: Inputs): PrecheckOutput {
     `though each idle unload sweep resumes them: ${stuckHandoffs.slice(0, 5).map(entry => `${entry.session.slice(0, 8)} ${entry.state} since ${clock(entry.at)}`).join(", ")}. ` +
     "Read ~/.prime/agent/orphan-services/<session>.json and the service log's \"idle unload: <session>\" lines." });
   if (offlineMin.size) flagged.push({ kind: "offline_minutes", excerpt: [...offlineMin].map(([name, at]) => `${name} offline ${spans(at)}`).join("; ") +
-    (flappedMin.length ? `; ${flappedMin.length} of these the relay could not reach next to a minute Tailscale read offline (${flappedMin.join(", ")})` : "") });
+    (flappedMin.length ? `; ${flappedMin.length} of these the relay could not read next to a minute Tailscale read offline (${flappedMin.join(", ")})` : "") });
   for (const wait of slotWaits) {
     const fault = wait.fault;
     flagged.push({ kind: "slot_wait_timeout", excerpt: `${clock(fault.at)} ${faultName(fault) ?? `session ${fault.session!.slice(0, 8)}`} on ${fault.host}: ${fault.what}, ` +

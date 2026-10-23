@@ -3,12 +3,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { measure } from "../scripts/duties/whole-system.ts";
-import type { WatchLine } from "../src/mac-usable-watch.ts";
+import { UNREAD_AT_STOP, type WatchLine } from "../src/mac-usable-watch.ts";
 
 const RUN = Date.parse("2026-10-23T14:53:43Z");
 const box = { kind: "linux", memSomeAvg10: 0, memFullAvg10: 0, cpuSomeAvg10: 0, swapoutsPerS: 0, runnablePerCore: 0.4, allowedCpus: 80 } as const;
 const mac = { pressureLevel: 1, swapoutsPerS: 0, kernelTaskPct: 25 };
-type MacRead = "usable" | "offline" | "fetch failed" | "relay mac answered 500 to /v1/watch";
+type MacRead = "usable" | "offline" | "fetch failed" | typeof UNREAD_AT_STOP | "relay mac answered 500 to /v1/watch";
 const minuteAt = (minute: number): number => Math.floor(RUN / 60_000) * 60_000 - (30 - minute) * 60_000;
 const line = (minute: number, read: MacRead): WatchLine => ({ host: "us-metal02",
   at: new Date(minuteAt(minute) + 30_000).toISOString(), usable: box, workers: 0, workerGb: 0, top: [], live: 0, working: 0, queue: null,
@@ -24,6 +24,14 @@ test("a Mac minute the relay could not reach between two minutes Tailscale read 
   assert.equal(out.metrics.offline_min_30_mac, 30);
   assert.equal(out.metrics.unknown_min_30, 0);
   assert.equal(out.metrics.daemon_fail_min_30, 0);
+});
+
+// Guards d7's 20:46Z minute on 10-23: a release stopped the chat service at 20:46:25Z while the Mac's relay read was out, between two offline minutes.
+test("a Mac minute a service stop wrote unread between two minutes Tailscale read offline is offline", () => {
+  const out = run(Array.from({ length: 30 }, (_, minute) => line(minute, minute === 6 ? UNREAD_AT_STOP : "offline")), []);
+  assert.equal(out.metrics.clean_min_30, 30);
+  assert.equal(out.metrics.offline_min_30_mac, 30);
+  assert.equal(out.metrics.unknown_min_30, 0);
 });
 
 test("an unreached Mac minute at either edge of an offline stretch is offline too", () => {
