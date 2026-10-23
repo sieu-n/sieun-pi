@@ -37,8 +37,8 @@ export const NUDGE_CAP = 2;
 /** PR #233 (4222b4b) removed the token expired email; it merged at this time. A token email after it is one the owner already turned down. */
 export const TOKEN_EMAIL_REMOVED_AT = Date.parse("2026-10-14T01:22:18Z");
 
-export type Template = "connect_reminder" | "setup_link" | "token_expired" | "trial_d7" | "trial_d2" | "trial_d0" | "trial_followup" |
-  "signup_confirm" | "password_reset" | "other";
+export type Template = "connect_reminder" | "setup_link" | "token_expired" | "trial_d7" | "trial_d2" | "trial_last_day" | "trial_d0" |
+  "trial_idle" | "trial_followup" | "signup_confirm" | "password_reset" | "other";
 /**
  * Subjects as sent today: the connect reminder from PR #225, the setup link from the onboarding route, the rest from the Resend log.
  * PR #285 gave the setup link a subject naming the saved workspace and hours, and added SETUP_EMAIL_PERSONAL_COPY subjects that the setup link
@@ -55,7 +55,16 @@ const SUBJECTS: [Template, RegExp][] = [
   ["trial_d7", /Trial Ends in a Week/],
   ["trial_d2", /Trial Ends Soon/],
   ["trial_d0", /Trial Has Ended/],
-  ["trial_followup", /^50% Off Your First Month/],
+  ["trial_followup", /^50% off your first month/i],
+  // Trial emails v2 (packages/backend/app/polling/trial_emails.py, TRIAL_EMAILS_V2_ENABLED), first sent 2026-10-22 14:20Z.
+  ["trial_d7", /^A week left on your Slack Green trial$/],
+  ["trial_d7", /^7 days left on your trial, and Slack isn't connected yet$/],
+  ["trial_d2", /^2 days left to keep .+ green$/],
+  ["trial_last_day", /^Last day of your Slack Green trial$/],
+  ["trial_last_day", /^Less than a day left on your trial, and Slack isn't connected yet$/],
+  ["trial_d0", /^Slack Green stopped keeping .+ green$/],
+  ["trial_d0", /^Your Slack Green trial ended before Slack was connected$/],
+  ["trial_idle", /^Slack Green isn't keeping .+ green$/],
   ["signup_confirm", /^Confirm Your Signup$/],
   ["password_reset", /^Reset Your Password$/],
 ];
@@ -63,7 +72,9 @@ export const NUDGES: readonly Template[] = ["connect_reminder", "setup_link"];
 /** Sends the person asked for themselves (a signup or a reset); a second one in a day is their retry, not us. */
 const ASKED: readonly Template[] = ["signup_confirm", "password_reset"];
 /** Sends that should_send_marketing gates in packages/backend/app/lib/email.py: off for a user who turned marketing email off. */
-const MARKETING: readonly Template[] = ["connect_reminder", "trial_d7", "trial_d2", "trial_d0", "trial_followup"];
+const MARKETING: readonly Template[] = ["connect_reminder", "trial_d7", "trial_d2", "trial_last_day", "trial_d0", "trial_idle", "trial_followup"];
+/** The v2 trial copy for someone who never connected Slack (_not_connected_draft): wrong once the user has a workspace. */
+const NOT_CONNECTED_SUBJECT = /Slack isn't connected yet$|^Your Slack Green trial ended before Slack was connected$/;
 const BAD_EVENTS = ["bounced", "complained"];
 /**
  * QA sign-in accounts, the same pattern as QA_EMAIL in PR #225's packages/backend/app/lib/email.py, and Resend's test inboxes (delivered@,
@@ -90,7 +101,7 @@ const who = (send: Send, recipients: Record<string, Recipient>): string =>
 export function wrongSend(send: Send, recipient: Recipient | undefined, previous: EmailState | undefined): string | null {
   if (!recipient) return ASKED.includes(send.template) ? null : "no account has this address";
   if (recipient.deletedAt !== undefined && recipient.deletedAt < send.at) return `the account was deleted at ${iso(recipient.deletedAt)}`;
-  if (NUDGES.includes(send.template) && recipient.firstWorkspaceAt !== undefined && recipient.firstWorkspaceAt < send.at)
+  if ((NUDGES.includes(send.template) || NOT_CONNECTED_SUBJECT.test(send.subject)) && recipient.firstWorkspaceAt !== undefined && recipient.firstWorkspaceAt < send.at)
     return `the user connected a Slack workspace at ${iso(recipient.firstWorkspaceAt)}`;
   if (send.template === "token_expired" && send.at > TOKEN_EMAIL_REMOVED_AT) return `PR #233 removed this email at ${iso(TOKEN_EMAIL_REMOVED_AT)}`;
   if (MARKETING.includes(send.template) && previous && send.at > previous.at && previous.optedOut.includes(recipient.userId))
@@ -160,7 +171,7 @@ export function emailMetrics(sources: Sources, now: number, previous: EmailState
   if (sources.sends) {
     const bad = day.filter(send => BAD_EVENTS.includes(send.lastEvent));
     metrics.bounce_or_complaint_pct = day.length ? Math.round(10000 * bad.length / day.length) / 100 : 0;
-    for (const send of day.filter(send => [...BAD_EVENTS, "suppressed", "failed"].includes(send.lastEvent)))
+    for (const send of day.filter(send => [...BAD_EVENTS, "soft_bounced", "suppressed", "failed"].includes(send.lastEvent)))
       flagged.push({ at: send.at, kind: send.lastEvent, item: "p68", excerpt: `${send.template} to user ${who(send, recipients)} at ${iso(send.at)} (Resend ${send.id}) ended ${send.lastEvent}` });
   }
   if (sources.optedOut) {
@@ -221,6 +232,26 @@ export async function readSends(deps: EmailDeps, key: string): Promise<Send[]> {
   return sends;
 }
 
+/**
+ * Resend's warm-up guide's 4% is for bounces that will not deliver. On 10-23 the one bounce in the window was a Gmail inbox full ("Transient",
+ * "MailboxFull"), 1 of 11 sends, so the rate read 9.09% with nothing to fix. Each bounced send in the window is read once more (GET /emails/{id})
+ * and a Transient bounce becomes "soft_bounced": listed, never counted.
+ */
+export async function markSoftBounces(deps: EmailDeps, key: string, sends: Send[]): Promise<void> {
+  for (const send of sends.filter(item => item.lastEvent === "bounced")) {
+    let response = await deps.fetch(`https://api.resend.com/emails/${send.id}`, { headers: { Authorization: `Bearer ${key}` } });
+    const wait = Number(response.headers.get("retry-after") ?? response.headers.get("ratelimit-reset") ?? Number.NaN);
+    if (response.status === 429 && Number.isFinite(wait)) {
+      await response.body?.cancel();
+      await new Promise((resolve) => setTimeout(resolve, wait * 1000));
+      response = await deps.fetch(`https://api.resend.com/emails/${send.id}`, { headers: { Authorization: `Bearer ${key}` } });
+    }
+    const body = await response.text();
+    if (!response.ok) throw new Error(`Resend GET /emails/${send.id} gave HTTP ${response.status}: ${body.slice(0, 200)}`);
+    if ((JSON.parse(body) as { bounce?: { type?: string } }).bounce?.type === "Transient") send.lastEvent = "soft_bounced";
+  }
+}
+
 async function query<T>(deps: EmailDeps, sql: string): Promise<T[]> {
   const token = deps.env.SUPABASE_ACCESS_TOKEN;
   if (!token) throw new Error(`SUPABASE_ACCESS_TOKEN is not set in ${REPO}/scripts/seo-agent/.env`);
@@ -278,6 +309,10 @@ export async function measureEmails(deps: EmailDeps, previous: EmailState | unde
   const key = deps.resendKey || railway?.key;
   if (!key) { if (railway) sources.errors.push("Railway has no RESEND_API_KEY for slack-green-backend production"); }
   else sources.sends = await readSends(deps, key).catch(fail("Resend send log"));
+  if (sources.sends && key) {
+    const day = sources.sends.filter(send => send.at > at - DAY_MS);
+    await markSoftBounces(deps, key, day).catch(fail("Resend bounce details"));
+  }
   if (sources.sends) {
     const window = sources.sends.filter(send => send.at > at - DAY_MS || NUDGES.includes(send.template)).map(send => send.to);
     sources.recipients = await readRecipients(deps, window).catch(fail("Supabase recipients"));
