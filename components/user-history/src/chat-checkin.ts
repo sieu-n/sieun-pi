@@ -169,12 +169,15 @@ export function checkInPrecheck(previous: CheckInMemory | undefined, facts: read
   const doneFacts = { ...context.doneFacts ?? NO_FACTS, working };
   const done = context.boardError ? [] : finishedOpen(board, doneFacts);
   const fold = context.boardError ? [] : goalsToFold(board, facts, self, context.duties ?? []);
-  const goals = context.boardError ? { pushes: [], memos: previous?.goals ?? {} }
-    : goalPushes(board, goaled, previous?.goals, context.everyMs ?? CHECK_IN_MS, now, doneFacts.metrics, new Set(fold.map(entry => entry.goal.id)), paused);
   const roots = new Set(context.jobs ?? []);
+  // A thread the chat did not start, such as another chat that owns a step on this board, is no job of this chat: on 10-23 at 16:25Z VP of CI's
+  // check-in sent its p1 goal steer to the AI harness chat, which held p342 under p1.
+  const ownJob = (fact: JobFact): boolean => !fact.key.startsWith("thread:") || roots.has(fact.name) || roots.has(fact.key.slice("thread:".length));
+  const goals = context.boardError ? { pushes: [], memos: previous?.goals ?? {} }
+    : goalPushes(board, goaled, previous?.goals, context.everyMs ?? CHECK_IN_MS, now, doneFacts.metrics, new Set(fold.map(entry => entry.goal.id)), paused, ownJob);
   const pushed = context.boardError ? { pushes: [], memos: previous?.jobs ?? {} }
     : jobPushes(facts, goaled, previous?.jobs, context.everyMs ?? CHECK_IN_MS, now,
-      fact => !fact.name.startsWith("check-in ") && (!fact.key.startsWith("thread:") || roots.has(fact.name) || roots.has(fact.key.slice("thread:".length))),
+      fact => !fact.name.startsWith("check-in ") && ownJob(fact),
       view => steps[view.item.id] ? recordedAt(steps[view.item.id]!) : view.changedAt,
       { job: fact => threadPaused(fact, fact, paused),
         step: view => view.cls === "foryou" || view.cls === "parked" || heldByTodo(view.item, openTodos) || Date.parse(view.item.waitUntil ?? "") > now ||

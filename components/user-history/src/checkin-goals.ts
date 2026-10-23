@@ -344,17 +344,20 @@ export function quietPush(memo: GoalMemo | undefined, number: GoalNumber, now: n
  */
 export function goalPushes(board: ChatBoard | null, views: readonly StepView[], memos: Readonly<Record<string, GoalMemo>> | undefined,
   everyMs: number, now: number, metrics: ReadonlyMap<string, MetricFact> = new Map(),
-  folded: ReadonlySet<string> = new Set(), paused: ReadonlySet<string> = new Set()): { pushes: GoalPush[]; memos: Record<string, GoalMemo> } {
+  folded: ReadonlySet<string> = new Set(), paused: ReadonlySet<string> = new Set(),
+  ownJob: (fact: JobFact) => boolean = () => true): { pushes: GoalPush[]; memos: Record<string, GoalMemo> } {
   const todos: readonly OwnerTodo[] = board?.todos ?? [];
   const kept: Record<string, GoalMemo> = {};
+  // The goal's message goes only to a job of this chat, so a step another chat owns names no owner or holder.
+  const mine = views.filter(view => !view.owner || ownJob(view.owner));
   const pushes = openGoals(board?.plan ?? []).flatMap((goal): GoalPush[] => {
     if (folded.has(goal.id)) return [];
     const words = goalWords(goal);
-    const owner = goalOwner(goal, views);
+    const owner = goalOwner(goal, mine);
     const pushView = views.find(view => view.goal?.id === goal.id && view.item.duty === GOAL_PUSH_LINK);
     const step = pushView?.item.id;
-    const under = views.filter(view => view.goal?.id === goal.id && view.item.id !== goal.id && view.item.job);
-    const holder = (pushView?.item.job ? pushView : undefined) ?? under.find(view => view.item.duty !== undefined) ?? under[0];
+    const under = mine.filter(view => view.goal?.id === goal.id && view.item.id !== goal.id && view.item.job);
+    const holder = (pushView?.item.job && mine.includes(pushView) ? pushView : undefined) ?? under.find(view => view.item.duty !== undefined) ?? under[0];
     const stepJob = holder?.item.job ? { step: holder.item.id, job: holder.owner?.name ?? holder.item.job, ...holder.item.duty ? { duty: holder.item.duty } : {} } : undefined;
     const base = { goal, words, ...(owner ? { owner } : {}), ...(step ? { pushStep: step } : {}), ...(stepJob ? { stepJob } : {}) };
     const number = goalNumber(goal, everyMs, metrics);

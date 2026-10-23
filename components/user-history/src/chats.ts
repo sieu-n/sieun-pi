@@ -1633,7 +1633,8 @@ export class Chats {
    * at once and its wake stays as a later backstop: on 10-18 VP of CI's check-in told "repo design count" to attack p75 at 12:00Z and the message
    * waited in its wake note for 19:50Z, 7.5 h away.
    */
-  async steerJob(chat: string, job: string, message: string): Promise<{ session: string; act: "steer" | "restart" | "relay" } | { jobs: string[] } | { cancelled: string } | null> {
+  async steerJob(chat: string, job: string, message: string): Promise<{ session: string; act: "steer" | "restart" | "relay" } | { jobs: string[] } | { cancelled: string } |
+    { otherChat: string } | null> {
     await this.load();
     if (!this.chatIds.has(chat)) return null;
     // The daemon's list can time out for minutes after a restart (502 at 08:2xZ on 10-16), so the board alone then names the job's session.
@@ -1649,6 +1650,9 @@ export class Chats {
     const fact = facts.find(candidate => candidate.name.trim().toLowerCase() === wanted || sessionOf(candidate) === job.trim());
     const session = fact ? sessionOf(fact) : stepSessions.get(wanted) ?? [...stepSessions.values()].find(id => id === job.trim());
     if (!session) return { jobs: facts.map(candidate => candidate.name) };
+    // Another chat that owns a step on this board is no job of this chat, and this chat's goals and words are not its own: on 10-23 at 16:25Z
+    // VP of CI's check-in steered the AI harness chat with VP of CI's p1 goal, because p342 under p1 named that chat.
+    if (session !== chat && (this.chatIds.has(session) || (await this.archivedIds()).has(session))) return { otherChat: fact?.name ?? job.trim() };
     const cancel = await this.cancelled(session);
     if (cancel) {
       this.log(`chat ${chat.slice(0, 8)}: check-in job's message for job ${fact?.name ?? job.trim()} not sent: ${cancelWords(cancel)}`);

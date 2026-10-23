@@ -1195,6 +1195,7 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
           if (!steered) throw new RequestError(404, "This thread is not a chat.");
           if ("jobs" in steered) throw new RequestError(404, `The chat has no job by that name. Its jobs: ${steered.jobs.join(", ") || "none"}.`);
           if ("cancelled" in steered) throw new RequestError(409, steered.cancelled);
+          if ("otherChat" in steered) throw new RequestError(409, `${steered.otherChat} is another chat, not a job of this chat, so it gets none of this chat's goals or steers.`);
           json(res, 200, steered); return;
         }
         case "check-in": {
