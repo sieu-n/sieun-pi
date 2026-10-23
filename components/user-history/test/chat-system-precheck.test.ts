@@ -1,7 +1,7 @@
 // Guards the Chat system duty's precheck (d9), built 10-19 for the owner's rule that a plan holds only tasks that finish (msg mvfb7zt0).
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { agingSince, chatSystemOutput, fixNotMoving, goalsWithNoJob, jobsByChat, ownerMessages, planUpkeep, pushedFile, pushList, pushReached, spread, withCatalogOwners, withoutWorkingRuns } from "../scripts/duties/chat-system.ts";
+import { agingSince, chatSystemOutput, fixNotMoving, goalsWithNoJob, jobsByChat, ownerMessages, planUpkeep, pushedFile, pushList, pushReached, spotAuditLines, spread, withCatalogOwners, withoutWorkingRuns } from "../scripts/duties/chat-system.ts";
 import { type PlanInputs, planCounts } from "../scripts/duties/whole-system.ts";
 import type { MetricStreak } from "../src/shared/duty-streak.ts";
 import type { ChatBoard } from "../src/shared/types.ts";
@@ -230,4 +230,15 @@ test("a red duty whose live fix has not moved its number over 3 or more misses i
   assert.ok(out.flagged!.some(slice => slice.kind === "fix_not_moving" && slice.item === "d1"));
   assert.ok(out.flagged!.some(slice => slice.kind === "push" && slice.excerpt.startsWith("1 chat has")));
   assert.deepEqual(pushList({ idleGoals: [], stuckDuties: [], upkeep: [], notMoving: found }).map(entry => [entry.chat, entry.duties]), [["a", [found[0]!.line]]]);
+});
+
+// d9 run of 10-24: the global-rules read guard refuses a read of another chat's transcript, so the spot audit reads the board, job list and agent_observe.
+test("the spot audit brief points to the board, the job list and agent_observe, and never names a transcript or session file", () => {
+  const lines = spotAuditLines({ spot: "01abc", title: "chat A", host: "us-metal02", dataDir: "/data", log: "/tmp/spot.md", asks: [],
+    jobs: [{ sessionId: "01job1", sessionName: "fix wiki", activity: "working" }, { sessionId: "01job2", activity: "idle" }] });
+  const text = lines.join("\n");
+  assert.doesNotMatch(text, /transcript|session file|sessions\/|last turns/i);
+  assert.match(text, /\/data\/boards\/01abc\.json: read its open plan, each step's note and requirements, and its todos/);
+  assert.match(text, /job list holds 2 jobs of it, 1 working now: fix wiki \(01job1\)/);
+  assert.match(text, /agent_observe/);
 });

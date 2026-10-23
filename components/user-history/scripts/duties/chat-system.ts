@@ -473,6 +473,26 @@ export function pushRecords(pushes: ReturnType<typeof pushList>, tag: string, at
   });
 }
 
+/** What the spot audit reads: the chat's board, its duties, the chat service's job list and agent_observe, never its transcript or session file (global rule). */
+export function spotAuditLines(input: { spot: string; title: string; host?: string | undefined; dataDir: string; jobs: readonly CatalogRow[];
+  log: string; asks: readonly { at: string; text: string }[] }): string[] {
+  const { spot, dataDir } = input;
+  const working = input.jobs.filter(row => row.activity === "working");
+  return [
+    `## Spot audit: ${input.title}`, "",
+    `1. The chat is ${spot}, and it runs on ${input.host ?? "a box this box has no catalog copy for"}.`,
+    `2. Its board is ${join(dataDir, "boards", `${spot}.json`)}: read its open plan, each step's note and requirements, and its todos.`,
+    `3. Its duties are ${join(dataDir, "duties", `${spot}.json`)}, and their runs are ${join(dataDir, "duties", `${spot}.runs.jsonl`)}.`,
+    `4. The chat service's job list holds ${input.jobs.length} jobs of it, ${working.length} working now` +
+      `${working.length ? `: ${working.map(row => `${row.sessionName ?? row.sessionId.slice(0, 8)} (${row.sessionId})`).join(", ")}` : ""}.`,
+    "5. Read each job's status with agent_observe where it can see the chat, and compare the board, the duties and the jobs with the owner's asks below.",
+    "6. Fix what is off: a step that is upkeep, a step with no done line or no live owner, a duty that checks something the owner did not ask for or misses what he did, a red duty with no fix job (one this file marks as red only on counts that age out owes none), and an ask of his that nothing on the board carries.",
+    `7. Append what you found and what you fixed to ${input.log}, under a heading with the time and the chat's name, and send the owner nothing.`, "",
+    "The owner's last messages in it, newest last:", "",
+    ...input.asks.length ? input.asks.map(ask => `- ${ask.at}: ${JSON.stringify(ask.text)}`) : ["- None found in its last 4 MB of messages."], "",
+  ];
+}
+
 const today = (now: number): string => new Date(now).toISOString().slice(0, 10);
 const section = (title: string, lines: readonly string[]): string => [`## ${title}`, "", ...lines.length ? lines.map((line, index) => `${index + 1}. ${line}`) : ["None."], ""].join("\n");
 
@@ -536,8 +556,8 @@ async function main(): Promise<void> {
 
   // The spot audit: one owner chat at random each run, read by the duty job against what the owner asked in it.
   const spot = ids[Math.floor(Math.random() * ids.length)]!;
-  const transcript = localCopy(listed.get(spot)?.file);
-  const asks = transcript ? ownerMessages(await tail(transcript.file, TRANSCRIPT_TAIL_BYTES), OWNER_MESSAGES) : [];
+  const session = localCopy(listed.get(spot)?.file);
+  const asks = session ? ownerMessages(await tail(session.file, TRANSCRIPT_TAIL_BYTES), OWNER_MESSAGES) : [];
   const log = join(homedir(), "work/plan-audit/spot", `${today(now)}.md`);
   await mkdir(join(homedir(), "work/plan-audit/spot"), { recursive: true });
   result.flagged!.push({ kind: "spot_audit", chat: spot, excerpt: `Spot audit this run: ${names.get(spot)} (${spot}). Its files and the owner's last messages in it are in ${detail}; ` +
@@ -548,16 +568,7 @@ async function main(): Promise<void> {
     `stuck_steps_all ${result.metrics.stuck_steps_all}, plan_upkeep_all ${result.metrics.plan_upkeep_all}, duties_green_pct ${result.metrics.duties_green_pct}, ` +
       `stuck_duties ${result.metrics.stuck_duties}, fix_not_moving ${result.metrics.fix_not_moving}, over ${ids.length} chats.`, "",
     ...fleetMissing.map(slice => `${slice.excerpt}\n`),
-    `## Spot audit: ${name(spot)}`, "",
-    `1. The chat is ${spot}, and it runs on ${transcript?.host ?? "a box whose transcript this box has no copy of"}.`,
-    `2. Its plan is ${join(dataDir, "boards", `${spot}.json`)}.`,
-    `3. Its duties are ${join(dataDir, "duties", `${spot}.json`)}, and their runs are ${join(dataDir, "duties", `${spot}.runs.jsonl`)}.`,
-    `4. Its transcript is ${transcript?.file ?? "not on this box"}.`,
-    "5. Read its open plan, its duties and their last runs, and its last turns, and compare them with the owner's asks below.",
-    "6. Fix what is off: a step that is upkeep, a step with no done line or no live owner, a duty that checks something the owner did not ask for or misses what he did, a red duty with no fix job (one this file marks as red only on counts that age out owes none), and an ask of his that nothing on the board carries.",
-    `7. Append what you found and what you fixed to ${log}, under a heading with the time and the chat's name, and send the owner nothing.`, "",
-    "The owner's last messages in it, newest last:", "",
-    ...asks.length ? asks.map(ask => `- ${ask.at}: ${JSON.stringify(ask.text)}`) : ["- None found in the transcript's last 4 MB."], "",
+    ...spotAuditLines({ spot, title: name(spot), host: session?.host, dataDir, jobs: jobs.get(spot) ?? [], log, asks }),
     `## Push list (${pushes.length} chats)`, "",
     `The server sent each chat below its push, tagged ${tag}, when this run's precheck ended, and ${PUSHES_FILE} records each one. Send none of them again. ` +
       "Follow up only where a chat's answer shows it did not act.", "",
