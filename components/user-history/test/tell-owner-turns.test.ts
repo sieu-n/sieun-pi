@@ -311,3 +311,14 @@ test("an ask for the go of a product prod deploy is no needless ok, since he wal
   assert.equal(tellOwner({ text: "The billing fix is on staging. Should I start the prod deploy now? My pick on t29 is yes.", why: "decision",
     about: "prod billing fix" }, turn).kind, "sent");
 });
+
+test("on a turn the owner did not start, an answer that says its page is still being written is refused once as progress", () => {
+  // 10-22 15:44Z: AI harness sent an interim Prime under load verdict with "I'm putting the bugs and fix options on one page for our talk".
+  const turn = tellTurn([...settled, job("the load review found 25 bugs", "07:00:00")]);
+  const interim = { text: "Prime isn't safe under load yet. I'm putting the bugs and fix options on one page for our talk.", why: "answer", about: "is prime-agent durable under load" };
+  const refused = tellOwner(interim, turn);
+  assert.equal(refused.kind, "refused");
+  assert.match(refused.text, /reports work still going \("I'm putting the bugs and fix options on one page"\)/);
+  assert.equal(tellOwner(interim, { ...turn, resent: new Set([interim.text]) }).kind, "sent", "the very same text again goes out");
+  assert.equal(tellOwner(interim, { ...turn, owner: true }).kind, "sent", "his own turn is never held");
+});

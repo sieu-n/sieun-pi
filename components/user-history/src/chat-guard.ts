@@ -268,9 +268,12 @@ const PROGRESS_MARK = "Not sent, it reports work still going";
  * that starts now, a count of open steps. On 10-22 (temp) mcp release sent "I'll ask you to walk the prod deploy with it after that" at
  * 05:49Z, Crawler VP an answer whose second half was "still being counted" 28 min before the final one at 06:30Z, and AI harness its "down to
  * 11 open steps" at 07:05Z. Of the 170 lines d11 labelled from 10-19 to 10-22 these words catch 4 of the 5 progress relays (the fifth, a 10-19
- * blocker, falls to ASKS_HIM) and none of the 141 needed ones; on the owner's own turns, never held, they mark 9 of 387 sent lines.
+ * blocker, falls to ASKS_HIM) and none of the 141 needed ones; on the owner's own turns, never held, they mark 9 of 387 sent lines. A page
+ * still being written is the same: AI harness sent "I'm putting the bugs and fix options on one page for our talk" at 15:44Z on 10-22, an hour
+ * before the page. measured: over the 2,714 lines sent from 10-09 to 10-23 those words match that line and no other
+ * (~/work/tell-owner-noise-p942/replay.md).
  */
-const PROGRESS = /\bstill being \w+ed\b|\binterim\b|\b(?:I['’]ll|I will|we['’]ll|we will)\b[^.?!]*\b(?:after that|later|once)\b|\b(?:starts|started|begins) now\b|\bstepping up\b|\b\d+ (?:open|remaining) (?:steps|items|jobs|tasks)\b|\b(?:steps|items|jobs|tasks) (?:left|remain(?:ing)?)\b/i;
+const PROGRESS = /\bstill being \w+ed\b|\binterim\b|\b(?:I['’]ll|I will|we['’]ll|we will)\b[^.?!]*\b(?:after that|later|once)\b|\b(?:starts|started|begins) now\b|\bstepping up\b|\b\d+ (?:open|remaining) (?:steps|items|jobs|tasks)\b|\b(?:steps|items|jobs|tasks) (?:left|remain(?:ing)?)\b|\b(?:I['’]m|I am|we['’]re|we are) (?:putting|writing|drafting|preparing|pulling)\b[^.?!]*\b(?:page|doc|write-?up|report|together)\b/i;
 const NEEDLESS_OK_MARK = "Not sent, no owner rule keeps this for him";
 /**
  * An ok asked for work the chat may do itself: a restart or a run of its own (`should I restart p5`, `want me to run`), a step handed to a job
