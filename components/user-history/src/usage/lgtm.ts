@@ -3,6 +3,7 @@ import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { type UsageBucket, type UsageFeed, type UsageGroup, type UsageKind, type UsageMetric, type UsageModelRow, type UsageRate, type UsageSeries, type UsageSummary, type UsageTokens, type UsageWindow, USAGE_BUCKETS, USAGE_GROUPS, USAGE_METRICS, USAGE_WINDOWS } from "../shared/usage.ts";
 import type { TokenRate } from "../shared/types.ts";
+import { waitedOnHost } from "../chat-latency.ts";
 
 /**
  * Settings > Usage, the sidebar Throughput line and the Agents card tok/s, all read from LGTM. Each Prime process on every box exports its model
@@ -91,6 +92,8 @@ export function grafanaPrometheus(config: string, fetcher: typeof fetch = http1F
     catch (error) { throw new UsageError(503, `No Grafana token: ${config}: ${error instanceof Error ? error.message : String(error)}`); }
     if (typeof url !== "string" || typeof token !== "string") throw new UsageError(503, `No Grafana token: ${config} needs url and token.`);
     const ask = () => fetcher(`${url.replace(/\/$/, "")}/api/datasources/proxy/uid/${DATASOURCE}/api/v1/${path}?${new URLSearchParams(params)}`, { headers: { authorization: `Bearer ${token}` } });
+    // The query runs on the LGTM box, so a slow answer is its time, not this box's (chat-latency.ts waitedOnHost).
+    waitedOnHost();
     // A second try covers a connection that dropped between two queries. Every query here is a read.
     const response = await ask().catch(() => ask())
       .catch((error: unknown) => { throw new UsageError(502, `LGTM unreachable: ${reason(error)}`); });

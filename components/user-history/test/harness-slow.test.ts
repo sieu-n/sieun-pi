@@ -5,6 +5,10 @@ import { test } from "node:test";
 import type { LinuxUsable } from "../../prime-relay/host-stats.ts";
 import { measure } from "../scripts/duties/whole-system.ts";
 import { createServer } from "node:http";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { grafanaPrometheus } from "../src/usage/lgtm.ts";
 import { readRoute, takeLatency, timeRead, waitedOnHost } from "../src/chat-latency.ts";
 import { chatLatency, harnessSlow, waitedOnCpu, workerMisses } from "../src/harness-slow.ts";
 import type { UsableReading, WatchLine } from "../src/mac-usable-watch.ts";
@@ -90,4 +94,28 @@ test("a GET that waited on another box is timed apart from this box's reads, so 
   const own = { box: "us-metal02", own: true, from: 0, to: 60_000, misses: [], faults: [] };
   assert.deepEqual(harnessSlow({ ...own, latency: { readMs: 60, read: "api/agent/siblings", remoteMs: 2105, remote: "api/threads/a/older", loopMs: 279 } }), [],
     "a read that waited 2.1 s on the Mac relay does not make a busy us-metal02 minute dirty");
+});
+
+test("a Settings > Usage read that waits on LGTM's Prometheus is timed as a remote wait, so d7 does not count it as this box's CPU", async () => {
+  // As 10-23 08:09 to 08:18Z: api/usage/models waited 12 to 14.5 s on obs.virev.ai with the loop under 1 s, and d7 counted ten busy minutes dirty.
+  const config = join(await mkdtemp(join(tmpdir(), "lgtm-latency-")), "grafana.json");
+  await writeFile(config, JSON.stringify({ url: "https://obs.example", token: "t" }));
+  const slowLgtm = (() => new Promise<Response>(done => setTimeout(() => done(new Response(JSON.stringify({ status: "success", data: { resultType: "vector", result: [] } }))), 150))) as typeof fetch;
+  const prometheus = grafanaPrometheus(config, slowLgtm);
+  const server = createServer((req, res) => {
+    timeRead(req, res, "/cap/");
+    if (req.url?.includes("usage")) void prometheus.query("up").then(() => res.end("ok"));
+    else setTimeout(() => res.end("ok"), 30);
+  });
+  await new Promise<void>(done => server.listen(0, "127.0.0.1", done));
+  const port = (server.address() as { port: number }).port;
+  try {
+    takeLatency();
+    await Promise.all(["/cap/api/usage/models?window=24h", "/cap/api/labels"].map(path => fetch(`http://127.0.0.1:${port}${path}`).then(res => res.text())));
+    const taken = takeLatency()!;
+    assert.equal(taken.read, "api/labels", "the local read stays this box's");
+    assert.ok(taken.readMs < 140, JSON.stringify(taken));
+    assert.equal(taken.remote, "api/usage/models");
+    assert.ok(taken.remoteMs! >= 140, JSON.stringify(taken));
+  } finally { server.close(); }
 });
