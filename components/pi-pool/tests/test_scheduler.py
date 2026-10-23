@@ -312,6 +312,20 @@ class R5Wait(unittest.TestCase):
         again = request(state, KEY, [acct("x", five=100, five_reset_in=300), acct("y", five=100)], NOW + 300)
         self.assertEqual((type(again), again.slot_account.id, again.slot_at), (sched.Wait, "x", d.slot_at))
 
+    def test_who_says_whether_the_tree_holds_the_cell_of_the_wait_it_reads(self):
+        """10-23: resume_paused.py held 01a1641e, cut at 04:35Z with a 04:46:30Z claude20 slot, from 04:47Z to 05:02Z on `who`'s dry run,
+        which read a new slot a minute ahead on each pass that no cell held, while later trees entered claude20."""
+        from vend.pool import session_cmds
+        state = empty_state()
+        put(state, KEY, on="x", at=NOW - 60, priority="high")
+        d = limited(state, KEY, [acct("x", five=100, five_reset_in=600), acct("y", five=100)], NOW, NOW + 600)
+        held = decide(state, KEY, [acct("x", five=100, five_reset_in=300), acct("y", five=100)], NOW + 300)
+        self.assertEqual(session_cmds.wait_view(held, sched.tree_for(state, KEY, P)),
+                         {"account": "x", "slot_at": math.ceil(d.slot_at), "reserved": True})
+        late = decide(state, KEY, [fresh("x", 100, 300, NOW + 690), fresh("y", 100, 3000, NOW + 690)], NOW + 690)
+        view = session_cmds.wait_view(late, sched.tree_for(state, KEY, P))
+        self.assertEqual((view["account"], view["slot_at"] > NOW + 690, view["reserved"]), ("x", True, False))
+
     def test_a_tree_waits_on_its_own_account_when_it_frees_as_early_as_any(self):
         """A move rewrites the tree's whole prompt cache (300k to 390k tokens on 10-21), so
         R5 keeps the tree on its own account when no other account frees sooner."""
@@ -775,10 +789,10 @@ class Cli(unittest.TestCase):
         accounts = [acct("x", five=100), acct("y", five=40, tier="max 5x")]
         _, out, _ = self.run_cli(state, accounts, ["who", "--json"])
         who = json.loads(out)
-        self.assertEqual((who["priority"], who["providers"][P]["wait"]), ("low", {"account": "y", "slot_at": round(NOW + 1500)}))
+        self.assertEqual((who["priority"], who["providers"][P]["wait"]), ("low", {"account": "y", "slot_at": round(NOW + 1500), "reserved": True}))
         _, out, _ = self.run_cli(state, accounts, ["ls", "--json"])
         ls = json.loads(out)
-        self.assertEqual((ls["priority"], ls["wait"]), ("low", {"account": "y", "slot_at": round(NOW + 1500)}))
+        self.assertEqual((ls["priority"], ls["wait"]), ("low", {"account": "y", "slot_at": round(NOW + 1500), "reserved": True}))
         self.assertNotIn("force", ls["rows"][0])
         rc, out, _ = self.run_cli(state, accounts, ["ls"])
         self.assertEqual(rc, 0)

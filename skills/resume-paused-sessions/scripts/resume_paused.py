@@ -1411,7 +1411,12 @@ def account_blocker(root_session_id, provider, cache, strict=False):
     free_at = pool_free_at(resolved, rows, time.time())
     # A tree that pi-pool holds in a wait, its slot or R5's 0 to 120 min backoff draw (30f44c22b), gets no turn before slot_at: a continue
     # would only meet the same hold, and an abort of a run in its retry would end it early.
+    # A wait with `reserved` false is a dry run that no cell holds: the tree takes its place in R5's order only by asking. From 04:47Z to 05:02Z
+    # on 10-23 nine cut high trees whose 04:46Z to 04:54Z claude20 slots had passed were held here, each pass reading a slot a minute ahead,
+    # and trees that parked later entered claude20 meanwhile. A pool from before 10-23 writes no `reserved`, and its wait still holds.
     wait = resolved.get("wait") or {}
+    if wait.get("reserved") is False:
+        return None, None
     if isinstance(wait.get("slot_at"), (int, float)) and wait["slot_at"] > time.time():
         return f"pi-pool holds the tree until {dt.datetime.fromtimestamp(wait['slot_at'], dt.timezone.utc).isoformat(timespec='seconds')}", free_at
     account = resolved.get("account")

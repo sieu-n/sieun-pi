@@ -13,13 +13,18 @@ def tree_view(state, key, provider, accounts, f, cfg, now):
     return accounts, tree, sched.book_for(state, provider, key, cfg, now), state["providers"][provider]["cooldowns"]
 
 
-def wait_view(d):
-    """The wait the tree's next request gets as {account, slot_at}; None when that
+def wait_view(d, tree):
+    """The wait the tree's next request gets as {account, slot_at, reserved}; None when that
     request gets an account. The wait on file can be stale: on 10-18 at 16:21Z
     `who` printed 01a14eb4's wait to 16:47Z on the Virev seat while its next
-    request would have entered claude4, and resume_paused.py held it for that."""
+    request would have entered claude4, and resume_paused.py held it for that.
+    `reserved` says the tree's wait on file holds that cell. Without it the slot is a dry run that
+    nobody holds, and it moves on while awake trees take each cell: on 10-23 from 04:47Z to 05:02Z
+    resume_paused.py held nine cut high trees past their 04:46Z to 04:54Z claude20 slots, each pass
+    reading a new slot a minute ahead, and later trees entered claude20 meanwhile."""
     if isinstance(d, sched.Wait):
-        return {"account": d.slot_account.id, "slot_at": math.ceil(d.slot_at)}
+        reserved = bool(tree.wait) and tree.wait[0] == d.slot_account.id and tree.wait[1] == d.slot_at
+        return {"account": d.slot_account.id, "slot_at": math.ceil(d.slot_at), "reserved": reserved}
     return None
 
 
@@ -51,7 +56,7 @@ def cmd_ls(rest):
     out = {"provider": provider, "session": key.key if key else None,
            "pin": {"id": pin_account.id, "email": pin_account.email, "label": pin_account.label} if pin_account else None,
            "priority": tree.priority, "selection": sched.selection_view(tree),
-           "wait": wait_view(d) if key else None, "rows": rows}
+           "wait": wait_view(d, tree) if key else None, "rows": rows}
     if f["json"]:
         print(json.dumps(out, indent=2))
         return 0
@@ -177,7 +182,7 @@ def cmd_who(rest):
             "selection": sched.selection_view(tree),
             "shadowed": list(d.shadowed) if isinstance(d, (sched.Stay, sched.Admit, sched.Wait)) and d.shadowed else None,
             "at": tree.current_at or None,
-            "wait": wait_view(d),
+            "wait": wait_view(d, tree),
             "moves_today": len([t for t in tree.moves if now - t < sched.MOVE_WINDOW_SEC]),
             "current": {"id": current.id, "email": current.email, "label": current.label, "session_pct": current.session_pct,
                         "weekly_pct": current.weekly_pct, "gated_pct": current.gated_pct,

@@ -1491,6 +1491,9 @@ class ResumePausedTests(unittest.TestCase):
         self.assertIn("holds the tree", who({"account": "acct1", "slot_at": later}))
         self.assertIsNone(who({"account": "acct1", "slot_at": NOW.timestamp() - 60}))
         self.assertIn("no anthropic account", who({"account": "acct1", "slot_at": NOW.timestamp() - 60}, account=None))
+        self.assertIn("holds the tree", who({"account": "acct1", "slot_at": later, "reserved": True}))
+        # 10-23 04:49:39Z: 01a1641e's 04:46:30Z cell had passed and `who` read a fresh slot at 04:50Z that no cell held.
+        self.assertIsNone(who({"account": "acct1", "slot_at": later, "reserved": False}, account=None))
 
     def test_retry_wait_names_the_error_a_hung_run_sleeps_on(self):
         # ssh tailnet only, 10-18: its last entry is the 08:20:32Z 429, and it showed working for 146 min after it.
