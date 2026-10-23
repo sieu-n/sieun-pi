@@ -172,7 +172,7 @@ function skippedLead(metrics: readonly DutyMetric[], misses: readonly DutyRunRec
   const streak = misses.slice(0, run < 0 ? misses.length : run);
   const { value, target, op } = results[key]!;
   const first = streak[streak.length - 1]!.metrics![key]!.value;
-  return { key, misses: streak.length, moved: Math.abs(value - target) < Math.abs(first - target), since: streak[streak.length - 1]!.at, value, target, op };
+  return { key, misses: streak.length, moved: Math.abs(value - target) < Math.abs(first - target), since: streak[streak.length - 1]!.at, value, target, op, stuck: false };
 }
 const show = (value: number): string => String(Math.round(value * 10) / 10);
 const bound = (streak: MetricStreak): string => `${streak.op === "<=" ? "at most" : "at least"} ${show(streak.target)}`;
