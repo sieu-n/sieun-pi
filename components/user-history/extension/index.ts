@@ -139,7 +139,7 @@ export default function historyExtension(pi: ExtensionAPI): void {
         const service = await chatService(dataDir());
         const asks = (params as TellInput).why === "decision" || (params as TellInput).why === "blocker";
         const { board, others } = (service?.remote ? await agentOpsViaService(dataDir(), sessionId, [], _signal, asks) : null) ?? await applyAgentOps(dataDir(), sessionId, [], asks);
-        if (board) turn = { ...turn, asked: asked(board.todos, turn.startedAt) };
+        if (board) turn = { ...turn, asked: asked(board.todos, turn.startedAt), plan: board.plan };
         if (others) turn = { ...turn, others };
       } catch { /* no board read, so no todo holds the message */ }
       const result = guard.tellOwner(params as TellInput, turn);

@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { WIKI_CONTENT_HOME, wikiLinkPath } from "./shared/artifact-link.ts";
 import { chatLines, CHECK_IN_PREFIX, messageIdNote, ownerMessageId, serverNote, TELL_OWNER_HELD, TELL_OWNER_TOOL, TELL_WHY, type TellWhy, turnStarter } from "./shared/chat-feed.ts";
 import { messageText } from "./shared/turns.ts";
-import type { ThreadMessage } from "./shared/types.ts";
+import type { PlanItem, ThreadMessage } from "./shared/types.ts";
+import { targetMet } from "./shared/chat-board.ts";
 import { ALLOWED_SHELL, SHELL_LIST } from "./chat-brief.ts";
 import { fileLines } from "./file-lines.ts";
 import { LONG_REPLY_MARK, longReply, SHOP_TALK_MARK, shopTalk } from "./shared/reply-lint.ts";
@@ -190,7 +191,7 @@ export interface TellInput { text?: unknown; why?: unknown; about?: unknown; rep
  * sent is left out), and the ids of his messages a `reply_to` may name.
  */
 export interface TellTurn { owner: boolean; ownerIds: ReadonlySet<string>; byOwner?: boolean; tells?: number; ownerText?: string; resent?: ReadonlySet<string>; done?: readonly string[]; startedAt?: number; asked?: ReadonlySet<string>; looked?: boolean;
-  others?: readonly OtherAsk[]; lastSent?: SentTell; dropped?: readonly DroppedTodo[] }
+  others?: readonly OtherAsk[]; lastSent?: SentTell; dropped?: readonly DroppedTodo[]; plan?: readonly PlanItem[] }
 /**
  * A For you todo the chat added, then removed or checked itself with no answer from the owner: an ask it took back. `swappedFor` holds the
  * todos the same call added. A call in the running step has no result yet, so `swappedAfter` holds the highest todo number the chat had
@@ -291,6 +292,30 @@ const PROGRESS = /\bstill being \w+ed\b|\binterim\b|\b(?:I['â€™]ll|I will|we['â€
  */
 const STAGING_STEP = /\bon staging\b/i;
 const stagingStep = (text: string, about: string): boolean => STAGING_STEP.test(text) && /\bp\d+\b/.test(`${text} ${about}`) && !/\bprod(?:uction)?\b/i.test(text);
+/**
+ * The duty fix step a done names and the goal over it that still misses its target, when every step the text and about name is such a step: a
+ * fix the chat's own duty run started (`duty` "d<n>/<metric>", not a check-in's goal gap), under an open goal whose number is not there yet.
+ * On 10-23 at 13:53Z a chat sent the cause of its unindexed blog pages (p90, d2) while his visits goal p56 read 141.7 of 10,000, and at 17:40Z
+ * AI harness sent the clean test of p910 (d10) while p706 read 59.6 of 100% duties green; d11 labelled both progress on a goal still going.
+ * measured: over the 2,733 lines sent from 10-09 to 10-23 20:30Z (271 labelled), with each chat's board of 10-23 20:30Z, these mark those 2
+ * lines and no other, while the 10-20 17:36Z d6 done labelled needed sits under p1, whose target read 8 of 8.
+ * Evidence: ~/work/tell-owner-internal-done/replay.md.
+ */
+const DUTY_RUN_FIX = /^d\d+\//;
+export function dutyFixDone(text: string, plan: readonly PlanItem[]): { step: PlanItem; goal: PlanItem } | undefined {
+  const ids = new Set(text.match(/\bp\d+\b/g) ?? []);
+  const found: { step: PlanItem; goal: PlanItem }[] = [];
+  const walk = (items: readonly PlanItem[], goals: readonly PlanItem[]): void => {
+    for (const item of items) {
+      const goal = goals.findLast(above => above.target);
+      if (ids.has(item.id) && goal && DUTY_RUN_FIX.test(item.duty ?? "") && goal.status !== "done" && goal.status !== "dropped"
+        && goal.target!.current !== undefined && !targetMet(goal.target!)) found.push({ step: item, goal });
+      walk(item.children, [...goals, item]);
+    }
+  };
+  walk(plan, []);
+  return ids.size && found.length === ids.size ? found[0] : undefined;
+}
 const NEEDLESS_OK_MARK = "Not sent, no owner rule keeps this for him";
 /**
  * An ok asked for work the chat may do itself: a restart or a run of its own (`should I restart p5`, `want me to run`), a step handed to a job
@@ -504,7 +529,8 @@ export function tellTurn(messages: readonly ThreadMessage[]): TellTurn {
  * a text that reports work still going (`PROGRESS`), a text that takes back the chat's own ask (`WITHDRAW`), and a decision or blocker that
  * asks an ok for work no owner rule keeps for him (`NEEDLESS_OK`). So is an answer or done that comes within `SPLIT_MS` of one the turn
  * already sent (`lastSent`), a decision or blocker whose about another chat's open todo holds (`sameAbout`), that sends him to another chat's
- * list (`OTHER_LIST`) or that swaps a todo for a new one (`REPLACED`, `swappedIn`), and a blocker whose only "you" promises to tell him later. A text it would send with a `wiki:` link that opens no page (`brokenWikiLinks`)
+ * list (`OTHER_LIST`) or that swaps a todo for a new one (`REPLACED`, `swappedIn`), a blocker whose only "you" promises to tell him later, and a
+ * done for a fix step of the chat's own duty run under a goal that misses its target (`dutyFixDone`, `plan`). A text it would send with a `wiki:` link that opens no page (`brokenWikiLinks`)
  * is refused once the same way, with the form that works, since on 10-22 two links went out as `wiki:https://...:5176/page/...` and the owner
  * answered "often links to wrong page." on 10-23.
  */
@@ -527,6 +553,10 @@ export function tellOwner(input: TellInput, turn: TellTurn, now = Date.now(), pa
   if (!turn.owner && input.why === "done" && declared && !turn.resent?.has(told) && stagingStep(told, input.about as string)) return { kind: "refused",
     text: `${PROGRESS_MARK}, a step on staging while its goal waits on prod. Put it in the step's note on the board and tell him once the goal ` +
       "is done, in one message. If this step finishes what he asked for, send the very same text again and it goes out (c117)." };
+  const fix = !turn.owner && input.why === "done" && declared && !answers && !turn.resent?.has(told) && turn.plan ? dutyFixDone(`${told} ${input.about as string}`, turn.plan) : undefined;
+  if (fix) return { kind: "refused", text: `${PROGRESS_MARK}, ${fix.step.id} is a fix for duty ${fix.step.duty} while its goal ${fix.goal.id} reads ` +
+    `${fix.goal.target!.current} of ${fix.goal.target!.target}. A fix your own duty run started is update until the goal is met, so put it in the ` +
+    "step's note and tell him once the goal is done, in one message. If this finishes what he asked for, send the very same text again and it goes out (c117)." };
   const about = typeof input.about === "string" ? input.about : "";
   const fresh = !turn.owner && !turn.resent?.has(told);
   const ask = fresh && (input.why === "decision" || input.why === "blocker");
