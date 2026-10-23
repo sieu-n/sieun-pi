@@ -276,6 +276,14 @@ const PROGRESS_MARK = "Not sent, it reports work still going";
  * (~/work/progress-relay-watch/replay-new.json).
  */
 const PROGRESS = /\bstill being \w+ed\b|\binterim\b|\b(?:I['’]ll|I will|we['’]ll|we will)\b[^.?!]*\b(?:after that|later|once)\b|\b(?:starts|started|begins) now\b|\bstepping up\b|\b\d+ (?:open|remaining) (?:steps|items|jobs|tasks)\b|\b(?:steps|items|jobs|tasks) (?:left|remain(?:ing)?)\b|\b(?:I['’]m|I am|we['’]re|we are) (?:putting|writing|drafting|preparing|pulling)\b[^.?!]*\b(?:page|doc|write-?up|report|together)\b|\b(?:fix|fixes|work|change|changes|rebuild|rewrite) (?:is|are) (?:now )?(?:underway|under way|in progress)\b/i;
+/**
+ * A done that names a step (p57) on staging and says nothing of prod: the step is finished but its goal waits on prod, so the result is not in.
+ * On 10-23 at 10:17Z a chat sent "Google search is upgraded on staging (p57)" while its goal p18 ("works through api.virev.ai on prod") stayed
+ * open, and d11 labelled it progress. measured: a step done under an open goal alone also marks 27 needed lines of 2,671 sent from 10-09 to
+ * 10-23, while these words on turns he did not start mark that line and no other (~/work/progress-relay-watch/staging-step.md).
+ */
+const STAGING_STEP = /\bon staging\b/i;
+const stagingStep = (text: string, about: string): boolean => STAGING_STEP.test(text) && /\bp\d+\b/.test(`${text} ${about}`) && !/\bprod(?:uction)?\b/i.test(text);
 const NEEDLESS_OK_MARK = "Not sent, no owner rule keeps this for him";
 /**
  * An ok asked for work the chat may do itself: a restart or a run of its own (`should I restart p5`, `want me to run`), a step handed to a job
@@ -429,6 +437,9 @@ export function tellOwner(input: TellInput, turn: TellTurn, now = Date.now(), pa
   if (!turn.owner && (answers || declared) && !turn.resent?.has(told) && PROGRESS.test(told)) return { kind: "refused", text: `${PROGRESS_MARK} ("${PROGRESS.exec(told)![0]}"). ` +
     "Progress on work that is not finished is update, so put it on the board and tell him once the result is in, in one message. If he must " +
     "see this now as it is, send the very same text again and it goes out (c117)." };
+  if (!turn.owner && input.why === "done" && declared && !turn.resent?.has(told) && stagingStep(told, input.about as string)) return { kind: "refused",
+    text: `${PROGRESS_MARK}, a step on staging while its goal waits on prod. Put it in the step's note on the board and tell him once the goal ` +
+      "is done, in one message. If this step finishes what he asked for, send the very same text again and it goes out (c117)." };
   const about = typeof input.about === "string" ? input.about : "";
   const fresh = !turn.owner && !turn.resent?.has(told);
   const ask = fresh && (input.why === "decision" || input.why === "blocker");

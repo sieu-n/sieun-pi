@@ -334,3 +334,16 @@ test("on a turn the owner did not start, an answer that says its fix is still un
   assert.equal(tellOwner(cause, { ...turn, resent: new Set([cause.text]) }).kind, "sent", "the very same text again goes out");
   assert.equal(tellOwner(cause, { ...turn, owner: true }).kind, "sent", "his own turn is never held");
 });
+
+test("on a turn the owner did not start, a done for a step on staging that says nothing of prod is refused once as progress", () => {
+  // 10-23 10:17Z: a chat sent "Google search is upgraded on staging (p57)" while its goal p18, the prod crawler API, stayed open.
+  const turn = tellTurn([...settled, job("google search finish reported", "07:00:00")]);
+  const step = { text: "Google search is upgraded on staging (p57). Page 3 now loads in 2.9 s instead of 4.6 s.", why: "done", about: "integrate Google search properly" };
+  const refused = tellOwner(step, turn, Date.now(), () => true);
+  assert.equal(refused.kind, "refused");
+  assert.match(refused.text, /reports work still going, a step on staging/);
+  assert.equal(tellOwner(step, { ...turn, resent: new Set([step.text]) }, Date.now(), () => true).kind, "sent", "the very same text again goes out");
+  assert.equal(tellOwner(step, { ...turn, owner: true }, Date.now(), () => true).kind, "sent", "his own turn is never held");
+  const both = { ...step, text: "Google search is upgraded on staging and prod (p57)." };
+  assert.equal(tellOwner(both, turn, Date.now(), () => true).kind, "sent", "a step that reached prod is a result");
+});
