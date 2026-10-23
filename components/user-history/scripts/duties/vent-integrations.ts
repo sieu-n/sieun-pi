@@ -152,12 +152,12 @@ async function lights(token: string, dir: string): Promise<IntegrationLight[]> {
   return (JSON.parse(stdout) as { integrations: IntegrationLight[] }).integrations;
 }
 
-/** When each tier first and last logged prod's build. */
+/** When each tier first and last logged a call on prod's build. otel.vent_calls holds only Vent's call rows: the same scan of otel.otel_logs took 26 to 60 s and hit Grafana's deadline on 10-24, this one 0.4 to 2.3 s. */
 async function spans(token: string, version: string): Promise<VersionSpan[]> {
   if (!/^[\w.-]+$/.test(version)) throw new Error(`prod /healthz version ${JSON.stringify(version).slice(0, 40)} is not a build id`);
   const sql = "SELECT ResourceAttributes['deployment.environment.name'] AS env, toFloat64(toUnixTimestamp64Milli(min(Timestamp))) AS first, " +
-    "toFloat64(toUnixTimestamp64Milli(max(Timestamp))) AS last FROM otel.otel_logs WHERE ServiceName = 'vent' " +
-    `AND ResourceAttributes['service.version'] = '${version}' GROUP BY env`;
+    "toFloat64(toUnixTimestamp64Milli(max(Timestamp))) AS last FROM otel.vent_calls " +
+    `WHERE ResourceAttributes['service.version'] = '${version}' GROUP BY env`;
   const response = await fetch(`${GRAFANA}/api/ds/query`, {
     method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
     body: JSON.stringify({ queries: [{ refId: "A", datasource: { uid: "grafana_clickhouse" }, rawSql: sql, format: 1, queryType: "table" }], from: "now-1h", to: "now" }),
