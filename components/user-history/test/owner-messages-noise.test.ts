@@ -73,3 +73,14 @@ test("the 10-22 progress relays went out before the still-going fix, and a later
 test("no noise line gives no lastEventAt", () => {
   assert.deepEqual(noiseLastEvent([], firstRun), {});
 });
+
+test("a kind with a later fix reads its leaks after the first fix as before the newest one", async () => {
+  // 10-22: three same-incident asks went out after b084c910, and c541b75c refuses them; a line after c541b75c reads after its fix.
+  const fixed = { ...commits, b084c910: "2026-10-21T09:40:55Z", c541b75c: "2026-10-23T08:31:26Z" };
+  const split = await splitNoise([
+    { at: at("2026-10-21T06:02:09Z"), case: "same incident asked again by another chat (prod crawler restart already asked on t56)" },
+    { at: at("2026-10-22T13:22:18Z"), case: "same incident asked again by another chat (slot count already on metal-management t8)" },
+    { at: at("2026-10-23T09:00:00Z"), case: "same incident asked again by another chat" },
+  ], async hash => fixed[hash as keyof typeof fixed] ? at(fixed[hash as keyof typeof fixed]!) : undefined);
+  assert.deepEqual(split.map(line => [line.side, line.fix]), [["before_fix", "c541b75c"], ["before_fix", "c541b75c"], ["after_fix", "c541b75c"]]);
+});
