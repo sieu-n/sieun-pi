@@ -32,7 +32,8 @@ release builds the next candidate down to its own commit, so a newer request tha
 never folded. The batch restarts unless every covered request passed --no-kickstart, and it never leaves its restart to a later release.
 A release that takes the lock with restart.owed, which helpers before the fold left to a waiting release, makes that restart before its build.
 A restart counts as applied only while the service manager reports the service running (systemctl is-active, launchctl print).
-After each restart it checks that the chat answers http://127.0.0.1:5182/ and is still the same process 8 s after its start. When it is not,
+After each restart it checks that the chat answers http://127.0.0.1:5182/, is still the same process 8 s after its start, and stays that process
+until GET /ready answers 200 at the end of its first pass (up to 180 s; a release without /ready answers 404 and stands on the 8 s). When it is not,
 current goes back to the release the chat ran before, that release restarts, and the command exits 5 naming the failure.
 After the flip it deletes each release folder except current, the one current named before, the one the chat was last started on, a waiting
 release's and any folder a running process names, so a rollback further back than the release before current builds that commit again.
@@ -453,6 +454,12 @@ const ANSWER_MS = Number(process.env.SIEUN_PI_CHAT_ANSWER_MS || 60_000);
  * 4.7 to 6.8 s after their start (journalctl --user -u sieun-pi-chat), so 8 s covers the latest of them.
  */
 const HOLD_MS = Number(process.env.SIEUN_PI_CHAT_HOLD_MS || 8_000);
+/**
+ * How long a start may take to end its first pass (GET /ready, `Chats.ready`) before the release stands on the hold alone. On 10-23 release
+ * fbd5a0a0 answered 3 s after each start and threw in its first pass 30 s after it, 4 times, so the release waits for that pass. A release
+ * from before /ready answers 404 there and stands on the hold.
+ */
+const READY_MS = Number(process.env.SIEUN_PI_CHAT_READY_MS || 180_000);
 /** systemctl show answered in 20 ms on us-metal02 on 10-19, so polling it every 250 ms finds an exit within a quarter second for little CPU. */
 const POLL_MS = 250;
 const sleep = ms => new Promise(done => setTimeout(done, ms));
@@ -477,16 +484,18 @@ const ask = (url, signal) => new Promise(done => {
 });
 
 /**
- * Null when the service started at `startedAt` answers the chat URL with a status below 500 and is still the same process HOLD_MS after its
- * start; else what went wrong. A request to the systemd socket waits while no service accepts it, so the process is polled next to it: on
- * 10-19 at 01:14Z the release died at listen on that socket, the socket kept the port, and the page sat on its red banner for 5 min.
+ * Null when the service started at `startedAt` answers the chat URL with a status below 500, is still the same process HOLD_MS after its
+ * start, and its GET /ready answers 200 (or 404 from a release without it, or still 503 after READY_MS); else what went wrong. A request to
+ * the systemd socket waits while no service accepts it, so the process is polled next to it: on 10-19 at 01:14Z the release died at listen
+ * on that socket, the socket kept the port, and the page sat on its red banner for 5 min.
  */
 async function checkStart(startedAt) {
   const url = chatUrl();
+  const readyUrl = new URL("/ready", url).href;
   const first = serviceProcess();
   if (!first) return "was not running right after its restart";
   const controller = new AbortController();
-  let answered = null, last = "no answer yet";
+  let answered = null, last = "no answer yet", trial = false;
   const asking = (async () => {
     while (!controller.signal.aborted) {
       const status = await ask(url, controller.signal);
@@ -498,10 +507,18 @@ async function checkStart(startedAt) {
   try {
     for (;;) {
       const now = serviceProcess(), after = seconds(Date.now() - startedAt);
-      if (now !== first) return `${now ? `restarted as ${now}` : "exited"} ${after} after its start (${first})${answered ? "" : `, before it answered ${url}`}`;
+      if (now !== first) return `${now ? `restarted as ${now}` : "exited"} ${after} after its start (${first})${trial ? ", before it ended its first pass" : answered ? "" : `, before it answered ${url}`}`;
       if (answered && Date.now() - startedAt >= HOLD_MS) {
-        log(`the chat answered ${url} ${seconds(answered - startedAt)} after its start and still runs as ${first} after ${after}`);
-        return null;
+        const ready = await ask(readyUrl, AbortSignal.timeout(2_000));
+        if (serviceProcess() !== first) continue;
+        const ran = `the chat answered ${url} ${seconds(answered - startedAt)} after its start`;
+        if (ready === 200) { log(`${ran}, ended its first pass and still runs as ${first} after ${seconds(Date.now() - startedAt)}`); return null; }
+        if (typeof ready === "number" && ready !== 503) { log(`${ran} and still runs as ${first} after ${after}`); return null; }
+        trial = true;
+        if (Date.now() - startedAt >= READY_MS) {
+          log(`${ran} and still runs as ${first} after ${after}, but its first pass has not ended (${readyUrl}: ${ready}); the release stands`);
+          return null;
+        }
       }
       if (!answered && Date.now() - startedAt >= ANSWER_MS) return `did not answer ${url} within ${seconds(ANSWER_MS)} of its start (${last})`;
       await sleep(POLL_MS);

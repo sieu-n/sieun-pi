@@ -636,6 +636,8 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
         req.headers["sec-fetch-mode"] === "navigate" && req.headers["sec-fetch-dest"] === "document" && login === await ownerLogin()) {
         res.writeHead(302, { Location: base }); res.end(); return;
       }
+      // scripts/release-chat.mjs keeps a new release on trial until its first pass ended (`Chats.ready`); the answer names nothing else.
+      if (url.pathname === "/ready" && req.method === "GET") { const ready = backend.chats.ready; json(res, ready ? 200 : 503, { ready }); return; }
       if (url.origin !== origin || !url.pathname.startsWith(base)) throw new RequestError(404, "Not found.");
       // The diagram frame is sandboxed with an opaque origin, so its page request arrives cross-site. The page is static.
       const frameRoute = url.pathname.slice(base.length);

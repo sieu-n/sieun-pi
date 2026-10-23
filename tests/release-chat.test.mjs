@@ -40,7 +40,8 @@ const FREE_PORTS = `const net = require("node:net");
 const a = net.createServer().listen(0, "127.0.0.1", () => { const b = net.createServer().listen(0, "127.0.0.1", () => {
   console.log(a.address().port + " " + b.address().port); a.close(); b.close(); }); });`;
 // The chat service: it starts from the release current names, and that release's chat-behavior.json makes it exit before it listens (exitMs, the
-// 10-19 crash at listen), answer and then exit (answerThenExitMs) or never listen (hang). Every other start answers each request 404 with its release.
+// 10-19 crash at listen), answer and then exit (answerThenExitMs) or never listen (hang). Every other start answers each request 404 with its release,
+// except GET /ready when readyAfterMs is set: 503 until that long after the start, then 200, as Chats.ready does at the end of the first pass.
 const FAKE_CHAT = `import { createServer } from "node:http";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
@@ -51,7 +52,11 @@ const behavior = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
 if (behavior.exitMs !== undefined) setTimeout(() => process.exit(1), behavior.exitMs);
 else if (behavior.hang) setInterval(() => {}, 1000);
 else {
-  createServer((req, res) => { res.writeHead(404); res.end(JSON.stringify({ error: "Not found.", release: path.basename(release) })); }).listen(Number(port), "127.0.0.1");
+  const start = Date.now();
+  createServer((req, res) => {
+    if (req.url === "/ready" && behavior.readyAfterMs !== undefined) { const ready = Date.now() - start >= behavior.readyAfterMs; res.writeHead(ready ? 200 : 503); res.end(JSON.stringify({ ready })); return; }
+    res.writeHead(404); res.end(JSON.stringify({ error: "Not found.", release: path.basename(release) }));
+  }).listen(Number(port), "127.0.0.1");
   if (behavior.answerThenExitMs !== undefined) setTimeout(() => process.exit(1), behavior.answerThenExitMs);
 }
 `;
@@ -285,6 +290,32 @@ test("a chat that answers but exits inside the hold, or never answers, sends cur
     assert.equal(await f.page(), id(f.c1));
     assert.equal(JSON.parse(readFileSync(path.join(f.home, "started.json"), "utf8")).id, id(f.c1));
   }
+});
+
+test("a start that answers, passes the hold and dies in its first pass goes back to the release before it, as fbd5a0a0 did on 10-23 at 01:20Z", { timeout: 120000 }, async (t) => {
+  // 10-23 01:20Z: release fbd5a0a0 answered 3 s after each start and passed the 8 s hold, then its first job sweep threw 30 s after each
+  // start, and the chat crash-looped for 3.5 min until a job rolled it back by hand.
+  const f = fixture(t);
+  f.write("chat-behavior.json", JSON.stringify({ readyAfterMs: 400 }));
+  const good = f.commit("ends its first pass");
+  f.write("chat-behavior.json", JSON.stringify({ readyAfterMs: 60_000, answerThenExitMs: 1_500 }));
+  const bad = f.commit("dies in its first pass");
+  f.write("chat-behavior.json", JSON.stringify({ readyAfterMs: 60_000 }));
+  const slow = f.commit("first pass never ends");
+  f.publish();
+  const first = await f.releaseAsync([good]);
+  assert.equal(first.status, 0, first.stderr);
+  const broken = await f.releaseAsync([bad]);
+  assert.equal(broken.status, 5, broken.stderr);
+  assert.match(first.stderr, /the chat answered http:\/\/127\.0\.0\.1:\d+\/ [\d.]+ s after its start, ended its first pass and still runs as pid \d+/);
+  assert.match(broken.stderr, new RegExp(`the chat on ${id(bad)} exited [\\d.]+ s after its start \\(pid \\d+\\), before it ended its first pass; going back to ${id(good)}`));
+  assert.equal(f.current(), id(good));
+  assert.equal(await f.page(), id(good));
+  assert.equal(JSON.parse(readFileSync(path.join(f.home, "started.json"), "utf8")).id, id(good));
+  const waited = await f.releaseAsync([slow], { SIEUN_PI_CHAT_READY_MS: "1500" });
+  assert.equal(waited.status, 0, waited.stderr);
+  assert.match(waited.stderr, /but its first pass has not ended \(http:\/\/127\.0\.0\.1:\d+\/ready: 503\); the release stands/);
+  assert.equal(f.current(), id(slow));
 });
 
 test("a queued commit whose start dies fails only its own request, and the older request goes live", { timeout: 120000 }, async (t) => {
