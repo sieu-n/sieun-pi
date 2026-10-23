@@ -1,6 +1,6 @@
 import type { MetricFact } from "./checkin-done.ts";
 import { keyNamesGoal } from "./goal-readings.ts";
-import { heldByTodo, stepCarrier, stepCarriers } from "./checkin-end-state.ts";
+import { heldByTodo, type HoldingTodo, LINKED_TODO, stepCarrier, stepCarriers } from "./checkin-end-state.ts";
 import { GOAL_PUSH_LINK, openGoals, targetOp, targetStaleMs, walkGoal } from "./shared/chat-board.ts";
 import { CHECK_IN_DUTY_ID } from "./shared/chat-duties.ts";
 import { parseDutyLink } from "./shared/duty-fixes.ts";
@@ -247,18 +247,19 @@ export function ownerHeld(goal: PlanItem, views: readonly StepView[], todos: Par
 export function linkedTodoRefs(plan: readonly PlanItem[]): { chat: string; id: string }[] {
   const refs = new Map<string, { chat: string; id: string }>();
   walk(plan, item => {
-    for (const match of (item.waitFor ?? "").matchAll(/\b([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\s+(t\d+)\b/g)) refs.set(`${match[1]} ${match[2]}`, { chat: match[1]!, id: match[2]! });
+    for (const match of (item.waitFor ?? "").matchAll(LINKED_TODO)) refs.set(`${match[1]} ${match[2]}`, { chat: match[1]!, id: match[2]! });
   });
   return [...refs.values()];
 }
 
 /**
  * The board with the open agent todos of other chats that its waits name (`linkedTodoRefs`), so a wait on one holds its goal like a todo of
- * its own. Each one keeps only its id: its text and step name the other chat's plan items, which would hold this chat's items of the same id.
+ * its own. Each one keeps only its id and its chat (`HoldingTodo`): its text and step name the other chat's plan items, and its id another
+ * chat's numbering, which would hold this chat's items and waits of the same id.
  */
 export function withLinkedTodos(board: ChatBoard, linked: readonly { chat: string; todo: OwnerTodo }[]): ChatBoard {
   const open = linked.filter(({ todo }) => todo.from === "agent" && !todo.done)
-    .map(({ chat, todo }): OwnerTodo => ({ id: todo.id, text: `For you ${todo.id} of chat ${chat}`, done: false, from: "agent", at: todo.at }));
+    .map(({ chat, todo }): OwnerTodo & HoldingTodo => ({ id: todo.id, text: `For you ${todo.id} of chat ${chat}`, done: false, from: "agent", at: todo.at, chat }));
   return open.length ? { ...board, todos: [...board.todos, ...open] } : board;
 }
 

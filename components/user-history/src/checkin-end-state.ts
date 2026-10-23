@@ -24,16 +24,28 @@ export const STUCK_STATES: readonly EndState[] = ["owner_no_todo", "release", "c
 const RELEASE = /\b(?:land|lands|landed|promote|release|released|deploys?|redeploys?|cut|train|fable|slot|cas)\b/i;
 const CI = /\b(?:runs?|ci|checks?|green|probe|verify-dev|workflow|tests?|push(?:es|ed)?)\b|\bci\//i;
 
+/** A wait's link to another chat's todo: the chat's session id and then the todo id, like "thread:01a16213-54c6-73fa-b399-20e2713c41ba t11". */
+export const LINKED_TODO = /\b([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\s+(t\d+)\b/g;
+/** A todo as `heldByTodo` reads it: one of this chat's, or another chat's that a wait here links (`chat`, its session id). */
+export type HoldingTodo = Pick<OwnerTodo, "id" | "text" | "step" | "reply" | "done" | "from"> & { chat?: string };
+
 /**
  * Whether an open agent todo holds the step by an explicit link: it names the step's id, links it (`step`) or a PR it names (`coversStep`), or
  * the step's wait names the todo's id. A shared word is not a link: on 10-14 13 of the 17 steps the classes counted as For you matched only by a
  * word, and four of them waited on a release. A todo that only quotes a step's name is no link either, since a guessed hold can hide a step that is
  * really stuck (c88; tried in a4672f1 for Duties review's p14 and taken back).
+ * Another chat's todo (`chat`, from `withLinkedTodos`) holds only a wait that names that chat's session id and the todo id (`LINKED_TODO`), and a
+ * bare todo id names only this chat's todo: AI harness p919 waited for "thread:01a16213-54c6-73fa-b399-20e2713c41ba t11", Railway Breach's
+ * open ask, while the chat's own t11 was an old closed todo.
  */
-export function heldByTodo(item: Pick<PlanItem, "id" | "text" | "waitFor" | "note">, todos: readonly Pick<OwnerTodo, "id" | "text" | "step" | "reply" | "done" | "from">[]): boolean {
+export function heldByTodo(item: Pick<PlanItem, "id" | "text" | "waitFor" | "note">, todos: readonly HoldingTodo[]): boolean {
   const id = new RegExp(`\\b${item.id}\\b`);
-  const named = new Set(item.waitFor?.match(/\bt\d+\b/g) ?? []);
-  return todos.some(todo => todo.from === "agent" && !todo.done && (id.test(todo.text) || coversStep(todo, item as PlanItem) || (todo.id !== undefined && named.has(todo.id))));
+  const wait = item.waitFor ?? "";
+  const linked = new Set([...wait.matchAll(LINKED_TODO)].map(([, chat, todo]) => `${chat} ${todo}`));
+  const own = { ...item, text: item.text.replace(LINKED_TODO, ""), note: item.note?.replace(LINKED_TODO, ""), waitFor: wait.replace(LINKED_TODO, "") } as PlanItem;
+  const named = new Set(own.waitFor!.match(/\bt\d+\b/g) ?? []);
+  return todos.some(todo => todo.from === "agent" && !todo.done && (todo.chat !== undefined ? linked.has(`${todo.chat} ${todo.id}`)
+    : id.test(todo.text) || coversStep(todo, own) || named.has(todo.id)));
 }
 
 /**
