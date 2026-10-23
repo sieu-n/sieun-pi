@@ -34,6 +34,11 @@ class CacheWrites(unittest.TestCase):
         moves = {"s1": [(T0 + 30, "limited")]}
         self.assertEqual(cw.classify(calls[1], moves), ("account switch (limited)", 20002))
 
+    def test_a_pool_switch_of_the_tree_root_counts_for_its_subagent(self):
+        calls = list(cw.session_calls([json.dumps({"type": "session", "id": "child"}), call(T0, 636, 20000), call(T0 + 60, 636, 20900)],
+                                      "metal", T0, T0 + 7200, root="root1"))
+        self.assertEqual(cw.classify(calls[1], {"root1": [(T0 + 30, "depleted")]}), ("account switch (depleted)", 20002))
+
     def test_a_compaction_and_an_unexplained_break_are_told_apart(self):
         calls = rows(call(T0, 636, 20000), json.dumps({"type": "compaction"}), call(T0 + 60, 636, 9000), call(T0 + 70, 636, 9500))
         self.assertEqual(cw.classify(calls[1], {})[0], "compaction")

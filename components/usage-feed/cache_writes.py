@@ -60,8 +60,9 @@ def error_kind(message: dict) -> str:
     return "other"
 
 
-def session_calls(lines: Iterable[str], box: str, since: float, until: float) -> Iterator[dict]:
-    """Each finished call in [since, until) with the previous finished call's prompt and what happened between the two."""
+def session_calls(lines: Iterable[str], box: str, since: float, until: float, root: Optional[str] = None) -> Iterator[dict]:
+    """Each finished call in [since, until) with the previous finished call's prompt and what happened between the two. `root` is the
+    session tree's root, which pi-pool keys its accounts by (registry.session_key: the worker's rootSessionId)."""
     session, previous, between = None, None, []
     for line in lines:
         if line.startswith('{"type":"message"') and '"role":"assistant"' not in line:
@@ -92,7 +93,7 @@ def session_calls(lines: Iterable[str], box: str, since: float, until: float) ->
             continue
         model = f"{message.get('provider')}/{message.get('model')}"
         if since <= at < until:
-            yield {"box": box, "session": session, "at": at, "model": model, "input": int(usage.get("input") or 0),
+            yield {"box": box, "session": session, "root": root or session, "at": at, "model": model, "input": int(usage.get("input") or 0),
                    "cacheRead": int(usage.get("cacheRead") or 0), "cacheWrite": int(usage.get("cacheWrite") or 0),
                    "previous": previous and {"at": previous["at"], "prompt": previous["prompt"], "output": previous["output"], "model": previous["model"]},
                    "between": sorted(set(between)), "errors": sum(1 for item in between if item.startswith("error: "))}
@@ -105,8 +106,9 @@ def window_calls(files: Iterable[Path], box: str, since: float, until: float) ->
         try:
             if path.stat().st_mtime < since:
                 continue
+            root = path.parts[path.parts.index("session-artifacts") + 1] if "session-artifacts" in path.parts else None
             with open(path, encoding="utf-8", errors="replace") as handle:
-                yield from session_calls(handle, box, since, until)
+                yield from session_calls(handle, box, since, until, root)
         except OSError:
             continue
 
@@ -143,7 +145,8 @@ def classify(call: dict, moves: Dict[str, List[tuple]], ttl_s: float = TTL_S) ->
     if lost < 1024:
         return "growth", 0
     gap = call["at"] - previous["at"]
-    moved = [why for at, why in moves.get(call.get("session") or "", []) if previous["at"] - 1 <= at <= call["at"] + 1]
+    keys = {call.get("session") or "", call.get("root") or ""}
+    moved = [why for key in keys for at, why in moves.get(key, []) if previous["at"] - 1 <= at <= call["at"] + 1]
     if moved:
         return f"account switch ({moved[-1]})", lost
     if gap >= ttl_s:
