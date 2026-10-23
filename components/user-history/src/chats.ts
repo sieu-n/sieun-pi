@@ -1705,7 +1705,7 @@ export class Chats {
     const read = (chat: string) => (this.source.boardView ?? this.source.board).call(this.source, chat);
     const hosts = await this.hostHolds(id, rows);
     const precheck = checkInPrecheck(previous, facts, board ? await withBoardLinks(board, id, read) : board, at,
-      { self, rows, ...await this.ledger(id), everyMs, doneFacts, ...(duties ? { duties } : {}), jobs, heartbeats, queued, asleep, wakes, carried, ...(train ? { train } : {}), ...(boardError !== undefined ? { boardError } : {}),
+      { self, rows, ...await this.ledger(id), everyMs, doneFacts, ...(duties ? { duties } : {}), jobs, subagents: this.subagents, heartbeats, queued, asleep, wakes, carried, ...(train ? { train } : {}), ...(boardError !== undefined ? { boardError } : {}),
         ...(hosts ? { hosts } : {}),
         paused: await this.ownerPaused(at),
         owner: ownerSaid(this.messages(id) ?? []) });

@@ -70,6 +70,8 @@ export interface CheckInContext { self?: readonly string[];
    * line asks it for anything (`goalWait`, `jobPushes`, `heldElsewhere`). Not given: none.
    */
   paused?: ReadonlySet<string>;
+  /** The daemon's subagents by parent session (`Chats.roster`): a thread with one working subagent per SESSION_LOAD_STEPS_PER_JOB of its steps fans out (`oneSessionLoad`). Not given: none. */
+  subagents?: ReadonlyMap<string, readonly ChildAgent[]>;
   /** The chat's own schedules (`readHeartbeats`), for the heartbeats the check-in covers (`redundantHeartbeats`); none when not given. */
   heartbeats?: readonly ScheduledJob[];
   /** The release train in the CI cache (`readTrain`), for steps that wait on it (`trainMoves`); not given: no step counts as on a moving train. */
@@ -191,7 +193,7 @@ export function checkInPrecheck(previous: CheckInMemory | undefined, facts: read
     waitsMet: context.boardError ? [] : [...waitsMet(goaled, board, context.rows ?? [], self), ...deadRunWaits(goaled, context.train, now)],
     stale: context.boardError ? [] : staleSteps(board, facts, item => steps[item.id] ? recordedAt(steps[item.id]!) : now, self, context.everyMs ?? CHECK_IN_MS, now,
       context.rows ?? [], context.train),
-    fold, load: oneSessionLoad(goaled, context.jobs),
+    fold, load: oneSessionLoad(goaled, context.jobs, context.subagents),
     heartbeats: redundantHeartbeats(context.heartbeats ?? [], context.duties ?? []), noDuty: context.boardError || !context.duties ? [] : goalsWithoutDuty(board, context.duties, now), facts: notes,
     noDoneLine: context.boardError ? [] : goalsWithoutDoneLine(board), risks: context.boardError ? [] : planRiskSteps(board),
     metOpen: context.boardError ? [] : metOpenItems(board?.plan ?? []),

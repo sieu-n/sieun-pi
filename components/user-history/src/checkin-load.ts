@@ -4,10 +4,10 @@ import { readdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import type { JobFact, StepView } from "./checkin-steps.ts";
+import { childWorking, type JobFact, type StepView } from "./checkin-steps.ts";
 import { CI_CACHE_REPO, RUN_WAKE_DUE_MS, treeWakes, type Wake, wakeLabel } from "./wakes.ts";
 import { firstClause } from "./shared/chat-board.ts";
-import type { PlanItem } from "./shared/types.ts";
+import type { ChildAgent, PlanItem } from "./shared/types.ts";
 import type { StalledCall } from "./shared/stalled-calls.ts";
 import { ciRuns } from "./ci-runs.ts";
 
@@ -20,16 +20,23 @@ import { ciRuns } from "./ci-runs.ts";
 const clip = (text: string, max = 60) => text.length > max ? text.slice(0, max - 1) + "\u2026" : text;
 const quote = (text: string) => `"${clip(text)}"`;
 
-/** One other session that holds too much of a goal's open work: `steps` of the goal's `open` open steps. */
-export interface SessionLoad { goal: { id: string; text: string }; thread: { id: string; name: string }; steps: PlanItem[]; open: number }
+/** One other session that holds too much of a goal's open work: `steps` of the goal's `open` open steps, worked by `working` subagents of its own. */
+export interface SessionLoad { goal: { id: string; text: string }; thread: { id: string; name: string }; steps: PlanItem[]; open: number; working: number }
 /** A session holds too much of a goal when it owns more than this many of its open steps. */
 export const SESSION_LOAD_MAX = 3;
 /**
+ * A session that holds many steps fans them out when it has one working subagent per this many of them. On 10-23 at 17:52Z sep launch!!'s
+ * p2 per-area threads on us-metal02 ran 8 working subagents for 9 steps (5180 into the real app on metal), 3 for 8 (data model on metal) and
+ * 2 for 4 (mail integrations on metal), and the check-in had flagged all three 8 runs in a row.
+ */
+export const SESSION_LOAD_STEPS_PER_JOB = 3;
+/**
  * The other sessions that carry too much of one goal: per open goal, a thread owns more than SESSION_LOAD_MAX of its open steps, or more than
- * half of them when the goal has at least 4. A thread is another session the step names as its owner (a `thread:` link, a session id or name);
+ * half of them when the goal has at least 4, and has fewer working subagents (`subagents`, the daemon's roster by parent session) than one per
+ * SESSION_LOAD_STEPS_PER_JOB of those steps. A thread is another session the step names as its owner (a `thread:` link, a session id or name);
  * the chat's own steps, its subagents and the roots it started (`jobs`, ids or names from the job registry) never count.
  */
-export function oneSessionLoad(views: readonly StepView[], jobs: readonly string[] = []): SessionLoad[] {
+export function oneSessionLoad(views: readonly StepView[], jobs: readonly string[] = [], subagents: ReadonlyMap<string, readonly ChildAgent[]> = new Map()): SessionLoad[] {
   const own = new Set(jobs);
   const goals = new Map<string, { goal: { id: string; text: string }; open: number; by: Map<string, { thread: { id: string; name: string }; steps: PlanItem[] }> }>();
   for (const view of views) {
@@ -45,11 +52,15 @@ export function oneSessionLoad(views: readonly StepView[], jobs: readonly string
     held.steps.push(view.item);
     entry.by.set(id, held);
   }
-  return [...goals.values()].flatMap(({ goal, open, by }) => [...by.values()]
-    .filter(held => held.steps.length > SESSION_LOAD_MAX || (open >= 4 && held.steps.length * 2 > open)).map(held => ({ goal, ...held, open })));
+  return [...goals.values()].flatMap(({ goal, open, by }) => [...by.values()].flatMap(held => {
+    const working = (subagents.get(held.thread.id) ?? []).filter(childWorking).length;
+    const heavy = held.steps.length > SESSION_LOAD_MAX || (open >= 4 && held.steps.length * 2 > open);
+    return heavy && working * SESSION_LOAD_STEPS_PER_JOB < held.steps.length ? [{ goal, ...held, open, working }] : [];
+  }));
 }
-export const sessionLoadLine = ({ goal, thread, steps, open }: SessionLoad): string =>
-  `${goal.id} ${quote(goal.text)} has ${steps.length} of its ${open} open steps on the ${clip(thread.name, 40)} thread (thread:${thread.id}): ` +
+export const sessionLoadLine = ({ goal, thread, steps, open, working }: SessionLoad): string =>
+  `${goal.id} ${quote(goal.text)} has ${steps.length} of its ${open} open steps on the ${clip(thread.name, 40)} thread (thread:${thread.id}), ` +
+  `which runs ${working} working ${working === 1 ? "job" : "jobs"} of its own: ` +
   `${steps.map(item => item.id).join(", ")}. Split these into your own jobs per part: map the parts and their order, start one job or subagent ` +
   "per part with rlm.spawn, set each step's job to it, and tell that thread it no longer owns them";
 
