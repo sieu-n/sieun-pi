@@ -11,7 +11,7 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  * for now it should all be here"), so the duty's precheck command runs this script from the Mac's sieun-pi checkout over `ssh mac`. Its judged metrics (owner c75, 10-15: one headline plus at most 3):
  * - walk_problems, the headline: problems in the last offline walk of the 6 apps (tests/e2e/offline.spec.ts walks search, discover,
  *   analytics, campaigns, inbox and connections in two scenarios, plus the marketing pages). Each outside request counts 1, each test that
- *   failed for another reason counts 1, and a missing walk or one over a day old counts 1. The owner: "no external connection should work
+ *   failed for another reason counts 1, a missing walk or one over a day old counts 1, and so does a /configure probe without a 200. The owner: "no external connection should work
  *   off of internal fake database". This script reads the walk's Playwright JSON report from WALK_FILE and its stderr from WALK_ERR_FILE,
  *   and starts the next walk itself, detached (WALK_COMMAND), when the last one started over WALK_REFRESH_MS ago and none is running, so the
  *   next run reads a fresh walk. Until 10-22 only a missed run's duty job ran the walk, so a run on target never refreshed it: the 21:25Z run on
@@ -23,7 +23,7 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  *   under 2 s. The fastest try is the page's own cost, and the box_load slice names the box's load during the walk. The load's own wall time is
  *   left out, since every module of a cold load crosses the 195 ms link to the Mac. It replaced health_ms on 10-19, because /health answered in 25 ms while the owner
  *   found switching "infuriatingly slow" (10-09) and Creators slow to load (10-19, 2.3 s of long tasks before 7966ebbfd). A down server fails the
- *   walk, so walk_problems covers it. A page that never showed or a scenario test with no timings reads as PAGE_TIMEOUT_MS. A missing or stale
+ *   walk, and a /configure probe that gets no 200 adds 1 to walk_problems, since the walk is a day old. A page that never showed or a scenario test with no timings reads as PAGE_TIMEOUT_MS. A missing or stale
  *   walk gives no reading: slowest_page_ms is left out, so the duty shows it as not measured, and a `gap` slice names the walk's state.
  * - restarts_24h: times in 24 h the dev server went down without anyone asking for it (crashes and other exit codes, dev-guard memory
  *   kills), from pm2.log, so it measures whether the sandbox stays up. A crash loop counts once. A deliberate `pm2 restart` or `pm2 stop`
@@ -516,6 +516,8 @@ export async function measureSandbox(deps: SandboxDeps): Promise<PrecheckOutput>
     flagged.push({ at, kind: "walk_missing", excerpt });
     noReading(excerpt);
   }
+  // The walk runs once a day, so a server that broke after it would read 0 (10-23: /configure timed out at 21:25Z, 14 h after a clean walk).
+  if (configure.status !== 200) metrics.walk_problems++;
 
   // The next walk, started here and read by the next run.
   if (!(at - walkAt <= WALK_REFRESH_MS)) {
