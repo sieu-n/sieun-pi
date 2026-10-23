@@ -29,6 +29,12 @@ export interface Scenario {
   board?(copy: ChatBoard, context: { fixtures: Record<string, string>; sandbox: string }): { board: ChatBoard; changes: string[] };
   setupNotes(state: RunState, changes: readonly string[]): string;
   evaluate(run: string, state: RunState): { verdict: Verdict; text: string } | Promise<{ verdict: Verdict; text: string }>;
+  /**
+   * Collect judges the run on each pass and ends it at its first pass or fail, for a scenario whose every criterion waits for a send to exist
+   * or fails on a fault that stays failed. Run-1 to run-3 of the c104 long-reply clean room ended open on 10-22 and 10-23 at their 4 h window
+   * ends, since its jobs took 3.4 h and 3.5 h to report through account limit pauses and the third had not reported.
+   */
+  endsAtVerdict?: boolean;
   baseline(before: string): { verdict: Verdict; text: string };
 }
 /** `open`: the run has not yet reached a state a criterion needs, so it runs more cycles before a verdict. */

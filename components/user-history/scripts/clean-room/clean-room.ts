@@ -374,6 +374,13 @@ async function collectOnce(run: string, state: RunState, srv: Server, logOffset:
   }
 }
 
+/** Whether a scenario that ends at its verdict has reached a pass or fail; a judge that throws leaves the run to its window. */
+async function reachedVerdict(run: string, state: RunState, scenarios: Record<string, Scenario> = SCENARIOS): Promise<boolean> {
+  const scenario = scenarios[state.scenario];
+  if (!scenario?.endsAtVerdict) return false;
+  try { return (await scenario.evaluate(run, state)).verdict !== "open"; } catch (error) { log(run, `judge: ${error instanceof Error ? error.message : String(error)}`); return false; }
+}
+
 async function collect(flags: Record<string, string>): Promise<void> {
   const run = need(flags, "run");
   const until = Date.parse(need(flags, "until"));
@@ -386,6 +393,7 @@ async function collect(flags: Record<string, string>): Promise<void> {
     if (!existsSync(join(run, "run.json"))) return;
     const state = readJson<RunState>(join(run, "run.json"));
     try { await collectOnce(run, state, srv, offset); } catch (error) { log(run, `collect: ${error instanceof Error ? error.message : String(error)}`); }
+    if (await reachedVerdict(run, state)) { log(run, "collect done; the run reached a verdict before its window ended"); await evaluate({ run }); return; }
     await new Promise(resolve => setTimeout(resolve, Math.max(0, Math.min(everyMs, until - Date.now()))));
   }
   if (!existsSync(join(run, "run.json"))) return;

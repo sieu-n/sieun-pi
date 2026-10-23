@@ -290,5 +290,6 @@ export const dmReplies: Scenario = {
     "## The follow-up", "", "Once the first turn ends, `clean-room.ts say` sends the owner's second message through the composer's route.", "", `> ${FOLLOW_UP}`, "",
   ].join("\n"),
   evaluate: (run, state) => judge(run, state),
+  endsAtVerdict: true,
   baseline,
 };
