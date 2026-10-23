@@ -237,3 +237,77 @@ test("on a turn the owner did not start, a text that takes back the chat's own a
   assert.equal(tellOwner({ text: "Census reads 12,000 profiles a minute now, past your 10k goal.", why: "done", about: "10k profiles a minute" }, turn).kind, "sent");
   assert.equal(tellOwner(skip, { ...turn, owner: true }).kind, "sent", "his own turn is never held");
 });
+
+test("on a turn the owner did not start, an ask that another chat's For you todo already asks by its about, or that sends him to another chat's list, is refused once", () => {
+  // 10-22: AI harness asked the us-metal02 agent slot count at 13:22Z and 13:23Z while metal-management's t8 asked it, and at 14:40Z sent a
+  // Codex sign-in "from the Railway Breach thread's list (t10)".
+  const now = Date.parse("2026-10-22T13:22:18Z");
+  const t8 = { chat: "01a14d31-6ec0-7005-bbe8-c38b7ae73cfb", id: "t8", text: "Keep us-metal02's agent slots at 12, or go back to the 32 set in Settings", at: "2026-10-22T10:17:27.792Z" };
+  const turn = { ...tellTurn([...settled, job("queue holds come from the 6-slot turn queue", "07:00:00")]), others: [t8] };
+  const slots = { text: "A job cut how many agents the box runs at once from 32 to 6 after the box froze up, so 111 jobs are waiting. That number is yours, what should it be?",
+    why: "decision", about: "agent slots on us-metal02" };
+  const refused = tellOwner(slots, turn, now);
+  assert.equal(refused.kind, "refused");
+  assert.match(refused.text, /another chat already asks him this on For you, as t8/);
+  assert.equal(tellOwner(slots, { ...turn, resent: new Set([slots.text]) }, now).kind, "sent", "the very same text again goes out");
+  assert.equal(tellOwner(slots, { ...turn, owner: true }, now).kind, "sent", "his own turn is never held");
+  assert.equal(tellOwner({ ...slots, about: "agent slots on us-metal01" }, turn, now).kind, "sent", "an about with a word the todo lacks is another ask");
+  assert.equal(tellOwner(slots, turn, now + 25 * 3_600_000).kind, "sent", "a todo older than 24 h does not hold it");
+  const codex = { text: "Please sign fhnyq29tw5 back into Codex from the Railway Breach thread's list (t10), since the Codex chats can't run until it works.",
+    why: "blocker", about: "Codex chats down" };
+  const pointer = tellOwner(codex, { ...turn, others: [] }, now);
+  assert.equal(pointer.kind, "refused");
+  assert.match(pointer.text, /sends him to another chat's list \("thread's list"\)/);
+  assert.equal(tellOwner({ text: "Correction, the box is back at 12, so answer it once on metal-management's list, where it asks 12 or 32.", why: "decision",
+    about: "slots" }, { ...turn, others: [] }, now).kind, "refused");
+  assert.equal(tellOwner(codex, { ...turn, others: [], resent: new Set([codex.text]) }, now).kind, "sent");
+});
+
+test("on a turn the owner did not start, a decision that swaps a todo for a new one with the same question is refused once", () => {
+  // 10-22 17:22Z: metal-management removed t8, added t10 and sent "t8 is replaced by t10, the same agent-slot question with new numbers".
+  const turn = tellTurn([...settled, job("claude19 sat at 1 to 5% use while 114 to 142 turns waited", "07:00:00")]);
+  const swap = { text: "t8 is replaced by t10, the same agent-slot question with new numbers and a third choice of 20.", why: "decision", about: "us-metal02 agent slot count" };
+  const refused = tellOwner(swap, turn);
+  assert.equal(refused.kind, "refused");
+  assert.match(refused.text, /already waits for him on For you, as the todo you swapped in \("t8 is replaced"\)/);
+  assert.equal(tellOwner({ text: "Pick the slot count on t10, 12, 20 or 32.", why: "decision", about: "us-metal02 agent slot count, t10 replaces t8" }, turn).kind, "refused");
+  const later = tellTurn([...settled, job("measured", "07:00:00"), tell("s1", swap, "07:00:10"), result("s1", refused.text, "07:00:11")]);
+  assert.equal(tellOwner(swap, later).kind, "sent", "the very same text again goes out");
+  assert.equal(tellOwner(swap, { ...turn, owner: true }).kind, "sent", "his own turn is never held");
+});
+
+test("on a turn the owner did not start, a blocker whose only you is a promise to tell him later is refused once", () => {
+  // 10-22 08:21Z: metal-management sent a prod Postgres outage a job already fixed as a blocker, with "I'll tell you when census is writing again".
+  const turn = tellTurn([...settled, job("prod Postgres's container is gone", "07:00:00")]);
+  const outage = { text: "Prod's database has been down since 17:05 KST. A job is bringing it back now, and I'll tell you when census and the API are writing again.",
+    why: "blocker", about: "prod Postgres down" };
+  const refused = tellOwner(outage, turn);
+  assert.equal(refused.kind, "refused");
+  assert.match(refused.text, /a blocker says what he must do/);
+  assert.equal(tellOwner({ ...outage, text: `${outage.text} Can you open the metal box owner chat and send it continue?` }, turn).kind, "sent");
+  assert.equal(tellOwner(outage, { ...turn, resent: new Set([outage.text]) }).kind, "sent", "the very same text again goes out");
+});
+
+test("on a turn the owner did not start, an answer sent seconds after another answer of the same turn is refused once as its tail", () => {
+  // 10-22: a chat sent its 50% cut verdict at 08:35:41Z and the review page as a second answer 3.8 s later.
+  const verdict = { text: "I could not substantiate the requested 50% cut from six checked candidates.", why: "answer", about: "a 50 percent reduction" };
+  const page = { text: "The [full review](wiki:sessions/2026/10/22/1658-original-request-measured-answer/findings.html) has the queue algorithm.", why: "answer", about: "full review" };
+  const history = [...settled, job("the review is written", "07:00:00"), tell("a1", verdict, "07:00:10"), result("a1", TELL_OWNER_DONE, "07:00:11")];
+  const turn = tellTurn(history);
+  assert.deepEqual(turn.lastSent, { at: at("07:00:10"), why: "answer" });
+  const refused = tellOwner(page, turn, at("07:00:14"), () => true);
+  assert.equal(refused.kind, "refused");
+  assert.match(refused.text, /splits one answer into two messages, 4 s after your last one/);
+  assert.equal(tellOwner(page, turn, at("07:00:52"), () => true).kind, "sent", "52 s later it is a second point");
+  assert.equal(tellOwner({ ...page, why: "decision" }, turn, at("07:00:14"), () => true).kind, "sent", "a decision is its own call");
+  const next = tellTurn([...history, said("Sent.", "07:00:12"), job("one more thing", "07:00:13")]);
+  assert.equal(next.lastSent, undefined, "a new turn starts with nothing sent");
+  const again = tellTurn([...history, tell("a2", page, "07:00:14"), result("a2", refused.text, "07:00:15")]);
+  assert.equal(tellOwner(page, again, at("07:00:16"), () => true).kind, "sent", "the very same text again goes out");
+});
+
+test("an ask for the go of a product prod deploy is no needless ok, since he walks those (c154)", () => {
+  const turn = tellTurn([...settled, job("the billing fix is on staging", "07:00:00")]);
+  assert.equal(tellOwner({ text: "The billing fix is on staging. Should I start the prod deploy now? My pick on t29 is yes.", why: "decision",
+    about: "prod billing fix" }, turn).kind, "sent");
+});

@@ -189,7 +189,9 @@ export interface TellInput { text?: unknown; why?: unknown; about?: unknown; rep
  * sent is left out), and the ids of his messages a `reply_to` may name.
  */
 export interface TellTurn { owner: boolean; ownerIds: ReadonlySet<string>; byOwner?: boolean; tells?: number; ownerText?: string; resent?: ReadonlySet<string>; done?: readonly string[]; startedAt?: number; asked?: ReadonlySet<string>; looked?: boolean;
-  others?: readonly OtherAsk[] }
+  others?: readonly OtherAsk[]; lastSent?: SentTell }
+/** The last tell_owner the running turn sent: when its step ran and its why. */
+export interface SentTell { at: number; why?: string }
 /** An open For you todo that another of the owner's chats added: a question already waiting for him. */
 export interface OtherAsk { chat: string; id: string; text: string; at: string }
 /** The open owner todos on the chat's board that it added before the running turn started: a decision already waiting for him. */
@@ -228,12 +230,38 @@ const sameAsk = (text: string, others: readonly OtherAsk[], now: number): OtherA
   const words = incidentWords(text);
   return others.find(ask => now - Date.parse(ask.at) <= ASK_WINDOW_MS && [...incidentWords(ask.text)].filter(word => words.has(word)).length >= SAME_ASK_WORDS);
 };
+/**
+ * The other chat's open todo whose words hold every incident word of the `about`, with at least SAME_ABOUT_WORDS of them. On 10-22 AI harness
+ * asked the owner the us-metal02 agent slot count at 13:22Z and again at 13:23Z, about "agent slots on us-metal02", while metal-management's
+ * t8 "Keep us-metal02's agent slots at 12, or go back to the 32 set in Settings" waited; the texts shared only 3 incident words with t8.
+ * measured: over the 2,714 tell_owner lines sent in the owner's chats from 10-09 to 10-23 (245 labelled), with each other chat's open todos of
+ * the last 24 h at the time, 2 or 3 words refuse those 2 lines and no other, and 4 words refuse none.
+ * Evidence: ~/work/tell-owner-noise-p942/replay.md.
+ */
+const SAME_ABOUT_WORDS = 3;
+const sameAbout = (about: string, others: readonly OtherAsk[], now: number): OtherAsk | undefined => {
+  const words = incidentWords(about);
+  return words.size < SAME_ABOUT_WORDS ? undefined : others.find(ask => now - Date.parse(ask.at) <= ASK_WINDOW_MS && [...words].every(word => incidentWords(ask.text).has(word)));
+};
+/**
+ * Words that send the owner to another chat's list for an ask, like "answer it once on metal-management's list" or "sign it back in from the
+ * Railway Breach thread's list (t10)", both of 10-22: that chat already asks him, so this message asks nothing new.
+ * measured: on the same replay these words catch those 2 lines and no other sent line.
+ */
+const OTHER_LIST = /\b(?:thread|chat)['’]s (?:list|for you|todos?)\b|\bon [\w-]+(?: [\w-]+){0,3}['’]s list\b/i;
 const SAME_ASK_MARK = "Not sent, another chat already asks him this on For you";
 const REPEAT_MARK = "Not sent, you already told him this goal is done";
 const REASK_MARK = "Not sent, this decision already waits for him on For you";
 const INCIDENT_MARK = "Not sent, a blocker says what he must do";
 /** Words of a blocker that asks the owner for something: a question, you or your, please, or a Korean ask. */
 const ASKS_HIM = /\?|\byou\b|\byour\b|\bplease\b|주세요|골라|할까요|정해|해줘|하세요|부탁/i;
+/**
+ * A promise to report back, which asks nothing of him: on 10-22 at 08:21Z metal-management sent a prod Postgres outage a job was already fixing
+ * as a blocker, and its only "you" was in "I'll tell you when census and the API are writing again".
+ * measured: of the 35 blockers sent on turns he did not start in the replay (12 labelled needed), leaving these words out changes only that one.
+ */
+const TELLS_HIM_LATER = /\b(?:tell|let|keep|update|ping|show) you\b(?: know| posted)?/gi;
+const asksHim = (text: string): boolean => ASKS_HIM.test(text.replace(TELLS_HIM_LATER, ""));
 const PROGRESS_MARK = "Not sent, it reports work still going";
 /**
  * Words that say the work goes on and its result comes later: a number still being counted, a plan to tell him once something ends, a clock
@@ -252,10 +280,27 @@ const NEEDLESS_OK_MARK = "Not sent, no owner rule keeps this for him";
  * swaps and a Codex fallback (c30).
  * measured: a replay over the 887 tell_owner calls of the owner's chats from 10-19 to 10-22 (787 sent, 232 labelled) refuses all 5, none of
  * the 189 lines labelled needed and none of the 555 unlabelled ones; the one needed line the ask words catch, a c146 exception for two prod box commands, goes out on
- * OWNER_KEEPS. Evidence: ~/work/needless-ask-check/.
+ * OWNER_KEEPS. Evidence: ~/work/needless-ask-check/. A product prod deploy or promote is a step walked with him (c154, 10-22), so an ask for its
+ * go also goes out on OWNER_KEEPS; d11 relabelled the billing fix ask on t29 of 10-23 03:12Z needed for it.
  */
 const NEEDLESS_OK = /\b(?:can|could|should|shall|may) (?:a|my|one of my|the) jobs?\b|\b(?:(?:should|can|could|shall|may) I|(?:do you )?want me to) (?:re(?:start|run|try|spawn|launch)|resume|run|start|take over|kick off|spin up)\b|\b(?:nobody|no one) outside\b/i;
-const OWNER_KEEPS = /\bc\d{1,3}\b|\byour rule\b|\bjust this once\b|\bexception\b|\be-?mail\b|\bticket\b|\bsupport\b|\bcustomer|\bpublish|\b5180\b|\bvariant\b|\bboard layout\b/i;
+const OWNER_KEEPS = /\bc\d{1,3}\b|\b(?:prod|production)\b[^.?!]*\b(?:deploy|promote|release)|\bpromote\b|\byour rule\b|\bjust this once\b|\bexception\b|\be-?mail\b|\bticket\b|\bsupport\b|\bcustomer|\bpublish|\b5180\b|\bvariant\b|\bboard layout\b/i;
+/**
+ * Words that swap a todo for a new one with the same question: on 10-22 at 17:22Z metal-management removed t8, added t10 and sent "t8 is
+ * replaced by t10, the same agent-slot question with new numbers", a decision already on For you.
+ * measured: on the same replay these words catch that line, no other line on a turn he did not start, and one on his own turns, which are
+ * never held.
+ */
+const REPLACED = /\bt\d+\b[^.?!]*\b(?:replaced|swapped|superseded)\b|\b(?:replaces|supersedes)\b[^.?!]*\bt\d+\b/i;
+const SPLIT_MARK = "Not sent, it splits one answer into two messages";
+/**
+ * How soon after an answer or done a second one reads as its tail. On 10-22 a chat sent "I could not substantiate the requested 50% cut" at
+ * 08:35:41Z and the review page it came from 3.8 s later as its own message; the closest second answer labelled needed came 51.8 s after one.
+ * measured: on the same replay, 3 answers or dones followed one in the same turn in a later step, at 3.8 s (that line), 37.5 s (unlabelled) and
+ * 51.8 s (needed), so 30 s refuses only that line. Two calls in one step are already refused as one (tells).
+ */
+const SPLIT_MS = 30_000;
+const ENDS: readonly unknown[] = ["answer", "done"];
 const WITHDRAW_MARK = "Not sent, it takes back your own ask";
 /**
  * Words that take back an ask the chat put on For you itself: skip or scratch a todo or idea, or a todo taken off his list. Removing the todo
@@ -307,6 +352,8 @@ export function tellTurn(messages: readonly ThreadMessage[]): TellTurn {
   let ownerText = "";
   const told = new Map<string, string>();
   const doneAbout = new Map<string, string>();
+  const calls = new Map<string, SentTell>();
+  const sent: SentTell[] = [];
   const resent = new Set<string>();
   let done: string[] = [];
   let looked = false;
@@ -314,14 +361,16 @@ export function tellTurn(messages: readonly ThreadMessage[]): TellTurn {
     if (message.role === "user" && !serverNote(messageText(message).trim())) { ownerIds.add(ownerMessageId(message.timestamp)); ownerText = messageText(message); done = []; }
     if (message.role === "assistant") for (const part of message.content) {
       if (part.type === "toolCall" && part.name === TELL_OWNER_TOOL && typeof part.arguments?.text === "string") told.set(part.id, part.arguments.text.trim());
+      if (part.type === "toolCall" && part.name === TELL_OWNER_TOOL && typeof message.timestamp === "number") calls.set(part.id, { at: message.timestamp, ...(typeof part.arguments?.why === "string" ? { why: part.arguments.why } : {}) });
       if (part.type === "toolCall" && part.name === TELL_OWNER_TOOL && part.arguments?.why === "done" && typeof part.arguments?.about === "string") doneAbout.set(part.id, part.arguments.about);
     }
     if (message.role === "user" || message.role === "custom") looked = false;
     if (message.role === "toolResult" && message.content.some(part => part.type === "image")) looked = true;
-    if (message.role === "toolResult" && message.toolName === TELL_OWNER_TOOL && [SHOP_TALK_MARK, LONG_REPLY_MARK, REPEAT_MARK, REASK_MARK, UNLOOKED_MARK, INCIDENT_MARK, SAME_ASK_MARK, PROGRESS_MARK, NEEDLESS_OK_MARK, WITHDRAW_MARK, WIKI_LINK_MARK].some(mark => messageText(message).startsWith(mark))) {
+    if (message.role === "toolResult" && message.toolName === TELL_OWNER_TOOL && [SHOP_TALK_MARK, LONG_REPLY_MARK, REPEAT_MARK, REASK_MARK, UNLOOKED_MARK, INCIDENT_MARK, SAME_ASK_MARK, PROGRESS_MARK, NEEDLESS_OK_MARK, WITHDRAW_MARK, WIKI_LINK_MARK, SPLIT_MARK].some(mark => messageText(message).startsWith(mark))) {
       const text = told.get(message.toolCallId);
       if (text) resent.add(text);
     }
+    if (message.role === "toolResult" && message.toolName === TELL_OWNER_TOOL && messageText(message) === TELL_OWNER_DONE && calls.has(message.toolCallId)) sent.push(calls.get(message.toolCallId)!);
     if (message.role === "toolResult" && message.toolName === TELL_OWNER_TOOL && messageText(message) === TELL_OWNER_DONE && doneAbout.has(message.toolCallId)) {
       done.push(doneAbout.get(message.toolCallId)!);
     }
@@ -337,7 +386,8 @@ export function tellTurn(messages: readonly ThreadMessage[]): TellTurn {
   const settledAt = before.findLastIndex(message => message.role === "assistant" && (message as { stopReason?: string }).stopReason !== "toolUse");
   const startedAt = before.slice(settledAt + 1).find(message => message.role === "user" || message.role === "custom")?.timestamp
     ?? before.findLast(message => message.role === "user" || message.role === "custom")?.timestamp;
-  return { owner: unanswered || byOwner, ownerIds, byOwner, tells, ownerText, resent, done, looked, ...(typeof startedAt === "number" ? { startedAt } : {}) };
+  const lastSent = typeof startedAt === "number" ? sent.findLast(tell => tell.at >= startedAt) : undefined;
+  return { owner: unanswered || byOwner, ownerIds, byOwner, tells, ownerText, resent, done, looked, ...(typeof startedAt === "number" ? { startedAt } : {}), ...(lastSent ? { lastSent } : {}) };
 }
 
 /**
@@ -352,7 +402,9 @@ export function tellTurn(messages: readonly ThreadMessage[]): TellTurn {
  * report is refused once the same way, so the chat opens the shots and compares them with the accepted Staging app first (c118). A decision or
  * blocker that asks what another chat's open For you todo already asks (`sameAsk`, `turn.others`) is refused once the same way, and so is
  * a text that reports work still going (`PROGRESS`), a text that takes back the chat's own ask (`WITHDRAW`), and a decision or blocker that
- * asks an ok for work no owner rule keeps for him (`NEEDLESS_OK`). A text it would send with a `wiki:` link that opens no page (`brokenWikiLinks`)
+ * asks an ok for work no owner rule keeps for him (`NEEDLESS_OK`). So is an answer or done that comes within `SPLIT_MS` of one the turn
+ * already sent (`lastSent`), a decision or blocker whose about another chat's open todo holds (`sameAbout`), that sends him to another chat's
+ * list (`OTHER_LIST`) or that swaps a todo for a new one (`REPLACED`), and a blocker whose only "you" promises to tell him later. A text it would send with a `wiki:` link that opens no page (`brokenWikiLinks`)
  * is refused once the same way, with the form that works, since on 10-22 two links went out as `wiki:https://...:5176/page/...` and the owner
  * answered "often links to wrong page." on 10-23.
  */
@@ -366,14 +418,26 @@ export function tellOwner(input: TellInput, turn: TellTurn, now = Date.now(), pa
   const declared = TELL_CASES.includes(input.why as TellWhy) && named(input.about);
   const repeat = !turn.owner && input.why === "done" && named(input.about) && !turn.resent?.has(told) ? repeatOf(input.about, turn.done ?? []) : undefined;
   const reask = !turn.owner && !turn.resent?.has(told) ? todoIds(`${told} ${typeof input.about === "string" ? input.about : ""}`).find(id => turn.asked?.has(id)) : undefined;
-  if (!turn.owner && input.why === "blocker" && !turn.resent?.has(told) && !ASKS_HIM.test(told)) return { kind: "refused", text: `${INCIDENT_MARK}, ` +
+  if (!turn.owner && input.why === "blocker" && !turn.resent?.has(told) && !asksHim(told)) return { kind: "refused", text: `${INCIDENT_MARK}, ` +
     "and this one asks nothing of him. An incident or delay that a job or another chat already handles is update, so put it on the board. If " +
     "only he can clear it, say what he must do and send it again; if he must see it now as it is, send the very same text again (c117)." };
   if (!turn.owner && (answers || declared) && !turn.resent?.has(told) && PROGRESS.test(told)) return { kind: "refused", text: `${PROGRESS_MARK} ("${PROGRESS.exec(told)![0]}"). ` +
     "Progress on work that is not finished is update, so put it on the board and tell him once the result is in, in one message. If he must " +
     "see this now as it is, send the very same text again and it goes out (c117)." };
-  const other = !turn.owner && (input.why === "decision" || input.why === "blocker") && !turn.resent?.has(told)
-    ? sameAsk(`${told} ${typeof input.about === "string" ? input.about : ""}`, turn.others ?? [], now) : undefined;
+  const about = typeof input.about === "string" ? input.about : "";
+  const fresh = !turn.owner && !turn.resent?.has(told);
+  const ask = fresh && (input.why === "decision" || input.why === "blocker");
+  if (fresh && (answers || declared) && ENDS.includes(input.why) && turn.lastSent && ENDS.includes(turn.lastSent.why) && now - turn.lastSent.at <= SPLIT_MS)
+    return { kind: "refused", text: `${SPLIT_MARK}, ${Math.round((now - turn.lastSent.at) / 1000)} s after your last one. Its rest is detail, ` +
+      "so put it on the board or the wiki page and end the turn, or send one message with the takeaway and the page link. If it is a second " +
+      "point he must see, send the very same text again and it goes out (c117)." };
+  const other = ask ? sameAsk(`${told} ${about}`, turn.others ?? [], now) ?? sameAbout(about, turn.others ?? [], now) : undefined;
+  if (ask && !other && OTHER_LIST.test(told)) return { kind: "refused", text: `${SAME_ASK_MARK}, since this sends him to another chat's list ` +
+    `("${OTHER_LIST.exec(told)![0]}"). Do not ask him twice. Wait on that todo, and if you know something it lacks, send it to that chat with ` +
+    "agent_message. If yours is a different question he must answer too, send the very same text again and it goes out (c117)." };
+  if (ask && REPLACED.test(`${told} ${about}`)) return { kind: "refused", text: `${REASK_MARK}, as the todo you swapped in ` +
+    `("${REPLACED.exec(`${told} ${about}`)![0]}"). The new todo is on his list, so this asks nothing new. If he must see it now, send the very ` +
+    "same text again and it goes out (c117)." };
   if (other) return { kind: "refused", text: `${SAME_ASK_MARK}, as ${other.id} of chat ${other.chat} ("${other.text.slice(0, 120)}"). Do ` +
     `not ask him twice. Wait on that todo, and if you know something it lacks, send it to that chat with agent_message so it adds it to ${other.id}. ` +
     "If yours is a different question he must answer too, send the very same text again and it goes out (c117)." };
