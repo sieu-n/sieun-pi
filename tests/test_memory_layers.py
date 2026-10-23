@@ -69,6 +69,17 @@ class Heavy(unittest.TestCase):
         self.assertEqual(self.run_heavy("1G", path="/usr/bin:/bin").returncode, 2)
 
 
+class ThpDefrag(unittest.TestCase):
+    def test_defer_at_boot_and_from_setup(self):
+        unit = (MEM / "thp-defrag.service").read_text()
+        self.assertIn("echo defer > /sys/kernel/mm/transparent_hugepage/defrag", unit)
+        self.assertIn("WantedBy=sysinit.target", unit)
+        setup = (MEM / "setup-memory.sh").read_text()
+        for line in ('install -m 644 "$here/thp-defrag.service" /etc/systemd/system/thp-defrag.service',
+                     "systemctl enable thp-defrag.service", "systemctl restart thp-defrag.service"):
+            self.assertIn(line, setup)
+
+
 class Sysctls(unittest.TestCase):
     def test_values_and_the_owner_ask(self):
         text = (MEM / "90-agent-memory.conf").read_text()

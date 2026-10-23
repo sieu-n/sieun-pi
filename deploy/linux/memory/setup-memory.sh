@@ -47,6 +47,12 @@ systemctl daemon-reload
 systemctl enable oom-protect.service >/dev/null
 systemctl restart oom-protect.service
 
+# 7. THP defrag "defer" at boot and now, so a CI VM's huge page fault no longer compacts memory in place.
+install -m 644 "$here/thp-defrag.service" /etc/systemd/system/thp-defrag.service
+systemctl daemon-reload
+systemctl enable thp-defrag.service >/dev/null
+systemctl restart thp-defrag.service
+
 # 6. sysctls.
 install -m 644 "$here/90-agent-memory.conf" /etc/sysctl.d/90-agent-memory.conf
 sysctl -q -p /etc/sysctl.d/90-agent-memory.conf
@@ -57,4 +63,4 @@ install -d -m 755 -o "$DEV_USER" -g "$DEV_USER" "$home/.local/bin"
 install -m 755 -o "$DEV_USER" -g "$DEV_USER" "$here/heavy" "$home/.local/bin/heavy"
 
 swapon --show
-echo "zswap $(cat /sys/module/zswap/parameters/enabled) $(cat /sys/module/zswap/parameters/compressor); earlyoom $(systemctl is-active earlyoom); oom-protect $(systemctl is-active oom-protect)"
+echo "zswap $(cat /sys/module/zswap/parameters/enabled) $(cat /sys/module/zswap/parameters/compressor); thp defrag $(cat /sys/kernel/mm/transparent_hugepage/defrag); earlyoom $(systemctl is-active earlyoom); oom-protect $(systemctl is-active oom-protect)"

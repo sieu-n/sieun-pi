@@ -1,0 +1,12 @@
+[Unit]
+Description=THP defrag defer: a huge page fault wakes kcompactd instead of compacting in the faulting process (memory layer 7, deploy/linux/README.md)
+DefaultDependencies=no
+After=local-fs.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'echo defer > /sys/kernel/mm/transparent_hugepage/defrag'
+
+[Install]
+WantedBy=sysinit.target
