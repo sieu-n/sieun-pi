@@ -508,8 +508,9 @@ export async function measure(query: DsQuery | null, api: GrafanaApi | null, aut
     .map(row => ({ slot: num(row.slot) ?? 0, good: num(row.good) ?? 0 }));
   const window = `observed_at >= ${ms(geoFrom)} AND observed_at < ${ms(geoTo)}`;
   const hourOf = "toInt64(toUnixTimestamp(toStartOfHour(observed_at))) * 1000";
-  const [panels, igSlots, ttsSlots, ttsWeekly, deployPoints, writerLag, meta, others, census, proxy, adLibrary, queues, refresh] = await Promise.all([
-    step("dashboards", () => readPanels(api)),
+  // The goal reads run before the panels. Each one answers in 0.2 to 2 s alone (10-23 08:40Z), but beside the burst of every panel's queries
+  // ClickHouse missed Grafana's deadline on a different 2 to 5 of them on each of 3 runs at 08:30-08:45Z, so the headline went unmeasured.
+  const [igSlots, ttsSlots, ttsWeekly, deployPoints, writerLag, meta, others, census, proxy, adLibrary, queues, refresh] = await Promise.all([
     step("instagram rate", () => slotsOf(GOOD_ROWS.instagram, lagFrom)),
     step("tiktok shop rate", () => slotsOf(GOOD_ROWS.tiktokShop)),
     step("tiktok shop weekly", async () => {
@@ -569,6 +570,7 @@ export async function measure(query: DsQuery | null, api: GrafanaApi | null, aut
       return out;
     }),
   ]);
+  const panels = await step("dashboards", () => readPanels(api));
   if (census && proxy) {
     const hours = new Map<number, GeoHour>();
     const at = (hour: number): GeoHour => hours.get(hour) ?? hours.set(hour, { hour, proxy: [] }).get(hour)!;
