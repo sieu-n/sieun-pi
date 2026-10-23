@@ -456,6 +456,14 @@ export function pushTells(pushes: ReturnType<typeof pushList>, tag: string): { c
   return pushes.map(entry => ({ chat: entry.chat, text: `${tag} The chat system duty (d9) found these in your chat: ${pushItems(entry)}. ${PUSH_ASK}` }));
 }
 
+/**
+ * Whether this precheck records its pushes in PUSHES_FILE: only a scheduled or verify run (PRECHECK_MODE "run"), the one whose tells the server
+ * sends. An after-job measure or a hand run recorded pushes that never went out, so the next run flagged them as never delivered: on 10-23 the
+ * 14:24Z after-job measure and a 14:31Z precheck the server never logged left 4 such lines for Crawler VP and the Railway chat, and the 00:35 KST job was asked to steer
+ * both again about messages neither was ever sent.
+ */
+export const recordsPushes = (mode: string | undefined): boolean => mode === "run";
+
 /** The pushes.jsonl line of each push: the plan and duty ids it names. */
 export function pushRecords(pushes: ReturnType<typeof pushList>, tag: string, at: number): { at: number; chat: string; tag: string; items: string[] }[] {
   return pushes.map(entry => {
@@ -570,7 +578,7 @@ async function main(): Promise<void> {
     section(`Red windowed counts with no lastEventAt, read as lagging windows (${owned.lagging.length})`, owned.lagging.map(duty => `${duty.line}.`)),
   ].join("\n");
   await writeFile(detail, md);
-  if (pushes.length) {
+  if (pushes.length && recordsPushes(process.env.PRECHECK_MODE)) {
     await mkdir(dirname(PUSHES_FILE), { recursive: true });
     await appendFile(PUSHES_FILE, pushRecords(pushes, tag, now).map(line => JSON.stringify(line) + "\n").join(""));
   }

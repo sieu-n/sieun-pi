@@ -2,7 +2,7 @@
 // on "API key for provider anthropic is temporarily unavailable", and the 01:00Z run's 6-chat push list (d9-261023-1000.md) waited on a job
 // that never ran. The precheck's pushes now go out as server notices when it ends, with no model turn.
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -10,7 +10,7 @@ import { Duties } from "../src/chat-duty-run.ts";
 import { DutyStore } from "../src/chat-duty-store.ts";
 import type { Duty } from "../src/shared/chat-duties.ts";
 import type { CheckInView } from "../src/shared/types.ts";
-import { pushList, pushRecords, pushTells } from "../scripts/duties/chat-system.ts";
+import { pushList, pushRecords, pushTells, recordsPushes } from "../scripts/duties/chat-system.ts";
 
 const CHAT = "01a1164b-4a2d-742d-b27a-82f086ed0200";
 const CI = "01a1180e-6567-747f-bf44-452520ebdd1b";
@@ -31,6 +31,7 @@ test("d9's pushes go out as server notices when its precheck ends, before and wh
 
     const precheck = join(dir, "precheck.mjs");
     await writeFile(precheck, `import { writeFileSync } from "node:fs";
+writeFileSync(${JSON.stringify(join(dir, "mode.txt"))}, process.env.PRECHECK_MODE ?? "");
 writeFileSync(process.env.OUTPUT_FILE, JSON.stringify({ metrics: { duties_green_pct: 45.7 }, tells: ${JSON.stringify([...tells, { chat: "gone", text: "x" }])} }));`);
     const store = new DutyStore(dir);
     const duty: Duty = {
@@ -61,5 +62,14 @@ writeFileSync(process.env.OUTPUT_FILE, JSON.stringify({ metrics: { duties_green_
     await duties.settled();
     duties.close();
     assert.deepEqual(events, [`tell 01a1180e ${tag}`, `tell 01a11a24 ${tag}`, "job start"]);
+    assert.equal(await readFile(join(dir, "mode.txt"), "utf8"), "run");
   } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+// On 10-23 the 14:24Z after-job measure of d9 and a 14:31Z precheck the server never logged each appended pushes.jsonl lines for Crawler VP and
+// the Railway chat that no notice ever carried, and the 00:35 KST run read all 4 as pushes that never reached their transcripts.
+test("only a run the server sends tells for records its pushes; an after-job measure or a hand run records none", () => {
+  assert.equal(recordsPushes("run"), true);
+  assert.equal(recordsPushes("after"), false);
+  assert.equal(recordsPushes(undefined), false);
 });

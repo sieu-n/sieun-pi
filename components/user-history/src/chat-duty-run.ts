@@ -1151,7 +1151,8 @@ export class Duties {
   /**
    * Runs the precheck with the file contract; its state advances only when a scheduled run's precheck exits 0 with a valid output. An after-job
    * measure (`after`) reads the state but keeps none, so the next run's precheck counts from the same point, and it has its own files, so it can
-   * run beside a run of the same duty. Throws with the reason otherwise.
+   * run beside a run of the same duty. PRECHECK_MODE tells the precheck which one it is, since only a run sends its `tells`. Throws with the
+   * reason otherwise.
    */
   private async precheck(duty: Duty, dir: string, outputFile: string, lastRuns: readonly DutyRunRecord[], mode: "run" | "after" = "run"): Promise<PrecheckOutput> {
     await mkdir(dir, { recursive: true, mode: 0o700 });
@@ -1165,7 +1166,7 @@ export class Duties {
     const file = command === "node" ? this.host.node ?? process.execPath : command!;
     const stderrFile = `${outputFile.replace(/\.json$/, "")}.stderr.log`;
     try {
-      try { await this.spawnPrecheck(duty, dir, file, args, stderrFile, { STATE_FILE: nextState, LAST_RUNS_FILE: lastRunsFile, OUTPUT_FILE: outputFile }); }
+      try { await this.spawnPrecheck(duty, dir, file, args, stderrFile, { STATE_FILE: nextState, LAST_RUNS_FILE: lastRunsFile, OUTPUT_FILE: outputFile, PRECHECK_MODE: mode }); }
       catch (error) {
         const tail = (await readFile(stderrFile, "utf8").catch(() => "")).trim().split("\n").slice(-3).join(" ").slice(0, 300);
         throw new Error(`${message(error)}${tail ? `: ${tail}` : ""} (all of stderr: ${stderrFile})`);
