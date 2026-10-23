@@ -63,6 +63,8 @@ export interface DutyHost {
   fixLive?: (chatId: string, item: PlanItem) => Promise<boolean>;
   /** Applies board ops to the chat's board, for each measured run's goal readings (`goalReadingOps`); absent: runs write no reading. */
   applyBoard?: (chatId: string, ops: (board: ChatBoard) => readonly BoardOp[]) => Promise<void>;
+  /** Sends a server notice to a chat (`Chats.notice`), for each of a precheck's `tells`; absent: the runner sends none. */
+  tell?: (chatId: string, text: string) => Promise<void>;
   /** Whether pi-pool would give the tree rooted at `tree` a `provider` account now (`poolAdmits`), for a cut run's rerun; absent: it admits. */
   poolAdmits?: (tree: string, provider: string) => Promise<boolean>;
   /**
@@ -999,6 +1001,7 @@ export class Duties {
     };
     try {
       const output = await this.precheck(duty, dir, detail, previous.slice(0, 10));
+      await this.sendTells(chatId, dutyId, output.tells);
       const judged = judge(duty.metrics, output);
       const readings = outputReadings(duty.readings, output);
       flagged = output.flagged ?? [];
@@ -1031,6 +1034,21 @@ export class Duties {
       ...(record.parts ? { parts: record.parts } : {}) } : null;
     await this.startJob(chatId, record, duty, { schedule: duty.schedule, measured,
       brief: { measure: record.verdict === "error" ? `no measure (${record.summary})` : record.summary, findings, misses } });
+  }
+
+  /**
+   * Sends each of a precheck's `tells` as a server notice, so it goes out with no model turn: d9's pushes waited on its job, and no push went
+   * out from 17:03Z on 10-22 to 01:00Z on 10-23 while three d9 jobs in a row failed their first turn on an unavailable API key.
+   */
+  private async sendTells(chatId: string, dutyId: string, tells: PrecheckOutput["tells"]): Promise<void> {
+    if (!this.host.tell || !Array.isArray(tells)) return;
+    let sent = 0;
+    for (const tell of tells) {
+      if (typeof tell?.chat !== "string" || typeof tell.text !== "string" || !tell.text.trim()) continue;
+      try { await this.host.tell(tell.chat, tell.text); sent++; }
+      catch (error) { this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: notice to chat ${tell.chat.slice(0, 8)} failed: ${message(error)}`); }
+    }
+    if (sent) this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: sent ${sent} notice${sent === 1 ? "" : "s"} from its precheck`);
   }
 
   /**

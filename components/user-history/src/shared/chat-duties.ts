@@ -63,7 +63,9 @@ export const overrunWords = (overrun: PrecheckOverrun): string =>
  * `lastEventAt` names, per metric that counts events in a trailing window, the time of the newest event it counts. With it a miss streak tells a
  * count that no new event raised from one whose old events have not left the window yet (`MetricStreak.quietSince`).
  */
-export interface PrecheckOutput { metrics: Record<string, number>; flagged?: FlaggedSlice[]; lastEventAt?: Record<string, number> }
+export interface PrecheckOutput { metrics: Record<string, number>; flagged?: FlaggedSlice[]; lastEventAt?: Record<string, number>;
+  /** Server notices the runner sends to other chats when the precheck ends, before the duty's job starts (`DutyHost.tell`): d9's pushes. */
+  tells?: { chat: string; text: string }[] }
 /** One thing the precheck found that the duty job should read: the chat (session id), when, what kind, a short excerpt, and the plan item it is about. */
 export interface FlaggedSlice { chat?: string; at?: number; kind: string; excerpt: string; item?: string }
 

@@ -1922,6 +1922,13 @@ export class Chats {
    * sends them in order once the park ended (`sendHeld`), so they join the resumed turn. The owner's own messages never come here: the owner
    * outbox sends each at once as an owner turn.
    */
+  /** A server notice to an owner chat from outside the chat service's own passes, such as a duty precheck's push (`DutyHost.tell`). */
+  async notice(chat: string, message: string): Promise<void> {
+    await this.load();
+    if (!this.chatIds.has(chat)) throw new Error(`${chat.slice(0, 8)} is not a chat`);
+    await this.tell(chat, message);
+  }
+
   private tell(chat: string, message: string): Promise<void> {
     const record = this.source.heldNotices;
     if (!record) return this.threads.prompt(chat, { message, images: [], mode: "steer" });

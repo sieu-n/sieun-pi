@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import { appendFile, mkdir, open, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { parseAgentQueue, poolExecutable } from "../../src/chat-pool.ts";
@@ -377,8 +377,40 @@ export function pushList(facts: Pick<ChatSystemFacts, "idleGoals" | "stuckDuties
   return [...chats].map(([chat, entry]) => ({ chat, ...entry }));
 }
 
-/** Where the duty job records each push it sends, one JSON line per message, for the next run to check. */
+/** Where each push d9 sends is recorded, one JSON line per message, for the next run to check. */
 const PUSHES_FILE = join(homedir(), "work/plan-audit/pushes.jsonl");
+
+/** What a push asks of a chat, after the list of its items. */
+const PUSH_ASK = "Give each goal a live job this turn, each red duty a fix job on a step linked to it, each red duty whose live fix does not move its number a " +
+  "root-cause job that replaces that fix, each duty that reads as a lagging window lastEventAt in its precheck, and each listed plan item a \"Done when\" " +
+  "note, a duty metric or a close. Reply in your own chat, not to d9.";
+
+/** One chat's line of the push list: its idle goals, its red duty lines and its upkeep items. */
+export function pushItems(entry: ReturnType<typeof pushList>[number]): string {
+  return (entry.goals.length ? `goals with no live job ${entry.goals.map(goal => `${goal.id} ${quote(goal.text)}`).join(", ")}` : "") +
+    (entry.duties.length ? `${entry.goals.length ? "; " : ""}${entry.duties.join("; ")}` : "") +
+    (entry.upkeep.length ? `${entry.goals.length || entry.duties.length ? "; " : ""}plan items to give a "Done when" note, move into a duty metric or close: ` +
+      entry.upkeep.map(item => `${item.id} ${quote(item.text)} ${item.why}`).join(", ") : "");
+}
+
+/**
+ * The pushes the server sends itself (`PrecheckOutput.tells`), so they go out on every run whatever the pool does. From 17:03Z on 10-22 to
+ * 01:00Z on 10-23 no d9 push went out: the 20:09Z, 22:09Z and 00:10Z jobs each failed their first turn on "API key for provider anthropic is
+ * temporarily unavailable", sat until the runner replaced them, and the runs between were skipped, so 8 chats whose fix did not move never
+ * got the root-cause ask.
+ */
+export function pushTells(pushes: ReturnType<typeof pushList>, tag: string): { chat: string; text: string }[] {
+  return pushes.map(entry => ({ chat: entry.chat, text: `${tag} The chat system duty (d9) found these in your chat: ${pushItems(entry)}. ${PUSH_ASK}` }));
+}
+
+/** The pushes.jsonl line of each push: the plan and duty ids it names. */
+export function pushRecords(pushes: ReturnType<typeof pushList>, tag: string, at: number): { at: number; chat: string; tag: string; items: string[] }[] {
+  return pushes.map(entry => {
+    const items = [...entry.goals.map(goal => goal.id), ...entry.duties.flatMap(line => [...line.matchAll(/\((d\d+|checkin)\)/g)].map(match => match[1]!)),
+      ...entry.upkeep.map(item => item.id)];
+    return { at, chat: entry.chat, tag, items: [...new Set(items)] };
+  });
+}
 
 const today = (now: number): string => new Date(now).toISOString().slice(0, 10);
 const section = (title: string, lines: readonly string[]): string => [`## ${title}`, "", ...lines.length ? lines.map((line, index) => `${index + 1}. ${line}`) : ["None."], ""].join("\n");
@@ -462,14 +494,9 @@ async function main(): Promise<void> {
     "The owner's last messages in it, newest last:", "",
     ...asks.length ? asks.map(ask => `- ${ask.at}: ${JSON.stringify(ask.text)}`) : ["- None found in the transcript's last 4 MB."], "",
     `## Push list (${pushes.length} chats)`, "",
-    `Message each chat below with \`await agent_message.send(text, receiver_role="sibling", receiver_name="<its full session id>")\`, a Mac chat too, ` +
-      `and put ${tag} in the text. Ask it to give each goal a live job this turn, each red duty a fix job on a step linked to it, each red duty whose live fix does not move its number a root-cause job that replaces that fix, each duty that reads as a lagging window lastEventAt in its precheck, and each listed plan item a "Done when" note, a duty metric or a close. ` +
-      `After each send, append one line to ${PUSHES_FILE}: {"at": <ms>, "chat": "<session id>", "tag": "${tag}", "items": ["p1", "d2"]}.`, "",
-    ...pushes.map((entry, index) => `${index + 1}. ${name(entry.chat)} (${entry.chat})` +
-      (entry.goals.length ? `: goals with no live job ${entry.goals.map(goal => `${goal.id} ${quote(goal.text)}`).join(", ")}` : "") +
-      (entry.duties.length ? `${entry.goals.length ? ";" : ":"} ${entry.duties.join("; ")}` : "") +
-      (entry.upkeep.length ? `${entry.goals.length || entry.duties.length ? ";" : ":"} plan items to give a "Done when" note, move into a duty metric or close: ` +
-        entry.upkeep.map(item => `${item.id} ${quote(item.text)} ${item.why}`).join(", ") : "") + "."), "",
+    `The server sent each chat below its push, tagged ${tag}, when this run's precheck ended, and ${PUSHES_FILE} records each one. Send none of them again. ` +
+      "Follow up only where a chat's answer shows it did not act.", "",
+    ...pushes.map((entry, index) => `${index + 1}. ${name(entry.chat)} (${entry.chat}): ${pushItems(entry)}.`), "",
     section(`Pushes the last run sent (${followUps.length})`, followUps.map(check => `${name(check.push.chat)}: ${check.push.tag} about ${check.push.items.join(", ")}, ` +
       `${check.delivered ? "delivered" : "not delivered"}, ${check.read ? "read" : "not read"}, ${check.jobStarted ? "a job started since" : "no job started since"}.`)),
     section(`Open steps nobody moves (${result.metrics.stuck_steps_all})`, stuck.map(entry => entry.id
@@ -484,7 +511,11 @@ async function main(): Promise<void> {
     section(`Red windowed counts with no lastEventAt, read as lagging windows (${owned.lagging.length})`, owned.lagging.map(duty => `${duty.line}.`)),
   ].join("\n");
   await writeFile(detail, md);
-  await writeFile(output, JSON.stringify(result, null, 2) + "\n");
+  if (pushes.length) {
+    await mkdir(dirname(PUSHES_FILE), { recursive: true });
+    await appendFile(PUSHES_FILE, pushRecords(pushes, tag, now).map(line => JSON.stringify(line) + "\n").join(""));
+  }
+  await writeFile(output, JSON.stringify({ ...result, tells: pushTells(pushes, tag) }, null, 2) + "\n");
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) await main();
