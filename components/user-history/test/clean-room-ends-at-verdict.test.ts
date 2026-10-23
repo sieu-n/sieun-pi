@@ -1,5 +1,6 @@
 // Run-1 to run-3 of the c104 long-reply clean room ended open on 10-22 and 10-23 at their 4 h window ends, since the chat's jobs took 3.4 h and
-// 3.5 h to report through account limit pauses, so a dm-replies collect now judges each pass and ends the run at its first pass or fail.
+// 3.5 h to report through account limit pauses, so a dm-replies collect now judges each pass and ends the run at its first pass or fail. Run-4
+// went void at 47 min on a message from its own check-in, "check-in box questions 22 20", so the judge counts the chat's duty jobs as its own.
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -39,6 +40,8 @@ test("a dm-replies collect ends the run at its first pass, long before its windo
     writeFileSync(join(wiki, "release-path.md"), "# Release path\n\n```mermaid\nflowchart LR\n  job --> main --> release\n```\n");
     writeFileSync(join(sessions, "chat-1.jsonl"), [
       user("01:00:00", TASK), ...tell("01:00:30", "a", "Three jobs are on it, and I'll message you once all three are in."),
+      JSON.stringify({ type: "custom_message", timestamp: at("01:20:00"), customType: "agent_message",
+        content: "[agent-message from sibling:check-in box questions 01 20] [replaceable: check-in report] The three questions stand at 1 of 3.", details: { fromRelationship: "sibling" } }),
       report("02:00:00", "duty failures"), report("02:10:00", "main commits"), report("03:00:00", "disk use"),
       ...tell("03:00:30", "b", "All three are in, and the duty with the most failures is d7, see p2 to p4."),
       user("03:10:00", FOLLOW_UP), ...tell("03:20:00", "c", "Close, but a person runs release-chat after the push, see wiki:notes/release-path.md for the diagram."),

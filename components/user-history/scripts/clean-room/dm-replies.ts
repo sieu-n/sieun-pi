@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { ownerMessageId, serverNote, TELL_OWNER_HELD, TELL_OWNER_TOOL } from "../../src/shared/chat-feed.ts";
 import { longReply } from "../../src/shared/reply-lint.ts";
+import { ownJob } from "./answer-data.ts";
 import type { RunState, Scenario, Verdict } from "./session-read.ts";
 
 /**
@@ -218,8 +219,10 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
     /^\[agent-message from child:/.test(blockText(entry.content)));
   const typed = all.filter(entry => entry.type === "message" && (entry.message as { role?: string }).role === "user").map(entry => blockText((entry.message as { content?: unknown }).content))
     .filter(text => typedByOwner(text, state.seeds));
+  // The chat's own check-in writes to it as a sibling named like "check-in box questions 22 20"; run-4 went void on one on 10-23.
   const outside = all.filter(entry => entry.type === "custom_message" && entry.customType === "agent_message" &&
-    ["parent", "sibling"].includes(String((entry.details as { fromRelationship?: unknown } | undefined)?.fromRelationship ?? "")));
+    ["parent", "sibling"].includes(String((entry.details as { fromRelationship?: unknown } | undefined)?.fromRelationship ?? "")) &&
+    !ownJob(state.chat.name, { text: blockText(entry.content) }));
   const n = numbers(calls);
   const routine = routineWakes(calls);
   const checks: { id: string; ok: boolean | null; detail: string }[] = [];
