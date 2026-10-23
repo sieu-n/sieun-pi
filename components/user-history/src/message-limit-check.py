@@ -52,7 +52,7 @@ import time
 
 CHECK = os.path.join(os.path.dirname(os.path.realpath(__file__)), "message-limit-check.ts")
 SEND_ONCE = os.path.join(os.path.dirname(os.path.realpath(__file__)), "send-once.ts")
-VERSION = 20
+VERSION = 21
 BRIEFS = "spawn-briefs"
 SAFE_ID = re.compile(r"^[\w-]{1,128}$")
 SEND_TIMEOUT = 'waiting for the Prime Agent daemon response to "send_message"'
@@ -134,8 +134,10 @@ def record_brief(request_type, payload, reply):
         root = ident
     if not all(isinstance(value, str) and SAFE_ID.match(value) for value in (ident, root)):
         return
+    # The spawn's model and thinking, so a root the keeper starts in place of a lost child runs on them.
+    asked = {key: kw[key] for key in ("model", "thinking") if isinstance(kw.get(key), str) and kw[key]}
     record = {"kind": kind, "id": ident, "name": kw.get("name") or reply.get("name") or "", "prompt": payload["prompt"], "root": root,
-              "at": int(time.time() * 1000), **{key: str(value) for key, value in where.items() if value}}
+              "at": int(time.time() * 1000), **{key: str(value) for key, value in where.items() if value}, **asked}
     folder = os.path.join(chat_dir, BRIEFS)
     os.makedirs(folder, mode=0o700, exist_ok=True)
     path = os.path.join(folder, f"{kind}-{ident}.json")

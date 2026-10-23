@@ -11,7 +11,7 @@ import type { HeldTurns } from "./held-turns.ts";
 import type { Unstarted } from "./brief-keeper.ts";
 import type { ClaudeState } from "./chat-recovery.ts";
 import type { CheckInRun, CheckInStart } from "./chat-duty-run.ts";
-import type { JobResumes } from "./job-resume.ts";
+import type { JobModel, JobResumes } from "./job-resume.ts";
 import type { PrimeUpdate } from "./prime-update.ts";
 import type { InterruptedReport, JobOf } from "./shared/interrupted.ts";
 import type { Wake } from "./wakes.ts";
@@ -383,8 +383,11 @@ export interface CheckInSource {
    * note (the board store's apply). Absent: such a job is kept.
    */
   resumes?: { store: JobResumes; applyBoard(id: string, ops: readonly BoardOp[]): Promise<unknown>;
-    /** Starts a fresh root job of the chat (chat-duty-job.ts start) named `name` with the brief `brief(chat name)`; absent, the steps keep only the note. */
-    restart?(chat: string, name: string, brief: (chatName: string) => string): Promise<{ id: string; name: string }> };
+    /**
+     * Starts a fresh root job of the chat (chat-duty-job.ts start) named `name` with the brief `brief(chat name)`, on `model` when given (the
+     * ended job's own, `jobModel`), else on the daemon's default; absent, the steps keep only the note.
+     */
+    restart?(chat: string, name: string, brief: (chatName: string) => string, model?: JobModel): Promise<{ id: string; name: string }> };
   /**
    * Sends "continue" to each interrupted run that `isJob` keeps, as the resume script finds them at any depth (`InterruptedRuns.resumeJobs`).
    * Absent (tests): the job sweep resumes nothing.

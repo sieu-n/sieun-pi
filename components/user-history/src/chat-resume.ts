@@ -382,10 +382,10 @@ function cutWords(entry: Pick<RecordedStop, "cut" | "cut_error" | "cut_at">): st
  */
 export async function resumeChatJobs(chatRows: readonly SessionRow[], chats: ReadonlySet<string>,
   interrupted: (isJob: (run: JobOf) => boolean, owners: ReadonlySet<string>) => Promise<InterruptedReport | null>, log: (line: string) => void,
-  owners: ReadonlySet<string> = new Set(), held?: PoolHeldJobs, hidden: ReadonlySet<string> = new Set()): Promise<void> {
+  owners: ReadonlySet<string> = new Set(), held?: PoolHeldJobs, hidden: ReadonlySet<string> = new Set(), replaced: ReadonlySet<string> = new Set()): Promise<void> {
   const owned = new Set([...hidden, ...chatRows.flatMap(row => [row.id, ...(row.agents ?? []).flatMap(agent => agent.link === "root" && agent.sessionId ? [agent.sessionId] : [])])]);
   try {
-    const report = await interrupted(run => !chats.has(run.session_id ?? "") && (owned.has(run.head_session_id ?? "") || owners.has(run.session_id ?? "") ||
+    const report = await interrupted(run => !chats.has(run.session_id ?? "") && !replaced.has(run.session_id ?? "") && (owned.has(run.head_session_id ?? "") || owners.has(run.session_id ?? "") ||
       (run.session_id !== undefined && run.head_session_id === run.session_id)), owners);
     for (const job of report?.children ?? []) {
       const run = report!.paused.find(entry => entry.id === job.id);

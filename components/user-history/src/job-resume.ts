@@ -2,20 +2,34 @@ import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { clockTime } from "./checkin-settings.ts";
 import { spawnRecord } from "./spawn-record.ts";
-import type { PlanItem } from "./shared/types.ts";
+import { isThinkingLevel, type PlanItem, type ThinkingLevel } from "./shared/types.ts";
 import { fileLines } from "./file-lines.ts";
 
 /**
  * What a fresh job needs to pick up the work of a job the chat ended while it waited on a board step: the job's brief, its last report to the
  * chat, and the wait (each step's waitFor or waitUntil).
  */
-export interface JobResume { chat: string; childId: string; job: string; steps: string[]; event: string; brief: string; report: string; endedAt: number }
+export interface JobResume {
+  chat: string; childId: string; job: string; steps: string[]; event: string; brief: string; report: string; endedAt: number;
+  /** The model and thinking level the job ran on (`jobModel`, `sessionModel`), which its fresh job starts on; absent in files saved before 10-23. */
+  model?: JobModel;
+  /** The fresh job the cleanup started from this state (`resumeBrief`); absent when none started or the file is older. */
+  resumed?: { id: string; name: string };
+}
+
+/**
+ * The model a job was started on: chat-2572 10-22 spawned "mcp metadata access" on openai-codex/gpt-6-astra at thinking high, and the cleanup's
+ * fresh job "mcp metadata access resumed 00:11" (01a1642b) started on the daemon default anthropic/claude-opus-5-5 and stopped on the Claude limit.
+ */
+export interface JobModel { provider: string; modelId: string; thinkingLevel?: ThinkingLevel }
 
 /** `<data dir>/job-resumes/<chat>/<child id>.json`, one file per ended job. */
 export interface JobResumes {
   /** Writes the saved state and returns its path. */
   save(resume: JobResume): Promise<string>;
   read(path: string): Promise<JobResume>;
+  /** Every saved state of the chat, with its path; a file that does not parse is left out. */
+  list(chat: string): Promise<{ path: string; resume: JobResume }[]>;
 }
 export function jobResumes(dir: string): JobResumes {
   return {
@@ -28,7 +42,62 @@ export function jobResumes(dir: string): JobResumes {
       return path;
     },
     async read(path) { return JSON.parse(await readFile(path, "utf8")) as JobResume; },
+    async list(chat) {
+      const folder = join(dir, chat);
+      const names = (await readdir(folder).catch(() => [] as string[])).filter(name => name.endsWith(".json"));
+      const read = await Promise.all(names.map(async name => {
+        const path = join(folder, name);
+        try { return [{ path, resume: JSON.parse(await readFile(path, "utf8")) as JobResume }]; } catch { return []; }
+      }));
+      return read.flat();
+    },
   };
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+/** Entries a session file's head holds before its first message: the header, model_change, thinking_level_change and a few more. */
+const HEAD_LINES = 12;
+
+/**
+ * The model and thinking level a session file starts on: its first model_change and thinking_level_change, which Prime writes at the create
+ * from the spawn's or create_session's model and thinking. Undefined when the file has no model_change in its head.
+ */
+export async function sessionModel(file: string): Promise<JobModel | undefined> {
+  let model: { provider: string; modelId: string } | undefined;
+  let thinkingLevel: ThinkingLevel | undefined;
+  let read = 0;
+  try {
+    for await (const line of fileLines(file)) {
+      if (++read > HEAD_LINES) break;
+      if (!line.startsWith('{"type":"model_change"') && !line.startsWith('{"type":"thinking_level_change"')) continue;
+      const entry: unknown = JSON.parse(line);
+      if (!isRecord(entry)) continue;
+      if (entry.type === "model_change" && !model && typeof entry.provider === "string" && typeof entry.modelId === "string") model = { provider: entry.provider, modelId: entry.modelId };
+      if (entry.type === "thinking_level_change" && thinkingLevel === undefined && isThinkingLevel(entry.thinkingLevel)) thinkingLevel = entry.thinkingLevel;
+      if (model && thinkingLevel !== undefined) break;
+    }
+  } catch { /* unreadable: what was read */ }
+  return model ? { ...model, ...thinkingLevel !== undefined ? { thinkingLevel } : {} } : undefined;
+}
+
+/**
+ * A subagent's model and thinking level: the model its handle asked for (`rlm-subagent.json` `model`), else its session file's, with the
+ * thinking level from its session file, since rlm-subagent.json keeps none. Undefined when neither names a model.
+ */
+export async function jobModel(childDir: string): Promise<JobModel | undefined> {
+  const spawn: unknown = await readFile(join(childDir, "rlm-subagent.json"), "utf8").then(text => JSON.parse(text), () => null);
+  const asked = isRecord(spawn) && isRecord(spawn.model) && typeof spawn.model.provider === "string" && typeof spawn.model.modelId === "string"
+    ? { provider: spawn.model.provider, modelId: spawn.model.modelId } : undefined;
+  let file = isRecord(spawn) && typeof spawn.sessionFile === "string" ? spawn.sessionFile : undefined;
+  if (file === undefined) {
+    const names = (await readdir(childDir).catch(() => [] as string[])).filter(name => name.endsWith(".jsonl") && name !== "semantic-edges.jsonl");
+    if (names.length === 1) file = join(childDir, names[0]!);
+  }
+  const ran = file !== undefined ? await sessionModel(file) : undefined;
+  const model = asked ?? ran;
+  if (!model) return undefined;
+  const thinkingLevel = ran?.thinkingLevel;
+  return { provider: model.provider, modelId: model.modelId, ...thinkingLevel !== undefined ? { thinkingLevel } : {} };
 }
 
 /**
@@ -93,6 +162,24 @@ export const resumedNote = (job: string, at: number): string => `Resumed: the ch
 export const keptCopyNote = (job: string, at: number): string => `Kept: job ${job} still carries this work at ${clockTime(at)}, so the chat service started no copy, and the step is its.`;
 /** The job a session carries, its name less every " resumed HH:MM" the cleanup added (`resumeJobName`). */
 export const jobBase = (name: string): string => name.replace(/(?:\s+resumed \d\d:\d\d)+$/, "").trim();
+
+/**
+ * The fresh job a saved state started (`resumed`, else the name `resumeJobName` gave it), when a step it took now names another worker and no
+ * step names it any more, with those steps and their workers. chat-2572 10-23: the chat gave p5, p8 and p10 to new workers after the resumed
+ * roots 01a16497, 01a16443 and 01a1642b stopped on the Claude limit, and the resume pass kept continuing the old roots each time pi-pool
+ * admitted them (00:47Z to 00:51Z), so each wrote a failed turn and the chat got "ended (error) with no report" for work it had moved.
+ */
+export function replacedJob(resume: JobResume, plan: readonly PlanItem[]): { id?: string; name: string; steps: { id: string; job: string; sessionId?: string }[] } | undefined {
+  const name = resume.resumed?.name ?? resumeJobName(resume.job, resume.endedAt);
+  const id = resume.resumed?.id;
+  const items: PlanItem[] = [];
+  const walk = (list: readonly PlanItem[]): void => { for (const item of list) { items.push(item); walk(item.children); } };
+  walk(plan);
+  if (items.some(item => item.job === name || (id !== undefined && item.sessionId === id))) return undefined;
+  const steps = items.flatMap(item => resume.steps.includes(item.id) && item.job !== undefined && item.job !== resume.job
+    ? [{ id: item.id, job: item.job, ...item.sessionId !== undefined ? { sessionId: item.sessionId } : {} }] : []);
+  return steps.length ? { ...id !== undefined ? { id } : {}, name, steps } : undefined;
+}
 
 const SAVED = "Saved state: ";
 /** The line the cleanup puts first in a step's note when it ends the step's job, naming the saved state's path. */

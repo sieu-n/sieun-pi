@@ -15,7 +15,7 @@ import { treeWakes, type Wake } from "./wakes.ts";
 import { withQueuePlaces } from "./chat-turn-queue.ts";
 import { type CheckInMemory, checkInPrecheck, checkInPrecheckText, classCounts, convergenceMisses, endedJobs, endedWithoutReport, finishedJobs, JOB_CLEANUP_EVERY_MS, ROOT_END_EVERY_MS, jobEnd, jobEndText,
   handBackNote, handBackSteps, handBackText, idleRoots, jobReport, lastJobMessages, leftOpenSteps, noReportNotice, openStepLines, openStepsNotice, reportedRoot, retryDue, waitingJobs } from "./chat-checkin.ts";
-import { jobBase, jobBrief, keptCopyNote, resumeBrief, resumedNote, resumeJobName, savedStateNote, sessionBrief, waitText } from "./job-resume.ts";
+import { jobBase, jobBrief, jobModel, keptCopyNote, replacedJob, resumeBrief, resumedNote, resumeJobName, savedStateNote, sessionBrief, sessionModel, waitText } from "./job-resume.ts";
 import { heldByTodo } from "./checkin-end-state.ts";
 import { PoolHeldJobs, resumeChatJobs } from "./chat-resume.ts";
 import { readEndsParked, readQuotaPark, withFailedTurns, withHeldTurns } from "./held-turns.ts";
@@ -250,6 +250,9 @@ export class Chats {
   private readonly heldJobs: PoolHeldJobs;
   private rootsEndedAt = -Infinity;
   private readonly rootsEnded = new Map<string, string | undefined>();
+  /** Roots the cleanup started whose steps now name other workers (`replacedRoots`): no pass resumes or wakes them, and each is archived once idle. */
+  private replaced = new Set<string>();
+  private readonly retired = new Set<string>();
   /** The Prime update the idle-root sweep last held for, so it logs each update once. */
   private rootsHeldFor: string | undefined;
   /** Job threads found gone (`threadGone`) at an activity stamp: never looked at again unless the stamp changes. */
@@ -930,16 +933,22 @@ export class Chats {
     if (cancel) { this.log(`chat ${id.slice(0, 8)}: kept waiting job ${name} as it is: ${cancelWords(cancel)}, so no fresh job takes its steps`); return; }
     try {
       const sessionFile = (await this.summary(id))?.sessionFile;
-      const brief = sessionFile ? await jobBrief(join(artifactsDir(sessionFile), child.id)) : undefined;
-      if (brief === undefined) { this.log(`chat ${id.slice(0, 8)}: kept waiting job ${name}: its brief could not be read`); return; }
+      const childDir = sessionFile ? join(artifactsDir(sessionFile), child.id) : undefined;
+      const brief = childDir ? await jobBrief(childDir) : undefined;
+      if (brief === undefined || childDir === undefined) { this.log(`chat ${id.slice(0, 8)}: kept waiting job ${name}: its brief could not be read`); return; }
       const event = steps.map(waitText).join("; ");
       const owed = steps.filter(step => parkedBy(step) === undefined && !heldByTodo(step, todos));
-      const resume = { chat: id, childId: child.id, job: name, steps: owed.map(step => step.id), event: owed.map(waitText).join("; "), brief, report, endedAt: now };
-      const path = await resumes.store.save({ ...resume, steps: steps.map(step => step.id), event });
+      const model = await jobModel(childDir);
+      const resume = { chat: id, childId: child.id, job: name, steps: owed.map(step => step.id), event: owed.map(waitText).join("; "), brief, report, endedAt: now,
+        ...model ? { model } : {} };
+      const saved = { ...resume, steps: steps.map(step => step.id), event };
+      const path = await resumes.store.save(saved);
       if (await this.deleteJob(id, child, listed, now) !== "deleted") return;
       const live = owed.length ? await this.liveCopy(id, child) : undefined;
-      const fresh = live ?? (owed.length && resumes.restart ? await resumes.restart(id, resumeJobName(name, now), chat => resumeBrief(resume, path, chat, now))
+      const fresh = live ?? (owed.length && resumes.restart ? await resumes.restart(id, resumeJobName(name, now), chat => resumeBrief(resume, path, chat, now), model)
         .catch(error => { this.log(`chat ${id.slice(0, 8)}: resume waiting job ${name}: ${error instanceof Error ? error.message : String(error)}`); return undefined; }) : undefined);
+      if (fresh && !live) await resumes.store.save({ ...saved, resumed: { id: fresh.id, name: fresh.name } })
+        .catch(error => this.log(`chat ${id.slice(0, 8)}: saved state of ${name}: ${error instanceof Error ? error.message : String(error)}`));
       const line = savedStateNote(name, now, path);
       await resumes.applyBoard(id, steps.map(step => {
         const taken = fresh !== undefined && owed.includes(step);
@@ -982,6 +991,54 @@ export class Chats {
       if (why !== undefined) return { id: session, name: childName(other), why };
     }
     return undefined;
+  }
+
+  /**
+   * The roots the cleanup started from a saved state (`parkJob`) whose steps now name another worker of the chat, its own subagent or another
+   * root of it, while no step names the root (`replacedJob`). A step that names a worker below the root itself keeps the root.
+   */
+  private async replacedRoots(chatRows: readonly SessionRow[]): Promise<{ chat: string; id: string; name: string; steps: string[]; by: string[] }[]> {
+    const store = this.source.resumes?.store;
+    if (!store) return [];
+    const found: { chat: string; id: string; name: string; steps: string[]; by: string[] }[] = [];
+    for (const row of chatRows) {
+      const agents = row.agents ?? [];
+      const roots = agents.filter(agent => agent.link === "root" && agent.sessionId !== undefined && !this.chatIds.has(agent.sessionId));
+      if (!roots.length) continue;
+      const board = await this.source.board(row.id).catch(() => null);
+      if (!board) continue;
+      for (const { resume } of await store.list(row.id).catch(() => [])) {
+        const job = replacedJob(resume, board.plan);
+        if (!job) continue;
+        const root = roots.find(agent => job.id !== undefined ? agent.sessionId === job.id : agent.sender === job.name || agent.name === job.name);
+        if (!root) continue;
+        const moved = job.steps.filter(step => step.sessionId !== undefined && step.sessionId !== root.sessionId &&
+          agents.some(agent => agent.sessionId === step.sessionId && (agent.link === "subagent" || agent.link === "root")));
+        if (moved.length) found.push({ chat: row.id, id: root.sessionId!, name: root.name, steps: moved.map(step => step.id), by: moved.map(step => step.job) });
+      }
+    }
+    return found;
+  }
+
+  /**
+   * Archives a root whose steps now name other workers (`replacedRoots`) once it runs no turn, on that root's queue key, so the resume pass
+   * and the failed-turn wake never continue it and its leftovers end. Archived once per serve; an archived one is left as it is.
+   */
+  private async retireReplaced(job: { chat: string; id: string; name: string; steps: string[]; by: string[] }): Promise<void> {
+    if (this.retired.has(job.id)) return;
+    await new Promise<void>(resolve => this.queue(job.id, async () => {
+      try {
+        if ((await this.summary(job.id))?.lifecycle === "archived") { this.retired.add(job.id); return; }
+        if (await this.threads.sessionActive(job.id)) return;
+        await this.threads.archive(job.id, "replaced_job_end");
+        this.retired.add(job.id);
+        const left = await this.leftovers(job.chat, join(ARTIFACTS, job.id), job.id);
+        this.log(`chat ${job.chat.slice(0, 8)}: archived replaced root ${job.name} instead of resuming it: ${job.steps.join(", ")} now name ${[...new Set(job.by)].join(", ")}; ` +
+          `stopped ${left.stopped.map(entry => entry.pid).join(", ") || "no process"}, closed ${left.tabs} Aside tabs${copiesNote(left)}`);
+      } catch (error) {
+        this.log(`chat ${job.chat.slice(0, 8)}: archive replaced root ${job.name}: ${error instanceof Error ? error.message : String(error)}; tried again at the next sweep`);
+      } finally { resolve(); }
+    }));
   }
 
   /**
@@ -1034,14 +1091,18 @@ export class Chats {
     // A pass waiting behind a running one already covers every cut seen since: one run per pass at most stays queued, however many jobs are cut.
     if (this.now() - this.rootsSweptAt >= JOB_CLEANUP_EVERY_MS && !this.passWaits) {
       this.rootsSweptAt = this.now();
-      if (this.source.interrupted) {
+      if (this.source.interrupted || this.source.resumes) {
         const resume = this.source.interrupted;
         const swept = chatRows.filter(row => active.has(row.id));
         this.passWaits = true;
         this.queue("#interrupted", async () => {
           this.passWaits = false;
+          const replaced = await this.replacedRoots(swept);
+          this.replaced = new Set(replaced.map(job => job.id));
+          for (const job of replaced) await this.retireReplaced(job);
+          if (!resume) return;
           const hidden = new Set(await this.mine([...await this.archivedIds()]).catch(() => []));
-          await resumeChatJobs(swept, this.chatIds, resume, line => this.log(line), await this.stepOwners(swept), this.heldJobs, hidden);
+          await resumeChatJobs(swept, this.chatIds, resume, line => this.log(line), await this.stepOwners(swept), this.heldJobs, hidden, this.replaced);
         });
       }
     }
@@ -1053,7 +1114,7 @@ export class Chats {
       if (!active.has(row.id)) continue;
       for (const agent of row.agents ?? []) {
         const threadId = agent.sessionId;
-        if (!threadId || (agent.link !== "subagent" && agent.link !== "root") || this.chatIds.has(threadId) || threads.has(threadId)) continue;
+        if (!threadId || (agent.link !== "subagent" && agent.link !== "root") || this.chatIds.has(threadId) || threads.has(threadId) || this.replaced.has(threadId)) continue;
         threads.add(threadId);
         const stamp = agent.lastActivityAt ?? "";
         if (agent.state === "working" || now - (Date.parse(stamp) || 0) > JOB_WAKE_WINDOW_MS) { this.jobQuiet.delete(threadId); this.jobWakes.delete(threadId); continue; }
@@ -1152,8 +1213,9 @@ export class Chats {
           const brief = sessionFile ? await sessionBrief(sessionFile) : undefined;
           if (brief === undefined) { this.log(`chat ${row.id.slice(0, 8)}: kept root ${agent.name}: its brief could not be read`); return; }
           const quiet = Math.round((now - Date.parse(agent.lastActivityAt!)) / 60_000);
+          const model = sessionFile ? await sessionModel(sessionFile) : undefined;
           const path = await resumes.store.save({ chat: row.id, childId: id, job: agent.sender, steps: [], event: "no open step names it", brief,
-            report: jobReport(messages, agent.sender), endedAt: now });
+            report: jobReport(messages, agent.sender), endedAt: now, ...model ? { model } : {} });
           await this.threads.archive(id, "idle_root_end");
           const left = await this.leftovers(row.id, join(ARTIFACTS, id), id);
           this.log(`chat ${row.id.slice(0, 8)}: archived idle root ${agent.name} (quiet ${quiet} min); saved state ${path}; stopped ${left.stopped.map(entry => entry.pid).join(", ") || "no process"}, closed ${left.tabs} Aside tabs${copiesNote(left)}`);

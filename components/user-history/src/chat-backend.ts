@@ -54,7 +54,7 @@ import { ThreadOrigins } from "./thread-origin.ts";
 import { isThinkingLevel, type ChatDefaults, type ChatDefaultsInput } from "./shared/types.ts";
 import { grafanaPrometheus, Usage } from "./usage/lgtm.ts";
 import { cacheWatch, pendingWakes, readRunState, runStamp, startWakes, waking } from "./wakes.ts";
-import { BRIEFS_DIR, primeWorkers, startBriefKeeper, unstartedJobs } from "./brief-keeper.ts";
+import { BRIEFS_DIR, primeWorkers, recordModel, startBriefKeeper, unstartedJobs } from "./brief-keeper.ts";
 import { readOwnersFor, startAlertBridge } from "./alert-bridge.ts";
 import { startBridgeWatch } from "./alert-bridge-health.ts";
 import { startAlertPoll } from "./alert-poll.ts";
@@ -247,10 +247,10 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       deletedLeftovers: chat => jobEnds.deleted(chat),
       waking: session => waking(join(dataDir, "wakes"), session), relayed: relays, updating: () => primeUpdateRunning(agentDir, socketPath), wakes: now => pendingWakes(join(dataDir, "wakes"), now),
       resumes: { store: jobResumes(join(dataDir, "job-resumes")), applyBoard: (id, ops) => boards.apply(id, ops, "agent"),
-        restart: async (chatId, name, brief) => {
+        restart: async (chatId, name, brief, model) => {
           const chat = await dutyJobs.chat(chatId);
           if (!chat) throw new Error(`no chat ${chatId.slice(0, 8)}`);
-          return await dutyJobs.start(chat, name, brief(chat.name));
+          return await dutyJobs.start(chat, name, brief(chat.name), undefined, model);
         } },
       // resume_paused.py sends its continues to the live daemon itself, so a replay serve only reads the cut jobs.
       interrupted: replay ? async () => { await cutJobs(dataDir, [...await chats.ids()], ARTIFACTS); return null; } : async (isJob, owners) => interruptedRuns.resumeJobs(isJob, id => threads.reopenFailed(id), owners, cut => writeResumePending(dataDir, cut, Date.now()),
@@ -345,7 +345,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     restart: async (record, text) => {
       const chat = await dutyJobs.chat(record.root);
       if (!chat) throw new Error(`no chat ${record.root.slice(0, 8)}`);
-      return (await dutyJobs.start(chat, record.name || record.id, text(chat.name))).id;
+      return (await dutyJobs.start(chat, record.name || record.id, text(chat.name), undefined, recordModel(record))).id;
     } });
   const grafanaConfig = join(dataDir, "grafana-alerts.json");
   const statusFile = join(homedir(), ".cache/virev/alert-bridge-status.json");

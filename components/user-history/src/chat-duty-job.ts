@@ -14,7 +14,8 @@ import { CUT_TAIL_BYTES, tailLines } from "./cut-end.ts";
 import { lastTurnError } from "./held-turns.ts";
 import { dutyLink } from "./shared/duty-fixes.ts";
 import type { MetricStreak } from "./shared/duty-streak.ts";
-import type { SessionRow, ThreadSchedule } from "./shared/types.ts";
+import type { JobModel } from "./job-resume.ts";
+import type { SessionRow, ThinkingLevel, ThreadSchedule } from "./shared/types.ts";
 import { fileLines } from "./file-lines.ts";
 
 /**
@@ -53,8 +54,9 @@ export interface DutyJobHost {
   /**
    * Starts the job: a new root session named `name` in the chat's folder, registered as the chat's job, with `brief` as its first message.
    * `since` is when the run started: a session of the job's name made since then is this run's own, from a create that timed out before a restart.
+   * `model` is the model and thinking level the session starts on; absent, the daemon's default.
    */
-  start(chat: DutyChat, name: string, brief: string, since?: number): Promise<DutyJobRef>;
+  start(chat: DutyChat, name: string, brief: string, since?: number, model?: JobModel): Promise<DutyJobRef>;
   /**
    * Drops a finished duty job from the registry, so the chat's Agents card lists only the current one, and queues its archive
    * (src/chat-archive-queue.ts): a slow daemon never holds up the next start.
@@ -333,7 +335,7 @@ export function dutyJobBrief({ duty, chat, job, at, measure, findings, focus = [
 
 /** The parts of the thread hub a duty job host uses. */
 export interface DutyJobThreads {
-  create(input: { cwd: string; name: string }): Promise<{ id: string }>;
+  create(input: { cwd: string; name: string; provider?: string; modelId?: string; thinkingLevel?: ThinkingLevel }): Promise<{ id: string }>;
   prompt(id: string, input: { message: string; images: []; mode: "steer" }): Promise<void>;
 }
 
@@ -442,7 +444,7 @@ export function dutyJobHost(input: { threads: DutyJobThreads; archives: { add(jo
     }
     return undefined;
   };
-  const createOrAdopt = async (chat: DutyChat, first: string, runAt?: number): Promise<{ id: string; name: string }> => {
+  const createOrAdopt = async (chat: DutyChat, first: string, runAt?: number, model?: JobModel): Promise<{ id: string; name: string }> => {
     let cause = "";
     // A session made since the run started is its own. On 10-17 slack green guy's 22:11:50Z check-in run made "check-in slack green guy 07:11"
     // with a create that timed out, and each of the 3 service restarts after it counted only sessions made since its own attempt, found the name
@@ -455,7 +457,8 @@ export function dutyJobHost(input: { threads: DutyJobThreads; archives: { add(jo
     let taken = 0;
     for (let tries = 1; tries <= CREATE_TRIES;) {
       const name = taken === 0 ? first : taken === 1 ? dated : `${dated} (${taken})`;
-      try { return { id: (await input.threads.create({ cwd: chat.cwd, name })).id, name }; }
+      try { return { id: (await input.threads.create({ cwd: chat.cwd, name, ...model ? { provider: model.provider, modelId: model.modelId } : {},
+        ...model?.thinkingLevel ? { thinkingLevel: model.thinkingLevel } : {} })).id, name }; }
       catch (error) { cause = reason(error); }
       const refused = NAME_TAKEN.test(cause);
       const found = await find(chat, name, since, refused ? [0] : waits);
@@ -488,8 +491,8 @@ export function dutyJobHost(input: { threads: DutyJobThreads; archives: { add(jo
       const scheduled = input.schedules ? await input.schedules().catch(() => null) : new Map<string, ThreadSchedule>();
       return scheduled === null || await input.treeWait(job.id, scheduled).catch(() => "unread") !== null;
     },
-    start: (chat, planned, brief, since) => serial(async () => {
-      const { id, name } = await createOrAdopt(chat, planned, since);
+    start: (chat, planned, brief, since, model) => serial(async () => {
+      const { id, name } = await createOrAdopt(chat, planned, since, model);
       try {
         await input.registry.add([id], chat.name, chat.id);
         await input.started?.(id, chat, name);

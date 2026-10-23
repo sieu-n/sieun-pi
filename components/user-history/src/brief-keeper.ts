@@ -4,6 +4,8 @@ import type { AgentKind } from "./outbox.ts";
 import { zTime } from "./checkin-goals.ts";
 import type { JobFact } from "./checkin-steps.ts";
 import { fileLines } from "./file-lines.ts";
+import type { JobModel } from "./job-resume.ts";
+import { isThinkingLevel, type ThinkingLevel } from "./shared/types.ts";
 
 /**
  * The brief of every job a chat or its jobs start, kept until the job's session file shows it. Prime holds a new session's first prompt and
@@ -45,6 +47,9 @@ export interface BriefRecord {
   sessionDir?: string;
   /** A root's session file, from rlm.create_session. */
   sessionFile?: string;
+  /** The spawn's `model` selector (`provider/model`) and `thinking`, when it named them; a root the keeper starts in its place runs on them. */
+  model?: string;
+  thinking?: ThinkingLevel;
   /** The keeper's last send: when, and the worker of the tree it went to ("" when none ran then). */
   sent?: { at: number; worker: string };
 }
@@ -57,7 +62,8 @@ export function parseBriefRecord(value: unknown): BriefRecord | null {
   if (typeof value.prompt !== "string" || typeof value.at !== "number" || !Number.isFinite(value.at) || typeof value.root !== "string" || !ID.test(value.root)) return null;
   const sent = isRecord(value.sent) && typeof value.sent.at === "number" && typeof value.sent.worker === "string" ? { sent: { at: value.sent.at, worker: value.sent.worker } } : {};
   return { kind: value.kind, id: value.id, name: typeof value.name === "string" ? value.name : "", prompt: value.prompt, at: value.at, root: value.root,
-    ...(typeof value.sessionDir === "string" ? { sessionDir: value.sessionDir } : {}), ...(typeof value.sessionFile === "string" ? { sessionFile: value.sessionFile } : {}), ...sent };
+    ...(typeof value.sessionDir === "string" ? { sessionDir: value.sessionDir } : {}), ...(typeof value.sessionFile === "string" ? { sessionFile: value.sessionFile } : {}),
+    ...(typeof value.model === "string" && value.model.includes("/") ? { model: value.model } : {}), ...(isThinkingLevel(value.thinking) ? { thinking: value.thinking } : {}), ...sent };
 }
 
 /**
@@ -196,13 +202,23 @@ export function primeWorkers(workersDir: string): (root: string, session: string
   };
 }
 
+/** The model and thinking a record's spawn named (`BriefRecord.model`, `thinking`); undefined when it named no model. */
+export function recordModel(record: Pick<BriefRecord, "model" | "thinking">): JobModel | undefined {
+  const at = record.model?.indexOf("/") ?? -1;
+  if (at <= 0 || at === record.model!.length - 1) return undefined;
+  return { provider: record.model!.slice(0, at), modelId: record.model!.slice(at + 1), ...record.thinking ? { thinkingLevel: record.thinking } : {} };
+}
+
 export interface BriefDeps {
   dir: string;
   /** Hands the session the text on disk; the outbox starts the tree `root` when the daemon does not find the session (wakes.ts). */
   deliver: (session: string, text: string, root?: string, kind?: AgentKind) => Promise<void>;
   /** The live worker of the tree `root` and whether it ran `session` (`primeWorkers`); undefined when none runs. */
   worker: (root: string, session: string) => Promise<TreeWorker | undefined>;
-  /** Starts a root job registered under the chat `record.root` with the brief `restartText` makes (chat-duty-job.ts start); its session id. */
+  /**
+   * Starts a root job registered under the chat `record.root` with the brief `restartText` makes (chat-duty-job.ts start), on the spawn's
+   * model (`recordModel`); its session id.
+   */
   restart?: (record: BriefRecord, text: (chat: string) => string) => Promise<string>;
   log: (line: string) => void;
   now?: () => number;
