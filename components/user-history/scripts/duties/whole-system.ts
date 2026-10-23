@@ -26,6 +26,7 @@ import { CHECK_IN_DUTY_ID, type DutyRunRecord, type FlaggedSlice, type PrecheckO
 import { effectiveRun, metricStreaks, missStreak, newestReading } from "../../src/shared/duty-streak.ts";
 import { missedKeys, parseDutyLink } from "../../src/shared/duty-fixes.ts";
 import { dutyHold, withLinkedBoards } from "../../src/shared/todo-hold.ts";
+import { readsTheShare } from "./duty-fleet.ts";
 
 /** One box's numbers in a watch line: the box that wrote the line, then each other box it read through that box's relay (HostWatchLine). */
 export interface HostView { name: string; usable: HostUsable | null; workers: number; workerGb: number; top: readonly WorkerLine[]; serviceGb?: number; agents?: AgentLine; error?: string;
@@ -673,7 +674,7 @@ export interface Inputs {
   /** Chat head queue waits and parks overtaken by later trees in the window (`readSmoothness`); absent, neither number is written. */
   smooth?: Smoothness;
   /** Every chat's duty runs, newest first, with its active duty ids (the check-in included unless paused), and whether its check-in is paused. */
-  chats: readonly { id: string; name: string; duties: readonly { id: string; name: string }[]; runs: readonly DutyRunRecord[]; everyMs?: number; paused?: boolean }[];
+  chats: readonly { id: string; name: string; duties: readonly { id: string; name: string; metrics?: readonly { key: string }[] }[]; runs: readonly DutyRunRecord[]; everyMs?: number; paused?: boolean }[];
   /** Jobs in live chats whose last turn was cut and that got no input since (`cutEnd`). */
   cut?: readonly CutJob[];
   /** The cut jobs whose continue pi-pool held until its tree's accounts served again (`poolHeldCuts`). */
@@ -875,6 +876,10 @@ export function planCounts(input: PlanInputs): { stuck: StuckSteps[]; redDuties:
   const live = new Set([...input.waking ?? [], ...input.poolWaiting ?? []]);
   const lagging: LaggingDuty[] = [];
   const redDuties = input.chats.flatMap(chat => chat.duties.flatMap(duty => {
+    // A duty that reads the fleet's share (d9) misses only as the other duties miss, and this count judges each of those on its own line, as
+    // `readsTheShare` keeps it out of the share. Counted in, it needed a standing fix step on its own roll-up, which is a zombie step: d9 named
+    // itself as a red duty with no live fix in 7 of its 63 detail files from 10-20 16:40Z to 10-23 19:40Z, the last two at 18:41Z and 19:40Z.
+    if (duty.metrics && readsTheShare({ metrics: duty.metrics })) return [];
     const own = chat.runs.filter(run => run.duty === duty.id);
     // The duty is judged on its newest reading by the time it was taken (`newestReading`), as the duty runner's push and the fleet's green
     // share judge it, so a skipped run older than another run's after-job measure no longer reads a green duty as red.
@@ -1435,7 +1440,7 @@ export async function planInputs(dataDir: string, now: number, names: ReadonlyMa
     const paused = activePause(await settings.get(id), now) !== null;
     if (paused) pausedChats.add(id);
     chats.push({ id, name: names.get(id) ?? id.slice(0, 8), runs: await store.runs(id), everyMs: (await settings.get(id)).everyMs, paused,
-      duties: [...paused ? [] : [{ id: CHECK_IN_DUTY_ID, name: "Check-in" }], ...file.duties.filter(duty => duty.status === "active").map(duty => ({ id: duty.id, name: duty.name }))] });
+      duties: [...paused ? [] : [{ id: CHECK_IN_DUTY_ID, name: "Check-in" }], ...file.duties.filter(duty => duty.status === "active").map(duty => ({ id: duty.id, name: duty.name, metrics: duty.metrics }))] });
   }
   const boardStore = new BoardStore(dataDir);
   const boards = new Map(await Promise.all(ids.map(async id => [id, await boardStore.read(id).catch(() => null)] as const)));
