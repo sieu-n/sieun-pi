@@ -322,3 +322,15 @@ test("on a turn the owner did not start, an answer that says its page is still b
   assert.equal(tellOwner(interim, { ...turn, resent: new Set([interim.text]) }).kind, "sent", "the very same text again goes out");
   assert.equal(tellOwner(interim, { ...turn, owner: true }).kind, "sent", "his own turn is never held");
 });
+
+test("on a turn the owner did not start, an answer that says its fix is still underway is refused once as progress", () => {
+  // 10-23 04:46Z: AI harness sent the cause of the Usage chart hang on a child-failed wake, ending "the fix is underway (p932)".
+  const turn = tellTurn([...settled, job("the usage chart job failed", "07:00:00")]);
+  const cause = { text: "The Usage chart hangs because it waits on the model table, which now takes 15 s for a day. The fix is underway (p932).",
+    why: "answer", about: "Usage charts slow to render" };
+  const refused = tellOwner(cause, turn);
+  assert.equal(refused.kind, "refused");
+  assert.match(refused.text, /reports work still going \("fix is underway"\)/);
+  assert.equal(tellOwner(cause, { ...turn, resent: new Set([cause.text]) }).kind, "sent", "the very same text again goes out");
+  assert.equal(tellOwner(cause, { ...turn, owner: true }).kind, "sent", "his own turn is never held");
+});
