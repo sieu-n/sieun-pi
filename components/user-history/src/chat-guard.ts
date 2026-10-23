@@ -1,4 +1,8 @@
 import { randomBytes } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
+import { homedir, hostname } from "node:os";
+import { join } from "node:path";
+import { WIKI_CONTENT_HOME, wikiLinkPath } from "./shared/artifact-link.ts";
 import { chatLines, CHECK_IN_PREFIX, messageIdNote, ownerMessageId, serverNote, TELL_OWNER_HELD, TELL_OWNER_TOOL, TELL_WHY, type TellWhy, turnStarter } from "./shared/chat-feed.ts";
 import { messageText } from "./shared/turns.ts";
 import type { ThreadMessage } from "./shared/types.ts";
@@ -269,6 +273,32 @@ const UNLOOKED_MARK = "Not sent, you have not opened a screenshot of this screen
  * the 25 after c118.
  */
 const UI_HANDOFF = /\b(?:localhost|127\.0\.0\.1|[\w-]+(?:\.[\w-]+)+):1?5180\b|!\[[^\]]*\]\([^)\s]+\.(?:png|jpe?g|webp|gif)\)/iu;
+const WIKI_LINK_MARK = "Not sent, a wiki: link in it opens no page";
+/** Every `wiki:` link a text holds as written, with trailing sentence punctuation left out (markdown.ts reads bare targets the same way). */
+const WIKI_TOKEN = /(?<![\w-])wiki:[^\s<>()[\]`"'*]+/g;
+export const wikiLinks = (text: string): string[] =>
+  [...text.matchAll(WIKI_TOKEN)].map(match => "wiki:" + match[0].slice(5).replace(/[.,;:!?]+$/, "")).filter(link => link !== "wiki:");
+/**
+ * Whether a wiki page exists, read from the wiki's content folder when this box holds the wiki role in hosts.json, the folder the wiki serves
+ * pages from. Null on any other box, where the folder can lag the wiki's, so no link is checked there.
+ */
+export function localWikiPages(file = process.env.SIEUN_PI_HOSTS ?? join(homedir(), ".config/sieun-pi/hosts.json")): ((path: string) => boolean) | null {
+  const short = (name: string) => name.split(".")[0]!.toLowerCase();
+  try {
+    const hosts = (JSON.parse(readFileSync(file, "utf8")) as { hosts?: { hostname?: string; roles?: { wiki?: unknown } }[] }).hosts ?? [];
+    if (!hosts.some(host => host.roles?.wiki && typeof host.hostname === "string" && short(host.hostname) === short(hostname()))) return null;
+  } catch { return null; }
+  const content = join(homedir(), WIKI_CONTENT_HOME.slice(2));
+  return path => existsSync(join(content, path));
+}
+/** Each `wiki:` link in the text that opens no page, with why: no page path in it, or no such page on the wiki. */
+export function brokenWikiLinks(text: string, pageExists: ((path: string) => boolean) | null): string[] {
+  return wikiLinks(text).flatMap(link => {
+    const path = wikiLinkPath(link.slice(5));
+    if (path === null) return [`${link} (no page path in it)`];
+    return pageExists && !pageExists(path) ? [`${link} (no page ${path} on the wiki)`] : [];
+  });
+}
 /** The todo ids a text names, like t4. */
 const todoIds = (text: string): string[] => [...text.matchAll(/\bt(\d+)\b/g)].map(match => `t${match[1]}`);
 
@@ -288,7 +318,7 @@ export function tellTurn(messages: readonly ThreadMessage[]): TellTurn {
     }
     if (message.role === "user" || message.role === "custom") looked = false;
     if (message.role === "toolResult" && message.content.some(part => part.type === "image")) looked = true;
-    if (message.role === "toolResult" && message.toolName === TELL_OWNER_TOOL && [SHOP_TALK_MARK, LONG_REPLY_MARK, REPEAT_MARK, REASK_MARK, UNLOOKED_MARK, INCIDENT_MARK, SAME_ASK_MARK, PROGRESS_MARK, NEEDLESS_OK_MARK, WITHDRAW_MARK].some(mark => messageText(message).startsWith(mark))) {
+    if (message.role === "toolResult" && message.toolName === TELL_OWNER_TOOL && [SHOP_TALK_MARK, LONG_REPLY_MARK, REPEAT_MARK, REASK_MARK, UNLOOKED_MARK, INCIDENT_MARK, SAME_ASK_MARK, PROGRESS_MARK, NEEDLESS_OK_MARK, WITHDRAW_MARK, WIKI_LINK_MARK].some(mark => messageText(message).startsWith(mark))) {
       const text = told.get(message.toolCallId);
       if (text) resent.add(text);
     }
@@ -322,9 +352,11 @@ export function tellTurn(messages: readonly ThreadMessage[]): TellTurn {
  * report is refused once the same way, so the chat opens the shots and compares them with the accepted Staging app first (c118). A decision or
  * blocker that asks what another chat's open For you todo already asks (`sameAsk`, `turn.others`) is refused once the same way, and so is
  * a text that reports work still going (`PROGRESS`), a text that takes back the chat's own ask (`WITHDRAW`), and a decision or blocker that
- * asks an ok for work no owner rule keeps for him (`NEEDLESS_OK`).
+ * asks an ok for work no owner rule keeps for him (`NEEDLESS_OK`). A text it would send with a `wiki:` link that opens no page (`brokenWikiLinks`)
+ * is refused once the same way, with the form that works, since on 10-22 two links went out as `wiki:https://...:5176/page/...` and the owner
+ * answered "often links to wrong page." on 10-23.
  */
-export function tellOwner(input: TellInput, turn: TellTurn, now = Date.now()): { kind: "sent" | "refused" | "held"; text: string } {
+export function tellOwner(input: TellInput, turn: TellTurn, now = Date.now(), pageExists = localWikiPages()): { kind: "sent" | "refused" | "held"; text: string } {
   const told = typeof input.text === "string" ? input.text.trim() : "";
   if (!told) return { kind: "refused", text: "nothing to tell: give text" };
   if (turn.byOwner === false && (turn.tells ?? 0) > 1) return { kind: "refused", text: `${turn.tells} tell_owner calls in one step on a turn ` +
@@ -359,6 +391,10 @@ export function tellOwner(input: TellInput, turn: TellTurn, now = Date.now()): {
       "list (an outside send, a 5180 design into the app, an accepted variant, the board layout, a thread host move) and an exception to his own " +
       "rule wait for him; if this is one, send the very same text again and it goes out (c117)." };
   if (turn.owner || answers || declared) {
+    const broken = turn.resent?.has(told) ? [] : brokenWikiLinks(told, pageExists);
+    if (broken.length) return { kind: "refused", text: `${WIKI_LINK_MARK}: ${broken.join(", ")}. Write each as wiki:<path under the wiki's ` +
+      "content folder>, such as wiki:sessions/2026/10/23/0132-harness-load-discussion/prime-under-load.html, for a page that is there, and call " +
+      "tell_owner again. Sending the very same text again sends it as it is." };
     const talk = turn.resent?.has(told) ? [] : shopTalk(told, turn.ownerText);
     if (talk.length) return { kind: "refused", text: `${SHOP_TALK_MARK} ${talk.join(", ")}. Write it the way a person texts in Slack, with what ` +
       "he would see or can do now in plain words, and call tell_owner again. Sending the very same text again sends it as it is (c18, c98)." };
