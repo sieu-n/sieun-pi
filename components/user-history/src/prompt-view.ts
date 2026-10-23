@@ -446,7 +446,7 @@ const SYSTEM_LABELS: Record<string, Source> = {
   mcp: { kind: "system", label: "MCP connections", source: "Prime: enabled MCP servers" },
   skills: { kind: "skills", label: "Skills list", source: "Prime formatSkillsForPrompt: installed skills with descriptions" },
   harness: { kind: "harness", label: "Harness state", source: "Prime harness" },
-  appended: { kind: "instructions", label: "Appended instructions", source: "appendSystemPrompt or a before_agent_start hook (the user-history job line)" },
+  appended: { kind: "instructions", label: "Appended instructions", source: "appendSystemPrompt or another extension's before_agent_start hook" },
 };
 
 /**

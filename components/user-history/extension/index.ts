@@ -311,16 +311,15 @@ export default function historyExtension(pi: ExtensionAPI): void {
     if (!marked) return;
     try { pinBrief(); boardTool(CHAT_BRIEF); } catch { /* the pinned brief until the next start */ }
   });
-  pi.on("before_agent_start", async (event, ctx) => {
+  // A root whose name lands after session_start registers job_reply and poteto_mode here. Prime rebuilds the base prompt with their guidelines
+  // when they register and sends that base, so this hook returns nothing: on 10-23 an appended copy of the two lines made each such job's
+  // first turn differ from its second, which wrote its whole prompt cache again (106 of 702 job prompts captured on us-metal02 held the copy).
+  pi.on("before_agent_start", async (_event, ctx) => {
     if (job || rootLooked || marked || depthOf(ctx.sessionManager.getHeader()) !== 0) return undefined;
     rootLooked = true;
     await findJob(ctx).catch(() => {});
-    if (!job) return undefined;
-    const guideline = jobReplyGuideline(job, ctx.sessionManager.getSessionId());
-    let line: string | null = null;
-    try { line = registerPersona(); } catch { /* no line */ }
-    const add = [guideline, line].filter((line): line is string => line !== null && !event.systemPrompt.includes(line));
-    return add.length ? { systemPrompt: `${event.systemPrompt}\n\n${add.join("\n")}` } : undefined;
+    if (job) try { registerPersona(); } catch { /* no line */ }
+    return undefined;
   });
   // A session of a clean-room trial chat (the chat, a job filed under it, or a subagent below either) keeps its global harness writes in the
   // trial's own store (src/trial-harness.ts). The top session is read once; the root's own name and the job registry again at each cell until
