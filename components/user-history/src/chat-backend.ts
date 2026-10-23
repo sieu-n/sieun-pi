@@ -216,7 +216,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   };
   const dutyJobs = dutyJobHost({ threads, archives, rows: () => catalog.rows(), refresh: () => catalog.refresh(), registry,
     saved: async id => { const file = await sessionFileOf(id, agentDir); return file ? savedChat(file) : null; }, sessionFile: id => sessionFileOf(id, agentDir),
-    schedules: () => catalog.schedulesNow(), held: () => chats.poolHeldSessions(),
+    schedules: () => catalog.schedulesNow(), held: () => chats.poolHeldSessions(), queue: hostsReading,
     treeWait: (id, scheduled) => treeWait(id, { sessions: tree => catalog.tree(tree), queue: workerQueue, relay: sessions => agentOutbox.outbox.pending(entry => sessions.has(entry.threadId) || (entry.root !== undefined && sessions.has(entry.root))),
       wakes: () => pendingWakes(join(dataDir, "wakes"), Date.now()) }, scheduled),
     board: id => join(boards.dir, id + ".json"), log: dutyLog,

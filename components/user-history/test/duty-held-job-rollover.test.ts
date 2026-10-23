@@ -118,7 +118,11 @@ test("no duty rollover or stuck-job replacement archives a job pi-pool holds or 
     run.pool.quota.clear();
     run.clock.now = Date.parse("2026-10-22T07:26:10Z");
     await run.all();
-    assert.deepEqual(run.retired.slice(3).sort(), [SOL.id, MAIN.id].sort(), "a check-in still working past its stuck limit is replaced once nothing holds it");
+    assert.equal(run.retired.length, 3, "a check-in's stuck limit counts from the last run that kept it, 07:11:10Z");
+
+    run.clock.now = Date.parse("2026-10-22T09:12:10Z");
+    await run.all();
+    assert.ok([SOL.id, MAIN.id].every(id => run.retired.includes(id)), "a check-in still working past its stuck limit is replaced once nothing holds it");
     assert.ok(run.logs.some(line => line.includes("(replaced stuck job check-in gpt sol (metal 02) 13:42, working")), run.logs.join("\n"));
   } finally { run.duties.close(); await rm(dir, { recursive: true, force: true }); }
 });

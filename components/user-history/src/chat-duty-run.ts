@@ -935,8 +935,8 @@ export class Duties {
 
   /**
    * The duty's last job as a run for `slot` finds it: null when a run already started a job for the slot, a skip while the last job is kept
-   * (`kept`) or still works and has not worked past `stuckAfterMs(schedule)` since its run started, else the job to retire, with a note when it
-   * was stuck.
+   * (`kept`) or still works and has not worked past `stuckAfterMs(schedule)` since its run started or a run last found it kept (`keptAt`), else
+   * the job to retire, with a note when it was stuck.
    */
   private async previous(chatId: string, dutyId: string, schedule: DutySchedule, slot: number): Promise<Previous> {
     const runs = (await this.store.runs(chatId)).filter(run => run.duty === dutyId);
@@ -945,9 +945,12 @@ export class Duties {
     const last = started?.job;
     if (!started || !last) return {};
     const kept = await this.kept(last);
-    if (kept) return { skipped: `${STILL_WORKING} (job ${last.name} ${kept})`, held: { job: last, why: kept } };
+    if (kept) {
+      await this.store.updateRun(chatId, dutyId, started.at, record => { record.keptAt = this.now(); }).catch(error => this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: keptAt of ${last.name}: ${message(error)}`));
+      return { skipped: `${STILL_WORKING} (job ${last.name} ${kept})`, held: { job: last, why: kept } };
+    }
     if (!(await this.host.jobs.working(last))) return { last, lastRun: started };
-    const workingMs = this.now() - started.at;
+    const workingMs = this.now() - Math.max(started.at, started.keptAt ?? 0);
     if (workingMs <= stuckAfterMs(schedule)) return { skipped: `${STILL_WORKING} (job ${last.name})`, working: last };
     return { last, lastRun: started, replaced: ` (replaced stuck job ${last.name}, working ${Math.round(workingMs / 60_000)} min)` };
   }

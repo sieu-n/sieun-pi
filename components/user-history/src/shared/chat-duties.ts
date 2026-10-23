@@ -135,6 +135,11 @@ export interface DutyRunRecord {
   cut?: DutyCut;
   /** On a rerun (trigger `rerun`), the `at` of the cut run it reruns: the record that the cut run was rerun. */
   rerunOf?: number;
+  /**
+   * When a later run last found this run's job kept (`DutyJobHost.kept`, a Prime update): the stuck limit counts from it, so a job that waited
+   * for pi-pool or a quota resume gets a whole limit of work once it runs.
+   */
+  keptAt?: number;
 }
 /**
  * How a duty job was cut: its last turn failed on the model call, on a pi-pool wait or a provider error, and nothing came after it

@@ -15,7 +15,7 @@ import { lastTurnError } from "./held-turns.ts";
 import { dutyLink } from "./shared/duty-fixes.ts";
 import type { MetricStreak } from "./shared/duty-streak.ts";
 import type { JobModel } from "./job-resume.ts";
-import type { SessionRow, ThinkingLevel, ThreadSchedule } from "./shared/types.ts";
+import type { AgentQueueReading, SessionRow, ThinkingLevel, ThreadSchedule } from "./shared/types.ts";
 import { fileLines } from "./file-lines.ts";
 
 /**
@@ -77,9 +77,9 @@ export interface DutyJobHost {
    */
   cut?(job: DutyJobRef): Promise<DutyCut | null>;
   /**
-   * Why a later run must keep the job up for now, or null: the job waits in pi-pool for its slot (the chat's revive continues it then), or the
-   * daemon holds a scheduled job for it, such as the quota-resume of a session parked on a provider limit. A gone or archived job is never kept,
-   * and a failed read rejects. A host without it (test fakes) keeps no job.
+   * Why a later run must keep the job up for now, or null: the job waits in pi-pool for its slot (the chat's revive continues it then), its
+   * tree waits in pi-pool's turn queue (`turnQueueWait`), or the daemon holds a scheduled job for it, such as the quota-resume of a session
+   * parked on a provider limit. A gone or archived job is never kept, and a failed schedule read rejects. A host without it (test fakes) keeps no job.
    */
   kept?(job: DutyJobRef): Promise<string | null>;
   /** Sends a working job a message into its current turn (a steer); a host without it (test fakes) hands nothing to a working job. */
@@ -364,6 +364,17 @@ export const archiveDutyJob = (threads: { archive(id: string, by: ArchiveBy): Pr
 /** Why a job the chat's revive holds for pi-pool stays up (`DutyJobHost.kept`). */
 const POOL_HELD = "waits on pi-pool for its slot";
 
+/**
+ * Why the tree rooted at `tree` waits in pi-pool's turn queue, or null: a run of the tree is queued and none of its runs holds a working slot.
+ * From 10-21 17:00Z to 10-23 08:44Z the runner replaced 160 duty jobs as stuck, 31 of them while their turn sat in this queue and 123 while
+ * pi-pool held them for an account (4457a61d keeps those), and 149 had not worked 5 s; each new job asked again at the back of the line.
+ */
+export function turnQueueWait(reading: Pick<AgentQueueReading, "working" | "queued">, tree: string): string | null {
+  if (reading.working.some(entry => entry.tree === tree)) return null;
+  const place = reading.queued.filter(entry => entry.tree === tree).sort((a, b) => a.position - b.position)[0];
+  return place ? `waits ${place.position} of ${place.total} in pi-pool's turn queue` : null;
+}
+
 /** The waits before each look for a session whose create failed (a timeout, a lost client): about 2 min in all. */
 export const DUTY_LOOKUP_WAITS_MS: readonly number[] = [0, 10_000, 20_000, 30_000, 60_000];
 /**
@@ -439,6 +450,8 @@ export function dutyJobHost(input: { threads: DutyJobThreads; archives: { add(jo
    * of d5, d4 and d6 retired 3 cut jobs pi-pool held since 06:32:30Z to 06:37Z, and 2 check-ins replaced their quota-parked jobs as stuck.
    */
   held?: () => ReadonlySet<string>;
+  /** Every box's turn queue (`hostsQueueRead`), so `kept` keeps a job whose tree waits in it (`turnQueueWait`); a failed read keeps nothing. */
+  queue?: () => Promise<Pick<AgentQueueReading, "working" | "queued">>;
   refresh?: () => Promise<void>; lookupWaitsMs?: readonly number[]; sleep?: (ms: number) => Promise<void>; log?: (line: string) => void; now?: () => number }): DutyJobHost {
   const row = async (id: string) => (await input.rows()).find(candidate => candidate.id === id);
   const waits = input.lookupWaitsMs ?? DUTY_LOOKUP_WAITS_MS;
@@ -570,6 +583,8 @@ export function dutyJobHost(input: { threads: DutyJobThreads; archives: { add(jo
       const found = await row(job.id);
       if (!found || found.archived) return null;
       if (input.held?.().has(job.id)) return POOL_HELD;
+      const queued = input.queue ? await input.queue().then(reading => turnQueueWait(reading, job.id), () => null) : null;
+      if (queued) return queued;
       const schedule = input.schedules ? (await input.schedules()).get(job.id) : undefined;
       return schedule ? `has ${schedule.status === "active" ? "an active" : "a paused"} scheduled job${schedule.label ? ` (${schedule.label})` : ""}` : null;
     },
