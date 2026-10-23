@@ -102,8 +102,10 @@ export interface RetryState { attempt: number; maxAttempts: number; delayMs: num
  */
 export type PlanStatus = "todo" | "doing" | "done" | "blocked" | "dropped";
 /**
- * `waitUntil` (an ISO date-time) and `waitFor` (a short text naming an event or a thread) mark a step that waits on purpose: the check-in
- * counts it `waiting` until that time, or for STEP_STALE_MS of no progress, then `due` or `stale-chase` (`stepClass` in src/checkin-steps.ts).
+ * `waitUntil` (an ISO date-time) and `waitFor` (a short text naming an event or a thread) mark a step that waits on purpose: the check-in's
+ * step class counts it `waiting` until that time, or for STEP_STALE_MS of no progress, then `due` or `stale-chase` (`stepClass` in
+ * src/checkin-steps.ts), while its stuck count reads it stuck at once unless a live job, a wake, a queued turn or a For you todo moves it
+ * (`endState` in src/checkin-end-state.ts).
  */
 export interface PlanItem {
   id: string; text: string; status: PlanStatus; job?: string; note?: string; waitUntil?: string; waitFor?: string;

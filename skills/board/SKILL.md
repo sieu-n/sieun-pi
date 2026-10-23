@@ -166,4 +166,11 @@ The check-in lists every goal short of its target or not measured. Push the step
 
 ### Waits
 
-`waitUntil` (an ISO time) or `waitFor` (the event or thread, in a few words) marks a step that waits on purpose. The check-in leaves it alone until that time, or for 2 h after your last change. Then it lists the step as due or as a stale chase. After 24 h a stale chase must become a For you todo or a new plan.
+`waitUntil` (an ISO time) or `waitFor` (the event or thread, in a few words) marks a step that waits on purpose. A wait needs something that moves it, or the check-in counts the step in `stuck_steps` from its next run, even when you set the wait a minute before (`endState` in `src/checkin-end-state.ts`). One of these moves it:
+
+1. A working job of this chat owns the step, or the first clause of the wait names a working job of this chat or another step (`p123`) that a working job carries.
+2. The step's job or thread sleeps on a `board.wake`, or some session sleeps on a `board.wake` for the run, land or thread the wait names.
+3. A turn of the step's owner, of the thread the wait names, or of this chat for a step it owns waits in pi-pool's queue.
+4. An open For you todo links the step.
+
+So set the mover in the same turn as the wait, usually a job on the step that calls `board.wake(run=...)` or `board.wake(at=...)` and acts when it wakes. In the 24 h to 14:07Z on 10-23, 82 of the 132 stuck-step flags in the check-ins of the chats outside the owner's Mac were waits with no mover, the largest cause of red check-ins. The step classes still list a wait with no change for 2 h as a stale chase, and after 24 h a stale chase must become a For you todo or a new plan.
