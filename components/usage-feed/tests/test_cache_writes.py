@@ -45,6 +45,12 @@ class CacheWrites(unittest.TestCase):
         moves = cw.switches([json.dumps({"ts": "2026-10-23T09:00:00", "event": "switch", "session": "s1", "why": "limited"})], 9)
         self.assertEqual(moves["s1"][0][0], 1792713600.0)
 
+    def test_an_idle_gap_that_follows_a_failed_call_names_the_failure(self):
+        failed = json.dumps({"type": "message", "timestamp": (T0 + 10) * 1000, "message": {"role": "assistant", "stopReason": "error",
+                             "errorMessage": "Provider rate limit exceeded (rate_limit_error, 429)", "usage": {"input": 0, "cacheRead": 0, "cacheWrite": 0}}})
+        calls = rows(call(T0, 636, 20000), failed, call(T0 + 4000, 636, 20900))
+        self.assertEqual(cw.classify(calls[1], {}, ttl_s=3600), ("idle over TTL after a failed call (rate_limit)", 20002))
+
     def test_rank_orders_causes_by_tokens_written(self):
         calls = rows(call(T0, 636, 20000), call(T0 + 3700, 636, 20900), call(T0 + 3705, 21538, 500))
         ranked = cw.rank(calls, {}, ttl_s=3600)

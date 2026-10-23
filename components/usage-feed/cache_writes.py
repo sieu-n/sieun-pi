@@ -47,6 +47,19 @@ def epoch(value: object) -> Optional[float]:
         return None
 
 
+def error_kind(message: dict) -> str:
+    """A failed call's class, from its diagnostics or the first words of its error, never the conversation."""
+    for item in message.get("diagnostics") or []:
+        kind = isinstance(item, dict) and isinstance(item.get("details"), dict) and item["details"].get("kind")
+        if isinstance(kind, str):
+            return kind
+    text = str(message.get("errorMessage") or "")
+    for mark, name in (("429", "rate_limit"), ("rate limit", "rate_limit"), ("overloaded", "overloaded"), ("abort", "aborted")):
+        if mark in text.lower():
+            return name
+    return "other"
+
+
 def session_calls(lines: Iterable[str], box: str, since: float, until: float) -> Iterator[dict]:
     """Each finished call in [since, until) with the previous finished call's prompt and what happened between the two."""
     session, previous, between = None, None, []
@@ -72,6 +85,7 @@ def session_calls(lines: Iterable[str], box: str, since: float, until: float) ->
         usage = message["usage"]
         prompt = sum(int(usage.get(k) or 0) for k in ("input", "cacheRead", "cacheWrite"))
         if message.get("stopReason") == "error" or prompt == 0:
+            between.append(f"error: {error_kind(message)}")
             continue
         at = epoch(entry.get("timestamp")) or epoch(message.get("timestamp"))
         if at is None:
@@ -81,7 +95,7 @@ def session_calls(lines: Iterable[str], box: str, since: float, until: float) ->
             yield {"box": box, "session": session, "at": at, "model": model, "input": int(usage.get("input") or 0),
                    "cacheRead": int(usage.get("cacheRead") or 0), "cacheWrite": int(usage.get("cacheWrite") or 0),
                    "previous": previous and {"at": previous["at"], "prompt": previous["prompt"], "output": previous["output"], "model": previous["model"]},
-                   "between": sorted(set(between))}
+                   "between": sorted(set(between)), "errors": sum(1 for item in between if item.startswith("error: "))}
         previous = {"at": at, "prompt": prompt, "output": int(usage.get("output") or 0), "model": model}
         between = []
 
@@ -133,7 +147,8 @@ def classify(call: dict, moves: Dict[str, List[tuple]], ttl_s: float = TTL_S) ->
     if moved:
         return f"account switch ({moved[-1]})", lost
     if gap >= ttl_s:
-        return "idle over TTL", lost
+        failed = sorted(item[len("error: "):] for item in call["between"] if item.startswith("error: "))
+        return (f"idle over TTL after a failed call ({', '.join(failed)})" if failed else "idle over TTL"), lost
     if "compaction" in call["between"] or "branch_summary" in call["between"]:
         return "compaction", lost
     if previous["model"] != call["model"] or "model_change" in call["between"]:
