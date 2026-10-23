@@ -5,7 +5,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { toldCalls } from "../scripts/clean-room/dm-replies.ts";
+import { toldCalls, typedByOwner } from "../scripts/clean-room/dm-replies.ts";
 import { LONG_REPLY_MARK } from "../src/shared/reply-lint.ts";
 import { TELL_OWNER_HELD } from "../src/shared/chat-feed.ts";
 
@@ -25,4 +25,11 @@ test("a refused or held tell_owner call is left out of the judged calls", () => 
     call("10:00:30", "c", "All three are in, see p12."), result("10:00:31", "c", "Sent.", false),
   ].join("\n"));
   assert.deepEqual(toldCalls(file).map(told => told.text), ["All three are in, see p12."]);
+});
+
+test("Prime's quota resume note is no one stepping in, and a message the owner types is", () => {
+  const resume = "<provider_quota_resumed>\nThe provider usage limit that paused this session has been reported as reset; this resume is automatic.\n</provider_quota_resumed>";
+  assert.equal(typedByOwner(resume, ["what's up"]), false);
+  assert.equal(typedByOwner("[check-in] nothing to check", []), false);
+  assert.equal(typedByOwner("also can you look at the disk?", ["what's up"]), true);
 });

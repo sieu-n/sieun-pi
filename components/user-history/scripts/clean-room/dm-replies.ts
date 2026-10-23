@@ -200,6 +200,15 @@ export function report(calls: readonly Told[]): string[] {
   ];
 }
 
+/**
+ * A user message nobody but the owner could have typed: not a server note, a seed, an injected skill or Prime's quota resume note. Run-2 of
+ * the c104 long-reply clean room (10-22) went void on line g because two "<provider_quota_resumed>" notes read as typed.
+ */
+export function typedByOwner(text: string, seeds: readonly string[]): boolean {
+  const head = text.trimStart();
+  return !head.startsWith("[") && !head.startsWith("<provider_quota_resumed>") && !seeds.some(seed => text.includes(seed.slice(0, 60))) && !text.includes("<skill");
+}
+
 function judge(run: string, state: RunState): { verdict: Verdict; text: string } {
   const file = join(SESSIONS, `${state.chat.id}.jsonl`);
   const calls = toldCalls(file).filter(call => call.at >= state.windowStart);
@@ -208,7 +217,7 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
   const reports = all.filter(entry => entry.type === "custom_message" && entry.customType === "agent_message" &&
     /^\[agent-message from child:/.test(blockText(entry.content)));
   const typed = all.filter(entry => entry.type === "message" && (entry.message as { role?: string }).role === "user").map(entry => blockText((entry.message as { content?: unknown }).content))
-    .filter(text => !text.trimStart().startsWith("[") && !state.seeds.some(seed => text.includes(seed.slice(0, 60))) && !text.includes("<skill"));
+    .filter(text => typedByOwner(text, state.seeds));
   const outside = all.filter(entry => entry.type === "custom_message" && entry.customType === "agent_message" &&
     ["parent", "sibling"].includes(String((entry.details as { fromRelationship?: unknown } | undefined)?.fromRelationship ?? "")));
   const n = numbers(calls);
