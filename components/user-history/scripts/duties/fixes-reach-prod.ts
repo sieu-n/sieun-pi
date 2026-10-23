@@ -59,11 +59,13 @@ export async function readRuns(deps: ReachDeps, workflow: string, filters: reado
     .map(row => ({ id: row.databaseId, status: row.status, conclusion: row.conclusion, createdAt: Date.parse(row.createdAt), branch: row.headBranch, sha: row.headSha, url: row.url }));
 }
 
+/** A job with a failed step counts even when gh gives the job no conclusion, as land run 39915261080's "land / light" read on 10-23. */
 export async function readFailedJobs(deps: ReachDeps, id: number): Promise<FailedJob[]> {
   const out = await deps.exec("gh", ["run", "view", String(id), "--repo", REPO, "--json", "jobs"]);
   const jobs = (JSON.parse(out) as { jobs: { name: string; conclusion: string; steps?: { name: string; conclusion: string }[] }[] }).jobs;
-  return jobs.filter(job => FAILED.includes(job.conclusion))
-    .map(job => ({ name: job.name, steps: (job.steps ?? []).filter(step => FAILED.includes(step.conclusion)).map(step => step.name) }));
+  return jobs.map(job => ({ job, steps: (job.steps ?? []).filter(step => FAILED.includes(step.conclusion)).map(step => step.name) }))
+    .filter(({ job, steps }) => FAILED.includes(job.conclusion) || steps.length > 0)
+    .map(({ job, steps }) => ({ name: job.name, steps }));
 }
 
 export async function readHealth(deps: ReachDeps, world: keyof typeof CRAWLERS): Promise<Health> {

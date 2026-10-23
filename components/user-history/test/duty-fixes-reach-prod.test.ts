@@ -4,7 +4,7 @@
 // neither, because 53 of the newest 60 land runs were cancelled and it took each branch's newest finished run, and it never read staging-deploy.yml.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { type Compare, type FailedJob, type Run, measureReach, newestPerBranch, reachMetrics } from "../scripts/duties/fixes-reach-prod.ts";
+import { type Compare, type FailedJob, type Run, measureReach, newestPerBranch, reachMetrics, readFailedJobs } from "../scripts/duties/fixes-reach-prod.ts";
 
 const NOW = Date.parse("2026-10-23T03:50:00Z");
 const HEAD = "6e71eb047898f76ecba23e8e5d002f4a4e018be2";
@@ -72,4 +72,12 @@ test("measureReach reads the decided land, the last successful land and the stag
   assert.match(line(output.flagged, "staging_deploy_failed"), /gate \/ staging release.env/);
   assert.ok(calls.some(args => args.includes("--branch") && args.includes("staging")));
   assert.ok(calls.some(args => args.includes("--limit") && args.includes("100")));
+});
+
+test("a job gh lists with no conclusion but a failed step still names that step", async () => {
+  const exec = async (): Promise<string> => JSON.stringify({ jobs: [
+    { name: "land / light", conclusion: "", steps: [{ name: "pick / the newest tested tree of each dev branch, merged onto staging", conclusion: "failure" }] },
+    { name: "land / push", conclusion: "skipped", steps: [] }] });
+  const jobs = await readFailedJobs({ exec, fetch: globalThis.fetch, now: () => NOW }, 39915261080);
+  assert.deepEqual(jobs, [{ name: "land / light", steps: ["pick / the newest tested tree of each dev branch, merged onto staging"] }]);
 });
