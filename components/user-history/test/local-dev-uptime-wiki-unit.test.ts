@@ -14,7 +14,7 @@ function deps(show: string, pm2: object[]): UptimeDeps {
   };
   return {
     fetch: (async () => new Response("ok")) as typeof fetch, now: () => Date.parse("2026-10-18T16:20:00Z"), platform: "linux", env: {},
-    wiki: "https://us-metal02-dev.tail0c093d.ts.net:5176", pm2: { bin: "pm2", home: "/pm2" },
+    wiki: "https://us-metal02-dev.tail0c093d.ts.net:5176", pm2: { bin: "pm2", home: "/pm2" }, watch: async () => [],
     read: async path => { if (path in files) return files[path]!; throw enoent(path); },
     exec: async (file, args) => {
       if (file === "systemctl") return show;
