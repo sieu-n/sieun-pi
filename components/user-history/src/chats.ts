@@ -1894,7 +1894,7 @@ export class Chats {
       if ((await this.source.memory.ends(chat))[key]?.at === end.at) return;
       const name = agent.sender || agent.name;
       await this.tell(chat, JOB_NOTICE_PREFIX + jobEndText(name, end));
-      await this.source.memory.told(chat, key, { at: end.at, cause: end.cause });
+      await this.source.memory.told(chat, key, { at: end.at, cause: end.cause, ...end.error ? { error: end.error } : {} });
       this.log(`chat ${chat.slice(0, 8)}: job ${name} ended (${end.cause}) with no report; told the chat`);
       if (child) this.noticedEnd.set(child.id, { end: child.lastActivityAt ?? end.at });
     } catch (error) {

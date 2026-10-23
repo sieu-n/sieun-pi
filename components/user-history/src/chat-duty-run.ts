@@ -168,6 +168,7 @@ interface HandOff { items: FlaggedSlice[]; detail: string }
 /** What `<dutyId>.handed.json` keeps: the duty's job and the keys (`handOffKey`) of the items its brief and the runs since handed it. */
 interface Handed { job: string; keys: string[] }
 const handOffKey = (slice: FlaggedSlice): string => `${slice.kind}|${slice.item ?? slice.excerpt}`;
+const itemLine = (slice: FlaggedSlice): string => `- ${slice.kind}${slice.item ? ` ${slice.item}` : ""}: ${slice.excerpt}`;
 async function readPending(file: string): Promise<PendingStart | null> {
   try { const value = JSON.parse(await readFile(file, "utf8")) as PendingStart; return typeof value?.at === "number" && value.schedule && value.brief ? value : null; }
   catch { return null; }
@@ -183,7 +184,7 @@ export function runStamp(at: number): string {
 /** What a run's start of its duty job did: started one (`replaced` notes a stuck job it retired), skipped with why, or nothing (the slot already has its job). */
 type Launched = { job: DutyJobRef; replaced?: string } | { skipped: string } | null;
 /** The duty's last job as a new run finds it: the slot already has its job (null), it still works (skip), or it is the job to retire, if any. */
-type Previous = { last?: DutyJobRef; lastRun?: DutyRunRecord; replaced?: string } | { skipped: string; working?: DutyJobRef } | null;
+type Previous = { last?: DutyJobRef; lastRun?: DutyRunRecord; replaced?: string } | { skipped: string; working?: DutyJobRef; held?: { job: DutyJobRef; why: string } } | null;
 
 /** What a tick reads once per chat for its push runs: the chat's runs, newest first, and its check-in interval. */
 type PushContext = { runs: DutyRunRecord[]; everyMs: number };
@@ -797,7 +798,11 @@ export class Duties {
     const findings = briefFindings({ headline: headline?.words ?? null, flagged: run.output.flagged, ...headline ? { headlineKey: headline.key } : {}, detail });
     // goal_gaps' ask is per goal, in the findings (steer or start its owner job on a push step); the generic "land a code fix" line would contradict it.
     const stepMisses = misses.filter(miss => miss.key !== "goal_gaps");
+    // The steps nobody moves (stuck_steps, what d9 sums as stuck_steps_all) go to the check-in job still at work, or to the chat while pi-pool
+    // holds that job (`launch`): every check-in from 03:55Z to 08:12Z on 10-23 found sep launch!!'s job working or held and handed them nobody.
+    const stuck = run.output.flagged.filter(slice => slice.kind === "stuck_steps");
     const started = await this.startJob(chatId, record, CHECK_IN_DUTY, {
+      ...stuck.length ? { handOff: { items: stuck, detail } } : {},
       schedule: { kind: "every", minutes: run.everyMs / 60_000 }, measured: judged.verdict === "error" ? null : { at: run.at, ...judged },
       brief: { measure: judged.summary, findings: [findings, stuckFindings(stepMisses)].filter(Boolean).join("\n\n"), focus: CHECK_IN_FOCUS, misses: stepMisses, report: CHECK_IN_REPORT,
         ...run.prompt !== undefined ? { prompt: `${run.prompt}\n\nThe full precheck, with every step and finding, is in ${detail}. Read it for the work you take on; never paste it into a message.` } : {} } });
@@ -940,7 +945,7 @@ export class Duties {
     const last = started?.job;
     if (!started || !last) return {};
     const kept = await this.kept(last);
-    if (kept) return { skipped: `${STILL_WORKING} (job ${last.name} ${kept})` };
+    if (kept) return { skipped: `${STILL_WORKING} (job ${last.name} ${kept})`, held: { job: last, why: kept } };
     if (!(await this.host.jobs.working(last))) return { last, lastRun: started };
     const workingMs = this.now() - started.at;
     if (workingMs <= stuckAfterMs(schedule)) return { skipped: `${STILL_WORKING} (job ${last.name})`, working: last };
@@ -960,8 +965,16 @@ export class Duties {
     const previous = await this.previous(chatId, dutyId, schedule, slot);
     if (previous === null) return previous;
     if ("skipped" in previous) {
-      const handed = previous.working && handOff ? await this.handOff(chatId, dutyId, previous.working, handOff, brief.duty.name, at) : 0;
-      return handed ? { skipped: `${previous.skipped}; handed it ${handed} new flagged item${handed === 1 ? "" : "s"}` } : { skipped: previous.skipped };
+      const plural = (count: number) => `${count} new flagged item${count === 1 ? "" : "s"}`;
+      if (previous.working && handOff) {
+        const handed = await this.handOff(chatId, dutyId, previous.working, handOff, brief.duty.name, at);
+        if (handed) return { skipped: `${previous.skipped}; handed it ${plural(handed)}` };
+      }
+      if (previous.held && handOff && dutyId === CHECK_IN_DUTY_ID) {
+        const told = await this.handToChat(chatId, dutyId, previous.held, handOff, brief.duty.name, at);
+        if (told) return { skipped: `${previous.skipped}; handed the chat ${plural(told)}` };
+      }
+      return { skipped: previous.skipped };
     }
     const { last, lastRun, replaced } = previous;
     if (!chat) return { skipped: "skipped: the catalog does not list the chat" };
@@ -1003,18 +1016,38 @@ export class Duties {
    */
   private async handOff(chatId: string, dutyId: string, job: DutyJobRef, handOff: HandOff, dutyName: string, at: number): Promise<number> {
     const steer = this.host.jobs.steer;
-    if (!steer || !handOff.items.length) return 0;
+    if (!steer) return 0;
+    return this.handNew(chatId, dutyId, job, handOff, fresh => steer(job, [`The ${dutyName} run of ${new Date(at).toISOString().slice(0, 16)}Z found ` +
+      `${fresh.length} flagged item${fresh.length === 1 ? "" : "s"} that your brief and earlier runs did not name. Work them like your brief's items ` +
+      `before you end. The run's findings are in ${handOff.detail}.`, ...fresh.map(itemLine)].join("\n")), job.name);
+  }
+
+  /**
+   * Hands the chat itself, as one server notice, the new `handOff` items of a check-in run whose job pi-pool or a quota park holds (`kept`), since
+   * that job takes no message until its slot. On 10-23 sep launch!!'s check-in job of 03:39Z was cut on a 429 at 05:05Z and held for its
+   * 08:09Z slot, so the 17 check-ins from 03:55Z to 08:12Z all skipped, and the stuck steps they counted (up to 23 at 04:27Z and 15 at 06:27Z)
+   * reached no check-in (~/work/checkin-skip-orphans).
+   */
+  private async handToChat(chatId: string, dutyId: string, held: { job: DutyJobRef; why: string }, handOff: HandOff, dutyName: string, at: number): Promise<number> {
+    const tell = this.host.tell;
+    if (!tell) return 0;
+    return this.handNew(chatId, dutyId, held.job, handOff, fresh => tell(chatId, [`The ${dutyName} run of ${new Date(at).toISOString().slice(0, 16)}Z ` +
+      `found ${fresh.length} step${fresh.length === 1 ? "" : "s"} nobody moves, and its job ${held.job.name} ${held.why}, so it takes no message until then. ` +
+      `Give each a live owner in this turn: steer its job, start one, link a For you todo, or close it on evidence. The run's findings are in ` +
+      `${handOff.detail}.`, ...fresh.map(itemLine)].join("\n")), "the chat");
+  }
+
+  /** Sends the `handOff` items that the duty job's brief and the runs since did not name (`<dutyId>.handed.json`) once, and returns how many. */
+  private async handNew(chatId: string, dutyId: string, job: DutyJobRef, handOff: HandOff, send: (fresh: readonly FlaggedSlice[]) => Promise<void>, to: string): Promise<number> {
+    if (!handOff.items.length) return 0;
     const stored = await readFile(this.handedFile(chatId, dutyId), "utf8").then(text => JSON.parse(text) as Handed, () => null);
     const known = new Set(stored?.job === job.id && Array.isArray(stored.keys) ? stored.keys : []);
     const fresh = handOff.items.filter(slice => !known.has(handOffKey(slice)));
     if (!fresh.length) return 0;
-    const text = [`The ${dutyName} run of ${new Date(at).toISOString().slice(0, 16)}Z found ${fresh.length} flagged item${fresh.length === 1 ? "" : "s"} ` +
-      `that your brief and earlier runs did not name. Work them like your brief's items before you end. The run's findings are in ${handOff.detail}.`,
-      ...fresh.map(slice => `- ${slice.kind}${slice.item ? ` ${slice.item}` : ""}: ${slice.excerpt}`)].join("\n");
-    try { await steer(job, text); }
-    catch (error) { this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: hand ${job.name} ${fresh.length} items: ${message(error)}`); return 0; }
+    try { await send(fresh); }
+    catch (error) { this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: hand ${to} ${fresh.length} items: ${message(error)}`); return 0; }
     await this.writeHanded(chatId, dutyId, { job: job.id, keys: [...known, ...fresh.map(handOffKey)] });
-    this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: handed ${job.name} ${fresh.length} new flagged items`);
+    this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: handed ${to} ${fresh.length} new flagged items`);
     return fresh.length;
   }
 

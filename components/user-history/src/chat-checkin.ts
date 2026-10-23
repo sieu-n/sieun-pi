@@ -451,8 +451,13 @@ export function convergenceMisses(chat: string, steps: readonly StepView[], { sc
     const owner = view.owner;
     // A told end is silent until the job reports: a job that resumed after it and sent the chat a message cleared it (vent 10-21, p7's job "search
     // flows finish" ended on a provider error at 10-20 19:24Z, then reported at 08:32:59Z and 08:35Z, and read "with no report" for 14 h).
+    // A told end the job worked past is not its end any more, whatever part of the transcript the server holds: on 10-23 at 03:55Z sep launch!!'s
+    // "live fixes" read "stopped on a provider error ... 1223 min ago with no report" from its 429 at 10-22 07:32Z, though it sent the chat 17
+    // reports after it and its last turn ended well at 03:06Z on a board.wake. The margin covers the idle unload after a failed turn, which moves
+    // the job's activity 2.1 to 2.9 min past the end (`TOLD_END_MARGIN_MS`).
     const toldEnd = owner && owner.state !== "working" ? told[owner.key] : undefined;
-    const silent = toldEnd && (owner!.lastMessage?.at ?? 0) <= toldEnd.at ? toldEnd : undefined;
+    const current = toldEnd && !((owner!.activityAt ?? 0) - toldEnd.at > TOLD_END_MARGIN_MS) ? toldEnd : undefined;
+    const silent = current && (owner!.lastMessage?.at ?? 0) <= current.at ? current : undefined;
     const end = owner && !owner.key.startsWith("thread:") && owner.state !== "working" && !owner.cancelled && !holdsOnWait(view.item, now) ? owner.activityAt : undefined;
     const staleStep = staleById.get(id);
     staleById.delete(id);
@@ -807,7 +812,12 @@ export interface CheckInRecord {
   told(id: string, key: string, end: ToldEnd): Promise<void>;
 }
 /** A bad job end the server told the chat at once: when the job ended and why. Kept apart from the precheck's memory, which each run rewrites. */
-export interface ToldEnd { at: number; cause: JobEndCause }
+export interface ToldEnd { at: number; cause: JobEndCause; error?: string }
+/**
+ * How far past a told end a job's last activity may be and the end still be its last one. After a failed turn the idle unload stops the job and
+ * moves its activity: six 429 ends of sep launch!!'s "live fixes" on 10-22 were unloaded 2.1 to 2.9 min after the error.
+ */
+export const TOLD_END_MARGIN_MS = 5 * 60_000;
 export const TOLD_END_KEEP_MS = 7 * 24 * 60 * 60_000;
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const isStepMemo = (value: unknown): value is StepMemo => isRecord(value) && typeof value.sig === "string" && typeof value.at === "number";

@@ -20,10 +20,12 @@ const p7: PlanItem = { id: "p7", text: "Check every search app flow end to end o
 const board = (todos: OwnerTodo[]): ChatBoard => ({ v: 2, rev: 1, updatedAt: "2026-10-18T16:10:35Z", todos,
   plan: [{ id: "p1", text: "Search app works end to end", status: "doing", children: [p7] }] }) as unknown as ChatBoard;
 const said = (at: string, text: string) => ({ role: "custom", customType: "agent_message", timestamp: Date.parse(at), content: `[agent-message from sibling:search flows finish]\n\n${text}` });
-const owner = (messages: ReturnType<typeof said>[]): JobFact => {
+const owner = (messages: ReturnType<typeof said>[], activityAt = Date.parse("2026-10-21T08:35:01Z")): JobFact => {
   const lastMessage = lastJobMessages(messages).get("search flows finish");
-  return { key: `thread:${THREAD}`, name: "search flows finish", state: "ended", activityAt: Date.parse("2026-10-21T08:35:01Z"), ...lastMessage ? { lastMessage } : {} };
+  return { key: `thread:${THREAD}`, name: "search flows finish", state: "ended", activityAt, ...lastMessage ? { lastMessage } : {} };
 };
+// The idle unload after the failed turn, 2.7 min past the end, as for sep launch!!'s "live fixes" on 10-22 (src/chat-checkin.ts TOLD_END_MARGIN_MS).
+const unloaded = endAt + 160_000;
 const run = (todos: OwnerTodo[], fact: JobFact) => {
   const precheck = checkInPrecheck(undefined, [fact], board(todos), now);
   const told = { [`thread:${THREAD}`]: { at: endAt, cause: "error" as const } };
@@ -50,8 +52,8 @@ test("p7 on open todo t13 is not blocked on others, and its job's reports after 
 });
 
 test("without t13 and the reports, the same p7 still reads the error end as silent, and a note's past promote names no blocker", () => {
-  assert.deepEqual(run([], owner([])), ["job_end_silent"]);
-  assert.deepEqual(run([], owner([said("2026-10-20T19:00:00Z", "a report before the end")])), ["job_end_silent"]);
+  assert.deepEqual(run([], owner([], unloaded)), ["job_end_silent"]);
+  assert.deepEqual(run([], owner([said("2026-10-20T19:00:00Z", "a report before the end")], unloaded)), ["job_end_silent"]);
   const waits = { ...p7, waitFor: "promote 18 on prod" };
   const precheck = checkInPrecheck(undefined, [owner(reports)], { ...board([]), plan: [{ id: "p1", text: "Search app", status: "doing", children: [waits] }] } as ChatBoard, now);
   const flagged = convergenceMisses("vent", precheck.steps, precheck, {}, 30 * 60_000, now).flagged.filter(slice => slice.kind === "blocked_on_others");
