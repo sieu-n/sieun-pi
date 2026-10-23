@@ -67,6 +67,8 @@ function linked(board: ChatBoard | null, duty: string): Map<string, Linked[]> {
  * started until wiki_problems reached 26 at 09:36Z.
  * With no live step, an open step an open For you todo holds (`held`, the todo's name) comes next and carries `hold`: on 10-23 every d5 run
  * of the AI harness chat told its job to start a fix job on p919, which waited only on the owner's Apple sign-in, Railway Breach's t11.
+ * A step whose owner is a `rlm.create_session` root may carry only its `sessionId`: CI and RepoOps' p360 and p361, the root-cause steps it
+ * started on d9's 04:07Z push on 10-23, had no job name, and its 04:14Z d4 and 05:06Z d1 runs recorded them as not live, though both roots were started for them at about 04:10Z.
  */
 export async function dutyFixes(board: ChatBoard | null, duty: string, metrics: readonly string[], live: (item: PlanItem) => Promise<boolean>,
   flagged: readonly FlaggedSlice[] = [], goal?: string, held: (item: PlanItem) => string | undefined = () => undefined): Promise<Record<string, FixLink>> {
@@ -81,7 +83,7 @@ export async function dutyFixes(board: ChatBoard | null, duty: string, metrics: 
     let pick: { item: PlanItem; live: boolean; hold?: string } | undefined;
     let first: PlanItem | undefined;
     for (const item of open) {
-      if (item.job && await live(item)) { pick = { item, live: true }; break; }
+      if ((item.job !== undefined || item.sessionId !== undefined) && await live(item)) { pick = { item, live: true }; break; }
       const hold = held(item);
       if (hold !== undefined) pick ??= { item, live: false, hold };
       first ??= item;

@@ -110,6 +110,10 @@ test("the push list joins a chat's idle goals and stuck duties, and the follow-u
   assert.deepEqual(pushReached([sent], tag), { delivered: true, read: false });
   assert.deepEqual(pushReached([answer, sent, answer], tag), { delivered: true, read: true });
   assert.deepEqual(pushReached([answer], tag), { delivered: false, read: false });
+  // 10-23: the server sends the push itself, and it lands as a user message; the 07:02Z run read all 7 of the 05:01Z pushes as not delivered.
+  const told = JSON.stringify({ type: "message", message: { role: "user", content: [{ type: "text", text: `${tag} The chat system duty (d9) found these` }] } });
+  assert.deepEqual(pushReached([answer, told], tag), { delivered: true, read: false });
+  assert.deepEqual(pushReached([told, answer], tag), { delivered: true, read: true });
 });
 
 test("a chat whose only miss is plan items with no done line is on the push list with those items", () => {
@@ -214,12 +218,13 @@ test("a red duty whose live fix has not moved its number over 3 or more misses i
   const fix = { step: "p52", job: "schema promotes keep serving", live: true };
   const metric: MetricStreak = { key: "probe_uptime_24h_pct", misses: 42, moved: false, since: 0, value: 97.2, target: 100, op: ">=", fix, stuck: false };
   const duty = (id: string, change: Partial<MetricStreak> = {}, extra: object = {}) => ({ chat: "a", duty: id, name: id, green: false, misses: 42,
-    stuck: false, fix: "p52", metric: { ...metric, ...change }, ...extra });
-  const red = [duty("d1"), duty("d2", { moved: true }), duty("d3", { misses: 2 }), duty("d4", { quietSince: 1 }), duty("d5", { fix: { ...fix, step: "p9" } }),
-    duty("d6", {}, { fix: undefined }), duty("d7", {}, { agingSince: 1 })];
+    stuck: false, fix: "p52", metric: { ...metric, ...change }, underFix: { misses: 8, moved: false }, ...extra });
+  const red = [duty("d1"), duty("d2", {}, { underFix: { misses: 8, moved: true } }), duty("d3", {}, { underFix: { misses: 2, moved: false } }),
+    duty("d4", { quietSince: 1 }), duty("d5", { fix: { ...fix, step: "p9" } }), duty("d6", {}, { fix: undefined }), duty("d7", {}, { agingSince: 1 }),
+    duty("d8", {}, { underFix: undefined })];
   const found = fixNotMoving(red, () => "api portal vp");
   assert.deepEqual(found.map(entry => entry.duty), ["d1"]);
-  assert.match(found[0]!.line, /^api portal vp: d1 \(d1\) missed probe_uptime_24h_pct 42 runs in a row, 97\.2 against >= 100 and no closer .* fix step p52 has a live job\. Replace that fix: start a root-cause job .* duty "d1\/probe_uptime_24h_pct", and close or drop p52/);
+  assert.match(found[0]!.line, /^api portal vp: d1 \(d1\) missed probe_uptime_24h_pct 42 runs in a row, 8 of them under its fix step p52, 97\.2 against >= 100 and no closer than when p52 began, while p52 has a live job\. Replace that fix: start a root-cause job .* duty "d1\/probe_uptime_24h_pct", and close or drop p52/);
   const out = chatSystemOutput({ names: new Map([["a", "api portal vp"]]), stuck: [], upkeep: [], fleet: { pct: 50, red }, stuckDuties: [], idleGoals: [], followUps: [], detail: "/tmp/d9.md" });
   assert.equal(out.metrics.fix_not_moving, 1);
   assert.ok(out.flagged!.some(slice => slice.kind === "fix_not_moving" && slice.item === "d1"));

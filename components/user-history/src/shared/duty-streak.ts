@@ -82,6 +82,22 @@ export function missStreak(runs: readonly DutyRunRecord[]): number {
 export const fixMisses = (streak: readonly DutyRunRecord[], key: string, fix: FixLink): number =>
   streak.filter(run => { const named = run.fixes?.[key]; return named?.step === fix.step && named.job === fix.job; }).length;
 
+/**
+ * The misses of `key`'s current streak (`streakRuns`) whose run named `step` as its fix, and whether the value is closer to the target now than
+ * at the first of them. A fix is judged on its own runs: the whole streak counted the misses before it too, so the root-cause step a chat
+ * started on d9's push read as a fix that does not move from its first run. SEO guy 10-23: d9's 04:07Z push replaced p83 with p90, whose job
+ * started at 04:10Z, and the 05:06Z d2 run, the first to name p90, made it 18 misses with no move, so d9 asked again to replace p90.
+ */
+export function fixStepStreak(runs: readonly DutyRunRecord[], key: string, step: string): { misses: number; moved: boolean } {
+  const named: MetricResult[] = [];
+  for (const run of streakRuns(runs)) {
+    const found = effectiveRun(run).metrics[key];
+    if (!found || found.met) break;
+    if (run.fixes?.[key]?.step === step) named.push(found);
+  }
+  return { misses: named.length, moved: named.length > 0 && gap(named[0]!) < gap(named[named.length - 1]!) };
+}
+
 /** The current miss streak of every metric the newest measured run missed, from runs newest first. */
 export function metricStreaks(runs: readonly DutyRunRecord[]): MetricStreak[] {
   const ordered = streakRuns(runs);

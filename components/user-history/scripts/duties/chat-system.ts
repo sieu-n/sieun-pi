@@ -15,7 +15,7 @@ import { chatDataDir } from "../../src/owner-ok.ts";
 import type { DutyRunRecord, FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import { serverNote } from "../../src/shared/chat-feed.ts";
 import type { ChatBoard, PlanItem } from "../../src/shared/types.ts";
-import { CHANGE_APPROACH_MISSES, metricStreaks } from "../../src/shared/duty-streak.ts";
+import { CHANGE_APPROACH_MISSES, fixStepStreak, metricStreaks } from "../../src/shared/duty-streak.ts";
 import { hasDoneLine, upkeepWords } from "../../src/shared/upkeep-title.ts";
 import { daemonSessions, dutyFleet, type FleetDuty } from "./duty-fleet.ts";
 import { catalogCopies, endsOnPoolWait, planCounts, planInputs, POOL_TAIL_BYTES, stepSessions } from "./whole-system.ts";
@@ -113,8 +113,11 @@ function localCopy(file: string | undefined): { file: string; host: string } | u
   return undefined;
 }
 
-/** A red duty of the fleet, with the newest event time when every metric it misses is a windowed count that only ages out (`agingSince`). */
-export type RedDuty = FleetDuty & { agingSince?: number };
+/**
+ * A red duty of the fleet, with the newest event time when every metric it misses is a windowed count that only ages out (`agingSince`), and
+ * the lead metric's misses under its fix step with whether they moved (`underFix`, `fixStepStreak`).
+ */
+export type RedDuty = FleetDuty & { agingSince?: number; underFix?: { misses: number; moved: boolean } };
 
 /**
  * When a red duty misses only windowed counts with no new event since the run before (`MetricStreak.quietSince`, the duty runner's own quiet
@@ -132,23 +135,26 @@ export function agingSince(runs: readonly DutyRunRecord[]): number | undefined {
 export interface NotMoving { chat: string; duty: string; line: string }
 
 /**
- * The red duties whose lead metric's fix step has a live job while that metric missed CHANGE_APPROACH_MISSES or more runs in a row and is no
- * closer to its target than when the streak began (`MetricStreak.moved`, the duty job's "not moving toward the target" in `missLine`). The
- * whole streak counts, not only the misses under the current fix as `MetricStreak.stuck` reads them, since each new fix job starts that count
- * again: at 18:00Z on 10-22 api portal vp's d1 had missed 42 runs with probe_uptime_24h_pct never closer to 100 while p52's job was too new for
- * `stuck`, and so had SEO guy's d2 (16 runs) and CI and RepoOps' d4 (20 runs). A windowed count with no new event (`quietSince`) only waits.
+ * The red duties whose lead metric's fix step has a live job while the runs that named that step (`underFix`, `fixStepStreak`) missed it
+ * CHANGE_APPROACH_MISSES or more times with no move toward the target since the first of them. A fix is judged on its own runs: a new step
+ * starts its count, a new job on the same step does not. The whole-streak count read 8 at 01:00Z, 03:01Z and 05:01Z on 10-23, and after the 04:07Z
+ * push SEO guy's p90, the root-cause step that replaced p83, read as not moving on the first run that named it, so each run asked to replace
+ * the replacement. `MetricStreak.stuck` needs the same step and job, so a new job on an old step starts it again: on 10-22 api portal vp's d1
+ * missed 42 runs while p52's job was too new for `stuck`, and p52 had been its fix since 10-21 06:11Z.
  * measured: over the 7,011 runs in the 118 runs files on 10-22, a missed metric with no move reached its target within 10 more runs 86% of the
  * time after 1 miss, 76% after 2, 67% after 3 and 32% after 12 or more.
- * A duty whose missed metrics' fix steps all wait on an open For you todo (`FleetDuty.held`) waits on the owner and owes no new job.
+ * A windowed count with no new event (`quietSince`) only waits, and a duty whose missed metrics' fix steps all wait on an open For you todo
+ * (`FleetDuty.held`) waits on the owner and owes no new job.
  */
 export function fixNotMoving(red: readonly RedDuty[], name: (chat: string) => string): NotMoving[] {
   return red.flatMap(duty => {
     const metric = duty.metric;
-    if (duty.held || !duty.fix || metric?.fix?.step !== duty.fix || duty.agingSince !== undefined || metric.quietSince !== undefined || metric.moved ||
-      metric.misses < CHANGE_APPROACH_MISSES) return [];
+    const under = duty.underFix;
+    if (duty.held || !duty.fix || metric?.fix?.step !== duty.fix || duty.agingSince !== undefined || metric.quietSince !== undefined || !under ||
+      under.moved || under.misses < CHANGE_APPROACH_MISSES) return [];
     return [{ chat: duty.chat, duty: duty.duty, line: `${name(duty.chat)}: ${duty.name} (${duty.duty}) missed ${metric.key} ${metric.misses} runs in a row, ` +
-      `${show(metric.value)} against ${metric.op} ${show(metric.target)} and no closer than when the streak began, while its fix step ${duty.fix} has a live job. ` +
-      `Replace that fix: start a root-cause job with rlm.create_session that finds why ${duty.fix} does not move the number and fixes that cause, ` +
+      `${under.misses} of them under its fix step ${duty.fix}, ${show(metric.value)} against ${metric.op} ${show(metric.target)} and no closer than when ${duty.fix} began, ` +
+      `while ${duty.fix} has a live job. Replace that fix: start a root-cause job with rlm.create_session that finds why ${duty.fix} does not move the number and fixes that cause, ` +
       `give it its own step with duty "${duty.duty}/${metric.key}", and close or drop ${duty.fix} with a note naming the new step` }];
   });
 }
@@ -296,11 +302,15 @@ export function pushedFile(listed: ReadonlyMap<string, { file?: string }>, copie
   return listed.get(chat)?.file ?? listedSessions(copies, [chat]).get(chat)?.file;
 }
 
-/** The tagged push in a chat's transcript lines: delivered when an agent message carries the tag, read when an assistant line comes after it. */
+/**
+ * The tagged push in a chat's transcript lines: delivered when an agent message or a user message carries the tag, read when an assistant line
+ * comes after it. The server sends d9's pushes itself since ce020858, and they land as user messages: the 07:02Z run on 10-23 read all 7 of
+ * the 05:01Z pushes as not delivered, while the AI harness chat's transcript held its push as a user line from 05:01:46Z.
+ */
 export function pushReached(lines: readonly string[], tag: string): { delivered: boolean; read: boolean } {
   let delivered = false;
   for (const line of lines) {
-    if (!delivered) { if (line.includes('"agent_message"') && line.includes(tag)) delivered = true; continue; }
+    if (!delivered) { if ((line.includes('"agent_message"') || line.includes('"role":"user"')) && line.includes(tag)) delivered = true; continue; }
     if (line.includes('"role":"assistant"')) return { delivered, read: true };
   }
   return { delivered, read: false };
@@ -319,6 +329,9 @@ export interface ChatSystemFacts {
   detail: string;
 }
 
+/** How many runs in a row a red duty missed, in words; a duty red on skipped runs' measures alone says so (`FleetDuty.skipped`). */
+export const missRuns = (duty: Pick<RedDuty, "misses" | "skipped">): string =>
+  `${duty.misses} ${duty.skipped ? "skipped " : ""}${duty.misses === 1 ? "run" : "runs in a row"}`;
 /** The precheck output from the facts: the five metrics, and per metric a count line with the detail path and up to 3 examples. */
 export function chatSystemOutput(facts: ChatSystemFacts): PrecheckOutput {
   const name = (chat: string): string => facts.names.get(chat) ?? chat.slice(0, 8);
@@ -338,7 +351,7 @@ export function chatSystemOutput(facts: ChatSystemFacts): PrecheckOutput {
   head("red_duty", facts.fleet.red.length, "red duties", chats(facts.fleet.red));
   for (const duty of spread(facts.fleet.red.filter(duty => duty.agingSince === undefined), EXAMPLES)) {
     flagged.push({ kind: "red_duty", chat: duty.chat, item: duty.duty, excerpt: `${name(duty.chat)}: ${duty.name} (${duty.duty}) is red` +
-      (duty.metric ? `, ${duty.metric.key} ${show(duty.metric.value)} against ${duty.metric.op} ${show(duty.metric.target)}` : "") + `, ${duty.misses === 1 ? "1 run" : `${duty.misses} runs in a row`}.` });
+      (duty.metric ? `, ${duty.metric.key} ${show(duty.metric.value)} against ${duty.metric.op} ${show(duty.metric.target)}` : "") + `, ${missRuns(duty)}.` });
   }
   const aging = facts.fleet.red.filter(duty => duty.agingSince !== undefined);
   if (aging.length) flagged.push({ kind: "aging_duty", excerpt: `${aging.map(duty => `${name(duty.chat)} ${duty.duty}`).join(", ")} ${aging.length === 1 ? "is" : "are"} red only on ` +
@@ -445,8 +458,10 @@ async function main(): Promise<void> {
   const fleet = await dutyFleet({ dataDir, now, sessions: daemonSessions });
   const runsOf = (chat: string, duty: string) => (runsByChat.get(chat) ?? []).filter(run => run.duty === duty);
   const red = fleet.duties.filter(duty => !duty.green && !duty.pending).map((duty): RedDuty => {
-    const since = agingSince(runsOf(duty.chat, duty.duty));
-    return since === undefined ? duty : { ...duty, agingSince: since };
+    const own = runsOf(duty.chat, duty.duty);
+    const since = agingSince(own);
+    const under = duty.fix && duty.metric ? { underFix: fixStepStreak(own, duty.metric.key, duty.fix) } : {};
+    return { ...duty, ...under, ...since === undefined ? {} : { agingSince: since } };
   });
   const idleGoals = plan.chats.filter(chat => !plan.pausedChats.has(chat.id)).map(chat => ({ chat: chat.id, goals: goalsWithNoJob(plan.boards.get(chat.id) ?? null,
     { now, named: plan.named.get(chat.id) ?? new Map(), jobs: jobs.get(chat.id) ?? [], activity: plan.ownerActivity, waking: plan.waking, poolWaiting: plan.poolWaiting }) }));
@@ -504,7 +519,7 @@ async function main(): Promise<void> {
       ? `${name(entry.chat)}: ${entry.id} ${quote(entry.text ?? "")}.` : `${name(entry.chat)}: ${entry.count} open steps nobody moves, with no ids in its check-in.`)),
     section(`Open plan items that are upkeep or have no done line (${upkeep.length})`, upkeep.map(item => `${name(item.chat)}: ${item.id} ${quote(item.text)} ${item.why}.`)),
     section(`Red duties (${red.length}, ${fleet.metrics.duties_green_pct}% green)`, red.map(duty => `${name(duty.chat)}: ${duty.name} (${duty.duty}), ` +
-      `${duty.metric ? `${duty.metric.key} ${show(duty.metric.value)} against ${duty.metric.op} ${show(duty.metric.target)}, ` : ""}${duty.misses === 1 ? "1 run" : `${duty.misses} runs in a row`}` +
+      `${duty.metric ? `${duty.metric.key} ${show(duty.metric.value)} against ${duty.metric.op} ${show(duty.metric.target)}, ` : ""}${missRuns(duty)}` +
       `${duty.fix ? `, fix step ${duty.fix}` : duty.working ? `, its job ${duty.working} works on it` : ""}` +
       `${duty.agingSince !== undefined ? `, red only on counts that age out (newest event ${new Date(duty.agingSince).toISOString().slice(0, 16)}Z), so it owes no fix job` : ""}.`)),
     section(`Red duties with no live fix job (${counts.redDuties.length})`, counts.redDuties.map(duty => `${duty.line}.`)),

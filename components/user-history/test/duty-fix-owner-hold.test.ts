@@ -64,7 +64,8 @@ test("d9 counts a held red duty in neither stuck_duties nor fix_not_moving", () 
   assert.equal(planCounts(inputs([p919, p947], true)).redDuties.length, 1);
   const metric: MetricStreak = { key: "skills_or_tools_to_fix", misses: 5, moved: false, since: at("00:00:00"), value: 1, target: 0, op: "<=", stuck: true,
     fix: { step: "p919", job: "codex fhnyq29tw5 sign-in", live: true } };
-  const red: RedDuty = { chat: HARNESS, duty: "d5", name: "Skills and tools", green: false, misses: 5, stuck: false, metric, fix: "p919" };
+  const red: RedDuty = { chat: HARNESS, duty: "d5", name: "Skills and tools", green: false, misses: 5, stuck: false, metric, fix: "p919",
+    underFix: { misses: 5, moved: false } };
   assert.equal(fixNotMoving([red], () => "AI harness").length, 1);
   assert.equal(fixNotMoving([{ ...red, held: `p919 on t11 on thread ${BREACH}` }], () => "AI harness").length, 0);
 });
