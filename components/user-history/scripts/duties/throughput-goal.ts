@@ -85,6 +85,15 @@ export const WAIT_LINE_S = 300;
 export const QUEUE_LINE = 80_000;
 
 /**
+ * The census Postgres writer's worst lag over 24 h, read only in the 5-minute slots where Instagram profiles read at p826's rate or more and no
+ * deploy holds prod (p895, closed 10-23 on 2,613 records at most from 10-22 18:45Z to 00:44Z, against its line of 5,000). A slower census leaves
+ * the writer idle, so its lag says nothing there; on 10-22 the lag passed 5,000 on 36 of 130 minutes from 06:00 to 08:00Z at 10,900 ok a minute,
+ * while the lane scaler had stopped with 16 writers. The lag is crawler_v3_bus_group_lag_records of instagram-census-pg, its most in each slot.
+ */
+export const WRITER_LAG_MS = 24 * HOUR;
+export const WRITER_LAG_EXPR = 'max(max_over_time(crawler_v3_bus_group_lag_records{world="prod",group="instagram-census-pg"}[5m]))';
+
+/**
  * The refresh age of read Instagram accounts (p683, owner 10-18: "all refreshed at least weekly"; p829, owner 10-19: "Every Instagram profile is
  * re-read at least once every 2 weeks"). One 1% TABLESAMPLE of instagram_census timed out under grafana_ro's 30 s statement_timeout on 10-20, so
  * the read sums ten 0.1% samples with fixed seeds, about 1% of rows, read two at a time. A GONE row is an account Instagram no longer serves (the
@@ -225,6 +234,8 @@ export interface OtherRate { kind: string; slowest6h: number; average24h: number
 export interface BoardItem { id: string; text?: string; status?: string; target?: { target?: number; unit?: string } | null; children?: BoardItem[] }
 export interface ThroughputData {
   now: number; errors: { source: string; message: string }[];
+  /** Instagram profile slots and census-pg writer lag slots over WRITER_LAG_MS, and the deploy slots over the same span. */
+  igSlots24h?: Slot[]; writerLag?: Slot[]; deploys24h?: number[];
   board?: BoardItem[]; igSlowest?: number | null; igLast30?: number; ttsSlowest?: number | null; deployMinutes?: number; meta?: MetaWalks; refresh?: RefreshSample[];
   geoFrom: number; geoTo: number; geoHours?: GeoHour[]; adLibrary?: WireDay[]; queues?: Queue[]; panels?: PanelRead[]; others?: OtherRate[];
 }
@@ -369,6 +380,15 @@ export function report(d: ThroughputData, dutyMetrics: readonly DutyMetric[]): P
     const trend = (q: Queue): string => `${q.family} ${q.name} ${count(q.now)}${q.ago6h === null ? " (no 6 h history)" : ` from ${count(q.ago6h)} 6 h ago`}${q.wait == null ? "" : `, oldest write ${Math.round(q.wait)} s`}`;
     flagged.push({ at: d.now, kind: "backlog", excerpt: `${backlogs.length} of ${d.queues.length} Instagram queues backlog, over ${count(QUEUE_LINE)} at their 30-minute low or grown over 6 h${backlogs.length ? `: ${backlogs.map(trend).join("; ")}` : ""}. Largest: ${largest.map(trend).join("; ")}.`.slice(0, 300) });
   }
+  const rate = d.board ? boardGoal(d.board, "p826")?.goal ?? null : null;
+  if (d.igSlots24h && d.writerLag && d.deploys24h && rate !== null) {
+    const worst = writerLagAtRate(d.igSlots24h, d.writerLag, new Set(d.deploys24h), rate);
+    if (worst) metrics.census_pg_writer_lag_max_24h = worst.lag;
+    else unmeasured.add("census_pg_writer_lag_max_24h");
+    flagged.push({ at: d.now, kind: "writer_lag", excerpt: (worst
+      ? `The census Postgres writer lagged ${worst.lag.toLocaleString("en-US")} records at most over 24 h (${utc(worst.slot).slice(6, 11)}), in the ${worst.slots} of 288 five-minute slots where Instagram read ${fmt(rate)} a minute or more outside deploys.`
+      : `No five-minute slot of the last 24 h read ${fmt(rate)} Instagram profiles a minute outside deploys, so the census Postgres writer lag is not judged; the p826 goal row says why.`).slice(0, 300) });
+  } else unmeasured.add("census_pg_writer_lag_max_24h");
   if (d.panels) {
     const blank = d.panels.filter(panel => panel.state !== "ok");
     metrics.crawler_panels_blank = blank.length;
@@ -416,6 +436,20 @@ export function slowestHour(slots: readonly Slot[], from: number, to: number, de
   return Math.round(low / 60);
 }
 
+/**
+ * The census writer's worst lag, and its slot, over the slots whose Instagram profiles read `rate` a minute or more and no deploy holds, with how
+ * many slots counted; null when none did. A lag point at t covers the slot that ends at t, as deploySlots reads it.
+ */
+export function writerLagAtRate(ig: readonly Slot[], lag: readonly Slot[], deploys: ReadonlySet<number>, rate: number): { lag: number; slot: number; slots: number } | null {
+  const fast = new Set(ig.filter(s => s.good / (SLOT_MS / MINUTE) >= rate && !deploys.has(s.slot)).map(s => s.slot));
+  const counted = lag.filter(s => fast.has(s.slot));
+  if (!counted.length) return null;
+  const worst = counted.reduce((top, s) => s.good > top.good ? s : top);
+  return { lag: Math.round(worst.good), slot: worst.slot, slots: counted.length };
+}
+export const lagSlots = (points: readonly [number, number][]): Slot[] =>
+  points.filter(([, lag]) => Number.isFinite(lag)).map(([at, lag]) => ({ slot: Math.floor((at - 1) / SLOT_MS) * SLOT_MS, good: lag }));
+
 /** Results a minute over the last 30 minutes before `to`, the window the census canary run reads. */
 export const lastHalfHour = (slots: readonly Slot[], to: number): number =>
   Math.round(slots.filter(s => s.slot >= to - 30 * MINUTE && s.slot < to).reduce((sum, s) => sum + s.good, 0) / 30);
@@ -449,16 +483,18 @@ export async function measure(query: DsQuery | null, api: GrafanaApi | null, aut
   if (!query || !api) { d.errors.push({ source: "grafana auth", message: authError ?? "no client" }); return d; }
   const holdTo = Math.floor((now - SETTLE_MS) / SLOT_MS) * SLOT_MS;
   const holdFrom = holdTo - HOLD_MS;
-  const slotsOf = async (rows: { table: string; where: string }): Promise<Slot[]> => (await sqlRows(query, CH,
-    `SELECT toInt64(toUnixTimestamp(toStartOfFiveMinutes(observed_at))) * 1000 AS slot, count() AS good FROM ${rows.table} WHERE ${rows.where}observed_at >= ${ms(holdFrom)} AND observed_at < ${ms(holdTo)} GROUP BY slot`))
+  const lagFrom = holdTo - WRITER_LAG_MS;
+  const slotsOf = async (rows: { table: string; where: string }, from = holdFrom): Promise<Slot[]> => (await sqlRows(query, CH,
+    `SELECT toInt64(toUnixTimestamp(toStartOfFiveMinutes(observed_at))) * 1000 AS slot, count() AS good FROM ${rows.table} WHERE ${rows.where}observed_at >= ${ms(from)} AND observed_at < ${ms(holdTo)} GROUP BY slot`))
     .map(row => ({ slot: num(row.slot) ?? 0, good: num(row.good) ?? 0 }));
   const window = `observed_at >= ${ms(geoFrom)} AND observed_at < ${ms(geoTo)}`;
   const hourOf = "toInt64(toUnixTimestamp(toStartOfHour(observed_at))) * 1000";
-  const [panels, igSlots, ttsSlots, deployPoints, meta, others, census, proxy, adLibrary, queues, refresh] = await Promise.all([
+  const [panels, igSlots, ttsSlots, deployPoints, writerLag, meta, others, census, proxy, adLibrary, queues, refresh] = await Promise.all([
     step("dashboards", () => readPanels(api)),
-    step("instagram rate", () => slotsOf(GOOD_ROWS.instagram)),
+    step("instagram rate", () => slotsOf(GOOD_ROWS.instagram, lagFrom)),
     step("tiktok shop rate", () => slotsOf(GOOD_ROWS.tiktokShop)),
-    step("prod deploys", async () => (await promRange(query, PROM.prod, DEPLOY_EXPR, holdFrom, holdTo, SLOT_MS)).flatMap(series => series.points)),
+    step("prod deploys", async () => (await promRange(query, PROM.prod, DEPLOY_EXPR, lagFrom, holdTo, SLOT_MS)).flatMap(series => series.points)),
+    step("census writer lag", async () => lagSlots((await promRange(query, PROM.prod, WRITER_LAG_EXPR, lagFrom + SLOT_MS, holdTo, SLOT_MS)).flatMap(series => series.points))),
     step("meta ads walks", async () => {
       const row = (await sqlRows(query, PG.prod, META_SQL))[0];
       if (!row) throw new Error("meta_ads_walks answered no row");
@@ -518,7 +554,9 @@ export async function measure(query: DsQuery | null, api: GrafanaApi | null, aut
   }
   const deploys = deploySlots(deployPoints ?? []);
   d.deployMinutes = [...deploys].filter(slot => slot >= holdFrom && slot < holdTo).length * SLOT_MS / MINUTE;
-  Object.assign(d, panels && { panels }, igSlots && { igSlowest: slowestHour(igSlots, holdFrom, holdTo, deploys), igLast30: lastHalfHour(igSlots, holdTo) },
+  const holding = igSlots?.filter(s => s.slot >= holdFrom);
+  Object.assign(d, igSlots && writerLag && deployPoints && { igSlots24h: igSlots, writerLag, deploys24h: [...deploys] },
+    panels && { panels }, holding && { igSlowest: slowestHour(holding, holdFrom, holdTo, deploys), igLast30: lastHalfHour(holding, holdTo) },
     ttsSlots && { ttsSlowest: slowestHour(ttsSlots, holdFrom, holdTo, deploys) }, meta && { meta }, others && { others },
     adLibrary && { adLibrary }, queues && { queues }, refresh && { refresh });
   return d;

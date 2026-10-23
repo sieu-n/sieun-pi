@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { type BoardItem, GOOD_ROWS, REFRESH_SEEDS, type ThroughputData, backlogged, boardGoal, deploySlots, geonodeHours, geonodeMbps, goalRows, grew, interpolate, lastHalfHour,
-  missed, panelQueries, panelState, refreshShares, refreshSql, report, slowestHour } from "../scripts/duties/throughput-goal.ts";
+  lagSlots, missed, panelQueries, panelState, refreshShares, refreshSql, report, slowestHour, writerLagAtRate } from "../scripts/duties/throughput-goal.ts";
 import type { DutyMetric } from "../src/shared/chat-duties.ts";
 
 const METRICS: DutyMetric[] = [
@@ -13,6 +13,7 @@ const METRICS: DutyMetric[] = [
   { key: "geonode_mbps", label: "mbps", op: ">=", target: 100 },
   { key: "ig_queues_growing_6h", label: "queues", op: "<=", target: 0 },
   { key: "crawler_panels_blank", label: "panels", op: "<=", target: 0 },
+  { key: "census_pg_writer_lag_max_24h", label: "writer lag", op: "<=", target: 5_000 },
 ] as DutyMetric[];
 const NOW = Date.parse("2026-10-22T06:38:00Z");
 const FROM = Date.parse("2026-10-21T15:03:00Z");
@@ -197,4 +198,26 @@ test("the refresh age sums ten 0.1% samples, leaves GONE rows out and reads unme
   assert.deepEqual(read.map(row => missed(row)), [false, false]);
   const failed = goalRows(base({ board: BOARD, errors: [{ source: "refresh age", message: "Grafana HTTP 400: canceling statement due to statement timeout" }] }));
   assert.deepEqual(failed.filter(row => row.item === "p683" || row.item === "p829").map(row => row.value), [null, null]);
+});
+
+test("the census writer's worst lag counts only slots at p826's rate outside deploys (p895, 10-22 06:00-08:00Z)", () => {
+  const from = Date.parse("2026-10-22T06:00:00Z");
+  const at = (index: number): number => from + index * 300_000;
+  // 10,900 a minute in slots 0-2, 4,000 in slot 3, and slot 2 under a deploy.
+  const ig = [0, 1, 2, 3].map(index => ({ slot: at(index), good: (index === 3 ? 4_000 : 10_900) * 5 }));
+  // A lag point at t covers the slot that ends at t.
+  const lag = lagSlots([[at(1), 3_000], [at(2), 17_425], [at(3), 40_000], [at(4), 90_000]]);
+  assert.deepEqual(writerLagAtRate(ig, lag, new Set([at(2)]), 10_000), { lag: 17_425, slot: at(1), slots: 2 });
+  assert.equal(writerLagAtRate(ig.map(s => ({ ...s, good: 4_000 * 5 })), lag, new Set(), 10_000), null);
+});
+
+test("the writer lag metric reads 24 h of slots, and no slot at p826's rate leaves it unmeasured", () => {
+  const from = NOW - 24 * 3_600_000;
+  const slot = Math.floor(from / 300_000) * 300_000 + 300_000;
+  const met = report(base({ board: BOARD, igSlots24h: [{ slot, good: 55_000 }], writerLag: [{ slot, good: 2_613 }], deploys24h: [] }), METRICS);
+  assert.equal(met.metrics.census_pg_writer_lag_max_24h, 2_613);
+  assert.match(met.flagged!.find(f => f.kind === "writer_lag")!.excerpt, /lagged 2,613 records at most over 24 h/);
+  const slow = report(base({ board: BOARD, igSlots24h: [{ slot, good: 20_000 }], writerLag: [{ slot, good: 50_000 }], deploys24h: [] }), METRICS);
+  assert.ok(slow.metrics.census_pg_writer_lag_max_24h! > 5_000);
+  assert.ok(slow.flagged!.some(f => f.kind === "unmeasured" && f.excerpt.includes("census_pg_writer_lag_max_24h")));
 });
