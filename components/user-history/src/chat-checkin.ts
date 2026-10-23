@@ -193,7 +193,7 @@ export function checkInPrecheck(previous: CheckInMemory | undefined, facts: read
     waitsMet: context.boardError ? [] : [...waitsMet(goaled, board, context.rows ?? [], self), ...deadRunWaits(goaled, context.train, now)],
     stale: context.boardError ? [] : staleSteps(board, facts, item => steps[item.id] ? recordedAt(steps[item.id]!) : now, self, context.everyMs ?? CHECK_IN_MS, now,
       context.rows ?? [], context.train),
-    fold, load: oneSessionLoad(goaled, context.jobs, context.subagents),
+    fold, load: oneSessionLoad(goaled, context.jobs, context.subagents, new Set([...context.queued?.keys() ?? [], ...context.asleep ?? []])),
     heartbeats: redundantHeartbeats(context.heartbeats ?? [], context.duties ?? []), noDuty: context.boardError || !context.duties ? [] : goalsWithoutDuty(board, context.duties, now), facts: notes,
     noDoneLine: context.boardError ? [] : goalsWithoutDoneLine(board), risks: context.boardError ? [] : planRiskSteps(board),
     metOpen: context.boardError ? [] : metOpenItems(board?.plan ?? []),

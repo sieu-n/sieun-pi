@@ -34,9 +34,14 @@ export const SESSION_LOAD_STEPS_PER_JOB = 3;
  * The other sessions that carry too much of one goal: per open goal, a thread owns more than SESSION_LOAD_MAX of its open steps, or more than
  * half of them when the goal has at least 4, and has fewer working subagents (`subagents`, the daemon's roster by parent session) than one per
  * SESSION_LOAD_STEPS_PER_JOB of those steps. A thread is another session the step names as its owner (a `thread:` link, a session id or name);
- * the chat's own steps, its subagents and the roots it started (`jobs`, ids or names from the job registry) never count.
+ * the chat's own steps, its subagents and the roots it started (`jobs`, ids or names from the job registry) never count. A subagent works when
+ * it runs or its session is in `live`, the sessions queued in pi-pool's turn queue or asleep on a board.wake. A step with a `waitFor` or
+ * `waitUntil` waits on purpose, such as for a land, and leaves its thread no work, so it is no load. On 10-23 from 15:50Z to 18:31Z the six
+ * builders of "data model on metal" waited 1,842 to 2,376 s in pi-pool's turn queue before each turn (pi-pool log), and from 16:00Z to 16:45Z
+ * all six sat queued with none running, so the roster read none of them as working.
  */
-export function oneSessionLoad(views: readonly StepView[], jobs: readonly string[] = [], subagents: ReadonlyMap<string, readonly ChildAgent[]> = new Map()): SessionLoad[] {
+export function oneSessionLoad(views: readonly StepView[], jobs: readonly string[] = [], subagents: ReadonlyMap<string, readonly ChildAgent[]> = new Map(),
+  live: ReadonlySet<string> = new Set()): SessionLoad[] {
   const own = new Set(jobs);
   const goals = new Map<string, { goal: { id: string; text: string }; open: number; by: Map<string, { thread: { id: string; name: string }; steps: PlanItem[] }> }>();
   for (const view of views) {
@@ -47,13 +52,13 @@ export function oneSessionLoad(views: readonly StepView[], jobs: readonly string
     const owner = view.mine ? undefined : view.owner;
     if (!owner?.key.startsWith("thread:")) continue;
     const id = owner.key.slice("thread:".length);
-    if (own.has(id) || own.has(owner.name)) continue;
+    if (own.has(id) || own.has(owner.name) || view.item.waitFor || view.item.waitUntil) continue;
     const held = entry.by.get(id) ?? { thread: { id, name: owner.name }, steps: [] };
     held.steps.push(view.item);
     entry.by.set(id, held);
   }
   return [...goals.values()].flatMap(({ goal, open, by }) => [...by.values()].flatMap(held => {
-    const working = (subagents.get(held.thread.id) ?? []).filter(childWorking).length;
+    const working = (subagents.get(held.thread.id) ?? []).filter(child => childWorking(child) || (child.sessionId !== undefined && live.has(child.sessionId))).length;
     const heavy = held.steps.length > SESSION_LOAD_MAX || (open >= 4 && held.steps.length * 2 > open);
     return heavy && working * SESSION_LOAD_STEPS_PER_JOB < held.steps.length ? [{ goal, ...held, open, working }] : [];
   }));

@@ -37,3 +37,17 @@ test("a thread that works its steps alone, or with too few working subagents, is
   assert.match(sessionLoadLine(load[1]!), /has 8 of its 23 open steps on the data model on metal thread \(thread:01a1692c-9f57-7562-b7e7-f57c0252fcbc\), which runs 2 working jobs of its own: p70/);
   assert.deepEqual(oneSessionLoad(views).map(entry => entry.thread.name), THREADS.map(([, name]) => name));
 });
+
+test("a subagent queued in pi-pool's turn queue or asleep on a wake works, and a step that waits on purpose is no load", () => {
+  // 10-23 16:00Z: the six builders of data model on metal all sat in pi-pool's turn queue, so the roster listed none as running.
+  const builders = children(0, 6).map((child, index) => ({ ...child, sessionId: `01a16974-000${index}` }));
+  const roster = new Map([[APP, children(8, 2)], [DATA, builders], [MAIL, children(2, 2)]]);
+  const live = new Set(builders.slice(0, 3).map(child => child.sessionId));
+  assert.deepEqual(oneSessionLoad(views, [], roster, live), []);
+  assert.deepEqual(oneSessionLoad(views, [], roster, new Set()).map(entry => [entry.thread.id, entry.working]), [[DATA, 0]]);
+  // p73, p75 and p76 wait for the land of one branch and p77 for a time, so the thread holds 4 steps, which 2 queued builders cover.
+  const waiting = views.map(view => ["p73", "p75", "p76"].includes(view.item.id) ? { ...view, item: { ...view.item, waitFor: "the land of dev/sieun-mac-schema-unify" } }
+    : view.item.id === "p77" ? { ...view, item: { ...view.item, waitUntil: "2026-10-24T00:00:00Z" } } : view);
+  assert.deepEqual(oneSessionLoad(waiting, [], roster, new Set(builders.slice(0, 2).map(child => child.sessionId))), []);
+  assert.equal(oneSessionLoad(views, [], roster, new Set(builders.slice(0, 2).map(child => child.sessionId))).length, 1);
+});
