@@ -24,3 +24,11 @@ test("the board skill's Waits section says a wait needs a mover and promises no 
   assert.match(waits, /A wait needs something that moves it/);
   assert.match(waits, /`endState`/);
 });
+
+test("the board skill's Waits section says a wake that finds the wait still open sets the next one", () => {
+  // On 10-23 the job s3int5 install got its 18:16Z wake, read no clearance from chat-057a in its 18:48Z turn, and ended that turn with no new wake.
+  const skill = readFileSync(new URL("../../../skills/board/SKILL.md", import.meta.url), "utf8");
+  const waits = skill.slice(skill.indexOf("### Waits"), skill.indexOf("\n## ", skill.indexOf("### Waits")));
+  assert.match(waits, /the wait still holds, set the next `board\.wake` before that turn ends/);
+  assert.match(waits, /a promise to message is no mover/);
+});
