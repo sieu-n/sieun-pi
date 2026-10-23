@@ -248,7 +248,7 @@ export class Chats {
   private rootsSweptAt = -Infinity;
   private passWaits = false;
   /**
-   * True once the first tick ran and the passes it queued ended, with the passes those queued (#jobs queues #interrupted). GET /ready answers it,
+   * True once the #jobs pass of the first tick and the #interrupted pass it queued ended; check-in lanes can run minutes and are left out. GET /ready answers it,
    * and scripts/release-chat.mjs keeps a new release on trial until then: on 10-23 release fbd5a0a0 answered 3 s after each start and passed the
    * release's 8 s check, then the #interrupted pass of its first tick threw 30 s after each start, and the service crash-looped for 3.5 min.
    */
@@ -762,7 +762,13 @@ export class Chats {
     if (now - this.deletedSweptAt >= JOB_CLEANUP_EVERY_MS) { this.deletedSweptAt = now; this.queue("#deleted", () => this.sweepDeleted()); }
     if (!this.ticked) {
       this.ticked = true;
-      void (async () => { for (let round = 0; round < 2; round++) await Promise.all([...this.syncing.values()]); this.ready = true; })();
+      const started = this.now();
+      void (async () => {
+        await this.syncing.get("#jobs");
+        await this.syncing.get("#interrupted");
+        this.ready = true;
+        this.log(`chats: first pass ended ${Math.round((this.now() - started) / 1000)} s after the first tick`);
+      })();
     }
     return due;
   }
