@@ -50,7 +50,7 @@ export interface BrowserSwitch { id: string; ms: number | null; lines?: number }
 export interface BrowserOutput { loads: BrowserLoad[]; tabs: { switches: BrowserSwitch[]; banner?: string | null } | { error: string }; load?: number; ms?: number; error?: string }
 /** `create` is the send that rides on the create call, which also waits on the Mac's worker start. */
 export interface SendTiming { marker: string; sentAt: number; firstTokenAt: number; create?: boolean }
-export interface Reading { value?: number; flagged: FlaggedSlice[] }
+export interface Reading { value?: number; flagged: FlaggedSlice[]; lastEventAt?: number }
 
 export const median = (values: readonly number[]): number | undefined => {
   if (!values.length) return undefined;
@@ -129,6 +129,8 @@ const timeOf = (line: string): number => Date.parse(line.slice(0, line.indexOf("
  * exited" after the release's restart and before the next release or `RELEASE_WINDOW_MS`, which leaves the page on its red banner. The owner
  * outbox keeps a send on disk and retries it across restarts, so a release loses no page message by itself; the agent outbox's "message ...
  * dropped" lines are sends to sessions that are gone, 9 in the 24 h to 10-19 15:30Z and 4 of them away from any release, so they do not count.
+ * `lastEventAt` is the newest broken release's stop, the time the 24 h window keys on, and none with no break. AI harness d9 read the count as a
+ * lagging window on 10-23 because it had none.
  */
 export function releaseBreaks(journal: string, now: number): Reading {
   const reading: Reading = { flagged: [] };
@@ -144,6 +146,7 @@ export function releaseBreaks(journal: string, now: number): Reading {
     const found = exits.filter(exit => exit.at > restart && exit.at < end);
     if (!found.length) return;
     broken++;
+    reading.lastEventAt = stop;
     reading.flagged.push({ at: stop, kind: "release_break", item: new Date(stop).toISOString(),
       excerpt: `the release at ${new Date(stop).toISOString()}: ${found.length} break${found.length > 1 ? "s" : ""}, first ${found[0]!.text}`.slice(0, 600) });
   });
@@ -294,7 +297,12 @@ export async function measure(chatId: string): Promise<PrecheckOutput> {
   const metrics: Record<string, number> = {};
   const flagged: FlaggedSlice[] = [];
   const sourceError = (excerpt: string) => flagged.push({ at, kind: "source_error", excerpt: excerpt.slice(0, 600) });
-  const take = (key: string, reading: Reading) => { if (reading.value !== undefined) metrics[key] = reading.value; flagged.push(...reading.flagged); };
+  const lastEventAt: Record<string, number> = {};
+  const take = (key: string, reading: Reading) => {
+    if (reading.value !== undefined) metrics[key] = reading.value;
+    if (reading.lastEventAt !== undefined) lastEventAt[key] = reading.lastEventAt;
+    flagged.push(...reading.flagged);
+  };
 
   if (browser instanceof Error) sourceError(`the headless page on the Mac did not run, so tab switch and cold load are not measured: ${browser.message}`);
   else {
@@ -311,7 +319,7 @@ export async function measure(chatId: string): Promise<PrecheckOutput> {
 
   if (journal instanceof Error) sourceError(`journalctl for sieun-pi-chat: ${journal.message}`);
   else take("release_breaks_24h", releaseBreaks(journal, at));
-  return { metrics, flagged };
+  return { metrics, flagged, ...Object.keys(lastEventAt).length ? { lastEventAt } : {} };
 }
 
 async function main(): Promise<void> {

@@ -238,7 +238,7 @@ test("a subscribe that answers after the first turn ended reads its end from the
 
 const journal = (lines: string[]) => lines.map(line => `${line.slice(0, 32)} us-metal02 systemd[257985]: ${line.slice(33)}`).join("\n");
 
-test("a release counts as broken when the service exits after its restart within the window, and message drops do not count", () => {
+test("a release counts as broken when the service exits after its restart within the window, names the newest broken release as lastEventAt, and message drops do not count", () => {
   const text = journal([
     "2026-10-18T10:00:00.000000+00:00 Stopping sieun-pi-chat.service - sieun-pi browser chat on 127.0.0.1:5182...",
     "2026-10-18T10:00:02.000000+00:00 Started sieun-pi-chat.service - sieun-pi browser chat on 127.0.0.1:5182.",
@@ -257,4 +257,6 @@ test("a release counts as broken when the service exits after its restart within
   assert.deepEqual(reading.flagged.map(item => item.item ?? item.kind), ["2026-10-19T01:14:15.208Z", "releases"]);
   assert.match(reading.flagged[0]!.excerpt, /1 break, first Main process exited, code=exited, status=1\/FAILURE/);
   assert.equal(reading.flagged[1]!.excerpt, "4 chat releases in 24 h, 1 with a break");
+  assert.equal(reading.lastEventAt, Date.parse("2026-10-19T01:14:15.208Z"));
+  assert.equal(releaseBreaks(text.split("\n").filter(line => !line.includes("Main process exited")).join("\n"), at).lastEventAt, undefined);
 });
