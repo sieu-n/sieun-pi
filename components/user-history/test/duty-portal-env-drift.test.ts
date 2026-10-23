@@ -5,7 +5,7 @@ import { test } from "node:test";
 import { blobFingerprint, uptimeMetrics } from "../scripts/duties/portal-uptime.ts";
 
 const UP = [{ labels: { target: "crawler_health" }, value: 1 }, { labels: { target: "crawler_schema" }, value: 1 }, { labels: { target: "portal_openapi" }, value: 1 }];
-const ANSWERS = { up: UP, uptime: UP, age: UP.map(series => ({ ...series, value: 60 })), p90: [{ labels: { target: "portal_openapi" }, value: 400 }] };
+const ANSWERS = { up: UP, uptime: UP, age: UP.map(series => ({ ...series, value: 60 })), p90: [{ labels: { target: "portal_openapi" }, value: 400 }], lastDown: [] };
 const DIRECT = { status: 200, ms: 150 };
 const PROD = "DOTENV_PUBLIC_KEY=\"x\"\nCRAWLER_API_KEY=encrypted:a\nCRAWLER_API_URL=encrypted:b\n";
 const STAGING = "DOTENV_PUBLIC_KEY_STAGING=\"y\"\nCRAWLER_API_KEY=encrypted:c\nCRAWLER_API_URL=encrypted:d\nBATCH_WORKER_SECRET=encrypted:e\n";
@@ -58,4 +58,16 @@ test("an unread live blob falls back to main's .env and says so", () => {
 test("the fingerprint is vercel-blobs.mjs's: trailing whitespace dropped, one final newline", () => {
   assert.equal(blobFingerprint("A=1\n\n  "), blobFingerprint("A=1"));
   assert.match(blobFingerprint("A=1"), /^[0-9a-f]{16}$/);
+});
+
+test("the 24 h uptime gives the time of its newest failed probe minute, and a full 100% gives none (10-23 d9: d1 stayed red 44 runs after the 10-22 pg_wal cutovers)", () => {
+  const uptime = [{ labels: { target: "crawler_health" }, value: 0.98 }, { labels: { target: "crawler_schema" }, value: 0.99 }, { labels: { target: "portal_openapi" }, value: 1 }];
+  const lastDown = [{ labels: { target: "crawler_health" }, value: 1_761_100_000 }, { labels: { target: "crawler_schema" }, value: 1_761_103_600 }];
+  const red = uptimeMetrics({ ...ANSWERS, uptime, lastDown }, DIRECT, 0);
+  assert.ok(red.metrics.probe_uptime_24h_pct! < 100);
+  assert.deepEqual(red.lastEventAt, { probe_uptime_24h_pct: 1_761_103_600_000 });
+  assert.equal(uptimeMetrics(ANSWERS, DIRECT, 0).lastEventAt, undefined);
+  const unread = uptimeMetrics({ ...ANSWERS, uptime, lastDown: { error: "HTTP 500" } }, DIRECT, 0);
+  assert.equal(unread.lastEventAt, undefined);
+  assert.ok(unread.flagged!.some(flag => flag.kind === "source_error" && flag.excerpt.includes("HTTP 500")));
 });

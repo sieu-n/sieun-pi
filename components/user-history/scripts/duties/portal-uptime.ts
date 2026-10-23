@@ -44,6 +44,8 @@ export const QUERIES = {
   uptime: `avg_over_time(api_probe_up{${SEL}}[24h])`,
   age: `api_probe_age_seconds{${SEL}} + (time() - timestamp(api_probe_age_seconds{${SEL}}))`,
   p90: `quantile_over_time(0.9, api_probe_latency_ms{${SEL},target="portal_openapi"}[24h])`,
+  /** Per target, the newest minute of the last 24 h whose scrapes hold a failed probe, as a unix time in seconds; no series when none failed. */
+  lastDown: `max_over_time(timestamp(min_over_time(api_probe_up{${SEL}}[1m]) < 1)[24h:1m])`,
 } as const;
 export type QueryName = keyof typeof QUERIES;
 
@@ -58,6 +60,9 @@ export type Answers = Record<QueryName, Series[] | { error: string }>;
  * - probe_age_min <= 15: the rule api-portal-probe-stale fires when api_probe_age_seconds is over 900 s (the cron probes every 300 s).
  * - env_keys_staging_only <= 0: a key the staging blob has and the prod blob lacks is a prod setting that is missing, so none is allowed.
  * source_errors goes to the run detail: a query with no answer already fails the metric that needed it.
+ * probe_uptime_24h_pct gives `lastEventAt`, the epoch ms of the newest minute with a failed probe round it counts (QUERIES.lastDown, to the
+ * minute), and none when it reads 100 or was not read. On 10-23 d9 asked for it because the 24 h share stayed red 44 runs in a row after the
+ * 10-22 pg_wal cutovers were fixed, so a share no new failure lowered now reads quiet and a fresh failure reads live, as d4's counts do.
  * The note's portal_openapi_p90_ms <= 2000 is printed for the job but not scored, because no measurement or incident backs 2000 ms
  * (measured p90 on 2026-10-12 was 360 ms). The note's dm_senders_prod is left out, see the header.
  */
@@ -120,6 +125,12 @@ export function uptimeMetrics(answers: Answers, direct: { status: number; ms: nu
   const uptime = read("uptime", TARGETS);
   metrics.probe_uptime_24h_pct = uptime ? round(100 * uptime.reduce((sum, series) => sum + series.value, 0) / uptime.length, 2) : UNMEASURED_PCT;
   for (const series of uptime ?? []) if (series.value < 1) flagged.push({ at, kind: "uptime", excerpt: `prod api probe ${series.labels.target} passed ${round(100 * series.value, 2)}% of scrapes over 24 h` });
+  const lastEventAt: Record<string, number> = {};
+  const lastDown = answers.lastDown;
+  if (uptime && metrics.probe_uptime_24h_pct < 100) {
+    if ("error" in lastDown) { sourceErrors++; flagged.push({ at, kind: "source_error", excerpt: `Grafana gave no answer to ${QUERIES.lastDown}: ${lastDown.error}`.slice(0, 300) }); }
+    else if (lastDown.length) lastEventAt.probe_uptime_24h_pct = 1000 * Math.max(...lastDown.map(series => series.value));
+  }
 
   const age = read("age", TARGETS);
   metrics.probe_age_min = age ? round(Math.min(...age.map(series => series.value)) / 60) : UNMEASURED;
@@ -157,7 +168,7 @@ export function uptimeMetrics(answers: Answers, direct: { status: number; ms: nu
   }
   metrics.env_keys_staging_only = envRead ? stagingOnly.size : UNMEASURED;
   metrics.source_errors = sourceErrors;
-  return { metrics, flagged };
+  return { metrics, flagged, ...Object.keys(lastEventAt).length ? { lastEventAt } : {} };
 }
 
 /** Grafana basic auth from auto-sns-agent apps/infra/aws/secrets.env, as crawler-pipeline.mjs reads it. */
