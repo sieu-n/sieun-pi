@@ -47,7 +47,8 @@ export function jobResumes(dir: string): JobResumes {
       const names = (await readdir(folder).catch(() => [] as string[])).filter(name => name.endsWith(".json"));
       const read = await Promise.all(names.map(async name => {
         const path = join(folder, name);
-        try { return [{ path, resume: JSON.parse(await readFile(path, "utf8")) as JobResume }]; } catch { return []; }
+        const resume = parseJobResume(await readFile(path, "utf8").then(text => JSON.parse(text) as unknown, () => null));
+        return resume ? [{ path, resume }] : [];
       }));
       return read.flat();
     },
@@ -55,6 +56,23 @@ export function jobResumes(dir: string): JobResumes {
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+const strings = (value: unknown): value is string[] => Array.isArray(value) && value.every(item => typeof item === "string");
+
+/**
+ * A saved state file's content, parsed at the boundary; null when it is not one. us-metal02 10-23: one file under job-resumes held
+ * `{"check-in stuck root cause": ..., ...}` with no steps, and the first job sweep of fbd5a0a0 threw on it and stopped the service 4 times.
+ */
+export function parseJobResume(value: unknown): JobResume | null {
+  if (!isRecord(value) || typeof value.chat !== "string" || typeof value.childId !== "string" || typeof value.job !== "string" || !strings(value.steps) ||
+    typeof value.endedAt !== "number" || !Number.isFinite(value.endedAt)) return null;
+  const model = isRecord(value.model) && typeof value.model.provider === "string" && typeof value.model.modelId === "string"
+    ? { provider: value.model.provider, modelId: value.model.modelId, ...isThinkingLevel(value.model.thinkingLevel) ? { thinkingLevel: value.model.thinkingLevel } : {} } : undefined;
+  const resumed = isRecord(value.resumed) && typeof value.resumed.id === "string" && typeof value.resumed.name === "string" ? { id: value.resumed.id, name: value.resumed.name } : undefined;
+  return { chat: value.chat, childId: value.childId, job: value.job, steps: value.steps, event: typeof value.event === "string" ? value.event : "",
+    brief: typeof value.brief === "string" ? value.brief : "", report: typeof value.report === "string" ? value.report : "", endedAt: value.endedAt,
+    ...model ? { model } : {}, ...resumed ? { resumed } : {} };
+}
+
 /** Entries a session file's head holds before its first message: the header, model_change, thinking_level_change and a few more. */
 const HEAD_LINES = 12;
 
@@ -173,7 +191,7 @@ export function replacedJob(resume: JobResume, plan: readonly PlanItem[]): { id?
   const name = resume.resumed?.name ?? resumeJobName(resume.job, resume.endedAt);
   const id = resume.resumed?.id;
   const items: PlanItem[] = [];
-  const walk = (list: readonly PlanItem[]): void => { for (const item of list) { items.push(item); walk(item.children); } };
+  const walk = (list: readonly PlanItem[]): void => { for (const item of list) { items.push(item); walk(item.children ?? []); } };
   walk(plan);
   if (items.some(item => item.job === name || (id !== undefined && item.sessionId === id))) return undefined;
   const steps = items.flatMap(item => resume.steps.includes(item.id) && item.job !== undefined && item.job !== resume.job

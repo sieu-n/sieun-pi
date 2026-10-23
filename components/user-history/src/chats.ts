@@ -351,8 +351,13 @@ export class Chats {
   }
 
   /** Tasks of one thread run one after another; `settled` resolves once every queue is empty, for tests. */
+  /**
+   * Runs `task` after the key's last one. A task that throws is logged, so it never ends the service with an unhandled rejection or skips the
+   * key's later tasks: on 10-23 a throw in the #interrupted pass stopped the us-metal02 service 4 times from 01:22Z.
+   */
   private queue(id: string, task: () => Promise<void>): void {
-    const next = (this.syncing.get(id) ?? Promise.resolve()).then(task);
+    const next = (this.syncing.get(id) ?? Promise.resolve()).then(task)
+      .catch((error: unknown) => this.log(`chats: ${id.slice(0, 12)}: ${error instanceof Error ? error.message : String(error)}`));
     this.syncing.set(id, next);
     void next.finally(() => { if (this.syncing.get(id) === next) this.syncing.delete(id); });
   }
@@ -1097,9 +1102,15 @@ export class Chats {
         this.passWaits = true;
         this.queue("#interrupted", async () => {
           this.passWaits = false;
-          const replaced = await this.replacedRoots(swept);
-          this.replaced = new Set(replaced.map(job => job.id));
-          for (const job of replaced) await this.retireReplaced(job);
+          // A failed read retires nothing this pass and keeps the last set; it never stops the pass or the service.
+          const replaced = await this.replacedRoots(swept).catch(error => {
+            this.log(`chats: replaced roots: ${error instanceof Error ? error.message : String(error)}`);
+            return null;
+          });
+          if (replaced) {
+            this.replaced = new Set(replaced.map(job => job.id));
+            for (const job of replaced) await this.retireReplaced(job);
+          }
           if (!resume) return;
           const hidden = new Set(await this.mine([...await this.archivedIds()]).catch(() => []));
           await resumeChatJobs(swept, this.chatIds, resume, line => this.log(line), await this.stepOwners(swept), this.heldJobs, hidden, this.replaced);
