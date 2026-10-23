@@ -223,10 +223,56 @@ function blankTestSends(sites: string, code: string, call: RegExp): string {
 	return sites.replace(call, (text: string, offset: number) => (sendTarget(RESEND_EMAILS, balancedSlice(code, offset + text.length - 1)) ? text : " ".repeat(text.length)));
 }
 
+const JS_FETCH = /(?<![\w$.])(?:globalThis\s*\.\s*)?fetch\s*\(/g;
+
+/** Where the string or template literal that opens `text` at `start` ends, or -1 when `text` has no literal there. */
+function literalEnd(text: string, start: number): number {
+	const quote = text[start];
+	if (quote !== "'" && quote !== '"' && quote !== "`") return -1;
+	let depth = 0;
+	for (let i = start + 1; i < text.length; i++) {
+		if (text[i] === "\\") i++;
+		else if (quote === "`" && text.startsWith("${", i)) {
+			depth++;
+			i++;
+		} else if (depth && text[i] === "}") depth--;
+		else if (!depth && text[i] === quote) return i + 1;
+	}
+	return -1;
+}
+
+/** True for fetch options that leave the method GET: an inline object with no spread whose every method key is a literal GET or HEAD. */
+function readOnlyOptions(options: string): boolean {
+	if (!/^\{[\s\S]*\}$/.test(options) || options.includes("...")) return false;
+	return (options.match(/\bmethod\b[^,}]*/g) ?? []).every((m) => /^method\s*:\s*["'`](?:GET|HEAD)["'`]\s*$/i.test(m));
+}
+
+/**
+ * `code` with the URL of each fetch that only reads blanked out, so a GET to a mail API does not pair with a POST to another host.
+ * A fetch reads when its URL is a literal and its options are absent or an inline object with no spread and no method, or a literal GET or HEAD.
+ */
+function blankReadFetches(code: string): string {
+	let out = code;
+	JS_FETCH.lastIndex = 0;
+	let call: RegExpExecArray | null;
+	while ((call = JS_FETCH.exec(code)) !== null) {
+		const open = call.index + call[0].length - 1;
+		const args = balancedSlice(code, open);
+		const start = args.length - args.trimStart().length;
+		const end = literalEnd(args, start);
+		if (end === -1) continue;
+		const options = args.slice(end).trim().replace(/^,/, "").replace(/,$/, "").trim();
+		if (options && !readOnlyOptions(options)) continue;
+		const at = open + 1 + start;
+		out = out.slice(0, at) + " ".repeat(end - start) + out.slice(at + end - start);
+	}
+	return out;
+}
+
 /** Sends written in a JavaScript or TypeScript script: an HTTP write to a send target, nodemailer, or a mail or message SDK. */
 export function judgeSendJs(code: string): string | null {
 	const writes = /\bmethod\s*:\s*["'`](?:POST|PUT|PATCH)["'`]|\.\s*(?:post|put|patch)\s*\(/i.test(code);
-	const target = writes ? (code.match(URL_TEXT) ?? []).map((u) => sendTarget(u, code)).find(Boolean) : null;
+	const target = writes ? (blankReadFetches(code).match(URL_TEXT) ?? []).map((u) => sendTarget(u, code)).find(Boolean) : null;
 	if (target) return `this script writes to ${target}`;
 	if (/\bcreateTransport\s*\(/.test(code) && /\.\s*sendMail\s*\(/.test(code)) return "this script sends mail with nodemailer";
 	const sdkCall = /\bresend\b/i.test(code) ? JS_RESEND_SEND_ANY : JS_RESEND_SEND;

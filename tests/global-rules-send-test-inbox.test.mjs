@@ -88,3 +88,41 @@ test("a send with any recipient outside resend.dev, or one it cannot read, is st
   refused(bash(`node ${script}`), "node batch with a customer");
   assert.ok(send.sendTarget("https://api.sendgrid.com/v3/mail/send", '{"to":["delivered@resend.dev"]}'), "resend.dev is only Resend's test inbox");
 });
+
+// On 10-23 the guard refused scripts/staging/mail-check.mjs, which POSTs to Clerk and Convex and only GETs from api.resend.com.
+const CLERK_CONVEX = [
+  "const clerk = (path, init = {}) => fetch(`https://api.clerk.com/v1${path}`, { method: init.method ?? 'GET', body: JSON.stringify(init.body) });",
+  "await clerk('/organizations', { method: 'POST', body: { name: 'x' } });",
+  "await fetch(`${env.convexSite}/admin`, { method: 'POST', body: '{}' });",
+].join("\n");
+const READS = [
+  "const headers = { Authorization: `Bearer ${key}` };",
+  "await fetch(`https://api.resend.com/emails/${id}`, {\n  headers,\n  signal: AbortSignal.timeout(TIMEOUT_MS),\n});",
+  "await fetch('https://api.resend.com/emails/receiving');",
+  'await fetch("https://api.resend.com/emails/abc", { method: "GET", headers });',
+].join("\n");
+
+test("a script that writes to other hosts and only GETs from Resend passes", () => {
+  assert.equal(send.judgeSendJs(`${CLERK_CONVEX}\n${READS}\n`), null);
+  const script = join(root, "mail-check.mjs");
+  writeFileSync(script, `${CLERK_CONVEX}\n${READS}\n`);
+  assert.equal(bash(`node ${script} deployed --sha 93da7ce2e`), undefined);
+});
+
+test("a Resend write next to Resend reads is still refused", () => {
+  for (const code of [
+    "await fetch('https://api.resend.com/emails', { method: 'POST', headers, body: JSON.stringify({ to: 'bob@example.com' }) });",
+    "await new Resend(key).emails.send({ from: 'a@slack.green', to: ['bob@example.com'] });",
+    "await fetch('https://api.resend.com/emails', { method: m, body });",
+    "await fetch('https://api.resend.com/emails', { method, body });",
+    "await fetch('https://api.resend.com/emails', options);",
+    "await fetch('https://api.resend.com/emails', { ...init, headers });",
+    "const SEND = 'https://api.resend.com/emails';\nawait fetch(SEND, { method: 'POST', body });",
+  ]) {
+    const file = `${CLERK_CONVEX}\n${READS}\n${code}\n`;
+    assert.ok(send.judgeSendJs(file), code);
+    const script = join(root, "mail-send.mjs");
+    writeFileSync(script, file);
+    refused(bash(`node ${script}`), code);
+  }
+});

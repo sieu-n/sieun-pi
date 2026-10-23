@@ -30,6 +30,8 @@ In bash it covers mail CLIs (`mail -s`, `sendmail`, `msmtp`, `swaks`, `mutt`, `h
 It also covers `gh issue` and `gh pr` writes and `gh api` writes on repos the owner does not own, `stripe invoices send`, `vercel teams invite`, `convex run` of a function whose name sends (`sendEmail`, `emailSend`, `notifyEmail`), and a `cua-driver mcp` started outside the proxy.
 A `convex run` passes when its deployment is this machine's own Convex on a loopback URL and that deployment's `VENT_URL` answers `"mode": "mock"` on `/healthz`, since a mock-mode Vent answers every provider call from its fakes, and only while that deployment holds no SMTP sender, since an SMTP send goes from Convex straight to the sender's server.
 It reads the code that a runner starts: `python -c`, `node -e`, `uv run`, `npx`, and a Python, JavaScript, shell or AppleScript file named on the command line.
+In a JavaScript file, a `fetch` with a literal URL and no method, or a literal `GET` or `HEAD`, only reads, so its URL does not pair with a POST elsewhere in the file.
+Any other write in a file that names a send endpoint is refused.
 It follows `eval` and shell variables set earlier in the same command, such as `URL=...; curl "$URL"`.
 In an ipython cell it also covers `requests`, `httpx` and `urllib` writes to those endpoints, `smtplib` and `yagmail` sends, mail SDK sends (Resend, SendGrid, Postmark), Twilio messages, the Gmail API client's `send`, MCP send or reply tools on mail and ticket servers, and raw `aside` MCP or CLI calls that press Send or ask the Aside agent to send.
 Slack stays allowed everywhere except the desktop app: both Slack workspaces are the owner's own, and the slack-green lab posts in the test workspace every day.
