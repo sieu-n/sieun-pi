@@ -150,7 +150,8 @@ export const TELL_OWNER_DESCRIPTION = "Send the owner one chat message, its own 
   "its result (why done), a decision only he can make (decision), a blocker only he can clear (blocker), or the answer to a question he " +
   "asked (answer), and name that goal, decision, blocker or question in about. A finished goal he asked for, or a plan change he would " +
   "act on (a new land order, a move of his sessions or boxes), is done or decision, never update. News he already got, a fix of your own " +
-  "earlier message and progress on work still going are update, even when the work is a goal or a decision of his. A blocker is one only " +
+  "earlier message and progress on work still going are update, even when the work is a goal or a decision of his. So is a result he " +
+  "never asked for, like a speed-up or cleanup your own job found, even when its step is done. A blocker is one only " +
   "he can clear, and the message says what he must do; an incident or delay a job or another chat already fixes, and its later status, " +
   "is update. A question is its own call, with only the words he needs to answer it. Each decision or todo he must act on is its own point and its own call, even a small one, so three todos are three messages, never one. Any other call there, " +
   "and one with no why, is kept as a note (c117). Write one " +

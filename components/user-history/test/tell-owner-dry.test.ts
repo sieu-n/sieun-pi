@@ -10,6 +10,8 @@ test("tell_owner: the tool description asks for the same dry message as the brie
   assert.match(TELL_OWNER_DESCRIPTION, /best as one dry, plain sentence and at most 2, each of at most 25 words with one fact or ask/);
   assert.match(TELL_OWNER_DESCRIPTION, /no lead-in sentence/);
   assert.match(TELL_OWNER_DESCRIPTION, /A question is its own call/);
+  // 10-23 01:01Z and 01:04Z: a Prompt window speed-up (p917) and a Prime greeting speed-up (p927) went out as results he never asked for.
+  assert.match(TELL_OWNER_DESCRIPTION, /a result he never asked for, like a speed-up or cleanup your own job found, even when its step is done/);
   assert.match(TELL_OWNER_DESCRIPTION, /a status answer gives only the one thing that matters most and the ids of the steps that hold the rest/);
   const c18 = CHAT_BRIEF.find(line => line.includes("(c18)")) ?? "";
   assert.match(c18, /best as one dry, plain sentence and at most 2, each of at most 25 words with one fact or ask/);

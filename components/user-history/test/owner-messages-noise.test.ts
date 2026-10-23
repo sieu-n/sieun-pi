@@ -70,6 +70,18 @@ test("the 10-22 progress relays went out before the still-going fix, and a later
   assert.deepEqual(split.map(line => [line.side, line.fix]), [["before_fix", "208a7bb5"], ["before_fix", "208a7bb5"], ["after_fix", "208a7bb5"]]);
 });
 
+test("the 10-23 Usage hang relay and the p57 staging done went out before the checks that refuse them, and a later one reads after", async () => {
+  // ff9ba241 refuses "the fix is underway (p932)" and 97e7663f refuses a done for a step on staging; a replay of the live release over the
+  // 2,732 lines sent from 10-09 to 10-23 14:30Z refuses both and no needed line (~/work/tell-owner-unasked-p957/replay.md).
+  const fixed = { ...commits, "208a7bb5": "2026-10-22T08:04:48Z", ff9ba241: "2026-10-23T13:39:00Z", "97e7663f": "2026-10-23T14:12:39Z" };
+  const split = await splitNoise([
+    { at: at("2026-10-23T04:46:21Z"), case: "progress relay (cause of the Usage chart hang with its fix still underway, p932, sent on a child-failed wake)" },
+    { at: at("2026-10-23T10:17:58Z"), case: "progress on a goal still going (p57 Google search step on staging while his goal p18 stays open)" },
+    { at: at("2026-10-23T15:00:00Z"), case: "progress relay" },
+  ], async hash => fixed[hash as keyof typeof fixed] ? at(fixed[hash as keyof typeof fixed]!) : undefined);
+  assert.deepEqual(split.map(line => [line.side, line.fix]), [["before_fix", "ff9ba241"], ["before_fix", "97e7663f"], ["after_fix", "ff9ba241"]]);
+});
+
 test("no noise line gives no lastEventAt", () => {
   assert.deepEqual(noiseLastEvent([], firstRun), {});
 });

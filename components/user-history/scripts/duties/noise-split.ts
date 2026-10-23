@@ -23,6 +23,8 @@ export const NOISE_FIXES: readonly { kind: string; fix: string }[] = [
   { kind: "re-ask of an open For you todo", fix: "c541b75c" },
   { kind: "incident status sent as blocker", fix: "c541b75c" },
   { kind: "split answer", fix: "c541b75c" },
+  { kind: "progress relay", fix: "ff9ba241" },
+  { kind: "progress on a goal still going", fix: "97e7663f" },
 ];
 
 export interface NoiseLine { at: number; case: string; side: RepeatSide; fix?: string; /** When `fix` landed, in ms. */ fixed?: number }
