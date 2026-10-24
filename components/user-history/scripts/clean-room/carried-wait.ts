@@ -10,8 +10,11 @@ import { readSession, type RunState, type Scenario, type SessionEvent, type Verd
  * then read goal_gaps 1 and stuck_steps 2 because p6 was no leaf any more. A fresh chat gets one ordinary task whose plan needs a step that
  * waits about 3 h on another step's live job, and nothing says it is a test. The criteria live in the run folder's criteria.md.
  */
-export const TASK = "sample the free space on this box's / every 15 minutes for the next 3 hours, then once that's done check the last sample " +
-  "against a fresh df yourself and write me a short page with all 12 readings and the trend";
+export const TASK = "get a job to sample the free space on this box's / every 15 minutes for the next 3 hours. once that job is done, check its " +
+  "last sample against a fresh df yourself and write me a short page with all 12 readings and the trend";
+/** The first message of run-1 on 10-24, whose chat sampled with one systemd unit and planned no step that waits on another. */
+const EARLIER = ["sample the free space on this box's / every 15 minutes for the next 3 hours, then once that's done check the last sample " +
+  "against a fresh df yourself and write me a short page with all 12 readings and the trend"];
 const STALL_MS = 2 * 60 * 60_000;
 const OPEN = new Set(["todo", "doing", "blocked"]);
 const STEP_FLAGS = new Set(["stalled_steps", "blocked_on_others", "stuck_steps", "stale_chase_24h"]);
@@ -132,7 +135,7 @@ export function judge(run: string, state: RunState, now = Date.now()): { verdict
 
   const head = readSession(chat, [chat]).filter(event => event.at >= state.windowStart);
   const typed = head.filter(event => event.kind === "text" && event.role === "user" && !event.text.trimStart().startsWith("[") &&
-    !state.seeds.some(seed => event.text.includes(seed.slice(0, 60))) && !event.text.includes("<skill") && event.text.trim() !== TASK);
+    !state.seeds.some(seed => event.text.includes(seed.slice(0, 60))) && !event.text.includes("<skill") && ![TASK, ...EARLIER].includes(event.text.trim()));
   const asked = new Map<string, number>();
   for (const event of head) if (event.kind === "sent" && !asked.has(event.to)) asked.set(event.to, event.at);
   const outside = head.filter(event => event.kind === "text" && event.role === "custom" && (event.relation === "parent" || event.relation === "sibling") &&
