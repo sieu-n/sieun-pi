@@ -32,7 +32,7 @@ const board = (nested: boolean): ChatBoard => ({ v: 2, rev: 1, updatedAt: "2026-
 
 const facts = (release: JobFact["state"]): JobFact[] => [
   { key: `thread:${RELEASE}`, sessionId: RELEASE, name: "Look there are a bunch of prime agent threads", state: release, activityAt: NOW - 2 * 60_000,
-    ...release === "working" ? { queued: { place: 10, of: 50 } as never } : {} },
+    ...release === "working" ? { queued: { position: 10, total: 50, since: NOW - 7 * 60_000 } } : {} },
   { key: `thread:${CI}`, sessionId: CI, name: "CI and RepoOps", state: "working", activityAt: NOW, wake: "a board.wake on run 40074231385" },
 ];
 const previous = { at: NOW - 2 * 3_600_000, since: NOW - 3 * 3_600_000, steps: {} } as never;
