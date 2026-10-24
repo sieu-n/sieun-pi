@@ -713,7 +713,7 @@ export function stalledSteps(views: readonly StepView[], memos: Readonly<Record<
     const waits = item.waitFor !== undefined || item.waitUntil !== undefined || view.owner?.key.startsWith("thread:") === true;
     // A wait the CI cache shows over (`greenLater`) is wait_met's to act on, so the step gets one finding.
     if (!waits || view.cls === "live" || view.cls === "foryou" || view.cls === "parked" || heldRun(item) || greenLater(item, train)) return [];
-    if (movesOnPath(item, train, rows, self, now) || outsideMover(view, movers, rows, self) || carried(item, movers)) return [];
+    if (movesOnPath(item, train, rows, self, now) || outsideMover(view, movers, rows, self, now) || carried(item, movers)) return [];
     const memo = memos[item.id];
     const untils = memo?.untils ?? [];
     const pushes = untils.filter((until, index) => index > 0 && Date.parse(until) > Date.parse(untils[index - 1]!)).length;

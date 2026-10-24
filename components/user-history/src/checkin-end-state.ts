@@ -5,6 +5,7 @@ import type { OwnerTodo, PlanItem, SessionRow } from "./shared/types.ts";
 import { landWaitCommits, type WakeWatch } from "./checkin-load.ts";
 import { zTime } from "./checkin-goals.ts";
 import { stallWords } from "./shared/stalled-calls.ts";
+import { WAKE_LATE_MS } from "./wakes.ts";
 import { ago, capacityWait, clip, firstClause, type JobFact, OPEN, ownerLabel, poolWait, quote, STEP_STALE_MS, type StepView, stepOwner, waitCarrier, waitsOnOwner, waitTarget, walk } from "./checkin-steps.ts";
 
 /**
@@ -91,7 +92,7 @@ export function endState(view: StepView, todos: Parameters<typeof heldByTodo>[1]
   if (carrier) return out("moving", `its wait is on ${ownerLabel(carrier)}, which ${carrier.wake ? `sleeps on ${carrier.wake}` : "works on it"}`);
   const carried = movers.steps ? stepCarrier(item, movers.steps) : undefined;
   if (carried) return out("moving", carriedText(carried));
-  const mover = outsideMover(view, movers, rows, self);
+  const mover = outsideMover(view, movers, rows, self, now);
   if (mover) return out("moving", mover);
   if (mine && !wait && !item.waitUntil && now - view.changedAt < STEP_STALE_MS) return out("moving", "the chat changed it within 2 h");
   if (heldByTodo(item, todos)) return out("foryou", "an open For you todo links it");
@@ -171,14 +172,37 @@ export interface Movers { watches?: ReadonlyMap<string, WakeWatch>; queued?: Rea
   hosts?: { chatHost?: string; held: ReadonlyMap<string, HostHold> } }
 
 /**
+ * The chat's own time wake that owns a step with no job: a pending board.wake of one of the chat's sessions (`self`) whose note names the step
+ * id, or whose time is the step's waitUntil, and which is at most WAKE_LATE_MS past its time. Once it is later than that, nobody delivers it and
+ * the step is stuck again. root disk readings 10-25 00:13 KST: the owner gave p3 to the chat itself, the chat held a wake at 16:50Z with the
+ * note "p3: read 12 samples, fresh df, start page writer", and two check-ins in a row flagged p3 stuck; the 23:43 run handed it to a job.
+ */
+export function chatWakeMover(view: Pick<StepView, "item" | "owner" | "mine">, watches: ReadonlyMap<string, WakeWatch>, self: ReadonlySet<string>,
+  now: number): string | undefined {
+  const { item, owner, mine } = view;
+  if (owner || (item.job && !mine)) return undefined;
+  const id = new RegExp(`\\b${item.id}\\b`);
+  const until = Date.parse(item.waitUntil ?? "");
+  for (const session of self) {
+    for (const { at, note } of watches.get(session)?.times ?? []) {
+      if (now - at > WAKE_LATE_MS || !(id.test(note) || Math.abs(at - until) < 60_000)) continue;
+      return `the chat holds it with its own board.wake at ${new Date(at).toISOString().slice(11, 16)}Z`;
+    }
+  }
+  return undefined;
+}
+
+/**
  * Who moves a step that no working job of this chat holds: a session asleep on a board.wake (`wakeMover`), or a turn that waits for a working
  * slot in pi-pool's queue (its owner's, the session it stores, the chat's own for a step it owns, or the thread its wait names). Each of those
  * goes on by itself once its wake or slot comes. launch main bro 10-15 19:16Z read 18 of 19 steps stuck while the queue held its jobs' turns,
  * so the check-in asked for owners it could not start.
  */
 export function outsideMover(view: Pick<StepView, "item" | "owner" | "mine">, movers: Movers, rows: readonly Pick<SessionRow, "id" | "name" | "archived">[],
-  self: ReadonlySet<string>): string | undefined {
+  self: ReadonlySet<string>, now: number): string | undefined {
   const { item, owner, mine } = view;
+  const own = chatWakeMover(view, movers.watches ?? new Map(), self, now);
+  if (own) return own;
   // A CI run moves the step only while a session sleeps on a board.wake for it: a queued run nobody watches lands on nobody. At 05:19Z on 10-18
   // d7 read 9 stuck steps that waited on runs, lands and threads no live job watched (VP of CI's p209 and p214 among them).
   const woke = wakeMover(item, movers.watches ?? new Map(), rows, self);

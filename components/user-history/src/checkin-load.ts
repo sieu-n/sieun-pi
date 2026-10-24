@@ -315,6 +315,8 @@ export function withDeadWakes(facts: readonly JobFact[], dead: readonly DeadWake
 }
 /** What one session asleep on pending board.wakes watches: its wake label (`wakeLabel`), and the work its run wakes are on ("run 38790378691", "land 37"). */
 export interface WakeWatch { label: string; works: ReadonlySet<string>;
+  /** Each time wake of this session, with its note, so a step the note names or whose waitUntil it matches has this session as owner (`chatWakeMover`). */
+  times?: readonly { at: number; note: string }[];
   /** The commits named in open steps' waits that a land run this session sleeps on carries (`landCarries`), and that land, as in "land 40". */
   carries?: { land: string; commits: ReadonlySet<string> } }
 /**
@@ -342,7 +344,8 @@ export function wakeWatches(wakes: readonly Wake[], train?: Train, carried: Read
   };
   return new Map([...bySession].map(([session, owed]) => {
     const carry = carries(owed);
-    return [session, { label: wakeLabel(owed), works: new Set(owed.flatMap(works)), ...carry ? { carries: carry } : {} }];
+    const times = owed.flatMap(({ on, note }) => on.kind === "time" ? [{ at: on.at, note }] : []);
+    return [session, { label: wakeLabel(owed), works: new Set(owed.flatMap(works)), ...carry ? { carries: carry } : {}, ...times.length ? { times } : {} }];
   }));
 }
 
