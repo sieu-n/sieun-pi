@@ -531,7 +531,12 @@ export function dutyJobHost(input: { threads: DutyJobThreads; archives: { add(jo
         }
         found = await row(chatId);
       }
-      return found ? { id: chatId, name: found.name.trim() || chatId, cwd: found.cwd, board: input.board(chatId) } : null;
+      if (!found) return null;
+      // The folder saved in the chat's header wins over the row's, which is the live worker's folder: after the 10-22 thread move, Crawler VP,
+      // CI and RepoOps and vent held auto-sns-agent in their headers while their workers still ran in /home/sieun, and every duty run they
+      // started from 10-23 to 10-24 opened in /home/sieun.
+      const saved = await input.saved?.(chatId).catch(() => null);
+      return { id: chatId, name: found.name.trim() || chatId, cwd: saved?.cwd ?? found.cwd, board: input.board(chatId) };
     },
     async working(job) {
       const found = await row(job.id);
