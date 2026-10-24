@@ -351,12 +351,14 @@ export function judge(run: string, state: RunState, now = Date.now(), cache: Rea
 
   // d: every action of every check-in job, judged on the waits carried and the CI runs known at its own time.
   const jobs = ev.runs.flatMap(entry => entry.job ? [entry.job] : []);
-  const allFiles = sessionFiles(chat);
+  // A check-in job is a root session of its own (sessions/<id>.jsonl, as in run-1 on 10-24), or a subagent file under the chat's folder.
+  const jobFiles = new Map(jobs.map(job => [job.id, [...new Set([sessionFile(job.id, [chat]), ...sessionFiles(job.id)].filter((file): file is string => file !== undefined))]]));
+  const allFiles = [...new Set([...sessionFiles(chat), ...[...jobFiles.values()].flat()])];
   const dBad: string[] = [];
   const dUnknown: string[] = [];
   let about = 0;
   for (const job of jobs) {
-    const own = allFiles.filter(file => file.includes(job.id));
+    const own = jobFiles.get(job.id) ?? [];
     if (!own.length) { dUnknown.push(`no session file for ${job.name}`); continue; }
     for (const file of own) { const judgedJob = judgeActions(job.name, readSessionFile(file), carriedNow, ciNow); dBad.push(...judgedJob.bad); about += judgedJob.about; }
   }

@@ -64,12 +64,12 @@ test("unrelated-ci-wait: a job that saw an unrelated run and left the carried st
       "### Every open step, oldest change first", `- p3 (waiting) "Check the last sample against a fresh free -m and wri…" todo, no owner, waits for "p2 sampling finishes"`,
       `- p4 (live) "Tally the land runs on sieun/dev for 4 hours" doing, owner job land run tally; note: "run ${RUN_ID} success 6 min"`, ""].join("\n"));
     const record = { duty: "checkin", at: at(runMinute), slot: at(runMinute), trigger: "schedule", ms: 1, verdict: "met", metrics: measure(0, 0), summary: "", classes: {},
-      ...flagged.length ? { flagged } : {}, job: { id: CHECKIN, name: "check-in memory trend 01:20" }, ...after ? { after: { at: at(runMinute + 15), verdict: "met", metrics: measure(0, 0), summary: "" } } : {} };
+      ...flagged.length ? { flagged } : {}, job: { id: CHECKIN.replace(/4$/, String(count)), name: "check-in memory trend 01:20" }, ...after ? { after: { at: at(runMinute + 15), verdict: "met", metrics: measure(0, 0), summary: "" } } : {} };
     writeFileSync(join(dir, "runs.jsonl"), JSON.stringify(record) + "\n");
     mkdirSync(join(home, ".prime", "agent", "sessions"), { recursive: true });
     writeFileSync(join(home, ".prime", "agent", "sessions", `${chat}.jsonl`), [line("user", 0, [{ type: "text", text: TASK }]), line("assistant", 1, [{ type: "text", text: "Starting the sampling job." }])].join("\n") + "\n");
-    mkdirSync(join(home, ".prime", "agent", "session-artifacts", chat), { recursive: true });
-    writeFileSync(join(home, ".prime", "agent", "session-artifacts", chat, `${CHECKIN}.jsonl`),
+    // Check-in jobs are root sessions of their own, as in run-1 on 10-24, where the judge first looked only under the chat's folder.
+    writeFileSync(join(home, ".prime", "agent", "sessions", `${CHECKIN.replace(/4$/, String(count))}.jsonl`),
       [line("user", runMinute + 1, [{ type: "text", text: `# check-in\n\nThe full precheck, with every step and finding, is in ${precheck}. Read it for the work you take on.` }]), ...jobCalls(precheck)].join("\n") + "\n");
     const state: RunState = { scenario: "unrelated-ci-wait", chat: { id: chat, name: "memory trend" }, fixtures: {}, sandbox: home, everyMs: 15 * 60_000, release: "release-test",
       board: "", seeds: [TASK], setupAt: START, windowStart: START, until: at(300) };
