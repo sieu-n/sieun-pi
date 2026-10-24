@@ -146,3 +146,29 @@ test("a vend with no unparked line before it ends the park, as 01a15ede's claude
   ], new Set(), FROM, RUN);
   assert.deepEqual(smooth.overtaken, [{ session: "a", minutes: 0 }]);
 });
+
+// 10-24 on us-metal02: the ops guy chat 01a11af8 parked at 00:59:37Z for claude-virev7 at 01:00Z, and the wait line named vend claude20, so its
+// head's two requests went out on claude20 and its turn ended at 00:59:57Z. Its tree asked again only at 01:12:26Z, a job run that left the
+// turn queue after 1,114 s, while 01a1692f, parked at 01:00Z, entered claude12 at 01:06:46Z; d7's 01:31Z run read 01a11af8 as passed for 12.5 min.
+test("a park whose wait vends the tree's own account meanwhile is served, and a 429 on that account makes it a hold again", () => {
+  const OPS = "01a11af8-962e-773d-a19a-ee4104011987", LATER = "01a1692f-c189-716e-8951-d0eb45e758e3";
+  const day = (clock: string): number => Date.parse(`2026-10-24T${clock}Z`) / 1000;
+  const park = (session: string, clock: string, account: string): string =>
+    JSON.stringify({ ts: `2026-10-24T${clock}`, event: "parked", provider: "anthropic", session, at: day(clock), account, slot_at: day("01:00:00"), priority: "normal", room: [account] });
+  const wait = (session: string, clock: string, account: string, vend: string | null): string =>
+    JSON.stringify({ ts: `2026-10-24T${clock}`, event: "wait", provider: "anthropic", session, account, slot_at: "2026-10-24T01:00:00", priority: "normal", vend, left: vend ? "budget_overrun" : null });
+  const enter = (session: string, clock: string, account: string): string =>
+    JSON.stringify({ ts: `2026-10-24T${clock}`, event: "unparked", provider: "anthropic", session, at: day(clock), account });
+  const limited = (session: string, clock: string): string =>
+    JSON.stringify({ ts: `2026-10-24T${clock}`, event: "limited", provider: "anthropic", account: "claude20@slack.green", session, until: "2026-10-24T03:00:00", next: null });
+  const lines = (extra: string[]) => [
+    park(OPS, "00:59:37", "claude-virev7@slack.green"), wait(OPS, "00:59:37", "claude-virev7@slack.green", "claude20@slack.green"),
+    park(OPS, "00:59:54", "claude-virev7@slack.green"), ...extra,
+    park(LATER, "01:00:10", "claude12@slack.green"), wait(LATER, "01:00:10", "claude12@slack.green", null), enter(LATER, "01:06:46", "claude12@slack.green"),
+    enter(OPS, "01:12:27", "claude-virev7@slack.green")];
+  const window = [Date.parse("2026-10-24T01:01:00Z"), Date.parse("2026-10-24T01:31:00Z")] as const;
+  const served = readSmoothness(lines([]), new Set(), ...window);
+  assert.deepEqual(served.overtaken, [{ session: LATER, minutes: 0 }, { session: OPS, minutes: 0 }]);
+  const refused = readSmoothness(lines([limited(OPS, "00:59:58")]), new Set(), ...window);
+  assert.deepEqual(refused.overtaken, [{ session: LATER, minutes: 0 }, { session: OPS, minutes: 5.7 }]);
+});
