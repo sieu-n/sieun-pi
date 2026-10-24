@@ -4,7 +4,7 @@
 // dashboards drawing ("Check the Observability and Metrics"), where on 10-19 at 15:55Z two panels read No data.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { type BoardItem, GOOD_ROWS, REFRESH_SEEDS, type ThroughputData, backlogged, boardGoal, deploySlots, geonodeHours, geonodeMbps, goalLine, goalRows, grew, interpolate, lastHalfHour,
+import { type BoardItem, GOOD_ROWS, REFRESH_SEEDS, type ThroughputData, backlogged, blankPanels, boardGoal, deploySlots, geonodeHours, geonodeMbps, goalLine, goalRows, grew, interpolate, lastHalfHour,
   lagSlots, missed, panelQueries, panelState, refreshShares, refreshSql, report, slowestHour, writerLagAtRate } from "../scripts/duties/throughput-goal.ts";
 import type { DutyMetric } from "../src/shared/chat-duties.ts";
 
@@ -165,6 +165,23 @@ test("the run reads every metric, and a failed source misses instead of reading 
   const broken = report(base({ board: BOARD, errors: [{ source: "queues", message: "Grafana HTTP 502" }] }), METRICS);
   assert.ok(broken.metrics.geonode_mbps! < 0 && broken.metrics.ig_queues_growing_6h! > 1000 && broken.metrics.throughput_goals_missed! > 1000);
   assert.equal(broken.flagged![0]!.kind, "unmeasured");
+});
+
+test("No data panels under prod's deploy lock are left out of crawler_panels_blank, and errors still count (10-24 22:47Z, metal-deploy 40139546438)", () => {
+  const panels: ThroughputData["panels"] = [
+    { dashboard: "Crawler · Health", title: "Write backlog", state: "no data", detail: "" },
+    { dashboard: "Crawler · Health", title: "Search delay", state: "no data", detail: "" },
+    { dashboard: "Crawler · Sources", title: "Sources", state: "error", detail: "Data source not found" },
+    { dashboard: "Crawler · Health", title: "Profiles a minute", state: "ok", detail: "" },
+  ];
+  assert.deepEqual(blankPanels(panels, 240).blank.map(panel => panel.title), ["Sources"]);
+  assert.equal(blankPanels(panels, 240).leftOut, 2);
+  // No lock, a stale lock and an unread lock count every No data panel.
+  for (const lock of [0, 7_200, undefined]) assert.deepEqual(blankPanels(panels, lock), { blank: panels.slice(0, 3), leftOut: 0 });
+  const out = report(base({ panels, panelDeployLock: 240 }), METRICS);
+  assert.equal(out.metrics.crawler_panels_blank, 1);
+  assert.match(out.flagged!.find(item => item.kind === "dashboards")!.excerpt, /^1 of 4 panels .*, leaving out 2 No data panels because prod was under its deploy lock: Crawler · Sources \/ Sources \(error/);
+  assert.equal(report(base({ panels }), METRICS).metrics.crawler_panels_blank, 3);
 });
 
 test("ig_queues_growing_6h dates a growing or unread queue count at this run and gives no lastEventAt at 0 (10-20 07:40Z d9 push)", () => {

@@ -250,6 +250,8 @@ export interface ThroughputData {
   igSlots24h?: Slot[]; writerLag?: Slot[]; deploys24h?: number[];
   board?: BoardItem[]; igSlowest?: number | null; igLast30?: number; ttsSlowest?: number | null; ttsWeekly?: { read: number; live: number }; deployMinutes?: number; meta?: MetaWalks; refresh?: RefreshSample[];
   geoFrom: number; geoTo: number; geoHours?: GeoHour[]; adLibrary?: WireDay[]; queues?: Queue[]; panels?: PanelRead[]; others?: OtherRate[];
+  /** Prod's deploy lock in seconds, its most in the 5 minutes up to this run, the slot the panel read falls in. */
+  panelDeployLock?: number;
 }
 
 /** Where a goal number came from: the board item's target, the number in its title when it has no target, or this duty's own line. */
@@ -410,10 +412,11 @@ export function report(d: ThroughputData, dutyMetrics: readonly DutyMetric[]): P
     flagged.push({ at: d.now, kind: "backlog", excerpt: `${backlogs.length} of ${d.queues.length} Instagram queues backlog, over ${count(QUEUE_LINE)} at their 30-minute low or grown over 6 h${backlogs.length ? `: ${backlogs.map(trend).join("; ")}` : ""}. Largest: ${largest.map(trend).join("; ")}.`.slice(0, 300) });
   }
   if (d.panels) {
-    const blank = d.panels.filter(panel => panel.state !== "ok");
+    const { blank, leftOut } = blankPanels(d.panels, d.panelDeployLock);
     metrics.crawler_panels_blank = blank.length;
     const dashboards = new Set(d.panels.map(panel => panel.dashboard)).size;
-    flagged.push({ at: d.now, kind: "dashboards", excerpt: `${blank.length} of ${d.panels.length} panels on ${dashboards} crawler dashboards show an error or No data${blank.length ? `: ${blank.map(panel => `${panel.dashboard} / ${panel.title} (${panel.state}${panel.detail ? `: ${panel.detail}` : ""})`).join("; ")}` : ""}.`.slice(0, 300) });
+    const locked = leftOut ? `, leaving out ${leftOut} No data panels because prod was under its deploy lock` : "";
+    flagged.push({ at: d.now, kind: "dashboards", excerpt: `${blank.length} of ${d.panels.length} panels on ${dashboards} crawler dashboards show an error or No data${locked}${blank.length ? `: ${blank.map(panel => `${panel.dashboard} / ${panel.title} (${panel.state}${panel.detail ? `: ${panel.detail}` : ""})`).join("; ")}` : ""}.`.slice(0, 300) });
   }
   for (const error of d.errors) flagged.push({ at: d.now, kind: "source_error", excerpt: `${error.source}: ${error.message}`.slice(0, 300) });
   const replaced = settle(dutyMetrics, metrics, unmeasured);
@@ -441,6 +444,17 @@ export const DEPLOY_STALE_LOCK_S = 3_600;
 /** The 5-minute slots under the deploy lock: a point at t covers the slot that ends at t. */
 export const deploySlots = (points: readonly [number, number][]): Set<number> =>
   new Set(points.filter(([, seconds]) => seconds > 0 && seconds < DEPLOY_STALE_LOCK_S).map(([at]) => Math.floor((at - 1) / SLOT_MS) * SLOT_MS));
+
+/**
+ * The panels crawler_panels_blank counts. While prod holds its deploy lock (a reading as deploySlots takes it) the crawler restarts and its live
+ * panels read No data: d9 read 7 blank at 10-24 22:47Z under metal-deploy 40139546438's lock (22:43 to 22:52Z), and 0 of 127 at 22:58Z. That
+ * downtime is p146's number, so those No data panels are left out, and a panel whose query fails still counts.
+ */
+export function blankPanels(panels: readonly PanelRead[], deployLock: number | undefined): { blank: PanelRead[]; leftOut: number } {
+  const locked = deployLock !== undefined && deployLock > 0 && deployLock < DEPLOY_STALE_LOCK_S;
+  const blank = panels.filter(panel => panel.state === "error" || (panel.state === "no data" && !locked));
+  return { blank, leftOut: locked ? panels.filter(panel => panel.state === "no data").length : 0 };
+}
 
 /**
  * Results a minute in the slowest rolling hour of the 5-minute slots inside [from, to) that no deploy holds; a slot with no row is a stop and
@@ -571,7 +585,8 @@ export async function measure(query: DsQuery | null, api: GrafanaApi | null, aut
       return out;
     }),
   ]);
-  const panels = await step("dashboards", () => readPanels(api));
+  const [panels, panelDeployLock] = await Promise.all([step("dashboards", () => readPanels(api)),
+    step("prod deploy lock now", async () => (await promInstant(query, PROM.prod, DEPLOY_EXPR))[0]?.value ?? 0)]);
   if (census && proxy) {
     const hours = new Map<number, GeoHour>();
     const at = (hour: number): GeoHour => hours.get(hour) ?? hours.set(hour, { hour, proxy: [] }).get(hour)!;
@@ -583,7 +598,7 @@ export async function measure(query: DsQuery | null, api: GrafanaApi | null, aut
   d.deployMinutes = [...deploys].filter(slot => slot >= holdFrom && slot < holdTo).length * SLOT_MS / MINUTE;
   const holding = igSlots?.filter(s => s.slot >= holdFrom);
   Object.assign(d, igSlots && writerLag && deployPoints && { igSlots24h: igSlots, writerLag, deploys24h: [...deploys] },
-    panels && { panels }, holding && { igSlowest: slowestHour(holding, holdFrom, holdTo, deploys), igLast30: lastHalfHour(holding, holdTo) },
+    panels && { panels }, panelDeployLock !== undefined && { panelDeployLock }, holding && { igSlowest: slowestHour(holding, holdFrom, holdTo, deploys), igLast30: lastHalfHour(holding, holdTo) },
     ttsSlots && { ttsSlowest: slowestHour(ttsSlots, holdFrom, holdTo, deploys) }, ttsWeekly && { ttsWeekly }, meta && { meta }, others && { others },
     adLibrary && { adLibrary }, queues && { queues }, refresh && { refresh });
   return d;
