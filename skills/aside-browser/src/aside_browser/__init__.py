@@ -733,7 +733,7 @@ async def _cli_fallback(tool: str, arguments: dict[str, Any]) -> str:
 # box's own Chrome: at 04:00 to 07:00Z on 2026-10-18 agents made 582 Aside REPL calls from us-metal02, and their open
 # tabs all render as visible in his window (visibilityState 'visible' in every tab), while Aside used 70 to 105% of a Mac core.
 LOGIN_HOSTS = re.compile(
-    r"(?:^|\.)(?:google\.com|youtube\.com|github\.com|gitlab\.com|posthog\.com|geonode\.com|iwebfusion\.net|railway\.(?:com|app)"
+    r"(?:^|\.)(?:google\.com|gmail\.com|youtube\.com|github\.com|gitlab\.com|posthog\.com|geonode\.com|iwebfusion\.net|railway\.(?:com|app)"
     r"|vercel\.com|stripe\.com|cloudflare\.com|convex\.dev|supabase\.com|amazon\.com|aws\.amazon\.com|apple\.com|icloud\.com"
     r"|slack\.com|notion\.so|figma\.com|claude\.ai|anthropic\.com|openai\.com|chatgpt\.com|aside\.com|g2g\.com|impact\.com"
     r"|tailscale\.com|grafana\.net|sentry\.io|linear\.app|atlassian\.net|clerk\.com|kakao\.com|naver\.com|coupang\.com"
@@ -756,16 +756,24 @@ def browser_for(url: str) -> str:
 
 
 # The Aside REPL's site skill globals (`aside skills list`), which exist only in Aside.
-_SITE_GLOBAL = re.compile(r"\b(?:gmail|outlook|slack|notion|googleDocs|googleSheets|googleSearch|googleAccounts|youtube|linkedin|imessage)\s*\.\s*[A-Za-z_$]")
+# A global counts only as a call such as gmail.search(...), so an email literal (x@gmail.com) or a host (slack.green) does not.
+_SITE_GLOBAL = re.compile(
+    r"(?<![\w$@./-])(?:gmail|outlook|slack|notion|googleDocs|googleSheets|googleSearch|googleAccounts|youtube|linkedin|imessage)"
+    r"(?:\s*\.\s*[A-Za-z_$][\w$]*)+\s*\("
+)
 _OPEN_TAB_URL = re.compile(r"""\bopenTab\s*\(\s*['"`]([^'"`]+)['"`]""")
+_URL_HOST = re.compile(r"""(?:\bhttps?:)?//([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)""")
 
 
 def _route(code: str) -> str | None:
-    """The browser a run() call needs: the one browser_for() picks for an openTab('<url>') in the code, Aside for a site skill global, else None (the current tab's browser)."""
+    """The browser a run() call needs: the one browser_for() picks for an openTab('<url>') in the code, Aside for a site skill global
+    call or a URL on a login host, such as page.goto('https://mail.google.com/'), else None (the current tab's browser)."""
     opened = _OPEN_TAB_URL.search(code)
     if opened:
         return browser_for(opened.group(1))
-    return "aside" if _SITE_GLOBAL.search(code) else None
+    if _SITE_GLOBAL.search(code) or any(LOGIN_HOSTS.search(m.group(1)) for m in _URL_HOST.finditer(code)):
+        return "aside"
+    return None
 
 
 def box_available() -> bool:

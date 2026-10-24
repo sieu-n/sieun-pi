@@ -378,6 +378,29 @@ class BrowserRoutingTests(Base):
         ab._browser = "box"
         self.assertEqual(self.run_routed("return await googleDocs.getDocumentHTML(id)")[0], "aside out")
 
+    def test_email_literals_and_hosts_do_not_count_as_site_globals(self):
+        for code in (
+            "await page.fill('#email', 'sieunpark77@gmail.com')",
+            'return "a.b@gmail.com, c@outlook.com, d@notion.so"',
+            "await openTab('http://localhost:5182/?to=sieunpark77@gmail.com')",
+            "const host = 'slack.green'; return host",
+            "await page.fill('#q', 'gmail.com slack.green')",
+        ):
+            ab._browser = "box"
+            self.assertEqual(self.run_routed(code)[0], "box out", code)
+
+    def test_gmail_urls_and_site_global_calls_run_in_aside(self):
+        for code in (
+            "await openTab('https://gmail.com/')",
+            "await openTab('https://mail.google.com/mail/u/0/#inbox')",
+            "await page.goto('https://mail.google.com/mail/u/0/#inbox')",
+            "await page.goto(`//gmail.com`)",
+            "return await gmail.search({query: 'from:sieunpark77@gmail.com'})",
+            "return await gmail.messages.list()",
+        ):
+            ab._browser = "box"
+            self.assertEqual(self.run_routed(code)[0], "aside out", code)
+
     def test_on_the_mac_everything_stays_in_aside(self):
         ab._browser = None
         with patch.object(ab.sys, "platform", "darwin"), patch.dict(os.environ, {"ASIDE_BROWSER_BOX": "1"}):
