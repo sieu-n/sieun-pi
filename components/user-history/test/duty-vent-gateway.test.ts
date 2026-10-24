@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
-import { boxLocations, inScope, removedProviderRefs, UNMEASURED, ventMetrics, webhookVerdicts, type VentReads } from "../scripts/duties/vent-gateway.ts";
+import { boxLocations, inScope, removedProviderRefs, UNMEASURED, ventMetrics, webhookVerdicts, type ShareResult, type VentReads } from "../scripts/duties/vent-gateway.ts";
 
 const site = (row: number, status: string, extra: object = {}) => ({ row, app: "convex", provider: "Stripe", runs_in: "Convex staging, prod", status, ...extra });
 const TABLES = 'INTEGRATIONS: dict[str, Integration] = {\n    "zernio": Integration(ZERNIO, "ZERNIO_API_KEY"),\n    "cliproxy-openai": Integration(OPENAI, "CLIPROXY_API_KEY"),\n}\n';
@@ -94,7 +94,7 @@ test("a failed share script leaves through_vent_pct unmeasured with a source err
 });
 
 test("a failed traffic read keeps the code-path share and leaves only no_prod_traffic_sites unmeasured", () => {
-  const share = { refs: reads().share.refs, traffic: { error: "Grafana answered 400 for vent.call day 0: Code: 159. DB::Exception: Timeout exceeded" } };
+  const share = { refs: (reads().share as ShareResult).refs, traffic: { error: "Grafana answered 400 for vent.call day 0: Code: 159. DB::Exception: Timeout exceeded" } };
   const output = ventMetrics(reads({ share } as Partial<VentReads>), 0);
   assert.equal(output.metrics.through_vent_pct, 100);
   assert.equal("no_prod_traffic_sites" in output.metrics, false);
