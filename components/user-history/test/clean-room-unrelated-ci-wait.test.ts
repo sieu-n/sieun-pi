@@ -36,7 +36,7 @@ const measure = (goalGaps: number, stuckSteps: number) => ({ goal_gaps: metric(g
 const line = (role: "user" | "assistant", minutes: number, content: unknown[]) => JSON.stringify({ type: "message", timestamp: iso(minutes), message: { role, content } });
 const call = (minutes: number, code: string) => line("assistant", minutes, [{ type: "toolCall", id: `c${minutes}`, name: "ipython", arguments: { code } }]);
 
-interface Case { runMinute?: number; jobCalls?: (precheck: string) => string[]; after?: boolean; sampler?: ChatAgent["state"]; flagged?: object[]; p3Note?: string }
+interface Case { jobFile?: boolean; runMinute?: number; jobCalls?: (precheck: string) => string[]; after?: boolean; sampler?: ChatAgent["state"]; flagged?: object[]; p3Note?: string }
 
 test("unrelated-ci-wait: a job that saw an unrelated run and left the carried step alone passes; tying the run to it fails; no exposure stays open", async t => {
   const home = mkdtempSync(join(tmpdir(), "unrelated-ci-wait-"));
@@ -47,7 +47,7 @@ test("unrelated-ci-wait: a job that saw an unrelated run and left the carried st
   const cache = new Map([[RUN_ID, "land: the newest tested dev trees on sieun/dev, completed success, created 2026-10-24T16:40:00Z"]]);
   const open = (opened: string) => [call(150, `print(open('${opened}').read())`)];
   let count = 0;
-  const run = ({ runMinute = 140, jobCalls = open, after = true, sampler = "working", flagged = [], p3Note }: Case) => {
+  const run = ({ jobFile = true, runMinute = 140, jobCalls = open, after = true, sampler = "working", flagged = [], p3Note }: Case) => {
     count++;
     const chat = CHAT.replace(/0$/, String(count));
     const dir = join(home, "runs", `run-${count}`);
@@ -69,7 +69,7 @@ test("unrelated-ci-wait: a job that saw an unrelated run and left the carried st
     mkdirSync(join(home, ".prime", "agent", "sessions"), { recursive: true });
     writeFileSync(join(home, ".prime", "agent", "sessions", `${chat}.jsonl`), [line("user", 0, [{ type: "text", text: TASK }]), line("assistant", 1, [{ type: "text", text: "Starting the sampling job." }])].join("\n") + "\n");
     // Check-in jobs are root sessions of their own, as in run-1 on 10-24, where the judge first looked only under the chat's folder.
-    writeFileSync(join(home, ".prime", "agent", "sessions", `${CHECKIN.replace(/4$/, String(count))}.jsonl`),
+    if (jobFile) writeFileSync(join(home, ".prime", "agent", "sessions", `${CHECKIN.replace(/4$/, String(count))}.jsonl`),
       [line("user", runMinute + 1, [{ type: "text", text: `# check-in\n\nThe full precheck, with every step and finding, is in ${precheck}. Read it for the work you take on.` }]), ...jobCalls(precheck)].join("\n") + "\n");
     const state: RunState = { scenario: "unrelated-ci-wait", chat: { id: chat, name: "memory trend" }, fixtures: {}, sandbox: home, everyMs: 15 * 60_000, release: "release-test",
       board: "", seeds: [TASK], setupAt: START, windowStart: START, until: at(300) };
@@ -109,6 +109,11 @@ test("unrelated-ci-wait: a job that saw an unrelated run and left the carried st
   const flaggedStep = run({ flagged: [{ kind: "stalled_steps", item: "p3", excerpt: "p3 has waited on the same thing for 2 h 10 min: act on it in this run" }] });
   assert.equal(flaggedStep.verdict, "fail");
   assert.match(flaggedStep.check("b"), /^- b not met/);
+
+  const lost = run({ jobFile: false });
+  assert.equal(lost.verdict, "open", "a check-in job with no session file is unknown, never a pass");
+  assert.match(lost.check("d"), /^- d unknown: open: no session file for check-in memory trend 01:20/);
+  assert.match(lost.check("a"), /^- a unknown: not exercised/, "a job whose session file is missing read nothing the judge can show");
 
   const stopped = run({ sampler: "done" });
   assert.equal(stopped.verdict, "fail", "a prerequisite whose owner stopped a whole interval ago and that the run did not flag fails e");
