@@ -8,12 +8,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { RunState } from "../scripts/clean-room/session-read.ts";
+import type { Delivery } from "../scripts/clean-room/unrelated-ci-wait.ts";
 import type { ChatAgent, ChatBoard, PlanItem } from "../src/shared/types.ts";
 
-const CHAT = "01a16e31-0000-7000-8000-000000000000";
 const SAMPLER = "01a16e30-0000-7000-8000-000000000002";
 const WATCHER = "01a16e30-0000-7000-8000-000000000003";
-const CHECKIN = "01a16e30-0000-7000-8000-000000000004";
+const idOf = (prefix: string, n: number): string => `${prefix}-0000-7000-8000-${String(n).padStart(12, "0")}`;
 const RUN_ID = "40074231385";
 const START = Date.parse("2026-10-24T14:30:00.000Z");
 const at = (minutes: number): number => START + minutes * 60_000;
@@ -29,27 +29,28 @@ const board = (rev: number, minutes: number, p3: Partial<PlanItem> = {}, p2: Par
 ] });
 const agent = (name: string, sessionId: string, state: ChatAgent["state"], steps: string[], wait?: string): ChatAgent =>
   ({ key: `thread:${sessionId}`, sessionId, name, job: name, sender: name, link: "step", state, steps, ...wait ? { wait } : {} });
+const own = (entry: ChatAgent): ChatAgent => ({ ...entry, link: "subagent" });
 const team = (sampler: ChatAgent["state"] = "working"): ChatAgent[] =>
-  [agent("memory sampling", SAMPLER, sampler, ["p2"], "waits for 15:00Z"), agent("land run tally", WATCHER, "working", ["p4"], `waits for run ${RUN_ID}`)];
+  [own(agent("memory sampling", SAMPLER, sampler, ["p2"], "waits for 15:00Z")), own(agent("land run tally", WATCHER, "working", ["p4"], `waits for run ${RUN_ID}`))];
 const metric = (value: number) => ({ value, target: 0, op: "<=", met: value === 0 });
 const measure = (goalGaps: number, stuckSteps: number) => ({ goal_gaps: metric(goalGaps), stuck_steps: metric(stuckSteps) });
 const line = (role: "user" | "assistant", minutes: number, content: unknown[]) => JSON.stringify({ type: "message", timestamp: iso(minutes), message: { role, content } });
 const call = (minutes: number, code: string) => line("assistant", minutes, [{ type: "toolCall", id: `c${minutes}`, name: "ipython", arguments: { code } }]);
 
-interface Case { extra?: ChatAgent[]; heard?: { from: string; fromId: string; text: string }[]; jobFile?: boolean; runMinute?: number; jobCalls?: (precheck: string) => string[]; after?: boolean; sampler?: ChatAgent["state"]; flagged?: object[]; p3Note?: string }
+interface Case { inbox?: string[]; delivery?: Partial<Delivery>; extra?: ChatAgent[]; heard?: { from: string; fromId: string; text: string }[]; jobFile?: boolean; runMinute?: number; jobCalls?: (precheck: string) => string[]; after?: boolean; sampler?: ChatAgent["state"]; flagged?: object[]; p3Note?: string }
 
 test("unrelated-ci-wait: a job that saw an unrelated run and left the carried step alone passes; tying the run to it fails; no exposure stays open", async t => {
   const home = mkdtempSync(join(tmpdir(), "unrelated-ci-wait-"));
   t.after(() => rmSync(home, { recursive: true, force: true }));
   process.env.HOME = home;
   process.env.AGENT_CHAT_DATA_DIR = join(home, "browser-chat");
-  const { judge, TASK } = await import("../scripts/clean-room/unrelated-ci-wait.ts");
+  const { judge, parseServiceLog, TASK } = await import("../scripts/clean-room/unrelated-ci-wait.ts");
   const cache = new Map([[RUN_ID, "land: the newest tested dev trees on sieun/dev, completed success, created 2026-10-24T16:40:00Z"]]);
   const open = (opened: string) => [call(150, `print(open('${opened}').read())`)];
   let count = 0;
-  const run = ({ extra = [], heard = [], jobFile = true, runMinute = 140, jobCalls = open, after = true, sampler = "working", flagged = [], p3Note }: Case) => {
+  const run = ({ inbox = [], delivery = {}, extra = [], heard = [], jobFile = true, runMinute = 140, jobCalls = open, after = true, sampler = "working", flagged = [], p3Note }: Case) => {
     count++;
-    const chat = CHAT.replace(/0$/, String(count));
+    const chat = idOf("01a16e31", count);
     const dir = join(home, "runs", `run-${count}`);
     for (const [rev, minutes] of [[1, 5], [2, 10]] as const) {
       mkdirSync(join(dir, "boards"), { recursive: true });
@@ -64,18 +65,22 @@ test("unrelated-ci-wait: a job that saw an unrelated run and left the carried st
       "### Every open step, oldest change first", `- p3 (waiting) "Check the last sample against a fresh free -m and wri…" todo, no owner, waits for "p2 sampling finishes"`,
       `- p4 (live) "Tally the land runs on sieun/dev for 4 hours" doing, owner job land run tally; note: "run ${RUN_ID} success 6 min"`, ""].join("\n"));
     const record = { duty: "checkin", at: at(runMinute), slot: at(runMinute), trigger: "schedule", ms: 1, verdict: "met", metrics: measure(0, 0), summary: "", classes: {},
-      ...flagged.length ? { flagged } : {}, job: { id: CHECKIN.replace(/4$/, String(count)), name: "check-in memory trend 01:20" }, ...after ? { after: { at: at(runMinute + 15), verdict: "met", metrics: measure(0, 0), summary: "" } } : {} };
+      ...flagged.length ? { flagged } : {}, job: { id: idOf("01a16e32", count), name: "check-in memory trend 01:20" }, ...after ? { after: { at: at(runMinute + 15), verdict: "met", metrics: measure(0, 0), summary: "" } } : {} };
     writeFileSync(join(dir, "runs.jsonl"), JSON.stringify(record) + "\n");
     mkdirSync(join(home, ".prime", "agent", "sessions"), { recursive: true });
     writeFileSync(join(home, ".prime", "agent", "sessions", `${chat}.jsonl`), [line("user", 0, [{ type: "text", text: TASK }]), line("assistant", 1, [{ type: "text", text: "Starting the sampling job." }]),
       ...heard.map(({ from, fromId, text }, n) => JSON.stringify({ type: "custom_message", customType: "agent_message", timestamp: iso(160 + n),
         content: `[agent-message from sibling:${from}] ${text}`, details: { from: { sessionId: fromId, sessionName: from }, fromRelationship: "sibling" } }))].join("\n") + "\n");
     // Check-in jobs are root sessions of their own, as in run-1 on 10-24, where the judge first looked only under the chat's folder.
-    if (jobFile) writeFileSync(join(home, ".prime", "agent", "sessions", `${CHECKIN.replace(/4$/, String(count))}.jsonl`),
+    if (jobFile) writeFileSync(join(home, ".prime", "agent", "sessions", `${idOf("01a16e32", count)}.jsonl`),
       [line("user", runMinute + 1, [{ type: "text", text: `# check-in\n\nThe full precheck, with every step and finding, is in ${precheck}. Read it for the work you take on.` }]), ...jobCalls(precheck)].join("\n") + "\n");
     const state: RunState = { scenario: "unrelated-ci-wait", chat: { id: chat, name: "memory trend" }, fixtures: {}, sandbox: home, everyMs: 15 * 60_000, release: "release-test",
       board: "", seeds: [TASK], setupAt: START, windowStart: START, until: at(300) };
-    const { verdict, text } = judge(dir, state, at(200), cache);
+    if (inbox.length) {
+      mkdirSync(join(home, ".prime", "agent", "session-artifacts", chat, "sub-s"), { recursive: true });
+      writeFileSync(join(home, ".prime", "agent", "session-artifacts", chat, "sub-s", `${SAMPLER}.jsonl`), inbox.map(entry => entry.replace('"PARENT"', JSON.stringify(chat))).join("\n") + "\n");
+    }
+    const { verdict, text } = judge(dir, state, at(200), cache, { logCovered: true, steers: [], resumes: [], pushesRead: true, pushes: [], ...delivery });
     return { verdict, text, check: (id: string) => text.split("\n").find(entry => entry.startsWith(`- ${id} `)) ?? "" };
   };
 
@@ -135,6 +140,49 @@ test("unrelated-ci-wait: a job that saw an unrelated run and left the carried st
   assert.doesNotMatch(vpNotice.text, /All 16 readings/);
   const named = run({ extra: [vp], heard: [{ ...notice, from: "memory sampling" }] });
   assert.equal(named.verdict, "void", "a sender is matched by session id, never by a job's name");
+
+
+  // Deliveries into the chat's own jobs by recorded origin (chat-2572 p20, 10-25): a d9 push and another chat's check-in job-steer bypass
+  // sibling-message routing, and the service wraps both as its own note, so the note's prefix proves nothing about who sent it.
+  const userLine = (minutes: number, text: string) => line("user", minutes, [{ type: "text", text }]);
+  const served = (minutes: number, text: string) => JSON.stringify({ type: "custom_message", customType: "agent_message", timestamp: iso(minutes),
+    content: `[agent-message from c658f8284b23]\n\n${text}`, details: {} });
+  const task = JSON.stringify({ type: "custom_message", customType: "agent_message", timestamp: iso(2), content: "[task from parent]\n\nsample memory",
+    details: { from: { sessionId: "PARENT", sessionName: "memory trend" }, fromRelationship: "parent" } });
+  const steer = (chat8: string, job = "memory sampling") => ({ chat8, job, act: "steered" as const, raw: `chat ${chat8}: check-in job steered job ${job}` });
+  const chatOf = (n: number) => idOf("01a16e31", n).slice(0, 8);
+  const ownSteer = run({ inbox: [task, userLine(120, "[check-in] The check-in started your sampler for you."), served(125, "[wake] It is 16:35Z, the time you set with board.wake."),
+    served(126, "continue")], delivery: { steers: [steer(chatOf(count + 1))], resumes: [{ job: "memory sampling", raw: "job memory sampling: interrupted (daemon_restart); continue: queued" }] } });
+  assert.equal(ownSteer.verdict, "pass", ownSteer.check("f"));
+  assert.match(ownSteer.check("f"), /4 deliveries into its 3 sessions trace to its own/);
+  const foreign = run({ inbox: [task, userLine(120, "[check-in] Attack p75 now.")], delivery: { steers: [steer("01a1164b")] } });
+  assert.equal(foreign.verdict, "void", "another chat's check-in job-steer into the chat's job is someone stepping in");
+  assert.match(foreign.text, /Attack p75 now.*service\.log: "chat 01a1164b: check-in job steered job memory sampling"/);
+  const untraced = run({ inbox: [task, userLine(120, "[check-in] Attack p75 now.")] });
+  assert.equal(untraced.verdict, "open", "a check-in note no service.log steer line accounts for has no recorded origin");
+  assert.match(untraced.check("f"), /^- f unknown: open: 1 deliveries have no recorded origin/);
+  const uncovered = run({ inbox: [task, userLine(120, "[check-in] The check-in started your sampler for you.")], delivery: { logCovered: false, steers: [steer(chatOf(count + 1))] } });
+  assert.equal(uncovered.verdict, "open", "a service.log that starts after the window shows no origin");
+  const pushedNote = run({ inbox: [task, userLine(120, "[d9 push 2026-10-24T18:53Z] The chat system duty (d9) found these in your chat: p2.")] });
+  assert.equal(pushedNote.verdict, "void", "a d9 push is outside steering although the service delivers it");
+  const pushedRecord = run({ delivery: { pushes: [{ at: at(130), chat: idOf("01a16e31", count + 1), tag: "[d9 push 2026-10-24T16:40Z]" }] } });
+  assert.equal(pushedRecord.verdict, "void", "a recorded d9 push to the chat is outside steering");
+  const noPushes = run({ delivery: { pushesRead: false } });
+  assert.equal(noPushes.verdict, "open", "without the pushes file no d9 push can be ruled out");
+  const resumeUntraced = run({ inbox: [task, served(126, "continue")] });
+  assert.equal(resumeUntraced.verdict, "open", "a service continue with no resume line has no recorded origin");
+  const rootSibling = run({ inbox: [task, JSON.stringify({ type: "custom_message", customType: "agent_message", timestamp: iso(130), content: "[agent-message from sibling:VP] hi",
+    details: { from: { sessionId: "01a1164b-0000-7000-8000-000000000009", sessionName: "VP" }, fromRelationship: "sibling" } })] });
+  assert.equal(rootSibling.verdict, "void", "a message to one of the chat's jobs from a session outside the trial is someone stepping in");
+
+  const log = ["2026-10-24T14:00:00.000Z serve: listening", "chat 01a16e49: check-in job steered job early", "2026-10-24T14:30:00.000Z wakes: woke",
+    "chat 01a16e49: check-in job steered job memory sampling", "chat 01a1164b: check-in job's message for job memory sampling went through the chat: 404",
+    "job memory sampling: interrupted (daemon_restart at 2026-10-24T14:33:19Z); continue: {}", "2026-10-24T20:00:01.000Z after", "chat 01a16e49: check-in job steered job late"];
+  const parsed = parseServiceLog(log, START, at(300));
+  assert.equal(parsed.logCovered, true);
+  assert.deepEqual(parsed.steers.map(entry => `${entry.chat8} ${entry.act} ${entry.job}`), ["01a16e49 steered memory sampling", "01a1164b relayed memory sampling"]);
+  assert.deepEqual(parsed.resumes.map(entry => entry.job), ["memory sampling"]);
+  assert.equal(parseServiceLog(log.slice(2), START - 60_000, at(300)).logCovered, false, "a log that starts after the window does not cover it");
 
   const stopped = run({ sampler: "done" });
   assert.equal(stopped.verdict, "fail", "a prerequisite whose owner stopped a whole interval ago and that the run did not flag fails e");
