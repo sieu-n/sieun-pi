@@ -28,6 +28,7 @@ export const NOISE_FIXES: readonly { kind: string; fix: string }[] = [
   { kind: "re-ask of an open For you todo", fix: "9b525da8" },
   { kind: "progress on a goal still going", fix: "02f07734" },
   { kind: "progress on a goal still going", fix: "673c7b17" },
+  { kind: "same incident asked again by another chat", fix: "841c86f8" },
   // The tell_owner description text fix, since three replays (~/work/tell-owner-unasked-result/replay.md) found no check that spares done reports.
   { kind: "unasked result", fix: "41665689" },
 ];
