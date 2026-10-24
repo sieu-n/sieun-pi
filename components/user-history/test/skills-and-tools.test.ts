@@ -292,6 +292,23 @@ test("pool_claude makes a new sign-in the owner's fix while the Mac is offline, 
   assert.ok(back.status === "fail" && back.fixer === "agent" && back.fix.includes("Aside"), JSON.stringify(back));
 });
 
+// 10-24 05:13Z: sieunpark77's Claude refresh grant reached its fixed end, and nothing flagged it before it did.
+test("pool_claude flags a live account whose refresh grant ends within GRANT_WARN_MS, and skips a disabled one", async () => {
+  const now = Date.parse("2026-10-24T00:00:00Z");
+  const ends: Record<string, number> = { a1: now + 10 * 3_600_000, a2: now + 5 * 86_400_000, a3: now + 3_600_000 };
+  const rows = [{ id: "a1", email: "sieunpark77@gmail.com", usable: true }, { id: "a2", email: "claude4@slack.green", usable: true }, { id: "a3", email: "krenerd77@naver.com", disabled: true }];
+  const mac = macDeps(true, TIMED_OUT, []);
+  const outcome = await poolClaude.run({ ...mac, now: () => now,
+    exec: async (file, args, options) => file === "pi-pool" ? { code: 0, stdout: JSON.stringify({ rows }), stderr: "", ms: 0 } : mac.exec(file, args, options),
+    readFile: async path => {
+      const id = path.match(/pi-pool\/accounts\/secrets\/pi-pool\.anthropic\.(\w+)$/)?.[1];
+      if (!id) throw new Error(`unexpected read ${path}`);
+      return JSON.stringify({ accessToken: "x", refreshTokenExpiresAt: ends[id] });
+    } });
+  assert.ok(outcome.status === "fail" && outcome.fixer === "agent" && outcome.detail.startsWith("sieunpark77@gmail.com (grant ends 10-24 10:00Z) need")
+    && !outcome.detail.includes("claude4") && !outcome.detail.includes("krenerd77") && outcome.fix.includes("pi-pool login"), JSON.stringify(outcome));
+});
+
 // 10-24 00:13 KST: pool_codex waited on the owner's Apple sign-in, and the headline missed for 10 runs that no agent could move.
 test("skills_or_tools_to_fix leaves out a fail only the owner can fix, which owner_fixes counts", () => {
   const check = (id: string) => CHECKS.find(entry => entry.id === id)!;

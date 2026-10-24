@@ -232,13 +232,38 @@ const setDiff = (a: Iterable<string>, b: Iterable<string>) => { const other = ne
 /** A Sign in with Apple login: ChatGPT sends it to appleid.apple.com, which wants the Apple ID password and a 2FA code on the owner's devices (10-23, fhnyq29tw5). */
 const APPLE_RELAY = "@privaterelay.appleid.com";
 
+/**
+ * How far ahead pool_claude flags a Claude refresh grant that is about to reach its fixed end. sieunpark77's grant ended at 05:13Z on 10-24 with
+ * nothing flagged before it, and the owner's Mac, whose Aside runs the sign-in, sat offline 7 h that day; 48 h leaves a job room for both.
+ */
+export const GRANT_WARN_MS = 48 * 3_600_000;
+
+/** When each Claude account's refresh grant ends (refreshTokenExpiresAt), read from the credential files pi-pool keeps where no Keychain is; a Mac reads none. */
+async function grantEnds(deps: Deps, ids: readonly string[]): Promise<Map<string, number>> {
+  const secrets = join((deps.env ?? process.env).PI_POOL_DIR || join(deps.home, ".config/pi-pool"), "accounts/secrets");
+  const ends = new Map<string, number>();
+  await Promise.all(ids.map(async id => {
+    try {
+      const at = (JSON.parse(await deps.readFile(join(secrets, `pi-pool.anthropic.${id}`))) as { refreshTokenExpiresAt?: unknown }).refreshTokenExpiresAt;
+      if (typeof at === "number") ends.set(id, at);
+    } catch { /* no credential file here */ }
+  }));
+  return ends;
+}
+const utcMinute = (ms: number) => `${new Date(ms).toISOString().slice(5, 16).replace("T", " ")}Z`;
+
 async function pool(deps: Deps, provider: "anthropic" | "openai-codex"): Promise<Outcome> {
   const result = await deps.exec("pi-pool", ["ls", "--json", ...(provider === "anthropic" ? [] : ["--provider", provider])], { timeoutMs: CALL_TIMEOUT_MS });
   if (result.code !== 0) return FAIL("agent", `pi-pool ls ${failText(result)}`, "reinstall pi-pool with components/pi-pool/install.py in sieun-pi");
-  type Row = { email?: string; usable?: boolean; reason?: string | null; disabled?: boolean; limited_until?: number | null; cooldown_until?: number | null; windows?: { resets_at?: number | null }[] };
+  type Row = { id?: string; email?: string; usable?: boolean; reason?: string | null; disabled?: boolean; limited_until?: number | null; cooldown_until?: number | null; windows?: { resets_at?: number | null }[] };
   const rows = (parseJson(result.stdout) as { rows?: Row[] }).rows ?? [];
   const live = rows.filter(row => row.disabled !== true);
-  const reauth = live.filter(row => row.reason === "needs-reauth").map(row => row.email ?? "?");
+  const ends = provider === "anthropic" ? await grantEnds(deps, live.flatMap(row => row.reason !== "needs-reauth" && row.id ? [row.id] : [])) : new Map<string, number>();
+  const ending = live.flatMap(row => {
+    const at = row.id === undefined ? undefined : ends.get(row.id);
+    return at !== undefined && at - deps.now() <= GRANT_WARN_MS ? [`${row.email ?? "?"} (grant ends ${utcMinute(at)})`] : [];
+  });
+  const reauth = [...live.filter(row => row.reason === "needs-reauth").map(row => row.email ?? "?"), ...ending];
   const usable = live.filter(row => row.usable).length;
   const nowSec = deps.now() / 1000;
   const soon = live.some(row => [row.limited_until, row.cooldown_until, ...(row.windows ?? []).map(window => window.resets_at)]
