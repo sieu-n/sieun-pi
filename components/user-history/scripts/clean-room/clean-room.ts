@@ -20,7 +20,9 @@
  *   node --import tsx scripts/clean-room/clean-room.ts advance-release --run <dir> --until <ISO time>   (detached-report: moves the project's tools/current once)
  *   node --import tsx scripts/clean-room/clean-room.ts collect --run <dir> --until <ISO time>
  *   node --import tsx scripts/clean-room/clean-room.ts evaluate --run <dir>
- *   node --import tsx scripts/clean-room/clean-room.ts teardown --run <dir>
+ *   node --import tsx scripts/clean-room/clean-room.ts teardown --run <dir>   (archives the evidence as <run>.evidence.tar.gz before it deletes the run)
+ *   node --import tsx scripts/clean-room/clean-room.ts judge --run <dir> [--now <ISO time>]   (prints this code's verdict as one JSON line and writes nothing)
+ *   node --import tsx scripts/clean-room/clean-room.ts rejudge --archive <run>.evidence.tar.gz   (judges an archived run with this code's judge)
  *   node --import tsx scripts/clean-room/clean-room.ts baseline --scenario checkin-goal-push --before <dir> --out <file>
  */
 import { execFileSync } from "node:child_process";
@@ -83,6 +85,8 @@ import { publishedBuildKeep } from "./published-build-keep.ts";
 import { taskOwner } from "./task-owner.ts";
 import { answerData } from "./answer-data.ts";
 import { dryMessage } from "./dry-message.ts";
+import { currentRoot, judgeCurrent, judgedLine, judgeVersion, LOADED } from "./judge-version.ts";
+import { archivePath, archiveRun, DELIVERY, fileSha256, judgeFooter, rejudge } from "./run-archive.ts";
 
 const DATA = process.env.AGENT_CHAT_DATA_DIR ?? join(homedir(), ".prime/agent/browser-chat");
 /** Prime's agent dir, whose harness/ folder holds the published global harness store. */
@@ -387,7 +391,10 @@ async function collectOnce(run: string, state: RunState, srv: Server, logOffset:
     const fd = readFileSync(service).subarray(logOffset.at, size).toString("utf8");
     logOffset.at = size;
     const short = state.chat.id.slice(0, 8);
-    const mine = fd.split("\n").filter(line => line.includes(short) || line.includes(state.chat.name) || Object.values(state.fixtures).some(id => line.includes(id.slice(0, 8))));
+    // A delivery receipt (src/clean-room-subjects.ts) names its sender and target by full session id, a job's too, and the archive keeps them as the identity record.
+    const ids = [...knownSessions(run, state)];
+    const mine = fd.split("\n").filter(line => line.includes(short) || line.includes(state.chat.name) || Object.values(state.fixtures).some(id => line.includes(id.slice(0, 8))) ||
+      (DELIVERY.test(line) && ids.some(id => line.includes(id))));
     if (mine.length) appendFileSync(join(run, "service.log"), mine.join("\n") + "\n");
   }
   const own = [state.chat.id, ...(state.control ? [state.control.id] : []), ...await ownSessions(run, state, () => {})];
@@ -396,11 +403,18 @@ async function collectOnce(run: string, state: RunState, srv: Server, logOffset:
   }
 }
 
-/** Whether a scenario that ends at its verdict has reached a pass or fail; a judge that throws leaves the run to its window. */
+/**
+ * Whether a scenario that ends at its verdict has reached a pass or fail, by the current judge (judge-version.ts); a judge that throws or
+ * cannot run leaves the run to its window.
+ */
 async function reachedVerdict(run: string, state: RunState, scenarios: Record<string, Scenario> = SCENARIOS): Promise<boolean> {
   const scenario = scenarios[state.scenario];
   if (!scenario?.endsAtVerdict) return false;
-  try { return (await scenario.evaluate(run, state)).verdict !== "open"; } catch (error) { log(run, `judge: ${error instanceof Error ? error.message : String(error)}`); return false; }
+  try {
+    const judged = await judgeCurrent(run, async () => scenario.evaluate(run, state));
+    if ("unjudged" in judged) { log(run, `judge: ${judged.unjudged}`); return false; }
+    return judged.verdict !== "open";
+  } catch (error) { log(run, `judge: ${error instanceof Error ? error.message : String(error)}`); return false; }
 }
 
 async function collect(flags: Record<string, string>): Promise<void> {
@@ -415,7 +429,11 @@ async function collect(flags: Record<string, string>): Promise<void> {
     if (!existsSync(join(run, "run.json"))) return;
     const state = readJson<RunState>(join(run, "run.json"));
     try { await collectOnce(run, state, srv, offset); } catch (error) { log(run, `collect: ${error instanceof Error ? error.message : String(error)}`); }
-    if (await reachedVerdict(run, state)) { log(run, "collect done; the run reached a verdict before its window ended"); await evaluate({ run }); return; }
+    if (await reachedVerdict(run, state)) {
+      log(run, "the run reached a verdict before its window ended");
+      await evaluate({ run });
+      if (!existsSync(join(run, "run.json"))) return;
+    }
     await new Promise(resolve => setTimeout(resolve, Math.max(0, Math.min(everyMs, until - Date.now()))));
   }
   if (!existsSync(join(run, "run.json"))) return;
@@ -570,11 +588,16 @@ async function evaluate(flags: Record<string, string>): Promise<void> {
   const scenario = SCENARIOS[state.scenario]!;
   const srv = await server().catch(() => null);
   if (srv) await collectOnce(run, state, srv, { at: 0 });
-  const { verdict, text } = await scenario.evaluate(run, state);
-  const out = join(dirname(run), `${basename(run)}.${verdict}.md`);
-  writeFileSync(out, text);
-  log(run, `verdict ${verdict}: ${out}`);
-  if (verdict !== "open" || (state.until !== undefined && state.until <= Date.now())) await teardown({ run });
+  // A judge newer than the one this process loaded judges in a fresh process, and one that cannot run leaves the run open with its inputs kept.
+  const judged = await judgeCurrent(run, async () => scenario.evaluate(run, state));
+  const ended = state.until !== undefined && state.until <= Date.now();
+  const kept = "unjudged" in judged ? `\nThe inputs ${ended ? "go" : "stay in the run folder and go"} to ${archivePath(run)} at teardown. ` +
+    `Judge them with \`clean-room.ts rejudge --archive ${archivePath(run)}\`.\n` : "";
+  const out = join(dirname(run), `${basename(run)}.${judged.verdict}.md`);
+  writeFileSync(out, judged.text + kept + judgeFooter(judged.judge, judged.loaded, fileSha256(join(run, "criteria.md")), state.until));
+  if (judged.verdict !== "open") rmSync(join(dirname(run), `${basename(run)}.open.md`), { force: true });
+  log(run, `verdict ${judged.verdict}: ${out}`);
+  if (judged.verdict !== "open" || ended) await teardown({ run });
 }
 
 /**
@@ -801,6 +824,8 @@ async function teardown(flags: Record<string, string>): Promise<void> {
     if ([...chats, ...jobs].some(id => file.startsWith(id))) { rmSync(join(wakes, file), { force: true }); log(run, `dropped wake ${file}`); }
   }
   if (failed.length) throw new Error(`kept ${run}, because ${failed.length} archives failed; run teardown again`);
+  const evidence = archiveRun(run, state, [...new Set([...chats, ...knownSessions(run, state), ...jobs])], DATA, { loaded: LOADED, current: judgeVersion(currentRoot()) });
+  log(run, `archived the evidence, the criteria and the judge version in ${evidence}`);
   if (scenario?.cleanup) log(run, scenario.cleanup(state) || `removed the project folder ${state.sandbox}`);
   const harness = keepTrialHarness(run);
   if (harness) log(run, `kept the trial's global harness store as ${harness}`);
@@ -837,6 +862,20 @@ async function main(): Promise<void> {
   if (command === "reseed") return reseed(flags);
   if (command === "evaluate") return evaluate(flags);
   if (command === "teardown") return teardown(flags);
+  if (command === "judge") {
+    const run = need(flags, "run");
+    const state = readJson<RunState>(join(run, "run.json"));
+    // rejudge pins the clock at the window end, so a judge that reads Date.now sees the window as it ended.
+    if (flags.now) { const at = Date.parse(flags.now); Date.now = () => at; }
+    const { verdict, text } = await SCENARIOS[state.scenario]!.evaluate(run, state);
+    process.stdout.write(judgedLine(verdict, text));
+    return;
+  }
+  if (command === "rejudge") {
+    const { verdict, file } = await rejudge(resolve(need(flags, "archive")), join(LOADED.root, "scripts/clean-room/clean-room.ts"), LOADED);
+    process.stdout.write(`${verdict}: ${file}\n`);
+    return;
+  }
   if (command === "baseline") {
     const scenario = SCENARIOS[need(flags, "scenario")]!;
     const { verdict, text } = scenario.baseline(need(flags, "before"));
@@ -844,7 +883,7 @@ async function main(): Promise<void> {
     process.stdout.write(`${verdict}: ${flags.out}\n`);
     return;
   }
-  throw new Error("usage: clean-room.ts <setup|collect|evaluate|teardown|baseline> --run <dir> ...; see the header of this file");
+  throw new Error("usage: clean-room.ts <setup|collect|evaluate|teardown|judge|rejudge|baseline> --run <dir> ...; see the header of this file");
 }
 
 main().catch(error => { process.stderr.write(`${error instanceof Error ? error.stack ?? error.message : String(error)}\n`); process.exit(1); });

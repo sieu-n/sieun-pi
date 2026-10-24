@@ -47,8 +47,10 @@ export type SessionEvent =
   | { kind: "call"; at: number; tool: string; input: string }
   | { kind: "sent"; at: number; to: string; toName: string; text: string };
 
-const SESSIONS = join(homedir(), ".prime/agent/sessions");
-const ARTIFACTS = join(homedir(), ".prime/agent/session-artifacts");
+/** `rejudge` points this at a run archive's copy of the session files, which outlive the run folder. */
+export const PRIME_DIR = process.env.CLEAN_ROOM_PRIME_DIR || join(homedir(), ".prime/agent");
+const SESSIONS = join(PRIME_DIR, "sessions");
+const ARTIFACTS = join(PRIME_DIR, "session-artifacts");
 
 const blockText = (content: unknown): string => typeof content === "string" ? content
   : Array.isArray(content) ? content.map(block => typeof block === "object" && block && "text" in block && typeof block.text === "string" ? block.text : "").join("\n") : "";
