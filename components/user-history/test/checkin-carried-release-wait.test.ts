@@ -4,7 +4,7 @@
 // after-job measure at 07:53Z then read goal_gaps 1 and stuck_steps 2, because p6 was no leaf any more and its live job carried nothing.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { checkInPrecheck, convergenceMisses } from "../src/chat-checkin.ts";
+import { type CheckInMemory, checkInPrecheck, convergenceMisses } from "../src/chat-checkin.ts";
 import type { JobFact } from "../src/checkin-steps.ts";
 import type { ChatBoard, PlanItem } from "../src/shared/types.ts";
 
@@ -13,14 +13,14 @@ const CHAT = "01a162bc-47b4-770b-a9fc-19c3a742e730";
 const RELEASE = "01a10810-34b5-710f-88fe-3d369f89a8c9";
 const CI = "01a1180e-6567-747f-bf44-452520ebdd1b";
 
-const step = (id: string, text: string, extra: Partial<PlanItem> = {}): PlanItem => ({ id, text, status: "todo", children: [], ...extra } as PlanItem);
+const step = (id: string, text: string, extra: Partial<PlanItem> = {}): PlanItem => ({ id, text, status: "todo", children: [], ...extra });
 // The waits as the 07:43Z check-in read them, and as the chat wrote them after 08:03Z.
 const WAITS = { "07:43Z": ["The verified production served-version handoff from p6", "The served production deployment from p6"],
   "08:03Z": ["p6's active release job to supply the production source and served versions", "p6's active release job to supply the production source and served versions"] };
 let waits = WAITS["08:03Z"];
 const p8 = () => step("p8", "Verify the production connection on claude.ai", { job: CHAT, sessionId: CHAT, waitFor: waits[0]! });
 const p10 = () => step("p10", "Fix the proxy route used during MCP sign-in", { job: CHAT, sessionId: CHAT, waitFor: waits[1]! });
-const board = (nested: boolean): ChatBoard => ({ v: 2, rev: 1, updatedAt: "2026-10-23T15:00:00Z", todos: [], lastIds: {}, plan: [{
+const board = (nested: boolean): ChatBoard => ({ v: 2, rev: 1, updatedAt: "2026-10-23T15:00:00Z", todos: [], plan: [{
   id: "p1", text: "Make the insight MCP work for your coworker", status: "doing",
   target: { metric: "Production checks for the endpoint, sign-in and Claude database reads", target: 3, unit: "checks", current: 0, measuredAt: "2026-10-24T07:52:00Z" },
   children: [
@@ -28,14 +28,14 @@ const board = (nested: boolean): ChatBoard => ({ v: 2, rev: 1, updatedAt: "2026-
     ...nested ? [] : [p8(), p10()],
     step("p12", "Finish the checks needed for deployment", { status: "doing", job: CI, sessionId: CI, waitFor: "CI's first complete staging candidate with a passing full staging check" }),
     step("p15", "Repair production promotion proof", { status: "doing", job: CI, sessionId: CI, waitFor: "CI's passing full verification and successful normal promotion preflight" }),
-  ] } as unknown as PlanItem] } as unknown as ChatBoard);
+  ] }] });
 
 const facts = (release: JobFact["state"]): JobFact[] => [
   { key: `thread:${RELEASE}`, sessionId: RELEASE, name: "Look there are a bunch of prime agent threads", state: release, activityAt: NOW - 2 * 60_000,
     ...release === "working" ? { queued: { position: 10, total: 50, since: NOW - 7 * 60_000 } } : {} },
   { key: `thread:${CI}`, sessionId: CI, name: "CI and RepoOps", state: "working", activityAt: NOW, wake: "a board.wake on run 40074231385" },
 ];
-const previous = { at: NOW - 2 * 3_600_000, since: NOW - 3 * 3_600_000, steps: {} } as never;
+const previous: CheckInMemory = { at: NOW - 2 * 3_600_000, since: NOW - 3 * 3_600_000, steps: {} };
 const run = (nested: boolean, release: JobFact["state"] = "working") => {
   const found = checkInPrecheck(previous, facts(release), board(nested), NOW, { self: [CHAT], jobs: [] });
   const { metrics, flagged } = convergenceMisses(CHAT, found.steps, found, {}, 2 * 3_600_000, NOW);
