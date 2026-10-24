@@ -42,6 +42,36 @@ test("a thread linked to its chat only as the owner of an open step gets its con
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
+// Crawler VP on 10-23: the idle unload stopped instagram posts search resumed 06:42 (01a16ab6-dbd7) at 22:01:51Z, 9 s before its pi-pool slot,
+// and the resume pass logged "turn stopped: no account token from pi-pool, retries at 07:02 at 2026-10-23T22:00:36.548Z. Not resumed: no work
+// is owed to it, since no open step names it", because p689 named it but had p935 open under it. It sat parked until 23:48:52Z.
+test("the owner of an open step with open steps under it gets its continue after a pool wait stop", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "step-owner-parent-"));
+  try {
+    const index = new IdIndex(join(dir, "chats.json"), "Chat index");
+    await index.add("crawler-vp");
+    const stopped = "2026-10-23T22:01:53Z";
+    const posts = "01a16ab6-dbd7-7058-b822-2c7e27987343", census = "01a16ab7-417b-7106-be67-770a91c632a7";
+    const owner: ChatAgent = { key: `thread:${posts}`, sessionId: posts, name: "instagram posts search resumed 06:42", job: `session:${posts}`,
+      sender: "instagram posts search resumed 06:42", link: "root", state: "idle", steps: ["p689"], lastActivityAt: stopped };
+    const board: ChatBoard = { v: 2, rev: 1, updatedAt: stopped, todos: [], plan: [{
+      id: "p689", text: "Every Instagram post searchable in OpenSearch, fitting on the disk we have", status: "doing",
+      job: "instagram posts search resumed 06:42", sessionId: posts, children: [
+        { id: "p871", text: "Raise the Instagram posts OpenSearch backfill", status: "done", children: [] },
+        { id: "p935", text: "Fix Instagram census post-history reads", status: "todo", job: "census seed order resumed 06:42", sessionId: census, children: [] }] }] };
+    const rows = (): SessionRow[] => [row("crawler-vp", stopped, { chat: true, agents: [owner] })];
+    const owners: string[][] = [];
+    const chats = new Chats(index, fakeThreads([]), async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")),
+      { ...source(dir, { "crawler-vp": board }, () => Date.parse(stopped) + 60_000, rows),
+        interrupted: async (_isJob, named) => { owners.push([...named].sort()); return null; } }, () => {});
+    await chats.adopt();
+    await chats.tick();
+    await chats.settled();
+    assert.deepEqual(owners, [[posts, census].sort()], "p689's job is owed work while p689 is open, whatever its children read");
+    chats.close();
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
 test("a chat's links find the roots filed under its name when the hub does not hold the chat", async () => {
   const dir = await mkdtemp(join(tmpdir(), "links-name-"));
   try {

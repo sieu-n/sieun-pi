@@ -1065,9 +1065,12 @@ export class Chats {
   }
 
   /**
-   * The sessions that own an open leaf step of these chats, by the step's stored session id or a linked thread that lists the step, less the
+   * The sessions that own an open step of these chats, by the step's stored session id or a linked thread that lists the step, less the
    * chats. The resume pass looks at each one even with no worker or archived (resume_paused.py --owners): on
    * 10-15 a worker stop, a SIGTERM of every worker and the owner's stop each left a frontend bro step owner cut, and none was resumed.
+   * A step with open children counts too: on 10-23 Crawler VP's p689 (doing, with p935 open under it) named instagram posts search resumed
+   * 06:42, which the idle unload stopped at 22:01:51Z in its pi-pool wait for 22:02Z, and the pass read it as owed no work until a check-in
+   * restarted it at 23:48Z, so d7 read a tree parked 106 min while later trees got accounts.
    */
   private async stepOwners(chatRows: readonly SessionRow[]): Promise<Set<string>> {
     const owners = new Set<string>();
@@ -1075,7 +1078,7 @@ export class Chats {
       const board = await this.source.board(row.id).catch(() => null);
       const open = new Set<string>();
       walk(board?.plan ?? [], item => {
-        if (!OPEN.has(item.status) || item.children.some(child => OPEN.has(child.status))) return;
+        if (!OPEN.has(item.status)) return;
         open.add(item.id);
         if (item.sessionId) owners.add(item.sessionId);
       });
