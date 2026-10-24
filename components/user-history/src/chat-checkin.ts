@@ -398,6 +398,21 @@ export function checkInPrompt(precheck: Pick<CheckInPrecheck, "goals" | "end" | 
 }
 
 /**
+ * Whether a check-in run has nothing for a job to do: no goal to steer or start (a quiet push sends nothing), no job the server pushed, no step
+ * without a live owner, no upkeep item and no item at target to close. Such a run starts no job. From 10-23 07:00Z to 10-24 07:00Z the check-ins
+ * started 211 jobs, and 181 of them on runs that read met, most with a prompt that said "Nothing is due". Each one waited in pi-pool's turn line,
+ * where turns waited a median 872 s from 05:40Z to 06:41Z on 10-24, behind the fix jobs of the red duties.
+ */
+export function checkInIdle(precheck: Pick<CheckInPrecheck, "goals" | "end" | "risks" | "metOpen">, jobLine: string | null): boolean {
+  if (jobLine) return false;
+  if (precheck.goals.some(push => !push.quiet && goalDueLine(push) !== null)) return false;
+  if (precheck.goals.some(push => push.trend?.kind === "met" && !push.left?.length)) return false;
+  if (precheck.end.some(entry => !OK_STATES.has(entry.state))) return false;
+  if ((precheck.risks ?? []).some(item => upkeepWords(item.text))) return false;
+  return !(precheck.metOpen ?? []).length;
+}
+
+/**
  * What a step's last change compares: its status, text and owner. A note edit is no change, so a chase note does not hide a stall, and neither is
  * a wait rewrite (c63): a new ETA or run id in the waitFor is no progress.
  */

@@ -32,7 +32,7 @@ import { spawnRecord } from "./spawn-record.ts";
 import { pooledProviders } from "./chat-pool.ts";
 import { checkInLane, type ClaudeState, claudeDown, failureCause, hungMessage, hungTurn, jobWake, type JobWake, ownerPause, revivalMessage, type Stall, stallAction, strandedInput, turnStall, turnViewOf, wokeFromSleep } from "./chat-recovery.ts";
 import { CHECK_IN_PREFIX, JOB_NOTICE_PREFIX, poolSlot, TELL_OWNER_TOOL } from "./shared/chat-feed.ts";
-import { checkInPrompt } from "./chat-checkin.ts";
+import { checkInIdle, checkInPrompt } from "./chat-checkin.ts";
 import { type JobPush, jobPushLine, jobPushMessage } from "./checkin-jobs.ts";
 import { correctionStep } from "./correction-refine.ts";
 import { briefCheck, briefCheckNote, ownerSaid } from "./shared/brief-check.ts";
@@ -1607,7 +1607,7 @@ export class Chats {
       await this.source.memory.set(id, { ...precheck.memory, flags, ...sent(unsent!) });
       const pushed = await this.pushJobs(id, precheck.jobs, gathered.sessions ?? new Map());
       const start = await this.source.duty?.checkIn(id, { at, trigger, everyMs, output: { ...output, flagged }, classes: classCounts(precheck.steps),
-        findings: checkInPrecheckText(precheck, facts, flagged, at, flags), prompt: checkInPrompt(precheck, pushed), ...rerunOf === undefined ? {} : { rerunOf } });
+        findings: checkInPrecheckText(precheck, facts, flagged, at, flags), prompt: checkInPrompt(precheck, pushed), ...checkInIdle(precheck, pushed) ? { idle: true as const } : {}, ...rerunOf === undefined ? {} : { rerunOf } });
       if (start === "failed" && everyMs > CHECK_IN_RETRY_MS) this.lastCheckIn.set(id, at - everyMs + CHECK_IN_RETRY_MS);
       // A check-in that did not start sent no goal push, so its retry pushes again (quietPush).
       if (start === "failed") await this.source.memory.set(id, { ...precheck.memory, flags, ...sent(unsent!), goals: unpushed(precheck.memory.goals, previous?.goals, at) });

@@ -40,7 +40,12 @@ export interface CheckInRun {
   prompt?: string;
   /** On a rerun, the `at` of the cut run it reruns (`DutyRunRecord.rerunOf`). */
   rerunOf?: number;
+  /** Nothing is due this run (`checkInIdle`): a run that reads met records its measure and starts no job. */
+  idle?: true;
 }
+
+/** The summary note of a met check-in run that started no job, since nothing was due. */
+export const NOTHING_DUE = "nothing due, so no job";
 
 /** What the runner needs from the server: which threads are chats, and the duty jobs. Tests pass fakes. */
 export interface DutyHost {
@@ -796,6 +801,11 @@ export class Duties {
     });
     const detail = await this.writeDetail(chatId, `${CHECK_IN_DUTY_ID}-${runStamp(run.at)}`,
       [`# Check-in run of ${new Date(run.at).toISOString()}`, `Measured against the targets: ${judged.summary}.`, run.findings, flaggedSection(run.output.flagged)]);
+    if (run.idle && judged.verdict === "met") {
+      await this.store.appendRun(chatId, { ...record, summary: `${judged.summary}; ${NOTHING_DUE}` });
+      this.log(`duty ${chatId.slice(0, 8)}/${CHECK_IN_DUTY_ID}: met, ${NOTHING_DUE}`);
+      return "done";
+    }
     const headline = headlineOf(CHECK_IN_DUTY.metrics, record);
     const findings = briefFindings({ headline: headline?.words ?? null, flagged: run.output.flagged, ...headline ? { headlineKey: headline.key } : {}, detail });
     // goal_gaps' ask is per goal, in the findings (steer or start its owner job on a push step); the generic "land a code fix" line would contradict it.
