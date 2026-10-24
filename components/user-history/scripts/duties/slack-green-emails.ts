@@ -193,7 +193,7 @@ export function emailMetrics(sources: Sources, now: number, previous: EmailState
 
 /** Runs a program with no shell and gives its stdout. */
 export type Exec = (file: string, args: readonly string[], options?: { cwd?: string }) => Promise<string>;
-export interface EmailDeps { exec: Exec; fetch: typeof fetch; now: () => number; env: Record<string, string>; resendKey?: string }
+export interface EmailDeps { exec: Exec; fetch: typeof fetch; now: () => number; env: Record<string, string>; resendKey?: string; sleep?: (ms: number) => Promise<void> }
 
 const message = (error: unknown): string => (error instanceof Error ? error.message : String(error)).replace(/re_[A-Za-z0-9_]+|sbp_[A-Za-z0-9]+/g, "***");
 const resendTime = (value: string): number => Date.parse(value.replace(" ", "T").replace(/\+00$/, "Z"));
@@ -282,13 +282,31 @@ export async function readRecipients(deps: EmailDeps, addresses: string[]): Prom
 
 interface RailwayDeploy { status: string; createdAt: string; meta?: { branch?: string; commitHash?: string; skippedReason?: string } }
 
+/**
+ * A Railway CLI failure that a later try can pass: the d3 runs of 2026-10-22 06:59Z ("You are being ratelimited") and 2026-10-24 01:00Z
+ * (dns error, "failed to lookup address information: Try again") each lost the Resend key this way, and a rerun 20 min later read it.
+ */
+const RAILWAY_TRANSIENT = /ratelimited|dns error|failed to lookup address|client error \(Connect\)/i;
+/** A whole run took 10 s on 2026-10-24 against the runner's PRECHECK_TARGET_MS of 120 s, so two 20 s waits keep a failing run inside it. */
+export const RAILWAY_RETRY_WAITS_MS = [20_000, 20_000];
+
+async function railway(deps: EmailDeps, args: readonly string[], cwd: string): Promise<string> {
+  for (const wait of [...RAILWAY_RETRY_WAITS_MS, undefined]) {
+    try { return await deps.exec("railway", args, { cwd }); } catch (error) {
+      if (wait === undefined || !RAILWAY_TRANSIENT.test(message(error))) throw error;
+      await (deps.sleep ?? ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))))(wait);
+    }
+  }
+  throw new Error("unreachable");
+}
+
 /** The Resend key and the backend deploys from Railway, linked in a temp folder and unlinked after. */
 export async function readRailway(deps: EmailDeps): Promise<{ key: string | undefined; deploys: Deploys }> {
   const dir = await mkdtemp(join(tmpdir(), "sg-emails-"));
   try {
-    await deps.exec("railway", ["link", "--project", "slack-green-backend", "--environment", "production", "--service", "slack-green-backend"], { cwd: dir });
-    const key = deps.resendKey || parseEnv(await deps.exec("railway", ["variable", "list", "--kv"], { cwd: dir })).RESEND_API_KEY;
-    const list = await deps.exec("railway", ["deployment", "list", "--json", "--limit", "30"], { cwd: dir });
+    await railway(deps, ["link", "--project", "slack-green-backend", "--environment", "production", "--service", "slack-green-backend"], dir);
+    const key = deps.resendKey || parseEnv(await railway(deps, ["variable", "list", "--kv"], dir)).RESEND_API_KEY;
+    const list = await railway(deps, ["deployment", "list", "--json", "--limit", "30"], dir);
     const deploys = JSON.parse(list.slice(list.indexOf("["))) as RailwayDeploy[];
     const live = deploys.find(deploy => deploy.status === "SUCCESS");
     return { key, deploys: { ...(live ? { live: { at: Date.parse(live.createdAt), commit: live.meta?.commitHash ?? "?" } } : {}),
