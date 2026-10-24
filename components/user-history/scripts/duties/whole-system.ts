@@ -934,7 +934,6 @@ export function planCounts(input: PlanInputs): { stuck: StuckSteps[]; redDuties:
     if (unread.length) lagging.push({ chat: chat.id, duty: duty.id, keys: unread, line: `${chat.name}: ${duty.name} misses ${unread.join(" and ")}, ` +
       `${unread.length === 1 ? "a count" : "counts"} over a trailing window with no lastEventAt, so d9 reads ${unread.length === 1 ? "it" : "them"} as a lagging window. ` +
       `Add lastEventAt, the time in ms of the newest event each count counts, to the duty's precheck output, so a count no new event raised reads quiet and a fresh one reads live` });
-    if (liveFix(newest, duty.id, input.boards?.get(chat.id), input.ownerActivity ?? new Map(), live, input.named?.get(chat.id))) return [];
     const missed = missedKeys(effectiveRun(newest));
     const fresh = chat.everyMs === undefined || input.now - (newest.after?.at ?? newest.at) <= chat.everyMs;
     const owed = owedKeys(missed, own, duty.id === CHECK_IN_DUTY_ID && fresh && !stuck.some(entry => entry.chat.id === chat.id));
@@ -948,6 +947,7 @@ export function planCounts(input: PlanInputs): { stuck: StuckSteps[]; redDuties:
     if (waits) ownerHeld.push({ chat: chat.id, duty: duty.id, line: `${chat.name}: ${duty.name} (${duty.id}) ${waits}, an open For you todo, so it owes no fix job` });
     const left = holds.filter(entry => !entry.hold).map(entry => entry.key);
     if (owed.length && !left.length) return [];
+    if (liveFix(newest, duty.id, board, input.ownerActivity ?? new Map(), live, input.named?.get(chat.id))) return [];
     const links = left.map(key => `${duty.id}/${key}`);
     return [{ chat: chat.id, duty: duty.id, line: `${chat.name}: ${duty.name} read off target in ${missStreak(own) === 1 ? "its last run" : `its last ${missStreak(own)} runs`}, and no open step linked to it ` +
       `(duty field ${links.length ? links.join(" or ") : `${duty.id}/<metricKey>`}) has a live owner now${waits ? `, while ${waits}` : ""}` }];

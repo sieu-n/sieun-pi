@@ -41,6 +41,15 @@ test("a duty red only on the held metric is no stuck duty and still shows as wai
   assert.equal(counts.ownerHeld.length, 1);
 });
 
+test("a live fix job on skills_or_tools_to_fix leaves no stuck duty, and owner_fixes still shows as waiting on t97", () => {
+  const p1010: PlanItem = { id: "p1010", text: "Sign sieunpark77 back into pi-pool's Claude accounts", status: "doing", children: [], duty: "d5/skills_or_tools_to_fix",
+    sessionId: "01a16daf-5418-734f-afd1-392e6e0f6dba" };
+  const counts = planCounts({ ...inputs(1), boards: new Map([[HARNESS, { ...board(t97), plan: [p919, p1010] }]]),
+    ownerActivity: new Map([["01a16daf-5418-734f-afd1-392e6e0f6dba", at("11:20:00")]]) });
+  assert.equal(counts.redDuties.length, 0);
+  assert.equal(counts.ownerHeld.length, 1);
+});
+
 test("once the owner answers t97, owner_fixes owes a fix again", () => {
   const counts = planCounts(inputs(0, { ...t97, done: true }));
   assert.equal(counts.ownerHeld.length, 0);
