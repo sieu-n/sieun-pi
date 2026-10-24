@@ -168,7 +168,8 @@ interface PendingStart {
 interface HandOff { items: FlaggedSlice[]; detail: string }
 /** What `<dutyId>.handed.json` keeps: the duty's job and the keys (`handOffKey`) of the items its brief and the runs since handed it. */
 interface Handed { job: string; keys: string[] }
-const handOffKey = (slice: FlaggedSlice): string => `${slice.kind}|${slice.item ?? slice.excerpt}`;
+/** An item is handed again once its `sig` changes: a wiki page a writer checked and that a later commit put behind again is new work. */
+const handOffKey = (slice: FlaggedSlice): string => `${slice.kind}|${slice.item ?? slice.excerpt}${slice.sig === undefined ? "" : `|${slice.sig}`}`;
 const itemLine = (slice: FlaggedSlice): string => `- ${slice.kind}${slice.item ? ` ${slice.item}` : ""}: ${slice.excerpt}`;
 async function readPending(file: string): Promise<PendingStart | null> {
   try { const value = JSON.parse(await readFile(file, "utf8")) as PendingStart; return typeof value?.at === "number" && value.schedule && value.brief ? value : null; }
@@ -342,9 +343,9 @@ export class Duties {
   }
 
   /**
-   * Starts a push run of a red standing duty that is not due (`pushMisses`) when no job is at work on it: its last duty job has ended, and no
-   * open fix step linked to a missed metric has a live job (`dutyFixes`). A job that cannot be read counts as ended, so the push run's own
-   * start records why it failed. The push run is an ordinary run that leaves the schedule where it was. An ended job whose run has no after-job
+   * Starts a push run of a red standing duty that is not due (`pushMisses`) when no job is at work on it: its last duty job has ended or sent
+   * its report (`reportedFree`), and no open fix step linked to a missed metric has a live job (`dutyFixes`). A job that cannot be read counts
+   * as ended, so the push run's own start records why it failed. The push run is an ordinary run that leaves the schedule where it was. An ended job whose run has no after-job
    * measure yet gets that measure first (`endJob`, shared with the scan), and the push judges on it, so no push measures beside it.
    */
   private async push(chatId: string, duty: Duty, context: () => Promise<PushContext>): Promise<void> {
@@ -355,7 +356,7 @@ export class Duties {
     let own = runs.filter(run => run.duty === duty.id);
     if (!pushMisses(own, counted, everyMs, this.now())) return;
     const lastRun = own.find((run): run is DutyRunRecord & { job: DutyJobRef } => run.job !== undefined);
-    const working = !!lastRun && await this.host.jobs.working(lastRun.job).catch(() => false);
+    const working = !!lastRun && await this.host.jobs.working(lastRun.job).catch(() => false) && !(await this.reportedFree(chatId, lastRun.job));
     // A working job takes the push run's findings (`handOff`), so it gets one when its duty's last measure flagged items to hand off.
     if (working && !(await this.handsOffBeside(own, lastRun.job))) return;
     // A cut run waits for its rerun once pi-pool admits its tree (`rerunCut`), so it is still going: at 15:50:20Z on 10-19 the AI harness chat's
@@ -928,16 +929,27 @@ export class Duties {
    * kept by its host (`DutyJobHost.kept`: pi-pool holds it for its slot, or a quota-resume or other scheduled job waits on it). A failed read
    * keeps it. The 5 duty jobs Prime update 2004241-1792651168001 recorded as stopped before restore on 10-22 were all archived this way.
    */
-  private async kept(job: DutyJobRef): Promise<string | null> {
+  private async kept(job: DutyJobRef, reported = false): Promise<string | null> {
     const update = await this.updateRunning();
     if (update) return `is kept while Prime update ${update.requestId} is ${update.phase}`;
-    return await this.host.jobs.kept?.(job).catch(error => `is kept, its pool and schedule holds did not read: ${message(error)}`) ?? null;
+    return await this.host.jobs.kept?.(job, reported).catch(error => `is kept, its pool and schedule holds did not read: ${message(error)}`) ?? null;
+  }
+
+  /** Whether the job's report is in and nothing keeps it for later (`kept` with `reported`): the job is done though late notices wake it. */
+  private async reportedFree(chatId: string, job: DutyJobRef): Promise<boolean> {
+    return await this.reported(chatId, job) && !(await this.kept(job, true));
+  }
+
+  /** Whether the job's report to the chat is in (`DutyJobHost.reported`); a failed read reads no report. */
+  private async reported(chatId: string, job: DutyJobRef): Promise<boolean> {
+    return await this.host.jobs.reported?.(job, chatId).catch(error => { this.log(`duty job ${job.name}: read its report: ${message(error)}`); return false; }) ?? false;
   }
 
   /**
    * The duty's last job as a run for `slot` finds it: null when a run already started a job for the slot, a skip while the last job is kept
    * (`kept`) or still works and has not worked past `stuckAfterMs(schedule)` since its run started or a run last found it kept (`keptAt`), else
-   * the job to retire, with a note when it was stuck.
+   * the job to retire, with a note when it was stuck. A job whose report is in (`reported`) is done though it works on: only its scheduled job
+   * or board.wake keeps it, and the run retires it and starts its own job with the run's findings.
    */
   private async previous(chatId: string, dutyId: string, schedule: DutySchedule, slot: number): Promise<Previous> {
     const runs = (await this.store.runs(chatId)).filter(run => run.duty === dutyId);
@@ -945,12 +957,14 @@ export class Duties {
     const started = runs.find(run => run.job);
     const last = started?.job;
     if (!started || !last) return {};
-    const kept = await this.kept(last);
+    const reported = await this.reported(chatId, last);
+    const kept = await this.kept(last, reported);
     if (kept) {
       await this.store.updateRun(chatId, dutyId, started.at, record => { record.keptAt = this.now(); }).catch(error => this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: keptAt of ${last.name}: ${message(error)}`));
       return { skipped: `${STILL_WORKING} (job ${last.name} ${kept})`, held: { job: last, why: kept } };
     }
     if (!(await this.host.jobs.working(last))) return { last, lastRun: started };
+    if (reported) return { last, lastRun: started, replaced: ` (replaced job ${last.name}, whose report was in)` };
     const workingMs = this.now() - Math.max(started.at, started.keptAt ?? 0);
     if (workingMs <= stuckAfterMs(schedule)) return { skipped: `${STILL_WORKING} (job ${last.name})`, working: last };
     return { last, lastRun: started, replaced: ` (replaced stuck job ${last.name}, working ${Math.round(workingMs / 60_000)} min)` };

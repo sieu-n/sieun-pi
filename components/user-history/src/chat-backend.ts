@@ -54,7 +54,7 @@ import { newChatStore, type NewChatStore } from "./chat-new-chat.ts";
 import { ThreadOrigins } from "./thread-origin.ts";
 import { isThinkingLevel, type ChatDefaults, type ChatDefaultsInput } from "./shared/types.ts";
 import { grafanaPrometheus, Usage } from "./usage/lgtm.ts";
-import { cacheWatch, pendingWakes, readRunState, runStamp, startWakes, waking } from "./wakes.ts";
+import { cacheWatch, pendingWakes, readRunState, runStamp, startWakes, wakeLabel, waking } from "./wakes.ts";
 import { BRIEFS_DIR, primeWorkers, recordModel, startBriefKeeper, unstartedJobs } from "./brief-keeper.ts";
 import { readOwnersFor, startAlertBridge } from "./alert-bridge.ts";
 import { startBridgeWatch } from "./alert-bridge-health.ts";
@@ -221,6 +221,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const dutyJobs = dutyJobHost({ threads, archives, rows: () => catalog.rows(), refresh: () => catalog.refresh(), registry,
     saved: async id => { const file = await sessionFileOf(id, agentDir); return file ? savedChat(file) : null; }, sessionFile: id => sessionFileOf(id, agentDir),
     schedules: () => catalog.schedulesNow(), held: () => chats.poolHeldSessions(), queue: hostsReading,
+    waking: async id => { const owed = (await pendingWakes(join(dataDir, "wakes"), Date.now())).filter(wake => wake.session === id || wake.root === id); return owed.length ? `waits on ${wakeLabel(owed)}` : null; },
     treeWait: (id, scheduled) => treeWait(id, { sessions: tree => catalog.tree(tree), queue: workerQueue, relay: sessions => agentOutbox.outbox.pending(entry => sessions.has(entry.threadId) || (entry.root !== undefined && sessions.has(entry.root))),
       wakes: () => pendingWakes(join(dataDir, "wakes"), Date.now()) }, scheduled),
     board: id => join(boards.dir, id + ".json"), log: dutyLog,

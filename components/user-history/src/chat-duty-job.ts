@@ -19,6 +19,7 @@ import type { MetricStreak } from "./shared/duty-streak.ts";
 import type { JobModel } from "./job-resume.ts";
 import type { AgentQueueReading, SessionRow, ThinkingLevel, ThreadSchedule } from "./shared/types.ts";
 import { fileLines } from "./file-lines.ts";
+import { reportedSince, reportReader } from "./duty-job-report.ts";
 
 /**
  * Duty jobs: on every scheduled run of a duty (the built-in check-in included) the server starts one job for it, a root session linked to the
@@ -81,9 +82,18 @@ export interface DutyJobHost {
   /**
    * Why a later run must keep the job up for now, or null: the job waits in pi-pool for its slot (the chat's revive continues it then), its
    * tree waits in pi-pool's turn queue (`turnQueueWait`), or the daemon holds a scheduled job for it, such as the quota-resume of a session
-   * parked on a provider limit. A gone or archived job is never kept, and a failed schedule read rejects. A host without it (test fakes) keeps no job.
+   * parked on a provider limit. A job whose report is in (`reported`) is kept only by its scheduled job or a board.wake it owes. A gone or
+   * archived job is never kept, and a failed schedule read rejects. A host without it (test fakes) keeps no job.
    */
-  kept?(job: DutyJobRef): Promise<string | null>;
+  kept?(job: DutyJobRef, reported?: boolean): Promise<string | null>;
+  /**
+   * Whether the job sent the chat `chatId` a message after its last prompt (`reportedSince`): its report is in, so its work is done even
+   * while late notices wake it. Such a job is kept only by a scheduled job or a board.wake (`kept` with `reported`). On 10-23 the Wiki dream's
+   * 17:21 job sent its report at 23:15Z, then 18 late "child-exited" notices and harness digests woke it one turn at a time, each turn waiting
+   * 15 to 30 min in pi-pool's turn queue, so it read working or kept until 05:39Z, and the d4 runs of 00:26Z and 05:18Z (5 and 12 wiki
+   * problems) started no job and handed nobody their pages. A host without it (test fakes) reads no job as reported.
+   */
+  reported?(job: DutyJobRef, chatId: string): Promise<boolean>;
   /** Sends a working job a message into its current turn (a steer); a host without it (test fakes) hands nothing to a working job. */
   steer?(job: DutyJobRef, text: string): Promise<void>;
 }
@@ -277,12 +287,13 @@ const boardApplyCall = (chat: Pick<DutyChat, "id" | "board">): string =>
 const jobSteerCall = (chat: Pick<DutyChat, "id">): string =>
   `await bash("cd ${USER_HISTORY} && node --import tsx scripts/job-steer.ts ${chat.id} " + shlex.quote(job_name) + " " + shlex.quote(text))`;
 /** A check-in job's report call: the report opens with a replaceable key (src/agent-outbox.ts), since each check-in restates the chat's whole state. */
+/** The check-in job's report call, printing its receipt like `reportCall`. */
 const checkInReportCall = (chat: Pick<DutyChat, "name">): string =>
-  `await agent_message.send(${JSON.stringify(replaceableLine(CHECK_IN_REPORT_KEY) + "\n\n")} + report, receiver_role="sibling", receiver_name=${JSON.stringify(chat.name)})`;
+  `print(await agent_message.send(${JSON.stringify(replaceableLine(CHECK_IN_REPORT_KEY) + "\n\n")} + report, receiver_role="sibling", receiver_name=${JSON.stringify(chat.name)}))`;
 /** The replaceable key of a check-in job's report. */
 export const CHECK_IN_REPORT_KEY = "check-in report";
-/** The report call a job the server starts ends with. */
-const reportCall = (chat: Pick<DutyChat, "name">): string => `await agent_message.send(report, receiver_role="sibling", receiver_name=${JSON.stringify(chat.name)})`;
+/** The report call a job the server starts ends with. It prints the send's receipt, which tells the runner the report is in (`DutyJobHost.reported`). */
+const reportCall = (chat: Pick<DutyChat, "name">): string => `print(await agent_message.send(report, receiver_role="sibling", receiver_name=${JSON.stringify(chat.name)}))`;
 
 /**
  * The duty job's brief (owner 10-09: "every (n min/h/day) -> code precheck -> run job with that context to 'fix issues, check what duty
@@ -466,6 +477,8 @@ export function dutyJobHost(input: { threads: DutyJobThreads; archives: { add(jo
   held?: () => ReadonlySet<string>;
   /** Every box's turn queue (`hostsQueueRead`), so `kept` keeps a job whose tree waits in it (`turnQueueWait`); a failed read keeps nothing. */
   queue?: () => Promise<Pick<AgentQueueReading, "working" | "queued">>;
+  /** Why a board.wake the service still owes keeps the job up (one the job or a session below it set), or null; absent: no wake keeps it. */
+  waking?: (id: string) => Promise<string | null>;
   refresh?: () => Promise<void>; lookupWaitsMs?: readonly number[]; sleep?: (ms: number) => Promise<void>; log?: (line: string) => void; now?: () => number }): DutyJobHost {
   const row = async (id: string) => (await input.rows()).find(candidate => candidate.id === id);
   const waits = input.lookupWaitsMs ?? DUTY_LOOKUP_WAITS_MS;
@@ -473,6 +486,7 @@ export function dutyJobHost(input: { threads: DutyJobThreads; archives: { add(jo
   let queue: Promise<unknown> = Promise.resolve();
   /** The last wait `ended` logged for each job it kept, so a wait that holds over many scans is logged once. */
   const held = new Map<string, string>();
+  const marks = reportReader();
   const serial = <T>(task: () => Promise<T>): Promise<T> => {
     const next = queue.then(task, task);
     queue = next.catch(() => {});
@@ -598,14 +612,21 @@ export function dutyJobHost(input: { threads: DutyJobThreads; archives: { add(jo
       const file = await input.sessionFile?.(job.id);
       return file ? readJobCut(file) : null;
     },
-    async kept(job) {
+    async kept(job, reported = false) {
       const found = await row(job.id);
       if (!found || found.archived) return null;
-      if (input.held?.().has(job.id)) return POOL_HELD;
-      const queued = input.queue ? await input.queue().then(reading => turnQueueWait(reading, job.id), () => null) : null;
-      if (queued) return queued;
+      if (!reported) {
+        if (input.held?.().has(job.id)) return POOL_HELD;
+        const queued = input.queue ? await input.queue().then(reading => turnQueueWait(reading, job.id), () => null) : null;
+        if (queued) return queued;
+      }
       const schedule = input.schedules ? (await input.schedules()).get(job.id) : undefined;
-      return schedule ? `has ${schedule.status === "active" ? "an active" : "a paused"} scheduled job${schedule.label ? ` (${schedule.label})` : ""}` : null;
+      if (schedule) return `has ${schedule.status === "active" ? "an active" : "a paused"} scheduled job${schedule.label ? ` (${schedule.label})` : ""}`;
+      return reported ? await input.waking?.(job.id) ?? null : null;
+    },
+    async reported(job, chatId) {
+      const file = await input.sessionFile?.(job.id);
+      return file ? reportedSince(await marks(file, chatId)) : false;
     },
     async steer(job, text) {
       await input.threads.prompt(job.id, { message: text, images: [], mode: "steer" });

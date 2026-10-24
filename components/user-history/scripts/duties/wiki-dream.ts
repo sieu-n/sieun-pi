@@ -502,7 +502,8 @@ export async function measureDream(deps: DreamDeps, lastRuns: readonly DutyRunRe
   // The pages that count come first, longest behind first, then the followed ones, so the job takes the oldest work first.
   const behindOrder = (page: StalePage): [number, number] => { const fell = behindSince(page); return [fell > 0 && now - fell <= FOLLOW_WINDOW_MS ? 1 : 0, fell]; };
   const staleOrder = [...stalePages ?? []].sort((a, b) => { const [x, y] = [behindOrder(a), behindOrder(b)]; return x[0] - y[0] || x[1] - y[1]; });
-  for (const page of staleOrder) slices.push({ kind: "stale_vs_code", item: page.path, excerpt: clip(staleExcerpt(page, now)) });
+  // The page's check time is its sig, so a run hands the dream job a page again once a writer checked it and a later commit put it behind again.
+  for (const page of staleOrder) slices.push({ kind: "stale_vs_code", item: page.path, excerpt: clip(staleExcerpt(page, now)), sig: page.verified_at ?? page.last_verified });
   for (const item of health?.items ?? []) {
     if (item.kind === "signal" || (item.kind === "stale_vs_code" && stalePages)) continue;
     slices.push({ kind: item.kind, item: item.path, excerpt: clip(`${item.excerpt ?? item.path}${item.target ? ` -> ${item.target}` : ""}`) });
