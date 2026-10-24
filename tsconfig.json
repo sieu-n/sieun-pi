@@ -13,6 +13,7 @@
   },
   "include": [
     "components/global-rules/**/*.ts",
+    "components/claude-rules/**/*.ts",
     "components/pi-pool/app/extension/**/*.ts"
   ]
 }

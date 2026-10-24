@@ -50,7 +50,7 @@ try {
   python("-m", "unittest", "discover", "-s", "components/usage-feed/tests");
   const rulesTests = readdirSync(join(root, "tests")).filter((name) => /^global-rules-.*\.test\.mjs$/.test(name)).sort();
   if (rulesTests.length === 0) throw new Error("No global-rules Node suites found.");
-  run(process.execPath, ["--test", ...rulesTests.map((name) => `tests/${name}`), "tests/agent-utilities.test.mjs", "tests/git-stale-index.test.mjs", "tests/git-mass-delete.test.mjs", "tests/release-chat.test.mjs"]);
+  run(process.execPath, ["--test", ...rulesTests.map((name) => `tests/${name}`), "tests/claude-rules.test.mjs", "tests/agent-utilities.test.mjs", "tests/git-stale-index.test.mjs", "tests/git-mass-delete.test.mjs", "tests/release-chat.test.mjs"]);
   run(process.execPath, ["node_modules/typescript/bin/tsc", "--project", "tsconfig.json"]);
   run("npm", ["test"], join(root, "components/user-history"));
   run("npm", ["run", "typecheck"], join(root, "components/user-history"));

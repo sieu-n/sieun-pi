@@ -245,6 +245,13 @@
       "target": ".prime/agent/extensions/global-rules.ts"
     },
     {
+      "id": "claude-rules",
+      "kind": "link",
+      "source": "components/claude-rules/index.ts",
+      "scope": "home",
+      "target": ".prime/agent/extensions/claude-rules.ts"
+    },
+    {
       "id": "user-history",
       "kind": "link",
       "source": "components/user-history",

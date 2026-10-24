@@ -258,6 +258,7 @@ Then remove the `anthropic` and `openai-codex` entries whose `apiKey` names `pi-
 - Each skill root and the auxiliary `skills/skills` directory go under `~/.prime/agent/skills`.
 - `config/AGENTS.md` and `config/pstack-models.json` go under `~/.prime/agent`.
 - One global entry links `~/.prime/agent/extensions/global-rules.ts` to `components/global-rules/index.ts`. It refuses history rewrites in the sieun-pi checkout and outside sends without the owner's ok.
+- One global entry links `~/.prime/agent/extensions/claude-rules.ts` to `components/claude-rules/index.ts`. It loads the `.claude/rules` files of the repo a session works in.
 - One global link points `~/.prime/agent/extensions/user-history` at the whole `components/user-history` package. Its `pi.extensions` declaration loads `./extension/index.ts`.
 - The pool is not in the manifest. `components/pi-pool/install.py` owns its links. `~/.config/pi-pool` stays a real directory. See [the pool README](../components/pi-pool/README.md#install-update-and-roll-back).
 

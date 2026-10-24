@@ -338,6 +338,7 @@ It runs Prime Agent 0.9.8 on macOS. Every item below is public or installable.
 | `pi-pool` extension | Picks a pooled account for each session and adds `/account` to move a running session to another account. `components/pi-pool/install.py` installs it. |
 | `user-history` extension | Serves the browser chat app for native Prime sessions (`/what-did-i-say`, `/agent-chat`, `sieun-pi chat`). |
 | `global-rules` extension | Refuses a recursive grep of `~/.prime/agent`, history rewrites already on a remote in the sieun-pi checkout, outside sends and PR merges without the owner's ok. It adds no prompt text. |
+| `claude-rules` extension | Loads a repo's `.claude/rules/*.md` the way Claude Code does: unscoped rules at session start, and a rule with `paths:` globs the first time the session reads or edits a matching file. |
 | The skills in [`skills/`](skills/README.md) | Work playbooks for investigation, design, review, verification and writing, plus browser and web search helpers. Most are adapted from [cursor/plugins pstack](https://github.com/cursor/plugins/tree/main/pstack) (MIT). |
 | `config/AGENTS.md` | Five global rules for every session: the unslop pointer, one subagent per unit of output, threads only on request, steering a live job, and what the browser chat renders. |
 | `config/pstack-models.json` | The model policy for subagents, described below. |
@@ -407,6 +408,7 @@ sieun-pi
   ├─ components/pi-pool/        install.py copies a commit to ~/.local/share/pi-pool
   ├─ components/user-history/   the browser chat and its Prime extension
   ├─ components/global-rules/   global guards
+  ├─ components/claude-rules/   a repo's .claude/rules for Prime sessions
   ├─ skills/                    linked to ~/.prime/agent/skills/<name>
   └─ config/                    rules, model policy and new-profile settings
 ```
