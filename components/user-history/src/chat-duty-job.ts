@@ -397,8 +397,14 @@ const POOL_HELD = "waits on pi-pool for its slot";
 export function turnQueueWait(reading: Pick<AgentQueueReading, "working" | "queued">, tree: string): string | null {
   if (reading.working.some(entry => entry.tree === tree)) return null;
   const place = reading.queued.filter(entry => entry.tree === tree).sort((a, b) => a.position - b.position)[0];
-  return place ? `waits ${place.position} of ${place.total} in pi-pool's turn queue` : null;
+  return place ? `waits ${place.position} of ${place.total}${TURN_QUEUE}` : null;
 }
+const TURN_QUEUE = " in pi-pool's turn queue";
+/**
+ * Whether a `kept` reason is a turn-queue wait (`turnQueueWait`): the job's turn is only waiting for a slot, so a steer reaches it at its
+ * next step, unlike a job pi-pool holds for an account or a quota park waits on.
+ */
+export const inTurnQueue = (why: string): boolean => why.endsWith(TURN_QUEUE);
 
 /** The waits before each look for a session whose create failed (a timeout, a lost client): about 2 min in all. */
 export const DUTY_LOOKUP_WAITS_MS: readonly number[] = [0, 10_000, 20_000, 30_000, 60_000];

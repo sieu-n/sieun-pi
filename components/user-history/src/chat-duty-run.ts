@@ -1,7 +1,7 @@
 import { copyFile, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { hostExecFile } from "./spawn-host.ts";
 import { basename, join } from "node:path";
-import { type DutyJobHost, dutyJobBrief, type DutyJobInput, dutyJobName } from "./chat-duty-job.ts";
+import { type DutyJobHost, dutyJobBrief, type DutyJobInput, dutyJobName, inTurnQueue } from "./chat-duty-job.ts";
 import { type CheckInActor, CHECK_IN_MS } from "./checkin-settings.ts";
 import type { DutyStore } from "./chat-duty-store.ts";
 import { pooledProviders } from "./chat-pool.ts";
@@ -959,7 +959,9 @@ export class Duties {
    * The duty's last job as a run for `slot` finds it: null when a run already started a job for the slot, a skip while the last job is kept
    * (`kept`) or still works and has not worked past `stuckAfterMs(schedule)` since its run started or a run last found it kept (`keptAt`), else
    * the job to retire, with a note when it was stuck. A job whose report is in (`reported`) is done though it works on: only its scheduled job
-   * or board.wake keeps it, and the run retires it and starts its own job with the run's findings.
+   * or board.wake keeps it, and the run retires it and starts its own job with the run's findings. A job kept only by pi-pool's turn queue
+   * (`inTurnQueue`) still takes the run's hand-off as `working`: from 10-23 10:27Z to 10-24 05:18Z, 18 missed runs on 4 chats skipped beside
+   * a job in that queue and handed it nothing, among them d4 at 00:26Z and 05:18Z with 5 and 12 wiki problems.
    */
   private async previous(chatId: string, dutyId: string, schedule: DutySchedule, slot: number): Promise<Previous> {
     const runs = (await this.store.runs(chatId)).filter(run => run.duty === dutyId);
@@ -971,7 +973,7 @@ export class Duties {
     const kept = await this.kept(last, reported);
     if (kept) {
       await this.store.updateRun(chatId, dutyId, started.at, record => { record.keptAt = this.now(); }).catch(error => this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: keptAt of ${last.name}: ${message(error)}`));
-      return { skipped: `${STILL_WORKING} (job ${last.name} ${kept})`, held: { job: last, why: kept } };
+      return { skipped: `${STILL_WORKING} (job ${last.name} ${kept})`, held: { job: last, why: kept }, ...inTurnQueue(kept) ? { working: last } : {} };
     }
     if (!(await this.host.jobs.working(last))) return { last, lastRun: started };
     if (reported) return { last, lastRun: started, replaced: ` (replaced job ${last.name}, whose report was in)` };
@@ -1025,11 +1027,12 @@ export class Duties {
   }
 
   /**
-   * Whether a push run may start beside the duty's working job `job`: the host can steer it, nothing keeps it (`kept`: a job parked on its
-   * quota or held by pi-pool takes no message), and the duty's newest measured run flagged an item to hand off, read from its precheck output.
+   * Whether a push run may start beside the duty's working job `job`: the host can steer it, nothing but pi-pool's turn queue keeps it (`kept`:
+   * a job parked on its quota or held by pi-pool for an account takes no message), and the duty's newest measured run flagged an item to hand off, read from its precheck output.
    */
   private async handsOffBeside(runs: readonly DutyRunRecord[], job: DutyJobRef): Promise<boolean> {
-    if (!this.host.jobs.steer || await this.kept(job)) return false;
+    const kept = await this.kept(job);
+    if (!this.host.jobs.steer || (kept && !inTurnQueue(kept))) return false;
     const detail = runs.find(run => (run.verdict === "met" || run.verdict === "missed") && run.detail)?.detail;
     if (!detail) return false;
     const output = await readFile(detail, "utf8").then(text => JSON.parse(text) as PrecheckOutput, () => null);
