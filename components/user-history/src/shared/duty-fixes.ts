@@ -111,7 +111,8 @@ export async function dutyFixes(board: ChatBoard | null, duty: string, metrics: 
 function stepTarget(item: PlanItem): { target: NonNullable<FixLink["target"]> } | Record<string, never> {
   const target = item.target;
   if (!target || typeof target.current !== "number" || !Number.isFinite(target.current)) return {};
-  return { target: { current: target.current, target: target.target, ...(target.measuredAt ? { measuredAt: target.measuredAt } : {}) } };
+  return { target: { current: target.current, target: target.target, ...(target.direction ? { direction: target.direction } : {}),
+    ...(target.measuredAt ? { measuredAt: target.measuredAt } : {}) } };
 }
 
 export const missedKeys = (run: Pick<DutyRunRecord, "metrics">): string[] => Object.entries(run.metrics).filter(([, result]) => !result.met).map(([key]) => key);

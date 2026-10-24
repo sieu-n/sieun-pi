@@ -60,11 +60,13 @@ test("runs with no item reading judge the lead metric as before", () => {
 test("a fix with its own measured target is judged on that target's history in the runs", () => {
   const risks: DutyMetric[] = [{ key: "crawler_risks_firing", label: "Risks whose alert fires now", op: "<=", target: 0 }];
   const d5 = (at: string, writes: number): DutyRunRecord => ({ duty: "d5", at: t(at), trigger: "owner", ms: 1, ...judge(risks, { metrics: { crawler_risks_firing: 1 } }),
-    fixes: { crawler_risks_firing: { step: "p952", job: "nvme0 and root disk writes root cause", live: true, target: { current: writes, target: 4 } } } });
+    fixes: { crawler_risks_firing: { step: "p952", job: "nvme0 and root disk writes root cause", live: true, target: { current: writes, target: 4, direction: "down" } } } });
   const falling = [d5("2026-10-24T16:52:00Z", 4.35), d5("2026-10-24T16:25:00Z", 3.9), d5("2026-10-24T14:33:00Z", 6.48)];
   assert.deepEqual(fixStepStreak(falling, "crawler_risks_firing", "p952"), { misses: 3, moved: true, worked: { item: "p952", from: 6.48, to: 4.35, target: 4 } });
   const flat = [d5("2026-10-24T16:52:00Z", 6.48), d5("2026-10-24T16:25:00Z", 6.5), d5("2026-10-24T14:33:00Z", 6.48)];
   assert.equal(fixStepStreak(flat, "crawler_risks_firing", "p952").moved, false);
+  const under = [d5("2026-10-24T19:03:00Z", 2.0), d5("2026-10-24T18:20:00Z", 3.86), d5("2026-10-24T14:33:00Z", 4.5)];
+  assert.equal(fixStepStreak(under, "crawler_risks_firing", "p952").moved, true, "a number past its own target counts as moved, though it lies further from 4 than 4.5 did");
 });
 
 test("the duty records each goal's number, and a run records its fix step's measured target", async () => {
@@ -77,5 +79,5 @@ test("the duty records each goal's number, and a run records its fix step's meas
   const target = { metric: "nvme0n1 writes, 1 h rate", target: 4, unit: "TB/day", current: 4.35, measuredAt: "2026-10-24T16:52:00.000Z", direction: "down" };
   const fixBoard = { ...board, plan: [step("p952", [], { duty: "d5/crawler_risks_firing", job: "nvme0 root cause", target } as Partial<PlanItem>)] } as unknown as ChatBoard;
   assert.deepEqual(await dutyFixes(fixBoard, "d5", ["crawler_risks_firing"], async () => true),
-    { crawler_risks_firing: { step: "p952", job: "nvme0 root cause", live: true, target: { current: 4.35, target: 4, measuredAt: "2026-10-24T16:52:00.000Z" } } });
+    { crawler_risks_firing: { step: "p952", job: "nvme0 root cause", live: true, target: { current: 4.35, target: 4, direction: "down", measuredAt: "2026-10-24T16:52:00.000Z" } } });
 });

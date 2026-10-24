@@ -167,7 +167,7 @@ export interface DutyCut { error: string; at: number; provider?: string; slotAt?
  */
 export interface FixLink { step: string; job?: string; live: boolean; hold?: string;
   /** The step's own target with its last measurement when the run looked (`GoalTarget.current`), so the runs keep its history (`fixStepStreak`). */
-  target?: { current: number; target: number; measuredAt?: string };
+  target?: { current: number; target: number; direction?: "up" | "down"; measuredAt?: string };
   /** The job's session sat in one tool call past STALL_MS when the run looked (src/shared/stalled-calls.ts): not live, and the brief names its process. */
   stalled?: StalledCall }
 /** A run's re-measure after its own job ended. */

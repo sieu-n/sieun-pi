@@ -93,7 +93,7 @@ export const fixMisses = (streak: readonly DutyRunRecord[], key: string, fix: Fi
  * which d9 read as 6 misses under p919 counting 4 from before the hold.
  */
 /** What a fix step works, as one run read it: the board item (the step or one above it) and its number against its own target. */
-export interface WorkedReading { item: string; value: number; target: number }
+export interface WorkedReading { item: string; value: number; target: number; op?: MetricResult["op"] }
 /** How far a fix's own number moved over the runs that named it (`fixStepStreak`): the item, its value at the first of them and now, and its target now. */
 export interface WorkedMove { item: string; from: number; to: number; target: number }
 
@@ -104,10 +104,13 @@ export interface WorkedMove { item: string; from: number; to: number; target: nu
 function workedReading(run: DutyRunRecord, fix: FixLink | undefined, step: string, above: readonly string[]): WorkedReading | undefined {
   const items = effectiveRun(run).items ?? {};
   const own = items[step];
-  if (own) return { item: step, value: own.value, target: own.target };
-  if (fix?.step === step && fix.target) return { item: step, value: fix.target.current, target: fix.target.target };
+  if (own) return { item: step, value: own.value, target: own.target, op: own.op };
+  if (fix?.step === step && fix.target) {
+    const { current, target, direction } = fix.target;
+    return { item: step, value: current, target, ...direction ? { op: direction === "down" ? "<=" as const : ">=" as const } : {} };
+  }
   const id = above.find(entry => items[entry] !== undefined);
-  return id === undefined ? undefined : { item: id, value: items[id]!.value, target: items[id]!.target };
+  return id === undefined ? undefined : { item: id, value: items[id]!.value, target: items[id]!.target, op: items[id]!.op };
 }
 
 /**
@@ -119,7 +122,9 @@ function workedReading(run: DutyRunRecord, fix: FixLink | undefined, step: strin
  * once he answers: AI harness p919 waited on Railway Breach's t11 at 08:37Z on 10-23, t11 closed, and its job started on it again by 09:11Z,
  * which d9 read as 6 misses under p919 counting 4 from before the hold.
  * When the newest named run and an older one read a number for what the step works (`workedReading`: the step's item, its own target, or the
- * item above it in `above`, nearest first), the move is judged on that number from the oldest such run, and `worked` says how far it went. A
+ * item above it in `above`, nearest first), the move is judged on that number from the oldest such run, and `worked` says how far it went A
+ * number on its own target counts as moved, since its fix did its part while a windowed duty metric still lags: p952's nvme0n1 1 h rate read
+ * 3.86 TB a day against 4 at 19:03Z on 10-24 while d5's 24 h rate read 6.12. A
  * count or a 0-or-1 metric moves only when a whole item clears: on 10-24 Crawler VP's d9 read throughput_goals_missed 3 then 4 under p942, so
  * d9 asked to replace it, while p850, the goal above p942, went from 135 to 159 walks a minute against 252.
  */
@@ -140,8 +145,9 @@ export function fixStepStreak(runs: readonly DutyRunRecord[], key: string, step:
   const now = readings[0];
   const first = readings[readings.length - 1];
   if (now && first && readings.length > 1) {
-    const distance = (reading: WorkedReading): number => Math.abs(reading.value - reading.target);
-    return { misses, moved: distance(now) < distance(first), worked: { item: now.item, from: first.value, to: now.value, target: now.target } };
+    const onTarget = (reading: WorkedReading): boolean => reading.op === "<=" ? reading.value <= reading.target : reading.op === ">=" && reading.value >= reading.target;
+    const distance = (reading: WorkedReading): number => onTarget(reading) ? 0 : Math.abs(reading.value - reading.target);
+    return { misses, moved: onTarget(now) || distance(now) < distance(first), worked: { item: now.item, from: first.value, to: now.value, target: now.target } };
   }
   return { misses, moved: misses > 0 && gap(named[0]!) < gap(named[misses - 1]!) };
 }
