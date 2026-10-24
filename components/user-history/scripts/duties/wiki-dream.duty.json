@@ -41,7 +41,7 @@
       "scripts/duties/wiki-dream.ts"
     ],
     "cwd": "../..",
-    "timeoutMs": 120000
+    "timeoutMs": 300000
   },
   "onMiss": "Follow auto-sns-agent's playbook (node scripts/skills/read-skill.mjs apps/llm-wiki/references/wiki-dream.md) and the ledger in this chat's duties folder. Fix every flagged item this run, headline first, one subagent per page, pair or class, with no daily cap; where the playbook caps a day or stops at a plan step, this wins, so fix the playbook too. An enforcement gap gets a check in code with a test from a fix job (rlm.create_session). A rule waiting on a CI probe asks the chat for a slot with its object sha. Then rerun the precheck (scripts/duties/wiki-dream.ts in sieun-pi components/user-history) and go again until every metric is 0, or name the blocker and whose it is. A miscount gets a fix in wiki-dream.ts with a test. Commits use the scope wiki-dream; never push sieun/dev or sieun-pi. Report each metric before and after with the commits; a quiet day sends nothing.",
   "boardGoal": "p249"
