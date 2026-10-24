@@ -30,6 +30,7 @@ The watchdog finds Prime Agent sessions that stopped making progress and recover
 3. As hard gates they stopped every recovery on us-metal02, where 14,649 actions were skipped from 10-19 16:53Z to 10-24 08:46Z at 16 to 80 GiB swap used, while 132 GiB RAM sat free and the load sat near 200 on 80 cores.
 4. A subagent shares its parent's worker, so the cycle finds its own tools under the RLM kernel whose `RLM_HARNESS_STATE_DIR` names its session id.
 5. When a subagent has been silent 45 minutes while one of those tools burns CPU, the parent's `CHILD_WEDGED` notice names the pid, the command and its CPU minutes. On 10-24 a `git grep -w -F -f` with 1,117 patterns and a `reach.py` stuck in a regex burned 2.7 and 0.95 cores for over an hour under two code cut 3 subagents. `tests/test_stalled_tools.py` covers both parts.
+6. Right before a `CHILD_WEDGED` notice goes out, the cycle reads the subagent again and sends nothing when it has a pending `board.wake` file in `browser-chat/wakes/`, a run in pi-pool's turn queue (`turns.json` `queued` or `kept`), or an `agent_message.send` to its parent after its last prompt. The verdict turns `OK` and the cycle writes one `child_waits` line to `log.jsonl`. On 10-24 at 19:35:33Z a cycle told the AI harness chat to cancel checkin pushes goals, which sat 105th in that queue, held a wake for 10:40Z on 10-25 and had reported to its parent at 19:33:50Z. `tests/test_waiting_child.py` replays that case.
 
 ## Archived chats
 

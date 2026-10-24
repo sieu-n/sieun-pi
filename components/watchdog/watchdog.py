@@ -12,7 +12,7 @@ import re
 import time
 
 from wd_common import (LOG_F, STATE_F, WATCH, _rp, _run, _tail_events, _ts, chat_ids, chat_jobs, credential_wait_at, gone_reason, log, outbox_notice,
-                       pa, stop_reason, tree_root, work_done)
+                       pa, pending_wake, pool_queued, stop_reason, tree_root, work_done)
 from wd_daemon import daemon_call, ui_retry, unwedge
 from wd_heartbeats import heartbeat_rearm
 from wd_probe import probe_model, probe_verdict
@@ -86,6 +86,35 @@ def owed_input(evs):
             owed_since = owed_since or ts
             owner_owed = owner_owed or from_owner(e)
     return (last_input, owed_since, owner_owed) if owed_since else (last_input, None, False)
+
+
+def told_parent(evs):
+    """Whether the session called agent_message.send to its parent after its last prompt (a user message or a custom message of PROMPT_TYPES)."""
+    for e in reversed(evs):
+        m = e.get('message') or {}
+        if (e.get('type') == 'message' and m.get('role') == 'user') or (e.get('type') == 'custom_message' and e.get('customType') in PROMPT_TYPES):
+            return False
+        if e.get('type') == 'message' and m.get('role') == 'assistant' and any(
+                isinstance(c, dict) and c.get('type') == 'toolCall' and 'agent_message.send' in (a := json.dumps(c.get('arguments'))) and 'parent' in a
+                for c in (m.get('content') or [])):
+            return True
+    return False
+
+
+def child_waits(r):
+    """Why a silent subagent is waiting on purpose, else None, read when its parent's notice would go out, since a cycle takes minutes.
+
+    checkin pushes goals (01a14d7c-1a93-7008-bc1e-bde0d047eaf9) on us-metal02, 10-24: its parent's prompt at 19:05:27Z sat 105th in pi-pool's
+    turn queue, its board.wake for 10:40Z on 10-25 was pending, and it reported to its parent at 19:33:50Z. The cycle that read it at 19:33Z
+    sent its parent "[watchdog] Your subagent 'checkin pushes goals' has produced nothing for 137.9 minutes ... Cancel that child" at 19:35:33Z."""
+    wake = pending_wake(r['sid'])
+    if wake:
+        return f'its board.wake {wake} is pending'
+    if pool_queued(r['sid']):
+        return "its run waits in pi-pool's turn queue"
+    if r.get('file') and told_parent(_tail_events(r['file'])):
+        return 'it sent its parent a message after its last prompt'
+    return None
 
 
 def snapshot():
@@ -580,8 +609,16 @@ def _cycle(dry_run=False, verbose=True):
                     noted.add(e.get('parent_sid'))
         groups = {}
         for r in verdicts:
-            if r['verdict'] == 'CHILD_WEDGED':
-                groups.setdefault(r['parent_sid'], []).append(r)
+            if r['verdict'] != 'CHILD_WEDGED':
+                continue
+            waits = child_waits(r)
+            if waits:
+                r['verdict'], r['why'] = 'OK', f'subagent waits on purpose: {waits}'
+                with open(LOG_F, 'a') as f:
+                    f.write(json.dumps({'skip': 'child_waits', 'id': r['id'], 'sid': r['sid'], 'name': r['name'], 'why': waits,
+                                        'at': dt.datetime.now(dt.timezone.utc).isoformat()}) + '\n')
+                continue
+            groups.setdefault(r['parent_sid'], []).append(r)
         for psid, kids in sorted(groups.items(), key=lambda g: next(
                 (x['stale_min'] or 0 for x in recs if x['sid'] == g[0]), float('inf'))):
             par = next((x for x in recs if x['sid'] == psid), None)

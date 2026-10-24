@@ -101,6 +101,23 @@ DEFAULT_CHAT_DATA = Path.home() / '.prime/agent/browser-chat'
 CHAT_DATA = Path(os.environ.get('AGENT_CHAT_DATA_DIR') or DEFAULT_CHAT_DATA)
 
 
+POOL_TURNS = Path(os.environ.get('PI_POOL_DIR') or Path.home() / '.config/pi-pool') / 'turns.json'
+
+
+def pending_wake(sid):
+    """The name of a board.wake file the chat service still holds for session `sid`, else None. The service deletes a wake once it sends it."""
+    return next((p.name for p in sorted((CHAT_DATA / 'wakes').glob(f'{sid}-*.json'))), None) if sid else None
+
+
+def pool_queued(sid):
+    """Whether pi-pool's turn queue (turns.json) holds a run of session `sid` waiting for a working slot, or kept for its account wait."""
+    try:
+        turns = json.loads(POOL_TURNS.read_text())
+    except (OSError, ValueError):
+        return False
+    return any(sid in (turns.get(part) or {}) for part in ('queued', 'kept'))
+
+
 def _rp():
     """resume_paused.py, loaded once."""
     global _resume_paused
