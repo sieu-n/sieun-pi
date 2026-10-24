@@ -8,7 +8,7 @@ import { ownerChats } from "../../src/owner-chats.ts";
 import { type CutSpan, cutWords, readCut, readCutSpans, tailLines, type CutCause } from "../../src/cut-end.ts";
 import { activePause, checkInSettings } from "../../src/checkin-settings.ts";
 import { BoardStore } from "../../src/chat-board-store.ts";
-import { OPEN, POOL_WAIT, walk } from "../../src/checkin-steps.ts";
+import { liveWindowMs, OPEN, parkedBy, POOL_WAIT, walk } from "../../src/checkin-steps.ts";
 import { turnError } from "../../src/shared/credential-wait.ts";
 import type { ChatBoard, MemoryGroupId } from "../../src/shared/types.ts";
 import { type AgentLine, type HostUsable, isLinuxReading, parseLinuxReading, readWatch, type TestBrowserLine, UNREAD_AT_STOP, unusable, type WaitingTree, type WatchLine, type WorkerLine, type WorkerTree } from "../../src/mac-usable-watch.ts";
@@ -25,7 +25,7 @@ import { deliveryCandidates, outboxLandings, readSessionMarks, type SlotWaitTime
 import { CHECK_IN_DUTY_ID, type DutyRunRecord, type FlaggedSlice, type PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import { effectiveRun, metricStreaks, missStreak, newestReading } from "../../src/shared/duty-streak.ts";
 import { missedKeys, parseDutyLink } from "../../src/shared/duty-fixes.ts";
-import { dutyHold, withLinkedBoards } from "../../src/shared/todo-hold.ts";
+import { dutyHold, heldByTodo, withLinkedBoards } from "../../src/shared/todo-hold.ts";
 import { readsTheShare } from "./duty-fleet.ts";
 
 /** One box's numbers in a watch line: the box that wrote the line, then each other box it read through that box's relay (HostWatchLine). */
@@ -866,9 +866,17 @@ export function planCounts(input: PlanInputs): { stuck: StuckSteps[]; redDuties:
   // VP of CI's 19:36Z run measured 26 and its after-job measure at 20:09Z read 1, and its next run at 20:04Z (skipped behind that job) read 0.
   // On 10-18 d7 at 02:13Z counted frontend bro's p197, whose job had ended, though that chat's check-in job had set a live job on it. A count
   // older than the interval is left out: after no check-in ran from 00:05Z on 10-17, 20 h old counts read as current.
-  // A chat whose check-in is paused is parked by the owner, so its steps are his to hold: at 00:09Z on 10-18 slack green guy's 22:11Z check-in,
-  // under its 2 h interval, still put its 3 stuck steps in the count after the owner's focus pause stopped the chat at 23:03Z.
-  const stuck = input.chats.filter(chat => !chat.paused).map(chat => {
+  // A fix step's owner asleep on a board.wake or waiting for its pi-pool slot is live: at 16:33Z on 10-18 d7 flagged Vent's check-in while
+  // p8's job vent cutover train had ended its last turn on "pi-pool: this session waits for its slot at 2026-10-18T16:45".
+  const live = new Set([...input.waking ?? [], ...input.poolWaiting ?? []]);
+  const stuck = input.chats.map(chat => {
+    // A chat whose check-in is paused runs no check-in to count from, so its board and step owners are read here (`unmovedSteps`). On 10-24 the
+    // owner had paused the check-ins of SEO guy, frontend bro, ops guy and metal-management, and stuck_steps_all read 0 while ops guy's p506
+    // named a job unloaded 23 h before with no wake.
+    if (chat.paused) {
+      const items = unmovedSteps(input.boards?.get(chat.id), input.now, chat.everyMs, input.ownerActivity ?? new Map(), live, input.named?.get(chat.id));
+      return { chat, value: items.length, at: input.now, items };
+    }
     // A run skipped because the job before it still worked measured the board all the same, so it counts when it carries the metric: frontend
     // bro's 23:15:37Z run on 10-18 read 0 stuck steps, while d7 at 00:41Z still took 2 from its 23:13Z run. A skip with no metrics measured nothing.
     const run = chat.runs.find(entry => entry.duty === CHECK_IN_DUTY_ID && entry.verdict !== "error" && entry.metrics?.stuck_steps !== undefined);
@@ -891,9 +899,6 @@ export function planCounts(input: PlanInputs): { stuck: StuckSteps[]; redDuties:
     return { chat, value: value + returned.length, at,
       items: [...value > 0 ? liveStuckIds(at!, run!.flagged, board, input.ownerActivity ?? new Map(), input.waking) : [], ...returned] };
   }).filter(entry => entry.value > 0);
-  // A fix step's owner asleep on a board.wake or waiting for its pi-pool slot is live: at 16:33Z on 10-18 d7 flagged Vent's check-in while
-  // p8's job vent cutover train had ended its last turn on "pi-pool: this session waits for its slot at 2026-10-18T16:45".
-  const live = new Set([...input.waking ?? [], ...input.poolWaiting ?? []]);
   const lagging: LaggingDuty[] = [];
   const redDuties = input.chats.flatMap(chat => chat.duties.flatMap(duty => {
     // A duty that reads the fleet's share (d9) misses only as the other duties miss, and this count judges each of those on its own line, as
@@ -924,6 +929,27 @@ export function planCounts(input: PlanInputs): { stuck: StuckSteps[]; redDuties:
       `(duty field ${links.length ? links.join(" or ") : `${duty.id}/<metricKey>`}) has a live owner now` }];
   }));
   return { stuck, redDuties, lagging, hostHeld };
+}
+
+/**
+ * The open leaf steps of a board that nobody moves, read from the board and the step owners alone, for a chat with no check-in snapshot to
+ * count from. A step is held when an open For you todo links it (its step field or `heldByTodo`) or an owner correction parks it (`parkedBy`),
+ * and moving when one of its owners (`stepSessions`) sleeps on a board.wake, waits for its pi-pool slot (`live`) or wrote within the check-in's
+ * live window (`liveWindowMs`), as `goalsWithNoJob` in chat-system.ts reads a goal's owner.
+ */
+export function unmovedSteps(board: ChatBoard | null | undefined, now: number, everyMs: number | undefined, activity: ReadonlyMap<string, number>,
+  live: ReadonlySet<string>, named: ReadonlyMap<string, readonly string[]> = new Map()): string[] {
+  const todos = board?.todos ?? [];
+  const asked = new Set(todos.filter(todo => !todo.done && todo.step).map(todo => todo.step));
+  const window = liveWindowMs(everyMs ?? Infinity);
+  const out: string[] = [];
+  walk(board?.plan ?? [], item => {
+    if (!OPEN.has(item.status) || item.children.some(child => OPEN.has(child.status))) return;
+    if (asked.has(item.id) || heldByTodo(item, todos) || parkedBy(item) !== undefined) return;
+    if (stepSessions(item, named).some(session => live.has(session) || now - (activity.get(session) ?? -Infinity) <= window)) return;
+    out.push(item.id);
+  });
+  return out;
 }
 
 /** The `host_held` slices of a check-in snapshot whose step is still open on the live board, each once. */
