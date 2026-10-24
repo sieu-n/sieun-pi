@@ -55,6 +55,8 @@ FAKE = textwrap.dedent(r"""
             elif mode == 'stream_wait':
                 out({'type': 'message_end', 'message': {'role': 'assistant', 'content': [{'type': 'text', 'text': ''}],
                      'stopReason': 'error', 'errorMessage': os.environ['FAKE_ERROR']}})
+            elif mode == 'queued':     # Prime's report of pi-pool's turn queue (us-metal02, 10-24 at 08:50Z), then silence
+                out({'type': 'wait_status_changed', 'waitingFor': 'a turn, place 91 of 91', 'waitingSince': '2026-10-24T08:50:40.028Z'})
             elif mode == 'row_wait':
                 with open(os.environ['FAKE_POOL_LOG'], 'a') as f:
                     f.write(os.environ['FAKE_ROW'] + '\n')
@@ -144,6 +146,12 @@ class Probe(unittest.TestCase):
         self.assertTrue(alive(hand_run.pid))
         self.assertFalse(alive(got['pid']))
 
+    def test_1024_a_turn_held_in_the_pool_queue_reads_as_a_pool_wait(self):
+        # From 10-23 08:00Z to 10-24 08:50Z all 279 probes on us-metal02 read stalled while the turns sat in this queue.
+        got = self.probe('queued', timeout=2)
+        self.assertEqual((got['outcome'], got.get('via'), got.get('queued')), ('pool_wait', 'queue', 'a turn, place 91 of 91'))
+        self.assertEqual(got.get('end'), 'aborted')
+
     def test_a_pong_reads_as_alive(self):
         got = self.probe('pong')
         self.assertEqual(got['outcome'], 'alive')
@@ -162,6 +170,16 @@ class Verdict(unittest.TestCase):
         self.assertEqual(probe_mod.probe_verdict('PHANTOM_TURN', 'x', 'm', {'m': {'outcome': 'stalled'}})[0], 'MODEL_STALL')
         self.assertEqual(probe_mod.probe_verdict('FROZEN_TOOL', 'x', 'm', {'m': {'outcome': 'alive'}}), ('FROZEN_TOOL', 'x'))
         self.assertEqual(probe_mod.probe_verdict('OK', 'x', 'm', {'m': {'outcome': 'pool_wait'}}), ('OK', 'x'))
+
+    def test_a_tool_verdict_waits_on_a_process_so_no_probe_changes_it(self):
+        for v in ('STUCK_TOOL', 'FROZEN_TOOL'):
+            for outcome in ('stalled', 'pool_wait'):
+                self.assertEqual(probe_mod.probe_verdict(v, 'x', 'm', {'m': {'outcome': outcome}}), (v, 'x'))
+
+    def test_a_queue_pool_wait_names_the_queue(self):
+        v, why = probe_mod.probe_verdict('FROZEN_TURN', 'x', 'm', {'m': {'outcome': 'pool_wait', 'queued': 'a turn, place 9 of 91'}})
+        self.assertEqual(v, 'POOL_WAIT')
+        self.assertIn('place 9 of 91', why)
 
 
 if __name__ == '__main__':

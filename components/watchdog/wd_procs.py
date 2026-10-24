@@ -126,9 +126,48 @@ def _etime_min(et):
 
 # ---- hung-tool surgery: an orphaned shell holding the tool's stdout pipe ----
 
+SESSION_ID = re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}')
+
+
 def _kernel_pids(worker_pid, table=None):
     table = _ps_table() if table is None else table
     return [p for p in _children(worker_pid, table) if 'ipykernel' in table[p][5]]
+
+
+def _rlm_kernel_pids(worker_pid, table):
+    """Prime's RLM kernels (`python -m rlm.repl`). Kept apart from _kernel_pids: an RLM bash() handle runs in the background on
+    purpose, so a quiet shell under one is no wedge for the parked-shell kills."""
+    return [p for p in _children(worker_pid, table) if 'rlm.repl' in table[p][5]]
+
+
+def kernel_session(pid):
+    """The session a kernel serves: the last session id in its RLM_HARNESS_STATE_DIR (session-artifacts/<root>/.../<session>/harness)."""
+    try:
+        env = Path(f'/proc/{pid}/environ').read_bytes().split(b'\0')
+    except OSError:
+        return None
+    for kv in env:
+        if kv.startswith(b'RLM_HARNESS_STATE_DIR='):
+            ids = SESSION_ID.findall(kv.decode('utf-8', 'replace'))
+            return ids[-1] if ids else None
+    return None
+
+
+def session_busy_tools(worker_pid, sid, table=None, read_session=kernel_session):
+    """[(pid, cpu_seconds, etime, cmd)] of the processes burning CPU under the kernel of session `sid` in this worker.
+
+    A worker hosts a root and its subagents, so the worker's descendants alone cannot say whose tool is running; the kernel's
+    harness dir names its session. On 10-24 a git grep and a reach.py under two code cut 3 subagents burned 2.7 and 0.95 cores.
+    """
+    table = _ps_table() if table is None else table
+    out = []
+    for k in _rlm_kernel_pids(worker_pid, table):
+        if read_session(k) != sid:
+            continue
+        for p, stat, secs, pct, cmd in _descendants(k, depth=4, table=table):
+            if stat.startswith('R') or pct > 5.0:
+                out.append((p, secs, table[p][2], cmd))
+    return sorted(out, key=lambda t: -t[1])
 
 
 def pipe_blockers(worker_pid, min_age_min=15):

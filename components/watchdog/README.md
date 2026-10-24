@@ -18,10 +18,18 @@ The watchdog finds Prime Agent sessions that stopped making progress and recover
 ## The model probe
 
 1. When every live session of one model is silent, the cycle starts `prime-agent --mode rpc --model <m> --no-session --no-tools` and asks for "pong", with a 100 s limit.
-2. The answer is `alive`, `stalled` or `pool_wait`. A probe reads as `pool_wait` when pi-pool's slot-wait text ("this session waits for its slot at ...") shows up in its stream, or when `pi-pool.log` has a `wait` or `parked` row for the probe's session id, which the probe reads with the rpc `get_state` command.
-3. A frozen session of a `stalled` model gets the verdict `MODEL_STALL`, and one of a `pool_wait` model gets `POOL_WAIT`. Neither is touched, and each probe writes one `model_probe` line to `log.jsonl`.
+2. The answer is `alive`, `stalled` or `pool_wait`. A probe reads as `pool_wait` when pi-pool's slot-wait text ("this session waits for its slot at ...") shows up in its stream, or when `pi-pool.log` has a `wait` or `parked` row for the probe's session id, which the probe reads with the rpc `get_state` command. It also reads as `pool_wait` when Prime reports pi-pool's turn queue with a `wait_status_changed` event ("a turn, place 91 of 91") and no pong came. From 10-23 08:00Z to 10-24 08:50Z all 279 probes on us-metal02 read `stalled` while they sat in that queue.
+3. A frozen turn (`FROZEN_TURN`, `PHANTOM_TURN`) of a `stalled` model gets the verdict `MODEL_STALL`, and one of a `pool_wait` model gets `POOL_WAIT`. Neither is touched, and each probe writes one `model_probe` line to `log.jsonl`. A tool verdict (`FROZEN_TOOL`, `STUCK_TOOL`) waits on a process, so the probe leaves it as it is.
 4. The probe ends its turn with the rpc `abort` command and then closes its stdin, so the supervisor logs no failed command. A probe that is still running 15 s later gets SIGTERM and then SIGKILL sent to its own process group, which it got from `start_new_session`.
 5. The old probe ran `prime-agent -p` and, after 100 s, `pkill -f 'prime-agent -p --model <m>'`. On 10-18 pi-pool held it in a slot wait, the kill made the supervisor log "prompt_and_wait failed: Daemon worker client closed" at 12:44:48Z and 12:54:46Z, which made dirty minutes in the Whole system precheck, and at 13:14:22Z the pattern also killed a pong probe another agent ran by hand.
+
+## Pressure targets and stalled subagent tools
+
+1. A cycle wakes at most 5 sessions (`MAX_RESUMES_PER_CYCLE`), and that budget is the only gate on its recoveries.
+2. Swap above 16 GiB and a 1-minute load above 30 are soft targets under owner rule c98. An action over either one goes through, and the cycle writes one `over` line per target to `log.jsonl`.
+3. As hard gates they stopped every recovery on us-metal02, where 14,649 actions were skipped from 10-19 16:53Z to 10-24 08:46Z at 16 to 80 GiB swap used, while 132 GiB RAM sat free and the load sat near 200 on 80 cores.
+4. A subagent shares its parent's worker, so the cycle finds its own tools under the RLM kernel whose `RLM_HARNESS_STATE_DIR` names its session id.
+5. When a subagent has been silent 45 minutes while one of those tools burns CPU, the parent's `CHILD_WEDGED` notice names the pid, the command and its CPU minutes. On 10-24 a `git grep -w -F -f` with 1,117 patterns and a `reach.py` stuck in a regex burned 2.7 and 0.95 cores for over an hour under two code cut 3 subagents. `tests/test_stalled_tools.py` covers both parts.
 
 ## Archived chats
 

@@ -163,7 +163,10 @@ def probe_model(model, timeout=PROBE_TIMEOUT_S, pool_log=POOL_LOG, env=None, end
             ev = json.loads(line)
         except ValueError:
             continue
-        if ev.get('type') == 'response' and ev.get('command') == 'get_state':
+        if ev.get('type') == 'wait_status_changed' and ev.get('waitingFor'):
+            # pi-pool's turn queue, as Prime reports it: "a turn, place 91 of 91" (us-metal02, 10-24 at 08:50Z).
+            out['queued'] = ev['waitingFor']
+        elif ev.get('type') == 'response' and ev.get('command') == 'get_state':
             out['session'] = (ev.get('data') or {}).get('sessionId')
         elif ev.get('type') == 'message_end' and (ev.get('message') or {}).get('role') == 'assistant':
             msg = ev['message']
@@ -178,6 +181,8 @@ def probe_model(model, timeout=PROBE_TIMEOUT_S, pool_log=POOL_LOG, env=None, end
         row = pool_wait_row(out['session'], pool_log, offset)
         if row:
             out.update(outcome='pool_wait', slot_at=row.get('slot_at'), via='pi-pool.log', account=row.get('account'))
+        elif out.get('queued'):
+            out.update(outcome='pool_wait', via='queue')
     out['end'] = _finish(proc, turn_open, end_wait)
     out['sec'] = round(time.monotonic() - started, 1)
     return out
@@ -185,12 +190,14 @@ def probe_model(model, timeout=PROBE_TIMEOUT_S, pool_log=POOL_LOG, env=None, end
 
 def probe_verdict(verdict, why, model, probes):
     """A wedge verdict for a session whose model's probe did not get a word out: MODEL_STALL when the model stalled,
-    POOL_WAIT when pi-pool held the probe in a slot wait. Either way host-side recovery would only lose the turn."""
-    if verdict not in ('PHANTOM_TURN', 'FROZEN_TURN', 'FROZEN_TOOL', 'STUCK_TOOL') or model not in probes:
+    POOL_WAIT when pi-pool held the probe in a slot wait. Either way host-side recovery would only lose the turn.
+    A tool verdict waits on a process, not on the model, so it stays as it is."""
+    if verdict not in ('PHANTOM_TURN', 'FROZEN_TURN') or model not in probes:
         return verdict, why
     p = probes[model]
     if p['outcome'] == 'pool_wait':
-        return 'POOL_WAIT', (f"pi-pool holds new {model} sessions in a slot wait (until {p.get('slot_at')}), "
+        held = f"until {p['slot_at']}" if p.get('slot_at') else f"queue at {p.get('queued')}"
+        return 'POOL_WAIT', (f"pi-pool holds new {model} sessions in a slot wait ({held}), "
                              f"so this silence is the pool's queue; host-side recovery cannot fix it")
     if p['outcome'] == 'stalled':
         return 'MODEL_STALL', (f"every live {model} session is silent (cohort stall, no provider error) -- "

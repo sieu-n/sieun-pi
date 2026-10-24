@@ -17,7 +17,7 @@ from wd_daemon import daemon_call, ui_retry, unwedge
 from wd_heartbeats import heartbeat_rearm
 from wd_probe import probe_model, probe_verdict
 from wd_procs import (_children, _descendants, _fd1_is_pipe, _ps_table, _tls_confirmed, _tls_count, kill_stuck_cell,
-                      parked_shells, pressure, shell_belongs_to, stuck_cell_procs, unblock)
+                      parked_shells, pressure, session_busy_tools, shell_belongs_to, stuck_cell_procs, unblock)
 
 SELF_SESSION = '01a01846-1bcc-732d-b587-dcfccf752d68'   # this watchdog session; never touch
 
@@ -28,8 +28,11 @@ TOOL_FREEZE = 35     # tool "running" but no process burning CPU
 BUSY_TOOL_MAX = 120  # a genuinely running tool this long is still a wedge
 CHILD_EXTRA = 15     # subagents get a longer leash
 
-# resume pressure limits: after a reboot every session wakes at once and swap fills (2026-10-09)
+# Resume budget: after a reboot every session wakes at once and swap fills (2026-10-09). The 5 per cycle stays the only gate.
 MAX_RESUMES_PER_CYCLE = 5
+# Soft pressure targets (owner rule c98): an overrun is logged and the action goes through. As hard gates they stopped every recovery on
+# us-metal02: from 10-19 16:53Z to 10-24 08:46Z 14,649 actions were skipped at 16 to 80 GiB swap used while 132 GiB RAM sat free and the load
+# sat near 200 on 80 cores, and stalled tools in two code cut 3 jobs burned 3.7 cores for over an hour with no notice to their parent.
 SWAP_CAP_GIB = 16.0  # ops guy 2026-10-10: the Mac target; at 8 nothing woke for hours
 LOAD_CAP = 30.0
 LAST_COUNTS = {}     # resumed/skipped counts of the latest cycle, read by cron_cycle.py
@@ -124,10 +127,12 @@ def snapshot():
                              if f and os.path.exists(f) else None),
                             _ts(s.get('lastActivityAt')), _ts(s.get('modified'))) if t]
         last_any = max(cand) if cand else None
-        busy, tls = [], None
+        busy, tls, own_busy = [], None, []
         if s['lifecycle'] == 'live' and s['activity'] == 'working':
             table = _ps_table() if table is None else table
             busy = [d for d in _descendants(s.get('workerPid'), table=table) if d[1].startswith('R') or d[3] > 5.0]
+            if s.get('rlmDepth', 0) > 0:
+                own_busy = session_busy_tools(s.get('workerPid'), s.get('sessionId'), table)
             # An open TLS socket means a provider request is genuinely in flight: a slow turn,
             # not a wedged one. Never interrupt those.
             tls = _tls_count(s.get('workerPid'))
@@ -150,6 +155,7 @@ def snapshot():
             last_asst_min=last_asst_min,
             sleepy=sleepy,
             busy_procs=[f'{c[4][:60]} cpu={c[2]:.0f}s {c[3]}%' for c in busy],
+            own_busy=[f'pid {p} ({cmd[:80]}, {secs / 60:.0f} CPU-min in {et})' for p, secs, et, cmd in own_busy],
             tls=tls,
             stopped=stop_reason(s.get('sessionId'), f, archived, test_chats),
         ))
@@ -274,6 +280,9 @@ def classify(r, prev, repeats=None):
             and (r.get('awaiting_min') is None or r['awaiting_min'] >= 10)):
         return 'PHANTOM_TURN', (f"runtime says streaming but no request is open and nothing written for "
                                 f"{r.get('last_asst_min')}m; {r.get('queued', 0)} message(s) queued behind it")
+    if r['depth'] > 0 and (r.get('last_asst_min') or 0) >= 45 and r.get('own_busy'):
+        return 'CHILD_WEDGED', (f'subagent silent {r.get("last_asst_min")}m in one tool call burning CPU: {r["own_busy"][0]} -- '
+                                f'its parent owns the fix (stop that process or the child)')
     if r['depth'] > 0 and (r.get('last_asst_min') or 0) >= 45 and not stuck_cell_procs(r['pid'], 20):
         return 'CHILD_WEDGED', (f'subagent silent {r.get("last_asst_min")}m with no shell to kill -- '
                                 f'its parent owns the fix (cancel/respawn the child)')
@@ -467,21 +476,24 @@ def _cycle(dry_run=False, verbose=True):
                 jobs = chat_jobs() or {}
             r['work_done'] = work_done(r['sid'], r.get('file'), _tail_events(r['file']) if r.get('file') else [], jobs, shown or None)
     swap, load = pressure()
-    blocked = ('swap', swap, SWAP_CAP_GIB) if swap > SWAP_CAP_GIB else \
-        ('load', load, LOAD_CAP) if load > LOAD_CAP else None
-    counts = {'resumed': 0, 'skipped_budget': 0, 'skipped_pressure': 0, 'swap_gib': swap, 'load_1m': load}
+    over = [o for o in (('swap', swap, SWAP_CAP_GIB), ('load', load, LOAD_CAP)) if o[1] > o[2]]
+    counts = {'resumed': 0, 'skipped_budget': 0, 'over_pressure': 0, 'swap_gib': swap, 'load_1m': load}
     LAST_COUNTS.clear()
     LAST_COUNTS.update(counts)
 
     def admit(r, verdict):
-        """Spend one wake from this cycle's budget, or log why the session waits for a later cycle."""
-        if not blocked and counts['resumed'] < MAX_RESUMES_PER_CYCLE:
+        """Spend one wake from this cycle's budget, or log that the session waits for a later cycle. A pressure overrun is logged and admitted."""
+        if counts['resumed'] < MAX_RESUMES_PER_CYCLE:
             counts['resumed'] += 1
+            for reason, value, cap in over:
+                counts['over_pressure'] += 1
+                with open(LOG_F, 'a') as f:
+                    f.write(json.dumps({'over': reason, 'value': value, 'cap': cap, 'id': r['id'], 'sid': r['sid'], 'name': r['name'],
+                                        'verdict': verdict, 'dry_run': dry_run, 'at': dt.datetime.now(dt.timezone.utc).isoformat()}) + '\n')
             return True
-        reason, value, cap = blocked or ('budget', counts['resumed'], MAX_RESUMES_PER_CYCLE)
-        counts['skipped_budget' if reason == 'budget' else 'skipped_pressure'] += 1
+        counts['skipped_budget'] += 1
         with open(LOG_F, 'a') as f:
-            f.write(json.dumps({'skip': reason, 'value': value, 'cap': cap, 'id': r['id'], 'sid': r['sid'],
+            f.write(json.dumps({'skip': 'budget', 'value': counts['resumed'], 'cap': MAX_RESUMES_PER_CYCLE, 'id': r['id'], 'sid': r['sid'],
                                 'name': r['name'], 'verdict': verdict, 'stale_min': r['stale_min'],
                                 'dry_run': dry_run, 'at': dt.datetime.now(dt.timezone.utc).isoformat()}) + '\n')
         return False
@@ -581,6 +593,11 @@ def _cycle(dry_run=False, verbose=True):
                      f"kept turning: {names}. Either they are wedged or they are queued behind your own turns on "
                      f"the shared worker. Check in on them (agent_message), and cancel + respawn any that cannot "
                      f"tell you their current step.")
+            elif kids[0].get('own_busy'):
+                k = kids[0]
+                m = (f"[watchdog] Your subagent '{k['name']}' has produced nothing for {k.get('last_asst_min')} minutes while one "
+                     f"tool call of its own burns CPU: {'; '.join(k['own_busy'][:3])}. Stop that pid (kill <pid>) so the call returns "
+                     f"and the child goes on, or cancel the child (rlm.delete_subagent).")
             else:
                 k = kids[0]
                 m = (f"[watchdog] Your subagent '{k['name']}' has produced nothing for {k.get('last_asst_min')} "
