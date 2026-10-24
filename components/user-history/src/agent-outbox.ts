@@ -359,6 +359,11 @@ export class AgentOutbox {
     await this.keep(session, text, root, kind, setAt);
   }
 
+  /** `deliver` of a message, answering the id of the entry that holds it, for a delivery receipt (src/clean-room-subjects.ts). */
+  async deliverId(session: string, text: string): Promise<string> {
+    return await this.keep(session, text);
+  }
+
   /** `deliver`, answering the id of the entry that holds the message, or its first part when it goes in parts (`messageParts`). */
   private async keep(session: string, text: string, root?: string, kind: AgentKind = "message", setAt?: number): Promise<string> {
     const ids: string[] = [];

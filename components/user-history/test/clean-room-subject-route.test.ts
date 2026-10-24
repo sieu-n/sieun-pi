@@ -4,13 +4,18 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { once } from "node:events";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { promisify } from "node:util";
-import { CLEAN_ROOM_SUBJECTS_FILE, fileSubjects, routeMessage, type RouteSources, type Subject } from "../src/clean-room-subjects.ts";
+import { createHash } from "node:crypto";
+import { Duties } from "../src/chat-duty-run.ts";
+import { DutyStore } from "../src/chat-duty-store.ts";
+import { CLEAN_ROOM_SUBJECTS_FILE, fileSubjects, routedSibling, routedSteer, routedTell, routeMessage, type RouteSources, type Subject } from "../src/clean-room-subjects.ts";
+import type { Duty } from "../src/shared/chat-duties.ts";
+import type { CheckInView } from "../src/shared/types.ts";
 import { messageCheckPrelude } from "../src/message-limit-check.ts";
 
 const SUBJECT = "01a16e1d-6592-73c6-9a96-81184bf35e5a";
@@ -26,6 +31,7 @@ const AGENTS = [{ sessionId: SAMPLER, name: "disk free sampling 2", link: "root"
 const NOTICE = "From the AI harness chat VP: fixed in sieun-pi 9cc887bc (release-9cc887b). Your check-in's finding is answered.";
 const REPORT = "All 16 readings of root disk free space are in; p2 is done.";
 
+const sha = (text: string) => createHash("sha256").update(text).digest("hex").slice(0, 12);
 const sources = (archived = false, agents = AGENTS): RouteSources => ({ subjects: async () => SUBJECTS, archived: async () => archived,
   participants: async () => ({ agents, dutyJobs: [CHECK_IN] }) });
 
@@ -50,16 +56,15 @@ test("a sibling send to a running test chat returns a redirected receipt and rea
   await fileSubjects(dir, SUBJECTS);
   assert.ok(JSON.parse(await readFile(join(dir, CLEAN_ROOM_SUBJECTS_FILE), "utf8")).subjects[SUBJECT]);
   const delivered: { session: string; text: string }[] = [];
+  const receipts: string[] = [];
   const server = createServer((req, res) => {
     let body = "";
     req.on("data", chunk => { body += chunk; });
     req.on("end", () => {
       const { from, fromName, to, message } = JSON.parse(body || "{}");
       const answer = new URL(req.url!, "http://127.0.0.1").pathname.endsWith("api/agent/route")
-        ? routeMessage(sources(), { from, fromName, to, text: message }).then(route => {
-          if (route.to === "owner") delivered.push({ session: route.owner, text: route.text });
-          return route.to === "owner" ? { redirected: true, owner: route.owner } : { redirected: false };
-        })
+        ? routedSibling(sources(), { from, fromName, to, text: message }, { owner: async (owner, text) => { delivered.push({ session: owner, text }); return `m-${delivered.length}`; },
+          chatOf: async session => session === SAMPLER ? SUBJECT : session === VP ? VP : undefined }, line => receipts.push(line))
         : Promise.reject(new Error(`unexpected ${req.url}`));
       answer.then(value => { res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify(value)); },
         error => { res.writeHead(500, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: error.message })); });
@@ -98,6 +103,7 @@ test("a sibling send to a running test chat returns a redirected receipt and rea
     const notice = await send(VP, "AI harness developer environment VP", NOTICE);
     assert.equal(notice.deliveryStatus, "redirected");
     assert.equal(notice.trialOwner, OWNER);
+    assert.equal(notice.deliveryId, "m-1");
     assert.match(notice.note, /root disk readings is a clean-room test chat[\s\S]*trial's owner 01a16cf7/);
     assert.equal(delivered.length, 1);
     assert.equal(delivered[0]!.session, OWNER);
@@ -106,5 +112,70 @@ test("a sibling send to a running test chat returns a redirected receipt and rea
     assert.equal(report.local, true, "the chat's own root job sends to it as it came");
     assert.equal(await readFile(join(dir, "local-sends.txt"), "utf8"), REPORT + "\n", "only the root job's report went to the chat");
     assert.equal(delivered.length, 1);
+    assert.deepEqual(receipts, [
+      `delivery sibling send: from session ${VP} (AI harness developer environment VP) of chat ${VP} to session ${SUBJECT} as m-1, taken to the trial owner ${OWNER}`,
+      `delivery sibling send: from session ${SAMPLER} (disk free sampling 2) of chat ${SUBJECT} to session ${SUBJECT} as sha256:${sha(REPORT)}`,
+    ], "one receipt per send names both sessions and the delivery id");
   } finally { server.close(); }
+});
+
+test("a d9 push from another chat's duty to a running test chat goes to the trial owner; the chat's own duty notice and other chats' pushes go as they were", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "clean-room-d9-"));
+  const NOW = Date.parse("2026-10-25T01:00:00Z");
+  const other = "01a1180e-6567-747f-bf44-452520ebdd1b";
+  const tells = [{ chat: SUBJECT, text: "[d9 push 2026-10-25T01:00Z] root disk readings: goals with no live job p3" }, { chat: other, text: "[d9 push 2026-10-25T01:00Z] VP of CI: p346" }];
+  const precheck = join(dir, "precheck.mjs");
+  await writeFile(precheck, `import { writeFileSync } from "node:fs";
+writeFileSync(process.env.OUTPUT_FILE, JSON.stringify({ metrics: { duties_green_pct: 45.7 }, tells: ${JSON.stringify(tells)} }));`);
+  const store = new DutyStore(dir);
+  const duty: Duty = { id: "d9", name: "Chat system", ownerWords: "every chat runs on its own", goal: "duties read green",
+    metrics: [{ key: "duties_green_pct", label: "Duties green", op: ">=", target: 100, headline: true }],
+    schedule: { kind: "every", minutes: 60 }, precheck: { command: ["node", precheck], cwd: dir, timeoutMs: 30_000 }, onMiss: "push the chats",
+    status: "active", createdAt: NOW - 86_400_000, updatedAt: NOW - 86_400_000, runCount: 0 };
+  await store.update(VP, duties => { duties.push(duty); });
+  const notices: string[] = [];
+  const owner: { session: string; text: string }[] = [];
+  const receipts: string[] = [];
+  const tell = routedTell(sources(), { notice: async (chat, text) => { notices.push(`${chat.slice(0, 8)} ${text.slice(0, 30)}`); },
+    owner: async (session, text) => { owner.push({ session, text }); return "m-d9"; } }, line => receipts.push(line));
+  const duties = new Duties(store, { isChat: async () => true, now: () => NOW, tickMs: 0, node: process.execPath, tell,
+    jobs: { chat: async id => ({ id, name: "AI harness", cwd: dir, board: id }), working: async () => false, retire: async () => {},
+      start: async (_chat, name) => ({ id: "job-1", name }), ended: async (last, older = []) => [...last, ...older], stop: async () => {} },
+    checkIn: { view: async () => ({ everyMs: 7_200_000 }) as CheckInView, set: async () => null, run: async () => {} },
+    board: async () => ({ v: 2, rev: 1, updatedAt: "", todos: [], plan: [] }), fixLive: async () => false });
+  try {
+    await duties.tick();
+    await duties.settled();
+    assert.deepEqual(notices, [`01a1180e ${tells[1]!.text.slice(0, 30)}`], "the test chat got no push from the AI harness chat's d9");
+    assert.equal(owner.length, 1);
+    assert.equal(owner[0]!.session, OWNER);
+    assert.match(owner[0]!.text, /duty d9 \(01a1164b[^)]*\) sent this to "root disk readings"[\s\S]*goals with no live job p3/);
+    assert.deepEqual(receipts, [
+      `delivery d9 push: from session ${VP} (duty d9) of chat ${VP} to session ${SUBJECT} as m-d9, taken to the trial owner ${OWNER}`,
+      `delivery d9 push: from session ${VP} (duty d9) of chat ${VP} to session ${other} as sha256:${sha(tells[1]!.text)}`,
+    ]);
+    // The test chat's own duty notice reaches it.
+    await tell(SUBJECT, "check-in: p3 waits on p2", { chat: SUBJECT, duty: "check-in" });
+    assert.equal(notices.at(-1), `01a16e1d check-in: p3 waits on p2`);
+  } finally { duties.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("a job-steer of a running test chat's job from another chat goes to the trial owner; the chat's own check-in job steers it, with a receipt per steer", async () => {
+  const steered: string[] = [];
+  const owner: { session: string; text: string }[] = [];
+  const receipts: string[] = [];
+  const job = "disk free sampling 2";
+  const steer = (caller: string | undefined, callerChat?: string) => routedSteer(sources(), { ...caller ? { caller } : {}, ...callerChat ? { callerChat } : {}, chat: SUBJECT, job, message: "take p3 now" },
+    { steer: async () => { steered.push(caller ?? "unnamed"); return { session: SAMPLER, act: "steer" as const }; },
+      owner: async (session, text) => { owner.push({ session, text }); return `m-${owner.length}`; } }, line => receipts.push(line));
+  assert.deepEqual(await steer(VP, VP), { act: "trial owner", session: OWNER, id: "m-1" }, "another chat's check-in job steering the test chat's job reaches the trial owner");
+  assert.match(owner[0]!.text, /01a1164b-4a2d-742d-b27a-82f086ed0200 sent this to "root disk readings"[\s\S]*job-steer for its job "disk free sampling 2"[\s\S]*take p3 now/);
+  assert.deepEqual(await steer(undefined), { act: "trial owner", session: OWNER, id: "m-2" }, "an unnamed caller is not one of the chat's own sessions");
+  assert.deepEqual(await steer(CHECK_IN, SUBJECT), { session: SAMPLER, act: "steer" }, "the test chat's own check-in job steers its job");
+  assert.deepEqual(steered, [CHECK_IN]);
+  assert.deepEqual(receipts, [
+    `delivery job-steer: from session ${VP} of chat ${VP} to session ${SUBJECT} as m-1, taken to the trial owner ${OWNER}`,
+    `delivery job-steer: from session an unnamed caller of chat unknown to session ${SUBJECT} as m-2, taken to the trial owner ${OWNER}`,
+    `delivery job-steer: from session ${CHECK_IN} (steering job disk free sampling 2 of chat ${SUBJECT}) of chat ${SUBJECT} to session ${SAMPLER} as sha256:${sha("take p3 now")}`,
+  ], "each steer's receipt names the caller's session and chat and the target job's session id");
 });

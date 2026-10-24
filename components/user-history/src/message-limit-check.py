@@ -412,7 +412,7 @@ async def to_trial_owner(real, payload):
     note = REDIRECT_NOTE.format(target=payload.get("receiver_name") or to, owner=answer.get("owner"))
     print(note)
     return {"deliveryStatus": "redirected", "message": payload.get("message"), "receiverRole": payload.get("receiver_role"),
-            "receiverName": payload.get("receiver_name"), "trialOwner": answer.get("owner"), "note": note}
+            "receiverName": payload.get("receiver_name"), "trialOwner": answer.get("owner"), "deliveryId": answer.get("id"), "note": note}
 
 
 def plain_request():

@@ -11,7 +11,7 @@ import { reopenSession, unarchiveOnItsBox } from "./reopen-send.ts";
 import { jobRegistry } from "./chat-sources.ts";
 import { IdIndex } from "./id-index.ts";
 import { CLEAN_ROOM_CHATS_FILE, CLEAN_ROOM_CORRECTIONS_FILE, CorrectionLedger, correctionResult, parseCorrectionCall } from "./chat-corrections.ts";
-import { readSubjects, routeMessage, type RouteSources } from "./clean-room-subjects.ts";
+import { routedSibling, routedSteer, type RouteSources, subjectSources } from "./clean-room-subjects.ts";
 import type { Duplex } from "node:stream";
 import { applyAgentOps } from "./agent-board.ts";
 import type { ChatBackend } from "./chat-backend.ts";
@@ -140,10 +140,25 @@ function rootDirectory(backend: ChatBackend): RootDirectory {
 }
 
 /** The clean-room subjects and what decides a subject's own sessions, from this service's files, catalog rows and duty runs. */
-function subjectSources(backend: ChatBackend): RouteSources {
-  return { subjects: () => readSubjects(dirname(backend.boards.dir)), archived: async id => (await backend.chats.archivedIds()).has(id),
-    participants: async id => ({ agents: (await backend.catalog.rows()).find(row => row.id === id)?.agents ?? [],
-      dutyJobs: (await backend.duties?.store.runs(id) ?? []).flatMap(run => run.job ? [run.job.id] : []) }) };
+function subjectSourcesOf(backend: ChatBackend): RouteSources {
+  return subjectSources(dirname(backend.boards.dir), { archived: () => backend.chats.archivedIds(), rows: () => backend.catalog.rows(),
+    runs: async id => await backend.duties?.store.runs(id) ?? [] });
+}
+
+/** The chat a session belongs to for a delivery receipt: the chat itself, or the chat chat-jobs.json files the job's session id under. */
+async function chatOfSession(backend: ChatBackend, session: string | undefined): Promise<string | undefined> {
+  if (!session) return undefined;
+  if ((await backend.chats.ids()).has(session)) return session;
+  return await jobRegistry(join(dirname(backend.boards.dir), "chat-jobs.json")).chatIdOf(session).catch(() => undefined);
+}
+
+/** One delivery receipt line in service.log, with its time. */
+const receipt = (line: string): void => { process.stderr.write(`${new Date().toISOString()} ${line}\n`); };
+
+/** The session an agent names itself with (`X-Chat-Agent-Session`), when it is a session id. */
+function agentSession(req: IncomingMessage): string | undefined {
+  const claim = req.headers["x-chat-agent-session"];
+  return typeof claim === "string" && idPattern.test(claim) ? claim : undefined;
 }
 
 function threadId(value: string): string {
@@ -738,7 +753,7 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
         // Whether a session is a running clean-room test chat, and the session that owns its trial (src/clean-room-subjects.ts).
         if (route === "api/agent/clean-room") {
           const session = threadId(url.searchParams.get("session") ?? "");
-          const sources = subjectSources(backend);
+          const sources = subjectSourcesOf(backend);
           const subject = (await sources.subjects())[session];
           const active = !!subject && !await sources.archived(session);
           json(res, 200, { session, cleanRoomSubject: active, ...active ? { trialOwner: subject.owner, run: subject.run } : {} }); return;
@@ -901,10 +916,10 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
       }
       // A sibling send to a running clean-room test chat (message-limit-check.py): from outside the chat's own sessions it goes to the trial owner.
       if (route === "api/agent/route") {
-        const routed = await routeMessage(subjectSources(backend), { from: threadId(text(body.from, "from", 128)), to: threadId(text(body.to, "to", 128)),
-          text: text(body.message, "message"), ...typeof body.fromName === "string" ? { fromName: text(body.fromName, "fromName", 256) } : {} });
-        if (routed.to === "owner") await backend.messages.deliver(routed.owner, routed.text);
-        json(res, 200, routed.to === "owner" ? { redirected: true, owner: routed.owner } : { redirected: false }); return;
+        const fromName = typeof body.fromName === "string" && body.fromName ? text(body.fromName, "fromName", 256) : undefined;
+        json(res, 200, await routedSibling(subjectSourcesOf(backend), { from: threadId(text(body.from, "from", 128)), to: threadId(text(body.to, "to", 128)),
+          text: text(body.message, "message"), ...fromName ? { fromName } : {} }, { owner: (owner, routed) => backend.messages.deliverId(owner, routed),
+          chatOf: session => chatOfSession(backend, session) }, receipt)); return;
       }
       // A sibling send the sender's own daemon refused as "Session worker is failed" or "Unknown active session": open that root from its file.
       if (route === "api/agent/reopen") {
@@ -1237,7 +1252,12 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
         }
         case "job-steer": {
           // A check-in job's message to a job of its chat (scripts/job-steer.ts): the server delivers it, because a root cannot message a chat's subagents.
-          const steered = await backend.chats.steerJob(id, text(body.job, "job", 256), text(body.message, "message"));
+          const job = text(body.job, "job", 256);
+          const message = text(body.message, "message");
+          const caller = agentSession(req);
+          const callerChat = await chatOfSession(backend, caller);
+          const steered = await routedSteer(subjectSourcesOf(backend), { ...caller ? { caller } : {}, ...callerChat ? { callerChat } : {}, chat: id, job, message },
+            { steer: () => backend.chats.steerJob(id, job, message), owner: (owner, routed) => backend.messages.deliverId(owner, routed) }, receipt);
           if (!steered) throw new RequestError(404, "This thread is not a chat.");
           if ("jobs" in steered) throw new RequestError(404, `The chat has no job by that name. Its jobs: ${steered.jobs.join(", ") || "none"}.`);
           if ("cancelled" in steered) throw new RequestError(409, steered.cancelled);

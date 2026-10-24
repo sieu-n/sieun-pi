@@ -12,6 +12,7 @@ import { type AfterMeasure, CHECK_IN_DUTY, CHECK_IN_DUTY_ID, dailySlot, dutyDue,
   type DutyCut, type DutyMetric, type DutyRunRecord, type DutySchedule, type DutyTrigger, type DutyView, type FixLink, type FlaggedSlice, type PrecheckOutput, type PrecheckOverrun, verdictMetrics } from "./shared/chat-duties.ts";
 import { briefFindings, headlineWords } from "./shared/brief-cap.ts";
 import { pushMisses } from "./duty-push.ts";
+import type { TellSource } from "./clean-room-subjects.ts";
 import type { PrimeUpdate } from "./prime-update.ts";
 import { closedFixes, dutyFixes, type FixLiveness, missedKeys, verifyNoteOps } from "./shared/duty-fixes.ts";
 import { holdingTodo, todoName, withBoardLinks } from "./shared/todo-hold.ts";
@@ -69,8 +70,11 @@ export interface DutyHost {
   fixLive?: (chatId: string, item: PlanItem) => Promise<FixLiveness>;
   /** Applies board ops to the chat's board, for each measured run's goal readings (`goalReadingOps`); absent: runs write no reading. */
   applyBoard?: (chatId: string, ops: (board: ChatBoard) => readonly BoardOp[]) => Promise<void>;
-  /** Sends a server notice to a chat (`Chats.notice`), for each of a precheck's `tells`; absent: the runner sends none. */
-  tell?: (chatId: string, text: string) => Promise<void>;
+  /**
+   * Sends a server notice to a chat (`Chats.notice`), for each of a precheck's `tells`, from the chat whose duty it is (`routedTell`: a notice
+   * to a clean-room test chat from another chat's duty goes to the trial owner); absent: the runner sends none.
+   */
+  tell?: (chatId: string, text: string, from: TellSource) => Promise<void>;
   /** Whether pi-pool would give the tree rooted at `tree` a `provider` account now (`poolAdmits`), for a cut run's rerun; absent: it admits. */
   poolAdmits?: (tree: string, provider: string) => Promise<boolean>;
   /**
@@ -1069,7 +1073,7 @@ export class Duties {
     return this.handNew(chatId, dutyId, held.job, handOff, fresh => tell(chatId, [`The ${dutyName} run of ${new Date(at).toISOString().slice(0, 16)}Z ` +
       `found ${fresh.length} step${fresh.length === 1 ? "" : "s"} nobody moves, and its job ${held.job.name} ${held.why}, so it takes no message until then. ` +
       `Give each a live owner in this turn: steer its job, start one, link a For you todo, or close it on evidence. The run's findings are in ` +
-      `${handOff.detail}.`, ...fresh.map(itemLine)].join("\n")), "the chat");
+      `${handOff.detail}.`, ...fresh.map(itemLine)].join("\n"), { chat: chatId, duty: dutyId }), "the chat");
   }
 
   /** Sends the `handOff` items that the duty job's brief and the runs since did not name (`<dutyId>.handed.json`) once, and returns how many. */
@@ -1178,7 +1182,7 @@ export class Duties {
     let sent = 0;
     for (const tell of tells) {
       if (typeof tell?.chat !== "string" || typeof tell.text !== "string" || !tell.text.trim()) continue;
-      try { await this.host.tell(tell.chat, tell.text); sent++; }
+      try { await this.host.tell(tell.chat, tell.text, { chat: chatId, duty: dutyId }); sent++; }
       catch (error) { this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: notice to chat ${tell.chat.slice(0, 8)} failed: ${message(error)}`); }
     }
     if (sent) this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: sent ${sent} notice${sent === 1 ? "" : "s"} from its precheck`);
