@@ -3,7 +3,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { STALL_MS } from "../../src/checkin-findings.ts";
 import { trainFile } from "../../src/checkin-load.ts";
-import { ownSessions } from "../../src/clean-room-subjects.ts";
+import { messageId, ownSessions } from "../../src/clean-room-subjects.ts";
+import { DELIVERY } from "./run-archive.ts";
 import { firstClause, parseBoard, planJob } from "../../src/shared/chat-board.ts";
 import type { ChatBoard, PlanItem } from "../../src/shared/types.ts";
 import { readSessionFile, sessionFile, sessionFiles, type RunState, type Scenario, type SessionEvent, type Verdict } from "./session-read.ts";
@@ -286,17 +287,33 @@ export interface ResumeLine { job: string; raw: string }
  * What the judge reads about deliveries it cannot see in session files: service.log's steer and resume lines in the window, and the d9 pushes.
  * `logCovered` is false when service.log starts after the window or could not be read, and `pushesRead` false when the pushes file is missing.
  */
-export interface Delivery { logCovered: boolean; steers: SteerLine[]; resumes: ResumeLine[]; pushesRead: boolean; pushes: { at: number; chat: string; tag: string }[] }
+export interface Delivery { logCovered: boolean; steers: SteerLine[]; resumes: ResumeLine[]; pushesRead: boolean; pushes: { at: number; chat: string; tag: string }[];
+  /** The service's own check-in nudges and restarts of jobs (`Chats.pushJobs`), which deliver "The check-in is checking on you" notes. */
+  nudges?: NudgeLine[];
+  /** The delivery receipts the routed service writes per sibling send, d9 push and job-steer (`deliveryLine` in src/clean-room-subjects.ts). */
+  receipts?: Receipt[] }
+/** One check-in nudge or restart of a job by name (`chat <id8>: check-in nudged job <name>: <why>`). */
+export interface NudgeLine { chat8: string; job: string; raw: string }
+/** One delivery receipt: where a message went. `owner` is set when the service took it to the trial owner instead of its target. */
+export interface Receipt { at: number; path: "sibling send" | "d9 push" | "job-steer"; from?: string; fromChat?: string; to: string; id: string; owner?: string; raw: string }
+/**
+ * When the routed delivery with receipts went live: the routing owner reported activation at 04:47:42 KST on 10-25 (19:47:42Z on 10-24), in
+ * release-4311297 from 04:52:53 KST. Deliveries before it have no receipt and are judged by the legacy steer lines and pushes file.
+ */
+export const RECEIPTS_FROM = Date.parse("2026-10-24T19:47:42Z");
 
 const STEER_LINE = /^chat ([0-9a-f]{8})(?: \(archived\))?: check-in job (steered|restarted) job (.+)$/;
 const STEER_ASIDE = /^chat ([0-9a-f]{8})(?: \(archived\))?: check-in job's message for job (.+?) (went through the chat|not sent)\b/;
 const RESUME_LINE = /^job (.+?): interrupted \([^)]*\); continue: /;
+const NUDGE_LINE = /^chat ([0-9a-f]{8})(?: \(archived\))?: check-in (?:nudged|restarted) job (.+?): /;
 const STAMP = /^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d+Z) /;
 
 /** Parses service.log lines from the first stamped line at or after `since` up to the first stamped line past `until`. */
-export function parseServiceLog(lines: Iterable<string>, since: number, until: number): Pick<Delivery, "logCovered" | "steers" | "resumes"> {
+export function parseServiceLog(lines: Iterable<string>, since: number, until: number): Pick<Delivery, "logCovered" | "steers" | "resumes" | "nudges" | "receipts"> {
   const steers: SteerLine[] = [];
   const resumes: ResumeLine[] = [];
+  const nudges: NudgeLine[] = [];
+  const receipts: Receipt[] = [];
   let first: number | undefined;
   let inside = false;
   for (const line of lines) {
@@ -306,9 +323,14 @@ export function parseServiceLog(lines: Iterable<string>, since: number, until: n
       first ??= at;
       if (at > until) break;
       if (at >= since) inside = true;
+      const receipt = inside ? line.match(DELIVERY) : null;
+      if (receipt) receipts.push({ at, path: receipt[1] as Receipt["path"], to: receipt[5]!, id: receipt[6]!, raw: line,
+        ...receipt[2] !== "an unnamed caller" ? { from: receipt[2]! } : {}, ...receipt[4] !== "unknown" ? { fromChat: receipt[4]! } : {}, ...receipt[7] ? { owner: receipt[7] } : {} });
       continue;
     }
     if (!inside) continue;
+    const nudge = line.match(NUDGE_LINE);
+    if (nudge) { nudges.push({ chat8: nudge[1]!, job: nudge[2]!.trim(), raw: line }); continue; }
     const steer = line.match(STEER_LINE);
     if (steer) { steers.push({ chat8: steer[1]!, act: steer[2] as "steered" | "restarted", job: steer[3]!.trim(), raw: line }); continue; }
     const aside = line.match(STEER_ASIDE);
@@ -316,13 +338,13 @@ export function parseServiceLog(lines: Iterable<string>, since: number, until: n
     const resume = line.match(RESUME_LINE);
     if (resume) resumes.push({ job: resume[1]!.trim(), raw: line });
   }
-  return { logCovered: first !== undefined && first <= since, steers, resumes };
+  return { logCovered: first !== undefined && first <= since, steers, resumes, nudges, receipts };
 }
 
 /** Reads the delivery evidence of a run's window from the live service.log and the d9 pushes file. */
 export async function readDelivery(state: RunState, until: number): Promise<Delivery> {
   const log = join(dataDir(), "service.log");
-  let parsed: Pick<Delivery, "logCovered" | "steers" | "resumes"> = { logCovered: false, steers: [], resumes: [] };
+  let parsed: Pick<Delivery, "logCovered" | "steers" | "resumes" | "nudges" | "receipts"> = { logCovered: false, steers: [], resumes: [], nudges: [], receipts: [] };
   if (existsSync(log)) {
     const { createReadStream } = await import("node:fs");
     const { createInterface } = await import("node:readline");
@@ -349,6 +371,8 @@ const body = (text: string): string => text.replace(/^\[agent-message from [^\]]
 /** Prefixes of notes another chat's duty or job puts in a session: a d9 push and the old cross-chat nudge (`NUDGE_PREFIX`). */
 const FOREIGN_NOTE = /^\[(?:d9 push |from )/;
 const CHECK_IN_NOTE = "[check-in] ";
+/** The service's own push of a job with no progress (`jobPushMessage` in src/checkin-jobs.ts). */
+const JOB_PUSH = /^The check-in (?:is checking on you|restarted you): /;
 
 /** One trial session the steering check reads: its id, its name as the steer lines use it, and whether it is the chat itself. */
 export interface TrialSession { id: string; name?: string; head: boolean; file: string }
@@ -364,21 +388,57 @@ export function steering(sessions: readonly TrialSession[], chat: string, since:
   const outside: string[] = [];
   const unknown: string[] = [];
   let owned = 0;
-  const ids = new Set(sessions.map(session => session.id));
+  // Every session of the trial, also one whose file is not on disk, since a delivery to it reached the trial either way.
+  const ids = new Set([chat, ...own, ...sessions.map(session => session.id)]);
   const chat8 = chat.slice(0, 8);
+  const receipts = (delivery?.receipts ?? []).filter(receipt => receipt.at >= since);
+  const ownSource = (receipt: Receipt): boolean => receipt.from === chat || receipt.fromChat === chat || (receipt.from !== undefined && own.has(receipt.from));
+  // Effective delivery: a receipt the service took to the trial owner never reached the subject, whatever an older push record names. A receipt
+  // delivered to a trial session from outside the trial is someone stepping in.
+  for (const receipt of receipts) {
+    if (!ids.has(receipt.to) || receipt.owner !== undefined || ownSource(receipt)) continue;
+    outside.push(`${receipt.path} to ${receipt.to} at ${iso(receipt.at)}: "${clip(receipt.raw)}"`);
+  }
   if (!delivery?.pushesRead) unknown.push("the d9 pushes file was not read, so no d9 push to the trial's sessions can be ruled out");
-  for (const push of delivery?.pushes ?? []) if (push.at >= since && ids.has(push.chat)) outside.push(`d9 push ${push.tag} to ${push.chat} at ${iso(push.at)}`);
+  for (const push of delivery?.pushes ?? []) {
+    if (push.at < since || !ids.has(push.chat)) continue;
+    // From activation on, each d9 push has a receipt: the receipt says where it went, and a push with none is unknown.
+    if (push.at >= RECEIPTS_FROM) {
+      const own = receipts.filter(receipt => receipt.path === "d9 push" && receipt.to === push.chat);
+      if (!own.length) unknown.push(`d9 push ${push.tag} to ${push.chat} at ${iso(push.at)} has no delivery receipt`);
+      continue;
+    }
+    outside.push(`d9 push ${push.tag} to ${push.chat} at ${iso(push.at)}`);
+  }
   for (const session of sessions) {
     const events = readSessionFile(session.file).filter(event => event.at >= since && event.kind === "text");
     const checkIns: string[] = [];
     let briefed = false;
+    const steerReceipt = (text: string): Receipt | undefined => receipts.find(receipt => receipt.path === "job-steer" && receipt.to === session.id && receipt.owner === undefined &&
+      receipt.id === messageId(text.slice(CHECK_IN_NOTE.length)));
+    const nudged = (text: string): void => {
+      const quote = `${session.name ?? session.id}: "${clip(text, 160)}"`;
+      if (!delivery?.logCovered) { unknown.push(`${quote}; service.log does not cover the window`); return; }
+      const lines = delivery.nudges ?? [];
+      if (lines.some(line => line.chat8 === chat8 && line.job === session.name)) { owned++; return; }
+      const theirs = lines.find(line => line.chat8 !== chat8 && line.job === session.name);
+      if (theirs) outside.push(`${quote}; service.log: "${clip(theirs.raw)}"`);
+      else unknown.push(`${quote}; no service.log nudge line of this chat names ${session.name ?? session.id}`);
+    };
     for (const event of events) {
       if (event.kind !== "text") continue;
       const quote = `${session.name ?? session.id} at ${iso(event.at)}: "${clip(event.text, 160)}"`;
       if (event.role === "user") {
         const text = event.text.trimStart();
         if (FOREIGN_NOTE.test(text)) { outside.push(quote); continue; }
-        if (!session.head && text.startsWith(CHECK_IN_NOTE)) { checkIns.push(quote); continue; }
+        if (!session.head && text.startsWith(CHECK_IN_NOTE)) {
+          const receipt = steerReceipt(text);
+          // A receipt from outside the trial is already counted above, by the receipt itself.
+          if (receipt) { if (ownSource(receipt)) owned++; }
+          else checkIns.push(quote);
+          continue;
+        }
+        if (!session.head && JOB_PUSH.test(text)) { nudged(text); continue; }
         if (!session.head && !briefed && !text.startsWith("[")) { briefed = true; owned++; continue; }
         if (!session.head && !text.startsWith("[")) outside.push(quote);
         continue;

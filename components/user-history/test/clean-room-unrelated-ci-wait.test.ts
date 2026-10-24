@@ -3,12 +3,13 @@
 // job saw an unrelated run and left the carried step alone, fails one that ties the run to it, and leaves a run open while the case is not
 // exercised or a reading is missing.
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { RunState } from "../scripts/clean-room/session-read.ts";
-import type { Delivery } from "../scripts/clean-room/unrelated-ci-wait.ts";
+import type { Delivery, Receipt } from "../scripts/clean-room/unrelated-ci-wait.ts";
 import type { ChatAgent, ChatBoard, PlanItem } from "../src/shared/types.ts";
 
 const SAMPLER = "01a16e30-0000-7000-8000-000000000002";
@@ -183,6 +184,43 @@ test("unrelated-ci-wait: a job that saw an unrelated run and left the carried st
   assert.deepEqual(parsed.steers.map(entry => `${entry.chat8} ${entry.act} ${entry.job}`), ["01a16e49 steered memory sampling", "01a1164b relayed memory sampling"]);
   assert.deepEqual(parsed.resumes.map(entry => entry.job), ["memory sampling"]);
   assert.equal(parseServiceLog(log.slice(2), START - 60_000, at(300)).logCovered, false, "a log that starts after the window does not cover it");
+
+
+  // The service's own job push ("The check-in is checking on you"), which carried-wait run-3's "disk free sampling" got at 14:43:32Z on 10-24.
+  const nudgeText = "The check-in is checking on you: you owe a report to the chat, and nothing moved for 2 h. Send the chat what you have now.";
+  const nudgeLine = (chat8: string) => ({ chat8, job: "memory sampling", raw: `chat ${chat8}: check-in nudged job memory sampling: nothing moved for 2 h` });
+  const ownNudge = run({ inbox: [task, userLine(120, nudgeText)], delivery: { nudges: [nudgeLine(chatOf(count + 1))] } });
+  assert.equal(ownNudge.verdict, "pass", ownNudge.check("f"));
+  const bareNudge = run({ inbox: [task, userLine(120, nudgeText)] });
+  assert.equal(bareNudge.verdict, "open", "a job push no nudge line of this chat accounts for has no recorded origin");
+  const foreignNudge = run({ inbox: [task, userLine(120, nudgeText)], delivery: { nudges: [nudgeLine("01a1164b")] } });
+  assert.equal(foreignNudge.verdict, "void");
+
+  // Receipts from the routed service (live from 19:47:42Z on 10-24): effective delivery decides, not the push record.
+  const AFTER = Date.parse("2026-10-24T19:50:00Z");
+  const receipt = (extra: Partial<Receipt> & Pick<Receipt, "path" | "to" | "id">): Receipt => ({ at: AFTER, raw: `delivery ${extra.path}: to session ${extra.to} as ${extra.id}`, ...extra });
+  const steerText = "[check-in] Copy the tally into p4 now.";
+  const hashed = (text: string) => `sha256:${createHash("sha256").update(text).digest("hex").slice(0, 12)}`;
+  const ownReceipt = run({ inbox: [task, userLine(120, steerText)], delivery: { receipts: [receipt({ path: "job-steer", from: "01a16e57-0000-7000-8000-000000000001",
+    fromChat: idOf("01a16e31", count + 1), to: SAMPLER, id: hashed("Copy the tally into p4 now.") })] } });
+  assert.equal(ownReceipt.verdict, "pass", `a job-steer receipt from the chat's own check-in is the system at work: ${ownReceipt.check("f")}`);
+  const foreignReceipt = run({ inbox: [task, userLine(120, steerText)], delivery: { receipts: [receipt({ path: "job-steer", from: "01a1164b-0000-7000-8000-000000000009",
+    fromChat: "01a1164b-0000-7000-8000-000000000009", to: SAMPLER, id: hashed("Copy the tally into p4 now.") })] } });
+  assert.equal(foreignReceipt.verdict, "void", "a job-steer the service delivered from another chat is someone stepping in");
+  const redirectedPush = run({ delivery: { pushes: [{ at: AFTER, chat: idOf("01a16e31", count + 1), tag: "[d9 push 2026-10-24T19:50Z]" }],
+    receipts: [receipt({ path: "d9 push", from: "01a1164b-0000-7000-8000-000000000009", to: idOf("01a16e31", count + 1), id: "m-1", owner: "01a16e22-0000-7000-8000-000000000001" })] } });
+  assert.equal(redirectedPush.verdict, "pass", `a d9 push taken to the trial owner never reached the chat, though the push record names it: ${redirectedPush.check("f")}`);
+  const unreceipted = run({ delivery: { pushes: [{ at: AFTER, chat: idOf("01a16e31", count + 1), tag: "[d9 push 2026-10-24T19:50Z]" }] } });
+  assert.equal(unreceipted.verdict, "open", "a push record after activation with no receipt leaves its delivery unknown");
+  const deliveredSibling = run({ delivery: { receipts: [receipt({ path: "sibling send", from: "01a1164b-0000-7000-8000-000000000009", to: SAMPLER, id: "sha256:abcdefabcdef" })] } });
+  assert.equal(deliveredSibling.verdict, "void", "a sibling send the service delivered to a trial job from outside is someone stepping in");
+
+  const routed = parseServiceLog(["2026-10-24T14:00:00.000Z serve", "2026-10-24T14:40:00.000Z wakes", "chat 01a16e49: check-in nudged job memory sampling: nothing moved for 2 h",
+    "2026-10-24T19:50:00.000Z delivery d9 push: from session 01a1164b-4a2d-742d-b27a-82f086ed0200 (d9 of AI harness) of chat 01a1164b-4a2d-742d-b27a-82f086ed0200 to session 01a16e49-71ae-74b3-8490-220e5bb38507 as m-77, taken to the trial owner 01a16e22-91e0-7783-8ab3-dd7d6021ed6f",
+    "2026-10-24T19:51:00.000Z delivery job-steer: from session an unnamed caller of chat unknown to session 01a16e4a-b352-7219-b017-f3c5ab891ffe as sha256:0123456789ab"], START, at(400));
+  assert.deepEqual(routed.nudges?.map(entry => `${entry.chat8} ${entry.job}`), ["01a16e49 memory sampling"]);
+  assert.deepEqual(routed.receipts?.map(entry => `${entry.path} ${entry.from ?? "-"} ${entry.fromChat ?? "-"} ${entry.to.slice(0, 8)} ${entry.id} ${entry.owner?.slice(0, 8) ?? "-"}`),
+    ["d9 push 01a1164b-4a2d-742d-b27a-82f086ed0200 01a1164b-4a2d-742d-b27a-82f086ed0200 01a16e49 m-77 01a16e22", "job-steer - - 01a16e4a sha256:0123456789ab -"]);
 
   const stopped = run({ sampler: "done" });
   assert.equal(stopped.verdict, "fail", "a prerequisite whose owner stopped a whole interval ago and that the run did not flag fails e");
