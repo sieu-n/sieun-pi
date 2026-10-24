@@ -3,7 +3,8 @@ import { join } from "node:path";
 import { firstClause, planJob } from "../../src/shared/chat-board.ts";
 import type { ChatAgent, ChatBoard, PlanItem } from "../../src/shared/types.ts";
 import { nextIds } from "../../src/shared/chat-board.ts";
-import { readSession, type RunState, type Scenario, type SessionEvent, type Verdict } from "./session-read.ts";
+import { readSession, type RunState, type Scenario, type SessionEvent, sessionFile, type Verdict } from "./session-read.ts";
+import { type Delivery, readDelivery, steering, type TrialSession } from "./unrelated-ci-wait.ts";
 
 /**
  * The clean-room scenario for check-ins that follow the live job carrying a wait (chat-2572 p18, 10-24). Its p8 and p10 waited on p6, whose
@@ -75,7 +76,7 @@ function carriedAt(snaps: readonly Snapshot[], agents: readonly { at: number; li
   return out;
 }
 
-export function judge(run: string, state: RunState, now = Date.now()): { verdict: Verdict; text: string } {
+export function judge(run: string, state: RunState, now = Date.now(), delivery?: Delivery): { verdict: Verdict; text: string } {
   const chat = state.chat.id;
   const ended = now >= (state.until ?? Infinity);
   const snaps: Snapshot[] = files(join(run, "boards")).map(file => { const board = readJson<ChatBoard>(join(run, "boards", file)); return { at: Date.parse(board.updatedAt) || 0, board }; })
@@ -166,22 +167,30 @@ export function judge(run: string, state: RunState, now = Date.now()): { verdict
     : "not exercised: no agent of the chat slept on a CI run while a wait was carried";
 
   const head = readSession(chat, [chat]).filter(event => event.at >= state.windowStart);
-  const typed = head.filter(event => event.kind === "text" && event.role === "user" && !event.text.trimStart().startsWith("[") &&
-    !state.seeds.some(seed => event.text.includes(seed.slice(0, 60))) && !event.text.includes("<skill"));
   const asked = new Map<string, number>();
   for (const event of head) if (event.kind === "sent" && !asked.has(event.to)) asked.set(event.to, event.at);
   // The check-in jobs the server starts for the chat report to it as siblings; those reports are the system at work, not someone stepping in.
   // The chat's own jobs, which the agents snapshots list under it with link subagent or root, report to it as siblings when the chat started
   // them as root sessions: run-3's "disk free sampling 2" reported its 12 readings at 16:59Z that way. A thread listed only because it messaged
   // the chat (link "message", run-3's AI harness developer environment VP at 15:46Z) is no job of the chat, and names never count.
-  const dutyJobs = new Set([...jobs.map(job => job.id), ...agents.flatMap(entry => entry.list.flatMap(agent =>
-    agent.sessionId && (agent.link === "subagent" || agent.link === "root") ? [agent.sessionId] : []))]);
-  const outside = head.filter(event => event.kind === "text" && event.role === "custom" && (event.relation === "parent" || event.relation === "sibling") &&
-    !(event.fromId && (asked.get(event.fromId) ?? Infinity) < event.at) && !(event.fromId && dutyJobs.has(event.fromId)));
+  const checkIns = new Set(jobs.map(job => job.id));
+  const ownJobs = new Map(agents.flatMap(entry => entry.list.flatMap(agent =>
+    agent.sessionId && !checkIns.has(agent.sessionId) && (agent.link === "subagent" || agent.link === "root") ? [[agent.sessionId, agent.name] as const] : [])));
+  const own = new Set([...checkIns, ...ownJobs.keys()]);
+  const typed = head.filter(event => event.kind === "text" && event.role === "user" && !event.text.trimStart().startsWith("[") &&
+    !state.seeds.some(seed => event.text.includes(seed.slice(0, 60))) && !event.text.includes("<skill"));
+  const messaged = head.filter(event => event.kind === "text" && event.role === "custom" && (event.relation === "parent" || event.relation === "sibling") &&
+    !(event.fromId && (asked.get(event.fromId) ?? Infinity) < event.at) && !(event.fromId && own.has(event.fromId)));
+  // Steering also reaches the chat and its jobs as notes the service wraps as its own, such as a d9 push or another chat's job-steer, so each
+  // delivery is judged by its recorded origin (`steering`, shared with unrelated-ci-wait), and one whose origin the evidence cannot show is unknown.
+  const trial: TrialSession[] = [{ id: chat, head: true, file: sessionFile(chat, [chat]) ?? "" },
+    ...[...ownJobs].map(([id, name]) => ({ id, name, head: false, file: sessionFile(id, [chat]) ?? "" }))].filter(session => session.file);
+  const steered = steering(trial, chat, state.windowStart, own, delivery);
+  const outside = [...[...typed, ...messaged].map(event => `at ${iso(event.at)}: "${clip(event.kind === "text" ? event.text : "", 160)}"`), ...steered.outside];
   const turns = head.filter(event => event.kind === "assistant" || event.kind === "call").length;
-  add("f", typed.length || outside.length ? false : turns ? true : ended ? false : null, typed.length || outside.length
-    ? [...typed, ...outside].map(event => `at ${iso(event.at)}: "${clip(event.kind === "text" ? event.text : "", 160)}"`).join("; ")
-    : `${turns} model turns and calls of the chat; only the first message, server notes and its own jobs reached it`);
+  add("f", outside.length ? false : steered.unknown.length ? null : turns ? true : ended ? false : null, outside.length ? outside.join("; ")
+    : steered.unknown.length ? `unknown: ${steered.unknown.join("; ")}`
+    : `${turns} model turns and calls of the chat; ${steered.owned} deliveries into it and its ${ownJobs.size} jobs trace to its own check-ins, jobs, wakes and resumes`);
 
   const verdict: Verdict = checks.find(check => check.id === "f")!.ok === false ? "void"
     : checks.some(check => check.ok === false) ? "fail"
@@ -210,7 +219,7 @@ export const carriedWait: Scenario = {
     `Its check-in runs every ${state.everyMs / 60_000} min on the server's clock. The owner asked for runs the system does alone (c84); no other chat's interval changed.`, "",
     "## The first message", "", `> ${TASK}`, "",
   ].join("\n"),
-  evaluate: (run, state) => judge(run, state),
+  evaluate: async (run, state) => judge(run, state, Date.now(), await readDelivery(state, Math.min(Date.now(), state.until ?? Date.now()))),
   baseline: () => { throw new Error("this scenario has no baseline"); },
 };
 
@@ -258,6 +267,6 @@ export const carriedRelease: Scenario = {
     `The disk sampler job is ${state.fixtures[SAMPLER]}. The check-in runs every ${state.everyMs / 60_000} min on the server's clock (c84).`, "",
     "## The first message", "", `> ${NESTED_TASK}`, "",
   ].join("\n"),
-  evaluate: (run, state) => judge(run, state),
+  evaluate: async (run, state) => judge(run, state, Date.now(), await readDelivery(state, Math.min(Date.now(), state.until ?? Date.now()))),
   baseline: () => { throw new Error("this scenario has no baseline"); },
 };

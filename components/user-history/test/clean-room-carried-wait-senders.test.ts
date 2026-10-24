@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import type { ChatAgent, ChatBoard } from "../src/shared/types.ts";
 import type { RunState } from "../scripts/clean-room/session-read.ts";
+import type { Delivery } from "../scripts/clean-room/unrelated-ci-wait.ts";
 
 const home = mkdtempSync(join(tmpdir(), "carried-wait-judge-"));
 process.env.HOME = home;
@@ -23,7 +24,7 @@ const message = (iso: string, role: string, content: unknown) => ({ type: "messa
 const sibling = (iso: string, name: string, id: string, text: string) => ({ type: "custom_message", timestamp: at(iso), customType: "agent_message",
   content: text, details: { from: { sessionId: id, sessionName: name }, fromRelationship: "sibling" } });
 
-function run(name: string, lines: readonly object[]): { dir: string; state: RunState } {
+function run(name: string, lines: readonly object[], jobLines: readonly object[] = []): { dir: string; state: RunState } {
   const dir = join(home, name);
   mkdirSync(join(dir, "boards"), { recursive: true });
   mkdirSync(join(dir, "agents"), { recursive: true });
@@ -38,6 +39,8 @@ function run(name: string, lines: readonly object[]): { dir: string; state: RunS
   writeFileSync(join(dir, "runs.jsonl"), "");
   mkdirSync(join(home, ".prime/agent/sessions"), { recursive: true });
   writeFileSync(join(home, ".prime/agent/sessions", `${CHAT}.jsonl`), lines.map(line => JSON.stringify(line)).join("\n") + "\n");
+  writeFileSync(join(home, ".prime/agent/sessions", `${JOB}.jsonl`), [message("2026-10-24T13:35:00Z", "user", "Sample free space on / every 15 minutes for 3 hours."),
+    ...jobLines].map(line => JSON.stringify(line)).join("\n") + "\n");
   const state: RunState = { scenario: "carried-wait", chat: { id: CHAT, name: "root disk readings" }, fixtures: {}, sandbox: home, everyMs: 30 * 60_000,
     release: "release-test", board: "", seeds: [TASK], setupAt: START, windowStart: START, until: START + 4 * 3_600_000 };
   return { dir, state };
@@ -46,17 +49,18 @@ const base = [message("2026-10-24T13:33:31Z", "user", TASK), message("2026-10-24
 const report = sibling("2026-10-24T16:59:20Z", "disk free sampling 2", JOB, "All 12 readings of free space on / are in.");
 const outside = sibling("2026-10-24T15:46:07Z", "AI harness developer environment VP", VP, "From the AI harness chat VP: fixed in sieun-pi 9cc887bc.");
 const impostor = sibling("2026-10-24T16:10:00Z", "disk free sampling 2", "01a16e8a-0000-7000-8000-00000000dead", "Readings look fine, carry on.");
+const clean: Delivery = { logCovered: true, steers: [], resumes: [], pushesRead: true, pushes: [] };
 const f = (text: string): string => text.split("\n").find(line => line.startsWith("- f "))!;
 
 test("the chat's own root job reporting as a sibling is the system at work", () => {
   const { dir, state } = run("own", [...base, report]);
-  const line = f(judge(dir, state, START + 5 * 3_600_000).text);
+  const line = f(judge(dir, state, START + 5 * 3_600_000, clean).text);
   assert.match(line, /^- f met/, line);
 });
 
 test("another chat's thread messaging the test chat is an intervention, and the run is void", () => {
   const { dir, state } = run("outside", [...base, outside, report]);
-  const verdict = judge(dir, state, START + 5 * 3_600_000);
+  const verdict = judge(dir, state, START + 5 * 3_600_000, clean);
   const line = f(verdict.text);
   assert.match(line, /^- f not met/, line);
   assert.match(line, /AI harness chat VP/);
@@ -66,10 +70,37 @@ test("another chat's thread messaging the test chat is an intervention, and the 
 
 test("a sender that only shares the name of the chat's job is an intervention, since names never count", () => {
   const { dir, state } = run("impostor", [...base, impostor, report]);
-  const line = f(judge(dir, state, START + 5 * 3_600_000).text);
+  const line = f(judge(dir, state, START + 5 * 3_600_000, clean).text);
   assert.match(line, /^- f not met/, line);
   assert.match(line, /carry on/);
   assert.doesNotMatch(line, /All 12 readings/);
+});
+
+const steer = message("2026-10-24T15:20:00Z", "user", "[check-in] Report your reading count to the chat now.");
+const push = message("2026-10-24T15:30:00Z", "user", "[d9 push 2026-10-24T15:30Z] The chat system duty (d9) found these in your chat: p3.");
+const later = START + 5 * 3_600_000;
+
+test("a d9 push the service wraps as its own note is someone stepping in", () => {
+  const { dir, state } = run("d9", [...base, push]);
+  const line = f(judge(dir, state, later, clean).text);
+  assert.match(line, /^- f not met/, line);
+  assert.match(line, /d9 push/);
+});
+
+test("a check-in steer in the chat's job with no steer line to trace it to the chat leaves f unknown, not met", () => {
+  const { dir, state } = run("untraced", base, [steer]);
+  const line = f(judge(dir, state, later, clean).text);
+  assert.match(line, /^- f not reached yet: unknown/, line);
+  const uncovered = f(judge(dir, state, later, { ...clean, logCovered: false }).text);
+  assert.match(uncovered, /service\.log does not cover the window/);
+});
+
+test("a check-in steer in the chat's job counts as its own only by a steer line of this chat for that job", () => {
+  const mine = { chat8: CHAT.slice(0, 8), job: "disk free sampling 2", act: "steered" as const, raw: `chat ${CHAT.slice(0, 8)}: check-in job steered job disk free sampling 2` };
+  const { dir, state } = run("traced", base, [steer]);
+  assert.match(f(judge(dir, state, later, { ...clean, steers: [mine] }).text), /^- f met/);
+  const theirs = { ...mine, chat8: "01a162bc", raw: "chat 01a162bc: check-in job steered job disk free sampling 2" };
+  assert.match(f(judge(dir, state, later, { ...clean, steers: [theirs] }).text), /^- f not met/);
 });
 
 test.after(() => rmSync(home, { recursive: true, force: true }));
