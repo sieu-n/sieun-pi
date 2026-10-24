@@ -3,7 +3,7 @@
 // still going (c117). Such a done is refused once, the very same text again goes out, and his own turn is never held.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { dutyFixDone, tellOwner, tellTurn } from "../src/chat-guard.ts";
+import { openGoalDone, tellOwner, tellTurn } from "../src/chat-guard.ts";
 import type { AssistantMessage, PlanItem, ThreadMessage } from "../src/shared/types.ts";
 
 const at = (clock: string): number => Date.parse(`2026-10-23T${clock}Z`);
@@ -29,24 +29,24 @@ test("a done for a duty run's fix step under a goal that misses its target is re
   assert.equal(turn.owner, false);
   const refused = tellOwner(done, turn, at("17:40:00"), () => true);
   assert.equal(refused.kind, "refused");
-  assert.match(refused.text, /reports work still going, p910 is a fix for duty d10\/repeat_corrections_7d while its goal p706 reads 59.6 of 100/);
+  assert.match(refused.text, /reports work still going, p910 is a step under goal p706, which reads 59.6 of 100/);
   const again = { ...tellTurn([...history, tell("a1", done, "17:40:00"), result("a1", refused.text, "17:40:01")]), plan };
   assert.equal(tellOwner(done, again, at("17:40:10"), () => true).kind, "sent", "the very same text again goes out");
   assert.equal(tellOwner(done, { ...turn, owner: true }, at("17:40:00"), () => true).kind, "sent", "his own turn is never held");
   assert.equal(tellOwner(done, tellTurn(history), at("17:40:00"), () => true).kind, "sent", "no board read holds nothing");
 });
 
-test("a done goes out when its goal is met, it names a goal or a step no duty run started, or it answers his message", () => {
+test("a done goes out when its goal is met, it names the goal or a check-in goal gap step, or it answers his message", () => {
   const turn = { ...tellTurn(history), plan };
   const send = (text: string, about = "duty fix") => tellOwner({ text, why: "done", about }, turn, at("17:40:00"), () => true).kind;
   assert.equal(send("None of your design notes count as repeated anymore (p305)."), "sent", "p1 reads 8 of 8, so the result is in");
   assert.equal(send("The goal gap step p896 is done."), "sent", "a check-in's goal gap step works toward his goal");
-  assert.equal(send("The plan cleanup p904 is done."), "sent", "a step no duty run started");
+  assert.equal(send("The plan cleanup p904 is done."), "refused", "a step no duty run started is held too since 10-24 (p954)");
   assert.equal(send("p910 is done and p706 reads green now."), "sent", "it also names the goal");
   assert.equal(tellOwner({ ...done, why: "answer" }, turn, at("17:40:00"), () => true).kind, "sent", "an answer is not a done");
-  assert.deepEqual(dutyFixDone("cause found (p90)", plan)?.goal.id, "p56");
-  assert.equal(dutyFixDone("cause found (p90)", [{ ...plan[2]!, status: "done" }]), undefined, "a closed goal");
-  assert.equal(dutyFixDone("cause found (p90)", [{ ...plan[2]!, target: { metric: "visits", target: 10000, unit: "visits" } }]), undefined, "an unmeasured goal");
+  assert.deepEqual(openGoalDone("cause found (p90)", plan)?.goal.id, "p56");
+  assert.equal(openGoalDone("cause found (p90)", [{ ...plan[2]!, status: "done" }]), undefined, "a closed goal");
+  assert.equal(openGoalDone("cause found (p90)", [{ ...plan[2]!, target: { metric: "visits", target: 10000, unit: "visits" } }]), undefined, "an unmeasured goal");
 });
 
 // 10-24 00:54Z: CI and RepoOps sent the p358 runner wait fix (d1) while p1 read about 46 of 10 min, and its "at p90" read as the step p90.
@@ -59,10 +59,10 @@ test("a percentile the text shares with the step's or goal's metric is no step i
   const turn = { ...tellTurn(history), plan: ci };
   const refused = tellOwner({ text, why: "done", about: "p358" }, turn, at("17:40:00"), () => true);
   assert.equal(refused.kind, "refused");
-  assert.match(refused.text, /p358 is a fix for duty d1\/runner_wait_p90_min while its goal p1 reads 46 of 10/);
+  assert.match(refused.text, /p358 is a step under goal p1, which reads 46 of 10/);
   const again = { ...tellTurn([...history, tell("a2", { text, why: "done", about: "p358" }, "17:40:00"), result("a2", refused.text, "17:40:01")]), plan: ci };
   assert.equal(tellOwner({ text, why: "done", about: "p358" }, again, at("17:40:10"), () => true).kind, "sent", "the very same text again goes out");
   assert.equal(tellOwner({ text, why: "done", about: "p358" }, { ...turn, owner: true }, at("17:40:00"), () => true).kind, "sent", "his own turn is never held");
-  assert.equal(dutyFixDone(`${text} p358`, [wait(8, [fixStep])]), undefined, "a met goal");
-  assert.equal(dutyFixDone("p358 is done, and the review step p95 too.", ci), undefined, "an id no metric names is still a step");
+  assert.equal(openGoalDone(`${text} p358`, [wait(8, [fixStep])]), undefined, "a met goal");
+  assert.equal(openGoalDone("p358 is done, and the review step p95 too.", ci), undefined, "an id no metric names is still a step");
 });
