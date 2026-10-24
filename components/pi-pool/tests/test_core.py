@@ -4,7 +4,7 @@ the command tests that share these fixtures.
 
 Run: python3 -m unittest discover -s tests   (from the pool directory)
 """
-import base64, contextlib, dataclasses, importlib.util, io, json, os, sys, tempfile, time, unittest, unittest.mock, urllib.request
+import base64, contextlib, dataclasses, importlib.util, io, json, os, sys, tempfile, threading, time, unittest, unittest.mock, urllib.request
 
 from fixture_isolation import isolate_test_module
 
@@ -450,6 +450,59 @@ class BusyPoolLock(unittest.TestCase):
         self.assertEqual(out, "fixture-token")
         self.assertIn(("vend_unrecorded", {"provider": "anthropic", "account": "b@x", "session": KEY.key}), logged)
         self.assertEqual(saved, [])
+
+
+
+class ConcurrentSwitch(unittest.TestCase):
+    """Two hooks of one tree that both decide a switch in their first hold record one move. Each charged a move from
+    its first hold's view, so on 10-24 a tree could spend two of its max_moves_per_day on one switch."""
+
+    def test_two_hooks_that_both_decide_a_switch_charge_one_move(self):
+        state = BusyPoolLock().vended_state(account_id="b", cooldowns={"b": NOW + 600})
+        pool_lock, both_decided, probes, logged = threading.Lock(), threading.Barrier(2, timeout=10), [], []
+
+        @contextlib.contextmanager
+        def lock(*args, **kwargs):
+            with pool_lock:
+                yield
+
+        def credential(account, cfg, refresh=True):
+            both_decided.wait()
+            return "fixture-token", "store"
+
+        errors = []
+
+        def hook():
+            try:
+                vending.vend("anthropic")
+            except Exception as e:
+                errors.append(e)
+
+        output = io.StringIO()
+        with contextlib.ExitStack() as stack:
+            for module, name, value in ((base, "config", CFG), (registry, "load_index", [A, B]),
+                                        (registry, "session_key", KEY), (registry, "load_state", state),
+                                        (base, "proc_info", {"start": "s"})):
+                stack.enter_context(unittest.mock.patch.object(module, name, return_value=value))
+            stack.enter_context(unittest.mock.patch.object(vending, "credential_for", side_effect=credential))
+            stack.enter_context(unittest.mock.patch.object(base, "anthropic_probe",
+                                                           side_effect=lambda token: probes.append(token) or base.ProbeAccepted()))
+            stack.enter_context(unittest.mock.patch.object(base, "Flock", lock))
+            stack.enter_context(unittest.mock.patch.object(time, "time", return_value=NOW))
+            stack.enter_context(unittest.mock.patch.object(base, "save_json"))
+            stack.enter_context(unittest.mock.patch.object(base, "log", side_effect=lambda e, **kw: logged.append((e, kw))))
+            stack.enter_context(contextlib.redirect_stdout(output))
+            threads = [threading.Thread(target=hook) for _ in range(2)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(10)
+        self.assertEqual(errors, [])
+        self.assertEqual(output.getvalue(), "fixture-token" * 2)
+        rec = state["sessions"][KEY.key]
+        self.assertEqual(rec["vends"]["anthropic"]["account_id"], "a")
+        self.assertEqual(rec["moves"]["anthropic"], [NOW])
+        self.assertEqual([e for e, _ in logged].count("switch"), 1)
 
 
 

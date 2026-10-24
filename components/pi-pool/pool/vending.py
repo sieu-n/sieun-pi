@@ -759,8 +759,10 @@ def vend(provider):
                 prev = ((state["sessions"].get(key.key) or {}).get("vends") or {}).get(provider) if key else None
                 if key and account.id != d.account.id:
                     writer.admit(key, provider, account.id, now)
+                # A move is read from this hold's state, so a second hook of the tree that decided the same switch
+                # in its first hold, before the first hook recorded it, charges no second move.
                 vended = writer.record_vend(key, provider, account, source, reason, d.shadowed, now, parent,
-                                            moved=entering and tree.current is not None) if key else None
+                                            moved=bool(prev) and prev.get("account_id") != account.id) if key else None
                 base.save_json(base.STATE, state)
         except TimeoutError:
             # The token is valid; a vend left off the record only skews the next decision.
