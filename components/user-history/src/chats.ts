@@ -1777,12 +1777,13 @@ export class Chats {
     const sessions = new Map([...this.subagents.values()].flat().concat(children, nested).flatMap(child => child.sessionId ? [[child.id, child.sessionId] as const] : []));
     const asleep = new Set(wakes.map(wake => wake.session));
     const live = liveJobs([...children, ...nested], this.subagents, this.now(), liveWindowMs((await this.source.settings.get(id)).everyMs), asleep);
+    const pool = await this.source.queue?.().catch(() => undefined);
     // A cut owner the resume pass continues is the service's to give back (`readHeldTurns`).
     const held = await this.source.held?.(this.now()).catch(error => { this.log(`chat ${id.slice(0, 8)}: check-in held turns: ${error instanceof Error ? error.message : String(error)}`); return undefined; });
     // A job Prime admitted whose session never got its first prompt reads as not started, whatever its RLM status says (`withUnstarted`).
     const unstarted = await this.source.unstarted?.(this.now()).catch(error => { this.log(`chat ${id.slice(0, 8)}: check-in unstarted jobs: ${error instanceof Error ? error.message : String(error)}`); return []; }) ?? [];
     // A job stalled in one tool call past STALL_MS moves nothing until it returns, so it owns no step (`withStalls`).
-    const threads = withStalls(withUnstarted(withHeldTurns(withDeadWakes(withWakes(liveThreads(jobFacts(children, board, rows, id, nested, live), session => readHeartbeats(heartbeatsFile(session, this.source.home)), this.now()),
+    const threads = withStalls(withUnstarted(withHeldTurns(withDeadWakes(withWakes(liveThreads(jobFacts(children, board, rows, id, nested, live, new Set([...asleep, ...pool?.queued.keys() ?? [], ...pool?.working ?? []])), session => readHeartbeats(heartbeatsFile(session, this.source.home)), this.now()),
       wakes, key => sessions.get(key), this.below), dead, key => sessions.get(key), this.below), held?.sessions ?? new Map(), key => sessions.get(key)), unstarted),
       this.source.stalls?.(this.now()) ?? new Map(), key => sessions.get(key));
     // A job Prime parked on a provider limit waits for an account until the daemon's quota resume, not failed (`withQuotaParks`).
@@ -1794,7 +1795,6 @@ export class Chats {
     }));
     const disk = await this.source.artifacts?.(id).catch(() => null) ?? localDisk(this.source.home);
     const parks = quotaParks(await parkSchedules(id, roots, jobSessions, disk), this.now());
-    const pool = await this.source.queue?.().catch(() => undefined);
     const queued = pool?.queued ?? new Map<string, QueuePlace>();
     const pooled = await withFailedTurns(threads, join(this.source.home ?? homedir(), ".prime", "agent"), id, key => sessions.get(key),
       async session => (await this.summary(session))?.sessionFile);

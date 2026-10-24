@@ -237,9 +237,13 @@ export const ownerOf = (item: PlanItem, facts: readonly JobFact[]): JobFact | un
  * names as its owner (`stepOwner`) that is not one of them. An owner that names nothing known, or the chat itself (`self`, its session id), is
  * left out. A cancelled subagent ended; only an error is a failure. `nested` holds the subagents of the chat's duty jobs (a check-in job's
  * helpers): one joins only when an open step names it, by session id or name, a working one first. A subagent in `live` (`liveJobs`) works.
+ * A step's stored session that no child and no row names joins, keyed by that id, while it is in `liveSessions` (a pending board.wake or a
+ * turn queue place): a subagent has no catalog row, and the daemon lists none under a detached chat at times. disk space trend 10-24 13:50Z
+ * read p2 "(root disk sampler not found)" while its agents API listed the job queued 55th of 86 with a wake at 15:30Z (`chatAgents` keeps
+ * such a step's session).
  */
 export function jobFacts(children: readonly ChildAgent[], board: ChatBoard | null, rows: readonly SessionRow[], self?: string,
-  nested: readonly ChildAgent[] = [], live: ReadonlySet<string> = new Set()): JobFact[] {
+  nested: readonly ChildAgent[] = [], live: ReadonlySet<string> = new Set(), liveSessions: ReadonlySet<string> = new Set()): JobFact[] {
   const ids = new Set(children.map(child => child.id));
   const facts = new Map<string, JobFact>();
   // A job that waits on its own subagent is at work (frontend bro 10-12: watchlist table rework waited on its working helper, and p78 was
@@ -275,6 +279,10 @@ export function jobFacts(children: readonly ChildAgent[], board: ChatBoard | nul
       return;
     }
     const row = rows.find(candidate => candidate.id === item.sessionId) ?? rows.find(candidate => candidate.id === owner || candidate.name === owner);
+    if (!row && item.sessionId !== undefined && item.sessionId !== self && liveSessions.has(item.sessionId)) {
+      facts.set(item.sessionId, { key: item.sessionId, name: owner, state: "working", sessionId: item.sessionId, item: link });
+      return;
+    }
     if (!row || row.id === self) return;
     const at = Date.parse(row.lastActivityAt ?? "");
     facts.set("thread:" + row.id, { key: "thread:" + row.id, name: row.name, state: row.working ? "working" : row.failure ? "failed" : "ended",
