@@ -144,7 +144,8 @@ export const REMOVED_PROVIDERS: readonly RemovedProvider[] = [
 
 /** Tip paths that may name a removed provider: the guards that keep it out, and frozen copies that never run. A path ending in / covers its folder. */
 export const KEPT_GUARDS: readonly { path: string; reason: string }[] = [
-  { path: "scripts/ci/vent-key-scan.mjs", reason: "the key scan's ban list (VENDOR_WORDS, the meta-removed and llm-media families)" },
+  { path: "scripts/ci/providers.mjs", reason: "the provider table the key scan's VENDOR_WORDS and the Vent egress lint's banned hosts read, so a removed provider's key or host still fails" },
+  { path: "scripts/ci/vent-key-scan.mjs", reason: "the key scan's ban list (the meta-removed and llm-media families)" },
   { path: "scripts/ci/vent-key-scan.test.mjs", reason: "the key scan's test" },
   { path: "scripts/ci/lint.mjs", reason: "the Vent egress lint's banned hosts of our old Meta app" },
   { path: "scripts/ci/lint.test.mjs", reason: "the Vent egress lint's test" },
