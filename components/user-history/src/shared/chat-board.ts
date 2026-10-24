@@ -894,7 +894,7 @@ export const MERGE_RULE = releaseGo.preapproval
 const RULE_TEXT = /\bwithout\s+(?:the\s+owner['\u2019]?s|your|his|an?)\s+(?:explicit\s+)?(?:go|approval|ok)\b|\b(?:refuses?|blocks?)\s+(?:gh\s+pr\s+merge|auto-?merges?|merges?|pushes)\b/i;
 /** MERGE_RULE in one sentence, for the short job reply guideline. */
 export const MERGE_RULE_SHORT = releaseGo.preapproval
-  ? "Never ask the owner to confirm a staging land, a deploy, a merge, a push to main or master or a prod promote. " + preApprovalText(releaseGo.preapproval)
+  ? "Never ask the owner to confirm a staging land, a staging deploy, a merge or a push to main or master. " + preApprovalText(releaseGo.preapproval)
   : "Never ask the owner to confirm a staging land or deploy; never merge a PR into production, push to main or master, or " +
     "promote to production without his go on a For you todo that names that PR or push (c49).";
 /** Whether a step's text says it merges a PR or a branch, turns on auto-merge, lands code or pushes to main or master. */

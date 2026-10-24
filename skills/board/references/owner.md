@@ -10,7 +10,7 @@ Read this before you add an owner todo, ask for a review, handle a login, or put
 4. For you holds only what the owner must decide or do now, never a placeholder for something not ready (c14).
 5. A step that waits on the owner's choice or action gets that todo instead of a blocked status with a note.
 6. If the owner says talk first, reply with your proposal and the default you start at your next wake-up (a job report, a check-in job's report) unless he objects. At that wake-up, start it.
-7. Never ask for a go on a merge, a push to main or master or a prod promote, because the owner pre-approves them all until the proper launch (c74, 2026-10-15).
+7. Never ask for a go on a merge or a push to main or master, because the owner pre-approves them until the proper launch (c74, 2026-10-15). A prod deploy is the release owner's walk with the owner (c154, 2026-10-22), so a step that waits on his answer to a prod deploy todo is waiting on him, and nobody closes that todo or ships the deploy without his answer.
 
 ## Review asks and logins
 
