@@ -115,7 +115,7 @@ test("a subagent of the chat's job, by the parent its session header records, re
   writeFileSync(join(folder, `${WRITER}.jsonl`), header(`/home/sieun/.prime/agent/sessions/${VP}.jsonl`));
   assert.match(f(judge(dir, state, later, clean).text), /^- f not met/, "a parent outside the trial is no ancestry");
   rmSync(folder, { recursive: true, force: true });
-  assert.match(f(judge(dir, state, later, clean).text), /^- f not met/, "a sender with no session file has no recorded parent");
+  assert.match(f(judge(dir, state, later, clean).text), /^- f not reached yet: unknown/, "a sender with no captured session file has no recorded parent, so it is unknown");
 });
 
 test.after(() => rmSync(home, { recursive: true, force: true }));
