@@ -19,6 +19,7 @@ test("a job's end deletes its rig folder on /drive2, and the job line names it",
   const write = (file: string) => { mkdirSync(join(file, ".."), { recursive: true }); writeFileSync(file, "x"); return file; };
   write(join(job, `${jobId}.jsonl`));
   assert.ok(jobReplyGuideline({ chat: "ops guy", root: false }, jobId).includes(`under ${join(rigs, jobId)}/ instead`));
+  assert.ok(jobReplyGuideline({ chat: "ops guy", root: false }, jobId).includes("Share one export per commit"), "10-23: 365 job folders held 169 GB of us-metal02's /");
   assert.deepEqual(jobFolders(jobId, home), [join(home, "scratch", jobId), join(rigs, jobId)]);
   write(join(rigs, jobId, "q-cut", "data", "store", "part.bin"));
   const other = write(join(rigs, otherId, "q-cut", "data", "store", "part.bin"));

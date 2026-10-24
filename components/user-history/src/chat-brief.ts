@@ -165,6 +165,9 @@ export function jobReplyGuideline(job: ChatJobOf, session: string): string {
       "which your end deletes too, and run the rig's container with `--user \"$(id -u):$(id -g)\"` so your end can delete what it writes. " : "") +
     "Export only the paths you build or test " +
     "(`git archive <commit> -- <paths>`), since a whole tree is 0.6 GB, and commit through a private index, which needs no tree copy. " +
+    "Share one export per commit between you and your subagents, give a subagent its own only while it edits files another one also edits, " +
+    "and delete an export once its commit has landed, since on 10-23 one job on us-metal02 held 10 exports of about 1 GB and 365 job folders " +
+    "held 169 GB of its / (p500). " +
     "Record a throwaway path outside your folder and each `systemd-run` unit with `board.own(path, unit=...)`, and keep reports, evidence and " +
     "helpers other jobs run under ~/work/<job>/ or the repo, never in your scratch folder. " +
     `No cap, throttle, timeout, rate or caution line without a measurement, a vendor limit or an incident cited next to the number; remove unbacked ones. ` +
