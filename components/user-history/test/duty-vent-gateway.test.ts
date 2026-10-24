@@ -68,7 +68,7 @@ test("the box reader's stopped containers, host units, services.env tokens and k
     files: { "/srv/obs/secrets/services.env": ["RAILWAY_API_TOKEN", "VERCEL_TOKEN"], "/srv/prod/secrets/vent.env": ["STRIPE_SECRET_KEY"] },
     docker: { "virev-prod-copy-oneoff": ["SOURCE_RAW_ARCHIVE_URL"], "virev-prod-crawler-api": ["RAW_ARCHIVE_URL"] },
     dockerUrls: { "virev-prod-copy-oneoff": { SOURCE_RAW_ARCHIVE_URL: true }, "virev-prod-crawler-api": { RAW_ARCHIVE_URL: false } },
-    units: { "opensearch-b2@prod.service": ["SLACK_BOT_TOKEN_DEV", "PATH"], "virev-services.service": ["SLACK_BOT_TOKEN_DEV"] },
+    units: { "opensearch-b2@prod.service": ["SLACK_BOT_TOKEN_DEV", "PATH"], "virev-digest.service": ["SLACK_BOT_TOKEN_DEV"] },
   }, locations);
   locations["github secrets repo"] = ["VERCEL_TOKEN", "RAILWAY_TOKEN"];
   locations["box /home/x/.config/b2-viewer/env"] = ["B2_VIEWER_PROD_KEY"];
@@ -77,6 +77,23 @@ test("the box reader's stopped containers, host units, services.env tokens and k
   // and the backup unit, which runs dotenvx over the infra tier that holds the alarm fallback token, do not count.
   assert.equal(output.metrics.provider_keys_outside_vent, 5);
   assert.equal(inScope("unit opensearch-b2@prod.service"), true);
+});
+
+// On 10-24 1b0fa0fd17 moved virev-services' RAILWAY_API_TOKEN and VERCEL_TOKEN from /srv/obs/secrets/services.env into the prod infra tier,
+// which host.yml copies to /usr/local/lib/virev-services/infra.env, and d1 read provider_keys_outside_vent 0 while the exporter still called
+// Railway and Vercel directly. The copy a host unit loads counts its two tokens; the tier file and GitHub keep them as deploy credentials.
+test("the infra tier copy virev-services loads counts its Vercel and Railway tokens, and its alarm Slack token stays exempt", () => {
+  const locations: Record<string, string[]> = {};
+  const tier = ["RAILWAY_API_TOKEN", "VERCEL_TOKEN", "SLACK_BOT_TOKEN_DEV", "GRAFANA_URL"];
+  boxLocations({ files: { "/usr/local/lib/virev-services/infra.env": tier }, docker: {}, units: { "virev-services.service": tier } }, locations);
+  locations["tier apps/infra/.env"] = tier;
+  locations["github secrets repo"] = ["VERCEL_TOKEN"];
+  const output = ventMetrics(reads({ keys: { locations, unreadable: {} } }), 0);
+  assert.deepEqual(output.flagged!.filter(flag => flag.kind === "key_outside_vent").map(flag => flag.excerpt), [
+    "box /usr/local/lib/virev-services/infra.env still holds RAILWAY_API_TOKEN, VERCEL_TOKEN",
+    "unit virev-services.service still holds RAILWAY_API_TOKEN, VERCEL_TOKEN",
+  ]);
+  assert.equal(output.metrics.key_locations_with_leaks, 2);
 });
 
 // On 10-24 at 04:28Z the share script exited non-zero on a ClickHouse TIMEOUT_EXCEEDED, the precheck wrote through_vent_pct -1 and the

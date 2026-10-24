@@ -74,8 +74,9 @@ export const PROVIDER_KEYS = new Set([
   "BACKBLAZE_APPLICATION_KEY", "BACKBLAZE_KEY_ID", "B2_VIEWER_PROD_KEY", "B2_VIEWER_DEV_KEY", "CLIPROXY_MANAGEMENT_KEY",
 ]);
 
-/** Vercel and Railway tokens count on the box, where the host services exporter (/srv/obs/secrets/services.env) calls those APIs at runtime;
- *  in GitHub, Vercel or Railway stores they are deploy credentials. */
+/** Vercel and Railway tokens count on the box, where the host services exporter (virev-services) calls those APIs at runtime: until 10-24
+ *  from /srv/obs/secrets/services.env, since 1b0fa0fd17 from the prod infra tier copy /usr/local/lib/virev-services/infra.env, which the key
+ *  scan's BOX_READER reads. In tier files and GitHub, Vercel or Railway stores they are deploy credentials. */
 export const BOX_PLATFORM = /^(VERCEL|RAILWAY)_(API_)?TOKEN$/;
 const onBox = (location: string) => /^(box|container|unit) /.test(location);
 
@@ -87,7 +88,7 @@ const onBox = (location: string) => /^(box|container|unit) /.test(location);
  *  and passes it to `vent-mock up` alone (26a36a614f; search / e2e green in verify run 39284928208), as vent-key-scan.mjs exempts it
  *  (2d058da12). Only that name, only as a repo secret. */
 export const CI_VENT_INPUT = (location: string, name: string) => location === "github secrets repo" && name === "CLERK_SECRET_KEY";
-export const ALARM_FALLBACK = /^(unit (opensearch|pgbackrest|redis|clickhouse)[a-z0-9-]*@[a-z]+\.service|tier apps\/infra\/\.env|tier apps\/infra\/metal\/watch\/\.env\.watch|box \/srv\/obs\/secrets\/obs\.env|box \/srv\/[^/]+\/current\/apps\/infra\/metal\/watch\/\.env\.watch|container virev-obs-grafana|railway auto-sns-crawler\/[^/]+\/metal-watch)$/;
+export const ALARM_FALLBACK = /^(unit (opensearch|pgbackrest|redis|clickhouse)[a-z0-9-]*@[a-z]+\.service|tier apps\/infra\/\.env|unit virev-services\.service|box \/usr\/local\/lib\/virev-services\/infra\.env|tier apps\/infra\/metal\/watch\/\.env\.watch|box \/srv\/obs\/secrets\/obs\.env|box \/srv\/[^/]+\/current\/apps\/infra\/metal\/watch\/\.env\.watch|container virev-obs-grafana|railway auto-sns-crawler\/[^/]+\/metal-watch)$/;
 
 /** Vent's own homes: its Railway service, its tier files, its secrets on the box and its containers. */
 export const VENT_OWN = /^(railway .*\/vent|tier apps\/vent\/.*|box .*\/vent[^/]*|container .*-vent(-.*)?)$/;
