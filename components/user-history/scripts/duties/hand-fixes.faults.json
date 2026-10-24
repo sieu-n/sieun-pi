@@ -394,7 +394,9 @@
       "id": "F27",
       "title": "A refused TikTok handle on the refresh path held all 207 TikTok slots in the systemic dead-letter hold, so a job turned refresh.delta_enabled off by hand on prod",
       "designs": [
-        "commit:1791d2b5dc"
+        "commit:1791d2b5dc",
+        "commit:44ae61117d",
+        "commit:770cd61989"
       ],
       "owner": "tiktok refresh hold fault (session 01a16bab-6b0f-73f8-a3e0-76c85f876335), started by the d3 run of 10-24 10:30 KST: prod audit 16354 (09:26Z 10-23) set refresh.delta_enabled false because normalize_handle's InvalidRequestError on '..' handles escaped the refresh path and froze crawl-tiktok-worker at 0 ok/min. 1791d2b5d ends the refusal as 'failed' and crawls '..' handles; it is on sieun/dev, not on prod 6cdb32fcb4 at 01:5xZ 10-24. The job makes a per-record error unable to freeze a lane, then restores the key once the fix is on prod",
       "match": {
