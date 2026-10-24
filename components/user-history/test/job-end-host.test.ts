@@ -17,7 +17,7 @@ const JOB = "01a15515-c587-705b-ab73-77b9e3023031";
 
 function fakeSource(stopUnits: Source["stopUnits"], log: string[]): Source {
   return { strays: async () => [], started: async () => null, kill: () => {}, closeTabs: async () => 0, later: () => {}, removeCopies: async () => [], inside: async () => [],
-    removeTmp: async dirs => dirs, stopUnits, writeOwned: async file => { log.push(`write ${file}`); }, artifactCopies: async () => [], kernelStates: async () => [],
+    removeTmp: async dirs => dirs, stopContainers: async () => [], stopUnits, writeOwned: async file => { log.push(`write ${file}`); }, artifactCopies: async () => [], kernelStates: async () => [],
     stopServices: async () => [] };
 }
 

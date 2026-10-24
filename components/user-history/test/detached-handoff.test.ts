@@ -285,7 +285,7 @@ test("a deleted job's leftovers stop the scopes its sessions handed off", async 
   const asked: string[][] = [];
   const source: LeftoverSource = {
     strays: async () => [], stopServices: async sessions => { asked.push([...sessions]); return ["orphan-x-400.scope"]; }, started: async () => null, kill: () => {},
-    closeTabs: async () => 0, later: () => {}, removeCopies: async () => [], inside: async () => [], removeTmp: async () => [],
+    closeTabs: async () => 0, later: () => {}, removeCopies: async () => [], inside: async () => [], removeTmp: async () => [], stopContainers: async () => [],
     artifactCopies: async () => [], kernelStates: async () => [], stopUnits: async () => [], writeOwned: async () => {},
   };
   const left = await endLeftovers(source, dir, SESSION);

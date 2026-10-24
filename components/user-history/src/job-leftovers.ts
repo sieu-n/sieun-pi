@@ -42,7 +42,9 @@ const TABS_FILE = "aside-browser-tabs.json";
 export interface Leftovers { stopped: readonly RawProcess[]; tabs: number; copies: readonly string[]; artifacts: readonly string[]; owned: readonly string[]; units: readonly string[];
   elsewhere?: readonly string[]; away?: Readonly<Record<string, readonly string[]>>; sessions?: readonly string[];
   /** The recorded paths kept for good and dropped from their records, each with its reason (`endOwned`, `removeFree`). */
-  kept?: readonly string[] }
+  kept?: readonly string[];
+  /** The Docker containers removed because they bind-mounted a path this end deleted (`removeFree`). */
+  containers?: readonly string[] }
 /** A process that runs in or holds a /tmp tree (worker-footprint.py `--inside`): the session it carries (none for the rig's own processes), whether it is Prime outside the rig, or a shared service. */
 export interface InsideProcess extends RawProcess { dir: string; session: string | null; prime: boolean; shared: boolean }
 export interface LeftoverSource {
@@ -60,6 +62,8 @@ export interface LeftoverSource {
   inside: (dirs: readonly string[]) => Promise<readonly InsideProcess[]>;
   /** Deletes these dirs; returns the ones it deleted. */
   removeTmp: (dirs: readonly string[]) => Promise<readonly string[]>;
+  /** Removes the running Docker containers that bind-mount one of these dirs or a path below it (`mountedIn`); returns their names. */
+  stopContainers: (dirs: readonly string[]) => Promise<readonly string[]>;
   /**
    * Stops these user units where they are active and transient (`systemd-run`), so a recorded unit file such as the chat service never stops;
    * returns the ones it stopped, or null on a box with no systemd, where the units run on another box.
@@ -173,8 +177,12 @@ function frozenFolder(path: string): Promise<string | null> {
 /**
  * Deletes the paths our user owns that no process runs in, holds or names, and returns the ones it deleted. A tree with a folder our user
  * cannot write (`frozenFolder`) is kept whole and comes back in `kept`, since its maker froze it for readers and rm would delete all but it.
+ * It first removes the Docker containers that bind-mount a path it deletes, because `inside` reads a container's processes in the container's
+ * own paths and never finds the host folder: on 10-23 the sweep of Crawler VP's deleted jobs deleted /drive2/sieun/scratch/01a1694a-d619-703c-8ccf-328d37540888
+ * while that job's rig j1694a-ch, j1694a-kafka and j1694a-redis ran on it, and they ran on for 20 h; at 11:45Z on 10-24 the ClickHouse used
+ * 5.4 cores, 2.5 GB RAM and 0.8 GB swap and failed on its deleted parts.
  */
-async function removeFree(source: Pick<LeftoverSource, "inside" | "removeTmp">, candidates: readonly string[]): Promise<{ paths: string[]; removed: readonly string[]; kept: Map<string, string> }> {
+async function removeFree(source: Pick<LeftoverSource, "inside" | "removeTmp" | "stopContainers">, candidates: readonly string[]): Promise<{ paths: string[]; removed: readonly string[]; kept: Map<string, string>; containers: readonly string[] }> {
   const paths: string[] = [];
   for (const path of new Set(candidates)) if (await ours(path)) paths.push(path);
   const held = new Set(paths.length ? (await source.inside(paths)).map(entry => entry.dir) : []);
@@ -184,7 +192,17 @@ async function removeFree(source: Pick<LeftoverSource, "inside" | "removeTmp">, 
     if (frozen) kept.set(path, `it holds the read-only folder ${frozen}`);
   }
   const free = paths.filter(path => !held.has(path) && !kept.has(path));
-  return { paths, removed: free.length ? await source.removeTmp(free) : [], kept };
+  const containers = free.length ? await source.stopContainers(free).catch(() => []) : [];
+  return { paths, removed: free.length ? await source.removeTmp(free) : [], kept, containers };
+}
+
+/** A running container as `docker inspect` prints it, with only the fields `mountedIn` reads. */
+export interface DockerContainer { Name: string; Mounts?: readonly { Type: string; Source: string }[] }
+
+/** The names of the containers with a bind mount at one of these dirs or below it. */
+export function mountedIn(containers: readonly DockerContainer[], dirs: readonly string[]): string[] {
+  return containers.filter(container => (container.Mounts ?? []).some(mount => mount.Type === "bind" &&
+    dirs.some(dir => mount.Source === dir || mount.Source.startsWith(dir + "/")))).map(container => container.Name.replace(/^\//, ""));
 }
 
 /** When the session of the ownership record `file` began: the birth of its session folder, where Prime writes the record. */
@@ -255,9 +273,9 @@ const keptNotes = (kept: ReadonlyMap<string, string>): string[] => [...kept].map
  * record or its session's folder name, so a later sweep of deleted jobs deletes it once nothing holds it. The paths the records name on other
  * boxes come back as `away` and stay in the records, for the box that runs the cleanup over ssh (`hostLeftovers`).
  */
-async function endOwned(source: LeftoverSource, files: readonly string[], dirs: readonly string[], sessions: readonly string[]): Promise<{ owned: readonly string[]; units: readonly string[]; elsewhere: readonly string[]; away: Record<string, string[]>; kept: readonly string[] }> {
+async function endOwned(source: LeftoverSource, files: readonly string[], dirs: readonly string[], sessions: readonly string[]): Promise<{ owned: readonly string[]; units: readonly string[]; elsewhere: readonly string[]; away: Record<string, string[]>; kept: readonly string[]; containers: readonly string[] }> {
   const folders = sessions.filter(session => SESSION.test(session)).flatMap(session => jobFolders(session, homedir()));
-  if (!files.length && !folders.length) return { owned: [], units: [], elsewhere: [], away: {}, kept: [] };
+  if (!files.length && !folders.length) return { owned: [], units: [], elsewhere: [], away: {}, kept: [], containers: [] };
   const records = await Promise.all(files.map(file => readOwned(file, dirs)));
   const wanted = [...new Set(records.flatMap(record => record.units))];
   const answer = wanted.length ? await source.stopUnits(wanted).catch(() => []) : [];
@@ -279,7 +297,7 @@ async function endOwned(source: LeftoverSource, files: readonly string[], dirs: 
       if (why) unmade.set(path, why);
     }
   }));
-  const { paths, removed: owned, kept } = await removeFree(source, [...records.flatMap(record => record.paths).filter(path => !unmade.has(path)), ...folders]);
+  const { paths, removed: owned, kept, containers } = await removeFree(source, [...records.flatMap(record => record.paths).filter(path => !unmade.has(path)), ...folders]);
   const gone = new Set(owned);
   const away: Record<string, string[]> = {};
   for (const record of records) for (const [host, list] of Object.entries(record.hosts ?? {})) away[host] = [...new Set([...away[host] ?? [], ...list])];
@@ -288,7 +306,7 @@ async function endOwned(source: LeftoverSource, files: readonly string[], dirs: 
     const left = { paths: record.paths.filter(path => !gone.has(path) && !kept.has(path) && paths.includes(path)), units: [], ...record.hosts ? { hosts: record.hosts } : {} };
     await source.writeOwned(file, left).catch(() => {});
   }));
-  return { owned, units, elsewhere, away, kept: keptNotes(new Map([...unmade, ...kept])) };
+  return { owned, units, elsewhere, away, kept: keptNotes(new Map([...unmade, ...kept])), containers };
 }
 
 /**
@@ -448,9 +466,10 @@ export async function endLeftovers(source: LeftoverSource, dirs: string | readon
   const transcripts = trees.flatMap(tree => tree.transcripts);
   const copies = await source.removeCopies(transcripts).catch(() => []);
   const artifacts = await endArtifacts(source, transcripts).catch(() => []);
-  const owned = await endOwned(source, trees.flatMap(tree => tree.ownedFiles), typeof dirs === "string" ? [dirs] : dirs, sessions).catch(() => ({ owned: [], units: [], elsewhere: [], away: {}, kept: [] }));
+  const owned = await endOwned(source, trees.flatMap(tree => tree.ownedFiles), typeof dirs === "string" ? [dirs] : dirs, sessions).catch(() => ({ owned: [], units: [], elsewhere: [], away: {}, kept: [], containers: [] }));
   return { stopped, tabs: Math.max(tabs, 0), copies, artifacts, owned: owned.owned, units: [...handed, ...owned.units], ...owned.elsewhere.length ? { elsewhere: owned.elsewhere } : {},
-    ...Object.keys(owned.away).length ? { away: owned.away } : {}, ...sessions.length ? { sessions } : {}, ...owned.kept.length ? { kept: owned.kept } : {} };
+    ...Object.keys(owned.away).length ? { away: owned.away } : {}, ...sessions.length ? { sessions } : {}, ...owned.kept.length ? { kept: owned.kept } : {},
+    ...owned.containers.length ? { containers: owned.containers } : {} };
 }
 
 /** Deletes the kernel-state.dill files and the repo copies gone sessions left in session-artifacts, and keeps a copy any process runs in or holds. */
@@ -468,6 +487,13 @@ function helper(args: readonly string[], input = ""): Promise<unknown> {
       try { resolve(JSON.parse(stdout) as unknown); } catch (failure) { reject(failure); }
     });
     child.stdin?.end(input);
+  });
+}
+
+/** Runs `docker` with these arguments: whether it exited 0, and its trimmed stdout; a box with no docker reads as a failed run. */
+function docker(args: readonly string[]): Promise<{ ok: boolean; output: string }> {
+  return new Promise(resolve => {
+    hostExecFile("docker", [...args], { maxBuffer: 16 * 1024 * 1024 }, (error, stdout) => resolve({ ok: !error, output: String(stdout).trim() }));
   });
 }
 
@@ -535,6 +561,14 @@ export const leftoverSource: LeftoverSource = {
     }
     return stopped;
   },
+  stopContainers: async dirs => {
+    const ids = (await docker(["ps", "-q"])).output.split("\n").filter(Boolean);
+    const listed = ids.length ? await docker(["inspect", ...ids]) : null;
+    const running = listed?.ok ? JSON.parse(listed.output) as DockerContainer[] : [];
+    const removed: string[] = [];
+    for (const name of mountedIn(running, dirs)) if ((await docker(["rm", "-f", name])).ok) removed.push(name);
+    return removed;
+  },
   writeOwned: (file, record) => writeFile(file, JSON.stringify(record)),
   artifactCopies: transcripts => {
     const fresh = transcripts.filter(file => !artifactsCleared.has(file));
@@ -547,7 +581,7 @@ export const leftoverSource: LeftoverSource = {
 
 /** A replay serve's source (`serve --replay-daemon`): the same reads, with no kill, unit stop, tab close, delete or record write, and a tab count of -1 so no tab record is emptied. */
 export const dryLeftoverSource: LeftoverSource = { ...leftoverSource, kill: () => {}, closeTabs: async () => -1, removeCopies: async () => [], removeTmp: async () => [],
-  stopUnits: async () => [], writeOwned: async () => {} };
+  stopContainers: async () => [], stopUnits: async () => [], writeOwned: async () => {} };
 
 /** Runs this module's CLI (`main`) on another box with these arguments and returns what it printed. */
 export type RemoteLeftovers = (host: Host, args: readonly string[]) => Promise<Leftovers>;
@@ -576,9 +610,12 @@ export function hostLeftovers(options: { local: LeftoverSource; hostOf: (session
     const self = options.self?.() ?? null;
     const folders = (left.sessions ?? []).filter(session => SESSION.test(session)).flatMap(session => jobFolders(session, homedir()));
     const here = [...self ? hostPaths(left.away?.[self] ?? []) : [], ...folders];
-    const { removed, kept } = here.length ? await removeFree(local, here).catch(() => ({ removed: [], kept: new Map<string, string>() })) : { removed: [], kept: new Map<string, string>() };
+    const none = { removed: [], kept: new Map<string, string>(), containers: [] };
+    const { removed, kept, containers } = here.length ? await removeFree(local, here).catch(() => none) : none;
     const notes = [...left.kept ?? [], ...keptNotes(kept)];
-    return { ...left, owned: [...left.owned, ...removed], units: [...left.units, ...stopped], ...notes.length ? { kept: notes } : {} };
+    const removedContainers = [...left.containers ?? [], ...containers];
+    return { ...left, owned: [...left.owned, ...removed], units: [...left.units, ...stopped], ...notes.length ? { kept: notes } : {},
+      ...removedContainers.length ? { containers: removedContainers } : {} };
   };
   // The paths the records name on a third box, such as the Mac's for a box job that made trees there over ssh, end on that box.
   const far = async (left: Leftovers): Promise<Leftovers> => {
@@ -632,8 +669,8 @@ async function main(args: readonly string[]): Promise<void> {
   if (kind === "end" && path && ARTIFACT_PATH.test(path) && (session === undefined || SESSION.test(session))) left = await endLeftovers(source, join(ARTIFACTS, path), session);
   else if (kind === "deleted" && path && SESSION.test(path)) left = await endLeftovers(source, await deletedFolders(join(ARTIFACTS, path)));
   else if (kind === "away") {
-    const { removed, kept } = await removeFree(source, hostPaths(args.slice(1)));
-    left = { stopped: [], tabs: 0, copies: [], artifacts: [], units: [], owned: removed, ...kept.size ? { kept: keptNotes(kept) } : {} };
+    const { removed, kept, containers } = await removeFree(source, hostPaths(args.slice(1)));
+    left = { stopped: [], tabs: 0, copies: [], artifacts: [], units: [], owned: removed, ...kept.size ? { kept: keptNotes(kept) } : {}, ...containers.length ? { containers } : {} };
   }
   else throw new Error("usage: job-leftovers.ts end <session>[/sub-...] [session] | deleted <chat> | away <path>...");
   process.stdout.write(JSON.stringify(left) + "\n");
