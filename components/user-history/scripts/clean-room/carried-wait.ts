@@ -171,12 +171,13 @@ export function judge(run: string, state: RunState, now = Date.now()): { verdict
   const asked = new Map<string, number>();
   for (const event of head) if (event.kind === "sent" && !asked.has(event.to)) asked.set(event.to, event.at);
   // The check-in jobs the server starts for the chat report to it as siblings; those reports are the system at work, not someone stepping in.
-  // The chat's own jobs, which the agents snapshots list under it, report to it as siblings when the chat started them as root sessions:
-  // run-3's "disk free sampling 2" reported its 12 readings at 16:59Z that way.
-  const dutyJobs = new Set([...jobs.map(job => job.id), ...agents.flatMap(entry => entry.list.flatMap(agent => agent.sessionId ? [agent.sessionId] : []))]);
-  const ownNames = new Set(agents.flatMap(entry => entry.list.map(agent => agent.name)));
+  // The chat's own jobs, which the agents snapshots list under it with link subagent or root, report to it as siblings when the chat started
+  // them as root sessions: run-3's "disk free sampling 2" reported its 12 readings at 16:59Z that way. A thread listed only because it messaged
+  // the chat (link "message", run-3's AI harness developer environment VP at 15:46Z) is no job of the chat, and names never count.
+  const dutyJobs = new Set([...jobs.map(job => job.id), ...agents.flatMap(entry => entry.list.flatMap(agent =>
+    agent.sessionId && (agent.link === "subagent" || agent.link === "root") ? [agent.sessionId] : []))]);
   const outside = head.filter(event => event.kind === "text" && event.role === "custom" && (event.relation === "parent" || event.relation === "sibling") &&
-    !(event.fromId && (asked.get(event.fromId) ?? Infinity) < event.at) && !(event.fromId && dutyJobs.has(event.fromId)) && !ownNames.has(event.from ?? "") && !/^check-in /.test(event.from ?? ""));
+    !(event.fromId && (asked.get(event.fromId) ?? Infinity) < event.at) && !(event.fromId && dutyJobs.has(event.fromId)));
   const turns = head.filter(event => event.kind === "assistant" || event.kind === "call").length;
   add("f", typed.length || outside.length ? false : turns ? true : ended ? false : null, typed.length || outside.length
     ? [...typed, ...outside].map(event => `at ${iso(event.at)}: "${clip(event.kind === "text" ? event.text : "", 160)}"`).join("; ")

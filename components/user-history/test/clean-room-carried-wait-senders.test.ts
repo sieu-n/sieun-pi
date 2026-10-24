@@ -1,6 +1,7 @@
 // Clean-room carried-wait run-3 on 10-24 read void for two senders. Its own root job "disk free sampling 2" reported its 12 readings to the
 // chat as a sibling at 16:59:20Z, which is the system at work, and the AI harness developer environment VP thread sent the chat "fixed in
-// sieun-pi 9cc887bc" at 15:46:07Z, which is someone stepping in. The judge admits the first and keeps the second as an intervention.
+// sieun-pi 9cc887bc" at 15:46:07Z, which is someone stepping in. The agents list held both, the VP with link "message", and dc76a413 let both
+// through until the judge counted only agents with link subagent or root, by session id. The judge admits the first and keeps the second.
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -30,7 +31,9 @@ function run(name: string, lines: readonly object[]): { dir: string; state: RunS
     { id: "p1", text: "Show how free space on / moves over 3 hours", status: "doing", children: [] }] };
   writeFileSync(join(dir, "boards", "000001.json"), JSON.stringify(board));
   const agents: ChatAgent[] = [{ key: `thread:${JOB}`, sessionId: JOB, name: "disk free sampling 2", job: "disk free sampling 2", sender: "disk free sampling 2",
-    link: "root", state: "working", steps: ["p2"] }];
+    link: "root", state: "working", steps: ["p2"] },
+    { key: `thread:${VP}`, sessionId: VP, name: "AI harness developer environment VP", job: "AI harness developer environment VP",
+      sender: "AI harness developer environment VP", link: "message", state: "working", steps: [] }];
   writeFileSync(join(dir, "agents", `${START + 60_000}.json`), JSON.stringify(agents));
   writeFileSync(join(dir, "runs.jsonl"), "");
   mkdirSync(join(home, ".prime/agent/sessions"), { recursive: true });
@@ -42,6 +45,7 @@ function run(name: string, lines: readonly object[]): { dir: string; state: RunS
 const base = [message("2026-10-24T13:33:31Z", "user", TASK), message("2026-10-24T13:34:00Z", "assistant", [{ type: "text", text: "Starting the sampling job." }])];
 const report = sibling("2026-10-24T16:59:20Z", "disk free sampling 2", JOB, "All 12 readings of free space on / are in.");
 const outside = sibling("2026-10-24T15:46:07Z", "AI harness developer environment VP", VP, "From the AI harness chat VP: fixed in sieun-pi 9cc887bc.");
+const impostor = sibling("2026-10-24T16:10:00Z", "disk free sampling 2", "01a16e8a-0000-7000-8000-00000000dead", "Readings look fine, carry on.");
 const f = (text: string): string => text.split("\n").find(line => line.startsWith("- f "))!;
 
 test("the chat's own root job reporting as a sibling is the system at work", () => {
@@ -58,6 +62,14 @@ test("another chat's thread messaging the test chat is an intervention, and the 
   assert.match(line, /AI harness chat VP/);
   assert.doesNotMatch(line, /All 12 readings/);
   assert.equal(verdict.verdict, "void");
+});
+
+test("a sender that only shares the name of the chat's job is an intervention, since names never count", () => {
+  const { dir, state } = run("impostor", [...base, impostor, report]);
+  const line = f(judge(dir, state, START + 5 * 3_600_000).text);
+  assert.match(line, /^- f not met/, line);
+  assert.match(line, /carry on/);
+  assert.doesNotMatch(line, /All 12 readings/);
 });
 
 test.after(() => rmSync(home, { recursive: true, force: true }));
