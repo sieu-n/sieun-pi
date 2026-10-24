@@ -168,6 +168,8 @@ interface PendingStart {
   at: number; schedule: DutySchedule; measured: AfterMeasure | null;
   brief: Pick<DutyJobInput, "measure" | "findings" | "focus" | "misses" | "report" | "prompt">;
   handOff?: HandOff;
+  /** The run reads met with nothing due: it ends the last job as any run does and starts none (`NOTHING_DUE`). */
+  idle?: true;
 }
 /** A run's flagged items marked `handOff` and its findings file, which a run hands to the duty's job while that job still works (`Duties.handOff`). */
 interface HandOff { items: FlaggedSlice[]; detail: string }
@@ -880,7 +882,7 @@ export class Duties {
     if (append) { await this.store.appendRun(chatId, record); await this.writeReadings(chatId, record.duty, record); }
     let launched: Launched;
     let failed = false;
-    try { launched = await this.launch(chatId, record.duty, pending.schedule, record.slot ?? record.at, record.at, { duty, ...pending.brief }, pending.measured, pending.handOff); }
+    try { launched = await this.launch(chatId, record.duty, pending.schedule, record.slot ?? record.at, record.at, { duty, ...pending.brief }, pending.measured, pending.handOff, pending.idle); }
     catch (error) { failed = true; launched = { skipped: `${NOT_STARTED}: ${message(error).slice(0, 300)}` }; }
     const checkIn = record.duty === CHECK_IN_DUTY_ID;
     const ms = Math.max(0, this.now() - record.at);
@@ -927,7 +929,7 @@ export class Duties {
       if (!pending || !record || !duty || record.job || record.verdict === "skipped" || record.summary.includes(NOT_STARTED)) { await rm(file, { force: true }); continue; }
       this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: the server restarted before the job of the run of ${new Date(record.at).toISOString()} started; starting it`);
       this.steps.set(key, { at: record.at, step: "starting its job" });
-      const task = this.startJob(chatId, record, duty, { schedule: pending.schedule, measured: pending.measured, brief: pending.brief }, false)
+      const task = this.startJob(chatId, record, duty, { schedule: pending.schedule, measured: pending.measured, brief: pending.brief, ...pending.idle ? { idle: pending.idle } : {} }, false)
         .then(() => {}, error => this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: resume its job: ${message(error)}`))
         .finally(() => { this.running.delete(key); this.steps.delete(key); });
       this.running.set(key, task);
@@ -990,7 +992,8 @@ export class Duties {
    * `stopEnded` did not see, is still judged after its fixes.
    */
   private async launch(chatId: string, dutyId: string, schedule: DutySchedule, slot: number, at: number,
-    brief: Pick<DutyJobInput, "duty" | "measure" | "findings" | "focus" | "misses" | "report" | "prompt">, measured: AfterMeasure | null, handOff?: HandOff): Promise<Launched> {
+    brief: Pick<DutyJobInput, "duty" | "measure" | "findings" | "focus" | "misses" | "report" | "prompt">, measured: AfterMeasure | null, handOff?: HandOff,
+    idle?: true): Promise<Launched> {
     const chat = await this.host.jobs.chat(chatId);
     const previous = await this.previous(chatId, dutyId, schedule, slot);
     if (previous === null) return previous;
@@ -1013,6 +1016,7 @@ export class Duties {
       await this.store.updateRun(chatId, dutyId, lastRun.at, record => { record.after ??= measured; })
         .catch(error => this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: after-job measure of ${lastRun.job?.name ?? "the last run"}: ${message(error)}`));
     }
+    if (idle) return { skipped: NOTHING_DUE };
     const name = dutyJobName(brief.duty.name, chat.name, at);
     const job = await this.host.jobs.start(chat, name, dutyJobBrief({ ...brief, chat, job: name, at }), at);
     if (handOff) await this.writeHanded(chatId, dutyId, { job: job.id, keys: handOff.items.map(handOffKey) });
@@ -1153,11 +1157,15 @@ export class Duties {
       findings = [briefFindings({ headline: headline?.words ?? null, flagged, ...headline ? { headlineKey: headline.key } : {}, detail: file }), overrunLine, stuckFindings(misses)]
         .filter(Boolean).join("\n\n");
     }
+    // A met run whose findings name no item and hand nothing off has nothing due: the duties' own onMiss says "All on target: end with no
+    // message". From 10-23 08:00Z to 10-24 08:00Z standing duties started 57 jobs on met runs, 27 of them d7's, each one a place in pi-pool's
+    // turn line behind the red duties' fix jobs (median wait 40 min at 09:05Z to 09:35Z on 10-24). The run still ends the last job (`launch`).
+    const idle = record.verdict === "met" && !misses.length && !record.overrun && !flagged.some(slice => slice.item !== undefined || slice.handOff);
     this.steps.set(key, { at: started, step: "starting its job" });
     const measured = record.verdict === "met" || record.verdict === "missed" ? { at: started, verdict: record.verdict, metrics: record.metrics, summary: record.summary,
       ...(record.parts ? { parts: record.parts } : {}) } : null;
     const handOff = findingsFile && flagged.some(slice => slice.handOff) ? { items: flagged.filter(slice => slice.handOff), detail: findingsFile } : undefined;
-    await this.startJob(chatId, record, duty, { schedule: duty.schedule, measured,
+    await this.startJob(chatId, record, duty, { schedule: duty.schedule, measured, ...idle ? { idle: true as const } : {},
       brief: { measure: record.verdict === "error" ? `no measure (${record.summary})` : record.summary, findings, misses }, ...handOff ? { handOff } : {} });
   }
 
