@@ -1,7 +1,6 @@
 // Guards d9's stuck_steps_all in a chat whose check-in the owner paused: on 10-24 it read 0 while ops guy's p506 named a job unloaded 23 h before.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { chatSystemOutput, pushList } from "../scripts/duties/chat-system.ts";
 import { type PlanInputs, planCounts } from "../scripts/duties/whole-system.ts";
 import type { ChatBoard } from "../src/shared/types.ts";
 
@@ -34,13 +33,4 @@ test("a step whose owner wrote over the live window ago counts, and one under it
 
 test("a chat whose check-in runs still counts only from its check-in snapshot", () => {
   assert.deepEqual(planCounts(plan(false)).stuck, []);
-});
-
-// 10-24, the AI harness chat on p1004: the owner set those pauses himself and his reason is not on record, so a push must not wake a chat he paused.
-test("a paused chat's stuck step counts in stuck_steps_all and reads as in a paused chat, but gets no push", () => {
-  const steps = [{ chat: OPS, id: "p506", text: ":5180 on the Mac answers 500", paused: true as const }, { chat: "c2", id: "p9", text: "Fix X" }];
-  assert.deepEqual(pushList({ idleGoals: [], stuckDuties: [], upkeep: [], stuck: steps }).map(entry => [entry.chat, entry.steps.map(step => step.id)]), [["c2", ["p9"]]]);
-  const out = chatSystemOutput({ names: new Map([[OPS, "ops guy"]]), stuck: steps, upkeep: [], fleet: { pct: 100, red: [] }, stuckDuties: [], idleGoals: [], followUps: [], detail: "/tmp/d9.md" });
-  assert.equal(out.metrics.stuck_steps_all, 2);
-  assert.match(out.flagged!.find(slice => slice.item === "p506")!.excerpt, /in a paused chat, so push nothing until the owner resumes its check-in\.$/);
 });

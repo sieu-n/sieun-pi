@@ -331,9 +331,7 @@ export function pushReached(lines: readonly string[], tag: string): { delivered:
  * An open step nobody moves: its id and title, or only a count when the chat's check-in named no ids. `waitsOn` is the open step of the same
  * chat that its blocked wait names (`waitsOnStep`), whose live job it can name as its own.
  */
-export interface StuckStep { chat: string; id?: string; text?: string; count?: number; waitsOn?: string;
-  /** The step's chat has a check-in the owner paused: it counts in stuck_steps_all but gets no push until he resumes that check-in (`pushList`). */
-  paused?: true }
+export interface StuckStep { chat: string; id?: string; text?: string; count?: number; waitsOn?: string }
 
 /** The other open step of the board that a blocked step's waitFor names, such as CI and RepoOps' p361 waiting for p368 on 10-24. */
 export function waitsOnStep(board: ChatBoard | null, id: string): string | undefined {
@@ -374,8 +372,7 @@ export function chatSystemOutput(facts: ChatSystemFacts): PrecheckOutput {
   head("stuck_steps", stuckCount, "open steps nobody moves", chats(facts.stuck));
   for (const entry of spread(facts.stuck, EXAMPLES)) {
     flagged.push({ kind: "stuck_steps", chat: entry.chat, ...entry.id ? { item: entry.id } : {},
-      excerpt: (entry.id ? `${name(entry.chat)}: ${entry.id} ${quote(entry.text ?? "")} is open and nobody moves it` : `${name(entry.chat)}: ${entry.count} open steps nobody moves`) +
-        (entry.paused ? `, in a paused chat, so push nothing until the owner resumes its check-in.` : ".") });
+      excerpt: entry.id ? `${name(entry.chat)}: ${entry.id} ${quote(entry.text ?? "")} is open and nobody moves it.` : `${name(entry.chat)}: ${entry.count} open steps nobody moves.` });
   }
   for (const group of hostGroups(facts.hostHeld ?? [])) {
     flagged.push({ kind: "host_held", excerpt: `${group.title}: ${group.steps.length === 1 ? "its job runs" : "their jobs run"} on ${group.host}, which Tailscale reads ` +
@@ -426,9 +423,7 @@ export function pushList(facts: Pick<ChatSystemFacts, "idleGoals" | "stuckDuties
   const chats = new Map<string, { goals: readonly PlanItem[]; steps: StuckStep[]; duties: string[]; upkeep: PlanFlag[] }>();
   const at = (chat: string) => chats.get(chat) ?? chats.set(chat, { goals: [], steps: [], duties: [], upkeep: [] }).get(chat)!;
   for (const entry of facts.idleGoals) if (entry.goals.length) at(entry.chat).goals = entry.goals;
-  // A step in a chat whose check-in the owner paused gets no push, because a push wakes a chat he stopped: the AI harness chat ruled so on 10-24
-  // when d9 began to count those chats' steps (p1004), since his reason for each pause is not on record.
-  for (const step of facts.stuck ?? []) if (!step.paused && !chats.get(step.chat)?.goals.some(goal => goal.id === step.id)) at(step.chat).steps.push(step);
+  for (const step of facts.stuck ?? []) if (!chats.get(step.chat)?.goals.some(goal => goal.id === step.id)) at(step.chat).steps.push(step);
   for (const duty of [...facts.stuckDuties, ...facts.lagging ?? [], ...facts.notMoving ?? []]) at(duty.chat).duties.push(duty.line);
   for (const item of facts.upkeep) at(item.chat).upkeep.push(item);
   return [...chats].map(([chat, entry]) => ({ chat, ...entry }));
@@ -553,7 +548,7 @@ async function main(): Promise<void> {
   const hostHeld = owned.hostHeld.map((step: HostHeldStep) => ({ chat: step.chat.id, id: step.id, host: step.host, todo: step.todo, text: text(step.chat.id, step.id) ?? "" }));
   const stuck = counts.stuck.flatMap((entry): ChatSystemFacts["stuck"] => entry.items.length
     ? entry.items.map(id => { const waitsOn = waitsOnStep(plan.boards.get(entry.chat.id) ?? null, id);
-      return { chat: entry.chat.id, id, text: text(entry.chat.id, id) ?? "", ...waitsOn ? { waitsOn } : {}, ...entry.chat.paused ? { paused: true as const } : {} }; })
+      return { chat: entry.chat.id, id, text: text(entry.chat.id, id) ?? "", ...waitsOn ? { waitsOn } : {} }; })
     : [{ chat: entry.chat.id, count: entry.value }]);
   const upkeep = plan.chats.filter(chat => !plan.pausedChats.has(chat.id)).flatMap(chat => planUpkeep(chat.id, plan.boards.get(chat.id) ?? null));
   const fleet = await dutyFleet({ dataDir, now, sessions: daemonSessions });
@@ -609,8 +604,7 @@ async function main(): Promise<void> {
     section(`Pushes the last run sent (${followUps.length})`, followUps.map(check => `${name(check.push.chat)}: ${check.push.tag} about ${check.push.items.join(", ")}, ` +
       `${check.delivered ? "delivered" : "not delivered"}, ${check.read ? "read" : "not read"}, ${check.jobStarted ? "a job started since" : "no job started since"}.`)),
     section(`Open steps nobody moves (${result.metrics.stuck_steps_all})`, stuck.map(entry => entry.id
-      ? `${name(entry.chat)}: ${entry.id} ${quote(entry.text ?? "")}${entry.paused ? ", in a paused chat (no push until the owner resumes its check-in)" : ""}.`
-      : `${name(entry.chat)}: ${entry.count} open steps nobody moves, with no ids in its check-in.`)),
+      ? `${name(entry.chat)}: ${entry.id} ${quote(entry.text ?? "")}.` : `${name(entry.chat)}: ${entry.count} open steps nobody moves, with no ids in its check-in.`)),
     ...hostGroups(hostHeld).map(group => section(group.title, group.steps.map(step => `${name(step.chat)}: ${step.id} ${quote(step.text)}.`))),
     ...hostHeld.length ? [] : [section("Steps that wait on an offline box (0)", [])],
     section(`Open plan items that are upkeep or have no done line (${upkeep.length})`, upkeep.map(item => `${name(item.chat)}: ${item.id} ${quote(item.text)} ${item.why}.`)),
