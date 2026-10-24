@@ -99,7 +99,12 @@ export interface FleetDuty {
   green: boolean;
   /** No measured run yet: neither green nor red, and outside `duties_green_pct`. */
   pending?: true;
-  /** Measured runs in a row, newest first, whose verdict is missed; with `skipped`, the skipped runs in a row whose own measure missed (`skippedMisses`). */
+  /**
+   * Measured runs in a row, newest first, that missed `metric`, or whose verdict is missed when no metric is named; with `skipped`, the skipped
+   * runs in a row whose own measure missed (`skippedMisses`). The duty's verdict streak would pair a metric that just went red with the misses
+   * of another: d9's 02:03Z run on 10-24 read AI harness d11 as "unlabeled_lines 1 against <= 0, 11 runs in a row" while unlabeled_lines had
+   * read 0 on the 9 runs before and the 11 misses were needed_pct_24h's, met since 01:35Z.
+   */
   misses: number;
   /** Red on skipped runs' measures alone: no measured run missed since the newest one that met. */
   skipped?: true;
@@ -229,7 +234,7 @@ export async function dutyFleet(options: { dataDir: string; now: number; session
       const streaks = newest ? metricStreaks(own) : [];
       const entry: FleetDuty = { chat: id, duty: duty.id, name: duty.name, green, misses: streak, stuck: false, ...newest ? {} : { pending: true as const } };
       const metric = leadMetric(duty.metrics, streaks);
-      if (metric) entry.metric = { ...metric };
+      if (metric) Object.assign(entry, { metric: { ...metric }, misses: metric.misses });
       const skipped = !green && newest && streak === 0 ? skippedMisses(runs.filter(run => run.duty === duty.id)) : [];
       const lead = skippedLead(duty.metrics, skipped);
       if (lead) Object.assign(entry, { misses: skipped.length, skipped: true, metric: lead });
@@ -242,7 +247,7 @@ export async function dutyFleet(options: { dataDir: string; now: number; session
         held ??= board ? await withBoardLinks(board, id, other => boards.read(other)) : null;
         const hold = dutyHold(duty.id, streaks.map(item => item.key), held);
         if (hold) entry.held = hold;
-        const all = streak >= CHANGE_APPROACH_MISSES && !entry.held ? await roster() : null;
+        const all = Math.max(0, ...streaks.map(item => item.misses)) >= CHANGE_APPROACH_MISSES && !entry.held ? await roster() : null;
         if (all) {
           // The check-in's working test: a running subtree, a session change within the chat's interval capped at LIVE_GAP_MS, or an owed wake.
           live ??= (() => {

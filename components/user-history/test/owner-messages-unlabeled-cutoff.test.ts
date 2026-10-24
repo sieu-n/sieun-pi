@@ -47,6 +47,8 @@ test("an unlabeled line before the newest job run counts, and one after it is fl
   const output = precheck([{ duty: "d11", at: at("2026-10-22T09:30:00Z"), trigger: "verify" }, { duty: "d11", at: jobRun, trigger: "verify", job: { id: "j", name: "d11 job" } }]);
   assert.equal(output.metrics.unlabeled_lines, 1);
   assert.deepEqual(output.flagged.filter(item => item.kind === "unlabeled").map(item => item.excerpt.split("sent: ")[1]), ["before the job run", "after the job run"]);
+  // 10-24: the 01:35Z run met, its job left the 00:54Z line unlabeled, and the 01:55Z run counted it.
+  assert.deepEqual(output.flagged.filter(item => item.kind === "unlabeled").map(item => item.excerpt.startsWith("not counted yet, label it in this run even when every metric is met")), [false, true]);
 });
 
 test("with no LAST_RUNS_FILE or no run that started a job, every unlabeled line counts", () => {

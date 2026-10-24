@@ -94,3 +94,26 @@ test("a duty red on skipped runs' measures alone names their missed metric and c
     assert.equal(missRuns({ misses: 1 }), "1 run");
   } finally { await rm(dataDir, { recursive: true, force: true }); }
 });
+
+// 10-24 02:03Z: d9 read AI harness d11 as "unlabeled_lines 1 against <= 0, 11 runs in a row" while unlabeled_lines had read 0 on the 9 runs
+// before; the 11 misses were needed_pct_24h's, met since 01:35Z.
+test("a red duty's line counts the runs in a row its named metric missed, not the duty's verdict streak", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "duty-fleet-"));
+  try {
+    const chat = "chat-d11";
+    await writeFile(join(dataDir, "chats.json"), JSON.stringify({ ids: [chat] }));
+    await mkdir(join(dataDir, "duties"), { recursive: true });
+    const d11 = { ...duty("d11", "needed_pct_24h", ">=", 90), metrics: [{ key: "needed_pct_24h", label: "needed", op: ">=", target: 90, headline: true },
+      { key: "unlabeled_lines", label: "unlabeled", op: "<=", target: 0 }] };
+    await writeFile(join(dataDir, "duties", `${chat}.json`), JSON.stringify({ version: 1, duties: [d11] }));
+    const store = new DutyStore(dataDir);
+    const both = (needed: number, unlabeled: number, at: number) => ({ duty: "d11", at, slot: at, trigger: "verify", ms: 1, verdict: needed >= 90 && unlabeled <= 0 ? "met" : "missed",
+      metrics: { needed_pct_24h: { value: needed, target: 90, op: ">=", met: needed >= 90 }, unlabeled_lines: { value: unlabeled, target: 0, op: "<=", met: unlabeled <= 0 } }, summary: "d11" });
+    for (let at = 1; at <= 10; at++) await store.appendRun(chat, both(87, 0, at * 1_000) as never);
+    await store.appendRun(chat, both(90.3, 1, 11_000) as never);
+    const fleet = await dutyFleet({ dataDir, now: 12_000, sessions: () => [] });
+    const entry = fleet.duties.find(item => item.duty === "d11")!;
+    assert.deepEqual([entry.green, entry.metric?.key, entry.misses, missRuns(entry)], [false, "unlabeled_lines", 1, "1 run"]);
+    assert.equal(fleet.metrics.stuck_duties, 0, "one miss of its metric is no stuck duty");
+  } finally { await rm(dataDir, { recursive: true, force: true }); }
+});
