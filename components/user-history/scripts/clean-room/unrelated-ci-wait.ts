@@ -16,10 +16,18 @@ import { readSessionFile, sessionFile, sessionFiles, type RunState, type Scenari
  * input, so this one gives a fresh chat one ordinary task with a sampling job, a step that waits on it, and a separate job that follows real
  * land runs. Nothing says it is a test, and nothing is seeded. The criteria live in the run folder's criteria.md.
  */
-export const TASK = "get a separate job to sample the available memory on this box every 15 minutes for the next 4 hours, as its own step. " +
+export const TASK = "get a separate job to sample the free space on this box's / every 15 minutes for the next 4 hours, as its own step, and " +
+  "keep a goal on the board with how many of the 16 readings are in. checking its last sample against a fresh df and writing me a short page " +
+  "with all 16 readings and the trend is your own step, and it waits on the sampling step. also have another job follow the land runs on " +
+  "auto-sns-agent's sieun/dev over the same 4 hours, wait on each one till it finishes, and keep a tally of each run's id, result and duration on its own step";
+/**
+ * The first messages of earlier runs. Run-1 on 10-24 sampled memory with no number on the board, and every check-in on its aged wait read
+ * "nothing due, so no job", so no check-in job read a CI run while the wait was over 2 h old.
+ */
+export const EARLIER = ["get a separate job to sample the available memory on this box every 15 minutes for the next 4 hours, as its own step. " +
   "checking its last sample against a fresh free -m and writing me a short page with all the readings and the trend is your own step, and it " +
   "waits on the sampling step. also have another job follow the land runs on auto-sns-agent's sieun/dev over the same 4 hours, wait on each " +
-  "one till it finishes, and keep a tally of each run's id, result and duration on its own step";
+  "one till it finishes, and keep a tally of each run's id, result and duration on its own step"];
 
 const OPEN = new Set(["todo", "doing", "blocked"]);
 /** The flags the 10-24 check-ins put on chat-2572's carried p8 and p10 (stale_chase_24h is the chase class's flag). */
@@ -594,7 +602,7 @@ export function judge(run: string, state: RunState, now = Date.now(), cache: Rea
   // f: nobody stepped in.
   const head = readSessionFile(sessionFile(chat) ?? "").filter(event => event.at >= state.windowStart);
   const typed = head.filter(event => event.kind === "text" && event.role === "user" && !event.text.trimStart().startsWith("[") &&
-    !state.seeds.some(seed => event.text.includes(seed.slice(0, 60))) && !event.text.includes("<skill") && event.text.trim() !== TASK);
+    !state.seeds.some(seed => event.text.includes(seed.slice(0, 60))) && !event.text.includes("<skill") && ![TASK, ...EARLIER].includes(event.text.trim()));
   const asked = new Map<string, number>();
   for (const event of head) if (event.kind === "sent" && !asked.has(event.to)) asked.set(event.to, event.at);
   // The chat's own jobs are its check-in jobs and the sessions the agents snapshots list with link subagent or root, by session id only. A root
