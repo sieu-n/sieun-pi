@@ -10,11 +10,16 @@ import { readSession, type RunState, type Scenario, type SessionEvent, type Verd
  * then read goal_gaps 1 and stuck_steps 2 because p6 was no leaf any more. A fresh chat gets one ordinary task whose plan needs a step that
  * waits about 3 h on another step's live job, and nothing says it is a test. The criteria live in the run folder's criteria.md.
  */
-export const TASK = "get a job to sample the free space on this box's / every 15 minutes for the next 3 hours. once that job is done, check its " +
-  "last sample against a fresh df yourself and write me a short page with all 12 readings and the trend";
-/** The first message of run-1 on 10-24, whose chat sampled with one systemd unit and planned no step that waits on another. */
+export const TASK = "get a separate job to sample the free space on this box's / every 15 minutes for the next 3 hours, as its own step. checking " +
+  "its last sample against a fresh df and writing me a short page with all 12 readings and the trend is your own step, and it waits on the sampling step";
+/**
+ * The first messages of earlier runs on 10-24. Run-1's chat sampled with one systemd unit, and run-2's put the sampling and the page under one
+ * job, so neither planned a step that waits on another.
+ */
 const EARLIER = ["sample the free space on this box's / every 15 minutes for the next 3 hours, then once that's done check the last sample " +
-  "against a fresh df yourself and write me a short page with all 12 readings and the trend"];
+  "against a fresh df yourself and write me a short page with all 12 readings and the trend",
+  "get a job to sample the free space on this box's / every 15 minutes for the next 3 hours. once that job is done, check its " +
+  "last sample against a fresh df yourself and write me a short page with all 12 readings and the trend"];
 const STALL_MS = 2 * 60 * 60_000;
 const OPEN = new Set(["todo", "doing", "blocked"]);
 const STEP_FLAGS = new Set(["stalled_steps", "blocked_on_others", "stuck_steps", "stale_chase_24h"]);
@@ -102,44 +107,80 @@ export function judge(run: string, state: RunState, now = Date.now()): { verdict
   add("b", judged.length ? !wrongFlags.length : ended ? false : null, wrongFlags.length ? wrongFlags.join("; ")
     : `${judged.length} check-ins ran on carried waits, and none flagged the waiting step`);
 
-  const misses = judged.flatMap(({ entry }) => [entry, ...entry.after ? [entry.after] : []].flatMap(measure => ["goal_gaps", "stuck_steps"]
-    .filter(key => (measure.metrics?.[key]?.value ?? 0) > 0)
-    .map(key => `${measure === entry ? "run" : "after-job measure"} at ${iso(measure.at)} read ${key} ${measure.metrics![key]!.value}` +
-      `${measure === entry ? `: ${(entry.flagged ?? []).filter(slice => slice.kind === key).map(slice => `"${clip(slice.excerpt, 160)}"`).join("; ")}` : ""}`)));
-  add("c", judged.length ? !misses.length : ended ? false : null, misses.length ? misses.join("; ")
-    : `${judged.length} check-ins and their after-job measures read goal_gaps 0 and stuck_steps 0`);
+  // A reading that is missing leaves the proof open: a run with no metric, or a run whose job ran and whose after-job measure is not in yet.
+  // A miss in the run's own measure is excused only when every flagged item of that kind names something outside the carried waits: a
+  // stuck step that is not one of them, or a goal gap on a goal that holds none of them.
+  const under = (goal: string, step: string, board: ChatBoard | undefined): boolean => {
+    const found = board ? items(board) : new Map<string, { item: PlanItem; parent?: string }>();
+    for (let at = found.get(step)?.parent; at !== undefined; at = found.get(at)?.parent) if (at === goal) return true;
+    return false;
+  };
+  const boardAt = (at: number): ChatBoard | undefined => snaps.filter(snap => snap.at <= at).at(-1)?.board;
+  const missing: string[] = [];
+  const misses: string[] = [];
+  for (const { entry, carried } of judged) {
+    for (const key of ["goal_gaps", "stuck_steps"]) {
+      const own = entry.metrics?.[key]?.value;
+      if (own === undefined) missing.push(`run at ${iso(entry.at)} has no ${key}`);
+      else if (own > 0) {
+        const slices = (entry.flagged ?? []).filter(slice => slice.kind === key);
+        const related = slices.filter(slice => slice.item === undefined || carried.some(wait => key === "stuck_steps" ? wait.step.id === slice.item
+          : wait.step.id === slice.item || under(slice.item!, wait.step.id, boardAt(entry.at))));
+        if (related.length || !slices.length) misses.push(`run at ${iso(entry.at)} read ${key} ${own}: ${slices.map(slice => `"${clip(slice.excerpt, 160)}"`).join("; ") || "no flagged item names it"}`);
+      }
+      if (!entry.job) continue;
+      const after = entry.after?.metrics?.[key]?.value;
+      if (after === undefined) missing.push(`run at ${iso(entry.at)} started job ${entry.job.name} and has no after-job ${key} yet`);
+      else if (after > 0) misses.push(`after-job measure at ${iso(entry.after!.at)} read ${key} ${after}, with no flagged item to show which step`);
+    }
+  }
+  add("c", misses.length ? false : judged.length && !missing.length ? true : null, misses.length ? misses.join("; ")
+    : missing.length ? `open: ${missing.join("; ")}` : judged.length ? `${judged.length} check-ins and their after-job measures read goal_gaps 0 and stuck_steps 0` : "no check-in ran on a carried wait yet");
 
-  const waiting = new Map<string, Carried>();
-  for (const { carried } of judged) for (const wait of carried) if (!waiting.has(wait.step.id)) waiting.set(wait.step.id, wait);
+  // Each call counts against the waits that were carried when it ran, so work on a step after its wait ended is the chat's to do.
   const jobs = runs.flatMap(entry => entry.job ? [entry.job] : []);
   const calls = jobs.flatMap(job => readSession(job.id, [chat]).filter((event): event is Extract<SessionEvent, { kind: "call" }> => event.kind === "call")
     .map(event => ({ job, event })));
-  const named = (input: string, id: string): boolean => new RegExp(`["'\\s]${id}["'\\s,]|\\b${id}\\b`).test(input);
+  const named = (input: string, id: string): boolean => new RegExp(`\\b${id}\\b`).test(input);
   const changes: string[] = [];
   const steers: string[] = [];
+  const runIds: string[] = [];
+  let checked = 0;
   for (const { job, event } of calls) {
-    for (const [id, wait] of waiting) {
+    for (const wait of carriedAt(snaps, agents, event.at)) {
+      const id = wait.step.id;
       if (!named(event.input, id)) continue;
+      checked++;
       const op = new RegExp(`["']id["']\\s*:\\s*["']${id}["'][^}]*["'](?:parent|job|sessionId)["']\\s*:`).test(event.input) ||
         new RegExp(`["'](?:parent|job|sessionId)["']\\s*:[^}]*["']id["']\\s*:\\s*["']${id}["']`).test(event.input);
       const runId = new RegExp(`["']id["']\\s*:\\s*["']${id}["'][^}]*["']note["']\\s*:\\s*["'][^"']*\\b\\d{9,}\\b`).test(event.input);
       const start = /create_session\(|rlm\.spawn\(/.test(event.input);
-      if (op || runId || start) changes.push(`${job.name} at ${iso(event.at)} ${op ? "changed the owner or parent of" : runId ? "wrote a run id into" : "started a job on"} ${id}: "${clip(event.input)}"`);
+      if (op || start) changes.push(`${job.name} at ${iso(event.at)} ${op ? "changed the owner or parent of" : "started a job on"} ${id}: "${clip(event.input)}"`);
+      if (runId) runIds.push(`${job.name} at ${iso(event.at)} wrote a run id into ${id}: "${clip(event.input)}"`);
       if (/job-steer\.ts/.test(event.input) && !wait.owners.some(owner => event.input.includes(owner)))
         steers.push(`${job.name} at ${iso(event.at)} steered about ${id} someone other than ${wait.owners.join(", ")}: "${clip(event.input)}"`);
     }
   }
-  add("d", waiting.size ? !changes.length : ended ? false : null, changes.length ? changes.join("; ")
-    : `${calls.length} calls of ${jobs.length} check-in jobs, none changed ${[...waiting.keys()].join(", ") || "a carried step"}`);
-  add("e", waiting.size ? !steers.length : ended ? false : null, steers.length ? steers.join("; ") : "no check-in job steered anyone but the carrier about a carried wait");
+  const waiting = judged.length > 0;
+  add("d", waiting ? !changes.length && !runIds.length : ended ? false : null, [...changes, ...runIds].join("; ")
+    || `${calls.length} calls of ${jobs.length} check-in jobs, ${checked} of them about a step while its wait was carried, and none changed it`);
+  add("e", waiting ? !steers.length : ended ? false : null, steers.length ? steers.join("; ") : "no check-in job steered anyone but the carrier about a carried wait");
+  // An unrelated CI wake is exercised only when some agent of the chat slept on a run while a wait was carried. Unexercised, it proves nothing
+  // and stays out of the verdict.
+  const ciWakes = agents.filter(entry => carriedAt(snaps, agents, entry.at).length)
+    .flatMap(entry => entry.list.filter(agent => /\brun\s+\d{9,}\b/.test(agent.wait ?? "")).map(agent => `${agent.name} at ${iso(entry.at)}: ${agent.wait}`));
+  const exercised = ciWakes.length ? `exercised (${[...new Set(ciWakes)].slice(0, 3).join("; ")}): ${runIds.length ? "a run id reached a carried step" : "no run id reached a carried step"}`
+    : "not exercised: no agent of the chat slept on a CI run while a wait was carried";
 
   const head = readSession(chat, [chat]).filter(event => event.at >= state.windowStart);
   const typed = head.filter(event => event.kind === "text" && event.role === "user" && !event.text.trimStart().startsWith("[") &&
     !state.seeds.some(seed => event.text.includes(seed.slice(0, 60))) && !event.text.includes("<skill") && ![TASK, ...EARLIER].includes(event.text.trim()));
   const asked = new Map<string, number>();
   for (const event of head) if (event.kind === "sent" && !asked.has(event.to)) asked.set(event.to, event.at);
+  // The check-in jobs the server starts for the chat report to it as siblings; those reports are the system at work, not someone stepping in.
+  const dutyJobs = new Set(jobs.map(job => job.id));
   const outside = head.filter(event => event.kind === "text" && event.role === "custom" && (event.relation === "parent" || event.relation === "sibling") &&
-    !(event.fromId && (asked.get(event.fromId) ?? Infinity) < event.at));
+    !(event.fromId && (asked.get(event.fromId) ?? Infinity) < event.at) && !(event.fromId && dutyJobs.has(event.fromId)) && !/^check-in /.test(event.from ?? ""));
   const turns = head.filter(event => event.kind === "assistant" || event.kind === "call").length;
   add("f", typed.length || outside.length ? false : turns ? true : ended ? false : null, typed.length || outside.length
     ? [...typed, ...outside].map(event => `at ${iso(event.at)}: "${clip(event.kind === "text" ? event.text : "", 160)}"`).join("; ")
@@ -153,6 +194,7 @@ export function judge(run: string, state: RunState, now = Date.now()): { verdict
     `The chat "${state.chat.name}" (${chat}) ran on ${state.release} from ${iso(state.windowStart)} to ${iso(now)}. Judged by \`clean-room.ts evaluate\`.`,
     `Criteria: ${join(run, "criteria.md")}. Evidence: ${snaps.length} board snapshots, ${agents.length} agents snapshots, ${runs.length} check-in runs and their jobs' session files.`, "",
     ...checks.map(check => `- ${check.id} ${yes(check.ok)}: ${check.detail}`), "",
+    `The unrelated CI wake case was ${exercised}.`, "",
     "## Check-ins", "",
     ...runs.map(entry => `- ${iso(entry.at)} ${entry.trigger}: goal_gaps ${entry.metrics?.goal_gaps?.value ?? "-"}, stuck_steps ${entry.metrics?.stuck_steps?.value ?? "-"}` +
       `${entry.after ? `, after-job ${entry.after.metrics?.goal_gaps?.value ?? "-"} and ${entry.after.metrics?.stuck_steps?.value ?? "-"}` : ""}; ` +
