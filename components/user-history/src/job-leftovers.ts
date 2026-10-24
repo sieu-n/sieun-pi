@@ -396,7 +396,19 @@ export async function deletedFolders(chatDir: string): Promise<string[]> {
     const record = await readFile(join(entry.parentPath, entry.name), "utf8").then(text => JSON.parse(text) as { status?: unknown }, () => null);
     if (record?.status === "deleted") found.push(entry.parentPath);
   }
-  return found.filter(dir => !found.some(other => other !== dir && dir.startsWith(other + "/")));
+  return outermost(found);
+}
+
+/**
+ * The folders of `dirs` that sit inside no other of them, found by looking each folder's parents up in a set. On 10-24 at 12:26Z the pairwise
+ * check this replaced held the chat's event loop 973 ms on one chat's deleted jobs, and d7 read that minute dirty.
+ */
+export function outermost(dirs: readonly string[]): string[] {
+  const all = new Set(dirs);
+  return dirs.filter(dir => {
+    for (let cut = dir.lastIndexOf("/"); cut > 0; cut = dir.lastIndexOf("/", cut - 1)) if (all.has(dir.slice(0, cut))) return false;
+    return true;
+  });
 }
 
 /** Top-level /tmp names every session shares (caches, sockets, Prime's own dir), never one job's tree. */
