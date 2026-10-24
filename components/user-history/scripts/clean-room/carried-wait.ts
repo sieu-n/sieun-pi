@@ -2,6 +2,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { firstClause, planJob } from "../../src/shared/chat-board.ts";
 import type { ChatAgent, ChatBoard, PlanItem } from "../../src/shared/types.ts";
+import { nextIds } from "../../src/shared/chat-board.ts";
 import { readSession, type RunState, type Scenario, type SessionEvent, type Verdict } from "./session-read.ts";
 
 /**
@@ -12,14 +13,6 @@ import { readSession, type RunState, type Scenario, type SessionEvent, type Verd
  */
 export const TASK = "get a separate job to sample the free space on this box's / every 15 minutes for the next 3 hours, as its own step. checking " +
   "its last sample against a fresh df and writing me a short page with all 12 readings and the trend is your own step, and it waits on the sampling step";
-/**
- * The first messages of earlier runs on 10-24. Run-1's chat sampled with one systemd unit, and run-2's put the sampling and the page under one
- * job, so neither planned a step that waits on another.
- */
-const EARLIER = ["sample the free space on this box's / every 15 minutes for the next 3 hours, then once that's done check the last sample " +
-  "against a fresh df yourself and write me a short page with all 12 readings and the trend",
-  "get a job to sample the free space on this box's / every 15 minutes for the next 3 hours. once that job is done, check its " +
-  "last sample against a fresh df yourself and write me a short page with all 12 readings and the trend"];
 const STALL_MS = 2 * 60 * 60_000;
 const OPEN = new Set(["todo", "doing", "blocked"]);
 const STEP_FLAGS = new Set(["stalled_steps", "blocked_on_others", "stuck_steps", "stale_chase_24h"]);
@@ -174,7 +167,7 @@ export function judge(run: string, state: RunState, now = Date.now()): { verdict
 
   const head = readSession(chat, [chat]).filter(event => event.at >= state.windowStart);
   const typed = head.filter(event => event.kind === "text" && event.role === "user" && !event.text.trimStart().startsWith("[") &&
-    !state.seeds.some(seed => event.text.includes(seed.slice(0, 60))) && !event.text.includes("<skill") && ![TASK, ...EARLIER].includes(event.text.trim()));
+    !state.seeds.some(seed => event.text.includes(seed.slice(0, 60))) && !event.text.includes("<skill"));
   const asked = new Map<string, number>();
   for (const event of head) if (event.kind === "sent" && !asked.has(event.to)) asked.set(event.to, event.at);
   // The check-in jobs the server starts for the chat report to it as siblings; those reports are the system at work, not someone stepping in.
@@ -212,6 +205,54 @@ export const carriedWait: Scenario = {
     `The chat ${state.chat.id} was opened through POST api/threads in ${state.sandbox} on ${state.release}, with one owner-style first message and no seeded board, todo or fixture.`,
     `Its check-in runs every ${state.everyMs / 60_000} min on the server's clock. The owner asked for runs the system does alone (c84); no other chat's interval changed.`, "",
     "## The first message", "", `> ${TASK}`, "",
+  ].join("\n"),
+  evaluate: (run, state) => judge(run, state),
+  baseline: () => { throw new Error("this scenario has no baseline"); },
+};
+
+/**
+ * The same judge on the shape chat-2572 had at 08:03Z on 10-24, which a chat that plans its own board did not make in run-1 to run-3: a step of
+ * the chat under another job's step, waiting on that job's handoff, so the step above it is no leaf and its live job carries the wait. Run-3's
+ * chat set a carried wait at 13:34Z, and its sampling job ended at 14:2xZ, an hour before the 2 h a stall needs. The board is seeded at setup,
+ * and the job on p2 is a real one that samples for 3 h and sleeps on a board.wake meanwhile.
+ */
+export const NESTED_TASK = "the disk sampler job is sampling free space on this box's / every 15 minutes for the next 3 hours, that's p2. once its " +
+  "12th reading is in, check it against a fresh df and write me a short page with all 12 readings and the trend. that part is p3 and it's yours";
+const SAMPLER = "disk sampler";
+export const carriedRelease: Scenario = {
+  name: "carried-release",
+  headMessage: () => NESTED_TASK,
+  fixtures: [{
+    name: SAMPLER,
+    brief: ({ chat, chatName, sandbox }) => `You sample disk space for the chat "${chatName}" (session ${chat}), and you own its step p2. Work in ${sandbox}.\n\n` +
+      `1. Start the sampler detached: \`systemd-run --user --unit=disk-sampler-${chat.slice(0, 8)} --collect --same-dir sh -c 'for i in $(seq 12); do ` +
+      `echo "$(date -u +%FT%TZ),$(df -B1 --output=avail / | tail -1)" >> ${sandbox}/samples.csv; [ $i -lt 12 ] && sleep 900; done'\`.\n` +
+      "2. In Python, set `board.wake(at=<the time 2 h 50 min from now, ISO>, note=\"read samples.csv\")` and end your turn.\n" +
+      `3. When the wake comes, count the rows of ${sandbox}/samples.csv. Below 12, set another board.wake at the time the next rows are due and end your turn. ` +
+      `At 12, run \`node --import tsx scripts/board-apply.ts ${chat} '[{"op":"plan_update","id":"p2","status":"done","note":"12 readings in ${sandbox}/samples.csv"}]'\` ` +
+      "from ~/.local/share/sieun-pi-chat/current/components/user-history, and end your turn.",
+  }],
+  board(copy, { fixtures }) {
+    const sampler = fixtures[SAMPLER];
+    if (!sampler) throw new Error("the sampler job was not created");
+    const board = structuredClone(copy);
+    const ids = nextIds(board);
+    const [p1, p2, p3] = [ids("p"), ids("p"), ids("p")];
+    if (p1 !== "p1" || p2 !== "p2" || p3 !== "p3") throw new Error(`the board is not empty: it gives ${p1}, ${p2} and ${p3}`);
+    const at = new Date().toISOString();
+    board.plan = [{ id: "p1", text: "Show how free space on this box's / moves over 3 hours", status: "doing",
+      target: { metric: "readings checked against a fresh df", target: 12, unit: "readings", current: 0, measuredAt: at, direction: "up" },
+      note: "Done when the trend page lists all 12 readings and the last one matches a fresh df.", children: [
+        { id: "p2", text: "Sample free space on / every 15 minutes for 3 hours", status: "doing", job: SAMPLER, sessionId: sampler, children: [
+          { id: "p3", text: "Check the last sample against a fresh df and write the trend page", status: "todo", waitFor: "p2's 12th reading", children: [] }] }] }];
+    board.lastIds = { p: 3, t: board.lastIds?.t ?? 0 };
+    return { board, changes: ["p1 with a target of 12 readings, p2 owned by the disk sampler job, and p3 for the chat under p2, waiting on p2's 12th reading."] };
+  },
+  setupNotes: (state, changes) => [
+    `# Run setup: ${state.chat.name}`, "",
+    `The chat ${state.chat.id} was opened through POST api/threads in ${state.sandbox} on ${state.release}, and its board was seeded: ${changes.join(" ")}`,
+    `The disk sampler job is ${state.fixtures[SAMPLER]}. The check-in runs every ${state.everyMs / 60_000} min on the server's clock (c84).`, "",
+    "## The first message", "", `> ${NESTED_TASK}`, "",
   ].join("\n"),
   evaluate: (run, state) => judge(run, state),
   baseline: () => { throw new Error("this scenario has no baseline"); },
