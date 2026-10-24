@@ -189,6 +189,8 @@ export function headSkillIds(lsTree: string): string[] {
 }
 /** check-skill-paths.mjs run over HEAD's skill roots: `git archive` copies them to scratch, and GIT_DIR keeps the script's HEAD file list and ignore rules on the repo. */
 const SKILL_PATHS_SCRIPT = "scripts/ci/check-skill-paths.mjs";
+/** The archive takes only the roots HEAD holds, because `git archive` exits 128 on a pathspec that matches nothing, as `.claude/skills-native` did once auto-sns-agent 7e1345d14 emptied it on 10-24. */
+const SKILL_ROOTS = [".agents/skills", ".claude/skills-native", ".claude/rules"];
 
 /** The script and every module it imports by a relative path at HEAD, so the archive runs it with its own imports (gh-annotate.mjs since 10-17). */
 async function scriptWithImports(deps: Deps, entry: string): Promise<string[]> {
@@ -210,9 +212,12 @@ async function skillPathsAtHead(deps: Deps): Promise<ExecResult> {
   const gitDir = await deps.exec("git", ["rev-parse", "--absolute-git-dir"], { cwd: deps.repo, timeoutMs: CALL_TIMEOUT_MS });
   if (gitDir.code !== 0) return gitDir;
   const scripts = await scriptWithImports(deps, SKILL_PATHS_SCRIPT);
+  const roots = await deps.exec("git", ["ls-tree", "--name-only", "HEAD", "--", ...SKILL_ROOTS], { cwd: deps.repo, timeoutMs: CALL_TIMEOUT_MS });
+  if (roots.code !== 0) return roots;
+  const present = roots.stdout.split("\n").filter(root => SKILL_ROOTS.includes(root));
   try {
     for (const [file, args] of [["rm", ["-rf", dir, tar]], ["mkdir", ["-p", dir]],
-      ["git", ["archive", "--format=tar", "-o", tar, "HEAD", "--", ".agents/skills", ".claude/skills-native", ".claude/rules", ...scripts, ":(glob)**/.gitignore"]],
+      ["git", ["archive", "--format=tar", "-o", tar, "HEAD", "--", ...present, ...scripts, ":(glob)**/.gitignore"]],
       ["tar", ["-x", "-f", tar, "-C", dir]]] as const) {
       const step = await deps.exec(file, args, { cwd: deps.repo, timeoutMs: CALL_TIMEOUT_MS });
       if (step.code !== 0) return step;

@@ -197,6 +197,21 @@ test("skill_paths runs check-skill-paths.mjs with the modules it imports at HEAD
   assert.ok(dead.status === "fail" && dead.detail.includes("apps/x.ts"), JSON.stringify(dead));
 });
 
+test("skill_paths archives only the skill roots HEAD holds, so an emptied .claude/skills-native does not fail git archive", async () => {
+  const archives: (readonly string[])[] = [];
+  const outcome = await skillPaths.run({
+    ...deps("linux"),
+    exec: async (file, args) => {
+      if (file === "git" && args[0] === "archive") archives.push(args);
+      const stdout = file === "git" && args[0] === "rev-parse" ? "/repo/.git\n" : file === "git" && args[0] === "ls-tree" ? ".agents/skills\n.claude/rules\n" : file === "node" ? "[]" : "";
+      return { code: 0, stdout, stderr: "", ms: 0 };
+    },
+  });
+  assert.equal(outcome.status, "pass", JSON.stringify(outcome));
+  assert.ok(archives[0]!.includes(".agents/skills") && archives[0]!.includes(".claude/rules"));
+  assert.ok(!archives[0]!.includes(".claude/skills-native"));
+});
+
 const macChecks = CHECKS.filter(check => ["aside_tabs", "aside_account"].includes(check.id));
 const tailscale = (online: boolean) => JSON.stringify({ Peer: { "nodekey:1": { DNSName: "main-dev-sieuns-macbook-pro-m2max.tail0c093d.ts.net.", TailscaleIPs: ["100.66.173.18"], Online: online, LastSeen: "2026-10-18T11:10:00Z" } } });
 const macDeps = (online: boolean, account: ExecResult, calls: string[]): Deps => ({
