@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import type { ChatBoard } from "../../src/shared/types.ts";
+import { inputRoots } from "./inputs.ts";
 
 /** What `clean-room.ts setup` recorded about a run: the test chat, its fixture jobs, the seeds it sent, and when the measured window began. */
 export interface RunState {
@@ -47,8 +47,7 @@ export type SessionEvent =
   | { kind: "call"; at: number; tool: string; input: string }
   | { kind: "sent"; at: number; to: string; toName: string; text: string };
 
-/** `rejudge` points this at a run archive's copy of the session files, which outlive the run folder. */
-export const PRIME_DIR = process.env.CLEAN_ROOM_PRIME_DIR || join(homedir(), ".prime/agent");
+export const PRIME_DIR = inputRoots().primeDir;
 const SESSIONS = join(PRIME_DIR, "sessions");
 const ARTIFACTS = join(PRIME_DIR, "session-artifacts");
 
@@ -136,10 +135,12 @@ export function sessionFile(id: string, roots: readonly string[] = []): string |
 }
 /** The id of the session whose file a session file's header names as its parent (`parentSession`), by that file's name; undefined when none. */
 export function sessionParent(file: string): string | undefined {
-  if (!existsSync(file)) return undefined;
-  const first = readFileSync(file, "utf8").split("\n", 1)[0] ?? "";
+  return existsSync(file) ? headerParent(readFileSync(file, "utf8")) : undefined;
+}
+/** The parent session id the first line of a session file's text names, by the file name of its `parentSession`; undefined when none. */
+export function headerParent(text: string): string | undefined {
   try {
-    const header = JSON.parse(first) as { type?: unknown; parentSession?: unknown };
+    const header = JSON.parse(text.split("\n", 1)[0] ?? "") as { type?: unknown; parentSession?: unknown };
     return header.type === "session" && typeof header.parentSession === "string" ? basename(header.parentSession).replace(/\.jsonl$/, "") : undefined;
   } catch { return undefined; }
 }

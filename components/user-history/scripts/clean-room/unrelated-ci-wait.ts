@@ -1,10 +1,10 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { STALL_MS } from "../../src/checkin-findings.ts";
 import { trainFile } from "../../src/checkin-load.ts";
 import { messageId, ownSessions } from "../../src/clean-room-subjects.ts";
-import { DELIVERY } from "./run-archive.ts";
+import { inputRoots, precheckDir, pushesFile, serviceLogFile } from "./inputs.ts";
+import { DELIVERY, STAMP } from "./run-archive.ts";
 import { firstClause, parseBoard, planJob } from "../../src/shared/chat-board.ts";
 import { D9_PUSH_PREFIX, NUDGE_PREFIX } from "../../src/shared/chat-feed.ts";
 import type { ChatBoard, PlanItem } from "../../src/shared/types.ts";
@@ -60,7 +60,6 @@ const clip = (text: string, length = 240): string => (text.length > length ? tex
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const files = (dir: string): string[] => existsSync(dir) ? readdirSync(dir).sort() : [];
 const word = (text: string, id: string): boolean => new RegExp(`(?<![\\w-])${id}(?![\\w-])`).test(text);
-const dataDir = (): string => process.env.AGENT_CHAT_DATA_DIR ?? join(homedir(), ".prime/agent/browser-chat");
 
 /** One duty run line as runs.jsonl holds it, or why it is not a readable check-in run; other duties give null. */
 export function parseRun(line: string): CheckInRun | string | null {
@@ -162,7 +161,7 @@ export function carriedAt(ev: Evidence, at: number): Carried[] {
 }
 
 /** The ids of the CI cache's runs, each with its workflow, branch and result; empty when the cache is missing. */
-export function cachedRuns(file = trainFile(homedir())): Map<string, string> {
+export function cachedRuns(file = trainFile(inputRoots().home)): Map<string, string> {
   const out = new Map<string, string>();
   if (!existsSync(file)) return out;
   let value: unknown;
@@ -203,7 +202,7 @@ function ciRunsAt(ev: Evidence, at: number, carried: readonly Carried[], cache: 
 }
 
 /** A check-in run's precheck detail file, found by the run time its first line holds; undefined when the server kept none. */
-export function precheckFile(chat: string, at: number, dir = join(dataDir(), "duties", chat)): string | undefined {
+export function precheckFile(chat: string, at: number, dir = precheckDir(inputRoots(), chat)): string | undefined {
   const head = `# Check-in run of ${iso(at)}`;
   return files(dir).filter(file => /^checkin-.*\.flagged\.md$/.test(file)).map(file => join(dir, file))
     .find(file => readFileSync(file, "utf8").split("\n", 1)[0] === head);
@@ -286,8 +285,6 @@ export function judgeActions(job: string, events: readonly SessionEvent[], carri
   return { bad, about };
 }
 
-/** The d9 pushes file the chat system duty writes (`PUSHES_FILE` in scripts/duties/chat-system.ts): one line per push, with its chat and tag. */
-const PUSHES_FILE = (): string => join(homedir(), "work/plan-audit/pushes.jsonl");
 /** One check-in job-steer line of service.log (`Chats.steerJob`): which chat's check-in job sent it, to which job by name, and what it did. */
 export interface SteerLine { chat8: string; job: string; act: "steered" | "restarted" | "relayed" | "not sent"; raw: string }
 /** The service's resume of a job a daemon restart cut (`job <name>: interrupted (...); continue: ...`). */
@@ -315,7 +312,6 @@ const STEER_LINE = /^chat ([0-9a-f]{8})(?: \(archived\))?: check-in job (steered
 const STEER_ASIDE = /^chat ([0-9a-f]{8})(?: \(archived\))?: check-in job's message for job (.+?) (went through the chat|not sent)\b/;
 const RESUME_LINE = /^job (.+?): interrupted \([^)]*\); continue: /;
 const NUDGE_LINE = /^chat ([0-9a-f]{8})(?: \(archived\))?: check-in (?:nudged|restarted) job (.+?): /;
-const STAMP = /^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d+Z) /;
 
 /** Parses service.log lines from the first stamped line at or after `since` up to the first stamped line past `until`. */
 export function parseServiceLog(lines: Iterable<string>, since: number, until: number): Pick<Delivery, "logCovered" | "steers" | "resumes" | "nudges" | "receipts"> {
@@ -350,9 +346,9 @@ export function parseServiceLog(lines: Iterable<string>, since: number, until: n
   return { logCovered: first !== undefined && first <= since, steers, resumes, nudges, receipts };
 }
 
-/** Reads the delivery evidence of a run's window from the live service.log and the d9 pushes file. */
+/** Reads the delivery evidence of a run's window from service.log and the d9 pushes file under the input roots (inputs.ts). */
 export async function readDelivery(state: RunState, until: number): Promise<Delivery> {
-  const log = join(dataDir(), "service.log");
+  const log = serviceLogFile(inputRoots());
   let parsed: Pick<Delivery, "logCovered" | "steers" | "resumes" | "nudges" | "receipts"> = { logCovered: false, steers: [], resumes: [], nudges: [], receipts: [] };
   if (existsSync(log)) {
     const { createReadStream } = await import("node:fs");
@@ -367,7 +363,7 @@ export async function readDelivery(state: RunState, until: number): Promise<Deli
     }
     parsed = parseServiceLog([...first ? [first] : [], ...lines], state.windowStart, until);
   }
-  const file = PUSHES_FILE();
+  const file = pushesFile(inputRoots());
   const pushes = existsSync(file) ? readFileSync(file, "utf8").split("\n").flatMap(line => {
     try { const value: unknown = JSON.parse(line); return isRecord(value) && typeof value.at === "number" && typeof value.chat === "string" && typeof value.tag === "string" ? [{ at: value.at, chat: value.chat, tag: value.tag }] : []; }
     catch { return []; }

@@ -96,7 +96,7 @@ test("a judge that changes while collect runs judges the run, and rejudge reads 
     assert.ok(!readdirSync(record).some(name => name.includes(".rejudge-")), "rejudge deletes its unpacked copy");
 
     const list = (await promisify(execFile)("tar", ["-tzf", archive])).stdout;
-    for (const entry of ["./archive.json", "./identity.jsonl", "./ownership.json", "./release-run-1/criteria.md", "./prime/sessions/chat-1.jsonl", "./verdicts/release-run-1.fail.md"])
+    for (const entry of ["./archive.json", "./identity.jsonl", "./ownership.json", "./release-run-1/criteria.md", "./home/.prime/agent/sessions/chat-1.jsonl", "./verdicts/release-run-1.fail.md"])
       assert.ok(list.split("\n").includes(entry), `${entry} in ${list}`);
     const identity = (await promisify(execFile)("tar", ["-xOzf", archive, "./identity.jsonl"])).stdout;
     assert.deepEqual(identity.trim().split("\n").map(line => { const { line: _, ...record } = JSON.parse(line) as Record<string, string>; return record; }),

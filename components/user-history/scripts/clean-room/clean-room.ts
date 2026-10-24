@@ -22,7 +22,7 @@
  *   node --import tsx scripts/clean-room/clean-room.ts evaluate --run <dir>
  *   node --import tsx scripts/clean-room/clean-room.ts teardown --run <dir>   (archives the evidence as <run>.evidence.tar.gz before it deletes the run)
  *   node --import tsx scripts/clean-room/clean-room.ts judge --run <dir> [--now <ISO time>]   (prints this code's verdict as one JSON line and writes nothing)
- *   node --import tsx scripts/clean-room/clean-room.ts rejudge --archive <run>.evidence.tar.gz   (judges an archived run with this code's judge)
+ *   node --import tsx scripts/clean-room/clean-room.ts rejudge --archive <run>.evidence.tar.gz [--supplement <file>.tar.gz ...]   (judges an archived run with this code's judge)
  *   node --import tsx scripts/clean-room/clean-room.ts baseline --scenario checkin-goal-push --before <dir> --out <file>
  */
 import { execFileSync } from "node:child_process";
@@ -872,7 +872,9 @@ async function main(): Promise<void> {
     return;
   }
   if (command === "rejudge") {
-    const { verdict, file } = await rejudge(resolve(need(flags, "archive")), join(LOADED.root, "scripts/clean-room/clean-room.ts"), LOADED);
+    const argv = process.argv.slice(3);
+    const supplements = argv.flatMap((flag, index) => flag === "--supplement" ? [resolve(argv[index + 1]!)] : []);
+    const { verdict, file } = await rejudge(resolve(need(flags, "archive")), join(LOADED.root, "scripts/clean-room/clean-room.ts"), LOADED, supplements);
     process.stdout.write(`${verdict}: ${file}\n`);
     return;
   }
