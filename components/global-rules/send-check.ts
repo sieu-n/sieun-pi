@@ -6,7 +6,7 @@ import { recordSend, sendReason, sessionOf } from "./send-log.ts";
 import { judgeKernelShell } from "./auto-sns-agent.ts";
 
 /*
- * The runtime half of the send guard (c37) and auto-sns-agent's repo guard. kernel-guard.py runs this for a send it sees at run time in the Python kernel:
+ * The runtime half of the send guard (c37), the cap guard (c107) and auto-sns-agent's repo guard. kernel-guard.py runs this for a send or cap it sees at run time in the Python kernel:
  * a subprocess, an HTTP write or an MCP call whose text the tool_call guard could not read. It prints one JSON line,
  * {"block": false} or {"block": true, "reason": "..."}, and judges with the same rules as the tool_call guard.
  */
@@ -21,7 +21,7 @@ export function judgeCheck(check: Check, record = false): { block: false } | { b
 		what ? [{ rule: "send", command, reason: refusal(what) }] : [];
 	const verdicts =
 		check.kind === "shell"
-			? judgeShellText(check.text, check.cwd).filter((v) => v.rule === "send")
+			? judgeShellText(check.text, check.cwd).filter((v) => v.rule === "send" || v.rule === "cap")
 			: check.kind === "http"
 				? push(httpSend(check.method, check.url, check.body ?? ""), `${check.method} ${check.url}`)
 				: push(mcpSend(check.server, check.tool, check.args), `mcp ${check.server} ${check.tool} ${check.args.slice(0, 300)}`);

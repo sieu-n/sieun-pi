@@ -8,7 +8,7 @@ auto-sns-agent is the one exception: its rules stay in that repo's `scripts/repo
 
 | Event | Module | Effect |
 | --- | --- | --- |
-| `tool_call` (`bash`, `ipython`) | `guard.ts` | Refuses a history rewrite in the sieun-pi checkout, and an outside send without the owner's ok. |
+| `tool_call` (`bash`, `ipython`) | `guard.ts` | Refuses a history rewrite in the sieun-pi checkout, an outside send without the owner's ok, and a resource cap the owner did not ask for. |
 | `tool_call` (`ipython`) | `kernel-guard.ts` | Installs `kernel-guard.py` in the Python kernel, which refuses an outside send at run time. |
 | `tool_call` (`ipython`) | `rlm-delete.ts` | In a subagent, makes `rlm.delete_subagent` wait until a child that already replied is idle. |
 | `tool_call` (`ipython`) | `kernel-guard.ts` | Also installs `kernel-own.py`, which records each path under `~/scratch` the kernel makes, on this box or on another one over ssh, in the session's `owned.json`, and refuses a recursive delete below `~/scratch` of a tree the job did not make (c130). |
@@ -22,6 +22,13 @@ The extension adds no prompt text. The writing standard is the `unslop` skill, r
 
 `sieun-pi.ts` applies to any git command whose target is a sieun-pi checkout: this source tree, or a clone whose origin is `sieu-n/sieun-pi`. It follows `cd`, `git -C`, `--git-dir` and `--work-tree`, so the session cwd does not matter.
 It refuses a force push and `git reset --hard`. It allows `git rebase` and `git commit --amend` only while no remote branch holds a commit they rewrite.
+
+`caps.ts` refuses a command that sets a memory, CPU, IO, task or priority cap (owner rule c107), because the box parity duty counts each one as `resource_limits_set` and every count so far came from a hand-typed command: `load-fakeprov.service` with `CPUQuota` on 10-22 (board step p143), and `docker run --cpus 8` at 20:56Z, 21:35Z and 21:54Z on 10-24.
+It covers `docker` or `podman` `run`, `create` and `update` with a cap flag such as `--cpus`, `-m` or `--pids-limit`, `systemd-run` with a cap property such as `-p CPUQuota=` or with `--nice`, `systemctl set-property` with a cap property, and `nice`, `renice`, `ionice`, `cpulimit` or `taskset` in front of a command.
+It judges a flag only where it is an argument of that program, before a container's image, and follows `sh -c`, `systemd-run`, `heavy`, `choom`, `timeout`, `sudo`, `ssh` and `$(...)` to the command they start, so a grep pattern, a heredoc body, a commit message or a brief that names the flag passes.
+`heavy <size> -- <cmd>` passes, since the owner asked for it on 10-19, and so does a property set to `infinity` or to nothing, which removes a cap.
+The refusal names c107 and says to size a run by its worker count, such as `-e JOBS=N`.
+The kernel guard sends a command that names a cap flag or tool to the same rule at run time, so a cap built in a variable or an f-string is refused too.
 
 `send-guard.ts` refuses an outside send unless the owner approved it on a For you todo (correction c37): an email, a vendor ticket reply, a message to someone outside, or a post on a repo or site the owner does not own.
 `send-targets.json` lists the HTTP endpoints that send: mail APIs, ticket APIs and portals, Discord, Telegram, Twilio, WhatsApp, Teams, LinkedIn and X, Stripe invoice sends, Clerk invitations, any non-local `.../email/send` route, and GitHub issue, comment and review writes on repos outside `sieu-n` and `virev-ai`.
@@ -99,7 +106,7 @@ A call passes with `owner_ok: "<chat id>/<todo id>"` in its arguments, which the
 
 ```text
 ~/.prime/agent/extensions/global-rules.ts  (link to index.ts)
-  -> guard.ts           -> sieun-pi.ts, send-guard.ts, cua-guard.ts -> shell.ts
+  -> guard.ts           -> sieun-pi.ts, send-guard.ts, cua-guard.ts, caps.ts -> shell.ts
                             send-guard.ts -> send-targets.json, node --import tsx ../user-history/src/owner-ok.ts (send approvals)
   -> kernel-guard.ts    -> ipython cell prelude -> kernel-guard.py -> send-targets.json, node send-check.ts -> guard.ts, auto-sns-agent.ts
                             ipython cell prelude -> kernel-read.py (transcript reads), also through python-child/sitecustomize.py
@@ -130,6 +137,7 @@ Each log line names the rule and the session cwd, for example `[guard] block rul
 
 The tool_call guard reads literal command text. The kernel guard checks the calls a Python process makes at run time. Neither is a sandbox.
 The tool_call guard skips cells over 200,000 characters.
+The cap guard misses a cap set through a Docker or systemd API call, a compose file or unit file, and a command a Node process starts.
 A chdir to a name an earlier cell set is invisible to the cell text, so the tool_call guard judges the commands after it from the cell's start cwd until the kernel reports its new cwd. The kernel guard covers that gap for auto-sns-agent's git rules only.
 The send guard misses a command decoded at run time and piped to a shell (`base64 -d | sh`), a Node process that sends from a module the script imports, an HTTP request whose request line is split over several socket writes, HTTP/2, the private `rlm.mcp._registry`, a body-only WHMCS ticket call sent through `http.client` with chunked encoding, a desktop send through an app it does not name, a cua-driver drag, `System Events` keystrokes, and a desktop click on a panel or sheet above layer 0, because `list_windows` lists only layer-0 windows.
 It also misses a desktop click on Send in a window that no snapshot has shown and that the guard cannot read, and a desktop click whose coordinates come from a downscaled `get_desktop_state` taken outside the proxy, such as a `cua-driver call` in a shell.

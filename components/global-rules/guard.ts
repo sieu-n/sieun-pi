@@ -5,10 +5,11 @@ import { applyOwnerOk, judgeSendPython, judgeSendShell, ownerOkToken } from "./s
 import { recordSend, sendReason, sessionOf } from "./send-log.ts";
 import { PY_STRING, balancedSlice } from "./shell.ts";
 import { judgeSieunPi } from "./sieun-pi.ts";
+import { judgeCaps } from "./caps.ts";
 import { cellStart, cellSteps } from "./kernel-cwd.ts";
 
 export interface Verdict {
-	rule: "sieun-pi" | "send";
+	rule: "sieun-pi" | "send" | "cap";
 	command: string;
 	reason: string;
 }
@@ -85,6 +86,7 @@ export function judgeShellText(text: string, cwd: string): Verdict[] {
 	return [
 		...judgeSieunPi(text, cwd),
 		...judgeSendShell(text, cwd),
+		...judgeCaps(text),
 		...(text.includes("cua-driver") ? judgeCuaShell(text) : []),
 	];
 }

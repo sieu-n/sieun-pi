@@ -44,6 +44,12 @@ LOCAL_CHECK = re.compile(
     r"\b(?:svelte-check|vitest|tsc|pytest|ruff|mypy|basedpyright|betterleaks|gitleaks|turbo|secrets-scan)\b"
     r"|\bpnpm\s+(?:check|test|verify|lint|ci:)|(?:^|[\s;&|(/])ty\s"
 )
+# A command that may set a resource cap (owner rule c107), which caps.ts judges: a docker or systemd cap flag or property, or a priority tool.
+# It reaches the judge only when the hint matches, so a cell that builds `docker run --cpus 8` in a variable is refused as the literal one is.
+CAP_HINT = re.compile(
+    r"--cpu|--memory|--kernel-memory|--pids-limit|--blkio|--device-(?:read|write)|(?:docker|podman)\b[\s\S]*\s-[a-zA-Z]*[cm]"
+    r"|set-property|--property|-p\s*[A-Z]\w*=|--nice|\b(?:nice|renice|ionice|cpulimit|taskset)\b"
+)
 MCP_HINT = re.compile(r"send|reply|forward|post|comment|message|submit|create|invite|exec|repl", re.I)
 WRITE = frozenset({"POST", "PUT", "PATCH"})
 OWN_PACKAGES = ("aside_browser",)
@@ -356,7 +362,7 @@ def on_shell(args, cwd, env, executable=None) -> None:
     text = shell_text(args)
     where = os.fsdecode(cwd) if cwd else os.getcwd()
     repo = touches_repo(text, where)
-    if not (repo or (SHELL_HINT.search(text) and not plain_git(executable, args))) or owned_by_skill():
+    if not (repo or CAP_HINT.search(text) or (SHELL_HINT.search(text) and not plain_git(executable, args))) or owned_by_skill():
         return
     names = env if isinstance(env, dict) else os.environ
     expanded = re.sub(r"\$\{?([A-Za-z_]\w*)\}?", lambda m: os.fsdecode(names.get(m.group(1), m.group(0))), text)
