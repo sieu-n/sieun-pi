@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { InsideProcess } from "../src/job-leftovers.ts";
-import { keepersOf, namedIn, pruneCaches, sweepTmp, textSince, tmpEntries, type TmpEntry, type TmpSweepSource } from "../src/tmp-sweep.ts";
+import { keepersOf, namedIn, namedSince, pruneCaches, sweepTmp, tmpEntries, type TmpEntry, type TmpSweepSource } from "../src/tmp-sweep.ts";
 
 const HOUR = 3_600_000;
 
@@ -26,7 +26,7 @@ test("a sweep deletes the stale entries no keeper names and no process holds, si
     entries: async () => [entry("cs", 14 * HOUR), entry("fresh", 60_000), entry("sock", 3 * HOUR, { liveSocket: true }), entry("named", 5 * HOUR),
       entry("p8iso-old", 6 * HOUR), entry("served", 4 * HOUR), entry("kernel-cwd", 4 * HOUR), entry("pm2-cwd", 4 * HOUR)],
     keepers: async () => [{ sessionFile: "a.jsonl" }],
-    textSince: async (file, since) => { read.push([file, since]); return 'ran "python3 /tmp/named/x.py" and ls /tmp/cs-other /tmp/nope'; },
+    namedSince: async (file, since, root) => { read.push([file, since]); return namedIn('ran "python3 /tmp/named/x.py" and ls /tmp/cs-other /tmp/nope', root); },
     inside: async paths => {
       assert.deepEqual([...paths].sort(), ["/tmp/cs", "/tmp/kernel-cwd", "/tmp/p8iso-old", "/tmp/pm2-cwd", "/tmp/served"]);
       return [proc(11, "/tmp/p8iso-old"), proc(12, "/tmp/p8iso-old"), proc(13, "/tmp/served", { session: "01a14fbe-0000-7000-8000-000000000001" }),
@@ -89,8 +89,43 @@ test("a transcript's text since a time reaches back past it and names its entrie
   const line = (at: string, text: string) => JSON.stringify({ type: "message", timestamp: at, message: { role: "assistant", content: [{ type: "text", text }] } });
   writeFileSync(file, [line("2026-10-18T10:00:00.000Z", "mkdir /tmp/early"), line("2026-10-18T12:00:00.000Z", "cd /tmp/later && ls")].join("\n") + "\n");
   writeFileSync(file, JSON.stringify({ type: "message", timestamp: "2026-10-18T12:30:00.000Z", message: { role: "toolResult", content: [{ type: "text", text: "made\n/tmp/listed\n" }] } }) + "\n", { flag: "a" });
-  const text = await textSince(file, Date.parse("2026-10-18T11:00:00Z"));
-  const named = namedIn(text, "/tmp");
+  const named = await namedSince(file, Date.parse("2026-10-18T11:00:00Z"), "/tmp");
   assert.ok(named.has("later"));
   assert.ok(named.has("listed"), "a path after an escaped newline counts");
+});
+
+// 10-24 us-metal02: the chat's CPU profile pid626077 shows textSince decoding a whole transcript tail at once and holding the event loop up to
+// 298 ms. The tail is now read and matched one chunk of whole lines at a time.
+test("names read in small chunks match the names of the whole tail, a name across a chunk edge included, and stop at the old stamp", async t => {
+  const dir = mkdtempSync(join(tmpdir(), "tmp-sweep-chunks-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const file = join(dir, "s.jsonl");
+  const line = (at: string, text: string) => JSON.stringify({ type: "message", timestamp: at, message: { content: [{ type: "text", text }] } });
+  const lines = [line("2026-10-18T09:00:00.000Z", "mkdir /tmp/too-old"), line("2026-10-18T10:00:00.000Z", "x".repeat(300) + " /tmp/long-one")];
+  for (let i = 0; i < 40; i++) lines.push(line(`2026-10-18T12:${String(i).padStart(2, "0")}:00.000Z`, `cd /tmp/dir-${i} && ls /tmp/caf\u00e9-${i} é`));
+  writeFileSync(file, lines.join("\n") + "\n");
+  const since = Date.parse("2026-10-18T11:00:00Z");
+  const whole = await namedSince(file, since, "/tmp", 1 << 30);
+  for (const chunk of [7, 64, 100, 333, 4096]) {
+    const named = await namedSince(file, since, "/tmp", chunk);
+    assert.deepEqual([...named].filter(name => name !== "too-old").sort(), [...whole].filter(name => name !== "too-old").sort(), `chunk ${chunk}`);
+    if (chunk < 300) assert.equal(named.has("too-old"), false, `chunk ${chunk} reads past the line stamped before the time`);
+  }
+  assert.ok(whole.has("dir-39") && whole.has("dir-0") && whole.has("long-one") && whole.has("caf"));
+});
+
+test("naming the entries of a 64 MB transcript never holds the event loop 100 ms", { skip: process.platform !== "linux" }, async t => {
+  const dir = mkdtempSync(join(tmpdir(), "tmp-sweep-big-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const file = join(dir, "s.jsonl");
+  const block = Array.from({ length: 2000 }, (_, i) => JSON.stringify({ type: "message", timestamp: "2026-10-18T12:00:00.000Z",
+    message: { content: [{ type: "text", text: `ran /tmp/job-${i}/run.py ` + "y".repeat(400) }] } })).join("\n") + "\n";
+  writeFileSync(file, block.repeat(Math.ceil(64 * 1024 ** 2 / block.length)));
+  let last = performance.now();
+  let longest = 0;
+  const tick = setInterval(() => { const now = performance.now(); longest = Math.max(longest, now - last); last = now; }, 1);
+  const named = await namedSince(file, Date.parse("2026-10-18T11:00:00Z"), "/tmp");
+  clearInterval(tick);
+  assert.equal(named.size, 2000);
+  assert.ok(longest < 100, `the longest gap between timer ticks was ${longest.toFixed(0)} ms`);
 });

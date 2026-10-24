@@ -23,8 +23,8 @@ export interface TmpSweepSource {
   entries: () => Promise<readonly TmpEntry[]>;
   /** The transcripts of the sessions the daemon holds loaded and of those a board.wake waits on. */
   keepers: () => Promise<readonly Keeper[]>;
-  /** The text a transcript wrote from `sinceMs` on (at least). */
-  textSince: (file: string, sinceMs: number) => Promise<string>;
+  /** The entries of `root` a transcript names from `sinceMs` on (at least), as `namedIn` finds them. */
+  namedSince: (file: string, sinceMs: number, root: string) => Promise<Set<string>>;
   inside: (paths: readonly string[]) => Promise<readonly InsideProcess[]>;
   remove: (paths: readonly string[]) => Promise<readonly string[]>;
   /** Deletes the files of the shared compile caches unchanged and unread since `beforeMs`; returns their bytes. */
@@ -60,7 +60,7 @@ export async function sweepTmp(source: TmpSweepSource): Promise<TmpSweep> {
   const since = Math.min(...stale.map(entry => entry.bornMs));
   for (const keeper of await source.keepers()) {
     if (!stale.length) break;
-    const named = namedIn(await source.textSince(keeper.sessionFile, since).catch(() => ""), source.root);
+    const named = await source.namedSince(keeper.sessionFile, since, source.root).catch(() => new Set<string>());
     stale = stale.filter(entry => !named.has(entry.name));
   }
   if (!stale.length) return { removed: [], cacheBytes };
@@ -132,23 +132,31 @@ export async function pruneCaches(root: string, beforeMs: number): Promise<numbe
 const CHUNK = 4 * 1024 * 1024;
 const STAMP = /"timestamp":"(\d{4}-\d\d-\d\dT[\d:.]+Z)"/;
 
-/** The tail of a transcript back to the first line stamped before `sinceMs`, read in chunks from the end. */
-export async function textSince(file: string, sinceMs: number): Promise<string> {
+/**
+ * The entries of `root` a transcript names in its tail back to the first line stamped before `sinceMs`, read from the end one chunk of whole
+ * lines at a time, so each decode and match covers one chunk and a read sits between them. On 10-24 decoding and matching the whole tail at
+ * once held the chat's event loop up to 298 ms (CPU profile pid626077).
+ */
+export async function namedSince(file: string, sinceMs: number, root: string, chunk = CHUNK): Promise<Set<string>> {
+  const named = new Set<string>();
   const handle = await open(file, "r");
   try {
     const { size } = await handle.stat();
-    const parts: Buffer[] = [];
+    let rest = Buffer.alloc(0);
     for (let end = size; end > 0;) {
-      const start = Math.max(0, end - CHUNK);
+      const start = Math.max(0, end - chunk);
       const buffer = Buffer.alloc(end - start);
       await handle.read(buffer, 0, buffer.length, start);
-      parts.unshift(buffer);
       end = start;
-      const head = buffer.toString("utf8", 0, Math.min(buffer.length, 64 * 1024));
-      const stamp = STAMP.exec(head.slice(head.indexOf("\n") + 1));
+      const lineStart = start === 0 ? 0 : buffer.indexOf(10) + 1;
+      if (start > 0 && lineStart === 0) { rest = Buffer.concat([buffer, rest]); continue; }
+      const text = Buffer.concat([buffer.subarray(lineStart), rest]).toString("utf8");
+      rest = buffer.subarray(0, lineStart);
+      for (const name of namedIn(text, root)) named.add(name);
+      const stamp = STAMP.exec(text.slice(0, 64 * 1024));
       if (stamp && Date.parse(stamp[1]!) < sinceMs) break;
     }
-    return Buffer.concat(parts).toString("utf8");
+    return named;
   } finally {
     await handle.close();
   }
@@ -167,7 +175,7 @@ export function startTmpSweep(input: { rows: () => readonly { sessionId: string;
     root, idleMs: input.idleMs, now: () => Date.now(),
     entries: () => { const idleMs = input.idleMs(); return tmpEntries(root, Date.now() - (idleMs ?? 0)); },
     keepers: async () => keepersOf(input.rows(), await input.waking().catch(() => new Set<string>())),
-    textSince,
+    namedSince,
     inside: paths => leftoverSource.inside(paths),
     remove: async paths => {
       const removed: string[] = [];

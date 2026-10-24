@@ -183,3 +183,27 @@ test("another box's link never subscribes to its roster and lists the roster eve
   assert.ok(types.filter(type => type === "list").length >= 2, `the roster is listed every poll: ${types.join(", ")}`);
   assert.deepEqual(peer.list().map(entry => entry.sessionId).sort(), ["a", "b"]);
 });
+
+// 10-24 us-metal02, CPU profile pid626077: with the Mac down for 30 min, every list() call copied each Mac row to its saved form, and the watch
+// asks for the rows several times a tick, which held the chat's event loop up to 376 ms and 59 s in 50 min. A copy now answers once per version.
+test("a down box's rows read as saved and one answer serves every call until the copy changes", async (t: TestContext) => {
+  const box = { live: [row("a", true)], saved: Array.from({ length: 3000 }, (_, i) => row(`s${i}`, false)) };
+  const daemon = fakeDaemon(box);
+  const peer = new SessionPeer({ name: "mac", client: daemon.client, file: null, deadlines: { socketMs: 10, helloMs: 10 }, changeMs: 0, reconnectMs: 60_000,
+    log: () => {}, onChange: () => {} });
+  t.after(() => peer.close());
+  await peer.sync();
+  const up = peer.list();
+  assert.equal(up.find(entry => entry.sessionId === "a")?.activeSessionId, "a-a");
+  assert.equal(peer.list(), up, "an unchanged copy answers with the same rows");
+  daemon.state.fail = true;
+  daemon.drop();
+  await peer.sync().catch(() => {});
+  await settle();
+  const down = peer.list();
+  assert.equal(down.length, 3001);
+  assert.equal(down.find(entry => entry.sessionId === "a")?.activeSessionId, undefined, "a down box's live row reads as saved");
+  assert.equal(peer.list(), down, "a down box copies its rows once, not on every call");
+  assert.equal(peer.patch("s7", { sessionName: "renamed" }), true);
+  assert.equal(peer.list().find(entry => entry.sessionId === "s7")?.sessionName, "renamed", "a change makes a new answer");
+});

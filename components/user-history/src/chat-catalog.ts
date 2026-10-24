@@ -872,7 +872,7 @@ export class Catalog {
   }
 
   /** The rows of this box's copy and the other boxes' copies, as the catalog reads them. */
-  private index(rows: SessionSummary[]): void {
+  private index(rows: readonly SessionSummary[]): void {
     const next = new Map<string, SessionSummary>();
     const children: SessionSummary[] = [];
     const own = new Set<string>();
@@ -1268,7 +1268,7 @@ export class Catalog {
   /** The other boxes' rows, live ones only from a box whose daemon answers now; empty without hosts.json. */
   remoteRows(): readonly SessionSummary[] { return this.hosts?.rows() ?? []; }
   /** Each other host with its rows, for the watch line's per-host numbers. */
-  remoteHosts(): { host: Host; rows: SessionSummary[] }[] { return this.hosts?.hostRows() ?? []; }
+  remoteHosts(): { host: Host; rows: readonly SessionSummary[] }[] { return this.hosts?.hostRows() ?? []; }
   /** This box's name in hosts.json; null without the file or when this box is not in it. */
   selfHostName(): string | null { return this.hosts?.self?.name ?? null; }
 

@@ -190,11 +190,19 @@ export class SessionPeer {
   /** Resolves once the disk copy of the last run is read (or found missing), so a caller right after a start sees what it saved. */
   loaded(): Promise<void> { return this.loading; }
 
-  /** The rows as the box's daemon gave them; every live row reads as saved while the box is down. */
-  list(): SessionSummary[] {
-    const rows = [...this.rows.values()];
-    return this.state === "down" ? rows.map(saved) : rows;
+  /**
+   * The rows as the box's daemon gave them; every live row reads as saved while the box is down. The answer is kept per `version`, since each
+   * watch tick asks for it several times: on 10-24, with the Mac down for 30 min, copying every row to its saved form on each call held the
+   * chat's event loop up to 376 ms and 59 s in 50 min (CPU profile pid626077).
+   */
+  list(): readonly SessionSummary[] {
+    if (this.answer?.version !== this.version) {
+      const rows = [...this.rows.values()];
+      this.answer = { version: this.version, rows: this.state === "down" ? rows.map(saved) : rows };
+    }
+    return this.answer.rows;
   }
+  private answer: { version: number; rows: readonly SessionSummary[] } | undefined;
 
   /** True when the box's daemon runs the session (a session id or active session id) now. */
   isActive(id: string): boolean {

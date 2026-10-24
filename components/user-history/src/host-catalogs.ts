@@ -144,7 +144,7 @@ export class HostCatalogs {
   private readonly mirroredRows = new MirroredRows();
 
   /** Each other host with its rows as `rows` gives them, for the watch's per-host numbers. */
-  hostRows(): { host: Host; rows: SessionSummary[] }[] {
+  hostRows(): { host: Host; rows: readonly SessionSummary[] }[] {
     return [...this.remotes.values()].map(remote => ({ host: remote.host, rows: remote.peer.list() }));
   }
 
