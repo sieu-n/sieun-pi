@@ -21,7 +21,7 @@ import { CHECK_IN_MS, clockTime, localTime } from "./checkin-settings.ts";
 import { turnErrorCause } from "./turn-error.ts";
 import { agentMessageHead } from "./no-report.ts";
 import { heldByTodo } from "./shared/todo-hold.ts";
-import { endState, endStateKpi, endStateLine, type EndStateView, type Movers, OK_STATES, stepCarriers, stuckLine } from "./checkin-end-state.ts";
+import { endState, endStateKpi, endStateLine, type EndStateView, type Movers, OK_STATES, stepCarrier, stepCarriers, stuckLine } from "./checkin-end-state.ts";
 import { goalDueLine, goalGap, type GoalMemo, goalLine, goalPromptLine, type GoalPush, goalPushes, goalsDetail, goalsHeadline, pushNeeded, threadPaused } from "./checkin-goals.ts";
 import { type JobMemo, type JobPush, jobPushes } from "./checkin-jobs.ts";
 import type { Wake } from "./wakes.ts";
@@ -162,12 +162,16 @@ export function checkInPrecheck(previous: CheckInMemory | undefined, facts: read
   const goaled = withGoals(views, board);
   const since = previous?.since ?? previous?.at ?? now;
   const queued = context.queued ?? new Map<string, unknown>();
-  const blocked = context.boardError ? [] : blockedOnOthers(goaled, context.rows ?? [], self, now, context.train, queued, context.asleep, openTodos);
+  const carriers = stepCarriers(board, goaled, item => self.has(stepOwner(item) ?? "") ? undefined : ownerOf(item, facts));
+  // A chase whose wait names a plan item that a live owner carries waits on that owner's work, as its end state reads it moving: chat-2572's p8
+  // and p10 read "chase it now" for 16 h while p6's release job was live.
+  for (const view of goaled) if (view.cls === "stale-chase" && stepCarrier(view.item, carriers)) { view.cls = "waiting"; delete view.target; }
+  const blocked = context.boardError ? [] : blockedOnOthers(goaled, context.rows ?? [], self, now, context.train, queued, context.asleep, openTodos, { steps: carriers });
   // A step blocked on others gets that one finding, which names the blocker and the action; stalled_steps' "act on it" on the same step gave
   // two lines with two different asks (34 steps from 10-13 09:15 to 23:59 KST, VP of CI's nine waits on the secrets cache at 14:29 among them).
   const onOthers = new Set(blocked.map(block => block.view.item.id));
   const movers = { watches: wakeWatches(context.wakes ?? [], context.train, context.carried), queued,
-    steps: stepCarriers(board, goaled), ...context.hosts ? { hosts: context.hosts } : {} };
+    steps: carriers, ...context.hosts ? { hosts: context.hosts } : {} };
   const working = new Set<string>();
   walk(board?.plan ?? [], item => { if (OPEN.has(item.status) && ownerOf(item, facts)?.state === "working") working.add(item.id); });
   const doneFacts = { ...context.doneFacts ?? NO_FACTS, working };
@@ -178,7 +182,7 @@ export function checkInPrecheck(previous: CheckInMemory | undefined, facts: read
   // check-in sent its p1 goal steer to the AI harness chat, which held p342 under p1.
   const ownJob = (fact: JobFact): boolean => !fact.key.startsWith("thread:") || roots.has(fact.name) || roots.has(fact.key.slice("thread:".length));
   const goals = context.boardError ? { pushes: [], memos: previous?.goals ?? {} }
-    : goalPushes(board, goaled, previous?.goals, context.everyMs ?? CHECK_IN_MS, now, doneFacts.metrics, new Set(fold.map(entry => entry.goal.id)), paused, ownJob);
+    : goalPushes(board, goaled, previous?.goals, context.everyMs ?? CHECK_IN_MS, now, doneFacts.metrics, new Set(fold.map(entry => entry.goal.id)), paused, ownJob, carriers);
   const pushed = context.boardError ? { pushes: [], memos: previous?.jobs ?? {} }
     : jobPushes(facts, goaled, previous?.jobs, context.everyMs ?? CHECK_IN_MS, now,
       fact => !fact.name.startsWith("check-in ") && ownJob(fact),
@@ -191,7 +195,7 @@ export function checkInPrecheck(previous: CheckInMemory | undefined, facts: read
     goals: goals.pushes, blocked, done,
     loose: context.boardError ? [] : looseGoals(board), extra: extraGoals(goals.pushes), underClosed: context.boardError ? [] : openUnderClosed(board),
     held: context.boardError ? [] : heldElsewhere(goaled, board, context.rows ?? [], self, context.jobs, paused),
-    noProgress: context.boardError ? null : noProgress(board, goaled, steps, since, context.rows ?? [], self, now, context.train, queued, { done, prs: doneFacts.prs }),
+    noProgress: context.boardError ? null : noProgress(board, goaled, steps, since, context.rows ?? [], self, now, context.train, queued, { done, prs: doneFacts.prs }, movers),
     waitsMet: context.boardError ? [] : [...waitsMet(goaled, board, context.rows ?? [], self), ...deadRunWaits(goaled, context.train, now)],
     stale: context.boardError ? [] : staleSteps(board, facts, item => steps[item.id] ? recordedAt(steps[item.id]!) : now, self, context.everyMs ?? CHECK_IN_MS, now,
       context.rows ?? [], context.train),

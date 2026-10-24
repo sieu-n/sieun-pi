@@ -262,7 +262,7 @@ export function slotWait(owner: JobFact | undefined, now: number): string | unde
  * every chat but frontend bro, and the check-ins went on asking for jobs on goals whose owners he had stopped.
  */
 export function goalWait(goal: PlanItem, push: StepView | undefined, now: number, paused: ReadonlySet<string> = new Set(), views: readonly StepView[] = [],
-  board: ChatBoard | null = null): string | undefined {
+  carriers: ReadonlyMap<string, readonly JobFact[]> = new Map()): string | undefined {
   for (const item of [goal, push?.item]) {
     const until = Date.parse(item?.waitUntil ?? "");
     if (Number.isFinite(until) && until > now) return `until ${zTime(until)}`;
@@ -271,7 +271,6 @@ export function goalWait(goal: PlanItem, push: StepView | undefined, now: number
   // A goal whose open steps besides its push step all move, live or carried, with at least one waiting on another step that live jobs carry,
   // moves when that step's work lands: AI harness p453 on 10-18 had p566 blocked on p565 (five live jobs) and its other steps live, and the
   // 12:26 KST check-in started a push job on p563 and p566.
-  const carriers = stepCarriers(board, views);
   const others = views.filter(view => view.goal?.id === goal.id && view.item.id !== goal.id && view.item.id !== push?.item.id);
   const carried = others.map(view => stepCarrier(view.item, carriers));
   if (others.length && carried.some(Boolean) && others.every((view, index) => carried[index] || view.owner?.state === "working" || view.cls === "foryou" || view.cls === "parked")) {
@@ -340,12 +339,13 @@ export function quietPush(memo: GoalMemo | undefined, number: GoalNumber, now: n
  * Each open goal's push for this run (`openGoals`: a goal with a target under an area goal gets its own), and the memos to keep. Goals the
  * check-in folds into a duty (`folded`) are left out, because the duty carries their number. Order: goals to start a job for, then to steer,
  * then without a number, then on pace; the largest gap first in each. Crawler VP 10-19: its 13 open goals each carried a live number, and the
- * extra_goals ask to fold them under area goals would have dropped each folded goal's number, trend, pace and owner job.
+ * extra_goals ask to fold them under area goals would have dropped each folded goal's number, trend, pace and owner job. `carriers` are the
+ * live owners that carry each item (`stepCarriers`), which the precheck reads with the own job of each item that has open steps under it.
  */
 export function goalPushes(board: ChatBoard | null, views: readonly StepView[], memos: Readonly<Record<string, GoalMemo>> | undefined,
   everyMs: number, now: number, metrics: ReadonlyMap<string, MetricFact> = new Map(),
   folded: ReadonlySet<string> = new Set(), paused: ReadonlySet<string> = new Set(),
-  ownJob: (fact: JobFact) => boolean = () => true): { pushes: GoalPush[]; memos: Record<string, GoalMemo> } {
+  ownJob: (fact: JobFact) => boolean = () => true, carriers: ReadonlyMap<string, readonly JobFact[]> = stepCarriers(board, views)): { pushes: GoalPush[]; memos: Record<string, GoalMemo> } {
   const todos: readonly OwnerTodo[] = board?.todos ?? [];
   const kept: Record<string, GoalMemo> = {};
   // The goal's message goes only to a job of this chat, so a step another chat owns names no owner or holder.
@@ -369,7 +369,7 @@ export function goalPushes(board: ChatBoard | null, views: readonly StepView[], 
     const stale = number.measuredAt === undefined || now - number.measuredAt > number.staleMs;
     const left = trend.kind === "met" ? openUnder(goal).map(item => item.id) : [];
     const asks = trend.kind !== "met" || left.length ? held : undefined;
-    const waits = trend.kind === "met" || asks ? undefined : goalWait(goal, pushView, now, paused, views, board) ?? slotWait(owner ?? holder?.owner, now);
+    const waits = trend.kind === "met" || asks ? undefined : goalWait(goal, pushView, now, paused, views, carriers) ?? slotWait(owner ?? holder?.owner, now);
     const act: GoalAct = trend.kind === "met" ? "on_pace" : asks ? "owner" : waits ? "waiting" : !owner ? "start" : offPace(trend, stale) ? "steer" : "on_pace";
     // goalTrend's memo is a new object, so the push time carries over from the saved one.
     const before = memos?.[goal.id]?.pushed;

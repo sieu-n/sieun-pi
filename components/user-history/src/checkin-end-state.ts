@@ -5,7 +5,7 @@ import type { OwnerTodo, PlanItem, SessionRow } from "./shared/types.ts";
 import { landWaitCommits, type WakeWatch } from "./checkin-load.ts";
 import { zTime } from "./checkin-goals.ts";
 import { stallWords } from "./shared/stalled-calls.ts";
-import { ago, capacityWait, clip, firstClause, type JobFact, ownerLabel, poolWait, quote, STEP_STALE_MS, type StepView, stepOwner, waitCarrier, waitsOnOwner, waitTarget } from "./checkin-steps.ts";
+import { ago, capacityWait, clip, firstClause, type JobFact, OPEN, ownerLabel, poolWait, quote, STEP_STALE_MS, type StepView, stepOwner, waitCarrier, waitsOnOwner, waitTarget, walk } from "./checkin-steps.ts";
 
 /**
  * The owner's end state for a board (owner 10-14: "all the PLAN list should clear or be stuck in FOR YOU right? check in duty should push forward
@@ -28,18 +28,25 @@ const RELEASE = /\b(?:land|lands|landed|promote|release|released|deploys?|redepl
 const CI = /\b(?:runs?|ci|checks?|green|probe|verify-dev|workflow|tests?|push(?:es|ed)?)\b|\bci\//i;
 
 /**
- * The live owners that carry each plan item: every open leaf step whose owner works now (`views`), listed under its own id and under every
- * item above it. A step that waits on one of these items waits on work that moves (`stepCarrier`).
+ * The live owners that carry each plan item: every open leaf step whose owner works now (`views`), and every other open item whose own job
+ * works now (`ownerOf`), each listed under its own id and under every item above it. A step that waits on one of these items waits on work
+ * that moves (`stepCarrier`). chat-2572 10-24 07:52Z: its check-in moved p8 and p10, which wait on p6, under p6, so p6 was no leaf, and its
+ * live release job 01a10810 carried nothing; the after-job measure read goal_gaps 1 and stuck_steps 2.
  */
-export function stepCarriers(board: { plan: readonly PlanItem[] } | null, views: readonly Pick<StepView, "item" | "owner">[]): Map<string, JobFact[]> {
+export function stepCarriers(board: { plan: readonly PlanItem[] } | null, views: readonly Pick<StepView, "item" | "owner">[],
+  ownerOf: (item: PlanItem) => JobFact | undefined = () => undefined): Map<string, JobFact[]> {
   const parents = new Map<string, string>();
   const visit = (items: readonly PlanItem[], parent?: string) => { for (const item of items) { if (parent) parents.set(item.id, parent); visit(item.children, item.id); } };
   visit(board?.plan ?? []);
   const carriers = new Map<string, JobFact[]>();
-  for (const view of views) {
-    if (view.owner?.state !== "working") continue;
-    for (let id: string | undefined = view.item.id; id !== undefined; id = parents.get(id)) carriers.set(id, [...carriers.get(id) ?? [], view.owner]);
-  }
+  const carry = (from: string, owner: JobFact) => { for (let id: string | undefined = from; id !== undefined; id = parents.get(id)) carriers.set(id, [...carriers.get(id) ?? [], owner]); };
+  for (const view of views) if (view.owner?.state === "working") carry(view.item.id, view.owner);
+  const leaves = new Set(views.map(view => view.item.id));
+  walk(board?.plan ?? [], item => {
+    if (!OPEN.has(item.status) || leaves.has(item.id)) return;
+    const owner = ownerOf(item);
+    if (owner?.state === "working") carry(item.id, owner);
+  });
   return carriers;
 }
 /**

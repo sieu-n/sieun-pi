@@ -8,7 +8,7 @@ import { upkeepWords } from "./shared/upkeep-title.ts";
 import { ago, clip, CLOSED, type JobFact, OPEN, ownerLabel, ownerOf, ownerState, owns, parkedBy, plural, quote, type StepMemo, stepOwner, type StepView, waitTarget,
   walk } from "./checkin-steps.ts";
 import type { CiRun, Train, TrainRun } from "./checkin-load.ts";
-import { type Movers, outsideMover } from "./checkin-end-state.ts";
+import { type Movers, outsideMover, stepCarrier } from "./checkin-end-state.ts";
 import { heldByTodo } from "./shared/todo-hold.ts";
 import { localTime } from "./checkin-settings.ts";
 import { GOAL_PUSH_LINK, type GoalPush } from "./checkin-goals.ts";
@@ -482,7 +482,7 @@ export const PROGRESS_MS = 60 * 60_000;
  * verify-dev run while the M1 Air runners slept (10:30Z to 13:35Z), such as p84 on 38378436903 and p75 on 38378422183. A goal moved when, in the last PROGRESS_MS, an open step's note under it gained a fact (`noteFacts`) or a step's job
  * sent the chat a message with a fact (`factsAt`, so an answer to a status ask with no fact is no move); its steps are not counted (launch main bro 10-12: p56's copy and p57's lane reads reported every 30 min with new page
  * and run counts, and three check-ins in a row flagged them). No verdict (null) until the chat's memory spans PROGRESS_MS. `moving` are the open
- * steps that are not held and whose goal did not move. A step whose work waits in the Mac-wide turn queue is held (`queueHolds`), and so is a
+ * steps that are not held and whose goal did not move. A step whose wait names a plan item a live owner carries is held (`carried`). A step whose work waits in the Mac-wide turn queue is held (`queueHolds`), and so is a
  * step whose owner sleeps on a board.wake for a run that is queued or running (`JobFact.wake`), as a waitFor naming that run is. Frontend bro
  * 10-15: the 20:31, 20:46 and 21:02 KST check-ins read no_progress 1 for p145 alone, whose job slept on a wake for verify-dev run 38724412490
  * from 20:01 KST while the run's jobs waited for pool-light and m1-air runners; the step's waitFor named no run.
@@ -495,7 +495,7 @@ export interface NoProgress { moving: StepView[] }
 export function noProgress(board: ChatBoard | null, views: readonly StepView[], memos: Readonly<Record<string, StepMemo>>, since: number,
   rows: readonly Pick<SessionRow, "id" | "name" | "archived">[], self: ReadonlySet<string>, now: number, train?: Train,
   queued: ReadonlyMap<string, unknown> = new Map(),
-  finished: { done: readonly DoneReason[]; prs: ReadonlyMap<string, PrState> } = { done: [], prs: new Map() }): NoProgress | null {
+  finished: { done: readonly DoneReason[]; prs: ReadonlyMap<string, PrState> } = { done: [], prs: new Map() }, movers: Pick<Movers, "steps"> = {}): NoProgress | null {
   if (now - since < PROGRESS_MS) return null;
   const recentMs = (at: number | undefined): boolean => (at ?? 0) >= now - PROGRESS_MS;
   let done = finished.done.some(found => recentMs(found.at));
@@ -507,7 +507,7 @@ export function noProgress(board: ChatBoard | null, views: readonly StepView[], 
   const held = (view: StepView): boolean => view.item.status === "blocked" || view.cls === "foryou" || Date.parse(view.item.waitUntil ?? "") > now ||
     (!view.mine && view.owner?.key.startsWith("thread:") === true) || waitTarget(view.item.waitFor, rows, self) !== undefined ||
     [...namedRuns(view.item, train), ...namedRuns({ waitFor: view.owner?.wake ?? "" }, train)].some(run => run.running) ||
-    (train !== undefined && trainMoves(view.item, train, now)) || queueHolds(view, queued, rows, self);
+    (train !== undefined && trainMoves(view.item, train, now)) || queueHolds(view, queued, rows, self) || carried(view.item, movers);
   const recent = (at: number | undefined): boolean => (at ?? 0) >= now - PROGRESS_MS;
   const goalOf = (view: StepView): string => view.goal?.id ?? view.item.id;
   const moved = new Set(views.filter(view => recent(memos[view.item.id]?.factsAt) || recent(view.owner?.lastMessage?.factsAt)).map(goalOf));
@@ -690,7 +690,10 @@ export const STALL_MS = 2 * 60 * 60_000;
  * release `train` that moves (`trainMoves`, no thread named) is not stalled, as it is not blocked_on_others (Crawler VP 10-13, p47 "land 34 on
  * staging ..." read "act on it in this run" at 19:38, 20:12 and 20:59 while land 33 and promote 9 ran). The check-in precheck also drops each
  * step `blockedOnOthers` flags: that line names the blocker and the action, and one step gets one finding. A step that someone moves from
- * outside the chat's jobs (`outsideMover`: a board.wake or a turn in pi-pool's queue) is not stalled either.
+ * outside the chat's jobs (`outsideMover`: a board.wake or a turn in pi-pool's queue) is not stalled either, and neither is a step whose wait
+ * names a plan item that a live owner carries (`carried`), as its end state reads it moving. chat-2572 10-24: p8 and p10 waited on p6, whose
+ * release job was live, and stalled_steps told 8 and 5 check-ins in a row to act on them, so the 07:43Z job moved both under p6 and named an
+ * unrelated CI probe run in their notes.
  */
 export interface StalledStep { view: StepView; why: string }
 /**
@@ -701,6 +704,8 @@ export interface StalledStep { view: StepView; why: string }
 const RUN_ID = /\b\d{9,}\b/;
 const HOLD = /\b(?:hold|holds|held|holding|queued\s+behind|cancell?ed\s+by)\b|(?<!\bin\s)\border\b/i;
 const heldRun = (item: PlanItem): boolean => RUN_ID.test(item.waitFor ?? "") && HOLD.test(item.note ?? "");
+/** Whether a step's wait names a plan item that a live owner carries (`stepCarrier`), so the step moves when that work lands. */
+const carried = (item: PlanItem, { steps }: Pick<Movers, "steps">): boolean => steps !== undefined && stepCarrier(item, steps) !== undefined;
 export function stalledSteps(views: readonly StepView[], memos: Readonly<Record<string, StepMemo>>, rows: readonly Pick<SessionRow, "id" | "name" | "archived">[],
   self: ReadonlySet<string>, now: number, train?: Train, movers: Movers = {}): StalledStep[] {
   return views.flatMap(view => {
@@ -708,7 +713,7 @@ export function stalledSteps(views: readonly StepView[], memos: Readonly<Record<
     const waits = item.waitFor !== undefined || item.waitUntil !== undefined || view.owner?.key.startsWith("thread:") === true;
     // A wait the CI cache shows over (`greenLater`) is wait_met's to act on, so the step gets one finding.
     if (!waits || view.cls === "live" || view.cls === "foryou" || view.cls === "parked" || heldRun(item) || greenLater(item, train)) return [];
-    if (movesOnPath(item, train, rows, self, now) || outsideMover(view, movers, rows, self)) return [];
+    if (movesOnPath(item, train, rows, self, now) || outsideMover(view, movers, rows, self) || carried(item, movers)) return [];
     const memo = memos[item.id];
     const untils = memo?.untils ?? [];
     const pushes = untils.filter((until, index) => index > 0 && Date.parse(until) > Date.parse(untils[index - 1]!)).length;
@@ -866,9 +871,13 @@ export function queueHolds(view: Pick<StepView, "item" | "owner" | "mine">, queu
   return target !== undefined && queued.has(target.id);
 }
 export function blockedOnOthers(views: readonly StepView[], rows: readonly Pick<SessionRow, "id" | "name" | "archived">[], self: ReadonlySet<string>, now: number,
-  train?: Train, queued: ReadonlyMap<string, unknown> = new Map(), asleep: ReadonlySet<string> = new Set(), todos: Parameters<typeof heldByTodo>[1] = []): BlockedStep[] {
+  train?: Train, queued: ReadonlyMap<string, unknown> = new Map(), asleep: ReadonlySet<string> = new Set(), todos: Parameters<typeof heldByTodo>[1] = [],
+  movers: Pick<Movers, "steps"> = {}): BlockedStep[] {
   return views.flatMap(view => {
     const { item, owner } = view;
+    // A wait on a plan item that a live owner carries is on that owner, not blocked (chat-2572 10-24: p8 and p10 read "blocked on release for
+    // 18 h" while p6's release job was live).
+    if (carried(item, movers)) return [];
     // A step an open For you todo holds waits on the owner even when `stepClass` reads it live first, for an owner thread active in the last
     // STEP_STALE_MS (vent 10-21, p7 waits for "t13 answer from the owner ..." and read "blocked on promote for 3 d" in 10 check-ins in a row).
     if ((item.waitFor === undefined && item.status !== "blocked") || owner?.state === "working" || view.cls === "parked" || view.cls === "foryou" ||
