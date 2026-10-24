@@ -92,6 +92,16 @@ test("the 10-23 unasked results p917 and p927 went out before the tell_owner des
   assert.deepEqual(split.map(line => [line.side, line.fix]), [["before_fix", "41665689"], ["before_fix", "41665689"], ["after_fix", "41665689"]]);
 });
 
+test("the 10-24 p954 unasked result went out before the open goal done check, and a later one reads after it", async () => {
+  // 62ca6828 refuses a done for any step under an open goal that misses its target, which p954 was (p700 read 1 of 0), on its first call.
+  const fixed = { ...commits, "41665689": "2026-10-23T14:58:07Z", "62ca6828": "2026-10-24T22:46:37Z" };
+  const split = await splitNoise([
+    { at: at("2026-10-24T21:29:53Z"), case: "unasked result (p954 Mac heavy checks on us-metal02, a done step under open goal p700 that misses its target)" },
+    { at: at("2026-10-25T01:00:00Z"), case: "unasked result" },
+  ], async hash => fixed[hash as keyof typeof fixed] ? at(fixed[hash as keyof typeof fixed]!) : undefined);
+  assert.deepEqual(split.map(line => [line.side, line.fix]), [["before_fix", "62ca6828"], ["after_fix", "62ca6828"]]);
+});
+
 test("no noise line gives no lastEventAt", () => {
   assert.deepEqual(noiseLastEvent([], firstRun), {});
 });

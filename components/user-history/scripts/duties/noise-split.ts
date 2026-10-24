@@ -29,8 +29,10 @@ export const NOISE_FIXES: readonly { kind: string; fix: string }[] = [
   { kind: "progress on a goal still going", fix: "02f07734" },
   { kind: "progress on a goal still going", fix: "673c7b17" },
   { kind: "same incident asked again by another chat", fix: "841c86f8" },
-  // The tell_owner description text fix, since three replays (~/work/tell-owner-unasked-result/replay.md) found no check that spares done reports.
+  // The tell_owner description text fix of 10-23, made when three replays (~/work/tell-owner-unasked-result/replay.md) found no check that spares done reports.
   { kind: "unasked result", fix: "41665689" },
+  // The open goal done check, which refuses the p954 shape once and holds 11 needed lines for one call (~/work/tell-owner-open-goal-done/replay.md).
+  { kind: "unasked result", fix: "62ca6828" },
 ];
 
 export interface NoiseLine { at: number; case: string; side: RepeatSide; fix?: string; /** When `fix` landed, in ms. */ fixed?: number }
