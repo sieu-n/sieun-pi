@@ -1,8 +1,8 @@
 import { repeatSide, type RepeatSide } from "./repeat-split.ts";
 
 /**
- * The noise kinds a tell_owner check in src/chat-guard.ts refuses, by the `case` the Owner messages duty job labels a line with (LABELS), and the
- * commit that landed each check. A noise line is `before_fix` when it went out before its kind's fix landed, or when its case names a build
+ * The noise kinds a tell_owner check in src/chat-guard.ts refuses, or a text fix in the tell_owner description covers when no board signal
+ * tells the kind from a needed line, by the `case` the Owner messages duty job labels a line with (LABELS), and the commit that landed each fix. A noise line is `before_fix` when it went out before its kind's fix landed, or when its case names a build
  * without that fix (`pre-<hash> build`), as mac-management's split answer at 23:11Z on 10-19 went out from the Mac 2 h after f4092cd landed.
  * A kind may have a row per fix, and the newest fix that landed decides the side, since a later check covers the leaks of an earlier one.
  * It is `after_fix` when the check was in place and the line still went out, and `no_fix` when no check covers its kind yet. A fix job for a
@@ -27,6 +27,8 @@ export const NOISE_FIXES: readonly { kind: string; fix: string }[] = [
   { kind: "progress on a goal still going", fix: "97e7663f" },
   { kind: "re-ask of an open For you todo", fix: "9b525da8" },
   { kind: "progress on a goal still going", fix: "02f07734" },
+  // The tell_owner description text fix, since three replays (~/work/tell-owner-unasked-result/replay.md) found no check that spares done reports.
+  { kind: "unasked result", fix: "41665689" },
 ];
 
 export interface NoiseLine { at: number; case: string; side: RepeatSide; fix?: string; /** When `fix` landed, in ms. */ fixed?: number }

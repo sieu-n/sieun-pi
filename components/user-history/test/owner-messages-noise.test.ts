@@ -82,6 +82,16 @@ test("the 10-23 Usage hang relay and the p57 staging done went out before the ch
   assert.deepEqual(split.map(line => [line.side, line.fix]), [["before_fix", "ff9ba241"], ["before_fix", "97e7663f"], ["after_fix", "ff9ba241"]]);
 });
 
+test("the 10-23 unasked results p917 and p927 went out before the tell_owner description fix, and a later one reads after it", async () => {
+  const fixed = { ...commits, "41665689": "2026-10-23T14:58:07Z" };
+  const split = await splitNoise([
+    { at: at("2026-10-23T04:01:35Z"), case: "unasked result (Prompt window speed fix p917 he did not ask for)" },
+    { at: at("2026-10-23T04:04:49Z"), case: "unasked result (Prime update hello time p927 he did not ask for)" },
+    { at: at("2026-10-23T15:00:00Z"), case: "unasked result" },
+  ], async hash => fixed[hash as keyof typeof fixed] ? at(fixed[hash as keyof typeof fixed]!) : undefined);
+  assert.deepEqual(split.map(line => [line.side, line.fix]), [["before_fix", "41665689"], ["before_fix", "41665689"], ["after_fix", "41665689"]]);
+});
+
 test("no noise line gives no lastEventAt", () => {
   assert.deepEqual(noiseLastEvent([], firstRun), {});
 });
