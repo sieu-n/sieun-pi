@@ -624,6 +624,7 @@ async function main(): Promise<void> {
       `${duty.fix ? `, fix step ${duty.fix}` : duty.working ? `, its job ${duty.working} works on it` : ""}` +
       `${duty.agingSince !== undefined ? `, red only on counts that age out (newest event ${new Date(duty.agingSince).toISOString().slice(0, 16)}Z), so it owes no fix job` : ""}.`)),
     section(`Red duties with no live fix job (${counts.redDuties.length})`, counts.redDuties.map(duty => `${duty.line}.`)),
+    section(`Red duty metrics that wait on the owner's open For you todo (${owned.ownerHeld.length})`, owned.ownerHeld.map(duty => `${duty.line}.`)),
     section(`Red duties whose live fix job does not move the number (${notMoving.length})`, notMoving.map(duty => `${duty.line}.`)),
     section(`Red windowed counts with no lastEventAt, read as lagging windows (${owned.lagging.length})`, owned.lagging.map(duty => `${duty.line}.`)),
   ].join("\n");

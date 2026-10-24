@@ -862,9 +862,10 @@ export function owedKeys(missed: readonly string[], runs: readonly DutyRunRecord
 /**
  * The open steps nobody moves in each chat and the red duties with no live fix, which the Chat system duty (d9) counts as stuck_steps_all and
  * stuck_duties. They moved there from this duty (d7) on 10-19 (owner msg mvfb7zt0). A red duty whose owed metrics' fix steps all wait on an
- * open For you todo (`dutyHold`) waits on the owner and is no red duty here.
+ * open For you todo (`dutyHold`) waits on the owner and is no red duty here; `ownerHeld` lists each duty with such a metric and its todo.
  */
-export function planCounts(input: PlanInputs): { stuck: StuckSteps[]; redDuties: { chat: string; duty: string; line: string }[]; lagging: LaggingDuty[]; hostHeld: HostHeldStep[] } {
+export function planCounts(input: PlanInputs): { stuck: StuckSteps[]; redDuties: { chat: string; duty: string; line: string }[]; lagging: LaggingDuty[]; hostHeld: HostHeldStep[];
+  ownerHeld: { chat: string; duty: string; line: string }[] } {
   const hostHeld: HostHeldStep[] = [];
   // Each chat's newest measured check-in, only while it is under one check-in interval old, read after its job when that job has finished: the
   // check-in job gives an ended job's step a new owner or a close in the same run, so the run's own count is the board before that work. On 10-17
@@ -915,6 +916,7 @@ export function planCounts(input: PlanInputs): { stuck: StuckSteps[]; redDuties:
       items: [...value > 0 ? liveStuckIds(at!, run!.flagged, board, input.ownerActivity ?? new Map(), input.waking) : [], ...returned] };
   }).filter(entry => entry.value > 0);
   const lagging: LaggingDuty[] = [];
+  const ownerHeld: { chat: string; duty: string; line: string }[] = [];
   const redDuties = input.chats.flatMap(chat => chat.duties.flatMap(duty => {
     // A duty that reads the fleet's share (d9) misses only as the other duties miss, and this count judges each of those on its own line, as
     // `readsTheShare` keeps it out of the share. Counted in, it needed a standing fix step on its own roll-up, which is a zombie step: d9 named
@@ -937,13 +939,20 @@ export function planCounts(input: PlanInputs): { stuck: StuckSteps[]; redDuties:
     const fresh = chat.everyMs === undefined || input.now - (newest.after?.at ?? newest.at) <= chat.everyMs;
     const owed = owedKeys(missed, own, duty.id === CHECK_IN_DUTY_ID && fresh && !stuck.some(entry => entry.chat.id === chat.id));
     if (missed.length && !owed.length) return [];
+    // Each owed metric whose open fix step an open For you todo holds (`dutyHold`) waits on the owner and leaves the line: at 11:25Z on 10-24
+    // d9 named d5/owner_fixes, whose p919 waited on t97, beside d5/skills_or_tools_to_fix, the one miss nobody owned.
     const board = input.boards?.get(chat.id);
-    if (board && dutyHold(duty.id, owed, withLinkedBoards(board, chat.id, input.boards!))) return [];
-    const links = owed.map(key => `${duty.id}/${key}`);
+    const linked = board ? withLinkedBoards(board, chat.id, input.boards!) : undefined;
+    const holds = owed.map(key => ({ key, hold: dutyHold(duty.id, [key], linked) }));
+    const waits = holds.filter(entry => entry.hold).map(entry => `${entry.key} waits on the owner (${entry.hold})`).join(", ");
+    if (waits) ownerHeld.push({ chat: chat.id, duty: duty.id, line: `${chat.name}: ${duty.name} (${duty.id}) ${waits}, an open For you todo, so it owes no fix job` });
+    const left = holds.filter(entry => !entry.hold).map(entry => entry.key);
+    if (owed.length && !left.length) return [];
+    const links = left.map(key => `${duty.id}/${key}`);
     return [{ chat: chat.id, duty: duty.id, line: `${chat.name}: ${duty.name} read off target in ${missStreak(own) === 1 ? "its last run" : `its last ${missStreak(own)} runs`}, and no open step linked to it ` +
-      `(duty field ${links.length ? links.join(" or ") : `${duty.id}/<metricKey>`}) has a live owner now` }];
+      `(duty field ${links.length ? links.join(" or ") : `${duty.id}/<metricKey>`}) has a live owner now${waits ? `, while ${waits}` : ""}` }];
   }));
-  return { stuck, redDuties, lagging, hostHeld };
+  return { stuck, redDuties, lagging, hostHeld, ownerHeld };
 }
 
 /**
