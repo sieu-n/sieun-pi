@@ -36,7 +36,7 @@ const measure = (goalGaps: number, stuckSteps: number) => ({ goal_gaps: metric(g
 const line = (role: "user" | "assistant", minutes: number, content: unknown[]) => JSON.stringify({ type: "message", timestamp: iso(minutes), message: { role, content } });
 const call = (minutes: number, code: string) => line("assistant", minutes, [{ type: "toolCall", id: `c${minutes}`, name: "ipython", arguments: { code } }]);
 
-interface Case { jobFile?: boolean; runMinute?: number; jobCalls?: (precheck: string) => string[]; after?: boolean; sampler?: ChatAgent["state"]; flagged?: object[]; p3Note?: string }
+interface Case { extra?: ChatAgent[]; heard?: { from: string; fromId: string; text: string }[]; jobFile?: boolean; runMinute?: number; jobCalls?: (precheck: string) => string[]; after?: boolean; sampler?: ChatAgent["state"]; flagged?: object[]; p3Note?: string }
 
 test("unrelated-ci-wait: a job that saw an unrelated run and left the carried step alone passes; tying the run to it fails; no exposure stays open", async t => {
   const home = mkdtempSync(join(tmpdir(), "unrelated-ci-wait-"));
@@ -47,7 +47,7 @@ test("unrelated-ci-wait: a job that saw an unrelated run and left the carried st
   const cache = new Map([[RUN_ID, "land: the newest tested dev trees on sieun/dev, completed success, created 2026-10-24T16:40:00Z"]]);
   const open = (opened: string) => [call(150, `print(open('${opened}').read())`)];
   let count = 0;
-  const run = ({ jobFile = true, runMinute = 140, jobCalls = open, after = true, sampler = "working", flagged = [], p3Note }: Case) => {
+  const run = ({ extra = [], heard = [], jobFile = true, runMinute = 140, jobCalls = open, after = true, sampler = "working", flagged = [], p3Note }: Case) => {
     count++;
     const chat = CHAT.replace(/0$/, String(count));
     const dir = join(home, "runs", `run-${count}`);
@@ -57,7 +57,7 @@ test("unrelated-ci-wait: a job that saw an unrelated run and left the carried st
     }
     if (p3Note !== undefined) writeFileSync(join(dir, "boards", "000003.json"), JSON.stringify(board(3, 155, { note: p3Note })));
     mkdirSync(join(dir, "agents"), { recursive: true });
-    for (const minutes of [6, runMinute - 20, runMinute - 1]) writeFileSync(join(dir, "agents", `${at(minutes)}.json`), JSON.stringify(team(minutes < 30 ? "working" : sampler)));
+    for (const minutes of [6, runMinute - 20, runMinute - 1]) writeFileSync(join(dir, "agents", `${at(minutes)}.json`), JSON.stringify([...team(minutes < 30 ? "working" : sampler), ...extra]));
     const precheck = join(home, "browser-chat", "duties", chat, "checkin-261025-0120.flagged.md");
     mkdirSync(join(home, "browser-chat", "duties", chat), { recursive: true });
     writeFileSync(precheck, [`# Check-in run of ${iso(runMinute)}`, "", "### Jobs", `- job land run tally: asleep on a board.wake on run ${RUN_ID}, on p4 "Tally the land runs" (doing)`, "",
@@ -67,7 +67,9 @@ test("unrelated-ci-wait: a job that saw an unrelated run and left the carried st
       ...flagged.length ? { flagged } : {}, job: { id: CHECKIN.replace(/4$/, String(count)), name: "check-in memory trend 01:20" }, ...after ? { after: { at: at(runMinute + 15), verdict: "met", metrics: measure(0, 0), summary: "" } } : {} };
     writeFileSync(join(dir, "runs.jsonl"), JSON.stringify(record) + "\n");
     mkdirSync(join(home, ".prime", "agent", "sessions"), { recursive: true });
-    writeFileSync(join(home, ".prime", "agent", "sessions", `${chat}.jsonl`), [line("user", 0, [{ type: "text", text: TASK }]), line("assistant", 1, [{ type: "text", text: "Starting the sampling job." }])].join("\n") + "\n");
+    writeFileSync(join(home, ".prime", "agent", "sessions", `${chat}.jsonl`), [line("user", 0, [{ type: "text", text: TASK }]), line("assistant", 1, [{ type: "text", text: "Starting the sampling job." }]),
+      ...heard.map(({ from, fromId, text }, n) => JSON.stringify({ type: "custom_message", customType: "agent_message", timestamp: iso(160 + n),
+        content: `[agent-message from sibling:${from}] ${text}`, details: { from: { sessionId: fromId, sessionName: from }, fromRelationship: "sibling" } }))].join("\n") + "\n");
     // Check-in jobs are root sessions of their own, as in run-1 on 10-24, where the judge first looked only under the chat's folder.
     if (jobFile) writeFileSync(join(home, ".prime", "agent", "sessions", `${CHECKIN.replace(/4$/, String(count))}.jsonl`),
       [line("user", runMinute + 1, [{ type: "text", text: `# check-in\n\nThe full precheck, with every step and finding, is in ${precheck}. Read it for the work you take on.` }]), ...jobCalls(precheck)].join("\n") + "\n");
@@ -114,6 +116,25 @@ test("unrelated-ci-wait: a job that saw an unrelated run and left the carried st
   assert.equal(lost.verdict, "open", "a check-in job with no session file is unknown, never a pass");
   assert.match(lost.check("d"), /^- d unknown: open: no session file for check-in memory trend 01:20/);
   assert.match(lost.check("a"), /^- a unknown: not exercised/, "a job whose session file is missing read nothing the judge can show");
+
+  // carried-wait run-3 on 10-24: the chat's own root job "disk free sampling 2" reported as a sibling at 16:59Z, and the AI harness developer
+  // environment VP, which the agents list showed with link message, sent the chat a release notice at 15:46Z.
+  const ROOT_JOB = "01a16e85-0000-7000-8000-000000000001";
+  const VP = "01a1164b-0000-7000-8000-000000000002";
+  const rootJob = agent("memory sampling 2", ROOT_JOB, "done", []);
+  rootJob.link = "root";
+  const vp = agent("AI harness developer environment VP", VP, "idle", []);
+  vp.link = "message";
+  const report = { from: "memory sampling 2", fromId: ROOT_JOB, text: "All 16 readings of available memory are in." };
+  const notice = { from: "AI harness developer environment VP", fromId: VP, text: "From the AI harness chat VP: fixed in sieun-pi 9cc887bc (release-9cc887b)." };
+  const ownReport = run({ extra: [rootJob, vp], heard: [report] });
+  assert.equal(ownReport.verdict, "pass", "a report from a root job the chat started is the system at work");
+  const vpNotice = run({ extra: [rootJob, vp], heard: [report, notice] });
+  assert.equal(vpNotice.verdict, "void", "another chat that wrote to the chat stays someone stepping in, though the agents list shows it");
+  assert.match(vpNotice.text, /AI harness developer environment VP\] From the AI harness chat VP/);
+  assert.doesNotMatch(vpNotice.text, /All 16 readings/);
+  const named = run({ extra: [vp], heard: [{ ...notice, from: "memory sampling" }] });
+  assert.equal(named.verdict, "void", "a sender is matched by session id, never by a job's name");
 
   const stopped = run({ sampler: "done" });
   assert.equal(stopped.verdict, "fail", "a prerequisite whose owner stopped a whole interval ago and that the run did not flag fails e");

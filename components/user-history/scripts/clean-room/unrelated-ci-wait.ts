@@ -35,7 +35,9 @@ export interface Check { id: string; status: Status; detail: string; quotes: str
 interface Slice { kind: string; item?: string; excerpt: string }
 interface Measure { at: number; goalGaps?: number; stuckSteps?: number }
 export interface CheckInRun { at: number; trigger: string; job?: { id: string; name: string }; flagged: Slice[]; own: Measure; after?: Measure }
-export interface Agent { name: string; state: string; sessionId?: string; job?: string; wait?: string }
+export interface Agent { name: string; state: string; sessionId?: string; job?: string; wait?: string; link?: string }
+/** The agent links of sessions the chat itself started (`chatDrafts`): its subagents and the root jobs it created. */
+const OWN_LINKS = new Set(["subagent", "root"]);
 interface Snapshot { at: number; board: ChatBoard }
 interface Entry { item: PlanItem; parent?: string }
 /** A carried wait: open step `step` whose wait's first clause names open step `on`, which a working job carries, unchanged since `since`. */
@@ -78,7 +80,7 @@ export function parseAgents(text: string): { list: Agent[]; dropped: number } {
   const raw = Array.isArray(value) ? value : [];
   const list = raw.flatMap((entry): Agent[] => isRecord(entry) && typeof entry.name === "string" && typeof entry.state === "string" ? [{ name: entry.name, state: entry.state,
     ...typeof entry.sessionId === "string" ? { sessionId: entry.sessionId } : {}, ...typeof entry.job === "string" ? { job: entry.job } : {},
-    ...typeof entry.wait === "string" ? { wait: entry.wait } : {} }] : []);
+    ...typeof entry.wait === "string" ? { wait: entry.wait } : {}, ...typeof entry.link === "string" ? { link: entry.link } : {} }] : []);
   return { list, dropped: raw.length - list.length };
 }
 
@@ -404,9 +406,12 @@ export function judge(run: string, state: RunState, now = Date.now(), cache: Rea
     !state.seeds.some(seed => event.text.includes(seed.slice(0, 60))) && !event.text.includes("<skill") && event.text.trim() !== TASK);
   const asked = new Map<string, number>();
   for (const event of head) if (event.kind === "sent" && !asked.has(event.to)) asked.set(event.to, event.at);
-  const dutyJobs = new Set(jobs.map(job => job.id));
+  // The chat's own jobs are its check-in jobs and the sessions the agents snapshots list with link subagent or root, by session id only. A root
+  // job the chat started reports to it as a sibling (carried-wait run-3's "disk free sampling 2" at 16:59Z), while another chat that wrote
+  // to it is listed with link message (run-3's "AI harness developer environment VP" at 15:46Z) and stays someone stepping in.
+  const ownJobs = new Set([...jobs.map(job => job.id), ...ev.agents.flatMap(entry => entry.list.flatMap(agent => agent.sessionId && OWN_LINKS.has(agent.link ?? "") ? [agent.sessionId] : []))]);
   const outside = head.filter(event => event.kind === "text" && event.role === "custom" && (event.relation === "parent" || event.relation === "sibling") &&
-    !(event.fromId && (asked.get(event.fromId) ?? Infinity) < event.at) && !(event.fromId && dutyJobs.has(event.fromId)) && !/^check-in /.test(event.from ?? ""));
+    !(event.fromId && (asked.get(event.fromId) ?? Infinity) < event.at) && !(event.fromId && ownJobs.has(event.fromId)));
   const turns = head.filter(event => event.kind === "assistant" || event.kind === "call").length;
   const ended = now >= (state.until ?? Infinity);
   add("f", typed.length || outside.length || (ended && !turns) ? "not met" : turns ? "met" : "unknown", typed.length || outside.length
