@@ -25,8 +25,11 @@ export interface DaemonFault {
   timedOut?: { call: string; ms: number };
   /** The outbox's id of the message a send carried (`m-<uuid>`), which its "is landed" line names (src/slot-wait-timeouts.ts). */
   message?: string;
-  /** A Prime worker crashed (WORKER_CRASH or BUN_PANIC): a fault inside Prime, which d7 names as its own cause of a dirty minute. */
-  prime?: true;
+  /**
+   * The fault sits inside Prime, in d7's words after "a Prime fault, ": a worker crashed (WORKER_CRASH or BUN_PANIC), or a create Prime
+   * answered over SLOW_MS (SLOW_CREATE). d7 names it as its own cause of a dirty minute.
+   */
+  prime?: string;
 }
 
 const STAMPED = /^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z) (.*)$/;
@@ -48,6 +51,13 @@ const NAME_TAKEN = /is unavailable: an agent of that name already exists/;
 const WAITS_OUT_PREPARE = new RegExp(`; ${PREPARE_WAIT}$`);
 /** A resume of another box's session names that box after the id (`resume 01a15503 on mac`). */
 const START_ON = /^([0-9a-f]{8}) on ([\w.-]+)$/;
+/**
+ * A create Prime took over SLOW_MS to answer, or to refuse for a taken name, is a Prime fault. The chat service waits on that daemon call, and
+ * the time goes inside Prime: at 15:02:55Z on 10-24 the create of chat "disk trend page 2" took 32.9 s and its worker listened 2.3 s in, and
+ * at 16:05Z a create with a name took 25.7 to 32.2 s while its new worker read 2.75 GB of the 4,827 saved session files, against 2.0 to 2.2 s
+ * for one without (~/work/d7-slow-creates-1025/README.md).
+ */
+const SLOW_CREATE = "a create Prime answered late";
 const WORKER_NO_ANSWER = /^daemon (create|resume|reload) (.+): no answer after ([\d.]+) s: (.*)$/;
 /**
  * The service closed its own daemon link: DaemonClient.close() is the only source of this error, and the clients of worker starts belong to
@@ -202,8 +212,10 @@ export function readServiceFaults(lines: readonly string[], local: string): Daem
       const seconds = Number(found[4]);
       const refused = found[3] === "refused" && !NAME_TAKEN.test(found[5] ?? "") && !WAITS_OUT_PREPARE.test(found[5] ?? "");
       const on = START_ON.exec(found[2]!);
+      const late = found[1] === "create" && (found[3] === "answered" || NAME_TAKEN.test(found[5] ?? "")) && seconds * 1000 > SLOW_MS;
       if (refused || seconds * 1000 > SLOW_MS)
-        faults.push({ at: at + seconds * 1000, host: on?.[2] ?? local, ...titleOrSession(on?.[1] ?? found[2]!), what: `its ${found[1]} was ${found[3]} in ${seconds} s${found[5] ? `, ${faultReason(found[5]) ?? found[5].slice(0, 80)}` : ""}` });
+        faults.push({ at: at + seconds * 1000, host: on?.[2] ?? local, ...titleOrSession(on?.[1] ?? found[2]!), what: `its ${found[1]} was ${found[3]} in ${seconds} s${found[5] ? `, ${faultReason(found[5]) ?? found[5].slice(0, 80)}` : ""}`,
+          ...late ? { prime: SLOW_CREATE } : {} });
       continue;
     }
     if ((found = WORKER_NO_ANSWER.exec(text))) {
@@ -267,13 +279,13 @@ export function readSupervisorFaults(lines: readonly string[], local: string, re
     const crash = WORKER_CRASH.exec(line);
     if (crash) {
       const at = Date.parse(crash[1]!);
-      if (Number.isFinite(at)) faults.push({ at, host: local, what: `Prime worker ${crash[2]} crashed, ${crash[3]}: ${crash[4]!.slice(0, 80)}`, prime: true });
+      if (Number.isFinite(at)) faults.push({ at, host: local, what: `Prime worker ${crash[2]} crashed, ${crash[3]}: ${crash[4]!.slice(0, 80)}`, prime: "a worker crashed" });
       continue;
     }
     const panic = BUN_PANIC.exec(line);
     if (panic) {
       const at = Date.parse(panic[1]!);
-      if (Number.isFinite(at)) faults.push({ at, host: local, what: `Prime worker ${panic[2]} crashed in Bun, panic on its ${panic[3]}: ${panic[4]!.slice(0, 80)}`, prime: true });
+      if (Number.isFinite(at)) faults.push({ at, host: local, what: `Prime worker ${panic[2]} crashed in Bun, panic on its ${panic[3]}: ${panic[4]!.slice(0, 80)}`, prime: "a worker crashed" });
       continue;
     }
     const found = SUPERVISOR.exec(line);

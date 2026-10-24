@@ -1124,9 +1124,9 @@ export function measure(input: Inputs): PrecheckOutput {
     offlineFaults += minuteFaults.length - faults.length;
     if (faults.length) {
       daemonFail++;
-      const prime = faults.some(fault => fault.prime);
-      if (prime) primeMin++;
-      why.push(`${prime ? "a Prime fault, a worker crashed: " : ""}daemon calls failed or ran over ${SLOW_MS / 1000} s for ${faultWords(faults, faultName)}`);
+      const prime = [...new Set(faults.flatMap(fault => fault.prime ? [fault.prime] : []))];
+      if (prime.length) primeMin++;
+      why.push(`${prime.length ? `a Prime fault, ${prime.join(" and ")}: ` : ""}daemon calls failed or ran over ${SLOW_MS / 1000} s for ${faultWords(faults, faultName)}`);
     }
     if (why.length) dirty.push(`${clock(from)} ${why.join(", ")}`);
     else if (unknown.length) { unknownMin++; unknownLines.push(`${clock(from)} ${unknown.join(", ")}`); }
@@ -1213,7 +1213,7 @@ export function measure(input: Inputs): PrecheckOutput {
     `(${harness} unusable minutes on the harness side, ${other} on the app or owner side, ${unattributed} with no cause read, ${unwatched} with no watch line, and ${rigMin} harness minutes went mostly to job rigs); a start, wake or parked job was held over ` +
     `10 min in ${held}; a turn sat queued while pi-pool had ${FREE_SLOTS} or more slots it could give it, or pi-pool refused a tree for over 10 min while an account took its class, in ${freeSlot}; ` +
     `a tree waited over 10 min for a pi-pool cell at R4's pace, not counted dirty, in ${cellWait}; ` +
-    `an open, status read, send or worker start failed or ran over ${SLOW_MS / 1000} s in ${daemonFail}, ${primeMin} of them with a Prime worker crash.` +
+    `an open, status read, send or worker start failed or ran over ${SLOW_MS / 1000} s in ${daemonFail}, ${primeMin} of them a Prime fault, a worker crash or a create Prime took over ${SLOW_MS / 1000} s to answer.` +
     (offlineMin.size ? ` Tailscale read ${[...offlineMin].map(([name, at]) => `${name} offline in ${at.length}`).join(" and ")}, and ${offlineFaults} daemon calls to a box while it was offline are left out.` : "") });
   if (input.ciCache) {
     metrics.ci_cache_age_s = Math.max(0, Math.round((now - input.ciCache.fetchedAt) / 1000));
