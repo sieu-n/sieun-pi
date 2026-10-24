@@ -7,10 +7,8 @@ import { type DsQuery, grafanaClient, PROM, promInstant, SOURCE_DEADLINE_MS } fr
 
 /**
  * The precheck of metal-management's duty "Prod box headroom" (`node --import tsx scripts/duties/prod-headroom.ts`): whether us-metal01, the
- * prod box, keeps room for the crawl push. Prod ran out of CPU on 10-18 05:04Z, on the 10-18 evening from staging's crawler, and on 10-19 at
- * 14:44Z at 70.5 of 72 cores. Three numbers, all read only from prod Prometheus (estate_prometheus) through Grafana ds/query on obs.virev.ai:
+ * prod box, keeps room for the crawl push. Two numbers, both read only from prod Prometheus (estate_prometheus) through Grafana ds/query on obs.virev.ai:
  * - `profiles_p95_s`: p95 seconds of /api/profiles GET over the last hour, from the crawler API's request histogram (goal p8).
- * - `cpu_wait_pct_1h`: the share of the last hour that some task on us-metal01 waited for a CPU (PSI cpu some), in percent.
  * - `nvme0_tb_24h`: terabytes written to nvme0n1, prod's database drive, in the last 24 h (goal p83).
  * The login is the Viewer token in browser-chat/grafana-alerts.json, the one vps-boxes.ts and the alert bridge use, so it can only read.
  * A query that fails or has no sample leaves its metric out with a `source_error` item, and the runner says not measured instead of a miss.
@@ -21,21 +19,18 @@ const GRAFANA_CONFIG = join(homedir(), ".prime/agent/browser-chat/grafana-alerts
 
 export const QUERIES = {
   profiles_p95_s: 'histogram_quantile(0.95, sum by (le) (rate(crawler_v3_api_request_duration_seconds_bucket{route="/api/profiles",method="GET"}[1h])))',
-  cpu_wait_pct_1h: 'rate(node_pressure_cpu_waiting_seconds_total{box="us-metal01"}[1h])',
   nvme0_tb_24h: 'increase(node_disk_written_bytes_total{box="us-metal01",device="nvme0n1"}[24h])',
 } as const;
 export type MetricKey = keyof typeof QUERIES;
 
-/** Each metric's number from its query's raw value: seconds to 2 places, the PSI rate (seconds per second) as a percent, bytes as decimal TB. */
+/** Each metric's number from its query's raw value: seconds to 2 places, bytes as decimal TB. */
 export const CONVERT: Readonly<Record<MetricKey, (raw: number) => number>> = {
   profiles_p95_s: raw => Math.round(raw * 100) / 100,
-  cpu_wait_pct_1h: raw => Math.round(raw * 1000) / 10,
   nvme0_tb_24h: raw => Math.round(raw / 1e10) / 100,
 };
 
 const WORDS: Readonly<Record<MetricKey, (value: number) => string>> = {
   profiles_p95_s: value => `profile reads on prod took ${value} s at p95 over the last hour`,
-  cpu_wait_pct_1h: value => `some task on us-metal01 waited for a CPU ${value}% of the last hour`,
   nvme0_tb_24h: value => `nvme0n1 on us-metal01 took ${value} TB of writes in the last 24 h`,
 };
 
