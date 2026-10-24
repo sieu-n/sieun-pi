@@ -701,12 +701,64 @@ export const openStepLines = (steps: readonly PlanItem[]): string[] => steps.map
  */
 export function openStepsNotice(child: ChildAgent, steps: readonly PlanItem[], detail?: string): string {
   const how = child.status === "cancelled" ? "was cancelled" : child.status === "error" ? "failed" : "ended its turn";
+  return leftStepsNotice(childName(child), how, steps, detail);
+}
+
+const leftStepsNotice = (name: string, how: string, steps: readonly PlanItem[], detail?: string): string => {
   const lines = openStepLines(steps);
   const rest = lines.length - BRIEF_ITEMS;
   const listed = [...lines.slice(0, BRIEF_ITEMS), ...rest > 0 ? [`and ${rest} more${detail ? `, all listed in ${detail}` : ""}`] : []];
-  return `${childName(child)} ${how}, and ${steps.length === 1 ? "this open step names" : "these open steps name"} it: ${listed.join("; ")}. ` +
+  return `${name} ${how}, and ${steps.length === 1 ? "this open step names" : "these open steps name"} it: ${listed.join("; ")}. ` +
     "Read its last report now, then close each step whose work is done, steer the job, or start a fresh job for the rest, so no step waits on a job that stopped.";
+};
+
+/**
+ * The create_session roots and step-linked threads of a chat whose turn ended since the last look (`before`, state by session id): working
+ * before, which a board.wake sleep also reads, and not working now. A thread first seen now has no before and is left out. The open-steps
+ * notice on a job's end covers only the chat's subagents (`endedJobs`), which the hub reports while it holds the chat: on 10-24 SEO guy's root
+ * next article 10-25 ended at 15:49Z with p95's article live, the owner had paused that chat's check-in, and p95 sat open until d9's 16:53Z push.
+ */
+export function endedRoots(before: ReadonlyMap<string, ChatAgent["state"]>, agents: readonly ChatAgent[]): ChatAgent[] {
+  return agents.filter(agent => (agent.link === "root" || agent.link === "step") && agent.sessionId !== undefined &&
+    before.get(agent.sessionId) === "working" && agent.state !== "working");
 }
+
+/** The open steps a root left when its turn ended (`endedRoots`): each open step that names it, less a step another working thread of the chat owns. */
+export function rootLeftSteps(root: ChatAgent, agents: readonly ChatAgent[], board: ChatBoard | null): PlanItem[] {
+  const others = agents.filter(agent => agent.sessionId !== root.sessionId && agent.state === "working");
+  return openSteps(board).filter(item => {
+    if (item.children.some(child => OPEN.has(child.status))) return false;
+    if (!stepNamesJob(item, { id: root.sessionId!, names: [root.name, root.sender] }) || handedBack(item, root.sender || root.name)) return false;
+    const owner = stepOwner(item);
+    return owner === undefined || !others.some(other => owner === other.sessionId || owner === other.name || owner === other.sender);
+  });
+}
+
+/**
+ * The open leaf steps of a board that name no owner at all (`stepOwner`) and that no open For you todo holds (`heldByTodo`, or a todo's step)
+ * and no owner correction parks (`parkedBy`), which d9 reads as stuck at once in a chat that runs no check-in. On 10-24 SEO guy, whose check-in
+ * the owner had paused, took p81 off its ended subagent domain rating between 16:00Z and 16:02Z and left it open with no job, no wait and no
+ * todo until d9's 16:53Z push.
+ */
+export function ownerlessSteps(board: ChatBoard | null): PlanItem[] {
+  const todos = board?.todos ?? [];
+  const asked = new Set(todos.filter(todo => !todo.done && todo.step).map(todo => todo.step));
+  return openSteps(board).filter(item => !item.children.some(child => OPEN.has(child.status)) && stepOwner(item) === undefined &&
+    !asked.has(item.id) && !heldByTodo(item, todos) && parkedBy(item) === undefined);
+}
+
+/** The line a chat that runs no check-in gets for its open steps with no owner (`ownerlessSteps`). */
+export function ownerlessNotice(steps: readonly PlanItem[], detail?: string): string {
+  const lines = openStepLines(steps);
+  const rest = lines.length - BRIEF_ITEMS;
+  const listed = [...lines.slice(0, BRIEF_ITEMS), ...rest > 0 ? [`and ${rest} more${detail ? `, all listed in ${detail}` : ""}`] : []];
+  return `${steps.length === 1 ? "This open step names" : "These open steps name"} no owner, and your check-in is paused, so nothing else moves ` +
+    `${steps.length === 1 ? "it" : "them"}: ${listed.join("; ")}. Close each one whose work is done, give the rest a job, or link each to the open For you todo it waits on.`;
+}
+
+/** The line a chat gets when a root's turn ended and open steps still name it (`rootLeftSteps`). */
+export const rootStepsNotice = (root: ChatAgent, steps: readonly PlanItem[], detail?: string): string =>
+  leftStepsNotice(root.sender || root.name, root.state === "failed" ? "failed" : "ended its turn", steps, detail);
 
 /**
  * A create_session root of the chat that ended its turn with its report in: idle (not working, failed, or waiting on an answer from the chat)

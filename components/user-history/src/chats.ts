@@ -14,7 +14,8 @@ import { checkInDue, childName, childWorking, type JobFact, jobFacts, liveJobs, 
 import { treeWakes, type Wake } from "./wakes.ts";
 import { withQueuePlaces } from "./chat-turn-queue.ts";
 import { type CheckInContext, type CheckInMemory, checkInPrecheck, checkInPrecheckText, classCounts, convergenceMisses, endedJobs, endedWithoutReport, finishedJobs, JOB_CLEANUP_EVERY_MS, ROOT_END_EVERY_MS, jobEnd, jobEndText,
-  handBackNote, handBackSteps, handBackText, idleRoots, jobReport, lastJobMessages, leftOpenSteps, noReportNotice, openStepLines, openStepsNotice, reportedRoot, retryDue, waitingJobs } from "./chat-checkin.ts";
+  endedRoots, handBackNote, handBackSteps, handBackText, idleRoots, jobReport, lastJobMessages, leftOpenSteps, noReportNotice, openStepLines, openStepsNotice, reportedRoot, retryDue,
+  ownerlessNotice, ownerlessSteps, rootLeftSteps, rootStepsNotice, waitingJobs } from "./chat-checkin.ts";
 import { jobBase, jobBrief, jobModel, keptCopyNote, replacedJob, resumeBrief, resumedNote, resumeJobName, savedStateNote, sessionBrief, sessionModel, waitText } from "./job-resume.ts";
 import { type AwayHost, hostHolds } from "./shared/host-hold.ts";
 import { heldByTodo, withBoardLinks } from "./shared/todo-hold.ts";
@@ -198,6 +199,11 @@ export class Chats {
   private readonly noticedEnd = new Map<string, { end: number; waited?: number }>();
   /** The job end and steps each open-steps notice told, by child id, so one end is told once. */
   private readonly openStepsTold = new Map<string, string>();
+  /** Each chat's roots and step-linked threads as the last catalog read listed them, and each one's state then, by session id (`endedRoots`). */
+  private readonly roots = new Map<string, readonly ChatAgent[]>();
+  private readonly rootStates = new Map<string, ChatAgent["state"]>();
+  /** The steps each paused chat was last told have no owner (`ownerless`), so one set is told once. */
+  private readonly ownerlessTold = new Map<string, string>();
   /** Chats found stale while mid-turn; the end of the turn reloads them. */
   private readonly reloadWaiting = new Set<string>();
   /** Chats the owner's Update all chats reloads even on the current build; each leaves the set once its reload ran. */
@@ -748,6 +754,7 @@ export class Chats {
       if (this.children.has(id) && now - (this.cleanedAt.get(id) ?? -Infinity) >= JOB_CLEANUP_EVERY_MS) { this.cleanedAt.set(id, now); this.queue(id, () => this.cleanJobs(id)); }
       const setting = planCheckIn(settings[id] ?? DEFAULT_CHECK_IN, open.get(id) ?? true);
       const paused = activePause(setting, now) !== null;
+      if (paused && open.get(id)) this.queue(id, () => this.ownerless(id));
       if (paused && ownerPause(setting)) continue;
       active.add(id);
       if (!this.reviving.has(id)) { this.reviving.add(id); this.queue(id, () => this.revive(id, woke).finally(() => this.reviving.delete(id))); }
@@ -1135,6 +1142,7 @@ export class Chats {
     catch (error) { this.log(`chats: jobs: ${error instanceof Error ? error.message : String(error)}`); return; }
     const chatRows = rows.filter(row => this.chatIds.has(row.id));
     this.refreshJobs(chatRows);
+    this.rootEnds(chatRows);
     if (this.now() - this.rootsEndedAt >= ROOT_END_EVERY_MS) {
       this.rootsEndedAt = this.now();
       for (const row of chatRows) if (active.has(row.id)) this.queue(row.id, () => this.endRoots(row));
@@ -1912,6 +1920,72 @@ export class Chats {
   private laterOpenSteps(id: string, childId: string, tries = 0): void {
     const timer = setTimeout(() => this.queue(id, () => this.openSteps(id, childId, tries)), this.source.noReportGraceMs ?? NO_REPORT_GRACE_MS);
     timer.unref?.();
+  }
+
+  /**
+   * Every chat's roots whose turn ended since the last catalog read (`endedRoots`), each looked at after the no-report grace (`rootSteps`).
+   * An owner pause does not hold it: like the subagent notice, it only tells the chat, and such a chat runs no check-in that would find the step.
+   */
+  private rootEnds(chatRows: readonly SessionRow[]): void {
+    for (const row of chatRows) {
+      const agents = (row.agents ?? []).filter(agent => (agent.link === "root" || agent.link === "step") && agent.sessionId !== undefined && !this.chatIds.has(agent.sessionId));
+      for (const root of endedRoots(this.rootStates, agents)) this.laterRootSteps(row.id, root.sessionId!);
+      for (const agent of agents) this.rootStates.set(agent.sessionId!, agent.state);
+      this.roots.set(row.id, agents);
+    }
+  }
+
+  /**
+   * A chat whose check-in is paused runs no check-in to find a step nobody owns, so each tick it is told its open steps with no owner
+   * (`ownerlessSteps`) while no turn of it runs, once per set of steps.
+   */
+  private async ownerless(id: string): Promise<void> {
+    await this.load();
+    if (!this.chatIds.has(id) || this.threads.busy(id) || this.stall(id)) return;
+    let board: ChatBoard | null;
+    try { board = await (this.source.boardView ?? this.source.board).call(this.source, id); }
+    catch (error) { this.log(`chat ${id.slice(0, 8)}: ownerless steps: ${error instanceof Error ? error.message : String(error)}`); return; }
+    const steps = ownerlessSteps(board);
+    const told = steps.map(step => step.id).join(",");
+    if (!steps.length || this.ownerlessTold.get(id) === told) { if (!steps.length) this.ownerlessTold.delete(id); return; }
+    this.ownerlessTold.set(id, told);
+    try {
+      const detail = await this.noticeDetail(id, "ownerless-steps", openStepLines(steps));
+      await this.tell(id, JOB_NOTICE_PREFIX + ownerlessNotice(steps, detail));
+      this.log(`chat ${id.slice(0, 8)}: told the paused chat ${told} name no owner`);
+    } catch (error) { this.log(`chat ${id.slice(0, 8)}: ownerless steps: ${error instanceof Error ? error.message : String(error)}`); }
+  }
+
+  private laterRootSteps(id: string, session: string, tries = 0): void {
+    const timer = setTimeout(() => this.queue(id, () => this.rootSteps(id, session, tries)), this.source.noReportGraceMs ?? NO_REPORT_GRACE_MS);
+    timer.unref?.();
+  }
+
+  /**
+   * A root whose turn ended while open steps still name it (`rootLeftSteps`) is told to the chat as one steer, as `openSteps` tells a subagent's
+   * end, once per end. A root at work again, cancelled, or asleep on a board.wake is not told, and a chat mid-turn is looked at again later.
+   */
+  private async rootSteps(id: string, session: string, tries: number): Promise<void> {
+    await this.load();
+    if (!this.chatIds.has(id)) return;
+    const agents = this.roots.get(id) ?? [];
+    const root = agents.find(agent => agent.sessionId === session);
+    if (!root || root.state === "working" || await this.cancelled(session) || await this.source.waking?.(session)) return;
+    if (this.threads.busy(id) && tries < NO_REPORT_BUSY_TRIES && !this.stall(id)) { this.laterRootSteps(id, session, tries + 1); return; }
+    let board: ChatBoard | null;
+    try { board = await this.source.board(id); }
+    catch (error) { this.log(`chat ${id.slice(0, 8)}: open-steps notice: ${error instanceof Error ? error.message : String(error)}`); return; }
+    const steps = rootLeftSteps(root, agents, board);
+    if (!steps.length) return;
+    const key = "thread:" + session;
+    const told = `${root.lastActivityAt ?? ""}:${steps.map(step => step.id).join(",")}`;
+    if (this.openStepsTold.get(key) === told) return;
+    this.openStepsTold.set(key, told);
+    try {
+      const detail = await this.noticeDetail(id, "open-steps", openStepLines(steps));
+      await this.tell(id, JOB_NOTICE_PREFIX + rootStepsNotice(root, steps, detail));
+      this.log(`chat ${id.slice(0, 8)}: told the chat ${root.sender || root.name} ended with ${steps.map(step => step.id).join(", ")} open`);
+    } catch (error) { this.log(`chat ${id.slice(0, 8)}: open-steps notice: ${error instanceof Error ? error.message : String(error)}`); }
   }
 
   private async openSteps(id: string, childId: string, tries: number): Promise<void> {
