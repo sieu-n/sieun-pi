@@ -103,4 +103,19 @@ test("a check-in steer in the chat's job counts as its own only by a steer line 
   assert.match(f(judge(dir, state, later, { ...clean, steers: [theirs] }).text), /^- f not met/);
 });
 
+test("a subagent of the chat's job, by the parent its session header records, reports to that job as the trial's own (run-4, 10-24)", () => {
+  const WRITER = "01a16f95-b211-758c-8541-498f6cbe20c9";
+  const { dir, state } = run("descendant", base, [{ type: "custom_message", timestamp: at("2026-10-24T16:38:42Z"), customType: "agent_message",
+    content: "The page is up.", details: { from: { sessionId: WRITER, sessionName: "free-space-page-writer" }, fromRelationship: "child" } }]);
+  const folder = join(home, ".prime/agent/session-artifacts", JOB, "sub-ee61925a");
+  const header = (parent: string) => JSON.stringify({ type: "session", version: 3, id: WRITER, timestamp: at("2026-10-24T16:24:03Z"), parentSession: parent }) + "\n";
+  mkdirSync(folder, { recursive: true });
+  writeFileSync(join(folder, `${WRITER}.jsonl`), header(`/home/sieun/.prime/agent/sessions/${JOB}.jsonl`));
+  assert.match(f(judge(dir, state, later, clean).text), /^- f met/);
+  writeFileSync(join(folder, `${WRITER}.jsonl`), header(`/home/sieun/.prime/agent/sessions/${VP}.jsonl`));
+  assert.match(f(judge(dir, state, later, clean).text), /^- f not met/, "a parent outside the trial is no ancestry");
+  rmSync(folder, { recursive: true, force: true });
+  assert.match(f(judge(dir, state, later, clean).text), /^- f not met/, "a sender with no session file has no recorded parent");
+});
+
 test.after(() => rmSync(home, { recursive: true, force: true }));

@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import type { ChatBoard } from "../../src/shared/types.ts";
 
 /** What `clean-room.ts setup` recorded about a run: the test chat, its fixture jobs, the seeds it sent, and when the measured window began. */
@@ -134,4 +134,43 @@ export function sessionFile(id: string, roots: readonly string[] = []): string |
   for (const parent of roots) { const found = find(join(ARTIFACTS, parent), 0); if (found) return found; }
   return undefined;
 }
+/** The id of the session whose file a session file's header names as its parent (`parentSession`), by that file's name; undefined when none. */
+export function sessionParent(file: string): string | undefined {
+  if (!existsSync(file)) return undefined;
+  const first = readFileSync(file, "utf8").split("\n", 1)[0] ?? "";
+  try {
+    const header = JSON.parse(first) as { type?: unknown; parentSession?: unknown };
+    return header.type === "session" && typeof header.parentSession === "string" ? basename(header.parentSession).replace(/\.jsonl$/, "") : undefined;
+  } catch { return undefined; }
+}
+
+/**
+ * The sessions below `roots` by recorded ancestry, each with its file: a session file under the session-artifacts folder of a root in `scope`
+ * whose header names a root or a session already found as its parent, repeated until none is added. Only recorded ids count, never a name.
+ * Clean-room carried-wait run-4 on 10-24: the subagent free-space-page-writer (01a16f95), whose header names the chat's job "free space page"
+ * (01a16f7c) as its parent, reported to that job, and the judge read it as outside because it knew only the chat's direct agents. A session
+ * whose file is not in the store or the archive is not found, so its messages stay unproven.
+ */
+export function ownedDescendants(roots: Iterable<string>, scope: Iterable<string>): Map<string, string> {
+  const owned = new Set(roots);
+  const files = new Map<string, string>();
+  for (const root of new Set(scope)) for (const file of sessionFiles(root)) {
+    const id = basename(file).replace(/\.jsonl$/, "");
+    if (/^[0-9a-f]{8}-[0-9a-f]{4}-/.test(id) && !files.has(id)) files.set(id, file);
+  }
+  const found = new Map<string, string>();
+  for (let added = true; added;) {
+    added = false;
+    for (const [id, file] of files) {
+      if (owned.has(id)) continue;
+      const parent = sessionParent(file);
+      if (parent === undefined || !owned.has(parent)) continue;
+      owned.add(id);
+      found.set(id, file);
+      added = true;
+    }
+  }
+  return found;
+}
+
 export const readSession = (id: string, roots: readonly string[] = []): SessionEvent[] => { const file = sessionFile(id, roots); return file ? readSessionFile(file) : []; };

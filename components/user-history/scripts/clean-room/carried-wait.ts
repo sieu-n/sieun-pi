@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { firstClause, planJob } from "../../src/shared/chat-board.ts";
 import type { ChatAgent, ChatBoard, PlanItem } from "../../src/shared/types.ts";
 import { nextIds } from "../../src/shared/chat-board.ts";
-import { readSession, type RunState, type Scenario, type SessionEvent, sessionFile, type Verdict } from "./session-read.ts";
+import { ownedDescendants, readSession, type RunState, type Scenario, type SessionEvent, sessionFile, type Verdict } from "./session-read.ts";
 import { type Delivery, readDelivery, steering, type TrialSession } from "./unrelated-ci-wait.ts";
 
 /**
@@ -176,7 +176,9 @@ export function judge(run: string, state: RunState, now = Date.now(), delivery?:
   const checkIns = new Set(jobs.map(job => job.id));
   const ownJobs = new Map(agents.flatMap(entry => entry.list.flatMap(agent =>
     agent.sessionId && !checkIns.has(agent.sessionId) && (agent.link === "subagent" || agent.link === "root") ? [[agent.sessionId, agent.name] as const] : [])));
-  const own = new Set([...checkIns, ...ownJobs.keys()]);
+  // Each session one of those spawned, at any depth, is the trial's own too, by the parent its session header records (`ownedDescendants`).
+  const below = ownedDescendants([chat, ...checkIns, ...ownJobs.keys()], [chat, ...checkIns, ...ownJobs.keys()]);
+  const own = new Set([...checkIns, ...ownJobs.keys(), ...below.keys()]);
   const typed = head.filter(event => event.kind === "text" && event.role === "user" && !event.text.trimStart().startsWith("[") &&
     !state.seeds.some(seed => event.text.includes(seed.slice(0, 60))) && !event.text.includes("<skill"));
   const messaged = head.filter(event => event.kind === "text" && event.role === "custom" && (event.relation === "parent" || event.relation === "sibling") &&
@@ -184,13 +186,14 @@ export function judge(run: string, state: RunState, now = Date.now(), delivery?:
   // Steering also reaches the chat and its jobs as notes the service wraps as its own, such as a d9 push or another chat's job-steer, so each
   // delivery is judged by its recorded origin (`steering`, shared with unrelated-ci-wait), and one whose origin the evidence cannot show is unknown.
   const trial: TrialSession[] = [{ id: chat, head: true, file: sessionFile(chat, [chat]) ?? "" },
-    ...[...ownJobs].map(([id, name]) => ({ id, name, head: false, file: sessionFile(id, [chat]) ?? "" }))].filter(session => session.file);
+    ...[...ownJobs].map(([id, name]) => ({ id, name, head: false, file: sessionFile(id, [chat]) ?? "" })),
+    ...[...below].filter(([id]) => !checkIns.has(id) && !ownJobs.has(id)).map(([id, file]) => ({ id, head: false, file }))].filter(session => session.file);
   const steered = steering(trial, chat, state.windowStart, own, delivery);
   const outside = [...[...typed, ...messaged].map(event => `at ${iso(event.at)}: "${clip(event.kind === "text" ? event.text : "", 160)}"`), ...steered.outside];
   const turns = head.filter(event => event.kind === "assistant" || event.kind === "call").length;
   add("f", outside.length ? false : steered.unknown.length ? null : turns ? true : ended ? false : null, outside.length ? outside.join("; ")
     : steered.unknown.length ? `unknown: ${steered.unknown.join("; ")}`
-    : `${turns} model turns and calls of the chat; ${steered.owned} deliveries into it and its ${ownJobs.size} jobs trace to its own check-ins, jobs, wakes and resumes`);
+    : `${turns} model turns and calls of the chat; ${steered.owned} deliveries into it, its ${ownJobs.size} jobs and their ${below.size} subagents trace to its own check-ins, jobs, wakes and resumes`);
 
   const verdict: Verdict = checks.find(check => check.id === "f")!.ok === false ? "void"
     : checks.some(check => check.ok === false) ? "fail"
