@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { ExtensionAPI } from "prime-agent";
@@ -135,10 +135,12 @@ export function touchedPaths(toolName: string, input: Input, sessionCwd: string,
 		if (value) paths.push(resolve(sessionCwd, value.replace(/^~(?=\/)/, homedir())));
 	}
 	const code = text(input.code);
-	if (toolName === "ipython" && code) for (const step of kernel.cellSteps(code, kernel.cellStart(ctx))) paths.push(...namedPaths(step.code, step.cwd));
+	const named: string[] = [];
+	if (toolName === "ipython" && code) for (const step of kernel.cellSteps(code, kernel.cellStart(ctx))) named.push(...namedPaths(step.code, step.cwd));
 	const command = text(input.command);
-	if (command) paths.push(...namedPaths(command, sessionCwd));
-	return paths;
+	if (command) named.push(...namedPaths(command, sessionCwd));
+	// A word in code may be a path relative to a folder a shell `cd` moved to, so only a file that exists counts.
+	return [...paths, ...named.filter((path) => existsSync(path))];
 }
 
 type Entry = { type?: string; customType?: string; data?: unknown };
@@ -177,9 +179,11 @@ export class SessionRules {
 		return root;
 	}
 
+	/** Read through the real path, so a repo reached through a link, such as /Users/sieunpark on us-metal02, is one repo. */
 	rulesOf(root: string): Rule[] {
-		let rules = this.rules.get(root);
-		if (!rules) this.rules.set(root, (rules = readRules(root)));
+		const real = realpathSync(root);
+		let rules = this.rules.get(real);
+		if (!rules) this.rules.set(real, (rules = readRules(real)));
 		return rules;
 	}
 
@@ -190,7 +194,7 @@ export class SessionRules {
 		const always = root ? this.rulesOf(root).filter((rule) => !rule.paths) : [];
 		this.prefix = {
 			cwd,
-			text: always.length ? `Project rules from ${join(root!, ".claude", "rules")} that apply to all work in this repo:\n\n${always.map(render).join("\n\n")}` : null,
+			text: always.length ? `Project rules from ${join(realpathSync(root!), ".claude", "rules")} that apply to all work in this repo:\n\n${always.map(render).join("\n\n")}` : null,
 			files: new Set(always.map((rule) => rule.file)),
 		};
 		return this.prefix;

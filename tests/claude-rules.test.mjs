@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -11,7 +11,8 @@ import { cellStart, cellSteps } from "../components/global-rules/kernel-cwd.ts";
 const repo = mkdtempSync(join(tmpdir(), "claude-rules-"));
 test.after(() => rmSync(repo, { recursive: true, force: true }));
 mkdirSync(join(repo, ".claude", "rules", "apps"), { recursive: true });
-mkdirSync(join(repo, "src"), { recursive: true });
+for (const dir of ["src", "tests", "apps/web/src", "x/tests"]) mkdirSync(join(repo, dir), { recursive: true });
+for (const file of ["src/main.ts", "src/a.test.ts", "tests/b.py", "apps/web/src/page.svelte", "x/tests/c.py"]) writeFileSync(join(repo, file), "");
 writeFileSync(join(repo, ".claude", "rules", "always.md"), "# Always\n\nALWAYS-RULE-BODY\n");
 writeFileSync(join(repo, ".claude", "rules", "testing.md"), "---\npaths:\n  - '**/tests/**'\n  - '**/*.test.*'\n---\n\n# Testing\n\nTESTING-RULE-BODY\n");
 writeFileSync(join(repo, ".claude", "rules", "apps", "web.md"), "---\npaths: 'apps/web/**/*.{ts,svelte}'\n---\nWEB-RULE-BODY\n");
@@ -49,6 +50,11 @@ test("an unscoped rule is first in the context from the first call, and a scoped
 	assert.match(messages[0].content, /ALWAYS-RULE-BODY/);
 	assert.doesNotMatch(textOf(messages), /TESTING-RULE-BODY|WEB-RULE-BODY/);
 	assert.deepEqual(messages.slice(1), [user]);
+});
+
+test("a word in code that names no file in the repo loads nothing", async () => {
+	const s = session();
+	assert.doesNotMatch(await s.cell("bash('cd ~/elsewhere && cat tests/other.test.mjs')"), /TESTING-RULE-BODY/);
 });
 
 test("the start-up message is the same text on every call, so the cached prefix holds", async () => {
@@ -99,4 +105,18 @@ test("a session started outside the repo gets the repo's unscoped rules with its
 	const text = result.content.map((p) => p.text).join("\n");
 	assert.match(text, /ALWAYS-RULE-BODY/);
 	assert.match(text, /TESTING-RULE-BODY/);
+});
+
+test("a session whose cwd reaches the repo through a link gets no unscoped rule twice", async () => {
+	const link = `${repo}-link`;
+	symlinkSync(repo, link);
+	const handlers = new Map();
+	register({ on: (name, handler) => handlers.set(name, handler), appendEntry: () => {} }, { cellStart, cellSteps });
+	const ctx = { cwd: link, sessionManager: { getBranch: () => [] } };
+	assert.match(handlers.get("context")({ type: "context", messages: [user] }, ctx).messages[0].content, /ALWAYS-RULE-BODY/);
+	const result = handlers.get("tool_result")({ toolName: "ipython", input: { code: `open(${JSON.stringify(join(repo, "src", "a.test.ts"))})` }, content: [] }, ctx);
+	const text = result.content.map((part) => part.text).join("\n");
+	assert.match(text, /TESTING-RULE-BODY/);
+	assert.doesNotMatch(text, /ALWAYS-RULE-BODY/);
+	rmSync(link);
 });
