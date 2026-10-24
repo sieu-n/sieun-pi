@@ -252,6 +252,32 @@ const sameAbout = (about: string, others: readonly OtherAsk[], now: number): Oth
   return words.size < SAME_ABOUT_WORDS ? undefined : others.find(ask => now - Date.parse(ask.at) <= ASK_WINDOW_MS && [...words].every(word => incidentWords(ask.text).has(word)));
 };
 /**
+ * The device or account the owner must act on that a text names: "mac" for a Mac or MacBook, an M1 or M2 Air, or a handle with four letters
+ * in a row and a digit, such as krenerd77, fhnyq29tw5 or us-metal02.
+ */
+const thingsOf = (text: string): Set<string> => {
+  const lower = text.toLowerCase();
+  const things = new Set([...lower.matchAll(/\bm\d+ (?:air|pro|mini)\b/g), ...lower.matchAll(/(?<![\w@.-])(?=[\w-]*[a-z]{4})(?=[\w-]*\d)[a-z][\w-]{4,}/g)].map(match => match[0]));
+  if (/\bmac(?:book)?s?\b/.test(lower)) things.add("mac");
+  return things;
+};
+/** Words that say a device or account is out of reach until he acts: offline, asleep, locked, paused, declined, expired, signed out. */
+const THING_DOWN = /\b(?:offline|asleep|sleeping|slept|locked|paused|declined|expired|logged out|signed out|unreachable|disconnected)\b/gi;
+const downWords = (text: string): Set<string> => new Set([...text.matchAll(THING_DOWN)].map(match => match[0].toLowerCase()));
+/**
+ * The other chat's open todo that names the same device or account as the text and says it is down the same way. On 10-24 at 03:39Z SEO guy
+ * asked "Please open your MacBook and keep it awake on the network" while sep launch!! t30 ("Your MacBook Pro has been offline on Tailscale")
+ * and CI and RepoOps t67 ("Your Mac has been offline since 19:08 KST") waited, and the texts shared only 2 and 3 incident words with them.
+ * measured: over the 2,742 tell_owner lines sent in the owner's chats from 10-09 to 10-24 04:46Z, with each other chat's open todos of the last
+ * 24 h at the time, this matches 2 lines and no other: that one and CI and RepoOps' own Mac offline ask of 10-23 22:58Z, sent while t30 had
+ * waited 9 h. Evidence: ~/work/same-action-ask/replay.md.
+ */
+const sameThing = (text: string, others: readonly OtherAsk[], now: number): OtherAsk | undefined => {
+  const things = thingsOf(text), down = downWords(text);
+  return down.size === 0 ? undefined : others.find(ask => now - Date.parse(ask.at) <= ASK_WINDOW_MS
+    && [...thingsOf(ask.text)].some(thing => things.has(thing)) && [...downWords(ask.text)].some(word => down.has(word)));
+};
+/**
  * Words that send the owner to another chat's list for an ask, like "answer it once on metal-management's list" or "sign it back in from the
  * Railway Breach thread's list (t10)", both of 10-22: that chat already asks him, so this message asks nothing new.
  * measured: on the same replay these words catch those 2 lines and no other sent line.
@@ -574,7 +600,8 @@ export function tellOwner(input: TellInput, turn: TellTurn, now = Date.now(), pa
     return { kind: "refused", text: `${SPLIT_MARK}, ${Math.round((now - turn.lastSent.at) / 1000)} s after your last one. Its rest is detail, ` +
       "so put it on the board or the wiki page and end the turn, or send one message with the takeaway and the page link. If it is a second " +
       "point he must see, send the very same text again and it goes out (c117)." };
-  const other = ask ? sameAsk(`${told} ${about}`, turn.others ?? [], now) ?? sameAbout(about, turn.others ?? [], now) : undefined;
+  const other = ask ? sameAsk(`${told} ${about}`, turn.others ?? [], now) ?? sameAbout(about, turn.others ?? [], now)
+    ?? sameThing(`${told} ${about}`, turn.others ?? [], now) : undefined;
   if (ask && !other && OTHER_LIST.test(told)) return { kind: "refused", text: `${SAME_ASK_MARK}, since this sends him to another chat's list ` +
     `("${OTHER_LIST.exec(told)![0]}"). Do not ask him twice. Wait on that todo, and if you know something it lacks, send it to that chat with ` +
     "agent_message. If yours is a different question he must answer too, send the very same text again and it goes out (c117)." };
