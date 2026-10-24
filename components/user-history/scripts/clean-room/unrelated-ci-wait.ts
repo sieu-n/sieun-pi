@@ -8,7 +8,7 @@ import { DELIVERY } from "./run-archive.ts";
 import { firstClause, parseBoard, planJob } from "../../src/shared/chat-board.ts";
 import { D9_PUSH_PREFIX, NUDGE_PREFIX } from "../../src/shared/chat-feed.ts";
 import type { ChatBoard, PlanItem } from "../../src/shared/types.ts";
-import { readSessionFile, sessionFile, sessionFiles, type RunState, type Scenario, type SessionEvent, type Verdict } from "./session-read.ts";
+import { ownedDescendants, readSessionFile, sessionFile, sessionFiles, type RunState, type Scenario, type SessionEvent, type Verdict } from "./session-read.ts";
 
 /**
  * The clean-room scenario for a check-in that sees an unrelated CI run while a step waits on another step's live job (chat-2572 p18 and p20,
@@ -383,6 +383,33 @@ const CHECK_IN_NOTE = "[check-in] ";
 /** The service's own push of a job with no progress (`jobPushMessage` in src/checkin-jobs.ts). */
 const JOB_PUSH = /^The check-in (?:is checking on you|restarted you): /;
 
+/** Where a message's sender belongs: one of the trial's own sessions, outside the trial, or unknown when the evidence cannot place it. */
+export type Origin = { kind: "own" } | { kind: "outside"; why: string } | { kind: "unknown"; why: string };
+/**
+ * Places the sender of a message by recorded identity only. `own` holds the chat's own sessions, its descendants by recorded parentage among
+ * them (`ownedDescendants`). `foreign` holds sessions the chat's agents snapshots list with a link that is not its own ("message", "step"),
+ * which the catalog recorded as other threads. A receipt from another chat places the sender outside. Otherwise the sender's captured session
+ * file decides: a root, or a session whose recorded parent is not the trial's, is outside, and a missing file or a child file with no recorded
+ * parent is unknown. Carried-wait run-4 on 10-24: free-space-page-writer (01a16f95), whose header names the chat's job 01a16f7c as parent.
+ */
+export function senderOrigin(id: string, chat: string, own: ReadonlySet<string>, foreign: ReadonlySet<string> = new Set(), receipts: readonly Receipt[] = []): Origin {
+  if (id === chat || own.has(id)) return { kind: "own" };
+  if (foreign.has(id)) return { kind: "outside", why: "the chat's agents list it as another thread" };
+  const sent = receipts.find(receipt => receipt.from === id && receipt.fromChat !== undefined && receipt.fromChat !== chat);
+  if (sent) return { kind: "outside", why: `a receipt names its chat ${sent.fromChat}` };
+  const file = sessionFile(id, [chat, ...own]);
+  if (!file) return { kind: "unknown", why: `no session file of ${id} was captured, so its parentage is not recorded` };
+  let header: unknown;
+  try { header = JSON.parse(readFileSync(file, "utf8").split("\n", 1)[0] ?? ""); } catch { header = undefined; }
+  if (!isRecord(header) || header.type !== "session") return { kind: "unknown", why: `the session file of ${id} has no readable header` };
+  if (typeof header.parentSession === "string") {
+    const parent = header.parentSession.split("/").at(-1)!.replace(/\.jsonl$/, "");
+    return { kind: "outside", why: `its recorded parent ${parent} is not a session of the trial` };
+  }
+  if (typeof header.rlmDepth === "number" && header.rlmDepth > 0) return { kind: "unknown", why: `the session file of ${id} records depth ${header.rlmDepth} and no parent` };
+  return { kind: "outside", why: "its session file records a root session outside the trial" };
+}
+
 /** One trial session the steering check reads: its id, its name as the steer lines use it, and whether it is the chat itself. */
 export interface TrialSession { id: string; name?: string; head: boolean; file: string }
 
@@ -392,8 +419,8 @@ export interface TrialSession { id: string; name?: string; head: boolean; file: 
  * service wraps it as its own note. The chat's own check-in steers, its jobs' reports, its wakes and the service's resume after a daemon restart
  * are the system at work.
  */
-export function steering(sessions: readonly TrialSession[], chat: string, since: number, own: ReadonlySet<string>, delivery: Delivery | undefined):
-  { outside: string[]; unknown: string[]; owned: number } {
+export function steering(sessions: readonly TrialSession[], chat: string, since: number, own: ReadonlySet<string>, delivery: Delivery | undefined,
+  foreign: ReadonlySet<string> = new Set()): { outside: string[]; unknown: string[]; owned: number } {
   const outside: string[] = [];
   const unknown: string[] = [];
   let owned = 0;
@@ -453,7 +480,13 @@ export function steering(sessions: readonly TrialSession[], chat: string, since:
         continue;
       }
       if (event.customType !== "agent_message") continue;
-      if (event.fromId) { if (!session.head && event.fromId !== chat && !own.has(event.fromId)) outside.push(quote); continue; }
+      if (event.fromId) {
+        if (session.head) continue;
+        const origin = senderOrigin(event.fromId, chat, own, foreign, receipts);
+        if (origin.kind === "own") owned++;
+        else (origin.kind === "outside" ? outside : unknown).push(`${quote}; ${origin.why}`);
+        continue;
+      }
       const said = body(event.text);
       if (said.startsWith("[wake] ") || said.startsWith("[relay] ")) { owned++; continue; }
       if (said.trim() === "continue") {
@@ -609,9 +642,19 @@ export function judge(run: string, state: RunState, now = Date.now(), cache: Rea
   // The chat's own jobs are its check-in jobs and the sessions the agents snapshots list with link subagent or root, by session id only. A root
   // job the chat started reports to it as a sibling (carried-wait run-3's "disk free sampling 2" at 16:59Z), while another chat that wrote
   // to it is listed with link message (run-3's "AI harness developer environment VP" at 15:46Z) and stays someone stepping in.
-  const ownJobs = ownSessions(ev.agents.flatMap(entry => entry.list), jobs.map(job => job.id));
-  const outside = head.filter(event => event.kind === "text" && event.role === "custom" && (event.relation === "parent" || event.relation === "sibling") &&
-    !(event.fromId && (asked.get(event.fromId) ?? Infinity) < event.at) && !(event.fromId && ownJobs.has(event.fromId)));
+  const direct = ownSessions(ev.agents.flatMap(entry => entry.list), jobs.map(job => job.id));
+  // A session the chat's own sessions spawned is the trial's own by the parent its header records, at any depth (carried-wait run-4's
+  // free-space-page-writer under the job "free space page"). A session the agents snapshots list as another thread is outside.
+  const descendants = ownedDescendants([chat, ...direct], [chat, ...direct]);
+  const ownJobs = new Set([...direct, ...descendants.keys()]);
+  const foreign = new Set(ev.agents.flatMap(entry => entry.list.flatMap(agent => agent.sessionId && !ownJobs.has(agent.sessionId) && agent.link !== undefined &&
+    agent.link !== "subagent" && agent.link !== "root" ? [agent.sessionId] : [])));
+  const headIn = head.filter((event): event is Extract<SessionEvent, { kind: "text" }> => event.kind === "text" && event.role === "custom" && (event.relation === "parent" || event.relation === "sibling") &&
+    !(event.fromId && (asked.get(event.fromId) ?? Infinity) < event.at));
+  const placed = headIn.map(event => ({ event, origin: event.fromId ? senderOrigin(event.fromId, chat, ownJobs, foreign, delivery?.receipts ?? [])
+    : { kind: "unknown" as const, why: "the message records no sender session" } }));
+  const outside = placed.filter(({ origin }) => origin.kind === "outside").map(({ event }) => event);
+  const headUnknown = placed.flatMap(({ event, origin }) => origin.kind === "unknown" ? [`chat at ${iso(event.at)}: "${clip(event.kind === "text" ? event.text : "", 160)}"; ${origin.why}`] : []);
   const turns = head.filter(event => event.kind === "assistant" || event.kind === "call").length;
   const ended = now >= (state.until ?? Infinity);
   // Deliveries into the chat and its own jobs by recorded origin: a d9 push or another chat's job-steer is someone stepping in, though the
@@ -620,8 +663,10 @@ export function judge(run: string, state: RunState, now = Date.now(), cache: Rea
   for (const entry of ev.agents) for (const agent of entry.list) if (agent.sessionId && ownJobs.has(agent.sessionId)) names.set(agent.sessionId, agent.name);
   for (const job of jobs) names.set(job.id, job.name);
   const trial: TrialSession[] = [...sessionFile(chat) ? [{ id: chat, head: true, file: sessionFile(chat)! }] : [],
-    ...[...names].flatMap(([id, name]) => { const file = sessionFile(id, [chat]); return file ? [{ id, name, head: false, file }] : []; })];
-  const steered = steering(trial, chat, state.windowStart, ownJobs, delivery);
+    ...[...names].flatMap(([id, name]) => { const file = sessionFile(id, [chat]); return file ? [{ id, name, head: false, file }] : []; }),
+    ...[...descendants].filter(([id]) => !names.has(id)).map(([id, file]) => ({ id, head: false, file }))];
+  const steered = steering(trial, chat, state.windowStart, ownJobs, delivery, foreign);
+  steered.unknown.push(...headUnknown);
   const stepped = typed.length + outside.length + steered.outside.length;
   add("f", stepped || (ended && !turns) ? "not met" : steered.unknown.length || !turns ? "unknown" : "met", stepped
     ? "someone other than the first message, the server and the chat's own jobs reached the chat or its jobs"

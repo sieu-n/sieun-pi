@@ -155,7 +155,7 @@ test("unrelated-ci-wait: a job that saw an unrelated run and left the carried st
   const ownSteer = run({ inbox: [task, userLine(120, "[check-in] The check-in started your sampler for you."), served(125, "[wake] It is 16:35Z, the time you set with board.wake."),
     served(126, "continue")], delivery: { steers: [steer(chatOf(count + 1))], resumes: [{ job: "memory sampling", raw: "job memory sampling: interrupted (daemon_restart); continue: queued" }] } });
   assert.equal(ownSteer.verdict, "pass", ownSteer.check("f"));
-  assert.match(ownSteer.check("f"), /4 deliveries into its 3 sessions trace to its own/);
+  assert.match(ownSteer.check("f"), /5 deliveries into its 3 sessions trace to its own/);
   const foreign = run({ inbox: [task, userLine(120, "[check-in] Attack p75 now.")], delivery: { steers: [steer("01a1164b")] } });
   assert.equal(foreign.verdict, "void", "another chat's check-in job-steer into the chat's job is someone stepping in");
   assert.match(foreign.text, /Attack p75 now.*service\.log: "chat 01a1164b: check-in job steered job memory sampling"/);
@@ -172,9 +172,12 @@ test("unrelated-ci-wait: a job that saw an unrelated run and left the carried st
   assert.equal(noPushes.verdict, "open", "without the pushes file no d9 push can be ruled out");
   const resumeUntraced = run({ inbox: [task, served(126, "continue")] });
   assert.equal(resumeUntraced.verdict, "open", "a service continue with no resume line has no recorded origin");
-  const rootSibling = run({ inbox: [task, JSON.stringify({ type: "custom_message", customType: "agent_message", timestamp: iso(130), content: "[agent-message from sibling:VP] hi",
-    details: { from: { sessionId: "01a1164b-0000-7000-8000-000000000009", sessionName: "VP" }, fromRelationship: "sibling" } })] });
-  assert.equal(rootSibling.verdict, "void", "a message to one of the chat's jobs from a session outside the trial is someone stepping in");
+  const vpMessage = (fromId: string) => JSON.stringify({ type: "custom_message", customType: "agent_message", timestamp: iso(130), content: "[agent-message from sibling:VP] hi",
+    details: { from: { sessionId: fromId, sessionName: "VP" }, fromRelationship: "sibling" } });
+  const rootSibling = run({ extra: [vp], inbox: [task, vpMessage(VP)] });
+  assert.equal(rootSibling.verdict, "void", "a message to one of the chat's jobs from a thread the agents list records as another is someone stepping in");
+  const unplaced = run({ inbox: [task, vpMessage("01a1164b-0000-7000-8000-000000000009")] });
+  assert.equal(unplaced.verdict, "open", "a sender with no recorded identity in the evidence is unknown, never outside or own");
 
   const log = ["2026-10-24T14:00:00.000Z serve: listening", "chat 01a16e49: check-in job steered job early", "2026-10-24T14:30:00.000Z wakes: woke",
     "chat 01a16e49: check-in job steered job memory sampling", "chat 01a1164b: check-in job's message for job memory sampling went through the chat: 404",
@@ -221,6 +224,35 @@ test("unrelated-ci-wait: a job that saw an unrelated run and left the carried st
   assert.deepEqual(routed.nudges?.map(entry => `${entry.chat8} ${entry.job}`), ["01a16e49 memory sampling"]);
   assert.deepEqual(routed.receipts?.map(entry => `${entry.path} ${entry.from ?? "-"} ${entry.fromChat ?? "-"} ${entry.to.slice(0, 8)} ${entry.id} ${entry.owner?.slice(0, 8) ?? "-"}`),
     ["d9 push 01a1164b-4a2d-742d-b27a-82f086ed0200 01a1164b-4a2d-742d-b27a-82f086ed0200 01a16e49 m-77 01a16e22", "job-steer - - 01a16e4a sha256:0123456789ab -"]);
+
+
+  // carried-wait run-4 on 10-24: free-space-page-writer (01a16f95), a subagent of the chat's job "free space page", replied to that job as its
+  // child. Its session header records the job as its parent, which is what makes it the trial's own, never its name or text.
+  const WRITER = "01a16f95-b211-758c-8541-498f6cbe20c9";
+  const reply = (fromId: string) => JSON.stringify({ type: "custom_message", customType: "agent_message", timestamp: iso(170), content: "[agent-message from child:free-space-page-writer] The page is up.",
+    details: { from: { sessionId: fromId, sessionName: "free-space-page-writer" }, fromRelationship: "child" } });
+  const writerFile = (chat: string, parent: string | null, depth = 2) => {
+    const folder = join(home, ".prime", "agent", "session-artifacts", chat, "sub-s", "sub-w");
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(join(folder, `${WRITER}.jsonl`), JSON.stringify({ type: "session", id: WRITER, timestamp: iso(150), rlmDepth: depth,
+      ...parent ? { parentSession: `/home/sieun/.prime/agent/session-artifacts/${chat}/sub-s/${parent}.jsonl` } : {} }) + "\n");
+  };
+  const nestedRun = (parent: string | null | "none", depth = 2) => {
+    const chat = idOf("01a16e31", count + 1);
+    if (parent !== "none") writerFile(chat, parent === null ? null : parent, depth);
+    return run({ inbox: [task, reply(WRITER)] });
+  };
+  const ownChild = nestedRun(SAMPLER);
+  assert.equal(ownChild.verdict, "pass", `a subagent of the chat's job, by its recorded parent, is the trial's own: ${ownChild.check("f")}`);
+  const strayChild = nestedRun("01a1164b-0000-7000-8000-000000000009");
+  assert.equal(strayChild.verdict, "void", "the same name and text from a session whose recorded parent is outside the trial is someone stepping in");
+  assert.match(strayChild.text, /recorded parent 01a1164b-0000-7000-8000-000000000009 is not a session of the trial/);
+  const uncaptured = nestedRun("none");
+  assert.equal(uncaptured.verdict, "open", "a sender whose session file was not captured has no recorded parentage, so f is unknown");
+  assert.match(uncaptured.check("f"), /^- f unknown/);
+  assert.match(uncaptured.text, /no session file of 01a16f95-b211-758c-8541-498f6cbe20c9 was captured/);
+  const orphan = nestedRun(null);
+  assert.equal(orphan.verdict, "open", "a child session file with no recorded parent is unknown");
 
   const stopped = run({ sampler: "done" });
   assert.equal(stopped.verdict, "fail", "a prerequisite whose owner stopped a whole interval ago and that the run did not flag fails e");
