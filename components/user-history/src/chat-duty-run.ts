@@ -1133,7 +1133,7 @@ export class Duties {
       const readings = outputReadings(duty.readings, output);
       flagged = output.flagged ?? [];
       record = { duty: dutyId, at: started, slot: at, trigger, ms: this.now() - started, verdict: judged.verdict, metrics: judged.metrics, summary: judged.summary, detail,
-        ...(judged.parts ? { parts: judged.parts } : {}), ...(readings ? { readings } : {}),
+        ...(judged.parts ? { parts: judged.parts } : {}), ...(judged.items ? { items: judged.items } : {}), ...(readings ? { readings } : {}),
         ...(judged.verdict === "error" ? { error: judged.summary } : {}), ...overrunOf(), ...link };
     } catch (error) {
       await rm(detail, { force: true });
@@ -1163,7 +1163,7 @@ export class Duties {
     const idle = record.verdict === "met" && !misses.length && !record.overrun && !flagged.some(slice => slice.item !== undefined || slice.handOff);
     this.steps.set(key, { at: started, step: "starting its job" });
     const measured = record.verdict === "met" || record.verdict === "missed" ? { at: started, verdict: record.verdict, metrics: record.metrics, summary: record.summary,
-      ...(record.parts ? { parts: record.parts } : {}) } : null;
+      ...(record.parts ? { parts: record.parts } : {}), ...(record.items ? { items: record.items } : {}) } : null;
     const handOff = findingsFile && flagged.some(slice => slice.handOff) ? { items: flagged.filter(slice => slice.handOff), detail: findingsFile } : undefined;
     await this.startJob(chatId, record, duty, { schedule: duty.schedule, measured, ...idle ? { idle: true as const } : {},
       brief: { measure: record.verdict === "error" ? `no measure (${record.summary})` : record.summary, findings, misses }, ...handOff ? { handOff } : {} });

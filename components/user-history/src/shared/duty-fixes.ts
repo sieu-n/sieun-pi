@@ -102,9 +102,16 @@ export async function dutyFixes(board: ChatBoard | null, duty: string, metrics: 
       if (newest) pick = { item: newest, live: false };
     }
     if (pick) fixes[metric] = { step: pick.item.id, ...(pick.item.job ? { job: pick.item.job } : {}), live: pick.live, ...(pick.hold ? { hold: pick.hold } : {}),
-      ...(pick.stalled ? { stalled: pick.stalled } : {}) };
+      ...(pick.stalled ? { stalled: pick.stalled } : {}), ...stepTarget(pick.item) };
   }
   return fixes;
+}
+
+/** A step's own target with its last measurement, as `FixLink.target` keeps it; none when the step has no target or no measurement. */
+function stepTarget(item: PlanItem): { target: NonNullable<FixLink["target"]> } | Record<string, never> {
+  const target = item.target;
+  if (!target || typeof target.current !== "number" || !Number.isFinite(target.current)) return {};
+  return { target: { current: target.current, target: target.target, ...(target.measuredAt ? { measuredAt: target.measuredAt } : {}) } };
 }
 
 export const missedKeys = (run: Pick<DutyRunRecord, "metrics">): string[] => Object.entries(run.metrics).filter(([, result]) => !result.met).map(([key]) => key);

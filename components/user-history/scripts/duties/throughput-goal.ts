@@ -383,6 +383,7 @@ export function report(d: ThroughputData, dutyMetrics: readonly DutyMetric[]): P
   metrics.throughput_goals_missed = rows.filter(missed).length;
   if (rows.some(row => row.value === null || row.goal === null)) unmeasured.add("throughput_goals_missed");
   for (const row of rows) flagged.push({ at: d.now, kind: "goal", item: row.item, excerpt: goalLine(row).slice(0, 300) });
+  const items = Object.fromEntries(rows.flatMap(row => row.value === null || row.goal === null ? [] : [[row.item, { value: row.value, target: row.goal, op: row.op }] as const]));
   if (d.others) {
     const named = (kind: string): string => kind.replace(/^(\w+)/, word => ({ instagram: "Instagram", tiktok: "TikTok", youtube: "YouTube", linkedin: "LinkedIn" })[word] ?? word);
     flagged.push({ at: d.now, kind: "no_goal", excerpt: `No throughput goal on the board, so left out of the count: ${d.others.length ? d.others.map(o =>
@@ -417,7 +418,7 @@ export function report(d: ThroughputData, dutyMetrics: readonly DutyMetric[]): P
   for (const error of d.errors) flagged.push({ at: d.now, kind: "source_error", excerpt: `${error.source}: ${error.message}`.slice(0, 300) });
   const replaced = settle(dutyMetrics, metrics, unmeasured);
   if (replaced.length) flagged.unshift(unmeasuredFlag(replaced, d.now));
-  return { metrics, flagged, ...(metrics.ig_queues_growing_6h! > 0 ? { lastEventAt: { ig_queues_growing_6h: d.now } } : {}) };
+  return { metrics, flagged, ...Object.keys(items).length ? { items } : {}, ...(metrics.ig_queues_growing_6h! > 0 ? { lastEventAt: { ig_queues_growing_6h: d.now } } : {}) };
 }
 
 /** What each goal's crawl counts: every Instagram profile read on any path (p826's own reading), and TikTok Shop's good products as its rate controller lane counts them. */

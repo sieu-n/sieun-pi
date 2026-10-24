@@ -36,8 +36,9 @@ export interface MetricStreak {
 }
 
 /** The run as judged: its after-job measure when it has one, else its own. */
-export function effectiveRun(run: DutyRunRecord): Pick<DutyRunRecord, "verdict" | "metrics" | "summary" | "parts"> {
-  return run.after ? { verdict: run.after.verdict, metrics: run.after.metrics, summary: run.after.summary, ...(run.after.parts ? { parts: run.after.parts } : {}) } : run;
+export function effectiveRun(run: DutyRunRecord): Pick<DutyRunRecord, "verdict" | "metrics" | "summary" | "parts" | "items"> {
+  return run.after ? { verdict: run.after.verdict, metrics: run.after.metrics, summary: run.after.summary, ...(run.after.parts ? { parts: run.after.parts } : {}),
+    ...(run.after.items ? { items: run.after.items } : {}) } : run;
 }
 
 const measured = (run: DutyRunRecord): boolean => { const verdict = effectiveRun(run).verdict; return verdict === "met" || verdict === "missed"; };
@@ -91,15 +92,58 @@ export const fixMisses = (streak: readonly DutyRunRecord[], key: string, fix: Fi
  * once he answers: AI harness p919 waited on Railway Breach's t11 at 08:37Z on 10-23, t11 closed, and its job started on it again by 09:11Z,
  * which d9 read as 6 misses under p919 counting 4 from before the hold.
  */
-export function fixStepStreak(runs: readonly DutyRunRecord[], key: string, step: string): { misses: number; moved: boolean } {
+/** What a fix step works, as one run read it: the board item (the step or one above it) and its number against its own target. */
+export interface WorkedReading { item: string; value: number; target: number }
+/** How far a fix's own number moved over the runs that named it (`fixStepStreak`): the item, its value at the first of them and now, and its target now. */
+export interface WorkedMove { item: string; from: number; to: number; target: number }
+
+/**
+ * The number a run read for what `step` works: the duty's own reading of the step (`DutyRunRecord.items`), else the step's own target as the
+ * run found it (`FixLink.target`), else the duty's reading of the nearest item above the step (`above`, nearest first).
+ */
+function workedReading(run: DutyRunRecord, fix: FixLink | undefined, step: string, above: readonly string[]): WorkedReading | undefined {
+  const items = effectiveRun(run).items ?? {};
+  const own = items[step];
+  if (own) return { item: step, value: own.value, target: own.target };
+  if (fix?.step === step && fix.target) return { item: step, value: fix.target.current, target: fix.target.target };
+  const id = above.find(entry => items[entry] !== undefined);
+  return id === undefined ? undefined : { item: id, value: items[id]!.value, target: items[id]!.target };
+}
+
+/**
+ * The misses of `key`'s current streak (`streakRuns`) whose run named `step` as its fix, and whether the value is closer to the target now than
+ * at the first of them. A fix is judged on its own runs: the whole streak counted the misses before it too, so the root-cause step a chat
+ * started on d9's push read as a fix that does not move from its first run. SEO guy 10-23: d9's 04:07Z push replaced p83 with p90, whose job
+ * started at 04:10Z, and the 05:06Z d2 run, the first to name p90, made it 18 misses with no move, so d9 asked again to replace p90.
+ * A run that found the step held by an open For you todo (`FixLink.hold`) ends the count, since the fix waited on the owner and starts again
+ * once he answers: AI harness p919 waited on Railway Breach's t11 at 08:37Z on 10-23, t11 closed, and its job started on it again by 09:11Z,
+ * which d9 read as 6 misses under p919 counting 4 from before the hold.
+ * When the newest named run and an older one read a number for what the step works (`workedReading`: the step's item, its own target, or the
+ * item above it in `above`, nearest first), the move is judged on that number from the oldest such run, and `worked` says how far it went. A
+ * count or a 0-or-1 metric moves only when a whole item clears: on 10-24 Crawler VP's d9 read throughput_goals_missed 3 then 4 under p942, so
+ * d9 asked to replace it, while p850, the goal above p942, went from 135 to 159 walks a minute against 252.
+ */
+export function fixStepStreak(runs: readonly DutyRunRecord[], key: string, step: string, above: readonly string[] = []):
+  { misses: number; moved: boolean; worked?: WorkedMove } {
   const named: MetricResult[] = [];
+  const readings: WorkedReading[] = [];
   for (const run of streakRuns(runs)) {
     const found = effectiveRun(run).metrics[key];
     const fix = run.fixes?.[key];
     if (!found || found.met || (fix?.step === step && fix.hold !== undefined)) break;
-    if (fix?.step === step) named.push(found);
+    if (fix?.step !== step) continue;
+    const reading = workedReading(run, fix, step, above);
+    if (reading && (named.length === 0 || reading.item === readings[0]?.item)) readings.push(reading);
+    named.push(found);
   }
-  return { misses: named.length, moved: named.length > 0 && gap(named[0]!) < gap(named[named.length - 1]!) };
+  const misses = named.length;
+  const now = readings[0];
+  const first = readings[readings.length - 1];
+  if (now && first && readings.length > 1) {
+    const distance = (reading: WorkedReading): number => Math.abs(reading.value - reading.target);
+    return { misses, moved: distance(now) < distance(first), worked: { item: now.item, from: first.value, to: now.value, target: now.target } };
+  }
+  return { misses, moved: misses > 0 && gap(named[0]!) < gap(named[misses - 1]!) };
 }
 
 /** The current miss streak of every metric the newest measured run missed, from runs newest first. */

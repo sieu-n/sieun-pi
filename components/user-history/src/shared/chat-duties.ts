@@ -65,6 +65,12 @@ export const overrunWords = (overrun: PrecheckOverrun): string =>
  * count that no new event raised from one whose old events have not left the window yet (`MetricStreak.quietSince`).
  */
 export interface PrecheckOutput { metrics: Record<string, number>; flagged?: FlaggedSlice[]; lastEventAt?: Record<string, number>;
+  /**
+   * The number of each board item a counted metric counts, by plan item id, read against that item's own target (`judge` keeps the valid
+   * ones as `DutyRunRecord.items`). A fix of one item is judged on it (`fixStepStreak`): on 10-24 Crawler VP's d9 throughput_goals_missed went
+   * 3 to 4 under p942 because p826 began to miss, while p850, the goal p942 works, went from 135 to 159 walks a minute against 252.
+   */
+  items?: Record<string, { value: number; target: number; op: DutyMetric["op"] }>;
   /** Server notices the runner sends to other chats when the precheck ends, before the duty's job starts (`DutyHost.tell`): d9's pushes. */
   tells?: { chat: string; text: string }[] }
 /**
@@ -129,6 +135,8 @@ export interface DutyRunRecord {
   parts?: Record<string, MetricResult>;
   /** The duty's readings the precheck measured (`outputReadings`). */
   readings?: Record<string, number>;
+  /** Per board item a counted metric counts, its number against its own target (`PrecheckOutput.items`). */
+  items?: Record<string, MetricResult>;
   classes?: Record<string, number>; flagged?: FlaggedSlice[]; job?: DutyJobRef;
   /** Set when the precheck ran past its soft target. */
   overrun?: PrecheckOverrun;
@@ -158,11 +166,13 @@ export interface DutyCut { error: string; at: number; provider?: string; slotAt?
  * the open For you todo that holds the step (`hold`, by `todoName`, from src/shared/todo-hold.ts) when only the owner's answer moves it.
  */
 export interface FixLink { step: string; job?: string; live: boolean; hold?: string;
+  /** The step's own target with its last measurement when the run looked (`GoalTarget.current`), so the runs keep its history (`fixStepStreak`). */
+  target?: { current: number; target: number; measuredAt?: string };
   /** The job's session sat in one tool call past STALL_MS when the run looked (src/shared/stalled-calls.ts): not live, and the brief names its process. */
   stalled?: StalledCall }
 /** A run's re-measure after its own job ended. */
 export interface AfterMeasure { at: number; verdict: "met" | "missed" | "error"; metrics: Record<string, MetricResult>; summary: string; parts?: Record<string, MetricResult>;
-  readings?: Record<string, number> }
+  readings?: Record<string, number>; items?: Record<string, MetricResult> }
 /** The part of a duty the card shows; the check-in duty has the same fields. */
 export type DutyCard = Pick<Duty, "id" | "name" | "ownerWords" | "goal" | "metrics" | "status"> & { boardGoal?: string };
 /**
@@ -314,11 +324,22 @@ export function outputReadings(readings: readonly DutyReading[] | undefined, out
   }
   return Object.keys(found).length ? found : undefined;
 }
+/** The valid items of a precheck output (`PrecheckOutput.items`): a finite value and target and a known op, each judged against its own target. */
+export function outputItems(output: PrecheckOutput): Record<string, MetricResult> | undefined {
+  const found: Record<string, MetricResult> = {};
+  for (const [id, item] of Object.entries(output.items ?? {})) {
+    if (!item || !Number.isFinite(item.value) || !Number.isFinite(item.target) || (item.op !== "<=" && item.op !== ">=") || isPlaceholder(item.value)) continue;
+    found[id] = { value: item.value, target: item.target, op: item.op, met: item.op === "<=" ? item.value <= item.target : item.value >= item.target };
+  }
+  return Object.keys(found).length ? found : undefined;
+}
 export function judge(metrics: readonly DutyMetric[], output: PrecheckOutput): { verdict: "met" | "missed" | "error"; metrics: Record<string, MetricResult>; summary: string;
-  parts?: Record<string, MetricResult> } {
+  parts?: Record<string, MetricResult>; items?: Record<string, MetricResult> } {
   const parts = metricParts(metrics, output);
+  const items = outputItems(output);
   const judged = judgeCounted(metrics, output);
-  return parts && judged.verdict !== "error" ? { ...judged, parts } : judged;
+  if (judged.verdict === "error") return judged;
+  return { ...judged, ...parts ? { parts } : {}, ...items ? { items } : {} };
 }
 function judgeCounted(metrics: readonly DutyMetric[], output: PrecheckOutput): { verdict: "met" | "missed" | "error"; metrics: Record<string, MetricResult>; summary: string } {
   const note = shapeNote(metrics);

@@ -121,7 +121,20 @@ function localCopy(file: string | undefined): { file: string; host: string } | u
  * A red duty of the fleet, with the newest event time when every metric it misses is a windowed count that only ages out (`agingSince`), and
  * the lead metric's misses under its fix step with whether they moved (`underFix`, `fixStepStreak`).
  */
-export type RedDuty = FleetDuty & { agingSince?: number; underFix?: { misses: number; moved: boolean } };
+export type RedDuty = FleetDuty & { agingSince?: number; underFix?: ReturnType<typeof fixStepStreak> };
+
+/** The ids of the plan items above `id` on a board, nearest first: what a fix step's own number can be read from (`fixStepStreak`). */
+export function itemsAbove(board: ChatBoard | null, id: string): string[] {
+  const find = (items: readonly PlanItem[], path: readonly string[]): string[] | undefined => {
+    for (const item of items) {
+      if (item.id === id) return [...path].reverse();
+      const found = find(item.children, [...path, item.id]);
+      if (found) return found;
+    }
+    return undefined;
+  };
+  return find(board?.plan ?? [], []) ?? [];
+}
 
 /**
  * When a red duty misses only windowed counts with no new event since the run before (`MetricStreak.quietSince`, the duty runner's own quiet
@@ -149,6 +162,8 @@ export interface NotMoving { chat: string; duty: string; line: string }
  * time after 1 miss, 76% after 2, 67% after 3 and 32% after 12 or more.
  * A windowed count with no new event (`quietSince`) only waits, and a duty whose missed metrics' fix steps all wait on an open For you todo
  * (`FleetDuty.held`) waits on the owner and owes no new job.
+ * When the runs read a number for the item the step works (`fixStepStreak` with `itemsAbove`), the move is judged on that number and the
+ * line names it, since a count of goals or risks moves only when one clears.
  */
 export function fixNotMoving(red: readonly RedDuty[], name: (chat: string) => string): NotMoving[] {
   return red.flatMap(duty => {
@@ -156,8 +171,11 @@ export function fixNotMoving(red: readonly RedDuty[], name: (chat: string) => st
     const under = duty.underFix;
     if (duty.held || !duty.fix || metric?.fix?.step !== duty.fix || duty.agingSince !== undefined || metric.quietSince !== undefined || !under ||
       under.moved || under.misses < CHANGE_APPROACH_MISSES) return [];
+    const worked = under.worked;
+    const stall = worked ? `${worked.item}, the item ${duty.fix} works, read ${show(worked.to)} against ${show(worked.target)}, no closer than its ${show(worked.from)} when the first of those runs measured it`
+      : `${show(metric.value)} against ${metric.op} ${show(metric.target)} and no closer than when ${duty.fix} began`;
     return [{ chat: duty.chat, duty: duty.duty, line: `${name(duty.chat)}: ${duty.name} (${duty.duty}) missed ${metric.key} ${metric.misses} runs in a row, ` +
-      `${under.misses} of them under its fix step ${duty.fix}, ${show(metric.value)} against ${metric.op} ${show(metric.target)} and no closer than when ${duty.fix} began, ` +
+      `${under.misses} of them under its fix step ${duty.fix}, ${stall}, ` +
       `while ${duty.fix} has a live job. Replace that fix: start a root-cause job with rlm.create_session that finds why ${duty.fix} does not move the number and fixes that cause, ` +
       `give it its own step with duty "${duty.duty}/${metric.key}", and close or drop ${duty.fix} with a note naming the new step` }];
   });
@@ -588,7 +606,7 @@ async function main(): Promise<void> {
   const red = fleet.duties.filter(duty => !duty.green && !duty.pending).map((duty): RedDuty => {
     const own = runsOf(duty.chat, duty.duty);
     const since = agingSince(own);
-    const under = duty.fix && duty.metric ? { underFix: fixStepStreak(own, duty.metric.key, duty.fix) } : {};
+    const under = duty.fix && duty.metric ? { underFix: fixStepStreak(own, duty.metric.key, duty.fix, itemsAbove(plan.boards.get(duty.chat) ?? null, duty.fix)) } : {};
     return { ...duty, ...under, ...since === undefined ? {} : { agingSince: since } };
   });
   const idleGoals = plan.chats.filter(chat => !plan.pausedChats.has(chat.id)).map(chat => ({ chat: chat.id, goals: goalsWithNoJob(plan.boards.get(chat.id) ?? null,
