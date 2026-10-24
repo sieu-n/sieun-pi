@@ -11,8 +11,9 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  * The owner merged the Crawler API and Query MCP duties on 10-22 (msg mvj491h5): "merge Crawler API & Query MCP".
  * The headline counts what fails on prod for a customer: the documented crawler API routes that fail for a crawler reason, read by
  * auto-sns-agent scripts/duties/crawler/crawler-api.mjs from the API portal chat's d2 detail file, plus each Query MCP call that fails on
- * prod https://virev.ai/mcp on either tier. The two supporting counts, minutes the API and its health snapshots were down in 24 h, come
- * from the same crawler-api.mjs run (prod Prometheus through obs.virev.ai).
+ * prod https://virev.ai/mcp on either tier. The supporting counts, minutes the API and its health snapshots were down in 24 h (prod
+ * Prometheus through obs.virev.ai) and the Instagram posts behind the prod OpenSearch alias crawler_v3_posts (0 when the alias is off),
+ * come from the same crawler-api.mjs run. The posts count keeps p689, closed on 10-24 at 1,411.8M against 1,007M.
  * The MCP half calls prod the way a customer's agent does (JSON-RPC over Streamable HTTP, a bearer token): describe, a sql count, a search
  * count and the owner's follower-bucket sql (10-15 23:58Z: "팔로워 구간별로 좋아요 수 비율 분석해줘" as one group-by sql call), per tier.
  * The identity is the prod test user mcp-duty-checker with orgs org_mcp_duty_standard and org_mcp_duty_full (dataApi allow), made on 10-20
@@ -132,7 +133,7 @@ async function readCrawlerApi(): Promise<PrecheckOutput> {
  */
 export function report(api: PrecheckOutput | Error, mcp: Record<string, CallResult[]> | Error, now: number): PrecheckOutput {
   const flagged: FlaggedSlice[] = [];
-  const read = (key: string) => (api instanceof Error ? UNMEASURED : api.metrics[key] ?? UNMEASURED);
+  const read = (key: string, missing = UNMEASURED) => (api instanceof Error ? missing : api.metrics[key] ?? missing);
   if (api instanceof Error) flagged.push({ at: now, kind: "source_error", excerpt: `crawler-api.mjs failed: ${api.message}`.slice(0, 299) });
   else for (const slice of api.flagged ?? []) {
     if (slice.kind === "unmeasured") continue;
@@ -153,9 +154,10 @@ export function report(api: PrecheckOutput | Error, mcp: Record<string, CallResu
     [HEADLINE]: routes === UNMEASURED || mcpFailing === UNMEASURED ? UNMEASURED : routes + mcpFailing,
     api_down_minutes_24h: read("api_down_minutes_24h"),
     health_snapshot_down_minutes_24h: read("health_snapshot_down_minutes_24h"),
+    ig_posts_searchable: read("ig_posts_searchable", -UNMEASURED),
   };
-  const unmeasured = Object.entries(metrics).filter(([, value]) => value === UNMEASURED).map(([key]) => key);
-  if (unmeasured.length) flagged.push({ at: now, kind: "unmeasured", excerpt: `Not measured this run, so the value is ${UNMEASURED} and counts as a miss: ${unmeasured.join(", ")}. Fix the source error first.` });
+  const unmeasured = Object.entries(metrics).filter(([, value]) => Math.abs(value) === UNMEASURED).map(([key]) => key);
+  if (unmeasured.length) flagged.push({ at: now, kind: "unmeasured", excerpt: `Not measured this run, so the value is ${UNMEASURED} or -${UNMEASURED} and counts as a miss: ${unmeasured.join(", ")}. Fix the source error first.` });
   const lastEventAt = api instanceof Error ? undefined : api.lastEventAt;
   return { metrics, flagged, ...(lastEventAt && Object.keys(lastEventAt).length ? { lastEventAt } : {}) };
 }
