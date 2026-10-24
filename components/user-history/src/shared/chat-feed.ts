@@ -39,8 +39,14 @@ export const OPS_STEER_PREFIX = "[board] Ops not applied: ";
  * the scratchpad; the feed still reads it in older transcripts as a note the owner did not type.
  */
 const DECISION_STEER_PREFIX = "[board] Decisions not on the scratchpad: ";
+/**
+ * The tag that opens the chat system duty's push to a chat, `[d9 push <ISO minute>Z]` (scripts/duties/chat-system.ts), which the duty runner
+ * sends as a server notice (`DutyHost.tell`). Until 10-24 the feed read it as the owner's: the 08:03Z push to one chat drew as his bubble and
+ * d11 counted it as his unanswered burst.
+ */
+export const D9_PUSH_PREFIX = "[d9 push ";
 const SERVER_NOTES: readonly [string, string][] = [[CHECK_IN_PREFIX, "check-in"], [JOB_NOTICE_PREFIX, "jobs"], [REPLY_CHECK_PREFIX, "reply check"], [BRIEF_CHECK_PREFIX, "brief check"],
-  [CORRECTION_CHECK_PREFIX, "corrections"], [OPS_STEER_PREFIX, "board"], [DECISION_STEER_PREFIX, "board"],
+  [CORRECTION_CHECK_PREFIX, "corrections"], [OPS_STEER_PREFIX, "board"], [DECISION_STEER_PREFIX, "board"], [D9_PUSH_PREFIX, "d9"],
   ["Prime Agent restarted after an update", "Prime"], ["Watchdog recovery checkpoint", "watchdog"]];
 /**
  * Prime's own notes in a user message open with a snake_case tag on its own line: <provider_quota_resumed>, <prime_agent_update_interrupted>,

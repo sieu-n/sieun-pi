@@ -6,6 +6,7 @@ import { trainFile } from "../../src/checkin-load.ts";
 import { messageId, ownSessions } from "../../src/clean-room-subjects.ts";
 import { DELIVERY } from "./run-archive.ts";
 import { firstClause, parseBoard, planJob } from "../../src/shared/chat-board.ts";
+import { D9_PUSH_PREFIX, NUDGE_PREFIX } from "../../src/shared/chat-feed.ts";
 import type { ChatBoard, PlanItem } from "../../src/shared/types.ts";
 import { readSessionFile, sessionFile, sessionFiles, type RunState, type Scenario, type SessionEvent, type Verdict } from "./session-read.ts";
 
@@ -376,8 +377,8 @@ export async function readDelivery(state: RunState, until: number): Promise<Deli
 
 /** The body of a server-sent agent message, after its "[agent-message from <client>]" header. */
 const body = (text: string): string => text.replace(/^\[agent-message from [^\]]*\]\s*/, "").trimStart();
-/** Prefixes of notes another chat's duty or job puts in a session: a d9 push and the old cross-chat nudge (`NUDGE_PREFIX`). */
-const FOREIGN_NOTE = /^\[(?:d9 push |from )/;
+/** Whether a note is one another chat's duty or job puts in a session: a d9 push or the old cross-chat nudge. */
+const foreignNote = (text: string): boolean => text.startsWith(D9_PUSH_PREFIX) || text.startsWith(NUDGE_PREFIX);
 const CHECK_IN_NOTE = "[check-in] ";
 /** The service's own push of a job with no progress (`jobPushMessage` in src/checkin-jobs.ts). */
 const JOB_PUSH = /^The check-in (?:is checking on you|restarted you): /;
@@ -438,7 +439,7 @@ export function steering(sessions: readonly TrialSession[], chat: string, since:
       const quote = `${session.name ?? session.id} at ${iso(event.at)}: "${clip(event.text, 160)}"`;
       if (event.role === "user") {
         const text = event.text.trimStart();
-        if (FOREIGN_NOTE.test(text)) { outside.push(quote); continue; }
+        if (foreignNote(text)) { outside.push(quote); continue; }
         if (!session.head && text.startsWith(CHECK_IN_NOTE)) {
           const receipt = steerReceipt(text);
           // A receipt from outside the trial is already counted above, by the receipt itself.

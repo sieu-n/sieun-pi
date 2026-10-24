@@ -13,7 +13,7 @@ import { listedSessions } from "../../src/daemon-faults.ts";
 import { ownerChats } from "../../src/owner-chats.ts";
 import { chatDataDir } from "../../src/owner-ok.ts";
 import type { DutyRunRecord, FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
-import { serverNote } from "../../src/shared/chat-feed.ts";
+import { D9_PUSH_PREFIX, serverNote } from "../../src/shared/chat-feed.ts";
 import type { ChatBoard, PlanItem } from "../../src/shared/types.ts";
 import { CHANGE_APPROACH_MISSES, fixStepStreak, metricStreaks } from "../../src/shared/duty-streak.ts";
 import { hasDoneLine, upkeepWords } from "../../src/shared/upkeep-title.ts";
@@ -528,6 +528,9 @@ export function pushItems(entry: ReturnType<typeof pushList>[number]): string {
  * temporarily unavailable", sat until the runner replaced them, and the runs between were skipped, so 8 chats whose fix did not move never
  * got the root-cause ask.
  */
+/** The tag a run's pushes open with, `[d9 push <ISO minute>Z]`, which the feed reads as a server note by its prefix (`D9_PUSH_PREFIX`). */
+export const pushTag = (now: number): string => `${D9_PUSH_PREFIX}${new Date(now).toISOString().slice(0, 16)}Z]`;
+
 export function pushTells(pushes: ReturnType<typeof pushList>, tag: string): { chat: string; text: string }[] {
   return pushes.map(entry => ({ chat: entry.chat, text: `${tag} The chat system duty (d9) found these in your chat: ${pushItems(entry)}. ${PUSH_ASK}` }));
 }
@@ -633,7 +636,7 @@ async function main(): Promise<void> {
   const result = chatSystemOutput({ names, stuck, upkeep, fleet: { pct: fleet.metrics.duties_green_pct, red }, stuckDuties: counts.redDuties, idleGoals, followUps, detail, hostHeld });
   const fleetMissing = fleet.flagged.filter(slice => slice.kind === "fleet_data_missing");
   result.flagged!.push(...fleetMissing);
-  const tag = `[d9 push ${new Date(now).toISOString().slice(0, 16)}Z]`;
+  const tag = pushTag(now);
   const name = (chat: string): string => names.get(chat) ?? chat.slice(0, 8);
   const notMoving = fixNotMoving(red, name);
   const pushes = pushList({ idleGoals, stuck, stuckDuties: counts.redDuties, lagging: owned.lagging, notMoving, upkeep });
