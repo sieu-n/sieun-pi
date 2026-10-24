@@ -194,6 +194,37 @@ export function outsideMover(view: Pick<StepView, "item" | "owner" | "mine">, mo
   return undefined;
 }
 
+/**
+ * The steps whose wait names a step held on an offline box (`held`), each with the step it names and that step's hold, through chains of such
+ * waits. Only a held step holds another: a wait on a step a live owner moves on a reachable box holds nothing. On 10-24 frontend bro's p333,
+ * whose job ran on us-metal02, waited for p332 to push its commit from the Mac while Tailscale read the Mac offline and For you asked it back.
+ */
+export function waitHolds(steps: readonly Pick<PlanItem, "id" | "waitFor">[], held: ReadonlyMap<string, HostHold>): Map<string, { on: string; hold: HostHold }> {
+  const out = new Map<string, { on: string; hold: HostHold }>();
+  const holds = new Map(held);
+  for (let grew = true; grew;) {
+    grew = false;
+    for (const step of steps) {
+      const on = holds.has(step.id) ? undefined : (step.waitFor?.match(/\bp\d+\b/g) ?? []).find(id => id !== step.id && holds.has(id));
+      if (on === undefined) continue;
+      holds.set(step.id, holds.get(on)!);
+      out.set(step.id, { on, hold: holds.get(on)! });
+      grew = true;
+    }
+  }
+  return out;
+}
+
+/** End states with each stuck step whose wait names a `host` step (`waitHolds`) moved to `host` under that step's hold. */
+export function withWaitHolds(states: readonly EndStateView[]): EndStateView[] {
+  const held = new Map(states.flatMap(entry => entry.state === "host" && entry.hold ? [[entry.view.item.id, entry.hold] as const] : []));
+  const waits = waitHolds(states.filter(entry => !OK_STATES.has(entry.state)).map(entry => entry.view.item), held);
+  return states.map(entry => {
+    const wait = waits.get(entry.view.item.id);
+    return wait ? { view: entry.view, state: "host", reason: `its wait is on ${wait.on}, whose job runs on ${holdWords(wait.hold)}`, hold: wait.hold } : entry;
+  });
+}
+
 /** The KPI of a set of end states: open steps, how many are in the end state, how many are stuck and by what, and the share in the end state. */
 export interface EndStateKpi { open: number; ok: number; stuck: number; pct: number; byState: Partial<Record<EndState, number>> }
 export function endStateKpi(states: readonly Pick<EndStateView, "state">[]): EndStateKpi {

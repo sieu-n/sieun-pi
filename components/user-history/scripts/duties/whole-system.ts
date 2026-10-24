@@ -9,8 +9,9 @@ import { type CutSpan, cutWords, readCut, readCutSpans, tailLines, type CutCause
 import { activePause, checkInSettings } from "../../src/checkin-settings.ts";
 import { BoardStore } from "../../src/chat-board-store.ts";
 import { liveWindowMs, OPEN, parkedBy, POOL_WAIT, walk } from "../../src/checkin-steps.ts";
+import { waitHolds } from "../../src/checkin-end-state.ts";
 import { turnError } from "../../src/shared/credential-wait.ts";
-import type { ChatBoard, MemoryGroupId } from "../../src/shared/types.ts";
+import type { ChatBoard, MemoryGroupId, PlanItem } from "../../src/shared/types.ts";
 import { type AgentLine, type HostUsable, isLinuxReading, parseLinuxReading, readWatch, type TestBrowserLine, UNREAD_AT_STOP, unusable, type WaitingTree, type WatchLine, type WorkerLine, type WorkerTree } from "../../src/mac-usable-watch.ts";
 import { QUIET_MINUTES, QUIET_TARGET_GB, quietMinutes } from "../../src/quiet-minutes.ts";
 import type { HungCall } from "../../src/hung-calls.ts";
@@ -819,7 +820,9 @@ export type PlanInputs = Pick<Inputs, "now" | "chats" | "boards" | "ownerActivit
   holds?: ReadonlyMap<string, HostHold>;
 };
 /** An open step a check-in held on an offline box (`host_held`): its chat, id, the box and the For you todo that asks the owner to bring it back. */
-export interface HostHeldStep { chat: PlanInputs["chats"][number]; id: string; host: string; todo: string }
+export interface HostHeldStep { chat: PlanInputs["chats"][number]; id: string; host: string; todo: string;
+  /** The held step this one's wait names (`waitHolds`); absent: its own job runs on the box. */
+  waitsOn?: string }
 /** A red duty whose missed windowed counts give no `lastEventAt` (`unreadWindows`): d9 reads them as lagging and asks the chat to add the field. */
 export interface LaggingDuty { chat: string; duty: string; keys: string[]; line: string }
 /** One chat's open steps that nobody moves (`liveStuck`), with the ids of those its check-in flagged. */
@@ -885,11 +888,19 @@ export function planCounts(input: PlanInputs): { stuck: StuckSteps[]; redDuties:
       const board = input.boards?.get(chat.id);
       const items = unmovedSteps(board, input.now, chat.everyMs, input.ownerActivity ?? new Map(), live, input.named?.get(chat.id));
       const held = new Map<string, HostHold>();
+      const unmoved: PlanItem[] = [];
       walk(board?.plan ?? [], item => {
-        const hold = items.includes(item.id) ? pausedHold(item, chat.id, input.named?.get(chat.id), input.hosts, input.holds) : undefined;
+        if (!items.includes(item.id)) return;
+        unmoved.push(item);
+        const hold = pausedHold(item, chat.id, input.named?.get(chat.id), input.hosts, input.holds);
         if (hold) held.set(item.id, hold);
       });
-      hostHeld.push(...[...held].map(([id, hold]) => ({ chat, id, host: hold.host, todo: hold.todo })));
+      // A step whose wait names such a held step waits on the same box and todo (`waitHolds`): at 11:25Z on 10-24 frontend bro's p333, whose job
+      // ran on us-metal02, counted while it waited for p332 to push its commit from the offline Mac.
+      const waits = waitHolds(unmoved, held);
+      hostHeld.push(...[...held].map(([id, hold]) => ({ chat, id, host: hold.host, todo: hold.todo })),
+        ...[...waits].map(([id, wait]) => ({ chat, id, host: wait.hold.host, todo: wait.hold.todo, waitsOn: wait.on })));
+      for (const id of waits.keys()) held.set(id, waits.get(id)!.hold);
       const left = items.filter(id => !held.has(id));
       return { chat, value: left.length, at: input.now, items: left };
     }

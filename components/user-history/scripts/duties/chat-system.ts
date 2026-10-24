@@ -556,7 +556,8 @@ async function main(): Promise<void> {
     walk(plan.boards.get(chat)?.plan ?? [], item => { if (item.id === id) found = item.text; });
     return found;
   };
-  const hostHeld = owned.hostHeld.map((step: HostHeldStep) => ({ chat: step.chat.id, id: step.id, host: step.host, todo: step.todo, text: text(step.chat.id, step.id) ?? "" }));
+  const hostHeld = owned.hostHeld.map((step: HostHeldStep) => ({ chat: step.chat.id, id: step.id, host: step.host, todo: step.todo, text: text(step.chat.id, step.id) ?? "",
+    ...step.waitsOn ? { waitsOn: step.waitsOn } : {} }));
   const stuck = counts.stuck.flatMap((entry): ChatSystemFacts["stuck"] => entry.items.length
     ? entry.items.map(id => { const waitsOn = waitsOnStep(plan.boards.get(entry.chat.id) ?? null, id);
       return { chat: entry.chat.id, id, text: text(entry.chat.id, id) ?? "", ...waitsOn ? { waitsOn } : {} }; })
@@ -616,7 +617,8 @@ async function main(): Promise<void> {
       `${check.delivered ? "delivered" : "not delivered"}, ${check.read ? "read" : "not read"}, ${check.jobStarted ? "a job started since" : "no job started since"}.`)),
     section(`Open steps nobody moves (${result.metrics.stuck_steps_all})`, stuck.map(entry => entry.id
       ? `${name(entry.chat)}: ${entry.id} ${quote(entry.text ?? "")}.` : `${name(entry.chat)}: ${entry.count} open steps nobody moves, with no ids in its check-in.`)),
-    ...hostGroups(hostHeld).map(group => section(group.title, group.steps.map(step => `${name(step.chat)}: ${step.id} ${quote(step.text)}.`))),
+    ...hostGroups(hostHeld).map(group => section(group.title, group.steps.map(step => `${name(step.chat)}: ${step.id} ${quote(step.text)}` +
+      `${step.waitsOn ? `, which waits on ${step.waitsOn}` : ""}.`))),
     ...hostHeld.length ? [] : [section("Steps that wait on an offline box (0)", [])],
     section(`Open plan items that are upkeep or have no done line (${upkeep.length})`, upkeep.map(item => `${name(item.chat)}: ${item.id} ${quote(item.text)} ${item.why}.`)),
     section(`Red duties (${red.length}, ${fleet.metrics.duties_green_pct}% green)`, red.map(duty => `${name(duty.chat)}: ${duty.name} (${duty.duty}), ` +

@@ -21,7 +21,7 @@ import { CHECK_IN_MS, clockTime, localTime } from "./checkin-settings.ts";
 import { turnErrorCause } from "./turn-error.ts";
 import { agentMessageHead } from "./no-report.ts";
 import { heldByTodo } from "./shared/todo-hold.ts";
-import { endState, endStateKpi, endStateLine, type EndStateView, type Movers, OK_STATES, stepCarrier, stepCarriers, stuckLine } from "./checkin-end-state.ts";
+import { endState, endStateKpi, endStateLine, type EndStateView, type Movers, OK_STATES, stepCarrier, stepCarriers, stuckLine, withWaitHolds } from "./checkin-end-state.ts";
 import { goalDueLine, goalGap, type GoalMemo, goalLine, goalPromptLine, type GoalPush, goalPushes, goalsDetail, goalsHeadline, pushNeeded, threadPaused } from "./checkin-goals.ts";
 import { type JobMemo, type JobPush, jobPushes } from "./checkin-jobs.ts";
 import type { Wake } from "./wakes.ts";
@@ -203,7 +203,7 @@ export function checkInPrecheck(previous: CheckInMemory | undefined, facts: read
     heartbeats: redundantHeartbeats(context.heartbeats ?? [], context.duties ?? []), noDuty: context.boardError || !context.duties ? [] : goalsWithoutDuty(board, context.duties, now), facts: notes,
     noDoneLine: context.boardError ? [] : goalsWithoutDoneLine(board), risks: context.boardError ? [] : planRiskSteps(board),
     metOpen: context.boardError ? [] : metOpenItems(board?.plan ?? []),
-    end: context.boardError ? [] : goaled.map(view => endState(view, board?.todos ?? [], context.rows ?? [], self, now, facts, movers)) };
+    end: context.boardError ? [] : withWaitHolds(goaled.map(view => endState(view, board?.todos ?? [], context.rows ?? [], self, now, facts, movers))) };
 }
 
 /** A job asleep on dead waits (`JobFact.deadWake`): the wake service did not send them, so the chat tells the job how its run ended. */
