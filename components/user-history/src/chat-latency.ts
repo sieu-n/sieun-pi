@@ -62,10 +62,13 @@ export function waitedOnHost(): void {
 }
 let loop: IntervalHistogram | null = null;
 
-/** The route of a request path under `base`, its query dropped and a content hash such as app.3f9c1a.js cut to app.js. */
+/**
+ * The route of a request path under `base`, its query dropped and a content hash such as app.3f9c1a.js cut to app.js. The page itself, `base`
+ * with nothing after it, is "shell": its empty route left the latency line without a `read`, and d7 named the 1.68 s shell at 23:57Z on 10-23 "a read".
+ */
 export const readRoute = (url: string, base: string): string => {
   const path = url.split("?")[0]!;
-  return (path.startsWith(base) ? path.slice(base.length) : path).replace(/\.[0-9a-f]{6,}(?=\.\w+$)/, "").slice(0, 80);
+  return (path.startsWith(base) ? path.slice(base.length) : path).replace(/\.[0-9a-f]{6,}(?=\.\w+$)/, "").slice(0, 80) || "shell";
 };
 
 /** Times a GET from now until its response is sent, and starts the event loop monitor on the first one. */

@@ -392,8 +392,8 @@ export class Chats {
    */
   private load(): Promise<void> {
     return this.loaded ??= this.index.ids().then(ids => this.mine(ids)).then(async ids => {
+      for (const id of ids) this.chatIds.add(id);
       for (const id of ids) {
-        this.chatIds.add(id);
         const at = this.source.duty ? await this.source.duty.lastCheckIn(id).catch(() => undefined) : (await this.source.memory.get(id).catch(() => undefined))?.at;
         if (at !== undefined && !this.lastCheckIn.has(id)) this.lastCheckIn.set(id, Math.min(at, this.now()));
       }
@@ -409,6 +409,8 @@ export class Chats {
   }
 
   async ids(): Promise<ReadonlySet<string>> { await this.load(); return this.chatIds; }
+  /** The ids `load` has listed so far, for a shell that cannot wait for the rest (chat-server.ts `shellParts`). */
+  known(): ReadonlySet<string> { return this.chatIds; }
 
   /** `host` is the hosts.json box whose daemon runs the chat; absent means this box. `first` is the owner's first message, which the thread create sends before its attach (ThreadHub.create). */
   async create(input: { cwd: string; provider?: string; modelId?: string; thinkingLevel?: ThinkingLevel; name?: string; host?: string; first?: FirstMessage }): Promise<{ id: string; name: string }> {

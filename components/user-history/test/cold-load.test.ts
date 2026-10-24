@@ -52,6 +52,20 @@ test("the shell names hashed assets that go out immutable and brotli-packed, and
   assert.equal(old.headers["cache-control"], "no-cache");
 });
 
+// Guards 23:57Z on 10-23: a minute after a release started, a shell took 1.68 s while only its first frames had a deadline.
+test("a shell waits at most its deadline for the chat ids and the wiki origin, and goes with the chat ids listed so far", async t => {
+  const backend = { close: async () => {}, chats: { ids: () => new Promise<never>(() => {}), known: () => new Set(["chat-a"]) },
+    threads: { firstFrames: () => new Promise<never>(() => {}) } } as unknown as ChatBackend;
+  const server = await startChatServer({ backend, bundle: { js: script, css: style, version: "test" }, port: 0, capability: "cap", csrfToken: "token", stopToken: "stop",
+    identity: { pid: process.pid, instanceId: "test", socketPath: "/isolated-cold-deadline.sock" }, onStop: async () => {} });
+  t.after(() => server.close());
+  const started = Date.now();
+  const html = (await get(server.url + "?t=chat-a")).body.toString();
+  assert.ok(Date.now() - started < 1000, `shell after ${Date.now() - started} ms`);
+  assert.match(html, /data-chats="chat-a"/);
+  assert.doesNotMatch(html, /boot-thread/);
+});
+
 test("feeds named in the socket URL start on the upgrade, the thread's snapshot before the sessions list", async t => {
   const started: string[] = [];
   let release!: () => void;

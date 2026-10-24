@@ -51,6 +51,7 @@ import { CHECK_IN_MIN_MINUTES, CHECK_IN_PAUSES, isThinkingLevel, type AccountAct
 import { channelNameError } from "./shared/slack-channel.ts";
 import { parseStartSkill } from "./shared/start-skill.ts";
 import { timeRead } from "./chat-latency.ts";
+import { SLOW_READ_MS } from "./harness-slow.ts";
 import { ScheduledJobsLeft } from "./saved-archive.ts";
 import { type ArchiveBy, isServiceArchiveReason, SERVICE_ARCHIVES_FILE } from "./service-archives.ts";
 import { type CancelBy, parseCancelBy } from "./job-cancels.ts";
@@ -511,18 +512,33 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
     packer.end();
   }
   /**
-   * The JSON block of a thread's first frames for the shell, or null when it takes longer than `inlineWaitMs`. From Korea the page's own socket brings
-   * them about three round trips (560 ms) after the shell, so a shell that waits longer than that for them is slower than going without.
+   * What a shell waits for, all against one deadline `inlineWaitMs` after the request: the wiki origin, the chat ids and the thread's first frames.
+   * Past it the shell goes with the wiki origin and the chat ids known so far and without the frames, which the page's socket brings from Korea
+   * about three round trips (560 ms) after the shell anyway. Until 10-24 only the frames had the deadline: at 23:57Z on 10-23, a minute after
+   * f2acbee started, a shell took 1.68 s while the start held the main thread 94 to 100% busy for 19 s (its CPU profile), and `ms` names each
+   * part's wait so the next slow shell says which one.
    */
   const inlineWaitMs = 400;
-  async function inlineFrames(id: string): Promise<string | null> {
+  const LATE = Symbol("late");
+  async function shellParts(id: string | null): Promise<{ wiki: string | null; chats: Iterable<string>; frames: Promise<string | null>; ms: Record<string, number> }> {
+    const started = performance.now();
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const late = new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), inlineWaitMs); });
-    const frames = backend.threads.firstFrames(id).catch((error: unknown) => {
+    const late = new Promise<typeof LATE>(resolve => { timer = setTimeout(() => resolve(LATE), inlineWaitMs); });
+    const ms: Record<string, number> = {};
+    const within = async <T>(name: string, value: Promise<T> | T, sofar: () => T): Promise<T> => {
+      const found = await Promise.race([value, late]);
+      ms[name] = Math.round(performance.now() - started);
+      return found === LATE ? sofar() : found;
+    };
+    const frames = id ? backend.threads.firstFrames(id).catch((error: unknown) => {
       process.stderr.write(`${new Date().toISOString()} shell ${id.slice(0, 8)}: no inline page: ${error instanceof Error ? error.message : String(error)}\n`);
       return null;
-    });
-    try { return await Promise.race([frames, late]); } finally { clearTimeout(timer); }
+    }) : null;
+    const found = within("frames", frames, () => null);
+    void found.finally(() => { clearTimeout(timer); });
+    const [wiki, chats] = await Promise.all([within("wiki", wikiCached(), () => wikiLast ?? null),
+      within<Iterable<string>>("chats", backend.chats ? backend.chats.ids().catch(() => []) : [], () => backend.chats?.known() ?? [])]);
+    return { wiki, chats, frames: found, ms };
   }
   /** The still view of chat `id` from its first page, kept while the page is the same text; empty when the build has no server half or the render throws. */
   let prepainted: { json: string; html: string } | null = null;
@@ -545,6 +561,7 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
     const next = wikiOrigin().then(found => { wikiLast = found; return found; }, () => wikiLast ?? null);
     return wikiLast === undefined ? next : wikiLast;
   }
+  void wikiCached();
   /**
    * The shell goes out as a packed stream: its head is flushed at once, so the browser fetches app.js and opens the socket while the server
    * still reads the thread's first page, and the tail with that page follows (brotli at quality 5 packs it in about a millisecond).
@@ -672,12 +689,18 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
           if (route === "") {
             const named = url.searchParams.get("t");
             const id = named && idPattern.test(named) ? named : null;
-            const frames = id ? inlineFrames(id) : Promise.resolve(null);
-            const [wiki, chats] = await Promise.all([wikiCached(), backend.chats ? backend.chats.ids().catch(() => []) : []]);
+            const started = performance.now();
+            const { wiki, chats, frames, ms } = await shellParts(id);
             const html = startHtml(req, res);
             html.write(shellHead(csrfToken, built.version, wiki, { js, css, ...built.preload ? { preload: built.preload } : {} }, chats));
             const found = await frames;
+            const painted = performance.now();
             html.end(shellTail(id && found ? { id, json: found } : null, id && found && [...chats].includes(id) ? prepaintFor(built, id, found) : ""));
+            const took = Math.round(performance.now() - started);
+            if (took > SLOW_READ_MS) {
+              process.stderr.write(`${new Date().toISOString()} shell ${id?.slice(0, 8) ?? "with no thread"}: ${took} ms; wiki ${ms.wiki} ms, chats ${ms.chats} ms, `
+                + `frames ${ms.frames} ms${found ? "" : " (went without)"}, still view ${Math.round(performance.now() - painted)} ms\n`);
+            }
             return;
           }
           if (route === js) { serveAsset(req, res, built.js, true); return; }

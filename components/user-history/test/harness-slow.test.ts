@@ -55,6 +55,7 @@ test("the slow signals: a read or loop stall over 1 s, the supervisor's unanswer
   ]), [Date.parse("2026-10-18T10:54:00.613Z"), Date.parse("2026-10-18T11:06:00.000Z")]);
   assert.equal(readRoute("/cap123/app.3f9c1a2b.js?x=1", "/cap123/"), "app.js");
   assert.equal(readRoute("/cap123/api/threads?id=1", "/cap123/"), "api/threads");
+  assert.equal(readRoute("/cap123/?t=01a1164b", "/cap123/"), "shell");
 });
 
 test("the chat times each GET it answers and keeps the slowest, with the event loop's longest stall, until the watch takes them", async () => {
