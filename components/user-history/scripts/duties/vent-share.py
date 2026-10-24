@@ -8,7 +8,8 @@ calls the provider. The call sites at a ref are the rows whose call is still in 
 (removed) or no longer name the provider (gone) has no caller left, plus every direct provider call the call scan finds in deployed
 code that no live row covers, so a new direct call counts as a site of its own. With --traffic
 it also counts Vent's vent.call log rows per caller and integration in the shared otel ClickHouse, and matches them to sites through
-the integrations in apps/vent/src/vent/tables.py, so a new Vent integration needs no edit here.
+the integrations in apps/vent/src/vent/tables.py, so a new Vent integration needs no edit here. A failed traffic read lands in the result
+as traffic.error and the code verdicts still write, since the gateway duty's headline counts code paths, not traffic (owner rule c67).
 
 Run from the auto-sns-agent repo root:
   python3 <this> [--ref origin/sieun/dev] [--ref origin/main] [--traffic] [--json out.json]
@@ -483,6 +484,18 @@ def traffic(days: int) -> list[dict]:
     return merge_traffic([traffic_day(token, day) for day in range(days)])
 
 
+def grafana_error(body: str) -> str:
+    """The datasource's own error from a Grafana /api/ds/query answer, which leads with the executed query, so a cut of the raw body
+    showed only SQL on 10-24 at 04:28Z when ClickHouse gave TIMEOUT_EXCEEDED."""
+    try:
+        parsed = json.loads(body)
+    except ValueError:
+        return body[:400]
+    results = parsed.get("results") if isinstance(parsed, dict) else None
+    error = next((r.get("error") for r in (results or {}).values() if isinstance(r, dict) and r.get("error")), None)
+    return str(error or (parsed.get("message") if isinstance(parsed, dict) else None) or body)[:400]
+
+
 def traffic_day(token: str, day: int) -> list[dict]:
     body = {"queries": [{"refId": "A", "datasource": {"uid": "grafana_clickhouse", "type": "grafana-clickhouse-datasource"},
                          "rawSql": traffic_sql(day), "format": 1, "queryType": "sql"}], "from": f"now-{day + 1}d", "to": f"now-{day}d" if day else "now"}
@@ -491,7 +504,7 @@ def traffic_day(token: str, day: int) -> list[dict]:
     try:
         res = json.load(urllib.request.urlopen(req))["results"]["A"]
     except urllib.error.HTTPError as error:
-        raise RuntimeError(f"Grafana answered {error.code} for vent.call day {day}: {error.read().decode(errors='replace')[:400]}") from error
+        raise RuntimeError(f"Grafana answered {error.code} for vent.call day {day}: {grafana_error(error.read().decode(errors='replace'))}") from error
     frames = res.get("frames") or []
     if not frames:
         return []
@@ -588,7 +601,13 @@ def main() -> None:
         for site in new_sites:
             print(f"   new direct call, {site['app']} {site['provider']}: {site['direct'][0]}")
     if a.traffic:
-        rows = traffic(a.days)
+        try:
+            rows = traffic(a.days)
+        except (RuntimeError, OSError, ValueError, KeyError) as error:
+            rows = None
+            result["traffic"] = {"days": a.days, "error": str(error)[:400]}
+            print(f"\n== traffic not read: {result['traffic']['error']}", file=sys.stderr)
+    if a.traffic and rows is not None:
         ref = tables_ref()
         integrations = vent_integrations(git("show", f"{ref}:{TABLES}")) if ref else {}
         result["traffic"] = {"days": a.days, "rows": rows, "tables_ref": ref, "integrations": sorted(integrations),

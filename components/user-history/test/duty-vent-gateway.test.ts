@@ -1,8 +1,9 @@
 // Guards the Vent gateway duty (vent-gateway.ts). On 2026-10-18 Vent carried 0 of the 70 in-scope prod call sites, both Vent hosts failed
 // the TLS handshake and 112 provider keys still sat outside Vent, and the duty has to read those as misses, never as a pass.
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { test } from "node:test";
-import { boxLocations, inScope, removedProviderRefs, UNMEASURED, UNMEASURED_PCT, ventMetrics, webhookVerdicts, type VentReads } from "../scripts/duties/vent-gateway.ts";
+import { boxLocations, inScope, removedProviderRefs, UNMEASURED, ventMetrics, webhookVerdicts, type VentReads } from "../scripts/duties/vent-gateway.ts";
 
 const site = (row: number, status: string, extra: object = {}) => ({ row, app: "convex", provider: "Stripe", runs_in: "Convex staging, prod", status, ...extra });
 const TABLES = 'INTEGRATIONS: dict[str, Integration] = {\n    "zernio": Integration(ZERNIO, "ZERNIO_API_KEY"),\n    "cliproxy-openai": Integration(OPENAI, "CLIPROXY_API_KEY"),\n}\n';
@@ -78,10 +79,38 @@ test("the box reader's stopped containers, host units, services.env tokens and k
   assert.equal(inScope("unit opensearch-b2@prod.service"), true);
 });
 
-test("a failed share script gives a -1 share and a source error", () => {
+// On 10-24 at 04:28Z the share script exited non-zero on a ClickHouse TIMEOUT_EXCEEDED, the precheck wrote through_vent_pct -1 and the
+// runner judged that a measured miss of the 100 target. A failed read leaves the metric out, so the runner reads it as not measured.
+test("a failed share script leaves through_vent_pct unmeasured with a source error, never -1", async () => {
+  const { judge } = await import("../src/shared/chat-duties.ts");
+  const duty = JSON.parse(await readFile(new URL("../scripts/duties/vent-gateway.duty.json", import.meta.url), "utf8"));
   const output = ventMetrics(reads({ share: { error: "exit 1" } }), 0);
-  assert.equal(output.metrics.through_vent_pct, UNMEASURED_PCT);
+  assert.equal("through_vent_pct" in output.metrics, false);
+  assert.ok(Object.values(output.metrics).every(value => value !== -1));
   assert.equal(output.metrics.source_errors, 1);
+  const verdict = judge(duty.metrics, output);
+  assert.equal(verdict.metrics.through_vent_pct, undefined);
+  assert.match(verdict.summary, /not measured: the precheck gave no value for through_vent_pct \(vent share script gave no result: exit 1\)/);
+});
+
+test("a failed traffic read keeps the code-path share and leaves only no_prod_traffic_sites unmeasured", () => {
+  const share = { refs: reads().share.refs, traffic: { error: "Grafana answered 400 for vent.call day 0: Code: 159. DB::Exception: Timeout exceeded" } };
+  const output = ventMetrics(reads({ share } as Partial<VentReads>), 0);
+  assert.equal(output.metrics.through_vent_pct, 100);
+  assert.equal("no_prod_traffic_sites" in output.metrics, false);
+  assert.equal(output.flagged!.filter(flag => flag.kind === "no_prod_traffic").length, 0);
+  assert.equal(output.metrics.source_errors, 1);
+  assert.match(output.flagged!.find(flag => flag.kind === "source_error")!.excerpt, /^prod vent\.call traffic was not read: Grafana answered 400 .*Timeout exceeded/);
+});
+
+test("vent-share.py reads the datasource error out of a Grafana answer that leads with the executed query", async () => {
+  const { execFileSync } = await import("node:child_process");
+  const { VENT_SHARE } = await import("../scripts/duties/vent-gateway.ts");
+  const body = JSON.stringify({ results: { A: { error: "Code: 159. DB::Exception: Timeout exceeded: elapsed 85871 ms, maximum: 64000 ms", status: 400,
+    frames: [{ schema: { meta: { executedQueryString: `SELECT ${"x, ".repeat(200)}1` } } }] } } });
+  const code = "import importlib.util, sys\nspec = importlib.util.spec_from_file_location('vs', sys.argv[1]); vs = importlib.util.module_from_spec(spec)\n" +
+    "sys.modules['vs'] = vs; spec.loader.exec_module(vs)\nprint(vs.grafana_error(sys.argv[2]))";
+  assert.equal(execFileSync("python3", ["-c", code, VENT_SHARE, body], { encoding: "utf8" }).trim(), "Code: 159. DB::Exception: Timeout exceeded: elapsed 85871 ms, maximum: 64000 ms");
 });
 
 test("vent-share.py takes each provider's Vent integrations from tables.py, by name or by secret, and never gives gmail to Google OAuth", async () => {
@@ -162,7 +191,7 @@ test("the by-code counts read at main and at the sieun/dev tip, and a direct row
   assert.deepEqual([output.metrics.code_rows, output.metrics.code_vent_sites, output.metrics.tip_code_vent_sites], [2, 1, 1]);
   assert.deepEqual(output.flagged!.filter(flag => flag.kind === "tip_site_direct").map(flag => flag.item), ["row 1"]);
   const noTip = ventMetrics(reads({ share: { refs: { "origin/main": share.refs["origin/main"] }, traffic: share.traffic } }), 0);
-  assert.deepEqual([noTip.metrics.tip_code_vent_sites, noTip.metrics.through_vent_pct], [UNMEASURED_PCT, UNMEASURED_PCT]);
+  assert.deepEqual(["tip_code_vent_sites" in noTip.metrics, "through_vent_pct" in noTip.metrics], [false, false]);
   assert.equal(noTip.metrics.source_errors, 1);
 });
 

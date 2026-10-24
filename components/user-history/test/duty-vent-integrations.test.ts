@@ -2,7 +2,7 @@
 // 06:38Z, prod's console showed resend red on a 403, and google-search-console had 81 failed calls in 24 h; each has to read as a miss.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { behindHours, integrationMetrics, UNMEASURED, UNMEASURED_PCT, type IntegrationLight, type IntegrationReads } from "../scripts/duties/vent-integrations.ts";
+import { behindHours, integrationMetrics, UNMEASURED, type IntegrationLight, type IntegrationReads } from "../scripts/duties/vent-integrations.ts";
 
 const HOUR = 3_600_000;
 const light = (name: string, value: IntegrationLight["light"], success: number, failures: number, top: IntegrationLight["topFailure24h"] = null): IntegrationLight =>
@@ -27,10 +27,12 @@ test("call success counts only the console's success and failure classes, and re
   assert.equal(metrics.source_errors, 0);
 });
 
-test("no counted call reads -1, and a failed lights read reads unmeasured, never a pass", () => {
-  assert.equal(integrationMetrics({ lights: [light("b2", "grey", 0, 0)], hosts: hosts(), spans: null }, 0).metrics.vent_success_24h_pct, UNMEASURED_PCT);
+test("no counted call and a failed lights read leave the success rate unmeasured with a reason, never -1 or a pass", () => {
+  const quiet = integrationMetrics({ lights: [light("b2", "grey", 0, 0)], hosts: hosts(), spans: null }, 0);
+  assert.equal("vent_success_24h_pct" in quiet.metrics, false);
+  assert.equal(quiet.flagged!.filter(flag => flag.kind === "gap").length, 1);
   const output = integrationMetrics({ lights: { error: "Grafana ds/query HTTP 401" }, hosts: hosts(), spans: null }, 0);
-  assert.equal(output.metrics.vent_success_24h_pct, UNMEASURED_PCT);
+  assert.equal("vent_success_24h_pct" in output.metrics, false);
   assert.equal(output.metrics.red_integrations_prod, UNMEASURED);
   assert.equal(output.metrics.source_errors, 1);
 });

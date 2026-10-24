@@ -14,12 +14,13 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  * - prod_vent_behind_staging_h: hours since staging Vent first ran another build than prod Vent. Both builds come from /healthz `version`, and
  *   the time from the service.version of Vent's own OTel rows: the later of when prod first logged its build and when staging last logged it.
  * - vent_hosts_down: how many of vent.virev.ai and vent-staging.virev.ai do not answer 200 on /healthz.
- * A source it cannot read gives 999999 for a count to drive down, -1 for a share, a source_errors count and a flagged slice.
+ * A source it cannot read gives a source_error flagged slice with its reason, counted in source_errors, and leaves each metric it feeds out of
+ * the output (the 999999 placeholder for a count to drive down), so the duty runner reads it as not measured. A day with no counted call has no
+ * success rate either, so vent_success_24h_pct is left out with a gap slice. Until 10-24 both wrote -1, which the runner judged as a miss.
  */
 
 const REPO = process.env.LLM_WIKI_REPO || join(homedir(), "Documents/Github/auto-sns-agent");
 export const UNMEASURED = 999999;
-export const UNMEASURED_PCT = -1;
 export const HOSTS = { production: "https://vent.virev.ai", staging: "https://vent-staging.virev.ai" } as const;
 const GRAFANA = "https://obs.virev.ai";
 const VENT_HEALTH = join(dirname(fileURLToPath(import.meta.url)), "vent-health.py");
@@ -71,7 +72,6 @@ export function integrationMetrics(reads: IntegrationReads, at: number): Prechec
 
   if (failed(reads.lights)) {
     sourceError(`prod integration lights could not be built: ${reads.lights.error}`);
-    metrics.vent_success_24h_pct = UNMEASURED_PCT;
     metrics.red_integrations_prod = UNMEASURED;
   } else {
     const lights = reads.lights;
@@ -80,8 +80,8 @@ export function integrationMetrics(reads: IntegrationReads, at: number): Prechec
     const total = lights.reduce((sum, light) => sum + counted(light), 0);
     metrics.vent_counted_calls_24h = total;
     metrics.vent_failed_calls_24h = total - ok;
-    metrics.vent_success_24h_pct = total ? round(100 * ok / total, 2) : UNMEASURED_PCT;
-    if (!total) flagged.push({ at, kind: "no_calls", excerpt: "prod Vent logged no counted outbound call in 24 h, so there is no success rate to read" });
+    if (total) metrics.vent_success_24h_pct = round(100 * ok / total, 2);
+    else flagged.push({ at, kind: "gap", excerpt: "prod Vent logged no counted outbound call in 24 h, so there is no success rate to read" });
     const failing = lights.filter(light => light.windows["24h"].failures > 0).sort((a, b) => b.windows["24h"].failures - a.windows["24h"].failures);
     for (const light of failing.slice(0, ITEMS)) {
       const top = light.topFailure24h;

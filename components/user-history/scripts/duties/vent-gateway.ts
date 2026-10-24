@@ -24,7 +24,10 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  *   and dropped.
  * - removed_provider_refs: (provider, file) pairs at the tip that name a provider goal p22 removed (REMOVED_PROVIDERS) outside the guards
  *   that keep it out (KEPT_GUARDS), plus each removed integration tables.py lists again, so removed code or a removed Vent row that comes back misses.
- * A source it cannot read gives 999999 for a count to drive down, -1 for a share or a count to drive up, a source_errors count and a flagged slice, never a good-looking value.
+ * A source it cannot read gives a source_error flagged slice with its reason, counted in source_errors, and leaves each metric it feeds out of
+ * the output (the 999999 placeholder for a count to drive down), so the duty runner reads that metric as not measured, never as a value. Until
+ * 10-24 a failed read wrote -1, which the runner judged as a measured miss: at 04:28Z prod ClickHouse waited 86 s on disk for the share
+ * script's traffic query, the script exited non-zero and the verify run read through_vent_pct -1 while the code path stood at 100.
  * Targets in vent-gateway.duty.json and their sources: through_vent_pct 100 is the owner's "all external API/webhook should pass here", and
  * provider_keys_outside_vent 0 is his "completely remove all legacy sdk, API keys from old deployments". Call success and host health moved
  * to the Vent integrations duty's own precheck (vent-integrations.ts) on 2026-10-19.
@@ -41,7 +44,6 @@ export const TIP = "origin/sieun/dev";
 export const CONVEX = { staging: "tremendous-eel-825", production: "befitting-sparrow-356" } as const;
 const BOX = "us-metal01";
 export const UNMEASURED = 999999;
-export const UNMEASURED_PCT = -1;
 
 /**
  * In-scope rows that run in no prod deployment, so their code verdict at main decides them without prod traffic: staging only (12, 13, 61),
@@ -103,7 +105,8 @@ export function inScope(location: string): boolean {
 export interface ShareSite { row: number; app: string; provider: string; runs_in: string; status: string; direct?: string[]; exception?: string | null }
 /** A direct provider call the share script's call scan found in deployed code that no live inventory row covers. */
 export interface NewSite { path: string; app: string; provider: string; direct: string[] }
-export interface ShareResult { refs: Record<string, { sha: string; sites: ShareSite[]; new_sites?: NewSite[] }>; traffic?: { production?: { sites_with_vent_traffic: number[] } } }
+/** traffic.error is set when the share script could not read prod Vent's vent.call rows; its code verdicts still stand. */
+export interface ShareResult { refs: Record<string, { sha: string; sites: ShareSite[]; new_sites?: NewSite[] }>; traffic?: { error?: string; production?: { sites_with_vent_traffic: number[] } } }
 /** Share script statuses for a row whose call is no longer in the code: every file deleted, or the files no longer name the provider. */
 export const GONE = new Set(["removed", "gone"]);
 export interface WebhookVerdict { source: string; direct: boolean; vent: boolean }
@@ -225,13 +228,14 @@ export function ventMetrics(reads: VentReads, at: number): PrecheckOutput {
   if (failed(reads.share) || failed(reads.webhooks)) {
     if (failed(reads.share)) sourceError(`vent share script gave no result: ${reads.share.error}`);
     if (failed(reads.webhooks)) sourceError(`convex/http.ts at ${REF} could not be read: ${reads.webhooks.error}`);
-    metrics.through_vent_pct = UNMEASURED_PCT;
   } else {
     const main = reads.share.refs[REF];
     const tip = reads.share.refs[TIP];
-    const live = new Set(reads.share.traffic?.production?.sites_with_vent_traffic ?? []);
+    const traffic = reads.share.traffic?.production;
+    const live = new Set(traffic?.sites_with_vent_traffic ?? []);
     if (!tip) sourceError(`vent share script result has no ${TIP} section, so the call-site list is unknown`);
-    if (!main || !reads.share.traffic?.production) sourceError(`vent share script result has no ${main ? "prod traffic" : REF} section`);
+    if (!main) sourceError(`vent share script result has no ${REF} section`);
+    if (!traffic) sourceError(`prod vent.call traffic was not read${reads.share.traffic?.error ? `: ${reads.share.traffic.error}` : ", the share result has no prod traffic section"}`);
     const atMain = new Map((main?.sites ?? []).map(site => [site.row, site]));
     const sites = (tip?.sites ?? []).filter(site => !site.exception && !GONE.has(site.status));
     const newSites = tip?.new_sites ?? [];
@@ -243,7 +247,7 @@ export function ventMetrics(reads: VentReads, at: number): PrecheckOutput {
         // Owner rule c67: the headline measures the code path, not demand. A site whose code at main reaches Vent with no direct
         // call counts; a prod site with no successful vent.call in 7 days is a supporting number only.
         through++;
-        if (!CODE_ONLY_ROWS.has(site.row) && !live.has(site.row)) {
+        if (traffic && !CODE_ONLY_ROWS.has(site.row) && !live.has(site.row)) {
           quiet++;
           flagged.push({ at, kind: "no_prod_traffic", item: `row ${site.row}`, excerpt: `#${site.row} ${site.app} ${site.provider}: code at main goes through Vent; prod Vent logged no successful vent.call for it in 7 days`.slice(0, 300) });
         }
@@ -258,16 +262,19 @@ export function ventMetrics(reads: VentReads, at: number): PrecheckOutput {
       flagged.push({ at, kind: "webhook_direct", item: `webhook ${hook.source}`, excerpt: `${hook.source} webhook: ${hook.direct ? `convex/http.ts at main still routes the provider's own path` : "no direct route"}${hook.vent ? "" : ", and convex/webhooks/vent.ts at main does not take it"}` });
     }
     const total = sites.length + newSites.length + reads.webhooks.length;
-    metrics.through_vent_pct = main && tip && total ? round(100 * through / total) : UNMEASURED_PCT;
+    if (main && tip && total) metrics.through_vent_pct = round(100 * through / total);
+    else if (main && tip) sourceError(`vent share script found no in-scope call site or webhook at ${TIP}, so there is no share to read`);
     metrics.through_vent_count = through;
-    metrics.no_prod_traffic_sites = main && tip && reads.share.traffic?.production ? quiet : UNMEASURED_PCT;
+    if (main && tip && traffic) metrics.no_prod_traffic_sites = quiet;
     metrics.in_scope_count = total;
-    metrics.code_rows = tip ? sites.length + newSites.length : UNMEASURED_PCT;
-    metrics.code_vent_sites = main && tip ? sites.filter(site => atMain.get(site.row)?.status === "vent").length : UNMEASURED_PCT;
-    metrics.tip_code_vent_sites = tip ? sites.filter(site => site.status === "vent").length : UNMEASURED_PCT;
-    metrics.new_direct_sites = tip ? newSites.length : UNMEASURED_PCT;
     const removed = (tip?.sites ?? []).filter(site => GONE.has(site.status));
-    metrics.tip_removed_sites = tip ? removed.length : UNMEASURED_PCT;
+    if (tip) {
+      metrics.code_rows = sites.length + newSites.length;
+      metrics.tip_code_vent_sites = sites.filter(site => site.status === "vent").length;
+      metrics.new_direct_sites = newSites.length;
+      metrics.tip_removed_sites = removed.length;
+      if (main) metrics.code_vent_sites = sites.filter(site => atMain.get(site.row)?.status === "vent").length;
+    }
     for (const site of removed) {
       const prod = atMain.get(site.row);
       const still = prod && !GONE.has(prod.status) ? `, and main, which prod runs, still has it (${prod.status}) until the next promote` : "";
