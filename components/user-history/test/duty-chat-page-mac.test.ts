@@ -5,7 +5,7 @@ import { once } from "node:events";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { WebSocketServer } from "ws";
-import { browserReadings, median, parsePing, releaseBreaks, replyExtra, sendProbe, type SendTiming } from "../scripts/duties/chat-page-mac.ts";
+import { browserReadings, macTailnet, median, parsePing, releaseBreaks, replyExtra, sendProbe, type SendTiming } from "../scripts/duties/chat-page-mac.ts";
 
 const at = Date.parse("2026-10-19T15:00:00Z");
 
@@ -271,4 +271,15 @@ test("with no break in 24 h, release_breaks_24h's lastEventAt is the newest rele
   assert.equal(reading.value, 0);
   assert.equal(reading.lastEventAt, Date.parse("2026-10-19T14:12:29.000Z"));
   assert.equal(releaseBreaks("", at).lastEventAt, undefined);
+});
+
+test("the Mac's tailnet state comes from its ssh address, so an asleep Mac reads as offline instead of two ssh timeouts", () => {
+  const status = JSON.stringify({ Peer: {
+    "nodekey:a": { HostName: "Sieun’s MacBook Pro", TailscaleIPs: ["100.66.173.18", "fd7a:115c:a1e0::1"], Online: false, LastSeen: "2026-10-24T06:10:00.1Z" },
+    "nodekey:b": { HostName: "node", TailscaleIPs: ["100.94.58.72"], Online: true, LastSeen: "0001-01-01T00:00:00Z" },
+  } });
+  assert.deepEqual(macTailnet(status, "100.66.173.18"), { online: false, lastSeen: "2026-10-24T06:10:00.1Z" });
+  assert.equal(macTailnet(status, "100.94.58.72")?.online, true);
+  assert.equal(macTailnet(status, "100.1.2.3"), undefined);
+  assert.equal(macTailnet("{}", "100.66.173.18"), undefined);
 });

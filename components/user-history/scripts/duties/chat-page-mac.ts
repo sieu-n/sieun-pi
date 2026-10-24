@@ -281,19 +281,38 @@ export async function sendProbe(config: ChatConfig, firstReplyMs = FIRST_REPLY_M
   return { id, sends };
 }
 
+/**
+ * The Mac's tailnet state from `tailscale status --json`, matched by the address `ssh -G` gives for the Mac's ssh host. From 10-23 13:20Z to
+ * 10-24 09:26Z eleven runs spent the 190 s browser ssh, the 40 s ping and the 10 min reply wait on a Mac that tailscale already listed offline,
+ * and each reported two ssh timeouts, so an offline Mac now reads as one line that says so. Undefined when the address is not a peer.
+ */
+export function macTailnet(statusJson: string, address: string): { online: boolean; lastSeen?: string } | undefined {
+  const status = JSON.parse(statusJson) as { Peer?: Record<string, { TailscaleIPs?: string[]; Online?: boolean; LastSeen?: string }> };
+  const peer = Object.values(status.Peer ?? {}).find(item => item.TailscaleIPs?.includes(address));
+  return peer && { online: peer.Online === true, ...peer.LastSeen ? { lastSeen: peer.LastSeen } : {} };
+}
+
+async function macOffline(): Promise<string | undefined> {
+  const address = (await exec("ssh", ["-G", MAC]).catch(() => "")).match(/^hostname (\S+)$/m)?.[1] ?? "";
+  const peer = address ? macTailnet(await exec("tailscale", ["status", "--json"]).catch(() => "{}"), address) : undefined;
+  return peer && !peer.online ? `the Mac (${address}) is offline on the tailnet${peer.lastSeen ? ` since ${peer.lastSeen}` : ""}, asleep or shut, so tab switch, cold load and the Mac chat reply wait are not measured` : undefined;
+}
+
 const settle = <T>(promise: Promise<T>): Promise<T | Error> => promise.catch((error: unknown) => error instanceof Error ? error : new Error(String(error)));
 
 export async function measure(chatId: string): Promise<PrecheckOutput> {
   const at = Date.now();
   const config = JSON.parse(await readFile(join(DATA_DIR, "configuration.json"), "utf8")) as ChatConfig;
   const host = config.publicOrigin ? new URL(config.publicOrigin).hostname : "";
+  const offline = await macOffline();
+  const skipped = Promise.resolve(new Error(offline));
   const [browser, ping, journal] = await Promise.all([
-    settle(browse(config, chatId)),
-    settle(onMac(`ping -c 5 -q ${host}`, 40)),
+    offline ? skipped : settle(browse(config, chatId)),
+    offline ? skipped : settle(onMac(`ping -c 5 -q ${host}`, 40)),
     settle(exec("journalctl", ["--user", "-u", "sieun-pi-chat", "--since", `@${Math.floor((at - 25 * 3_600_000) / 1000)}`, "-o", "short-iso-precise", "--no-pager"], { timeoutMs: 60_000 })),
   ]);
   const startSkill = await readFile(join(DATA_DIR, "new-chat.json"), "utf8").then(text => parseStartSkill((JSON.parse(text) as { startSkill?: unknown }).startSkill ?? null), () => null);
-  const replies = await settle(sendProbe(config, FIRST_REPLY_MS, startSkill));
+  const replies = offline ? new Error(offline) : await settle(sendProbe(config, FIRST_REPLY_MS, startSkill));
   const macSession = replies instanceof Error ? replies : await settle(onMac(`cat .prime/agent/sessions/${replies.id.replace(/[^0-9a-f-]/g, "")}.jsonl`, 40));
   const metrics: Record<string, number> = {};
   const flagged: FlaggedSlice[] = [];
@@ -305,18 +324,20 @@ export async function measure(chatId: string): Promise<PrecheckOutput> {
     flagged.push(...reading.flagged);
   };
 
-  if (browser instanceof Error) sourceError(`the headless page on the Mac did not run, so tab switch and cold load are not measured: ${browser.message}`);
+  if (offline) sourceError(offline);
   else {
-    const { load, tabs } = browserReadings(browser, at, SWITCH_TIMEOUT_MS);
-    take("cold_tab_switch_ms", tabs);
-    take("cold_load_s", load);
+    if (browser instanceof Error) sourceError(`the headless page on the Mac did not run, so tab switch and cold load are not measured: ${browser.message}`);
+    else {
+      const { load, tabs } = browserReadings(browser, at, SWITCH_TIMEOUT_MS);
+      take("cold_tab_switch_ms", tabs);
+      take("cold_load_s", load);
+    }
+    const rtt = ping instanceof Error ? undefined : parsePing(ping);
+    if (rtt === undefined) sourceError(`ping from the Mac to ${host} gave no round trip: ${ping instanceof Error ? ping.message : ping.slice(-200)}`);
+    else if (replies instanceof Error) sourceError(`the Mac chat sends did not finish: ${replies.message}`);
+    else if (macSession instanceof Error) sourceError(`the Mac's session file for ${replies.id} could not be read: ${macSession.message}`);
+    else take("mac_chat_reply_extra_rtt", replyExtra(replies.sends, macSession, rtt, at));
   }
-
-  const rtt = ping instanceof Error ? undefined : parsePing(ping);
-  if (rtt === undefined) sourceError(`ping from the Mac to ${host} gave no round trip: ${ping instanceof Error ? ping.message : ping.slice(-200)}`);
-  else if (replies instanceof Error) sourceError(`the Mac chat sends did not finish: ${replies.message}`);
-  else if (macSession instanceof Error) sourceError(`the Mac's session file for ${replies.id} could not be read: ${macSession.message}`);
-  else take("mac_chat_reply_extra_rtt", replyExtra(replies.sends, macSession, rtt, at));
 
   if (journal instanceof Error) sourceError(`journalctl for sieun-pi-chat: ${journal.message}`);
   else take("release_breaks_24h", releaseBreaks(journal, at));
