@@ -403,7 +403,8 @@ async function serve(options: Options): Promise<void> {
   // the catalog lists every box's sessions through them (src/host-catalogs.ts).
   const hosts = await startHosts(primary);
   const backend = await createChatBackend({ socketPath: readOnly?.socketPath ?? service.config.socketPath, dataDir: service.directory,
-    ownChatsOnly: adopt === "own", scratch, replay, hosts: hosts?.catalogs ?? null, copyFile: primary ? join(service.directory, "session-copy.json") : null });
+    ownChatsOnly: adopt === "own", scratch, replay, hosts: hosts?.catalogs ?? null, copyFile: primary ? join(service.directory, "session-copy.json") : null,
+    saveAgents: !scratch || !await isLiveDirectory(service.directory) });
   // The Slack bridge stays off until Settings turns it on with tokens in the Keychain; without them the service runs as before.
   const slack = !scratch && runsSlack(primary) ? new SlackBridge({ path: join(service.directory, "slack.json"), chats: slackChats(backend),
     log: line => process.stderr.write(`${new Date().toISOString()} ${line}\n`) }) : null;

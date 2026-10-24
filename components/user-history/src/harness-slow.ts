@@ -43,6 +43,12 @@ export const waitedOnCpu = (what: string): boolean => /\b(?:send|wake)/.test(wha
 
 const seconds = (ms: number): string => `${Math.round(ms / 100) / 10} s`;
 
+/** The chat service's read slower than SLOW_READ_MS in a line `own` says the box wrote; every read it times is a route of the chat service's own code. */
+export function slowChatRead(own: boolean, latency: unknown): ChatLatency | undefined {
+  const read = own ? chatLatency(latency) : undefined;
+  return read && read.readMs > SLOW_READ_MS ? read : undefined;
+}
+
 /**
  * What made the harness slow in [from, to) on `box`, in the flag's words; empty when it stayed fast. `own` says whether `box` wrote the line,
  * since only that box's chat service timed its reads and only its supervisor log was read.
@@ -50,7 +56,8 @@ const seconds = (ms: number): string => `${Math.round(ms / 100) / 10} s`;
 export function harnessSlow(input: { box: string; own: boolean; latency: unknown; from: number; to: number; misses: readonly number[]; faults: readonly DaemonFault[] }): string[] {
   const out: string[] = [];
   const latency = input.own ? chatLatency(input.latency) : undefined;
-  if (latency && latency.readMs > SLOW_READ_MS) out.push(`the chat answered ${latency.read ?? "a read"} in ${seconds(latency.readMs)}`);
+  const slowRead = slowChatRead(input.own, input.latency);
+  if (slowRead) out.push(`the chat answered ${slowRead.read ?? "a read"} in ${seconds(slowRead.readMs)}`);
   if (latency && latency.loopMs > SLOW_READ_MS) {
     const gc = latency.gcMs !== undefined && latency.gcMs > SLOW_READ_MS / 2 ? ` (a ${latency.gc} GC took ${seconds(latency.gcMs)})` : "";
     out.push(`the chat's event loop stalled ${seconds(latency.loopMs)}${gc}`);

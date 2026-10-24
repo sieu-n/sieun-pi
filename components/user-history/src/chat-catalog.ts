@@ -1,5 +1,5 @@
-import { closeSync, existsSync, fstatSync, openSync, readFileSync, readSync, statSync } from "node:fs";
-import { readdir } from "node:fs/promises";
+import { closeSync, existsSync, fstatSync, openSync, readFileSync, readSync, statSync, unlinkSync } from "node:fs";
+import { readdir, rename, writeFile } from "node:fs/promises";
 import { performance as loopPerformance } from "node:perf_hooks";
 import { basename, dirname, join } from "node:path";
 import { DaemonClient, parseSkillBlock, type SessionSummary } from "prime-agent";
@@ -18,6 +18,25 @@ import type { Host } from "./hosts.ts";
 import type { ChatAgent, ChatBriefState, CheckInState, ChildAgent, QueuePlace, TokenRate, ChildPulse, ChildUsage, Pulse, RunWait, SessionPulse, SessionRow, SessionsEvent, ThreadLabels, ThreadMessage, ThreadSchedule, Workspace } from "./shared/types.ts";
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+
+/** The chats' agents a run saves in its data dir at its stop (`Catalog.heldAgents`); the next start reads the file once and deletes it. */
+export const AGENTS_FILE = "chat-agents.json";
+type SavedAgents = { savedAt: string; chats: Record<string, readonly ChatAgent[]> };
+/**
+ * The agents in a saved file, which is deleted as it is read, so a run that ends without a stop (a crash) leaves none for the start after it,
+ * and that start projects as before. Undefined for no file or one of another shape.
+ */
+function takeSavedAgents(path: string): ReadonlyMap<string, readonly ChatAgent[]> | undefined {
+  let text: string;
+  try { text = readFileSync(path, "utf8"); } catch { return undefined; }
+  try { unlinkSync(path); } catch (error) { process.stderr.write(`catalog: deleting ${path}: ${error instanceof Error ? error.message : String(error)}\n`); }
+  let parsed: unknown;
+  try { parsed = JSON.parse(text); } catch { return undefined; }
+  if (!isRecord(parsed) || !isRecord(parsed.chats)) return undefined;
+  const chats = new Map<string, readonly ChatAgent[]>();
+  for (const [id, agents] of Object.entries(parsed.chats)) if (Array.isArray(agents) && agents.every(isRecord)) chats.set(id, agents as unknown as ChatAgent[]);
+  return chats;
+}
 
 const FIRST_MESSAGE_SCAN_BYTES = 4 * 1024 * 1024;
 /** cron_list fans out to every worker; roster activity must not repeat that work. */
@@ -734,8 +753,9 @@ export class Catalog {
   private closed = false;
 
   constructor(private readonly socketPath: string, private readonly readState: ChatReadState, private readonly labels: ChatLabels, private readonly chats: Pick<Chats, "ids" | "checkIns" | "links"> & Partial<Pick<Chats, "briefs" | "archivedIds" | "roster">>,
-    private readonly origins: ThreadOrigins, private readonly hosts: HostCatalogs | null = null, copyFile: string | null = null) {
+    private readonly origins: ThreadOrigins, private readonly hosts: HostCatalogs | null = null, copyFile: string | null = null, private readonly agentsFile: string | null = null) {
     this.client = new DaemonClient(socketPath);
+    this.saved = agentsFile ? takeSavedAgents(agentsFile) : undefined;
     // Roster updates were up to 116 a minute (10-12); this box's lay into one frame per 150 ms, the wait its roster refresh had before.
     this.peer = new SessionPeer({ name: hosts?.selfName ?? "this box", client: this.client, file: copyFile, deadlines: { socketMs: 1500, helloMs: 1500 }, changeMs: 150,
       reconnectMs: 2000, log: line => process.stderr.write(`catalog: ${line}\n`), onChange: () => this.peerChanged(),
@@ -1130,10 +1150,17 @@ export class Catalog {
   /** Bumped by each change the catalog hears of (new daemon rows, and every emit: notify, schedules, cut ends, rates), so rows() never takes a projection that began before one. */
   private inputs = 0;
   private running: { inputs: number; result: ReturnType<Catalog["project"]> } | undefined;
+  /** The rows of the last projection that ended, whoever asked for it (a frame or a `rows` call), and the inputs it began on (`heldAgents`). */
+  private latest: { inputs: number; rows: SessionRow[] } | undefined;
+  /** The chats' agents the last run saved at its stop (`AGENTS_FILE`), which `heldAgents` gives until this run's first projection ends. */
+  private saved: ReadonlyMap<string, readonly ChatAgent[]> | undefined;
   private tracked(): ReturnType<Catalog["project"]> {
     const started = performance.now();
     const run = { inputs: this.inputs, result: this.project() };
-    void run.result.then(() => { this.projectionMs.push(performance.now() - started); }, () => {});
+    void run.result.then(({ rows }) => {
+      this.projectionMs.push(performance.now() - started);
+      if (!this.latest || this.latest.inputs <= run.inputs) { this.latest = { inputs: run.inputs, rows }; this.saved = undefined; }
+    }, () => {});
     this.running = run;
     void run.result.finally(() => { if (this.running === run) this.running = undefined; }).catch(() => {});
     return run.result;
@@ -1209,6 +1236,33 @@ export class Catalog {
    */
   framedRows(): readonly SessionRow[] | null {
     return this.listeners.size && this.lastEvent ? this.lastEvent.sessions : null;
+  }
+
+  /**
+   * A chat's agents with no wait for a projection: the last frame's while a listener holds the feed, else the last projection's, with a new one
+   * started behind the answer when the catalog heard of a change since, else, until this run's first projection ends, what the last run saved
+   * at its stop. Undefined for a chat none of them holds, which the caller projects. The api/threads/<id>/agents read waited for a projection
+   * of its own with no page open: on a scratch serve on a copy of browser-chat on 10-24 its first read after the start took 14.0 s (5.1 s for
+   * the daemon's first list, 5.4 s for the first projection) and each later one 62 to 180 ms; live, the first projection after each of the 9
+   * starts on 10-24 from 15:20Z took 7.1 to 8.6 s, and the 3 reads over 1 s in 2 days (2.8 to 7.6 s) all came in a minute after a start.
+   */
+  heldAgents(id: string): readonly ChatAgent[] | undefined {
+    const framed = this.framedRows();
+    if (framed) return framed.find(row => row.id === id)?.agents;
+    const latest = this.latest;
+    if (!latest) return this.saved?.get(id);
+    if (latest.inputs !== this.inputs && !this.running) void this.rows().catch(() => {});
+    return latest.rows.find(row => row.id === id)?.agents;
+  }
+
+  /** Writes each chat's agents of the last projection to `agentsFile`, for the next run's `heldAgents` before its first projection. */
+  private async saveAgents(): Promise<void> {
+    const rows = this.latest?.rows;
+    if (!this.agentsFile || !rows) return;
+    const chats = Object.fromEntries(rows.flatMap(row => row.chat ? [[row.id, row.agents ?? []] as const] : []));
+    const temp = `${this.agentsFile}.${process.pid}.tmp`;
+    await writeFile(temp, JSON.stringify({ savedAt: new Date().toISOString(), chats } satisfies SavedAgents), { mode: 0o600 });
+    await rename(temp, this.agentsFile);
   }
 
   /** Like `subscribe`, without the refresh a page load asks for: a page's agents feed starts on each chat it opens or unfolds. */
@@ -1506,7 +1560,9 @@ export class Catalog {
   }
 
   async close(): Promise<void> {
+    const first = !this.closed;
     this.closed = true;
+    if (first) await this.saveAgents().catch(error => { process.stderr.write(`catalog: saving the chats' agents: ${error instanceof Error ? error.message : String(error)}\n`); });
     clearInterval(this.projectionTimer);
     this.peer.close();
     clearTimeout(this.schedulesTimer);

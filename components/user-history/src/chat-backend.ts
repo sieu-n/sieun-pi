@@ -2,7 +2,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { defaultDaemonSocketPath, getAgentDir, SettingsManager } from "prime-agent";
 import { BoardStore } from "./chat-board-store.ts";
-import { Catalog } from "./chat-catalog.ts";
+import { AGENTS_FILE, Catalog } from "./chat-catalog.ts";
 import type { HostCatalogs } from "./host-catalogs.ts";
 import { ChatLabels } from "./chat-labels.ts";
 import { ChatReadState } from "./chat-read-state.ts";
@@ -154,8 +154,9 @@ export function chatDefaultsStore(agentDir: string): ChatDefaultsStore {
  * `replay`: a scratch serve on a recorded fake daemon (`serve --replay-daemon`), whose threads attach as a live serve's do.
  * `hosts`: the other boxes in hosts.json, whose sessions join the catalog and whose commands go to their own daemons.
  * `copyFile`: where this box's session copy is kept across restarts (`SessionPeer`), so a restart serves the sidebar before any list.
+ * `saveAgents`: the chats' agents go to AGENTS_FILE in the data dir at the stop, so the next start answers agents reads before its first projection.
  */
-export async function createChatBackend(options: { socketPath?: string; dataDir?: string; agentDir?: string; ownChatsOnly?: boolean; scratch?: boolean; replay?: boolean; hosts?: HostCatalogs | null; copyFile?: string | null } = {}): Promise<ChatBackend> {
+export async function createChatBackend(options: { socketPath?: string; dataDir?: string; agentDir?: string; ownChatsOnly?: boolean; scratch?: boolean; replay?: boolean; hosts?: HostCatalogs | null; copyFile?: string | null; saveAgents?: boolean } = {}): Promise<ChatBackend> {
   const scratch = options.scratch === true;
   // A replay serve runs the loops a live start runs whose only effects are daemon commands, which all reach the recorded fake daemon, and
   // writes in its data dir copy. Whatever reaches past those (job leftovers, GitHub, the spawn ledger, Grafana, duty measures,
@@ -178,7 +179,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   // While a chat or one of its jobs works, the service keeps the Mac from idle sleep (10-05: a battery sleep stopped every chat and job).
   const awake = new IdleSleepHold(line => process.stderr.write(`${new Date().toISOString()} ${line}\n`));
   const cleanRoomChats = new IdIndex(join(dataDir, CLEAN_ROOM_CHATS_FILE), "Clean-room chat index");
-  const catalog = new Catalog(socketPath, readState, labels, { ids: () => chats.ids(), checkIns: () => chats.checkIns(), links: (id, name) => chats.links(id, name), briefs: () => chats.briefs(), archivedIds: () => chats.archivedIds(), roster: children => chats.roster(children) }, new ThreadOrigins(created, cleanRoomChats), options.hosts ?? null, options.copyFile ?? null);
+  const catalog = new Catalog(socketPath, readState, labels, { ids: () => chats.ids(), checkIns: () => chats.checkIns(), links: (id, name) => chats.links(id, name), briefs: () => chats.briefs(), archivedIds: () => chats.archivedIds(), roster: children => chats.roster(children) }, new ThreadOrigins(created, cleanRoomChats), options.hosts ?? null, options.copyFile ?? null, options.saveAgents ? join(dataDir, AGENTS_FILE) : null);
   const boards = new BoardStore(dataDir);
   const corrections = new CorrectionLedger(dataDir);
   const threads = new ThreadHub(socketPath, catalog, () => defaults.read(), async id => (await chats.ids()).has(id) ? boards.read(id) : undefined,

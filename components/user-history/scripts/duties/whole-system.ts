@@ -19,7 +19,7 @@ import type { StoppedCall } from "../../src/hung-stop.ts";
 import { chatDataDir } from "../../src/owner-ok.ts";
 import { beatStale, type CacheBeat, pendingWakes, readBeat, treeWakes } from "../../src/wakes.ts";
 import { processEvidence } from "../../src/proc-evidence.ts";
-import { harnessSlow, workerMisses } from "../../src/harness-slow.ts";
+import { harnessSlow, slowChatRead, workerMisses } from "../../src/harness-slow.ts";
 import { chatNamer, type DaemonFault, faultWords, type ListedSession, listedSessions, type QueueOverrun, readQueueOverruns, readReopenedSends, readServiceFaults, readSupervisorFaults, SLOW_MS } from "../../src/daemon-faults.ts";
 import { readRecords } from "../../src/orphan-services.ts";
 import { deliveryCandidates, outboxLandings, readSessionMarks, type SlotWaitTimeout, splitSlotWaits } from "../../src/slot-wait-timeouts.ts";
@@ -1103,7 +1103,9 @@ export function measure(input: Inputs): PrecheckOutput {
       if (!miss.length) { count.usable++; continue; }
       count.unusable++;
       why.push(`${view.name} unusable (${miss.join(", ")}${slow.length ? `: ${slow.join(", ")}` : ""}${rigWords(view, faultName)})`);
-      const read = side(line, view);
+      // A slow read of the chat service is the harness's own code, whoever used the most cores: at 20:32Z on 10-24 api/threads/<id>/agents
+      // took 2.8 s waiting for a projection at 1.09 runnable a core, and the minute went to the apps' side for their 21.99 cores to the harness's 20.12.
+      const read = found.includes("cpu") && slowChatRead(own, line.chat) ? "harness" : side(line, view);
       sides.add(read);
       if (read === "harness" && rigsLead(view)) rigged = true;
     }
