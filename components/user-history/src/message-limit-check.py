@@ -33,7 +33,11 @@ its own reference. It does three things.
    left to remember a retry. The owner made every such limit a target (c98), so the send goes to the chat service's agent outbox
    (api/agent/queue, src/agent-outbox.ts), which delivers it once the target has room, and the sender gets a "queued" receipt. Later sends
    from this kernel to that target go behind it in the outbox until it went, so they keep their order.
-7. The login PATH. A kernel whose PATH finds no node takes the login shell's PATH when this file loads, so the node runs above and every
+7. Clean-room test chats. A sibling send to a chat that clean-room.ts setup filed in clean-room-subjects.json asks the chat service where
+   it goes (api/agent/route, src/clean-room-subjects.ts). From a session outside that chat's own ones it goes to the trial's owner, and the
+   receipt says so. On 10-25 at 00:46:07 KST the AI harness VP's release notice for sieun-pi 9cc887bc reached the test chat "root disk
+   readings" and voided its run.
+8. The login PATH. A kernel whose PATH finds no node takes the login shell's PATH when this file loads, so the node runs above and every
    other node, bun, uv or tsx a cell starts resolve. On 10-20 the Mac supervisor restarted at 07:49:42Z from an ssh command, and all 41
    revived kernels had PATH /usr/bin:/bin:/usr/sbin:/sbin: mac-management, mcp for chris and frontend bro saw each cross-host send fail
    with "No such file or directory: 'node'" until they set PATH by hand, and the send guard's node check (kernel-guard.py) let every call
@@ -52,7 +56,7 @@ import time
 
 CHECK = os.path.join(os.path.dirname(os.path.realpath(__file__)), "message-limit-check.ts")
 SEND_ONCE = os.path.join(os.path.dirname(os.path.realpath(__file__)), "send-once.ts")
-VERSION = 21
+VERSION = 22
 BRIEFS = "spawn-briefs"
 SAFE_ID = re.compile(r"^[\w-]{1,128}$")
 SEND_TIMEOUT = 'waiting for the Prime Agent daemon response to "send_message"'
@@ -372,6 +376,45 @@ async def send_other_box(payload, error, resend):
     return reply
 
 
+SUBJECTS_FILE = "clean-room-subjects.json"
+REDIRECT_NOTE = ("agent_message: {target} is a clean-room test chat, and this session is not one of its own, so the chat service brought this "
+                 "message to the trial's owner {owner} instead of the chat. The owner decides what the chat needs.")
+
+
+def subjects():
+    """The clean-room test chats this box's chat service filed, by session id; empty when none is filed or the file does not read."""
+    folder = data_dir()
+    try:
+        with open(os.path.join(folder, SUBJECTS_FILE)) as f:
+            found = json.load(f).get("subjects")
+    except (OSError, TypeError, ValueError, AttributeError):
+        return {}
+    return found if isinstance(found, dict) else {}
+
+
+async def to_trial_owner(real, payload):
+    """The receipt of a sibling send the chat service took to a clean-room test chat's trial owner (point 7), else None to send it as it came."""
+    filed = subjects()
+    if payload.get("receiver_role") != "sibling" or not filed:
+        return None
+    roster = await real("agent_observe.list")
+    me = roster.get("current") if isinstance(roster, dict) else None
+    target = roster_target(roster, payload)
+    to = target.get("sessionId") if target else None
+    if not to and own_root():
+        found = pick_other(await other_roots(own_root()), payload.get("receiver_name"))
+        to = found[0].get("sessionId") if found else None
+    if to not in filed or not isinstance(me, dict) or not isinstance(me.get("sessionId"), str):
+        return None
+    answer = await cross_host("route", {"from": me["sessionId"], "fromName": str(me.get("sessionName") or ""), "to": to, "message": payload.get("message")})
+    if not isinstance(answer, dict) or not answer.get("redirected"):
+        return None
+    note = REDIRECT_NOTE.format(target=payload.get("receiver_name") or to, owner=answer.get("owner"))
+    print(note)
+    return {"deliveryStatus": "redirected", "message": payload.get("message"), "receiverRole": payload.get("receiver_role"),
+            "receiverName": payload.get("receiver_name"), "trialOwner": answer.get("owner"), "note": note}
+
+
 def plain_request():
     """Prime's own host_request: the one install saved, else rlm's when it is not this wrapper, else one built on rlm.repl."""
     rlm = sys.modules.get("rlm")
@@ -410,6 +453,15 @@ async def request(request_type, payload=None, *args, **kwargs):
         print(f"user-history: the message check failed ({error}); sent as it came", file=sys.stderr)
         return with_note(await real(request_type, payload, *args, **kwargs), note)
     started = earlier["since"] if earlier else time.time()
+    if direct:
+        try:
+            redirected = await to_trial_owner(real, payload)
+        except Exception as error:
+            print(f"user-history: the clean-room check failed ({error}); sent as it came", file=sys.stderr)
+            redirected = None
+        if redirected:
+            UNCONFIRMED.pop(key, None)
+            return with_note(redirected, note)
     try:
         target = None
         if direct:
@@ -482,7 +534,7 @@ def install() -> None:
 
 
 def login_path() -> None:
-    """Puts the login shell's PATH in front of the kernel's when the kernel's finds no node (point 7).
+    """Puts the login shell's PATH in front of the kernel's when the kernel's finds no node (point 8).
 
     zsh loads nvm in .zshrc, so the shell runs interactive (-i), in its own session so it never takes a terminal, and the PATH is the
     last line it prints."""

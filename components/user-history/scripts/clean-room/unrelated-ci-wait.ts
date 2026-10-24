@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { STALL_MS } from "../../src/checkin-findings.ts";
 import { trainFile } from "../../src/checkin-load.ts";
+import { ownSessions } from "../../src/clean-room-subjects.ts";
 import { firstClause, parseBoard, planJob } from "../../src/shared/chat-board.ts";
 import type { ChatBoard, PlanItem } from "../../src/shared/types.ts";
 import { readSessionFile, sessionFile, sessionFiles, type RunState, type Scenario, type SessionEvent, type Verdict } from "./session-read.ts";
@@ -36,8 +37,6 @@ interface Slice { kind: string; item?: string; excerpt: string }
 interface Measure { at: number; goalGaps?: number; stuckSteps?: number }
 export interface CheckInRun { at: number; trigger: string; job?: { id: string; name: string }; flagged: Slice[]; own: Measure; after?: Measure }
 export interface Agent { name: string; state: string; sessionId?: string; job?: string; wait?: string; link?: string }
-/** The agent links of sessions the chat itself started (`chatDrafts`): its subagents and the root jobs it created. */
-const OWN_LINKS = new Set(["subagent", "root"]);
 interface Snapshot { at: number; board: ChatBoard }
 interface Entry { item: PlanItem; parent?: string }
 /** A carried wait: open step `step` whose wait's first clause names open step `on`, which a working job carries, unchanged since `since`. */
@@ -409,7 +408,7 @@ export function judge(run: string, state: RunState, now = Date.now(), cache: Rea
   // The chat's own jobs are its check-in jobs and the sessions the agents snapshots list with link subagent or root, by session id only. A root
   // job the chat started reports to it as a sibling (carried-wait run-3's "disk free sampling 2" at 16:59Z), while another chat that wrote
   // to it is listed with link message (run-3's "AI harness developer environment VP" at 15:46Z) and stays someone stepping in.
-  const ownJobs = new Set([...jobs.map(job => job.id), ...ev.agents.flatMap(entry => entry.list.flatMap(agent => agent.sessionId && OWN_LINKS.has(agent.link ?? "") ? [agent.sessionId] : []))]);
+  const ownJobs = ownSessions(ev.agents.flatMap(entry => entry.list), jobs.map(job => job.id));
   const outside = head.filter(event => event.kind === "text" && event.role === "custom" && (event.relation === "parent" || event.relation === "sibling") &&
     !(event.fromId && (asked.get(event.fromId) ?? Infinity) < event.at) && !(event.fromId && ownJobs.has(event.fromId)));
   const turns = head.filter(event => event.kind === "assistant" || event.kind === "call").length;

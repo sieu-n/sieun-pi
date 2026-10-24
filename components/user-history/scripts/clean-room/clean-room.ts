@@ -72,6 +72,7 @@ import { taskAndUpkeep } from "./task-and-upkeep.ts";
 import { type RunState, type Scenario, sessionFiles } from "./session-read.ts";
 import { endUnits, recordUnits, userSystemd } from "./trial-units.ts";
 import { fileTrialHarness, fileTrialName, keepTrialHarness, seedTrialHarness } from "../../src/trial-harness.ts";
+import { CLEAN_ROOM_SUBJECTS_FILE, fileSubjects, forgetSubjects } from "../../src/clean-room-subjects.ts";
 import { softCaps } from "./soft-caps.ts";
 import { stepIds } from "./step-ids.ts";
 import { archiveTestPages } from "./wiki-pages.ts";
@@ -178,6 +179,19 @@ async function createThread(srv: Server, run: string, pending: Pending, role: st
 const setCheckIn = (srv: Server, chat: string, body: Record<string, unknown>) => call(srv, "POST", `api/threads/${chat}/check-in`, body);
 /** This job's session id, sent as the agent that changes a check-in, so the setting names who paused it. */
 const SELF = process.env.CLEAN_ROOM_SESSION ?? "";
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/**
+ * The session that runs this trial, which gets the agent messages other sessions send its test chats (src/clean-room-subjects.ts): CLEAN_ROOM_SESSION,
+ * else the Prime session whose kernel started this script. A root's RLM_SESSION_DIR is named for it, and a subagent's holds its one <id>.jsonl.
+ */
+function trialOwner(): string | undefined {
+  if (UUID.test(SELF)) return SELF;
+  const folder = process.env.RLM_SESSION_DIR ?? "";
+  if (UUID.test(basename(folder))) return basename(folder);
+  const logs = existsSync(folder) ? readdirSync(folder).filter(name => name.endsWith(".jsonl") && UUID.test(name.slice(0, -6))) : [];
+  return logs.length === 1 ? logs[0]!.slice(0, -6) : undefined;
+}
 
 /** Replaces a board file under the board store's lock, so no chat_board write interleaves. */
 async function seedBoard(chat: string, board: ChatBoard): Promise<void> {
@@ -239,6 +253,12 @@ async function setup(flags: Record<string, string>): Promise<void> {
   for (const id of [chat, ...(controlId ? [controlId] : [])]) await new IdIndex(join(DATA, CLEAN_ROOM_CHATS_FILE), "Clean-room chat index").add(id);
   log(run, `${pending.creates.chat!.adopted ? "adopted" : "created"} chat ${chat} "${name}" in ${sandbox}, filed in ${CLEAN_ROOM_CHATS_FILE} so its corrections go to the scratch ledger and it stays out of the owner's sidebar and For you`);
   await fileTrialHarness(DATA, [{ id: chat, name }, ...(madeControl ? [madeControl] : [])], harness);
+  const owner = trialOwner();
+  if (owner) {
+    const at = Date.now();
+    await fileSubjects(DATA, Object.fromEntries([{ id: chat, name }, ...(madeControl ? [madeControl] : [])].map(one => [one.id, { owner, run: resolve(run), name: one.name, at }])));
+    log(run, `filed the trial owner ${owner} in ${CLEAN_ROOM_SUBJECTS_FILE}, so an agent message from outside the chat's own sessions goes there`);
+  } else log(run, `no trial owner: neither CLEAN_ROOM_SESSION nor RLM_SESSION_DIR names a session, so an agent message from any session reaches the chat`);
   log(run, `filed ${harness}, seeded from the published global harness store, as the global harness store of the trial's sessions`);
   if (control && madeControl) {
     await setCheckIn(srv, madeControl.id, { pause: "forever" });
@@ -767,6 +787,7 @@ async function teardown(flags: Record<string, string>): Promise<void> {
     for (const duty of await duties.list(id)) if (await duties.remove(id, duty.id)) log(run, `removed duty ${duty.id} "${duty.name}" of ${id}`);
   }
   for (const id of chats) await archive(id, "chat");
+  await forgetSubjects(DATA, chats);
   // The units go after the jobs and chats are archived, so no session of the trial starts one after this look.
   try {
     recordUnits(run, [...new Set([...chats, ...jobs].flatMap(sessionFiles))], state.setupAt);

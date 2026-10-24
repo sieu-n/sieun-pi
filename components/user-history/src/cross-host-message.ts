@@ -108,7 +108,7 @@ export async function reopenSibling(directory: RootDirectory, from: string, to: 
   return { reopened: await directory.reopen(target.sessionId), sessionId: target.sessionId, host: target.host };
 }
 
-/** `node cross-host-message.ts send|siblings|reopen|queue` with {from, to, message} or {session} and the chat's dataDir on stdin prints the answer or {error}. */
+/** `node cross-host-message.ts send|siblings|reopen|queue|route` with {from, to, message} or {session} and the chat's dataDir on stdin prints the answer or {error}. */
 async function cli(op: string): Promise<unknown> {
   const input = JSON.parse(readFileSync(0, "utf8")) as Record<string, unknown>;
   const dataDir = typeof input.dataDir === "string" ? input.dataDir : join(homedir(), ".prime/agent/browser-chat");
@@ -118,6 +118,8 @@ async function cli(op: string): Promise<unknown> {
   // A send the sender's daemon refused for the target's pending limit, kept in the service's agent outbox (src/agent-outbox.ts `queue`).
   if (op === "queue") return await serviceCall(service, "api/agent/queue", { from: input.from, to: input.to, role: input.role, message: input.message,
     pending: input.pending, limit: input.limit, behind: input.behind, root: input.root }, AbortSignal.timeout(60_000));
+  // A sibling send to a clean-room test chat, which the service delivers to the trial owner when the sender is not one of the chat's own sessions.
+  if (op === "route") return await serviceCall(service, "api/agent/route", { from: input.from, fromName: input.fromName, to: input.to, message: input.message });
   if (op === "reopen") return await serviceCall(service, "api/agent/reopen", { from: input.from, to: input.to }, AbortSignal.timeout(DAEMON_WORKER_START_MS));
   if (op === "siblings") return await serviceCall(service, `api/agent/siblings?session=${encodeURIComponent(String(input.session))}`);
   throw new Error(`Unknown op ${op}.`);

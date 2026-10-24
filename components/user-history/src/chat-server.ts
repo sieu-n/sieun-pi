@@ -11,6 +11,7 @@ import { reopenSession, unarchiveOnItsBox } from "./reopen-send.ts";
 import { jobRegistry } from "./chat-sources.ts";
 import { IdIndex } from "./id-index.ts";
 import { CLEAN_ROOM_CHATS_FILE, CLEAN_ROOM_CORRECTIONS_FILE, CorrectionLedger, correctionResult, parseCorrectionCall } from "./chat-corrections.ts";
+import { readSubjects, routeMessage, type RouteSources } from "./clean-room-subjects.ts";
 import type { Duplex } from "node:stream";
 import { applyAgentOps } from "./agent-board.ts";
 import type { ChatBackend } from "./chat-backend.ts";
@@ -136,6 +137,13 @@ function rootDirectory(backend: ChatBackend): RootDirectory {
     },
     reopen: sessionId => reopenSession(catalog, { agentDir: getAgentDir() }, sessionId),
   };
+}
+
+/** The clean-room subjects and what decides a subject's own sessions, from this service's files, catalog rows and duty runs. */
+function subjectSources(backend: ChatBackend): RouteSources {
+  return { subjects: () => readSubjects(dirname(backend.boards.dir)), archived: async id => (await backend.chats.archivedIds()).has(id),
+    participants: async id => ({ agents: (await backend.catalog.rows()).find(row => row.id === id)?.agents ?? [],
+      dutyJobs: (await backend.duties?.store.runs(id) ?? []).flatMap(run => run.job ? [run.job.id] : []) }) };
 }
 
 function threadId(value: string): string {
@@ -727,6 +735,14 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
           const roots = await otherBoxRoots(rootDirectory(backend), text(url.searchParams.get("session"), "session", 128)).catch(error => { throw new RequestError(404, (error as Error).message); });
           json(res, 200, { agents: roots.map(siblingRow) }); return;
         }
+        // Whether a session is a running clean-room test chat, and the session that owns its trial (src/clean-room-subjects.ts).
+        if (route === "api/agent/clean-room") {
+          const session = threadId(url.searchParams.get("session") ?? "");
+          const sources = subjectSources(backend);
+          const subject = (await sources.subjects())[session];
+          const active = !!subject && !await sources.archived(session);
+          json(res, 200, { session, cleanRoomSubject: active, ...active ? { trialOwner: subject.owner, run: subject.run } : {} }); return;
+        }
         if (route === "api/agent/jobs") {
           const text = await readFile(join(dirname(backend.boards.dir), "chat-jobs.json"), "utf8").catch(() => "{\"jobs\":{}}");
           res.writeHead(200, { "Content-Type": "application/json" }); res.end(text); return;
@@ -882,6 +898,13 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
         const receipt = await sendCrossHost(rootDirectory(backend), text(body.from, "from", 128), text(body.to, "to", 256), text(body.message, "message"))
           .catch(error => { throw new RequestError(409, (error as Error).message); });
         json(res, 200, receipt); return;
+      }
+      // A sibling send to a running clean-room test chat (message-limit-check.py): from outside the chat's own sessions it goes to the trial owner.
+      if (route === "api/agent/route") {
+        const routed = await routeMessage(subjectSources(backend), { from: threadId(text(body.from, "from", 128)), to: threadId(text(body.to, "to", 128)),
+          text: text(body.message, "message"), ...typeof body.fromName === "string" ? { fromName: text(body.fromName, "fromName", 256) } : {} });
+        if (routed.to === "owner") await backend.messages.deliver(routed.owner, routed.text);
+        json(res, 200, routed.to === "owner" ? { redirected: true, owner: routed.owner } : { redirected: false }); return;
       }
       // A sibling send the sender's own daemon refused as "Session worker is failed" or "Unknown active session": open that root from its file.
       if (route === "api/agent/reopen") {
