@@ -45,6 +45,7 @@ import { chatName, fileHasChatMarker, ownerStopSinceActive } from "./chat-guard.
 import { ARTIFACTS, type Leftovers, sessionTree } from "./job-leftovers.ts";
 import { type CancelBy, cancelAsker, cancelPurpose, cancelWords, type JobCancel, jobPlace } from "./job-cancels.ts";
 import type { ArchiveBy } from "./service-archives.ts";
+import type { PrimeUpdate } from "./prime-update.ts";
 
 export { TELL_OWNER_TOOL };
 
@@ -261,8 +262,8 @@ export class Chats {
   /** Roots the cleanup started whose steps now name other workers (`replacedRoots`): no pass resumes or wakes them, and each is archived once idle. */
   private replaced = new Set<string>();
   private readonly retired = new Set<string>();
-  /** The Prime update the idle-root sweep last held for, so it logs each update once. */
-  private rootsHeldFor: string | undefined;
+  /** The Prime update each retirement path last held for (`updateHold`), so each logs an update once. */
+  private readonly heldFor = new Map<string, string>();
   /** Job threads found gone (`threadGone`) at an activity stamp: never looked at again unless the stamp changes. */
   private readonly jobGone = new Map<string, string>();
   /** When the scheduler last looked for lost chats, and the threads with messages found plain (their head never changes). */
@@ -807,13 +808,16 @@ export class Chats {
       for (const { child, steps } of handBackSteps(children, board, said)) if (!gone?.has(child.id)) handed = await this.handBack(id, child, steps) || handed;
       if (handed) board = await this.source.board(id).catch(() => board);
     }
-    for (const child of finishedJobs(children, board, said)) {
+    // A job the update's prepare drained reads finished or quiet before its restore resumes it, so none is deleted or ended while one runs.
+    const finished = finishedJobs(children, board, said);
+    const waiting = this.source.resumes ? waitingJobs(children, board, now, said) : [];
+    if ((finished.length || waiting.length) && await this.updateHold("job is deleted or ended")) return;
+    for (const child of finished) {
       if (gone?.has(child.id)) continue;
       const result = await this.deleteJob(id, child, listed, now);
       if (result === "deleted") this.log(`chat ${id.slice(0, 8)}: deleted finished job ${childName(child)} (reported, quiet ${Math.round((now - child.lastActivityAt!) / 60_000)} min, no open step)`);
     }
-    if (!this.source.resumes) return;
-    for (const { child, steps } of waitingJobs(children, board, now, said)) if (!gone?.has(child.id)) await this.parkJob(id, child, steps, jobReport(messages, childName(child)), listed, now, board?.todos ?? []);
+    for (const { child, steps } of waiting) if (!gone?.has(child.id)) await this.parkJob(id, child, steps, jobReport(messages, childName(child)), listed, now, board?.todos ?? []);
   }
 
   /**
@@ -1046,15 +1050,34 @@ export class Chats {
   }
 
   /**
-   * Archives a root whose steps now name other workers (`replacedRoots`) once it runs no turn, on that root's queue key, so the resume pass
-   * and the failed-turn wake never continue it and its leftovers end. Archived once per serve; an archived one is left as it is.
+   * The Prime update preparing or restoring this box's daemon now (`updating`), or null. While one runs, a session the prepare drained reads
+   * idle before its restore resumes it, so no retirement path archives, deletes or ends a job then. `what` names the path in its one log line
+   * per update.
+   */
+  private async updateHold(what: string): Promise<PrimeUpdate | null> {
+    const update = await this.source.updating?.().catch(() => null) ?? null;
+    if (update && this.heldFor.get(what) !== update.requestId) {
+      this.heldFor.set(what, update.requestId);
+      this.log(`chats: Prime update ${update.requestId} is ${update.phase}; no ${what} until it ends`);
+    }
+    return update;
+  }
+
+  /**
+   * Archives a root whose steps now name other workers (`replacedRoots`) once it runs no turn and waits on no board.wake, on that root's queue
+   * key, so the resume pass and the failed-turn wake never continue it and its leftovers end. Archived once per serve; an archived one is left
+   * as it is. None is archived while a Prime update prepares or restores (`updateHold`): on 10-23 at 23:06:50Z, 30 s into the prepare of update
+   * 793302-1792796780311 on us-metal02, the sweep archived "crawler prod deploy resumed 13:31" (01a16707-1c9d), which the update's plan had
+   * recorded as streaming with an accepted prompt in flight and shouldResume true. The prepare had drained its turn, so it read idle; the update
+   * listed it under stoppedBeforeRestore with reason unknown and never resumed it, and its board.wake for run 40036134910 reopened it at 23:30:21Z.
    */
   private async retireReplaced(job: { chat: string; id: string; name: string; steps: string[]; by: string[] }): Promise<void> {
     if (this.retired.has(job.id)) return;
     await new Promise<void>(resolve => this.queue(job.id, async () => {
       try {
         if ((await this.summary(job.id))?.lifecycle === "archived") { this.retired.add(job.id); return; }
-        if (await this.threads.sessionActive(job.id)) return;
+        if (await this.updateHold("replaced root is archived")) return;
+        if (await this.source.waking?.(job.id) || await this.threads.sessionActive(job.id)) return;
         await this.threads.archive(job.id, "replaced_job_end");
         this.retired.add(job.id);
         const left = await this.leftovers(job.chat, join(ARTIFACTS, job.id), job.id);
@@ -1236,13 +1259,7 @@ export class Chats {
           const summary = await this.summary(id);
           if (summary?.lifecycle === "archived") return;
           if (await this.source.waking?.(id) || await this.threads.sessionActive(id)) { this.rootsEnded.delete(id); return; }
-          const update = await this.source.updating?.().catch(() => null) ?? null;
-          if (update) {
-            this.rootsEnded.delete(id);
-            if (this.rootsHeldFor !== update.requestId) this.log(`chats: Prime update ${update.requestId} is ${update.phase}; no idle root is archived until it ends`);
-            this.rootsHeldFor = update.requestId;
-            return;
-          }
+          if (await this.updateHold("idle root is archived")) { this.rootsEnded.delete(id); return; }
           const sessionFile = summary?.sessionFile;
           const brief = sessionFile ? await sessionBrief(sessionFile) : undefined;
           if (brief === undefined) { this.log(`chat ${row.id.slice(0, 8)}: kept root ${agent.name}: its brief could not be read`); return; }

@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { clockTime, localTime } from "./checkin-settings.ts";
 import type { JobRegistry } from "./chat-sources.ts";
 import type { ArchiveBy } from "./service-archives.ts";
+import type { PrimeUpdate } from "./prime-update.ts";
 import { BRIEF_ITEMS } from "./shared/brief-cap.ts";
 import { MERGE_RULE } from "./shared/chat-board.ts";
 import { releaseGo } from "./shared/release-go.ts";
@@ -362,9 +363,14 @@ export interface DutyJobThreads {
 
 /**
  * The archive the duty archive queue runs for a duty job: a session the catalog lists as live is archived as the service's (`duty_job_end`),
- * never as the owner's; one archived or gone is done.
+ * never as the owner's; one archived or gone is done. While a Prime update prepares or restores (`updating`) the try fails and the queue tries
+ * again later, since a job the prepare drained reads idle before its restore: the runner holds its own stops then (chat-duty-run.ts), and an
+ * archive queued just before the update must wait the same way.
  */
-export const archiveDutyJob = (threads: { archive(id: string, by: ArchiveBy): Promise<void> }, rows: () => Promise<readonly SessionRow[]>) => async (id: string): Promise<void> => {
+export const archiveDutyJob = (threads: { archive(id: string, by: ArchiveBy): Promise<void> }, rows: () => Promise<readonly SessionRow[]>,
+  updating?: () => Promise<PrimeUpdate | null>) => async (id: string): Promise<void> => {
+  const update = await updating?.().catch(() => null) ?? null;
+  if (update) throw new Error(`Prime update ${update.requestId} is ${update.phase}; the archive waits until it ends`);
   const found = (await rows()).find(candidate => candidate.id === id);
   if (found && !found.archived) await threads.archive(id, "duty_job_end");
 };

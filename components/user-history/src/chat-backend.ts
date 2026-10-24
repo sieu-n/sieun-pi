@@ -193,7 +193,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const dutyLog = (line: string) => process.stderr.write(`${new Date().toISOString()} ${line}\n`);
   const settings = checkInSettings(join(dataDir, "check-in-settings.json"));
   // A finished duty job's archive runs in the background with retries, so a slow daemon never holds up the next job's start.
-  const archives = new ArchiveQueue({ path: join(dataDir, "duty-archive-queue.json"), archive: archiveDutyJob(threads, () => catalog.rows()), log: dutyLog, ...quiet ? { tickMs: 0 } : {} });
+  const archives = new ArchiveQueue({ path: join(dataDir, "duty-archive-queue.json"), archive: archiveDutyJob(threads, () => catalog.rows(), () => primeUpdateRunning(agentDir, socketPath)), log: dutyLog, ...quiet ? { tickMs: 0 } : {} });
   const queueReading = boardQueueRead;
   // A Mac chat's jobs wait in the Mac's pool, so its check-in, its agents and its duties read every box's queue (`hostsQueueRead`).
   const hostsReading = hostsQueueRead(queueReading, () => catalog.remoteHosts().map(({ host }) => () => relayStats(host)));
@@ -396,6 +396,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     sessionsDir: join(agentDir, "sessions"),
     chats: () => chats.ids(),
     dormant: id => threads.isDormant(id),
+    updating: () => primeUpdateRunning(agentDir, socketPath),
     pool: () => poolWaiting(),
     waking: async now => new Set((await pendingWakes(join(dataDir, "wakes"), now).catch(() => [])).map(wake => wake.session)),
     // A session asleep in Prime's provider retry stops when its transcript ends on the failed reply and pi-pool serves its tree (keyed by the

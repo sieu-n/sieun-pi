@@ -2,6 +2,7 @@ import { dirname } from "node:path";
 import type { DaemonClient, SessionSummary } from "prime-agent";
 import { poolFreeAt, type PoolStatus, type PoolThread, type ThreadParts, threadKey } from "./chat-pool.ts";
 import { lastTurnError } from "./held-turns.ts";
+import type { PrimeUpdate } from "./prime-update.ts";
 import type { UnloadReceipt } from "./unloaded.ts";
 import { afterMove, moveOf } from "./worker-move.ts";
 
@@ -369,6 +370,11 @@ export interface UnloadSource {
   chats(): Promise<ReadonlySet<string>>;
   /** Whether the hub detached the chat as dormant. */
   dormant(id: string): boolean;
+  /**
+   * The Prime update preparing or restoring this box's daemon now (`primeUpdateRunning`), or null; a sweep stops nothing while one runs, since
+   * a session the prepare drained reads idle before its restore resumes it. Absent: none.
+   */
+  updating?(): Promise<PrimeUpdate | null>;
   /** The sessions with a turn working or queued in pi-pool. */
   pool(): Promise<ReadonlySet<string>>;
   /** The sessions with a board.wake pending at `now`. */
@@ -541,6 +547,8 @@ export class IdleUnloader {
   /** The sessions `quieted` named that its plan under way has not read yet, and that plan. */
   private readonly pending = new Set<string>();
   private quick: Promise<void> | undefined;
+  /** The Prime update the last sweep held for, so each update is logged once. */
+  private heldFor: string | undefined;
 
   constructor(private readonly source: UnloadSource) {}
 
@@ -552,6 +560,12 @@ export class IdleUnloader {
     const source = this.source;
     const idleMs = source.idleMs();
     if (only && (idleMs === null || !only.size)) return;
+    const update = await source.updating?.().catch(() => null) ?? null;
+    if (update) {
+      if (this.heldFor !== update.requestId) source.log(`idle unload: Prime update ${update.requestId} is ${update.phase}; no session is stopped until it ends`);
+      this.heldFor = update.requestId;
+      return;
+    }
     const began = source.now();
     const phases: [string, number][] = [];
     const lap = (name: string): void => { phases.push([name, source.now()]); };
