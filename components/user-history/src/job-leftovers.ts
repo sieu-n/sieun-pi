@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { hostExecFile } from "./spawn-host.ts";
 import { existsSync } from "node:fs";
-import { lstat, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { lstat, readdir, readFile, readlink, rm, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, normalize, relative } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -182,18 +182,37 @@ function frozenFolder(path: string): Promise<string | null> {
  * while that job's rig j1694a-ch, j1694a-kafka and j1694a-redis ran on it, and they ran on for 20 h; at 11:45Z on 10-24 the ClickHouse used
  * 5.4 cores, 2.5 GB RAM and 0.8 GB swap and failed on its deleted parts.
  */
+/**
+ * A tree's real folder: its copy in `ATTIC` when `path` is the link a disk cleanup left at its old place (ops/runbooks/dev-boxes.md, "move a
+ * finished tree to /drive2/scratch-attic/<same path> and leave a symlink"), or `path` itself. From 10-19 to 10-24 the p500 and box root disk
+ * jobs moved 98 trees to the attic on us-metal02, and a job's end kept each one there for good, since it deletes no symlink.
+ */
+export const ATTIC = "/drive2/scratch-attic";
+async function realFolder(path: string): Promise<string> {
+  return await readlink(path).catch(() => null) === ATTIC + path ? ATTIC + path : path;
+}
+
 async function removeFree(source: Pick<LeftoverSource, "inside" | "removeTmp" | "stopContainers">, candidates: readonly string[]): Promise<{ paths: string[]; removed: readonly string[]; kept: Map<string, string>; containers: readonly string[] }> {
-  const paths: string[] = [];
-  for (const path of new Set(candidates)) if (await ours(path)) paths.push(path);
-  const held = new Set(paths.length ? (await source.inside(paths)).map(entry => entry.dir) : []);
+  const real = new Map<string, string>();
+  for (const path of new Set(candidates)) {
+    const folder = await realFolder(path);
+    if (await ours(folder)) real.set(path, folder);
+  }
+  const paths = [...real.keys()];
+  const back = new Map([...real].map(([path, folder]) => [folder, path]));
+  const linked = paths.filter(path => real.get(path) !== path);
+  const held = new Set(paths.length ? (await source.inside([...real.values(), ...linked])).map(entry => back.get(entry.dir) ?? entry.dir) : []);
   const kept = new Map<string, string>();
   for (const path of paths.filter(path => !held.has(path))) {
-    const frozen = await frozenFolder(path);
+    const frozen = await frozenFolder(real.get(path)!);
     if (frozen) kept.set(path, `it holds the read-only folder ${frozen}`);
   }
   const free = paths.filter(path => !held.has(path) && !kept.has(path));
-  const containers = free.length ? await source.stopContainers(free).catch(() => []) : [];
-  return { paths, removed: free.length ? await source.removeTmp(free) : [], kept, containers };
+  const containers = free.length ? await source.stopContainers(free.map(path => real.get(path)!)).catch(() => []) : [];
+  const gone = free.length ? new Set(await source.removeTmp(free.map(path => real.get(path)!))) : new Set<string>();
+  const removed = free.filter(path => gone.has(real.get(path)!));
+  for (const path of removed) if (real.get(path) !== path) await unlink(path).catch(() => {});
+  return { paths, removed, kept, containers };
 }
 
 /** A running container as `docker inspect` prints it, with only the fields `mountedIn` reads. */
