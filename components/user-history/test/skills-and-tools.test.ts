@@ -276,6 +276,22 @@ test("pool_codex keeps an email-code account's new sign-in the agent's fix", asy
   assert.ok(outcome.status === "fail" && outcome.fixer === "agent", JSON.stringify(outcome));
 });
 
+// 10-24: sieunpark77's Claude sign-in read as an agent fix in the owner's Aside while his Mac was offline, and claude.ai showed the box
+// Chrome an hCaptcha, so 27 d5 runs passed with no job able to start the fix.
+const poolClaude = CHECKS.find(check => check.id === "pool_claude")!;
+const reauthRows = JSON.stringify({ rows: [{ email: "sieunpark77@gmail.com", reason: "needs-reauth" }, { email: "a@gmail.com", usable: true }] });
+const poolMacDeps = (online: boolean): Deps => {
+  const mac = macDeps(online, TIMED_OUT, []);
+  return { ...mac, exec: async (file, args, options) => file === "pi-pool" ? { code: 0, stdout: reauthRows, stderr: "", ms: 0 } : mac.exec(file, args, options) };
+};
+
+test("pool_claude makes a new sign-in the owner's fix while the Mac is offline, and the agent's once it is back", async () => {
+  const away = await poolClaude.run(poolMacDeps(false));
+  assert.ok(away.status === "fail" && away.fixer === "owner" && away.detail.includes("MacBook Pro is offline"), JSON.stringify(away));
+  const back = await poolClaude.run(poolMacDeps(true));
+  assert.ok(back.status === "fail" && back.fixer === "agent" && back.fix.includes("Aside"), JSON.stringify(back));
+});
+
 // 10-24 00:13 KST: pool_codex waited on the owner's Apple sign-in, and the headline missed for 10 runs that no agent could move.
 test("skills_or_tools_to_fix leaves out a fail only the owner can fix, which owner_fixes counts", () => {
   const check = (id: string) => CHECKS.find(entry => entry.id === id)!;
