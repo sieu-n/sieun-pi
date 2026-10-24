@@ -1,7 +1,7 @@
 // Guards the Chat system duty's precheck (d9), built 10-19 for the owner's rule that a plan holds only tasks that finish (msg mvfb7zt0).
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { agingSince, chatSystemOutput, fixNotMoving, goalsWithNoJob, jobsByChat, ownerMessages, planUpkeep, pushedFile, pushList, pushReached, pushRecords, pushTells, spotAuditLines, spread, waitsOnStep, withCatalogOwners, withoutWorkingRuns } from "../scripts/duties/chat-system.ts";
+import { agingSince, chatSystemOutput, fixNotMoving, goalsWithNoJob, jobsByChat, ownerMessages, planUpkeep, pushedFile, pushList, pushReached, pushRecords, pushSettled, pushTells, spotAuditLines, spread, waitsOnStep, withCatalogOwners, withoutWorkingRuns } from "../scripts/duties/chat-system.ts";
 import { type PlanInputs, planCounts } from "../scripts/duties/whole-system.ts";
 import type { MetricStreak } from "../src/shared/duty-streak.ts";
 import type { ChatBoard } from "../src/shared/types.ts";
@@ -277,4 +277,16 @@ test("a push to a chat whose box is offline reads as queued and asks for no seco
   assert.deepEqual(out.flagged!.filter(slice => slice.kind === "push_queued").map(slice => slice.chat), ["fe"]);
   assert.match(out.flagged!.find(slice => slice.kind === "push_queued")!.excerpt, /runs on mac, which Tailscale reads offline/);
   assert.deepEqual(out.flagged!.filter(slice => slice.kind === "push_followup").map(slice => slice.chat), ["api"]);
+});
+
+test("a push whose named steps all closed since owes no followup, while one with a step still open does", () => {
+  const board = { plan: [{ id: "p450", text: "cpu", status: "doing", children: [{ id: "p475", text: "dup", status: "dropped", children: [] }] }], todos: [] } as unknown as ChatBoard;
+  assert.equal(pushSettled(board, ["p475"]), true);
+  assert.equal(pushSettled(board, ["p475", "p450"]), false);
+  assert.equal(pushSettled(board, []), false);
+  assert.equal(pushSettled(board, ["p999"]), false);
+  const push = { at: 1, chat: "ops", tag: "[d9 push 2026-10-24T13:27Z]", items: ["p475"] };
+  const out = chatSystemOutput({ names: new Map([["ops", "ops guy"]]), stuck: [], upkeep: [], fleet: { pct: 100, red: [] }, stuckDuties: [], idleGoals: [], detail: "/tmp/d9.md",
+    followUps: [{ push, delivered: true, read: true, jobStarted: false, settled: true }] });
+  assert.equal(out.flagged!.filter(slice => slice.kind === "push_followup").length, 0);
 });
