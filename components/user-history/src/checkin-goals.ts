@@ -375,6 +375,9 @@ export function goalPushes(board: ChatBoard | null, views: readonly StepView[], 
     const before = memos?.[goal.id]?.pushed;
     const quiet = pushNeeded({ act } as GoalPush) && memo ? quietPush({ ...memo, ...before ? { pushed: before } : {} }, number, now, act) : undefined;
     if (memo && quiet && before) memo.pushed = before;
+    // A goal that waits or is held by the owner between two pushes keeps its last push: api portal p18 (99.4 of 100%) went from steer to
+    // "waits on p29" and back about every 2 h on 10-23 and 10-24, and each wait dropped the push, so 8 steers repeated the same 99.4.
+    else if (memo && before && (act === "waiting" || act === "owner")) memo.pushed = before;
     else if (memo && pushNeeded({ act } as GoalPush)) memo.pushed = { at: now, reading: Math.max(...memo.readings.map(reading => reading.at), number.measuredAt ?? 0),
       ...number.value === undefined ? {} : { value: number.value }, act };
     return [{ ...base, number, trend, stale: trend.kind !== "met" && stale, ...(asks ? { asks } : {}), ...(waits ? { waits } : {}), ...(left.length ? { left } : {}),

@@ -156,3 +156,17 @@ test("a swinging number gets one push at a new worst value and none for a swing 
   const again = run(p1(298.1, now + 150 * 60_000), back.memos as never, now + 3 * 3_600_000);
   assert.ok(again.pushes[0]!.quiet, "the same worst value again is no news");
 });
+
+// api portal vp p18 "Crawler routes working on prod" (99.4 of 100%) went from steer to "waits on p29" and back about every 2 h on 10-23 and
+// 10-24, and each wait dropped its last push, so it got 8 steers of the same 99.4.
+test("a goal that waits between two steers keeps its last push, so the same value after the wait stays quiet", () => {
+  const target = { metric: "Crawler routes working on prod", target: 100, unit: "%", current: 99.4, measuredAt: new Date(now - 3_600_000).toISOString(), source: "d2", direction: "up" as const };
+  const at = (waitUntil?: string) => ({ ...board, plan: board.plan.map(item => item.id === "p1" ? { ...item, target, ...waitUntil ? { waitUntil } : {} } : item) }) as never;
+  const prior = { p1: { readings: [{ value: 99.4, at: now - 7_200_000 }], still: 1 } } as never;
+  const first = run(at(), prior, now);
+  assert.equal(first.pushes[0]!.quiet, undefined);
+  const waited = run(at(new Date(now + 2 * 3_600_000).toISOString()), first.memos as never, now + 3_600_000);
+  assert.equal(waited.pushes[0]!.act, "waiting");
+  const after = run(at(), waited.memos as never, now + 3 * 3_600_000);
+  assert.ok(after.pushes[0]!.quiet, "the wait is no news, so the same 99.4 stays quiet");
+});
