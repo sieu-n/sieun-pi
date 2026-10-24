@@ -302,6 +302,14 @@ const stagingStep = (text: string, about: string): boolean => STAGING_STEP.test(
  * Evidence: ~/work/tell-owner-internal-done/replay.md.
  */
 const DUTY_RUN_FIX = /^d\d+\//;
+/**
+ * A percentile the text shares with a found step's or goal's metric is no step id: on 10-24 at 00:54Z CI and RepoOps sent the p358 runner
+ * wait fix (d1) while p1 read about 46 of 10 min, and its "at p90" named the done step p90 of that board too, so the check let it out.
+ * measured: the replay of the 2,733 lines sent from 10-09 to 10-23 20:30Z refuses the same 1,618 lines as before, none more
+ * (~/work/tell-owner-duty-fix-leak/replay.md).
+ */
+const metricIds = (found: readonly { step: PlanItem; goal: PlanItem }[]): Set<string> =>
+  new Set(found.flatMap(({ step, goal }) => `${step.target?.metric ?? ""} ${goal.target!.metric}`.match(/\bp\d+\b/g) ?? []));
 export function dutyFixDone(text: string, plan: readonly PlanItem[]): { step: PlanItem; goal: PlanItem } | undefined {
   const ids = new Set(text.match(/\bp\d+\b/g) ?? []);
   const found: { step: PlanItem; goal: PlanItem }[] = [];
@@ -314,7 +322,9 @@ export function dutyFixDone(text: string, plan: readonly PlanItem[]): { step: Pl
     }
   };
   walk(plan, []);
-  return ids.size && found.length === ids.size ? found[0] : undefined;
+  const echoed = metricIds(found);
+  const named = [...ids].filter(id => !echoed.has(id) || found.some(({ step }) => step.id === id));
+  return found.length && found.length === named.length ? found[0] : undefined;
 }
 const NEEDLESS_OK_MARK = "Not sent, no owner rule keeps this for him";
 /**

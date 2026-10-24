@@ -48,3 +48,21 @@ test("a done goes out when its goal is met, it names a goal or a step no duty ru
   assert.equal(dutyFixDone("cause found (p90)", [{ ...plan[2]!, status: "done" }]), undefined, "a closed goal");
   assert.equal(dutyFixDone("cause found (p90)", [{ ...plan[2]!, target: { metric: "visits", target: 10000, unit: "visits" } }]), undefined, "an unmeasured goal");
 });
+
+// 10-24 00:54Z: CI and RepoOps sent the p358 runner wait fix (d1) while p1 read about 46 of 10 min, and its "at p90" read as the step p90.
+test("a percentile the text shares with the step's or goal's metric is no step id", () => {
+  const wait = (current: number, children: PlanItem[]): PlanItem => ({ id: "p1", text: "push to verdict", status: "doing", children,
+    target: { metric: "push to verdict p90, 24 h", target: 10, unit: "min", current, direction: "down" } });
+  const fixStep: PlanItem = { ...step("p358", "d1/runner_wait_p90_min"), target: { metric: "runner wait p90, 24 h", target: 10, unit: "min", current: 7.8, direction: "down" } };
+  const ci: PlanItem[] = [wait(46, [fixStep]), { id: "p60", text: "reviews", status: "done", children: [step("p90")] }];
+  const text = "CI jobs now wait 7.8 minutes or less for a test machine at p90 over the last 24 hours, under your 10-minute target. That's p358, across 2,946 jobs.";
+  const turn = { ...tellTurn(history), plan: ci };
+  const refused = tellOwner({ text, why: "done", about: "p358" }, turn, at("17:40:00"), () => true);
+  assert.equal(refused.kind, "refused");
+  assert.match(refused.text, /p358 is a fix for duty d1\/runner_wait_p90_min while its goal p1 reads 46 of 10/);
+  const again = { ...tellTurn([...history, tell("a2", { text, why: "done", about: "p358" }, "17:40:00"), result("a2", refused.text, "17:40:01")]), plan: ci };
+  assert.equal(tellOwner({ text, why: "done", about: "p358" }, again, at("17:40:10"), () => true).kind, "sent", "the very same text again goes out");
+  assert.equal(tellOwner({ text, why: "done", about: "p358" }, { ...turn, owner: true }, at("17:40:00"), () => true).kind, "sent", "his own turn is never held");
+  assert.equal(dutyFixDone(`${text} p358`, [wait(8, [fixStep])]), undefined, "a met goal");
+  assert.equal(dutyFixDone("p358 is done, and the review step p95 too.", ci), undefined, "an id no metric names is still a step");
+});
