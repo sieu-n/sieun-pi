@@ -26,6 +26,7 @@ import { CHECK_IN_DUTY_ID, type DutyRunRecord, type FlaggedSlice, type PrecheckO
 import { effectiveRun, metricStreaks, missStreak, newestReading } from "../../src/shared/duty-streak.ts";
 import { missedKeys, parseDutyLink } from "../../src/shared/duty-fixes.ts";
 import { dutyHold, heldByTodo, withLinkedBoards } from "../../src/shared/todo-hold.ts";
+import type { HostHold } from "../../src/shared/host-hold.ts";
 import { readsTheShare } from "./duty-fleet.ts";
 
 /** One box's numbers in a watch line: the box that wrote the line, then each other box it read through that box's relay (HostWatchLine). */
@@ -812,6 +813,10 @@ const minutes = (ms: number): number => Math.round(ms / MINUTE);
 export type PlanInputs = Pick<Inputs, "now" | "chats" | "boards" | "ownerActivity" | "waking" | "poolWaiting" | "named"> & {
   /** The boxes of hosts.json that Tailscale reads offline now (`awayHosts`); absent: every box reads online, so a held step counts by its job again. */
   away?: ReadonlySet<string>;
+  /** The box each session and chat runs on, by the catalog copy that lists it (`copyHosts`); absent: every one runs on this box. */
+  hosts?: ReadonlyMap<string, string>;
+  /** Each offline box with the open For you todo that asks the owner to bring it back (`hostHolds`); absent: no box is held. */
+  holds?: ReadonlyMap<string, HostHold>;
 };
 /** An open step a check-in held on an offline box (`host_held`): its chat, id, the box and the For you todo that asks the owner to bring it back. */
 export interface HostHeldStep { chat: PlanInputs["chats"][number]; id: string; host: string; todo: string }
@@ -873,9 +878,19 @@ export function planCounts(input: PlanInputs): { stuck: StuckSteps[]; redDuties:
     // A chat whose check-in is paused runs no check-in to count from, so its board and step owners are read here (`unmovedSteps`). On 10-24 the
     // owner had paused the check-ins of SEO guy, frontend bro, ops guy and metal-management, and stuck_steps_all read 0 while ops guy's p506
     // named a job unloaded 23 h before with no wake.
+    // A step whose owners all run on an offline box that a For you todo asks the owner to bring back waits on him (`pausedHold`), as a
+    // check-in's host_held slice does: at 10:03Z on 10-24 frontend bro's p330 and p332 counted while their jobs sat on the Mac, off Tailscale.
     if (chat.paused) {
-      const items = unmovedSteps(input.boards?.get(chat.id), input.now, chat.everyMs, input.ownerActivity ?? new Map(), live, input.named?.get(chat.id));
-      return { chat, value: items.length, at: input.now, items };
+      const board = input.boards?.get(chat.id);
+      const items = unmovedSteps(board, input.now, chat.everyMs, input.ownerActivity ?? new Map(), live, input.named?.get(chat.id));
+      const held = new Map<string, HostHold>();
+      walk(board?.plan ?? [], item => {
+        const hold = items.includes(item.id) ? pausedHold(item, chat.id, input.named?.get(chat.id), input.hosts, input.holds) : undefined;
+        if (hold) held.set(item.id, hold);
+      });
+      hostHeld.push(...[...held].map(([id, hold]) => ({ chat, id, host: hold.host, todo: hold.todo })));
+      const left = items.filter(id => !held.has(id));
+      return { chat, value: left.length, at: input.now, items: left };
     }
     // A run skipped because the job before it still worked measured the board all the same, so it counts when it carries the metric: frontend
     // bro's 23:15:37Z run on 10-18 read 0 stuck steps, while d7 at 00:41Z still took 2 from its 23:13Z run. A skip with no metrics measured nothing.
@@ -949,6 +964,30 @@ export function unmovedSteps(board: ChatBoard | null | undefined, now: number, e
     if (stepSessions(item, named).some(session => live.has(session) || now - (activity.get(session) ?? -Infinity) <= window)) return;
     out.push(item.id);
   });
+  return out;
+}
+
+/**
+ * The hold on a paused chat's step whose owners (`stepSessions`) all run on a box in `holds`, or, with no owner, whose chat does. A session no
+ * catalog copy lists runs on its chat's box: frontend bro's p332 named 01a164b0, which the Mac's copy no longer listed on 10-24.
+ */
+export function pausedHold(item: { sessionId?: string; job?: string }, chat: string, named: ReadonlyMap<string, readonly string[]> | undefined,
+  hosts: ReadonlyMap<string, string> | undefined, holds: ReadonlyMap<string, HostHold> | undefined): HostHold | undefined {
+  if (!hosts || !holds?.size) return undefined;
+  const sessions = stepSessions(item, named ?? new Map());
+  const boxes = (sessions.length ? sessions : [chat]).map(session => hosts.get(session) ?? hosts.get(chat));
+  return boxes.every(box => box !== undefined && holds.has(box)) ? holds.get(boxes[0]!) : undefined;
+}
+
+/**
+ * The box of each session and chat in the boxes' catalog copies (`catalogCopyFiles`), this box's copy first, so a session both list runs here.
+ * `self` names this box.
+ */
+export function copyHosts(copies: readonly { host: string | null; rows: readonly { sessionId?: string }[] }[], self: string): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const copy of [...copies].sort((a, b) => Number(a.host !== null) - Number(b.host !== null))) {
+    for (const row of copy.rows) if (row.sessionId && !out.has(row.sessionId)) out.set(row.sessionId, copy.host ?? self);
+  }
   return out;
 }
 
@@ -1462,11 +1501,17 @@ async function jobSessions(artifacts: string, chats: readonly string[]): Promise
   return out;
 }
 
-/** This box's catalog copy (`session-copy.json`) and each other box's (`MIRROR_DIR/<host>.sessions.json` in src/host-catalogs.ts). */
-export async function catalogCopies(dataDir: string): Promise<string[]> {
+/** This box's catalog copy (`session-copy.json`, host null) and each other box's (`MIRROR_DIR/<host>.sessions.json` in src/host-catalogs.ts). */
+export async function catalogCopyFiles(dataDir: string): Promise<{ host: string | null; text: string }[]> {
   const mirror = join(homedir(), ".cache/sieun-pi/hosts");
-  const files = [join(dataDir, "session-copy.json"), ...(await readdir(mirror).catch(() => [] as string[])).filter(name => name.endsWith(".sessions.json")).map(name => join(mirror, name))];
-  return Promise.all(files.map(file => readFile(file, "utf8").catch(() => "")));
+  const files = [{ host: null, file: join(dataDir, "session-copy.json") }, ...(await readdir(mirror).catch(() => [] as string[]))
+    .filter(name => name.endsWith(".sessions.json")).map(name => ({ host: name.slice(0, -".sessions.json".length), file: join(mirror, name) }))];
+  return Promise.all(files.map(async ({ host, file }) => ({ host, text: await readFile(file, "utf8").catch(() => "") })));
+}
+
+/** The text of each box's catalog copy (`catalogCopyFiles`). */
+export async function catalogCopies(dataDir: string): Promise<string[]> {
+  return (await catalogCopyFiles(dataDir)).map(copy => copy.text);
 }
 
 const readJson = async (file: string): Promise<unknown> => JSON.parse(await readFile(file, "utf8").catch(() => "null")) as unknown;
@@ -1475,7 +1520,7 @@ const readJson = async (file: string): Promise<unknown> => JSON.parse(await read
  * The chats, live boards and step owners `planCounts` reads, from the chat service's data dir. Only the owner's chats (`ownerChats`): an archived
  * or clean-room test chat stays out of his counts and the job's messages. `names` titles a chat; one it lacks reads as its short id.
  */
-export async function planInputs(dataDir: string, now: number, names: ReadonlyMap<string, string>): Promise<Required<Omit<PlanInputs, "now" | "away">> & { now: number; pausedChats: Set<string> }> {
+export async function planInputs(dataDir: string, now: number, names: ReadonlyMap<string, string>): Promise<Required<Omit<PlanInputs, "now" | "away" | "hosts" | "holds">> & { now: number; pausedChats: Set<string> }> {
   const ids = await ownerChats(dataDir);
   const store = new DutyStore(dataDir);
   const settings = checkInSettings(join(dataDir, "check-in-settings.json"));

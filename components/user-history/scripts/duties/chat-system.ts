@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import { appendFile, mkdir, open, readFile, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
+import { homedir, hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
@@ -19,9 +19,10 @@ import { CHANGE_APPROACH_MISSES, fixStepStreak, metricStreaks } from "../../src/
 import { hasDoneLine, upkeepWords } from "../../src/shared/upkeep-title.ts";
 import { stalledSince } from "../../src/shared/stalled-calls.ts";
 import { daemonSessions, dutyFleet, type FleetDuty } from "./duty-fleet.ts";
-import { catalogCopies, endsOnPoolWait, type HostHeldStep, planCounts, planInputs, POOL_TAIL_BYTES, stepSessions } from "./whole-system.ts";
+import { catalogCopyFiles, copyHosts, endsOnPoolWait, type HostHeldStep, planCounts, planInputs, POOL_TAIL_BYTES, stepSessions } from "./whole-system.ts";
 import { loadHosts, selfHost } from "../../src/hosts.ts";
 import { peerReach, readTailscaleStatus } from "../../src/host-reach.ts";
+import { type AwayHost, hostHolds } from "../../src/shared/host-hold.ts";
 
 /**
  * The precheck of the AI harness chat's Chat system duty (d9). The owner on 10-19 (msg mvfb7zt0): "plan should be tasks all eventually clear -
@@ -442,14 +443,20 @@ export function hostGroups<T extends { host: string; todo: string }>(steps: read
   return [...groups.values()].map(group => ({ ...group, title: `${group.steps.length} ${group.steps.length === 1 ? "step waits" : "steps wait"} on ${group.host}, For you ${group.todo}` }));
 }
 
-/** The boxes of hosts.json other than this one that Tailscale reads offline now (`peerReach`); none when hosts.json or Tailscale does not read. */
-async function awayHosts(): Promise<Set<string>> {
+/**
+ * This box's hosts.json name (the machine's hostname when hosts.json does not read) and the other boxes Tailscale reads offline now
+ * (`peerReach`); none when hosts.json or Tailscale does not read.
+ */
+async function awayHosts(): Promise<{ self: string; away: AwayHost[] }> {
   try {
     const registry = await loadHosts();
     const status = await readTailscaleStatus();
-    const self = selfHost(registry)?.name;
-    return new Set(status ? registry.hosts.filter(host => host.name !== self && !peerReach(status, host.address).online).map(host => host.name) : []);
-  } catch { return new Set(); }
+    const self = selfHost(registry)?.name ?? hostname();
+    return { self, away: status ? registry.hosts.flatMap(host => {
+      const reach = host.name === self ? { online: true as const } : peerReach(status, host.address);
+      return reach.online ? [] : [{ name: host.name, ...host.hostname ? { hostname: host.hostname } : {}, ...reach.lastSeen ? { lastSeen: reach.lastSeen } : {} }];
+    }) : [] };
+  } catch { return { self: hostname(), away: [] }; }
 }
 
 /** What a push asks of a chat, after the list of its items. */
@@ -529,14 +536,18 @@ async function main(): Promise<void> {
   const now = Date.now();
   const dataDir = chatDataDir();
   const detail = `${output.replace(/\.json$/, "")}.md`;
-  const copies = await catalogCopies(dataDir);
+  const files = await catalogCopyFiles(dataDir);
+  const copies = files.map(copy => copy.text);
   const ids = await ownerChats(dataDir);
   const listed = listedSessions(copies, ids);
   const names = new Map(ids.map(id => [id, listed.get(id)?.name ?? id.slice(0, 8)] as const));
   const plan = await planInputs(dataDir, now, names);
-  const rows = copies.flatMap(text => { try { const value = JSON.parse(text) as { rows?: CatalogRow[] }; return value.rows ?? []; } catch { return []; } });
+  const parsed = files.map(copy => { try { return { host: copy.host, rows: (JSON.parse(copy.text) as { rows?: CatalogRow[] }).rows ?? [] }; } catch { return { host: copy.host, rows: [] }; } });
+  const rows = parsed.flatMap(copy => copy.rows);
   const jobs = jobsByChat(rows, plan.boards);
-  const owned = planCounts({ ...plan, ...withCatalogOwners(plan, jobs, now), away: await awayHosts() });
+  const { self, away } = await awayHosts();
+  const todos = [...plan.boards].flatMap(([chat, board]) => (board?.todos ?? []).map(todo => ({ chat, todo })));
+  const owned = planCounts({ ...plan, ...withCatalogOwners(plan, jobs, now), away: new Set(away.map(host => host.name)), hosts: copyHosts(parsed, self), holds: hostHolds(away, todos) });
   const runsByChat = new Map(plan.chats.map(chat => [chat.id, chat.runs]));
   const poolCut = await poolCutJobs(owned.redDuties, runsByChat, id => listedSessions(copies, [id]).get(id)?.file);
   const counts = { ...owned, redDuties: withoutWorkingRuns(owned.redDuties, runsByChat, rows, now, poolCut, await poolTrees()) };
