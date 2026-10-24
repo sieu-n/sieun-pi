@@ -57,6 +57,13 @@ test("runs with no item reading judge the lead metric as before", () => {
   assert.equal(fixNotMoving([red(old, "throughput_goals_missed", "p942", ["p850"])], () => "Crawler VP").length, 1);
 });
 
+test("a fix first measured on its own number starts its count there", () => {
+  const first = [d9("2026-10-24T22:47:00Z", 4, 163, 250), ...crawler().slice(0, 3).map(run => { const { items: _items, ...rest } = run; return rest; })];
+  assert.deepEqual(fixStepStreak(first, "throughput_goals_missed", "p942", ["p850"]),
+    { misses: 1, moved: false, worked: { item: "p850", from: 163, to: 163, target: 250 } });
+  assert.deepEqual(fixNotMoving([red(first, "throughput_goals_missed", "p942", ["p850"])], () => "Crawler VP"), [], "one reading of p850 is no stall yet");
+});
+
 test("a fix with its own measured target is judged on that target's history in the runs", () => {
   const risks: DutyMetric[] = [{ key: "crawler_risks_firing", label: "Risks whose alert fires now", op: "<=", target: 0 }];
   const d5 = (at: string, writes: number): DutyRunRecord => ({ duty: "d5", at: t(at), trigger: "owner", ms: 1, ...judge(risks, { metrics: { crawler_risks_firing: 1 } }),
