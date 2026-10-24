@@ -290,3 +290,11 @@ test("a push whose named steps all closed since owes no followup, while one with
     followUps: [{ push, delivered: true, read: true, jobStarted: false, settled: true }] });
   assert.equal(out.flagged!.filter(slice => slice.kind === "push_followup").length, 0);
 });
+
+test("a push whose named step waits only on an open For you todo owes no followup, and owes one again once the todo closes", () => {
+  const todo = { id: "t34", text: "Where should /ci's growth go?", done: false, from: "agent", at: "2026-10-24T09:30:46Z" };
+  const step = { id: "p518", text: "Fix: /ci fills within 30 days", status: "blocked", duty: "d2/risks_firing", waitFor: "the owner answers t34", children: [] };
+  assert.equal(pushSettled({ plan: [step], todos: [todo] } as unknown as ChatBoard, ["p518"]), true);
+  assert.equal(pushSettled({ plan: [step], todos: [{ ...todo, done: true }] } as unknown as ChatBoard, ["p518"]), false);
+  assert.equal(pushSettled({ plan: [{ ...step, waitFor: "the next cut" }], todos: [todo] } as unknown as ChatBoard, ["p518"]), false);
+});

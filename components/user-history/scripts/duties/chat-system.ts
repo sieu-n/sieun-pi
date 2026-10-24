@@ -329,14 +329,18 @@ export interface Push { at: number; chat: string; tag: string; items: string[] }
 export interface PushCheck { push: Push; delivered: boolean; read: boolean; jobStarted: boolean; away?: string; settled?: boolean }
 
 /**
- * Whether every step a push named has closed on the chat's board since: then the chat acted and owes no followup. On 10-24 the 23:10 run
- * asked to steer ops guy again about p475, which the chat had dropped as a duplicate of p450, whose job sleeps on a wake.
+ * Whether every step a push named has closed on the chat's board since, or waits on an open For you todo (`heldByTodo`): then the chat acted
+ * and owes no followup. On 10-24 the 23:10 run asked to steer ops guy again about p475, which the chat had dropped as a duplicate of p450,
+ * whose job sleeps on a wake, and the 20:53Z run asked to steer ops guy again about p518, which waited only on the owner's t34.
  */
 export function pushSettled(board: ChatBoard | null, items: readonly string[]): boolean {
   if (!items.length || !board) return false;
-  const status = new Map<string, PlanItem["status"]>();
-  walk(board.plan, item => { status.set(item.id, item.status); });
-  return items.every(id => status.has(id) && !OPEN.has(status.get(id)!));
+  const steps = new Map<string, PlanItem>();
+  walk(board.plan, item => { steps.set(item.id, item); });
+  return items.every(id => {
+    const step = steps.get(id);
+    return step !== undefined && (!OPEN.has(step.status) || heldByTodo(step, board.todos));
+  });
 }
 
 /**
