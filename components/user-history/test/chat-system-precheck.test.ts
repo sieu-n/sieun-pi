@@ -1,7 +1,7 @@
 // Guards the Chat system duty's precheck (d9), built 10-19 for the owner's rule that a plan holds only tasks that finish (msg mvfb7zt0).
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { agingSince, chatSystemOutput, fixNotMoving, goalsWithNoJob, jobsByChat, ownerMessages, planUpkeep, pushedFile, pushList, pushReached, spotAuditLines, spread, withCatalogOwners, withoutWorkingRuns } from "../scripts/duties/chat-system.ts";
+import { agingSince, chatSystemOutput, fixNotMoving, goalsWithNoJob, jobsByChat, ownerMessages, planUpkeep, pushedFile, pushList, pushReached, pushRecords, pushTells, spotAuditLines, spread, waitsOnStep, withCatalogOwners, withoutWorkingRuns } from "../scripts/duties/chat-system.ts";
 import { type PlanInputs, planCounts } from "../scripts/duties/whole-system.ts";
 import type { MetricStreak } from "../src/shared/duty-streak.ts";
 import type { ChatBoard } from "../src/shared/types.ts";
@@ -241,4 +241,29 @@ test("the spot audit brief points to the board, the job list and agent_observe, 
   assert.match(text, /\/data\/boards\/01abc\.json: read its open plan, each step's note and requirements, and its todos/);
   assert.match(text, /job list holds 2 jobs of it, 1 working now: fix wiki \(01job1\)/);
   assert.match(text, /agent_observe/);
+});
+
+// d9 run of 10-24 00:49Z: CI and RepoOps' p361 (blocked, waitFor p368, no job) was the only stuck step, and CI and RepoOps got no push.
+test("a chat whose only gap is a stuck step is pushed with its step ids, and a blocked step names the step it waits for", () => {
+  const ci = { v: 2, rev: 1, updatedAt: "2026-10-24T00:40:00Z", todos: [], plan: [
+    { id: "p360", text: "Git rules hold", status: "doing", note: "Done when 0", children: [
+      { id: "p361", text: "Verify the hook on the next land", status: "blocked", waitFor: "p368's land", children: [] },
+      { id: "p368", text: "Land the hook", status: "doing", job: "hook land", children: [] },
+      { id: "p369", text: "Old step", status: "blocked", waitFor: "p370", children: [] },
+      { id: "p370", text: "Done step", status: "done", children: [] }] }] } as unknown as ChatBoard;
+  assert.equal(waitsOnStep(ci, "p361"), "p368");
+  assert.equal(waitsOnStep(ci, "p368"), undefined);
+  assert.equal(waitsOnStep(ci, "p369"), undefined);
+  const stuck = [{ chat: "ci", id: "p361", text: "Verify the hook on the next land", waitsOn: "p368" }, { chat: "x", count: 2 }];
+  const pushes = pushList({ idleGoals: [], stuck, stuckDuties: [], upkeep: [] });
+  assert.deepEqual(pushes.map(entry => [entry.chat, entry.steps.map(step => step.id ?? step.count)]), [["ci", ["p361"]], ["x", [2]]]);
+  const tag = "[d9 push 2026-10-24T00:49Z]";
+  const [tell] = pushTells(pushes, tag);
+  assert.match(tell!.text, /open steps nobody moves p361 "Verify the hook on the next land" \(blocked on p368, so it can name p368's live job\)\./);
+  assert.match(tell!.text, /each open step nobody moves a live job, a For you todo or a close/);
+  assert.deepEqual(pushRecords(pushes, tag, 0).map(line => line.items), [["p361"], []]);
+  const goal = { id: "p361", text: "x", status: "doing", children: [] } as unknown as ChatBoard["plan"][number];
+  assert.deepEqual(pushList({ idleGoals: [{ chat: "ci", goals: [goal] }], stuck, stuckDuties: [], upkeep: [] })[0]!.steps, []);
+  const out = chatSystemOutput({ names: new Map(), stuck, upkeep: [], fleet: { pct: 100, red: [] }, stuckDuties: [], idleGoals: [], followUps: [], detail: "/tmp/d.md" });
+  assert.match(out.flagged!.find(slice => slice.kind === "push")!.excerpt, /^2 chats have .*an open step nobody moves/);
 });

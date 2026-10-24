@@ -327,9 +327,24 @@ export function pushReached(lines: readonly string[], tag: string): { delivered:
   return { delivered, read: false };
 }
 
+/**
+ * An open step nobody moves: its id and title, or only a count when the chat's check-in named no ids. `waitsOn` is the open step of the same
+ * chat that its blocked wait names (`waitsOnStep`), whose live job it can name as its own.
+ */
+export interface StuckStep { chat: string; id?: string; text?: string; count?: number; waitsOn?: string }
+
+/** The other open step of the board that a blocked step's waitFor names, such as CI and RepoOps' p361 waiting for p368 on 10-24. */
+export function waitsOnStep(board: ChatBoard | null, id: string): string | undefined {
+  const items = new Map<string, PlanItem>();
+  walk(board?.plan ?? [], item => { items.set(item.id, item); });
+  const step = items.get(id);
+  if (step?.status !== "blocked") return undefined;
+  return (step.waitFor?.match(/\bp\d+\b/g) ?? []).find(named => named !== id && OPEN.has(items.get(named)?.status ?? "done"));
+}
+
 export interface ChatSystemFacts {
   names: ReadonlyMap<string, string>;
-  stuck: readonly { chat: string; id?: string; text?: string; count?: number }[];
+  stuck: readonly StuckStep[];
   upkeep: readonly PlanFlag[];
   fleet: { pct: number; red: readonly RedDuty[] };
   stuckDuties: readonly { chat: string; line: string }[];
@@ -381,7 +396,7 @@ export function chatSystemOutput(facts: ChatSystemFacts): PrecheckOutput {
   head("fix_not_moving", notMoving.length, "red duties whose live fix job does not move the number", chats(notMoving));
   for (const duty of spread(notMoving, EXAMPLES)) flagged.push({ kind: "fix_not_moving", chat: duty.chat, item: duty.duty, excerpt: `${duty.line}.` });
   const pushes = pushList({ ...facts, notMoving });
-  if (pushes.length) flagged.push({ kind: "push", excerpt: `${pushes.length} ${pushes.length === 1 ? "chat has" : "chats have"} a goal with no live job, a red duty with no fix job ` +
+  if (pushes.length) flagged.push({ kind: "push", excerpt: `${pushes.length} ${pushes.length === 1 ? "chat has" : "chats have"} a goal with no live job, an open step nobody moves, a red duty with no fix job ` +
     `or with a fix that does not move it, or a plan item that is upkeep or has no done line; ` +
     `message each one, as the push list in ${facts.detail} says.` });
   for (const check of facts.followUps.filter(check => !check.read || !check.jobStarted)) {
@@ -396,15 +411,19 @@ export function chatSystemOutput(facts: ChatSystemFacts): PrecheckOutput {
 }
 
 /**
- * Per chat, what the run's job pushes it on: its open goals with no live job, its red duties with no fix job or with a fix that does not move
- * them (`fixNotMoving`), its red windowed counts with no lastEventAt (`unreadWindows`), and its plan items that are upkeep or have no done line. Until 10-19 a chat with only plan items was on no push list, so no run messaged it: at 20:22Z the 26 items sat in 6
- * chats, and 4 of those chats were on no list.
+ * Per chat, what the run's job pushes it on: its open goals with no live job, its open steps nobody moves that are not those goals, its red
+ * duties with no fix job or with a fix that does not move them (`fixNotMoving`), its red windowed counts with no lastEventAt (`unreadWindows`),
+ * and its plan items that are upkeep or have no done line. Until 10-19 a chat with only plan items was on no push list, so no run messaged it:
+ * at 20:22Z the 26 items sat in 6 chats, and 4 of those chats were on no list. Until 10-24 a chat with only stuck steps got no push either: at
+ * 00:49Z CI and RepoOps' p361 (blocked, waitFor p368, no job) was the only stuck step, and the duty job linked it to p368's job by hand.
  */
-export function pushList(facts: Pick<ChatSystemFacts, "idleGoals" | "stuckDuties" | "upkeep"> & { lagging?: readonly { chat: string; line: string }[]; notMoving?: readonly NotMoving[] }):
-  { chat: string; goals: readonly PlanItem[]; duties: string[]; upkeep: PlanFlag[] }[] {
-  const chats = new Map<string, { goals: readonly PlanItem[]; duties: string[]; upkeep: PlanFlag[] }>();
-  const at = (chat: string) => chats.get(chat) ?? chats.set(chat, { goals: [], duties: [], upkeep: [] }).get(chat)!;
+export function pushList(facts: Pick<ChatSystemFacts, "idleGoals" | "stuckDuties" | "upkeep"> & { stuck?: readonly StuckStep[];
+  lagging?: readonly { chat: string; line: string }[]; notMoving?: readonly NotMoving[] }):
+  { chat: string; goals: readonly PlanItem[]; steps: StuckStep[]; duties: string[]; upkeep: PlanFlag[] }[] {
+  const chats = new Map<string, { goals: readonly PlanItem[]; steps: StuckStep[]; duties: string[]; upkeep: PlanFlag[] }>();
+  const at = (chat: string) => chats.get(chat) ?? chats.set(chat, { goals: [], steps: [], duties: [], upkeep: [] }).get(chat)!;
   for (const entry of facts.idleGoals) if (entry.goals.length) at(entry.chat).goals = entry.goals;
+  for (const step of facts.stuck ?? []) if (!chats.get(step.chat)?.goals.some(goal => goal.id === step.id)) at(step.chat).steps.push(step);
   for (const duty of [...facts.stuckDuties, ...facts.lagging ?? [], ...facts.notMoving ?? []]) at(duty.chat).duties.push(duty.line);
   for (const item of facts.upkeep) at(item.chat).upkeep.push(item);
   return [...chats].map(([chat, entry]) => ({ chat, ...entry }));
@@ -434,16 +453,24 @@ async function awayHosts(): Promise<Set<string>> {
 }
 
 /** What a push asks of a chat, after the list of its items. */
-const PUSH_ASK = "Give each goal a live job this turn, each red duty a fix job on a step linked to it, each red duty whose live fix does not move its number a " +
+const PUSH_ASK = "Give each goal a live job this turn, each open step nobody moves a live job, a For you todo or a close (a blocked step that waits for another " +
+  "step of your chat can name that step's live job as its job), each red duty a fix job on a step linked to it, each red duty whose live fix does not move its number a " +
   "root-cause job that replaces that fix, each duty that reads as a lagging window lastEventAt in its precheck, and each listed plan item a \"Done when\" " +
   "note, a duty metric or a close. Reply in your own chat, not to d9.";
 
-/** One chat's line of the push list: its idle goals, its red duty lines and its upkeep items. */
+/** One stuck step in a push: its id and title with the step its wait names, or the count of a chat whose check-in named no ids. */
+const stuckItem = (step: StuckStep): string => step.id
+  ? `${step.id} ${quote(step.text ?? "")}${step.waitsOn ? ` (blocked on ${step.waitsOn}, so it can name ${step.waitsOn}'s live job)` : ""}`
+  : `${step.count ?? 1} with no ids in its check-in`;
+
+/** One chat's line of the push list: its idle goals, its stuck steps, its red duty lines and its upkeep items. */
 export function pushItems(entry: ReturnType<typeof pushList>[number]): string {
-  return (entry.goals.length ? `goals with no live job ${entry.goals.map(goal => `${goal.id} ${quote(goal.text)}`).join(", ")}` : "") +
-    (entry.duties.length ? `${entry.goals.length ? "; " : ""}${entry.duties.join("; ")}` : "") +
-    (entry.upkeep.length ? `${entry.goals.length || entry.duties.length ? "; " : ""}plan items to give a "Done when" note, move into a duty metric or close: ` +
-      entry.upkeep.map(item => `${item.id} ${quote(item.text)} ${item.why}`).join(", ") : "");
+  return [
+    entry.goals.length ? `goals with no live job ${entry.goals.map(goal => `${goal.id} ${quote(goal.text)}`).join(", ")}` : "",
+    entry.steps.length ? `open steps nobody moves ${entry.steps.map(stuckItem).join(", ")}` : "",
+    ...entry.duties,
+    entry.upkeep.length ? `plan items to give a "Done when" note, move into a duty metric or close: ${entry.upkeep.map(item => `${item.id} ${quote(item.text)} ${item.why}`).join(", ")}` : "",
+  ].filter(Boolean).join("; ");
 }
 
 /**
@@ -467,7 +494,7 @@ export const recordsPushes = (mode: string | undefined): boolean => mode === "ru
 /** The pushes.jsonl line of each push: the plan and duty ids it names. */
 export function pushRecords(pushes: ReturnType<typeof pushList>, tag: string, at: number): { at: number; chat: string; tag: string; items: string[] }[] {
   return pushes.map(entry => {
-    const items = [...entry.goals.map(goal => goal.id), ...entry.duties.flatMap(line => [...line.matchAll(/\((d\d+|checkin)\)/g)].map(match => match[1]!)),
+    const items = [...entry.goals.map(goal => goal.id), ...entry.steps.flatMap(step => step.id ? [step.id] : []), ...entry.duties.flatMap(line => [...line.matchAll(/\((d\d+|checkin)\)/g)].map(match => match[1]!)),
       ...entry.upkeep.map(item => item.id)];
     return { at, chat: entry.chat, tag, items: [...new Set(items)] };
   });
@@ -520,7 +547,8 @@ async function main(): Promise<void> {
   };
   const hostHeld = owned.hostHeld.map((step: HostHeldStep) => ({ chat: step.chat.id, id: step.id, host: step.host, todo: step.todo, text: text(step.chat.id, step.id) ?? "" }));
   const stuck = counts.stuck.flatMap((entry): ChatSystemFacts["stuck"] => entry.items.length
-    ? entry.items.map(id => ({ chat: entry.chat.id, id, text: text(entry.chat.id, id) ?? "" }))
+    ? entry.items.map(id => { const waitsOn = waitsOnStep(plan.boards.get(entry.chat.id) ?? null, id);
+      return { chat: entry.chat.id, id, text: text(entry.chat.id, id) ?? "", ...waitsOn ? { waitsOn } : {} }; })
     : [{ chat: entry.chat.id, count: entry.value }]);
   const upkeep = plan.chats.filter(chat => !plan.pausedChats.has(chat.id)).flatMap(chat => planUpkeep(chat.id, plan.boards.get(chat.id) ?? null));
   const fleet = await dutyFleet({ dataDir, now, sessions: daemonSessions });
@@ -552,7 +580,7 @@ async function main(): Promise<void> {
   const tag = `[d9 push ${new Date(now).toISOString().slice(0, 16)}Z]`;
   const name = (chat: string): string => names.get(chat) ?? chat.slice(0, 8);
   const notMoving = fixNotMoving(red, name);
-  const pushes = pushList({ idleGoals, stuckDuties: counts.redDuties, lagging: owned.lagging, notMoving, upkeep });
+  const pushes = pushList({ idleGoals, stuck, stuckDuties: counts.redDuties, lagging: owned.lagging, notMoving, upkeep });
 
   // The spot audit: one owner chat at random each run, read by the duty job against what the owner asked in it.
   const spot = ids[Math.floor(Math.random() * ids.length)]!;
