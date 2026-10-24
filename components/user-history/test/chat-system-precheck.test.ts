@@ -267,3 +267,14 @@ test("a chat whose only gap is a stuck step is pushed with its step ids, and a b
   const out = chatSystemOutput({ names: new Map(), stuck, upkeep: [], fleet: { pct: 100, red: [] }, stuckDuties: [], idleGoals: [], followUps: [], detail: "/tmp/d.md" });
   assert.match(out.flagged!.find(slice => slice.kind === "push")!.excerpt, /^2 chats have .*an open step nobody moves/);
 });
+
+test("a push to a chat whose box is offline reads as queued and asks for no second send, while a push that reached a live chat still gets a followup", () => {
+  const push = (chat: string) => ({ at: 1, chat, tag: "[d9 push 2026-10-24T11:25Z]", items: ["p333"] });
+  const out = chatSystemOutput({ names: new Map([["fe", "frontend bro"], ["api", "api portal vp"]]), stuck: [], upkeep: [], fleet: { pct: 100, red: [] }, stuckDuties: [],
+    idleGoals: [], detail: "/tmp/d9.md", followUps: [
+      { push: push("fe"), delivered: false, read: false, jobStarted: false, away: "mac" },
+      { push: push("api"), delivered: true, read: false, jobStarted: false }] });
+  assert.deepEqual(out.flagged!.filter(slice => slice.kind === "push_queued").map(slice => slice.chat), ["fe"]);
+  assert.match(out.flagged!.find(slice => slice.kind === "push_queued")!.excerpt, /runs on mac, which Tailscale reads offline/);
+  assert.deepEqual(out.flagged!.filter(slice => slice.kind === "push_followup").map(slice => slice.chat), ["api"]);
+});

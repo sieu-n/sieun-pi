@@ -302,8 +302,13 @@ async function poolTrees(): Promise<Set<string>> {
 
 /** One push the duty job sent a chat (`PUSHES_FILE`): when, the tag it put in the message, and the items it named. */
 export interface Push { at: number; chat: string; tag: string; items: string[] }
-/** How a push the last run's job sent went: whether its tag reached the chat's transcript, the chat answered after it, and a job started since. */
-export interface PushCheck { push: Push; delivered: boolean; read: boolean; jobStarted: boolean }
+/**
+ * How a push the last run's job sent went: whether its tag reached the chat's transcript, the chat answered after it, and a job started since.
+ * `away` names the box the chat runs on when this box reads its transcript from a mirror copy and Tailscale reads that box offline: the push
+ * sits in the queue until the box answers, so a second send only queues a duplicate. On 10-24 the 13:19Z run flagged both 11:25Z pushes to
+ * frontend bro as never delivered and asked for them again while the Mac sat offline for 7 hours with its steps held on For you t30.
+ */
+export interface PushCheck { push: Push; delivered: boolean; read: boolean; jobStarted: boolean; away?: string }
 
 /**
  * The transcript a push went to. A push can go to a session that is no owner chat, like the release owner 01a10810 or the metal box owner
@@ -400,7 +405,11 @@ export function chatSystemOutput(facts: ChatSystemFacts): PrecheckOutput {
   if (pushes.length) flagged.push({ kind: "push", excerpt: `${pushes.length} ${pushes.length === 1 ? "chat has" : "chats have"} a goal with no live job, an open step nobody moves, a red duty with no fix job ` +
     `or with a fix that does not move it, or a plan item that is upkeep or has no done line; ` +
     `message each one, as the push list in ${facts.detail} says.` });
-  for (const check of facts.followUps.filter(check => !check.read || !check.jobStarted)) {
+  for (const check of facts.followUps.filter(check => check.away && !check.delivered)) {
+    flagged.push({ kind: "push_queued", chat: check.push.chat, excerpt: `${name(check.push.chat)}: the last run's push ${check.push.tag} about ${check.push.items.join(", ")} ` +
+      `waits in the queue, since the chat runs on ${check.away}, which Tailscale reads offline; it lands when the box answers, so send it nothing again.` });
+  }
+  for (const check of facts.followUps.filter(check => (!check.read || !check.jobStarted) && !(check.away && !check.delivered))) {
     flagged.push({ kind: "push_followup", chat: check.push.chat, excerpt: `${name(check.push.chat)}: the last run's push ${check.push.tag} about ${check.push.items.join(", ")} ` +
       `${!check.delivered ? "never reached its transcript" : !check.read ? "reached it, but the chat has not answered" : "was read, but no job started since"}; steer it again.` });
   }
@@ -584,7 +593,8 @@ async function main(): Promise<void> {
   for (const push of sent) {
     const file = localCopy(pushedFile(listed, copies, push.chat));
     const reached = file ? pushReached(await tail(file.file, TRANSCRIPT_TAIL_BYTES), push.tag) : { delivered: false, read: false };
-    followUps.push({ push, ...reached, jobStarted: (jobs.get(push.chat) ?? []).some(row => ms(row.created) > push.at) });
+    const offline = file && away.some(host => host.name === file.host) ? { away: file.host } : {};
+    followUps.push({ push, ...reached, jobStarted: (jobs.get(push.chat) ?? []).some(row => ms(row.created) > push.at), ...offline });
   }
   const result = chatSystemOutput({ names, stuck, upkeep, fleet: { pct: fleet.metrics.duties_green_pct, red }, stuckDuties: counts.redDuties, idleGoals, followUps, detail, hostHeld });
   const fleetMissing = fleet.flagged.filter(slice => slice.kind === "fleet_data_missing");
@@ -614,7 +624,7 @@ async function main(): Promise<void> {
       "Follow up only where a chat's answer shows it did not act.", "",
     ...pushes.map((entry, index) => `${index + 1}. ${name(entry.chat)} (${entry.chat}): ${pushItems(entry)}.`), "",
     section(`Pushes the last run sent (${followUps.length})`, followUps.map(check => `${name(check.push.chat)}: ${check.push.tag} about ${check.push.items.join(", ")}, ` +
-      `${check.delivered ? "delivered" : "not delivered"}, ${check.read ? "read" : "not read"}, ${check.jobStarted ? "a job started since" : "no job started since"}.`)),
+      `${check.delivered ? "delivered" : check.away ? `queued while ${check.away} is offline` : "not delivered"}, ${check.read ? "read" : "not read"}, ${check.jobStarted ? "a job started since" : "no job started since"}.`)),
     section(`Open steps nobody moves (${result.metrics.stuck_steps_all})`, stuck.map(entry => entry.id
       ? `${name(entry.chat)}: ${entry.id} ${quote(entry.text ?? "")}.` : `${name(entry.chat)}: ${entry.count} open steps nobody moves, with no ids in its check-in.`)),
     ...hostGroups(hostHeld).map(group => section(group.title, group.steps.map(step => `${name(step.chat)}: ${step.id} ${quote(step.text)}` +
