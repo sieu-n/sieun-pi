@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { childWorking, type JobFact, type StepView } from "./checkin-steps.ts";
-import { CI_CACHE_REPO, RUN_WAKE_DUE_MS, treeWakes, type Wake, wakeLabel } from "./wakes.ts";
+import { CI_CACHE_REPO, RERUN_GAP_MS, RUN_WAKE_DUE_MS, treeWakes, type Wake, wakeLabel } from "./wakes.ts";
 import { firstClause } from "./shared/chat-board.ts";
 import type { ChildAgent, PlanItem } from "./shared/types.ts";
 import type { StalledCall } from "./shared/stalled-calls.ts";
@@ -281,7 +281,8 @@ export interface DeadWake { wake: Wake; why: string }
  * The pending wakes split into the live ones and the dead waits: a run wake on a run of the CI cache's repo that the cache (`train`) reads as
  * ended or a ghost, and whose last update is over RUN_WAKE_DUE_MS old, so a ticking service would have sent it. A job asleep only on dead waits
  * is no live owner. Crawler VP 10-20 07:45Z: about 15 jobs had slept since 10-19 21:07Z on promote run 39323562100, cancelled before any job
- * ran, and the check-in listed each as asleep on it. A wake for a later attempt than the run's latest waits for a rerun and stays live.
+ * ran, and the check-in listed each as asleep on it. A wake for a later attempt than the run's latest waits for a rerun and stays live until
+ * RERUN_GAP_MS after the run ended, when the service sends it as a rerun that never started.
  */
 export function deadWakes(wakes: readonly Wake[], train: Train | undefined, now: number): { live: Wake[]; dead: DeadWake[] } {
   const live: Wake[] = [];
@@ -289,9 +290,10 @@ export function deadWakes(wakes: readonly Wake[], train: Train | undefined, now:
   for (const wake of wakes) {
     const run = wake.on.kind === "run" && (!wake.on.repo || wake.on.repo === CI_CACHE_REPO) ? train?.all?.get(String(wake.on.run)) : undefined;
     const later = wake.on.kind === "run" && (wake.on.attempt ?? 1) > (run?.attempt ?? 1);
-    if (!run || later || (run.running && !run.ghost) || !(now - run.updatedAt > RUN_WAKE_DUE_MS)) { live.push(wake); continue; }
+    if (!run || (run.running && !run.ghost) || !(now - run.updatedAt > (later ? RERUN_GAP_MS : 0) + RUN_WAKE_DUE_MS)) { live.push(wake); continue; }
     const how = run.ghost ? "as a ghost with no result" : run.conclusion ?? "with no conclusion";
-    dead.push({ wake, why: `run ${run.id} ended ${how} at ${new Date(run.updatedAt).toISOString().slice(11, 16)}Z` });
+    const rerun = later ? ` and its rerun never started` : "";
+    dead.push({ wake, why: `run ${run.id} ended ${how} at ${new Date(run.updatedAt).toISOString().slice(11, 16)}Z${rerun}` });
   }
   return { live, dead };
 }

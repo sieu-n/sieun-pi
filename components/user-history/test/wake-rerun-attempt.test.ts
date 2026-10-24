@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { deadWakes, parseTrain } from "../src/checkin-load.ts";
-import { CI_CACHE_REPO, parseWake, readRunState, REAL_GH, RUN_WAKE_DUE_MS, type RunState, type Wake, Wakes, wakeText } from "../src/wakes.ts";
+import { CI_CACHE_REPO, parseWake, pendingWakes, readRunState, REAL_GH, RERUN_GAP_MS, RUN_WAKE_DUE_MS, type RunState, type Wake, Wakes, wakeText } from "../src/wakes.ts";
 
 const RUN = 39493311906;
 const URL = `https://github.com/${CI_CACHE_REPO}/actions/runs/${RUN}`;
@@ -85,4 +85,43 @@ test("the check-in counts a wake for a later attempt of an ended run as live", (
   const { live, dead } = deadWakes([later, any], train, now);
   assert.deepEqual(live, [later]);
   assert.deepEqual(dead.map(({ wake }) => wake), [any]);
+});
+
+// Promote 18, run 39574490195: attempt 1 failed at 09:48:25Z on 10-21 and was never rerun, and on 10-24 seven wakes still waited for attempt 2.
+test("a wake for attempt 2 of a run that ended at attempt 1 goes out once no rerun started for RERUN_GAP_MS, and is no longer pending", async t => {
+  const dir = await mkdtemp(join(tmpdir(), "rerun-missed-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const run = 39574490195;
+  const ended = Date.parse("2026-10-21T09:48:25Z");
+  const session = "01a1cccc-0000-7000-8000-000000000004";
+  await writeFile(join(dir, `${session}-run-${run}.json`), JSON.stringify({ session, on: { kind: "run", run, attempt: 2 }, note: "promote 18 attempt 2", since: ended + 60_000 }));
+  let now = ended + 106 * 60_000;
+  const state: RunState = { done: true, conclusion: "failure", attempt: 1, endedAt: ended, url: URL, label: "promote on sieun/dev" };
+  const sent: { session: string; text: string }[] = [];
+  const wakes = new Wakes({ dir, now: () => now, log: () => {}, runState: async () => state, deliver: async (to, text) => { sent.push({ session: to, text }); } });
+  assert.equal(await wakes.tick(), 0);
+  assert.equal((await pendingWakes(dir, now)).length, 1);
+  now = ended + RERUN_GAP_MS + RUN_WAKE_DUE_MS;
+  assert.equal(await wakes.tick(), 1);
+  assert.equal(sent[0]?.session, session);
+  assert.match(sent[0]!.text, /^\[wake\] Run 39574490195: you waited for attempt 2, but the rerun never started\. Attempt 1 ended failure at 2026-10-21T09:48Z/);
+  assert.match(sent[0]!.text, /Your note: promote 18 attempt 2$/);
+  assert.deepEqual(await pendingWakes(dir, now), []);
+});
+
+test("a finished run's state carries when it ended, from GitHub's updatedAt", async () => {
+  const live = () => JSON.stringify({ status: "completed", conclusion: "failure", attempt: 1, url: URL, workflowName: "promote", headBranch: "sieun/dev", updatedAt: "2026-10-21T09:48:25Z" });
+  const state = await readRunState({ kind: "run", run: RUN }, reads([], () => cache("completed", "failure", 1), live));
+  assert.deepEqual(state, { done: true, conclusion: "failure", attempt: 1, endedAt: Date.parse("2026-10-21T09:48:25Z"), url: URL, label: "promote on sieun/dev" });
+});
+
+test("the check-in counts a wake for a later attempt as dead once the rerun gap and the send delay passed", () => {
+  const ended = Date.parse("2026-10-21T09:48:25Z");
+  const train = parseTrain({ fetchedAt: "2026-10-24T04:30:00Z", runs: { [RUN]: { run: { id: RUN, name: "promote", path: ".github/workflows/promote.yml",
+    head_branch: "sieun/dev", event: "workflow_dispatch", status: "completed", conclusion: "failure", run_attempt: 1,
+    created_at: "2026-10-21T09:07:18Z", updated_at: new Date(ended).toISOString() } } } });
+  const later: Wake = { session: "01a1cccc-0000-7000-8000-000000000005", on: { kind: "run", run: RUN, attempt: 2 }, note: "", since: ended };
+  assert.deepEqual(deadWakes([later], train, ended + RERUN_GAP_MS).live, [later]);
+  assert.deepEqual(deadWakes([later], train, ended + RERUN_GAP_MS + RUN_WAKE_DUE_MS + 1).dead,
+    [{ wake: later, why: "run 39493311906 ended failure at 09:48Z and its rerun never started" }]);
 });

@@ -21,7 +21,8 @@ export type WakeOn = { kind: "run"; run: number; repo?: string; attempt?: number
 /** `root`: the chat tree's root session, when the wake's session is a child of it; board.wake reads it from RLM_SESSION_DIR. */
 export interface Wake { session: string; root?: string; on: WakeOn; note: string; since: number }
 /** What a run's state read answers: still going, finished with its conclusion, or not readable now (looked at again next tick). */
-export type RunState = { done: false } | { done: true; conclusion: string; attempt?: number; url: string; label: string; why?: string } | { error: string };
+/** `endedAt`: the run's last update on GitHub (`updatedAt`), which for a finished run is when its latest attempt ended. */
+export type RunState = { done: false } | { done: true; conclusion: string; attempt?: number; endedAt?: number; url: string; label: string; why?: string } | { error: string };
 
 export const TICK_MS = 30_000;
 /** The file the ticker rewrites as it starts and on every beat (`startWakes`); board.wake refuses a wake while it is over 2 min old, since no service would deliver it. */
@@ -36,6 +37,18 @@ export const RUN_LOOK_MS = 2 * 60_000;
 export const UNREADABLE_MS = 10 * 60_000;
 /** The longest a ticking service takes to send a run wake after its run ends: one RUN_LOOK_MS between reads of an unmoved run, plus one tick. */
 export const RUN_WAKE_DUE_MS = RUN_LOOK_MS + TICK_MS;
+/**
+ * How long after a run's latest attempt ended a wake for a later attempt still waits for the rerun; past it the wake goes out saying the rerun
+ * never started. On 10-24 14 wakes had waited 30 to 72 h for attempt 2 of runs that ended at attempt 1 on 10-21 to 10-23 and were never rerun,
+ * and the chat counted their jobs as live owners, so Crawler VP's p890 and p929 sat blocked for 3 days after their blocker shipped.
+ */
+// measured: promote 17 run 39493311906 had attempt 1 cancelled at 23:16Z on 10-20 and its rerun started at 01:02Z on 10-21, a 106 min gap.
+export const RERUN_GAP_MS = 120 * 60_000;
+/** Whether `wake` waits for a later attempt than the finished run's latest one, and that attempt ended RERUN_GAP_MS or more before `now`. */
+export function rerunMissed(wake: Wake, state: RunState | null, now: number): boolean {
+  if (wake.on.kind !== "run" || !state || !("done" in state) || !state.done) return false;
+  return (wake.on.attempt ?? 1) > (state.attempt ?? 1) && state.endedAt !== undefined && now - state.endedAt >= RERUN_GAP_MS;
+}
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const SESSION = /^[\w-]{1,128}$/;
@@ -63,6 +76,12 @@ export function wakeText(wake: Wake, state: RunState | null, now: number): strin
   }
   if (wake.on.kind === "time") return `[wake] It is ${new Date(now).toISOString()}, the time you set with board.wake (${new Date(wake.on.at).toISOString()}).${note}`;
   const done = state && "done" in state && state.done ? state : null;
+  if (done && rerunMissed(wake, done, now)) {
+    const ended = done.endedAt === undefined ? "" : ` at ${new Date(done.endedAt).toISOString().slice(0, 16)}Z`;
+    return `[wake] Run ${wake.on.run}${wake.on.repo ? ` in ${wake.on.repo}` : ""}: you waited for attempt ${wake.on.attempt}, but the rerun never started. ` +
+      `Attempt ${done.attempt ?? 1} ended ${done.conclusion}${ended}${done.label ? ` (${done.label})` : ""} and no rerun followed in ${Math.round((now - (done.endedAt ?? now)) / 3_600_000)} h. ` +
+      `${done.url} Wake on the run that replaced it, or set board.wake again once a rerun starts. You set this wake with board.wake.${note}`.replace(/\s+/g, " ").trim();
+  }
   const about = [done?.attempt ? `attempt ${done.attempt}` : "", done?.label ?? ""].filter(Boolean).join(", ");
   const rerun = done?.attempt && done.conclusion !== "success"
     ? ` A rerun keeps this run id: to wait for its next attempt, set board.wake(run=${wake.on.run}, attempt=${done.attempt + 1}).` : "";
@@ -128,7 +147,7 @@ export class Wakes {
         state = states.get(wake.on.run) ?? null;
         const failed = this.failing.get(wake.on.run);
         if (failed && now - failed.since >= UNREADABLE_MS) state = { error: failed.error };
-        else if (!state || !("done" in state) || !state.done || (wake.on.attempt ?? 1) > (state.attempt ?? 1)) continue;
+        else if (!state || !("done" in state) || !state.done || ((wake.on.attempt ?? 1) > (state.attempt ?? 1) && !rerunMissed(wake, state, now))) continue;
       } else if (wake.on.at > now) continue;
       due.set(wake.session, [...due.get(wake.session) ?? [], { file, wake, state }]);
     }
@@ -264,7 +283,7 @@ const NO_SUCH_RUN = /HTTP 404/;
  */
 export async function readRunState(on: Extract<WakeOn, { kind: "run" }>, exec: (command: string, args: string[]) => Promise<string> = run,
   stale: () => Promise<boolean> = async () => false): Promise<RunState> {
-  const gh = (repo: string, bin = "gh") => exec(bin, ["run", "view", String(on.run), "--repo", repo, "--json", "status,conclusion,attempt,url,workflowName,headBranch"]);
+  const gh = (repo: string, bin = "gh") => exec(bin, ["run", "view", String(on.run), "--repo", repo, "--json", "status,conclusion,attempt,url,workflowName,headBranch,updatedAt"]);
   const anyRepo = async (bin = "gh"): Promise<string> => {
     let missing: unknown;
     for (const repo of [CI_CACHE_REPO, ...OTHER_RUN_REPOS]) {
@@ -291,7 +310,9 @@ export async function readRunState(on: Extract<WakeOn, { kind: "run" }>, exec: (
   const workflow = typeof raw.workflow === "string" ? raw.workflow : typeof raw.workflowName === "string" ? raw.workflowName : "";
   const branch = typeof raw.headBranch === "string" ? raw.headBranch : "";
   const attempt = typeof raw.attempt === "number" && Number.isSafeInteger(raw.attempt) && raw.attempt > 0 ? { attempt: raw.attempt } : {};
-  return { done: true, conclusion: ghost ? "no result" : typeof raw.conclusion === "string" ? raw.conclusion : "unknown", ...attempt, url: typeof raw.url === "string" ? raw.url : "",
+  const updated = Date.parse(String(raw.updatedAt));
+  const endedAt = Number.isFinite(updated) ? { endedAt: updated } : {};
+  return { done: true, conclusion: ghost ? "no result" : typeof raw.conclusion === "string" ? raw.conclusion : "unknown", ...attempt, ...endedAt, url: typeof raw.url === "string" ? raw.url : "",
     label: [workflow, branch].filter(Boolean).join(" on "), ...ghost ? { why: NO_RESULT_WHY } : {} };
 }
 
