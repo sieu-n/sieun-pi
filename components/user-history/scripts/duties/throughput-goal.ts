@@ -117,7 +117,7 @@ export const refreshSql = (seed: number): string => `SELECT
   count(*) FILTER (WHERE last_ok_at IS NOT NULL AND state <> 'gone') AS read,
   count(*) FILTER (WHERE last_ok_at < now() - interval '7 days' AND state <> 'gone') AS past7,
   count(*) FILTER (WHERE last_ok_at < now() - interval '14 days' AND state <> 'gone') AS past14,
-  count(*) FILTER (WHERE last_ok_at < now() - interval '7 days' AND state <> 'gone' AND lane = 'history') AS past7History
+  count(*) FILTER (WHERE last_ok_at < now() - interval '7 days' AND state <> 'gone' AND lane = 'history') AS "past7History"
 FROM instagram_census TABLESAMPLE SYSTEM(0.1) REPEATABLE(${seed})`;
 export interface RefreshSample { read: number; past7: number; past14: number; past7History: number }
 /** Sums the samples; null when none answered, so the metrics stay unmeasured instead of reading 0%. */
