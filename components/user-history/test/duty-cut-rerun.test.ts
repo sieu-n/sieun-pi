@@ -19,6 +19,7 @@ const HARNESS = "01a1164b-4a2d-742d-b27a-82f086ed0200";
 const MIN = 60_000;
 const slotError = (slot: string, minutes: number) => `Failed to resolve API key for provider "anthropic" from shell command: /home/sieun/.config/pi-pool/bin/pi-pool-token ` +
   `pi-pool: this session waits for its slot at ${slot}. Try again in ${minutes} minutes.`;
+const REFUSAL = "Model refused to respond (refusal): cyber: This request triggered restrictions on violative cyber content.";
 const CHECK_IN_MISS = { goal_gaps: { value: 1, target: 0, op: "<=" as const, met: false }, stuck_steps: { value: 0, target: 0, op: "<=" as const, met: true },
   no_done_line: { value: 0, target: 0, op: "<=" as const, met: true }, plan_risks: { value: 0, target: 0, op: "<=" as const, met: true } };
 
@@ -209,7 +210,7 @@ writeFileSync(process.env.OUTPUT_FILE, JSON.stringify({ metrics: { wiki_problems
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
-test("a rerun whose own job is cut is recorded as cut and not rerun again", async () => {
+test("a rerun whose own job is cut on an error that is no transient model call failure is recorded as cut and not rerun again", async () => {
   const dir = await mkdtemp(join(tmpdir(), "duty-cut-rerun-cut-"));
   try {
     const store = new DutyStore(dir);
@@ -226,14 +227,57 @@ test("a rerun whose own job is cut is recorded as cut and not rerun again", asyn
     const run = checkInDuties(dir, store, clock, {});
     await run.addJob(first.id, first.name, transcript(first.id, "2026-10-19T03:04:04.015Z", "2026-10-19T03:04:04.082Z", slotError("2026-10-19T03:42:00.000Z", 38), "2026-10-19T03:06:30.178Z"));
     run.rows.get(first.id)!.archived = true;
-    await run.addJob(second.id, second.name, transcript(second.id, "2026-10-19T03:42:12.000Z", "2026-10-19T03:42:12.100Z", slotError("2026-10-19T04:10:00.000Z", 28), "2026-10-19T03:45:00.000Z"));
+    await run.addJob(second.id, second.name, transcript(second.id, "2026-10-19T03:42:12.000Z", "2026-10-19T03:42:12.100Z", REFUSAL, "2026-10-19T03:45:00.000Z"));
 
     await run.duties.tick();
     const [rerun] = await store.runs(TWITCH);
-    assert.equal(rerun!.cut?.slotAt, Date.parse("2026-10-19T04:10:00.000Z"), "the rerun's own cut is recorded");
-    assert.ok(run.logs.some(line => line.includes("cut, its job check-in Twitch gaps 12:42") && line.endsWith("a rerun is not run again")), run.logs.join("\n"));
+    assert.equal(rerun!.cut?.error, REFUSAL, "the rerun's own cut is recorded");
+    assert.ok(run.logs.some(line => line.includes("cut, its job check-in Twitch gaps 12:42") && line.endsWith("a rerun cut by no transient failure is not run again")), run.logs.join("\n"));
     await run.duties.tick();
     assert.deepEqual(run.reruns, [], "neither the cut rerun nor the cut run it reran runs again");
+    run.duties.close();
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+// 10-25 on us-metal02 the box lost outside DNS and TCP from about 21:43Z to 21:58Z. Check-in Prospect feature bro 06:53 was cut at 21:54:49Z
+// on "the token hook gave no token", its rerun started check-in 06:55 at 21:55:21Z, that job was cut the same way at 21:56:19Z, and the log
+// said "a rerun is not run again", so nothing ran the check-in until its 22:55Z slot.
+const PROSPECT = "01a11bd7-072f-7591-ad1d-f123c276cde5";
+const hookError = 'Failed to resolve API key for provider "anthropic" from shell command: /home/sieun/.config/pi-pool/bin/pi-pool-token ' +
+  "pi-pool: the token hook gave no token; the retry uses a new hook run.";
+
+test("a rerun cut on a transient model call failure reruns again once pi-pool admits its tree (Prospect feature bro check-in, 10-25 21:56Z)", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "duty-cut-rerun-again-"));
+  try {
+    const store = new DutyStore(dir);
+    await store.updateFile(PROSPECT, file => { file.checkIn = { createdAt: Date.parse("2026-10-20T01:00:00Z"), runCount: 90 }; });
+    const first = { id: "01a1750e-0000-7000-8000-000000000653", name: "check-in Prospect feature bro 06:53" };
+    const second = { id: "01a17510-0000-7000-8000-000000000655", name: "check-in Prospect feature bro 06:55" };
+    const firstAt = Date.parse("2026-10-25T21:53:50.224Z");
+    const secondAt = Date.parse("2026-10-25T21:55:21.097Z");
+    const miss = { verdict: "missed" as const, metrics: CHECK_IN_MISS, summary: "goal_gaps 1 (target at most 0)" };
+    await store.appendRun(PROSPECT, { duty: "checkin", at: firstAt, slot: firstAt, trigger: "schedule", ms: 5000, ...miss, job: first,
+      cut: { error: hookError, at: Date.parse("2026-10-25T21:54:49.618Z"), provider: "anthropic" } });
+    await store.appendRun(PROSPECT, { duty: "checkin", at: secondAt, slot: secondAt, trigger: "rerun", rerunOf: firstAt, ms: 4500, ...miss, job: second });
+    const clock = { now: Date.parse("2026-10-25T21:56:20.700Z") };
+    const egressBack = Date.parse("2026-10-25T21:58:20.000Z");
+    const run = checkInDuties(dir, store, clock, { [second.id]: egressBack });
+    await run.addJob(first.id, first.name, transcript(first.id, "2026-10-25T21:53:55.291Z", "2026-10-25T21:54:49.618Z", hookError, "2026-10-25T21:54:50.956Z"));
+    run.rows.get(first.id)!.archived = true;
+    await run.addJob(second.id, second.name, transcript(second.id, "2026-10-25T21:55:25.597Z", "2026-10-25T21:56:19.245Z", hookError, "2026-10-25T21:56:20.752Z"));
+
+    await run.duties.tick();
+    const [rerun] = await store.runs(PROSPECT);
+    assert.equal(rerun!.cut?.error, hookError, "the rerun's own cut is recorded");
+    assert.ok(run.logs.some(line => line.includes("cut, its job check-in Prospect feature bro 06:55") && line.endsWith("it reruns once pi-pool admits its tree")),
+      run.logs.join("\n"));
+    assert.deepEqual(run.reruns, [], "pi-pool does not admit the tree while the box has no egress");
+
+    clock.now = Date.parse("2026-10-25T21:58:20.904Z");
+    await run.duties.tick();
+    assert.deepEqual(run.reruns, [[PROSPECT, "rerun", secondAt]], "the cut rerun reruns at the first tick pi-pool admits its tree");
+    await run.duties.tick();
+    assert.deepEqual(run.reruns, [[PROSPECT, "rerun", secondAt]], "one rerun per cut run, and the first cut run stays rerun by the second");
     run.duties.close();
   } finally { await rm(dir, { recursive: true, force: true }); }
 });

@@ -12,6 +12,7 @@ import { type AfterMeasure, CHECK_IN_DUTY, CHECK_IN_DUTY_ID, dailySlot, dutyDue,
   type DutyCut, type DutyMetric, type DutyRunRecord, type DutySchedule, type DutyTrigger, type DutyView, type FixLink, type FlaggedSlice, type PrecheckOutput, type PrecheckOverrun, verdictMetrics } from "./shared/chat-duties.ts";
 import { briefFindings, headlineWords } from "./shared/brief-cap.ts";
 import { pushMisses } from "./duty-push.ts";
+import { transientTurnError } from "./turn-error.ts";
 import type { TellSource } from "./clean-room-subjects.ts";
 import type { PrimeUpdate } from "./prime-update.ts";
 import { closedFixes, dutyFixes, type FixLiveness, missedKeys, verifyNoteOps } from "./shared/duty-fixes.ts";
@@ -206,6 +207,12 @@ const message = (error: unknown): string => error instanceof Error ? error.messa
 
 /** Whether a run moves its duty's lastRunAt and lastSlotAt: a push run or a rerun leaves them, since they set when the duty is due next. */
 const movesSchedule = (trigger: DutyTrigger): boolean => trigger !== "push" && trigger !== "rerun";
+/**
+ * Whether a run whose job ended cut gets a rerun: a run that is no rerun on any cut, and a rerun again while its cut is a transient model call
+ * failure (`transientTurnError`). On 10-25 us-metal02 lost egress from about 21:43Z to 21:58Z, Prospect feature bro's check-in rerun was cut
+ * on "the token hook gave no token" at 21:56:19Z, and with one rerun per cut nothing ran the check-in until its 22:55Z slot.
+ */
+const cutReruns = (run: DutyRunRecord, cut: DutyCut): boolean => run.trigger !== "rerun" || transientTurnError(cut.error);
 
 /** The keys of the metrics a duty's verdict counts (`verdictMetrics`); old run records still carry every metric the duty once had. */
 const verdictKeys = (metrics: readonly DutyMetric[]): Set<string> => new Set(verdictMetrics(metrics).map(metric => metric.key));
@@ -372,7 +379,8 @@ export class Duties {
     if (working && !(await this.handsOffBeside(own, lastRun.job))) return;
     // A cut run waits for its rerun once pi-pool admits its tree (`rerunCut`), so it is still going: at 15:50:20Z on 10-19 the AI harness chat's
     // d9 got a push run while its 15:34Z run waited for its slot, and at 16:15:41Z frontend bro's d1 got one while its 15:29Z push run did.
-    if (!working && lastRun && lastRun.trigger !== "rerun" && !own.some(run => run.rerunOf === lastRun.at) && await this.cutOf(chatId, lastRun)) return;
+    const lastCut = !working && lastRun && !own.some(run => run.rerunOf === lastRun.at) ? await this.cutOf(chatId, lastRun) : null;
+    if (lastRun && lastCut && cutReruns(lastRun, lastCut)) return;
     // The last job has ended, so its after-job measure is the duty's check now: the push judges on its result instead of measuring beside it.
     if (!working && (lastRun && !lastRun.after || this.afters.has(key))) {
       await (this.afters.get(key) ?? (lastRun && !this.stopped.has(lastRun.job.id) ? this.endJob(chatId, lastRun) : undefined));
@@ -501,7 +509,7 @@ export class Duties {
         await this.store.updateRun(chatId, run.duty, run.at, record => { record.cut ??= cut; });
         const slot = cut.slotAt === undefined ? "" : `, pi-pool slot ${new Date(cut.slotAt).toISOString()}`;
         this.log(`duty ${chatId.slice(0, 8)}/${run.duty}: cut, its job ${run.job.name} ended on a failed model call at ${new Date(cut.at).toISOString()}${slot}` +
-          ` (${cut.error}); ${run.trigger === "rerun" ? "a rerun is not run again" : "it reruns once pi-pool admits its tree"}`);
+          ` (${cut.error}); ${cutReruns(run, cut) ? "it reruns once pi-pool admits its tree" : "a rerun cut by no transient failure is not run again"}`);
         return cut;
       })();
       this.cuts.set(run.job.id, read);
@@ -511,7 +519,8 @@ export class Duties {
 
   /**
    * Reruns each cut run once. A duty's run to look at is its newest run that started a job, after that job ended (the run has an after-job
-   * measure or a cut). It reruns when its job ended cut (`cutOf`), the run is no rerun itself, no rerun names it (`rerunOf`), no run of the
+   * measure or a cut). It reruns when its job ended cut (`cutOf`), the run is no rerun or its cut is transient (`cutReruns`), so a rerun cut
+   * on a lost connection or a token hook with no token reruns again until a model call gets through, no rerun names it (`rerunOf`), no run of the
    * duty goes now, the duty is active, the slot pi-pool gave the cut job has come (`DutyCut.slotAt`), and pi-pool admits the cut job's tree
    * (`poolAdmits`; a duty job is the root of its tree), asked WAIT_READ_TREES trees at a time. `who` reserves nothing, so without the slot
    * every cut tree read as admitted the moment one account freed: at 14:40:07Z on 10-19 claude-virev4 came back, 40 cut runs reran in that
@@ -528,11 +537,11 @@ export class Duties {
         if (!run.job || seen.has(run.duty)) continue;
         seen.add(run.duty);
         const key = `${chatId}/${run.duty}`;
-        if (run.trigger === "rerun" || (!run.cut && !run.after) || this.running.has(key) || this.afters.has(key) || this.reran.has(`${key}@${run.at}`) ||
+        if ((!run.cut && !run.after) || this.running.has(key) || this.afters.has(key) || this.reran.has(`${key}@${run.at}`) ||
           runs.some(other => other.duty === run.duty && other.rerunOf === run.at)) continue;
         const ended = run as DutyRunRecord & { job: DutyJobRef };
         const cut = await this.cutOf(chatId, ended);
-        if (cut && !(cut.slotAt !== undefined && cut.slotAt > this.now()) && await this.dutyActive(chatId, run.duty)) found.push({ chatId, run: ended, cut });
+        if (cut && cutReruns(run, cut) && !(cut.slotAt !== undefined && cut.slotAt > this.now()) && await this.dutyActive(chatId, run.duty)) found.push({ chatId, run: ended, cut });
       }
     }
     const admits = this.host.poolAdmits;

@@ -57,7 +57,7 @@ test("a check-in's stuck_steps miss owes no fix once none of its flagged steps i
   assert.equal(planCounts(inputs([run], { id: "checkin", name: "Check-in" }, at("05:29"), 60 * MIN)).redDuties.length, 1, "a check-in older than its interval proves nothing");
 });
 
-test("a duty whose newest job was cut and waits for its one rerun is owned; a cut rerun and a rerun that ran are not (d9, 03:52Z to 06:16Z)", () => {
+test("a duty whose newest job was cut and waits for its rerun is owned; a rerun cut by no transient failure and a rerun that ran are not (d9, 03:52Z to 06:16Z)", () => {
   const cut = { error: "pi-pool: this session waits for its slot", at: at("05:29"), provider: "anthropic", slotAt: Date.parse("2026-10-20T07:23:24Z") };
   const missed = { stuck_duties: { value: 2, target: 0, op: "<=" as const, met: false } };
   const run = (clock: string, trigger: DutyRunRecord["trigger"], extra: Partial<DutyRunRecord> = {}): DutyRunRecord => ({ duty: "d9", at: at(clock), trigger, ms: 1,
@@ -65,7 +65,9 @@ test("a duty whose newest job was cut and waits for its one rerun is owned; a cu
   const stuck = [{ chat: HARNESS, duty: "d9", line: "d9" }];
   const read = (runs: DutyRunRecord[]) => withoutWorkingRuns(stuck, new Map([[HARNESS, runs]]), [], at("06:16")).length;
   assert.equal(read([run("05:29", "schedule", { cut })]), 0, "the cut run waits for its rerun");
-  assert.equal(read([run("03:52", "rerun", { cut, rerunOf: at("03:29") })]), 1, "a cut rerun is not run again");
+  assert.equal(read([run("03:52", "rerun", { cut, rerunOf: at("03:29") })]), 0, "a rerun cut by a pool wait waits for its own rerun");
+  const refused = { error: "Model refused to respond (refusal): cyber: This request triggered restrictions.", at: at("03:53"), provider: "anthropic" };
+  assert.equal(read([run("03:52", "rerun", { cut: refused, rerunOf: at("03:29") })]), 1, "a rerun cut by no transient failure is not run again");
   assert.equal(read([run("05:52", "rerun", { rerunOf: at("05:29"), after: { at: at("06:00"), verdict: "missed", summary: "", metrics: missed } }), run("05:29", "schedule", { cut })]), 1,
     "the rerun ran and ended, so the miss needs a fix step again");
 });
@@ -171,5 +173,5 @@ test("a duty whose newest job ended on a pool wait the runner has not recorded a
   const read = (runs: DutyRunRecord[], poolCut: string[]) => withoutWorkingRuns(stuck, new Map([[FRONTEND, runs]]), [], at("07:01"), new Set(poolCut)).length;
   assert.equal(read([run], [run.job!.id]), 0);
   assert.equal(read([run], []), 1, "a job that ended with no pool wait owes the fix");
-  assert.equal(read([{ ...run, trigger: "rerun", rerunOf: at("05:00") }], [run.job!.id]), 1, "a rerun is not run again");
+  assert.equal(read([{ ...run, trigger: "rerun", rerunOf: at("05:00") }], [run.job!.id]), 0, "a rerun that ended on a pool wait waits for its own rerun");
 });

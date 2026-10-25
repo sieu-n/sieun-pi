@@ -146,7 +146,7 @@ test("a red duty whose fix job works on the other box is not stuck once the cata
 });
 
 // 10-20 01:2xZ: the AI harness chat's check-in counted as stuck while its own 01:19Z check-in job worked on the step its run flagged.
-test("a stuck duty whose newest run's own job still works or waits for its rerun is left out, and one whose job ended or whose rerun was cut stays", () => {
+test("a stuck duty whose newest run's own job still works or waits for its rerun is left out, and one whose job ended or whose rerun was cut by no transient failure stays", () => {
   const now = Date.parse("2026-10-20T01:25:00Z");
   const run = (extra: object) => ({ duty: "checkin", at: now - 360_000, trigger: "schedule", verdict: "missed", ms: 1, job: { id: "s-job", name: "check-in x 10:19" },
     metrics: { stuck_steps: { value: 1, target: 0, op: "<=", met: false } }, ...extra });
@@ -157,7 +157,10 @@ test("a stuck duty whose newest run's own job still works or waits for its rerun
   assert.equal(left([run({ after: { at: now - 60_000, verdict: "missed", metrics: {} } })]), 1);
   assert.equal(left([run({ cut: { error: "pi-pool: this session waits for its slot", at: now - 300_000 } })]), 0);
   const cutRerun = run({ trigger: "rerun", rerunOf: now - 3_600_000, cut: { error: "pi-pool: this session waits for its slot", at: now - 300_000 } });
-  assert.equal(left([cutRerun], [{ sessionId: "s-job", activity: "idle", lastActivityAt: new Date(now - 300_000).toISOString() }] as never), 1);
+  const idleSince = [{ sessionId: "s-job", activity: "idle", lastActivityAt: new Date(now - 300_000).toISOString() }] as never;
+  assert.equal(left([cutRerun], idleSince), 0, "a rerun cut by a pool wait waits for its own rerun");
+  const refusedRerun = run({ trigger: "rerun", rerunOf: now - 3_600_000, cut: { error: "Model refused to respond (refusal): cyber.", at: now - 300_000 } });
+  assert.equal(left([refusedRerun], idleSince), 1, "a rerun cut by no transient failure is not run again");
   assert.equal(left([cutRerun]), 0, "a cut rerun whose session works again after its cut is at work");
   assert.equal(left([run({})], [{ sessionId: "s-job", activity: "idle", lastActivityAt: "2026-10-19T20:00:00Z" }] as never), 1);
 });

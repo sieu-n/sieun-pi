@@ -144,7 +144,7 @@ export interface DutyRunRecord {
   fixes?: Record<string, FixLink>;
   /** The measure taken after this run's own job ended: the run's verdict once its fixes are in (`effectiveRun`). */
   after?: AfterMeasure;
-  /** Set when the run's job ended cut, so the run did not do its work and reruns once. */
+  /** Set when the run's job ended cut, so the run did not do its work and reruns (`cutReruns` in src/chat-duty-run.ts). */
   cut?: DutyCut;
   /** On a rerun (trigger `rerun`), the `at` of the cut run it reruns: the record that the cut run was rerun. */
   rerunOf?: number;

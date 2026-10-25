@@ -18,6 +18,7 @@ import type { ChatBoard, PlanItem } from "../../src/shared/types.ts";
 import { CHANGE_APPROACH_MISSES, fixStepStreak, metricStreaks } from "../../src/shared/duty-streak.ts";
 import { hasDoneLine, upkeepWords } from "../../src/shared/upkeep-title.ts";
 import { stalledSince } from "../../src/shared/stalled-calls.ts";
+import { transientTurnError } from "../../src/turn-error.ts";
 import { daemonSessions, dutyFleet, type FleetDuty } from "./duty-fleet.ts";
 import { catalogCopyFiles, copyHosts, endsOnPoolWait, type HostHeldStep, mirroredSessions, planCounts, planInputs, POOL_TAIL_BYTES, stepSessions } from "./whole-system.ts";
 import { loadHosts, selfHost } from "../../src/hosts.ts";
@@ -276,8 +277,8 @@ export function withCatalogOwners(plan: { ownerActivity?: ReadonlyMap<string, nu
  * 01:2xZ on 10-20 the AI harness chat's check-in counted as stuck while its 01:19Z check-in job worked on the step its run flagged. A later run
  * that found that job still at work measured with no job of its own (STILL_WORKING), and a cut job goes on once pi-pool gives it a slot: at
  * 07:20Z on 10-22 d9 counted 5 stuck duties, and the jobs of all 5 (AI harness d5, d9 and d11, CI and RepoOps d2, Vent d1) were at work. Or that job was cut on a failed
- * model call and the run waits for its one rerun (`rerunCut`), as the duty runner's push reads it: a cut run that is no rerun and that no rerun
- * names. From 03:52Z to 06:16Z on 10-20 d9 counted its own d9, CI and RepoOps' d4 and frontend bro's check-in while their jobs waited for
+ * model call and the run waits for its rerun (`rerunCut`), as the duty runner's push reads it: a cut run that no rerun names, which is no
+ * rerun or whose cut is transient (`transientTurnError`). From 03:52Z to 06:16Z on 10-20 d9 counted its own d9, CI and RepoOps' d4 and frontend bro's check-in while their jobs waited for
  * pi-pool slots up to 07:23Z. A job whose transcript ends on a pool wait the runner has not recorded as a cut yet (`poolCut`) waits the same
  * way: at 07:01Z d9 counted CI and RepoOps' d4, whose 06:56Z verify job got a slot wait as its first reply and was parked to 08:16Z.
  * So does a job whose tree has a turn working or queued in pi-pool (`poolTrees`), as the duty runner's `treeWait` reads a subagent's wait: at
@@ -293,7 +294,7 @@ export function withoutWorkingRuns<T extends { chat: string; duty: string }>(stu
     if (last && !last.after && now - wrote <= LIVE_GAP_MS && wrote > (last.cut?.at ?? 0)) return false;
     if (last?.job && !last.after && poolTrees.has(last.job.id)) return false;
     const cut = last?.cut ?? (last?.job && !last.after && poolCut.has(last.job.id) ? true : undefined);
-    return !(cut && last!.trigger !== "rerun" && !own.some(run => run.rerunOf === last!.at));
+    return !(cut && (last!.trigger !== "rerun" || cut === true || transientTurnError(cut.error)) && !own.some(run => run.rerunOf === last!.at));
   });
 }
 

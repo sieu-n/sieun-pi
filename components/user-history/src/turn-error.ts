@@ -1,18 +1,30 @@
 import { clockTime } from "./checkin-settings.ts";
 import { poolSlot } from "./shared/chat-feed.ts";
 
-/** Each kind of failed model call, by the first pattern its error text matches. */
-const KINDS: readonly (readonly [RegExp, (status: string | undefined) => string])[] = [
-  [/from shell command: \S*pi-pool-token|token hook gave no token/i, () => "no account token from pi-pool"],
-  [/usage limit/i, () => "usage limit"],
-  [/rate.?limit|\b429\b/i, () => "rate limit 429"],
-  [/overloaded|\b529\b/i, () => "provider overloaded 529"],
-  [/\b50[0234]\b|internal server error/i, status => `provider server error${status ? ` ${status}` : ""}`],
+/** Each kind of failed model call, by the first pattern its error text matches, and whether it is transient (`transientTurnError`). */
+const KINDS: readonly (readonly [RegExp, (status: string | undefined) => string, boolean])[] = [
+  [/from shell command: \S*pi-pool-token|token hook gave no token/i, () => "no account token from pi-pool", true],
+  [/usage limit/i, () => "usage limit", true],
+  [/rate.?limit|\b429\b/i, () => "rate limit 429", true],
+  [/overloaded|\b529\b/i, () => "provider overloaded 529", true],
+  [/\b50[0234]\b|internal server error/i, status => `provider server error${status ? ` ${status}` : ""}`, true],
   [/connection error|fetch failed|econnreset|econnrefused|enotfound|etimedout|eai_again|socket hang up|network|other side closed|timed? ?out|websocket closed/i,
-    () => "connection error"],
-  [/\b401\b|\b403\b|authentication|unauthori[sz]ed|invalid.*api key/i, status => `sign-in refused${status ? ` ${status}` : ""}`],
-  [/\b400\b|invalid_request/i, () => "request refused 400"],
+    () => "connection error", true],
+  [/\b401\b|\b403\b|authentication|unauthori[sz]ed|invalid.*api key/i, status => `sign-in refused${status ? ` ${status}` : ""}`, false],
+  [/\b400\b|invalid_request/i, () => "request refused 400", false],
 ];
+/** Prime's credential wait marker: 'API key for provider "anthropic" is temporarily unavailable until <time>: waiting for an account slot'. */
+const CREDENTIAL_WAIT = /waiting for an account slot|\bpi-pool:/i;
+
+/**
+ * Whether a failed model call's error goes away on its own: pi-pool's token hook or wait, a limit, an overloaded or failing provider, or a lost
+ * connection. A refusal, a sign-in refusal, a 400 or an error of no known kind is not. On 10-25 from about 21:43Z to 21:58Z us-metal02 had no
+ * outside DNS or TCP, and its duty jobs ended on "the token hook gave no token" and "Request timed out." until it came back.
+ */
+export function transientTurnError(error: string): boolean {
+  const text = error.replace(/\s+/g, " ");
+  return CREDENTIAL_WAIT.test(text) || poolSlot(text) !== null || (KINDS.find(([pattern]) => pattern.test(text))?.[2] ?? false);
+}
 /** pi-pool's note on a limited account: "pi-pool: claude18@slack.green is limited until 2026-10-19T21:10:00.000Z". */
 const LIMITED = /pi-pool: (\S+?)@\S+ is limited until (\d{4}-\d\d-\d\dT[\d:.]+Z)/;
 
