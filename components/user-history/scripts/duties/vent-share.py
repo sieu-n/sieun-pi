@@ -142,6 +142,9 @@ EXTRA_FILES = {
     49: ["apps/research-agent-be/src/llm.py"],
     35: ["apps/search/src/hooks.server.ts"],
     71: ["apps/infra/ci-server/alert/config.json.j2"],
+    # deploy-obs.mjs ends each obs deploy with Slack auth.test on virev-obs-grafana's SLACK_BOT_TOKEN_DEV, the token row 70's
+    # slack-direct contact point pages with when Vent is down, so that check must stay direct (d1 flagged it on 2026-10-25).
+    70: ["apps/infra/metal/deploy-obs.mjs"],
 }
 
 
