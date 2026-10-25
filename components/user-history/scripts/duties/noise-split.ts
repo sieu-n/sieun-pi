@@ -36,6 +36,8 @@ export const NOISE_FIXES: readonly { kind: string; fix: string }[] = [
   // The taken-back todo and empty decision checks of 10-25 (~/work/d11-after-fix-noise/replay.md).
   { kind: "incident status (withdraws its own", fix: "e5d526be" },
   { kind: "split answer", fix: "e5d526be" },
+  // The re-ask refusal text fix of 10-25, which says a reminder of an open todo stays on For you (c81; a code hold cost 8 needed lines for 4 noise).
+  { kind: "re-ask of an open For you todo", fix: "c083958b" },
 ];
 
 /** A labelled noise line: `at` is when it went out, `labelled` when the duty run wrote its label (the LABELS row's `at`). */
