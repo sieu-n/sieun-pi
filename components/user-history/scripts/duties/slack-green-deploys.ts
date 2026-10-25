@@ -4,6 +4,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { type FlaggedSlice, type PrecheckOutput, PRECHECK_TARGET_MS } from "../../src/shared/chat-duties.ts";
+import { vercelToken } from "./vercel-login.ts";
 
 /**
  * The slack green guy's Slack green deploys duty's precheck (`node --import tsx scripts/duties/slack-green-deploys.ts`). No model call.
@@ -321,8 +322,6 @@ const railwayToken = async (): Promise<string> => {
   if (!token) throw new Error("no Railway token: RAILWAY_API_TOKEN is unset and ~/.railway/config.json has no login");
   return token;
 };
-const vercelToken = async (): Promise<string> =>
-  process.env.VERCEL_TOKEN || (JSON.parse(await readFile(join(homedir(), "Library/Application Support/com.vercel.cli/auth.json"), "utf8")) as { token: string }).token;
 
 async function main(): Promise<void> {
   const output = process.env.OUTPUT_FILE;
