@@ -129,6 +129,27 @@ class RepoGuardAtRunTime(KernelGuardBase):
         self.assert_passed(self.run_from_home("git merge-file -p ours base theirs"))
         self.assertEqual(self.fake_runs(), ["git merge-file -p ours base theirs"])
 
+    def run_python_clone(self, target, url="https://github.com/sieu-n/auto-sns-agent.git"):
+        """A cell that clones from a Python subprocess with the kernel left in its start dir, as an argv list git's shim never sees."""
+        argv = ["git", "clone", "--depth", "1", url, target]
+        cell = f"import subprocess\nsubprocess.run({argv!r}, check=True)\n"
+        return self.run_cells(cell, env={"RLM_SESSION_DIR": CRAWLER_OPS, "GLOBAL_RULES_AUTO_SNS_AGENT": str(self.checkout), "REPO_GUARD_LOG": str(self.repo_log)})
+
+    def test_a_shallow_clone_into_the_marked_checkout_from_a_python_subprocess_is_refused(self):
+        # auto-sns-agent d00d1cd410 added git-shallow-fetch, and until 10-26 GIT_WRITE had no clone, so this argv skipped the judge.
+        self.mark_shared()
+        out = self.run_python_clone(f"{self.checkout}/vendor-copy")
+        self.assertIn("repo guard (git-shallow-fetch)", out["refused"] or "", out)
+        self.assertEqual(self.fake_runs(), [])
+
+    def test_a_shallow_clone_into_scratch_from_a_python_subprocess_runs_unjudged(self):
+        self.mark_shared()
+        target = str(self.tmp / "home/scratch/job/src")
+        out = self.run_python_clone(target, url="https://github.com/sieu-n/sieun-pi.git")
+        self.assert_passed(out)
+        self.assertEqual(self.fake_runs(), [f"git clone --depth 1 https://github.com/sieu-n/sieun-pi.git {target}"])
+        self.assertEqual(self.logged(), [])
+
     def run_check_in_app(self, command):
         app = self.checkout / "apps/crawler-v3"
         (app / "src").mkdir(parents=True, exist_ok=True)

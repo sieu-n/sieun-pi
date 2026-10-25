@@ -32,10 +32,11 @@ SHELL_HINT = re.compile(
 # rm, mv, cherry-pick, revert, am, update-ref, symbolic-ref and fetch are the shared-index rule's hazard and branch commands. On
 # 2026-10-19 bash(f"cd {R} && git rm -q x") ran in the shared checkout after its full marker went on, because only this half
 # sees {R} expanded and this list had no rm. apply is one too unless it has --cached: on 2026-10-20 at 05:50Z a plain git apply
-# in the box's shared checkout put 15 stale files in its working tree.
+# in the box's shared checkout put 15 stale files in its working tree. clone is one since auto-sns-agent d00d1cd410's git-shallow-fetch
+# rule refuses a depth-limited clone into the shared checkout, which a Python subprocess argv list otherwise ran past the judge.
 GIT_WRITE = re.compile(
     r"(?:^|[\s;&|`('\"/])git\s[\s\S]*\b(?:stash|reset|checkout|switch|restore|merge|rebase|pull|clean|worktree|push|add|commit|branch|filter-branch|replace"
-    r"|rm|mv|cherry-pick|revert|am|update-ref|symbolic-ref|fetch|apply)\b"
+    r"|rm|mv|cherry-pick|revert|am|update-ref|symbolic-ref|fetch|clone|apply)\b"
 )
 GIT_PUSH = re.compile(r"\bgit\s[\s\S]*\bpush\b")
 # A lint, type check or test run, as that guard's DANGEROUS reads one. The tool_call guard leaves one in a cell to this half,
