@@ -124,3 +124,15 @@ test("staging's head reads promotable only when its deploy/staging status and it
   const noVerify = read({ sha: VERIFIED, deploy: { state: "pending", url: "" } }, []);
   assert.match(line(noVerify.flagged, "no_promotable_staging_sha"), /its newest deploy\/staging status is pending, and it has no full verify yet/);
 });
+
+test("a failed promote that a later green promote followed leaves failed_promotes_24h", () => {
+  const at = Date.parse("2026-10-25T22:25:00Z");
+  const promotes = [run(40191052854, "success", "2026-10-25T11:57:00Z"), run(40170404510, "failure", "2026-10-25T06:48:00Z"), run(40169054833, "failure", "2026-10-25T06:25:00Z")];
+  const output = reachMetrics({ compare: COMPARE, promotes, lands: [], failedJobs: new Map(), health: [], errors: [] }, at);
+  assert.equal(output.metrics.failed_promotes_24h, 0);
+  assert.equal(output.lastEventAt, undefined);
+  assert.match(line(output.flagged, "promote_failed_24h"), /promote run 40191052854 passed its gates after it/);
+  const later = reachMetrics({ compare: COMPARE, promotes: [run(40200000000, "failure", "2026-10-25T20:00:00Z"), ...promotes], lands: [], failedJobs: new Map(), health: [], errors: [] }, at);
+  assert.equal(later.metrics.failed_promotes_24h, 1);
+  assert.deepEqual(later.lastEventAt, { failed_promotes_24h: Date.parse("2026-10-25T20:00:00Z") });
+});

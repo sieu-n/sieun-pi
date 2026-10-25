@@ -5,7 +5,7 @@
   "metrics": [
     {
       "key": "failed_promotes_24h",
-      "label": "Promote runs in 24 h that failed",
+      "label": "Promote runs in 24 h that failed with no green promote after them",
       "op": "<=",
       "target": 0,
       "headline": true

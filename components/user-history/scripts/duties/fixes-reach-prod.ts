@@ -14,7 +14,9 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  * ("gate / staging CI green", release-evidence.mjs stagingCheckProof). The precheck takes that run's conclusion, where the gate judges its jobs in
  * the promote's deploy scope, so a red job the gate would only warn on still reads not promotable here.
  * The headline, oldest_fix_wait_h, is how long the oldest commit on staging and not on main has waited, from its committer time, which is when
- * land.yml squashed it onto staging. failed_promotes_24h counts promote.yml runs started in the last 24 h that ended in failure.
+ * land.yml squashed it onto staging. failed_promotes_24h counts promote.yml runs started in the last 24 h that ended in failure after the newest
+ * successful promote, since a later green promote passed the gate an earlier failure hit (10-25: 40169054833 and 40170404510 failed, their fixes
+ * bc5a9a24e1 and a96b170082 landed, and 40191052854 passed, yet the count read 2 until 10-26 06:48Z).
  * commits_on_staging_only is the compare's ahead_by. An unreadable compare fails the run, because the headline cannot be read without it; a
  * failed run or health read is flagged as a source_error and counts failed_promotes_24h as at least 1.
  * Incident: promotes 6, 7, 8, 9, 10, 12, 13 and 14 each failed at a gate, and on 10-19 seven board steps of the chat waited a day or more for
@@ -128,6 +130,9 @@ const decided = (runs: readonly Run[]): Run[] =>
 /** The newest run that passed or failed, skipping cancelled and skipped ones, which say nothing about the gate. */
 export const newestDecided = (runs: readonly Run[]): Run | undefined => decided(runs)[0];
 
+/** The newest promote that passed: a failure before it was a gate a later promote passed, so failed_promotes_24h stops counting it. */
+const newestPassed = (runs: readonly Run[]): Run | undefined => decided(runs).find(run => run.conclusion === "success");
+
 /** The newest decided run of each head branch: a land runs per dev branch, so each branch's newest result is its land's state. */
 export const newestPerBranch = (runs: readonly Run[]): Run[] => {
   const seen = new Map<string, Run>();
@@ -184,6 +189,8 @@ export function reachMetrics(reading: Reading, now: number): PrecheckOutput {
   for (const health of reading.health) flagged.push({ at: now, kind: health.sha ? `${health.world}_crawler` : "source_error", excerpt: crawlerPlace(health, compare, stagingHead) });
 
   const recentFailed = (reading.promotes ?? []).filter(run => run.createdAt >= now - DAY_MS && FAILED.includes(run.conclusion));
+  const passed = newestPassed(reading.promotes ?? []);
+  const openFailed = recentFailed.filter(run => !passed || run.createdAt > passed.createdAt);
   for (const run of reading.promotes ?? []) {
     if (run.status !== "completed") flagged.push({ at: now, kind: "promote_in_flight", item: String(run.id), excerpt: `promote run ${run.id} is ${run.status}, started ${iso(run.createdAt)}: ${run.url}` });
   }
@@ -196,7 +203,8 @@ export function reachMetrics(reading: Reading, now: number): PrecheckOutput {
   }
   for (const run of recentFailed) {
     if (run === newestPromote) continue;
-    flagged.push({ at: now, kind: "promote_failed_24h", item: String(run.id), excerpt: `promote run ${run.id} from ${iso(run.createdAt)} ended ${run.conclusion} in ${jobWords(reading.failedJobs.get(run.id) ?? [])}` });
+    const after = openFailed.includes(run) ? "" : `; promote run ${passed!.id} passed its gates after it`;
+    flagged.push({ at: now, kind: "promote_failed_24h", item: String(run.id), excerpt: `promote run ${run.id} from ${iso(run.createdAt)} ended ${run.conclusion} in ${jobWords(reading.failedJobs.get(run.id) ?? [])}${after}` });
   }
   for (const run of newestPerBranch(reading.lands ?? [])) {
     if (!FAILED.includes(run.conclusion)) continue;
@@ -216,10 +224,10 @@ export function reachMetrics(reading: Reading, now: number): PrecheckOutput {
   const unread = reading.promotes ? 0 : 1;
   const metrics: Record<string, number> = {
     oldest_fix_wait_h: oldest ? hours(now, oldest.at) : 0,
-    failed_promotes_24h: Math.max(recentFailed.length, unread),
+    failed_promotes_24h: Math.max(openFailed.length, unread),
     commits_on_staging_only: compare.aheadBy,
   };
-  const lastFailed = recentFailed.map(run => run.createdAt).sort((a, b) => b - a)[0];
+  const lastFailed = openFailed.map(run => run.createdAt).sort((a, b) => b - a)[0];
   return { metrics, flagged, ...(lastFailed ? { lastEventAt: { failed_promotes_24h: lastFailed } } : {}) };
 }
 
