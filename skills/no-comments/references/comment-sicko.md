@@ -10,6 +10,7 @@ Keep a comment only if it is one of these:
 - A lint suppression whose rule is faulty, pedantic, or style-only.
 - A doc comment that defines a public API contract.
 - An issue or RFC link that explains a constraint the code cannot express.
+- A limit annotation that a repo's limits scan reads, such as `measured:`, `out of scope:` or `experiment:` next to a cap, timeout or threshold, because on 2026-10-24 an auto-sns-agent sweep (9cdcb8bec4) deleted three `out of scope:` lines and the limits duty counted their caps as unbacked again.
 
 If you are not sure an exception applies, delete the comment.
 
