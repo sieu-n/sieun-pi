@@ -381,7 +381,12 @@ export class Duties {
     const misses = pushMisses(own, counted, everyMs, this.now());
     if (!misses) return;
     const board = await this.host.board?.(chatId).catch(() => null) ?? null;
-    if (Object.values(await this.fixesOn(board, chatId, duty.id, misses, [], duty.boardGoal)).some(fix => fix.live)) return;
+    const fixes = await this.fixesOn(board, chatId, duty.id, misses, [], duty.boardGoal);
+    if (Object.values(fixes).some(fix => fix.live)) return;
+    // A miss whose fix step waits on the owner's open For you todo (`hold`) owes no fix job, as d9 reads it, so a push run for it starts a job
+    // with nothing to do. From 10-24 19:30Z to 02:08Z on 10-25 vent's d1 got 14 push runs, each with a job, while p79 waited on t15, and SEO
+    // guy's d2 got one every 2 h while p101 waited on t30. The duty's own schedule still measures it, and a push comes back once the todo closes.
+    if (misses.every(miss => fixes[miss]?.hold !== undefined)) return;
     if (this.afters.has(key)) return;
     if (this.start(chatId, duty.id, "push", this.now())) this.log(`duty ${chatId.slice(0, 8)}/${duty.id}: red on ${misses.join(", ")} with no job at work on it; a push run starts`);
   }
