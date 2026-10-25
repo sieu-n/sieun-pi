@@ -9,8 +9,9 @@ const NOW = 30 * DAY;
 const metrics = [{ key: "staging_green_pct", target: 100, direction: "min" }] as never;
 
 function row(over: Partial<WatchRow>): WatchRow {
-  return { platform: "instagram", kind: "tagged", target: "a", paused: false, lastOutcome: "ok", lastRunAt: NOW - 3_600_000, lastStopReason: "",
-    lastErrorCode: "", isPrivate: false, errStreak: 0, due: true, noAccountSince: null, addedAt: NOW - 10 * DAY, renamed: false, ...over };
+  const r: WatchRow = { platform: "instagram", kind: "tagged", target: "a", paused: false, lastOutcome: "ok", lastRunAt: NOW - 3_600_000, lastStopReason: "",
+    lastErrorCode: "", isPrivate: false, errStreak: 0, due: true, lastOkAt: null, addedAt: NOW - 10 * DAY, renamed: false, ...over };
+  return "lastOkAt" in over || r.lastOutcome !== "ok" ? r : { ...r, lastOkAt: r.lastRunAt };
 }
 
 function staging(rows: WatchRow[]) {

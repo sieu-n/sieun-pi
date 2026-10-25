@@ -88,8 +88,10 @@ export const NEEDS: Readonly<Record<string, readonly Source[]>> = {
 export interface WatchRow {
   platform: string; kind: string; target: string; paused: boolean; lastOutcome: string; lastRunAt: number | null;
   lastStopReason: string; lastErrorCode: string; isPrivate: boolean;
-  /** err_streak, whether next_due_at is set, and for a row waiting for an account the time of its last ok run (else its created_at). */
-  errStreak: number; due: boolean; noAccountSince: number | null;
+  /** err_streak and whether next_due_at is set. */
+  errStreak: number; due: boolean;
+  /** The settle time of the row's newest run that ended ok, epoch ms, as read.py's last_ok_at; null when no ok run is in the 30 days of claims. */
+  lastOkAt: number | null;
   /** created_at, epoch ms: when the row joined the monitor rows. */
   addedAt: number | null;
   /** The row's last run named the account's newer handle (crawl_batch_targets.retry_evidence renamed_to, as read.py's renamed_to). */
@@ -144,21 +146,37 @@ export function stopReason(row: WatchRow, now: number): string | null {
   if (row.paused || isClosed(row)) return null;
   const code = row.lastErrorCode;
   if ((row.lastOutcome === "ok" && row.lastStopReason === "hidden") || (row.lastOutcome === "error" && HIDDEN_CODES.has(code))) return "Instagram hides this account";
-  if (row.lastOutcome === "starved" || (row.lastOutcome === "error" && NO_ACCOUNT_CODES.has(code)))
-    return row.noAccountSince !== null && now - row.noAccountSince >= NO_ACCOUNT_STOP_MS ? "no account for 2 days" : null;
+  if (row.lastOutcome === "starved" || (row.lastOutcome === "error" && NO_ACCOUNT_CODES.has(code))) {
+    const since = row.lastOkAt ?? row.addedAt;
+    return since !== null && now - since >= NO_ACCOUNT_STOP_MS ? "no account for 2 days" : null;
+  }
   if (row.lastOutcome !== "error") return null;
   const forGood = row.errStreak >= STOP_AFTER_FAILURES && !TRANSIENT_CODES.has(code);
   return row.due && !forGood ? null : `failed ${code || "error"}`;
 }
+/**
+ * A row read ok in the last 24 h that does not read Stopped. A later run that ended starved or error with a retry due leaves the last ok read
+ * standing, as the Watchlist reads it (words.ts: "Checked" at the last ok read, with a waiting or retrying note). On staging at 02:35Z on
+ * 2026-10-25, @dr.altheaglobal's collab row read last starved and scored not green: its routine pass found no free fleet account from 01:42Z
+ * and was released at 01:57Z, its retry was claimed at 01:59Z and settled ok at 02:48Z, and its last ok read was at 03:23Z the day before.
+ * Staging settled 759 routine posts runs starved in the 24 h to 03:00Z, 550 of them on a row read ok in the 24 h before.
+ */
 const readOk = (row: WatchRow, now: number): boolean =>
-  row.lastOutcome === "ok" && row.lastStopReason !== "hidden" && row.lastRunAt !== null && now - row.lastRunAt <= DAY;
+  !isHidden(row) && stopReason(row, now) === null && row.lastOkAt !== null && now - row.lastOkAt <= DAY;
 /** A row added under 24 h ago that does not read Stopped: its first read is not late yet (crawler health.py _NO_GOOD_READ). */
 export const isYoung = (row: WatchRow, now: number): boolean => row.addedAt !== null && now - row.addedAt < DAY && stopReason(row, now) === null;
 export const isGreen = (row: WatchRow | undefined, now: number): boolean =>
   !!row && !row.paused && (isClosed(row) || isAcceptedHidden(row) || readOk(row, now) || isYoung(row, now));
 /** Why a watch is not green, as a flag phrase. */
-const notGreen = (kind: string, row: WatchRow | undefined): string => !row ? `${kind} no monitor row` : row.paused ? `${kind} paused`
-  : !row.lastOutcome ? `${kind} never ran` : row.lastOutcome !== "ok" ? `${kind} last ${row.lastOutcome}` : row.lastStopReason === "hidden" ? `${kind} Stopped, hidden` : `${kind} ok but older than 24 h`;
+function notGreen(kind: string, row: WatchRow | undefined, now: number): string {
+  if (!row) return `${kind} no monitor row`;
+  if (row.paused) return `${kind} paused`;
+  if (!row.lastOutcome) return `${kind} never ran`;
+  if (isHidden(row)) return `${kind} Stopped, hidden`;
+  const stop = stopReason(row, now);
+  if (stop) return `${kind} Stopped, ${stop}`;
+  return row.lastOutcome === "ok" ? `${kind} ok but older than 24 h` : `${kind} last ${row.lastOutcome}, no ok read in 24 h`;
+}
 const tally = (why: Map<string, number>): [string, number][] => [...why.entries()].sort((a, b) => b[1] - a[1]);
 const listWhy = (why: readonly [string, number][]): string => why.map(([reason, count]) => `${count} ${reason}`).join(", ");
 
@@ -180,7 +198,7 @@ export function ownerGreen(keys: readonly string[], rows: readonly WatchRow[], n
     const account = `${want.platform}:${want.target}`;
     accounts.set(account, (accounts.get(account) ?? true) && green);
     if (want.kind === "tagged") { collabs++; if (row && !row.paused) pushed++; }
-    if (!green) { const reason = notGreen(want.kind, row); why.set(reason, (why.get(reason) ?? 0) + 1); }
+    if (!green) { const reason = notGreen(want.kind, row, now); why.set(reason, (why.get(reason) ?? 0) + 1); }
     if (row && isAcceptedHidden(row)) { hidden++; continue; }
     const stop = row && stopReason(row, now);
     if (stop) { const reason = `${want.kind} ${stop}`; stops.set(reason, (stops.get(reason) ?? 0) + 1); }
@@ -200,7 +218,7 @@ export function rowsGreen(rows: readonly WatchRow[], now: number, kinds: readonl
     const green = isGreen(row, now);
     byKind[row.kind]!.rows++;
     if (green) byKind[row.kind]!.green++;
-    else { const reason = notGreen(row.kind, row); why.set(reason, (why.get(reason) ?? 0) + 1); }
+    else { const reason = notGreen(row.kind, row, now); why.set(reason, (why.get(reason) ?? 0) + 1); }
     if (green && !isClosed(row) && !readOk(row, now)) young++;
   }
   return { rows: live.length, green: Object.values(byKind).reduce((sum, kind) => sum + kind.green, 0), byKind, why: tally(why), young };
@@ -302,16 +320,16 @@ export function report(data: WatchData, dutyMetrics: readonly DutyMetric[]): Pre
 }
 
 /** The tab-separated monitor rows psql prints (rowLines for Grafana's): platform, kind, target, paused (t or f), last_outcome, last_run_at epoch ms or empty,
- *  last_stop_reason, last_error_code, the account's is_private (t or f), err_streak, next_due_at set (t or f), the no-account since time and created_at. */
+ *  last_stop_reason, last_error_code, the account's is_private (t or f), err_streak, next_due_at set (t or f), the last ok run's time and created_at. */
 export function parseRows(text: string): WatchRow[] {
   const rows: WatchRow[] = [];
   for (const line of text.split("\n")) {
     const cells = line.split("\t");
     if (cells.length !== 14) continue;
-    const [platform, kind, target, paused, lastOutcome, lastRunAt, lastStopReason, lastErrorCode, isPrivate, errStreak, due, noAccountSince, addedAt, renamed] = cells as
+    const [platform, kind, target, paused, lastOutcome, lastRunAt, lastStopReason, lastErrorCode, isPrivate, errStreak, due, lastOkAt, addedAt, renamed] = cells as
       [string, string, string, string, string, string, string, string, string, string, string, string, string, string];
     rows.push({ platform, kind, target, paused: paused === "t", lastOutcome, lastRunAt: lastRunAt ? Number(lastRunAt) : null,
-      lastStopReason, lastErrorCode, isPrivate: isPrivate === "t", errStreak: Number(errStreak) || 0, due: due === "t", noAccountSince: noAccountSince ? Number(noAccountSince) : null,
+      lastStopReason, lastErrorCode, isPrivate: isPrivate === "t", errStreak: Number(errStreak) || 0, due: due === "t", lastOkAt: lastOkAt ? Number(lastOkAt) : null,
       addedAt: addedAt ? Number(addedAt) : null, renamed: renamed === "t" });
   }
   return rows;
@@ -487,8 +505,8 @@ const ROWS_SQL = "select w.platform, w.kind, lower(w.target) as target, case whe
   "coalesce((extract(epoch from w.last_run_at) * 1000)::bigint::text, '') as last_run_at, coalesce(w.last_stop_reason, '') as last_stop_reason, coalesce(w.last_error_code, '') as last_error_code, " +
   "case when w.platform = 'instagram' and exists (select 1 from instagram_accounts a where a.username = w.target and a.is_private) then 't' else 'f' end as is_private, " +
   "w.err_streak, case when w.next_due_at is null then 'f' else 't' end as due, " +
-  "case when w.last_outcome = 'starved' or w.last_error_code in ('fleet_exhausted', 'no_serveable_persona', 'leased_persona_unavailable', 'fleet_starved') then " +
-  "(extract(epoch from coalesce((select max(c.settled_at) from watch_target_claims c where c.platform = w.platform and c.kind = w.kind and c.target = w.target and c.outcome = 'ok'), w.created_at)) * 1000)::bigint::text else '' end as no_account_since, " +
+  "coalesce((extract(epoch from case when w.last_outcome = 'ok' then w.last_run_at else (select max(c.settled_at) from watch_target_claims c " +
+  "where c.platform = w.platform and c.kind = w.kind and c.target = w.target and c.outcome = 'ok') end) * 1000)::bigint::text, '') as last_ok_at, " +
   "(extract(epoch from w.created_at) * 1000)::bigint::text as added_at, ";
 /** Whether the row's last run named a newer handle. Only a hidden row can read renamed (renamedHidden), so the CASE asks the claims
  *  join of hidden rows alone: asked of all 19,700 monitor rows it ran past prod's statement_timeout at 17:00Z on 2026-10-20. Staging's Grafana role (grafana_ro on estate_pg_stg) has no SELECT on
@@ -501,7 +519,7 @@ const RENAMED_SQL = "case when w.platform <> 'instagram' or w.last_batch_id is n
 const PROD_ROWS_SQL = ROWS_SQL + RENAMED_SQL;
 const STAGING_ROWS_SQL = ROWS_SQL + "'f' as renamed from watch_targets w where w.tier = 'monitor'";
 /** ROWS_SQL's columns in parseRows order, to print Grafana's table rows as the lines psql prints. */
-const ROW_COLUMNS = ["platform", "kind", "target", "paused", "last_outcome", "last_run_at", "last_stop_reason", "last_error_code", "is_private", "err_streak", "due", "no_account_since", "added_at", "renamed"];
+const ROW_COLUMNS = ["platform", "kind", "target", "paused", "last_outcome", "last_run_at", "last_stop_reason", "last_error_code", "is_private", "err_streak", "due", "last_ok_at", "added_at", "renamed"];
 export const rowLines = (rows: Record<string, unknown>[]): string => rows.map(row => ROW_COLUMNS.map(column => String(row[column] ?? "")).join("\t")).join("\n");
 const RECEIPTS_SQL = "select 'receipt', outcome, count(*) from watch_target_claims where settled_at > now() - interval '24 hours' and outcome is not null group by outcome;";
 
