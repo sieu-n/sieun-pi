@@ -170,7 +170,7 @@ export const NOTHING_TO_CHECK = "nothing to check: no job at work and no open pl
 /** A run's job start in progress, kept in `<dutyId>.pending.json` until the start ends, so a restart can finish it (`Duties.resume`). */
 interface PendingStart {
   at: number; schedule: DutySchedule; measured: AfterMeasure | null;
-  brief: Pick<DutyJobInput, "measure" | "findings" | "focus" | "misses" | "report" | "prompt">;
+  brief: Pick<DutyJobInput, "measure" | "findings" | "focus" | "misses" | "parts" | "report" | "prompt">;
   handOff?: HandOff;
   /** The run reads met with nothing due: it ends the last job as any run does and starts none (`NOTHING_DUE`). */
   idle?: true;
@@ -996,7 +996,7 @@ export class Duties {
    * `stopEnded` did not see, is still judged after its fixes.
    */
   private async launch(chatId: string, dutyId: string, schedule: DutySchedule, slot: number, at: number,
-    brief: Pick<DutyJobInput, "duty" | "measure" | "findings" | "focus" | "misses" | "report" | "prompt">, measured: AfterMeasure | null, handOff?: HandOff,
+    brief: Pick<DutyJobInput, "duty" | "measure" | "findings" | "focus" | "misses" | "parts" | "report" | "prompt">, measured: AfterMeasure | null, handOff?: HandOff,
     idle?: true): Promise<Launched> {
     const chat = await this.host.jobs.chat(chatId);
     const previous = await this.previous(chatId, dutyId, schedule, slot);
@@ -1170,7 +1170,7 @@ export class Duties {
       ...(record.parts ? { parts: record.parts } : {}), ...(record.items ? { items: record.items } : {}) } : null;
     const handOff = findingsFile && flagged.some(slice => slice.handOff) ? { items: flagged.filter(slice => slice.handOff), detail: findingsFile } : undefined;
     await this.startJob(chatId, record, duty, { schedule: duty.schedule, measured, ...idle ? { idle: true as const } : {},
-      brief: { measure: record.verdict === "error" ? `no measure (${record.summary})` : record.summary, findings, misses }, ...handOff ? { handOff } : {} });
+      brief: { measure: record.verdict === "error" ? `no measure (${record.summary})` : record.summary, findings, misses, ...record.parts ? { parts: record.parts } : {} }, ...handOff ? { handOff } : {} });
   }
 
   /**

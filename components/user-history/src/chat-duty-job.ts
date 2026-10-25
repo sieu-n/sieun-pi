@@ -9,7 +9,7 @@ import type { PrimeUpdate } from "./prime-update.ts";
 import { BRIEF_ITEMS } from "./shared/brief-cap.ts";
 import { MERGE_RULE } from "./shared/chat-board.ts";
 import { releaseGo } from "./shared/release-go.ts";
-import { type DutyCard, type DutyCut, type DutyJobRef, headlineMetric, verdictMetrics } from "./shared/chat-duties.ts";
+import { type DutyCard, type DutyCut, type DutyJobRef, headlineMetric, type MetricResult, verdictMetrics } from "./shared/chat-duties.ts";
 import { poolSlot } from "./shared/chat-feed.ts";
 import { CUT_TAIL_BYTES, tailLines } from "./cut-end.ts";
 import { lastTurnError } from "./held-turns.ts";
@@ -139,6 +139,8 @@ export interface DutyJobInput {
   focus?: readonly string[];
   /** The miss streak of each metric this run missed (`metricStreaks`), with the fix step the run found for it. */
   misses?: readonly MetricStreak[];
+  /** The run's parts of counted metrics (`metricParts`); each one off target is work this job does now (`partLines`). */
+  parts?: Readonly<Record<string, MetricResult>>;
   /** How this duty's job reports to the chat, in place of the generic report rule; the check-in's is `CHECK_IN_REPORT`. */
   report?: string;
   /** The check-in's own prompt body (`checkInPrompt` and its detail file): set, the brief is `checkInJobBrief` with no stock rules (c90). */
@@ -296,17 +298,31 @@ export const CHECK_IN_REPORT_KEY = "check-in report";
 const reportCall = (chat: Pick<DutyChat, "name">): string => `print(await agent_message.send(report, receiver_role="sibling", receiver_name=${JSON.stringify(chat.name)}))`;
 
 /**
+ * The brief lines for a run's parts that are off target: work the verdict counts soon, which a push run starts a job for (`pushMisses`). The
+ * Wiki dream push job of 09:27Z on 10-25 read wiki_problems 0 with wiki_problems_following 6, took the met verdict as nothing to do, ended
+ * in one turn with "the next run will see them counted", and its after-job measure read 2 two minutes later and 5 by 10:25Z.
+ */
+export function partLines(duty: Pick<DutyCard, "metrics">, parts: Readonly<Record<string, MetricResult>>): string[] {
+  const counted = verdictMetrics(duty.metrics);
+  return Object.entries(parts).flatMap(([key, part]) => {
+    const metric = counted.find(entry => key.startsWith(`${entry.key}_`));
+    return part.met || !metric ? [] : [`${key} is ${part.value}${metric.unit ?? ""}, target ${part.op} ${part.target}${metric.unit ?? ""}: these items count in ${metric.key} soon.`];
+  });
+}
+
+/**
  * The duty job's brief (owner 10-09: "every (n min/h/day) -> code precheck -> run job with that context to 'fix issues, check what duty
  * specifies, be a VP, report to user what needed'"; "control flow should be dynamically defined by agent"): the duty in the owner's words, the
  * precheck as information, and how a chat job works. It names no fixed list of checks and no verdict; a quiet run ends in one short turn.
  */
-export function dutyJobBrief({ duty, chat, job, at, measure, findings, focus = [], misses = [], report, prompt }: DutyJobInput): string {
+export function dutyJobBrief({ duty, chat, job, at, measure, findings, focus = [], misses = [], parts = {}, report, prompt }: DutyJobInput): string {
   if (prompt !== undefined) return checkInJobBrief({ chat, job, at, prompt, ...(report ? { report } : {}) });
   const send = reportCall(chat);
   const headline = headlineMetric(duty.metrics);
   const counted = verdictMetrics(duty.metrics);
   const shown = misses.filter(streak => counted.some(metric => metric.key === streak.key));
   const apply = boardApplyCall(chat);
+  const due = partLines(duty, parts);
   return [
     `# ${job}: the ${duty.name} duty of the chat "${chat.name}"`,
     `You are the duty job "${job}" of the chat "${chat.name}" (session id ${chat.id}), started ${localTime(at)}. The server starts one duty job ` +
@@ -326,6 +342,8 @@ export function dutyJobBrief({ duty, chat, job, at, measure, findings, focus = [
       shown.map(streak => { const metric = counted.find(entry => entry.key === streak.key); return `- ${missLine(duty.id ?? "<dutyId>", streak, metric?.label ?? streak.key, metric?.unit, at)}`; }).join("\n") +
       "\n\nA miss is never accepted as it stands. A fix step is a plan step with `duty` set to `<dutyId>/<metricKey>` and `job` set to a job that " +
       "works on a code change, not a note or a later wait. When a fix step closes, the server runs this duty again at once to check the number moved."] : []),
+    ...(due.length ? [`## Work due before it counts\n${due.map(line => `- ${line}`).join("\n")}\n\nThis run started for these items. Fix each one ` +
+      "now as you would a miss, even though the target reads met, because the next push may come only after they count."] : []),
     "## How to work",
     [
       `The chat's board is the JSON file ${chat.board}: the plan with its step notes and the For you todos with the owner's answers. Read it, then ` +
