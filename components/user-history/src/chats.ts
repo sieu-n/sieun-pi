@@ -18,7 +18,7 @@ import { type CheckInContext, type CheckInMemory, checkInPrecheck, checkInPreche
   ownerlessNotice, ownerlessSteps, rootLeftSteps, rootStepsNotice, waitingJobs } from "./chat-checkin.ts";
 import { jobBase, jobBrief, jobModel, keptCopyNote, replacedJob, resumeBrief, resumedNote, resumeJobName, savedStateNote, sessionBrief, sessionModel, waitText } from "./job-resume.ts";
 import { type AwayHost, hostHolds } from "./shared/host-hold.ts";
-import { heldByTodo, withBoardLinks } from "./shared/todo-hold.ts";
+import { heldByTodo, linkedBoards, withLinkedBoards } from "./shared/todo-hold.ts";
 import { PoolHeldJobs, resumeChatJobs } from "./chat-resume.ts";
 import { readEndsParked, readQuotaPark, withFailedTurns, withHeldTurns } from "./held-turns.ts";
 import { withUnstarted } from "./brief-keeper.ts";
@@ -1757,8 +1757,9 @@ export class Chats {
     const doneFacts = await this.doneFacts(id, board, rows);
     const read = (chat: string) => (this.source.boardView ?? this.source.board).call(this.source, chat);
     const hosts = await this.hostHolds(id, rows);
-    const precheck = checkInPrecheck(previous, facts, board ? await withBoardLinks(board, id, read) : board, at,
-      { self, rows, ...await this.ledger(id), everyMs, doneFacts, ...(duties ? { duties } : {}), jobs, subagents: this.subagents, heartbeats, queued, asleep, wakes, carried, ...(train ? { train } : {}), ...(boardError !== undefined ? { boardError } : {}),
+    const linked = board ? await linkedBoards(board, id, read, rows) : new Map<string, ChatBoard | null>();
+    const precheck = checkInPrecheck(previous, facts, board ? withLinkedBoards(board, id, linked) : board, at,
+      { self, rows, linked, ...await this.ledger(id), everyMs, doneFacts, ...(duties ? { duties } : {}), jobs, subagents: this.subagents, heartbeats, queued, asleep, wakes, carried, ...(train ? { train } : {}), ...(boardError !== undefined ? { boardError } : {}),
         ...(hosts ? { hosts } : {}),
         paused: await this.ownerPaused(at),
         owner: ownerSaid(this.messages(id) ?? []) });

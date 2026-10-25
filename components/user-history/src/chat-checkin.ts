@@ -58,6 +58,8 @@ export interface CheckInMemory { at: number; steps: Record<string, StepMemo>;
  */
 export interface CheckInContext { self?: readonly string[];
   boardError?: string; rows?: readonly Pick<SessionRow, "id" | "name" | "archived">[];
+  /** The boards of the other chats the plan's waits name (`linkedBoards`), null for one that cannot be read; a wait on an id there reads it (`waitsMet`). */
+  linked?: ReadonlyMap<string, ChatBoard | null>;
   handoffs?: readonly HandoffRule[];
   /** The ids of the owner corrections in force, for parked steps (`parkedBy`); every cited id counts when not given. */
   corrections?: readonly string[];
@@ -196,7 +198,7 @@ export function checkInPrecheck(previous: CheckInMemory | undefined, facts: read
     loose: context.boardError ? [] : looseGoals(board), extra: extraGoals(goals.pushes), underClosed: context.boardError ? [] : openUnderClosed(board),
     held: context.boardError ? [] : heldElsewhere(goaled, board, context.rows ?? [], self, context.jobs, paused),
     noProgress: context.boardError ? null : noProgress(board, goaled, steps, since, context.rows ?? [], self, now, context.train, queued, { done, prs: doneFacts.prs }, movers),
-    waitsMet: context.boardError ? [] : [...waitsMet(goaled, board, context.rows ?? [], self), ...deadRunWaits(goaled, context.train, now)],
+    waitsMet: context.boardError ? [] : [...waitsMet(goaled, board, context.rows ?? [], self, context.linked), ...deadRunWaits(goaled, context.train, now)],
     stale: context.boardError ? [] : staleSteps(board, facts, item => steps[item.id] ? recordedAt(steps[item.id]!) : now, self, context.everyMs ?? CHECK_IN_MS, now,
       context.rows ?? [], context.train),
     fold, load: oneSessionLoad(goaled, context.jobs, context.subagents, new Set([...context.queued?.keys() ?? [], ...context.asleep ?? []]), now),
