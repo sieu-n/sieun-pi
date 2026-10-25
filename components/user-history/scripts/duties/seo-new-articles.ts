@@ -231,8 +231,8 @@ export async function measureArticles(deps: ArticlesDeps, previous: ArticlesStat
       const unindexed = due.filter(url => !state.indexed[url] && !failed.some(row => row.url === url));
       const why = (url: string): string => {
         const last = state.inspected[url];
-        const verdict = last ? last.coverage_state ?? last.verdict ?? "?" : "never inspected";
-        return notAsked.has(url) ? `${verdict}, last asked ${last?.day ?? "never"}, not asked: quota spent` : verdict;
+        const verdict = last ? `${last.coverage_state ?? last.verdict ?? "?"}, last asked ${last.day}` : "never inspected";
+        return notAsked.has(url) ? `${verdict}, not asked: quota spent` : last?.coverage_state ?? last?.verdict ?? "?";
       };
       metrics.new_unindexed_3d = unindexed.length + failed.length;
       if (failed.length) {
@@ -240,7 +240,7 @@ export async function measureArticles(deps: ArticlesDeps, previous: ArticlesStat
         flagged.push(...listSlice("source_error", `URL Inspection failed for ${failed.length} of ${ask.length} asked; they count as not indexed:`, failed.map(row => `${path(row.url)} (${row.error ?? `HTTP ${row.http}`})`), at));
       }
       flagged.push({ at, kind: "inspect_calls", excerpt: `Detail: URL Inspection asked ${ask.length - notAsked.size} of ${due.length} articles; ${reused.length} kept the verdict from earlier on quota day ${day} (UTC)` +
-        (notAsked.size ? ` and ${notAsked.size} were not asked, because metrics/inspect-quota.json had ${inspected.quota_left_before ?? 0} calls left for the day.` : ".") });
+        (notAsked.size ? ` and ${notAsked.size} were not asked, because metrics/inspect-quota.json had ${Math.max(0, inspected.quota_left_before ?? 0)} calls left for the day.` : ".") });
       flagged.push(...listSlice("unindexed", `Articles that went live in the last ${NEW_WINDOW_DAYS} days, live ${INDEX_AFTER_DAYS} or more days, that Google has not indexed (${unindexed.length} of ${due.length}):`,
         unindexed.map(url => `${path(url)} (live ${age(url)} days, ${why(url)})`), at));
     } catch (error) { fail("Search Console URL Inspection (seo-sources.py inspect)", message(error), ["new_unindexed_3d"]); }
