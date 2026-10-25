@@ -18,6 +18,11 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  *   caller, read from otel.vent_calls by client.address. The console leaves refused calls out, so from 02:09Z on 10-25 the prod host services
  *   exporter on us-metal01 (64.34.205.243) got 401 on every Railway and Vercel call with a key Vent did not know, the Railway and Vercel
  *   panels froze, and this duty still read 100%. A keyless scanner gets the same refusal, and vent.key_present false leaves it out.
+ * - vent_console_slow_reads_24h: how many of the 17 reads the prod Vent console runs cost 1 core-second or more on prod ClickHouse. vent-console-cost.py
+ *   beside this file builds them with vent.telemetry_read and vent.health from apps/vent/src at origin/main, the build prod runs, runs each once
+ *   through Grafana with a log_comment tag and reads its CPU from otel.query_cost. Until release 21 (10-25) prod's console decoded the whole
+ *   LogAttributes map of each call row, and its 24 h usage reads took 1.07 to 1.50 core-s on prod; on the columns of otel.vent_calls they take
+ *   0.29 to 0.51. Goal p44, owner: "Make the Vent Grafana panels and alert rules cheap so they stop loading prod's database".
  * A source it cannot read gives a source_error flagged slice with its reason, counted in source_errors, and leaves each metric it feeds out of
  * the output (the 999999 placeholder for a count to drive down), so the duty runner reads it as not measured. A day with no counted call has no
  * success rate either, so vent_success_24h_pct is left out with a gap slice. Until 10-24 both wrote -1, which the runner judged as a miss.
@@ -30,6 +35,11 @@ const GRAFANA = "https://obs.virev.ai";
 const VENT_HEALTH = join(dirname(fileURLToPath(import.meta.url)), "vent-health.py");
 /** The ref whose apps/vent/src the lights are built with: what staging runs, and what prod runs after the next promote. */
 const HEALTH_REF = "origin/staging";
+/** The ref whose apps/vent/src prod Vent runs: promote.yml fast-forwards main to the staging sha it deploys. */
+const PROD_REF = "origin/main";
+const VENT_CONSOLE_COST = join(dirname(fileURLToPath(import.meta.url)), "vent-console-cost.py");
+/** A console read at or over this many core-seconds counts as slow (goal p44). */
+export const SLOW_READ_S = 1;
 /** The duty report carries at most 3 items per metric (board skill check-ins.md, rule 4, owner 10-15). */
 const ITEMS = 3;
 const HOUR_MS = 3_600_000;
@@ -47,12 +57,15 @@ export interface HostRead { url: string; status: number; version?: string; error
 export interface VersionSpan { env: string; first: number; last: number }
 /** One source address whose keyed prod calls Vent refused as vent_unauthorized in 24 h, with the integrations its paths named. */
 export interface KeyRefusal { source: string; calls: number; last: number; integrations: string[] }
+/** One read the prod Vent console runs and what one run of it cost on prod ClickHouse, null when otel.query_cost had no row for it. */
+export interface ConsoleRead { name: string; cpu_s: number | null; read_rows: number | null }
 type Failed = { error: string };
 export interface IntegrationReads {
   lights: IntegrationLight[] | Failed;
   hosts: { production: HostRead; staging: HostRead };
   spans: VersionSpan[] | Failed | null;
   refusals: KeyRefusal[] | Failed;
+  consoleReads: ConsoleRead[] | Failed;
 }
 
 const failed = <T extends object>(value: T | Failed): value is Failed => "error" in value && typeof (value as Failed).error === "string";
@@ -117,6 +130,21 @@ export function integrationMetrics(reads: IntegrationReads, at: number): Prechec
     }
   }
 
+  const unread = failed(reads.consoleReads) ? reads.consoleReads.error
+    : !reads.consoleReads.length ? "no console read was built"
+    : reads.consoleReads.some(read => read.cpu_s === null) ? `otel.query_cost had no row for ${reads.consoleReads.filter(read => read.cpu_s === null).map(read => read.name).join(", ")}`
+    : null;
+  if (unread !== null || failed(reads.consoleReads)) {
+    sourceError(`prod Vent console read costs could not be read: ${unread}`);
+    metrics.vent_console_slow_reads_24h = UNMEASURED;
+  } else {
+    const slow = reads.consoleReads.filter(read => (read.cpu_s ?? 0) >= SLOW_READ_S).sort((a, b) => (b.cpu_s ?? 0) - (a.cpu_s ?? 0));
+    metrics.vent_console_slow_reads_24h = slow.length;
+    for (const read of slow.slice(0, ITEMS)) {
+      flagged.push({ at, kind: "slow_console_read", item: read.name, excerpt: `prod Vent console read ${read.name} took ${read.cpu_s} core-s on prod ClickHouse for ${read.read_rows} rows` });
+    }
+  }
+
   if (reads.spans && failed(reads.spans)) sourceError(`Vent build history could not be read from ClickHouse: ${reads.spans.error}`);
   const behind = behindHours(reads.hosts, reads.spans && !failed(reads.spans) ? reads.spans : null, at);
   const { production, staging } = reads.hosts;
@@ -171,6 +199,20 @@ async function lights(token: string, dir: string): Promise<IntegrationLight[]> {
   return (JSON.parse(stdout) as { integrations: IntegrationLight[] }).integrations;
 }
 
+/** The prod Vent console's reads and their cost, built by vent-console-cost.py from apps/vent/src at PROD_REF with the checkout's apps/vent python. */
+async function consoleReads(token: string, dir: string): Promise<ConsoleRead[]> {
+  const tar = join(dir, "vent-src-prod.tar");
+  const tree = join(dir, "prod");
+  await run("git", ["fetch", "--quiet", "origin", "main"]);
+  await run("git", ["archive", "--output", tar, PROD_REF, "apps/vent/src"]);
+  await run("mkdir", ["-p", tree]);
+  await run("tar", ["-xf", tar, "-C", tree]);
+  const stdout = await run(join(REPO, "apps/vent/.venv/bin/python"), [VENT_CONSOLE_COST, "production", GRAFANA], {
+    env: { ...process.env, GRAFANA_AGENT_TOKEN: token, PYTHONPATH: join(tree, "apps/vent/src") },
+  });
+  return (JSON.parse(stdout) as { reads: ConsoleRead[] }).reads;
+}
+
 /** One ClickHouse query through Grafana, as a column reader and its row count. */
 async function clickhouse(token: string, sql: string): Promise<{ rows: number; column: (name: string) => unknown[] }> {
   const response = await fetch(`${GRAFANA}/api/ds/query`, {
@@ -223,13 +265,14 @@ async function main(): Promise<void> {
       if (!production.version || !staging.version || production.version === staging.version) return null;
       return spans(token, production.version).catch((error: unknown) => ({ error: errorText(error) }));
     });
-    const [lightsRead, hosts, history, refusals] = await Promise.all([
+    const [lightsRead, hosts, history, refusals, consoleCost] = await Promise.all([
       typeof token === "string" ? lights(token, dir).catch((error: unknown) => ({ error: errorText(error) })) : Promise.resolve(token),
       hostsRead,
       spansRead,
       typeof token === "string" ? keyRefusals(token).catch((error: unknown) => ({ error: errorText(error) })) : Promise.resolve(token),
+      typeof token === "string" ? consoleReads(token, dir).catch((error: unknown) => ({ error: errorText(error) })) : Promise.resolve(token),
     ]);
-    await writeFile(output, JSON.stringify(integrationMetrics({ lights: lightsRead, hosts, spans: history, refusals }, at), null, 2) + "\n");
+    await writeFile(output, JSON.stringify(integrationMetrics({ lights: lightsRead, hosts, spans: history, refusals, consoleReads: consoleCost }, at), null, 2) + "\n");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

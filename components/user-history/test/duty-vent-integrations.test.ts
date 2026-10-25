@@ -2,11 +2,13 @@
 // 06:38Z, prod's console showed resend red on a 403, and google-search-console had 81 failed calls in 24 h; each has to read as a miss.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { behindHours, integrationMetrics, UNMEASURED, type IntegrationLight, type IntegrationReads, type KeyRefusal } from "../scripts/duties/vent-integrations.ts";
+import { behindHours, integrationMetrics, UNMEASURED, type ConsoleRead, type IntegrationLight, type IntegrationReads, type KeyRefusal } from "../scripts/duties/vent-integrations.ts";
 
 const HOUR = 3_600_000;
 const light = (name: string, value: IntegrationLight["light"], success: number, failures: number, top: IntegrationLight["topFailure24h"] = null): IntegrationLight =>
   ({ name, light: value, reason: `${name} reason`, windows: { "24h": { success, failures } }, topFailure24h: top });
+/** The prod console's 24 h reads on 10-25 after release 21, all under 1 core-s. */
+const CHEAP: ConsoleRead[] = [{ name: "usage.totals 24h", cpu_s: 0.507, read_rows: 770024 }, { name: "health.top", cpu_s: 0.035, read_rows: 94237 }];
 const hosts = (production = "a478d04d0afa", staging = "a478d04d0afa", status = 200): IntegrationReads["hosts"] => ({
   production: { url: "https://vent.virev.ai", status, version: production },
   staging: { url: "https://vent-staging.virev.ai", status: 200, version: staging },
@@ -15,7 +17,7 @@ const hosts = (production = "a478d04d0afa", staging = "a478d04d0afa", status = 2
 test("call success counts only the console's success and failure classes, and red lights count with at most 3 items", () => {
   const lights = [light("resend", "red", 0, 1, { kind: "auth", status: 403, errorCode: null, count: 1 }), light("b2", "green", 4257, 0),
     light("google-search-console", "green", 674, 81, { kind: "5xx", status: 500, errorCode: null, count: 78 }), light("a", "red", 1, 1), light("b", "red", 1, 1), light("c", "red", 1, 1)];
-  const { metrics, flagged } = integrationMetrics({ lights, hosts: hosts(), spans: null, refusals: [] }, 0);
+  const { metrics, flagged } = integrationMetrics({ lights, hosts: hosts(), spans: null, refusals: [], consoleReads: CHEAP }, 0);
   assert.equal(metrics.vent_counted_calls_24h, 5019);
   assert.equal(metrics.vent_success_24h_pct, Math.round(100 * 4934 / 5019 * 100) / 100);
   assert.equal(metrics.red_integrations_prod, 4);
@@ -28,10 +30,10 @@ test("call success counts only the console's success and failure classes, and re
 });
 
 test("no counted call and a failed lights read leave the success rate unmeasured with a reason, never -1 or a pass", () => {
-  const quiet = integrationMetrics({ lights: [light("b2", "grey", 0, 0)], hosts: hosts(), spans: null, refusals: [] }, 0);
+  const quiet = integrationMetrics({ lights: [light("b2", "grey", 0, 0)], hosts: hosts(), spans: null, refusals: [], consoleReads: CHEAP }, 0);
   assert.equal("vent_success_24h_pct" in quiet.metrics, false);
   assert.equal(quiet.flagged!.filter(flag => flag.kind === "gap").length, 1);
-  const output = integrationMetrics({ lights: { error: "Grafana ds/query HTTP 401" }, hosts: hosts(), spans: null, refusals: [] }, 0);
+  const output = integrationMetrics({ lights: { error: "Grafana ds/query HTTP 401" }, hosts: hosts(), spans: null, refusals: [], consoleReads: CHEAP }, 0);
   assert.equal("vent_success_24h_pct" in output.metrics, false);
   assert.equal(output.metrics.red_integrations_prod, UNMEASURED);
   assert.equal(output.metrics.source_errors, 1);
@@ -45,14 +47,14 @@ test("prod behind staging counts from the later of prod getting its build and st
   assert.deepEqual(behindHours(hosts("a478d04d0afa", "fd27624f5075"), spans, now), { hours: Math.round((now - stagingLast) / HOUR * 10) / 10, since: stagingLast });
   assert.equal(behindHours(hosts("a478d04d0afa", "fd27624f5075"), [spans[0]!], now)!.since, prodFirst);
   assert.equal(behindHours(hosts("a478d04d0afa", "fd27624f5075"), [], now), null);
-  const output = integrationMetrics({ lights: [], hosts: hosts("a478d04d0afa", "fd27624f5075"), spans, refusals: [] }, now);
+  const output = integrationMetrics({ lights: [], hosts: hosts("a478d04d0afa", "fd27624f5075"), spans, refusals: [], consoleReads: CHEAP }, now);
   assert.equal(output.flagged!.find(flag => flag.kind === "behind_staging")!.excerpt, "prod Vent runs a478d04d0afa and staging runs fd27624f5075; they differ since 2026-10-19T06:38Z");
-  assert.equal(integrationMetrics({ lights: [], hosts: hosts("a478d04d0afa", "fd27624f5075"), spans: { error: "HTTP 400" }, refusals: [] }, now).metrics.prod_vent_behind_staging_h, UNMEASURED);
+  assert.equal(integrationMetrics({ lights: [], hosts: hosts("a478d04d0afa", "fd27624f5075"), spans: { error: "HTTP 400" }, refusals: [], consoleReads: CHEAP }, now).metrics.prod_vent_behind_staging_h, UNMEASURED);
 });
 
 test("a host that does not answer 200 counts as down, and with no version the lag reads unmeasured", () => {
   const down = { production: { url: "https://vent.virev.ai", status: 0, error: "TLS" }, staging: hosts().staging };
-  const output = integrationMetrics({ lights: [], hosts: down, spans: null, refusals: [] }, 0);
+  const output = integrationMetrics({ lights: [], hosts: down, spans: null, refusals: [], consoleReads: CHEAP }, 0);
   assert.equal(output.metrics.vent_hosts_down, 1);
   assert.equal(output.metrics.prod_vent_behind_staging_h, UNMEASURED);
   assert.equal(output.flagged!.find(flag => flag.kind === "host_down")!.excerpt, "https://vent.virev.ai/healthz gave TLS");
@@ -65,14 +67,33 @@ test("keyed calls refused as vent_unauthorized count per source address and read
   const refusals: KeyRefusal[] = [{ source: "155.254.27.166", calls: 22, last, integrations: ["clerk", "slack-dev"] },
     { source: "64.34.205.243", calls: 196, last, integrations: ["railway", "vercel"] }];
   const lights = [light("railway", "green", 40, 0), light("vercel", "green", 40, 0)];
-  const output = integrationMetrics({ lights, hosts: hosts(), spans: null, refusals }, last);
+  const output = integrationMetrics({ lights, hosts: hosts(), spans: null, refusals, consoleReads: CHEAP }, last);
   assert.equal(output.metrics.vent_success_24h_pct, 100);
   assert.equal(output.metrics.vent_key_refused_sources, 2);
   const rows = output.flagged!.filter(flag => flag.kind === "key_refused");
   assert.deepEqual(rows.map(flag => flag.item), ["64.34.205.243", "155.254.27.166"]);
   assert.equal(rows[0]!.excerpt, "64.34.205.243: 196 prod Vent calls for railway, vercel refused as vent_unauthorized with a key Vent does not know in 24 h, last at 2026-10-25T03:47Z");
-  assert.equal(integrationMetrics({ lights, hosts: hosts(), spans: null, refusals: [] }, last).metrics.vent_key_refused_sources, 0);
-  const unread = integrationMetrics({ lights, hosts: hosts(), spans: null, refusals: { error: "HTTP 502" } }, last);
+  assert.equal(integrationMetrics({ lights, hosts: hosts(), spans: null, refusals: [], consoleReads: CHEAP }, last).metrics.vent_key_refused_sources, 0);
+  const unread = integrationMetrics({ lights, hosts: hosts(), spans: null, refusals: { error: "HTTP 502" }, consoleReads: CHEAP }, last);
   assert.equal(unread.metrics.vent_key_refused_sources, UNMEASURED);
   assert.equal(unread.metrics.source_errors, 1);
+});
+
+// Until release 21 (10-25) prod's console decoded each call row's whole LogAttributes map: on 10-24 at 15:21Z its 24 h usage reads took
+// 1.07 to 1.34 core-s on prod ClickHouse (goal p44). Each slow read has to read as a miss, and a read with no cost row as unmeasured.
+test("console reads at 1 core-s or more count as slow with at most 3 items, and an unread cost is unmeasured", () => {
+  const before: ConsoleRead[] = [{ name: "usage.totals 24h", cpu_s: 1.336, read_rows: 421570 }, { name: "usage.by_caller 24h", cpu_s: 1.073, read_rows: 421570 },
+    { name: "usage.by_integration 24h", cpu_s: 1.121, read_rows: 421570 }, { name: "usage.by_operation 24h", cpu_s: 1.121, read_rows: 421570 },
+    { name: "calls.all 24h", cpu_s: 0.486, read_rows: 421581 }, { name: "health.top", cpu_s: 1, read_rows: 71117 }];
+  const slow = integrationMetrics({ lights: [], hosts: hosts(), spans: null, refusals: [], consoleReads: before }, 0);
+  assert.equal(slow.metrics.vent_console_slow_reads_24h, 5);
+  const rows = slow.flagged!.filter(flag => flag.kind === "slow_console_read");
+  assert.deepEqual(rows.map(flag => flag.item), ["usage.totals 24h", "usage.by_integration 24h", "usage.by_operation 24h"]);
+  assert.equal(rows[0]!.excerpt, "prod Vent console read usage.totals 24h took 1.336 core-s on prod ClickHouse for 421570 rows");
+  assert.equal(integrationMetrics({ lights: [], hosts: hosts(), spans: null, refusals: [], consoleReads: CHEAP }, 0).metrics.vent_console_slow_reads_24h, 0);
+  for (const consoleReads of [{ error: "Grafana ds/query HTTP 502" }, [], [{ name: "health.top", cpu_s: null, read_rows: null }]]) {
+    const output = integrationMetrics({ lights: [], hosts: hosts(), spans: null, refusals: [], consoleReads }, 0);
+    assert.equal(output.metrics.vent_console_slow_reads_24h, UNMEASURED);
+    assert.equal(output.metrics.source_errors, 1);
+  }
 });
