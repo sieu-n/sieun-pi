@@ -1,7 +1,9 @@
 // Guards the Vent integrations duty (vent-integrations.ts). On 2026-10-19 prod Vent ran a478d04d0afa while staging had run newer builds since
 // 06:38Z, prod's console showed resend red on a 403, and google-search-console had 81 failed calls in 24 h; each has to read as a miss.
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { dutyShapeProblem, type DutyMetric } from "../src/shared/chat-duties.ts";
 import { behindHours, integrationMetrics, UNMEASURED, type ConsoleRead, type IntegrationLight, type IntegrationReads, type KeyRefusal } from "../scripts/duties/vent-integrations.ts";
 
 const HOUR = 3_600_000;
@@ -96,4 +98,15 @@ test("console reads at 1 core-s or more count as slow with at most 3 items, and 
     assert.equal(output.metrics.vent_console_slow_reads_24h, UNMEASURED);
     assert.equal(output.metrics.source_errors, 1);
   }
+});
+
+// c75: a duty keeps one headline metric and at most 3 more. On 10-25 d2 had 5, and its prod_vent_behind_staging_h reading is one no Vent job
+// can move under c154, so the duty keeps the 24 h success headline, refused keys and slow console reads, and the rest stay in the run detail.
+test("the duty keeps one headline and at most 3 metrics, and the precheck writes each of them", () => {
+  const duty = JSON.parse(readFileSync(new URL("../scripts/duties/vent-integrations.duty.json", import.meta.url), "utf8")) as { metrics: DutyMetric[]; readings?: unknown };
+  assert.equal(dutyShapeProblem(duty.metrics), null);
+  assert.deepEqual(duty.metrics.map(metric => metric.key), ["vent_success_24h_pct", "vent_key_refused_sources", "vent_console_slow_reads_24h"]);
+  assert.equal(duty.readings, undefined);
+  const { metrics } = integrationMetrics({ lights: [light("b2", "green", 10, 0)], hosts: hosts(), spans: null, refusals: [], consoleReads: CHEAP }, 0);
+  for (const metric of duty.metrics) assert.equal(typeof metrics[metric.key], "number", metric.key);
 });
