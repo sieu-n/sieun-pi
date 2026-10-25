@@ -272,13 +272,13 @@ async function pool(deps: Deps, provider: "anthropic" | "openai-codex"): Promise
   if (reauth.length && reauth.every(email => email.endsWith(APPLE_RELAY))) return FAIL("owner", `${reauth.join(", ")} need a new sign-in (${counts})`,
     `the owner clicks Sign in again on the account in Settings, Accounts and signs in with Apple; Apple asks for his Apple ID password and a 2FA code on his devices, which no agent holds`);
   if (reauth.length) {
-    // The sign-in runs in the owner's Aside, since claude.ai showed the box Chrome an hCaptcha on its email sign-in link (us-metal02, 10-24
-    // 12:36Z). With his Mac offline no agent can do it, and on 10-24 d5 read sieunpark77's sign-in as an agent fix while no job could start it.
+    // Only a password, 2FA, key or macOS grant is the owner's fix, and this sign-in needs none of them (c129): it runs in his Aside, which holds
+    // his Google login, since claude.ai showed the box Chrome an hCaptcha on its email link (us-metal02, 10-24 12:36Z). With his Mac offline it
+    // stays an agent fix with the Mac's state in the detail, because 28 runs from 10-24 counted sieunpark77's sign-in in owner_fixes, where no
+    // todo could hold it and the dead account fell out of skills_or_tools_to_fix.
     const mac = await macReach(deps);
-    if (!mac.online) return FAIL("owner", `${reauth.join(", ")} need a new sign-in (${counts}); ${mac.detail}`,
-      `nothing to ask the owner (c129): the sign-in needs his Aside, so this reads as an agent fix again once his Mac is online, and a job then runs \`pi-pool login <email> --provider ${provider}\` in Aside`);
-    return FAIL("agent", `${reauth.join(", ")} need a new sign-in (${counts})`,
-      `sign in again with \`pi-pool login <email> --provider ${provider}\` in the owner's Aside browser; a password or 2FA prompt makes it an owner item`);
+    return FAIL("agent", `${reauth.join(", ")} need a new sign-in (${counts})${mac.online ? "" : `; ${mac.detail}`}`,
+      `copy a live login of the account if a box has one, else run \`pi-pool login <email> --provider ${provider}\` in the owner's Aside; \`pi-pool off <email>\` an account whose plan is unpaid; a password or 2FA prompt makes it an owner item`);
   }
   if (!usable && !soon) return FAIL("agent", `no ${provider} account is usable and none resets within 24 h (${counts})`, "read `pi-pool ls --json` and find why every account is stuck");
   return PASS(counts);

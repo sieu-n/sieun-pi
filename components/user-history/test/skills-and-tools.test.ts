@@ -276,8 +276,8 @@ test("pool_codex keeps an email-code account's new sign-in the agent's fix", asy
   assert.ok(outcome.status === "fail" && outcome.fixer === "agent", JSON.stringify(outcome));
 });
 
-// 10-24: sieunpark77's Claude sign-in read as an agent fix in the owner's Aside while his Mac was offline, and claude.ai showed the box
-// Chrome an hCaptcha, so 27 d5 runs passed with no job able to start the fix.
+// 10-24 to 10-26: sieunpark77's Claude sign-in, which needs the owner's Aside and no password or 2FA from him, counted in owner_fixes for 28
+// runs while his Mac was offline, so no todo could hold it and the dead account fell out of skills_or_tools_to_fix.
 const poolClaude = CHECKS.find(check => check.id === "pool_claude")!;
 const reauthRows = JSON.stringify({ rows: [{ email: "sieunpark77@gmail.com", reason: "needs-reauth" }, { email: "a@gmail.com", usable: true }] });
 const poolMacDeps = (online: boolean): Deps => {
@@ -285,11 +285,14 @@ const poolMacDeps = (online: boolean): Deps => {
   return { ...mac, exec: async (file, args, options) => file === "pi-pool" ? { code: 0, stdout: reauthRows, stderr: "", ms: 0 } : mac.exec(file, args, options) };
 };
 
-test("pool_claude makes a new sign-in the owner's fix while the Mac is offline, and the agent's once it is back", async () => {
+test("pool_claude keeps a new sign-in the agent's fix while the Mac is offline, so owner_fixes leaves it out", async () => {
   const away = await poolClaude.run(poolMacDeps(false));
-  assert.ok(away.status === "fail" && away.fixer === "owner" && away.detail.includes("MacBook Pro is offline"), JSON.stringify(away));
+  assert.ok(away.status === "fail" && away.fixer === "agent" && away.detail.includes("MacBook Pro is offline") && away.fix.includes("pi-pool login"), JSON.stringify(away));
+  const metrics = withHarness(toOutput([{ check: poolClaude, outcome: away, ms: 0 }], 0), { metrics: { skills_to_prune: 0 }, flagged: [] }).metrics;
+  assert.equal(metrics.owner_fixes, 0);
+  assert.equal(metrics.skills_or_tools_to_fix, 1);
   const back = await poolClaude.run(poolMacDeps(true));
-  assert.ok(back.status === "fail" && back.fixer === "agent" && back.fix.includes("Aside"), JSON.stringify(back));
+  assert.ok(back.status === "fail" && back.fixer === "agent" && !back.detail.includes("offline") && back.fix.includes("Aside"), JSON.stringify(back));
 });
 
 // 10-24 05:13Z: sieunpark77's Claude refresh grant reached its fixed end, and nothing flagged it before it did.
