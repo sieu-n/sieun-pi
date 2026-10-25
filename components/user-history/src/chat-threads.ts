@@ -350,6 +350,13 @@ export class ThreadHub {
   private readonly observers = new Set<ThreadObserver>();
   /** Each thread's owner sends not delivered yet (`setOutbox`), for the threads that open later. */
   private readonly outboxes = new Map<string, OutboxEntry[]>();
+  /**
+   * The calls under way on each thread's own connection (`using`), which no let-go of the thread may close under them. On 10-25 at 21:53Z the
+   * job wake pass's stall read (`view`) opened job 01a174e7, the check-in restart's abort joined that open, and the read's let-go disposed the
+   * thread and closed its client under the abort: "Prime Agent daemon client closed before the operation completed", a dirty d7 minute, and the
+   * job got its message only from a job-steer 10 min later.
+   */
+  private readonly using = new Map<string, number>();
   private closed = false;
 
   /**
@@ -383,7 +390,7 @@ export class ThreadHub {
   private sweep(): void {
     const now = Date.now();
     for (const [id, thread] of this.threads) {
-      if (!this.pinned.has(id) && !thread.opening && thread.listeners.size === 0 && thread.idleSince !== null && now - thread.idleSince > IDLE_MS) void this.dispose(id);
+      if (!this.pinned.has(id) && !thread.opening && !this.using.has(id) && thread.listeners.size === 0 && thread.idleSince !== null && now - thread.idleSince > IDLE_MS) void this.dispose(id);
     }
     void this.rest().catch(error => { process.stderr.write(`rest: ${error instanceof Error ? error.message : String(error)}\n`); });
   }
@@ -398,7 +405,7 @@ export class ThreadHub {
     const { queue } = thread.state;
     return !isThreadBusy({ ...thread.state, children: unsilent(thread.state.children, this.dormant.now()) }) &&
       queue.steering.length === 0 && queue.followUp.length === 0 &&
-      !this.resuming.has(thread.id) && !this.opening.has(thread.id);
+      !this.resuming.has(thread.id) && !this.opening.has(thread.id) && !this.using.has(thread.id);
   }
 
   /**
@@ -478,7 +485,7 @@ export class ThreadHub {
 
   /** Closes the oldest unpinned threads of `kind` with no tab open over MAX_LIVE or MAX_SAVED; pinned threads do not count, so pins never push other threads out. */
   private evict(kind: "live" | "saved"): void {
-    const candidates = [...this.threads.values()].filter(thread => (thread.live !== null) === (kind === "live") && thread.listeners.size === 0 && !thread.opening && !this.pinned.has(thread.id))
+    const candidates = [...this.threads.values()].filter(thread => (thread.live !== null) === (kind === "live") && thread.listeners.size === 0 && !thread.opening && !this.pinned.has(thread.id) && !this.using.has(thread.id))
       .sort((left, right) => left.touched - right.touched);
     const total = [...this.threads.values()].filter(thread => (thread.live !== null) === (kind === "live") && !this.pinned.has(thread.id)).length;
     const limit = kind === "live" ? MAX_LIVE : MAX_SAVED;
@@ -1238,7 +1245,7 @@ export class ThreadHub {
     const state = thread.live ? thread.state : null;
     if (opened) {
       setTimeout(() => {
-        if (this.threads.get(id) === thread && thread.listeners.size === 0 && !this.pinned.has(id) && !this.resuming.has(id) && !this.opening.has(id)) void this.dispose(id);
+        if (this.threads.get(id) === thread && thread.listeners.size === 0 && !this.pinned.has(id) && !this.resuming.has(id) && !this.opening.has(id) && !this.using.has(id)) void this.dispose(id);
       }, 0);
     }
     return state;
@@ -1569,15 +1576,28 @@ export class ThreadHub {
    * text (and anything queued before it) starts a turn now.
    */
   async restart(id: string, message: string, abort = false): Promise<void> {
-    if (abort) await this.abort(id, "restart");
-    await this.prompt(id, { message, images: [], mode: "steer" }, "restart");
-    await this.resumeQueue(id);
+    await this.use(id, async () => {
+      if (abort) await this.abort(id, "restart");
+      await this.prompt(id, { message, images: [], mode: "steer" }, "restart");
+      await this.resumeQueue(id);
+    });
+  }
+
+  /** Runs `call` with the thread marked in use, so no let-go (`view`, the sweep, `evict`, `rest`) disposes it and closes its client meanwhile. */
+  private async use<T>(id: string, call: () => Promise<T>): Promise<T> {
+    this.using.set(id, (this.using.get(id) ?? 0) + 1);
+    try { return await call(); } finally {
+      const left = (this.using.get(id) ?? 1) - 1;
+      if (left > 0) this.using.set(id, left); else this.using.delete(id);
+    }
   }
 
   /** A line in the transcript that starts no turn (the feed shows it as a notice). Sent only between turns: in a running turn it would join it as input. */
   async notice(id: string, text: string): Promise<void> {
-    const { live } = await this.requireLive(id, "notice");
-    await live.connection.appendCustomMessage({ customType: CHAT_NOTICE, content: text, display: true });
+    await this.use(id, async () => {
+      const { live } = await this.requireLive(id, "notice");
+      await live.connection.appendCustomMessage({ customType: CHAT_NOTICE, content: text, display: true });
+    });
   }
 
   /**
@@ -1585,6 +1605,10 @@ export class ThreadHub {
    * runs after `timeoutMs`, the daemon's own 30 s request timeout, so a caller never sends a continue into a run its abort did not stop.
    */
   async settled(id: string, timeoutMs = 30_000): Promise<void> {
+    await this.use(id, () => this.settledNow(id, timeoutMs));
+  }
+
+  private async settledNow(id: string, timeoutMs: number): Promise<void> {
     const until = Date.now() + timeoutMs;
     for (;;) {
       const { live } = await this.current(id, "settled");
@@ -1601,13 +1625,15 @@ export class ThreadHub {
    * on 10-19 the check-in and job-steer restarts of saved jobs failed with it (7 jobs of chat 01a115e2 from 11:0xZ, and the metal box owner).
    */
   async abort(id: string, trigger = "abort"): Promise<void> {
-    const { live } = await this.current(id, trigger);
-    if (!live) return;
-    const state = await live.connection.getState();
-    if (state.isCompacting) await live.connection.abortCompaction();
-    if (state.isBashRunning) await live.connection.abortBash();
-    if (state.retryAttempt) await live.connection.abortRetry();
-    await live.connection.abort();
+    await this.use(id, async () => {
+      const { live } = await this.current(id, trigger);
+      if (!live) return;
+      const state = await live.connection.getState();
+      if (state.isCompacting) await live.connection.abortCompaction();
+      if (state.isBashRunning) await live.connection.abortBash();
+      if (state.retryAttempt) await live.connection.abortRetry();
+      await live.connection.abort();
+    });
   }
 
   /**
