@@ -38,9 +38,10 @@ export const NOISE_FIXES: readonly { kind: string; fix: string }[] = [
   { kind: "split answer", fix: "e5d526be" },
 ];
 
-export interface NoiseLine { at: number; case: string; side: RepeatSide; fix?: string; /** When `fix` landed, in ms. */ fixed?: number }
+/** A labelled noise line: `at` is when it went out, `labelled` when the duty run wrote its label (the LABELS row's `at`). */
+export interface NoiseLine { at: number; labelled?: number; case: string; side: RepeatSide; fix?: string; /** When `fix` landed, in ms. */ fixed?: number }
 
-export async function splitNoise(lines: readonly { at: number; case: string }[], commitTime: (hash: string) => Promise<number | undefined>): Promise<NoiseLine[]> {
+export async function splitNoise(lines: readonly { at: number; labelled?: number; case: string }[], commitTime: (hash: string) => Promise<number | undefined>): Promise<NoiseLine[]> {
   return Promise.all(lines.map(async line => {
     const kind = line.case.toLowerCase();
     const landed = await Promise.all(NOISE_FIXES.filter(entry => kind.startsWith(entry.kind.toLowerCase())).map(async entry => ({ entry, at: await commitTime(entry.fix) })));
@@ -59,13 +60,31 @@ export function noiseMetrics(split: readonly NoiseLine[]): Record<`noise_${Repea
 }
 
 /**
- * `lastEventAt` for needed_pct_24h, read the way d10 reads its repeats (splitLastEvents): with only before_fix noise lines the share can only
- * rise as they leave the 24 h, so it dates from the newest fix landing and the miss line says to start no new job a run later. An after_fix or
- * no_fix line still needs a fix and dates it `now`. No noise line gives no `lastEventAt`.
+ * `lastEventAt` for needed_pct_24h: the newest change to a counted noise line, which is when it went out, when a run labelled it, or for a
+ * before_fix line when its fix landed. A noise line pulls the share down for the whole 24 h whatever fix lands after it, so once a run has
+ * passed since that change the miss reads quiet and only waits for the line to leave. An after_fix or no_fix line reads live on the run after
+ * its label, whose miss line starts its fix, and a new leak reads live again, so d9 still judges a fix by the lines sent after it. Before
+ * 10-26 an after_fix line dated the count `now`: the 10-25 t15 re-ask, t34 nudge and p161 done, sent from 03:29Z to 10:57Z and labelled at
+ * 21:09Z, kept every run live after p1067 had fixed or dropped their kinds, and d9 asked at 22:13Z to replace a fix that no line had leaked
+ * past. No noise line gives no `lastEventAt`.
  */
-export function noiseLastEvent(split: readonly NoiseLine[], now: number): { needed_pct_24h?: number } {
+export function noiseLastEvent(split: readonly NoiseLine[]): { needed_pct_24h?: number } {
   if (!split.length) return {};
-  return { needed_pct_24h: split.some(line => line.side !== "before_fix") ? now : Math.max(...split.map(line => line.fixed!)) };
+  return { needed_pct_24h: Math.max(...split.map(line => Math.max(line.at, line.labelled ?? 0, line.side === "before_fix" ? line.fixed! : 0))) };
+}
+
+/** When needed_pct_24h's noise leaves its window: the oldest line, how many noise lines `target` allows beside `needed` needed lines, and when the line that brings the count down to that leaves. */
+export interface NoiseAging { oldestLeaves: number; allowed: number; meetsAt: number; pointsPerLine: number }
+
+/**
+ * The window's aging for a missed needed_pct_24h, if no new noise goes out and the needed count holds. On 10-25 22:01Z it read 13 needed of 18
+ * lines: one line is 5.6 points, 90% allows 1 noise line beside 13 needed, and the 5 noise lines leave from 10-26 03:29Z to 10:57Z.
+ */
+export function noiseAging(split: readonly NoiseLine[], needed: number, target: number, windowMs: number): NoiseAging | undefined {
+  const allowed = Math.floor(needed * (100 - target) / target + 1e-9);
+  if (split.length <= allowed) return undefined;
+  const leaves = split.map(line => line.at + windowMs).sort((a, b) => a - b);
+  return { oldestLeaves: leaves[0]!, allowed, meetsAt: leaves[split.length - allowed - 1]!, pointsPerLine: Math.round(1000 / (needed + split.length)) / 10 };
 }
 
 /** The line's lead in the flagged excerpt, such as "before fix f4092cd3 of 10-19 21:02Z". */

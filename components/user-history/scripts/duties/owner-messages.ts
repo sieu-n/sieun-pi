@@ -6,7 +6,7 @@ import { Projector } from "../../src/chat-projection.ts";
 import { readBranchPage, historyMessages } from "../../src/session-tail.ts";
 import { chatLines, lineId, OWNER_RETRY_MARK, serverNote } from "../../src/shared/chat-feed.ts";
 import { isPromptCustom, messageText } from "../../src/shared/turns.ts";
-import { noiseLastEvent, noiseMetrics, noiseSide, splitNoise } from "./noise-split.ts";
+import { noiseAging, noiseLastEvent, noiseMetrics, noiseSide, splitNoise } from "./noise-split.ts";
 import { fixRepos, gitCommitTime } from "./repeat-split.ts";
 
 /**
@@ -23,7 +23,9 @@ import { fixRepos, gitCommitTime } from "./repeat-split.ts";
  *   lines before them read 13, 9 and 9 misses. Every unlabeled line is flagged with its chat, wake and text.
  * - unanswered_bursts: his message bursts with no reply in the window that are older than ANSWER_GRACE_MS.
  * - noise_before_fix_24h, noise_after_fix_24h, noise_no_fix_24h: the noise lines by when the check for their kind landed (noise-split.ts), and
- *   needed_pct_24h's lastEventAt, so a miss on noise that went out before its fix only waits for the lines to leave the 24 h.
+ *   needed_pct_24h's lastEventAt, the newest send, label or fix landing among them, so a miss on noise no run has newly seen only waits for the
+ *   lines to leave the 24 h. A missed needed_pct_24h also flags `aging`: when the oldest noise line leaves and when the share meets the target
+ *   with no new noise (noiseAging).
  * Clean-room test chats are left out (clean-room-chats.json), since the goal is about his real chats.
  *
  *   OUTPUT_FILE=<file> node --import tsx scripts/duties/owner-messages.ts [--hours 24] [--end <ISO>]
@@ -43,7 +45,8 @@ const PLACES = [join(homedir(), ".prime/agent/sessions"), join(homedir(), ".cach
 const args = process.argv.slice(2);
 const opt = (name: string): string | undefined => args.includes(name) ? args[args.indexOf(name) + 1] : undefined;
 const end = opt("--end") ? Date.parse(opt("--end")!) : Date.now();
-const start = end - Number(opt("--hours") ?? 24) * 3_600_000;
+const windowMs = Number(opt("--hours") ?? 24) * 3_600_000;
+const start = end - windowMs;
 const out = process.env.OUTPUT_FILE;
 if (!out) { process.stderr.write("OUTPUT_FILE is not set\n"); process.exit(2); }
 
@@ -74,7 +77,7 @@ async function branchSince(file: string, since: number): Promise<any[]> {
 
 let needed = 0, unlabeled = 0, unanswered = 0;
 const flagged: FlaggedSlice[] = [];
-const noiseLines: { chat: string; at: number; case: string; text: string }[] = [];
+const noiseLines: { chat: string; at: number; labelled?: number; case: string; text: string }[] = [];
 for (const chat of chats) {
   const file = PLACES.map(dir => join(dir, `${chat}.jsonl`)).find(existsSync);
   if (!file) continue;
@@ -104,7 +107,7 @@ for (const chat of chats) {
     if (ownerTurn[index]) { needed++; continue; }
     const label = labels.get(line.id);
     if (label?.label === "needed") needed++;
-    else if (label?.label === "noise") noiseLines.push({ chat, at: line.at, case: label.case ?? "noise", text: line.text });
+    else if (label?.label === "noise") noiseLines.push({ chat, at: line.at, ...Number.isFinite(Date.parse(label.at ?? "")) ? { labelled: Date.parse(label.at!) } : {}, case: label.case ?? "noise", text: line.text });
     else { if (line.at < cutoff) unlabeled++; flagged.push({ kind: "unlabeled", chat, at: line.at, excerpt: `${line.at < cutoff ? "" : UNCOUNTED}id ${line.id}; wake: ${wakeOf[index]!.replace(/\s+/g, " ")}; sent: ${line.text.replace(/\s+/g, " ").slice(0, 600)}` }); }
   }
   const seq = lines.filter(line => line.at >= start - 6 * 3_600_000 && line.at < end);
@@ -123,5 +126,11 @@ const noise = await splitNoise(noiseLines, gitCommitTime(fixRepos("")));
 noise.forEach((line, index) => flagged.push({ kind: "noise", chat: noiseLines[index]!.chat, at: line.at, excerpt: `${line.case}, ${noiseSide(line)}: ${noiseLines[index]!.text.slice(0, 300)}` }));
 const labelled = needed + noise.length;
 const metrics = { needed_pct_24h: labelled ? Math.round(1000 * needed / labelled) / 10 : 100, unlabeled_lines: unlabeled, unanswered_bursts: unanswered, ...noiseMetrics(noise) };
-writeFileSync(out, JSON.stringify({ metrics, flagged, lastEventAt: noiseLastEvent(noise, end) } satisfies PrecheckOutput, null, 1));
+const target = readJson<{ metrics: { key: string; target: number }[] }>(new URL("./owner-messages.duty.json", import.meta.url).pathname, { metrics: [] }).metrics.find(metric => metric.key === "needed_pct_24h")?.target ?? 90;
+const aging = metrics.needed_pct_24h < target ? noiseAging(noise, needed, target, windowMs) : undefined;
+const clock = (ms: number) => new Date(ms).toISOString().slice(5, 16).replace("T", " ") + "Z";
+if (aging) flagged.push({ kind: "aging", at: aging.oldestLeaves, excerpt: `needed_pct_24h counts ${noise.length} noise lines in ${labelled}, so one line is ${aging.pointsPerLine} points. ` +
+  `The oldest leaves the window at ${clock(aging.oldestLeaves)}. At ${target}% the ${needed} needed lines allow ${aging.allowed} noise ${aging.allowed === 1 ? "line" : "lines"}, so with no new noise ` +
+  `and the same needed count the share meets the target at ${clock(aging.meetsAt)}.` });
+writeFileSync(out, JSON.stringify({ metrics, flagged, lastEventAt: noiseLastEvent(noise) } satisfies PrecheckOutput, null, 1));
 process.stdout.write(`${JSON.stringify(metrics)}\n`);

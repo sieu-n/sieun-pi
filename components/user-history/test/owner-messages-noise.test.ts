@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { agingSince } from "../scripts/duties/chat-system.ts";
-import { noiseLastEvent, noiseMetrics, noiseSide, splitNoise } from "../scripts/duties/noise-split.ts";
+import { noiseAging, noiseLastEvent, noiseMetrics, noiseSide, splitNoise } from "../scripts/duties/noise-split.ts";
 import { missLine } from "../src/chat-duty-job.ts";
 import { judge, type DutyMetric, type DutyRunRecord } from "../src/shared/chat-duties.ts";
 import { metricStreaks } from "../src/shared/duty-streak.ts";
@@ -28,9 +28,9 @@ test("the night's noise lines all went out before their kind's fix, the Mac's sp
   const split = await splitNoise(nightLines, commitTime);
   assert.deepEqual(split.map(line => line.side), Array(7).fill("before_fix"));
   assert.equal(noiseSide(split[0]!), "before fix f4092cd3 of 10-19 21:02Z");
-  assert.deepEqual(noiseLastEvent(split, firstRun), { needed_pct_24h: at(commits.d7112574!) });
+  assert.deepEqual(noiseLastEvent(split), { needed_pct_24h: at(commits.d7112574!) });
 
-  const output = { metrics: { needed_pct_24h: 80.5, ...noiseMetrics(split) }, lastEventAt: noiseLastEvent(split, firstRun) };
+  const output = { metrics: { needed_pct_24h: 80.5, ...noiseMetrics(split) }, lastEventAt: noiseLastEvent(split) };
   const run = (time: number): DutyRunRecord => ({ duty: "d11", at: time, trigger: "schedule", ms: 1, ...judge([metric], output) });
   const runs = [run(firstRun + 30 * 60_000), run(firstRun)];
   const [streak] = metricStreaks(runs);
@@ -39,14 +39,15 @@ test("the night's noise lines all went out before their kind's fix, the Mac's sp
   assert.equal(agingSince(runs), at(commits.d7112574!));
 });
 
-test("a noise line that went out after its kind's fix, or of a kind no fix covers, keeps the miss live", async () => {
-  const later = [...nightLines, { at: at("2026-10-20T16:48:37Z"), case: "second report on a goal already reported (later demo work on staging)" }, { at: at("2026-10-20T05:00:00Z"), case: "progress relay" }];
+test("a noise line that went out after its kind's fix, or of a kind no fix covers, reads live on the run after its label", async () => {
+  const leak = at("2026-10-20T21:20:00Z"), labelled = firstRun + 40 * 60_000;
+  const later = [...nightLines, { at: leak, labelled, case: "second report on a goal already reported (later demo work on staging)" }, { at: at("2026-10-20T05:00:00Z"), labelled: firstRun + 5 * 60_000, case: "progress relay" }];
   const split = await splitNoise(later, commitTime);
   assert.deepEqual(noiseMetrics(split), { noise_before_fix_24h: 7, noise_after_fix_24h: 1, noise_no_fix_24h: 1 });
-  assert.deepEqual(noiseLastEvent(split, firstRun), { needed_pct_24h: firstRun });
-  const output = { metrics: { needed_pct_24h: 77.8 }, lastEventAt: noiseLastEvent(split, firstRun + 30 * 60_000) };
-  const runs = [{ duty: "d11", at: firstRun + 30 * 60_000, trigger: "schedule" as const, ms: 1, ...judge([metric], output) },
-    { duty: "d11", at: firstRun, trigger: "schedule" as const, ms: 1, ...judge([metric], { ...output, lastEventAt: { needed_pct_24h: firstRun } }) }];
+  assert.deepEqual(noiseLastEvent(split), { needed_pct_24h: labelled });
+  const output = { metrics: { needed_pct_24h: 77.8 }, lastEventAt: noiseLastEvent(split) };
+  const runs = [{ duty: "d11", at: firstRun + 60 * 60_000, trigger: "schedule" as const, ms: 1, ...judge([metric], output) },
+    { duty: "d11", at: firstRun + 30 * 60_000, trigger: "schedule" as const, ms: 1, ...judge([metric], output) }];
   assert.equal(metricStreaks(runs)[0]!.quietSince, undefined);
   assert.equal(agingSince(runs), undefined);
 });
@@ -115,7 +116,7 @@ test("the 10-25 t15 take-back and t68 finding went out before e5d526be, and late
 });
 
 test("no noise line gives no lastEventAt", () => {
-  assert.deepEqual(noiseLastEvent([], firstRun), {});
+  assert.deepEqual(noiseLastEvent([]), {});
 });
 
 test("a kind with a later fix reads its leaks after the first fix as before the newest one", async () => {
@@ -127,4 +128,45 @@ test("a kind with a later fix reads its leaks after the first fix as before the 
     { at: at("2026-10-23T09:00:00Z"), case: "same incident asked again by another chat" },
   ], async hash => fixed[hash as keyof typeof fixed] ? at(fixed[hash as keyof typeof fixed]!) : undefined);
   assert.deepEqual(split.map(line => [line.side, line.fix]), [["before_fix", "c541b75c"], ["before_fix", "c541b75c"], ["after_fix", "c541b75c"]]);
+});
+
+test("the 10-25 lines that p1067 fixed or dropped read quiet a run after e5d526be, and only a new leak makes the miss live again", async () => {
+  // d11 at 22:01Z on 10-25 read 72.2 (13 needed of 18) on five noise lines sent from 03:29Z to 10:57Z and labelled at 21:09:06Z. Two went
+  // out before e5d526be; the t15 re-ask, the t34 nudge and the p161 done went out after the fixes of their kinds, and p1067 dropped a code
+  // hold for them on replay evidence. Their after_fix side dated the count `now`, so every run read live and d9 at 22:13Z asked to replace
+  // the fix, though no line had gone out after it.
+  const fixed = { ...commits, "9b525da8": "2026-10-23T18:06:00Z", "20cfb99d": "2026-10-22T18:31:47Z", c541b75c: "2026-10-23T08:31:26Z",
+    "841c86f8": "2026-10-24T05:16:23Z", "41665689": "2026-10-23T14:58:07Z", "62ca6828": "2026-10-24T22:46:37Z", e5d526be: "2026-10-25T21:36:14Z" };
+  const time = async (hash: string) => fixed[hash as keyof typeof fixed] ? at(fixed[hash as keyof typeof fixed]!) : undefined;
+  const labelled = at("2026-10-25T21:09:06Z");
+  const lines = [
+    { at: at("2026-10-25T03:51:20Z"), labelled, case: "re-ask of an open For you todo (t15 prod Vent update, first asked 10-24 17:07Z, resent with its cause at 03:51Z)" },
+    { at: at("2026-10-25T10:35:34Z"), labelled, case: "incident status (withdraws its own t15 ask after release 21 fixed the frozen panels; closing t15 on the board says the same)" },
+    { at: at("2026-10-25T10:57:42Z"), labelled, case: "same incident asked again by another chat (us-metal01 CI disk fill nudged on t34 at 10:57Z after Crawler VP asked t68 on the same disk at 06:49Z)" },
+    { at: at("2026-10-25T03:29:10Z"), labelled, case: "unasked result (p161 one proxy session per walk, a done step under open goal p146, third line of a wake turn; the goal met its target so 62ca6828 did not fire)" },
+    { at: at("2026-10-25T06:49:24Z"), labelled, case: "split answer (disk runway finding sent 16 s before the t68 ask that carries the same date in the next turn)" },
+  ];
+  const split = await splitNoise(lines, time);
+  assert.deepEqual(noiseMetrics(split), { noise_before_fix_24h: 2, noise_after_fix_24h: 3, noise_no_fix_24h: 0 });
+  assert.deepEqual(noiseLastEvent(split), { needed_pct_24h: at(fixed.e5d526be) });
+
+  const run = (time: number, output: { metrics: Record<string, number>; lastEventAt: Record<string, number> }): DutyRunRecord =>
+    ({ duty: "d11", at: time, trigger: "schedule", ms: 1, ...judge([metric], output) });
+  const reading = { metrics: { needed_pct_24h: 72.2 }, lastEventAt: noiseLastEvent(split) };
+  const live = [run(at("2026-10-25T22:01:44Z"), reading), run(at("2026-10-25T21:03:04Z"), reading)];
+  assert.equal(metricStreaks(live)[0]!.quietSince, undefined);
+  const aging = [run(at("2026-10-25T23:01:00Z"), reading), ...live];
+  assert.equal(metricStreaks(aging)[0]!.quietSince, at(fixed.e5d526be));
+  assert.equal(agingSince(aging), at(fixed.e5d526be));
+  assert.match(missLine("d11", metricStreaks(aging)[0]!, metric.label, "%"), /Start no new job for it/);
+
+  const window = 24 * 3_600_000;
+  assert.deepEqual(noiseAging(split, 13, 90, window),
+    { oldestLeaves: at("2026-10-26T03:29:10Z"), allowed: 1, meetsAt: at("2026-10-26T10:35:34Z"), pointsPerLine: 5.6 });
+  assert.equal(noiseAging(split.slice(0, 1), 13, 90, window), undefined);
+
+  const leak = await splitNoise([...lines, { at: at("2026-10-25T23:30:00Z"), labelled: at("2026-10-26T00:02:00Z"), case: "unasked result" }], time);
+  const fresh = { metrics: { needed_pct_24h: 68.4 }, lastEventAt: noiseLastEvent(leak) };
+  assert.equal(leak.at(-1)!.side, "after_fix");
+  assert.equal(metricStreaks([run(at("2026-10-26T01:00:00Z"), fresh), run(at("2026-10-26T00:00:00Z"), reading), ...aging])[0]!.quietSince, undefined);
 });
