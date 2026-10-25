@@ -641,8 +641,10 @@ export function tellOwner(input: TellInput, turn: TellTurn, now = Date.now(), pa
   if (other) return { kind: "refused", text: `${SAME_ASK_MARK}, as ${other.id} of chat ${other.chat} ("${other.text.slice(0, 120)}"). Do ` +
     `not ask him twice. Wait on that todo, and if you know something it lacks, send it to that chat with agent_message so it adds it to ${other.id}. ` +
     "If yours is a different question he must answer too, send the very same text again and it goes out (c117)." };
-  if (reask) return { kind: "refused", text: `${REASK_MARK} as ${reask}, which you added in an earlier turn. Put new facts or a changed ` +
-    "pick in that todo with chat_board todo_update instead; if he must see this now, send the very same text again and it goes out (c117)." };
+  if (reask) return { kind: "refused", text: `${REASK_MARK} as ${reask}, which you added in an earlier turn. He reads it there, so a re-ask ` +
+    `of an open todo stays on For you: put new facts, its cause, a new number, more urgency or a changed pick in ${reask} with chat_board ` +
+    "todo_update and end the turn. Send the very same text again only when it corrects a fact he would answer wrong without it, and then it " +
+    "goes out (c117)." };
   if (repeat) return { kind: "refused", text: `${REPEAT_MARK} ("${repeat}") since his last message. Send nothing unless this brings something ` +
     "new he must see or act on; if it does, send the very same text again and it goes out (c117)." };
   if (!turn.owner && (answers || declared) && !turn.resent?.has(told) && WITHDRAW.test(told)) return { kind: "refused", text: `${WITHDRAW_MARK} ` +

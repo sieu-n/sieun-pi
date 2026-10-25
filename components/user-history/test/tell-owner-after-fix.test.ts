@@ -57,3 +57,16 @@ test("a decision with no question, pick or todo in it is refused once, and one t
     assert.equal(tellOwner({ text, why: "decision", about: "disk plan" }, turn, at("06:49:40"), () => true).kind, "sent", text);
   assert.equal(tellOwner({ ...finding, why: "done" }, turn, at("06:49:24"), () => true).kind, "sent", "only a decision is checked");
 });
+
+test("the refusal of a re-ask of an open todo says a reminder stays on For you and only a correction he would answer wrong without goes again", () => {
+  // 10-25: at 03:51Z a chat resent the t15 ask with its cause added 4.7 s after this refusal, and at 10:57Z another sent "t34 is more urgent
+  // now" 8.2 s after it; d11 labelled both noise. A code hold of such resends would also hold 8 needed corrections, so the refusal says it.
+  const turn = { ...tellTurn([owner("keep the disks from filling", "01:00:00"), said("A job reads it.", "01:00:10"), job("CI disk holds 5 days", "10:57:00")]), asked: new Set(["t34"]) };
+  const nudge = { text: "t34 is more urgent now, since us-metal01's CI disk will hold only about 5 days after tonight's cleanup.", why: "decision", about: "t34 disk growth choice" };
+  const refused = tellOwner(nudge, turn, at("10:57:33"), () => true);
+  assert.equal(refused.kind, "refused");
+  assert.match(refused.text, /a re-ask of an open todo stays on For you/);
+  assert.match(refused.text, /its cause, a new number, more urgency or a changed pick in t34/);
+  assert.match(refused.text, /only when it corrects a fact he would answer wrong without it/);
+  assert.equal(tellOwner(nudge, { ...turn, resent: new Set([nudge.text]) }, at("10:57:42"), () => true).kind, "sent", "the very same text again goes out");
+});
