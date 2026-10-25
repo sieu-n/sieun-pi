@@ -47,6 +47,8 @@ The same holds for any `bash()` handle that outlives its turn, such as a 3 h sam
 
 A single cell that pages an API or awaits a command for 30 min holds the kernel and worker the same way, and the job takes no message until it ends. On 10-15 wp-engage-crawl sat 32 min in one cell that paged the staging crawler API and lost the pull to a 502 at the end. Run such a pull as a detached script that writes its result to a file, set `board.wake(at=<its end>)`, and read the file when the wake comes. Give every network call a timeout.
 
+A `[wake]` that reopens an unloaded session starts a new Python kernel, so its cwd is back at the session's start folder and every `os.chdir` from before the wait is gone. On 2026-10-25 a found-dash job woke in the shared auto-sns-agent checkout instead of its clone and wrote a probe spec there, which it then had to delete. After every wake, `os.chdir` to the job's own clone or folder before the first command, and write every file by its absolute path.
+
 A chat and every job under it find the chat from `RLM_SESSION_DIR`. A root job that a chat started with `rlm.create_session` has its own id, so it passes `chat="<chat session id>"`.
 
 ## Record what a job throws away
