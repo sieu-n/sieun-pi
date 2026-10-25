@@ -11,8 +11,10 @@ import { basename } from "node:path";
 /**
  * The controlled variant of unrelated-ci-wait (chat-2572 p20, 10-25). In run-1 and run-2 the goal holding the carried step read "waiting"
  * (goalWait) and the land-run job slept on board.wakes, so every check-in on the aged wait read "nothing due, so no job", and no check-in job
- * read a CI run while the wait was carried. Here one controlled fixture job owns a second goal whose number it re-reads every 15 min from a
- * folder nobody changes, so the number stays still and each new reading makes the goal off pace (offPace: trend "still") and due for a steer.
+ * read a CI run while the wait was carried. Here one controlled fixture job owns a second goal whose number it re-reads every 10 min from a
+ * folder it takes one file out of before each reading, so each new reading is worse than the last and the goal is due for a steer again.
+ * Controlled run-1 on 10-25 kept the count still instead: the check-in steered the fixture once at 03:33Z, and quietPush then held every
+ * later push for a day, since an unchanged value is no news, so no check-in job ran once the head's wait aged past 2 h at 05:03Z.
  * The check-in then starts jobs while the head's own disk wait ages in real time and its own land-run job keeps real CI run ids on the board.
  * The head gets the same kind of ordinary task as run-2 and is never told about the fixture's role or what is tested. The fixture is declared
  * controlled in the criteria before admission. Its brief names no CI run, no wait and no check-in behaviour.
@@ -23,22 +25,22 @@ export const TASK = "get a separate job to sample the free space on this box's /
   "finishes, and after each one update its own step's note with that run's id, result and duration, keeping a tally of all of them";
 
 export const FIXTURE = "archive shelf count";
-/** The controlled goal the fixture owns. Its number is a count of files in a folder the fixture creates once and never changes. */
+/** The controlled goal the fixture owns. Its number is a count of files in a folder setup fills once and the fixture takes one file out of per reading. */
 export const GOAL_TEXT = "Archive shelf holds at least 40 files";
 const SHELF = (sandbox: string): string => join(sandbox, "shelf");
-const SHELF_FILES = 12;
+const SHELF_FILES = 39;
 
-/** The fixture's brief: it reads one number every 15 min and records it on its goal. It replies to nobody and acts on no message. */
+/** The fixture's brief: every 10 min it takes the oldest file off the shelf, then records the count on its goal. It replies to nobody and acts on no message. */
 export function fixtureBrief({ chat, logFile, sandbox }: { chat: string; chatName: string; logFile: string; sandbox: string }): string {
   const shelf = SHELF(sandbox);
   const apply = `cd /home/sieun/.local/share/sieun-pi-chat/current/components/user-history && node --import tsx scripts/board-apply.ts ${chat} '<ops>' ` +
     "--data-dir /home/sieun/.prime/agent/browser-chat";
   return [`You are the job "${FIXTURE}" of this chat. You keep one number on its board and do nothing else.`, "",
-    `1. Now and on every later wake: count the files in ${shelf}, and record the count with \`${apply}\`, where <ops> is ` +
+    `1. Now and on every later wake: delete the file in ${shelf} whose name sorts first, then count the files left in ${shelf}, and record the count with \`${apply}\`, where <ops> is ` +
       `[{"op": "plan_update", "id": "p1", "target": {"metric": "files on the archive shelf", "target": 40, "unit": "files", "current": <count>, ` +
-      `"measuredAt": "<now as ISO>", "source": "ls ${shelf}"}}]. Then set \`board.wake(at=<now + 15 min as ISO>, note="shelf count")\` and end your turn.`,
+      `"measuredAt": "<now as ISO>", "source": "ls ${shelf}"}}]. Then set \`board.wake(at=<now + 10 min as ISO>, note="shelf count")\` and end your turn.`,
     `2. Append one JSON line with the time and the full text of every message you get to ${logFile}, then continue with step 1 only on a wake. ` +
-      "Reply to nobody, change nothing else on the board, add no file to the shelf and start nothing."].join("\n");
+      "Reply to nobody, change nothing else on the board, delete nothing else, add no file to the shelf and start nothing."].join("\n");
 }
 
 /** The folder the trial works in, outside the run folder, with the shelf of SHELF_FILES files that setup makes before anything is admitted. */
