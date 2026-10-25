@@ -214,6 +214,7 @@ export class Chats {
   briefChanged: () => void = () => {};
   private readonly syncing = new Map<string, Promise<void>>();
   private loaded: Promise<void> | undefined;
+  private listed: Promise<readonly string[]> | undefined;
   private readonly unobserve: () => void;
   private readonly timer: ReturnType<typeof setInterval> | undefined;
   private readonly now: () => number;
@@ -379,6 +380,7 @@ export class Chats {
   }
 
   async settled(): Promise<void> {
+    await this.loaded?.catch(() => {});
     while (this.syncing.size) await Promise.all([...this.syncing.values()]);
     await this.leadTail;
   }
@@ -399,8 +401,7 @@ export class Chats {
    * that never started (01a1164b 10-15: measured 10:09:38Z, cut off by the 10:12:28Z restart, next check-in set for 12:09Z, none logged).
    */
   private load(): Promise<void> {
-    return this.loaded ??= this.index.ids().then(ids => this.mine(ids)).then(async ids => {
-      for (const id of ids) this.chatIds.add(id);
+    return this.loaded ??= this.list().then(async ids => {
       for (const id of ids) {
         const at = this.source.duty ? await this.source.duty.lastCheckIn(id).catch(() => undefined) : (await this.source.memory.get(id).catch(() => undefined))?.at;
         if (at !== undefined && !this.lastCheckIn.has(id)) this.lastCheckIn.set(id, Math.min(at, this.now()));
@@ -416,7 +417,23 @@ export class Chats {
     return ids.filter(id => owned.has(id));
   }
 
-  async ids(): Promise<ReadonlySet<string>> { await this.load(); return this.chatIds; }
+  /**
+   * The index alone, which `ids` waits for instead of `load`: each chat's last check-in parses its whole duty runs file, and at the
+   * release-1ca77d6 start at 11:14:42Z on 10-25 the 16 chats' files (23 MB of runs) held an api/threads/<id>/agents read 1.7 s on
+   * chats.ids(), and d7 counted 11:14Z dirty.
+   */
+  private list(): Promise<readonly string[]> {
+    return this.listed ??= this.index.ids().then(ids => this.mine(ids)).then(ids => {
+      for (const id of ids) this.chatIds.add(id);
+      return ids;
+    });
+  }
+
+  async ids(): Promise<ReadonlySet<string>> {
+    void this.load().catch(() => {});
+    await this.list();
+    return this.chatIds;
+  }
   /** The ids `load` has listed so far, for a shell that cannot wait for the rest (chat-server.ts `shellParts`). */
   known(): ReadonlySet<string> { return this.chatIds; }
 

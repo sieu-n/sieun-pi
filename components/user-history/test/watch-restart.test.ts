@@ -62,3 +62,19 @@ test("a stop in a minute with no line yet writes one, and a stop in a minute wit
   await again();
   assert.equal(lines(dataDir, at).length, 1, "06:00Z has its line from the last stop, so neither the start nor the stop adds one");
 });
+
+// At the release-1ca77d6 start at 11:14:42Z on 10-25 the catalog was still empty at the first start tick, its copy loaded while the watch read
+// its seed, and the sample wrote 11:14:44.904Z beside the old process's 11:14:30.010Z line, with the boot's 1.7 s agents read in it.
+test("a start whose catalog fills while the seed is read writes no line in a minute the last process already wrote", async (t) => {
+  const dataDir = setup(t, "2026-10-25T11:14:30.010Z");
+  const at = Date.parse("2026-10-25T11:14:43.405Z");
+  const reads = { count: 0 };
+  const base = source(dataDir, () => at, reads);
+  const full = base.rows();
+  let asked = 0;
+  const stop = startMacUsableWatch({ ...base, rows: () => asked++ === 0 ? [] : full });
+  await settle();
+  await stop();
+  assert.equal(reads.count, 0, "no start sample went out");
+  assert.deepEqual(lines(dataDir, at), []);
+});

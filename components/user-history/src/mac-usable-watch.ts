@@ -1,6 +1,6 @@
 import { hostExecFile } from "./spawn-host.ts";
 import { readFileSync } from "node:fs";
-import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, open, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { HarnessSplit, RigLine } from "../../prime-relay/rig-cpu.ts";
 import { type ChatLatency, takeLatency } from "./chat-latency.ts";
@@ -424,7 +424,7 @@ export async function readWatch(dataDir: string, since: number, now: number): Pr
   for (let at = since - day; at < now + 2 * day; at += day) files.add(watchFile(dataDir, Math.min(at, now + day)));
   const lines: WatchLine[] = [];
   for (const file of files) {
-    const text = await readFile(file, "utf8").catch(() => "");
+    const text = await tailSince(file, since);
     for (const raw of text.split("\n")) {
       if (!raw) continue;
       try {
@@ -435,6 +435,49 @@ export async function readWatch(dataDir: string, since: number, now: number): Pr
     }
   }
   return lines.sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+}
+
+/**
+ * How long after its `at` a line can land: `at` is its sample's start and the sample's reads are cut at the next tick (`sample`), so a line
+ * lands within a minute of it, and a line older than `since` by LATE_MS has every line from `since` on after it in the file.
+ */
+const LATE_MS = 2 * MINUTE;
+/** About 23 lines of the 10-25 file, which held 13.8 MB in 1,250 lines by 11:33Z. */
+const TAIL_CHUNK = 256 * 1024;
+/** A line's `at` from its first 200 bytes, where the writer puts it after `host`; NaN when they hold none. */
+const headAt = (head: Buffer): number => Date.parse(/"at":"([^"]+)"/.exec(head.toString("latin1"))?.[1] ?? "");
+
+/**
+ * The lines of `file` from the first one older than `since` by LATE_MS, read back from its end; "" when it is missing. The watch's start reads
+ * the last 30 minutes for its call marks, and parsing every line of the day files held the main thread 0.6 s at the release-1ca77d6 start
+ * at 11:14:42Z on 10-25 (its CPU profile, two blocks between 1.6 and 2.4 s after the start), while the first reads waited.
+ */
+export async function tailSince(file: string, since: number): Promise<string> {
+  const handle = await open(file, "r").catch(() => null);
+  if (!handle) return "";
+  try {
+    const chunks: Buffer[] = [];
+    let at = (await handle.stat()).size;
+    let from = 0;
+    while (at > 0) {
+      const size = Math.min(TAIL_CHUNK, at);
+      at -= size;
+      const chunk = Buffer.alloc(size);
+      for (let got = 0; got < size;) {
+        const { bytesRead } = await handle.read(chunk, got, size - got, at + got);
+        if (!bytesRead) break;
+        got += bytesRead;
+      }
+      chunks.unshift(chunk);
+      const start = chunk.indexOf(10);
+      if (start < 0) continue;
+      const head = Buffer.concat([chunk.subarray(start + 1, start + 201), chunks[1]?.subarray(0, 200) ?? Buffer.alloc(0)]);
+      if (headAt(head) < since - LATE_MS) { from = start + 1; break; }
+    }
+    return Buffer.concat(chunks).subarray(from).toString("utf8");
+  } finally {
+    await handle.close();
+  }
 }
 
 const HELPER = join(import.meta.dirname, "worker-footprint.py");
@@ -632,19 +675,23 @@ export function startMacUsableWatch(source: WatchSource, firstMs = 5_000): () =>
   let markStopping!: () => void;
   const stopping = new Promise<void>(resolve => { markStopping = resolve; });
   const written = () => lastAt !== null && Math.floor(lastAt / MINUTE) === Math.floor(now() / MINUTE);
-  const startTick = () => {
-    if (written() && source.rows().length) landed = true;
-    else tick();
-  };
+  const startTick = () => tick(false, true);
   // The tool call marks of the last PROGRESS_WINDOW_MS come back from this box's own lines, so a restart judges no call on fewer marks.
   const seeded = source.calls ? readWatch(source.dataDir, now() - PROGRESS_WINDOW_MS, now())
     .then(lines => source.calls!.seed(lines.filter(line => (line.host ?? null) === (source.host ?? null)))).catch(() => {}) : Promise.resolve();
-  const run = () => seeded.then(() => sample(source, stopping)).then(line => { if (line) { landed = true; lastAt = Date.parse(line.at); } })
+  // A start tick asks whether its minute has a line once the seed is read and the sample would start: at the release-1ca77d6 start on
+  // 10-25 it asked before, with the catalog still empty, and the catalog's copy loaded while the seed read the watch files, so the sample
+  // wrote a second 11:14Z line at 11:14:44.904Z beside the old process's 11:14:30.010Z one.
+  const run = (fill = false) => seeded.then(() => {
+    if (!fill || !written()) return sample(source, stopping);
+    if (source.rows().length) landed = true;
+    return null;
+  }).then(line => { if (line) { landed = true; lastAt = Date.parse(line.at); } })
     .catch(error => source.log(`mac usable watch: ${error instanceof Error ? error.message : String(error)}`));
   let queued = false;
-  const tick = (queue = false) => {
+  const tick = (queue = false, fill = false) => {
     if (running) { queued ||= queue; return; }
-    running = run().finally(() => { running = null; if (queued) { queued = false; tick(); } });
+    running = run(fill).finally(() => { running = null; if (queued) { queued = false; tick(); } });
   };
   let due = nextSampleAt(now());
   let timer: NodeJS.Timeout;
