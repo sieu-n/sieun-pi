@@ -29,6 +29,7 @@ const agentsOf = async (url: string, id: string): Promise<unknown> =>
 test("the agents read answers from the rows the catalog holds and never waits for a projection", async t => {
   const server = await serve({
     heldAgents: (id: string) => id === "chat-a" ? [agent] : undefined,
+    unplacedNow: async () => false,
     summary: async () => undefined,
     rows: () => new Promise(() => {}),
   });
@@ -40,6 +41,7 @@ test("a chat that is not in the rows the catalog holds gets its row from a proje
   let built = 0;
   const server = await serve({
     heldAgents: (id: string) => id === "chat-a" ? [agent] : undefined,
+    unplacedNow: async () => false,
     summary: async () => undefined,
     rows: async () => { built++; return [{ id: "chat-b", agents: [{ ...agent, key: "child:b" }] }]; },
   });

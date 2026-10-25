@@ -4,7 +4,7 @@ import { constants as zlibConstants, createBrotliCompress, createGzip, gzipSync 
 import { readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { parseWake } from "./wakes.ts";
-import { isTopLevel, sessionTitle } from "./chat-catalog.ts";
+import { isTopLevel, sessionTitle, unplacedMessage } from "./chat-catalog.ts";
 import { otherBoxRoots, reopenSibling, type RootDirectory, rootsOf, sendCrossHost, siblingRow } from "./cross-host-message.ts";
 import { getAgentDir } from "prime-agent";
 import { reopenSession, unarchiveOnItsBox } from "./reopen-send.ts";
@@ -895,6 +895,9 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
             if (!(await backend.chats.ids()).has(id)) throw new RequestError(404, "This thread is not a chat.");
             const held = backend.catalog.heldAgents(id);
             if (held) { json(res, 200, { agents: held }); return; }
+            // A chat no box's rows place while another box has not listed, such as Mac chat 01a11b0b with the Mac offline, is refused before the
+            // summary's refresh: that ran a daemon list and indexed all 5,600 rows only to refuse it, 40 to 180 ms a read and 1.5 s at 08:57Z on 10-25.
+            if (await backend.catalog.unplacedNow(id)) throw new RequestError(502, unplacedMessage(id));
             await backend.catalog.summary(id);
             const row = (await backend.catalog.rows()).find(candidate => candidate.id === id);
             json(res, 200, { agents: row?.agents ?? [] }); return;

@@ -47,6 +47,9 @@ function takeSavedAgents(path: string): ReadonlyMap<string, readonly ChatAgent[]
  * is final once read, so the start takes them as they are; the file is deleted as it is read, like AGENTS_FILE.
  */
 export const HEADS_FILE = "chat-heads.json";
+
+/** The refusal for a session no box's rows place while another box has not listed yet (`Catalog.unplaced`). */
+export const unplacedMessage = (id: string): string => `Session ${id.slice(0, 8)} is not on this box, and another box has not listed its sessions yet.`;
 type SavedHeads = { savedAt: string; origins: Record<string, ThreadOrigin>; firsts: Record<string, string>; titles: Record<string, string> };
 const strings = (value: unknown): [string, string][] => isRecord(value) ? Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === "string") : [];
 function takeSavedHeads(path: string, origins: ThreadOrigins): void {
@@ -1326,7 +1329,7 @@ export class Catalog {
     let summary = this.find(sessionId);
     if (!summary) { await this.refresh(); summary = this.find(sessionId); }
     // Until every other box listed once, a session this box lacks may run there: the service start's adopt would forget a chat on the Mac.
-    if (!summary && await this.unplaced(sessionId)) throw new Error(`Session ${sessionId.slice(0, 8)} is not on this box, and another box has not listed its sessions yet.`);
+    if (!summary && await this.unplaced(sessionId)) throw new Error(unplacedMessage(sessionId));
     summary ??= this.find(sessionId);
     // Another box's session file is read here from its local copy, so the copy is brought up to date for whoever asked (check-ins, briefs, history).
     if (summary && this.hosts && this.hostOf(sessionId)) await this.localFile(summary).catch(error => {
@@ -1513,8 +1516,18 @@ export class Catalog {
    * jobs' wakes as "no such session".
    */
   async daemonFor(id: string): Promise<DaemonClient> {
-    if (await this.unplaced(id)) throw new Error(`Session ${id.slice(0, 8)} is not on this box, and another box has not listed its sessions yet.`);
+    if (await this.unplaced(id)) throw new Error(unplacedMessage(id));
     return this.hostClient(this.hostOf(id));
+  }
+
+  /**
+   * `unplaced` with no daemon list, for a read that must not wait on one (the agents read in chat-server.ts). It is false until this box's copy
+   * has listed, from its disk copy or a list, since only then do its rows say a session is not here: a scratch serve with no copy and no page
+   * open lists nothing until a read refreshes, and read this box's own chat 01a1164b as unplaced for 40 s.
+   */
+  async unplacedNow(id: string): Promise<boolean> {
+    await this.peer.loaded();
+    return this.peer.listed && await this.unplaced(id);
   }
 
   /**
