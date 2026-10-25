@@ -62,6 +62,18 @@ test("provider keys count per location outside Vent, the alarm fallback Slack to
   assert.equal(inScope("container virev-prod-crawler-api"), true);
 });
 
+// On 10-25 d1 read provider_keys_outside_vent 2 from CLIPROXY_API_KEY in apps/infra/cliproxy/.env and .env.staging, the gateway's own inbound key.
+test("the CLIProxy gateway's tier files are out of scope, and other tiers still count", () => {
+  const keys = { locations: {
+    "tier apps/infra/cliproxy/.env": ["CLIPROXY_API_KEY"],
+    "tier apps/infra/cliproxy/.env.staging": ["CLIPROXY_API_KEY"],
+    "tier apps/search/.env": ["CLIPROXY_API_KEY"],
+  }, unreadable: {} };
+  assert.equal(ventMetrics(reads({ keys }), 0).metrics.provider_keys_outside_vent, 1);
+  assert.equal(inScope("tier apps/infra/cliproxy/.env"), false);
+  assert.equal(inScope("tier apps/infra/.env"), true);
+});
+
 test("the box reader's stopped containers, host units, services.env tokens and keyed URLs count (p61 audit, 10-22)", () => {
   const locations: Record<string, string[]> = {};
   const urlKeys = boxLocations({

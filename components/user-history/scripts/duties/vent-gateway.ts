@@ -93,13 +93,16 @@ export const ALARM_FALLBACK = /^(unit (opensearch|pgbackrest|redis|clickhouse)[a
 /** Vent's own homes: its Railway service, its tier files, its secrets on the box and its containers. */
 export const VENT_OWN = /^(railway .*\/vent|tier apps\/vent\/.*|box .*\/vent[^/]*|container .*-vent(-.*)?)$/;
 
+/** The CLIProxy gateway's own tier files. Its CLIPROXY_API_KEY is the key callers present to the gateway, which sits upstream of Vent, so it is no provider key. */
+export const CLIPROXY_OWN = /^tier apps\/infra\/cliproxy\//;
+
 /**
  * Whether a lister location is a deployment of this system other than Vent: Convex, the auto-sns-crawler Railway project, the auto-sns-*
  * Vercel projects, the repo's GitHub stores, tracked tier files and us-metal01. Other projects on the same accounts (slack.green, tokscale,
  * hello2026) and the CLIProxy gateway, which sits upstream of Vent, are outside it.
  */
 export function inScope(location: string): boolean {
-  if (VENT_OWN.test(location)) return false;
+  if (VENT_OWN.test(location) || CLIPROXY_OWN.test(location)) return false;
   return /^(convex |railway auto-sns-crawler\/|vercel auto-sns-|github (secrets|variables) (repo|env )|tier |box |container |unit )/.test(location);
 }
 
