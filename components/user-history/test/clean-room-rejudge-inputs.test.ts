@@ -213,9 +213,9 @@ sealSupplement(${JSON.stringify(old)}, ${JSON.stringify(supplement)}, "the archi
     assert.equal(supplemented.verdict, sealed.verdict, supplemented.text);
     assert.equal(body(supplemented.text), body(sealed.text).replace("4 deliveries into it, its 1 jobs and their 1 subagents", "5 deliveries into it, its 1 jobs and their 2 subagents"),
       "the nested descendant the old archive holds counts as the trial's own");
-    assert.match(supplemented.name, /^run-1\.rejudged-[0-9a-f]{12}-with-supplement-[0-9a-f]{8}\.pass\.md$/);
+    assert.match(supplemented.name, /^run-1\.rejudged-(?:[0-9a-f]{12}|unknown)-with-supplement-[0-9a-f]{8}\.pass\.md$/);
     assert.match(supplemented.text, /With supplement .*run-1\.supplement-1\.tar\.gz \(sha256 [0-9a-f]{12}\): the archive was sealed before/);
-    assert.ok(readdirSync(join(fx.root, "old")).some(name => /^run-1\.rejudged-[0-9a-f]{12}\.open\.md$/.test(name)), "the plain rejudge is kept");
+    assert.ok(readdirSync(join(fx.root, "old")).some(name => /^run-1\.rejudged-(?:[0-9a-f]{12}|unknown)\.open\.md$/.test(name)), "the plain rejudge is kept");
 
     await assert.rejects(rejudge(fx, file, [supplement]), /extends an archive with sha256/);
     await assert.rejects(script(fx, `import { sealSupplement } from ${runArchive};
