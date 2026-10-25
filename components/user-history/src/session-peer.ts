@@ -312,17 +312,26 @@ export class SessionPeer {
     return this.fullList;
   }
 
-  /** The background full list, once the last one is RESYNC_MS old. */
-  private scheduleResync(): void {
+  /**
+   * The background full list, once the last one is RESYNC_MS old, and after a failed one again in reconnectMs, the link's reconnect pace. Until
+   * 10-25 a failed one went again at once, since `fullAt` stays old: with the Mac offline the chat service on us-metal02 tried about 750 times
+   * a second and wrote 11.8 million "background full list" lines to service.log from 10-23 to 10-25, which reached 1.4 GB.
+   */
+  private scheduleResync(failed = false): void {
     if (this.closed || this.resyncTimer) return;
     this.resyncTimer = setTimeout(() => {
       this.resyncTimer = undefined;
-      void this.connect().then(() => this.full()).then(() => this.roster()).catch(error => {
-        if (!this.closed) this.options.log(`copy ${this.name}: background full list: ${error instanceof Error ? error.message : String(error)}`);
-      }).finally(() => this.scheduleResync());
-    }, Math.max(0, this.fullAt + RESYNC_MS - Date.now()));
+      void this.connect().then(() => this.full()).then(() => this.roster()).then(() => { this.resyncFailure = undefined; return false; }, error => {
+        const message = error instanceof Error ? error.message : String(error);
+        if (!this.closed && message !== this.resyncFailure) this.options.log(`copy ${this.name}: background full list: ${message}`);
+        this.resyncFailure = message;
+        return true;
+      }).then(again => this.scheduleResync(again));
+    }, failed ? this.options.reconnectMs : Math.max(0, this.fullAt + RESYNC_MS - Date.now()));
     this.resyncTimer.unref?.();
   }
+  /** The last failed background list's message, logged once until one answers or another failure comes. */
+  private resyncFailure: string | undefined;
 
   private onRoster(update: RosterUpdate): void {
     if (!this.listed) return;

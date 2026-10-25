@@ -14,6 +14,7 @@ import type { ThreadOrigin, ThreadOrigins } from "./thread-origin.ts";
 import type { Wake } from "./wakes.ts";
 import { mirrorPath, remotePath, type HostCatalogs } from "./host-catalogs.ts";
 import { SessionPeer } from "./session-peer.ts";
+import { sessionBornAt, UNLISTED_LIVE_MS } from "./shared/duty-fixes.ts";
 import type { Host } from "./hosts.ts";
 import type { ChatAgent, ChatBriefState, CheckInState, ChildAgent, QueuePlace, TokenRate, ChildPulse, ChildUsage, Pulse, RunWait, SessionPulse, SessionRow, SessionsEvent, ThreadLabels, ThreadMessage, ThreadSchedule, Workspace } from "./shared/types.ts";
 
@@ -697,6 +698,18 @@ export function projectionLine(ms: readonly number[], windowMs = PROJECTION_LOG_
 /** How often a working agent's output rate is read again and pushed with the rows; the usage feed's own cadence. */
 export const RATES_MS = 2000;
 
+/**
+ * Whether a session the rows lack may still be too new for them, so a lookup lists this box's roster again before it answers: one whose UUIDv7
+ * id was made under UNLISTED_LIVE_MS ago, or whose id names no time. Until this box's copy answered a list this run, every lookup lists. An
+ * older one is not on this box's roster, and the list costs the main thread a roster parse and an index of every row: at 11:57Z on 10-25 a
+ * Mac chat's older page, with the Mac offline and its copy lacking the chat, took 1,044 ms on the live service, and 61 such reads on a
+ * scratch serve with the live daemon's 5,720 rows spent 3.6 s of main thread, 83 to 1,491 ms each (median 100 ms).
+ */
+export function mayBeUnlisted(sessionId: string, now: number): boolean {
+  const born = sessionBornAt(sessionId);
+  return born === null || now - born < UNLISTED_LIVE_MS;
+}
+
 /** How long a refresh waits for a session list: the SDK's default request deadline, which every list used before p349. */
 const LIST_WAIT_MS = 30000;
 
@@ -1327,7 +1340,7 @@ export class Catalog {
   /** A top-level thread, else a subagent session, so a child transcript opens read the same way as its parent. */
   async summary(sessionId: string): Promise<SessionSummary | undefined> {
     let summary = this.find(sessionId);
-    if (!summary) { await this.refresh(); summary = this.find(sessionId); }
+    if (!summary && (!this.peer.synced || mayBeUnlisted(sessionId, Date.now()))) { await this.refresh(); summary = this.find(sessionId); }
     // Until every other box listed once, a session this box lacks may run there: the service start's adopt would forget a chat on the Mac.
     if (!summary && await this.unplaced(sessionId)) throw new Error(unplacedMessage(sessionId));
     summary ??= this.find(sessionId);
