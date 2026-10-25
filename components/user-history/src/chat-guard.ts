@@ -411,6 +411,26 @@ const WITHDRAW_MARK = "Not sent, it takes back your own ask";
  * measured: on the same replay these words catch those 3 lines, none of the 189 needed ones, and no other line on a turn he did not start.
  */
 const WITHDRAW = /\b(?:skip|scratch|ignore|disregard|forget|drop|cancel|withdraw)\b[^.?!]*\b(?:t\d+|idea|ask|todo|request|question)\b|\b(?:removed|took|taken|pulled) (?:it|t\d+|that|this) (?:off|from)\b|\boff your list\b/i;
+/**
+ * The todo a text names that the chat took back unanswered in the last ASK_WINDOW_MS (`droppedTodos`): a message about an ask already off his
+ * list. On 10-25 at 10:35:31Z a chat checked its own t15 ("Can I ship the small prod Vent update now to fix them?") with no answer from him
+ * and sent "the small prod Vent update on t15 isn't needed" 3 s later, in words WITHDRAW does not catch.
+ * measured: over the 2,771 tell_owner lines sent in the owner's chats from 10-09 to 10-25 (309 labelled, 245 needed, 64 noise), lines on turns
+ * he did not start that name such a todo are 5, all labelled noise, and the older checks already refused 4 of them.
+ * Evidence: ~/work/d11-after-fix-noise/replay.md.
+ */
+const takenBack = (text: string, dropped: readonly DroppedTodo[], now: number): DroppedTodo | undefined => {
+  const named = new Set(todoIds(text));
+  return dropped.findLast(todo => named.has(todo.id) && now - todo.at <= ASK_WINDOW_MS);
+};
+const EMPTY_ASK_MARK = "Not sent, this decision asks him nothing";
+/**
+ * Words of a decision that ask him to choose: a todo id, a pick, a choice, an ok or a recommendation. On 10-25 at 06:49:24Z a chat sent the
+ * finding behind its new t68 ("the fast CI disk fills about 06:00 KST 10-29") as a decision with no ask in it, and the ask itself 16 s later.
+ * measured: on the replay above, decisions sent on turns he did not start with none of these words and no ASKS_HIM word are 4 lines, all
+ * labelled noise, and the older checks sent 2 of them.
+ */
+const CHOICE_WORDS = /\bt\d+\b|\b(?:pick|picks|choose|choice|approve|decide|answer|ok|okay|recommend|which|should|want|let me know)\b|\bI['’]d\b|추천|선택/i;
 const UNLOOKED_MARK = "Not sent, you have not opened a screenshot of this screen in this turn";
 /**
  * A 5180 demo link (localhost or the box's 15180 copy) or a screenshot image in a tell_owner text: a UI result handed to the owner to look at.
@@ -528,7 +548,7 @@ export function tellTurn(messages: readonly ThreadMessage[]): TellTurn {
     }
     if (message.role === "user" || message.role === "custom") looked = false;
     if (message.role === "toolResult" && message.content.some(part => part.type === "image")) looked = true;
-    if (message.role === "toolResult" && message.toolName === TELL_OWNER_TOOL && [SHOP_TALK_MARK, LONG_REPLY_MARK, REPEAT_MARK, REASK_MARK, UNLOOKED_MARK, INCIDENT_MARK, SAME_ASK_MARK, PROGRESS_MARK, NEEDLESS_OK_MARK, WITHDRAW_MARK, WIKI_LINK_MARK, SPLIT_MARK].some(mark => messageText(message).startsWith(mark))) {
+    if (message.role === "toolResult" && message.toolName === TELL_OWNER_TOOL && [SHOP_TALK_MARK, LONG_REPLY_MARK, REPEAT_MARK, REASK_MARK, UNLOOKED_MARK, INCIDENT_MARK, SAME_ASK_MARK, PROGRESS_MARK, NEEDLESS_OK_MARK, WITHDRAW_MARK, WIKI_LINK_MARK, SPLIT_MARK, EMPTY_ASK_MARK].some(mark => messageText(message).startsWith(mark))) {
       const text = told.get(message.toolCallId);
       if (text) resent.add(text);
     }
@@ -568,8 +588,9 @@ export function tellTurn(messages: readonly ThreadMessage[]): TellTurn {
  * a text that reports work still going (`PROGRESS`), a text that takes back the chat's own ask (`WITHDRAW`), and a decision or blocker that
  * asks an ok for work no owner rule keeps for him (`NEEDLESS_OK`). So is an answer or done that comes within `SPLIT_MS` of one the turn
  * already sent (`lastSent`), a decision or blocker whose about another chat's open todo holds (`sameAbout`), that sends him to another chat's
- * list (`OTHER_LIST`) or that swaps a todo for a new one (`REPLACED`, `swappedIn`), a blocker whose only "you" promises to tell him later, and a
- * done for a step under a goal that misses its target (`openGoalDone`, `plan`). A text it would send with a `wiki:` link that opens no page (`brokenWikiLinks`)
+ * list (`OTHER_LIST`) or that swaps a todo for a new one (`REPLACED`, `swappedIn`), a blocker whose only "you" promises to tell him later, a
+ * done for a step under a goal that misses its target (`openGoalDone`, `plan`), a decision with no question, pick or todo in it (`CHOICE_WORDS`),
+ * and a text that names a todo the chat took back unanswered (`takenBack`, `dropped`). A text it would send with a `wiki:` link that opens no page (`brokenWikiLinks`)
  * is refused once the same way, with the form that works, since on 10-22 two links went out as `wiki:https://...:5176/page/...` and the owner
  * answered "often links to wrong page." on 10-23.
  */
@@ -586,6 +607,9 @@ export function tellOwner(input: TellInput, turn: TellTurn, now = Date.now(), pa
   if (!turn.owner && input.why === "blocker" && !turn.resent?.has(told) && !asksHim(told)) return { kind: "refused", text: `${INCIDENT_MARK}, ` +
     "and this one asks nothing of him. An incident or delay that a job or another chat already handles is update, so put it on the board. If " +
     "only he can clear it, say what he must do and send it again; if he must see it now as it is, send the very same text again (c117)." };
+  if (!turn.owner && input.why === "decision" && !turn.resent?.has(told) && !asksHim(told) && !CHOICE_WORDS.test(told)) return { kind: "refused",
+    text: `${EMPTY_ASK_MARK}, no question, pick or todo in it. A finding behind a decision is detail, so put it in the todo or on the board ` +
+      "and send one message with the question and your pick. If he must see it now as it is, send the very same text again and it goes out (c117)." };
   if (!turn.owner && (answers || declared) && !turn.resent?.has(told) && PROGRESS.test(told)) return { kind: "refused", text: `${PROGRESS_MARK} ("${PROGRESS.exec(told)![0]}"). ` +
     "Progress on work that is not finished is update, so put it on the board and tell him once the result is in, in one message. If he must " +
     "see this now as it is, send the very same text again and it goes out (c117)." };
@@ -624,6 +648,10 @@ export function tellOwner(input: TellInput, turn: TellTurn, now = Date.now(), pa
   if (!turn.owner && (answers || declared) && !turn.resent?.has(told) && WITHDRAW.test(told)) return { kind: "refused", text: `${WITHDRAW_MARK} ` +
     `("${WITHDRAW.exec(told)![0]}"). The todo you removed is already off his list, so this asks nothing. Put the reason in that step's note on ` +
     "the board and end the turn. If he must see it now as it is, send the very same text again and it goes out (c117)." };
+  const back = !turn.owner && (answers || declared) && !turn.resent?.has(told) ? takenBack(`${told} ${about}`, turn.dropped ?? [], now) : undefined;
+  if (back) return { kind: "refused", text: `${WITHDRAW_MARK} (${back.id} "${back.text.slice(0, 80)}", which you took off his list with no ` +
+    "answer from him). He no longer sees that ask, so a message about it asks nothing. Put the reason in that step's note on the board and end " +
+    "the turn. If he must see it now as it is, send the very same text again and it goes out (c117)." };
   if (!turn.owner && (input.why === "decision" || input.why === "blocker") && !turn.resent?.has(told) && NEEDLESS_OK.test(told) && !OWNER_KEEPS.test(told)) return {
     kind: "refused", text: `${NEEDLESS_OK_MARK} ("${NEEDLESS_OK.exec(told)![0]}"). Rule 7 and c47 say act on work no owner rule keeps for him, ` +
       "such as a restart of your own job, a stalled step you can take over or a fix in his dev setup (c69), so do it, put it on the board, and " +
