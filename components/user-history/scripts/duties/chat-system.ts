@@ -543,10 +543,14 @@ export function pushTells(pushes: ReturnType<typeof pushList>, tag: string): { c
  */
 export const recordsPushes = (mode: string | undefined): boolean => mode === "run";
 
-/** The pushes.jsonl line of each push: the plan and duty ids it names. */
+/**
+ * The pushes.jsonl line of each push: the plan and duty ids it names. A red duty with no live fix reads "(duty field d4/commits_not_live)"
+ * rather than "(d4)": until 10-26 its push recorded no item, so the 04:32 KST run asked to steer Slack green again "about " nothing.
+ */
 export function pushRecords(pushes: ReturnType<typeof pushList>, tag: string, at: number): { at: number; chat: string; tag: string; items: string[] }[] {
   return pushes.map(entry => {
-    const items = [...entry.goals.map(goal => goal.id), ...entry.steps.flatMap(step => step.id ? [step.id] : []), ...entry.duties.flatMap(line => [...line.matchAll(/\((d\d+|checkin)\)/g)].map(match => match[1]!)),
+    const items = [...entry.goals.map(goal => goal.id), ...entry.steps.flatMap(step => step.id ? [step.id] : []),
+      ...entry.duties.flatMap(line => [...line.matchAll(/\((d\d+|checkin)\)|\(duty field (d\d+|checkin)\//g)].map(match => (match[1] ?? match[2])!)),
       ...entry.upkeep.map(item => item.id)];
     return { at, chat: entry.chat, tag, items: [...new Set(items)] };
   });

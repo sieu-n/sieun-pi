@@ -28,6 +28,9 @@ test("d9's pushes go out as server notices when its precheck ends, before and wh
     assert.equal(tells.length, 2);
     assert.match(tells[0]!.text, /^\[d9 push 2026-10-23T01:00Z\] .*goals with no live job p346 .*Give each goal a live job this turn/);
     assert.deepEqual(pushRecords(pushes, tag, NOW).map(line => line.items), [["p346"], ["d2"]]);
+    const noFix = pushList({ idleGoals: [], upkeep: [], stuckDuties: [{ chat: "sg", duty: "d4", line: "01a11b0b: Slack green deploys read off target in its last run, " +
+      "and no open step linked to it (duty field d4/commits_not_live) has a live owner now." } as never] });
+    assert.deepEqual(pushRecords(noFix, tag, NOW).map(line => line.items), [["d4"]]);
 
     const precheck = join(dir, "precheck.mjs");
     await writeFile(precheck, `import { writeFileSync } from "node:fs";
