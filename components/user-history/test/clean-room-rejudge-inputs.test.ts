@@ -10,7 +10,7 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { promisify } from "node:util";
 import { TASK } from "../scripts/clean-room/carried-wait.ts";
-import type { ArchiveManifest } from "../scripts/clean-room/run-archive.ts";
+import type { ArchiveManifest, SupplementManifest } from "../scripts/clean-room/run-archive.ts";
 
 const HERE = join(import.meta.dirname, "..");
 const run$ = promisify(execFile);
@@ -18,6 +18,7 @@ const CHAT = "01a16e1d-6592-73c6-9a96-81184bf35e5a";
 const JOB = "01a16e8a-0000-7000-8000-000000000002";
 const WRITER = "01a16f95-b211-758c-8541-498f6cbe20c9";
 const VP = "01a1164b-4a2d-742d-b27a-82f086ed0200";
+const NESTED = "01a16f97-0000-7000-8000-000000000007";
 const START = Date.parse("2026-10-24T13:33:31Z");
 const UNTIL = START + 4 * 3_600_000;
 const iso = (offsetMin: number): string => new Date(START + offsetMin * 60_000).toISOString();
@@ -167,7 +168,7 @@ test("an archive whose service.log was missing rejudges to open, and a tampered 
   }
 });
 
-test("an archive from before 10-25 rejudges to open, and a supplement with its service.log and pushes slice turns it into the run's verdict", async () => {
+test("an archive from before 10-25 rejudges to open, and a supplement that lists its held sessions and adds its service.log and pushes turns it into the run's verdict", async () => {
   const fx = fixture(true);
   try {
     const file = await archive(fx);
@@ -180,6 +181,9 @@ test("an archive from before 10-25 rejudges to open, and a supplement with its s
       renameSync(join(dir, "home/.prime/agent"), join(dir, "prime"));
       rmSync(join(dir, "prime/browser-chat"), { recursive: true, force: true });
       rmSync(join(dir, "home"), { recursive: true, force: true });
+      mkdirSync(join(dir, "prime/session-artifacts", JOB, "sub-ee61925a", "sub-5c2e"), { recursive: true });
+      writeFileSync(join(dir, "prime/session-artifacts", JOB, "sub-ee61925a", "sub-5c2e", `${NESTED}.jsonl`),
+        jsonl([header(NESTED, 175, join(fx.prime, "session-artifacts", JOB, "sub-ee61925a", `${WRITER}.jsonl`)), user(175, "draw the chart")]));
     });
     const before = await rejudge(fx, old);
     assert.equal(before.verdict, "open", before.text);
@@ -194,9 +198,21 @@ const slice = serviceLogSlice(log, ${START}, ${UNTIL})!;
 sealSupplement(${JSON.stringify(old)}, ${JSON.stringify(supplement)}, "the archive was sealed before rejudge read service.log and pushes from it", [
   { source: log, path: "home/.prime/agent/browser-chat/service.log", bytes: slice.bytes, selection: "window slice", ranges: slice.ranges },
   { source: pushes, path: "home/work/plan-audit/pushes.jsonl", bytes: readFileSync(pushes), selection: "whole file" }]);`);
+    const sealedSupplement = JSON.parse((await run$("tar", ["-xOzf", supplement, "./supplement.json"])).stdout) as SupplementManifest;
+    const sha = async (path: string): Promise<string> => createHash("sha256").update((await promisify(execFile)("tar", ["-xOzf", old, `./${path}`], { encoding: "buffer" })).stdout).digest("hex");
+    const expected = [[`prime/session-artifacts/${JOB}/sub-ee61925a/${WRITER}.jsonl`, WRITER, "descendant"],
+      [`prime/session-artifacts/${JOB}/sub-ee61925a/sub-5c2e/${NESTED}.jsonl`, NESTED, "descendant"],
+      [`prime/sessions/${CHAT}.jsonl`, CHAT, "run"], [`prime/sessions/${JOB}.jsonl`, JOB, "run"], [`prime/sessions/${VP}.jsonl`, VP, "unlisted"]] as const;
+    assert.deepEqual(new Set(sealedSupplement.archiveSessions.map(session => JSON.stringify(session))),
+      new Set(await Promise.all(expected.map(async ([path, id, kind]) => JSON.stringify({ id, kind, path, sha256: await sha(path) })))));
+    const forged = join(fx.root, "forged", "run-1.supplement-1.tar.gz");
+    await repack(supplement, forged, dir => writeFileSync(join(dir, "supplement.json"),
+      JSON.stringify({ ...sealedSupplement, archiveSessions: sealedSupplement.archiveSessions.filter(session => session.id !== NESTED) })));
+    await assert.rejects(rejudge(fx, old, [forged]), /lists archiveSessions that differ from the session files/);
     const supplemented = await rejudge(fx, old, [supplement]);
     assert.equal(supplemented.verdict, sealed.verdict, supplemented.text);
-    assert.equal(body(supplemented.text), body(sealed.text));
+    assert.equal(body(supplemented.text), body(sealed.text).replace("4 deliveries into it, its 1 jobs and their 1 subagents", "5 deliveries into it, its 1 jobs and their 2 subagents"),
+      "the nested descendant the old archive holds counts as the trial's own");
     assert.match(supplemented.name, /^run-1\.rejudged-[0-9a-f]{12}-with-supplement-[0-9a-f]{8}\.pass\.md$/);
     assert.match(supplemented.text, /With supplement .*run-1\.supplement-1\.tar\.gz \(sha256 [0-9a-f]{12}\): the archive was sealed before/);
     assert.ok(readdirSync(join(fx.root, "old")).some(name => /^run-1\.rejudged-[0-9a-f]{12}\.open\.md$/.test(name)), "the plain rejudge is kept");

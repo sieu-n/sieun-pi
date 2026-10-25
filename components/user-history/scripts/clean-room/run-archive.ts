@@ -47,10 +47,19 @@ export type Selection = "whole file" | "window slice" | "header line";
 export type ArchiveInput = { path: string; source: string; selection: Selection; missing: true }
   | { path: string; source: string; selection: Selection; denied: string }
   | { path: string; source: string; selection: Selection; sourceSize: number; sourceSha256: string; sha256: string; ranges?: ByteRange[]; prefixSha256?: string };
-/** supplement.json: files added to an archive after it was sealed, tied to that archive's bytes, criteria and window. */
+/**
+ * supplement.json: files added to an archive after it was sealed, tied to that archive's bytes, criteria and window. `archiveSessions` lists
+ * every session file the archive holds, which an archive sealed before 10-25 does not list in its own archive.json.
+ */
 export interface SupplementManifest {
-  archive: { path: string; sha256: string }; criteria: { sha256: string }; windowStart: number; until?: number; createdAt: number; why: string; inputs: ArchiveInput[];
+  archive: { path: string; sha256: string }; criteria: { sha256: string }; windowStart: number; until?: number; createdAt: number; why: string;
+  archiveSessions: HeldSession[]; inputs: ArchiveInput[];
 }
+/**
+ * A session file an archive holds, at `path` in the archive: `run` when archive.json lists its id, `descendant` when the parent chain of the
+ * held session headers reaches a listed id, else `unlisted`.
+ */
+export interface HeldSession { id: string; kind: "run" | "descendant" | "unlisted"; path: string; sha256: string }
 /** A file for `sealSupplement`: the selected bytes of `source`, laid at `path` under the archive root, with the source ranges a slice took. */
 export interface SupplementFile { source: string; path: string; bytes: Uint8Array; selection: Selection; ranges?: readonly ByteRange[] }
 
@@ -311,7 +320,24 @@ function archiveHolds(archive: string): Set<string> {
   return new Set(execFileSync("tar", ["-tzf", archive], { encoding: "utf8" }).split("\n").map(path => path.replace(/^\.\//, ""))
     .filter(path => path && !path.endsWith("/")).map(path => path.startsWith("prime/") ? join(rootsUnder(".").primeDir, path.slice("prime/".length)) : path));
 }
-type StoredManifest = Omit<ArchiveManifest, "inputs" | "sessions" | "liveRoots"> & { inputs?: ArchiveInput[]; liveRoots?: InputRoots };
+type StoredManifest = Omit<ArchiveManifest, "inputs" | "sessions" | "liveRoots"> & { inputs?: ArchiveInput[]; liveRoots?: InputRoots; sessions: (ArchivedSession | string)[] };
+
+export function heldSessions(unpacked: string, manifest: StoredManifest): HeldSession[] {
+  const listed = new Set(manifest.sessions.map(session => typeof session === "string" ? session : session.id));
+  const files = ["prime", rootsUnder(".").primeDir].flatMap(prime => [
+    ...walk(join(unpacked, prime, "sessions")).filter(file => file.endsWith(".jsonl")),
+    ...walk(join(unpacked, prime, "session-artifacts")).filter(file => UUID.test(basename(file)) && file.endsWith(".jsonl"))]);
+  const parents = new Map(files.map(file => [basename(file, ".jsonl"), headerParent(readFileSync(file, "utf8"))]));
+  const reaches = (id: string): boolean => {
+    const seen = new Set<string>();
+    for (let at = parents.get(id); at !== undefined && !seen.has(at); at = parents.get(at)) { if (listed.has(at)) return true; seen.add(at); }
+    return false;
+  };
+  return files.map(file => {
+    const id = basename(file, ".jsonl");
+    return { id, kind: listed.has(id) ? "run" as const : reaches(id) ? "descendant" as const : "unlisted" as const, path: relative(unpacked, file), sha256: fileSha256(file) };
+  }).sort((a, b) => a.path.localeCompare(b.path));
+}
 
 /**
  * Writes `out`, a supplement to `archive`: supplement.json and each file at its path under home/. Each file's bytes must be what its source
@@ -324,9 +350,11 @@ export function sealSupplement(archive: string, out: string, why: string, files:
   const taken = new Set([...archiveHolds(archive), ...(manifest.inputs ?? []).map(input => input.path)]);
   const inputs: ArchiveInput[] = [];
   const stage = `${out}.stage-${process.pid}`;
-  rmSync(stage, { recursive: true, force: true });
-  mkdirSync(stage, { recursive: true });
+  const unpacked = `${out}.archive-${process.pid}`;
+  for (const dir of [stage, unpacked]) { rmSync(dir, { recursive: true, force: true }); mkdirSync(dir, { recursive: true }); }
   try {
+    execFileSync("tar", ["-xzf", archive, "-C", unpacked]);
+    const archiveSessions = heldSessions(unpacked, manifest);
     for (const file of files) {
       if (!isPlainRelative(file.path) || !file.path.startsWith("home/")) throw new Error(`a supplement file goes under home/, not at ${file.path}`);
       if (taken.has(file.path)) throw new Error(`${file.path} is in ${archive} or this supplement already`);
@@ -343,17 +371,17 @@ export function sealSupplement(archive: string, out: string, why: string, files:
       inputs.push(record(stage, file.path, file.source, file.selection, read));
     }
     const supplement: SupplementManifest = { archive: { path: resolve(archive), sha256: fileSha256(archive) }, criteria: { sha256: manifest.criteria.sha256 },
-      windowStart: manifest.windowStart, ...manifest.until !== undefined ? { until: manifest.until } : {}, createdAt: Date.now(), why, inputs };
+      windowStart: manifest.windowStart, ...manifest.until !== undefined ? { until: manifest.until } : {}, createdAt: Date.now(), why, archiveSessions, inputs };
     writeFileSync(join(stage, "supplement.json"), JSON.stringify(supplement, null, 1));
     execFileSync("tar", ["-czf", `${out}.part`, "-C", stage, "."]);
     renameSync(`${out}.part`, out);
     return out;
   } finally {
-    rmSync(stage, { recursive: true, force: true });
+    for (const dir of [stage, unpacked]) rmSync(dir, { recursive: true, force: true });
   }
 }
 
-function laySupplement(work: string, file: string, archive: string, manifest: StoredManifest, unpack: string): { file: string; sha256: string; why: string } {
+function laySupplement(work: string, file: string, archive: string, manifest: StoredManifest, held: readonly HeldSession[], unpack: string): { file: string; sha256: string; why: string } {
   rmSync(unpack, { recursive: true, force: true });
   mkdirSync(unpack, { recursive: true });
   execFileSync("tar", ["-xzf", file, "-C", unpack]);
@@ -362,6 +390,7 @@ function laySupplement(work: string, file: string, archive: string, manifest: St
   if (supplement.archive.sha256 !== fileSha256(archive)) throw new Error(`${what} extends an archive with sha256 ${supplement.archive.sha256}, not ${archive}`);
   if (supplement.criteria.sha256 !== manifest.criteria.sha256) throw new Error(`${what} names criteria sha256 ${supplement.criteria.sha256}, not the archive's ${manifest.criteria.sha256}`);
   if (supplement.windowStart !== manifest.windowStart || supplement.until !== manifest.until) throw new Error(`${what} names another window than the archive's`);
+  if (JSON.stringify(supplement.archiveSessions) !== JSON.stringify(held)) throw new Error(`${what} lists archiveSessions that differ from the session files ${archive} holds`);
   checkDeclared(unpack, supplement.inputs, readdirSync(unpack).filter(name => name !== "supplement.json"), what);
   const declared = new Set((manifest.inputs ?? []).map(input => input.path));
   for (const input of supplement.inputs) {
@@ -408,9 +437,10 @@ export async function rejudge(archive: string, script: string, judge: JudgeVersi
     const criteria = fileSha256(join(work, manifest.criteria.file));
     if (criteria !== manifest.criteria.sha256) throw new Error(`the archived criteria read sha256 ${criteria}, not the ${manifest.criteria.sha256} the run was judged on`);
     const roots = rootsUnder(work);
+    const held = heldSessions(work, manifest);
     if (manifest.inputs) checkDeclared(work, manifest.inputs, ["home", basename(manifest.run)], `the archive ${archive}`);
     else if (existsSync(join(work, "prime"))) { mkdirSync(dirname(roots.primeDir), { recursive: true }); renameSync(join(work, "prime"), roots.primeDir); }
-    const added = supplements.map((file, index) => laySupplement(work, resolve(file), archive, manifest, unpacks[index]!));
+    const added = supplements.map((file, index) => laySupplement(work, resolve(file), archive, manifest, held, unpacks[index]!));
     const run = join(work, basename(manifest.run));
     const state = join(run, "run.json");
     if (existsSync(state)) writeFileSync(state, JSON.stringify(sealPaths(readJson<unknown>(state), path => sealedPath(path, work, manifest.run, manifest.liveRoots))));
