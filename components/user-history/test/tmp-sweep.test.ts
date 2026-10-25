@@ -121,11 +121,20 @@ test("naming the entries of a 64 MB transcript never holds the event loop 100 ms
   const block = Array.from({ length: 2000 }, (_, i) => JSON.stringify({ type: "message", timestamp: "2026-10-18T12:00:00.000Z",
     message: { content: [{ type: "text", text: `ran /tmp/job-${i}/run.py ` + "y".repeat(400) }] } })).join("\n") + "\n";
   writeFileSync(file, block.repeat(Math.ceil(64 * 1024 ** 2 / block.length)));
-  let last = performance.now();
+  // A gap counts the main thread's own CPU time, not wall time: the release suite on us-metal02 at load 125 to 157 on 80 cores on 10-25 read
+  // wall gaps of 124 ms twice for code that passed alone, since a held core's wait for the scheduler is no work the sweep holds the loop for.
+  const cpuMs = (): number => { const used = process.threadCpuUsage(); return (used.user + used.system) / 1000; };
+  let last = cpuMs();
+  let lastWall = performance.now();
   let longest = 0;
-  const tick = setInterval(() => { const now = performance.now(); longest = Math.max(longest, now - last); last = now; }, 1);
+  let longestWall = 0;
+  const tick = setInterval(() => {
+    const now = cpuMs(), wall = performance.now();
+    longest = Math.max(longest, now - last); longestWall = Math.max(longestWall, wall - lastWall);
+    last = now; lastWall = wall;
+  }, 1);
   const named = await namedSince(file, Date.parse("2026-10-18T11:00:00Z"), "/tmp");
   clearInterval(tick);
   assert.equal(named.size, 2000);
-  assert.ok(longest < 100, `the longest gap between timer ticks was ${longest.toFixed(0)} ms`);
+  assert.ok(longest < 100, `the main thread ran ${longest.toFixed(0)} ms of CPU between two timer ticks (longest wall gap ${longestWall.toFixed(0)} ms)`);
 });
