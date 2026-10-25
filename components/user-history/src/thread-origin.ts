@@ -84,6 +84,10 @@ export class ThreadOrigins {
    * code on a bench over a copy of the live rows on 10-19.
    */
   private readonly byRow = new WeakMap<OriginRow, ThreadOrigin>();
+  /** Each session file whose head decided, for the stop to save (chat-catalog.ts `HEADS_FILE`). */
+  decisions(): ReadonlyMap<string, ThreadOrigin> { return this.decided; }
+  /** Decisions a last run saved: a decided head never changes, since a session file only grows at its end. */
+  take(saved: Iterable<readonly [string, ThreadOrigin]>): void { for (const [file, origin] of saved) if (!this.decided.has(file)) this.decided.set(file, origin); }
   private fileDecides(row: OriginRow, file: string): ThreadOrigin {
     const known = this.decided.get(file);
     if (known) return known;

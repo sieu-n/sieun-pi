@@ -38,6 +38,34 @@ function takeSavedAgents(path: string): ReadonlyMap<string, readonly ChatAgent[]
   return chats;
 }
 
+/**
+ * What a run read from session file heads (each file's origin, first task and title), saved beside AGENTS_FILE at its stop for the next start.
+ * The first projection after a start read the head of every listed file: in the CPU profile of the run started at 03:31:39Z on 10-25 that was
+ * 3.1 s of fileDecides and 1.4 s of firstTask on the main thread between 3.5 and 10.2 s after the start, in blocks of 256 rows, and at the
+ * 06:17:13Z start an api/threads/<id>/agents read in that window took 2.2 s (d7 counted 06:17Z dirty). On a scratch serve on a copy of
+ * browser-chat on 10-25 the saved heads (10.7 MB for 5,544 rows) cut the first projection's own code from 3.4 and 4.4 s to 0.42 s. Each value
+ * is final once read, so the start takes them as they are; the file is deleted as it is read, like AGENTS_FILE.
+ */
+export const HEADS_FILE = "chat-heads.json";
+type SavedHeads = { savedAt: string; origins: Record<string, ThreadOrigin>; firsts: Record<string, string>; titles: Record<string, string> };
+const strings = (value: unknown): [string, string][] => isRecord(value) ? Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === "string") : [];
+function takeSavedHeads(path: string, origins: ThreadOrigins): void {
+  let text: string;
+  try { text = readFileSync(path, "utf8"); } catch { return; }
+  try { unlinkSync(path); } catch (error) { process.stderr.write(`catalog: deleting ${path}: ${error instanceof Error ? error.message : String(error)}\n`); }
+  let parsed: unknown;
+  try { parsed = JSON.parse(text); } catch { return; }
+  if (!isRecord(parsed)) return;
+  origins.take(strings(parsed.origins).filter((entry): entry is [string, ThreadOrigin] => entry[1] === "user" || entry[1] === "agent"));
+  for (const [file, first] of strings(parsed.firsts)) if (!fileFirsts.has(file)) fileFirsts.set(file, first);
+  for (const [file, title] of strings(parsed.titles)) if (!fileTitles.has(file)) fileTitles.set(file, title);
+}
+/** The heads of the files in `files` this process knows, in the saved shape. */
+function heldHeads(files: ReadonlySet<string>, origins: ThreadOrigins): SavedHeads {
+  const pick = <V>(map: ReadonlyMap<string, V>): Record<string, V> => Object.fromEntries([...map].filter(([file]) => files.has(file)));
+  return { savedAt: new Date().toISOString(), origins: pick(origins.decisions()), firsts: pick(fileFirsts), titles: pick(fileTitles) };
+}
+
 const FIRST_MESSAGE_SCAN_BYTES = 4 * 1024 * 1024;
 /** cron_list fans out to every worker; roster activity must not repeat that work. */
 const SCHEDULE_REFRESH_MS = 30_000;
@@ -756,6 +784,7 @@ export class Catalog {
     private readonly origins: ThreadOrigins, private readonly hosts: HostCatalogs | null = null, copyFile: string | null = null, private readonly agentsFile: string | null = null) {
     this.client = new DaemonClient(socketPath);
     this.saved = agentsFile ? takeSavedAgents(agentsFile) : undefined;
+    if (agentsFile) takeSavedHeads(join(dirname(agentsFile), HEADS_FILE), origins);
     // Roster updates were up to 116 a minute (10-12); this box's lay into one frame per 150 ms, the wait its roster refresh had before.
     this.peer = new SessionPeer({ name: hosts?.selfName ?? "this box", client: this.client, file: copyFile, deadlines: { socketMs: 1500, helloMs: 1500 }, changeMs: 150,
       reconnectMs: 2000, log: line => process.stderr.write(`catalog: ${line}\n`), onChange: () => this.peerChanged(),
@@ -979,9 +1008,10 @@ export class Catalog {
     // The read markers by session in a Map: looking each of the 4,500 rows up in the parsed read state's object was 1.9 of 29 ms of a
     // projection's own code on a bench over a copy of the live rows on 10-19.
     const readAts = new Map(Object.entries(state?.sessions ?? {}).map(([id, marker]) => [id, marker?.timestamp] as const));
-    let since = 0;
+    // A row whose session file head is not read yet costs about 0.8 ms (HEADS_FILE), so this loop looks at the clock on every row: 256 such rows
+    // between two looks held the main thread about 200 ms after each start.
     for (const row of [...this.summaries.values()]) {
-      if (++since === BREATHE_ROWS) { since = 0; await breathe(); }
+      if (performance.now() - slice >= PROJECTION_SLICE_MS) await breathe();
       const remote = this.hostOf(row.sessionId);
       // Another box's saved session is listed by its daemon's word: its file is on that box's disk, not this one.
       if (!(remote ? isListed(row, () => true) : listedHere(row)) || this.spares.has(row.sessionId)) continue;
@@ -1263,6 +1293,16 @@ export class Catalog {
     const temp = `${this.agentsFile}.${process.pid}.tmp`;
     await writeFile(temp, JSON.stringify({ savedAt: new Date().toISOString(), chats } satisfies SavedAgents), { mode: 0o600 });
     await rename(temp, this.agentsFile);
+  }
+
+  /** Writes the heads of the listed session files to HEADS_FILE beside `agentsFile`, for the next run's first projection. */
+  private async saveHeads(): Promise<void> {
+    if (!this.agentsFile) return;
+    const files = new Set([...this.summaries.values()].flatMap(row => row.sessionFile ? [row.sessionFile] : []));
+    const path = join(dirname(this.agentsFile), HEADS_FILE);
+    const temp = `${path}.${process.pid}.tmp`;
+    await writeFile(temp, JSON.stringify(heldHeads(files, this.origins)), { mode: 0o600 });
+    await rename(temp, path);
   }
 
   /** Like `subscribe`, without the refresh a page load asks for: a page's agents feed starts on each chat it opens or unfolds. */
@@ -1563,6 +1603,7 @@ export class Catalog {
     const first = !this.closed;
     this.closed = true;
     if (first) await this.saveAgents().catch(error => { process.stderr.write(`catalog: saving the chats' agents: ${error instanceof Error ? error.message : String(error)}\n`); });
+    if (first) await this.saveHeads().catch(error => { process.stderr.write(`catalog: saving the session heads: ${error instanceof Error ? error.message : String(error)}\n`); });
     clearInterval(this.projectionTimer);
     this.peer.close();
     clearTimeout(this.schedulesTimer);
