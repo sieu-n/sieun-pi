@@ -1,6 +1,8 @@
 // Guards two URL Inspection failures through the real seo-sources.py inspect, against a stub virev_seo and a sitecustomize that records
 // time.sleep instead of sleeping. On 10-18 at 05:21Z /ko/blog/kol-key-opinion-leader answered HTTP 500 "Internal error encountered" once
 // and read PASS when inspected again. On 10-18 from 16:45:24Z to 16:48:36Z Google answered 500 or 503 to 81 calls of one 32-thread run.
+// The stub's session() takes no argument, like virev_seo.gsc.session since auto-sns-agent c45b315b39 (10-25 15:12Z), whose Vent mints the
+// scope per call. seo-sources.py inspect still called gsc.session(write=True) after it, so every d2 run read source_errors 1.
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -51,7 +53,7 @@ class _Session:
             return _Resp(500, {"error": {"code": 500, "message": "Internal error encountered.", "status": "INTERNAL"}}, headers)
         return _Resp(200, {"inspectionResult": {"indexStatusResult": {"verdict": "PASS", "coverageState": "Submitted and indexed"}}}, {})
 
-def session(write=False):
+def session():
     return _Session()
 `;
 

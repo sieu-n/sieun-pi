@@ -125,7 +125,7 @@ def inspect(urls: list[str]) -> dict[str, Any]:
     pt_day = (datetime.now(UTC) - timedelta(hours=7)).date().isoformat()
     left = INSPECT_DAILY_QUOTA - gsc._quota_used(pt_day)
     asked = urls[: max(0, left)]
-    sess = gsc.session(write=True)
+    sess = gsc.session()
     stop = threading.Event()
     retry_after: list[float] = []
 
