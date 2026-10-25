@@ -272,3 +272,12 @@ test("unrelated-ci-wait: a job that saw an unrelated run and left the carried st
   const seen = run({ sampler: "done", flagged: [{ kind: "stuck_steps", item: "p3", excerpt: "p3 waits on p2, whose job memory sampling ended" }] });
   assert.match(seen.check("e"), /^- e met/);
 });
+
+test("unrelated-ci-wait g: a command that changes CI counts, a workflow's name in a note does not (controlled run-2, 10-25)", async () => {
+  const { changesCi } = await import("../scripts/clean-room/unrelated-ci-wait.ts");
+  const note = `state.setdefault('notes',[]).append("From about 18:04 KST land dispatch is held while promote.yml run 40179127613 runs; push runs at 18:12 and 18:15 KST dispatched no land.")`;
+  assert.equal(changesCi(note), false);
+  for (const code of ["gh workflow run promote.yml --ref sieun/dev", "bash('gh run cancel 40179127613')", "git push origin sieun/dev", "node scripts/release-chat.mjs abc1234",
+    "gh api -X POST repos/o/r/actions/workflows/land.yml/dispatches", "httpx.post(f'{API}/repos/o/r/actions/workflows/land.yml/dispatches', json={})",
+    "requests.post(api + '/repos/o/r/actions/runs/40179127613/cancel')"]) assert.equal(changesCi(code), true, code);
+});
