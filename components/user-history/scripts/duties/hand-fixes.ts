@@ -80,8 +80,11 @@ export type RefState = { kind: "step"; status: string | null } | { kind: "git"; 
 /** `oneoff` is set for a container scripts/copy-oneoff.sh started: its virev.expires_at in unix seconds (null when unreadable) and docker restart policy. */
 /** `networks` is the docker networks it joins, or undefined when the read did not list them. */
 export interface BoxContainer { name: string; status: string; service: string; oneoff?: { expiresAt: number | null; restart: string }; networks?: string[]; image?: string; created?: string }
-/** `id` is the docker exec id; `lasted` is whether it still ran at the read's second sample, or undefined when the read took none. */
-export interface BoxExec { container: string; service: string; running: boolean; command: string; networks?: string[]; id?: string; lasted?: boolean }
+/**
+ * `id` is the docker exec id; `lasted` is whether it still ran at the read's second sample, or undefined when the read took none. `text` is
+ * the exec's script with its same-folder imports, read on the box through /proc/<exec Pid>/root, or undefined when it could not be read.
+ */
+export interface BoxExec { container: string; service: string; running: boolean; command: string; networks?: string[]; id?: string; lasted?: boolean; text?: string }
 export interface MacProcess { pid: number; command: string; script: string | null; writes: boolean }
 /**
  * A process on the box that an ssh session left running on its own, with its script's text: parent pid 1 in a session-*.scope (nohup,
@@ -248,6 +251,7 @@ export function parseBox(text: string): { containers: BoxContainer[]; execs: Box
   const service = new Map<string, string>();
   const nets_ = new Map<string, string[]>();
   const still = new Set<string>();
+  const texts = new Map<string, string>();
   let resampled = false;
   for (const line of text.split("\n")) {
     const [tag, name, rest] = line.split("\t");
@@ -271,12 +275,16 @@ export function parseBox(text: string): { containers: BoxContainer[]; execs: Box
       execs.push({ container: name, service: service.get(name) ?? "", running: exec.Running === true,
         command: [exec.ProcessConfig?.entrypoint ?? "", ...(exec.ProcessConfig?.arguments ?? [])].join(" ").trim(), ...(networks ? { networks } : {}),
         ...(exec.ID ? { id: exec.ID } : {}) });
+    } else if (tag === "X") {
+      const read = JSON.parse(Buffer.from(rest, "base64").toString("utf8")) as { id?: string; text?: string };
+      if (read.id && typeof read.text === "string") texts.set(read.id, read.text);
     } else if (tag === "R") {
       resampled = true;
       for (const id of rest.split(/\s+/).filter(Boolean)) still.add(id);
     }
   }
   if (resampled) for (const exec of execs) if (exec.id) exec.lasted = still.has(exec.id);
+  for (const exec of execs) { const text = exec.id ? texts.get(exec.id) : undefined; if (text !== undefined) exec.text = text; }
   return { containers, execs, hosts, deploys };
 }
 
@@ -320,9 +328,25 @@ export const reachesTier = (item: { networks?: readonly string[] }): boolean =>
  * trailing `-`.
  */
 const STDIN_SCRIPT = /\/(?:python3?|bash|sh)\s+(?:-|-s)(?:\s|$)|\s(?:-|-s)$/;
-/** `exempt` is the registry's exempt.box_exec_regex: an exec a declared unit on the box starts, so a restart does not lose it. */
-export const handExecs = (execs: readonly BoxExec[], exempt?: string): BoxExec[] =>
+/** Running execs in an app container on a tier network that last past the second sample, less those a declared unit starts (`exempt`). */
+const longExecs = (execs: readonly BoxExec[], exempt?: string): BoxExec[] =>
   execs.filter(exec => exec.running && !DATA_SERVICES.has(exec.service) && !STDIN_SCRIPT.test(exec.command) && !(exempt && new RegExp(exempt).test(exec.command)) && reachesTier(exec) && exec.lasted !== false);
+/**
+ * A write to a store or a queue a crawler script makes through code: a Kafka producer, a Redis list, stream or hash write, an upsert or
+ * persist helper, a session commit, a writer or a src.run entry point. Read together with HOST_WRITES, which holds the SQL, /ops and docker writes.
+ */
+const STORE_WRITES = /\b(?:AIO)?KafkaProducer\b|\.(?:produce|send_and_wait|xadd|lpush|rpush|hset|publish)\(|\b(?:upsert|persist|bulk_insert)\w*\(|\.commit\(\)|\bwriters?\b|\bsrc\.run\b/i;
+/**
+ * A measurement exec: in a staging container, with a script read on the box whose text writes to no store, control, queue or prod. At
+ * 01:30Z on 10-24 and 10-25 the staging A/Bs of the crawler d2 jobs (/tmp/d2cap/ab.py, then /tmp/d2tls/tls_ab.py, which runs census
+ * crawl() and writes only a local JSON) were the one hand-run process. An exec in a prod container, or whose script cannot be read, still counts.
+ */
+export const isExperiment = (exec: BoxExec): boolean =>
+  exec.text !== undefined && /^virev-staging-/.test(exec.container) && !(exec.networks ?? []).some(network => /^virev-prod$|^host$/.test(network)) &&
+  !HOST_WRITES.test(exec.text) && !STORE_WRITES.test(exec.text);
+/** `exempt` is the registry's exempt.box_exec_regex: an exec a declared unit on the box starts, so a restart does not lose it. */
+export const handExecs = (execs: readonly BoxExec[], exempt?: string): BoxExec[] => longExecs(execs, exempt).filter(exec => !isExperiment(exec));
+export const experimentExecs = (execs: readonly BoxExec[], exempt?: string): BoxExec[] => longExecs(execs, exempt).filter(isExperiment);
 
 /** The script a session process runs: the first argument ending in .py, .mjs, .js, .ts or .sh. */
 export function scriptOf(command: string): string | null {
@@ -448,6 +472,8 @@ export function report(data: HandData, dutyMetrics: readonly DutyMetric[]): Prec
     metrics.unsupervised_box_processes = execs.length + left.length + loops.length;
     for (const loop of loops) flagged.push({ at, kind: "box_host_loop", excerpt: `us-metal01 process started by hand over ssh, pid ${loop.pid}, gone at the next reboot: ${loop.command}`.slice(0, 400) });
     for (const exec of execs) flagged.push({ at, kind: "box_exec", excerpt: `docker exec in ${exec.container}, gone at the next restart: ${exec.command}`.slice(0, 400) });
+    for (const exec of experimentExecs(data.box.execs, registry?.exempt.box_exec_regex))
+      flagged.push({ at, kind: "box_experiment", excerpt: `Staging measurement exec in ${exec.container}, its script writes no store, control or queue, not counted: ${exec.command}`.slice(0, 400) });
     if (left.length) flagged.push({ at, kind: "box_oneoff", excerpt: `Containers with no compose service: ${left.map(container => `${container.name} (${container.status}${container.image ? `, ${container.image.replace(/@sha256:(\w{12})\w+/, "@$1")}, created ${container.created?.slice(0, 19)}Z` : ""})`).join(", ")}` });
     if (kept.length) flagged.push({ at, kind: "box_oneoff_kept", excerpt: `One-offs that docker and deploy.sh start again, not counted: ${kept.map(container => `${container.name} (until ${utc(container.oneoff!.expiresAt! * 1000)})`).join(", ")}` });
   }
@@ -493,12 +519,36 @@ export const eventsSql = (after: number): string =>
  */
 export const EXEC_RESAMPLE_S = 20;
 export const BOX_SCRIPT = `set -u
+XREAD=$(cat <<'PY'
+import base64, json, os, re, sys
+d = json.loads(sys.stdin.read() or '{}')
+tokens = ' '.join((d.get('ProcessConfig') or {}).get('arguments') or []).split()
+script = next((t for t in tokens if re.search(r'\\.(?:py|mjs|js|ts)$', t)), None) or next((t for t in tokens if t.endswith('.sh')), None)
+if d.get('Running') and d.get('Pid') and d.get('ID') and script:
+    path = os.path.join('/proc/%s/%s' % (d['Pid'], 'root' if script.startswith('/') else 'cwd'), script.lstrip('/'))
+    try:
+        text = open(path, errors='replace').read(65536)
+    except OSError:
+        sys.exit()
+    folder = os.path.dirname(path)
+    names = {a or b for a, b in re.findall(r'^\\s*(?:from\\s+(\\w+)\\S*\\s+import|import\\s+(\\w+))', text, re.M)}
+    names |= set(re.findall(r'([\\w-]+\\.(?:py|sh))\\b', text))
+    for name in sorted(names):
+        try:
+            text += '\\n' + open(os.path.join(folder, name if '.' in name else name + '.py'), errors='replace').read(65536)
+        except OSError:
+            pass
+    print('X\\t%s\\t%s' % (sys.argv[1], base64.b64encode(json.dumps({'id': d['ID'], 'text': text}).encode()).decode()))
+PY
+)
 awk '$2 == "prod" && $3 == "deploy" && $5 == "ok:" { printf "D\\t%s\\t%s\\n", $1, $4 }' /srv/prod/releases/deploy.log
 for c in $(docker ps -a --format '{{.Names}}'); do
   info=$(docker inspect -f '{{.State.Status}}|{{index .Config.Labels "com.docker.compose.service"}}|{{range .ExecIDs}}{{.}} {{end}}|{{index .Config.Labels "virev.oneoff"}}|{{index .Config.Labels "virev.expires_at"}}|{{.HostConfig.RestartPolicy.Name}}|{{range $k, $v := .NetworkSettings.Networks}}{{$k}},{{end}}|{{.Config.Image}}|{{.Created}}' "$c")
   printf 'C\\t%s\\t%s\\n' "$c" "$info"
   for e in $(printf '%s' "$info" | cut -d'|' -f3); do
-    printf 'E\\t%s\\t%s\\n' "$c" "$(curl -s --max-time 5 --unix-socket /var/run/docker.sock "http://localhost/exec/$e/json")"
+    j=$(curl -s --max-time 5 --unix-socket /var/run/docker.sock "http://localhost/exec/$e/json")
+    printf 'E\\t%s\\t%s\\n' "$c" "$j"
+    printf '%s' "$j" | python3 -c "$XREAD" "$c"
   done
 done
 sleep ${EXEC_RESAMPLE_S}

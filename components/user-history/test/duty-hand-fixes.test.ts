@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { parseDutyInput } from "../src/shared/chat-duties.ts";
-import { type AuditRow, type Deploy, type Fault, type HandData, type RefState, auditSql, classifyConfig, designOnProd, gitReleaseHolds, groupAudit, handExecs, isSessionProcess, nextState, startedByTest, hostWriters, oneOffs, parseBox, parseRegistry, releaseAt, report, WRITES, HOST_WRITES } from "../scripts/duties/hand-fixes.ts";
+import { type AuditRow, type Deploy, type Fault, type HandData, type RefState, auditSql, classifyConfig, designOnProd, gitReleaseHolds, groupAudit, handExecs, experimentExecs, isSessionProcess, nextState, startedByTest, hostWriters, oneOffs, parseBox, parseRegistry, releaseAt, report, WRITES, HOST_WRITES } from "../scripts/duties/hand-fixes.ts";
 
 const DIR = join(import.meta.dirname, "..", "scripts", "duties");
 const AT = Date.parse("2026-10-16T05:08:27Z");
@@ -342,4 +342,32 @@ test("a session script a test started is no hand writer", () => {
   assert.equal(isSessionProcess(unit), true);
   assert.equal(startedByTest(12, table), true);
   assert.equal(startedByTest(21, table), false);
+});
+
+// The d3 reads at 01:30Z on 10-24 and 10-25: a crawler d2 job's staging A/B through docker exec in virev-staging-crawler-api was the one
+// hand-run process both days, 10-24 /tmp/d2cap/ab.py and 10-25 /tmp/d2tls/tls_ab.py (fixture: its text read from us-metal01 at 02:30Z).
+// Such an exec writes only a local file, so it reads as an experiment; an unread script, a prod container or a store write still counts.
+test("a staging A/B exec whose script writes no store is an experiment; unread, prod or writing ones count", async () => {
+  const tlsAb = await readFile(join(import.meta.dirname, "fixtures", "d2tls-tls_ab-1025.py"), "utf8");
+  const tls = "dotenvx-start.sh .venv/bin/python /tmp/d2tls/tls_ab.py 3600 32 /tmp/d2tls/ab.json 8400 12,6";
+  const cap = "dotenvx-start.sh .venv/bin/python /tmp/d2cap/ab.py 17 540 60 128";
+  const capText = '"""Staging capacity A/B: census crawl() at two concurrencies, results to a local JSON."""\nfrom src.platforms.instagram.census import crawl\njson.dump(rows, open(out, "w"))';
+  const box = (container: string, nets: string, execs: { id: string; command: string; text?: string }[]) => parseBox([
+    `C\t${container}\trunning|crawler-api|${execs.map(exec => exec.id).join(" ")} ||||${nets}`,
+    ...execs.map(exec => `E\t${container}\t${JSON.stringify({ ID: exec.id, Running: true, Pid: 4242, ProcessConfig: { entrypoint: exec.command.split(" ")[0], arguments: exec.command.split(" ").slice(1) } })}`),
+    ...execs.filter(exec => exec.text !== undefined).map(exec => `X\t${container}\t${Buffer.from(JSON.stringify({ id: exec.id, text: exec.text })).toString("base64")}`),
+    `R\t${container}\t${execs.map(exec => exec.id).join(" ")}`,
+  ].join("\n")).execs;
+  const staging = box("virev-staging-crawler-api", "virev-staging,", [{ id: "t", command: tls, text: tlsAb }, { id: "c", command: cap, text: capText }]);
+  assert.equal(staging[0]!.text, tlsAb);
+  assert.deepEqual(handExecs(staging), []);
+  assert.deepEqual(experimentExecs(staging).map(exec => exec.id), ["t", "c"]);
+  assert.deepEqual(handExecs(box("virev-staging-crawler-api", "virev-staging,", [{ id: "u", command: cap }])).map(exec => exec.id), ["u"]);
+  assert.deepEqual(handExecs(box("virev-prod-crawler-api", "virev-prod,", [{ id: "p", command: tls, text: tlsAb }])).map(exec => exec.id), ["p"]);
+  for (const write of ["producer = AIOKafkaProducer(bootstrap_servers=BROKERS)", "await writer.run()", "await r.xadd('census', row)",
+    "requests.post(f'{API}/ops/controls', json=body)", "cur.execute('INSERT INTO census_jobs VALUES (%s)', row)", "session.commit()"])
+    assert.deepEqual(handExecs(box("virev-staging-crawler-api", "virev-staging,", [{ id: "w", command: cap, text: `${capText}\n${write}` }])).map(exec => exec.id), ["w"], write);
+  const flagged = report({ now: AT, audit: {}, events: {}, errors: [], mac: [], box: { containers: [], execs: staging } }, await metrics(AT));
+  assert.equal(flagged.metrics.hand_run_processes, 0);
+  assert.equal(flagged.flagged.filter(item => item.kind === "box_experiment").length, 2);
 });
