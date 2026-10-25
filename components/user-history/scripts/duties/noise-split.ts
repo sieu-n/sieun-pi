@@ -33,6 +33,9 @@ export const NOISE_FIXES: readonly { kind: string; fix: string }[] = [
   { kind: "unasked result", fix: "41665689" },
   // The open goal done check, which refuses the p954 shape once and holds 11 needed lines for one call (~/work/tell-owner-open-goal-done/replay.md).
   { kind: "unasked result", fix: "62ca6828" },
+  // The taken-back todo and empty decision checks of 10-25 (~/work/d11-after-fix-noise/replay.md).
+  { kind: "incident status (withdraws its own", fix: "e5d526be" },
+  { kind: "split answer", fix: "e5d526be" },
 ];
 
 export interface NoiseLine { at: number; case: string; side: RepeatSide; fix?: string; /** When `fix` landed, in ms. */ fixed?: number }

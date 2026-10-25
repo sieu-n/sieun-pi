@@ -102,6 +102,18 @@ test("the 10-24 p954 unasked result went out before the open goal done check, an
   assert.deepEqual(split.map(line => [line.side, line.fix]), [["before_fix", "62ca6828"], ["after_fix", "62ca6828"]]);
 });
 
+test("the 10-25 t15 take-back and t68 finding went out before e5d526be, and later ones read after it", async () => {
+  // e5d526be refuses a text that names a todo the chat took back unanswered and a decision with no question, pick or todo in it.
+  const fixed = { ...commits, "20cfb99d": "2026-10-22T18:31:47Z", c541b75c: "2026-10-23T08:31:26Z", e5d526be: "2026-10-25T22:00:00Z" };
+  const split = await splitNoise([
+    { at: at("2026-10-25T10:35:34Z"), case: "incident status (withdraws its own t15 ask after release 21 fixed the frozen panels)" },
+    { at: at("2026-10-25T06:49:24Z"), case: "split answer (disk runway finding sent 16 s before the t68 ask that carries the same date in the next turn)" },
+    { at: at("2026-10-26T01:00:00Z"), case: "incident status (withdraws its own t20 ask)" },
+    { at: at("2026-10-26T01:00:00Z"), case: "split answer" },
+  ], async hash => fixed[hash as keyof typeof fixed] ? at(fixed[hash as keyof typeof fixed]!) : undefined);
+  assert.deepEqual(split.map(line => [line.side, line.fix]), [["before_fix", "e5d526be"], ["before_fix", "e5d526be"], ["after_fix", "e5d526be"], ["after_fix", "e5d526be"]]);
+});
+
 test("no noise line gives no lastEventAt", () => {
   assert.deepEqual(noiseLastEvent([], firstRun), {});
 });
