@@ -38,6 +38,8 @@ export const NOISE_FIXES: readonly { kind: string; fix: string }[] = [
   { kind: "split answer", fix: "e5d526be" },
   // The re-ask refusal text fix of 10-25, which says a reminder of an open todo stays on For you (c81; a code hold cost 8 needed lines for 4 noise).
   { kind: "re-ask of an open For you todo", fix: "c083958b" },
+  // The t34 nudge of 10-25 10:57:42Z went out as a resend after that same re-ask refusal, so c083958b's text covers it too.
+  { kind: "same incident asked again by another chat", fix: "c083958b" },
 ];
 
 /** A labelled noise line: `at` is when it went out, `labelled` when the duty run wrote its label (the LABELS row's `at`). */

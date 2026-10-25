@@ -124,6 +124,15 @@ test("the 10-25 22:02Z t34 re-ask went out on a pre-c083958 build, and a later r
   assert.deepEqual(split.map(line => [line.side, line.fix]), [["before_fix", "c083958b"], ["after_fix", "c083958b"]]);
 });
 
+test("the 10-25 10:57Z t34 nudge, resent after the re-ask refusal, went out before c083958b, and a later one reads after it", async () => {
+  const fixed = { ...commits, b084c910: "2026-10-21T09:40:55Z", c541b75c: "2026-10-23T08:31:26Z", "841c86f8": "2026-10-24T05:16:23Z", c083958b: "2026-10-25T22:09:25Z" };
+  const split = await splitNoise([
+    { at: at("2026-10-25T10:57:42Z"), case: "same incident asked again by another chat (us-metal01 CI disk fill nudged on t34 after Crawler VP asked t68)" },
+    { at: at("2026-10-26T01:00:00Z"), case: "same incident asked again by another chat" },
+  ], async hash => fixed[hash as keyof typeof fixed] ? at(fixed[hash as keyof typeof fixed]!) : undefined);
+  assert.deepEqual(split.map(line => [line.side, line.fix]), [["before_fix", "c083958b"], ["after_fix", "c083958b"]]);
+});
+
 test("no noise line gives no lastEventAt", () => {
   assert.deepEqual(noiseLastEvent([]), {});
 });
