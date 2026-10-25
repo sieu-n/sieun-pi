@@ -14,6 +14,10 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  * - prod_vent_behind_staging_h: hours since staging Vent first ran another build than prod Vent. Both builds come from /healthz `version`, and
  *   the time from the service.version of Vent's own OTel rows: the later of when prod first logged its build and when staging last logged it.
  * - vent_hosts_down: how many of vent.virev.ai and vent-staging.virev.ai do not answer 200 on /healthz.
+ * - vent_key_refused_sources: how many source addresses sent prod Vent a call with a key that it refused as vent_unauthorized in 24 h, any
+ *   caller, read from otel.vent_calls by client.address. The console leaves refused calls out, so from 02:09Z on 10-25 the prod host services
+ *   exporter on us-metal01 (64.34.205.243) got 401 on every Railway and Vercel call with a key Vent did not know, the Railway and Vercel
+ *   panels froze, and this duty still read 100%. A keyless scanner gets the same refusal, and vent.key_present false leaves it out.
  * A source it cannot read gives a source_error flagged slice with its reason, counted in source_errors, and leaves each metric it feeds out of
  * the output (the 999999 placeholder for a count to drive down), so the duty runner reads it as not measured. A day with no counted call has no
  * success rate either, so vent_success_24h_pct is left out with a gap slice. Until 10-24 both wrote -1, which the runner judged as a miss.
@@ -41,11 +45,14 @@ export interface IntegrationLight {
 export interface HostRead { url: string; status: number; version?: string; error?: string }
 /** When one Vent tier logged a build first and last, from service.version on its OTel rows. */
 export interface VersionSpan { env: string; first: number; last: number }
+/** One source address whose keyed prod calls Vent refused as vent_unauthorized in 24 h, with the integrations its paths named. */
+export interface KeyRefusal { source: string; calls: number; last: number; integrations: string[] }
 type Failed = { error: string };
 export interface IntegrationReads {
   lights: IntegrationLight[] | Failed;
   hosts: { production: HostRead; staging: HostRead };
   spans: VersionSpan[] | Failed | null;
+  refusals: KeyRefusal[] | Failed;
 }
 
 const failed = <T extends object>(value: T | Failed): value is Failed => "error" in value && typeof (value as Failed).error === "string";
@@ -97,6 +104,18 @@ export function integrationMetrics(reads: IntegrationReads, at: number): Prechec
   const hosts = [reads.hosts.production, reads.hosts.staging];
   metrics.vent_hosts_down = hosts.filter(host => host.status !== 200).length;
   for (const host of hosts) if (host.status !== 200) flagged.push({ at, kind: "host_down", item: host.url, excerpt: `${host.url}/healthz gave ${host.error ?? `HTTP ${host.status}`}`.slice(0, 300) });
+
+  if (failed(reads.refusals)) {
+    sourceError(`refused prod Vent calls could not be read from ClickHouse: ${reads.refusals.error}`);
+    metrics.vent_key_refused_sources = UNMEASURED;
+  } else {
+    const refusals = [...reads.refusals].sort((a, b) => b.calls - a.calls);
+    metrics.vent_key_refused_sources = refusals.length;
+    for (const refusal of refusals.slice(0, ITEMS)) {
+      const named = refusal.integrations.length ? ` for ${refusal.integrations.join(", ")}` : "";
+      flagged.push({ at, kind: "key_refused", item: refusal.source, excerpt: `${refusal.source}: ${refusal.calls} prod Vent calls${named} refused as vent_unauthorized with a key Vent does not know in 24 h, last at ${iso(refusal.last)}`.slice(0, 300) });
+    }
+  }
 
   if (reads.spans && failed(reads.spans)) sourceError(`Vent build history could not be read from ClickHouse: ${reads.spans.error}`);
   const behind = behindHours(reads.hosts, reads.spans && !failed(reads.spans) ? reads.spans : null, at);
@@ -152,12 +171,8 @@ async function lights(token: string, dir: string): Promise<IntegrationLight[]> {
   return (JSON.parse(stdout) as { integrations: IntegrationLight[] }).integrations;
 }
 
-/** When each tier first and last logged a call on prod's build. otel.vent_calls holds only Vent's call rows: the same scan of otel.otel_logs took 26 to 60 s and hit Grafana's deadline on 10-24, this one 0.4 to 2.3 s. */
-async function spans(token: string, version: string): Promise<VersionSpan[]> {
-  if (!/^[\w.-]+$/.test(version)) throw new Error(`prod /healthz version ${JSON.stringify(version).slice(0, 40)} is not a build id`);
-  const sql = "SELECT ResourceAttributes['deployment.environment.name'] AS env, toFloat64(toUnixTimestamp64Milli(min(Timestamp))) AS first, " +
-    "toFloat64(toUnixTimestamp64Milli(max(Timestamp))) AS last FROM otel.vent_calls " +
-    `WHERE ResourceAttributes['service.version'] = '${version}' GROUP BY env`;
+/** One ClickHouse query through Grafana, as a column reader and its row count. */
+async function clickhouse(token: string, sql: string): Promise<{ rows: number; column: (name: string) => unknown[] }> {
   const response = await fetch(`${GRAFANA}/api/ds/query`, {
     method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
     body: JSON.stringify({ queries: [{ refId: "A", datasource: { uid: "grafana_clickhouse" }, rawSql: sql, format: 1, queryType: "table" }], from: "now-1h", to: "now" }),
@@ -166,10 +181,33 @@ async function spans(token: string, version: string): Promise<VersionSpan[]> {
   const result = body?.results?.A;
   if (!response.ok || !result || result.error) throw new Error(`HTTP ${response.status}: ${String(result?.error ?? "no result").slice(0, 160)}`);
   const frame = result.frames?.[0];
-  if (!frame) return [];
+  if (!frame) return { rows: 0, column: () => [] };
   const names = frame.schema.fields.map(field => field.name);
   const column = (name: string) => frame.data.values[names.indexOf(name)] ?? [];
-  return column("env").map((env, index) => ({ env: String(env), first: Number(column("first")[index]), last: Number(column("last")[index]) }));
+  return { rows: frame.data.values[0]?.length ?? 0, column };
+}
+
+/** When each tier first and last logged a call on prod's build. otel.vent_calls holds only Vent's call rows: the same scan of otel.otel_logs took 26 to 60 s and hit Grafana's deadline on 10-24, this one 0.4 to 2.3 s. */
+async function spans(token: string, version: string): Promise<VersionSpan[]> {
+  if (!/^[\w.-]+$/.test(version)) throw new Error(`prod /healthz version ${JSON.stringify(version).slice(0, 40)} is not a build id`);
+  const sql = "SELECT ResourceAttributes['deployment.environment.name'] AS env, toFloat64(toUnixTimestamp64Milli(min(Timestamp))) AS first, " +
+    "toFloat64(toUnixTimestamp64Milli(max(Timestamp))) AS last FROM otel.vent_calls " +
+    `WHERE ResourceAttributes['service.version'] = '${version}' GROUP BY env`;
+  const { rows, column } = await clickhouse(token, sql);
+  return Array.from({ length: rows }, (_, index) => ({ env: String(column("env")[index]), first: Number(column("first")[index]), last: Number(column("last")[index]) }));
+}
+
+/** Prod calls Vent refused as vent_unauthorized in 24 h that carried a key, per source address, from the columns telemetry.py writes on a refusal. */
+async function keyRefusals(token: string): Promise<KeyRefusal[]> {
+  const sql = "SELECT `client.address` AS source, toFloat64(sum(greatest(toUInt64OrZero(`vent.count`), 1))) AS calls, " +
+    "toFloat64(toUnixTimestamp64Milli(max(Timestamp))) AS last, arrayStringConcat(arraySort(groupUniqArrayIf(`vent.requested_integration`, `vent.requested_integration` != '')), ',') AS integrations " +
+    "FROM otel.vent_calls WHERE ResourceAttributes['deployment.environment.name'] = 'production' AND Timestamp > now() - INTERVAL 24 HOUR " +
+    "AND `vent.outcome` = 'refused' AND `vent.error_code` = 'vent_unauthorized' AND `vent.key_present` = 'true' GROUP BY source";
+  const { rows, column } = await clickhouse(token, sql);
+  return Array.from({ length: rows }, (_, index) => ({
+    source: String(column("source")[index]) || "no address", calls: Number(column("calls")[index]), last: Number(column("last")[index]),
+    integrations: String(column("integrations")[index] ?? "").split(",").filter(Boolean),
+  }));
 }
 
 async function main(): Promise<void> {
@@ -185,12 +223,13 @@ async function main(): Promise<void> {
       if (!production.version || !staging.version || production.version === staging.version) return null;
       return spans(token, production.version).catch((error: unknown) => ({ error: errorText(error) }));
     });
-    const [lightsRead, hosts, history] = await Promise.all([
+    const [lightsRead, hosts, history, refusals] = await Promise.all([
       typeof token === "string" ? lights(token, dir).catch((error: unknown) => ({ error: errorText(error) })) : Promise.resolve(token),
       hostsRead,
       spansRead,
+      typeof token === "string" ? keyRefusals(token).catch((error: unknown) => ({ error: errorText(error) })) : Promise.resolve(token),
     ]);
-    await writeFile(output, JSON.stringify(integrationMetrics({ lights: lightsRead, hosts, spans: history }, at), null, 2) + "\n");
+    await writeFile(output, JSON.stringify(integrationMetrics({ lights: lightsRead, hosts, spans: history, refusals }, at), null, 2) + "\n");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
