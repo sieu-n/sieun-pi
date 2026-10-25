@@ -18,13 +18,16 @@ const sitemap = `<urlset><url><loc>${ARTICLE}</loc><lastmod>2026-10-13</lastmod>
 const page = `<meta property="article:published_time" content="2026-10-13T00:00:00Z">`;
 const fakeFetch = (async (input: string | URL | Request) => new Response(String(input).endsWith("sitemap.xml") ? sitemap : page)) as typeof fetch;
 
-const stubGsc = (dir: string, failFirst: number, retryAfter: string | null): string => `
+const stubGsc = (dir: string, failFirst: number, retryAfter: string | null, failStatus: number): string => `
 import json, os, threading
 INSPECT_URL = "https://searchconsole.googleapis.com/v1/urlInspection/index:inspect"
 QUOTA = os.path.join(${JSON.stringify(dir)}, "quota.json")
 POSTS = os.path.join(${JSON.stringify(dir)}, "posts.txt")
 _lock = threading.Lock()
 _posts = []
+
+def quota_day():
+    return "2026-10-18"
 
 def _quota_used(day):
     return json.load(open(QUOTA)).get(day, 0) if os.path.exists(QUOTA) else 0
@@ -49,7 +52,9 @@ class _Session:
             with open(POSTS, "a") as f:
                 f.write(json["inspectionUrl"] + "\\n")
         if n <= ${failFirst}:
-            headers = {"Retry-After": ${JSON.stringify(retryAfter)}} if ${JSON.stringify(retryAfter)} is not None else {}
+            headers = {} if ${retryAfter === null ? "True" : "False"} else {"Retry-After": ${JSON.stringify(retryAfter)}}
+            if ${failStatus} == 429:
+                return _Resp(429, {"error": {"code": 429, "message": "Quota exceeded for sc-domain:virev.ai.", "status": "RESOURCE_EXHAUSTED"}}, headers)
             return _Resp(500, {"error": {"code": 500, "message": "Internal error encountered.", "status": "INTERNAL"}}, headers)
         return _Resp(200, {"inspectionResult": {"indexStatusResult": {"verdict": "PASS", "coverageState": "Submitted and indexed"}}}, {})
 
@@ -65,12 +70,12 @@ def _sleep(seconds):
 time.sleep = _sleep
 `;
 
-async function stubRoot(failFirst: number, retryAfter: string | null): Promise<string> {
+async function stubRoot(failFirst: number, retryAfter: string | null, failStatus = 500): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "seo-inspect-retry-"));
   await mkdir(join(dir, "virev_seo"));
   await writeFile(join(dir, "virev_seo/__init__.py"), "");
   await writeFile(join(dir, "virev_seo/config.py"), `GSC_SITE = "sc-domain:virev.ai"\nINSPECT_DAILY_QUOTA = 2000\n`);
-  await writeFile(join(dir, "virev_seo/gsc.py"), stubGsc(dir, failFirst, retryAfter));
+  await writeFile(join(dir, "virev_seo/gsc.py"), stubGsc(dir, failFirst, retryAfter, failStatus));
   await writeFile(join(dir, "sitecustomize.py"), sitecustomize(dir));
   return dir;
 }
@@ -116,5 +121,18 @@ test("a run of 500s stops new calls, waits Google's Retry-After once, and every 
     assert.ok(posts <= 64, `each of the 2 passes starts at most one call per thread, got ${posts}`);
     assert.deepEqual(await lines(join(dir, "sleeps.txt")), ["7.0"]);
     assert.deepEqual(Object.values(JSON.parse(await readFile(join(dir, "quota.json"), "utf8"))), [posts]);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("a 429 for the daily quota stops new calls and asks no URL again, since the quota resets only at 00:00Z", async () => {
+  const dir = await stubRoot(1_000, null, 429);
+  try {
+    const urls = Array.from({ length: 40 }, (_, i) => `https://virev.ai/blog/page-${i}`);
+    const read = await runInspect(dir, urls);
+    const posts = (await lines(join(dir, "posts.txt"))).length;
+    assert.ok(read.rows.every(row => row.http === 429 || row.error === "not asked: URL Inspection failed earlier in this run"));
+    assert.ok(posts <= 32, `one pass starts at most one call per thread, got ${posts}`);
+    assert.deepEqual(await lines(join(dir, "sleeps.txt")), []);
+    assert.deepEqual(JSON.parse(await readFile(join(dir, "quota.json"), "utf8")), { "2026-10-18": posts });
   } finally { await rm(dir, { recursive: true, force: true }); }
 });

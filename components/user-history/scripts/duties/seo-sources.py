@@ -122,8 +122,8 @@ def inspect(urls: list[str]) -> dict[str, Any]:
     from virev_seo import gsc
     from virev_seo.config import GSC_SITE, INSPECT_DAILY_QUOTA
 
-    pt_day = (datetime.now(UTC) - timedelta(hours=7)).date().isoformat()
-    left = INSPECT_DAILY_QUOTA - gsc._quota_used(pt_day)
+    day = gsc.quota_day()
+    left = INSPECT_DAILY_QUOTA - gsc._quota_used(day)
     asked = urls[: max(0, left)]
     sess = gsc.session()
     stop = threading.Event()
@@ -162,15 +162,17 @@ def inspect(urls: list[str]) -> dict[str, Any]:
 
     done = run(asked)
     spent = sum(tries for _, tries in done)
-    again = [row["url"] for row, _ in done if _failed(row)]
+    # A 429 is the property's daily quota, which resets at 00:00Z (virev_seo.gsc.quota_day), so a URL is never asked again after one.
+    # measured: on 10-25 Google answered 429 "Quota exceeded for sc-domain:virev.ai" to 9 calls at 19:01Z and to all 32 asked again at 19:05Z
+    again = [] if any(row["http"] == 429 for row, _ in done) else [row["url"] for row, _ in done if _failed(row)]
     if again:
         time.sleep(max(retry_after) if retry_after else REASK_WAIT_S)
         redone = {row["url"]: (row, tries) for row, tries in run(again)}
         spent += sum(tries for _, tries in redone.values())
         done = [(redone[row["url"]][0], 0) if row["url"] in redone else (row, 0) for row, _ in done]
     if spent:
-        gsc._quota_add(pt_day, spent)
-    return {"pt_day": pt_day, "quota_left_before": left, "rows": [row for row, _ in done], "not_asked": urls[len(asked):]}
+        gsc._quota_add(day, spent)
+    return {"quota_day": day, "quota_left_before": left, "rows": [row for row, _ in done], "not_asked": urls[len(asked):]}
 
 
 def main() -> None:
