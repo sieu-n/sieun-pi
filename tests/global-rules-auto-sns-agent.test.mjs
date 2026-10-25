@@ -4,12 +4,13 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync,
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { headModules } from "./auto-sns-agent-head-modules.mjs";
 
 // auto-sns-agent's repo guard loads from global-rules for every Prime session, whatever its cwd. The fixture checkout holds a copy of
 // the live checkout's scripts/repo/agent/guards, so the rules under test are the ones agents get, and nothing here runs a command.
 const SOURCE = join(homedir(), "Documents/Github/auto-sns-agent/scripts/repo/agent/guards");
 // The guards also load these from HEAD (agent-branch.mjs headModule), so the fixture commits them too.
-const HEAD_MODULES = ["scripts/ci/branches.mjs", "scripts/repo/agent/shared-index.mjs"];
+const HEAD_MODULES = existsSync(SOURCE) ? headModules(SOURCE) : [];
 const root = realpathSync(mkdtempSync(join(tmpdir(), "global-rules-auto-sns-agent-")));
 const checkout = join(root, "auto-sns-agent");
 const broken = join(root, "broken", "auto-sns-agent");
@@ -211,7 +212,8 @@ test("a scratch copy of the repo, with its own old guard files, is judged by the
   const app = join(copy, "apps/vent");
   mkdirSync(join(app, "tests/unit"), { recursive: true });
   writeFileSync(join(app, "tests/unit/test_mock_engine.py"), "def test_a(): pass\n");
-  const text = `cd ${app} && nice -n 10 uv run pytest -q tests/unit/test_mock_engine.py`;
+  // The 10-18 cell ran it under nice -n 10, which the cap guard has refused since c107, so the copy here runs it plain.
+  const text = `cd ${app} && uv run pytest -q tests/unit/test_mock_engine.py`;
   for (const cwd of [checkout, app, HOME_CWD]) {
     const reason = await call("bash", text, ctx(cwd, "x"));
     assert.doesNotMatch(reason ?? "", STALE, cwd);

@@ -4,6 +4,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symli
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { headModules } from "./auto-sns-agent-head-modules.mjs";
 
 // The kernel half of auto-sns-agent's repo guard judges a git push by the repo it targets: the kernel's real cwd, cd and git -C,
 // resolved through symlinks, then the push remote's URL. On us-metal02 /Users/sieunpark is a symlink to /home/sieun, and a session
@@ -22,12 +23,12 @@ if (!skip) {
 	mkdirSync(join(checkout, "scripts/repo/agent"), { recursive: true });
 	cpSync(SOURCE, join(checkout, "scripts/repo/agent/guards"), { recursive: true, filter: (src) => !src.endsWith(".test.mjs") });
 	// The guards also load these from HEAD (agent-branch.mjs headModule), so the fixture commits them too.
-	const headModules = ["scripts/ci/branches.mjs", "scripts/repo/agent/shared-index.mjs"];
-	for (const rel of headModules) cpSync(join(SOURCE, "../../../..", rel), join(checkout, rel));
+	const modules = headModules(SOURCE);
+	for (const rel of modules) cpSync(join(SOURCE, "../../../..", rel), join(checkout, rel));
 	git("init", "-q", "-b", "sieun/dev", checkout);
 	git("-C", checkout, "remote", "add", "origin", "https://github.com/sieu-n/auto-sns-agent");
 	// The guard loads from the checkout's HEAD.
-	git("-C", checkout, "add", "scripts/repo/agent/guards", ...headModules);
+	git("-C", checkout, "add", "scripts/repo/agent/guards", ...modules);
 	git("-C", checkout, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "guards");
 	const sieunPi = join(BOX, "src/sieun-pi");
 	mkdirSync(sieunPi, { recursive: true });
