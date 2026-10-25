@@ -785,10 +785,13 @@ export function liveFix(run: DutyRunRecord, dutyId: string, board: ChatBoard | n
 /**
  * The sessions that own a step: its session id, and each session of a job of the chat, not deleted, that carries the step's job name (`named`).
  * At 07:40Z on 10-18 Crawler VP's p510 and p700 kept the session of the stopped "crawler ops train before move" while "crawler ops train",
- * its continuation after the host move, slept on 9 CI run wakes.
+ * its continuation after the host move, slept on 9 CI run wakes. A job field that holds a session id names that session: at 06:05Z on 10-25
+ * SEO guy's p101 had job set to the thread "sep launch!!" (01a15427-145f) with no sessionId, so d9 read it as running on the chat's own
+ * us-metal02 and counted it stuck, though that thread sat on the offline Mac that For you t30 asked the owner to bring back.
  */
 export function stepSessions(item: { sessionId?: string; job?: string }, named: ReadonlyMap<string, readonly string[]>): string[] {
-  return [...new Set([...item.sessionId ? [item.sessionId] : [], ...item.job ? named.get(item.job) ?? [] : []])];
+  const job = item.job ? named.get(item.job) ?? (SESSION_ID.test(item.job) ? [item.job] : []) : [];
+  return [...new Set([...item.sessionId ? [item.sessionId] : [], ...job])];
 }
 
 const clock = (at: number): string => new Date(at).toISOString().slice(11, 16) + "Z";
