@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "requestId": "2429267-1792959011469",
+  "socketPath": "/tmp/prime-agent-1001/daemon.sock",
+  "phase": "complete",
+  "startedAt": "2026-10-25T20:10:11.469Z",
+  "updatedAt": "2026-10-25T20:12:35.162Z",
+  "heartbeatAt": "2026-10-25T20:12:35.162Z",
+  "message": "Restarted the daemon after the update",
+  "counts": {
+    "total": 42,
+    "restored": 42,
+    "resumed": 33,
+    "notResumed": 0,
+    "resumeUnknown": 0,
+    "failed": 0
+  }
+}

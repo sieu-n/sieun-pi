@@ -43,6 +43,30 @@ export async function primeUpdateRunning(agentDir: string, socketPath: string, s
   return null;
 }
 
+/** When one Prime update restart worked on this box's daemon, from its coordinator's status record. */
+export interface UpdateSpan { requestId: string; from: number; to: number }
+
+/**
+ * The span a coordinator's status record covers: from its `startedAt` to its last `updatedAt` or `heartbeatAt`. Null for a failed update, which
+ * left the daemon as it found it or worse, and for a record without both times. The ctl's record of 10-25 ran from 20:10:11Z, when the
+ * supervisor began its prepare, to 20:12:35Z, when it had restored 42 sessions on the new supervisor.
+ */
+export function updateSpan(record: unknown, name = ""): UpdateSpan | null {
+  if (!isRecord(record) || record.phase === "failed" || typeof record.startedAt !== "string") return null;
+  const from = Date.parse(record.startedAt);
+  const to = Math.max(...[record.updatedAt, record.heartbeatAt].map(at => typeof at === "string" ? Date.parse(at) : NaN).filter(Number.isFinite));
+  if (!Number.isFinite(from) || !Number.isFinite(to) || to < from) return null;
+  return { requestId: typeof record.requestId === "string" ? record.requestId : name, from, to };
+}
+
+/** Every update span this box's coordinators recorded under `<agent dir>/update-restarts/` (`updateSpan`). */
+export async function readUpdateSpans(agentDir: string): Promise<UpdateSpan[]> {
+  const dir = join(agentDir, "update-restarts");
+  const names = (await readdir(dir).catch(() => [] as string[])).filter(entry => entry.endsWith(".json") && !entry.endsWith(".planned.json"));
+  const records = await Promise.all(names.map(async name => updateSpan(await readFile(join(dir, name), "utf8").then(text => JSON.parse(text) as unknown, () => null), name)));
+  return records.filter((span): span is UpdateSpan => span !== null);
+}
+
 /** The daemon's answer to a mutation it fenced out while it prepares an update restart (prime-agent's UPDATE_RESTART_PREPARING_MESSAGE). */
 const PREPARING = "Daemon is preparing an update restart";
 

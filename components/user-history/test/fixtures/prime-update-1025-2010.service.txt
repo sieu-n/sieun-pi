@@ -1,0 +1,53 @@
+2026-10-25T20:10:17.551Z duty jobs: Prime update 2429267-1792959011469 is preparing; no duty job stops until it ends
+2026-10-25T20:10:19.016Z wakes: woke 01a17421-28f7-7412-97ab-94d336cbdabb for its time, waited 136 min, queued 2 s after the tick began
+2026-10-25T20:10:19.017Z wakes: woke 01a11d24-ac9b-757d-ac51-9b2b7598782f for its time, waited 13 min, queued 2 s after the tick began
+2026-10-25T20:10:19.017Z wakes: woke 01a155b8-757f-7717-936d-f870740895ce for its time, waited 26 min, queued 2 s after the tick began
+2026-10-25T20:10:19.017Z wakes: woke 01a1724f-f8aa-733f-bf6a-45a8d2d5495b for its time, waited 70 min, queued 2 s after the tick began
+2026-10-25T20:10:19.019Z wakes: woke 01a16a55-482b-744b-8661-fb9e62a4f9b1 for its time, waited 18 min, queued 2 s after the tick began
+2026-10-25T20:10:21.500Z outbox 01a11d24: m-91dafe1a-1a32-4c9a-b73a-1e2946a4177f met the daemon's update prepare; it and the sends after it wait for it to end
+2026-10-25T20:10:21.503Z outbox 01a155b8: m-4b59c1e5-d57a-47c1-9875-42c53f1d727b met the daemon's update prepare; it and the sends after it wait for it to end
+2026-10-25T20:10:21.508Z outbox 01a17421: m-dcf01070-652b-4ec3-872b-da4edc713ee5 met the daemon's update prepare; it and the sends after it wait for it to end
+2026-10-25T20:10:21.512Z outbox 01a1724f: m-97cafc81-3d74-4df3-b67f-711ec4cdb55f met the daemon's update prepare; it and the sends after it wait for it to end
+2026-10-25T20:10:21.519Z outbox 01a16a55: m-0ba2ea43-e483-4b9c-a6a6-ab2089f05e5f met the daemon's update prepare; it and the sends after it wait for it to end
+open 01a1746b saved 46 messages: catalog 0ms, first page 202ms, queue 0ms, failed: Active session 680443071bdf is recovering; retry shortly, total 4331ms
+job 01a1746b: wake: Active session 680443071bdf is recovering; retry shortly
+2026-10-25T20:10:33.222Z hosts: copy mac: mac is offline (Tailscale last seen 31 min ago)
+2026-10-25T20:10:34.359Z outbox 01a172d1: the target has room, 0 of 20 unfinished; sending m-0bad02a1-72a1-4f50-a6d1-8ea0e8e27d3e
+2026-10-25T20:10:35.248Z relay: 01a172d1 (brief-fix5) is stopped; its message goes through its parent 01a1692b
+2026-10-25T20:10:35.416Z outbox 01a1692b: m-94e37a6c-ea31-4812-b385-1fa69313debc met the daemon's update prepare; it and the sends after it wait for it to end
+2026-10-25T20:10:37.289Z relay: 01a172d1 (brief-fix5) is stopped; its message goes through its parent 01a1692b
+2026-10-25T20:10:38.388Z relay: 01a172d1 (brief-fix5) is stopped; its message goes through its parent 01a1692b
+2026-10-25T20:10:46.779Z catalog: 75 projections in 60 s, median 133 ms, p90 195 ms, max 346 ms, own code median 100 ms, p90 120 ms, main thread 83% busy
+2026-10-25T20:10:47.029Z idle unload: Prime update 2429267-1792959011469 is preparing; no session is stopped until it ends
+chat 01a11ba8: held notices: Session 01a11ba8 is not on this box, and another box has not listed its sessions yet.; sent at the next tick
+open 01a174a4 saved 18 messages: catalog 12ms, first page 229ms, total 241ms
+open 01a1746b saved 46 messages: catalog 0ms, first page 230ms, total 230ms
+open 01a17421 saved 234 messages: catalog 0ms, first page 196ms, total 431ms
+open 01a11d24 saved 1000 messages: catalog 0ms, first page 240ms, total 502ms
+open 01a155b8 saved 1000 messages: catalog 0ms, first page 233ms, total 538ms
+open 01a15c6c saved 1000 messages: catalog 0ms, first page 237ms, total 544ms
+2026-10-25T20:10:48.700Z wakes: woke 01a17474-047b-7029-8775-9fcb9f1974c9 for run 40228363052, waited 1 min, queued 2 s after the tick began
+2026-10-25T20:10:48.785Z relay: 01a17474 (staging convex io) is stopped; its message goes through its parent 01a1180e
+catalog: copy us-metal02: Timed out after 1500ms waiting for the Prime Agent daemon handshake. Socket: /tmp/prime-agent-1001/daemon.sock. Daemon log: /home/sieun/.prime/agent/logs/daemon.sock.ee92e1d8.log.
+2026-10-25T20:10:50.461Z outbox 01a1180e: m-b33fd2b1-b3c5-411a-98a3-3419f0f40fcd met the daemon's update restart; it and the sends after it wait for it to end
+2026-10-25T20:10:52.711Z chats: the Prime daemon has a new supervisor; the pass over interrupted jobs runs soon
+2026-10-25T20:10:52.712Z outbox 01a11d24: the daemon's update prepare ended (restarted) after 31 s; m-91dafe1a-1a32-4c9a-b73a-1e2946a4177f goes again
+2026-10-25T20:10:52.712Z outbox 01a155b8: the daemon's update prepare ended (restarted) after 31 s; m-4b59c1e5-d57a-47c1-9875-42c53f1d727b goes again
+2026-10-25T20:10:52.712Z outbox 01a17421: the daemon's update prepare ended (restarted) after 31 s; m-dcf01070-652b-4ec3-872b-da4edc713ee5 goes again
+2026-10-25T20:10:52.712Z outbox 01a1724f: the daemon's update prepare ended (restarted) after 31 s; m-97cafc81-3d74-4df3-b67f-711ec4cdb55f goes again
+2026-10-25T20:10:52.712Z outbox 01a16a55: the daemon's update prepare ended (restarted) after 31 s; m-0ba2ea43-e483-4b9c-a6a6-ab2089f05e5f goes again
+2026-10-25T20:10:52.712Z outbox 01a1692b: the daemon's update prepare ended (restarted) after 17 s; m-94e37a6c-ea31-4812-b385-1fa69313debc goes again
+2026-10-25T20:10:52.712Z outbox 01a1180e: the daemon's update restart ended (restarted) after 2 s; m-b33fd2b1-b3c5-411a-98a3-3419f0f40fcd goes again
+dormant 01a1301d: idle 15 min, detached
+chat 01a11ba8: held notices: Session 01a11ba8 is not on this box, and another box has not listed its sessions yet.; sent at the next tick
+open 01a17474 saved 103 messages: catalog 0ms, first page 10ms, total 30ms
+2026-10-25T20:11:19.314Z wakes: woke 01a172c1-169e-761a-ab25-bcf9571a0b37 for its time, waited 9 min, queued 2 s after the tick began
+2026-10-25T20:11:19.314Z wakes: woke 01a15984-a584-7668-aaec-d5a67c824796 for run 40228838346, waited 9 min, queued 2 s after the tick began
+2026-10-25T20:11:19.314Z wakes: woke 01a115e2-9544-7204-b8db-8ce4d5319048 for run 40228838346, waited 9 min, queued 2 s after the tick began
+2026-10-25T20:11:19.642Z relay: 01a172c1 (reasons-fix) is stopped; its message goes through its parent 01a1695d
+2026-10-25T20:11:19.716Z relay: 01a1695d (staging-walk) is stopped; its message goes through its parent 01a1692b
+catalog schedules: Timed out after 30000ms waiting for the Prime Agent daemon response to "cron_list". Socket: /tmp/prime-agent-1001/daemon.sock. Daemon log: /home/sieun/.prime/agent/logs/daemon.sock.ee92e1d8.log.
+2026-10-25T20:11:23.386Z outbox 01a1180e: m-b33fd2b1-b3c5-411a-98a3-3419f0f40fcd try 2 (may have gone): Timed out after 30000ms waiting for the Prime Agent daemon response to "send_message". Socket: /tmp/prime-agent-1001/daemon.sock. Daemon log: /home/sieun/.prime/agent/logs/daemon.sock.ee92e1d8.log.
+2026-10-25T20:11:23.393Z outbox 01a11d24: m-91dafe1a-1a32-4c9a-b73a-1e2946a4177f try 2 (may have gone): Timed out after 30000ms waiting for the Prime Agent daemon response to "send_message". Socket: /tmp/prime-agent-1001/daemon.sock. Daemon log: /home/sieun/.prime/agent/logs/daemon.sock.ee92e1d8.log.
+2026-10-25T20:11:27.430Z outbox 01a11d24: m-91dafe1a-1a32-4c9a-b73a-1e2946a4177f is landed from the send at 2026-10-25T20:10:53.110Z; not sent again
+2026-10-25T20:11:28.212Z outbox 01a1180e: m-b33fd2b1-b3c5-411a-98a3-3419f0f40fcd is landed from the send at 2026-10-25T20:10:53.139Z; not sent again

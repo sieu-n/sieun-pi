@@ -22,6 +22,7 @@ import { processEvidence } from "../../src/proc-evidence.ts";
 import { harnessSlow, slowChatRead, workerMisses } from "../../src/harness-slow.ts";
 import { chatNamer, type DaemonFault, faultWords, type ListedSession, listedSessions, type QueueOverrun, readQueueOverruns, readReopenedSends, readServiceFaults, readSupervisorFaults, SLOW_MS } from "../../src/daemon-faults.ts";
 import { readRecords } from "../../src/orphan-services.ts";
+import { readUpdateSpans, type UpdateSpan } from "../../src/prime-update.ts";
 import { deliveryCandidates, outboxLandings, readSessionMarks, type SlotWaitTimeout, splitSlotWaits } from "../../src/slot-wait-timeouts.ts";
 import { CHECK_IN_DUTY_ID, type DutyRunRecord, type FlaggedSlice, type PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import { effectiveRun, metricStreaks, missStreak, newestReading } from "../../src/shared/duty-streak.ts";
@@ -186,7 +187,8 @@ export function sideOf(lines: readonly WatchLine[]): (line: WatchLine, view: Hos
  * only when the harness itself was slow in it, src/harness-slow.ts, and is a busy_minutes detail line otherwise), no start, wake or parked
  * job had waited over HOLD_MS, and no turn sat queued while pi-pool had a slot it was allowed to give it (`freeSlotWait`), and no open, status read, send or worker start
  * failed or ran over 30 s on any box (src/daemon-faults.ts), leaving out a timed-out send or status read whose session waited for a pi-pool
- * slot and went through, which is a slot_wait_timeout detail line (src/slot-wait-timeouts.ts). The other two are queue holds and open steps nobody
+ * slot and went through, which is a slot_wait_timeout detail line (src/slot-wait-timeouts.ts), and a call inside a Prime update restart its
+ * box's coordinator recorded, which is a prime_update detail line (src/prime-update.ts `updateSpan`). The other two are queue holds and open steps nobody
  * moves in all chats. The headline is what Settings > Hosts reads for Agent sessions once no session has worked for the quiet window
  * (`quietAgents`, owner c92 and his words of 10-19: "when everybody's asleep it should drop ram"). The rest is detail, with each
  * harness process far above its normal size (`oversized`).
@@ -728,6 +730,8 @@ export interface Inputs {
   listed?: ReadonlyMap<string, ListedSession>;
   /** The CI cache poller's heartbeat on this box (`readBeat`); absent or null, no CI cache line. */
   ciCache?: CacheBeat | null;
+  /** The Prime update restarts each box's coordinator recorded (src/prime-update.ts `readUpdateSpans`), by that box's name. */
+  primeUpdates?: readonly (UpdateSpan & { host: string })[];
 }
 
 /**
@@ -1072,7 +1076,14 @@ export function nameHungWorkers(faults: readonly DaemonFault[], watch: readonly 
 
 export function measure(input: Inputs): PrecheckOutput {
   const { now } = input;
-  const daemonFaults = nameHungWorkers(input.daemonFaults ?? [], input.watch);
+  // A call that failed inside a supported Prime update restart on its box met the update's planned stop, not a harness fault: at 20:10:21Z on
+  // 10-25 the crc.1 update's prepare made an open answer "Active session 680443071bdf is recovering; retry shortly", and two outbox sends the
+  // new supervisor took 30 s to answer while it restored 42 sessions landed on their first try at 20:10:53Z. A crash or hang in it stays Prime's.
+  const updates = input.primeUpdates ?? [];
+  const updateOf = (fault: DaemonFault) => fault.prime ? undefined : updates.find(update => update.host === fault.host && fault.at >= update.from && fault.at <= update.to);
+  const allFaults = nameHungWorkers(input.daemonFaults ?? [], input.watch);
+  const daemonFaults = allFaults.filter(fault => !updateOf(fault));
+  const updateFaults = allFaults.filter(fault => updateOf(fault));
   // The 30 whole wall-clock minutes before `now`'s, each read by the watch line in it; the watch samples at each minute's middle (`nextSampleAt`).
   const start = Math.floor(now / MINUTE) * MINUTE - WINDOW_MS;
   const flagged: FlaggedSlice[] = [];
@@ -1175,6 +1186,15 @@ export function measure(input: Inputs): PrecheckOutput {
     else if (unknown.length) { unknownMin++; unknownLines.push(`${clock(from)} ${unknown.join(", ")}`); }
     else clean++;
   }
+  const inWindow = updates.filter(update => update.to >= start && update.from < start + WINDOW_MS);
+  const updateMin = Array.from({ length: 30 }, (_, minute) => start + minute * MINUTE)
+    .filter(from => inWindow.some(update => update.from < from + MINUTE && update.to >= from)).length;
+  if (inWindow.length) flagged.push({ kind: "prime_update", excerpt: inWindow.map(update => {
+    const left = updateFaults.filter(fault => fault.host === update.host && fault.at >= update.from && fault.at <= update.to);
+    return `Prime update ${update.requestId} restarted the ${update.host} daemon from ${clock(update.from)} to ${clock(update.to)}; ` +
+      `${left.length} daemon call${left.length === 1 ? "" : "s"} that failed or ran over ${SLOW_MS / 1000} s inside it count as planned maintenance, not dirty` +
+      (left.length ? ` (${faultWords(left, faultName)})` : "");
+  }).join("; ") });
   const { stuck, redDuties } = planCounts(input);
   const quietMs = input.quietMs ?? QUIET_MINUTES * MINUTE;
   const quiet = quietReadings(input.watch, start, start + WINDOW_MS + MINUTE, quietMs);
@@ -1217,6 +1237,7 @@ export function measure(input: Inputs): PrecheckOutput {
     cell_wait_min_30: cellWait,
     daemon_fail_min_30: daemonFail,
     prime_fault_min_30: primeMin,
+    prime_update_min_30: updateMin,
     slot_wait_timeouts_30: slotWaits.length,
     offline_min_30: offlineAny,
     unwatched_min_30: unwatched,
@@ -1642,6 +1663,7 @@ async function main(): Promise<void> {
     // still runs jobs but leads nothing: counting archived chats as heads read 01a14210's 2,330 s wait as a head held at the 10:21Z run.
     smooth: readSmoothness(poolLines, new Set([...live, ...poolLead]), now - WINDOW_MS, now),
     daemonFaults,
+    primeUpdates: (await readUpdateSpans(join(dataDir, ".."))).map(update => ({ ...update, host: box })),
     workerMisses: workerPolls,
     queueOverruns,
     slotWaits,
