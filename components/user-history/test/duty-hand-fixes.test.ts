@@ -369,5 +369,5 @@ test("a staging A/B exec whose script writes no store is an experiment; unread, 
     assert.deepEqual(handExecs(box("virev-staging-crawler-api", "virev-staging,", [{ id: "w", command: cap, text: `${capText}\n${write}` }])).map(exec => exec.id), ["w"], write);
   const flagged = report({ now: AT, audit: {}, events: {}, errors: [], mac: [], box: { containers: [], execs: staging } }, await metrics(AT));
   assert.equal(flagged.metrics.hand_run_processes, 0);
-  assert.equal(flagged.flagged.filter(item => item.kind === "box_experiment").length, 2);
+  assert.equal((flagged.flagged ?? []).filter(item => item.kind === "box_experiment").length, 2);
 });
