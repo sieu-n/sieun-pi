@@ -1,3 +1,5 @@
+import type { Scenario } from "./session-read.ts";
+
 /**
  * Deferred admission for a clean-room scenario with fixture state: the chat is created with no first message and its check-in paused, its
  * fixtures and board are made, and only then does the head get its first message, after which the check-in resumes. In unrelated-ci-wait and
@@ -8,6 +10,10 @@
  * a lost response resumes where it stopped. It never seeds a chat whose head already has its first message, never sends the first message
  * twice, and never backdates anything: each step's time is the clock's at that step.
  */
+/** A scenario whose setup admits the head last (`admit`); its fixtures and board exist before the head's first message. */
+export type DeferredScenario = Scenario & { deferAdmission: true };
+export const isDeferred = (scenario: Scenario): scenario is DeferredScenario => "deferAdmission" in scenario && scenario.deferAdmission === true;
+
 export type AdmissionStep = "created" | "paused" | "fixtures" | "seeded" | "delivered" | "resumed";
 export interface AdmissionState {
   requestId: string;

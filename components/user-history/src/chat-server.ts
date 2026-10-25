@@ -993,7 +993,14 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
         const cwd = backend.catalog.isOtherHost(host) ? remoteWorkspace(text(body.cwd, "cwd", 1024), host!) : await resolveWorkspace(text(body.cwd, "cwd", 1024));
         const message = text(body.message, "message");
         const images = parseImages(body.images);
-        if (!message.trim() && !images.length) throw new RequestError(400, "Add a message or image.");
+        // A clean-room setup creates a chat with no first message and its check-in paused, makes the chat's fixtures and board, and only then
+        // sends the first message (scripts/clean-room/deferred-admission.ts): on 10-25 the head got its message at create and its first turn
+        // could race the board seed. Only an empty chat may defer; every other create still needs a message or an image.
+        const deferFirst = body.deferFirst === true;
+        if (deferFirst && (parseKind(body.kind) !== "chat" || message.trim() || images.length || body.account !== undefined || body.slack !== undefined)) {
+          throw new RequestError(400, "deferFirst makes an empty chat: send kind chat and no message, image, account or Slack setup.");
+        }
+        if (!deferFirst && !message.trim() && !images.length) throw new RequestError(400, "Add a message or image.");
         const provider = typeof body.provider === "string" ? text(body.provider, "provider", 128) : undefined;
         const modelId = typeof body.modelId === "string" ? text(body.modelId, "modelId", 256) : undefined;
         const thinkingLevel = typeof body.thinkingLevel === "string" ? text(body.thinkingLevel, "thinkingLevel", 16) as ThinkingLevel : undefined;
@@ -1003,7 +1010,7 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
         // A clean-room fixture's name is set before its first message goes (ThreadHub.create).
         const nameBeforeFirst = body.nameBeforeFirst === true;
         const syncSlack = kind === "chat" ? parseSlackSetup(body.slack) : undefined;
-        const fingerprint = createHash("sha256").update(JSON.stringify([cwd, host, provider, modelId, thinkingLevel, message, images, account, name, kind, nameBeforeFirst, syncSlack])).digest("hex");
+        const fingerprint = createHash("sha256").update(JSON.stringify([cwd, host, provider, modelId, thinkingLevel, message, images, account, name, kind, nameBeforeFirst, syncSlack, deferFirst])).digest("hex");
         let creation = creations.get(id);
         if (creation && creation.fingerprint !== fingerprint) throw new RequestError(409, "This request ID belongs to another new chat.");
         if (!creation) {
@@ -1016,11 +1023,13 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
             const slash = message.trimStart().startsWith("/");
             const startSkill = slash ? (await backend.newChat.read().catch(() => ({ startSkill: null }))).startSkill : null;
             const plain = !slash || (startSkill !== null && message.startsWith(`/skill:${startSkill} `));
-            const first = !account && !images.length && plain ? { message, mode } as const : undefined;
+            const first = !deferFirst && !account && !images.length && plain ? { message, mode } as const : undefined;
             const input = { cwd, ...(provider ? { provider } : {}), ...(modelId ? { modelId } : {}), ...(thinkingLevel ? { thinkingLevel } : {}), ...(host ? { host } : {}),
               ...(name ? { name } : {}), ...(first ? { first } : {}), ...(nameBeforeFirst ? { nameBeforeFirst } : {}) };
             // A chat is created with its name (a job replies to it by name), pinned and set to steering mode all; the server tick does its check-ins.
             const thread = kind === "chat" ? await backend.chats.create(input) : await backend.threads.create(input);
+            // An empty chat is paused before anything is on its board, so no check-in runs until its setup resumes it.
+            if (deferFirst) await backend.chats.setCheckIn(thread.id, { pause: "forever" }, checkInActor(req));
             // Both kinds go in threads.json: a thread this server created is the person's (origin "user"), whatever its session file says.
             await Promise.all([backend.created.add(thread.id).catch(() => {}), backend.newChat.remember(host ?? backend.catalog.selfHost() ?? thisBox(), cwd).catch(() => {})]);
             if (account) {
@@ -1034,7 +1043,7 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
             }
             // A thread the owner starts is high in the pool; its first turn is already admitted at once as the owner's (ThreadHub.prompt).
             await backend.poolPriorities?.set(thread.id, "high");
-            if (!first) await backend.threads.prompt(thread.id, { message, images, mode, owner: true });
+            if (!first && !deferFirst) await backend.threads.prompt(thread.id, { message, images, mode, owner: true });
             // The chat exists either way; a Slack refusal comes back as a notice and the header switch can try again.
             if (syncSlack) {
               const failure = !slack ? "This chat instance runs no Slack bridge." : await slack.chat(thread.id, { action: "connect", ...syncSlack }).then(() => null, (error: unknown) => error instanceof Error ? error.message : String(error));

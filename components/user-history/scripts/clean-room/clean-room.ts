@@ -8,7 +8,9 @@
  *
  *   node --import tsx scripts/clean-room/clean-room.ts setup --scenario checkin-real-task --criteria <file> --cwd <repo> --name <chat name> --every-min <n> --run <dir> [--chat <id>]
  *     (setup that stopped before its window line runs again with the same --run: it finds each create's outcome and never builds the project
- *     again; --chat adopts a chat in its own folder without building anything; a scenario with a control chat also takes --control-name <name>)
+ *     again; --chat adopts a chat in its own folder without building anything; a scenario with a control chat also takes --control-name <name>;
+ *     a scenario with deferAdmission makes the chat empty, files it, makes its fixtures and seeds its board before the head's first message,
+ *     and writes the order to <run>/admission.json; see deferred-admission.ts)
  *   node --import tsx scripts/clean-room/clean-room.ts reseed --run <dir>
  *   node --import tsx scripts/clean-room/clean-room.ts say --run <dir> --message <text>
  *   node --import tsx scripts/clean-room/clean-room.ts archive --run <dir>   (chat-tools-reopen: archives the chat alone once it is idle)
@@ -42,6 +44,8 @@ import { emptyBoard, parseBoard } from "../../src/shared/chat-board.ts";
 import type { ChatBoard } from "../../src/shared/types.ts";
 import { checkinGoalPush } from "./checkin-goal-push.ts";
 import { carriedRelease, carriedWait } from "./carried-wait.ts";
+import { admit, type AdmissionIo, type AdmissionState, type AdmissionStep, type DeferredScenario, isDeferred } from "./deferred-admission.ts";
+import { unrelatedCiControlled } from "./unrelated-ci-controlled.ts";
 import { unrelatedCiWait } from "./unrelated-ci-wait.ts";
 import { checkinJobSteer } from "./checkin-job-steer.ts";
 import { checkinPushControl } from "./checkin-push-control.ts";
@@ -71,7 +75,7 @@ import { ownerAsks } from "./owner-asks.ts";
 import { plainWords } from "./plain-words.ts";
 import { planAndDuties } from "./plan-and-duties.ts";
 import { taskAndUpkeep } from "./task-and-upkeep.ts";
-import { type RunState, type Scenario, sessionFiles } from "./session-read.ts";
+import { readSessionFile, type RunState, type Scenario, type SessionEvent, sessionFiles } from "./session-read.ts";
 import { endUnits, recordUnits, userSystemd } from "./trial-units.ts";
 import { fileTrialHarness, fileTrialName, keepTrialHarness, seedTrialHarness } from "../../src/trial-harness.ts";
 import { CLEAN_ROOM_SUBJECTS_FILE, fileSubjects, forgetSubjects } from "../../src/clean-room-subjects.ts";
@@ -95,7 +99,7 @@ const RELEASES = join(homedir(), ".local/share/sieun-pi-chat");
 const SCENARIOS: Record<string, Scenario> = { "carried-release": carriedRelease, "carried-wait": carriedWait, "checkin-goal-push": checkinGoalPush, "checkin-real-task": checkinRealTask, "checkin-push-control": checkinPushControl, "correction-refine": correctionRefine, "dm-replies": dmReplies, "english-jobs": englishJobs, "everyday-task": everydayTask, "import-speed": importSpeed,
   "checkin-job-steer": checkinJobSteer, "chat-tools-reopen": chatToolsReopen, "reopen-first-message": reopenFirstMessage, "kernel-revive": kernelRevive, "lost-brief": lostBrief, "ordinary-hour": ordinaryHour, "idle-unload": idleUnload, "owner-asks": ownerAsks, "plan-and-duties": planAndDuties, "task-and-upkeep": taskAndUpkeep, "soft-caps": softCaps, "step-ids": stepIds, "token-hook-resume": tokenHookResume, "wake-live": wakeLive, "box-browser-default": boxBrowserDefault, "box-tools": boxTools,
   "detached-report": detachedReport, "relative-duty": relativeDuty, "old-commit-tests": oldCommitTests, "readme-preview": readmePreview, "history-leftovers": historyLeftovers, "plain-words": plainWords, "saved-login": savedLogin , "job-cancel-cleanup": jobCancelCleanup,
-  "transcript-boundary": transcriptBoundary, "published-build-keep": publishedBuildKeep, "task-owner": taskOwner, "answer-data": answerData, "dry-message": dryMessage, "unrelated-ci-wait": unrelatedCiWait };
+  "transcript-boundary": transcriptBoundary, "published-build-keep": publishedBuildKeep, "task-owner": taskOwner, "answer-data": answerData, "dry-message": dryMessage, "unrelated-ci-wait": unrelatedCiWait, "unrelated-ci-controlled": unrelatedCiControlled };
 
 function args(argv: readonly string[]): { command: string; flags: Record<string, string> } {
   const [command = "", ...rest] = argv;
@@ -145,13 +149,13 @@ interface Pending { sandbox: string; creates: Record<string, CreateRecord> }
 const pendingFile = (run: string): string => join(run, "setup.pending.json");
 
 /** One `POST api/threads`, the route the New chat dialog uses, with no client timeout: the server answers once its create settles. */
-async function postCreate(srv: Server, record: CreateRecord): ReturnType<CreateIo["post"]> {
+async function postCreate(srv: Server, record: CreateRecord, extra: Record<string, unknown> = {}): ReturnType<CreateIo["post"]> {
   let status = 0;
   let text = "";
   try {
     const response = await fetch(srv.base + "api/threads", { method: "POST", headers: { "content-type": "application/json", "x-chat-token": srv.token, origin: srv.origin,
       ...(SELF ? { "x-chat-agent-session": SELF } : {}) },
-      body: JSON.stringify(createBody(record, MODEL)) });
+      body: JSON.stringify({ ...createBody(record, MODEL), ...extra }) });
     status = response.status;
     text = await response.text();
   } catch (error) { return { kind: "unknown", error: error instanceof Error ? `${error.message}${error.cause instanceof Error ? `: ${error.cause.message}` : ""}` : String(error) }; }
@@ -167,14 +171,16 @@ async function postCreate(srv: Server, record: CreateRecord): ReturnType<CreateI
  * Each POST starts the session's first turn before its answer gives the id, so the trial's harness store `harness` is filed under the name it
  * asks for first, and the server names the session before that turn (createBody).
  */
-async function createThread(srv: Server, run: string, pending: Pending, role: string, kind: "chat" | "thread", name: string, cwd: string, message: string, harness: string): Promise<{ id: string; name: string }> {
+async function createThread(srv: Server, run: string, pending: Pending, role: string, kind: "chat" | "thread", name: string, cwd: string, message: string, harness: string,
+  deferFirst = false): Promise<{ id: string; name: string }> {
   const save = (): void => writeJson(pendingFile(run), pending);
   const record = pending.creates[role] ??= { kind, name, names: [name], cwd, message, requestId: requestId(), since: Date.now() };
   const io: CreateIo = {
-    post: async one => { await fileTrialName(DATA, one.name, harness, one.since); return postCreate(srv, one); },
+    post: async one => { await fileTrialName(DATA, one.name, harness, one.since); return postCreate(srv, one, deferFirst ? { deferFirst: true } : {}); },
     find: async one => findSession(SESSIONS, one, new Set(await new IdIndex(join(DATA, "chats.json"), "Chat index").ids())),
     archive: async id => { await call(srv, "POST", `api/threads/${id}/archive`, { by: "service_cleanup" }).catch((error: unknown) => { if (!/: 404 /.test(String(error))) throw error; }); },
-    deliver: async (id, text, rid) => { await call(srv, "POST", `api/threads/${id}/prompt`, { message: text, images: [], mode: "steer", requestId: rid }); },
+    // An empty chat's first message goes later through `admit`, never from the create's reconcile.
+    deliver: async (id, text, rid) => { if (!deferFirst) await call(srv, "POST", `api/threads/${id}/prompt`, { message: text, images: [], mode: "steer", requestId: rid }); },
     save, log: line => log(run, line), newRequestId: requestId, sleep: ms => new Promise(resolve => setTimeout(resolve, ms)), now: Date.now,
   };
   const { id } = await createOrAdopt(record, io);
@@ -214,6 +220,90 @@ const copyOf = (path: string): ChatBoard => path ? parseBoard(readJson(path)) : 
 
 const liveRelease = (): string => { try { return readlinkSync(join(RELEASES, "current")); } catch { return "unknown"; } };
 
+/**
+ * Setup for a scenario that admits its head last (deferred-admission.ts): the chat is made empty with its check-in paused, filed as a
+ * clean-room chat, a subject of this trial and a user of the trial's harness store, its fixtures are made and its board seeded, and only then
+ * does the head get its first message, after which the check-in resumes. Each step is kept in the pending file, so a setup run again resumes
+ * without a second message or seed. The order with each step's time goes to `<run>/admission.json`.
+ */
+async function setupDeferred(run: string, scenario: DeferredScenario, sandbox: string, pending: Pending & { admission?: AdmissionState }, harness: string, srv: Server,
+  everyMin: number, flags: Record<string, string>): Promise<void> {
+  const asked = pending.creates.chat?.names[0] ?? need(flags, "name");
+  const headMessage = scenario.headMessage(asked);
+  const save = () => writeJson(pendingFile(run), pending);
+  const admission = pending.admission ??= { requestId: requestId(), order: [] };
+  save();
+  let name = pending.creates.chat?.name ?? asked;
+  const fixtures: Record<string, string> = {};
+  const fixtureBriefs: string[] = [];
+  let changes: string[] = [];
+  const firstUserText = (chat: string): string | undefined =>
+    readSessionFile(join(SESSIONS, `${chat}.jsonl`)).find((event): event is Extract<SessionEvent, { kind: "text" }> => event.kind === "text" && event.role === "user")?.text;
+  const io: AdmissionIo = {
+    createEmpty: async () => {
+      const made = await createThread(srv, run, pending, "chat", "chat", asked, sandbox, "", harness, true);
+      name = made.name;
+      await new IdIndex(join(DATA, CLEAN_ROOM_CHATS_FILE), "Clean-room chat index").add(made.id);
+      log(run, `created empty chat ${made.id} "${name}" in ${sandbox} with its check-in paused, filed in ${CLEAN_ROOM_CHATS_FILE}`);
+      return made.id;
+    },
+    pauseCheckIn: async chat => { await setCheckIn(srv, chat, { pause: "forever" }); log(run, `paused the check-in of ${chat}`); },
+    makeFixtures: async chat => {
+      // The chat is a subject of this trial and its sessions use the trial's harness store before any session of it takes a turn.
+      await fileTrialHarness(DATA, [{ id: chat, name }], harness);
+      const owner = trialOwner();
+      if (owner) await fileSubjects(DATA, { [chat]: { owner, run: resolve(run), name, at: Date.now() } });
+      log(run, owner ? `filed the trial owner ${owner} in ${CLEAN_ROOM_SUBJECTS_FILE} and ${harness} as the trial's harness store` : `no trial owner; filed ${harness} as the trial's harness store`);
+      const registry = jobRegistry(join(DATA, "chat-jobs.json"));
+      for (const fixture of scenario.fixtures) {
+        const logFile = join(run, `fixture-${fixture.name.replace(/\W+/g, "-")}.jsonl`);
+        const brief = fixture.brief({ chat, chatName: name, logFile, sandbox });
+        const { id } = await createThread(srv, run, pending, `fixture:${fixture.name}`, "thread", fixture.name, sandbox, brief, harness);
+        await registry.add([fixture.name, id], name, chat);
+        await fileTrialHarness(DATA, [{ id, name: fixture.name }], harness);
+        fixtures[fixture.name] = id;
+        log(run, `created fixture ${id} "${fixture.name}", filed under the chat in chat-jobs.json`);
+      }
+      return { ...fixtures };
+    },
+    seed: async (chat, made) => {
+      if (!scenario.board) return 0;
+      const seeded = scenario.board(copyOf(flags.board ?? ""), { fixtures: made, sandbox });
+      changes = seeded.changes;
+      await seedBoard(chat, seeded.board);
+      log(run, `seeded board rev ${seeded.board.rev} before the head's first message`);
+      return seeded.board.rev;
+    },
+    firstMessage: async chat => { const text = firstUserText(chat); return text === undefined ? "none" : text.trim() === headMessage.trim() ? "this" : "other"; },
+    deliver: async (chat, rid) => {
+      await call(srv, "POST", `api/threads/${chat}/prompt`, { message: headMessage, images: [], mode: "steer", requestId: rid });
+      log(run, `sent the head its first message (request ${rid})`);
+    },
+    resumeCheckIn: async chat => { await setCheckIn(srv, chat, { everyMs: everyMin * 60_000, pause: null }); log(run, `check-in every ${everyMin} min resumed`); },
+    save: state => { pending.admission = state; save(); },
+    now: Date.now,
+  };
+  const done = await admit(admission, io);
+  const chat = done.chat!;
+  Object.assign(fixtures, done.fixtures ?? {});
+  for (const fixture of scenario.fixtures) fixtureBriefs.push(fixture.brief({ chat, chatName: name, logFile: join(run, `fixture-${fixture.name.replace(/\W+/g, "-")}.jsonl`), sandbox }));
+  const at = (step: AdmissionStep): number => done.order.find(entry => entry.step === step)!.at;
+  // A check-in run of the chat before its resume would be one the pause did not hold: one that started a job voids the setup.
+  const runsFile = join(DATA, "duties", `${chat}.runs.jsonl`);
+  const early = (existsSync(runsFile) ? readFileSync(runsFile, "utf8").split("\n").filter(line => line.trim()) : [])
+    .map(line => JSON.parse(line) as { duty?: string; at?: number; job?: unknown }).filter(entry => entry.duty === "checkin" && (entry.at ?? Infinity) < at("resumed"));
+  writeJson(join(run, "admission.json"), { chat, requestId: done.requestId, seededRev: done.seededRev, order: done.order.map(entry => ({ ...entry, iso: new Date(entry.at).toISOString() })),
+    checkInsBeforeResume: early.length });
+  if (early.some(entry => entry.job !== undefined)) throw new Error(`${run}: a check-in of ${chat} started a job before its setup resumed it, so start a new run folder`);
+  const state: RunState = { scenario: scenario.name, chat: { id: chat, name }, fixtures, sandbox, everyMs: everyMin * 60_000, release: liveRelease(),
+    board: flags.board ?? "", seeds: [headMessage, ...fixtureBriefs], setupAt: at("created"), windowStart: at("created") };
+  writeJson(join(run, "run.json"), state);
+  writeFileSync(join(run, "setup.md"), scenario.setupNotes(state, changes));
+  rmSync(pendingFile(run), { force: true });
+  log(run, `admitted the head at ${new Date(at("delivered")).toISOString()} after ${done.order.map(entry => entry.step).join(", ")}; check-in every ${everyMin} min on ` +
+    `${state.release}; the measured window started at ${new Date(state.windowStart).toISOString()} and nobody steps in`);
+}
+
 async function setup(flags: Record<string, string>): Promise<void> {
   const scenario = SCENARIOS[need(flags, "scenario")];
   if (!scenario) throw new Error(`unknown scenario; known: ${Object.keys(SCENARIOS).join(", ")}`);
@@ -242,6 +332,10 @@ async function setup(flags: Record<string, string>): Promise<void> {
   const everyMin = Number(need(flags, "every-min"));
   const srv = await server();
   const control = scenario.control && flags["control-name"] ? { ...scenario.control, name: flags["control-name"] } : scenario.control;
+  if (isDeferred(scenario)) {
+    if (adopted || control) throw new Error(`${scenario.name} admits its head last, so it takes no --chat and no control chat`);
+    return setupDeferred(run, scenario, sandbox, pending, harness, srv, everyMin, flags);
+  }
   if (adopted && adoptedChat) {
     const named = adoptedChat.name || need(flags, "name");
     pending.creates.chat = { kind: "chat", name: named, names: [named], cwd: sandbox, message: scenario.headMessage(named), requestId: "", since: adoptedChat.at, id: adopted, adopted: true };

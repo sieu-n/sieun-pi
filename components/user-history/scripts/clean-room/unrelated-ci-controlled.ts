@@ -1,7 +1,8 @@
 import { join } from "node:path";
 import { emptyBoard, GOAL_PUSH_LINK } from "../../src/shared/chat-board.ts";
 import type { ChatBoard, PlanItem } from "../../src/shared/types.ts";
-import type { RunState, Scenario, Verdict } from "./session-read.ts";
+import type { RunState, Verdict } from "./session-read.ts";
+import type { DeferredScenario } from "./deferred-admission.ts";
 import { cachedRuns, judge as judgeOrdinary, parseRun, readDelivery } from "./unrelated-ci-wait.ts";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -19,7 +20,7 @@ import { basename } from "node:path";
 export const TASK = "get a separate job to sample the free space on this box's / every 15 minutes for the next 5 hours, as its own step. checking " +
   "its last sample against a fresh df and writing me a short page with all 20 readings and the trend is your own step, and it waits on the " +
   "sampling step. also have another job follow the land runs on auto-sns-agent's sieun/dev over the same 5 hours, wait on each one till it " +
-  "finishes, and keep a tally of each run's id, result and duration on its own step";
+  "finishes, and after each one update its own step's note with that run's id, result and duration, keeping a tally of all of them";
 
 export const FIXTURE = "archive shelf count";
 /** The controlled goal the fixture owns. Its number is a count of files in a folder the fixture creates once and never changes. */
@@ -80,8 +81,9 @@ export async function evaluate(run: string, state: RunState): Promise<{ verdict:
   return { verdict: base.verdict, text: base.text.replace(/^# Clean-room run ([^:]+): /, "# Clean-room run $1 (controlled): ") + note };
 }
 
-export const unrelatedCiControlled: Scenario = {
+export const unrelatedCiControlled: DeferredScenario = {
   name: "unrelated-ci-controlled",
+  deferAdmission: true,
   headMessage: () => TASK,
   prepare: run => prepareShelf(run),
   cleanup: state => { rmSync(state.sandbox, { recursive: true, force: true }); return `removed the trial folder ${state.sandbox} and its shelf`; },
