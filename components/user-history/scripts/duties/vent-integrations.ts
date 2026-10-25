@@ -18,6 +18,9 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  *   caller, read from otel.vent_calls by client.address. The console leaves refused calls out, so from 02:09Z on 10-25 the prod host services
  *   exporter on us-metal01 (64.34.205.243) got 401 on every Railway and Vercel call with a key Vent did not know, the Railway and Vercel
  *   panels froze, and this duty still read 100%. A keyless scanner gets the same refusal, and vent.key_present false leaves it out.
+ *   REVOKE_PROOF_AGENT leaves out the Railway services duty's own revoke proofs: ~/work/railway-breach-checks/vent/check sends each old Vent
+ *   caller key to prod once a day as vent-breach-check/1 and passes only when Vent refuses it, so on 10-25 at 08:35Z us-metal02 read as a
+ *   refused source and would every day that duty runs.
  * - vent_console_slow_reads_24h: how many of the 17 reads the prod Vent console runs cost 1 core-second or more on prod ClickHouse. vent-console-cost.py
  *   beside this file builds them with vent.telemetry_read and vent.health from apps/vent/src at origin/main, the build prod runs, runs each once
  *   through Grafana with a log_comment tag and reads its CPU from otel.query_cost. Until release 21 (10-25) prod's console decoded the whole
@@ -42,6 +45,7 @@ const VENT_CONSOLE_COST = join(dirname(fileURLToPath(import.meta.url)), "vent-co
 export const SLOW_READ_S = 1;
 /** The duty report carries at most 3 items per metric (board skill check-ins.md, rule 4, owner 10-15). */
 const ITEMS = 3;
+const REVOKE_PROOF_AGENT = "vent-breach-check/1";
 const HOUR_MS = 3_600_000;
 
 type LightName = "red" | "yellow" | "green" | "grey";
@@ -244,7 +248,8 @@ async function keyRefusals(token: string): Promise<KeyRefusal[]> {
   const sql = "SELECT `client.address` AS source, toFloat64(sum(greatest(toUInt64OrZero(`vent.count`), 1))) AS calls, " +
     "toFloat64(toUnixTimestamp64Milli(max(Timestamp))) AS last, arrayStringConcat(arraySort(groupUniqArrayIf(`vent.requested_integration`, `vent.requested_integration` != '')), ',') AS integrations " +
     "FROM otel.vent_calls WHERE ResourceAttributes['deployment.environment.name'] = 'production' AND Timestamp > now() - INTERVAL 24 HOUR " +
-    "AND `vent.outcome` = 'refused' AND `vent.error_code` = 'vent_unauthorized' AND `vent.key_present` = 'true' GROUP BY source";
+    "AND `vent.outcome` = 'refused' AND `vent.error_code` = 'vent_unauthorized' AND `vent.key_present` = 'true' " +
+    `AND \`user_agent.original\` != '${REVOKE_PROOF_AGENT}' GROUP BY source`;
   const { rows, column } = await clickhouse(token, sql);
   return Array.from({ length: rows }, (_, index) => ({
     source: String(column("source")[index]) || "no address", calls: Number(column("calls")[index]), last: Number(column("last")[index]),
