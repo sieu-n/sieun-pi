@@ -19,7 +19,7 @@ import { CHANGE_APPROACH_MISSES, fixStepStreak, metricStreaks } from "../../src/
 import { hasDoneLine, upkeepWords } from "../../src/shared/upkeep-title.ts";
 import { stalledSince } from "../../src/shared/stalled-calls.ts";
 import { daemonSessions, dutyFleet, type FleetDuty } from "./duty-fleet.ts";
-import { catalogCopyFiles, copyHosts, endsOnPoolWait, type HostHeldStep, planCounts, planInputs, POOL_TAIL_BYTES, stepSessions } from "./whole-system.ts";
+import { catalogCopyFiles, copyHosts, endsOnPoolWait, type HostHeldStep, mirroredSessions, planCounts, planInputs, POOL_TAIL_BYTES, stepSessions } from "./whole-system.ts";
 import { loadHosts, selfHost } from "../../src/hosts.ts";
 import { peerReach, readTailscaleStatus } from "../../src/host-reach.ts";
 import { type AwayHost, hostHolds } from "../../src/shared/host-hold.ts";
@@ -592,7 +592,7 @@ async function main(): Promise<void> {
   const jobs = jobsByChat(rows, plan.boards);
   const { self, away } = await awayHosts();
   const todos = [...plan.boards].flatMap(([chat, board]) => (board?.todos ?? []).map(todo => ({ chat, todo })));
-  const owned = planCounts({ ...plan, ...withCatalogOwners(plan, jobs, now), away: new Set(away.map(host => host.name)), hosts: copyHosts(parsed, self), holds: hostHolds(away, todos) });
+  const owned = planCounts({ ...plan, ...withCatalogOwners(plan, jobs, now), away: new Set(away.map(host => host.name)), hosts: copyHosts([...parsed, ...await mirroredSessions()], self), holds: hostHolds(away, todos) });
   const runsByChat = new Map(plan.chats.map(chat => [chat.id, chat.runs]));
   const poolCut = await poolCutJobs(owned.redDuties, runsByChat, id => listedSessions(copies, [id]).get(id)?.file);
   const counts = { ...owned, redDuties: withoutWorkingRuns(owned.redDuties, runsByChat, rows, now, poolCut, await poolTrees()) };

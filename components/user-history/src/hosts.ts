@@ -38,7 +38,8 @@ export type HostTool = (typeof HOST_TOOLS)[number];
 const NAME = /^[a-z0-9][a-z0-9-]*$/;
 export const CONFIG_DIR = join(homedir(), ".config/sieun-pi");
 export const HOSTS_FILE = join(CONFIG_DIR, "hosts.json");
-export const BRIDGE_DIR = join(homedir(), ".local/state/sieun-pi/hosts");
+/** Where the bridge sockets live. HOME is read at each call, so a test that points HOME at a temp folder writes there even when an earlier file in its process loaded this module. */
+export const bridgeDir = (): string => join(homedir(), ".local/state/sieun-pi/hosts");
 const UPGRADE = "prime-daemon";
 /** The relay's opt-in for slim attach snapshots (SLIM_HEADER in components/prime-relay/slim-snapshot.mjs). */
 const SLIM_HEADER = "x-prime-slim-snapshot";
@@ -299,7 +300,7 @@ export class HostBridge {
   private readonly sockets = new Set<Socket>();
   constructor(private readonly registry: HostsRegistry, private readonly options: { dir?: string; self?: Host | null; replaceLive?: boolean; log?: (line: string) => void } = {}) {}
 
-  private get dir(): string { return this.options.dir ?? BRIDGE_DIR; }
+  private get dir(): string { return this.options.dir ?? bridgeDir(); }
   private get self(): Host | null { return this.options.self === undefined ? selfHost(this.registry) : this.options.self; }
 
   socketPath(name: string): string {

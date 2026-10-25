@@ -8,8 +8,12 @@ import { HostReach, seenAgo } from "./host-reach.ts";
 import { HostBridge, selfHost, type Host, type HostsRegistry } from "./hosts.ts";
 import { SessionPeer } from "./session-peer.ts";
 
-/** Copies of other boxes' session files, refreshed by byte range, so readers that open a session file by path work for every host. */
-export const MIRROR_DIR = join(homedir(), ".cache/sieun-pi/hosts");
+/**
+ * Copies of other boxes' session files, refreshed by byte range, so readers that open a session file by path work for every host. HOME is read
+ * at each call: on 10-25 at 07:45Z a one-process run of the whole test suite loaded this module before mac-offline-first-frame.test.ts pointed
+ * HOME at a temp folder, and that test wrote its 2 fixture rows over the real Mac copy, so d9 could no longer place 5 held steps on the Mac.
+ */
+export const mirrorDir = (): string => join(homedir(), ".cache/sieun-pi/hosts");
 const RECONNECT_MS = 5000;
 /**
  * Another box's copy lists its roster (live sessions only) this often instead of following its roster_update stream. On 10-18 the Mac's stream
@@ -24,18 +28,18 @@ const CHANGE_DEBOUNCE_MS = 300;
 /** A copy brought up to date this recently is used as it is; a check-in tick asks for the same chat's file several times in a row. */
 const MIRROR_FRESH_MS = 2000;
 /** Where this box keeps its copy of another box's file. */
-export const mirrorPath = (host: Pick<Host, "name">, path: string): string => join(MIRROR_DIR, host.name, path);
+export const mirrorPath = (host: Pick<Host, "name">, path: string): string => join(mirrorDir(), host.name, path);
 
 /** The other box's path of a file named by its copy's path (`mirrorPath`); a path outside the copies comes back as it is. */
 export function remotePath(host: Pick<Host, "name">, path: string): string {
-  const prefix = join(MIRROR_DIR, host.name);
+  const prefix = join(mirrorDir(), host.name);
   return path.startsWith(prefix + "/") ? path.slice(prefix.length) : path;
 }
 
 type Remote = { host: Host; client: DaemonClient; peer: SessionPeer };
 
 /** Where this box keeps its copy of a box's session list (`SessionPeer`) across restarts. */
-export const copyPath = (name: string): string => join(MIRROR_DIR, `${name}.sessions.json`);
+export const copyPath = (name: string): string => join(mirrorDir(), `${name}.sessions.json`);
 
 /**
  * Each other box's row with its session file named by its local copy's path (`mirrorPath`), kept while that box's copy holds the same row
@@ -248,7 +252,7 @@ export class HostCatalogs {
     if (!remote || !full || this.prunedAt.get(name) === full) return;
     this.prunedAt.set(name, full);
     const keep = new Set(remote.peer.list().flatMap(row => (row.sessionFile ? [mirrorPath(remote.host, row.sessionFile)] : [])));
-    void pruneMirror(join(MIRROR_DIR, name), keep).then(gone => { if (gone.length) this.log(`hosts: removed ${gone.length} copies of ${name} files no row names`); },
+    void pruneMirror(join(mirrorDir(), name), keep).then(gone => { if (gone.length) this.log(`hosts: removed ${gone.length} copies of ${name} files no row names`); },
       error => this.log(`hosts: prune ${name} copies: ${error instanceof Error ? error.message : String(error)}`));
   }
 

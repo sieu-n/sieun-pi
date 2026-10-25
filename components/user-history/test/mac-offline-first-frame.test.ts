@@ -48,6 +48,7 @@ async function boxWithMac(t: TestContext, relayPort: number, online: boolean) {
     { name: "mac", hostname: "Sieuns-MacBook-Pro", address: "127.0.0.1", relayPort, token: "file:relay-tokens/mac", daemonSocket: "/tmp/mac-daemon.sock", roles: {} }] });
   const self = selfHost(registry, "us-metal02");
   const mac = registry.hosts[1]!;
+  assert.ok(copyPath("mac").startsWith(home + "/"), `the Mac copy ${copyPath("mac")} lies outside the test's HOME`);
   mkdirSync(join(home, ".cache/sieun-pi/hosts"), { recursive: true });
   writeFileSync(copyPath("mac"), JSON.stringify({ version: 1, fullAt: Date.now() - 3 * 3600_000, rows: [macRow(MAC_THREAD), macRow(NO_COPY)] }));
   const copy = mirrorPath(mac, macFile(MAC_THREAD));

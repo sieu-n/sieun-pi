@@ -25,7 +25,7 @@ import { HostReach } from "./host-reach.ts";
 import { relayWatch } from "./hosts.ts";
 import type { PromptCapture } from "./prompt-capture.ts";
 import { readHostCapture } from "./prompt-host-capture.ts";
-import { ARTIFACTS, dryLeftoverSource, hostLeftovers, leftoverSource, sshLeftovers } from "./job-leftovers.ts";
+import { artifactsRoot, dryLeftoverSource, hostLeftovers, leftoverSource, sshLeftovers } from "./job-leftovers.ts";
 import { ALERT_TRIAGE_DUTY, chatPoolPriority, dutyJobIds, dutyJobPriority, PoolPriorities } from "./chat-pool-priority.ts";
 import { agentQueue, type AgentQueue, type IdleEviction } from "./chat-agent-queue.ts";
 import { briefCheckRecord, deletedJobRecord, heldNoticeRecord, jobRegistry, checkRecord, quietJobRecord, relayRecord } from "./chat-sources.ts";
@@ -262,7 +262,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
           return await dutyJobs.start(chat, name, brief(chat.name), undefined, model);
         } },
       // resume_paused.py sends its continues to the live daemon itself, so a replay serve only reads the cut jobs.
-      interrupted: replay ? async () => { await cutJobs(dataDir, [...await chats.ids()], ARTIFACTS); return null; } : async (isJob, owners) => interruptedRuns.resumeJobs(isJob, id => threads.reopenFailed(id), owners, cut => writeResumePending(dataDir, cut, Date.now()),
+      interrupted: replay ? async () => { await cutJobs(dataDir, [...await chats.ids()], artifactsRoot()); return null; } : async (isJob, owners) => interruptedRuns.resumeJobs(isJob, id => threads.reopenFailed(id), owners, cut => writeResumePending(dataDir, cut, Date.now()),
         await cutJobs(dataDir, [...await chats.ids()]), async id => {
           await threads.abort(id);
           await threads.settled(id);

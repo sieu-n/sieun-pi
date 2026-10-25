@@ -1,7 +1,10 @@
 // Guards d9's stuck_steps_all in a chat whose check-in the owner paused: on 10-24 it read 0 while ops guy's p506 named a job unloaded 23 h before.
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
-import { copyHosts, type PlanInputs, planCounts } from "../scripts/duties/whole-system.ts";
+import { copyHosts, mirroredSessions, type PlanInputs, planCounts } from "../scripts/duties/whole-system.ts";
 import type { ChatBoard } from "../src/shared/types.ts";
 
 const OPS = "01a11af8-962e-773d-a19a-ee4104011987";
@@ -64,4 +67,33 @@ test("a paused chat's steps on an offline box count as stuck while no For you to
 test("a session both boxes' copies list runs on this box", () => {
   const hosts = copyHosts([{ host: "mac", rows: [{ sessionId: "s-both" }, { sessionId: "s-mac" }] }, { host: null, rows: [{ sessionId: "s-both" }, { sessionId: "s-metal" }] }], "us-metal02");
   assert.deepEqual([...hosts].sort(), [["s-both", "us-metal02"], ["s-mac", "mac"], ["s-metal", "us-metal02"]]);
+});
+
+// 10-25 08:25Z: a test had written 2 fixture rows over the Mac's catalog copy, so no copy listed frontend bro's chat or its jobs, and d9 counted
+// p330 and p332 as stuck while the Mac read offline and t30 was open. This box still kept the copy of the chat's file the Mac had listed.
+test("a paused chat that no catalog copy lists runs on the box whose copied files name it", async t => {
+  const dir = mkdtempSync(join(tmpdir(), "mirrored-sessions-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const MAC_JOB = "01a164b0-1111-7000-8000-000000000001";
+  const BOX_JOB = "01a16999-2222-7000-8000-000000000002";
+  mkdirSync(join(dir, "mac/Users/sieunpark/.prime/agent/session-artifacts", FRONT, "sub-1a2b3c4d"), { recursive: true });
+  writeFileSync(join(dir, "mac/Users/sieunpark/.prime/agent/session-artifacts", FRONT, "sub-1a2b3c4d", `${MAC_JOB}.jsonl`), "");
+  mkdirSync(join(dir, "mac/Users/sieunpark/.prime/agent/sessions"), { recursive: true });
+  writeFileSync(join(dir, "mac/Users/sieunpark/.prime/agent/sessions", `${FRONT}.jsonl`), "");
+  writeFileSync(join(dir, "mac.sessions.json"), "{}");
+  const mirrored = await mirroredSessions(dir);
+  assert.deepEqual(mirrored.map(copy => [copy.host, copy.rows.map(row => row.sessionId).sort()]), [["mac", [FRONT, MAC_JOB].sort()]]);
+  const fixture = [{ host: "mac", rows: [{ sessionId: "01a14e9a-0000-7000-8000-000000000001" }] }, { host: null, rows: [{ sessionId: BOX_JOB }, { sessionId: MAC_JOB }] }];
+  const hosts = copyHosts([...fixture, ...mirrored], "us-metal02");
+  assert.equal(hosts.get(FRONT), "mac");
+  assert.equal(hosts.get(MAC_JOB), "us-metal02", "a session this box's own copy lists runs here, whatever copies of its file remain");
+  const steps = { ...macBoard, plan: [{ ...macBoard.plan[0]!, children: [
+    { id: "p330", text: "5180 builds from the newest real app", status: "doing", job: "demo pin past list drop", sessionId: "01a16420-3333-7000-8000-000000000003", children: [] },
+    { id: "p332", text: "Your Mac branch's demo work reaches staging again", status: "doing", children: [] },
+    { id: "p309", text: "A prod release no longer takes search down", status: "doing", job: "schema promotes keep serving", sessionId: BOX_JOB, children: [] }] }] } as unknown as ChatBoard;
+  const input = { ...macPlan(new Map([["mac", { host: "mac", todo: "t30" }]])), boards: new Map([[FRONT, steps]]), named: new Map(), ownerActivity: new Map(), hosts };
+  const counts = planCounts(input);
+  assert.deepEqual(counts.stuck.flatMap(entry => entry.items), ["p309"]);
+  assert.deepEqual(counts.hostHeld.map(step => step.id), ["p330", "p332"]);
+  assert.deepEqual(planCounts({ ...input, hosts: copyHosts(fixture, "us-metal02") }).stuck.flatMap(entry => entry.items), ["p330", "p332", "p309"]);
 });

@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { createConnection } from "node:net";
 import { type DaemonAnswer, type UnloadClient, unloadRequest } from "./idle-unload.ts";
-import { type Handoff, type OrphanRecord, type OrphanService, type PreparedGroup, logPath, ORPHAN_SERVICES_DIR, readRecord, unitName, writeRecord } from "./orphan-services.ts";
+import { type Handoff, type OrphanRecord, type OrphanService, type PreparedGroup, logPath, orphanServicesDir, readRecord, unitName, writeRecord } from "./orphan-services.ts";
 
 /**
  * Handing a session's detached services to systemd --user scopes of their own, then freeing its kernel through the idle unload's kill, on
@@ -284,7 +284,7 @@ export function handoffSend(socketPath: string, timeoutMs = 30_000): HandoffSend
  * HANDOFF_CAPABILITY. `send` defaults to `client.request`, which needs a pinned prime-agent whose command table lists the three handoff
  * commands; the chat service passes `handoffSend` instead.
  */
-export function systemPorts(client: UnloadClient, dir = ORPHAN_SERVICES_DIR, send: HandoffSend = body => client.request(body as never, 30_000, { recoverable: false })): HandoffPorts {
+export function systemPorts(client: UnloadClient, dir = orphanServicesDir(), send: HandoffSend = body => client.request(body as never, 30_000, { recoverable: false })): HandoffPorts {
   const ask = async (body: Record<string, unknown>): Promise<{ success: true; data?: unknown } | Failure> => {
     try { return await send(body) as { success: true; data?: unknown } | Failure; }
     catch (error) { return { success: false, error: String(error) }; }

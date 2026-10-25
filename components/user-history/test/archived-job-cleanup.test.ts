@@ -30,7 +30,7 @@ test("a deleted job releases what it owns under a live chat and under an archive
   writeFileSync(join(bin, "systemctl"), `#!/bin/sh\necho "$*" >> ${calls}\ncase "$*" in\n  *show*) printf 'ActiveState=active\\nTransient=yes\\n' ;;\nesac\n`);
   chmodSync(join(bin, "systemctl"), 0o755);
   process.env.PATH = `${bin}:${path}`;
-  const { ARTIFACTS, deletedFolders, endLeftovers, leftoverSource } = await import("../src/job-leftovers.ts");
+  const { artifactsRoot, deletedFolders, endLeftovers, leftoverSource } = await import("../src/job-leftovers.ts");
   const { Chats } = await import("../src/chats.ts");
   const { IdIndex } = await import("../src/id-index.ts");
   const { loadRecord } = await import("../src/chat-brief.ts");
@@ -48,7 +48,7 @@ test("a deleted job releases what it owns under a live chat and under an archive
   const write = (file: string, text = "x") => { mkdirSync(join(file, ".."), { recursive: true }); writeFileSync(file, text); return file; };
   /** A job folder the daemon wrote: its record with `status`, its transcript, and its ownership record. */
   const job = (chat: string, sub: string, status: string, session: string, owned: { paths: string[]; units: string[] }) => {
-    const dir = join(ARTIFACTS, chat, sub);
+    const dir = join(artifactsRoot(), chat, sub);
     write(join(dir, "rlm-subagent.json"), JSON.stringify({ type: "rlm_subagent", childId: sub, status }));
     write(join(dir, `${session}.jsonl`), JSON.stringify({ type: "message", text: `used ${join(scratch, "shared", "helper.mjs")}` }) + "\n");
     write(join(dir, "owned.json"), JSON.stringify(owned));
@@ -57,7 +57,7 @@ test("a deleted job releases what it owns under a live chat and under an archive
   const tree = (name: string) => { write(join(scratch, name, "tree", "note.txt")); return join(scratch, name, "tree"); };
 
   // Prime makes a job's folder at its spawn, before the job makes anything, and a job's end deletes only a recorded path born after it.
-  for (const [chat, sub] of [[live, "sub-l1"], [archived, "sub-a1"], [archived, "sub-a2"], [archived, "sub-a3"], [unknown, "sub-u1"]]) mkdirSync(join(ARTIFACTS, chat!, sub!), { recursive: true });
+  for (const [chat, sub] of [[live, "sub-l1"], [archived, "sub-a1"], [archived, "sub-a2"], [archived, "sub-a3"], [unknown, "sub-u1"]]) mkdirSync(join(artifactsRoot(), chat!, sub!), { recursive: true });
   await pause(20);
   const liveTree = tree("live-job");
   job(live, "sub-l1", "deleted", sessionId(1), { paths: [liveTree], units: ["live-rig.service"] });
@@ -89,7 +89,7 @@ test("a deleted job releases what it owns under a live chat and under an archive
   let now = Date.parse("2026-10-19T12:43:20Z");
   const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")), {
     ...source(dir, {}, () => now), archived: new IdIndex(join(dir, "archived-chats.json"), "Archived chat index"),
-    deletedLeftovers: async chat => endLeftovers(leftoverSource, await deletedFolders(join(ARTIFACTS, chat))),
+    deletedLeftovers: async chat => endLeftovers(leftoverSource, await deletedFolders(join(artifactsRoot(), chat))),
   }, line => lines.push(line));
   await chats.adopt();
   await chats.archive(archived, "owner");

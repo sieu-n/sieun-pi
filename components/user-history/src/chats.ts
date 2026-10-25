@@ -43,7 +43,7 @@ import type { ChatAgent, ChatBoard, ChatBriefState, CheckInState, CheckInView, C
 import { chatBrief, type LoadRecord, reloadAction } from "./chat-brief.ts";
 import { BRIEF_CHECK_MAX_AGE_MS, type ChatLinks, type ChatSummary, type ChatThreads, type CheckInSource, CHECK_MAX_AGE_MS, type SubagentDelete } from "./chat-sources.ts";
 import { chatName, fileHasChatMarker, ownerStopSinceActive } from "./chat-guard.ts";
-import { ARTIFACTS, type Leftovers, sessionTree } from "./job-leftovers.ts";
+import { artifactsRoot, type Leftovers, sessionTree } from "./job-leftovers.ts";
 import { type CancelBy, cancelAsker, cancelPurpose, cancelWords, type JobCancel, jobPlace } from "./job-cancels.ts";
 import type { ArchiveBy } from "./service-archives.ts";
 import type { PrimeUpdate } from "./prime-update.ts";
@@ -512,8 +512,8 @@ export class Chats {
   }
 
   private async releaseArchivedJob(id: string, sessionFile: string, since: number): Promise<void> {
-    if (!sessionFile.startsWith(ARTIFACTS + "/") || !sessionFile.endsWith(`/${id}.jsonl`)) return;
-    const chat = sessionFile.slice(ARTIFACTS.length + 1).split("/")[0]!;
+    if (!sessionFile.startsWith(artifactsRoot() + "/") || !sessionFile.endsWith(`/${id}.jsonl`)) return;
+    const chat = sessionFile.slice(artifactsRoot().length + 1).split("/")[0]!;
     const dir = dirname(sessionFile);
     if (chat === id || !basename(dir).startsWith("sub-")) return;
     if (!this.chatIds.has(chat) && !(await this.mine([chat])).length) return;
@@ -859,7 +859,7 @@ export class Chats {
         this.log(`chat ${id.slice(0, 8)}: kept job ${childName(child)}: the daemon shows it running`);
         return result;
       }
-      await this.endLeftovers(id, childName(child), join(ARTIFACTS, id, child.id), sessionId, "was deleted.");
+      await this.endLeftovers(id, childName(child), join(artifactsRoot(), id, child.id), sessionId, "was deleted.");
       await this.source.deletedJobs?.add(id, child.id, now, listed);
       if (result === "not_held") this.log(`chat ${id.slice(0, 8)}: finished job ${childName(child)} is no longer a subagent of the chat (the daemon still lists its session); recorded, not tried again`);
       return result;
@@ -1088,7 +1088,7 @@ export class Chats {
         if (await this.source.waking?.(job.id) || await this.threads.sessionActive(job.id)) return;
         await this.threads.archive(job.id, "replaced_job_end");
         this.retired.add(job.id);
-        const left = await this.leftovers(job.chat, join(ARTIFACTS, job.id), job.id);
+        const left = await this.leftovers(job.chat, join(artifactsRoot(), job.id), job.id);
         this.log(`chat ${job.chat.slice(0, 8)}: archived replaced root ${job.name} instead of resuming it: ${job.steps.join(", ")} now name ${[...new Set(job.by)].join(", ")}; ` +
           `stopped ${left.stopped.map(entry => entry.pid).join(", ") || "no process"}, closed ${left.tabs} Aside tabs${copiesNote(left)}`);
       } catch (error) {
@@ -1277,7 +1277,7 @@ export class Chats {
           const path = await resumes.store.save({ chat: row.id, childId: id, job: agent.sender, steps: [], event: "no open step names it", brief,
             report: jobReport(messages, agent.sender), endedAt: now, ...model ? { model } : {} });
           await this.threads.archive(id, "idle_root_end");
-          const left = await this.leftovers(row.id, join(ARTIFACTS, id), id);
+          const left = await this.leftovers(row.id, join(artifactsRoot(), id), id);
           this.log(`chat ${row.id.slice(0, 8)}: archived idle root ${agent.name} (quiet ${quiet} min); saved state ${path}; stopped ${left.stopped.map(entry => entry.pid).join(", ") || "no process"}, closed ${left.tabs} Aside tabs${copiesNote(left)}`);
         } catch (error) {
           this.rootsEnded.delete(id);
@@ -1882,7 +1882,7 @@ export class Chats {
     const session = child.sessionId ?? this.subagents.get(id)?.find(row => row.id === child.id)?.sessionId;
     // The job's session folder names its own session and every one below it, before the daemon's list or the hub gives them (clean room
     // 10-18 01:46Z: "disk space check" set a time wake at 01:44:56Z and was told "ended its turn" 2 min later, with no session id known yet).
-    const folder = this.source.home ? join(this.source.home, ".prime", "agent", "session-artifacts", id, child.id) : join(ARTIFACTS, id, child.id);
+    const folder = this.source.home ? join(this.source.home, ".prime", "agent", "session-artifacts", id, child.id) : join(artifactsRoot(), id, child.id);
     const tree = (await sessionTree(folder).catch(() => ({ sessions: [] as string[] }))).sessions;
     for (const each of new Set([...session !== undefined ? [session] : [], ...tree])) if (await this.source.waking?.(each).catch(() => false)) return true;
     const wakes = await this.source.wakes?.(this.now()).catch(() => []) ?? [];

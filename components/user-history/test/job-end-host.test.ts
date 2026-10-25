@@ -9,7 +9,7 @@ import { test } from "node:test";
 
 const box = mkdtempSync(join(tmpdir(), "job-end-host-box-"));
 process.env.HOME = box;
-const { ARTIFACTS, endLeftovers, hostLeftovers, sshLeftovers } = await import("../src/job-leftovers.ts");
+const { artifactsRoot, endLeftovers, hostLeftovers, sshLeftovers } = await import("../src/job-leftovers.ts");
 type Source = Parameters<typeof endLeftovers>[0];
 const mac = { name: "mac", hostname: "Sieuns-MacBook-Pro", address: "100.66.173.18", relayPort: 7790, token: "file:x", daemonSocket: "/tmp/d.sock", ssh: "sieunpark@mac", roles: {} };
 const CHAT = "01a15427-145f-751d-ba15-d27b6c30f65f";
@@ -29,20 +29,20 @@ test("a Mac chat's job ends on the Mac, and the box stops the box units its reco
     calls.push([host.name, args]);
     return { stopped: [], tabs: 1, copies: [], artifacts: [], owned: ["/Users/sieunpark/scratch/bp"], units: [], elsewhere: ["bp-world.service"] };
   } });
-  const left = await ends.leftovers(join(ARTIFACTS, CHAT, "sub-63cc71f6"), JOB);
+  const left = await ends.leftovers(join(artifactsRoot(), CHAT, "sub-63cc71f6"), JOB);
   assert.deepEqual(calls, [["mac", ["end", `${CHAT}/sub-63cc71f6`, JOB]]]);
   assert.deepEqual(stops, [["bp-world.service"]]);
   assert.deepEqual([left.tabs, left.owned, left.units], [1, ["/Users/sieunpark/scratch/bp"], ["bp-world.service"]]);
   await ends.deleted(CHAT);
   assert.deepEqual(calls.at(-1), ["mac", ["deleted", CHAT]]);
   const boxChat = "01a1164b-4a2d-742d-b27a-82f086ed0200";
-  await ends.leftovers(join(ARTIFACTS, boxChat, "sub-c86d652b"));
+  await ends.leftovers(join(artifactsRoot(), boxChat, "sub-c86d652b"));
   await ends.deleted(boxChat);
   assert.equal(calls.length, 2, "a box chat's job ends on the box");
 });
 
 test("on a box with no systemd the units its records name come back as elsewhere and leave the record", async () => {
-  const job = join(ARTIFACTS, CHAT, "sub-63cc71f6");
+  const job = join(artifactsRoot(), CHAT, "sub-63cc71f6");
   mkdirSync(job, { recursive: true });
   writeFileSync(join(job, "owned.json"), JSON.stringify({ paths: [], units: ["bp-world.service"] }));
   const log: string[] = [];
@@ -65,14 +65,14 @@ test("a Mac job's end deletes the box trees its record names for the box and its
         : { stopped: [], tabs: 0, copies: [], artifacts: [], owned: [], units: [], sessions: [JOB],
           away: { "us-metal02": ["~/scratch/flow-at-scale-convex-scale", "~/scratch/../src", "~/.ssh"], far: ["~/scratch/far-tree"] } };
     } });
-  const left = await ends.leftovers(join(ARTIFACTS, CHAT, "sub-77630b38"), JOB);
+  const left = await ends.leftovers(join(artifactsRoot(), CHAT, "sub-77630b38"), JOB);
   assert.deepEqual(removed, [[join(box, "scratch", "flow-at-scale-convex-scale"), join(box, "scratch", JOB)]]);
   assert.deepEqual(calls.at(-1), ["far", ["away", "~/scratch/far-tree"]]);
   assert.deepEqual(left.owned, [join(box, "scratch", "flow-at-scale-convex-scale"), join(box, "scratch", JOB), "/home/u/scratch/far-tree"]);
 });
 
 test("a box record's paths on another box come back as away and stay in the record", async () => {
-  const job = join(ARTIFACTS, "01a1164b-4a2d-742d-b27a-82f086ed0200", "sub-c86d652b");
+  const job = join(artifactsRoot(), "01a1164b-4a2d-742d-b27a-82f086ed0200", "sub-c86d652b");
   mkdirSync(job, { recursive: true });
   writeFileSync(join(job, "owned.json"), JSON.stringify({ paths: [], units: [], hosts: { mac: ["~/scratch/mac-tree", "/etc/x"], "bad host": ["~/scratch/y"] } }));
   const written: unknown[] = [];

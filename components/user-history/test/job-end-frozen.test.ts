@@ -18,13 +18,13 @@ test("a deleted job's end keeps the shared and published trees its record wrongl
   const feed = join(work, "build-s2int1", "feed");
   t.after(() => { try { chmodSync(feed, 0o755); } catch { /* gone */ } rmSync(home, { recursive: true, force: true }); });
   process.env.HOME = home;
-  const { ARTIFACTS, endLeftovers, leftoverSource } = await import("../src/job-leftovers.ts");
+  const { artifactsRoot, endLeftovers, leftoverSource } = await import("../src/job-leftovers.ts");
   const write = (file: string) => { mkdirSync(join(file, ".."), { recursive: true }); writeFileSync(file, "x"); return file; };
   const older = join(work, "evidence-s2int1");
   write(join(older, "notes.txt"));
   const moved = write(join(home, "work", "other-job", "frozen-script.sh"));
   await pause(20);
-  const chat = join(ARTIFACTS, "01a14210-4e7d-72c3-aa67-e3d476f4e728", "sub-740c5dc9");
+  const chat = join(artifactsRoot(), "01a14210-4e7d-72c3-aa67-e3d476f4e728", "sub-740c5dc9");
   const job = join(chat, "sub-47ae7e89");
   const reader = join(chat, "sub-39111b17");
   mkdirSync(job, { recursive: true });

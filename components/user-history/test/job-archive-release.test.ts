@@ -25,7 +25,7 @@ test("the owner's archive of a job releases its own folder and its recorded path
   writeFileSync(join(bin, "systemctl"), "#!/bin/sh\nprintf 'ActiveState=inactive\\nTransient=yes\\n'\n");
   chmodSync(join(bin, "systemctl"), 0o755);
   process.env.PATH = `${bin}:${path}`;
-  const { ARTIFACTS, endLeftovers, leftoverSource } = await import("../src/job-leftovers.ts");
+  const { artifactsRoot, endLeftovers, leftoverSource } = await import("../src/job-leftovers.ts");
   const { Chats } = await import("../src/chats.ts");
   const { IdIndex } = await import("../src/id-index.ts");
   const { loadRecord } = await import("../src/chat-brief.ts");
@@ -38,7 +38,7 @@ test("the owner's archive of a job releases its own folder and its recorded path
   const files = new Map<string, string>();
   /** A job session folder under `parent` with its transcript, a file in its own scratch folder, and an optional owned.json. */
   const job = (parent: string, sub: string, session: string, owned?: { paths: string[]; units: string[] }) => {
-    const dir = join(ARTIFACTS, parent, sub);
+    const dir = join(artifactsRoot(), parent, sub);
     const file = write(join(dir, `${session}.jsonl`), JSON.stringify({ type: "session", id: session }) + "\n");
     write(join(scratch, session, "export", "package.json"));
     if (owned) write(join(dir, "owned.json"), JSON.stringify(owned));

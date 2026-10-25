@@ -13,7 +13,7 @@ export type WikiPageView = { path: string; title: string; url: string; dir: stri
 
 export const WIKI_TIMEOUT_MS = 5000;
 /** The llm-wiki checkout the dev server serves; the page's file is read from here when the dev server is down. */
-export const WIKI_CONTENT_DIR = join(homedir(), WIKI_CONTENT_HOME.slice(2));
+export const wikiContentDir = (): string => join(homedir(), WIKI_CONTENT_HOME.slice(2));
 const MAX_PATH = 2048;
 
 export function wikiPagePath(path: string): string {
@@ -48,7 +48,7 @@ export async function wikiOrigin(): Promise<string | null> {
  * (404, the read cap) is passed on with its text. No answer in 5 s, a refused connection or no wiki host falls back to the page's file
  * under the content folder; a page neither has is 502 with the wiki's silence named.
  */
-export async function readWikiPage(path: string, fetchImpl: typeof fetch = fetch, wiki?: string | null, contentDir = WIKI_CONTENT_DIR): Promise<WikiPageView> {
+export async function readWikiPage(path: string, fetchImpl: typeof fetch = fetch, wiki?: string | null, contentDir = wikiContentDir()): Promise<WikiPageView> {
   const clean = wikiPagePath(path);
   const origin = wiki === undefined ? await wikiOrigin() : wiki;
   const dir = dirname(join(contentDir, clean));

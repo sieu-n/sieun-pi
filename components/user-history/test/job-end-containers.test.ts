@@ -10,7 +10,7 @@ import { test } from "node:test";
 
 const box = mkdtempSync(join(tmpdir(), "job-end-containers-"));
 process.env.HOME = box;
-const { ARTIFACTS, endLeftovers, leftoverSource, mountedIn } = await import("../src/job-leftovers.ts");
+const { artifactsRoot, endLeftovers, leftoverSource, mountedIn } = await import("../src/job-leftovers.ts");
 type Source = Parameters<typeof endLeftovers>[0];
 const JOB = "01a1694a-d619-703c-8ccf-328d37540888";
 const rig = "/drive2/sieun/scratch/01a1694a-d619-703c-8ccf-328d37540888";
@@ -31,7 +31,7 @@ test("a job's end removes the containers on its folder before it deletes the fol
   t.after(() => rmSync(box, { recursive: true, force: true }));
   const folder = join(box, "scratch", JOB);
   mkdirSync(folder, { recursive: true });
-  const job = join(ARTIFACTS, "01a115e2-9544-7204-b8db-8ce4d5319048", "sub-9f6c8b05");
+  const job = join(artifactsRoot(), "01a115e2-9544-7204-b8db-8ce4d5319048", "sub-9f6c8b05");
   mkdirSync(job, { recursive: true });
   writeFileSync(join(job, `${JOB}.jsonl`), "{}\n");
   const steps: string[] = [];

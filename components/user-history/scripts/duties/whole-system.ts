@@ -1017,6 +1017,24 @@ export function copyHosts(copies: readonly { host: string | null; rows: readonly
   return out;
 }
 
+/**
+ * Each other box's sessions whose files or job folders this box keeps copies of (`mirrorPath` in src/host-catalogs.ts), as a copy with that box's
+ * name, for `copyHosts` to read after the catalog copies. The chat service prunes them after each full list, so only a box that listed the session
+ * leaves one. At 08:25Z on 10-25 the Mac's catalog copy held 2 test fixture rows, so d9 placed none of frontend bro's, ops guy's and SEO guy's steps
+ * on the offline Mac and read stuck_steps_all 5, while this box still kept the copy of frontend bro's chat file.
+ */
+export async function mirroredSessions(dir = join(homedir(), ".cache/sieun-pi/hosts")): Promise<{ host: string; rows: { sessionId: string }[] }[]> {
+  const hosts = (await readdir(dir, { withFileTypes: true }).catch(() => [])).filter(entry => entry.isDirectory()).map(entry => entry.name);
+  return Promise.all(hosts.map(async host => {
+    const ids = new Set<string>();
+    for (const path of await readdir(join(dir, host), { recursive: true }).catch(() => [] as string[])) {
+      const name = basename(path).replace(/\.jsonl$/, "");
+      if (SESSION_ID.test(name)) ids.add(name);
+    }
+    return { host, rows: [...ids].map(sessionId => ({ sessionId })) };
+  }));
+}
+
 /** The `host_held` slices of a check-in snapshot whose step is still open on the live board, each once. */
 export function hostHeldSlices(flagged: readonly FlaggedSlice[] | undefined, board: ChatBoard | null | undefined): FlaggedSlice[] {
   const open = new Set<string>();

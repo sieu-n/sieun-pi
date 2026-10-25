@@ -11,7 +11,8 @@ import { join } from "node:path";
  * (d7) and the watchdog. Prime stops a transferred service itself on an owner stop or delete, re-checked from its receipt; the delete here also
  * stops the scope and removes the record.
  */
-export const ORPHAN_SERVICES_DIR = join(homedir(), ".prime", "agent", "orphan-services");
+/** HOME is read at each call, so a test that points HOME at a temp folder writes there even when an earlier file in its process loaded this module. */
+export const orphanServicesDir = (): string => join(homedir(), ".prime", "agent", "orphan-services");
 
 /**
  * One handed-off service: the group Prime's receipt names, the scope that owns it, and where it writes. `pid` is the service and `pgid` its old
@@ -72,14 +73,14 @@ export async function writeRecord(dir: string, record: OrphanRecord): Promise<vo
 }
 
 /** The sessions whose records hold a handoff that has not reached `unloaded`, with the active session id that handoff began on. */
-export async function unfinishedHandoffs(dir = ORPHAN_SERVICES_DIR): Promise<{ sessionId: string; activeSessionId: string }[]> {
+export async function unfinishedHandoffs(dir = orphanServicesDir()): Promise<{ sessionId: string; activeSessionId: string }[]> {
   return (await readRecords(dir)).flatMap(record => {
     const open = record.handoffs.find(handoff => handoff.state !== "unloaded");
     return open ? [{ sessionId: record.sessionId, activeSessionId: open.activeSessionId }] : [];
   });
 }
 
-export async function readRecords(dir = ORPHAN_SERVICES_DIR): Promise<OrphanRecord[]> {
+export async function readRecords(dir = orphanServicesDir()): Promise<OrphanRecord[]> {
   const names = await readdir(dir).catch(() => [] as string[]);
   const records = await Promise.all(names.filter(name => name.endsWith(".json")).map(name => readRecord(dir, name.slice(0, -".json".length))));
   return records.filter((record): record is OrphanRecord => record !== null);
@@ -103,7 +104,7 @@ export async function logPath(pid: number): Promise<string | null> {
 export interface OrphanServiceLine { session: string; unit: string; pid: number; live: boolean; state: Handoff["state"]; command: string; log: string | null }
 
 /** Every service the records name, with `live` read from /proc. */
-export async function listOrphanServices(dir = ORPHAN_SERVICES_DIR, started = processStartId): Promise<OrphanServiceLine[]> {
+export async function listOrphanServices(dir = orphanServicesDir(), started = processStartId): Promise<OrphanServiceLine[]> {
   const lines: OrphanServiceLine[] = [];
   for (const record of await readRecords(dir)) {
     for (const handoff of record.handoffs) {
@@ -125,7 +126,7 @@ export const stopUnit = (unit: string): Promise<void> => new Promise(resolve => 
  * Stops the handed-off services of deleted sessions and removes their records. The scope stop reaches only the processes in that scope, so a
  * reused pid is never hit. Returns the units it stopped.
  */
-export async function stopOrphanServices(sessions: readonly string[], dir = ORPHAN_SERVICES_DIR, stop = stopUnit): Promise<string[]> {
+export async function stopOrphanServices(sessions: readonly string[], dir = orphanServicesDir(), stop = stopUnit): Promise<string[]> {
   const stopped: string[] = [];
   for (const session of new Set(sessions)) {
     if (!SESSION_ID.test(session)) continue;
