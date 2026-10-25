@@ -123,6 +123,9 @@ test("naming the entries of a 64 MB transcript never holds the event loop 100 ms
   writeFileSync(file, block.repeat(Math.ceil(64 * 1024 ** 2 / block.length)));
   // A gap counts the main thread's own CPU time, not wall time: the release suite on us-metal02 at load 125 to 157 on 80 cores on 10-25 read
   // wall gaps of 124 ms twice for code that passed alone, since a held core's wait for the scheduler is no work the sweep holds the loop for.
+  // Each test file runs in its own process, so other files' work never counts here. measured: on us-metal02 on 10-25 at 934b2b60 the longest
+  // CPU gap read 30 to 42 ms alone and 35 to 41 ms in 6 full suites at load 110 to 200, whose wall gaps read 67 to 186 ms, and a 200 ms busy
+  // loop added after each chunk read 229 to 241 ms.
   const cpuMs = (): number => { const used = process.threadCpuUsage(); return (used.user + used.system) / 1000; };
   let last = cpuMs();
   let lastWall = performance.now();
