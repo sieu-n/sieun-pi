@@ -61,3 +61,56 @@ test("a standing duty's met run with only informational findings starts no job; 
     duties.close();
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
+
+// On 10-25 the Wiki dream read wiki_problems_following 0 at 12:30Z and nothing read it again until 16:30Z, so a met duty with parts now gets
+// a push run each check-in interval (`pushMisses`). Its precheck flags every page retouched in 7 days on every run (76 at 08:27Z on 10-25),
+// so such a push run starts a job only when a part is off target.
+test("a push run of a met duty with parts starts no job while every part is on target, and starts one once a part is off", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "duty-push-remeasure-"));
+  try {
+    const out = join(dir, "out.json");
+    const precheck = join(dir, "precheck.mjs");
+    await writeFile(precheck, `import { copyFileSync } from "node:fs"; copyFileSync(${JSON.stringify(out)}, process.env.OUTPUT_FILE);`);
+    const store = new DutyStore(dir);
+    let now = Date.parse("2026-10-25T12:52:00Z");
+    const duty: Duty = {
+      id: "d4", name: "Wiki dream", ownerWords: "the main wiki all articles and whcih articles exist itself should always be up to date", goal: "no page behind code",
+      metrics: [{ key: "wiki_problems", label: "Wiki problems", op: "<=", target: 0, headline: true }],
+      schedule: { kind: "every", minutes: 24 * 60 }, precheck: { command: ["node", precheck], cwd: dir, timeoutMs: 30_000 },
+      onMiss: "Rewrite each page behind code.", status: "active", createdAt: now - 48 * 60 * MIN, updatedAt: now - 48 * 60 * MIN, runCount: 0, lastRunAt: now - 60 * MIN,
+    };
+    await store.update(CHAT, duties => { duties.push(duty); });
+    const result = (value: number) => ({ value, target: 0, op: "<=" as const, met: value <= 0 });
+    await store.appendRun(CHAT, { duty: "d4", at: now - 61 * MIN, trigger: "verify", ms: 1000, verdict: "met", summary: "", metrics: { wiki_problems: result(0) },
+      parts: { wiki_problems_following: result(0) } });
+    const started: string[] = [];
+    const duties = new Duties(store, {
+      isChat: async () => true, now: () => now, tickMs: 0, node: process.execPath,
+      jobs: {
+        chat: async id => ({ id, name: "AI harness", cwd: dir, board: id }),
+        working: async () => false,
+        retire: async () => {},
+        start: async (_chat, name) => { started.push(name); return { id: `job-${started.length}`, name }; },
+      },
+      checkIn: { view: async () => ({ everyMs: 60 * MIN }) as CheckInView, set: async () => null, run: async () => {} },
+    });
+    const retouched = { kind: "retouched", item: "auto-sns-agent:.claude/rules/app-crawler-v3.md", excerpt: "changed by 81 commits in 7 days" };
+    const push = async (following: number) => {
+      await writeFile(out, JSON.stringify({ metrics: { wiki_problems: 0, wiki_problems_following: following }, flagged: [retouched] }));
+      await duties.tick();
+      await duties.settled();
+      return (await store.runs(CHAT))[0]!;
+    };
+    const quiet = await push(0);
+    assert.equal(quiet.trigger, "push");
+    assert.ok(quiet.summary.endsWith(NOTHING_DUE), quiet.summary);
+    assert.deepEqual(started, []);
+    now += 30 * MIN;
+    assert.equal((await push(3)).at, quiet.at, "no push before the check-in interval");
+    now += 31 * MIN;
+    const behind = await push(3);
+    assert.equal(behind.trigger, "push");
+    assert.equal(started.length, 1, "a push run that reads a part off target starts its job");
+    duties.close();
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});

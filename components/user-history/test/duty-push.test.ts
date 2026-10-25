@@ -22,9 +22,35 @@ test("a met run with a part of a counted metric off target gets a push for that 
   assert.deepEqual(pushMisses(runs, COUNTED, EVERY, NOW), ["wiki_problems_following"]);
 });
 
-test("a met run with every part on target, or a part of no counted metric, gets no push", () => {
-  assert.equal(pushMisses([run(NOW - 20 * MIN, "met", { wiki_problems: 0, open_mistakes: 0 }, { wiki_problems_following: 0 })], COUNTED, EVERY, NOW), null);
+test("a met run with every part on target gets a push with no keys to read the parts again, and one with no part of a counted metric gets none", () => {
+  assert.deepEqual(pushMisses([run(NOW - 20 * MIN, "met", { wiki_problems: 0, open_mistakes: 0 }, { wiki_problems_following: 0 })], COUNTED, EVERY, NOW), []);
+  assert.equal(pushMisses([run(NOW - 5 * MIN, "met", { wiki_problems: 0, open_mistakes: 0 }, { wiki_problems_following: 0 })], COUNTED, EVERY, NOW), null);
   assert.equal(pushMisses([run(NOW - 20 * MIN, "met", { wiki_problems: 0, open_mistakes: 0 }, { lint_over_glide_x: 3 })], COUNTED, EVERY, NOW), null);
+  assert.equal(pushMisses([run(NOW - 24 * 60 * MIN, "met", { wiki_problems: 0, open_mistakes: 0 })], COUNTED, EVERY, NOW), null, "a met duty with no parts");
+});
+
+// The AI harness chat's d4 runs of 10-25 from 11:05Z on, as the runs file holds them, with the metrics that were on target left out. The
+// 11:41Z verify run's job ended with an after-job measure at 12:30:29Z that read every metric and part on target, and the duty was not read
+// again until its 16:30Z schedule run read wiki_problems 45 and wiki_problems_following 13.
+test("the Wiki dream's runs of 10-25 get a push within one check-in interval of 11:51Z instead of waiting for the 16:30Z schedule run", () => {
+  const counted = new Set(["wiki_problems", "open_mistakes", "mistakes_back", "dup_unjudged"]);
+  const green = { wiki_problems: 0, open_mistakes: 0, mistakes_back: 0, dup_unjudged: 0 };
+  const at = (time: string) => Date.parse(`2026-10-25T${time}Z`);
+  const reading = (time: string, verdict: "met" | "missed", metrics: Record<string, number>, following: number) => {
+    const { metrics: results, parts } = run(at(time), verdict, metrics, { wiki_problems_following: following });
+    return { at: at(time), verdict, summary: "", metrics: results, parts: parts! };
+  };
+  const job = (id: string) => ({ id, name: `wiki dream AI harness developer environment ${id}` });
+  const runs: DutyRunRecord[] = [
+    { ...run(at("11:51:29.687"), "met", green, { wiki_problems_following: 17 }), trigger: "verify" },
+    { ...run(at("11:41:00.554"), "met", green, { wiki_problems_following: 17 }), trigger: "verify", job: job("20:41"), after: reading("12:30:29.990", "met", green, 0) },
+    { ...run(at("11:05:53.337"), "missed", { ...green, wiki_problems: 1 }, { wiki_problems_following: 13 }), job: job("10-25 20:05"), after: reading("11:28:15.163", "met", green, 2) },
+  ];
+  const everyMs = 60 * MIN;
+  const first = [...Array(240).keys()].map(minute => at("12:31:00") + minute * MIN).find(now => pushMisses(runs, counted, everyMs, now) !== null);
+  assert.equal(first, at("12:52:00"));
+  assert.deepEqual(pushMisses(runs, counted, everyMs, first!), []);
+  assert.ok(first! <= at("13:30:00"));
 });
 
 test("a missed run still pushes on its counted misses, and no run gets a push before the check-in interval", () => {
@@ -35,7 +61,7 @@ test("a missed run still pushes on its counted misses, and no run gets a push be
 test("the after-job measure judges the push: its parts replace the run's own", () => {
   const ran = run(NOW - 40 * MIN, "met", { wiki_problems: 0, open_mistakes: 0 }, { wiki_problems_following: 4 });
   const after = { at: NOW - 20 * MIN, verdict: "met" as const, summary: "", metrics: ran.metrics, parts: { wiki_problems_following: result(0) } };
-  assert.equal(pushMisses([{ ...ran, after }], COUNTED, EVERY, NOW), null);
+  assert.deepEqual(pushMisses([{ ...ran, after }], COUNTED, EVERY, NOW), []);
 });
 
 test("an older run's after-job measure that is newer than a later run's reading judges the push", () => {

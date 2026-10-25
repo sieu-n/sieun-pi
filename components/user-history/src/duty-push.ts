@@ -32,6 +32,11 @@ function endedUnpushed(runs: readonly DutyRunRecord[]): boolean {
  * the verdict waits to count. The Wiki dream's `wiki_problems_following` counts pages behind their code for less than the time one push run
  * and one rewrite take, so they are rewritten before they count; on 10-20 cited code changed under 20 pages in the 15 min after 48 were
  * rewritten. Until then no duty's met run had a part off target, so this pushes no other duty.
+ *
+ * A met run whose counted metric has parts gets a push with no keys (`[]`) once it is `everyMs` old even with every part on target, so a page
+ * that falls behind later is seen within one interval; the push run starts no job when it reads met with every part on target (`run` in
+ * src/chat-duty-run.ts). On 10-25 the Wiki dream's after-job measure of 12:30Z read wiki_problems_following 0, no run read d4 again until its
+ * 16:30Z schedule run, and that run read wiki_problems 45 and wiki_problems_following 13.
  */
 export function pushMisses(runs: readonly DutyRunRecord[], counted: ReadonlySet<string>, everyMs: number, now: number): string[] | null {
   const newest = runs[0];
@@ -47,6 +52,6 @@ export function pushMisses(runs: readonly DutyRunRecord[], counted: ReadonlySet<
     return owed.length ? owed : null;
   }
   if (now - newest.at < everyMs) return null;
-  const parts = missedKeys({ metrics: measured.parts ?? {} }).filter(key => [...counted].some(metric => key.startsWith(`${metric}_`)));
-  return parts.length ? parts : null;
+  const parts = Object.fromEntries(Object.entries(measured.parts ?? {}).filter(([key]) => [...counted].some(metric => key.startsWith(`${metric}_`))));
+  return Object.keys(parts).length ? missedKeys({ metrics: parts }) : null;
 }

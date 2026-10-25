@@ -386,9 +386,10 @@ export class Duties {
     // A miss whose fix step waits on the owner's open For you todo (`hold`) owes no fix job, as d9 reads it, so a push run for it starts a job
     // with nothing to do. From 10-24 19:30Z to 02:08Z on 10-25 vent's d1 got 14 push runs, each with a job, while p79 waited on t15, and SEO
     // guy's d2 got one every 2 h while p101 waited on t30. The duty's own schedule still measures it, and a push comes back once the todo closes.
-    if (misses.every(miss => fixes[miss]?.hold !== undefined)) return;
+    if (misses.length && misses.every(miss => fixes[miss]?.hold !== undefined)) return;
     if (this.afters.has(key)) return;
-    if (this.start(chatId, duty.id, "push", this.now())) this.log(`duty ${chatId.slice(0, 8)}/${duty.id}: red on ${misses.join(", ")} with no job at work on it; a push run starts`);
+    if (this.start(chatId, duty.id, "push", this.now())) this.log(`duty ${chatId.slice(0, 8)}/${duty.id}: ${misses.length ? `red on ${misses.join(", ")} with no job at work on it`
+      : "met with parts that can fall behind, unread for the check-in interval"}; a push run starts`);
   }
 
   /**
@@ -1169,7 +1170,11 @@ export class Duties {
     // A met run whose findings name no item and hand nothing off has nothing due: the duties' own onMiss says "All on target: end with no
     // message". From 10-23 08:00Z to 10-24 08:00Z standing duties started 57 jobs on met runs, 27 of them d7's, each one a place in pi-pool's
     // turn line behind the red duties' fix jobs (median wait 40 min at 09:05Z to 09:35Z on 10-24). The run still ends the last job (`launch`).
-    const idle = record.verdict === "met" && !misses.length && !record.overrun && !flagged.some(slice => slice.item !== undefined || slice.handOff);
+    // A push run chases misses and parts off target (`pushMisses`), so once it reads met with every part on target it has nothing due either,
+    // even when its findings name items: the Wiki dream flags every page retouched in 7 days (76 at 08:27Z on 10-25) on every run.
+    const acts = trigger === "push" ? Object.values(record.parts ?? {}).some(part => !part.met) || flagged.some(slice => slice.handOff)
+      : flagged.some(slice => slice.item !== undefined || slice.handOff);
+    const idle = record.verdict === "met" && !misses.length && !record.overrun && !acts;
     this.steps.set(key, { at: started, step: "starting its job" });
     const measured = record.verdict === "met" || record.verdict === "missed" ? { at: started, verdict: record.verdict, metrics: record.metrics, summary: record.summary,
       ...(record.parts ? { parts: record.parts } : {}), ...(record.items ? { items: record.items } : {}) } : null;
