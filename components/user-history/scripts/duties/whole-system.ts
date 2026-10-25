@@ -888,7 +888,10 @@ export function planCounts(input: PlanInputs): { stuck: StuckSteps[]; redDuties:
     // A step whose owners all run on an offline box that a For you todo asks the owner to bring back waits on him (`pausedHold`), as a
     // check-in's host_held slice does: at 10:03Z on 10-24 frontend bro's p330 and p332 counted while their jobs sat on the Mac, off Tailscale.
     if (chat.paused) {
-      const board = input.boards?.get(chat.id);
+      // Its waits read the open todos of the other chats they name (`withLinkedBoards`), wherever those chats run: at 08:19Z on 10-25 SEO guy's
+      // p101 waited on "01a15427-145f-751d-ba15-d27b6c30f65f t30", sep launch!!'s open ask to wake the Mac, and counted as stuck.
+      const own = input.boards?.get(chat.id);
+      const board = own ? withLinkedBoards(own, chat.id, input.boards!) : own;
       const items = unmovedSteps(board, input.now, chat.everyMs, input.ownerActivity ?? new Map(), live, input.named?.get(chat.id));
       const held = new Map<string, HostHold>();
       const unmoved: PlanItem[] = [];

@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { parseAgentQueue, poolExecutable } from "../../src/chat-pool.ts";
-import { heldByTodo } from "../../src/shared/todo-hold.ts";
+import { heldByTodo, withLinkedBoards } from "../../src/shared/todo-hold.ts";
 import { planRiskSteps } from "../../src/checkin-findings.ts";
 import { LIVE_GAP_MS, OPEN, parkedBy, walk } from "../../src/checkin-steps.ts";
 import { listedSessions } from "../../src/daemon-faults.ts";
@@ -616,7 +616,9 @@ async function main(): Promise<void> {
     const under = duty.fix && duty.metric ? { underFix: fixStepStreak(own, duty.metric.key, duty.fix, itemsAbove(plan.boards.get(duty.chat) ?? null, duty.fix)) } : {};
     return { ...duty, ...under, ...since === undefined ? {} : { agingSince: since } };
   });
-  const idleGoals = plan.chats.filter(chat => !plan.pausedChats.has(chat.id)).map(chat => ({ chat: chat.id, goals: goalsWithNoJob(plan.boards.get(chat.id) ?? null,
+  // A wait that names another chat's open todo holds its step, wherever that chat runs (`withLinkedBoards`).
+  const linked = (chat: string): ChatBoard | null => { const board = plan.boards.get(chat); return board ? withLinkedBoards(board, chat, plan.boards) : null; };
+  const idleGoals = plan.chats.filter(chat => !plan.pausedChats.has(chat.id)).map(chat => ({ chat: chat.id, goals: goalsWithNoJob(linked(chat.id),
     { now, named: plan.named.get(chat.id) ?? new Map(), jobs: jobs.get(chat.id) ?? [], activity: plan.ownerActivity, waking: plan.waking, poolWaiting: plan.poolWaiting,
       onHost: new Set(hostHeld.filter(step => step.chat === chat.id).map(step => step.id)) }) }));
   // The pushes the last run's job sent: those recorded after the last run of this duty began (LAST_RUNS_FILE, newest first).
@@ -631,7 +633,7 @@ async function main(): Promise<void> {
     const reached = file ? pushReached(await tail(file.file, TRANSCRIPT_TAIL_BYTES), push.tag) : { delivered: false, read: false };
     const offline = file && away.some(host => host.name === file.host) ? { away: file.host } : {};
     followUps.push({ push, ...reached, jobStarted: (jobs.get(push.chat) ?? []).some(row => ms(row.created) > push.at), ...offline,
-      ...pushSettled(plan.boards.get(push.chat) ?? null, push.items) ? { settled: true } : {} });
+      ...pushSettled(linked(push.chat), push.items) ? { settled: true } : {} });
   }
   const result = chatSystemOutput({ names, stuck, upkeep, fleet: { pct: fleet.metrics.duties_green_pct, red }, stuckDuties: counts.redDuties, idleGoals, followUps, detail, hostHeld });
   const fleetMissing = fleet.flagged.filter(slice => slice.kind === "fleet_data_missing");
