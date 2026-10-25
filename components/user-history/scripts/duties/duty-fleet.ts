@@ -243,7 +243,10 @@ export async function dutyFleet(options: { dataDir: string; now: number; session
         const { byId, linked } = boardSteps(board);
         // A run records its fixes when it runs, so the board says now whether a step closed since: a done or dropped step is never a fix.
         const open = (step: string): boolean => { const item = byId.get(step); return item === undefined || OPEN.has(item.status); };
-        if (entry.metric?.fix && !open(entry.metric.fix.step)) delete entry.metric.fix;
+        // A recorded fix holds only while its step still carries the metric's duty link: at 21:35Z on 10-25 Crawler VP moved d5/crawler_risks_firing
+        // from p952 to p998, and d5's 21:24Z run, its newest for a day, kept naming p952, so d9 asked to replace a fix already replaced.
+        const carries = (fix: FixLink, key: string): boolean => open(fix.step) && (board === null || byId.get(fix.step)?.duty === `${duty.id}/${key}`);
+        if (entry.metric?.fix && !carries(entry.metric.fix, entry.metric.key)) delete entry.metric.fix;
         held ??= board ? await withBoardLinks(board, id, other => boards.read(other)) : null;
         const hold = dutyHold(duty.id, streaks.map(item => item.key), held);
         if (hold) entry.held = hold;
@@ -263,12 +266,12 @@ export async function dutyFleet(options: { dataDir: string; now: number; session
             return (item: PlanItem) => ownerOf(item, facts)?.state === "working" || fixJobLive(item, id, rows, asleep, new Set(), now, stalls);
           })();
           const working = live;
-          // The lead metric's fix first, then the other missed metrics': for each, the live fix the run recorded while its step stays open, else an
+          // The lead metric's fix first, then the other missed metrics': for each, the live fix the run recorded while its step stays open with the link (`carries`), else an
           // open step linked to it whose job works now. On 10-18 at 00:46Z the AI harness chat's d7 missed clean_min_30, whose recorded fix p528
           // was done while p559 worked on it, and this named p529, the fix of stuck_steps_all.
           const fixOf = (key: string): FixLink | undefined => {
             const recorded = newest.fixes?.[key];
-            if (recorded?.live && open(recorded.step)) return recorded;
+            if (recorded?.live && carries(recorded, key)) return recorded;
             const item = linked.get(`${duty.id}/${key}`)?.find(working);
             return item && { step: item.id, ...item.job ? { job: item.job } : {}, live: true };
           };

@@ -117,3 +117,26 @@ test("a red duty's line counts the runs in a row its named metric missed, not th
     assert.equal(fleet.metrics.stuck_duties, 0, "one miss of its metric is no stuck duty");
   } finally { await rm(dataDir, { recursive: true, force: true }); }
 });
+
+// 10-25 21:32Z: d9 read Crawler VP's d5 as fix_not_moving under p952, while at 21:35Z the chat had moved d5/crawler_risks_firing to p998 and its
+// create_session job; d5 runs daily, so its 21:24Z run kept recording p952 as the fix for a day.
+test("a recorded fix whose step no longer carries the duty link gives way to the linked step whose job works", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "duty-fleet-"));
+  try {
+    const chat = "chat-crawler", root = "01a1702b-7ba4-7588-b36b-86711091ca98", now = Date.parse("2026-10-25T22:00:00Z");
+    await writeFile(join(dataDir, "chats.json"), JSON.stringify({ ids: [chat] }));
+    await mkdir(join(dataDir, "duties"), { recursive: true });
+    await mkdir(join(dataDir, "boards"), { recursive: true });
+    await writeFile(join(dataDir, "duties", `${chat}.json`), JSON.stringify({ version: 1, duties: [duty("d5", "crawler_risks_firing", "<=", 0)] }));
+    const step = (id: string, extra: object) => ({ id, text: `step ${id}`, status: "doing", children: [], ...extra });
+    const plan = [step("p952", { job: "nvme0 and root disk writes root cause" }), step("p998", { job: root, sessionId: root, duty: "d5/crawler_risks_firing" })];
+    await writeFile(join(dataDir, "boards", `${chat}.json`), JSON.stringify({ v: 2, rev: 1, plan, todos: [], updatedAt: new Date(now).toISOString() }));
+    const store = new DutyStore(dataDir);
+    for (let at = 1; at <= CHANGE_APPROACH_MISSES; at++) await store.appendRun(chat, { ...run("d5", "crawler_risks_firing", 1, 0, "<=", false, at * 1_000),
+      fixes: { crawler_risks_firing: { step: "p952", job: "nvme0 and root disk writes root cause", live: true } } } as never);
+    const sessions = [{ sessionId: root, activity: "working", lastActivityAt: new Date(now).toISOString() }];
+    const fleet = await dutyFleet({ dataDir, now, sessions: () => sessions });
+    const d5 = fleet.duties.find(entry => entry.duty === "d5")!;
+    assert.deepEqual([d5.fix, d5.metric?.fix?.step, d5.stuck], ["p998", "p998", false]);
+  } finally { await rm(dataDir, { recursive: true, force: true }); }
+});
