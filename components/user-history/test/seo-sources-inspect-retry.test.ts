@@ -3,6 +3,8 @@
 // and read PASS when inspected again. On 10-18 from 16:45:24Z to 16:48:36Z Google answered 500 or 503 to 81 calls of one 32-thread run.
 // The stub's session() takes no argument, like virev_seo.gsc.session since auto-sns-agent c45b315b39 (10-25 15:12Z), whose Vent mints the
 // scope per call. seo-sources.py inspect still called gsc.session(write=True) after it, so every d2 run read source_errors 1.
+// Like virev_seo.gsc.VentSession.post since auto-sns-agent 64f4b0ac4, the stub session counts each inspection POST itself, so the quota
+// assertions also catch seo-sources.py counting a POST a second time.
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -47,6 +49,8 @@ class _Resp:
 class _Session:
     def post(self, url, json=None):
         with _lock:
+            if url == INSPECT_URL:
+                _quota_add(quota_day(), 1)
             _posts.append(json["inspectionUrl"])
             n = len(_posts)
             with open(POSTS, "a") as f:

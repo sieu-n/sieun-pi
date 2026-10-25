@@ -1,5 +1,6 @@
 // Guards the 10-20 07:40Z d9 push: SEO guy's d2 read new_unindexed_3d 1 with no lastEventAt, so d9 read the count as a lagging window.
-// The count is open: each run inspects every counted article again, so it dates this run and stays live until Google indexes the article.
+// The count is open: each run reads every counted article's verdict from this UTC quota day, so it dates this run and stays live until
+// Google indexes the article.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { measureArticles, UNMEASURED, type ArticlesState, type InspectRead } from "../scripts/duties/seo-new-articles.ts";

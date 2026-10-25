@@ -10,7 +10,8 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  * 1. the live blog sitemap (https://virev.ai/blog/sitemap.xml lists every locale; an article is a <url> with a <lastmod>), and each
  *    article page it has not seen answer 200 yet, for its status and article:published_time;
  * 2. URL Inspection (seo-sources.py inspect, counted in metrics/inspect-quota.json) for articles that went live in the last 14 days, are live
- *    3 or more days, and that no earlier inspection in metrics/*.json or this duty's state saw indexed;
+ *    3 or more days, and that no earlier inspection in metrics/*.json or this duty's state saw indexed, at most once per article per
+ *    quota day (see quotaDay);
  * 3. for detail lines only: metrics/indexnow-sent.json of the SEO program, for sitemap URLs `seo indexnow --new` would still send, and the
  *    program's ledger.jsonl, for checks past their date with no result and the share of the last 30 days' scored checks that won.
  * The state keeps each article's first-seen day, so the day an article went live is the day the sitemap first listed it. On the first run
@@ -30,8 +31,8 @@ export const UNMEASURED = 999_999;
  * new_unindexed_3d <= 0: articles that went live in the last NEW_WINDOW_DAYS days, live INDEX_AFTER_DAYS or more days, that Google has not
  * indexed. A published article that nobody can find is not published, and the older backlog (285 on 10-15) is a detail line, so a fixed
  * new-article pipeline can turn this green while the crawl demand fix job works the backlog.
- * new_unindexed_3d's `lastEventAt` is this run whenever it is above 0: each run inspects every counted article again, so the count is what
- * Google said at this run and drops the run an article gets indexed. It is an open count, like repeat-split's after_fix lines, and no
+ * new_unindexed_3d's `lastEventAt` is this run whenever it is above 0: each run reads every counted article's verdict from this quota day,
+ * so the count is what Google said today and drops the run an article gets indexed. It is an open count, like repeat-split's after_fix lines, and no
  * old event waits in it to leave a window. Dating it by the day each article crossed 3 days would read it quiet: on 10-20 at 05:52Z
  * /blog/instagram-collab-posts, past 3 days since 10-18, read "Discovered - currently not indexed", and a quiet count starts no fix job
  * for the 9 days before it leaves the 14-day window. A failed inspection or source counts as unindexed, and it failed at this run too.
@@ -57,7 +58,10 @@ const PAGE_CONCURRENCY = 16;
  */
 export type PageKind = "article" | "listing";
 export interface ArticleState { published: string; firstSeen: string; status: number; kind?: PageKind }
-export interface ArticlesState { articles: Record<string, ArticleState>; indexed: Record<string, string> }
+/** The last answer URL Inspection gave for an article, and the quotaDay it was asked on. */
+export interface InspectVerdict { day: string; verdict: string | null; coverage_state: string | null }
+/** `inspected` is absent in state written before 10-26. */
+export interface ArticlesState { articles: Record<string, ArticleState>; indexed: Record<string, string>; inspected?: Record<string, InspectVerdict> }
 export interface InspectRow { url: string; http: number; verdict?: string | null; coverage_state?: string | null; error?: string | null }
 export interface InspectRead { rows: InspectRow[]; not_asked: string[]; quota_left_before?: number }
 export interface LedgerEntry { worker?: string; url?: string; check_date?: string; result?: string; result_date?: string }
@@ -73,6 +77,12 @@ export interface ArticlesDeps {
 
 /** The Seoul calendar day of a time, as YYYY-MM-DD. */
 export const seoulDay = (at: number): string => new Date(at + 9 * 3_600_000).toISOString().slice(0, 10);
+/**
+ * The day URL Inspection's quota of 2,000 calls a day per property counts on, the UTC day, the same as virev_seo.gsc.quota_day. An article
+ * asked earlier on this day keeps that verdict, so several runs a day cost one call per article. measured: d2 ran 7 times on 10-25 and asked
+ * about 146 articles each run, and Google answered 429 "Quota exceeded for sc-domain:virev.ai." to 59 of them at 19:01Z.
+ */
+export const quotaDay = (at: number): string => new Date(at).toISOString().slice(0, 10);
 export const daysBetween = (from: string, to: string): number => Math.round((Date.parse(to.slice(0, 10)) - Date.parse(from.slice(0, 10))) / 86_400_000);
 const unescape = (text: string): string => text.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&quot;/g, '"').trim();
 
@@ -137,7 +147,7 @@ export async function measureArticles(deps: ArticlesDeps, previous: ArticlesStat
   const today = seoulDay(at);
   const flagged: FlaggedSlice[] = [];
   const metrics: Record<string, number> = { days_since_new_article: UNMEASURED, new_unindexed_3d: UNMEASURED, source_errors: 0 };
-  const state: ArticlesState = { articles: { ...previous?.articles }, indexed: { ...previous?.indexed } };
+  const state: ArticlesState & { inspected: Record<string, InspectVerdict> } = { articles: { ...previous?.articles }, indexed: { ...previous?.indexed }, inspected: { ...previous?.inspected } };
   const fail = (source: string, why: string, keys: string[]): void => {
     metrics.source_errors! += 1;
     flagged.push({ at, kind: "source_error", excerpt: `${source}: ${why}. Not measured this run, so ${keys.join(", ")} read the miss value ${UNMEASURED}.` });
@@ -205,18 +215,34 @@ export async function measureArticles(deps: ArticlesDeps, previous: ArticlesStat
     const due = unseen.filter(url => age(url) <= NEW_WINDOW_DAYS);
     const backlog = unseen.filter(url => age(url) > NEW_WINDOW_DAYS);
     try {
+      const day = quotaDay(at);
+      for (const url of Object.keys(state.inspected)) if (!due.includes(url)) delete state.inspected[url];
+      const reused = due.filter(url => state.inspected[url]?.day === day);
+      const ask = due.filter(url => !reused.includes(url));
       // seo-sources.py inspect asks a failed URL once more itself, after Google's Retry-After or its REASK_WAIT_S.
-      const inspected = due.length ? await deps.inspect(due) : { rows: [], not_asked: [] };
-      const failed = [...inspected.rows.filter(row => row.http !== 200 || row.error).map(row => `${path(row.url)} (${row.error ?? `HTTP ${row.http}`})`), ...inspected.not_asked.map(url => `${path(url)} (quota)`)];
-      const unindexed = inspected.rows.filter(row => row.http === 200 && !row.error && row.verdict !== "PASS");
-      for (const row of inspected.rows) if (row.http === 200 && row.verdict === "PASS") state.indexed[row.url] = today;
+      const inspected: InspectRead = ask.length ? await deps.inspect(ask) : { rows: [], not_asked: [] };
+      const failed = inspected.rows.filter(row => row.http !== 200 || row.error);
+      for (const row of inspected.rows) {
+        if (row.http !== 200 || row.error) continue;
+        if (row.verdict === "PASS") { state.indexed[row.url] = today; delete state.inspected[row.url]; } else state.inspected[row.url] = { day, verdict: row.verdict ?? null, coverage_state: row.coverage_state ?? null };
+      }
+      // A URL over the counted quota is not asked and keeps its last verdict, which was not PASS, since a PASS leaves `due` for good.
+      const notAsked = new Set(inspected.not_asked);
+      const unindexed = due.filter(url => !state.indexed[url] && !failed.some(row => row.url === url));
+      const why = (url: string): string => {
+        const last = state.inspected[url];
+        const verdict = last ? last.coverage_state ?? last.verdict ?? "?" : "never inspected";
+        return notAsked.has(url) ? `${verdict}, last asked ${last?.day ?? "never"}, not asked: quota spent` : verdict;
+      };
       metrics.new_unindexed_3d = unindexed.length + failed.length;
       if (failed.length) {
         metrics.source_errors! += 1;
-        flagged.push(...listSlice("source_error", `URL Inspection failed for ${failed.length} of ${due.length}; they count as not indexed:`, failed, at));
+        flagged.push(...listSlice("source_error", `URL Inspection failed for ${failed.length} of ${ask.length} asked; they count as not indexed:`, failed.map(row => `${path(row.url)} (${row.error ?? `HTTP ${row.http}`})`), at));
       }
-      flagged.push(...listSlice("unindexed", `Articles that went live in the last ${NEW_WINDOW_DAYS} days, live ${INDEX_AFTER_DAYS} or more days, that Google has not indexed (${unindexed.length} of ${due.length} inspected):`,
-        unindexed.map(row => `${path(row.url)} (live ${age(row.url)} days, ${row.coverage_state ?? row.verdict ?? "?"})`), at));
+      flagged.push({ at, kind: "inspect_calls", excerpt: `Detail: URL Inspection asked ${ask.length - notAsked.size} of ${due.length} articles; ${reused.length} kept the verdict from earlier on quota day ${day} (UTC)` +
+        (notAsked.size ? ` and ${notAsked.size} were not asked, because metrics/inspect-quota.json had ${inspected.quota_left_before ?? 0} calls left for the day.` : ".") });
+      flagged.push(...listSlice("unindexed", `Articles that went live in the last ${NEW_WINDOW_DAYS} days, live ${INDEX_AFTER_DAYS} or more days, that Google has not indexed (${unindexed.length} of ${due.length}):`,
+        unindexed.map(url => `${path(url)} (live ${age(url)} days, ${why(url)})`), at));
     } catch (error) { fail("Search Console URL Inspection (seo-sources.py inspect)", message(error), ["new_unindexed_3d"]); }
     flagged.push(...listSlice("backlog", `Detail: older articles (live over ${NEW_WINDOW_DAYS} days) no inspection has seen indexed (${backlog.length}), the crawl demand fix job's work, not re-inspected here:`, backlog.map(path), at));
   }

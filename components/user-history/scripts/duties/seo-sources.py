@@ -4,7 +4,8 @@ to the program's daily metrics file. Run inside auto-sns-agent's SEO CLI project
 
 visits: PostHog blog and tool visits (virev_seo.traffic), Search Console totals and impressions per page (virev_seo.gsc) and 28-day
 sign-ups with their first page (virev_seo.signups and virev_seo.goal). Each source is read on its own, so one failure leaves the others.
-inspect: URL Inspection for the URLs on stdin (one per line), counted in metrics/inspect-quota.json like `seo gsc inspect`, re-asks included.
+inspect: URL Inspection for the URLs on stdin (one per line), each POST, re-asks included, counted in metrics/inspect-quota.json by
+virev_seo.gsc.VentSession.post like every other caller.
 """
 
 from __future__ import annotations
@@ -145,15 +146,15 @@ def inspect(urls: list[str]) -> dict[str, Any]:
             retry_after.append(wait)
         return row
 
-    def one(url: str) -> tuple[dict[str, Any], int]:
+    def one(url: str) -> dict[str, Any]:
         if stop.is_set():
-            return {"url": url, "http": 0, "verdict": None, "coverage_state": None, "error": NOT_ASKED}, 0
+            return {"url": url, "http": 0, "verdict": None, "coverage_state": None, "error": NOT_ASKED}
         row = attempt(url)
         if _failed(row):
             stop.set()
-        return row, 1
+        return row
 
-    def run(batch: list[str]) -> list[tuple[dict[str, Any], int]]:
+    def run(batch: list[str]) -> list[dict[str, Any]]:
         stop.clear()
         # Measured 10-12: one inspection takes about 7.4 s, and 32 parallel calls inspected 32 URLs in 8.5 s, all HTTP 200. That is
         # about 230 a minute, under Google's 600 a minute per property (virev_seo.config INSPECT_PER_MINUTE).
@@ -161,18 +162,14 @@ def inspect(urls: list[str]) -> dict[str, Any]:
             return list(pool.map(one, batch))
 
     done = run(asked)
-    spent = sum(tries for _, tries in done)
     # A 429 is the property's daily quota, which resets at 00:00Z (virev_seo.gsc.quota_day), so a URL is never asked again after one.
     # measured: on 10-25 Google answered 429 "Quota exceeded for sc-domain:virev.ai" to 9 calls at 19:01Z and to all 32 asked again at 19:05Z
-    again = [] if any(row["http"] == 429 for row, _ in done) else [row["url"] for row, _ in done if _failed(row)]
+    again = [] if any(row["http"] == 429 for row in done) else [row["url"] for row in done if _failed(row)]
     if again:
         time.sleep(max(retry_after) if retry_after else REASK_WAIT_S)
-        redone = {row["url"]: (row, tries) for row, tries in run(again)}
-        spent += sum(tries for _, tries in redone.values())
-        done = [(redone[row["url"]][0], 0) if row["url"] in redone else (row, 0) for row, _ in done]
-    if spent:
-        gsc._quota_add(day, spent)
-    return {"quota_day": day, "quota_left_before": left, "rows": [row for row, _ in done], "not_asked": urls[len(asked):]}
+        redone = {row["url"]: row for row in run(again)}
+        done = [redone.get(row["url"], row) for row in done]
+    return {"quota_day": day, "quota_left_before": left, "rows": done, "not_asked": urls[len(asked):]}
 
 
 def main() -> None:
