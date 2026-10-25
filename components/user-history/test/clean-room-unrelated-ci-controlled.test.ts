@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { type GoalMemo, type GoalNumber, quietPush } from "../src/checkin-goals.ts";
 import { GOAL_PUSH_LINK } from "../src/shared/chat-board.ts";
-import { controlledBoard, fixtureBrief, FIXTURE, prepareShelf, shelfCount, TASK } from "../scripts/clean-room/unrelated-ci-controlled.ts";
+import { controlledBoard, DROP_EVERY_MIN, FIRST_DROP_MIN, fixtureBrief, FIXTURE, prepareShelf, shelfCount, TASK } from "../scripts/clean-room/unrelated-ci-controlled.ts";
 
 test("unrelated-ci-controlled: the shelf and the controlled goal exist before admission, and no brief teaches the tested behaviour", t => {
   const root = mkdtempSync(join(tmpdir(), "shelf-"));
@@ -31,6 +31,11 @@ test("unrelated-ci-controlled: the shelf and the controlled goal exist before ad
   const brief = fixtureBrief({ chat: "01a17000-0000-7000-8000-0000000000ab", chatName: "root free space", logFile: join(root, "log.jsonl"), sandbox });
   for (const text of [brief, TASK, sandbox]) assert.doesNotMatch(text, /\b(?:carried|stalled|check-in|checkin|unrelated|controlled|clean.room|\d{9,})\b/i);
   assert.match(brief, new RegExp(`"${FIXTURE}"`));
+  // Controlled run-2: drops from the first wake made the check-in ask the owner before the head's wait aged past 2 h (STALL_MS).
+  assert.ok(FIRST_DROP_MIN * 60_000 > 2 * 3_600_000, "the first drop comes after a wait started at admission has aged past 2 h");
+  assert.match(brief, new RegExp(`1\\. Now: count the files[^\\n]*now \\+ ${FIRST_DROP_MIN} min`));
+  assert.doesNotMatch(brief.split("\n")[2]!, /delete/, "the first reading deletes nothing");
+  assert.match(brief, new RegExp(`2\\. On every later wake: delete the file[^\\n]*now \\+ ${DROP_EVERY_MIN} min`));
   assert.doesNotMatch(TASK, /fixture|clean.room|test|shelf/i, "the head is never told about the fixture or the trial");
 });
 
