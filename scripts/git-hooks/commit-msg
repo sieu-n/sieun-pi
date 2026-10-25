@@ -1,2 +1,3 @@
 #!/bin/sh
+node "$(dirname "$0")/escaped-newline.mjs" "$1" || exit 1
 exec node "$(dirname "$0")/mass-delete.mjs" commit-msg "$1"
