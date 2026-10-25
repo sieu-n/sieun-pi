@@ -50,6 +50,7 @@ export type SessionEvent =
 export const PRIME_DIR = inputRoots().primeDir;
 const SESSIONS = join(PRIME_DIR, "sessions");
 const ARTIFACTS = join(PRIME_DIR, "session-artifacts");
+const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-/;
 
 const blockText = (content: unknown): string => typeof content === "string" ? content
   : Array.isArray(content) ? content.map(block => typeof block === "object" && block && "text" in block && typeof block.text === "string" ? block.text : "").join("\n") : "";
@@ -146,28 +147,53 @@ export function headerParent(text: string): string | undefined {
 }
 
 /**
- * The sessions below `roots` by recorded ancestry, each with its file: a session file under the session-artifacts folder of a root in `scope`
- * whose header names a root or a session already found as its parent, repeated until none is added. Only recorded ids count, never a name.
+ * The sessions below `roots` by recorded ancestry, each with its file: a session whose header names a root or a session already found as its
+ * parent, repeated until none is added. Only recorded ids count, never a name or a text prefix. The candidates are the session files under the
+ * session-artifacts folder of a root in `scope` or of a session found, and the root-level session file (sessions/<id>.jsonl) of each id that
+ * `referenced` names or that an owned session's file records as a sender or a recipient. No other session is read, so a session nobody
+ * names stays unfound and its messages unproven.
  * Clean-room carried-wait run-4 on 10-24: the subagent free-space-page-writer (01a16f95), whose header names the chat's job "free space page"
- * (01a16f7c) as its parent, reported to that job, and the judge read it as outside because it knew only the chat's direct agents. A session
- * whose file is not in the store or the archive is not found, so its messages stay unproven.
+ * (01a16f7c) as its parent, reported to that job, and the judge read it as outside because it knew only the chat's direct agents. On 10-25 the
+ * archive owner found the same gap for a root-level session whose header names an owned trial session, since only scoped folders were read.
  */
-export function ownedDescendants(roots: Iterable<string>, scope: Iterable<string>): Map<string, string> {
+export function ownedDescendants(roots: Iterable<string>, scope: Iterable<string>, referenced: Iterable<string> = []): Map<string, string> {
   const owned = new Set(roots);
   const files = new Map<string, string>();
-  for (const root of new Set(scope)) for (const file of sessionFiles(root)) {
-    const id = basename(file).replace(/\.jsonl$/, "");
-    if (/^[0-9a-f]{8}-[0-9a-f]{4}-/.test(id) && !files.has(id)) files.set(id, file);
-  }
+  const scanned = new Set<string>();
+  const candidate = (id: string): void => {
+    if (!SESSION_ID.test(id) || files.has(id)) return;
+    const root = join(SESSIONS, `${id}.jsonl`);
+    if (existsSync(root)) files.set(id, root);
+  };
+  const addScope = (id: string): void => {
+    if (scanned.has(id)) return;
+    scanned.add(id);
+    for (const file of sessionFiles(id)) {
+      const name = basename(file).replace(/\.jsonl$/, "");
+      if (SESSION_ID.test(name) && !files.has(name)) files.set(name, file);
+    }
+  };
+  // The ids a session's own file records as a sender to it or a recipient of it.
+  const references = (file: string | undefined): void => {
+    for (const event of file ? readSessionFile(file) : []) {
+      if (event.kind === "text" && event.fromId) candidate(event.fromId);
+      if (event.kind === "sent") candidate(event.to);
+    }
+  };
+  for (const id of new Set(scope)) addScope(id);
+  for (const id of referenced) candidate(id);
+  for (const id of owned) references(files.get(id) ?? sessionFile(id, [id]));
   const found = new Map<string, string>();
   for (let added = true; added;) {
     added = false;
-    for (const [id, file] of files) {
+    for (const [id, file] of [...files]) {
       if (owned.has(id)) continue;
       const parent = sessionParent(file);
       if (parent === undefined || !owned.has(parent)) continue;
       owned.add(id);
       found.set(id, file);
+      addScope(id);
+      references(file);
       added = true;
     }
   }

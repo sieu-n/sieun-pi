@@ -253,6 +253,18 @@ test("unrelated-ci-wait: a job that saw an unrelated run and left the carried st
   assert.match(uncaptured.text, /no session file of 01a16f95-b211-758c-8541-498f6cbe20c9 was captured/);
   const orphan = nestedRun(null);
   assert.equal(orphan.verdict, "open", "a child session file with no recorded parent is unknown");
+  // 10-25: the same writer captured as a root-level session (sessions/<id>.jsonl) is found by the id the job's own file records as its
+  // sender, never by a walk of the sessions folder, and its recorded parent decides as before.
+  const rootFile = join(home, ".prime", "agent", "sessions", `${WRITER}.jsonl`);
+  const rootRun = (parent: string) => {
+    writeFileSync(rootFile, JSON.stringify({ type: "session", id: WRITER, timestamp: iso(150), parentSession: `/home/sieun/.prime/agent/sessions/${parent}.jsonl` }) + "\n");
+    try { return nestedRun("none"); } finally { rmSync(rootFile, { force: true }); }
+  };
+  const rootChild = rootRun(SAMPLER);
+  assert.equal(rootChild.verdict, "pass", `a root-level session whose recorded parent is the chat's job is the trial's own: ${rootChild.check("f")}`);
+  const rootStray = rootRun("01a1164b-0000-7000-8000-000000000009");
+  assert.equal(rootStray.verdict, "void", "a root-level session whose recorded parent is outside the trial is someone stepping in");
+  assert.match(rootStray.text, /recorded parent 01a1164b-0000-7000-8000-000000000009 is not a session of the trial/);
 
   const stopped = run({ sampler: "done" });
   assert.equal(stopped.verdict, "fail", "a prerequisite whose owner stopped a whole interval ago and that the run did not flag fails e");
