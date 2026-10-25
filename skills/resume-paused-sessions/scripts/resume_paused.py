@@ -1308,14 +1308,17 @@ def archived_by_unload(entries, unloaded_at):
 
 
 def unload_stop_holds(session, verdict):
-    """The idle unload's stop keeps a run that is not live stopped unless its turn failed on the token hook, or on a rate limit or pi-pool
-    hold that Prime was still retrying when the unload stopped it: the unload stops a run asleep in its provider retry once pi-pool holds its
-    tree past the unload's minutes (components/user-history/src/idle-unload.ts providerWaits). The kill writes only the archive after the
-    failed reply, so such a run gets its continue once the hook or `pi-pool who` lets its tree in (account_blocker). At 01:11Z on 10-19 176
-    runs slept that way, 91 on a 429 and 85 on the hook's "waits for its slot", each with "waits for its slot at" in its error."""
+    """The idle unload's stop keeps a run that is not live stopped unless its turn failed on the token hook, a rate limit, a pi-pool hold
+    or a transient provider failure (INTERRUPTION_ERROR: a timeout, a connection error or reset, a DNS failure, overloaded, a 5xx) that Prime
+    was still retrying when the unload stopped it: the unload stops a run asleep in its provider retry once pi-pool holds its tree past the
+    unload's minutes (components/user-history/src/idle-unload.ts providerWaits). The kill writes only the archive after the failed reply, so
+    such a run gets its continue once the hook or `pi-pool who` lets its tree in (account_blocker). At 01:11Z on 10-19 176 runs slept that
+    way, 91 on a 429 and 85 on the hook's "waits for its slot", each with "waits for its slot at" in its error. On 10-25 the unload stopped
+    Prospect's p224 job (01a174fc) at 21:50:25Z and 21:57:25Z while it retried "Request timed out." in us-metal02's egress gap, and this
+    pass kept it stopped until the chat's job-steer at 22:27Z."""
     if session.get("lifecycle") == "live" or verdict[0] != "error":
         return session.get("lifecycle") != "live"
-    return not (TOKEN_HOOK_ERROR.search(verdict[1]) or PROVIDER_WAIT_ERROR.search(verdict[1]))
+    return not any(rule.search(verdict[1]) for rule in (TOKEN_HOOK_ERROR, PROVIDER_WAIT_ERROR, INTERRUPTION_ERROR))
 
 
 def stop_archive(entries, last):
@@ -2024,7 +2027,7 @@ def find_paused(sessions, since_minutes, state, now, direct=False, only=frozense
                                        "error": why, **({"host": BOX.name} if BOX.remote else {})})
                     continue
                 if not named and unload_stop_holds(s, verdict):
-                    stopped(s, sid, f"{why} after a turn that did not fail on the token hook", stopper.get("timestamp"))
+                    stopped(s, sid, f"{why} after a turn that did not fail on the token hook, a pool hold or a provider outage", stopper.get("timestamp"))
                     continue
         try:
             recorded = stop_record(s.get("sessionFile"))

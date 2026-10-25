@@ -861,6 +861,32 @@ class ResumePausedTests(unittest.TestCase):
         self.assertEqual([(p["reason"], p["target"], p["errored_at"]) for p in report["paused"]],
                          [("error", self.CI_TRAIN, "2026-10-16T10:25:52.307Z")])
 
+    # staging watchlist green 10-26 (01a174fc, Prospect's p224 job): us-metal02 lost outside DNS and TCP from about 21:43Z to 21:58Z on
+    # 10-25, the job's turn failed on "Request timed out." in Prime's provider retry, the idle unload stopped it at 21:50:25Z, and the pass
+    # logged "not resumed, stopped on purpose" until the chat's job-steer at 22:27Z.
+    TIMED_OUT = "01a174fc-0000-7000-8000-000000000000"
+
+    def test_a_job_the_idle_unload_stopped_after_a_provider_timeout_is_resumed(self):
+        entries = [{"type": "message", "timestamp": "2026-10-25T21:44:02.100Z", "message": {"role": "user", "content": [{"type": "text", "text": "continue"}]}},
+                   {"type": "message", "timestamp": "2026-10-25T21:46:40.500Z", "message": {"role": "assistant", "stopReason": "error", "provider": "anthropic",
+                                                                                         "content": [], "errorMessage": "Request timed out."}},
+                   {"type": "session_state", "timestamp": "2026-10-25T21:50:25.310Z", "state": {"status": "archived", "reason": "idle_unload"}}]
+        sessions = self.root / "sessions"
+        sessions.mkdir(exist_ok=True)
+        (sessions / f"{self.TIMED_OUT}.jsonl").write_text("\n".join(json.dumps(entry) for entry in entries) + "\n")
+        now = dt.datetime(2026, 10, 25, 21, 54, tzinfo=dt.timezone.utc)
+        args = argparse.Namespace(message="continue", since_minutes=0, dry_run=True, include_children=False, direct=True, only="", state=str(self.root / "state.json"))
+        with patch.object(resume_paused, "SESSIONS_DIR", sessions), patch.object(resume_paused, "ARTIFACTS_DIR", self.root / "artifacts"), \
+                patch.dict(resume_paused.UNLOADED, {self.TIMED_OUT: resume_paused.parse_ts("2026-10-25T21:50:25.400Z")}, clear=True), \
+                patch.object(resume_paused, "DELETED_JOBS", self.root / "deleted-jobs.json"), patch.object(resume_paused, "pool_bin", return_value=None), \
+                patch.object(resume_paused, "daemon_restarts", return_value=[]), patch.object(resume_paused, "worker_shutdowns", return_value=[]), \
+                patch.object(resume_paused.time, "time", return_value=now.timestamp()):
+            rows = resume_paused.with_saved_owners([], resume_paused.saved_rows({self.TIMED_OUT}), {self.TIMED_OUT})
+            report = resume_paused.resume(rows, args, now)
+        self.assertEqual(resume_paused.STOPPED, [])
+        self.assertEqual([(p["reason"], p["error"], p["errored_at"]) for p in report["paused"]],
+                         [("error", "Request timed out.", "2026-10-25T21:46:40.500Z")])
+
     # stuck duty chat page from the mac (01a15a2b-be18), on us-metal02 with dhx.3 Prime and the p692 hook on 10-20: the hook answered exit 75
     # with a slot at 17:32:00Z, Prime wrote this wait marker at 17:30:08Z (copied from a dhx.3 session, provider and times set to the
     # incident's), the idle unload stopped it at 17:31:50Z ("pool wait"), and no pass listed it.
@@ -999,7 +1025,7 @@ class ResumePausedTests(unittest.TestCase):
         self.assertIsNone(resume_paused.credential_wait_at({**message, "diagnostics": [{"type": "provider_stream_failure", "details": {"kind": "rate_limit", "retryAfterMs": 5}}]}))
         self.assertEqual(resume_paused.turn_error({**message, "diagnostics": []}), message["errorMessage"])
 
-    def test_the_unload_stop_counts_only_after_a_token_hook_failure(self):
+    def test_the_unload_stop_holds_after_a_finished_or_cut_turn_and_not_after_a_network_error(self):
         sessions = self.root / "sessions"
         sessions.mkdir(exist_ok=True)
         archived = {"type": "session_state", "timestamp": "2026-10-16T10:27:23.453Z", "state": {"status": "archived"}}
@@ -1014,7 +1040,7 @@ class ResumePausedTests(unittest.TestCase):
         with patch.object(resume_paused, "SESSIONS_DIR", sessions), patch.object(resume_paused, "ARTIFACTS_DIR", self.root / "artifacts"), \
                 patch.dict(resume_paused.UNLOADED, {sid: stop for sid in ends}, clear=True):
             rows = resume_paused.with_saved_owners([], resume_paused.saved_rows(set(ends)), set(ends))
-            self.assertEqual(resume_paused.resume(rows, args, now)["paused"], [])
+            self.assertEqual([p["session_id"] for p in resume_paused.resume(rows, args, now)["paused"]], ["01a14068-0000-7000-8000-000000net00"])
 
     def test_a_run_the_idle_unload_stopped_asleep_on_a_429_is_resumed_once_pi_pool_lets_its_tree_in(self):
         # new pages indexing (01a14d4b), a subagent under VP 01a11a24 on 10-19: its retry slept on this 429 from 00:46:55Z with a slot at 02:11:32Z,
@@ -1052,7 +1078,7 @@ class ResumePausedTests(unittest.TestCase):
         report = run(None, dt.datetime(2026, 10, 19, 2, 12, tzinfo=dt.timezone.utc))
         self.assertEqual([(p["reason"], p["target"], p["errored_at"]) for p in report["paused"]], [("error", sid, "2026-10-19T00:46:55.774Z")])
         self.assertEqual(self.sent, [(sid, "continue")])
-        self.assertTrue(resume_paused.unload_stop_holds({"lifecycle": "archived"}, ("error", "Connection error.")), "a network error the unload met stays stopped")
+        self.assertFalse(resume_paused.unload_stop_holds({"lifecycle": "archived"}, ("error", "Connection error.")), "a network error the unload met gets its continue")
 
     def test_a_job_whose_chat_is_archived_asks_pi_pool_for_its_chats_tree_and_stays_held(self):
         # scratch deletion (01a151ed), a job of chat-057a (01a14210) on 10-19: claude7 hit its 5h cap at 02:29:12Z, and the tree's waits ran
