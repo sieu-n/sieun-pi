@@ -1,0 +1,144 @@
+[2026-10-25T01:40:10.268Z] supervisor: Session worker 96117e1e2b89 stderr: Prime Agent daemon listening on /tmp/prime-agent-1001/worker-ee92e1d8c39e-96117e1e2b89.sock
+[2026-10-25T01:40:24.691Z] supervisor: Session worker 292dcc5dd0f3 stderr: Prime Agent daemon listening on /tmp/prime-agent-1001/worker-ee92e1d8c39e-292dcc5dd0f3.sock
+[2026-10-25T01:40:29.452Z] supervisor: Session worker e6e6dc6bba17 stderr: shutting down (exit 0); closing 0 active session(s)
+[2026-10-25T01:40:38.861Z] supervisor: Session worker aa03e39a7c01 stderr: shutdown command received over socket; 1 active session(s) will be closed
+[2026-10-25T01:40:38.863Z] supervisor: Session worker aa03e39a7c01 stderr: shutting down (exit 0); closing 1 active session(s)
+[2026-10-25T01:40:40.049Z] supervisor: Session worker ae148b0a56db stderr: Prime Agent daemon listening on /tmp/prime-agent-1001/worker-ee92e1d8c39e-ae148b0a56db.sock
+[2026-10-25T01:40:44.468Z] supervisor: Session worker 0b8c7198f219 stderr: Prime Agent daemon listening on /tmp/prime-agent-1001/worker-ee92e1d8c39e-0b8c7198f219.sock
+[2026-10-25T01:40:48.411Z] supervisor: Session worker 4ba1b4e3562a stderr: Prime Agent daemon listening on /tmp/prime-agent-1001/worker-ee92e1d8c39e-4ba1b4e3562a.sock
+[2026-10-25T01:40:54.801Z] supervisor: Session worker fe3a22b6f2a6 stderr: Prime Agent daemon listening on /tmp/prime-agent-1001/worker-ee92e1d8c39e-fe3a22b6f2a6.sock
+[2026-10-25T01:41:07.338Z] supervisor: Session worker 18c417078786 stderr: Prime Agent daemon listening on /tmp/prime-agent-1001/worker-ee92e1d8c39e-18c417078786.sock
+[2026-10-25T01:41:12.189Z] supervisor: Session worker e3f523d9f043 stderr: Prime Agent daemon listening on /tmp/prime-agent-1001/worker-ee92e1d8c39e-e3f523d9f043.sock
+[2026-10-25T01:41:16.437Z] supervisor: Session worker 3f5afb0bbee3 stderr: Prime Agent daemon listening on /tmp/prime-agent-1001/worker-ee92e1d8c39e-3f5afb0bbee3.sock
+[2026-10-25T01:42:28.001Z] supervisor: Session worker c9d516fe6c8b stderr: shutting down (exit 0); closing 0 active session(s)
+[2026-10-25T01:42:53.994Z] supervisor: Session worker 0a7068df4b32 stderr: Prime Agent daemon listening on /tmp/prime-agent-1001/worker-ee92e1d8c39e-0a7068df4b32.sock
+[2026-10-25T01:43:10.750Z] supervisor: Idle eviction sweep: workers=80 answered=64 busy=58 candidates=0 evicted=0 idleEvictionMinutes=15 took=163ms
+[2026-10-25T01:43:38.523Z] supervisor: Session worker 2699bf0b2d79 stderr: deleted RLM subagent sub-baf0a9c4 (session 01a1706f-98bd-705e-954b-eec4ddbae907); stopped 0 transferred handoff(s)
+[2026-10-25T01:43:40.051Z] supervisor: Session worker 2699bf0b2d79 stderr: deleted RLM subagent sub-03589ac1 (session 01a1706f-9fd9-77ee-b9ed-6d6052b993a6); stopped 0 transferred handoff(s)
+[2026-10-25T01:43:41.501Z] supervisor: Session worker 2699bf0b2d79 stderr: deleted RLM subagent sub-fcfa1c26 (session 01a1706f-a6b5-721a-8a5f-d65f74b78f88); stopped 0 transferred handoff(s)
+[2026-10-25T01:43:42.970Z] supervisor: Session worker 2699bf0b2d79 stderr: deleted RLM subagent sub-3a446d3e (session 01a1706f-ac37-7104-bb00-745cec6be149); stopped 0 transferred handoff(s)
+[2026-10-25T01:43:44.426Z] supervisor: Session worker 2699bf0b2d79 stderr: deleted RLM subagent sub-10ead7fa (session 01a1706f-b275-730e-a11d-a72e68ecd1a4); stopped 0 transferred handoff(s)
+[2026-10-25T01:43:45.934Z] supervisor: Session worker 2699bf0b2d79 stderr: deleted RLM subagent sub-766925d3 (session 01a1706f-b942-7355-95bd-8762ad1c0924); stopped 0 transferred handoff(s)
+[2026-10-25T01:45:16.536Z] supervisor: Session worker ed893631adf7 stderr: deleted RLM subagent sub-835894ce (session 01a16f9f-7c73-723c-8df2-090ad7399012); stopped 0 transferred handoff(s)
+[2026-10-25T01:45:28.594Z] supervisor: Session worker 52c836fc1ba0 stderr: shutting down (exit 0); closing 0 active session(s)
+[2026-10-25T01:45:37.207Z] supervisor: Session worker 35dbb73a1fa3 stderr: shutting down (exit 0); closing 0 active session(s)
+[2026-10-25T01:45:38.775Z] supervisor: Session worker 13a47acee0e6 stderr: shutting down (exit 0); closing 0 active session(s)
+[2026-10-25T01:46:05.606Z] supervisor: Session worker 0acd3714f491 stderr: Prime Agent daemon listening on /tmp/prime-agent-1001/worker-ee92e1d8c39e-0acd3714f491.sock
+[2026-10-25T01:46:34.011Z] supervisor: Session worker d674152c3ea7 stderr: Prime Agent daemon listening on /tmp/prime-agent-1001/worker-ee92e1d8c39e-d674152c3ea7.sock
+[2026-10-25T01:47:04.934Z] supervisor: Session worker ec5654f96e61 stderr: Prime Agent daemon listening on /tmp/prime-agent-1001/worker-ee92e1d8c39e-ec5654f96e61.sock
+[2026-10-25T01:47:09.290Z] supervisor: Session worker 89815d0d5cbe stderr: Prime Agent daemon listening on /tmp/prime-agent-1001/worker-ee92e1d8c39e-89815d0d5cbe.sock
+[2026-10-25T01:47:21.005Z] supervisor: Session worker ad481d71e552 stderr: deleted RLM subagent sub-325f8eb0 (session 01a170a7-29f3-733a-bdec-7241dfc4e904); stopped 0 transferred handoff(s)
+[2026-10-25T01:47:24.069Z] supervisor: Session worker 8309c258e4cc stderr: Prime Agent daemon listening on /tmp/prime-agent-1001/worker-ee92e1d8c39e-8309c258e4cc.sock
+[2026-10-25T01:48:11.720Z] supervisor: Idle eviction sweep: workers=82 answered=66 busy=58 candidates=0 evicted=0 idleEvictionMinutes=15 took=941ms
+[2026-10-25T01:48:17.282Z] supervisor: Session worker ad481d71e552 stderr: deleted RLM subagent sub-b04215a3 (session 01a17096-5411-748b-8f00-899d69651997); stopped 0 transferred handoff(s)
+[2026-10-25T01:48:23.745Z] supervisor: Session worker 643b55eb1af8 stderr: Prime Agent daemon listening on /tmp/prime-agent-1001/worker-ee92e1d8c39e-643b55eb1af8.sock
+[2026-10-25T01:48:26.783Z] supervisor: Supervisor command rename failed: Error: Agent name "owner corrections AI harness developer environment 10:47" is unavailable: an agent of that name already exists at depth 0 under this parent
+[2026-10-25T01:48:27.044Z] supervisor: Session worker 643b55eb1af8 stderr: shutting down (exit 0); closing 0 active session(s)
+[2026-10-25T01:48:28.147Z] supervisor: Session worker 3b5f5ddf6453 stderr: Prime Agent daemon listening on /tmp/prime-agent-1001/worker-ee92e1d8c39e-3b5f5ddf6453.sock
+[2026-10-25T01:48:31.628Z] supervisor: Session worker da2196c55b2e stderr: shutting down (exit 0); closing 0 active session(s)
+[2026-10-25T01:48:48.380Z] supervisor: Session worker 89815d0d5cbe stderr: shutdown command received over socket; 1 active session(s) will be closed
+[2026-10-25T01:48:48.380Z] supervisor: Session worker 89815d0d5cbe stderr: shutting down (exit 0); closing 1 active session(s)
+[2026-10-25T01:48:49.923Z] supervisor: Session worker b4a81b9a0e76 stderr: Prime Agent daemon listening on /tmp/prime-agent-1001/worker-ee92e1d8c39e-b4a81b9a0e76.sock
+[2026-10-25T01:48:58.288Z] supervisor: Session worker f9b8db2cab94 stderr: shutting down (exit 0); closing 0 active session(s)
+[2026-10-25T01:49:23.479Z] supervisor: Session worker c2418701b591 stderr: shutting down (exit 0); closing 0 active session(s)
+[2026-10-25T01:49:28.800Z] supervisor: Session worker f97f5fd302b9 stderr: shutting down (exit 0); closing 0 active session(s)
+[2026-10-25T01:49:28.826Z] supervisor: Session worker dc76b78e6bae stderr: shutting down (exit 0); closing 0 active session(s)
+[2026-10-25T01:49:29.144Z] supervisor: Session worker 6044492ee114 stderr: shutting down (exit 0); closing 0 active session(s)
+[2026-10-25T01:49:34.176Z] supervisor: Session worker 16bb1ebdc068 stderr: Prime Agent daemon listening on /tmp/prime-agent-1001/worker-ee92e1d8c39e-16bb1ebdc068.sock
+[2026-10-25T01:50:24.682Z] supervisor: Session worker eb4b3ca5ae81 stderr: Prime Agent daemon listening on /tmp/prime-agent-1001/worker-ee92e1d8c39e-eb4b3ca5ae81.sock
+[2026-10-25T01:50:28.724Z] supervisor: Session worker b4a81b9a0e76 stderr: shutdown command received over socket; 1 active session(s) will be closed
+[2026-10-25T01:50:28.726Z] supervisor: Session worker b4a81b9a0e76 stderr: shutting down (exit 0); closing 1 active session(s)
+[2026-10-25T01:50:59.612Z] supervisor: Session worker 70a4b73fe9b2 stderr: Prime Agent daemon listening on /tmp/prime-agent-1001/worker-ee92e1d8c39e-70a4b73fe9b2.sock
+[2026-10-25T01:51:00.036Z] supervisor: Session worker cb3117e57a47 stderr: Prime Agent daemon listening on /tmp/prime-agent-1001/worker-ee92e1d8c39e-cb3117e57a47.sock
+[2026-10-25T01:51:17.754Z] supervisor: Session worker 56afdd6a0acb stderr: deleted RLM subagent sub-b6825348 (session 01a170a1-c1b2-767f-9cbb-82c638fd3bb0); stopped 0 transferred handoff(s)
+[2026-10-25T01:51:28.532Z] supervisor: Session worker b64490eb290d stderr: shutting down (exit 0); closing 0 active session(s)
+[2026-10-25T01:51:28.784Z] supervisor: Session worker 839ee9a8711a stderr: shutting down (exit 0); closing 0 active session(s)
+[2026-10-25T01:51:29.127Z] supervisor: Session worker 8c5c81223e71 stderr: shutting down (exit 0); closing 0 active session(s)
+[2026-10-25T01:51:42.541Z] supervisor: Session worker 3964342c8c90 stderr: Prime Agent daemon listening on /tmp/prime-agent-1001/worker-ee92e1d8c39e-3964342c8c90.sock
+[2026-10-25T01:52:05.756Z] supervisor: Session worker f0417cb3cf92 stderr: shutting down (exit 0); closing 0 active session(s)
+[2026-10-25T01:52:26.228Z] supervisor: Session worker fefc48c10f1d stderr: deleted RLM subagent sub-e3749d9b (session 01a170a5-dc28-748a-be80-b9abc5c678bb); stopped 0 transferred handoff(s)
+[2026-10-25T01:52:28.594Z] supervisor: Session worker 96117e1e2b89 stderr: shutting down (exit 0); closing 0 active session(s)
+[2026-10-25T01:53:12.588Z] supervisor: Idle eviction sweep: workers=76 answered=60 busy=48 candidates=0 evicted=0 idleEvictionMinutes=15 took=863ms
+[2026-10-25T01:53:28.561Z] supervisor: Session worker 0b8c7198f219 stderr: shutting down (exit 0); closing 0 active session(s)
+[2026-10-25T01:53:28.562Z] supervisor: Session worker 3f5afb0bbee3 stderr: shutting down (exit 0); closing 0 active session(s)
+[2026-10-25T01:53:28.793Z] supervisor: Session worker e3f523d9f043 stderr: shutting down (exit 0); closing 0 active session(s)
+[2026-10-25T01:53:29.137Z] supervisor: Session worker 4ba1b4e3562a stderr: shutting down (exit 0); closing 0 active session(s)
+[2026-10-25T01:53:37.764Z] supervisor: Session worker 313ca7b3e1ff stderr: shutting down (exit 0); closing 0 active session(s)
+[2026-10-25T01:53:54.244Z] supervisor: Session worker 8b2f2ea07418 stderr: Prime Agent daemon listening on /tmp/prime-agent-1001/worker-ee92e1d8c39e-8b2f2ea07418.sock
+[2026-10-25T01:54:28.555Z] supervisor: Session worker 10f029fd3aa0 stderr: shutting down (exit 0); closing 0 active session(s)
+[2026-10-25T01:54:29.182Z] supervisor: Session worker 18c417078786 stderr: shutting down (exit 0); closing 0 active session(s)
+[2026-10-25T01:56:54.065Z] supervisor: Session worker 458cb8bd6ddd stderr: Prime Agent daemon listening on /tmp/prime-agent-1001/worker-ee92e1d8c39e-458cb8bd6ddd.sock
+[2026-10-25T01:57:13.217Z] supervisor: Session worker 2444ed091a33 stderr: Prime Agent daemon listening on /tmp/prime-agent-1001/worker-ee92e1d8c39e-2444ed091a33.sock
+[2026-10-25T01:57:28.453Z] supervisor: Session worker 528e38af23b3 stderr: shutting down (exit 0); closing 0 active session(s)
+[2026-10-25T01:58:12.847Z] supervisor: Idle eviction sweep: workers=71 answered=55 busy=48 candidates=0 evicted=0 idleEvictionMinutes=15 took=258ms
+[2026-10-25T01:58:24.311Z] supervisor: Session worker 0e2edff56a3b stderr: Prime Agent daemon listening on /tmp/prime-agent-1001/worker-ee92e1d8c39e-0e2edff56a3b.sock
+[2026-10-25T01:58:52.049Z] supervisor: Session worker 2444ed091a33 stderr: shutdown command received over socket; 1 active session(s) will be closed
+[2026-10-25T01:58:52.050Z] supervisor: Session worker 2444ed091a33 stderr: shutting down (exit 0); closing 1 active session(s)
+[2026-10-25T01:59:28.001Z] supervisor: Session worker 0acd3714f491 stderr: shutting down (exit 0); closing 0 active session(s)
+[2026-10-25T01:59:28.022Z] supervisor: Session worker c4841ff389a9 stderr: shutting down (exit 0); closing 0 active session(s)
+[2026-10-25T02:00:09.771Z] supervisor: Session worker 71311ec79f8e stderr: Prime Agent daemon listening on /tmp/prime-agent-1001/worker-ee92e1d8c39e-71311ec79f8e.sock
+[2026-10-25T02:00:28.392Z] supervisor: Session worker 2c6a6bbf3fd9 stderr: Prime Agent daemon listening on /tmp/prime-agent-1001/worker-ee92e1d8c39e-2c6a6bbf3fd9.sock
+[2026-10-25T02:00:28.393Z] supervisor: Session worker 679a36a31d2f stderr: Prime Agent daemon listening on /tmp/prime-agent-1001/worker-ee92e1d8c39e-679a36a31d2f.sock
+[2026-10-25T02:00:28.393Z] supervisor: Session worker d9b781fd67da stderr: Prime Agent daemon listening on /tmp/prime-agent-1001/worker-ee92e1d8c39e-d9b781fd67da.sock
+[2026-10-25T02:00:28.393Z] supervisor: Session worker 46070a12af6a stderr: Prime Agent daemon listening on /tmp/prime-agent-1001/worker-ee92e1d8c39e-46070a12af6a.sock
+[2026-10-25T02:00:28.393Z] supervisor: Session worker 46eb737c7904 stderr: Prime Agent daemon listening on /tmp/prime-agent-1001/worker-ee92e1d8c39e-46eb737c7904.sock
+[2026-10-25T02:00:28.393Z] supervisor: Session worker 7619afa81467 stderr: Prime Agent daemon listening on /tmp/prime-agent-1001/worker-ee92e1d8c39e-7619afa81467.sock
+[2026-10-25T02:00:28.394Z] supervisor: Session worker 06deb0b902c7 stderr: Prime Agent daemon listening on /tmp/prime-agent-1001/worker-ee92e1d8c39e-06deb0b902c7.sock
+[2026-10-25T02:00:29.288Z] supervisor: Session worker 8309c258e4cc stderr: shutting down (exit 0); closing 0 active session(s)
+[2026-10-25T02:00:29.674Z] supervisor: Session worker ed13f3dfbc9c stderr: deleted RLM subagent sub-fe7dbf0f (session 01a16fee-3b80-75ee-a656-bcaf3345d368); stopped 0 transferred handoff(s)
+[2026-10-25T02:00:58.568Z] supervisor: Could not list scheduled jobs from a worker: Timed out waiting for daemon worker response to cron_list
+[2026-10-25T02:01:29.340Z] supervisor: Session worker e4cb31b054a7 stderr: shutting down (exit 0); closing 0 active session(s)
+[2026-10-25T02:01:30.188Z] supervisor: Could not list scheduled jobs from a worker: Timed out waiting for daemon worker response to cron_list
+[2026-10-25T02:01:33.598Z] supervisor: Session worker 3b5f5ddf6453 stderr: shutting down (exit 0); closing 0 active session(s)
+[2026-10-25T02:01:34.144Z] supervisor: Could not list scheduled jobs from a worker: Timed out waiting for daemon worker response to cron_list
+[2026-10-25T02:01:42.027Z] supervisor: Session worker b04ad78c0efb stderr: Prime Agent daemon listening on /tmp/prime-agent-1001/worker-ee92e1d8c39e-b04ad78c0efb.sock
+[2026-10-25T02:01:52.801Z] supervisor: Session worker 96ae5d27ba49 stderr: Prime Agent daemon listening on /tmp/prime-agent-1001/worker-ee92e1d8c39e-96ae5d27ba49.sock
+[2026-10-25T02:02:04.800Z] supervisor: Could not list scheduled jobs from a worker: Timed out waiting for daemon worker response to cron_list
+[2026-10-25T02:02:40.567Z] supervisor: Could not list scheduled jobs from a worker: Timed out waiting for daemon worker response to cron_list
+[2026-10-25T02:03:16.188Z] supervisor: Could not list scheduled jobs from a worker: Timed out waiting for daemon worker response to cron_list
+[2026-10-25T02:03:17.977Z] supervisor: Idle eviction sweep: workers=76 answered=59 busy=54 candidates=0 evicted=0 idleEvictionMinutes=15 took=5128ms
+[2026-10-25T02:03:51.779Z] supervisor: Could not list scheduled jobs from a worker: Timed out waiting for daemon worker response to cron_list
+[2026-10-25T02:03:56.627Z] supervisor: Killing unresponsive session worker a0bc1b3cb58e pid=2403602: no frame for 180 s, no answer for 180 s of watchdog ticks
+[2026-10-25T02:03:56.684Z] supervisor: Recovered worker a0bc1b3cb58e without replaying uncertain operations: tool_execution_start
+[2026-10-25T02:03:57.856Z] supervisor: Retired unresponsive session worker a0bc1b3cb58e; its sessions reopen from their files on their next message or wake
+[2026-10-25T02:03:58.478Z] supervisor: Session worker 0a56999be1c4 stderr: Prime Agent daemon listening on /tmp/prime-agent-1001/worker-ee92e1d8c39e-0a56999be1c4.sock
+[2026-10-25T02:04:00.808Z] supervisor: Session worker c23256b5bb65 stderr: Prime Agent daemon listening on /tmp/prime-agent-1001/worker-ee92e1d8c39e-c23256b5bb65.sock
+[2026-10-25T02:04:25.992Z] supervisor: Session worker 2699bf0b2d79 stderr: deleted RLM subagent sub-d10c8c7a (session 01a17062-b3e8-73fb-9b26-2ec6da629e55); stopped 0 transferred handoff(s)
+[2026-10-25T02:04:32.151Z] supervisor: Session worker c08ca2f49e82 stderr: Prime Agent daemon listening on /tmp/prime-agent-1001/worker-ee92e1d8c39e-c08ca2f49e82.sock
+[2026-10-25T02:05:05.513Z] supervisor: Session worker 16bb1ebdc068 stderr: shutting down (exit 0); closing 0 active session(s)
+[2026-10-25T02:05:29.822Z] supervisor: Session worker ad481d71e552 stderr: shutting down (exit 0); closing 0 active session(s)
+[2026-10-25T02:05:34.371Z] supervisor: Session worker f96d357af4ef stderr: Prime Agent daemon listening on /tmp/prime-agent-1001/worker-ee92e1d8c39e-f96d357af4ef.sock
+[2026-10-25T02:05:57.080Z] supervisor: Session worker eb4b3ca5ae81 stderr: shutting down (exit 0); closing 0 active session(s)
+[2026-10-25T02:06:12.233Z] supervisor: Session worker db28827ca02d stderr: Prime Agent daemon listening on /tmp/prime-agent-1001/worker-ee92e1d8c39e-db28827ca02d.sock
+[2026-10-25T02:06:28.749Z] supervisor: Session worker 82e2930eed09 stderr: shutting down (exit 0); closing 0 active session(s)
+[2026-10-25T02:07:08.154Z] supervisor: Session worker 008dfe8c05d5 stderr: Prime Agent daemon listening on /tmp/prime-agent-1001/worker-ee92e1d8c39e-008dfe8c05d5.sock
+[2026-10-25T02:07:28.403Z] supervisor: Session worker 9cc83c0699a9 stderr: shutting down (exit 0); closing 0 active session(s)
+[2026-10-25T02:08:10.052Z] supervisor: Session worker d370c0821507 stderr: Prime Agent daemon listening on /tmp/prime-agent-1001/worker-ee92e1d8c39e-d370c0821507.sock
+[2026-10-25T02:08:18.206Z] supervisor: Idle eviction sweep: workers=77 answered=61 busy=56 candidates=0 evicted=0 idleEvictionMinutes=15 took=227ms
+[2026-10-25T02:08:28.964Z] supervisor: Session worker 70a4b73fe9b2 stderr: shutting down (exit 0); closing 0 active session(s)
+[2026-10-25T02:08:47.078Z] supervisor: Session worker 008dfe8c05d5 stderr: shutdown command received over socket; 1 active session(s) will be closed
+[2026-10-25T02:08:47.080Z] supervisor: Session worker 008dfe8c05d5 stderr: shutting down (exit 0); closing 1 active session(s)
+[2026-10-25T02:08:48.779Z] supervisor: Session worker bbd7d5eae563 stderr: Prime Agent daemon listening on /tmp/prime-agent-1001/worker-ee92e1d8c39e-bbd7d5eae563.sock
+[2026-10-25T02:09:39.074Z] supervisor: Session worker 636d16ea2262 stderr: Prime Agent daemon listening on /tmp/prime-agent-1001/worker-ee92e1d8c39e-636d16ea2262.sock
+[2026-10-25T02:09:42.097Z] supervisor: Session worker 78a920438e63 stderr: Prime Agent daemon listening on /tmp/prime-agent-1001/worker-ee92e1d8c39e-78a920438e63.sock
+[2026-10-25T02:10:02.511Z] supervisor: Session worker ea1dc28c03b1 stderr: Prime Agent daemon listening on /tmp/prime-agent-1001/worker-ee92e1d8c39e-ea1dc28c03b1.sock
+[2026-10-25T02:10:23.566Z] supervisor: Session worker fefc48c10f1d stderr: shutting down (exit 0); closing 0 active session(s)
+[2026-10-25T02:10:27.408Z] supervisor: Session worker bbd7d5eae563 stderr: shutdown command received over socket; 1 active session(s) will be closed
+[2026-10-25T02:10:27.409Z] supervisor: Session worker bbd7d5eae563 stderr: shutting down (exit 0); closing 1 active session(s)
+[2026-10-25T02:10:28.547Z] supervisor: Session worker cb3117e57a47 stderr: shutting down (exit 0); closing 0 active session(s)
+[2026-10-25T02:11:29.557Z] supervisor: Session worker a360bef4d585 stderr: shutting down (exit 0); closing 0 active session(s)
+[2026-10-25T02:11:54.986Z] supervisor: Session worker e3d173c5e14d stderr: Prime Agent daemon listening on /tmp/prime-agent-1001/worker-ee92e1d8c39e-e3d173c5e14d.sock
+[2026-10-25T02:11:58.919Z] supervisor: Session worker 383baddf6ad4 stderr: deleted RLM subagent sub-982b61ea (session 01a170bf-5883-7122-9460-afb7b49d5751); stopped 0 transferred handoff(s)
+[2026-10-25T02:13:18.926Z] supervisor: Idle eviction sweep: workers=76 answered=60 busy=53 candidates=0 evicted=0 idleEvictionMinutes=15 took=719ms
+[2026-10-25T02:14:28.364Z] supervisor: Session worker 458cb8bd6ddd stderr: shutting down (exit 0); closing 0 active session(s)
+[2026-10-25T02:14:31.945Z] supervisor: Session worker 71311ec79f8e stderr: shutting down (exit 0); closing 0 active session(s)
+[2026-10-25T02:15:24.966Z] supervisor: Session worker 52cf36637e89 stderr: Prime Agent daemon listening on /tmp/prime-agent-1001/worker-ee92e1d8c39e-52cf36637e89.sock
+[2026-10-25T02:15:28.723Z] supervisor: Session worker 0a7068df4b32 stderr: shutting down (exit 0); closing 0 active session(s)
+[2026-10-25T02:15:28.756Z] supervisor: Session worker 8b2f2ea07418 stderr: shutting down (exit 0); closing 0 active session(s)
+[2026-10-25T02:16:28.178Z] supervisor: Session worker b688a5329977 stderr: shutting down (exit 0); closing 0 active session(s)
+[2026-10-25T02:16:57.815Z] supervisor: Session worker cd85782a73e2 stderr: Prime Agent daemon listening on /tmp/prime-agent-1001/worker-ee92e1d8c39e-cd85782a73e2.sock
+[2026-10-25T02:18:19.629Z] supervisor: Idle eviction sweep: workers=73 answered=57 busy=52 candidates=0 evicted=0 idleEvictionMinutes=15 took=701ms
+[2026-10-25T02:18:28.166Z] supervisor: Session worker b04ad78c0efb stderr: shutting down (exit 0); closing 0 active session(s)
+[2026-10-25T02:18:36.888Z] supervisor: Session worker cd85782a73e2 stderr: shutdown command received over socket; 1 active session(s) will be closed
+[2026-10-25T02:18:36.889Z] supervisor: Session worker cd85782a73e2 stderr: shutting down (exit 0); closing 1 active session(s)
+[2026-10-25T02:18:38.095Z] supervisor: Session worker 86b491e3de3e stderr: Prime Agent daemon listening on /tmp/prime-agent-1001/worker-ee92e1d8c39e-86b491e3de3e.sock

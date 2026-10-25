@@ -26,10 +26,12 @@ export interface DaemonFault {
   /** The outbox's id of the message a send carried (`m-<uuid>`), which its "is landed" line names (src/slot-wait-timeouts.ts). */
   message?: string;
   /**
-   * The fault sits inside Prime, in d7's words after "a Prime fault, ": a worker crashed (WORKER_CRASH or BUN_PANIC), or a create Prime
-   * answered over SLOW_MS (SLOW_CREATE). d7 names it as its own cause of a dirty minute.
+   * The fault sits inside Prime, in d7's words after "a Prime fault, ": a worker crashed (WORKER_CRASH or BUN_PANIC) or hung (WORKER_HUNG),
+   * or a create Prime answered over SLOW_MS (SLOW_CREATE). d7 names it as its own cause of a dirty minute.
    */
   prime?: string;
+  /** The process of a hung worker (`readWorkerHangs`), which d7 names by the tree its watch lines list for it. */
+  pid?: number;
 }
 
 const STAMPED = /^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z) (.*)$/;
@@ -130,6 +132,26 @@ const WORKER_CRASH = /^\[(\S+Z)\] supervisor: Session worker (\w+) stderr: (unha
  * under an async function), and the create routed to it failed 1.4 s later with "Daemon worker socket closed".
  */
 const BUN_PANIC = /^\[(\S+Z)\] supervisor: Session worker (\w+) stderr: panic\(([^)]*)\): (.*)$/;
+/**
+ * The supervisor's watchdog killed a worker that sent no frame for the seconds it names, and the worker's open tool call was lost ("Recovered
+ * worker <id> without replaying uncertain operations: tool_execution_start"). At 02:03:56Z on 10-25 it killed a0bc1b3cb58e (pid 2403602), the
+ * one worker of "dev branch skipped alert", after 180 s in which it grew from 0.65 to 24.3 GB. Every cron_list poll from 02:00:58Z on missed only
+ * that worker while the other 59 answered, and d7 read the four minutes as CPU lag on the apps' side.
+ */
+const WORKER_HUNG = /^\[(\S+Z)\] supervisor: Killing unresponsive session worker (\w+) pid=(\d+): no frame for ([\d.]+) s/;
+
+/** A worker the supervisor killed as hung: from its last frame to the kill. */
+export interface WorkerHang { worker: string; pid: number; from: number; to: number }
+
+export function readWorkerHangs(lines: readonly string[]): WorkerHang[] {
+  const hangs: WorkerHang[] = [];
+  for (const line of lines) {
+    const found = WORKER_HUNG.exec(line);
+    const to = found ? Date.parse(found[1]!) : NaN;
+    if (found && Number.isFinite(to)) hangs.push({ worker: found[2]!, pid: Number(found[3]), from: to - Number(found[4]) * 1000, to });
+  }
+  return hangs;
+}
 
 const TIMED_OUT = /Timed out after (\d+)ms waiting for the Prime Agent daemon response to "(\w+)"/;
 const MESSAGE_ID = /\b(m-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/;
@@ -273,6 +295,11 @@ export function readSupervisorFaults(lines: readonly string[], local: string, re
   const faults: DaemonFault[] = [];
   const delivered = new Set(reopened.map(minuteOf));
   let askedStop = -Infinity;
+  // A hang is a fault in every minute it spans, as the worker answered nothing in any of them.
+  for (const hang of readWorkerHangs(lines)) {
+    const what = `Prime worker ${hang.worker} sent nothing for ${Math.round((hang.to - hang.from) / 1000)} s until the supervisor killed it`;
+    for (let at = hang.from; at <= hang.to; at = (minuteOf(at) + 1) * 60_000) faults.push({ at, host: local, what, prime: "a worker hung", pid: hang.pid });
+  }
   for (const line of lines) {
     const stop = ASKED_STOP.exec(line);
     if (stop) { askedStop = Date.parse(stop[1]!); continue; }

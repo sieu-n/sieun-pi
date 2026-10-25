@@ -1,5 +1,5 @@
 import type { ChatLatency } from "./chat-latency.ts";
-import type { DaemonFault } from "./daemon-faults.ts";
+import { type DaemonFault, readWorkerHangs } from "./daemon-faults.ts";
 
 /**
  * Whether the harness itself was slow in a minute its box read CPU-unusable, for the Whole system duty (scripts/duties/whole-system.ts). The chat
@@ -14,14 +14,17 @@ export const SLOW_READ_MS = 1000;
 /**
  * When the supervisor's poll of a worker went unanswered, from a daemon log's lines: its scheduled job and heartbeat lists timing out
  * ("Could not list scheduled jobs from a worker: Timed out waiting for daemon worker response to cron_list", 7 lines from 10:52Z to 11:00Z on
- * 10-18) and a worker it parked as unresponsive. A list refused by a worker that is stopping is no miss.
+ * 10-18) and a worker it parked as unresponsive. A list refused by a worker that is stopping is no miss. A miss inside a hang the supervisor
+ * killed (src/daemon-faults.ts `readWorkerHangs`) is that hang's, which d7 counts as a Prime fault: from 02:00:58Z to 02:03:51Z on 10-25 all 7
+ * misses were worker a0bc1b3cb58e, which answered nothing for 180 s while it grew to 24.3 GB, and the chat read pages in about 60 ms.
  */
 export function workerMisses(lines: readonly string[]): number[] {
+  const hangs = readWorkerHangs(lines);
   const out: number[] = [];
   for (const line of lines) {
     const found = /^\[(\S+Z)\] supervisor: (?:Could not list [\w ]+ from a worker: Timed out waiting for daemon worker response|Worker \S+ is unresponsive; parked)/.exec(line);
     const at = found ? Date.parse(found[1]!) : NaN;
-    if (Number.isFinite(at)) out.push(at);
+    if (Number.isFinite(at) && !hangs.some(hang => at >= hang.from && at <= hang.to)) out.push(at);
   }
   return out;
 }

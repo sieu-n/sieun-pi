@@ -1030,8 +1030,25 @@ const spans = (starts: readonly number[]): string => {
   return runs.map(([from, to]) => from === to ? clock(from) : `${clock(from)} to ${clock(to)}`).join(", ");
 };
 
+/**
+ * A hung worker's faults named by the tree this box's watch lines list for its pid, with how far it grew, since the supervisor's line names
+ * only the worker id (src/daemon-faults.ts `readWorkerHangs`).
+ */
+export function nameHungWorkers(faults: readonly DaemonFault[], watch: readonly WatchLine[]): DaemonFault[] {
+  return faults.map(fault => {
+    if (fault.pid === undefined) return fault;
+    const hungAt = Math.min(...faults.filter(other => other.pid === fault.pid).map(other => other.at));
+    const seen = watch.flatMap(line => (line.byWorker ?? []).filter(worker => worker.pid === fault.pid).map(worker => ({ at: Date.parse(line.at), worker })));
+    if (!seen.length) return fault;
+    const before = seen.findLast(entry => entry.at <= hungAt)?.worker.gb, most = Math.max(...seen.map(entry => entry.worker.gb));
+    const grew = before !== undefined && most > before ? `, after it grew from ${before} to ${most} GB` : "";
+    return { ...fault, title: seen.at(-1)!.worker.tree, what: fault.what + grew };
+  });
+}
+
 export function measure(input: Inputs): PrecheckOutput {
   const { now } = input;
+  const daemonFaults = nameHungWorkers(input.daemonFaults ?? [], input.watch);
   // The 30 whole wall-clock minutes before `now`'s, each read by the watch line in it; the watch samples at each minute's middle (`nextSampleAt`).
   const start = Math.floor(now / MINUTE) * MINUTE - WINDOW_MS;
   const flagged: FlaggedSlice[] = [];
@@ -1092,7 +1109,7 @@ export function measure(input: Inputs): PrecheckOutput {
       const found = unusable(view.usable);
       const own = view.name === (line.host ?? UNNAMED_HOST);
       const slow = found.includes("cpu")
-        ? harnessSlow({ box: view.name, own, latency: line.chat, from, to, misses: input.workerMisses ?? [], faults: input.daemonFaults ?? [] }) : [];
+        ? harnessSlow({ box: view.name, own, latency: line.chat, from, to, misses: input.workerMisses ?? [], faults: daemonFaults }) : [];
       // A CPU miss the harness stayed fast through is real job work on a busy box, a detail line and no fault (harness-slow.ts).
       const miss = found.filter(kind => kind !== "cpu" || slow.length > 0);
       if (found.includes("cpu") && !slow.length) {
@@ -1121,7 +1138,7 @@ export function measure(input: Inputs): PrecheckOutput {
     if (waited) why.push(`a turn of ${waited.tree} queued ${waited.oldestWaitS} s with free slots (${line.queue!.slots} of ${line.queue!.workingMax} in use, its tree at ${waited.slots} of ${line.queue!.treeWorkingMax})`);
     if (parked) why.push(`pi-pool refused ${parked.session.slice(0, 8)} for over 10 min while ${parked.room.join(", ")} took its class`);
     if (offline.size) offlineAny++;
-    const minuteFaults = (input.daemonFaults ?? []).filter(fault => fault.at >= from && fault.at < to);
+    const minuteFaults = daemonFaults.filter(fault => fault.at >= from && fault.at < to);
     const faults = minuteFaults.filter(fault => !offline.has(fault.host));
     offlineFaults += minuteFaults.length - faults.length;
     if (faults.length) {
@@ -1215,7 +1232,7 @@ export function measure(input: Inputs): PrecheckOutput {
     `(${harness} unusable minutes on the harness side, ${other} on the app or owner side, ${unattributed} with no cause read, ${unwatched} with no watch line, and ${rigMin} harness minutes went mostly to job rigs); a start, wake or parked job was held over ` +
     `10 min in ${held}; a turn sat queued while pi-pool had ${FREE_SLOTS} or more slots it could give it, or pi-pool refused a tree for over 10 min while an account took its class, in ${freeSlot}; ` +
     `a tree waited over 10 min for a pi-pool cell at R4's pace, not counted dirty, in ${cellWait}; ` +
-    `an open, status read, send or worker start failed or ran over ${SLOW_MS / 1000} s in ${daemonFail}, ${primeMin} of them a Prime fault, a worker crash or a create Prime took over ${SLOW_MS / 1000} s to answer.` +
+    `an open, status read, send or worker start failed or ran over ${SLOW_MS / 1000} s in ${daemonFail}, ${primeMin} of them a Prime fault, a worker crash or hang or a create Prime took over ${SLOW_MS / 1000} s to answer.` +
     (offlineMin.size ? ` Tailscale read ${[...offlineMin].map(([name, at]) => `${name} offline in ${at.length}`).join(" and ")}, and ${offlineFaults} daemon calls to a box while it was offline are left out.` : "") });
   if (input.ciCache) {
     metrics.ci_cache_age_s = Math.max(0, Math.round((now - input.ciCache.fetchedAt) / 1000));
