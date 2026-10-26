@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { stat } from "node:fs/promises";
 import { constants, type IntervalHistogram, monitorEventLoopDelay, performance, PerformanceObserver } from "node:perf_hooks";
 
 /**
@@ -20,6 +21,8 @@ export interface ChatLatency {
   /** The longest garbage collection since the last line, in ms, and its kind; absent when none ran. */
   gcMs?: number;
   gc?: GcKind;
+  /** The longest a stat of "/" waited for libuv's thread pool since the last line, in ms, a probe still out counted to now (`probePool`). */
+  poolMs?: number;
 }
 
 export type GcKind = "major" | "minor" | "incremental" | "weak";
@@ -40,6 +43,30 @@ const gcKindOf = (entry: object): number => {
 export function noteGc(ms: number, kind: number): void {
   const named = GC_KINDS.get(kind);
   if (named && ms > (longestGc?.ms ?? 0)) longestGc = { ms, kind: named };
+}
+
+/**
+ * One stat of "/" a second, timed, so the line says how long any file read waited for one of the 4 threads libuv gives the service. From
+ * 03:42:20Z to 03:47:50Z on 10-26 us-metal02's chat answered api/accounts and a chat's duties in 2.3 to 10.7 s and its projections took up to
+ * 36.6 s against 134 ms of their own code, while its event loop stalled at most 273 ms and its kernel reads went unread, which a full
+ * thread pool would explain, and no reading said whether it was full.
+ */
+const POOL_PROBE_MS = 1000;
+let longestPool = 0;
+const probesOut = new Set<number>();
+function probePool(): void {
+  const started = performance.now();
+  probesOut.add(started);
+  void stat("/").catch(() => {}).finally(() => {
+    probesOut.delete(started);
+    longestPool = Math.max(longestPool, performance.now() - started);
+  });
+}
+/** The window's longest pool wait, with each probe still out counted up to `now`. */
+export function poolWait(now = performance.now()): number {
+  let longest = longestPool;
+  for (const started of probesOut) longest = Math.max(longest, now - started);
+  return longest;
 }
 
 /** api/hosts waits on each other box's relay over the network, up to 35 s by design (hosts.ts), so its time says nothing about this box. */
@@ -77,6 +104,7 @@ export function timeRead(req: IncomingMessage, res: ServerResponse, base: string
     loop = monitorEventLoopDelay({ resolution: 20 }); loop.enable();
     new PerformanceObserver(list => { for (const entry of list.getEntries()) noteGc(entry.duration, gcKindOf(entry)); })
       .observe({ entryTypes: ["gc"] });
+    setInterval(probePool, POOL_PROBE_MS).unref();
   }
   const read = { remote: false };
   reading.enterWith(read);
@@ -95,8 +123,9 @@ export function takeLatency(): ChatLatency | undefined {
   if (!loop) return undefined;
   const taken: ChatLatency = { readMs: slowest.ms, ...slowest.route ? { read: slowest.route } : {},
     ...slowestRemote.ms ? { remoteMs: slowestRemote.ms, remote: slowestRemote.route } : {}, loopMs: Math.round(loop.max / 1e6),
-    ...longestGc ? { gcMs: Math.round(longestGc.ms), gc: longestGc.kind } : {} };
+    ...longestGc ? { gcMs: Math.round(longestGc.ms), gc: longestGc.kind } : {}, poolMs: Math.round(poolWait()) };
   slowest = { ms: 0, route: "" };
+  longestPool = 0;
   slowestRemote = { ms: 0, route: "" };
   longestGc = null;
   loop.reset();

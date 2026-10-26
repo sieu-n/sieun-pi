@@ -33,9 +33,10 @@ const count = (value: unknown): value is number => typeof value === "number" && 
 /** A watch line's chat latency checked at the edge; undefined when absent or malformed. */
 export function chatLatency(value: unknown): ChatLatency | undefined {
   if (typeof value !== "object" || value === null) return undefined;
-  const { readMs, read, loopMs, gcMs, gc } = value as Record<string, unknown>;
+  const { readMs, read, loopMs, gcMs, gc, poolMs } = value as Record<string, unknown>;
   const kind = gc === "major" || gc === "minor" || gc === "incremental" || gc === "weak" ? gc : undefined;
-  return count(readMs) && count(loopMs) ? { readMs, loopMs, ...typeof read === "string" ? { read } : {}, ...count(gcMs) && kind ? { gcMs, gc: kind } : {} } : undefined;
+  return count(readMs) && count(loopMs) ? { readMs, loopMs, ...typeof read === "string" ? { read } : {}, ...count(gcMs) && kind ? { gcMs, gc: kind } : {},
+    ...count(poolMs) ? { poolMs } : {} } : undefined;
 }
 
 /**
@@ -65,6 +66,7 @@ export function harnessSlow(input: { box: string; own: boolean; latency: unknown
     const gc = latency.gcMs !== undefined && latency.gcMs > SLOW_READ_MS / 2 ? ` (a ${latency.gc} GC took ${seconds(latency.gcMs)})` : "";
     out.push(`the chat's event loop stalled ${seconds(latency.loopMs)}${gc}`);
   }
+  if (latency?.poolMs !== undefined && latency.poolMs > SLOW_READ_MS) out.push(`the chat's file reads waited ${seconds(latency.poolMs)} for a thread-pool thread`);
   const misses = input.own ? input.misses.filter(at => at >= input.from && at < input.to).length : 0;
   if (misses) out.push(`${misses} worker poll${misses === 1 ? "" : "s"} went unanswered`);
   const slow = input.faults.filter(fault => fault.host === input.box && fault.at >= input.from && fault.at < input.to && waitedOnCpu(fault.what)).length;
