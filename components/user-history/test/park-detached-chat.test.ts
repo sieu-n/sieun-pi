@@ -10,12 +10,9 @@ import { loadRecord } from "../src/chat-brief.ts";
 import { PARK_IDLE_MS } from "../src/chat-checkin.ts";
 import { Chats } from "../src/chats.ts";
 import { IdIndex } from "../src/id-index.ts";
-import { jobResumes } from "../src/job-resume.ts";
+import { jobResumes, resumeJobName } from "../src/job-resume.ts";
 import type { ChatBoard, ChildAgent, ThreadMessage } from "../src/shared/types.ts";
 import { fakeThreads, source } from "./chats-helpers.ts";
-
-// Job names carry the owner's local HH:MM, and the chat service runs with TZ=Asia/Seoul; the expected "resumed 18:56" is 09:56Z in Seoul.
-process.env.TZ = "Asia/Seoul";
 
 test("a reported job whose session the idle unload stopped is parked after its chat detaches", async () => {
   const dir = await mkdtemp(join(tmpdir(), "park-detached-"));
@@ -50,6 +47,7 @@ test("a reported job whose session the idle unload stopped is parked after its c
     await chats.tick();
     await chats.settled();
     chats.close();
-    assert.deepEqual(started, ["test file count resumed 18:56"], lines.join("\n"));
+    // The name carries the box's local HH:MM (`resumeJobName`), so it is built with the same formatter and clock, whatever TZ the box runs in.
+    assert.deepEqual(started, [resumeJobName("test file count", now)], lines.join("\n"));
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
