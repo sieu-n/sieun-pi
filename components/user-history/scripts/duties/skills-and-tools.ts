@@ -272,13 +272,15 @@ async function pool(deps: Deps, provider: "anthropic" | "openai-codex"): Promise
   if (reauth.length && reauth.every(email => email.endsWith(APPLE_RELAY))) return FAIL("owner", `${reauth.join(", ")} need a new sign-in (${counts})`,
     `the owner clicks Sign in again on the account in Settings, Accounts and signs in with Apple; Apple asks for his Apple ID password and a 2FA code on his devices, which no agent holds`);
   if (reauth.length) {
+    // The fix never offers `pi-pool off`: jobs that followed it turned off krenerd77 (10-23 13:43Z) and sieunpark77 (10-25 19:49Z) after the
+    // owner had turned them on in Settings, and he turned both on again at 12:12Z on 10-26.
     // Only a password, 2FA, key or macOS grant is the owner's fix, and this sign-in needs none of them (c129): it runs in his Aside, which holds
     // his Google login, since claude.ai showed the box Chrome an hCaptcha on its email link (us-metal02, 10-24 12:36Z). With his Mac offline it
     // stays an agent fix with the Mac's state in the detail, because 28 runs from 10-24 counted sieunpark77's sign-in in owner_fixes, where no
     // todo could hold it and the dead account fell out of skills_or_tools_to_fix.
     const mac = await macReach(deps);
     return FAIL("agent", `${reauth.join(", ")} need a new sign-in (${counts})${mac.online ? "" : `; ${mac.detail}`}`,
-      `copy a live login of the account if a box has one, else run \`pi-pool login <email> --provider ${provider}\` in the owner's Aside; \`pi-pool off <email>\` an account whose plan is unpaid; a password or 2FA prompt makes it an owner item`);
+      `copy a live login of the account if a box has one, else run \`pi-pool login <email> --provider ${provider}\` in the owner's Aside once his Mac is online; never \`pi-pool off\` the account, since he turns accounts on and off in Settings, Accounts and his last choice stands; a password or 2FA prompt makes it an owner item`);
   }
   if (!usable && !soon) return FAIL("agent", `no ${provider} account is usable and none resets within 24 h (${counts})`, "read `pi-pool ls --json` and find why every account is stuck");
   return PASS(counts);

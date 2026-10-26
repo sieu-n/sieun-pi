@@ -295,6 +295,12 @@ test("pool_claude keeps a new sign-in the agent's fix while the Mac is offline, 
   assert.ok(back.status === "fail" && back.fixer === "agent" && !back.detail.includes("offline") && back.fix.includes("Aside"), JSON.stringify(back));
 });
 
+// 10-23 and 10-25: jobs following the fix text ran `pi-pool off` on krenerd77 and sieunpark77 after the owner had turned them on in Settings.
+test("pool_claude's sign-in fix never tells a job to turn the account off", async () => {
+  const outcome = await poolClaude.run(poolMacDeps(true));
+  assert.ok(outcome.status === "fail" && outcome.fix.includes("never `pi-pool off` the account") && !/`pi-pool off <email>`/.test(outcome.fix), JSON.stringify(outcome));
+});
+
 // 10-24 05:13Z: sieunpark77's Claude refresh grant reached its fixed end, and nothing flagged it before it did.
 test("pool_claude flags a live account whose refresh grant ends within GRANT_WARN_MS, and skips a disabled one", async () => {
   const now = Date.parse("2026-10-24T00:00:00Z");
