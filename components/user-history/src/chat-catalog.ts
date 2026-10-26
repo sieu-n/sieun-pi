@@ -816,6 +816,8 @@ export class Catalog {
       hosts.onChange = () => { if (this.peer.listed && !this.closed) void this.apply().catch(() => {}); };
       hosts.start();
     }
+    const copied = () => { this.copiesLoaded = true; };
+    void Promise.all([this.peer.loaded(), hosts?.loaded()]).then(copied, copied);
     this.client.onMessage(message => {
       if (message.type === "heartbeats_changed") this.scheduleSchedulesRefresh();
     });
@@ -1198,14 +1200,23 @@ export class Catalog {
   private running: { inputs: number; result: ReturnType<Catalog["project"]> } | undefined;
   /** The rows of the last projection that ended, whoever asked for it (a frame or a `rows` call), and the inputs it began on (`heldAgents`). */
   private latest: { inputs: number; rows: SessionRow[] } | undefined;
-  /** The chats' agents the last run saved at its stop (`AGENTS_FILE`), which `heldAgents` gives until this run's first projection ends. */
+  /**
+   * The chats' agents the last run saved at its stop (`AGENTS_FILE`), which `heldAgents` gives until this run's first projection on the disk
+   * copies of every box ends.
+   */
   private saved: ReadonlyMap<string, readonly ChatAgent[]> | undefined;
+  /**
+   * Whether the disk copies of this box and every other box are loaded (`SessionPeer.loaded`), so a projection begun since holds every chat's
+   * row. At the 07:25:34Z start on 10-26 a projection began on no rows, its 0 rows replaced the saved agents, and three agents reads at
+   * 07:25:35Z projected for 2.06 s each ("the last projection of 0 rows lacks its row").
+   */
+  private copiesLoaded = false;
   private tracked(): ReturnType<Catalog["project"]> {
     const started = performance.now();
-    const run = { inputs: this.inputs, result: this.project() };
+    const run = { inputs: this.inputs, result: this.project(), full: this.copiesLoaded && this.peer.listed };
     void run.result.then(({ rows }) => {
       this.projectionMs.push(performance.now() - started);
-      if (!this.latest || this.latest.inputs <= run.inputs) { this.latest = { inputs: run.inputs, rows }; this.saved = undefined; }
+      if (run.full && (!this.latest || this.latest.inputs <= run.inputs)) { this.latest = { inputs: run.inputs, rows }; this.saved = undefined; }
     }, () => {});
     this.running = run;
     void run.result.finally(() => { if (this.running === run) this.running = undefined; }).catch(() => {});

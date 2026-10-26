@@ -18,7 +18,7 @@ const ID = "01a154b4-51ea-7166-ae5a-57c4936c2b80";
 test("a session placed on the Mac is the Mac's until the Mac's list names it, and then the list decides", (t: TestContext) => {
   let listed: string | null = null;
   const hosts = { selfName: "us-metal02", hostOf: (id: string) => id === ID && listed ? { name: listed } : null, isActive: () => false, client: () => null,
-    start: () => {}, close: async () => {} } as unknown as HostCatalogs;
+    start: () => {}, loaded: async () => {}, close: async () => {} } as unknown as HostCatalogs;
   const catalog = new Catalog("unused", new ChatReadState("unused"), new ChatLabels("unused"), { ids: async () => new Set(), checkIns: async () => new Map(), links: async () => ({ children: [], board: null, roots: [], messages: [] }) },
     new ThreadOrigins({ ids: async () => [] }), hosts);
   t.after(() => catalog.close());

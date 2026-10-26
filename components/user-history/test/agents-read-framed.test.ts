@@ -135,6 +135,12 @@ test("a start answers with the agents the last run saved at its stop until its f
   assert.deepEqual(next.catalog.heldAgents("s1")?.map(entry => entry.sessionId), ["s2"]);
   assert.equal(next.catalog.heldSource("s9"), "the agents the last run saved for 1 chats lack it");
   assert.equal(next.counted.projections, 0);
+  await next.catalog.rows();
+  assert.deepEqual(next.catalog.heldAgents("s1")?.map(entry => entry.sessionId), ["s2"],
+    "a projection begun before this box listed holds no rows, so the saved agents still answer (07:25:34Z start on 10-26)");
+  await next.catalog.refresh();
+  await next.catalog.rows();
+  assert.equal(next.catalog.heldSource("s9"), "the last projection of 2 rows lacks its row", "the first projection on listed rows replaces them");
   writeFileSync(file, "not json");
   assert.equal(chatCatalog(t, file).catalog.heldAgents("s1"), undefined, "a file of another shape is no answer");
 });

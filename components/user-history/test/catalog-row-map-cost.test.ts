@@ -20,7 +20,7 @@ test("a projection asks each row's box once and parses only new rows' times", as
   const box = Array.from({ length: 100 }, (_, n) => row(n));
   const mac = Array.from({ length: 100 }, (_, n) => row(100 + n));
   let asked = 0;
-  const hosts = { selfName: "box", onChange: () => {}, start: () => {}, close: () => {}, rows: () => mac, isActive: () => false,
+  const hosts = { selfName: "box", onChange: () => {}, start: () => {}, close: () => {}, loaded: async () => {}, rows: () => mac, isActive: () => false,
     hostOf: (id: string) => { asked++; return mac.some(entry => entry.sessionId === id) ? { name: "mac" } : null; } } as unknown as HostCatalogs;
   const reads = new ChatReadState("unused");
   t.mock.method(reads, "snapshot", async () => ({ baseline: 0, sessions: {} }));
