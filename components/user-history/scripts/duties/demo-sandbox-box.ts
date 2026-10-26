@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { writeFile } from "node:fs/promises";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
-import { MAC_HOST, macAway } from "./mac-reach.ts";
+import { MAC_HOST, macAway, macSilent } from "./mac-reach.ts";
 
 /**
  * The box side of the Demo sandbox works duty (demo-sandbox.ts). The demo and its walk live on the owner's MacBook Pro, so this runs
@@ -17,18 +17,22 @@ export const MAC_COMMAND = "export PATH=/Users/sieunpark/.hermes/node/bin:$PATH;
 
 export interface BoxDeps {
   away: () => Promise<FlaggedSlice | undefined>;
+  /** Read after an ssh that exits 255: a `host_away` item when the Mac answers nothing on the tailnet either (`macSilent`). */
+  silent: () => Promise<FlaggedSlice | undefined>;
   ssh: () => Promise<{ code: number; stdout: string; stderr: string }>;
 }
 
-/** The precheck output text and exit code: the Mac's own output when ssh reaches it, or a `host_away` output when Tailscale lists it offline. */
+/**
+ * The precheck output text and exit code: the Mac's own output when ssh reaches it, or a `host_away` output when Tailscale lists it offline
+ * or when ssh exits 255 on a Mac that answers no tailscale ping either.
+ */
 export async function boxPrecheck(deps: BoxDeps): Promise<{ code: number; text: string; stderr: string }> {
+  const awayOutput = (item: FlaggedSlice, stderr: string) => ({ code: 0, text: JSON.stringify({ metrics: {}, flagged: [item] } satisfies PrecheckOutput), stderr });
   const away = await deps.away();
-  if (away) {
-    const output: PrecheckOutput = { metrics: {}, flagged: [away] };
-    return { code: 0, text: JSON.stringify(output), stderr: "" };
-  }
+  if (away) return awayOutput(away, "");
   const { code, stdout, stderr } = await deps.ssh();
-  return { code, text: stdout, stderr };
+  const silent = code === 255 ? await deps.silent() : undefined;
+  return silent ? awayOutput(silent, stderr) : { code, text: stdout, stderr };
 }
 
 const ssh = (): Promise<{ code: number; stdout: string; stderr: string }> => new Promise(resolve => {
@@ -37,7 +41,8 @@ const ssh = (): Promise<{ code: number; stdout: string; stderr: string }> => new
 });
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const { code, text, stderr } = await boxPrecheck({ away: () => macAway(MAC_HOST, "the demo walk, page times, restarts and SSR timeouts are", Date.now()), ssh });
+  const what = "the demo walk, page times, restarts and SSR timeouts are";
+  const { code, text, stderr } = await boxPrecheck({ away: () => macAway(MAC_HOST, what, Date.now()), silent: () => macSilent(MAC_HOST, what, Date.now()), ssh });
   if (stderr) process.stderr.write(stderr);
   if (process.env.OUTPUT_FILE) await writeFile(process.env.OUTPUT_FILE, text);
   else process.stdout.write(text);

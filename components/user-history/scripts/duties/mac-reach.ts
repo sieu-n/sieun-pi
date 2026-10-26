@@ -33,6 +33,20 @@ export function macAwayItem(statusJson: string, address: string, what: string, a
 }
 
 /**
+ * The `host_away` item for a Mac whose ssh failed (exit 255) and that answers no `tailscale ping` either, so it went back to sleep between the
+ * Tailscale read and the dial; undefined when it answers, and the ssh failure stays a source error. At 22:18Z on 10-26 the Mac woke for under
+ * 2 min (Tailscale handshake 22:18:07Z, LastSeen 22:20:00Z), the runner reran d1 for it, and ssh timed out on the sleeping Mac, so the run read
+ * "the precheck failed" and started a duty job that could do nothing; `tailscale ping 100.66.173.18` got "no reply" at 22:20Z.
+ */
+export async function macSilent(sshHost: string, what: string, at: number): Promise<FlaggedSlice | undefined> {
+  const address = (await run("ssh", ["-G", sshHost], { encoding: "utf8" }).then(result => result.stdout, () => "")).match(/^hostname (\S+)$/m)?.[1];
+  if (!address) return undefined;
+  const answered = await run("tailscale", ["ping", "-c", "3", "--timeout", "3s", address], { encoding: "utf8" }).then(() => true, () => false);
+  return answered ? undefined : { at, kind: HOST_AWAY, host: MAC_HOST, excerpt: `the Mac (${address}) read online on the tailnet but answered no ssh ` +
+    `and no tailscale ping, asleep again, so ${what} not measured; the duty reruns once Tailscale reads it online` };
+}
+
+/**
  * The `host_away` item when Tailscale lists the Mac offline now. A read that fails gives none, so the precheck dials the Mac as before and a
  * failure there is a source error. `tailscale status --json` reads the tailscaled socket and took 0.03 s on us-metal02 on 10-18 (src/host-reach.ts).
  */
