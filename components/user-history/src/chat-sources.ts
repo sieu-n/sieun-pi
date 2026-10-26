@@ -302,6 +302,8 @@ export interface ChatThreads {
   reloadIdle(id: string): Promise<"reloaded" | "busy" | "saved">;
   /** Whether the hub holds an attach of the thread now; while it does, its children come from the attach and not from the daemon's rows. */
   isLive?(id: string): boolean;
+  /** Whether the chat is dormant now, when the daemon refuses to delete its subagents (`deleteSubagent`); absent: never. */
+  isDormant?(id: string): boolean;
   /** `live` fires after each attach with the children known then; `children` on every change while attached; `idle` at each turn's end. */
   observe(observer: { live(id: string, children: readonly ChildAgent[]): void; children(id: string, children: readonly ChildAgent[]): void; idle(id: string): void }): () => void;
   /**

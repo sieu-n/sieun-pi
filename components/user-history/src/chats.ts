@@ -279,6 +279,8 @@ export class Chats {
   private readonly retired = new Set<string>();
   /** `repliedSinceTask` read from a job's session file (`withReplies`), by job id and activity stamp. */
   private readonly replies = new Map<string, boolean | undefined>();
+  /** Waiting jobs of dormant chats whose park waits for the chat's wake (`parkJob`), so each is logged once. */
+  private readonly parkWaits = new Set<string>();
   /** The Prime update each retirement path last held for (`updateHold`), so each logs an update once. */
   private readonly heldFor = new Map<string, string>();
   /** Job threads found gone (`threadGone`) at an activity stamp: never looked at again unless the stamp changes. */
@@ -1020,6 +1022,14 @@ export class Chats {
     const name = childName(child);
     const cancel = await this.cancelledChild(id, child);
     if (cancel) { this.log(`chat ${id.slice(0, 8)}: kept waiting job ${name} as it is: ${cancelWords(cancel)}, so no fresh job takes its steps`); return; }
+    // A dormant chat's subagents cannot be deleted, so the park waits for the chat's next wake and saves nothing until then. Clean-room w81 run4
+    // on 10-26: from 05:47Z to 07:59Z each sweep saved "test file count" again and then met "The chat is dormant" at its delete.
+    if (this.threads.isDormant?.(id)) {
+      if (!this.parkWaits.has(child.id)) this.log(`chat ${id.slice(0, 8)}: waiting job ${name} is parked at the chat's next wake: the chat is dormant`);
+      this.parkWaits.add(child.id);
+      return;
+    }
+    this.parkWaits.delete(child.id);
     try {
       const sessionFile = (await this.summary(id))?.sessionFile;
       const childDir = sessionFile ? join(artifactsDir(sessionFile), child.id) : undefined;

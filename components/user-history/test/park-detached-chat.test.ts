@@ -2,7 +2,7 @@
 // idle unload stopped its session at 08:49Z, and its chat detached at 09:24Z. From then on the chat's children came from the daemon's rows,
 // whose saved subagent rows carry no repliedSinceTask, so the waiting-job cleanup never read the job as reported and never parked it.
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -104,5 +104,46 @@ test("after a service restart with the chat detached, a reported job is parked f
     assert.deepEqual(await park(true), [{ name: resumeJobName("test file count", now), model: "openai-codex/gpt-6-astra medium" }],
       "the reply in the job's file makes it reported, and the fresh job keeps its model and thinking");
     assert.deepEqual((await park(false)).length, 1, "a job whose file shows no reply since its task ended silently, and waitingJobs parks that too");
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+// Guards clean-room w81 run4 on 10-26: from 05:47Z to 07:59Z each sweep of the dormant chat 01a17670 saved "test file count" again and then
+// met "The chat is dormant" at the delete. The park now saves nothing while the chat is dormant and finishes at its next wake.
+test("a waiting job of a dormant chat is saved and parked only once the chat wakes", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "park-dormant-"));
+  try {
+    let now = Date.parse("2026-10-23T08:47:05Z");
+    let dormant = true;
+    const threads = Object.assign(fakeThreads([]), { isLive: () => false, isDormant: () => dormant });
+    const index = new IdIndex(join(dir, "chats.json"), "Chat index");
+    await index.add("c1");
+    await mkdir(join(dir, "session-artifacts", "c1", "sub-d1"), { recursive: true });
+    await writeFile(join(dir, "session-artifacts", "c1", "sub-d1", "rlm-subagent.json"), JSON.stringify({ prompt: "Count the test files.", createdAt: now - 3_600_000 }));
+    const board: ChatBoard = { v: 2, rev: 1, updatedAt: "", todos: [], plan: [
+      { id: "p2", text: "Record both counts", status: "doing", job: "test file count", waitFor: "The release owner's message", children: [] }] };
+    const started: string[] = [];
+    const lines: string[] = [];
+    const chats = new Chats(index, threads, async () => ({ lifecycle: "live", sessionFile: join(dir, "sessions", "c1.jsonl") }), "b1", loadRecord(join(dir, "loads.json")), {
+      ...source(dir, {}, () => now), board: async () => board, waking: async () => false, wakes: async () => [],
+      resumes: { store: jobResumes(join(dir, "job-resumes")), restart: async (_chat, name) => { started.push(name); return { id: "s-fresh", name }; }, applyBoard: async () => {} } },
+      line => lines.push(line));
+    await chats.adopt();
+    threads.transcripts.set("c1", [{ role: "custom", customType: "agent_message", display: true, timestamp: now,
+      content: "[agent-message from child:test file count]\n415 test files." } as ThreadMessage]);
+    await chats.roster(new Map([["c1", [{ id: "sub-d1", label: "test file count", sessionName: "test file count", sessionId: "s-job", status: "done",
+      repliedSinceTask: true, lastActivityAt: now } satisfies ChildAgent]]]));
+    for (const minutes of [70, 80]) {
+      now = Date.parse("2026-10-23T08:47:05Z") + minutes * 60_000;
+      await chats.tick();
+      await chats.settled();
+    }
+    assert.deepEqual(await readdir(join(dir, "job-resumes")).catch(() => []), [], "nothing is saved while the chat is dormant");
+    assert.equal(lines.filter(line => line.includes("is parked at the chat's next wake")).length, 1, lines.join("\n"));
+    dormant = false;
+    now += 11 * 60_000;
+    await chats.tick();
+    await chats.settled();
+    chats.close();
+    assert.deepEqual(started, [resumeJobName("test file count", now)], lines.join("\n"));
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
