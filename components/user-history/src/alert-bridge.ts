@@ -4,8 +4,9 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { ALERT_ROUTES, OPS_ROUTE, routeAlert } from "./alert-routes.ts";
 import { missing } from "./locked-json.ts";
-import { POOL_WAIT, type TurnSince } from "./held-turns.ts";
+import type { TurnSince } from "./held-turns.ts";
 import type { QueuePlace } from "./shared/types.ts";
+import { transientTurnError } from "./turn-error.ts";
 import { TICK_MS } from "./wakes.ts";
 
 /**
@@ -518,7 +519,7 @@ export class AlertBridge {
 
   /**
    * The triage job that takes the chat's fires now. A job that never had a turn keeps them, and so does one whose last call failed on a pool
-   * wait or limit after it ran, since pi-pool holds it and the resume pass continues it: on 10-19 the bridge read such jobs as ended and
+   * wait or another transient error after it ran, since the resume pass continues it: on 10-19 the bridge read such jobs as ended and
    * started another for each fire, until 25 jobs for hyperdx-error-logs sat in pi-pool's queue with no turn and 8 of them woke at once at 20:30Z.
    */
   private async give(chat: string, current: TriageJob | undefined, lines: readonly AlertLine[]): Promise<TriageJob> {
@@ -527,7 +528,7 @@ export class AlertBridge {
       if (await this.deps.jobWorking?.(job)) return true;
       if (!this.deps.jobTurn || this.now() - (job.ranAt ?? job.at) >= REOPEN_MS) return false;
       const turn = await this.deps.jobTurn(job, job.ranAt === undefined ? job.at : job.ranAt + 1);
-      return job.ranAt === undefined ? !turn.ran : !turn.ran && turn.slotAt !== undefined;
+      return job.ranAt === undefined ? !turn.ran : !turn.ran && (turn.slotAt !== undefined || (turn.error !== undefined && transientTurnError(turn.error)));
     };
     if (current && current.replacedAt === undefined && await keep(current)) {
       await this.deps.deliver(current.id, firedAgainText(lines));
@@ -552,6 +553,11 @@ export class AlertBridge {
    * `queued` holds each such job whose run waits in pi-pool's turn queue, so its escalation says the queue holds it: on 10-22 job 01a16080
    * took crawler-prod-sticky-block-rotations-jump at 11:53:27Z while its run sat in the queue from 11:28:22Z (126 queued, 6 working), the
    * bridge escalated it at 12:23:43Z as a job with no model turn, and pi-pool let the run in at 12:57:04Z.
+   * A job whose last call failed on a transient error (`transientTurnError`: a lost connection, a timeout, pi-pool's token hook, a limit or a
+   * failing provider) has not ended either: the catalog reads its cut and runs the resume pass at once (`resumesNow`), which continues it once
+   * pi-pool can serve it, and its fire escalates at ESCALATE_MS with the error while no turn comes. Read as ended, such a job's fire went to a
+   * fresh job on the next poll while the resume pass continued the old one, so two jobs worked one fire, and in an outage each fresh job could
+   * fail the same way.
    */
   private async watch(state: BridgeState, now: number): Promise<{ state: BridgeState; errors: Map<string, string>; parked: Set<string>; queued: Map<string, QueuePlace>; ended: Set<string> }> {
     const errors = new Map<string, string>();
@@ -574,7 +580,8 @@ export class AlertBridge {
       if ((turn.slotAt !== undefined && now < turn.slotAt + TICK_MS) || await this.poolHolds(id, turn.provider, now)) parked.add(id);
       const retry = this.deps.retryJob !== undefined && turn.slotAt !== undefined && turn.slotAt <= now && (job.retriedAt ?? -1) < turn.slotAt;
       const working = await (this.deps.jobWorking?.(job) ?? Promise.resolve(true)).catch(() => true);
-      if (!working && !retry && !place && !parked.has(id) && !(turn.error && POOL_WAIT.test(turn.error))) ended.add(id);
+      const transient = turn.error !== undefined && transientTurnError(turn.error);
+      if (!working && !retry && !place && !parked.has(id) && !transient) ended.add(id);
       if (!retry || working || turn.slotAt === undefined) continue;
       this.deps.retryJob!(job);
       jobs[id] = { ...job, retriedAt: turn.slotAt };
@@ -586,7 +593,7 @@ export class AlertBridge {
   /**
    * Marks each job in `ended` replaced (`replacedAt`) while a fire it took still fires, so `dispatch` gives those fires to the chat's live
    * triage job, or to a fresh one at once when the ended job was the chat's own. `ended` holds the jobs with no model turn since they took a
-   * fire whose session has ended, was archived or settled on a failed call that names no pool wait. A job pi-pool holds keeps its place: one
+   * fire whose session has ended, was archived or settled on a failed call that is not transient. A job pi-pool holds keeps its place: one
    * in the turn queue would have a fresh job queue behind it, as on 10-22, when 01a16086's run had waited 55 min at 12:21Z behind 193 others,
    * and one that failed on a pool wait gets its continue from the resume pass.
    */

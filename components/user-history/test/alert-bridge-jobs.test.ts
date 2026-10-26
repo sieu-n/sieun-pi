@@ -383,6 +383,40 @@ test("a triage job that settled on a failed call naming no pool wait counts as e
   assert.equal(f.started[1]!.previous?.id, "job-1");
 });
 
+// Ops guy, 10-26: alert triage Crawler VP 07:43 (01a1753b) took crawler-prod-sticky-block-rotations-jump at 22:43:39Z on 10-25, and us-metal02
+// lost its uplink from 23:13Z to 23:30Z. A triage job whose call fails on "Connection error." in such a gap gets its continue from the resume pass,
+// which the catalog runs at once on the cut, so the bridge keeps the job and its fires, starts no second job, and escalates with the error.
+test("a triage job whose call failed on a lost connection keeps its fires for the resume pass's continue and escalates with the error", async () => {
+  const fired = Date.parse("2026-10-25T22:43:39.470Z");
+  const f = await fixture();
+  const escalations = () => f.sent.filter(({ session, text }) => session === OPS && text.startsWith("[alert-escalation]"));
+  const failed = { type: "message", id: "a1", parentId: "u1", timestamp: "2026-10-25T23:14:02.000Z",
+    message: { role: "assistant", content: [], provider: "anthropic", model: "claude-opus-5-5", stopReason: "error", errorMessage: "Connection error." } };
+  f.at(fired);
+  f.set([crawler("cccc0000000000a1", "crawler-prod-sticky-block-rotations-jump")]);
+  await f.bridge.tick();
+  assert.equal(f.started.length, 1);
+  f.working.clear();
+  f.turns.set("job-1", turnSince(JSON.stringify(failed), fired));
+  f.at(Date.parse("2026-10-25T23:30:49Z"));
+  await f.bridge.tick();
+  assert.equal(f.started.length, 1, "the job the resume pass continues keeps the fire");
+  assert.equal((await f.state()).jobs["job-1"]!.replacedAt, undefined);
+  f.set([crawler("cccc0000000000a1", "crawler-prod-sticky-block-rotations-jump"), crawler("cccc0000000000a2", "crawler-prod-lanes-link-down")]);
+  f.at(Date.parse("2026-10-25T23:31:19Z"));
+  await f.bridge.tick();
+  assert.equal(f.started.length, 1, "a later fire goes to the same job");
+  assert.deepEqual(f.sent.filter(({ text }) => text.startsWith("[alert] A rule")).map(({ session }) => session), ["job-1"]);
+  f.at(fired + ESCALATE_MS + 30_000);
+  await f.bridge.tick();
+  assert.equal(escalations().length, 1);
+  assert.match(escalations()[0]!.text, /its triage job alert crawler-prod-sticky-block-rotations-jump 1 has had no model turn \(its last call failed: Connection error\.\)/);
+  f.turns.set("job-1", { ran: true, at: Date.parse("2026-10-25T23:56:33Z") });
+  f.at(Date.parse("2026-10-25T23:57:00Z"));
+  await f.bridge.tick();
+  assert.equal(f.started.length, 1);
+});
+
 test("a held job that runs at its slot holds the fire, so nothing escalates", async () => {
   const fired = Date.parse("2026-10-20T04:26:58Z");
   const slot = Date.parse("2026-10-20T05:06:00Z");
