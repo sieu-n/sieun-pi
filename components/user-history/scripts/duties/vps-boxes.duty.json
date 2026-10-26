@@ -40,6 +40,11 @@
       "box": "us-metal01",
       "until": "2026-10-21T22:10:00Z",
       "step": "p490"
+    },
+    {
+      "box": "us-metal02",
+      "until": "2026-10-26T03:55:00Z",
+      "step": "p542"
     }
   ],
   "precheck": {
