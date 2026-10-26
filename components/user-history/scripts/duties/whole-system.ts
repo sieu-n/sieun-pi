@@ -127,11 +127,14 @@ const leads = (shares: ReadonlyMap<MemoryGroupId, number>): boolean => {
  * the largest growth since `previous` (the same box in the line before) when that line is at most 2 minutes older. On a Linux box it is the
  * harness's when a CPU miss came with the harness's cgroups using the most cores (host-stats.ts `cpuSides`). A reading with nothing to
  * compare is unknown, never the apps': a Mac line with no groups, a Linux line from before cpuCores, or a Linux memory-only miss. d7 at 06:21Z
- * on 10-18 put all 11 CPU minutes on us-metal02 on the app and owner side, since Linux readings never carry the Mac's memory groups.
+ * on 10-18 put all 11 CPU minutes on us-metal02 on the app and owner side, since Linux readings never carry the Mac's memory groups. A Linux
+ * memory stall (`MEMORY_STALL_PCT`) goes to the group that held the most memory (AgentLine `largest`), whoever used the most cores.
  */
 export function minuteSide(view: HostView, previous?: { view: HostView; gapMs: number }): MinuteSide {
   const usable = view.usable;
   if (usable && isLinuxReading(usable)) {
+    const largest = view.agents?.largest;
+    if (memoryStalled(usable) && largest) return largest === "agents" || largest === "services" ? "harness" : "other";
     if (!usable.cpuCores || !unusable(usable).includes("cpu")) return "unknown";
     const { harness, ...rest } = usable.cpuCores;
     return harness > 0 && Object.values(rest).every(cores => cores <= harness) ? "harness" : "other";
@@ -161,6 +164,24 @@ export function rigWords(view: HostView, name: (fault: DaemonFault) => string | 
     return `${job ? `${chat}, job ${job}` : chat} ${line.cores} (${line.command})`;
   });
   return `; harness ${Math.round(100 * (own + rigs)) / 100} cores, ${own} its own and ${rigs} in job rigs${owners.length ? `: ${owners.join(", ")}` : ""}`;
+}
+
+/**
+ * Memory full stall (avg10) from which a Linux minute reads as a memory stall. On 10-26 us-metal02 read 0.5 to 3.7% in every minute from 02:14Z
+ * to 02:40Z but five, and 13.5 to 41.4% in those five, 02:22Z to 02:26Z, when CI and RepoOps' job processes grew to 231 GB, swap read 80 of
+ * 80 GB, swap-outs ran 20,208 to 60,614 a second and the chat's event loop stalled 1.6 to 6.4 s. d7 read them as CPU minutes, since the
+ * box's CPU miss is all a Linux reading names under LINUX_USABLE's 70%, and booked two of them to the apps by cores.
+ */
+export const MEMORY_STALL_PCT = 10;
+const memoryStalled = (usable: HostUsable): boolean => isLinuxReading(usable) && usable.memFullAvg10 >= MEMORY_STALL_PCT;
+
+/** A Linux memory stall in the flag's words: the stall, the swap-outs, the group that held the most and the worker tree whose work held the most. */
+export function memoryWords(view: HostView): string {
+  const usable = view.usable;
+  if (!usable || !isLinuxReading(usable) || !memoryStalled(usable)) return "";
+  const most = view.top.reduce<WorkerLine | null>((top, worker) => (worker.workGb ?? 0) > (top?.workGb ?? 0) ? worker : top, null);
+  return `; memory full ${usable.memFullAvg10}% of the last 10 s with ${usable.swapoutsPerS} swap-outs a second` +
+    (view.agents?.largest ? `, the ${view.agents.largest} group held the most memory` : "") + (most?.workGb ? `, the job processes of ${most.tree} ${most.workGb} GB` : "");
 }
 
 /** Whether a reading's harness cores went mostly to job rigs (rig-cpu.ts). */
@@ -1165,7 +1186,7 @@ export function measure(input: Inputs): PrecheckOutput {
       }
       if (!miss.length) { count.usable++; continue; }
       count.unusable++;
-      why.push(`${view.name} unusable (${miss.join(", ")}${slow.length ? `: ${slow.join(", ")}` : ""}${rigWords(view, faultName)})`);
+      why.push(`${view.name} unusable (${miss.join(", ")}${slow.length ? `: ${slow.join(", ")}` : ""}${memoryWords(view)}${rigWords(view, faultName)})`);
       // A slow read of the chat service is the harness's own code, whoever used the most cores: at 20:32Z on 10-24 api/threads/<id>/agents
       // took 2.8 s waiting for a projection at 1.09 runnable a core, and the minute went to the apps' side for their 21.99 cores to the harness's 20.12.
       const read = found.includes("cpu") && slowChatRead(own, line.chat) ? "harness" : side(line, view);

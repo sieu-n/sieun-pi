@@ -56,7 +56,7 @@ test("the 23:46Z state reads red: Agent sessions held 101 GB 26 min after the la
   const lines = evening(101.26, at => at <= lastTurn);
   const latest = lines.at(-1)!;
   assert.equal(latest.working, 220, "the daemon's own activity count still reads them working");
-  assert.deepEqual(latest.agents, { gb: 101.26, swapGb: 6.6, cacheGb: 59.9, working: 0, children: 0, retry: 220, idle: 8, hung: 0 });
+  assert.deepEqual(latest.agents, { gb: 101.26, swapGb: 6.6, cacheGb: 59.9, largest: "agents", working: 0, children: 0, retry: 220, idle: 8, hung: 0 });
   const output = measure({ now: RUN, watch: lines, log: { holds: [] }, chats: [], quietMs: 15 * MIN });
   assert.equal(output.metrics.quiet_agent_gb, 101.26);
   assert.equal(output.metrics.sleeping_gb, undefined);

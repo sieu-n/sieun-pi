@@ -227,15 +227,18 @@ export function servicesLine(services: readonly OrphanServiceLine[]): ServicesLi
  * quiet_agent_gb reads `gb` in the minutes no session `working`. `servicesGb` is the Agent services group beside it (host-stats.ts
  * CGROUP_RULES: the chat service, the relay, pi-pool and the Prime supervisor), which `gb` leaves out since 10-21.
  */
-export interface AgentLine extends AgentCounts { gb: number | null; swapGb?: number; cacheGb?: number; servicesGb?: number }
+export interface AgentLine extends AgentCounts { gb: number | null; swapGb?: number; cacheGb?: number; servicesGb?: number;
+  /** The group that held the most of the box's memory that minute, which the Whole system duty books a memory stall to (whole-system.ts `minuteSide`). */
+  largest?: MemoryGroupId }
 
 /** The agents group of a memory reading and the session counts of `rows`, as one AgentLine. */
 export function agentLine(memory: { groups: readonly MemoryGroup[] | null; cacheBytes?: number | null } | null, rows: readonly unknown[], hung?: ReadonlySet<string>): AgentLine {
   const group = memory?.groups ? memory.groups.find(entry => entry.id === "agents") ?? { bytes: 0, swapBytes: 0 } : null;
   const services = memory?.groups?.find(entry => entry.id === "services");
+  const largest = memory?.groups && memory.groups.length > 1 ? memory.groups.reduce((most, entry) => entry.bytes > most.bytes ? entry : most) : null;
   return { gb: group ? round(group.bytes / GB) : null, ...group?.swapBytes !== undefined ? { swapGb: round(group.swapBytes / GB) } : {},
     ...services ? { servicesGb: round(services.bytes / GB) } : {},
-    ...typeof memory?.cacheBytes === "number" ? { cacheGb: round(memory.cacheBytes / GB) } : {}, ...agentCounts(rows, hung) };
+    ...typeof memory?.cacheBytes === "number" ? { cacheGb: round(memory.cacheBytes / GB) } : {}, ...largest ? { largest: largest.id } : {}, ...agentCounts(rows, hung) };
 }
 
 /** The daemon row fields the watch reads, parsed at the boundary from the catalog's raw rows. */

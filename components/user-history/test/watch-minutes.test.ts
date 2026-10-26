@@ -64,7 +64,7 @@ test("each box is judged on its own reading, a Linux box by memory stall and run
   assert.equal(metrics.unusable_min_30_us_metal02, 2);
   assert.equal(metrics.unknown_min_30_mac, 1);
   assert.equal(metrics.usable_min_30_mac, 29);
-  assert.match(flagged?.find(slice => slice.kind === "dirty_minutes")?.excerpt ?? "", /us-metal02 unusable \(pressure\).*us-metal02 unusable \(cpu: the chat answered api\/threads in 1\.8 s\)/);
+  assert.match(flagged?.find(slice => slice.kind === "dirty_minutes")?.excerpt ?? "", /us-metal02 unusable \(pressure; memory full 72% of the last 10 s with 0 swap-outs a second\).*us-metal02 unusable \(cpu: the chat answered api\/threads in 1\.8 s\)/);
   assert.match(flagged?.find(slice => slice.kind === "unknown_minutes")?.excerpt ?? "", /mac unread \(relay mac answered 502/);
 });
 
