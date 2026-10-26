@@ -237,7 +237,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       stalls }),
     priority: async id => chatPoolPriority((await labels.snapshot()).threads[id]?.priority ?? 0),
     jobs: dutyJobs, poolAdmits, updating: () => primeUpdateRunning(agentDir, socketPath), tell: routedTell(subjectSources(dataDir, { archived: () => chats.archivedIds(), rows: () => catalog.rows(), runs: (id): Promise<readonly { job?: { id: string } }[]> => duties.store.runs(id) }),
-      { notice: (id, text) => chats.notice(id, text), owner: (owner, text) => agentOutbox.deliverId(owner, text) }, dutyLog),
+      { notice: (id, text) => chats.notice(id, text), job: (session, text) => agentOutbox.deliver(session, text, session), owner: (owner, text) => agentOutbox.deliverId(owner, text) }, dutyLog),
     checkIn: { view: id => chats.checkInView(id), run: (id, trigger, rerunOf) => chats.runCheckIn(id, trigger, rerunOf), measure: id => chats.measureCheckIn(id),
       set: async (id, change, actor) => { const view = await chats.setCheckIn(id, change, actor); if (view) await catalog.notify(); return view; } } });
   // A gone job's leftovers end on the box whose daemon runs its folder's session; a replay serve stops nothing anywhere.

@@ -1,10 +1,11 @@
 // Guards the Chat system duty's precheck (d9), built 10-19 for the owner's rule that a plan holds only tasks that finish (msg mvfb7zt0).
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { agingSince, chatSystemOutput, failingTurns, fixNotMoving, manualSelection, goalsWithNoJob, jobsByChat, ownerMessages, planUpkeep, pushedFile, pushList, pushReached, pushRecords, pushSettled, pushTells, spotAuditLines, spotPick, spread, waitsOnStep, withCatalogOwners, withoutWorkingRuns } from "../scripts/duties/chat-system.ts";
+import { agingSince, chatSystemOutput, failingTurns, fixNotMoving, manualSelection, goalsWithNoJob, jobPushes, jobPushRecords, jobPushTells, jobsByChat, ownerMessages, planUpkeep, pushedFile, pushList, pushReached, pushRecords, pushSettled, pushTells, spotAuditLines, spotPick, spread, waitsOnStep, withCatalogOwners, withoutWorkingRuns } from "../scripts/duties/chat-system.ts";
 import { type PlanInputs, planCounts } from "../scripts/duties/whole-system.ts";
 import type { MetricStreak } from "../src/shared/duty-streak.ts";
 import type { ChatBoard } from "../src/shared/types.ts";
+import { routedTell } from "../src/clean-room-subjects.ts";
 
 const board = { v: 2, rev: 1, updatedAt: "2026-10-19T13:40:00Z", todos: [], plan: [
   { id: "p453", text: "Every duty in every chat is green", status: "doing", note: "Done when 109 of 109", children: [
@@ -347,4 +348,44 @@ test("the spot audit picks a chat not audited this cycle, so the chat audited lo
   assert.equal(spotPick(["a", "b"], [{ at: 1, chat: "a" }, { at: 2, chat: "gone" }, { at: 3, chat: "gone" }], last), "b");
   assert.deepEqual(new Set([0, 0.5, 0.999].map(n => spotPick(["a", "b", "c"], [{ at: 1, chat: "a" }, { at: 2, chat: "b" }, { at: 3, chat: "c" }], () => n))), new Set(["a", "b", "c"]));
   assert.equal(spotPick(["a", "b"], [], first), "a");
+});
+
+test("a down chat's stuck step whose job is a root session is pushed to that job straight, tagged and recorded, and the chat still gets none", async () => {
+  const FB = "01a11ba8-9d2c-727c-8ded-38f819ca9f29";
+  const JOB = "01a1562a-f0d0-7124-a027-cb69219e5b5f";
+  const fb = { v: 2, rev: 1, updatedAt: "2026-10-26T12:00:00Z", todos: [], plan: [
+    { id: "p330", text: "5180 builds from the newest real app", status: "doing", job: "5180 creators cold load", sessionId: JOB, children: [] },
+    { id: "p331", text: "A subagent's step", status: "doing", job: "inbox shots", children: [] },
+    { id: "p332", text: "A cancelled job's step", status: "doing", job: "old walk", children: [] }] } as unknown as ChatBoard;
+  const rows = [
+    { sessionId: JOB, sessionName: "5180 creators cold load", sessionFile: `/home/sieun/.prime/agent/sessions/${JOB}.jsonl`, lastActivityAt: "2026-10-26T10:13:00Z" },
+    { sessionId: "sub-1", sessionName: "inbox shots", sessionFile: `/x/session-artifacts/${FB}/sub-1/s.jsonl` },
+    { sessionId: "old-1", sessionName: "old walk", sessionFile: "/home/sieun/.prime/agent/sessions/old-1.jsonl" },
+    { sessionId: FB, sessionFile: `/home/sieun/.prime/agent/sessions/${FB}.jsonl` }];
+  const named = new Map([[FB, new Map([["inbox shots", ["sub-1"]], ["old walk", ["old-1"]]])]]);
+  const stuck = ["p330", "p331", "p332"].map(id => ({ chat: FB, id, text: id }));
+  const reads = { boards: new Map([[FB, fb]]), named, rows, chats: new Set([FB]), cancelled: new Set(["old-1"]) };
+  const direct = jobPushes(stuck, new Set([FB]), reads);
+  assert.deepEqual(direct.map(push => [push.session, push.job, push.steps.map(step => step.id)]), [[JOB, "5180 creators cold load", ["p330"]]]);
+  assert.deepEqual(jobPushes(stuck, new Set(), reads), [], "a chat that takes turns gets its own push");
+
+  const tag = "[d9 push 2026-10-26T12:24Z]";
+  const [tell] = jobPushTells(direct, tag, () => "frontend bro");
+  assert.equal(tell!.chat, FB);
+  assert.equal(tell!.session, JOB);
+  assert.match(tell!.text, /^\[d9 push 2026-10-26T12:24Z\] .*of your chat frontend bro, which names you as its job, and nobody moves it: p330 "p330"/);
+  assert.deepEqual(jobPushRecords(direct, tag, 7), [{ at: 7, chat: FB, session: JOB, tag, items: ["p330"] }]);
+
+  const out = chatSystemOutput({ names: new Map([[FB, "frontend bro"]]), stuck, upkeep: [], fleet: { pct: 100, red: [] }, stuckDuties: [], idleGoals: [], followUps: [],
+    detail: "/tmp/d9.md", down: [{ chat: FB, since: Date.parse("2026-10-22T18:57:00Z"), turns: 24, cause: "rate limit 429" }], jobPushes: direct });
+  assert.match(out.flagged!.find(slice => slice.kind === "job_push")!.excerpt, /^frontend bro's chat cannot take a turn, so d9 sent its job "5180 creators cold load" \(01a1562a-f0d0-7124-a027-cb69219e5b5f\) the push about p330 straight/);
+  assert.deepEqual(out.flagged!.filter(slice => slice.kind === "push"), []);
+
+  const sent: string[] = [];
+  const receipts: string[] = [];
+  const send = routedTell({ subjects: async () => ({}), archived: async () => false, participants: async () => ({ agents: [], dutyJobs: [] }) },
+    { notice: async chat => { sent.push(`notice ${chat}`); }, job: async session => { sent.push(`job ${session}`); }, owner: async () => "m-0" }, line => receipts.push(line));
+  await send(tell!.chat, tell!.text, { chat: "vp", duty: "d9" }, tell!.session);
+  assert.deepEqual(sent, [`job ${JOB}`]);
+  assert.match(receipts[0]!, new RegExp(`to session ${JOB} as sha256:`));
 });

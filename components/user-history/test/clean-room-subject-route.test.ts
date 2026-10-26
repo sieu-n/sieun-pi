@@ -136,7 +136,7 @@ writeFileSync(process.env.OUTPUT_FILE, JSON.stringify({ metrics: { duties_green_
   const notices: string[] = [];
   const owner: { session: string; text: string }[] = [];
   const receipts: string[] = [];
-  const tell = routedTell(sources(), { notice: async (chat, text) => { notices.push(`${chat.slice(0, 8)} ${text.slice(0, 30)}`); },
+  const tell = routedTell(sources(), { notice: async (chat, text) => { notices.push(`${chat.slice(0, 8)} ${text.slice(0, 30)}`); }, job: async () => { throw new Error("no job push here"); },
     owner: async (session, text) => { owner.push({ session, text }); return "m-d9"; } }, line => receipts.push(line));
   const duties = new Duties(store, { isChat: async () => true, now: () => NOW, tickMs: 0, node: process.execPath, tell,
     jobs: { chat: async id => ({ id, name: "AI harness", cwd: dir, board: id }), working: async () => false, retire: async () => {},

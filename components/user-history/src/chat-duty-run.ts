@@ -73,9 +73,10 @@ export interface DutyHost {
   applyBoard?: (chatId: string, ops: (board: ChatBoard) => readonly BoardOp[]) => Promise<void>;
   /**
    * Sends a server notice to a chat (`Chats.notice`), for each of a precheck's `tells`, from the chat whose duty it is (`routedTell`: a notice
-   * to a clean-room test chat from another chat's duty goes to the trial owner); absent: the runner sends none.
+   * to a clean-room test chat from another chat's duty goes to the trial owner), or to the chat's root job `session` when the tell names one;
+   * absent: the runner sends none.
    */
-  tell?: (chatId: string, text: string, from: TellSource) => Promise<void>;
+  tell?: (chatId: string, text: string, from: TellSource, session?: string) => Promise<void>;
   /** Whether pi-pool would give the tree rooted at `tree` a `provider` account now (`poolAdmits`), for a cut run's rerun; absent: it admits. */
   poolAdmits?: (tree: string, provider: string) => Promise<boolean>;
   /**
@@ -1224,8 +1225,9 @@ export class Duties {
     let sent = 0;
     for (const tell of tells) {
       if (typeof tell?.chat !== "string" || typeof tell.text !== "string" || !tell.text.trim()) continue;
-      try { await this.host.tell(tell.chat, tell.text, { chat: chatId, duty: dutyId }); sent++; }
-      catch (error) { this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: notice to chat ${tell.chat.slice(0, 8)} failed: ${message(error)}`); }
+      const session = typeof tell.session === "string" ? tell.session : undefined;
+      try { await this.host.tell(tell.chat, tell.text, { chat: chatId, duty: dutyId }, session); sent++; }
+      catch (error) { this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: notice to chat ${tell.chat.slice(0, 8)}${session ? `'s job ${session.slice(0, 8)}` : ""} failed: ${message(error)}`); }
     }
     if (sent) this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: sent ${sent} notice${sent === 1 ? "" : "s"} from its precheck`);
   }

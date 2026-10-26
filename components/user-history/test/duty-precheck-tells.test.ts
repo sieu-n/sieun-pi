@@ -35,7 +35,7 @@ test("d9's pushes go out as server notices when its precheck ends, before and wh
     const precheck = join(dir, "precheck.mjs");
     await writeFile(precheck, `import { writeFileSync } from "node:fs";
 writeFileSync(${JSON.stringify(join(dir, "mode.txt"))}, process.env.PRECHECK_MODE ?? "");
-writeFileSync(process.env.OUTPUT_FILE, JSON.stringify({ metrics: { duties_green_pct: 45.7 }, tells: ${JSON.stringify([...tells, { chat: "gone", text: "x" }])} }));`);
+writeFileSync(process.env.OUTPUT_FILE, JSON.stringify({ metrics: { duties_green_pct: 45.7 }, tells: ${JSON.stringify([...tells, { chat: "gone", text: "x" }, { chat: CI, session: "01a1562a-job", text: "[d9 push] to the job" }])} }));`);
     const store = new DutyStore(dir);
     const duty: Duty = {
       id: "d9", name: "Chat system", ownerWords: "every chat runs on its own", goal: "duties read green",
@@ -47,7 +47,7 @@ writeFileSync(process.env.OUTPUT_FILE, JSON.stringify({ metrics: { duties_green_
     const events: string[] = [];
     const duties = new Duties(store, {
       isChat: async () => true, now: () => NOW, tickMs: 0, node: process.execPath,
-      tell: async (chat, text) => { if (chat === "gone") throw new Error("not a chat"); events.push(`tell ${chat.slice(0, 8)} ${text.slice(0, 27)}`); },
+      tell: async (chat, text, _from, session) => { if (chat === "gone") throw new Error("not a chat"); events.push(`tell ${chat.slice(0, 8)}${session ? ` job ${session}` : ""} ${text.slice(0, 27)}`); },
       jobs: {
         chat: async id => ({ id, name: "AI harness", cwd: dir, board: id }),
         working: async () => false,
@@ -64,7 +64,7 @@ writeFileSync(process.env.OUTPUT_FILE, JSON.stringify({ metrics: { duties_green_
     await duties.tick();
     await duties.settled();
     duties.close();
-    assert.deepEqual(events, [`tell 01a1180e ${tag}`, `tell 01a11a24 ${tag}`, "job start"]);
+    assert.deepEqual(events, [`tell 01a1180e ${tag}`, `tell 01a11a24 ${tag}`, "tell 01a1180e job 01a1562a-job [d9 push] to the job", "job start"]);
     assert.equal(await readFile(join(dir, "mode.txt"), "utf8"), "run");
   } finally { await rm(dir, { recursive: true, force: true }); }
 });

@@ -113,13 +113,19 @@ export function deliveryLine(delivery: Delivery): string {
 /** The source of a d9 push or another duty's notice: the chat whose duty sent it. */
 export interface TellSource { chat: string; duty: string }
 
-/** `DutyHost.tell`: a duty's notice to a chat, through `routeMessage`, with a receipt line per notice. */
-export function routedTell(sources: RouteSources, send: { notice(chat: string, text: string): Promise<void>; owner(owner: string, text: string): Promise<string> },
-  log: (line: string) => void): (chat: string, text: string, from: TellSource) => Promise<void> {
-  return async (chat, text, from) => {
+/**
+ * `DutyHost.tell`: a duty's notice to a chat, through `routeMessage`, with a receipt line per notice. With `session` it goes to that root job
+ * of the chat (`job`), routed as a message to the chat, since d9 sends a chat that cannot take a turn nothing and its job's step would have no
+ * one to wake it: frontend bro's job "5180 creators cold load" ended idle at 10:13Z on 10-26 with p330 open while every turn of the chat failed on a 429.
+ */
+export function routedTell(sources: RouteSources, send: { notice(chat: string, text: string): Promise<void>; job(session: string, text: string): Promise<void>;
+  owner(owner: string, text: string): Promise<string> }, log: (line: string) => void): (chat: string, text: string, from: TellSource, session?: string) => Promise<void> {
+  return async (chat, text, from, session) => {
     const fromName = `duty ${from.duty}`;
-    const sent = await deliverRouted(sources, { from: from.chat, fromName, to: chat, text }, { target: () => send.notice(chat, text), owner: send.owner });
-    log(deliveryLine({ path: "d9 push", from: from.chat, fromName, fromChat: from.chat, to: chat, ...sent.to === "owner" ? { id: sent.id, owner: sent.owner } : { id: messageId(text) } }));
+    const target = session ? () => send.job(session, text) : () => send.notice(chat, text);
+    const sent = await deliverRouted(sources, { from: from.chat, fromName, to: chat, text }, { target, owner: send.owner });
+    log(deliveryLine({ path: "d9 push", from: from.chat, fromName, fromChat: from.chat, to: sent.to === "owner" ? chat : session ?? chat,
+      ...sent.to === "owner" ? { id: sent.id, owner: sent.owner } : { id: messageId(text) } }));
   };
 }
 

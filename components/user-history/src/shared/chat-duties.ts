@@ -71,8 +71,11 @@ export interface PrecheckOutput { metrics: Record<string, number>; flagged?: Fla
    * 3 to 4 under p942 because p826 began to miss, while p850, the goal p942 works, went from 135 to 159 walks a minute against 252.
    */
   items?: Record<string, { value: number; target: number; op: DutyMetric["op"] }>;
-  /** Server notices the runner sends to other chats when the precheck ends, before the duty's job starts (`DutyHost.tell`): d9's pushes. */
-  tells?: { chat: string; text: string }[] }
+  /**
+   * Server notices the runner sends to other chats when the precheck ends, before the duty's job starts (`DutyHost.tell`): d9's pushes. With
+   * `session` the notice goes to that root job session of the chat instead of the chat: d9's push to the job of a chat that cannot take a turn.
+   */
+  tells?: { chat: string; text: string; session?: string }[] }
 /**
  * One thing the precheck found that the duty job should read: the chat (session id), when, what kind, a short excerpt, and the plan item it is
  * about. `handOff` marks work a run hands to the duty's job while that job still works (`Duties.handOff`), so a later run's finding reaches it.
