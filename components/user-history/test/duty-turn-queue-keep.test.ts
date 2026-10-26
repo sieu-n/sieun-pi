@@ -9,9 +9,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { dutyJobHost, turnQueueWait } from "../src/chat-duty-job.ts";
-import { Duties, STILL_WORKING } from "../src/chat-duty-run.ts";
+import { Duties } from "../src/chat-duty-run.ts";
 import { DutyStore } from "../src/chat-duty-store.ts";
-import type { DutyJobRef } from "../src/shared/chat-duties.ts";
+import { type DutyJobRef, STILL_WORKING } from "../src/shared/chat-duties.ts";
 import type { AgentQueueReading, SessionRow } from "../src/shared/types.ts";
 
 const MIN = 60_000;

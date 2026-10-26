@@ -826,10 +826,15 @@ export type PlanInputs = Pick<Inputs, "now" | "chats" | "boards" | "ownerActivit
   /** Each offline box with the open For you todo that asks the owner to bring it back (`hostHolds`); absent: no box is held. */
   holds?: ReadonlyMap<string, HostHold>;
 };
-/** An open step a check-in held on an offline box (`host_held`): its chat, id, the box and the For you todo that asks the owner to bring it back. */
+/**
+ * An open step a check-in held on an offline box (`host_held`), or a red duty of a chat that runs there: its chat, step or duty id, the box and
+ * the For you todo that asks the owner to bring it back.
+ */
 export interface HostHeldStep { chat: PlanInputs["chats"][number]; id: string; host: string; todo: string;
   /** The held step this one's wait names (`waitHolds`); absent: its own job runs on the box. */
-  waitsOn?: string }
+  waitsOn?: string;
+  /** The red duty's name when the held item is a duty of a chat on the box; absent: a plan step. */
+  duty?: string }
 /** A red duty whose missed windowed counts give no `lastEventAt` (`unreadWindows`): d9 reads them as lagging and asks the chat to add the field. */
 export interface LaggingDuty { chat: string; duty: string; keys: string[]; line: string }
 /** One chat's open steps that nobody moves (`liveStuck`), with the ids of those its check-in flagged. */
@@ -969,6 +974,12 @@ export function planCounts(input: PlanInputs): { stuck: StuckSteps[]; redDuties:
     const left = holds.filter(entry => !entry.hold).map(entry => entry.key);
     if (owed.length && !left.length) return [];
     if (liveFix(newest, duty.id, board, input.ownerActivity ?? new Map(), live, input.named?.get(chat.id))) return [];
+    // A chat that runs on an offline box a For you todo asks the owner to bring back gets no duty job and no push until the box answers: from
+    // 00:30Z on 10-26 slack green guy's d1 read red on the Mac's chat, every run's start read "the catalog does not list the chat", and d9
+    // counted it as the one stuck duty. It waits on the owner as a step whose job runs there does (`host_held`).
+    const box = input.hosts?.get(chat.id);
+    const hold = box === undefined ? undefined : input.holds?.get(box);
+    if (hold) { hostHeld.push({ chat, id: duty.id, host: hold.host, todo: hold.todo, duty: duty.name }); return []; }
     const links = left.map(key => `${duty.id}/${key}`);
     return [{ chat: chat.id, duty: duty.id, line: `${chat.name}: ${duty.name} read off target in ${missStreak(own) === 1 ? "its last run" : `its last ${missStreak(own)} runs`}, and no open step linked to it ` +
       `(duty field ${links.length ? links.join(" or ") : `${duty.id}/<metricKey>`}) has a live owner now${waits ? `, while ${waits}` : ""}` }];

@@ -112,6 +112,11 @@ export interface Duty {
 export interface CheckInDutyState { createdAt: number; runCount: number; lastRunAt?: number }
 export interface DutyFile { version: 1; duties: Duty[]; checkIn?: CheckInDutyState }
 
+/**
+ * Why a run started no job because the duty's last job still works. A standing duty's run still measures and records its verdict, with this
+ * after its summary (ops guy 10-10 to 10-12: 220 of 293 Local dev servers runs skipped the precheck too); a check-in run is recorded as skipped.
+ */
+export const STILL_WORKING = "skipped: previous run still working";
 /** What started a run: its schedule, a catch-up, or the owner's Run now. */
 /** `verify`: a re-measure after a fix step linked to one of the duty's metrics closed (src/shared/duty-streak.ts). */
 /** `push`: a red standing duty with no job at work on it, run again at the chat's check-in interval (`pushMisses` in src/duty-push.ts). */

@@ -1,5 +1,5 @@
 import { missedKeys } from "./shared/duty-fixes.ts";
-import type { DutyRunRecord } from "./shared/chat-duties.ts";
+import { type DutyRunRecord, STILL_WORKING } from "./shared/chat-duties.ts";
 import { effectiveRun, metricStreaks, newestReading } from "./shared/duty-streak.ts";
 
 /**
@@ -11,11 +11,17 @@ import { effectiveRun, metricStreaks, newestReading } from "./shared/duty-streak
  * after-job measure, since its rerun measured beside it: metal-management's d1 verify job of 14:49Z on 10-22 was cut at 15:23Z, its rerun
  * at 15:29Z read tool_rows_off 2 behind it, the job ended at 15:42Z and the fix step p142 closed at about 15:50Z, and no run read the duty
  * again until the 17:29Z push, so d9 counted it stuck at 16:03Z and 17:03Z. AI harness d5 (11:30Z to 12:28Z) and d9 (15:42Z to 16:03Z) sat
- * the same way after their cut reruns' jobs ended. A push job that ends red, or is cut and rerun, waits the interval as before.
+ * the same way after their cut reruns' jobs ended. A push job that ends red, or is cut and rerun, waits the interval as before. So does a
+ * duty that a run measured after the job ended and started no job for another reason than the job still at work (STILL_WORKING): that run
+ * was the push, or read the duty afresh. From 00:30Z on 10-26 slack green guy's d1 got a push run every 30 s, since each one read red,
+ * started no job ("the catalog does not list the chat") and left the 10-25 00:30Z job, which ended red at 00:57Z, as the newest job.
  */
 function endedUnpushed(runs: readonly DutyRunRecord[]): boolean {
-  const last = runs.find(run => run.job !== undefined);
+  const index = runs.findIndex(run => run.job !== undefined);
+  const last = runs[index];
   if (!last || (!last.after && !last.cut)) return false;
+  const ended = last.after?.at ?? last.cut?.at ?? last.at;
+  if (runs.slice(0, index).some(run => run.verdict !== "skipped" && run.at >= ended && !run.summary.includes(STILL_WORKING))) return false;
   const origin = last.trigger === "rerun" ? runs.find(run => run.at === last.rerunOf) ?? last : last;
   return last.trigger !== "push" && origin.trigger !== "push";
 }

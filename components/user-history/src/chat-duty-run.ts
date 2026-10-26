@@ -9,7 +9,7 @@ import { WAIT_READ_TREES } from "./idle-unload.ts";
 import { GOAL_PUSH_LINK } from "./checkin-goals.ts";
 import { goalReadingOps } from "./goal-readings.ts";
 import { type AfterMeasure, CHECK_IN_DUTY, CHECK_IN_DUTY_ID, dailySlot, dutyDue, ERROR_RUNS_TARGET, errorStreak, headlineMetric, judge, nextRunAt, outputReadings, overrunWords, parseSchedule, type Duty, type DutyJobRef,
-  type DutyCut, type DutyMetric, type DutyRunRecord, type DutySchedule, type DutyTrigger, type DutyView, type FixLink, type FlaggedSlice, type PrecheckOutput, type PrecheckOverrun, verdictMetrics } from "./shared/chat-duties.ts";
+  type DutyCut, type DutyMetric, type DutyRunRecord, type DutySchedule, type DutyTrigger, type DutyView, type FixLink, type FlaggedSlice, type PrecheckOutput, type PrecheckOverrun, STILL_WORKING, verdictMetrics } from "./shared/chat-duties.ts";
 import { briefFindings, headlineWords } from "./shared/brief-cap.ts";
 import { pushMisses } from "./duty-push.ts";
 import { transientTurnError } from "./turn-error.ts";
@@ -126,11 +126,6 @@ export const CHECK_IN_REPORT = "Send the chat one report of at most 3 plain line
  * `started` when a new check-in job got the run's findings, so the chat marks them sent (`sentAfter`); `done` for any other end.
  */
 export type CheckInStart = "started" | "done" | "failed";
-/**
- * Why a run started no job because the duty's last job still works. A standing duty's run still measures and records its verdict, with this
- * after its summary (ops guy 10-10 to 10-12: 220 of 293 Local dev servers runs skipped the precheck too); a check-in run is recorded as skipped.
- */
-export const STILL_WORKING = "skipped: previous run still working";
 /**
  * Why a slot of a standing duty ran nothing: its last run was still measuring (ops guy 10-12: the 14:35Z run took 19 min under load, and the
  * 14:45Z slot left no record). A slot that comes while the last run starts its job gets no record (`skipBusy`).

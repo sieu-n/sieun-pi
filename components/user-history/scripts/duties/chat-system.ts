@@ -388,8 +388,8 @@ export interface ChatSystemFacts {
   upkeep: readonly PlanFlag[];
   fleet: { pct: number; red: readonly RedDuty[] };
   stuckDuties: readonly { chat: string; line: string }[];
-  /** The open steps held on an offline box that a For you todo asks the owner to bring back (`HostHeldStep`), by chat id; absent: none. */
-  hostHeld?: readonly { chat: string; id: string; host: string; todo: string }[];
+  /** The open steps and red duties held on an offline box that a For you todo asks the owner to bring back (`HostHeldStep`), by chat id; absent: none. */
+  hostHeld?: readonly { chat: string; id: string; host: string; todo: string; duty?: string }[];
   /** Per chat, the open goals with no live job (`goalsWithNoJob`) the run's job pushes it on, beside its stuck duties. */
   idleGoals: readonly { chat: string; goals: readonly PlanItem[] }[];
   /** The pushes the last run's job sent, as they went. */
@@ -415,9 +415,13 @@ export function chatSystemOutput(facts: ChatSystemFacts): PrecheckOutput {
       excerpt: entry.id ? `${name(entry.chat)}: ${entry.id} ${quote(entry.text ?? "")} is open and nobody moves it.` : `${name(entry.chat)}: ${entry.count} open steps nobody moves.` });
   }
   for (const group of hostGroups(facts.hostHeld ?? [])) {
-    flagged.push({ kind: "host_held", excerpt: `${group.title}: ${group.steps.length === 1 ? "its job runs" : "their jobs run"} on ${group.host}, which Tailscale reads ` +
-      `offline, and For you ${group.todo} asks the owner to bring it back, so ${group.steps.length === 1 ? "it waits" : "they wait"} on his answer and push nothing; ` +
-      `${group.steps.length === 1 ? "it counts" : "they count"} as stuck again once the box answers and ${group.steps.length === 1 ? "its job does" : "their jobs do"} not move. ` +
+    const one = group.steps.length === 1;
+    const duties = group.steps.filter(step => step.duty !== undefined).length;
+    const runs = !duties ? (one ? "its job runs" : "their jobs run") : duties === group.steps.length ? (one ? "its chat runs" : "their chats run")
+      : `the ${duties === group.steps.length - 1 ? "step's job" : "steps' jobs"} and the ${duties === 1 ? "duty's chat" : "duties' chats"} run`;
+    flagged.push({ kind: "host_held", excerpt: `${group.title}: ${runs} on ${group.host}, which Tailscale reads ` +
+      `offline, and For you ${group.todo} asks the owner to bring it back, so ${one ? "it waits" : "they wait"} on his answer and push nothing; ` +
+      `${one ? "it counts" : "they count"} as stuck again once the box answers and nothing moves ${one ? "it" : "them"}. ` +
       `Every one is in ${facts.detail}.` });
   }
   head("plan_upkeep", facts.upkeep.length, "open plan items that are upkeep or have no done line", chats(facts.upkeep));
@@ -476,14 +480,19 @@ export function pushList(facts: Pick<ChatSystemFacts, "idleGoals" | "stuckDuties
 /** Where each push d9 sends is recorded, one JSON line per message, for the next run to check. */
 const PUSHES_FILE = join(homedir(), "work/plan-audit/pushes.jsonl");
 
-/** The held steps grouped by box and todo, with the detail section's title: "41 steps wait on mac, For you t96". */
-export function hostGroups<T extends { host: string; todo: string }>(steps: readonly T[]): { host: string; todo: string; title: string; steps: T[] }[] {
+/** The held steps and duties grouped by box and todo, with the detail section's title: "41 steps and 1 red duty wait on mac, For you t96". */
+export function hostGroups<T extends { host: string; todo: string; duty?: string }>(steps: readonly T[]): { host: string; todo: string; title: string; steps: T[] }[] {
   const groups = new Map<string, { host: string; todo: string; steps: T[] }>();
   for (const step of steps) {
     const key = `${step.host}\n${step.todo}`;
     (groups.get(key) ?? groups.set(key, { host: step.host, todo: step.todo, steps: [] }).get(key)!).steps.push(step);
   }
-  return [...groups.values()].map(group => ({ ...group, title: `${group.steps.length} ${group.steps.length === 1 ? "step waits" : "steps wait"} on ${group.host}, For you ${group.todo}` }));
+  const count = (n: number, one: string, many: string) => n ? [`${n} ${n === 1 ? one : many}`] : [];
+  return [...groups.values()].map(group => {
+    const duties = group.steps.filter(step => step.duty !== undefined).length;
+    const words = [...count(group.steps.length - duties, "step", "steps"), ...count(duties, "red duty", "red duties")].join(" and ");
+    return { ...group, title: `${words} ${group.steps.length === 1 ? "waits" : "wait"} on ${group.host}, For you ${group.todo}` };
+  });
 }
 
 /**
@@ -606,8 +615,8 @@ async function main(): Promise<void> {
     walk(plan.boards.get(chat)?.plan ?? [], item => { if (item.id === id) found = item.text; });
     return found;
   };
-  const hostHeld = owned.hostHeld.map((step: HostHeldStep) => ({ chat: step.chat.id, id: step.id, host: step.host, todo: step.todo, text: text(step.chat.id, step.id) ?? "",
-    ...step.waitsOn ? { waitsOn: step.waitsOn } : {} }));
+  const hostHeld = owned.hostHeld.map((step: HostHeldStep) => ({ chat: step.chat.id, id: step.id, host: step.host, todo: step.todo,
+    text: step.duty ?? text(step.chat.id, step.id) ?? "", ...step.waitsOn ? { waitsOn: step.waitsOn } : {}, ...step.duty ? { duty: step.duty } : {} }));
   const stuck = counts.stuck.flatMap((entry): ChatSystemFacts["stuck"] => entry.items.length
     ? entry.items.map(id => { const waitsOn = waitsOnStep(plan.boards.get(entry.chat.id) ?? null, id);
       return { chat: entry.chat.id, id, text: text(entry.chat.id, id) ?? "", ...waitsOn ? { waitsOn } : {} }; })
@@ -673,7 +682,7 @@ async function main(): Promise<void> {
       ? `${name(entry.chat)}: ${entry.id} ${quote(entry.text ?? "")}.` : `${name(entry.chat)}: ${entry.count} open steps nobody moves, with no ids in its check-in.`)),
     ...hostGroups(hostHeld).map(group => section(group.title, group.steps.map(step => `${name(step.chat)}: ${step.id} ${quote(step.text)}` +
       `${step.waitsOn ? `, which waits on ${step.waitsOn}` : ""}.`))),
-    ...hostHeld.length ? [] : [section("Steps that wait on an offline box (0)", [])],
+    ...hostHeld.length ? [] : [section("Steps and red duties that wait on an offline box (0)", [])],
     section(`Open plan items that are upkeep or have no done line (${upkeep.length})`, upkeep.map(item => `${name(item.chat)}: ${item.id} ${quote(item.text)} ${item.why}.`)),
     section(`Red duties (${red.length}, ${fleet.metrics.duties_green_pct}% green)`, red.map(duty => `${name(duty.chat)}: ${duty.name} (${duty.duty}), ` +
       `${duty.metric ? `${duty.metric.key} ${show(duty.metric.value)} against ${duty.metric.op} ${show(duty.metric.target)}, ` : ""}${missRuns(duty)}` +

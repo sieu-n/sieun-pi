@@ -9,11 +9,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { dutyJobHost } from "../src/chat-duty-job.ts";
-import { Duties, STILL_WORKING } from "../src/chat-duty-run.ts";
+import { Duties } from "../src/chat-duty-run.ts";
 import { DutyStore } from "../src/chat-duty-store.ts";
 import { processStartId } from "../src/orphan-services.ts";
 import { primeUpdateRunning } from "../src/prime-update.ts";
-import type { Duty, DutyJobRef } from "../src/shared/chat-duties.ts";
+import { type Duty, type DutyJobRef, STILL_WORKING } from "../src/shared/chat-duties.ts";
 import type { SessionRow, ThreadSchedule } from "../src/shared/types.ts";
 
 const MIN = 60_000;
