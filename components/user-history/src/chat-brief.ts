@@ -81,6 +81,8 @@ export const CHAT_BRIEF: readonly string[] = [
     "`scripts/move-thread-host.py --owner-ask <his message id>`; a broad word like \"ALL\" never covers a thread he kept (c128, c131).",
   "Flag a goal days or weeks away or blocked on capacity in For you at once, with options and your pick (c42). Base limits (c43) and any " +
     "'target does not fit' or hardware ask (c17) on measured evidence, and show what you tried.",
+  "Track a goal and its target with their plain, normal measure (the whole repo's line count, not a count of only some files or dates), and " +
+    "never propose or ask in For you about a bespoke counting rule, baseline or exception that overrides it (c172).",
   "In your first reply to a new request, answer his question first with what you know, then name the job you started, then ask your " +
     "question if one is open. " +
     "The owner wants to be asked (c96). In the first reply to a new request, check what it leaves open (who it is for, how deep or long, which " +
