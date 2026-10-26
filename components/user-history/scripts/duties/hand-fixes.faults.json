@@ -404,6 +404,19 @@
           "refresh.delta_enabled"
         ]
       }
+    },
+    {
+      "id": "F28",
+      "title": "Every crawl lane shares one GeoNode plan and nothing splits it, so when one lane starved the others a job held crawl.concurrency.tiktok at 100 by hand on prod",
+      "designs": [
+        "01a115e2-9544-7204-b8db-8ce4d5319048/p1000"
+      ],
+      "owner": "Crawler VP (01a115e2) job 'census climb good reads', step p1000, which the Crawler VP named as this fault's owner on 10-26 02:1xZ: prod audit 16649 (00:23:42Z 10-26) set crawl.concurrency.tiktok 100 for a 12-min test by the Crawler VP's alert triage, and audit 16657 (00:50:28Z) cleared it to the code default 207. crawl-tiktok-worker's GeoNode traffic rose from about 10 to 63-75 Mbps after 16:30Z 10-25 on a plan whose 10-min peaks read 207-211 Mbps over 72 h, and youtube curl-28 and census no-answer stalls came back. p1000 changes the rate controller's climb (control/climb.py) so a crawl_concurrency trial is judged on transport failures and good reads and no lane steps up while GeoNode plus Ad Library sits at the plan cap (d4b3c08f2 on prod in p999, 6fbde0206 next cut). How the plan splits between lanes is the owner's open choice (Crawler VP todos t64, t65, t67, t69). Filed by d3 for Prospect feature bro step p227 (job geonode lane share fault, session 01a175ef)",
+      "match": {
+        "config_key_prefixes": [
+          "crawl.concurrency."
+        ]
+      }
     }
   ],
   "exempt": {
