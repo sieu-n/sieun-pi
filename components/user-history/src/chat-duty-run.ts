@@ -855,7 +855,7 @@ export class Duties {
 
   /** When the chat's newest check-in run was recorded; undefined when it has none. The scheduler reads it at start (`Chats.load`). */
   async lastCheckIn(chatId: string): Promise<number | undefined> {
-    return (await this.store.runs(chatId)).find(run => run.duty === CHECK_IN_DUTY_ID)?.at;
+    return (await this.store.newestRun(chatId, CHECK_IN_DUTY_ID))?.at;
   }
 
   /**

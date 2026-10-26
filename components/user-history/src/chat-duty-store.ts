@@ -1,5 +1,6 @@
 import { appendFile, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { tailLines } from "./cut-end.ts";
 import { missing, readJsonFile, transactJsonFile, withFileLock, type JsonFile } from "./locked-json.ts";
 import { parseDutyFile, type Duty, type DutyFile, type DutyRunRecord } from "./shared/chat-duties.ts";
 
@@ -106,6 +107,21 @@ export class DutyStore {
   }
 
   /**
+   * The chat's newest run record of `duty`, from the runs file's last NEWEST_RUN_TAIL_BYTES, else from the whole file (`runs`). At the chat's
+   * start at 05:53:51Z on 10-26 `Chats.load` read each chat's last check-in through `runs`, which parsed all 134 runs files (24 MB, 9,765 records,
+   * 0.7 to 0.9 s on a quiet process), and the owner's api/threads/01a15427/duties read waited on it 1.9 s, which d7 counted dirty; the tail
+   * read takes 50 to 70 ms for all of them.
+   */
+  async newestRun(chatId: string, duty: string): Promise<DutyRunRecord | undefined> {
+    const key = `"duty":${JSON.stringify(duty)}`;
+    for (const line of (await tailLines(this.runsFile(chatId), NEWEST_RUN_TAIL_BYTES)).reverse()) {
+      if (!line.includes(key)) continue;
+      try { const record = JSON.parse(line) as DutyRunRecord; if (record.duty === duty) return record; } catch { continue; }
+    }
+    return (await this.runs(chatId)).find(run => run.duty === duty);
+  }
+
+  /**
    * The chat's run records, newest first; a line that does not parse is skipped. A file whose inode, size and mtime match its last parse gives
    * the records of that parse (`parsedRuns`), so callers must not change them.
    */
@@ -124,6 +140,9 @@ export class DutyStore {
     return [...await parsed.records];
   }
 }
+
+/** The tail `newestRun` reads first: the newest check-in sat at most 89 KB from the end of each of the 133 runs files that held one on 10-26. */
+const NEWEST_RUN_TAIL_BYTES = 256 * 1024;
 
 /**
  * Each runs file's records as last parsed, by path, with the inode, size and mtime its stat gave before the read. On a scratch serve with a
