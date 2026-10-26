@@ -18,7 +18,8 @@ import type { ChatBoard, PlanItem } from "../../src/shared/types.ts";
 import { CHANGE_APPROACH_MISSES, fixStepStreak, metricStreaks } from "../../src/shared/duty-streak.ts";
 import { hasDoneLine, upkeepWords } from "../../src/shared/upkeep-title.ts";
 import { stalledSince } from "../../src/shared/stalled-calls.ts";
-import { transientTurnError } from "../../src/turn-error.ts";
+import { transientTurnError, turnErrorCause } from "../../src/turn-error.ts";
+import { turnError } from "../../src/shared/credential-wait.ts";
 import { daemonSessions, dutyFleet, type FleetDuty } from "./duty-fleet.ts";
 import { catalogCopyFiles, copyHosts, endsOnPoolWait, type HostHeldStep, mirroredSessions, planCounts, planInputs, POOL_TAIL_BYTES, stepSessions } from "./whole-system.ts";
 import { loadHosts, selfHost } from "../../src/hosts.ts";
@@ -362,10 +363,52 @@ export function pushReached(lines: readonly string[], tag: string): { delivered:
   let delivered = false;
   for (const line of lines) {
     if (!delivered) { if ((line.includes('"agent_message"') || line.includes('"role":"user"')) && line.includes(tag)) delivered = true; continue; }
-    if (line.includes('"role":"assistant"')) return { delivered, read: true };
+    if (line.includes('"role":"assistant"') && !line.includes('"stopReason":"error"')) return { delivered, read: true };
   }
   return { delivered, read: false };
 }
+
+/**
+ * A chat that cannot take a turn: every model turn it took since `since` failed, and `cause` names why (`turnErrorCause`, with its pi-pool
+ * selection when that is Manual). A push to it lands in its transcript and nobody reads it. From 10-24 to 10-26 d9 pushed frontend bro 6 times
+ * on p330, p332 and p333 while every turn of it since 10-23 09:12Z ended on "Provider rate limit exceeded (rate_limit_error, 429) ...
+ * pi-pool: Manual f6cee98e-... remains selected.", since `pi-pool use` had pinned it to claude8@slack.green, limited until 10-29 02:00Z.
+ */
+export interface ChatDown { chat: string; since: number; turns: number; cause: string }
+
+/**
+ * The failed model turns at the end of a transcript's lines: those after its last assistant message that did not fail, when the last one
+ * failed and the first of them is LIVE_GAP_MS old or older, the longest quiet a working session shows between model calls, so a turn in
+ * Prime's provider retry does not read as down.
+ */
+export function failingTurns(lines: readonly string[], now: number): { since: number; turns: number; error: string; provider?: string } | undefined {
+  let failed: { since: number; turns: number; error: string; provider?: string } | undefined;
+  for (const line of lines) {
+    if (!line.includes('"role":"assistant"')) continue;
+    let entry: { type?: string; timestamp?: string; message?: { role?: string; stopReason?: string; errorMessage?: unknown; diagnostics?: unknown; provider?: unknown } };
+    try { entry = JSON.parse(line) as typeof entry; } catch { continue; }
+    if (entry.type !== "message" || entry.message?.role !== "assistant") continue;
+    if (entry.message.stopReason !== "error") { failed = undefined; continue; }
+    const provider = typeof entry.message.provider === "string" ? { provider: entry.message.provider } : {};
+    failed = { since: failed?.since ?? ms(entry.timestamp), turns: (failed?.turns ?? 0) + 1, error: turnError(entry.message) ?? "error", ...provider };
+  }
+  return failed && now - failed.since >= LIVE_GAP_MS ? failed : undefined;
+}
+
+/** A Manual pi-pool selection from `pi-pool who --json --session <id>`, with its account and when its slot comes; undefined for Auto or a reply it cannot read. */
+export function manualSelection(who: unknown, provider: string): string | undefined {
+  const entry = (who as { providers?: Record<string, { selection?: { mode?: unknown; account_id?: unknown }; current?: { email?: unknown }; wait?: { slot_at?: unknown } | null }> })
+    ?.providers?.[provider];
+  if (entry?.selection?.mode !== "manual") return undefined;
+  const account = typeof entry.current?.email === "string" ? entry.current.email : String(entry.selection.account_id ?? "an account");
+  const slot = typeof entry.wait?.slot_at === "number" ? `, whose pi-pool slot comes at ${new Date(entry.wait.slot_at * 1000).toISOString().slice(0, 16)}Z` : "";
+  return `Manual ${account}${slot}`;
+}
+
+/** The `chat_down` line of a chat that cannot take a turn, which the detail file's push list and the flagged slices open with. */
+export const downLine = (down: ChatDown, name: string): string => `chat_down: ${name} has failed every turn since ` +
+  `${new Date(down.since).toISOString().slice(0, 16)}Z (${down.cause}), ${down.turns} failed ${down.turns === 1 ? "turn" : "turns"}; d9 sent it no push this run. ` +
+  "Ask the owner on For you to bring it back, or move its steps to a chat that runs, and push it nothing until it takes a turn";
 
 /**
  * An open step nobody moves: its id and title, or only a count when the chat's check-in named no ids. `waitsOn` is the open step of the same
@@ -394,6 +437,8 @@ export interface ChatSystemFacts {
   idleGoals: readonly { chat: string; goals: readonly PlanItem[] }[];
   /** The pushes the last run's job sent, as they went. */
   followUps: readonly PushCheck[];
+  /** The chats on the push list or the follow-ups that cannot take a turn; d9 sends them no push. */
+  down?: readonly ChatDown[];
   detail: string;
 }
 
@@ -404,7 +449,8 @@ export const missRuns = (duty: Pick<RedDuty, "misses" | "skipped">): string =>
 export function chatSystemOutput(facts: ChatSystemFacts): PrecheckOutput {
   const name = (chat: string): string => facts.names.get(chat) ?? chat.slice(0, 8);
   const stuckCount = facts.stuck.reduce((sum, entry) => sum + (entry.count ?? 1), 0);
-  const flagged: FlaggedSlice[] = [];
+  const down = new Set((facts.down ?? []).map(entry => entry.chat));
+  const flagged: FlaggedSlice[] = (facts.down ?? []).map(entry => ({ kind: "chat_down", chat: entry.chat, excerpt: `${downLine(entry, name(entry.chat))}.` }));
   const head = (kind: string, count: number, what: string, chats: number) => {
     if (count) flagged.push({ kind, excerpt: `${count} ${what} in ${chats} ${chats === 1 ? "chat" : "chats"}; every one is in ${facts.detail}.` });
   };
@@ -439,7 +485,7 @@ export function chatSystemOutput(facts: ChatSystemFacts): PrecheckOutput {
   const notMoving = fixNotMoving(facts.fleet.red, name);
   head("fix_not_moving", notMoving.length, "red duties whose live fix job does not move the number", chats(notMoving));
   for (const duty of spread(notMoving, EXAMPLES)) flagged.push({ kind: "fix_not_moving", chat: duty.chat, item: duty.duty, excerpt: `${duty.line}.` });
-  const pushes = pushList({ ...facts, notMoving });
+  const pushes = pushList({ ...facts, notMoving }).filter(entry => !down.has(entry.chat));
   if (pushes.length) flagged.push({ kind: "push", excerpt: `${pushes.length} ${pushes.length === 1 ? "chat has" : "chats have"} a goal with no live job, an open step nobody moves, a red duty with no fix job ` +
     `or with a fix that does not move it, or a plan item that is upkeep or has no done line; ` +
     `message each one, as the push list in ${facts.detail} says.` });
@@ -447,7 +493,7 @@ export function chatSystemOutput(facts: ChatSystemFacts): PrecheckOutput {
     flagged.push({ kind: "push_queued", chat: check.push.chat, excerpt: `${name(check.push.chat)}: the last run's push ${check.push.tag} about ${check.push.items.join(", ")} ` +
       `waits in the queue, since the chat runs on ${check.away}, which Tailscale reads offline; it lands when the box answers, so send it nothing again.` });
   }
-  for (const check of facts.followUps.filter(check => (!check.read || !check.jobStarted) && !(check.away && !check.delivered) && !check.settled)) {
+  for (const check of facts.followUps.filter(check => (!check.read || !check.jobStarted) && !(check.away && !check.delivered) && !check.settled && !down.has(check.push.chat))) {
     flagged.push({ kind: "push_followup", chat: check.push.chat, excerpt: `${name(check.push.chat)}: the last run's push ${check.push.tag} about ${check.push.items.join(", ")} ` +
       `${!check.delivered ? "never reached its transcript" : !check.read ? "reached it, but the chat has not answered" : "was read, but no job started since"}; steer it again.` });
   }
@@ -649,13 +695,23 @@ async function main(): Promise<void> {
     followUps.push({ push, ...reached, jobStarted: (jobs.get(push.chat) ?? []).some(row => ms(row.created) > push.at), ...offline,
       ...pushSettled(linked(push.chat), push.items) ? { settled: true } : {} });
   }
-  const result = chatSystemOutput({ names, stuck, upkeep, fleet: { pct: fleet.metrics.duties_green_pct, red }, stuckDuties: counts.redDuties, idleGoals, followUps, detail, hostHeld });
-  const fleetMissing = fleet.flagged.filter(slice => slice.kind === "fleet_data_missing");
-  result.flagged!.push(...fleetMissing);
   const tag = pushTag(now);
   const name = (chat: string): string => names.get(chat) ?? chat.slice(0, 8);
   const notMoving = fixNotMoving(red, name);
-  const pushes = pushList({ idleGoals, stuck, stuckDuties: counts.redDuties, lagging: owned.lagging, notMoving, upkeep });
+  const listedPushes = pushList({ idleGoals, stuck, stuckDuties: counts.redDuties, lagging: owned.lagging, notMoving, upkeep });
+  const down: ChatDown[] = [];
+  for (const chat of new Set([...listedPushes.map(entry => entry.chat), ...followUps.map(check => check.push.chat)])) {
+    const file = localCopy(pushedFile(listed, copies, chat));
+    const failed = file ? failingTurns(await tail(file.file, TRANSCRIPT_TAIL_BYTES), now) : undefined;
+    if (!failed) continue;
+    const who = await run(poolExecutable(), ["who", "--json", "--session", chat]).then(out => JSON.parse(out.stdout) as unknown, () => undefined);
+    const manual = manualSelection(who, failed.provider ?? "anthropic");
+    down.push({ chat, since: failed.since, turns: failed.turns, cause: [turnErrorCause(failed.error), manual].filter(Boolean).join(", ") });
+  }
+  const pushes = listedPushes.filter(entry => !down.some(item => item.chat === entry.chat));
+  const result = chatSystemOutput({ names, stuck, upkeep, fleet: { pct: fleet.metrics.duties_green_pct, red }, stuckDuties: counts.redDuties, idleGoals, followUps, down, detail, hostHeld });
+  const fleetMissing = fleet.flagged.filter(slice => slice.kind === "fleet_data_missing");
+  result.flagged!.push(...fleetMissing);
 
   // The spot audit: one owner chat at random each run, read by the duty job against what the owner asked in it.
   const spot = ids[Math.floor(Math.random() * ids.length)]!;
@@ -673,6 +729,7 @@ async function main(): Promise<void> {
     ...fleetMissing.map(slice => `${slice.excerpt}\n`),
     ...spotAuditLines({ spot, title: name(spot), host: session?.host, dataDir, jobs: jobs.get(spot) ?? [], log, asks }),
     `## Push list (${pushes.length} chats)`, "",
+    ...down.map(entry => `${downLine(entry, name(entry.chat))}. Its push would have named: ${pushItems(listedPushes.find(item => item.chat === entry.chat) ?? { chat: entry.chat, goals: [], steps: [], duties: [], upkeep: [] }) || "only the last run's push"}.\n`),
     `The server sent each chat below its push, tagged ${tag}, when this run's precheck ended, and ${PUSHES_FILE} records each one. Send none of them again. ` +
       "Follow up only where a chat's answer shows it did not act.", "",
     ...pushes.map((entry, index) => `${index + 1}. ${name(entry.chat)} (${entry.chat}): ${pushItems(entry)}.`), "",

@@ -1,7 +1,7 @@
 // Guards the Chat system duty's precheck (d9), built 10-19 for the owner's rule that a plan holds only tasks that finish (msg mvfb7zt0).
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { agingSince, chatSystemOutput, fixNotMoving, goalsWithNoJob, jobsByChat, ownerMessages, planUpkeep, pushedFile, pushList, pushReached, pushRecords, pushSettled, pushTells, spotAuditLines, spread, waitsOnStep, withCatalogOwners, withoutWorkingRuns } from "../scripts/duties/chat-system.ts";
+import { agingSince, chatSystemOutput, failingTurns, fixNotMoving, manualSelection, goalsWithNoJob, jobsByChat, ownerMessages, planUpkeep, pushedFile, pushList, pushReached, pushRecords, pushSettled, pushTells, spotAuditLines, spread, waitsOnStep, withCatalogOwners, withoutWorkingRuns } from "../scripts/duties/chat-system.ts";
 import { type PlanInputs, planCounts } from "../scripts/duties/whole-system.ts";
 import type { MetricStreak } from "../src/shared/duty-streak.ts";
 import type { ChatBoard } from "../src/shared/types.ts";
@@ -300,4 +300,38 @@ test("a push whose named step waits only on an open For you todo owes no followu
   assert.equal(pushSettled({ plan: [step], todos: [todo] } as unknown as ChatBoard, ["p518"]), true);
   assert.equal(pushSettled({ plan: [step], todos: [{ ...todo, done: true }] } as unknown as ChatBoard, ["p518"]), false);
   assert.equal(pushSettled({ plan: [{ ...step, waitFor: "the next cut" }], todos: [todo] } as unknown as ChatBoard, ["p518"]), false);
+});
+
+// From 10-24 to 10-26 d9 pushed frontend bro 6 times while every turn of it failed on its Manual pi-pool account's 429.
+const turn = (at: string, failed: boolean) => JSON.stringify({ type: "message", timestamp: at, message: { role: "assistant", provider: "anthropic",
+  ...failed ? { stopReason: "error", errorMessage: "Provider rate limit exceeded (rate_limit_error, 429). pi-pool: Manual f6cee98e-a8df remains selected." } : { stopReason: "stop" } } });
+
+test("a chat whose every turn since its last good one failed reads as down from that first failure, and a recent failure or a good turn does not", () => {
+  const now = Date.parse("2026-10-26T03:40:00Z");
+  const lines = [turn("2026-10-23T08:50:00Z", false), turn("2026-10-23T09:12:00Z", true), turn("2026-10-25T08:20:00Z", true), turn("2026-10-26T03:28:00Z", true)];
+  assert.deepEqual(failingTurns(lines, now), { since: Date.parse("2026-10-23T09:12:00Z"), turns: 3, provider: "anthropic",
+    error: "Provider rate limit exceeded (rate_limit_error, 429). pi-pool: Manual f6cee98e-a8df remains selected." });
+  assert.equal(failingTurns([...lines, turn("2026-10-26T03:30:00Z", false)], now), undefined);
+  assert.equal(failingTurns([turn("2026-10-26T03:28:00Z", true)], now), undefined);
+  const who = { providers: { anthropic: { selection: { mode: "manual", account_id: "f6cee98e" }, current: { email: "claude8@slack.green" }, wait: { slot_at: 1793239201 } } } };
+  assert.equal(manualSelection(who, "anthropic"), "Manual claude8@slack.green, whose pi-pool slot comes at 2026-10-29T02:00Z");
+  assert.equal(manualSelection({ providers: { anthropic: { selection: { mode: "auto" } } } }, "anthropic"), undefined);
+});
+
+test("a push answered only by a failed turn is not read", () => {
+  const tag = "[d9 push 2026-10-26T03:27Z]";
+  const sent = JSON.stringify({ type: "message", message: { role: "user", content: `${tag} The chat system duty (d9) found these` } });
+  assert.deepEqual(pushReached([sent, turn("2026-10-26T03:28:00Z", true)], tag), { delivered: true, read: false });
+});
+
+test("a down chat opens the flagged slices with its chat_down line, and gets no push and no follow-up", () => {
+  const push = { at: 1, chat: "fb", tag: "[d9 push 2026-10-26T03:27Z]", items: ["p330"] };
+  const out = chatSystemOutput({ names: new Map([["fb", "frontend bro"]]), stuck: [{ chat: "fb", id: "p330", text: "Ship the inbox" }], upkeep: [],
+    fleet: { pct: 100, red: [] }, stuckDuties: [], idleGoals: [], detail: "/tmp/d9.md",
+    followUps: [{ push, delivered: true, read: false, jobStarted: false }],
+    down: [{ chat: "fb", since: Date.parse("2026-10-23T09:12:00Z"), turns: 41, cause: "rate limit 429, Manual claude8@slack.green, whose pi-pool slot comes at 2026-10-29T02:00Z" }] });
+  assert.equal(out.flagged![0]!.kind, "chat_down");
+  assert.match(out.flagged![0]!.excerpt, /^chat_down: frontend bro has failed every turn since 2026-10-23T09:12Z \(rate limit 429, Manual claude8@slack\.green, .*\), 41 failed turns; d9 sent it no push this run\./);
+  assert.deepEqual(out.flagged!.filter(slice => slice.kind === "push" || slice.kind === "push_followup"), []);
+  assert.equal(out.metrics!.stuck_steps_all, 1);
 });
