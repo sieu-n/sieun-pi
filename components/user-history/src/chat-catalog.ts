@@ -1301,6 +1301,19 @@ export class Catalog {
     return latest.rows.find(row => row.id === id)?.agents;
   }
 
+  /**
+   * Which rows `heldAgents` read for a chat it found no agents for, for the agents read's line when it projects instead. At 06:42Z on 10-26,
+   * 54 s after the 06:41:36Z start, the read of chat 01a17670 projected for 2.9 s, and nothing said whether the frame, the last projection or
+   * the saved agents lacked it.
+   */
+  heldSource(id: string): string {
+    const framed = this.framedRows();
+    const holds = (rows: readonly SessionRow[]) => rows.some(row => row.id === id) ? "holds its row with no agents" : "lacks its row";
+    if (framed) return `the last frame of ${framed.length} rows ${holds(framed)}`;
+    if (this.latest) return `the last projection of ${this.latest.rows.length} rows ${holds(this.latest.rows)}`;
+    return this.saved ? `the agents the last run saved for ${this.saved.size} chats lack it` : "no frame, projection or saved agents yet";
+  }
+
   /** Writes each chat's agents of the last projection to `agentsFile`, for the next run's `heldAgents` before its first projection. */
   private async saveAgents(): Promise<void> {
     const rows = this.latest?.rows;

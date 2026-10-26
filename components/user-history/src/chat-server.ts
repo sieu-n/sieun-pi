@@ -898,8 +898,11 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
             // A chat no box's rows place while another box has not listed, such as Mac chat 01a11b0b with the Mac offline, is refused before the
             // summary's refresh: that ran a daemon list and indexed all 5,600 rows only to refuse it, 40 to 180 ms a read and 1.5 s at 08:57Z on 10-25.
             if (await backend.catalog.unplacedNow(id)) throw new RequestError(502, unplacedMessage(id));
+            const missed = backend.catalog.heldSource(id);
+            const started = performance.now();
             await backend.catalog.summary(id);
             const row = (await backend.catalog.rows()).find(candidate => candidate.id === id);
+            receipt(`agents ${id.slice(0, 8)}: ${missed}, so the read projected in ${Math.round(performance.now() - started)} ms`);
             json(res, 200, { agents: row?.agents ?? [] }); return;
           }
         }

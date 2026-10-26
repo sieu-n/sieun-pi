@@ -37,10 +37,14 @@ test("the agents read answers from the rows the catalog holds and never waits fo
   assert.deepEqual(await agentsOf(server.url, "chat-a"), [agent]);
 });
 
-test("a chat that is not in the rows the catalog holds gets its row from a projection", async t => {
+test("a chat that is not in the rows the catalog holds gets its row from a projection, and the read logs what lacked it", async t => {
   let built = 0;
+  const lines: string[] = [];
+  const write = process.stderr.write.bind(process.stderr);
+  t.mock.method(process.stderr, "write", (chunk: string | Uint8Array) => { lines.push(String(chunk)); return write(chunk); });
   const server = await serve({
     heldAgents: (id: string) => id === "chat-a" ? [agent] : undefined,
+    heldSource: () => "the last frame of 1 rows lacks its row",
     unplacedNow: async () => false,
     summary: async () => undefined,
     rows: async () => { built++; return [{ id: "chat-b", agents: [{ ...agent, key: "child:b" }] }]; },
@@ -48,6 +52,7 @@ test("a chat that is not in the rows the catalog holds gets its row from a proje
   t.after(() => server.close());
   assert.deepEqual(await agentsOf(server.url, "chat-b"), [{ ...agent, key: "child:b" }]);
   assert.equal(built, 1);
+  assert.ok(lines.some(line => /^\S+Z agents chat-b: the last frame of 1 rows lacks its row, so the read projected in \d+ ms\n$/.test(line)), lines.join(""));
 });
 
 test("the catalog hands out the last frame's rows only while a listener holds the feed", async (t: TestContext) => {
@@ -102,7 +107,9 @@ test("with no listener the agents come from the last projection, and a change si
   const { catalog, counted } = chatCatalog(t);
   await catalog.refresh();
   assert.equal(catalog.heldAgents("s1"), undefined, "nothing to answer from before a projection");
+  assert.equal(catalog.heldSource("s1"), "no frame, projection or saved agents yet");
   await catalog.rows();
+  assert.equal(catalog.heldSource("s9"), "the last projection of 2 rows lacks its row");
   const built = counted.projections;
   assert.deepEqual(catalog.heldAgents("s1")?.map(entry => entry.sessionId), ["s2"]);
   assert.equal(counted.projections, built, "rows that are current start no projection");
@@ -126,6 +133,7 @@ test("a start answers with the agents the last run saved at its stop until its f
   const next = chatCatalog(t, file);
   assert.equal(existsSync(file), false, "the start deletes the file it read, so a crash leaves none behind");
   assert.deepEqual(next.catalog.heldAgents("s1")?.map(entry => entry.sessionId), ["s2"]);
+  assert.equal(next.catalog.heldSource("s9"), "the agents the last run saved for 1 chats lack it");
   assert.equal(next.counted.projections, 0);
   writeFileSync(file, "not json");
   assert.equal(chatCatalog(t, file).catalog.heldAgents("s1"), undefined, "a file of another shape is no answer");
