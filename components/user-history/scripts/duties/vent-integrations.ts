@@ -21,7 +21,8 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  *   REVOKE_PROOF_AGENTS leaves out the Railway services duty's own revoke proofs: its checks under ~/work/railway-breach-checks send old
  *   Vent caller keys to prod once a day and pass only when Vent refuses them. vent/check sends them as vent-breach-check/1 (us-metal02 read
  *   as a refused source on 10-25 at 08:35Z) and research-api/check as railway-breach-check/research-api (langfuse at 22:05Z on 10-25), so
- *   every user agent with "breach-check/" in it is left out.
+ *   every user agent with "breach-check/" in it is left out. `lastEventAt.vent_key_refused_sources` is the newest refusal it counts, so a
+ *   count whose sources stopped refusing reads as aging out of the window: on 10-26 d9 read d2 as stuck on two sources last seen 10-25.
  * - vent_console_slow_reads_24h: how many of the 17 reads the prod Vent console runs cost 1 core-second or more on prod ClickHouse. vent-console-cost.py
  *   beside this file builds them with vent.telemetry_read and vent.health from apps/vent/src at origin/main, the build prod runs, runs each once
  *   through Grafana with a log_comment tag and reads its CPU from otel.query_cost. Until release 21 (10-25) prod's console decoded the whole
@@ -92,6 +93,7 @@ export function behindHours(hosts: IntegrationReads["hosts"], spans: VersionSpan
 export function integrationMetrics(reads: IntegrationReads, at: number): PrecheckOutput {
   const flagged: FlaggedSlice[] = [];
   const metrics: Record<string, number> = {};
+  const lastEventAt: Record<string, number> = {};
   let sourceErrors = 0;
   const sourceError = (excerpt: string) => { sourceErrors++; flagged.push({ at, kind: "source_error", excerpt: excerpt.slice(0, 300) }); };
 
@@ -129,6 +131,7 @@ export function integrationMetrics(reads: IntegrationReads, at: number): Prechec
   } else {
     const refusals = [...reads.refusals].sort((a, b) => b.calls - a.calls);
     metrics.vent_key_refused_sources = refusals.length;
+    if (refusals.length) lastEventAt.vent_key_refused_sources = Math.max(...refusals.map(refusal => refusal.last));
     for (const refusal of refusals.slice(0, ITEMS)) {
       const named = refusal.integrations.length ? ` for ${refusal.integrations.join(", ")}` : "";
       flagged.push({ at, kind: "key_refused", item: refusal.source, excerpt: `${refusal.source}: ${refusal.calls} prod Vent calls${named} refused as vent_unauthorized with a key Vent does not know in 24 h, last at ${iso(refusal.last)}`.slice(0, 300) });
@@ -163,7 +166,7 @@ export function integrationMetrics(reads: IntegrationReads, at: number): Prechec
     }
   }
   metrics.source_errors = sourceErrors;
-  return { metrics, flagged };
+  return { metrics, flagged, ...Object.keys(lastEventAt).length ? { lastEventAt } : {} };
 }
 
 const run = (file: string, args: string[], options: { env?: NodeJS.ProcessEnv } = {}) => new Promise<string>((resolve, reject) => {

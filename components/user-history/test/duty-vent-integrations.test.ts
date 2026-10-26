@@ -75,10 +75,23 @@ test("keyed calls refused as vent_unauthorized count per source address and read
   const rows = output.flagged!.filter(flag => flag.kind === "key_refused");
   assert.deepEqual(rows.map(flag => flag.item), ["64.34.205.243", "155.254.27.166"]);
   assert.equal(rows[0]!.excerpt, "64.34.205.243: 196 prod Vent calls for railway, vercel refused as vent_unauthorized with a key Vent does not know in 24 h, last at 2026-10-25T03:47Z");
-  assert.equal(integrationMetrics({ lights, hosts: hosts(), spans: null, refusals: [], consoleReads: CHEAP }, last).metrics.vent_key_refused_sources, 0);
+  assert.equal(output.lastEventAt?.vent_key_refused_sources, last);
+  const none = integrationMetrics({ lights, hosts: hosts(), spans: null, refusals: [], consoleReads: CHEAP }, last);
+  assert.equal(none.metrics.vent_key_refused_sources, 0);
+  assert.equal(none.lastEventAt, undefined);
   const unread = integrationMetrics({ lights, hosts: hosts(), spans: null, refusals: { error: "HTTP 502" }, consoleReads: CHEAP }, last);
   assert.equal(unread.metrics.vent_key_refused_sources, UNMEASURED);
   assert.equal(unread.metrics.source_errors, 1);
+});
+
+// On 10-26 at 02:48Z d9 read d2 as stuck: 64.34.205.243 last refused at 10:01Z and 155.254.27.166 at 12:18Z on 10-25, and with no
+// lastEventAt the runner never set quietSince, so a count that only ages out read as a red duty with no fix.
+test("lastEventAt for refused key sources is the newest refusal across sources", () => {
+  const refusals: KeyRefusal[] = [{ source: "64.34.205.243", calls: 196, last: Date.UTC(2026, 9, 25, 10, 1), integrations: ["railway"] },
+    { source: "155.254.27.166", calls: 3, last: Date.UTC(2026, 9, 25, 12, 18), integrations: ["langfuse"] }];
+  const output = integrationMetrics({ lights: [], hosts: hosts(), spans: null, refusals, consoleReads: CHEAP }, Date.UTC(2026, 9, 26, 2, 48));
+  assert.deepEqual(output.lastEventAt, { vent_key_refused_sources: Date.UTC(2026, 9, 25, 12, 18) });
+  assert.equal(integrationMetrics({ lights: [], hosts: hosts(), spans: null, refusals: { error: "HTTP 502" }, consoleReads: CHEAP }, 0).lastEventAt, undefined);
 });
 
 // Until release 21 (10-25) prod's console decoded each call row's whole LogAttributes map: on 10-24 at 15:21Z its 24 h usage reads took
