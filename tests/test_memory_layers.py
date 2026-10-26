@@ -45,6 +45,55 @@ class DevServerScores(unittest.TestCase):
         self.assertEqual(oom.plan(units, {"llm-wiki.service": 60}, current), {50: -500, 51: -500, 60: -500, 61: -500})
 
 
+class RunawaySession(unittest.TestCase):
+    # 10-26 in small: worker 11 with its kernel 12 in session 11, a pytest command in session 20, and a recursive bash
+    # command in session 30 whose forks are each smaller than the kernel and together larger.
+    procs = {10: "prime-agent", 11: "prime-agent", 12: "python", 20: "bash", 21: "pytest", 30: "bash", 31: "bash", 32: "bash", 33: "bash"}
+    sessions = {10: 10, 11: 11, 12: 11, 20: 20, 21: 20, 30: 30, 31: 30, 32: 30, 33: 30}
+
+    def test_a_fork_tree_larger_than_any_one_process_outside_it_goes_first(self):
+        memory = {10: 900, 11: 500, 12: 5000, 20: 4, 21: 700, 30: 1500, 31: 1600, 32: 1700, 33: 1800}
+        self.assertEqual(oom.runaway(self.procs, 10, self.sessions, memory), 30)
+
+    def test_no_session_goes_first_while_one_process_outside_holds_more(self):
+        memory = {10: 900, 11: 500, 12: 9000, 20: 4, 21: 700, 30: 1500, 31: 1600, 32: 1700, 33: 1800}
+        self.assertIsNone(oom.runaway(self.procs, 10, self.sessions, memory))
+
+    def test_a_worker_session_with_its_kernels_is_never_marked(self):
+        memory = {10: 900, 11: 500, 12: 90000, 20: 4, 21: 700, 30: 1, 31: 1, 32: 1, 33: 1}
+        self.assertIsNone(oom.runaway(self.procs, 10, self.sessions, memory))
+
+    def test_the_marked_session_goes_to_1000_and_a_mark_that_moved_on_goes_back_to_200(self):
+        units = {"prime-agent-daemon.service": self.procs}
+        current = {10: -900, 11: -500, 12: 200, 20: 1000, 21: 1000, 30: 200, 31: 200, 32: 1000, 33: 500}
+        writes = oom.plan(units, {"prime-agent-daemon.service": 10}, current, frozenset({30, 31, 32, 33}))
+        self.assertEqual(writes, {20: 200, 21: 200, 30: 1000, 31: 1000, 33: 1000})
+
+
+class KillSessionHook(unittest.TestCase):
+    def test_it_kills_only_the_marked_session_members_that_still_carry_the_mark(self):
+        spec = importlib.util.spec_from_file_location("oom_kill_session", MEM / "oom-kill-session.py")
+        hook = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(hook)
+        with tempfile.TemporaryDirectory() as proc:
+            for pid, sid, adj in ((40, 40, 1000), (41, 40, 1000), (42, 40, 200), (43, 43, 1000), (44, 40, 1000)):
+                os.makedirs(f"{proc}/{pid}")
+                Path(f"{proc}/{pid}/stat").write_text(f"{pid} (ba sh) S 1 {sid} {sid} 0 -1\n")
+                Path(f"{proc}/{pid}/oom_score_adj").write_text(f"{adj}\n")
+            os.makedirs(f"{proc}/self")
+            self.assertEqual(sorted(hook.members(40, proc)), [40, 41, 44])
+
+    def test_earlyoom_runs_it_after_each_kill_and_its_unit_has_no_memory_or_task_cap(self):
+        args = earlyoom_args()
+        self.assertEqual(args[args.index("-N") + 1], "/usr/local/lib/oom-protect/oom-kill-session.py")
+        conf = (MEM / "earlyoom-limits.conf").read_text()
+        self.assertEqual(re.findall(r"^(\w+)=(\S+)$", conf, re.M), [("MemoryMax", "infinity"), ("TasksMax", "infinity")])
+        setup = (MEM / "setup-memory.sh").read_text()
+        for line in ('install -m 755 "$here/oom-kill-session.py" /usr/local/lib/oom-protect/oom-kill-session.py',
+                     'install -m 644 "$here/earlyoom-limits.conf" /etc/systemd/system/earlyoom.service.d/limits.conf'):
+            self.assertIn(line, setup)
+
+
 class EarlyoomConfig(unittest.TestCase):
     def test_thresholds_are_the_pages_5_and_2_percent(self):
         args = earlyoom_args()

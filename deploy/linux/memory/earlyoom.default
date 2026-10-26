@@ -6,4 +6,6 @@
 # filled RAM and swap, and with the guests preferred (+300, about 990 against 800 for an adj-200 agent command) earlyoom
 # SIGTERMed 6 running guests, about 51 GB, and the shortage went on. Avoided, a guest reads about 390, under every
 # adj-200 process and still over the Prime workers (-500, about 334) and the harness core (-900, about 68).
-EARLYOOM_ARGS="-m 5,2 -s 5,2 -r 3600 --avoid '^(systemd|systemd-.+|init|sshd|sshd-session|tailscaled|dockerd|containerd|containerd-shim.*|earlyoom|prime-agent|pi-pool|qemu:ci-.+)$' --prefer '^(qemu-system-.+|vitest.*|jest.*|pytest|svelte-check|tsc|cc1plus|ld)$'"
+# -N runs oom-kill-session.py after each kill, which kills the rest of the agent command session oom-protect.py marked
+# at 1000 (about 1333, over every other score), because earlyoom picks one process at a time.
+EARLYOOM_ARGS="-m 5,2 -s 5,2 -r 3600 -N /usr/local/lib/oom-protect/oom-kill-session.py --avoid '^(systemd|systemd-.+|init|sshd|sshd-session|tailscaled|dockerd|containerd|containerd-shim.*|earlyoom|prime-agent|pi-pool|qemu:ci-.+)$' --prefer '^(qemu-system-.+|vitest.*|jest.*|pytest|svelte-check|tsc|cc1plus|ld)$'"

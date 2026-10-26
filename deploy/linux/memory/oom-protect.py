@@ -9,6 +9,15 @@ Prime workers spawn kernels and agent commands, which must stay killable.
 The dev servers (auto-sns-dev-pm2.service with every pm2 app, and llm-wiki.service) go to -500 in every process, so
 earlyoom takes them after the CI guests (qemu:ci-, avoided, about 390) and every adj-200 agent command (800). Every
 agent writes its session to the wiki on :5176, and search on :5174 takes 60 to 97 s to cold start (ops, 2026-10-26).
+
+Every agent command starts its own session (rlm bash() runs with start_new_session), and its forks stay in it. The
+command session whose processes hold the most RAM and swap goes to 1000 in every process, when that sum is more than any
+one killable process outside it holds, and its id goes to MARK_FILE. Then the kernel and earlyoom pick it before
+anything else, and earlyoom's -N hook (oom-kill-session.py) kills the rest of it. Both killers score one process at a
+time, so a tree of small processes never came first: from 02:17 to 02:28Z on 10-26 a recursive agent command grew to
+11,017 bash processes of 4 to 33 MB each, 101 GB of RAM and 65 GB of swap in the daemon unit. The kernel killed 7 prod
+Chromiums (adj 300) and two node builds (500), its 50 MB memcg killed earlyoom, and earlyoom killed 22 pytest runs and 6
+CI guests, while the tree kept growing until it ended on its own.
 """
 import os
 import subprocess
@@ -23,12 +32,16 @@ MAIN_ADJ = -900
 WORKER_ADJ = -500
 DEV_ADJ = -500
 UNIT_DEFAULT_ADJ = 200
+MARK_ADJ = 1000
+MARK_FILE = "/run/oom-protect/marked-session"
 # A pass reads about 400 processes in these four units; 5 s bounds how long an agent command keeps an inherited score.
 INTERVAL_S = 5
 
 
-def plan(units: dict[str, dict[int, str]], main_pids: dict[str, int], current: dict[int, int]) -> dict[int, int]:
-    """The writes that bring every process in the core units to its score. units maps unit -> {pid: comm}."""
+def plan(units: dict[str, dict[int, str]], main_pids: dict[str, int], current: dict[int, int],
+         marked: frozenset[int] = frozenset()) -> dict[int, int]:
+    """The writes that bring every process in the core units to its score. units maps unit -> {pid: comm}, and marked
+    holds the processes of the command session that goes first (runaway)."""
     writes = {}
     for unit, procs in units.items():
         main = main_pids.get(unit, 0)
@@ -41,13 +54,33 @@ def plan(units: dict[str, dict[int, str]], main_pids: dict[str, int], current: d
                 want = MAIN_ADJ
             elif unit == DAEMON and comm == "prime-agent":
                 want = WORKER_ADJ
-            elif current.get(pid, UNIT_DEFAULT_ADJ) < UNIT_DEFAULT_ADJ:
+            elif pid in marked:
+                want = MARK_ADJ
+            elif current.get(pid, UNIT_DEFAULT_ADJ) < UNIT_DEFAULT_ADJ or (unit == DAEMON and current.get(pid) == MARK_ADJ):
                 want = UNIT_DEFAULT_ADJ
             else:
                 continue
             if current.get(pid) != want:
                 writes[pid] = want
     return writes
+
+
+def runaway(procs: dict[int, str], main: int, sessions: dict[int, int], memory: dict[int, int]) -> int | None:
+    """The command session in the daemon unit that goes first: the one whose processes hold the most RAM and swap, when
+    that sum is more than any one killable process outside it holds. A session that holds the main process or a Prime
+    worker is a worker's, with its kernels, and never a command's."""
+    protected = {pid for pid, comm in procs.items() if pid == main or comm == "prime-agent"}
+    worker_sessions = {sessions[pid] for pid in protected if pid in sessions}
+    totals: dict[int, int] = {}
+    for pid in procs:
+        sid = sessions.get(pid)
+        if sid is not None and sid not in worker_sessions:
+            totals[sid] = totals.get(sid, 0) + memory.get(pid, 0)
+    if not totals:
+        return None
+    sid = max(totals, key=lambda s: totals[s])
+    largest_outside = max((memory.get(pid, 0) for pid in procs if pid not in protected and sessions.get(pid) != sid), default=0)
+    return sid if totals[sid] > largest_outside else None
 
 
 def read(path: str) -> str | None:
@@ -77,6 +110,18 @@ def snapshot(uid: int) -> tuple[dict[str, dict[int, str]], dict[int, int]]:
     return units, current
 
 
+def session_and_memory(pids) -> tuple[dict[int, int], dict[int, int]]:
+    """Each process's session id from /proc/<pid>/stat and its RAM plus swap in kB (VmRSS + VmSwap)."""
+    sessions, memory = {}, {}
+    for pid in pids:
+        stat, status = read(f"/proc/{pid}/stat"), read(f"/proc/{pid}/status")
+        if stat is None or status is None:
+            continue
+        sessions[pid] = int(stat.rsplit(")", 1)[1].split()[3])
+        memory[pid] = sum(int(line.split()[1]) for line in status.splitlines() if line.startswith(("VmRSS:", "VmSwap:")))
+    return sessions, memory
+
+
 def main_pids() -> dict[str, int]:
     out = subprocess.run(["systemctl", "--user", f"--machine={USER}@", "show", "-p", "MainPID", "--value", *CORE_UNITS],
                          capture_output=True, text=True).stdout
@@ -84,13 +129,36 @@ def main_pids() -> dict[str, int]:
     return {unit: int(value) for unit, value in zip(CORE_UNITS, values) if value.isdigit()}
 
 
+def write_mark(sid: int | None) -> int | None:
+    """Writes the marked session id to MARK_FILE, or removes it, and returns the id it held before."""
+    before = read(MARK_FILE)
+    if sid is None:
+        if before is not None:
+            os.remove(MARK_FILE)
+    elif before != f"{sid}\n":
+        os.makedirs(os.path.dirname(MARK_FILE), exist_ok=True)
+        with open(f"{MARK_FILE}.tmp", "w") as f:
+            f.write(f"{sid}\n")
+        os.replace(f"{MARK_FILE}.tmp", MARK_FILE)
+    return int(before) if before and before.strip().isdigit() else None
+
+
 def run_once(uid: int) -> None:
     units, current = snapshot(uid)
-    for pid, adj in plan(units, main_pids(), current).items():
+    mains = main_pids()
+    procs = units.get(DAEMON, {})
+    sessions, memory = session_and_memory(procs)
+    sid = runaway(procs, mains.get(DAEMON, 0), sessions, memory)
+    marked = frozenset(pid for pid in procs if sid is not None and sessions.get(pid) == sid)
+    if write_mark(sid) != sid and sid is not None:
+        held = sum(memory.get(pid, 0) for pid in marked) / 1048576
+        print(f"session {sid} ({procs.get(sid, 'leader gone')}, {len(marked)} processes, {held:.1f} GiB RAM and swap) goes first at {MARK_ADJ}", flush=True)
+    for pid, adj in plan(units, mains, current, marked).items():
         try:
             with open(f"/proc/{pid}/oom_score_adj", "w") as f:
                 f.write(str(adj))
-            print(f"pid {pid} ({units_comm(units, pid)}) oom_score_adj {current.get(pid)} -> {adj}", flush=True)
+            if adj != MARK_ADJ:
+                print(f"pid {pid} ({units_comm(units, pid)}) oom_score_adj {current.get(pid)} -> {adj}", flush=True)
         except OSError:
             pass
 

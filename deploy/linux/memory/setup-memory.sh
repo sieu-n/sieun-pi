@@ -25,9 +25,15 @@ systemctl daemon-reload
 systemctl enable zswap-zstd.service >/dev/null
 systemctl restart zswap-zstd.service
 
-# 3. earlyoom at 5% and 2%.
+# 3. earlyoom at 5% and 2%, with oom-kill-session.py as its -N hook, and without the packaged unit's memory and task caps.
 command -v earlyoom >/dev/null || DEBIAN_FRONTEND=noninteractive apt-get install -y -qq earlyoom
+install -d /usr/local/lib/oom-protect
+install -m 755 "$here/oom-protect.py" /usr/local/lib/oom-protect/oom-protect.py
+install -m 755 "$here/oom-kill-session.py" /usr/local/lib/oom-protect/oom-kill-session.py
 install -m 644 "$here/earlyoom.default" /etc/default/earlyoom
+install -d /etc/systemd/system/earlyoom.service.d
+install -m 644 "$here/earlyoom-limits.conf" /etc/systemd/system/earlyoom.service.d/limits.conf
+systemctl daemon-reload
 systemctl enable earlyoom >/dev/null
 systemctl restart earlyoom
 # sieun reads earlyoom's kills from the system journal for harness-feed's memory row; the default ACL covers rotated journal files.
@@ -40,8 +46,6 @@ for unit in ssh tailscaled; do
   pid=$(systemctl show -p MainPID --value "$unit")
   [ "$pid" -gt 0 ] && echo -500 > "/proc/$pid/oom_score_adj"
 done
-install -d /usr/local/lib/oom-protect
-install -m 755 "$here/oom-protect.py" /usr/local/lib/oom-protect/oom-protect.py
 install -m 644 "$here/oom-protect.service" /etc/systemd/system/oom-protect.service
 systemctl daemon-reload
 systemctl enable oom-protect.service >/dev/null
