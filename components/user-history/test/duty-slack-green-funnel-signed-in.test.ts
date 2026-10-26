@@ -37,7 +37,7 @@ test("a home view after sign-in in the same visit is not a signed-out home visit
     assert.match(query, /GROUP BY person_id, session/);
     assert.match(query, /identified = 0 OR first_home_24h < signed_in_at/);
     const { metrics, flagged } = funnelMetrics({ ...report, window: null, cohort: null }, 1);
-    assert.equal(metrics.home_test_reach_pct, 92.31);
-    assert.match(flagged.find(slice => slice.kind === "home_test")!.excerpt, /1 left out as signed in/);
+    assert.equal(metrics.home_test_reach_pct, 58.52);
+    assert.match(flagged.find(slice => slice.kind === "home_test")!.excerpt, /last 24 h: 24 of 26 .*1 left out as signed in/);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });

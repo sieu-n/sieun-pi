@@ -28,7 +28,8 @@ export const DAYS = 28;
  * The duty JSON's targets, readings and where each comes from (JSON has no comments). Its targets cover only what breaks (c110), and its four
  * funnel numbers are readings, which the runner writes into the plan goals whose duty link names them each run, with no target here. Until 10-22
  * the duty targeted all of them from its own goal text, so it read red every day on growth work that p145, p151 and p166 hold.
- * - home_test_reach_pct >= 90 is the headline: the share of real people who opened the home page of any locale signed out in the last 24 h (the visitors
+ * - home_test_reach_pct >= 90 is the headline: the share of real people who opened the home page of any locale signed out in the last 24 h, or in
+ *   the last 7 days when 24 h has under MIN_HOME_SAMPLE of them (the visitors
  *   the home test is for: since slack-green PR #256, 207d4d5 on 10-15, landing-ab-wrapper.tsx sends the exposure on all 11 locales and never on
  *   ?noredirect=true, the signed-in path) who got an sg-exp-home exposure. A home view after $identify in the same session is signed in too
  *   (One Tap on a blog post, then a client-side click to home), so it is left out and counted as signed_in_24h in the home_test slice. Before #256 only /en was in the test and the precheck counted only /en. A count failed on quiet days: PostHog shows 7 to 11 real home visitors a day on the weekends of 09-26, 10-03 and
@@ -50,6 +51,13 @@ export const DAYS = 28;
  * cache empty), later runs 10 s for the queries and 17.2 s in all.
  */
 export const HEADLINE = "home_test_reach_pct";
+/**
+ * Under this many real signed-out home visitors in the last 24 h, home_test_reach_pct reads the last 7 days instead. Weekdays from 10-12 to
+ * 10-23 had 24 to 44 such people a KST day and the weekend days 10-17, 10-18, 10-24 and 10-25 had 10 to 16, where one visitor moves the share
+ * 6 to 10 points, and the 24 h run of 10-25 09:30 KST read 4 of 6. On 10-26 the 24 h read 9 of 11 (81.82%) while the 7 days read 183 of 192
+ * (95.31%), and 2 of the 3 misses since 10-25 13:00 KST sent only a $pageview.
+ */
+export const MIN_HOME_SAMPLE = 30;
 
 /** One window of conversion_targets.py's window_report. Rates are percents, null when the part they divide by is 0. */
 export interface WindowReport {
@@ -137,9 +145,12 @@ export function funnelMetrics(report: FunnelReport | null, at: number, sourceErr
   if (!home || report.home_error) fail(`the 24 h home test query failed: ${report.home_error ?? "no rows"}`, "p54");
   else if (!home.eligible) fail("PostHog gave 0 real signed-out home visitors on any locale in 24 h, so the pageview tracking or the query is broken", "p54");
   else {
-    metrics.home_test_reach_pct = pct(home.eligible_exposed, home.eligible);
+    const day = home.eligible >= MIN_HOME_SAMPLE;
+    metrics.home_test_reach_pct = day ? pct(home.eligible_exposed, home.eligible) : pct(home.eligible_exposed_7d, home.eligible_7d);
     metrics.home_test_people_24h = home.exposed;
-    flagged.push({ at, kind: "home_test", item: "p54", excerpt: `last 24 h: ${home.eligible_exposed} of ${home.eligible} real signed-out home visitors on any locale got a home test ` +
+    flagged.push({ at, kind: "home_test", item: "p54", excerpt: `${day ? "the headline reads the last 24 h" :
+      `the headline reads the last 7 days, because the last 24 h had under ${MIN_HOME_SAMPLE} visitors`}; ` +
+      `last 24 h: ${home.eligible_exposed} of ${home.eligible} real signed-out home visitors on any locale got a home test ` +
       `exposure (${home.flags.length ? home.flags.join(", ") : "no sg-exp-home flag was called"}); ${home.exposed} real people got one anywhere, out of ` +
       `${home.home_visitors} real home visitors signed in or out; ${home.signed_in_24h ?? 0} left out as signed in (home view after sign-in in the same visit); ` +
       `last 7 days: ${home.eligible_exposed_7d} of ${home.eligible_7d}` });

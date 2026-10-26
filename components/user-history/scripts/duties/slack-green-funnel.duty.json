@@ -1,11 +1,11 @@
 {
   "name": "Visitors become paying users",
   "ownerWords": "conversion funnel-this is pretty bad right? have a goal to improve this and lets go wild\n\nalso keep doing experiments on the landing page. in the main My App Dashboard can you setup weekly conversion funnel metrics over time too\n\ni also want onboarding tests. the signup -> add workspace is also super important funnel.",
-  "goal": "The funnel measure keeps working: every PostHog source the precheck reads answers, and 90% of signed-out home visitors each day get the running home page test. The growth targets live on the plan: p145 (2% of on-topic visitors sign up), p151 (60% of signups connect Slack) and p166 under p177 (10% of signups pay within 16 days, with 1% of on-topic visitors paying within 28 days as the long-run number), and each run writes its reading into them.",
+  "goal": "The funnel measure keeps working: every PostHog source the precheck reads answers, and 90% of signed-out home visitors each day get the running home page test, read over the last 7 days when a day has under 30 of them. The growth targets live on the plan: p145 (2% of on-topic visitors sign up), p151 (60% of signups connect Slack) and p166 under p177 (10% of signups pay within 16 days, with 1% of on-topic visitors paying within 28 days as the long-run number), and each run writes its reading into them.",
   "metrics": [
     {
       "key": "home_test_reach_pct",
-      "label": "Signed-out home visitors who got the home test, 24 h",
+      "label": "Signed-out home visitors who got the home test, 24 h (7 days when 24 h has under 30)",
       "op": ">=",
       "target": 90,
       "unit": "%",
