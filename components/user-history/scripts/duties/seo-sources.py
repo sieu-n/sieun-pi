@@ -102,6 +102,12 @@ def visits() -> dict[str, Any]:
 # measured: the 10-18 failure ran from the first 500 at 16:45:24Z to the last at 16:48:36Z, and calls at 16:49:22Z, 238 s in, answered 200
 REASK_WAIT_S = 240
 NOT_ASKED = "not asked: URL Inspection failed earlier in this run"
+# Beside metrics/inspect-quota.json; it holds the time of the last 429 until a call answers 200.
+REFUSED_FILE = "inspect-refused.json"
+
+
+def _not_asked(url: str) -> dict[str, Any]:
+    return {"url": url, "http": 0, "verdict": None, "coverage_state": None, "error": NOT_ASKED}
 
 
 def _failed(row: dict[str, Any]) -> bool:
@@ -148,7 +154,7 @@ def inspect(urls: list[str]) -> dict[str, Any]:
 
     def one(url: str) -> dict[str, Any]:
         if stop.is_set():
-            return {"url": url, "http": 0, "verdict": None, "coverage_state": None, "error": NOT_ASKED}
+            return _not_asked(url)
         row = attempt(url)
         if _failed(row):
             stop.set()
@@ -161,9 +167,20 @@ def inspect(urls: list[str]) -> dict[str, Any]:
         with ThreadPoolExecutor(32) as pool:
             return list(pool.map(one, batch))
 
-    done = run(asked)
-    # A 429 is the property's daily quota, which resets at 00:00Z (virev_seo.gsc.quota_day), so a URL is never asked again after one.
+    # After a 429 any caller recorded, one URL goes first and the rest only when it answers, because a run that copies d2's state, such as
+    # ~/work/second-google-user/windows.py, still sent 32 calls at 00:56:10Z on 10-26 that all got 429 (Vent prod otel.vent_calls).
+    refused = gsc.QUOTA_FILE.with_name(REFUSED_FILE)
+    if refused.exists() and len(asked) > 1:
+        done = run(asked[:1])
+        done += run(asked[1:]) if not _failed(done[0]) else [_not_asked(url) for url in asked[1:]]
+    else:
+        done = run(asked)
+    # A 429 is the property's daily quota, which Google does not give back within the run, so a URL is never asked again after one.
     # measured: on 10-25 Google answered 429 "Quota exceeded for sc-domain:virev.ai" to 9 calls at 19:01Z and to all 32 asked again at 19:05Z
+    if any(row["http"] == 429 for row in done):
+        refused.write_text(json.dumps({"at": datetime.now(UTC).isoformat()}) + "\n")
+    elif any(row["http"] == 200 for row in done):
+        refused.unlink(missing_ok=True)
     again = [] if any(row["http"] == 429 for row in done) else [row["url"] for row in done if _failed(row)]
     if again:
         time.sleep(max(retry_after) if retry_after else REASK_WAIT_S)

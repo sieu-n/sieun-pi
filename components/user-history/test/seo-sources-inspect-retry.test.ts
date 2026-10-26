@@ -24,6 +24,8 @@ const stubGsc = (dir: string, failFirst: number, retryAfter: string | null, fail
 import json, os, threading
 INSPECT_URL = "https://searchconsole.googleapis.com/v1/urlInspection/index:inspect"
 QUOTA = os.path.join(${JSON.stringify(dir)}, "quota.json")
+from pathlib import Path
+QUOTA_FILE = Path(QUOTA)
 POSTS = os.path.join(${JSON.stringify(dir)}, "posts.txt")
 _lock = threading.Lock()
 _posts = []
@@ -139,4 +141,27 @@ test("a 429 for the daily quota stops new calls and asks no URL again, since the
     assert.deepEqual(await lines(join(dir, "sleeps.txt")), []);
     assert.deepEqual(JSON.parse(await readFile(join(dir, "quota.json"), "utf8")), { "2026-10-18": posts });
   } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("after a 429 any run asks one URL first, asks no more while Google refuses, and the full batch once a call answers", async () => {
+  const dir = await stubRoot(1_000, null, 429);
+  try {
+    const urls = Array.from({ length: 40 }, (_, i) => `https://virev.ai/blog/page-${i}`);
+    await runInspect(dir, urls);
+    const firstPosts = (await lines(join(dir, "posts.txt"))).length;
+    assert.ok(JSON.parse(await readFile(join(dir, "inspect-refused.json"), "utf8")).at);
+    const second = await runInspect(dir, urls);
+    assert.equal((await lines(join(dir, "posts.txt"))).length, firstPosts + 1);
+    assert.equal(second.rows.filter(row => row.http === 429).length, 1);
+    assert.equal(second.rows.length, 40);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+  const ok = await stubRoot(0, null);
+  try {
+    await writeFile(join(ok, "inspect-refused.json"), JSON.stringify({ at: "2026-10-26T00:56:13Z" }));
+    const urls = Array.from({ length: 40 }, (_, i) => `https://virev.ai/blog/page-${i}`);
+    const read = await runInspect(ok, urls);
+    assert.equal((await lines(join(ok, "posts.txt"))).length, 40);
+    assert.ok(read.rows.every(row => row.http === 200));
+    assert.equal(await readFile(join(ok, "inspect-refused.json"), "utf8").catch(() => "gone"), "gone");
+  } finally { await rm(ok, { recursive: true, force: true }); }
 });

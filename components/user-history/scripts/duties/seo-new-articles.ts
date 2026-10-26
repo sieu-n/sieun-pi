@@ -60,11 +60,8 @@ export type PageKind = "article" | "listing";
 export interface ArticleState { published: string; firstSeen: string; status: number; kind?: PageKind }
 /** The last answer URL Inspection gave for an article that was not PASS, and when (epoch ms). */
 export interface InspectVerdict { at: number; verdict: string | null; coverage_state: string | null }
-/**
- * `inspected` and `refusedAt` are absent in state written before 10-26. `refusedAt` is the last run Google answered 429 "Quota exceeded", and
- * while it is set a run asks one article first and the rest only when that one answers.
- */
-export interface ArticlesState { articles: Record<string, ArticleState>; indexed: Record<string, string>; inspected?: Record<string, InspectVerdict>; refusedAt?: number }
+/** `inspected` is absent in state written before 10-26. */
+export interface ArticlesState { articles: Record<string, ArticleState>; indexed: Record<string, string>; inspected?: Record<string, InspectVerdict> }
 export interface InspectRow { url: string; http: number; verdict?: string | null; coverage_state?: string | null; error?: string | null }
 export interface InspectRead { rows: InspectRow[]; not_asked: string[]; quota_left_before?: number }
 export interface LedgerEntry { worker?: string; url?: string; check_date?: string; result?: string; result_date?: string }
@@ -172,7 +169,6 @@ export async function measureArticles(deps: ArticlesDeps, previous: ArticlesStat
   const state: ArticlesState & { inspected: Record<string, InspectVerdict> } = {
     articles: { ...previous?.articles }, indexed: { ...previous?.indexed },
     inspected: Object.fromEntries(Object.entries(previous?.inspected ?? {}).filter(([, last]) => typeof last.at === "number")),
-    ...(previous?.refusedAt ? { refusedAt: previous.refusedAt } : {}),
   };
   const fail = (source: string, why: string, keys: string[]): void => {
     metrics.source_errors! += 1;
@@ -246,23 +242,10 @@ export async function measureArticles(deps: ArticlesDeps, previous: ArticlesStat
         if (due.includes(url) && last.at > (state.inspected[url]?.at ?? -1)) state.inspected[url] = last;
       }
       const ask = due.filter(url => !(at - (state.inspected[url]?.at ?? -Infinity) < REASK_AFTER_MS));
-      const rows: InspectRow[] = [];
-      const skipped: string[] = [];
-      let quotaLeft: number | undefined;
-      const call = async (urls: string[]): Promise<void> => {
-        // seo-sources.py inspect asks a failed URL once more itself, after Google's Retry-After or its REASK_WAIT_S, but never after a 429.
-        const read = await deps.inspect(urls);
-        rows.push(...read.rows);
-        skipped.push(...read.not_asked);
-        quotaLeft ??= read.quota_left_before;
-      };
+      // seo-sources.py inspect asks a failed URL once more itself, but never after a 429, and after a 429 any caller saw it asks one URL first.
+      const { rows, not_asked: skipped, quota_left_before: quotaLeft }: InspectRead = ask.length ? await deps.inspect(ask) : { rows: [], not_asked: [] };
       const good = (row: InspectRow): boolean => row.http === 200 && !row.error;
-      if (state.refusedAt !== undefined && ask.length > 1) {
-        await call(ask.slice(0, 1));
-        if (rows.every(good)) await call(ask.slice(1)); else skipped.push(...ask.slice(1));
-      } else if (ask.length) await call(ask);
       const refused = rows.some(row => row.http === 429);
-      if (refused) state.refusedAt = at; else if (rows.some(good)) delete state.refusedAt;
       // Google's 429 and the inspect-quota.json counter both mean the day's calls are spent, so those articles keep their last verdict.
       const stale = new Set([...skipped, ...rows.filter(row => row.http === 429 || (refused && row.error?.startsWith(NOT_ASKED_PREFIX))).map(row => row.url)]);
       const failed = rows.filter(row => !good(row) && !stale.has(row.url));

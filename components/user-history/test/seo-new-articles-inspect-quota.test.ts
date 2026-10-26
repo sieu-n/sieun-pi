@@ -44,22 +44,16 @@ test("24 h after the last verdict the article is asked again", async () => {
   assert.deepEqual(two.asked, [ARTICLES]);
 });
 
-test("a 429 keeps the last verdict as stale, fails no source, and the next run asks one article before the rest", async () => {
+test("a 429 keeps the last verdict as stale and fails no source", async () => {
   const one = await run(first, NOW, neutral);
-  const later = NOW + REASK_AFTER_MS;
-  const two = await run(one.state, later, refuse);
+  const two = await run(one.state, NOW + REASK_AFTER_MS, refuse);
   assert.equal(two.output.metrics.source_errors, 0);
   assert.equal(two.output.metrics.new_unindexed_3d, 2);
   assert.match(excerpt(two.output, "unindexed"), /Discovered - currently not indexed as of 2026-10-25T19:01Z, stale: quota spent/);
   assert.match(excerpt(two.output, "inspect_calls"), /2 kept their last verdict as stale because Google answered 429/);
-  assert.equal(two.state.refusedAt, later);
-  const three = await run(two.state, later + 3_600_000, refuse);
-  assert.deepEqual(three.asked, [[ARTICLE]]);
-  assert.equal(three.output.metrics.source_errors, 0);
-  const four = await run(three.state, later + 7_200_000, async urls => ({ rows: urls.map(answer("PASS")), not_asked: [] }));
-  assert.deepEqual(four.asked, [[ARTICLE], ARTICLES.slice(1)]);
-  assert.equal(four.output.metrics.new_unindexed_3d, 0);
-  assert.equal(four.state.refusedAt, undefined);
+  const three = await run(two.state, NOW + REASK_AFTER_MS + 3_600_000, async urls => ({ rows: urls.map(answer("PASS")), not_asked: [] }));
+  assert.deepEqual(three.asked, [ARTICLES]);
+  assert.equal(three.output.metrics.new_unindexed_3d, 0);
 });
 
 test("an article never inspected and refused for quota still counts as not indexed, without a source error", async () => {
