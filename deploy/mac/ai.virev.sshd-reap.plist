@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>ai.virev.sshd-reap</string>
+<key>ProgramArguments</key><array><string>/usr/bin/python3</string><string>-B</string><string>/Users/sieunpark/.local/share/sshd-reap/sshd-reap.py</string></array>
+<key>EnvironmentVariables</key><dict><key>HOME</key><string>/Users/sieunpark</string><key>USER</key><string>sieunpark</string><key>PATH</key><string>/usr/bin:/bin:/usr/sbin:/sbin</string></dict>
+<key>RunAtLoad</key><true/>
+<key>StartInterval</key><integer>300</integer>
+<key>StandardOutPath</key><string>/Users/sieunpark/.local/state/sshd-reap/launchd.log</string>
+<key>StandardErrorPath</key><string>/Users/sieunpark/.local/state/sshd-reap/launchd.log</string>
+</dict></plist>
