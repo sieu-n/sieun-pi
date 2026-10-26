@@ -26,7 +26,7 @@ import { relayWatch } from "./hosts.ts";
 import type { PromptCapture } from "./prompt-capture.ts";
 import { readHostCapture } from "./prompt-host-capture.ts";
 import { artifactsRoot, dryLeftoverSource, hostLeftovers, leftoverSource, sshLeftovers } from "./job-leftovers.ts";
-import { ALERT_TRIAGE_DUTY, chatPoolPriority, dutyJobIds, dutyJobPriority, PoolPriorities } from "./chat-pool-priority.ts";
+import { ALERT_TRIAGE_DUTY, chatPoolPriority, dutyJobIds, dutyJobPriority, leadList, PoolPriorities } from "./chat-pool-priority.ts";
 import { agentQueue, type AgentQueue, type IdleEviction } from "./chat-agent-queue.ts";
 import { briefCheckRecord, deletedJobRecord, heldNoticeRecord, jobRegistry, checkRecord, quietJobRecord, relayRecord } from "./chat-sources.ts";
 import { jobResumes } from "./job-resume.ts";
@@ -246,9 +246,10 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const jobEnds = hostLeftovers({ local: replay ? dryLeftoverSource : leftoverSource, remote: replay ? undefined : sshLeftovers, self: () => catalog.selfHostName(),
     hostNamed: name => catalog.remoteHosts().find(({ host }) => host.name === name)?.host ?? null,
     hostOf: id => { const name = catalog.hostOf(id); return name ? catalog.remoteHosts().find(({ host }) => host.name === name)?.host ?? null : null; } });
-  // Only the serve that owns the live chats writes the turn queues' lead lists: each box gets the chats it runs, this one locally, the others
-  // through their relays.
-  const lead = ownChatsOnly ? null : leadWriter({ hostOf: id => catalog.hostOf(id), remotes: () => catalog.remoteHosts().map(({ host }) => host), local: leadSessions, log: dutyLog });
+  // Only the serve that owns the live chats writes the turn queues' lead lists: each box gets the chats and alert triage jobs it runs
+  // (`leadList`), this one locally, the others through their relays. A row change rewrites them, so a new triage job leads from its first run.
+  const writeLead = ownChatsOnly ? null : leadWriter({ hostOf: id => catalog.hostOf(id), remotes: () => catalog.remoteHosts().map(({ host }) => host), local: leadSessions, log: dutyLog });
+  const lead = writeLead && ((chatIds: readonly string[], every?: boolean) => writeLead(leadList(chatIds, [...catalog.daemonRows(), ...catalog.remoteRows()]), every));
   const relays = relayRecord(join(dataDir, "relayed.json"));
   chats = new Chats(index, threads, id => catalog.summary(id), extensionBuild(), loadRecord(join(dataDir, "extension-loads.json")),
     { board: id => boards.read(id), rows: () => catalog.rows(), memory: checkInRecord(join(dataDir, "check-ins.json")), registry,
@@ -455,7 +456,8 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   unloader?.unref();
   // A row that reads parked on its provider quota between sweeps is planned for at once, so the session stops seconds after its park.
   const parkSeen = new Map<string, string>();
-  // A chat that moves box leaves or joins this box's rows, so each row change splits the chat list again and writes the two boxes it changed.
+  // A chat that moves box leaves or joins this box's rows, and a triage job starts or ends, so each row change splits the list again and
+  // writes the boxes it changed.
   const stopLeadWatch = !lead ? () => {} : catalog.onDaemonRows(() => { void chats.ids().then(ids => lead([...ids])).catch(() => {}); });
   const stopQuietWatch = !unloader ? () => {} : catalog.onDaemonRows(() => { void unloader_.quieted(parkChanges(parkSeen, catalog.daemonRows())); });
   // /tmp is a tmpfs on Linux, so what nobody holds or names there is RAM or swap that no work uses (src/tmp-sweep.ts).
