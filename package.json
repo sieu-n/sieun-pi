@@ -157,6 +157,7 @@
   "dependencies": {
     "@duckdb/node-api": "1.5.6-r.1",
     "@earendil-works/pi-ai": "https://pub-728493de92a943e2a9b2d17b4719f318.r2.dev/releases/v0.9.8/prime-agent-ai-0.9.8.tgz",
+    "@earendil-works/pi-coding-agent": "https://pub-728493de92a943e2a9b2d17b4719f318.r2.dev/releases/v0.9.8/prime-agent-0.9.8.tgz",
     "@silvia-odwyer/photon-node": "0.3.4",
     "esbuild": "0.28.2",
     "esbuild-svelte": "0.9.5",

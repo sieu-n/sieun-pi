@@ -53,7 +53,7 @@ test("packed production install, native reload, update, rollback and uninstall",
     assert(metadata.dependencies["prime-agent"].startsWith("https://pub-"));
     assert.equal(metadata.dependencies.marked, "18.0.12");
     assert.equal(metadata.dependencies.tsx, "4.23.13");
-    assert.equal(metadata.pi.extensions.length, 3);
+    assert.equal(metadata.pi.extensions.length, 4);
     const tarball = join(base, packed.filename);
     const releases = [join(base, "release-a"), join(base, "release-b")];
     for (const [index, prefix] of releases.entries()) {
@@ -79,7 +79,7 @@ test("packed production install, native reload, update, rollback and uninstall",
         await loader.reload();
         const result = loader.getExtensions();
         assert.deepEqual(result.errors, []);
-        assert.equal(result.extensions.length, 3);
+        assert.equal(result.extensions.length, ${metadata.pi.extensions.length});
         const commands = result.extensions.flatMap(extension => [...extension.commands.keys()]);
         for (const name of ["account", "what-did-i-say", "agent-chat"]) assert.equal(commands.filter(value => value === name).length, 1);
         for (const name of ["virev-status", "virev-reload"]) assert(!commands.includes(name));

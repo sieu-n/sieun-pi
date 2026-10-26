@@ -104,7 +104,7 @@ for (let pass = 1; pass <= 2; pass++) {
   const ctx = { cwd, hasUI: false };
   try {
     const registered = rules.handlers.get("tool_call");
-    assert.equal(registered.length, 3, "Expected the guard, kernel-guard and rlm-delete tool_call handlers");
+    assert.equal(registered.length, 4, "Expected the guard, kernel-guard, transcript-guard and rlm-delete tool_call handlers");
     const handlers = { tool_call: async (event, context) => {
       for (const handler of registered) {
         const outcome = await handler(event, context);
