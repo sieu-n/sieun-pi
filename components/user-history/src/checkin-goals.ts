@@ -6,7 +6,7 @@ import { GOAL_PUSH_LINK, openGoals, targetOp, targetStaleMs, walkGoal } from "./
 import { CHECK_IN_DUTY_ID } from "./shared/chat-duties.ts";
 import { parseDutyLink } from "./shared/duty-fixes.ts";
 import type { ChatBoard, OwnerTodo, PlanItem } from "./shared/types.ts";
-import { type JobFact, ownerLabel, parkBound, poolWait, quote, type StepView, walk } from "./checkin-steps.ts";
+import { type JobFact, ownerLabel, waitBound, poolWait, quote, type StepView, walk } from "./checkin-steps.ts";
 import { poolSlot } from "./shared/chat-feed.ts";
 
 /**
@@ -282,12 +282,12 @@ export function goalWait(goal: PlanItem, push: StepView | undefined, now: number
     // to push it now would wake the sleeper early (clean room 10-18 02:49Z: "disk free check" slept until 03:01Z for its second reading, and
     // goal_gaps read p1 "no live job owns it", so the check-in steered the job 12 min early).
     const open = views.filter(view => view.goal?.id === goal.id && view.item.id !== goal.id);
-    // A step whose reported job the cleanup parks (`parkBound`) waits the same way (clean-room w81 run6 10-26).
+    // A step whose reported job waits on it as the same session (`waitBound`) waits the same way (clean-room w81 run6 10-26).
     const asleep = (view: StepView): string | undefined => view.owner?.wake !== undefined ? `on ${view.owner.name}'s ${view.owner.wake.replace(/^a /, "")}`
-      : parkBound(view) ? `on ${view.owner!.name}'s wait for ${quote(view.item.waitFor!)}`
+      : waitBound(view) ? `on ${view.owner!.name}'s wait for ${quote(view.item.waitFor!)}`
       : Date.parse(view.item.waitUntil ?? "") > now ? `until ${zTime(Date.parse(view.item.waitUntil!))}` : undefined;
     const waits = open.map(asleep);
-    if (open.length && waits.every(Boolean) && open.some(view => view.owner?.wake !== undefined || parkBound(view))) return [...new Set(waits)].join(" and ");
+    if (open.length && waits.every(Boolean) && open.some(view => view.owner?.wake !== undefined || waitBound(view))) return [...new Set(waits)].join(" and ");
   }
   return undefined;
 }

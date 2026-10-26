@@ -10,7 +10,7 @@ import type { OwnerMessage } from "./shared/brief-check.ts";
 import type { ChatAgent, ChatBoard, ChildAgent, PlanItem, SessionRow, StopReason, ThreadMessage } from "./shared/types.ts";
 import { ago, capacityWait, CHASE_ESCALATE_MS, childName, childWorking, classLine, clip, type JobFact, type JobMessage, OPEN, ownerLabel, ownerOf, ownerState, parkedBy, quote, readySteps,
   noteFacts, readyReviewLine, readyReviews, recordedAt, STEP_CLASSES, type StepClass, type StepMemo, stepNamesJob, stepOwner, stepView, type StepView, todoForStep,
-  parkBound, waitsOnOwner, walk, withGoals } from "./checkin-steps.ts";
+  waitBound, waitsOnOwner, walk, withGoals } from "./checkin-steps.ts";
 import { blockedLine, blockedOnOthers, type BlockedStep, deadRunWaits, type DutyRef, type ExtraGoal, extraGoals, extraGoalsLine, type FoldGoal, foldLine, type GateFinding,
   gateFindings, gateLine, goalsToFold, goalsWithoutDuty, heldElsewhere, type HeldGoal, heldLine, idleGoalLine, idleGoals,
   lookDoneLine, looseGoalLine, looseGoals, noDutyLine, noProgress, type NoProgress, noProgressLine, openUnderClosed, scopeLine, type ScopeMiss, scopeMisses,
@@ -190,7 +190,7 @@ export function checkInPrecheck(previous: CheckInMemory | undefined, facts: read
       fact => !fact.name.startsWith("check-in ") && ownJob(fact),
       view => steps[view.item.id] ? recordedAt(steps[view.item.id]!) : view.changedAt,
       { job: fact => threadPaused(fact, fact, paused),
-        step: view => view.cls === "foryou" || view.cls === "parked" || parkBound(view) || heldByTodo(view.item, openTodos) || Date.parse(view.item.waitUntil ?? "") > now ||
+        step: view => view.cls === "foryou" || view.cls === "parked" || waitBound(view) || heldByTodo(view.item, openTodos) || Date.parse(view.item.waitUntil ?? "") > now ||
           threadPaused(view.owner, view.item, paused) });
   return { memory: { at: now, steps, since, goals: goals.memos, jobs: pushed.memos }, jobs: pushed.pushes, steps: goaled, scope: context.boardError ? [] : scopeMisses(board, context.handoffs ?? [], context.self ?? []), gates,
     stalled: context.boardError ? [] : stalledSteps(goaled, steps, context.rows ?? [], self, now, context.train, movers).filter(stall => !onOthers.has(stall.view.item.id)),

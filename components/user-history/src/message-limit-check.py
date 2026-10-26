@@ -56,7 +56,7 @@ import time
 
 CHECK = os.path.join(os.path.dirname(os.path.realpath(__file__)), "message-limit-check.ts")
 SEND_ONCE = os.path.join(os.path.dirname(os.path.realpath(__file__)), "send-once.ts")
-VERSION = 22
+VERSION = 23
 BRIEFS = "spawn-briefs"
 SAFE_ID = re.compile(r"^[\w-]{1,128}$")
 SEND_TIMEOUT = 'waiting for the Prime Agent daemon response to "send_message"'
@@ -126,6 +126,56 @@ def tree_root(path):
     return next((parts[i + 1] for i, part in enumerate(parts[:-1]) if part == "session-artifacts"), None)
 
 
+def own_session_file():
+    """This kernel's session file: a root's <agent dir>/sessions/<id>.jsonl, a subagent's newest .jsonl in its RLM_SESSION_DIR; None when neither is found."""
+    folder = os.environ.get("RLM_SESSION_DIR", "").rstrip(os.sep)
+    if not folder:
+        return None
+    root = own_root()
+    if root:
+        agent_dir = os.environ.get("PRIME_AGENT_CODING_AGENT_DIR") or os.path.join(os.path.expanduser("~"), ".prime", "agent")
+        path = os.path.join(agent_dir, "sessions", f"{root}.jsonl")
+        return path if os.path.isfile(path) else None
+    try:
+        names = [name for name in os.listdir(folder) if name.endswith(".jsonl") and name != "semantic-edges.jsonl"]
+    except OSError:
+        return None
+    paths = [os.path.join(folder, name) for name in names]
+    return max(paths, key=os.path.getmtime) if paths else None
+
+
+def own_thinking(chunk=1 << 16):
+    """The thinking level of this kernel's session now: its file's last thinking_level_change, read from the end; None when it has none."""
+    path = own_session_file()
+    if not path:
+        return None
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            end = f.tell()
+            tail = b""
+            while end > 0:
+                start = max(0, end - chunk)
+                f.seek(start)
+                tail = f.read(end - start) + tail
+                end = start
+                lines = tail.split(b"\n")
+                if end > 0:
+                    tail, lines = lines[0], lines[1:]
+                for line in reversed(lines):
+                    if b'"thinking_level_change"' not in line:
+                        continue
+                    try:
+                        level = json.loads(line).get("thinkingLevel")
+                    except ValueError:
+                        continue
+                    if isinstance(level, str) and level:
+                        return level
+    except OSError:
+        return None
+    return None
+
+
 def record_brief(request_type, payload, reply):
     chat_dir = data_dir()
     if not isinstance(chat_dir, str) or not isinstance(reply, dict) or not isinstance(payload.get("prompt"), str):
@@ -138,8 +188,16 @@ def record_brief(request_type, payload, reply):
         root = ident
     if not all(isinstance(value, str) and SAFE_ID.match(value) for value in (ident, root)):
         return
-    # The spawn's model and thinking, so a root the keeper starts in place of a lost child runs on them.
+    # The spawn's model and thinking, so a root the keeper starts in place of a lost child runs on them. A spawn that names neither runs on
+    # what it inherits: the model the reply names (the daemon resolves it) and this kernel's own thinking level, so the record holds those. Until
+    # 10-26 such a record held none, and a restart ran on the daemon's default model and thinking.
     asked = {key: kw[key] for key in ("model", "thinking") if isinstance(kw.get(key), str) and kw[key]}
+    if "model" not in asked and isinstance(reply.get("model"), str) and "/" in reply["model"]:
+        asked["model"] = reply["model"]
+    if "thinking" not in asked:
+        own = own_thinking()
+        if own:
+            asked["thinking"] = own
     record = {"kind": kind, "id": ident, "name": kw.get("name") or reply.get("name") or "", "prompt": payload["prompt"], "root": root,
               "at": int(time.time() * 1000), **{key: str(value) for key, value in where.items() if value}, **asked}
     folder = os.path.join(chat_dir, BRIEFS)

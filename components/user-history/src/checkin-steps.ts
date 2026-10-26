@@ -401,7 +401,7 @@ export function ago(ms: number): string {
  * which waits for the release owner's message; at 10:11Z, 58 min later, the check-in nudged it ("nothing moved for 58 min") and its check-in
  * job steered it for stuck_steps 1.
  */
-export function parkBound(view: Pick<StepView, "item" | "owner" | "cls">): boolean {
+export function waitBound(view: Pick<StepView, "item" | "owner" | "cls">): boolean {
   const owner = view.owner;
   return view.cls === "waiting" && view.item.waitFor !== undefined && owner?.state === "ended" && owner.cancelled === undefined && owner.error === undefined &&
     !owner.key.startsWith("thread:") && (owner.replied === true || owner.lastMessage !== undefined);
