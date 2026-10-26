@@ -395,6 +395,19 @@ export function ago(ms: number): string {
 }
 
 /**
+ * A step the job cleanup parks: its job reported and ended its turn, and the step names a waitFor that is still fresh (`waiting`). After
+ * PARK_IDLE_MS the cleanup ends that job and starts a fresh root that waits on the same event, so the check-in neither pushes the job nor counts
+ * the step stuck. Clean-room w81 run6 on 10-26: "test file count" reported at 09:13:47Z under p3, which waits for the release owner's message;
+ * at 10:11Z, 58 min later, the check-in nudged it ("nothing moved for 58 min") and its check-in job steered it for stuck_steps 1, so the
+ * original session woke and the park never came.
+ */
+export function parkBound(view: Pick<StepView, "item" | "owner" | "cls">): boolean {
+  const owner = view.owner;
+  return view.cls === "waiting" && view.item.waitFor !== undefined && owner?.state === "ended" && owner.cancelled === undefined && owner.error === undefined &&
+    !owner.key.startsWith("thread:") && (owner.replied === true || owner.lastMessage !== undefined);
+}
+
+/**
  * The class of one open leaf step at a tick; every chat converges to steps that are `live`, `foryou` or `waiting`. `live`: its owner is a job
  * at work, a thread active in the last STEP_STALE_MS, or the chat itself on a step it changed in that time. `foryou`: an open owner todo covers
  * it (`todoForStep`). `waiting`: its `waitUntil` is ahead, or its `waitFor` (or thread owner) has seen progress within STEP_STALE_MS. The three
