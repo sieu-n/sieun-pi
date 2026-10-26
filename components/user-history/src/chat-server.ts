@@ -864,7 +864,7 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
           }
           if (action === "commands") { json(res, 200, { commands: await backend.threads.commands(id) }); return; }
           // A page that missed a board delta asks for the whole board once (shared/board-delta.ts BoardFollower).
-          if (action === "board") { const board = backend.threads.state(id)?.board ?? await backend.boards.view(id); json(res, 200, { board: board && feedBoard(board) }); return; }
+          if (action === "board") { const board = backend.threads.state(id)?.board ?? await backend.boards.read(id); json(res, 200, { board: board && feedBoard(board) }); return; }
           if (action === "stats") { json(res, 200, await backend.threads.stats(id)); return; }
           if (action === "prompt") {
             const via = (url.searchParams.get("via") ?? "").split(",").filter(Boolean).map(threadId);
@@ -959,7 +959,7 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
         const settings = checkInSettings(join(dirname(backend.boards.dir), "check-in-settings.json"));
         const now = Date.now();
         const changed = body.change === undefined ? [] : [await chatCheckIn(settings, chat, parseChatCheckIn(body.change), now)];
-        const planOpen = await backend.boards.view(chat).then(planHasOpenStep, () => true);
+        const planOpen = await backend.boards.read(chat).then(planHasOpenStep, () => true);
         json(res, 200, { changed, line: checkInLine(await settings.get(chat), now, planOpen) }); return;
       }
       if (route === "api/agent/jobs") {

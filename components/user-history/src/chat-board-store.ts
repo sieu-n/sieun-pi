@@ -24,26 +24,24 @@ export class BoardStore {
     return { path: join(this.dir, id + ".json"), label: "Chat board", parse: parseBoard, initial: () => emptyBoard(new Date().toISOString()) };
   }
 
-  /** The board (a v1 file reads as v2), or null before its first op. Writes replace the file by rename, so a read without the lock sees a whole board. */
-  async read(id: string): Promise<ChatBoard | null> {
-    try { return await readJsonFile(this.file(id)); }
-    catch (error) { if (missing(error)) return null; throw error; }
-  }
-
-  /** Each board's last parse for `view`, with the file's inode, mtime and size then. */
-  private readonly views = new Map<string, { key: string; board: ChatBoard | null }>();
+  /** Each board's last parse, with the file's inode, mtime and size then. */
+  private readonly parsed = new Map<string, { key: string; board: ChatBoard | null }>();
   /**
-   * The board for a reader that never changes it, parsed again only once its file changed: a write replaces the file by rename. The catalog
-   * reads every chat's board on each projection, and on 10-18 parsing them took 13% of it.
+   * The board (a v1 file reads as v2), or null before its first op, parsed again only once its file changed: a write replaces the file by
+   * rename, so a read without the lock sees a whole board, and a caller never changes the board it gets. On 10-18 the catalog's parses of
+   * every chat's board on each projection took 13% of it, and on 10-26 the 30 s ticks' board reads (job cleanup, check-ins, duties) parsed
+   * the 16 chats' boards (3.7 MB) about twice a tick, 35 to 60 ms of the main thread a pass, while the chat's reads waited 200 to 385 ms.
    */
-  async view(id: string): Promise<ChatBoard | null> {
+  async read(id: string): Promise<ChatBoard | null> {
     let key: string;
     try { const info = await stat(this.file(id).path, { bigint: true }); key = `${info.ino}:${info.mtimeNs}:${info.size}`; }
     catch (error) { if (missing(error)) return null; throw error; }
-    const known = this.views.get(id);
+    const known = this.parsed.get(id);
     if (known?.key === key) return known.board;
-    const board = await this.read(id);
-    this.views.set(id, { key, board });
+    let board: ChatBoard | null;
+    try { board = await readJsonFile(this.file(id)); }
+    catch (error) { if (!missing(error)) throw error; board = null; }
+    this.parsed.set(id, { key, board });
     return board;
   }
 

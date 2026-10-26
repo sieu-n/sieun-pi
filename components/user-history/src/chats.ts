@@ -743,7 +743,7 @@ export class Chats {
   private async plansOpen(ids: Iterable<string>): Promise<Map<string, boolean>> {
     return new Map(await Promise.all([...ids].map(async id => {
       const state = this.threads.state?.(id);
-      const board = state?.board !== undefined ? Promise.resolve(state.board) : (this.source.boardView ?? this.source.board).call(this.source, id);
+      const board = state?.board !== undefined ? Promise.resolve(state.board) : this.source.board(id);
       return [id, await board.then(planHasOpenStep, () => true)] as const;
     })));
   }
@@ -1570,7 +1570,7 @@ export class Chats {
     await this.load();
     if (!this.chatIds.has(id)) return { children: [], board: null, roots: [], messages: [] };
     const state = this.threads.state?.(id);
-    const board = state?.board !== undefined ? state.board : await (this.source.boardView ?? this.source.board).call(this.source, id).catch(() => null);
+    const board = state?.board !== undefined ? state.board : await this.source.board(id).catch(() => null);
     const keys = [...new Set([id, state?.info?.name?.trim(), name?.trim()].filter((key): key is string => !!key))];
     const roots = this.source.registry ? await this.source.registry.rootsOf(keys).catch(() => []) : [];
     return { children: this.children.get(id) ?? state?.children ?? [], board, roots, messages: state?.messages ?? [] };
@@ -1790,7 +1790,7 @@ export class Chats {
     const train = await readTrain(trainFile(this.source.home));
     const carried = await landCarries(board?.plan ?? [], wakes, train, trainRepo(this.source.home));
     const doneFacts = await this.doneFacts(id, board, rows);
-    const read = (chat: string) => (this.source.boardView ?? this.source.board).call(this.source, chat);
+    const read = (chat: string) => this.source.board(chat);
     const hosts = await this.hostHolds(id, rows);
     const linked = board ? await linkedBoards(board, id, read, rows) : new Map<string, ChatBoard | null>();
     const precheck = checkInPrecheck(previous, facts, board ? withLinkedBoards(board, id, linked) : board, at,
@@ -1812,7 +1812,7 @@ export class Chats {
     const names = [...new Set(rows.flatMap(row => row.host ? [row.host] : []))];
     const offline = (await Promise.all(names.map(name => away(name).catch(() => null)))).filter((host): host is AwayHost => host !== null);
     if (!offline.length) return undefined;
-    const read = (chat: string) => (this.source.boardView ?? this.source.board).call(this.source, chat).catch(() => null);
+    const read = (chat: string) => this.source.board(chat).catch(() => null);
     const todos = (await Promise.all([...this.chatIds].map(async chat => ((await read(chat))?.todos ?? []).map(todo => ({ chat, todo }))))).flat();
     const chatHost = rows.find(row => row.id === id)?.host;
     return { ...chatHost ? { chatHost } : {}, held: hostHolds(offline, todos) };
@@ -1996,7 +1996,7 @@ export class Chats {
     await this.load();
     if (!this.chatIds.has(id) || this.threads.busy(id) || this.stall(id)) return;
     let board: ChatBoard | null;
-    try { board = await (this.source.boardView ?? this.source.board).call(this.source, id); }
+    try { board = await this.source.board(id); }
     catch (error) { this.log(`chat ${id.slice(0, 8)}: ownerless steps: ${error instanceof Error ? error.message : String(error)}`); return; }
     const steps = ownerlessSteps(board);
     const told = steps.map(step => step.id).join(",");

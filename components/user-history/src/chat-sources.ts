@@ -323,9 +323,8 @@ export interface ChatLinks { children: readonly ChildAgent[]; board: ChatBoard |
 
 /** What the check-in reads besides the children: the board, the catalog rows (threads a plan item links), its memory and the owner's setting per chat. */
 export interface CheckInSource {
+  /** The board as its file holds it, reused while the file is unchanged (`BoardStore.view`), so a caller never changes it. */
   board(id: string): Promise<ChatBoard | null>;
-  /** The board for a reader that never changes it, reused while its file is unchanged (`BoardStore.view`); absent: `board`. */
-  boardView?(id: string): Promise<ChatBoard | null>;
   rows(): Promise<readonly SessionRow[]>;
   /** The roots chats started with rlm.create_session (`<data dir>/chat-jobs.json`); absent in tests that need none. */
   registry?: JobRegistry;

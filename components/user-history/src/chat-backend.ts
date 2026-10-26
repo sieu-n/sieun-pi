@@ -249,7 +249,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const lead = ownChatsOnly ? null : leadWriter({ hostOf: id => catalog.hostOf(id), remotes: () => catalog.remoteHosts().map(({ host }) => host), local: leadSessions, log: dutyLog });
   const relays = relayRecord(join(dataDir, "relayed.json"));
   chats = new Chats(index, threads, id => catalog.summary(id), extensionBuild(), loadRecord(join(dataDir, "extension-loads.json")),
-    { board: id => boards.read(id), boardView: id => boards.view(id), rows: () => catalog.rows(), memory: checkInRecord(join(dataDir, "check-ins.json")), registry,
+    { board: id => boards.read(id), rows: () => catalog.rows(), memory: checkInRecord(join(dataDir, "check-ins.json")), registry,
       correctionChecks: checkRecord(join(dataDir, "correction-checks.json")),
       briefChecks: briefCheckRecord(join(dataDir, "brief-checks.json")), deletedJobs: deletedJobRecord(join(dataDir, "deleted-jobs.json")), quietJobs: quietJobRecord(join(dataDir, "quiet-jobs.json")),
       heldNotices: heldNoticeRecord(join(dataDir, "held-notices.json")), cancels: jobCancelRecord(join(dataDir, JOB_CANCELS_FILE)),
