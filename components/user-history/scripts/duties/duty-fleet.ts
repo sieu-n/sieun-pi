@@ -250,7 +250,11 @@ export async function dutyFleet(options: { dataDir: string; now: number; session
         held ??= board ? await withBoardLinks(board, id, other => boards.read(other)) : null;
         const hold = dutyHold(duty.id, streaks.map(item => item.key), held);
         if (hold) entry.held = hold;
-        const all = Math.max(0, ...streaks.map(item => item.misses)) >= CHANGE_APPROACH_MISSES && !entry.held ? await roster() : null;
+        // Every red duty not held names its live fix, and only a long streak with none is stuck: at 02:13Z on 10-26 d9 listed api portal vp's
+        // d1 and Prospect's d3, one-run reds whose own runs had started fix jobs on p71 and p227, with no fix line, and the check-in asked to
+        // push both chats to start the fix jobs they already ran.
+        const long = Math.max(0, ...streaks.map(item => item.misses)) >= CHANGE_APPROACH_MISSES;
+        const all = !entry.held ? await roster() : null;
         if (all) {
           // The check-in's working test: a running subtree, a session change within the chat's interval capped at LIVE_GAP_MS, or an owed wake.
           live ??= (() => {
@@ -285,8 +289,8 @@ export async function dutyFleet(options: { dataDir: string; now: number; session
           // The duty's own job still at work owns its misses this run: on 10-15 at 16:29Z ops guy's check-in read stuck 20 min into its 01:08 job.
           const job = fix === undefined ? runs.find(run => run.duty === duty.id && run.job)?.job : undefined;
           if (job && sessionRows(all).some(row => row.id === job.id && row.working)) entry.working = job.name;
-          else if (fix === undefined) entry.stuck = true;
-          else entry.fix = fix.step;
+          else if (fix !== undefined) entry.fix = fix.step;
+          else entry.stuck = long;
         }
       }
       duties.push(entry);

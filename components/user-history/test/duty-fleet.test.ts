@@ -140,3 +140,23 @@ test("a recorded fix whose step no longer carries the duty link gives way to the
     assert.deepEqual([d5.fix, d5.metric?.fix?.step, d5.stuck], ["p998", "p998", false]);
   } finally { await rm(dataDir, { recursive: true, force: true }); }
 });
+
+test("a red duty one run old names the linked step whose job works, and a short streak with no fix is not stuck", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "duty-fleet-"));
+  try {
+    const chat = "chat-portal", root = "01a1730c-0000-7000-8000-000000000071", now = Date.parse("2026-10-26T02:13:00Z");
+    await writeFile(join(dataDir, "chats.json"), JSON.stringify({ ids: [chat] }));
+    await mkdir(join(dataDir, "duties"), { recursive: true });
+    await mkdir(join(dataDir, "boards"), { recursive: true });
+    await writeFile(join(dataDir, "duties", `${chat}.json`), JSON.stringify({ version: 1, duties: [duty("d1", "probe_uptime_24h_pct", ">=", 100), duty("d2", "prod_working_pct", ">=", 100)] }));
+    const plan = [{ id: "p71", text: "step p71", status: "doing", children: [], job: root, sessionId: root, duty: "d1/probe_uptime_24h_pct" }];
+    await writeFile(join(dataDir, "boards", `${chat}.json`), JSON.stringify({ v: 2, rev: 1, plan, todos: [], updatedAt: new Date(now).toISOString() }));
+    const store = new DutyStore(dataDir);
+    await store.appendRun(chat, run("d1", "probe_uptime_24h_pct", 99.9, 100, ">=", false, 1_000) as never);
+    await store.appendRun(chat, run("d2", "prod_working_pct", 99.4, 100, ">=", false, 2_000) as never);
+    const sessions = [{ sessionId: root, activity: "working", lastActivityAt: new Date(now).toISOString() }];
+    const fleet = await dutyFleet({ dataDir, now, sessions: () => sessions });
+    const d1 = fleet.duties.find(entry => entry.duty === "d1")!, d2 = fleet.duties.find(entry => entry.duty === "d2")!;
+    assert.deepEqual([d1.fix, d1.stuck, d2.fix, d2.stuck, fleet.metrics.stuck_duties], ["p71", false, undefined, false, 0]);
+  } finally { await rm(dataDir, { recursive: true, force: true }); }
+});
