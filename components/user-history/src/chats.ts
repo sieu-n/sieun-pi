@@ -67,12 +67,19 @@ export const NO_REPORT_SAME_END_MS = 60_000;
 export const NO_REPORT_BUSY_TRIES = 6;
 /**
  * The daemon's rows say only whether a subagent runs. The hub's attach keeps a finished job "done" while a follow-up task runs and shows the work
- * in `activity`, which is what `endedWithoutReport` looks for, so a job seen ended that runs again keeps its status here too.
+ * in `activity`, which is what `endedWithoutReport` looks for, so a job seen ended that runs again keeps its status here too. A finished job's
+ * row of a session the daemon no longer holds (the idle unload stopped it) has no `repliedSinceTask`: on us-metal02 on 10-26, 2 of 807 saved
+ * subagent rows had it and all 28 live ones did. The value seen while the job was held stays until the job runs again, so the waiting-job
+ * cleanup still finds it reported: clean-room w81 run3's "test file count" reported at 08:47:05Z on 10-23, the idle unload stopped it at
+ * 08:49Z, its chat detached at 09:24Z, and the job was never parked by 10:45Z.
  */
 export function followUps(before: readonly ChildAgent[] | undefined, roster: readonly ChildAgent[]): ChildAgent[] {
   return roster.map(child => {
     const was = before?.find(candidate => candidate.id === child.id);
-    if (child.status !== "running" || !was || was.status === "running" || was.status === "queued") return child;
+    if (child.status !== "running" || !was || was.status === "running" || was.status === "queued") {
+      const replied = was && child.status === "done" && was.status === "done" && child.repliedSinceTask === undefined ? was.repliedSinceTask : undefined;
+      return replied === undefined ? child : { ...child, repliedSinceTask: replied };
+    }
     return { ...child, status: was.status, activity: { kind: "executing" } };
   });
 }

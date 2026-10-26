@@ -12,9 +12,16 @@ export interface RunState {
   /** A second chat opened at the same time with its check-in paused, to compare against. */
   control?: { id: string; name: string };
 }
+/** The model a test chat is created on. */
+export type ScenarioModel = Record<"provider" | "modelId" | "thinkingLevel", string>;
 /** A clean-room scenario: how it seeds the test chat, and how it judges the evidence against the criteria written before the run. */
 export interface Scenario {
   name: string;
+  /**
+   * The model the test chat runs on; absent, anthropic/claude-opus-5-5 at high. w81 run2 on 10-23 sat 3 h on "waiting for an account slot" for
+   * Anthropic and never spawned its job, so a scenario that does not judge the chat's own model may pick one.
+   */
+  model?: ScenarioModel;
   /** The AGENTS.md of a sandbox folder the chat works in; absent: the chat works in `--cwd` like a chat the owner opens there. */
   agentsMd?(sandbox: string): string;
   /** Builds the folder the chat works in outside the run folder and returns it, so the chat sees no run file; `cleanup` removes it at teardown. */

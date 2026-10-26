@@ -75,7 +75,7 @@ import { ownerAsks } from "./owner-asks.ts";
 import { plainWords } from "./plain-words.ts";
 import { planAndDuties } from "./plan-and-duties.ts";
 import { taskAndUpkeep } from "./task-and-upkeep.ts";
-import { readSessionFile, type RunState, type Scenario, type SessionEvent, sessionFiles } from "./session-read.ts";
+import { readSessionFile, type RunState, type Scenario, type ScenarioModel, type SessionEvent, sessionFiles } from "./session-read.ts";
 import { endUnits, recordUnits, userSystemd } from "./trial-units.ts";
 import { fileTrialHarness, fileTrialName, keepTrialHarness, seedTrialHarness } from "../../src/trial-harness.ts";
 import { CLEAN_ROOM_SUBJECTS_FILE, fileSubjects, forgetSubjects } from "../../src/clean-room-subjects.ts";
@@ -89,6 +89,7 @@ import { publishedBuildKeep } from "./published-build-keep.ts";
 import { taskOwner } from "./task-owner.ts";
 import { answerData } from "./answer-data.ts";
 import { dryMessage } from "./dry-message.ts";
+import { resumeModel } from "./resume-model.ts";
 import { currentRoot, judgeCurrent, judgedLine, judgeVersion, LOADED } from "./judge-version.ts";
 import { archivePath, archiveRun, DELIVERY, fileSha256, judgeFooter, rejudge } from "./run-archive.ts";
 
@@ -99,7 +100,7 @@ const RELEASES = join(homedir(), ".local/share/sieun-pi-chat");
 const SCENARIOS: Record<string, Scenario> = { "carried-release": carriedRelease, "carried-wait": carriedWait, "checkin-goal-push": checkinGoalPush, "checkin-real-task": checkinRealTask, "checkin-push-control": checkinPushControl, "correction-refine": correctionRefine, "dm-replies": dmReplies, "english-jobs": englishJobs, "everyday-task": everydayTask, "import-speed": importSpeed,
   "checkin-job-steer": checkinJobSteer, "chat-tools-reopen": chatToolsReopen, "reopen-first-message": reopenFirstMessage, "kernel-revive": kernelRevive, "lost-brief": lostBrief, "ordinary-hour": ordinaryHour, "idle-unload": idleUnload, "owner-asks": ownerAsks, "plan-and-duties": planAndDuties, "task-and-upkeep": taskAndUpkeep, "soft-caps": softCaps, "step-ids": stepIds, "token-hook-resume": tokenHookResume, "wake-live": wakeLive, "box-browser-default": boxBrowserDefault, "box-tools": boxTools,
   "detached-report": detachedReport, "relative-duty": relativeDuty, "old-commit-tests": oldCommitTests, "readme-preview": readmePreview, "history-leftovers": historyLeftovers, "plain-words": plainWords, "saved-login": savedLogin , "job-cancel-cleanup": jobCancelCleanup,
-  "transcript-boundary": transcriptBoundary, "published-build-keep": publishedBuildKeep, "task-owner": taskOwner, "answer-data": answerData, "dry-message": dryMessage, "unrelated-ci-wait": unrelatedCiWait, "unrelated-ci-controlled": unrelatedCiControlled };
+  "transcript-boundary": transcriptBoundary, "published-build-keep": publishedBuildKeep, "task-owner": taskOwner, "answer-data": answerData, "dry-message": dryMessage, "resume-model": resumeModel, "unrelated-ci-wait": unrelatedCiWait, "unrelated-ci-controlled": unrelatedCiControlled };
 
 function args(argv: readonly string[]): { command: string; flags: Record<string, string> } {
   const [command = "", ...rest] = argv;
@@ -140,7 +141,7 @@ async function call(srv: Server, method: "GET" | "POST", route: string, body?: u
   return text ? JSON.parse(text) : null;
 }
 const requestId = (): string => randomBytes(12).toString("hex");
-const MODEL = { provider: "anthropic", modelId: "claude-opus-5-5", thinkingLevel: "high" };
+const MODEL: ScenarioModel = { provider: "anthropic", modelId: "claude-opus-5-5", thinkingLevel: "high" };
 
 const SESSIONS = join(homedir(), ".prime/agent/sessions");
 
@@ -149,13 +150,13 @@ interface Pending { sandbox: string; creates: Record<string, CreateRecord> }
 const pendingFile = (run: string): string => join(run, "setup.pending.json");
 
 /** One `POST api/threads`, the route the New chat dialog uses, with no client timeout: the server answers once its create settles. */
-async function postCreate(srv: Server, record: CreateRecord, extra: Record<string, unknown> = {}): ReturnType<CreateIo["post"]> {
+async function postCreate(srv: Server, record: CreateRecord, extra: Record<string, unknown> = {}, model: ScenarioModel = MODEL): ReturnType<CreateIo["post"]> {
   let status = 0;
   let text = "";
   try {
     const response = await fetch(srv.base + "api/threads", { method: "POST", headers: { "content-type": "application/json", "x-chat-token": srv.token, origin: srv.origin,
       ...(SELF ? { "x-chat-agent-session": SELF } : {}) },
-      body: JSON.stringify({ ...createBody(record, MODEL), ...extra }) });
+      body: JSON.stringify({ ...createBody(record, model), ...extra }) });
     status = response.status;
     text = await response.text();
   } catch (error) { return { kind: "unknown", error: error instanceof Error ? `${error.message}${error.cause instanceof Error ? `: ${error.cause.message}` : ""}` : String(error) }; }
@@ -172,11 +173,11 @@ async function postCreate(srv: Server, record: CreateRecord, extra: Record<strin
  * asks for first, and the server names the session before that turn (createBody).
  */
 async function createThread(srv: Server, run: string, pending: Pending, role: string, kind: "chat" | "thread", name: string, cwd: string, message: string, harness: string,
-  deferFirst = false): Promise<{ id: string; name: string }> {
+  deferFirst = false, model: ScenarioModel = MODEL): Promise<{ id: string; name: string }> {
   const save = (): void => writeJson(pendingFile(run), pending);
   const record = pending.creates[role] ??= { kind, name, names: [name], cwd, message, requestId: requestId(), since: Date.now() };
   const io: CreateIo = {
-    post: async one => { await fileTrialName(DATA, one.name, harness, one.since); return postCreate(srv, one, deferFirst ? { deferFirst: true } : {}); },
+    post: async one => { await fileTrialName(DATA, one.name, harness, one.since); return postCreate(srv, one, deferFirst ? { deferFirst: true } : {}, model); },
     find: async one => findSession(SESSIONS, one, new Set(await new IdIndex(join(DATA, "chats.json"), "Chat index").ids())),
     archive: async id => { await call(srv, "POST", `api/threads/${id}/archive`, { by: "service_cleanup" }).catch((error: unknown) => { if (!/: 404 /.test(String(error))) throw error; }); },
     // An empty chat's first message goes later through `admit`, never from the create's reconcile.
@@ -341,7 +342,7 @@ async function setup(flags: Record<string, string>): Promise<void> {
     pending.creates.chat = { kind: "chat", name: named, names: [named], cwd: sandbox, message: scenario.headMessage(named), requestId: "", since: adoptedChat.at, id: adopted, adopted: true };
   }
   const asked = pending.creates.chat?.names[0] ?? need(flags, "name");
-  const [made, madeControl] = await Promise.all([createThread(srv, run, pending, "chat", "chat", asked, sandbox, scenario.headMessage(asked), harness),
+  const [made, madeControl] = await Promise.all([createThread(srv, run, pending, "chat", "chat", asked, sandbox, scenario.headMessage(asked), harness, false, scenario.model ?? MODEL),
     control ? createThread(srv, run, pending, "control", "chat", control.name, sandbox, control.message(control.name), harness) : Promise.resolve(undefined)]);
   const chat = made.id;
   const name = made.name;
