@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { readFile, writeFile } from "node:fs/promises";
+import { setTimeout as delay } from "node:timers/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -50,6 +51,12 @@ export const MAC_WINDOW_MS = 24 * 60 * 60_000;
 export const MAC_COMMAND = ["sysctl -n vm.loadavg", "memory_pressure -Q",
   ...MAC_PORTS.map(({ port }) => `curl -s -o /dev/null -m ${ANSWER_TIMEOUT_MS / 1000} -w 'port ${port} %{http_code}\\n' http://localhost:${port}/`), "exit 0"].join("; ");
 
+/**
+ * A Mac read with a dev server that gave no 200 is read again after this wait, so a normal pm2 restart is not a miss.
+ * measured: after one pm2 restart of :5180 at 16:58:57 KST on 10-26, / refused for 11 s, timed out twice behind the seed and answered 200 from 24 s on (5180 cold answer fix, board step p506).
+ */
+export const MAC_RETRY_MS = 30_000;
+
 export interface MacReading { load1: number; freePct: number; ports: Record<number, string> }
 
 /** Parses MAC_COMMAND's output: `{ 7.26 6.95 7.77 }`, `System-wide memory free percentage: 37%` and one `port <n> <code>` line per server. */
@@ -85,15 +92,20 @@ export function macUnusableMinutes(lines: readonly WatchLine[]): { read: number;
  * Reads the Mac over ssh (or in place when this run is on the Mac). ssh exits 255 when it cannot reach the host, which is a sleeping or
  * offline Mac: that sets mac_unreachable and leaves mac_servers_not_answering unmeasured. mac_unusable_min comes from the watch lines either way.
  */
-export async function measureMac(deps: Pick<UptimeDeps, "exec" | "platform" | "watch">, at: number): Promise<{ metrics: Record<string, number>; flagged: FlaggedSlice[] }> {
+export async function measureMac(deps: Pick<UptimeDeps, "exec" | "platform" | "watch" | "wait">, at: number): Promise<{ metrics: Record<string, number>; flagged: FlaggedSlice[] }> {
   const day = macUnusableMinutes(await deps.watch().catch(() => []));
   const usable: FlaggedSlice = day.read
     ? { at, kind: day.unusable ? "mac_unusable" : "mac_usable", excerpt: `Mac: ${day.unusable} of ${day.read} watched minutes in the last 24 h read unusable${day.unusable ? ` (${Object.entries(day.by).map(([miss, n]) => `${miss} ${n}`).join(", ")})` : ""}` }
     : { at, kind: "mac_read", excerpt: "Mac: the usable watch holds no Mac minute in the last 24 h" };
   const watched = day.read ? { mac_unusable_min: day.unusable } : {};
+  const read = () => deps.platform === "darwin" ? deps.exec("sh", ["-c", MAC_COMMAND]) : deps.exec("ssh", [MAC_HOST, MAC_COMMAND]);
   let text: string;
   try {
-    text = deps.platform === "darwin" ? await deps.exec("sh", ["-c", MAC_COMMAND]) : await deps.exec("ssh", [MAC_HOST, MAC_COMMAND]);
+    text = await read();
+    if (macDown(parseMacReading(text)).length) {
+      await deps.wait(MAC_RETRY_MS);
+      text = await read();
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if ((error as { code?: unknown }).code === 255) return { metrics: { ...watched, mac_unreachable: 1 }, flagged: [usable, { at, kind: "mac_unreachable", excerpt: `Mac: ssh ${MAC_HOST} could not reach it (asleep or offline), so its dev servers were not read: ${message}`.slice(0, 300) }] };
@@ -111,8 +123,8 @@ export const PM2_NAMES = ["llm-wiki", "search"] as const;
 
 /** Runs a program with no shell and gives its stdout. */
 export type Exec = (file: string, args: readonly string[], env?: Record<string, string>) => Promise<string>;
-/** `platform` is the OS of the host whose pm2 and localhost services this run measures; `read` gives a file's text or throws; `watch` gives the last 24 h of Mac usable watch lines. */
-export interface UptimeDeps { fetch: typeof fetch; exec: Exec; read: (path: string) => Promise<string>; platform: NodeJS.Platform; now: () => number; watch: () => Promise<WatchLine[]>;
+/** `platform` is the OS of the host whose pm2 and localhost services this run measures; `read` gives a file's text or throws; `watch` gives the last 24 h of Mac usable watch lines; `wait` sleeps. */
+export interface UptimeDeps { fetch: typeof fetch; exec: Exec; read: (path: string) => Promise<string>; platform: NodeJS.Platform; now: () => number; watch: () => Promise<WatchLine[]>; wait: (ms: number) => Promise<void>;
   pm2: { bin: string; home: string }; env: Record<string, string>; wiki: string }
 /** The restart count per pm2 process name or systemd unit, kept between runs; a unit also keeps its InvocationID, which changes at each start. */
 export interface UptimeState { restarts: Record<string, { restartTime: number; at: number; invocation?: string }> }
@@ -283,7 +295,7 @@ async function main(): Promise<void> {
   const wiki = roleUrl(await loadHosts(), "wiki");
   if (!wiki) { process.stderr.write("local-dev-uptime: no host holds the wiki role in hosts.json\n"); process.exit(2); }
   const watch = () => readWatch(chatDataDir(), Date.now() - MAC_WINDOW_MS, Date.now());
-  const result = await measureUptime({ fetch, exec, read: path => readFile(path, "utf8"), platform: process.platform, now: Date.now, watch, env, wiki, pm2: { bin: join(REPO, "node_modules/.bin/pm2"), home: join(REPO, ".cache/pm2-dev") } },
+  const result = await measureUptime({ fetch, exec, read: path => readFile(path, "utf8"), platform: process.platform, now: Date.now, watch, wait: ms => delay(ms), env, wiki, pm2: { bin: join(REPO, "node_modules/.bin/pm2"), home: join(REPO, ".cache/pm2-dev") } },
     previous?.restarts ? previous : undefined);
   await writeFile(output, JSON.stringify(result.output, null, 2) + "\n");
   if (stateFile && result.state) await writeFile(stateFile, JSON.stringify(result.state) + "\n");

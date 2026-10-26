@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { WatchLine } from "../src/mac-usable-watch.ts";
-import { macDown, macUnusableMinutes, measureMac, parseMacReading } from "../scripts/duties/local-dev-uptime.ts";
+import { MAC_RETRY_MS, macDown, macUnusableMinutes, measureMac, parseMacReading } from "../scripts/duties/local-dev-uptime.ts";
 
 const reading = (load: string, free: number, codes: [string, string]) =>
   `{ ${load} 6.95 7.77 }\nThe system has 34359738368 (2097152 pages with a page size of 16384).\nSystem-wide memory free percentage: ${free}%\nport 5174 ${codes[0]}\nport 5180 ${codes[1]}\n`;
@@ -26,8 +26,16 @@ test("counts the watched minutes that read unusable, by cause", () => {
 
 test("a Mac ssh cannot reach is unreachable, and its watched minutes still count", async () => {
   const asleep = Object.assign(new Error("Command failed: ssh mac"), { code: 255 });
-  const result = await measureMac({ platform: "linux", exec: async () => { throw asleep; }, watch: async () => [minute(25)] }, 0);
+  const result = await measureMac({ platform: "linux", exec: async () => { throw asleep; }, watch: async () => [minute(25)], wait: async () => {} }, 0);
   assert.deepEqual(result.metrics, { mac_unusable_min: 0, mac_unreachable: 1 });
-  const awake = await measureMac({ platform: "linux", exec: async () => reading("38.59", 43, ["200", "000"]), watch: async () => [minute(25), minute(140)] }, 0);
+  const awake = await measureMac({ platform: "linux", exec: async () => reading("38.59", 43, ["200", "000"]), watch: async () => [minute(25), minute(140)], wait: async () => {} }, 0);
   assert.deepEqual(awake.metrics, { mac_unusable_min: 1, mac_servers_not_answering: 1, mac_unreachable: 0 });
+});
+
+test("a dev server that answers on the read 30 s later, as :5180 does after a pm2 restart, is no miss", async () => {
+  const codes: [string, string][] = [["200", "000"], ["200", "200"]];
+  const waits: number[] = [];
+  const result = await measureMac({ platform: "linux", exec: async () => reading("7.26", 37, codes.shift()!), watch: async () => [], wait: async ms => { waits.push(ms); } }, 0);
+  assert.deepEqual(result.metrics, { mac_servers_not_answering: 0, mac_unreachable: 0 });
+  assert.deepEqual(waits, [MAC_RETRY_MS]);
 });
