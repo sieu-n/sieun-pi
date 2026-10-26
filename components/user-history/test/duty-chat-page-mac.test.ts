@@ -5,7 +5,9 @@ import { once } from "node:events";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { WebSocketServer } from "ws";
-import { browserReadings, macTailnet, median, parsePing, releaseBreaks, replyExtra, sendProbe, type SendTiming } from "../scripts/duties/chat-page-mac.ts";
+import { browserReadings, median, parsePing, releaseBreaks, replyExtra, sendProbe, type SendTiming } from "../scripts/duties/chat-page-mac.ts";
+import { MAC_HOST, macAwayItem, macTailnet } from "../scripts/duties/mac-reach.ts";
+import { HOST_AWAY } from "../src/shared/chat-duties.ts";
 
 const at = Date.parse("2026-10-19T15:00:00Z");
 
@@ -282,4 +284,17 @@ test("the Mac's tailnet state comes from its ssh address, so an asleep Mac reads
   assert.equal(macTailnet(status, "100.94.58.72")?.online, true);
   assert.equal(macTailnet(status, "100.1.2.3"), undefined);
   assert.equal(macTailnet("{}", "100.66.173.18"), undefined);
+});
+
+// From 10-23 08:21Z to 10-26 d2 read met on release_breaks_24h alone while the Mac slept through each 07:06 KST slot. An offline Mac is now a
+// host_away item that names the hosts.json box, so the runner reruns the duty once Tailscale reads the Mac online.
+test("an offline Mac is a host_away item for the hosts.json box mac, and an online or unknown Mac is none", () => {
+  const status = (online: boolean) => JSON.stringify({ Peer: { "nodekey:a": { TailscaleIPs: ["100.66.173.18"], Online: online, LastSeen: "2026-10-26T15:20:00.1Z" } } });
+  const item = macAwayItem(status(false), "100.66.173.18", "tab switch, cold load and the Mac chat reply wait are", at);
+  assert.equal(item?.kind, HOST_AWAY);
+  assert.equal(item?.host, MAC_HOST);
+  assert.equal(item?.host, "mac");
+  assert.match(item!.excerpt, /offline on the tailnet since 2026-10-26T15:20:00\.1Z, asleep or shut, so tab switch, cold load and the Mac chat reply wait are not measured; the duty reruns/);
+  assert.equal(macAwayItem(status(true), "100.66.173.18", "x are", at), undefined);
+  assert.equal(macAwayItem(status(false), "100.1.2.3", "x are", at), undefined);
 });

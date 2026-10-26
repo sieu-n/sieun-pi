@@ -236,6 +236,8 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       pool: poolWaiting, held: () => chats.poolHeldSessions(),
       stalls }),
     priority: async id => chatPoolPriority((await labels.snapshot()).threads[id]?.priority ?? 0),
+    // `reach` is made below with the watch's; the runner asks it only from its first tick on.
+    hostOnline: async name => catalog.remoteHosts().some(({ host }) => host.name === name) && (await reach.reach(name)).online,
     jobs: dutyJobs, poolAdmits, updating: () => primeUpdateRunning(agentDir, socketPath), tell: routedTell(trialSources(dataDir, { archived: () => chats.archivedIds(), rows: () => catalog.rows(), runs: (id): Promise<readonly { job?: { id: string } }[]> => duties.store.runs(id) }),
       { notice: (id, text) => chats.notice(id, text), job: (session, text) => agentOutbox.deliver(session, text, session) }, dutyLog),
     checkIn: { view: id => chats.checkInView(id), run: (id, trigger, rerunOf) => chats.runCheckIn(id, trigger, rerunOf), measure: id => chats.measureCheckIn(id),

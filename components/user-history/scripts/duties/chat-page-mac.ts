@@ -8,6 +8,7 @@ import WebSocket from "ws";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import { credentialWaitAt } from "../../src/shared/credential-wait.ts";
 import { parseStartSkill, startMessage } from "../../src/shared/start-skill.ts";
+import { macAway } from "./mac-reach.ts";
 
 /**
  * The Chat page from the Mac duty's precheck (`node --import tsx scripts/duties/chat-page-mac.ts`): whether the box's chat page on :5182 feels
@@ -27,7 +28,9 @@ import { parseStartSkill, startMessage } from "../../src/shared/start-skill.ts";
  *   of 10-20 01:49Z read a 193 ms round trip, about 55 ms on the Mac's daemon before its user entry, and 0 ms in the bridge and relay filters.
  * - `release_breaks_24h`: releases (systemd stops of sieun-pi-chat) in 24 h after which the service exits with an error within
  *   `RELEASE_WINDOW_MS`, which leaves the owner's page on its red banner.
- * A source that cannot be read leaves its metric out with a `source_error` item, so the run says not measured instead of a miss.
+ * A Mac that Tailscale lists offline leaves the three Mac numbers out with a `host_away` item (mac-reach.ts), and the runner reruns the duty
+ * once Tailscale reads it online. A source that cannot be read leaves its metric out with a `source_error` item, so the run says not measured
+ * instead of a miss.
  */
 
 const HERE = import.meta.dirname;
@@ -281,30 +284,14 @@ export async function sendProbe(config: ChatConfig, firstReplyMs = FIRST_REPLY_M
   return { id, sends };
 }
 
-/**
- * The Mac's tailnet state from `tailscale status --json`, matched by the address `ssh -G` gives for the Mac's ssh host. From 10-23 13:20Z to
- * 10-24 09:26Z eleven runs spent the 190 s browser ssh, the 40 s ping and the 10 min reply wait on a Mac that tailscale already listed offline,
- * and each reported two ssh timeouts, so an offline Mac now reads as one line that says so. Undefined when the address is not a peer.
- */
-export function macTailnet(statusJson: string, address: string): { online: boolean; lastSeen?: string } | undefined {
-  const status = JSON.parse(statusJson) as { Peer?: Record<string, { TailscaleIPs?: string[]; Online?: boolean; LastSeen?: string }> };
-  const peer = Object.values(status.Peer ?? {}).find(item => item.TailscaleIPs?.includes(address));
-  return peer && { online: peer.Online === true, ...peer.LastSeen ? { lastSeen: peer.LastSeen } : {} };
-}
-
-async function macOffline(): Promise<string | undefined> {
-  const address = (await exec("ssh", ["-G", MAC]).catch(() => "")).match(/^hostname (\S+)$/m)?.[1] ?? "";
-  const peer = address ? macTailnet(await exec("tailscale", ["status", "--json"]).catch(() => "{}"), address) : undefined;
-  return peer && !peer.online ? `the Mac (${address}) is offline on the tailnet${peer.lastSeen ? ` since ${peer.lastSeen}` : ""}, asleep or shut, so tab switch, cold load and the Mac chat reply wait are not measured` : undefined;
-}
-
 const settle = <T>(promise: Promise<T>): Promise<T | Error> => promise.catch((error: unknown) => error instanceof Error ? error : new Error(String(error)));
 
 export async function measure(chatId: string): Promise<PrecheckOutput> {
   const at = Date.now();
   const config = JSON.parse(await readFile(join(DATA_DIR, "configuration.json"), "utf8")) as ChatConfig;
   const host = config.publicOrigin ? new URL(config.publicOrigin).hostname : "";
-  const offline = await macOffline();
+  const away = await macAway(MAC, "tab switch, cold load and the Mac chat reply wait are", at);
+  const offline = away?.excerpt;
   const skipped = Promise.resolve(new Error(offline));
   const [browser, ping, journal] = await Promise.all([
     offline ? skipped : settle(browse(config, chatId)),
@@ -324,7 +311,7 @@ export async function measure(chatId: string): Promise<PrecheckOutput> {
     flagged.push(...reading.flagged);
   };
 
-  if (offline) sourceError(offline);
+  if (away) flagged.push(away);
   else {
     if (browser instanceof Error) sourceError(`the headless page on the Mac did not run, so tab switch and cold load are not measured: ${browser.message}`);
     else {

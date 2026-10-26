@@ -8,7 +8,7 @@ import { pooledProviders } from "./chat-pool.ts";
 import { WAIT_READ_TREES } from "./idle-unload.ts";
 import { GOAL_PUSH_LINK } from "./checkin-goals.ts";
 import { goalReadingOps } from "./goal-readings.ts";
-import { type AfterMeasure, CHECK_IN_DUTY, CHECK_IN_DUTY_ID, dailySlot, dutyDue, ERROR_RUNS_TARGET, errorStreak, headlineMetric, judge, nextRunAt, outputReadings, overrunWords, parseSchedule, type Duty, type DutyJobRef,
+import { type AfterMeasure, CHECK_IN_DUTY, CHECK_IN_DUTY_ID, dailySlot, dutyDue, ERROR_RUNS_TARGET, errorStreak, headlineMetric, hostAwayOf, judge, nextRunAt, outputReadings, overrunWords, parseSchedule, type Duty, type DutyJobRef,
   type DutyCut, type DutyMetric, type DutyRunRecord, type DutySchedule, type DutyTrigger, type DutyView, type FixLink, type FlaggedSlice, type PrecheckOutput, type PrecheckOverrun, STILL_WORKING, verdictMetrics } from "./shared/chat-duties.ts";
 import { briefFindings, headlineWords } from "./shared/brief-cap.ts";
 import { pushMisses } from "./duty-push.ts";
@@ -85,6 +85,11 @@ export interface DutyHost {
    * the runner archived 10 restored roots of update ctl-847650, so 8 of their subagents failed their restore at 03:11:38Z to 03:12:11Z.
    */
   updating?: () => Promise<PrimeUpdate | null>;
+  /**
+   * Whether Tailscale reads the hosts.json box `host` online now, for the rerun of a run that waited on it (`rerunHostBack`); absent: no such
+   * rerun, and the duty measures that box at its next slot.
+   */
+  hostOnline?: (host: string) => Promise<boolean>;
 }
 
 export const DUTY_TICK_MS = 30_000;
@@ -202,7 +207,7 @@ type PushContext = { runs: DutyRunRecord[]; everyMs: number };
 const message = (error: unknown): string => error instanceof Error ? error.message : String(error);
 
 /** Whether a run moves its duty's lastRunAt and lastSlotAt: a push run or a rerun leaves them, since they set when the duty is due next. */
-const movesSchedule = (trigger: DutyTrigger): boolean => trigger !== "push" && trigger !== "rerun";
+const movesSchedule = (trigger: DutyTrigger): boolean => trigger !== "push" && trigger !== "rerun" && trigger !== "host-back";
 /**
  * Whether a run whose job ended cut gets a rerun: a run that is no rerun on any cut, and a rerun again while its cut is a transient model call
  * failure (`transientTurnError`). On 10-25 us-metal02 lost egress from about 21:43Z to 21:58Z, Prospect feature bro's check-in rerun was cut
@@ -353,6 +358,7 @@ export class Duties {
     const update = await this.updateRunning();
     if (!update) await this.stopEnded(runs);
     await this.rerunCut(runs);
+    await this.rerunHostBack(runs);
     if (!update) await this.retireGone(gone);
   }
 
@@ -558,6 +564,36 @@ export class Duties {
     }
   }
 
+  /**
+   * Reruns a standing duty whose newest run waited on a box Tailscale read offline (`DutyRunRecord.hostAway`, or its after-job measure's) at
+   * the first tick that box reads online (`DutyHost.hostOnline`), once per such run. The rerun is a run with the trigger "host-back" and
+   * `rerunOf`, and it leaves the schedule where it was. The owner's MacBook Pro sleeps through most morning slots: d1 and d2 of the
+   * metal-management chat went from 10-23 to 10-26 with no Mac reading, though Tailscale saw the Mac online on some of those days. A rerun
+   * that finds the box offline again waits again, and the precheck flags a box only when Tailscale reads it offline, so a box that is online
+   * but fails its read gets one rerun and a source error, never a rerun each tick.
+   */
+  private async rerunHostBack(runsByChat: ReadonlyMap<string, readonly DutyRunRecord[]>): Promise<void> {
+    const online = this.host.hostOnline;
+    if (!online) return;
+    const reads = new Map<string, Promise<boolean>>();
+    for (const [chatId, runs] of runsByChat) {
+      const seen = new Set<string>();
+      for (const run of runs) {
+        if (run.verdict === "skipped" || seen.has(run.duty)) continue;
+        seen.add(run.duty);
+        const host = run.after ? run.after.hostAway : run.hostAway;
+        const key = `${chatId}/${run.duty}`;
+        if (!host || run.duty === CHECK_IN_DUTY_ID || this.running.has(key) || this.afters.has(key) || this.reran.has(`${key}@${run.at}`)) continue;
+        let read = reads.get(host);
+        if (!read) { read = online(host).catch(() => false); reads.set(host, read); }
+        if (!(await read) || !(await this.dutyActive(chatId, run.duty))) continue;
+        this.reran.add(`${key}@${run.at}`);
+        this.log(`duty ${chatId.slice(0, 8)}/${run.duty}: ${host} is back online, so its run of ${new Date(run.at).toISOString()} that waited on it reruns`);
+        this.start(chatId, run.duty, "host-back", null, run.at);
+      }
+    }
+  }
+
   /** Whether the duty runs on its own now: a standing duty that is active, or the check-in of a chat whose check-in is not paused. */
   private async dutyActive(chatId: string, dutyId: string): Promise<boolean> {
     if (dutyId === CHECK_IN_DUTY_ID) {
@@ -655,7 +691,8 @@ export class Duties {
     const dir = this.store.chatDir(chatId);
     const output = await this.precheck(duty, dir, join(dir, `${dutyId}.after.json`), lastRuns, "after");
     const readings = outputReadings(duty.readings, output);
-    return { at, ...judge(duty.metrics, output), ...readings ? { readings } : {} };
+    const hostAway = hostAwayOf(output);
+    return { at, ...judge(duty.metrics, output, { now: at, runs: lastRuns }), ...readings ? { readings } : {}, ...hostAway ? { hostAway } : {} };
   }
 
   private async skip(chatId: string, duty: Duty, slot: number): Promise<void> {
@@ -1172,12 +1209,13 @@ export class Duties {
     try {
       const output = await this.precheck(duty, dir, detail, previous.slice(0, 10));
       await this.sendTells(chatId, dutyId, output.tells);
-      const judged = judge(duty.metrics, output);
+      const judged = judge(duty.metrics, output, { now: started, runs: previous });
       const readings = outputReadings(duty.readings, output);
+      const hostAway = hostAwayOf(output);
       flagged = output.flagged ?? [];
       record = { duty: dutyId, at: started, slot: at, trigger, ms: this.now() - started, verdict: judged.verdict, metrics: judged.metrics, summary: judged.summary, detail,
         ...(judged.parts ? { parts: judged.parts } : {}), ...(judged.items ? { items: judged.items } : {}), ...(readings ? { readings } : {}),
-        ...(judged.verdict === "error" ? { error: judged.summary } : {}), ...overrunOf(), ...link };
+        ...(judged.verdict === "error" ? { error: judged.summary } : {}), ...overrunOf(), ...link, ...hostAway ? { hostAway } : {} };
     } catch (error) {
       await rm(detail, { force: true });
       record = { duty: dutyId, at: started, slot: at, trigger, ms: this.now() - started, verdict: "error", metrics: {}, summary: "the precheck failed", error: message(error).slice(0, 500),
@@ -1190,7 +1228,10 @@ export class Duties {
     const misses = await this.missesOf(chatId, record, previous, duty.metrics, duty.boardGoal);
     let findings: string;
     let findingsFile = "";
-    if (record.verdict === "error") {
+    if (record.verdict === "error" && record.hostAway) {
+      findings = [`No measure: ${record.summary}. ${record.hostAway} is offline on Tailscale, so this duty reruns by itself at the first tick it is back ` +
+        `online; nothing here wakes it.`, overrunLine].filter(Boolean).join("\n\n");
+    } else if (record.verdict === "error") {
       findings = [`The precheck failed: ${record.error ?? record.summary}. ${streak >= ERROR_RUNS_TARGET ? `It failed ${streak} runs in a row, over the target of ` +
         `${ERROR_RUNS_TARGET}: fix the precheck first.` : "Fix the precheck or check the duty by hand."}`, overrunLine, stuckFindings(misses)].filter(Boolean).join("\n\n");
     } else {
@@ -1207,7 +1248,10 @@ export class Duties {
     // even when its findings name items: the Wiki dream flags every page retouched in 7 days (76 at 08:27Z on 10-25) on every run.
     const acts = trigger === "push" ? Object.values(record.parts ?? {}).some(part => !part.met) || flagged.some(slice => slice.handOff)
       : flagged.some(slice => slice.item !== undefined || slice.handOff);
-    const idle = record.verdict === "met" && !misses.length && !record.overrun && !acts;
+    // A run that reads error only because its headline waits on an offline box, with every number it read on target, has nothing a job can do:
+    // its host-back rerun measures the box and starts the job then (`rerunHostBack`).
+    const waits = record.verdict === "error" && record.hostAway !== undefined && Object.values(record.metrics).every(result => result.met);
+    const idle = (record.verdict === "met" || waits) && !misses.length && !record.overrun && !acts;
     this.steps.set(key, { at: started, step: "starting its job" });
     const measured = record.verdict === "met" || record.verdict === "missed" ? { at: started, verdict: record.verdict, metrics: record.metrics, summary: record.summary,
       ...(record.parts ? { parts: record.parts } : {}), ...(record.items ? { items: record.items } : {}) } : null;

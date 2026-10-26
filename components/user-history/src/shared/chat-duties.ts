@@ -124,7 +124,8 @@ export const STILL_WORKING = "skipped: previous run still working";
 /** `verify`: a re-measure after a fix step linked to one of the duty's metrics closed (src/shared/duty-streak.ts). */
 /** `push`: a red standing duty with no job at work on it, run again at the chat's check-in interval (`pushMisses` in src/duty-push.ts). */
 /** `rerun`: the one rerun of a cut run (`DutyRunRecord.cut`), at the first tick pi-pool admits the cut job's tree (`Duties.rerunCut`). */
-export type DutyTrigger = "schedule" | "catch-up" | "owner" | "verify" | "push" | "rerun";
+/** `host-back`: the rerun of a run that waited on a box Tailscale read offline (`DutyRunRecord.hostAway`), at the first tick it reads online. */
+export type DutyTrigger = "schedule" | "catch-up" | "owner" | "verify" | "push" | "rerun" | "host-back";
 export type DutyVerdict = "met" | "missed" | "error" | "skipped";
 /** `lastEventAt` is the precheck's time of the newest event a windowed count counts (`PrecheckOutput.lastEventAt`). */
 export interface MetricResult { value: number; target: number; op: DutyMetric["op"]; met: boolean; lastEventAt?: number }
@@ -154,8 +155,10 @@ export interface DutyRunRecord {
   after?: AfterMeasure;
   /** Set when the run's job ended cut, so the run did not do its work and reruns (`cutReruns` in src/chat-duty-run.ts). */
   cut?: DutyCut;
-  /** On a rerun (trigger `rerun`), the `at` of the cut run it reruns: the record that the cut run was rerun. */
+  /** On a rerun (trigger `rerun` or `host-back`), the `at` of the run it reruns: the record that that run was rerun. */
   rerunOf?: number;
+  /** The hosts.json name of a box the precheck found offline on Tailscale (`hostAwayOf`), so the run reruns once it is back (`Duties.rerunHostBack`). */
+  hostAway?: string;
   /**
    * When a later run last found this run's job kept (`DutyJobHost.kept`, a Prime update): the stuck limit counts from it, so a job that waited
    * for pi-pool or a quota resume gets a whole limit of work once it runs.
@@ -180,7 +183,7 @@ export interface FixLink { step: string; job?: string; live: boolean; hold?: str
   stalled?: StalledCall }
 /** A run's re-measure after its own job ended. */
 export interface AfterMeasure { at: number; verdict: "met" | "missed" | "error"; metrics: Record<string, MetricResult>; summary: string; parts?: Record<string, MetricResult>;
-  readings?: Record<string, number>; items?: Record<string, MetricResult> }
+  readings?: Record<string, number>; items?: Record<string, MetricResult>; hostAway?: string }
 /** The part of a duty the card shows; the check-in duty has the same fields. */
 export type DutyCard = Pick<Duty, "id" | "name" | "ownerWords" | "goal" | "metrics" | "status"> & { boardGoal?: string };
 /**
@@ -292,9 +295,18 @@ export function shapeNote(metrics: readonly Pick<DutyMetric, "key" | "headline">
 export const PLACEHOLDER = 999_999;
 const isPlaceholder = (value: number): boolean => value === PLACEHOLDER || value === -PLACEHOLDER;
 
-/** Why the precheck could not read its inputs, from its `source_error` and `gap` items, for the summary of a run with unmeasured metrics. */
+/**
+ * A box the precheck could not read because Tailscale lists it offline: a `host_away` item whose `host` is the box's hosts.json name. Its
+ * metrics stay unmeasured, and the runner reruns the duty once the box is back (`Duties.rerunHostBack`).
+ */
+export const HOST_AWAY = "host_away";
+/** The box a precheck output waits on (`HOST_AWAY`), or undefined. */
+export const hostAwayOf = (output: PrecheckOutput): string | undefined =>
+  (output.flagged ?? []).find(slice => slice.kind === HOST_AWAY && typeof slice.host === "string" && slice.host.length > 0)?.host;
+
+/** Why the precheck could not read its inputs, from its `source_error`, `gap` and `host_away` items, for the summary of a run with unmeasured metrics. */
 function sourceReasons(output: PrecheckOutput): string {
-  const reasons = [...new Set((output.flagged ?? []).filter(slice => slice.kind === "source_error" || slice.kind === "gap").map(slice => slice.excerpt.trim()))];
+  const reasons = [...new Set((output.flagged ?? []).filter(slice => slice.kind === "source_error" || slice.kind === "gap" || slice.kind === HOST_AWAY).map(slice => slice.excerpt.trim()))];
   const text = reasons.slice(0, 4).join("; ");
   return text.length > 300 ? `${text.slice(0, 299)}…` : text;
 }
@@ -341,12 +353,53 @@ export function outputItems(output: PrecheckOutput): Record<string, MetricResult
   }
   return Object.keys(found).length ? found : undefined;
 }
-export function judge(metrics: readonly DutyMetric[], output: PrecheckOutput): { verdict: "met" | "missed" | "error"; metrics: Record<string, MetricResult>; summary: string;
-  parts?: Record<string, MetricResult>; items?: Record<string, MetricResult> } {
+/**
+ * How long a headline may go unmeasured before its duty's runs read error, whatever the other metrics read. From 10-23 21:55Z to 10-26 the
+ * metal-management chat's d1 read met on resource_limits_set alone while tool_rows_off had no value since 10-22 21:55Z, and d2 read met on
+ * release_breaks_24h while its three Mac numbers had none since 10-23 08:21Z, because the owner's MacBook Pro slept through each daily slot.
+ * 24 h is one daily slot, so a daily duty reads red from the first slot after the one that last measured its headline.
+ */
+export const UNMEASURED_HEADLINE_MS = 24 * 60 * 60_000;
+
+/** The newest time a run or its after-job measure gave `key` a value, or undefined when none of `runs` did. */
+export function measuredAt(runs: readonly Pick<DutyRunRecord, "at" | "metrics" | "after">[], key: string): number | undefined {
+  let newest: number | undefined;
+  for (const run of runs) {
+    if (run.metrics?.[key] && (newest === undefined || run.at > newest)) newest = run.at;
+    if (run.after?.metrics?.[key] && (newest === undefined || run.after.at > newest)) newest = run.after.at;
+  }
+  return newest;
+}
+
+/**
+ * Why the headline counts as unmeasured past UNMEASURED_HEADLINE_MS, or null: this output gives it no value, and no earlier run (`runs`, any
+ * order) measured it in that time. With no run that measured it, the oldest run is the bound, so a new duty gets its first day.
+ */
+function staleHeadline(metrics: readonly DutyMetric[], output: PrecheckOutput, history: { now: number; runs: readonly DutyRunRecord[] }): string | null {
+  const lead = verdictMetrics(metrics)[0];
+  const value = lead && output.metrics[lead.key];
+  if (!lead || (typeof value === "number" && Number.isFinite(value) && !isPlaceholder(value))) return null;
+  const last = measuredAt(history.runs, lead.key);
+  const since = last ?? Math.min(...history.runs.map(run => run.at));
+  if (!Number.isFinite(since) || history.now - since <= UNMEASURED_HEADLINE_MS) return null;
+  const hours = Math.round((history.now - since) / 3_600_000);
+  return `unmeasured: ${lead.key}, the headline, has no value ${last === undefined ? "in any run since" : "since its last measure at"} ` +
+    `${new Date(since).toISOString().slice(0, 16)}Z, ${hours} h ago, over the ${UNMEASURED_HEADLINE_MS / 3_600_000} h limit`;
+}
+
+/**
+ * `history` is the duty's earlier runs and the time now. With it, a run whose headline has no value reads error once the headline has gone
+ * unmeasured past UNMEASURED_HEADLINE_MS (`staleHeadline`), and its summary leads with that, so a duty whose headline nobody can read stays red
+ * instead of reading met on its other metrics. The metrics it did measure keep their results.
+ */
+export function judge(metrics: readonly DutyMetric[], output: PrecheckOutput, history?: { now: number; runs: readonly DutyRunRecord[] }):
+  { verdict: "met" | "missed" | "error"; metrics: Record<string, MetricResult>; summary: string; parts?: Record<string, MetricResult>; items?: Record<string, MetricResult> } {
   const parts = metricParts(metrics, output);
   const items = outputItems(output);
   const judged = judgeCounted(metrics, output);
   if (judged.verdict === "error") return judged;
+  const stale = history ? staleHeadline(metrics, output, history) : null;
+  if (stale) return { verdict: "error", metrics: judged.metrics, summary: `${stale}; ${judged.summary}` };
   return { ...judged, ...parts ? { parts } : {}, ...items ? { items } : {} };
 }
 function judgeCounted(metrics: readonly DutyMetric[], output: PrecheckOutput): { verdict: "met" | "missed" | "error"; metrics: Record<string, MetricResult>; summary: string } {

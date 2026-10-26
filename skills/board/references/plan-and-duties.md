@@ -116,6 +116,8 @@ The duties hold the upkeep in his words.
 4. It changes or drops a duty rule or metric that does not make sense, by editing the duty JSON or check script and running `add.ts` again, or `remove.ts` for a whole duty, and says why in its report.
 5. It skips nitpicks and spends effort only where a miss has real impact on a system that breaks easily.
 6. A miss it cannot fix inside the run becomes a fix step on the plan with a job, which closes when the metric is met again.
+7. A precheck that cannot read a box because Tailscale lists it offline, such as the owner's sleeping MacBook Pro, flags a `host_away` item with the box's hosts.json name. The runner reruns the duty at the first tick Tailscale reads that box online, so nobody wakes it.
+8. A headline metric with no value for over 24 h makes every run read error, red on the card, whatever the other metrics read.
 
 ## Pursue completion
 

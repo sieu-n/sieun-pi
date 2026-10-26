@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
+import { macAway } from "./mac-reach.ts";
 import { CHECKS, type Outcome, realDeps, runChecks } from "./skills-and-tools.ts";
 
 /**
@@ -25,7 +26,9 @@ import { CHECKS, type Outcome, realDeps, runChecks } from "./skills-and-tools.ts
  * - `rcu_boost_off`: 1 when rcu-boost.service (CPU layer 3) is not running or rcu_cpu_stall_timeout differs from its STALL_TIMEOUT_S, see rcuBoostOff.
  * - `public_ssh_open`: 1 when port 22 on the box's public address answers from us-metal01 (METAL_SSH_HOST), or ssh-public-guard.service is not
  *   active; the probe also dials a closed port, so a refused answer proves the path reaches the box.
- * A source that cannot be read leaves its metric out with a `source_error` item, so the run says not measured instead of a miss.
+ * A Mac that Tailscale lists offline leaves `tool_rows_off` out with a `host_away` item (mac-reach.ts), with no ssh to it, and the runner reruns
+ * the duty once Tailscale reads it online. A source that cannot be read leaves its metric out with a `source_error` item, so the run says not
+ * measured instead of a miss.
  * STATE_FILE keeps the Mac CLI versions the probe had to run, keyed by path and mtime, so later runs only read the Mac.
  */
 
@@ -432,8 +435,11 @@ export async function measure(rows: readonly Row[], known: Record<string, unknow
   const at = Date.now();
   const showUnit = (unit: string, props: string) =>
     exec("systemctl", ["show", unit, "-p", props]).then(text => Object.fromEntries(text.trim().split("\n").map(line => line.split("="))) as Record<string, string>, () => ({}));
+  const away = await macAway(MAC, "tool rows are", at);
+  // With the Mac away the box side of the rows has nothing to match, so neither the box probe nor the panel checks run.
+  const skip = <T>(read: () => Promise<T>): Promise<T | Error> => away ? Promise.resolve(new Error(away.excerpt)) : settle(read());
   const [mac, box, panel, limits, outside, guard, rcuUnit, stallTimeout, layers] = await Promise.all([
-    settle(probeMac(rows, known)), settle(probeBox(rows)), settle(panelOutcomes(rows)), settle(resourceLimits()), settle(outsideSsh()),
+    skip(() => probeMac(rows, known)), skip(() => probeBox(rows)), skip(() => panelOutcomes(rows)), settle(resourceLimits()), settle(outsideSsh()),
     showUnit("ssh-public-guard.service", "ActiveState,Result"), showUnit("rcu-boost.service", "ActiveState,SubState"),
     settle(readFile("/sys/module/rcupdate/parameters/rcu_cpu_stall_timeout", "utf8")), settle(readLayers()),
   ]);
@@ -441,7 +447,8 @@ export async function measure(rows: readonly Row[], known: Record<string, unknow
   const flagged: FlaggedSlice[] = [];
   const sourceError = (excerpt: string) => flagged.push({ at, kind: "source_error", excerpt: excerpt.slice(0, 600) });
 
-  if (mac instanceof Error) sourceError(`the Mac read over ssh failed, so tool rows are not measured: ${mac.message}`);
+  if (away) flagged.push(away);
+  else if (mac instanceof Error) sourceError(`the Mac read over ssh failed, so tool rows are not measured: ${mac.message}`);
   else if (box instanceof Error) sourceError(`the box probe failed: ${box.message}`);
   else {
     const result = judgeRows(rows, mac, box, panel instanceof Error ? new Map() : panel);

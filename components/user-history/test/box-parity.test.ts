@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { commitGaps, compareVersions, containerLimits, foldName, judgeRows, type LimitContext, managerLimits, parseLayers, parseShow, type ProbeOutput, publicSsh, rcuBoostOff, type Row, shortfall, unitLimits, unpushedNote }
   from "../scripts/duties/box-parity.ts";
+import { macAway } from "../scripts/duties/mac-reach.ts";
 
 const output = (host: "mac" | "box", values: Record<string, string[]>): ProbeOutput => ({ host, values, versions: {}, ms: 1 });
 
@@ -330,4 +331,27 @@ test("the AGENTS.md row matches when the Mac's file is one the box checkout held
   assert.match(shortfall(macWith("rules on a side branch\n"), box)!, /is at no commit the box checkout's HEAD descends from/);
   assert.match(shortfall(macWith("rules only the Mac has\n"), box)!, /is at no commit the box checkout's HEAD descends from/);
   assert.equal(judgeRows(rows, output("mac", { agents: [macWith("rules v2\n")] }), output("box", { agents: [box] }), new Map()).off.length, 0);
+});
+
+// From 10-23 21:55Z to 10-26 d1 read met while tool_rows_off had no value since 10-22 21:55Z: the Mac slept through each 06:55 KST slot and the
+// run spent its 90 s ssh on it. The precheck now reads Tailscale first, and an offline Mac gives a host_away item instead of an ssh, so the runner
+// reruns the duty once the Mac is back.
+test("d1 reads the Mac's Tailscale state from its ssh address and flags an offline Mac as host_away", async () => {
+  const bin = mkdtempSync(join(tmpdir(), "box-parity-mac-away-"));
+  const script = (name: string, body: string) => { writeFileSync(join(bin, name), `#!/bin/sh\n${body}\n`, { mode: 0o755 }); };
+  script("ssh", '[ "$1" = "-G" ] && echo "hostname 100.66.173.18" && exit 0; echo "no ssh to the Mac in this test" >&2; exit 255');
+  const status = (online: boolean) => JSON.stringify({ Peer: { a: { TailscaleIPs: ["100.66.173.18"], Online: online, LastSeen: "2026-10-26T15:20:00.1Z" } } });
+  const path = process.env.PATH;
+  process.env.PATH = `${bin}:${path}`;
+  try {
+    script("tailscale", `echo '${status(false)}'`);
+    const item = await macAway("mac", "tool rows are", 1);
+    assert.equal(item?.kind, "host_away");
+    assert.equal(item?.host, "mac");
+    assert.match(item!.excerpt, /^the Mac \(100\.66\.173\.18\) is offline on the tailnet since 2026-10-26T15:20:00\.1Z, asleep or shut, so tool rows are not measured/);
+    script("tailscale", `echo '${status(true)}'`);
+    assert.equal(await macAway("mac", "tool rows are", 1), undefined, "an online Mac is read over ssh as before");
+    script("tailscale", "exit 1");
+    assert.equal(await macAway("mac", "tool rows are", 1), undefined, "a Tailscale read that fails leaves the ssh read to say what is wrong");
+  } finally { process.env.PATH = path; }
 });
