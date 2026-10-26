@@ -108,8 +108,34 @@ const CATCH_UP_MS = 1000;
 /** connecting: no answer yet on this link (start, or the link just closed); up: subscribed to the roster; down: the last connect failed. */
 export type PeerState = "connecting" | "up" | "down";
 
-/** The copy on disk: the rows, and when their last full list ran. */
+/**
+ * The copy on disk: the rows, and when their last full list ran. A save puts the header, each row and the closing on lines of their own, so
+ * the file stays one JSON value and `readCopy` parses it a row at a time.
+ */
 type SavedCopy = { version: 1; fullAt: number; rows: SessionSummary[] };
+
+/**
+ * The copy in `file`, parsed one row line at a time with a turn for the event loop every PROJECTION_SLICE_MS. A copy saved on one line, as
+ * before 10-26, is parsed whole. At the 06:41:36Z start on 10-26 the Mac's 38 MB copy and this box's 46 MB one each held the main thread about
+ * 0.25 s in one JSON.parse, while the reads of the start waited behind them.
+ */
+export async function readCopy(file: string): Promise<Partial<SavedCopy>> {
+  const data = await readFile(file);
+  let end = data.indexOf(0x0a);
+  if (end < 0) return JSON.parse(data.toString("utf8")) as Partial<SavedCopy>;
+  const copy = JSON.parse(`${data.toString("utf8", 0, end)}]}`) as Partial<SavedCopy>;
+  const rows: unknown[] = [];
+  let slice = performance.now();
+  for (let start = end + 1; start < data.length; start = end + 1) {
+    end = data.indexOf(0x0a, start);
+    if (end < 0) end = data.length;
+    const line = data.toString("utf8", start, end);
+    if (line === "]}") return { ...copy, rows: rows as SessionSummary[] };
+    if (line) rows.push(JSON.parse(line.endsWith(",") ? line.slice(0, -1) : line));
+    if (performance.now() - slice >= PROJECTION_SLICE_MS) { await new Promise<void>(resolve => { setImmediate(resolve); }); slice = performance.now(); }
+  }
+  throw new Error("the copy ends before its closing line");
+}
 
 export type PeerOptions = {
   /** The box's hosts.json name, for logs and errors. */
@@ -384,7 +410,7 @@ export class SessionPeer {
     const file = this.options.file;
     if (!file) return;
     try {
-      const copy = JSON.parse(await readFile(file, "utf8")) as Partial<SavedCopy>;
+      const copy = await readCopy(file);
       if (copy.version !== 1 || !Array.isArray(copy.rows) || !copy.rows.length || this.listed) return;
       const rows = parseSummaries({ sessions: copy.rows });
       this.rows = new Map(rows.map(row => [rowKey(row), row]));
@@ -417,19 +443,19 @@ export class SessionPeer {
       await mkdir(dirname(file), { recursive: true, mode: 0o700 });
       const handle = await open(`${file}.tmp`, "w", 0o600);
       try {
-        let chunk = `{"version":1,"fullAt":${JSON.stringify(fullAt)},"rows":[`;
+        let chunk = `{"version":1,"fullAt":${JSON.stringify(fullAt)},"rows":[\n`;
         let slice = performance.now();
         for (const [index, row] of rows.entries()) {
           let text = this.rowJson.get(row);
           if (text === undefined) { text = JSON.stringify(row); this.rowJson.set(row, text); }
-          chunk += index ? `,${text}` : text;
+          chunk += index ? `,\n${text}` : text;
           if (chunk.length >= SAVE_CHUNK_CHARS || performance.now() - slice >= PROJECTION_SLICE_MS) {
             await handle.write(chunk);
             chunk = "";
             slice = performance.now();
           }
         }
-        await handle.write(`${chunk}]}`);
+        await handle.write(`${chunk}\n]}`);
       } finally { await handle.close(); }
       await rename(`${file}.tmp`, file);
     };
