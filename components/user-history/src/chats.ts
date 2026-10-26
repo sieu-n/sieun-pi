@@ -840,13 +840,16 @@ export class Chats {
     const now = this.now();
     const messages = this.messages(id) ?? [];
     const said = lastJobMessages(messages);
+    // The jobs whose steps went back to the chat this sweep: the chat gets its turn to close or continue each step before the job is deleted.
+    // Clean-room w81 run5 on 10-26: "test file count" reported at 08:30:31Z, its step p2 went back to the chat at 08:30:43Z, the same sweep
+    // deleted the job ("reported, quiet 0 min, no open step"), and the chat linked p2 to it again at 08:30:51Z, to a deleted job.
+    const handed = new Set<string>();
     if (this.source.resumes) {
-      let handed = false;
-      for (const { child, steps } of handBackSteps(children, board, said)) if (!gone?.has(child.id)) handed = await this.handBack(id, child, steps) || handed;
-      if (handed) board = await this.source.board(id).catch(() => board);
+      for (const { child, steps } of handBackSteps(children, board, said)) if (!gone?.has(child.id) && await this.handBack(id, child, steps)) handed.add(child.id);
+      if (handed.size) board = await this.source.board(id).catch(() => board);
     }
     // A job the update's prepare drained reads finished or quiet before its restore resumes it, so none is deleted or ended while one runs.
-    const finished = finishedJobs(children, board, said);
+    const finished = finishedJobs(children, board, said).filter(child => !handed.has(child.id));
     const waiting = this.source.resumes ? waitingJobs(children, board, now, said) : [];
     if ((finished.length || waiting.length) && await this.updateHold("job is deleted or ended")) return;
     for (const child of finished) {
