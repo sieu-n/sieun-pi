@@ -4,9 +4,9 @@ import { stepCarrier, stepCarriers } from "./checkin-end-state.ts";
 import { heldByTodo } from "./shared/todo-hold.ts";
 import { GOAL_PUSH_LINK, openGoals, targetOp, targetStaleMs, walkGoal } from "./shared/chat-board.ts";
 import { CHECK_IN_DUTY_ID } from "./shared/chat-duties.ts";
-import { parseDutyLink } from "./shared/duty-fixes.ts";
+import { parseDutyLink, sessionBornAt } from "./shared/duty-fixes.ts";
 import type { ChatBoard, OwnerTodo, PlanItem } from "./shared/types.ts";
-import { type JobFact, ownerLabel, waitBound, poolWait, quote, type StepView, walk } from "./checkin-steps.ts";
+import { type JobFact, ownerLabel, ownerState, waitBound, poolWait, quote, type StepView, walk } from "./checkin-steps.ts";
 import { poolSlot } from "./shared/chat-feed.ts";
 
 /**
@@ -73,6 +73,8 @@ export interface GoalPush {
    * step p60 (linked to checkin/goal_gaps) had the job "metal agent runtime". `duty` is that step's duty field.
    */
   stepJob?: { step: string; job: string; duty?: string };
+  /** The open fix steps already on the goal's gap (`goalFixes`); absent when none. */
+  fixes?: GoalFix[];
   /** The items that wait on the owner's answer in For you (`ownerHeld`): the goal or its push step, or every open step under it. */
   asks?: string[];
   /** What a goal that waits holds on (`goalWait`): "until 10-18 20:00Z", or the owner's pause of the thread that owns its push step. */
@@ -84,6 +86,50 @@ export interface GoalPush {
   act: GoalAct;
   /** The owner's words for the goal: its open and unmet requirement lines. */
   words: string[];
+}
+
+/**
+ * An open fix step already on a goal's gap: its job, the job's state in words (`ownerState`), and when its session started. On 10-26 d5 started
+ * fix jobs at 13:00Z on the AI harness chat's p1095 and p1096 (d5/skills_or_tools_to_fix) under p700, and the check-in started two more jobs on
+ * the same problems at 13:02Z and 13:03Z, one of them against the d5 job.
+ */
+export interface GoalFix { step: string; job: string; state: string; working: boolean; startedAt?: number }
+
+/** The duty metrics a goal's number reads: its own duty link, the metric its target's source names, and the duty links of the steps under it. */
+function goalLinks(goal: PlanItem): Set<string> {
+  const links = new Set<string>();
+  const named = /\bduty ([a-z][a-z0-9_-]*) metric ([a-z][a-z0-9_]*)/.exec(goal.target?.source ?? "");
+  if (named) links.add(`${named[1]}/${named[2]}`);
+  walkGoal(goal, item => { if (dutyFixLink(item.duty)) links.add(item.duty!); });
+  return links;
+}
+
+const working = (view: StepView): boolean => view.owner?.state === "working" && !view.owner.cancelled;
+
+/** The open steps with a job that fix a goal's gap: a step on one of its duty metrics (`goalLinks`), or a step under it whose job works. */
+function fixViews(goal: PlanItem, views: readonly StepView[]): StepView[] {
+  const links = goalLinks(goal);
+  const under = new Set([goal.id]);
+  walk(goal.children, item => under.add(item.id));
+  return views.filter(view => OPEN_ITEM.has(view.item.status) && (view.item.job !== undefined || view.owner !== undefined) &&
+    ((view.item.duty !== undefined && links.has(view.item.duty)) || (under.has(view.item.id) && working(view))));
+}
+
+/** The open fix steps already on a goal's gap, working ones first (`GoalFix`). */
+export function goalFixes(goal: PlanItem, views: readonly StepView[]): GoalFix[] {
+  return fixViews(goal, views).map((view): GoalFix => {
+    const born = view.item.sessionId ? sessionBornAt(view.item.sessionId) : null;
+    return { step: view.item.id, job: view.owner?.name ?? view.item.job!, state: view.owner ? ownerState(view.owner) : "not found", working: working(view),
+      ...born !== null ? { startedAt: born } : {} };
+  }).sort((a, b) => Number(b.working) - Number(a.working));
+}
+
+/** "Fix in progress: p1096 (job d5 type-system skill unread, working, started 10-26 13:00Z)", then the stopped ones to restart. */
+export function fixesText(fixes: readonly GoalFix[]): string {
+  const one = (fix: GoalFix) => `${fix.step} (job ${fix.job}, ${fix.state}${fix.startedAt !== undefined ? `, started ${zTime(fix.startedAt)}` : ""})`;
+  const live = fixes.filter(fix => fix.working);
+  const stopped = fixes.filter(fix => !fix.working);
+  return [...live.length ? [`Fix in progress: ${live.map(one).join(", ")}.`] : [], ...stopped.length ? [`Stopped fix: ${stopped.map(one).join(", ")}.`] : []].join(" ");
 }
 
 /** The number of a goal: its target, else the newest measured run of the duty metric the goal links; undefined for neither. */
@@ -355,13 +401,15 @@ export function goalPushes(board: ChatBoard | null, views: readonly StepView[], 
   const pushes = openGoals(board?.plan ?? []).flatMap((goal): GoalPush[] => {
     if (folded.has(goal.id)) return [];
     const words = goalWords(goal);
-    const owner = goalOwner(goal, mine);
+    const fixes = goalFixes(goal, mine);
+    // A live fix step on the goal's duty metric outside the goal owns the number too: steer it rather than start a second job.
+    const owner = goalOwner(goal, mine) ?? fixViews(goal, mine).find(working)?.owner;
     const pushView = views.find(view => view.goal?.id === goal.id && view.item.duty === GOAL_PUSH_LINK);
     const step = pushView?.item.id;
     const under = mine.filter(view => view.goal?.id === goal.id && view.item.id !== goal.id && view.item.job);
     const holder = (pushView?.item.job && mine.includes(pushView) ? pushView : undefined) ?? under.find(view => view.item.duty !== undefined) ?? under[0];
     const stepJob = holder?.item.job ? { step: holder.item.id, job: holder.owner?.name ?? holder.item.job, ...holder.item.duty ? { duty: holder.item.duty } : {} } : undefined;
-    const base = { goal, words, ...(owner ? { owner } : {}), ...(step ? { pushStep: step } : {}), ...(stepJob ? { stepJob } : {}) };
+    const base = { goal, words, ...(owner ? { owner } : {}), ...(step ? { pushStep: step } : {}), ...(stepJob ? { stepJob } : {}), ...(fixes.length ? { fixes } : {}) };
     const number = goalNumber(goal, everyMs, metrics);
     const held = ownerHeld(goal, views, todos);
     // A goal with no number that waits on the owner's word needs his answer, not a target (frontend bro p62, its p52 and p31 parked by c40).
@@ -455,8 +503,9 @@ function askText(push: GoalPush): string {
 
 /** A goal's line for the brief and the chat: number, trend, owner and ask, one sentence of at most about 240 characters (`plainItem`). */
 export function goalLine(push: GoalPush): string {
-  if (!push.number) return `${push.goal.id} ${quote(push.goal.text)}: ${askText(push)}`;
-  return `${push.goal.id} ${numberText(push.number)}, ${trendText(push.number, push.trend!, push.stale)}; ${askText(push)}`;
+  const fixes = push.fixes ? ` ${fixesText(push.fixes)}` : "";
+  if (!push.number) return `${push.goal.id} ${quote(push.goal.text)}: ${askText(push)}${fixes}`;
+  return `${push.goal.id} ${numberText(push.number)}, ${trendText(push.number, push.trend!, push.stale)}; ${askText(push)}${fixes}`;
 }
 
 /** The message to steer a goal's owner, or the opening of a new owner job's brief: the owner's words, the measured gap and the ask. */
@@ -516,7 +565,7 @@ export function goalPromptLine(push: GoalPush): string {
   if (!push.number) return `${title} has no number yet: no target and no duty metric${push.act === "owner" ? `, and it waits on the owner's word on ${ownerAsks(push)}` : ""}.`;
   const gap = gapText(push.number);
   const owner = push.owner ? `${ownerLabel(push.owner)} owns it` : "no live job owns it";
-  return `${title}: ${numberText(push.number)}${gap ? `, ${gap}` : ""}; ${paceText(push)}; ${owner}.`;
+  return `${title}: ${numberText(push.number)}${gap ? `, ${gap}` : ""}; ${paceText(push)}; ${owner}.${push.fixes ? ` ${fixesText(push.fixes)}` : ""}`;
 }
 
 /**
@@ -541,8 +590,9 @@ export function goalDueLine(push: GoalPush): string | null {
     : held ? `Steer the job ${held.job} on ${held.step}${held.step === push.pushStep ? `, the push step of ${title}` : ` of ${title}`} with this message, ` +
       `restarting it if it ended${held.step === push.pushStep ? "" : `, and set the duty of ${held.step} to "${GOAL_PUSH_LINK}"`}. Add no new step: add one only when the ` +
       "work needs an output that no open step owns"
-    : push.pushStep ? `Set one job on the push step ${push.pushStep} of ${title}, a live job of the goal or a new one, and send it this message`
-    : `Add a push step under ${push.goal.id} with duty "${GOAL_PUSH_LINK}" for ${title}, set its job to a live job of the goal or a new one, and send it this message`;
+    : `${push.pushStep ? `Set one job on the push step ${push.pushStep} of ${title},` : `Add a push step under ${push.goal.id} with duty "${GOAL_PUSH_LINK}" for ${title}, set its job to`} ` +
+      `a live job of the goal or a new one, and send it this message. Read board.get("${push.goal.id}") first: a duty job may have added a fix step since this brief, ` +
+      "and when one has a working job, steer that job instead and start none";
   // From 10-18 17:00Z to 10-19 17:00Z check-ins pushed 31 goals 451 times and 7 of them moved: VP of CI p1 was steered 85 times and Vent p1 76
   // times with the same message while the number stood still. A goal still after a steer gets its blocker acted on, not the same steer again.
   const stuck = push.trend?.kind === "still" && push.trend.runs >= 2 && (push.owner || push.stepJob)
