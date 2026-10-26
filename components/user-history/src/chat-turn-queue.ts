@@ -38,11 +38,26 @@ export function withQueuePlaces(facts: readonly JobFact[], places: PoolPlaces, c
  * 21:44Z to 22:00Z on 10-19 it read only its own pool and restarted "email template", "dev tip reds" and "new frontend plan" twice each while
  * they sat 39th to 44th for a Mac slot, and each restart aborted the waiting model request with no output. A box whose relay or pool does not
  * answer adds nothing; this box's failure fails the read, as before.
+ *
+ * The other boxes' readings are shared for `maxAgeMs`, like this box's own (QUEUE_READ_MS), and one read is in flight at a time. Each relay
+ * /v1/host call starts `pi-pool queue --json` and `pi-pool config` on that box, and every check-in, duty, catalog projection and poolWaiting
+ * call asked again: on 10-26 the Mac's relay started 26 Python processes every 10 s for us-metal02's chat service, macOS logged 61,582
+ * Gatekeeper exec checks from 04:36Z to 04:49Z against none in the 13 minutes before, and the Mac's load reached 317 at 04:46Z.
  */
-export function hostsQueueRead(self: () => Promise<AgentQueueReading>, remotes: () => readonly (() => Promise<unknown>)[]): () => Promise<AgentQueueReading> {
+export function hostsQueueRead(self: () => Promise<AgentQueueReading>, remotes: () => readonly (() => Promise<unknown>)[], maxAgeMs = QUEUE_READ_MS,
+  now: () => number = Date.now): () => Promise<AgentQueueReading> {
+  let last: { at: number; read: AgentQueueReading[] } | null = null;
+  let reading: Promise<AgentQueueReading[]> | null = null;
+  const remoteReads = (): Promise<AgentQueueReading[]> => {
+    if (last && now() - last.at < maxAgeMs) return Promise.resolve(last.read);
+    reading ??= Promise.all(remotes().map(read => read().then(remotePool, () => null)))
+      .then(others => others.filter((other): other is AgentQueueReading => other !== null))
+      .then(read => { last = { at: now(), read }; return read; })
+      .finally(() => { reading = null; });
+    return reading;
+  };
   return async () => {
-    const [own, ...others] = await Promise.all([self(), ...remotes().map(read => read().then(remotePool, () => null))]);
-    const read = others.filter((other): other is AgentQueueReading => other !== null);
+    const [own, read] = await Promise.all([self(), remoteReads()]);
     return { ...own, working: [own, ...read].flatMap(reading => reading.working), queued: [own, ...read].flatMap(reading => reading.queued) };
   };
 }
