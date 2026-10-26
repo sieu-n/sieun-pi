@@ -89,6 +89,16 @@ test("railway_auth fails a broken RAILWAY_API_TOKEN that the OAuth login would h
   assert.ok(outcome.status === "fail" && outcome.fix.includes("railway.com/account/tokens"), JSON.stringify(outcome));
 });
 
+test("railway_auth calls whoami again after a connection error and names the network, never a new token, when both fail", async () => {
+  const unreached = { code: 1, stdout: "", stderr: "Failed to fetch: error sending request for url (https://backboard.railway.com/graphql/v2) client error (Connect)", ms: 0 };
+  const answers = [unreached, { code: 0, stdout: "Logged in as Sieun Park (sieunpark77@gmail.com)", stderr: "", ms: 0 }];
+  assert.equal((await railwayAuth.run({ ...railwayDeps("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"), exec: async () => answers.shift()! })).status, "pass");
+  let calls = 0;
+  const outcome = await railwayAuth.run({ ...railwayDeps("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"), exec: async () => { calls++; return unreached; } });
+  assert.equal(calls, 2);
+  assert.ok(outcome.status === "fail" && outcome.fix.includes("network") && !outcome.fix.includes("account/tokens"), JSON.stringify(outcome));
+});
+
 test("railway_auth names the inline comment when RAILWAY_API_TOKEN carries one", async () => {
   const outcome = await railwayAuth.run(railwayDeps('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"  # PERSONAL account token'));
   assert.ok(outcome.status === "fail" && outcome.fix.includes("inline comment"), JSON.stringify(outcome));
@@ -237,6 +247,24 @@ test("an offline Mac turns aside_tabs and aside_account off, with no owner fix a
   }
   assert.deepEqual(toOutput(results, 0).metrics, { checks_failed: 0, owner_fixes: 0, cua_failed: 0, websearch_failed: 0, checks_run: 2 });
   assert.deepEqual(calls, ["ssh -G mac", "tailscale status --json"]);
+});
+
+// 10-26 13:52Z: the Mac left Tailscale at 13:50:00Z, Tailscale still listed it online, and both checks failed on an ssh connect timeout.
+test("a Mac that Tailscale still lists online but does not answer a ping turns failed aside checks off", async () => {
+  const sshTimeout = { code: 255, stdout: "", stderr: "ssh: connect to host 100.66.173.18 port 22: Connection timed out", ms: 0 };
+  for (const answers of [true, false]) {
+    const calls: string[] = [];
+    const mac = macDeps(true, sshTimeout, calls);
+    const results = await runChecks({ ...mac, exec: async (file, args, options) => file === "tailscale" && args[0] === "ping"
+      ? (calls.push(`${file} ${args.join(" ")}`), answers ? { code: 0, stdout: "pong from main-dev-sieuns-macbook-pro-m2max (100.66.173.18) in 186ms", stderr: "", ms: 0 }
+        : { code: 1, stdout: "ping \"100.66.173.18\" timed out\n", stderr: "no reply\n", ms: 5026 })
+      : mac.exec(file, args, options) }, macChecks);
+    for (const { check, outcome } of results) {
+      if (answers) assert.ok(outcome.status === "fail" && outcome.fixer === "agent", `${check.id} ${JSON.stringify(outcome)}`);
+      else assert.ok(outcome.status === "off" && outcome.detail.includes("no reply to a Tailscale ping"), `${check.id} ${JSON.stringify(outcome)}`);
+    }
+    assert.equal(calls.filter(call => call === "tailscale ping -c 1 --timeout 5s 100.66.173.18").length, 2);
+  }
 });
 
 test("aside_account on an online Mac keeps a signed-out reply as the owner's fix", async () => {

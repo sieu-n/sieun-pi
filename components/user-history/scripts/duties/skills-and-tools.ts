@@ -133,13 +133,28 @@ function macReach(deps: Deps): Promise<MacReach> {
   if (!reach) { reach = probeMac(deps); macReaches.set(deps, reach); }
   return reach;
 }
+const macHost = async (deps: Deps) => /^hostname (\S+)$/m.exec((await deps.exec("ssh", ["-G", "mac"], { timeoutMs: CALL_TIMEOUT_MS })).stdout)?.[1];
 async function probeMac(deps: Deps): Promise<MacReach> {
   // Both read local state (the ssh config, the tailscaled socket) and took 0.09 s and 0.03 s on us-metal02 on 10-18.
-  const host = /^hostname (\S+)$/m.exec((await deps.exec("ssh", ["-G", "mac"], { timeoutMs: CALL_TIMEOUT_MS })).stdout)?.[1];
+  const host = await macHost(deps);
   if (!host) return { online: true };
   const reach = peerReach((await deps.exec("tailscale", ["status", "--json"], { timeoutMs: CALL_TIMEOUT_MS })).stdout, host);
   if (reach.online) return reach;
   return { online: false, detail: `the owner's MacBook Pro is offline (Tailscale last seen ${seenAgo(deps.now(), reach.lastSeen)}); Aside answers again when it wakes` };
+}
+/**
+ * Tailscale lists a peer online for minutes after it leaves: the MacBook Pro left at 13:50:00Z on 10-26, the 13:52Z run still read it online,
+ * and both aside checks failed on `ssh: connect to host 100.66.173.18 port 22: Connection timed out`. So a failed aside call on linux asks the
+ * Mac itself with one Tailscale ping, and no reply turns the fail off. That ping got no reply in 5.03 s at 14:23Z, while 15 pings from us-metal02
+ * to the three online Macs on the owner's network answered in 0.23 to 0.26 s at 14:25Z, so 5 s gives a live Mac about 20 times its time.
+ */
+async function offIfMacGone(deps: Deps, failed: Outcome): Promise<Outcome> {
+  if (deps.platform !== "linux") return failed;
+  const host = await macHost(deps);
+  if (!host) return failed;
+  const ping = await deps.exec("tailscale", ["ping", "-c", "1", "--timeout", "5s", host], { timeoutMs: CALL_TIMEOUT_MS });
+  if (ping.code === 0 || !/no reply/.test(both(ping))) return failed;
+  return { status: "off", detail: `the owner's MacBook Pro is offline (no reply to a Tailscale ping, though Tailscale still lists it online); Aside answers again when it wakes` };
 }
 /**
  * Aside's reply when the owner closed his last Aside window: on 10-22 at 01:08Z the Mac's log shows his close click and the extension bridge
@@ -306,8 +321,13 @@ async function railwayAuth(deps: Deps): Promise<Outcome> {
   const token = (deps.env ?? process.env).RAILWAY_API_TOKEN;
   if (!token) return cliLogin(deps, "railway", ["whoami"], loggedIn, "run `railway login --browserless` in the owner's Aside browser");
   const env = { RAILWAY_API_TOKEN: token, RAILWAY_NO_AUTO_UPDATE: "1", HOME: join(deps.scratchDir, `railway-token-home-${process.pid}`) };
-  const result = await deps.exec("railway", ["whoami"], { env, timeoutMs: CALL_TIMEOUT_MS });
+  const whoami = () => deps.exec("railway", ["whoami"], { env, timeoutMs: CALL_TIMEOUT_MS });
+  const unreached = (result: ExecResult) => both(result).includes("error sending request");
+  let result = await whoami();
+  // On 10-26 at 13:52Z one run read "error sending request ... client error (Connect)" and told the job to mint a token; a re-run 9 min later passed.
+  if (unreached(result)) result = await whoami();
   if (result.code === 0 && loggedIn(result)) return PASS(`RAILWAY_API_TOKEN: ${brief(both(result), 120)}`);
+  if (unreached(result)) return FAIL("agent", `railway whoami with RAILWAY_API_TOKEN only: ${failText(result)}`, "the box did not reach backboard.railway.com twice, so the token was never read; check this box's network and DNS to backboard.railway.com and re-check");
   if (/[\s#"']/.test(token)) {
     return FAIL("agent", `railway whoami with RAILWAY_API_TOKEN only: ${failText(result)}`, `RAILWAY_API_TOKEN holds ${token.length} chars with a space, # or quote; move the inline comment in ~/.config/sieun-pi/agent.env and ~/.zshenv to its own line, since systemd EnvironmentFile keeps it in the value`);
   }
@@ -454,8 +474,8 @@ export const CHECKS: readonly Check[] = [
     const count = Number(/"count"\s*:\s*(\d+)/.exec(text)?.[1] ?? NaN);
     if (!answer.error && result?.isError !== true && count >= 1) return PASS(`${count} tabs`);
     if (NO_ASIDE_WINDOW.test(text)) return { status: "off", detail: `the owner's Aside has no open window, so it answers again when he opens one: ${brief(text, 160)}` };
-    return FAIL("agent", answer.error ? `MCP ${answer.error}` : `repl gave ${brief(text || "no text", 200)}`, deps.platform === "linux"
-      ? MAC_REACH_FIX : "open Aside with `open -a Aside` and re-check");
+    return offIfMacGone(deps, FAIL("agent", answer.error ? `MCP ${answer.error}` : `repl gave ${brief(text || "no text", 200)}`, deps.platform === "linux"
+      ? MAC_REACH_FIX : "open Aside with `open -a Aside` and re-check"));
   } },
   /** Only a reply that lists no signed-in account is the owner's; a timeout, an ssh failure or "Aside isn't running" (10-18 04:31Z and 13:24Z) is a reach problem. */
   { id: "aside_account", group: "browser", tool: "Aside account", hostTool: "aside", run: async deps => {
@@ -464,7 +484,7 @@ export const CHECKS: readonly Check[] = [
     const result = await deps.exec("aside", ["account", "status"], { timeoutMs: CALL_TIMEOUT_MS });
     const line = /^\*\s+\S+\s+\S+@\S+\s+signed in.*$/m.exec(result.stdout);
     if (line) return PASS(brief(line[0], 100));
-    if (result.code !== 0) return FAIL("agent", `aside account status: ${failText(result)}`, deps.platform === "linux" ? MAC_REACH_FIX : "open Aside with `open -a Aside` and re-check");
+    if (result.code !== 0) return offIfMacGone(deps, FAIL("agent", `aside account status: ${failText(result)}`, deps.platform === "linux" ? MAC_REACH_FIX : "open Aside with `open -a Aside` and re-check"));
     return FAIL("owner", `aside account status shows no signed-in account: ${brief(both(result), 200)}`, "sign in to the Aside account in the Aside app");
   } },
   /**
