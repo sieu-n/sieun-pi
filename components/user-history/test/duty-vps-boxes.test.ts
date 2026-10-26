@@ -22,6 +22,18 @@ test("a risk counts once however many of its label sets fire, and a risk with no
   assert.match(result.flagged[0]!.excerpt, /owner metal\): metal-host-disk-fill-30d firing since 2026-10-17T07:45/);
 });
 
+// Guards 10-26: metal-host-disk-fill-30d fired on us-metal01's / and /ci, and the cold-disk risk read as firing with /hdd.raid10 at 7.6 TB free.
+test("a risk's match narrows a shared rule to its own labels, and an alert without the label still counts", () => {
+  const file = parseRisks({ risks: [
+    { id: "cold", line: "us-metal01 cold disk fills", owner: "metal", alertUids: ["metal-host-disk-fill-30d", "metal-disk-raid-pd-failed"], match: { mountpoint: "/hdd\\.raid10" } },
+  ] });
+  const disk = (mountpoint: string): FiringAlert => ({ ...alert("metal-host-disk-fill-30d", "2026-10-26T15:18:00.000Z"), labels: { __alert_rule_uid__: "metal-host-disk-fill-30d", mountpoint } });
+  const known = new Set(["metal-host-disk-fill-30d", "metal-disk-raid-pd-failed"]);
+  assert.equal(countRisks(file, [disk("/"), disk("/ci")], known, 0).firing, 0);
+  assert.equal(countRisks(file, [disk("/hdd.raid10")], known, 0).firing, 1);
+  assert.equal(countRisks(file, [alert("metal-disk-raid-pd-failed", "2026-10-26T00:00:00.000Z")], known, 0).firing, 1);
+});
+
 // Guards 10-19: root_disk_days read us-metal01's / only (51 days) while us-metal02's / read 6.9, so disk_days_min reads every disk of both boxes.
 test("disk_days_min is the lowest disk of both boxes, names each disk under 30 days, and fails when a box has no disk", () => {
   const disks = [{ box: "us-metal01", mountpoint: "/", days: 50.9 }, { box: "us-metal01", mountpoint: "/ci", days: 15.47 }, { box: "us-metal02", mountpoint: "/", days: 6.93 }];

@@ -52,7 +52,9 @@ export const oomSinceQuery = (box: string, seconds: number): string => `round(in
 export const DUTY_FILE = join(dirname(fileURLToPath(import.meta.url)), "vps-boxes.duty.json");
 export const AIR_RUNNERS_QUERY = 'sum(devbox_runner_up{job="devbox",box="m1-air"})';
 
-export interface Risk { id: string; line: string; owner: string; alertUids: string[] }
+/** match narrows a shared rule to this risk: each key the alert carries must match its pattern, and an alert without the key still counts.
+ * measured: on 10-26 metal-host-disk-fill-30d fired on us-metal01's / and /ci, and the cold-disk risk read as firing with /hdd.raid10 at 7.6 TB free. */
+export interface Risk { id: string; line: string; owner: string; alertUids: string[]; match?: Record<string, string> }
 export interface RiskFile { page?: string; risks: Risk[] }
 
 export function parseRisks(value: unknown): RiskFile {
@@ -62,12 +64,15 @@ export function parseRisks(value: unknown): RiskFile {
     const risk = item as Partial<Risk>;
     if (typeof risk.line !== "string" || !Array.isArray(risk.alertUids)) throw new Error(`infra-risks.json risk ${index} needs a line and alertUids`);
     return { id: typeof risk.id === "string" ? risk.id : String(index), line: risk.line, owner: typeof risk.owner === "string" ? risk.owner : "unknown",
-      alertUids: risk.alertUids.filter((uid): uid is string => typeof uid === "string") };
+      alertUids: risk.alertUids.filter((uid): uid is string => typeof uid === "string"),
+      ...risk.match && typeof risk.match === "object" ? { match: risk.match } : {} };
   });
   return { ...typeof record.page === "string" ? { page: record.page } : {}, risks };
 }
 
 const ruleUid = (alert: FiringAlert): string => alert.labels.__alert_rule_uid__ ?? alert.alertname;
+const matches = (risk: Risk, alert: FiringAlert): boolean =>
+  Object.entries(risk.match ?? {}).every(([key, pattern]) => alert.labels[key] === undefined || new RegExp(`^(?:${pattern})$`).test(alert.labels[key]));
 
 /** The risks whose rules fire, one flagged line each with its owner, plus a line for each risk with no rule and each uid Grafana does not know. */
 export function countRisks(file: RiskFile, firing: readonly FiringAlert[], knownUids: ReadonlySet<string> | null, at: number): { firing: number; flagged: FlaggedSlice[] } {
@@ -77,7 +82,7 @@ export function countRisks(file: RiskFile, firing: readonly FiringAlert[], known
     if (!risk.alertUids.length) { flagged.push({ at, kind: "unchecked", excerpt: `${risk.line.replace(/\.$/, "")} (owner ${risk.owner}): no Grafana rule checks it yet` }); continue; }
     const unknown = knownUids ? risk.alertUids.filter(uid => !knownUids.has(uid)) : [];
     if (unknown.length) flagged.push({ at, kind: "gap", excerpt: `${risk.line.replace(/\.$/, "")}: Grafana has no alert rule ${unknown.join(", ")}` });
-    const hits = firing.filter(alert => risk.alertUids.includes(ruleUid(alert)));
+    const hits = firing.filter(alert => risk.alertUids.includes(ruleUid(alert)) && matches(risk, alert));
     if (!hits.length) continue;
     count++;
     const since = new Map<string, string>();
