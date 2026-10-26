@@ -309,7 +309,7 @@ export class AgentOutbox {
         const go = async () => {
           await sending(merged.change);
           await this.took(entry, merged);
-          return this.send(session, entry.id, text, host);
+          return this.send(session, entry.id, entry.at, text, host);
         };
         const stopped = deps.resident?.(session) === false ? await this.subagent(session) : null;
         if (stopped) {
@@ -461,7 +461,12 @@ export class AgentOutbox {
     return { obsolete: `${wake ? `a wake for the same ${wake}` : "the same message"} landed in the target's file at ${new Date(landed).toISOString()}, after it was queued` };
   }
 
-  private async send(session: string, id: string, text: string, host: string | null): Promise<"sent" | "gone"> {
+  /**
+   * One send of entry `id`, queued at `at`. Its line after a move counts only its own wait, from the refusal or its queue time if later: on
+   * 10-26 a wake to reasons-fix (01a172c1) met "closing" at 05:59:53Z and went through the parent 2 s later, which left the move on record,
+   * and the next wake, queued at 06:07:22.6Z and sent 0.4 s later, read "went after its target's worker was closing for 450 s".
+   */
+  private async send(session: string, id: string, at: number, text: string, host: string | null): Promise<"sent" | "gone"> {
     let sent: "sent" | "gone";
     try { sent = await this.deps.send(session, text, host); } catch (error) {
       const window = await this.deps.updateWindow?.(host, error).catch(() => null);
@@ -495,7 +500,7 @@ export class AgentOutbox {
     const moved = this.moving.get(session);
     if (moved) {
       this.moving.delete(session);
-      if (sent === "sent") this.deps.log(`outbox ${this.where(session)}: ${id} went after its target's worker was ${moved.doing} for ${Math.round((this.now() - moved.since) / 1000)} s`);
+      if (sent === "sent") this.deps.log(`outbox ${this.where(session)}: ${id} went after its target's worker was ${moved.doing} for ${Math.round((this.now() - Math.max(moved.since, at)) / 1000)} s`);
     }
     return sent;
   }
