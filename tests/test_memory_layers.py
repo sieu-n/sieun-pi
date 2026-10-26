@@ -46,9 +46,10 @@ class EarlyoomConfig(unittest.TestCase):
     def test_avoid_and_prefer_match_the_comm_names_seen_on_us_metal02(self):
         args = earlyoom_args()
         avoid, prefer = re.compile(args[args.index("--avoid") + 1]), re.compile(args[args.index("--prefer") + 1])
-        for comm in ("systemd", "sshd", "sshd-session", "tailscaled", "dockerd", "containerd", "containerd-shim", "earlyoom", "prime-agent"):
+        for comm in ("systemd", "sshd", "sshd-session", "tailscaled", "dockerd", "containerd", "containerd-shim", "earlyoom", "prime-agent", "qemu:ci-g17"):
             self.assertTrue(avoid.search(comm), comm)
-        for comm in ("qemu:ci-g17", "qemu-system-x86", "vitest", "svelte-check"):
+            self.assertFalse(prefer.search(comm), comm)
+        for comm in ("qemu-system-x86", "vitest", "pytest", "svelte-check"):
             self.assertTrue(prefer.search(comm), comm)
         for comm in ("node-MainThread", "python3", "chrome"):
             self.assertFalse(avoid.search(comm) or prefer.search(comm), comm)

@@ -2,4 +2,8 @@
 # SIGTERM the process with the highest oom_score when both available RAM and free swap fall under 5%, SIGKILL under 2%.
 # The regexes match /proc/<pid>/comm. Node processes all read node-MainThread, so the chat service and pi-pool (python3)
 # are kept by oom-protect.py's -900 score instead, and heavy-wrapped test runners are picked first by their score of 500.
-EARLYOOM_ARGS="-m 5,2 -s 5,2 -r 3600 --avoid '^(systemd|systemd-.+|init|sshd|sshd-session|tailscaled|dockerd|containerd|containerd-shim.*|earlyoom|prime-agent|pi-pool)$' --prefer '^(qemu:ci-.+|qemu-system-.+|vitest.*|jest.*|pytest|svelte-check|tsc|cc1plus|ld)$'"
+# The CI guests (qemu:ci-*) are avoided, which subtracts 300: on 10-26 from 02:22 to 02:27Z a fork run of agent commands
+# filled RAM and swap, and with the guests preferred (+300, about 990 against 800 for an adj-200 agent command) earlyoom
+# SIGTERMed 6 running guests, about 51 GB, and the shortage went on. Avoided, a guest reads about 390, under every
+# adj-200 process and still over the Prime workers (-500, about 334) and the harness core (-900, about 68).
+EARLYOOM_ARGS="-m 5,2 -s 5,2 -r 3600 --avoid '^(systemd|systemd-.+|init|sshd|sshd-session|tailscaled|dockerd|containerd|containerd-shim.*|earlyoom|prime-agent|pi-pool|qemu:ci-.+)$' --prefer '^(qemu-system-.+|vitest.*|jest.*|pytest|svelte-check|tsc|cc1plus|ld)$'"
