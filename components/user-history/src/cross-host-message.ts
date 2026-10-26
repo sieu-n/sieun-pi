@@ -46,6 +46,8 @@ export interface RootDirectory {
   send(sessionId: string, text: string): Promise<Record<string, unknown>>;
   /** Opens a root from its file with a daemon create (src/reopen-send.ts); false when it has no file to open. */
   reopen(sessionId: string): Promise<boolean>;
+  /** The line that refuses a send across a running clean-room trial's wall (`judgeCrossing`), or undefined when it may go. */
+  refuse?(from: string, to: string, message: string): Promise<string | undefined>;
 }
 
 /** The roster row a root on another box adds to agent_observe.list_agents, in the shape Prime's own rows have. */
@@ -93,6 +95,8 @@ export async function sendCrossHost(directory: RootDirectory, from: string, to: 
   if (!sender) throw new Error(`No box lists root session ${from.slice(0, 8)}.`);
   const target = pickRoot(roots.filter(root => root.host !== sender.host), to);
   if ("error" in target) throw new Error(target.error);
+  const refused = await directory.refuse?.(sender.sessionId, target.sessionId, message);
+  if (refused) throw new Error(refused);
   const receipt = await directory.send(target.sessionId, crossHostText(sender, message));
   return { ...receipt, host: target.host, crossHost: true };
 }
@@ -118,7 +122,7 @@ async function cli(op: string): Promise<unknown> {
   // A send the sender's daemon refused for the target's pending limit, kept in the service's agent outbox (src/agent-outbox.ts `queue`).
   if (op === "queue") return await serviceCall(service, "api/agent/queue", { from: input.from, to: input.to, role: input.role, message: input.message,
     pending: input.pending, limit: input.limit, behind: input.behind, root: input.root }, AbortSignal.timeout(60_000));
-  // A sibling send to a clean-room test chat, which the service delivers to the trial owner when the sender is not one of the chat's own sessions.
+  // A root's sibling send while a clean-room trial runs: whether the trial's wall refuses it (src/clean-room-subjects.ts).
   if (op === "route") return await serviceCall(service, "api/agent/route", { from: input.from, fromName: input.fromName, to: input.to, message: input.message });
   if (op === "reopen") return await serviceCall(service, "api/agent/reopen", { from: input.from, to: input.to }, AbortSignal.timeout(DAEMON_WORKER_START_MS));
   if (op === "siblings") return await serviceCall(service, `api/agent/siblings?session=${encodeURIComponent(String(input.session))}`);

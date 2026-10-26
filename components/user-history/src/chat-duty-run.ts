@@ -72,11 +72,11 @@ export interface DutyHost {
   /** Applies board ops to the chat's board, for each measured run's goal readings (`goalReadingOps`); absent: runs write no reading. */
   applyBoard?: (chatId: string, ops: (board: ChatBoard) => readonly BoardOp[]) => Promise<void>;
   /**
-   * Sends a server notice to a chat (`Chats.notice`), for each of a precheck's `tells`, from the chat whose duty it is (`routedTell`: a notice
-   * to a clean-room test chat from another chat's duty goes to the trial owner), or to the chat's root job `session` when the tell names one;
-   * absent: the runner sends none.
+   * Sends a server notice to a chat (`Chats.notice`), for each of a precheck's `tells`, from the chat whose duty it is, or to the chat's root
+   * job `session` when the tell names one; false when it sent nothing, since a running clean-room trial takes no notice from another chat's
+   * duty (`routedTell`). Absent: the runner sends none.
    */
-  tell?: (chatId: string, text: string, from: TellSource, session?: string) => Promise<void>;
+  tell?: (chatId: string, text: string, from: TellSource, session?: string) => Promise<boolean | void>;
   /** Whether pi-pool would give the tree rooted at `tree` a `provider` account now (`poolAdmits`), for a cut run's rerun; absent: it admits. */
   poolAdmits?: (tree: string, provider: string) => Promise<boolean>;
   /**
@@ -1116,7 +1116,7 @@ export class Duties {
   }
 
   /** Sends the `handOff` items that the duty job's brief and the runs since did not name (`<dutyId>.handed.json`) once, and returns how many. */
-  private async handNew(chatId: string, dutyId: string, job: DutyJobRef, handOff: HandOff, send: (fresh: readonly FlaggedSlice[]) => Promise<void>, to: string): Promise<number> {
+  private async handNew(chatId: string, dutyId: string, job: DutyJobRef, handOff: HandOff, send: (fresh: readonly FlaggedSlice[]) => Promise<unknown>, to: string): Promise<number> {
     if (!handOff.items.length) return 0;
     const stored = await readFile(this.handedFile(chatId, dutyId), "utf8").then(text => JSON.parse(text) as Handed, () => null);
     const known = new Set(stored?.job === job.id && Array.isArray(stored.keys) ? stored.keys : []);
@@ -1226,7 +1226,7 @@ export class Duties {
     for (const tell of tells) {
       if (typeof tell?.chat !== "string" || typeof tell.text !== "string" || !tell.text.trim()) continue;
       const session = typeof tell.session === "string" ? tell.session : undefined;
-      try { await this.host.tell(tell.chat, tell.text, { chat: chatId, duty: dutyId }, session); sent++; }
+      try { if (await this.host.tell(tell.chat, tell.text, { chat: chatId, duty: dutyId }, session) !== false) sent++; }
       catch (error) { this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: notice to chat ${tell.chat.slice(0, 8)}${session ? `'s job ${session.slice(0, 8)}` : ""} failed: ${message(error)}`); }
     }
     if (sent) this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: sent ${sent} notice${sent === 1 ? "" : "s"} from its precheck`);

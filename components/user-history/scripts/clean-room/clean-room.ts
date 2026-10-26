@@ -193,7 +193,7 @@ const SELF = process.env.CLEAN_ROOM_SESSION ?? "";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /**
- * The session that runs this trial, which gets the agent messages other sessions send its test chats (src/clean-room-subjects.ts): CLEAN_ROOM_SESSION,
+ * The session that runs this trial, which reaches its test chats past the trial's wall (src/clean-room-subjects.ts): CLEAN_ROOM_SESSION,
  * else the Prime session whose kernel started this script. A root's RLM_SESSION_DIR is named for it, and a subagent's holds its one <id>.jsonl.
  */
 function trialOwner(): string | undefined {
@@ -356,8 +356,8 @@ async function setup(flags: Record<string, string>): Promise<void> {
   if (owner) {
     const at = Date.now();
     await fileSubjects(DATA, Object.fromEntries([{ id: chat, name }, ...(madeControl ? [madeControl] : [])].map(one => [one.id, { owner, run: resolve(run), name: one.name, at }])));
-    log(run, `filed the trial owner ${owner} in ${CLEAN_ROOM_SUBJECTS_FILE}, so an agent message from outside the chat's own sessions goes there`);
-  } else log(run, `no trial owner: neither CLEAN_ROOM_SESSION nor RLM_SESSION_DIR names a session, so an agent message from any session reaches the chat`);
+    log(run, `filed the trial owner ${owner} in ${CLEAN_ROOM_SUBJECTS_FILE}, so it reaches the chat past the trial's wall`);
+  } else log(run, `no trial owner: neither CLEAN_ROOM_SESSION nor RLM_SESSION_DIR names a session, so only the standing runners reach the chat past the trial's wall`);
   log(run, `filed ${harness}, seeded from the published global harness store, as the global harness store of the trial's sessions`);
   if (control && madeControl) {
     await setCheckIn(srv, madeControl.id, { pause: "forever" });

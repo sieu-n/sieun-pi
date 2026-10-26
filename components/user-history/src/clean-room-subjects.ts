@@ -1,13 +1,28 @@
 import { createHash } from "node:crypto";
 import { join } from "node:path";
+import { CLEAN_ROOM_CHATS_FILE } from "./chat-corrections.ts";
+import { jobRegistry } from "./chat-sources.ts";
+import { IdIndex } from "./id-index.ts";
 import { snapshotJsonFile, transactJsonFile, type JsonFile } from "./locked-json.ts";
 
 /*
- * The clean-room subjects: each test chat clean-room.ts setup opened, with its trial owner, the session that ran setup. On 10-25 at 00:46:07 KST
- * the AI harness developer environment VP sent its release notice for sieun-pi 9cc887bc to "root disk readings", a running test chat, because
- * that chat's own check-in had told it about a finding. The verdict quoted the notice as someone stepping in and the run was void. So an agent
- * message from outside a subject's own sessions goes to its trial owner (`subjectRoute`), and the sender's receipt says so.
+ * No agent message crosses the wall of a running clean-room trial: the test chat with its own sessions on one side, every other session but
+ * the trial's runners on the other. On 10-25 at 00:46:07 KST the AI harness developer environment VP sent its release notice for sieun-pi
+ * 9cc887bc to "root disk readings", a running test chat, and the verdict quoted it as someone stepping in, so the run was void. The fix then
+ * took such a message to the trial owner filed in clean-room-subjects.json, but on 10-26 that file held no entry for the test chat
+ * "test file counts 4" (01a177e7), so from 12:16 to 12:17Z three messages of the AI harness chat reached it and voided its trial. The trial
+ * had asked first: its check-in job at 12:15:20Z and the chat at 12:16:45Z and 12:17:19Z asked the AI harness chat for code changes. So the
+ * wall reads clean-room-chats.json, which setup always writes, refuses a message in either direction, and names where findings go instead.
  */
+
+/**
+ * The sessions that run clean-room trials, which reach a test chat and which its sessions reach: the realtime layer thread on the Mac and
+ * chat-2572, which collects trial findings.
+ */
+export const TRIAL_RUNNERS: ReadonlyMap<string, string> = new Map([["01a0fd18-88e0-7168-8e3b-b0bc53da3610", "realtime layer"],
+  ["01a162bc-47b4-770b-a9fc-19c3a742e730", "chat-2572"]]);
+/** Where a sender outside a trial sends its findings about a test chat. */
+export const FINDINGS_CHAT = "01a162bc-47b4-770b-a9fc-19c3a742e730";
 
 export const CLEAN_ROOM_SUBJECTS_FILE = "clean-room-subjects.json";
 
@@ -50,118 +65,153 @@ export function ownSessions(agents: readonly { sessionId?: string; link?: string
   return new Set([...dutyJobs, ...agents.flatMap(agent => agent.sessionId && OWN_LINKS.has(agent.link ?? "") ? [agent.sessionId] : [])]);
 }
 
-/** Who gets an agent message sent to a session: the session itself, or the subject's trial owner with the message headed for it. */
-export type Route = { to: "target" } | { to: "owner"; owner: string; text: string };
-
-/** What `routeMessage` reads from the chat service. */
-export interface RouteSources {
+/** What the wall reads from the chat service. */
+export interface TrialSources {
+  /** The running test chats: clean-room-chats.json less the archived ones, since teardown archives each test chat and its trial is then over. */
+  trials(): Promise<readonly string[]>;
   subjects(): Promise<Record<string, Subject>>;
-  /** Whether the chat is archived, which teardown does to every subject; an archived subject's trial is over. */
-  archived(id: string): Promise<boolean>;
-  /** The subject chat's agents (`SessionRow.agents`) and the session ids of its duty jobs. */
+  /** The chat chat-jobs.json files a session under, such as a root job, a resumed job or a fixture; undefined for any other session. */
+  chatOf(session: string): Promise<string | undefined>;
+  /** The test chat's agents (`SessionRow.agents`) and the session ids of its duty jobs. */
   participants(id: string): Promise<{ agents: readonly { sessionId?: string; link?: string }[]; dutyJobs: readonly string[] }>;
 }
 
 /**
- * Where an agent message from session `from` to session `to` goes. A message to an active subject from a session outside its own
- * participants (`ownSessions`) goes to its trial owner; every other message goes to its target. The subject itself and its own sessions
- * always reach it, and so do the owner's messages and the service's wakes, which come by other routes.
+ * The running trial whose tree holds one of `sessions`: the test chat itself, a job chat-jobs.json files under it, or one of its own sessions
+ * (`ownSessions`); undefined when none does.
  */
-export async function routeMessage(sources: RouteSources, message: { from: string; fromName?: string; to: string; text: string }): Promise<Route> {
-  const subject = (await sources.subjects())[message.to];
-  if (!subject || message.from === message.to || message.from === subject.owner || await sources.archived(message.to)) return { to: "target" };
-  const { agents, dutyJobs } = await sources.participants(message.to);
-  if (ownSessions(agents, dutyJobs).has(message.from)) return { to: "target" };
-  const sender = message.fromName ? `${message.fromName} (${message.from})` : message.from;
-  return { to: "owner", owner: subject.owner, text: `[clean-room: ${sender} sent this to "${subject.name}" (${message.to}), a test chat of your trial in ` +
-    `${subject.run}. It is not one of that chat's own sessions, so the chat service brought it to you, the trial owner, and the chat did not get it]\n\n${message.text}` };
+export async function trialOf(sources: TrialSources, sessions: readonly string[]): Promise<string | undefined> {
+  const trials = await sources.trials();
+  if (!trials.length || !sessions.length) return undefined;
+  for (const session of sessions) {
+    if (trials.includes(session)) return session;
+    const chat = await sources.chatOf(session);
+    if (chat && trials.includes(chat)) return chat;
+  }
+  for (const trial of trials) {
+    const { agents, dutyJobs } = await sources.participants(trial);
+    const own = ownSessions(agents, dutyJobs);
+    if (sessions.some(session => own.has(session))) return trial;
+  }
+  return undefined;
 }
 
-/** `RouteSources` from a chat service's files: the subject index in `dataDir`, its archived chats, its catalog rows and its duty runs. */
-export function subjectSources(dataDir: string, read: { archived(): Promise<ReadonlySet<string>>; rows(): Promise<readonly { id: string; agents?: readonly { sessionId?: string; link?: string }[] }[]>;
-  runs?(id: string): Promise<readonly { job?: { id: string } }[]> }): RouteSources {
-  return { subjects: () => readSubjects(dataDir), archived: async id => (await read.archived()).has(id),
-    participants: async id => ({ agents: (await read.rows()).find(row => row.id === id)?.agents ?? [],
-      dutyJobs: (await read.runs?.(id) ?? []).flatMap(run => run.job ? [run.job.id] : []) }) };
-}
+/** An agent message to judge: the sender and the target, each with the root of its tree when it is a subagent's. */
+export interface Crossing { from: string; fromRoot?: string; fromName?: string; to: string; toRoot?: string }
+
+/** Whether a message may go, with the trial it touches; a refused one carries the line its sender reads. */
+export type Verdict = { go: true; trial?: string } | { go: false; trial: string; reason: string };
+
+const ids = (...values: (string | undefined)[]): string[] => [...new Set(values.filter((value): value is string => !!value))];
 
 /**
- * Sends a message through `target`, unless `routeMessage` takes it to the trial owner; then `owner` sends the headed text and answers its
- * delivery id (the agent outbox entry).
+ * The wall of a running trial. A message into a trial's tree goes only from that tree or from one of its runners (`TRIAL_RUNNERS` and the
+ * trial owner its subject entry files); a message out of a trial's tree goes only to that tree or to one of its runners.
  */
-export async function deliverRouted<T>(sources: RouteSources, message: Parameters<typeof routeMessage>[1],
-  send: { target(): Promise<T>; owner(owner: string, text: string): Promise<string> }): Promise<{ to: "target"; sent: T } | { to: "owner"; owner: string; id: string }> {
-  const route = await routeMessage(sources, message);
-  return route.to === "owner" ? { to: "owner", owner: route.owner, id: await send.owner(route.owner, route.text) } : { to: "target", sent: await send.target() };
+export async function judgeCrossing(sources: TrialSources, message: Crossing): Promise<Verdict> {
+  const senders = ids(message.from, message.fromRoot);
+  const targets = ids(message.to, message.toRoot);
+  const [fromTrial, toTrial] = await Promise.all([trialOf(sources, senders), trialOf(sources, targets)]);
+  if (fromTrial === toTrial) return fromTrial ? { go: true, trial: fromTrial } : { go: true };
+  const runs = async (trial: string, sessions: readonly string[]) => {
+    const runners = new Set([...TRIAL_RUNNERS.keys(), ...ids((await sources.subjects())[trial]?.owner)]);
+    return sessions.some(session => runners.has(session));
+  };
+  if (toTrial && !await runs(toTrial, senders)) {
+    return { go: false, trial: toTrial, reason: `agent_message refused: ${message.to} is ${message.to === toTrial ? "" : `in the tree of `}the clean-room trial chat ${toTrial}, ` +
+      `and a message from outside the trial voids it. Send your findings to chat-2572 (${FINDINGS_CHAT}) instead.` };
+  }
+  if (fromTrial && !await runs(fromTrial, targets)) {
+    return { go: false, trial: fromTrial, reason: `agent_message refused: a clean-room trial starts no outside work, so this session of trial chat ${fromTrial} ` +
+      `sends nothing to ${message.to}, which is outside the trial.` };
+  }
+  return { go: true, trial: (toTrial ?? fromTrial)! };
+}
+
+/** `TrialSources` from a chat service's files: its clean-room and archived chats, the subject index and job registry in `dataDir`, its catalog rows and its duty runs. */
+export function trialSources(dataDir: string, read: { archived(): Promise<ReadonlySet<string>>; rows(): Promise<readonly { id: string; agents?: readonly { sessionId?: string; link?: string }[] }[]>;
+  runs?(id: string): Promise<readonly { job?: { id: string } }[]> }): TrialSources {
+  const chats = new IdIndex(join(dataDir, CLEAN_ROOM_CHATS_FILE), "Clean-room chat index");
+  const jobs = jobRegistry(join(dataDir, "chat-jobs.json"));
+  return {
+    trials: async () => {
+      const listed = await chats.ids().catch(() => []);
+      if (!listed.length) return [];
+      const archived = await read.archived();
+      return listed.filter(id => !archived.has(id));
+    },
+    subjects: () => readSubjects(dataDir),
+    chatOf: session => jobs.chatIdOf(session).catch(() => undefined),
+    participants: async id => ({ agents: (await read.rows()).find(row => row.id === id)?.agents ?? [],
+      dutyJobs: (await read.runs?.(id) ?? []).flatMap(run => run.job ? [run.job.id] : []) }),
+  };
 }
 
 /** A delivery id for a message that has no outbox entry: the hash of its text. */
 export const messageId = (text: string): string => `sha256:${createHash("sha256").update(text).digest("hex").slice(0, 12)}`;
 
 /**
- * One delivery receipt, the service.log line a path writes per message it delivers, so a trial audit tells senders and targets apart by session
- * id: a job name alone named two jobs on 10-24. `to` is the target session; `owner` is set when the message went to the trial owner instead.
+ * One receipt, the service.log line a path writes per message (a sibling, cross-host or queued send only when it touches a running trial), so
+ * a trial audit tells senders and targets apart by session id: a job name alone named two jobs on 10-24. `to` is the target session; `refused` is set for a message the wall stopped.
  */
-export interface Delivery { path: "sibling send" | "d9 push" | "job-steer"; from?: string; fromName?: string; fromChat?: string; to: string; id: string; owner?: string }
+export interface Delivery { path: "sibling send" | "cross-host send" | "queued send" | "d9 push" | "job-steer"; from?: string; fromName?: string; fromChat?: string; to: string; id: string; refused?: string }
 
 export function deliveryLine(delivery: Delivery): string {
   const from = `${delivery.from ?? "an unnamed caller"}${delivery.fromName ? ` (${delivery.fromName})` : ""}`;
-  return `delivery ${delivery.path}: from session ${from} of chat ${delivery.fromChat ?? "unknown"} to session ${delivery.to} as ${delivery.id}` +
-    (delivery.owner ? `, taken to the trial owner ${delivery.owner}` : "");
+  return `${delivery.refused ? "refused" : "delivery"} ${delivery.path}: from session ${from} of chat ${delivery.fromChat ?? "unknown"} to session ${delivery.to} as ${delivery.id}` +
+    (delivery.refused ? `, clean-room trial ${delivery.refused}` : "");
 }
 
 /** The source of a d9 push or another duty's notice: the chat whose duty sent it. */
 export interface TellSource { chat: string; duty: string }
 
 /**
- * `DutyHost.tell`: a duty's notice to a chat, through `routeMessage`, with a receipt line per notice. With `session` it goes to that root job
- * of the chat (`job`), routed as a message to the chat, since d9 sends a chat that cannot take a turn nothing and its job's step would have no
- * one to wake it: frontend bro's job "5180 creators cold load" ended idle at 10:13Z on 10-26 with p330 open while every turn of the chat failed on a 429.
+ * `DutyHost.tell`: a duty's notice to a chat, or to that chat's root job `session` when the tell names one, through `judgeCrossing`. A notice
+ * the wall refuses is not sent and answers false. Writes one receipt line per notice.
  */
-export function routedTell(sources: RouteSources, send: { notice(chat: string, text: string): Promise<void>; job(session: string, text: string): Promise<void>;
-  owner(owner: string, text: string): Promise<string> }, log: (line: string) => void): (chat: string, text: string, from: TellSource, session?: string) => Promise<void> {
+export function routedTell(sources: TrialSources, send: { notice(chat: string, text: string): Promise<void>; job(session: string, text: string): Promise<void> },
+  log: (line: string) => void): (chat: string, text: string, from: TellSource, session?: string) => Promise<boolean> {
   return async (chat, text, from, session) => {
     const fromName = `duty ${from.duty}`;
-    const target = session ? () => send.job(session, text) : () => send.notice(chat, text);
-    const sent = await deliverRouted(sources, { from: from.chat, fromName, to: chat, text }, { target, owner: send.owner });
-    log(deliveryLine({ path: "d9 push", from: from.chat, fromName, fromChat: from.chat, to: sent.to === "owner" ? chat : session ?? chat,
-      ...sent.to === "owner" ? { id: sent.id, owner: sent.owner } : { id: messageId(text) } }));
+    const verdict = await judgeCrossing(sources, { from: from.chat, fromName, to: session ?? chat, toRoot: chat });
+    if (verdict.go) await (session ? send.job(session, text) : send.notice(chat, text));
+    log(deliveryLine({ path: "d9 push", from: from.chat, fromName, fromChat: from.chat, to: session ?? chat, id: messageId(text), ...verdict.go ? {} : { refused: verdict.trial } }));
+    return verdict.go;
   };
 }
 
-/** A job-steer the trial owner got instead of the test chat's job. */
-export interface OwnerSteer { act: "trial owner"; session: string; id: string }
+/** A job-steer the wall refused, with the line its caller reads. */
+export interface RefusedSteer { refused: string }
 
 /**
- * `POST api/threads/<chat>/job-steer` through `routeMessage`: a steer of a test chat's job from a caller that is not one of the chat's own
- * sessions (the header `X-Chat-Agent-Session`, absent from an unnamed caller) goes to the trial owner. Writes one receipt line per steer.
+ * `POST api/threads/<chat>/job-steer` through `judgeCrossing`: the caller names its session with `X-Chat-Agent-Session` and its tree's root with
+ * `X-Chat-Agent-Root`; an unnamed caller is outside every trial. Writes one receipt line per steer.
  */
-export async function routedSteer<T>(sources: RouteSources, steer: { caller?: string; callerChat?: string; chat: string; job: string; message: string },
-  send: { steer(): Promise<T>; owner(owner: string, text: string): Promise<string> }, log: (line: string) => void): Promise<T | OwnerSteer> {
-  const sent = await deliverRouted(sources, { from: steer.caller ?? "", ...steer.caller ? {} : { fromName: "an unnamed caller" }, to: steer.chat,
-    text: `[job-steer for its job "${steer.job}"]\n\n${steer.message}` }, { target: send.steer, owner: send.owner });
+export async function routedSteer<T>(sources: TrialSources, steer: { caller?: string; callerRoot?: string; callerChat?: string; chat: string; job: string; message: string },
+  send: { steer(): Promise<T> }, log: (line: string) => void): Promise<T | RefusedSteer> {
+  const verdict = await judgeCrossing(sources, { from: steer.caller ?? "", ...steer.callerRoot ? { fromRoot: steer.callerRoot } : {}, to: steer.chat });
   const from = { ...steer.caller ? { from: steer.caller } : {}, ...steer.callerChat ? { fromChat: steer.callerChat } : {} };
-  if (sent.to === "owner") {
-    log(deliveryLine({ path: "job-steer", ...from, to: steer.chat, id: sent.id, owner: sent.owner }));
-    return { act: "trial owner", session: sent.owner, id: sent.id };
+  if (!verdict.go) {
+    log(deliveryLine({ path: "job-steer", ...from, fromName: `steering job ${steer.job} of chat ${steer.chat}`, to: steer.chat, id: messageId(steer.message), refused: verdict.trial }));
+    return { refused: verdict.reason };
   }
-  const answer: unknown = sent.sent;
+  const answer: unknown = await send.steer();
   if (typeof answer === "object" && answer !== null && "session" in answer && typeof answer.session === "string") {
     log(deliveryLine({ path: "job-steer", ...from, fromName: `steering job ${steer.job} of chat ${steer.chat}`, to: answer.session, id: messageId(steer.message) }));
   }
-  return sent.sent;
+  return answer as T;
 }
 
 /**
- * `POST api/agent/route`: a sibling send to a clean-room test chat (message-limit-check.py). From outside the chat's own sessions `owner` sends
- * it to the trial owner; otherwise the sender's kernel sends it itself. Writes one receipt line either way and answers the kernel.
+ * The check of a sender's kernel before an agent_message.send (`POST api/agent/route`, message-limit-check.py) and of the service paths that
+ * carry one (`api/agent/message`, `api/agent/queue`): the verdict, with one receipt line when the message touches a trial.
  */
-export async function routedSibling(sources: RouteSources, message: Parameters<typeof routeMessage>[1], send: { owner(owner: string, text: string): Promise<string>; chatOf(session: string): Promise<string | undefined> },
-  log: (line: string) => void): Promise<{ redirected: true; owner: string; id: string } | { redirected: false; id: string }> {
-  const route = await routeMessage(sources, message);
-  const id = route.to === "owner" ? await send.owner(route.owner, route.text) : messageId(message.text);
-  const fromChat = await send.chatOf(message.from);
-  log(deliveryLine({ path: "sibling send", from: message.from, ...message.fromName ? { fromName: message.fromName } : {}, ...fromChat ? { fromChat } : {}, to: message.to, id,
-    ...route.to === "owner" ? { owner: route.owner } : {} }));
-  return route.to === "owner" ? { redirected: true, owner: route.owner, id } : { redirected: false, id };
+export async function routedSend(sources: TrialSources, message: Crossing & { text: string; path: Delivery["path"] }, chatOf: (session: string) => Promise<string | undefined>,
+  log: (line: string) => void): Promise<Verdict> {
+  const verdict = await judgeCrossing(sources, message);
+  if (!verdict.trial) return verdict;
+  const fromChat = await chatOf(message.fromRoot ?? message.from);
+  log(deliveryLine({ path: message.path, from: message.from, ...message.fromName ? { fromName: message.fromName } : {}, ...fromChat ? { fromChat } : {}, to: message.to,
+    id: messageId(message.text), ...verdict.go ? {} : { refused: verdict.trial } }));
+  return verdict;
 }

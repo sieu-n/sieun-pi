@@ -383,8 +383,8 @@ test("a down chat's stuck step whose job is a root session is pushed to that job
 
   const sent: string[] = [];
   const receipts: string[] = [];
-  const send = routedTell({ subjects: async () => ({}), archived: async () => false, participants: async () => ({ agents: [], dutyJobs: [] }) },
-    { notice: async chat => { sent.push(`notice ${chat}`); }, job: async session => { sent.push(`job ${session}`); }, owner: async () => "m-0" }, line => receipts.push(line));
+  const send = routedTell({ trials: async () => [], subjects: async () => ({}), chatOf: async () => undefined, participants: async () => ({ agents: [], dutyJobs: [] }) },
+    { notice: async chat => { sent.push(`notice ${chat}`); }, job: async session => { sent.push(`job ${session}`); } }, line => receipts.push(line));
   await send(tell!.chat, tell!.text, { chat: "vp", duty: "d9" }, tell!.session);
   assert.deepEqual(sent, [`job ${JOB}`]);
   assert.match(receipts[0]!, new RegExp(`to session ${JOB} as sha256:`));

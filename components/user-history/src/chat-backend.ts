@@ -14,7 +14,7 @@ import { checkInRecord, JOB_CLEANUP_EVERY_MS } from "./chat-checkin.ts";
 import { checkInSettings } from "./checkin-settings.ts";
 import { checkInDuties } from "./checkin-findings.ts";
 import { CLEAN_ROOM_CHATS_FILE, CLEAN_ROOM_CORRECTIONS_FILE, CorrectionLedger } from "./chat-corrections.ts";
-import { routedTell, subjectSources } from "./clean-room-subjects.ts";
+import { routedTell, trialSources } from "./clean-room-subjects.ts";
 import { claudeReader, leadSessions, markOwnerTurn, poolAdmits, readPoolClasses, readPoolStatus, setPoolPriority, treeAccountWaits, treeFreeAt } from "./chat-pool.ts";
 import { leadWriter, relayStats } from "./chat-hosts.ts";
 import { boardQueueRead, hostsQueueRead, queueReader } from "./chat-turn-queue.ts";
@@ -236,8 +236,8 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       pool: poolWaiting, held: () => chats.poolHeldSessions(),
       stalls }),
     priority: async id => chatPoolPriority((await labels.snapshot()).threads[id]?.priority ?? 0),
-    jobs: dutyJobs, poolAdmits, updating: () => primeUpdateRunning(agentDir, socketPath), tell: routedTell(subjectSources(dataDir, { archived: () => chats.archivedIds(), rows: () => catalog.rows(), runs: (id): Promise<readonly { job?: { id: string } }[]> => duties.store.runs(id) }),
-      { notice: (id, text) => chats.notice(id, text), job: (session, text) => agentOutbox.deliver(session, text, session), owner: (owner, text) => agentOutbox.deliverId(owner, text) }, dutyLog),
+    jobs: dutyJobs, poolAdmits, updating: () => primeUpdateRunning(agentDir, socketPath), tell: routedTell(trialSources(dataDir, { archived: () => chats.archivedIds(), rows: () => catalog.rows(), runs: (id): Promise<readonly { job?: { id: string } }[]> => duties.store.runs(id) }),
+      { notice: (id, text) => chats.notice(id, text), job: (session, text) => agentOutbox.deliver(session, text, session) }, dutyLog),
     checkIn: { view: id => chats.checkInView(id), run: (id, trigger, rerunOf) => chats.runCheckIn(id, trigger, rerunOf), measure: id => chats.measureCheckIn(id),
       set: async (id, change, actor) => { const view = await chats.setCheckIn(id, change, actor); if (view) await catalog.notify(); return view; } } });
   // A gone job's leftovers end on the box whose daemon runs its folder's session; a replay serve stops nothing anywhere.
