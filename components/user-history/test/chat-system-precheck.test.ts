@@ -1,7 +1,7 @@
 // Guards the Chat system duty's precheck (d9), built 10-19 for the owner's rule that a plan holds only tasks that finish (msg mvfb7zt0).
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { agingSince, chatSystemOutput, failingTurns, fixNotMoving, manualSelection, goalsWithNoJob, jobPushes, jobPushRecords, jobPushTells, jobsByChat, ownerMessages, planUpkeep, pushedFile, pushList, pushReached, pushRecords, pushSettled, pushTells, spotAuditLines, spotPick, spread, waitsOnStep, withCatalogOwners, withoutWorkingRuns } from "../scripts/duties/chat-system.ts";
+import { agingSince, chatSystemOutput, failingTurns, fixNotMoving, manualSelection, goalsWithNoJob, downRoutes, jobPushRecords, jobPushTells, jobsByChat, ownerMessages, planUpkeep, pushedFile, pushList, pushReached, pushRecords, pushSettled, pushTells, spotAuditLines, spotPick, spread, waitsOnStep, withCatalogOwners, withoutWorkingRuns } from "../scripts/duties/chat-system.ts";
 import { type PlanInputs, planCounts } from "../scripts/duties/whole-system.ts";
 import type { MetricStreak } from "../src/shared/duty-streak.ts";
 import type { ChatBoard } from "../src/shared/types.ts";
@@ -365,9 +365,9 @@ test("a down chat's stuck step whose job is a root session is pushed to that job
   const named = new Map([[FB, new Map([["inbox shots", ["sub-1"]], ["old walk", ["old-1"]]])]]);
   const stuck = ["p330", "p331", "p332"].map(id => ({ chat: FB, id, text: id }));
   const reads = { boards: new Map([[FB, fb]]), named, rows, chats: new Set([FB]), cancelled: new Set(["old-1"]) };
-  const direct = jobPushes(stuck, new Set([FB]), reads);
+  const direct = downRoutes(stuck, new Set([FB]), reads).pushes;
   assert.deepEqual(direct.map(push => [push.session, push.job, push.steps.map(step => step.id)]), [[JOB, "5180 creators cold load", ["p330"]]]);
-  assert.deepEqual(jobPushes(stuck, new Set(), reads), [], "a chat that takes turns gets its own push");
+  assert.deepEqual(downRoutes(stuck, new Set(), reads), { pushes: [], moves: [] }, "a chat that takes turns gets its own push");
 
   const tag = "[d9 push 2026-10-26T12:24Z]";
   const [tell] = jobPushTells(direct, tag, () => "frontend bro");
@@ -388,4 +388,37 @@ test("a down chat's stuck step whose job is a root session is pushed to that job
   await send(tell!.chat, tell!.text, { chat: "vp", duty: "d9" }, tell!.session);
   assert.deepEqual(sent, [`job ${JOB}`]);
   assert.match(receipts[0]!, new RegExp(`to session ${JOB} as sha256:`));
+});
+
+test("a down chat's stuck step owned by a subagent, by a root job on an offline box or by no job is named as a move_step with one create_session call", () => {
+  const FB = "01a11ba8-9d2c-727c-8ded-38f819ca9f29";
+  const fb = { v: 2, rev: 1, updatedAt: "2026-10-26T14:00:00Z", todos: [], plan: [
+    { id: "p334", text: "A prod brand dashboard opens on the first try", status: "doing", job: "dashboard retries", note: "Done when it is on prod.", children: [] },
+    { id: "p339", text: "One live read per domain", status: "doing", job: "single flight", children: [] },
+    { id: "p341", text: "A step with no job", status: "todo", children: [] }] } as unknown as ChatBoard;
+  const rows = [
+    { sessionId: "sub-1", sessionName: "dashboard retries", sessionFile: `/Users/sieunpark/.prime/agent/session-artifacts/${FB}/sub-1/s.jsonl` },
+    { sessionId: "mac-root", sessionName: "single flight", sessionFile: "/Users/sieunpark/.prime/agent/sessions/mac-root.jsonl" }];
+  const reads = { boards: new Map([[FB, fb]]), named: new Map([[FB, new Map([["dashboard retries", ["sub-1"]], ["single flight", ["mac-root"]]])]]), rows,
+    chats: new Set([FB]), cancelled: new Set<string>(), hostOf: new Map([["sub-1", "mac"], ["mac-root", "mac"]]), away: new Set(["mac"]), dataDir: "/data" };
+  const stuck = ["p334", "p339", "p341"].map(id => ({ chat: FB, id, text: id }));
+  const { pushes, moves } = downRoutes(stuck, new Set([FB]), reads, () => "frontend bro");
+  assert.deepEqual(pushes, []);
+  assert.deepEqual(moves.map(move => [move.id, move.why]), [["p334", "its job is a subagent of the chat, which only the chat can wake"],
+    ["p339", "its root job runs on mac, which Tailscale reads offline"], ["p341", "it names no job session that can be woken"]]);
+  const call = moves[0]!.call;
+  assert.match(call, /^await rlm\.create_session\(".*", name="frontend bro p334 job"\)$/);
+  const brief = JSON.parse(call.slice("await rlm.create_session(".length, call.indexOf(', name="'))) as string;
+  assert.match(brief, /^Owner's words \(10-19\)/);
+  assert.match(brief, /Step p334: "A prod brand dashboard opens on the first try"\.\nIts note: Done when it is on prod\./);
+  assert.match(brief, /board-apply\.ts 01a11ba8-9d2c-727c-8ded-38f819ca9f29 '<ops>' --data-dir \/data` with the ops \[\{"op":"plan_update","id":"p334","job":"frontend bro p334 job","sessionId":"<your own session id>"\}\]/);
+  // Once the Mac answers, its root job gets the push straight and only the subagent's step still moves.
+  const back = downRoutes(stuck, new Set([FB]), { ...reads, away: new Set<string>() }, () => "frontend bro");
+  assert.deepEqual(back.pushes.map(push => [push.session, push.steps.map(step => step.id)]), [["mac-root", ["p339"]]]);
+  assert.deepEqual(back.moves.map(move => move.id), ["p334", "p341"]);
+  const out = chatSystemOutput({ names: new Map([[FB, "frontend bro"]]), stuck, upkeep: [], fleet: { pct: 100, red: [] }, stuckDuties: [], idleGoals: [], followUps: [],
+    detail: "/tmp/d9.md", down: [{ chat: FB, since: 0, turns: 2, cause: "no account token from pi-pool" }], stepMoves: moves });
+  const slices = out.flagged!.filter(slice => slice.kind === "move_step");
+  assert.deepEqual(slices.map(slice => slice.item), ["p334", "p339", "p341"]);
+  assert.match(slices[0]!.excerpt, /^frontend bro: p334 "A prod brand dashboard opens on the first try" is stuck in a chat that cannot take a turn, and its job is a subagent of the chat, .*with this one call, .*: await rlm\.create_session\(/);
 });

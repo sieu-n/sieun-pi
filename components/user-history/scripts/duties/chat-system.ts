@@ -323,7 +323,7 @@ async function poolTrees(): Promise<Set<string>> {
 
 /**
  * One push the duty job sent a chat (`PUSHES_FILE`): when, the tag it put in the message, and the items it named. `session` is the chat's root
- * job the push went to in place of the chat (`jobPushes`).
+ * job the push went to in place of the chat (`downRoutes`).
  */
 export interface Push { at: number; chat: string; tag: string; items: string[]; session?: string }
 /**
@@ -433,29 +433,72 @@ export function waitsOnStep(board: ChatBoard | null, id: string): string | undef
 export interface JobPush { chat: string; session: string; job: string; steps: StuckStep[] }
 
 /**
- * Per root job, the stuck steps of a chat that cannot take a turn (`down`) whose job is a root session: one started with rlm.create_session,
- * whose file is no subagent file under session-artifacts, that is no owner chat and that no Stop or Archive still holds (`cancelHolds`). A
- * step's job is its sessionId or the sessions its job name names (`stepSessions`), the newest by its catalog row. d9 pushes a down chat
- * nothing, so until 10-26 such a step had no one to wake its job: frontend bro's job "5180 creators cold load" ended idle at 10:13Z with p330
- * open while the chat failed every turn on a 429, and the 12:24Z run's job steered it by hand.
+ * A down chat's stuck step that no push can reach: its job is a subagent of the chat, its root job runs on a box Tailscale reads offline, or it
+ * names no job session at all. `call` is the one rlm.create_session call that moves it to a new root job on this box, whose brief has the job
+ * claim the step on the board first.
  */
-export function jobPushes(stuck: readonly StuckStep[], down: ReadonlySet<string>, reads: { boards: ReadonlyMap<string, ChatBoard | null>;
-  named: ReadonlyMap<string, ReadonlyMap<string, readonly string[]>>; rows: readonly CatalogRow[]; chats: ReadonlySet<string>; cancelled: ReadonlySet<string> }): JobPush[] {
+export interface StepMove { chat: string; id: string; text: string; why: string; job: string; call: string }
+
+/** What `downRoutes` reads: the boards, the job names' sessions, both boxes' catalog rows with the box each runs on, the offline boxes and the data dir. */
+export interface RouteReads { boards: ReadonlyMap<string, ChatBoard | null>; named: ReadonlyMap<string, ReadonlyMap<string, readonly string[]>>; rows: readonly CatalogRow[];
+  chats: ReadonlySet<string>; cancelled: ReadonlySet<string>; hostOf?: ReadonlyMap<string, string | null>; away?: ReadonlySet<string>; dataDir?: string }
+
+/** The board-apply command a job runs on a chat's board. */
+const boardApply = (chat: string, dataDir: string): string =>
+  `cd /home/sieun/.local/share/sieun-pi-chat/current/components/user-history && node --import tsx scripts/board-apply.ts ${chat} '<ops>' --data-dir ${dataDir}`;
+
+/** The brief of the root job that takes over a down chat's step: the owner's rule, the step, how to claim it and how to work it with no chat to report to. */
+export function moveBrief(input: { chat: string; chatName: string; item: PlanItem; job: string; dataDir: string }): string {
+  const { chat, chatName, item, job } = input;
+  return [`Owner's words (10-19): "the Chat (and Chat-check-in) MUST BE DESIGNED SO THAT IT ACTIVELY PERSUES AND CLEARS ALL THE TASKS."`, "",
+    `You are the job "${job}" of the chat "${chatName}" (${chat}), started by the chat system duty (d9) because that chat fails every turn and nothing moves its step ${item.id}.`,
+    `Step ${item.id}: "${item.text}".`, ...item.note ? [`Its note: ${item.note}`] : [], ...item.waitFor ? [`It waits for: ${item.waitFor}`] : [], "",
+    `1. First claim the step: run \`${boardApply(chat, input.dataDir)}\` with the ops [{"op":"plan_update","id":"${item.id}","job":${JSON.stringify(job)},"sessionId":"<your own session id>"}].`,
+    `2. Work the step to its Done when line, and keep its note current with the same command after each milestone.`,
+    `3. Put any ask of the owner on For you, close the step only on the evidence its Done when line names, and send the chat nothing, since nobody reads it until it takes a turn.`,
+    `4. Follow the repo's AGENTS.md, write in English and follow the unslop skill.`].join("\n");
+}
+
+/**
+ * Where d9's push goes for each stuck step of a chat that cannot take a turn (`down`). A step whose job is a root session (a file under
+ * sessions/, no owner chat, no Stop or Archive that still holds) on a box that answers gets the push straight, per job (`pushes`). Every other
+ * step with an id gets a `StepMove` (`moves`). A step's job is its sessionId or the sessions its job name names (`stepSessions`), the newest
+ * by its catalog row. d9 pushes a down chat nothing, so until 10-26 such a step had no one to wake its job: frontend bro's job "5180 creators
+ * cold load" ended idle at 10:13Z with p330 open while the chat failed every turn on a 429, and the 12:24Z run's job steered it by hand. At
+ * 14:19Z its p334, p339 and p340 belonged to subagents of the chat on the Mac, which Tailscale read offline, and the run's job moved them by hand.
+ */
+export function downRoutes(stuck: readonly StuckStep[], down: ReadonlySet<string>, reads: RouteReads, name: (chat: string) => string = chat => chat.slice(0, 8)):
+  { pushes: JobPush[]; moves: StepMove[] } {
   const out = new Map<string, JobPush>();
+  const moves: StepMove[] = [];
   for (const step of stuck) {
     if (!step.id || !down.has(step.chat)) continue;
     let item: PlanItem | undefined;
     walk(reads.boards.get(step.chat)?.plan ?? [], candidate => { if (candidate.id === step.id) item = candidate; });
     if (!item) continue;
     const ids = stepSessions(item, reads.named.get(step.chat) ?? new Map());
-    const root = reads.rows.filter(row => ids.includes(row.sessionId) && !!row.sessionFile && !ROOT_OF.test(row.sessionFile) &&
-      !reads.chats.has(row.sessionId) && !reads.cancelled.has(row.sessionId)).sort((a, b) => ms(b.lastActivityAt) - ms(a.lastActivityAt))[0];
-    if (!root) continue;
-    const push = out.get(root.sessionId) ?? out.set(root.sessionId, { chat: step.chat, session: root.sessionId, job: item.job ?? root.sessionName ?? root.sessionId, steps: [] }).get(root.sessionId)!;
-    push.steps.push(step);
+    const owners = reads.rows.filter(row => ids.includes(row.sessionId)).sort((a, b) => ms(b.lastActivityAt) - ms(a.lastActivityAt));
+    const roots = owners.filter(row => !!row.sessionFile && !ROOT_OF.test(row.sessionFile) && !reads.chats.has(row.sessionId) && !reads.cancelled.has(row.sessionId));
+    const host = (row: CatalogRow): string | null => reads.hostOf?.get(row.sessionId) ?? null;
+    const root = roots.find(row => { const box = host(row); return box === null || !reads.away?.has(box); });
+    if (root) {
+      const push = out.get(root.sessionId) ?? out.set(root.sessionId, { chat: step.chat, session: root.sessionId, job: item.job ?? root.sessionName ?? root.sessionId, steps: [] }).get(root.sessionId)!;
+      push.steps.push(step);
+      continue;
+    }
+    const offline = roots.map(host).find(box => box !== null);
+    const why = offline ? `its root job runs on ${offline}, which Tailscale reads offline` : owners.some(row => ROOT_OF.test(row.sessionFile ?? ""))
+      ? "its job is a subagent of the chat, which only the chat can wake" : "it names no job session that can be woken";
+    const job = `${name(step.chat)} ${item.id} job`;
+    const brief = moveBrief({ chat: step.chat, chatName: name(step.chat), item, job, dataDir: reads.dataDir ?? "/home/sieun/.prime/agent/browser-chat" });
+    moves.push({ chat: step.chat, id: item.id, text: item.text, why, job, call: `await rlm.create_session(${JSON.stringify(brief)}, name=${JSON.stringify(job)})` });
   }
-  return [...out.values()];
+  return { pushes: [...out.values()], moves };
 }
+
+/** The line of a move_step item, in the flagged slice and the detail file: the step, why no push reaches it, and the one call that moves it. */
+const moveLine = (move: StepMove, chat: string): string => `${chat}: ${move.id} ${quote(move.text)} is stuck in a chat that cannot take a turn, and ${move.why}, ` +
+  `so no push reaches it. Move it to a new root job with this one call, whose brief has the job claim ${move.id} on the board: ${move.call}`;
 
 /** The line that names a job push, in the flagged slice and the detail file. */
 const jobPushLine = (push: JobPush, chat: string): string => `${chat}'s chat cannot take a turn, so d9 sent its job "${push.job}" (${push.session}) ` +
@@ -487,8 +530,10 @@ export interface ChatSystemFacts {
   followUps: readonly PushCheck[];
   /** The chats on the push list or the follow-ups that cannot take a turn; d9 sends them no push. */
   down?: readonly ChatDown[];
-  /** The pushes d9 sends straight to the root jobs of down chats' stuck steps (`jobPushes`). */
+  /** The pushes d9 sends straight to the root jobs of down chats' stuck steps (`downRoutes`). */
   jobPushes?: readonly JobPush[];
+  /** The down chats' stuck steps no push reaches, each with the call that moves it to a new root job (`downRoutes`). */
+  stepMoves?: readonly StepMove[];
   detail: string;
 }
 
@@ -502,6 +547,7 @@ export function chatSystemOutput(facts: ChatSystemFacts): PrecheckOutput {
   const down = new Set((facts.down ?? []).map(entry => entry.chat));
   const flagged: FlaggedSlice[] = (facts.down ?? []).map(entry => ({ kind: "chat_down", chat: entry.chat, excerpt: `${downLine(entry, name(entry.chat))}.` }));
   for (const push of facts.jobPushes ?? []) flagged.push({ kind: "job_push", chat: push.chat, excerpt: `${jobPushLine(push, name(push.chat))}; send it nothing again.` });
+  for (const move of facts.stepMoves ?? []) flagged.push({ kind: "move_step", chat: move.chat, item: move.id, excerpt: moveLine(move, name(move.chat)) });
   const head = (kind: string, count: number, what: string, chats: number) => {
     if (count) flagged.push({ kind, excerpt: `${count} ${what} in ${chats} ${chats === 1 ? "chat" : "chats"}; every one is in ${facts.detail}.` });
   };
@@ -781,10 +827,13 @@ async function main(): Promise<void> {
   }
   const pushes = listedPushes.filter(entry => !down.some(item => item.chat === entry.chat));
   const cancels = parseJobCancels(JSON.parse(await readFile(join(dataDir, JOB_CANCELS_FILE), "utf8").catch(() => "{}")));
-  const direct = jobPushes(stuck, new Set(down.map(entry => entry.chat)), { boards: plan.boards, named: owners.named, rows, chats: new Set(ids),
-    cancelled: new Set(Object.entries(cancels).flatMap(([session, cancel]) => cancelHolds(cancel) ? [session] : [])) });
+  const hostOf = new Map<string, string | null>();
+  for (const copy of parsed) for (const row of copy.rows) if (!hostOf.has(row.sessionId) || copy.host === null) hostOf.set(row.sessionId, copy.host);
+  const routes = downRoutes(stuck, new Set(down.map(entry => entry.chat)), { boards: plan.boards, named: owners.named, rows, chats: new Set(ids), hostOf,
+    away: new Set(away.map(host => host.name)), dataDir, cancelled: new Set(Object.entries(cancels).flatMap(([session, cancel]) => cancelHolds(cancel) ? [session] : [])) }, name);
+  const direct = routes.pushes;
   const result = chatSystemOutput({ names, stuck, upkeep, fleet: { pct: fleet.metrics.duties_green_pct, red }, stuckDuties: counts.redDuties, idleGoals, followUps, down,
-    jobPushes: direct, detail, hostHeld });
+    jobPushes: direct, stepMoves: routes.moves, detail, hostHeld });
   const fleetMissing = fleet.flagged.filter(slice => slice.kind === "fleet_data_missing");
   result.flagged!.push(...fleetMissing);
 
@@ -810,6 +859,7 @@ async function main(): Promise<void> {
     `## Push list (${pushes.length} chats)`, "",
     ...down.map(entry => `${downLine(entry, name(entry.chat))}. Its push would have named: ${pushItems(listedPushes.find(item => item.chat === entry.chat) ?? { chat: entry.chat, goals: [], steps: [], duties: [], upkeep: [] }) || "only the last run's push"}.\n`),
     ...direct.map(push => `${jobPushLine(push, name(push.chat))}, tagged ${tag}, and ${PUSHES_FILE} records it. Send it nothing again.\n`),
+    ...routes.moves.length ? [section(`Steps of a down chat to move to a new root job (${routes.moves.length})`, routes.moves.map(move => moveLine(move, name(move.chat))))] : [],
     `The server sent each chat below its push, tagged ${tag}, when this run's precheck ended, and ${PUSHES_FILE} records each one. Send none of them again. ` +
       "Follow up only where a chat's answer shows it did not act.", "",
     ...pushes.map((entry, index) => `${index + 1}. ${name(entry.chat)} (${entry.chat}): ${pushItems(entry)}.`), "",
