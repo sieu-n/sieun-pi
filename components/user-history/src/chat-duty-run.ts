@@ -244,7 +244,7 @@ function checkInMinutes(value: unknown): number {
  * Runs each chat's due duties on the server: a skip policy on overlap (a duty with a run going starts no other, and each slot it holds up while measuring gets a skipped record), one catch-up for a daily slot
  * missed by at most CATCH_UP_MS, the precheck with the file contract and its timeout, the measure against the targets, and then one duty job
  * per run with the precheck as context (src/chat-duty-job.ts), met or missed. One job per duty per slot: a run whose slot already has a job
- * starts none, and while the duty's last job still works a run measures but starts no job and says so in its summary, unless that job is stuck past
+ * starts none, and while the duty's last job or an older one woken again (`olderLive`) still works a run measures but starts no job and says so in its summary, unless that job is stuck past
  * `stuckAfterMs` of its duty's schedule, which the run replaces. The run that starts a job retires the
  * last one: it leaves the registry at once and its archive is queued, so a slow daemon never holds up the start. A precheck that errors ERROR_RUNS_TARGET times in a row or more keeps running on schedule, and each such run's job is told the streak and to fix it. The check-in duty's
  * schedule and precheck live on the chat server, which hands each run here (`checkIn`); its card reads and edits the chat's check-in setting.
@@ -357,7 +357,7 @@ export class Duties {
 
   /**
    * Starts a push run of a red standing duty that is not due (`pushMisses`) when no job is at work on it: its last duty job has ended or sent
-   * its report (`reportedFree`), and no open fix step linked to a missed metric has a live job (`dutyFixes`). A job that cannot be read counts
+   * its report (`reportedFree`), no older job of the duty works again (`olderLive`), and no open fix step linked to a missed metric has a live job (`dutyFixes`). A job that cannot be read counts
    * as ended, so the push run's own start records why it failed. The push run is an ordinary run that leaves the schedule where it was. An ended job whose run has no after-job
    * measure yet gets that measure first (`endJob`, shared with the scan), and the push judges on it, so no push measures beside it.
    */
@@ -369,9 +369,11 @@ export class Duties {
     let own = runs.filter(run => run.duty === duty.id);
     if (!pushMisses(own, counted, everyMs, this.now())) return;
     const lastRun = own.find((run): run is DutyRunRecord & { job: DutyJobRef } => run.job !== undefined);
-    const working = !!lastRun && await this.host.jobs.working(lastRun.job).catch(() => false) && !(await this.reportedFree(chatId, lastRun.job));
+    const newestWorks = !!lastRun && await this.host.jobs.working(lastRun.job).catch(() => false) && !(await this.reportedFree(chatId, lastRun.job));
+    const live = newestWorks && lastRun ? lastRun.job : lastRun ? await this.olderLive(chatId, own, lastRun.job, duty.schedule) : null;
+    const working = live !== null;
     // A working job takes the push run's findings (`handOff`), so it gets one when its duty's last measure flagged items to hand off.
-    if (working && !(await this.handsOffBeside(own, lastRun.job))) return;
+    if (live && !(await this.handsOffBeside(own, live))) return;
     // A cut run waits for its rerun once pi-pool admits its tree (`rerunCut`), so it is still going: at 15:50:20Z on 10-19 the AI harness chat's
     // d9 got a push run while its 15:34Z run waited for its slot, and at 16:15:41Z frontend bro's d1 got one while its 15:29Z push run did.
     const lastCut = !working && lastRun && !own.some(run => run.rerunOf === lastRun.at) ? await this.cutOf(chatId, lastRun) : null;
@@ -977,7 +979,8 @@ export class Duties {
    * the job to retire, with a note when it was stuck. A job whose report is in (`reported`) is done though it works on: only its scheduled job
    * or board.wake keeps it, and the run retires it and starts its own job with the run's findings. A job kept only by pi-pool's turn queue
    * (`inTurnQueue`) still takes the run's hand-off as `working`: from 10-23 10:27Z to 10-24 05:18Z, 18 missed runs on 4 chats skipped beside
-   * a job in that queue and handed it nothing, among them d4 at 00:26Z and 05:18Z with 5 and 12 wiki problems.
+   * a job in that queue and handed it nothing, among them d4 at 00:26Z and 05:18Z with 5 and 12 wiki problems. A run that would retire the
+   * last job skips instead while an older job of the duty works again (`olderLive`), and hands that job its items.
    */
   private async previous(chatId: string, dutyId: string, schedule: DutySchedule, slot: number): Promise<Previous> {
     const runs = (await this.store.runs(chatId)).filter(run => run.duty === dutyId);
@@ -991,11 +994,36 @@ export class Duties {
       await this.store.updateRun(chatId, dutyId, started.at, record => { record.keptAt = this.now(); }).catch(error => this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: keptAt of ${last.name}: ${message(error)}`));
       return { skipped: `${STILL_WORKING} (job ${last.name} ${kept})`, held: { job: last, why: kept }, ...inTurnQueue(kept) ? { working: last } : {} };
     }
-    if (!(await this.host.jobs.working(last))) return { last, lastRun: started };
-    if (reported) return { last, lastRun: started, replaced: ` (replaced job ${last.name}, whose report was in)` };
-    const workingMs = this.now() - Math.max(started.at, started.keptAt ?? 0);
-    if (workingMs <= stuckAfterMs(schedule)) return { skipped: `${STILL_WORKING} (job ${last.name})`, working: last };
-    return { last, lastRun: started, replaced: ` (replaced stuck job ${last.name}, working ${Math.round(workingMs / 60_000)} min)` };
+    let next: Previous;
+    if (!(await this.host.jobs.working(last))) next = { last, lastRun: started };
+    else if (reported) next = { last, lastRun: started, replaced: ` (replaced job ${last.name}, whose report was in)` };
+    else {
+      const workingMs = this.now() - Math.max(started.at, started.keptAt ?? 0);
+      if (workingMs <= stuckAfterMs(schedule)) return { skipped: `${STILL_WORKING} (job ${last.name})`, working: last };
+      next = { last, lastRun: started, replaced: ` (replaced stuck job ${last.name}, working ${Math.round(workingMs / 60_000)} min)` };
+    }
+    const live = await this.olderLive(chatId, runs, last, schedule);
+    return live ? { skipped: `${STILL_WORKING} (job ${live.name}, an older job of this duty)`, working: live } : next;
+  }
+
+  /**
+   * The newest job of an older run of the duty that still works with no report in, from a run of the last `stuckAfterMs(schedule)`; null when
+   * none does. A later run retired it, but a message woke it again, so it is the duty's live job and a new run hands it its items instead of
+   * starting a second job. On 10-26 the Wiki dream's 10:18 KST job was cut at 01:48:47Z, its rerun started the 10:56 job at 01:57:56Z and
+   * retired it, and the job sweep's continue to its subagent at 01:58Z, relayed through it, woke it. The 10:56 job ended at 02:04Z, and the
+   * 02:56Z push read only that newest job, found it ended and started the 11:58 job, which worked the same 12 pages as the 10:18 job.
+   */
+  private async olderLive(chatId: string, runs: readonly DutyRunRecord[], newest: DutyJobRef, schedule: DutySchedule): Promise<DutyJobRef | null> {
+    const since = this.now() - stuckAfterMs(schedule);
+    const seen = new Set([newest.id]);
+    for (const run of runs) {
+      if (run.at < since) break;
+      const job = run.job;
+      if (!job || seen.has(job.id)) continue;
+      seen.add(job.id);
+      if (await this.host.jobs.working(job).catch(() => false) && !(await this.reportedFree(chatId, job))) return job;
+    }
+    return null;
   }
 
   /**
