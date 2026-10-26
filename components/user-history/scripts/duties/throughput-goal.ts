@@ -20,8 +20,9 @@ import { type DsQuery, HOUR, MINUTE, PG, PROM, grafanaClient, num, promInstant, 
  *   down: on 10-22 it read 11,100 from 00:55 to 01:50Z while census finished 56,843 jobs in the 01:00Z hour, so a stopped crawl would read green there;
  * - Meta Ads advertiser re-reads (p850, every due advertiser read within 7 days): advertiser walks finished a minute over 24 h (prod Postgres
  *   meta_ads_walks, as auto-sns-agent scripts/duties/crawler/meta-ads-crawl.mjs reads it) against the walks due now spread over the 7 days;
- * - Instagram re-reads (p683, at most 1% of read accounts past 7 days; p829, every profile re-read within 14 days): ten 0.1% samples of prod
- *   instagram_census (REFRESH_SEEDS).
+ * - Instagram re-reads (p683, owner 10-26: "1k+ every month, 10K+ every week" and "under 1k also monthly", at most 1% of read accounts with
+ *   10,000+ followers past 7 days and at most 1% of the rest past 30 days; p829, every profile re-read within 14 days): ten 0.1% samples of
+ *   prod instagram_census (REFRESH_SEEDS).
  * Each goal number comes from the board item at run time: its target, or the number in its title when it has none. Platforms that crawl on
  * prod with no goal on the board (crawler.job_run_events crawl_profile, and Instagram posts) are listed in the run detail and left out of the count.
  * The supporting metrics keep the rest of the owner's 10-19 duties for crawler-v3 (msg mvfe8foz): "Geonode mbps >=100mbps always", "nothing is
@@ -113,20 +114,26 @@ export const WRITER_LAG_EXPR = 'max(max_over_time(crawler_v3_bus_group_lag_recor
  * (0.064%) and 3 past 14 days, all three in a failing streak of 8 to 16 reads (a route-deadline block, a status-only shell, a logged-out null root).
  */
 export const REFRESH_SEEDS: readonly number[] = [101, 102, 103, 104, 105, 106, 107, 108, 109, 110];
+/** The weekly tier's floor (owner 10-26, "10K+ every week"), as the census reads it: no follower count reads as 0 (auto-sns-agent census policy.cadence). */
+export const WEEKLY_MIN_FOLLOWERS = 10_000;
+const BIG = `coalesce(followers, 0) >= ${WEEKLY_MIN_FOLLOWERS}`;
 export const refreshSql = (seed: number): string => `SELECT
   count(*) FILTER (WHERE last_ok_at IS NOT NULL AND state <> 'gone') AS read,
-  count(*) FILTER (WHERE last_ok_at < now() - interval '7 days' AND state <> 'gone') AS past7,
   count(*) FILTER (WHERE last_ok_at < now() - interval '14 days' AND state <> 'gone') AS past14,
-  count(*) FILTER (WHERE last_ok_at < now() - interval '7 days' AND state <> 'gone' AND lane = 'history') AS "past7History"
+  count(*) FILTER (WHERE last_ok_at IS NOT NULL AND state <> 'gone' AND ${BIG}) AS "readBig",
+  count(*) FILTER (WHERE last_ok_at < now() - interval '7 days' AND state <> 'gone' AND ${BIG}) AS "past7Big",
+  count(*) FILTER (WHERE last_ok_at < now() - interval '30 days' AND state <> 'gone' AND NOT ${BIG}) AS "past30Rest"
 FROM instagram_census TABLESAMPLE SYSTEM(0.1) REPEATABLE(${seed})`;
-export interface RefreshSample { read: number; past7: number; past14: number; past7History: number }
-/** Sums the samples; null when none answered, so the metrics stay unmeasured instead of reading 0%. */
-export function refreshShares(samples: readonly RefreshSample[]): { past7Pct: number; within14Pct: number; sum: RefreshSample } | null {
-  const sum = samples.reduce((acc, s) => ({ read: acc.read + s.read, past7: acc.past7 + s.past7, past14: acc.past14 + s.past14, past7History: acc.past7History + s.past7History }),
-    { read: 0, past7: 0, past14: 0, past7History: 0 });
+export interface RefreshSample { read: number; past14: number; readBig: number; past7Big: number; past30Rest: number }
+export interface RefreshShares { big7Pct: number | null; rest30Pct: number | null; within14Pct: number; sum: RefreshSample }
+/** Sums the samples; null when none answered, so the metrics stay unmeasured instead of reading 0%. A tier with no sampled row reads null. */
+export function refreshShares(samples: readonly RefreshSample[]): RefreshShares | null {
+  const sum = samples.reduce((acc, s) => ({ read: acc.read + s.read, past14: acc.past14 + s.past14, readBig: acc.readBig + s.readBig,
+    past7Big: acc.past7Big + s.past7Big, past30Rest: acc.past30Rest + s.past30Rest }), { read: 0, past14: 0, readBig: 0, past7Big: 0, past30Rest: 0 });
   if (!sum.read) return null;
-  const pct = (n: number): number => Math.round((100_000 * n) / sum.read) / 1000;
-  return { past7Pct: pct(sum.past7), within14Pct: Math.round(100_000 - (100_000 * sum.past14) / sum.read) / 1000, sum };
+  const pct = (n: number, of: number): number | null => (of ? Math.round((100_000 * n) / of) / 1000 : null);
+  return { big7Pct: pct(sum.past7Big, sum.readBig), rest30Pct: pct(sum.past30Rest, sum.read - sum.readBig),
+    within14Pct: Math.round(100_000 - (100_000 * sum.past14) / sum.read) / 1000, sum };
 }
 
 /** The Instagram pipeline queues: Kafka consumer lag, dead letters, search sync outbox and Redis stream lag. */
@@ -343,9 +350,12 @@ export function goalRows(d: ThroughputData): GoalRow[] {
     { platform: "Meta Ads advertiser re-reads", item: "p850", op: ">=", unit: "", reads: "walks finished a minute over 24 h",
       value: d.meta ? d.meta.finished24h / (24 * 60) : null, goal: d.meta && days !== null ? d.meta.due / (days * 24 * 60) : null, source: metaDays.source,
       extra: d.meta && days !== null ? `(${d.meta.due.toLocaleString("en-US")} advertiser walks due now, read within ${days} days)` : undefined },
-    { platform: "Instagram weekly re-reads", item: "p683", value: shares?.past7Pct ?? null, op: "<=", unit: "%",
-      reads: "of sampled read accounts last read over 7 days ago", ...goal("p683"),
-      extra: shares ? `(${shares.sum.past7.toLocaleString("en-US")} of ${shares.sum.read.toLocaleString("en-US")}, ${shares.sum.past7History.toLocaleString("en-US")} in the history lane)` : undefined },
+    { platform: "Instagram 10k+ weekly re-reads", item: "p683", value: shares?.big7Pct ?? null, op: "<=", unit: "%",
+      reads: "of sampled read accounts with 10,000+ followers last read over 7 days ago", ...goal("p683"),
+      extra: shares ? `(${shares.sum.past7Big.toLocaleString("en-US")} of ${shares.sum.readBig.toLocaleString("en-US")})` : undefined },
+    { platform: "Instagram under-10k monthly re-reads", item: "p683", value: shares?.rest30Pct ?? null, op: "<=", unit: "%",
+      reads: "of the other sampled read accounts last read over 30 days ago", ...goal("p683"),
+      extra: shares ? `(${shares.sum.past30Rest.toLocaleString("en-US")} of ${(shares.sum.read - shares.sum.readBig).toLocaleString("en-US")})` : undefined },
     { platform: "Instagram 2-week re-reads", item: "p829", value: shares?.within14Pct ?? null, op: ">=", unit: "%", goal: WITHIN_14D_PCT, source: "duty",
       reads: "of sampled read accounts re-read within 14 days", extra: shares ? `(${shares.sum.past14} past 14 days; the duty's line, the board item says 100%)` : undefined },
     writerLagRow(d, goal("p826").goal),
@@ -576,7 +586,8 @@ export async function measure(query: DsQuery | null, api: GrafanaApi | null, aut
     step("refresh age", async () => {
       const read = async (seed: number): Promise<RefreshSample> => {
         const row = (await sqlRows(query, PG.prod, refreshSql(seed)))[0] ?? {};
-        return { read: num(row.read) ?? 0, past7: num(row.past7) ?? 0, past14: num(row.past14) ?? 0, past7History: num(row.past7History) ?? 0 };
+        return { read: num(row.read) ?? 0, past14: num(row.past14) ?? 0, readBig: num(row.readBig) ?? 0, past7Big: num(row.past7Big) ?? 0,
+          past30Rest: num(row.past30Rest) ?? 0 };
       };
       const half = REFRESH_SEEDS.length / 2;
       const lanes = [REFRESH_SEEDS.slice(0, half), REFRESH_SEEDS.slice(half)];
