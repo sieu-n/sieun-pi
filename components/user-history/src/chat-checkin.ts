@@ -586,8 +586,6 @@ export function endedWithoutReport(before: readonly ChildAgent[], after: readonl
 export const JOB_CLEANUP_EVERY_MS = 10 * 60_000;
 /** How often the service looks for reported roots to end (`idleRoots`): each look reads the chat's board and one summary per reported root. */
 export const ROOT_END_EVERY_MS = 60_000;
-/** A job quiet this long whose only open work is a board wait is ended, with its state saved on the step (`waitingJobs`). */
-export const PARK_IDLE_MS = 60 * 60_000;
 
 /** A direct subagent that ended its task: done, not working, its final report sent (`repliedSinceTask`) and in the chat's transcript (`said`). */
 function reported(child: ChildAgent, ids: ReadonlySet<string>, said: ReadonlyMap<string, JobMessage>): boolean {
@@ -618,27 +616,6 @@ export function finishedJobs(children: readonly ChildAgent[], board: ChatBoard |
   const open = openSteps(board);
   return children.filter(child => reported(child, ids, said) && said.get(childName(child))?.parked === undefined &&
     !open.some(item => stepNamesJob(item, jobRef(child))));
-}
-
-/**
- * The chat's jobs that ended their task, have been quiet PARK_IDLE_MS, and that open steps still name (a wait, or a step left doing). Each comes
- * with those steps, so the chat can save the job's state on them and delete it; the step's class then asks the chat for a fresh job. On 10-14
- * at 12:07Z frontend bro's connections multiple accounts (quiet 417 min, p106 doing, p115 blocked on a todo) and email list funnel columns
- * (355 min, p118 doing) held their kernels only because a step named them, and neither step had a waitFor. A job owed work by its parked
- * words alone, with no step to hold it, is kept. A job that ended its last task with no reply to the chat is ended the same way: it handed
- * its result to a sibling or ended silently, so neither rule took it, and on 10-14 at 15:2xZ the 5 such jobs (Crawler VP's database explorer,
- * engage login redirect and api health snapshots, VP of CI's ci scope root paths, launch main bro's collab backfill) sat resident under open
- * steps, collab backfill quiet 628 min.
- */
-export function waitingJobs(children: readonly ChildAgent[], board: ChatBoard | null, now: number, said: ReadonlyMap<string, JobMessage> = new Map()): { child: ChildAgent; steps: PlanItem[] }[] {
-  const ids = new Set(children.map(child => child.id));
-  const open = openSteps(board);
-  return children.flatMap(child => {
-    const done = reported(child, ids, said) || (ended(child, ids) && child.repliedSinceTask === false);
-    if (!done || child.lastActivityAt === undefined || now - child.lastActivityAt < PARK_IDLE_MS) return [];
-    const steps = open.filter(item => stepNamesJob(item, jobRef(child)));
-    return steps.length ? [{ child, steps }] : [];
-  });
 }
 
 const HANDED = "Handed back: ";

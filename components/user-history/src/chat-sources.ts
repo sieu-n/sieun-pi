@@ -11,7 +11,7 @@ import type { HeldTurns } from "./held-turns.ts";
 import type { Unstarted } from "./brief-keeper.ts";
 import type { ClaudeState } from "./chat-recovery.ts";
 import type { CheckInRun, CheckInStart } from "./chat-duty-run.ts";
-import type { JobModel, JobResumes } from "./job-resume.ts";
+import type { JobResumes } from "./job-resume.ts";
 import type { PrimeUpdate } from "./prime-update.ts";
 import type { InterruptedReport, JobOf } from "./shared/interrupted.ts";
 import type { Wake } from "./wakes.ts";
@@ -389,15 +389,10 @@ export interface CheckInSource {
   /** The sessions in one tool call past STALL_MS at a time (`stalledCalls`); the check-in counts a job stalled in one as not working. Absent: none. */
   stalls?: (now: number) => ReadonlyMap<string, StalledCall>;
   /**
-   * Where the cleanup saves a job it ends while the job waits on a board step (`JobResumes`, src/job-resume.ts), and how it writes that step's
-   * note (the board store's apply). Absent: such a job is kept.
+   * Where the cleanup saves a root it archives (`JobResumes`, src/job-resume.ts), and how it writes the note of a step it hands back to the chat
+   * (the board store's apply). Absent: no root is archived and no step is handed back.
    */
-  resumes?: { store: JobResumes; applyBoard(id: string, ops: readonly BoardOp[]): Promise<unknown>;
-    /**
-     * Starts a fresh root job of the chat (chat-duty-job.ts start) named `name` with the brief `brief(chat name)`, on `model` when given (the
-     * ended job's own, `jobModel`), else on the daemon's default; absent, the steps keep only the note.
-     */
-    restart?(chat: string, name: string, brief: (chatName: string) => string, model?: JobModel): Promise<{ id: string; name: string }> };
+  resumes?: { store: JobResumes; applyBoard(id: string, ops: readonly BoardOp[]): Promise<unknown> };
   /**
    * Sends "continue" to each interrupted run that `isJob` keeps, as the resume script finds them at any depth (`InterruptedRuns.resumeJobs`).
    * Absent (tests): the job sweep resumes nothing.

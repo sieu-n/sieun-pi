@@ -30,7 +30,6 @@ const CODE: Setting = { kind: "code" };
 export const CHECK_IN_MS = 120 * 60_000;
 export const STEP_STALE_MS = 2 * 60 * 60_000;
 export const NO_REPORT_GRACE_MS = 90_000;
-export const PARK_IDLE_MS = 60 * 60_000;
 
 /** `DEFAULTS.max_moves_per_day` and `DEFAULTS.tier_units` in pi-pool's pool/base.py, checked against it by the test. */
 export const MOVES_PER_DAY = { high: 6, normal: 3, low: 1 } as const;
@@ -68,8 +67,6 @@ const CHAT_RULES: Rule[] = [
     text: "A step that waits on another thread or an event with no progress for this long is flagged for the check-in to chase.", source: { file: USER_HISTORY + "checkin-steps.ts", symbol: "STEP_STALE_MS" } },
   { id: "no-report", title: "Job ended with no report", value: q(NO_REPORT_GRACE_MS, "ms"), setting: CODE,
     text: "When a job goes quiet without reporting, the chat is told after this long.", source: { file: USER_HISTORY + "chats.ts", symbol: "NO_REPORT_GRACE_MS" } },
-  { id: "job-cleanup", title: "Waiting job cleanup", value: q(PARK_IDLE_MS, "ms"), setting: CODE,
-    text: "A finished job is deleted as soon as its report reaches the chat. A job whose only open work is a board wait is deleted after it has been quiet this long, with its brief, last report and wait saved on the step for a fresh job. A job still owed a turn is kept: a board.wake, a wake that went through its parent, a pi-pool hold, a quota park or a cut turn the service resumes.", source: { file: USER_HISTORY + "chat-checkin.ts", symbol: "PARK_IDLE_MS" } },
   { id: "duty-errors", title: "Duty error streak target", value: q(ERROR_RUNS_TARGET, "count"), setting: CODE,
     text: "Past this many failed duty runs in a row, each run's job is told the streak and to fix the precheck first. The duty keeps running.", source: { file: USER_HISTORY + "shared/chat-duties.ts", symbol: "ERROR_RUNS_TARGET" } },
   { id: "precheck-target", title: "Duty precheck target", value: q(PRECHECK_TARGET_MS, "ms"), setting: { kind: "chat", where: "the duty's precheck timeoutMs" },

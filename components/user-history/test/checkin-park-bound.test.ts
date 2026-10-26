@@ -1,7 +1,7 @@
 // Clean-room w81 run6 on us-metal02, 10-26: the job "test file count" reported 492 files at 09:13:47Z, and the chat set p3 to wait for the release
-// owner's message under it. At 10:11Z, 58 min later and 2 min before the job cleanup's PARK_IDLE_MS, the check-in nudged the job ("nothing moved
-// for 58 min, since 10-26 09:14Z"), read stuck_steps 1 and goal_gaps 1, and its check-in job steered the job, so the original session woke and the
-// cleanup never parked it into a fresh "test file count resumed" root. A reported job under a fresh waitFor belongs to the park and resume path.
+// owner's message under it. At 10:11Z, 58 min later, the check-in nudged the job ("nothing moved for 58 min, since 10-26 09:14Z"), read
+// stuck_steps 1 and goal_gaps 1, and its check-in job steered the job. A reported job under a fresh waitFor waits as the same session for that
+// message.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { checkInPrecheck } from "../src/chat-checkin.ts";
@@ -34,12 +34,12 @@ test("a reported job whose step waits on a fresh waitFor is not pushed, its step
   assert.deepEqual(run.jobs.map(push => push.why), [], "no nudge at 58 min");
   const p3 = run.end.find(entry => entry.view.item.id === "p3")!;
   assert.ok(OK_STATES.has(p3.state), `${p3.state}: ${p3.reason}`);
-  assert.match(p3.reason, /parks it/);
+  assert.match(p3.reason, /that message reaches the same job/);
   assert.equal(run.goals.filter(goalGap).length, 0, run.goals.map(push => `${push.goal.id} ${push.act}`).join(", "));
 });
 
 test("the same job is still pushed when its step has no wait, or when it never reported", () => {
   assert.equal(checkIns(undefined, job(true)).jobs.length, 1, "no wait: the step is the job's work");
   const { lastMessage: _said, ...silent } = job(false);
-  assert.equal(checkIns(wait, silent).jobs.length, 1, "no report: the cleanup does not park it, so the check-in pushes it");
+  assert.equal(checkIns(wait, silent).jobs.length, 1, "no report: the job does not wait on the step, so the check-in pushes it");
 });

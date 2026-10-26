@@ -2,84 +2,21 @@
 // openai-codex/gpt-6-astra at thinking high (each rlm-subagent.json has "model": {"provider": "openai-codex", "modelId": "gpt-6-astra"}). The
 // cleanup ended each while its step waited and started "... resumed 00:11" (01a1642b), "... resumed 00:37" (01a16443) and "... resumed 02:10"
 // (01a16497) with no model, so each started on the daemon default anthropic/claude-opus-5-5 and stopped on the Claude limit. The chat then
-// gave p10, p8 and p5 to new workers, and the resume pass still continued the three old roots each time pi-pool admitted them.
+// gave p10, p8 and p5 to new workers, and the resume pass still continued the three old roots each time pi-pool admitted them. Since 10-26
+// the cleanup ends no waiting job (waiting-job-same-session.test.ts), and these tests keep the roots such saved states started in line.
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { parseBriefRecord, recordModel } from "../src/brief-keeper.ts";
 import { loadRecord } from "../src/chat-brief.ts";
-import { dutyJobHost } from "../src/chat-duty-job.ts";
-import { PARK_IDLE_MS } from "../src/chat-checkin.ts";
 import { Chats } from "../src/chats.ts";
 import { IdIndex } from "../src/id-index.ts";
-import { jobResumes, savedStatePath, type JobResume } from "../src/job-resume.ts";
+import { jobResumes, type JobResume } from "../src/job-resume.ts";
 import type { InterruptedRun } from "../src/shared/interrupted.ts";
-import type { BoardOp, ChatAgent, ChatBoard, ChildAgent, SessionRow, ThreadMessage } from "../src/shared/types.ts";
+import type { ChatAgent, ChatBoard, SessionRow } from "../src/shared/types.ts";
 import { fakeThreads, row, source } from "./chats-helpers.ts";
-
-const CHILD = "sub-ddcaca04";
-
-test("a job the cleanup ends while its step waits is resumed on the model and thinking level it was started with", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "resume-keeps-model-"));
-  try {
-    let now = Date.parse("2026-10-22T14:00:00Z");
-    const threads = fakeThreads([]);
-    const index = new IdIndex(join(dir, "chats.json"), "Chat index");
-    await index.add("c1");
-    const childDir = join(dir, "session-artifacts", "c1", CHILD);
-    const childFile = join(childDir, "01a1636c-d150-717b-be2b-a7a4ed76bbaf.jsonl");
-    await mkdir(childDir, { recursive: true });
-    await writeFile(join(childDir, "rlm-subagent.json"), JSON.stringify({ type: "rlm_subagent", childId: CHILD, sessionName: "mcp metadata access",
-      sessionFile: childFile, prompt: "Finish the Vent caller-table change.", model: { provider: "openai-codex", modelId: "gpt-6-astra" }, createdAt: now - 3_600_000 }));
-    await writeFile(childFile, [
-      { type: "session", version: 3, id: "01a1636c-d150-717b-be2b-a7a4ed76bbaf", timestamp: "2026-10-22T11:43:58.288Z", cwd: dir, rlmDepth: 1 },
-      { type: "model_change", id: "9293b28b", parentId: null, timestamp: "2026-10-22T11:43:58.423Z", provider: "openai-codex", modelId: "gpt-6-astra" },
-      { type: "thinking_level_change", id: "33f58ffe", parentId: "9293b28b", timestamp: "2026-10-22T11:43:58.423Z", thinkingLevel: "xhigh" },
-    ].map(line => JSON.stringify(line)).join("\n") + "\n");
-    let board: ChatBoard = { v: 2, rev: 1, updatedAt: "", todos: [], plan: [
-      { id: "p10", text: "Hosted metadata check", status: "blocked", job: "mcp metadata access", waitFor: "Vent deployment by the release owner in p6", children: [] }] };
-    // The fresh job starts through the duty job host the backend wires to `resumes.restart`, so the create the daemon gets is the one checked.
-    const created: { name: string; provider?: string; modelId?: string; thinkingLevel?: string }[] = [];
-    const host = dutyJobHost({
-      threads: { create: async input => { created.push(input); return { id: "01a1642b-31c8-77bd-a92f-14555cbe837f" }; }, prompt: async () => {} },
-      archives: { add: async () => {} }, rows: async () => [],
-      registry: { add: async () => {}, chatOf: async () => undefined, chatIdOf: async () => undefined, rootsOf: async () => [], remove: async () => {} },
-      board: id => join(dir, "boards", `${id}.json`) });
-    const chats = new Chats(index, threads, async () => ({ lifecycle: "live", sessionFile: join(dir, "sessions", "c1.jsonl") }), "b1",
-      loadRecord(join(dir, "extension-loads.json")), {
-        ...source(dir, {}, () => now), board: async () => board, waking: async () => false, wakes: async () => [],
-        resumes: { store: jobResumes(join(dir, "job-resumes")),
-          restart: (_chat, name, brief, model) => host.start({ id: "c1", name: "chat-2572", cwd: dir, board: "" }, name, brief("chat-2572"), undefined, model),
-          applyBoard: async (_id: string, ops: readonly BoardOp[]) => {
-            board = { ...board, plan: board.plan.map(item => {
-              const op = ops.find(each => each.op === "plan_update" && each.id === item.id);
-              return op && op.op === "plan_update" ? { ...item, ...op.job ? { job: op.job } : {}, ...op.sessionId ? { sessionId: op.sessionId } : {}, ...typeof op.note === "string" ? { note: op.note } : {} } : item;
-            }) };
-          } },
-      }, () => {});
-    await chats.adopt();
-    const job: ChildAgent = { id: CHILD, label: "mcp metadata access", sessionName: "mcp metadata access", sessionId: "01a1636c-d150-717b-be2b-a7a4ed76bbaf",
-      status: "done", repliedSinceTask: true, lastActivityAt: now };
-    threads.transcripts.set("c1", [{ role: "custom", customType: "agent_message", display: true, timestamp: now,
-      content: "[agent-message from child:mcp metadata access]\nReady for the deployed revision; p10 waits on the Vent deploy." } as ThreadMessage]);
-    await chats.roster(new Map([["c1", [job]]]));
-    threads.fire().live("c1", [job]);
-    await chats.settled();
-    now += PARK_IDLE_MS + 6 * 60_000;
-    await chats.tick();
-    await chats.settled();
-    chats.close();
-    assert.equal(created.length, 1, "one fresh job starts for p10");
-    assert.match(created[0]!.name, /^mcp metadata access resumed \d\d:\d\d$/);
-    assert.deepEqual({ provider: created[0]!.provider, modelId: created[0]!.modelId, thinkingLevel: created[0]!.thinkingLevel },
-      { provider: "openai-codex", modelId: "gpt-6-astra", thinkingLevel: "xhigh" }, "the fresh job runs on the model and thinking the ended job was started with");
-    const saved = JSON.parse(await readFile(savedStatePath(board.plan[0]!)!, "utf8")) as JobResume;
-    assert.deepEqual(saved.model, { provider: "openai-codex", modelId: "gpt-6-astra", thinkingLevel: "xhigh" }, "the saved state records them");
-    assert.deepEqual(saved.resumed, { id: "01a1642b-31c8-77bd-a92f-14555cbe837f", name: created[0]!.name }, "and the fresh job it started");
-  } finally { await rm(dir, { recursive: true, force: true }); }
-});
 
 test("a root the brief keeper starts in place of a lost child runs on the model and thinking its spawn named", () => {
   const record = parseBriefRecord({ kind: "child", id: "sub-5c92e43f", name: "mcp chatgpt login", prompt: "Log in.", at: 1, root: "01a162bc-47b4-770b-a9fc-19c3a742e730",

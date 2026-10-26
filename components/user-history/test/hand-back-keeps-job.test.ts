@@ -1,20 +1,20 @@
 // Guards clean-room w81 run5 on us-metal02, 10-26: the job "test file count" (sub-868db11d) reported at 08:30:31Z before its chat set p2's
 // wait. The sweep at 08:30:43Z handed p2 back to the chat and, in the same sweep, deleted the job ("reported, quiet 0 min, no open step").
-// The chat linked p2 to the job again at 08:30:51Z, to a deleted job, so the job could never be parked and resumed.
+// The chat linked p2 to the job again at 08:30:51Z, to a deleted job, so the release message could never reach it.
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { loadRecord } from "../src/chat-brief.ts";
-import { JOB_CLEANUP_EVERY_MS, PARK_IDLE_MS } from "../src/chat-checkin.ts";
+import { JOB_CLEANUP_EVERY_MS } from "../src/chat-checkin.ts";
 import { Chats } from "../src/chats.ts";
 import { IdIndex } from "../src/id-index.ts";
-import { jobResumes, resumeJobName } from "../src/job-resume.ts";
+import { jobResumes } from "../src/job-resume.ts";
 import type { BoardOp, ChatBoard, ChildAgent, PlanItem, ThreadMessage } from "../src/shared/types.ts";
 import { fakeThreads, source } from "./chats-helpers.ts";
 
-test("a job whose step goes back to the chat is kept for the chat's turn, and parks once the chat gives the step back to it with a wait", async () => {
+test("a job whose step goes back to the chat is kept for the chat's turn, and stays the same session once the chat gives the step back to it with a wait", async () => {
   const dir = await mkdtemp(join(tmpdir(), "hand-back-keeps-job-"));
   try {
     let now = Date.parse("2026-10-26T08:30:31Z");
@@ -28,11 +28,10 @@ test("a job whose step goes back to the chat is kept for the chat's turn, and pa
     let board: ChatBoard = { v: 2, rev: 1, updatedAt: "", todos: [], plan: [
       { id: "p2", text: "Record both counts", status: "doing", job: "test file count", children: [] }] };
     const update = (id: string, change: Partial<PlanItem>) => { board = { ...board, plan: board.plan.map(item => item.id === id ? { ...item, ...change } : item) }; };
-    const started: string[] = [];
     const lines: string[] = [];
     const chats = new Chats(index, threads, async () => ({ lifecycle: "live", sessionFile: join(dir, "sessions", "c1.jsonl") }), "b1", loadRecord(join(dir, "loads.json")), {
       ...source(dir, {}, () => now), board: async () => board, waking: async () => false, wakes: async () => [],
-      resumes: { store: jobResumes(join(dir, "job-resumes")), restart: async (_chat, name) => { started.push(name); return { id: "s-fresh", name }; },
+      resumes: { store: jobResumes(join(dir, "job-resumes")),
         applyBoard: async (_id: string, ops: readonly BoardOp[]) => {
           for (const op of ops) if (op.op === "plan_update") update(op.id, { ...op.job ? { job: op.job } : {}, ...typeof op.note === "string" ? { note: op.note } : {} });
           // The chat's own write of 08:30:43Z lands right after: its new note and the job's session id, and no wait yet.
@@ -56,10 +55,10 @@ test("a job whose step goes back to the chat is kept for the chat's turn, and pa
     await chats.tick();
     await chats.settled();
     assert.ok(!calls.some(call => call.startsWith("delete c1")), "a step names the job again, so it is kept");
-    now = Date.parse("2026-10-26T08:30:31Z") + PARK_IDLE_MS + 2 * JOB_CLEANUP_EVERY_MS;
+    now = Date.parse("2026-10-26T08:30:31Z") + 6 * 60 * 60_000;
     await chats.tick();
     await chats.settled();
     chats.close();
-    assert.deepEqual(started, [resumeJobName("test file count", now)], lines.join("\n"));
+    assert.ok(!calls.some(call => call.startsWith("delete c1")), `the job still waits as the same session 6 h later:\n${lines.join("\n")}`);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });

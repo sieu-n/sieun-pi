@@ -6,10 +6,10 @@ import { ownedDescendants, readSession, type RunState, type Scenario, type Verdi
 import { senderOrigin } from "./unrelated-ci-wait.ts";
 
 /**
- * The clean-room scenario for w81 (sieun-pi fbd5a0a0): a job the cleanup ends while its step waits is started again on the model and
- * thinking level its spawn asked for. A fresh chat gets one owner-style task whose job runs on an openai-codex model at medium thinking and
- * then waits on a message with no wake to poll, so the cleanup ends it after PARK_IDLE_MS and starts "<job> resumed HH:MM". The judge reads
- * the job's spawn record, the saved state and the resumed root's session file.
+ * The clean-room scenario for w81: a job that waits on a message with no wake to poll stays the same session on the model and thinking level
+ * its spawn asked for. A fresh chat gets one owner-style task whose job runs on an openai-codex model at medium thinking and then waits for the
+ * release owner's message. Until 10-26 the cleanup ended such a job after an hour and started "<job> resumed HH:MM" in its place. The judge
+ * reads the job's spawn record, the chat's job-resumes folder and the job's own session file.
  */
 export const MODEL = { provider: "openai-codex", modelId: "gpt-6-astra", thinkingLevel: "medium" };
 export const TASK = "how many test files are in components/user-history/test of ~/src/sieun-pi right now? have one job count them and put the " +
@@ -18,7 +18,6 @@ export const TASK = "how many test files are in components/user-history/test of 
 const HOME = homedir();
 const DATA = process.env.AGENT_CHAT_DATA_DIR ?? join(HOME, ".prime/agent/browser-chat");
 const ARTIFACTS = join(HOME, ".prime/agent/session-artifacts");
-const SESSIONS = join(HOME, ".prime/agent/sessions");
 const iso = (at: number): string => new Date(at).toISOString();
 const clip = (text: string, length = 200): string => (text.length > length ? text.slice(0, length - 1) + "\u2026" : text).replace(/\s+/g, " ");
 const yes = (ok: boolean | null): string => ok === null ? "not reached yet" : ok ? "met" : "not met";
@@ -36,6 +35,13 @@ function head(file: string): { model?: string; thinking?: string } {
   return out;
 }
 
+/** The parent messages a subagent's session file holds: its task, then each message its chat sent it later. */
+function parentMessages(file: string): number {
+  if (!existsSync(file)) return 0;
+  return readFileSync(file, "utf8").split("\n").filter(line => line.startsWith('{"type":"custom_message","customType":"agent_message"') &&
+    line.includes('"fromRelationship":"parent"')).length;
+}
+
 function judge(run: string, state: RunState): { verdict: Verdict; text: string } {
   const chat = state.chat.id;
   const want = `${MODEL.provider}/${MODEL.modelId}`;
@@ -47,7 +53,7 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
     if (!record) return [];
     const model = record.model as { provider?: string; modelId?: string } | undefined;
     const file = typeof record.sessionFile === "string" ? record.sessionFile : "";
-    return [{ child, name: String(record.sessionName ?? ""), asked: model ? `${model.provider}/${model.modelId}` : "none", ran: head(file) }];
+    return [{ child, name: String(record.sessionName ?? ""), asked: model ? `${model.provider}/${model.modelId}` : "none", ran: head(file), file }];
   });
   const asked = spawns.filter(spawn => spawn.asked === want);
   add("a", asked.length ? true : null, spawns.length ? spawns.map(spawn => `${spawn.child} "${spawn.name}" asked ${spawn.asked}, ran ${spawn.ran.model ?? "?"} at ${spawn.ran.thinking ?? "?"}`).join("; ")
@@ -55,18 +61,16 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
   const folder = join(DATA, "job-resumes", chat);
   const saved = existsSync(folder) ? readdirSync(folder).flatMap(name => { const value = json(join(folder, name)); return value ? [{ name, value }] : []; }) : [];
   const ended = saved.filter(entry => asked.some(spawn => spawn.child === entry.value.childId));
-  const recorded = ended.map(entry => entry.value.model as { provider?: string; modelId?: string; thinkingLevel?: string } | undefined);
-  add("b", ended.length ? recorded.every(model => model?.provider === MODEL.provider && model.modelId === MODEL.modelId) : null, ended.length
-    ? ended.map((entry, at) => `${entry.name} ended ${iso(Number(entry.value.endedAt))}, steps ${JSON.stringify(entry.value.steps)}, model ${JSON.stringify(recorded[at] ?? null)}, resumed ${JSON.stringify(entry.value.resumed ?? null)}`).join("; ")
-    : "the cleanup has not ended the job yet");
-  const resumed = ended.flatMap(entry => { const fresh = entry.value.resumed as { id?: string; name?: string } | undefined; return fresh?.id ? [{ ...fresh, from: entry.value.childId }] : []; });
-  const thinking = (child: unknown): string | undefined => asked.find(spawn => spawn.child === child)?.ran.thinking;
-  const ran = resumed.map(fresh => ({ ...fresh, head: head(join(SESSIONS, `${fresh.id}.jsonl`)) }));
-  add("c", ran.length ? ran.every(fresh => fresh.head.model === want && fresh.head.thinking === thinking(fresh.from)) : null, ran.length
-    ? ran.map(fresh => `${fresh.id} "${fresh.name}" started on ${fresh.head.model ?? "?"} at ${fresh.head.thinking ?? "?"}; its job ${fresh.from} ran at ${thinking(fresh.from) ?? "?"}`).join("; ")
-    : "no resumed job has started yet");
+  add("b", ended.length ? false : asked.length ? true : null, ended.length
+    ? ended.map(entry => `${entry.name} ended ${iso(Number(entry.value.endedAt))}, steps ${JSON.stringify(entry.value.steps)}, resumed ${JSON.stringify(entry.value.resumed ?? null)}`).join("; ")
+    : asked.length ? "no saved state names the job, so the cleanup never ended or replaced it" : "the chat has spawned no job yet");
+  const woken = asked.map(spawn => ({ ...spawn, tasks: parentMessages(spawn.file) }));
+  const again = woken.filter(spawn => spawn.tasks >= 2);
+  add("c", again.length ? again.every(spawn => spawn.ran.model === want && spawn.ran.thinking === MODEL.thinkingLevel) : null, again.length
+    ? again.map(spawn => `${spawn.child} got ${spawn.tasks} parent messages in its own session, on ${spawn.ran.model ?? "?"} at ${spawn.ran.thinking ?? "?"}`).join("; ")
+    : "the release notice has not reached the job's session yet");
   // d: nobody stepped in. The chat's own sessions are its check-in jobs (runs.jsonl), the sessions the agents snapshots list under it with link
-  // subagent or root (the resumed job among them) and their descendants by recorded parentage; every other sender is placed by its recorded
+  // subagent or root and their descendants by recorded parentage; every other sender is placed by its recorded
   // identity (`senderOrigin`), as unrelated-ci-wait places it. run3 on 10-23 read the chat's own "check-in user history test count 17 24" as outside.
   const events = readSession(chat).filter(event => event.at >= state.windowStart);
   const typed = events.filter(event => event.kind === "text" && event.role === "user" && !event.text.trimStart().startsWith("[") &&
@@ -96,7 +100,7 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
   const text = [
     `# Clean-room run ${run.split("/").at(-1)}: ${verdict}`, "",
     `The chat "${state.chat.name}" (${chat}) ran on ${state.release} from ${iso(state.windowStart)} to ${iso(Date.now())}. Judged by \`clean-room.ts evaluate\`.`,
-    `Criteria: ${join(run, "criteria.md")}. Evidence: the job's rlm-subagent.json and session file, ${folder}, and the resumed root's session file.`, "",
+    `Criteria: ${join(run, "criteria.md")}. Evidence: the job's rlm-subagent.json and session file, and ${folder}.`, "",
     ...checks.map(check => `- ${check.id} ${yes(check.ok)}: ${check.detail}`), "",
   ].join("\n");
   return { verdict, text };
@@ -104,8 +108,7 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
 
 export const resumeModel: Scenario = {
   name: "resume-model",
-  // The chat runs on the job's model too: run2 sat 3 h on an Anthropic account slot and never spawned its job. A resumed job that lost its
-  // model would still start on the daemon default anthropic/claude-opus-5-5, which criterion c reads.
+  // The chat runs on the job's model too: run2 sat 3 h on an Anthropic account slot and never spawned its job.
   model: { provider: "openai-codex", modelId: "gpt-6-astra", thinkingLevel: "high" },
   headMessage: () => TASK,
   fixtures: [],

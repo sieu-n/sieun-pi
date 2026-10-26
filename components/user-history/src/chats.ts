@@ -15,8 +15,8 @@ import { treeWakes, type Wake } from "./wakes.ts";
 import { withQueuePlaces } from "./chat-turn-queue.ts";
 import { type CheckInContext, type CheckInMemory, checkInPrecheck, checkInPrecheckText, classCounts, convergenceMisses, endedJobs, endedWithoutReport, finishedJobs, JOB_CLEANUP_EVERY_MS, ROOT_END_EVERY_MS, jobEnd, jobEndText,
   endedRoots, handBackNote, handBackSteps, handBackText, idleRoots, jobReport, lastJobMessages, leftOpenSteps, noReportNotice, openStepLines, openStepsNotice, reportedRoot, retryDue,
-  ownerlessNotice, ownerlessSteps, rootLeftSteps, rootStepsNotice, waitingJobs } from "./chat-checkin.ts";
-import { childSessionFile, jobBase, jobBrief, jobModel, keptCopyNote, replacedJob, resumeBrief, resumedNote, resumeJobName, savedStateNote, sessionBrief, sessionModel, sessionReplied, waitText } from "./job-resume.ts";
+  ownerlessNotice, ownerlessSteps, rootLeftSteps, rootStepsNotice } from "./chat-checkin.ts";
+import { childSessionFile, replacedJob, sessionBrief, sessionModel, sessionReplied } from "./job-resume.ts";
 import { type AwayHost, hostHolds } from "./shared/host-hold.ts";
 import { heldByTodo, linkedBoards, withLinkedBoards } from "./shared/todo-hold.ts";
 import { PoolHeldJobs, resumeChatJobs } from "./chat-resume.ts";
@@ -279,8 +279,6 @@ export class Chats {
   private readonly retired = new Set<string>();
   /** `repliedSinceTask` read from a job's session file (`withReplies`), by job id and activity stamp. */
   private readonly replies = new Map<string, boolean | undefined>();
-  /** Waiting jobs of dormant chats whose park waits for the chat's wake (`parkJob`), so each is logged once. */
-  private readonly parkWaits = new Set<string>();
   /** The Prime update each retirement path last held for (`updateHold`), so each logs an update once. */
   private readonly heldFor = new Map<string, string>();
   /** Job threads found gone (`threadGone`) at an activity stamp: never looked at again unless the stamp changes. */
@@ -814,11 +812,14 @@ export class Chats {
   }
 
   /**
-   * Hands the open steps a reported job still owns to the chat (`handBack`), deletes each finished job of a chat (`finishedJobs`) once, with
-   * one log line, so its Python kernel and session stop holding memory, and ends each job whose only open work is a board wait
-   * (`waitingJobs`) with its state saved on the step (`parkJob`). A board that cannot be read deletes nothing; a failed delete is logged and
-   * not tried again in this serve. A job the daemon deleted, or one the chat no longer holds (`not_held`), goes on the deleted job record,
-   * so a restart does not try it again while the daemon still lists it.
+   * Hands the open steps a reported job still owns to the chat (`handBack`) and deletes each finished job of a chat (`finishedJobs`) once, with
+   * one log line, so its Python kernel and session stop holding memory. A job that an open step still names, such as one that waits on a
+   * message, is never deleted or replaced: the idle unload stops its session, and its next message loads that same session again. Until 10-26
+   * the cleanup deleted such a job after an hour and started "<job> resumed HH:MM" as a new root: on 10-26 the clean-room w81 chat 01a177e7 told
+   * "test file count" to wait for the release owner's message as the same job, and at 12:15:31Z the cleanup deleted sub-3eed36dc and started
+   * root 01a17823, which the chat's rlm.list_subagents() no longer showed. A board that cannot be read deletes nothing; a failed delete is
+   * logged and not tried again in this serve. A job the daemon deleted, or one the chat no longer holds (`not_held`), goes on the deleted job
+   * record, so a restart does not try it again while the daemon still lists it.
    */
   private async cleanJobs(id: string): Promise<void> {
     await this.load();
@@ -848,16 +849,14 @@ export class Chats {
       for (const { child, steps } of handBackSteps(children, board, said)) if (!gone?.has(child.id) && await this.handBack(id, child, steps)) handed.add(child.id);
       if (handed.size) board = await this.source.board(id).catch(() => board);
     }
-    // A job the update's prepare drained reads finished or quiet before its restore resumes it, so none is deleted or ended while one runs.
+    // A job the update's prepare drained reads finished before its restore resumes it, so none is deleted while one runs.
     const finished = finishedJobs(children, board, said).filter(child => !handed.has(child.id));
-    const waiting = this.source.resumes ? waitingJobs(children, board, now, said) : [];
-    if ((finished.length || waiting.length) && await this.updateHold("job is deleted or ended")) return;
+    if (finished.length && await this.updateHold("job is deleted or ended")) return;
     for (const child of finished) {
       if (gone?.has(child.id)) continue;
       const result = await this.deleteJob(id, child, listed, now);
       if (result === "deleted") this.log(`chat ${id.slice(0, 8)}: deleted finished job ${childName(child)} (reported, quiet ${Math.round((now - child.lastActivityAt!) / 60_000)} min, no open step)`);
     }
-    for (const { child, steps } of waiting) if (!gone?.has(child.id)) await this.parkJob(id, child, steps, jobReport(messages, childName(child)), listed, now, board?.todos ?? []);
   }
 
   /**
@@ -987,9 +986,9 @@ export class Chats {
    * Hands the open steps a reported job still owns (`handBackSteps`) to the chat: the chat gets one turn to close or continue them
    * (`handBackText`), then each step's job becomes the chat and its note names the job. The steer goes first, so a steer that fails leaves the
    * steps on the job for the next sweep: metal-management 10-18 06:46Z, the steer for p11 failed with "Daemon is preparing an update restart"
-   * after the board write, and p11 became the chat's without the chat being told. The note keeps the job named, so it is kept and later saved on the
-   * step (`parkJob`) unless the chat steers it. A job still at work (`jobBusy`), one whose last turn parked with no reply (`endsParked`), or one
-   * whose wakes cannot be read yet, keeps its steps.
+   * after the board write, and p11 became the chat's without the chat being told. The note keeps the job named, so the cleanup keeps it as it
+   * is. A job still at work (`jobBusy`), one whose last turn parked with no reply (`endsParked`), or one whose wakes cannot be read yet, keeps
+   * its steps.
    */
   private async handBack(id: string, child: ChildAgent, steps: readonly PlanItem[]): Promise<boolean> {
     const name = childName(child);
@@ -1013,91 +1012,9 @@ export class Chats {
   }
 
   /**
-   * Ends a quiet job that open steps name (`waitingJobs`): its brief (`jobBrief`), last report and the steps' waits are saved first
-   * (`<data dir>/job-resumes`), then the job is deleted, then a fresh root job starts at once from the saved state (`resumeBrief`) and owns
-   * each step that no correction parks and no open For you todo holds, and each step's note names the saved state. A step whose fresh job
-   * could not start keeps only the note, and the check-in's line for it (`classLine`) tells the chat to spawn one. A job whose brief cannot
-   * be read is kept.
-   */
-  private async parkJob(id: string, child: ChildAgent, steps: readonly PlanItem[], report: string, listed: readonly string[], now: number,
-    todos: readonly OwnerTodo[]): Promise<void> {
-    const resumes = this.source.resumes!;
-    const name = childName(child);
-    const cancel = await this.cancelledChild(id, child);
-    if (cancel) { this.log(`chat ${id.slice(0, 8)}: kept waiting job ${name} as it is: ${cancelWords(cancel)}, so no fresh job takes its steps`); return; }
-    // A dormant chat's subagents cannot be deleted, so the park waits for the chat's next wake and saves nothing until then. Clean-room w81 run4
-    // on 10-26: from 05:47Z to 07:59Z each sweep saved "test file count" again and then met "The chat is dormant" at its delete.
-    if (this.threads.isDormant?.(id)) {
-      if (!this.parkWaits.has(child.id)) this.log(`chat ${id.slice(0, 8)}: waiting job ${name} is parked at the chat's next wake: the chat is dormant`);
-      this.parkWaits.add(child.id);
-      return;
-    }
-    this.parkWaits.delete(child.id);
-    try {
-      const sessionFile = (await this.summary(id))?.sessionFile;
-      const childDir = sessionFile ? join(artifactsDir(sessionFile), child.id) : undefined;
-      const brief = childDir ? await jobBrief(childDir) : undefined;
-      if (brief === undefined || childDir === undefined) { this.log(`chat ${id.slice(0, 8)}: kept waiting job ${name}: its brief could not be read`); return; }
-      const event = steps.map(waitText).join("; ");
-      const owed = steps.filter(step => parkedBy(step) === undefined && !heldByTodo(step, todos));
-      const model = await jobModel(childDir);
-      const resume = { chat: id, childId: child.id, job: name, steps: owed.map(step => step.id), event: owed.map(waitText).join("; "), brief, report, endedAt: now,
-        ...model ? { model } : {} };
-      const saved = { ...resume, steps: steps.map(step => step.id), event };
-      const path = await resumes.store.save(saved);
-      if (await this.deleteJob(id, child, listed, now) !== "deleted") return;
-      const live = owed.length ? await this.liveCopy(id, child) : undefined;
-      const fresh = live ?? (owed.length && resumes.restart ? await resumes.restart(id, resumeJobName(name, now), chat => resumeBrief(resume, path, chat, now), model)
-        .catch(error => { this.log(`chat ${id.slice(0, 8)}: resume waiting job ${name}: ${error instanceof Error ? error.message : String(error)}`); return undefined; }) : undefined);
-      if (fresh && !live) await resumes.store.save({ ...saved, resumed: { id: fresh.id, name: fresh.name } })
-        .catch(error => this.log(`chat ${id.slice(0, 8)}: saved state of ${name}: ${error instanceof Error ? error.message : String(error)}`));
-      const line = savedStateNote(name, now, path);
-      await resumes.applyBoard(id, steps.map(step => {
-        const taken = fresh !== undefined && owed.includes(step);
-        return { op: "plan_update", id: step.id, ...taken ? { job: fresh.name, sessionId: fresh.id } : {},
-          note: [line, taken ? (live ? keptCopyNote(fresh.name, now) : resumedNote(fresh.name, now)) : undefined, step.note].filter(Boolean).join("\n") };
-      }));
-      this.log(`chat ${id.slice(0, 8)}: ended waiting job ${name} (quiet ${Math.round((now - child.lastActivityAt!) / 60_000)} min, ${event}); saved state ${path}` +
-        (live ? `; started no copy, since ${live.name} (${live.id}) still carries it: ${live.why}; it takes ${owed.map(step => step.id).join(", ")}`
-          : fresh ? `; started ${fresh.name} (${fresh.id.slice(0, 8)}) for ${owed.map(step => step.id).join(", ")}` : ""));
-    } catch (error) { this.log(`chat ${id.slice(0, 8)}: end waiting job ${name}: ${error instanceof Error ? error.message : String(error)}`); }
-  }
-
-  /**
-   * Another session of the chat on any box that carries the same job as `child` (`jobBase` of its name), and works or is owed a turn
-   * (`jobBusy`), so the cleanup starts no copy for it. The chat's row lists its subagents and roots on every box; the hub's children add the
-   * subagents it holds. mac-management 10-22: the cleanup started "metal agent queue resumed 10:47" at 01:47Z and "5180 into the real app
-   * resumed 10:57" at 01:57Z while the copies "resumed 05:50" (01a1603b) and "resumed 06:50" (01a16071) were parked on the Claude limit, and
-   * the new copies sat parked or queued for pi-pool slots beside them.
-   */
-  private async liveCopy(id: string, child: ChildAgent): Promise<{ id: string; name: string; why: string } | undefined> {
-    const base = jobBase(childName(child));
-    const own = child.sessionId ?? this.subagents.get(id)?.find(row => row.id === child.id)?.sessionId;
-    const rows = await this.source.rows().catch(() => [] as SessionRow[]);
-    const archived = new Set(rows.flatMap(row => row.archived ? [row.id] : []));
-    const agents = rows.find(row => row.id === id)?.agents ?? [];
-    const candidates = new Map<string, ChildAgent>();
-    for (const other of this.children.get(id) ?? []) {
-      const session = other.sessionId ?? this.subagents.get(id)?.find(row => row.id === other.id)?.sessionId;
-      if (session !== undefined) candidates.set(session, { ...other, sessionId: session });
-    }
-    for (const agent of agents) {
-      if (agent.sessionId === undefined || candidates.has(agent.sessionId)) continue;
-      const at = Date.parse(agent.lastActivityAt ?? "");
-      candidates.set(agent.sessionId, { id: agent.childId ?? agent.sessionId, label: agent.sender, sessionName: agent.sender, sessionId: agent.sessionId,
-        status: agent.state === "working" ? "running" : agent.state === "failed" ? "error" : "done", ...Number.isFinite(at) ? { lastActivityAt: at } : {} });
-    }
-    for (const [session, other] of candidates) {
-      if (session === own || other.id === child.id || other.status === "cancelled" || archived.has(session) || jobBase(childName(other)) !== base) continue;
-      const why = childWorking(other) ? "it works" : await this.jobBusy(id, other, session);
-      if (why !== undefined) return { id: session, name: childName(other), why };
-    }
-    return undefined;
-  }
-
-  /**
-   * The roots the cleanup started from a saved state (`parkJob`) whose steps now name another worker of the chat, its own subagent or another
-   * root of it, while no step names the root (`replacedJob`). A step that names a worker below the root itself keeps the root.
+   * The roots the cleanup started from a saved state before 10-26, in place of a job it ended while that job waited, whose steps now name
+   * another worker of the chat, its own subagent or another root of it, while no step names the root (`replacedJob`). A step that names a
+   * worker below the root itself keeps the root.
    */
   private async replacedRoots(chatRows: readonly SessionRow[]): Promise<{ chat: string; id: string; name: string; steps: string[]; by: string[] }[]> {
     const store = this.source.resumes?.store;
@@ -1301,7 +1218,7 @@ export class Chats {
   }
 
   /**
-   * Ends each create_session root of a chat that reported and has been quiet PARK_IDLE_MS while no open step names it (`idleRoots`): its brief,
+   * Ends each create_session root of a chat that reported while no open step names it (`idleRoots`): its brief,
    * last report and the chat it reports to are saved in `<data dir>/job-resumes`, then it is archived, so its worker ends, and the chat gets a
    * notice naming the file. A root is its own worker: on 10-14 at 12:39Z 8 roots idle with their reports in held 2.81 GB. Never a
    * chat, a duty run (the duty code archives those), a root that waits on a board.wake, or one the daemon shows in a turn, a tool call or a

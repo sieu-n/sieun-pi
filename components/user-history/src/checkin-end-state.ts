@@ -87,7 +87,7 @@ export function endState(view: StepView, todos: Parameters<typeof heldByTodo>[1]
   if (poolWait(owner)) return out("moving", `${ownerLabel(owner!)} waits for its slot in the token pool`);
   if (owner?.state === "unstarted" && owner.unstarted) return out("job_ended", `${ownerLabel(owner)} never started: Prime admitted it at ${zTime(owner.unstarted.at)} and its ` +
     `session has no first prompt${owner.unstarted.sentAt !== undefined ? `, though the chat service sent its brief at ${zTime(owner.unstarted.sentAt)}` : ""}`);
-  if (parkBound(view)) return out("moving", `${ownerLabel(owner!)} reported and waits for ${quote(clip(item.waitFor!, 80))}; the job cleanup parks it and a fresh job resumes it on the wait`);
+  if (parkBound(view)) return out("moving", `${ownerLabel(owner!)} reported and waits for ${quote(clip(item.waitFor!, 80))}; that message reaches the same job`);
   const wait = item.waitFor ?? "";
   const carrier = waitCarrier(wait, facts);
   if (carrier) return out("moving", `its wait is on ${ownerLabel(carrier)}, which ${carrier.wake ? `sleeps on ${carrier.wake}` : "works on it"}`);

@@ -1,13 +1,13 @@
 // Guards mac-management 10-21 and 10-22: the job cleanup ended its jobs "metal agent queue" (20:50Z, 01:47Z) and "5180 into the real app"
-// (21:50Z, 01:57Z) as quiet waiting jobs. Each time the job was owed a turn that left no wake file: its wake had gone through the chat, which
-// Prime had parked on its quota, or pi-pool held its tree. Each delete cut the job's subagents, and the chat's relays met "No child matches".
+// (21:50Z, 01:57Z). Each time the job was owed a turn that left no wake file: its wake had gone through the chat, which Prime had parked on its
+// quota, or pi-pool held its tree. Each delete cut the job's subagents, and the chat's relays met "No child matches". The cleanup now deletes
+// only a finished job, whose steps are closed, and the same checks keep one that is owed a turn.
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { loadRecord } from "../src/chat-brief.ts";
-import { PARK_IDLE_MS } from "../src/chat-checkin.ts";
 import { Chats } from "../src/chats.ts";
 import type { CheckInSource } from "../src/chat-sources.ts";
 import { IdIndex } from "../src/id-index.ts";
@@ -49,7 +49,7 @@ async function sweep(owed: (endedAt: number) => Owed) {
   const poolHeldFile = join(dir, "pool-held.json");
   await writeFile(poolHeldFile, JSON.stringify(want.pool ?? []));
   const board: ChatBoard = { v: 2, rev: 1, updatedAt: "", todos: [], plan: [
-    { id: "p34", text: "5180 design live in the real app on 5174", status: "todo", job: "5180 into the real app", children: [] }] };
+    { id: "p34", text: "5180 design live in the real app on 5174", status: "done", job: "5180 into the real app", children: [] }] };
   const extra: Partial<CheckInSource> = {
     relayed: { add: async () => {}, at: async session => want.relays?.[session] },
     held: async () => ({ sessions: new Map((want.turns ?? []).map(session => [session, "the chat service's continue after its cut turn (error)"])) }),
@@ -70,7 +70,7 @@ async function sweep(owed: (endedAt: number) => Owed) {
   await chats.roster(new Map([[CHAT, [job]], [JOB, [builder]]]));
   threads.fire().live(CHAT, [job]);
   await chats.settled();
-  now += PARK_IDLE_MS + 5 * 60_000;
+  now += 65 * 60_000;
   await chats.tick();
   await chats.settled();
   chats.close();
@@ -102,12 +102,12 @@ test("job cleanup: a quiet job whose cut turn the resume pass gives back is kept
 });
 
 test("job cleanup: a quiet job Prime parked on its provider quota is kept", async () => {
-  const { deleted, kept } = await sweep(ended => ({ parkUntil: ended + PARK_IDLE_MS + 30 * 60_000 }));
+  const { deleted, kept } = await sweep(ended => ({ parkUntil: ended + 90 * 60_000 }));
   assert.equal(deleted, false);
   assert.match(kept.join("\n"), /Prime parks its turn on its provider quota until 02:22Z/);
 });
 
-test("job cleanup: a quiet job owed nothing, with an older relay it already took, is still ended", async () => {
+test("job cleanup: a finished job owed nothing, with an older relay it already took, is still deleted", async () => {
   const { deleted } = await sweep(ended => ({ relays: { [JOB]: ended - 60_000 } }));
   assert.equal(deleted, true);
 });

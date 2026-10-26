@@ -1,19 +1,18 @@
 import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { clockTime } from "./checkin-settings.ts";
-import { spawnRecord } from "./spawn-record.ts";
 import { isThinkingLevel, type PlanItem, type ThinkingLevel } from "./shared/types.ts";
 import { fileLines } from "./file-lines.ts";
 
 /**
- * What a fresh job needs to pick up the work of a job the chat ended while it waited on a board step: the job's brief, its last report to the
- * chat, and the wait (each step's waitFor or waitUntil).
+ * What the service keeps of a root it archives once the root reported and no open step names it (`endRoots`): its brief, its last report to
+ * the chat and its model. Files saved before 10-26 also hold jobs the cleanup ended while they waited on a board step, with each step's wait.
  */
 export interface JobResume {
   chat: string; childId: string; job: string; steps: string[]; event: string; brief: string; report: string; endedAt: number;
-  /** The model and thinking level the job ran on (`jobModel`, `sessionModel`), which its fresh job starts on; absent in files saved before 10-23. */
+  /** The model and thinking level the job ran on (`sessionModel`); absent in files saved before 10-23. */
   model?: JobModel;
-  /** The fresh job the cleanup started from this state (`resumeBrief`); absent when none started or the file is older. */
+  /** The fresh job the cleanup started from this state before 10-26; absent when none started. */
   resumed?: { id: string; name: string };
 }
 
@@ -130,39 +129,6 @@ export async function sessionReplied(file: string): Promise<boolean | undefined>
   return replied;
 }
 
-/**
- * A subagent's model and thinking level: the model its handle asked for (`rlm-subagent.json` `model`), else its session file's, with the
- * thinking level from its session file, since rlm-subagent.json keeps none. Undefined when neither names a model.
- */
-export async function jobModel(childDir: string): Promise<JobModel | undefined> {
-  const spawn: unknown = await readFile(join(childDir, "rlm-subagent.json"), "utf8").then(text => JSON.parse(text), () => null);
-  const asked = isRecord(spawn) && isRecord(spawn.model) && typeof spawn.model.provider === "string" && typeof spawn.model.modelId === "string"
-    ? { provider: spawn.model.provider, modelId: spawn.model.modelId } : undefined;
-  const file = await childSessionFile(childDir, spawn);
-  const ran = file !== undefined ? await sessionModel(file) : undefined;
-  const model = asked ?? ran;
-  if (!model) return undefined;
-  const thinkingLevel = ran?.thinkingLevel;
-  return { provider: model.provider, modelId: model.modelId, ...thinkingLevel !== undefined ? { thinkingLevel } : {} };
-}
-
-/**
- * A job's brief: the prompt the daemon stored at the spawn (`rlm-subagent.json`, which keeps prompts of 4,096 characters or fewer), else the task
- * its session file in its folder `childDir` opens with: the first `agent_message` custom message, a `[task from parent]` (frontend bro 10-14:
- * connections multiple accounts had a longer brief, no user message, and the cleanup kept it as "its brief could not be read"), or a first
- * user message. Undefined when none can be read.
- */
-export async function jobBrief(childDir: string): Promise<string | undefined> {
-  const spawn = await spawnRecord(childDir);
-  if (spawn) return spawn.prompt;
-  const names = await readdir(childDir).catch(() => [] as string[]);
-  for (const name of names.filter(name => name.endsWith(".jsonl") && name !== "semantic-edges.jsonl")) {
-    const brief = await sessionBrief(join(childDir, name));
-    if (brief !== undefined) return brief;
-  }
-  return undefined;
-}
-
 /** The task a session file opens with: its first `agent_message` custom message (a `[task from parent]`) or its first user message (a root's prompt). */
 export async function sessionBrief(file: string): Promise<string | undefined> {
   const lines = fileLines(file);
@@ -180,34 +146,6 @@ export async function sessionBrief(file: string): Promise<string | undefined> {
 }
 const contentText = (content: unknown): string | undefined => typeof content === "string" ? content
   : Array.isArray(content) ? content.map(part => typeof part === "object" && part && "text" in part ? String(part.text) : "").join("") : undefined;
-
-/** What a step holds, as one line: `p12 waits for "the r14 sha"`, `p12 waits until 2026-10-14T12:00:00Z`, or `p12 is doing` for a step with no wait. */
-export function waitText(item: PlanItem): string {
-  const waits = [item.waitFor !== undefined ? `for "${item.waitFor}"` : "", item.waitUntil !== undefined ? `until ${item.waitUntil}` : ""].filter(Boolean);
-  return waits.length ? `${item.id} waits ${waits.join(" and ")}` : `${item.id} is ${item.status}`;
-}
-
-/** The name of the fresh job the cleanup starts in place of a job it ended (`resumeBrief`). */
-export const resumeJobName = (job: string, at: number): string => `${job} resumed ${clockTime(at)}`;
-/**
- * The brief of the fresh root job the cleanup starts at once in place of a job it ended while that job waited on open steps, so the steps keep
- * a live owner. launch main bro 10-20: the cleanup ended "g2g accounts setup" at 09:26Z with p105 and p98 waiting on promote 16 and 17, and the
- * steps had no owner until the d9 run started a job by hand at 09:41Z, since the next check-in waited on provider rate limits.
- */
-export function resumeBrief(resume: JobResume, path: string, chat: string, now: number): string {
-  const steps = resume.steps.join(", ");
-  return `${resume.brief}\n\n(The chat service started this job at ${clockTime(now)} in place of "${resume.job}", which it ended while that job sat ` +
-    `quiet with ${steps} open: ${resume.event}. Its last report and the waits are saved in ${path}; read that first. ${steps} ${resume.steps.length === 1 ? "is" : "are"} ` +
-    `yours now. Check whether each wait has happened and do the next action. If it has not, push whatever moves it, then sleep on ` +
-    `board.wake(run=...) or board.wake(at=...) and end your turn; never end a turn with a step open and no wake set. You are a root job of the chat ` +
-    `${chat}, so wherever this brief says to send to your parent, send to the chat with agent_message.send(report, receiver_role="sibling", receiver_name="${chat}").)`;
-}
-/** The note line a step gets when the cleanup starts a fresh job for it (`resumeBrief`). */
-export const resumedNote = (job: string, at: number): string => `Resumed: the chat service started job ${job} at ${clockTime(at)} from the saved state, and the step is its.`;
-/** The note line a step gets when the cleanup finds a live session that carries the job it ended, so it starts no copy. */
-export const keptCopyNote = (job: string, at: number): string => `Kept: job ${job} still carries this work at ${clockTime(at)}, so the chat service started no copy, and the step is its.`;
-/** The job a session carries, its name less every " resumed HH:MM" the cleanup added (`resumeJobName`). */
-export const jobBase = (name: string): string => name.replace(/(?:\s+resumed \d\d:\d\d)+$/, "").trim();
 
 /**
  * The fresh job a saved state started (`resumed`, which the cleanup writes once that job starts), when a step it took now names another
