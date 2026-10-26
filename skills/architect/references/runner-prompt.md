@@ -11,7 +11,7 @@ The orchestrator compares candidates on these rules:
 - Prefer a small public interface that pulls complexity into the callee, and keep transport or wire types off it, per [`design-red-flags.md`](design-red-flags.md).
 - If two actors can write the same state, give each actor its own state and merge at the read boundary, per `principle-separate-before-serializing-shared-state`.
 - Use `not implemented` errors for bodies, `// TODO` pseudocode for tricky logic, and doc comments for intent and invariants, so a reader can trace data from input to output through types and signatures alone.
-- Encode invariants in types first, runtime checks second, and comments last, per `principle-encode-lessons-in-structure` and `principle-type-system-discipline`.
+- Encode invariants in types first, runtime checks second, and comments last, per `principle-encode-lessons-in-structure` and `typescript-best-practices`.
 - Validate at boundaries, trust types inside, and keep business logic in pure functions, per `principle-boundary-discipline`.
 - Give each invariant one source of truth and derive the rest.
 - Make state transitions safe to run twice or to resume after a crash, per `principle-make-operations-idempotent`.

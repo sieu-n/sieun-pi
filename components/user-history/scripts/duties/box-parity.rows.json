@@ -189,15 +189,6 @@
   ]
  },
  {
-  "id": "skill-principle-type-system-discipline",
-  "tool": "skill principle-type-system-discipline",
-  "probes": [
-   {
-    "path": "~/.prime/agent/skills/principle-type-system-discipline/SKILL.md"
-   }
-  ]
- },
- {
   "id": "skill-resume-paused-sessions",
   "tool": "skill resume-paused-sessions",
   "probes": [

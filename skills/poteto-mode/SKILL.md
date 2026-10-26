@@ -54,7 +54,7 @@ Read the leaf skill in full for any principle you apply.
 | principle-build-the-lever | Work is non-trivial. Build the script, codemod, or generator that does or proves it. |
 | principle-model-the-domain | Logic holds state or branches a lot. Encode it in a state machine, typed model, table, or reducer. |
 | principle-boundary-discipline | You wire validation, errors, or adapters. Guard at system edges and trust internal types. |
-| principle-type-system-discipline | You design types or a signature. Make illegal states unrepresentable and parse external data at edges. |
+| typescript-best-practices | You design types or a signature in any typed language. Make illegal states unrepresentable and parse external data at edges. |
 | principle-make-operations-idempotent | A command or loop runs through crashes and retries. Make it converge to one end state. |
 | principle-separate-before-serializing-shared-state | Concurrent actors may write the same file, branch, or key. Remove the sharing first. |
 | principle-prove-it-works | You are about to call a task done. Check the real artifact, not a proxy. |

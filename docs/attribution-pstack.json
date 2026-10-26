@@ -531,13 +531,6 @@
       "unchanged_at_comparison": false
     },
     {
-      "path": "skills/principle-type-system-discipline/SKILL.md",
-      "upstream_path": "pstack/skills/principle-type-system-discipline/SKILL.md",
-      "upstream_sha256": "c83da8031ffb4c86410030d3e261f659598fca2b7d8158fd9dc269d70a3a025e",
-      "import_sha256": "662ed1ad53fb491e97b9c4eac7317fba8ec5ed722fec8d71beb94da0111619cf",
-      "unchanged_at_comparison": false
-    },
-    {
       "path": "skills/setup-pstack/SKILL.md",
       "upstream_path": "pstack/skills/setup-pstack/SKILL.md",
       "upstream_sha256": "5acdc3db4f15f3e9b81fb56eab7f17cdccde1a11a40053ed7743f7467729c8a9",

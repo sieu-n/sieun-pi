@@ -139,13 +139,6 @@
       "target": ".prime/agent/skills/principle-sequence-verifiable-units"
     },
     {
-      "id": "skill:principle-type-system-discipline",
-      "kind": "link",
-      "source": "skills/principle-type-system-discipline",
-      "scope": "home",
-      "target": ".prime/agent/skills/principle-type-system-discipline"
-    },
-    {
       "id": "skill:resume-paused-sessions",
       "kind": "link",
       "source": "skills/resume-paused-sessions",
