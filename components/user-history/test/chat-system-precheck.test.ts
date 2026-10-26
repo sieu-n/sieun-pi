@@ -1,7 +1,7 @@
 // Guards the Chat system duty's precheck (d9), built 10-19 for the owner's rule that a plan holds only tasks that finish (msg mvfb7zt0).
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { agingSince, chatSystemOutput, failingTurns, fixNotMoving, manualSelection, goalsWithNoJob, jobsByChat, ownerMessages, planUpkeep, pushedFile, pushList, pushReached, pushRecords, pushSettled, pushTells, spotAuditLines, spread, waitsOnStep, withCatalogOwners, withoutWorkingRuns } from "../scripts/duties/chat-system.ts";
+import { agingSince, chatSystemOutput, failingTurns, fixNotMoving, manualSelection, goalsWithNoJob, jobsByChat, ownerMessages, planUpkeep, pushedFile, pushList, pushReached, pushRecords, pushSettled, pushTells, spotAuditLines, spotPick, spread, waitsOnStep, withCatalogOwners, withoutWorkingRuns } from "../scripts/duties/chat-system.ts";
 import { type PlanInputs, planCounts } from "../scripts/duties/whole-system.ts";
 import type { MetricStreak } from "../src/shared/duty-streak.ts";
 import type { ChatBoard } from "../src/shared/types.ts";
@@ -334,4 +334,17 @@ test("a down chat opens the flagged slices with its chat_down line, and gets no 
   assert.match(out.flagged![0]!.excerpt, /^chat_down: frontend bro has failed every turn since 2026-10-23T09:12Z \(rate limit 429, Manual claude8@slack\.green, .*\), 41 failed turns; d9 sent it no push this run\./);
   assert.deepEqual(out.flagged!.filter(slice => slice.kind === "push" || slice.kind === "push_followup"), []);
   assert.equal(out.metrics!.stuck_steps_all, 1);
+});
+
+test("the spot audit picks a chat not audited this cycle, so the chat audited longest ago wins and a chat gone from the list is ignored", () => {
+  const first = () => 0;
+  const last = () => 0.999;
+  assert.equal(spotPick(["a", "b", "c"], [{ at: 1, chat: "a" }, { at: 2, chat: "b" }], last), "c");
+  assert.equal(spotPick(["a", "b", "c"], [{ at: 3, chat: "b" }, { at: 1, chat: "a" }, { at: 2, chat: "c" }, { at: 4, chat: "c" }, { at: 5, chat: "b" }], last), "a");
+  const cycles = [{ at: 1, chat: "a" }, { at: 2, chat: "b" }, { at: 3, chat: "c" }, { at: 4, chat: "c" }, { at: 5, chat: "a" }];
+  assert.equal(spotPick(["a", "b", "c"], cycles, first), "b");
+  assert.equal(spotPick(["a", "b", "c"], cycles, last), "b");
+  assert.equal(spotPick(["a", "b"], [{ at: 1, chat: "a" }, { at: 2, chat: "gone" }, { at: 3, chat: "gone" }], last), "b");
+  assert.deepEqual(new Set([0, 0.5, 0.999].map(n => spotPick(["a", "b", "c"], [{ at: 1, chat: "a" }, { at: 2, chat: "b" }, { at: 3, chat: "c" }], () => n))), new Set(["a", "b", "c"]));
+  assert.equal(spotPick(["a", "b"], [], first), "a");
 });

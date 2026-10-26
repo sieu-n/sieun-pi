@@ -32,7 +32,7 @@ import { type AwayHost, hostHolds } from "../../src/shared/host-hold.ts";
  * your duty. 당분간은 몰래 실사 감시도 하고". Across the owner's chats on both boxes (one chat service holds every board) it counts the open steps
  * nobody moves (headline), the open plan items that are upkeep or have no done line, the share of green duties, and the red duties with no live
  * fix job, and the red duties whose live fix job does not move the number. Each metric flags at most 3 examples, spread over chats, and the detail file next to OUTPUT_FILE lists them all. Each run also
- * picks one chat at random for the duty job's quiet spot audit and writes that chat's files and the owner's last messages in it there.
+ * picks one chat not yet audited this cycle (`spotPick`) for the duty job's quiet spot audit and writes that chat's files and the owner's last messages in it there.
  */
 
 /** Examples per metric in the flagged slices; the detail file lists every item. The owner's c75 shape for a duty run's summary. */
@@ -525,6 +525,25 @@ export function pushList(facts: Pick<ChatSystemFacts, "idleGoals" | "stuckDuties
 
 /** Where each push d9 sends is recorded, one JSON line per message, for the next run to check. */
 const PUSHES_FILE = join(homedir(), "work/plan-audit/pushes.jsonl");
+/** Which chat each scheduled run spot-audited, one JSON line `{ at, chat }` per run, so `spotPick` can prefer the chats audited longest ago. */
+const SPOT_PICKS_FILE = join(homedir(), "work/plan-audit/spot-picks.jsonl");
+
+/**
+ * The chat this run spot-audits: one at random among the chats in `ids` not yet picked in the current cycle, where a cycle closes once every
+ * chat in `ids` has been picked. So each chat gets one audit per `ids.length` runs, in a new random order each cycle, and a chat new to `ids`
+ * joins the open cycle. Until 10-26 it picked from all of `ids` each run, and the 10-25 21:40Z, 10-26 04:2xZ and 06:24Z runs all audited
+ * "spec and monitoring system", whose plan was done and whose one duty was green, about 10 of 58 audits since 10-20.
+ */
+export function spotPick(ids: readonly string[], picks: readonly { at: number; chat: string }[], random: () => number = Math.random): string {
+  const open = new Set<string>();
+  for (const pick of [...picks].sort((a, b) => a.at - b.at)) {
+    if (!ids.includes(pick.chat)) continue;
+    open.add(pick.chat);
+    if (open.size === new Set(ids).size) open.clear();
+  }
+  const due = ids.filter(id => !open.has(id));
+  return due[Math.floor(random() * due.length)]!;
+}
 
 /** The held steps and duties grouped by box and todo, with the detail section's title: "41 steps and 1 red duty wait on mac, For you t96". */
 export function hostGroups<T extends { host: string; todo: string; duty?: string }>(steps: readonly T[]): { host: string; todo: string; title: string; steps: T[] }[] {
@@ -713,12 +732,16 @@ async function main(): Promise<void> {
   const fleetMissing = fleet.flagged.filter(slice => slice.kind === "fleet_data_missing");
   result.flagged!.push(...fleetMissing);
 
-  // The spot audit: one owner chat at random each run, read by the duty job against what the owner asked in it.
-  const spot = ids[Math.floor(Math.random() * ids.length)]!;
+  // The spot audit: one owner chat each run, the open cycle's next at random (`spotPick`), read by the duty job against what the owner asked in it.
+  const picks = (await readFile(SPOT_PICKS_FILE, "utf8").catch(() => "")).split("\n").flatMap(line => {
+    try { const pick = JSON.parse(line) as { at: number; chat: string }; return typeof pick.at === "number" && typeof pick.chat === "string" ? [pick] : []; } catch { return []; }
+  });
+  const spot = spotPick(ids, picks);
   const session = localCopy(listed.get(spot)?.file);
   const asks = session ? ownerMessages(await tail(session.file, TRANSCRIPT_TAIL_BYTES), OWNER_MESSAGES) : [];
   const log = join(homedir(), "work/plan-audit/spot", `${today(now)}.md`);
   await mkdir(join(homedir(), "work/plan-audit/spot"), { recursive: true });
+  if (recordsPushes(process.env.PRECHECK_MODE)) await appendFile(SPOT_PICKS_FILE, JSON.stringify({ at: now, chat: spot }) + "\n");
   result.flagged!.push({ kind: "spot_audit", chat: spot, excerpt: `Spot audit this run: ${names.get(spot)} (${spot}). Its files and the owner's last messages in it are in ${detail}; ` +
     `log what you found to ${log}, and send the owner nothing.` });
 
