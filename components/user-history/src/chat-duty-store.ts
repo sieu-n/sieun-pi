@@ -108,9 +108,9 @@ export class DutyStore {
 
   /**
    * The chat's newest run record of `duty`, from the runs file's last NEWEST_RUN_TAIL_BYTES, else from the whole file (`runs`). At the chat's
-   * start at 05:53:51Z on 10-26 `Chats.load` read each chat's last check-in through `runs`, which parsed all 134 runs files (24 MB, 9,765 records,
-   * 0.7 to 0.9 s on a quiet process), and the owner's api/threads/01a15427/duties read waited on it 1.9 s, which d7 counted dirty; the tail
-   * read takes 50 to 70 ms for all of them.
+   * start at 05:53:51Z on 10-26 `Chats.load` read each chat's last check-in through `runs`, which parsed the 16 chats' whole runs files (23.8 MB, 9,182
+   * records, 0.59 to 0.91 s on a quiet process), and the owner's api/threads/01a15427/duties read waited on it 1.9 s, which d7 counted dirty;
+   * the tail reads take 39 to 52 ms for all 16.
    */
   async newestRun(chatId: string, duty: string): Promise<DutyRunRecord | undefined> {
     const key = `"duty":${JSON.stringify(duty)}`;
