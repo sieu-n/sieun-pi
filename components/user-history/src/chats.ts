@@ -16,7 +16,7 @@ import { withQueuePlaces } from "./chat-turn-queue.ts";
 import { type CheckInContext, type CheckInMemory, checkInPrecheck, checkInPrecheckText, classCounts, convergenceMisses, endedJobs, endedWithoutReport, finishedJobs, JOB_CLEANUP_EVERY_MS, ROOT_END_EVERY_MS, jobEnd, jobEndText,
   endedRoots, handBackNote, handBackSteps, handBackText, idleRoots, jobReport, lastJobMessages, leftOpenSteps, noReportNotice, openStepLines, openStepsNotice, reportedRoot, retryDue,
   ownerlessNotice, ownerlessSteps, rootLeftSteps, rootStepsNotice, waitingJobs } from "./chat-checkin.ts";
-import { jobBase, jobBrief, jobModel, keptCopyNote, replacedJob, resumeBrief, resumedNote, resumeJobName, savedStateNote, sessionBrief, sessionModel, waitText } from "./job-resume.ts";
+import { childSessionFile, jobBase, jobBrief, jobModel, keptCopyNote, replacedJob, resumeBrief, resumedNote, resumeJobName, savedStateNote, sessionBrief, sessionModel, sessionReplied, waitText } from "./job-resume.ts";
 import { type AwayHost, hostHolds } from "./shared/host-hold.ts";
 import { heldByTodo, linkedBoards, withLinkedBoards } from "./shared/todo-hold.ts";
 import { PoolHeldJobs, resumeChatJobs } from "./chat-resume.ts";
@@ -277,6 +277,8 @@ export class Chats {
   /** Roots the cleanup started whose steps now name other workers (`replacedRoots`): no pass resumes or wakes them, and each is archived once idle. */
   private replaced = new Set<string>();
   private readonly retired = new Set<string>();
+  /** `repliedSinceTask` read from a job's session file (`withReplies`), by job id and activity stamp. */
+  private readonly replies = new Map<string, boolean | undefined>();
   /** The Prime update each retirement path last held for (`updateHold`), so each logs an update once. */
   private readonly heldFor = new Map<string, string>();
   /** Job threads found gone (`threadGone`) at an activity stamp: never looked at again unless the stamp changes. */
@@ -820,11 +822,12 @@ export class Chats {
     await this.load();
     // The hub reports every thread it attaches, and a serve on its own chats opens live chats too (a profile serve read 01a14d31 on 10-18).
     if (!this.chatIds.has(id)) return;
-    const children = this.children.get(id);
-    if (!children?.length) return;
+    const held = this.children.get(id);
+    if (!held?.length) return;
     let board: ChatBoard | null;
     try { board = await this.source.board(id); }
     catch (error) { this.log(`chat ${id.slice(0, 8)}: job cleanup: ${error instanceof Error ? error.message : String(error)}`); return; }
+    const children = await this.withReplies(id, held);
     const record = this.source.deletedJobs;
     const listed = children.map(child => child.id);
     const gone = await record?.gone(id, listed).catch(error => {
@@ -850,6 +853,31 @@ export class Chats {
       if (result === "deleted") this.log(`chat ${id.slice(0, 8)}: deleted finished job ${childName(child)} (reported, quiet ${Math.round((now - child.lastActivityAt!) / 60_000)} min, no open step)`);
     }
     for (const { child, steps } of waiting) if (!gone?.has(child.id)) await this.parkJob(id, child, steps, jobReport(messages, childName(child)), listed, now, board?.todos ?? []);
+  }
+
+  /**
+   * The chat's jobs with `repliedSinceTask` read from each finished job's own session file where neither the daemon's row nor an earlier attach
+   * gave it (`sessionReplied`), so a job whose session the idle unload stopped still reads as reported after a service restart while its chat
+   * sits detached. Each job is read again only when its activity changes. Clean-room w81 run4 on 10-26: "test file count" reported at 04:28Z,
+   * its session was stopped at 04:30Z, the service restarted at 04:40Z and 05:04Z with the chat detached, and the job was not parked by 05:43Z.
+   */
+  private async withReplies(id: string, children: readonly ChildAgent[]): Promise<readonly ChildAgent[]> {
+    const missing = children.filter(child => child.status === "done" && !childWorking(child) && child.repliedSinceTask === undefined);
+    if (!missing.length) return children;
+    const sessionFile = await this.summary(id).then(summary => summary?.sessionFile, () => undefined);
+    if (!sessionFile) return children;
+    const read = new Map<string, boolean>();
+    for (const child of missing) {
+      const key = `${child.id}|${child.lastActivityAt ?? ""}`;
+      let replied = this.replies.get(key);
+      if (!this.replies.has(key)) {
+        const file = await childSessionFile(join(artifactsDir(sessionFile), child.id)).catch(() => undefined);
+        replied = file ? await sessionReplied(file) : undefined;
+        this.replies.set(key, replied);
+      }
+      if (replied !== undefined) read.set(child.id, replied);
+    }
+    return read.size ? children.map(child => read.has(child.id) ? { ...child, repliedSinceTask: read.get(child.id)! } : child) : children;
   }
 
   /**

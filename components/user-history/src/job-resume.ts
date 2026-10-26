@@ -98,6 +98,38 @@ export async function sessionModel(file: string): Promise<JobModel | undefined> 
   return model ? { ...model, ...thinkingLevel !== undefined ? { thinkingLevel } : {} } : undefined;
 }
 
+/** A subagent's session file: the one its rlm-subagent.json names, else the one session file in its folder; undefined when neither. */
+export async function childSessionFile(childDir: string, spawn?: unknown): Promise<string | undefined> {
+  const record = spawn !== undefined ? spawn : await readFile(join(childDir, "rlm-subagent.json"), "utf8").then(text => JSON.parse(text) as unknown, () => null);
+  if (isRecord(record) && typeof record.sessionFile === "string") return record.sessionFile;
+  const names = (await readdir(childDir).catch(() => [] as string[])).filter(name => name.endsWith(".jsonl") && name !== "semantic-edges.jsonl");
+  return names.length === 1 ? join(childDir, names[0]!) : undefined;
+}
+
+/**
+ * Whether a subagent sent its parent a message after its last message from that parent, read from its own session file: the parent's
+ * messages are `agent_message` custom messages with `fromRelationship: "parent"`, and its sends are toolResult `sentAgentMessages` with
+ * `receiverRole: "parent"`. This is the daemon's `repliedSinceTask`, which a row of a session the daemon no longer holds leaves out: clean-room
+ * w81 run4 on 10-26, where the idle unload stopped "test file count" at 04:30Z, and the service restarts of 04:40Z and 05:04Z left its
+ * detached chat with no record of the reply. Undefined when the file names no message from the parent or cannot be read.
+ */
+export async function sessionReplied(file: string): Promise<boolean | undefined> {
+  let replied: boolean | undefined;
+  try {
+    for await (const line of fileLines(file)) {
+      const task = line.startsWith('{"type":"custom_message","customType":"agent_message"');
+      if (!task && !line.includes('"sentAgentMessages"')) continue;
+      const entry: unknown = JSON.parse(line);
+      if (!isRecord(entry)) continue;
+      if (task) { if (isRecord(entry.details) && entry.details.fromRelationship === "parent") replied = false; continue; }
+      const message = isRecord(entry.message) ? entry.message : undefined;
+      const sent = message?.role === "toolResult" && isRecord(message.details) && Array.isArray(message.details.sentAgentMessages) ? message.details.sentAgentMessages : [];
+      if (replied !== undefined && sent.some(item => isRecord(item) && item.receiverRole === "parent")) replied = true;
+    }
+  } catch { return undefined; }
+  return replied;
+}
+
 /**
  * A subagent's model and thinking level: the model its handle asked for (`rlm-subagent.json` `model`), else its session file's, with the
  * thinking level from its session file, since rlm-subagent.json keeps none. Undefined when neither names a model.
@@ -106,11 +138,7 @@ export async function jobModel(childDir: string): Promise<JobModel | undefined> 
   const spawn: unknown = await readFile(join(childDir, "rlm-subagent.json"), "utf8").then(text => JSON.parse(text), () => null);
   const asked = isRecord(spawn) && isRecord(spawn.model) && typeof spawn.model.provider === "string" && typeof spawn.model.modelId === "string"
     ? { provider: spawn.model.provider, modelId: spawn.model.modelId } : undefined;
-  let file = isRecord(spawn) && typeof spawn.sessionFile === "string" ? spawn.sessionFile : undefined;
-  if (file === undefined) {
-    const names = (await readdir(childDir).catch(() => [] as string[])).filter(name => name.endsWith(".jsonl") && name !== "semantic-edges.jsonl");
-    if (names.length === 1) file = join(childDir, names[0]!);
-  }
+  const file = await childSessionFile(childDir, spawn);
   const ran = file !== undefined ? await sessionModel(file) : undefined;
   const model = asked ?? ran;
   if (!model) return undefined;
