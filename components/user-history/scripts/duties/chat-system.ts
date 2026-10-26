@@ -17,6 +17,7 @@ import type { DutyRunRecord, FlaggedSlice, PrecheckOutput } from "../../src/shar
 import { D9_PUSH_PREFIX, serverNote } from "../../src/shared/chat-feed.ts";
 import type { ChatBoard, PlanItem } from "../../src/shared/types.ts";
 import { CHANGE_APPROACH_MISSES, fixStepStreak, metricStreaks } from "../../src/shared/duty-streak.ts";
+import { countWindowMs } from "../../src/duty-push.ts";
 import { hasDoneLine, upkeepWords } from "../../src/shared/upkeep-title.ts";
 import { stalledSince } from "../../src/shared/stalled-calls.ts";
 import { transientTurnError, turnErrorCause } from "../../src/turn-error.ts";
@@ -124,7 +125,7 @@ function localCopy(file: string | undefined): { file: string; host: string } | u
  * A red duty of the fleet, with the newest event time when every metric it misses is a windowed count that only ages out (`agingSince`), and
  * the lead metric's misses under its fix step with whether they moved (`underFix`, `fixStepStreak`).
  */
-export type RedDuty = FleetDuty & { agingSince?: number; underFix?: ReturnType<typeof fixStepStreak> };
+export type RedDuty = FleetDuty & { agingSince?: number; agingUntil?: number; underFix?: ReturnType<typeof fixStepStreak> };
 
 /** The ids of the plan items above `id` on a board, nearest first: what a fix step's own number can be read from (`fixStepStreak`). */
 export function itemsAbove(board: ChatBoard | null, id: string): string[] {
@@ -149,6 +150,22 @@ export function agingSince(runs: readonly DutyRunRecord[]): number | undefined {
   const streaks = metricStreaks(runs);
   if (!streaks.length || streaks.some(streak => streak.quietSince === undefined)) return undefined;
   return Math.max(...streaks.map(streak => streak.quietSince!));
+}
+
+/**
+ * When the last event an aging duty counts leaves its window (`countWindowMs` of each key), or undefined when a key names no window. The newest
+ * event alone misled: at 22:25Z on 10-26 d9 said CI and RepoOps d5 aged out with its newest event at 02:35Z, and the chat read that as clearing
+ * at 02:35Z on 10-27, while refused_lands_promotes_7d counts a refusal of 21:53Z on 10-25 until 21:53Z on 11-01.
+ */
+export function agingUntil(runs: readonly DutyRunRecord[]): number | undefined {
+  if (agingSince(runs) === undefined) return undefined;
+  let until = 0;
+  for (const streak of metricStreaks(runs)) {
+    const window = countWindowMs(streak.key);
+    if (window === undefined) return undefined;
+    until = Math.max(until, streak.quietSince! + window);
+  }
+  return until;
 }
 
 /** A red duty whose live fix job does not move its number, with the push line that asks its chat to replace that fix. */
@@ -791,7 +808,8 @@ async function main(): Promise<void> {
     const own = runsOf(duty.chat, duty.duty);
     const since = agingSince(own);
     const under = duty.fix && duty.metric ? { underFix: fixStepStreak(own, duty.metric.key, duty.fix, itemsAbove(plan.boards.get(duty.chat) ?? null, duty.fix)) } : {};
-    return { ...duty, ...under, ...since === undefined ? {} : { agingSince: since } };
+    const until = agingUntil(own);
+    return { ...duty, ...under, ...since === undefined ? {} : { agingSince: since }, ...until === undefined ? {} : { agingUntil: until } };
   });
   // A wait that names another chat's open todo holds its step, wherever that chat runs (`withLinkedBoards`).
   const linked = (chat: string): ChatBoard | null => { const board = plan.boards.get(chat); return board ? withLinkedBoards(board, chat, plan.boards) : null; };
@@ -874,7 +892,8 @@ async function main(): Promise<void> {
     section(`Red duties (${red.length}, ${fleet.metrics.duties_green_pct}% green)`, red.map(duty => `${name(duty.chat)}: ${duty.name} (${duty.duty}), ` +
       `${duty.metric ? `${duty.metric.key} ${show(duty.metric.value)} against ${duty.metric.op} ${show(duty.metric.target)}, ` : ""}${missRuns(duty)}` +
       `${duty.fix ? `, fix step ${duty.fix}` : duty.working ? `, its job ${duty.working} works on it` : ""}` +
-      `${duty.agingSince !== undefined ? `, red only on counts that age out (newest event ${new Date(duty.agingSince).toISOString().slice(0, 16)}Z), so it owes no fix job` : ""}.`)),
+      `${duty.agingSince !== undefined ? `, red only on counts that age out (newest event ${new Date(duty.agingSince).toISOString().slice(0, 16)}Z` +
+        `${duty.agingUntil !== undefined ? `, clears at ${new Date(duty.agingUntil).toISOString().slice(0, 16)}Z` : ""}), so it owes no fix job` : ""}.`)),
     section(`Red duties with no live fix job (${counts.redDuties.length})`, counts.redDuties.map(duty => `${duty.line}.`)),
     section(`Red duty metrics that wait on the owner's open For you todo (${owned.ownerHeld.length})`, owned.ownerHeld.map(duty => `${duty.line}.`)),
     section(`Red duties whose live fix job does not move the number (${notMoving.length})`, notMoving.map(duty => `${duty.line}.`)),
