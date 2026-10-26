@@ -254,16 +254,28 @@ export const POOL_TICK_MS = 2_000;
 const KEPT_THREADS = 100;
 
 /**
+ * How long a session's change mark (`forgetSession`) blocks a read that started before it: past the longest a snapshot runs, hookd's 10 s
+ * and the CLI's 15 s timeouts, so no read still out can land that old a reading.
+ */
+const CHANGE_MARK_MS = 60_000;
+
+/**
  * The pool's status for every reader in this service: one `pi-pool snapshot` at a time, at most one per `tickMs` unless an ask names a thread
  * with no reading, that every ask made while
  * it waits for its turn joins, with the threads those asks name. `current` answers from the last reading when it is at most `maxAgeMs` old
- * and names the asked threads; else it waits for the next read. A read that fails leaves the last good reading in place and answers with it;
- * only an ask that nothing was ever read for fails. `forget` drops every reading after a pool change this service made.
+ * and names the asked threads; else it waits for the next read. With `alone`, a thread with no reading is read by itself at once instead of
+ * behind the shared read. A read that fails leaves the last good reading in place and answers with it; only an ask that nothing was ever
+ * read for fails. `forget` drops every reading after a pool change this service made; `forgetSession` drops one session's readings after
+ * a change to that session's record only.
  */
 export class PoolStatusReader {
   private base: { at: number; queue: PoolPart; config: PoolPart } | null = null;
   private readonly threads = new Map<string, { at: number; parts: ThreadParts }>();
   private readonly pending = new Map<string, PoolThread>();
+  /** The read of one thread by itself (`alone`) in flight, by thread key. */
+  private readonly alone = new Map<string, Promise<void>>();
+  /** When this service last changed a session's record (`forgetSession`): a reading of the session from a read started before then is old. */
+  private readonly changed = new Map<string, number>();
   private next: Promise<void> | null = null;
   private running: Promise<void> = Promise.resolve();
   private lastStart = -Infinity;
@@ -275,13 +287,19 @@ export class PoolStatusReader {
   constructor(private readonly read: (threads: readonly PoolThread[]) => Promise<PoolSnapshot> = readSnapshot, private readonly tickMs = POOL_TICK_MS,
     private readonly now: () => number = Date.now, private readonly sleep: (ms: number) => Promise<void> = ms => new Promise(resolve => setTimeout(resolve, ms))) {}
 
-  current(threads: readonly PoolThread[] = [], { maxAgeMs = this.tickMs }: { maxAgeMs?: number } = {}): Promise<PoolStatus> {
+  current(threads: readonly PoolThread[] = [], { maxAgeMs = this.tickMs, alone = false }: { maxAgeMs?: number; alone?: boolean } = {}): Promise<PoolStatus> {
     const since = this.now() - maxAgeMs;
     const stale = threads.filter(thread => !((this.threads.get(threadKey(thread))?.at ?? -Infinity) >= since));
     if (this.base && this.base.at >= since && !stale.length) return Promise.resolve(this.status(threads));
+    const generation = this.generation;
+    const missing = alone ? stale.filter(thread => !this.threads.has(threadKey(thread))) : [];
+    if (missing.length) {
+      // On 10-26 at 07:26, 07:27 and 07:42Z api/accounts on us-metal02 took 1.7 to 2.1 s waiting behind the shared read after a restart or a job start.
+      return Promise.all(missing.map(thread => this.readAlone(thread)))
+        .then(() => generation === this.generation ? this.status(threads) : this.current(threads, { maxAgeMs, alone }));
+    }
     for (const thread of stale) this.pending.set(threadKey(thread), thread);
     if (stale.some(thread => !this.threads.has(threadKey(thread)))) this.wake?.();
-    const generation = this.generation;
     return this.turn().then(() => generation === this.generation ? this.status(threads) : this.current(threads, { maxAgeMs }));
   }
 
@@ -298,10 +316,48 @@ export class PoolStatusReader {
     this.lastStart = -Infinity;
   }
 
+  /**
+   * Drops the readings of `session` alone, after a change to its record only, such as the class a job start sets on its tree: every other
+   * thread keeps its reading, and a read that started before the change lands nothing for `session`. On 10-26 at 07:26 and 07:42Z a job start's
+   * class set dropped every reading on us-metal02, and api/accounts then waited 1.7 to 2.1 s for a new one.
+   */
+  forgetSession(session: string): void {
+    this.changed.set(session, this.now());
+    for (const key of [...this.threads.keys()]) if (key.startsWith(session + "|")) this.threads.delete(key);
+  }
+
   private status(threads: readonly PoolThread[]): PoolStatus {
     const found = new Map(threads.map(thread => { const entry = this.threads.get(threadKey(thread)); return [threadKey(thread), entry && { ...entry.parts, at: entry.at }] as const; }));
     if (!this.base || [...found.values()].some(parts => !parts)) throw this.error instanceof Error ? this.error : new Error("pi-pool gave no reading");
     return { at: this.base.at, queue: this.base.queue, config: this.base.config, threads: found as Map<string, ThreadParts & { at: number }> };
+  }
+
+  /** Keeps a snapshot that a read started at `at` gave, unless a pool change came since, or a newer reading is already kept. */
+  private land(generation: number, at: number, snapshot: PoolSnapshot): void {
+    if (generation !== this.generation) return;
+    this.error = null;
+    if (!this.base || at >= this.base.at) this.base = { at, queue: snapshot.queue, config: snapshot.config };
+    for (const { session, model, who, ls } of snapshot.threads) {
+      const key = threadKey({ session, model });
+      if (session !== null && at <= (this.changed.get(session) ?? -Infinity)) continue;
+      if ((this.threads.get(key)?.at ?? -Infinity) > at) continue;
+      this.threads.delete(key);
+      this.threads.set(key, { at, parts: { who, ls } });
+    }
+    for (const [session, when] of this.changed) if (when < at - CHANGE_MARK_MS) this.changed.delete(session);
+    while (this.threads.size > KEPT_THREADS) this.threads.delete(this.threads.keys().next().value!);
+  }
+
+  private readAlone(thread: PoolThread): Promise<void> {
+    const key = threadKey(thread);
+    let reading = this.alone.get(key);
+    if (!reading) {
+      const generation = this.generation, at = this.now();
+      reading = this.read([thread]).then(snapshot => this.land(generation, at, snapshot), error => { if (generation === this.generation) this.error = error; })
+        .finally(() => this.alone.delete(key));
+      this.alone.set(key, reading);
+    }
+    return reading;
   }
 
   private turn(): Promise<void> {
@@ -315,17 +371,7 @@ export class PoolStatusReader {
       const asked = [...this.pending.values()];
       this.pending.clear();
       const generation = this.generation, at = this.lastStart = this.now();
-      this.running = this.read(asked).then(snapshot => {
-        if (generation !== this.generation) return;
-        this.error = null;
-        this.base = { at, queue: snapshot.queue, config: snapshot.config };
-        for (const { session, model, who, ls } of snapshot.threads) {
-          const key = threadKey({ session, model });
-          this.threads.delete(key);
-          this.threads.set(key, { at, parts: { who, ls } });
-        }
-        while (this.threads.size > KEPT_THREADS) this.threads.delete(this.threads.keys().next().value!);
-      }, error => { this.error = error; });
+      this.running = this.read(asked).then(snapshot => this.land(generation, at, snapshot), error => { this.error = error; });
       await this.running;
     })();
     return this.next;
@@ -344,7 +390,7 @@ export function readPoolStatus(threads: readonly PoolThread[] = [], options: { m
   return poolStatus.current(threads, options);
 }
 
-/** A pool change this service makes (an account action, a key, a priority, a login, a usage refresh) drops every reading, so the next ask waits for a new one. */
+/** A pool change this service makes (an account action, a key, a login, a usage refresh) drops every reading, so the next ask waits for a new one. */
 export function forgetAccountReadings(): void { poolStatus.forget(); }
 
 /** The accounts view of one thread from its snapshot parts, as `who`, `config` and `ls` for each provider gave it at `parts.at`. */
@@ -374,11 +420,12 @@ export function accountsView(sessionId: string | null, parts: ThreadParts & { at
 /**
  * `model` names the model the chat runs, so a spent per-model cap (Fable) only marks an account depleted for that model. With a reading for
  * the thread and model it answers at once with it, and asks for the thread in the next shared read; the accounts frame of a thread feed thus
- * starts no pi-pool process of its own. Without one, or with `fresh`, it waits for that read.
+ * starts no pi-pool process of its own. Without one it reads the thread by itself at once, not behind the shared read; with `fresh` and a
+ * reading it waits for the next shared read.
  */
 export function listAccounts(sessionId: string | null, model: string | null = null, { fresh = false, status = poolStatus }: { fresh?: boolean; status?: PoolStatusReader } = {}): Promise<AccountsView> {
   const thread = { session: sessionId, model };
-  const next = status.current([thread], fresh ? { maxAgeMs: 0 } : {}).then(read => accountsView(sessionId, read.threads.get(threadKey(thread))!, read.config));
+  const next = status.current([thread], { alone: true, ...fresh ? { maxAgeMs: 0 } : {} }).then(read => accountsView(sessionId, read.threads.get(threadKey(thread))!, read.config));
   const cached = fresh ? null : status.cached(thread);
   if (!cached) return next;
   next.catch(() => {});
@@ -588,10 +635,13 @@ export async function readPoolClasses(sessionIds: readonly string[], part: (args
   }));
 }
 
-/** Sets a root session's pool class through hookd when it answers (poolPart); the pool keeps it on the tree record, so every subagent of the root shares it. */
+/**
+ * Sets a root session's pool class through hookd when it answers (poolPart); the pool keeps it on the tree record, so every subagent of the root
+ * shares it. It drops the root's own readings only; a subagent's reading takes the new class at its next shared read.
+ */
 export async function setPoolPriority(sessionId: string, priority: PoolPriority): Promise<void> {
   if (!sessionId || sessionId.startsWith("-")) throw new Error("Choose a thread.");
-  try { partOut(await poolPart(poolCommand.priority(sessionId, priority))); } finally { forgetAccountReadings(); }
+  try { partOut(await poolPart(poolCommand.priority(sessionId, priority))); } finally { poolStatus.forgetSession(sessionId); }
 }
 
 const accountArgument = (account: string | undefined): string => {

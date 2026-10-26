@@ -105,14 +105,63 @@ test("the accounts frame answers from the last reading at once and asks for its 
 
   time.advance(2001);
   const subscribes = Array.from({ length: 20 }, () => listAccounts("t1", "opus", { status }));
-  void listAccounts("t2", null, { status });
+  const other = listAccounts("t3", "opus", { status });
+  void status.current([{ session: "t2", model: null }]);
   assert.ok((await Promise.all(subscribes)).every(view => email(view) === "call1@a"), "a subscribe answers from the snapshot without waiting");
   await settle(); await settle();
-  assert.equal(pool.calls.length, 2, "twenty subscribes and another thread make one call");
-  assert.deepEqual(pool.calls[1]!.threads.map(threadKey), ["t1|opus", "t2|"]);
+  assert.deepEqual(pool.calls.slice(1).map(call => call.threads.map(threadKey)), [["t3|opus"], ["t1|opus", "t2|"]],
+    "a thread with no reading is read by itself; twenty subscribes and another reader's thread make one shared call");
   pool.calls[1]!.answer();
+  assert.equal(email(await other), "call2@a");
+  pool.calls[2]!.answer();
   await settle();
-  assert.equal(email(await listAccounts("t1", "opus", { status })), "call2@a");
+  assert.equal(email(await listAccounts("t1", "opus", { status })), "call3@a");
+});
+
+// 10-26 on us-metal02: api/accounts took 2078 ms at 07:26Z after a restart and 2094 and 1682 ms at 07:27 and 07:42Z after job starts, while
+// the event loop stalled at most 432 ms: each waited for a shared read to end before its own began, and d7 counted the minutes dirty.
+test("api/accounts for a thread with no reading reads it alone at once, not behind the shared read in flight", async () => {
+  const pool = fakePool(), time = clock();
+  const status = new PoolStatusReader(pool.read, 2000, time.now, time.sleep);
+  const trees = Array.from({ length: 40 }, (_, n): PoolThread => ({ session: `tree${n}`, model: null }));
+  void status.current(trees);
+  await settle();
+  assert.equal(pool.calls.length, 1);
+  const view = listAccounts("new", "opus", { status });
+  await settle();
+  assert.equal(pool.calls.length, 2, "the thread's read starts while the shared read is still out");
+  assert.deepEqual(pool.calls[1]!.threads.map(threadKey), ["new|opus"]);
+  pool.calls[1]!.answer();
+  assert.equal(email(await view), "call2@a");
+  const again = listAccounts("new", "opus", { status });
+  assert.equal(email(await again), "call2@a");
+  assert.equal(pool.calls.length, 2, "two asks for one thread share its read");
+});
+
+test("a class set on one job's tree keeps every other thread's reading, and drops that tree's even from a read started before it", async () => {
+  const pool = fakePool(), time = clock();
+  const status = new PoolStatusReader(pool.read, 2000, time.now, time.sleep);
+  const first = listAccounts("t1", null, { status });
+  await settle();
+  pool.calls[0]!.answer();
+  await first;
+  time.advance(10);
+  const job = { session: "job", model: null };
+  const shared = status.current([job]);
+  await settle();
+  assert.equal(pool.calls.length, 2);
+  time.advance(10);
+  status.forgetSession("job");
+  const after = listAccounts("t1", null, { status });
+  assert.equal(email(await after), "call1@a", "the owner's thread answers at once");
+  pool.calls[1]!.answer();
+  await assert.rejects(shared, /no reading/, "the read that started before the set lands nothing for the job's tree");
+  assert.equal(status.cached(job), null);
+  time.advance(10);
+  const job2 = status.current([job], { alone: true });
+  await settle();
+  pool.calls.at(-1)!.answer();
+  assert.ok((await job2).threads.has("job|"));
 });
 
 test("a pool change drops the readings, so the next ask waits for a new one", async () => {
