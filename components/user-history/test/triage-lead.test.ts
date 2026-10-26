@@ -14,15 +14,16 @@ const PI_POOL = fileURLToPath(new URL("../../pi-pool", import.meta.url));
 const CHAT = "01a1180e-6567-747f-bf44-452520ebdd1b";
 const TRIAGE = "01a17a05-1b7d-74cb-ae99-e9a7d02e878a";
 const rows = [
-  { sessionId: TRIAGE, sessionName: "alert triage CI and RepoOps 06:01", lifecycle: "active" },
-  { sessionId: "01a16000-0000-7000-8000-000000000001", sessionName: "alert triage ops guy 01:10", lifecycle: "archived" },
-  { sessionId: "01a179eb-3069-7702-a8d9-e378c55a0c6d", sessionName: "wiki index job", lifecycle: "active" },
-  { sessionId: CHAT, sessionName: "CI and RepoOps", lifecycle: "active" },
+  { sessionId: TRIAGE, sessionName: "alert triage CI and RepoOps 06:01", lifecycle: "live", isSessionActive: true },
+  { sessionId: "01a16000-0000-7000-8000-000000000001", sessionName: "alert triage ops guy 01:10", lifecycle: "archived", isSessionActive: false },
+  { sessionId: "01a16000-0000-7000-8000-000000000002", sessionName: "alert triage Crawler VP 14:32", lifecycle: "live", isSessionActive: false },
+  { sessionId: "01a179eb-3069-7702-a8d9-e378c55a0c6d", sessionName: "wiki index job", lifecycle: "live", isSessionActive: true },
+  { sessionId: CHAT, sessionName: "CI and RepoOps", lifecycle: "live", isSessionActive: true },
 ];
 
-test("the lead list holds the chats and every live alert triage job, once each, and no archived triage job or other job", () => {
+test("the lead list holds the chats and every alert triage job a worker runs, once each, and no archived or unloaded triage job or other job", () => {
   assert.deepEqual(leadList([CHAT], rows), [CHAT, TRIAGE]);
-  assert.deepEqual(leadList([], [{ sessionId: "x" }]), [], "a row with no name is no triage job");
+  assert.deepEqual(leadList([], [{ sessionId: "x", lifecycle: "live", isSessionActive: true }]), [], "a row with no name is no triage job");
 });
 
 test("pi-pool's turn queue starts the triage job's run at the next free slot, ahead of 37 job runs that asked before it, and not before", () => {
