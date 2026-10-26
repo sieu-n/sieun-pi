@@ -349,9 +349,27 @@ test("d1 reads the Mac's Tailscale state from its ssh address and flags an offli
     assert.equal(item?.kind, "host_away");
     assert.equal(item?.host, "mac");
     assert.match(item!.excerpt, /^the Mac \(100\.66\.173\.18\) is offline on the tailnet since 2026-10-26T15:20:00\.1Z, asleep or shut, so tool rows are not measured/);
-    script("tailscale", `echo '${status(true)}'`);
-    assert.equal(await macAway("mac", "tool rows are", 1), undefined, "an online Mac is read over ssh as before");
+    script("tailscale", `[ "$1" = ping ] && echo "pong from mac (100.66.173.18) via DERP(tok) in 301ms" && echo "direct connection not established" && exit 1; echo '${status(true)}'`);
+    assert.equal(await macAway("mac", "tool rows are", 1), undefined, "an online Mac that answers a ping, even through DERP with exit 1, is read over ssh as before");
     script("tailscale", "exit 1");
     assert.equal(await macAway("mac", "tool rows are", 1), undefined, "a Tailscale read that fails leaves the ssh read to say what is wrong");
+  } finally { process.env.PATH = path; }
+});
+
+// 10-26 22:18:31Z: the Mac dark-woke, Tailscale read it online for about a minute, and the host-back reruns of frontend bro's d1 and d5 timed
+// out on ssh to it, read "the precheck failed" and started duty jobs that could do nothing. An online Mac with no pong now reads host_away.
+test("a Mac Tailscale lists online that gives no pong to a tailscale ping is host_away, so no ssh dials a dark-woken Mac", async () => {
+  const bin = mkdtempSync(join(tmpdir(), "box-parity-mac-dark-wake-"));
+  const script = (name: string, body: string) => { writeFileSync(join(bin, name), `#!/bin/sh\n${body}\n`, { mode: 0o755 }); };
+  script("ssh", '[ "$1" = "-G" ] && echo "hostname 100.66.173.18" && exit 0; exit 255');
+  const online = JSON.stringify({ Peer: { a: { TailscaleIPs: ["100.66.173.18"], Online: true, LastSeen: "2026-10-26T22:20:00.1Z" } } });
+  script("tailscale", `[ "$1" = ping ] && echo 'ping "100.66.173.18" timed out' && echo "no reply" && exit 1; echo '${online}'`);
+  const path = process.env.PATH;
+  process.env.PATH = `${bin}:${path}`;
+  try {
+    const item = await macAway("mac", "tool rows are", 1);
+    assert.equal(item?.kind, "host_away");
+    assert.equal(item?.host, "mac");
+    assert.match(item!.excerpt, /^the Mac \(100\.66\.173\.18\) is listed online on the tailnet but gave no pong to a tailscale ping, a dark wake from sleep, so tool rows are not measured/);
   } finally { process.env.PATH = path; }
 });
