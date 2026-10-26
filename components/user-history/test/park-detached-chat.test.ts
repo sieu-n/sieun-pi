@@ -14,6 +14,9 @@ import { jobResumes } from "../src/job-resume.ts";
 import type { ChatBoard, ChildAgent, ThreadMessage } from "../src/shared/types.ts";
 import { fakeThreads, source } from "./chats-helpers.ts";
 
+// Job names carry the owner's local HH:MM, and the chat service runs with TZ=Asia/Seoul; the expected "resumed 18:56" is 09:56Z in Seoul.
+process.env.TZ = "Asia/Seoul";
+
 test("a reported job whose session the idle unload stopped is parked after its chat detaches", async () => {
   const dir = await mkdtemp(join(tmpdir(), "park-detached-"));
   try {
