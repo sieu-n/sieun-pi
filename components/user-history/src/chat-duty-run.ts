@@ -11,7 +11,7 @@ import { goalReadingOps } from "./goal-readings.ts";
 import { type AfterMeasure, CHECK_IN_DUTY, CHECK_IN_DUTY_ID, dailySlot, dutyDue, ERROR_RUNS_TARGET, errorStreak, headlineMetric, hostAwayOf, judge, nextRunAt, outputReadings, overrunWords, parseSchedule, type Duty, type DutyJobRef,
   type DutyCut, type DutyMetric, type DutyRunRecord, type DutySchedule, type DutyTrigger, type DutyView, type FixLink, type FlaggedSlice, type PrecheckOutput, type PrecheckOverrun, STILL_WORKING, verdictMetrics } from "./shared/chat-duties.ts";
 import { briefFindings, headlineWords } from "./shared/brief-cap.ts";
-import { pushMisses } from "./duty-push.ts";
+import { agedOut, pushMisses } from "./duty-push.ts";
 import { transientTurnError } from "./turn-error.ts";
 import type { TellSource } from "./clean-room-subjects.ts";
 import type { PrimeUpdate } from "./prime-update.ts";
@@ -374,7 +374,7 @@ export class Duties {
     const { runs, everyMs } = await context();
     const counted = verdictKeys(duty.metrics);
     let own = runs.filter(run => run.duty === duty.id);
-    if (!pushMisses(own, counted, everyMs, this.now())) return;
+    if (!pushMisses(own, counted, everyMs, this.now()) && agedOut(own, counted, this.now()) === undefined) return;
     const lastRun = own.find((run): run is DutyRunRecord & { job: DutyJobRef } => run.job !== undefined);
     const newestWorks = !!lastRun && await this.host.jobs.working(lastRun.job).catch(() => false) && !(await this.reportedFree(chatId, lastRun.job));
     const live = newestWorks && lastRun ? lastRun.job : lastRun ? await this.olderLive(chatId, own, lastRun.job, duty.schedule) : null;
@@ -389,6 +389,14 @@ export class Duties {
     if (!working && (lastRun && !lastRun.after || this.afters.has(key))) {
       await (this.afters.get(key) ?? (lastRun && !this.stopped.has(lastRun.job.id) ? this.endJob(chatId, lastRun) : undefined));
       own = (await this.store.runs(chatId)).filter(run => run.duty === duty.id);
+    }
+    // A duty red only on windowed counts whose events have all left their windows gets its push run whatever fix or hold it has (`agedOut`).
+    const aged = agedOut(own, counted, this.now());
+    if (aged !== undefined) {
+      if (this.afters.has(key)) return;
+      if (this.start(chatId, duty.id, "push", this.now())) this.log(`duty ${chatId.slice(0, 8)}/${duty.id}: red only on windowed counts whose newest event ` +
+        `left its window at ${new Date(aged).toISOString()}; a push run reads it again`);
+      return;
     }
     const misses = pushMisses(own, counted, everyMs, this.now());
     if (!misses) return;

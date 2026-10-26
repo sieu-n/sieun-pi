@@ -61,3 +61,35 @@ export function pushMisses(runs: readonly DutyRunRecord[], counted: ReadonlySet<
   const parts = Object.fromEntries(Object.entries(measured.parts ?? {}).filter(([key]) => [...counted].some(metric => key.startsWith(`${metric}_`))));
   return Object.keys(parts).length ? missedKeys({ metrics: parts }) : null;
 }
+
+/** A windowed count's window from its key's `_<n>m`, `_<n>h` or `_<n>d` part (`noisy_rules_24h`, `probe_uptime_24h_pct`), or undefined. */
+export function countWindowMs(key: string): number | undefined {
+  const found = /_(\d+)(m|h|d)(?:_|$)/.exec(key);
+  if (!found) return undefined;
+  return Number(found[1]) * { m: 60_000, h: 3_600_000, d: 86_400_000 }[found[2] as "m" | "h" | "d"];
+}
+
+/**
+ * When the duty's newest reading missed only windowed counts whose newest event (`lastEventAt`) has left its window since, the time the last
+ * one left; undefined while any counted miss can still count, or once a run of any verdict came after that time. Such a duty gets a push run
+ * even with a live fix job or a hold, and the run reads met and starts no job. Without it the duty read red until its next daily slot: Crawler
+ * VP's d6 counted health_snapshot_down_minutes_24h 16 with the newest down minute at 18:16Z on 10-25, its next run was the 21:20Z slot on
+ * 10-26, and d9 counted it red at each run in between, as it did ops guy's d3, whose last noisy flap of 12:06Z on 10-26 waited for 23:46Z on 10-27.
+ */
+export function agedOut(runs: readonly DutyRunRecord[], counted: ReadonlySet<string>, now: number): number | undefined {
+  const newest = runs[0];
+  const holder = newestReading(runs);
+  if (!newest || !holder) return undefined;
+  const measured = effectiveRun(holder);
+  if (measured.verdict !== "missed") return undefined;
+  const missed = missedKeys(measured).filter(key => counted.has(key));
+  if (!missed.length) return undefined;
+  let left = 0;
+  for (const key of missed) {
+    const at = measured.metrics[key]?.lastEventAt;
+    const window = countWindowMs(key);
+    if (at === undefined || window === undefined) return undefined;
+    left = Math.max(left, at + window);
+  }
+  return left <= now && Math.max(newest.at, holder.after?.at ?? holder.at) < left ? left : undefined;
+}
