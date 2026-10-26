@@ -36,6 +36,7 @@ import { IdleUnloader, parkChanges, providerWaits, quotaParkedUntil, SWEEP_EVERY
 import { handOff, handoffSend, handsOffRow, systemPorts } from "./detached-handoff.ts";
 import { unfinishedHandoffs } from "./orphan-services.ts";
 import { readHeldTurns, readTurnSince, writeResumePending } from "./held-turns.ts";
+import { jobLive, livePaths } from "./job-live.ts";
 import { recordUnloaded, writeReceipt } from "./unloaded.ts";
 import { quietMinutes } from "./quiet-minutes.ts";
 import { startTmpSweep } from "./tmp-sweep.ts";
@@ -381,7 +382,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       return file ? readTurnSince(file, since) : { ran: false };
     },
     retryJob: () => chats.interruptedSoon(0), poolFreeAt: (tree, provider) => treeFreeAt(tree, provider),
-    turnQueued: async session => (await queued()).queued.get(session) ?? null,
+    turnQueued: async session => (await queued()).queued.get(session) ?? null, jobLive: (session, now) => jobLive(livePaths(dataDir), session, now),
     log: dutyLog, ...agentMessage });
   const stopBridgeWatch = !alertPoll ? () => {} : startBridgeWatch({ health: alertPoll.health, statusFile, configFile: grafanaConfig,
     alerting: alerting => alertPoll.alerting(alerting), log: dutyLog, ...agentMessage });

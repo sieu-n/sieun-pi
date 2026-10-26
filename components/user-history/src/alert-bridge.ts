@@ -390,6 +390,8 @@ export interface AlertBridgeDeps {
   retryJob?: (job: AlertJob) => void;
   /** When pi-pool next gives the tree rooted at `tree` a `provider` account (`poolFreeAt`): now when it would now, null when the pool does not say. */
   poolFreeAt?: (tree: string, provider: string) => Promise<number | null>;
+  /** Why a job that does not work is about to run (`jobLive`: a pending wake, a queued pi-pool run, a fresh watchdog continue), else null. */
+  jobLive?: (session: string, now: number) => Promise<string | null>;
   /** The session's place in pi-pool's turn queue (`pi-pool queue --json`), null when its run does not wait there. */
   turnQueued?: (session: string) => Promise<QueuePlace | null>;
   now?: () => number;
@@ -557,7 +559,8 @@ export class AlertBridge {
    * failing provider) has not ended either: the catalog reads its cut and runs the resume pass at once (`resumesNow`), which continues it once
    * pi-pool can serve it, and its fire escalates at ESCALATE_MS with the error while no turn comes. Read as ended, such a job's fire went to a
    * fresh job on the next poll while the resume pass continued the old one, so two jobs worked one fire, and in an outage each fresh job could
-   * fail the same way.
+   * fail the same way. A job about to run (`jobLive`) has not ended either: on 10-25 the watchdog sent 01a1753b a continue at 23:49:35Z, the
+   * bridge read it as ended at 23:50:07Z and started a second job, and the continue's run reached pi-pool's queue at 23:50:12Z.
    */
   private async watch(state: BridgeState, now: number): Promise<{ state: BridgeState; errors: Map<string, string>; parked: Set<string>; queued: Map<string, QueuePlace>; ended: Set<string> }> {
     const errors = new Map<string, string>();
@@ -581,7 +584,11 @@ export class AlertBridge {
       const retry = this.deps.retryJob !== undefined && turn.slotAt !== undefined && turn.slotAt <= now && (job.retriedAt ?? -1) < turn.slotAt;
       const working = await (this.deps.jobWorking?.(job) ?? Promise.resolve(true)).catch(() => true);
       const transient = turn.error !== undefined && transientTurnError(turn.error);
-      if (!working && !retry && !place && !parked.has(id) && !transient) ended.add(id);
+      if (!working && !retry && !place && !parked.has(id) && !transient) {
+        const live = await (this.deps.jobLive?.(id, now) ?? Promise.resolve(null)).catch(() => null);
+        if (live) this.deps.log(`alerts: triage job ${job.name} (${id.slice(0, 8)}) does not work, but ${live}; not ended`);
+        else ended.add(id);
+      }
       if (!retry || working || turn.slotAt === undefined) continue;
       this.deps.retryJob!(job);
       jobs[id] = { ...job, retriedAt: turn.slotAt };

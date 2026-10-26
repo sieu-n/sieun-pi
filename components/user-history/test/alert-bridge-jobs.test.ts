@@ -7,6 +7,7 @@ import { test } from "node:test";
 import { AlertBridge, ESCALATE_MS, startAlertBridge, REFIRE_MS, REOPEN_MS, firingRules, parseAlerts, parseOwners, parseState, readFiringRules, ruleKey, type AlertLine, type BridgeState, type RuleJob, type TriageJob } from "../src/alert-bridge.ts";
 import { ALERT_ROUTES } from "../src/alert-routes.ts";
 import { turnSince, type TurnSince } from "../src/held-turns.ts";
+import { jobLive, RESENT_MS } from "../src/job-live.ts";
 import type { QueuePlace } from "../src/shared/types.ts";
 
 const NOW = Date.parse("2026-10-18T16:00:00Z");
@@ -25,7 +26,7 @@ const OWNERS = parseOwners({ owners: { "metal box owner": METAL, "ops guy": OPS 
 
 const ref = (job: RuleJob | TriageJob | undefined) => job && { id: job.id, name: job.name, at: job.at };
 
-async function fixture(options: { state?: unknown; failStarts?: boolean } = {}) {
+async function fixture(options: { state?: unknown; failStarts?: boolean; jobLive?: (session: string, now: number) => Promise<string | null> } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "alert-bridge-jobs-"));
   const file = join(dir, "alert-bridge.json");
   if (options.state) await writeFile(file, JSON.stringify(options.state));
@@ -50,7 +51,8 @@ async function fixture(options: { state?: unknown; failStarts?: boolean } = {}) 
     },
     jobWorking: async job => working.has(job.id),
     jobTurn: async (job, since) => turns.get(job.id) ?? { ran: true, at: since },
-    retryJob: job => { retried.push(job.id); }, poolFreeAt: async tree => freeAt.get(tree) ?? null, turnQueued: async session => queue.get(session) ?? null });
+    retryJob: job => { retried.push(job.id); }, poolFreeAt: async tree => freeAt.get(tree) ?? null, turnQueued: async session => queue.get(session) ?? null,
+    ...options.jobLive ? { jobLive: options.jobLive } : {} });
   return { file, bridge, started, sent, working, turns, retried, freeAt, queue, set: (alerts: unknown[]) => { list = alerts; }, at: (ms: number) => { now = ms; },
     state: async () => parseState(JSON.parse(await readFile(file, "utf8"))) };
 }
@@ -415,6 +417,39 @@ test("a triage job whose call failed on a lost connection keeps its fires for th
   f.at(Date.parse("2026-10-25T23:57:00Z"));
   await f.bridge.tick();
   assert.equal(f.started.length, 1);
+});
+
+// Replays 10-25: the watchdog found alert triage Crawler VP 07:43 (01a1753b) with a tool marked running 35.1 min and no live process, and
+// stopped it and sent it a continue at 23:49:35Z. The bridge read it as ended at 23:50:07Z, since it had no turn after the 23:30:49Z fire,
+// and started 08:50 on the same fires, while the continue's run reached pi-pool's queue at 23:50:12Z and ran at 23:56Z.
+test("a triage job the watchdog just sent a continue, or whose run waits in pi-pool's queue, is not ended, and one past both is", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "alert-bridge-live-"));
+  const paths = { wakes: join(dir, "wakes"), turns: join(dir, "turns.json"), watchdogLog: join(dir, "log.jsonl") };
+  const f = await fixture({ jobLive: (session, now) => jobLive(paths, session, now) });
+  f.at(Date.parse("2026-10-25T22:43:39.470Z"));
+  f.set([crawler("cccc0000000000b1", "crawler-prod-sticky-block-rotations-jump")]);
+  f.turns.set("job-1", { ran: true, at: Date.parse("2026-10-25T22:50:24Z") });
+  await f.bridge.tick();
+  f.at(Date.parse("2026-10-25T23:30:49.012Z"));
+  f.set([crawler("cccc0000000000b1", "crawler-prod-sticky-block-rotations-jump"), crawler("cccc0000000000b2", "crawler-prod-lanes-link-down")]);
+  f.turns.set("job-1", { ran: false });
+  await f.bridge.tick();
+  assert.deepEqual(f.sent.filter(({ text }) => text.startsWith("[alert] A rule")).map(({ session }) => session), ["job-1"]);
+  f.working.clear();
+  await writeFile(paths.watchdogLog, JSON.stringify({ id: "5f899fe960ef", sid: "job-1", name: "alert triage Crawler VP 07:43", depth: 0, stale_min: 35.1,
+    why: "tool marked running 35.1m with no live process", method: "stop+send", stop_rc: 0, stop_out: "ok", send_rc: 0, send_out: "Sent to job-1",
+    at: "2026-10-25T23:49:35.551946+00:00" }) + "\n");
+  f.at(Date.parse("2026-10-25T23:50:07.986Z"));
+  await f.bridge.tick();
+  assert.equal(f.started.length, 1, "the job the watchdog just sent a continue is not ended");
+  await writeFile(paths.turns, JSON.stringify({ working: {}, queued: { "job-1": { tree: "job-1", since: 1792972212 } }, owner: {}, lead: [], kept: {} }));
+  f.at(Date.parse("2026-10-25T23:50:12Z") + RESENT_MS);
+  await f.bridge.tick();
+  assert.equal(f.started.length, 1, "its run waits in pi-pool's turn queue");
+  await writeFile(paths.turns, JSON.stringify({ working: {}, queued: {}, owner: {}, lead: [], kept: {} }));
+  f.at(Date.parse("2026-10-25T23:50:42Z") + RESENT_MS);
+  await f.bridge.tick();
+  assert.equal(f.started.length, 2, "with no continue landing and no queued run, the fires go to a fresh job");
 });
 
 test("a held job that runs at its slot holds the fire, so nothing escalates", async () => {
