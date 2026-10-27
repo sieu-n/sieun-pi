@@ -1,7 +1,10 @@
 import { execFile } from "node:child_process";
-import { basename } from "node:path";
+import { readdir, stat } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
+import { clockTime } from "./checkin-settings.ts";
 import { CUT_CONFIRM_BYTES, CUT_TAIL_BYTES, tailLines } from "./cut-end.ts";
+import { turnError } from "./shared/credential-wait.ts";
 
 /**
  * One reader for "this session waits for a pi-pool working slot". Since load.2 (us-metal02, 10-28 about 05:44 KST) a turn that waits for its
@@ -25,16 +28,27 @@ export type SlotPark = {
   resumeAt?: number;
   /** pi-pool started the slot and waits for the session to load and take it. */
   starting?: true;
+  /**
+   * Its turn ended on the wait: the newest entry is a slot-wait error or a `provider_quota_park`, so no live model call holds the queue place
+   * and its worker can stop. Absent while the newest entry is a `pi-pool-queue` place, a turn that waits inside a live model call.
+   */
+  ended?: true;
 };
 
-/** `pi-pool queue --json`, only the parts this reader uses. */
+/** One session file's own reading: its open wait, or when Prime dropped its park with no turn after (`dropped`), and whether the lines held a clear. */
+export type FileSlotPark = { park?: SlotPark; dropped?: number; complete: boolean };
+
+/** `pi-pool queue --json`, only the parts this reader uses; the chat service's `PoolPlaces` (src/chat-turn-queue.ts) is one. */
 export type PoolQueue = {
-  queued: ReadonlyMap<string, { place: number; total: number }>;
+  queued: ReadonlyMap<string, { position: number; total: number }>;
   working: ReadonlySet<string>;
 };
 
-/** pi-pool's slot wait as Prime ends the turn with it (components/pi-pool/app/extension/index.ts). */
-const SLOT_ERROR = /pi-pool: this (?:run|session) waits for (?:a working slot|its slot)(?:, place (\d+) of (\d+))?[^]*?(?:asks again at|waits for its slot at) (\d{4}-\d\d-\d\dT[\d:.]+Z)/;
+/**
+ * pi-pool's slot wait as Prime ends the turn with it (components/pi-pool/app/extension/index.ts): load.2's "this run waits for a working slot,
+ * place 134 of 139; ... asks again at <time>", and the token hook's older "this session waits for its slot at <time>" (10-18 to 10-20).
+ */
+const SLOT_ERROR = /pi-pool: this (?:run|session) waits for (?:a working slot|its slot)(?:, place (\d+) of (\d+))?(?:[^]*?\bat (\d{4}-\d\d-\d\dT[\d:.]+Z))?/;
 /** The archive reasons that are the daemon's own and leave the session restorable (Prime's RT set); any other archive is a stop. */
 const NOT_A_STOP = new Set(["idle_unload", "daemon_shutdown", "update_discarded"]);
 
@@ -44,7 +58,7 @@ type Line = {
   state?: { status?: unknown; reason?: unknown };
   message?: { role?: unknown; stopReason?: unknown; errorMessage?: unknown };
 };
-type Signal = { at: number; place?: number; total?: number; resumeAt?: number };
+type Signal = { at: number; place?: number | undefined; total?: number | undefined; resumeAt?: number | undefined };
 
 const num = (value: unknown): number | undefined => typeof value === "number" && Number.isFinite(value) ? value : undefined;
 const time = (value: unknown): number | undefined => {
@@ -53,23 +67,26 @@ const time = (value: unknown): number | undefined => {
 };
 
 /** What one line says: a wait signal, a clear (a turn that ran, another failure, a resume or a stop), or nothing (undefined). */
-function classify(line: Line): Signal | "clear" | undefined {
+function classify(line: Line): Signal | Clear | undefined {
   const at = time(line.timestamp) ?? 0;
   if (line.type === "message" && line.message?.role === "assistant") {
-    if (line.message.stopReason !== "error") return "clear";
-    const slot = SLOT_ERROR.exec(String(line.message.errorMessage ?? ""));
-    if (!slot) return "clear";
-    return { at, place: num(Number(slot[1])), total: num(Number(slot[2])), resumeAt: time(slot[3]) };
+    if (line.message.stopReason !== "error") return { clear: true };
+    const slot = SLOT_ERROR.exec(turnError(line.message) ?? "");
+    if (!slot) return { clear: true };
+    return { at, place: num(Number(slot[1])), total: num(Number(slot[2])), resumeAt: time(slot[3]), ended: true };
   }
   if (line.type === "custom" && line.customType === "pi-pool-queue") return { at, place: num(line.data?.position), total: num(line.data?.total) };
-  if (line.type === "custom" && line.customType === "provider_quota_park") return { at, resumeAt: time(line.data?.resumeAt) };
-  if (line.type === "custom" && line.customType === "provider_quota_resume") return "clear";
-  if (line.type === "session_state" && line.state?.status === "archived" && !NOT_A_STOP.has(String(line.state.reason))) return "clear";
+  if (line.type === "custom" && line.customType === "provider_quota_park") return { at, resumeAt: time(line.data?.resumeAt), ended: true };
+  if (line.type === "custom" && line.customType === "provider_quota_resume") return { clear: true, ...(line.data as { outcome?: unknown } | undefined)?.outcome === "cancelled" ? { dropped: at } : {} };
+  if (line.type === "session_state" && line.state?.status === "archived" && !NOT_A_STOP.has(String(line.state.reason))) return { clear: true };
   return undefined;
 }
 
-/** The open slot wait in a session's lines, newest last, or undefined when it has none (`complete` false: the lines hold no clear). */
-export function fileSlotPark(lines: readonly string[]): { park?: SlotPark; complete: boolean } {
+/**
+ * The open slot wait in a session's lines, newest last, or none (`complete` false: the lines hold no clear). `dropped` is when Prime's wake
+ * dropped the park with no turn after it: 01a17f25's provider_quota_resume "cancelled" at 21:16:40Z, after which it ran nothing until a message.
+ */
+export function fileSlotPark(lines: readonly string[]): FileSlotPark {
   const signals: Signal[] = [];
   for (let index = lines.length - 1; index >= 0; index--) {
     const raw = lines[index]!;
@@ -77,17 +94,21 @@ export function fileSlotPark(lines: readonly string[]): { park?: SlotPark; compl
     let line: Line;
     try { line = JSON.parse(raw); } catch { continue; }
     const read = classify(line);
-    if (read === "clear") return { ...signals.length ? { park: merge(signals) } : {}, complete: true };
+    if (read && "clear" in read) {
+      if (signals.length) return { park: merge(signals), complete: true };
+      return { ...read.dropped !== undefined ? { dropped: read.dropped } : {}, complete: true };
+    }
     if (read) signals.push(read);
   }
   return { ...signals.length ? { park: merge(signals) } : {}, complete: false };
 }
 
-/** Signals newest first into one wait: its start, and the newest place, total and resume time. */
+/** Signals newest first into one wait: its start, the newest place, total and resume time, and whether the newest one ended the turn. */
 function merge(signals: readonly Signal[]): SlotPark {
   const placed = signals.find(signal => signal.place !== undefined);
   const resumeAt = signals.find(signal => signal.resumeAt !== undefined)?.resumeAt;
-  return { since: signals.at(-1)!.at, ...placed ? { place: placed.place!, ...placed.total !== undefined ? { total: placed.total } : {} } : {}, ...resumeAt !== undefined ? { resumeAt } : {} };
+  return { since: signals.at(-1)!.at, ...placed ? { place: placed.place!, ...placed.total !== undefined ? { total: placed.total } : {} } : {},
+    ...resumeAt !== undefined ? { resumeAt } : {}, ...signals[0]!.ended ? { ended: true as const } : {} };
 }
 
 /**
@@ -95,23 +116,44 @@ function merge(signals: readonly Signal[]): SlotPark {
  * listed by the pool (whose place wins) or due to ask again after `now`. A wait the pool dropped and whose time passed is over.
  */
 export function slotParkOf(lines: readonly string[], sessionId: string, now: number, pool: PoolQueue | null): SlotPark | null {
-  const { park } = fileSlotPark(lines);
+  return poolPark(fileSlotPark(lines).park, sessionId, now, pool);
+}
+
+/** A file's open wait (`fileSlotPark`) checked against pi-pool now, as `slotParkOf` reads it. */
+export function poolPark(park: SlotPark | undefined, sessionId: string, now: number, pool: PoolQueue | null): SlotPark | null {
   if (!park) return null;
   if (!pool) return park;
   const queued = pool.queued.get(sessionId);
-  if (queued) return { ...park, place: queued.place, total: queued.total };
+  if (queued) return { ...park, place: queued.position, total: queued.total };
   if (pool.working.has(sessionId)) return { since: park.since, ...park.resumeAt !== undefined ? { resumeAt: park.resumeAt } : {}, starting: true };
   return park.resumeAt !== undefined && park.resumeAt > now ? park : null;
 }
 
-/** `slotParkOf` for a session file, reading longer tails until one holds a clear. The session id is the file's name. */
-export async function readSlotPark(file: string, now: number, pool: PoolQueue | null): Promise<SlotPark | null> {
-  let lines: string[] = [];
+const fileReads = new Map<string, { key: string; read: FileSlotPark }>();
+
+/**
+ * `fileSlotPark` of a session file, reading longer tails until one holds a clear, and read again only after the file changed (its size or
+ * mtime): the catalog asks for every chat's stopped jobs at each projection, every 2 s while an agent works (RATES_MS), and a parked session
+ * writes nothing. A file that cannot be read has no wait.
+ */
+export async function readFileSlotPark(file: string): Promise<FileSlotPark> {
+  const info = await stat(file).catch(() => null);
+  if (!info) return { complete: true };
+  const key = `${info.size}:${info.mtimeMs}`;
+  const known = fileReads.get(file);
+  if (known?.key === key) return known.read;
+  let read: FileSlotPark = { complete: false };
   for (const bytes of [CUT_TAIL_BYTES, CUT_CONFIRM_BYTES]) {
-    lines = await tailLines(file, bytes);
-    if (fileSlotPark(lines).complete) break;
+    read = fileSlotPark(await tailLines(file, bytes).catch(() => []));
+    if (read.complete) break;
   }
-  return slotParkOf(lines, basename(file, ".jsonl"), now, pool);
+  fileReads.set(file, { key, read });
+  return read;
+}
+
+/** `slotParkOf` for a session file (`readFileSlotPark`). The session id is the file's name. */
+export async function readSlotPark(file: string, now: number, pool: PoolQueue | null): Promise<SlotPark | null> {
+  return poolPark((await readFileSlotPark(file)).park, basename(file, ".jsonl"), now, pool);
 }
 
 /** `pi-pool queue --json` as a PoolQueue; null when pi-pool is missing, off or unreadable. */
@@ -119,10 +161,10 @@ export function parsePoolQueue(text: string): PoolQueue | null {
   let raw: { enabled?: unknown; queued?: unknown; working?: unknown };
   try { raw = JSON.parse(text); } catch { return null; }
   if (raw.enabled === false || !Array.isArray(raw.queued)) return null;
-  const queued = new Map<string, { place: number; total: number }>();
+  const queued = new Map<string, { position: number; total: number }>();
   for (const entry of raw.queued as { session?: unknown; position?: unknown; total?: unknown }[]) {
-    const place = num(entry.position);
-    if (typeof entry.session === "string" && place !== undefined) queued.set(entry.session, { place, total: num(entry.total) ?? raw.queued.length });
+    const position = num(entry.position);
+    if (typeof entry.session === "string" && position !== undefined) queued.set(entry.session, { position, total: num(entry.total) ?? raw.queued.length });
   }
   const working = new Set((Array.isArray(raw.working) ? raw.working as { session?: unknown }[] : []).flatMap(entry => typeof entry.session === "string" ? [entry.session] : []));
   return { queued, working };
@@ -144,4 +186,42 @@ export function slotParkWords(park: SlotPark): string {
   if (park.starting) return "waits for its working slot to start";
   if (park.place === undefined) return "waits for a working slot";
   return `waits for a working slot, place ${park.place}${park.total !== undefined ? ` of ${park.total}` : ""}`;
+}
+
+/** A dropped park in words: "its slot park was dropped at 21:16, when Prime's wake ran no turn, so it runs again only when it gets a message". */
+export const droppedWords = (at: number): string =>
+  `its slot park was dropped at ${clockTime(at)}, when Prime's wake ran no turn, so it runs again only when it gets a message`;
+
+/**
+ * Prime's reason on a child's end notice (`rlm_child_terminal_notice` "[child-exited: cancelled child:NAME]") when the idle unload stopped the
+ * child's worker while its turn waited for a slot. On 10-27 chat 01a1164b's job got it for pi-pool-move and pi-rlm-move at 21:47Z, both only
+ * waiting in pi-pool's line, and read it as a cancel.
+ */
+export const PARK_STOP_REASON = "Stopped while its turn waited for a provider credential";
+
+/** The child a park-stop notice names (its rlm child id and name), or null for any other message. */
+export function parkStopNotice(message: unknown): { child: string; name: string } | null {
+  const notice = message as { role?: unknown; customType?: unknown; content?: unknown; details?: unknown };
+  if (notice.role !== "custom" || notice.customType !== "rlm_child_terminal_notice") return null;
+  const details = (typeof notice.details === "object" && notice.details !== null ? notice.details : {}) as { childId?: unknown; sessionName?: unknown; reason?: unknown };
+  if (details.reason !== PARK_STOP_REASON && !(typeof notice.content === "string" && notice.content.includes(PARK_STOP_REASON))) return null;
+  if (typeof details.childId !== "string") return null;
+  return { child: details.childId, name: typeof details.sessionName === "string" && details.sessionName ? details.sessionName : details.childId };
+}
+
+/** What a parent reads in place of a park-stop notice, from the child's file when the notice first came: still waiting, dropped, or run since. */
+export function parkStopText(name: string, read: { park: SlotPark | null; dropped?: number }): string {
+  if (read.park) return `[child-parked child:${name}] ${name} was not cancelled: Prime stopped its worker while it ${slotParkWords(read.park)}, and pi-pool ` +
+    "wakes it when its slot starts. Leave it as it is and do not start a copy of it.";
+  if (read.dropped !== undefined) return `[child-park-dropped child:${name}] ${name} was not cancelled: it waited for a working slot, and ${droppedWords(read.dropped)}. ` +
+    "Send it a message to continue its task.";
+  return `[child-parked child:${name}] ${name} was not cancelled: Prime stopped its worker while its turn waited for a working slot, and it has run again since.`;
+}
+
+/** The session file of rlm child `child` of the session whose file is `parentFile`: a root's children sit under `<agentDir>/session-artifacts/<root id>/`. */
+export async function childSessionFile(parentFile: string, child: string, agentDir: string): Promise<string | null> {
+  const parentDir = basename(dirname(parentFile)).startsWith("sub-") ? dirname(parentFile) : join(agentDir, "session-artifacts", basename(parentFile, ".jsonl"));
+  const folder = join(parentDir, child);
+  const files = (await readdir(folder).catch(() => [] as string[])).filter(name => /^[0-9a-f-]{36}\.jsonl$/.test(name));
+  return files.length === 1 ? join(folder, files[0]!) : null;
 }
