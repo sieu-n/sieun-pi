@@ -21,7 +21,7 @@ const BRANCH = "dev/sieun";
 const SCRATCH = join(homedir(), "scratch", "01a17e93-4acd-764d-8c37-22942272d029");
 const PREFIX = join(SCRATCH, "auto-sns-agent-");
 const REAL_CHECKOUT = join(homedir(), "Documents/Github/auto-sns-agent");
-const PATHS = ["AGENTS.md", "CLAUDE.md", ".agents", ".claude", "scripts", "apps/virev-demo", "packages", "package.json", "pnpm-workspace.yaml", "tsconfig.json",
+const PATHS = [".gitignore", "AGENTS.md", "CLAUDE.md", ".agents", ".claude", "scripts", "apps/virev-demo", "packages", "package.json", "pnpm-workspace.yaml", "tsconfig.json",
   "tsconfig.base.json", "apps/search/src/lib", "apps/crawler-v3/src/catalog/niches.json"];
 const APP = "apps/virev-demo";
 const SHARED = `${APP}/overlay/src/lib/ui/`;
@@ -76,7 +76,7 @@ function changedFiles(project: string, BASE: string): Changed[] {
   const paths = new Set<string>();
   for (const line of (tryGit(project, ["diff", "--name-only", BASE, "--", APP]) ?? "").split("\n")) if (line) paths.add(line);
   for (const line of (tryGit(project, ["ls-files", "--others", "--exclude-standard", "--", APP]) ?? "").split("\n")) if (line) paths.add(line);
-  return [...paths].filter(path => /\.(svelte|ts)$/.test(path) && !path.startsWith(`${APP}/src/`) && !path.startsWith(`${APP}/tests/`) && existsSync(join(project, path)))
+  return [...paths].filter(path => /\.(svelte|ts)$/.test(path) && (path.startsWith(`${APP}/variants/`) || path.startsWith(`${APP}/overlay/`)) && existsSync(join(project, path)))
     .sort().map(path => ({ path, text: readFileSync(join(project, path), "utf8") }));
 }
 function sharedParts(project: string, BASE: string): Changed[] {
