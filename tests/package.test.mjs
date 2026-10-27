@@ -115,7 +115,7 @@ test("packed production install, native reload, update, rollback and uninstall",
     const receiptA = cli(0, "apply", "--plan", planA).receipt;
     cli(0, "apply", "--plan", planA);
     cli(0, "verify", "--home", home);
-    const proof = JSON.parse(run(process.execPath, [join(roots[0], "scripts/prove_runtime.mjs"), "--home", home,
+    const proof = JSON.parse(run(process.execPath, [join(roots[0], "legacy/prime/scripts/prove_runtime.mjs"), "--home", home,
       "--cwd", cwd], { env }));
     assert.equal(proof.passes, 2);
     for (const name of ["what-did-i-say", "agent-chat"]) {
@@ -128,7 +128,7 @@ test("packed production install, native reload, update, rollback and uninstall",
     cli(1, "plan", "--home", home, "--out", planB);
     const receiptB = cli(1, "apply", "--plan", planB).receipt;
     cli(1, "verify", "--home", home);
-    const localProof = JSON.parse(run(process.execPath, [join(roots[1], "scripts/prove_runtime.mjs"),
+    const localProof = JSON.parse(run(process.execPath, [join(roots[1], "legacy/prime/scripts/prove_runtime.mjs"),
       "--home", home, "--cwd", cwd], { env }));
     assert.equal(localProof.passes, 2);
     assert.equal(localProof.checks.providerNetworkCalls, 0);

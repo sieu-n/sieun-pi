@@ -32,12 +32,12 @@ The reaper never signals the daemon, a busy worker, or a `prime-agent` TUI on a 
 ## Install, check and turn off
 
 ```sh
-/usr/bin/python3 -B components/idle-reaper/reaper.py --dry-run          # print what it would kill, signal nothing
-/usr/bin/python3 -B components/idle-reaper/install.py --ref "$(git rev-parse HEAD)"
+/usr/bin/python3 -B legacy/prime/idle-reaper/reaper.py --dry-run          # print what it would kill, signal nothing
+/usr/bin/python3 -B legacy/prime/idle-reaper/install.py --ref "$(git rev-parse HEAD)"
 tail ~/.local/share/idle-reaper/reaper.log
 touch ~/.local/share/idle-reaper/disabled                               # pause it; rm the file to resume
-/usr/bin/python3 -B components/idle-reaper/install.py uninstall         # remove the launchd agent
+/usr/bin/python3 -B legacy/prime/idle-reaper/install.py uninstall         # remove the launchd agent
 ```
 
 `--idle-minutes` and `--version-minutes` change the two thresholds for a manual run.
-`tests/test_idle_reaper.py` checks which workers the plan picks.
+`legacy/prime/tests/test_idle_reaper.py` checks which workers the plan picks.

@@ -255,7 +255,7 @@ Then remove the `anthropic` and `openai-codex` entries whose `apiKey` names `pi-
 
 ## What apply installs
 
-- Each skill root and the auxiliary `skills/skills` directory go under `~/.prime/agent/skills`.
+- Each skill root and the auxiliary `legacy/prime/skills/skills` directory go under `~/.prime/agent/skills`.
 - `config/AGENTS.md` and `config/pstack-models.json` go under `~/.prime/agent`.
 - One global entry links `~/.prime/agent/extensions/global-rules.ts` to `components/global-rules/index.ts`. It refuses history rewrites in the sieun-pi checkout and outside sends without the owner's ok.
 - One global entry links `~/.prime/agent/extensions/claude-rules.ts` to `components/claude-rules/index.ts`. It loads the `.claude/rules` files of the repo a session works in.
@@ -271,7 +271,7 @@ Do not also register this package through Prime's package settings. The `pi.exte
 
 The root runtime dependencies include `marked` and the official Prime Agent SDK tarball from its versioned R2 URL, because the npm registry has no `prime-agent` release.
 The matching checksums are at [SHA256SUMS](https://pub-728493de92a943e2a9b2d17b4719f318.r2.dev/releases/v0.9.8/SHA256SUMS).
-`node scripts/sync-prime-agent.mjs` moves the SDK to the installed Prime Agent version, and the chat service runs it when the daemon updates.
+`node legacy/prime/scripts/sync-prime-agent.mjs` moves the SDK to the installed Prime Agent version, and the chat service runs it when the daemon updates.
 The pinned SDK has two high-severity npm audit entries through `extract-zip`, with no fix in that release. Do not use it to extract untrusted archives.
 
 ## Migrate old links

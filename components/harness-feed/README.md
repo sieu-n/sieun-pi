@@ -13,7 +13,7 @@ The owner asked for it on 10-19 (AI harness chat, msgs mvfhd7q5 and mvfhfzby): e
 
 | Reader | What it reads |
 |---|---|
-| tokens | usage-feed health, and cost and tokens per chat from the chat's session copies. Token counters themselves come from `components/usage-feed`. |
+| tokens | usage-feed health, and cost and tokens per chat from the chat's session copies. Token counters themselves come from `legacy/prime/usage-feed`. |
 | chat-health | d7's clean minutes (whole-system.ts `measure`, ported), holds, hung calls, idle agent memory, agents by state, main-thread stalls and daemon call latency. |
 | delivery | The agent and owner outboxes, the daemon's queued input and outside sends (c37). |
 | pool | `pi-pool snapshot --json` through hookd, the queue, `turnHistory()` over pi-pool.log, and the sidebar meters from `pool-meter.ts`. |

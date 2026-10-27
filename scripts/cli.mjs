@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { lockedPrimeVersion } from "../utils/prime-version.mjs";
+import { lockedPrimeVersion } from "../legacy/prime/utils/prime-version.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const [command, ...args] = process.argv.slice(2);
@@ -28,7 +28,7 @@ try {
   } else if (command === "source") {
     process.stdout.write(`${root}\n`);
   } else if (command === "sync-prime-agent") {
-    run(process.execPath, [resolve(root, "scripts/sync-prime-agent.mjs"), ...args]);
+    run(process.execPath, [resolve(root, "legacy/prime/scripts/sync-prime-agent.mjs"), ...args]);
   } else if (command === "check" || command === "build") {
     run(process.execPath, [resolve(root, `scripts/${command}.mjs`), ...args]);
   } else if (command === "develop") {

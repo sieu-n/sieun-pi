@@ -1,4 +1,4 @@
-/** One run that an interruption stopped, as `skills/resume-paused-sessions/scripts/resume_paused.py --json` reports it. */
+/** One run that an interruption stopped, as `legacy/prime/skills/resume-paused-sessions/scripts/resume_paused.py --json` reports it. */
 export interface InterruptedRun {
   id: string;
   name: string;

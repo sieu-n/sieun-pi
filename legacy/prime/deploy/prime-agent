@@ -1,5 +1,5 @@
 #!/bin/sh
-# ~/.local/bin/prime-agent on us-metal02, installed from sieun-pi deploy/linux/prime-agent in place of the link to
+# ~/.local/bin/prime-agent on us-metal02, installed from sieun-pi legacy/prime/deploy/prime-agent in place of the link to
 # ~/.local/share/prime-agent/bin/prime-agent. A CLI that finds no daemon on its socket spawns one as its own child
 # (ensureDaemonRunning in Prime's daemon-launch.ts, detached: true), so the daemon lands in the caller's cgroup. On
 # 2026-10-27 at 12:56:35Z a prime-agent run from the owner's VS Code shell started supervisor 3052306 in
@@ -14,7 +14,7 @@
 # - --version, --help, shutdown and update, which start no daemon.
 # `prime-agent --mode daemon` on the public socket from outside the unit is refused.
 # Tests set PRIME_AGENT_REAL_BIN, PRIME_AGENT_DAEMON_UNIT, PRIME_AGENT_DAEMON_PIDFILE, PRIME_AGENT_DAEMON_SOCKET and
-# PRIME_AGENT_DAEMON_START (tests/test_prime_daemon_ctl.py, a scratch unit and socket).
+# PRIME_AGENT_DAEMON_START (legacy/prime/tests/test_prime_daemon_ctl.py, a scratch unit and socket).
 real=${PRIME_AGENT_REAL_BIN:-$HOME/.local/share/prime-agent/bin/prime-agent}
 unit=${PRIME_AGENT_DAEMON_UNIT:-prime-agent-daemon.service}
 uid=$(id -u)

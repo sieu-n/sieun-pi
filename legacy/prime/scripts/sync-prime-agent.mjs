@@ -8,7 +8,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const root = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const history = join(root, "components", "user-history");
 const RELEASE = "https://pub-728493de92a943e2a9b2d17b4719f318.r2.dev/releases";
 const PACKAGES = ["prime-agent", "prime-agent-ai", "prime-agent-tui"];

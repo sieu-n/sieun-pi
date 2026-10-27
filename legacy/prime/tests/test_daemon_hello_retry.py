@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-REPO = Path(__file__).resolve().parents[1]
+REPO = Path(__file__).resolve().parents[3]
 MISS = "Error: Timed out after 3000ms waiting for the Prime Agent daemon handshake. Socket: /tmp/prime-agent-1001/daemon.sock."
 
 
@@ -17,9 +17,9 @@ def load(name, rel):
     return module
 
 
-reaper = load("reaper_hello", "components/idle-reaper/reaper.py")
+reaper = load("reaper_hello", "legacy/prime/idle-reaper/reaper.py")
 sync = load("sync_hello", "components/prime-sync/sync.py")
-resume_paused = load("resume_paused_hello", "skills/resume-paused-sessions/scripts/resume_paused.py")
+resume_paused = load("resume_paused_hello", "legacy/prime/skills/resume-paused-sessions/scripts/resume_paused.py")
 
 
 def answers(*results):

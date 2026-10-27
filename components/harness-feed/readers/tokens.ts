@@ -9,7 +9,7 @@ import type { Context, Sample } from "../otlp.ts";
 import { copyIndex, type CopyRow } from "./session-copy.ts";
 
 /**
- * The tokens group. Token, cost, cache and throughput numbers are in LGTM already: components/usage-feed sends Prime's five prime_agent_*
+ * The tokens group. Token, cost, cache and throughput numbers are in LGTM already: legacy/prime/usage-feed sends Prime's five prime_agent_*
  * counters from the transcripts (feed="transcripts") until Prime's own exporter ships, and the dashboard copies the PromQL of
  * components/user-history/src/usage/lgtm.ts. This reader adds what LGTM lacks:
  * 1. usage-feed's own health on every box: running, handed off, release, start time, CPU, memory and the errors in its log.
@@ -27,7 +27,7 @@ const ERROR_WINDOW_MS = 30 * 60_000;
 const FIRST_READ_BYTES = 256 * 1024;
 
 type Kind = "export_failed" | "handoff_check_failed" | "handed_off";
-/** One usage-feed log line that matters, from components/usage-feed/feed.py. */
+/** One usage-feed log line that matters, from legacy/prime/usage-feed/feed.py. */
 export type LogLine = { at: number; started: boolean; error: Kind | null };
 
 const STAMP = /^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ) (.*)$/;

@@ -11,7 +11,7 @@ import { turnErrorCause } from "./turn-error.ts";
 import type { SessionRow } from "./shared/types.ts";
 
 /** The resume-paused-sessions skill owns the rule for which runs count as interrupted; the chat only runs it. */
-const script = fileURLToPath(new URL("../../../skills/resume-paused-sessions/scripts/resume_paused.py", import.meta.url));
+const script = fileURLToPath(new URL("../../../legacy/prime/skills/resume-paused-sessions/scripts/resume_paused.py", import.meta.url));
 /**
  * A pass longer than this logs a warning and keeps running: the dry run took 45 to 58 s on 10-18 and 67 s at 06:58Z, and the old 90 s kill
  * at 06:52Z and 06:57Z threw away a finished pass, 8 sent continues included, and left the Mac's jobs unchecked. Each daemon call and relay

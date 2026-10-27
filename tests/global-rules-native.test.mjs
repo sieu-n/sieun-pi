@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
-import { lockedPrimeVersion } from "../utils/prime-version.mjs";
+import { lockedPrimeVersion } from "../legacy/prime/utils/prime-version.mjs";
 
 const source = fileURLToPath(new URL("..", import.meta.url));
 

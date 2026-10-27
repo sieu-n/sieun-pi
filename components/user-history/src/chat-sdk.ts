@@ -6,7 +6,7 @@ import { readJsonFile, transactJsonFile, type JsonFile } from "./locked-json.ts"
 import type { SdkUpdateState, SdkView } from "./shared/types.ts";
 
 const componentDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const SYNC_SCRIPT = resolve(componentDir, "..", "..", "scripts", "sync-prime-agent.mjs");
+const SYNC_SCRIPT = resolve(componentDir, "..", "..", "legacy", "prime", "scripts", "sync-prime-agent.mjs");
 const VERSION = /^\d+\.\d+\.\d+$/;
 
 /**
@@ -55,7 +55,7 @@ function isShipped(value: unknown): value is { daemon: string; sdk: string } {
 /**
  * Keeps this chat's prime-agent SDK on the version the daemon ships. The daemon names its version in `daemon_hello` on every connect, so a
  * Prime Agent update is seen when the chat reconnects after the daemon restart. With auto on (the default), a new daemon version runs
- * scripts/sync-prime-agent.mjs once; the script reports the SDK that version ships, which is kept, since a Rust daemon (0.10.0+) ships an
+ * legacy/prime/scripts/sync-prime-agent.mjs once; the script reports the SDK that version ships, which is kept, since a Rust daemon (0.10.0+) ships an
  * older TypeScript SDK. When the script changed packages the service restarts itself (launchd starts it again); on failure the script
  * restores the old packages and Settings shows the error with Retry.
  */
@@ -125,7 +125,7 @@ export class SdkSync {
     await this.loaded;
     if (this.state.state === "running" || this.state.state === "restarting") return;
     if (!this.daemon) throw new Error("The Prime Agent daemon has not reported its version yet.");
-    if (!this.available) throw new Error("Updating needs a sieun-pi checkout with scripts/sync-prime-agent.mjs.");
+    if (!this.available) throw new Error("Updating needs a sieun-pi checkout with legacy/prime/scripts/sync-prime-agent.mjs.");
     void this.update().catch(() => {});
   }
 

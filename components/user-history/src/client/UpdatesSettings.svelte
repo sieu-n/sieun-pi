@@ -109,7 +109,7 @@
           </div>
         {/if}
       {:else}
-        <p class="note">Automatic updates need a sieun-pi checkout. Run <code>node scripts/sync-prime-agent.mjs</code> there, then restart the chat.</p>
+        <p class="note">Automatic updates need a sieun-pi checkout. Run <code>node legacy/prime/scripts/sync-prime-agent.mjs</code> there, then restart the chat.</p>
       {/if}
     {/if}
   </section>

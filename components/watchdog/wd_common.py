@@ -15,7 +15,7 @@ LOG_F = WATCH / 'log.jsonl'
 ENV = dict(os.environ); ENV.pop('FORCE_COLOR', None); ENV['NO_COLOR'] = '1'
 # The resume skill owns the reading of a turn's end, credential_wait_at included: the checkout's copy, else the installed skill, since the
 # watchdog runs from its own installed release.
-RESUME_PAUSED = next((path for path in (Path(__file__).resolve().parents[2] / 'skills/resume-paused-sessions/scripts/resume_paused.py',
+RESUME_PAUSED = next((path for path in (Path(__file__).resolve().parents[2] / 'legacy/prime/skills/resume-paused-sessions/scripts/resume_paused.py',
                                         Path.home() / '.prime/agent/skills/resume-paused-sessions/scripts/resume_paused.py') if path.exists()), None)
 _resume_paused = None
 

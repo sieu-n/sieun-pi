@@ -19,10 +19,10 @@ A restart of the feed starts new series and skips the calls made while it was do
 ## Install, check and turn off
 
 ```sh
-python3 -B components/usage-feed/feed.py --dry-run --once                  # print the payload, send nothing
-python3 -B components/usage-feed/install.py --ref "$(git rev-parse HEAD)"  # launchd com.sieun.usage-feed on the Mac, systemd usage-feed.service on Linux
+python3 -B legacy/prime/usage-feed/feed.py --dry-run --once                  # print the payload, send nothing
+python3 -B legacy/prime/usage-feed/install.py --ref "$(git rev-parse HEAD)"  # launchd com.sieun.usage-feed on the Mac, systemd usage-feed.service on Linux
 tail ~/.local/share/usage-feed/feed.log
-python3 -B components/usage-feed/install.py uninstall
+python3 -B legacy/prime/usage-feed/install.py uninstall
 ```
 
 `tests/test_feed.py` checks the offsets, the zero-first export and the handoff.
@@ -42,12 +42,12 @@ A block must not overlap the head block, which holds the last 2 to 3 hours, so t
 The staging Prometheus keeps 90 days (auto-sns-agent `apps/infra/metal/compose.staging.yml`), and a block older than the retention is deleted at the next reload.
 
 ```sh
-python3 -B components/usage-feed/backfill.py extract --until 2026-10-19T17:00Z --out calls-<box>.jsonl.gz
-python3 -B components/usage-feed/backfill.py build --calls us-metal02=calls-us-metal02.jsonl.gz --calls mbp=calls-mbp.jsonl.gz \
+python3 -B legacy/prime/usage-feed/backfill.py extract --until 2026-10-19T17:00Z --out calls-<box>.jsonl.gz
+python3 -B legacy/prime/usage-feed/backfill.py build --calls us-metal02=calls-us-metal02.jsonl.gz --calls mbp=calls-mbp.jsonl.gz \
   --since 2026-10-05T00:00Z --until 2026-10-19T16:00Z --out out --promtool <promtool 3.8.0>
-python3 -B components/usage-feed/backfill.py build ... --since 2026-10-19T16:00Z --until 2026-10-19T16:23Z \
+python3 -B legacy/prime/usage-feed/backfill.py build ... --since 2026-10-19T16:00Z --until 2026-10-19T16:23Z \
   --seam us-metal02=2026-10-19T16:22:07Z --seam mbp=2026-10-19T16:22:23.802Z --out out-seam
-python3 -B components/usage-feed/backfill.py upload out
+python3 -B legacy/prime/usage-feed/backfill.py upload out
 ```
 
 `tests/test_backfill.py` checks the minute samples and the call id dedupe.

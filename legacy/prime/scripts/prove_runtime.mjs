@@ -13,7 +13,7 @@ const { values } = parseArgs({ options: {
 assert(values.home && values.cwd, "Pass --home and --cwd for an installed isolated profile");
 const home = realpathSync(values.home);
 const cwd = realpathSync(values.cwd);
-const source = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const source = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 process.env.HOME = home;
 process.env.PRIME_AGENT_CODING_AGENT_DIR = join(home, ".prime", "agent");
 process.env.PI_CODING_AGENT_DIR = process.env.PRIME_AGENT_CODING_AGENT_DIR;
@@ -25,7 +25,7 @@ process.chdir(cwd);
 const primeRoot = values["prime-root"] ? realpathSync(values["prime-root"])
   : dirname(dirname(fileURLToPath(import.meta.resolve("prime-agent"))));
 const primePackage = JSON.parse(readFileSync(join(primeRoot, "package.json"), "utf8"));
-assert.equal(primePackage.version, lockedPrimeVersion(fileURLToPath(new URL("..", import.meta.url))));
+assert.equal(primePackage.version, lockedPrimeVersion(fileURLToPath(new URL("../../..", import.meta.url))));
 const { DefaultResourceLoader, SettingsManager } = await import(pathToFileURL(join(primeRoot, "dist", "index.js")).href);
 const loader = new DefaultResourceLoader({
   cwd,

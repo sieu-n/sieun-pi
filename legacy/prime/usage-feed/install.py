@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Install usage-feed from one commit and keep it running: launchd on the Mac, a systemd user service on Linux.
 
-usage: python3 -B components/usage-feed/install.py --ref <commit>
-       python3 -B components/usage-feed/install.py uninstall
+usage: python3 -B legacy/prime/usage-feed/install.py --ref <commit>
+       python3 -B legacy/prime/usage-feed/install.py uninstall
 
 Copies feed.py from <commit> to ~/.local/share/usage-feed, deletes an old `handed-off` marker and starts the feed, so a later
 checkout change cannot alter the running copy until someone installs again. `uninstall` stops it and keeps the log.
@@ -17,7 +17,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parents[2]
+REPO = Path(__file__).resolve().parents[3]
 HOME = Path.home()
 SHARE = HOME / ".local/share/usage-feed"
 LABEL = "com.sieun.usage-feed"
@@ -59,7 +59,7 @@ def plist(script: Path) -> str:
 
 def unit(script: Path) -> str:
     return f"""[Unit]
-Description=usage-feed: Prime model call usage from session transcripts to LGTM until Prime's OTLP exporter is live (components/usage-feed)
+Description=usage-feed: Prime model call usage from session transcripts to LGTM until Prime's OTLP exporter is live (legacy/prime/usage-feed)
 
 [Service]
 ExecStart=/usr/bin/python3 -B {script}
@@ -95,7 +95,7 @@ def main() -> int:
         parser.error("install needs --ref <commit>")
     sha = git("rev-parse", "--verify", f"{args.ref}^{{commit}}").strip()
     script = SHARE / "feed.py"
-    write(script, git("show", f"{sha}:components/usage-feed/feed.py"), 0o755)
+    write(script, git("show", f"{sha}:legacy/prime/usage-feed/feed.py"), 0o755)
     (SHARE / "handed-off").unlink(missing_ok=True)
     write(SHARE / "release.json", json.dumps({"sha": sha, "installedAt": datetime.now(timezone.utc).isoformat(timespec="seconds")}) + "\n", 0o644)
     if MAC:

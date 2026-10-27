@@ -19,12 +19,12 @@ import unittest
 from unittest import mock
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-CTL = ROOT / "deploy/linux/prime-agent-daemon-ctl"
-UNIT = ROOT / "deploy/linux/prime-agent-daemon.service"
+ROOT = Path(__file__).resolve().parents[3]
+CTL = ROOT / "legacy/prime/deploy/prime-agent-daemon-ctl"
+UNIT = ROOT / "legacy/prime/deploy/prime-agent-daemon.service"
 CHAT_UNIT = ROOT / "deploy/linux/sieun-pi-chat.service"
-INSTALL = ROOT / "deploy/linux/prime-install.sh"
-WRAPPER = ROOT / "deploy/linux/prime-agent"
+INSTALL = ROOT / "legacy/prime/deploy/prime-install.sh"
+WRAPPER = ROOT / "legacy/prime/deploy/prime-agent"
 FEED = ("PRIME_AGENT_DOWNLOAD_BASE_URL", "PRIME_AGENT_ALLOW_INSECURE_HTTP_FOR_TESTS")
 
 FAKE = textwrap.dedent(

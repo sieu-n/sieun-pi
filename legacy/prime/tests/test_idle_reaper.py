@@ -3,7 +3,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-SPEC = importlib.util.spec_from_file_location("reaper", Path(__file__).resolve().parents[1] / "components/idle-reaper/reaper.py")
+SPEC = importlib.util.spec_from_file_location("reaper", Path(__file__).resolve().parents[3] / "legacy/prime/idle-reaper/reaper.py")
 reaper = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(reaper)
 

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { detectAgentIdentity } from "../utils/agent-identity.mjs";
-import { derivePrimeAgent } from "../utils/prime-context.mjs";
+import { derivePrimeAgent } from "../legacy/prime/utils/prime-context.mjs";
 
 test("Prime identity uses the stable session directory rather than a worker id", () => {
   assert.deepEqual(detectAgentIdentity({ RLM_SESSION_DIR: "/fixture/session-a", PRIME_AGENT_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID: "worker-b" }),

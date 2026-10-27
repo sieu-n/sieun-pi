@@ -2,7 +2,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
-import { lockedPrimeVersion } from "../utils/prime-version.mjs";
+import { lockedPrimeVersion } from "../legacy/prime/utils/prime-version.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const ignored = new Set([".git", ".work", ".venv", "node_modules", "dist", "__pycache__", ".test-artifacts", ".pytest_cache", ".cache"]);
@@ -47,7 +47,9 @@ try {
   }
   python("-m", "unittest", "discover", "-s", "skills/linear-ticket/tests");
   python("-m", "unittest", "discover", "-s", "skills/aside-browser/tests");
-  python("-m", "unittest", "discover", "-s", "components/usage-feed/tests");
+  python("-m", "unittest", "discover", "-s", "legacy/prime/usage-feed/tests");
+  python("-m", "unittest", "discover", "-s", "legacy/prime/tests", "-p", "test_*.py");
+  python("-m", "unittest", "discover", "-s", "legacy/prime/daemon-keeper/tests");
   const rulesTests = readdirSync(join(root, "tests")).filter((name) => /^global-rules-.*\.test\.mjs$/.test(name)).sort();
   if (rulesTests.length === 0) throw new Error("No global-rules Node suites found.");
   run(process.execPath, ["--test", ...rulesTests.map((name) => `tests/${name}`), "tests/claude-rules.test.mjs", "tests/agent-utilities.test.mjs", "tests/git-stale-index.test.mjs", "tests/git-mass-delete.test.mjs", "tests/git-escaped-newline.test.mjs", "tests/release-chat.test.mjs"]);
@@ -58,7 +60,7 @@ try {
   run(process.execPath, ["--test", "check-source-paths.test.mjs"], poteto);
   run("bun", ["test", "orch", "watch-pr"], poteto);
   run("bun", ["run", "typecheck"], poteto);
-  const source = ["scripts", "tests", "components", "packages", "skills", "utils"].flatMap((name) => files(join(root, name))).sort();
+  const source = ["scripts", "tests", "components", "packages", "legacy", "skills", "utils"].flatMap((name) => files(join(root, name))).sort();
   const pythonFiles = source.filter((path) => path.endsWith(".py"));
   pythonFiles.push(join(root, "components/pi-pool/bin/pi-pool"), join(root, "components/pi-pool/bin/pi-pool-token"));
   python("-c", "import ast, pathlib, sys; [ast.parse(pathlib.Path(p).read_bytes(), filename=p) for p in sys.argv[1:]]", ...pythonFiles);

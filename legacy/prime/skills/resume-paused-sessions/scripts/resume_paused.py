@@ -337,7 +337,7 @@ UNLOADED_FILE = Path.home() / ".prime" / "agent" / "browser-chat" / "unloaded.js
 UNLOADED = {}
 # The unload writes its record right after the daemon's kill returns, and the kill writes the archive.
 UNLOAD_MATCH_S = 60.0
-# {full session id: when the Mac's idle-reaper SIGTERMed its idle worker}, written by components/idle-reaper/reaper.py and read in main().
+# {full session id: when the Mac's idle-reaper SIGTERMed its idle worker}, written by legacy/prime/idle-reaper/reaper.py and read in main().
 # Such a worker reads "failed" in the daemon list, so a row named here is judged by its last turn, as if its worker still ran; on 10-19
 # the reaper's kills listed 10 to 19 finished Mac jobs as worker_failed every 5 minutes.
 REAPED_FILE = Path.home() / ".local" / "share" / "idle-reaper" / "reaped.json"
@@ -385,7 +385,7 @@ NEVER_STARTED_INTRO = ("[resume] Your parent spawned you, but its worker stopped
 
 # The daemon reader in this checkout (components/user-history/src/daemon-cli.mjs). prime-agent's CLI waits a fixed 3 s for the daemon's hello, and
 # from 10-21 to 10-22 136 passes failed on it and sent nothing until the next tick; the reader waits 30 s and tries a failed hello once more.
-DAEMON_CLI = Path(__file__).resolve().parents[3] / "components" / "user-history" / "src" / "daemon-cli.mjs"
+DAEMON_CLI = Path(__file__).resolve().parents[5] / "components" / "user-history" / "src" / "daemon-cli.mjs"
 # The reader's own longest run: two tries of a 30 s connect and a 30 s hello, then a 60 s list answer.
 DAEMON_CLI_S = 180
 HANDSHAKE_MISSES = ("waiting for the Prime Agent daemon handshake", "connecting to the Prime Agent daemon")
@@ -729,7 +729,7 @@ COPY_DIR = Path.home() / ".cache" / "sieun-pi" / "hosts"
 COPY_FRESH_S = 40 * 60
 COPY_IDENTITY_FIELDS = ("id", "sessionId", "sessionFile", "sessionName", "runtimeKind", "parentSessionId", "created", "modified", "lastActivityAt")
 HOSTS_FILE = Path(os.environ.get("SIEUN_PI_HOSTS") or Path.home() / ".config" / "sieun-pi" / "hosts.json")
-HOSTS_CLI = Path(__file__).resolve().parents[3] / "components" / "user-history" / "src" / "hosts-cli.mjs"
+HOSTS_CLI = Path(__file__).resolve().parents[5] / "components" / "user-history" / "src" / "hosts-cli.mjs"
 BOX = LocalBox()
 
 

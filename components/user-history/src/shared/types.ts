@@ -669,7 +669,7 @@ export interface SdkView {
   build: string;
   matched: boolean;
   auto: boolean;
-  /** scripts/sync-prime-agent.mjs is present, so this chat can update itself. */
+  /** legacy/prime/scripts/sync-prime-agent.mjs is present, so this chat can update itself. */
   available: boolean;
   /** The service runs under launchd, so it can restart itself after an update. */
   canRestart: boolean;

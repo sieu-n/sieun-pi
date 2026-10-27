@@ -141,7 +141,7 @@
     {
       "id": "skill:resume-paused-sessions",
       "kind": "link",
-      "source": "skills/resume-paused-sessions",
+      "source": "legacy/prime/skills/resume-paused-sessions",
       "scope": "home",
       "target": ".prime/agent/skills/resume-paused-sessions"
     },
@@ -162,7 +162,7 @@
     {
       "id": "skill:skills",
       "kind": "link",
-      "source": "skills/skills",
+      "source": "legacy/prime/skills/skills",
       "scope": "home",
       "target": ".prime/agent/skills/skills"
     },

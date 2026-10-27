@@ -13,8 +13,8 @@ import threading
 import unittest
 from unittest.mock import patch
 
-REPO = Path(__file__).resolve().parents[1]
-SPEC = importlib.util.spec_from_file_location("resume_paused", REPO / "skills/resume-paused-sessions/scripts/resume_paused.py")
+REPO = Path(__file__).resolve().parents[3]
+SPEC = importlib.util.spec_from_file_location("resume_paused", REPO / "legacy/prime/skills/resume-paused-sessions/scripts/resume_paused.py")
 resume_paused = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(resume_paused)
 # No test reaches this box's live chat service: a test that wants the agent outbox serves its own (ResumeThroughTheOutbox).
@@ -2009,7 +2009,7 @@ class ResumePausedTests(unittest.TestCase):
         hosts.write_text(json.dumps({"hosts": [{"name": "slowbox", "hostname": "slowbox-host", "address": "127.0.0.1", "relayPort": 9, "token": "file:token"}]}))
         env = {"HOME": str(home), "PATH": f"{bin_dir}:/usr/bin:/bin", "TMPDIR": str(self.root), "PRIME_AGENT_BIN": str(agent), "SIEUN_PI_HOSTS": str(hosts)}
         started = time.monotonic()
-        with subprocess.Popen([sys.executable, "-B", str(REPO / "skills/resume-paused-sessions/scripts/resume_paused.py"), "--json", "--direct"],
+        with subprocess.Popen([sys.executable, "-B", str(REPO / "legacy/prime/skills/resume-paused-sessions/scripts/resume_paused.py"), "--json", "--direct"],
                               env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as run:
             while not (self.root / wait_for).exists() and time.monotonic() - started < 30:
                 time.sleep(0.05)

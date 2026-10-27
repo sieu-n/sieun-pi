@@ -392,12 +392,12 @@
       "sha256": "540738217c3da7bf513b9886924ad6a2bc77e58be867f5bd2e1831c74bf2ce70"
     },
     {
-      "path": "skills/resume-paused-sessions/SKILL.md",
+      "path": "legacy/prime/skills/resume-paused-sessions/SKILL.md",
       "origin": "~/.prime/agent/skills/resume-paused-sessions/SKILL.md",
       "sha256": "9fe8269f3e244bf15a8e94ee21757d2bd6c0f746538006a52db9869940516b17"
     },
     {
-      "path": "skills/resume-paused-sessions/scripts/resume_paused.py",
+      "path": "legacy/prime/skills/resume-paused-sessions/scripts/resume_paused.py",
       "origin": "~/.prime/agent/skills/resume-paused-sessions/scripts/resume_paused.py",
       "sha256": "b7ef4db5c093dea2366abb5e1c2715e71c9e5f06cd39570522e4d4ec3a64c714"
     },
@@ -502,17 +502,17 @@
       "sha256": "e29b6b6534a23dcaf8c7e16fc25d6484000d7b6e289c48eb0a32a97280633c5d"
     },
     {
-      "path": "skills/skills/__init__.py",
+      "path": "legacy/prime/skills/skills/__init__.py",
       "origin": "~/.prime/agent/skills/skills/__init__.py",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "skills/skills/prime_agent/__init__.py",
+      "path": "legacy/prime/skills/skills/prime_agent/__init__.py",
       "origin": "~/.prime/agent/skills/skills/prime_agent/__init__.py",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "skills/skills/prime_agent/fleet_health.py",
+      "path": "legacy/prime/skills/skills/prime_agent/fleet_health.py",
       "origin": "~/.prime/agent/skills/skills/prime_agent/fleet_health.py",
       "sha256": "29b50ca475e246e476d3a11658ab91e852445ec3eb54309aebf963b23de24d0f"
     },

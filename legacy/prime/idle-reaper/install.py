@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Install idle-reaper from one commit and run it every 5 minutes under launchd.
 
-usage: python3 -B components/idle-reaper/install.py --ref <commit>
-       python3 -B components/idle-reaper/install.py uninstall
+usage: python3 -B legacy/prime/idle-reaper/install.py --ref <commit>
+       python3 -B legacy/prime/idle-reaper/install.py uninstall
 
 Copies reaper.py from <commit> to ~/.local/share/idle-reaper and loads com.sieun.idle-reaper,
 so a later checkout change cannot alter the running copy until someone installs again.
@@ -18,7 +18,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parents[2]
+REPO = Path(__file__).resolve().parents[3]
 HOME = Path.home()
 SHARE = HOME / ".local/share/idle-reaper"
 LABEL = "com.sieun.idle-reaper"
@@ -71,7 +71,7 @@ def main() -> int:
         parser.error("install needs --ref <commit>")
     sha = git("rev-parse", "--verify", f"{args.ref}^{{commit}}").strip()
     script = SHARE / "reaper.py"
-    write(script, git("show", f"{sha}:components/idle-reaper/reaper.py"), 0o755)
+    write(script, git("show", f"{sha}:legacy/prime/idle-reaper/reaper.py"), 0o755)
     write(SHARE / "release.json", json.dumps({"sha": sha, "installedAt": datetime.now(timezone.utc).isoformat(timespec="seconds")}) + "\n", 0o644)
     write(PLIST, plist(script), 0o644)
     subprocess.run(["launchctl", "bootstrap", DOMAIN, str(PLIST)], check=True)
