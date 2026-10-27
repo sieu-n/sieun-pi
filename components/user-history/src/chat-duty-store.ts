@@ -1,4 +1,4 @@
-import { appendFile, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, open, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tailLines } from "./cut-end.ts";
 import { missing, readJsonFile, transactJsonFile, withFileLock, type JsonFile } from "./locked-json.ts";
@@ -68,11 +68,15 @@ export class DutyStore {
     });
     const ran = await this.lockRuns(chatId, async runsFile => {
       let found = false;
-      const lines = (await readLines(runsFile)).filter(line => {
+      const read = await readRunLines(runsFile);
+      const lines = read.lines.filter(line => {
         try { if ((JSON.parse(line) as { duty?: unknown }).duty === dutyId) { found = true; return false; } } catch { /* an unreadable line stays */ }
         return true;
       });
-      if (found) await replaceLines(runsFile, lines);
+      if (found) {
+        await replaceLines(runsFile, lines);
+        await rewroteRuns(runsFile, read.key, records => records.filter(entry => entry.duty !== dutyId));
+      }
       return found;
     });
     const files = await readdir(this.chatDir(chatId)).catch(error => { if (missing(error)) return [] as string[]; throw error; });
@@ -92,7 +96,8 @@ export class DutyStore {
    */
   async updateRun(chatId: string, duty: string, at: number, change: (record: DutyRunRecord) => void): Promise<boolean> {
     return this.lockRuns(chatId, async path => {
-      const lines = await readLines(path);
+      const read = await readRunLines(path);
+      const { lines } = read;
       for (let index = lines.length - 1; index >= 0; index--) {
         let record: DutyRunRecord;
         try { record = JSON.parse(lines[index]!) as DutyRunRecord; } catch { continue; }
@@ -100,6 +105,7 @@ export class DutyStore {
         change(record);
         lines[index] = JSON.stringify(record);
         await replaceLines(path, lines);
+        await rewroteRuns(path, read.key, records => records.map(entry => entry.duty === duty && entry.at === at ? record : entry));
         return true;
       }
       return false;
@@ -123,16 +129,22 @@ export class DutyStore {
 
   /**
    * The chat's run records, newest first; a line that does not parse is skipped. A file whose inode, size and mtime match its last parse gives
-   * the records of that parse (`parsedRuns`), so callers must not change them.
+   * the records of that parse (`parsedRuns`), so callers must not change them. A file that only grew since then parses only its new lines, and
+   * this store's own rewrites (`updateRun`, `remove`) change the parse in place: at 06:58Z on 10-27 the owner's read of Crawler VP's duties
+   * waited 1.7 s on a parse of its whole 7.8 MB runs file, which took 99 to 141 ms on a quiet copy, and the file changes with each of its runs.
    */
   async runs(chatId: string): Promise<DutyRunRecord[]> {
     const path = this.runsFile(chatId);
-    const info = await stat(path, { bigint: true }).catch(error => { if (missing(error)) return null; throw error; });
+    const info = await statRuns(path);
     if (!info) { parsedRuns.delete(path); return []; }
-    const key = `${info.ino}:${info.size}:${info.mtimeNs}`;
+    const key = runsKey(info);
     let parsed = parsedRuns.get(path);
     if (parsed?.key !== key) {
-      const entry = { key, records: parseRuns(path) };
+      const before = parsed;
+      const records = before && before.ino === info.ino && info.size > before.size
+        ? appendedRuns(path, before.size, info.size).then(async added => added ? [...added, ...await before.records] : parseRuns(path))
+        : parseRuns(path);
+      const entry = { key, ino: info.ino, size: info.size, records };
       parsedRuns.set(path, entry);
       entry.records.catch(() => { if (parsedRuns.get(path) === entry) parsedRuns.delete(path); });
       parsed = entry;
@@ -149,7 +161,41 @@ const NEWEST_RUN_TAIL_BYTES = 256 * 1024;
  * copy of the live data on 10-19, each 30 s tick of the duties and the check-ins read the runs files about 30 times (3,830 records, 10 MB, 3.4 MB
  * for Crawler VP alone), and those parses held the main thread for 0.9 to 1.2 s in one stretch every tick.
  */
-const parsedRuns = new Map<string, { key: string; records: Promise<readonly DutyRunRecord[]> }>();
+const parsedRuns = new Map<string, { key: string; ino: bigint; size: bigint; records: Promise<readonly DutyRunRecord[]> }>();
+const runsKey = (info: { ino: bigint; size: bigint; mtimeNs: bigint }): string => `${info.ino}:${info.size}:${info.mtimeNs}`;
+const statRuns = (path: string) => stat(path, { bigint: true }).catch(error => { if (missing(error)) return null; throw error; });
+
+/** The records appended to a runs file in [from, to), newest first; null when byte from - 1 is no line end, so the file did not only grow. */
+async function appendedRuns(path: string, from: bigint, to: bigint): Promise<DutyRunRecord[] | null> {
+  const handle = await open(path, "r");
+  try {
+    const buffer = Buffer.alloc(Number(to - from) + 1);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, Number(from) - 1);
+    if (bytesRead !== buffer.length || buffer[0] !== 0x0a) return null;
+    const records: DutyRunRecord[] = [];
+    for (const line of buffer.subarray(1).toString("utf8").split("\n")) {
+      if (!line.trim()) continue;
+      try { records.push(JSON.parse(line) as DutyRunRecord); } catch { continue; }
+    }
+    return records.reverse();
+  } finally { await handle.close(); }
+}
+
+/** A runs file's lines with the stat key from before the read, so a rewrite can tell whether the parse it changes was of these lines. */
+async function readRunLines(path: string): Promise<{ key: string | null; lines: string[] }> {
+  const info = await statRuns(path);
+  return { key: info ? runsKey(info) : null, lines: await readLines(path) };
+}
+
+/** After a rewrite of `path` whose lines read at `before`, changes the parse of those lines the same way, under the rewritten file's key. */
+async function rewroteRuns(path: string, before: string | null, change: (records: readonly DutyRunRecord[]) => DutyRunRecord[]): Promise<void> {
+  const parsed = parsedRuns.get(path);
+  const info = await statRuns(path);
+  if (!parsed || parsed.key !== before || !info) { parsedRuns.delete(path); return; }
+  const entry = { key: runsKey(info), ino: info.ino, size: info.size, records: parsed.records.then(change) };
+  parsedRuns.set(path, entry);
+  entry.records.catch(() => { if (parsedRuns.get(path) === entry) parsedRuns.delete(path); });
+}
 
 async function parseRuns(path: string): Promise<readonly DutyRunRecord[]> {
   const records: DutyRunRecord[] = [];
