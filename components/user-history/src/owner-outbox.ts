@@ -24,7 +24,7 @@ export class OwnerOutbox {
     options: Pick<OutboxDeps, "sleep"> = {}) {
     const { threads, chats, catalog } = parts;
     this.chats = chats;
-    this.outbox = new Outbox({ dir, log, ...options,
+    this.outbox = new Outbox({ dir, log, ...options, sendBeforeWrite: true,
       deliver: async (entry: Stored, sending) => {
         const id = entry.threadId;
         const since = this.archives.get(entry.id) ?? chats.archives(id);

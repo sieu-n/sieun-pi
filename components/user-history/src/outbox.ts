@@ -65,6 +65,14 @@ export interface OutboxDeps {
   deliver(entry: Stored, sending: (change?: Sending) => Promise<void>): Promise<void | Obsolete>;
   /** Where a send that began at `since` is. */
   copy(entry: Stored, since: number): Promise<Copy>;
+  /**
+   * A send goes to the daemon while its entry is written, and every entry read back at a start is looked for (`copy`) before it goes, so a send
+   * that left just before a crash is found instead of sent twice. The owner's sends take it: each file step of a write waits for a turn on the
+   * chat service's main thread, 83% busy on us-metal02 on 10-27, when the owner POST of a follow-up to a Mac chat took 24 to 354 ms while one
+   * write and fsync alone took 5 ms. The agent outbox, which held 93 entries left to send then, keeps its writes first, since each would be
+   * looked for at a start.
+   */
+  sendBeforeWrite?: boolean;
   /** Plain words when the error is final and the entry fails, null when it is tried again. */
   final(error: unknown): string | null;
   /** Whether a send that failed this way may still have reached the daemon, so it is looked for before a resend; absent means always. */
@@ -149,7 +157,16 @@ export class Outbox {
     this.last = Math.max(this.now(), this.last + 1);
     const entry: Stored = { ...input, imageCount: input.images.length, state: "queued", at: this.last, attempts: 0 };
     this.entries.set(entry.id, entry);
-    try { await this.save(entry); } catch (error) { this.entries.delete(entry.id); throw error; }
+    const saved = this.save(entry);
+    if (this.deps.sendBeforeWrite) {
+      this.publish(entry.threadId);
+      this.kick(entry.threadId);
+      // The answer still waits for the write, so a send the page lets go of is on disk or already gone. A failed write leaves the entry going
+      // from memory, and a resend of its id finds it instead of sending it twice.
+      await saved.catch(error => this.deps.log(`outbox: write ${entry.id}: ${message(error)}; it goes from memory`));
+      return { accepted: true, outbox: publicEntry(this.entries.get(entry.id) ?? entry) };
+    }
+    try { await saved; } catch (error) { this.entries.delete(entry.id); throw error; }
     this.publish(entry.threadId);
     this.kick(entry.threadId);
     return { accepted: true, outbox: publicEntry(entry) };
@@ -225,12 +242,14 @@ export class Outbox {
       if (copy === "unknown") { await this.sleep(backoff(entry.attempts)); return; }
     }
     const { sentAt: _sentAt, ...unsent } = entry;
-    let current = this.update(unsent, { state: "sending", attempts: entry.attempts + 1 });
+    // The try shows on the page at once and reaches the disk with `sentAt` (or its failure), so a send waits for one write before its request
+    // instead of two; load() reads a "sending" entry back as queued anyway.
+    let current = this.update(unsent, { state: "sending", attempts: entry.attempts + 1 }, false);
     const sending = async (change?: Sending) => {
       if (this.closed) throw new Closed();
       this.out.add(current.threadId);
       current = this.update(current, { ...change, sentAt: this.now() });
-      await this.writes.get(current.id);
+      if (!this.deps.sendBeforeWrite) await this.writes.get(current.id);
     };
     try {
       const result = await this.deps.deliver(current, sending);
@@ -281,11 +300,11 @@ export class Outbox {
     return this.writes.get(done.id) ?? Promise.resolve();
   }
 
-  /** Changes the entry in memory, writes it, and tells the page; the write's promise is in `writes`. */
-  private update(entry: Stored, change: Partial<Stored>): Stored {
+  /** Changes the entry in memory, writes it unless `write` is false, and tells the page; the write's promise is in `writes`. */
+  private update(entry: Stored, change: Partial<Stored>, write = true): Stored {
     const next = { ...entry, ...change };
     this.entries.set(next.id, next);
-    void this.save(next).catch(error => this.deps.log(`outbox: write ${next.id}: ${message(error)}`));
+    if (write) void this.save(next).catch(error => this.deps.log(`outbox: write ${next.id}: ${message(error)}`));
     this.publish(next.threadId);
     return next;
   }
@@ -330,7 +349,8 @@ export class Outbox {
       try {
         const entry = JSON.parse(await readFile(file, "utf8")) as Stored;
         if (typeof entry.id !== "string" || typeof entry.threadId !== "string" || typeof entry.at !== "number") continue;
-        this.entries.set(entry.id, entry.state === "sending" ? { ...entry, state: "queued" } : entry);
+        const back = entry.state === "sending" ? { ...entry, state: "queued" as const } : entry;
+        this.entries.set(entry.id, this.deps.sendBeforeWrite && back.doneAt === undefined && back.sentAt === undefined ? { ...back, sentAt: back.at } : back);
         this.last = Math.max(this.last, entry.at);
       } catch (error) { this.deps.log(`outbox: skip ${name}: ${message(error)}`); }
     }

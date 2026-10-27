@@ -1,7 +1,7 @@
 import { open } from "node:fs/promises";
 import { basename, dirname } from "node:path";
 import { clockTime } from "./checkin-settings.ts";
-import { type JsonFile, snapshotJsonFile, transactJsonFile } from "./locked-json.ts";
+import { cachedJsonFile, type JsonFile, snapshotJsonFile, transactJsonFile } from "./locked-json.ts";
 
 /**
  * Who asked for a cancel: the owner, by his Stop or Archive in the chat's controls, or a chat that owns the job, by its session id, through the
@@ -78,7 +78,10 @@ export function jobCancelRecord(path: string): JobCancelRecord {
       });
       return kept;
     },
+    // Each owner send asks this, and nearly always no cancel holds. The lock and its folder are about ten file steps in a row, each waiting for a
+    // turn on the chat service's main thread, which was 83% busy on us-metal02 on 10-27; the read alone is one stat while the file is unchanged.
     async reopen(session, at) {
+      if (!cancelHolds((await cachedJsonFile(file))[session])) return false;
       let ended = false;
       await transactJsonFile(file, state => {
         const held = state[session];
