@@ -8,18 +8,19 @@ import type { SessionEntry } from "prime-agent";
 import { jobLedgerPrompt, UI_RULE_LINE, uiRuleLine } from "../src/chat-corrections.ts";
 import { deliverCorrections } from "../src/correction-delivery.ts";
 
-// From frontend bro's 'dashboard first run' brief, 10-19 15:19Z, which named the shared components but not the frontend design skill.
+// From frontend bro's 'dashboard first run' brief, 10-19 15:19Z, which named the shared components but not the frontend design skill. Its shot
+// path is now Aside, since shot-browser.mjs was removed on 10-27 (c177).
 const DASHBOARD_FIRST_RUN = "My read: work on Staging's Dashboards Home (home/dashboard-final) for two cases. Rules: one long-lived builder per part (the to-do card, " +
   "the bare-bones layout and empty states, the live stream). Shared components (c78), the shared motion kit ($lib/ui/motion), and blue only for main " +
-  "actions (c95). Where things run: localhost:5180 is pm2 virev-demo. Take shots with `node apps/virev-demo/scripts/shot-browser.mjs`.";
+  "actions (c95). Where things run: localhost:5180 is pm2 virev-demo. Take shots in an Aside tab with the aside-browser skill.";
 // From its 'onboarding start flow' brief, 10-19 05:58Z, which named both.
 const ONBOARDING_START_FLOW = "Take one desktop shot per page at 1440x900 (c25). Split: one job, with a design lead deciding first, then one builder per part " +
   "spawned flat.\nRules:\n- Read the frontend design and frontend-implementation skills first.\n- Use only the shared kit ($lib/ui, Menu, FormPanel, FilterMenu, " +
   "AddRow and InlineField), with Watchlist as the first pattern source (c78, c48, c54).\n- Don't restyle Watchlist, the Inbox desk, the wide profile viewer or " +
   "Connections.\n- Never kill 5180.";
-// Its 'shot relay cache' brief, 10-19 17:02Z: a 5180 job that changes no screen.
-const SHOT_RELAY_CACHE = "Owner rule c103 keeps browsers off the Mac, so every demo job shoots through apps/virev-demo/scripts/shot-browser.mjs, whose browser " +
-  "runs on us-metal02 and relays page requests to the Mac's localhost:5180. My read: the relay makes every page slow. Task: cut relay page time to a few seconds warm.";
+// After its 'shot relay cache' brief, 10-19 17:02Z, a 5180 job that changes no screen, with the browser path moved to Aside (c177).
+const SHOT_RELAY_CACHE = "Owner rule c177 sends every browser check through Aside, so every demo job opens the Mac's localhost:5180 in a background Aside " +
+  "tab. My read: cold Vite module loads make every page slow there. Task: cut page time to a few seconds warm.";
 
 test("a UI job brief that does not name the frontend design skill gets the c48 line", () => {
   assert.equal(uiRuleLine(DASHBOARD_FIRST_RUN), UI_RULE_LINE);

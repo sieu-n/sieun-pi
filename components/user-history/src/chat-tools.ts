@@ -11,7 +11,7 @@ import { effectiveRun } from "./shared/duty-streak.ts";
 import type { HostToolsCard, ToolCheck, ToolsDailyRun, ToolsRecheck, ToolsView } from "./shared/types.ts";
 
 /** The Skills and tools duty's checks that Settings > Tools and skills runs live, in CHECKS order. websearch_query is a paid Virev search. */
-const TOOL_CHECK_IDS = new Set(["aside_tabs", "aside_account", "box_browser", "websearch_kernel", "websearch_query", "cua_permissions", "cua_mcp"]);
+const TOOL_CHECK_IDS = new Set(["aside_tabs", "aside_account", "websearch_kernel", "websearch_query", "cua_permissions", "cua_mcp"]);
 const TOOL_CHECKS = CHECKS.filter(check => TOOL_CHECK_IDS.has(check.id));
 const CHECK_IDS = new Set(CHECKS.map(check => check.id));
 /** How long one live result serves view(false), so opening the tab again does not pay for another search. */

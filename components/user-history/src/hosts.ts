@@ -30,10 +30,11 @@ export type HostsRegistry = { version: 1; hosts: Host[] };
 
 const ROLES: readonly HostRole[] = ["pool", "wiki", "chat"];
 /**
- * The tools a box can be meant to have: the websearch skill, a headless Chromium on the box (aside-browser's box runner), the Aside CLI and MCP
- * for the owner's logged-in sites, and cua-driver for computer use. Boxes differ on purpose, so each host's `tools` lists its own.
+ * The tools a box can be meant to have: the websearch skill, the Aside CLI and MCP, and cua-driver for computer use. Boxes differ on purpose,
+ * so each host's `tools` lists its own. Agents browse only through Aside, so no headless browser is a tool here (owner c177, 10-27: "NEVER put
+ * it back in"); test/no-headless-browser.test.ts fails if one comes back.
  */
-export const HOST_TOOLS = ["websearch", "headless-browser", "aside", "cua-driver"] as const;
+export const HOST_TOOLS = ["websearch", "aside", "cua-driver"] as const;
 export type HostTool = (typeof HOST_TOOLS)[number];
 const NAME = /^[a-z0-9][a-z0-9-]*$/;
 export const CONFIG_DIR = join(homedir(), ".config/sieun-pi");

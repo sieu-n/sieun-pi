@@ -16,7 +16,7 @@ On a Linux box:
 
 1. Install the box runner once with `cd skills/aside-browser/box && npm ci`, which needs `node`.
 2. Chrome comes from `/usr/bin/google-chrome`, or Playwright's Chromium in `~/.cache/ms-playwright` when that is missing, and `BOX_CHROME` names another binary.
-3. Xvfb comes from `~/.local/opt/xvfb` as `deploy/linux/README.md` (Tools, steps 3 and 4) unpacks it, or `Xvfb` on `PATH`, or `BOX_XVFB`. Without Xvfb, Chrome runs headless and the runner logs that.
+3. Xvfb comes from `~/.local/opt/xvfb` as `deploy/linux/README.md` (Tools, steps 3 and 4) unpacks it, or `Xvfb` on `PATH`, or `BOX_XVFB`. Without Xvfb the runner exits with an error, because no agent browser runs headless (c177).
 
 For the owner's Aside, on the Mac or for login pages from a box:
 
@@ -161,9 +161,8 @@ On the owner's Mac, or with `ASIDE_BROWSER_BOX=0`, every page opens in Aside, an
 An agent on the Mac never launches a Playwright, Puppeteer or Chrome for Testing browser there either, headless included, because Mac browsers pushed its load to 110 to 170 and froze 5180 on 10-19.
 
 - A script browser, such as a rig that loads an unpacked extension into a persistent profile, runs on us-metal02: copy the files with `scp` or `rsync`, then run it with `ssh us-metal02`, which loads `playwright-core` from `~/.prime/agent/skills/aside-browser/box/node_modules` with the `no-netlink-chromium.py` wrapper there.
-- A check of the Mac's 5180 demo page runs in an Aside tab through this skill, because the headless shot scripts were removed on 10-27 and nobody adds one back (c177).
-- The Chat page from the Mac duty's probe is the one exception, since it times the Mac's own network path in one short headless run a day, and it marks its browser with `CHAT_PAGE_MAC_PROBE=1`.
-- The Whole system duty (d7) counts every other Chrome for Testing and chrome-headless-shell on the Mac as `mac_test_browsers` and names the session that started each one.
+- A check of the Mac's 5180 demo page, and the Chat page from the Mac duty's timing, run in an Aside tab through this skill, because every headless browser was removed on 10-27 and nobody adds one back (c177).
+- The Whole system duty (d7) counts every Chrome for Testing and chrome-headless-shell on the Mac as `mac_test_browsers` and names the session that started each one.
 
 ## Browser rules
 

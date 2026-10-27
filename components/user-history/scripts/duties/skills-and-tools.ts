@@ -491,22 +491,6 @@ export const CHECKS: readonly Check[] = [
     if (result.code !== 0) return offIfMacGone(deps, FAIL("agent", `aside account status: ${failText(result)}`, deps.platform === "linux" ? MAC_REACH_FIX : "open Aside with `open -a Aside` and re-check"));
     return FAIL("owner", `aside account status shows no signed-in account: ${brief(both(result), 200)}`, "sign in to the Aside account in the Aside app");
   } },
-  /**
-   * The headless Chromium agents use for pages that need no login: aside-browser's box runner opens a data: page and prints its title. The runner
-   * exits 1 once stdin closes, because closing the browser fires its disconnected handler, so only its answer line counts.
-   */
-  { id: "box_browser", group: "browser", tool: "headless Chromium", hostTool: "headless-browser", run: async deps => {
-    const runner = join(deps.home, ".prime/agent/skills/aside-browser/box/box.mjs");
-    const install = "run `npm ci` in ~/.prime/agent/skills/aside-browser/box, which needs Playwright's Chromium in ~/.cache/ms-playwright";
-    if (!await deps.exists(runner)) return FAIL("agent", `${runner} is missing`, install);
-    const code = "await openTab('data:text/html,<title>box-browser-ok</title>'); console.log(await page.title())";
-    // measured: a cold run took 1.4 s on us-metal02 on 10-19.
-    const result = await deps.exec("node", [runner], { input: `${JSON.stringify({ id: 1, code })}\n`, timeoutMs: CALL_TIMEOUT_MS });
-    let answer: { out?: unknown; error?: unknown } = {};
-    try { answer = JSON.parse(result.stdout.split("\n").find(line => line.startsWith("{")) ?? "{}") as typeof answer; } catch { /* reported below */ }
-    if (answer.out === "box-browser-ok") return PASS(`opened a page in ${result.ms} ms`);
-    return FAIL("agent", answer.error ? `the runner: ${brief(String(answer.error), 200)}` : `no answer (${failText(result)})`, install);
-  } },
   { id: "prime_daemon", group: "prime skills", tool: "Prime daemon (agent-message, agent-observe, goal, heartbeat, compact, mcp)", run: async deps => {
     const result = await deps.exec(paths(deps).prime, ["status", "--json"], { timeoutMs: CALL_TIMEOUT_MS });
     let daemons: { isDefault?: boolean; status?: string; version?: string; pid?: number }[] = [];

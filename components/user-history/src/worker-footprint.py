@@ -385,13 +385,12 @@ TEST_BROWSER = re.compile(r"/Google Chrome for Testing\.app/Contents/MacOS/Googl
 
 def test_browsers(table):
     """Each Chrome for Testing or chrome-headless-shell main process on macOS, with the root and session its RLM_HARNESS_STATE_DIR names ("" when
-    none, as for a duty walk over ssh); [] on Linux, where agents run the box's own Chrome by design. The Chat page from the Mac duty's probe
-    (scripts/duties/chat-page-mac-probe.mjs) is left out by its CHAT_PAGE_MAC_PROBE=1, since it times the Mac's own network path by design."""
+    none, as for a duty walk over ssh); [] on Linux, where agents run the box's own Chrome by design. None is exempt, since no duty runs a
+    headless browser on the Mac since 10-27 (c177)."""
     if sys.platform != "darwin":
         return []
     found = (process(table, pid, dict(zip(("root", "session"), harness(args[1]) or ("", ""))))
-             for pid, (_, _, _, args) in table.items() if args and args[0] and TEST_BROWSER.search(args[0][0]) and not any(arg.startswith("--type=") for arg in args[0])
-             and "CHAT_PAGE_MAC_PROBE=1" not in args[1])
+             for pid, (_, _, _, args) in table.items() if args and args[0] and TEST_BROWSER.search(args[0][0]) and not any(arg.startswith("--type=") for arg in args[0]))
     return [entry for entry in found if entry]
 
 

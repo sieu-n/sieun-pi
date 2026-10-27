@@ -9,7 +9,6 @@
 
   const TOOL_LABELS: Record<HostTool, string> = {
     "websearch": "Web search",
-    "headless-browser": "Headless browser",
     "aside": "Aside browser",
     "cua-driver": "Computer use",
   };

@@ -2338,21 +2338,6 @@
   ]
  },
  {
-  "id": "tools-panel-check-box-browser",
-  "tool": "tools-panel check box_browser",
-  "mac": [
-   {
-    "const": "ok"
-   }
-  ],
-  "box": [
-   {
-    "panel": "box_browser"
-   }
-  ],
-  "note": "The box opens pages with no login in its own Chrome (aside-browser box runner), which the Mac does in Aside; aside_tabs covers the owner's Aside that both hosts use for his logins."
- },
- {
   "id": "tools-panel-check-model-policy",
   "tool": "tools-panel check model_policy",
   "mac": [

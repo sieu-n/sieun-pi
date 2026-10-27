@@ -22,20 +22,24 @@ const profileRoot = fs.mkdtempSync(path.join(TMP, `aside-box-${process.pid}-`));
 process.env.TMPDIR = profileRoot;
 const cleanup = () => fs.rmSync(profileRoot, { recursive: true, force: true });
 
-const headful = hasDisplayServer();
-if (!headful && process.platform === "linux") process.stderr.write("aside-box: no Xvfb on this host, so Chrome runs headless\n");
-const screen = headful ? await startDisplay() : null;
+// Agents never run a headless browser (owner c177, 10-27: "NEVER put it back in"), so a host with no Xvfb gets an error, not a headless Chrome.
+if (!hasDisplayServer()) {
+  process.stderr.write("aside-box: no Xvfb on this host, and the box browser never runs headless (c177); install Xvfb as deploy/linux/README.md (Tools, steps 3 and 4) says\n");
+  cleanup();
+  process.exit(1);
+}
+const screen = await startDisplay();
 const chrome = process.env.BOX_CHROME || (fs.existsSync("/usr/bin/google-chrome") ? "/usr/bin/google-chrome" : chromium.executablePath());
-const env = { ...process.env, ...(screen ? { DISPLAY: screen.display } : {}) };
+const env = { ...process.env, DISPLAY: screen.display };
 // Chromium fails every in-flight request with ERR_NETWORK_CHANGED when a host interface changes address. On us-metal02
 // the CI VMs add and drop cig-N taps all day, and on 2026-10-18 a plain launch hit 158 such failures and 2 of 4 loads of
 // a Vite page rendered "500 Internal Error", while the wrapper that hides netlink from Chromium hit 0 and 4 of 4 loaded.
 // Chrome exits when the runner's end of its debugging pipe closes, so a SIGKILLed runner leaves no browser either.
 const browser = await chromium.launch(process.platform === "linux" && process.arch === "x64"
-  ? { headless: !headful, executablePath: new URL("./no-netlink-chromium.py", import.meta.url).pathname, env: { ...env, BOX_CHROMIUM: chrome } }
-  : { headless: !headful, executablePath: chrome, env });
+  ? { headless: false, executablePath: new URL("./no-netlink-chromium.py", import.meta.url).pathname, env: { ...env, BOX_CHROMIUM: chrome } }
+  : { headless: false, executablePath: chrome, env });
 let closing = false;
-browser.on("disconnected", () => { screen?.close(); cleanup(); if (!closing) process.exit(1); });
+browser.on("disconnected", () => { screen.close(); cleanup(); if (!closing) process.exit(1); });
 const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
 const ids = new WeakMap();
 let next = 1;
@@ -119,5 +123,5 @@ for await (const line of rl) {
 }
 closing = true;
 await browser.close();
-screen?.close();
+screen.close();
 cleanup();

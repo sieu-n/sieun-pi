@@ -12,7 +12,7 @@ const host = (name: string, hostname: string, address: string, tools?: string[])
   ...(tools ? { tools } : {}),
 });
 const registry = (self: string): HostsRegistry => parseHosts({ version: 1, hosts: [
-  host("box", self, "100.0.0.1", ["websearch", "headless-browser", "aside", "cua-driver"]),
+  host("box", self, "100.0.0.1", ["websearch", "aside", "cua-driver"]),
   host("mac", "Sieuns-MacBook-Pro", "100.0.0.2", ["aside", "cua-driver", "websearch"]),
 ] });
 
@@ -37,12 +37,13 @@ const deps = (): Deps => ({
 test("hosts.json takes a host's tools list and refuses a tool it does not know", () => {
   assert.deepEqual(registry("box").hosts[1]!.tools, ["aside", "cua-driver", "websearch"]);
   assert.equal(parseHosts({ version: 1, hosts: [host("box", "box", "100.0.0.1")] }).hosts[0]!.tools, undefined);
-  assert.throws(() => parseHosts({ version: 1, hosts: [host("box", "box", "100.0.0.1", ["paper"])] }), /tools: needs a list of websearch, headless-browser, aside, cua-driver/);
+  assert.throws(() => parseHosts({ version: 1, hosts: [host("box", "box", "100.0.0.1", ["paper"])] }), /tools: needs a list of websearch, aside, cua-driver/);
+  assert.throws(() => parseHosts({ version: 1, hosts: [host("box", "box", "100.0.0.1", ["headless-browser"])] }), /tools: needs a list of/);
 });
 
 test("the daily run leaves out the checks for tools this box is not meant to have", async () => {
-  const mac = await hostChecks(async () => ({ version: 1, hosts: [{ ...registry("x").hosts[1]!, hostname: (await import("node:os")).hostname() }] }));
-  assert.ok(!mac.some(check => check.id === "box_browser"));
+  const mac = await hostChecks(async () => ({ version: 1, hosts: [{ ...registry("x").hosts[1]!, tools: ["websearch", "aside"], hostname: (await import("node:os")).hostname() }] }));
+  assert.ok(!mac.some(check => check.hostTool === "cua-driver"));
   assert.ok(mac.some(check => check.id === "aside_tabs") && mac.some(check => check.id === "prime_daemon"));
   const missing = await hostChecks(async () => { throw Object.assign(new Error("gone"), { code: "ENOENT" }); });
   assert.equal(missing.length, CHECKS.length);
@@ -59,13 +60,13 @@ test("each box gets its own tools: this box's run here, the others over the remo
   assert.deepEqual(view.hosts.map(card => [card.name, card.self, card.state]), [["box", true, "checked"], ["mac", false, "checked"]]);
   assert.deepEqual(asked, [{ host: "mac", ids: ["cua_permissions", "cua_mcp", "websearch_kernel", "websearch_query", "aside_tabs", "aside_account"] }]);
   const mac = view.hosts[1]!;
-  assert.deepEqual(mac.tools.map(row => [row.tool, row.used]), [["websearch", true], ["headless-browser", false], ["aside", true], ["cua-driver", true]]);
+  assert.deepEqual(mac.tools.map(row => [row.tool, row.used]), [["websearch", true], ["aside", true], ["cua-driver", true]]);
   const aside = mac.tools.find(row => row.tool === "aside")!;
   assert.ok(aside.used && aside.checks.map(check => check.detail).join() === "aside_tabs on mac,aside_account on mac", JSON.stringify(aside));
   const box = view.hosts[0]!;
   assert.ok(box.tools.every(row => row.used));
-  const browser = box.tools.find(row => row.tool === "headless-browser")!;
-  assert.ok(browser.used && browser.checks.length === 1 && browser.checks[0]!.id === "box_browser" && browser.checks[0]!.status === "fail");
+  const cua = box.tools.find(row => row.tool === "cua-driver")!;
+  assert.ok(cua.used && cua.checks.map(check => check.id).join() === "cua_permissions,cua_mcp", JSON.stringify(cua));
 });
 
 test("a box Tailscale reads offline is not dialed, and a remote run that breaks marks only that box unreachable", async () => {

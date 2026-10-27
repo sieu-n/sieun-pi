@@ -609,8 +609,8 @@ export type AgentQueueInput = { action: "queue"; on: boolean } | { action: "mac"
 export type HostQueueInput = { host: string } & Exclude<AgentQueueInput, { action: "idle" }>;
 
 /**
- * Settings > Tools and skills: per box in hosts.json, live checks of the tools agents there are meant to have (its `tools`: web search, a headless
- * browser, the Aside browser, computer use), each run on that box with the Skills and tools duty's own checks (scripts/duties/skills-and-tools.ts).
+ * Settings > Tools and skills: per box in hosts.json, live checks of the tools agents there are meant to have (its `tools`: web search, the Aside
+ * browser, computer use), each run on that box with the Skills and tools duty's own checks (scripts/duties/skills-and-tools.ts).
  * `id` is that duty's check id; `off` is installed but out of reach on purpose (the Mac asleep).
  */
 export type { HostTool } from "../hosts.ts";

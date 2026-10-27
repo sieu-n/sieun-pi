@@ -1,6 +1,6 @@
 // Guards d7's Mac test browser count: at 16:35Z on 10-19 frontend bro found a Chrome for Testing on the Mac and had to ask whose it was. It was
-// the 'teams green add-on' job's headless Playwright rig in ~/scratch/teams-green, under slack green guy, while the d1 offline walk beside it
-// ran its browser on us-metal02 through shot-browser.mjs --run.
+// the 'teams green add-on' job's headless Playwright rig in ~/scratch/teams-green, under slack green guy. Since 10-27 every agent browser
+// check runs in Aside (c177).
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { testBrowsers } from "../scripts/duties/whole-system.ts";
