@@ -1320,7 +1320,7 @@ export function measure(input: Inputs): PrecheckOutput {
     `10 min in ${held}; a turn sat queued while pi-pool had ${FREE_SLOTS} or more slots it could give it, or pi-pool refused a tree for over 10 min while an account took its class, in ${freeSlot}; ` +
     `a tree waited over 10 min for a pi-pool cell at R4's pace, not counted dirty, in ${cellWait}; ` +
     `an open, status read, send or worker start failed or ran over ${SLOW_MS / 1000} s in ${daemonFail}, ${primeMin} of them a Prime fault, a worker crash or hang or a create Prime took over ${SLOW_MS / 1000} s to answer.` +
-    (offlineMin.size ? ` Tailscale read ${[...offlineMin].map(([name, at]) => `${name} offline in ${at.length}`).join(" and ")}, and ${offlineFaults} daemon calls to a box while it was offline, or that failed because the service read their box offline, are left out.` :
+    (offlineMin.size ? ` Tailscale read ${[...offlineMin].map(([name, at]) => `${name} offline in ${at.length}`).join(" and ")}, and ${offlineFaults} daemon calls to a box while it was offline are left out.` :
       offlineFaults ? ` ${offlineFaults} daemon calls that failed because the service read their box offline are left out.` : "") });
   if (input.ciCache) {
     metrics.ci_cache_age_s = Math.max(0, Math.round((now - input.ciCache.fetchedAt) / 1000));
