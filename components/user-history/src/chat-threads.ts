@@ -982,7 +982,8 @@ export class ThreadHub {
           const native = event.event.type;
           if (native === "agent_end") this.turnEnded(thread);
           if (native === "agent_start" || native === "agent_end" || (native === "message_end" && event.event.message.role === "user")) await this.refreshQueue(thread);
-          if (native === "compaction_end" && !event.event.aborted) { for (const observer of [...this.observers]) observer.compacted?.(thread.id, thread.sessionFile); await this.resnapshot(thread); }
+          // A failed compaction changed nothing, and its resnapshot replaced the failure notice pi-host sends right after it.
+          if (native === "compaction_end" && !event.event.aborted && !event.event.errorMessage) { for (const observer of [...this.observers]) observer.compacted?.(thread.id, thread.sessionFile); await this.resnapshot(thread); }
           // pi-host sends Pi's agent_settled after agent_end, and only then does its state read idle.
           if (native === "agent_end" || (native as string) === "agent_settled" || native === "compaction_end" || native === "auto_retry_end" || native === "thinking_level_changed" || native === "session_info_changed") await this.refreshInfo(thread);
           return;

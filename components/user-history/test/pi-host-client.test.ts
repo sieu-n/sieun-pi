@@ -116,3 +116,45 @@ test("against a real pi-host: attach streams the snapshot in chunks, events arri
     if (process.exitCode) process.stderr.write(log);
   }
 });
+
+test("a pi-host restart reattaches an open connection, with no closed event, as Prime's connection does after a daemon shutdown", { skip: noHost }, async () => {
+  const root = mkdtempSync(join(tmpdir(), "chat-pi-host-restart-"));
+  mkdirSync(join(root, "ws"), { recursive: true });
+  const socket = join(root, "host.sock");
+  const start = () => spawn(process.execPath, ["--import", "tsx", "host/src/main.ts", "--socket", socket, "--agent-dir", join(root, "agent"),
+    "--session-dir", join(root, "sessions"), "--cwd", join(root, "ws"), "--no-default-extensions", "--extension", "host/test/fixtures/echo.ts", "--model", "echo/m"], {
+    cwd: piStack, env: { ...process.env, PI_OFFLINE: "1", PI_TELEMETRY: "0", PI_SKIP_VERSION_CHECK: "1" }, stdio: "ignore",
+  });
+  const up = async () => { for (let i = 0; i < 200 && !existsSync(socket); i++) await new Promise(r => setTimeout(r, 100)); };
+  let host = start();
+  const clients: HostClient[] = [];
+  const connect = async () => { const client = new HostClient(socket); clients.push(client); await client.connect(3000); await client.waitForHello(10_000); return client; };
+  try {
+    await up();
+    const control = await connect();
+    const created = await control.request({ type: "create", config: { cwd: join(root, "ws") } });
+    assert.ok(created.success);
+    const id = (created.data as { activeSessionId: string }).activeSessionId;
+    await control.request({ type: "prompt", activeSessionId: id, message: "before the restart" });
+    await control.request({ type: "wait_for_idle", activeSessionId: id }, 20_000);
+    const events: HostConnectionEvent[] = [];
+    const connection = await HostAgentConnection.attach(await connect(), id, { closeClientOnDispose: true });
+    connection.subscribe(event => { events.push(event); });
+    host.kill("SIGTERM");
+    await new Promise(r => host.once("exit", r));
+    host = start();
+    await up();
+    for (let i = 0; i < 200 && !events.some(event => event.type === "connection_status" && event.status === "connected"); i++) await new Promise(r => setTimeout(r, 100));
+    assert.ok(events.some(event => event.type === "connection_status" && event.status === "connected"), JSON.stringify(events));
+    assert.ok(!events.some(event => event.type === "closed"), JSON.stringify(events));
+    assert.ok(events.some(event => event.type === "session_resynced"));
+    const snapshot = await connection.getInitialSnapshot();
+    assert.ok(JSON.stringify(snapshot.messages).includes("before the restart"));
+    await connection.dispose();
+  } finally {
+    for (const client of clients) client.close();
+    host.kill("SIGTERM");
+    await new Promise(r => host.once("exit", r));
+    rmSync(root, { recursive: true, force: true });
+  }
+});

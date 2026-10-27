@@ -315,6 +315,7 @@ export class HostAgentConnection {
   private closedEmitted = false;
   private disposed = false;
   private reattaching: Promise<void> | undefined;
+  private hostStopping = false;
   private readonly offMessage: () => void;
   private readonly offClose: () => void;
 
@@ -497,6 +498,9 @@ export class HostAgentConnection {
       return;
     }
     if (message.type === "session_closed") {
+      // A host stop closes every session and then the socket; the drop that follows reattaches, as Prime's connection does after a
+      // shutdown (`reconnectAfterShutdown`), so a pi-host restart does not leave each open thread closed until someone presses Retry.
+      if (message.reason === "shutdown") { this.hostStopping = true; return; }
       this.closedEmitted = true;
       await this.emit({ type: "closed", error: `Daemon session ${this.activeSessionId} closed: ${String(message.reason ?? "closed")}` });
       return;
@@ -528,7 +532,7 @@ export class HostAgentConnection {
 
   private async onDropped(error: Error): Promise<void> {
     if (this.disposed || this.closedEmitted) return;
-    const recover = this.options.recoverDaemon;
+    const recover = this.options.recoverDaemon ?? (this.hostStopping ? async () => {} : undefined);
     if (!recover) {
       this.closedEmitted = true;
       await this.emit({ type: "closed", error: error.message });
@@ -545,6 +549,7 @@ export class HostAgentConnection {
           if (!this.client.isConnected) await this.client.reconnect(1000);
           await this.client.waitForHello(3000);
           await this.resync();
+          this.hostStopping = false;
           await this.emit({ type: "connection_status", status: "connected" });
           return;
         } catch (failure) {
