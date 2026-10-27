@@ -23,6 +23,8 @@ import { hostViews } from "./whole-system.ts";
  * mac_convex_push_stale is 1 when its Convex watcher's newest push failed and no push succeeded after the newest convex/ change, mac_unusable_min
  * counts the minutes of the last 24 h that the Mac usable watch read unusable (src/mac-usable-watch.ts USABLE, the same line d7 judges a minute
  * by), and mac_unreachable is 1 when ssh cannot reach it (asleep), which fails no check.
+ * store_box_swap_used_mb reads the M2 Air store box that hosts local Convex and the dev stores over ssh, with its memory pressure level and
+ * its three biggest processes as run detail.
  */
 
 const REPO = process.env.LLM_WIKI_REPO || join(homedir(), "Documents/Github/auto-sns-agent");
@@ -62,6 +64,44 @@ export const MAC_CONVEX_COMMAND = `(cd "${MAC_REPO}" && echo "convex-push $("$HO
 export const MAC_COMMAND = ["sysctl -n vm.loadavg", "memory_pressure -Q",
   ...MAC_PORTS.map(({ port, path }) => `curl -s -o /dev/null -m ${ANSWER_TIMEOUT_MS / 1000} -w 'port ${port} %{http_code}\\n' http://localhost:${port}${path}`),
   MAC_CONVEX_COMMAND, "exit 0"].join("; ");
+
+/** The M2 Air store box, the m2-air target of auto-sns-agent ops/dev-boxes/install.sh (ops/runbooks/local-runtime.md there). */
+export const STORE_BOX = "a.@100.84.91.26";
+/**
+ * The store box's swap ceiling.
+ * measured: from 10-13 to 10-27 the Mac's Convex watcher pushed 58 times while node_memory_swap_used_bytes{box="m2-air"} read under 6.0 GB and
+ * no schema eval passed its 1 s limit, and 27 times at 6.0 GB or more with 4 that did (first at 6.16 GB on 10-22), as the box's swap grew from
+ * 3.8 to 8.9 GB with sandboxd at 5.4 GB and System Events at 1.2 GB (board step p560).
+ */
+export const STORE_SWAP_MB = 6000;
+/** Swap use and the macOS memory pressure level (1 normal, 2 warn, 4 critical), then the three processes with the most memory, swapped and compressed pages included. */
+export const STORE_COMMAND = "sysctl -n vm.swapusage kern.memorystatus_vm_pressure_level; top -l 1 -o mem -n 3 -stats command,mem,cmprs | tail -3";
+export const PRESSURE_NAMES: Record<number, string> = { 1: "normal", 2: "warn", 4: "critical" };
+
+/** Parses STORE_COMMAND's output: `total = 9216.00M  used = 8525.44M  free = 690.56M  (encrypted)`, the pressure level, then the top lines. */
+export function parseStoreBox(text: string): { swapUsedMb: number; pressureLevel: number; top: string[] } {
+  const lines = text.trim().split("\n");
+  const swapUsedMb = Number(/used = ([\d.]+)M/.exec(lines[0] ?? "")?.[1]);
+  const pressureLevel = Number(lines[1]?.trim());
+  if (!Number.isFinite(swapUsedMb) || !Number.isInteger(pressureLevel) || !lines[1]?.trim()) throw new Error(`unparsed store box reading: ${text.trim().slice(0, 200)}`);
+  return { swapUsedMb: Math.round(swapUsedMb), pressureLevel, top: lines.slice(2).map(line => line.trim().replace(/\s+/g, " ")).filter(Boolean) };
+}
+
+/** Reads the store box over ssh. ssh exit 255 means it could not reach the box, which leaves store_box_swap_used_mb unmeasured. */
+export async function measureStoreBox(deps: Pick<UptimeDeps, "exec">, at: number): Promise<{ metrics: Record<string, number>; flagged: FlaggedSlice[] }> {
+  let reading: ReturnType<typeof parseStoreBox>;
+  try {
+    reading = parseStoreBox(await deps.exec("ssh", ["-o", "BatchMode=yes", STORE_BOX, STORE_COMMAND]));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const kind = (error as { code?: unknown }).code === 255 ? "store_box_unreachable" : "store_box_read";
+    return { metrics: {}, flagged: [{ at, kind, excerpt: `Store box ${STORE_BOX}: read failed: ${message}`.slice(0, 300) }] };
+  }
+  const over = reading.swapUsedMb > STORE_SWAP_MB;
+  const pressure = PRESSURE_NAMES[reading.pressureLevel] ?? `level ${reading.pressureLevel}`;
+  return { metrics: { store_box_swap_used_mb: reading.swapUsedMb },
+    flagged: [{ at, kind: over ? "store_box_swap" : "store_box", excerpt: `Store box: ${reading.swapUsedMb} MB swap used${over ? `, over the ${STORE_SWAP_MB} MB line where local Convex schema evals start to pass 1 s` : ""}, memory pressure ${pressure}, top ${reading.top.join("; ")}`.slice(0, 300) }] };
+}
 
 /**
  * A Mac read with a dev server that gave no 200 is read again after this wait, so a normal pm2 restart is not a miss.
@@ -251,6 +291,7 @@ export async function measureUptime(deps: UptimeDeps, previous: UptimeState | un
   const at = deps.now();
   const mac = measureMac(deps, at).catch((error: unknown): Awaited<ReturnType<typeof measureMac>> =>
     ({ metrics: {}, flagged: [{ at, kind: "mac_read", excerpt: `Mac: ${error instanceof Error ? error.message : String(error)}`.slice(0, 300) }] }));
+  const store = measureStoreBox(deps, at);
   const answers = await Promise.all([{ key: "wiki", url: deps.wiki + "/" }, ...SERVICES].map(async (service): Promise<FlaggedSlice> => {
     const where = target(service, deps.env);
     if ("off" in where) return { at, kind: "by_design", excerpt: `${service.key}: ${where.off}` };
@@ -265,6 +306,9 @@ export async function measureUptime(deps: UptimeDeps, previous: UptimeState | un
   const macResult = await mac;
   Object.assign(metrics, macResult.metrics);
   flagged.push(...macResult.flagged);
+  const storeResult = await store;
+  Object.assign(metrics, storeResult.metrics);
+  flagged.push(...storeResult.flagged);
   if (metrics.servers_not_answering) {
     const load = await hostLoad(deps).catch((error: unknown) => `unread: ${String(error)}`);
     flagged.push({ at, kind: "mac", excerpt: `${deps.platform === "darwin" ? "Mac" : "Host"} at the probe: load ${load}`.slice(0, 300) });

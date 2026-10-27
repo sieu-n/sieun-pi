@@ -1,10 +1,11 @@
 // Guards d1's Mac metrics: mac_servers_not_answering from ssh, and mac_unusable_min from the Mac usable watch, which replaced the one-sample
 // load-under-20 check on 10-23 (~/work/mac-load-root-cause/metric-findings.md on us-metal02). Vent :8791 joined the servers on 10-27, and
 // mac_convex_push_stale reads the Mac's Convex watcher, whose pushes all failed from 10-22 to 10-27 while its status read healthy.
+// store_box_swap_used_mb joined on 10-27, after the M2 Air store box reached 8.5 GB of swap and local Convex schema evals passed 1 s.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { WatchLine } from "../src/mac-usable-watch.ts";
-import { convexPushStale, MAC_COMMAND, MAC_RETRY_MS, macDown, macUnusableMinutes, measureMac, parseMacReading } from "../scripts/duties/local-dev-uptime.ts";
+import { convexPushStale, MAC_COMMAND, MAC_RETRY_MS, macDown, macUnusableMinutes, measureMac, measureStoreBox, parseMacReading, parseStoreBox, STORE_BOX, STORE_COMMAND } from "../scripts/duties/local-dev-uptime.ts";
 
 const push = (outcome: string, at: string, lastGoodAt: string | null) =>
   `convex-push {  "count": 1,  "watchers": [],  "push": {    "outcome": "${outcome}",    "at": "${at}",    "reason": ${outcome === "failed" ? '"schema eval timed out (1s)"' : "null"},    "lastGoodAt": ${lastGoodAt ? `"${lastGoodAt}"` : "null"}  }}\n`;
@@ -63,4 +64,26 @@ test("a dev server that answers on the read 30 s later, as :5180 does after a pm
   const result = await measureMac({ platform: "linux", exec: async () => reading("7.26", 37, codes.shift()!), watch: async () => [], wait: async ms => { waits.push(ms); } }, 0);
   assert.deepEqual(result.metrics, { mac_servers_not_answering: 0, mac_unreachable: 0, mac_convex_push_stale: 0 });
   assert.deepEqual(waits, [MAC_RETRY_MS]);
+});
+
+const store = (used: string, level: number) => `total = 9216.00M  used = ${used}M  free = 690.56M  (encrypted)\n${level}\ncom.docker.krun  7995M 6458M\nsandboxd         5424M 5420M\nSystem Events    1186M 1184M\n`;
+
+test("parses the store box's swap use, pressure level and top processes", () => {
+  assert.deepEqual(parseStoreBox(store("8525.44", 2)), { swapUsedMb: 8525, pressureLevel: 2, top: ["com.docker.krun 7995M 6458M", "sandboxd 5424M 5420M", "System Events 1186M 1184M"] });
+  assert.throws(() => parseStoreBox("Permission denied\n"), /unparsed store box reading/);
+});
+
+test("the store box over its swap line is flagged, under it is detail, and an unreachable box leaves the metric unmeasured", async () => {
+  const calls: string[][] = [];
+  const full = await measureStoreBox({ exec: async (file, args) => { calls.push([file, ...args]); return store("8525.44", 2); } }, 0);
+  assert.deepEqual(calls, [["ssh", "-o", "BatchMode=yes", STORE_BOX, STORE_COMMAND]]);
+  assert.deepEqual(full.metrics, { store_box_swap_used_mb: 8525 });
+  assert.equal(full.flagged[0]!.kind, "store_box_swap");
+  assert.match(full.flagged[0]!.excerpt, /8525 MB swap used, over the 6000 MB line.*memory pressure warn, top com.docker.krun 7995M 6458M; sandboxd/);
+  const freed = await measureStoreBox({ exec: async () => store("1431.06", 2) }, 0);
+  assert.deepEqual(freed.metrics, { store_box_swap_used_mb: 1431 });
+  assert.equal(freed.flagged[0]!.kind, "store_box");
+  const away = await measureStoreBox({ exec: async () => { throw Object.assign(new Error("Command failed: ssh"), { code: 255 }); } }, 0);
+  assert.deepEqual(away.metrics, {});
+  assert.equal(away.flagged[0]!.kind, "store_box_unreachable");
 });
