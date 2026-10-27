@@ -130,14 +130,16 @@ export interface TargetState { queued: string[]; busy: boolean; unfinished?: num
 
 /**
  * The count a daemon holds against its pending message limit. A daemon that sends the summary's top-level `queuedLanes` (Prime load-h) counts
- * only queued input: its `sessionActions.queuedCount`, or the sum of the lanes on a roster row that carries no `sessionActions`. An older daemon
- * sends no lanes and counts every unfinished action, while its `queuedCount` reads the visible queue only, so `unfinishedActionCount` stands in.
+ * only queued input, which is the sum of its lanes. The lanes win over `sessionActions.queuedCount`, because a crc.2 supervisor over load-h
+ * workers lists a row with `queuedLanes.steering` 1 and `queuedCount` 0 (load-x new-then-old, 10-27). With no lanes, `queuedCount` stands in,
+ * and a crc.2 daemon, whose `queuedCount` reads the visible queue while it counts every unfinished action, is read by `unfinishedActionCount`.
  */
 function limitCount(lanes: unknown, queuedCount: unknown, unfinished: number | undefined): number | undefined {
-  if (typeof lanes !== "object" || lanes === null) return unfinished;
-  if (typeof queuedCount === "number") return queuedCount;
-  const { steering, followUp } = lanes as { steering?: unknown; followUp?: unknown };
-  return (typeof steering === "number" ? steering : 0) + (typeof followUp === "number" ? followUp : 0);
+  if (typeof lanes === "object" && lanes !== null) {
+    const { steering, followUp } = lanes as { steering?: unknown; followUp?: unknown };
+    return (typeof steering === "number" ? steering : 0) + (typeof followUp === "number" ? followUp : 0);
+  }
+  return unfinished ?? (typeof queuedCount === "number" ? queuedCount : undefined);
 }
 
 /** The TargetState in get_state's `data`, or in a list or roster row, which share the SessionSummary fields it reads. */

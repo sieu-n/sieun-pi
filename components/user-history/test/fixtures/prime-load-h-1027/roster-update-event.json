@@ -1,0 +1,59 @@
+{
+ "type": "roster_update",
+ "changed": [
+  {
+   "agentId": "01a17c82-cfeb-74a2-be08-e9f48e97d6b7",
+   "summary": {
+    "id": "ca6cfbe9da26",
+    "lifecycle": "live",
+    "activity": "working",
+    "isSessionActive": true,
+    "lastActivityAt": "2026-10-27T08:38:31.569Z",
+    "runtimeKind": "top-level",
+    "rlmDepth": 0,
+    "activeSessionId": "ca6cfbe9da26",
+    "sessionId": "01a17c82-cfeb-74a2-be08-e9f48e97d6b7",
+    "sessionFile": "<rig>/runs/new/new/agent/sessions/01a17c82-cfeb-74a2-be08-e9f48e97d6b7.jsonl",
+    "sessionName": "x-a",
+    "cwd": "<rig>/runs/new/new/home",
+    "model": {
+     "id": "fake-model",
+     "name": "fake",
+     "api": "anthropic-messages",
+     "provider": "fakeprov",
+     "baseUrl": "http://127.0.0.1:<port>",
+     "reasoning": false,
+     "input": [
+      "text"
+     ],
+     "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0
+     },
+     "contextWindow": 100000,
+     "maxTokens": 1000
+    },
+    "thinkingLevel": "off",
+    "isStreaming": true,
+    "isCompacting": false,
+    "isBashRunning": false,
+    "hasRunningRlmChildren": false,
+    "isRunningTools": false,
+    "attachedClients": 1,
+    "messageCount": 2,
+    "unfinishedActionCount": 6,
+    "queuedLanes": {
+     "steering": 3,
+     "followUp": 2
+    },
+    "created": "2026-10-27T08:38:30.123Z",
+    "modified": "2026-10-27T08:38:30.859Z",
+    "firstMessage": "<prompt-text>"
+   },
+   "status": "running",
+   "workerId": "af772790c5cf"
+  }
+ ]
+}

@@ -1,9 +1,9 @@
-// Guards Prime load-h (10-27): its daemon counts only queued input against the pending message limit, reports that count as
-// `sessionActions.queuedCount` and adds a top-level `queuedLanes` {steering, followUp} to get_state, list and roster rows. The agent outbox reads
-// that count for room when a row carries `queuedLanes`, and keeps `unfinishedActionCount` for crc.2, whose `queuedCount` reads the visible queue
-// only. The fixtures follow chat-057a's load-x capture of crc.2 and the load.0 dry build on one rig (x/out/{old,new}.json, 10-27).
+// Guards Prime load-h (10-27): its daemon counts only queued input against the pending message limit and adds a top-level `queuedLanes`
+// {steering, followUp} to get_state, list and roster rows. The agent outbox reads room from the sum of the lanes when a row carries them, since a
+// crc.2 supervisor over load-h workers lists `queuedLanes.steering` 1 beside `sessionActions.queuedCount` 0, and keeps `unfinishedActionCount`
+// for crc.2, whose `queuedCount` reads the visible queue only. The fixtures are chat-057a's load-x wire captures (x/fixtures and x/evidence, 10-27).
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
@@ -26,7 +26,7 @@ const NEW_ROSTER_ROW = { ...ROW, isStreaming: true, isRunningTools: false, unfin
 const OLD_STATE = { ...ROW, isStreaming: true, isRunningTools: false, unfinishedActionCount: 6,
   sessionActions: { queuedCount: 5, steering: ["a", "b", "c"], followUps: ["d", "e"] } };
 
-test("targetStateOf reads the limit's count from queuedCount when a row carries top-level queuedLanes, else from unfinishedActionCount", () => {
+test("targetStateOf reads the limit's count from the sum of top-level queuedLanes when a row carries them, else from unfinishedActionCount", () => {
   assert.deepEqual(targetStateOf(NEW_STATE), { queued: ["a", "b", "c", "d", "e"], busy: true, unfinished: 5 });
   assert.deepEqual(targetStateOf(NEW_LIST_ROW), { queued: [], busy: true, unfinished: 2 });
   assert.deepEqual(targetStateOf(OLD_STATE), { queued: ["a", "b", "c", "d", "e"], busy: true, unfinished: 6 });
@@ -39,6 +39,22 @@ test("targetStateOf reads the limit's count from queuedCount when a row carries 
 test("a roster row with lanes and no sessionActions counts the sum of its lanes", () => {
   assert.deepEqual(targetStateOf(NEW_ROSTER_ROW), { queued: [], busy: true, unfinished: 2 });
   assert.deepEqual(targetStateOf({ queuedLanes: { steering: 4 } }), { queued: [], busy: false, unfinished: 4 }, "a missing lane reads 0");
+});
+
+const FIXTURES = new URL("./fixtures/prime-load-h-1027/", import.meta.url);
+async function fixture(name: string): Promise<any> { return JSON.parse(await readFile(new URL(name, FIXTURES), "utf8")); }
+
+test("the load.0 wire captures read the sum of their lanes for room", async () => {
+  assert.deepEqual(targetStateOf((await fixture("get-state-response.json")).data), { queued: Array(5).fill("<prompt-text>"), busy: true, unfinished: 5 });
+  assert.deepEqual(targetStateOf((await fixture("list-response-row-with-queued-input.json")).data.sessions[0]), { queued: [], busy: true, unfinished: 4 });
+  assert.deepEqual(targetStateOf((await fixture("roster-subscribe-response-row.json")).data.roster[0].summary), { queued: [], busy: true, unfinished: 4 });
+  assert.deepEqual(targetStateOf((await fixture("roster-update-event.json")).changed[0].summary), { queued: [], busy: true, unfinished: 5 });
+  for (const name of ["session-unavailable-refusal-get-state.json", "session-unavailable-refusal-steer.json"])
+    assert.deepEqual(targetStateOf((await fixture(name)).data), { queued: [], busy: false }, name);
+});
+
+test("a crc.2 supervisor's list row over load.0 workers counts the queued steer its lanes show, though its queuedCount reads 0", async () => {
+  assert.deepEqual(targetStateOf((await fixture("list-row-mixed-crc2-supervisor.json")).row), { queued: [], busy: true, unfinished: 1 });
 });
 
 async function outbox(t: TestContext, data: unknown) {

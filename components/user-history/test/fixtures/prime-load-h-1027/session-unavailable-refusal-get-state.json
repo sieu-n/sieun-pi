@@ -1,0 +1,12 @@
+{
+ "id": "x_15_196d6c68",
+ "type": "response",
+ "command": "get_state",
+ "success": false,
+ "error": "Unknown active session: nosuchsession0",
+ "errorInfo": {
+  "code": "session_unavailable",
+  "activeSessionId": "nosuchsession0",
+  "state": "unknown"
+ }
+}

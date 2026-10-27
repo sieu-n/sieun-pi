@@ -1,0 +1,18 @@
+{
+ "source": "load-x evidence/new-then-old.json list[0], 2026-10-27: a crc.2 supervisor over adopted load.0 workers, as the rig recorded the row's fields",
+ "row": {
+  "activeSessionId": "06cdad354702",
+  "isStreaming": true,
+  "workerState": "ready",
+  "unfinishedActionCount": 2,
+  "queuedLanes": {
+   "steering": 1,
+   "followUp": 0
+  },
+  "sessionActions": {
+   "queuedCount": 0,
+   "steering": [],
+   "followUps": []
+  }
+ }
+}
