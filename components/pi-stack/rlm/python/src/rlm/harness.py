@@ -9,11 +9,15 @@ Execution still belongs to Prime Agent's TypeScript host and the existing
 
 from __future__ import annotations
 
+import contextlib
 import json
 import math
 import os
+import random
 import re
+import shutil
 import stat
+import time
 import unicodedata
 from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timezone
@@ -316,6 +320,123 @@ def _validate_refinement_event(trigger: Any, changes: Any, *, evidence: Any, out
         raise ValueError(f"refinement event rejected: outcome must be a string when provided, got {_type_name(outcome)}")
 
 
+_LOCK_STALE_SECONDS = 30.0
+_LOCK_WAIT_SECONDS = 120.0
+
+
+def _read_pid(path: Path) -> int | None:
+    try:
+        pid = int(path.read_text())
+    except (OSError, ValueError):
+        return None
+    return pid if pid > 0 else None
+
+
+def _lock_owner(directory: Path) -> int | None:
+    return _read_pid(directory / "pid")
+
+
+def _lock_abandoned(directory: Path, owner: int | None) -> bool:
+    if owner is not None:
+        try:
+            os.kill(owner, 0)
+            return False
+        except ProcessLookupError:
+            return True
+        except PermissionError:
+            return False
+    try:
+        return time.time() - directory.stat().st_mtime > _LOCK_STALE_SECONDS
+    except FileNotFoundError:
+        return False
+
+
+def _write_pid(path: Path) -> None:
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "w") as f:
+        os.fchmod(f.fileno(), 0o600)
+        f.write(str(os.getpid()))
+
+
+def _lock_own(directory: Path) -> bool:
+    temporary = directory / f"pid.{uuid4().hex}"
+    _write_pid(temporary)
+    try:
+        os.link(temporary, directory / "pid")
+        return True
+    except FileExistsError:
+        return False
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _lock_enter_recovery(recovery: Path) -> bool:
+    try:
+        try:
+            recovery.mkdir(mode=0o700)
+            os.chmod(recovery, 0o700)
+            return _lock_own(recovery)
+        except FileExistsError:
+            pass
+        owner = _lock_owner(recovery)
+        if not _lock_abandoned(recovery, owner):
+            return False
+        if owner is None:
+            return _lock_own(recovery)
+        aside = recovery / uuid4().hex
+        os.rename(recovery / "pid", aside)
+        if _read_pid(aside) == owner:
+            return _lock_own(recovery)
+        try:
+            os.link(aside, recovery / "pid")
+        except FileExistsError:
+            pass
+        aside.unlink(missing_ok=True)
+        return False
+    except FileNotFoundError:
+        return False
+
+
+class _FileLock:
+    """The ``<file>.lock`` directory that every writer of a harness state file takes.
+
+    It is the protocol of pi-stack's harness lock, user-history's locked-json.ts and prime-sync's LedgerLock: a directory holding the
+    owner's pid, cleared through ``<file>.lock.recovery`` when its owner died or it has no owner and is older than 30 s.
+    """
+
+    def __init__(self, path: Path):
+        self.lock = Path(str(path) + ".lock")
+
+    def __enter__(self) -> "_FileLock":
+        self.lock.parent.mkdir(parents=True, exist_ok=True)
+        deadline = time.monotonic() + _LOCK_WAIT_SECONDS
+        while True:
+            try:
+                self.lock.mkdir(mode=0o700)
+            except FileExistsError:
+                pass
+            else:
+                os.chmod(self.lock, 0o700)
+                _write_pid(self.lock / "pid.new")
+                os.replace(self.lock / "pid.new", self.lock / "pid")
+                return self
+            if _lock_abandoned(self.lock, _lock_owner(self.lock)):
+                recovery = Path(str(self.lock) + ".recovery")
+                if _lock_enter_recovery(recovery):
+                    try:
+                        if _lock_abandoned(self.lock, _lock_owner(self.lock)):
+                            shutil.rmtree(self.lock, ignore_errors=True)
+                    finally:
+                        shutil.rmtree(recovery, ignore_errors=True)
+                    continue
+            if time.monotonic() >= deadline:
+                raise RuntimeError(f"{self.lock} is held by another writer")
+            time.sleep(0.005 + random.random() * 0.02)
+
+    def __exit__(self, *exc: Any) -> None:
+        shutil.rmtree(self.lock, ignore_errors=True)
+
+
 class HarnessState:
     """CRUD store for reset-free harness refinement state."""
 
@@ -352,6 +473,16 @@ class HarnessState:
     def _ensure_local_writable(self) -> None:
         if self._local_write_error is not None:
             raise RuntimeError(self._local_write_error)
+
+    @contextlib.contextmanager
+    def _locked(self) -> Any:
+        """Holds the state file's lock and reloads the file under it, so a write never replaces another writer's change."""
+        if self.file_path is None:
+            yield
+            return
+        with _FileLock(Path(os.path.realpath(self.file_path))):
+            self.load()
+            yield
 
     def _disk_mtime(self) -> int | None:
         if self.file_path is None:
@@ -527,18 +658,18 @@ class HarnessState:
                 source=source,
             )
         self._ensure_local_writable()
-        self._sync_from_disk()
-        return self._upsert(
-            kind,
-            title,
-            content,
-            id=id,
-            path=path,
-            reference=reference,
-            arguments=arguments,
-            metadata=metadata,
-            source=source,
-        )
+        with self._locked():
+            return self._upsert(
+                kind,
+                title,
+                content,
+                id=id,
+                path=path,
+                reference=reference,
+                arguments=arguments,
+                metadata=metadata,
+                source=source,
+            )
 
     def _upsert(
         self,
@@ -631,14 +762,14 @@ class HarnessState:
         if target := self._global_target(global_, kwargs):
             return target.delete(kind, id)
         self._ensure_local_writable()
-        self._sync_from_disk()
-        if kind not in self.entries:
-            raise ValueError(f"unknown harness kind {kind!r}; expected one of {_KINDS}")
-        if id not in self.entries[kind]:
-            return False
-        del self.entries[kind][id]
-        self.save()
-        return True
+        with self._locked():
+            if kind not in self.entries:
+                raise ValueError(f"unknown harness kind {kind!r}; expected one of {_KINDS}")
+            if id not in self.entries[kind]:
+                return False
+            del self.entries[kind][id]
+            self.save()
+            return True
 
     def list(self, kind: HarnessKind | None = None, *, global_: bool = False, **kwargs: Any) -> list[HarnessEntry]:
         if target := self._global_target(global_, kwargs):
@@ -681,26 +812,26 @@ class HarnessState:
                 source=source,
             )
         self._ensure_local_writable()
-        self._sync_from_disk()
-        if kind not in self.entries:
-            raise ValueError(f"unknown harness kind {kind!r}; expected one of {_KINDS}")
-        _require_text(kind, _describe_entry(id, title), "title", title)
-        if id is not None:
-            _require_text(kind, _describe_entry(id, title), "id", id)
-        entry_id = id or _slug(title, kind)
-        if entry_id in self.entries[kind]:
-            raise ValueError(f"{kind} entry {entry_id!r} already exists")
-        return self._upsert(
-            kind,
-            title,
-            content,
-            id=entry_id,
-            path=path,
-            reference=reference,
-            arguments=arguments,
-            metadata=metadata,
-            source=source,
-        )
+        with self._locked():
+            if kind not in self.entries:
+                raise ValueError(f"unknown harness kind {kind!r}; expected one of {_KINDS}")
+            _require_text(kind, _describe_entry(id, title), "title", title)
+            if id is not None:
+                _require_text(kind, _describe_entry(id, title), "id", id)
+            entry_id = id or _slug(title, kind)
+            if entry_id in self.entries[kind]:
+                raise ValueError(f"{kind} entry {entry_id!r} already exists")
+            return self._upsert(
+                kind,
+                title,
+                content,
+                id=entry_id,
+                path=path,
+                reference=reference,
+                arguments=arguments,
+                metadata=metadata,
+                source=source,
+            )
 
     def update(
         self,
@@ -731,23 +862,23 @@ class HarnessState:
                 source=source,
             )
         self._ensure_local_writable()
-        self._sync_from_disk()
-        if kind not in self.entries:
-            raise ValueError(f"unknown harness kind {kind!r}; expected one of {_KINDS}")
-        _require_text(kind, _describe_entry(id, title), "id", id)
-        if id not in self.entries[kind]:
-            raise ValueError(f"{kind} entry {id!r} does not exist")
-        return self._upsert(
-            kind,
-            title,
-            content,
-            id=id,
-            path=path,
-            reference=reference,
-            arguments=arguments,
-            metadata=metadata,
-            source=source,
-        )
+        with self._locked():
+            if kind not in self.entries:
+                raise ValueError(f"unknown harness kind {kind!r}; expected one of {_KINDS}")
+            _require_text(kind, _describe_entry(id, title), "id", id)
+            if id not in self.entries[kind]:
+                raise ValueError(f"{kind} entry {id!r} does not exist")
+            return self._upsert(
+                kind,
+                title,
+                content,
+                id=id,
+                path=path,
+                reference=reference,
+                arguments=arguments,
+                metadata=metadata,
+                source=source,
+            )
 
     def create_memory(
         self,
@@ -911,24 +1042,24 @@ class HarnessState:
         if target := self._global_target(global_, kwargs):
             return target.record_refinement(trigger, changes, evidence=evidence, outcome=outcome, id=id)
         self._ensure_local_writable()
-        self._sync_from_disk()
-        _validate_refinement_event(trigger, changes, evidence=evidence, outcome=outcome)
-        if id is not None and (not isinstance(id, str) or not id):
-            raise ValueError(
-                f"refinement event rejected: id must be a non-empty string when provided, got {_type_name(id)}"
+        with self._locked():
+            _validate_refinement_event(trigger, changes, evidence=evidence, outcome=outcome)
+            if id is not None and (not isinstance(id, str) or not id):
+                raise ValueError(
+                    f"refinement event rejected: id must be a non-empty string when provided, got {_type_name(id)}"
+                )
+            event_id = id or f"refine_{len(self.refinements) + 1:04d}"
+            normalized_changes = [changes] if isinstance(changes, str) else list(changes)
+            event = RefinementEvent(
+                id=event_id,
+                trigger=trigger,
+                changes=normalized_changes,
+                evidence=evidence,
+                outcome=outcome,
             )
-        event_id = id or f"refine_{len(self.refinements) + 1:04d}"
-        normalized_changes = [changes] if isinstance(changes, str) else list(changes)
-        event = RefinementEvent(
-            id=event_id,
-            trigger=trigger,
-            changes=normalized_changes,
-            evidence=evidence,
-            outcome=outcome,
-        )
-        self.refinements.append(event)
-        self.save()
-        return event
+            self.refinements.append(event)
+            self.save()
+            return event
 
     def plan_refinement(
         self,

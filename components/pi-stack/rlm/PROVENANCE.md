@@ -58,6 +58,9 @@ Each row is the SHA-256 of the file in the release folder before any change.
 
 1. `python/src/rlm/repl.py` has sieun-pi's kernel revive guard (prime-agent#3447) applied from `components/watchdog/repl-guard.patch` with `patch --forward -p0`. A dill revive no longer reopens a saved write-mode file handle and truncates its target. The watchdog used to re-apply this patch to Prime's installed copy after each update, and pi-rlm owns this copy, so the patch lives here. The patched file's SHA-256 is `d583f2877d8baca0a1197df70818431e22b53160335c897c5b2b294196678a04`.
 
+2. `python/src/rlm/harness.py` takes a cross-process lock for every write, from pi-harness's `harness-lock.patch` (`/home/sieun/work/pi-migration-build/step-4/harness-py-lock/`). A `_FileLock` class takes `<file>.lock` with the protocol of pi-harness's `lock.ts`, user-history's `locked-json.ts` and prime-sync's `LedgerLock`, and the five mutators reload the file under it before they change it. Before the patch, 8 writers plus prime-sync lost entries with the mtime check alone. The patched file's SHA-256 is `77155ad22abeca3927398ccc2403d63d41c422fdd85a7c08f79f7ee285164cec`.
+3. `python/test/test_harness.py` saves twice more in `test_search_discounts_common_terms_and_keeps_frequency_ties`, because a create now reloads from disk. The patched file's SHA-256 is `a230b66e6974594a8522e46c9d303616239b1286860417e0bf62fdcad157322f`, and the 54 harness tests pass with `uv run --offline --with pytest pytest test/test_harness.py`.
+
 No other vendored file differs from its source.
 
 ## License

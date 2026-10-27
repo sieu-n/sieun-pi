@@ -1237,12 +1237,14 @@ class HarnessSearchTest(unittest.TestCase):
             state.create_memory("Session notes", "Session signal.", id="solo")
             self.assertEqual([entry.id for entry in state.search("session")], ["solo"])
             state.entries["memory"]["solo"].updated_at = "2026-07-01T00:00:00+00:00"
+            state.save()
 
             # Equal frequency discounts every match alike, so recency still orders them: id order
             # alone would put aa_older first.
             for entry_id, day in (("aa_older", "08-01"), ("zz_newer", "09-01")):
                 state.create_memory("Session notes", "Same session signal.", id=entry_id)
                 state.entries["memory"][entry_id].updated_at = f"2026-{day}T00:00:00+00:00"
+                state.save()
             self.assertEqual([entry.id for entry in state.search("session")], ["zz_newer", "aa_older", "solo"])
 
             # "session" matches 3 of 4 (log(1 + 4/3)), "quantum" 1 of 4 (log(1 + 4)): rare ranks first.
