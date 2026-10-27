@@ -28,6 +28,7 @@ import { movedReason, movedTo } from "../src/moved-copy.ts";
 import { endLoadWait, loadWaitNote } from "../src/load-wait.ts";
 import { recordPrompt } from "../src/prompt-capture.ts";
 import { onUpstreamPi } from "../src/pi-runtime.ts";
+import { SHARED_LEDGER_REFUSAL, sharedDataDir, sharedLedgerOnly } from "../src/shared-data-dir.ts";
 import { REQUIREMENT_STATUSES, type ChatAgent, type ThreadMessage } from "../src/shared/types.ts";
 
 export default function historyExtension(pi: ExtensionAPI): void {
@@ -187,7 +188,7 @@ export default function historyExtension(pi: ExtensionAPI): void {
     } catch { return []; }
   };
   const jobs = () => hostJobRegistry(dataDir());
-  const corrections = () => new CorrectionLedger(dataDir());
+  const corrections = () => new CorrectionLedger(sharedDataDir(dataDir()));
   // The chat host's ledger, read at most once a minute: the context hook runs before every model request, and the box is 0.2 s away from the Mac.
   let remoteLedger: { at: number; ledger: Ledger | null } | null = null;
   const readLedger = async (): Promise<Ledger | null> => {
@@ -234,6 +235,7 @@ export default function historyExtension(pi: ExtensionAPI): void {
           remoteLedger = null;
           return { content: [{ type: "text", text: answer?.text ?? "The chat host has no corrections route yet." }], details: undefined };
         }
+        if (sharedLedgerOnly(dataDir())) return { content: [{ type: "text", text: SHARED_LEDGER_REFUSAL }], details: undefined };
         // A clean-room chat's owner messages are the script's, so its corrections go to a scratch ledger no other chat reads.
         const cleanRoom = await new IdIndex(join(dataDir(), CLEAN_ROOM_CHATS_FILE), "Clean-room chat index").ids().then(ids => ids.includes(chat.id), () => false);
         const ledger = cleanRoom ? new CorrectionLedger(dataDir(), CLEAN_ROOM_CORRECTIONS_FILE) : corrections();

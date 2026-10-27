@@ -274,6 +274,14 @@ async function startHosts(primary: boolean): Promise<{ bridge: { close(): Promis
   } catch (error) { log(`hosts: ${error instanceof Error ? error.message : String(error)}`); return null; }
 }
 
+/**
+ * The other boxes a serve lists threads from: none for a `--pi-host-canary` serve, which lists only the threads its pi-host owns, so nobody
+ * opens a Prime thread from it. On 10-27 the canary on :5183 listed the Mac's Prime threads, read through the live chat's bridge socket.
+ */
+export async function serveHosts(canary: boolean, primary: boolean, start: typeof startHosts = startHosts): ReturnType<typeof startHosts> {
+  return canary ? null : await start(primary);
+}
+
 const withPhone = (service: Service, record: Instance): Instance & { phoneUrl: string | null } => ({ ...record, phoneUrl: phoneUrl(service) });
 
 export async function ensureChatService(options: Options = {}): Promise<Instance & { phoneUrl: string | null }> {
@@ -426,7 +434,7 @@ async function serve(options: Options): Promise<void> {
   if (adopt === "own") process.stderr.write(`${new Date().toISOString()} chats: this serve acts only on the chats it created (${join(service.directory, "own-chats.json")})\n`);
   // The other boxes in ~/.config/sieun-pi/hosts.json: the main instance opens a local socket per box, tunneled to its relay (src/hosts.ts), and
   // the catalog lists every box's sessions through them (src/host-catalogs.ts).
-  const hosts = await startHosts(primary);
+  const hosts = await serveHosts(options.piHostCanary === true, primary);
   const backend = await createChatBackend({ socketPath: readOnly?.socketPath ?? service.config.socketPath, dataDir: service.directory,
     ownChatsOnly: adopt === "own", scratch, replay, hosts: hosts?.catalogs ?? null, copyFile: primary ? join(service.directory, "session-copy.json") : null,
     saveAgents: !scratch || !await isLiveDirectory(service.directory) });

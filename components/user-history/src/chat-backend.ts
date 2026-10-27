@@ -2,6 +2,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { getAgentDir, SettingsManager } from "prime-agent";
 import { piHostJobsFile } from "./checkin-load.ts";
+import { sharedDataDir } from "./shared-data-dir.ts";
 import { defaultDaemonSocketPath, onPiHost } from "./daemon-sdk.ts";
 import { BoardStore } from "./chat-board-store.ts";
 import { AGENTS_FILE, Catalog } from "./chat-catalog.ts";
@@ -188,7 +189,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const relays = relayRecord(join(dataDir, "relayed.json"));
   const catalog = new Catalog(socketPath, readState, labels, { ids: () => chats.ids(), checkIns: () => chats.checkIns(), links: (id, name) => chats.links(id, name), briefs: () => chats.briefs(), archivedIds: () => chats.archivedIds(), roster: children => { if (!quiet) void relayHops(relays, [...children.values()].flat(), dutyLog).catch(error => dutyLog(`relay: hops: ${error instanceof Error ? error.message : String(error)}`)); return chats.roster(children); } }, new ThreadOrigins(created, cleanRoomChats), options.hosts ?? null, options.copyFile ?? null, options.saveAgents ? join(dataDir, AGENTS_FILE) : null);
   const boards = new BoardStore(dataDir);
-  const corrections = new CorrectionLedger(dataDir);
+  const corrections = new CorrectionLedger(sharedDataDir(dataDir));
   const threads = new ThreadHub(socketPath, catalog, () => defaults.read(), async id => (await chats.ids()).has(id) ? boards.read(id) : undefined,
     { minutes: () => defaults.idleEviction(), held: async (id: string): Promise<boolean> => (await duties.view(id)).some(duty => duty.running),
       file: join(dataDir, "idle-clocks.json") }, new FirstPages(join(dataDir, "first-pages")), quiet, join(dataDir, "saved-archive-queue.json"));
@@ -306,7 +307,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       void chats.ids().then(ids => ids.has(id) ? autoCompact.compacted(id, file) : null).catch(error => dutyLog(`session compact ${id.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`));
     } });
   // Token usage of every box comes from LGTM only (src/usage/lgtm.ts); nothing is queried until a page subscribes or the Agents card asks for rates.
-  const usage = new Usage(grafanaPrometheus(join(dataDir, "grafana-alerts.json")));
+  const usage = new Usage(grafanaPrometheus(join(sharedDataDir(dataDir), "grafana-alerts.json")));
   catalog.ratesSource = ids => usage.rates(ids);
   catalog.queueSource = async () => (await queued()).queued;
   catalog.accountWaitSource = (asks, now) => treeAccountWaits(asks, now);
@@ -365,7 +366,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       if (!chat) throw new Error(`no chat ${record.root.slice(0, 8)}`);
       return (await dutyJobs.start(chat, record.name || record.id, text(chat.name), undefined, recordModel(record))).id;
     } });
-  const grafanaConfig = join(dataDir, "grafana-alerts.json");
+  const grafanaConfig = join(sharedDataDir(dataDir), "grafana-alerts.json");
   const statusFile = join(homedir(), ".cache/virev/alert-bridge-status.json");
   const alertPoll = ownChatsOnly ? null : startAlertPoll({ grafanaConfig, sessionsDir: join(agentDir, "sessions"), statusFile }, dutyLog);
   const stopAlerts = !alertPoll ? () => {} : startAlertBridge({ file: join(dataDir, "alert-bridge.json"),
