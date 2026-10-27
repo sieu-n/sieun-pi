@@ -234,6 +234,8 @@ const scratchKey: unknown[] = Array.from({ length: 13 });
  * was 280 to 510 ms at box load 50; live under load the same work waited behind about 3.7 runnable threads per core and stalled 4.4 to 12.9 s.
  */
 export const PROJECTION_SLICE_MS = 10;
+/** Frames come at most once per this many projection wall times (`Catalog.frameGap`), so projections hold at most about a quarter of the main thread. */
+export const PROJECTION_SHARE = 4;
 /** Rows the projection builds between two looks at the clock: about 2 ms of them on that serve. */
 const BREATHE_ROWS = 256;
 const NO_ROWS: readonly SessionSummary[] = [];
@@ -1186,7 +1188,7 @@ export class Catalog {
   async rows(): Promise<SessionRow[]> {
     const running = this.running;
     if (running && running.inputs === this.inputs) return (await running.result).rows;
-    if (this.lastFrame?.inputs === this.inputs && Date.now() - this.lastFrame.at < this.emitGapMs) return [...this.lastFrame.rows];
+    if (this.lastFrame?.inputs === this.inputs && Date.now() - this.lastFrame.at < this.frameGap()) return [...this.lastFrame.rows];
     // A frame that waits out emitGapMs starts after this call's change, so its rows serve the call too.
     const waiting = this.emitRun;
     if (waiting && !waiting.started && this.listeners.size) {
@@ -1221,7 +1223,8 @@ export class Catalog {
     const started = performance.now();
     const run = { inputs: this.inputs, result: this.project(), full: this.copiesLoaded && this.peer.listed };
     void run.result.then(({ rows }) => {
-      this.projectionMs.push(performance.now() - started);
+      this.lastProjectionMs = performance.now() - started;
+      this.projectionMs.push(this.lastProjectionMs);
       if (run.full && (!this.latest || this.latest.inputs <= run.inputs)) { this.latest = { inputs: run.inputs, rows }; this.saved = undefined; }
     }, () => {});
     this.running = run;
@@ -1247,6 +1250,16 @@ export class Catalog {
    * after a quiet window goes out at once.
    */
   emitGapMs = 500;
+  /** The wall time of the last projection that ended, in ms (`frameGap`). */
+  private lastProjectionMs = 0;
+  /**
+   * The least time between two frames: emitGapMs, or PROJECTION_SHARE times the last projection's wall time when that is longer, so frames
+   * hold at most about 1 / PROJECTION_SHARE of the main thread however many rows there are. With 6,900 rows on 10-27 a projection took 150 to
+   * 200 ms, roster updates came 5.5 times a second (331 in 60 s, each changing a field), frames went out at the 500 ms floor, 114 a minute,
+   * and in the 18:07Z to 18:55Z CPU profile projections were 520 s of the main thread's 1,259 busy s (41%) while the service log read it
+   * 81 to 84% busy and reads took 1.4 to 4.2 s.
+   */
+  private frameGap(): number { return Math.max(this.emitGapMs, PROJECTION_SHARE * this.lastProjectionMs); }
   /**
    * One projection at a time, at most one per `emitGapMs`: an emit asked for while one waits joins it, and one asked for while one runs waits
    * for it, and every such ask shares one run after it, so each caller still gets a frame built after its change. On 10-18 the service's main
@@ -1261,7 +1274,7 @@ export class Catalog {
       this.emitNext ??= running.promise.catch(() => {}).then(() => { this.emitNext = undefined; return this.emit(); });
       return this.emitNext;
     }
-    const wait = this.emittedAt + this.emitGapMs - Date.now();
+    const wait = this.emittedAt + this.frameGap() - Date.now();
     const run = { started: false, promise: Promise.resolve() };
     const start = (): Promise<void> => { run.started = true; return this.emitOnce(); };
     run.promise = (wait > 0 ? new Promise<void>(resolve => { setTimeout(resolve, wait).unref(); }).then(start) : start())
