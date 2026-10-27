@@ -17,7 +17,7 @@ import type { ImageContent, Message, ModelThinkingLevel, TextContent, Usage } fr
 import type { Models } from "@earendil-works/pi-ai/models";
 import {
   Harness, LiveDoc, ROOT_CONVERSATION_ID, watchEvents, type AgentEvent, type AgentEventStream, type CommitPublication, type Conversation,
-  type ConversationId, type ConversationRecord, type EntryRecord, type HarnessSettings, type ModelRef, type ReportInfo, type SettledSubmissionRecord,
+  type ConversationId, type ConversationRecord, type EntryDraft, type EntryId, type EntryRecord, type HarnessSettings, type ModelRef, type ReportInfo, type SettledSubmissionRecord,
   type SubmissionId, type SubmissionRecord, type Wake,
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
@@ -26,6 +26,7 @@ import { existsSync, mkdirSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { Leases, SessionLockedError } from "../lease.ts";
 import { statusOf, ThreadIndex, type IndexedEntry, type SearchHit, type SearchQuery, type ThreadRow, type ThreadStatus, type UsageRow, type UsageTotal } from "./index-db.ts";
+import { headFor, parseSession } from "./import.ts";
 import { AgentMessageEntry, ChatDoc, threadEnv, threadRegistry } from "./registry.ts";
 
 const context: Context = BACKGROUND_CONTEXT;
@@ -559,6 +560,33 @@ export class DurableThreads {
       draft.value = value as never;
     }, context);
     for (const watcher of open.watchers) watcher.sink({ type: "doc", conversation: target, name, value });
+  }
+
+  /**
+   * Imports a Prime or Pi session file as a new thread (`import.ts`). The file is only read; the old thread keeps
+   * running where it is. The model and thinking level are the session's last ones unless given.
+   */
+  async importSession(path: string, input: { name?: string; model?: ModelRef; thinkingLevel?: ModelThinkingLevel; cwd?: string } = {}): Promise<ThreadInfo & { imported: number; skipped: Record<string, number> }> {
+    const parsed = parseSession(path);
+    const created = await this.create({
+      name: input.name ?? parsed.name ?? `Imported ${parsed.id ?? path}`,
+      model: input.model ?? parsed.model ?? this.options.defaultModel,
+      thinkingLevel: input.thinkingLevel ?? parsed.thinkingLevel ?? this.options.defaultThinkingLevel ?? "high",
+      cwd: input.cwd ?? parsed.cwd ?? this.options.defaultCwd,
+    });
+    const open = await this.thread(created.id);
+    const written = new Map<string, EntryId>();
+    for (let start = 0; start < parsed.drafts.length; start += PAGE_MAX) {
+      const batch = parsed.drafts.slice(start, start + PAGE_MAX);
+      await open.harness.commit(async tx => {
+        for (const item of batch) {
+          const draft: EntryDraft = item.draft.kind === "pi.compaction" ? { ...item.draft, head: headFor(item.headFrom, written) } : item.draft;
+          const record = await tx.appendEntry(ROOT_CONVERSATION_ID, draft);
+          written.set(item.from, record.id);
+        }
+      }, context);
+    }
+    return { ...this.info(created.id), imported: parsed.drafts.length, skipped: parsed.skipped };
   }
 
   search(query: SearchQuery): SearchHit[] {

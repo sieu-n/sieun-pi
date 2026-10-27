@@ -11,7 +11,7 @@ import type { DurableThreads, SubmitInput } from "./threads.ts";
 
 export const DURABLE_COMMANDS = new Set([
   "durable_threads", "durable_create", "durable_submit", "durable_wait", "durable_watch", "durable_unwatch", "durable_abort", "durable_tree",
-  "durable_entries", "durable_search", "durable_usage", "durable_doc_get", "durable_doc_put", "durable_set",
+  "durable_entries", "durable_search", "durable_usage", "durable_doc_get", "durable_doc_put", "durable_set", "durable_import",
 ]);
 
 type Command = { id?: string; type: string; [key: string]: unknown };
@@ -134,6 +134,14 @@ export class DurableCommands {
             ...(model ? { model } : {}),
             ...(optStr(command, "thinkingLevel") ? { thinkingLevel: optStr(command, "thinkingLevel") as ModelThinkingLevel } : {}),
             ...(typeof command.archived === "boolean" ? { archived: command.archived } : {}),
+          }) });
+        }
+        case "durable_import": {
+          const model = modelRef(command.model);
+          return done({ thread: await this.threads.importSession(str(command, "path"), {
+            ...(optStr(command, "name") === undefined ? {} : { name: optStr(command, "name")! }),
+            ...(model ? { model } : {}),
+            ...(optStr(command, "cwd") === undefined ? {} : { cwd: optStr(command, "cwd")! }),
           }) });
         }
         default:

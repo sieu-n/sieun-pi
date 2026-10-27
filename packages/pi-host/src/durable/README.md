@@ -41,6 +41,7 @@ H-->>C: the same submission, nothing admitted twice
 | `open.ts` | `openDurableHost()` for one file and the Prime preamble extension. |
 | `pool-provider.ts` | `poolProvider()`: a pi-ai Provider that vends each request's account through pi-pool and turns a slot wait into a stored sleep. |
 | `subagent.ts` | The `subagent` tool: a replay-safe call that owns one child conversation and returns its answer. |
+| `import.ts` | `parseSession()`: a Prime or Pi session file's active branch as entry drafts, for `durable_import`. |
 
 ## Socket commands
 
@@ -62,6 +63,7 @@ Each command is one JSON line with `type` and `id`, and the response is a v7 `re
 | `durable_doc_get` | `thread`, `name`, `conversation?` | `value` |
 | `durable_doc_put` | `thread`, `name`, `value`, `conversation?` | |
 | `durable_set` | `thread`, `name?`, `model?`, `thinkingLevel?`, `archived?` | `thread` |
+| `durable_import` | `path` (a Prime or Pi session JSONL), `name?`, `model?`, `cwd?` | `thread` with `imported` and `skipped` counts. |
 
 A `durable_event` line is `{type: "durable_event", thread, watch, event}`, and `event` is one of these.
 
@@ -72,6 +74,18 @@ A `durable_event` line is `{type: "durable_event", thread, watch, event}`, and `
 5. `{type: "closed", reason}` ends the watch when the file closes at shutdown.
 
 Every entry reaches a watcher once, so a client that reconnects with `fromEntry` set to the newest id it has misses nothing.
+
+## Importing a Prime thread
+
+`durable_import {path}` reads a Prime or Pi session file and writes its active branch into a new thread, and the old file is only read.
+
+1. User, assistant and tool-result messages become `pi.user`, `pi.assistant` and `pi.tool-result` entries.
+2. A compaction becomes a `pi.compaction` entry whose head is the entry its first kept line became, so the model sees the summary and the kept messages, as Prime sent them.
+3. Prime's custom messages, such as agent messages, task briefs and heartbeats, become `prime.custom` entries the model reads as user text.
+4. The thread takes the session's name, cwd, last model and thinking level.
+5. Bookkeeping lines, such as `git_state` and `child_usage_attributed`, are counted in `skipped` and not written.
+
+This job's own Prime transcript of 260 lines imported in 138 ms, and claude-opus-5-5 through pi-pool answered a question about it from the imported context.
 
 ## How a request gets its account
 
