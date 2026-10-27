@@ -577,7 +577,11 @@ export interface AgentQueueSession { session: string; tree: string; since: numbe
 export const TURN_KINDS = ["slot", "owner", "ahead"] as const;
 export type TurnKind = (typeof TURN_KINDS)[number];
 export interface AgentQueueWorking extends AgentQueueSession { kind: TurnKind }
-export interface AgentQueuedSession extends AgentQueueSession { position: number; total: number; waitMs: number }
+/**
+ * `parked`: the run gave up its process (pi-pool `park`) and its session waits in Prime's credential wait, so pi-pool starts it by a wake and
+ * its own ask, never on a poll of its own.
+ */
+export interface AgentQueuedSession extends AgentQueueSession { position: number; total: number; waitMs: number; parked?: true }
 /** Who last ran `pi-pool set` on a key and when, in epoch ms. `by` is null for a value written before pi-pool recorded writers; `at` is then config.json's file time. */
 export interface PoolSetRecord { by: string | null; at: number }
 /**

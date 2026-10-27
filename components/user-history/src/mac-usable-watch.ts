@@ -151,7 +151,10 @@ export interface QueueLine {
   /**
    * pi-pool's admission inputs, so d7 can tell a turn its tree's cap holds from one a free slot left waiting (`admit_pass` in pool/turns.py):
    * both limits as pi-pool merges its defaults and config.json, the working turns, each of which holds a slot, and each
-   * tree with a queued turn. Absent on lines written before 10-18 05:1xZ, when metal-management's turns at its 8 of 8 read as free-slot waits.
+   * tree with a queued turn that is not parked. Absent on lines written before 10-18 05:1xZ, when metal-management's turns at its 8 of 8 read
+   * as free-slot waits. A parked turn has no process to take a slot: pi-pool wakes it and holds the slot for it, or skips it until its session
+   * asks again, after a wake Prime cancelled. From 21:13Z to 22:02Z on 10-27, the turn d7 named in each of its 6 free-slot minutes was parked,
+   * in the AI harness VP's tree or the wiki dream tree, and Prime cancelled its resume on each wake (p1184).
    */
   workingMax?: number; treeWorkingMax?: number; slots?: number; waiting?: WaitingTree[];
 }
@@ -405,7 +408,7 @@ function queueLine(reading: QueueReading, now: number, treeName: (id: string) =>
   const oldest = reading.queued.reduce<(typeof reading.queued)[number] | undefined>((first, entry) => !first || entry.since < first.since ? entry : first, undefined);
   const held = reading.working;
   const firstAsk = new Map<string, number>();
-  for (const entry of reading.queued) firstAsk.set(entry.tree, Math.min(firstAsk.get(entry.tree) ?? Infinity, entry.since));
+  for (const entry of reading.queued) if (!entry.parked) firstAsk.set(entry.tree, Math.min(firstAsk.get(entry.tree) ?? Infinity, entry.since));
   const waiting = [...firstAsk].map(([tree, since]) => ({ tree: treeName(tree), oldestWaitS: waitS(since), slots: held.filter(entry => entry.tree === tree).length }))
     .sort((a, b) => b.oldestWaitS - a.oldestWaitS);
   return { working: reading.working.length, queued: reading.queued.length,

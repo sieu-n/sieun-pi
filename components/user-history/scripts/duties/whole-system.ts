@@ -556,7 +556,8 @@ const p90 = (values: readonly number[]): number => {
  * pool/turns.py): the machine under working_max slots and the turn's tree under tree_working_max, each with FREE_SLOTS to spare, since a
  * waiter takes a slot a release just freed on its next 1 s poll. A turn its tree's cap holds is pi-pool's limit at work: at 04:30Z on 10-18
  * metal-management's turns waited 167 s at 8 of 8 while the box held 12 of 16 slots, and the old machine-only test called it a free slot.
- * A line written before the watch recorded pi-pool's limits and slots is not judged.
+ * A line written before the watch recorded pi-pool's limits and slots is not judged. A parked turn is no waiter here (`QueueLine` in
+ * src/mac-usable-watch.ts), since pi-pool starts it only by a wake and its session's ask.
  */
 export function freeSlotWait(line: WatchLine): WaitingTree | undefined {
   const queue = line.queue;

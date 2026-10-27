@@ -591,7 +591,7 @@ export function parseAgentQueue(value: unknown): AgentQueueReading {
     const position = count(row.position), total = count(row.total);
     const wait = typeof row.wait_s === "number" && Number.isFinite(row.wait_s) && row.wait_s >= 0 ? row.wait_s : null;
     if (position === null || total === null || wait === null) throw new Error("pi-pool returned an invalid queue entry");
-    return { ...session, position, total, waitMs: wait * 1000 };
+    return { ...session, position, total, waitMs: wait * 1000, ...row.parked === true ? { parked: true as const } : {} };
   }).sort((a, b) => a.position - b.position);
   return { enabled: value.enabled, workingMax, workingMaxSet: setRecord(value.working_max_set), treeWorkingMax, working: value.working.map(workingSession), queued };
 }

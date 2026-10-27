@@ -3,6 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { measure } from "../scripts/duties/whole-system.ts";
+import { parseAgentQueue } from "../src/chat-pool.ts";
 import type { DutyRunRecord } from "../src/shared/chat-duties.ts";
 import type { ChatBoard } from "../src/shared/types.ts";
 import type { LinuxUsable } from "../../prime-relay/host-stats.ts";
@@ -138,6 +139,23 @@ test("a turn whose tree has free slots and waits while the machine has free slot
   assert.match(flagged?.find(slice => slice.kind === "dirty_minutes")?.excerpt ?? "", /a turn of VP of CI queued 167 s with free slots \(12 of 16 in use, its tree at 4 of 8\)/);
   const full: QueueReading = { ...open, working: [...open.working, ...slots("api", 3)] };
   assert.equal(measure({ now: BOX_RUN, watch: Array.from({ length: 30 }, (_, minute) => queueAt(full, minute)), log: { holds: [] }, chats: [] }).metrics.clean_min_30, 30);
+});
+
+// d7's 06:35 KST run on 10-28 read 21:13Z dirty: 01a17f1e of the AI harness VP's tree had queued 1,664 s with 17 of 20 slots in use. It was
+// parked since 21:12:06Z, its wake at 21:16:30Z held a slot 60 s that its session never took, and the watch counted it as a free-slot waiter.
+test("a parked turn is no free-slot waiter, and a live turn that waits while slots are free still reads dirty", () => {
+  const pool = parseAgentQueue({ enabled: true, working_max: 20, tree_working_max: 60, working: [], queued: [
+    { session: "01a17f1e", tree: "ci", position: 53, total: 188, since: BOX_RUN / 1000 - 1664, wait_s: 1664, lead: false, parked: true }] });
+  assert.equal(pool.queued[0]!.parked, true, "the watch reads pi-pool's parked mark");
+  const parked = { ...waiter("01a17f1e", "ci", 1664), parked: true as const };
+  const reading: QueueReading = { workingMax: 20, treeWorkingMax: 60, working: [...slots("ci", 2), ...slots("mm", 15)], queued: [parked] };
+  const line = queueAt(reading, 0);
+  assert.equal(line.queue?.queued, 1);
+  assert.deepEqual(line.queue?.waiting, []);
+  assert.equal(measure({ now: BOX_RUN, watch: Array.from({ length: 30 }, (_, minute) => queueAt(reading, minute)), log: { holds: [] }, chats: [] }).metrics.clean_min_30, 30);
+  const live: QueueReading = { ...reading, queued: [parked, waiter("01a17edb", "ci", 300)] };
+  assert.deepEqual(queueAt(live, 0).queue?.waiting, [{ tree: "VP of CI", oldestWaitS: 300, slots: 2 }], "the tree's oldest live turn is its wait");
+  assert.equal(measure({ now: BOX_RUN, watch: Array.from({ length: 30 }, (_, minute) => queueAt(live, minute)), log: { holds: [] }, chats: [] }).metrics.clean_min_30, 0);
 });
 
 // Guards the 04:48Z d7 run on 10-18: it took chat-057a's 3 stuck steps from its 04:32Z check-in, taken before the chat moved to us-metal02,
