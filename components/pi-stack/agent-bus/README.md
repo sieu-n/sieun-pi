@@ -43,6 +43,14 @@ Pi keeps queued steers and follow-ups in memory only, so `src/inbox.ts` writes e
 4. pi-host calls `recoverInboxes()` once at start, which reopens every session that still has records, and calls `clearInbox()` after `clear_queue` and `abort_and_clear_queue`.
 5. The transcript decides what landed, because Pi writes a custom message to the session file only after the extensions' `message_end` handlers return.
 
+## Idempotent sends
+
+A `send_message` that carries an idempotency key delivers at most once, even when pi-host dies between taking the message and answering.
+1. The key is the sender's client id and command id, which stay the same on a retry. pi-host takes it from `command.idempotencyKey`, or from a v7 envelope's `clientId` and `id`.
+2. `sendFromClient` makes the message id from the target and the key, so a retry has the id of the first try.
+3. Each live session keeps the ids it holds in its transcript and durable inbox, so a retry whose id is already there gets the first receipt back with `duplicate: true` and delivers nothing. After a host restart, the session rebuilds that set from its file and inbox, so no map in pi-host has to survive.
+4. A plain `pi` session's send to pi-host or to another box's relay uses an envelope with client id `agent-bus:<session id>` and one command id, and retries for up to 60 s while the host does not answer.
+
 ## Other boxes
 
 A root on one box reaches a root on another box through that box's prime-relay, which tunnels `GET /v1/daemon` to the pi-host socket byte for byte, so `relay.mjs` needs no change.
@@ -65,6 +73,7 @@ The step 3 check is 30 senders that send 20 messages each to one busy receiver, 
 3. `test/host-closed.test.ts` wakes a closed child inside pi-host from its parent and from a socket client.
 4. `test/inbox.test.ts` kills and aborts busy receivers with queued messages and checks that each lands once.
 5. `test/host-crash.test.ts` kills pi-host with SIGKILL during a 30 x 20 burst, restarts it and checks that every accepted message lands once.
-6. `test/cross-box.test.ts` runs two pi-hosts behind two scratch relays as boxes a and b, with this process as box c, and runs the 30 x 20 load across boxes.
+6. `test/host-idempotency.test.ts` kills pi-host between taking a send and answering it, and checks that the retry delivers nothing more.
+7. `test/cross-box.test.ts` runs two pi-hosts behind two scratch relays as boxes a and b, with this process as box c, and runs the 30 x 20 load across boxes.
 
 Set `BUS_LOAD_SENDERS` and `BUS_LOAD_PER_SENDER` to change the load, `BUS_LOAD_OUT` to write each result as JSON, and `BUS_LOAD_ROOT` with `BUS_LOAD_KEEP=1` to keep the session files.

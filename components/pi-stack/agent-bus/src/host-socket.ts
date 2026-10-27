@@ -4,6 +4,7 @@
  * which tunnels `GET /v1/daemon` to the host socket byte for byte.
  */
 
+import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { request } from "node:http";
 import { createConnection } from "node:net";
@@ -78,9 +79,16 @@ function where(route: Route): string {
   return "box" in route ? `pi-host on ${route.box.name}` : "pi-host";
 }
 
-export async function lineRequest(route: Route, command: Record<string, unknown>): Promise<unknown> {
+/** A failed response from the host. Anything else, such as a refused connection or a close before the answer, may have been a host death. */
+export class HostRefusal extends Error {}
+
+/**
+ * Sends one command and resolves with its response data. With `envelope`, the line is a v7 envelope with that client id and command id, so a
+ * retry of the same command carries the same key.
+ */
+export async function lineRequest(route: Route, command: Record<string, unknown>, envelope?: { clientId: string; id: string }): Promise<unknown> {
   const socket: Duplex = "box" in route ? await openTunnel(route.box) : createConnection(route.socket);
-  const id = `bus-${process.pid}-${Math.random().toString(36).slice(2)}`;
+  const id = envelope?.id ?? `bus-${process.pid}-${Math.random().toString(36).slice(2)}`;
   return await new Promise((resolve, reject) => {
     let buffer = "";
     let hello = false;
@@ -103,10 +111,11 @@ export async function lineRequest(route: Route, command: Record<string, unknown>
         const msg = JSON.parse(line) as { type?: string; id?: string; success?: boolean; data?: unknown; error?: string };
         if (!hello && msg.type === "daemon_hello") {
           hello = true;
-          socket.write(`${JSON.stringify({ ...command, id })}\n`);
+          const line = envelope ? { type: "command", id, protocol: { name: "prime-agent.daemon", version: 7 }, clientId: envelope.clientId, command: { ...command, id } } : { ...command, id };
+          socket.write(`${JSON.stringify(line)}\n`);
         } else if (msg.type === "response" && msg.id === id) {
           if (msg.success) finish(undefined, msg.data);
-          else finish(new Error(msg.error ?? `${where(route)} refused ${String(command.type)}`));
+          else finish(new HostRefusal(msg.error ?? `${where(route)} refused ${String(command.type)}`));
         }
       }
     });
@@ -130,19 +139,34 @@ export async function hostRoots(route?: Route): Promise<HostRoot[]> {
   return (data?.sessions ?? []).filter(row => row.runtimeKind === "top-level").map(row => (box ? { ...row, box } : row));
 }
 
+/** How long a send keeps retrying with the same key while the host does not answer, such as during a host restart. */
+export const SEND_RETRY_MS = 60_000;
+
 export async function hostSend(input: { target: string; message: string; mode: DeliveryMode; from: { id: string; name: string }; route?: Route }): Promise<Receipt> {
-  const data = (await hostRequest(
-    {
-      type: "send_message",
-      targetActiveSessionId: input.target,
-      message: input.message,
-      fromActiveSessionId: input.from.id,
-      fromName: input.from.name,
-      agentOrigin: true,
-      deliveryMode: input.mode,
-    },
-    input.route,
-  )) as Partial<Receipt> & { delivery?: "started" | "queued" };
-  if (!data || typeof data.deliveryStatus !== "string") throw new Error(`${input.route ? where(input.route) : "pi-host"} answered send_message without a receipt; it needs pi-agent-bus's route.ts loaded`);
-  return input.route && "box" in input.route ? { ...(data as Receipt), host: input.route.box.name, crossHost: true } : (data as Receipt);
+  const route = input.route ?? localRoute();
+  const clientId = `agent-bus:${input.from.id}`;
+  const commandId = randomUUID();
+  const command = {
+    type: "send_message",
+    targetActiveSessionId: input.target,
+    message: input.message,
+    fromActiveSessionId: input.from.id,
+    fromName: input.from.name,
+    agentOrigin: true,
+    deliveryMode: input.mode,
+    idempotencyKey: `${clientId}:${commandId}`,
+  };
+  const deadline = Date.now() + SEND_RETRY_MS;
+  let data: Partial<Receipt> | undefined;
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      data = (await lineRequest(route, command, { clientId, id: commandId })) as Partial<Receipt>;
+      break;
+    } catch (error) {
+      if (error instanceof HostRefusal || Date.now() > deadline) throw error;
+      await new Promise(resolve => setTimeout(resolve, Math.min(2000, 100 * 2 ** attempt)));
+    }
+  }
+  if (!data || typeof data.deliveryStatus !== "string") throw new Error(`${where(route)} answered send_message without a receipt; it needs pi-agent-bus's route.ts loaded`);
+  return "box" in route ? { ...(data as Receipt), host: route.box.name, crossHost: true } : (data as Receipt);
 }

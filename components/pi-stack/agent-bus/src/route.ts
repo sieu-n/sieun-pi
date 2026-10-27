@@ -13,8 +13,8 @@ import { family, REACH_ERROR, relationship, type Member, type Relationship } fro
 import { hostSend, needsHost } from "./host-socket.ts";
 import { overLimits } from "./limits.ts";
 import { allMembers, memberOf, type Known } from "./members.ts";
-import { endpoint, newMessageId, parseMode, receipt, type Endpoint, type Receipt } from "./message.ts";
-import { pendingCount, state } from "./state.ts";
+import { endpoint, keyedMessageId, newMessageId, parseMode, receipt, type Endpoint, type Receipt } from "./message.ts";
+import { pendingCount, rememberReceipt, state } from "./state.ts";
 
 const ROLES = ["parent", "sibling", "child"] as const;
 
@@ -116,6 +116,11 @@ export interface ClientSend {
   clientId?: string;
   /** The sending session when it lives in another process, such as a plain `pi` CLI on pi-host's socket. */
   from?: { id: string; name?: string };
+  /**
+   * The sender's client id and command id, which stay the same when it retries. A repeat of a send the target already holds, in its
+   * transcript or its durable inbox, returns the first receipt with `duplicate: true` and delivers nothing, even after a host restart.
+   */
+  idempotencyKey?: string;
 }
 
 /**
@@ -142,10 +147,18 @@ export async function sendFromClient(req: ClientSend): Promise<Receipt> {
     const client = req.clientId ?? "client";
     from = { id: `client:${client}`, name: client, role: "host" };
   }
-  const bus: BusMessage = { id: newMessageId(), from, text, mode, sentAt: Date.now() };
+  const key = typeof req.idempotencyKey === "string" && req.idempotencyKey ? req.idempotencyKey : undefined;
+  const bus: BusMessage = { id: key ? keyedMessageId(target.member.id, key) : newMessageId(), from, text, mode, sentAt: Date.now() };
+  const fromEndpoint = endpoint(from.id, from.name, from.role, req.from ? "agent" : req.clientId ?? "client");
+  if (key && state().live.get(target.member.id)?.seen.has(bus.id)) {
+    const first = state().receipts.get(bus.id) as Receipt | undefined;
+    return { ...(first ?? receipt(bus, fromEndpoint, endpointOf(target.member), "queued", [])), duplicate: true };
+  }
   const over = overLimits({ chars: text.length, pending: pendingCount(target.member.id), rateKey: `${from.id}->${target.member.id}` });
   const delivery = target.entry ? await target.entry.deliver(bus) : await hostApi()!.deliver(target.member.id, bus);
   if (rel === "parent") state().replied.set(from.id, true);
   if (rel === "child") state().replied.set(target.member.id, false);
-  return receipt(bus, endpoint(from.id, from.name, from.role, req.from ? "agent" : req.clientId ?? "client"), endpointOf(target.member), delivery, over);
+  const out = receipt(bus, fromEndpoint, endpointOf(target.member), delivery, over);
+  if (key) rememberReceipt(bus.id, out);
+  return out;
 }

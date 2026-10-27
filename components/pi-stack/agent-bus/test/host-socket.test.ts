@@ -26,7 +26,8 @@ before(async () => {
       buf += chunk;
       let nl: number;
       while ((nl = buf.indexOf("\n")) >= 0) {
-        const cmd = JSON.parse(buf.slice(0, nl));
+        const line = JSON.parse(buf.slice(0, nl));
+        const cmd = line.type === "command" ? { ...line.command, id: line.id } : line;
         buf = buf.slice(nl + 1);
         lines.push(cmd);
         const reply = (data: unknown, error?: string) =>
@@ -34,7 +35,7 @@ before(async () => {
         if (cmd.type === "list") reply({ sessions: [{ sessionId: target.id, sessionName: "host-root", cwd: root, runtimeKind: "top-level", rosterStatus: "idle" }] });
         else if (cmd.type === "send_message") {
           try {
-            reply(await sendFromClient({ target: cmd.targetActiveSessionId, message: cmd.message, mode: cmd.deliveryMode, from: { id: cmd.fromActiveSessionId, name: cmd.fromName } }));
+            reply(await sendFromClient({ target: cmd.targetActiveSessionId, message: cmd.message, mode: cmd.deliveryMode, from: { id: cmd.fromActiveSessionId, name: cmd.fromName }, idempotencyKey: cmd.idempotencyKey }));
           } catch (error) {
             reply(undefined, (error as Error).message);
           }

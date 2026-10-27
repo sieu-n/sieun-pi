@@ -6,6 +6,7 @@ import { after, before, test } from "node:test";
 import { kernelHandler } from "../../shared/kernel-bridge.ts";
 import * as registry from "../../shared/registry.ts";
 import { inboxDir, records } from "../src/inbox.ts";
+import { sendFromClient } from "../src/route.ts";
 import { landed, openAgent, until, type Opened } from "./rig.ts";
 
 let root: string;
@@ -102,4 +103,49 @@ test("a reopen with nothing queued sends nothing", async () => {
   assert.equal(landed(file).length, 1);
   assert.equal(again.runtime.session.isStreaming, false);
   await again.runtime.dispose();
+});
+
+test("a keyed client send that repeats lands once, also after the receiver is killed and reopened", async () => {
+  const s = await openAgent(root, "I");
+  const first = await sendFromClient({ target: s.id, message: "keyed once", clientId: "chat", idempotencyKey: "chat:cmd-1" });
+  const again = await sendFromClient({ target: s.id, message: "keyed once", clientId: "chat", idempotencyKey: "chat:cmd-1" });
+  assert.equal(again.id, first.id);
+  assert.equal(again.duplicate, true);
+  assert.equal(again.deliveryStatus, first.deliveryStatus);
+  await until(() => landed(s.file()).some(m => m.id === first.id));
+  await idle(s);
+  const other = await sendFromClient({ target: s.id, message: "keyed twice", clientId: "chat", idempotencyKey: "chat:cmd-2" });
+  assert.notEqual(other.id, first.id);
+  await until(() => landed(s.file()).some(m => m.id === other.id));
+  await idle(s);
+  const file = s.file()!;
+  await s.runtime.dispose();
+  const reopened = await openAgent(root, "I", undefined, file);
+  const late = await sendFromClient({ target: s.id, message: "keyed once", clientId: "chat", idempotencyKey: "chat:cmd-1" });
+  assert.equal(late.id, first.id);
+  assert.equal(late.duplicate, true);
+  await new Promise(resolve => setTimeout(resolve, 300));
+  assertOnce(file, [first.id, other.id]);
+  assert.equal(landed(file).length, 2);
+  await reopened.runtime.dispose();
+});
+
+test("a keyed send that is only queued when the receiver dies is not repeated by a retry after the reopen", async () => {
+  const s = await openAgent(root, "J");
+  const run = s.runtime.session.prompt("busy 5000").catch(() => undefined);
+  await until(() => s.runtime.session.isStreaming);
+  const first = await sendFromClient({ target: s.id, message: "queued keyed", clientId: "chat", idempotencyKey: "chat:q-1" });
+  assert.equal(first.deliveryStatus, "queued");
+  const file = s.file()!;
+  await s.runtime.dispose();
+  await run;
+  assert.ok(!landed(file).some(m => m.id === first.id), "the kill dropped it from memory");
+  const reopened = await openAgent(root, "J", undefined, file);
+  const retry = await sendFromClient({ target: s.id, message: "queued keyed", clientId: "chat", idempotencyKey: "chat:q-1" });
+  assert.equal(retry.id, first.id);
+  assert.equal(retry.duplicate, true);
+  await until(() => landed(file).some(m => m.id === first.id), 30_000, "replay");
+  await idle(reopened);
+  assertOnce(file, [first.id]);
+  await reopened.runtime.dispose();
 });

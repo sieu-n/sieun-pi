@@ -18,7 +18,7 @@ import { customMessage, endpoint, CUSTOM_TYPE } from "./src/message.ts";
 import { memberOf } from "./src/members.ts";
 import { getAgent, listAgents, messageText, messagesOf, recentMessages } from "./src/observe.ts";
 import { send } from "./src/route.ts";
-import { keepUnlanded, landedIds, record } from "./src/inbox.ts";
+import { keepUnlanded, landedIds, record, records } from "./src/inbox.ts";
 import { state, type Activity, type LiveSession } from "./src/state.ts";
 
 export const SKILLS_DIR = join(dirname(fileURLToPath(import.meta.url)), "skills");
@@ -57,11 +57,14 @@ export default function agentBus(pi: ExtensionAPI): void {
     const id = sm.getSessionId();
     sessionId = id;
     const identity = registry.identityOf(id, sm.getSessionName() ?? id);
-    const live: LiveSession = { id, sessionManager: sm, activity, pending: new Set() };
+    const live: LiveSession = { id, sessionManager: sm, activity, pending: new Set(), seen: landedIds(sm.getEntries()) };
+    for (const rec of records(id)) live.seen.add(rec.id);
     state().live.set(id, live);
 
     const deliver = async (bus: BusMessage): Promise<Delivery> => {
       if (!ctx || sessionId !== id) throw new Error(`session ${id} has shut down`);
+      if (live.seen.has(bus.id)) return ctx.isIdle() && !live.pending.has(bus.id) ? "started" : "queued";
+      live.seen.add(bus.id);
       const self = memberOf(entry);
       const sender = senderMember(bus);
       const rel = sender ? relationship(self, sender) : undefined;

@@ -3,7 +3,7 @@
  * sieun-pi's transcript readers match these shapes today (`custom_message` with `customType: "agent_message"`).
  */
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { AgentRole, BusMessage, Delivery, DeliveryMode } from "../../shared/registry.ts";
 import type { Relationship } from "./family.ts";
 
@@ -33,6 +33,8 @@ export interface Receipt {
   /** The box that holds the target, for a send through another box's prime-relay. */
   host?: string;
   crossHost?: true;
+  /** Set when a keyed send repeated one the target already holds, so nothing was delivered again. */
+  duplicate?: true;
 }
 
 export interface AgentMessageDetails {
@@ -45,6 +47,12 @@ export interface AgentMessageDetails {
 
 export function newMessageId(): string {
   return `agentmsg_${randomUUID()}`;
+}
+
+/** The message id of a keyed send: the same target and idempotency key always give the same id, in Prime's `agentmsg_<uuid>` form. */
+export function keyedMessageId(targetId: string, key: string): string {
+  const h = createHash("sha256").update(`${targetId}\n${key}`).digest("hex");
+  return `agentmsg_${h.slice(0, 8)}-${h.slice(8, 12)}-5${h.slice(13, 16)}-${((parseInt(h[16], 16) & 3) | 8).toString(16)}${h.slice(17, 20)}-${h.slice(20, 32)}`;
 }
 
 export function endpoint(id: string, name: string, role: AgentRole | "host" | "owner", clientId?: string): Endpoint {
