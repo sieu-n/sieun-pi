@@ -30,8 +30,10 @@ import { recordPrompt } from "../src/prompt-capture.ts";
 import { onUpstreamPi } from "../src/pi-runtime.ts";
 import { SHARED_LEDGER_REFUSAL, sharedDataDir, sharedLedgerOnly } from "../src/shared-data-dir.ts";
 import { REQUIREMENT_STATUSES, type ChatAgent, type ThreadMessage } from "../src/shared/types.ts";
+import { registerSearchHistory } from "./search-history.ts";
 
 export default function historyExtension(pi: ExtensionAPI): void {
+  registerSearchHistory(pi);
   // On upstream Pi the harness digests come from pi-harness, which keeps every digest past a compaction (src/correction-delivery.ts).
   const piHarness = onUpstreamPi(pi);
   const images = new ImageFitter(undefined, undefined, line => {

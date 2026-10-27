@@ -57,6 +57,10 @@ import { SLOW_READ_MS } from "./harness-slow.ts";
 import { ScheduledJobsLeft } from "./saved-archive.ts";
 import { type ArchiveBy, isServiceArchiveReason, SERVICE_ARCHIVES_FILE } from "./service-archives.ts";
 import { type CancelBy, parseCancelBy } from "./job-cancels.ts";
+import { historyGet, HistoryError } from "../../../../packages/pi-history/src/client.ts";
+
+const SEARCH_PARAMS = new Set(["q", "sort", "kind", "box", "chat", "agent", "since", "until", "limit", "cursor"]);
+const READ_PARAMS = new Set(["ref", "before", "after"]);
 
 const maxBodyBytes = 12 * 1024 * 1024;
 const requestIdPattern = /^[a-zA-Z0-9_-]{16,100}$/;
@@ -832,6 +836,14 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
           // A `file:` artifact link on the board: read-only text under the chat's allowed folders (readLocalText).
           try { json(res, 200, await readLocalText(url.searchParams.get("path") ?? "")); }
           catch (error) { throw error instanceof LocalFileError ? new RequestError(error.status, error.message) : error; }
+          return;
+        }
+        if (route === "api/search" || route === "api/search/read") {
+          // The search panel's calls on this box's pi-history socket, owner scope: an agent's caller fields and a peer's fan-out fields stay out.
+          const keys = route === "api/search" ? SEARCH_PARAMS : READ_PARAMS;
+          const params = Object.fromEntries([...url.searchParams].filter(([key]) => keys.has(key)));
+          try { json(res, 200, await historyGet(route === "api/search" ? "/v1/search" : "/v1/read", params)); }
+          catch (error) { throw error instanceof HistoryError ? new RequestError(error.status, error.message) : error; }
           return;
         }
         if (route === "api/wiki-page") {

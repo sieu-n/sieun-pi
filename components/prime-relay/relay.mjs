@@ -3,7 +3,7 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { createReadStream, readFileSync, realpathSync } from "node:fs";
 import { readdir, realpath, stat } from "node:fs/promises";
 import { spawn } from "node:child_process";
-import { createServer } from "node:http";
+import { createServer, request as httpRequest } from "node:http";
 import { createConnection } from "node:net";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, sep } from "node:path";
@@ -14,18 +14,24 @@ import { firstPromptTunnel } from "./first-prompt.mjs";
 import { ownerTurnLines, piPoolLead, piPoolOwnerTurn, piPoolSet, SESSION } from "./owner-turn.mjs";
 import { SLIM_HEADER, slimSnapshots } from "./slim-snapshot.mjs";
 
-const VERSION = 4;
+const VERSION = 5;
 const UPGRADE = "prime-daemon";
 
 const expand = path => path.startsWith("~/") ? join(homedir(), path.slice(2)) : path;
 
-/** Reads relay.json: { listen, port, daemonSocket, roots, tokenFile }. */
+/** pi-history's socket as packages/pi-history/src/client.ts finds it: $XDG_RUNTIME_DIR/pi-history on Linux, ~/.local/state/pi-history on macOS. */
+const historySocket = () => process.platform === "linux"
+  ? join(process.env.XDG_RUNTIME_DIR ?? `/run/user/${process.getuid?.() ?? 0}`, "pi-history", "history.sock")
+  : join(homedir(), ".local", "state", "pi-history", "history.sock");
+
+/** Reads relay.json: { listen, port, daemonSocket, roots, tokenFile, historySocket? }. */
 export function loadConfig(file) {
   const raw = JSON.parse(readFileSync(file, "utf8"));
   const config = {
     listen: String(raw.listen), port: Number(raw.port), daemonSocket: expand(String(raw.daemonSocket)),
     roots: (raw.roots ?? ["~/.prime/agent/sessions", "~/.prime/agent/session-artifacts", "~/.prime/agent/logs", "~/.prime/agent/browser-chat/prompts"]).map(root => expand(String(root))),
     token: readFileSync(expand(String(raw.tokenFile)), "utf8").trim(),
+    historySocket: raw.historySocket ? expand(String(raw.historySocket)) : historySocket(),
   };
   if (!config.listen || !Number.isInteger(config.port) || !isAbsolute(config.daemonSocket) || config.token.length < 32) throw new Error(`${file}: needs listen, port, an absolute daemonSocket and a tokenFile with at least 32 characters`);
   return config;
@@ -161,6 +167,19 @@ async function servePool(request, response, setPool, readPool) {
   send(response, 200, { pool: await readPool() });
 }
 
+/** `/v1/history/<route>` goes to this box's pi-history socket as `/v1/<route>`, query and answer unchanged, so another box's search reaches this index. */
+function serveHistory(request, response, url, socketPath) {
+  const upstream = httpRequest({ socketPath, method: request.method, path: `/v1/${url.pathname.slice("/v1/history/".length)}${url.search}` }, answer => {
+    response.writeHead(answer.statusCode ?? 502, { "Content-Type": answer.headers["content-type"] ?? "application/json" });
+    answer.pipe(response);
+  });
+  upstream.on("error", error => {
+    if (!response.headersSent) send(response, 503, { error: `pi-history does not answer on ${socketPath}: ${error.message}` });
+    else response.destroy();
+  });
+  request.pipe(upstream);
+}
+
 function send(response, status, body) {
   response.writeHead(status, { "Content-Type": "application/json" });
   response.end(JSON.stringify(body));
@@ -185,6 +204,7 @@ export function createRelay(config, log = () => {}, { markOwnerTurn = piPoolOwne
       if (request.method === "POST" && url.pathname === "/v1/watch") return await serveWatch(request, response);
       if (request.method === "POST" && url.pathname === "/v1/lead") return await serveLead(request, response, lead);
       if (request.method === "POST" && url.pathname === "/v1/pool") return await servePool(request, response, setPool, readPool);
+      if (url.pathname.startsWith("/v1/history/")) return serveHistory(request, response, url, config.historySocket ?? historySocket());
       send(response, 404, { error: "unknown route" });
     } catch (error) {
       if (!response.headersSent) send(response, 500, { error: error instanceof Error ? error.message : String(error) });

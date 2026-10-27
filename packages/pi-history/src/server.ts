@@ -117,14 +117,15 @@ export async function startServer(options: ServerOptions): Promise<{ close(): Pr
   };
 
   const boxState = (tookMs: number): BoxState => {
-    const status = localStatus();
+    const status = localStatus(false);
     return { ok: true, tookMs, ...status.newestAt ? { newestAt: status.newestAt } : {}, backfillPct: status.backfillPct,
       ...status.lagP50Ms !== undefined ? { lagP50Ms: status.lagP50Ms } : {}, ...status.lagP99Ms !== undefined ? { lagP99Ms: status.lagP99Ms } : {} };
   };
 
   /** This box's index reading: the indexer's when it runs here, else counted from the database (tests, a read-only copy). */
-  const localStatus = (): Omit<Status, "peers" | "box"> => {
-    const timing = { queryP50Ms: percentile(timings, 0.5), queryP99Ms: percentile(timings, 0.99) };
+  const localStatus = (counts: boolean): Omit<Status, "peers" | "box"> => {
+    const p50 = percentile(timings, 0.5), p99 = percentile(timings, 0.99);
+    const timing = p50 !== undefined && p99 !== undefined ? { queryP50Ms: p50, queryP99Ms: p99 } : {};
     if (options.indexer) {
       const own = options.indexer.status();
       return { files: own.files, docs: own.docs, bytesIndexed: own.bytesIndexed, bytesTotal: own.bytesTotal, backfillPct: own.backfillPct,
@@ -133,7 +134,8 @@ export async function startServer(options: ServerOptions): Promise<{ close(): Pr
     const handle = index();
     const sizes = handle.prepare("SELECT count(*) AS files, coalesce(sum(min(indexed_to, size)), 0) AS done, coalesce(sum(size), 0) AS total FROM files").get() as Record<string, number>;
     const newest = handle.prepare("SELECT max(id) AS id FROM docs").get() as { id: number | null };
-    const docs = Number((handle.prepare("SELECT count(*) AS n FROM docs").get() as { n: number }).n);
+    // Counting every doc takes tens of ms at 600,000 docs, so only /v1/status counts them; a search's box state needs the newest time alone.
+    const docs = counts ? Number((handle.prepare("SELECT count(*) AS n FROM docs").get() as { n: number }).n) : 0;
     let dbBytes = 0;
     for (const suffix of ["", "-wal"]) try { dbBytes += statSync(options.dbPath + suffix).size; } catch {}
     const total = Number(sizes.total);
@@ -221,7 +223,7 @@ export async function startServer(options: ServerOptions): Promise<{ close(): Pr
 
   const status = async (params: URLSearchParams): Promise<Status> => {
     const settings = settingsOf();
-    const own = { box: settings.box, ...localStatus() };
+    const own = { box: settings.box, ...localStatus(true) };
     const out: Record<string, BoxState> = {};
     if (params.get("local") !== "1") {
       await Promise.all(peers(settings).map(async peer => {

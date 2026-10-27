@@ -38,8 +38,8 @@ export function readPrime(db: DatabaseSync, box: string, ref: Extract<Ref, { sou
   if (!hit) throw new ReadError(404, `No message ${ref.id} on ${box}; the index may have been rebuilt, so search again.`);
   if (roots && !roots.includes(String(hit.root))) throw new ReadError(403, `${String(hit.session)} is outside this session's chat family.`);
   const columns = "id, at, kind, tool, author, text";
-  const older = db.prepare(`SELECT ${columns} FROM docs WHERE file = ? AND id < ? AND kind != 'thinking' ORDER BY id DESC LIMIT ?`).all(hit.file, ref.id, before) as Row[];
-  const newer = db.prepare(`SELECT ${columns} FROM docs WHERE file = ? AND id > ? AND kind != 'thinking' ORDER BY id LIMIT ?`).all(hit.file, ref.id, after) as Row[];
+  const older = db.prepare(`SELECT ${columns} FROM docs WHERE file = ? AND id < ? AND kind != 'thinking' ORDER BY id DESC LIMIT ?`).all(Number(hit.file), ref.id, before) as Row[];
+  const newer = db.prepare(`SELECT ${columns} FROM docs WHERE file = ? AND id > ? AND kind != 'thinking' ORDER BY id LIMIT ?`).all(Number(hit.file), ref.id, after) as Row[];
   return {
     box, session: String(hit.session), thread: hit.name ? String(hit.name) : String(hit.session),
     messages: [...older.reverse().map(row => message(row, false)), message(hit, true), ...newer.map(row => message(row, false))],
@@ -52,9 +52,9 @@ export function readDurable(db: DatabaseSync, box: string, ref: Extract<Ref, { s
   if (!hit) throw new ReadError(404, `No durable entry ${ref.id} on ${box}.`);
   if (roots && !roots.includes(String(hit.thread))) throw new ReadError(403, `${String(hit.thread)} is outside this session's chat family.`);
   const columns = "rowid AS id, kind, author, CAST(at AS INTEGER) AS at, text";
-  const older = db.prepare(`SELECT ${columns} FROM entries WHERE thread = ? AND rowid < ? ORDER BY rowid DESC LIMIT ?`).all(hit.thread, ref.id, before) as Row[];
-  const newer = db.prepare(`SELECT ${columns} FROM entries WHERE thread = ? AND rowid > ? ORDER BY rowid LIMIT ?`).all(hit.thread, ref.id, after) as Row[];
-  const name = db.prepare("SELECT name FROM threads WHERE id = ?").get(hit.thread) as Row | undefined;
+  const older = db.prepare(`SELECT ${columns} FROM entries WHERE thread = ? AND rowid < ? ORDER BY rowid DESC LIMIT ?`).all(String(hit.thread), ref.id, before) as Row[];
+  const newer = db.prepare(`SELECT ${columns} FROM entries WHERE thread = ? AND rowid > ? ORDER BY rowid LIMIT ?`).all(String(hit.thread), ref.id, after) as Row[];
+  const name = db.prepare("SELECT name FROM threads WHERE id = ?").get(String(hit.thread)) as Row | undefined;
   return {
     box, session: String(hit.thread), thread: name?.name ? String(name.name) : String(hit.thread),
     messages: [...older.reverse().map(row => message(row, false, durableKind(String(row.kind)))), message(hit, true, durableKind(String(hit.kind))),

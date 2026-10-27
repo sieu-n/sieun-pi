@@ -19,10 +19,11 @@ CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
 export interface FixtureFile { session: string; root?: string; parent?: string; depth?: number; name?: string; path?: string; size?: number; indexedTo?: number }
 export interface FixtureDoc { session: string; at: number; kind: string; text: string; author?: string; tool?: string; toolCallId?: string; isError?: boolean }
 
-export function makeIndex(path: string, files: FixtureFile[], docs: FixtureDoc[]): DatabaseSync {
+/** `ftsKind` builds fts with `kind` as a second column, the schema the api worker asked the indexer for. */
+export function makeIndex(path: string, files: FixtureFile[], docs: FixtureDoc[], { ftsKind = false } = {}): DatabaseSync {
   const db = new DatabaseSync(path);
   db.exec("PRAGMA journal_mode = WAL;");
-  db.exec(SCHEMA);
+  db.exec(ftsKind ? SCHEMA.replace("fts5(text,", "fts5(text, kind,") : SCHEMA);
   const ids = new Map<string, number>();
   for (const file of files) {
     const result = db.prepare(`INSERT INTO files(path, session, root, parent, depth, name, size, indexed_to) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(
@@ -39,7 +40,8 @@ export function makeIndex(path: string, files: FixtureFile[], docs: FixtureDoc[]
     if (file === undefined) throw new Error(`fixture doc names no file: ${doc.session}`);
     db.prepare(`INSERT INTO docs(id, file, at, line_offset, kind, tool, tool_call_id, author, is_error, text) VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?)`)
       .run(id, file, doc.at, doc.kind, doc.tool ?? null, doc.toolCallId ?? null, doc.author ?? (doc.kind === "user" ? "owner" : "agent"), doc.isError ? 1 : 0, doc.text);
-    db.prepare("INSERT INTO fts(rowid, text) VALUES (?, ?)").run(id, doc.text);
+    if (ftsKind) db.prepare("INSERT INTO fts(rowid, text, kind) VALUES (?, ?, ?)").run(id, doc.text, doc.kind);
+    else db.prepare("INSERT INTO fts(rowid, text) VALUES (?, ?)").run(id, doc.text);
   }
   return db;
 }

@@ -78,14 +78,26 @@ function prepare(db: DatabaseSync, sql: string): StatementSync {
   return statement;
 }
 
-interface Clause { sql: string[]; values: SQLInputValue[] }
-const clause = (): Clause => ({ sql: [], values: [] });
+/** WHERE terms, and whether any of them reads the docs or files row (a count with none of those reads fts alone). */
+interface Clause { sql: string[]; values: SQLInputValue[]; rows: boolean }
+const clause = (): Clause => ({ sql: [], values: [], rows: false });
+
+const kindColumn = new WeakMap<DatabaseSync, boolean>();
+/**
+ * Whether fts indexes `kind` beside `text`. Then "everything but thinking" is a MATCH term and an exact count needs no docs join, which
+ * measured 4 to 10x faster on a 400,000-doc copy of the live index on 10-28 (board.wake 47 to 10 ms, "the" 592 to 60 ms).
+ */
+function ftsHasKind(db: DatabaseSync): boolean {
+  let has = kindColumn.get(db);
+  if (has === undefined) kindColumn.set(db, has = (db.prepare("PRAGMA table_info(fts)").all() as Row[]).some(row => row.name === "kind"));
+  return has;
+}
 
 /** The WHERE terms every prime query shares: kinds, error flag, time, chat, author and the scope's roots. */
-function primeFilters(filters: Filters, thinking: boolean, roots: string[] | null, idColumn: string): Clause {
+function primeFilters(filters: Filters, thinking: boolean, roots: string[] | null, idColumn: string, thinkingInMatch: boolean): Clause {
   const out = clause();
   if (filters.kinds) { out.sql.push(`d.kind IN (SELECT value FROM json_each(?))`); out.values.push(JSON.stringify(filters.kinds)); }
-  if (!thinking) out.sql.push(`d.kind != 'thinking'`);
+  if (!thinking && !thinkingInMatch) out.sql.push(`d.kind != 'thinking'`);
   if (filters.isError) out.sql.push("d.is_error = 1");
   if (filters.since !== undefined) { out.sql.push(`${idColumn} >= ?`); out.values.push(filters.since * 1024); }
   if (filters.until !== undefined) { out.sql.push(`${idColumn} < ?`); out.values.push(filters.until * 1024); }
@@ -104,6 +116,7 @@ function primeFilters(filters: Filters, thinking: boolean, roots: string[] | nul
     }).join(" OR ") + ")");
   }
   if (roots) { out.sql.push("d.file IN (SELECT id FROM files WHERE root IN (SELECT value FROM json_each(?)))"); out.values.push(JSON.stringify(roots)); }
+  out.rows = out.sql.some(term => term.startsWith("d.") || term.startsWith("(d."));
   return out;
 }
 
@@ -137,22 +150,26 @@ function branches(query: Query): Branch[] {
   return out;
 }
 
-/** The FROM and WHERE of one branch, without paging. */
-function branchFrom(branch: Branch, query: Query, roots: string[] | null): { from: string; id: string; where: Clause; fts: boolean } {
+/** The FROM and WHERE of one branch, without paging, and the FROM its exact count needs. */
+function branchFrom(db: DatabaseSync, branch: Branch, query: Query, roots: string[] | null): { from: string; countFrom: string; id: string; where: Clause; fts: boolean } {
   const fts = branch.match !== null;
   const id = fts ? "fts.rowid" : "d.id";
   const where = clause();
-  if (fts) { where.sql.push("fts MATCH ?"); where.values.push(branch.match); }
-  else if (query.exclude) { where.sql.push("d.id NOT IN (SELECT rowid FROM fts WHERE fts MATCH ?)"); where.values.push(query.exclude); }
+  const thinkingInMatch = fts && !query.thinking && ftsHasKind(db);
+  const match = fts && ftsHasKind(db) ? `{text} : (${branch.match})${thinkingInMatch ? ` NOT kind : "thinking"` : ""}` : branch.match;
+  if (fts) { where.sql.push("fts MATCH ?"); where.values.push(match); }
+  else if (query.exclude) { where.sql.push("d.id NOT IN (SELECT rowid FROM fts WHERE fts MATCH ?)"); where.values.push(query.exclude); where.rows = true; }
   if (branch.sessions.length) {
     where.sql.push(`d.file IN (SELECT id FROM files WHERE ${branch.sessions.map(() => "session LIKE ?").join(" OR ")})`);
     where.values.push(...branch.sessions.map(sessionId => sessionId + "%"));
+    where.rows = true;
   }
-  const filters = primeFilters(query.filters, query.thinking, roots, id);
+  const filters = primeFilters(query.filters, query.thinking, roots, id, thinkingInMatch);
   where.sql.push(...filters.sql);
   where.values.push(...filters.values);
+  where.rows ||= filters.rows || !fts;
   const from = fts ? "fts JOIN docs d ON d.id = fts.rowid JOIN files f ON f.id = d.file" : "docs d JOIN files f ON f.id = d.file";
-  return { from, id, where, fts };
+  return { from, countFrom: where.rows ? from : "fts", id, where, fts };
 }
 
 const whereSql = (where: Clause, extra: string[] = []): string => {
@@ -169,7 +186,7 @@ function empty(query: Query): boolean {
 /** Hits and the exact total from one box's prime index. */
 export function searchPrime(db: DatabaseSync, box: string, query: Query, ask: PageAsk, roots: string[] | null): Page {
   if (empty(query)) return { hits: [], total: 0 };
-  const parts = branches(query).map(branch => branchFrom(branch, query, roots));
+  const parts = branches(query).map(branch => branchFrom(db, branch, query, roots));
   const hits = new Map<number, Ranked>();
   for (const part of parts) {
     const snippet = part.fts ? `snippet(fts, 0, '${OPEN}', '${CLOSE}', '…', ${SNIPPET_TOKENS})` : "substr(d.text, 1, 400)";
@@ -196,8 +213,8 @@ export function searchPrime(db: DatabaseSync, box: string, query: Query, ask: Pa
     }
   }
   const count = parts.length === 1
-    ? `SELECT count(*) AS n FROM ${parts[0]!.from} ${whereSql(parts[0]!.where)}`
-    : `SELECT count(*) AS n FROM (${parts.map(part => `SELECT ${part.id} AS id FROM ${part.from} ${whereSql(part.where)}`).join(" UNION ")})`;
+    ? `SELECT count(*) AS n FROM ${parts[0]!.countFrom} ${whereSql(parts[0]!.where)}`
+    : `SELECT count(*) AS n FROM (${parts.map(part => `SELECT ${part.id} AS id FROM ${part.countFrom} ${whereSql(part.where)}`).join(" UNION ")})`;
   const total = Number((prepare(db, count).get(...parts.flatMap(part => part.where.values)) as Row).n);
   return { hits: [...hits.values()], total };
 }
