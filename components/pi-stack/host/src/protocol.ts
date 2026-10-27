@@ -189,6 +189,29 @@ export interface SessionSummary {
   diagnostics?: { type: "info" | "warning" | "error"; message: string }[];
 }
 
+/** Prime's row for a saved session that no runtime holds, as its `summaryForInactiveSession` writes it: no `activeSessionId`. */
+export interface SavedSessionSummary {
+  id: string;
+  sessionId: string;
+  sessionFile: string;
+  sessionName?: string;
+  cwd: string;
+  lifecycle: "archived";
+  activity: "idle";
+  isSessionActive: false;
+  isStreaming: false;
+  isCompacting: false;
+  attachedClients: 0;
+  messageCount: number;
+  unfinishedActionCount: 0;
+  sessionActions: SessionActions;
+  created: string;
+  modified: string;
+  lastActivityAt: string;
+  firstMessage: string;
+  parentSessionPath?: string;
+}
+
 /** Prime's `AgentConnectionState`, which `get_connection_state` and `snapshot.state` carry. */
 export interface ConnectionState {
   activeSessionId: string;
