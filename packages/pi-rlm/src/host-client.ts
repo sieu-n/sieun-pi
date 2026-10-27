@@ -1,6 +1,6 @@
 import { createConnection } from "node:net";
 import { createInterface } from "node:readline";
-import { hostApi, HOST_SOCKET_ENV } from "../../pi-host/src/api.ts";
+import { hostApi, HOST_SOCKET_ENV } from "@sieun-pi/pi-family/host-api";
 
 export interface CreateSessionRequest {
   prompt: string;

@@ -3,7 +3,7 @@
  * to the session's slot wait, so it is the pool's routing and no failure of the run. Pi counts every retry against
  * `retry.maxRetries` (3 by default), so before this a run that met four limited accounts in a row ended with the error. Each
  * pool-handled retry now raises the session's budget by one, and other errors keep Pi's own budget. The count lives on
- * globalThis, because Pi loads this extension through its own loader and pi-host and pi-rlm import this file again.
+ * globalThis, because Pi loads each extension through its own loader, and pi-pool counts the retries while pi-host and pi-rlm read them.
  */
 
 const KEY: unique symbol = Symbol.for("sieun-pi.pi-stack.pool.retries");

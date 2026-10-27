@@ -12,7 +12,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { assignIdentity, get as registryGet, registerDormant, unregisterDormant, type AgentEntry } from "@sieun-pi/pi-family/registry";
 import { repliedSinceTask } from "../agent-bus/src/state.ts";
-import { withPoolRetries } from "../../pi-pool/src/retries.ts";
+import { withPoolRetries } from "@sieun-pi/pi-family/retries";
 
 /** A child's lifecycle. `done` is a run that settled cleanly, and the child stays open for follow-ups until it is deleted. */
 export type ChildStatus = "queued" | "running" | "done" | "error" | "cancelled";

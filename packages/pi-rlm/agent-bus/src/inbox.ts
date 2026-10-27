@@ -11,7 +11,7 @@
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import { hostApi } from "../../../pi-host/src/api.ts";
+import { hostApi } from "@sieun-pi/pi-family/host-api";
 import * as registry from "@sieun-pi/pi-family/registry";
 import type { customMessage } from "./message.ts";
 

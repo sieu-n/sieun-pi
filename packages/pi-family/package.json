@@ -9,7 +9,9 @@
     "./registry": "./registry.ts",
     "./kernel-bridge": "./kernel-bridge.ts",
     "./paths": "./paths.ts",
-    "./preamble": "./preamble.ts"
+    "./preamble": "./preamble.ts",
+    "./host-api": "./host-api.ts",
+    "./retries": "./retries.ts"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"

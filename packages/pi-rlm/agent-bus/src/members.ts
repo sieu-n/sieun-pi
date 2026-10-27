@@ -7,7 +7,7 @@ import * as registry from "@sieun-pi/pi-family/registry";
 import type { AgentEntry, DormantAgent } from "@sieun-pi/pi-family/registry";
 import type { Member } from "./family.ts";
 import { hostRoots, localRoute, otherBoxes, type HostRoot, type Route } from "./host-socket.ts";
-import { hostApi } from "../../../pi-host/src/api.ts";
+import { hostApi } from "@sieun-pi/pi-family/host-api";
 
 export type Known =
   | { kind: "live"; member: Member; entry: AgentEntry }

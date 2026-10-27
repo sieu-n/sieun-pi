@@ -74,7 +74,7 @@ const DEFAULT_RESET_MS = 5 * 60_000;
  * retry runs and its header hook vends the next account, or waits there for the session's slot. A 400 or 403 that
  * the pool reads as an account-level refusal (`pi-pool refused`) takes the account out and moves on the same way.
  * `hookFailure` is the reason the header hook gave no token for this request, which also retries. `pooled` is told when the pool
- * took the failure on (an auto selection moved on or set a slot wait), which keeps the retry off Pi's budget (src/retries.ts).
+ * took the failure on (an auto selection moved on or set a slot wait), which keeps the retry off Pi's budget (pi-family/retries.ts).
  */
 export async function rewriteFailure(message: AssistantMessage, pool: PoolCall, hookFailure: string | undefined, now: () => number = Date.now,
   pooled: () => void = () => {}): Promise<AssistantMessage | undefined> {

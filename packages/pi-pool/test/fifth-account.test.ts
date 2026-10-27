@@ -8,7 +8,7 @@ import type { Api, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/compat";
 import { openRuntime } from "@sieun-pi/pi-testkit/faux";
 import { createPoolExtension } from "../index.ts";
-import { poolRetries, withPoolRetries } from "../src/retries.ts";
+import { poolRetries, withPoolRetries } from "@sieun-pi/pi-family/retries";
 import { fakeAnthropic, openAnthropic, rateLimited, type Answer } from "../check/rig.ts";
 
 const FAKE = fileURLToPath(new URL("./fake-pool.mjs", import.meta.url));

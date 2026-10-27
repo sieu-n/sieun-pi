@@ -8,7 +8,7 @@
 
 import * as registry from "@sieun-pi/pi-family/registry";
 import type { AgentEntry, AgentRole, BusMessage, Delivery, DeliveryMode } from "@sieun-pi/pi-family/registry";
-import { hostApi } from "../../../pi-host/src/api.ts";
+import { hostApi } from "@sieun-pi/pi-family/host-api";
 import { family, REACH_ERROR, relationship, type Member, type Relationship } from "./family.ts";
 import { hostSend, needsHost } from "./host-socket.ts";
 import { overLimits } from "./limits.ts";

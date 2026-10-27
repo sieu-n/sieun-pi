@@ -14,7 +14,7 @@ The live chat on :5182, pi-pool's install and every live session stay on Prime u
 | `pi-rlm/` | The `ipython` tool, `bash()` notices, in-process `rlm.spawn` children and the vendored MIT Prime Python runtime under `python/`. `agent-bus/` holds `agent_message` and `agent_observe`, routed in-process for one tree and through pi-host for roots and closed sessions. |
 | `pi-harness/` | The continual harness: the same `harness_state.json` format, digest injection, `/refine`, auto-refine and rollback. |
 | `pi-pool/` | The pi-pool hooks on `before_provider_headers` and `message_end`. |
-| `pi-family/` | The process-wide agent registry and kernel bridge that two or more packages share. |
+| `pi-family/` | The process-wide agent registry, kernel bridge, host API and pool retry counts that two or more packages share. |
 | `pi-testkit/` | Shared test helpers, such as the faux provider runtime in `faux.ts`. |
 | `sieun-rules/` | The Pi tests and pi-host check rig for `components/global-rules`, `components/claude-rules` and `components/user-history/extension`, which `pi-host/extensions.json` loads in every session. |
 

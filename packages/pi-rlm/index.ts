@@ -22,7 +22,7 @@ import { bootstrapCode, parseSkillImportErrors } from "./src/bootstrap.ts";
 import { ChildManager, childRecordOf, closingReason, setClosingReason, type ChildRecord, type CloseReason } from "./src/children.ts";
 import { GoalState } from "./src/goal.ts";
 import { createSession } from "./src/host-client.ts";
-import { hostApi, HOST_SOCKET_ENV } from "../pi-host/src/api.ts";
+import { hostApi, HOST_SOCKET_ENV } from "@sieun-pi/pi-family/host-api";
 import { Kernel, KernelBusyError, relayPaths, type CellResult, type HostRequest, type KernelOptions, type RestoreResult } from "./src/kernel.ts";
 import { BASE_PROMPT, childSection, rlmSection, skillsSection } from "./src/prompt.ts";
 import { BUNDLED_SKILLS_DIR, kernelPython, pythonSkillOf, RUNTIME_SRC, type PythonSkill } from "./src/python.ts";

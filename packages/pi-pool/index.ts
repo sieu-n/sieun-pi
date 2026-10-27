@@ -17,7 +17,7 @@ import { identityOf } from "@sieun-pi/pi-family/registry";
 import { accountCommand, POOLED_PROVIDERS, refreshStatus, STATUS_REFRESH_MS } from "./src/account.ts";
 import { rewriteFailure, type PoolCall } from "./src/errors.ts";
 import { credential, defaultPoolBin, poolEnv, runPool, vendOnce, type TreeKey } from "./src/pool-cli.ts";
-import { clearPoolRetries, countPoolRetry } from "./src/retries.ts";
+import { clearPoolRetries, countPoolRetry } from "@sieun-pi/pi-family/retries";
 import { admitWait, ordinal } from "./src/turns.ts";
 
 export interface PoolOptions {

@@ -33,7 +33,7 @@ import {
 import { HostedSession, modelRef, type Sink } from "./session.ts";
 import { Scheduler } from "./scheduler.ts";
 import schedulerExtension from "./scheduler-extension.ts";
-import { withPoolRetries } from "../../pi-pool/src/retries.ts";
+import { withPoolRetries } from "@sieun-pi/pi-family/retries";
 import type { Job } from "./schedule.ts";
 import type { DurableCommands } from "./durable/commands.ts";
 
@@ -265,7 +265,7 @@ export class PiHost implements HostApi {
       const model = asked ? services.modelRuntime.getModel(request.provider!, request.model!)
         : !request.sessionPath && options.defaultModel ? services.modelRuntime.getModel(options.defaultModel.provider, options.defaultModel.id) : undefined;
       if (asked && !model) throw new Error(`Unknown model ${request.provider}/${request.model}.`);
-      // A retry the pool takes on (a 429 moved to the next account or to the slot wait) stays off Pi's retry budget (pi-pool/src/retries.ts).
+      // A retry the pool takes on (a 429 moved to the next account or to the slot wait) stays off Pi's retry budget (pi-family/retries.ts).
       withPoolRetries(services.settingsManager, sessionManager.getSessionId());
       const created = await createAgentSessionFromServices({ services, sessionManager, sessionStartEvent, model, thinkingLevel: request.thinking });
       return { ...created, services, diagnostics: services.diagnostics };
