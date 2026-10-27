@@ -67,6 +67,8 @@ export interface Connection extends Sink {
 type SessionCommand = Extract<HostCommand, { activeSessionId: string }>;
 
 const WAKE_MS = 15_000;
+/** The provider APIs sieun-pi uses: Anthropic through pi-pool, the Codex and OpenAI ones, and the OpenAI-compatible mocks and local models. */
+export const DEFAULT_WARM_APIS = ["anthropic-messages", "openai-codex-responses", "openai-responses", "openai-completions"] as const;
 
 function headerCwd(path: string): string | undefined {
   try {
@@ -326,6 +328,26 @@ export class PiHost implements HostApi {
   }
 
   /**
+   * Imports the provider stream modules for `apis` now, so the first request of each API does not compile them in the middle of other sessions'
+   * streams. pi-ai loads each one lazily on first use (`api/lazy.js`), and under tsx that compile blocked the loop for 400 to 1,250 ms in the
+   * scale probe's CPU profiles (step 6 report). The imports run one after another and resolve to the same module the lazy loader asks for.
+   */
+  async warmProviders(apis: readonly string[] = DEFAULT_WARM_APIS): Promise<{ api: string; ms: number; error?: string }[]> {
+    const out: { api: string; ms: number; error?: string }[] = [];
+    for (const api of new Set(apis)) {
+      const start = performance.now();
+      try {
+        await import(`@earendil-works/pi-ai/api/${api}`);
+        out.push({ api, ms: Math.round(performance.now() - start) });
+      } catch (error) {
+        out.push({ api, ms: Math.round(performance.now() - start), error: error instanceof Error ? error.message : String(error) });
+      }
+      await new Promise(resolve => setImmediate(resolve));
+    }
+    return out;
+  }
+
+  /**
    * Opens the session a due job targets, so its scheduler handle attaches: a root from its file, a child by opening its root first and then
    * waking the child's dormant row, which pi-rlm registers when the root's children index loads.
    */
@@ -397,7 +419,7 @@ export class PiHost implements HostApi {
   /** Starts or queues a prompt and resolves once Pi accepted it, without waiting for the run. */
   startPrompt(session: HostedSession, text: string, options: { images?: ImageContent[]; streamingBehavior?: "steer" | "followUp"; source?: string; expandPromptTemplates?: boolean } = {}): Promise<string> {
     // Prime ran /compact from prompt text, and the chat sends it that way. Pi runs only extension commands from prompt(), so the host does it.
-    const compact = options.streamingBehavior ? null : /^\/compact(?:\s+([\s\S]*))?$/.exec(text.trim());
+    const compact = /^\/compact(?:\s+([\s\S]*))?$/.exec(text.trim());
     if (compact) {
       if (session.busy) return Promise.reject(new Error("The session is busy. /compact runs once the session is idle."));
       session.session.compact(compact[1]?.trim() || undefined).catch(error => this.log(`compact in ${session.id.slice(0, 8)} failed: ${error instanceof Error ? error.message : String(error)}`));

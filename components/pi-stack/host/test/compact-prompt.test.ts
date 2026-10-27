@@ -36,7 +36,7 @@ test("a /compact prompt compacts the session, as Prime ran it from prompt text, 
       await client.waitForAgentEnd(id, seq);
     }
     const ended = client.waitFor(line => line.type === "session_event" && (line as { event: { type: string } }).event.type === "compaction_end");
-    const answer = await client.call<{ disposition: string }>({ type: "prompt", activeSessionId: id, message: "/compact keep the numbers" });
+    const answer = await client.call<{ disposition: string }>({ type: "prompt", activeSessionId: id, message: "/compact keep the numbers", streamingBehavior: "followUp", queueIfBusy: true });
     assert.equal(answer.disposition, "handled");
     const end = await ended as { event: { aborted?: boolean; errorMessage?: string; result?: unknown } };
     assert.equal(end.event.errorMessage, undefined, JSON.stringify(end.event));
