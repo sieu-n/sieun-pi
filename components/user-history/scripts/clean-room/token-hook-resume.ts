@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { appendFileSync, existsSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { unaged } from "../../src/agent-outbox.ts";
 import { daemonList, listRows } from "../../src/daemon-list.ts";
 import { readSession, readSessionFile, type RunState, type Scenario, type SessionEvent, type Verdict } from "./session-read.ts";
 
@@ -246,7 +247,7 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
       messages[index + 1]?.role !== "assistant");
     // The first input after the window: the service's "continue", or a message from inside the chat's tree (criterion e catches any other).
     const resumedAt = failed < 0 ? -1 : messages.findIndex((message, index) => index > failed && (window?.to ?? Infinity) <= message.at &&
-      ((message.role === "user" && /^continue\b/.test(message.text.trim())) || message.role === "agent"));
+      ((message.role === "user" && /^continue\b/.test(unaged(message.text.trim()))) || message.role === "agent"));
     const answered = resumedAt < 0 ? undefined : messages.slice(resumedAt + 1).find(message => message.role === "assistant" && message.stop !== "error");
     return { id, file, messages, failed: failed < 0 ? undefined : messages[failed], resumed: resumedAt < 0 ? undefined : messages[resumedAt], answered,
       reported: readSessionFile(file).some(event => event.kind === "call" && /receiver_role\s*=\s*\\?['"]parent/.test(event.input)) };

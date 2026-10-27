@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { findCutJobs } from "../scripts/duties/whole-system.ts";
 import { JOB_CLEANUP_EVERY_MS } from "./chat-checkin.ts";
 import { WAIT_READ_TREES } from "./idle-unload.ts";
-import type { InterruptedHead, InterruptedReport, InterruptedRun, JobOf, PoolHeldRun, RecordedStop } from "./shared/interrupted.ts";
+import type { InterruptedReport, InterruptedRun, JobOf, PoolHeldRun, RecordedStop } from "./shared/interrupted.ts";
 import { turnErrorCause } from "./turn-error.ts";
 import type { SessionRow } from "./shared/types.ts";
 
@@ -260,18 +260,11 @@ export class InterruptedRuns {
       // The send pass skips the other boxes when every job is on this one: the Mac's lists took 30 to 60 s of a 50 to 110 s pass on 10-18,
       // and the 06:56Z send pass died on the 90 s limit before it reached census writer speed, the last of its 11 jobs.
       const box = jobs.some(run => run.host) ? [] : ["--this-box"];
+      // Each continue goes into the agent outbox (resume_paused.py deliver), which opens a job the daemon archived from its file, relays to
+      // the parent of a stopped subagent, and looks for a copy of a send that timed out before it sends again.
       const sent = await this.run(["--direct", "--only", jobs.map(run => run.session_id).join(","), ...named, ...box, ...stuck]);
       passes.push(sent);
-      // A job the daemon archived when it went down answers "Unknown active session" to every send, its parent's agent_message included
-      // (queue audit, 10-15 22:28Z to 10-16 04:15Z, five failed sends), so it waits forever. Reopening it from its file lets the continue land.
-      const gone = new Set((sent.children ?? []).flatMap(child => isGone(child.result) ? [child.id] : []));
-      const lost = jobs.flatMap(run => gone.has(run.id) ? [run.session_id!] : []);
-      if (!lost.length) return { ...withIncomplete(sent, planned), ...held, ...heldAlso(pooled, sent) };
-      await reopenAll(lost);
-      const again = await this.run(["--direct", "--only", lost.join(","), ...named, ...box, ...stuck]);
-      passes.push(again);
-      const retried = new Map((again.children ?? []).map(child => [child.id, child]));
-      return { ...withIncomplete({ ...sent, children: (sent.children ?? []).map(child => retried.get(child.id) ?? child) }, planned, again), ...held, ...heldAlso(pooled, sent, again) };
+      return { ...withIncomplete(sent, planned), ...held, ...heldAlso(pooled, sent) };
     });
     // The pass's dry run is the page's next report, unless a resume came after this call.
     const keep = () => { if (passes[0] && this.epoch === epoch) this.keep(pageView(passes[0], passes.slice(1))); };
@@ -299,8 +292,6 @@ export async function cutJobs(dataDir: string, chats: readonly string[], artifac
 
 /** resume_paused.py CHAT_ARCHIVED: the owner archived the chat whose tree holds the run after the run's last message (archived-chats.json). */
 export const CHAT_ARCHIVED = "the owner archived its chat after its last message (archived-chats.json), so the sweep does not restart it";
-
-const isGone = (result: InterruptedHead["result"]): boolean => typeof result === "object" && "error" in result && result.error.includes("Unknown active session");
 
 /**
  * What a pass answered for a held run: its cut, its pool time and why the pool holds it, less its place in pi-pool's queue. On 10-23 from

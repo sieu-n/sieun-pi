@@ -17,6 +17,8 @@ REPO = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location("resume_paused", REPO / "skills/resume-paused-sessions/scripts/resume_paused.py")
 resume_paused = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(resume_paused)
+# No test reaches this box's live chat service: a test that wants the agent outbox serves its own (ResumeThroughTheOutbox).
+resume_paused.CHAT_CONFIG = REPO / "no-chat-service" / "configuration.json"
 
 NOW = dt.datetime(2026, 10, 5, 20, 0, tzinfo=dt.timezone.utc)
 
@@ -1941,6 +1943,80 @@ class ResumePausedTests(unittest.TestCase):
         self.assertEqual([child["id"] for child in report["children"]], sent)
         self.assertEqual([entry["host"] for entry in report["incomplete"]], [None])
         self.assertRegex(report["incomplete"][0]["error"], r"^stopped by SIGTERM after \d+\.\d s during the sends on this box, last step: prime-agent send --json ")
+
+class ResumeThroughTheOutbox(unittest.TestCase):
+    """From 10-19 to 10-22 the job sweep's own `prime-agent send ... continue` timed out 96 times. The pass then saved nothing, and the next
+    pass sent again, while on 10-22 four of the timed-out continues reached their job 17 to 107 s after the CLI gave up. The continue goes
+    into the chat service's agent outbox now, which looks for such a copy before it sends again."""
+
+    session = ResumePausedTests.session
+
+    def setUp(self):
+        ResumePausedTests.setUp(self)
+        self.posts = []
+        posts = self.posts
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                posts.append((self.path, self.headers["X-Chat-Token"], self.headers["Origin"], body))
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(json.dumps({"deliveryStatus": "queued", "session": body["to"]}).encode())
+
+            def log_message(self, *args):
+                pass
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        self.port = server.server_address[1]
+        config = self.root / "configuration.json"
+        config.write_text(json.dumps({"port": self.port, "capability": "cap", "csrfToken": "tok"}))
+        kept = patch.object(resume_paused, "CHAT_CONFIG", config)
+        kept.start()
+        self.addCleanup(kept.stop)
+
+    def test_a_continue_whose_daemon_send_would_time_out_goes_once_through_the_outbox(self):
+        self.session("provencut000", [assistant(41, "toolUse"), role(40, "toolResult")])
+        daemon = []
+
+        def timed_out(box, target, text):
+            daemon.append((target, text))
+            raise resume_paused.CommandError(f'daemon-cli.mjs send {target} continue failed (1): daemon-cli: Timed out after 30000ms '
+                                             'waiting for the Prime Agent daemon response to "send_message".')
+
+        args = argparse.Namespace(message="continue", since_minutes=1440, dry_run=False, include_children=False, direct=True,
+                                  only="", state=str(self.root / "state.json"))
+        with patch.object(resume_paused.LocalBox, "send", timed_out), patch.object(resume_paused, "pool_bin", return_value=None), \
+                patch.object(resume_paused, "daemon_restarts", return_value=[]), patch.object(resume_paused, "worker_shutdowns", return_value=[]):
+            first = resume_paused.resume(self.sessions, args, NOW)
+            second = resume_paused.resume(self.sessions, args, NOW + dt.timedelta(minutes=5))
+        sid = "0" * 24 + "provencut000"
+        self.assertEqual(daemon, [], "no pass sends to the daemon itself")
+        self.assertEqual(self.posts, [("/cap/api/agent/notice", "tok", f"http://127.0.0.1:{self.port}",
+                                       {"to": sid, "message": "continue", "kind": "retry", "root": sid})])
+        self.assertEqual([child["result"] for child in first["children"]], [{"deliveryStatus": "queued", "deliveryMode": "outbox"}])
+        self.assertEqual((second["paused"], second["children"]), ([], []), "the next pass finds the run resumed and sends nothing")
+
+    def test_a_head_and_its_child_get_their_messages_through_the_outbox(self):
+        self.session("headheadhead", [assistant(30, "error", "Connection error.")])
+        self.session("childchild01", [assistant(30, "error", "Connection error.")], parent="0" * 24 + "headheadhead")
+        args = argparse.Namespace(message="continue", since_minutes=1440, dry_run=False, include_children=True, state=str(self.root / "state.json"))
+        with patch.object(resume_paused.LocalBox, "send", side_effect=AssertionError("sent to the daemon")), patch.object(resume_paused, "pool_bin", return_value=None):
+            resume_paused.resume(self.sessions, args, NOW)
+        head = "0" * 24 + "headheadhead"
+        self.assertEqual([(body["to"], body["root"], body["kind"]) for _, _, _, body in self.posts],
+                         [(head, head, "retry"), ("0" * 24 + "childchild01", head, "retry")])
+
+    def test_a_continue_the_outbox_held_is_no_owner_input(self):
+        def user(text):
+            return {"type": "message", "message": {"role": "user", "content": text}}
+        aged = "[queued 2 min ago at 10:00Z; the chat service's outbox held it until the target could take it]\n\ncontinue"
+        bundled = "[2 messages the chat service's outbox held for this session go together in this one send, oldest first]\n\n[1 of 2, queued 10:00Z]\n\ncontinue"
+        self.assertEqual([resume_paused.from_owner(user(text)) for text in ("continue", aged, bundled, "please continue")], [False, False, False, True])
+
 
 class ChatHostStopRecords(unittest.TestCase):
     # On 10-18 the chat moved to us-metal02 at 04:19Z and the Mac's browser-chat files stopped there, so a pass on the Mac that read its own

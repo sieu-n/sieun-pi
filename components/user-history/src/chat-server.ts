@@ -959,10 +959,13 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
           ...typeof body.root === "string" ? { root: threadId(body.root) } : {} })); return;
       }
       // A watchdog notice the daemon refused for its session uuid ("Unknown active session"): the agent outbox relays it to the parent of a
-      // subagent with no worker or opens a root from its file (components/watchdog/wd_common.py outbox_notice).
+      // subagent with no worker or opens a root from its file (components/watchdog/wd_common.py outbox_notice). The resume pass's continue
+      // comes here as kind "retry" (resume_paused.py deliver), so a send that timed out is looked for before it goes again.
       if (route === "api/agent/notice") {
         const session = threadId(text(body.to, "to", 128));
-        await backend.messages.deliver(session, text(body.message, "message"), typeof body.root === "string" ? threadId(body.root) : undefined);
+        if (body.kind !== undefined && body.kind !== "retry") throw new RequestError(400, "Choose kind retry or leave it out.");
+        await backend.messages.deliver(session, text(body.message, "message"), typeof body.root === "string" ? threadId(body.root) : undefined,
+          body.kind === "retry" ? "retry" : "message");
         json(res, 200, { deliveryStatus: "queued", session }); return;
       }
       // The chat tools of a session on a box without the chat role (src/chat-host.ts): its check-in setting, the job registry and the ledger.

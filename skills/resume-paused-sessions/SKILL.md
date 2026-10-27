@@ -34,13 +34,17 @@ It leaves a run stopped, and does not list it, when its tool call ends on "Reque
 
 Only the archive that stopped the last turn counts, so an older archive from before a reopen decides nothing. Each send reads the stop records and the run's transcript again right before it goes, so a run deleted after the pass found it, or archived later with a stop reason, gets nothing and no record. A missing record file counts as empty, and so does an rlm-subagent.json the relay answers 404 "no such file" for. A record that cannot be read or parsed is reported under `incomplete`, and the runs it covers get nothing, and so is a ledger line that is not a v1 record. The ledger's last line counts only once it ends in a newline. Another box's ledger and update records are not read through the relay, so there only rlm-subagent.json shows a delete. It also skips runs older than `--since-minutes` (default 1440), runs whose head got a user message after the stop, and runs it already resumed. It records resumed runs in `~/.prime/agent/resume-paused-sessions.json`. It also holds back a run until `pi-pool who` names an account that can serve its tree, because an earlier resume fails again at once. A run that stopped on a token hook failure is held back instead until the hook, run once for its tree the way Prime runs it, gives a token, and the token is dropped unread.
 
-The script also looks at every other box in `~/.config/sieun-pi/hosts.json`: it lists and messages that box's daemon through `sieun-pi hosts daemon <host> list|send` and reads its session files and daemon logs through the box's relay (`GET /v1/file`, the tail by Range). So the pass the chat service runs on the chat host covers the jobs of every box. `--this-box` keeps it to the local daemon.
+The script also looks at every other box in `~/.config/sieun-pi/hosts.json`: it lists that box's daemon through `sieun-pi hosts daemon <host> list` and reads its session files and daemon logs through the box's relay (`GET /v1/file`, the tail by Range). So the pass the chat service runs on the chat host covers the jobs of every box. `--this-box` keeps it to the local daemon.
 
 Each run maps to its head through `parentActiveSessionId`. An idle head gets the message plus the list of stopped runs below it. A working head gets the list as a steer note. A working head with no stopped children is skipped.
 
 The other flags are `--message`, `--since-minutes 0` for no age limit, `--include-children` (use it only when the user asks), `--state` and `--json`.
 
 When a SIGTERM stops the script, for example when systemd stops the chat service's unit, it still prints the report of the boxes it finished, names each box it did not finish and the step it was on under `incomplete`, and exits 143. A send that is running when the signal comes finishes and is recorded first. Another box that answers with an error or a malformed list goes under `incomplete` too, and the other boxes still run. The chat service lets a pass run to its end and logs a warning once it takes over 90 s.
+
+## How a message goes
+
+Every message the script sends goes into the chat service's agent outbox through `api/agent/notice` with kind `retry`, on this box or on the chat host of `~/.config/sieun-pi/hosts.json`. The outbox keeps it on disk and sends it to the box that runs the session. Before it sends again after a timeout, it looks for the first copy in the session file and the worker's queue, so a continue lands once. From 10-19 to 10-22 the script's own `prime-agent send` of "continue" timed out 96 times, and four of those continues reached their job 17 to 107 s after the CLI gave up, while the pass had saved nothing and the next pass could send a second one. The script records a run as resumed once the outbox holds its message, and the result reads `deliveryMode` `outbox`. Only a box with no chat service and no chat host in hosts.json sends straight to its daemon.
 
 ## Hung runs and dead workers
 
@@ -56,7 +60,7 @@ The daemon finds a subagent only while its tree's worker holds it. After the cha
 python3 ~/.prime/agent/skills/resume-paused-sessions/scripts/resume_paused.py --direct --only <session id>
 ```
 
-The script reads the subagent from its file under `~/.prime/agent/session-artifacts/<root>/sub-*/`. An archive with no cause, or the idle unload's, does not hide a run you name. A stop record does: an owner stop or archive, a delete, a replacement or any other stop reason keeps a named run stopped, as it keeps any other run. On 10-20 a `--direct --only` dry run over 15 runs that the idle unload stopped in a credential wait listed 12 as paused, and 9 of them were duty jobs the chat service had archived and rerun. The send to it fails, so the script sends its parent a `[relay]` note with the subagent's name, id and last step. The note asks the parent to pass the message on with `agent_message.send(..., receiver_role="child", receiver_name=<name>)`, and that call reopens the subagent in the parent's tree. A parent the daemon does not hold either gets the note through its own parent. The result shows `relayed_through` with the parent's id. The chat service's wakes, brief keeper and alert bridge send the same way (`components/user-history/src/subagent-relay.ts`).
+The script reads the subagent from its file under `~/.prime/agent/session-artifacts/<root>/sub-*/`. An archive with no cause, or the idle unload's, does not hide a run you name. A stop record does: an owner stop or archive, a delete, a replacement or any other stop reason keeps a named run stopped, as it keeps any other run. On 10-20 a `--direct --only` dry run over 15 runs that the idle unload stopped in a credential wait listed 12 as paused, and 9 of them were duty jobs the chat service had archived and rerun. The agent outbox relays the message to the subagent's parent. On a box with no chat service the script does this itself: the send to the subagent fails, so the script sends its parent a `[relay]` note with the subagent's name, id and last step. The note asks the parent to pass the message on with `agent_message.send(..., receiver_role="child", receiver_name=<name>)`, and that call reopens the subagent in the parent's tree. A parent the daemon does not hold either gets the note through its own parent. The result shows `relayed_through` with the parent's id. The chat service's wakes, brief keeper and alert bridge send the same way (`components/user-history/src/subagent-relay.ts`).
 
 ## Verify
 
@@ -64,7 +68,7 @@ After 30 to 60 seconds, run `prime-agent list` and check that the heads and thei
 
 ## Manual fallback
 
-`agent_message` cannot reach sessions outside your own family, so use the CLI:
+`agent_message` cannot reach sessions outside your own family, so use the CLI. A CLI send that times out may still land later, so read the session file before you send again:
 
 ```
 prime-agent list --json                       # sessions, sessionFile, parentActiveSessionId

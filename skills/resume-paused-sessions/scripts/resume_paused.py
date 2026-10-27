@@ -51,13 +51,20 @@ the head re-drives them.
 A run stops counting once its head got a user message after the interruption,
 or once this script resumed it (the state file remembers the error time).
 
+Every message goes through the chat service's agent outbox (api/agent/notice),
+which keeps it on disk, looks for a copy that may have gone before it sends
+again, relays it to the parent of a stopped subagent and opens a root from its
+file. A run counts as resumed once the outbox holds its message. Only a box
+with no chat service sends straight to the daemon, and the relay paragraph
+below covers that case.
+
 With --direct each interrupted run gets the message itself and no head gets a
 list, and a message to the head no longer hides a run below it. The chat
 server runs it that way for the jobs of its chats, naming them with --only.
 
-A subagent the daemon no longer holds answers "Unknown active session" to a
-send: the daemon finds a subagent only while its tree's worker holds it, and the
-idle unload and restarts drop it from there. Its message then goes to its parent
+On a box with no chat service, a subagent the daemon no longer holds answers
+"Unknown active session" to a send: the daemon finds a subagent only while its
+tree's worker holds it, and the idle unload and restarts drop it from there. Its message then goes to its parent
 with the subagent's name, id and last step, asking it to send the message on
 through its rlm handle (agent_message), which reopens the subagent in its tree.
 A parent the daemon does not hold either gets that note through its own parent.
@@ -158,6 +165,8 @@ CHAT_INDEX = Path.home() / ".prime" / "agent" / "browser-chat" / "chats.json"
 THREAD_INDEX = Path.home() / ".prime" / "agent" / "browser-chat" / "threads.json"
 # The chat service's own archives (service-archives.ts): Prime writes owner_stop or owner_archive for every archive the service sends.
 SERVICE_ARCHIVES = Path.home() / ".prime" / "agent" / "browser-chat" / "service-archives.json"
+# This box's chat service (its port, capability and write token), whose agent outbox takes every message a pass sends (`deliver`).
+CHAT_CONFIG = Path.home() / ".prime" / "agent" / "browser-chat" / "configuration.json"
 LOG_DIR = Path.home() / ".prime" / "agent" / "logs"
 SHUTDOWN_LINE = re.compile(r"^\[(\S+Z)\] supervisor: Session worker \w+ stderr: received SIGTERM", re.MULTILINE)
 # A stopped worker writes "Request was aborted" to its running turn. On 10-15 the four such aborts in live chat jobs
@@ -188,6 +197,9 @@ NOTE_PREFIXES = ("[watchdog]", "[check-in] ", "[job] ", "[reply check] ", "[brie
                  "[board] Decisions not on the scratchpad: ", "Prime Agent restarted after an update", "Watchdog recovery checkpoint", "[from ",
                  "[resume]", "[relay]", "[cross-host message")
 PRIME_NOTE = re.compile(r"^<[a-z]+(?:_[a-z]+)+>\s")
+# The chat service's agent outbox heads a message that waited with its age, and several messages that go in one send with their count
+# (components/user-history/src/agent-outbox.ts agedText and bundleText). The owner's own sends never go through it, so neither is his.
+OUTBOX_NOTE = re.compile(r"^\[(?:queued [^\]\n]* ago at |\d+ messages the chat service's outbox held )")
 # A job's brief quotes the owner and is no message from him: a subagent's task opens with "[task from parent]", and every chat brief opens
 # with "Owner's words:" (poteto-mode and the chat brief rules).
 BRIEF_PREFIX = "[task from parent]"
@@ -214,7 +226,7 @@ def from_owner(entry):
         return False
     if OWNER_RETRY_MARK in text:
         return True
-    return bool(text) and text != "continue" and not text.startswith(NOTE_PREFIXES) and not PRIME_NOTE.match(text)
+    return bool(text) and text != "continue" and not text.startswith(NOTE_PREFIXES) and not PRIME_NOTE.match(text) and not OUTBOX_NOTE.match(text)
 
 
 def replied(message):
@@ -2105,6 +2117,48 @@ def send(target, message):
     return {"deliveryStatus": j.get("deliveryStatus"), "deliveryMode": j.get("deliveryMode")}
 
 
+def chat_outbox():
+    """(base URL, write token, origin) of the chat service whose agent outbox takes this pass's messages: the chat host of hosts.json when that is
+    another box, else this box's (CHAT_CONFIG). None only when neither is set up; a set-up one that does not read raises."""
+    host = chat_host()
+    if host:
+        access = json.loads((HOSTS_FILE.parent / "chat-access.json").read_text())
+        return host[0], access["csrfToken"], host[1]
+    try:
+        config = json.loads(CHAT_CONFIG.read_text())
+    except FileNotFoundError:
+        return None
+    origin = f"http://127.0.0.1:{config['port']}"
+    return f"{origin}/{config['capability']}/", config["csrfToken"], origin
+
+
+def deliver(target, message, session, root):
+    """Hands `message` for the run `session` (its tree's root `root`) to the chat service's agent outbox (api/agent/notice, kind "retry"), which
+    sends it, looks for a copy that may have gone before it sends again (src/agent-outbox.ts), relays it to the parent of a stopped subagent and
+    opens a root from its file. A pass's own send_message gave up after 30 s, saved nothing and left the next pass to send again: from 10-19 to
+    10-22 the job sweep's continue timed out 96 times, and on 10-22 four of them reached their job 17 to 107 s after the CLI gave up. Sends
+    straight to the daemon (`send`) only on a box with no chat service."""
+    try:
+        service = chat_outbox()
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise CommandError(f"the chat service's settings did not read ({error}), so nothing was sent to {session}") from None
+    if service is None:
+        return send(target, message)
+    base, token, origin = service
+    body = json.dumps({"to": session, "message": message, "kind": "retry", **({"root": root} if root else {})}).encode()
+    request = urllib.request.Request(base + "api/agent/notice", data=body, method="POST",
+                                     headers={"Content-Type": "application/json", "X-Chat-Token": token, "Origin": origin})
+    DOING[0] = f"api/agent/notice {session}"
+    try:
+        with urllib.request.urlopen(request, timeout=CHAT_HOST_WAIT_S) as response:
+            answer = json.loads(response.read().decode() or "{}")
+    except urllib.error.HTTPError as error:
+        raise CommandError(f"the chat service's outbox answered {error.code} for {session}: {error.read().decode(errors='replace')[:200]}") from None
+    except (OSError, ValueError, http.client.HTTPException) as error:
+        raise CommandError(f"the chat service's outbox did not take the message for {session}: {error}") from None
+    return {"deliveryStatus": answer.get("deliveryStatus"), "deliveryMode": "outbox"}
+
+
 def live_id(session_id):
     """The short id the daemon now runs `session_id` under, or None. A job the chat service just reopened from its file runs on a new
     worker, and a send to its full id answers "Unknown active session": at 19:51Z on 10-17 six reopened jobs ran again while the log
@@ -2204,7 +2258,7 @@ def direct_resume(paused, args, state, now):
             else:
                 text = NEVER_STARTED_INTRO + p["task"] if "task" in p else args.message
                 try:
-                    res = send(p.get("target", p["id"]), text)
+                    res = deliver(p.get("target", p["id"]), text, p["session_id"], p.get("head_session_id"))
                 except CommandError as error:
                     unlisted = "target" in p
                     gone = unlisted and UNKNOWN_SESSION in str(error)
@@ -2266,8 +2320,9 @@ def resume(sessions, args, now):
                     row["result"] = failed or "skipped: every run below it was stopped on purpose after the pass found it"
                     actions.append(row)
                     continue
+                head = hs.get("sessionId") or runs[0]["head_session_id"]
                 try:
-                    row["result"] = send(h, compose(args.message, h, runs, working))
+                    row["result"] = deliver(h, compose(args.message, h, runs, working), head, head)
                 except CommandError as error:
                     row["result"] = {"error": str(error)[:300]}
                 else:
@@ -2292,7 +2347,7 @@ def resume(sessions, args, now):
                     res = blocked
                 else:
                     try:
-                        res = send(p["id"], args.message)
+                        res = deliver(p["id"], args.message, p["session_id"], p.get("head_session_id"))
                     except CommandError as error:
                         res = {"error": str(error)[:300]}
                     else:

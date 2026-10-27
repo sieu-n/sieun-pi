@@ -42,7 +42,8 @@ export type Sending = Partial<Pick<Stored, "text" | "kind" | "bundle">>;
 
 /**
  * Why the service sends an agent message: "wake" for a board.wake of a time or a CI run, "retry" for a resend of a send that was already tried
- * (a spawn brief resent), and "message" for anything an agent or the owner says (a report, an instruction, a relay, an alert).
+ * (a spawn brief resent) or a cut run's resume continue (resume_paused.py deliver), and "message" for anything an agent or the owner says (a
+ * report, an instruction, a relay, an alert).
  */
 export type AgentKind = "wake" | "retry" | "message";
 

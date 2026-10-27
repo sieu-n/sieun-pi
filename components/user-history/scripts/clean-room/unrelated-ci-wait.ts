@@ -1,5 +1,6 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { unaged } from "../../src/agent-outbox.ts";
 import { STALL_MS } from "../../src/checkin-findings.ts";
 import { trainFile } from "../../src/checkin-load.ts";
 import { messageId, ownSessions } from "../../src/clean-room-subjects.ts";
@@ -378,8 +379,8 @@ export async function readDelivery(state: RunState, until: number): Promise<Deli
   return { ...parsed, pushesRead: existsSync(file), pushes };
 }
 
-/** The body of a server-sent agent message, after its "[agent-message from <client>]" header. */
-const body = (text: string): string => text.replace(/^\[agent-message from [^\]]*\]\s*/, "").trimStart();
+/** The body of a server-sent agent message, after its "[agent-message from <client>]" header and the age the agent outbox put on it once it waited. */
+const body = (text: string): string => unaged(text.replace(/^\[agent-message from [^\]]*\]\s*/, "").trimStart()).trimStart();
 /** Whether a note is one another chat's duty or job puts in a session: a d9 push or the old cross-chat nudge. */
 const foreignNote = (text: string): boolean => text.startsWith(D9_PUSH_PREFIX) || text.startsWith(NUDGE_PREFIX);
 const CHECK_IN_NOTE = "[check-in] ";
