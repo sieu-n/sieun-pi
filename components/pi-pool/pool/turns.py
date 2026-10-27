@@ -8,7 +8,8 @@ account state.json and its lock:
     queued   {session: {tree, since, asked?, pid, waiter?}}
     owner    {session: epoch sec of the owner-turn mark}
     lead     [session], the sessions whose queued runs go first (`lead`)
-    kept     {session: {since, slot_at}}, the place of a run let go on an account wait or with input queued
+    kept     {session: {since, slot_at, reask?}}, the place of a run let go on an account wait or with input queued,
+             and for REASK_SEC (`reask`) the place of any other run let go
 
 A queued run's `since` is its place in line and `asked` when it asked, which differ only
 for a run that keeps its place. A run released while its tree waits for an account
@@ -23,7 +24,9 @@ PLACE_KEEP_SEC after the slot, as long as the tree keeps its place in the accoun
 
 A run released with input already queued in Prime (`release --queued-input`) keeps its
 place the same way, until PLACE_KEEP_SEC after its release: a steer ends the running run
-after its model step, and the session's next run starts at once to read it. On 10-22 the
+after its model step, and the session's next run starts at once to read it. Any other run
+keeps its place for REASK_SEC, so a session on an extension from before --queued-input
+whose next run starts at once keeps it too. On 10-22 the
 metal box owner 01a11d24 got 3 runs from 09:57Z to 13:34Z, each after a wait of 2,802 s to
 5,799 s at the back of the line, and each held its slot for under 70 s.
 
@@ -55,6 +58,11 @@ TURNS_LOCK = os.path.join(base.POOL, "turns.lock")
 # A mark waits for the session's next turn, which starts after the turn in flight ends:
 # the 99th percentile turn was 2,956 s over the 22,675 turns of 10-11 to 10-14.
 OWNER_MARK_TTL_SEC = 3600
+# A run released with no flag whose session asks again this soon after keeps its place, as if released with --queued-input: its next
+# run started at once, so Prime held input for it. A session keeps the extension it loaded until it reloads, and those from before
+# --queued-input send none. measured: of the 8,756 re-asks on us-metal02 from 10-26 02:00Z to 10-27 03:13Z, 3,357 came within 2 s
+# of the release by the 1 s stamps of pi-pool.log, 46 in the third second and 79 in the fourth and fifth.
+REASK_SEC = 2.0
 # `admit --wait` re-reads turns.json this often while queued.
 WAIT_POLL_SEC = 1.0
 LOCK_TIMEOUT = 6.0
@@ -154,7 +162,7 @@ def sweep(turns, now, is_alive=alive):
         if now - at > OWNER_MARK_TTL_SEC:
             del turns["owner"][session]
     for session, kept in list(turns["kept"].items()):
-        if now - kept["slot_at"] > sched.PLACE_KEEP_SEC:
+        if now - kept["slot_at"] > (REASK_SEC if kept.get("reask") else sched.PLACE_KEEP_SEC):
             del turns["kept"][session]
     return gone
 
@@ -379,9 +387,10 @@ def leave(turns, session, now, cfg, reason=None, slot_of=waiting_slot, queued_in
     working = turns["working"].pop(session, None)
     queued = turns["queued"].pop(session, None)
     slot_at = slot_of(working["tree"]) if working else None
-    keep_at = slot_at if slot_at is not None else now if working and queued_input else None
-    if keep_at is not None:
-        turns["kept"][session] = {"since": working.get("place", working["queued_since"]), "slot_at": keep_at}
+    if working:
+        place = working.get("place", working["queued_since"])
+        turns["kept"][session] = ({"since": place, "slot_at": slot_at} if slot_at is not None else {"since": place, "slot_at": now} if queued_input
+                                  else {"since": place, "slot_at": now, "reask": True})
     changed, events = step(turns, now, cfg)
     if working:
         events = [("turn_released", {"session": session, "kind": working["kind"], "held_s": round(now - working["since"], 1),

@@ -656,6 +656,7 @@ One run of one session holds one working slot from its first model call to its a
 Queued runs of the lead sessions start first in the order they asked, and then every other run in the order it asked.
 A run released while its tree waits for an account, or released with input already queued in Prime, keeps its place for the session's next run, which asks again with the place of the run that let go.
 The extension passes `--queued-input` at an agent_end when `ctx.hasPendingMessages()` is true, because a steer ends the running run after its model step and the next run starts at once to read it.
+Any other released run keeps its place for `REASK_SEC` (2 s), so a session on an extension loaded before `--queued-input` whose next run starts at once keeps it too.
 On 10-22 the metal box owner 01a11d24 got 3 runs from 09:57Z to 13:34Z, each after a wait of 2,802 s to 5,799 s at the back of the line, and each held its slot for under 70 s.
 The lead list holds no kind and skips no limit, so a lead run waits for a free slot like any run.
 pi-pool does not know what a lead session is. The chat service writes the ids of the chats that run on this machine with `pi-pool lead` each time its chat list loads or changes (`leadWriter` in components/user-history/src/chat-hosts.ts), and it reaches another machine's queue through that machine's prime-relay (`POST /v1/lead`).

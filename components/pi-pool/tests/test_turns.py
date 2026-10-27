@@ -281,8 +281,23 @@ class QueuedInputPlace(unittest.TestCase):
         changed, answer, events = turns.leave(t, "done", 5, self.CFG, slot_of=lambda tree: None)
         self.assertNotIn("queued_input", events[0][1])
         turns.ask(t, ask_args("late", tree="l"), 6, self.CFG)
-        turns.ask(t, ask_args("done", tree="D"), 7, self.CFG)
+        turns.ask(t, ask_args("done", tree="D"), 5 + turns.REASK_SEC + 0.5, self.CFG)
         self.assertEqual(turns.order(t), ["late", "done"])
+
+    def test_a_run_whose_session_asks_again_at_once_keeps_its_place_with_no_flag(self):
+        """10-27: the release owner 01a10810 ran on an extension loaded before --queued-input. Its runs released at 01:22:57Z,
+        01:56:41Z and 02:27:49Z, each asked again within a second at the back of 67 to 98 queued runs, and the next ones
+        waited 1,827 s, 1,514 s and 1,541 s."""
+        t = turns.empty()
+        owner = "01a10810-34b5-710f-88fe-3d369f89a8c9"
+        turns.ask(t, ask_args(owner, tree=owner), 0, self.CFG)
+        turns.ask(t, ask_args("job", tree="j"), 1, self.CFG)
+        changed, answer, events = turns.leave(t, owner, 184.1, self.CFG, slot_of=lambda tree: None)
+        self.assertEqual([f["session"] for e, f in events if e == "turn_admitted"], ["job"])
+        turns.ask(t, ask_args("late", tree="l"), 184.5, self.CFG)
+        changed, answer, events = turns.ask(t, ask_args(owner, tree=owner), 185.1, self.CFG)
+        self.assertEqual(turns.order(t), [owner, "late"])
+        self.assertEqual([f.get("kept_since") for e, f in events if e == "turn_queued"], [0])
 
     def test_queued_input_on_a_run_that_only_queued_keeps_nothing(self):
         t = turns.empty()

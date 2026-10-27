@@ -109,12 +109,14 @@ class Wiring(unittest.TestCase):
         self.assertEqual([q["session"] for q in run["queues"]["q"]["queued"]], ["chat", "late"])
 
     def test_a_run_that_ends_with_nothing_queued_asks_at_the_back(self):
+        """A run with nothing queued whose session asks again after REASK_SEC (pool/turns.py) asks at the back."""
         self.cli("release", "blocker")
         run = self.drive({"op": "start", "name": "chat"}, {"op": "context", "name": "chat"},
                          {"op": "wait", "name": "chat", "ms": 5000, "label": "first"},
                          {"op": "cli", "args": ["admit", "other", "--tree", "O", "--pid", str(os.getpid())]},
                          {"op": "end", "name": "chat"},
                          {"op": "cli", "args": ["admit", "late", "--tree", "L", "--pid", str(os.getpid())]},
+                         {"op": "sleep", "ms": 2500},
                          {"op": "context", "name": "chat"}, {"op": "wait", "name": "chat", "ms": 2500, "label": "next"},
                          {"op": "queue", "label": "q"})
         self.assertEqual([q["session"] for q in run["queues"]["q"]["queued"]], ["late", "chat"])
