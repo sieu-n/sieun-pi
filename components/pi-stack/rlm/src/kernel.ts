@@ -158,7 +158,7 @@ async function hasSystemdRun(): Promise<boolean> {
 
 /** Starts `kernel_relay.py` outside this process's cgroup and session, so stopping pi-host leaves the kernel running. */
 async function startRelay(options: KernelOptions, relay: RelayOptions): Promise<void> {
-  mkdirSync(dirname(relay.socket), { recursive: true });
+  mkdirSync(dirname(relay.socket), { recursive: true, mode: 0o700 });
   const log = openSync(relay.logPath, "a");
   const argv = [options.python, RELAY_SCRIPT, "--socket", relay.socket, "--", options.python, "-m", "rlm.repl"];
   const viaSystemd = await hasSystemdRun();
@@ -522,7 +522,13 @@ export class Kernel {
   }
 }
 
+/**
+ * Where a session's kernel relay listens. macOS caps a unix socket path at 104 bytes, and its per-user tmpdir (/var/folders/xx/.../T/) took
+ * `kernel-<session id>.sock` past that, so on 10-27 a pi-host session on the Mac failed every cell with "AF_UNIX path too long". Off Linux the
+ * socket goes in /tmp/pi-rlm-<uid>, whose path is short on every box.
+ */
 export function relayPaths(artifactDir: string, sessionId: string): { socket: string; logPath: string; unit: string } {
-  const runtime = process.env.XDG_RUNTIME_DIR && process.platform === "linux" ? join(process.env.XDG_RUNTIME_DIR, "pi-rlm") : join(tmpdir(), "pi-rlm");
+  const runtime = process.env.XDG_RUNTIME_DIR && process.platform === "linux" ? join(process.env.XDG_RUNTIME_DIR, "pi-rlm")
+    : process.platform === "linux" ? join(tmpdir(), "pi-rlm") : join("/tmp", `pi-rlm-${process.getuid?.() ?? "user"}`);
   return { socket: join(runtime, `kernel-${sessionId}.sock`), logPath: join(artifactDir, "kernel-relay.log"), unit: `pi-rlm-kernel-${sessionId.slice(0, 8)}-${Date.now().toString(36)}` };
 }
