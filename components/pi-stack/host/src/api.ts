@@ -12,6 +12,7 @@
 import type { AgentSessionRuntime } from "@earendil-works/pi-coding-agent";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { BusMessage, Delivery, Identity } from "../../shared/registry.ts";
+import type { Scheduler } from "./scheduler.ts";
 
 export interface OpenRequest {
   /** Reopen this session file. Without it the host creates a new session in `cwd`. */
@@ -63,6 +64,8 @@ export interface HostApi {
   /** The session file for an id the host has seen or can find under its session dirs. */
   sessionPath(sessionId: string): Promise<string | undefined>;
   onEvent(listener: (event: HostEvent) => void): () => void;
+  /** Heartbeats, RLM heartbeats and cron prompts that fire into loaded and unloaded sessions (`scheduler.ts`). */
+  readonly scheduler?: Scheduler;
 }
 
 const KEY = Symbol.for("sieun-pi.pi-stack.host");

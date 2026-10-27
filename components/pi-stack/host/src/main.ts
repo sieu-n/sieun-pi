@@ -1,7 +1,7 @@
 /**
  * pi-host CLI:
  *
- *   node --import tsx host/src/main.ts --socket <path> --agent-dir <dir> [--session-dir <dir>] [--extension <path>]... [--cwd <dir>]
+ *   node --import tsx host/src/main.ts --socket <path> --agent-dir <dir> [--session-dir <dir>] [--data-dir <dir>] [--extension <path>]... [--cwd <dir>]
  *     [--model <provider/id>] [--idle-unload-min <n>] [--scratch-chat]
  *
  * `--extension` repeats and loads into every session. `--scratch-chat` marks the hello so a scratch chat serve passes writes. SIGTERM and
@@ -14,6 +14,7 @@ import { parseArgs } from "node:util";
 import { HOST_SOCKET_ENV } from "./api.ts";
 import { installGuard } from "./guard.ts";
 import { PiHost } from "./host.ts";
+import schedulerExtension from "./scheduler-extension.ts";
 import { listen } from "./server.ts";
 
 const { values } = parseArgs({
@@ -21,6 +22,7 @@ const { values } = parseArgs({
     socket: { type: "string" },
     "agent-dir": { type: "string" },
     "session-dir": { type: "string" },
+    "data-dir": { type: "string" },
     extension: { type: "string", multiple: true },
     cwd: { type: "string" },
     model: { type: "string" },
@@ -30,7 +32,7 @@ const { values } = parseArgs({
 });
 
 if (!values.socket || !values["agent-dir"]) {
-  process.stderr.write("usage: main.ts --socket <path> --agent-dir <dir> [--session-dir <dir>] [--extension <path>]... [--cwd <dir>] [--model <provider/id>] [--idle-unload-min <n>] [--scratch-chat]\n");
+  process.stderr.write("usage: main.ts --socket <path> --agent-dir <dir> [--session-dir <dir>] [--data-dir <dir>] [--extension <path>]... [--cwd <dir>] [--model <provider/id>] [--idle-unload-min <n>] [--scratch-chat]\n");
   process.exit(2);
 }
 
@@ -40,10 +42,16 @@ process.env.PI_CODING_AGENT_DIR = agentDir;
 process.env[HOST_SOCKET_ENV] = socketPath;
 const [provider, ...modelId] = (values.model ?? "").split("/");
 
+const extensions = (values.extension ?? []).map(path => resolve(path));
+// pi-rlm children load the host's extensions plus the scheduler's, so a child's rlm_heartbeat jobs attach to this host's scheduler.
+const { setChildLoaderOptions } = await import("../../rlm/src/children.ts");
+setChildLoaderOptions(() => ({ additionalExtensionPaths: extensions, extensionFactories: [schedulerExtension] }));
+
 const host = new PiHost({
   agentDir,
   sessionDir: values["session-dir"] ? resolve(values["session-dir"]) : undefined,
-  extensions: (values.extension ?? []).map(path => resolve(path)),
+  dataDir: values["data-dir"] ? resolve(values["data-dir"]) : undefined,
+  extensions,
   defaultCwd: values.cwd ? resolve(values.cwd) : undefined,
   defaultModel: values.model ? { provider, id: modelId.join("/") } : undefined,
   idleUnloadMs: values["idle-unload-min"] ? Number(values["idle-unload-min"]) * 60_000 : 30 * 60_000,

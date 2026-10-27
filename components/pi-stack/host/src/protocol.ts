@@ -12,6 +12,7 @@
 
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
+import type { Job } from "./schedule.ts";
 
 export const PROTOCOL_NAME = "prime-agent.daemon";
 export const PROTOCOL_VERSION = 7;
@@ -34,7 +35,7 @@ export type ClientCapability = "attach_snapshot" | "event_sequence" | "extension
 /** What the hello promises. Each one gates a command in the client's `DAEMON_COMMAND_COMPATIBILITY` table, so the list names only what the host serves. */
 export const SERVER_CAPABILITIES = [
   "attach_snapshot", "event_sequence", "slim_attach", "chunked_snapshot", "heartbeat_catalog",
-  "agent_roster", "session_input_admission", "queue_message_mutation", "authoritative_child_roster", "delete_rlm_subagent", "model_catalog",
+  "agent_roster", "session_input_admission", "queue_message_mutation", "authoritative_child_roster", "delete_rlm_subagent", "model_catalog", "heartbeat_management",
 ] as const;
 export type ServerCapability = (typeof SERVER_CAPABILITIES)[number];
 
@@ -94,6 +95,11 @@ export type HostCommand =
   | { id?: string; type: "cron_list"; activeSessionId?: string; includeInactive?: boolean }
   | { id?: string; type: "heartbeats_list"; activeSessionId?: string }
   | (Session & { type: "heartbeat_get" })
+  | (Session & { type: "heartbeat_set"; schedule: string; prompt: string; deliveryMode?: "steer" | "follow_up"; promoteOwnedSession?: boolean })
+  | (Session & { type: "heartbeat_update"; action: "pause" | "resume" | "clear" })
+  | (Session & { type: "heartbeat_manage"; jobId: string; action: "pause" | "resume" | "stop" })
+  | (Session & { type: "cron_add"; schedule: string; prompt: string; promoteOwnedSession?: boolean })
+  | { id?: string; type: "cron_cancel"; activeSessionId?: string; jobId: string }
   | { id?: string; type: "ack_result"; commandId: string }
   | { id?: string; type: "shutdown"; force?: boolean };
 
@@ -106,7 +112,8 @@ export const HOST_COMMANDS: ReadonlySet<HostCommandType> = new Set<HostCommandTy
   "get_connection_state", "get_messages", "get_queue", "get_session_stats", "get_commands", "get_model_catalog", "get_available_models",
   "get_session_header", "get_session_context", "get_last_assistant_text", "get_system_prompt", "get_rlm_children", "wait_for_idle", "set_model",
   "set_thinking_level", "set_steering_mode", "set_follow_up_mode", "set_auto_compaction", "set_auto_retry", "compact", "reload",
-  "cancel_rlm_child", "delete_rlm_subagent", "cron_list", "heartbeats_list", "heartbeat_get", "ack_result", "shutdown",
+  "cancel_rlm_child", "delete_rlm_subagent", "cron_list", "heartbeats_list", "heartbeat_get", "heartbeat_set", "heartbeat_update",
+  "heartbeat_manage", "cron_add", "cron_cancel", "ack_result", "shutdown",
 ]);
 
 export interface CommandEnvelope {
@@ -206,7 +213,8 @@ export interface ConnectionState {
   sessionActions: SessionActions;
   compactionCount: number;
   goal: { status: "none" };
-  heartbeat: null;
+  /** The session's user heartbeat (`/heartbeat`, `heartbeat_set`), or null. */
+  heartbeat: Job | null;
   scopedModels: never[];
   activeToolNames: string[];
   contextUsage?: unknown;

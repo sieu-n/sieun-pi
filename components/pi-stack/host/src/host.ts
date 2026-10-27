@@ -30,6 +30,9 @@ import {
   type Response, type RosterEntry, type SavedSessionInfo,
 } from "./protocol.ts";
 import { HostedSession, modelRef, type Sink } from "./session.ts";
+import { Scheduler } from "./scheduler.ts";
+import schedulerExtension from "./scheduler-extension.ts";
+import type { Job } from "./schedule.ts";
 
 export interface HostOptions {
   agentDir: string;
@@ -47,6 +50,10 @@ export interface HostOptions {
   idleUnloadMs?: number;
   replayLimit?: number;
   chunkBytes?: number;
+  /** The scheduler's clock, for tests. */
+  now?: () => Date;
+  /** Where the host keeps its own files, such as `scheduled-jobs.json`. Unset: `<agentDir>/pi-host`. */
+  dataDir?: string;
   /** Adds `replay: true` to the hello, which a scratch chat serve needs before it passes writes (user-history `src/read-only-daemon.ts`). */
   scratchChatMark?: boolean;
   log?: (line: string) => void;
@@ -98,15 +105,24 @@ export class PiHost implements HostApi {
   private readonly listeners = new Set<(event: HostEvent) => void>();
   private readonly idleTimer: NodeJS.Timeout | undefined;
   private closing = false;
+  readonly scheduler: Scheduler;
 
   constructor(readonly options: HostOptions) {
     this.agentDir = options.agentDir;
+    this.scheduler = new Scheduler({
+      dataDir: options.dataDir ?? join(options.agentDir, "pi-host"),
+      reopen: job => this.reopenFor(job),
+      changed: () => { for (const connection of this.connections) connection.write({ type: "heartbeats_changed" }); },
+      log: line => this.log(line),
+      now: options.now,
+    });
     const idle = options.idleUnloadMs ?? 0;
     if (idle > 0) {
       this.idleTimer = setInterval(() => void this.unloadIdle(), Math.max(1000, Math.min(60_000, idle / 4)));
       this.idleTimer.unref();
     }
     publishHostApi(this);
+    this.scheduler.start();
   }
 
   log(line: string): void {
@@ -196,6 +212,7 @@ export class PiHost implements HostApi {
       registry.assignIdentity(sessionId, identity);
       const runtime = await this.createRuntime(manager, request);
       const session = new HostedSession(runtime, realPath, identity, this.options.replayLimit ?? 2000, (s, line) => this.onSessionLine(s, line));
+      session.heartbeat = () => this.scheduler.heartbeat(session.id);
       this.sessions.set(session.id, session);
       if (file) this.knownPaths.set(session.id, file);
       await runtime.session.bindExtensions({
@@ -223,7 +240,7 @@ export class PiHost implements HostApi {
     const factory: CreateAgentSessionRuntimeFactory = async ({ cwd, agentDir, sessionManager, sessionStartEvent }) => {
       const services = await createAgentSessionServices({
         cwd, agentDir, extensionFlagValues: flags,
-        resourceLoaderOptions: { ...options.resourceLoaderOptions, additionalExtensionPaths: options.extensions ?? [], extensionFactories: options.extensionFactories ?? [] },
+        resourceLoaderOptions: { ...options.resourceLoaderOptions, additionalExtensionPaths: options.extensions ?? [], extensionFactories: [schedulerExtension, ...options.extensionFactories ?? []] },
       });
       const model = request.provider && request.model ? services.modelRuntime.getModel(request.provider, request.model) : undefined;
       if (request.provider && request.model && !model) throw new Error(`Unknown model ${request.provider}/${request.model}.`);
@@ -282,6 +299,22 @@ export class PiHost implements HostApi {
     if (!path) throw new Error(`Unknown session ${sessionIdOrPath}: pi-host has no loaded session or session file with that id.`);
     const dormantRow = registry.dormantOf(sessionIdOrPath);
     return this.openSession({ sessionPath: path, ...(dormantRow ? { identity: { name: dormantRow.name, role: dormantRow.role, parentId: dormantRow.parentId, depth: dormantRow.depth } } : {}) });
+  }
+
+  /**
+   * Opens the session a due job targets, so its scheduler handle attaches: a root from its file, a child by opening its root first and then
+   * waking the child's dormant row, which pi-rlm registers when the root's children index loads.
+   */
+  private async reopenFor(job: Job): Promise<void> {
+    if (job.runtimeKind === "subagent") {
+      if (job.rootSessionId && !this.sessions.has(job.rootSessionId)) await this.ensure(job.rootSessionId);
+      const row = registry.dormantOf(job.activeSessionId);
+      if (!row) throw new Error(`child ${job.activeSessionId} has no dormant row after its root opened`);
+      await row.wake();
+      return;
+    }
+    if (!this.knownPaths.has(job.activeSessionId)) this.knownPaths.set(job.activeSessionId, job.sessionFile);
+    await this.ensure(job.activeSessionId);
   }
 
   async kill(sessionId: string, reason: "killed" | "idle_unload" | "shutdown" = "killed"): Promise<void> {
@@ -453,6 +486,7 @@ export class PiHost implements HostApi {
         return done();
       case "kill":
         await this.kill(command.activeSessionId);
+        this.scheduler.cancelTree(command.activeSessionId);
         return done({ activeSessionId: command.activeSessionId });
       case "rename":
       case "set_session_name": {
@@ -600,9 +634,35 @@ export class PiHost implements HostApi {
         }
         return done();
       }
-      case "cron_list": return done({ jobs: [] });
-      case "heartbeats_list": return done({ heartbeats: [] });
-      case "heartbeat_get": await this.target(command); return done({ heartbeat: null });
+      case "cron_list":
+        return done({ jobs: this.scheduler.list({ sessionId: command.activeSessionId, includeInactive: command.includeInactive }) });
+      case "heartbeats_list":
+        return done({ heartbeats: this.scheduler.list({ sessionId: command.activeSessionId }).filter(job => job.source !== "cron").map(job => {
+          const loaded = this.sessions.get(job.activeSessionId)?.summary();
+          const name = loaded?.sessionName ?? registry.dormantOf(job.activeSessionId)?.name;
+          const first = loaded?.firstMessage ?? registry.dormantOf(job.activeSessionId)?.firstMessage;
+          return { job, ...(name ? { sessionName: name } : {}), ...(first ? { firstMessage: first } : {}) };
+        }) });
+      case "heartbeat_get":
+        return done({ heartbeat: this.scheduler.heartbeat(command.activeSessionId) ?? null });
+      case "heartbeat_set":
+        await this.target(command);
+        return done({ heartbeat: this.scheduler.setHeartbeat(command.activeSessionId, command.schedule, command.prompt, command.deliveryMode) });
+      case "heartbeat_update":
+        return done({ heartbeat: this.scheduler.updateHeartbeat(command.activeSessionId, command.action) ?? null });
+      case "heartbeat_manage": {
+        const heartbeat = this.scheduler.manage(command.activeSessionId, command.jobId, command.action);
+        if (!heartbeat) throw new Error(`No active heartbeat found: ${command.jobId}`);
+        return done({ heartbeat });
+      }
+      case "cron_add":
+        await this.target(command);
+        return done({ job: this.scheduler.addCron(command.activeSessionId, command.schedule, command.prompt) });
+      case "cron_cancel": {
+        const job = this.scheduler.cancel(command.jobId);
+        if (!job) throw new Error(`No cron job found: ${command.jobId}`);
+        return done({ job });
+      }
       case "ack_result": return undefined;
       case "shutdown":
         setImmediate(() => void this.shutdown());
@@ -707,6 +767,7 @@ export class PiHost implements HostApi {
     if (this.closing) return;
     this.closing = true;
     if (this.idleTimer) clearInterval(this.idleTimer);
+    this.scheduler.stop();
     for (const connection of this.connections) connection.write({ type: "daemon_closing", reason: "shutdown" });
     await Promise.all([...this.sessions.keys()].map(id => this.kill(id, "shutdown")));
     this.leases.releaseAll();

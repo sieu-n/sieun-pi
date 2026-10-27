@@ -15,6 +15,7 @@ import {
   PROTOCOL, type ChildSnapshot, type ConnectionState, type EventCursor, type EventMeta, type ModelRef, type Outbound, type SessionActions,
   type SessionSnapshot, type SessionSummary,
 } from "./protocol.ts";
+import type { Job } from "./schedule.ts";
 
 /** A client attached to the session; the server's connection implements it. */
 export interface Sink {
@@ -50,6 +51,8 @@ export class HostedSession {
   lastActivityAt = Date.now();
   streamingMessage: AgentMessage | undefined;
   runningTools = 0;
+  /** The session's user heartbeat, which the host's scheduler supplies. */
+  heartbeat: () => Job | undefined = () => undefined;
   private readonly buffer: SessionEventLine[] = [];
   private unsubscribe: (() => void) | undefined;
   private firstMessage: string | undefined;
@@ -226,7 +229,7 @@ export class HostedSession {
       sessionActions: this.actions(),
       compactionCount: sm.getEntries().filter(entry => entry.type === "compaction").length,
       goal: { status: "none" },
-      heartbeat: null,
+      heartbeat: this.heartbeat() ?? null,
       scopedModels: [],
       activeToolNames: s.getActiveToolNames(),
       contextUsage: s.getContextUsage(),
