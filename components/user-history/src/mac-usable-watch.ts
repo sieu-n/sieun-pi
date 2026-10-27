@@ -12,6 +12,7 @@ import { type AgentCounts, agentCounts, agentState } from "./agent-states.ts";
 import { type CallMark, callMarks, CallWatch, type HungCall, PROGRESS_WINDOW_MS } from "./hung-calls.ts";
 import type { CallHandle, CallStopper, StoppedCall } from "./hung-stop.ts";
 import type { AgentQueueReading, MemoryGroupId } from "./shared/types.ts";
+import { readUplinkDark } from "./uplink-dark.ts";
 
 /**
  * The Mac usable watch: once a minute the chat service appends one line to `<dataDir>/mac-usable/<local date>.jsonl` with the Mac's usability
@@ -197,6 +198,8 @@ export interface WatchLine {
   mac: { swapGb: number | null; pressureLevel: number | null };
   /** CPU this sample cost: the service's own work plus the footprint helper's. */
   cpuMs: number;
+  /** Both of this box's gateways were down (src/uplink-dark.ts), so it reached no other box and nobody reached it; absent otherwise. */
+  uplinkDark?: true;
   /** How slow the chat service on this box was to the owner since the last line (src/chat-latency.ts); absent on lines written before it. */
   chat?: ChatLatency;
   /** This box's sessions in a tool call silent long enough to be judged soon (src/hung-calls.ts `callMarks`); absent when none. */
@@ -523,6 +526,8 @@ export interface WatchSource {
   stop?: CallStopper;
   /** The handed-off services on this box; absent, `listOrphanServices`. */
   services?: () => Promise<readonly OrphanServiceLine[]>;
+  /** Whether this box was cut off its network at `now` (src/uplink-dark.ts); absent, `readUplinkDark`. */
+  uplink?: (now: number) => Promise<boolean>;
 }
 /** A relay's answer (hosts.ts `relayWatch`): the box's reading, and its workers' footprints or why they are missing. */
 export interface RemoteWatch { name: string; rows: readonly unknown[];
@@ -590,13 +595,14 @@ export async function sample(source: WatchSource, stopping?: Promise<void>): Pro
   const unread: string[] = [];
   const read = <T>(kind: string, value: () => Promise<T>): Promise<T | undefined> => bounded(kind, value, cut, unread);
   const chatIds = source.chats();
-  const [read_, queue, chats, usable, memory, hosts, services] = await Promise.all([read("footprints", () => (source.footprints ?? readFootprints)(pids)),
+  const [read_, queue, chats, usable, memory, hosts, services, dark] = await Promise.all([read("footprints", () => (source.footprints ?? readFootprints)(pids)),
     read("queue", () => source.queue().catch(() => null)), chatIds,
     (source.feed ?? readUsable)(at, cut, unread), read("memory", () => (source.memory ?? memoryByGroup)().catch(() => null)),
     chatIds.then(ids => Promise.all((source.remotes?.() ?? []).map(remote => {
       const read = hostWatchLine(remote, { now: at, chats: ids, title: source.title });
       return stopping ? Promise.race([read, stopping.then(() => unreadHost(remote.name))]) : read;
-    }))), read("services", () => (source.services ?? listOrphanServices)().catch(() => []))]);
+    }))), read("services", () => (source.services ?? listOrphanServices)().catch(() => [])),
+    read("uplink", () => (source.uplink ?? readUplinkDark)(at).catch(() => false))]);
   const handed = servicesLine(services ?? []);
   const resumed = process.cpuUsage();
   const latency = takeLatency();
@@ -613,7 +619,7 @@ export async function sample(source: WatchSource, stopping?: Promise<void>): Pro
     hung: new Set(hung.map(call => call.session)) }),
     ...hosts.length ? { hosts } : {}, serviceGb: round(process.memoryUsage().rss / GB), ...latency ? { chat: latency } : {},
     ...marks.length ? { calls: marks } : {}, ...hung.length ? { hung } : {}, ...stopped.length ? { stopped } : {}, ...handed ? { services: handed } : {},
-    ...unread.length ? { unread } : {} };
+    ...unread.length ? { unread } : {}, ...dark ? { uplinkDark: true as const } : {} };
   const after = process.cpuUsage(resumed);
   own = { user: own.user + after.user, system: own.system + after.system };
   const measured = { ...line, cpuMs: line.cpuMs + Math.round((own.user + own.system) / 1000) };

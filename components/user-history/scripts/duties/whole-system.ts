@@ -1167,10 +1167,14 @@ export function measure(input: Inputs): PrecheckOutput {
   // went unread, else clean. From 04:22:55Z on 10-18 the box's lines carried usable: null, and the old loop counted each as dirty.
   // A box Tailscale read offline is offline that minute, neither unknown nor dirty, and the daemon calls that minute to it are left out, so a
   // minute is clean when every box that is online is clean. From about 14:00Z on 10-18 the MacBook Pro slept with its lid closed, and its
-  // outbox handshake timeouts made every minute a daemon fault while us-metal02 read usable in all of them.
+  // outbox handshake timeouts made every minute a daemon fault while us-metal02 read usable in all of them. A line whose box read both its
+  // gateways down (`uplinkDark`, src/uplink-dark.ts) had no network, so every box in it is offline that minute: from 14:28Z to 14:42Z on 10-27
+  // the provider dropped both of us-metal02's address blocks, its Tailscale still read the Mac online, and d7 counted 8 minutes dirty from
+  // handshake timeouts to the Mac.
   const offlineMin = new Map<string, number[]>();
   let offlineAny = 0, offlineFaults = 0;
   const flappedMin: string[] = [];
+  const darkMin: number[] = [];
   let clean = 0, usable = 0, fed = 0, unwatched = 0, unknownMin = 0, held = 0, freeSlot = 0, cellWait = 0, harness = 0, rigMin = 0, busyMin = 0, other = 0, unattributed = 0, daemonFail = 0, primeMin = 0;
   const faultName = chatNamer(input.chats, input.named, input.listed);
   const slotWaits = (input.slotWaits ?? []).filter(wait => wait.fault.at >= start && wait.fault.at < start + WINDOW_MS);
@@ -1188,11 +1192,12 @@ export function measure(input: Inputs): PrecheckOutput {
     const sides = new Set<MinuteSide>();
     let rigged = false;
     const offline = new Set<string>();
+    if (line?.uplinkDark) darkMin.push(from);
     if (!line) { unwatched++; unknown.push("no watch line"); }
     else for (const view of hostViews(line)) {
       const count = hostCount(view.name);
       const flapped = !view.offline && !view.usable && (UNREACHED.test(view.error ?? "") || view.error === UNREAD_AT_STOP) && offlineAround(input.watch, view.name, from, to);
-      if (view.offline || flapped) {
+      if (view.offline || flapped || line.uplinkDark) {
         count.offline++; offline.add(view.name); offlineMin.set(view.name, [...offlineMin.get(view.name) ?? [], from]);
         if (flapped) flappedMin.push(`${clock(from)} ${view.name}`);
         continue;
@@ -1348,7 +1353,8 @@ export function measure(input: Inputs): PrecheckOutput {
     `though each idle unload sweep resumes them: ${stuckHandoffs.slice(0, 5).map(entry => `${entry.session.slice(0, 8)} ${entry.state} since ${clock(entry.at)}`).join(", ")}. ` +
     "Read ~/.prime/agent/orphan-services/<session>.json and the service log's \"idle unload: <session>\" lines." });
   if (offlineMin.size) flagged.push({ kind: "offline_minutes", excerpt: [...offlineMin].map(([name, at]) => `${name} offline ${spans(at)}`).join("; ") +
-    (flappedMin.length ? `; ${flappedMin.length} of these the relay could not read next to a minute Tailscale read offline (${flappedMin.join(", ")})` : "") });
+    (flappedMin.length ? `; ${flappedMin.length} of these the relay could not read next to a minute Tailscale read offline (${flappedMin.join(", ")})` : "") +
+    (darkMin.length ? `; ${darkMin.length} of these the watch's box read both its gateways down, so no box was reachable (${spans(darkMin)})` : "") });
   for (const wait of slotWaits) {
     const fault = wait.fault;
     flagged.push({ kind: "slot_wait_timeout", excerpt: `${clock(fault.at)} ${faultName(fault) ?? `session ${fault.session!.slice(0, 8)}`} on ${fault.host}: ${fault.what}, ` +
