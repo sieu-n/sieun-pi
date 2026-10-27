@@ -35,7 +35,7 @@ export type ClientCapability = "attach_snapshot" | "event_sequence" | "extension
 /** What the hello promises. Each one gates a command in the client's `DAEMON_COMMAND_COMPATIBILITY` table, so the list names only what the host serves. */
 export const SERVER_CAPABILITIES = [
   "attach_snapshot", "event_sequence", "slim_attach", "chunked_snapshot", "heartbeat_catalog",
-  "agent_roster", "session_input_admission", "queue_message_mutation", "authoritative_child_roster", "delete_rlm_subagent", "model_catalog", "heartbeat_management",
+  "agent_roster", "session_input_admission", "queue_message_mutation", "authoritative_child_roster", "delete_rlm_subagent", "model_catalog", "saved_session_archive", "heartbeat_management",
 ] as const;
 export type ServerCapability = (typeof SERVER_CAPABILITIES)[number];
 
@@ -74,6 +74,7 @@ export type HostCommand =
   | (Session & { type: "kill"; origin?: string })
   | (Session & { type: "rename"; name: string })
   | (Session & { type: "set_session_name"; name: string })
+  | { id?: string; type: "archive_saved_session"; sessionPath: string }
   | { id?: string; type: "rename_saved_session"; activeSessionId?: string; sessionPath: string; name: string }
   | (Session & Input & { type: "prompt"; streamingBehavior?: "steer" | "followUp"; queueIfBusy?: boolean; expandPromptTemplates?: boolean; source?: string })
   | (Session & Input & { type: "steer" })
@@ -107,7 +108,7 @@ export type HostCommandType = HostCommand["type"];
 
 export const HOST_COMMANDS: ReadonlySet<HostCommandType> = new Set<HostCommandType>([
   "list", "list_saved_sessions", "roster_subscribe", "roster_unsubscribe", "create", "attach", "detach", "kill", "rename", "set_session_name",
-  "rename_saved_session", "prompt", "steer", "follow_up", "abort", "abort_bash", "abort_compaction", "abort_retry", "abort_branch_summary",
+  "rename_saved_session", "archive_saved_session", "prompt", "steer", "follow_up", "abort", "abort_bash", "abort_compaction", "abort_retry", "abort_branch_summary",
   "abort_and_clear_queue", "clear_queue", "resume_queue", "append_custom_message", "mutate_queued_message", "send_message", "get_state",
   "get_connection_state", "get_messages", "get_queue", "get_session_stats", "get_commands", "get_model_catalog", "get_available_models",
   "get_session_header", "get_session_context", "get_last_assistant_text", "get_system_prompt", "get_rlm_children", "wait_for_idle", "set_model",

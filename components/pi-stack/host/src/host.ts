@@ -7,7 +7,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { closeSync, existsSync, openSync, readdirSync, readSync, statSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, openSync, readdirSync, readSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { ImageContent } from "@earendil-works/pi-ai";
@@ -414,7 +414,16 @@ export class PiHost implements HostApi {
     const compact = /^\/compact(?:\s+([\s\S]*))?$/.exec(text.trim());
     if (compact) {
       if (session.busy) return Promise.reject(new Error("The session is busy. /compact runs once the session is idle."));
-      session.session.compact(compact[1]?.trim() || undefined).catch(error => this.log(`compact in ${session.id.slice(0, 8)} failed: ${error instanceof Error ? error.message : String(error)}`));
+      session.session.compact(compact[1]?.trim() || undefined).catch(error => {
+        const text = error instanceof Error ? error.message : String(error);
+        this.log(`compact in ${session.id.slice(0, 8)} failed: ${text}`);
+        // Prime showed a failed /compact in the thread. This notice goes to attached clients only, so it never enters the model's context.
+        if (!/cancelled|aborted/i.test(text)) {
+          const message = { role: "custom", customType: "compaction_notice", content: `Compaction did not run: ${text}`, display: true, timestamp: Date.now() };
+          session.emit({ type: "message_start", message });
+          session.emit({ type: "message_end", message });
+        }
+      });
       return Promise.resolve("handled");
     }
     return new Promise((resolve, reject) => {
@@ -548,6 +557,20 @@ export class PiHost implements HostApi {
         session.session.setSessionName(command.name);
         this.broadcastRoster({ type: "roster_update", changed: [this.rosterEntry(session)] });
         return done(session.summary());
+      }
+      case "archive_saved_session": {
+        // Prime's contract (user-history src/saved-archive.ts): cancel the saved tree's scheduled jobs, append owner_archive, never open the session.
+        const holder = this.leases.holderOf(command.sessionPath);
+        if (holder && this.sessions.has(holder)) throw new Error(`Cannot archive a resident session: ${holder} holds ${command.sessionPath}. Kill it first.`);
+        const manager = SessionManager.open(command.sessionPath);
+        const sessionId = manager.getSessionId();
+        const real = this.leases.acquire(command.sessionPath, sessionId);
+        try {
+          const cancelled = this.scheduler.cancelTree(sessionId);
+          const entry = { type: "session_state", id: randomUUID().slice(0, 8), parentId: manager.getLeafId(), timestamp: new Date().toISOString(), state: { status: "archived", reason: "owner_archive" } };
+          appendFileSync(command.sessionPath, JSON.stringify(entry) + "\n");
+          return done({ sessionId, cancelledJobs: cancelled.length });
+        } finally { this.leases.release(real); }
       }
       case "rename_saved_session": {
         const loaded = this.leases.holderOf(command.sessionPath);

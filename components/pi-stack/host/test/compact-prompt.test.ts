@@ -51,3 +51,34 @@ test("a /compact prompt compacts the session, as Prime ran it from prompt text, 
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("a /compact with nothing to compact sends the attached client a notice that never enters the session file", async () => {
+  const root = mkdtempSync(join(tmpdir(), "pi-host-compact-none-"));
+  const agentDir = join(root, "agent");
+  mkdirSync(agentDir, { recursive: true });
+  mkdirSync(join(root, "ws"), { recursive: true });
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+  const host = new PiHost({
+    agentDir, sessionDir: join(root, "sessions"), defaultCwd: join(root, "ws"), extensionFactories: [echo], defaultModel: { provider: "echo", id: "m" },
+    resourceLoaderOptions: { noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true }, log: () => {},
+  });
+  const server = await listen(host, join(root, "host.sock"));
+  const client = await HostClient.connect(join(root, "host.sock"));
+  try {
+    const summary = await client.call<SessionSummary>({ type: "create", lifecycle: "resident" } as never);
+    const id = summary.activeSessionId;
+    await client.call({ type: "attach", activeSessionId: id, capabilities: ["attach_snapshot", "event_sequence", "slim_attach"] });
+    const notice = client.waitFor(line => line.type === "session_event" && (line as { event: { type: string; message?: { customType?: string } } }).event.type === "message_end"
+      && (line as { event: { message?: { customType?: string } } }).event.message?.customType === "compaction_notice");
+    await client.call({ type: "prompt", activeSessionId: id, message: "/compact" });
+    const line = await notice as unknown as { event: { message: { content: string } } };
+    assert.match(line.event.message.content, /Nothing to compact/);
+    const entries = host.sessions.get(id)!.session.sessionManager.getEntries();
+    assert.ok(!entries.some(entry => JSON.stringify(entry).includes("compaction_notice")));
+  } finally {
+    client.close();
+    await host.shutdown();
+    server.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
