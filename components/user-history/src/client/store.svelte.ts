@@ -2,6 +2,7 @@ import { api, ApiError, requestId } from "./api.ts";
 import { saveDrafts } from "./drafts.ts";
 import { buildReload, onLeave, warmAssets } from "./build-reload.ts";
 import { primeThread, retryFeeds } from "./feeds.ts";
+import { PrefetchQueue } from "./prefetch-queue.ts";
 import { applyThreadEvent, boardKey, threadStateFromSnapshot } from "../shared/thread-state.ts";
 import { BoardFollower } from "../shared/board-delta.ts";
 import { formatCursor, messageKey } from "../shared/message-key.ts";
@@ -439,33 +440,23 @@ class Store {
 
   /** Each prefetched thread's row `lastActivityAt` when its first frame was fetched, so a row that moved since is fetched again. */
   private prefetched = new Map<string, string>();
-  private prefetchQueue: string[] = [];
-  private prefetching = false;
+  private prefetchQueue = new PrefetchQueue(id => this.prefetchOne(id));
 
   /**
-   * Fetches the first frame of each thread that has no feed or state yet, one request at a time so a click never waits behind a burst, and
-   * primes its feed with it (`primeThread`): a click then paints at once and the feed's snapshot replaces it. `front` puts them first (a hover).
+   * Fetches the first frame of each thread that has no feed or state yet, a few at a time (PrefetchQueue), and primes its feed with it
+   * (`primeThread`): a click then paints at once and the feed's snapshot replaces it. `front` starts them now (a hover).
    */
   prefetch(ids: readonly string[], front = false): void {
     const wanted = ids.filter(id => !this.entries[id] && this.prefetched.get(id) !== (this.session(id)?.lastActivityAt ?? ""));
-    if (!wanted.length) return;
-    const rest = this.prefetchQueue.filter(id => !wanted.includes(id));
-    this.prefetchQueue = front ? [...wanted, ...rest] : [...rest, ...wanted];
-    void this.drainPrefetch();
+    if (wanted.length) this.prefetchQueue.add(wanted, front);
   }
 
-  private async drainPrefetch(): Promise<void> {
-    if (this.prefetching) return;
-    this.prefetching = true;
-    try {
-      for (let id = this.prefetchQueue.shift(); id !== undefined; id = this.prefetchQueue.shift()) {
-        if (this.entries[id]) continue;
-        const activity = this.session(id)?.lastActivityAt ?? "";
-        const frames = await api.firstFrame(id).catch(() => null);
-        this.prefetched.set(id, activity);
-        if (frames && !this.entries[id]) primeThread(id, frames);
-      }
-    } finally { this.prefetching = false; }
+  private async prefetchOne(id: string): Promise<void> {
+    if (this.entries[id]) return;
+    const activity = this.session(id)?.lastActivityAt ?? "";
+    const frames = await api.firstFrame(id).catch(() => null);
+    this.prefetched.set(id, activity);
+    if (frames && !this.entries[id]) primeThread(id, frames);
   }
 
   warm(id: string): void {

@@ -9,6 +9,7 @@ import { test } from "node:test";
 import type { Catalog } from "../src/chat-catalog.ts";
 import { ThreadHub } from "../src/chat-threads.ts";
 import { FirstPages } from "../src/first-page.ts";
+import { PrefetchQueue } from "../src/client/prefetch-queue.ts";
 import type { ThreadEvent } from "../src/shared/types.ts";
 
 const ID = "01a14ec2-0000-7000-8000-000000000000";
@@ -51,4 +52,25 @@ test("a first page read as stale comes back whatever its session file did since"
   assert.equal(await pages.get("t1"), undefined);
   assert.equal(await pages.get("t1", true), text);
   assert.equal(await pages.get("t2", true), undefined);
+});
+
+test("the sidebar prefetch runs 4 rows at once in list order, a hover starts its row at once, and a row on its way is not fetched again", async () => {
+  const started: string[] = [];
+  const done = new Map<string, () => void>();
+  const queue = new PrefetchQueue(id => { started.push(id); return new Promise(resolve => done.set(id, resolve)); });
+  queue.add(["r1", "r2", "r3", "r4", "r5", "r6"]);
+  assert.deepEqual(started, ["r1", "r2", "r3", "r4"], "13 rows one at a time took 2.7 s from the Mac, so a click 3 s after load met rows not primed yet");
+  queue.add(["r6"], true);
+  queue.add(["r2"], true);
+  assert.deepEqual(started, ["r1", "r2", "r3", "r4", "r6"]);
+  done.get("r1")!();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(started, ["r1", "r2", "r3", "r4", "r6"], "the hover's row holds a place until it is back");
+  done.get("r2")!();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(started, ["r1", "r2", "r3", "r4", "r6", "r5"]);
+  for (const id of ["r3", "r4", "r5", "r6"]) done.get(id)!();
+  await new Promise(resolve => setImmediate(resolve));
+  queue.add(["r1"]);
+  assert.deepEqual(started.slice(-1), ["r1"], "a row whose activity moved is fetched again");
 });

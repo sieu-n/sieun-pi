@@ -34,6 +34,23 @@ test("cold loads take the median shown time in seconds, and a switch that never 
   assert.deepEqual(tabs.flagged.map(item => [item.kind, item.item]), [["tab_switch", undefined], ["tab_switch_stuck", "c"]]);
 });
 
+test("each unprimed switch names where its prefetch was at the click, and the summary counts the primed ones", () => {
+  const { tabs } = browserReadings({
+    loads: [{ shown: 900 }],
+    tabs: { switches: [
+      { id: "a", ms: 8, primed: true, frame: { startMs: -2090, sentMs: -2089, firstByteMs: -1880, endMs: -1878 } },
+      { id: "b", ms: 363, primed: false, frame: { startMs: -927, sentMs: -224, firstByteMs: 101, endMs: 103 } },
+      { id: "c", ms: 214, primed: false, frame: null },
+    ], banner: null, settle: { frames: 2, medianMs: 920 } },
+  }, at, 10_000);
+  assert.equal(tabs.value, 214);
+  assert.match(tabs.flagged[0]!.excerpt, /3 cold tab switches, median 214 ms, worst 363 ms; 1 of 3 chats primed before the click; 2 first frames back when the clicks began, median 920 ms each/);
+  assert.deepEqual(tabs.flagged.slice(1).map(item => [item.kind, item.item]), [["tab_switch_unprimed", "b"], ["tab_switch_unprimed", "c"]]);
+  assert.equal(tabs.flagged[1]!.excerpt, "chat b painted in 363 ms from its feed's snapshot: its prefetch started 927 ms before the click and came back 103 ms after the click: " +
+    "703 ms before the page sent it, 325 ms to the first byte, 2 ms to the last");
+  assert.equal(tabs.flagged[2]!.excerpt, "chat c painted in 214 ms from its feed's snapshot: no first-frame prefetch of it came back by the paint");
+});
+
 test("tab switches that did not run leave the metric out with a source error", () => {
   const { tabs } = browserReadings({ loads: [{ shown: 900 }], tabs: { error: "locator.click: Timeout 5000ms exceeded" } }, at, 10_000);
   assert.equal(tabs.value, undefined);

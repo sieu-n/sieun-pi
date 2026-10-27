@@ -17,7 +17,9 @@ import { macAway } from "./mac-reach.ts";
  * - `cold_tab_switch_ms` and `cold_load_s` come from chat-page-mac-probe.mjs, which this script pipes into `node` on the Mac over one
  *   `ssh mac` that `timeout` on the box bounds, since the Mac has no `timeout`. It drives a headless Chromium there (c103) against the
  *   page's tailnet URL: each cold load is a new browser context, timed until the chat's lines show; each tab switch opens a chat that page has
- *   not opened yet and reads the app's own `thread-paint:<id>` measure, as p50 measured it (median 46 ms on 10-18).
+ *   not opened yet and reads the app's own `thread-paint:<id>` measure, as p50 measured it (median 46 ms on 10-18). Each switch also says
+ *   whether the sidebar's prefetch had brought the chat's first frame back before the click, and when that request ran, since an unprimed
+ *   switch waits one round trip for the feed's snapshot: the 10-27 00:20Z run right after the Mac woke read 217 ms and could not say why.
  * - `mac_chat_reply_extra_rtt`: a scratch thread on the Mac's daemon, made and archived here, gets up to `SENDS` no-op prompts through the
  *   chat service, the path the page uses. The first rides on the create call and is timed from before that POST; it waits on the Mac's
  *   worker start too, so it is listed and left out of the value, which is the median of the follow-ups. Those go only when the first turn
@@ -49,8 +51,16 @@ const FIRST_REPLY_MS = 10 * 60_000;
 export const RELEASE_WINDOW_MS = 10 * 60_000;
 
 export interface BrowserLoad { shown?: number | null; banner?: string | null; error?: string }
-export interface BrowserSwitch { id: string; ms: number | null; lines?: number }
-export interface BrowserOutput { loads: BrowserLoad[]; tabs: { switches: BrowserSwitch[]; banner?: string | null } | { error: string }; load?: number; ms?: number; error?: string }
+/** The clicked thread's first-frame prefetch, in ms from the click (negative is before it): started, sent past the page's queue, first byte, done. */
+export interface SwitchFrame { startMs: number; sentMs: number; firstByteMs: number; endMs: number }
+/**
+ * `primed` says whether the thread's first frame had come back before the click, so it painted from the prefetch; `frame` is null when no
+ * prefetch of it finished by the paint. Both are absent in output from a probe before 10-27.
+ */
+export interface BrowserSwitch { id: string; ms: number | null; lines?: number; primed?: boolean | null; frame?: SwitchFrame | null }
+/** `settle`: the prefetches back when the probe's settle ended and its clicks began, and their median time. */
+export interface BrowserTabs { switches: BrowserSwitch[]; banner?: string | null; settle?: { frames: number; medianMs: number | null } }
+export interface BrowserOutput { loads: BrowserLoad[]; tabs: BrowserTabs | { error: string }; load?: number; ms?: number; error?: string }
 /** `create` is the send that rides on the create call, which also waits on the Mac's worker start. */
 export interface SendTiming { marker: string; sentAt: number; firstTokenAt: number; create?: boolean }
 export interface Reading { value?: number; flagged: FlaggedSlice[]; lastEventAt?: number }
@@ -88,9 +98,25 @@ export function browserReadings(output: BrowserOutput, at: number, timeoutMs: nu
   const times = output.tabs.switches.map(sample => sample.ms ?? timeoutMs);
   const switchMedian = median(times);
   if (switchMedian !== undefined) tabs.value = Math.round(switchMedian);
-  tabs.flagged.push({ at, kind: "tab_switch", excerpt: `${times.length} cold tab switches, median ${switchMedian === undefined ? "none" : Math.round(switchMedian)} ms, worst ${times.length ? Math.round(Math.max(...times)) : "none"} ms` });
+  const known = output.tabs.switches.filter(sample => typeof sample.primed === "boolean");
+  const primed = known.length ? `; ${known.filter(sample => sample.primed).length} of ${known.length} chats primed before the click` : "";
+  const settle = output.tabs.settle;
+  const settled = settle ? `; ${settle.frames} first frames back when the clicks began, median ${settle.medianMs ?? "none"} ms each` : "";
+  tabs.flagged.push({ at, kind: "tab_switch", excerpt: `${times.length} cold tab switches, median ${switchMedian === undefined ? "none" : Math.round(switchMedian)} ms, ` +
+    `worst ${times.length ? Math.round(Math.max(...times)) : "none"} ms${primed}${settled}` });
   for (const sample of output.tabs.switches.filter(sample => sample.ms === null)) tabs.flagged.push({ at, kind: "tab_switch_stuck", item: sample.id, excerpt: `chat ${sample.id} did not paint within ${timeoutMs} ms` });
+  for (const sample of output.tabs.switches.filter(sample => sample.primed === false)) {
+    tabs.flagged.push({ at, kind: "tab_switch_unprimed", item: sample.id, excerpt: `chat ${sample.id} painted in ${sample.ms === null ? "no" : Math.round(sample.ms)} ms from its feed's snapshot: ${unprimedCause(sample.frame ?? null)}` });
+  }
   return { load, tabs };
+}
+
+/** Why a clicked chat had no prefetched first frame: never fetched by its paint, or fetched too late, with where the request's time went. */
+export function unprimedCause(frame: SwitchFrame | null): string {
+  if (!frame) return "no first-frame prefetch of it came back by the paint";
+  const when = (ms: number) => ms < 0 ? `${-ms} ms before the click` : `${ms} ms after the click`;
+  return `its prefetch started ${when(frame.startMs)} and came back ${when(frame.endMs)}: ${frame.sentMs - frame.startMs} ms before the page sent it, ` +
+    `${frame.firstByteMs - frame.sentMs} ms to the first byte, ${frame.endMs - frame.firstByteMs} ms to the last`;
 }
 
 interface SessionEntry { type?: string; timestamp?: string; message?: { role?: string; content?: unknown; stopReason?: string; errorMessage?: string; diagnostics?: unknown } }
