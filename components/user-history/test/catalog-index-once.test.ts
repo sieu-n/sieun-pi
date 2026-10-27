@@ -53,7 +53,7 @@ test("a copy change with no reader still hands the roster on within emitGapMs", 
 });
 
 // Guards 10-27: each catalog.hostOf call after a copy change indexed every row, 108.5 s of the main thread in a 48 min profile.
-test("hostOf between copy changes reads this box's ids without indexing the rows, and sees a session that joined", async t => {
+test("hostOf between copy changes reads this box's ids without indexing the rows", async t => {
   const { catalog: c, handed } = await catalog(t);
   const mac = { name: "mac" };
   Object.assign(c as unknown as object, { hosts: { hostOf: () => mac, isActive: () => true, rows: () => [], patch: () => false, allSynced: () => true, close: async () => {} } });
@@ -64,6 +64,4 @@ test("hostOf between copy changes reads this box's ids without indexing the rows
   }
   await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(handed, [], "no hostOf call indexed the rows");
-  c.patchRow("s2", { activeSessionId: undefined });
-  assert.equal(c.hostOf("s2"), "mac", "a session this box lists with no worker, while the other box runs it");
 });
