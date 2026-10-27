@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { hostExecFile } from "./spawn-host.ts";
 import { existsSync } from "node:fs";
-import { lstat, readdir, readFile, readlink, rm, unlink, writeFile } from "node:fs/promises";
+import { lstat, readdir, readFile, readlink, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, normalize, relative } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -10,6 +10,7 @@ import { jobFolders } from "./chat-brief.ts";
 import { wikiContentDir } from "./chat-wiki.ts";
 import type { RawProcess } from "./mac-usable-watch.ts";
 import { stopOrphanServices } from "./orphan-services.ts";
+import { removeTree, walkTree } from "./walk-tree.ts";
 
 /**
  * What a job leaves behind once it is gone, and the stop of it. On 10-15 at 00:45Z a deleted job's nohup'd runner.py went on to start a 30 GB
@@ -87,8 +88,7 @@ export async function sessionTree(dir: string): Promise<{ sessions: string[]; tr
   const tabs: string[] = [];
   const tabFiles: string[] = [];
   const ownedFiles: string[] = [];
-  const entries = await readdir(dir, { recursive: true, withFileTypes: true }).catch(() => []);
-  for (const entry of entries) {
+  for await (const entry of walkTree(dir)) {
     if (!entry.isFile()) continue;
     if (SESSION_FILE.test(entry.name)) {
       sessions.push(entry.name.slice(0, -".jsonl".length));
@@ -398,8 +398,7 @@ export async function removeRepoCopies(transcripts: readonly string[], contentDi
   for (const session of await openedWikiSessions(transcripts)) {
     for (const copy of await repoCopies(join(contentDir, session))) {
       if (await isTracked(contentDir, copy)) continue;
-      await rm(copy, { recursive: true, force: true });
-      removed.push(copy);
+      if (await removeTree(copy)) removed.push(copy);
     }
   }
   return removed;
@@ -411,9 +410,8 @@ export async function removeRepoCopies(transcripts: readonly string[], contentDi
  * clean room chat 01a1435e deleted "tmp web server setsid", and its setsid'd http.server on 8767 and its Aside tab outlived it until a reboot.
  */
 export async function deletedFolders(chatDir: string): Promise<string[]> {
-  const entries = await readdir(chatDir, { recursive: true, withFileTypes: true }).catch(() => []);
   const found: string[] = [];
-  for (const entry of entries) {
+  for await (const entry of walkTree(chatDir)) {
     if (!entry.isFile() || entry.name !== "rlm-subagent.json") continue;
     const record = await readFile(join(entry.parentPath, entry.name), "utf8").then(text => JSON.parse(text) as { status?: unknown }, () => null);
     if (record?.status === "deleted") found.push(entry.parentPath);
@@ -582,7 +580,7 @@ export const leftoverSource: LeftoverSource = {
   },
   removeTmp: async dirs => {
     const removed: string[] = [];
-    for (const dir of dirs) if (await rm(dir, { recursive: true, force: true }).then(() => true, () => false)) removed.push(dir);
+    for (const dir of dirs) if (await removeTree(dir)) removed.push(dir);
     return removed;
   },
   stopUnits: async units => {

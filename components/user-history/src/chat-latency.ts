@@ -46,10 +46,10 @@ export function noteGc(ms: number, kind: number): void {
 }
 
 /**
- * One stat of "/" a second, timed, so the line says how long any file read waited for one of the 4 threads libuv gives the service. From
- * 03:42:20Z to 03:47:50Z on 10-26 us-metal02's chat answered api/accounts and a chat's duties in 2.3 to 10.7 s and its projections took up to
- * 36.6 s against 134 ms of their own code, while its event loop stalled at most 273 ms and its kernel reads went unread, which a full
- * thread pool would explain, and no reading said whether it was full.
+ * One stat of "/" a second, timed, so the line says how long any file read waited for a thread of libuv's pool (UV_THREADPOOL_SIZE in
+ * deploy/linux/sieun-pi-chat.service). From 03:42:20Z to 03:47:50Z on 10-26 us-metal02's chat answered api/accounts and a chat's duties in
+ * 2.3 to 10.7 s and its projections took up to 36.6 s against 134 ms of their own code, while its event loop stalled at most 273 ms and its
+ * kernel reads went unread, which a full thread pool would explain, and no reading said whether it was full.
  */
 const POOL_PROBE_MS = 1000;
 let longestPool = 0;

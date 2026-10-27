@@ -1,6 +1,7 @@
 import { lstat, open, readdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { type InsideProcess, leftoverSource, SHARED_TMP } from "./job-leftovers.ts";
+import { removeTree } from "./walk-tree.ts";
 
 /**
  * The /tmp sweep while nobody works there. /tmp is a tmpfs, so each byte is RAM or swap, and a job's end (src/job-leftovers.ts) deletes no /tmp
@@ -179,7 +180,7 @@ export function startTmpSweep(input: { rows: () => readonly { sessionId: string;
     inside: paths => leftoverSource.inside(paths),
     remove: async paths => {
       const removed: string[] = [];
-      for (const path of paths) if (await rm(path, { recursive: true, force: true }).then(() => true, () => false)) removed.push(path);
+      for (const path of paths) if (await removeTree(path)) removed.push(path);
       return removed;
     },
     pruneCaches: beforeMs => pruneCaches(root, beforeMs),

@@ -13,6 +13,9 @@ Type=simple
 Environment=PATH=%h/.local/node/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=SIEUN_PI_CHAT_START_DAEMON=0
 Environment=SIEUN_PI_CHAT_OPEN_AT_LOGIN=0
+# libuv's default of 4 pool threads is what every file read of the chat waits on. On 10-27 one recursive readdir held all 4 for 3.1 s while a
+# stat behind it waited as long, and with 5 to 64 threads the same stat passed in 1 ms. 16 holds four such 4-thread walks on this 80-core box.
+Environment=UV_THREADPOOL_SIZE=16
 EnvironmentFile=-%h/.config/sieun-pi/agent.env
 EnvironmentFile=-%h/.config/sieun-pi/chat.env
 ExecStart=%h/.local/node/bin/node %h/.local/share/sieun-pi-chat/current/components/user-history/src/chat-service-cli.mjs serve --data-dir %h/.prime/agent/browser-chat --port 5182 --socket /tmp/prime-agent-%U/daemon.sock

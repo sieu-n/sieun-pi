@@ -1,4 +1,4 @@
-import { readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { open, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { AgentKind } from "./outbox.ts";
 import { zTime } from "./checkin-goals.ts";
@@ -169,17 +169,36 @@ const alive = (pid: number): boolean => {
   try { process.kill(pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
 };
 
-/** Whether a worker's recovery journal shows the session's agent start at or after `since`. */
-async function journalRan(journal: string, session: string, since: number): Promise<boolean> {
-  const lines = fileLines(journal);
+/** What one recovery journal showed so far: its inode, the bytes read up to the last whole line, and each session's latest agent start. */
+interface JournalRead { ino: number; read: number; starts: Map<string, number> }
+const AGENT_START = /"operation":\s*"agent_start"/;
+
+/**
+ * Brings the read of a worker's recovery journal up to its end with the bytes added since the last call, or from the start when the file
+ * shrank or was replaced; null when it cannot be read. The keeper's 30 s tick and every chat's check-in read each late session's journal, and
+ * on 10-27 on us-metal02, with 39 late spawn records, a copy of one pass read 78 MB of journals in 5,000 reads every time.
+ */
+async function readJournal(reads: Map<string, JournalRead>, journal: string): Promise<JournalRead | null> {
+  const handle = await open(journal, "r").catch(() => null);
+  if (!handle) { reads.delete(journal); return null; }
   try {
-    for await (const line of lines) {
-      if (!line.includes(session) || !/"operation":\s*"agent_start"/.test(line)) continue;
-      const entry: unknown = JSON.parse(line);
-      if (isRecord(entry) && entry.sessionId === session && typeof entry.recordedAt === "string" && Date.parse(entry.recordedAt) >= since) return true;
+    const { ino, size } = await handle.stat();
+    let known = reads.get(journal);
+    if (!known || known.ino !== ino || size < known.read) reads.set(journal, known = { ino, read: 0, starts: new Map() });
+    if (size === known.read) return known;
+    const bytes = Buffer.alloc(size - known.read);
+    const { bytesRead } = await handle.read(bytes, 0, bytes.length, known.read);
+    const whole = bytes.subarray(0, bytes.subarray(0, bytesRead).lastIndexOf(10) + 1);
+    for (const line of whole.toString("utf8").split("\n")) {
+      if (!AGENT_START.test(line)) continue;
+      const entry: unknown = (() => { try { return JSON.parse(line); } catch { return null; } })();
+      if (!isRecord(entry) || typeof entry.sessionId !== "string" || typeof entry.recordedAt !== "string") continue;
+      const at = Date.parse(entry.recordedAt);
+      if (at > (known.starts.get(entry.sessionId) ?? -Infinity)) known.starts.set(entry.sessionId, at);
     }
-  } catch { return false; }
-  return false;
+    known.read += whole.length;
+    return known;
+  } catch { return null; } finally { await handle.close(); }
 }
 
 /**
@@ -187,15 +206,18 @@ async function journalRan(journal: string, session: string, since: number): Prom
  * after another stopped gets a new id and journal), and whether its recovery journal shows the session's agent start since the worker began.
  */
 export function primeWorkers(workersDir: string): (root: string, session: string) => Promise<TreeWorker | undefined> {
+  const journals = new Map<string, JournalRead>();
   return async (root, session) => {
     for (const daemon of await readdir(workersDir).catch(() => [] as string[])) {
       const dir = join(workersDir, daemon);
       for (const name of (await readdir(dir).catch(() => [] as string[])).filter(entry => WORKER_FILE.test(entry))) {
         const worker: unknown = await readFile(join(dir, name), "utf8").then(text => JSON.parse(text), () => null);
-        if (!isRecord(worker) || worker.rootSessionId !== root || typeof worker.workerId !== "string" || typeof worker.pid !== "number" || !alive(worker.pid)) continue;
+        if (!isRecord(worker) || worker.rootSessionId !== root || typeof worker.workerId !== "string" || typeof worker.pid !== "number") continue;
+        const journal = typeof worker.recoveryJournalPath === "string" ? worker.recoveryJournalPath : null;
+        if (!alive(worker.pid)) { if (journal) journals.delete(journal); continue; }
         const since = typeof worker.createdAt === "string" ? Date.parse(worker.createdAt) : NaN;
-        const ran = typeof worker.recoveryJournalPath === "string" && Number.isFinite(since) && await journalRan(worker.recoveryJournalPath, session, since);
-        return { id: worker.workerId, ran };
+        const read = journal && Number.isFinite(since) ? await readJournal(journals, journal) : null;
+        return { id: worker.workerId, ran: (read?.starts.get(session) ?? -Infinity) >= since };
       }
     }
     return undefined;
