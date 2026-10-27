@@ -13,7 +13,7 @@ import { LIVE_GAP_MS, OPEN, parkedBy, walk } from "../../src/checkin-steps.ts";
 import { listedSessions } from "../../src/daemon-faults.ts";
 import { ownerChats } from "../../src/owner-chats.ts";
 import { chatDataDir } from "../../src/owner-ok.ts";
-import type { DutyPrecheck, DutyRunRecord, FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
+import { CHECK_IN_DUTY_ID, type DutyPrecheck, type DutyRunRecord, type FlaggedSlice, type PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import { DutyStore } from "../../src/chat-duty-store.ts";
 import { D9_PUSH_PREFIX, serverNote } from "../../src/shared/chat-feed.ts";
 import type { ChatBoard, PlanItem } from "../../src/shared/types.ts";
@@ -320,6 +320,16 @@ export function goalsWithNoJob(board: ChatBoard | null, reads: OwnerReads): Plan
     walk([goal], item => { if (OPEN.has(item.status) && live(item)) owned = true; });
     return !owned;
   });
+}
+
+/**
+ * The red duties with no live fix, less each check-in whose only owed miss is goal_gaps while its chat's live board has no goal without a live
+ * owner (`goalsWithNoJob`, read at this run). A check-in runs every 6 h in vent, and its after-job measure is the reading the duty is judged on
+ * until the next run: at 17:57Z on 10-27 d9 counted vent's check-in from its 16:49Z after-job goal_gaps 2, while live jobs worked on each of its
+ * goals p85, p89 and p94 and d9's own idle-goal read for vent was empty. A check-in that also owes another miss, such as a stuck step, stays.
+ */
+export function withLiveGoalGaps<T extends { chat: string; duty: string; keys: readonly string[] }>(red: readonly T[], idle: ReadonlyMap<string, number>): T[] {
+  return red.filter(entry => entry.duty !== CHECK_IN_DUTY_ID || !entry.keys.length || entry.keys.some(key => key !== "goal_gaps") || (idle.get(entry.chat) ?? 1) > 0);
 }
 
 /**
@@ -935,9 +945,11 @@ async function main(): Promise<void> {
   }));
   // A wait that names another chat's open todo holds its step, wherever that chat runs (`withLinkedBoards`).
   const linked = (chat: string): ChatBoard | null => { const board = plan.boards.get(chat); return board ? withLinkedBoards(board, chat, plan.boards) : null; };
-  const idleGoals = plan.chats.filter(chat => !plan.pausedChats.has(chat.id)).map(chat => ({ chat: chat.id, goals: goalsWithNoJob(linked(chat.id),
+  const goalGaps = plan.chats.map(chat => ({ chat: chat.id, goals: goalsWithNoJob(linked(chat.id),
     { now, named: plan.named.get(chat.id) ?? new Map(), jobs: jobs.get(chat.id) ?? [], activity: plan.ownerActivity, waking: plan.waking, poolWaiting: plan.poolWaiting,
       onHost: new Set(hostHeld.filter(step => step.chat === chat.id).map(step => step.id)) }) }));
+  const idleGoals = goalGaps.filter(entry => !plan.pausedChats.has(entry.chat));
+  const stuckDuties = withLiveGoalGaps(counts.redDuties, new Map(goalGaps.map(entry => [entry.chat, entry.goals.length])));
   // The pushes the last run's job sent: those recorded after the last run of this duty began (LAST_RUNS_FILE, newest first).
   const lastRuns = JSON.parse(await readFile(process.env.LAST_RUNS_FILE ?? "", "utf8").catch(() => "[]")) as DutyRunRecord[];
   const since = lastRuns.find(run => run.verdict !== "skipped")?.at;
@@ -955,7 +967,7 @@ async function main(): Promise<void> {
   const tag = pushTag(now);
   const name = (chat: string): string => names.get(chat) ?? chat.slice(0, 8);
   const notMoving = fixNotMoving(red, name);
-  const listedPushes = pushList({ idleGoals, stuck, stuckDuties: counts.redDuties, lagging: owned.lagging, notMoving, upkeep });
+  const listedPushes = pushList({ idleGoals, stuck, stuckDuties, lagging: owned.lagging, notMoving, upkeep });
   const down: ChatDown[] = [];
   for (const chat of new Set([...listedPushes.map(entry => entry.chat), ...followUps.map(check => check.push.chat)])) {
     const file = localCopy(pushedFile(listed, copies, chat));
@@ -974,7 +986,7 @@ async function main(): Promise<void> {
   const routes = downRoutes(stuck, new Set(down.map(entry => entry.chat)), routeReads, name);
   const unknown = unknownOwners(stuck, routeReads);
   const direct = routes.pushes;
-  const result = chatSystemOutput({ names, stuck, upkeep, fleet: { pct: fleet.metrics.duties_green_pct, red }, stuckDuties: counts.redDuties, idleGoals, followUps, down,
+  const result = chatSystemOutput({ names, stuck, upkeep, fleet: { pct: fleet.metrics.duties_green_pct, red }, stuckDuties, idleGoals, followUps, down,
     jobPushes: direct, stepMoves: routes.moves, unknownOwners: unknown, detail, hostHeld });
   const fleetMissing = fleet.flagged.filter(slice => slice.kind === "fleet_data_missing");
   result.flagged!.push(...fleetMissing);
@@ -1020,7 +1032,7 @@ async function main(): Promise<void> {
       `${duty.agingSince !== undefined ? `, red only on counts that age out (newest event ${new Date(duty.agingSince).toISOString().slice(0, 16)}Z` +
         `${duty.agingUntil !== undefined ? `, clears at ${new Date(duty.agingUntil).toISOString().slice(0, 16)}Z` : ""}), so it owes no fix job` : ""}` +
       `${duty.windowWait !== undefined ? `, the count's window can show its fix at ${minute(duty.windowWait)} at the earliest` : ""}.`)),
-    section(`Red duties with no live fix job (${counts.redDuties.length})`, counts.redDuties.map(duty => `${duty.line}.`)),
+    section(`Red duties with no live fix job (${stuckDuties.length})`, stuckDuties.map(duty => `${duty.line}.`)),
     section(`Red duty metrics that wait on the owner's open For you todo (${owned.ownerHeld.length})`, owned.ownerHeld.map(duty => `${duty.line}.`)),
     section(`Red duties whose live fix job does not move the number (${notMoving.length})`, notMoving.map(duty => `${duty.line}.`)),
     section(`Red windowed counts with no lastEventAt, read as lagging windows (${owned.lagging.length})`, owned.lagging.map(duty => `${duty.line}.`)),

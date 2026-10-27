@@ -883,6 +883,8 @@ export interface HostHeldStep { chat: PlanInputs["chats"][number]; id: string; h
   duty?: string }
 /** A red duty whose missed windowed counts give no `lastEventAt` (`unreadWindows`): d9 reads them as lagging and asks the chat to add the field. */
 export interface LaggingDuty { chat: string; duty: string; keys: string[]; line: string }
+/** A red duty with no live fix: its chat, id, the missed metrics that owe a fix job (`owedKeys`, none when its run gave no missed key) and d9's line. */
+export interface RedDutyNoFix { chat: string; duty: string; keys: string[]; line: string }
 /** One chat's open steps that nobody moves (`liveStuck`), with the ids of those its check-in flagged. */
 export interface StuckSteps { chat: PlanInputs["chats"][number]; value: number; at: number | undefined; items: string[] }
 
@@ -940,7 +942,7 @@ export function stuckReading(runs: readonly DutyRunRecord[]): DutyRunRecord | un
  * stuck_duties. They moved there from this duty (d7) on 10-19 (owner msg mvfb7zt0). A red duty whose owed metrics' fix steps all wait on an
  * open For you todo (`dutyHold`) waits on the owner and is no red duty here; `ownerHeld` lists each duty with such a metric and its todo.
  */
-export function planCounts(input: PlanInputs): { stuck: StuckSteps[]; redDuties: { chat: string; duty: string; line: string }[]; lagging: LaggingDuty[]; hostHeld: HostHeldStep[];
+export function planCounts(input: PlanInputs): { stuck: StuckSteps[]; redDuties: RedDutyNoFix[]; lagging: LaggingDuty[]; hostHeld: HostHeldStep[];
   ownerHeld: { chat: string; duty: string; line: string }[] } {
   const hostHeld: HostHeldStep[] = [];
   // Each chat's newest measured check-in, only while it is under one check-in interval old, read after its job when that job has finished: the
@@ -1043,7 +1045,7 @@ export function planCounts(input: PlanInputs): { stuck: StuckSteps[]; redDuties:
     const hold = box === undefined ? undefined : input.holds?.get(box);
     if (hold) { hostHeld.push({ chat, id: duty.id, host: hold.host, todo: hold.todo, duty: duty.name }); return []; }
     const links = left.map(key => `${duty.id}/${key}`);
-    return [{ chat: chat.id, duty: duty.id, line: `${chat.name}: ${duty.name} read off target in ${missStreak(own) === 1 ? "its last run" : `its last ${missStreak(own)} runs`}, and no open step linked to it ` +
+    return [{ chat: chat.id, duty: duty.id, keys: left, line: `${chat.name}: ${duty.name} read off target in ${missStreak(own) === 1 ? "its last run" : `its last ${missStreak(own)} runs`}, and no open step linked to it ` +
       `(duty field ${links.length ? links.join(" or ") : `${duty.id}/<metricKey>`}) has a live owner now${waits ? `, while ${waits}` : ""}` }];
   }));
   return { stuck, redDuties, lagging, hostHeld, ownerHeld };
