@@ -1,11 +1,13 @@
 import { createHash } from "node:crypto";
-import { realpath, stat, readFile } from "node:fs/promises";
+import { realpath, stat, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { extname, isAbsolute, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
+import { gzip } from "node:zlib";
 import { build } from "esbuild";
 import { hasImageSignature } from "./chat-images.ts";
-import { asset, type Asset } from "./chat-assets.ts";
+import { asset, PREBUILT_DIR, type Asset } from "./chat-assets.ts";
 
 /*
  * Rich blocks (mermaid diagrams, and a wiki page's own HTML) draw inside `<iframe sandbox="allow-scripts">` pointing at `render`.
@@ -14,18 +16,53 @@ import { asset, type Asset } from "./chat-assets.ts";
  * the chat only through postMessage.
  */
 
-let renderBundle: Promise<Asset> | null = null;
-/** The renderer bundle is large (mermaid), so it builds on the first diagram, not at service start. */
-export function buildRenderBundle(): Promise<Asset> {
-  renderBundle ??= build({
+const RENDERER = "render.js";
+const RENDERER_TYPE = "text/javascript; charset=utf-8";
+const gzipAsync = promisify(gzip);
+
+/** The renderer's esbuild compile, packed at gzip level 9: 5.3 MB raw and 1.5 MB packed, 1.4 to 2.0 s of esbuild on an idle us-metal02 on 10-27. */
+async function compileRenderer(): Promise<Asset> {
+  const result = await build({
     entryPoints: [fileURLToPath(new URL("./render/main.ts", import.meta.url))], bundle: true, write: false, format: "iife", target: "es2022",
     minify: true, sourcemap: false, legalComments: "none", logLevel: "silent", define: { "process.env.NODE_ENV": '"production"' },
-  }).then(result => {
-    const js = result.outputFiles[0];
-    if (!js) throw new Error("Render bundle produced no output");
-    return asset(js.contents, "text/javascript; charset=utf-8");
-  }).catch(error => { renderBundle = null; throw error; });
-  return renderBundle;
+  });
+  const js = result.outputFiles[0];
+  if (!js) throw new Error("Render bundle produced no output");
+  const compiled = asset(js.contents, RENDERER_TYPE);
+  return { ...compiled, gzip: await gzipAsync(compiled.body, { level: 9 }) };
+}
+
+/**
+ * release-chat.mjs writes the renderer and its gzip into the release's prebuilt folder (chat-assets-prebuild.mjs), after the client bundle,
+ * which replaces that folder whole. It carries no brotli copy, since brotli at quality 11 took 43 s for it on us-metal02 on 10-27.
+ */
+export async function writeRenderer(dir = PREBUILT_DIR): Promise<void> {
+  const built = await compileRenderer();
+  await writeFile(join(dir, RENDERER), built.body);
+  await writeFile(join(dir, `${RENDERER}.gz`), built.gzip!);
+}
+
+async function readRenderer(dir: string): Promise<Asset | null> {
+  try {
+    const [body, packed] = await Promise.all([readFile(join(dir, RENDERER)), readFile(join(dir, `${RENDERER}.gz`))]);
+    return { ...asset(body, RENDERER_TYPE), gzip: packed };
+  } catch { return null; }
+}
+
+const renderBundles = new Map<string, Promise<Asset>>();
+/**
+ * The renderer from the release's prebuilt folder, else compiled once on the first diagram. Before the release wrote it, each chat start
+ * compiled it on the first diagram: render.js took 2.3, 1.6 and 1.2 s at 17:57, 18:06 and 18:16Z on 10-27, each the first fetch after a
+ * chat release, and d7 counted each of those minutes dirty.
+ */
+export function buildRenderBundle(dir = PREBUILT_DIR): Promise<Asset> {
+  let found = renderBundles.get(dir);
+  if (!found) {
+    found = readRenderer(dir).then(prebuilt => prebuilt ?? compileRenderer());
+    found.catch(() => { renderBundles.delete(dir); });
+    renderBundles.set(dir, found);
+  }
+  return found;
 }
 
 /**
