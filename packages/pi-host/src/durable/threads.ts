@@ -16,7 +16,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ImageContent, Message, ModelThinkingLevel, TextContent, Usage } from "@earendil-works/pi-ai";
 import type { Models } from "@earendil-works/pi-ai/models";
 import {
-  Harness, LiveDoc, ROOT_CONVERSATION_ID, watchEvents, type AgentEvent, type AgentEventStream, type CommitPublication, type Conversation,
+  Harness, LiveDoc, ProviderDoc, ROOT_CONVERSATION_ID, watchEvents, type AgentEvent, type AgentEventStream, type CommitPublication, type Conversation,
   type ConversationId, type ConversationRecord, type EntryDraft, type EntryId, type EntryRecord, type HarnessSettings, type ModelRef, type ReportInfo, type SettledSubmissionRecord,
   type SubmissionId, type SubmissionRecord, type Wake,
 } from "@earendil-works/pi-durable";
@@ -44,6 +44,11 @@ export interface DurableThreadsOptions {
   /** How long a file with no runnable work and no watcher stays open; default 10 minutes. */
   idleCloseMs?: number;
   settings?: HarnessSettings;
+  /**
+   * Called when an input of a conversation settles, with the conversation's provider session id and whether a run
+   * still goes on in it; pi-host gives the session's pi-pool working slot back here.
+   */
+  inputSettled?: (threadId: string, sessionId: string, runContinues: boolean) => void | Promise<void>;
   log?: (line: string) => void;
   now?: () => number;
 }
@@ -132,6 +137,7 @@ function usageOf(entry: EntryRecord, thread: string, now: number): UsageRow | un
   return {
     thread, conversation: entry.conversationId, entryId: entry.id, model: `${message.provider}/${message.model}`, at: message.timestamp ?? now,
     input: usage.input, output: usage.output, cacheRead: usage.cacheRead, cacheWrite: usage.cacheWrite, cost: usage.cost.total,
+    costInput: usage.cost.input, costOutput: usage.cost.output, costCacheRead: usage.cost.cacheRead, costCacheWrite: usage.cost.cacheWrite,
   };
 }
 
@@ -165,6 +171,16 @@ export class DurableThreads {
 
   /** Reopens every thread that had runnable or due work when the last process stopped, and arms the timer for later sleeps. */
   async start(): Promise<string[]> {
+    if (this.index.rebuilt) {
+      // The index dropped its derived rows: open each thread once so its backfill writes them again, then let idle close it.
+      for (const row of this.index.list()) {
+        try {
+          await this.thread(row.id);
+        } catch (error) {
+          this.log(`reindex ${row.id} failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+    }
     const due = this.index.due(this.now());
     for (const id of due) {
       try {
@@ -315,6 +331,7 @@ export class DurableThreads {
           if (record.status === "unanswered") failed = true;
           if (record.status === "done") failed = false;
         }
+        if (record.type === "input" && (record.status === "done" || record.status === "unanswered")) setImmediate(() => void this.settled(open, record.conversationId));
       } else if (change.type === "conversation") {
         void this.announceConversation(open, change.value);
       }
@@ -324,6 +341,22 @@ export class DurableThreads {
       if (preview !== undefined || failed !== undefined) this.index.update(open.id, { updatedAt: now, ...(preview === undefined ? {} : { preview }), ...(failed === undefined ? {} : { failed }) });
     } catch (error) {
       this.log(`${open.id} index write failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  /** Runs off the commit listener, which must not call Session APIs. */
+  private async settled(open: OpenThread, conversation: ConversationId): Promise<void> {
+    if (!this.options.inputSettled) return;
+    try {
+      const provider = await open.harness.snapshot(ProviderDoc, conversation, context);
+      if (!provider?.sessionId) {
+        this.log(`${open.id} conversation ${conversation} settled an input with no provider session id`);
+        return;
+      }
+      const live = await open.harness.snapshot(LiveDoc, conversation, context);
+      await this.options.inputSettled(open.id, provider.sessionId, Boolean(live?.run));
+    } catch (error) {
+      this.log(`${open.id} settle hook failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 

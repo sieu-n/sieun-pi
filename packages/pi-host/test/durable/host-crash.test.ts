@@ -6,7 +6,7 @@
  */
 import { strict as assert } from "node:assert";
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
@@ -23,10 +23,16 @@ const PI_STACK = join(here, "..", "..", "..");
 const scratch = mkdtempSync(join(tmpdir(), "pi-host-durable-"));
 after(() => rmSync(scratch, { recursive: true, force: true }));
 
+/** Every pi-host this file starts, so a failed case leaves none running. */
+const hosts = new Set<ChildProcess>();
+after(() => { for (const child of hosts) child.kill("SIGKILL"); });
+
 interface Worker { child: ChildProcess; ready: Promise<{ recovered: string[] }>; stderr: () => string }
 
 function startHost(socket: string, dir: string, mode: "faux" | "real", env: NodeJS.ProcessEnv): Worker {
   const child = spawn(process.execPath, ["--import", "tsx", join(here, "host-worker.ts"), socket, dir, mode], { cwd: PI_STACK, env: { ...process.env, ...env }, stdio: ["ignore", "pipe", "pipe"] });
+  hosts.add(child);
+  child.once("exit", () => hosts.delete(child));
   let stderr = "";
   child.stderr!.on("data", chunk => (stderr += String(chunk)));
   const ready = new Promise<{ recovered: string[] }>((resolve, reject) => {
@@ -58,7 +64,8 @@ async function allEntries(client: HostClient, thread: string, conversation: numb
 
 const kinds = (entries: EntryRecord[]) => entries.map(entry => `${entry.kind}${(entry.model?.[0] as { stopReason?: string } | undefined)?.stopReason ? `(${(entry.model![0] as { stopReason: string }).stopReason})` : ""}`).join(" ");
 
-interface CaseResult { thread: string; killAfterMs: number; recovered: string[]; resumeMs: number; root: string; child: string; search: number; usageTurns: number }
+interface PoolCall { argv: string[]; key: string | null }
+interface CaseResult { calls: PoolCall[]; thread: string; killAfterMs: number; recovered: string[]; resumeMs: number; root: string; child: string; search: number; usageTurns: number }
 
 async function crashCase(name: string, mode: "faux" | "real", killOn: "child-stream" | "slot-wait", pool: Record<string, unknown> = {}): Promise<CaseResult> {
   const dir = join(scratch, name);
@@ -82,7 +89,7 @@ async function crashCase(name: string, mode: "faux" | "real", killOn: "child-str
     if ((line as { type: string }).type !== "durable_event" || event?.type !== "events") return false;
     if (killOn === "slot-wait") return event.events!.some(e => e.type === "deferred_poll" || (e.type === "snapshot" && (e.generation as { deferred?: unknown } | undefined)?.deferred));
     return event.conversation !== 1 && event.events!.some(e => e.type === "message_update");
-  }, mode === "real" ? 240_000 : 60_000);
+  }, mode === "real" ? 30 * 60_000 : 60_000);
   const killAfterMs = Date.now() - started;
   first.child.kill("SIGKILL");
   await new Promise(resolve => first.child.once("exit", resolve));
@@ -133,7 +140,15 @@ async function crashCase(name: string, mode: "faux" | "real", killOn: "child-str
     const row = listed.threads.find(t => t.id === thread.id)!;
     assert.equal(row.children, 1);
     assert.equal(row.status, "idle");
-    return { thread: thread.id, killAfterMs, recovered, resumeMs, root: kinds(root), child: kinds(child), search: hits.length, usageTurns: turns };
+    // A settled input gives its slot back right after the settle commit, so the last release can trail durable_wait a little.
+    const readCalls = () => readFileSync(join(dir, "pool", "calls.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line) as PoolCall);
+    const released = (calls: PoolCall[]) => calls.some(call => call.argv[1] === "release" && call.argv[2] === calls.find(c => c.argv[1] === "admit")?.argv[2]);
+    let calls = mode === "faux" ? readCalls() : [];
+    for (let tries = 0; mode === "faux" && !released(calls) && tries < 50; tries++) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+      calls = readCalls();
+    }
+    return { calls, thread: thread.id, killAfterMs, recovered, resumeMs, root: kinds(root), child: kinds(child), search: hits.length, usageTurns: turns };
   } finally {
     b.close();
     second.child.kill("SIGTERM");
@@ -149,6 +164,22 @@ describe("pi-host durable threads survive SIGKILL, faux", () => {
 
   test("SIGKILL during a pool slot wait; the new host's wake timer reopens and resumes it", async () => {
     await crashCase("slot-wait", "faux", "slot-wait", { waitUntil: Date.now() / 1000 + 4 });
+  });
+
+  test("every run waits its turn in pi-pool's queue, across a SIGKILL in the wait, and gives its slot back", async () => {
+    const result = await crashCase("turn-wait", "faux", "slot-wait", { queuedTimes: 6 });
+    const turnCalls = result.calls.filter(call => call.argv[0] === "--cli" && (call.argv[1] === "admit" || call.argv[1] === "release"));
+    const sessions = [...new Set(turnCalls.map(call => call.argv[2]!))];
+    assert.equal(sessions.length, 2, JSON.stringify(turnCalls.map(call => call.argv)));
+    for (const session of sessions) {
+      const mine = turnCalls.filter(call => call.argv[2] === session);
+      assert.equal(mine.at(-1)!.argv[1], "release", `${session}: ${JSON.stringify(mine.map(call => call.argv.slice(1)))}`);
+      assert.ok(JSON.parse(mine[0]!.key!).key.startsWith("pi-durable:"), mine[0]!.key!);
+    }
+    // No token went out before the first run was admitted: six queued answers came first.
+    const firstVend = result.calls.findIndex(call => call.argv[0] !== "--cli");
+    const admitsBefore = result.calls.slice(0, firstVend).filter(call => call.argv[1] === "admit").length;
+    assert.ok(admitsBefore >= 7, `${admitsBefore} admits before the first vend`);
   });
 });
 

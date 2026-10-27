@@ -13,7 +13,7 @@ import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createModels } from "@earendil-works/pi-ai/models";
-import { poolProvider } from "./durable/pool-provider.ts";
+import { DURABLE_SETTINGS, poolProvider, TurnQueue } from "./durable/pool-provider.ts";
 import { DurableCommands, DurableThreads } from "./durable/index.ts";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
@@ -69,16 +69,20 @@ setChildLoaderOptions(() => ({ additionalExtensionPaths: extensions, extensionFa
 
 const dataDir = values["data-dir"] ? resolve(values["data-dir"]) : join(agentDir, "pi-host");
 // Durable threads: one pi-durable file per root thread, each its own pi-pool tree. The default model is the newest Opus (c185).
+// One line for every run on the box (pi-pool's turn queue): each durable request takes its run's place, and a settled input gives it back.
+const turns = new TurnQueue({ agentDir });
 const durable = values["no-durable"] ? undefined : new DurableCommands(new DurableThreads({
   dir: values["durable-dir"] ? resolve(values["durable-dir"]) : join(dataDir, "durable"),
   models: threadId => {
     const models = createModels();
-    models.setProvider(poolProvider({ treeKey: `pi-durable:${threadId}`, agentDir }));
+    models.setProvider(poolProvider({ treeKey: `pi-durable:${threadId}`, agentDir, turns }));
     return models;
   },
   defaultModel: values.model ? { provider, modelId: modelId.join("/") } : { provider: "anthropic", modelId: "claude-opus-5-5" },
   defaultThinkingLevel: "high",
   defaultCwd: values.cwd ? resolve(values.cwd) : homedir(),
+  settings: DURABLE_SETTINGS,
+  inputSettled: (threadId, session, runContinues) => turns.release({ root: `pi-durable:${threadId}`, session }, runContinues),
   log: line => host.log(line),
 }));
 

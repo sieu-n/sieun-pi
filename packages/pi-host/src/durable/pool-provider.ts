@@ -6,6 +6,10 @@
  * the slot and holds no request while it waits. A restart during the wait finds the sleep in storage and polls again at
  * its time. When a poll finds the slot open, the poll ends with a retryable error, and the generation's retry sends
  * the request with the new token.
+ *
+ * Every request also takes its run's place in this machine's turn queue (pi-pool `turns.py`), the one line that every
+ * Prime and Pi run on the box waits in. A queued run is deferred the same way and polls its place; the run's slot is
+ * held until `TurnQueue.release`, which pi-host calls when the conversation's input settles.
  */
 import {
   createAssistantMessageEventStream,
@@ -18,8 +22,13 @@ import {
   type StreamOptions,
 } from "@earendil-works/pi-ai";
 import type { Provider } from "@earendil-works/pi-ai/models";
+import { DEFAULT_RETRY_POLICY, type HarnessSettings } from "@earendil-works/pi-durable";
 import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { rewriteFailure, type PoolCall } from "../../../pi-pool/src/errors.ts";
+import { admitReply, placeIn, type AdmitReply } from "../../../pi-pool/src/turns.ts";
 import { defaultPoolBin, poolEnv, runPool, vendOnce, WAIT_ASK_MS, type TreeKey, type Vend } from "../../../pi-pool/src/pool-cli.ts";
 
 export interface PoolProviderOptions {
@@ -31,6 +40,8 @@ export interface PoolProviderOptions {
   agentDir?: string;
   /** The provider that sends the request with the vended token; defaults to pi-ai's anthropic provider. */
   inner?: Provider;
+  /** The machine's turn queue, shared by every thread in the process; without it requests take no place in line. */
+  turns?: TurnQueue;
   now?: () => number;
 }
 
@@ -38,6 +49,102 @@ export interface PoolProviderOptions {
 export const SLOT_HANDLE_ID = "pi-pool-slot";
 /** Retry text for a poll that found the slot open; pi-ai's retry pattern matches "service is temporarily unavailable". */
 export const SLOT_OPEN_TEXT = "pi-pool: the account slot is open; the service is temporarily unavailable until the retry sends the request";
+
+/** The deferred handle id of a turn-queue wait. */
+export const TURN_HANDLE_ID = "pi-pool-turn";
+/** Retry text for a poll that found the run's working slot started. */
+export const TURN_OPEN_TEXT = "pi-pool: the working slot is open; the service is temporarily unavailable until the retry sends the request";
+/** How often a queued run reads its place, the extension's WAIT_READ_MS in ../../../pi-pool/src/turns.ts. */
+export const TURN_POLL_MS = 1000;
+/** How often a working run renews its slot's lease, the extension's QUEUE_RENEW_MS in ../../../pi-pool/index.ts. */
+export const TURN_RENEW_MS = 5 * 60_000;
+
+/**
+ * Run settings for threads behind this provider: a turn-queue wait and a slot wait each end with one retryable error
+ * that sends the request, so each takes one attempt of the retry budget, and the budget gets those two on top of
+ * pi-durable's default, which stays for real request failures.
+ */
+export const DURABLE_SETTINGS: HarnessSettings = { retry: { maxRetries: DEFAULT_RETRY_POLICY.maxRetries + 2 } };
+
+type TurnPlace = { kind: "go" } | { kind: "wait"; position: number | null; total: number | null; askedAt: number };
+
+/**
+ * One process's view of pi-pool's turn queue: which sessions hold a working slot, asking with `admit`, renewing with
+ * `admit --renew` and letting go with `release`, as the pi-pool Pi extension does for a Pi session. A failed or
+ * unreadable ask lets the run go, as the extension does.
+ */
+export class TurnQueue {
+  private readonly held = new Map<string, number>();
+  readonly bin: string;
+  readonly turnsFile: string;
+
+  constructor(private readonly opts: { bin?: string; agentDir?: string; turnsFile?: string; now?: () => number } = {}) {
+    this.bin = opts.bin ?? defaultPoolBin();
+    this.turnsFile = opts.turnsFile ?? join(process.env.PI_POOL_DIR || join(homedir(), ".config", "pi-pool"), "turns.json");
+  }
+
+  private now(): number {
+    return (this.opts.now ?? Date.now)();
+  }
+
+  private async call(key: TreeKey, args: string[]): Promise<{ ok: boolean; out: string }> {
+    const run = await runPool(this.bin, ["--cli", ...args], poolEnv(key, this.opts.agentDir));
+    return { ok: run.code === 0, out: run.stdout.trim() || run.stderr.trim() };
+  }
+
+  private async ask(key: TreeKey): Promise<TurnPlace> {
+    const res = await this.call(key, ["admit", key.session]);
+    const reply: AdmitReply | null = res.ok ? admitReply(res.out) : null;
+    if (reply?.state === "queued") return { kind: "wait", position: reply.position, total: reply.total, askedAt: this.now() };
+    if (reply?.state === "admitted") this.held.set(key.session, this.now());
+    return { kind: "go" };
+  }
+
+  /** Before a request: go when the session holds its slot (renewing its lease when due), else ask for one. */
+  async enter(key: TreeKey): Promise<TurnPlace> {
+    const renewedAt = this.held.get(key.session);
+    if (renewedAt === undefined) return this.ask(key);
+    if (this.now() - renewedAt >= TURN_RENEW_MS) {
+      this.held.set(key.session, this.now());
+      await this.call(key, ["admit", key.session, "--renew"]);
+    }
+    return { kind: "go" };
+  }
+
+  /** At a queued run's poll: an unlocked read of turns.json, and a real ask every WAIT_ASK_MS or when the entry is gone. */
+  async poll(key: TreeKey, askedAt: number): Promise<TurnPlace> {
+    let place: ReturnType<typeof placeIn> = null;
+    try {
+      place = placeIn(readFileSync(this.turnsFile, "utf8"), key.session);
+    } catch {
+      place = null;
+    }
+    if (place?.part === "working") {
+      this.held.set(key.session, this.now());
+      return { kind: "go" };
+    }
+    if (place?.part === "queued" && this.now() - askedAt < WAIT_ASK_MS) return { kind: "wait", position: null, total: null, askedAt };
+    return this.ask(key);
+  }
+
+  /** After the session's input settled: give the slot back; `queuedInput` keeps the place for a run that starts at once. */
+  async release(key: TreeKey, queuedInput = false): Promise<void> {
+    this.held.delete(key.session);
+    await this.call(key, ["release", key.session, ...(queuedInput ? ["--queued-input"] : [])]);
+  }
+
+  holds(session: string): boolean {
+    return this.held.has(session);
+  }
+}
+
+function turnWait(model: Model<Api>, key: TreeKey, place: Extract<TurnPlace, { kind: "wait" }>): AssistantMessage {
+  const deferred: DeferredHandle = {
+    provider: model.provider, modelId: model.id, api: model.api, id: TURN_HANDLE_ID, pollAfterMs: TURN_POLL_MS,
+    data: { session: key.session, askedAt: place.askedAt, position: place.position, total: place.total },
+  };
+  return message(model, { stopReason: "deferred", deferred });
+}
 
 function message(model: Model<Api>, fields: Partial<AssistantMessage> & Pick<AssistantMessage, "stopReason">): AssistantMessage {
   return {
@@ -86,8 +193,10 @@ export function poolProvider(opts: PoolProviderOptions): Provider {
       const env = envOf(options);
       let final: AssistantMessage;
       try {
-        const got = await vendOnce(bin, model.provider, env, options?.signal);
-        if (options?.signal?.aborted) final = message(model, { stopReason: "aborted", errorMessage: "Request aborted" });
+        const place = opts.turns ? await opts.turns.enter(keyOf(options)) : ({ kind: "go" } as const);
+        const got = place.kind === "wait" ? undefined : await vendOnce(bin, model.provider, env, options?.signal);
+        if (place.kind === "wait" || got === undefined) final = turnWait(model, keyOf(options), place as Extract<TurnPlace, { kind: "wait" }>);
+        else if (options?.signal?.aborted) final = message(model, { stopReason: "aborted", errorMessage: "Request aborted" });
         else if (got.kind === "wait") final = slotWait(model, got, now());
         else if (got.kind === "failed") final = noToken(model, got.reason);
         else {
@@ -118,8 +227,21 @@ export function poolProvider(opts: PoolProviderOptions): Provider {
     getModels: () => inner.getModels(),
     stream: (model, context, options) => send(model, options, o => inner.stream(model, context, o)),
     streamSimple: (model, context, options) => send(model, options, o => inner.streamSimple(model, context, o)),
-    // Only slot waits are deferred here: a poll asks the pool again, and an open slot ends the poll with a retryable error.
+    // Only slot and turn waits are deferred here: a poll asks the pool again, and an open slot ends the poll with a retryable error.
     fetchDeferred: (model, handle, options) => {
+      if (handle.id === TURN_HANDLE_ID) {
+        const out = createAssistantMessageEventStream();
+        void (async () => {
+          // The poll's options carry no session id, so the wait's handle names the session that asked.
+          const data = (handle.data ?? {}) as { session?: unknown; askedAt?: unknown };
+          const key: TreeKey = { root: opts.treeKey, session: typeof data.session === "string" ? data.session : keyOf(options).session };
+          const place = opts.turns ? await opts.turns.poll(key, Number(data.askedAt ?? 0)) : ({ kind: "go" } as const);
+          const final = place.kind === "wait" ? turnWait(model, key, place) : message(model, { stopReason: "error", errorMessage: TURN_OPEN_TEXT });
+          for await (const event of ended(final) as AsyncIterable<AssistantMessageEvent>) out.push(event);
+          out.end(final);
+        })();
+        return out;
+      }
       if (handle.id !== SLOT_HANDLE_ID) return ended(message(model, { stopReason: "error", errorMessage: `pi-pool: unknown deferred handle ${handle.id}` }));
       const out = createAssistantMessageEventStream();
       void (async () => {

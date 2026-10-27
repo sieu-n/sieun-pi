@@ -59,7 +59,7 @@ Each command is one JSON line with `type` and `id`, and the response is a v7 `re
 | `durable_tree` | `thread` | `conversations`: id, parent, ownerTask, name, depth, status, model, createdAt. |
 | `durable_entries` | `thread`, `conversation?`, `before?`, `after?`, `limit?` | `entries` newest first (oldest first with `after`), `more`. |
 | `durable_search` | `q`, `threads?`, `from?`, `after?`, `before?`, `limit?`, `sort?` (relevance, recent) | `hits`: thread, conversation, entryId, kind, author, at, snippet with `<mark>`. |
-| `durable_usage` | `since?`, `until?`, `threads?` | `usage`: per thread and model, turns and token and cost sums. |
+| `durable_usage` | `since?`, `until?`, `threads?` | `usage`: per thread and model, turns, input, output, cacheRead and cacheWrite tokens, and cost with costInput, costOutput, costCacheRead and costCacheWrite apart. |
 | `durable_doc_get` | `thread`, `name`, `conversation?` | `value` |
 | `durable_doc_put` | `thread`, `name`, `value`, `conversation?` | |
 | `durable_set` | `thread`, `name?`, `model?`, `thinkingLevel?`, `archived?` | `thread` |
@@ -113,11 +113,16 @@ end
 
 1. One thread is one pool tree: `PI_POOL_SESSION_KEY` carries `pi-durable:<thread id>` as the root and the conversation's `pi.provider` session id as the active session, so a child conversation draws from the root's account.
 2. A poll that finds the slot open ends with a retryable error, because pi-durable's `fetchDeferred` gets only the handle and not the transcript, so each slot wait costs one attempt of `settings.retry.maxRetries`.
-3. pi-pool's turn queue (`admit` and `release` around a run) is not wired here yet.
+3. Each request first takes its run's place in pi-pool's turn queue, the one line every Prime and Pi run on the box waits in, through `TurnQueue` (`admit <session>` under the thread's tree).
+4. A queued run is deferred like a slot wait: its stored sleep reads its place in `turns.json` each second and asks again every 30 s, as the pi-pool extension does, and a crash during the wait resumes the poll from the file.
+5. When the slot starts, the poll ends with a retryable error and the retry sends the request, so `DURABLE_SETTINGS` gives the retry budget two attempts on top of pi-durable's default, one for the turn wait and one for the slot wait.
+6. A working session renews its lease from its requests every 5 minutes, and pi-host releases the slot when the conversation's input settles, with `--queued-input` when a run goes on.
+7. A crash drops the host's queue entries once pi-pool sees the process gone, so a resumed run asks again and keeps its place only through pi-pool's own `kept` rules.
 
 ## Crash tests
 
-1. `test/durable/host-crash.test.ts` starts a real pi-host in a child process, submits through the socket, sends SIGKILL while the subagent streams or while a pool slot wait sleeps, starts a new pi-host on the same folder and checks through the socket that the host reopened the thread by itself and that the input was answered once, with the child's answer as the tool result, plus search, usage and documents after the restart.
+1. `test/durable/host-crash.test.ts` starts a real pi-host in a child process, submits through the socket, sends SIGKILL while the subagent streams, while a pool slot wait sleeps or while the run waits in the turn queue, starts a new pi-host on the same folder and checks through the socket that the host reopened the thread by itself and that the input was answered once, with the child's answer as the tool result, plus search, usage and documents after the restart.
+   In the turn-queue case it also checks that no token went out before the admit and that every session that asked gave its slot back.
 2. `test/durable/crash.test.ts` does the same on one file without pi-host, with kills mid root stream, mid child stream and in a slot wait.
 3. Both run on the faux provider behind the real pool wrapper and `pi-pool/test/fake-pool.mjs`, and `PI_DURABLE_REAL=1` adds a case on the real `claude-opus-5-5` through pi-pool.
 

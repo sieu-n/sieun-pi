@@ -11,7 +11,7 @@ import { fauxProvider } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { poolProvider } from "../../src/durable/pool-provider.ts";
+import { DURABLE_SETTINGS, poolProvider, TurnQueue } from "../../src/durable/pool-provider.ts";
 import { fauxRespond, MODEL } from "./crash-scenario.ts";
 import { DurableCommands, DurableThreads } from "../../src/durable/index.ts";
 import { PiHost } from "../../src/host.ts";
@@ -21,21 +21,27 @@ const [socket, dir, mode] = process.argv.slice(2);
 if (!socket || !dir || (mode !== "faux" && mode !== "real")) throw new Error("usage: host-worker.ts <socket> <dir> <faux|real>");
 const here = dirname(fileURLToPath(import.meta.url));
 
+const fakePool = join(here, "..", "..", "..", "pi-pool", "test", "fake-pool.mjs");
+const turns = mode === "real" ? new TurnQueue() : new TurnQueue({ bin: fakePool, turnsFile: join(dir, "pool", "turns.json") });
+
 function modelsFor(threadId: string) {
   const models = createModels();
   const treeKey = `pi-durable:${threadId}`;
   if (mode === "real") {
-    models.setProvider(poolProvider({ treeKey }));
+    models.setProvider(poolProvider({ treeKey, turns }));
     return models;
   }
   const faux = fauxProvider({ provider: "anthropic", models: [{ id: MODEL.modelId }], tokensPerSecond: 40 });
   faux.setResponses(Array.from({ length: 64 }, () => fauxRespond));
-  models.setProvider(poolProvider({ treeKey, bin: join(here, "..", "..", "..", "pi-pool", "test", "fake-pool.mjs"), inner: faux.provider }));
+  models.setProvider(poolProvider({ treeKey, bin: fakePool, inner: faux.provider, turns }));
   return models;
 }
 
 const log = (line: string) => process.stderr.write(`${new Date().toISOString()} ${line}\n`);
-const threads = new DurableThreads({ dir: join(dir, "durable"), models: modelsFor, defaultModel: MODEL, defaultThinkingLevel: mode === "real" ? "high" : "off", defaultCwd: dir, log });
+const threads = new DurableThreads({ dir: join(dir, "durable"), models: modelsFor, defaultModel: MODEL, defaultThinkingLevel: mode === "real" ? "high" : "off", defaultCwd: dir, log,
+  settings: DURABLE_SETTINGS,
+  inputSettled: (threadId, session, runContinues) => turns.release({ root: `pi-durable:${threadId}`, session }, runContinues),
+});
 const durable = new DurableCommands(threads);
 const host = new PiHost({ agentDir: join(dir, "agent"), dataDir: join(dir, "data"), extensions: [], idleUnloadMs: 0, durable, log });
 await listen(host, socket);

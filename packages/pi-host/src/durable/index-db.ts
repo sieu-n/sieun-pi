@@ -68,6 +68,10 @@ export interface UsageRow {
   cacheRead: number;
   cacheWrite: number;
   cost: number;
+  costInput: number;
+  costOutput: number;
+  costCacheRead: number;
+  costCacheWrite: number;
 }
 
 export interface UsageTotal {
@@ -79,6 +83,10 @@ export interface UsageTotal {
   cacheRead: number;
   cacheWrite: number;
   cost: number;
+  costInput: number;
+  costOutput: number;
+  costCacheRead: number;
+  costCacheWrite: number;
 }
 
 const SCHEMA = `
@@ -95,6 +103,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS entries USING fts5(
 CREATE TABLE IF NOT EXISTS usage (
   thread TEXT NOT NULL, conversation INTEGER NOT NULL, entry_id INTEGER NOT NULL, model TEXT NOT NULL, at INTEGER NOT NULL,
   input INTEGER NOT NULL, output INTEGER NOT NULL, cache_read INTEGER NOT NULL, cache_write INTEGER NOT NULL, cost REAL NOT NULL,
+  cost_input REAL NOT NULL DEFAULT 0, cost_output REAL NOT NULL DEFAULT 0, cost_cache_read REAL NOT NULL DEFAULT 0, cost_cache_write REAL NOT NULL DEFAULT 0,
   PRIMARY KEY (thread, entry_id)
 );
 CREATE INDEX IF NOT EXISTS usage_at ON usage (at);
@@ -125,11 +134,21 @@ export function ftsQuery(q: string): string {
 
 export class ThreadIndex {
   private readonly db: DatabaseSync;
+  /** Set when this open changed the schema of derived rows, so every thread's search and usage rows are read again. */
+  readonly rebuilt: boolean = false;
 
   constructor(path: string) {
     this.db = new DatabaseSync(path);
     this.db.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;");
     this.db.exec(SCHEMA);
+    const columns = (this.db.prepare("PRAGMA table_info(usage)").all() as Row[]).map(row => String(row.name));
+    if (!columns.includes("cost_input")) {
+      // An index from before the cost split: its usage rows lack the four costs, so every thread's derived rows start over.
+      this.db.exec(`ALTER TABLE usage ADD COLUMN cost_input REAL NOT NULL DEFAULT 0; ALTER TABLE usage ADD COLUMN cost_output REAL NOT NULL DEFAULT 0;
+        ALTER TABLE usage ADD COLUMN cost_cache_read REAL NOT NULL DEFAULT 0; ALTER TABLE usage ADD COLUMN cost_cache_write REAL NOT NULL DEFAULT 0;
+        DELETE FROM entries; DELETE FROM usage; UPDATE threads SET indexed_entry = 0;`);
+      this.rebuilt = true;
+    }
   }
 
   close(): void {
@@ -207,11 +226,13 @@ export class ThreadIndex {
     if (!fresh.length && !freshUsage.length) return;
     const top = Math.max(mark, ...fresh.map(entry => entry.entryId), ...freshUsage.map(row => row.entryId));
     const insert = this.db.prepare("INSERT INTO entries (text, thread, conversation, entry_id, kind, author, at) VALUES (?, ?, ?, ?, ?, ?, ?)");
-    const insertUsage = this.db.prepare("INSERT OR IGNORE INTO usage (thread, conversation, entry_id, model, at, input, output, cache_read, cache_write, cost) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+    const insertUsage = this.db.prepare(`INSERT OR IGNORE INTO usage (thread, conversation, entry_id, model, at, input, output, cache_read, cache_write, cost,
+      cost_input, cost_output, cost_cache_read, cost_cache_write) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
     this.db.exec("BEGIN");
     try {
       for (const entry of fresh) if (entry.text) insert.run(entry.text, entry.thread, entry.conversation, entry.entryId, entry.kind, entry.author, entry.at);
-      for (const row of freshUsage) insertUsage.run(row.thread, row.conversation, row.entryId, row.model, row.at, row.input, row.output, row.cacheRead, row.cacheWrite, row.cost);
+      for (const row of freshUsage) insertUsage.run(row.thread, row.conversation, row.entryId, row.model, row.at, row.input, row.output, row.cacheRead, row.cacheWrite, row.cost,
+        row.costInput, row.costOutput, row.costCacheRead, row.costCacheWrite);
       this.db.prepare("UPDATE threads SET indexed_entry = ? WHERE id = ?").run(top, thread);
       this.db.exec("COMMIT");
     } catch (error) {
@@ -249,10 +270,12 @@ export class ThreadIndex {
     if (range.until !== undefined) { where.push("at < ?"); values.push(range.until); }
     if (range.threads?.length) { where.push(`thread IN (${range.threads.map(() => "?").join(", ")})`); values.push(...range.threads); }
     const sql = `SELECT thread, model, COUNT(*) AS turns, SUM(input) AS input, SUM(output) AS output, SUM(cache_read) AS cache_read,
-      SUM(cache_write) AS cache_write, SUM(cost) AS cost FROM usage ${where.length ? `WHERE ${where.join(" AND ")}` : ""} GROUP BY thread, model ORDER BY thread, model`;
+      SUM(cache_write) AS cache_write, SUM(cost) AS cost, SUM(cost_input) AS cost_input, SUM(cost_output) AS cost_output,
+      SUM(cost_cache_read) AS cost_cache_read, SUM(cost_cache_write) AS cost_cache_write FROM usage ${where.length ? `WHERE ${where.join(" AND ")}` : ""} GROUP BY thread, model ORDER BY thread, model`;
     return (this.db.prepare(sql).all(...values) as Row[]).map(row => ({
       thread: String(row.thread), model: String(row.model), turns: Number(row.turns), input: Number(row.input), output: Number(row.output),
       cacheRead: Number(row.cache_read), cacheWrite: Number(row.cache_write), cost: Number(row.cost),
+      costInput: Number(row.cost_input), costOutput: Number(row.cost_output), costCacheRead: Number(row.cost_cache_read), costCacheWrite: Number(row.cost_cache_write),
     }));
   }
 

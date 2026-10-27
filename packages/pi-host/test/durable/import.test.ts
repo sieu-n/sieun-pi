@@ -16,7 +16,7 @@ const dir = mkdtempSync(join(tmpdir(), "pi-host-import-"));
 after(() => rmSync(dir, { recursive: true, force: true }));
 
 const MODEL = { provider: "anthropic", modelId: "claude-opus-5-5" };
-const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0.1, output: 0.2, cacheRead: 0.03, cacheWrite: 0.04, total: 0.37 } };
 const assistant = (text: string, ts: number) => ({ role: "assistant", content: [{ type: "text", text }], api: "anthropic-messages", provider: "anthropic", model: "claude-opus-5-5", usage, stopReason: "stop", timestamp: ts });
 const lines = [
   { type: "session", version: 3, id: "old-thread", timestamp: "2026-10-20T00:00:00.000Z", cwd: dir },
@@ -58,7 +58,9 @@ test("a Prime session imports as a thread, and the next input sees the summary a
     assert.deepEqual(entries.reverse().map(entry => entry.kind), ["pi.user", "pi.assistant", "pi.user", "pi.assistant", "pi.compaction", "prime.custom", "pi.assistant"]);
     assert.equal(threads.search({ q: "zebras" }).length, 0);
     assert.equal(threads.search({ q: "alpacas" }).length >= 2, true);
-    assert.equal(threads.usage({ threads: [thread.id] })[0]?.turns, 3);
+    const [usageRow] = threads.usage({ threads: [thread.id] });
+    assert.equal(usageRow?.turns, 3);
+    assert.deepEqual([usageRow!.costInput, usageRow!.costOutput, usageRow!.costCacheRead, usageRow!.costCacheWrite, usageRow!.cost].map(n => Math.round(n * 100) / 100), [0.3, 0.6, 0.09, 0.12, 1.11]);
 
     const { submission } = await threads.submit(thread.id, { text: "what next?", requestId: "after-import" });
     const settled = await threads.wait(thread.id, submission);
