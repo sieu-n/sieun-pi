@@ -169,3 +169,18 @@ test("openai-codex vends in the stream wrapper and a 429 moves it to the next ac
   assert.deepEqual(keys, ["codex-token-A", "codex-token-B"]);
   await rt.dispose();
 });
+
+test("a session on a provider outside the pool never enters the turn queue or vends", async () => {
+  const dir = join(root, "faux");
+  mkdirSync(join(dir, "pool"), { recursive: true });
+  writeFileSync(join(dir, "pool", "state.json"), JSON.stringify({ accounts: ["A"], current: 0, queuedTimes: 100 }));
+  writeFileSync(join(dir, "pool", "turns.json"), "{}");
+  process.env.FAKE_POOL_DIR = join(dir, "pool");
+  const ext = createPoolExtension({ bin: FAKE, turnsFile: join(dir, "pool", "turns.json"), agentDir: join(dir, "agent") });
+  const rt = await openRuntime({ root: dir, extensionFactories: [ext] });
+  await rt.session.prompt("hi");
+  assert.equal(rt.session.getLastAssistantText(), "faux reply");
+  const calls = readFileSync(join(dir, "pool", "calls.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line) as { argv: string[] });
+  assert.deepEqual(calls.filter(c => c.argv[0] === "--provider" || ["admit", "release"].includes(c.argv[1])), []);
+  await rt.dispose();
+});

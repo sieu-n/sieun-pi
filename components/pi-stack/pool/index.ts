@@ -310,6 +310,8 @@ export function createPoolExtension(opts: PoolOptions = {}): ExtensionFactory {
       })().catch(() => {}));
     });
     pi.on("context", async (_event, ctx) => {
+      // Only a pooled provider's run spends a pool account, so only its runs take a working slot.
+      if (!ctx.model || !POOLED_PROVIDERS.has(ctx.model.provider)) return undefined;
       const sid = sessionIdOf(ctx);
       if (!sid) return undefined;
       await started.get(sid);
