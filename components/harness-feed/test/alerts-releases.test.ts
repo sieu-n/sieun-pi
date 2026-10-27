@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { cpSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -6,7 +7,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promName, type Context, type Sample } from "../otlp.ts";
-import { briefSamples, bridgeSamples, parseBridge, toolSamples, parseChatJobs, parseWake, procStart, read, resumeSamples, sdkView, statusSamples, supervisorStart, wakeSamples } from "../readers/alerts-releases.ts";
+import { briefSamples, bridgeSamples, expectedSessions, parseBridge, toolSamples, parseChatJobs, parseWake, procStart, read, resumeSamples, sdkView, statusSamples, supervisorStart, wakeSamples } from "../readers/alerts-releases.ts";
 
 const FIXTURE = fileURLToPath(new URL("./fixtures/alerts-releases/home", import.meta.url));
 const NOW = 1792430000000;
@@ -15,8 +16,11 @@ const CRAWLER = "01a115e2-9544-7204-b8db-8ce4d5319048";
 const value = (samples: readonly Sample[], name: string, labels: Record<string, string> = {}): number | undefined =>
   samples.find(s => s.name === name && Object.entries(labels).every(([key, want]) => s.labels?.[key] === want))?.value;
 
-/** The fixture home in a temp folder, with the `current` symlink and a relay.json naming a fake daemon socket that says `hello`. */
-async function home(t: { after(fn: () => void): void }, hello: object | null): Promise<string> {
+/**
+ * The fixture home in a temp folder, with the `current` symlink and a relay.json naming a fake daemon socket that says `hello` and answers a
+ * `list` command with `rows`, or with an error when `rows` is null.
+ */
+async function home(t: { after(fn: () => void): void }, hello: object | null, rows: object[] | null = []): Promise<string> {
   const dir = mkdtempSync(join(tmpdir(), "alerts-releases-"));
   cpSync(FIXTURE, dir, { recursive: true });
   symlinkSync("release-abc1234", join(dir, ".local/share/sieun-pi-chat/current"));
@@ -25,7 +29,14 @@ async function home(t: { after(fn: () => void): void }, hello: object | null): P
   mkdirSync(sdk, { recursive: true });
   writeFileSync(join(sdk, "package.json"), JSON.stringify({ name: "prime-agent", version: "0.9.8" }));
   const socket = join(dir, "daemon.sock");
-  const server = createServer(connection => { if (hello) connection.write(`${JSON.stringify(hello)}\n`); });
+  const server = createServer(connection => {
+    if (hello) connection.write(`${JSON.stringify(hello)}\n`);
+    connection.on("data", chunk => {
+      const command = JSON.parse(chunk.toString("utf8").trim()) as { id: string; command: { type: string } };
+      if (command.command.type !== "list") return;
+      connection.write(`${JSON.stringify(rows ? { type: "response", id: command.id, success: true, data: { sessions: rows } } : { type: "response", id: command.id, success: false, error: "Daemon is preparing an update restart" })}\n`);
+    });
+  });
   await new Promise<void>(done => server.listen(socket, done));
   const config = join(dir, ".config/prime-relay");
   mkdirSync(config, { recursive: true });
@@ -83,8 +94,9 @@ test("the chat host round reads the bridge, resumes, wakes, releases and the dae
 test("off the chat host only the daemon and relay read, and a silent daemon reads down", async t => {
   const dir = await home(t, null);
   const samples = await read(context(dir, false));
-  assert.deepEqual(samples.map(s => s.name), ["harness.prime.daemon_up"]);
-  assert.equal(samples[0]!.value, 0);
+  assert.deepEqual([...new Set(samples.map(s => s.name))], ["harness.prime.daemon_up", "harness.prime.sessions_expected", "harness.prime.sessions_expected_from"]);
+  assert.equal(value(samples, "harness.prime.daemon_up"), 0);
+  assert.equal(value(samples, "harness.prime.sessions_expected"), 0);
 });
 
 test("a version 4 bridge state keeps its triage jobs apart, and a job that is not the chat's current one and never ran owes the fire", () => {
@@ -167,4 +179,90 @@ test("Chat rules count a chat behind when its last loaded brief is not the live 
   const samples = briefSamples("abcd1234", ["a", "b", "c"], { briefs: { a: "abcd1234", b: "00000000" } }, id => id);
   assert.equal(value(samples, "harness.release.brief_behind"), 2);
   assert.equal(value(samples, "harness.release.brief_up_to_date", { chat: "a" }), 1);
+});
+
+// Prime's update and worker files ----------------------------------------------------------------------------------------------------------
+
+/** Prime's folders for the daemon on `socket` under `<dir>/.prime/agent`, keyed as Prime keys them: sha256 of the resolved socket path. */
+function primeDirs(dir: string, socket: string) {
+  const agent = join(dir, ".prime/agent");
+  const hash = createHash("sha256").update(socket).digest("hex");
+  const dirs = { agent, hash, recoveries: join(agent, "daemon-update-restarts", `${hash}.recoveries`), workers: join(agent, "daemon-workers", hash.slice(0, 12)),
+    updates: join(agent, "update-restarts") };
+  for (const path of [dirs.recoveries, dirs.workers, dirs.updates]) mkdirSync(path, { recursive: true });
+  return dirs;
+}
+const sessionFile = (i: number) => `/home/sieun/.prime/agent/sessions/s${i}.jsonl`;
+const recovery = (i: number, state: object) => ({ formatVersion: 1, updateId: `2026-10-27T08:47:10.960Z:${i}`, manifestCreatedAt: "2026-10-27T08:47:10.960Z", order: i,
+  session: { activeSessionId: `a${i}`, sessionId: `s${i}`, sessionFile: sessionFile(i), shouldResume: true }, admission: "never_admitted", createUncertain: false,
+  attempts: [], state });
+const descriptor = (i: number, lifecycle: string) => ({ version: 2, workerId: `w${i}`, pid: 999_999_9, rootSessionId: `s${i}`, sessionFile: sessionFile(i), lifecycle });
+
+/**
+ * us-metal02 on 10-27 between 10:06Z and 12:56Z: the ctl's update coordinator had failed (restore-failed-successor-adopted, restored 0 of 188),
+ * so its record reads phase failed, the 188 manifest sessions sat as pending recoveries, 39 root workers as recovering descriptors with dead
+ * pids, and 16 failed descriptors from before. The old supervisor still answered daemon_hello and `list`, with no session loaded.
+ */
+function emptyStretch(dir: string, socket: string): void {
+  const prime = primeDirs(dir, socket);
+  for (let i = 0; i < 188; i++) writeFileSync(join(prime.recoveries, `r${i}.json`), JSON.stringify(recovery(i, { status: "pending" })));
+  for (let i = 0; i < 39; i++) writeFileSync(join(prime.workers, `w${i}.json`), JSON.stringify(descriptor(i, "recovering")));
+  for (let i = 0; i < 16; i++) writeFileSync(join(prime.workers, `f${i}.json`), JSON.stringify(descriptor(500 + i, "failed")));
+  writeFileSync(join(prime.updates, "ctl-651897-1793090758.json"), JSON.stringify({ version: 1, phase: "failed", socketPath: socket, coordinator: { pid: process.pid } }));
+  writeFileSync(join(prime.updates, "ctl-651897-1793090758.planned.json"), JSON.stringify({ manifests: { [`${prime.hash}.json`]: { sessions: [{ sessionFile: sessionFile(0) }] } } }));
+}
+
+/** A box after Prime restored everything: every recovery record recovered or stopped, the failed descriptors left over, and nothing loaded. */
+function idleBox(dir: string, socket: string): void {
+  const prime = primeDirs(dir, socket);
+  for (let i = 0; i < 161; i++) writeFileSync(join(prime.recoveries, `r${i}.json`), JSON.stringify(recovery(i, { status: "recovered", at: "2026-10-27T13:03:12.795Z", activeSessionId: `n${i}`, resumed: true })));
+  for (let i = 161; i < 188; i++) writeFileSync(join(prime.recoveries, `r${i}.json`), JSON.stringify(recovery(i, { status: "stopped", at: "2026-10-27T13:02:50.904Z", reason: "parent_not_restored" })));
+  for (let i = 0; i < 16; i++) writeFileSync(join(prime.workers, `f${i}.json`), JSON.stringify(descriptor(500 + i, "failed")));
+}
+
+const idleRows = [{ sessionId: "s1", lifecycle: "live", isSessionActive: false }, { sessionId: "s2", lifecycle: "live", isSessionActive: false }];
+
+test("the 10-27 empty stretch reads the daemon up with 0 sessions loaded and 188 Prime should restore", async t => {
+  const dir = await home(t, { type: "daemon_hello", protocol: { name: "prime-agent.daemon", version: 37 } }, idleRows);
+  emptyStretch(dir, join(dir, "daemon.sock"));
+  const samples = await read(context(dir, false));
+  assert.equal(value(samples, "harness.prime.daemon_up"), 1);
+  assert.equal(value(samples, "harness.prime.list_ok"), 1);
+  assert.equal(value(samples, "harness.prime.sessions_loaded"), 0);
+  assert.equal(value(samples, "harness.prime.sessions_expected"), 188, "the 39 recovering roots are among the 188 recoveries");
+  assert.deepEqual(["recovery", "manifest", "worker", "update"].map(source => value(samples, "harness.prime.sessions_expected_from", { source })), [188, 0, 39, 0]);
+  assert.equal(promName({ name: "harness.prime.sessions_expected", kind: "gauge" }), "harness_prime_sessions_expected");
+});
+
+test("a really idle box reads 0 loaded and 0 expected, since restored and stopped recoveries and failed workers expect nothing", async t => {
+  const dir = await home(t, { type: "daemon_hello", protocol: { name: "prime-agent.daemon", version: 37 } }, idleRows);
+  idleBox(dir, join(dir, "daemon.sock"));
+  const samples = await read(context(dir, false));
+  assert.equal(value(samples, "harness.prime.sessions_loaded"), 0);
+  assert.equal(value(samples, "harness.prime.sessions_expected"), 0);
+});
+
+test("loaded counts only the rows the daemon marks isSessionActive, and a refused list reads list_ok 0 with no loaded count", async t => {
+  const busy = await home(t, { type: "daemon_hello", protocol: { name: "prime-agent.daemon", version: 37 } },
+    [{ sessionId: "s1", isSessionActive: true }, { sessionId: "s2", isSessionActive: true }, { sessionId: "s3", isSessionActive: false }]);
+  const samples = await read(context(busy, false));
+  assert.equal(value(samples, "harness.prime.sessions_loaded"), 2);
+  const refusing = await home(t, { type: "daemon_hello", protocol: { name: "prime-agent.daemon", version: 37 } }, null);
+  const refused = await read(context(refusing, false));
+  assert.equal(value(refused, "harness.prime.list_ok"), 0);
+  assert.equal(value(refused, "harness.prime.sessions_loaded"), undefined);
+});
+
+test("a prepared manifest and the plan of an update coordinator that still runs count, and a coordinator that is gone does not", async t => {
+  const dir = mkdtempSync(join(tmpdir(), "expected-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const socket = "/tmp/prime-agent-1001/daemon.sock";
+  const prime = primeDirs(dir, socket);
+  writeFileSync(join(prime.agent, "daemon-update-restarts", `${prime.hash}.json`), JSON.stringify({ formatVersion: 1, sessions: [{ sessionFile: sessionFile(1) }, { sessionFile: sessionFile(2) }] }));
+  writeFileSync(join(prime.updates, "ctl-7-1.json"), JSON.stringify({ version: 1, phase: "restoring", socketPath: socket, coordinator: { pid: 7, processStartId: "proc:70" } }));
+  writeFileSync(join(prime.updates, "ctl-7-1.planned.json"), JSON.stringify({ manifests: { [`${prime.hash}.json`]: { sessions: [1, 2, 3].map(i => ({ sessionFile: sessionFile(i) })) } } }));
+  const running = await expectedSessions(prime.agent, socket, async pid => pid === 7 ? "proc:70" : null);
+  assert.deepEqual([running.manifest.size, running.update.size, running.recovery.size, running.worker.size], [2, 3, 0, 0]);
+  const gone = await expectedSessions(prime.agent, socket, async () => null);
+  assert.equal(gone.update.size, 0);
 });

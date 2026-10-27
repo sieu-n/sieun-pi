@@ -1,8 +1,10 @@
+import { createHash } from "node:crypto";
 import { open, readdir, readFile, readlink, stat } from "node:fs/promises";
 import { createConnection } from "node:net";
 import { tmpdir, userInfo } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { primeUpdateRunning } from "../../user-history/src/prime-update.ts";
 import type { Context, Sample } from "../otlp.ts";
 
 // alerts-releases: the alert bridge, held resumes and saved job states, board wakes, chat releases and the Updates pane on the chat host, and
@@ -18,6 +20,11 @@ const REOPEN_MS = 24 * 3_600_000;
 const RESUME_PENDING_FRESH_MS = 2 * 10 * MIN + MIN;
 /** components/prime-relay/relay.mjs daemonAnswers: the daemon is up when its socket says daemon_hello within 1.5 s. */
 const HELLO_MS = 1500;
+/**
+ * relay.mjs daemonWorking waits 10 s for the same `list` every 30 s on the Mac. measured: `prime-agent list --json` took 1.2 s wall and 0.7 s
+ * CPU on us-metal02 at 14:12Z on 10-27, a 4 MB answer with 118 loaded sessions.
+ */
+const LIST_MS = 10_000;
 /** Linux USER_HZ, the unit of /proc/<pid>/stat starttime. */
 const CLOCK_TICKS = 100;
 const OTHER = "other";
@@ -139,17 +146,114 @@ async function prime(ctx: Context): Promise<Sample[]> {
   const relay = await readJson(join(ctx.home, ".config/prime-relay/relay.json"));
   const config = isRecord(relay) ? relay : {};
   const socketPath = typeof config.daemonSocket === "string" ? config.daemonSocket : join(ctx.platform === "darwin" ? tmpdir() : "/tmp", `prime-agent-${userInfo().uid}`, "daemon.sock");
-  const [said, boot, relayUp] = await Promise.all([daemonHello(socketPath), bootMs(), relayHealth(config)]);
+  const [said, boot, relayUp, expected] = await Promise.all([daemonHello(socketPath), bootMs(), relayHealth(config),
+    expectedSessions(join(ctx.home, ".prime/agent"), socketPath)]);
   const out: Sample[] = [
     gauge("harness.prime.daemon_up", "1 when the Prime daemon socket answers daemon_hello within 1.5 s, the check prime-relay's /v1/health and the Hosts pane use.", said ? 1 : 0),
+    ...expectedSamples(expected),
   ];
   if (relayUp !== null) out.push(gauge("harness.prime.relay_up", "1 when this box's prime-relay answers /v1/health with ok, the check the chat's Hosts pane makes of each box.", relayUp ? 1 : 0));
   if (!said) return out;
+  const loaded = await daemonLoaded(socketPath);
+  out.push(gauge("harness.prime.list_ok", "1 when the daemon answered its `list` within 10 s with a session list.", loaded === null ? 0 : 1));
+  if (loaded !== null) out.push(gauge("harness.prime.sessions_loaded", "Sessions the daemon holds loaded now (`isSessionActive` in its `list`, the rows `prime-agent list --json` marks resident).", loaded));
   out.push(gauge("harness.prime.daemon_hello", "How long the daemon socket took to say daemon_hello.", said.ms / 1000, undefined, "s"));
   const started = supervisorStart(said.hello.supervisorProcessStartId, boot);
   if (started !== undefined) out.push(gauge("harness.prime.daemon_uptime", "How long the Prime daemon supervisor has run.", seconds(ctx.now - started), undefined, "s"));
   if (typeof said.hello.appVersion === "string") out.push(gauge("harness.prime.daemon_version", "1 for the version the Prime daemon reports in daemon_hello.", 1, { version: said.hello.appVersion }));
   return out;
+}
+
+/**
+ * How many sessions the daemon holds loaded: the rows of one `list` (not `all`, as `prime-agent list --json` asks) with `isSessionActive`, the
+ * count resident-before.json took at 08:45Z on 10-27. Null when the daemon did not answer within LIST_MS or answered with an error.
+ */
+export function daemonLoaded(socketPath: string, waitMs = LIST_MS): Promise<number | null> {
+  return new Promise(resolve => {
+    const socket = createConnection(socketPath);
+    const pending: Buffer[] = [];
+    let finished = false;
+    const done = (value: number | null) => { finished = true; socket.destroy(); resolve(value); };
+    const line = (text: string) => {
+      let message: unknown;
+      try { message = JSON.parse(text); } catch { return; }
+      if (!isRecord(message)) return;
+      if (message.type === "daemon_hello") {
+        socket.write(`${JSON.stringify({ type: "command", id: "harness-feed-list", protocol: message.protocol, clientId: "harness-feed", command: { id: "harness-feed-list", type: "list" } })}\n`);
+      } else if (message.id === "harness-feed-list") {
+        const rows = message.success === true && isRecord(message.data) && Array.isArray(message.data.sessions) ? message.data.sessions : null;
+        done(rows ? rows.filter(row => isRecord(row) && row.isSessionActive === true).length : null);
+      }
+    };
+    socket.setTimeout(waitMs, () => done(null));
+    socket.once("error", () => done(null));
+    socket.once("end", () => done(null));
+    socket.on("data", (chunk: Buffer) => {
+      let start = 0;
+      for (let end = chunk.indexOf(10); end >= 0 && !finished; end = chunk.indexOf(10, start)) {
+        pending.push(chunk.subarray(start, end));
+        const text = Buffer.concat(pending).toString("utf8");
+        pending.length = 0;
+        start = end + 1;
+        line(text);
+      }
+      if (!finished && start < chunk.length) pending.push(chunk.subarray(start));
+    });
+  });
+}
+
+/** Where Prime knows of sessions it should hold loaded, each read from its own files for the daemon on one socket. */
+export type ExpectedSource = "recovery" | "manifest" | "worker" | "update";
+export type Expected = Record<ExpectedSource, Set<string>>;
+
+const sessionFiles = (sessions: unknown): string[] => Array.isArray(sessions)
+  ? sessions.flatMap(session => isRecord(session) && typeof session.sessionFile === "string" ? [session.sessionFile] : [])
+  : [];
+
+async function jsonFiles(dir: string): Promise<unknown[]> {
+  const names = (await readdir(dir).catch(() => [] as string[])).filter(name => name.endsWith(".json"));
+  return Promise.all(names.map(name => readJson(join(dir, name))));
+}
+
+/**
+ * The session files Prime should hold loaded on this daemon, by source, read only from its files. Prime keys them by the sha256 of the resolved
+ * socket path (config.ts getDaemonUpdateRestartManifestPath, daemon-supervisor.ts descriptorKey).
+ * - recovery: `daemon-update-restarts/<hash>.recoveries/*.json` records still `pending` or `unresolved`, which the supervisor restores on start
+ *   (daemon-update-restart-recovery.ts daemonUpdateRestartRecoveryViews). On 10-27 all 188 sessions of the 08:47Z update sat here until 12:56Z.
+ * - manifest: `daemon-update-restarts/<hash>.json`, the sessions an update prepare wrote down for its successor to restore.
+ * - worker: `daemon-workers/<hash12>/*.json` descriptors in lifecycle `recovering`, workers the supervisor brings back. 39 sat there from
+ *   08:48Z on 10-27, each with a dead pid.
+ * - update: the planned manifests of an update coordinator that still runs (`update-restarts/<record>.planned.json` beside the record
+ *   prime-update.ts primeUpdateRunning finds), 188 sessions from 08:47Z to 10:06Z on 10-27.
+ */
+export async function expectedSessions(agentDir: string, socketPath: string,
+  startId?: (pid: number) => Promise<string | null>): Promise<Expected> {
+  const hash = createHash("sha256").update(resolve(socketPath)).digest("hex");
+  const restarts = join(agentDir, "daemon-update-restarts");
+  const [records, manifest, descriptors, running] = await Promise.all([
+    jsonFiles(join(restarts, `${hash}.recoveries`)),
+    readJson(join(restarts, `${hash}.json`)),
+    jsonFiles(join(agentDir, "daemon-workers", hash.slice(0, 12))),
+    primeUpdateRunning(agentDir, socketPath, startId).catch(() => null),
+  ]);
+  const planned = running ? await readJson(running.file.replace(/\.json$/, ".planned.json")) : undefined;
+  return {
+    recovery: new Set(records.flatMap(record => isRecord(record) && isRecord(record.state) && (record.state.status === "pending" || record.state.status === "unresolved")
+      && isRecord(record.session) && typeof record.session.sessionFile === "string" ? [record.session.sessionFile] : [])),
+    manifest: new Set(isRecord(manifest) ? sessionFiles(manifest.sessions) : []),
+    worker: new Set(descriptors.flatMap(descriptor => isRecord(descriptor) && descriptor.lifecycle === "recovering" && typeof descriptor.sessionFile === "string"
+      ? [descriptor.sessionFile] : [])),
+    update: new Set(isRecord(planned) && isRecord(planned.manifests) ? Object.values(planned.manifests).flatMap(entry => isRecord(entry) ? sessionFiles(entry.sessions) : []) : []),
+  };
+}
+
+export function expectedSamples(expected: Expected): Sample[] {
+  const all = new Set(Object.values(expected).flatMap(files => [...files]));
+  return [
+    gauge("harness.prime.sessions_expected", "Sessions Prime should hold loaded or restore on this daemon: pending update recoveries, a prepared update manifest, recovering workers and a running update's plan, each session once.", all.size),
+    ...(Object.keys(expected) as ExpectedSource[]).map(source =>
+      gauge("harness.prime.sessions_expected_from", "Sessions Prime should hold loaded or restore, by the file that names them (alerts-releases.ts expectedSessions).", expected[source].size, { source })),
+  ];
 }
 
 /** GET /v1/health on this box's relay with its own token; null when the box has no relay config. */
