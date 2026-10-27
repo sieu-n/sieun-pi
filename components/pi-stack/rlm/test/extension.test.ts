@@ -193,7 +193,8 @@ test("goal and compact bridges: compact.run compacts at the turn end and resumes
     cell("from rlm import host_request\nprint(await host_request('compact.run', {'instructions': 'keep the goal'}))"),
     say("ending the turn so compaction runs"),
     "summary after compact.run",
-    step(c => fauxAssistantMessage(JSON.stringify(c.messages).includes("compaction-resume") ? "resumed" : "not resumed")),
+    step(c => JSON.stringify(c.messages).includes("compaction-resume") ? fauxAssistantMessage(fauxToolCall("ipython", { code: "from rlm import host_request\nprint((await host_request('goal.complete'))['goal']['status'])" })) : fauxAssistantMessage("not resumed")),
+    say("resumed"),
     "unused",
   ]);
   smallCompaction(join(root, "bridges"));
@@ -204,6 +205,7 @@ test("goal and compact bridges: compact.run compacts at the turn end and resumes
     assert.match(JSON.stringify(rt.session.sessionManager.getEntries()), /active/);
     assert.equal(rt.session.getLastAssistantText(), "resumed");
     assert.ok(rt.session.sessionManager.getEntries().some(e => e.type === "compaction"));
+    assert.ok(!rt.session.sessionManager.getEntries().some(e => e.type === "custom_message" && e.customType === "goal_context"), "a pending compaction holds the goal continuation");
   } finally {
     await rt.dispose();
   }

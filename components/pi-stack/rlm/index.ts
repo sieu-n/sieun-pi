@@ -89,6 +89,8 @@ class RlmSession {
   private children: ChildManager | undefined;
   private notices = new Map<number, Notice>();
   private compactRequest: { instructions?: string } | undefined;
+  /** The stop reason of the run's last assistant message; an errored or aborted run gets no goal continuation. */
+  lastStop: string | undefined;
   private maxDepthOverride: number | undefined;
   private disposed = false;
 
@@ -263,6 +265,24 @@ class RlmSession {
     const out = [...this.notices.values()];
     this.notices.clear();
     return out;
+  }
+
+  /** Background `bash()` handles still running in the kernel, which hold a goal continuation as Prime's do. */
+  private async liveHandles(): Promise<number> {
+    if (!this.kernel?.alive) return 0;
+    const r = await this.kernel.execute('__import__("rlm.bash", fromlist=["_live_handles"])._live_handles.__len__()').catch(() => undefined);
+    return r?.status === "ok" ? Number(r.result ?? 0) || 0 : 0;
+  }
+
+  /**
+   * Whether the settling run gets a `[goal: continuation]`: the goal is active, the run did not end in an error or an abort, no compaction is
+   * pending, and no child or background handle is still working. A child's reply or a `[bash-done]` notice starts the next run, whose settle
+   * asks again.
+   */
+  async goalContinues(): Promise<boolean> {
+    if (!this.goal.active || this.lastStop === "error" || this.lastStop === "aborted" || this.compactRequest) return false;
+    if (this.children?.all().some(r => r.status === "running" || r.status === "queued")) return false;
+    return (await this.liveHandles()) === 0;
   }
 
   takeCompactRequest(): { instructions?: string } | undefined {
@@ -447,9 +467,26 @@ export default function piRlm(pi: ExtensionAPI): void {
     },
   });
 
+  pi.registerCommand("goal", {
+    description: "Set, show, pause, resume or clear this session's goal: /goal [--budget <tokens>] <objective>",
+    handler: async (args, ctx) => {
+      const s = of(ctx);
+      ctx.ui.notify(s.goal.command(args), "info");
+      if (s.goal.active && ctx.isIdle()) pi.sendMessage(s.goal.continuation(), { triggerTurn: true });
+    },
+  });
+
+  pi.on("agent_start", (_event, ctx) => {
+    of(ctx).lastStop = undefined;
+  });
+
   pi.on("message_end", (event, ctx) => {
     if (event.message.role !== "assistant") return;
-    of(ctx).goal.countTokens(event.message.usage?.totalTokens ?? 0);
+    const s = of(ctx);
+    const message = event.message as { stopReason?: string; errorMessage?: string; usage?: { input?: number; output?: number } };
+    s.lastStop = message.stopReason;
+    if (s.goal.terminal(message)) return;
+    if (s.goal.account(message)) pi.sendMessage(s.goal.message("budget_limit"), { triggerTurn: true, deliverAs: "steer" });
   });
 
   pi.on("turn_end", (_event, ctx) => {
@@ -458,10 +495,11 @@ export default function piRlm(pi: ExtensionAPI): void {
     return { entries: notices.map(n => ({ type: "custom_message" as const, ...noticeMessage(n) })), continue: true };
   });
 
-  pi.on("agent_before_settle", (_event, ctx) => {
-    const notices = of(ctx).takeNotices();
-    if (!notices.length) return;
-    return { entries: notices.map(n => ({ type: "custom_message" as const, ...noticeMessage(n) })), continue: true };
+  pi.on("agent_before_settle", async (_event, ctx) => {
+    const s = of(ctx);
+    const notices = s.takeNotices();
+    if (notices.length) return { entries: notices.map(n => ({ type: "custom_message" as const, ...noticeMessage(n) })), continue: true };
+    if (await s.goalContinues()) return { entries: [{ type: "custom_message" as const, ...s.goal.continuation() }], continue: true };
   });
 
   pi.on("agent_settled", (_event, ctx) => {

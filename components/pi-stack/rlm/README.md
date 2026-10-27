@@ -13,8 +13,10 @@ Load it with `pi -e components/pi-stack/rlm/index.ts --tools ipython`, or as an 
 6. `rlm.list_subagents`, `rlm.collect`, `rlm.delete_subagent`, `rlm.progress_note` and `rlm.find_models` work on the parent's child index in `<artifact dir>/rlm-children.json`, and a reopened parent registers its closed children as dormant rows.
 7. Child usage goes on the parent transcript as `child_usage_attributed` custom entries until upstream Pi has `pi.appendUsage`.
 8. The namespace survives compaction because the kernel process stays up, and it survives a restart through `kernel-state.dill`, which pi-rlm writes after every run and at shutdown.
-9. `goal.*` keeps the goal as `rlm_goal` custom entries, and `compact.run` compacts after the run settles and resumes it with a `[compaction-resume]` message.
-10. `rlm.create_session` opens a root in pi-host, in-process through `hostApi()` or over `PI_HOST_SOCKET`.
+9. `goal.*` keeps the goal as `rlm_goal` custom entries in Prime's shape, and while a goal is active each settling run gets a `[goal: continuation]` message, unless the run errored or was aborted, a compaction is pending, or a child or a `bash()` handle is still working.
+10. A goal that spends its token budget turns `budget_limited` and gets a `[goal: budget-limit]` steer, and `/goal [--budget <tokens>] <objective>`, `status`, `pause`, `resume` and `clear` manage it.
+11. `compact.run` compacts after the run settles and resumes it with a `[compaction-resume]` message.
+12. `rlm.create_session` opens a root in pi-host, in-process through `hostApi()` or over `PI_HOST_SOCKET`.
 
 ## Python
 
