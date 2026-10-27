@@ -9,6 +9,9 @@ On a Linux box, `open_tab(url)` and `run(code)` drive a headful Google Chrome on
 Each kernel gets its own Chrome on its own Xvfb display, with its own profile folder, and all three go away when the kernel exits.
 The owner's Aside browser on his Mac is the exception, used only for a site that needs one of his logins, and it is the only browser on the Mac itself.
 Both browsers take the same Playwright-style REPL globals, so the same code runs in either.
+Aside has no Linux build, because aside.com/download offers only macOS and Windows and docs.aside.com/help/get-started names macOS 15.0 or later (checked 2026-10-27), and the Linux `aside` CLI only reaches a running Aside elsewhere.
+So the owner picked this split on 2026-10-27 (msg mvqbc3ep): his Aside on the Mac for pages that need his login, and the box's headful Chrome for pages with no login, such as local frontend checks.
+Never install Aside on a box or add a headless browser in place of the box Chrome (c177).
 
 ## Setup
 
