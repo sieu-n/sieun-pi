@@ -34,8 +34,8 @@ export const TRIES = 3;
 export const SCENARIOS = ["kbeauty-brand", "fresh-start"];
 export const PAGES = ["/app", "/app/search", "/app/discover", "/app/dashboards", "/app/campaigns", "/app/watchlist", "/app/outreach", "/app/inbox", "/app/connections"];
 export const MARKETING_PAGES = ["/", "/pricing", "/privacy", "/sign-in"];
-/** An app's URL from before each app moved to /app/<app name> (owner, 10-22), which hooks.server.ts sends on with its path and query. */
-export const OLD_URL = { scenario: "kbeauty-brand", from: "/campaigns/heartleaf-toner-us?view=home", to: "/app/campaigns/heartleaf-toner-us" };
+/** An app's URL from before each app moved to /app/<app name> (owner, 10-22, ROUTE_MOVES in apps/virev-demo/overlay/src/lib/app-routes.js), which hooks.server.ts sends on with its path and query. */
+export const OLD_URL = { scenario: "kbeauty-brand", from: "/app/analytics/creators/heartleaf-toner-us?view=home", to: "/app/campaigns/heartleaf-toner-us" };
 export const MARKETING_TITLE = "marketing, legal and auth pages load their fonts from the app";
 export const scenarioTitle = (scenario: string) => `${scenario}: every browser and server request stays on localhost`;
 
