@@ -145,8 +145,10 @@ export function installRuntime({ repo = checkout, home = homedir(), ref = "HEAD"
       }
       bundleExtension(join(staging, "legacy/prime/user-history"), execute);
       // Installed watchdog and idle-reaper copies and chat duties name <runtime>/components/user-history until the switch to Pi.
-      mkdirSync(join(staging, "components"), { recursive: true });
-      symlinkSync("../legacy/prime/user-history", join(staging, "components/user-history"));
+      if (!existsSync(join(staging, "components/user-history"))) {
+        mkdirSync(join(staging, "components"), { recursive: true });
+        symlinkSync("../legacy/prime/user-history", join(staging, "components/user-history"));
+      }
       validate(staging, execute);
       writeFileSync(join(staging, "release.json"), JSON.stringify({ sha, source: repo, builtAt: new Date().toISOString() }, null, 2) + "\n");
       renameSync(staging, release);

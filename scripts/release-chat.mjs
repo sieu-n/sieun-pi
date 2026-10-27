@@ -281,7 +281,7 @@ async function build(options, home, sha, dir) {
     symlinkSync(join(options.repo, "node_modules"), join(scratch, "node_modules"));
     const appPath = chatAppPath(scratch);
     symlinkSync(join(options.repo, appPath, "node_modules"), join(scratch, appPath, "node_modules"));
-    if (appPath === LEGACY_APP) {
+    if (appPath === LEGACY_APP && !existsSync(join(scratch, OLD_APP))) {
       mkdirSync(join(scratch, "components"), { recursive: true });
       symlinkSync("../legacy/prime/user-history", join(scratch, OLD_APP));
     }
