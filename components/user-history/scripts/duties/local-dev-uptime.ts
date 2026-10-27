@@ -19,7 +19,8 @@ import { hostViews } from "./whole-system.ts";
  * restarts come from whichever of the two holds it.
  * Convex and the crawler API may run on another box behind local port forwards; their URLs are the ones the search dev app uses (apps/search/.env.local).
  * When that file points a service away from this machine (`pnpm dev:crawler staging`), the local one is off by design and does not count as down.
- * It also reads the owner's Mac: mac_servers_not_answering counts which of its search app and design demo gave no 200 over ssh, mac_unusable_min
+ * It also reads the owner's Mac: mac_servers_not_answering counts which of its search app, design demo and Vent gave no 200 over ssh,
+ * mac_convex_push_stale is 1 when its Convex watcher's newest push failed and no push succeeded after the newest convex/ change, mac_unusable_min
  * counts the minutes of the last 24 h that the Mac usable watch read unusable (src/mac-usable-watch.ts USABLE, the same line d7 judges a minute
  * by), and mac_unreachable is 1 when ssh cannot reach it (asleep), which fails no check.
  */
@@ -41,16 +42,26 @@ export const SERVICES: readonly Service[] = [
 ];
 /** The owner's Mac (the `mac` alias of ~/.ssh/config.d/mac.conf), its dev servers, and the targets that keep it usable (owner, 10-09: "have it your duty to have usable mac"). */
 export const MAC_HOST = "mac";
-export const MAC_PORTS = [{ port: 5174, name: "search app" }, { port: 5180, name: "design demo" }] as const;
+/** Vent :8791 carries every Clerk call of the search app; it answers 401 on / and 200 only on /healthz. */
+export const MAC_PORTS = [{ port: 5174, name: "search app", path: "/" }, { port: 5180, name: "design demo", path: "/" },
+  { port: 8791, name: "Vent", path: "/healthz" }] as const;
 /**
  * The window mac_unusable_min covers, one day, so a daily run reads every minute since the last one. A single 1-min load sample said nothing
  * about the owner's Mac: from 04:28Z to 08:27Z on 10-23, 174 of 312 30-s samples read load 20 or more, and the watch read 2 of those minutes
  * unusable (~/work/mac-load-root-cause/metric-findings.md on us-metal02).
  */
 export const MAC_WINDOW_MS = 24 * 60 * 60_000;
-/** One read-only shell line on the Mac: load averages and free memory as run detail, and each dev server's HTTP code within the owner's 5 s (000 is no answer). */
+/**
+ * The Mac's Convex watcher: `convex-watcher.mjs status --json` gives its newest push and last good push from the pm2 log, and the newest
+ * mtime under convex/ says whether a change came after that good push. Both are local times in the same format, so they compare as text.
+ */
+export const MAC_REPO = "$HOME/Documents/Github/auto-sns-agent";
+export const MAC_CONVEX_COMMAND = `(cd "${MAC_REPO}" && echo "convex-push $("$HOME/.hermes/node/bin/node" scripts/repo/agent/convex-watcher.mjs status --json 2>/dev/null | tr -d '\\n')"; `
+  + `echo "convex-src $(find convex -type f -not -path 'convex/_generated/*' -not -path '*/node_modules/*' -exec stat -f '%Sm' -t '%Y-%m-%dT%H:%M:%S' {} + | sort | tail -1)")`;
+/** One read-only shell line on the Mac: load averages and free memory as run detail, each dev server's HTTP code within the owner's 5 s (000 is no answer), and the Convex watcher's push state. */
 export const MAC_COMMAND = ["sysctl -n vm.loadavg", "memory_pressure -Q",
-  ...MAC_PORTS.map(({ port }) => `curl -s -o /dev/null -m ${ANSWER_TIMEOUT_MS / 1000} -w 'port ${port} %{http_code}\\n' http://localhost:${port}/`), "exit 0"].join("; ");
+  ...MAC_PORTS.map(({ port, path }) => `curl -s -o /dev/null -m ${ANSWER_TIMEOUT_MS / 1000} -w 'port ${port} %{http_code}\\n' http://localhost:${port}${path}`),
+  MAC_CONVEX_COMMAND, "exit 0"].join("; ");
 
 /**
  * A Mac read with a dev server that gave no 200 is read again after this wait, so a normal pm2 restart is not a miss.
@@ -58,14 +69,37 @@ export const MAC_COMMAND = ["sysctl -n vm.loadavg", "memory_pressure -Q",
  */
 export const MAC_RETRY_MS = 30_000;
 
-export interface MacReading { load1: number; freePct: number; ports: Record<number, string> }
+/** The watcher's newest push as convex-push-state.mjs reads it: `ok`, `failed`, `running` or `unknown`, with local times. */
+export interface ConvexPush { outcome: string; at: string | null; reason: string | null; lastGoodAt: string | null }
+export interface MacReading { load1: number; freePct: number; ports: Record<number, string>; convexPush?: ConvexPush; convexSrc?: string }
 
-/** Parses MAC_COMMAND's output: `{ 7.26 6.95 7.77 }`, `System-wide memory free percentage: 37%` and one `port <n> <code>` line per server. */
+/**
+ * Parses MAC_COMMAND's output: `{ 7.26 6.95 7.77 }`, `System-wide memory free percentage: 37%`, one `port <n> <code>` line per server, and
+ * `convex-push <status json>` and `convex-src <newest mtime>`, which stay unset when the Mac gave no readable value.
+ */
 export function parseMacReading(text: string): MacReading {
   const load1 = Number(/\{\s*([\d.]+)/.exec(text)?.[1]);
   const freePct = Number(/memory free percentage:\s*(\d+)%/.exec(text)?.[1]);
   if (!Number.isFinite(load1) || !Number.isFinite(freePct)) throw new Error(`unparsed Mac reading: ${text.trim().slice(0, 200)}`);
-  return { load1, freePct, ports: Object.fromEntries([...text.matchAll(/^port (\d+) (\d{3})$/gm)].map(match => [Number(match[1]), match[2]!])) };
+  const ports = Object.fromEntries([...text.matchAll(/^port (\d+) (\d{3})$/gm)].map(match => [Number(match[1]), match[2]!]));
+  const status = /^convex-push (\{.*\})\s*$/m.exec(text)?.[1];
+  let push: ConvexPush | undefined;
+  try { push = status ? (JSON.parse(status) as { push?: ConvexPush }).push : undefined; } catch { push = undefined; }
+  const convexSrc = /^convex-src (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})\s*$/m.exec(text)?.[1];
+  return { load1, freePct, ports, ...(push ? { convexPush: push } : {}), ...(convexSrc ? { convexSrc } : {}) };
+}
+
+/**
+ * Whether the local Convex backend serves functions older than convex/: the watcher's newest push failed and no push succeeded after the
+ * newest change under convex/. From 10-22 17:49Z to 10-27 every push failed while status read healthy, and the backend served 4-day-old
+ * functions. Undefined when the Mac gave no push state or no source time.
+ */
+export function convexPushStale(reading: MacReading): { stale: boolean; detail: string } | undefined {
+  const push = reading.convexPush;
+  if (!push || !reading.convexSrc) return undefined;
+  const stale = push.outcome === "failed" && (!push.lastGoodAt || push.lastGoodAt < reading.convexSrc);
+  const reason = push.reason ? `: ${push.reason.split("\n")[0]}` : "";
+  return { stale, detail: `Convex watcher: newest push ${push.outcome} at ${push.at ?? "?"}${push.outcome === "failed" ? reason : ""}, last good push ${push.lastGoodAt ?? "none in the log tail"}, newest convex/ change ${reading.convexSrc} (Mac local time)` };
 }
 
 /** Each Mac dev server that gave no 200, in plain words. */
@@ -115,8 +149,12 @@ export async function measureMac(deps: Pick<UptimeDeps, "exec" | "platform" | "w
   const reading = parseMacReading(text);
   const down = macDown(reading);
   const summary = `load ${reading.load1}, ${reading.freePct}% memory free, ${MAC_PORTS.map(({ port }) => `:${port} ${reading.ports[port] ?? "unread"}`).join(", ")}`;
-  return { metrics: { ...watched, mac_servers_not_answering: down.length, mac_unreachable: 0 },
-    flagged: [usable, { at, kind: down.length ? "mac_down" : "mac_answer", excerpt: (down.length ? `Mac dev servers not answering 200: ${down.join(", ")} (${summary})` : `Mac dev servers answer: ${summary}`).slice(0, 300) }] };
+  const convex = convexPushStale(reading);
+  const convexFlag: FlaggedSlice = convex
+    ? { at, kind: convex.stale ? "mac_convex_stale" : "mac_convex", excerpt: convex.detail.slice(0, 300) }
+    : { at, kind: "mac_read", excerpt: `Mac: no Convex watcher push state or convex/ mtime in the read: ${(/^convex-(push|src).*$/gm.exec(text)?.[0] ?? "no convex lines").slice(0, 200)}` };
+  return { metrics: { ...watched, mac_servers_not_answering: down.length, mac_unreachable: 0, ...(convex ? { mac_convex_push_stale: convex.stale ? 1 : 0 } : {}) },
+    flagged: [usable, { at, kind: down.length ? "mac_down" : "mac_answer", excerpt: (down.length ? `Mac dev servers not answering 200: ${down.join(", ")} (${summary})` : `Mac dev servers answer: ${summary}`).slice(0, 300) }, convexFlag] };
 }
 
 /** pm2 processes whose restarts the duty counts. The wiki counts here only where pm2 runs it. */
