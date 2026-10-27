@@ -17,6 +17,7 @@ import { identityOf } from "../shared/registry.ts";
 import { accountCommand, POOLED_PROVIDERS, refreshStatus, STATUS_REFRESH_MS } from "./src/account.ts";
 import { rewriteFailure, type PoolCall } from "./src/errors.ts";
 import { credential, defaultPoolBin, poolEnv, runPool, vendOnce, type TreeKey } from "./src/pool-cli.ts";
+import { clearPoolRetries, countPoolRetry } from "./src/retries.ts";
 import { admitWait, ordinal } from "./src/turns.ts";
 
 export interface PoolOptions {
@@ -199,10 +200,18 @@ export function createPoolExtension(opts: PoolOptions = {}): ExtensionFactory {
     pi.on("message_end", async (event, ctx) => {
       const message = event.message;
       if (message.role !== "assistant" || !POOLED_PROVIDERS.has(message.provider)) return undefined;
+      // Stop during a slot wait ends the wait, and Pi then reports the run's own abort ("This operation was aborted") as an error. It is the
+      // owner's stop, so it ends as one and the chat shows "Response stopped" (the 10-27 walk on pi-host showed the error text).
+      if (message.stopReason === "error" && ctx.signal?.aborted) return { message: { ...message, stopReason: "aborted", errorMessage: "Request aborted" } };
       const s = session(ctx);
+      const sid = sessionIdOf(ctx);
+      if (message.stopReason !== "error") {
+        if (sid) clearPoolRetries(sid);
+        return undefined;
+      }
       const hookFailure = s?.hookFailure;
       if (s) s.hookFailure = undefined;
-      const rewritten = await rewriteFailure(message, call(ctx), hookFailure);
+      const rewritten = await rewriteFailure(message, call(ctx), hookFailure, Date.now, () => { if (sid) countPoolRetry(sid); });
       return rewritten ? { message: rewritten } : undefined;
     });
 
@@ -337,6 +346,7 @@ export function createPoolExtension(opts: PoolOptions = {}): ExtensionFactory {
       await call(ctx)(["model", "--clear", "--source", sid]);
       queue.delete(sid);
       started.delete(sid);
+      clearPoolRetries(sid);
       if (own.delete(sid)) sessions.delete(sid);
     });
     pi.on("model_select", async (event, ctx) => {

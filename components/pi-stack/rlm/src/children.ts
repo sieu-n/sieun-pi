@@ -12,6 +12,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { assignIdentity, get as registryGet, registerDormant, unregisterDormant, type AgentEntry } from "../../shared/registry.ts";
 import { repliedSinceTask } from "../../agent-bus/src/state.ts";
+import { withPoolRetries } from "../../pool/src/retries.ts";
 
 /** A child's lifecycle. `done` is a run that settled cleanly, and the child stays open for follow-ups until it is deleted. */
 export type ChildStatus = "queued" | "running" | "done" | "error" | "cancelled";
@@ -318,6 +319,8 @@ export class ChildManager {
       ...(model ? { model } : {}),
       tools: this.parent.activeTools(),
     });
+    // A retry the pool takes on stays off Pi's retry budget, as in pi-host (pool/src/retries.ts).
+    withPoolRetries(session.settingsManager, record.sessionId);
     await session.bindExtensions({});
     const [provider, ...rest] = record.model.split("/");
     const own = session.modelRuntime.getModel(provider!, rest.join("/"));

@@ -73,9 +73,11 @@ const DEFAULT_RESET_MS = 5 * 60_000;
  * A 429 reports the account to the pool (`pi-pool limited`) and becomes a retryable rate-limit error, so Pi's own
  * retry runs and its header hook vends the next account, or waits there for the session's slot. A 400 or 403 that
  * the pool reads as an account-level refusal (`pi-pool refused`) takes the account out and moves on the same way.
- * `hookFailure` is the reason the header hook gave no token for this request, which also retries.
+ * `hookFailure` is the reason the header hook gave no token for this request, which also retries. `pooled` is told when the pool
+ * took the failure on (an auto selection moved on or set a slot wait), which keeps the retry off Pi's budget (src/retries.ts).
  */
-export async function rewriteFailure(message: AssistantMessage, pool: PoolCall, hookFailure: string | undefined, now: () => number = Date.now): Promise<AssistantMessage | undefined> {
+export async function rewriteFailure(message: AssistantMessage, pool: PoolCall, hookFailure: string | undefined, now: () => number = Date.now,
+  pooled: () => void = () => {}): Promise<AssistantMessage | undefined> {
   if (message.stopReason !== "error") return undefined;
   const original = message.errorMessage ?? "";
   if (hookFailure) {
@@ -87,6 +89,7 @@ export async function rewriteFailure(message: AssistantMessage, pool: PoolCall, 
     const reply = await poolJson<LimitedReply>(pool, ["limited", "--provider", message.provider, "--until", String(until), "--since", String(message.timestamp / 1000)]);
     if (!reply) return { ...message, errorMessage: retryable(429, failure.text, "pi-pool did not record this 429; the retry reports it again.") };
     if (reply.selection.mode === "manual") return { ...message, errorMessage: retryable(429, failure.text, `pi-pool: ${selectionName(reply.selection)} remains selected.`) };
+    pooled();
     if (!reply.next) {
       const slot = typeof reply.retry_at === "number" ? `; this session waits for its slot at ${iso(reply.retry_at)}` : "";
       return { ...message, errorMessage: retryable(429, failure.text, `pi-pool: ${reply.account} is limited until ${iso(reply.until)}${slot}.`) };
@@ -98,6 +101,7 @@ export async function rewriteFailure(message: AssistantMessage, pool: PoolCall, 
     const reply = await poolJson<RefusedReply>(pool, ["refused", "--provider", message.provider, original]);
     if (!reply || !reply.reason) return undefined;
     if (reply.selection.mode === "manual") return undefined;
+    pooled();
     const next = reply.next ? `the retry uses ${reply.next}` : typeof reply.retry_at === "number" ? `this session waits for its slot at ${iso(reply.retry_at)}` : "the retry asks the pool again";
     return { ...message, errorMessage: retryable(failure.status, failure.text, `pi-pool: ${reply.account} is out of the pool (${reply.reason}), which pi-pool treats as a rate limit; ${next}.`) };
   }
