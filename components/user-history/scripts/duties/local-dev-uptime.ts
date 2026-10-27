@@ -12,7 +12,7 @@ import { chatDataDir } from "../../src/owner-ok.ts";
 import { hostViews } from "./whole-system.ts";
 
 /**
- * The local dev uptime duty's precheck (`node --import tsx scripts/duties/local-dev-uptime.ts`): how many of the 4 dev services gave no
+ * The local dev uptime duty's precheck (`node --import tsx scripts/duties/local-dev-uptime.ts`): how many of the 5 dev services gave no
  * 200 within 5 s, the wiki's real memory against its cap, and restarts of the wiki and search since the last run. Each service's answer and time
  * goes into the flagged items as run detail. No model call. The wiki is the one server at the wiki host of hosts.json. On us-metal02 it runs as
  * llm-wiki.service under systemd (deploy/linux/llm-wiki.service) and elsewhere as the llm-wiki app of the pm2 dev stack, so its memory and
@@ -35,6 +35,7 @@ export const WIKI_UNIT = "llm-wiki.service";
 export type Service = { key: string; url: string } | { key: string; envKey: string; path: string };
 export const SERVICES: readonly Service[] = [
   { key: "search", url: "http://localhost:5174/" },
+  { key: "api-portal", url: "http://localhost:5175/" },
   { key: "convex", envKey: "PUBLIC_CONVEX_URL", path: "/version" },
   { key: "crawler", envKey: "CRAWLER_API_URL", path: "/health" },
 ];
