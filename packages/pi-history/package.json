@@ -1,0 +1,20 @@
+{
+  "name": "@sieun-pi/pi-history",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Full-text search over every Prime and Pi session transcript on a box, served on a unix socket, with a search_history tool for agents.",
+  "license": "SEE LICENSE IN ../../NOTICE",
+  "pi": {
+    "extensions": [
+      "./src/pi/index.ts"
+    ]
+  },
+  "scripts": {
+    "start": "node src/main.ts",
+    "test": "node --import tsx --test --test-force-exit \"test/**/*.test.ts\""
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}

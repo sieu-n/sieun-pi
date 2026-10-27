@@ -15,7 +15,8 @@
     "pi-pool",
     "pi-family",
     "pi-testkit",
-    "sieun-rules"
+    "sieun-rules",
+    "pi-history"
   ],
   "scripts": {
     "typecheck": "tsc -p tsconfig.json",
