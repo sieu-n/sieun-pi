@@ -176,7 +176,9 @@ export interface HostWatchLine { name: string; usable: HostUsable | null; worker
   /** The box's agent test browsers (`TestBrowserLine`); absent when there are none. */
   testBrowsers?: TestBrowserLine[];
   /** The stray stdio MCP servers the box's footprint read stopped this minute (`StrayServerLine`); absent when there were none. */
-  strayServers?: StrayServerLine[] }
+  strayServers?: StrayServerLine[];
+  /** The box's idle or relative-home pm2 God Daemons (`IdlePm2Line`); absent when there are none. */
+  idlePm2?: IdlePm2Line[] }
 
 export interface WatchLine {
   at: string;
@@ -221,6 +223,8 @@ export interface WatchLine {
   testBrowsers?: TestBrowserLine[];
   /** The stray stdio MCP servers this box's footprint read stopped this minute (`StrayServerLine`); absent when there were none. */
   strayServers?: StrayServerLine[];
+  /** This box's idle or relative-home pm2 God Daemons (`IdlePm2Line`); absent when there are none. */
+  idlePm2?: IdlePm2Line[];
 }
 /** How many handed-off services the records name, how many of them still run, and the first 5. */
 export interface ServicesLine { count: number; live: number; top: { session: string; unit: string; pid: number; live: boolean }[] }
@@ -271,6 +275,8 @@ export interface Footprints { workers: Record<string, { pids: number; bytes: num
   test_browsers?: RawOrphan[];
   /** The stdio MCP servers whose kernel was gone, which the helper signalled in this read; absent from a helper older than 10-28. */
   stray_servers?: RawStray[];
+  /** The box's pm2 God Daemons (`RawPm2`); absent from a helper older than 10-28. */
+  pm2_daemons?: RawPm2[];
   swap_used_bytes: number | null; pressure_level: number | null; cpu_s: number }
 /** One process the helper names: its footprint, its start time in epoch seconds (null when unreadable) and its command's first 200 characters. */
 export interface RawProcess { pid: number; bytes: number; started: number | null; command: string }
@@ -283,6 +289,15 @@ export interface RawKernel { pid: number; root: string; session: string; pids: n
   cpu_s?: number; work_cpu_s?: number }
 /** A process with RLM_HARNESS_STATE_DIR under no kernel and no Prime process (a deleted job's nohup'd runner), with the root and session the path names. */
 export interface RawOrphan extends RawProcess { root: string; session: string }
+/** A pm2 God Daemon: the home its title names, as given (relative when its starter set a relative PM2_HOME), and how many processes it runs. */
+export interface RawPm2 extends RawOrphan { home: string; apps: number }
+/**
+ * A pm2 God Daemon that runs no process, or whose home is relative and so depends on its starter's cwd: its pid, start, home, process count
+ * and the chat tree and session whose env it carries ("" when none).
+ */
+export interface IdlePm2Line { pid: number; started: number | null; home: string; apps: number; mb: number; root: string; tree: string; session: string }
+/** The God Daemons that run no process or have a relative home (`IdlePm2Line`), from the footprint helper's `pm2_daemons`. */
+export const strayPm2 = (daemons: readonly RawPm2[]): RawPm2[] => daemons.filter(daemon => daemon.apps === 0 || !daemon.home.startsWith("/"));
 /** A stdio MCP server (`aside mcp`, cua-guard.ts) init or the user's systemd adopted once its kernel exited, and the signal that ended it (null when it was gone first). */
 export interface RawStray extends RawProcess { ppid: number; signal: "SIGTERM" | "SIGKILL" | null }
 /** A stray stdio MCP server the box's footprint read stopped (`RawStray`), with its footprint in MB. */
@@ -365,6 +380,8 @@ export function watchLine(input: { now: number; rows: readonly unknown[]; footpr
     const id = root || session;
     return { root: id, tree: input.title(id) ?? id.slice(0, 8) };
   };
+  const idlePm2 = strayPm2(input.footprints.pm2_daemons ?? []).map((daemon): IdlePm2Line => ({ pid: daemon.pid, started: daemon.started, home: daemon.home,
+    apps: daemon.apps, mb: Math.round(daemon.bytes / 2 ** 20), ...daemon.root || daemon.session ? owner(daemon.session, daemon.root) : { root: "", tree: "" }, session: daemon.session }));
   return {
     at: new Date(input.now).toISOString(),
     usable: input.usable ?? null, chatsLive,
@@ -376,6 +393,7 @@ export function watchLine(input: { now: number; rows: readonly unknown[]; footpr
     ...input.footprints.test_browsers?.length ? { testBrowsers: input.footprints.test_browsers.map(browser => ({ pid: browser.pid, started: browser.started,
       ...browser.root || browser.session ? owner(browser.session, browser.root) : { root: "", tree: "" }, session: browser.session, command: browser.command })) } : {},
     ...input.footprints.stray_servers?.length ? { strayServers: strayLines(input.footprints) } : {},
+    ...idlePm2.length ? { idlePm2 } : {},
     ...input.memory !== undefined ? { agents: agentLine(input.memory, input.rows, input.hung) } : {},
     mac: { swapGb: input.footprints.swap_used_bytes === null ? null : round(input.footprints.swap_used_bytes / GB, 1), pressureLevel: input.footprints.pressure_level },
     cpuMs: Math.round(input.cpuMs + input.footprints.cpu_s * 1000),
@@ -574,7 +592,7 @@ export async function hostWatchLine(remote: RemoteWatch, input: { now: number; c
     const line = watchLine({ now: input.now, rows: remote.rows, footprints: answer.footprints, queue: null, chats: input.chats, title: input.title, cpuMs: 0, usable });
     return { name: remote.name, usable, workers: line.workers, workerGb: line.workerGb, top: line.top, ...line.byWorker ? { byWorker: line.byWorker } : {}, live: line.live,
       working: line.working, agents, swapGb: line.mac.swapGb,
-      ...line.testBrowsers ? { testBrowsers: line.testBrowsers } : {}, ...line.strayServers ? { strayServers: line.strayServers } : {} };
+      ...line.testBrowsers ? { testBrowsers: line.testBrowsers } : {}, ...line.strayServers ? { strayServers: line.strayServers } : {}, ...line.idlePm2 ? { idlePm2: line.idlePm2 } : {} };
   } catch (error) {
     return { name: remote.name, usable: null, workers: 0, workerGb: 0, top: [], live: 0, working: 0, swapGb: null, error: (error instanceof Error ? error.message : String(error)).slice(0, 200) };
   }

@@ -13,7 +13,7 @@ import { stepSessions, unmovedSteps } from "../../src/unmoved-steps.ts";
 import { waitHolds } from "../../src/checkin-end-state.ts";
 import { turnError } from "../../src/shared/credential-wait.ts";
 import type { ChatBoard, MemoryGroupId, PlanItem } from "../../src/shared/types.ts";
-import { type AgentLine, type HostUsable, isLinuxReading, parseLinuxReading, readWatch, type StrayServerLine, type TestBrowserLine, UNREAD_AT_STOP, unusable, type WaitingTree, type WatchLine, type WorkerLine, type WorkerTree } from "../../src/mac-usable-watch.ts";
+import { type AgentLine, type HostUsable, isLinuxReading, parseLinuxReading, readWatch, type StrayServerLine, type IdlePm2Line, type TestBrowserLine, UNREAD_AT_STOP, unusable, type WaitingTree, type WatchLine, type WorkerLine, type WorkerTree } from "../../src/mac-usable-watch.ts";
 import { QUIET_MINUTES, QUIET_TARGET_GB, quietMinutes } from "../../src/quiet-minutes.ts";
 import type { HungCall } from "../../src/hung-calls.ts";
 import type { StoppedCall } from "../../src/hung-stop.ts";
@@ -40,6 +40,8 @@ export interface HostView { name: string; usable: HostUsable | null; workers: nu
   testBrowsers?: readonly TestBrowserLine[];
   /** The stray stdio MCP servers the box's footprint read stopped that minute (HostWatchLine.strayServers). */
   strayServers?: readonly StrayServerLine[];
+  /** The pm2 God Daemons on the box that minute that run no process or have a relative home (HostWatchLine.idlePm2). */
+  idlePm2?: readonly IdlePm2Line[];
   /** Every worker of the box that minute (WatchLine.byWorker); absent on lines written before 10-20. */
   byWorker?: readonly WorkerTree[] }
 /** Lines written before 10-18 04:5xZ name no box, and the Mac wrote every one of them. */
@@ -90,13 +92,13 @@ export function hostViews(line: WatchLine): HostView[] {
   return [
     { name: line.host ?? UNNAMED_HOST, usable: own.usable, workers: line.workers, workerGb: line.workerGb, top: line.top,
       ...line.serviceGb === undefined ? {} : { serviceGb: line.serviceGb }, ...line.agents ? { agents: line.agents } : {}, ...own.error ? { error: own.error } : {},
-      ...line.testBrowsers ? { testBrowsers: line.testBrowsers } : {}, ...line.strayServers ? { strayServers: line.strayServers } : {}, ...line.byWorker ? { byWorker: line.byWorker } : {} },
+      ...line.testBrowsers ? { testBrowsers: line.testBrowsers } : {}, ...line.strayServers ? { strayServers: line.strayServers } : {}, ...line.idlePm2 ? { idlePm2: line.idlePm2 } : {}, ...line.byWorker ? { byWorker: line.byWorker } : {} },
     ...(line.hosts ?? []).map(host => {
       const read = checked(host.usable);
       const error = host.error ?? read.error;
       return { name: host.name, usable: read.usable, workers: host.workers, workerGb: host.workerGb, top: host.top,
         ...host.agents ? { agents: host.agents } : {}, ...error ? { error } : {}, ...host.offline ? { offline: true as const } : {}, ...host.testBrowsers ? { testBrowsers: host.testBrowsers } : {},
-        ...host.strayServers ? { strayServers: host.strayServers } : {},
+        ...host.strayServers ? { strayServers: host.strayServers } : {}, ...host.idlePm2 ? { idlePm2: host.idlePm2 } : {},
         ...host.byWorker ? { byWorker: host.byWorker } : {} };
     }),
   ];
@@ -614,6 +616,25 @@ export function oversized(latest: WatchLine | undefined, day: readonly WatchLine
 
 /** An agent's Playwright or Puppeteer browser on the Mac: the chat tree and session that started it ("" when unknown) and the finding. */
 export interface TestBrowser { root: string; session: string; text: string }
+
+/** How long a pm2 God Daemon may run no process before `idlePm2` flags it, so a `pm2 start` between its daemon and its first app is not caught. */
+export const PM2_IDLE_MS = 10 * MINUTE;
+
+/**
+ * Each pm2 God Daemon in the newest watch line that has run no process for `PM2_IDLE_MS`, or whose home is relative, with the chat tree and session
+ * whose env it carries. Any pm2 command starts an empty daemon in the home it reads when none runs there: on 10-22 a job's
+ * `PM2_HOME=~/.pm2 npx pm2 jlist` left one in ~/.pm2, and on 10-26 a `PM2_HOME=.cache/pm2-dev pm2 ...` run in apps/virev-demo left one in that
+ * app's folder. Each held 50 MB on the Mac until 10-28.
+ */
+export function idlePm2(latest: WatchLine | undefined, now: number): TestBrowser[] {
+  if (!latest) return [];
+  return hostViews(latest).flatMap(view => (view.idlePm2 ?? []).filter(daemon => !daemon.home.startsWith("/") || daemon.started === null || daemon.started * 1000 < now - PM2_IDLE_MS)
+    .map(daemon => ({ root: daemon.root, session: daemon.session,
+      text: `${view.name}: pm2 God Daemon pid ${daemon.pid} in ${daemon.home}${daemon.started === null ? "" : ` since ${clock(daemon.started * 1000)}, up ${Math.round(now / 1000 / 3600 - daemon.started / 3600)} h,`} runs ` +
+        `${daemon.apps ? `${daemon.apps} process${daemon.apps === 1 ? "" : "es"}` : "no process"} (${daemon.mb} MB)` +
+        `${daemon.home.startsWith("/") ? "" : `, and its PM2_HOME is relative, so its folder is its starter's cwd (lsof -a -p ${daemon.pid} -d cwd)`}, started by ` +
+        `${daemon.session ? `${daemon.tree || daemon.root} session ${daemon.session}` : "no agent session its env names (a duty, a script or an ssh command)"}` })));
+}
 
 /**
  * Every Chrome for Testing or chrome-headless-shell main process in the newest watch line, which only the Mac's helper lists, since agent
@@ -1289,6 +1310,7 @@ export function measure(input: Inputs): PrecheckOutput {
   const latest = input.watch.findLast(line => Date.parse(line.at) > start);
   const oversize = oversized(latest, input.day ?? []);
   const browsers = testBrowsers(latest);
+  const pm2 = idlePm2(latest, now);
   const strays = strayServers(input.watch, start, start + WINDOW_MS + MINUTE);
   const hung = hungNow(input.watch, start);
   // Each idle unload sweep (every 60 s) finishes an open handoff (src/idle-unload.ts `resumeUnloaded`), so one still open a whole window later is stuck.
@@ -1312,6 +1334,7 @@ export function measure(input: Inputs): PrecheckOutput {
     oversized_procs: oversize.length,
     mac_test_browsers: browsers.length,
     stray_servers_30: strays.length,
+    idle_pm2_daemons: pm2.length,
     usable_min_30: usable,
     fed_min_30: fed,
     harness_unusable_min_30: harness,
@@ -1401,6 +1424,7 @@ export function measure(input: Inputs): PrecheckOutput {
   if (latest && reads.length) flagged.push({ kind: "agents_now", excerpt: `At ${clock(Date.parse(latest.at))}: ${reads.map(view => `${view.name} ${agentWords(view.agents!)}`).join("; ")}.` });
   for (const entry of oversize) flagged.push({ kind: "oversized", excerpt: entry.text });
   for (const text of strays) flagged.push({ kind: "stray_server", excerpt: text });
+  for (const entry of pm2) flagged.push({ kind: "idle_pm2", ...entry.root ? { chat: entry.root } : {}, ...entry.session ? { item: entry.session } : {}, excerpt: entry.text });
   for (const entry of browsers) flagged.push({ kind: "test_browser", ...entry.root ? { chat: entry.root } : {}, ...entry.session ? { item: entry.session } : {}, excerpt: entry.text });
   for (const call of hung?.calls ?? []) flagged.push({ kind: "hung_call", chat: call.root, item: call.session, excerpt: `${call.tree}: ${call.name} (${call.session}) ` +
     `has run one tool call for ${call.silentMin} min with no output${call.why === "kernel burning" ? `, its kernel burning ${call.kernelCores} cores` : `, its commands at ${call.workCores} cores`}` +

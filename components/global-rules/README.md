@@ -8,7 +8,7 @@ auto-sns-agent is the one exception: its rules stay in that repo's `scripts/repo
 
 | Event | Module | Effect |
 | --- | --- | --- |
-| `tool_call` (`bash`, `ipython`) | `guard.ts` | Refuses a history rewrite in the sieun-pi checkout, an outside send without the owner's ok, and a resource cap the owner did not ask for. |
+| `tool_call` (`bash`, `ipython`) | `guard.ts` | Refuses a history rewrite in the sieun-pi checkout, an outside send without the owner's ok, a resource cap the owner did not ask for, and a pm2 command with a relative PM2_HOME. |
 | `tool_call` (`ipython`) | `kernel-guard.ts` | Installs `kernel-guard.py` in the Python kernel, which refuses an outside send at run time. |
 | `tool_call` (`ipython`) | `rlm-delete.ts` | In a subagent, makes `rlm.delete_subagent` wait until a child that already replied is idle. |
 | `tool_call` (`ipython`) | `kernel-guard.ts` | Also installs `kernel-own.py`, which records each path under `~/scratch` the kernel makes, on this box or on another one over ssh, in the session's `owned.json`, and refuses a recursive delete below `~/scratch` of a tree the job did not make (c130). |
@@ -29,6 +29,10 @@ It judges a flag only where it is an argument of that program, before a containe
 `heavy <size> -- <cmd>` passes, since the owner asked for it on 10-19, and so does a property set to `infinity` or to nothing, which removes a cap.
 The refusal names c107 and says to size a run by its worker count, such as `-e JOBS=N`.
 The kernel guard sends a command that names a cap flag or tool to the same rule at run time, so a cap built in a variable or an f-string is refused too.
+
+`pm2.ts` refuses a pm2 command whose PM2_HOME is relative, because pm2 reads that home under the command's cwd and starts an empty God Daemon there when none runs. On 10-26 `PM2_HOME=.cache/pm2-dev pm2 ...` run in auto-sns-agent's apps/virev-demo left one in that app's folder, which held 50 MB on the Mac with no app until 10-28.
+It covers pm2 by any path and through npx, pnpm or yarn, with the home set in front of the command, by `env`, by an earlier `export` or by a `for` loop variable, and it follows `sh -c` and `ssh`. An absolute, `~` or computed home passes, and so does a command that only names one, such as a grep or a commit message.
+The whole-system duty flags a daemon that slips past it as `idle_pm2_daemons`.
 
 `send-guard.ts` refuses an outside send unless the owner approved it on a For you todo (correction c37): an email, a vendor ticket reply, a message to someone outside, or a post on a repo or site the owner does not own.
 `send-targets.json` lists the HTTP endpoints that send: mail APIs, ticket APIs and portals, Discord, Telegram, Twilio, WhatsApp, Teams, LinkedIn and X, Stripe invoice sends, Clerk invitations, any non-local `.../email/send` route, and GitHub issue, comment and review writes on repos outside `sieu-n` and `virev-ai`.
@@ -113,7 +117,7 @@ A call passes with `owner_ok: "<chat id>/<todo id>"` in its arguments, which the
 
 ```text
 ~/.prime/agent/extensions/global-rules.ts  (link to index.ts)
-  -> guard.ts           -> sieun-pi.ts, send-guard.ts, cua-guard.ts, caps.ts -> shell.ts
+  -> guard.ts           -> sieun-pi.ts, send-guard.ts, cua-guard.ts, caps.ts, pm2.ts -> shell.ts
                             send-guard.ts -> send-targets.json, node --import tsx ../user-history/src/owner-ok.ts (send approvals)
   -> kernel-guard.ts    -> ipython cell prelude -> kernel-guard.py -> send-targets.json, node send-check.ts -> guard.ts, auto-sns-agent.ts
                             ipython cell prelude -> kernel-read.py (transcript reads), also through python-child/sitecustomize.py

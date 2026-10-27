@@ -10,6 +10,7 @@ orphan of the root and session that path names (`orphans`): on 10-15 at 00:45Z a
 A shared service (`SHARED`) and every process under it belong to no tree.
 On macOS each Chrome for Testing or chrome-headless-shell main process is listed with the session that started it (`test_browsers`), since no agent browser may run there.
 It stops each stdio MCP server whose kernel is gone (`stray_servers`, SIGTERM, then SIGKILL after 3 s) and lists it, the one process it signals in a footprint read.
+Each pm2 God Daemon is listed with its home and the processes it runs (`pm2_daemons`), so the whole-system duty flags one that runs none.
 `--session <id>[,<id>...]` prints the processes those sessions' kernels left detached (`strays`), which the service stops once their job is deleted or archived (src/job-leftovers.ts); `--handles` reads
 "<kernel pid> <since epoch s>" lines and prints the bash() handles those kernels started since then (`handles`), which the watch stops when the call hangs (src/hung-stop.ts); `--started <pid>`
 prints a process's start time, and `--inside` prints the processes that run in or hold the dirs it reads on stdin, one per line (`inside`), and a
@@ -460,6 +461,23 @@ def reap(found, kill=os.kill, start=started, wait=3.0, sleep=None):
     return found
 
 
+# A pm2 God Daemon's title names its home, and any pm2 command starts an empty one in the home it reads when none runs there. On 10-22 a job's
+# `PM2_HOME=~/.pm2 npx pm2 jlist` left one in ~/.pm2, and on 10-26 a raw `PM2_HOME=.cache/pm2-dev pm2 ...` run from apps/virev-demo left one in
+# that app's own .cache/pm2-dev; each held 50 MB on the Mac for days with no app. On macOS the title is argv[0] and the rest of argv reads as
+# the daemon's env strings, so only argv[0] is matched.
+GOD_DAEMON = re.compile(r"^PM2 v[\d.]+: God Daemon \((.*)\)$")
+
+
+def pm2_daemons(table):
+    """Each pm2 God Daemon with the home its title names, the processes it runs (`apps`, its direct children) and the root and session its env names."""
+    runs = {}
+    for ppid, _, _, _ in table.values():
+        runs[ppid] = runs.get(ppid, 0) + 1
+    found = (process(table, pid, {"home": match.group(1), "apps": runs.get(pid, 0), **dict(zip(("root", "session"), harness(args[1]) or ("", "")))})
+             for pid, (_, _, _, args) in table.items() if args and args[0] and (match := GOD_DAEMON.match(args[0][0].strip())))
+    return [entry for entry in found if entry]
+
+
 def cpu():
     usage = resource.getrusage(resource.RUSAGE_SELF)
     return round(usage.ru_utime + usage.ru_stime, 3)
@@ -483,4 +501,4 @@ if __name__ == "__main__":
     workers = {line.strip(): tree(int(line), kernels, seen) for line in sys.stdin if line.strip().isdigit()}
     table = scan()
     print(json.dumps({"workers": workers, "kernels": kernels, "orphans": orphans(table, seen), "test_browsers": test_browsers(table),
-                      "stray_servers": reap(stray_servers(table)), "swap_used_bytes": swap_used(), "pressure_level": pressure_level(), "cpu_s": cpu()}))
+                      "stray_servers": reap(stray_servers(table)), "pm2_daemons": pm2_daemons(table), "swap_used_bytes": swap_used(), "pressure_level": pressure_level(), "cpu_s": cpu()}))
