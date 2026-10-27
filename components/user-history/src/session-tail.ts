@@ -218,8 +218,6 @@ export async function readContextTail(file: string, bytes: number): Promise<Bran
   } finally { await handle.close(); }
 }
 
-/** How far before a message's time its entry may be written: an assistant reply is stamped when it starts and saved when it ends. */
-const WRITE_LAG_MS = 30 * 60_000;
 /** How far after its message a branch entry's own time may run back (custom entries take a second clock read). */
 const CLOCK_SKEW_MS = 60_000;
 
@@ -227,25 +225,37 @@ export interface FoundMessage { entry: SessionEntry; message: AgentMessage; befo
 
 /**
  * The shown message with timestamp `at` that has `n` shown messages with the same timestamp before it on the branch, found by walking back from
- * the leaf; only entries written near `at` are parsed. `before` is where the entries before it start. Undefined when no such message is there,
- * and for a file a full open must migrate.
+ * the leaf; only entries that hold `"timestamp":<at>` are parsed. `before` is where the entries before it start. Null when the branch holds no
+ * such message, and undefined for a file a full open must migrate, so only that file takes a caller's whole-file read: until 10-27 a message
+ * not on the branch read undefined too, and at 07:36Z and 07:37Z a part read of Crawler VP held the chat's event loop 1.8 and 1.9 s on that
+ * read; on a copy of the 100 MB AI harness chat file it took 846 to 876 ms against 3 to 10 ms for this walk.
  */
-export async function findMessage(file: string, at: number, n: number): Promise<FoundMessage | undefined> {
+export async function findMessage(file: string, at: number, n: number): Promise<FoundMessage | null | undefined> {
   const handle = await open(file, "r");
   try {
     const { size } = await handle.stat();
     const head = await header(handle, size);
     if (!head) return undefined;
+    const needle = Buffer.from(`"timestamp":${at}`);
     const hits: FoundMessage[] = [];
     for await (const line of branchLines(handle, head.first, size, null, { bytes: 0 })) {
       if (line.time < at - CLOCK_SKEW_MS) break;
-      if (line.time > at + WRITE_LAG_MS) continue;
+      if (!holdsStamp(line.bytes, needle)) continue;
       const entry = parse(line);
       const message = entry && shown(entry);
       if (entry && message?.timestamp === at) hits.push({ entry, message, before: entry.parentId ? { end: line.start, id: entry.parentId } : null });
     }
-    return hits[hits.length - 1 - n];
+    return hits[hits.length - 1 - n] ?? null;
   } finally { await handle.close(); }
+}
+
+/** Whether `bytes` hold `needle` followed by no digit, so `"timestamp":17` does not match `"timestamp":170`. */
+function holdsStamp(bytes: Buffer, needle: Buffer): boolean {
+  for (let from = bytes.indexOf(needle); from >= 0; from = bytes.indexOf(needle, from + 1)) {
+    const next = bytes[from + needle.length];
+    if (next === undefined || next < 0x30 || next > 0x39) return true;
+  }
+  return false;
 }
 
 /**
