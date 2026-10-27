@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
@@ -44,6 +45,15 @@ export function readConfig(argv = process.argv.slice(2), env = process.env): Con
     box: env.APPS_CHAT_BOX ?? hostname(),
     sharedDir: env.AGENT_CHAT_SHARED_DIR ?? join(homedir(), ".prime/agent/browser-chat"),
     wikiBase: env.APPS_CHAT_WIKI_BASE ?? "https://us-metal02-dev.tail0c093d.ts.net:5176",
-    version: values.version ?? env.APPS_CHAT_VERSION ?? "dev",
+    version: values.version ?? env.APPS_CHAT_VERSION ?? releaseVersion(appDir),
   };
+}
+
+/** The release's short sha from the release.json scripts/release-apps-chat.mjs writes at the release root, else "dev". */
+function releaseVersion(appDir: string): string {
+  try {
+    return String((JSON.parse(readFileSync(join(appDir, "../../release.json"), "utf8")) as { sha: string }).sha).slice(0, 7);
+  } catch {
+    return "dev";
+  }
 }

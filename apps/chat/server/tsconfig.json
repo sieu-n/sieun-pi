@@ -22,5 +22,9 @@
     "./**/*.ts",
     "../test/server/**/*.ts",
     "../web/src/lib/api/**/*.ts"
+  ],
+  "exclude": [
+    "../web/src/lib/api/**/*.svelte.ts",
+    "../web/src/lib/api/index.ts"
   ]
 }

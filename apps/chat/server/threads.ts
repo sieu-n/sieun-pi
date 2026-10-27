@@ -284,7 +284,7 @@ export class Threads {
       const newer = await this.pageAfter(thread, conversation, target, Math.floor(limit / 2));
       const entries = [...older.entries, ...newer.entries];
       const items = buildItems(entries, { ...ctx, running: ctx.running && !newer.more, fromStart: !older.more });
-      const focus = itemIdFor(entries, target);
+      const focus = opts.around.startsWith("t") && items.some(i => i.id === opts.around) ? opts.around : itemIdFor(entries, target);
       return { items, ...(older.more && entries[0] ? { older: `e${entries[0].id}` } : {}), ...(newer.more && entries.at(-1) ? { newer: `e${entries.at(-1)!.id}` } : {}), ...(focus ? { focus } : {}) };
     }
     if (opts.after) {

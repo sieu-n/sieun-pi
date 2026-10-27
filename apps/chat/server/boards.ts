@@ -170,13 +170,13 @@ export class Boards {
     const file = this.file(chat);
     const agents = this.chatAgents(chat);
     return file.duties.map(duty => {
-      const runs = file.runs[duty.id] ?? [];
+      const runs = [...(file.runs[duty.id] ?? [])].sort((a, b) => b.at - a.at).slice(0, 20);
       const view: DutyView = {
         duty: { id: duty.id, name: duty.name, ownerWords: duty.ownerWords, goal: duty.goal, metrics: duty.metrics, status: duty.status, ...(duty.boardGoal ? { boardGoal: duty.boardGoal } : {}) },
         schedule: duty.schedule, paused: duty.status === "paused", nextAt: duty.status === "paused" ? null : nextRun(duty.schedule, duty.lastRunAt ?? duty.createdAt),
         running: false, runs, priority: "normal",
       };
-      const newest = runs.at(-1);
+      const newest = runs[0];
       const judged = newest ? judgedRun(newest, duty.metrics) : null;
       return {
         ...view, card: dutyCard(view, agents),

@@ -1,0 +1,22 @@
+# apps/chat, the new chat app on pi-host, beside the live chat (:5182) and the canary (:5183), never replacing either.
+# It runs the installed release under ~/.local/share/sieun-pi-apps-chat/current, which scripts/release-apps-chat.mjs builds from a commit on origin main.
+# Its own state (channels, read marks, duties) lives in ~/.pi/agent/chat; every thread lives in pi-host's durable files.
+# Tailnet: tailscale serve --bg --https=5184 http://127.0.0.1:5184
+[Unit]
+Description=apps/chat, the sieun-pi chat app on pi-host (127.0.0.1:5184)
+After=default.target pi-host.service
+Wants=pi-host.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.local/share/sieun-pi-apps-chat/current/apps/chat
+Environment=PATH=%h/.local/node/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=AGENT_CHAT_SHARED_DIR=%h/.prime/agent/browser-chat
+ExecStart=%h/.local/node/bin/node --import tsx server/main.ts --port 5184 --listen 127.0.0.1 --data-dir %h/.pi/agent/chat --socket %t/pi-host/host.sock
+KillSignal=SIGTERM
+TimeoutStopSec=20
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target
