@@ -124,6 +124,7 @@ import argparse
 import concurrent.futures
 import contextlib
 import datetime as dt
+import fcntl
 import functools
 import hashlib
 import http.client
@@ -1988,9 +1989,18 @@ def save_state(path, state, now, keep_minutes):
     kept = {k: v for k, v in state.items() if (parse_ts(v) or now) >= cutoff}
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(kept, indent=1))
-    tmp.replace(path)
+    # Two passes can save at once: at 22:5xZ on 10-27 one pass's rename found the other's shared .tmp gone and exited 1 before its sends. Each
+    # save merges the file under a lock, so neither pass drops the other's sends and a run is never continued twice for one cut.
+    with open(path.with_suffix(".lock"), "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        for key, value in load_state(path).items():
+            if key not in kept or (parse_ts(value) or now) > (parse_ts(kept[key]) or now):
+                if (parse_ts(value) or now) >= cutoff:
+                    kept[key] = value
+        state.update(kept)
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(kept, indent=1))
+        tmp.replace(path)
 
 
 def hook_pairs(sessions, only, by_id, entries_of):

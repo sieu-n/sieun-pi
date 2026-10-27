@@ -1177,6 +1177,16 @@ class ResumePausedTests(unittest.TestCase):
                 report = self.run_stranded(sid, [*entries[:park + 1], added, *entries[park + 1:]])
                 self.assertEqual([p["session_id"] for p in report["paused"]], [sid] if kept else [])
 
+    def test_two_passes_that_save_the_state_at_once_keep_both_sends(self):
+        path = self.root / "state.json"
+        first = {"a": "2026-10-05T19:50:00Z"}
+        second = {"b": "2026-10-05T19:55:00Z", "a": "2026-10-05T19:40:00Z"}
+        resume_paused.save_state(path, first, NOW, 1440)
+        resume_paused.save_state(path, second, NOW, 1440)
+        self.assertEqual(json.loads(path.read_text()), {"a": "2026-10-05T19:50:00Z", "b": "2026-10-05T19:55:00Z"})
+        self.assertEqual(second["a"], "2026-10-05T19:50:00Z", "the pass sees the other pass's newer send")
+        self.assertEqual(sorted(p.name for p in self.root.glob("state.json*")), ["state.json"])
+
     def test_credential_wait_at_reads_the_diagnostic_and_not_the_text(self):
         message = self.MARKER["message"]
         self.assertEqual(resume_paused.credential_wait_at(message), 1792517520000)
