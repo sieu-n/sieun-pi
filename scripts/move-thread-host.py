@@ -156,13 +156,15 @@ def sha(host, path):
     return out.split()[0] if out.strip() else ""
 
 
+# The open waits 30 s for the socket and the daemon's hello, where DaemonClient's defaults wait 3 s; probes on us-metal02 got the hello after
+# 3 to 7 s on 10-22 (~/work/prime-under-load/LOGS.md).
 OPEN_JS = """
 import { pathToFileURL } from "node:url";
 const [lib, socketPath, sessionPath, startMs, message] = process.argv.slice(1);
 const { DaemonClient } = await import(pathToFileURL(lib).href);
 const client = new DaemonClient(socketPath);
-await client.connect();
-await client.waitForHello();
+await client.connect(30000);
+await client.waitForHello(30000);
 const created = await client.request({ type: "create", lifecycle: "resident", sessionPath }, Number(startMs), { recoverable: false });
 const out = { created };
 if (created.success && message) out.sent = await client.request({ type: "prompt", activeSessionId: created.data.activeSessionId, message, source: "interactive", queueIfBusy: true }, undefined, { recoverable: false });

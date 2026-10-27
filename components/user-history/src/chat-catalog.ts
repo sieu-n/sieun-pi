@@ -712,6 +712,8 @@ export function mayBeUnlisted(sessionId: string, now: number): boolean {
 
 /** How long a refresh waits for a session list: the SDK's default request deadline, which every list used before p349. */
 const LIST_WAIT_MS = 30000;
+/** How long this box's link waits for its socket and for the daemon's hello. */
+export const CATALOG_LINK_MS = 30_000;
 
 /** The promise's result, or a rejection after `ms` for this caller only; the promise itself keeps running. */
 function waitFor<T>(promise: Promise<T>, ms: number, box: string): Promise<T> {
@@ -802,7 +804,10 @@ export class Catalog {
     this.saved = agentsFile ? takeSavedAgents(agentsFile) : undefined;
     if (agentsFile) takeSavedHeads(join(dirname(agentsFile), HEADS_FILE), origins);
     // Roster updates were up to 116 a minute (10-12); this box's lay into one frame per 150 ms, the wait its roster refresh had before.
-    this.peer = new SessionPeer({ name: hosts?.selfName ?? "this box", client: this.client, file: copyFile, deadlines: { socketMs: 1500, helloMs: 1500 }, changeMs: 150,
+    // The link waits 30 s for the socket and the hello, as daemon-list.ts does for d9. With 1.5 s waits, service.log on us-metal02 held 374 calls
+    // to this box's daemon that failed on the hello by 10-27, the link's own syncs and the service commands that went through it, while probes got
+    // the supervisor's hello after 3 to 7 s (~/work/prime-under-load/LOGS.md).
+    this.peer = new SessionPeer({ name: hosts?.selfName ?? "this box", client: this.client, file: copyFile, deadlines: { socketMs: CATALOG_LINK_MS, helloMs: CATALOG_LINK_MS }, changeMs: 150,
       reconnectMs: 2000, log: line => process.stderr.write(`catalog: ${line}\n`), onChange: () => this.peerChanged(),
       onHello: hello => {
         this.observedDaemonVersion = { version: hello.appVersion };

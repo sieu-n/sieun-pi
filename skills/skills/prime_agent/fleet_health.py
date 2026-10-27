@@ -12,6 +12,7 @@ from __future__ import annotations
 import datetime as _dt
 import json
 import os
+import shutil
 import socket
 import subprocess
 import time
@@ -36,10 +37,24 @@ def _run(cmd: list[str], timeout: int = 120) -> tuple[int, str]:
     return p.returncode, out
 
 
+# sieun-pi's daemon reader in this checkout. prime-agent's CLI waits a fixed 3 s for the daemon's hello, and probes on us-metal02 got it after
+# 3 to 7 s on 10-22; the reader waits 30 s and opens the daemon once more after a failed hello (components/user-history/src/daemon-list.ts).
+DAEMON_CLI = Path(__file__).resolve().parents[3] / "components" / "user-history" / "src" / "daemon-cli.mjs"
+
+
+def _daemon(*args: str, timeout: int = 180) -> tuple[int, str]:
+    """`list --all` or `send <session> <text>` on this box's daemon: through the reader when this checkout has it with node and tsx, else
+    through the CLI with --json."""
+    node = shutil.which("node")
+    if node and DAEMON_CLI.is_file() and (DAEMON_CLI.parents[1] / "node_modules" / "tsx").is_dir():
+        return _run([node, str(DAEMON_CLI), *args], timeout=timeout)
+    return _run(["prime-agent", args[0], "--json", *args[1:]], timeout=timeout)
+
+
 def list_sessions() -> dict[str, dict]:
     """Enumerate with --all. Plain `list` omits daemon-evicted sessions and
     produces false PARKED verdicts on finished work."""
-    _, out = _run(["prime-agent", "list", "--all", "--json"])
+    _, out = _daemon("list", "--all")
     return {s["sessionId"]: s for s in json.loads(out)["sessions"]}
 
 
@@ -231,7 +246,7 @@ def unwedge(active_id: str, session_id: str, reason: str) -> dict:
         client.request({"type": "resume_queue", "activeSessionId": active_id})
     finally:
         client.close()
-    code, out = _run(["prime-agent", "send", session_id, reason, "--json"], timeout=180)
+    code, out = _daemon("send", session_id, reason)
     return {"aborted": True, "send_rc": code, "send": out[:200]}
 
 
@@ -320,7 +335,7 @@ async def fleet_health(session_ids: list[str] | None = None, idle_threshold_min:
                                 **unwedge(s["id"], row["session"],
                                           UNWEDGE_NOTE.format(cause=row["detail"]))})
             elif row["verdict"] == "PARKED":
-                code, out = _run(["prime-agent", "send", row["session"], NUDGE_NOTE, "--json"], timeout=180)
+                code, out = _daemon("send", row["session"], NUDGE_NOTE)
                 actions.append({"session": row["short"], "did": "nudge", "rc": code})
             elif row["verdict"] == "FAULT" and row["stop"] == "aborted":
                 s = sessions[row["session"]]
@@ -329,7 +344,7 @@ async def fleet_health(session_ids: list[str] | None = None, idle_threshold_min:
                     actions.append({"session": row["short"], "did": "clear phantom turn + resume",
                                     **unwedge(s["id"], row["session"], note)})
                 else:
-                    code, _ = _run(["prime-agent", "send", row["session"], note, "--json"], timeout=180)
+                    code, _ = _daemon("send", row["session"], note)
                     actions.append({"session": row["short"], "did": "resume", "rc": code})
             elif row["verdict"] == "DEADLOCK":
                 actions.append({"session": row["short"], "did": "report only",
