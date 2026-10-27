@@ -12,6 +12,7 @@
   import ReportCard from "./ReportCard.svelte";
   import Icon from "./Icon.svelte";
   import { lazy } from "./lazy.ts";
+  import { isSearchShortcut, searchPanel } from "./search-panel.svelte.ts";
 
   const NARROW_BELOW = 900;
   let root: HTMLElement | undefined = $state();
@@ -72,6 +73,7 @@
   function onKeydown(event: KeyboardEvent): void {
     // An artifact link in rendered markdown is an <a> without href; Enter on a focused one opens it like a click.
     if (event.key === "Enter" && event.target instanceof HTMLElement && event.target.matches("a.artifact-link")) { event.preventDefault(); event.target.click(); return; }
+    if (isSearchShortcut(event)) { event.preventDefault(); searchPanel.show(); return; }
     const meta = event.metaKey || event.ctrlKey;
     if (meta && !event.shiftKey && !event.altKey) {
       const key = event.key.toLowerCase();
@@ -124,6 +126,9 @@
     {/if}
     {#if ui.agentsOpen}
       {#await lazy.AgentsDialog() then { default: AgentsDialog }}<AgentsDialog onclose={() => { ui.agentsOpen = false; }} />{/await}
+    {/if}
+    {#if searchPanel.open}
+      {#await lazy.SearchPanel() then { default: SearchPanel }}<SearchPanel />{/await}
     {/if}
     {#if store.reader}
       {#await lazy.Reader() then { default: Reader }}<Reader view={store.reader} {narrow} onclose={() => { store.reader = null; }} />{/await}

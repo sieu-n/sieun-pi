@@ -20,6 +20,8 @@
   import TagPicker from "./ui/TagPicker.svelte";
   import { tooltip } from "./ui/tooltip.ts";
   import { ui, SIDEBAR_MAX, SIDEBAR_MIN, SIDEBAR_SNAP } from "./ui.svelte.ts";
+  import { searchPanel } from "./search-panel.svelte.ts";
+  import { sidebarSearchLine } from "./search.ts";
 
   let { narrow }: { narrow: boolean } = $props();
   let query = $state("");
@@ -288,7 +290,8 @@
     <div class="find">
       <label class="search">
         <Icon name="search" size={14} />
-        <input type="search" placeholder="Search threads or tags" aria-label="Search threads" bind:value={query} />
+        <input type="search" placeholder="Search threads or tags" aria-label="Search threads" bind:value={query}
+          onkeydown={event => { if (event.key === "Enter" && !event.isComposing && query.trim()) { event.preventDefault(); searchPanel.show(query); } }} />
       </label>
       <div class="segmented view" role="radiogroup" aria-label="Sidebar view">
         {#each SIDEBAR_VIEWS as view (view)}
@@ -340,6 +343,9 @@
       {/if}
       {#if agentCreatedCount && ui.sidebarView !== "chats"}
         <button type="button" class="archived-toggle" aria-pressed={ui.agentCreatedShown} onclick={() => ui.setAgentCreatedShown(!ui.agentCreatedShown)}>{ui.agentCreatedShown ? "Hide agent-created" : `Show agent-created (${agentCreatedCount})`}</button>
+      {/if}
+      {#if query.trim()}
+        <button type="button" class="search-messages" data-search-messages onclick={() => searchPanel.show(query)}><Icon name="search" size={13} /><span>{sidebarSearchLine(query)}</span><kbd>↵</kbd></button>
       {/if}
     </div>
     <PoolMeters />
@@ -499,5 +505,10 @@
   .empty { display: flex; justify-content: center; padding: 24px 8px; color: var(--text-faint); font-size: 12.5px; text-align: center; }
   .archived-toggle { display: block; width: 100%; padding: 8px; margin-top: 8px; font-size: 12px; color: var(--text-faint); border-radius: var(--radius-small); }
   .archived-toggle + .archived-toggle { margin-top: 0; }
+  .search-messages { position: sticky; bottom: 0; display: flex; align-items: center; gap: 7px; width: 100%; margin-top: 6px; padding: 7px 8px; border-radius: var(--radius-small);
+    background: var(--bg-elevated); box-shadow: 0 0 0 1px var(--border); font-size: 12.5px; color: var(--accent-bold); text-align: left; }
+  .search-messages span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .search-messages kbd { flex: none; font: 500 11.5px var(--font); color: var(--text-faint); }
+  .search-messages:hover { background: var(--accent-soft); }
   .archived-toggle:hover { background: var(--bg-hover); color: var(--text-muted); }
 </style>

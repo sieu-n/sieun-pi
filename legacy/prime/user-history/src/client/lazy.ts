@@ -16,6 +16,7 @@ export const lazy = {
   PromptView: once(() => import("./PromptView.svelte")),
   PlanView: once(() => import("./PlanView.svelte")),
   JobDrawer: once(() => import("./JobDrawer.svelte")),
+  SearchPanel: once(() => import("./SearchPanel.svelte")),
 };
 
 /** Fetches every lazy view a few seconds after the first paint, when the page's own frames are in. */

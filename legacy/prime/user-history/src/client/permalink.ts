@@ -66,7 +66,9 @@ export function revealLine(root: HTMLElement, line: string): boolean {
 function reveal(root: HTMLElement, target: HTMLElement | null | undefined): boolean {
   if (!target) return false;
   target.style.scrollMarginTop = "12px";
-  target.scrollIntoView({ block: target.offsetHeight > root.clientHeight * 0.8 ? "start" : "center" });
+  const place = () => target.scrollIntoView({ block: target.offsetHeight > root.clientHeight * 0.8 ? "start" : "center" });
+  place();
+  settle(root, target, place);
   clearTimeout(flashes.get(target));
   target.classList.remove("linked");
   void target.offsetWidth;
@@ -74,6 +76,28 @@ function reveal(root: HTMLElement, target: HTMLElement | null | undefined): bool
   flashes.set(target, setTimeout(() => target.classList.remove("linked"), 2000));
   return true;
 }
+/**
+ * Places the message again on each frame until it holds still for two frames, and stops at once when the owner scrolls. A turn off screen lays
+ * out at a guessed height (Turn.svelte `content-visibility`) and takes its real one once the scroll brings it near, which pushed a linked message
+ * under the composer: on 10-28 a jump to line 20 of a 40-message thread grew the scroller from 3213 to 3925 px in the next frame.
+ */
+function settle(root: HTMLElement, target: HTMLElement, place: () => void): void {
+  const INPUTS = ["wheel", "pointerdown", "keydown", "touchstart"] as const;
+  let stopped = false;
+  const stop = () => { stopped = true; for (const type of INPUTS) root.removeEventListener(type, stop); };
+  for (const type of INPUTS) root.addEventListener(type, stop, { passive: true });
+  let last = target.getBoundingClientRect().top;
+  let still = 0;
+  const step = () => {
+    if (stopped || !target.isConnected) { stop(); return; }
+    const top = target.getBoundingClientRect().top;
+    if (Math.abs(top - last) < 1) still += 1;
+    else { still = 0; place(); last = target.getBoundingClientRect().top; }
+    if (still >= 2) stop(); else requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+}
+
 /** The pending end of each element's flash, so a second reveal of the same message restarts it in full. */
 const flashes = new WeakMap<HTMLElement, ReturnType<typeof setTimeout>>();
 
