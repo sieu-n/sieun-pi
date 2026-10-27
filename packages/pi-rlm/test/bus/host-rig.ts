@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { HostClient } from "../../../pi-host/src/client.ts";
+import { HostClient } from "@sieun-pi/pi-host/client";
 import { until } from "./rig.ts";
 
 export const STACK = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
@@ -28,7 +28,7 @@ export async function startHost(root: string, name = "host", extraEnv: Record<st
   const proc = spawn(
     process.execPath,
     ["--import", "tsx", "pi-host/src/main.ts", "--socket", socket, "--agent-dir", join(dir, "agent"), "--session-dir", join(dir, "sessions"), "--cwd", join(dir, "ws"),
-      "--no-default-extensions", "--extension", "pi-rlm/agent-bus/index.ts", "--extension", "pi-rlm/agent-bus/test/fixtures/busy.ts", "--model", "busy/m", "--idle-unload-min", "0"],
+      "--no-default-extensions", "--extension", "pi-rlm/src/pi/agent-bus.ts", "--extension", "pi-rlm/test/bus/fixtures/busy.ts", "--model", "busy/m", "--idle-unload-min", "0"],
     {
       cwd: STACK,
       env: { HOME: join(dir, "home"), PATH: process.env.PATH ?? "/usr/bin:/bin", LANG: "C.UTF-8", PI_OFFLINE: "1", PI_TELEMETRY: "0", PI_SKIP_VERSION_CHECK: "1", ...extraEnv },

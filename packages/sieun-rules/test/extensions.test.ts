@@ -5,8 +5,8 @@ import { join, resolve } from "node:path";
 import { after, before, test } from "node:test";
 import { PiHost } from "../../pi-host/src/host.ts";
 import type { HostedSession } from "../../pi-host/src/session.ts";
-import piRlm from "../../pi-rlm/index.ts";
-import { testPython } from "../../pi-rlm/test/helpers.ts";
+import piRlm from "@sieun-pi/pi-rlm";
+import { testPython } from "@sieun-pi/pi-rlm/test-helpers";
 import scripted from "../rig/scripted.ts";
 
 process.env.PI_OFFLINE = "1";

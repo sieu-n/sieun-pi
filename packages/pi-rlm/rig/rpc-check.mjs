@@ -23,7 +23,7 @@ const log = (o) => appendFileSync(eventsPath, JSON.stringify({ at: Date.now(), .
 
 function start(extra) {
   const args = [join(stack, "node_modules/@earendil-works/pi-coding-agent/dist/cli.js"), "--mode", "rpc", "--provider", provider, "--model", model, "--thinking", thinking,
-    "--tools", "ipython", "--no-context-files", "-e", join(stack, "pi-rlm/index.ts"), "-e", join(stack, "pi-rlm/agent-bus/index.ts"), "-e", join(stack, "pi-rlm/rig/measure.ts"),
+    "--tools", "ipython", "--no-context-files", "-e", join(stack, "pi-rlm/src/pi/index.ts"), "-e", join(stack, "pi-rlm/src/pi/agent-bus.ts"), "-e", join(stack, "pi-rlm/rig/measure.ts"),
     ...(process.env.EXTRA_EXTENSIONS ?? "").split(",").filter(Boolean).flatMap(p => ["-e", resolve(stack, p)]),
     "--session-dir", join(rig, "sessions"), ...extra];
   const child = spawn(process.execPath, args, { cwd: join(rig, "ws"), env: { ...process.env, PI_RLM_MEASURE_LOG: measurePath, PI_RLM_MEASURE_LABEL: "rpc" }, stdio: ["pipe", "pipe", "pipe"] });

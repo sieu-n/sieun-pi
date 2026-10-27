@@ -5,8 +5,8 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { kernelHandler } from "@sieun-pi/pi-family/kernel-bridge";
 import * as registry from "@sieun-pi/pi-family/registry";
-import { inboxDir, records } from "../src/inbox.ts";
-import { sendFromClient } from "../src/route.ts";
+import { inboxDir, records } from "../../src/core/bus/inbox.ts";
+import { sendFromClient } from "../../src/core/bus/route.ts";
 import { landed, openAgent, until, type Opened } from "./rig.ts";
 
 let root: string;

@@ -2,7 +2,7 @@
 // tmpdir, /var/folders/xr/<...>/T/pi-rlm/kernel-<session id>.sock, past the 104-byte cap on unix socket paths.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { relayPaths } from "../src/kernel.ts";
+import { relayPaths } from "../src/core/kernel.ts";
 
 test("off Linux the kernel socket path stays under macOS's 104-byte cap", () => {
   const platform = Object.getOwnPropertyDescriptor(process, "platform")!;

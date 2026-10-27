@@ -12,7 +12,7 @@ The files were copied on 2026-10-27 without `__pycache__` folders.
 2. `skills/goal`, `skills/compact` and `skills/edit` went to `pi-rlm/skills/`, which pi-rlm returns from `resources_discover`, so Pi lists them and the kernel pre-imports them.
 3. The release `LICENSE` went to `pi-rlm/python/LICENSE`, and its text is repeated below.
 
-The other bundled skills live with the part that answers their host requests: `agent-message` and `agent-observe` in `pi-rlm/agent-bus/skills`, `refine` with pi-harness and `rlm-heartbeat` with pi-host.
+The other bundled skills live with the part that answers their host requests: `agent-message` and `agent-observe` sit in the same `pi-rlm/skills/` and come with pi-rlm's agent bus extension, `refine` lives with pi-harness and `rlm-heartbeat` with pi-host.
 
 ## Source file hashes
 
@@ -60,6 +60,7 @@ Each row is the SHA-256 of the file in the release folder before any change.
 
 2. `python/src/rlm/harness.py` takes a cross-process lock for every write, from pi-harness's `harness-lock.patch` (`/home/sieun/work/pi-migration-build/step-4/harness-py-lock/`). A `_FileLock` class takes `<file>.lock` with the protocol of pi-harness's `lock.ts`, user-history's `locked-json.ts` and prime-sync's `LedgerLock`, and the five mutators reload the file under it before they change it. Before the patch, 8 writers plus prime-sync lost entries with the mtime check alone. The patched file's SHA-256 is `77155ad22abeca3927398ccc2403d63d41c422fdd85a7c08f79f7ee285164cec`.
 3. `python/test/test_harness.py` saves twice more in `test_search_discounts_common_terms_and_keeps_frequency_ties`, because a create now reloads from disk. The patched file's SHA-256 is `a230b66e6974594a8522e46c9d303616239b1286860417e0bf62fdcad157322f`, and the 54 harness tests pass with `uv run --offline --with pytest pytest test/test_harness.py`.
+4. `python/test/test_agent_message_skill.py` loads the skill from `pi-rlm/skills/agent-message` in place of Prime's `packages/coding-agent/skills` path, and its last check sends an unknown mode, because pi-rlm's skill takes the optional `mode` that Prime's refused.
 
 No other vendored file differs from its source.
 

@@ -10,8 +10,8 @@ const root = mkdtempSync(join(tmpdir(), "pi-harness-kernel-"));
 process.env.PI_CODING_AGENT_DIR = join(root, "agent");
 
 const { fauxProvider } = await import("@sieun-pi/pi-testkit/faux");
-const { openWithSkills, testPython } = await import("../../pi-rlm/test/helpers.ts");
-const { default: piRlm } = await import("../../pi-rlm/index.ts");
+const { openWithSkills, testPython } = await import("@sieun-pi/pi-rlm/test-helpers");
+const { default: piRlm } = await import("@sieun-pi/pi-rlm");
 const { createHarnessExtension } = await import("../index.ts");
 const { globalHarnessDir, readState } = await import("../src/store.ts");
 const { PLANNER_PROMPT } = await import("../src/prompts.ts");

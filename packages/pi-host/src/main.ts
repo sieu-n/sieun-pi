@@ -50,7 +50,7 @@ const socketPath = resolve(values.socket);
 const agentDir = resolve(values["agent-dir"]);
 process.env.PI_CODING_AGENT_DIR = agentDir;
 process.env[HOST_SOCKET_ENV] = socketPath;
-/** `{ "extensions": ["../pi-rlm/agent-bus/index.ts", ...] }`, each path relative to the list file. */
+/** `{ "extensions": ["../pi-rlm/src/pi/agent-bus.ts", ...] }`, each path relative to the list file. */
 function listedExtensions(): string[] {
   if (values["no-default-extensions"]) return [];
   const file = values["extensions-file"] ? resolve(values["extensions-file"]) : fileURLToPath(new URL("../extensions.json", import.meta.url));
@@ -64,7 +64,7 @@ const extensions = [...listedExtensions(), ...(values.extension ?? []).map(path 
 const [provider, ...modelId] = (values.model ?? "").split("/");
 
 // pi-rlm children load the host's extensions plus the scheduler's, so a child's rlm_heartbeat jobs attach to this host's scheduler.
-const { setChildLoaderOptions } = await import("../../pi-rlm/src/children.ts");
+const { setChildLoaderOptions } = await import("@sieun-pi/pi-rlm/children");
 setChildLoaderOptions(() => ({ additionalExtensionPaths: extensions, extensionFactories: [schedulerExtension] }));
 
 const dataDir = values["data-dir"] ? resolve(values["data-dir"]) : join(agentDir, "pi-host");

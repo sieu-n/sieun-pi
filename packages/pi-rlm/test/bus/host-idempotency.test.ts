@@ -4,8 +4,8 @@ import { createConnection, createServer, type Server, type Socket } from "node:n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { HostClient } from "../../../pi-host/src/client.ts";
-import type { SessionSummary } from "../../../pi-host/src/protocol.ts";
+import { HostClient } from "@sieun-pi/pi-host/client";
+import type { SessionSummary } from "@sieun-pi/pi-host/protocol";
 import { kernelHandler } from "@sieun-pi/pi-family/kernel-bridge";
 import { startHost, type RunningHost } from "./host-rig.ts";
 import { landed, openAgent, until, type Opened } from "./rig.ts";

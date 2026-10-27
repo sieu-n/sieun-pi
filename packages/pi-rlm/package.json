@@ -4,5 +4,42 @@
   "private": true,
   "type": "module",
   "description": "The ipython kernel tool, rlm.spawn children and agent_message/agent_observe for Pi.",
-  "license": "SEE LICENSE IN ../../NOTICE"
+  "license": "SEE LICENSE IN ../../NOTICE",
+  "keywords": [
+    "pi-package"
+  ],
+  "exports": {
+    ".": "./src/pi/index.ts",
+    "./agent-bus": "./src/pi/agent-bus.ts",
+    "./children": "./src/pi/children.ts",
+    "./bus/route": "./src/core/bus/route.ts",
+    "./bus/inbox": "./src/core/bus/inbox.ts",
+    "./test-helpers": "./test/helpers.ts"
+  },
+  "pi": {
+    "extensions": [
+      "./src/pi/index.ts",
+      "./src/pi/agent-bus.ts"
+    ],
+    "skills": [
+      "./skills"
+    ]
+  },
+  "scripts": {
+    "test": "node --import tsx --test --test-force-exit \"test/*.test.ts\" \"test/bus/*.test.ts\""
+  },
+  "dependencies": {
+    "@sieun-pi/pi-family": "0.1.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-agent-core": "*",
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@sieun-pi/pi-host": "0.1.0",
+    "@sieun-pi/pi-testkit": "0.1.0",
+    "tsx": "4.23.13"
+  }
 }

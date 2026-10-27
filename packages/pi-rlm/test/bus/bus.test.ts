@@ -5,9 +5,9 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { kernelHandler } from "@sieun-pi/pi-family/kernel-bridge";
 import * as registry from "@sieun-pi/pi-family/registry";
-import { MAX_MESSAGE_CHARS } from "../src/limits.ts";
-import { sendFromClient } from "../src/route.ts";
-import { pendingCount, repliedSinceTask } from "../src/state.ts";
+import { MAX_MESSAGE_CHARS } from "../../src/core/bus/limits.ts";
+import { sendFromClient } from "../../src/core/bus/route.ts";
+import { pendingCount, repliedSinceTask } from "../../src/core/bus/state.ts";
 import { landed, openAgent, until, type Opened } from "./rig.ts";
 
 let root: string;

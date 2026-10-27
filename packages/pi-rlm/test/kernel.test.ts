@@ -4,9 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { before, test } from "node:test";
 import { existsSync } from "node:fs";
-import { Kernel, KernelBusyError, type HostRequest } from "../src/kernel.ts";
-import { RUNTIME_SRC } from "../src/python.ts";
-import { bootstrapCode } from "../src/bootstrap.ts";
+import { Kernel, KernelBusyError, type HostRequest } from "../src/core/kernel.ts";
+import { RUNTIME_SRC } from "../src/core/python.ts";
+import { bootstrapCode } from "../src/core/bootstrap.ts";
 import { testPython } from "./helpers.ts";
 
 let python = "";

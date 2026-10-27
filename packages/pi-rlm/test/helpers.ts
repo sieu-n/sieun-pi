@@ -10,7 +10,7 @@ import {
   type ExtensionFactory,
 } from "@earendil-works/pi-coding-agent";
 import type { fauxProvider } from "@sieun-pi/pi-testkit/faux";
-import { kernelPython } from "../src/python.ts";
+import { kernelPython } from "../src/core/python.ts";
 
 /**
  * The Python the tests run kernels with: `PI_RLM_PYTHON` when set, else pi-rlm's own uv venv under the OS temp dir, built on first use.

@@ -98,7 +98,7 @@ export interface RelayOptions {
 
 const STDERR_TAIL = 16_384;
 const READY_TIMEOUT_MS = 120_000;
-const RELAY_SCRIPT = resolve(import.meta.dirname, "..", "relay", "kernel_relay.py");
+const RELAY_SCRIPT = resolve(import.meta.dirname, "..", "..", "relay", "kernel_relay.py");
 
 interface Link {
   readonly stdout: Readable;

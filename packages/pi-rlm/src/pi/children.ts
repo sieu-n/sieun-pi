@@ -11,7 +11,7 @@ import {
   type AgentSessionEvent,
 } from "@earendil-works/pi-coding-agent";
 import { assignIdentity, get as registryGet, registerDormant, unregisterDormant, type AgentEntry } from "@sieun-pi/pi-family/registry";
-import { repliedSinceTask } from "../agent-bus/src/state.ts";
+import { repliedSinceTask } from "../core/bus/state.ts";
 import { withPoolRetries } from "@sieun-pi/pi-family/retries";
 
 /** A child's lifecycle. `done` is a run that settled cleanly, and the child stays open for follow-ups until it is deleted. */
@@ -90,7 +90,9 @@ export function closingReason(sessionId: string): CloseReason | undefined {
 
 const RESUME_TEXT = "[host-restart]\n\nThe session host restarted while you were working. Your Python kernel and its bash() jobs kept running. Continue your task.";
 const CHILDREN_KEY = Symbol.for("sieun-pi.pi-stack.rlm.children");
-const SELF = resolve(import.meta.dirname, "..", "index.ts");
+const SELF = resolve(import.meta.dirname, "index.ts");
+/** pi-rlm's package root, which `pi -e <dir>` loads through its package.json. */
+const PACKAGE_DIR = resolve(import.meta.dirname, "..", "..");
 const NOTE_INTERVAL_MS = 10_000;
 const PREVIEW = 2000;
 
@@ -115,7 +117,7 @@ function childLoaderOptions(parentSessionId: string): ChildLoaderOptions {
   const provider = (globalThis as unknown as Record<symbol, ChildLoaderProvider | undefined>)[LOADER_KEY];
   const base = provider ? provider(parentSessionId) : { additionalExtensionPaths: argvExtensions() };
   const paths = base.additionalExtensionPaths ?? [];
-  const hasSelf = paths.some(p => resolve(p) === SELF || resolve(p) === resolve(SELF, ".."));
+  const hasSelf = paths.some(p => resolve(p) === SELF || resolve(p) === PACKAGE_DIR);
   return { ...base, additionalExtensionPaths: hasSelf || base.extensionFactories?.length ? paths : [...paths, SELF] };
 }
 
@@ -319,7 +321,7 @@ export class ChildManager {
       ...(model ? { model } : {}),
       tools: this.parent.activeTools(),
     });
-    // A retry the pool takes on stays off Pi's retry budget, as in pi-host (pi-pool/src/retries.ts).
+    // A retry the pool takes on stays off Pi's retry budget, as in pi-host (pi-family/retries.ts).
     withPoolRetries(session.settingsManager, record.sessionId);
     await session.bindExtensions({});
     const [provider, ...rest] = record.model.split("/");

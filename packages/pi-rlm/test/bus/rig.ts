@@ -12,7 +12,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { assignIdentity, type Identity } from "@sieun-pi/pi-family/registry";
-import agentBus from "../index.ts";
+import agentBus from "../../src/pi/agent-bus.ts";
 
 process.env.PI_OFFLINE = "1";
 process.env.PI_TELEMETRY = "0";

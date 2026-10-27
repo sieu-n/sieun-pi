@@ -5,8 +5,8 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { fauxAssistantMessage, fauxText, fauxToolCall, type AssistantMessage } from "@earendil-works/pi-ai";
 import { fauxProvider } from "@sieun-pi/pi-testkit/faux";
-import piRlm from "../../pi-rlm/index.ts";
-import { testPython } from "../../pi-rlm/test/helpers.ts";
+import piRlm from "@sieun-pi/pi-rlm";
+import { testPython } from "@sieun-pi/pi-rlm/test-helpers";
 import { PiHost } from "../src/host.ts";
 
 process.env.PI_OFFLINE = "1";

@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { SKILLS_DIR } from "../index.ts";
+import { SKILLS_DIR } from "../../src/core/python.ts";
 
 const STUB = `
 calls = []

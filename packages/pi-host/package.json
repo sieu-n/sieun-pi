@@ -12,6 +12,7 @@
     "./host": "./src/host.ts",
     "./lease": "./src/lease.ts",
     "./scheduler-extension": "./src/scheduler-extension.ts",
+    "./server": "./src/server.ts",
     "./durable": "./src/durable/index.ts"
   },
   "scripts": {
@@ -26,6 +27,7 @@
     "@earendil-works/pi-coding-agent": "1.4.0",
     "@earendil-works/pi-durable": "1.4.0",
     "@sieun-pi/pi-family": "0.1.0",
+    "@sieun-pi/pi-rlm": "0.1.0",
     "tsx": "4.23.13"
   },
   "devDependencies": {

@@ -5,10 +5,14 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 /** The vendored Prime runtime. Its `src` goes first on the kernel's PYTHONPATH, so an installed `rlm` package never shadows it. */
-export const RUNTIME_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..", "python");
+export const RUNTIME_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "python");
 export const RUNTIME_SRC = join(RUNTIME_DIR, "src");
-/** The Prime bundled skills pi-rlm ships: goal, compact and edit. */
-export const BUNDLED_SKILLS_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..", "skills");
+/** Every Python skill pi-rlm ships, Prime's goal, compact and edit and the agent bus's agent-message and agent-observe. */
+export const SKILLS_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "skills");
+/** The Prime bundled skills the kernel extension returns from `resources_discover`. */
+export const RLM_SKILLS = ["goal", "compact", "edit"].map(name => join(SKILLS_DIR, name));
+/** The skills the agent bus extension returns from `resources_discover`. */
+export const BUS_SKILLS = ["agent-message", "agent-observe"].map(name => join(SKILLS_DIR, name));
 
 const BASE_PACKAGES = ["dill", "tyro", "mcp>=2,<3"];
 

@@ -94,14 +94,14 @@ function saved(info: { path: string; id: string; cwd: string; name?: string; par
 
 let busRoute: Promise<{ sendFromClient?: (input: { target: string; message: string; mode?: string; clientId?: string; from?: { id: string; name: string }; idempotencyKey?: string }) => Promise<unknown> } | undefined> | undefined;
 function loadBusRoute() {
-  busRoute ??= import(new URL("../../pi-rlm/agent-bus/src/route.ts", import.meta.url).href).catch(() => undefined);
+  busRoute ??= import("@sieun-pi/pi-rlm/bus/route").catch(() => undefined);
   return busRoute;
 }
 
-/** pi-agent-bus's durable inbox (`pi-rlm/agent-bus/src/inbox.ts`), when that file exists. */
+/** pi-agent-bus's durable inbox (`pi-rlm/src/core/bus/inbox.ts`), when that file exists. */
 let busInbox: Promise<{ recoverInboxes?: () => Promise<string[]>; clearInbox?: (sessionId: string) => void | Promise<void> } | undefined> | undefined;
 function loadBusInbox() {
-  busInbox ??= import(new URL("../../pi-rlm/agent-bus/src/inbox.ts", import.meta.url).href).catch(() => undefined);
+  busInbox ??= import("@sieun-pi/pi-rlm/bus/inbox").catch(() => undefined);
   return busInbox;
 }
 

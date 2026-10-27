@@ -3,25 +3,22 @@
  *
  * Each session this extension loads into registers in `pi-family/registry.ts` with a `deliver` that queues a Prime-shaped custom message
  * (steer, follow-up, or a new turn when idle), and answers the kernel's `agent_message.*` and `agent_observe.*` requests through
- * `pi-family/kernel-bridge.ts`. The Python skills of the same names ship under `skills/`.
+ * `pi-family/kernel-bridge.ts`. The Python skills of the same names ship under the package's `skills/`.
  */
 
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import * as registry from "@sieun-pi/pi-family/registry";
 import type { AgentEntry, BusMessage, Delivery } from "@sieun-pi/pi-family/registry";
 import { registerKernelHandler } from "@sieun-pi/pi-family/kernel-bridge";
-import { relationship, type Member } from "./src/family.ts";
-import { customMessage, endpoint, CUSTOM_TYPE } from "./src/message.ts";
-import { memberOf } from "./src/members.ts";
-import { getAgent, listAgents, messageText, messagesOf, recentMessages } from "./src/observe.ts";
-import { send } from "./src/route.ts";
-import { keepUnlanded, landedIds, record, records } from "./src/inbox.ts";
-import { state, type Activity, type LiveSession } from "./src/state.ts";
-
-export const SKILLS_DIR = join(dirname(fileURLToPath(import.meta.url)), "skills");
+import { relationship, type Member } from "../core/bus/family.ts";
+import { customMessage, endpoint, CUSTOM_TYPE } from "../core/bus/message.ts";
+import { memberOf } from "../core/bus/members.ts";
+import { getAgent, listAgents, messageText, messagesOf, recentMessages } from "../core/bus/observe.ts";
+import { send } from "../core/bus/route.ts";
+import { keepUnlanded, landedIds, record, records } from "../core/bus/inbox.ts";
+import { state, type Activity, type LiveSession } from "../core/bus/state.ts";
+import { BUS_SKILLS } from "../core/python.ts";
 
 function senderMember(bus: BusMessage): Member | undefined {
   const known = registry.get(bus.from.id);
@@ -48,7 +45,7 @@ export default function agentBus(pi: ExtensionAPI): void {
     ctx = undefined;
   }
 
-  pi.on("resources_discover", () => ({ skillPaths: [SKILLS_DIR] }));
+  pi.on("resources_discover", () => ({ skillPaths: BUS_SKILLS }));
 
   pi.on("session_start", (event, startCtx) => {
     shutdown();

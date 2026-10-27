@@ -18,16 +18,16 @@ import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil
 import { dropKernelHandlers, kernelHandler } from "@sieun-pi/pi-family/kernel-bridge";
 import { sessionArtifactDir } from "@sieun-pi/pi-family/paths";
 import { dormantOf, get as registryGet, identityOf, type Identity } from "@sieun-pi/pi-family/registry";
-import { bootstrapCode, parseSkillImportErrors } from "./src/bootstrap.ts";
-import { ChildManager, childRecordOf, closingReason, setClosingReason, type ChildRecord, type CloseReason } from "./src/children.ts";
-import { GoalState } from "./src/goal.ts";
-import { createSession } from "./src/host-client.ts";
+import { bootstrapCode, parseSkillImportErrors } from "../core/bootstrap.ts";
+import { ChildManager, childRecordOf, closingReason, setClosingReason, type ChildRecord, type CloseReason } from "./children.ts";
+import { GoalState } from "./goal.ts";
+import { createSession } from "../core/host-client.ts";
 import { hostApi, HOST_SOCKET_ENV } from "@sieun-pi/pi-family/host-api";
-import { Kernel, KernelBusyError, relayPaths, type CellResult, type HostRequest, type KernelOptions, type RestoreResult } from "./src/kernel.ts";
-import { BASE_PROMPT, childSection, rlmSection, skillsSection } from "./src/prompt.ts";
-import { BUNDLED_SKILLS_DIR, kernelPython, pythonSkillOf, RUNTIME_SRC, type PythonSkill } from "./src/python.ts";
+import { Kernel, KernelBusyError, relayPaths, type CellResult, type HostRequest, type KernelOptions, type RestoreResult } from "../core/kernel.ts";
+import { BASE_PROMPT, childSection, rlmSection, skillsSection } from "../core/prompt.ts";
+import { kernelPython, pythonSkillOf, RLM_SKILLS, RUNTIME_SRC, type PythonSkill } from "../core/python.ts";
 
-export { setChildLoaderOptions } from "./src/children.ts";
+export { setChildLoaderOptions } from "./children.ts";
 
 const AGENT_MESSAGE_MIME = "application/vnd.prime-agent.agent-message+json";
 const IMAGE_MIMES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
@@ -490,7 +490,7 @@ export default function piRlm(pi: ExtensionAPI): void {
     return s;
   };
 
-  pi.on("resources_discover", () => ({ skillPaths: [BUNDLED_SKILLS_DIR] }));
+  pi.on("resources_discover", () => ({ skillPaths: RLM_SKILLS }));
 
   pi.on("session_start", async (_event, ctx) => {
     listenToHost();

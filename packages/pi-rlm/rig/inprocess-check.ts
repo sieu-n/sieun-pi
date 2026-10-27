@@ -6,8 +6,8 @@ import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, writ
 import { join, resolve } from "node:path";
 import type { AgentSessionRuntime } from "@earendil-works/pi-coding-agent";
 import { openRuntime } from "@sieun-pi/pi-testkit/faux";
-import agentBus from "../agent-bus/index.ts";
-import piRlm, { setChildLoaderOptions } from "../index.ts";
+import agentBus from "../src/pi/agent-bus.ts";
+import piRlm, { setChildLoaderOptions } from "../src/pi/index.ts";
 import measure, { startSampler } from "./measure.ts";
 
 const rig = process.env.RIG_DIR!;

@@ -112,7 +112,8 @@ async function resolveById(id: string): Promise<{ entry?: AgentEntry; member: Me
 export interface ClientSend {
   target: string;
   message: string;
-  mode?: DeliveryMode;
+  /** Checked by `parseMode`, because pi-host passes the socket command's `deliveryMode` as it came. */
+  mode?: unknown;
   clientId?: string;
   /** The sending session when it lives in another process, such as a plain `pi` CLI on pi-host's socket. */
   from?: { id: string; name?: string };

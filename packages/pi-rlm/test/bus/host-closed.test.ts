@@ -5,12 +5,12 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { after, before, test } from "node:test";
-import { HostClient } from "../../../pi-host/src/client.ts";
-import { PiHost } from "../../../pi-host/src/host.ts";
-import { listen } from "../../../pi-host/src/server.ts";
+import { HostClient } from "@sieun-pi/pi-host/client";
+import { PiHost } from "@sieun-pi/pi-host/host";
+import { listen } from "@sieun-pi/pi-host/server";
 import { kernelHandler } from "@sieun-pi/pi-family/kernel-bridge";
 import * as registry from "@sieun-pi/pi-family/registry";
-import { repliedSinceTask } from "../src/state.ts";
+import { repliedSinceTask } from "../../src/core/bus/state.ts";
 import { landed, until } from "./rig.ts";
 
 /** A closed child inside pi-host: the host keeps a dormant row for it, and a send from its parent or from a client reopens it. */
@@ -26,7 +26,7 @@ before(async () => {
   for (const dir of ["agent", "sessions", "ws"]) mkdirSync(join(root, dir), { recursive: true });
   host = new PiHost({
     agentDir: join(root, "agent"), sessionDir: join(root, "sessions"), defaultCwd: join(root, "ws"),
-    extensions: [join(HERE, "..", "index.ts"), join(HERE, "fixtures", "busy.ts")], defaultModel: { provider: "busy", id: "m" },
+    extensions: [join(HERE, "..", "..", "src", "pi", "agent-bus.ts"), join(HERE, "fixtures", "busy.ts")], defaultModel: { provider: "busy", id: "m" },
     resourceLoaderOptions: { noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true }, log: () => {},
   });
   server = await listen(host, join(root, "host.sock"));

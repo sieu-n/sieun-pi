@@ -4,8 +4,8 @@ import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { hostRoots, hostSend } from "../src/host-socket.ts";
-import { sendFromClient } from "../src/route.ts";
+import { hostRoots, hostSend } from "../../src/core/bus/host-socket.ts";
+import { sendFromClient } from "../../src/core/bus/route.ts";
 import { landed, openAgent, until, type Opened } from "./rig.ts";
 
 let root: string;

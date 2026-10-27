@@ -3,8 +3,8 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { HostClient } from "../../../pi-host/src/client.ts";
-import type { SessionSummary } from "../../../pi-host/src/protocol.ts";
+import { HostClient } from "@sieun-pi/pi-host/client";
+import type { SessionSummary } from "@sieun-pi/pi-host/protocol";
 import { body, MODES } from "./load.ts";
 import { startHost } from "./host-rig.ts";
 import { landed, until } from "./rig.ts";

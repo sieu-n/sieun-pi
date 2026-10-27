@@ -7,7 +7,8 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 
-SKILL = Path(__file__).parents[2] / "packages/coding-agent/skills/agent-message/src/agent_message/__init__.py"
+# pi-rlm keeps the skill in its own skills/ folder, next to python/.
+SKILL = Path(__file__).parents[2] / "skills/agent-message/src/agent_message/__init__.py"
 
 
 class AgentMessageSkillTest(unittest.TestCase):
@@ -32,8 +33,9 @@ class AgentMessageSkillTest(unittest.TestCase):
             asyncio.run(module.send("hello", receiver_role="child"))
         with self.assertRaisesRegex(ValueError, "omitted"):
             asyncio.run(module.send("hello", receiver_role="parent", receiver_name="x"))
-        with self.assertRaisesRegex(TypeError, "unexpected keyword argument 'mode'"):
-            asyncio.run(module.send("hello", receiver_role="parent", mode="follow_up"))
+        # pi-rlm's copy adds the optional mode, so an unknown mode is the error now, where Prime refused any mode.
+        with self.assertRaisesRegex(ValueError, "mode must be"):
+            asyncio.run(module.send("hello", receiver_role="parent", mode="later"))
 
 
 if __name__ == "__main__":

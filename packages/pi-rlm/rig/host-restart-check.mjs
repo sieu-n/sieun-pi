@@ -5,7 +5,7 @@
 import { spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { HostClient } from "../../pi-host/src/client.ts";
+import { HostClient } from "@sieun-pi/pi-host/client";
 
 const stack = resolve(import.meta.dirname, "..", "..");
 const rig = process.env.RIG_DIR;
@@ -17,7 +17,7 @@ const unit = `pi-rlm-scratch-host-${Date.now().toString(36)}`;
 mkdirSync(out, { recursive: true });
 mkdirSync(join(rig, "ws"), { recursive: true });
 const log = (o) => appendFileSync(join(out, "host-restart-events.jsonl"), JSON.stringify({ at: Date.now(), ...o }) + "\n");
-writeFileSync(join(rig, "extensions.json"), JSON.stringify({ extensions: [join(stack, "pi-rlm/agent-bus/index.ts"), join(stack, "pi-harness/index.ts"), join(stack, "pi-rlm/index.ts"), join(stack, "pi-rlm/rig/async-token.ts")] }));
+writeFileSync(join(rig, "extensions.json"), JSON.stringify({ extensions: [join(stack, "pi-rlm/src/pi/agent-bus.ts"), join(stack, "pi-harness/src/pi/index.ts"), join(stack, "pi-rlm/src/pi/index.ts"), join(stack, "pi-rlm/rig/async-token.ts")] }));
 
 function startHost(n) {
   const env = ["HOME", "PATH", "USER", "LANG", "XDG_RUNTIME_DIR"].map(k => `${k}=${process.env[k] ?? ""}`);
