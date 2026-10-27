@@ -24,8 +24,8 @@ test("findMessage reads null for a message the branch does not hold, and finds o
   assert.equal(await findMessage(file, START + 500, 0), null, "a stamp no message has");
   assert.equal(await findMessage(file, START + 2, 0), null, "a stamp that only prefixes another");
   assert.equal(await findMessage(file, START, 1), null, "a second message at a stamp only one has");
-  assert.equal((await findMessage(file, START + 2000, 0))?.message.content, "message 2", "saved 2 h after its stamp");
-  assert.equal((await findMessage(file, START, 0))?.message.content, "message 0");
+  assert.equal((await findMessage(file, START + 2000, 0))?.entry.id, "m2", "saved 2 h after its stamp");
+  assert.equal((await findMessage(file, START, 0))?.entry.id, "m0");
   await writeFile(file, JSON.stringify({ type: "session", version: 1, id: ID }) + "\n");
   assert.equal(await findMessage(file, START, 0), undefined, "a file a full open must migrate");
 });
