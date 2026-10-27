@@ -251,7 +251,7 @@
       "skill": "smooth animations everywhere",
       "skillSince": "2026-10-20",
       "match": [
-        "smooo*th",
+        "smooo*th (transitions?|animations?|motion)",
         "transition"
       ],
       "tests": [
