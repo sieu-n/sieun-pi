@@ -7,6 +7,7 @@ import { BoardStore } from "../src/chat-board-store.ts";
 import { remoteChatService } from "../src/chat-host.ts";
 import { jobNames } from "../src/limit-names.ts";
 import { boardRevLine, parseBoardOps } from "../src/shared/chat-board.ts";
+import { holdAskFlag } from "../src/shared/hold-ask.ts";
 import { laneHoldFlag } from "../src/shared/lane-hold.ts";
 import { boardLimitFlag } from "../src/shared/reply-lint.ts";
 
@@ -26,7 +27,7 @@ export async function applyDutyOps(dataDir: string, chatId: string, value: unkno
     if (!write) throw new Error("The chat host's service took no board write.");
     return [...write.summaries, ...(write.board ? [boardRevLine(write.board)] : [])].join("\n");
   }
-  const flags = [boardLimitFlag(ops) && boardLimitFlag(ops, await jobNames(dataDir)), laneHoldFlag(ops)].filter(flag => flag !== null);
+  const flags = [boardLimitFlag(ops) && boardLimitFlag(ops, await jobNames(dataDir)), laneHoldFlag(ops), holdAskFlag(ops)].filter(flag => flag !== null);
   const { board, summaries } = await new BoardStore(dataDir).apply(chatId, ops, "agent");
   return [...summaries, ...flags, ...(board ? [boardRevLine(board)] : [])].join("\n");
 }

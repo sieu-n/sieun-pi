@@ -4,6 +4,7 @@ import type { OtherAsk } from "./chat-guard.ts";
 import { jobNames } from "./limit-names.ts";
 import { ownerChats } from "./owner-chats.ts";
 import { BoardError, parseBoardOps } from "./shared/chat-board.ts";
+import { holdAskFlag } from "./shared/hold-ask.ts";
 import { laneHoldFlag } from "./shared/lane-hold.ts";
 import { boardLimitFlag } from "./shared/reply-lint.ts";
 import type { ChatBoard } from "./shared/types.ts";
@@ -11,12 +12,12 @@ import type { ChatBoard } from "./shared/types.ts";
 export interface AgentBoardWrite { board: ChatBoard | null; summaries: string[]; others?: OtherAsk[] }
 
 /**
- * An agent's chat_board ops: the board applies them with its flags, and a c43 limit claim or a c72 lane hold adds a flag line each. With
+ * An agent's chat_board ops: the board applies them with its flags, and a c43 limit claim, a c72 lane hold or a c72 ask to keep an unmeasured hold adds a flag line each. With
  * `others`, the answer also carries the open For you todos of the owner's other chats, which tell_owner's same-ask check reads.
  */
 export async function applyAgentOps(dataDir: string, sessionId: string, raw: unknown, others = false): Promise<AgentBoardWrite> {
   const ops = parseBoardOps(raw);
-  const flags = [boardLimitFlag(ops) && boardLimitFlag(ops, await jobNames(dataDir)), laneHoldFlag(ops)].filter(flag => flag !== null);
+  const flags = [boardLimitFlag(ops) && boardLimitFlag(ops, await jobNames(dataDir)), laneHoldFlag(ops), holdAskFlag(ops)].filter(flag => flag !== null);
   const write = await new BoardStore(dataDir).apply(sessionId, ops, "agent");
   const flagged = flags.length ? { ...write, summaries: [...write.summaries, ...flags] } : write;
   return others ? { ...flagged, others: await otherAsks(dataDir, sessionId) } : flagged;
