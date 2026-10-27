@@ -118,7 +118,11 @@ globalThis.__walk = (() => {
     return { ms: clock.__walkFirstShown === null ? null : Math.round(clock.__walkFirstShown), longMs: Math.round(longMs), origin: performance.timeOrigin };
   }
 
-  async function pageSwitch({ path, timeout, clickKey }) {
+  /**
+   * Clicks a link to path and returns once the router took the click, or once it was left to the browser after retryMs. A rAF watcher then
+   * marks the first frame on path that shows new text in __walkSwitch, which pageSwitchRead reads, so no evaluate outlives Aside's 30 s CDP limit.
+   */
+  async function pageSwitchStart({ path, timeout, clickKey, retryMs }) {
     const clock = window;
     for (const element of document.querySelectorAll("main *")) element.setAttribute("data-walk-old", "");
     const world = new URLSearchParams(location.search).get("world");
@@ -130,7 +134,7 @@ globalThis.__walk = (() => {
       link.href = href;
       link.setAttribute("data-sveltekit-preload-data", "off");
       document.body.append(link);
-      const late = performance.now() - begin > timeout;
+      const late = performance.now() - begin > retryMs;
       let taken = false;
       const cancelNative = (event) => { taken = event.defaultPrevented; if (!taken && !late) event.preventDefault(); };
       addEventListener("click", cancelNative, { once: true });
@@ -142,18 +146,28 @@ globalThis.__walk = (() => {
       if (taken || late) break;
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
-    const end = await new Promise((resolve) => {
-      const check = () => {
-        const now = performance.now();
-        if (location.pathname === path && clock.__walkShows()) resolve(now);
-        else if (now - start > timeout) resolve(null);
-        else requestAnimationFrame(check);
-      };
-      requestAnimationFrame(check);
-    });
-    const until = end ?? performance.now();
-    const longMs = clock.__walkLong.filter(([at]) => at >= start && at < until).reduce((sum, [, duration]) => sum + duration, 0);
-    return { ms: end === null ? null : Math.round(end - start), longMs: Math.round(longMs) };
+    const state = { path, start, end: null, timeout };
+    clock.__walkSwitch = state;
+    const check = () => {
+      if (clock.__walkSwitch !== state) return;
+      const now = performance.now();
+      if (location.pathname === path && clock.__walkShows()) state.end = now;
+      else if (now - start <= timeout) requestAnimationFrame(check);
+    };
+    requestAnimationFrame(check);
+    return true;
+  }
+
+  /** The switch pageSwitchStart began: null while it may still show, else its ms (null when it never showed) and long-task ms. */
+  function pageSwitchRead() {
+    const clock = window;
+    const state = clock.__walkSwitch;
+    if (!state) return { replaced: true };
+    const now = performance.now();
+    if (state.end === null && now - state.start <= state.timeout) return null;
+    const until = state.end ?? now;
+    const longMs = clock.__walkLong.filter(([at]) => at >= state.start && at < until).reduce((sum, [, duration]) => sum + duration, 0);
+    return { ms: state.end === null ? null : Math.round(state.end - state.start), longMs: Math.round(longMs) };
   }
 
   async function install() {
@@ -195,22 +209,33 @@ globalThis.__walk = (() => {
     }
   }
 
+  /** A Playwright wait that gives up after ms instead of hanging the REPL call. */
+  const bounded = (promise, ms) => Promise.race([promise.catch(() => {}), sleep(ms)]);
+
+  async function documentSwitch(path, timeout, cause) {
+    for (let reload = 0; ; reload++) {
+      await bounded(tab.waitForLoadState("load"), timeout);
+      if (new URL(tab.url()).pathname !== path) throw cause;
+      try {
+        await install();
+        const loaded = await timeLoad(timeout);
+        const clickAt = Number(await tab.evaluate(() => sessionStorage.getItem("__walkClickAt")));
+        const ms = loaded.ms === null || !clickAt ? null : Math.round(loaded.origin + loaded.ms - clickAt);
+        return { ms, longMs: loaded.longMs, document: true };
+      } catch (again) { if (reload > 0 || !destroyed(again)) throw again; }
+    }
+  }
+
   async function timeSwitch(path, timeout) {
-    try {
-      return { ...(await tab.evaluate(pageSwitch, { path, timeout, clickKey: "__walkClickAt" })), document: false };
-    } catch (error) {
-      if (!destroyed(error)) throw error;
-      for (let reload = 0; ; reload++) {
-        await tab.waitForLoadState("load");
-        if (new URL(tab.url()).pathname !== path) throw error;
-        try {
-          await install();
-          const loaded = await timeLoad(timeout);
-          const clickAt = Number(await tab.evaluate(() => sessionStorage.getItem("__walkClickAt")));
-          const ms = loaded.ms === null || !clickAt ? null : Math.round(loaded.origin + loaded.ms - clickAt);
-          return { ms, longMs: loaded.longMs, document: true };
-        } catch (again) { if (reload > 0 || !destroyed(again)) throw again; }
-      }
+    try { await tab.evaluate(pageSwitchStart, { path, timeout, clickKey: "__walkClickAt", retryMs: 15000 }); }
+    catch (error) { if (!destroyed(error)) throw error; return documentSwitch(path, timeout, error); }
+    for (;;) {
+      let read;
+      try { read = await tab.evaluate(pageSwitchRead); }
+      catch (error) { if (!destroyed(error)) throw error; return documentSwitch(path, timeout, error); }
+      if (read && read.replaced) return documentSwitch(path, timeout, new Error("the switch to " + path + " loaded another document"));
+      if (read) return { ...read, document: false };
+      await sleep(100);
     }
   }
 
@@ -222,7 +247,7 @@ globalThis.__walk = (() => {
     path: () => new URL(tab.url()).pathname,
     goto, land, collect, timeLoad, timeSwitch,
     async settle(waitMs, scroll) {
-      await tab.waitForLoadState("load");
+      await bounded(tab.waitForLoadState("load"), 30000);
       await sleep(waitMs);
       if (scroll) { await tab.evaluate(() => window.scrollBy(0, 4000)); await sleep(2000); }
       await collect();
@@ -283,16 +308,22 @@ async function serverEgress(): Promise<string[] | Error> {
 /** The 1-minute load and core count of this host, which runs Aside and so the walk's browser. */
 const hostLoad = (): Omit<Extract<BoxLoad, { load1: number }>, "scenario" | "pass"> => ({ host: hostname(), load1: Math.round(loadavg()[0]! * 100) / 100, cores: cpus().length });
 
+/** One stderr line per step, so a slow or stuck walk shows where it is in WALK_ERR_FILE. */
+const progress = (line: string) => process.stderr.write(`step ${new Date().toISOString().slice(11, 19)}Z ${line}\n`);
+
 /** One test's tab and steps: a step that fails runs once more, on a new tab when the old one closed or stopped answering, and fails after that. */
 function testWalk(repl: Repl) {
   const failures: StepFailure[] = [];
   async function step<T>(path: string, name: string, run: (attempt: number) => Promise<T>): Promise<T | null> {
     for (let attempt = 1; ; attempt++) {
+      const began = Date.now();
       try {
         const value = await run(attempt);
         await repl.call("collect", "await __walk.collect();").catch(() => {});
+        progress(`${name} ${path}: ok in ${Date.now() - began} ms${value && typeof value === "object" && "ms" in value ? ` (page ${String(value.ms)} ms)` : ""}`);
         return value;
       } catch (error) {
+        progress(`${name} ${path}: try ${attempt} failed in ${Date.now() - began} ms: ${firstLine(error)}`);
         if (tabGone(error)) await repl.call("new tab", "await __walk.reopen();").catch(() => {});
         if (attempt === 2) { failures.push({ path, step: name, error: firstLine(error) }); return null; }
       }
