@@ -49,6 +49,8 @@ class Relay:
         self.kernel: asyncio.subprocess.Process | None = None
 
     async def start(self) -> None:
+        # The kernel exits when its owner pid dies. Its owner is this relay, its parent, never the pi-host that started the relay.
+        os.environ.pop("PRIME_AGENT_KERNEL_OWNER_PID", None)
         self.kernel = await asyncio.create_subprocess_exec(
             *self.argv, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, limit=64 * 1024 * 1024, start_new_session=True
         )

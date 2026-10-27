@@ -551,6 +551,12 @@ export class ChildManager {
     try {
       if (live.session.isStreaming) await live.session.abort();
     } catch {}
+    // AgentSession.dispose() emits no session_shutdown, which only AgentSessionRuntime sends, so the child's own extensions (its pi-rlm
+    // kernel, its pi-agent-bus entry) would never close. Send it here, as the runtime does.
+    try {
+      const runner = live.session.extensionRunner;
+      if (runner.hasHandlers("session_shutdown")) await runner.emit({ type: "session_shutdown", reason: "quit" });
+    } catch {}
     live.session.dispose();
     live.resolveSettled();
   }

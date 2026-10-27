@@ -7,6 +7,7 @@ import { fauxAssistantMessage, fauxText, fauxToolCall, type AssistantMessage } f
 import type { AgentSessionRuntime } from "@earendil-works/pi-coding-agent";
 import { fauxProvider, openRuntime, type FauxReply } from "../../test/faux.ts";
 import agentBus from "../../agent-bus/index.ts";
+import { list as registryList } from "../../shared/registry.ts";
 import piRlm, { setChildLoaderOptions } from "../index.ts";
 import { openWithSkills, testPython } from "./helpers.ts";
 
@@ -149,6 +150,7 @@ test("P2: rlm.spawn returns at once, the child's reply steers the parent, and a 
     const collected = toolTexts(rt).at(-1)!;
     assert.match(collected, /\('quiet', 'done', 'I am the quiet child'\)/);
     assert.match(collected, /quiet 1/);
+    assert.ok(!registryList().some(a => a.name === "quiet"), "deleting a child runs its session_shutdown, so pi-agent-bus drops it");
   } finally {
     await rt.dispose();
   }

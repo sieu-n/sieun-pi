@@ -17,7 +17,7 @@ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { dropKernelHandlers, kernelHandler } from "../shared/kernel-bridge.ts";
 import { sessionArtifactDir } from "../shared/paths.ts";
-import { identityOf, type Identity } from "../shared/registry.ts";
+import { dormantOf, get as registryGet, identityOf, type Identity } from "../shared/registry.ts";
 import { bootstrapCode, parseSkillImportErrors } from "./src/bootstrap.ts";
 import { ChildManager, childRecordOf, closingReason, setClosingReason, type ChildRecord, type CloseReason } from "./src/children.ts";
 import { GoalState } from "./src/goal.ts";
@@ -204,14 +204,16 @@ class RlmSession {
     await this.starting.catch(() => undefined);
   }
 
-  private rootId(): string {
+  /** What the relay sends pi-host to reopen this session's tree after a restart: the root's session file, which the host reopens from any path. */
+  private wakeTarget(): string {
     let identity = this.identity;
     let id = this.id;
     for (let i = 0; i < 16 && identity.parentId; i++) {
       id = identity.parentId;
       identity = identityOf(id, id);
     }
-    return id;
+    const file = id === this.id ? this.ctx.sessionManager.getSessionFile() : registryGet(id)?.sessionFile ?? dormantOf(id)?.sessionFile;
+    return file ?? id;
   }
 
   private async startKernel(onProgress: (text: string) => void, attachOnly: boolean): Promise<KernelStart | undefined> {
@@ -232,7 +234,7 @@ class RlmSession {
     };
     if (useRelay()) {
       const paths = relayPaths(this.artifactDir, this.id);
-      kernel = await Kernel.relay(options, { ...paths, hostSocket: hostApi()?.socketPath ?? process.env[HOST_SOCKET_ENV], wakeSession: this.rootId() }, !attachOnly);
+      kernel = await Kernel.relay(options, { ...paths, hostSocket: hostApi()?.socketPath ?? process.env[HOST_SOCKET_ENV], wakeSession: this.wakeTarget() }, !attachOnly);
       if (!kernel) return undefined;
     } else {
       kernel = Kernel.spawn(options);
