@@ -29,7 +29,7 @@
   });
 </script>
 
-<nav class="sidebar" aria-label="Conversations" style:width="{sidebar.width}px" data-filter={sidebar.filter}>
+<nav class="sidebar" aria-label="Conversations" data-filter={sidebar.filter}>
   <div class="head">
     <Tabs items={filters} value={sidebar.filter} variant="segmented" full label="Show" onchange={(f) => sidebar.setFilter(f)} />
   </div>
@@ -94,7 +94,7 @@
     {/if}
   </div>
 
-  <ResizeHandle
+  {#if !sidebar.narrow}<ResizeHandle
     size={sidebar.width}
     min={SIDEBAR_MIN}
     max={SIDEBAR_MAX}
@@ -106,12 +106,13 @@
       sidebar.setWidth(SIDEBAR_DEFAULT);
       sidebar.saveWidth();
     }}
-  />
+  />{/if}
 </nav>
 
 <style>
   .sidebar {
     position: relative;
+    width: 100%;
     display: flex;
     flex-direction: column;
     flex: none;

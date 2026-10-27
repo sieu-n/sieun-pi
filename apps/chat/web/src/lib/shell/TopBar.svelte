@@ -146,4 +146,17 @@
       display: none;
     }
   }
+  @media (max-width: 860px) {
+    .capsule :global(.tab > span) {
+      display: none;
+    }
+    .capsule :global(.tab) {
+      padding: 0 10px;
+    }
+  }
+  @media (max-width: 560px) {
+    .left :global(.icon-btn:not(:first-child)) {
+      display: none;
+    }
+  }
 </style>

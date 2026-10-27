@@ -5,6 +5,7 @@
   import { router, hrefFor } from "$lib/router.svelte";
   import { search } from "$lib/shell/search.svelte";
   import "$lib/shell/theme.svelte";
+  import { initZoom, stepZoom } from "$lib/shell/zoom";
   import ChannelPage from "$pages/channel/ChannelPage.svelte";
   import AgentsPage from "$pages/agents/AgentsPage.svelte";
   import BoardPage from "$pages/board/BoardPage.svelte";
@@ -13,6 +14,7 @@
   import SearchDialog from "$pages/search/SearchDialog.svelte";
 
   trackKeyboardNavigation();
+  initZoom();
 
   function onKeydown(e: KeyboardEvent) {
     if (!modKey(e) || e.altKey) return;
@@ -26,6 +28,15 @@
     } else if (key === "n" && !e.shiftKey) {
       e.preventDefault();
       router.navigate(hrefFor("messages", ["new"], { kind: "chat" }));
+    } else if (key === "=" || key === "+") {
+      e.preventDefault();
+      stepZoom(0.1);
+    } else if (key === "-") {
+      e.preventDefault();
+      stepZoom(-0.1);
+    } else if (key === "0") {
+      e.preventDefault();
+      stepZoom(null);
     } else if (key === "[") {
       e.preventDefault();
       history.back();

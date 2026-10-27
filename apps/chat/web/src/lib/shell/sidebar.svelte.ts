@@ -28,6 +28,9 @@ class SidebarView {
   filter = $state<SidebarFilter>(parseFilter(read(FILTER_KEY)));
   width = $state(clampWidth(Number(read(WIDTH_KEY)) || SIDEBAR_DEFAULT));
   collapsed = $state(read("chat.sidebarCollapsed") === "1");
+  /** Below 650 px the sidebar is a 220 px drawer over the main panel. The shell sets this from the window width. */
+  narrow = $state(false);
+  drawerOpen = $state(false);
 
   /** Live rows from GET /api/sidebar and the `sidebar` event, empty until the first answer. */
   get data(): SidebarData {
@@ -65,6 +68,10 @@ class SidebarView {
     write(WIDTH_KEY, String(this.width));
   }
   toggle(): void {
+    if (this.narrow) {
+      this.drawerOpen = !this.drawerOpen;
+      return;
+    }
     this.collapsed = !this.collapsed;
     write("chat.sidebarCollapsed", this.collapsed ? "1" : "0");
   }
