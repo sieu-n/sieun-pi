@@ -1,0 +1,25 @@
+{
+  "name": "@sieun-pi/pi-stack",
+  "private": true,
+  "type": "module",
+  "version": "0.1.0",
+  "description": "Prime Agent rebuilt on upstream Pi: the pi-host session host and the Pi extensions that replace Prime's daemon, RLM kernel, messaging and continual harness.",
+  "license": "SEE LICENSE IN ../../NOTICE",
+  "engines": {
+    "node": ">=22.8.0"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "node --import tsx --test --test-force-exit \"test/*.test.ts\" \"*/test/**/*.test.ts\""
+  },
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "1.4.0",
+    "@earendil-works/pi-ai": "1.4.0",
+    "@earendil-works/pi-agent-core": "1.4.0",
+    "tsx": "4.23.13"
+  },
+  "devDependencies": {
+    "@types/node": "22.15.30",
+    "typescript": "5.9.3"
+  }
+}
