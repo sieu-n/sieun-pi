@@ -258,9 +258,9 @@ Then remove the `anthropic` and `openai-codex` entries whose `apiKey` names `pi-
 - Each skill root and the auxiliary `legacy/prime/skills/skills` directory go under `~/.prime/agent/skills`.
 - `config/AGENTS.md` and `config/pstack-models.json` go under `~/.prime/agent`.
 - One global entry links `~/.prime/agent/extensions/global-rules.ts` to `packages/sieun-rules/src/index.ts`. It refuses history rewrites in the sieun-pi checkout and outside sends without the owner's ok.
-- One global entry links `~/.prime/agent/extensions/claude-rules.ts` to `components/claude-rules/index.ts`. It loads the `.claude/rules` files of the repo a session works in.
+- One global entry links `~/.prime/agent/extensions/claude-rules.ts` to `packages/pi-claude-rules/src/pi/index.ts`. It loads the `.claude/rules` files of the repo a session works in.
 - One global link points `~/.prime/agent/extensions/user-history` at the whole `legacy/prime/user-history` package. Its `pi.extensions` declaration loads `./extension/index.ts`.
-- The pool is not in the manifest. `packages/pi-pool/install.py` owns its links. `~/.config/pi-pool` stays a real directory. See [the pool README](../packages/pi-pool/README.md#install-update-and-roll-back).
+- The pool is not in the manifest. `packages/pi-pool/install.py` owns its links. `~/.config/pi-pool` stays a real directory. See [the pool README](../components/pi-pool/README.md#install-update-and-roll-back).
 
 Use a new plan filename each time. Omitting `--home` selects your HOME.
 Plans cannot go under managed runtime directories. Inside a development checkout, use the ignored `.work/`.

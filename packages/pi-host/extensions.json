@@ -5,7 +5,7 @@
     "../pi-rlm/src/pi/index.ts",
     "../pi-pool/src/pi/index.ts",
     "../sieun-rules/src/index.ts",
-    "../../components/claude-rules/index.ts",
+    "../pi-claude-rules/src/pi/index.ts",
     "../../legacy/prime/user-history/extension/index.ts"
   ]
 }

@@ -16,7 +16,8 @@
     "pi-family",
     "pi-testkit",
     "sieun-rules",
-    "pi-history"
+    "pi-history",
+    "pi-claude-rules"
   ],
   "scripts": {
     "typecheck": "tsc -p tsconfig.json",

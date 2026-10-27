@@ -1,0 +1,22 @@
+{
+  "name": "@sieun-pi/pi-claude-rules",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Loads a repo's .claude/rules/*.md into a Pi session the way Claude Code does.",
+  "license": "SEE LICENSE IN ../../NOTICE",
+  "exports": {
+    ".": "./src/pi/index.ts"
+  },
+  "pi": {
+    "extensions": [
+      "./src/pi/index.ts"
+    ]
+  },
+  "scripts": {
+    "test": "node --test --test-force-exit \"test/*.test.mjs\""
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}

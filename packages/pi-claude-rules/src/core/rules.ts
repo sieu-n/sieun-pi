@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import type { ExtensionAPI } from "prime-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 /*
  * Loads a repo's .claude/rules/*.md the way Claude Code does. A rule with no `paths:` front matter loads at session start, and a

@@ -3,8 +3,9 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { CUSTOM_TYPE, globRegex, register } from "../components/claude-rules/rules.ts";
-import { cellStart, cellSteps } from "../packages/sieun-rules/src/kernel-cwd.ts";
+import { CUSTOM_TYPE, globRegex, register } from "../src/core/rules.ts";
+import { kernelCwd, sessionCwd } from "../src/pi/index.ts";
+import { cellStart, cellSteps } from "../../sieun-rules/src/kernel-cwd.ts";
 
 // A Prime session in a repo with .claude/rules gets the unscoped rules first in every model call, and a scoped rule once,
 // appended to the result of the first tool call that reads or edits a file its paths match.
@@ -119,4 +120,18 @@ test("a session whose cwd reaches the repo through a link gets no unscoped rule 
 	assert.match(text, /TESTING-RULE-BODY/);
 	assert.doesNotMatch(text, /ALWAYS-RULE-BODY/);
 	rmSync(link);
+});
+
+test("next to sieun-rules the entry follows a cell's os.chdir with sieun-rules' kernel-cwd, and alone it reads a cell in the session cwd", async () => {
+	const here = join(import.meta.dirname, "..", "src", "pi");
+	const found = await kernelCwd(here);
+	assert.equal(found.cellSteps, cellSteps, "the package in this repo uses sieun-rules' kernel-cwd.ts");
+	const alone = mkdtempSync(join(tmpdir(), "claude-rules-alone-"));
+	try {
+		assert.equal(await kernelCwd(join(alone, "src", "pi")), sessionCwd);
+	} finally {
+		rmSync(alone, { recursive: true, force: true });
+	}
+	assert.deepEqual(sessionCwd.cellSteps("os.chdir('apps')\nopen('x')", "/repo"), [{ code: "os.chdir('apps')\nopen('x')", cwd: "/repo" }]);
+	assert.equal(sessionCwd.cellStart({ cwd: "/repo" }), "/repo");
 });

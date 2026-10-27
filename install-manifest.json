@@ -240,7 +240,7 @@
     {
       "id": "claude-rules",
       "kind": "link",
-      "source": "components/claude-rules/index.ts",
+      "source": "packages/pi-claude-rules/src/pi/index.ts",
       "scope": "home",
       "target": ".prime/agent/extensions/claude-rules.ts"
     },

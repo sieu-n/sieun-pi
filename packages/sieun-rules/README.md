@@ -142,7 +142,7 @@ On Pi:
 
 1. The tool_call guards refuse transcript reads outside the family, sends without an approved OWNER_OK, resource caps and history rewrites in sieun-pi.
 2. The cell prelude loads `kernel-guard.py`, `kernel-read.py`, `kernel-own.py` and `kernel-cwd.py` into pi-rlm's kernel, as on Prime.
-3. claude-rules reads `src/kernel-cwd.ts` from here for an ipython cell's cwd, and the user-history extension registers `chat_board`, `tell_owner` and the chat and job hooks next to these guards.
+3. pi-claude-rules reads `src/kernel-cwd.ts` from here for an ipython cell's cwd, and the user-history extension registers `chat_board`, `tell_owner` and the chat and job hooks next to these guards.
 4. Pi reads `config/AGENTS.md` as `<agent dir>/AGENTS.md`, so the global rules reach the system prompt once the install links it there.
 
 `/home/sieun/work/pi-migration-build/rules-port/` holds the results of the first Pi port.
@@ -184,7 +184,7 @@ A handler error lets the call run and writes `handler error, failing open` to th
 |---|---|
 | `src/` | The extension: `index.ts`, the guards, the kernel prelude in Python, `python-child/`, `unit-env/` and `send-targets.json`. |
 | `test/paths.test.ts` | The Prime and Pi session layouts in `src/paths.ts` and `src/send-log.ts`, and `kernel-read.py --judge` refusing Prime and Pi transcripts for a Pi session. |
-| `test/extensions.test.ts` | One in-process pi-host with pi-rlm, this extension, claude-rules and the user-history extension: the kernel guards load, a Pi transcript read and a send are refused, claude-rules reaches the context and `chat_board` writes and reads a board. |
+| `test/extensions.test.ts` | One in-process pi-host with pi-rlm, this extension, pi-claude-rules and the user-history extension: the kernel guards load, a Pi transcript read and a send are refused, claude-rules reaches the context and `chat_board` writes and reads a board. |
 | `rig/scripted.ts` | The `script` provider, which runs the tool call a `TOOL {...}` message names, so a check drives real tool calls without a model. |
 | `rig/check.ts` | The pi-host check over the socket, with every guard case, `OWNER_OK`, claude-rules, `AGENTS.md`, `chat_board` and an `rlm.spawn` child. |
 

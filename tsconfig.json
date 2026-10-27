@@ -13,7 +13,7 @@
   },
   "include": [
     "packages/sieun-rules/src/**/*.ts",
-    "components/claude-rules/**/*.ts",
+    "packages/pi-claude-rules/src/**/*.ts",
     "legacy/prime/pi-pool-extension/**/*.ts"
   ]
 }

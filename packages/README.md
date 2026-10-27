@@ -16,6 +16,7 @@ The live chat on :5182, pi-pool's install and every live session stay on Prime u
 | `pi-pool/` | The account pool: the Python pool, its token hook and `install.py`, the stock Pi extension in `src/pi` on `before_provider_headers` and `message_end`, and the pi-durable provider in `src/durable` that pi-host uses. |
 | `pi-family/` | The process-wide agent registry, kernel bridge, host API and pool retry counts that two or more packages share. |
 | `pi-testkit/` | Shared test helpers, such as the faux provider runtime in `faux.ts`. |
+| `pi-claude-rules/` | Loads a repo's `.claude/rules/*.md` the way Claude Code does, for Prime and Pi sessions. |
 | `sieun-rules/` | The owner's guards, the global-rules extension in `src/`, which Prime and every pi-host session load, with its Pi tests and the pi-host check rig. |
 
 All of them share this folder's `package.json` and `node_modules` until the switch, when the repo root becomes the npm workspace root.
