@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
-import { FLAGGED_MAX, FOLLOW_WINDOW_MS, measureDream, parseStale, pickFlagged, staleExcerpt, type DreamDeps } from "../scripts/duties/wiki-dream.ts";
+import { dateMissingRefs, FLAGGED_MAX, FOLLOW_WINDOW_MS, measureDream, parseDeletions, parseStale, pickFlagged, staleExcerpt, type DreamDeps } from "../scripts/duties/wiki-dream.ts";
 import { judge, type DutyMetric } from "../src/shared/chat-duties.ts";
 
 const DUTY = JSON.parse(readFileSync(new URL("../scripts/duties/wiki-dream.duty.json", import.meta.url), "utf8")) as { metrics: unknown[] };
@@ -87,4 +87,32 @@ test("every page behind code is flagged, past the old cap of 30 and past FLAGGED
   assert.deepEqual(picked.filter(slice => slice.kind === "stale_vs_code").map(slice => slice.item), stale.map(slice => slice.item));
   assert.equal(picked.filter(slice => slice.kind === "dead_link").length, 12);
   assert.equal(picked.filter(slice => slice.kind !== "stale_vs_code" && slice.kind !== "dead_link").length, FLAGGED_MAX);
+});
+
+test("a missing ref whose file a commit in the follow window deleted is followed, and one no deletion dates still counts at once", async () => {
+  const base = deps();
+  const calls: string[][] = [];
+  const dated: DreamDeps = { ...base, exec: async (file, args, options) => {
+    if (file === "git" && args.includes("--diff-filter=D")) { calls.push([...args]); return `\x1e${Date.parse("2026-10-20T03:10:00Z") / 1000}\napps/vent/gone.py\nconvex/other.ts\n`; }
+    return base.exec(file, args, options);
+  } };
+  const result = await measureDream(dated, []);
+  assert.equal(calls.length, 1, "one git log reads every deletion of the follow window");
+  assert.ok(calls[0]!.includes("--first-parent") && calls[0]!.includes(`--since=${new Date(NOW - FOLLOW_WINDOW_MS).toISOString()}`));
+  assert.equal(result.metrics.pages_behind_code, 1, "only outside-calls, behind since 02:14:30Z, counts");
+  assert.equal(result.metrics.wiki_problems_following, 2, "telemetry-map fell behind at 03:10Z, when its README changed and gone.py was deleted");
+  const telemetry = (result.flagged ?? []).find(slice => slice.item === "domains/architecture/telemetry-map.html");
+  assert.match(telemetry!.excerpt, /behind since 03:10Z, counted from 04:20Z; .*apps\/vent\/gone\.py \(missing\)/);
+});
+
+test("dateMissingRefs matches a deleted file by its path, an app-relative or folder ref, and leaves a dated or unmatched ref alone", () => {
+  const deleted = parseDeletions(`\x1e1793090170\napps/search/src/routes/api/ads/lookup/+server.ts\nconvex/search/adLibrary.ts\n\x1e1793086429\nconvex/search/adLibrary.ts\n`);
+  assert.equal(deleted.get("convex/search/adLibrary.ts"), 1793090170_000, "the newest deletion wins");
+  const [page] = dateMissingRefs([{ path: "apps/search/ads-library.html", last_verified: "2026-10-20", staleRefs: [
+    { ref: "convex/search/adLibrary.ts::pruneOrphanAds", modified: "missing — ref no longer exists" },
+    { ref: "src/routes/api/ads/", modified: "missing — ref no longer exists" },
+    { ref: "convex/never.ts", modified: "missing — ref no longer exists" },
+    { ref: "convex/crons.ts", modified: "2026-10-27T04:51:00.000Z" },
+  ] }], deleted);
+  assert.deepEqual(page!.staleRefs.map(ref => ref.since), ["2026-10-27T08:36:10.000Z", "2026-10-27T08:36:10.000Z", undefined, undefined]);
 });

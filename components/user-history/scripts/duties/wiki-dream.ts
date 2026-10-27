@@ -205,7 +205,45 @@ export function parseStale(value: unknown): StalePage[] {
  */
 export const FOLLOW_WINDOW_MS = 70 * 60_000;
 
-/** When the page fell behind: its first ref change after the check (`since`, else the newest `modified`); 0 for a ref git no longer has. */
+/**
+ * The newest time each path left HEAD's first-parent history, from `git log --first-parent --diff-filter=D --format=%x1e%ct --name-only`.
+ * git lists the newest commit first, so the first time a path shows is the one kept.
+ */
+export function parseDeletions(text: string): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const record of text.split("\x1e").slice(1)) {
+    const [head = "", ...files] = record.split("\n");
+    const at = Number(head.trim()) * 1000;
+    if (!Number.isFinite(at) || at <= 0) continue;
+    for (const file of files.map(line => line.trim()).filter(Boolean)) if (!out.has(file)) out.set(file, at);
+  }
+  return out;
+}
+
+/**
+ * Dates each undated ref (wiki-health's missing ones, with no `since` and no time in `modified`) by the commit that took its path off HEAD, so
+ * a page whose cited file was deleted gets the same follow window as one whose cited file changed. wiki-health resolves a bare ref under the
+ * repo root, the wiki content folder or an app folder, and a folder ref names every file under it, so a deleted path matches when it is the
+ * ref, ends with `/<ref>`, or sits under the folder. A ref no deletion matches, such as a path that never existed, stays undated and counts
+ * at once. On 10-27 0f56a96354 (07:33:49Z) and 263f8054be (08:36:10Z) deleted files 9 pages cite, and the 07:34Z and 08:35Z runs read
+ * wiki_problems 3 and 6 off target from them within 2 min of each commit.
+ */
+export function dateMissingRefs(pages: readonly StalePage[], deleted: ReadonlyMap<string, number>): StalePage[] {
+  const leftAt = (ref: string): number | undefined => {
+    const bare = ref.replace(/(?::\d+(?:-\d+)?|::[\w$.-]+)$/, "").replace(/\/+$/, "");
+    let newest: number | undefined;
+    for (const [file, at] of deleted)
+      if (file === bare || file.endsWith(`/${bare}`) || file.startsWith(`${bare}/`) || file.includes(`/${bare}/`)) newest = Math.max(newest ?? 0, at);
+    return newest;
+  };
+  return pages.map(page => ({ ...page, staleRefs: page.staleRefs.map(ref => {
+    if (ref.since !== undefined || Number.isFinite(Date.parse(ref.modified))) return ref;
+    const at = leftAt(ref.ref);
+    return at === undefined ? ref : { ...ref, since: new Date(at).toISOString() };
+  }) }));
+}
+
+/** When the page fell behind: its first ref change after the check (`since`, else the newest `modified`); 0 for an undated ref (dateMissingRefs). */
 export function behindSince(page: StalePage): number {
   return Math.min(...page.staleRefs.map(ref => { const at = Date.parse(ref.since ?? ref.modified); return Number.isFinite(at) ? at : 0; }));
 }
@@ -433,7 +471,13 @@ export async function measureDream(deps: DreamDeps, lastRuns: readonly DutyRunRe
     return { runs: runs.length, pages: unlandedPages(runs) };
   }).catch(error => fail(`journalctl ${BOX_UNIT}`, error));
 
-  const stalePages = health && (() => { try { return parseStale(health.stale); } catch (error) { return fail("wiki-health.mjs stale", error); } })();
+  const listed = health && (() => { try { return parseStale(health.stale); } catch (error) { return fail("wiki-health.mjs stale", error); } })();
+  const undated = listed?.some(page => page.staleRefs.some(ref => ref.since === undefined && !Number.isFinite(Date.parse(ref.modified))));
+  const stalePages = listed && undated
+    ? await deps.exec("git", ["-C", deps.repos.wiki, "log", "HEAD", "--first-parent", "--diff-filter=D", "--no-renames", `--since=${new Date(now - FOLLOW_WINDOW_MS).toISOString()}`,
+      "--format=%x1e%ct", "--name-only"], { cwd: deps.repos.wiki, timeoutMs: GIT_TIMEOUT_MS })
+      .then(text => dateMissingRefs(listed, parseDeletions(text))).catch(error => { fail("git log deletions", error); return listed; })
+    : listed;
   const metrics: Record<string, number> = {};
   for (const key of HEALTH_METRICS) metrics[key] = health?.facts[key] ?? UNMEASURED;
   const following = stalePages?.filter(page => { const fell = behindSince(page); return fell > 0 && now - fell <= FOLLOW_WINDOW_MS; });
