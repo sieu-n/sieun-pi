@@ -239,7 +239,7 @@ test("the census writer's worst lag counts only slots at p826's rate outside dep
   const ig = [0, 1, 2, 3].map(index => ({ slot: at(index), good: (index === 3 ? 4_000 : 10_900) * 5 }));
   // A lag point at t covers the slot that ends at t.
   const lag = lagSlots([[at(1), 3_000], [at(2), 17_425], [at(3), 40_000], [at(4), 90_000]]);
-  assert.deepEqual(writerLagAtRate(ig, lag, new Set([at(2)]), 10_000), { lag: 17_425, slot: at(1), slots: 2 });
+  assert.deepEqual(writerLagAtRate(ig, lag, new Set([at(2)]), 10_000), { lag: 17_425, slot: at(1), slots: 2, newestOver: at(1) });
   assert.equal(writerLagAtRate(ig.map(s => ({ ...s, good: 4_000 * 5 })), lag, new Set(), 10_000), null);
 });
 
@@ -257,4 +257,36 @@ test("the census writer is one goal row: its worst lag at p826's rate counts tow
   assert.equal(slow.value, 0);
   assert.match(slow.reads, /not judged/);
   assert.equal(row({ writerLag: [{ slot, good: 2_613 }] }).value, null);
+});
+
+test("p895 dates its miss at the newest slot over 5,000, not the worst one, and says when it leaves the 24 h (10-27 01:10Z d9 read)", () => {
+  const worst = Date.parse("2026-10-26T10:55:00Z");
+  const later = Date.parse("2026-10-27T00:30:00Z");
+  const calm = Date.parse("2026-10-27T00:50:00Z");
+  const now = Date.parse("2026-10-27T01:10:00Z");
+  const fast = [worst, later, calm].map(slot => ({ slot, good: 21_000 * 5 }));
+  const lag = [{ slot: worst, good: 214_542 }, { slot: later, good: 6_327 }, { slot: calm, good: 3_622 }];
+  const data = base({ now, board: BOARD, deploys24h: [], igSlots24h: fast, writerLag: lag, igSlowest: 17_978, ttsWeekly: { read: 6_495_126, live: 6_495_155 },
+    meta: { due: 3_015_442, finished24h: 315 * 1_440 }, refresh: [HALF] });
+  const row = goalRows(data).find(r => r.item === "p895")!;
+  assert.equal(row.lastEventAt, later);
+  assert.match(goalLine(row), /214,542 records of lag at most over 24 h \(10:55Z 10-26\).*the newest over 5,000 \(00:30Z 10-27\) leaves the 24 h window at 00:30Z 10-28\)\. Missed\.$/);
+  const out = report(data, METRICS);
+  assert.equal(out.metrics.throughput_goals_missed, 1);
+  assert.equal(out.lastEventAt?.throughput_goals_missed, later);
+  assert.ok(out.flagged!.find(item => item.item === "p895")!.excerpt.endsWith("Missed."));
+  // Every counted slot under the line reads met with no time; another missed row with no time leaves the headline undated.
+  assert.equal(report(base({ ...data, writerLag: [{ slot: calm, good: 3_622 }] }), METRICS).lastEventAt?.throughput_goals_missed, undefined);
+  assert.equal(report(base({ ...data, igSlowest: 9_000 }), METRICS).lastEventAt?.throughput_goals_missed, undefined);
+});
+
+test("geonode_mbps dates its miss at the newest hour under 100 Mbps and says when it leaves the 24 h", () => {
+  const census = { jobs: 0, bad: 0, att: 0, okAtt: 0, wire: 0 };
+  const big = { jobs: 0, bad: 0, att: 0, okAtt: 0, wire: 200e6 / 8 * 3_600 };
+  const geoHours = Array.from({ length: 24 }, (_, index) => ({ hour: GEO_FROM + index * 3_600_000, census: index === 5 || index === 9 ? census : big, proxy: [] }));
+  const out = report(base({ geoHours, adLibrary: [] }), METRICS);
+  assert.ok(out.metrics.geonode_mbps! < 100);
+  assert.equal(out.lastEventAt?.geonode_mbps, GEO_FROM + 9 * 3_600_000);
+  assert.match(out.flagged!.find(item => item.kind === "geonode")!.excerpt, /the newest leaving the window at 15:00Z 10-22\./);
+  assert.equal(report(base({ geoHours: geoHours.map(h => ({ ...h, census: big })), adLibrary: [] }), METRICS).lastEventAt?.geonode_mbps, undefined);
 });

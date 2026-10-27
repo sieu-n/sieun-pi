@@ -101,6 +101,9 @@ export const QUEUE_LINE = 80_000;
  * the writer idle, so its lag says nothing there; on 10-22 the lag passed 5,000 on 36 of 130 minutes from 06:00 to 08:00Z at 10,900 ok a minute,
  * while the lane scaler had stopped with 16 writers. The lag is crawler_v3_bus_group_lag_records of instagram-census-pg, its most in each slot. It is
  * one goal row of the headline (writerLagRow), so the duty keeps its headline and 3 supporting metrics (c75).
+ * The headline's `lastEventAt` is the newest slot that keeps a missed row missed, when every missed row reads a trailing window's worst slot (this
+ * row; geonode_mbps does the same with its newest hour under 100 Mbps). Before it the p895 miss carried no time over 21 d9 runs to 10-27
+ * 00:25Z, so a miss that only waits for old slots to leave the 24 h read the same as one that new slots keep raising.
  */
 export const WRITER_LAG_MS = 24 * HOUR;
 export const WRITER_LAG_LINE = 5_000;
@@ -268,6 +271,8 @@ export interface GoalRow {
   platform: string; item: string; value: number | null; goal: number | null; op: ">=" | "<="; source: GoalSource | null;
   /** Printed after the value, like "%"; and what the value counts, like "good a minute in the slowest hour of the last 6 h". */
   unit: string; reads: string; extra?: string | undefined;
+  /** For a row that reads the worst slot of a trailing window, the start of the newest slot that keeps it missed (`PrecheckOutput.lastEventAt`). */
+  lastEventAt?: number;
 }
 export const missed = (row: GoalRow): boolean => row.value === null || row.goal === null || (row.op === ">=" ? row.value < row.goal : row.value > row.goal);
 
@@ -371,9 +376,14 @@ export function writerLagRow(d: ThroughputData, rate: number | null): GoalRow {
   if (!d.igSlots24h || !d.writerLag || !d.deploys24h || rate === null) return { ...row, value: null, reads: "records of lag at most over 24 h, not read" };
   const worst = writerLagAtRate(d.igSlots24h, d.writerLag, new Set(d.deploys24h), rate);
   if (!worst) return { ...row, value: 0, reads: `records of lag, not judged: no five-minute slot of the last 24 h read ${fmt(rate)} Instagram profiles a minute outside deploys` };
-  return { ...row, value: worst.lag, reads: `records of lag at most over 24 h (${utc(worst.slot).slice(6, 11)})`,
-    extra: `(${worst.slots} of 288 five-minute slots at ${fmt(rate)} Instagram profiles a minute or more, outside deploys)` };
+  const over = worst.newestOver === null ? "" : `; the newest over ${fmt(WRITER_LAG_LINE)} (${when(worst.newestOver)}) leaves the 24 h window at ${when(worst.newestOver + WRITER_LAG_MS)}`;
+  return { ...row, value: worst.lag, reads: `records of lag at most over 24 h (${when(worst.slot)})`,
+    extra: `(${worst.slots} of 288 five-minute slots at ${fmt(rate)} Instagram profiles a minute or more, outside deploys${over})`,
+    ...(worst.newestOver === null ? {} : { lastEventAt: worst.newestOver }) };
 }
+
+/** A time for a line, "10:55Z 10-26". */
+const when = (t: number): string => `${utc(t).slice(6)} ${utc(t).slice(0, 5)}`;
 
 /** GeoNode Mbps for each full hour of the window; an hour with no ledger rows reads its Ad Library bytes alone. */
 export function geonodeHours(hours: readonly GeoHour[], adLibrary: readonly WireDay[], from: number, to: number): { hour: number; mbps: number }[] {
@@ -391,8 +401,11 @@ export function report(d: ThroughputData, dutyMetrics: readonly DutyMetric[]): P
   const metrics: Record<string, number> = {};
   const flagged: FlaggedSlice[] = [];
   const unmeasured = new Set<string>();
+  const lastEventAt: Record<string, number> = {};
   const rows = goalRows(d);
-  metrics.throughput_goals_missed = rows.filter(missed).length;
+  const missedRows = rows.filter(missed);
+  metrics.throughput_goals_missed = missedRows.length;
+  if (missedRows.length && missedRows.every(row => row.lastEventAt !== undefined)) lastEventAt.throughput_goals_missed = Math.max(...missedRows.map(row => row.lastEventAt!));
   if (rows.some(row => row.value === null || row.goal === null)) unmeasured.add("throughput_goals_missed");
   for (const row of rows) flagged.push({ at: d.now, kind: "goal", item: row.item, excerpt: goalLine(row).slice(0, 300) });
   const items = Object.fromEntries(rows.flatMap(row => row.value === null || row.goal === null ? [] : [[row.item, { value: row.value, target: row.goal, op: row.op }] as const]));
@@ -412,7 +425,10 @@ export function report(d: ThroughputData, dutyMetrics: readonly DutyMetric[]): P
     const slowest = hours.reduce((low, h) => h.mbps < low.mbps ? h : low, hours[0]!);
     metrics.geonode_mbps = slowest.mbps;
     const under = hours.filter(h => h.mbps < 100);
-    flagged.push({ at: d.now, kind: "geonode", excerpt: `GeoNode carried ${slowest.mbps} Mbps in its slowest hour ${span} (${utc(slowest.hour).slice(6)}), ${hours.at(-1)!.mbps} in the last, with ${under.length} of ${hours.length} hours under the owner's 100 Mbps${under.length ? `: ${under.map(h => `${utc(h.hour).slice(6, 11)} ${h.mbps}`).join(", ")}` : ""}. Handshakes count ${NEW_CONNECTION_BYTES.toLocaleString("en-US")} bytes per new connection.`.slice(0, 300) });
+    const newestUnder = under.at(-1)?.hour;
+    if (newestUnder !== undefined) lastEventAt.geonode_mbps = newestUnder;
+    const leaves = newestUnder === undefined ? "" : `, the newest leaving the window at ${when(newestUnder + GEONODE_HOURS * HOUR)}`;
+    flagged.push({ at: d.now, kind: "geonode", excerpt: `GeoNode carried ${slowest.mbps} Mbps in its slowest hour ${span} (${utc(slowest.hour).slice(6)}), ${hours.at(-1)!.mbps} in the last, with ${under.length} of ${hours.length} hours under the owner's 100 Mbps${under.length ? `: ${under.map(h => `${utc(h.hour).slice(6, 11)} ${h.mbps}`).join(", ")}${leaves}` : ""}. Handshakes count ${NEW_CONNECTION_BYTES.toLocaleString("en-US")} bytes per new connection.`.slice(0, 300) });
   }
   if (d.queues) {
     const backlogs = d.queues.filter(backlogged);
@@ -431,7 +447,8 @@ export function report(d: ThroughputData, dutyMetrics: readonly DutyMetric[]): P
   for (const error of d.errors) flagged.push({ at: d.now, kind: "source_error", excerpt: `${error.source}: ${error.message}`.slice(0, 300) });
   const replaced = settle(dutyMetrics, metrics, unmeasured);
   if (replaced.length) flagged.unshift(unmeasuredFlag(replaced, d.now));
-  return { metrics, flagged, ...Object.keys(items).length ? { items } : {}, ...(metrics.ig_queues_growing_6h! > 0 ? { lastEventAt: { ig_queues_growing_6h: d.now } } : {}) };
+  if (metrics.ig_queues_growing_6h! > 0) lastEventAt.ig_queues_growing_6h = d.now;
+  return { metrics, flagged, ...Object.keys(items).length ? { items } : {}, ...Object.keys(lastEventAt).length ? { lastEventAt } : {} };
 }
 
 /** What each goal's crawl counts: every Instagram profile read on any path (p826's own reading), and TikTok Shop's good products as its rate controller lane counts them. */
@@ -482,14 +499,18 @@ export function slowestHour(slots: readonly Slot[], from: number, to: number, de
 
 /**
  * The census writer's worst lag, and its slot, over the slots whose Instagram profiles read `rate` a minute or more and no deploy holds, with how
- * many slots counted; null when none did. A lag point at t covers the slot that ends at t, as deploySlots reads it.
+ * many slots counted and the newest counted slot over `line` (null when none is); null when no slot counted. A lag point at t covers the slot
+ * that ends at t, as deploySlots reads it. The row misses until that newest slot leaves the window, not the worst one: on 10-27 at 01:10Z the
+ * worst slot was 214,542 at 10:55Z on 10-26, while counted slots still read 8,034 at 22:05Z and up to 6,327 at 00:25 to 00:35Z on 10-27.
  */
-export function writerLagAtRate(ig: readonly Slot[], lag: readonly Slot[], deploys: ReadonlySet<number>, rate: number): { lag: number; slot: number; slots: number } | null {
+export function writerLagAtRate(ig: readonly Slot[], lag: readonly Slot[], deploys: ReadonlySet<number>, rate: number, line = WRITER_LAG_LINE):
+  { lag: number; slot: number; slots: number; newestOver: number | null } | null {
   const fast = new Set(ig.filter(s => s.good / (SLOT_MS / MINUTE) >= rate && !deploys.has(s.slot)).map(s => s.slot));
   const counted = lag.filter(s => fast.has(s.slot));
   if (!counted.length) return null;
   const worst = counted.reduce((top, s) => s.good > top.good ? s : top);
-  return { lag: Math.round(worst.good), slot: worst.slot, slots: counted.length };
+  const over = counted.filter(s => Math.round(s.good) > line).map(s => s.slot);
+  return { lag: Math.round(worst.good), slot: worst.slot, slots: counted.length, newestOver: over.length ? Math.max(...over) : null };
 }
 export const lagSlots = (points: readonly [number, number][]): Slot[] =>
   points.filter(([, lag]) => Number.isFinite(lag)).map(([at, lag]) => ({ slot: Math.floor((at - 1) / SLOT_MS) * SLOT_MS, good: lag }));
