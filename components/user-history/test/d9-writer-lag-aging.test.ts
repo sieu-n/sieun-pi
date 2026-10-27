@@ -4,10 +4,11 @@
 // and no push read the duty when that slot left the window, until the precheck named the window too (windowMs).
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { agingSince, agingUntil, fixNotMoving, type RedDuty } from "../scripts/duties/chat-system.ts";
+import { agingSince, agingUntil, fixNotMoving, fixWindowWait, type RedDuty } from "../scripts/duties/chat-system.ts";
 import { agedOut } from "../src/duty-push.ts";
 import { judge, type DutyMetric, type DutyRunRecord, type FixLink } from "../src/shared/chat-duties.ts";
 import { fixStepStreak, metricStreaks } from "../src/shared/duty-streak.ts";
+import type { Wake } from "../src/wakes.ts";
 
 const t = (iso: string): number => Date.parse(`2026-${iso}Z`);
 const DAY = 24 * 3_600_000;
@@ -51,4 +52,24 @@ test("a slot over 5,000 after the previous run keeps the miss live, so d9 still 
   assert.equal(duty.agingSince, undefined);
   const [found] = fixNotMoving([duty], () => "Crawler VP");
   assert.match(found!.line, /^Crawler VP: Throughput goal achieved \(d9\) missed throughput_goals_missed 4 runs in a row, 4 of them under its fix step p1022, p895/);
+});
+
+// d9 at 02:25Z on 10-27 asked Crawler VP to replace p1022, while p1022's job (crawler ops train) had committed 86f9c09f2c and slept on run
+// 40444358343 to ship it. Its other wake, at 06:00Z on 10-29 about snapshot parts, lies past one window and says nothing about this fix.
+test("a fix whose job sleeps on a ship run inside the count's window waits on the window, so d9 asks for no replacement", () => {
+  const runs = [d9("10-27T02:20:00", "10-27T01:20:00"), ...older];
+  const now = t("10-27T02:25:00");
+  const train = "01a15984-a584-7668-aaec-d5a67c824796";
+  const ship: Wake = { session: train, on: { kind: "run", run: 40444358343 }, note: "ship 86f9c09f2c", since: t("10-27T02:12:00") };
+  const parts: Wake = { session: train, on: { kind: "time", at: t("10-29T06:00:00") }, note: "snapshot parts", since: t("10-26T05:25:00") };
+  const step = { sessionId: train };
+  const duty = red(runs);
+  assert.equal(fixNotMoving([duty], () => "Crawler VP").length, 1, "the old read asks to replace p1022");
+  const wait = fixWindowWait(duty.metric, step, [ship, parts], now);
+  assert.equal(wait, now + DAY);
+  assert.deepEqual(fixNotMoving([{ ...duty, windowWait: wait! }], () => "Crawler VP"), []);
+  assert.equal(fixWindowWait(duty.metric, step, [parts], now), undefined, "a wake past one window is no wait on this fix");
+  assert.equal(fixWindowWait(duty.metric, { sessionId: "01a17851-b190-72ec-8cdf-83180c1c649c" }, [ship, parts], now), undefined, "another session's wake");
+  assert.equal(fixWindowWait(duty.metric, { waitUntil: "2026-10-27T08:00:00Z" }, [], now), t("10-27T08:00:00"));
+  assert.equal(fixWindowWait({ key: "throughput_goals_missed" }, step, [ship], now), undefined, "a count with no window has no window to wait on");
 });

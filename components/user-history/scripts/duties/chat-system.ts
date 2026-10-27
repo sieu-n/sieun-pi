@@ -18,6 +18,7 @@ import { D9_PUSH_PREFIX, serverNote } from "../../src/shared/chat-feed.ts";
 import type { ChatBoard, PlanItem } from "../../src/shared/types.ts";
 import { CHANGE_APPROACH_MISSES, fixStepStreak, metricStreaks } from "../../src/shared/duty-streak.ts";
 import { countWindowMs } from "../../src/duty-push.ts";
+import { pendingWakes, type Wake } from "../../src/wakes.ts";
 import { hasDoneLine, upkeepWords } from "../../src/shared/upkeep-title.ts";
 import { stalledSince } from "../../src/shared/stalled-calls.ts";
 import { transientTurnError, turnErrorCause } from "../../src/turn-error.ts";
@@ -123,9 +124,10 @@ function localCopy(file: string | undefined): { file: string; host: string } | u
 
 /**
  * A red duty of the fleet, with the newest event time when every metric it misses is a windowed count that only ages out (`agingSince`), and
- * the lead metric's misses under its fix step with whether they moved (`underFix`, `fixStepStreak`).
+ * the lead metric's misses under its fix step with whether they moved (`underFix`, `fixStepStreak`), and when its fix can show in a windowed
+ * count while the fix's job waits inside the window (`windowWait`, `fixWindowWait`).
  */
-export type RedDuty = FleetDuty & { agingSince?: number; agingUntil?: number; underFix?: ReturnType<typeof fixStepStreak> };
+export type RedDuty = FleetDuty & { agingSince?: number; agingUntil?: number; underFix?: ReturnType<typeof fixStepStreak>; windowWait?: number };
 
 /** The ids of the plan items above `id` on a board, nearest first: what a fix step's own number can be read from (`fixStepStreak`). */
 export function itemsAbove(board: ChatBoard | null, id: string): string[] {
@@ -168,6 +170,28 @@ export function agingUntil(runs: readonly DutyRunRecord[]): number | undefined {
   return until;
 }
 
+/** A time for a line, "2026-10-27T13:28Z". */
+const minute = (at: number): string => `${new Date(at).toISOString().slice(0, 16)}Z`;
+
+/**
+ * When a red duty's lead metric counts a trailing window (`countWindowMs`, the precheck's `windowMs` first) and the job of its fix step waits
+ * inside one window, the time the number can show that fix; otherwise undefined. The job waits on a pending board.wake of the step's session, or
+ * on the step's waitUntil: a time wake or waitUntil within one window gives its own time, and a run wake, a deploy or CI run still going, gives
+ * one window from now, since the number shows the fix only one window after it runs. Such a duty is no fix that fails to move (`fixNotMoving`):
+ * at 02:25Z on 10-27 d9 asked Crawler VP to replace p1022 on census writer lag, the worst five-minute slot of 24 h, while p1022's job had found
+ * the cause, committed 86f9c09f2c at 02:12Z and slept on the ship run 40444358343.
+ */
+export function fixWindowWait(metric: { key: string; windowMs?: number } | undefined, step: Pick<PlanItem, "sessionId" | "waitUntil"> | undefined,
+  wakes: readonly Wake[], now: number): number | undefined {
+  const window = metric && countWindowMs(metric.key, metric);
+  if (window === undefined || !step) return undefined;
+  const until = step.waitUntil === undefined ? [] : [Date.parse(step.waitUntil)];
+  const woken = step.sessionId === undefined ? [] : wakes.filter(wake => wake.session === step.sessionId || wake.root === step.sessionId)
+    .map(wake => wake.on.kind === "time" ? wake.on.at : now + window);
+  const times = [...until, ...woken].filter(at => Number.isFinite(at) && at > now && at <= now + window);
+  return times.length ? Math.max(...times) : undefined;
+}
+
 /** A red duty whose live fix job does not move its number, with the push line that asks its chat to replace that fix. */
 export interface NotMoving { chat: string; duty: string; line: string }
 
@@ -180,7 +204,7 @@ export interface NotMoving { chat: string; duty: string; line: string }
  * missed 42 runs while p52's job was too new for `stuck`, and p52 had been its fix since 10-21 06:11Z.
  * measured: over the 7,011 runs in the 118 runs files on 10-22, a missed metric with no move reached its target within 10 more runs 86% of the
  * time after 1 miss, 76% after 2, 67% after 3 and 32% after 12 or more.
- * A windowed count with no new event (`quietSince`) only waits, and a duty whose missed metrics' fix steps all wait on an open For you todo
+ * A windowed count with no new event (`quietSince`) only waits, as does one whose fix's job waits inside the window (`windowWait`), and a duty whose missed metrics' fix steps all wait on an open For you todo
  * (`FleetDuty.held`) waits on the owner and owes no new job.
  * When the runs read a number for the item the step works (`fixStepStreak` with `itemsAbove`), the move is judged on that number and the
  * line names it, since a count of goals or risks moves only when one clears.
@@ -189,7 +213,7 @@ export function fixNotMoving(red: readonly RedDuty[], name: (chat: string) => st
   return red.flatMap(duty => {
     const metric = duty.metric;
     const under = duty.underFix;
-    if (duty.held || !duty.fix || metric?.fix?.step !== duty.fix || duty.agingSince !== undefined || metric.quietSince !== undefined || !under ||
+    if (duty.held || !duty.fix || metric?.fix?.step !== duty.fix || duty.agingSince !== undefined || metric.quietSince !== undefined || duty.windowWait !== undefined || !under ||
       under.moved || under.misses < CHANGE_APPROACH_MISSES) return [];
     const worked = under.worked;
     const stall = worked ? `${worked.item}, the item ${duty.fix} works, read ${show(worked.to)} against ${show(worked.target)}, no closer than its ${show(worked.from)} when the first of those runs measured it`
@@ -594,6 +618,11 @@ export function chatSystemOutput(facts: ChatSystemFacts): PrecheckOutput {
   const aging = facts.fleet.red.filter(duty => duty.agingSince !== undefined);
   if (aging.length) flagged.push({ kind: "aging_duty", excerpt: `${aging.map(duty => `${name(duty.chat)} ${duty.duty}`).join(", ")} ${aging.length === 1 ? "is" : "are"} red only on ` +
     "counts over a trailing window with no new event since the run before, which fall as old events leave the window; they owe no fix job, so push nothing for them." });
+  const waiting = facts.fleet.red.filter(duty => duty.windowWait !== undefined && fixNotMoving([{ ...duty, windowWait: undefined }], name).length);
+  for (const duty of waiting) {
+    flagged.push({ kind: "fix_window_wait", chat: duty.chat, item: duty.duty, excerpt: `${name(duty.chat)}: ${duty.name} (${duty.duty}) misses ${duty.metric?.key ?? "a windowed count"}, ` +
+      `a count over a trailing window, while ${duty.fix}'s job waits inside that window, so the number can show the fix at ${minute(duty.windowWait!)} at the earliest; push no replacement for ${duty.fix}.` });
+  }
   head("stuck_duty", facts.stuckDuties.length, "red duties with no live fix job", chats(facts.stuckDuties));
   for (const duty of spread(facts.stuckDuties, EXAMPLES)) flagged.push({ kind: "stuck_duty", chat: duty.chat, excerpt: `${duty.line}.` });
   const notMoving = fixNotMoving(facts.fleet.red, name);
@@ -804,12 +833,17 @@ async function main(): Promise<void> {
   const upkeep = plan.chats.filter(chat => !plan.pausedChats.has(chat.id)).flatMap(chat => planUpkeep(chat.id, plan.boards.get(chat.id) ?? null));
   const fleet = await dutyFleet({ dataDir, now, sessions: daemonSessions });
   const runsOf = (chat: string, duty: string) => (runsByChat.get(chat) ?? []).filter(run => run.duty === duty);
+  const wakes = await pendingWakes(join(dataDir, "wakes"), now);
   const red = fleet.duties.filter(duty => !duty.green && !duty.pending).map((duty): RedDuty => {
     const own = runsOf(duty.chat, duty.duty);
     const since = agingSince(own);
     const under = duty.fix && duty.metric ? { underFix: fixStepStreak(own, duty.metric.key, duty.fix, itemsAbove(plan.boards.get(duty.chat) ?? null, duty.fix)) } : {};
     const until = agingUntil(own);
-    return { ...duty, ...under, ...since === undefined ? {} : { agingSince: since }, ...until === undefined ? {} : { agingUntil: until } };
+    let step: PlanItem | undefined;
+    if (duty.fix) walk(plan.boards.get(duty.chat)?.plan ?? [], item => { if (item.id === duty.fix) step = item; });
+    const wait = fixWindowWait(duty.metric, step, wakes, now);
+    return { ...duty, ...under, ...since === undefined ? {} : { agingSince: since }, ...until === undefined ? {} : { agingUntil: until },
+      ...wait === undefined ? {} : { windowWait: wait } };
   });
   // A wait that names another chat's open todo holds its step, wherever that chat runs (`withLinkedBoards`).
   const linked = (chat: string): ChatBoard | null => { const board = plan.boards.get(chat); return board ? withLinkedBoards(board, chat, plan.boards) : null; };
@@ -893,7 +927,8 @@ async function main(): Promise<void> {
       `${duty.metric ? `${duty.metric.key} ${show(duty.metric.value)} against ${duty.metric.op} ${show(duty.metric.target)}, ` : ""}${missRuns(duty)}` +
       `${duty.fix ? `, fix step ${duty.fix}` : duty.working ? `, its job ${duty.working} works on it` : ""}` +
       `${duty.agingSince !== undefined ? `, red only on counts that age out (newest event ${new Date(duty.agingSince).toISOString().slice(0, 16)}Z` +
-        `${duty.agingUntil !== undefined ? `, clears at ${new Date(duty.agingUntil).toISOString().slice(0, 16)}Z` : ""}), so it owes no fix job` : ""}.`)),
+        `${duty.agingUntil !== undefined ? `, clears at ${new Date(duty.agingUntil).toISOString().slice(0, 16)}Z` : ""}), so it owes no fix job` : ""}` +
+      `${duty.windowWait !== undefined ? `, its fix's job waits inside the count's window, so the number can show the fix at ${minute(duty.windowWait)} at the earliest` : ""}.`)),
     section(`Red duties with no live fix job (${counts.redDuties.length})`, counts.redDuties.map(duty => `${duty.line}.`)),
     section(`Red duty metrics that wait on the owner's open For you todo (${owned.ownerHeld.length})`, owned.ownerHeld.map(duty => `${duty.line}.`)),
     section(`Red duties whose live fix job does not move the number (${notMoving.length})`, notMoving.map(duty => `${duty.line}.`)),
