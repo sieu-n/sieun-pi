@@ -197,7 +197,7 @@ UNOWED = []
 # snake_case notes (PRIME_NOTE) and the watchdog's notices: none of them is a message the owner typed. The watchdog reads owner input the same way.
 NOTE_PREFIXES = ("[watchdog]", "[check-in] ", "[job] ", "[reply check] ", "[brief check] ", "[correction check] ", "[board] Ops not applied: ",
                  "[board] Decisions not on the scratchpad: ", "Prime Agent restarted after an update", "Watchdog recovery checkpoint", "[from ",
-                 "[resume]", "[relay]", "[cross-host message")
+                 "[resume]", "[relay]", "[cross-host message", "[d9 push ")
 PRIME_NOTE = re.compile(r"^<[a-z]+(?:_[a-z]+)+>\s")
 # The chat service's agent outbox heads a message that waited with its age, and several messages that go in one send with their count
 # (components/user-history/src/agent-outbox.ts agedText and bundleText). The owner's own sends never go through it, so neither is his.
