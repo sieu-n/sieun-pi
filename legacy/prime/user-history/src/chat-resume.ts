@@ -1,6 +1,6 @@
 import { type HostExecError, hostExecFile } from "./spawn-host.ts";
 import { readFileSync } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { findCutJobs } from "../scripts/duties/whole-system.ts";
@@ -123,6 +123,13 @@ function heldAlso(pooled: readonly PoolHeldRun[], ...passes: readonly Interrupte
   return all.size ? { held: [...all.values()] } : {};
 }
 
+/** The pass's report with the continues its resend of a cut pass's jobs gave first. */
+function withResent(report: InterruptedReport | null, resent: InterruptedReport | null, planned: InterruptedReport): InterruptedReport | null {
+  if (!resent?.children?.length) return report;
+  const base = report ?? { paused: [], heads: [], checked_at: planned.checked_at };
+  return { ...base, paused: [...resent.paused, ...base.paused], children: [...resent.children, ...base.children ?? []] };
+}
+
 const withIncomplete = (report: InterruptedReport, ...earlier: readonly InterruptedReport[]): InterruptedReport => {
   const incomplete = [...earlier.flatMap(run => run.incomplete ?? []), ...report.incomplete ?? []];
   return incomplete.length ? { ...report, incomplete } : report;
@@ -155,7 +162,39 @@ export class InterruptedRuns {
   private epoch = 0;
   private queue: Promise<unknown> = Promise.resolve();
 
-  constructor(private readonly run: (args: readonly string[]) => Promise<InterruptedReport> = runScript) {}
+  /**
+   * The job sweep's place (`resumeJobs`): the jobs a pass planned to continue, written before its send pass and removed once that pass ends.
+   * A file left behind names a pass a chat restart cut, and the next pass sends to those jobs first, before its own dry run. From 22:19Z to
+   * 22:54Z on 10-27 five releases of :5182 restarted the chat, each killed the sweep's running pass, and each new pass spent 1 to 3 min on a
+   * dry run before it sent anything. The script's state file still keeps each cut to one continue.
+   */
+  constructor(private readonly run: (args: readonly string[]) => Promise<InterruptedReport> = runScript, public journal?: string) {}
+
+  private async leftover(): Promise<{ session_id: string; host?: string }[]> {
+    if (!this.journal) return [];
+    const value: unknown = await readFile(this.journal, "utf8").then(JSON.parse, () => null);
+    const runs = isRecord(value) && Array.isArray(value.runs) ? value.runs : [];
+    return runs.filter((run): run is { session_id: string; host?: string } => isRecord(run) && isText(run.session_id) && isOptionalText(run.host));
+  }
+
+  /** The send pass for the jobs a cut pass left (`journal`), or null when none were left. */
+  private async resend(named: readonly string[]): Promise<InterruptedReport | null> {
+    const left = await this.leftover();
+    if (!left.length) return null;
+    // A resend that fails keeps the file for the next pass and lets this pass go on.
+    const resent = await this.run(["--direct", "--only", left.map(run => run.session_id).join(","), ...named, ...left.some(run => run.host) ? [] : ["--this-box"]])
+      .catch(error => { process.stderr.write(`resume: the jobs a cut pass left were not resent: ${error instanceof Error ? error.message : String(error)}\n`); return null; });
+    if (resent) await this.place(null);
+    return resent;
+  }
+
+  private async place(runs: readonly InterruptedRun[] | null): Promise<void> {
+    if (!this.journal) return;
+    if (!runs) { await rm(this.journal, { force: true }); return; }
+    const temp = `${this.journal}.${process.pid}.tmp`;
+    await writeFile(temp, JSON.stringify({ at: Date.now(), runs: runs.map(run => ({ session_id: run.session_id, ...run.host ? { host: run.host } : {} })) }));
+    await rename(temp, this.journal);
+  }
 
   check(): Promise<InterruptedReport> {
     if (!this.pending && !(this.last && Date.now() - this.last.at < CHECK_TTL_MS)) {
@@ -216,6 +255,7 @@ export class InterruptedRuns {
       const listed = new Set([...owners, ...cut]);
       // --owed: a cut job is continued only while its work is owed (resume_paused.py work_owed), since the pass looks back with no limit.
       const named = ["--owed", ...listed.size ? ["--owners", [...listed].join(",")] : []];
+      const resent = await this.resend(named);
       const planned = await this.run(["--dry-run", "--direct", ...named]);
       passes.push(planned);
       const jobs = planned.paused
@@ -235,7 +275,7 @@ export class InterruptedRuns {
       const held = { ...(unresolved.length ? { unresolved } : {}), ...(stopped.length ? { stopped } : {}), ...(pooled.length ? { held: pooled } : {}),
         ...(archived.length ? { archived } : {}), ...(unowed.length ? { unowed } : {}) };
       const notes = { ...(planned.incomplete?.length ? { incomplete: planned.incomplete } : {}), ...held };
-      if (!jobs.length) return Object.keys(notes).length ? { paused: [], heads: [], checked_at: planned.checked_at, ...notes } : null;
+      if (!jobs.length) return withResent(Object.keys(notes).length ? { paused: [], heads: [], checked_at: planned.checked_at, ...notes } : null, resent, planned);
       const reopenAll = async (ids: Iterable<string>): Promise<void> => {
         for (const id of new Set(ids)) {
           try { await reopen(id); }
@@ -256,15 +296,17 @@ export class InterruptedRuns {
       }
       const stuck = unstuck.length ? ["--unstuck", unstuck.join(",")] : [];
       jobs.splice(0, jobs.length, ...jobs.filter(run => !skipped.has(run.session_id!)));
-      if (!jobs.length) return Object.keys(notes).length ? { paused: [], heads: [], checked_at: planned.checked_at, ...notes } : null;
+      if (!jobs.length) return withResent(Object.keys(notes).length ? { paused: [], heads: [], checked_at: planned.checked_at, ...notes } : null, resent, planned);
       // The send pass skips the other boxes when every job is on this one: the Mac's lists took 30 to 60 s of a 50 to 110 s pass on 10-18,
       // and the 06:56Z send pass died on the 90 s limit before it reached census writer speed, the last of its 11 jobs.
       const box = jobs.some(run => run.host) ? [] : ["--this-box"];
       // Each continue goes into the agent outbox (resume_paused.py deliver), which opens a job the daemon archived from its file, relays to
       // the parent of a stopped subagent, and looks for a copy of a send that timed out before it sends again.
+      await this.place(jobs.filter(run => run.reason !== "hung"));
       const sent = await this.run(["--direct", "--only", jobs.map(run => run.session_id).join(","), ...named, ...box, ...stuck]);
       passes.push(sent);
-      return { ...withIncomplete(sent, planned), ...held, ...heldAlso(pooled, sent) };
+      await this.place(null);
+      return withResent({ ...withIncomplete(sent, planned), ...held, ...heldAlso(pooled, sent) }, resent, planned);
     });
     // The pass's dry run is the page's next report, unless a resume came after this call.
     const keep = () => { if (passes[0] && this.epoch === epoch) this.keep(pageView(passes[0], passes.slice(1))); };

@@ -255,6 +255,8 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   // The server's notices to chats wait on disk until the daemon takes them (src/notice-outbox.ts); a scratch serve keeps its own folder.
   const notices = noticeOutbox(join(dataDir, quiet ? "notice-outbox-scratch" : "notice-outbox"), threads, dutyLog, {
     held: async entry => { const host = catalog.hostOf(entry.threadId); return !!host && !(await reach.reach(host)).online; } });
+  // The job sweep's place, so a pass a chat restart cut is picked up by the next one (InterruptedRuns.journal).
+  if (!replay) interruptedRuns.journal = join(dataDir, "resume-journal.json");
   chats = new Chats(index, threads, id => catalog.summary(id), extensionBuild(), loadRecord(join(dataDir, "extension-loads.json")),
     { board: id => boards.read(id), rows: () => catalog.rows(), memory: checkInRecord(join(dataDir, "check-ins.json")), registry,
       correctionChecks: checkRecord(join(dataDir, "correction-checks.json")),

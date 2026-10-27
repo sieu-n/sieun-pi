@@ -383,3 +383,32 @@ test("the job sweep asks for --owed, logs each cut job no work is owed to once, 
   assert.equal(lines.length, 1);
   assert.match(lines[0]!, /^job fix chat system 23:33: turn stopped: .* at 2026-10-15T17:24:10\.671Z\. Not resumed: no work is owed to it/);
 });
+
+test("a pass a chat restart cut before its sends is picked up by the next pass, which sends to those jobs first", async () => {
+  // 10-27 22:19Z to 22:54Z: five releases of :5182 each killed the job sweep's running pass.
+  const dir = await mkdtemp(join(tmpdir(), "resume-journal-"));
+  const journal = join(dir, "resume-journal.json");
+  const planned: InterruptedReport = { paused: [job("j-a", "error", "chat1"), job("j-b", "cut_off", "chat1"), job("j-hung", "hung", "chat1")], heads: [], checked_at: "now" };
+  const owned = (run: { head_session_id?: string }) => run.head_session_id === "chat1";
+  const cut = new InterruptedRuns(async args => {
+    if (args.includes("--dry-run")) return planned;
+    assert.deepEqual(JSON.parse(await readFile(journal, "utf8")).runs, [{ session_id: "j-a" }, { session_id: "j-b" }]);
+    throw new Error("resume_paused.py --direct ended by SIGKILL after 3.0 s");
+  }, journal);
+  await assert.rejects(cut.resumeJobs(owned, async () => {}));
+  const calls: string[][] = [];
+  const sent = (ids: string[]): InterruptedReport => ({ paused: ids.map(id => job(id, "error", "chat1")), heads: [], checked_at: "now",
+    children: ids.map(id => ({ id: id.slice(-12), name: id, head: "chat1", result: "delivered" })) });
+  const next = new InterruptedRuns(async args => {
+    calls.push([...args]);
+    return args.includes("--dry-run") ? { paused: [], heads: [], checked_at: "now" } : sent(args[args.indexOf("--only") + 1]!.split(","));
+  }, journal);
+  const report = await next.resumeJobs(owned, async () => {});
+  assert.deepEqual(calls, [["--direct", "--only", "j-a,j-b", "--owed", "--this-box"], ["--dry-run", "--direct", "--owed"]]);
+  assert.deepEqual(report?.children?.map(child => child.name), ["j-a", "j-b"]);
+  await assert.rejects(readFile(journal, "utf8"), "the resend removes the file");
+  calls.length = 0;
+  await next.resumeJobs(owned, async () => {});
+  assert.deepEqual(calls, [["--dry-run", "--direct", "--owed"]], "a pass that ended leaves nothing to resend");
+  await rm(dir, { recursive: true, force: true });
+});
