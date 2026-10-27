@@ -15,7 +15,7 @@ test("the CLI host survives an extension timer throw in one session, keeps the o
   mkdirSync(join(root, "ws"), { recursive: true });
   const socket = join(root, "host.sock");
   const child = spawn(process.execPath, ["--import", "tsx", join(here, "../src/main.ts"), "--socket", socket, "--agent-dir", join(root, "agent"),
-    "--session-dir", join(root, "sessions"), "--cwd", join(root, "ws"), "--extension", join(here, "fixtures/echo.ts"), "--model", "echo/m"], {
+    "--session-dir", join(root, "sessions"), "--cwd", join(root, "ws"), "--no-default-extensions", "--extension", join(here, "fixtures/echo.ts"), "--model", "echo/m"], {
     env: { ...process.env, PI_OFFLINE: "1", PI_TELEMETRY: "0", PI_SKIP_VERSION_CHECK: "1" }, stdio: ["ignore", "pipe", "pipe"],
   });
   let log = "";

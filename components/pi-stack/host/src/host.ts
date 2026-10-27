@@ -91,6 +91,13 @@ function loadBusRoute() {
   return busRoute;
 }
 
+/** pi-agent-bus's durable inbox (`agent-bus/src/inbox.ts`), when that file exists. */
+let busInbox: Promise<{ recoverInboxes?: () => Promise<string[]>; clearInbox?: (sessionId: string) => void | Promise<void> } | undefined> | undefined;
+function loadBusInbox() {
+  busInbox ??= import(new URL("../../agent-bus/src/inbox.ts", import.meta.url).href).catch(() => undefined);
+  return busInbox;
+}
+
 export class PiHost implements HostApi {
   readonly pid = process.pid;
   readonly agentDir: string;
@@ -539,10 +546,16 @@ export class PiHost implements HostApi {
       case "abort_compaction": (await this.target(command)).session.abortCompaction(); return done();
       case "abort_retry": (await this.target(command)).session.abortRetry(); return done();
       case "abort_branch_summary": (await this.target(command)).session.abortBranchSummary(); return done();
-      case "clear_queue": return done((await this.target(command)).session.clearQueue());
+      case "clear_queue": {
+        const session = await this.target(command);
+        const cleared = session.session.clearQueue();
+        await (await loadBusInbox())?.clearInbox?.(session.id);
+        return done(cleared);
+      }
       case "abort_and_clear_queue": {
         const session = await this.target(command);
         const cleared = session.session.clearQueue();
+        await (await loadBusInbox())?.clearInbox?.(session.id);
         await session.session.abort();
         return done(cleared);
       }
@@ -759,6 +772,18 @@ export class PiHost implements HostApi {
     };
     const delivery = await this.deliver(target, message);
     return { targetActiveSessionId: target, delivery, id: message.id };
+  }
+
+  /**
+   * Restores every session whose pi-agent-bus inbox still holds messages that never reached its transcript, such as after a host crash.
+   * Returns the restored ids, or an empty list when pi-agent-bus has no inbox module.
+   */
+  async recoverInboxes(): Promise<string[]> {
+    const inbox = await loadBusInbox();
+    if (!inbox?.recoverInboxes) return [];
+    const restored = await inbox.recoverInboxes();
+    if (restored.length) this.log(`restored ${restored.length} sessions with queued agent messages: ${restored.map(id => id.slice(0, 8)).join(", ")}`);
+    return restored;
   }
 
   // ---- shutdown ----

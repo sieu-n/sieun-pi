@@ -1,0 +1,8 @@
+{
+  "extensions": [
+    "../agent-bus/index.ts",
+    "../harness/index.ts",
+    "../rlm/index.ts",
+    "../pool/index.ts"
+  ]
+}

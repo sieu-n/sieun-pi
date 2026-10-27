@@ -8,10 +8,10 @@ Nothing here is live.
 
 ```sh
 cd components/pi-stack
-node --import tsx host/src/main.ts --socket <path> --agent-dir <dir> [--session-dir <dir>] [--data-dir <dir>] [--extension <path>]... [--cwd <dir>] [--model <provider/id>] [--idle-unload-min <n>] [--scratch-chat]
+node --import tsx host/src/main.ts --socket <path> --agent-dir <dir> [--session-dir <dir>] [--data-dir <dir>] [--extension <path>]... [--extensions-file <path>] [--no-default-extensions] [--cwd <dir>] [--model <provider/id>] [--idle-unload-min <n>] [--scratch-chat]
 ```
 
-1. `--extension` repeats, and every session loads each one.
+1. Every session loads the extensions in `host/extensions.json`, with paths relative to that file, then each `--extension`, which repeats. `--extensions-file` names another list, and `--no-default-extensions` skips it.
 2. `--model` is the model a session gets when its create names none.
 3. `--idle-unload-min` unloads a session that is idle with no client attached, 30 by default and 0 for never.
 4. `--scratch-chat` adds `replay: true` to the hello, so a scratch chat serve with `--scratch --replay-daemon` passes its writes through.
