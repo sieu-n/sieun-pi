@@ -896,6 +896,21 @@ export function owedKeys(missed: readonly string[], runs: readonly DutyRunRecord
 }
 
 /**
+ * The check-in run whose stuck_steps reading counts, newest first in `runs`: the newest run that carries one, unless that run was skipped behind a
+ * check-in job still at work, with only skipped runs since that job's run. Then the job's run counts, which holds every step it flagged until its
+ * after-job measure, as a newest run whose job works does. On 10-27 at 07:03Z d9 read stuck_steps_all 4 from sep launch!!'s 06:49Z skipped run
+ * while its 06:33Z check-in job waited 61st of 113 in pi-pool's turn queue; that job steered the steps' jobs at 07:10Z, and its after-job measure
+ * at 07:11Z read 0. In 24 of d9's 45 nonzero readings from 10-19 to 10-27, every chat it counted came from such a skipped run.
+ */
+export function stuckReading(runs: readonly DutyRunRecord[]): DutyRunRecord | undefined {
+  const checkIns = runs.filter(entry => entry.duty === CHECK_IN_DUTY_ID);
+  const run = checkIns.find(entry => entry.verdict !== "error" && entry.metrics?.stuck_steps !== undefined);
+  if (run?.verdict !== "skipped") return run;
+  const before = checkIns.slice(checkIns.indexOf(run) + 1).find(entry => entry.verdict !== "skipped");
+  return before?.job && (!before.after || before.after.at >= run.at) ? before : run;
+}
+
+/**
  * The open steps nobody moves in each chat and the red duties with no live fix, which the Chat system duty (d9) counts as stuck_steps_all and
  * stuck_duties. They moved there from this duty (d7) on 10-19 (owner msg mvfb7zt0). A red duty whose owed metrics' fix steps all wait on an
  * open For you todo (`dutyHold`) waits on the owner and is no red duty here; `ownerHeld` lists each duty with such a metric and its todo.
@@ -940,9 +955,10 @@ export function planCounts(input: PlanInputs): { stuck: StuckSteps[]; redDuties:
       const left = items.filter(id => !held.has(id));
       return { chat, value: left.length, at: input.now, items: left };
     }
-    // A run skipped because the job before it still worked measured the board all the same, so it counts when it carries the metric: frontend
-    // bro's 23:15:37Z run on 10-18 read 0 stuck steps, while d7 at 00:41Z still took 2 from its 23:13Z run. A skip with no metrics measured nothing.
-    const run = chat.runs.find(entry => entry.duty === CHECK_IN_DUTY_ID && entry.verdict !== "error" && entry.metrics?.stuck_steps !== undefined);
+    // A run skipped because the job before it still worked measured the board all the same, so it counts when it carries the metric, unless the
+    // check-in job it was skipped behind still works or measured after it (`stuckReading`): frontend bro's 23:15:37Z run on 10-18 read 0 stuck
+    // steps, while d7 at 00:41Z still took 2 from its 23:13Z run. A skip with no metrics measured nothing.
+    const run = stuckReading(chat.runs);
     const after = run?.after?.metrics?.stuck_steps;
     // A check-in whose job still works (it has a job and no after-job measure yet) is the live owner of every step it flagged, so none is stuck
     // until that job ends and its after-job count says what it left: at 06:54Z on 10-18 d7 read 27, 26 of them ops guy's Grafana rule steps
