@@ -177,6 +177,20 @@ class Cli(unittest.TestCase):
         view = self.run_cli("queue", "--json")
         self.assertEqual([(q["session"], q["position"], q.get("parked")) for q in view["queued"]], [("job", 1, True)])
 
+    def test_queue_json_gives_a_lapsed_slot_to_the_next_run_as_the_next_locked_call_would(self):
+        self.admit("job", "J")
+        self.run_cli("park", "job")
+        gone = subprocess.Popen(["/bin/true"])
+        gone.wait()
+        path = os.path.join(self.dir, "turns.json")
+        with open(path) as f:
+            saved = json.load(f)
+        saved["working"]["blocker"]["pid"] = gone.pid
+        with open(path, "w") as f:
+            json.dump(saved, f)
+        view = self.run_cli("queue", "--json")
+        self.assertEqual(([w["session"] for w in view["working"]], view["queued"]), (["job"], []))
+
     def test_the_release_that_frees_the_slot_wakes_the_parked_run_outside_the_lock(self):
         self.admit("job", "J")
         self.run_cli("park", "job")

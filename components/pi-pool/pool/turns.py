@@ -598,7 +598,9 @@ def cmd_queue(rest):
     if rest not in ([], ["--json"]):
         raise SystemExit("usage: pi-pool queue [--json]")
     turns, cfg, now = current(), base.config(), time.time()
-    sweep(turns, now)
+    # What the next locked call holds: at 21:13:30Z on 10-27 a sweep alone showed 17 of 20 slots busy, while the 3 lapsed wake slots
+    # would go to the next runs in line at once, and d7 read the VP's queued run as one a free slot left waiting.
+    step(turns, now, cfg)
     out = view(turns, now, cfg)
     if rest:
         emit(out)
