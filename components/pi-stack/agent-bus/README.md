@@ -20,7 +20,7 @@ flowchart LR
   r -- "dormant row from pi-rlm or pi-host" --> w["row.wake, then deliver"]
   r -- "inside pi-host, not loaded" --> h["hostApi().restore, then deliver"]
   r -- "plain pi CLI, root in pi-host" --> k["send_message on PI_HOST_SOCKET"]
-  r -- "another box" --> x["prime-relay, not built"]
+  r -- "another box" --> x["send_message through that box's prime-relay"]
 ```
 
 1. Reach follows Prime's rule in `src/family.ts`: the parent, siblings at the same depth under the same parent, and direct children, with every root a sibling of every other root.
@@ -34,12 +34,23 @@ The message size (16,384 chars), the pending queue (20 unfinished per target) an
 They are soft caps under owner rule c98, because none guards data integrity, security, money, an outside send or a vendor limit.
 A send over a cap goes through, and its receipt lists the overrun in `overLimit`.
 
+## Durable inbox
+
+Pi keeps queued steers and follow-ups in memory only, so `src/inbox.ts` writes each accepted message to `<agent dir>/agent-bus/inbox/<session id>.jsonl` before Pi queues it.
+1. At `session_start`, other than a reload, the session replays every record whose id is not in its transcript, with the same id, so each message lands once.
+2. At each `agent_end`, the file drops the records the transcript holds, and it is removed when none is left.
+3. An abort leaves the messages in Pi's queue, and the next run delivers them. A kill after the abort loses the queue, and the reopen replays it from the file.
+4. pi-host calls `recoverInboxes()` once at start, which reopens every session that still has records, and calls `clearInbox()` after `clear_queue` and `abort_and_clear_queue`.
+5. The transcript decides what landed, because Pi writes a custom message to the session file only after the extensions' `message_end` handlers return.
+
 ## Other boxes
 
-A send to a root on another box needs three things that do not exist yet.
-1. pi-host has to publish its roots to prime-relay, as the chat service does for Prime's daemon today.
-2. prime-relay has to forward a `send_message` line to the host that holds the target and return the receipt.
-3. `src/members.ts` has to add the relay's roots as `remote` members, and `src/route.ts` has to send to them through the relay.
+A root on one box reaches a root on another box through that box's prime-relay, which tunnels `GET /v1/daemon` to the pi-host socket byte for byte, so `relay.mjs` needs no change.
+1. Each box runs a relay whose `daemonSocket` is its pi-host socket.
+2. `PI_AGENT_BUS_BOXES` names a JSON file `{"self": "<this box>", "boxes": [{"name", "url", "tokenFile"}]}`, and every box can share one file, since the entry named `self` is skipped.
+3. `src/members.ts` lists each other box's roots with a `list` line through its relay, and `src/route.ts` sends to one with a `send_message` line. The receipt gains `host` and `crossHost: true`, as Prime's cross-host receipts did, and the target box's pi-host delivers it with the header `[agent-message from sibling:<sender name>]`.
+4. A box that does not answer adds no roots, so a send to a root on it fails with `No sibling matches`.
+5. The live `~/.config/sieun-pi/hosts.json` points at Prime's relays on port 7790, so a cutover adds a pi-host relay per box and writes the boxes file from hosts.json's `address`, relay port and token.
 
 ## Tests
 
@@ -52,5 +63,8 @@ The step 3 check is 30 senders that send 20 messages each to one busy receiver, 
 1. `test/load.test.ts` runs it in-process, once with a busy receiver and once with sends spread over time.
 2. `test/host-load.test.ts` starts pi-host as its own process with this extension and `test/fixtures/busy.ts` loaded. It runs the load from 30 plain `pi` sessions on `PI_HOST_SOCKET` and from 30 socket clients with no sender session, then wakes a closed root.
 3. `test/host-closed.test.ts` wakes a closed child inside pi-host from its parent and from a socket client.
+4. `test/inbox.test.ts` kills and aborts busy receivers with queued messages and checks that each lands once.
+5. `test/host-crash.test.ts` kills pi-host with SIGKILL during a 30 x 20 burst, restarts it and checks that every accepted message lands once.
+6. `test/cross-box.test.ts` runs two pi-hosts behind two scratch relays as boxes a and b, with this process as box c, and runs the 30 x 20 load across boxes.
 
 Set `BUS_LOAD_SENDERS` and `BUS_LOAD_PER_SENDER` to change the load, `BUS_LOAD_OUT` to write each result as JSON, and `BUS_LOAD_ROOT` with `BUS_LOAD_KEEP=1` to keep the session files.

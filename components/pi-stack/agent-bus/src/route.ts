@@ -78,7 +78,7 @@ function endpointOf(member: Member, clientId?: string): Endpoint {
 
 async function deliverFrom(self: Member, targetRel: Relationship, target: Known, message: unknown, mode: DeliveryMode): Promise<Receipt> {
   const text = cleanText(message);
-  if (target.kind === "remote") return await hostSend({ target: target.member.id, message: text, mode, from: { id: self.id, name: self.name } });
+  if (target.kind === "remote") return await hostSend({ target: target.member.id, message: text, mode, from: { id: self.id, name: self.name }, route: target.route });
   const bus: BusMessage = { id: newMessageId(), from: { id: self.id, name: self.name, role: self.role }, text, mode, sentAt: Date.now() };
   const over = overLimits({ chars: text.length, pending: pendingCount(target.member.id), rateKey: `${self.id}->${target.member.id}` });
   const delivery = await deliverLocal(target, bus);

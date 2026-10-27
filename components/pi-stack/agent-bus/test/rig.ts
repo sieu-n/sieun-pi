@@ -1,4 +1,5 @@
-import { mkdirSync, readFileSync, existsSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createFauxCore, fauxAssistantMessage, fauxToolCall, type AssistantMessage } from "@earendil-works/pi-ai";
 import {
@@ -16,6 +17,7 @@ import agentBus from "../index.ts";
 process.env.PI_OFFLINE = "1";
 process.env.PI_TELEMETRY = "0";
 process.env.PI_SKIP_VERSION_CHECK = "1";
+process.env.PI_AGENT_BUS_INBOX ??= mkdtempSync(join(tmpdir(), "agent-bus-inbox-"));
 
 /**
  * A faux model that calls the `slow` tool when the newest user or agent message asks for "busy <ms>", and answers "ack" otherwise.

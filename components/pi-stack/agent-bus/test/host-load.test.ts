@@ -1,15 +1,14 @@
 import assert from "node:assert/strict";
-import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { after, before, test } from "node:test";
 import { HostClient } from "../../host/src/client.ts";
 import type { SessionSummary } from "../../host/src/protocol.ts";
 import { kernelHandler } from "../../shared/kernel-bridge.ts";
 import { body, runLoad, type LoadResult } from "./load.ts";
-import { landed, openAgent, until, type Opened } from "./rig.ts";
+import { startHost, type RunningHost } from "./host-rig.ts";
+import { landed, openAgent, type Opened } from "./rig.ts";
 
 /**
  * The step 3 check through pi-host. pi-host runs as its own process with pi-agent-bus and the busy fixture loaded, and this process plays
@@ -17,13 +16,11 @@ import { landed, openAgent, until, type Opened } from "./rig.ts";
  * socket clients that send `send_message` lines with no sender session.
  */
 
-const STACK = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const SENDERS = Number(process.env.BUS_LOAD_SENDERS ?? 30);
 const PER_SENDER = Number(process.env.BUS_LOAD_PER_SENDER ?? 20);
 
 let root: string;
-let host: ChildProcess;
-let hostLog = "";
+let host: RunningHost;
 let client: HostClient;
 const opened: Opened[] = [];
 
@@ -86,28 +83,18 @@ function assertClean(result: LoadResult): void {
 
 before(async () => {
   root = mkdtempSync(join(process.env.BUS_LOAD_ROOT ?? tmpdir(), "agent-bus-host-"));
-  for (const dir of ["agent", "sessions", "ws"]) mkdirSync(join(root, dir), { recursive: true });
-  const socket = join(root, "host.sock");
-  host = spawn(
-    process.execPath,
-    ["--import", "tsx", "host/src/main.ts", "--socket", socket, "--agent-dir", join(root, "agent"), "--session-dir", join(root, "sessions"), "--cwd", join(root, "ws"),
-      "--extension", "agent-bus/index.ts", "--extension", "agent-bus/test/fixtures/busy.ts", "--model", "busy/m", "--idle-unload-min", "0"],
-    { cwd: STACK, env: { ...process.env, PI_OFFLINE: "1", PI_TELEMETRY: "0", PI_SKIP_VERSION_CHECK: "1" }, stdio: ["ignore", "pipe", "pipe"] },
-  );
-  host.stdout!.on("data", chunk => (hostLog += chunk));
-  host.stderr!.on("data", chunk => (hostLog += chunk));
-  await until(() => existsSync(socket), 30_000, "pi-host socket");
-  client = await HostClient.connect(socket);
-  process.env.PI_HOST_SOCKET = socket;
+  host = await startHost(root);
+  client = await HostClient.connect(host.socket);
+  process.env.PI_HOST_SOCKET = host.socket;
 });
+
 
 after(async () => {
   delete process.env.PI_HOST_SOCKET;
   for (const s of opened) await s.runtime.dispose();
   client?.close();
-  host?.kill("SIGTERM");
-  await new Promise(resolve => host?.once("exit", resolve));
-  if (process.env.BUS_LOAD_OUT) writeFileSync(`${process.env.BUS_LOAD_OUT}-host.log`, hostLog);
+  await host?.stop();
+  if (process.env.BUS_LOAD_OUT) writeFileSync(`${process.env.BUS_LOAD_OUT}-host.log`, host?.log() ?? "");
   if (!process.env.BUS_LOAD_KEEP) rmSync(root, { recursive: true, force: true });
 });
 

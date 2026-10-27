@@ -30,6 +30,9 @@ export interface Receipt {
   deliveryMode: "steer" | "follow_up";
   /** Soft caps the send went over (owner rule c98). Absent when none. */
   overLimit?: string[];
+  /** The box that holds the target, for a send through another box's prime-relay. */
+  host?: string;
+  crossHost?: true;
 }
 
 export interface AgentMessageDetails {

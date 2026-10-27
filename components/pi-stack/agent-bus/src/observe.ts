@@ -45,6 +45,9 @@ export interface AgentRow {
   latestMessage?: Preview;
   relationship?: Relationship;
   repliedSinceTask?: boolean;
+  /** The box that holds a root reached through its prime-relay. */
+  host?: string;
+  crossHost?: true;
 }
 
 function partsText(content: unknown): string {
@@ -116,6 +119,7 @@ export function messagesOf(known: Known): AgentMessage[] {
     if (live) return contextOf(live.sessionManager.getEntries(), live.sessionManager.getLeafId());
     return known.entry.preview(50).map(p => ({ role: p.role, content: p.text, timestamp: p.timestamp }) as unknown as AgentMessage);
   }
+  if (known.kind === "remote" && known.root.box) return [];
   const file = known.kind === "dormant" ? known.row.sessionFile : known.root.sessionFile;
   if (!file) return [];
   try {
@@ -159,7 +163,10 @@ function row(known: Known, isCurrent: boolean, rel?: Relationship): AgentRow {
     };
   }
   if (known.kind === "remote") {
-    return { ...base, cwd: known.root.cwd, status: known.root.rosterStatus, isStreaming: known.root.rosterStatus === "running", queuedCount: 0, isSessionActive: known.root.rosterStatus !== "inactive" };
+    return {
+      ...base, cwd: known.root.cwd, status: known.root.rosterStatus, isStreaming: known.root.rosterStatus === "running", queuedCount: 0,
+      isSessionActive: known.root.rosterStatus !== "inactive", ...(known.root.box ? { host: known.root.box, crossHost: true as const } : {}),
+    };
   }
   const first = known.row.firstMessage ?? firstMessage(messagesOf(known));
   return { ...base, cwd: known.row.cwd, status: "inactive", isStreaming: false, queuedCount: 0, isSessionActive: false, ...(first ? { firstMessage: first } : {}) };

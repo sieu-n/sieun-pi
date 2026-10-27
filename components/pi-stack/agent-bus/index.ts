@@ -18,6 +18,7 @@ import { customMessage, endpoint, CUSTOM_TYPE } from "./src/message.ts";
 import { memberOf } from "./src/members.ts";
 import { getAgent, listAgents, messageText, messagesOf, recentMessages } from "./src/observe.ts";
 import { send } from "./src/route.ts";
+import { keepUnlanded, landedIds, record } from "./src/inbox.ts";
 import { state, type Activity, type LiveSession } from "./src/state.ts";
 
 export const SKILLS_DIR = join(dirname(fileURLToPath(import.meta.url)), "skills");
@@ -49,7 +50,7 @@ export default function agentBus(pi: ExtensionAPI): void {
 
   pi.on("resources_discover", () => ({ skillPaths: [SKILLS_DIR] }));
 
-  pi.on("session_start", (_event, startCtx) => {
+  pi.on("session_start", (event, startCtx) => {
     shutdown();
     ctx = startCtx;
     const sm = startCtx.sessionManager;
@@ -65,11 +66,11 @@ export default function agentBus(pi: ExtensionAPI): void {
       const sender = senderMember(bus);
       const rel = sender ? relationship(self, sender) : undefined;
       const idle = ctx.isIdle();
+      const message = customMessage(bus, rel, endpoint(self.id, self.name, self.role));
+      const deliverAs = bus.mode === "follow_up" ? "followUp" : "steer";
+      record({ id: bus.id, sessionId: id, sessionFile: sm.getSessionFile(), deliverAs, message, at: Date.now() });
       if (!idle) live.pending.add(bus.id);
-      pi.sendMessage(customMessage(bus, rel, endpoint(self.id, self.name, self.role)), {
-        triggerTurn: true,
-        deliverAs: bus.mode === "follow_up" ? "followUp" : "steer",
-      });
+      pi.sendMessage(message, { triggerTurn: true, deliverAs });
       return idle ? "started" : "queued";
     };
 
@@ -92,6 +93,19 @@ export default function agentBus(pi: ExtensionAPI): void {
           }),
     };
     registry.register(entry);
+
+    if (event.reason !== "reload") {
+      const replay = keepUnlanded(id, landedIds(sm.getEntries()));
+      if (replay.length > 0) {
+        setImmediate(() => {
+          if (sessionId !== id) return;
+          for (const rec of replay) {
+            if (!ctx!.isIdle()) live.pending.add(rec.id);
+            pi.sendMessage(rec.message, { triggerTurn: true, deliverAs: rec.deliverAs });
+          }
+        });
+      }
+    }
 
     cleanup.push(
       registerKernelHandler(id, "agent_message.send", payload => send(id, payload)),
@@ -116,8 +130,12 @@ export default function agentBus(pi: ExtensionAPI): void {
   pi.on("tool_execution_end", () => {
     tools = Math.max(0, tools - 1);
   });
-  pi.on("agent_end", () => {
+  pi.on("agent_end", (_event, endCtx) => {
     tools = 0;
+    if (!sessionId) return;
+    const id = sessionId;
+    const sm = endCtx.sessionManager;
+    setImmediate(() => keepUnlanded(id, landedIds(sm.getEntries())));
   });
   pi.on("message_start", event => {
     const m = event.message as { role?: string; customType?: string; details?: { id?: unknown } };

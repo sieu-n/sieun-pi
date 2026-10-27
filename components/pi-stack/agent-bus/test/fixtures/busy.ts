@@ -1,11 +1,14 @@
 /**
  * A test extension for pi-host rigs: the `busy/m` faux model calls the `slow` tool when the newest user message asks for "busy <ms>", and
- * answers "ack" otherwise. The `slow` tool sleeps for that long, so a test can send into a busy receiver.
+ * answers "ack" otherwise. The `slow` tool sleeps for that long, so a test can send into a busy receiver. A user message
+ * "send <name> <text>" makes the model call `bus_send`, which runs this session's `agent_message.send` to the sibling <name>, so a test can
+ * make a session inside pi-host send.
  */
 
 import { createFauxCore, fauxAssistantMessage, fauxToolCall, type AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { kernelHandler } from "../../../shared/kernel-bridge.ts";
 
 const core = createFauxCore({ api: "busy-api", provider: "busy", tokensPerSecond: 100_000, models: [{ id: "m" }] });
 
@@ -15,6 +18,9 @@ const reply = (context: { messages: { role: string; content: unknown }[] }): Ass
   const text = typeof last?.content === "string" ? last.content : JSON.stringify(last?.content ?? "");
   const busy = last?.role === "user" ? /busy (\d+)/.exec(text) : null;
   if (busy) return fauxAssistantMessage(fauxToolCall("slow", { ms: Number(busy[1]) }), { stopReason: "toolUse" });
+  const userText = last?.role === "user" && typeof last.content !== "string" ? (last.content as { type: string; text?: string }[]).map(p => p.text ?? "").join("") : String(last?.content ?? "");
+  const send = last?.role === "user" ? /^send (\S+) ([\s\S]+)$/.exec(userText) : null;
+  if (send) return fauxAssistantMessage(fauxToolCall("bus_send", { to: send[1], message: send[2] }), { stopReason: "toolUse" });
   return fauxAssistantMessage("ack");
 };
 
@@ -39,6 +45,19 @@ const busyFixture: ExtensionFactory = pi => {
     async execute(_id, params) {
       await new Promise(resolve => setTimeout(resolve, (params as { ms: number }).ms));
       return { content: [{ type: "text", text: "slept" }], details: {} };
+    },
+  });
+  pi.registerTool({
+    name: "bus_send",
+    label: "bus_send",
+    description: "Sends an agent message to a sibling.",
+    parameters: Type.Object({ to: Type.String(), message: Type.String() }),
+    async execute(_id, params, _signal, _update, ctx) {
+      const { to, message } = params as { to: string; message: string };
+      const handler = kernelHandler(ctx.sessionManager.getSessionId(), "agent_message.send");
+      if (!handler) throw new Error("agent_message.send is not registered in this session");
+      const receipt = await handler({ message, receiver_role: "sibling", receiver_name: to });
+      return { content: [{ type: "text", text: JSON.stringify(receipt) }], details: receipt };
     },
   });
 };
