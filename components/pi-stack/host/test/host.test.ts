@@ -12,6 +12,7 @@ import { lockPathOf } from "../src/lease.ts";
 import type { SessionSummary } from "../src/protocol.ts";
 import { listen } from "../src/server.ts";
 import echo from "./fixtures/echo.ts";
+import { fauxProvider } from "../../test/faux.ts";
 
 process.env.PI_OFFLINE = "1";
 process.env.PI_TELEMETRY = "0";
@@ -146,8 +147,12 @@ test("kill keeps the session restorable, and a prompt or send_message reopens it
   const summary = await create({ name: "sleeper" });
   const id = summary.activeSessionId;
   await promptAndWait(id, "remember me");
+  const events: string[] = [];
+  const stop = hostApi()!.onEvent(event => { if (event.type !== "session_event" && event.sessionId === id) events.push(`${event.type}:${"reason" in event ? event.reason : ""}`); });
   await client.call({ type: "kill", activeSessionId: id });
   assert.equal(host.sessions.has(id), false);
+  stop();
+  assert.deepEqual(events, ["closing:killed", "closed:killed"]);
   assert.equal(existsSync(lockPathOf(summary.sessionFile!)), false, "kill releases the lockfile");
   const listed = await client.call<{ sessions: SessionSummary[] }>({ type: "list", all: true });
   assert.equal(listed.sessions.find(row => row.sessionId === id)?.rosterStatus, "inactive");
@@ -233,5 +238,34 @@ test("idle unload disposes an idle session with no client and a prompt restores 
     assert.equal(idle.sessions.get(id)!.session.getLastAssistantText(), "echo: after unload");
   } finally {
     await idle.shutdown();
+  }
+});
+
+test("a new session with no model asked gets the host default over the agent dir's default, and a reopened one keeps its own", async () => {
+  const agentDir = join(root, "agent-default");
+  mkdirSync(agentDir, { recursive: true });
+  writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ defaultProvider: "other", defaultModel: "m" }));
+  const other = fauxProvider("other", "m");
+  const make = (defaultModel: { provider: string; id: string }) => new PiHost({
+    agentDir, sessionDir: join(root, "sessions-default"), defaultCwd: join(root, "ws"), extensionFactories: [echo, other.factory], defaultModel,
+    resourceLoaderOptions: { noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true }, log: () => {},
+  });
+  const first = make({ provider: "echo", id: "m" });
+  let file: string | undefined;
+  try {
+    const session = await first.openSession({});
+    assert.equal(session.session.model?.provider, "echo");
+    await first.startPrompt(session, "pin the model");
+    await session.session.waitForIdle();
+    file = session.session.sessionFile;
+  } finally {
+    await first.shutdown();
+  }
+  const second = make({ provider: "other", id: "m" });
+  try {
+    const reopened = await second.openSession({ sessionPath: file });
+    assert.equal(reopened.session.model?.provider, "echo");
+  } finally {
+    await second.shutdown();
   }
 });

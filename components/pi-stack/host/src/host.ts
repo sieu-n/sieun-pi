@@ -230,8 +230,11 @@ export class PiHost implements HostApi {
         onError: error => this.extensionError(session, error),
         shutdownHandler: () => { void this.kill(session.id); },
       });
-      if (!runtime.session.model && this.options.defaultModel) {
-        const model = runtime.services.modelRuntime.getModel(this.options.defaultModel.provider, this.options.defaultModel.id);
+      // A new session with no model asked gets the host's default even when an extension or settings picked another; a reopened one keeps its own.
+      const wantsDefault = !runtime.session.model || (!request.sessionPath && !(request.provider && request.model));
+      const fallback = this.options.defaultModel;
+      if (wantsDefault && fallback && (runtime.session.model?.provider !== fallback.provider || runtime.session.model?.id !== fallback.id)) {
+        const model = runtime.services.modelRuntime.getModel(fallback.provider, fallback.id);
         if (model) await runtime.session.setModel(model);
       }
       if (request.name && request.name !== runtime.session.sessionName) runtime.session.setSessionName(request.name);
@@ -253,8 +256,10 @@ export class PiHost implements HostApi {
         cwd, agentDir, extensionFlagValues: flags,
         resourceLoaderOptions: { ...options.resourceLoaderOptions, additionalExtensionPaths: options.extensions ?? [], extensionFactories: [schedulerExtension, ...options.extensionFactories ?? []] },
       });
-      const model = request.provider && request.model ? services.modelRuntime.getModel(request.provider, request.model) : undefined;
-      if (request.provider && request.model && !model) throw new Error(`Unknown model ${request.provider}/${request.model}.`);
+      const asked = request.provider && request.model;
+      const model = asked ? services.modelRuntime.getModel(request.provider!, request.model!)
+        : !request.sessionPath && options.defaultModel ? services.modelRuntime.getModel(options.defaultModel.provider, options.defaultModel.id) : undefined;
+      if (asked && !model) throw new Error(`Unknown model ${request.provider}/${request.model}.`);
       const created = await createAgentSessionFromServices({ services, sessionManager, sessionStartEvent, model, thinkingLevel: request.thinking });
       return { ...created, services, diagnostics: services.diagnostics };
     };
@@ -356,6 +361,7 @@ export class PiHost implements HostApi {
     const file = session.session.sessionFile;
     const sinks = [...session.sinks.values()];
     const firstMessage = session.summary().firstMessage;
+    this.emitHost({ type: "closing", sessionId, reason });
     try { await session.dispose(); } catch (error) { this.log(`dispose ${sessionId.slice(0, 8)} threw: ${String(error)}`); }
     if (session.realPath) this.leases.release(session.realPath);
     for (const sink of sinks) sink.write({ type: "session_closed", activeSessionId: sessionId, reason: reason === "shutdown" ? "shutdown" : "killed" });

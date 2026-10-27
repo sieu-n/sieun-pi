@@ -40,6 +40,8 @@ export interface HostSessionInfo {
 
 export type HostEvent =
   | { type: "opened"; sessionId: string }
+  /** Sent before the host disposes a session, so an extension can detach work that should outlive the host (pi-rlm's kernel on "shutdown"). */
+  | { type: "closing"; sessionId: string; reason: "killed" | "idle_unload" | "shutdown" }
   | { type: "closed"; sessionId: string; reason: "killed" | "idle_unload" | "shutdown" }
   | { type: "session_event"; sessionId: string; event: { type: string; [key: string]: unknown } };
 
