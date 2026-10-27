@@ -48,7 +48,7 @@ class SocketConnection implements Connection {
       return;
     }
     try {
-      const response = await this.host.handle(parsed.command, this);
+      const response = await this.host.handle(parsed.command, this, parsed.clientId);
       if (response) this.write(response);
     } catch (error) {
       this.write(fail(parsed.id, parsed.command.type, error));

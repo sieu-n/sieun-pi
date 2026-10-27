@@ -83,7 +83,9 @@ export type HostCommand =
   | (Session & { type: "resume_queue" })
   | (Session & { type: "append_custom_message"; message: { customType: string; content: string | (TextContent | ImageContent)[]; display: boolean; details?: unknown } })
   | (Session & { type: "mutate_queued_message"; lane: QueueLane; index: number; expectedText: string; mutation: QueueMutation })
-  | { id?: string; type: "send_message"; targetActiveSessionId: string; message: string; fromActiveSessionId?: string; agentOrigin?: boolean; deliveryMode?: MessageDeliveryMode }
+  | { id?: string; type: "send_message"; targetActiveSessionId: string; message: string; fromActiveSessionId?: string; agentOrigin?: boolean; deliveryMode?: MessageDeliveryMode; fromName?: string;
+      /** Repeats with the same key deliver once; pi-agent-bus keeps the dedupe durable. Envelopes default it to `<clientId>:<id>`. */
+      idempotencyKey?: string }
   | (Session & { type: "get_state" | "get_connection_state" | "get_messages" | "get_queue" | "get_session_stats" | "get_commands" | "get_model_catalog"
       | "get_available_models" | "get_session_header" | "get_session_context" | "get_last_assistant_text" | "get_system_prompt" | "get_rlm_children" | "wait_for_idle" })
   | (Session & { type: "set_model"; provider: string; modelId: string })

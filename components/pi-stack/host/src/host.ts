@@ -89,7 +89,7 @@ function saved(info: { path: string; id: string; cwd: string; name?: string; par
   return { ...info, created: info.created.toISOString(), modified: info.modified.toISOString() };
 }
 
-let busRoute: Promise<{ sendFromClient?: (input: { target: string; message: string; mode?: string; clientId?: string; from?: { id: string; name: string } }) => Promise<unknown> } | undefined> | undefined;
+let busRoute: Promise<{ sendFromClient?: (input: { target: string; message: string; mode?: string; clientId?: string; from?: { id: string; name: string }; idempotencyKey?: string }) => Promise<unknown> } | undefined> | undefined;
 function loadBusRoute() {
   busRoute ??= import(new URL("../../agent-bus/src/route.ts", import.meta.url).href).catch(() => undefined);
   return busRoute;
@@ -477,12 +477,13 @@ export class PiHost implements HostApi {
   }
 
   /** Answers one command. Returns undefined when the handler wrote its own response, as attach does before its snapshot chunks. */
-  async handle(command: HostCommand, connection: Connection): Promise<Response | undefined> {
+  /** `envelopeClientId` is the `clientId` of a v7 command envelope, which stays the same when a client retries on a new connection. */
+  async handle(command: HostCommand, connection: Connection, envelopeClientId?: string): Promise<Response | undefined> {
     const id = command.id;
     const type = command.type as string;
     if (!HOST_COMMANDS.has(command.type)) return fail(id, type, unknownCommand(type));
     try {
-      return await this.dispatch(command, connection);
+      return await this.dispatch(command, connection, envelopeClientId);
     } catch (error) {
       if (error instanceof SessionLockedError) {
         const holder = error.inHost ? error.holder?.sessionId : undefined;
@@ -494,7 +495,7 @@ export class PiHost implements HostApi {
     }
   }
 
-  private async dispatch(command: HostCommand, connection: Connection): Promise<Response | undefined> {
+  private async dispatch(command: HostCommand, connection: Connection, envelopeClientId?: string): Promise<Response | undefined> {
     const id = command.id;
     const done = (data?: unknown) => ok(id, command.type, data);
     switch (command.type) {
@@ -642,7 +643,7 @@ export class PiHost implements HostApi {
       case "mutate_queued_message":
         return done({ status: await this.mutateQueue(await this.target(command), command) });
       case "send_message":
-        return done(await this.sendMessage(command, connection));
+        return done(await this.sendMessage(command, connection, envelopeClientId));
       case "get_state":
         return done((await this.target(command)).summary());
       case "get_connection_state":
@@ -828,14 +829,17 @@ export class PiHost implements HostApi {
     return "applied";
   }
 
-  private async sendMessage(command: Extract<HostCommand, { type: "send_message" }>, connection: Connection): Promise<unknown> {
+  private async sendMessage(command: Extract<HostCommand, { type: "send_message" }>, connection: Connection, envelopeClientId?: string): Promise<unknown> {
+    // A connection's own clientId is random, so only a key the client chose, or its envelope clientId plus command id, survives a retry after a host restart.
+    const idempotencyKey = typeof command.idempotencyKey === "string" ? command.idempotencyKey
+      : envelopeClientId && command.id ? `${envelopeClientId}:${command.id}` : undefined;
     const target = command.targetActiveSessionId;
     const fromId = command.fromActiveSessionId;
     const fromName = (command as { fromName?: string }).fromName ?? (fromId ? registry.get(fromId)?.name ?? this.sessions.get(fromId)?.identity.name ?? fromId.slice(0, 8) : undefined);
     if (!registry.get(target)) await this.ensure(target);
     const route = registry.get(target) ? await loadBusRoute() : undefined;
     if (route?.sendFromClient) {
-      return route.sendFromClient({ target, message: command.message, mode: command.deliveryMode, clientId: connection.clientId, ...(fromId ? { from: { id: fromId, name: fromName! } } : {}) });
+      return route.sendFromClient({ target, message: command.message, mode: command.deliveryMode, clientId: connection.clientId, ...(fromId ? { from: { id: fromId, name: fromName! } } : {}), ...(idempotencyKey ? { idempotencyKey } : {}) });
     }
     const fromEntry = fromId ? registry.get(fromId) : undefined;
     const message: BusMessage = {
