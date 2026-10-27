@@ -4,5 +4,28 @@
   "private": true,
   "type": "module",
   "description": "Continual harness for Pi: harness_state.json digest injection, /refine, auto-refine and rollback.",
-  "license": "SEE LICENSE IN ../../NOTICE"
+  "license": "SEE LICENSE IN ../../NOTICE",
+  "exports": {
+    ".": "./src/pi/index.ts"
+  },
+  "pi": {
+    "extensions": [
+      "./src/pi/index.ts"
+    ]
+  },
+  "scripts": {
+    "test": "node --import tsx --test --test-force-exit \"test/*.test.ts\""
+  },
+  "dependencies": {
+    "@sieun-pi/pi-family": "0.1.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-agent-core": "*",
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@sieun-pi/pi-rlm": "0.1.0",
+    "@sieun-pi/pi-testkit": "0.1.0"
+  }
 }

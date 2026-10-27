@@ -10,10 +10,10 @@ const root = mkdtempSync(join(tmpdir(), "pi-harness-ext-"));
 process.env.PI_CODING_AGENT_DIR = join(root, "agent");
 
 const { fauxProvider, openRuntime } = await import("@sieun-pi/pi-testkit/faux");
-const { createHarnessExtension } = await import("../index.ts");
+const { createHarnessExtension } = await import("../src/pi/index.ts");
 const { kernelHandler } = await import("@sieun-pi/pi-family/kernel-bridge");
-const { readState, updateState } = await import("../src/store.ts");
-const { PLANNER_PROMPT, REVIEW_PROMPT } = await import("../src/prompts.ts");
+const { readState, updateState } = await import("../src/core/store.ts");
+const { PLANNER_PROMPT, REVIEW_PROMPT } = await import("../src/core/prompts.ts");
 
 interface Seen { system: string; text: string }
 

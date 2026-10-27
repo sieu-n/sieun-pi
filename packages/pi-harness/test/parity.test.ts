@@ -5,9 +5,9 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { mergeStates, readState, type HarnessState } from "../src/store.ts";
-import { buildDelta, buildDigest, fingerprint, plannerOverview, queryTermsOf } from "../src/digest.ts";
-import { applyProposal, historyText, invalidEdit, noticeBody, parseProposal, parseRefineArgs, parseReview, rollbackProposal, type RefineResult } from "../src/refine.ts";
+import { mergeStates, readState, type HarnessState } from "../src/core/store.ts";
+import { buildDelta, buildDigest, fingerprint, plannerOverview, queryTermsOf } from "../src/core/digest.ts";
+import { applyProposal, historyText, invalidEdit, noticeBody, parseProposal, parseRefineArgs, parseReview, rollbackProposal, type RefineResult } from "../src/core/refine.ts";
 
 const fx = join(import.meta.dirname, "fixtures");
 const gold = JSON.parse(readFileSync(join(fx, "prime-parity.json"), "utf8"));

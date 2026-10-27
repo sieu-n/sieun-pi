@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
-import { readState, stateFile, updateState } from "../src/store.ts";
+import { readState, stateFile, updateState } from "../src/core/store.ts";
 
 const repo = resolve(import.meta.dirname, "../../..");
 const syncPy = join(repo, "components/prime-sync/sync.py");
@@ -52,7 +52,7 @@ test("the vendored harness.py and pi-harness share one lock, so 4 Python and 4 T
   const dir = mkdtempSync(join(tmpdir(), "pi-harness-mixed-"));
   try {
     const { spawn } = await import("node:child_process");
-    const ts = `import { updateState } from ${JSON.stringify(new URL("../src/store.ts", import.meta.url).href)};
+    const ts = `import { updateState } from ${JSON.stringify(new URL("../src/core/store.ts", import.meta.url).href)};
       for (let i = 0; i < 25; i++) await updateState(${JSON.stringify(dir)}, "global", s => { const id = process.argv[1] + "_" + i; s.entries.memory[id] = { id, kind: "memory", title: id, content: "c", path: "general", scope: "global", reference: {}, arguments: {}, metadata: {}, source: "agent", created_at: "", updated_at: "", version: 1 }; });`;
     const py = `import importlib.util, sys
 spec = importlib.util.spec_from_file_location("harness", sys.argv[1]); h = importlib.util.module_from_spec(spec); sys.modules["harness"] = h; spec.loader.exec_module(h)

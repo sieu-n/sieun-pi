@@ -1,7 +1,29 @@
 # pi-harness
 
 pi-harness is Prime Agent's continual harness as an upstream Pi extension, build step 4 of `packages`.
-Load it with `pi -e packages/pi-harness/index.ts`, or as the factory `createHarnessExtension()` in pi-host.
+It loads as the factory `createHarnessExtension()` in pi-host, or on its own into stock Pi.
+
+## Install alone into stock Pi
+
+pi-harness needs only the session and its store, so it works with no other sieun-pi package loaded.
+It imports `@sieun-pi/pi-family`, which resolves from the `packages/` workspace, so run `npm ci` in `packages/` once first.
+
+```sh
+cd packages && npm ci
+pi install ./packages/pi-harness      # adds it to Pi's settings, loads src/pi/index.ts in place
+pi -e ./packages/pi-harness           # one run only, no settings change
+```
+
+Without pi-rlm the digest and `/refine` work the same, and the kernel's `refine.*` calls simply have no kernel to come from.
+
+## Layout
+
+| Path | What it holds |
+|---|---|
+| `src/pi/index.ts` | The stock Pi extension: the digest hooks, `/refine`, auto-refine and the kernel's `refine.*` handlers. |
+| `src/core/` | The store, digest, refine planner and review, conversation fitting and file lock, with no extension API in them. |
+| `skills/refine/` | Prime's kernel skill, returned from `resources_discover`. |
+| `test/` | The package tests, with pi-rlm and pi-testkit as dev dependencies. |
 
 ## What it does
 
@@ -26,8 +48,8 @@ The measurements are in `~/work/pi-migration-build/step-4/`.
 ## Tests
 
 ```sh
-cd packages
-node --import tsx --test --test-force-exit "pi-harness/test/*.test.ts"
+cd packages/pi-harness
+npm test
 ```
 
 `test/parity.test.ts` compares the digest, delta, fingerprint, planner text, edit checks, apply and rollback with the output of Prime's own bundled functions, and `PROVENANCE.md` lists what came from the Prime release.

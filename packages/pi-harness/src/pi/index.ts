@@ -18,8 +18,8 @@ import {
   updateState,
   type HarnessState,
   type Scope,
-} from "./src/store.ts";
-import { buildDelta, buildDigest, buildQueryTerms, digestMessageContent, fingerprint, updateMessageContent, type DigestOptions } from "./src/digest.ts";
+} from "../core/store.ts";
+import { buildDelta, buildDigest, buildQueryTerms, digestMessageContent, fingerprint, updateMessageContent, type DigestOptions } from "../core/digest.ts";
 import {
   applyProposal,
   autoRefineInstructions,
@@ -46,8 +46,8 @@ import {
   type RefineProposal,
   type RefineResult,
   type RefineSource,
-} from "./src/refine.ts";
-import { conversationText, fitPrompt } from "./src/conversation.ts";
+} from "../core/refine.ts";
+import { conversationText, fitPrompt } from "../core/conversation.ts";
 
 /**
  * pi-harness: Prime's continual harness as a Pi extension.
@@ -130,7 +130,7 @@ export interface HarnessExtensionOptions {
   complete?: (model: Model<Api>, systemPrompt: string, prompt: string, maxTokens: number, signal?: AbortSignal) => Promise<string>;
 }
 
-const skillsDir = join(dirname(fileURLToPath(import.meta.url)), "skills");
+const skillsDir = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "skills");
 
 function textOf(message: AgentMessage): string {
   const content = (message as { content?: unknown }).content;

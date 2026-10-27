@@ -4,7 +4,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, st
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { agentDir, globalHarnessDir, mergeStates, readState, stateFile, updateState } from "../src/store.ts";
+import { agentDir, globalHarnessDir, mergeStates, readState, stateFile, updateState } from "../src/core/store.ts";
 
 const temp = () => mkdtempSync(join(tmpdir(), "pi-harness-store-"));
 const deadPid = () => Number(spawnSync(process.execPath, ["-e", "process.stdout.write(String(process.pid))"], { encoding: "utf8" }).stdout);
@@ -76,7 +76,7 @@ test("a lock left by a dead process is cleared, and a live owner's lock is waite
 test("eight processes that write the same store at once lose no entry", async () => {
   const dir = temp();
   try {
-    const worker = `import { updateState } from ${JSON.stringify(new URL("../src/store.ts", import.meta.url).href)};
+    const worker = `import { updateState } from ${JSON.stringify(new URL("../src/core/store.ts", import.meta.url).href)};
       const id = process.argv[1];
       for (let i = 0; i < 20; i++) await updateState(${JSON.stringify(dir)}, "global", s => {
         s.entries.memory[id + "_" + i] = { id: id + "_" + i, kind: "memory", title: "t", content: "c", path: "general", scope: "global", reference: {}, arguments: {}, metadata: {}, source: "agent", created_at: "", updated_at: "", version: 1 };

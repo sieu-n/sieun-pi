@@ -7,9 +7,9 @@ The work was done on 2026-10-27.
 ## What came from where
 
 1. `skills/refine/` is a copy of the release's `skills/refine/` (`SKILL.md`, `pyproject.toml`, `src/refine/__init__.py`), unchanged.
-2. `src/prompts.ts` holds the planner prompt (`_Fn`) and the auto-refine review prompt (`SFn`), copied as text from the JavaScript bundle inside the release's `prime-agent` binary.
-3. `src/digest.ts`, `src/refine.ts`, `src/conversation.ts` and `src/store.ts` are TypeScript rewrites of the bundle's functions `qFn`, `jFn`, `JFn`, `GFn`, `VFn`, `YFn`, `UFn`, `eUn`, `IZs`, `iUn`, `mZs`, `EZs`, `gZs`, `BR`, `get`, `vI` and `$Fn`, and of the host's `_nextHarnessDigestMessage`, `_maybeAutoRefine` and `handleRefineHostRequest` methods.
-4. `src/store.ts` keeps the file format and path rules of the release's `prime-agent-runtime/src/rlm/harness.py`.
+2. `src/core/prompts.ts` holds the planner prompt (`_Fn`) and the auto-refine review prompt (`SFn`), copied as text from the JavaScript bundle inside the release's `prime-agent` binary.
+3. `src/core/digest.ts`, `src/core/refine.ts`, `src/core/conversation.ts` and `src/core/store.ts` are TypeScript rewrites of the bundle's functions `qFn`, `jFn`, `JFn`, `GFn`, `VFn`, `YFn`, `UFn`, `eUn`, `IZs`, `iUn`, `mZs`, `EZs`, `gZs`, `BR`, `get`, `vI` and `$Fn`, and of the host's `_nextHarnessDigestMessage`, `_maybeAutoRefine` and `handleRefineHostRequest` methods.
+4. `src/core/store.ts` keeps the file format and path rules of the release's `prime-agent-runtime/src/rlm/harness.py`.
 5. `test/fixtures/prime-parity.json` is the output of the bundle's own functions on `test/fixtures/global` and `test/fixtures/local`, made by the generator in `~/work/pi-migration-build/step-4/parity/`.
 
 ## Source file hashes
