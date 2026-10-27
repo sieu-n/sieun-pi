@@ -1,5 +1,6 @@
 import contextlib
 import fcntl
+import hashlib
 import importlib.machinery
 import importlib.util
 import io
@@ -112,7 +113,7 @@ FAKE = textwrap.dedent(
                 sys.exit(0)
             status("skipped", message="No running daemon needed to be restarted", counts={"total": 0, "restored": 0, "resumed": 0, "failed": 0})
             sys.exit(0)
-        if mode in ("stuck-stop", "refusing"):
+        if mode in ("stuck-stop", "refusing", "cancelled", "stuck-queued"):
             # 10-27 on us-metal02: the predecessor took the shutdown and never finished it, and the coordinator restored
             # every planned session into it, each refused as preparing after a 120 s wait.
             old = int(open(os.environ["FAKE_PIDS"]).read().split()[-1])
@@ -126,6 +127,35 @@ FAKE = textwrap.dedent(
             recoveries = manifest[:-len(".json")] + ".recoveries"
             counts = {"total": total, "restored": 0, "resumed": 0, "failed": 0}
             status("preparing", counts=counts, predecessor={"pid": old})
+            if mode == "cancelled":
+                # Prime f2d4ec7 and chat-057a's follow-up: the predecessor never accepts the shutdown. The coordinator's connection
+                # closes (SIGUSR2 to the fake supervisor here), on its own after the refusal or when the coordinator dies, the
+                # predecessor cancels its prepared phase, and the coordinator reports phase cancelled after its 10 s stop wait.
+                import signal
+                def closed(*_):
+                    os.kill(old, signal.SIGUSR2)
+                    sys.exit(1)
+                signal.signal(signal.SIGTERM, closed)
+                status("stopping", counts=counts, predecessor={"pid": old})
+                time.sleep(float(os.environ.get("FAKE_REFUSAL_SECONDS", "0")))
+                signal.signal(signal.SIGTERM, signal.SIG_DFL)
+                os.kill(old, signal.SIGUSR2)
+                time.sleep(float(os.environ.get("FAKE_STOP_WAIT", "1")))
+                status("cancelled", message=f"The predecessor daemon on {sock} did not accept the shutdown; it cancelled the update and restores its own sessions", counts=counts)
+                sys.exit(1)
+            if mode == "stuck-queued":
+                # Prime f2d4ec7: an accepted shutdown that outlives the 10 s wait. The coordinator restores nothing into the
+                # predecessor, queues every prepared session as a pending recovery record, keeps the manifest and fails.
+                status("stopping", counts=counts, predecessor={"pid": old})
+                os.kill(old, 10)
+                time.sleep(float(os.environ.get("FAKE_STOP_WAIT", "1")))
+                os.makedirs(recoveries, exist_ok=True)
+                for n in range(total):
+                    with open(os.path.join(recoveries, f"{n}.json"), "w") as f:
+                        json.dump({"formatVersion": 1, "updateId": f"2026-10-27T08:47:11.045Z:a{n}", "manifestCreatedAt": "2026-10-27T08:47:11.045Z", "session": {"activeSessionId": f"a{n}", "sessionFile": f"/s/{n}.jsonl"},
+                                   "admission": "never_admitted", "attempts": [], "state": {"status": "pending"}}, f)
+                status("failed", message=f"Could not stop the predecessor daemon on {sock}", counts=counts)
+                sys.exit(1)
             if mode == "stuck-stop":
                 status("stopping", counts=counts, predecessor={"pid": old})
                 os.kill(old, 10)
@@ -237,6 +267,20 @@ FAKE = textwrap.dedent(
         signal.signal(signal.SIGTERM, signal.SIG_IGN if os.environ["FAKE_STUCK"] == "hard" else dies)
     if os.environ.get("FAKE_STUCK"):
         signal.signal(signal.SIGUSR1, shutdown_that_hangs)
+    # SIGUSR2 is the coordinator's connection closing without an accepted shutdown. With FAKE_CANCELS the supervisor is
+    # Prime f2d4ec7's cancelPreparedUpdateRestart: it queues each manifest session as a pending recovery record, deletes the
+    # manifest and serves again. Without it, it is an f48fb6fd supervisor, which keeps its prepared phase.
+    def cancel(*_):
+        signalled("CANCEL")
+        manifest = os.path.join(os.environ["PRIME_AGENT_CODING_AGENT_DIR"], "daemon-update-restarts", hashlib.sha256(sock.encode()).hexdigest() + ".json")
+        plan = json.load(open(manifest))
+        recoveries = manifest[:-len(".json")] + ".recoveries"
+        os.makedirs(recoveries, exist_ok=True)
+        for n, s in enumerate(plan["sessions"]):
+            with open(os.path.join(recoveries, f"{n}.json"), "w") as f:
+                json.dump({"formatVersion": 1, "updateId": f"{plan['createdAt']}:{s['activeSessionId']}", "session": s, "state": {"status": "pending"}}, f)
+        os.remove(manifest)
+    signal.signal(signal.SIGUSR2, cancel if os.environ.get("FAKE_CANCELS") else signal.SIG_IGN)
     hello = {"type": "daemon_hello", "protocol": {"version": 7}, "supervisorPid": os.getpid(), "supervisorSocketPath": sock}
     while True:
         conn, _ = server.accept()
@@ -660,6 +704,60 @@ class DaemonCtlTest(unittest.TestCase):
         self.assertNotIn("sent SIG", out)
         self.assertEqual(old.wait(timeout=5), -signal.SIGUSR1)
         self.assertEqual(self.pid_in_file(), self.successor_pid())
+
+    def manifest(self):
+        return Path(self.env["PRIME_AGENT_CODING_AGENT_DIR"]) / "daemon-update-restarts" / f"{hashlib.sha256(self.sock.encode()).hexdigest()}.json"
+
+    def test_a_predecessor_that_never_accepted_the_shutdown_restores_its_own_sessions_and_gets_no_signal(self):
+        # Prime f2d4ec7 and chat-057a's follow-up on 10-28: a shutdown the predecessor never accepts closes the coordinator's
+        # connection, the predecessor cancels its prepared phase, queues the manifest as pending recovery records, deletes the
+        # manifest and restores them itself, and the coordinator ends in phase cancelled with no 'Could not stop' text. Its
+        # stop wait is 10 s and usually ends near 11 s, but a slow shutdown answer or session list can run past the ctl's 15 s
+        # clock ("past"), and a refusal can still be in flight when the clock fires ("slow-refusal", where the ctl's stop of
+        # the coordinator is what closes the connection).
+        for case, extra in (("in-time", {"FAKE_STOP_WAIT": "1"}), ("past", {"FAKE_STOP_WAIT": "4"}),
+                            ("slow-refusal", {"FAKE_REFUSAL_SECONDS": "5", "FAKE_STOP_WAIT": "1"})):
+            with self.subTest(case=case):
+                self.kill_fakes()
+                signals = self.dir / f"signals-{case}"
+                old = self.serve(FAKE_CANCELS="1", FAKE_SIGNALS=str(signals))
+                code, out, _ = self.update_in_process(FAKE_UPDATE_MODE="cancelled", FAKE_SESSIONS="3", **extra)
+                self.assertEqual(signals.read_text().split()[0::2], ["CANCEL"], out)
+                self.assertIsNone(old.poll(), out)
+                self.assertNotIn("sent SIG", out)
+                self.assertFalse(self.manifest().exists())
+                self.assertEqual(len(self.recoveries()), 3, "the predecessor's pending records stay for its own sweep")
+                self.assertIn("result=update-cancelled", out)
+                self.assertEqual(code, 5, out)
+                self.assertEqual(self.pid_in_file(), old.pid)
+
+    def test_a_cancelled_coordinator_whose_predecessor_kept_its_prepared_phase_ends_it_and_restores_the_manifest(self):
+        # A mixed update: Prime f2d4ec7's coordinator over an f48fb6fd predecessor, which never cancels a prepared phase, so the
+        # manifest stays and the predecessor refuses every open, as 2013592 did on 10-27 from 08:48Z to 12:56Z.
+        files = self.rerun_files()
+        old = self.serve(FAKE_SIGNALS=str(self.dir / "signals"))
+        code, out, _ = self.update_in_process(FAKE_UPDATE_MODE="cancelled", FAKE_SESSIONS="3", FAKE_RESTORES=files["restores"])
+        self.assertEqual(code, 0, out)
+        self.assertIn("and its prepared manifest is still there", out)
+        self.assertIsNotNone(old.wait(timeout=5))
+        self.assertEqual(Path(files["restores"]).read_text().splitlines(), ["/s/0.jsonl", "/s/1.jsonl", "/s/2.jsonl"])
+        self.assertIn("result=stop-forced restored 3 of 3", out)
+        self.assertEqual(self.pid_in_file(), self.successor_pid())
+
+    def test_an_accepted_stop_that_outlives_prime_s_wait_is_ended_and_the_rerun_gets_the_kept_manifest_and_records(self):
+        # Prime f2d4ec7: the coordinator keeps 'Could not stop the predecessor daemon on <socket>' for an accepted shutdown
+        # whose pid and start id still live after 10 s, queues every session as a pending record and keeps the manifest.
+        files = self.rerun_files()
+        old = self.serve(FAKE_STUCK="soft")
+        code, out, _ = self.update_in_process(FAKE_UPDATE_MODE="stuck-queued", FAKE_SESSIONS="3", FAKE_RESTORES=files["restores"], FAKE_RERUN_LOG=files["rerun.json"])
+        self.assertEqual(code, 0, out)
+        self.assertIsNotNone(old.wait(timeout=5))
+        self.assertEqual(json.loads(Path(files["rerun.json"]).read_text())["manifest_sha256"], Path(files["rerun.json"] + ".first").read_text())
+        self.assertEqual(Path(files["restores"]).read_text().splitlines(), ["/s/0.jsonl", "/s/1.jsonl", "/s/2.jsonl"])
+        records = {name: json.loads(raw) for name, raw in self.recoveries().items()}
+        self.assertEqual(sorted(records), ["0.json", "1.json", "2.json"])
+        self.assertTrue(all(r["state"] == {"status": "pending"} and r["attempts"] == [] for r in records.values()), "the ctl leaves Prime's records as Prime wrote them")
+        self.assertIn("result=stop-forced restored 3 of 3", out)
 
     def serve_outside(self):
         """A supervisor in its own transient scope, as 3052306 runs in session-c155369.scope since 10-27 12:56Z."""

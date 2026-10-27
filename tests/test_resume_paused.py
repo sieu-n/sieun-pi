@@ -71,8 +71,8 @@ class ResumePausedTests(unittest.TestCase):
         for found in (resume_paused.INCOMPLETE, resume_paused.UNRESOLVED, resume_paused.STOPPED, resume_paused.HELD):
             found.clear()
             self.addCleanup(found.clear)
-        for name, value in (("TAIL_CACHE", self.root / "tails"), ("COPY_DIR", self.root / "copies")):
-            kept = patch.object(resume_paused, name, value)
+        for name, value in (("TAIL_CACHE", self.root / "tails"), ("COPY_DIR", self.root / "copies"), ("UPDATE_MANIFESTS_DIR", self.root / "daemon-update-restarts")):
+            kept = patch.object(resume_paused, name, value, create=True)
             kept.start()
             self.addCleanup(kept.stop)
         self.served = []
@@ -452,6 +452,35 @@ class ResumePausedTests(unittest.TestCase):
         report = self.run_lost()
         self.assertEqual((report["paused"], self.sent), ([], []))
         self.assertEqual([entry["session_id"] for entry in resume_paused.STOPPED], ["ownstop0-0000-0000-0000-000000000003"])
+
+    def test_an_input_a_prime_update_restart_still_holds_or_left_unresolved_gets_no_continue(self):
+        # Prime f2d4ec7 and chat-057a's follow-up on 10-28: a cancelled update's predecessor, or the ctl's coordinator rerun, restores each
+        # prepared session once from the manifest or its recovery record, with restore_next_turn and a continuation, and its sweep starts
+        # 1 to 5 min after a cancel. A continue sent before that delivers the input twice, and one sent after a send Prime left
+        # unresolved replays it.
+        def custom(minutes_ago, kind):
+            return {"type": "custom_message", "customType": kind, "timestamp": at(minutes_ago), "content": "x"}
+        entries = [custom(30, "agent_message"), {"type": "session_state", "timestamp": at(20), "state": {"status": "archived", "reason": "daemon_shutdown"}},
+                   assistant(19.99, "aborted")]
+        sids = {name: f"{n:08d}-0000-0000-0000-00000000{name[:4]}" for n, name in enumerate(("manifest", "pending", "sending", "unresolved", "recovered"))}
+        for sid in sids.values():
+            self.lost_job(sid, entries)
+        folder = self.root / "daemon-update-restarts"
+        (folder / "ee92.recoveries").mkdir(parents=True)
+        created = at(25)
+        (folder / "ee92.json").write_text(json.dumps({"formatVersion": 1, "createdAt": created, "sessions": [{"activeSessionId": "m1", "sessionId": sids["manifest"]}]}))
+        (folder / "ee92.coordinator.json").write_text(json.dumps({"recordPath": "/x", "token": "t"}))
+        states = {"pending": ({"status": "pending"}, None), "sending": ({"status": "pending"}, "sending"),
+                  "unresolved": ({"status": "unresolved", "at": at(10), "reason": "an earlier restore of the queued work has no known outcome", "owner": {"kind": "operator"}}, "sending"),
+                  "recovered": ({"status": "recovered", "at": at(10), "activeSessionId": "n5", "resumed": False}, "restored")}
+        for name, (state, queue) in states.items():
+            record = {"formatVersion": 1, "updateId": f"{created}:{name}", "manifestCreatedAt": created, "session": {"activeSessionId": name, "sessionId": sids[name]},
+                      "admission": "never_admitted", "attempts": [], "state": state, **({"queueRestore": queue} if queue else {})}
+            (folder / "ee92.recoveries" / f"{name}.json").write_text(json.dumps(record))
+        report = self.run_lost()
+        self.assertEqual([p["session_id"] for p in report["paused"]], [sids["recovered"]])
+        self.assertEqual(self.sent, [(sids["recovered"], "continue")])
+        self.assertEqual([(entry["session_id"], "unresolved" in entry["error"]) for entry in resume_paused.UNRESOLVED], [(sids["unresolved"], True)])
 
     def test_a_step_owner_aborted_and_archived_with_no_worker_is_resumed_by_its_full_id(self):
         # frontend bro 10-15: stuck steps root cause waited 103rd in pi-pool's queue; the workers' SIGTERM at 17:43:22Z aborted it, the
@@ -2163,7 +2192,7 @@ class RecordedStops(unittest.TestCase):
         for name, value in (("SESSIONS_DIR", self.agent / "sessions"), ("ARTIFACTS_DIR", self.agent / "session-artifacts"),
                             ("DELETED_JOBS", self.agent / "browser-chat" / "deleted-jobs.json"), ("ARCHIVED_CHATS", self.agent / "browser-chat" / "archived-chats.json"),
                             ("JOB_CANCELS", self.agent / "browser-chat" / "job-cancels.json"), ("SERVICE_ARCHIVES", self.agent / "browser-chat" / "service-archives.json"),
-                            ("UPDATE_RESTARTS_DIR", self.agent / "update-restarts"), ("LOG_DIR", self.agent / "logs"), ("TOKEN_HOOK", self.root / "no-hook"),
+                            ("UPDATE_RESTARTS_DIR", self.agent / "update-restarts"), ("UPDATE_MANIFESTS_DIR", self.agent / "daemon-update-restarts"), ("LOG_DIR", self.agent / "logs"), ("TOKEN_HOOK", self.root / "no-hook"),
                             ("HOSTS_FILE", self.root / "no-hosts.json"), ("TAIL_CACHE", self.root / "tails"), ("COPY_DIR", self.root / "copies")):
             kept = patch.object(resume_paused, name, value, create=True)
             kept.start()

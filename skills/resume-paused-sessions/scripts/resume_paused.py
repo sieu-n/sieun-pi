@@ -1116,6 +1116,58 @@ def read_update_records(folder):
     return records
 
 
+# Prime keeps each session an update restart prepared under <agent dir>/daemon-update-restarts: in the manifest <socket hash>.json while
+# the coordinator or the predecessor still restores it, then in one recovery record per session under <socket hash>.recoveries/. Prime
+# f2d4ec7's coordinator rerun and its supervisor's recovery sweep share that record, mark it before restore_next_turn and restore_actions
+# go out, and end a crash in between as unresolved instead of a replay. A cancelled update's predecessor runs its records at its next idle
+# sweep, 1 to 5 min later, while the coordinator lease blocks the sweep it starts at once.
+UPDATE_MANIFESTS_DIR = Path.home() / ".prime" / "agent" / "daemon-update-restarts"
+
+
+def update_recovery(session_id, path, cut_at):
+    """("held", text) while a Prime update restart still holds the session and will deliver its queued work and continuation, ("unresolved",
+    text) when Prime recorded at or after the cut that it does not know whether that work went out, else None. A continue on top of
+    either would deliver twice or replay a send Prime left unresolved. Another box's files are not read from here. Raises JobRecordError
+    for a file that does not parse."""
+    if BOX.remote:
+        return None
+    real = os.path.realpath(path) if path else None
+
+    def names(session):
+        return isinstance(session, dict) and (session.get("sessionId") == session_id or
+                                              bool(real and session.get("sessionFile") and os.path.realpath(session["sessionFile"]) == real))
+
+    def load(file):
+        try:
+            return json.loads(file.read_text())
+        except FileNotFoundError:
+            return None
+        except (OSError, ValueError) as error:
+            raise JobRecordError(f"the update restart file {file.name} did not read ({error})") from None
+
+    records = [record for record in map(load, sorted(UPDATE_MANIFESTS_DIR.glob("*.recoveries/*.json"))) if isinstance(record, dict)]
+    queued = {record.get("updateId") for record in records}
+    for file in sorted(UPDATE_MANIFESTS_DIR.glob("*.json")):
+        plan = load(file)
+        sessions = plan.get("sessions") if isinstance(plan, dict) else None
+        for session in sessions if isinstance(sessions, list) else []:
+            if names(session) and f"{plan.get('createdAt')}:{session.get('activeSessionId')}" not in queued:
+                return ("held", f"Prime's update restart of {plan.get('createdAt')} still holds it in its prepared manifest and restores it with its "
+                                "queued work, so it is not resumed.")
+    for record in records:
+        state = record.get("state") or {}
+        if not names(record.get("session")):
+            continue
+        if state.get("status") == "pending":
+            return ("held", f"Prime's update recovery record {record.get('updateId')} is still pending, and Prime's recovery sweep restores it "
+                            "with its queued work, so it is not resumed.")
+        settled = parse_ts(state.get("at"))
+        if (state.get("status") == "unresolved" or record.get("queueRestore") == "sending") and (not cut_at or not settled or cut_at <= settled):
+            return ("unresolved", f"Prime's update recovery record {record.get('updateId')} is unresolved ({state.get('reason') or 'its queued work was being sent'}), "
+                                  "so Prime does not know whether its queued work went out, and it is not replayed.")
+    return None
+
+
 def update_entries(key, session_id, path, matches):
     """[(record, entry)] for each entry of list `key` in the update records that names the session `session_id` at `path` and passes
     `matches`."""
@@ -2110,11 +2162,18 @@ def find_paused(sessions, since_minutes, state, now, direct=False, only=frozense
                     continue
         try:
             recorded = stop_record(s.get("sessionFile"))
+            held = update_recovery(full, s.get("sessionFile"), parse_ts(last.get("timestamp")))
         except JobRecordError as error:
             INCOMPLETE.append({"host": BOX.name, "error": f"not checked {sid}: {error}"})
             continue
         if recorded:
             stopped(s, sid, recorded, cut=verdict, last=last)
+            continue
+        if held:
+            if held[0] == "unresolved":
+                UNRESOLVED.append({"id": sid, "session_id": full, "name": s.get("sessionName") or "(unnamed)", "head": head_of(sid, by_id),
+                                   "head_session_id": head_session(head_of(sid, by_id), s), "archived_at": last.get("timestamp"), "error": held[1],
+                                   **({"host": BOX.name} if BOX.remote else {})})
             continue
         if not owed(s, sid, full, verdict, last.get("timestamp")):
             continue
