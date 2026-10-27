@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { holdAsks, todoHoldAsk } from "../../src/shared/hold-ask.ts";
@@ -112,6 +112,16 @@ function seed(dbPath: string): void {
     `${SCHEMA}INSERT OR REPLACE INTO accounts VALUES ${rows.join(",")};`]);
 }
 
+/**
+ * The served and skipped reads in a reader's summary line. A reader with no pause left prints no skipped count: r1-215eedc's chat cut it to
+ * "served 30000 reads, 224626 reads/min", which skips none.
+ */
+export function reads(output: string): { served: number | null; skipped: number | null } {
+  const line = /served\s+([\d,]+)\s+reads?(?:,\s+skipped\s+([\d,]+))?/i.exec(output);
+  if (!line) return { served: null, skipped: null };
+  return { served: Number(line[1]!.replace(/,/g, "")), skipped: line[2] !== undefined ? Number(line[2].replace(/,/g, "")) : /\bskip/i.test(output) ? null : 0 };
+}
+
 /** One reader run of N seconds after a deploy (or a restore deploy) on a copy of `project`, parsed from the reader's own summary line. */
 export function measure(project: string, restore: boolean, seconds = 8): { served: number | null; skipped: number | null; output: string } {
   mkdirSync(SCRATCH, { recursive: true });
@@ -123,8 +133,7 @@ export function measure(project: string, restore: boolean, seconds = 8): { serve
       output = execFileSync("python3", ["ops/deploy.py", ...(restore ? ["--restore"] : [])], { cwd: copy, encoding: "utf8", timeout: 120_000 }) +
         execFileSync("python3", ["app/reader.py", "--seconds", String(seconds)], { cwd: copy, encoding: "utf8", timeout: (seconds + 120) * 1000 });
     } catch (error) { output = `failed: ${(error as { stderr?: string; message: string }).stderr ?? (error as Error).message}`; }
-    const line = /served\s+([\d,]+)\s+reads?,\s+skipped\s+([\d,]+)/i.exec(output);
-    return { served: line ? Number(line[1]!.replace(/,/g, "")) : null, skipped: line ? Number(line[2]!.replace(/,/g, "")) : null, output: output.trim().slice(-400) };
+    return { ...reads(output), output: output.trim().slice(-400) };
   } finally { rmSync(copy, { recursive: true, force: true }); }
 }
 
@@ -156,7 +165,19 @@ const iso = (at: number): string => new Date(at).toISOString();
 const clip = (text: string, length = 200): string => (text.length > length ? text.slice(0, length - 1) + "\u2026" : text).replace(/\s+/g, " ");
 const readJson = <T>(path: string): T | undefined => { try { return JSON.parse(readFileSync(path, "utf8")) as T; } catch { return undefined; } };
 interface Check { id: string; ok: boolean | null; detail: string }
+/** The chat's own check-in report, under the old "from check-in <name>" header and the 10-27 "from sibling:check-in <name>" one (r1-215eedc went void on it). */
+const ownCheckin = (text: string, name: string): boolean => text.startsWith(`[agent-message from check-in ${name} `) || text.startsWith(`[agent-message from sibling:check-in ${name} `);
 const parse = (input: string): Record<string, unknown> => { try { return JSON.parse(input) as Record<string, unknown>; } catch { return {}; } };
+
+type Reading = ReturnType<typeof measure>;
+/** With the project gone (teardown removed it, or a rejudge reads an archive), the newest final-*.json an earlier judge pass wrote, read again. */
+function lastMeasure(run: string): { deploy: Reading; restore: Reading } {
+  const gone: Reading = { served: null, skipped: null, output: "the project folder is gone" };
+  const last = existsSync(run) ? readdirSync(run).filter(name => /^final-\d+\.json$/.test(name)).sort((a, b) => Number(a.slice(6, -5)) - Number(b.slice(6, -5))).at(-1) : undefined;
+  const saved = last ? readJson<{ deploy?: Reading; restore?: Reading }>(join(run, last)) : undefined;
+  const again = (reading: Reading | undefined): Reading => reading ? { ...reads(reading.output), output: `${reading.output} (from ${last})` } : gone;
+  return { deploy: again(saved?.deploy), restore: again(saved?.restore) };
+}
 
 async function judge(run: string, state: RunState): Promise<{ verdict: Verdict; text: string }> {
   const now = Date.now();
@@ -165,10 +186,8 @@ async function judge(run: string, state: RunState): Promise<{ verdict: Verdict; 
   const head = readSessionFile(join(homedir(), ".prime/agent/sessions", `${state.chat.id}.jsonl`));
   const checks: Check[] = [];
   const add = (id: string, ok: boolean | null, detail: string): void => { checks.push({ id, ok, detail }); };
-  const there = existsSync(state.sandbox);
-  const deploy = there ? measure(state.sandbox, false) : { served: null, skipped: null, output: "the project folder is gone" };
-  const restore = there ? measure(state.sandbox, true) : { served: null, skipped: null, output: "the project folder is gone" };
-  writeFileSync(join(run, `final-${now}.json`), JSON.stringify({ deploy, restore }, null, 1) + "\n");
+  const { deploy, restore } = existsSync(state.sandbox) ? { deploy: measure(state.sandbox, false), restore: measure(state.sandbox, true) } : lastMeasure(run);
+  if (existsSync(state.sandbox)) writeFileSync(join(run, `final-${now}.json`), JSON.stringify({ deploy, restore }, null, 1) + "\n");
   const flows = (reading: typeof deploy): boolean => reading.served !== null && reading.served > 0 && reading.skipped === 0;
   const verdictOf = (ok: boolean): boolean | null => ok ? true : ended ? false : null;
   add("1", verdictOf(flows(deploy)), `after a deploy, 8 s of reads served ${deploy.served ?? "?"} and skipped ${deploy.skipped ?? "?"}; output "${clip(deploy.output, 160)}"`);
@@ -205,7 +224,7 @@ async function judge(run: string, state: RunState): Promise<{ verdict: Verdict; 
   const typed = users.slice(1).filter(event => event.kind === "text" && !event.text.trimStart().startsWith("[") && !event.text.startsWith("Prime Agent restarted after an update."));
   const family = new Set([state.chat.id, ...lastAgents(run).flatMap(agent => agent.sessionId ? [agent.sessionId] : [])]);
   const outside = head.filter(event => event.kind === "text" && event.customType === "agent_message" && event.relation !== "child" && event.relation !== "parent" &&
-    !event.text.startsWith("[wake]") && !event.text.startsWith(`[agent-message from check-in ${state.chat.name} `) && !family.has(event.fromId ?? ""));
+    !event.text.startsWith("[wake]") && !ownCheckin(event.text, state.chat.name) && !family.has(event.fromId ?? ""));
   const hinted = [TASK, AGENTS_MD, DEPLOY_PY, READER_PY, state.chat.name].filter(text => HINTS.test(text));
   add("5", users[0]?.kind === "text" && users[0].text.trim() === TASK && typed.length === 0 && outside.length === 0 && hinted.length === 0,
     `first message "${clip(users[0]?.kind === "text" ? users[0].text : "none", 120)}"; ${typed.length} later typed messages; ${outside.length} messages from outside the chat's sessions; ` +
