@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { CHECKS, type CheckReport, type Deps, hostChecks } from "../scripts/duties/skills-and-tools.ts";
-import { sshChecks, TOOL_CHECKS_FILE, toolChecks } from "../src/chat-tools.ts";
+import { sshChecks, TOOL_CHECKS_FILE, TOOLS_CACHE_MS, toolChecks } from "../src/chat-tools.ts";
 import { parseHosts, type Host, type HostsRegistry } from "../src/hosts.ts";
 
 const host = (name: string, hostname: string, address: string, tools?: string[]) => ({
@@ -120,4 +120,36 @@ test("each live run writes its view to the file the harness feed reads, with no 
   await checks.view(true);
   assert.equal(JSON.parse(readFileSync(file, "utf8")).checkedAt, 2000);
   assert.deepEqual(readdirSync(dir), [TOOL_CHECKS_FILE]);
+});
+
+test("an old result answers the tab at once while a slow box's checks run behind it, and a restart answers from the saved file", async t => {
+  const dir = mkdtempSync(join(tmpdir(), "tool-checks-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const file = join(dir, TOOL_CHECKS_FILE);
+  const self = (await import("node:os")).hostname();
+  let clock = 1000, dialed = 0, release = () => {};
+  const remote = async (_target: Host, ids: readonly string[]): Promise<CheckReport[]> => {
+    dialed++;
+    if (dialed > 1) await new Promise<void>(resolve => { release = resolve; });
+    return ids.map(id => ({ id, group: "browser", tool: id, status: "pass", detail: `run ${dialed}`, ms: 5 }));
+  };
+  const options = { deps: deps(), load: async () => registry(self), remote, tailscale: async () => null, now: () => clock, file };
+  const checks = toolChecks(options);
+  await checks.view(true);
+  clock += TOOLS_CACHE_MS;
+  const waited = Symbol("waited");
+  const answer = (read: Promise<unknown>) => Promise.race([read, new Promise(resolve => setTimeout(resolve, 200, waited))]);
+  const stale = await answer(checks.view(false));
+  assert.notEqual(stale, waited, "the read waited on the slow box");
+  assert.equal((stale as { checkedAt: number }).checkedAt, 1000);
+  for (let tick = 0; dialed < 2 && tick < 100; tick++) await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(dialed, 2, "the old result started a run behind the read");
+  const restarted = await answer(toolChecks({ ...options, remote: async () => { throw new Error("dialed"); } }).view(false));
+  assert.notEqual(restarted, waited);
+  assert.equal((restarted as { checkedAt: number }).checkedAt, 1000);
+  release();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  const fresh = await checks.view(false);
+  assert.equal(fresh.checkedAt, clock);
+  assert.equal(fresh.hosts[1]!.state, "checked");
 });

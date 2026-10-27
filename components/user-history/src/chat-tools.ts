@@ -68,7 +68,9 @@ export interface ToolsOptions {
 /**
  * Settings > Tools and skills on the server: per box in hosts.json, the tools it is meant to have (its `tools`), each checked on that box, this
  * box in-process and every other box over ssh, all at once. A tool a box is not meant to have is listed as unused and never checked.
- * `view(false)` runs the checks when the last result is older than TOOLS_CACHE_MS and `view(true)` always runs them; calls during a run share it.
+ * `view(false)` answers with the last result at once, read from `file` after a restart, and starts a run in the background when that result is
+ * older than TOOLS_CACHE_MS; it waits only when no run ever finished. `view(true)` always waits for a run, and calls during a run share it. At
+ * 05:01Z on 10-27 api/tools waited 28.2 s on the Mac's websearch_query (26.7 s, Google down on the Virev backend), and d7 counted the minute dirty.
  * The daily duty's newest run is read fresh each time.
  */
 export function toolChecks(options: ToolsOptions): { view(fresh: boolean): Promise<ToolsView> } {
@@ -115,12 +117,23 @@ export function toolChecks(options: ToolsOptions): { view(fresh: boolean): Promi
     return last;
   })().finally(() => { running = undefined; });
 
+  const saved = options.file ? readSaved(options.file) : Promise.resolve(undefined);
   return {
     async view(fresh) {
-      const live = !fresh && last && now() - last.checkedAt < TOOLS_CACHE_MS ? last : await run();
+      const stored = await saved;
+      last ??= stored;
+      if (!fresh && last && now() - last.checkedAt >= TOOLS_CACHE_MS) void run().catch(() => {});
+      const live = !fresh && last ? last : await run();
       return { ...live, daily: options.dutyStore ? await dailyRun(options.dutyStore) : null };
     },
   };
+}
+
+/** The last live run's view from `file`, so the first read after a restart answers at once; undefined when absent or unreadable. */
+async function readSaved(file: string): Promise<Omit<ToolsView, "daily"> | undefined> {
+  const view: unknown = await readFile(file, "utf8").then(text => JSON.parse(text) as unknown).catch(() => undefined);
+  return typeof view === "object" && view !== null && typeof (view as ToolsView).checkedAt === "number" && Array.isArray((view as ToolsView).hosts)
+    ? view as Omit<ToolsView, "daily"> : undefined;
 }
 
 /** Writes a live run's view through a temp file; a failed write leaves the last file, whose checkedAt then reads old. */

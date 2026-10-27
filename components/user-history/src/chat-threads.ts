@@ -1991,13 +1991,29 @@ export class ThreadHub {
     return summaries;
   }
 
+  /**
+   * The daemon's model catalog, which a thread's model picker and the new-chat screen read. After the first read each api/models read answers
+   * from the last catalog and reads a new one behind it, so a busy worker no longer holds the picker: at 05:00:03Z on 10-27 one worker took
+   * 5886 ms over get_model_catalog, 7 of that day's 21 reads took over 1 s, and d7 counted the minute dirty. Reads during a read share it.
+   */
+  private modelCatalog: { models: ModelInfo[]; configuredProviders: string[] } | null = null;
+  private catalogRead: Promise<{ models: ModelInfo[]; configuredProviders: string[] }> | null = null;
+  private readCatalog(connection: DaemonAgentConnection): Promise<{ models: ModelInfo[]; configuredProviders: string[] }> {
+    return this.catalogRead ??= connection.getModelCatalog().then(catalog => {
+      const models = catalog.models.map(projectModel);
+      for (const model of models) this.knownModels.set(model.provider + "/" + model.id, model);
+      return this.modelCatalog = { models, configuredProviders: [...catalog.configuredProviders] };
+    }).finally(() => { this.catalogRead = null; });
+  }
+
   /** A thread reports its own model and effort. With no thread the catalog carries the Prime Agent defaults, which a new session starts with. */
   private async catalogFrom(connection: DaemonAgentConnection, thread: Thread | null): Promise<ModelCatalog> {
-    const [catalog, state] = await Promise.all([connection.getModelCatalog(), connection.getState()]);
-    const models = catalog.models.map(projectModel);
-    for (const model of models) this.knownModels.set(model.provider + "/" + model.id, model);
-    const shared = { models, configuredProviders: [...catalog.configuredProviders] };
-    if (thread) return { ...shared, current: this.catalogModel(state.model ?? null), thinkingLevel: state.thinkingLevel, availableThinkingLevels: [...state.availableThinkingLevels] };
+    const cached = this.modelCatalog;
+    const read = this.readCatalog(connection);
+    if (cached) read.catch(() => {});
+    const [shared, state] = await Promise.all([cached ?? read, thread ? connection.getState() : null]);
+    const { models } = shared;
+    if (thread && state) return { ...shared, current: this.catalogModel(state.model ?? null), thinkingLevel: state.thinkingLevel, availableThinkingLevels: [...state.availableThinkingLevels] };
     const defaults = this.defaults();
     const current = models.find(model => model.provider === defaults.provider && model.id === defaults.modelId) ?? null;
     const availableThinkingLevels = current?.thinkingLevels ?? [];
