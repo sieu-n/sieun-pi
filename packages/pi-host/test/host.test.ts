@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import type { Server } from "node:net";
-import * as registry from "../../pi-family/registry.ts";
+import * as registry from "@sieun-pi/pi-family/registry";
 import { hostApi } from "../src/api.ts";
 import { HostClient } from "../src/client.ts";
 import { PiHost } from "../src/host.ts";
@@ -12,7 +12,7 @@ import { lockPathOf } from "../src/lease.ts";
 import type { SessionSummary } from "../src/protocol.ts";
 import { listen } from "../src/server.ts";
 import echo from "./fixtures/echo.ts";
-import { fauxProvider } from "../../pi-testkit/faux.ts";
+import { fauxProvider } from "@sieun-pi/pi-testkit/faux";
 
 process.env.PI_OFFLINE = "1";
 process.env.PI_TELEMETRY = "0";

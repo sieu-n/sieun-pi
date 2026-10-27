@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { AgentSessionRuntime } from "@earendil-works/pi-coding-agent";
-import { openRuntime } from "../../pi-testkit/faux.ts";
+import { openRuntime } from "@sieun-pi/pi-testkit/faux";
 import agentBus from "../agent-bus/index.ts";
 import piRlm, { setChildLoaderOptions } from "../index.ts";
 import measure, { startSampler } from "./measure.ts";

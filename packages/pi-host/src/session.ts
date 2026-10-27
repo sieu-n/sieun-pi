@@ -9,8 +9,8 @@
 import { randomUUID } from "node:crypto";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AgentSessionRuntime } from "@earendil-works/pi-coding-agent";
-import * as registry from "../../pi-family/registry.ts";
-import type { Identity } from "../../pi-family/registry.ts";
+import * as registry from "@sieun-pi/pi-family/registry";
+import type { Identity } from "@sieun-pi/pi-family/registry";
 import {
   PROTOCOL, type ChildSnapshot, type ConnectionState, type EventCursor, type EventMeta, type ModelRef, type Outbound, type SessionActions,
   type SessionSnapshot, type SessionSummary,

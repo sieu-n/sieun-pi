@@ -1,7 +1,7 @@
 import type { Skill } from "@earendil-works/pi-coding-agent";
 import type { PythonSkill } from "./python.ts";
 
-export { PRIME_BASE_PROMPT as BASE_PROMPT } from "../../pi-family/preamble.ts";
+export { PRIME_BASE_PROMPT as BASE_PROMPT } from "@sieun-pi/pi-family/preamble";
 
 function escapeXml(text: string): string {
   return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");

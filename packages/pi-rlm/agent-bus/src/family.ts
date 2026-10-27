@@ -3,7 +3,7 @@
  * other root. Anything else is out of reach.
  */
 
-import type { AgentRole } from "../../../pi-family/registry.ts";
+import type { AgentRole } from "@sieun-pi/pi-family/registry";
 
 export type Relationship = "parent" | "sibling" | "child";
 

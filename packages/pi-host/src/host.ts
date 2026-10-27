@@ -21,8 +21,8 @@ import {
   type CreateAgentSessionServicesOptions,
   type ExtensionFactory,
 } from "@earendil-works/pi-coding-agent";
-import * as registry from "../../pi-family/registry.ts";
-import type { AgentEntry, BusMessage, Delivery, Identity } from "../../pi-family/registry.ts";
+import * as registry from "@sieun-pi/pi-family/registry";
+import type { AgentEntry, BusMessage, Delivery, Identity } from "@sieun-pi/pi-family/registry";
 import { publishHostApi, type HostApi, type HostEvent, type HostSessionInfo, type OpenRequest } from "./api.ts";
 import { Leases, SessionLockedError } from "./lease.ts";
 import { SavedIndex } from "./saved-index.ts";

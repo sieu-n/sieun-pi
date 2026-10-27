@@ -3,7 +3,7 @@
  * `bus.load.test.ts` runs it in-process, and `scripts/host-load.ts` runs the same count through pi-host.
  */
 
-import type { DeliveryMode } from "../../../pi-family/registry.ts";
+import type { DeliveryMode } from "@sieun-pi/pi-family/registry";
 import { landed } from "./rig.ts";
 
 export interface LoadResult {

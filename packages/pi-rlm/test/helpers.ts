@@ -9,7 +9,7 @@ import {
   type AgentSessionRuntime,
   type ExtensionFactory,
 } from "@earendil-works/pi-coding-agent";
-import type { fauxProvider } from "../../pi-testkit/faux.ts";
+import type { fauxProvider } from "@sieun-pi/pi-testkit/faux";
 import { kernelPython } from "../src/python.ts";
 
 /**

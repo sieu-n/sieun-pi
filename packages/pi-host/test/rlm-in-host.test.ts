@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { fauxAssistantMessage, fauxText, fauxToolCall, type AssistantMessage } from "@earendil-works/pi-ai";
-import { fauxProvider } from "../../pi-testkit/faux.ts";
+import { fauxProvider } from "@sieun-pi/pi-testkit/faux";
 import piRlm from "../../pi-rlm/index.ts";
 import { testPython } from "../../pi-rlm/test/helpers.ts";
 import { PiHost } from "../src/host.ts";

@@ -12,7 +12,7 @@ import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renam
 import { join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { hostApi } from "../../../pi-host/src/api.ts";
-import * as registry from "../../../pi-family/registry.ts";
+import * as registry from "@sieun-pi/pi-family/registry";
 import type { customMessage } from "./message.ts";
 
 export interface InboxRecord {

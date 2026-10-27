@@ -8,7 +8,7 @@
 import { createFauxCore, fauxAssistantMessage, fauxToolCall, type AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { kernelHandler } from "../../../../pi-family/kernel-bridge.ts";
+import { kernelHandler } from "@sieun-pi/pi-family/kernel-bridge";
 
 const core = createFauxCore({ api: "busy-api", provider: "busy", tokensPerSecond: 100_000, models: [{ id: "m" }] });
 

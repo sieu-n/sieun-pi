@@ -12,8 +12,8 @@ import type { AssistantMessage, AssistantMessageEvent, AssistantMessageEventStre
 import { createAssistantMessageEventStream, openAICodexResponsesApi } from "@earendil-works/pi-ai/compat";
 import { getAgentDir, type ExtensionAPI, type ExtensionContext, type ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
-import { PRIME_BASE_PROMPT } from "../pi-family/preamble.ts";
-import { identityOf } from "../pi-family/registry.ts";
+import { PRIME_BASE_PROMPT } from "@sieun-pi/pi-family/preamble";
+import { identityOf } from "@sieun-pi/pi-family/registry";
 import { accountCommand, POOLED_PROVIDERS, refreshStatus, STATUS_REFRESH_MS } from "./src/account.ts";
 import { rewriteFailure, type PoolCall } from "./src/errors.ts";
 import { credential, defaultPoolBin, poolEnv, runPool, vendOnce, type TreeKey } from "./src/pool-cli.ts";

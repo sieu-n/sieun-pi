@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { after, before, test } from "node:test";
 import { HostClient } from "../../../pi-host/src/client.ts";
 import type { SessionSummary } from "../../../pi-host/src/protocol.ts";
-import { kernelHandler } from "../../../pi-family/kernel-bridge.ts";
+import { kernelHandler } from "@sieun-pi/pi-family/kernel-bridge";
 import { body, runLoad, type LoadResult } from "./load.ts";
 import { startHost, type RunningHost } from "./host-rig.ts";
 import { landed, openAgent, type Opened } from "./rig.ts";

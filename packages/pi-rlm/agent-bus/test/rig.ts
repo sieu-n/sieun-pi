@@ -11,7 +11,7 @@ import {
   type ExtensionFactory,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { assignIdentity, type Identity } from "../../../pi-family/registry.ts";
+import { assignIdentity, type Identity } from "@sieun-pi/pi-family/registry";
 import agentBus from "../index.ts";
 
 process.env.PI_OFFLINE = "1";

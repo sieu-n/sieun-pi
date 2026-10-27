@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { isRetryableAssistantError } from "@earendil-works/pi-ai/compat";
-import { assignIdentity } from "../../pi-family/registry.ts";
+import { assignIdentity } from "@sieun-pi/pi-family/registry";
 import { rootOf } from "../index.ts";
 import { readFailure, rewriteFailure, type PoolCall } from "../src/errors.ts";
 import { credential, poolEnv, readVend, type Vend } from "../src/pool-cli.ts";

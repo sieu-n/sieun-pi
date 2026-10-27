@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
-import { openRuntime } from "../../pi-testkit/faux.ts";
+import { openRuntime } from "@sieun-pi/pi-testkit/faux";
 
 /** One request the fake Anthropic server saw. */
 export interface SeenRequest {

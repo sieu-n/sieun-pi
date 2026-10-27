@@ -9,9 +9,9 @@ for (const key of Object.keys(process.env)) if (key.startsWith("RLM_") || key ==
 const root = mkdtempSync(join(tmpdir(), "pi-harness-ext-"));
 process.env.PI_CODING_AGENT_DIR = join(root, "agent");
 
-const { fauxProvider, openRuntime } = await import("../../pi-testkit/faux.ts");
+const { fauxProvider, openRuntime } = await import("@sieun-pi/pi-testkit/faux");
 const { createHarnessExtension } = await import("../index.ts");
-const { kernelHandler } = await import("../../pi-family/kernel-bridge.ts");
+const { kernelHandler } = await import("@sieun-pi/pi-family/kernel-bridge");
 const { readState, updateState } = await import("../src/store.ts");
 const { PLANNER_PROMPT, REVIEW_PROMPT } = await import("../src/prompts.ts");
 

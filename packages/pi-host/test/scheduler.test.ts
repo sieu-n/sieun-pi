@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import type { Server } from "node:net";
-import { kernelHandler } from "../../pi-family/kernel-bridge.ts";
+import { kernelHandler } from "@sieun-pi/pi-family/kernel-bridge";
 import { HostClient } from "../src/client.ts";
 import { PiHost, type HostOptions } from "../src/host.ts";
 import type { SessionSummary } from "../src/protocol.ts";

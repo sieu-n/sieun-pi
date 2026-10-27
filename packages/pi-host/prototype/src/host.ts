@@ -3,7 +3,7 @@ import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { Models } from "@earendil-works/pi-ai/models";
 import { createRegistry, defineExtension, Harness, ROOT_CONVERSATION_ID, section, type Conversation, type HarnessSettings, type ReportInfo } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { PRIME_BASE_PROMPT } from "../../../pi-family/preamble.ts";
+import { PRIME_BASE_PROMPT } from "@sieun-pi/pi-family/preamble";
 import { Subagent } from "./subagent.ts";
 
 /** Anthropic refuses a subscription token under an unknown preamble (../shared/preamble.ts), so every conversation gets Prime's. */

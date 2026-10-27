@@ -4,5 +4,14 @@
   "private": true,
   "type": "module",
   "description": "The process-wide agent registry and kernel bridge that sieun-pi's Pi packages share.",
-  "license": "SEE LICENSE IN ../../NOTICE"
+  "license": "SEE LICENSE IN ../../NOTICE",
+  "exports": {
+    "./registry": "./registry.ts",
+    "./kernel-bridge": "./kernel-bridge.ts",
+    "./paths": "./paths.ts",
+    "./preamble": "./preamble.ts"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  }
 }

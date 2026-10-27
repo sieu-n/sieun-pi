@@ -11,7 +11,7 @@
 
 import type { AgentSessionRuntime } from "@earendil-works/pi-coding-agent";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { BusMessage, Delivery, Identity } from "../../pi-family/registry.ts";
+import type { BusMessage, Delivery, Identity } from "@sieun-pi/pi-family/registry";
 import type { Scheduler } from "./scheduler.ts";
 
 export interface OpenRequest {

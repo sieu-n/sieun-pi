@@ -8,8 +8,8 @@ import { after, before, test } from "node:test";
 import { HostClient } from "../../../pi-host/src/client.ts";
 import { PiHost } from "../../../pi-host/src/host.ts";
 import { listen } from "../../../pi-host/src/server.ts";
-import { kernelHandler } from "../../../pi-family/kernel-bridge.ts";
-import * as registry from "../../../pi-family/registry.ts";
+import { kernelHandler } from "@sieun-pi/pi-family/kernel-bridge";
+import * as registry from "@sieun-pi/pi-family/registry";
 import { repliedSinceTask } from "../src/state.ts";
 import { landed, until } from "./rig.ts";
 

@@ -10,7 +10,7 @@ import {
   type AgentSession,
   type AgentSessionEvent,
 } from "@earendil-works/pi-coding-agent";
-import { assignIdentity, get as registryGet, registerDormant, unregisterDormant, type AgentEntry } from "../../pi-family/registry.ts";
+import { assignIdentity, get as registryGet, registerDormant, unregisterDormant, type AgentEntry } from "@sieun-pi/pi-family/registry";
 import { repliedSinceTask } from "../agent-bus/src/state.ts";
 import { withPoolRetries } from "../../pi-pool/src/retries.ts";
 

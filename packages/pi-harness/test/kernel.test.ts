@@ -9,7 +9,7 @@ for (const key of Object.keys(process.env)) if (key.startsWith("RLM_") || key ==
 const root = mkdtempSync(join(tmpdir(), "pi-harness-kernel-"));
 process.env.PI_CODING_AGENT_DIR = join(root, "agent");
 
-const { fauxProvider } = await import("../../pi-testkit/faux.ts");
+const { fauxProvider } = await import("@sieun-pi/pi-testkit/faux");
 const { openWithSkills, testPython } = await import("../../pi-rlm/test/helpers.ts");
 const { default: piRlm } = await import("../../pi-rlm/index.ts");
 const { createHarnessExtension } = await import("../index.ts");

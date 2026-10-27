@@ -5,9 +5,9 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { fauxAssistantMessage, fauxText, fauxToolCall, type AssistantMessage } from "@earendil-works/pi-ai";
 import type { AgentSessionRuntime } from "@earendil-works/pi-coding-agent";
-import { fauxProvider, openRuntime, type FauxReply } from "../../pi-testkit/faux.ts";
+import { fauxProvider, openRuntime, type FauxReply } from "@sieun-pi/pi-testkit/faux";
 import agentBus from "../agent-bus/index.ts";
-import { list as registryList } from "../../pi-family/registry.ts";
+import { list as registryList } from "@sieun-pi/pi-family/registry";
 import piRlm, { setChildLoaderOptions } from "../index.ts";
 import { openWithSkills, testPython } from "./helpers.ts";
 

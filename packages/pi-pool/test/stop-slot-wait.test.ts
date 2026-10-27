@@ -6,7 +6,7 @@ import { after, before, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import type { Api, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/compat";
-import { openRuntime } from "../../pi-testkit/faux.ts";
+import { openRuntime } from "@sieun-pi/pi-testkit/faux";
 import { createPoolExtension } from "../index.ts";
 import { fakeAnthropic, openAnthropic, rateLimited, type Answer } from "../check/rig.ts";
 

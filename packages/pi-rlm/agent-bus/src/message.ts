@@ -4,7 +4,7 @@
  */
 
 import { createHash, randomUUID } from "node:crypto";
-import type { AgentRole, BusMessage, Delivery, DeliveryMode } from "../../../pi-family/registry.ts";
+import type { AgentRole, BusMessage, Delivery, DeliveryMode } from "@sieun-pi/pi-family/registry";
 import type { Relationship } from "./family.ts";
 
 export const CUSTOM_TYPE = "agent_message";

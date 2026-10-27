@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { kernelHandler } from "../../../pi-family/kernel-bridge.ts";
+import { kernelHandler } from "@sieun-pi/pi-family/kernel-bridge";
 import { body, runLoad } from "./load.ts";
 import { openAgent, until, type Opened } from "./rig.ts";
 

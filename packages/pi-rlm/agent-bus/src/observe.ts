@@ -6,7 +6,7 @@
 import { readFileSync } from "node:fs";
 import { buildSessionContext, parseSessionEntries, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import * as registry from "../../../pi-family/registry.ts";
+import * as registry from "@sieun-pi/pi-family/registry";
 import { family, type Member, type Relationship } from "./family.ts";
 import { allMembers, memberOf, type Known } from "./members.ts";
 import { repliedSinceTask, state } from "./state.ts";

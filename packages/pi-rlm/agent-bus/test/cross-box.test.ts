@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { after, before, test } from "node:test";
 import { HostClient } from "../../../pi-host/src/client.ts";
 import type { SessionSummary } from "../../../pi-host/src/protocol.ts";
-import { kernelHandler } from "../../../pi-family/kernel-bridge.ts";
+import { kernelHandler } from "@sieun-pi/pi-family/kernel-bridge";
 import { BOXES_ENV } from "../src/host-socket.ts";
 import { body, runLoad } from "./load.ts";
 import { startHost, startRelay, type RunningHost, type RunningRelay } from "./host-rig.ts";

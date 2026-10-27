@@ -4,5 +4,12 @@
   "private": true,
   "type": "module",
   "description": "Faux provider runtime and rigs for testing sieun-pi's Pi packages.",
-  "license": "SEE LICENSE IN ../../NOTICE"
+  "license": "SEE LICENSE IN ../../NOTICE",
+  "exports": {
+    "./faux": "./faux.ts"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*"
+  }
 }

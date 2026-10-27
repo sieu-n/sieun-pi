@@ -9,8 +9,8 @@
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext, ExtensionFactory } from "@earendil-works/pi-coding-agent";
-import { registerKernelHandler, type KernelPayload } from "../../pi-family/kernel-bridge.ts";
-import * as registry from "../../pi-family/registry.ts";
+import { registerKernelHandler, type KernelPayload } from "@sieun-pi/pi-family/kernel-bridge";
+import * as registry from "@sieun-pi/pi-family/registry";
 import { hostApi } from "./api.ts";
 import { parseDeliveryMode, parseHeartbeatCommand, rlmHeartbeatView, type Job } from "./schedule.ts";
 import type { ScheduledMessage, Scheduler, SendMode } from "./scheduler.ts";

@@ -6,8 +6,8 @@
  * session is restored through `hostApi()`; a plain `pi` CLI reaches pi-host's roots over `PI_HOST_SOCKET`. Other boxes need prime-relay.
  */
 
-import * as registry from "../../../pi-family/registry.ts";
-import type { AgentEntry, AgentRole, BusMessage, Delivery, DeliveryMode } from "../../../pi-family/registry.ts";
+import * as registry from "@sieun-pi/pi-family/registry";
+import type { AgentEntry, AgentRole, BusMessage, Delivery, DeliveryMode } from "@sieun-pi/pi-family/registry";
 import { hostApi } from "../../../pi-host/src/api.ts";
 import { family, REACH_ERROR, relationship, type Member, type Relationship } from "./family.ts";
 import { hostSend, needsHost } from "./host-socket.ts";

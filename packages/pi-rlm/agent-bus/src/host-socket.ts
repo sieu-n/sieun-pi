@@ -10,7 +10,7 @@ import { request } from "node:http";
 import { createConnection } from "node:net";
 import type { Duplex } from "node:stream";
 import { HOST_SOCKET_ENV } from "../../../pi-host/src/api.ts";
-import type { DeliveryMode } from "../../../pi-family/registry.ts";
+import type { DeliveryMode } from "@sieun-pi/pi-family/registry";
 import type { Receipt } from "./message.ts";
 
 export interface HostRoot {

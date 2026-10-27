@@ -3,9 +3,9 @@ import { fileURLToPath } from "node:url";
 import { buildSessionContext, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Api, Model } from "@earendil-works/pi-ai";
-import { identityOf } from "../pi-family/registry.ts";
-import { registerKernelHandler } from "../pi-family/kernel-bridge.ts";
-import { sessionArtifactDir } from "../pi-family/paths.ts";
+import { identityOf } from "@sieun-pi/pi-family/registry";
+import { registerKernelHandler } from "@sieun-pi/pi-family/kernel-bridge";
+import { sessionArtifactDir } from "@sieun-pi/pi-family/paths";
 import {
   appendRefinementLog,
   filesIdentity,

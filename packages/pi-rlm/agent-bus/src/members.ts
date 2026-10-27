@@ -3,8 +3,8 @@
  * and, in a plain `pi` CLI with `PI_HOST_SOCKET` set, the roots that pi-host holds.
  */
 
-import * as registry from "../../../pi-family/registry.ts";
-import type { AgentEntry, DormantAgent } from "../../../pi-family/registry.ts";
+import * as registry from "@sieun-pi/pi-family/registry";
+import type { AgentEntry, DormantAgent } from "@sieun-pi/pi-family/registry";
 import type { Member } from "./family.ts";
 import { hostRoots, localRoute, otherBoxes, type HostRoot, type Route } from "./host-socket.ts";
 import { hostApi } from "../../../pi-host/src/api.ts";
