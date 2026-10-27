@@ -77,6 +77,17 @@ test("the 10-18 throttle steps are F1, the deep backfill stop is F21, and the ow
   assert.equal(fault(["pause.enrich"], "pause.enrich: the owner's order, as I read it"), "undesigned");
 });
 
+// Guards the d3 read of 10-27 01:30Z: three owner answers on For you todos (audits 16761, 16768, 16777) read as F14 and F1 repeats.
+test("a write that cites the owner's answer on a todo is exempt, and a capacity raise that only names F1 stays F1", async () => {
+  const reg = await registry();
+  const fault = (keys: string[], text: string) => { const verdict = classifyConfig({ actor: "api-key", writer: "ops-api", keys, text }, reg); return verdict.kind === "fault" ? verdict.fault.id : verdict.kind; };
+  assert.equal(fault(["media.mirror_kinds"], "media.fetch intake job (01a1769e): owner ruling on todo t61 at about 12:45Z 10-26, 'Keep only their links, like Instagram posts', relayed by Crawler VP."), "exempt");
+  assert.equal(fault(["instagram_census.crawl_concurrency"], "Owner's fixed census cap (todo t67, c170): crawl_concurrency 64 per process."), "exempt");
+  assert.equal(fault(["instagram_census.weekly_min_followers"], "p944/p683, owner rule on t65 (10-26): \"1k+ every month, 10K+ every week\""), "exempt");
+  assert.equal(fault(["meta_ads.walker_sessions"], "F1: 7ddecf3eb live in p1014 (21:58Z): +20% sessions toward 25.7k advertiser walks an hour"), "F1");
+  assert.equal(fault(["instagram_census.crawl_concurrency"], "raise census, the owner wants more reads"), "F1");
+});
+
 test("a hand write no fault covers is filed and counts as a fault without a job until the registry lists one for its key", async () => {
   const now = AT + 3_600_000;
   const first = await data(now, [hand(20001, AT, "lane.new_knob", "raise the new knob")]);
