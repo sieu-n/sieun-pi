@@ -13,7 +13,7 @@ import { type Hit, mergePages, type Page, pageAsk, type PageAsk, type Ranked, se
 import { callerRoot, chatOf, expandHome, familyRoots, type HostEntry, hostsFile, localRoots, readHosts, readSettings, RegistryReader, registrySource, settingsPath, type Settings,
   sieunPiConfig } from "./core/scope.ts";
 
-export interface BoxState { ok: boolean; error?: string; tookMs: number; newestAt?: number; backfillPct: number; lagP50Ms?: number; lagP99Ms?: number }
+export interface BoxState { ok: boolean; error?: string; tookMs: number; newestAt?: number; backfillPct: number; bytesTotal?: number; lagP50Ms?: number; lagP99Ms?: number }
 export interface SearchResult { hits: Hit[]; total: number; nextCursor?: string; tookMs: number; boxes: Record<string, BoxState>; scope: "all" | "family" }
 export interface Status {
   box: string; files: number; docs: number; bytesIndexed: number; bytesTotal: number; backfillPct: number; newestAt?: number;
@@ -118,7 +118,7 @@ export async function startServer(options: ServerOptions): Promise<{ close(): Pr
 
   const boxState = (tookMs: number): BoxState => {
     const status = localStatus(false);
-    return { ok: true, tookMs, ...status.newestAt ? { newestAt: status.newestAt } : {}, backfillPct: status.backfillPct,
+    return { ok: true, tookMs, ...status.newestAt ? { newestAt: status.newestAt } : {}, backfillPct: status.backfillPct, bytesTotal: status.bytesTotal,
       ...status.lagP50Ms !== undefined ? { lagP50Ms: status.lagP50Ms } : {}, ...status.lagP99Ms !== undefined ? { lagP99Ms: status.lagP99Ms } : {} };
   };
 
@@ -230,7 +230,7 @@ export async function startServer(options: ServerOptions): Promise<{ close(): Pr
         const asked = performance.now();
         try {
           const answer = await askPeer<Status>(peer, "status", new URLSearchParams({ local: "1" }));
-          out[peer.name] = { ok: true, tookMs: Math.round(performance.now() - asked), backfillPct: answer.backfillPct,
+          out[peer.name] = { ok: true, tookMs: Math.round(performance.now() - asked), backfillPct: answer.backfillPct, bytesTotal: answer.bytesTotal,
             ...answer.newestAt ? { newestAt: answer.newestAt } : {}, ...answer.lagP50Ms !== undefined ? { lagP50Ms: answer.lagP50Ms, lagP99Ms: answer.lagP99Ms } : {} };
         } catch (error) {
           out[peer.name] = { ok: false, error: error instanceof Error ? error.message : String(error), tookMs: Math.round(performance.now() - asked), backfillPct: 0 };

@@ -84,7 +84,7 @@ test("an owner search merges both boxes and the durable index newest first, with
   assert.equal(result.total, 6);
   assert.equal(result.boxes["us-metal02"]!.ok, true);
   assert.equal(result.boxes.mac!.ok, true);
-  assert.deepEqual([result.boxes.mac!.lagP99Ms, result.boxes.mac!.backfillPct], [900, 50], "a box reports its indexer's lag and backfill");
+  assert.deepEqual([result.boxes.mac!.lagP99Ms, result.boxes.mac!.backfillPct, result.boxes.mac!.bytesTotal], [900, 50, 100], "a box reports its indexer's lag, backfill and JSONL bytes");
   assert.equal(result.boxes.down!.ok, false, "a box that does not answer shows as down and the rest still return");
   assert.match(result.hits[2]!.ref, /^mac:/);
 });
@@ -142,7 +142,7 @@ test("status reports this box's counts and every peer's state", async () => {
   assert.equal(status.box, "us-metal02");
   assert.deepEqual([status.files, status.docs, status.backfillPct], [3, 3, 100]);
   assert.equal(status.newestAt, min(5));
-  assert.deepEqual([status.peers.mac!.ok, status.peers.mac!.backfillPct, status.peers.mac!.lagP50Ms], [true, 50, 120]);
+  assert.deepEqual([status.peers.mac!.ok, status.peers.mac!.backfillPct, status.peers.mac!.lagP50Ms, status.peers.mac!.bytesTotal], [true, 50, 120, 100]);
   assert.equal(status.peers.down!.ok, false);
   assert.ok(status.queryP50Ms !== undefined);
 });
