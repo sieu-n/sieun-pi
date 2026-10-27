@@ -1,7 +1,16 @@
 <script lang="ts">
-  import EmptyState from "$lib/ui/EmptyState.svelte";
-  import PanelHeader from "$lib/ui/PanelHeader.svelte";
+  import { router } from "$lib/router.svelte";
+  import BoardIndex from "./BoardIndex.svelte";
+  import ChatBoardPage from "./ChatBoardPage.svelte";
+  import ForYouPage from "./ForYouPage.svelte";
+
+  const head = $derived(router.route.rest[0] ?? null);
 </script>
 
-<PanelHeader title="Board" icon="board" level={1} />
-<EmptyState icon="board" title="Board" description="This page is a placeholder. The board and for you builder replaces it." />
+{#if head === "for-you"}
+  <ForYouPage />
+{:else if head}
+  {#key head}<ChatBoardPage chatId={head} focus={router.route.params.focus ?? null} />{/key}
+{:else}
+  <BoardIndex />
+{/if}
