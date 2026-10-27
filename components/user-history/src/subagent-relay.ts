@@ -51,3 +51,20 @@ export function relayNote(child: Pick<StoppedSubagent, "id" | "name">, text: str
     `Send it the message below with agent_message.send(message, receiver_role="child", receiver_name=${JSON.stringify(child.name)}), ` +
     "which reopens it in your tree. Skip it only if you stopped that subagent on purpose.\n\n" + text;
 }
+
+/**
+ * The second hop of a relay: once a subagent that the outbox reached through its parent (`relayNote`) runs again after the relay, one line says
+ * so and how long after, and its record goes, since the job cleanup needs it only until that run. From 10-19 to 10-22 768 messages to 263
+ * stopped subagents went this way, and no record said whether or when a parent passed one on. A record that stays names a relay never passed on.
+ */
+export async function relayHops(record: { all(): Promise<Record<string, number>>; done(session: string, at: number): Promise<void> },
+  rows: Iterable<{ sessionId?: string; sessionName?: string; lastActivityAt?: number }>, log: (line: string) => void): Promise<void> {
+  const relayed = await record.all();
+  for (const row of rows) {
+    const at = row.sessionId ? relayed[row.sessionId] : undefined;
+    if (at === undefined || row.lastActivityAt === undefined || row.lastActivityAt <= at) continue;
+    await record.done(row.sessionId!, at);
+    log(`relay: ${row.sessionId!.slice(0, 8)}${row.sessionName ? ` (${row.sessionName})` : ""} ran at ${new Date(row.lastActivityAt).toISOString()}, ` +
+      `${Math.round((row.lastActivityAt - at) / 1000)} s after its message went through its parent`);
+  }
+}

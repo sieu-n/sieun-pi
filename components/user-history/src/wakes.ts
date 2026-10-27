@@ -115,13 +115,22 @@ export class Wakes {
   private readonly looked = new Map<number, { stamp: string | null; at: number }>();
   /** Each run whose reads have only failed, from its first failed read on. */
   private readonly failing = new Map<number, { since: number; error: string }>();
+  /** The wake files a pass handles now; a later pass leaves them alone. */
+  private readonly handling = new Set<string>();
+  /** The run reads under way, which a later pass shares instead of starting its own. */
+  private readonly reading = new Map<number, Promise<RunState | null>>();
   private readonly now: () => number;
   constructor(private readonly deps: WakeDeps) { this.now = deps.now ?? Date.now; }
 
   /**
    * One pass: a session's due wakes go to the outbox as one message and their files are removed; a wake whose read or outbox write failed stays
-   * for the next tick. Returns the count of sessions messaged. 10-14 12:35 to 12:56Z: release driver held up to 17 wakes due in one tick, each sent as its own
+   * for the next tick. Returns the count of sends. 10-14 12:35 to 12:56Z: release driver held up to 17 wakes due in one tick, each sent as its own
    * message, and the daemon refused the rest with "too many pending messages: 20 unfinished, limit is 20" every 2 s.
+   *
+   * Time wakes go at once, and a session's run wakes wait only for the reads of their own runs. A pass leaves alone the files an earlier pass
+   * still handles and shares a run read still under way, so a slow read holds only the wakes on that run. Before, every wake waited for every
+   * run read of its pass, and a pass still running skipped the next ones: on 10-19 from 15:32Z to 18:07Z 143 wakes were queued 100 s or more
+   * after their pass began, and on 10-20 at 13:08Z two run wakes 4,995 s, while one read hung.
    */
   async tick(): Promise<number> {
     const names = await readdir(this.deps.dir).catch(() => [] as string[]);
@@ -131,43 +140,68 @@ export class Wakes {
       const file = join(this.deps.dir, name);
       let wake: Wake | null;
       try { wake = parseWake(JSON.parse(await readFile(file, "utf8"))); } catch { wake = null; }
-      if (!wake) { this.deps.log(`wakes: ${name} is not a wake; removed`); await rm(file, { force: true }); continue; }
+      if (!wake) { if (!this.handling.has(file)) { this.deps.log(`wakes: ${name} is not a wake; removed`); await rm(file, { force: true }); } continue; }
       parsed.push({ file, wake });
     }
+    const runs = new Set<number>();
+    for (const { wake } of parsed) if (wake.on.kind === "run") runs.add(wake.on.run);
+    for (const run of this.looked.keys()) if (!runs.has(run)) this.looked.delete(run);
+    for (const run of this.failing.keys()) if (!runs.has(run)) this.failing.delete(run);
     // Every run is read at once and every session is sent at once: after the chat moved to us-metal02 (10-18 04:19Z) 170 wakes waited, and one
     // at a time at 3 to 5 s a send, a time wake set for 04:40:30Z went out at 04:42:58Z. The outbox keeps each send single (src/agent-outbox.ts).
-    const runs = new Map<number, Extract<WakeOn, { kind: "run" }>>();
-    for (const { wake } of parsed) if (wake.on.kind === "run" && !runs.has(wake.on.run)) runs.set(wake.on.run, wake.on);
-    const states = new Map<number, RunState | null>(await Promise.all([...runs].map(async ([run, on]) => [run, await this.look(on, now)] as const)));
-    if (runs.size) await this.moved();
-    const due = new Map<string, { file: string; wake: Wake; state: RunState | null }[]>();
-    for (const { file, wake } of parsed) {
-      let state: RunState | null = null;
-      if (wake.on.kind === "run") {
-        state = states.get(wake.on.run) ?? null;
-        const failed = this.failing.get(wake.on.run);
-        if (failed && now - failed.since >= UNREADABLE_MS) state = { error: failed.error };
-        else if (!state || !("done" in state) || !state.done || ((wake.on.attempt ?? 1) > (state.attempt ?? 1) && !rerunMissed(wake, state, now))) continue;
-      } else if (wake.on.at > now) continue;
-      due.set(wake.session, [...due.get(wake.session) ?? [], { file, wake, state }]);
+    const mine = parsed.filter(({ file }) => !this.handling.has(file));
+    for (const { file } of mine) this.handling.add(file);
+    const groups = new Map<string, { file: string; wake: Wake }[]>();
+    for (const item of mine) {
+      const key = `${item.wake.session} ${item.wake.on.kind}`;
+      groups.set(key, [...groups.get(key) ?? [], item]);
     }
-    const results = await Promise.all([...due].map(async ([session, wakes]) => {
-      const what = wakes.map(({ wake }) => wake.on.kind === "run" ? `run ${wake.on.run}` : "its time").join(", ");
+    const results = await Promise.all([...groups.values()].map(async group => {
       try {
-        const text = wakes.map(({ wake, state }) => wakeText(wake, state, now)).join("\n");
-        const root = wakes.find(({ wake }) => wake.root)?.wake.root;
-        await this.deps.deliver(session, text, root, "wake", Math.max(...wakes.map(({ wake }) => wake.since)));
-        for (const { file } of wakes) await rm(file, { force: true });
-        this.deps.log(`wakes: woke ${session} for ${what}, waited ${Math.round((now - Math.min(...wakes.map(({ wake }) => wake.since))) / 60_000)} min, queued ${Math.round((this.now() - now) / 1000)} s after the tick began`);
-        return true;
-      } catch (error) {
-        this.deps.log(`wakes: wake ${session} for ${what}: ${error instanceof Error ? error.message : String(error)}; tried again next tick`);
-        return false;
-      } finally { await this.moved(); }
+        const due: { file: string; wake: Wake; state: RunState | null }[] = [];
+        const states = new Map<number, RunState | null>(await Promise.all([...new Set(group.flatMap(({ wake }) => wake.on.kind === "run" ? [wake.on.run] : []))]
+          .map(async run => [run, await this.read(group.find(({ wake }) => wake.on.kind === "run" && wake.on.run === run)!.wake.on as Extract<WakeOn, { kind: "run" }>, now)] as const)));
+        if (states.size) await this.moved();
+        for (const { file, wake } of group) {
+          let state: RunState | null = null;
+          if (wake.on.kind === "run") {
+            state = states.get(wake.on.run) ?? null;
+            const failed = this.failing.get(wake.on.run);
+            if (failed && now - failed.since >= UNREADABLE_MS) state = { error: failed.error };
+            else if (!state || !("done" in state) || !state.done || ((wake.on.attempt ?? 1) > (state.attempt ?? 1) && !rerunMissed(wake, state, now))) continue;
+          } else if (wake.on.at > now) continue;
+          due.push({ file, wake, state });
+        }
+        return due.length ? await this.send(due, now) : false;
+      } finally { for (const { file } of group) this.handling.delete(file); }
     }));
-    for (const run of this.looked.keys()) if (!states.has(run)) this.looked.delete(run);
-    for (const run of this.failing.keys()) if (!states.has(run)) this.failing.delete(run);
     return results.filter(Boolean).length;
+  }
+
+  /** The read of a run, shared by every pass while it is under way (`look`). */
+  private read(on: Extract<WakeOn, { kind: "run" }>, now: number): Promise<RunState | null> {
+    const going = this.reading.get(on.run);
+    if (going) return going;
+    const read = this.look(on, now).finally(() => this.reading.delete(on.run));
+    this.reading.set(on.run, read);
+    return read;
+  }
+
+  /** One session's due wakes as one message to the outbox; their files go once it is on disk. */
+  private async send(wakes: { file: string; wake: Wake; state: RunState | null }[], now: number): Promise<boolean> {
+    const session = wakes[0]!.wake.session;
+    const what = wakes.map(({ wake }) => wake.on.kind === "run" ? `run ${wake.on.run}` : "its time").join(", ");
+    try {
+      const text = wakes.map(({ wake, state }) => wakeText(wake, state, now)).join("\n");
+      const root = wakes.find(({ wake }) => wake.root)?.wake.root;
+      await this.deps.deliver(session, text, root, "wake", Math.max(...wakes.map(({ wake }) => wake.since)));
+      for (const { file } of wakes) await rm(file, { force: true });
+      this.deps.log(`wakes: woke ${session} for ${what}, waited ${Math.round((now - Math.min(...wakes.map(({ wake }) => wake.since))) / 60_000)} min, queued ${Math.round((this.now() - now) / 1000)} s after the tick began`);
+      return true;
+    } catch (error) {
+      this.deps.log(`wakes: wake ${session} for ${what}: ${error instanceof Error ? error.message : String(error)}; tried again next tick`);
+      return false;
+    } finally { await this.moved(); }
   }
 
   private async moved(): Promise<void> {
@@ -383,7 +417,8 @@ export async function waking(dir: string, session: string): Promise<boolean> {
 }
 
 /**
- * Ticks the wakes at once and then every TICK_MS until the returned stop is called; a tick still running when the next comes is left to run.
+ * Ticks the wakes at once and then every TICK_MS until the returned stop is called; a tick still running when the next comes is left to run,
+ * and the next runs beside it on the files it does not hold (`Wakes.tick`).
  * TICKED is stamped when the ticker starts, on every TICK_MS beat even while a tick runs, after each run read and send, and when a tick ends,
  * so it ages only while no service runs this ticker. 10-15: a tick took 30 s to over 2 min (a run read under load, a send held up to 30 s by a
  * slow daemon), and releases and crashes restarted the service at 10:3xZ, 13:49:5xZ and 15:21:3xZ. At the 10:33:18Z VP of CI check-in the stamp
@@ -397,12 +432,7 @@ export function startWakes(deps: WakeDeps, everyMs = TICK_MS): () => void {
   const fail = (error: unknown) => deps.log(`wakes: ${error instanceof Error ? error.message : String(error)}`);
   const stamp = () => mkdir(deps.dir, { recursive: true, mode: 0o700 }).then(() => writeFile(join(deps.dir, TICKED), new Date((deps.now ?? Date.now)()).toISOString()));
   const wakes = new Wakes({ ...deps, progress: stamp });
-  let running = false;
-  const beat = () => {
-    if (running) { void stamp().catch(fail); return; }
-    running = true;
-    void stamp().then(() => wakes.tick()).then(stamp).catch(fail).finally(() => { running = false; });
-  };
+  const beat = () => { void stamp().then(() => wakes.tick()).then(stamp).catch(fail); };
   beat();
   const timer = setInterval(beat, everyMs);
   timer.unref();

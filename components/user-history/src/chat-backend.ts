@@ -15,8 +15,8 @@ import { checkInSettings } from "./checkin-settings.ts";
 import { checkInDuties } from "./checkin-findings.ts";
 import { CLEAN_ROOM_CHATS_FILE, CLEAN_ROOM_CORRECTIONS_FILE, CorrectionLedger } from "./chat-corrections.ts";
 import { routedTell, trialSources } from "./clean-room-subjects.ts";
-import { claudeReader, leadSessions, markOwnerTurn, poolAdmits, readPoolClasses, readPoolStatus, setPoolPriority, treeAccountWaits, treeFreeAt } from "./chat-pool.ts";
-import { leadWriter, relayStats } from "./chat-hosts.ts";
+import { claudeReader, leadSessions, markOwnerTurn, poolAdmits, poolQueueNow, readPoolClasses, readPoolStatus, setPoolPriority, treeAccountWaits, treeFreeAt } from "./chat-pool.ts";
+import { leadNow, leadStore, leadWriter, relayStats } from "./chat-hosts.ts";
 import { boardQueueRead, hostsQueueRead, queueReader } from "./chat-turn-queue.ts";
 import { readCallHandles, readFootprints, startMacUsableWatch } from "./mac-usable-watch.ts";
 import { CallWatch } from "./hung-calls.ts";
@@ -64,7 +64,8 @@ import { startAlertPoll } from "./alert-poll.ts";
 import { promptView, sessionFileFor } from "./prompt-view.ts";
 import { sessionFileOf, type TargetState } from "./send-once.ts";
 import { AgentOutbox, stopRecords } from "./agent-outbox.ts";
-import { rowSubagent } from "./subagent-relay.ts";
+import { noticeOutbox } from "./notice-outbox.ts";
+import { relayHops, rowSubagent } from "./subagent-relay.ts";
 import { OwnerOutbox } from "./owner-outbox.ts";
 import type { AgentKind } from "./outbox.ts";
 import { adoptMoved, REOPENABLE, reopenSession, sendReopening } from "./reopen-send.ts";
@@ -180,7 +181,9 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   // While a chat or one of its jobs works, the service keeps the Mac from idle sleep (10-05: a battery sleep stopped every chat and job).
   const awake = new IdleSleepHold(line => process.stderr.write(`${new Date().toISOString()} ${line}\n`));
   const cleanRoomChats = new IdIndex(join(dataDir, CLEAN_ROOM_CHATS_FILE), "Clean-room chat index");
-  const catalog = new Catalog(socketPath, readState, labels, { ids: () => chats.ids(), checkIns: () => chats.checkIns(), links: (id, name) => chats.links(id, name), briefs: () => chats.briefs(), archivedIds: () => chats.archivedIds(), roster: children => chats.roster(children) }, new ThreadOrigins(created, cleanRoomChats), options.hosts ?? null, options.copyFile ?? null, options.saveAgents ? join(dataDir, AGENTS_FILE) : null);
+  const dutyLog = (line: string) => process.stderr.write(`${new Date().toISOString()} ${line}\n`);
+  const relays = relayRecord(join(dataDir, "relayed.json"));
+  const catalog = new Catalog(socketPath, readState, labels, { ids: () => chats.ids(), checkIns: () => chats.checkIns(), links: (id, name) => chats.links(id, name), briefs: () => chats.briefs(), archivedIds: () => chats.archivedIds(), roster: children => { if (!quiet) void relayHops(relays, [...children.values()].flat(), dutyLog).catch(error => dutyLog(`relay: hops: ${error instanceof Error ? error.message : String(error)}`)); return chats.roster(children); } }, new ThreadOrigins(created, cleanRoomChats), options.hosts ?? null, options.copyFile ?? null, options.saveAgents ? join(dataDir, AGENTS_FILE) : null);
   const boards = new BoardStore(dataDir);
   const corrections = new CorrectionLedger(dataDir);
   const threads = new ThreadHub(socketPath, catalog, () => defaults.read(), async id => (await chats.ids()).has(id) ? boards.read(id) : undefined,
@@ -193,7 +196,6 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     log: line => process.stderr.write(`${new Date().toISOString()} ${line}\n`) });
   // Each chat's duties: every run starts one duty job linked to the chat. The standing ones are scheduled here; the built-in check-in duty is
   // scheduled and measured in Chats and handed here, and its card edits the check-in setting.
-  const dutyLog = (line: string) => process.stderr.write(`${new Date().toISOString()} ${line}\n`);
   const settings = checkInSettings(join(dataDir, "check-in-settings.json"));
   // A finished duty job's archive runs in the background with retries, so a slow daemon never holds up the next job's start.
   const archives = new ArchiveQueue({ path: join(dataDir, "duty-archive-queue.json"), archive: archiveDutyJob(threads, () => catalog.rows(), () => primeUpdateRunning(agentDir, socketPath)), log: dutyLog, ...quiet ? { tickMs: 0 } : {} });
@@ -248,13 +250,16 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     hostOf: id => { const name = catalog.hostOf(id); return name ? catalog.remoteHosts().find(({ host }) => host.name === name)?.host ?? null : null; } });
   // Only the serve that owns the live chats writes the turn queues' lead lists: each box gets the chats it runs, this one locally, the others
   // through their relays.
-  const lead = ownChatsOnly ? null : leadWriter({ hostOf: id => catalog.hostOf(id), remotes: () => catalog.remoteHosts().map(({ host }) => host), local: leadSessions, log: dutyLog });
-  const relays = relayRecord(join(dataDir, "relayed.json"));
+  const lead = ownChatsOnly ? null : leadWriter({ hostOf: id => catalog.hostOf(id), remotes: () => catalog.remoteHosts().map(({ host }) => host), local: leadSessions, log: dutyLog,
+    current: host => leadNow(host, poolQueueNow), store: leadStore(join(dataDir, "lead-written.json")) });
+  // The server's notices to chats wait on disk until the daemon takes them (src/notice-outbox.ts); a scratch serve keeps its own folder.
+  const notices = noticeOutbox(join(dataDir, quiet ? "notice-outbox-scratch" : "notice-outbox"), threads, dutyLog, {
+    held: async entry => { const host = catalog.hostOf(entry.threadId); return !!host && !(await reach.reach(host)).online; } });
   chats = new Chats(index, threads, id => catalog.summary(id), extensionBuild(), loadRecord(join(dataDir, "extension-loads.json")),
     { board: id => boards.read(id), rows: () => catalog.rows(), memory: checkInRecord(join(dataDir, "check-ins.json")), registry,
       correctionChecks: checkRecord(join(dataDir, "correction-checks.json")),
       briefChecks: briefCheckRecord(join(dataDir, "brief-checks.json")), deletedJobs: deletedJobRecord(join(dataDir, "deleted-jobs.json")), quietJobs: quietJobRecord(join(dataDir, "quiet-jobs.json")),
-      heldNotices: heldNoticeRecord(join(dataDir, "held-notices.json")), cancels: jobCancelRecord(join(dataDir, JOB_CANCELS_FILE)),
+      heldNotices: heldNoticeRecord(join(dataDir, "held-notices.json")), notices, cancels: jobCancelRecord(join(dataDir, JOB_CANCELS_FILE)),
       leftovers: (dir, session) => jobEnds.leftovers(dir, session),
       deletedLeftovers: chat => jobEnds.deleted(chat),
       waking: session => waking(join(dataDir, "wakes"), session), relayed: relays, updating: () => primeUpdateRunning(agentDir, socketPath), wakes: now => pendingWakes(join(dataDir, "wakes"), now), stalls,
@@ -489,7 +494,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   return {
     catalog, threads, readState, labels, defaults, newChat, chats, boards, created, usage, duties, poolPriorities, calls,
     agentQueue: agentQueue(id => catalog.title(id), defaults),
-    drainSends: async () => { stopWakes(); await agentOutbox.close(); },
+    drainSends: async () => { stopWakes(); await agentOutbox.close(); await notices.close(); },
     prompt: async (id, via) => {
       const capture = hostCapture(id);
       capture.catch(() => {});
@@ -506,6 +511,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       const watchStopped = stopWatch();
       await outbox.close();
       await agentOutbox.close();
+      await notices.close();
       await watchStopped;
       clearInterval(prioritySync);
       if (unloader) clearInterval(unloader);

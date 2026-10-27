@@ -2061,11 +2061,11 @@ export class Chats {
 
   private tell(chat: string, message: string): Promise<void> {
     const record = this.source.heldNotices;
-    if (!record) return this.threads.prompt(chat, { message, images: [], mode: "steer" });
+    if (!record) return this.steer(chat, message);
     return new Promise((resolve, reject) => this.queue(heldLane(chat), async () => {
       try {
         const until = await this.parkedUntil(chat);
-        if (until === null && !(await record.read()).get(chat)?.length) await this.threads.prompt(chat, { message, images: [], mode: "steer" });
+        if (until === null && !(await record.read()).get(chat)?.length) await this.steer(chat, message);
         else {
           const held = await record.add(chat, message);
           if (until === null) await this.sendHeld(chat);
@@ -2074,6 +2074,11 @@ export class Chats {
         resolve();
       } catch (error) { reject(error); }
     }));
+  }
+
+  /** One notice as a steer: through the notice outbox, which sends it again until it lands (`CheckInSource.notices`), else straight to the daemon. */
+  private steer(chat: string, message: string): Promise<void> {
+    return this.source.notices ? this.source.notices.send(chat, message) : this.threads.prompt(chat, { message, images: [], mode: "steer" });
   }
 
   /** When Prime resumes the chat it parked on a provider wait, from its session file; null when it is not parked or the file cannot be read. */
@@ -2089,7 +2094,7 @@ export class Chats {
       const held = (await record.read()).get(chat) ?? [];
       if (!held.length || await this.parkedUntil(chat) !== null) return;
       let sent = 0;
-      try { for (const message of held) { await this.threads.prompt(chat, { message, images: [], mode: "steer" }); sent++; } }
+      try { for (const message of held) { await this.steer(chat, message); sent++; } }
       finally { if (sent) await record.drop(chat, sent); }
       this.log(`chat ${chat.slice(0, 8)}: the park ended; sent the ${sent} notices held while it was parked`);
     } catch (error) {

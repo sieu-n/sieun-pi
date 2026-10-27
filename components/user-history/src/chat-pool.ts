@@ -610,6 +610,11 @@ export async function markOwnerTurn(sessionId: string): Promise<void> {
   await run(poolCommand.ownerTurn(sessionId));
 }
 
+/** This box's `pi-pool queue --json` read now, unparsed, for the lead writer's read of the list (`leadNow`). */
+export async function poolQueueNow(): Promise<unknown> {
+  return JSON.parse(await run(["queue", "--json"]));
+}
+
 /** Puts the queued runs of these sessions ahead of every other queued run in this box's turn queue (`pi-pool lead`); the list replaces the last one. */
 export async function leadSessions(sessionIds: readonly string[]): Promise<void> {
   await run(poolCommand.lead(sessionIds));

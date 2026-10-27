@@ -287,6 +287,10 @@ export class AgentOutbox {
    * time asks the worker for what it does anyway, so each call waits only for its own target.
    */
   private readonly trees = new Map<string, Promise<unknown>>();
+  /** The keep under way for each session (`keepOne`). */
+  private readonly keeping = new Map<string, Promise<unknown>>();
+  /** The entries held for a box that reads offline, with when the hold began; one line when it begins and one when it ends. */
+  private readonly offline = new Map<string, number>();
 
   private readonly now: () => number;
 
@@ -344,7 +348,17 @@ export class AgentOutbox {
       again: error => error instanceof UpdateWaited,
       held: async entry => {
         const host = deps.reach && this.hostFor(entry.threadId, entry.root);
-        return !!host && !(await deps.reach!(host)).online;
+        if (!host) return false;
+        const away = !(await deps.reach!(host)).online;
+        const since = this.offline.get(entry.id);
+        if (away && since === undefined) {
+          this.offline.set(entry.id, this.now());
+          deps.log(`outbox ${this.where(entry.threadId)}: ${entry.id} waits with no try while ${host} reads offline`);
+        } else if (!away && since !== undefined) {
+          this.offline.delete(entry.id);
+          deps.log(`outbox ${this.where(entry.threadId)}: ${entry.id} waited ${Math.round((this.now() - since) / 1000)} s while ${host} read offline; it goes now`);
+        }
+        return away;
       },
       changed: () => {},
     });
@@ -366,7 +380,19 @@ export class AgentOutbox {
     return ids[0]!;
   }
 
-  private async keepOne(session: string, text: string, root?: string, kind: AgentKind = "message", setAt?: number): Promise<string> {
+  /**
+   * `keepNow` after the keep before it for the same session ended, so its look for a waiting copy and its write are one step: two identical
+   * submits in the same tick both went before (10-19 to 10-22: 15 groups of identical texts within 1 s, 18 extra copies).
+   */
+  private keepOne(session: string, text: string, root?: string, kind: AgentKind = "message", setAt?: number): Promise<string> {
+    const run = (this.keeping.get(session) ?? Promise.resolve()).then(() => this.keepNow(session, text, root, kind, setAt));
+    const done = run.then(() => {}, () => {});
+    this.keeping.set(session, done);
+    void done.then(() => { if (this.keeping.get(session) === done) this.keeping.delete(session); });
+    return run;
+  }
+
+  private async keepNow(session: string, text: string, root?: string, kind: AgentKind = "message", setAt?: number): Promise<string> {
     const key = sendKey(session, text);
     const held = await this.outbox.pending(entry => entry.threadId === session && (entry.fingerprint === key || !!entry.bundle?.some(part => part.fingerprint === key)));
     if (held) return held.id;

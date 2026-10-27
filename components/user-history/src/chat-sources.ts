@@ -189,6 +189,10 @@ export interface RelayRecord {
   add(session: string, at: number): Promise<void>;
   /** The time of the session's last relay, or undefined when none is on record. */
   at(session: string): Promise<number | undefined>;
+  /** Every session's last relay time. */
+  all(): Promise<Record<string, number>>;
+  /** Drops the session's record while it still holds the relay of `at`. */
+  done(session: string, at: number): Promise<void>;
 }
 /** `<data dir>/relayed.json`: `{ [session id]: last relay time }`, read without the lock since every write replaces it whole by rename. */
 export function relayRecord(path: string): RelayRecord {
@@ -197,6 +201,8 @@ export function relayRecord(path: string): RelayRecord {
   return {
     async add(session, at) { await transactJsonFile(file, state => { state[session] = Math.max(at, state[session] ?? at); }); },
     async at(session) { return (await snapshotJsonFile(file))[session]; },
+    async all() { return snapshotJsonFile(file); },
+    async done(session, at) { await transactJsonFile(file, state => { if (state[session] === at) delete state[session]; }); },
   };
 }
 
@@ -361,6 +367,8 @@ export interface CheckInSource {
   quietJobs?: QuietJobRecord;
   /** The notices held for parked chats (`<data dir>/held-notices.json`, `Chats.tell`). Absent: every notice goes at once. */
   heldNotices?: HeldNoticeRecord;
+  /** Sends a server notice to a chat through its outbox on disk, which tries it again until the daemon takes it (src/notice-outbox.ts). Absent: one direct steer. */
+  notices?: { send(chat: string, message: string): Promise<void> };
   /** The owner's Stops and Archives of jobs (`<data dir>/job-cancels.json`, `Chats.cancelJob`). Absent (tests): no cancel is kept. */
   cancels?: JobCancelRecord;
   /**
@@ -374,7 +382,7 @@ export interface CheckInSource {
   /** Whether a session holds a pending `board.wake` (src/wakes.ts); the cleanup keeps such a job, since its wake would reopen it. */
   waking?: (session: string) => Promise<boolean>;
   /** The messages sent to stopped subagents through their parents (`<data dir>/relayed.json`); the cleanup keeps a job owed one. Absent: none. */
-  relayed?: RelayRecord;
+  relayed?: Pick<RelayRecord, "add" | "at">;
   /** The Prime update restoring this box's daemon now (`primeUpdateRunning`), or null; the idle-root sweep archives nothing while one runs. Absent: none. */
   updating?: () => Promise<PrimeUpdate | null>;
   /** The board.wakes the service still owes at a time (`pendingWakes`); the check-in counts a job asleep on one as working. Absent: none. */

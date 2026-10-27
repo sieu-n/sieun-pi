@@ -65,7 +65,9 @@ test("a message to a session on an offline Mac waits with no try and no fault li
   for (const session of SESSIONS) for (const n of [1, 2]) await box.deliver(session, `[wake] check ${n}`);
   while (reads() < 4) await new Promise(done => setTimeout(done, 1));
   assert.equal(calls.length, 0, "no daemon call to the offline Mac");
-  assert.deepEqual(lines, ["hosts: mac is offline (Tailscale last seen 3h ago); messages to its sessions wait until it is back"]);
+  assert.deepEqual(lines.filter(line => !/^outbox \S+ on mac: m-\S+ waits with no try while mac reads offline$/.test(line)),
+    ["hosts: mac is offline (Tailscale last seen 3h ago); messages to its sessions wait until it is back"]);
+  assert.equal(lines.length, 3, "and one line for each held lane head");
   const held = (await box.outbox.pending(() => true))!;
   assert.equal(held.attempts, 0, "no try counted while the Mac is offline");
   wake();
@@ -74,7 +76,7 @@ test("a message to a session on an offline Mac waits with no try and no fault li
   assert.deepEqual(calls.filter(call => call.startsWith("send")).sort(), ["send 01a14dea", "send 01a14ecb"], "each session's two wakes go in one send");
   assert.equal(lines.filter(line => line.includes("is offline")).length, 1);
   assert.equal(lines.filter(line => line.includes("is back online")).length, 1, lines.join("\n"));
-  assert.ok(!lines.some(line => line.startsWith("outbox ") && !/: m-\S+ carries 2 queued messages in one send/.test(line)), lines.join("\n"));
+  assert.ok(!lines.some(line => line.startsWith("outbox ") && !/: m-\S+ (carries 2 queued messages in one send|waits with no try while mac reads offline|waited \d+ s while mac read offline; it goes now)/.test(line)), lines.join("\n"));
   assert.deepEqual(readServiceFaults(lines.map(line => `2026-10-18T16:01:00.000Z ${line}`), "us-metal02"), []);
 });
 
