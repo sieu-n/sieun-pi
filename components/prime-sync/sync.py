@@ -718,9 +718,10 @@ def sync_state(config: dict) -> list[str]:
         if part != local:
             written = harness_from(part, current)
             body = json.dumps(written, indent=2, ensure_ascii=False).encode()
-            if harness_path.stat().st_mtime_ns != before:
-                raise Skip("harness_state.json changed during the merge")
-            write_atomic(harness_path, body)
+            with LedgerLock(harness_path):
+                if harness_path.stat().st_mtime_ns != before:
+                    raise Skip("harness_state.json changed during the merge")
+                write_atomic(harness_path, body)
             time.sleep(SETTLE_SECONDS)
             if harness_path.read_bytes() != body:
                 raise Skip("Prime rewrote harness_state.json right after the merge")
