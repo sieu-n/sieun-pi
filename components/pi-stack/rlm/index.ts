@@ -1,0 +1,510 @@
+/**
+ * pi-rlm: Prime Agent's RLM kernel as an upstream Pi extension.
+ *
+ * It registers the `ipython` tool over the vendored Prime runtime in `python/`, answers the kernel's `host_request` calls, wakes the agent
+ * when a background `bash()` handle finishes, runs `rlm.spawn` children in this process as their own `AgentSession`s, and keeps the kernel's
+ * namespace across compaction (the process stays up) and across a restart (a dill snapshot in the session's artifact dir).
+ *
+ * One pi-host loads this module once and calls the factory once per session runtime, so every piece of session state lives in `RlmSession`,
+ * keyed by session id inside the factory closure.
+ */
+
+import { existsSync, mkdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Type } from "typebox";
+import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { dropKernelHandlers, kernelHandler } from "../shared/kernel-bridge.ts";
+import { sessionArtifactDir } from "../shared/paths.ts";
+import { identityOf, type Identity } from "../shared/registry.ts";
+import { bootstrapCode, parseSkillImportErrors } from "./src/bootstrap.ts";
+import { ChildManager, childRecordOf, type ChildRecord } from "./src/children.ts";
+import { GoalState } from "./src/goal.ts";
+import { createSession } from "./src/host-client.ts";
+import { Kernel, type CellResult, type HostRequest, type RestoreResult } from "./src/kernel.ts";
+import { childSection, rlmSection } from "./src/prompt.ts";
+import { BUNDLED_SKILLS_DIR, kernelPython, pythonSkillOf, RUNTIME_SRC, type PythonSkill } from "./src/python.ts";
+
+export { setChildLoaderOptions } from "./src/children.ts";
+
+const AGENT_MESSAGE_MIME = "application/vnd.prime-agent.agent-message+json";
+const IMAGE_MIMES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+const SNAPSHOT_LIMITS = { maxBytes: 256 * 1024 * 1024, maxVariableBytes: 16 * 1024 * 1024, pruneOversized: true };
+const KERNEL_RESET = [
+  "<ipython_kernel_reset>",
+  "The Python kernel was restarted after it exited. Variables, imports, async tasks, and open resources from before the restart are no longer available unless the snapshot revived them; recreate the rest before using them.",
+  "</ipython_kernel_reset>",
+].join("\n");
+
+/** The env a kernel starts from: the host's env without Prime's own kernel and worker variables, which name another runtime's files. */
+function baseEnv(): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (v === undefined) continue;
+    if (/^(RLM_(?!GLOBAL_HARNESS_STATE_DIR$)|PRIME_AGENT_INTERNAL_|PRIME_AGENT_KERNEL_OWNER_PID$)/.test(k)) continue;
+    env[k] = v;
+  }
+  return env;
+}
+
+function maxDepthFromEnv(): number {
+  const n = Number(process.env.RLM_MAX_DEPTH ?? "2");
+  return Number.isInteger(n) && n >= 0 ? n : 2;
+}
+
+interface Notice {
+  pid: number;
+  command: string;
+  exitCode: number | null;
+}
+
+function noticeMessage(n: Notice) {
+  return {
+    customType: "async_bash_completion",
+    content: `[bash-done pid:${n.pid} exit:${n.exitCode}]\n\nCommand: ${JSON.stringify(n.command)}`,
+    display: true,
+    details: n,
+  };
+}
+
+interface KernelStart {
+  kernel: Kernel;
+  restarted: boolean;
+  restore?: RestoreResult;
+  skillErrors?: Record<string, string>;
+}
+
+class RlmSession {
+  readonly id: string;
+  readonly identity: Identity;
+  readonly artifactDir: string;
+  readonly agentDir: string;
+  readonly goal: GoalState;
+  ctx: ExtensionContext;
+  pythonSkills: PythonSkill[] = [];
+  kernel: Kernel | undefined;
+  private starting: Promise<KernelStart> | undefined;
+  private kernelStarts = 0;
+  private children: ChildManager | undefined;
+  private notices = new Map<number, Notice>();
+  private compactRequest: { instructions?: string } | undefined;
+  private maxDepthOverride: number | undefined;
+  private disposed = false;
+
+  constructor(
+    private readonly pi: ExtensionAPI,
+    ctx: ExtensionContext,
+  ) {
+    this.ctx = ctx;
+    this.id = ctx.sessionManager.getSessionId();
+    this.identity = identityOf(this.id, ctx.sessionManager.getSessionName() ?? this.id);
+    this.agentDir = getAgentDir();
+    this.artifactDir = sessionArtifactDir(this.id, ctx.sessionManager.getSessionFile(), this.agentDir) ?? join(tmpdir(), `pi-rlm-${this.id}`);
+    this.goal = new GoalState(pi);
+    this.goal.load(ctx);
+  }
+
+  get snapshotPath(): string | undefined {
+    return this.ctx.sessionManager.getSessionFile() ? join(this.artifactDir, "kernel-state.dill") : undefined;
+  }
+
+  maxDepth(): number {
+    return this.maxDepthOverride ?? maxDepthFromEnv();
+  }
+
+  setMaxDepth(n: number): void {
+    this.maxDepthOverride = n;
+  }
+
+  childManager(): ChildManager {
+    return (this.children ??= new ChildManager({
+      sessionId: this.id,
+      sessionName: () => this.pi.getSessionName() ?? this.identity.name,
+      artifactDir: this.artifactDir,
+      agentDir: this.agentDir,
+      cwd: this.ctx.cwd,
+      depth: this.identity.depth,
+      maxDepth: () => this.maxDepth(),
+      activeTools: () => this.pi.getActiveTools(),
+      notify: (customType, content, details) => this.pi.sendMessage({ customType, content, display: true, details }, { triggerTurn: true, deliverAs: "steer" }),
+      attributeUsage: data => this.pi.appendEntry("child_usage_attributed", data),
+      changed: record => this.pi.events.emit("rlm:child", { parentId: this.id, child: record }),
+    }));
+  }
+
+  /** Loads the child index from disk, so a reopened parent lists its children and the bus can wake them. */
+  restoreChildren(): void {
+    if (existsSync(join(this.artifactDir, "rlm-children.json"))) this.childManager();
+  }
+
+  private kernelEnv(binDir: string | undefined): Record<string, string> {
+    const env = baseEnv();
+    const sep = process.platform === "win32" ? ";" : ":";
+    env.PYTHONPATH = [RUNTIME_SRC, ...this.pythonSkills.map(s => s.src), env.PYTHONPATH].filter(Boolean).join(sep);
+    env.PYTHONUNBUFFERED = "1";
+    if (binDir) env.PATH = [binDir, env.PATH].filter(Boolean).join(sep);
+    env.RLM_SESSION_DIR = this.artifactDir;
+    env.RLM_HARNESS_STATE_DIR = join(this.artifactDir, "harness");
+    env.RLM_DEPTH = String(this.identity.depth);
+    env.RLM_MAX_DEPTH = String(this.maxDepth());
+    env.PI_CODING_AGENT_DIR = this.agentDir;
+    env.PRIME_AGENT_KERNEL_OWNER_PID = String(process.pid);
+    return env;
+  }
+
+  ensureKernel(onProgress: (text: string) => void): Promise<KernelStart> {
+    if (this.kernel?.alive && !this.starting) return Promise.resolve({ kernel: this.kernel, restarted: false });
+    this.starting ??= this.startKernel(onProgress).finally(() => (this.starting = undefined));
+    return this.starting;
+  }
+
+  private async startKernel(onProgress: (text: string) => void): Promise<KernelStart> {
+    const restarted = this.kernelStarts > 0;
+    this.kernelStarts += 1;
+    mkdirSync(this.artifactDir, { recursive: true });
+    onProgress("Starting Python kernel...");
+    const { python, binDir } = await kernelPython(this.agentDir, this.pythonSkills, onProgress);
+    const kernel = new Kernel({
+      python,
+      cwd: this.ctx.cwd,
+      env: this.kernelEnv(binDir),
+      stderrLogPath: this.snapshotPath ? join(this.artifactDir, "kernel-stderr.log") : undefined,
+      onHostRequest: request => this.hostRequest(request),
+      onExit: () => {
+        if (this.kernel === kernel) this.kernel = undefined;
+      },
+    });
+    await kernel.ready;
+    let restore: RestoreResult | undefined;
+    if (this.snapshotPath && existsSync(this.snapshotPath)) {
+      onProgress("Restoring Python state...");
+      restore = await kernel.restore(this.snapshotPath);
+    }
+    onProgress("Preparing Python runtime...");
+    const boot = await kernel.execute(bootstrapCode(this.pythonSkills.map(s => s.importName)));
+    if (boot.status !== "ok") {
+      await kernel.shutdown();
+      throw new Error(`Failed to initialize the rlm runtime in the Python kernel:\n${boot.stderr}\n${boot.error?.traceback.join("\n") ?? ""}`);
+    }
+    this.kernel = kernel;
+    return { kernel, restore, restarted, skillErrors: parseSkillImportErrors(boot.stdout) };
+  }
+
+  async snapshot(): Promise<void> {
+    const path = this.snapshotPath;
+    const kernel = this.kernel;
+    if (!path || !kernel?.alive) return;
+    await kernel.snapshot(path, join(this.artifactDir, "kernel-state.json"), SNAPSHOT_LIMITS).catch(() => undefined);
+  }
+
+  /** One kernel `host_request`. Another extension's handler in `shared/kernel-bridge.ts` wins over pi-rlm's own. */
+  async hostRequest(request: HostRequest): Promise<unknown> {
+    const { type, ...payload } = request;
+    const external = kernelHandler(this.id, type);
+    if (external) return external(payload);
+    switch (type) {
+      case "bash.completed":
+        return this.onBashCompleted({ pid: Number(payload.pid), command: String(payload.command ?? ""), exitCode: (payload.exitCode as number | null) ?? null });
+      case "bash.consumed":
+        this.notices.delete(Number(payload.pid));
+        return {};
+      case "rlm.run":
+        return this.spawn(payload);
+      case "rlm.list_subagents":
+        return { subagents: this.childManager().all().map(r => this.childManager().row(r)) };
+      case "rlm.delete_subagent":
+        return { subagent: await this.childManager().delete(String(payload.target ?? "")), service_cleanup: "none" };
+      case "rlm.collect": {
+        const targets = Array.isArray(payload.targets) ? payload.targets.map(String) : [];
+        const timeout = typeof payload.timeout_ms === "number" ? payload.timeout_ms : 0;
+        return { results: await this.childManager().collect(targets, timeout) };
+      }
+      case "rlm.progress.note":
+        return this.progressNote(String(payload.message ?? ""));
+      case "rlm.find_models":
+        return this.findModels(String(payload.query ?? ""), typeof payload.limit === "number" ? payload.limit : 8);
+      case "rlm.create_session":
+        return this.createSession(payload);
+      case "goal.get":
+        return this.goal.view();
+      case "goal.create":
+        return this.goal.create(payload);
+      case "goal.complete":
+        return this.goal.complete();
+      case "compact.status": {
+        const usage = this.ctx.getContextUsage();
+        return { tokens: usage?.tokens ?? null, context_window: usage?.contextWindow ?? null, percent: usage?.percent ?? null, scheduled: this.compactRequest !== undefined };
+      }
+      case "compact.run": {
+        if (this.ctx.sessionManager.getEntries().filter(e => e.type === "message").length < 2) return { scheduled: false, reason: "nothing to compact yet" };
+        this.compactRequest = { instructions: typeof payload.instructions === "string" ? payload.instructions : undefined };
+        return { scheduled: true };
+      }
+      case "model.info": {
+        const m = this.ctx.model;
+        return m ? { provider: m.provider, id: m.id, name: m.name, input: m.input, context_window: m.contextWindow } : { provider: null, id: null };
+      }
+      default:
+        throw new Error(`pi-rlm has no handler for host request ${type}`);
+    }
+  }
+
+  private onBashCompleted(n: Notice): Record<string, unknown> {
+    if (this.ctx.isIdle()) this.pi.sendMessage(noticeMessage(n), { triggerTurn: true, deliverAs: "steer" });
+    else this.notices.set(n.pid, n);
+    return {};
+  }
+
+  /** Notices held while the agent was busy, for the next boundary. Reading a handle in a live cell removed its notice first. */
+  takeNotices(): Notice[] {
+    const out = [...this.notices.values()];
+    this.notices.clear();
+    return out;
+  }
+
+  takeCompactRequest(): { instructions?: string } | undefined {
+    const r = this.compactRequest;
+    this.compactRequest = undefined;
+    return r;
+  }
+
+  private async spawn(payload: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const prompt = payload.prompt;
+    const kwargs = (payload.kwargs ?? {}) as Record<string, unknown>;
+    if (typeof prompt !== "string") throw new Error("rlm.spawn prompt must be a string");
+    const unknown = Object.keys(kwargs).filter(k => !["name", "model", "thinking"].includes(k));
+    if (unknown.length) throw new Error(`rlm.spawn got unknown options: ${unknown.join(", ")}`);
+    if (typeof kwargs.name !== "string") throw new Error("rlm.spawn needs name=");
+    let model = this.ctx.model;
+    if (typeof kwargs.model === "string") {
+      const [provider, ...rest] = kwargs.model.split("/");
+      model = this.ctx.modelRegistry.find(provider!, rest.join("/"));
+      if (!model) throw new Error(`model ${kwargs.model} is not in the catalog; pick one from rlm.find_models()`);
+      if (!this.ctx.modelRegistry.hasConfiguredAuth(model)) throw new Error(`model ${kwargs.model} has no configured credentials`);
+    }
+    if (!model) throw new Error("rlm.spawn needs a parent model or model=");
+    const thinking = (typeof kwargs.thinking === "string" ? kwargs.thinking : this.pi.getThinkingLevel()) as ThinkingLevel;
+    const record = this.childManager().spawn({ prompt, name: kwargs.name, model, thinking });
+    return { rlm_child_id: record.id, name: record.name, session_dir: record.sessionDir, model: record.model };
+  }
+
+  private progressNote(message: string): Record<string, unknown> {
+    const mine = childRecordOf(this.id);
+    if (!mine) return { accepted: true };
+    return mine.owner.progress(mine.record, message);
+  }
+
+  private findModels(query: string, limit: number): Record<string, unknown> {
+    const q = query.trim().toLowerCase();
+    const models = this.ctx.modelRegistry
+      .getAvailable()
+      .filter(m => !q || `${m.provider}/${m.id} ${m.name}`.toLowerCase().includes(q))
+      .slice(0, Math.max(1, Math.min(limit, 50)))
+      .map(m => ({ provider: m.provider, id: m.id, name: m.name, selector: `${m.provider}/${m.id}` }));
+    return { models };
+  }
+
+  private async createSession(payload: Record<string, unknown>): Promise<Record<string, unknown>> {
+    if (this.identity.depth !== 0) throw new Error("rlm.create_session works only from a root session at depth 0");
+    const kwargs = (payload.kwargs ?? {}) as Record<string, unknown>;
+    const [provider, ...rest] = typeof kwargs.model === "string" ? kwargs.model.split("/") : [this.ctx.model?.provider, this.ctx.model?.id];
+    const handle = await createSession({
+      prompt: String(payload.prompt ?? ""),
+      name: typeof kwargs.name === "string" ? kwargs.name : undefined,
+      provider: provider ?? undefined,
+      model: rest.length ? rest.join("/") : undefined,
+      thinking: typeof kwargs.thinking === "string" ? kwargs.thinking : this.pi.getThinkingLevel(),
+      cwd: typeof kwargs.cwd === "string" ? kwargs.cwd : this.ctx.cwd,
+    });
+    return { ...handle };
+  }
+
+  async dispose(): Promise<void> {
+    if (this.disposed) return;
+    this.disposed = true;
+    await this.snapshot();
+    await this.children?.closeAll();
+    await this.kernel?.shutdown();
+    this.kernel = undefined;
+    dropKernelHandlers(this.id);
+  }
+}
+
+function formatCell(r: CellResult): string {
+  let text = r.stdout;
+  if (r.stderr) text += (text ? "\n" : "") + r.stderr;
+  if (r.result) text += (text ? "\n" : "") + r.result;
+  if (r.status !== "ok" && r.error) text += (text ? "\n" : "") + r.error.traceback.join("\n");
+  if (r.backgroundOutput) text += `${text ? "\n" : ""}[background output (unattributed)]\n${r.backgroundOutput}`;
+  return text;
+}
+
+function restoreLine(r: RestoreResult): string {
+  const lines = ["[python-state-restored]"];
+  if (r.restored.length) lines.push(`Your Python kernel state was revived from your previous session. These names are available again: ${r.restored.join(", ")}.`);
+  else lines.push("Your previous Python kernel state could not be revived; the kernel is starting fresh.");
+  if (r.failed.length) lines.push(`These could not be restored and must be recreated if needed: ${r.failed.map(f => f.name).join(", ")}.`);
+  return lines.join("\n");
+}
+
+export default function piRlm(pi: ExtensionAPI): void {
+  const sessions = new Map<string, RlmSession>();
+  const of = (ctx: ExtensionContext): RlmSession => {
+    const id = ctx.sessionManager.getSessionId();
+    let s = sessions.get(id);
+    if (!s) {
+      s = new RlmSession(pi, ctx);
+      sessions.set(id, s);
+    }
+    s.ctx = ctx;
+    return s;
+  };
+
+  pi.on("resources_discover", () => ({ skillPaths: [BUNDLED_SKILLS_DIR] }));
+
+  pi.on("session_start", (_event, ctx) => {
+    of(ctx).restoreChildren();
+  });
+
+  pi.on("before_agent_start", (event, ctx) => {
+    const s = of(ctx);
+    const skills: PythonSkill[] = [];
+    for (const skill of event.systemPromptOptions.skills) {
+      const py = pythonSkillOf(skill.name, skill.baseDir);
+      if (py && !skills.some(k => k.importName === py.importName)) skills.push(py);
+    }
+    s.pythonSkills = skills;
+    event.systemPromptOptions.sections.rlm = rlmSection(skills);
+    if (s.identity.role === "child") {
+      const parent = s.identity.parentId ? identityOf(s.identity.parentId, s.identity.parentId).name : undefined;
+      event.systemPromptOptions.sections.rlm_child = childSection(parent);
+    }
+  });
+
+  pi.registerTool({
+    name: "ipython",
+    label: "ipython",
+    description:
+      "Execute Python code in a persistent Python REPL. Top-level `await` is supported. Variables, imports, and loaded data persist across calls, and are revived on a best-effort basis when a session is resumed (objects that cannot be serialized are dropped and reported). Run shell commands with `bash('cmd')` / `await bash('cmd')`. Project imports, tests, scripts, CLIs, and dependency checks should run through the target project's own environment.",
+    promptSnippet: "ipython - persistent Python REPL for code, state, and bash() orchestration",
+    executionMode: "sequential",
+    parameters: Type.Object({
+      code: Type.String({ description: "Python code to execute in the persistent Python REPL. Use the target project's own environment for project imports, tests, scripts, CLIs, and dependency checks instead of direct kernel imports." }),
+    }),
+    async execute(_toolCallId, params, signal, onUpdate, ctx) {
+      const s = of(ctx);
+      const progress = (text: string) => onUpdate?.({ content: [{ type: "text", text }], details: { status: "starting" } });
+      const { kernel, restore, restarted, skillErrors } = await s.ensureKernel(progress);
+      const r = await kernel.execute(params.code, {
+        signal,
+        onStream: text => onUpdate?.({ content: [{ type: "text", text }], details: { status: "running" } }),
+      });
+      let text = formatCell(r);
+      const notes: string[] = [];
+      if (restarted) notes.push(KERNEL_RESET);
+      if (restore) notes.push(restoreLine(restore));
+      if (skillErrors) notes.push(`[python-skills-unavailable]\n${Object.entries(skillErrors).map(([k, v]) => `- ${k}: ${v}`).join("\n")}`);
+      if (notes.length) text = `${notes.join("\n\n")}${text ? `\n\n${text}` : ""}`;
+      const images = r.displays.flatMap(d =>
+        Object.entries(d)
+          .filter(([mime, data]) => IMAGE_MIMES.has(mime) && typeof data === "string")
+          .map(([mimeType, data]) => ({ type: "image" as const, data: data as string, mimeType })),
+      );
+      const sentAgentMessages = r.displays.filter(d => AGENT_MESSAGE_MIME in d).map(d => d[AGENT_MESSAGE_MIME]);
+      return {
+        content: [{ type: "text", text }, ...images],
+        details: {
+          durationMs: r.durationMs,
+          status: r.status,
+          errorEname: r.error?.ename,
+          stdout: r.stdout,
+          stderr: r.stderr,
+          result: r.result,
+          backgroundOutput: r.backgroundOutput,
+          sentAgentMessages,
+          kernelRestarted: restarted,
+          restored: restore ? { restored: restore.restored, failed: restore.failed } : undefined,
+          error: r.error,
+        },
+        isError: r.status !== "ok",
+      };
+    },
+  });
+
+  pi.registerCommand("rlm-max-depth", {
+    description: "Show or set RLM_MAX_DEPTH for this session's children",
+    handler: async (args, ctx) => {
+      const s = of(ctx);
+      const n = Number(args.trim());
+      if (args.trim() && Number.isInteger(n) && n >= 0) s.setMaxDepth(n);
+      ctx.ui.notify(`RLM_MAX_DEPTH is ${s.maxDepth()} for this session`, "info");
+    },
+  });
+
+  pi.on("message_end", (event, ctx) => {
+    if (event.message.role !== "assistant") return;
+    of(ctx).goal.countTokens(event.message.usage?.totalTokens ?? 0);
+  });
+
+  pi.on("turn_end", (_event, ctx) => {
+    const notices = of(ctx).takeNotices();
+    if (!notices.length) return;
+    return { entries: notices.map(n => ({ type: "custom_message" as const, ...noticeMessage(n) })), continue: true };
+  });
+
+  pi.on("agent_before_settle", (_event, ctx) => {
+    const notices = of(ctx).takeNotices();
+    if (!notices.length) return;
+    return { entries: notices.map(n => ({ type: "custom_message" as const, ...noticeMessage(n) })), continue: true };
+  });
+
+  pi.on("agent_settled", (_event, ctx) => {
+    const s = of(ctx);
+    const request = s.takeCompactRequest();
+    const flush = () => {
+      for (const n of s.takeNotices()) pi.sendMessage(noticeMessage(n), { triggerTurn: true, deliverAs: "steer" });
+    };
+    if (!request) return flush();
+    ctx.compact({
+      customInstructions: request.instructions,
+      onComplete: () => {
+        pi.sendMessage(
+          { customType: "compaction_resume", content: "[compaction-resume]\n\nThe context was compacted as you asked. Continue the task from the summary and the retained messages.", display: true },
+          { triggerTurn: true, deliverAs: "steer" },
+        );
+        flush();
+      },
+      onError: error => {
+        pi.sendMessage({ customType: "compaction_outcome", content: `[compaction-failed]\n\n${error.message}`, display: true }, { triggerTurn: true, deliverAs: "steer" });
+        flush();
+      },
+    });
+  });
+
+  pi.on("agent_end", async (_event, ctx) => {
+    await of(ctx).snapshot();
+  });
+
+  pi.on("session_compact", async (_event, ctx) => {
+    const s = of(ctx);
+    const kernel = s.kernel;
+    if (!kernel?.alive) return;
+    const names = await kernel.listNames().catch(() => null);
+    if (names === null) return;
+    const tail = names.length ? ` These names are still defined: ${names.join(", ")}.` : " You have not defined any names yet.";
+    pi.sendMessage(
+      { customType: "ipython_state", content: `[python-state]\n\nYour Python kernel persisted through compaction; its remaining variables, imports, and helpers are still available.${tail}`, display: false },
+      { deliverAs: "nextTurn" },
+    );
+  });
+
+  pi.on("session_shutdown", async (_event, ctx) => {
+    const id = ctx.sessionManager.getSessionId();
+    const s = sessions.get(id);
+    sessions.delete(id);
+    await s?.dispose();
+  });
+}
+
+export type { ChildRecord };

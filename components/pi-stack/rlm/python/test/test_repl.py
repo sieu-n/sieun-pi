@@ -1,0 +1,3080 @@
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import queue
+import signal
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import unittest
+from pathlib import Path
+from unittest import mock
+
+SRC = os.path.join(os.path.dirname(__file__), "..", "src")
+
+_EOF = object()
+
+
+class ReplProcess:
+    """Drives one `python -m rlm.repl` subprocess over the JSON-lines protocol."""
+
+    def __init__(self, env: dict[str, str] | None = None) -> None:
+        env = {
+            **os.environ,
+            "PYTHONPATH": SRC + os.pathsep + os.environ.get("PYTHONPATH", ""),
+            **(env or {}),
+        }
+        self.spawned_at = time.monotonic()
+        self.proc = subprocess.Popen(
+            [sys.executable, "-m", "rlm.repl"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            env=env,
+        )
+        self.raw_lines: list[str] = []
+        self._lines: queue.Queue[object] = queue.Queue()
+        threading.Thread(target=self._read_lines, daemon=True).start()
+
+    def _read_lines(self) -> None:
+        assert self.proc.stdout is not None
+        try:
+            for line in self.proc.stdout:
+                self._lines.put(line)
+        except ValueError:
+            pass  # stdout closed by close() while the thread was blocked on it
+        self._lines.put(_EOF)
+
+    def read_event(self, timeout: float = 30.0) -> dict:
+        try:
+            line = self._lines.get(timeout=timeout)
+        except queue.Empty:
+            raise TimeoutError("timed out waiting for a protocol event") from None
+        if line is _EOF:
+            raise EOFError("runtime closed its protocol stream")
+        assert isinstance(line, str)
+        self.raw_lines.append(line)
+        return json.loads(line)
+
+    def ready(self) -> tuple[dict, float]:
+        event = self.read_event()
+        return event, (time.monotonic() - self.spawned_at) * 1000
+
+    def send(self, request: dict) -> None:
+        assert self.proc.stdin is not None
+        self.proc.stdin.write(json.dumps(request) + "\n")
+        self.proc.stdin.flush()
+
+    def send_raw(self, line: str) -> None:
+        assert self.proc.stdin is not None
+        self.proc.stdin.write(line + "\n")
+        self.proc.stdin.flush()
+
+    def execute(self, rid: str, code: str) -> list[dict]:
+        self.send({"type": "execute", "id": rid, "code": code})
+        return self.until_done(rid)
+
+    def until_done(self, rid: str) -> list[dict]:
+        events = []
+        while True:
+            event = self.read_event()
+            events.append(event)
+            if event.get("event") == "done" and event.get("id") == rid:
+                return events
+
+    def shutdown(self) -> int:
+        self.send({"type": "shutdown", "id": "__shutdown__"})
+        self.until_done("__shutdown__")
+        return self.proc.wait(timeout=10)
+
+    def close(self) -> None:
+        if self.proc.poll() is None:
+            self.proc.kill()
+            self.proc.wait(timeout=10)
+        for stream in (self.proc.stdin, self.proc.stdout):
+            if stream is not None:
+                stream.close()
+
+
+def stream_text(events: list[dict], stream: str) -> str:
+    return "".join(e["text"] for e in events if e.get("event") == stream)
+
+
+def one(events: list[dict], kind: str) -> dict | None:
+    matches = [e for e in events if e.get("event") == kind]
+    return matches[0] if matches else None
+
+
+def wait_for_host_request(repl: ReplProcess, events: list[dict]) -> dict:
+    request = one(events, "host_request")
+    while request is None:
+        event = repl.read_event()
+        if event.get("event") == "host_request":
+            request = event
+    return request
+
+
+def reply_ok(repl: ReplProcess, request: dict) -> None:
+    repl.send({"type": "host_reply", "id": request["id"], "data": {"status": "ok", "result": {}}})
+
+
+class ReplTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.repl = ReplProcess()
+        self.addCleanup(self.repl.close)
+        self.ready_event, self.ready_ms = self.repl.ready()
+
+    def test_ready_handshake_and_startup_time(self):
+        self.assertEqual(self.ready_event["event"], "ready")
+        self.assertEqual(self.ready_event["protocol"], 3)
+        major, minor = sys.version_info[:2]
+        self.assertTrue(self.ready_event["python"].startswith(f"{major}.{minor}."))
+        # Loose bound for loaded CI machines; still catches an order-of-magnitude regression.
+        print(f"\n[startup] spawn -> ready: {self.ready_ms:.0f} ms")
+        self.assertLess(self.ready_ms, 500)
+
+    def test_import_rlm_defers_the_event_loop_stack(self):
+        # `import rlm` is the pre-ready boot path: the event loop stack must load
+        # after the ready event, not during package import, and serving must keep
+        # it resident.
+        env = {**os.environ, "PYTHONPATH": SRC + os.pathsep + os.environ.get("PYTHONPATH", "")}
+        code = "import rlm, sys; assert 'asyncio' not in sys.modules and 'secrets' not in sys.modules"
+        subprocess.run([sys.executable, "-c", code], env=env, check=True, timeout=30)
+        events = self.repl.execute("serving", "import sys\n'asyncio' in sys.modules")
+        self.assertEqual(one(events, "result")["text"], "True")
+
+    def test_sigint_during_the_deferred_boot_stays_fatal(self):
+        # A fake `asyncio` parks the kernel inside the post-ready deferred
+        # import. The fifo open below returns only once the kernel is parked in
+        # that window, where an early _sigint_handler install swallowed the
+        # Ctrl-C, so only the default handler may be in charge there.
+        with tempfile.TemporaryDirectory() as tmp:
+            park = os.path.join(tmp, "deferred-boot-park")
+            os.mkfifo(park)
+            with open(os.path.join(tmp, "asyncio.py"), "w") as fake_asyncio:
+                fake_asyncio.write(f"import os\nos.read(os.open({park!r}, os.O_RDONLY), 1)\n")
+            repl = ReplProcess(env={"PYTHONPATH": tmp + os.pathsep + SRC})
+            self.addCleanup(repl.close)
+            self.assertEqual(repl.ready()[0]["event"], "ready")
+            with open(park, "wb"):
+                os.kill(repl.proc.pid, signal.SIGINT)
+                self.assertNotEqual(repl.proc.wait(timeout=10), 0)
+
+    def test_result_echo(self):
+        events = self.repl.execute("a", "1+1")
+        self.assertEqual(one(events, "result")["text"], "2")
+        self.assertEqual(one(events, "done")["status"], "ok")
+
+        events = self.repl.execute("b", "x = 5")
+        self.assertIsNone(one(events, "result"))
+
+        events = self.repl.execute("c", "None")
+        self.assertIsNone(one(events, "result"))
+
+        events = self.repl.execute("d", "_ + 40")
+        self.assertEqual(one(events, "result")["text"], "42")
+
+    def test_stdout_stderr_and_direct_fd_writes(self):
+        code = "\n".join(
+            [
+                "import os, sys",
+                "print('py-out')",
+                "sys.stderr.write('py-err\\n')",
+                "os.write(1, b'fd-out\\n')",
+                "os.write(2, b'fd-err\\n')",
+            ]
+        )
+        events = self.repl.execute("io", code)
+        out = stream_text(events, "stdout")
+        err = stream_text(events, "stderr")
+        self.assertIn("py-out", out)
+        self.assertIn("fd-out", out)
+        self.assertIn("py-err", err)
+        self.assertIn("fd-err", err)
+        # Python-level writes carry the cell id; raw fd bytes are never attributed.
+        for event in events:
+            if event.get("event") not in ("stdout", "stderr"):
+                continue
+            if "py-" in event["text"]:
+                self.assertEqual(event["id"], "io")
+            if "fd-" in event["text"]:
+                self.assertIsNone(event["id"])
+        # done arrives last, after every byte the cell wrote.
+        self.assertEqual(events[-1]["event"], "done")
+
+    def test_top_level_await(self):
+        events = self.repl.execute("tla", "import asyncio\nawait asyncio.sleep(0)\n'ok'")
+        self.assertEqual(one(events, "result")["text"], "'ok'")
+        self.assertEqual(one(events, "done")["status"], "ok")
+
+    def test_background_task_persists_across_cells(self):
+        setup = "\n".join(
+            [
+                "import asyncio",
+                "acc = []",
+                "async def tick():",
+                "    while True:",
+                "        acc.append(1)",
+                "        await asyncio.sleep(0.01)",
+                "task = asyncio.create_task(tick())",
+            ]
+        )
+        self.assertEqual(one(self.repl.execute("bg1", setup), "done")["status"], "ok")
+        events = self.repl.execute("bg2", "import asyncio\nawait asyncio.sleep(0.2)\nlen(acc)")
+        count = int(one(events, "result")["text"])
+        self.assertGreater(count, 1)
+        events = self.repl.execute("bg3", "task.cancel()\nimport asyncio\nawait asyncio.sleep(0.05)\nlen(acc)")
+        self.assertEqual(one(events, "done")["status"], "ok")
+
+    def test_output_after_done_carries_null_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            trigger = os.path.join(tmp, "go")
+            code = "\n".join(
+                [
+                    "import os, threading, time",
+                    "def late():",
+                    f"    while not os.path.exists({trigger!r}):",
+                    "        time.sleep(0.01)",
+                    "    print('late-output', flush=True)",
+                    "threading.Thread(target=late, daemon=True).start()",
+                ]
+            )
+            events = self.repl.execute("late", code)
+            self.assertEqual(one(events, "done")["status"], "ok")
+            # `done` is the last event carrying this cell's id.
+            tagged = [e for e in events if e.get("id") == "late"]
+            self.assertEqual(tagged[-1]["event"], "done")
+            # Release the background writer only after `done` was observed; its
+            # between-cell output must be emitted with a null id.
+            with open(trigger, "w"):
+                pass
+            deadline = time.monotonic() + 5
+            late_events: list[dict] = []
+            while time.monotonic() < deadline:
+                try:
+                    event = self.repl.read_event(timeout=0.5)
+                except TimeoutError:
+                    continue
+                late_events.append(event)
+                if event.get("event") == "stdout" and "late-output" in event["text"]:
+                    break
+            self.assertIn("late-output", stream_text(late_events, "stdout"))
+            for event in late_events:
+                self.assertIsNone(event.get("id"))
+
+    def test_background_thread_and_fd_output_during_later_cell_is_null(self):
+        # Cross-cell misattribution repro: a thread and a direct fd write from
+        # cell1 land while cell2 runs; neither may carry cell2's id.
+        code = "\n".join(
+            [
+                "import os, threading, time",
+                "def late_print():",
+                "    time.sleep(0.6)",
+                "    print('SECRET-py', flush=True)",
+                "def late_fd():",
+                "    time.sleep(0.7)",
+                "    os.write(1, b'SECRET-fd\\n')",
+                "threading.Thread(target=late_print, daemon=True).start()",
+                "threading.Thread(target=late_fd, daemon=True).start()",
+            ]
+        )
+        events = self.repl.execute("cell1", code)
+        self.assertEqual(one(events, "done")["status"], "ok")
+        events = self.repl.execute("cell2", "import time\ntime.sleep(1.2)")
+        self.assertEqual(one(events, "done")["status"], "ok")
+        # The SECRET lines may land during cell2 or right after; scan until both seen.
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            text = stream_text(events, "stdout")
+            if "SECRET-py" in text and "SECRET-fd" in text:
+                break
+            try:
+                events.append(self.repl.read_event(timeout=0.5))
+            except TimeoutError:
+                continue
+        for event in events:
+            if event.get("event") == "stdout" and "SECRET" in event["text"]:
+                self.assertIsNone(event["id"])
+        text = stream_text(events, "stdout")
+        self.assertIn("SECRET-py", text)
+        self.assertIn("SECRET-fd", text)
+
+    def test_cell_own_direct_fd_write_is_null_but_arrives_before_done(self):
+        events = self.repl.execute("rawfd", "import os\nos.write(1, b'raw\\n')\nprint('tagged')")
+        done_index = next(i for i, e in enumerate(events) if e.get("event") == "done")
+        raw = next(e for e in events if e.get("event") == "stdout" and "raw" in e["text"])
+        self.assertIsNone(raw["id"])
+        self.assertLess(events.index(raw), done_index)
+        tagged = next(e for e in events if e.get("event") == "stdout" and "tagged" in e["text"])
+        self.assertEqual(tagged["id"], "rawfd")
+
+    def test_drain_finalizes_incomplete_raw_utf8_before_done(self):
+        first = self.repl.execute("partial-utf8", "import os\nos.write(1, b'\\xe2\\x82')")
+        replacement = next(e for e in first if e.get("event") == "stdout")
+        self.assertEqual(replacement["text"], "\ufffd")
+        self.assertLess(first.index(replacement), first.index(one(first, "done")))
+
+        second = self.repl.execute("continuation-utf8", "os.write(1, b'\\xac')")
+        self.assertEqual(stream_text(second, "stdout"), "\ufffd")
+        self.assertNotIn("€", stream_text(second, "stdout"))
+
+    def test_hostile_deeply_nested_json_line_does_not_kill_reader(self):
+        # json.loads raises RecursionError on pathological nesting; the reader
+        # thread must survive and keep serving.
+        self.repl.send_raw("[" * 100_000)
+        error = self.repl.read_event()
+        self.assertEqual(error["event"], "error")
+        self.assertEqual(error["ename"], "ProtocolError")
+        follow = self.repl.execute("after-hostile", "1+1")
+        self.assertEqual(one(follow, "result")["text"], "2")
+        self.assertEqual(one(follow, "done")["status"], "ok")
+
+    def test_unhashable_request_type_does_not_kill_reader(self):
+        self.repl.send({"type": []})
+        error = self.repl.read_event()
+        self.assertEqual(error["event"], "error")
+        self.assertEqual(error["ename"], "ProtocolError")
+        self.repl.send({"type": {"x": 1}, "id": 5})
+        error = self.repl.read_event()
+        self.assertEqual(error["ename"], "ProtocolError")
+        follow = self.repl.execute("after-unhashable", "1+1")
+        self.assertEqual(one(follow, "result")["text"], "2")
+        self.assertEqual(one(follow, "done")["status"], "ok")
+
+    def test_duplicate_inflight_id_rejected_and_original_still_interruptible(self):
+        self.repl.send({"type": "execute", "id": "dup", "code": "import time\nwhile True:\n    time.sleep(0.05)"})
+        time.sleep(0.3)
+        self.repl.send({"type": "execute", "id": "dup", "code": "print('imposter')"})
+        error = self.repl.read_event()
+        self.assertEqual(error["event"], "error")
+        self.assertEqual(error["ename"], "ProtocolError")
+        self.assertIn("duplicate", error["evalue"])
+        # The original request is unaffected and its targeted interrupt still lands.
+        self.repl.send({"type": "interrupt", "id": "dup"})
+        events = self.repl.until_done("dup")
+        self.assertEqual(one(events, "error")["ename"], "KeyboardInterrupt")
+        self.assertEqual(one(events, "done")["status"], "error")
+        self.assertNotIn("imposter", stream_text(events, "stdout"))
+        follow = self.repl.execute("after-dup", "1+1")
+        self.assertEqual(one(follow, "result")["text"], "2")
+
+    def test_large_buffer_write_survives_short_pipe_writes(self):
+        # 256 KiB exceeds the 64 KiB pipe capacity; the binary proxy must loop
+        # until every byte is written.
+        code = "\n".join(
+            [
+                "import sys",
+                "n = sys.stdout.buffer.write(b'x' * 262144)",
+                "sys.stdout.buffer.flush()",
+                "print('wrote', n)",
+            ]
+        )
+        events = self.repl.execute("bigbuf", code)
+        self.assertEqual(one(events, "done")["status"], "ok")
+        raw = "".join(
+            e["text"] for e in events if e.get("event") == "stdout" and e.get("id") is None
+        )
+        self.assertEqual(raw.count("x"), 262144)
+        # Cross-channel ordering is not guaranteed: raw x-chunks may interleave
+        # between print()'s tagged fragments, so join only the tagged channel.
+        tagged = "".join(
+            e["text"] for e in events if e.get("event") == "stdout" and e.get("id") == "bigbuf"
+        )
+        self.assertIn("wrote 262144", tagged)
+
+    def test_interrupt_without_pthread_kill_cancels_awaited_cell(self):
+        # Windows fallback seam: with pthread_kill absent the reader cancels
+        # the active task on the loop; an await-suspended cell still interrupts.
+        code = "\n".join(
+            [
+                "import signal",
+                "if hasattr(signal, 'pthread_kill'):",
+                "    del signal.pthread_kill",
+                "import asyncio",
+                "await asyncio.sleep(30)",
+            ]
+        )
+        self.repl.send({"type": "execute", "id": "nokill", "code": code})
+        time.sleep(0.4)
+        self.repl.send({"type": "interrupt"})
+        events = self.repl.until_done("nokill")
+        error = one(events, "error")
+        self.assertEqual(error["ename"], "KeyboardInterrupt")
+        self.assertEqual(one(events, "done")["status"], "error")
+
+    def test_stdout_buffer_write_surfaces_as_null_and_rejects_int(self):
+        # Libraries write bytes via sys.stdout.buffer: the tagged writer exposes a
+        # working buffer whose bytes surface (null-attributed) before done, and it
+        # raises TypeError for ints (bytes(5) would emit five NULs).
+        events = self.repl.execute(
+            "bufw", "import sys\nsys.stdout.buffer.write(b'buffer-bytes\\n')\nsys.stdout.buffer.flush()"
+        )
+        buffered = next(e for e in events if e.get("event") == "stdout" and "buffer-bytes" in e["text"])
+        self.assertIsNone(buffered["id"])
+        self.assertLess(events.index(buffered), events.index(one(events, "done")))
+        events = self.repl.execute("bufint", "import sys\nsys.stdout.buffer.write(5)")
+        self.assertEqual(one(events, "error")["ename"], "TypeError")
+        self.assertEqual(one(events, "done")["status"], "error")
+
+    def test_asyncio_task_output_keeps_spawning_cell_id(self):
+        code = "\n".join(
+            [
+                "import asyncio",
+                "async def late():",
+                "    await asyncio.sleep(0.3)",
+                "    print('task-output', flush=True)",
+                "_t = asyncio.create_task(late())",
+            ]
+        )
+        events = self.repl.execute("spawn", code)
+        self.assertEqual(one(events, "done")["status"], "ok")
+        events = self.repl.execute("next", "import asyncio\nawait asyncio.sleep(0.6)")
+        late = next(e for e in events if e.get("event") == "stdout" and "task-output" in e["text"])
+        self.assertEqual(late["id"], "spawn")
+
+    def test_interrupted_await_bash_leaves_no_side_effects(self):
+        # One-shot `await bash(...)` (the %%bash-rewrite pattern) must not leak
+        # the command past an interrupt.
+        with tempfile.TemporaryDirectory() as tmp:
+            marker = os.path.join(tmp, "marker")
+            code = f"from rlm import bash\nr = await bash('sleep 1.5 && touch {marker}')"
+            self.repl.send({"type": "execute", "id": "ibash", "code": code})
+            time.sleep(0.4)
+            self.repl.send({"type": "interrupt"})
+            events = self.repl.until_done("ibash")
+            error = one(events, "error")
+            self.assertEqual(error["ename"], "KeyboardInterrupt")
+            self.assertEqual(one(events, "done")["status"], "error")
+            time.sleep(1.6)
+            self.assertFalse(os.path.exists(marker))
+
+    def _interrupt_after_running(self, rid: str, code: str) -> list[dict]:
+        self.repl.send({"type": "execute", "id": rid, "code": code})
+        # Give the cell time to enter its blocking region before interrupting.
+        time.sleep(0.4)
+        self.repl.send({"type": "interrupt"})
+        return self.repl.until_done(rid)
+
+    def test_interrupt_sync_blocking(self):
+        events = self._interrupt_after_running(
+            "sync", "import time\nwhile True:\n    time.sleep(0.05)"
+        )
+        error = one(events, "error")
+        self.assertEqual(error["ename"], "KeyboardInterrupt")
+        self.assertNotIn("repl.py", "".join(error["traceback"]))
+        self.assertEqual(one(events, "done")["status"], "error")
+        follow = self.repl.execute("after-sync", "1+1")
+        self.assertEqual(one(follow, "result")["text"], "2")
+
+    def test_interrupt_survives_cell_rebinding_sigint(self):
+        # A cell that ignores SIGINT must not break protocol interrupts for later cells.
+        events = self.repl.execute(
+            "rebind", "import signal\nsignal.signal(signal.SIGINT, signal.SIG_IGN)"
+        )
+        self.assertEqual(one(events, "done")["status"], "ok")
+        events = self._interrupt_after_running(
+            "sync-after-rebind", "import time\nwhile True:\n    time.sleep(0.05)"
+        )
+        error = one(events, "error")
+        self.assertEqual(error["ename"], "KeyboardInterrupt")
+        self.assertEqual(one(events, "done")["status"], "error")
+        follow = self.repl.execute("after-rebind", "5+5")
+        self.assertEqual(one(follow, "result")["text"], "10")
+
+    def test_interrupt_await_suspended(self):
+        events = self._interrupt_after_running(
+            "await", "import asyncio\nawait asyncio.sleep(1e9)"
+        )
+        error = one(events, "error")
+        self.assertEqual(error["ename"], "KeyboardInterrupt")
+        self.assertIn("await asyncio.sleep(1e9)", "".join(error["traceback"]))
+        self.assertEqual(one(events, "done")["status"], "error")
+        follow = self.repl.execute("after-await", "2+2")
+        self.assertEqual(one(follow, "result")["text"], "4")
+
+    def test_interrupt_sync_blocked_in_selectors(self):
+        events = self._interrupt_after_running(
+            "sel", "import selectors\ns = selectors.DefaultSelector()\ns.select()"
+        )
+        error = one(events, "error")
+        self.assertEqual(error["ename"], "KeyboardInterrupt")
+        self.assertNotIn("repl.py", "".join(error["traceback"]))
+        self.assertEqual(one(events, "done")["status"], "error")
+        follow = self.repl.execute("after-sel", "3+3")
+        self.assertEqual(one(follow, "result")["text"], "6")
+
+    def test_interrupt_await_with_loop_hogging_background_task(self):
+        # A sync-blocked background task hogs the only thread; the interrupt kills it
+        # so the foreground cancel can take effect.
+        code = "\n".join(
+            [
+                "import asyncio, time",
+                "async def hog():",
+                "    while True:",
+                "        time.sleep(0.05)",
+                "hog_task = asyncio.create_task(hog())",
+                "await asyncio.sleep(1e9)",
+            ]
+        )
+        events = self._interrupt_after_running("fg", code)
+        error = one(events, "error")
+        self.assertEqual(error["ename"], "KeyboardInterrupt")
+        self.assertEqual(one(events, "done")["status"], "error")
+        follow = self.repl.execute("hog-fate", "type(hog_task.exception()).__name__")
+        self.assertEqual(one(follow, "result")["text"], "'KeyboardInterrupt'")
+        follow = self.repl.execute("after-hog", "7+7")
+        self.assertEqual(one(follow, "result")["text"], "14")
+
+    def test_interrupt_written_back_to_back_with_execute(self):
+        execute = json.dumps({"type": "execute", "id": "race", "code": "import asyncio\nawait asyncio.sleep(1e9)"})
+        interrupt = json.dumps({"type": "interrupt"})
+        assert self.repl.proc.stdin is not None
+        self.repl.proc.stdin.write(execute + "\n" + interrupt + "\n")
+        self.repl.proc.stdin.flush()
+        events = self.repl.until_done("race")
+        error = one(events, "error")
+        self.assertEqual(error["ename"], "KeyboardInterrupt")
+        self.assertEqual(one(events, "done")["status"], "error")
+        follow = self.repl.execute("after-race", "5+5")
+        self.assertEqual(one(follow, "result")["text"], "10")
+
+    def test_stale_target_from_finished_interrupt_ignores_later_sigint_on_reused_id(self):
+        # A targeted interrupt completes "reuse"; a later request reusing the id
+        # must not be cancelled by a delayed/external SIGINT that only matches
+        # the stale target of the finished request.
+        events = self._interrupt_after_running("reuse", "import time\nwhile True:\n    time.sleep(0.05)")
+        self.assertEqual(one(events, "error")["ename"], "KeyboardInterrupt")
+        self.repl.send({"type": "execute", "id": "reuse", "code": "import time\ntime.sleep(1.5)\nprint('survived')"})
+        time.sleep(0.4)  # let the cell enter its sleep before the stray SIGINT
+        os.kill(self.repl.proc.pid, signal.SIGINT)
+        events = self.repl.until_done("reuse")
+        self.assertIsNone(one(events, "error"))
+        self.assertEqual(one(events, "done")["status"], "ok")
+        self.assertIn("survived", stream_text(events, "stdout"))
+
+    def test_interrupt_during_slow_repr_cancels_finishing_request(self):
+        # The cell body finishes instantly; the interrupt lands while the
+        # trailing-expression repr is sleeping (post-run finishing window).
+        code = "\n".join(
+            [
+                "import time",
+                "class SlowRepr:",
+                "    def __repr__(self):",
+                "        time.sleep(600)",
+                "        return 'late'",
+                "SlowRepr()",
+            ]
+        )
+        events = self._interrupt_after_running("slowrepr", code)
+        error = one(events, "error")
+        self.assertEqual(error["ename"], "KeyboardInterrupt")
+        self.assertEqual(one(events, "done")["status"], "error")
+        follow = self.repl.execute("after-slowrepr", "1+1")
+        self.assertEqual(one(follow, "result")["text"], "2")
+
+    def test_traceback_clean_with_source_line(self):
+        code = "def boom():\n    raise ValueError('nope')\nboom()"
+        events = self.repl.execute("tb", code)
+        error = one(events, "error")
+        self.assertEqual(error["ename"], "ValueError")
+        self.assertEqual(error["evalue"], "nope")
+        text = "".join(error["traceback"])
+        self.assertIn("<cell-", text)
+        self.assertIn("raise ValueError('nope')", text)
+        self.assertNotIn("repl.py", text)
+        self.assertNotIn("\x1b[", text)
+
+    def test_syntax_error(self):
+        events = self.repl.execute("syn", "def broken(:\n    pass")
+        error = one(events, "error")
+        self.assertEqual(error["ename"], "SyntaxError")
+        text = "".join(error["traceback"])
+        self.assertIn("<cell-", text)
+        self.assertNotIn("repl.py", text)
+        self.assertNotIn("ast.py", text)
+        self.assertEqual(one(events, "done")["status"], "error")
+
+    def test_snapshot_restore_roundtrip(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "kernel-state.dill")
+            manifest_path = os.path.join(tmp, "kernel-state.json")
+            setup = "\n".join(
+                [
+                    "import socket",
+                    "x = 41",
+                    "def bump(n):",
+                    "    return n + 1",
+                    "sock = socket.socket()",
+                ]
+            )
+            self.assertEqual(one(self.repl.execute("s1", setup), "done")["status"], "ok")
+            self.repl.send({"type": "snapshot", "id": "s2", "path": path, "manifest_path": manifest_path})
+            done = one(self.repl.until_done("s2"), "done")
+            self.assertEqual(done["status"], "ok")
+            self.assertEqual(sorted(done["saved"]), ["bump", "socket", "x"])
+            self.assertEqual([s["name"] for s in done["skipped"]], ["sock"])
+            self.assertNotIn("asyncio", done["saved"])
+            self.assertEqual(
+                sorted(os.listdir(tmp)), ["kernel-state.dill", "kernel-state.json"]
+            )  # no temp files survive a successful commit
+            with open(manifest_path) as fh:
+                manifest = json.load(fh)
+            self.assertEqual(manifest["version"], 1)
+            self.assertEqual(manifest["savedNames"], done["saved"])
+            self.assertEqual(manifest["bytes"], done["bytes"])
+            self.assertIn("pythonVersion", manifest)
+            self.assertIn("timestamp", manifest)
+
+            fresh = ReplProcess()
+            self.addCleanup(fresh.close)
+            fresh.ready()
+            fresh.send({"type": "restore", "id": "r1", "path": path})
+            done = one(fresh.until_done("r1"), "done")
+            self.assertEqual(done["status"], "ok")
+            self.assertEqual(sorted(done["restored"]), ["bump", "socket", "x"])
+            events = fresh.execute("r2", "bump(x)")
+            self.assertEqual(one(events, "result")["text"], "42")
+            self.assertEqual(fresh.shutdown(), 0)
+
+    def test_restore_skips_ipython_injected_names(self):
+        import dill
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "kernel-state.dill")
+            payload = {
+                "kept": dill.dumps(7),
+                "In": dill.dumps(["cell"]),
+                "Out": dill.dumps({1: "x"}),
+                "get_ipython": dill.dumps(None),
+            }
+            with open(path, "wb") as fh:
+                dill.dump(payload, fh)
+            self.repl.send({"type": "restore", "id": "r", "path": path})
+            done = one(self.repl.until_done("r"), "done")
+            self.assertEqual(done["status"], "ok")
+            self.assertEqual(done["restored"], ["kept"])
+            events = self.repl.execute("chk", "'In' in dir()")
+            self.assertEqual(one(events, "result")["text"], "False")
+
+    def test_restore_revives_functions_with_live_globals_pr2471(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "state.dill")
+            self.repl.execute("fn1", "G = 1\ndef reader():\n    return G\ndef prober():\n    return late")
+            # priv.__globals__ is the private exec dict pn, not ns: drives backfill.
+            self.repl.execute("fn0", "exec('SECRET = 42\\ndef priv():\\n    return SECRET', pn:={'__name__': '__main__'})\npriv = pn['priv']")
+            self.repl.send({"type": "snapshot", "id": "fn2", "path": path, "manifest_path": os.path.join(tmp, "state.json")})
+            self.repl.send({"type": "restore", "id": "fn3", "path": path})
+            self.assertEqual(one(self.repl.until_done("fn3"), "done")["status"], "ok")
+            events = self.repl.execute("fn4", "G = 2\nreader()")
+            self.assertEqual(one(events, "result")["text"], "2")
+            events = self.repl.execute("fn5", "late = 'live'\nprober()")
+            self.assertEqual(one(events, "result")["text"], "'live'")
+            events = self.repl.execute("fn6", "priv()")
+            self.assertEqual(one(events, "result")["text"], "42")
+
+    def test_restore_revives_partial_wrapped_functions_pr2471(self):
+        # dill revives a partial's wrapped __main__ function with frozen globals.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "state.dill")
+            self.repl.execute("pt1", "import functools\nG = 1\ndef base():\n    return G\nwrapped = functools.partial(base)")
+            self.repl.send({"type": "snapshot", "id": "pt2", "path": path, "manifest_path": os.path.join(tmp, "state.json")})
+            self.repl.send({"type": "restore", "id": "pt3", "path": path})
+            self.assertEqual(one(self.repl.until_done("pt3"), "done")["status"], "ok")
+            events = self.repl.execute("pt4", "G = 2\nwrapped()")
+            self.assertEqual(one(events, "result")["text"], "2")
+
+    def _snapshot_restore(self, rid: str, code: str, tmp: str) -> None:
+        self.assertEqual(one(self.repl.execute(rid + "0", code), "done")["status"], "ok")
+        self.repl.send({"type": "snapshot", "id": rid + "1", "path": os.path.join(tmp, "s.dill"), "manifest_path": os.path.join(tmp, "s.json")})
+        self.repl.send({"type": "restore", "id": rid + "2", "path": os.path.join(tmp, "s.dill")})
+        self.assertEqual(one(self.repl.until_done(rid + "2"), "done")["status"], "ok")
+
+    def test_restore_rebuilt_partial_keeps_attributes_and_args_pr2471(self):
+        code = (
+            "import functools\nG = 1\ndef helper():\n    return G\ndef apply(fn):\n    return fn()\n"
+            "wrapped = functools.partial(apply, helper)\nwrapped.label = 'x'"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            self._snapshot_restore("pa", code, tmp)
+            self.assertEqual(one(self.repl.execute("pa4", "wrapped.label"), "result")["text"], "'x'")
+            self.assertEqual(one(self.repl.execute("pa5", "G = 2\nwrapped()"), "result")["text"], "2")
+
+    def test_restore_backfill_skips_excluded_names_pr2471(self):
+        code = (
+            "exec('PUB = 1\\n_hidden = 2\\nIn = 3\\nOut = 4\\ndef user():\\n    return (PUB, _hidden, In, Out)', pn:={'__name__': '__main__'})\n"
+            "user = pn['user']"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            self._snapshot_restore("ex", code, tmp)
+            probe = "('PUB' in dir(), '_hidden' in dir(), 'In' in dir(), 'Out' in dir())"
+            self.assertEqual(one(self.repl.execute("ex4", probe), "result")["text"], "(True, False, False, False)")
+
+    def test_restore_revives_callables_in_defaults_and_closures_pr2471(self):
+        code = ("G = 1\ndef helper():\n    return G\nrun = lambda fn=helper: fn()\nrun2 = lambda *, fn=helper: fn()\nclosed = (lambda fn: lambda: fn())(helper)\n"
+                "def make():\n    n = 0\n    def get():\n        return n\n    def set(v):\n        nonlocal n\n        n = v\n    get.set = set\n    return get\ncounter = make()\nrun.callback = helper")
+        with tempfile.TemporaryDirectory() as tmp:
+            self._snapshot_restore("dc", code, tmp)
+            self.assertEqual(one(self.repl.execute("dc4", "G = 2\ncounter.set(5)\n(run(), run2(), closed(), counter(), run.callback())"), "result")["text"], "(2, 2, 2, 5, 2)")
+
+    def test_restore_publishes_rebuilt_partial_in_backfill_cycle_pr2471(self):
+        code = ("exec('import functools\\nG = 1\\ndef base():\\n    return G, wrapped\\nwrapped = functools.partial(base)\\n"
+                "def entry():\\n    return wrapped()', pn:={'__name__': '__main__'})\nentry = pn['entry']")
+        self._snapshot_restore("bp", code, self.enterContext(tempfile.TemporaryDirectory()))
+        self.assertEqual(one(self.repl.execute("bp4", "G = 2\nentry()[0]"), "result")["text"], "2")
+
+    def test_restore_revives_functions_inside_containers_pr2471(self):
+        code = "G = 1\ndef reader():\n    return G\ncallbacks = [reader]\nhandlers = {'read': reader}\npair = (reader,)"
+        self._snapshot_restore("ct", code, self.enterContext(tempfile.TemporaryDirectory()))
+        self.assertEqual(one(self.repl.execute("ct4", "G = 2\n(callbacks[0](), handlers['read'](), pair[0]())"), "result")["text"], "(2, 2, 2)")
+
+    def test_snapshot_prune_oversized(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "kernel-state.dill")
+            manifest_path = os.path.join(tmp, "kernel-state.json")
+            self.repl.execute("p1", "small = 1\nbig = b'x' * 100_000")
+            self.repl.send(
+                {
+                    "type": "snapshot",
+                    "id": "p2",
+                    "path": path,
+                    "manifest_path": manifest_path,
+                    "max_variable_bytes": 1024,
+                    "prune_oversized": True,
+                }
+            )
+            done = one(self.repl.until_done("p2"), "done")
+            self.assertEqual(done["status"], "ok")
+            self.assertEqual(done["saved"], ["small"])
+            self.assertEqual(done["pruned"], ["big"])
+            events = self.repl.execute("p3", "'big' in dir()")
+            self.assertEqual(one(events, "result")["text"], "False")
+
+    def test_prune_measures_the_current_value_2478(self):
+        # Redefinition or in-place shrink after an oversized skip: prune must re-measure.
+        for cell in ("def big(): pass", "big.clear()"):
+            with self.subTest(cell=cell):
+                with tempfile.TemporaryDirectory() as tmp:
+                    base = {"type": "snapshot", "path": os.path.join(tmp, "kernel-state.dill"),
+                            "manifest_path": os.path.join(tmp, "kernel-state.json"), "max_variable_bytes": 1024}
+                    self.repl.execute("pk1", "big = bytearray(b'x' * 100_000)\nkeep = 1")
+                    self.repl.send({"id": "pk2", **base})
+                    self.assertEqual(one(self.repl.until_done("pk2"), "done")["status"], "ok")
+                    self.repl.execute("pk3", cell)
+                    self.repl.send({"id": "pk4", "prune_oversized": True, **base})
+                    done = one(self.repl.until_done("pk4"), "done")
+                    self.assertEqual(done["status"], "ok")
+                    self.assertEqual(done["pruned"], [])
+                    self.assertEqual(done["saved"], ["big", "keep"])
+
+    def test_emit_display(self):
+        payloads = {
+            "application/vnd.prime-agent.diff+json": {
+                "path": "/tmp/file.py",
+                "old_str": "a",
+                "new_str": "b",
+                "start_line": 3,
+            },
+            "application/vnd.prime-agent.attachment+json": {
+                "mime_type": "image/png",
+                "data": "aGVsbG8=",
+                "path": "/tmp/img.png",
+            },
+            "application/vnd.prime-agent.agent-message+json": {
+                "id": "agentmsg_1",
+                "message": "hi",
+                "deliveryStatus": "delivered",
+                "receiverRole": "parent",
+                "target": {"sessionId": "s1"},
+            },
+        }
+        for i, (mime, payload) in enumerate(payloads.items()):
+            code = "\n".join(
+                [
+                    "from rlm.repl import emit",
+                    f"emit({{ {mime!r}: {payload!r}, 'text/plain': 'label' }})",
+                ]
+            )
+            events = self.repl.execute(f"emit{i}", code)
+            display = one(events, "display")
+            self.assertIsNotNone(display)
+            self.assertEqual(display["data"][mime], payload)
+            self.assertEqual(display["data"]["text/plain"], "label")
+            self.assertEqual(display["id"], f"emit{i}")
+
+    def test_emit_nan_payload_errors_in_cell_and_keeps_framing(self):
+        # NaN would serialize as non-JSON text and tear protocol framing;
+        # emit() must raise in the caller's cell instead.
+        code = "from rlm.repl import emit\nemit({'application/json': float('nan')})"
+        events = self.repl.execute("emit-nan", code)
+        self.assertEqual(one(events, "error")["ename"], "ValueError")
+        self.assertEqual(one(events, "done")["status"], "error")
+        self.assertIsNone(one(events, "display"))
+        follow = self.repl.execute("after-emit-nan", "1+1")
+        self.assertEqual(one(follow, "result")["text"], "2")
+        self.assertEqual(one(follow, "done")["status"], "ok")
+
+    def test_large_write_ships_bounded_stream_frames(self):
+        events = self.repl.execute("chunk", "import sys\nsys.stdout.write('x' * 300_000)")
+        frames = [e["text"] for e in events if e.get("event") == "stdout"]
+        self.assertEqual("".join(frames), "x" * 300_000)
+        self.assertTrue(all(len(frame) <= 65536 for frame in frames))
+
+    def test_oversized_text_and_payloads_are_capped(self):
+        code = "class C:\n    def __repr__(self):\n        return 'x' * 3_000_000\nC()"
+        events = self.repl.execute("big-repr", code)
+        expected = "x" * 1_048_576 + "\n[... result truncated at 1048576 characters ...]"
+        self.assertEqual(one(events, "result")["text"], expected)
+        error = one(self.repl.execute("big-error", "raise ValueError('x' * 3_000_000)"), "error")
+        self.assertEqual(error["evalue"], expected)
+        self.assertEqual(error["traceback"][-1], "ValueError: " + expected[len("ValueError: ") :])
+        events = self.repl.execute("emit-big", "from rlm.repl import emit\nemit({'text/plain': 'x' * 17_000_000})")
+        self.assertEqual(one(events, "error")["ename"], "ValueError")
+        self.assertEqual(one(events, "done")["status"], "error")
+        code = "from rlm.repl import host_request\nawait host_request({'type': 'demo', 'blob': 'x' * 17_000_000})"
+        self.assertEqual(one(self.repl.execute("hr-big", code), "error")["ename"], "ValueError")
+
+    def test_bash_integration(self):
+        events = self.repl.execute(
+            "sh1", "from rlm import bash\nresult = await bash('echo repl-bash')\nresult.output.strip()"
+        )
+        self.assertEqual(one(events, "result")["text"], "'repl-bash'")
+
+        events = self.repl.execute(
+            "sh2", "handle = bash('sleep 600')\nhandle.pid"
+        )
+        pid = int(one(events, "result")["text"])
+        self.assertEqual(self.repl.shutdown(), 0)
+        # Shutdown kills live bash process groups; the sleep must be gone.
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return
+            time.sleep(0.05)
+        self.fail(f"bash child {pid} survived runtime shutdown")
+
+    def test_async_bash_completion_notifies_only_after_an_unawaited_creating_cell(self):
+        direct = self.repl.execute(
+            "bash-direct", "from rlm import bash\n(await bash('printf direct')).exit_code"
+        )
+        self.assertIsNone(one(direct, "host_request"))
+
+        eventual = self.repl.execute(
+            "bash-eventual",
+            "import asyncio\nhandle = bash('printf eventual')\nawait asyncio.sleep(0.1)\n(await handle).exit_code",
+        )
+        self.assertIsNone(one(eventual, "host_request"))
+
+        started = self.repl.execute(
+            "bash-detached", "handle = bash('sleep 0.05; printf detached')\nhandle.pid"
+        )
+        pid = int(one(started, "result")["text"])
+        request = wait_for_host_request(self.repl, started)
+        self.assertEqual(
+            request["data"],
+            {
+                "type": "bash.completed",
+                "pid": pid,
+                "command": "sleep 0.05; printf detached",
+                "exitCode": 0,
+            },
+        )
+        reply_ok(self.repl, request)
+        inspected = self.repl.execute("bash-inspect", "handle.poll().output")
+        self.assertIn("detached", one(inspected, "result")["text"])
+
+    def test_result_read_after_notice_requests_one_withdrawal(self):
+        reads = (
+            ("poll", "handle.poll().output"),
+            ("await", "(await handle).output"),
+        )
+        for label, read_code in reads:
+            with self.subTest(label=label):
+                command = f"sleep 0.05; printf withdrawn-{label}"
+                started = self.repl.execute(
+                    f"withdraw-{label}",
+                    f"from rlm import bash\nhandle = bash({command!r})\nhandle.pid",
+                )
+                pid = int(one(started, "result")["text"])
+                notice = wait_for_host_request(self.repl, started)
+                self.assertEqual(notice["data"]["type"], "bash.completed")
+                reply_ok(self.repl, notice)
+                read = self.repl.execute(f"withdraw-{label}-read", read_code)
+                self.assertIn(f"withdrawn-{label}", one(read, "result")["text"])
+                # The withdrawal must ship ahead of the reading cell's done, or the
+                # notice is delivered as a stale turn-boundary notice instead.
+                kinds = [event.get("event") for event in read]
+                self.assertLess(kinds.index("host_request"), kinds.index("done"))
+                request = wait_for_host_request(self.repl, read)
+                self.assertEqual(
+                    request["data"], {"type": "bash.consumed", "pid": pid, "command": command}
+                )
+                # Old host: the error reply is dropped silently and the withdrawal never repeats.
+                self.repl.send(
+                    {"type": "host_reply", "id": request["id"], "data": {"status": "error", "error": "unknown"}}
+                )
+                if label == "poll":
+                    again = self.repl.execute("withdraw-again", "handle.output()\nhandle.tail(1)")
+                    self.assertEqual([e for e in again if e.get("event") in ("error", "host_request")], [])
+
+    def test_result_read_before_notice_acceptance_withdraws_at_acceptance(self):
+        started = self.repl.execute("early", "from rlm import bash\nhandle = bash('printf early')\nhandle.pid")
+        notice = wait_for_host_request(self.repl, started)
+        self.assertIsNone(one(self.repl.execute("early-read", "handle.poll().output"), "host_request"))
+        reply_ok(self.repl, notice)
+        withdrawal = wait_for_host_request(self.repl, [])["data"]
+        self.assertEqual(withdrawal, {"type": "bash.consumed", "pid": notice["data"]["pid"], "command": "printf early"})
+
+    def test_detached_read_between_turns_keeps_bash_completion(self):
+        # A watcher reading the handle with no cell running reaches nobody: the
+        # notice is the only wake-up an idle session gets, so it must survive.
+        code = "\n".join(
+            [
+                "from rlm import bash",
+                "import asyncio",
+                "handle = bash('sleep 0.2; printf detached-read')",
+                "async def watch():",
+                "    await handle._wait()",
+                "    globals()['seen'] = handle.output()",
+                "asyncio.create_task(watch())",
+                "handle.pid",
+            ]
+        )
+        started = self.repl.execute("detached-read", code)
+        pid = int(one(started, "result")["text"])
+        request = wait_for_host_request(self.repl, started)
+        self.assertEqual(request["data"]["type"], "bash.completed")
+        self.assertEqual(request["data"]["pid"], pid)
+        reply_ok(self.repl, request)
+        probe = self.repl.execute("detached-read-probe", "await asyncio.sleep(0.05)\nseen")
+        self.assertIsNone(one(probe, "host_request"))
+        self.assertEqual(one(probe, "result")["text"], "'detached-read'")
+
+    def test_result_read_in_creating_cell_suppresses_bash_completion(self):
+        events = self.repl.execute(
+            "read-in-cell",
+            "from rlm import bash\nimport asyncio\nhandle = bash('printf read-in-cell')\n"
+            "await asyncio.wait_for(handle._wait(), 5)\nhandle.output()",
+        )
+        self.assertEqual(one(events, "result")["text"], "'read-in-cell'")
+        probe = self.repl.execute("read-in-cell-probe", "await asyncio.sleep(0.05)")
+        self.assertIsNone(one(events, "host_request"))
+        self.assertIsNone(one(probe, "host_request"))
+
+    def test_wrapper_awaits_in_creating_cell_suppress_bash_completion(self):
+        def task_group(label: str, await_expression: str) -> str:
+            return "\n".join(
+                [
+                    f"handle = bash('printf {label}')",
+                    "async def consume():",
+                    f"    return {await_expression}",
+                    "async with asyncio.TaskGroup() as group:",
+                    "    task = group.create_task(consume())",
+                    "task.result().output",
+                ]
+            )
+
+        snippets = {
+            "gather": "(await asyncio.gather(bash('printf gather')))[0].output",
+            "wait-for": "(await asyncio.wait_for(bash('printf wait-for'), 1)).output",
+            "shield": "(await asyncio.shield(bash('printf shield'))).output",
+            "nested": "(await asyncio.shield(asyncio.gather(bash('printf nested'))))[0].output",
+            "as-completed": (
+                "[(await completed).output for completed in "
+                "asyncio.as_completed([bash('printf as-completed')])]"
+            ),
+            "as-completed-delayed-consumer": (
+                "handle = bash('sleep 0.15; printf as-completed-delayed-consumer')\n"
+                "completed = next(iter(asyncio.as_completed([handle])))\n"
+                "await asyncio.sleep(0)\n"
+                "(await completed).output"
+            ),
+            "as-completed-finished-handle": (
+                "handle = bash('printf as-completed-finished-handle')\n"
+                "task = asyncio.ensure_future(handle)\n"
+                "await asyncio.to_thread(handle._done.wait)\n"
+                "await asyncio.sleep(0.01)\n"
+                "assert task.done()\n"
+                "(await handle).output"
+            ),
+            "as-completed-nested": (
+                "[(await completed)[0].output for completed in "
+                "asyncio.as_completed([asyncio.shield(asyncio.gather(bash('printf as-completed-nested')))])]"
+            ),
+            "wait": "\n".join(
+                [
+                    "handle = bash('printf wait')",
+                    "task = asyncio.ensure_future(handle)",
+                    "await asyncio.wait({task})",
+                    "task.result().output",
+                ]
+            ),
+            "task-group": task_group("task-group", "await handle"),
+            "task-group-gather": task_group("task-group-gather", "(await asyncio.gather(handle))[0]"),
+            "task-group-shield": task_group("task-group-shield", "await asyncio.shield(handle)"),
+        }
+        if sys.version_info >= (3, 13):
+            snippets["as-completed-async"] = (
+                "[completed.result().output async for completed in "
+                "asyncio.as_completed([bash('printf as-completed-async')])]"
+            )
+        for label, snippet in snippets.items():
+            with self.subTest(label=label):
+                completed = self.repl.execute(
+                    f"bash-wrapper-{label}",
+                    f"from rlm import bash\nimport asyncio\n{snippet}",
+                )
+                self.assertIn(label, one(completed, "result")["text"])
+                probe = self.repl.execute(f"bash-wrapper-{label}-probe", "await asyncio.sleep(0.05)")
+                request = one(probe, "host_request")
+                if request is not None:
+                    reply_ok(self.repl, request)
+                self.assertIsNone(request)
+
+    def test_as_completed_outside_creating_cell_keeps_one_bash_completion(self):
+        snippets = {
+            "no-await": (
+                "iterator = asyncio.as_completed([handle])\n"
+                "next(iterator).close()\n"
+                "await asyncio.sleep(0.05)"
+            ),
+            "detached": (
+                "async def consume():\n"
+                "    for completed in asyncio.as_completed([handle]):\n"
+                "        await completed\n"
+                "consumer = asyncio.create_task(consume())\n"
+                "await asyncio.sleep(0.05)"
+            ),
+        }
+        for label, snippet in snippets.items():
+            with self.subTest(label=label):
+                command = f"printf {label}"
+                events = self.repl.execute(
+                    f"as-completed-{label}",
+                    f"from rlm import bash\nimport asyncio\nhandle = bash({command!r})\n{snippet}",
+                )
+                events += self.repl.execute(
+                    f"as-completed-{label}-probe", "await asyncio.sleep(0.05)"
+                )
+                requests = [event for event in events if event.get("event") == "host_request"]
+                for request in requests:
+                    reply_ok(self.repl, request)
+                self.assertEqual(len(requests), 1)
+                self.assertEqual(requests[0]["data"]["type"], "bash.completed")
+                self.assertEqual(requests[0]["data"]["command"], command)
+                self.assertFalse(any(event.get("event") == "error" for event in events))
+
+    def test_background_task_await_does_not_suppress_bash_completion(self):
+        code = "\n".join(
+            [
+                "from rlm import bash",
+                "import asyncio",
+                "task_handle = bash('sleep 0.05; printf background-waiter')",
+                "async def consume():",
+                "    globals()['task_result'] = await task_handle",
+                "waiter = asyncio.create_task(consume())",
+                "bookkeeping = asyncio.get_running_loop().create_future()",
+                "def callback_for(marker):",
+                "    return lambda _: marker.cancelled()",
+                "waiter.add_done_callback(callback_for(bookkeeping))",
+                "asyncio.get_running_loop().call_later(0.02, bookkeeping.set_result, None)",
+                "await bookkeeping",
+                "task_handle.pid",
+            ]
+        )
+        started = self.repl.execute("bash-task-waiter", code)
+        pid = int(one(started, "result")["text"])
+        request = wait_for_host_request(self.repl, started)
+        self.assertEqual(request["data"]["type"], "bash.completed")
+        self.assertEqual(request["data"]["pid"], pid)
+        reply_ok(self.repl, request)
+
+    def test_awaited_bash_handles_are_released_before_their_cell_ends(self):
+        # On 10-17 a cell ran `await bash("git show HEAD:<1.5 MB file>")` 4,875 times, and
+        # each completion notice held its handle and output until the cell ended: the kernel
+        # reached 18 GB and macOS swap 31 of 32 GB before the kernel was stopped.
+        events = self.repl.execute(
+            "awaited-release",
+            "from rlm import bash\nimport asyncio, gc, weakref\n"
+            "refs = []\n"
+            "for _ in range(5):\n"
+            "    handle = bash('printf released')\n"
+            "    refs.append(weakref.ref(handle))\n"
+            "    assert (await handle).output == 'released'\n"
+            "    del handle\n"
+            "await asyncio.sleep(0.05)\n"
+            "gc.collect()\n"
+            "sum(ref() is not None for ref in refs)",
+        )
+        self.assertEqual(one(events, "result")["text"], "0")
+        self.assertIsNone(one(events, "host_request"))
+
+    def test_bash_activity_and_notice_wait_for_group_reap(self):
+        mime = "application/vnd.prime-agent.bash-activity+json"
+        for awaited in (False, True):
+            with self.subTest(awaited=awaited):
+                events = self.repl.execute(
+                    "group-start",
+                    "from rlm import bash\nimport asyncio\n"
+                    "handle = bash('sleep 30 &')\n"
+                    + ("await handle\n" if awaited else "")
+                    + "await asyncio.wait_for(handle._wait(), 3)\nhandle._group_alive()",
+                )
+                self.assertEqual(one(events, "result")["text"], "True")
+                self.assertIsNone(one(events, "host_request"))
+                self.assertFalse(
+                    any(event.get("data", {}).get(mime, {}).get("active") is False for event in events)
+                )
+                events += self.repl.execute("group-stop", "handle.kill()")
+                requests = []
+                cursor = 0
+                while True:
+                    for event in events[cursor:]:
+                        if event.get("event") == "host_request":
+                            requests.append(event)
+                            reply_ok(self.repl, event)
+                    cursor = len(events)
+                    if any(event.get("data", {}).get(mime, {}).get("active") is False for event in events):
+                        break
+                    events.append(self.repl.read_event())
+                self.assertEqual(len(requests), 0 if awaited else 1)
+                checked = self.repl.execute(
+                    "group-reaped", "await asyncio.wait_for(handle._wait_reaped(), 1)\nhandle._reaped"
+                )
+                self.assertEqual(one(checked, "result")["text"], "True")
+
+    def _start_detachable(self, command: str) -> tuple[list[dict], dict, int]:
+        mime = "application/vnd.prime-agent.bash-activity+json"
+        events = self.repl.execute(
+            "detach-start",
+            f"from rlm import bash\nhandle = bash({command!r})\nint((await handle).output.split()[-1])",
+        )
+        started = next(
+            event["data"][mime] for event in events if event.get("data", {}).get(mime, {}).get("active") is True
+        )
+        return events, started, int(one(events, "result")["text"])
+
+    def _activity_until(self, events: list[dict], activity_id: str, done, timeout: float) -> list[dict]:
+        mime = "application/vnd.prime-agent.bash-activity+json"
+        seen = [event["data"][mime] for event in events if event.get("data", {}).get(mime, {}).get("id") == activity_id]
+        deadline = time.monotonic() + timeout
+        while not any(done(item) for item in seen):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                event = self.repl.read_event(timeout=remaining)
+            except TimeoutError:
+                break
+            events.append(event)
+            if event.get("event") == "host_request":
+                reply_ok(self.repl, event)
+            item = event.get("data", {}).get(mime)
+            if item is not None and item.get("id") == activity_id:
+                seen.append(item)
+        return seen
+
+    def _stop_detached(self, service_pid: int) -> None:
+        self.repl.execute("detach-stop", "handle.kill()")
+        try:
+            os.kill(service_pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+    def test_detached_service_releases_bash_activity(self):
+        commands = (
+            "nohup sleep 60 > /dev/null 2>&1 & echo $!",
+            "cd / && nohup sleep 60 > /dev/null 2>&1 & echo $!",
+            "setsid sleep 60 > /dev/null 2>&1 < /dev/null & echo $!",
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                events, started, service_pid = self._start_detachable(command)
+                self.addCleanup(self._stop_detached, service_pid)
+                seen = self._activity_until(events, started["id"], lambda item: not item["active"], 10)
+                self.assertEqual(
+                    [item for item in seen if not item["active"]],
+                    [{**started, "active": False, "detached": True}],
+                )
+                self.assertIsNone(one(events, "host_request"))
+                self._stop_detached(service_pid)
+
+    def test_detached_service_keeps_running_after_release(self):
+        events, started, service_pid = self._start_detachable(
+            "cd / && nohup sleep 60 > /dev/null 2>&1 & echo $!"
+        )
+        self.addCleanup(self._stop_detached, service_pid)
+        start_id = Path(f"/proc/{service_pid}/stat").read_text().split()[21]
+        seen = self._activity_until(events, started["id"], lambda item: item.get("detached") is True, 10)
+        self.assertTrue(any(item.get("detached") for item in seen))
+        time.sleep(1)
+        self.assertEqual(Path(f"/proc/{service_pid}/stat").read_text().split()[21], start_id)
+        checked = self.repl.execute("detach-alive", "handle.running, handle._reaped, handle._group_alive()")
+        self.assertEqual(one(checked, "result")["text"], "(True, False, True)")
+
+    def test_pipe_holding_background_work_keeps_bash_activity(self):
+        mime = "application/vnd.prime-agent.bash-activity+json"
+        cases = (
+            ("sleep 30 & echo $!", True),
+            ("cd / && sleep 30 & echo $!", True),
+            ("sleep 30; echo 1", False),
+        )
+        for command, awaited in cases:
+            with self.subTest(command=command):
+                code = f"from rlm import bash\nhandle = bash({command!r})\n" + (
+                    "(await handle).exit_code" if awaited else "handle.pid"
+                )
+                events = self.repl.execute("keep-start", code)
+                started = next(
+                    event["data"][mime] for event in events if event.get("data", {}).get(mime, {}).get("active") is True
+                )
+                seen = self._activity_until(events, started["id"], lambda item: not item["active"], 4)
+                self.assertEqual([item["active"] for item in seen], [True])
+                self.repl.execute("keep-stop", "handle.kill()")
+                self._activity_until(
+                    events, started["id"], lambda item: not item["active"] and not item.get("detached"), 10
+                )
+
+    def test_background_writer_after_a_service_takes_bash_activity_back(self):
+        events, started, _ = self._start_detachable("(nohup sleep 1 > /dev/null 2>&1; sleep 30) & echo $!")
+        seen = self._activity_until(
+            events, started["id"], lambda item: item["active"] and item is not started, 8
+        )
+        self.assertEqual([item["active"] for item in seen], [True, False, True])
+        self.assertTrue(seen[1]["detached"])
+        self.repl.execute("writer-stop", "handle.kill()")
+        self._activity_until(events, started["id"], lambda item: not item["active"] and not item.get("detached"), 10)
+
+    def test_cancelled_released_bash_await_keeps_completion_notice(self):
+        mime = "application/vnd.prime-agent.bash-activity+json"
+        for released in (False, True):
+            with self.subTest(released=released):
+                events = self.repl.execute(
+                    "cancel-start",
+                    "from rlm import bash\nimport asyncio\n"
+                    "handle = bash('sleep 0.15; printf finished')\n"
+                    + ("handle.pid\n" if released else "")
+                    + "try:\n    await asyncio.wait_for(handle, 0.01)\n"
+                    "except TimeoutError:\n    pass\nhandle._group_alive()",
+                )
+                self.assertEqual(one(events, "result")["text"], str(released))
+                requests = []
+                cursor = 0
+                while True:
+                    for event in events[cursor:]:
+                        if event.get("event") == "host_request":
+                            requests.append(event)
+                            reply_ok(self.repl, event)
+                    cursor = len(events)
+                    if any(event.get("data", {}).get(mime, {}).get("active") is False for event in events):
+                        break
+                    events.append(self.repl.read_event())
+                self.assertEqual(len(requests), 1 if released else 0)
+                checked = self.repl.execute("cancel-result", "handle.poll().output")
+                self.assertEqual(one(checked, "result")["text"], "'finished'" if released else "''")
+
+    def test_interrupt_during_bash_notifier_construction_rolls_back_activity(self):
+        code = "\n".join(
+            [
+                "from rlm import bash, repl as bridge",
+                "import sys, threading, asyncio, inspect",
+                "def stop_at_notice_construction(frame, event, arg):",
+                "    coro = frame.f_locals.get('coro')",
+                "    if (event == 'call' and frame.f_code.co_name == 'create_task'",
+                "            and getattr(getattr(coro, 'cr_code', None), 'co_name', None)",
+                "            == '_notify_background_completion'):",
+                "        globals()['unscheduled_notice'] = coro",
+                "        globals()['interrupted_handle'] = coro.cr_frame.f_locals['self']",
+                "        bridge.emit({'application/json': {'at_notice_create_task': True}})",
+                "        threading.Event().wait(10)",
+                "    return stop_at_notice_construction",
+                "sys.settrace(stop_at_notice_construction)",
+                "handle = bash('sleep 30')",
+            ]
+        )
+        self.repl.send({"type": "execute", "id": "construct", "code": code})
+        events = []
+        while True:
+            event = self.repl.read_event()
+            events.append(event)
+            if event.get("data", {}).get("application/json", {}).get("at_notice_create_task"):
+                break
+        self.repl.send({"type": "interrupt", "id": "construct"})
+        events += self.repl.until_done("construct")
+        self.assertEqual(one(events, "done")["status"], "error")
+        self.assertEqual(one(events, "error")["ename"], "KeyboardInterrupt")
+        mime = "application/vnd.prime-agent.bash-activity+json"
+        activity = [event["data"][mime] for event in events if mime in event.get("data", {})]
+        self.assertEqual([item["active"] for item in activity], [True, False])
+        self.assertEqual(activity[0]["id"], activity[1]["id"])
+        checked = self.repl.execute(
+            "construct-check",
+            "sys.settrace(None)\n"
+            "assert await interrupted_handle._await_group_death(3)\n"
+            "(inspect.getcoroutinestate(unscheduled_notice), interrupted_handle._reap_callback, "
+            "interrupted_handle._group_alive())",
+        )
+        self.assertEqual(one(checked, "result")["text"], "('CORO_CLOSED', None, False)")
+
+    def test_rejected_bash_completion_reports_safe_stderr_and_releases_activity(self):
+        mime = "application/vnd.prime-agent.bash-activity+json"
+        for reply in ({"status": "error", "error": "secret-host-error"}, {}, {"status": "ok"}):
+            with self.subTest(reply=reply):
+                events = self.repl.execute(
+                    "ack-start", "from rlm import bash\nhandle = bash('printf secret-command')"
+                )
+                request = wait_for_host_request(self.repl, events)
+                self.repl.send({"type": "host_reply", "id": request["id"], "data": reply})
+                after = []
+                while not any(
+                    event.get("data", {}).get(mime, {}).get("active") is False for event in after
+                ):
+                    after.append(self.repl.read_event())
+                diagnostic = stream_text(after, "stderr")
+                if reply.get("status") == "ok":
+                    self.assertEqual(diagnostic, "")
+                else:
+                    self.assertEqual(
+                        diagnostic,
+                        f"Background bash completion follow-up for pid {request['data']['pid']} "
+                        "was not accepted. Inspect the saved handle with poll(), output(), or tail().\n",
+                    )
+                self.assertIsNone(one(after, "host_request"))
+                checked = self.repl.execute("ack-check", "handle._reaped, handle.poll().exit_code")
+                self.assertEqual(one(checked, "result")["text"], "(True, 0)")
+
+    def test_reused_request_id_does_not_capture_old_cell_bash_completion(self):
+        setup = "\n".join(
+            [
+                "from rlm import bash",
+                "import asyncio",
+                "reuse_gate = asyncio.Event()",
+                "async def launch_after_cell():",
+                "    await reuse_gate.wait()",
+                "    globals()['reused_handle'] = bash('printf reused-id')",
+                "asyncio.create_task(launch_after_cell())",
+            ]
+        )
+        self.repl.execute("reused-cell-id", setup)
+
+        self.repl.send(
+            {
+                "type": "execute",
+                "id": "reused-cell-id",
+                "code": "reuse_gate.set()\nawait asyncio.sleep(0.2)",
+            }
+        )
+        request = None
+        while True:
+            event = self.repl.read_event()
+            if event.get("event") == "host_request":
+                request = event
+                break
+            self.assertFalse(event.get("event") == "done" and event.get("id") == "reused-cell-id")
+        self.assertEqual(request["data"]["type"], "bash.completed")
+        self.assertEqual(request["data"]["command"], "printf reused-id")
+        reply_ok(self.repl, request)
+        self.assertEqual(one(self.repl.until_done("reused-cell-id"), "done")["status"], "ok")
+
+    def test_protocol_framing_under_noise(self):
+        setup = "\n".join(
+            [
+                "import os, threading",
+                "stop = threading.Event()",
+                "def spam():",
+                "    while not stop.is_set():",
+                "        os.write(1, b'noise-' * 64 + b'\\n')",
+                "threading.Thread(target=spam, daemon=True).start()",
+            ]
+        )
+        self.assertEqual(one(self.repl.execute("n0", setup), "done")["status"], "ok")
+        for i in range(5):
+            events = self.repl.execute(f"n{i + 1}", f"{i} * 10")
+            self.assertEqual(one(events, "result")["text"], str(i * 10))
+        self.repl.execute("n-stop", "stop.set()")
+        # Every protocol line parsed as JSON (until_done would have raised
+        # otherwise); noise text only ever arrived inside stdout events.
+        for line in self.repl.raw_lines:
+            event = json.loads(line)
+            if "noise-" in line:
+                self.assertEqual(event["event"], "stdout")
+
+    def test_malformed_request_line(self):
+        self.repl.send_raw("{not json")
+        event = self.repl.read_event()
+        self.assertEqual(event["event"], "error")
+        self.assertEqual(event["ename"], "ProtocolError")
+        self.assertIsNone(event["id"])
+        events = self.repl.execute("ok", "'alive'")
+        self.assertEqual(one(events, "result")["text"], "'alive'")
+
+    def test_list_names(self):
+        self.repl.execute("ln1", "alpha = 1\ndef helper(n):\n    return n\n_hidden = 2\nrlm = object()\nglobals()[1] = 2")
+        self.repl.send({"type": "list_names", "id": "ln2"})
+        done = one(self.repl.until_done("ln2"), "done")
+        self.assertEqual(done["status"], "ok")
+        self.assertIn("alpha", done["names"])
+        self.assertIn("helper", done["names"])
+        self.assertNotIn("_hidden", done["names"])
+        self.assertNotIn("rlm", done["names"])
+        self.assertNotIn(1, done["names"])
+        self.assertEqual(done["names"], sorted(done["names"]))
+
+    def test_host_request_round_trip(self):
+        code = "\n".join(
+            [
+                "from rlm.repl import host_request",
+                "reply = await host_request({'type': 'demo', 'value': 7})",
+                "reply",
+            ]
+        )
+        self.repl.send({"type": "execute", "id": "hr", "code": code})
+        request = self.repl.read_event()
+        while request.get("event") != "host_request":
+            request = self.repl.read_event()
+        self.assertEqual(request["data"], {"type": "demo", "value": 7})
+        envelope = {"status": "ok", "result": {"status": "weird", "answer": 42}}
+        self.repl.send({"type": "host_reply", "id": request["id"], "data": envelope})
+        events = self.repl.until_done("hr")
+        self.assertEqual(one(events, "result")["text"], repr(envelope))
+        self.assertEqual(one(events, "done")["status"], "ok")
+
+    def test_typed_host_request_unwraps_exact_handler_result(self):
+        code = "\n".join(
+            [
+                "from rlm import host_request",
+                "reply = await host_request('demo')",
+                "reply",
+            ]
+        )
+        self.repl.send({"type": "execute", "id": "typed-hr", "code": code})
+        request = self.repl.read_event()
+        while request.get("event") != "host_request":
+            request = self.repl.read_event()
+        handler_result = {"status": "weird", "answer": 42}
+        self.repl.send(
+            {
+                "type": "host_reply",
+                "id": request["id"],
+                "data": {"status": "ok", "result": handler_result},
+            }
+        )
+        events = self.repl.until_done("typed-hr")
+        self.assertEqual(one(events, "result")["text"], repr(handler_result))
+        self.assertEqual(one(events, "done")["status"], "ok")
+
+    def test_typed_host_request_raises_host_error(self):
+        code = "from rlm import host_request\nawait host_request('demo')"
+        self.repl.send({"type": "execute", "id": "typed-error", "code": code})
+        request = self.repl.read_event()
+        while request.get("event") != "host_request":
+            request = self.repl.read_event()
+        self.repl.send(
+            {
+                "type": "host_reply",
+                "id": request["id"],
+                "data": {"status": "error", "error": "handler exploded"},
+            }
+        )
+        events = self.repl.until_done("typed-error")
+        self.assertEqual(one(events, "error")["ename"], "RuntimeError")
+        self.assertEqual(one(events, "error")["evalue"], "handler exploded")
+        self.assertEqual(one(events, "done")["status"], "error")
+
+    def test_typed_host_request_rejects_unexpected_envelope_status(self):
+        code = "from rlm import host_request\nawait host_request('demo')"
+        self.repl.send({"type": "execute", "id": "typed-unexpected", "code": code})
+        request = self.repl.read_event()
+        while request.get("event") != "host_request":
+            request = self.repl.read_event()
+        self.repl.send(
+            {
+                "type": "host_reply",
+                "id": request["id"],
+                "data": {"status": "partial", "result": {}},
+            }
+        )
+        events = self.repl.until_done("typed-unexpected")
+        self.assertEqual(one(events, "error")["ename"], "RuntimeError")
+        self.assertEqual(
+            one(events, "error")["evalue"],
+            "host request demo returned unexpected status: 'partial'",
+        )
+        self.assertEqual(one(events, "done")["status"], "error")
+
+    def test_host_request_cancelled_cell_drops_pending_future(self):
+        code = "\n".join(
+            [
+                "from rlm.repl import host_request",
+                "await host_request({'type': 'never-answered'})",
+            ]
+        )
+        self.repl.send({"type": "execute", "id": "hr-cancel", "code": code})
+        request = self.repl.read_event()
+        while request.get("event") != "host_request":
+            request = self.repl.read_event()
+        self.repl.send({"type": "interrupt"})
+        events = self.repl.until_done("hr-cancel")
+        self.assertEqual(one(events, "error")["ename"], "KeyboardInterrupt")
+        # A reply arriving after the cancel must be dropped, not crash the runtime.
+        self.repl.send({"type": "host_reply", "id": request["id"], "data": {"status": "ok"}})
+        follow = self.repl.execute("after-cancel", "8+8")
+        self.assertEqual(one(follow, "result")["text"], "16")
+
+    def test_display_from_detached_task_keeps_cell_id(self):
+        code = "\n".join(
+            [
+                "import asyncio",
+                "from rlm.repl import emit",
+                "async def later():",
+                "    await asyncio.sleep(0.2)",
+                "    emit({'text/plain': 'late'})",
+                "detached = asyncio.create_task(later())",
+            ]
+        )
+        self.assertEqual(one(self.repl.execute("det", code), "done")["status"], "ok")
+        self.assertEqual(one(self.repl.execute("idle", "1"), "done")["status"], "ok")
+        display = self.repl.read_event()
+        while display.get("event") != "display":
+            display = self.repl.read_event()
+        self.assertEqual(display["id"], "det")
+        self.assertEqual(display["data"], {"text/plain": "late"})
+
+    def test_shutdown_after_mcp_import_exits_cleanly(self):
+        events = self.repl.execute("mcp-import", "import rlm.mcp")
+        self.assertEqual(one(events, "done")["status"], "ok")
+        self.assertEqual(self.repl.shutdown(), 0)
+
+    def _start_pending_host_request(self) -> None:
+        code = "\n".join(
+            [
+                "from rlm.repl import host_request",
+                "await host_request({'type': 'never-answered'})",
+            ]
+        )
+        self.repl.send({"type": "execute", "id": "hr-pending", "code": code})
+        request = self.repl.read_event()
+        while request.get("event") != "host_request":
+            request = self.repl.read_event()
+
+    def test_stdin_eof_with_pending_host_request_exits(self):
+        self._start_pending_host_request()
+        assert self.repl.proc.stdin is not None
+        self.repl.proc.stdin.close()
+        self.assertEqual(self.repl.proc.wait(timeout=10), 0)
+
+    def test_shutdown_with_pending_host_request_exits(self):
+        self._start_pending_host_request()
+        self.repl.send({"type": "shutdown", "id": "__shutdown__"})
+        events = self.repl.until_done("hr-pending")
+        self.assertEqual(one(events, "error")["ename"], "RuntimeError")
+        self.repl.until_done("__shutdown__")
+        self.assertEqual(self.repl.proc.wait(timeout=10), 0)
+
+
+    def test_interrupt_with_non_string_id_is_protocol_error(self):
+        self.repl.send({"type": "execute", "id": "busy", "code": "import asyncio\nawait asyncio.sleep(0.6)\n'done'"})
+        time.sleep(0.2)
+        self.repl.send({"type": "interrupt", "id": 123})
+        events = self.repl.until_done("busy")
+        protocol_errors = [e for e in events if e.get("ename") == "ProtocolError"]
+        self.assertEqual(len(protocol_errors), 1)
+        self.assertIn("interrupt request id must be a string", protocol_errors[0]["evalue"])
+        # The running cell was not interrupted by the malformed request.
+        self.assertEqual(one(events, "result")["text"], "'done'")
+        self.assertEqual(one(events, "done")["status"], "ok")
+
+    def test_snapshot_rejects_non_boolean_and_non_integer_options(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "kernel-state.dill")
+            manifest_path = os.path.join(tmp, "kernel-state.json")
+            self.repl.execute("v1", "big = b'x' * 100_000")
+            self.repl.send(
+                {
+                    "type": "snapshot",
+                    "id": "v2",
+                    "path": path,
+                    "manifest_path": manifest_path,
+                    "max_variable_bytes": 1024,
+                    "prune_oversized": "false",
+                }
+            )
+            done = one(self.repl.until_done("v2"), "done")
+            self.assertEqual(done["status"], "error")
+            self.assertIn("boolean", done["reason"])
+            events = self.repl.execute("v3", "'big' in dir()")
+            self.assertEqual(one(events, "result")["text"], "True")
+
+            self.repl.send(
+                {"type": "snapshot", "id": "v4", "path": path, "manifest_path": manifest_path, "max_bytes": "10"}
+            )
+            done = one(self.repl.until_done("v4"), "done")
+            self.assertEqual(done["status"], "error")
+            self.assertIn("max_bytes must be a non-negative integer", done["reason"])
+
+            # An explicit JSON null is present-but-invalid, not "use the default".
+            self.repl.send(
+                {"type": "snapshot", "id": "v5", "path": path, "manifest_path": manifest_path, "max_bytes": None}
+            )
+            done = one(self.repl.until_done("v5"), "done")
+            self.assertEqual(done["status"], "error")
+            self.assertIn("max_bytes must be a non-negative integer", done["reason"])
+
+            self.repl.send(
+                {
+                    "type": "snapshot",
+                    "id": "v6",
+                    "path": path,
+                    "manifest_path": manifest_path,
+                    "max_variable_bytes": None,
+                }
+            )
+            done = one(self.repl.until_done("v6"), "done")
+            self.assertEqual(done["status"], "error")
+            self.assertIn("max_variable_bytes must be a non-negative integer", done["reason"])
+
+            # A negative cap with prune_oversized would delete every user variable: reject it
+            # before the snapshot runs, leaving the namespace untouched.
+            self.repl.send(
+                {
+                    "type": "snapshot",
+                    "id": "v7",
+                    "path": path,
+                    "manifest_path": manifest_path,
+                    "max_variable_bytes": -1,
+                    "prune_oversized": True,
+                }
+            )
+            done = one(self.repl.until_done("v7"), "done")
+            self.assertEqual(done["status"], "error")
+            self.assertIn("max_variable_bytes must be a non-negative integer", done["reason"])
+            events = self.repl.execute("v8", "'big' in dir()")
+            self.assertEqual(one(events, "result")["text"], "True")
+
+    def test_snapshot_rejects_identical_path_and_manifest_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "kernel-state.dill")
+            self.repl.send({"type": "snapshot", "id": "sp1", "path": path, "manifest_path": path})
+            done = one(self.repl.until_done("sp1"), "done")
+            self.assertEqual(done["status"], "error")
+            self.assertEqual(done["reason"], "path and manifest_path must differ")
+            self.assertFalse(os.path.exists(path))
+
+    def test_exception_with_broken_str_reported_safely(self):
+        code = "\n".join(
+            [
+                "class Broken(Exception):",
+                "    def __str__(self):",
+                "        raise RuntimeError('nope')",
+                "raise Broken()",
+            ]
+        )
+        events = self.repl.execute("brk", code)
+        error = one(events, "error")
+        self.assertEqual(error["ename"], "Broken")
+        self.assertEqual(error["evalue"], "<exception str() failed>")
+        self.assertEqual(one(events, "done")["status"], "error")
+        follow = self.repl.execute("after-brk", "1+1")
+        self.assertEqual(one(follow, "result")["text"], "2")
+
+    def test_snapshot_manifest_write_failure_fails_without_pruning(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "kernel-state.dill")
+            manifest_path = os.path.join(tmp, "missing-dir", "kernel-state.json")
+            self.repl.execute("m1", "big = b'x' * 100_000")
+            self.repl.send(
+                {
+                    "type": "snapshot",
+                    "id": "m2",
+                    "path": path,
+                    "manifest_path": manifest_path,
+                    "max_variable_bytes": 1024,
+                    "prune_oversized": True,
+                }
+            )
+            done = one(self.repl.until_done("m2"), "done")
+            self.assertEqual(done["status"], "error")
+            self.assertTrue(done["reason"].startswith("manifest write failed"))
+            events = self.repl.execute("m3", "'big' in dir()")
+            self.assertEqual(one(events, "result")["text"], "True")
+
+    def test_closed_stdio_cell_still_completes_and_serves_next(self):
+        # Closing sys.stdout/sys.stderr must not kill the serve loop: done still
+        # arrives and the runtime keeps serving cells.
+        events = self.repl.execute("close-io", "import sys\nsys.stdout.close()\nsys.stderr.close()")
+        self.assertEqual(one(events, "done")["status"], "ok")
+        follow = self.repl.execute("after-close", "1+1")
+        self.assertEqual(one(follow, "result")["text"], "2")
+        self.assertEqual(one(follow, "done")["status"], "ok")
+
+    def test_compile_crash_reports_error_and_serves_next(self):
+        # A compile-phase crash outside SyntaxError/ValueError (RecursionError or
+        # MemoryError depending on build) must fail the one cell, not the runtime.
+        events = self.repl.execute("deep", "a" + ".b" * 100000)
+        self.assertIsNotNone(one(events, "error"))
+        self.assertEqual(one(events, "done")["status"], "error")
+        follow = self.repl.execute("after-deep", "1+1")
+        self.assertEqual(one(follow, "result")["text"], "2")
+        self.assertEqual(one(follow, "done")["status"], "ok")
+
+    def test_rebound_stdout_without_flush_still_completes(self):
+        # Rebinding sys.stdout/sys.stderr to flush-less objects must not kill drain.
+        events = self.repl.execute("rebind-io", "import sys\nsys.stdout = None\nsys.stderr = None")
+        self.assertEqual(one(events, "done")["status"], "ok")
+        follow = self.repl.execute("after-rebind", "1+1")
+        self.assertEqual(one(follow, "result")["text"], "2")
+        self.assertEqual(one(follow, "done")["status"], "ok")
+
+    def test_closed_fds_reclaimed_by_files_still_completes(self):
+        # A cell closing fds 1/2 with open() reclaiming the numbers must not wedge
+        # drain: tokens go through a private dup, so done still arrives.
+        code = "\n".join(
+            [
+                "import os",
+                "os.close(1)",
+                "os.close(2)",
+                "a = open(os.devnull, 'w')",
+                "b = open(os.devnull, 'w')",
+            ]
+        )
+        events = self.repl.execute("reclaim-fds", code)
+        self.assertEqual(one(events, "done")["status"], "ok")
+        # print() writes via sys.stdout's own dup, so the event must arrive and drain stays exact.
+        follow = self.repl.execute("after-reclaim", "print('hi')")
+        self.assertEqual(stream_text(follow, "stdout"), "hi\n")
+        self.assertEqual(one(follow, "done")["status"], "ok")
+
+    def test_restore_missing_snapshot_is_ok_with_reason(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.repl.send({"type": "restore", "id": "r0", "path": os.path.join(tmp, "absent.dill")})
+            done = one(self.repl.until_done("r0"), "done")
+            self.assertEqual(done["status"], "ok")
+            self.assertEqual(done["restored"], [])
+            self.assertEqual(done["failed"], [])
+            self.assertEqual(done["reason"], "snapshot not found")
+
+
+class FinishRequestTest(unittest.TestCase):
+    """In-process checks of the parked-interrupt bookkeeping on request finish."""
+
+    def setUp(self) -> None:
+        import rlm.repl as repl_module
+
+        self.repl_module = repl_module
+        self.addCleanup(self._reset)
+
+    def _reset(self) -> None:
+        self.repl_module._inflight.clear()
+        self.repl_module._pending_interrupts["ids"].clear()
+        self.repl_module._pending_interrupts["any"] = False
+        self.repl_module._finishing_rid = None
+        self.repl_module._handoff_interrupted = False
+        self.repl_module._sigint_target = None
+        self.repl_module._active.update({"task": None, "rid": None, "interrupted": False})
+
+    def test_parked_any_survives_while_another_request_is_inflight(self):
+        repl = self.repl_module
+        repl._inflight.update({"a", "b"})
+        repl._pending_interrupts["any"] = True
+        repl._finish_request("a")
+        self.assertTrue(repl._pending_interrupts["any"])
+        repl._finish_request("b")
+        self.assertFalse(repl._pending_interrupts["any"])
+
+    def test_compile_error_consumes_parked_untargeted_interrupt(self):
+        # An untargeted interrupt parked while a compile-broken request was
+        # inflight belongs to that request: its compile-error finish must
+        # consume it even while another request is still inflight, so the
+        # interrupt cannot leak onto the next cell.
+        repl = self.repl_module
+        repl._inflight.update({"bad", "other"})
+        repl._pending_interrupts["any"] = True
+        asyncio.run(repl._handle_request(repl._handle_execute, {"id": "bad", "code": "def broken(:\n    pass"}, {}))
+        self.assertFalse(repl._pending_interrupts["any"])
+        self.assertNotIn("bad", repl._inflight)
+        self.assertIn("other", repl._inflight)
+
+    def test_post_run_error_leaves_parked_interrupt_for_next_request(self):
+        # Once _run_guarded finished a request (_finish_locked already ran), a
+        # later exception in the same handler must not consume an untargeted
+        # interrupt parked for the still-inflight next request.
+        repl = self.repl_module
+
+        async def finished_then_broken(req, ns):
+            repl._finish_request(req["id"])  # simulate _run_guarded completion
+            repl._pending_interrupts["any"] = True  # parked while "other" is inflight
+            raise RuntimeError("post-execution failure")
+
+        repl._inflight.update({"done", "other"})
+        asyncio.run(repl._handle_request(finished_then_broken, {"id": "done"}, {}))
+        self.assertTrue(repl._pending_interrupts["any"])
+        self.assertIn("other", repl._inflight)
+
+    def test_sigint_in_post_run_guarded_window_reports_snapshot_ok(self):
+        # A finishing-targeted SIGINT between _run_guarded's return and
+        # _finish_request raises KeyboardInterrupt into _handle_state; the
+        # completed destructive snapshot must still report done status ok.
+        import signal
+        from unittest import mock
+
+        repl = self.repl_module
+        real_run_guarded = repl._run_guarded
+
+        async def run_guarded_then_sigint(task, rid):
+            outcome = await real_run_guarded(task, rid)
+            with repl._interrupt_lock:
+                repl._sigint_target = rid
+            # Synchronous SIGINT in the post-run window: the handler sees
+            # _sigint_target == _finishing_rid and raises right here.
+            signal.raise_signal(signal.SIGINT)
+            return outcome
+
+        previous = signal.signal(signal.SIGINT, repl._sigint_handler)
+        self.addCleanup(signal.signal, signal.SIGINT, previous)
+        previous_loop = repl._loop
+        self.addCleanup(setattr, repl, "_loop", previous_loop)
+        sent = []
+        ns = {"big": b"x" * 100_000}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            req = {
+                "type": "snapshot",
+                "id": "snap",
+                "path": os.path.join(tmp, "kernel-state.dill"),
+                "manifest_path": os.path.join(tmp, "kernel-state.json"),
+                "max_variable_bytes": 1024,
+                "prune_oversized": True,
+            }
+
+            async def main():
+                repl._loop = asyncio.get_running_loop()
+                repl._inflight.add("snap")
+                await repl._handle_request(repl._handle_state, req, ns)
+
+            with mock.patch.object(repl, "_run_guarded", run_guarded_then_sigint):
+                with mock.patch.object(repl, "_send", sent.append):
+                    asyncio.run(main())
+
+        done = next(e for e in sent if e.get("event") == "done")
+        self.assertEqual(done["status"], "ok")
+        self.assertEqual(done["pruned"], ["big"])
+        # The prune ran (destructive success) and the request is fully finished.
+        self.assertEqual(ns, {})
+        self.assertNotIn("snap", repl._inflight)
+
+    def test_protocol_interrupt_during_restore_commit_is_consumed_and_next_request_runs(self):
+        # A protocol interrupt (_request_interrupt -> SIGINT on the main thread)
+        # landing while the restore applies its staged names is consumed: the
+        # restore reports done ok with every name applied, and a following
+        # request runs normally with no interrupt bleed.
+        import signal
+        from unittest import mock
+
+        repl = self.repl_module
+        previous = signal.signal(signal.SIGINT, repl._sigint_handler)
+        self.addCleanup(signal.signal, signal.SIGINT, previous)
+        previous_loop = repl._loop
+        self.addCleanup(setattr, repl, "_loop", previous_loop)
+        sent = []
+
+        class InterruptOnFirstSet(dict):
+            def __setitem__(self, key, value):
+                super().__setitem__(key, value)
+                if len(self) == 1:
+                    repl._request_interrupt("restore")
+
+        ns = InterruptOnFirstSet()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "kernel-state.dill")
+            manifest = os.path.join(tmp, "kernel-state.json")
+            snap = repl._snapshot_state({"a": 1, "b": 2}, path, manifest, 1 << 20, 1 << 20, False)
+            self.assertNotIn("error", snap)
+
+            async def main():
+                repl._loop = asyncio.get_running_loop()
+                repl._inflight.add("restore")
+                await repl._handle_request(repl._handle_state, {"type": "restore", "id": "restore", "path": path}, ns)
+                repl._inflight.add("next")
+                await repl._handle_request(repl._handle_execute, {"id": "next", "code": "checked = 1 + 1"}, {})
+
+            with mock.patch.object(repl, "_send", sent.append):
+                with mock.patch.object(repl, "_drain_output", lambda: None):
+                    asyncio.run(main())
+
+        done_restore = next(e for e in sent if e.get("event") == "done" and e["id"] == "restore")
+        self.assertEqual(done_restore["status"], "ok")
+        self.assertEqual(done_restore["restored"], ["a", "b"])
+        self.assertEqual(dict(ns), {"a": 1, "b": 2})
+        done_next = next(e for e in sent if e.get("event") == "done" and e["id"] == "next")
+        self.assertEqual(done_next["status"], "ok")
+        self.assertIsNone(repl._sigint_target)
+        self.assertFalse(repl._pending_interrupts["any"])
+        self.assertFalse(repl._pending_interrupts["ids"])
+
+    @staticmethod
+    def _run_resuming(coro):
+        # Mimic main(): a KI escaping a task stops run_until_complete; the
+        # runtime resumes the loop and serving continues.
+        loop = asyncio.new_event_loop()
+        try:
+            outer = loop.create_task(coro)
+            while not outer.done():
+                try:
+                    loop.run_until_complete(outer)
+                except KeyboardInterrupt:
+                    continue
+        finally:
+            loop.close()
+
+    def test_protocol_interrupt_after_restore_returned_before_task_done_reports_ok(self):
+        # The interrupt raises into the state task AFTER _restore_state returned
+        # but before the task completes; every binding is committed, so the
+        # request must report ok from the committed box, not interrupted.
+        import signal
+        from unittest import mock
+
+        repl = self.repl_module
+        previous = signal.signal(signal.SIGINT, repl._sigint_handler)
+        self.addCleanup(signal.signal, signal.SIGINT, previous)
+        previous_loop = repl._loop
+        self.addCleanup(setattr, repl, "_loop", previous_loop)
+        sent = []
+        real_restore = repl._restore_state
+
+        def restore_then_interrupt(*args, **kwargs):
+            result = real_restore(*args, **kwargs)
+            repl._sigint_target = "restore"
+            repl._sigint_handler(signal.SIGINT, None)  # raises into the still-running task
+            return result
+
+        ns: dict = {}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "kernel-state.dill")
+            manifest = os.path.join(tmp, "kernel-state.json")
+            snap = repl._snapshot_state({"a": 1, "b": 2}, path, manifest, 1 << 20, 1 << 20, False)
+            self.assertNotIn("error", snap)
+
+            async def main():
+                repl._loop = asyncio.get_running_loop()
+                repl._inflight.add("restore")
+                await repl._handle_request(repl._handle_state, {"type": "restore", "id": "restore", "path": path}, ns)
+                repl._inflight.add("next")
+                await repl._handle_request(repl._handle_execute, {"id": "next", "code": "checked = 1 + 1"}, {})
+
+            with mock.patch.object(repl, "_restore_state", restore_then_interrupt):
+                with mock.patch.object(repl, "_send", sent.append):
+                    with mock.patch.object(repl, "_drain_output", lambda: None):
+                        self._run_resuming(main())
+
+        done_restore = next(e for e in sent if e.get("event") == "done" and e["id"] == "restore")
+        self.assertEqual(done_restore["status"], "ok")
+        self.assertEqual(done_restore["restored"], ["a", "b"])
+        self.assertEqual(ns, {"a": 1, "b": 2})
+        done_next = next(e for e in sent if e.get("event") == "done" and e["id"] == "next")
+        self.assertEqual(done_next["status"], "ok")
+        self.assertIsNone(repl._sigint_target)
+        self.assertFalse(repl._pending_interrupts["any"])
+        self.assertFalse(repl._pending_interrupts["ids"])
+
+    def test_nonprotocol_keyboardinterrupt_after_committed_restore_is_not_recovered(self):
+        # A user-originated KeyboardInterrupt (no _sigint_handler provenance:
+        # _active["interrupted"] stays False) after the restore committed must
+        # keep the interrupted error, not be converted to snapshot success.
+        from unittest import mock
+
+        repl = self.repl_module
+        previous_loop = repl._loop
+        self.addCleanup(setattr, repl, "_loop", previous_loop)
+        sent = []
+        real_restore = repl._restore_state
+
+        def restore_then_user_interrupt(*args, **kwargs):
+            real_restore(*args, **kwargs)  # fills the committed box
+            raise KeyboardInterrupt("nonprotocol")
+
+        ns: dict = {}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "kernel-state.dill")
+            manifest = os.path.join(tmp, "kernel-state.json")
+            snap = repl._snapshot_state({"a": 1, "b": 2}, path, manifest, 1 << 20, 1 << 20, False)
+            self.assertNotIn("error", snap)
+
+            async def main():
+                repl._loop = asyncio.get_running_loop()
+                repl._inflight.add("restore")
+                await repl._handle_request(repl._handle_state, {"type": "restore", "id": "restore", "path": path}, ns)
+
+            with mock.patch.object(repl, "_restore_state", restore_then_user_interrupt):
+                with mock.patch.object(repl, "_send", sent.append):
+                    with mock.patch.object(repl, "_drain_output", lambda: None):
+                        self._run_resuming(main())
+
+        done = next(e for e in sent if e.get("event") == "done" and e["id"] == "restore")
+        self.assertEqual(done["status"], "error")
+        self.assertEqual(done["reason"], "interrupted")
+
+    def test_protocol_interrupt_after_destructive_snapshot_returned_reports_ok(self):
+        # Same post-return window for snapshot: the pruning commit already ran,
+        # so the interrupt must not misreport the destructive snapshot as failed.
+        import signal
+        from unittest import mock
+
+        repl = self.repl_module
+        previous = signal.signal(signal.SIGINT, repl._sigint_handler)
+        self.addCleanup(signal.signal, signal.SIGINT, previous)
+        previous_loop = repl._loop
+        self.addCleanup(setattr, repl, "_loop", previous_loop)
+        sent = []
+        real_snapshot = repl._snapshot_state
+
+        def snapshot_then_interrupt(*args, **kwargs):
+            result = real_snapshot(*args, **kwargs)
+            repl._sigint_target = "snap"
+            repl._sigint_handler(signal.SIGINT, None)  # raises into the still-running task
+            return result
+
+        ns = {"small": 1, "big": "x" * 100000}
+        with tempfile.TemporaryDirectory() as tmp:
+            req = {
+                "type": "snapshot",
+                "id": "snap",
+                "path": os.path.join(tmp, "kernel-state.dill"),
+                "manifest_path": os.path.join(tmp, "kernel-state.json"),
+                "prune_oversized": True,
+                "max_variable_bytes": 1024,
+            }
+
+            async def main():
+                repl._loop = asyncio.get_running_loop()
+                repl._inflight.add("snap")
+                await repl._handle_request(repl._handle_state, req, ns)
+
+            with mock.patch.object(repl, "_snapshot_state", snapshot_then_interrupt):
+                with mock.patch.object(repl, "_send", sent.append):
+                    self._run_resuming(main())
+
+        done = next(e for e in sent if e.get("event") == "done" and e["id"] == "snap")
+        self.assertEqual(done["status"], "ok")
+        self.assertEqual(done["saved"], ["small"])
+        self.assertEqual(done["pruned"], ["big"])
+        self.assertEqual(ns, {"small": 1})
+        self.assertIsNone(repl._sigint_target)
+
+    def test_untargeted_interrupt_in_done_task_handoff_is_not_parked(self):
+        # The cell task is done but _run_guarded's finally has not run yet
+        # (_active still names the rid, _finishing_rid is unset). An untargeted
+        # interrupt in that handoff belongs to THIS request: it must be recorded
+        # for its finishing phase, never parked where the next request eats it.
+        import signal
+
+        repl = self.repl_module
+
+        class DoneTask:
+            def done(self):
+                return True
+
+            def cancel(self):
+                raise AssertionError("a done task must not be cancelled")
+
+        repl._inflight.update({"handoff", "other"})
+        repl._active.update({"task": DoneTask(), "rid": "handoff", "interrupted": False})
+        previous = signal.signal(signal.SIGINT, repl._sigint_handler)
+        self.addCleanup(signal.signal, signal.SIGINT, previous)
+        repl._request_interrupt(None)
+        deadline = time.monotonic() + 5
+        while not repl._handoff_interrupted and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertEqual(repl._sigint_target, "handoff")
+        self.assertFalse(repl._pending_interrupts["any"])
+        self.assertTrue(repl._consume_handoff_interrupt())
+        self.assertFalse(repl._handoff_interrupted)
+        self.assertIn("other", repl._inflight)
+
+
+class SnapshotPruneShieldTest(unittest.TestCase):
+    """The prune-deletion window must not be split by a SIGINT-raised KeyboardInterrupt."""
+
+    def test_sigint_mid_prune_is_consumed_after_all_deletions_ran(self):
+        import signal
+
+        sys.path.insert(0, SRC)
+        self.addCleanup(sys.path.remove, SRC)
+        from rlm.repl import _snapshot_state
+
+        class SigintOnFirstPop(dict):
+            fired = False
+
+            def pop(self, key, default=None):
+                if not self.fired:
+                    self.fired = True
+                    # Synchronous SIGINT on the main thread: lands exactly mid-loop.
+                    signal.raise_signal(signal.SIGINT)
+                return super().pop(key, default)
+
+        ns = SigintOnFirstPop(big1=b"x" * 100_000, big2=b"y" * 100_000)
+        with tempfile.TemporaryDirectory() as tmp:
+            result = _snapshot_state(
+                ns,
+                os.path.join(tmp, "kernel-state.dill"),
+                os.path.join(tmp, "kernel-state.json"),
+                max_bytes=1 << 20,
+                max_variable_bytes=1024,
+                prune_oversized=True,
+            )
+        # The parked SIGINT is consumed: the committed snapshot reports success.
+        self.assertEqual(result["pruned"], ["big1", "big2"])
+        self.assertNotIn("error", result)
+        # Both deletions ran: ns matches the manifest.
+        self.assertEqual(dict(ns), {})
+
+    def test_sigint_after_manifest_commit_before_deletions_is_consumed(self):
+        import signal
+        from unittest import mock
+
+        sys.path.insert(0, SRC)
+        self.addCleanup(sys.path.remove, SRC)
+        from rlm.repl import _snapshot_state
+
+        real_replace = os.replace
+
+        ns = {"big1": b"x" * 100_000, "big2": b"y" * 100_000}
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest_path = os.path.join(tmp, "kernel-state.json")
+
+            def replace_then_sigint(src, dst):
+                real_replace(src, dst)
+                # Synchronous SIGINT right after the manifest commit, before any deletion.
+                if dst == manifest_path:
+                    signal.raise_signal(signal.SIGINT)
+
+            with mock.patch("os.replace", replace_then_sigint):
+                result = _snapshot_state(
+                    ns,
+                    os.path.join(tmp, "kernel-state.dill"),
+                    manifest_path,
+                    max_bytes=1 << 20,
+                    max_variable_bytes=1024,
+                    prune_oversized=True,
+                )
+            # The parked SIGINT is consumed: the committed destructive snapshot
+            # reports success instead of surfacing KeyboardInterrupt.
+            self.assertEqual(result["pruned"], ["big1", "big2"])
+            self.assertNotIn("error", result)
+            # The deletions still ran: ns is consistent with the committed manifest.
+            self.assertEqual(ns, {})
+            with open(manifest_path) as fh:
+                self.assertEqual(json.load(fh)["pruned"], ["big1", "big2"])
+
+
+class RestoreApplyShieldTest(unittest.TestCase):
+    """The restore assignment loop must not be split by a SIGINT-raised KeyboardInterrupt."""
+
+    def _write_snapshot(self, tmp: str, source: dict[str, object]) -> str:
+        path = os.path.join(tmp, "kernel-state.dill")
+        from rlm.repl import _snapshot_state
+
+        result = _snapshot_state(
+            source,
+            path,
+            os.path.join(tmp, "kernel-state.json"),
+            max_bytes=1 << 20,
+            max_variable_bytes=1 << 20,
+            prune_oversized=False,
+        )
+        self.assertNotIn("error", result)
+        return path
+
+    def setUp(self):
+        sys.path.insert(0, SRC)
+        self.addCleanup(sys.path.remove, SRC)
+
+    class SigintOnNthSet(dict):
+        """Fires one synchronous SIGINT right after its Nth assignment."""
+
+        def __init__(self, fire_on: int) -> None:
+            super().__init__()
+            self.fire_on = fire_on
+            self.calls = 0
+
+        def __setitem__(self, key, value):
+            super().__setitem__(key, value)
+            self.calls += 1
+            if self.calls == self.fire_on:
+                signal.raise_signal(signal.SIGINT)
+
+    def test_sigint_during_staging_leaves_namespace_unchanged(self):
+        import dill
+
+        from rlm.repl import _restore_state
+
+        real_loads = dill.loads
+        calls = {"n": 0}
+
+        def loads_then_sigint(blob):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                # Synchronous SIGINT mid-deserialize: nothing may have touched ns yet.
+                signal.raise_signal(signal.SIGINT)
+            return real_loads(blob)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write_snapshot(tmp, {"a": 1, "b": 2})
+            ns = {"a": "old", "unrelated": "keep"}
+            with mock.patch.object(dill, "loads", loads_then_sigint):
+                with self.assertRaises(KeyboardInterrupt):
+                    _restore_state(ns, path)
+        # The old namespace is byte-identical: no partial old/new mixture.
+        self.assertEqual(ns, {"a": "old", "unrelated": "keep"})
+
+    def test_sigint_mid_apply_is_consumed_and_all_names_applied(self):
+        from rlm.repl import _restore_state
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write_snapshot(tmp, {"a": 1, "b": 2})
+            ns = self.SigintOnNthSet(fire_on=1)
+            result = _restore_state(ns, path)
+        # The parked SIGINT is consumed: the committed restore reports success.
+        self.assertNotIn("error", result)
+        self.assertEqual(result["restored"], ["a", "b"])
+        self.assertEqual(dict(ns), {"a": 1, "b": 2})
+
+    def test_sigint_after_last_apply_is_consumed(self):
+        from rlm.repl import _restore_state
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write_snapshot(tmp, {"a": 1, "b": 2})
+            ns = self.SigintOnNthSet(fire_on=2)
+            result = _restore_state(ns, path)
+        self.assertNotIn("error", result)
+        self.assertEqual(result["restored"], ["a", "b"])
+        self.assertEqual(dict(ns), {"a": 1, "b": 2})
+
+    def test_sigint_with_backfill_first_write_is_consumed(self):
+        from rlm.repl import _restore_state
+        exec("SECRET = 42\ndef reader():\n    return SECRET", source := {"__name__": "__main__"})
+        with tempfile.TemporaryDirectory() as tmp:
+            ns = self.SigintOnNthSet(fire_on=1)
+            result = _restore_state(ns, self._write_snapshot(tmp, {"reader": source["reader"]}))
+        self.assertEqual((result["restored"], ns["SECRET"]), (["reader"], 42))
+
+    def _restore_with_sigint_at_unpark(self):
+        """Real unparking swap, then the newly restored handler fires immediately."""
+        from rlm.repl import _restore_state
+
+        real_signal = signal.signal
+        state = {"calls": 0, "fired": False}
+
+        def swap_then_fire(sig, handler):
+            prev = real_signal(sig, handler)
+            state["calls"] += 1
+            if state["calls"] == 2:
+                # A SIGINT delivered while parked but first seen after the swap
+                # runs the restored raising handler inside _restore_state's tail.
+                state["fired"] = True
+                handler(sig, None)
+            return prev
+
+        committed: list = []
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write_snapshot(tmp, {"a": 1, "b": 2})
+            ns: dict = {}
+            with mock.patch("signal.signal", swap_then_fire):
+                with self.assertRaises(KeyboardInterrupt):
+                    _restore_state(ns, path, committed)
+        self.assertTrue(state["fired"])
+        return committed, ns
+
+    def test_sigint_at_handler_restoration_publishes_committed_result(self):
+        # Every binding is applied by unpark time: the KeyboardInterrupt escapes
+        # this frame, but the filled box lets _handle_state report success.
+        previous = signal.signal(signal.SIGINT, signal.default_int_handler)
+        self.addCleanup(signal.signal, signal.SIGINT, previous)
+        committed, ns = self._restore_with_sigint_at_unpark()
+        self.assertEqual(committed[0]["restored"], ["a", "b"])
+        self.assertEqual(ns, {"a": 1, "b": 2})
+        self.assertIs(signal.getsignal(signal.SIGINT), signal.default_int_handler)
+
+    def test_sigint_at_handler_restoration_with_non_default_prior_handler(self):
+        fired = []
+
+        def prior(signum, frame):
+            fired.append(signum)
+            raise KeyboardInterrupt
+
+        previous = signal.signal(signal.SIGINT, prior)
+        self.addCleanup(signal.signal, signal.SIGINT, previous)
+        committed, ns = self._restore_with_sigint_at_unpark()
+        self.assertEqual(committed[0]["restored"], ["a", "b"])
+        self.assertEqual(ns, {"a": 1, "b": 2})
+        self.assertEqual(fired, [signal.SIGINT])
+        self.assertIs(signal.getsignal(signal.SIGINT), prior)
+
+    def test_handler_restored_and_no_interrupt_bleed(self):
+        from rlm.repl import _restore_state
+
+        original = signal.getsignal(signal.SIGINT)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write_snapshot(tmp, {"a": 1, "b": 2})
+            ns = self.SigintOnNthSet(fire_on=1)
+            result = _restore_state(ns, path)
+        self.assertNotIn("error", result)
+        self.assertIs(signal.getsignal(signal.SIGINT), original)
+        # Nothing parked bleeds into later work: a fresh SIGINT raises normally.
+        with self.assertRaises(KeyboardInterrupt):
+            signal.raise_signal(signal.SIGINT)
+
+
+class SnapshotTempCleanupTest(unittest.TestCase):
+    def test_keyboard_interrupt_during_payload_write_removes_temp_file(self):
+        from unittest import mock as unittest_mock
+
+        sys.path.insert(0, SRC)
+        self.addCleanup(sys.path.remove, SRC)
+        import dill
+
+        from rlm.repl import _snapshot_state
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "kernel-state.dill")
+
+            real_dump = dill.dump
+
+            def interrupted_dump(value, fh):
+                # Interrupt mid-dump, after partial bytes landed in the staged temp.
+                fh.write(b"partial")
+                raise KeyboardInterrupt
+
+            with unittest_mock.patch.object(dill, "dump", interrupted_dump):
+                with self.assertRaises(KeyboardInterrupt):
+                    _snapshot_state(
+                        {"x": 1},
+                        path,
+                        os.path.join(tmp, "manifest.json"),
+                        max_bytes=1 << 20,
+                        max_variable_bytes=1 << 20,
+                        prune_oversized=False,
+                    )
+            self.assertEqual(os.listdir(tmp), [])  # no temp (or final) files survive
+
+    def test_name_deleted_by_background_thread_mid_snapshot_is_skipped(self):
+        sys.path.insert(0, SRC)
+        self.addCleanup(sys.path.remove, SRC)
+        from rlm.repl import _snapshot_state
+
+        class RacyNs(dict):
+            # Simulates a background thread deleting "gone" between the key
+            # listing and the per-name lookup.
+            def keys(self):
+                yield from ("gone", "kept")
+
+        ns = RacyNs(kept=1)
+        with tempfile.TemporaryDirectory() as tmp:
+            result = _snapshot_state(
+                ns,
+                os.path.join(tmp, "kernel-state.dill"),
+                os.path.join(tmp, "manifest.json"),
+                max_bytes=1 << 20,
+                max_variable_bytes=1 << 20,
+                prune_oversized=False,
+            )
+        self.assertNotIn("error", result)
+        self.assertEqual(result["saved"], ["kept"])
+        self.assertEqual(result["skipped"], [{"name": "gone", "reason": "deleted during snapshot"}])
+
+
+
+class SnapshotPairConsistencyTest(unittest.TestCase):
+    # Direct fault injection into _snapshot_state: portable and deterministic
+    # (chmod-based injection breaks as root and has different Windows semantics).
+    def setUp(self):
+        sys.path.insert(0, SRC)
+        self.addCleanup(sys.path.remove, SRC)
+        from rlm.repl import _snapshot_state
+
+        self.snapshot = _snapshot_state
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dir = tmp.name
+        self.path = os.path.join(self.dir, "kernel-state.dill")
+        self.manifest_path = os.path.join(self.dir, "kernel-state.json")
+
+    def _snap(self, ns, path=None, manifest_path=None, **kw):
+        args = dict(max_bytes=1 << 20, max_variable_bytes=1 << 20, prune_oversized=False)
+        args.update(kw)
+        return self.snapshot(ns, path or self.path, manifest_path or self.manifest_path, **args)
+
+    def _old_pair(self, path=None, manifest_path=None):
+        self.assertNotIn("error", self._snap({"keep": 1}, path, manifest_path))
+        with open(path or self.path, "rb") as fh:
+            payload = fh.read()
+        with open(manifest_path or self.manifest_path, "rb") as fh:
+            manifest = fh.read()
+        return payload, manifest
+
+    def _assert_pair(self, old_payload, old_manifest, path=None, manifest_path=None):
+        with open(path or self.path, "rb") as fh:
+            self.assertEqual(fh.read(), old_payload)
+        with open(manifest_path or self.manifest_path, "rb") as fh:
+            self.assertEqual(fh.read(), old_manifest)
+
+    def _assert_only_pair_files(self, directory=None):
+        self.assertEqual(
+            sorted(os.listdir(directory or self.dir)),
+            ["kernel-state.dill", "kernel-state.json"],
+        )
+
+    def test_complete_payload_respects_aggregate_size_cap(self):
+        name = "x" * 10_000
+        result = self._snap({name: 1}, max_bytes=128, max_variable_bytes=128)
+        self.assertEqual(result["saved"], [])
+        self.assertEqual(result["skipped"], [{"name": name, "reason": "exceeds aggregate snapshot size cap"}])
+        self.assertLessEqual(result["bytes"], 128)
+        self._assert_only_pair_files()
+
+    def test_near_cap_payload_skips_tail_instead_of_failing_snapshot(self):
+        import dill
+
+        from rlm.repl import _SNAPSHOT_MAGIC, _restore_state
+
+        dill.settings["recurse"] = True
+        source = {"a": "first", "b": "second"}
+        blobs = {name: dill.dumps(value) for name, value in source.items()}
+        # One byte short of the full single-pass payload (magic + both records),
+        # so "a" fits exactly and "b" overflows the remaining aggregate budget.
+        cap = len(_SNAPSHOT_MAGIC) + 13 + len(blobs["a"]) + 13 + len(blobs["b"]) - 1
+
+        result = self._snap(source, max_bytes=cap, max_variable_bytes=cap)
+        self.assertEqual(result["saved"], ["a"])
+        self.assertEqual(result["skipped"], [{"name": "b", "reason": "exceeds aggregate snapshot size cap"}])
+        self.assertLessEqual(result["bytes"], cap)
+        ns: dict = {}
+        self.assertNotIn("error", _restore_state(ns, self.path))
+        self.assertEqual(ns, {"a": "first"})
+
+    def test_manifest_write_failure_preserves_prior_pair(self):
+        old_payload, old_manifest = self._old_pair()
+        ns = {"keep": 1, "big": b"x" * 100_000}
+        with mock.patch("json.dump", side_effect=OSError("disk full")):
+            result = self._snap(ns, max_variable_bytes=1024, prune_oversized=True)
+        self.assertTrue(result["error"].startswith("manifest write failed"))
+        self._assert_pair(old_payload, old_manifest)
+        self._assert_only_pair_files()
+        self.assertIn("big", ns)  # not pruned
+
+    def test_payload_replace_failure_preserves_prior_pair(self):
+        old_payload, old_manifest = self._old_pair()
+        real_replace = os.replace
+
+        def failing_replace(src, dst):
+            if dst == self.path:
+                raise OSError("rename failed")
+            return real_replace(src, dst)
+
+        with mock.patch("os.replace", failing_replace):
+            result = self._snap({"keep": 2})
+        self.assertTrue(result["error"].startswith("write failed"))
+        self._assert_pair(old_payload, old_manifest)
+        self._assert_only_pair_files()
+
+    def test_payload_write_failure_returns_error_dict_and_cleans_temp(self):
+        old_payload, old_manifest = self._old_pair()
+        real_fdopen = os.fdopen
+
+        class FailingWrite:
+            def __init__(self, fh):
+                self.fh = fh
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                self.fh.close()
+
+            def write(self, data):
+                raise OSError("disk full")
+
+        def fdopen(fd, mode):
+            fh = real_fdopen(fd, mode)
+            return FailingWrite(fh) if mode == "wb" else fh
+
+        with mock.patch("os.fdopen", side_effect=fdopen):
+            result = self._snap({"keep": 2})
+        self.assertTrue(result["error"].startswith("write failed"))
+        self._assert_pair(old_payload, old_manifest)
+        self._assert_only_pair_files()
+
+    def test_keyboard_interrupt_between_stages_cleans_temps(self):
+        old_payload, old_manifest = self._old_pair()
+        with mock.patch("json.dump", side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                self._snap({"keep": 2})
+        self._assert_pair(old_payload, old_manifest)
+        self._assert_only_pair_files()
+
+    def test_sigint_after_payload_replace_is_parked_and_consumed(self):
+        # SIGINT is parked from before the payload replace through the deletions.
+        real_replace = os.replace
+        ns = {"keep": 1, "big": b"x" * 100_000}
+
+        def replace_then_sigint(src, dst):
+            real_replace(src, dst)
+            if dst == self.path:
+                signal.raise_signal(signal.SIGINT)
+
+        with mock.patch("os.replace", replace_then_sigint):
+            result = self._snap(ns, max_variable_bytes=1024, prune_oversized=True)
+        self.assertNotIn("error", result)
+        self.assertEqual(result["pruned"], ["big"])
+        self.assertNotIn("big", ns)  # the prune still ran; the SIGINT was consumed
+        self._assert_only_pair_files()
+        with open(self.manifest_path) as fh:
+            self.assertEqual(json.load(fh)["pruned"], ["big"])
+
+    def test_signal_install_failure_propagates_and_cleans_temps(self):
+        # A SIGINT-handler install failure (e.g. off-main-thread) must not leak temps.
+        old_payload, old_manifest = self._old_pair()
+        with mock.patch("signal.signal", side_effect=ValueError("main thread only")):
+            with self.assertRaises(ValueError):
+                self._snap({"keep": 2})
+        self._assert_pair(old_payload, old_manifest)
+        self._assert_only_pair_files()
+
+    def test_fdopen_failure_closes_raw_fd_and_removes_temp(self):
+        old_payload, old_manifest = self._old_pair()
+        real_mkstemp = tempfile.mkstemp
+        seen = {}
+
+        def spy_mkstemp(**kwargs):
+            seen["fd"], seen["name"] = real_mkstemp(**kwargs)
+            return seen["fd"], seen["name"]
+
+        with mock.patch("tempfile.mkstemp", spy_mkstemp):
+            with mock.patch("os.fdopen", side_effect=OSError("bad fd")):
+                result = self._snap({"keep": 2})
+        self.assertTrue(result["error"].startswith("write failed"))
+        with self.assertRaises(OSError):
+            os.fstat(seen["fd"])  # the raw mkstemp fd was closed
+        self.assertFalse(os.path.exists(seen["name"]))
+        self._assert_pair(old_payload, old_manifest)
+        self._assert_only_pair_files()
+
+    def test_manifest_replace_failure_leaves_new_payload_old_manifest(self):
+        # The documented unavoidable failure state between the two renames.
+        old_payload, old_manifest = self._old_pair()
+        ns = {"keep": 2, "big": b"x" * 100_000}
+        real_replace = os.replace
+
+        def failing_manifest_replace(src, dst):
+            if dst == self.manifest_path:
+                raise OSError("rename failed")
+            return real_replace(src, dst)
+
+        with mock.patch("os.replace", failing_manifest_replace):
+            result = self._snap(ns, max_variable_bytes=1024, prune_oversized=True)
+        self.assertTrue(result["error"].startswith("manifest write failed"))
+        with open(self.path, "rb") as fh:
+            self.assertNotEqual(fh.read(), old_payload)  # new payload committed
+        with open(self.manifest_path, "rb") as fh:
+            self.assertEqual(fh.read(), old_manifest)  # old manifest intact
+        self._assert_only_pair_files()
+        self.assertIn("big", ns)  # not pruned
+
+    def test_sigint_during_final_temp_cleanup_is_parked_and_consumed(self):
+        # The handler must stay parked through discard_temps and restore last.
+        original = signal.getsignal(signal.SIGINT)
+        real_remove = os.remove
+        fired = []
+        ns = {"keep": 1, "big": b"x" * 100_000}
+
+        def remove_then_sigint(name):
+            if not fired:
+                fired.append(name)
+                signal.raise_signal(signal.SIGINT)
+            return real_remove(name)
+
+        with mock.patch("os.remove", remove_then_sigint):
+            result = self._snap(ns, max_variable_bytes=1024, prune_oversized=True)
+        self.assertNotIn("error", result)  # no KeyboardInterrupt escaped
+        self.assertEqual(result["pruned"], ["big"])
+        self.assertNotIn("big", ns)  # pruning completed
+        self.assertTrue(fired)  # the SIGINT really fired during cleanup
+        self.assertIs(signal.getsignal(signal.SIGINT), original)  # handler restored
+        self._assert_only_pair_files()
+
+    def test_cleanup_failure_still_restores_sigint_handler(self):
+        # A non-OSError from cleanup (e.g. an audit hook) must not skip the restore.
+        original = signal.getsignal(signal.SIGINT)
+        with mock.patch("os.remove", side_effect=RuntimeError("audit hook")):
+            with self.assertRaisesRegex(RuntimeError, "audit hook"):
+                self._snap({"keep": 1})
+        self.assertIs(signal.getsignal(signal.SIGINT), original)
+
+    def test_aliased_temp_style_names_never_clobber_the_pair(self):
+        # Regression: fixed path+'.tmp' temp names aliased the OTHER final path.
+        layouts = (
+            ("kernel-state.dill", "kernel-state.dill.tmp"),  # manifest == payload + '.tmp'
+            ("kernel-state.json.tmp", "kernel-state.json"),  # payload == manifest + '.tmp'
+        )
+        for payload_name, manifest_name in layouts:
+            with self.subTest(payload=payload_name, manifest=manifest_name):
+                d = tempfile.mkdtemp(dir=self.dir)
+                path = os.path.join(d, payload_name)
+                manifest_path = os.path.join(d, manifest_name)
+                old_payload, old_manifest = self._old_pair(path, manifest_path)
+                with mock.patch("json.dump", side_effect=OSError("disk full")):
+                    result = self._snap({"keep": 2}, path, manifest_path)
+                self.assertTrue(result["error"].startswith("manifest write failed"))
+                self._assert_pair(old_payload, old_manifest, path, manifest_path)
+                self.assertEqual(sorted(os.listdir(d)), sorted([payload_name, manifest_name]))
+                # A plain success with aliased names must clobber neither file.
+                self.assertNotIn("error", self._snap({"keep": 2}, path, manifest_path))
+                with open(path, "rb") as fh:
+                    self.assertNotEqual(fh.read(), old_payload)  # new payload committed
+                with open(manifest_path) as fh:
+                    self.assertEqual(json.load(fh)["savedNames"], ["keep"])
+                self.assertEqual(sorted(os.listdir(d)), sorted([payload_name, manifest_name]))
+
+    def test_each_variable_serialized_once_and_payload_is_not_a_pickle(self):
+        import dill
+
+        from rlm.repl import _SNAPSHOT_MAGIC
+
+        real_dump = dill.dump
+        dumped: list[object] = []
+
+        def counting_dump(value, writer):
+            dumped.append(value)
+            return real_dump(value, writer)
+
+        with mock.patch.object(dill, "dump", counting_dump):
+            result = self._snap({"a": 1, "b": 2, "c": 3})
+        self.assertEqual(result["saved"], ["a", "b", "c"])
+        self.assertEqual(dumped, [1, 2, 3])
+        self.assertEqual(result["bytes"], os.path.getsize(self.path))
+        with open(self.path, "rb") as fh:
+            self.assertEqual(fh.read(len(_SNAPSHOT_MAGIC)), _SNAPSHOT_MAGIC)
+            with self.assertRaises(Exception):
+                dill.load(fh)
+
+
+class OwnerWatchdogTest(unittest.TestCase):
+    def test_owner_watchdog_exits_busy_runtime(self):
+        # The reproduced F4 scenario: stdin stays open (no EOF shutdown), a
+        # synchronous cell monopolizes the loop, and only the watchdog thread
+        # can notice the owner's death and exit the runtime.
+        owner = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(300)"])
+        try:
+            repl = ReplProcess(env={"PRIME_AGENT_KERNEL_OWNER_PID": str(owner.pid)})
+            self.addCleanup(repl.close)
+            repl.ready()
+            repl.send({"type": "execute", "id": "busy", "code": "while True: pass"})
+            time.sleep(1.0)  # let the busy cell start monopolizing the loop
+            self.assertIsNone(repl.proc.poll())
+            owner.kill()
+            owner.wait(timeout=10)
+            self.assertEqual(repl.proc.wait(timeout=15), 1)
+        finally:
+            if owner.poll() is None:
+                owner.kill()
+                owner.wait(timeout=10)
+
+    def test_resolve_owner_pid_falls_back_to_ppid(self):
+        sys.path.insert(0, SRC)
+        self.addCleanup(sys.path.remove, SRC)
+        import rlm.repl as repl_module
+
+        with mock.patch.dict(os.environ, {"PRIME_AGENT_KERNEL_OWNER_PID": "4242"}):
+            self.assertEqual(repl_module._resolve_owner_pid(), 4242)
+        for raw in (None, "", "garbage", "0", "-7"):
+            env = {} if raw is None else {"PRIME_AGENT_KERNEL_OWNER_PID": raw}
+            with mock.patch.dict(os.environ, env, clear=False):
+                if raw is None:
+                    os.environ.pop("PRIME_AGENT_KERNEL_OWNER_PID", None)
+                self.assertEqual(repl_module._resolve_owner_pid(), os.getppid())
+
+    def test_owner_watchdog_windows_waits_on_process_handle(self):
+        sys.path.insert(0, SRC)
+        self.addCleanup(sys.path.remove, SRC)
+        import rlm.repl as repl_module
+
+        from ctypes import wintypes
+
+        calls: list[tuple] = []
+
+        class FakeFunction:
+            def __init__(self, name, result):
+                self.name = name
+                self.result = result
+                self.argtypes = None
+                self.restype = None
+
+            def __call__(self, *args):
+                calls.append((self.name, *args))
+                return self.result
+
+        class FakeKernel32:
+            def __init__(self, open_result=1234):
+                self.OpenProcess = FakeFunction("OpenProcess", open_result)
+                self.WaitForSingleObject = FakeFunction("WaitForSingleObject", 0)
+                self.CloseHandle = FakeFunction("CloseHandle", 1)
+
+        k32 = FakeKernel32()
+        with mock.patch.object(repl_module.ctypes, "WinDLL", create=True, return_value=k32):
+            repl_module._wait_owner_windows(777)
+        self.assertEqual(
+            calls,
+            [
+                ("OpenProcess", 0x00100000, False, 777),
+                ("WaitForSingleObject", 1234, 0xFFFFFFFF),
+                ("CloseHandle", 1234),
+            ],
+        )
+        self.assertEqual(k32.OpenProcess.argtypes, [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD])
+        self.assertIs(k32.OpenProcess.restype, wintypes.HANDLE)
+        self.assertEqual(k32.WaitForSingleObject.argtypes, [wintypes.HANDLE, wintypes.DWORD])
+        self.assertIs(k32.WaitForSingleObject.restype, wintypes.DWORD)
+        self.assertEqual(k32.CloseHandle.argtypes, [wintypes.HANDLE])
+        self.assertIs(k32.CloseHandle.restype, wintypes.BOOL)
+
+        calls.clear()
+        with mock.patch.object(
+            repl_module.ctypes, "WinDLL", create=True, return_value=FakeKernel32(open_result=0)
+        ):
+            repl_module._wait_owner_windows(778)
+        self.assertEqual(calls, [("OpenProcess", 0x00100000, False, 778)])
+
+
+class DetachedOrphanRecordTest(unittest.TestCase):
+    def test_detached_service_keeps_its_orphan_record(self):
+        mime = "application/vnd.prime-agent.bash-activity+json"
+        with tempfile.TemporaryDirectory() as directory:
+            journal = os.path.join(directory, "orphans.jsonl")
+            repl = ReplProcess(
+                {"PRIME_AGENT_INTERNAL_ORPHAN_PROCESS_JOURNAL": journal, "PRIME_AGENT_KERNEL_OWNER_PID": str(os.getpid())}
+            )
+            self.addCleanup(repl.close)
+            repl.ready()
+            events = repl.execute(
+                "journal-start",
+                "from rlm import bash\nhandle = bash('cd / && nohup sleep 60 > /dev/null 2>&1 & echo $!')\n"
+                "(handle.pid, int((await handle).output.split()[-1]))",
+            )
+            leader, service = (int(part) for part in one(events, "result")["text"].strip("()").split(","))
+
+            def stop() -> None:
+                for pid in (service, leader):
+                    try:
+                        os.kill(pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+
+            self.addCleanup(stop)
+            deadline = time.monotonic() + 10
+            detached = any(event.get("data", {}).get(mime, {}).get("detached") for event in events)
+            while not detached and time.monotonic() < deadline:
+                try:
+                    event = repl.read_event(timeout=max(0.01, deadline - time.monotonic()))
+                except TimeoutError:
+                    break
+                detached = bool(event.get("data", {}).get(mime, {}).get("detached"))
+            self.assertTrue(detached)
+            with open(journal) as handle:
+                records = [json.loads(line) for line in handle if line.strip()]
+            latest = [record for record in records if record["pid"] == leader][-1]
+            self.assertTrue(latest["active"])
+            self.assertEqual(latest["kernelPid"], repl.proc.pid)
+            self.assertIn("processStartId", latest)
+
+
+
+def _member_cgroup(pid: int) -> str | None:
+    try:
+        with open(f"/proc/{pid}/cgroup") as f:
+            for line in f:
+                if line.startswith("0::"):
+                    return line[3:].strip()
+    except OSError:
+        return None
+    return None
+
+
+def _start_time(pid: int) -> str | None:
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as f:
+            raw = f.read()
+    except OSError:
+        return None
+    return raw[raw.rindex(b")") + 2 :].split()[19].decode()
+
+
+def _alive(pid: int) -> bool:
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as f:
+            raw = f.read()
+    except OSError:
+        return False
+    return raw[raw.rindex(b")") + 2 :].split()[0] != b"Z"
+
+
+@unittest.skipUnless(sys.platform.startswith("linux") and _member_cgroup(os.getpid()) is not None, "needs Linux cgroup v2")
+class DetachedHandoffTest(unittest.TestCase):
+    MIME = "application/vnd.prime-agent.bash-activity+json"
+
+    def setUp(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.dir = directory.name
+        self.journal = os.path.join(self.dir, "w1.orphans.jsonl")
+        self.root = os.path.join(self.dir, "detached-handoffs")
+        self.events: list[dict] = []
+
+    def kernel(self, **env: str) -> ReplProcess:
+        repl = ReplProcess(
+            {
+                "PRIME_AGENT_INTERNAL_ORPHAN_PROCESS_JOURNAL": self.journal,
+                "PRIME_AGENT_KERNEL_OWNER_PID": str(os.getpid()),
+                **env,
+            }
+        )
+        self.addCleanup(repl.close)
+        repl.ready()
+        return repl
+
+    def start_service(self, repl: ReplProcess) -> tuple[int, int]:
+        events = repl.execute(
+            "svc",
+            "from rlm import bash\nh = bash('nohup sleep 300 > /dev/null 2>&1 & echo $!')\n"
+            "(h.pid, int((await h).output.split()[-1]))",
+        )
+        leader, service = (int(part) for part in one(events, "result")["text"].strip("()").split(","))
+        self.addCleanup(self.kill_pids, [service, leader])
+        deadline = time.monotonic() + 10
+        detached = any(event.get("data", {}).get(self.MIME, {}).get("detached") for event in events)
+        while not detached and time.monotonic() < deadline:
+            event = repl.read_event(timeout=max(0.01, deadline - time.monotonic()))
+            self.events.append(event)
+            detached = bool(event.get("data", {}).get(self.MIME, {}).get("detached"))
+        self.assertTrue(detached)
+        return leader, service
+
+    @staticmethod
+    def kill_pids(pids: list[int]) -> None:
+        for pid in pids:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+    def move_to_scope(self, pids: list[int]) -> str:
+        name = f"p8ho-test-{os.getpid()}-{len(self.events)}-{time.monotonic_ns()}.scope"
+        args = ["busctl", "--user", "call", "org.freedesktop.systemd1", "/org/freedesktop/systemd1",
+                "org.freedesktop.systemd1.Manager", "StartTransientUnit", "ssa(sv)a(sa(sv))", name, "fail",
+                "1", "PIDs", "au", str(len(pids)), *[str(pid) for pid in pids], "0"]
+        subprocess.run(args, check=True, capture_output=True, timeout=10)
+        self.addCleanup(subprocess.run, ["systemctl", "--user", "stop", name], capture_output=True, timeout=10)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            paths = {_member_cgroup(pid) for pid in pids}
+            if len(paths) == 1 and next(iter(paths), "").endswith("/" + name):
+                return next(iter(paths))
+            time.sleep(0.05)
+        self.fail(f"pids did not reach {name}")
+
+    def request(self, repl: ReplProcess, rid: str, **fields: object) -> dict:
+        repl.send({"id": rid, **fields})
+        events = repl.until_done(rid)
+        self.events.extend(events)
+        done = events[-1]
+        self.assertEqual(done.get("status"), "ok", done)
+        return done["handoff"]
+
+    def prepare(self, repl: ReplProcess, rid: str = "p1", handoff_id: str = "h1") -> dict:
+        return self.request(repl, rid, type="handoff_prepare", sessionId="sess-1", handoffId=handoff_id)
+
+    def commit(self, repl: ReplProcess, groups: list[dict], rid: str = "c1", handoff_id: str = "h1") -> dict:
+        return self.request(repl, rid, type="handoff_commit", sessionId="sess-1", handoffId=handoff_id, groups=groups)
+
+    def moved(self, prepared: dict, cgroup: str) -> list[dict]:
+        return [
+            {
+                "pgid": group["pgid"],
+                "leader": group["leader"],
+                "members": [{"pid": m["pid"], "startTime": m["startTime"]} for m in group["members"]],
+                "cgroup": cgroup,
+            }
+            for group in prepared["groups"]
+        ]
+
+    def latest(self, pid: int) -> dict:
+        with open(self.journal) as handle:
+            return [json.loads(line) for line in handle if line.strip() and json.loads(line)["pid"] == pid][-1]
+
+    def receipt_path(self, handoff_id: str = "h1") -> str:
+        return os.path.join(self.root, "sess-1", f"{handoff_id}.json")
+
+    def handoff(self, repl: ReplProcess) -> tuple[int, int, dict, dict]:
+        leader, service = self.start_service(repl)
+        prepared = self.prepare(repl)
+        cgroup = self.move_to_scope([m["pid"] for m in prepared["groups"][0]["members"]])
+        return leader, service, prepared, self.commit(repl, self.moved(prepared, cgroup))
+
+    def test_prepare_lists_the_detached_group_and_changes_nothing(self):
+        repl = self.kernel()
+        leader, service = self.start_service(repl)
+        prepared = self.prepare(repl)
+        self.assertTrue(prepared["ok"], prepared)
+        self.assertEqual(len(prepared["groups"]), 1)
+        group = prepared["groups"][0]
+        self.assertEqual(group["pgid"], leader)
+        self.assertEqual(group["leader"], {"pid": leader, "startTime": _start_time(leader)})
+        self.assertIn({"pid": service, "startTime": _start_time(service), "cgroup": _member_cgroup(service)}, group["members"])
+        self.assertTrue(self.latest(leader)["active"])
+        self.assertFalse(os.path.exists(self.root))
+
+    def test_commit_after_the_move_persists_a_receipt_and_relinquishes(self):
+        repl = self.kernel()
+        leader, service, prepared, committed = self.handoff(repl)
+        self.assertTrue(committed["ok"], committed)
+        self.assertFalse(committed["replayed"])
+        with open(self.receipt_path()) as handle:
+            receipt = json.load(handle)
+        self.assertEqual(receipt, committed["receipt"])
+        self.assertEqual(receipt["state"], "committed")
+        self.assertEqual(receipt["groups"][0]["leader"]["pid"], leader)
+        record = self.latest(leader)
+        self.assertFalse(record["active"])
+        self.assertEqual(record["transferred"], receipt["receiptId"])
+        def released(event: dict) -> bool:
+            activity = event.get("data", {}).get(self.MIME, {})
+            return activity.get("pid") == leader and activity.get("active") is False and not activity.get("detached")
+
+        deadline = time.monotonic() + 5
+        while not any(released(event) for event in self.events) and time.monotonic() < deadline:
+            self.events.append(repl.read_event(timeout=max(0.01, deadline - time.monotonic())))
+        self.assertTrue(any(released(event) for event in self.events))
+        killed = repl.execute("kill", "h.kill()")
+        self.assertIn(receipt["receiptId"], json.dumps(one(killed, "error")))
+        repl.shutdown()
+        time.sleep(0.3)
+        self.assertTrue(_alive(service))
+        self.assertTrue(_alive(leader))
+        self.assertEqual(self.latest(leader)["transferred"], receipt["receiptId"])
+
+    def test_a_repeated_commit_returns_the_stored_receipt(self):
+        repl = self.kernel()
+        _, _, prepared, first = self.handoff(repl)
+        groups = [dict(group, cgroup=first["receipt"]["groups"][0]["cgroup"]) for group in self.moved(prepared, "/")]
+        again = self.commit(repl, groups, rid="c2")
+        self.assertTrue(again["replayed"])
+        self.assertEqual(again["receipt"]["receiptId"], first["receipt"]["receiptId"])
+        other = [dict(groups[0], leader={"pid": groups[0]["pgid"], "startTime": "1"})]
+        conflict = self.commit(repl, other, rid="c3")
+        self.assertEqual(conflict["code"], "handoff_id_conflict")
+        self.assertEqual(conflict["receipt"]["receiptId"], first["receipt"]["receiptId"])
+        again_prepare = self.prepare(repl, rid="p2")
+        self.assertEqual(again_prepare["code"], "handoff_already_committed")
+
+    def test_a_group_that_was_not_moved_stays_native(self):
+        repl = self.kernel()
+        leader, service = self.start_service(repl)
+        prepared = self.prepare(repl)
+        refused = self.commit(repl, self.moved(prepared, "/user.slice/p8ho-never-moved.scope"))
+        self.assertEqual(refused["code"], "handoff_not_in_target_cgroup")
+        self.assertIn(service, refused["pids"])
+        self.assertFalse(os.path.exists(self.receipt_path()))
+        self.assertTrue(self.latest(leader)["active"])
+        repl.shutdown()
+        deadline = time.monotonic() + 5
+        while _alive(service) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertFalse(_alive(service))
+
+    def test_a_target_that_contains_the_kernel_cgroup_is_refused(self):
+        repl = self.kernel()
+        self.start_service(repl)
+        prepared = self.prepare(repl)
+        refused = self.commit(repl, self.moved(prepared, "/"))
+        self.assertEqual(refused["code"], "handoff_invalid_target_cgroup")
+        self.assertFalse(os.path.exists(self.receipt_path()))
+
+    def test_a_reused_member_identity_is_refused_and_never_transferred(self):
+        repl = self.kernel()
+        leader, service = self.start_service(repl)
+        prepared = self.prepare(repl)
+        cgroup = self.move_to_scope([m["pid"] for m in prepared["groups"][0]["members"]])
+        groups = self.moved(prepared, cgroup)
+        groups[0]["members"] = [
+            dict(member, startTime="1") if member["pid"] == service else member for member in groups[0]["members"]
+        ]
+        refused = self.commit(repl, groups)
+        self.assertEqual(refused["code"], "handoff_identity_mismatch")
+        self.assertEqual(refused["pids"], [service])
+        self.assertFalse(os.path.exists(self.receipt_path()))
+        self.assertTrue(self.latest(leader)["active"])
+
+    def test_an_aborted_handoff_refuses_commit_and_prepare(self):
+        repl = self.kernel()
+        self.start_service(repl)
+        os.makedirs(os.path.join(self.root, "sess-1"))
+        with open(self.receipt_path(), "w") as handle:
+            json.dump({"version": 1, "kind": "prime-agent/detached-handoff-receipt", "handoffId": "h1",
+                       "sessionId": "sess-1", "state": "aborted", "abortedAt": "2026-10-18T00:00:00Z"}, handle)
+        self.assertEqual(self.prepare(repl)["code"], "handoff_aborted")
+        prepared = self.prepare(repl, rid="p2", handoff_id="h2")
+        refused = self.commit(repl, self.moved(prepared, "/x.scope"))
+        self.assertEqual(refused["code"], "handoff_aborted")
+
+    def test_a_kernel_killed_after_the_receipt_is_completed_on_the_next_start(self):
+        repl = self.kernel(PRIME_AGENT_TEST_HANDOFF_CRASH="after-receipt")
+        leader, service = self.start_service(repl)
+        prepared = self.prepare(repl)
+        cgroup = self.move_to_scope([m["pid"] for m in prepared["groups"][0]["members"]])
+        repl.send({"id": "c1", "type": "handoff_commit", "sessionId": "sess-1", "handoffId": "h1",
+                   "groups": self.moved(prepared, cgroup)})
+        with self.assertRaises(EOFError):
+            repl.until_done("c1")
+        self.assertEqual(repl.proc.wait(timeout=5), -signal.SIGKILL)
+        with open(self.receipt_path()) as handle:
+            receipt = json.load(handle)
+        self.assertTrue(self.latest(leader)["active"])
+        self.assertTrue(_alive(service))
+        later = self.kernel()
+        self.assertEqual(self.latest(leader)["transferred"], receipt["receiptId"])
+        self.assertFalse(self.latest(leader)["active"])
+        later.shutdown()
+        time.sleep(0.3)
+        self.assertTrue(_alive(service))
+
+    def test_the_crash_hook_does_nothing_unless_set_to_a_point(self):
+        repl = self.kernel(PRIME_AGENT_TEST_HANDOFF_CRASH="after-everything")
+        _, service, _, committed = self.handoff(repl)
+        self.assertTrue(committed["ok"], committed)
+        self.assertEqual(one(repl.execute("alive", "1 + 1"), "result")["text"], "2")
+        self.assertTrue(_alive(service))
+
+    def test_unreadable_receipts_keep_the_kernel_from_killing_on_shutdown(self):
+        if os.geteuid() == 0:
+            self.skipTest("root reads mode 000 files")
+        repl = self.kernel()
+        leader, service = self.start_service(repl)
+        broken = os.path.join(self.root, "sess-other")
+        os.makedirs(broken)
+        path = os.path.join(broken, "h9.json")
+        with open(path, "w") as handle:
+            handle.write("{}")
+        os.chmod(path, 0)
+        self.addCleanup(os.chmod, path, 0o600)
+        repl.shutdown()
+        time.sleep(0.3)
+        self.assertTrue(_alive(service))
+        self.assertTrue(self.latest(leader)["active"])
+
+
+if __name__ == "__main__":
+    unittest.main()
