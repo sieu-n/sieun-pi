@@ -10,7 +10,7 @@ import { turnErrorCause } from "./turn-error.ts";
  * Whole system duty read them as done. The words name only what the transcript shows: duty fix opener wrote the same pair at 04:14:29Z when a chat
  * stopped it with the supervisor alive, so an archive and abort never proves the daemon went down.
  */
-export type CutCause = "archived" | "error" | "length" | "mid-tool";
+export type CutCause = "archived" | "error" | "length" | "mid-tool" | "recovered";
 /**
  * `archivedAt` is when the session was archived at or after its cut. An archive by itself says nothing about why: on 10-16 lost agent resumes
  * traced all 6 cut jobs the Whole system duty listed at 07:50Z to a parent's rlm.delete_subagent (4) or the parker ending the job above them (2),
@@ -37,6 +37,7 @@ export const CUT_CONFIRM_BYTES = 4_000_000;
 
 const CUT_WORDS: Record<CutCause, string> = {
   archived: "aborted and archived", error: "stopped on a provider error", length: "stopped at the length limit", "mid-tool": "stopped mid-tool",
+  recovered: "left with a message no turn answered when its worker or the daemon stopped",
 };
 
 /** What the transcript shows, in words for a sentence, "<name> was <words> at 09:19". */
@@ -99,17 +100,32 @@ function reportedBefore(lines: readonly string[], index: number): boolean {
   return false;
 }
 
+/** Prime's notice that a session's worker died and was recovered without its in-flight work. */
+export const RECOVERY_NOTICE = "prime-agent.worker_recovery";
+
 function lastCut(lines: readonly string[], end = lines.length): (Cut & { index: number }) | null {
   let archivedAfter: number | undefined;
+  /**
+   * A worker recovery notice or a daemon shutdown archive read so far: an input before it that no turn answered was lost with its worker
+   * (`recovered`). ctl-fix (01a17d82) kept its parent's 15:01:29Z message on 10-27 with only a pi-pool queue place and the 16:48:54Z recovery
+   * after it, and this read the queue place as a turn still to come.
+   */
+  let stopped = false;
   for (let index = end - 1; index >= 0; index--) {
-    let entry: { type?: string; customType?: string; timestamp?: string; state?: { status?: string }; message?: { role?: string; stopReason?: string; errorMessage?: string; diagnostics?: unknown } };
+    let entry: { type?: string; customType?: string; timestamp?: string; state?: { status?: string; reason?: string }; message?: { role?: string; stopReason?: string; errorMessage?: string; diagnostics?: unknown } };
     try { entry = JSON.parse(lines[index]!); } catch { continue; }
-    if (entry.type === "custom" && entry.customType === "pi-pool-queue") return null;
-    if (entry.type === "custom_message" && entry.customType === "agent_message") return null;
-    if (entry.type === "session_state" && entry.state?.status === "archived") archivedAfter ??= Date.parse(entry.timestamp ?? "");
+    const lost = (): Cut & { index: number } => ({ at: Date.parse(entry.timestamp ?? ""), cause: "recovered", index });
+    if (entry.type === "custom_message" && entry.customType === RECOVERY_NOTICE) { stopped = true; continue; }
+    if (entry.type === "custom" && entry.customType === "pi-pool-queue") { if (stopped) continue; return null; }
+    if (entry.type === "custom_message" && entry.customType === "agent_message") return stopped ? lost() : null;
+    if (entry.type === "session_state" && entry.state?.status === "archived") {
+      archivedAfter ??= Date.parse(entry.timestamp ?? "");
+      if (entry.state.reason === "daemon_shutdown") stopped = true;
+    }
     if (entry.type !== "message" || !entry.message) continue;
     const at = Date.parse(entry.timestamp ?? "");
     const { role, stopReason } = entry.message;
+    if (role === "user" && stopped) return lost();
     const archived = archivedAfter === undefined ? {} : { archivedAt: archivedAfter };
     // An archive also lands just before the tool result it aborts: the owner's focus pause on 10-17 archived watchlist last fixes at
     // 23:04:28.977Z and its running tool read "Request was aborted" 29 ms later. That is an archive of the turn, so its archivedAt is set.
@@ -123,11 +139,13 @@ function lastCut(lines: readonly string[], end = lines.length): (Cut & { index: 
     }
     if (stopReason !== "aborted") return null;
     for (let back = index - 1; back >= 0; back--) {
-      let before: { type?: string; timestamp?: string; state?: { status?: string } };
+      let before: { type?: string; timestamp?: string; state?: { status?: string; reason?: string } };
       try { before = JSON.parse(lines[back]!); } catch { continue; }
       if (before.type !== "session_state") { if (before.type === "message") return null; continue; }
       const archivedAt = Date.parse(before.timestamp ?? "");
-      return before.state?.status === "archived" && at - archivedAt <= ARCHIVE_ABORT_MS ? { at, cause: "archived", index, archivedAt } : null;
+      if (before.state?.status !== "archived" || at - archivedAt > ARCHIVE_ABORT_MS) return null;
+      // The daemon's own shutdown wrote this archive and abort, which is the proof an archive cut needs.
+      return before.state.reason === "daemon_shutdown" ? { at, cause: "recovered", index } : { at, cause: "archived", index, archivedAt };
     }
     return null;
   }

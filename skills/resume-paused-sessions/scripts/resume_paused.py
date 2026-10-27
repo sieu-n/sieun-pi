@@ -11,6 +11,8 @@ it is live and idle, and either:
   - its last message is a tool result, a user message or a tool call with no
     reply after it: the turn was cut off, or
   - its last message is an empty model reply that asked for a tool, or
+  - an input it got (a wake, a brief or any message) has no answering turn, and a worker recovery
+    notice or a daemon shutdown archive came after it: the worker that held the turn died, or
   - it shows "working" but did nothing for 30 minutes with no child run or
     compaction running (120 minutes when a tool call is running): a hung model
     stream, retry wait or tool call. A message cannot reach it; it has to be aborted first, which the chat
@@ -1766,6 +1768,63 @@ def recovered_after(entries, ts):
                for e in entries)
 
 
+# The inputs that start a turn (components/user-history/src/shared/turns.ts PROMPT_TYPES, less the update notice, which update_before reads):
+# a wake, a brief or any agent message lands as an agent_message custom message.
+INPUT_TYPES = ("agent_message", "heartbeat_prompt", "async_bash_completion", "goal_context", "rlm_child_terminal_notice", "rlm_child_failure")
+
+
+def is_input(entry):
+    return (entry.get("type") == "message" and (entry.get("message") or {}).get("role") == "user") or \
+        (entry.get("type") == "custom_message" and entry.get("customType") in INPUT_TYPES)
+
+
+def stop_proof(entry):
+    """What a worker recovery notice or a daemon shutdown archive says stopped the run, else None."""
+    if entry.get("type") == "custom_message" and entry.get("customType") == RECOVERY_NOTICE:
+        return f"its worker died and the daemon recovered it at {entry.get('timestamp')}"
+    if is_archive(entry) and (entry.get("state") or {}).get("reason") == "daemon_shutdown":
+        return f"the daemon shut down at {entry.get('timestamp')}"
+    return None
+
+
+def lost_input(entries, restarts=list):
+    """(input entry, verdict) when a delivered input never got a turn: no turn answered the first input since the run's last answer, and a
+    worker recovery notice, a daemon shutdown archive or a daemon restart came after it. A turn answers when the assistant said something or ended with
+    "stop", or it failed with an error classify reads; an empty error or aborted reply does not, and an abort with no archive right before
+    it is a Stop. The worker that held the
+    turn died, and Prime does not replay it. On 10-27 the us-metal02 OOM hang from 15:14Z ended in worker recoveries at 16:48:54Z, and
+    ctl-fix (01a17d82) kept its parent's 15:01:29Z message with no turn while every pass read its 14:36Z connection error, ended by a
+    "completed" archive, as its last turn. release approval evidence (01a17d75) kept a board.wake the same way, and the continue its
+    parent sent by hand got an empty reply and then the 16:55Z daemon shutdown."""
+    first = None
+    archived_at = None
+    for index, entry in enumerate(entries):
+        msg = entry.get("message") or {}
+        if is_archive(entry):
+            archived_at = parse_ts(entry.get("timestamp"))
+        if entry.get("type") == "message" and msg.get("role") == "toolResult":
+            first = None
+        elif entry.get("type") == "message" and msg.get("role") == "assistant":
+            stamp = parse_ts(entry.get("timestamp"))
+            shut = msg.get("stopReason") == "aborted" and archived_at and stamp and (stamp - archived_at).total_seconds() <= ARCHIVE_ABORT_S
+            failed = msg.get("stopReason") == "error" and turn_error(msg).strip()
+            if said_something(msg) or msg.get("stopReason") == "stop" or failed or (msg.get("stopReason") == "aborted" and not shut):
+                first = None
+        elif first is None and is_input(entry):
+            first = index
+    if first is None:
+        return None
+    proof = next((said for said in map(stop_proof, entries[first + 1:]) if said), None)
+    asked = parse_ts(entries[first].get("timestamp"))
+    if not proof and asked:
+        # A daemon that dies writes nothing into a session whose turn waits in pi-pool's queue: outbox lanes first (01a17dd1) queued its
+        # wake at 17:03:05Z on 10-27, the daemon unit died at 17:07:50Z, and pi-pool swept the turn at 17:08:12Z as "process gone".
+        proof = next((f"the daemon restarted at {end.isoformat()}" for start, end in restarts() if start > asked), None)
+    if not proof:
+        return None
+    return entries[first], ("cut_off", f"No turn answered its input of {entries[first].get('timestamp')}: {proof}.")
+
+
 def classify(last, now, entries=(), shutdowns=list, owner=False, restarts=list):
     """("error" | "cut_off" | "empty_reply" | "worker_stopped" | "aborted", text) when the last message shows the run stopped mid-work, else None."""
     if not last:
@@ -1962,7 +2021,8 @@ def find_paused(sessions, since_minutes, state, now, direct=False, only=frozense
                 and seen_at and (now - seen_at).total_seconds() / 60 > since_minutes + 5:
             continue  # an old archive, read no further
         if s.get("lifecycle") != "live" and not ((owner or named) and s.get("saved")) and not archived_by_unload(entries_of(sid), unloaded_at) \
-                and not archived_by_restart(entries_of(sid), restarts) and not update_before(entries_of(sid), last_message(entries_of(sid)) or {}):
+                and not archived_by_restart(entries_of(sid), restarts) and not update_before(entries_of(sid), last_message(entries_of(sid)) or {}) \
+                and not lost_input(entries_of(sid), restarts):
             continue
         reaped_at = REAPED.get(full) if not BOX.remote else None
         if s.get("workerState") == "failed" and not (reaped_at and (not seen_at or seen_at <= reaped_at)):
@@ -2007,8 +2067,9 @@ def find_paused(sessions, since_minutes, state, now, direct=False, only=frozense
         if since_minutes and seen_at and (now - seen_at).total_seconds() / 60 > since_minutes + 5:
             continue
         last = last_message(entries_of(sid))
+        lost = lost_input(entries_of(sid), restarts) if full not in UNSTUCK else None
         task = None
-        if not last:
+        if not last and not lost:
             started = never_started(s, entries_of(sid)) if owner else None
             if not started:
                 continue
@@ -2016,12 +2077,18 @@ def find_paused(sessions, since_minutes, state, now, direct=False, only=frozense
             verdict = ("never_started", "Its worker stopped before its first task reached it.")
         else:
             unstuck = full in UNSTUCK
-            if not unstuck and stopped_on_purpose(entries_of(sid), last, restarts, unloaded_at):
-                continue
-            verdict = ("hung", "Was hung; the Resume button aborted it.") if unstuck else classify(last, now, entries_of(sid), shutdowns, owner or named, restarts)
-            if not verdict:
-                continue
-            stopper = stop_archive(entries_of(sid), last)
+            if lost:
+                # The daemon shutdown that cut the input is the cut itself; any other archive after the input decides as below.
+                last, verdict = lost
+                stopper = next((e for e in reversed(entries_of(sid)[entries_of(sid).index(last) + 1:])
+                                if is_archive(e) and (e.get("state") or {}).get("reason") != "daemon_shutdown"), None)
+            else:
+                if not unstuck and stopped_on_purpose(entries_of(sid), last, restarts, unloaded_at):
+                    continue
+                verdict = ("hung", "Was hung; the Resume button aborted it.") if unstuck else classify(last, now, entries_of(sid), shutdowns, owner or named, restarts)
+                if not verdict:
+                    continue
+                stopper = stop_archive(entries_of(sid), last)
             if stopper and not unstuck:
                 try:
                     recorded = stop_record(s.get("sessionFile"))

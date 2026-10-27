@@ -387,6 +387,72 @@ class ResumePausedTests(unittest.TestCase):
         self.owners("0" * 24 + "startedjob01")
         self.assertEqual(self.run_direct(dry_run=True)["paused"], [])
 
+    def lost_job(self, sid, entries, status="running", lifecycle="archived"):
+        folder = self.root / "artifacts" / "01a1164b-chat" / f"sub-{len(self.sessions):08d}"
+        folder.mkdir(parents=True)
+        (folder / "rlm-subagent.json").write_text(json.dumps({"sessionName": sid, "status": status, "prompt": "task"}))
+        path = folder / f"{sid}.jsonl"
+        path.write_text("\n".join(json.dumps(entry) for entry in entries) + "\n")
+        self.sessions.append({"id": sid, "sessionId": sid, "lifecycle": lifecycle, "activity": "idle", "sessionFile": str(path), "sessionName": sid,
+                              "runtimeKind": "subagent", "lastActivityAt": at(0)})
+
+    def run_lost(self):
+        with patch.object(resume_paused, "ARTIFACTS_DIR", self.root / "artifacts"), patch.object(resume_paused, "SESSIONS_DIR", self.root / "sessions"), \
+                patch.object(resume_paused, "DELETED_JOBS", self.root / "deleted-jobs.json"), \
+                patch.object(resume_paused, "ARCHIVED_CHATS", self.root / "archived-chats.json"), \
+                patch.object(resume_paused, "daemon_restarts", return_value=[]), patch.object(resume_paused, "worker_shutdowns", return_value=[]):
+            return self.run_direct()
+
+    def test_an_input_the_worker_recovery_left_with_no_turn_gets_one_continue(self):
+        # ctl-fix (01a17d82) on us-metal02, 10-27: a connection error at 14:36:34Z, a "completed" archive at 14:37:30Z, its parent's message at
+        # 15:01:29Z queued 153rd in pi-pool, the OOM hang from 15:14Z, and the worker recovery at 16:48:54Z. Every pass read the 14:36Z error
+        # under the completed archive as its last turn and listed it stopped, and it sat with no turn until its parent wrote again at 17:03Z.
+        def custom(minutes_ago, kind, **more):
+            return {"type": "custom_message", "customType": kind, "timestamp": at(minutes_ago), "content": "x", **more}
+        message = custom(107, "agent_message")
+        entries = [role(160, "user"), assistant(132, "error", "Connection error."),
+                   {"type": "session_state", "timestamp": at(131), "state": {"status": "archived", "reason": "completed"}},
+                   message, {"type": "custom", "customType": "pi-pool-queue", "timestamp": at(107), "data": {"position": 153}},
+                   custom(0.5, resume_paused.RECOVERY_NOTICE)]
+        sid = "01a17d82-a257-745b-91d3-9d307cc71fcf"
+        self.lost_job(sid, entries)
+        report = self.run_lost()
+        self.assertEqual([(p["reason"], p["errored_at"], p["target"]) for p in report["paused"]], [("cut_off", at(107), sid)])
+        self.assertIn("No turn answered its input", report["paused"][0]["error"])
+        self.assertEqual(self.sent, [(sid, "continue")])
+        self.assertEqual(self.run_lost()["paused"], [], "one continue for the input")
+        self.assertEqual(self.sent, [(sid, "continue")])
+
+    def test_a_continue_answered_by_an_empty_turn_the_daemon_shutdown_cut_gets_one_continue_unless_its_parent_deleted_it(self):
+        # release approval evidence (01a17d75) of chat-2572, 10-27: a board.wake, the 16:48:54Z worker recovery, its parent's continue, an
+        # empty reply, then the 16:55Z daemon shutdown archive and its empty abort, with no work since. chat-2572 then deleted it on purpose.
+        def custom(minutes_ago, kind):
+            return {"type": "custom_message", "customType": kind, "timestamp": at(minutes_ago), "content": "x"}
+        text = {"type": "message", "timestamp": at(140), "message": {"role": "assistant", "stopReason": "stop", "content": [{"type": "text", "text": "Wake set."}]}}
+        entries = [role(150, "user"), text, custom(100, "agent_message"), custom(14, resume_paused.RECOVERY_NOTICE), custom(12, "agent_message"),
+                   assistant(11, "error", ""), {"type": "session_state", "timestamp": at(6.01), "state": {"status": "archived", "reason": "daemon_shutdown"}},
+                   assistant(6, "aborted")]
+        self.lost_job("01a17d75-fc95-719e-9b8d-7a2024838567", entries)
+        self.lost_job("01a17d75-0000-0000-0000-00000000dele", entries, status="deleted")
+        report = self.run_lost()
+        self.assertEqual([(p["session_id"], p["reason"], p["errored_at"]) for p in report["paused"]],
+                         [("01a17d75-fc95-719e-9b8d-7a2024838567", "cut_off", at(100))])
+        self.assertEqual(self.sent, [("01a17d75-fc95-719e-9b8d-7a2024838567", "continue")])
+        self.assertEqual([(entry["session_id"], entry["stopped_by"]) for entry in resume_paused.STOPPED],
+                         [("01a17d75-0000-0000-0000-00000000dele", "its parent deleted it (rlm-subagent.json status deleted)")])
+
+    def test_an_input_a_turn_answered_a_stop_after_it_or_no_recovery_gets_nothing(self):
+        def custom(minutes_ago, kind):
+            return {"type": "custom_message", "customType": kind, "timestamp": at(minutes_ago), "content": "x"}
+        done = {"type": "message", "timestamp": at(20), "message": {"role": "assistant", "stopReason": "stop", "content": [{"type": "text", "text": "Done."}]}}
+        self.lost_job("answered-0000-0000-0000-000000000001", [custom(30, "agent_message"), done, custom(5, resume_paused.RECOVERY_NOTICE)])
+        self.lost_job("noproof0-0000-0000-0000-000000000002", [custom(30, "agent_message")], lifecycle="live")
+        self.lost_job("ownstop0-0000-0000-0000-000000000003", [custom(30, "agent_message"), custom(20, resume_paused.RECOVERY_NOTICE),
+                                                               {"type": "session_state", "timestamp": at(10), "state": {"status": "archived", "reason": "owner_stop"}}])
+        report = self.run_lost()
+        self.assertEqual((report["paused"], self.sent), ([], []))
+        self.assertEqual([entry["session_id"] for entry in resume_paused.STOPPED], ["ownstop0-0000-0000-0000-000000000003"])
+
     def test_a_step_owner_aborted_and_archived_with_no_worker_is_resumed_by_its_full_id(self):
         # frontend bro 10-15: stuck steps root cause waited 103rd in pi-pool's queue; the workers' SIGTERM at 17:43:22Z aborted it, the
         # daemon restarted, and it no longer showed in `prime-agent list`. At 18:25Z the owner's stop archived it with another empty abort,
