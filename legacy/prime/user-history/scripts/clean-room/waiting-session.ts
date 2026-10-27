@@ -7,13 +7,15 @@ import type { RunState, Scenario, Verdict } from "./session-read.ts";
 /**
  * The clean-room scenario w81-waiting-session (chat-2572 c84, 10-26): a job that waits on its own board.wake stays the same session, on the
  * model and thinking level its spawn asked for, through an idle unload and the wake. Since sieun-pi 84fff13d the cleanup never replaces a
- * waiting job. A fresh chat on gpt-6-astra gets one owner-style task: one job on openai-codex/gpt-6-astra at medium counts now and again 30
+ * waiting job. A fresh chat on gpt-6.1-sol gets one owner-style task: one job on openai-codex/gpt-6.1-sol at medium counts now and again 30
  * minutes later. The job sets its own board.wake, the idle unload stops its session while it waits, and the wake service delivers the wake;
  * nobody sends anything. The judge reads the job's spawn record and session file, the wake files and the service.log lines that name the
  * job's session, which collect keeps for this scenario (`jobEvidence`). The criteria live in the run folder's criteria.md.
  */
-export const MODEL = { provider: "openai-codex", modelId: "gpt-6-astra", thinkingLevel: "medium" };
-export const TASK = "how many test files are in legacy/prime/user-history/test of ~/src/sieun-pi right now? have one job on openai-codex/gpt-6-astra " +
+// Owner rule c185 allows only Claude Opus 5.5, Sonnet 5.5 and Fable 5.1, and OpenAI GPT-6.1 sol, GPT-6.1 terra and GPT-6 luna; run1 on 10-27
+// used gpt-6-astra and was closed as noncompliant.
+export const MODEL = { provider: "openai-codex", modelId: "gpt-6.1-sol", thinkingLevel: "medium" };
+export const TASK = "how many test files are in legacy/prime/user-history/test of ~/src/sieun-pi right now? have one job on openai-codex/gpt-6.1-sol " +
   "with medium thinking count them and put the number on the board, then the same job counts again 30 minutes later and puts the difference " +
   "on the board";
 const HOME = homedir();
@@ -174,7 +176,7 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
 
 export const waitingSession: Scenario = {
   name: "waiting-session",
-  model: { provider: "openai-codex", modelId: "gpt-6-astra", thinkingLevel: "high" },
+  model: { provider: "openai-codex", modelId: "gpt-6.1-sol", thinkingLevel: "high" },
   headMessage: () => TASK,
   fixtures: [],
   jobEvidence: true,

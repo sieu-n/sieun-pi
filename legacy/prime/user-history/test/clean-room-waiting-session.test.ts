@@ -1,5 +1,5 @@
 // Guards the w81-waiting-session judge (chat-2572 c84, 10-26): a job that waits on its own board.wake passes only when the same session, on
-// openai-codex/gpt-6-astra at medium before and after, was idle-unloaded in between and woke on the wake service's message with nobody stepping in.
+// openai-codex/gpt-6.1-sol at medium before and after, was idle-unloaded in between and woke on the wake service's message with nobody stepping in.
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -24,11 +24,11 @@ test("waiting-session: pass on one session through unload and wake; fail on a st
   mkdirSync(join(agent, "sessions"), { recursive: true });
   const jobFile = join(sub, `${JOB}.jsonl`);
   writeFileSync(join(sub, "rlm-subagent.json"), JSON.stringify({ childId: "sub-1", sessionName: "test file count", sessionFile: jobFile,
-    model: { provider: "openai-codex", modelId: "gpt-6-astra" } }));
+    model: { provider: "openai-codex", modelId: "gpt-6.1-sol" } }));
   writeFileSync(join(agent, "sessions", `${CHAT}.jsonl`), [JSON.stringify({ type: "session", id: CHAT, timestamp: at(0), cwd: home }),
     JSON.stringify({ type: "message", timestamp: at(0), message: { role: "user", content: [{ type: "text", text: TASK }] } })].join("\n") + "\n");
   const reply = (minutes: number, extra: Record<string, unknown> = {}) => JSON.stringify({ type: "message", timestamp: at(minutes),
-    message: { role: "assistant", provider: "openai-codex", model: "gpt-6-astra", stopReason: "stop", content: [{ type: "text", text: "ok" }], ...extra } });
+    message: { role: "assistant", provider: "openai-codex", model: "gpt-6.1-sol", stopReason: "stop", content: [{ type: "text", text: "ok" }], ...extra } });
   const run = join(home, "run");
   mkdirSync(join(run, "agents"), { recursive: true });
   mkdirSync(join(run, "wakes"), { recursive: true });
@@ -42,7 +42,7 @@ test("waiting-session: pass on one session through unload and wake; fail on a st
     return waitingSession.evaluate(run, state) as { verdict: string; text: string };
   };
   const head = [JSON.stringify({ type: "session", id: JOB, timestamp: at(1) }),
-    JSON.stringify({ type: "model_change", timestamp: at(1), provider: "openai-codex", modelId: "gpt-6-astra" }),
+    JSON.stringify({ type: "model_change", timestamp: at(1), provider: "openai-codex", modelId: "gpt-6.1-sol" }),
     JSON.stringify({ type: "thinking_level_change", timestamp: at(1), thinkingLevel: "medium" }),
     JSON.stringify({ type: "custom_message", customType: "agent_message", timestamp: at(1), content: "[task from parent] count" }),
     reply(2), reply(5, { content: [{ type: "toolCall", name: "ipython", arguments: { code: "board.wake(at=time.time()+1800)" } }] })];
