@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
+import { sessionDirOf } from "./paths.ts";
 import { PY_STRING, balancedSlice } from "./shell.ts";
 
 /*
@@ -18,14 +19,7 @@ export interface CellStep {
 	cwd: string;
 }
 
-/** The kernel's RLM_SESSION_DIR for a session file: a subagent's file sits in its own sub-<n> folder, a root's in sessions/ with its folder under session-artifacts/. */
-export function sessionDirOf(sessionFile: string | null | undefined): string | null {
-	if (!sessionFile) return null;
-	const dir = dirname(sessionFile);
-	if (basename(dir).startsWith("sub-")) return dir;
-	if (basename(dir) === "sessions") return join(dirname(dir), "session-artifacts", basename(sessionFile, ".jsonl"));
-	return null;
-}
+export { sessionDirOf };
 
 /** The cwd the session's live kernel last reported, or null when there is no report, its kernel is gone or it came from another host. */
 export function kernelCwd(sessionFile: string | null | undefined): string | null {

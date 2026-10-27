@@ -370,8 +370,13 @@ def install() -> None:
 # and build-b13, which a live Crawler ops lab job still needed. So the kernel refuses a recursive delete below ~/scratch unless this job made
 # the tree: a path in an owned.json of this session, the sessions above it up to its root, or its subagents, a job's own
 # ~/scratch/<session id>/ folder of those sessions, or a folder this kernel made. A tree that does not exist yet passes.
-ARTIFACTS = os.path.join(os.path.expanduser(os.environ.get("PRIME_AGENT_CODING_AGENT_DIR") or os.environ.get("PI_CODING_AGENT_DIR")
-                                            or os.path.join(HOME, ".prime", "agent")), "session-artifacts")
+# The session-artifacts folder that holds this session's folder, Prime's or upstream Pi's (pi-rlm names Pi's in PI_CODING_AGENT_DIR), else
+# the first one named.
+_ARTIFACT_DIRS = list(dict.fromkeys(os.path.join(os.path.expanduser(d), "session-artifacts") for d in (
+    os.environ.get("PRIME_AGENT_CODING_AGENT_DIR"), os.environ.get("PI_CODING_AGENT_DIR"), os.path.join(HOME, ".prime", "agent")) if d))
+ARTIFACTS = next((d for d in _ARTIFACT_DIRS if os.path.normpath(SESSION).startswith(d + "/")), _ARTIFACT_DIRS[0])
+# Prime names a transcript <id>.jsonl, and Pi names a root's <timestamp>_<id>.jsonl.
+TRANSCRIPT_NAME = re.compile(r"^(?:[^_/]+_)?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$")
 SUBAGENT_FOLDER = re.compile(r"^sub-[0-9a-f]+$")
 SHELLS = {"sh", "bash", "dash", "zsh"}
 WRAPPERS = {"sudo", "env", "nice", "ionice", "timeout", "command", "exec", "time", "nohup", "heavy", "builtin"}
@@ -418,7 +423,7 @@ def session_ids(folder: str) -> list:
     """The session ids a session folder stands for: its own name for a root session, the transcripts in it for a subagent's folder."""
     found = [os.path.basename(folder)] if SESSION_FOLDER.match(os.path.basename(folder)) else []
     try:
-        found += [name[:-6] for name in os.listdir(folder) if name.endswith(".jsonl") and SESSION_FOLDER.match(name[:-6])]
+        found += [m.group(1) for m in map(TRANSCRIPT_NAME.match, os.listdir(folder)) if m]
     except OSError:
         pass
     return found

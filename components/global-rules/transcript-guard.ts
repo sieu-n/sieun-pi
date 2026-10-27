@@ -3,7 +3,7 @@ import { realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionContext, ToolCallEvent, ToolCallEventResult } from "prime-agent";
-import { sessionDirOf } from "./kernel-cwd.ts";
+import { sessionDirOf } from "./paths.ts";
 import { enabled, log } from "./log.ts";
 
 /*
@@ -22,7 +22,7 @@ export function judgeTool(tool: string, input: Record<string, unknown>, cwd: str
 	const text = tool === "bash" ? input.command : (input.path ?? input.file_path);
 	if (typeof text !== "string" || !(HINT.test(text) || HINT.test(cwd))) return undefined;
 	const request = tool === "bash" ? { tool, text, cwd, session } : { tool, path: text, cwd, session };
-	const run = spawnSync("python3", ["-B", JUDGE, "--judge"], { input: JSON.stringify(request), encoding: "utf8", env: { ...process.env, PYTHONPATH: "" } });
+	const run = spawnSync("python3", ["-B", JUDGE, "--judge"], { input: JSON.stringify(request), encoding: "utf8", env: { ...process.env, PYTHONPATH: "", RLM_SESSION_DIR: session } });
 	if (run.status !== 0) {
 		log("transcript", `judge failed, failing open :: ${run.stderr.slice(0, 500)}`);
 		return undefined;
@@ -35,7 +35,7 @@ export function judgeTool(tool: string, input: Record<string, unknown>, cwd: str
 export function onToolCall(event: ToolCallEvent, ctx: Ctx): ToolCallEventResult | undefined {
 	try {
 		if (!enabled("GLOBAL_RULES_GUARD") || !["read", "grep", "bash"].includes(event.toolName)) return undefined;
-		const session = sessionDirOf(ctx?.sessionManager?.getSessionFile?.()) ?? process.env.RLM_SESSION_DIR ?? "";
+		const session = sessionDirOf(ctx?.sessionManager?.getSessionFile?.(), ctx?.sessionManager?.getSessionId?.()) ?? process.env.RLM_SESSION_DIR ?? "";
 		if (!session) return undefined;
 		const reason = judgeTool(event.toolName, event.input as Record<string, unknown>, ctx?.cwd ?? process.cwd(), session);
 		if (!reason) return undefined;

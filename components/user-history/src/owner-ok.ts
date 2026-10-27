@@ -18,7 +18,9 @@ import type { OwnerTodo } from "./shared/types.ts";
  */
 export type OwnerOk = { ok: true; todo: OwnerTodo; source: string } | { ok: false; reason: string; source?: string };
 
-export const chatDataDir = (): string => process.env.AGENT_CHAT_DATA_DIR || join(homedir(), ".prime", "agent", "browser-chat");
+/** AGENT_CHAT_DATA_DIR, else browser-chat in Prime's agent dir or, for an upstream Pi session, Pi's (PI_CODING_AGENT_DIR). */
+export const chatDataDir = (): string => process.env.AGENT_CHAT_DATA_DIR ||
+  join(process.env.PRIME_AGENT_CODING_AGENT_DIR || process.env.PI_CODING_AGENT_DIR || join(homedir(), ".prime", "agent"), "browser-chat");
 
 /**
  * How long the chat host may take to answer before the local file answers instead. The send guard runs this script with a 15 s limit

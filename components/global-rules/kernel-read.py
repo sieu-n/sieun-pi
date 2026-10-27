@@ -40,8 +40,13 @@ import time
 HERE = os.path.dirname(os.path.realpath(__file__))
 THIS = os.path.realpath(__file__)
 HOME = os.path.expanduser("~")
-PRIME = os.path.realpath(os.path.expanduser(os.environ.get("PRIME_AGENT_CODING_AGENT_DIR") or os.environ.get("PI_CODING_AGENT_DIR")
-                                            or os.path.join(HOME, ".prime", "agent")))
+# Prime's and upstream Pi's agent dirs both hold transcripts, since pi-host sessions run beside Prime's. PRIME is the one that holds this
+# session's folder (pi-rlm's kernel names Pi's in PI_CODING_AGENT_DIR), else the first one named.
+AGENT_DIRS = list(dict.fromkeys(os.path.realpath(os.path.expanduser(d)) for d in (
+    os.environ.get("PRIME_AGENT_CODING_AGENT_DIR"), os.environ.get("PI_CODING_AGENT_DIR"),
+    os.path.join(HOME, ".prime", "agent"), os.path.join(HOME, ".pi", "agent")) if d))
+_SESSION_DIR = os.path.realpath(os.environ["RLM_SESSION_DIR"]) if os.environ.get("RLM_SESSION_DIR") else ""
+PRIME = next((d for d in AGENT_DIRS if _SESSION_DIR.startswith(os.path.join(d, "session-artifacts") + os.sep)), AGENT_DIRS[0])
 SESSIONS = os.path.join(PRIME, "sessions")
 ARTIFACTS = os.path.join(PRIME, "session-artifacts")
 LOG = os.environ.get("GLOBAL_RULES_TRANSCRIPT_LOG") or os.path.join(PRIME, "logs", "transcript-refusals.jsonl")
@@ -51,7 +56,8 @@ CLEAN_ROOM = os.path.join(PRIME, "clean-room")
 # MIRROR_DIR). On 10-23 at about 13:20Z the job 'd9 stuck steps job liveness 10-23' read two other chats' transcripts through the Mac's copy
 # here, after the guard had refused the same read under sessions/, so a transcript in a host's copy is judged like one under PRIME.
 MIRRORS = os.path.realpath(os.path.join(HOME, ".cache", "sieun-pi", "hosts"))
-TRANSCRIPT = re.compile(r"^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$")
+# Prime names a transcript <id>.jsonl, and Pi names a root's <timestamp>_<id>.jsonl.
+TRANSCRIPT = re.compile(r"^(?:[^_/]+_)?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$")
 SUB = re.compile(r"^sub-[0-9a-f]+$")
 UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 KERNEL = os.getpid()
@@ -106,8 +112,9 @@ def prime_of(real: str):
 
     A copied file outside a `.prime/agent` folder counts as held by its host's copy as a whole.
     """
-    if under(real, PRIME):
-        return PRIME
+    for prime in AGENT_DIRS:
+        if under(real, prime):
+            return prime
     if not under(real, MIRRORS) or real == MIRRORS:
         return None
     parts = os.path.relpath(real, MIRRORS).split(os.sep)
@@ -243,7 +250,8 @@ def name_of(root: str):
     if root not in _names:
         _names[root] = None
         copies = sorted(glob.glob(os.path.join(MIRRORS, "*", "**", ".prime", "agent", "sessions", root + ".jsonl"), recursive=True))
-        for path in [os.path.join(SESSIONS, root + ".jsonl"), *copies]:
+        own = [os.path.join(SESSIONS, root + ".jsonl"), *sorted(glob.glob(os.path.join(SESSIONS, "*", "*_" + root + ".jsonl")))]
+        for path in [*own, *copies]:
             try:
                 with _open(path, "rb") as handle:
                     head = handle.read(65536).decode("utf-8", "replace")
@@ -311,7 +319,8 @@ def outside_in(directory: str, folder: str):
         return None
     if real in (HOME, "/"):
         return None
-    starts = [real if under(real, base) else top for base, top in ((PRIME, SESSIONS), (MIRRORS, MIRRORS)) if under(real, base) or under(base, real)]
+    bases = [*((prime, os.path.join(prime, "sessions")) for prime in AGENT_DIRS), (MIRRORS, MIRRORS)]
+    starts = [real if under(real, base) else top for base, top in bases if under(real, base) or under(base, real)]
     for start in dict.fromkeys(starts):
         for top, dirs, files in os.walk(start):
             dirs.sort()

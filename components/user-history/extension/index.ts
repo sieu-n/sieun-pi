@@ -27,9 +27,12 @@ import { withMessageCheck } from "../src/message-limit-check.ts";
 import { movedReason, movedTo } from "../src/moved-copy.ts";
 import { endLoadWait, loadWaitNote } from "../src/load-wait.ts";
 import { recordPrompt } from "../src/prompt-capture.ts";
+import { onUpstreamPi } from "../src/pi-runtime.ts";
 import { REQUIREMENT_STATUSES, type ChatAgent, type ThreadMessage } from "../src/shared/types.ts";
 
 export default function historyExtension(pi: ExtensionAPI): void {
+  // On upstream Pi the harness digests come from pi-harness, which keeps every digest past a compaction (src/correction-delivery.ts).
+  const piHarness = onUpstreamPi(pi);
   const images = new ImageFitter(undefined, undefined, line => {
     void appendFile(join(getAgentDir(), "logs", "context-images.log"), `${new Date().toISOString()} ${line}\n`).catch(() => {});
   });
@@ -200,7 +203,7 @@ export default function historyExtension(pi: ExtensionAPI): void {
     let ledger: Ledger | null = null;
     try { ledger = await readLedger(); } catch { /* no ledger */ }
     messages = deliverCorrections({ messages, branch: ctx.sessionManager.getBranch(), ledger, job: !marked, brief: BRIEF_CORRECTIONS,
-      append: data => pi.appendEntry(CORRECTION_CHECKPOINT, data) });
+      append: data => pi.appendEntry(CORRECTION_CHECKPOINT, data), digests: piHarness ? "pi-harness" : "prime" });
     return { messages };
   });
   // correction_add exists only in a chat: registered at the chat's session_start, so jobs and other sessions never see it.

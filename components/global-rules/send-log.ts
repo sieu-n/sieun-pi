@@ -1,6 +1,6 @@
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join, sep } from "node:path";
+import { agentDir } from "./paths.ts";
 
 /*
  * The record of outside sends (c37). Every guard layer that judges a send writes one JSON line here: the tool_call guard
@@ -32,24 +32,30 @@ export interface SendEntry {
 
 /**
  * GLOBAL_RULES_SEND_LOG, else <AGENT_CHAT_DATA_DIR>/sends.jsonl, else next to GLOBAL_RULES_LOG (so every guard test that moves the
- * guard log also moves this one), else ~/.prime/agent/browser-chat/sends.jsonl, next to the boards that hold the OWNER_OK todos.
+ * guard log also moves this one), else <agent dir>/browser-chat/sends.jsonl (paths.ts), next to the boards that hold the OWNER_OK todos.
  */
 export function sendLogPath(env: NodeJS.ProcessEnv = process.env): string {
 	if (env.GLOBAL_RULES_SEND_LOG) return env.GLOBAL_RULES_SEND_LOG;
 	if (env.AGENT_CHAT_DATA_DIR) return join(env.AGENT_CHAT_DATA_DIR, "sends.jsonl");
 	if (env.GLOBAL_RULES_LOG) return join(dirname(env.GLOBAL_RULES_LOG), "sends.jsonl");
-	return join(homedir(), ".prime", "agent", "browser-chat", "sends.jsonl");
+	return join(agentDir(env), "browser-chat", "sends.jsonl");
 }
 
-/** The chat and session behind a session dir or transcript path: the parts after session-artifacts or sessions. */
+/**
+ * The chat and session behind a session dir or transcript path: the parts after session-artifacts or sessions. A Pi transcript,
+ * <timestamp>_<id>.jsonl in a <cwd slug> folder under sessions, stands for its id alone.
+ */
 export function sessionOf(path: string | undefined | null): { chat: string | null; session: string | null } {
 	if (!path) return { chat: null, session: null };
 	const parts = path.split(sep).filter(Boolean);
 	const at = parts.findIndex((part) => part === "session-artifacts" || part === "sessions");
 	if (at === -1 || at + 1 >= parts.length) return { chat: null, session: path };
-	const rest = parts.slice(at + 1).map((part) => part.replace(/\.jsonl$/, ""));
+	const rest = parts.slice(at + 1).map((part) => part.replace(/\.jsonl$/, "").replace(PI_NAME, ""));
+	if (parts[at] === "sessions" && rest.length > 1) rest.splice(0, rest.length - 1);
 	return { chat: rest[0] ?? null, session: rest.join("/") };
 }
+
+const PI_NAME = /^[^_]+_(?=[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$)/;
 
 /** The guard's "refused, because X. <help>" text cut to X. */
 export function sendReason(refusal: string): string {

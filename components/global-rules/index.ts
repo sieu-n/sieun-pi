@@ -48,7 +48,8 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		loadFailed("transcript-guard.ts", error);
 	}
 
-	try {
+	// rlm-delete.ts works around a Prime 0.9.8 abort bug that pi-rlm does not have, so it stays off on upstream Pi.
+	if (typeof (pi as { registerMcpServer?: unknown }).registerMcpServer !== "function") try {
 		const rlmDelete: typeof import("./rlm-delete.ts") = await import(join(dir, "rlm-delete.ts"));
 		pi.on("tool_call", (event, ctx) => rlmDelete.onToolCall(event, ctx));
 	} catch (error) {
