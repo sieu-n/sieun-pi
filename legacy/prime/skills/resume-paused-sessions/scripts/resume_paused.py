@@ -13,6 +13,9 @@ it is live and idle, and either:
   - its last message is an empty model reply that asked for a tool, or
   - an input it got (a wake, a brief or any message) has no answering turn, and a worker recovery
     notice or a daemon shutdown archive came after it: the worker that held the turn died, or
+  - its last park's wake reads provider_quota_resume "cancelled" with no turn after it, and
+    only the idle unload's archives raised its stop generation since the park: load.2 Prime
+    drops that wake (cancelled_wake), or
   - it shows "working" but did nothing for 30 minutes with no child run or
     compaction running (120 minutes when a tool call is running): a hung model
     stream, retry wait or tool call. A message cannot reach it; it has to be aborted first, which the chat
@@ -1387,6 +1390,59 @@ def unload_stop_holds(session, verdict):
     return not any(rule.search(verdict[1]) for rule in (TOKEN_HOOK_ERROR, PROVIDER_WAIT_ERROR, INTERRUPTION_ERROR))
 
 
+# Prime's stop generation per session file, {"sessionPath", "stopGeneration"} in <sha256 of the path>.json.
+STOP_GENERATIONS_DIR = Path.home() / ".prime" / "agent" / "session-stop-generations"
+# A later turn or wait: a model message, an input other than the harness digest, a pool queue place, or another park or wake.
+WAKE_LATER_TYPES = ("provider_quota_park", "provider_quota_resume", "pi-pool-queue")
+WAKE_CANCELLED = ("Prime cancelled its pi-pool wake at {at}: the idle unload's stop after the park raised its stop generation from {parked} to {now}, "
+                  "so no turn ran.")
+
+
+def stop_generation(path):
+    """Prime's stop generation for the session file `path`, or None when its record is missing or does not name that file."""
+    record = STOP_GENERATIONS_DIR / f"{hashlib.sha256(path.encode()).hexdigest()}.json"
+    try:
+        data = json.loads(record.read_text())
+    except (OSError, ValueError):
+        return None
+    generation = data.get("stopGeneration") if isinstance(data, dict) and data.get("sessionPath") == path else None
+    return generation if isinstance(generation, int) and not isinstance(generation, bool) else None
+
+
+def cancelled_wake(entries, path):
+    """(the provider_quota_resume entry, the verdict) when Prime cancelled the wake of the run's last park only because the idle unload
+    raised its stop generation, and nothing ran since; else None. load.2 Prime's recordOwnerStops bumps the generation on the unload's kill
+    of a parked run, and _continueCredentialPark then writes provider_quota_resume 'cancelled' and runs no turn: on us-metal02 from 20:44Z
+    on 10-27, 21 of the 22 wakes in the AI harness chat's family ended so, and 75 runs sat stranded at 21:53Z. The run qualifies only when
+    every archive since the park is the idle unload's and their count covers the whole rise, so an owner Stop, which raises it with no
+    such archive, keeps it stopped."""
+    parks = [index for index, entry in enumerate(entries) if entry.get("type") == "custom" and entry.get("customType") == "provider_quota_park"]
+    if not parks or not path:
+        return None
+    park, since = entries[parks[-1]], entries[parks[-1] + 1:]
+    wakes = [index for index, entry in enumerate(since) if entry.get("type") == "custom" and entry.get("customType") == "provider_quota_resume"]
+    if len(wakes) != 1 or (since[wakes[0]].get("data") or {}).get("outcome") != "cancelled":
+        return None
+    wake = since[wakes[0]]
+    # A message that reached the run while it was parked failed on the same slot wait; a reply or a tool result means a turn ran.
+    if any(entry.get("type") == "message" and ((entry.get("message") or {}).get("role") == "toolResult"
+           or ((entry.get("message") or {}).get("role") == "assistant" and (entry.get("message") or {}).get("stopReason") != "error"))
+           for entry in since[:wakes[0]]):
+        return None
+    if any(entry.get("type") == "message" for entry in since[wakes[0] + 1:]):
+        return None
+    if any((entry.get("type") == "custom_message" and entry.get("customType") != "harness_digest")
+           or (entry.get("type") == "custom" and entry.get("customType") in WAKE_LATER_TYPES) for entry in since[wakes[0] + 1:]):
+        return None
+    archives = [entry for entry in since if is_archive(entry)]
+    if not archives or any((entry.get("state") or {}).get("reason") != "idle_unload" for entry in archives):
+        return None
+    parked, now = (park.get("data") or {}).get("stopGeneration"), stop_generation(path)
+    if not isinstance(parked, int) or now is None or not 0 < now - parked <= len(archives):
+        return None
+    return wake, ("error", WAKE_CANCELLED.format(at=wake.get("timestamp"), parked=parked, now=now))
+
+
 def stop_archive(entries, last):
     """The archive that stopped the turn ending in `last`: the latest one after it, else one right before it with no message between. An
     older archive stopped an earlier turn: air reboot proof 2 was unloaded at 06:22Z on 10-18, woken at 06:40Z and cut by the mem.3 update
@@ -2119,9 +2175,13 @@ def find_paused(sessions, since_minutes, state, now, direct=False, only=frozense
         if since_minutes and seen_at and (now - seen_at).total_seconds() / 60 > since_minutes + 5:
             continue
         last = last_message(entries_of(sid))
-        lost = lost_input(entries_of(sid), restarts) if full not in UNSTUCK else None
+        # The idle unload's stop is what cancelled the wake, so no archive rule below applies to it (cancelled_wake checks every archive).
+        woke = cancelled_wake(entries_of(sid), s.get("sessionFile")) if not BOX.remote and full not in UNSTUCK else None
+        lost = lost_input(entries_of(sid), restarts) if full not in UNSTUCK and not woke else None
         task = None
-        if not last and not lost:
+        if woke:
+            last, verdict = woke
+        elif not last and not lost:
             started = never_started(s, entries_of(sid)) if owner else None
             if not started:
                 continue
@@ -2175,7 +2235,8 @@ def find_paused(sessions, since_minutes, state, now, direct=False, only=frozense
                                    "head_session_id": head_session(head_of(sid, by_id), s), "archived_at": last.get("timestamp"), "error": held[1],
                                    **({"host": BOX.name} if BOX.remote else {})})
             continue
-        if not owed(s, sid, full, verdict, last.get("timestamp")):
+        # A park is an input whose turn never ran, so a cancelled wake owes that turn.
+        if not woke and not owed(s, sid, full, verdict, last.get("timestamp")):
             continue
         ts = parse_ts(last.get("timestamp"))
         age_min = (now - ts).total_seconds() / 60 if ts else None

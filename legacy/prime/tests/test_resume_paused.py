@@ -1116,6 +1116,52 @@ class ResumePausedTests(unittest.TestCase):
         sent = self.run_named(probe, entries, now, unloaded)
         self.assertEqual((sent["paused"], self.sent), ([], []), "the job sweep's send pass")
         self.assertEqual([h["session_id"] for h in resume_paused.HELD], [probe])
+    # Two runs of the AI harness chat on us-metal02, 10-27, copied from their files with long texts cut: the idle unload stopped each
+    # right after its park, load.2 Prime's recordOwnerStops raised its stop generation for that kill, and at the pool's wake
+    # _continueCredentialPark wrote provider_quota_resume "cancelled" and ran no turn. "generation" is the record after the wake.
+    STRANDED = json.loads((Path(__file__).parent / "fixtures" / "stranded-wakes.json").read_text())
+
+    def run_stranded(self, sid, entries=None, generation=None, dry_run=True):
+        case = self.STRANDED[sid]
+        gens = self.root / "stop-generations"
+        gens.mkdir(exist_ok=True)
+        path = str(self.root / "sessions" / f"{sid}.jsonl")
+        record = {"sessionPath": path, "stopGeneration": case["generation"] if generation is None else generation}
+        (gens / f"{resume_paused.hashlib.sha256(path.encode()).hexdigest()}.json").write_text(json.dumps(record))
+        with patch.object(resume_paused, "STOP_GENERATIONS_DIR", gens, create=True):
+            return self.run_named(sid, case["entries"] if entries is None else entries, resume_paused.parse_ts(case["now"]), dry_run=dry_run)
+
+    def test_a_run_whose_park_wake_prime_cancelled_after_the_idle_unload_gets_one_continue(self):
+        for sid, wake in (("01a17f25-f22d-71ef-9327-e68919164bb4", "2026-10-27T21:16:40.332Z"),
+                          ("01a17f1e-141e-723a-9afa-cc658e28bbe7", "2026-10-27T21:35:39.660Z")):
+            with self.subTest(sid=sid):
+                self.sent.clear()
+                (self.root / "state.json").unlink(missing_ok=True)
+                report = self.run_stranded(sid, dry_run=False)
+                self.assertEqual([(p["session_id"], p["reason"], p["errored_at"]) for p in report["paused"]], [(sid, "error", wake)])
+                self.assertIn("Prime cancelled its pi-pool wake", report["paused"][0]["error"])
+                self.assertEqual(self.sent, [(sid, "continue")])
+                self.assertEqual(self.run_stranded(sid, dry_run=False)["paused"], [], "the state file keys the continue to that wake")
+                self.assertEqual(self.sent, [(sid, "continue")])
+
+    def test_a_cancelled_wake_with_a_stop_or_a_later_turn_gets_nothing(self):
+        sid = "01a17f1e-141e-723a-9afa-cc658e28bbe7"
+        entries = self.STRANDED[sid]["entries"]
+        owner_stop = {"type": "session_state", "timestamp": "2026-10-27T21:35:50.000Z", "state": {"status": "archived", "reason": "owner_stop"}}
+        steer = {"type": "custom_message", "customType": "agent_message", "timestamp": "2026-10-27T21:35:50.000Z", "content": "continue"}
+        queued = {"type": "custom", "customType": "pi-pool-queue", "timestamp": "2026-10-27T21:35:50.100Z", "data": {"position": 3, "total": 9}}
+        for case, kept, generation in (("the owner stopped it", [*entries, owner_stop], None),
+                                       ("a Stop raised the generation past the unloads", entries, 5),
+                                       ("its generation never rose", entries, 2),
+                                       ("a later message queued it again", [*entries, steer, queued], None)):
+            with self.subTest(case=case):
+                (self.root / "state.json").unlink(missing_ok=True)
+                self.assertEqual(self.run_stranded(sid, kept, generation)["paused"], [])
+        (self.root / "state.json").unlink(missing_ok=True)
+        (self.root / "job-cancels.json").write_text(json.dumps({sid: {"at": 1793136950000, "by": "owner", "how": "stop"}}))
+        self.assertEqual(self.run_stranded(sid)["paused"], [], "the owner's Stop in job-cancels.json")
+        self.assertEqual(self.sent, [])
+
     def test_credential_wait_at_reads_the_diagnostic_and_not_the_text(self):
         message = self.MARKER["message"]
         self.assertEqual(resume_paused.credential_wait_at(message), 1792517520000)
