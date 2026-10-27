@@ -8,14 +8,16 @@
       "label": "Throughput goals on the board that prod misses, every platform",
       "op": "<=",
       "target": 0,
-      "headline": true
+      "headline": true,
+      "windowMs": 86400000
     },
     {
       "key": "geonode_mbps",
       "label": "GeoNode Mbps in the slowest hour since the last daily run",
       "op": ">=",
       "target": 100,
-      "unit": " Mbps"
+      "unit": " Mbps",
+      "windowMs": 86400000
     },
     {
       "key": "ig_queues_growing_6h",

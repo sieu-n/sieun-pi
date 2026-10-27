@@ -15,7 +15,13 @@ export type DutySchedule = { kind: "daily"; at: string } | { kind: "every"; minu
  * One target of a duty. `headline` marks the one number a run is judged on moving (owner 10-14 on the Chat system duty: "this is your KPI ... the
  * fundamentals are much more important than the quantitative number of checks"): the brief leads with it, the card and the summary show it first.
  */
-export interface DutyMetric { key: string; label: string; op: "<=" | ">="; target: number; unit?: string; headline?: true }
+export interface DutyMetric { key: string; label: string; op: "<=" | ">="; target: number; unit?: string; headline?: true;
+  /**
+   * For a count over a trailing window whose key names none, the window in ms, which the precheck also reports each run it reads the miss as
+   * one (`PrecheckOutput.windowMs`). d9 reads it from the checked-in duty file beside the precheck when a run dated the miss (`lastEventAt`) but
+   * predates windowMs, and judges a fix of such a miss one window after its first run (`FixJudging.windowMs`).
+   */
+  windowMs?: number }
 /**
  * A number the precheck prints that a plan goal holds the target of, so the duty measures it every run and never judges it (c110: a finishable
  * growth goal lives on the plan, and a duty watches only what breaks). Each run writes it into the open item whose own duty link names it
@@ -473,7 +479,8 @@ export function parseDutyInput(value: unknown, id: string, now: number, schedule
     if (!isRecord(metric) || typeof metric.key !== "string" || !KEY.test(metric.key) || !str(metric.label) || (metric.op !== "<=" && metric.op !== ">=") ||
       typeof metric.target !== "number" || !Number.isFinite(metric.target) || (metric.unit !== undefined && typeof metric.unit !== "string")) throw new Error(`metrics[${index}]: key, label, op (<= or >=) and target.`);
     const parsed: DutyMetric = { key: metric.key, label: metric.label, op: metric.op, target: metric.target, ...(typeof metric.unit === "string" ? { unit: metric.unit } : {}),
-      ...(metric.headline === true ? { headline: true as const } : {}) };
+      ...(metric.headline === true ? { headline: true as const } : {}),
+      ...(typeof metric.windowMs === "number" && Number.isFinite(metric.windowMs) && metric.windowMs > 0 ? { windowMs: metric.windowMs } : {}) };
     return parsed;
   });
   // A duty of one metric has nothing else to lead, so that metric is its headline.

@@ -27,8 +27,9 @@ export interface MetricStreak {
    * 11:38Z run compared it with the 14:07Z run of 10-20 and read "change approach" though promote 18's 09:35Z deploy had 0 down minutes.
    */
   quietSince?: number;
-  /** The window the precheck named for this count (`MetricResult.windowMs`). */
+  /** The window the precheck named for this count (`MetricResult.windowMs`), and its newest event (`MetricResult.lastEventAt`). */
   windowMs?: number;
+  lastEventAt?: number;
   /**
    * CHANGE_APPROACH_MISSES or more misses, no move toward the target, and not `quietSince`. With a fix step, only the misses its run records name
    * the same fix for count (`fixMisses`): a fix job younger than the misses has not had them yet. Demo sandbox 10-18: restarts_24h read 4 from
@@ -86,6 +87,15 @@ export const fixMisses = (streak: readonly DutyRunRecord[], key: string, fix: Fi
   streak.filter(run => { const named = run.fixes?.[key]; return named?.step === fix.step && named.job === fix.job; }).length;
 
 /**
+ * How `fixStepStreak` judges a fix beyond its own runs. `own`: board items that hold the step's own target, read before the step's board
+ * target (`workedReading`). `windowMs`: the window the precheck declares for a count over a trailing window (`DutyMetric.windowMs`); the runs
+ * within one window of the first run that named the step are not judged (`judgedFrom`), since the count still holds what came before the fix.
+ * At 04:26Z on 10-27 d9 asked Crawler VP to replace p1022 on census writer lag, the worst five-minute slot of 24 h, whose 214,542 at 10:55Z on
+ * 10-26 came before p1022's first run at 13:28Z.
+ */
+export interface FixJudging { own?: readonly string[]; windowMs?: number }
+
+/**
  * The misses of `key`'s current streak (`streakRuns`) whose run named `step` as its fix, and whether the value is closer to the target now than
  * at the first of them. A fix is judged on its own runs: the whole streak counted the misses before it too, so the root-cause step a chat
  * started on d9's push read as a fix that does not move from its first run. SEO guy 10-23: d9's 04:07Z push replaced p83 with p90, whose job
@@ -100,13 +110,17 @@ export interface WorkedReading { item: string; value: number; target: number; op
 export interface WorkedMove { item: string; from: number; to: number; target: number }
 
 /**
- * The number a run read for what `step` works: the duty's own reading of the step (`DutyRunRecord.items`), else the step's own target as the
- * run found it (`FixLink.target`), else the duty's reading of the nearest item above the step (`above`, nearest first).
+ * The number a run read for what `step` works: the duty's own reading of the step (`DutyRunRecord.items`), else its reading of an item that
+ * holds the same target (`same`, `FixJudging.own`), else the step's own target as the run found it (`FixLink.target`), else the duty's reading of
+ * the nearest item above the step (`above`, nearest first). The board target is the chat's copy of a duty read and goes stale between its edits:
+ * Crawler VP's p1022 read 214,542 from 01:15Z on 10-27, while each Crawler d9 run read p895, the goal row p1022 replaced, itself.
  */
-function workedReading(run: DutyRunRecord, fix: FixLink | undefined, step: string, above: readonly string[]): WorkedReading | undefined {
+function workedReading(run: DutyRunRecord, fix: FixLink | undefined, step: string, above: readonly string[], same: readonly string[] = []): WorkedReading | undefined {
   const items = effectiveRun(run).items ?? {};
   const own = items[step];
   if (own) return { item: step, value: own.value, target: own.target, op: own.op };
+  const twin = same.find(entry => items[entry] !== undefined);
+  if (twin !== undefined) return { item: twin, value: items[twin]!.value, target: items[twin]!.target, op: items[twin]!.op };
   if (fix?.step === step && fix.target) {
     const { current, target, direction } = fix.target;
     return { item: step, value: current, target, ...direction ? { op: direction === "down" ? "<=" as const : ">=" as const } : {} };
@@ -131,29 +145,38 @@ function workedReading(run: DutyRunRecord, fix: FixLink | undefined, step: strin
  * such number. A number on its own target counts as moved, since its fix did its part while a windowed duty metric still lags: p952's
  * nvme0n1 1 h rate read 3.86 TB a day against 4 at 19:03Z on 10-24 while d5's 24 h rate read 6.12.
  */
-export function fixStepStreak(runs: readonly DutyRunRecord[], key: string, step: string, above: readonly string[] = []):
-  { misses: number; moved: boolean; worked?: WorkedMove } {
-  const named: MetricResult[] = [];
-  const readings: WorkedReading[] = [];
+export function fixStepStreak(runs: readonly DutyRunRecord[], key: string, step: string, above: readonly string[] = [], options: FixJudging = {}):
+  { misses: number; moved: boolean; worked?: WorkedMove; judgedFrom?: number } {
+  const own = options.own ?? [];
+  const under: { run: DutyRunRecord; found: MetricResult; fix: FixLink }[] = [];
   for (const run of streakRuns(runs)) {
     const found = effectiveRun(run).metrics[key];
     const fix = run.fixes?.[key];
     if (!found || found.met || (fix?.step === step && fix.hold !== undefined)) break;
     if (fix?.step !== step) continue;
-    const reading = workedReading(run, fix, step, above);
+    under.push({ run, found, fix });
+  }
+  const start = under.at(-1)?.run.at;
+  const judgedFrom = options.windowMs !== undefined && start !== undefined ? start + options.windowMs : undefined;
+  const named: MetricResult[] = [];
+  const readings: WorkedReading[] = [];
+  for (const { run, found, fix } of under) {
+    if (judgedFrom !== undefined && run.at < judgedFrom) continue;
+    const reading = workedReading(run, fix, step, above, own);
     if (reading && (named.length === 0 || reading.item === readings[0]?.item)) readings.push(reading);
     named.push(found);
   }
   const misses = named.length;
+  const from = judgedFrom === undefined ? {} : { judgedFrom };
   const now = readings[0];
   const first = readings[readings.length - 1];
   if (now && first) {
     const onTarget = (reading: WorkedReading): boolean => reading.op === "<=" ? reading.value <= reading.target : reading.op === ">=" && reading.value >= reading.target;
     const distance = (reading: WorkedReading): number => onTarget(reading) ? 0 : Math.abs(reading.value - reading.target);
     return { misses: readings.length, moved: onTarget(now) || distance(now) < distance(first),
-      worked: { item: now.item, from: first.value, to: now.value, target: now.target } };
+      worked: { item: now.item, from: first.value, to: now.value, target: now.target }, ...from };
   }
-  return { misses, moved: misses > 0 && gap(named[0]!) < gap(named[misses - 1]!) };
+  return { misses, moved: misses > 0 && gap(named[0]!) < gap(named[misses - 1]!), ...from };
 }
 
 /** The current miss streak of every metric the newest measured run missed, from runs newest first. */
@@ -181,7 +204,8 @@ export function metricStreaks(runs: readonly DutyRunRecord[]): MetricStreak[] {
     const previous = runs.filter(measured).find(run => run.at < newest.at);
     const quiet = result.lastEventAt !== undefined && previous !== undefined && result.lastEventAt < previous.at;
     streaks.push({ key, misses, moved, since, value: result.value, target: result.target, op: result.op, ...(fix ? { fix } : {}),
-      ...(quiet ? { quietSince: result.lastEventAt } : {}), ...(result.windowMs !== undefined ? { windowMs: result.windowMs } : {}), stuck: judged >= CHANGE_APPROACH_MISSES && !moved && !quiet });
+      ...(quiet ? { quietSince: result.lastEventAt } : {}), ...(result.windowMs !== undefined ? { windowMs: result.windowMs } : {}),
+      ...(result.lastEventAt !== undefined ? { lastEventAt: result.lastEventAt } : {}), stuck: judged >= CHANGE_APPROACH_MISSES && !moved && !quiet });
   }
   return streaks;
 }
