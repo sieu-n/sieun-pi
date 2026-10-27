@@ -220,13 +220,13 @@ export interface Turns { starts: Map<string, number[]>; runs: Map<string, [numbe
 
 export const newTurns = (): Turns => ({ starts: new Map(), runs: new Map(), open: new Map() });
 
-/** pi-pool writes local time with no offset ("2026-10-22T07:32:26"), which Date reads as local time too (turn-history.ts `hourOf`). */
-const poolTime = (ts: unknown): number => typeof ts === "string" ? new Date(ts).getTime() : NaN;
+/** pi-pool writes UTC with no offset ("2026-10-22T07:32:26") since 10-27 (pool/base.py `log`). */
+const poolTime = (ts: unknown): number => typeof ts === "string" ? Date.parse(`${ts}Z`) : NaN;
 
 /**
- * Adds the runs in pi-pool.log lines. Not every pi-pool process writes UTC: on us-metal02 on 10-22 the owner-turn command (the chat
- * service's mark before the owner's prompt, and the "ahead" admit it makes) wrote KST, 9 h ahead of the lines around it. A line later than
- * `now` was written so, and goes back by the whole hours it is ahead of the line before it.
+ * Adds the runs in pi-pool.log lines. Before 10-27 not every pi-pool process wrote UTC: on us-metal02 on 10-22 the owner-turn command (the
+ * chat service's mark before the owner's prompt, and the "ahead" admit it makes) wrote KST, 9 h ahead of the lines around it. A line later
+ * than `now` was written so, and goes back by the whole hours it is ahead of the line before it.
  */
 export function addTurnLines(turns: Turns, lines: readonly string[], now: number): void {
   for (const line of lines) {

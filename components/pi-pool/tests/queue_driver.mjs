@@ -31,7 +31,7 @@ for (const step of steps) {
       writeFileSync(parentSession, JSON.stringify({ type: 'session', id: step.parent }) + '\n');
     }
     const header = { type: 'session', id: step.name, rlmDepth: step.depth ?? 0, ...(parentSession ? { parentSession } : {}) };
-    const state = { controller: undefined, idle: true };
+    const state = { controller: undefined, idle: true, queued: false };
     const ctx = {
       hasUI: false,
       model: { provider: 'anthropic', id: 'claude-x' },
@@ -39,6 +39,7 @@ for (const step of steps) {
       ui: { setWidget: () => {}, notify: () => {}, theme: { fg: (_c, t) => t } },
       get signal() { return state.controller?.signal; },
       isIdle: () => state.idle,
+      hasPendingMessages: () => state.queued,
     };
     // Prime's ctx.setWaiting; `waitApi: false` stands for a Prime that lacks it.
     if (step.waitApi !== false) {
@@ -61,6 +62,8 @@ for (const step of steps) {
   } else if (step.op === 'abort') {
     session.state.controller.abort();
   } else if (step.op === 'end') {
+    // `queued: true` ends the run with input queued in Prime, as a steer that cut the run leaves it.
+    session.state.queued = step.queued === true;
     session.state.idle = true;
     await session.handlers.get('agent_end')({ type: 'agent_end', messages: [] }, session.ctx);
   } else if (step.op === 'queue') {

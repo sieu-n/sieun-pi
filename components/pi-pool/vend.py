@@ -111,7 +111,9 @@ USAGE = """usage: pi-pool [command]
                                   --renew renews a running session's lease and never queues it.
                                   --tree defaults to this process's session tree, --pid to the
                                   caller, whose exit ends the run
-  release <session>              free the turn's slot or drop its queue entry
+  release <session> [--queued-input]
+                                  free the turn's slot or drop its queue entry; --queued-input
+                                  keeps the run's place for the session's next run
   owner-turn <session>           the session's next admit is the owner's and runs at once
   lead [<session>...]            replace the sessions whose queued runs start first; no
                                   sessions clears the list

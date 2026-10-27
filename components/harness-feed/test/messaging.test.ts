@@ -29,14 +29,10 @@ const value = (samples: Sample[], name: string, labels: Record<string, string> =
   assert.equal(found.length, 1, `${name} ${JSON.stringify(labels)} matched ${found.length} samples`);
   return found[0]!.value;
 };
-/** pi-pool's own stamp: local time, whole seconds, no offset (pool/base.py `log`). */
-const localTs = (at: number): string => {
-  const d = new Date(at);
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
-};
+/** pi-pool's own stamp: UTC, whole seconds, no offset (pool/base.py `log`). */
+const utcTs = (at: number): string => new Date(at).toISOString().slice(0, 19);
 const poolLine = (at: number, event: string, session: string, extra: Record<string, unknown> = {}) =>
-  JSON.stringify({ ts: localTs(at), event, session, ...event === "turn_admitted" ? { tree: ROOT, kind: "slot", waited_s: 0.0 } : {}, ...extra }) + "\n";
+  JSON.stringify({ ts: utcTs(at), event, session, ...event === "turn_admitted" ? { tree: ROOT, kind: "slot", waited_s: 0.0 } : {}, ...extra }) + "\n";
 const entry = (id: string, thread: string, text: string, state: string, at: number, extra: Record<string, unknown> = {}) =>
   JSON.stringify({ id, threadId: thread, text, images: [], mode: "steer", fingerprint: `${thread}\n${id}`, kind: "message", root: ROOT, state, at, attempts: 1, imageCount: 0, ...extra });
 const daemonLine = (component: string, msg: string) =>
@@ -57,7 +53,7 @@ function scratch(): string {
     poolLine(NOW - 60 * MINUTE, "turn_admitted", ROOT), poolLine(NOW - 55 * MINUTE, "turn_released", ROOT, { kind: "slot", held_s: 300 }),
     poolLine(NOW - 30 * MINUTE, "turn_admitted", S1), poolLine(NOW - 25 * MINUTE, "turn_released", S1, { kind: "slot", held_s: 300 }),
     poolLine(NOW - 20 * MINUTE, "turn_admitted", S5),
-    JSON.stringify({ ts: localTs(NOW - 10 * MINUTE), event: "parked", provider: "anthropic", session: S1, account: "a@b" }) + "\n",
+    JSON.stringify({ ts: utcTs(NOW - 10 * MINUTE), event: "parked", provider: "anthropic", session: S1, account: "a@b" }) + "\n",
     poolLine(NOW - 9 * MINUTE, "turn_admitted", S1),
   ].join(""));
   return home;
@@ -127,6 +123,18 @@ test("newLines starts at the end, keeps a half-written line for later, and start
     assert.deepEqual(await newLines(file, {}, 6), ["bbbb"], "a read back from inside a line drops that line");
     assert.deepEqual(await newLines(file, {}, 64), ["aaaa", "bbbb"], "a read back past the start keeps the first line");
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("addTurnLines reads ts as UTC in any zone, and moves a line stamped in KST before 10-27 back to the hour of the lines around it", () => {
+  const zone = process.env.TZ;
+  process.env.TZ = "Asia/Seoul";
+  try {
+    const kst = newTurns();
+    addTurnLines(kst, [poolLine(NOW - 10 * MINUTE, "turn_admitted", S1).trim()], NOW);
+    assert.deepEqual(kst.starts.get(S1), [NOW - 10 * MINUTE], "a reader on the Mac reads the same instant");
+  } finally {
+    if (zone === undefined) delete process.env.TZ; else process.env.TZ = zone;
+  }
 });
 
 test("addTurnLines moves a line stamped in KST back to the hour of the lines around it, and readAt finds the run that read a message", () => {

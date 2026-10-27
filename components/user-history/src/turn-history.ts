@@ -14,11 +14,14 @@ const NO_WAIT_KINDS: ReadonlySet<unknown> = new Set(["owner", "prod"]);
 
 interface Bucket { finished: number; waits: number[] }
 
-/** The local hour a pi-pool.log `ts` falls in, in epoch ms. pi-pool writes local time with no offset ("2026-10-16T05:02:50"). */
+/**
+ * The hour a pi-pool.log `ts` falls in, in epoch ms, which is also the start of a local clock hour in a zone of whole hours. pi-pool writes
+ * UTC with no offset ("2026-10-16T05:02:50") since 10-27, and the writer's local time before.
+ */
 export function hourOf(ts: unknown): number | null {
   const m = typeof ts === "string" ? /^(\d{4})-(\d\d)-(\d\d)T(\d\d):\d\d:\d\d$/.exec(ts) : null;
   if (!m) return null;
-  const at = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4])).getTime();
+  const at = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]));
   return Number.isFinite(at) ? at : null;
 }
 
@@ -47,28 +50,20 @@ function median(values: number[]): number | null {
 
 /** The hours from the first one with a line, at most HISTORY_HOURS back, to the hour `now` is in, with empty hours as zero. */
 export function hours(buckets: Map<number, Bucket>, now: number): TurnHour[] {
-  const last = hourOf(localTs(now));
+  const last = hourOf(utcTs(now));
   if (last === null) return [];
   const floor = last - (HISTORY_HOURS - 1) * HOUR_MS;
   const kept = [...buckets.keys()].filter(at => at >= floor && at <= last);
   if (!kept.length) return [];
   const out: TurnHour[] = [];
-  for (let at = Math.min(...kept); at <= last; at = nextHour(at)) {
+  for (let at = Math.min(...kept); at <= last; at += HOUR_MS) {
     const bucket = buckets.get(at);
     out.push({ at, finished: bucket?.finished ?? 0, medianWaitS: bucket ? median(bucket.waits) : null });
   }
   return out;
 }
-/** The next local hour start; across a clock change an hour can be 23 or 25 hours into a day, so step through the local clock. */
-const nextHour = (at: number): number => {
-  const date = new Date(at);
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate(), date.getHours() + 1).getTime();
-};
-const pad = (value: number): string => String(value).padStart(2, "0");
-function localTs(at: number): string {
-  const d = new Date(at);
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
-}
+/** `at` stamped as pi-pool stamps `ts`. */
+const utcTs = (at: number): string => new Date(at).toISOString().slice(0, 19);
 
 /**
  * Reads pi-pool.log by hour for the Agent queue chart. The first read scans the whole file (19 MB on 10-16, about 0.2 s); each later read
@@ -102,7 +97,7 @@ export function turnHistory(path = POOL_LOG): (now?: number) => Promise<TurnHour
   return async (now = Date.now()) => {
     reading ??= catchUp().finally(() => { reading = null; });
     try { await reading; } catch { return []; }
-    const floor = (hourOf(localTs(now)) ?? now) - HISTORY_HOURS * HOUR_MS;
+    const floor = (hourOf(utcTs(now)) ?? now) - HISTORY_HOURS * HOUR_MS;
     for (const at of buckets.keys()) if (at < floor) buckets.delete(at);
     return hours(buckets, now);
   };

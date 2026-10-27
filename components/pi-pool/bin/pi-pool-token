@@ -58,7 +58,7 @@ def pool_log(event, **fields):
     folder = os.environ.get("PI_POOL_DIR") or os.path.join(os.path.expanduser("~"), ".config", "pi-pool")
     try:
         with open(os.path.join(folder, "pi-pool.log"), "a") as f:
-            f.write(json.dumps({"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "event": event, **fields}) + "\n")
+            f.write(json.dumps({"ts": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()), "event": event, **fields}) + "\n")
     except Exception:
         pass
 

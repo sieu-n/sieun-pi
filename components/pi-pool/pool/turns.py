@@ -8,7 +8,7 @@ account state.json and its lock:
     queued   {session: {tree, since, asked?, pid, waiter?}}
     owner    {session: epoch sec of the owner-turn mark}
     lead     [session], the sessions whose queued runs go first (`lead`)
-    kept     {session: {since, slot_at}}, the place of a run let go on an account wait
+    kept     {session: {since, slot_at}}, the place of a run let go on an account wait or with input queued
 
 A queued run's `since` is its place in line and `asked` when it asked, which differ only
 for a run that keeps its place. A run released while its tree waits for an account
@@ -20,6 +20,12 @@ claude8 cells came at 11:30Z then queued about 90 min with working_max at 6. A r
 10-22 00:00Z to 08:14Z (~/work/pool-smooth/reask_replay.py) cut those returns' p90 queue
 wait from 1,154 s to 60 s and all job queue minutes by 11%. The place is kept until
 PLACE_KEEP_SEC after the slot, as long as the tree keeps its place in the account wait.
+
+A run released with input already queued in Prime (`release --queued-input`) keeps its
+place the same way, until PLACE_KEEP_SEC after its release: a steer ends the running run
+after its model step, and the session's next run starts at once to read it. On 10-22 the
+metal box owner 01a11d24 got 3 runs from 09:57Z to 13:34Z, each after a wait of 2,802 s to
+5,799 s at the back of the line, and each held its slot for under 70 s.
 
 Waiting runs of the `lead` sessions start first, then every other run, each in the order
 they asked, while the machine has fewer than working_max
@@ -366,31 +372,37 @@ def wait(session, pid, last):
             last = answer
 
 
-def leave(turns, session, now, cfg, reason=None, slot_of=waiting_slot):
+def leave(turns, session, now, cfg, reason=None, slot_of=waiting_slot, queued_input=False):
     """Free `session`'s slot or drop its queue entry, then start what fits. A run let go while its tree
-    waits for an account leaves its place in `kept` for the session's next run. Returns (changed, answer, events)."""
+    waits for an account, or with input queued for the session's next run, leaves its place in `kept`
+    for that next run. Returns (changed, answer, events)."""
     working = turns["working"].pop(session, None)
     queued = turns["queued"].pop(session, None)
     slot_at = slot_of(working["tree"]) if working else None
-    if slot_at is not None:
-        turns["kept"][session] = {"since": working.get("place", working["queued_since"]), "slot_at": slot_at}
+    keep_at = slot_at if slot_at is not None else now if working and queued_input else None
+    if keep_at is not None:
+        turns["kept"][session] = {"since": working.get("place", working["queued_since"]), "slot_at": keep_at}
     changed, events = step(turns, now, cfg)
     if working:
         events = [("turn_released", {"session": session, "kind": working["kind"], "held_s": round(now - working["since"], 1),
-                                     **({"account_wait": True} if slot_at is not None else {})})] + events
+                                     **({"account_wait": True} if slot_at is not None else {}),
+                                     **({"queued_input": True} if queued_input else {})})] + events
     elif queued:
         events = [("turn_dropped", {"session": session, "waited_s": round(now - asked(queued), 1), "reason": reason})] + events
     return bool(working or queued or changed), {"released": bool(working or queued)}, events
 
 
-def release(session, reason=None):
-    return locked(lambda turns, now: leave(turns, session, now, base.config(), reason))
+def release(session, reason=None, queued_input=False):
+    return locked(lambda turns, now: leave(turns, session, now, base.config(), reason, queued_input=queued_input))
 
 
 def cmd_release(rest):
-    if len(rest) != 1 or rest[0].startswith("--"):
-        raise SystemExit("usage: pi-pool release <session>")
-    emit(release(rest[0], reason="release"))
+    """`release <session> [--queued-input]`: the extension adds --queued-input at an agent_end with input queued in Prime."""
+    flags = [tok for tok in rest if tok.startswith("--")]
+    sessions = [tok for tok in rest if not tok.startswith("--")]
+    if len(sessions) != 1 or any(tok != "--queued-input" for tok in flags):
+        raise SystemExit("usage: pi-pool release <session> [--queued-input]")
+    emit(release(sessions[0], reason="release", queued_input=bool(flags)))
     return 0
 
 

@@ -112,9 +112,12 @@ DEFAULTS = {
 
 
 def log(event, **kw):
+    """One pi-pool.log line. `ts` is UTC with no suffix in every process. Until 10-27 it was the writer's local time, and on
+    us-metal02 4,081 of the 247,101 lines from 10-22 15:23Z to 10-27 01:20Z were KST, mostly the chat service's `priority`,
+    `turn_lead_set` and `owner-turn` calls and the token hook's `parked`, `wait` and `hook_no_token` lines."""
     try:
         with open(LOG, "a") as f:
-            f.write(json.dumps({"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "event": event, **kw}) + "\n")
+            f.write(json.dumps({"ts": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()), "event": event, **kw}) + "\n")
     except Exception:
         pass
 

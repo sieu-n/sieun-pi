@@ -13,7 +13,8 @@ splits each call's cache write into two parts:
   a compaction, a model change, a pi-pool account switch for the session between the two calls, or an unexplained prefix change.
 
 `calls` runs on each box, since its transcripts stay there. `rank` joins the rows with the pi-pool log on the box whose pool vends the
-tokens (us-metal02 serves the Mac too), whose timestamps are naive local time, hence --pool-utc-offset-h.
+tokens (us-metal02 serves the Mac too), whose timestamps are naive UTC since 10-27 and the writer's local time before, hence
+--pool-utc-offset-h for an older log.
 """
 from __future__ import annotations
 

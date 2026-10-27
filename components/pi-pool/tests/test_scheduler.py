@@ -926,8 +926,8 @@ class SwitchLog(unittest.TestCase):
         self.assertEqual((out, [kw["account"] for e, kw in logged if e == "unparked"]), ("fixture-token", ["a@x"]))
 
     def test_switches_today_counts_switch_lines_per_provider(self):
-        day = time.strftime("%Y-%m-%d", time.localtime(NOW))
-        before = time.strftime("%Y-%m-%d", time.localtime(NOW - 86400))
+        day = time.strftime("%Y-%m-%d", time.gmtime(NOW))
+        before = time.strftime("%Y-%m-%d", time.gmtime(NOW - 86400))
         lines = [{"ts": f"{before}T23:00:00", "event": "switch", "provider": P, "session": "s0"},
                  {"ts": f"{day}T01:00:00", "event": "switch", "provider": P, "session": "s1"},
                  {"ts": f"{day}T02:00:00", "event": "vend", "provider": P, "session": "s1"},

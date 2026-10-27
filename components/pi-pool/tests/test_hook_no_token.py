@@ -1,4 +1,4 @@
-import json, os, shutil, signal, subprocess, sys, tempfile, time, unittest
+import calendar, json, os, shutil, signal, subprocess, sys, tempfile, time, unittest
 
 from fixture_isolation import isolate_test_module
 from fixture_slot_wait import make_waiting_pool
@@ -41,6 +41,19 @@ class HookNoToken(unittest.TestCase):
 
     def test_an_empty_store_in_a_temp_home_logs_why_no_token_came(self):
         self.assertEqual(self.run_hook({"version": 1, "accounts": []}), "no_account")
+
+    def test_the_hook_writes_utc_in_a_process_that_runs_on_kst(self):
+        home = tempfile.mkdtemp(prefix="pi-pool-kst-home-")
+        self.addCleanup(shutil.rmtree, home, True)
+        pool = os.path.join(home, ".config", "pi-pool")
+        os.makedirs(os.path.join(pool, "accounts"))
+        env = dict(os.environ, HOME=home, PI_POOL_DIR=pool, PI_POOL_SECRETS="file", TZ="Asia/Seoul",
+                   PRIME_AGENT_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID="fixture-kst")
+        subprocess.run([sys.executable, "-B", HOOK], env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
+        stamps = [e["ts"] for e in events(pool)]
+        self.assertTrue(stamps)
+        for ts in stamps:
+            self.assertLess(abs(calendar.timegm(time.strptime(ts, "%Y-%m-%dT%H:%M:%S")) - time.time()), 120, ts)
 
     def test_no_store_yet_is_an_empty_pool(self):
         self.assertEqual(self.run_hook(None), "no_account")

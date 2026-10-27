@@ -268,9 +268,9 @@ def card_order(a, ctx):
 
 
 def switches_today(provider, now):
-    """(switches, sessions that switched) in today's log, local time. Scans
+    """(switches, sessions that switched) in today's log, by the UTC day that `ts` is written in. Scans
     backward and stops at the first line from an earlier day."""
-    day = time.strftime("%Y-%m-%d", time.localtime(now))
+    day = time.strftime("%Y-%m-%d", time.gmtime(now))
     moves, sessions = 0, set()
     try:
         with open(base.LOG) as f:

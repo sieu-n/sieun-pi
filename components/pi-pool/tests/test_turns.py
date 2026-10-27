@@ -245,6 +245,53 @@ class AccountWaitPlace(unittest.TestCase):
             self.assertEqual((turns.waiting_slot("D"), turns.waiting_slot("E")), (500.0, None))
 
 
+class QueuedInputPlace(unittest.TestCase):
+    """10-22: the metal box owner 01a11d24 got 3 runs from 09:57Z to 13:34Z, each after a wait of 2,802 s to 5,799 s
+    at the back of the line, and each held its slot for under 70 s, because a steer ends the running run after its
+    model step and the session's next run asked again as a new run."""
+    CFG = dict(base.DEFAULTS, working_max=1)
+    OWNER = "01a11d24-ac9b-757d-ac51-9b2b7598782f"
+
+    def test_a_run_released_with_queued_input_keeps_its_place_for_the_next_run(self):
+        t = turns.empty()
+        turns.ask(t, ask_args(self.OWNER, tree=self.OWNER), 0, self.CFG)
+        turns.ask(t, ask_args("job1", tree="j1"), 10, self.CFG)
+        changed, answer, events = turns.leave(t, self.OWNER, 19, self.CFG, slot_of=lambda tree: None, queued_input=True)
+        self.assertEqual(events[0], ("turn_released", {"session": self.OWNER, "kind": "slot", "held_s": 19.0, "queued_input": True}))
+        self.assertEqual([f["session"] for e, f in events if e == "turn_admitted"], ["job1"], "the freed slot goes to the head of the line")
+        turns.ask(t, ask_args("job2", tree="j2"), 19.5, self.CFG)
+        changed, answer, events = turns.ask(t, ask_args(self.OWNER, tree=self.OWNER), 20, self.CFG)
+        self.assertEqual((answer["position"], answer["total"]), (1, 2))
+        self.assertEqual(turns.order(t), [self.OWNER, "job2"])
+        changed, answer, events = turns.leave(t, "job1", 80, self.CFG, slot_of=lambda tree: None)
+        self.assertEqual([f for e, f in events if e == "turn_admitted"], [{"session": self.OWNER, "tree": self.OWNER, "kind": "slot", "waited_s": 60.0}])
+
+    def test_a_chain_of_cut_runs_keeps_the_first_place(self):
+        t = turns.empty()
+        turns.ask(t, ask_args("first", tree="F"), 0, self.CFG)
+        turns.leave(t, "first", 1, self.CFG, slot_of=lambda tree: None, queued_input=True)
+        turns.ask(t, ask_args("first", tree="F"), 2, self.CFG)
+        turns.leave(t, "first", 3, self.CFG, slot_of=lambda tree: None, queued_input=True)
+        self.assertEqual(t["kept"]["first"], {"since": 0, "slot_at": 3})
+
+    def test_a_run_released_with_nothing_queued_asks_at_the_back(self):
+        t = turns.empty()
+        turns.ask(t, ask_args("done", tree="D"), 0, self.CFG)
+        turns.ask(t, ask_args("job", tree="j"), 1, self.CFG)
+        changed, answer, events = turns.leave(t, "done", 5, self.CFG, slot_of=lambda tree: None)
+        self.assertNotIn("queued_input", events[0][1])
+        turns.ask(t, ask_args("late", tree="l"), 6, self.CFG)
+        turns.ask(t, ask_args("done", tree="D"), 7, self.CFG)
+        self.assertEqual(turns.order(t), ["late", "done"])
+
+    def test_queued_input_on_a_run_that_only_queued_keeps_nothing(self):
+        t = turns.empty()
+        fill(t, 1)
+        turns.ask(t, ask_args("waiting", tree="W"), 0, self.CFG)
+        turns.leave(t, "waiting", 5, self.CFG, slot_of=lambda tree: None, queued_input=True)
+        self.assertEqual(t["kept"], {})
+
+
 def kst(clock):
     """Epoch seconds of 10-14 `clock` KST."""
     return calendar.timegm(time.strptime(f"2026-10-14 {clock}", "%Y-%m-%d %H:%M:%S")) - 9 * 3600
@@ -340,6 +387,29 @@ class Cli(unittest.TestCase):
         self.assertEqual(json.loads(self.run_cli("release", "a").stdout), {"released": True})
         self.assertEqual(json.loads(self.run_cli("release", "a").stdout), {"released": False}, "release is idempotent")
         self.assertEqual([w["session"] for w in self.queue()["working"]], ["b", "c"], "the release admitted c")
+
+    def test_release_with_queued_input_keeps_the_place_and_logs_it(self):
+        self.admit("a", "--tree", "A")
+        self.admit("b", "--tree", "B")
+        self.admit("c", "--tree", "C")
+        self.assertEqual(json.loads(self.run_cli("release", "a", "--queued-input").stdout), {"released": True})
+        self.admit("d", "--tree", "D")
+        self.assertEqual(self.admit("a", "--tree", "A")["position"], 1, "a asks ahead of d, which asked first")
+        with open(os.path.join(self.dir, "pi-pool.log")) as f:
+            released = [json.loads(line) for line in f if '"turn_released"' in line]
+        self.assertEqual([(e["session"], e.get("queued_input")) for e in released], [("a", True)])
+        self.assertNotEqual(self.run_cli("release", "a", "--keep", check=False).returncode, 0, "an unknown flag is refused")
+
+    def test_log_lines_carry_utc_in_a_process_that_runs_on_kst(self):
+        """Until 10-27 `ts` was the writer's local time, and on us-metal02 the KST writers' lines read 9 h ahead of the rest."""
+        self.env["TZ"] = "Asia/Seoul"
+        self.admit("a", "--tree", "A")
+        self.run_cli("release", "a")
+        with open(os.path.join(self.dir, "pi-pool.log")) as f:
+            stamps = [json.loads(line)["ts"] for line in f]
+        self.assertTrue(stamps)
+        for ts in stamps:
+            self.assertLess(abs(calendar.timegm(time.strptime(ts, "%Y-%m-%dT%H:%M:%S")) - time.time()), 120, ts)
 
     def test_lead_replaces_the_list_and_the_same_list_writes_nothing(self):
         for s in "ab":

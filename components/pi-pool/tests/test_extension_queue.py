@@ -92,6 +92,33 @@ class Wiring(unittest.TestCase):
         self.assertEqual([w["session"] for w in run["queues"]["running"]["working"]], ["job"])
         self.assertEqual(run["queues"]["ended"]["working"], [], "agent_end released the slot")
 
+    def test_a_run_that_ends_with_input_queued_keeps_its_place_for_the_next_run(self):
+        """10-22: the metal box owner 01a11d24 got 3 runs from 09:57Z to 13:34Z, each after a wait of 2,802 s to
+        5,799 s at the back of the line, because a steer ends the run after its model step and the next run asked anew."""
+        self.cli("release", "blocker")
+        run = self.drive({"op": "start", "name": "chat"}, {"op": "context", "name": "chat"},
+                         {"op": "wait", "name": "chat", "ms": 5000, "label": "first"},
+                         {"op": "cli", "args": ["admit", "other", "--tree", "O", "--pid", str(os.getpid())]},
+                         {"op": "end", "name": "chat", "queued": True},
+                         {"op": "cli", "args": ["admit", "late", "--tree", "L", "--pid", str(os.getpid())]},
+                         {"op": "context", "name": "chat"}, {"op": "wait", "name": "chat", "ms": 2500, "label": "next"},
+                         {"op": "queue", "label": "q"})
+        self.assertIsNotNone(run["context"]["first"])
+        self.assertIsNone(run["context"]["next"], "other took the slot the run let go")
+        self.assertEqual([w["session"] for w in run["queues"]["q"]["working"]], ["other"])
+        self.assertEqual([q["session"] for q in run["queues"]["q"]["queued"]], ["chat", "late"])
+
+    def test_a_run_that_ends_with_nothing_queued_asks_at_the_back(self):
+        self.cli("release", "blocker")
+        run = self.drive({"op": "start", "name": "chat"}, {"op": "context", "name": "chat"},
+                         {"op": "wait", "name": "chat", "ms": 5000, "label": "first"},
+                         {"op": "cli", "args": ["admit", "other", "--tree", "O", "--pid", str(os.getpid())]},
+                         {"op": "end", "name": "chat"},
+                         {"op": "cli", "args": ["admit", "late", "--tree", "L", "--pid", str(os.getpid())]},
+                         {"op": "context", "name": "chat"}, {"op": "wait", "name": "chat", "ms": 2500, "label": "next"},
+                         {"op": "queue", "label": "q"})
+        self.assertEqual([q["session"] for q in run["queues"]["q"]["queued"]], ["late", "chat"])
+
     def test_a_queued_run_shows_its_place_as_a_wait_until_it_is_admitted(self):
         """On 10-22 a chat stopped a queued child that Prime listed as a model stream, and the child went to the
         back of a queue of 179. The wait label lets Prime list the run as waiting with its place."""

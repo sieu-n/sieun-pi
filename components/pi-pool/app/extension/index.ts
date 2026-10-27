@@ -475,6 +475,20 @@ function showWait(ctx: ExtensionContext, label: string | undefined): void {
 	if (typeof api.setWaiting === "function") api.setWaiting(label);
 }
 
+/**
+ * Whether Prime holds input that starts the session's next run as soon as this one ends. A steer that arrives during a run
+ * ends it after its model step, so a run cut that way ends with the steer still queued. On 10-22 the metal box owner
+ * 01a11d24 got 3 runs from 09:57Z to 13:34Z, each after a wait of 2,802 s to 5,799 s at the back of the line, and each
+ * held its slot for under 70 s.
+ */
+function inputQueued(ctx: ExtensionContext): boolean {
+	try {
+		return ctx.hasPendingMessages();
+	} catch {
+		return false;
+	}
+}
+
 function admitWait(sid: string, signal: AbortSignal | undefined, onQueued: (reply: AdmitReply) => void): AdmitWait {
 	let cancel = () => {};
 	const result = new Promise<AdmitReply | "stopped" | "failed">((resolve) => {
@@ -597,13 +611,17 @@ export default function (pi: ExtensionAPI): void {
 	let cancelWait = () => {};
 	let renewTimer: ReturnType<typeof setInterval> | undefined;
 	let renewedAt = 0;
-	const dropSlot = async (sid: string | undefined): Promise<void> => {
+	// `next` says the session's next run starts at once, so the pool keeps this run's place in line for it. A pool CLI
+	// from before --queued-input refuses the flag, and the plain release after it still frees the slot.
+	const dropSlot = async (sid: string | undefined, next = false): Promise<void> => {
 		const owes = slot === "held" || slot === "failed";
 		if (typeof slot === "object") cancelWait();
 		slot = "none";
 		if (renewTimer) clearInterval(renewTimer);
 		renewTimer = undefined;
-		if (owes && sid) await pool(["release", sid]);
+		if (!owes || !sid) return;
+		if (next && (await pool(["release", sid, "--queued-input"])).ok) return;
+		await pool(["release", sid]);
 	};
 	const holdSlot = async (ctx: ExtensionContext): Promise<void> => {
 		if (slot === "free" || slot === "failed") return;
@@ -667,7 +685,7 @@ export default function (pi: ExtensionAPI): void {
 		await holdSlot(ctx);
 		return undefined;
 	});
-	pi.on("agent_end", async (_event, ctx) => dropSlot(sessionId(ctx)));
+	pi.on("agent_end", async (_event, ctx) => dropSlot(sessionId(ctx), inputQueued(ctx)));
 	pi.on("session_shutdown", async (_event, ctx) => {
 		clearTimers();
 		const sid = sessionId(ctx);
