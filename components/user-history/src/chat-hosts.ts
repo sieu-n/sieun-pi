@@ -1,7 +1,7 @@
 import { readFile, rename, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { machineView, type HostStats, type MachineView } from "../../prime-relay/host-stats.ts";
-import { agentCounts, type AgentCounts } from "./agent-states.ts";
+import { type AgentCounts, hostCounts } from "./agent-states.ts";
 import { parseAgentQueue } from "./chat-pool.ts";
 import { queueRows } from "./chat-agent-queue.ts";
 import { hostHealth, hostToken, loadHosts, relayLead, selfHost, type Host, type HostsRegistry } from "./hosts.ts";
@@ -125,6 +125,8 @@ export interface HostsOptions {
   rows: (host: string | null) => readonly unknown[];
   /** This box's hung tool calls' sessions (src/hung-calls.ts), counted as hung instead of working; absent, none. */
   hung?: () => ReadonlySet<string>;
+  /** Whether this box's daemon link is up now (chat-catalog.ts `reachable`); absent, it reads up. */
+  selfDaemon?: () => boolean;
   load?: () => Promise<HostsRegistry>;
   selfMachine?: () => Promise<MachineView>;
   remote?: (host: Host) => Promise<HostStats>;
@@ -135,16 +137,18 @@ export const thisBox = (): string => hostname().split(".")[0]!.toLowerCase();
 
 /** Settings > Hosts and the New chat host picker: every box in hosts.json, this one first, each read once per call. */
 export function hostsView(options: HostsOptions): () => Promise<HostsView> {
-  const { selfQueue, title, picks, rows, load = loadHosts, selfMachine = machineView, remote = relayStats, hung } = options;
-  const sessions = (host: string | null): AgentCounts | null => {
+  const { selfQueue, title, picks, rows, load = loadHosts, selfMachine = machineView, remote = relayStats, hung, selfDaemon } = options;
+  /** A box's counts from its rows with its turn queue as a floor (agent-states.ts `hostCounts`); null before the first list. */
+  const sessions = (host: string | null, queue: AgentQueuePool): AgentCounts | null => {
     const listed = rows(host);
-    return listed.length ? agentCounts(listed, host === null ? hung?.() : undefined) : null;
+    const pool = queue.state === "read" ? { working: queue.working.length, queued: queue.queued.length } : null;
+    return listed.length ? hostCounts(listed, pool, host === null ? hung?.() : undefined) : null;
   };
 
   async function selfCard(host: Host | null): Promise<HostCard> {
     const [machine, queue] = await Promise.all([selfMachine(), selfQueue()]);
-    return { name: host?.name ?? thisBox(), address: host?.address ?? "127.0.0.1", roles: host ? roleList(host) : [], self: true, state: "up", daemon: "answering", pingMs: null, machine, queue,
-      sessions: sessions(null) };
+    return { name: host?.name ?? thisBox(), address: host?.address ?? "127.0.0.1", roles: host ? roleList(host) : [], self: true, state: "up",
+      daemon: selfDaemon?.() === false ? "down" : "answering", pingMs: null, machine, queue, sessions: sessions(null, queue) };
   }
 
   async function remoteCard(host: Host): Promise<HostCard> {
@@ -152,8 +156,9 @@ export function hostsView(options: HostsOptions): () => Promise<HostsView> {
     const started = Date.now();
     try {
       const [stats, health] = await Promise.all([remote(host), hostHealth(host)]);
-      return { ...base, state: "up", daemon: health.ok ? health.daemon : "down", pingMs: Date.now() - started, machine: parseMachine(stats.machine), queue: parsePool(stats.pool, title),
-        sessions: sessions(host.name) };
+      const queue = parsePool(stats.pool, title);
+      return { ...base, state: "up", daemon: health.ok ? health.daemon : "down", pingMs: Date.now() - started, machine: parseMachine(stats.machine), queue,
+        sessions: sessions(host.name, queue) };
     } catch (error) { return { ...base, state: "unreachable", pingMs: Date.now() - started, error: message(error) }; }
   }
 

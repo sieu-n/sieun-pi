@@ -128,13 +128,14 @@ const leads = (shares: ReadonlyMap<MemoryGroupId, number>): boolean => {
  * harness's when a CPU miss came with the harness's cgroups using the most cores (host-stats.ts `cpuSides`). A reading with nothing to
  * compare is unknown, never the apps': a Mac line with no groups, a Linux line from before cpuCores, or a Linux memory-only miss. d7 at 06:21Z
  * on 10-18 put all 11 CPU minutes on us-metal02 on the app and owner side, since Linux readings never carry the Mac's memory groups. A Linux
- * memory stall (`MEMORY_STALL_PCT`) goes to the group that held the most memory (AgentLine `largest`), whoever used the most cores.
+ * memory stall (`MEMORY_STALL_PCT`) goes to the group that held the most memory (AgentLine `largest`), whoever used the most cores, and Jobs'
+ * servers, builds and tests count as the harness's there as their CPU does (host-stats.ts `cpuSides`).
  */
 export function minuteSide(view: HostView, previous?: { view: HostView; gapMs: number }): MinuteSide {
   const usable = view.usable;
   if (usable && isLinuxReading(usable)) {
     const largest = view.agents?.largest;
-    if (memoryStalled(usable) && largest) return largest === "agents" || largest === "services" ? "harness" : "other";
+    if (memoryStalled(usable) && largest) return largest === "agents" || largest === "services" || largest === "jobs" ? "harness" : "other";
     if (!usable.cpuCores || !unusable(usable).includes("cpu")) return "unknown";
     const { harness, ...rest } = usable.cpuCores;
     return harness > 0 && Object.values(rest).every(cores => cores <= harness) ? "harness" : "other";
@@ -1352,7 +1353,7 @@ export function measure(input: Inputs): PrecheckOutput {
   for (const [name, reading] of worstByHost) {
     const key = name.replace(/[^A-Za-z0-9]+/g, "_");
     metrics[`quiet_agent_gb_${key}`] = reading.gb;
-    // The agent services in the same minute, a line of their own beside the quiet number, which leaves them out (host-stats.ts CGROUP_RULES).
+    // The agent services in the same minute, a line of their own beside the quiet number, which leaves them out (host-stats.ts `leafHolder`).
     const services = reading.whole?.agents.servicesGb;
     if (services !== undefined) metrics[`quiet_services_gb_${key}`] = services;
   }

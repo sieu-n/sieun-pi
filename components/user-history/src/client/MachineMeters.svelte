@@ -6,7 +6,14 @@
 
   const gb = (bytes: number) => (bytes / 1024 ** 3).toFixed(1);
   const memPercent = $derived((100 * machine.memory.usedBytes) / machine.memory.totalBytes);
-  const groupTotal = $derived(machine.memory.groups?.reduce((sum, group) => sum + group.bytes, 0) ?? 0);
+  /** What a group or holder has in RAM: on Linux its bytes less its part in swap, so the groups add up to the used memory above them. */
+  const ramOf = (item: { bytes: number; swapBytes?: number }) => item.bytes - (item.swapBytes ?? 0);
+  const groupTotal = $derived(machine.memory.groups?.reduce((sum, group) => sum + ramOf(group), 0) ?? 0);
+  const groupSwap = $derived(machine.memory.groups?.reduce((sum, group) => sum + (group.swapBytes ?? 0), 0) ?? 0);
+  const coreText = (cores: number) => `${cores.toFixed(1)} cores`;
+  /** The busy cores the CPU groups add up to, the card's percent of all cores (prime-relay cpu-groups.ts). */
+  const busyCores = $derived(machine.cpu.groups?.reduce((sum, group) => sum + group.cores, 0) ?? 0);
+  const busyShare = (cores: number) => (busyCores ? (100 * cores) / busyCores : 0);
   const PRESSURE_TEXT: Record<MemoryPressure, string> = {
     normal: "Memory pressure is normal.",
     warn: "Memory pressure is high, so the box is reclaiming and swapping.",
@@ -35,6 +42,26 @@
     {/if}
   </svg>
 </div>
+{#if machine.cpu.groups?.length}
+  <div class="groups cpu" aria-label="CPU by group">
+    {#each machine.cpu.groups as group (group.id)}
+      <details class="group">
+        <summary>
+          <span class="group-name">{group.label}</span>
+          <span class="group-size">{coreText(group.cores)}</span>
+          <span class="share" role="meter" aria-label="{group.label} CPU share" aria-valuemin="0" aria-valuemax="100" aria-valuenow={Math.round(busyShare(group.cores))}>
+            <span style:width="{busyShare(group.cores)}%"></span>
+          </span>
+        </summary>
+        <ul>
+          {#each group.top as item (item.label)}<li><span class="item-name" title={item.label}>{item.label}</span><span class="group-size">{coreText(item.cores)}</span></li>
+          {:else}<li class="none">Nothing busy</li>{/each}
+        </ul>
+      </details>
+    {/each}
+    <p class="note">The groups add up to the {busyCores.toFixed(1)} busy cores behind the {Math.round(machine.cpu.percent)}% above, and Kernel and interrupts under System is the time no cgroup holds.</p>
+  </div>
+{/if}
 
 <div class="metric">
   <span class="name">Memory</span>
@@ -55,15 +82,15 @@
       <details class="group">
         <summary>
           <span class="group-name">{group.label}</span>
-          <span class="group-size">{gb(group.bytes)} GB</span>
-          <span class="share" role="meter" aria-label="{group.label} share" aria-valuemin="0" aria-valuemax="100" aria-valuenow={groupTotal ? Math.round((100 * group.bytes) / groupTotal) : 0}>
-            <span style:width="{groupTotal ? (100 * group.bytes) / groupTotal : 0}%"></span>
+          <span class="group-size">{gb(ramOf(group))} GB</span>
+          <span class="share" role="meter" aria-label="{group.label} share" aria-valuemin="0" aria-valuemax="100" aria-valuenow={groupTotal ? Math.round((100 * ramOf(group)) / groupTotal) : 0}>
+            <span style:width="{groupTotal ? (100 * ramOf(group)) / groupTotal : 0}%"></span>
           </span>
         </summary>
         <ul>
-          {#each group.top as item (item.label)}<li><span class="item-name" title={item.label}>{item.label}</span><span class="group-size">{gb(item.bytes)} GB</span></li>
+          {#each group.top as item (item.label)}<li><span class="item-name" title={item.label}>{item.label}</span><span class="group-size">{gb(ramOf(item))} GB</span></li>
           {:else}<li class="none">Nothing running</li>{/each}
-          {#if group.swapBytes}<li class="none">{gb(group.swapBytes)} GB of it sits in swap.</li>{/if}
+          {#if group.swapBytes}<li class="none">{gb(group.swapBytes)} GB more of it sits in swap.</li>{/if}
         </ul>
       </details>
     {/each}
@@ -77,7 +104,7 @@
     {#if machine.platform === "darwin"}
       <p class="note">The groups add up to {gb(groupTotal)} GB of memory footprint, the number Activity Monitor shows. It can pass the {gb(machine.memory.usedBytes)} GB in RAM, because footprint also counts{machine.memory.swapUsedBytes ? ` the ${gb(machine.memory.swapUsedBytes)} GB in swap and` : ""} compressed pages at full size.</p>
     {:else}
-      <p class="note">The groups add up to {gb(groupTotal)} GB that the box cannot take back: process memory and tmpfs files, in RAM or in swap{machine.memory.swapUsedBytes ? `, where ${gb(machine.memory.swapUsedBytes)} GB sits` : ""}. File cache is left out of them.</p>
+      <p class="note">The groups add up to {gb(groupTotal)} GB in RAM against the {gb(machine.memory.usedBytes)} GB used: process memory, tmpfs files and the kernel's own share under System, with the free memory the kernel keeps in reserve.{groupSwap ? ` ${gb(groupSwap)} GB more of theirs sits in swap.` : ""} File cache is left out of them, since the box takes it back.</p>
     {/if}
   </div>
 {/if}
@@ -115,4 +142,5 @@
   .cache { display: grid; grid-template-columns: minmax(0, 1fr) 64px minmax(140px, 220px); align-items: center; gap: 16px; padding: 2px 0; font-size: 12px; color: var(--text-muted); }
   .share.thin { height: 2px; }
   .groups .note { margin-top: 6px; font-size: 12px; }
+  .groups.cpu .group summary, .groups.cpu .group li { grid-template-columns: minmax(0, 1fr) 80px minmax(140px, 220px); }
 </style>

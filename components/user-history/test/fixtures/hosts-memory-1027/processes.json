@@ -1,0 +1,1521 @@
+[
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.local/bin/prime-agent --mode daemon --daemon-socket /tmp/prime-agent-1001/daemon.sock",
+"rssAnonKb": 515008,
+"vmSwapKb": 3340
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.local/share/prime-agent/releases/0.9.8-daemon-fix.1-mem.4.2-s3int.9-crc.2-test.bun.1-linux-x64-9a6fa8b0910f7055c44ee34f1164d0f7d8c1d8510ad986e2a4f1d7f6ad05a470/prime-agent --version",
+"rssAnonKb": 304156,
+"vmSwapKb": 17984
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.local/share/prime-agent/releases/0.9.8-daemon-fix.1-mem.4.2-s3int.9-crc.2-test.bun.1-linux-x64-9a6fa8b0910f7055c44ee34f1164d0f7d8c1d8510ad986e2a4f1d7f6ad05a470/prime-agent --mode daemon -",
+"rssAnonKb": 385412,
+"vmSwapKb": 68008
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a16c82-e820-7559-8c9f-07334ee7a116",
+"rssAnonKb": 13980,
+"vmSwapKb": 78796
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.local/share/prime-agent/releases/0.9.8-daemon-fix.1-mem.4.2-s3int.9-crc.2-test.bun.1-linux-x64-9a6fa8b0910f7055c44ee34f1164d0f7d8c1d8510ad986e2a4f1d7f6ad05a470/prime-agent --mode daemon -",
+"rssAnonKb": 557896,
+"vmSwapKb": 101600
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.local/share/prime-agent/releases/0.9.8-daemon-fix.1-mem.4.2-s3int.9-crc.2-test.bun.1-linux-x64-9a6fa8b0910f7055c44ee34f1164d0f7d8c1d8510ad986e2a4f1d7f6ad05a470/prime-agent --mode daemon -",
+"rssAnonKb": 675292,
+"vmSwapKb": 111356
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.local/share/prime-agent/releases/0.9.8-daemon-fix.1-mem.4.2-s3int.9-crc.2-test.bun.1-linux-x64-9a6fa8b0910f7055c44ee34f1164d0f7d8c1d8510ad986e2a4f1d7f6ad05a470/prime-agent --mode daemon -",
+"rssAnonKb": 691644,
+"vmSwapKb": 60032
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a14210-4e7d-72c3-aa67-e3d476f4e728",
+"rssAnonKb": 34028,
+"vmSwapKb": 16808
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.local/share/prime-agent/releases/0.9.8-daemon-fix.1-mem.4.2-s3int.9-crc.2-test.bun.1-linux-x64-9a6fa8b0910f7055c44ee34f1164d0f7d8c1d8510ad986e2a4f1d7f6ad05a470/prime-agent --mode daemon -",
+"rssAnonKb": 591248,
+"vmSwapKb": 46488
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "node /home/sieun/src/sieun-pi/components/global-rules/send-check.ts --serve-socket /tmp/global-rules-1001/judge-e96773b5ecc8659dac64.sock",
+"rssAnonKb": 21704,
+"vmSwapKb": 5800
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a16c82-e820-7559-8c9f-07334ee7a116/sub-30487ddd",
+"rssAnonKb": 24664,
+"vmSwapKb": 50728
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a1164b-4a2d-742d-b27a-82f086ed0200/sub-24027b04",
+"rssAnonKb": 72460,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a14210-4e7d-72c3-aa67-e3d476f4e728/sub-9555e737",
+"rssAnonKb": 29736,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.local/share/prime-agent/releases/0.9.8-daemon-fix.1-mem.4.2-s3int.9-crc.2-test.bun.1-linux-x64-9a6fa8b0910f7055c44ee34f1164d0f7d8c1d8510ad986e2a4f1d7f6ad05a470/prime-agent --mode daemon -",
+"rssAnonKb": 738240,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a1164b-4a2d-742d-b27a-82f086ed0200/sub-9e1d3339",
+"rssAnonKb": 43364,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a14dd5-e9d3-705d-bd63-245c21b2eee2/sub-32b138f3",
+"rssAnonKb": 23240,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a14210-4e7d-72c3-aa67-e3d476f4e728/sub-9555e737/sub-3639cadb",
+"rssAnonKb": 36384,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a115e2-9544-7204-b8db-8ce4d5319048/sub-bbc3e607",
+"rssAnonKb": 23816,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a14dd5-e9d3-705d-bd63-245c21b2eee2/sub-32b138f3/sub-398320db",
+"rssAnonKb": 55064,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a16c82-e820-7559-8c9f-07334ee7a116/sub-30487ddd/sub-169ba4df",
+"rssAnonKb": 75100,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.local/share/prime-agent/releases/0.9.8-daemon-fix.1-mem.4.2-s3int.9-crc.2-test.bun.1-linux-x64-9a6fa8b0910f7055c44ee34f1164d0f7d8c1d8510ad986e2a4f1d7f6ad05a470/prime-agent --mode daemon -",
+"rssAnonKb": 475360,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.local/share/prime-agent/releases/0.9.8-daemon-fix.1-mem.4.2-s3int.9-crc.2-test.bun.1-linux-x64-9a6fa8b0910f7055c44ee34f1164d0f7d8c1d8510ad986e2a4f1d7f6ad05a470/prime-agent --mode daemon -",
+"rssAnonKb": 585684,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a1164b-4a2d-742d-b27a-82f086ed0200/sub-2e4b32d0",
+"rssAnonKb": 25092,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.local/share/prime-agent/releases/0.9.8-daemon-fix.1-mem.4.2-s3int.9-crc.2-test.bun.1-linux-x64-9a6fa8b0910f7055c44ee34f1164d0f7d8c1d8510ad986e2a4f1d7f6ad05a470/prime-agent --mode daemon -",
+"rssAnonKb": 453208,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.local/share/prime-agent/releases/0.9.8-daemon-fix.1-mem.4.2-s3int.9-crc.2-test.bun.1-linux-x64-9a6fa8b0910f7055c44ee34f1164d0f7d8c1d8510ad986e2a4f1d7f6ad05a470/prime-agent --mode daemon -",
+"rssAnonKb": 448716,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.local/share/prime-agent/releases/0.9.8-daemon-fix.1-mem.4.2-s3int.9-crc.2-test.bun.1-linux-x64-9a6fa8b0910f7055c44ee34f1164d0f7d8c1d8510ad986e2a4f1d7f6ad05a470/prime-agent --mode daemon -",
+"rssAnonKb": 435428,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a17a59-eaee-747c-a7f5-80c9cf0228bf",
+"rssAnonKb": 26672,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a115e2-9544-7204-b8db-8ce4d5319048/sub-5b84e42b",
+"rssAnonKb": 23708,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a115e2-9544-7204-b8db-8ce4d5319048/sub-ede89b1a",
+"rssAnonKb": 36608,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a1180e-6567-747f-bf44-452520ebdd1b/sub-30a85fe4",
+"rssAnonKb": 24020,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.local/share/prime-agent/releases/0.9.8-daemon-fix.1-mem.4.2-s3int.9-crc.2-test.bun.1-linux-x64-9a6fa8b0910f7055c44ee34f1164d0f7d8c1d8510ad986e2a4f1d7f6ad05a470/prime-agent --mode daemon -",
+"rssAnonKb": 377592,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a17dd2-9327-7348-a836-a41c709237df",
+"rssAnonKb": 30296,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.local/share/prime-agent/releases/0.9.8-daemon-fix.1-mem.4.2-s3int.9-crc.2-test.bun.1-linux-x64-9a6fa8b0910f7055c44ee34f1164d0f7d8c1d8510ad986e2a4f1d7f6ad05a470/prime-agent --mode daemon -",
+"rssAnonKb": 377724,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.local/share/prime-agent/releases/0.9.8-daemon-fix.1-mem.4.2-s3int.9-crc.2-test.bun.1-linux-x64-9a6fa8b0910f7055c44ee34f1164d0f7d8c1d8510ad986e2a4f1d7f6ad05a470/prime-agent --mode daemon -",
+"rssAnonKb": 386404,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a17dd3-c109-7599-9f57-15f85eb7e86f",
+"rssAnonKb": 63572,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a17e52-0431-71cc-a6c7-d891988b459a",
+"rssAnonKb": 326120,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a14210-4e7d-72c3-aa67-e3d476f4e728/sub-15b6aa56",
+"rssAnonKb": 43468,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a14210-4e7d-72c3-aa67-e3d476f4e728/sub-b140ccea",
+"rssAnonKb": 29376,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "prime-agent",
+"rssAnonKb": 142580,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/work/prime-agent-fix-p8/repo/node_modules/@esbuild/linux-x64/bin/esbuild --service=0.28.1 --ping",
+"rssAnonKb": 8040,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.local/share/prime-agent/releases/0.9.8-daemon-fix.1-mem.4.2-s3int.9-crc.2-test.bun.1-linux-x64-9a6fa8b0910f7055c44ee34f1164d0f7d8c1d8510ad986e2a4f1d7f6ad05a470/prime-agent --mode daemon -",
+"rssAnonKb": 414796,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a15984-a584-7668-aaec-d5a67c824796",
+"rssAnonKb": 37540,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a1180e-6567-747f-bf44-452520ebdd1b/sub-30a85fe4/sub-17c0cb8b",
+"rssAnonKb": 25056,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a1180e-6567-747f-bf44-452520ebdd1b/sub-30a85fe4/sub-f59c26c0",
+"rssAnonKb": 27040,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a115e2-9544-7204-b8db-8ce4d5319048/sub-5b84e42b/sub-cfe88475",
+"rssAnonKb": 77012,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a115e2-9544-7204-b8db-8ce4d5319048/sub-5b84e42b/sub-86873680",
+"rssAnonKb": 75788,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a1180e-6567-747f-bf44-452520ebdd1b/sub-30a85fe4/sub-3ac5ff62",
+"rssAnonKb": 27912,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.local/node/bin/node /home/sieun/src/sieun-pi/skills/aside-browser/box/box.mjs",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a1164b-4a2d-742d-b27a-82f086ed0200/sub-9e1d3339",
+"rssAnonKb": 50788,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.local/opt/xvfb/usr/bin/Xvfb-localxkb -displayfd 3 -screen 0 1920x1080x24 -nolisten tcp -xkbdir /usr/share/X11/xkb",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a1164b-4a2d-742d-b27a-82f086ed0200/sub-9e1d3339",
+"rssAnonKb": 11956,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a115e2-9544-7204-b8db-8ce4d5319048/sub-5b84e42b/sub-30d3b94a",
+"rssAnonKb": 28972,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "cat",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a1164b-4a2d-742d-b27a-82f086ed0200/sub-9e1d3339",
+"rssAnonKb": 1316,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "cat",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a1164b-4a2d-742d-b27a-82f086ed0200/sub-9e1d3339",
+"rssAnonKb": 1312,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/opt/google/chrome/chrome_crashpad_handler --monitor-self --monitor-self-annotation=ptype=crashpad-handler --database=/home/sieun/.config/google-chrome/Crash Reports --url=https://clients2.google.com/",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a1164b-4a2d-742d-b27a-82f086ed0200/sub-9e1d3339",
+"rssAnonKb": 356,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/opt/google/chrome/chrome_crashpad_handler --no-periodic-tasks --monitor-self-annotation=ptype=crashpad-handler --database=/home/sieun/.config/google-chrome/Crash Reports --url=https://clients2.google",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a1164b-4a2d-742d-b27a-82f086ed0200/sub-9e1d3339",
+"rssAnonKb": 328,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/opt/google/chrome/chrome --type=zygote --no-zygote-sandbox --no-sandbox --crashpad-handler-pid=976878 --enable-crash-reporter=, --user-data-dir=/tmp/aside-box-976418-VpTpVt/playwright_chromiumdev_pro",
+"rssAnonKb": 15820,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/opt/google/chrome/chrome --type=zygote --no-sandbox --crashpad-handler-pid=976878 --enable-crash-reporter=, --user-data-dir=/tmp/aside-box-976418-VpTpVt/playwright_chromiumdev_profile-Q8rlhw --change",
+"rssAnonKb": 15820,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/opt/google/chrome/chrome --type=utility --utility-sub-type=network.mojom.NetworkService --lang=en-US --service-sandbox-type=none --no-sandbox --disable-dev-shm-usage --crashpad-handler-pid=976878 --e",
+"rssAnonKb": 19456,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/opt/google/chrome/chrome --type=utility --utility-sub-type=storage.mojom.StorageService --lang=en-US --service-sandbox-type=utility --no-sandbox --disable-dev-shm-usage --crashpad-handler-pid=976878 ",
+"rssAnonKb": 16648,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/opt/google/chrome/chrome --type=renderer --crashpad-handler-pid=976878 --enable-crash-reporter=, --user-data-dir=/tmp/aside-box-976418-VpTpVt/playwright_chromiumdev_profile-Q8rlhw --change-stack-guar",
+"rssAnonKb": 21076,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/opt/google/chrome/chrome --type=gpu-process --gpu-recent-crash-count=0 --no-sandbox --disable-dev-shm-usage --disable-breakpad --ozone-platform=x11 --enable-unsafe-swiftshader --crashpad-handler-pid=",
+"rssAnonKb": 19356,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a115e2-9544-7204-b8db-8ce4d5319048/sub-5b84e42b/sub-0300f3d2",
+"rssAnonKb": 73740,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a11a24-a46e-77ff-adf7-671d01d462e2/sub-1d49c0cb",
+"rssAnonKb": 266880,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "prime-agent",
+"rssAnonKb": 122152,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "prime-agent",
+"rssAnonKb": 141740,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/work/prime-agent-fix-p8/repo/node_modules/@esbuild/linux-x64/bin/esbuild --service=0.28.1 --ping",
+"rssAnonKb": 7596,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.local/share/prime-agent/releases/0.9.8-daemon-fix.1-mem.4.2-s3int.9-crc.2-test.bun.1-linux-x64-9a6fa8b0910f7055c44ee34f1164d0f7d8c1d8510ad986e2a4f1d7f6ad05a470/prime-agent --mode daemon -",
+"rssAnonKb": 384696,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a17e5d-45de-700a-b803-0f3cf9b5325c",
+"rssAnonKb": 26448,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/drive2/sieun/scratch/01a17b28-0ebe-7299-bbb0-06eb67435e2b/i/kvenv/bin/python -m rlm.repl",
+"sessionDir": "/drive2/sieun/scratch/01a17b28-0ebe-7299-bbb0-06eb67435e2b/i/rig-src-norestart/agent/session-artifacts/01a17e5d-23a4-747a-a2ae-13b9b217a110",
+"rssAnonKb": 18512,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.local/share/prime-agent/releases/0.9.8-daemon-fix.1-mem.4.2-s3int.9-crc.2-test.bun.1-linux-x64-9a6fa8b0910f7055c44ee34f1164d0f7d8c1d8510ad986e2a4f1d7f6ad05a470/prime-agent --mode daemon -",
+"rssAnonKb": 386348,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.local/share/prime-agent/releases/0.9.8-daemon-fix.1-mem.4.2-s3int.9-crc.2-test.bun.1-linux-x64-9a6fa8b0910f7055c44ee34f1164d0f7d8c1d8510ad986e2a4f1d7f6ad05a470/prime-agent --mode daemon -",
+"rssAnonKb": 437636,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a11d25-4c00-7613-9039-7a8377db04bb",
+"rssAnonKb": 38588,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.local/share/prime-agent/releases/0.9.8-daemon-fix.1-mem.4.2-s3int.9-crc.2-test.bun.1-linux-x64-9a6fa8b0910f7055c44ee34f1164d0f7d8c1d8510ad986e2a4f1d7f6ad05a470/prime-agent --mode daemon -",
+"rssAnonKb": 476164,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a11d24-ac9b-757d-ac51-9b2b7598782f",
+"rssAnonKb": 80836,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a1164b-4a2d-742d-b27a-82f086ed0200/sub-24027b04/sub-52cce3c9",
+"rssAnonKb": 29488,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a14210-4e7d-72c3-aa67-e3d476f4e728/sub-9555e737/sub-4f3244b1",
+"rssAnonKb": 30292,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a14210-4e7d-72c3-aa67-e3d476f4e728/sub-15b6aa56/sub-7fb2378c",
+"rssAnonKb": 23612,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a14210-4e7d-72c3-aa67-e3d476f4e728/sub-15b6aa56/sub-3948389c",
+"rssAnonKb": 23964,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.local/node/bin/node /home/sieun/src/sieun-pi/skills/aside-browser/box/box.mjs",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a11a24-a46e-77ff-adf7-671d01d462e2/sub-1d49c0cb",
+"rssAnonKb": 68880,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.local/opt/xvfb/usr/bin/Xvfb-localxkb -displayfd 3 -screen 0 1920x1080x24 -nolisten tcp -xkbdir /usr/share/X11/xkb",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a11a24-a46e-77ff-adf7-671d01d462e2/sub-1d49c0cb",
+"rssAnonKb": 11952,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "cat",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a11a24-a46e-77ff-adf7-671d01d462e2/sub-1d49c0cb",
+"rssAnonKb": 1316,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "cat",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a11a24-a46e-77ff-adf7-671d01d462e2/sub-1d49c0cb",
+"rssAnonKb": 1312,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/opt/google/chrome/chrome_crashpad_handler --monitor-self --monitor-self-annotation=ptype=crashpad-handler --database=/home/sieun/.config/google-chrome/Crash Reports --url=https://clients2.google.com/",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a11a24-a46e-77ff-adf7-671d01d462e2/sub-1d49c0cb",
+"rssAnonKb": 360,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/opt/google/chrome/chrome_crashpad_handler --no-periodic-tasks --monitor-self-annotation=ptype=crashpad-handler --database=/home/sieun/.config/google-chrome/Crash Reports --url=https://clients2.google",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a11a24-a46e-77ff-adf7-671d01d462e2/sub-1d49c0cb",
+"rssAnonKb": 328,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/opt/google/chrome/chrome --type=zygote --no-zygote-sandbox --no-sandbox --crashpad-handler-pid=1075564 --enable-crash-reporter=, --user-data-dir=/tmp/aside-box-1075299-838qAV/playwright_chromiumdev_p",
+"rssAnonKb": 15820,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/opt/google/chrome/chrome --type=zygote --no-sandbox --crashpad-handler-pid=1075564 --enable-crash-reporter=, --user-data-dir=/tmp/aside-box-1075299-838qAV/playwright_chromiumdev_profile-v52I2q --chan",
+"rssAnonKb": 15820,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/opt/google/chrome/chrome --type=utility --utility-sub-type=network.mojom.NetworkService --lang=en-US --service-sandbox-type=none --no-sandbox --disable-dev-shm-usage --crashpad-handler-pid=1075564 --",
+"rssAnonKb": 33396,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/opt/google/chrome/chrome --type=utility --utility-sub-type=storage.mojom.StorageService --lang=en-US --service-sandbox-type=utility --no-sandbox --disable-dev-shm-usage --crashpad-handler-pid=1075564",
+"rssAnonKb": 16900,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/opt/google/chrome/chrome --type=renderer --top-chrome-webui --crashpad-handler-pid=1075564 --enable-crash-reporter=, --user-data-dir=/tmp/aside-box-1075299-838qAV/playwright_chromiumdev_profile-v52I2",
+"rssAnonKb": 38812,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/opt/google/chrome/chrome --type=renderer --crashpad-handler-pid=1075564 --enable-crash-reporter=, --user-data-dir=/tmp/aside-box-1075299-838qAV/playwright_chromiumdev_profile-v52I2q --change-stack-gu",
+"rssAnonKb": 58760,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/opt/google/chrome/chrome --type=renderer --crashpad-handler-pid=1075564 --enable-crash-reporter=, --user-data-dir=/tmp/aside-box-1075299-838qAV/playwright_chromiumdev_profile-v52I2q --change-stack-gu",
+"rssAnonKb": 56852,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/opt/google/chrome/chrome --type=gpu-process --gpu-recent-crash-count=0 --no-sandbox --disable-dev-shm-usage --disable-breakpad --ozone-platform=x11 --enable-unsafe-swiftshader --crashpad-handler-pid=",
+"rssAnonKb": 21096,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a1164b-4a2d-742d-b27a-82f086ed0200/sub-20a0f3b2",
+"rssAnonKb": 34192,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a115e2-9544-7204-b8db-8ce4d5319048/sub-bbc3e607/sub-ffb6f247",
+"rssAnonKb": 20328,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a14210-4e7d-72c3-aa67-e3d476f4e728/sub-9555e737/sub-c0fe9efb",
+"rssAnonKb": 24116,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a1164b-4a2d-742d-b27a-82f086ed0200/sub-24027b04/sub-a119cce4",
+"rssAnonKb": 24804,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a14210-4e7d-72c3-aa67-e3d476f4e728/sub-9555e737/sub-a39dd272",
+"rssAnonKb": 20272,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a14210-4e7d-72c3-aa67-e3d476f4e728/sub-b140ccea/sub-e13970ad",
+"rssAnonKb": 20732,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a1180e-6567-747f-bf44-452520ebdd1b/sub-dd890a9d",
+"rssAnonKb": 48668,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.local/share/prime-agent/releases/0.9.8-daemon-fix.1-mem.4.2-s3int.9-crc.2-test.bun.1-linux-x64-9a6fa8b0910f7055c44ee34f1164d0f7d8c1d8510ad986e2a4f1d7f6ad05a470/prime-agent --mode daemon -",
+"rssAnonKb": 111704,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a17c81-5d3f-77e5-8dd3-52a758c5ba23",
+"rssAnonKb": 20428,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a14dd5-e9d3-705d-bd63-245c21b2eee2",
+"rssAnonKb": 29640,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a11a24-a46e-77ff-adf7-671d01d462e2",
+"rssAnonKb": 19924,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a11af8-962e-773d-a19a-ee4104011987",
+"rssAnonKb": 29820,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a1164b-4a2d-742d-b27a-82f086ed0200",
+"rssAnonKb": 46700,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a14d31-6ec0-7005-bbe8-c38b7ae73cfb",
+"rssAnonKb": 32152,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a115e2-9544-7204-b8db-8ce4d5319048",
+"rssAnonKb": 32484,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a1180e-6567-747f-bf44-452520ebdd1b",
+"rssAnonKb": 47828,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.local/share/prime-agent/releases/0.9.8-daemon-fix.1-mem.4.2-s3int.9-crc.2-test.bun.1-linux-x64-9a6fa8b0910f7055c44ee34f1164d0f7d8c1d8510ad986e2a4f1d7f6ad05a470/prime-agent --mode daemon -",
+"rssAnonKb": 103184,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a17e61-cb7c-72ae-b9c4-6b2e825fdaa7",
+"rssAnonKb": 19828,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.local/share/prime-agent/releases/0.9.8-daemon-fix.1-mem.4.2-s3int.9-crc.2-test.bun.1-linux-x64-9a6fa8b0910f7055c44ee34f1164d0f7d8c1d8510ad986e2a4f1d7f6ad05a470/prime-agent --mode daemon -",
+"rssAnonKb": 99508,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.local/share/prime-agent/releases/0.9.8-daemon-fix.1-mem.4.2-s3int.9-crc.2-test.bun.1-linux-x64-9a6fa8b0910f7055c44ee34f1164d0f7d8c1d8510ad986e2a4f1d7f6ad05a470/prime-agent --mode daemon -",
+"rssAnonKb": 209160,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a17db6-c043-73ff-8074-4a007a2ea36b",
+"rssAnonKb": 62120,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a10810-34b5-710f-88fe-3d369f89a8c9",
+"rssAnonKb": 30100,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a14dd5-e9d3-705d-bd63-245c21b2eee2/sub-d7156192",
+"rssAnonKb": 20600,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.local/share/prime-agent/releases/0.9.8-daemon-fix.1-mem.4.2-s3int.9-crc.2-test.bun.1-linux-x64-9a6fa8b0910f7055c44ee34f1164d0f7d8c1d8510ad986e2a4f1d7f6ad05a470/prime-agent --mode daemon -",
+"rssAnonKb": 99248,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.local/share/prime-agent/releases/0.9.8-daemon-fix.1-mem.4.2-s3int.9-crc.2-test.bun.1-linux-x64-9a6fa8b0910f7055c44ee34f1164d0f7d8c1d8510ad986e2a4f1d7f6ad05a470/prime-agent --mode daemon -",
+"rssAnonKb": 100676,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.local/share/prime-agent/releases/0.9.8-daemon-fix.1-mem.4.2-s3int.9-crc.2-test.bun.1-linux-x64-9a6fa8b0910f7055c44ee34f1164d0f7d8c1d8510ad986e2a4f1d7f6ad05a470/prime-agent --mode daemon -",
+"rssAnonKb": 109184,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.local/share/prime-agent/releases/0.9.8-daemon-fix.1-mem.4.2-s3int.9-crc.2-test.bun.1-linux-x64-9a6fa8b0910f7055c44ee34f1164d0f7d8c1d8510ad986e2a4f1d7f6ad05a470/prime-agent --mode daemon -",
+"rssAnonKb": 107392,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.local/share/prime-agent/releases/0.9.8-daemon-fix.1-mem.4.2-s3int.9-crc.2-test.bun.1-linux-x64-9a6fa8b0910f7055c44ee34f1164d0f7d8c1d8510ad986e2a4f1d7f6ad05a470/prime-agent --mode daemon -",
+"rssAnonKb": 114528,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.local/share/prime-agent/releases/0.9.8-daemon-fix.1-mem.4.2-s3int.9-crc.2-test.bun.1-linux-x64-9a6fa8b0910f7055c44ee34f1164d0f7d8c1d8510ad986e2a4f1d7f6ad05a470/prime-agent --mode daemon -",
+"rssAnonKb": 108528,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.local/share/prime-agent/releases/0.9.8-daemon-fix.1-mem.4.2-s3int.9-crc.2-test.bun.1-linux-x64-9a6fa8b0910f7055c44ee34f1164d0f7d8c1d8510ad986e2a4f1d7f6ad05a470/prime-agent --mode daemon -",
+"rssAnonKb": 105460,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.local/share/prime-agent/releases/0.9.8-daemon-fix.1-mem.4.2-s3int.9-crc.2-test.bun.1-linux-x64-9a6fa8b0910f7055c44ee34f1164d0f7d8c1d8510ad986e2a4f1d7f6ad05a470/prime-agent --mode daemon -",
+"rssAnonKb": 106620,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.local/share/prime-agent/releases/0.9.8-daemon-fix.1-mem.4.2-s3int.9-crc.2-test.bun.1-linux-x64-9a6fa8b0910f7055c44ee34f1164d0f7d8c1d8510ad986e2a4f1d7f6ad05a470/prime-agent --mode daemon -",
+"rssAnonKb": 107348,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.local/share/prime-agent/releases/0.9.8-daemon-fix.1-mem.4.2-s3int.9-crc.2-test.bun.1-linux-x64-9a6fa8b0910f7055c44ee34f1164d0f7d8c1d8510ad986e2a4f1d7f6ad05a470/prime-agent --mode daemon -",
+"rssAnonKb": 108936,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.local/share/prime-agent/releases/0.9.8-daemon-fix.1-mem.4.2-s3int.9-crc.2-test.bun.1-linux-x64-9a6fa8b0910f7055c44ee34f1164d0f7d8c1d8510ad986e2a4f1d7f6ad05a470/prime-agent --mode daemon -",
+"rssAnonKb": 105464,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.local/share/prime-agent/releases/0.9.8-daemon-fix.1-mem.4.2-s3int.9-crc.2-test.bun.1-linux-x64-9a6fa8b0910f7055c44ee34f1164d0f7d8c1d8510ad986e2a4f1d7f6ad05a470/prime-agent --mode daemon -",
+"rssAnonKb": 115316,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.local/share/prime-agent/releases/0.9.8-daemon-fix.1-mem.4.2-s3int.9-crc.2-test.bun.1-linux-x64-9a6fa8b0910f7055c44ee34f1164d0f7d8c1d8510ad986e2a4f1d7f6ad05a470/prime-agent --mode daemon -",
+"rssAnonKb": 116796,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.local/share/prime-agent/releases/0.9.8-daemon-fix.1-mem.4.2-s3int.9-crc.2-test.bun.1-linux-x64-9a6fa8b0910f7055c44ee34f1164d0f7d8c1d8510ad986e2a4f1d7f6ad05a470/prime-agent --mode daemon -",
+"rssAnonKb": 98896,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.local/share/prime-agent/releases/0.9.8-daemon-fix.1-mem.4.2-s3int.9-crc.2-test.bun.1-linux-x64-9a6fa8b0910f7055c44ee34f1164d0f7d8c1d8510ad986e2a4f1d7f6ad05a470/prime-agent --mode daemon -",
+"rssAnonKb": 117136,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.local/share/prime-agent/releases/0.9.8-daemon-fix.1-mem.4.2-s3int.9-crc.2-test.bun.1-linux-x64-9a6fa8b0910f7055c44ee34f1164d0f7d8c1d8510ad986e2a4f1d7f6ad05a470/prime-agent --mode daemon -",
+"rssAnonKb": 112108,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a16d23-809b-7754-8404-135a5460a15d",
+"rssAnonKb": 23104,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a16abf-b115-738e-acb5-46d85ad5673a",
+"rssAnonKb": 25976,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a1748f-aafa-74a8-b254-2aeb084b03fa",
+"rssAnonKb": 63332,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.local/share/prime-agent/releases/0.9.8-daemon-fix.1-mem.4.2-s3int.9-crc.2-test.bun.1-linux-x64-9a6fa8b0910f7055c44ee34f1164d0f7d8c1d8510ad986e2a4f1d7f6ad05a470/prime-agent --mode daemon -",
+"rssAnonKb": 100872,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.local/share/prime-agent/releases/0.9.8-daemon-fix.1-mem.4.2-s3int.9-crc.2-test.bun.1-linux-x64-9a6fa8b0910f7055c44ee34f1164d0f7d8c1d8510ad986e2a4f1d7f6ad05a470/prime-agent --mode daemon -",
+"rssAnonKb": 100576,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.local/share/prime-agent/releases/0.9.8-daemon-fix.1-mem.4.2-s3int.9-crc.2-test.bun.1-linux-x64-9a6fa8b0910f7055c44ee34f1164d0f7d8c1d8510ad986e2a4f1d7f6ad05a470/prime-agent --mode daemon -",
+"rssAnonKb": 108988,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a17b7d-faae-7432-9478-4935a5ee1905",
+"rssAnonKb": 20692,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a14fcc-04d2-73e6-8da9-03b09ae1a736",
+"rssAnonKb": 24476,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a159a4-dc37-7003-877d-7d53b9c63bac",
+"rssAnonKb": 23980,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a17900-2db9-7201-8836-1d4083b93474",
+"rssAnonKb": 19852,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a16ab6-dbd7-7058-b822-2c7e27987343",
+"rssAnonKb": 65840,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a17d70-d396-70b4-93e5-6a394c86c3bc",
+"rssAnonKb": 20064,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a1692c-31fd-761a-a836-2ca6b1ade12d",
+"rssAnonKb": 20432,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a1692c-9f57-7562-b7e7-f57c0252fcbc",
+"rssAnonKb": 28868,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a17a57-b941-70b1-b9c6-76c88f73273a",
+"rssAnonKb": 64460,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a16fc9-1efe-7431-9ce2-b179530f3af6",
+"rssAnonKb": 34344,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a16988-23d1-73a8-98de-0e8c7796f9aa",
+"rssAnonKb": 25428,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.local/share/prime-agent/releases/0.9.8-daemon-fix.1-mem.4.2-s3int.9-crc.2-test.bun.1-linux-x64-9a6fa8b0910f7055c44ee34f1164d0f7d8c1d8510ad986e2a4f1d7f6ad05a470/prime-agent --mode daemon -",
+"rssAnonKb": 106696,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a17c69-bfca-7793-88e3-1c9a0e4a9a6f",
+"rssAnonKb": 19924,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a1702b-7ba4-7588-b36b-86711091ca98",
+"rssAnonKb": 20164,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a17567-0e4a-7589-8237-8159457d6353",
+"rssAnonKb": 20600,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a175eb-a774-74a7-8fac-7cbdbe70ef67",
+"rssAnonKb": 61776,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a17b20-a52f-7438-a9e8-02be2b0295d8",
+"rssAnonKb": 20052,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a17594-18ba-751a-bce5-a811419739ea",
+"rssAnonKb": 20604,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.local/share/prime-agent/releases/0.9.8-daemon-fix.1-mem.4.2-s3int.9-crc.2-test.bun.1-linux-x64-9a6fa8b0910f7055c44ee34f1164d0f7d8c1d8510ad986e2a4f1d7f6ad05a470/prime-agent --mode daemon -",
+"rssAnonKb": 436368,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.local/share/prime-agent/releases/0.9.8-daemon-fix.1-mem.4.2-s3int.9-crc.2-test.bun.1-linux-x64-9a6fa8b0910f7055c44ee34f1164d0f7d8c1d8510ad986e2a4f1d7f6ad05a470/prime-agent --mode daemon -",
+"rssAnonKb": 131352,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.local/share/prime-agent/releases/0.9.8-daemon-fix.1-mem.4.2-s3int.9-crc.2-test.bun.1-linux-x64-9a6fa8b0910f7055c44ee34f1164d0f7d8c1d8510ad986e2a4f1d7f6ad05a470/prime-agent --mode daemon -",
+"rssAnonKb": 120220,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a166f2-219d-737b-affa-2c2349581de7",
+"rssAnonKb": 66408,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a15c6c-8bec-71fe-b7d3-1fac79a315c9",
+"rssAnonKb": 21824,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a1180e-6567-747f-bf44-452520ebdd1b/sub-30409d13",
+"rssAnonKb": 20076,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a1301d-18de-7129-a559-cfb92f9b5fb1/sub-cc0acea5",
+"rssAnonKb": 61716,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a1180e-6567-747f-bf44-452520ebdd1b/sub-d1f177d3",
+"rssAnonKb": 62660,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/opt/google/chrome/chrome --type=renderer --crashpad-handler-pid=1075564 --enable-crash-reporter=, --user-data-dir=/tmp/aside-box-1075299-838qAV/playwright_chromiumdev_profile-v52I2q --change-stack-gu",
+"rssAnonKb": 51500,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/opt/google/chrome/chrome --type=renderer --crashpad-handler-pid=1075564 --enable-crash-reporter=, --user-data-dir=/tmp/aside-box-1075299-838qAV/playwright_chromiumdev_profile-v52I2q --change-stack-gu",
+"rssAnonKb": 57540,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/opt/google/chrome/chrome --type=renderer --crashpad-handler-pid=1075564 --enable-crash-reporter=, --user-data-dir=/tmp/aside-box-1075299-838qAV/playwright_chromiumdev_profile-v52I2q --change-stack-gu",
+"rssAnonKb": 60144,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/opt/google/chrome/chrome --type=renderer --crashpad-handler-pid=1075564 --enable-crash-reporter=, --user-data-dir=/tmp/aside-box-1075299-838qAV/playwright_chromiumdev_profile-v52I2q --change-stack-gu",
+"rssAnonKb": 89752,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a162bc-47b4-770b-a9fc-19c3a742e730",
+"rssAnonKb": 20228,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/bin/bash -c exec 9>&0 8>&1 0</dev/null\nread -r _prime_agent_gate <&9 || exit 127\n{\nssh -o ExitOnForwardFailure=yes -N -L 19347:127.0.0.1:9200 us-metal01\n} 8>&- 9>&-\n__prime_status=$?\n\\set +x\n'/bin/pr",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a115e2-9544-7204-b8db-8ce4d5319048/sub-5b84e42b/sub-86873680",
+"rssAnonKb": 280,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "ssh -o ExitOnForwardFailure=yes -N -L 19347:127.0.0.1:9200 us-metal01",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a115e2-9544-7204-b8db-8ce4d5319048/sub-5b84e42b/sub-86873680",
+"rssAnonKb": 1640,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/opt/google/chrome/chrome --type=renderer --crashpad-handler-pid=1075564 --enable-crash-reporter=, --user-data-dir=/tmp/aside-box-1075299-838qAV/playwright_chromiumdev_profile-v52I2q --change-stack-gu",
+"rssAnonKb": 20632,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a1301d-18de-7129-a559-cfb92f9b5fb1",
+"rssAnonKb": 20128,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a16c82-e820-7559-8c9f-07334ee7a116/sub-30487ddd/sub-e662f043",
+"rssAnonKb": 72756,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a17ab3-3c5e-732f-ab4b-86696163b058",
+"rssAnonKb": 20596,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.local/share/prime-agent/releases/0.9.8-daemon-fix.1-mem.4.2-s3int.9-crc.2-test.bun.1-linux-x64-9a6fa8b0910f7055c44ee34f1164d0f7d8c1d8510ad986e2a4f1d7f6ad05a470/prime-agent --mode daemon -",
+"rssAnonKb": 106156,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a178a2-ee0f-701b-8e98-6c984d12c8d0",
+"rssAnonKb": 19860,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a115e2-9544-7204-b8db-8ce4d5319048/sub-5b84e42b/sub-eb395ad0",
+"rssAnonKb": 61940,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/bin/bash -c exec 9>&0 8>&1 0</dev/null\nread -r _prime_agent_gate <&9 || exit 127\n{\ntimeout 300 tail -n0 -f /home/sieun/.prime/agent/browser-chat/service.log | grep -m2 -E '01a1164b/d4' | cut -c1-400\n",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a17dd3-c109-7599-9f57-15f85eb7e86f",
+"rssAnonKb": 280,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "timeout 300 tail -n0 -f /home/sieun/.prime/agent/browser-chat/service.log",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a17dd3-c109-7599-9f57-15f85eb7e86f",
+"rssAnonKb": 1288,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "grep -m2 -E 01a1164b/d4",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a17dd3-c109-7599-9f57-15f85eb7e86f",
+"rssAnonKb": 164,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "cut -c1-400",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a17dd3-c109-7599-9f57-15f85eb7e86f",
+"rssAnonKb": 1324,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "tail -n0 -f /home/sieun/.prime/agent/browser-chat/service.log",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a17dd3-c109-7599-9f57-15f85eb7e86f",
+"rssAnonKb": 1424,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/bin/bash -c exec 9>&0 8>&1 0</dev/null\nread -r _prime_agent_gate <&9 || exit 127\n{\ngit log --oneline -4; node scripts/release-chat.mjs b22747cd92159ad9fadb0a4971c7e5c2abc6ba22 2>&1 | tail -4\n} 8>&- 9",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a17dd2-9327-7348-a836-a41c709237df",
+"rssAnonKb": 280,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "node scripts/release-chat.mjs b22747cd92159ad9fadb0a4971c7e5c2abc6ba22",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a17dd2-9327-7348-a836-a41c709237df",
+"rssAnonKb": 37956,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "tail -4",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a17dd2-9327-7348-a836-a41c709237df",
+"rssAnonKb": 1384,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "npm run typecheck",
+"rssAnonKb": 17880,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "sh -c tsc --noEmit && svelte-check --tsconfig ./tsconfig.json --fail-on-warnings",
+"rssAnonKb": 112,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.prime/agent/kernel-venv/bin/python -m rlm.repl",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a1164b-4a2d-742d-b27a-82f086ed0200/sub-fc964b95",
+"rssAnonKb": 24836,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/bin/bash -c exec 9>&0 8>&1 0</dev/null\nread -r _prime_agent_gate <&9 || exit 127\n{\nnode scripts/ci/crawler-cut.mjs --name p1019 --parent 10b604cc14468a7415ea2b54313e2d797b44b51e --tree 73349cfbed49a8",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a15984-a584-7668-aaec-d5a67c824796",
+"rssAnonKb": 320,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "node scripts/ci/crawler-cut.mjs --name p1019 --parent 10b604cc14468a7415ea2b54313e2d797b44b51e --tree 73349cfbed49a8f084316d72328b67f0d854b4b6 --picks-from 56c1608b72b2f9f1860046df99dac7b6b152c7e2 --h",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a15984-a584-7668-aaec-d5a67c824796",
+"rssAnonKb": 12432,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "tail -6",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a15984-a584-7668-aaec-d5a67c824796",
+"rssAnonKb": 1364,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/usr/bin/ssh -T -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=30 -o LogLevel=ERROR -o ControlMaster=auto -o ControlPersist=yes -o ControlPath=/home/sieun/.ssh/cm/mcp-%r@%h:%p mac exec /",
+"rssAnonKb": 1316,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "ssh: /home/sieun/.ssh/cm/mcp-sieunpark@100.66.173.18:22 [mux]",
+"rssAnonKb": 1612,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.local/share/agent-git-shim/real-git -c diff.autoRefreshIndex=false log --format=%H 56c1608b72b2f9f1860046df99dac7b6b152c7e2 -- apps/crawler-v3/tests/unit/test_schema_gate_wait.py",
+"sessionDir": "/home/sieun/.prime/agent/session-artifacts/01a15984-a584-7668-aaec-d5a67c824796",
+"rssAnonKb": 3884,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "/home/sieun/.local/share/prime-agent/releases/0.9.8-daemon-fix.1-mem.4.2-s3int.9-crc.2-test.bun.1-linux-x64-9a6fa8b0910f7055c44ee34f1164d0f7d8c1d8510ad986e2a4f1d7f6ad05a470/prime-agent --mode daemon -",
+"rssAnonKb": 72264,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service",
+"command": "node /home/sieun/.local/share/sieun-pi-chat/.building-release-b22747c-1674225/components/user-history/node_modules/.bin/svelte-check --tsconfig ./tsconfig.json --fail-on-warnings",
+"rssAnonKb": 32020,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/session-c1119.scope",
+"command": "bash -s",
+"rssAnonKb": 264,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/session-c1119.scope",
+"command": "flock 9",
+"rssAnonKb": 108,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/session-c1173.scope",
+"command": "bash -s",
+"rssAnonKb": 260,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/session-c1173.scope",
+"command": "flock 9",
+"rssAnonKb": 108,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/session-c1350.scope",
+"command": "bash -s",
+"rssAnonKb": 264,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/session-c1350.scope",
+"command": "flock 9",
+"rssAnonKb": 108,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/session-c1366.scope",
+"command": "/bin/bash -c bash /home/sieun/scratch/01a17d58-49d5-704f-abdc-e9a1ca805568/feedwatch/look.sh > /home/sieun/scratch/01a17d58-49d5-704f-abdc-e9a1ca805568/feedwatch/look.log 2>&1; cat /home/sieun/scratch",
+"rssAnonKb": 260,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/session-c1366.scope",
+"command": "bash /home/sieun/scratch/01a17d58-49d5-704f-abdc-e9a1ca805568/feedwatch/look.sh",
+"rssAnonKb": 300,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/session-c1366.scope",
+"command": "node ../../node_modules/.bin/dotenvx run -f .env.staging --overload --quiet -- ../../node_modules/.bin/vite dev --port 44439 --host 127.0.0.1 --strictPort",
+"rssAnonKb": 36236,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/session-c1366.scope",
+"command": "node /home/sieun/scratch/01a17d58-49d5-704f-abdc-e9a1ca805568/feedwatch/tree/node_modules/.bin/vite dev --port 44439 --host 127.0.0.1 --strictPort",
+"rssAnonKb": 4150512,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/session-c1366.scope",
+"command": "npm exec playwright test tests/e2e/search-feedwatch-look.spec.ts --project=authenticated --no-deps --reporter=line --trace=off --output=/home/sieun/scratch/***/feedwatch/look/results",
+"rssAnonKb": 39300,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/session-c1366.scope",
+"command": "sh -c \"playwright\" test tests/e2e/search-feedwatch-look.spec.ts --project=authenticated --no-deps --reporter=line --trace=off --output=/home/sieun/scratch/01a17d58-49d5-704f-abdc-e9a1ca805568/feedwatc",
+"rssAnonKb": 108,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/session-c1366.scope",
+"command": "node /home/sieun/scratch/01a17d58-49d5-704f-abdc-e9a1ca805568/feedwatch/tree/node_modules/.bin/playwright test tests/e2e/search-feedwatch-look.spec.ts --project=authenticated --no-deps --reporter=line",
+"rssAnonKb": 212340,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/session-c1366.scope",
+"command": "/home/sieun/.local/opt/xvfb/usr/bin/Xvfb-localxkb :3840 -screen 0 1920x1080x24 -nolisten tcp -xkbdir /usr/share/X11/xkb",
+"rssAnonKb": 11944,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/session-c1366.scope",
+"command": "/home/sieun/.nvm/versions/node/v25.9.0/bin/node /home/sieun/scratch/01a17d58-49d5-704f-abdc-e9a1ca805568/feedwatch/tree/node_modules/playwright/lib/common/process.js",
+"rssAnonKb": 207540,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/session-c1366.scope",
+"command": "node /home/sieun/scratch/01a17d58-49d5-704f-abdc-e9a1ca805568/feedwatch/tree/scripts/dev/search-clean-world/browser-no-netlink.mjs --disable-field-trial-config --disable-background-networking --disabl",
+"rssAnonKb": 9032,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/session-c1366.scope",
+"command": "bwrap --dev-bind / / --die-with-parent --seccomp 5 -- /home/sieun/.cache/ms-playwright/chromium-1208/chrome-linux64/chrome --disable-field-trial-config --disable-background-networking --disable-backgr",
+"rssAnonKb": 148,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/session-c1366.scope",
+"command": "/home/sieun/.cache/ms-playwright/chromium-1208/chrome-linux64/chrome_crashpad_handler --monitor-self --monitor-self-annotation=ptype=crashpad-handler --database=/home/sieun/.config/google-chrome-for-t",
+"rssAnonKb": 364,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/session-c1366.scope",
+"command": "/home/sieun/.cache/ms-playwright/chromium-1208/chrome-linux64/chrome_crashpad_handler --no-periodic-tasks --monitor-self-annotation=ptype=crashpad-handler --database=/home/sieun/.config/google-chrome-",
+"rssAnonKb": 320,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/session-c1366.scope",
+"command": "/home/sieun/.cache/ms-playwright/chromium-1208/chrome-linux64/chrome --type=zygote --no-zygote-sandbox --no-sandbox --crashpad-handler-pid=1674810 --enable-crash-reporter=, --user-data-dir=/tmp/playwr",
+"rssAnonKb": 14564,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/session-c1366.scope",
+"command": "/home/sieun/.cache/ms-playwright/chromium-1208/chrome-linux64/chrome --type=zygote --no-sandbox --crashpad-handler-pid=1674810 --enable-crash-reporter=, --user-data-dir=/tmp/playwright_chromiumdev_pro",
+"rssAnonKb": 14564,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/session-c1366.scope",
+"command": "/home/sieun/.cache/ms-playwright/chromium-1208/chrome-linux64/chrome --type=utility --utility-sub-type=network.mojom.NetworkService --lang=en-US --service-sandbox-type=none --no-sandbox --disable-dev-",
+"rssAnonKb": 52076,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/session-c1366.scope",
+"command": "/home/sieun/.cache/ms-playwright/chromium-1208/chrome-linux64/chrome --type=utility --utility-sub-type=storage.mojom.StorageService --lang=en-US --service-sandbox-type=utility --no-sandbox --disable-d",
+"rssAnonKb": 16196,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/session-c1366.scope",
+"command": "/home/sieun/.cache/ms-playwright/chromium-1208/chrome-linux64/chrome --type=renderer --crashpad-handler-pid=1674810 --enable-crash-reporter=, --user-data-dir=/tmp/playwright_chromiumdev_profile-Ppyz68",
+"rssAnonKb": 18840,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/session-c1366.scope",
+"command": "/home/sieun/.cache/ms-playwright/chromium-1208/chrome-linux64/chrome --type=renderer --crashpad-handler-pid=1674810 --enable-crash-reporter=, --user-data-dir=/tmp/playwright_chromiumdev_profile-Ppyz68",
+"rssAnonKb": 270816,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/session-c1366.scope",
+"command": "/home/sieun/.cache/ms-playwright/chromium-1208/chrome-linux64/chrome --type=gpu-process --no-sandbox --disable-dev-shm-usage --disable-breakpad --ozone-platform=x11 --enable-unsafe-swiftshader --crash",
+"rssAnonKb": 29092,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/session-c1375.scope",
+"command": "bash -s",
+"rssAnonKb": 260,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/session-c1375.scope",
+"command": "flock 9",
+"rssAnonKb": 104,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/session-c922.scope",
+"command": "bash -s",
+"rssAnonKb": 288,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/session-c922.scope",
+"command": "/bin/sh /home/sieun/.local/share/pnpm/pnpm run check:local",
+"rssAnonKb": 108,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/session-c922.scope",
+"command": "/home/sieun/.local/share/pnpm/.tools/@pnpm+exe/10.33.0/node_modules/@pnpm/linux-x64/pnpm run check:local",
+"rssAnonKb": 36732,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/session-c922.scope",
+"command": "/home/sieun/.local/share/pnpm/.tools/@pnpm+exe/10.32.1/bin/pnpm run check:local",
+"rssAnonKb": 30280,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/session-c922.scope",
+"command": "sh -c node scripts/materialize.mjs && pnpm i18n:compile && svelte-kit sync && node scripts/tsgo-stubs.mjs && NODE_OPTIONS=--max-old-space-size=8192 svelte-check --tsconfig ./tsconfig.json --tsgo",
+"rssAnonKb": 112,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/session-c922.scope",
+"command": "node /home/sieun/scratch/mac-run/dev_sieun-mac/repo/node_modules/.bin/svelte-check --tsconfig ./tsconfig.json --tsgo",
+"rssAnonKb": 359692,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/session-c922.scope",
+"command": "/home/sieun/scratch/mac-run/dev_sieun-mac/repo/node_modules/@typescript/typescript-linux-x64/lib/tsc -p /home/sieun/scratch/mac-run/dev_sieun-mac/repo/apps/virev-demo/.svelte-kit/.svelte-check/tsconfi",
+"rssAnonKb": 4692008,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/session-c962.scope",
+"command": "bash -s",
+"rssAnonKb": 260,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/session-c962.scope",
+"command": "flock 9",
+"rssAnonKb": 104,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/session-c992.scope",
+"command": "bash -s",
+"rssAnonKb": 260,
+"vmSwapKb": 0
+},
+{
+"path": "user.slice/user-1001.slice/session-c992.scope",
+"command": "flock 9",
+"rssAnonKb": 108,
+"vmSwapKb": 0
+}
+]

@@ -228,7 +228,9 @@ export function servicesLine(services: readonly OrphanServiceLine[]): ServicesLi
  * agents group holds that the box cannot take back, in RAM or swap, `swapGb` the part in swap and `cacheGb` the box's file cache beside it,
  * with its loaded sessions by state (src/agent-states.ts). `gb` is null when the box's groups could not be read. The Whole system duty's
  * quiet_agent_gb reads `gb` in the minutes no session `working`. `servicesGb` is the Agent services group beside it (host-stats.ts
- * CGROUP_RULES: the chat service, the relay, pi-pool and the Prime supervisor), which `gb` leaves out since 10-21.
+ * `leafHolder`: the chat service, the relay, pi-pool and the Prime supervisor), which `gb` leaves out since 10-21. Since 10-28 `gb` also leaves
+ * out the tests, builds, servers and browsers jobs start in the daemon's cgroup, which read Jobs (`processHolder`), and holds the workers and
+ * kernels alone.
  */
 export interface AgentLine extends AgentCounts { gb: number | null; swapGb?: number; cacheGb?: number; servicesGb?: number;
   /** The group that held the most of the box's memory that minute, which the Whole system duty books a memory stall to (whole-system.ts `minuteSide`). */

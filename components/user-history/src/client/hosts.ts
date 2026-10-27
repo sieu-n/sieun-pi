@@ -14,8 +14,8 @@ const gb = (bytes: number): string => (bytes / 1024 ** 3).toFixed(0);
 
 /**
  * A host's one-line state for its card head and the New chat host menu. Working counts the sessions that stream or run a tool, and waiting the
- * ones that hold a turn open while they wait on the provider, the pool or a subagent (src/agent-states.ts). A tool call that wrote nothing for
- * an hour with no progress reads hung, not working (src/hung-calls.ts).
+ * ones that hold a turn open while they wait on the provider, the pool or a subagent, with the box's own turn queue as a floor for both
+ * (src/agent-states.ts `hostCounts`). A tool call that wrote nothing for an hour with no progress reads hung, not working (src/hung-calls.ts).
  */
 export function hostGlance(host: HostCard): string {
   if (host.state === "unreachable") return "Not answering";

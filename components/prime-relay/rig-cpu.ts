@@ -107,6 +107,22 @@ const jobName = async (dir: string): Promise<string | undefined> => {
 };
 /** The owner each pid (by its start) read from its environ, kept across snapshots so a long-lived process is read once. */
 const envOwners = new Map<string, string | null>();
+/**
+ * The job that owns process `pid`: the one its environ's RLM_SESSION_DIR names, else its nearest parent's among `stats`, up to 40 hops. Each
+ * pid and start is read once and kept (`envOwners`), so a later snapshot of a long-lived process reads no environ. Without `stats` each hop
+ * reads its pid's /proc stat. Undefined when none names one.
+ */
+export async function envOwner(pid: number, stats?: ReadonlyMap<number, { ppid: number; start: number }>, hops = 0): Promise<string | undefined> {
+  const stat = stats ? stats.get(pid) : parseProcStat(await kernel(`/proc/${pid}/stat`));
+  if (!stat || hops > 40) return undefined;
+  const key = `${pid}:${stat.start}`;
+  if (!envOwners.has(key)) {
+    const dir = /(?:^|\0)RLM_SESSION_DIR=([^\0]+)/.exec(await kernel(`/proc/${pid}/environ`))?.[1];
+    if (envOwners.size > 50_000) envOwners.clear();
+    envOwners.set(key, dir ? ownerOf(dir, await jobName(dir)) : null);
+  }
+  return envOwners.get(key) ?? await envOwner(stat.ppid, stats, hops + 1);
+}
 
 /** The unit a /proc/<pid>/cgroup text names: its unit under `app`, or its ssh login scope under the user slice that holds `app`; else null. */
 export function unitOf(cgroup: string, app: string): string | null {
@@ -146,23 +162,12 @@ export async function snapshot(app: string, excluded: ReadonlySet<string>, uid: 
     const stat = parseProcStat(await kernel(`/proc/${name}/stat`));
     if (stat) stats.set(Number(name), { ...stat, unit });
   }));
-  const ownerFor = async (pid: number, hops = 0): Promise<string | undefined> => {
-    const stat = stats.get(pid);
-    if (!stat || hops > 40) return undefined;
-    const key = `${pid}:${stat.start}`;
-    if (!envOwners.has(key)) {
-      const dir = /(?:^|\0)RLM_SESSION_DIR=([^\0]+)/.exec(await kernel(`/proc/${pid}/environ`))?.[1];
-      envOwners.set(key, dir ? ownerOf(dir, await jobName(dir)) : null);
-    }
-    return envOwners.get(key) ?? await ownerFor(stat.ppid, hops + 1);
-  };
   const procs = new Map<number, Proc>();
   await Promise.all([...stats].map(async ([pid, stat]) => {
     const command = await kernel(`/proc/${pid}/cmdline`);
     const own = stat.unit === DAEMON_UNIT && ownCommand(command.replaceAll("\0", " "));
-    const owner = own ? undefined : await ownerFor(pid) ?? (stat.unit === DAEMON_UNIT ? NO_OWNER : SSH_SCOPE.test(stat.unit) ? SSH_OWNER : stat.unit);
+    const owner = own ? undefined : await envOwner(pid, stats) ?? (stat.unit === DAEMON_UNIT ? NO_OWNER : SSH_SCOPE.test(stat.unit) ? SSH_OWNER : stat.unit);
     procs.set(pid, { start: stat.start, ticks: stat.ticks, unit: stat.unit, own, command: shortCommand(command), ...owner ? { owner } : {} });
   }));
-  if (envOwners.size > 50_000) envOwners.clear();
   return { at, units, procs };
 }

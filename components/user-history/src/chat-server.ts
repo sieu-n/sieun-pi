@@ -426,7 +426,7 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
   const tools = toolChecks({ dutyStore: backend.duties?.store, ...backend.boards ? { file: join(dirname(backend.boards.dir), TOOL_CHECKS_FILE) } : {} });
   const hosts = hostsView({ title: id => backend.catalog.title(id), picks: () => backend.newChat.picks(),
     rows: name => name === null ? backend.catalog.daemonRows() : backend.catalog.remoteHosts().find(({ host }) => host.name === name)?.rows ?? [],
-    ...backend.calls ? { hung: () => backend.calls!.hung() } : {},
+    ...backend.calls ? { hung: () => backend.calls!.hung() } : {}, selfDaemon: () => backend.catalog.reachable(null),
     selfQueue: async () => backend.agentQueue ? (await backend.agentQueue.view()).pool : { state: "unread", error: "This chat instance runs no agent queue." } });
   /**
    * One Settings > Hosts queue write and that box's fresh pool reading: this box, named as hostsView names its card, writes through its own Agent

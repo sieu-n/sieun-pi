@@ -1,11 +1,12 @@
 import { execFile } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { cpus, freemem, homedir, loadavg, totalmem } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { bounded, kernelDir, kernelFile } from "./kernel-read.ts";
-import { harnessSplit, type HarnessSplit, snapshot as rigSnapshot, type Snapshot as RigSnapshot } from "./rig-cpu.ts";
+import { DAEMON_UNIT, envOwner, harnessSplit, type HarnessSplit, NO_OWNER, ownCommand, snapshot as rigSnapshot, type Snapshot as RigSnapshot, SSH_OWNER } from "./rig-cpu.ts";
+import { type CpuGroup, cpuGroups, cpuSnapshot, type CpuSnapshot } from "./cpu-groups.ts";
 
 /**
  * One box's CPU, memory and turn queue, read on the box itself. The relay serves it as GET /v1/host, and sieun-pi reads its own box the same
@@ -15,21 +16,27 @@ import { harnessSplit, type HarnessSplit, snapshot as rigSnapshot, type Snapshot
 const run = promisify(execFile);
 
 export type MemoryPressure = "normal" | "warn" | "critical";
-export const MEMORY_GROUPS = ["agents", "services", "dev", "ci", "docker", "browsers", "coding", "system", "files", "other"] as const;
+export const MEMORY_GROUPS = ["agents", "services", "jobs", "dev", "ci", "docker", "browsers", "coding", "system", "files", "other"] as const;
 export type MemoryGroupId = (typeof MEMORY_GROUPS)[number];
 /**
- * One memory group: its bytes and its 3 largest owners (a chat tree, a pm2 app, an app with its helpers, a systemd unit). On Linux `bytes` is
- * the memory the box cannot take back (`heldBytes`) and `swapBytes` the part of it in swap; a macOS group has no `swapBytes`.
+ * One memory group: its bytes and its 3 largest holders (a chat tree, a pm2 app, an app with its helpers, a systemd unit, a job). On Linux
+ * `bytes` is the memory the box cannot take back (`heldBytes`) and `swapBytes` the part of it in swap, so `bytes` less `swapBytes` is the
+ * group's RAM, and the groups' RAM adds up to usedBytes; a macOS group has no `swapBytes`. Each holder of `top` has its own `swapBytes` the same way.
  */
-export interface MemoryGroup { id: MemoryGroupId; label: string; bytes: number; swapBytes?: number; top: { label: string; bytes: number }[] }
+export interface MemoryGroup { id: MemoryGroupId; label: string; bytes: number; swapBytes?: number; top: { label: string; bytes: number; swapBytes?: number }[] }
 export interface MachineView {
   platform: "darwin" | "linux";
   /** Busy share of all cores since the previous reading, 0 to 100. */
-  cpu: { percent: number; cores: number; load: [number, number, number] };
+  cpu: { percent: number; cores: number; load: [number, number, number];
+    /**
+     * The busy cores by group over the same window as `percent`, largest first, adding up to percent of cores (cpu-groups.ts); absent on
+     * macOS, on a relay older than 10-28 and on the first reading after a start.
+     */
+    groups?: CpuGroup[] };
   /**
    * On macOS usedBytes counts app, wired and compressed memory, as Activity Monitor's "Memory Used" does, and the groups are the pressure
    * feed's owners by footprint. On Linux usedBytes is MemTotal minus MemAvailable, and the groups are what the leaf cgroups hold that the
-   * box cannot take back (`heldBytes`).
+   * box cannot take back (`heldBytes`) with the kernel's own share in System (`kernelItems`), so their RAM adds up to usedBytes.
    */
   memory: { usedBytes: number; totalBytes: number; swapUsedBytes: number | null; swapTotalBytes: number | null; pressure: MemoryPressure | null;
     /** Largest first; null when the macOS feed is stale or the cgroup tree is unreadable. */
@@ -73,8 +80,7 @@ function procStat(): string | null {
 let previous = cpuSample();
 let lastPercent = 0;
 /** Busy share of all cores since the previous call, so each poll reports the time since the one before. */
-function cpuPercent(): { percent: number; cores: number } {
-  const next = cpuSample();
+function cpuPercent(next = cpuSample()): { percent: number; cores: number } {
   const total = next.total - previous.total;
   if (total > 0) lastPercent = Math.max(0, Math.min(100, (100 * (next.busy - previous.busy)) / total));
   previous = next;
@@ -82,18 +88,28 @@ function cpuPercent(): { percent: number; cores: number } {
 }
 
 const GB = 1024 ** 3;
-const GROUP_LABELS: Record<MemoryGroupId, string> = { agents: "Agent sessions", services: "Agent services", dev: "Dev servers and app code", ci: "CI runners", docker: "Docker",
-  browsers: "Browsers", coding: "Coding tools", system: "System", files: "Files in /tmp and shared memory", other: "Other" };
+export const GROUP_LABELS: Record<MemoryGroupId, string> = { agents: "Agent sessions", services: "Agent services", jobs: "Jobs' servers, builds and tests",
+  dev: "Dev servers and app code", ci: "CI runners", docker: "Docker", browsers: "Browsers", coding: "Coding tools", system: "System",
+  files: "Files in /tmp and shared memory", other: "Other" };
 
-function grouped(items: { id: MemoryGroupId; label: string; bytes: number; swapBytes?: number }[], always: MemoryGroupId[]): MemoryGroup[] {
-  const groups = new Map<MemoryGroupId, { label: string; bytes: number; swapBytes?: number }[]>(MEMORY_GROUPS.map(id => [id, []]));
-  for (const item of items) groups.get(item.id)!.push(item);
+type Item = { id: MemoryGroupId; label: string; bytes: number; swapBytes?: number };
+/** RAM first: what an item holds less its part in swap. */
+const ram = (item: { bytes: number; swapBytes?: number }): number => item.bytes - (item.swapBytes ?? 0);
+/** The items summed into groups, items of one group with one label merged (a job's several units), each group and its top by RAM. */
+function grouped(items: Item[], always: MemoryGroupId[]): MemoryGroup[] {
+  const groups = new Map<MemoryGroupId, Map<string, Item>>(MEMORY_GROUPS.map(id => [id, new Map()]));
+  for (const item of items) {
+    const members = groups.get(item.id)!, same = members.get(item.label);
+    members.set(item.label, same ? { ...same, bytes: same.bytes + item.bytes, ...same.swapBytes !== undefined || item.swapBytes !== undefined
+      ? { swapBytes: (same.swapBytes ?? 0) + (item.swapBytes ?? 0) } : {} } : item);
+  }
   return [...groups].map(([id, members]): MemoryGroup => {
-    const top = members.sort((a, b) => b.bytes - a.bytes);
+    const top = [...members.values()].sort((a, b) => ram(b) - ram(a));
     const swapped = top.some(item => item.swapBytes !== undefined);
     return { id, label: GROUP_LABELS[id], bytes: top.reduce((sum, item) => sum + item.bytes, 0),
-      ...swapped ? { swapBytes: top.reduce((sum, item) => sum + (item.swapBytes ?? 0), 0) } : {}, top: top.slice(0, 3).map(({ label, bytes }) => ({ label, bytes })) };
-  }).filter(group => group.bytes > 0 || always.includes(group.id)).sort((a, b) => b.bytes - a.bytes);
+      ...swapped ? { swapBytes: top.reduce((sum, item) => sum + (item.swapBytes ?? 0), 0) } : {},
+      top: top.slice(0, 3).map(({ label, bytes, swapBytes }) => ({ label, bytes, ...swapBytes ? { swapBytes } : {} })) };
+  }).filter(group => group.bytes > 0 || always.includes(group.id)).sort((a, b) => ram(b) - ram(a));
 }
 
 /** ops guy's Mac-wide feed, schema v1, rewritten every 10 s. A reading older than FEED_FRESH_MS (three missed writes) is stale. */
@@ -182,49 +198,117 @@ export function parsePsi(text: string): MemoryPressure | null {
   return full >= 70 ? "critical" : some >= 7 ? "warn" : "normal";
 }
 
+/** Who holds some memory in Settings > Hosts: its group and the name the group's list shows. */
+export interface Holder { id: MemoryGroupId; label: string }
+
 /**
- * The group of a leaf cgroup path under /sys/fs/cgroup, first match. The dev half of us-metal02 is dev.slice and the CI half is virev.slice.
- * Agent services are what serves every session and stays up when none works: the chat service, the relay, pi-pool and the Prime supervisor
- * (split out of the daemon's cgroup by `supervisorMemory`). Until 10-21 they counted in Agent sessions, which the owner's goal "idle agents free
- * their memory: us-metal02 agent sessions drop under 5 GB" judges: at 03:52Z on 10-21 the chat service held 1.37 GB and the supervisor 0.43 GB.
+ * The units installed under the user's app.slice that are not agent services, by group. Every other installed unit there serves the harness
+ * (the chat services, pi-pool, the relay, prime-sync, the watchdog, the feeds), and every transient unit is a job's (`leafHolder`).
  */
-export const CGROUP_RULES: [MemoryGroupId, RegExp][] = [
-  ["services", /sieun-pi-chat|pi-pool|prime-relay|agent-chat/],
-  ["agents", /prime-agent|sieun-pi/],
-  ["ci", /^virev\.slice\/|virev-ci/],
+const INSTALLED_UNITS: [MemoryGroupId, RegExp][] = [
+  ["dev", /^(auto-sns-dev-pm2|box-devserver-heal|llm-wiki|b2-viewer)\.service$/],
+  ["ci", /^ci-(cache|monitor)\.service$/],
+  ["coding", /code-server|cursor|vscode/],
+  ["system", /^(dbus|ssh-agent|gpg-agent[\w-]*|at-spi[\w-]*)\.(service|socket)$/],
+];
+const APP_UNIT = /^user\.slice\/user-\d+\.slice\/user@\d+\.service\/app\.slice\/([^/]+)/;
+const LOGIN_SCOPE = /^user\.slice\/user-\d+\.slice\/session-[^/]+\.scope$/;
+/**
+ * The group of a cgroup path under /sys/fs/cgroup outside the user's app.slice, first match. The dev half of us-metal02 is dev.slice and the
+ * CI half is virev.slice, with its production servers in virev-prod.slice; the box's CI runner slots run as system.slice/system-ci02\x2dslot.slice.
+ */
+const PATH_RULES: [MemoryGroupId, RegExp][] = [
+  ["dev", /^virev\.slice\/virev-prod/],
+  ["ci", /^virev\.slice\/|virev-ci|virev\\x2dci|ci02\\x2dslot/],
   ["docker", /docker|containerd|^machine\.slice\//],
   ["dev", /^dev\.slice\//],
   ["coding", /code-server|cursor|vscode/],
-  ["system", /^system\.slice\/|^init\.scope$/],
+  ["system", /^system\.slice\/|^init\.scope$|^user\.slice\/user-\d+\.slice\/user@\d+\.service\//],
 ];
-export const cgroupGroupOf = (path: string): MemoryGroupId => CGROUP_RULES.find(([, rule]) => rule.test(path))?.[0] ?? "other";
+
+let transientRead: { at: number; units: ReadonlySet<string> } | null = null;
+/**
+ * The units systemd started at run time for this user (systemd-run, `heavy`, Chrome's app scopes, a kernel's own scope), from
+ * /run/user/<uid>/systemd/transient, read again after 10 s. rig-cpu.ts tells a job's rig from an installed unit the same way.
+ */
+export function transientUnits(now = Date.now()): ReadonlySet<string> {
+  if (transientRead && now - transientRead.at < 10_000) return transientRead.units;
+  let units: string[] = [];
+  try { units = readdirSync(`/run/user/${process.getuid?.() ?? 0}/systemd/transient`); } catch {}
+  transientRead = { at: now, units: new Set(units) };
+  return transientRead.units;
+}
 
 /**
- * One leaf cgroup's memory: what its processes hold that the box cannot take back (`heldBytes`), the part of that in swap, its file cache, and
- * the tmpfs and shared memory files charged to it (`fileBytes`, `fileSwapBytes` of them in swap), which outlive the processes that wrote them.
+ * Who holds a memory leaf (`memoryLeaves`), or "by-process" for a leaf whose processes split between groups: prime-agent-daemon.service runs
+ * the supervisor, workers and kernels beside the tests, builds, servers and browsers jobs start there, and an ssh login's session scope runs
+ * Prime itself on some days (12:56Z to 16:46Z on 10-27) and Mac jobs' box checks on others. `processHolder` names each of their processes.
+ *
+ * Under app.slice an installed unit is an agent service unless INSTALLED_UNITS gives it another group, a kernel's own pi-rlm-kernel scope is an
+ * agent session, and every other transient unit is a job's (`transient`, `transientUnits`). Until 10-28 a path matched only CGROUP_RULES, so
+ * jobs' transient units and the ssh scopes read Other: 43.1 GB of the 69.7 GB the groups summed at 17:15Z on 10-27.
+ */
+export function leafHolder(path: string, transient: ReadonlySet<string> = transientUnits()): Holder | "by-process" {
+  const label = cgroupLabel(path);
+  const unit = APP_UNIT.exec(path)?.[1];
+  if (unit !== undefined) {
+    if (unit === DAEMON_UNIT) return "by-process";
+    if (unit.startsWith("pi-rlm-kernel-")) return { id: "agents", label: "Prime kernels" };
+    if (transient.has(unit)) return { id: "jobs", label };
+    return { id: INSTALLED_UNITS.find(([, rule]) => rule.test(unit))?.[0] ?? "services", label };
+  }
+  if (LOGIN_SCOPE.test(path)) return "by-process";
+  return { id: PATH_RULES.find(([, rule]) => rule.test(path))?.[0] ?? "other", label };
+}
+
+const SUPERVISOR_COMMAND = /(?:^|\/)prime-agent --mode daemon --daemon-socket \S*\/daemon\.sock(?:\s|$)/;
+/**
+ * Who holds a process of a by-process leaf, from its command line (NULs as spaces) and its owner (rig-cpu.ts `envOwner`: the job its environ or
+ * a parent's names). The supervisor is the daemon process on daemon.sock and a worker any other `ownCommand` process, both with no owner, since a
+ * job's test daemon carries its job's session; a kernel (`-m rlm.repl`) is an agent session's. Every other process is a job's, named by its
+ * owner, else NO_OWNER in the daemon's unit and SSH_OWNER in a login scope.
+ */
+export function processHolder(path: string, proc: { command: string; owner?: string }): Holder {
+  if (/\s-m rlm\.repl\b/.test(proc.command)) return { id: "agents", label: "Prime kernels" };
+  if (proc.owner === undefined && SUPERVISOR_COMMAND.test(proc.command)) return { id: "services", label: "Prime supervisor" };
+  if (proc.owner === undefined && ownCommand(proc.command)) return { id: "agents", label: "Prime workers" };
+  return { id: "jobs", label: proc.owner ?? (LOGIN_SCOPE.test(path) ? SSH_OWNER : NO_OWNER) };
+}
+
+/**
+ * The leaf cgroups at the memory controller's edge under `root`, relative to it, so each byte counts once: a cgroup whose
+ * cgroup.subtree_control has no memory. A qemu guest is so its .../libvirt cgroup, never the vcpuN and emulator threads under it, which have no
+ * memory files. Until 10-28 the walk went down to cgroups with no child, read those threads, found no memory.stat and left every CI guest out:
+ * CI runners read 0.0 GB at 17:15Z on 10-27 while ps put 55 to 85 GB in qemu. A cgroup that cannot be read is left out.
+ */
+export async function memoryLeaves(root = "/sys/fs/cgroup"): Promise<string[]> {
+  const leaves: string[] = [];
+  async function walk(relative: string): Promise<void> {
+    const dir = relative ? join(root, relative) : root;
+    const control = await kernelFile(join(dir, "cgroup.subtree_control")).catch(() => null);
+    if (control === null) return;
+    if (relative && !control.split(/\s+/).includes("memory")) { leaves.push(relative); return; }
+    const children = (await kernelDir(dir).catch(() => [])).filter(entry => entry.isDirectory());
+    await Promise.all(children.map(entry => walk(relative ? `${relative}/${entry.name}` : entry.name)));
+  }
+  await walk("");
+  return leaves.sort();
+}
+
+/**
+ * One leaf cgroup's memory: what its processes hold that the box cannot take back (`bytes`, in RAM or swap), the part of that in swap, its file
+ * cache, and the tmpfs and shared memory files charged to it (`fileBytes`, `fileSwapBytes` of them in swap), which outlive the processes that
+ * wrote them. `holders` splits `bytes` and `swapBytes` between who holds them: one holder for most leaves, each process's holder for a
+ * by-process leaf (`processShares`).
  */
 export interface LeafMemory { path: string; bytes: number; swapBytes: number; cacheBytes: number; fileBytes: number; fileSwapBytes: number;
-  /** The part of `bytes` (and `swapBytes`) that the Prime supervisor holds in the daemon's cgroup (`supervisorMemory`), which counts as an agent service. */
-  services?: { bytes: number; swapBytes: number } }
-
-/**
- * The Prime supervisor's pid file, which prime-agent-daemon.service names as its PIDFile (deploy/linux, `%t/prime-agent-daemon.pid`). The
- * supervisor runs in the same cgroup as every worker and kernel it starts, so only its pid tells it apart.
- */
-export const SUPERVISOR_PID_FILE = (): string => join(process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? 0}`, "prime-agent-daemon.pid");
+  holders: { holder: Holder; bytes: number; swapBytes: number }[] }
 
 /** The anonymous memory and swap of /proc/<pid>/status in bytes. */
 export function processHeld(status: string): { bytes: number; swapBytes: number } {
   const kb = (name: string): number => Number(new RegExp(`^${name}:\\s+(\\d+) kB`, "m").exec(status)?.[1] ?? 0) * 1024;
   const swapBytes = kb("VmSwap");
   return { bytes: kb("RssAnon") + swapBytes, swapBytes };
-}
-
-/** What the supervisor of `pidFile` holds when it is one of the cgroup's `procs`; null for another cgroup or an unread pid. */
-export async function supervisorMemory(procs: string, pidFile = SUPERVISOR_PID_FILE()): Promise<{ bytes: number; swapBytes: number } | null> {
-  const pid = (await readFile(pidFile, "utf8").catch(() => "")).trim();
-  if (!/^\d+$/.test(pid) || !procs.split("\n").includes(pid)) return null;
-  return kernelFile(`/proc/${pid}/status`).then(processHeld, () => null);
 }
 
 /**
@@ -238,7 +322,7 @@ export async function supervisorMemory(procs: string, pidFile = SUPERVISOR_PID_F
  * processes, while /tmp held 3.94 GB of files with 0.18 GB of them in RAM, and d7 read 9.3 GB with no session working at 00:23Z.
  * Null when memory.stat has no anon line.
  */
-export function heldBytes(stat: string, swap: string, processSwap: number | null): Omit<LeafMemory, "path"> | null {
+export function heldBytes(stat: string, swap: string, processSwap: number | null): Omit<LeafMemory, "path" | "holders"> | null {
   const field = (name: string): number | null => { const value = new RegExp(`^${name} (\\d+)$`, "m").exec(stat)?.[1]; return value === undefined ? null : Number(value); };
   const anon = field("anon"), shmem = field("shmem") ?? 0, file = field("file") ?? 0;
   if (anon === null) return null;
@@ -262,53 +346,148 @@ export async function processSwap(procs: string): Promise<number> {
   return swaps.reduce((sum, bytes) => sum + bytes, 0);
 }
 
-/** The leaf cgroups under `root` with their memory (`heldBytes`), so each byte counts once. A cgroup that cannot be read is skipped. */
-export async function leafCgroups(root = "/sys/fs/cgroup"): Promise<LeafMemory[]> {
-  const leaves: LeafMemory[] = [];
-  async function walk(relative: string): Promise<void> {
-    const dir = relative ? join(root, relative) : root;
-    const children = (await kernelDir(dir).catch(() => [])).filter(entry => entry.isDirectory()).map(entry => relative ? `${relative}/${entry.name}` : entry.name);
-    if (relative && !children.length) {
-      const [stat = null, swap = null, procs = null] = await Promise.all(["memory.stat", "memory.swap.current", "cgroup.procs"].map(name => kernelFile(join(dir, name)).catch(() => null)));
-      const swapped = Number(swap?.trim() || 0) > 0;
-      const held = heldBytes(stat ?? "", swap ?? "", swapped && procs !== null ? await processSwap(procs) : null);
-      const services = held && procs !== null && cgroupGroupOf(relative) === "agents" ? await supervisorMemory(procs) : null;
-      if (held && (held.bytes > 0 || held.cacheBytes > 0 || held.fileBytes > 0)) leaves.push({ path: relative, ...held, ...services ? { services: {
-        bytes: Math.min(services.bytes, held.bytes), swapBytes: Math.min(services.swapBytes, held.swapBytes) } } : {} });
-      return;
-    }
-    await Promise.all(children.map(walk));
+/** One process of a by-process leaf as `processShares` weighs it: its holder and its RssAnon and VmSwap (`processHeld`). */
+export interface ProcessShare { holder: Holder; bytes: number; swapBytes: number }
+/**
+ * A by-process leaf's `bytes` and `swapBytes` split between its processes' holders in proportion to what each holds, so the parts add up to
+ * the cgroup's own count: RssAnon counts a forked child's shared pages twice, and a process that exits leaves the cgroup's count first.
+ * A leaf none of whose live processes hold anything goes to `fallback` whole.
+ */
+export function processShares(leaf: { bytes: number; swapBytes: number }, procs: readonly ProcessShare[], fallback: Holder): LeafMemory["holders"] {
+  const ram = leaf.bytes - leaf.swapBytes;
+  const byHolder = new Map<string, ProcessShare>();
+  for (const proc of procs) {
+    const key = `${proc.holder.id}\0${proc.holder.label}`;
+    const entry = byHolder.get(key) ?? { holder: proc.holder, bytes: 0, swapBytes: 0 };
+    entry.bytes += proc.bytes - proc.swapBytes;
+    entry.swapBytes += proc.swapBytes;
+    byHolder.set(key, entry);
   }
-  await walk("");
-  return leaves;
+  const parts = [...byHolder.values()];
+  const procRam = parts.reduce((sum, part) => sum + part.bytes, 0), procSwap = parts.reduce((sum, part) => sum + part.swapBytes, 0);
+  if (!(procRam > 0) && !(procSwap > 0)) return [{ holder: fallback, bytes: leaf.bytes, swapBytes: leaf.swapBytes }];
+  // A side the processes hold none of goes by the other side's weights, so the parts still add up to the leaf.
+  const ramWeight = (part: ProcessShare): number => procRam > 0 ? part.bytes / procRam : part.swapBytes / procSwap;
+  const swapWeight = (part: ProcessShare): number => procSwap > 0 ? part.swapBytes / procSwap : part.bytes / procRam;
+  return parts.map(part => {
+    const swapBytes = Math.round(leaf.swapBytes * swapWeight(part));
+    return { holder: part.holder, bytes: Math.round(ram * ramWeight(part)) + swapBytes, swapBytes };
+  }).filter(part => part.bytes > 0);
 }
 
-/** A readable name for a leaf cgroup: a login session names its user id, and libvirt's inner cgroup takes its VM's scope name. */
-export function cgroupLabel(path: string): string {
-  const login = /user-(\d+)\.slice\/session-(\d+)\.scope$/.exec(path);
-  if (login) return `${login[1] === "0" ? "root" : `uid ${login[1]}`} login session ${login[2]}`;
-  const parts = path.split("/").map(part => part.replace(/\\x2d/g, "-"));
-  const leaf = parts.length > 1 && /^(libvirt|emulator|vcpu\d+)$/.test(parts.at(-1)!) ? parts.at(-2)! : parts.at(-1)!;
-  return leaf.replace(/\.(service|scope|slice)$/, "");
+/** Each live process of a cgroup's `procs` with its holder (`processHolder`) and its anonymous memory and swap. */
+async function processesOf(path: string, procs: string): Promise<ProcessShare[]> {
+  const pids = procs.split("\n").filter(pid => /^\d+$/.test(pid)).map(Number);
+  const read = await Promise.all(pids.map(async pid => {
+    const [status, command] = await Promise.all([kernelFile(`/proc/${pid}/status`).catch(() => null), kernelFile(`/proc/${pid}/cmdline`).catch(() => null)]);
+    if (status === null || command === null) return null;
+    const owner = await envOwner(pid).catch(() => undefined);
+    return { holder: processHolder(path, { command: command.replaceAll("\0", " ").trim(), ...owner ? { owner } : {} }), ...processHeld(status) };
+  }));
+  return read.filter(proc => proc !== null);
 }
 
-export function cgroupGroups(leaves: readonly LeafMemory[]): MemoryGroup[] | null {
-  if (!leaves.length) return null;
-  return grouped(leaves.flatMap(leaf => [{ id: cgroupGroupOf(leaf.path), label: cgroupLabel(leaf.path), bytes: leaf.bytes - (leaf.services?.bytes ?? 0),
-    swapBytes: leaf.swapBytes - (leaf.services?.swapBytes ?? 0) },
-    ...leaf.services ? [{ id: "services" as const, label: "Prime supervisor", bytes: leaf.services.bytes, swapBytes: leaf.services.swapBytes }] : [],
-    ...leaf.fileBytes > 0 ? [{ id: "files" as const, label: cgroupLabel(leaf.path), bytes: leaf.fileBytes, swapBytes: leaf.fileSwapBytes }] : []]), []);
+/** The job a job's unit belongs to, from the first of its processes whose environ, or a parent's, names one (rig-cpu.ts `envOwner`). */
+async function unitOwner(procs: string): Promise<string | undefined> {
+  for (const pid of procs.split("\n").filter(pid => /^\d+$/.test(pid)).slice(0, 8)) {
+    const owner = await envOwner(Number(pid)).catch(() => undefined);
+    if (owner) return owner;
+  }
+  return undefined;
 }
 
 /**
+ * The memory leaves under `root` (`memoryLeaves`) with their memory (`heldBytes`) and who holds it (`leafHolder`, `processHolder`). A job's
+ * unit takes its job's name when one of its processes names it (`unitOwner`), else its unit's. A cgroup that cannot be read is left out.
+ */
+export async function leafCgroups(root = "/sys/fs/cgroup", transient: ReadonlySet<string> = transientUnits()): Promise<LeafMemory[]> {
+  const leaves = await Promise.all((await memoryLeaves(root)).map(async (path): Promise<LeafMemory | null> => {
+    const dir = join(root, path);
+    const [stat = null, swap = null, procs = null] = await Promise.all(["memory.stat", "memory.swap.current", "cgroup.procs"].map(name => kernelFile(join(dir, name)).catch(() => null)));
+    const swapped = Number(swap?.trim() || 0) > 0;
+    const held = heldBytes(stat ?? "", swap ?? "", swapped && procs !== null ? await processSwap(procs) : null);
+    if (!held || !(held.bytes > 0 || held.cacheBytes > 0 || held.fileBytes > 0)) return null;
+    const holder = leafHolder(path, transient);
+    if (holder === "by-process") {
+      const fallback: Holder = LOGIN_SCOPE.test(path) ? { id: "jobs", label: SSH_OWNER } : { id: "agents", label: "Prime workers" };
+      return { path, ...held, holders: processShares(held, held.bytes > 0 && procs !== null ? await processesOf(path, procs) : [], fallback) };
+    }
+    const owner = holder.id === "jobs" && procs !== null ? await unitOwner(procs) : undefined;
+    return { path, ...held, holders: [{ holder: owner ? { id: "jobs", label: owner } : holder, bytes: held.bytes, swapBytes: held.swapBytes }] };
+  }));
+  return leaves.filter(leaf => leaf !== null);
+}
+
+/** A readable name for a cgroup: a login session names its user id, a qemu guest its domain name, a container its id's first 12 characters, and a unit drops its suffix. */
+export function cgroupLabel(path: string): string {
+  const login = /user-(\d+)\.slice\/session-([^/]+)\.scope$/.exec(path);
+  if (login) return `${login[1] === "0" ? "root" : `uid ${login[1]}`} login session ${login[2]}`;
+  const parts = path.split("/").map(part => part.replace(/\\x2d/g, "-"));
+  const leaf = parts.length > 1 && /^(libvirt|emulator|vcpu\d+)$/.test(parts.at(-1)!) ? parts.at(-2)! : parts.at(-1)!;
+  return leaf.replace(/^machine-qemu-\d+-/, "").replace(/^(docker-[0-9a-f]{12})[0-9a-f]{52}\b/, "$1").replace(/\.(service|scope|slice)$/, "");
+}
+
+/**
+ * The kernel's own share of used memory (MemTotal less MemAvailable) as System items, from /proc/meminfo and /proc/zoneinfo, and the process
+ * memory the box counted that the leaf cgroups' `cgroupRam` (their anon and shmem in RAM) did not, which is memory that changed while the leaves
+ * were read. MemAvailable is MemFree less the free pages the kernel keeps back (each zone's high watermark and lowmem protection), plus the file
+ * cache and reclaimable slab less a low watermark of each (mm/show_mem.c si_mem_available), so those three count as used. Free pages on the
+ * per-CPU lists are not in MemFree either: at 17:20Z on 10-27 on us-metal02, with 80 CPUs, they held 6.7 GB, the watermarks 7.7 GB, the cache's
+ * low watermarks 6.4 GB, and used read 143.4 GB. Null when either file does not parse.
+ */
+export function kernelItems(meminfo: string, zoneinfo: string, cgroupRam: number, pageSize = 4096): { system: (Holder & { bytes: number })[]; unread: number } | null {
+  const kb = (name: string): number | null => { const value = new RegExp(`^${name.replace(/[()]/g, "\\$&")}:\\s+(\\d+) kB`, "m").exec(meminfo)?.[1]; return value === undefined ? null : Number(value) * 1024; };
+  const total = kb("MemTotal"), free = kb("MemFree"), available = kb("MemAvailable");
+  const zones = zoneinfo.split(/^Node /m).slice(1);
+  if (total === null || free === null || available === null || !zones.length) return null;
+  const pages = (zone: string, name: string): number => Number(new RegExp(`^\\s+${name}\\s+(\\d+)$`, "m").exec(zone)?.[1] ?? 0);
+  let reserve = 0, low = 0, perCpu = 0;
+  for (const zone of zones) {
+    const protection = Math.max(0, ...(/protection: \(([^)]*)\)/.exec(zone)?.[1] ?? "").split(",").map(Number).filter(Number.isFinite));
+    reserve += Math.min(protection + pages(zone, "high"), pages(zone, "managed"));
+    low += pages(zone, "low");
+    for (const count of zone.matchAll(/^\s+count:\s+(\d+)$/gm)) perCpu += Number(count[1]);
+  }
+  const cache = (kb("Active(file)") ?? 0) + (kb("Inactive(file)") ?? 0), slab = kb("KReclaimable") ?? kb("SReclaimable") ?? 0;
+  const heldBack = Math.min(Math.floor(cache / 2), low * pageSize) + Math.min(Math.floor(slab / 2), low * pageSize);
+  const named: [string, number][] = [["Free memory the kernel keeps in reserve (watermarks)", reserve * pageSize],
+    ["File cache and slab MemAvailable keeps back (low watermarks)", heldBack], ["Free pages on the per-CPU lists", perCpu * pageSize],
+    ["Kernel slab it cannot reclaim", kb("SUnreclaim") ?? 0], ["Compressed swap pool (zswap)", kb("Zswap") ?? 0],
+    ["Page tables", (kb("PageTables") ?? 0) + (kb("SecPageTables") ?? 0)], ["Per-CPU allocations", kb("Percpu") ?? 0], ["Kernel stacks", kb("KernelStack") ?? 0]];
+  const process = (kb("AnonPages") ?? 0) + (kb("Shmem") ?? 0);
+  const kernel = total - free - cache - slab - process - named.slice(2).reduce((sum, [, bytes]) => sum + bytes, 0);
+  named.push(["Other kernel memory (swap cache, drivers, vmalloc)", Math.max(0, kernel)]);
+  return { system: named.filter(([, bytes]) => bytes > 0).map(([label, bytes]) => ({ id: "system", label, bytes })), unread: Math.max(0, process - cgroupRam) };
+}
+
+/**
+ * The leaves' memory by group, each holder once in its group's list, with the kernel's own items in System (`kernelItems`) when the box's
+ * /proc/meminfo and /proc/zoneinfo texts are given.
+ */
+export function cgroupGroups(leaves: readonly LeafMemory[], proc?: { meminfo: string; zoneinfo: string }): MemoryGroup[] | null {
+  if (!leaves.length) return null;
+  const kernel = proc ? kernelItems(proc.meminfo, proc.zoneinfo, leafRam(leaves)) : null;
+  return grouped([...leaves.flatMap(leaf => [...leaf.holders.filter(part => part.bytes > 0).map(({ holder, bytes, swapBytes }) => ({ ...holder, bytes, swapBytes })),
+    ...leaf.fileBytes > 0 ? [{ id: "files" as const, label: cgroupLabel(leaf.path), bytes: leaf.fileBytes, swapBytes: leaf.fileSwapBytes }] : []]),
+    ...kernel?.system ?? [], ...kernel && kernel.unread > 0 ? [{ id: "other" as const, label: "Process memory that changed while the cgroups were read", bytes: kernel.unread }] : []], []);
+}
+
+/** The RAM the leaves' processes and files hold: their anon and shmem, which /proc/meminfo counts as AnonPages and Shmem. */
+const leafRam = (leaves: readonly LeafMemory[]): number => leaves.reduce((sum, leaf) => sum + leaf.bytes - leaf.swapBytes + leaf.fileBytes - leaf.fileSwapBytes, 0);
+
+/**
  * The box's memory by group, the one reading Settings > Hosts draws and the Whole system duty's quiet_agent_gb reads (src/mac-usable-watch.ts
- * `agentLine`), so the two cannot disagree: on Linux the leaf cgroups' held memory with their file cache beside it, on macOS the pressure
- * feed's owners by footprint. A call while a Linux walk is still out joins it (kernel-read.ts `bounded`), so a hung cgroup file is read once.
+ * `agentLine`), so the two cannot disagree: on Linux the leaf cgroups' held memory and the kernel's own share, with their file cache beside
+ * it, on macOS the pressure feed's owners by footprint. A call while a Linux walk is still out joins it (kernel-read.ts `bounded`), so a hung
+ * cgroup file is read once.
  */
 export async function memoryByGroup(): Promise<{ groups: MemoryGroup[] | null; cacheBytes?: number | null }> {
   if (process.platform === "darwin") return { groups: memoryGroups(await readFile(PRESSURE_FEED, "utf8").then(text => JSON.parse(text) as unknown).catch(() => null), Date.now()) };
-  const leaves = (await bounded("leaf cgroups", () => leafCgroups()))!;
-  return { groups: cgroupGroups(leaves), cacheBytes: leaves.length ? leaves.reduce((sum, leaf) => sum + leaf.cacheBytes, 0) : null };
+  return (await bounded("leaf cgroups", async () => {
+    const leaves = await leafCgroups();
+    const [meminfo, zoneinfo] = await Promise.all(["/proc/meminfo", "/proc/zoneinfo"].map(path => kernelFile(path).catch(() => "")));
+    return { groups: cgroupGroups(leaves, { meminfo: meminfo!, zoneinfo: zoneinfo! }), cacheBytes: leaves.length ? leaves.reduce((sum, leaf) => sum + leaf.cacheBytes, 0) : null };
+  }))!;
 }
 
 async function linuxMemory(): Promise<MachineView["memory"]> {
@@ -321,12 +500,30 @@ async function linuxMemory(): Promise<MachineView["memory"]> {
   return { ...(meminfo ?? { usedBytes: totalBytes - freemem(), totalBytes, swapUsedBytes: null, swapTotalBytes: null }), pressure: psi, ...byGroup };
 }
 
+/**
+ * The CPU groups' last snapshot and the groups it ended. Two readers that poll at once join one snapshot (kernel-read.ts `bounded`) and get
+ * the same groups, and `cpuPercent` reads the same /proc/stat text, so the groups and the percent cover one window.
+ */
+let lastCpu: { snapshot: CpuSnapshot; groups?: CpuGroup[] } | null = null;
+const readCpu = async (): Promise<CpuSnapshot> => (await bounded("cpu groups", async () => cpuSnapshot(await memoryLeaves(), path => leafHolder(path))))!;
+if (process.platform === "linux") void readCpu().then(snapshot => { if (!lastCpu && snapshot.stat) { lastCpu = { snapshot }; previous = cpuSample(snapshot.stat); } }, () => {});
+async function linuxCpu(): Promise<Omit<MachineView["cpu"], "load">> {
+  const snapshot = await readCpu();
+  const { percent, cores } = cpuPercent(cpuSample(snapshot.stat || null));
+  if (snapshot !== lastCpu?.snapshot) {
+    const classifier = { leafHolder: (path: string) => leafHolder(path), processHolder, groupLabels: GROUP_LABELS };
+    const groups = lastCpu ? cpuGroups(lastCpu.snapshot, snapshot, classifier, (percent * cores) / 100, cores) : null;
+    lastCpu = { snapshot, ...groups ? { groups } : {} };
+  }
+  return { percent, cores, ...lastCpu.groups ? { groups: lastCpu.groups } : {} };
+}
+
 export async function machineView(): Promise<MachineView> {
   const platform = process.platform === "darwin" ? "darwin" : "linux";
   const memory = platform === "darwin" ? await macMemory() : await linuxMemory();
-  const { percent, cores } = cpuPercent();
+  const cpu = platform === "linux" ? await linuxCpu() : cpuPercent();
   const [one = 0, five = 0, fifteen = 0] = loadavg();
-  return { platform, cpu: { percent, cores, load: [one, five, fifteen] }, memory };
+  return { platform, cpu: { ...cpu, load: [one, five, fifteen] }, memory };
 }
 
 /** The installed pi-pool CLI, ~/.local/bin/pi-pool, or PI_POOL_BIN. */

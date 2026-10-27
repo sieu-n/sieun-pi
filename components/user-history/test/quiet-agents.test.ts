@@ -7,7 +7,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { cgroupGroups, heldBytes, leafCgroups, vmSwap, type MachineView, type MemoryGroup } from "../../prime-relay/host-stats.ts";
+import { cgroupGroups, heldBytes, type Holder, type LeafMemory, leafCgroups, vmSwap, type MachineView, type MemoryGroup } from "../../prime-relay/host-stats.ts";
 import { measure, quietAgents } from "../scripts/duties/whole-system.ts";
 import { agentCounts } from "../src/agent-states.ts";
 import { hostGlance } from "../src/client/hosts.ts";
@@ -18,6 +18,10 @@ import type { HostCard } from "../src/shared/types.ts";
 const GB = 1024 ** 3;
 const MIN = 60_000;
 const RUN = Date.parse("2026-10-18T23:47:08Z");
+/** A leaf at `path` that one holder holds whole. */
+const heldBy = (path: string, holder: Holder, held: Omit<LeafMemory, "path" | "holders">): LeafMemory =>
+  ({ path, ...held, holders: [{ holder, bytes: held.bytes, swapBytes: held.swapBytes }] });
+const WORKERS: Holder = { id: "agents", label: "Prime workers" };
 const duty = JSON.parse(readFileSync(join(import.meta.dirname, "../scripts/duties/whole-system.duty.json"), "utf8")) as { metrics: Parameters<typeof judge>[0] };
 const footprints: Footprints = { workers: {}, kernels: [], swap_used_bytes: 15.7 * GB, pressure_level: null, cpu_s: 0 };
 
@@ -108,8 +112,9 @@ test("Hosts counts memory the box cannot take back: anon and swap, tmpfs files a
   assert.equal(held.fileBytes / GB, 3);
   assert.equal(Math.round(10 * held.cacheBytes / GB) / 10, 53.5);
   assert.equal(heldBytes("", "", null), null);
-  const groups = cgroupGroups([{ path: "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service", ...held },
-    { path: "user.slice/user-1001.slice/user@1001.service/app.slice/sieun-pi-chat.service", bytes: 1.4 * GB, swapBytes: 0, cacheBytes: 0, fileBytes: 0, fileSwapBytes: 0 }])!;
+  const groups = cgroupGroups([heldBy("user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service", WORKERS, held),
+    heldBy("user.slice/user-1001.slice/user@1001.service/app.slice/sieun-pi-chat.service", { id: "services", label: "sieun-pi-chat" },
+      { bytes: 1.4 * GB, swapBytes: 0, cacheBytes: 0, fileBytes: 0, fileSwapBytes: 0 })])!;
   assert.equal(groups[0]!.id, "agents");
   assert.equal(Math.round(10 * groups[0]!.bytes / GB) / 10, 50.5, "the chat service counts in Agent services since 10-21 (agent-services.test.ts)");
   assert.equal(groups[0]!.swapBytes, 6.75 * GB);
@@ -125,7 +130,7 @@ test("Agent sessions leave out the tmpfs files jobs left in /tmp, which no sessi
   assert.equal(Math.round(100 * held.bytes / GB) / 100, 46.92);
   assert.equal(Math.round(100 * held.fileSwapBytes / GB) / 100, 4.11);
   assert.equal(Math.round(100 * held.fileBytes / GB) / 100, 4.13);
-  const groups = cgroupGroups([{ path: "user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service", ...held }])!;
+  const groups = cgroupGroups([heldBy("user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service", WORKERS, held)])!;
   assert.equal(Math.round(100 * groups.find(group => group.id === "agents")!.bytes / GB) / 100, 46.92);
   const files = groups.find(group => group.id === "files")!;
   assert.equal(files.label, "Files in /tmp and shared memory");
@@ -136,6 +141,8 @@ test("Agent sessions leave out the tmpfs files jobs left in /tmp, which no sessi
   const root = await mkdtemp(join(tmpdir(), "leaf-cgroups-"));
   const leaf = join(root, "user.slice/app.slice/prime-agent-daemon.service");
   await mkdir(leaf, { recursive: true });
+  for (const [dir, control] of [[root, "memory"], [join(root, "user.slice"), "memory"], [join(root, "user.slice/app.slice"), "memory"], [leaf, ""]] as const)
+    await writeFile(join(dir, "cgroup.subtree_control"), `${control}\n`);
   await writeFile(join(leaf, "memory.stat"), `anon ${bytes(0.5)}\nfile 0\nshmem 0\n`);
   await writeFile(join(leaf, "memory.swap.current"), `${bytes(2)}\n`);
   const own = vmSwap(await readFile(`/proc/${process.pid}/status`, "utf8"));

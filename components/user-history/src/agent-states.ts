@@ -39,3 +39,18 @@ export function agentCounts(rows: readonly unknown[], hung: ReadonlySet<string> 
   }
   return counts;
 }
+
+/**
+ * A box's counts for Settings > Hosts: its daemon rows' states (`agentCounts`) with its own pi-pool queue as a floor, `pool` the sessions that
+ * hold a slot and those queued for one. A queued run waits on the pool whether or not its row says so yet, and a slot holder streams. Null,
+ * so the card reads "sessions not read", while no row is loaded and the pool holds nothing: in the first minute after a new Prime supervisor
+ * (16:48:56Z after the reboot and 16:55:30Z after a supervisor restart on 10-27) the rows read no live session and the pool 0 working, 0
+ * queued, while CI guests, Docker and jobs' units kept the CPU busy, and the card said "0 working, 0 waiting".
+ */
+export function hostCounts(rows: readonly unknown[], pool: { working: number; queued: number } | null, hung: ReadonlySet<string> = new Set()): AgentCounts | null {
+  const counts = agentCounts(rows, hung);
+  const loaded = counts.working + counts.children + counts.retry + counts.idle + counts.hung;
+  if (!loaded && !(pool && (pool.working || pool.queued))) return null;
+  if (!pool) return counts;
+  return { ...counts, working: Math.max(counts.working, pool.working - counts.hung), retry: Math.max(counts.retry, pool.queued) };
+}
