@@ -489,17 +489,18 @@ test("a job whose turn ended after it took the fire holds it, so nothing escalat
 
 // Guards 10-19 14:41:36Z to 14:46:50Z: the start of vent-health-failure-rate-stg queued behind about 30 duty creates and the bridge skipped every poll.
 test("a job start that never settles does not stop the polls", async () => {
+  // The wait counts polls from the start on: at a load of 140 on 10-27 the second 20 ms tick beat the first dispatch's state read, and the test
+  // saw no start. A poll starts only once the last one ended, so when the third poll after the start begins, the first one's dispatch has passed the hung chat.
   const dir = await mkdtemp(join(tmpdir(), "alert-bridge-poll-"));
-  let polls = 0;
-  let twice: () => void = () => {};
-  const polled = new Promise<void>(resolve => { twice = resolve; });
+  let after = 0;
+  let thrice: () => void = () => {};
+  const polled = new Promise<void>(resolve => { thrice = resolve; });
   let starts = 0;
   const stop = startAlertBridge({ file: join(dir, "alert-bridge.json"), log: () => {}, deliver: async () => {},
-    alerts: async () => { if (++polls >= 2) twice(); return parseAlerts([ciAlert()]); },
+    alerts: async () => { if (starts && ++after >= 3) thrice(); return parseAlerts([ciAlert()]); },
     startJob: () => { starts++; return new Promise<never>(() => {}); }, jobWorking: async () => false }, 20);
   await polled;
   stop();
-  assert.ok(polls >= 2);
   assert.equal(starts, 1, "the hung start is not started again while it runs");
 });
 
