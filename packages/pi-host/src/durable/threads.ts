@@ -21,6 +21,7 @@ import {
   type SubmissionId, type SubmissionRecord, type Wake,
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
+import type { OwnerMark, TurnTicket } from "@sieun-pi/pi-pool/durable";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync } from "node:fs";
 import { join } from "node:path";
@@ -49,6 +50,11 @@ export interface DurableThreadsOptions {
    * still goes on in it; pi-host gives the session's pi-pool working slot back here.
    */
   inputSettled?: (threadId: string, sessionId: string, runContinues: boolean) => void | Promise<void>;
+  /** pi-pool's turn queue as one thread's conversation sees it, keyed like `inputSettled`; pi-host passes its TurnQueue. */
+  turns?: {
+    ownerTurn: (threadId: string, sessionId: string) => Promise<OwnerMark>;
+    ticket: (threadId: string, sessionId: string) => TurnTicket;
+  };
   log?: (line: string) => void;
   now?: () => number;
 }
@@ -85,6 +91,18 @@ export interface SubmitInput {
   requestId?: string;
   whenBusy?: "steer" | "followUp" | "reject";
   entry?: { kind: "agent.message"; data: { from: string; via?: string } };
+  /** The owner sent it: pi-pool marks the conversation's next run as the owner's, so it skips the turn queue. */
+  ownerTurn?: boolean;
+}
+
+export interface SubmitResult {
+  submission: SubmissionId;
+  requestId: string;
+  status: SubmissionRecord["status"];
+  /** The conversation's run in pi-pool's turn queue right after the admit; absent when pi-host runs without the queue. */
+  ticket?: TurnTicket;
+  /** The answer of the owner-turn mark; absent when `ownerTurn` was not set or the run already held its slot. */
+  owner?: OwnerMark;
 }
 
 interface Watcher {
@@ -445,8 +463,28 @@ export class DurableThreads {
     return conversation;
   }
 
-  /** Admits one input durably and returns at once; `wait` reacquires it by id, also after a restart. */
-  async submit(id: string, input: SubmitInput): Promise<{ submission: SubmissionId; requestId: string; status: SubmissionRecord["status"] }> {
+  /** The provider session id of a conversation, which is its session in pi-pool's turn queue. */
+  private async sessionOf(open: OpenThread, conversation: ConversationId): Promise<string> {
+    const existing = await open.harness.snapshot(ProviderDoc, conversation, context);
+    if (existing?.sessionId) return existing.sessionId;
+    // A conversation from before pi.provider gets its identity in one commit, as pi-durable's ensureProviderSessionId does.
+    return open.harness.commit(async tx => (await tx.doc(ProviderDoc, conversation)).sessionId, context);
+  }
+
+  /** Where a conversation's run stands in pi-pool's turn queue. */
+  async ticket(id: string, conversationId?: number): Promise<TurnTicket | undefined> {
+    if (!this.options.turns) return undefined;
+    const open = await this.thread(id);
+    const conversation = await this.conversation(open, conversationId);
+    return this.options.turns.ticket(id, await this.sessionOf(open, conversation.id));
+  }
+
+  /**
+   * Admits one input durably and returns at once; `wait` reacquires it by id, also after a restart. An owner input
+   * marks its run in pi-pool's turn queue before the admit, because the admit starts the run, unless the run already
+   * holds its slot and takes the input as a steer or follow-up.
+   */
+  async submit(id: string, input: SubmitInput): Promise<SubmitResult> {
     const open = await this.thread(id);
     const conversation = await this.conversation(open, input.conversation);
     const content: (TextContent | ImageContent)[] = [];
@@ -454,6 +492,10 @@ export class DurableThreads {
     for (const image of input.images ?? []) content.push({ type: "image", data: image.data, mimeType: image.mimeType });
     if (!content.length) throw new Error("durable_submit needs text or images");
     const requestId = input.requestId ?? `pi-host:${randomUUID()}`;
+    const turns = this.options.turns;
+    const session = turns ? await this.sessionOf(open, conversation.id) : undefined;
+    let owner: OwnerMark | undefined;
+    if (input.ownerTurn && turns && session && turns.ticket(id, session).place.state !== "working") owner = await turns.ownerTurn(id, session);
     this.index.markActive(id, this.now());
     const submission = await conversation.submit({
       type: "input", content, requestId,
@@ -463,7 +505,11 @@ export class DurableThreads {
     const status = (await submission.status(context)).status;
     // A repeated request id admits nothing and changes no wake, so the mark set above is cleared from the Harness's own value.
     this.onWake(open, open.harness.wake());
-    return { submission: submission.id, requestId, status };
+    return {
+      submission: submission.id, requestId, status,
+      ...(turns && session ? { ticket: turns.ticket(id, session) } : {}),
+      ...(owner ? { owner } : {}),
+    };
   }
 
   async wait(id: string, submission: SubmissionId, waitContext: Context = context): Promise<SettledSubmissionRecord> {

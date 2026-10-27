@@ -21,8 +21,10 @@ const [socket, dir, mode] = process.argv.slice(2);
 if (!socket || !dir || (mode !== "faux" && mode !== "real")) throw new Error("usage: host-worker.ts <socket> <dir> <faux|real>");
 const here = dirname(fileURLToPath(import.meta.url));
 
-const fakePool = join(here, "..", "..", "..", "pi-pool", "test", "fake-pool.mjs");
-const turns = mode === "real" ? new TurnQueue() : new TurnQueue({ bin: fakePool, turnsFile: join(dir, "pool", "turns.json") });
+// HOST_WORKER_POOL_BIN swaps fake-pool.mjs for another hook, such as one that runs the real turn queue in PI_POOL_DIR.
+const poolBin = process.env.HOST_WORKER_POOL_BIN;
+const fakePool = poolBin ?? join(here, "..", "..", "..", "pi-pool", "test", "fake-pool.mjs");
+const turns = mode === "real" ? new TurnQueue() : new TurnQueue({ bin: fakePool, ...(poolBin ? {} : { turnsFile: join(dir, "pool", "turns.json") }) });
 
 function modelsFor(threadId: string) {
   const models = createModels();
@@ -41,6 +43,10 @@ const log = (line: string) => process.stderr.write(`${new Date().toISOString()} 
 const threads = new DurableThreads({ dir: join(dir, "durable"), models: modelsFor, defaultModel: MODEL, defaultThinkingLevel: mode === "real" ? "high" : "off", defaultCwd: dir, log,
   settings: DURABLE_SETTINGS,
   inputSettled: (threadId, session, runContinues) => turns.release({ root: `pi-durable:${threadId}`, session }, runContinues),
+  turns: {
+    ownerTurn: (threadId, session) => turns.ownerTurn({ root: `pi-durable:${threadId}`, session }),
+    ticket: (threadId, session) => turns.ticket({ root: `pi-durable:${threadId}`, session }),
+  },
 });
 const durable = new DurableCommands(threads);
 const host = new PiHost({ agentDir: join(dir, "agent"), dataDir: join(dir, "data"), extensions: [], idleUnloadMs: 0, durable, log });

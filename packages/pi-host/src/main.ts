@@ -83,6 +83,10 @@ const durable = values["no-durable"] ? undefined : new DurableCommands(new Durab
   defaultCwd: values.cwd ? resolve(values.cwd) : homedir(),
   settings: DURABLE_SETTINGS,
   inputSettled: (threadId, session, runContinues) => turns.release({ root: `pi-durable:${threadId}`, session }, runContinues),
+  turns: {
+    ownerTurn: (threadId, session) => turns.ownerTurn({ root: `pi-durable:${threadId}`, session }),
+    ticket: (threadId, session) => turns.ticket({ root: `pi-durable:${threadId}`, session }),
+  },
   log: line => host.log(line),
 }));
 

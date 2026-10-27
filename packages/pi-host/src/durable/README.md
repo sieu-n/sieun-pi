@@ -51,7 +51,8 @@ Each command is one JSON line with `type` and `id`, and the response is a v7 `re
 |---|---|---|
 | `durable_threads` | `archived?` | `threads`: id, name, provider, modelId, cwd, createdAt, updatedAt, status (idle, running, sleeping, failed), wakeAt, preview, children. |
 | `durable_create` | `name?`, `model?` ("provider/id"), `thinkingLevel?`, `cwd?` | `thread` |
-| `durable_submit` | `thread`, `conversation?`, `text?`, `images?` ({data, mimeType}), `requestId?`, `whenBusy?` (steer, followUp, reject), `entry?` ({kind: "agent.message", data: {from, via?}}) | `submission`, `requestId`, `status` |
+| `durable_submit` | `thread`, `conversation?`, `text?`, `images?` ({data, mimeType}), `requestId?`, `whenBusy?` (steer, followUp, reject), `entry?` ({kind: "agent.message", data: {from, via?}}), `ownerTurn?` | `submission`, `requestId`, `status`, `ticket` ({session, tree, place}), `owner?` ({state: marked, off or failed, ahead?}) |
+| `durable_ticket` | `thread`, `conversation?` | `ticket`: the conversation's run in pi-pool's turn queue, read from `turns.json`. |
 | `durable_wait` | `thread`, `submission` | `settled`: the submission record once done or unanswered. |
 | `durable_watch` | `thread`, `conversation?`, `fromEntry?` | `watch`; then `durable_event` lines. |
 | `durable_unwatch` | `watch` | `stopped` |
@@ -118,13 +119,16 @@ end
 5. When the slot starts, the poll ends with a retryable error and the retry sends the request, so `DURABLE_SETTINGS` gives the retry budget two attempts on top of pi-durable's default, one for the turn wait and one for the slot wait.
 6. A working session renews its lease from its requests every 5 minutes, and pi-host releases the slot when the conversation's input settles, with `--queued-input` when a run goes on.
 7. A crash drops the host's queue entries once pi-pool sees the process gone, so a resumed run asks again and keeps its place only through pi-pool's own `kept` rules.
+8. `durable_submit {ownerTurn: true}` runs `pi-pool owner-turn <session>` before the admit, as the chat does for an owner prompt to Prime, so the run's first ask starts at once as kind `owner` and counts toward `working_max`, and a run of that conversation already queued starts now as kind `ahead`. A run that already holds its slot takes the owner's input as a steer or follow-up, and no mark is set.
+9. A ticket's `place` is `{state: "working", kind}`, `{state: "queued", position, total}` in pi-pool's order (lead sessions first, then first asked), `{state: "marked"}` for an owner mark the run has not taken yet, or `{state: "none"}` before the run's first ask and after its release. The ticket in `durable_submit`'s answer is read right after the admit, so the run's first ask may come after it; `durable_ticket` reads it again.
 
 ## Crash tests
 
 1. `test/durable/host-crash.test.ts` starts a real pi-host in a child process, submits through the socket, sends SIGKILL while the subagent streams, while a pool slot wait sleeps or while the run waits in the turn queue, starts a new pi-host on the same folder and checks through the socket that the host reopened the thread by itself and that the input was answered once, with the child's answer as the tool result, plus search, usage and documents after the restart.
    In the turn-queue case it also checks that no token went out before the admit and that every session that asked gave its slot back.
-2. `test/durable/crash.test.ts` does the same on one file without pi-host, with kills mid root stream, mid child stream and in a slot wait.
-3. Both run on the faux provider behind the real pool wrapper and `pi-pool/test/fake-pool.mjs`, and `PI_DURABLE_REAL=1` adds a case on the real `claude-opus-5-5` through pi-pool.
+2. `test/durable/owner-turn.test.ts` runs the real `pool/turns.py` queue in its own `PI_POOL_DIR` with one slot held and two runs queued, and checks that an agent input queues third while an owner input with `ownerTurn: true` is admitted as kind `owner` with no wait and answers, with each ticket over the socket and `durable_usage`'s four costs.
+3. `test/durable/crash.test.ts` runs the crash cases of item 1 on one file without pi-host, with kills mid root stream, mid child stream and in a slot wait.
+4. The crash tests run on the faux provider behind the real pool wrapper and `pi-pool/test/fake-pool.mjs`, and `PI_DURABLE_REAL=1` adds a case on the real `claude-opus-5-5` through pi-pool.
 
 ```sh
 cd packages

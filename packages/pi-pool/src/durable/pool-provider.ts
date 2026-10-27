@@ -69,6 +69,54 @@ export const DURABLE_SETTINGS: HarnessSettings = { retry: { maxRetries: DEFAULT_
 type TurnPlace = { kind: "go" } | { kind: "wait"; position: number | null; total: number | null; askedAt: number };
 
 /**
+ * Where one session stands in turns.json: holding a working slot, queued at a place (lead sessions first, then first
+ * asked, as `order` in pool/turns.py), marked for an owner turn its next admit takes at once, or not in the queue.
+ */
+export type TicketPlace =
+  | { state: "working"; kind: string | null }
+  | { state: "queued"; position: number; total: number }
+  | { state: "marked" }
+  | { state: "none" };
+
+/** A run's ticket in pi-pool's turn queue: the session that asks, its tree, and its place. */
+export interface TurnTicket { session: string; tree: string; place: TicketPlace }
+
+/** `pi-pool owner-turn`'s answer: marked, with `ahead` when a queued run of the session started; off while the queue is off. */
+export interface OwnerMark { state: "marked" | "off" | "failed"; ahead?: boolean }
+
+interface TurnsFile {
+  working?: Record<string, { kind?: unknown }>;
+  queued?: Record<string, { since?: unknown; parked?: unknown }>;
+  owner?: Record<string, unknown>;
+  lead?: unknown;
+}
+
+/** The ticket of `key` in turns.json text; a file that cannot be read or parsed reads as an empty queue. */
+export function ticketIn(text: string | undefined, key: TreeKey): TurnTicket {
+  let turns: TurnsFile = {};
+  try {
+    const parsed = text ? (JSON.parse(text) as TurnsFile | null) : null;
+    if (parsed && typeof parsed === "object") turns = parsed;
+  } catch {
+    turns = {};
+  }
+  const ticket = (place: TicketPlace): TurnTicket => ({ session: key.session, tree: key.root, place });
+  const working = turns.working?.[key.session];
+  if (working) return ticket({ state: "working", kind: typeof working.kind === "string" ? working.kind : null });
+  const queued = turns.queued ?? {};
+  if (queued[key.session]) {
+    const lead = new Set(Array.isArray(turns.lead) ? turns.lead : []);
+    const rank = (s: string): [number, number, string] => [lead.has(s) ? 0 : 1, Number(queued[s]?.since ?? 0), s];
+    const order = Object.keys(queued).sort((a, b) => {
+      const [x, y] = [rank(a), rank(b)];
+      return x[0] - y[0] || x[1] - y[1] || (x[2] < y[2] ? -1 : x[2] > y[2] ? 1 : 0);
+    });
+    return ticket({ state: "queued", position: order.indexOf(key.session) + 1, total: order.length });
+  }
+  return ticket(turns.owner && key.session in turns.owner ? { state: "marked" } : { state: "none" });
+}
+
+/**
  * One process's view of pi-pool's turn queue: which sessions hold a working slot, asking with `admit`, renewing with
  * `admit --renew` and letting go with `release`, as the pi-pool Pi extension does for a Pi session. A failed or
  * unreadable ask lets the run go, as the extension does.
@@ -131,6 +179,32 @@ export class TurnQueue {
   async release(key: TreeKey, queuedInput = false): Promise<void> {
     this.held.delete(key.session);
     await this.call(key, ["release", key.session, ...(queuedInput ? ["--queued-input"] : [])]);
+  }
+
+  /**
+   * The owner's input goes to `key.session` next: `pi-pool owner-turn` marks the session's next admit as the owner's,
+   * which starts at once, and a run of the session already queued starts now, as the chat marks an owner prompt to Prime.
+   */
+  async ownerTurn(key: TreeKey): Promise<OwnerMark> {
+    const res = await this.call(key, ["owner-turn", key.session]);
+    try {
+      const answer = JSON.parse(res.out.split("\n").at(-1) ?? "") as { state?: unknown; ahead?: unknown };
+      if (res.ok && (answer.state === "marked" || answer.state === "off")) return { state: answer.state, ...(answer.ahead === true ? { ahead: true } : {}) };
+    } catch {
+      // An answer that is not JSON is a failed mark; the run still asks for its slot at its first request.
+    }
+    return { state: "failed" };
+  }
+
+  /** The session's ticket from an unlocked read of turns.json, as `poll` reads it. */
+  ticket(key: TreeKey): TurnTicket {
+    let text: string | undefined;
+    try {
+      text = readFileSync(this.turnsFile, "utf8");
+    } catch {
+      text = undefined;
+    }
+    return ticketIn(text, key);
   }
 
   holds(session: string): boolean {

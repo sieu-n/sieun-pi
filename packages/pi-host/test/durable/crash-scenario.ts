@@ -8,6 +8,9 @@ export const INPUT = `Call the subagent tool exactly once with this task: "${CHI
 /** The faux child's answer, long enough that a kill lands while it streams. */
 export const FAUX_CHILD_ANSWER = ["2", "3", "5", "7", "11", "13", "17", "19", "23", "29"].join("\n") + "\n" + "One is not prime because a prime has exactly two distinct divisors. One has only itself as a divisor, so it falls short of that rule. ".repeat(4).trim();
 export const FAUX_FINAL = "The subagent said the first ten primes. DONE";
+/** An input the faux model answers in one step with PLAIN_ANSWER, with no subagent. */
+export const PLAIN_INPUT = "Reply with OK and nothing else.";
+export const PLAIN_ANSWER = "OK";
 const FAUX_PREAMBLE = "I will hand this to a subagent so the answer comes from a separate conversation that I wait on. ".repeat(4).trim();
 
 export const textOf = (content: Message["content"]): string =>
@@ -18,6 +21,7 @@ export const fauxRespond: FauxResponseFactory = transcript => {
   const messages = transcript.messages;
   const firstUser = messages.find(m => m.role === "user");
   if (firstUser && textOf(firstUser.content) === CHILD_TASK) return fauxAssistantMessage(FAUX_CHILD_ANSWER);
+  if (firstUser && textOf(firstUser.content) === PLAIN_INPUT) return fauxAssistantMessage(PLAIN_ANSWER);
   if (messages.some(m => m.role === "toolResult")) return fauxAssistantMessage(FAUX_FINAL);
   return fauxAssistantMessage([fauxText(FAUX_PREAMBLE), fauxToolCall("subagent", { task: CHILD_TASK })], { stopReason: "toolUse" });
 };

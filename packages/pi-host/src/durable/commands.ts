@@ -11,7 +11,7 @@ import type { DurableThreads, SubmitInput } from "./threads.ts";
 
 export const DURABLE_COMMANDS = new Set([
   "durable_threads", "durable_create", "durable_submit", "durable_wait", "durable_watch", "durable_unwatch", "durable_abort", "durable_tree",
-  "durable_entries", "durable_search", "durable_usage", "durable_doc_get", "durable_doc_put", "durable_set", "durable_import",
+  "durable_entries", "durable_search", "durable_usage", "durable_doc_get", "durable_doc_put", "durable_set", "durable_import", "durable_ticket",
 ]);
 
 type Command = { id?: string; type: string; [key: string]: unknown };
@@ -65,6 +65,7 @@ export class DurableCommands {
             ...(Array.isArray(command.images) ? { images: command.images as SubmitInput["images"] } : {}),
             ...(optStr(command, "requestId") === undefined ? {} : { requestId: optStr(command, "requestId")! }),
             ...(optStr(command, "whenBusy") === undefined ? {} : { whenBusy: optStr(command, "whenBusy") as SubmitInput["whenBusy"] }),
+            ...(command.ownerTurn === true ? { ownerTurn: true } : {}),
           };
           const entry = command.entry as { kind?: unknown; data?: { from?: unknown; via?: unknown } } | undefined;
           if (entry !== undefined) {
@@ -97,6 +98,8 @@ export class DurableCommands {
         case "durable_abort":
           await this.threads.abort(str(command, "thread"), optNum(command, "conversation"));
           return done();
+        case "durable_ticket":
+          return done({ ticket: (await this.threads.ticket(str(command, "thread"), optNum(command, "conversation"))) ?? null });
         case "durable_tree":
           return done({ conversations: await this.threads.tree(str(command, "thread")) });
         case "durable_entries":
