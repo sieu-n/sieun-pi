@@ -5,7 +5,9 @@ import { once } from "node:events";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { WebSocketServer } from "ws";
-import { browserReadings, median, parsePing, releaseBreaks, replyExtra, sendProbe, type SendTiming } from "../scripts/duties/chat-page-mac.ts";
+import type { Repl } from "../scripts/duties/aside-repl.ts";
+import { browseInAside, PROBE_LIB, type ProbeConfig } from "../scripts/duties/chat-page-mac-probe.ts";
+import { browserReadings, median, parseLoadavg, parsePing, releaseBreaks, replyExtra, sendProbe, type SendTiming } from "../scripts/duties/chat-page-mac.ts";
 import { MAC_HOST, macAwayItem, macTailnet } from "../scripts/duties/mac-reach.ts";
 import { HOST_AWAY } from "../src/shared/chat-duties.ts";
 
@@ -49,6 +51,70 @@ test("each unprimed switch names where its prefetch was at the click, and the su
   assert.equal(tabs.flagged[1]!.excerpt, "chat b painted in 363 ms from its feed's snapshot: its prefetch started 927 ms before the click and came back 103 ms after the click: " +
     "703 ms before the page sent it, 325 ms to the first byte, 2 ms to the last");
   assert.equal(tabs.flagged[2]!.excerpt, "chat c painted in 214 ms from its feed's snapshot: no first-frame prefetch of it came back by the paint");
+});
+
+test("the Mac's load comes from sysctl, and each Aside load says where its assets came from and how its time was read (c177, 10-27)", () => {
+  assert.equal(parseLoadavg("{ 5.98 9.31 11.52 }\n"), 5.98);
+  assert.equal(parseLoadavg("sysctl: unknown oid"), undefined);
+  const { load } = browserReadings({
+    loads: [{ shown: 406, via: "watch", cachedAssets: 18, fetchedAssets: 0 }, { shown: 450, via: "first paint", cachedAssets: 3, fetchedAssets: 15 }, { shown: 414 }],
+    tabs: { switches: [{ id: "a", ms: 100 }] }, load: 12.56,
+  }, at, 10_000);
+  assert.equal(load.value, 0.41);
+  assert.match(load.flagged[0]!.excerpt, /^3 of 3 cold loads showed the chat, median 414 ms, worst 450 ms; Mac 1-min load 12.6; 1 of 2 took every app asset from the browser's cache, 1 fetched some; 1 read at the first paint, since the lines had shown before the watcher went in$/);
+});
+
+const probeConfig: ProbeConfig = { url: "https://box.test/cap/?t=chat#chat", loads: 2, switches: 3, loadTimeoutMs: 20_000, switchTimeoutMs: 10_000, clickTimeoutMs: 5000, settleMs: 3000, gapMs: 300 };
+const switched = (id: string, ms: number) => ({ id, ms, lines: 2, primed: true, frame: { startMs: -900, sentMs: -899, firstByteMs: -700, endMs: -698 } });
+
+/** A fake Aside REPL that answers each probe call by its title, and records the titles in order. */
+function fakeRepl(answer: (title: string, body: string) => unknown): Repl & { titles: string[] } {
+  const titles: string[] = [];
+  return {
+    titles,
+    async call<T>(title: string, body: string): Promise<T> {
+      titles.push(title);
+      const value = answer(title, body);
+      if (value instanceof Error) throw value;
+      return value as T;
+    },
+    stop() {},
+  };
+}
+
+test("the probe's REPL side is plain JavaScript, and the Aside probe runs each load in its own call, then the switches, and closes its tab", async () => {
+  assert.doesNotThrow(() => new Function(`return (async () => { ${PROBE_LIB} })`));
+  let loads = 0;
+  const repl = fakeRepl((title, body) => {
+    if (title.startsWith("cold load")) return ++loads === 1 ? { shown: 406, via: "watch", complete: true, banner: null, cachedAssets: 18, fetchedAssets: 0 } : new Error("Error: page.goto: net::ERR_TIMED_OUT");
+    if (title === "tab switches") {
+      assert.match(body, /__chatProbe\.openSwitches\("https:\/\/box\.test\/cap\/\?t=chat#chat", \{.*"callMs":120000/);
+      return { settle: { frames: 13, medianMs: 197 }, done: [switched("a", 100)], left: ["b", "c"] };
+    }
+    if (title === "more tab switches") {
+      assert.match(body, /__chatProbe\.moreSwitches\(\["b","c"\]/);
+      return { done: [switched("b", 104), switched("c", 98)], left: [] };
+    }
+    if (title === "read the banner") return null;
+    return "ok";
+  });
+  const output = await browseInAside(repl, probeConfig);
+  assert.deepEqual(repl.titles, ["define the chat page probe", "cold load 1", "cold load 2", "tab switches", "more tab switches", "read the banner", "close the switch tab"]);
+  assert.deepEqual(output.loads, [{ shown: 406, via: "watch", complete: true, banner: null, cachedAssets: 18, fetchedAssets: 0 }, { error: "Error: page.goto: net::ERR_TIMED_OUT" }]);
+  assert.deepEqual(output.tabs, { switches: [switched("a", 100), switched("b", 104), switched("c", 98)], banner: null, settle: { frames: 13, medianMs: 197 } });
+  const { tabs } = browserReadings({ ...output, load: 5 }, at, 10_000);
+  assert.equal(tabs.value, 100);
+});
+
+test("switches that fail still close the switch tab, and a call that fits no switch ends the switches with an error instead of looping", async () => {
+  const failed = fakeRepl(title => title === "tab switches" ? new Error("Error: the sidebar listed 2 chats within 20000 ms, fewer than 4") : "ok");
+  const first = await browseInAside(failed, { ...probeConfig, loads: 0 });
+  assert.deepEqual(first.tabs, { error: "Error: the sidebar listed 2 chats within 20000 ms, fewer than 4" });
+  assert.equal(failed.titles.at(-1), "close the switch tab");
+  const stuck = fakeRepl(title => title === "tab switches" ? { settle: { frames: 0, medianMs: null }, done: [], left: ["a"] } : title === "more tab switches" ? { done: [], left: ["a"] } : "ok");
+  const second = await browseInAside(stuck, { ...probeConfig, loads: 0 });
+  assert.deepEqual(second.tabs, { error: "no switch fits in one 120 s REPL call" });
+  assert.equal(stuck.titles.at(-1), "close the switch tab");
 });
 
 test("tab switches that did not run leave the metric out with a source error", () => {

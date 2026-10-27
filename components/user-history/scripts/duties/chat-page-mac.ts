@@ -8,18 +8,21 @@ import WebSocket from "ws";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import { credentialWaitAt } from "../../src/shared/credential-wait.ts";
 import { parseStartSkill, startMessage } from "../../src/shared/start-skill.ts";
+import { asideRepl } from "./aside-repl.ts";
+import { browseInAside } from "./chat-page-mac-probe.ts";
 import { macAway } from "./mac-reach.ts";
 
 /**
  * The Chat page from the Mac duty's precheck (`node --import tsx scripts/duties/chat-page-mac.ts`): whether the box's chat page on :5182 feels
  * fast from the owner's MacBook Pro and never breaks (owner 10-18, goal p16). It sends nothing outside and never touches the live service
  * process (c106). Four numbers:
- * - `cold_tab_switch_ms` and `cold_load_s` come from chat-page-mac-probe.mjs, which this script pipes into `node` on the Mac over one
- *   `ssh mac` that `timeout` on the box bounds, since the Mac has no `timeout`. It drives a headless Chromium there (c103) against the
- *   page's tailnet URL: each cold load is a new browser context, timed until the chat's lines show; each tab switch opens a chat that page has
- *   not opened yet and reads the app's own `thread-paint:<id>` measure, as p50 measured it (median 46 ms on 10-18). Each switch also says
- *   whether the sidebar's prefetch had brought the chat's first frame back before the click, and when that request ran, since an unprimed
- *   switch waits one round trip for the feed's snapshot: the 10-27 00:20Z run right after the Mac woke read 217 ms and could not say why.
+ * - `cold_tab_switch_ms` and `cold_load_s` come from chat-page-mac-probe.ts, which drives background tabs of the owner's Aside on the Mac
+ *   over one `ssh mac` running `aside mcp` (c177, c103) against the page's tailnet URL: each cold load is a new tab, timed until the chat's
+ *   lines show; each tab switch opens a chat that page has not opened yet and reads the app's own `thread-paint:<id>` measure, as p50
+ *   measured it (median 46 ms on 10-18). Each switch also says whether the sidebar's prefetch had brought the chat's first frame back before
+ *   the click, and when that request ran, since an unprimed switch waits one round trip for the feed's snapshot: the 10-27 00:20Z run right
+ *   after the Mac woke read 217 ms and could not say why. Until 10-27 a headless Chromium on the Mac timed them, with a new browser context
+ *   per load; an Aside tab can take the app's assets from Aside's cache, so each load says how many it did.
  * - `mac_chat_reply_extra_rtt`: a scratch thread on the Mac's daemon, made and archived here, gets up to `SENDS` no-op prompts through the
  *   chat service, the path the page uses. The first rides on the create call and is timed from before that POST; it waits on the Mac's
  *   worker start too, so it is listed and left out of the value, which is the median of the follow-ups. Those go only when the first turn
@@ -35,9 +38,7 @@ import { macAway } from "./mac-reach.ts";
  * instead of a miss.
  */
 
-const HERE = import.meta.dirname;
 const MAC = process.env.MAC_SSH_HOST || "mac";
-const CHECKOUT = process.env.MAC_SIEUN_PI || "Documents/Github/sieun-pi";
 const DATA_DIR = process.env.CHAT_DATA_DIR || join(homedir(), ".prime/agent/browser-chat");
 const MODEL = { provider: "anthropic", modelId: "claude-opus-5-5" };
 /** 10 samples each, as the p16 brief asked of job mac feel check on 10-19. */
@@ -50,7 +51,12 @@ const FIRST_REPLY_MS = 10 * 60_000;
 /** On 10-19 the 01:14:15Z release crash-looped from 7 s after it to past 01:18:52Z (p72), so a break up to 10 min after a release is its break. */
 export const RELEASE_WINDOW_MS = 10 * 60_000;
 
-export interface BrowserLoad { shown?: number | null; banner?: string | null; error?: string }
+/**
+ * `via` says how `shown` was read: "watch" saw the lines arrive, "first paint" found them painted when the watcher went in. `cachedAssets`
+ * and `fetchedAssets` count the app's scripts and styles that came from the browser's cache and over the network, read once `complete`
+ * (the load event passed). All four are absent in output from the headless probe before 10-27.
+ */
+export interface BrowserLoad { shown?: number | null; via?: string | null; complete?: boolean; banner?: string | null; cachedAssets?: number; fetchedAssets?: number; error?: string }
 /** The clicked thread's first-frame prefetch, in ms from the click (negative is before it): started, sent past the page's queue, first byte, done. */
 export interface SwitchFrame { startMs: number; sentMs: number; firstByteMs: number; endMs: number }
 /**
@@ -86,8 +92,13 @@ export function browserReadings(output: BrowserOutput, at: number, timeoutMs: nu
   const failed = output.loads.filter(sample => !(typeof sample.shown === "number" && sample.shown > 0));
   const loadMedian = median(shown);
   if (loadMedian !== undefined) load.value = Math.round(loadMedian / 10) / 100;
+  const counted = output.loads.filter(sample => typeof sample.cachedAssets === "number");
+  const cached = counted.length ? `; ${counted.filter(sample => sample.cachedAssets! > 0 && !sample.fetchedAssets).length} of ${counted.length} took every app asset from the ` +
+    `browser's cache, ${counted.filter(sample => sample.fetchedAssets! > 0).length} fetched some` : "";
+  const firstPaint = output.loads.filter(sample => sample.via === "first paint").length;
+  const read = firstPaint ? `; ${firstPaint} read at the first paint, since the lines had shown before the watcher went in` : "";
   load.flagged.push({ at, kind: "cold_load", excerpt: `${shown.length} of ${output.loads.length} cold loads showed the chat, median ${loadMedian === undefined ? "none" : Math.round(loadMedian)} ms, ` +
-    `worst ${shown.length ? Math.round(Math.max(...shown)) : "none"} ms; Mac 1-min load ${output.load?.toFixed(1) ?? "unknown"}` });
+    `worst ${shown.length ? Math.round(Math.max(...shown)) : "none"} ms; Mac 1-min load ${output.load?.toFixed(1) ?? "unknown"}${cached}${read}` });
   for (const sample of failed) load.flagged.push({ at, kind: "cold_load_failed", excerpt: (sample.error ?? "the chat's lines never showed").slice(0, 600) });
   const banners = [...output.loads.map(sample => sample.banner), "switches" in output.tabs ? output.tabs.banner : null].filter((text): text is string => Boolean(text));
   for (const text of new Set(banners)) load.flagged.push({ at, kind: "banner_now", excerpt: `the page showed a red banner: ${text}`.slice(0, 600) });
@@ -198,16 +209,37 @@ const onMac = (command: string, seconds: number, input?: string): Promise<string
 export interface ChatConfig { port: number; capability: string; csrfToken: string; publicOrigin?: string }
 
 const SWITCH_TIMEOUT_MS = 10_000;
+/** The old headless probe's bound (`timeout 190` on its ssh); the browser part runs before the sends, whose new-thread bound is 10 of the precheck's 15 min. */
+const BROWSE_BUDGET_MS = 190_000;
 
+/** The Mac's 1-minute load from `sysctl -n vm.loadavg`, such as "{ 5.98 9.31 11.52 }". */
+export function parseLoadavg(text: string): number | undefined {
+  const match = /^\{\s*([\d.]+)/.exec(text.trim());
+  return match ? Number(match[1]) : undefined;
+}
+
+/**
+ * Cold loads and tab switches in the owner's Aside on the Mac (chat-page-mac-probe.ts), over one `aside mcp` that runs there through ssh.
+ * The page's URL carries `?t=<chat>`, which its boot script would otherwise add with a reload before the timed document.
+ */
 async function browse(config: ChatConfig, chatId: string): Promise<BrowserOutput> {
   if (!config.publicOrigin) throw new Error("configuration.json has no publicOrigin, so the Mac has no URL for the page");
-  const probe = { url: `${config.publicOrigin}/${config.capability}/#${chatId}`, checkout: CHECKOUT, loads: LOADS, switches: SWITCHES, budgetMs: 170_000,
-    loadTimeoutMs: 20_000, switchTimeoutMs: SWITCH_TIMEOUT_MS, settleMs: 3000, gapMs: 300 };
-  const script = (await readFile(join(HERE, "chat-page-mac-probe.mjs"), "utf8")).replace("const config = CONFIG;", `const config = ${JSON.stringify(probe)};`);
-  const text = await onMac("PATH=$HOME/.local/bin:/opt/homebrew/bin:$PATH node --input-type=module -", 190, script);
-  const output = JSON.parse(text.trim().split("\n").at(-1) ?? "") as BrowserOutput;
-  if (output.error) throw new Error(output.error);
-  return output;
+  const repl = asideRepl("ssh", ["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=20", MAC, "exec $HOME/.local/bin/aside mcp"]);
+  let over = false;
+  const stop = setTimeout(() => { over = true; repl.stop(); }, BROWSE_BUDGET_MS);
+  try {
+    const url = `${config.publicOrigin}/${config.capability}/?t=${encodeURIComponent(chatId)}#${chatId}`;
+    const output = await browseInAside(repl, { url, loads: LOADS, switches: SWITCHES, loadTimeoutMs: 20_000, switchTimeoutMs: SWITCH_TIMEOUT_MS, clickTimeoutMs: 5000,
+      settleMs: 3000, gapMs: 300 });
+    const late = `the Aside probe ran past ${BROWSE_BUDGET_MS / 1000} s`;
+    const loads = over ? output.loads.map(sample => sample.error ? { error: late } : sample) : output.loads;
+    const tabs = over && "error" in output.tabs ? { error: late } : output.tabs;
+    const load = await onMac("sysctl -n vm.loadavg", 40).then(parseLoadavg, () => undefined);
+    return { ...output, loads, tabs, ...(load === undefined ? {} : { load }) };
+  } finally {
+    clearTimeout(stop);
+    repl.stop();
+  }
 }
 
 /**
@@ -339,7 +371,7 @@ export async function measure(chatId: string): Promise<PrecheckOutput> {
 
   if (away) flagged.push(away);
   else {
-    if (browser instanceof Error) sourceError(`the headless page on the Mac did not run, so tab switch and cold load are not measured: ${browser.message}`);
+    if (browser instanceof Error) sourceError(`the Aside page on the Mac did not run, so tab switch and cold load are not measured: ${browser.message}`);
     else {
       const { load, tabs } = browserReadings(browser, at, SWITCH_TIMEOUT_MS);
       take("cold_tab_switch_ms", tabs);

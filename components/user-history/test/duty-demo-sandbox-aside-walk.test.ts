@@ -6,7 +6,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { readWalk, slowestPage } from "../scripts/duties/demo-sandbox.ts";
-import { asideRepl, MARKETING_TITLE, REPL_LIB, scenarioTitle, testErrors, walkReport } from "../scripts/duties/demo-sandbox-walk.ts";
+import { asideRepl } from "../scripts/duties/aside-repl.ts";
+import { MARKETING_TITLE, REPL_LIB, scenarioTitle, testErrors, walkReport } from "../scripts/duties/demo-sandbox-walk.ts";
 
 const clean = { outside: [], violations: [], failed: [] };
 

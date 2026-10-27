@@ -1,8 +1,8 @@
-import { spawn, type ChildProcess } from "node:child_process";
 import { mkdir, rename, writeFile } from "node:fs/promises";
-import { cpus, homedir, hostname, loadavg } from "node:os";
+import { cpus, hostname, loadavg } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { asideCli, asideRepl, type Repl } from "./aside-repl.ts";
 import { BASE_URL, REPO, WALK_FILE, WALK_SOURCE, type BoxLoad, type WalkReport } from "./demo-sandbox.ts";
 
 /**
@@ -23,8 +23,6 @@ import { BASE_URL, REPO, WALK_FILE, WALK_SOURCE, type BoxLoad, type WalkReport }
  * call it refused. A load's first shown frame is watched from the commit, so a page that showed before the watcher ran reads at the watcher's start.
  */
 
-/** Each REPL call ends at 120 s in Aside; a call with no answer by this time counts as failed, so a hung Aside cannot hang the walk. */
-const CALL_TIMEOUT_MS = 150_000;
 /** The whole walk stops here; the Playwright walk took 8.4 min for 3 tries of every page through us-metal02 (10-20). */
 const WALK_TIMEOUT_MS = 45 * 60_000;
 /** A page that shows nothing in this long reads as this long; demo-sandbox.ts reads a missing show as PAGE_TIMEOUT_MS, the same 30 s. */
@@ -234,57 +232,6 @@ globalThis.__walk = (() => {
 "ok";
 `;
 
-export interface Repl { call: <T>(title: string, body: string) => Promise<T>; stop: () => void }
-
-/**
- * One `aside mcp` process over stdio, so the REPL scope lives for the whole walk. `call` runs `body` (the inside of an async function, which
- * returns a JSON value) and resolves that value; a REPL error or no answer within CALL_TIMEOUT_MS rejects.
- */
-export function asideRepl(cli: string): Repl {
-  const child: ChildProcess = spawn(cli, ["mcp"], { stdio: ["pipe", "pipe", "ignore"], detached: true });
-  let buffer = "", nextId = 0, exited: string | null = null;
-  const waiting = new Map<number, (message: { result?: { content?: { text?: string }[]; isError?: boolean }; error?: { message?: string } }) => void>();
-  child.on("error", error => { exited = error.message; for (const answer of waiting.values()) answer({ error: { message: exited } }); waiting.clear(); });
-  child.on("exit", code => { exited = `aside mcp exited with code ${code}`; for (const answer of waiting.values()) answer({ error: { message: exited } }); waiting.clear(); });
-  child.stdin!.on("error", () => { /* the exit handler reports it */ });
-  child.stdout!.on("data", chunk => {
-    buffer += chunk;
-    for (let index = buffer.indexOf("\n"); index >= 0; index = buffer.indexOf("\n")) {
-      const line = buffer.slice(0, index).trim();
-      buffer = buffer.slice(index + 1);
-      let message: { id?: number };
-      try { message = JSON.parse(line); } catch { continue; }
-      if (typeof message.id === "number") { waiting.get(message.id)?.(message as never); waiting.delete(message.id); }
-    }
-  });
-  const send = (method: string, params: unknown) => new Promise<{ result?: { content?: { text?: string }[]; isError?: boolean }; error?: { message?: string } }>(answer => {
-    if (exited) return answer({ error: { message: exited } });
-    const id = ++nextId;
-    const timer = setTimeout(() => { waiting.delete(id); answer({ error: { message: `no answer from aside mcp within ${CALL_TIMEOUT_MS} ms` } }); }, CALL_TIMEOUT_MS);
-    waiting.set(id, message => { clearTimeout(timer); answer(message); });
-    child.stdin!.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
-  });
-  const ready = (async () => {
-    const init = await send("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "demo-sandbox-walk", version: "1" } });
-    if (init.error) throw new Error(`aside mcp initialize: ${init.error.message}`);
-    child.stdin!.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
-  })();
-  return {
-    async call<T>(title: string, body: string): Promise<T> {
-      await ready;
-      const code = `{ const __walkValue = await (async () => { ${body} })(); console.log("WALK_RESULT " + JSON.stringify(__walkValue ?? null)); }`;
-      const answer = await send("tools/call", { name: "repl", arguments: { title, code } });
-      if (answer.error) throw new Error(answer.error.message ?? "aside mcp error");
-      const text = (answer.result?.content ?? []).map(item => item.text ?? "").join("\n");
-      if (answer.result?.isError) throw new Error(text.split("\n").find(line => line.trim()) ?? "REPL error");
-      const line = text.split("\n").reverse().find(entry => entry.startsWith("WALK_RESULT "));
-      if (!line) throw new Error(`no result in the REPL output: ${text.slice(0, 300)}`);
-      return JSON.parse(line.slice("WALK_RESULT ".length)) as T;
-    },
-    stop() { child.stdin!.end(); setTimeout(() => { try { process.kill(-child.pid!, "SIGKILL"); } catch { /* gone */ } }, 2000).unref(); },
-  };
-}
-
 interface Shown { ms: number | null; longMs: number }
 interface Seen { outside: string[]; violations: string[]; failed: string[] }
 interface Annotation { type: string; description: string }
@@ -480,9 +427,6 @@ export async function runWalk(repl: Repl, now: () => number = Date.now): Promise
   tests.push(await marketingTest(repl).catch(error => brokenTest(MARKETING_TITLE, error)));
   return walkReport(startedAt, tests);
 }
-
-/** The Aside CLI: ASIDE_CLI, else ~/.local/bin/aside, where the Mac has it; a plain `ssh mac` PATH lacks ~/.local/bin. */
-export const asideCli = () => process.env.ASIDE_CLI || join(homedir(), ".local/bin/aside");
 
 async function main(): Promise<void> {
   const repl = asideRepl(asideCli());
