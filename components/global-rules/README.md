@@ -77,9 +77,12 @@ Code in this sieun-pi tree, the chat release, the runtime copy, a skill folder o
 Each refusal is one JSON line in `~/.prime/agent/logs/transcript-refusals.jsonl` (`GLOBAL_RULES_TRANSCRIPT_LOG` moves it), with the session folder, the path and the session it belongs to, so the d10 audit can count repeats.
 With no `RLM_SESSION_DIR` below `session-artifacts` (CI, a person's shell) nothing is judged.
 
-`unit-env/prime-agent` refuses `prime-agent shutdown` from any process a kernel starts, since `kernel-read.py` puts `unit-env/` first on the kernel's `PATH`, unless an explicit `--daemon-socket` names a socket other than the public `/tmp/prime-agent-<uid>/daemon.sock`.
-On 10-27 at 16:55:06Z and 17:07:46Z a service-handoff proof ran `HOME=<scratch>/r01/h TMPDIR=/tmp/svh-r01 prime-agent shutdown --force --json` for its scratch daemon, the CLI used the public socket, and the live daemon on us-metal02 stopped both times with every agent on it.
-`prime-agent stop <agent>` still runs, since `AGENTS.md` names it as the way to restart one stuck agent. A call by the binary's full path skips the shim.
+`unit-env/prime-agent` and `prime-shutdown.py` keep an agent from stopping the live Prime daemon with `prime-agent shutdown` (~/work/d7-supervisor-exits/TRACE.md).
+On 10-27 at 16:55:07Z a kernel bash ran `HOME=<scratch> TMPDIR=<scratch> prime-agent shutdown --force` by name, and at 17:07:48Z the unit svh-teardown-r01 ran `<release>/prime-agent shutdown --force --json` by full path. Both carried the kernel's `PRIME_AGENT_CODING_AGENT_DIR`, Prime found the live supervisor through the live workers' descriptors, and every agent on us-metal02 stopped both times.
+Prime's shutdown takes no `--daemon-socket` ("Unknown option for shutdown") and stops every daemon its environment leads it to, so the shim, first on a kernel's `PATH`, runs `prime-agent status --json` in the same environment and refuses when that lists the live socket or fails.
+`prime-shutdown.py` refuses each shutdown that would skip the shim: a `prime-agent` named by path, a command that sets `PATH` or runs under `env -i`, a systemd-run unit without `-E PATH`, and ssh. It reads `sh -c` strings and the shell scripts a command runs. `kernel-guard.py` runs it on each subprocess, `os.system`, `os.exec*` and `os.posix_spawn` of a kernel and its Python children, and `unit-env/systemd-run` runs it on a unit's command line.
+To stop a scratch daemon, stop its unit, or run `prime-agent shutdown` by name with HOME, TMPDIR and PRIME_AGENT_CODING_AGENT_DIR all in scratch. `prime-agent stop <agent>` still runs, since `AGENTS.md` names it as the way to restart one stuck agent.
+A program that is neither a shell nor Python, such as a Node script, can still run the release binary by path unseen. Only a check in Prime's supervisor of who asks for the shutdown would close that.
 
 `send-log.ts` keeps the record of outside sends (c37), so "did an agent send anything" has one answer.
 Each layer above writes one JSON line per send it judges to `~/.prime/agent/browser-chat/sends.jsonl`: the tool_call guard, `send-check.ts` for the kernel, the cua-driver proxy and the aside-browser skill.

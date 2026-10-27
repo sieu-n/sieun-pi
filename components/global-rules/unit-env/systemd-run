@@ -12,6 +12,10 @@ while [ -n "$rest" ]; do
   [ -n "$dir" ] && [ -x "$dir/systemd-run" ] && [ "$(cd "$dir" 2>/dev/null && pwd -P)" != "$here" ] && { real=$dir/systemd-run; break; }
 done
 [ -n "$real" ] || { echo "systemd-run: command not found" >&2; exit 127; }
+# A unit starts from the user manager's PATH, where unit-env/prime-agent is not, so prime-shutdown.py refuses a `prime-agent shutdown` in its
+# command or scripts unless the unit gets the kernel's PATH with -E PATH. On 10-27 at 17:07:46Z the unit svh-teardown-r01 ran
+# `<release>/prime-agent shutdown --force --json`, and it stopped the live daemon and every agent on us-metal02 (~/work/d7-supervisor-exits/TRACE.md).
+python3 -I -S "$here/../prime-shutdown.py" --unit "$@" || exit 2
 # A unit that runs prime-agent on a socket other than the public one is a scratch daemon or its client. Passing it this kernel's Prime dir
 # made it write into the live agent dir: on 10-22 at 02:16:45Z a scratch daemon started this way wrote a session, a lease, a worker folder and
 # two logs under ~/.prime/agent. Such a unit gets no Prime or chat dir from here and must name its own PRIME_AGENT_CODING_AGENT_DIR outside it.

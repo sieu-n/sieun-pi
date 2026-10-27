@@ -610,7 +610,18 @@ def wrap_http_modules() -> None:
         sys.meta_path.insert(0, WrapOnImport())
 
 
+def guard_prime_shutdown() -> None:
+    """prime-shutdown.py refuses a `prime-agent shutdown` that could stop the live daemon (10-27 16:55Z and 17:07Z on us-metal02)."""
+    path = os.path.join(HERE, "prime-shutdown.py")
+    try:
+        with open(path, encoding="utf-8") as handle:
+            exec(compile(handle.read(), path, "exec"), {"__name__": "global_rules_prime_shutdown", "__file__": path})
+    except Exception as error:
+        print(f"global-rules: the prime-agent shutdown guard did not load: {error}", file=sys.stderr)
+
+
 def install() -> None:
+    guard_prime_shutdown()
     guard_children()
     wrap_mcp()
     wrap_http_modules()
