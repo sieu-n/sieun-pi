@@ -29,11 +29,11 @@ test("targetStateOf reads the limit's count from queuedCount when the daemon sen
 
 async function outbox(t: TestContext, data: unknown) {
   const dir = await mkdtemp(join(tmpdir(), "outbox-room-"));
-  t.after(() => rm(dir, { recursive: true, force: true }));
   const sent: string[] = [], lines: string[] = [], reads = { count: 0 };
   const box = new AgentOutbox(join(dir, "agent-outbox"), { log: line => { lines.push(line); }, sleep: () => new Promise(resolve => setTimeout(resolve, 2)),
     send: async (_session, text) => { sent.push(text); return "sent"; }, target: async () => { reads.count++; return targetStateOf(data); }, fileOf: async () => null });
-  t.after(() => box.close());
+  // The outbox writes its entries until it closes, so a folder removed before the close came back ENOTEMPTY and failed release 59cf440f on 10-27.
+  t.after(async () => { await box.close(); await rm(dir, { recursive: true, force: true }); });
   return { box, sent, lines, reads };
 }
 
