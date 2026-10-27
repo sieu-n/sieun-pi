@@ -292,8 +292,14 @@ export class Threads {
     if (opts.after) {
       const after = entryOf(opts.after);
       if (after === undefined) throw new Error(`after must be an item id like e12, got ${opts.after}`);
-      const page = await this.pageAfter(thread, conversation, after, limit);
-      const items = buildItems(page.entries, { ...ctx, running: ctx.running && !page.more });
+      // After an input, read from the input itself, so the turn that answers it keeps the input's id; the input item is dropped below.
+      const page = await this.pageAfter(thread, conversation, opts.after.startsWith("e") ? after - 1 : after, limit);
+      // After a turn means after the whole turn: its own entries past the input belong to the item the page holds.
+      if (opts.after.startsWith("t")) {
+        const next = page.entries.findIndex(isInput);
+        page.entries = next < 0 ? [] : page.entries.slice(next);
+      }
+      const items = buildItems(page.entries, { ...ctx, running: ctx.running && !page.more }).filter(item => item.id !== opts.after);
       return { items, ...(page.more && page.entries.at(-1) ? { newer: `e${page.entries.at(-1)!.id}` } : {}) };
     }
     const before = entryOf(opts.before);

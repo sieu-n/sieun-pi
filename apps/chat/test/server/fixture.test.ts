@@ -48,6 +48,15 @@ describe("conversations", () => {
     assert.match(turnText(page)[0]!, /Two relay errors/);
   });
 
+  test("after a turn returns only what came after the whole turn", async () => {
+    const page = await s.get<TimelinePage>(`/api/c/${ids.vent}/items`);
+    const lastTurn = page.items.filter(i => i.kind === "turn").at(-1)!;
+    const after = await s.get<TimelinePage>(`/api/c/${ids.vent}/items?after=${lastTurn.id}`);
+    assert.deepEqual(after.items.map(i => i.id), []);
+    const fromInput = await s.get<TimelinePage>(`/api/c/${ids.vent}/items?after=${page.items[0]!.id}`);
+    assert.equal(fromInput.items[0]!.id, page.items[1]!.id);
+  });
+
   test("older pages start at an input, so no turn splits", async () => {
     const page = await s.get<TimelinePage>(`/api/c/${ids.vent}/items?limit=3`);
     assert.ok(page.older);
