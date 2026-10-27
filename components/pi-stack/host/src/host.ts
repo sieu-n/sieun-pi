@@ -419,7 +419,7 @@ export class PiHost implements HostApi {
         this.log(`compact in ${session.id.slice(0, 8)} failed: ${text}`);
         // Prime showed a failed /compact in the thread. This notice goes to attached clients only, so it never enters the model's context.
         if (!/cancelled|aborted/i.test(text)) {
-          const message = { role: "custom", customType: "compaction_notice", content: `Compaction did not run: ${text}`, display: true, timestamp: Date.now() };
+          const message = { role: "custom", customType: "compaction_notice", content: [{ type: "text", text: `Compaction did not run: ${text}` }], display: true, timestamp: Date.now() };
           session.emit({ type: "message_start", message });
           session.emit({ type: "message_end", message });
         }

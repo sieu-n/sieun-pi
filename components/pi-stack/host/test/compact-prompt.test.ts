@@ -71,8 +71,8 @@ test("a /compact with nothing to compact sends the attached client a notice that
     const notice = client.waitFor(line => line.type === "session_event" && (line as { event: { type: string; message?: { customType?: string } } }).event.type === "message_end"
       && (line as { event: { message?: { customType?: string } } }).event.message?.customType === "compaction_notice");
     await client.call({ type: "prompt", activeSessionId: id, message: "/compact" });
-    const line = await notice as unknown as { event: { message: { content: string } } };
-    assert.match(line.event.message.content, /Nothing to compact/);
+    const line = await notice as unknown as { event: { message: { content: unknown } } };
+    assert.match(JSON.stringify(line.event.message.content), /Nothing to compact/);
     const entries = host.sessions.get(id)!.session.sessionManager.getEntries();
     assert.ok(!entries.some(entry => JSON.stringify(entry).includes("compaction_notice")));
   } finally {
