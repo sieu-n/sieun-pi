@@ -23,7 +23,7 @@ import { ChildManager, childRecordOf, type ChildRecord } from "./src/children.ts
 import { GoalState } from "./src/goal.ts";
 import { createSession } from "./src/host-client.ts";
 import { Kernel, type CellResult, type HostRequest, type RestoreResult } from "./src/kernel.ts";
-import { childSection, rlmSection } from "./src/prompt.ts";
+import { BASE_PROMPT, childSection, rlmSection, skillsSection } from "./src/prompt.ts";
 import { BUNDLED_SKILLS_DIR, kernelPython, pythonSkillOf, RUNTIME_SRC, type PythonSkill } from "./src/python.ts";
 
 export { setChildLoaderOptions } from "./src/children.ts";
@@ -375,7 +375,10 @@ export default function piRlm(pi: ExtensionAPI): void {
       if (py && !skills.some(k => k.importName === py.importName)) skills.push(py);
     }
     s.pythonSkills = skills;
-    event.systemPromptOptions.sections.rlm = rlmSection(skills);
+    const options = event.systemPromptOptions;
+    if (options.customPrompt === undefined && options.selectedTools.includes("ipython")) options.customPrompt = BASE_PROMPT;
+    options.sections.rlm = rlmSection(skills);
+    if (options.skills.length) options.sections.skills = skillsSection(options.skills, skills);
     if (s.identity.role === "child") {
       const parent = s.identity.parentId ? identityOf(s.identity.parentId, s.identity.parentId).name : undefined;
       event.systemPromptOptions.sections.rlm_child = childSection(parent);
