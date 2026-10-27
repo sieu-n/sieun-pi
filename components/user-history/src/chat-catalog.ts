@@ -1114,6 +1114,7 @@ export class Catalog {
       if (row.unread && links?.messages.length) {
         const count = unreadOf(links.messages, Math.max(state?.baseline ?? 0, state?.sessions[row.id]?.timestamp ?? 0));
         if (count) row.unreadCount = count;
+        else row.unread = false;
       }
     }
     const rates = this.ratesFor(chatRows.flatMap(row => (row.agents ?? []).flatMap(agent => agent.sessionId ? [agent.sessionId] : [])), now);

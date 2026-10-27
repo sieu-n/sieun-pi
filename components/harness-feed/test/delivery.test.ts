@@ -107,9 +107,9 @@ test("readSends reads only appended lines and starts over after a truncation", a
 
 test("read gives each chat's unread rows, job messages and reports from its own transcript or the Mac mirror", async () => {
   const samples = await read(context(FIXTURE));
-  assert.equal(pick(samples, "harness.delivery.unread", { chat: "Crawler VP" })[0]?.value, 3);
-  assert.equal(pick(samples, "harness.delivery.unread", { chat: "mac-management" })[0]?.value, 2);
-  assert.equal(pick(samples, "harness.delivery.unread_all")[0]?.value, 5);
+  assert.equal(pick(samples, "harness.delivery.unread", { chat: "Crawler VP" })[0]?.value, 1, "a fold of job messages and notes is never unread (c117)");
+  assert.equal(pick(samples, "harness.delivery.unread", { chat: "mac-management" })[0]?.value, 1);
+  assert.equal(pick(samples, "harness.delivery.unread_all")[0]?.value, 2);
   assert.equal(pick(samples, "harness.delivery.job_messages_24h", { chat: "Crawler VP", source: "agent" })[0]?.value, 3);
   assert.equal(pick(samples, "harness.delivery.job_messages_24h", { chat: "Crawler VP", source: "check-in" })[0]?.value, 1);
   assert.equal(pick(samples, "harness.delivery.job_messages_30m", { chat: "Crawler VP", source: "agent" })[0]?.value, 2);

@@ -93,7 +93,7 @@ test("time stamps sit above visible lines only and measure from the visible line
   assert.deepEqual([...stampedItems(feed)], [feed[0]!.id, feed[3]!.id]);
 });
 
-test("the unread count counts replies and folds with a message, not a fold of waits alone", () => {
+test("the unread count counts replies and no fold, of waits or of job messages (c117)", () => {
   const messages = [owner("hi", "06:00:00"), reply("Hi.", "06:00:30"), poolWait("06:30:00", "06:05:00"), owner("there?", "06:10:00"), reply("Yes.", "06:10:30"), relay("chat-057a", "done", "06:11:00")];
-  assert.equal(unreadCount(messages, at("06:01:00")), 2);
+  assert.equal(unreadCount(messages, at("06:01:00")), 1);
 });

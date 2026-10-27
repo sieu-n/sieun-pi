@@ -60,6 +60,7 @@ import { correctionRefine } from "./correction-refine.ts";
 import { dmReplies } from "./dm-replies.ts";
 import { englishJobs } from "./english-jobs.ts";
 import { everydayTask } from "./everyday-task.ts";
+import { quietWakes } from "./quiet-wakes.ts";
 import { historyLeftovers } from "./history-leftovers.ts";
 import { holdAsk } from "./hold-ask.ts";
 import { machineBranch } from "./machine-branch.ts";
@@ -101,7 +102,7 @@ const DATA = process.env.AGENT_CHAT_DATA_DIR ?? join(homedir(), ".prime/agent/br
 /** Prime's agent dir, whose harness/ folder holds the published global harness store. */
 const AGENT_DIR = process.env.PRIME_AGENT_CODING_AGENT_DIR || join(homedir(), ".prime/agent");
 const RELEASES = join(homedir(), ".local/share/sieun-pi-chat");
-const SCENARIOS: Record<string, Scenario> = { "carried-release": carriedRelease, "carried-wait": carriedWait, "checkin-goal-push": checkinGoalPush, "checkin-real-task": checkinRealTask, "checkin-push-control": checkinPushControl, "correction-refine": correctionRefine, "dm-replies": dmReplies, "english-jobs": englishJobs, "everyday-task": everydayTask, "import-speed": importSpeed,
+const SCENARIOS: Record<string, Scenario> = { "carried-release": carriedRelease, "carried-wait": carriedWait, "checkin-goal-push": checkinGoalPush, "checkin-real-task": checkinRealTask, "checkin-push-control": checkinPushControl, "correction-refine": correctionRefine, "dm-replies": dmReplies, "english-jobs": englishJobs, "everyday-task": everydayTask, "quiet-wakes": quietWakes, "import-speed": importSpeed,
   "checkin-job-steer": checkinJobSteer, "token-cost": tokenCost, "chat-tools-reopen": chatToolsReopen, "reopen-first-message": reopenFirstMessage, "kernel-revive": kernelRevive, "lost-brief": lostBrief, "ordinary-hour": ordinaryHour, "idle-unload": idleUnload, "owner-asks": ownerAsks, "plan-and-duties": planAndDuties, "task-and-upkeep": taskAndUpkeep, "soft-caps": softCaps, "step-ids": stepIds, "token-hook-resume": tokenHookResume, "wake-live": wakeLive, "box-browser-default": boxBrowserDefault, "box-tools": boxTools,
   "detached-report": detachedReport, "relative-duty": relativeDuty, "old-commit-tests": oldCommitTests, "readme-preview": readmePreview, "history-leftovers": historyLeftovers, "hold-ask": holdAsk, "machine-branch": machineBranch, "shared-shapes": sharedShapes, "plain-words": plainWords, "saved-login": savedLogin , "job-cancel-cleanup": jobCancelCleanup,
   "transcript-boundary": transcriptBoundary, "published-build-keep": publishedBuildKeep, "task-owner": taskOwner, "answer-data": answerData, "dry-message": dryMessage, "resume-model": resumeModel, "unrelated-ci-wait": unrelatedCiWait, "unrelated-ci-controlled": unrelatedCiControlled };

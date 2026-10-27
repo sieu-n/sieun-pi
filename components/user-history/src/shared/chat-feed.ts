@@ -402,10 +402,14 @@ export function foldLines(lines: readonly ChatLine[]): ChatItem[] {
   return items;
 }
 
-/** How many feed rows the owner has not read: the chat's replies, and folds with a message after `since` (the read marker, ms). */
+/**
+ * How many feed rows the owner has not read: the lines the chat sent him (owner-turn replies and `tell_owner` messages) after `since` (the read
+ * marker, ms). A fold never counts, since its job messages and the chat's notes on turns he did not start were never sent to him (c117). On
+ * 10-27 api portal vp ended about 11 such turns from 13:07Z to 18:43Z with a status recap that reminded him of todo t4, each fold lit the chat
+ * as unread, and he wrote "이딴거 마구 쳐 보내지마".
+ */
 export function unreadCount(messages: readonly ThreadMessage[], since: number, nameOf: NameOf = () => undefined): number {
-  return foldLines(chatLines(messages, nameOf)).filter(item =>
-    item.kind === "agent" ? item.at > since : item.kind === "fold" ? item.entries.some(entry => entry.kind !== "quiet" && entry.at > since) : false).length;
+  return chatLines(messages, nameOf).filter(line => line.kind === "agent" && line.at > since).length;
 }
 
 /** A session titled by its first message can run long; the fold row clips each name to this. */
