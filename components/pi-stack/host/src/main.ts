@@ -73,6 +73,7 @@ const host = new PiHost({
 });
 installGuard(host);
 const server = await listen(host, socketPath, { scratchChatMark: values["scratch-chat"] === true });
+void host.warmProviders().then(rows => host.log(`provider modules loaded: ${rows.map(row => `${row.api} ${row.ms} ms${row.error ? ` (${row.error})` : ""}`).join(", ")}`));
 host.log(`listening on ${socketPath} (pid ${process.pid}, agent dir ${agentDir}, ${extensions.length} extensions)`);
 await host.recoverInboxes().catch(error => host.log(`inbox recovery failed: ${error instanceof Error ? error.message : String(error)}`));
 

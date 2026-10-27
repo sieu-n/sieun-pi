@@ -3,8 +3,9 @@
  * mock OpenAI endpoint, and record RSS and `monitorEventLoopDelay` p99 for each phase. It writes one JSON report.
  *
  *   node --import tsx host/probes/scale.ts --sessions <dir> --agent-dir <dir> --cwd <dir> --socket <path> --out <file.json>
- *     [--stream 10] [--no-attach] [--extension <path>]...
+ *     [--stream 10] [--no-attach] [--warm] [--extension <path>]...
  *
+ * `--warm` imports the provider modules before the sessions open (`PiHost.warmProviders`).
  * Unless `--no-attach`, a socket client attaches to the largest session with a chunked snapshot while the streams run.
  */
 
@@ -22,7 +23,7 @@ import type { HostedSession } from "../src/session.ts";
 
 const { values } = parseArgs({ options: {
   sessions: { type: "string" }, "agent-dir": { type: "string" }, cwd: { type: "string" }, socket: { type: "string" }, out: { type: "string" },
-  stream: { type: "string" }, "no-attach": { type: "boolean" }, extension: { type: "string", multiple: true }, chunks: { type: "string" }, gap: { type: "string" },
+  stream: { type: "string" }, "no-attach": { type: "boolean" }, warm: { type: "boolean" }, extension: { type: "string", multiple: true }, chunks: { type: "string" }, gap: { type: "string" },
 } });
 const sessionsDir = resolve(values.sessions!);
 const agentDir = resolve(values["agent-dir"]!);
@@ -50,6 +51,7 @@ const host = new PiHost({ agentDir, defaultCwd: cwd, extensions: (values.extensi
 installGuard(host);
 const server = await listen(host, resolve(values.socket!));
 report.baseline = memory();
+if (values.warm) report.warm = await host.warmProviders();
 
 const histogram = monitorEventLoopDelay({ resolution: 10 });
 histogram.enable();
