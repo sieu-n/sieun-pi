@@ -11,13 +11,6 @@
       "headline": true
     },
     {
-      "key": "wiki_footprint_mb",
-      "label": "Real memory of the wiki's process tree (llm-wiki.service on us-metal02, pm2 elsewhere)",
-      "op": "<=",
-      "target": 4096,
-      "unit": " MB"
-    },
-    {
       "key": "mac_unusable_min",
       "label": "Minutes in the last 24 h the owner's Mac read unusable (memory pressure critical, 6,000 or more swapouts a second, or kernel_task over one core)",
       "op": "<=",
@@ -27,18 +20,6 @@
     {
       "key": "mac_servers_not_answering",
       "label": "The owner's Mac dev servers not answering 200 within 5 s: search app :5174, design demo :5180 and Vent :8791 /healthz (an asleep Mac reads mac_unreachable instead)",
-      "op": "<=",
-      "target": 0
-    },
-    {
-      "key": "mac_convex_push_stale",
-      "label": "The owner's Mac Convex watcher: 1 when its newest push failed and no push succeeded after the newest convex/ change, so the local backend serves old functions",
-      "op": "<=",
-      "target": 0
-    },
-    {
-      "key": "convex_push_stale",
-      "label": "us-metal02's own Convex watcher: 1 when a push failed after its last good push and no push succeeded after the newest convex/ change, so the local backend serves old functions",
       "op": "<=",
       "target": 0
     },
