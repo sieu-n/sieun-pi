@@ -336,6 +336,8 @@ export interface CheckInSource {
   registry?: JobRegistry;
   /** The home folder whose `.prime/agent/session-artifacts/<chat id>/scheduled-jobs.json` holds a chat's heartbeats; the user's home when absent. */
   home?: string;
+  /** pi-host's schedules file (`piHostJobsFile`) when the chat runs on pi-host, read in place of Prime's per-session files under `home`. */
+  piHostJobs?: string;
   /** The disk of the other box that runs a chat (`chatDisk`), where its jobs' quota parks are; null or absent: this box's at `home`. */
   artifacts?: (chat: string) => Promise<ArtifactDisk | null>;
   memory: CheckInRecord;

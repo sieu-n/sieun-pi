@@ -98,6 +98,17 @@ export interface ScheduledJob {
 }
 /** `<home>/.prime/agent/session-artifacts/<chat id>/scheduled-jobs.json`, where Prime Agent keeps a session's heartbeats. */
 export const heartbeatsFile = (chatId: string, home: string = homedir()): string => join(home, ".prime", "agent", "session-artifacts", chatId, "scheduled-jobs.json");
+/**
+ * pi-host's one schedules file for every session it hosts (components/pi-stack/host/src/scheduler.ts): `<data dir>/scheduled-jobs.json`, where
+ * its data dir is `<agent dir>/pi-host` unless pi-host runs with `--data-dir`.
+ */
+export const piHostJobsFile = (agentDir: string): string => join(agentDir, "pi-host", "scheduled-jobs.json");
+/**
+ * A session's schedules on the chat's backend: on pi-host the jobs of `piHostJobs` (`piHostJobsFile`) whose session it is, else Prime's
+ * per-session `heartbeatsFile` under `home`.
+ */
+export const sessionHeartbeats = (sessionId: string, home: string = homedir(), piHostJobs?: string): ScheduledJob[] =>
+  piHostJobs ? readHeartbeats(piHostJobs).filter(job => job.sessionId === sessionId) : readHeartbeats(heartbeatsFile(sessionId, home));
 /** The schedules in a `scheduled-jobs.json`; none when the file is missing or unreadable. */
 export function readHeartbeats(file: string): ScheduledJob[] {
   try { return parseHeartbeats(readFileSync(file, "utf8")); } catch { return []; }

@@ -6,7 +6,7 @@ import { ArchiveLeftWork, ScheduledJobsLeft } from "./saved-archive.ts";
 import { artifactsDir } from "./moved-images.ts";
 import { agentChildren } from "./chat-agents.ts";
 import { activeCorrections, handoffRules } from "./chat-corrections.ts";
-import { deadWakes, heartbeatsFile, landCarries, liveThreads, localDisk, parkSchedules, quotaParks, readHeartbeats, readTrain, trainFile, trainRepo, withDeadWakes, withQuotaParks, withStalls, withWakes } from "./checkin-load.ts";
+import { deadWakes, landCarries, liveThreads, localDisk, parkSchedules, quotaParks, readTrain, sessionHeartbeats, trainFile, trainRepo, withDeadWakes, withQuotaParks, withStalls, withWakes } from "./checkin-load.ts";
 import { flagStreaks, sentAfter, unsentFindings } from "./checkin-repeats.ts";
 import { boardPrs, type DoneFacts, metricFacts } from "./checkin-done.ts";
 import { activePause, changeCheckIn, type CheckInActor, type CheckInChange, CheckInRefused, type CheckInSetting, DEFAULT_CHECK_IN, nextCheckIn, planCheckIn } from "./checkin-settings.ts";
@@ -1731,7 +1731,7 @@ export class Chats {
     const duties = await this.source.duties?.(id).catch(error => { this.log(`chat ${id.slice(0, 8)}: check-in duties: ${error instanceof Error ? error.message : String(error)}`); return undefined; });
     const noDuties = await this.source.noDuties?.(id).catch(error => { this.log(`chat ${id.slice(0, 8)}: check-in no-duties flag: ${error instanceof Error ? error.message : String(error)}`); return undefined; });
     const jobs = this.source.registry ? await this.source.registry.rootsOf(self).catch(() => []) : [];
-    const heartbeats = readHeartbeats(heartbeatsFile(id, this.source.home));
+    const heartbeats = sessionHeartbeats(id, this.source.home, this.source.piHostJobs);
     const train = await readTrain(trainFile(this.source.home));
     const carried = await landCarries(board?.plan ?? [], wakes, train, trainRepo(this.source.home));
     const doneFacts = await this.doneFacts(id, board, rows);
@@ -1789,7 +1789,7 @@ export class Chats {
     // A job Prime admitted whose session never got its first prompt reads as not started, whatever its RLM status says (`withUnstarted`).
     const unstarted = await this.source.unstarted?.(this.now()).catch(error => { this.log(`chat ${id.slice(0, 8)}: check-in unstarted jobs: ${error instanceof Error ? error.message : String(error)}`); return []; }) ?? [];
     // A job stalled in one tool call past STALL_MS moves nothing until it returns, so it owns no step (`withStalls`).
-    const threads = withStalls(withUnstarted(withHeldTurns(withDeadWakes(withWakes(liveThreads(jobFacts(children, board, rows, id, nested, live, new Set([...asleep, ...pool?.queued.keys() ?? [], ...pool?.working ?? []])), session => readHeartbeats(heartbeatsFile(session, this.source.home)), this.now()),
+    const threads = withStalls(withUnstarted(withHeldTurns(withDeadWakes(withWakes(liveThreads(jobFacts(children, board, rows, id, nested, live, new Set([...asleep, ...pool?.queued.keys() ?? [], ...pool?.working ?? []])), session => sessionHeartbeats(session, this.source.home, this.source.piHostJobs), this.now()),
       wakes, key => sessions.get(key), this.below), dead, key => sessions.get(key), this.below), held?.sessions ?? new Map(), key => sessions.get(key)), unstarted),
       this.source.stalls?.(this.now()) ?? new Map(), key => sessions.get(key));
     // A job Prime parked on a provider limit waits for an account until the daemon's quota resume, not failed (`withQuotaParks`).

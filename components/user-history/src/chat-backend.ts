@@ -1,7 +1,8 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { getAgentDir, SettingsManager } from "prime-agent";
-import { defaultDaemonSocketPath } from "./daemon-sdk.ts";
+import { piHostJobsFile } from "./checkin-load.ts";
+import { defaultDaemonSocketPath, onPiHost } from "./daemon-sdk.ts";
 import { BoardStore } from "./chat-board-store.ts";
 import { AGENTS_FILE, Catalog } from "./chat-catalog.ts";
 import type { HostCatalogs } from "./host-catalogs.ts";
@@ -269,7 +270,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
           // A native abort holds the session's input until the next human prompt; reopen it so the continue gets through (as Resume does).
           await threads.resumeQueue(id).catch(() => {});
         }),
-      held: now => readHeldTurns(dataDir, now), artifacts: id => chatDisk(catalog, id),
+      held: now => readHeldTurns(dataDir, now), artifacts: id => chatDisk(catalog, id), ...onPiHost ? { piHostJobs: piHostJobsFile(agentDir) } : {},
       // `reach` is made below with the watch's; the check-in asks it only from its first tick on.
       hostAway: async name => {
         const host = catalog.remoteHosts().find(({ host }) => host.name === name)?.host;
