@@ -25,6 +25,7 @@ flowchart LR
 
 1. Reach follows Prime's rule in `src/family.ts`: the parent, siblings at the same depth under the same parent, and direct children, with every root a sibling of every other root.
 2. pi-host's `send_message` handler calls `sendFromClient` in `src/route.ts`, so a send from the chat service or a plain `pi` CLI gets the same message shape and receipt.
+   A client send with no sender session gets the header `[agent-message from <clientId>]`, as in Prime.
 3. Receipts keep Prime's shape: `id`, `source`, `target`, `from`, `message`, `deliveryStatus` (`delivered` or `queued`), `deliveredAt` or `queuedAt`, and `deliveryMode`.
 
 ## Limits
@@ -47,5 +48,9 @@ cd components/pi-stack
 node --import tsx --test --test-force-exit "agent-bus/test/*.test.ts"
 ```
 
-`test/load.test.ts` is the step 3 check in-process: 30 senders send 20 messages each to one busy receiver, and `test/load.ts` counts the messages in the receiver's session file.
-Set `BUS_LOAD_SENDERS` and `BUS_LOAD_PER_SENDER` to change the load, and `BUS_LOAD_OUT` to write the result as JSON.
+The step 3 check is 30 senders that send 20 messages each to one busy receiver, and `test/load.ts` counts the messages in the receiver's session file.
+1. `test/load.test.ts` runs it in-process, once with a busy receiver and once with sends spread over time.
+2. `test/host-load.test.ts` starts pi-host as its own process with this extension and `test/fixtures/busy.ts` loaded. It runs the load from 30 plain `pi` sessions on `PI_HOST_SOCKET` and from 30 socket clients with no sender session, then wakes a closed root.
+3. `test/host-closed.test.ts` wakes a closed child inside pi-host from its parent and from a socket client.
+
+Set `BUS_LOAD_SENDERS` and `BUS_LOAD_PER_SENDER` to change the load, `BUS_LOAD_OUT` to write each result as JSON, and `BUS_LOAD_ROOT` with `BUS_LOAD_KEEP=1` to keep the session files.
