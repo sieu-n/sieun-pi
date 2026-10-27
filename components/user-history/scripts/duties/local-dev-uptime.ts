@@ -19,7 +19,7 @@ import { hostViews } from "./whole-system.ts";
  * restarts come from whichever of the two holds it.
  * Convex and the crawler API may run on another box behind local port forwards; their URLs are the ones the search dev app uses (apps/search/.env.local).
  * When that file points a service away from this machine (`pnpm dev:crawler staging`), the local one is off by design and does not count as down.
- * It also reads the owner's Mac: mac_servers_not_answering counts which of its search app, design demo and Vent gave no 200 over ssh,
+ * It also reads the owner's Mac: mac_servers_not_answering counts which of its search app, design demo, Vent and crawler API gave no 200 over ssh,
  * mac_convex_push_stale is 1 when its Convex watcher's newest push failed and no push succeeded after the newest convex/ change, mac_unusable_min
  * counts the minutes of the last 24 h that the Mac usable watch read unusable (src/mac-usable-watch.ts USABLE, the same line d7 judges a minute
  * by), and mac_unreachable is 1 when ssh cannot reach it (asleep), which fails no check.
@@ -44,9 +44,13 @@ export const SERVICES: readonly Service[] = [
 ];
 /** The owner's Mac (the `mac` alias of ~/.ssh/config.d/mac.conf), its dev servers, and the targets that keep it usable (owner, 10-09: "have it your duty to have usable mac"). */
 export const MAC_HOST = "mac";
-/** Vent :8791 carries every Clerk call of the search app; it answers 401 on / and 200 only on /healthz. */
+/**
+ * Vent :8791 carries every Clerk call of the search app; it answers 401 on / and 200 only on /healthz. :8787 is the Mac's forward to the
+ * local crawler on the M2 Air store box, which restarted from 10-26 04:40Z to 10-27 17:51Z on a squashed Alembic revision while no d1 metric
+ * read it.
+ */
 export const MAC_PORTS = [{ port: 5174, name: "search app", path: "/" }, { port: 5180, name: "design demo", path: "/" },
-  { port: 8791, name: "Vent", path: "/healthz" }] as const;
+  { port: 8791, name: "Vent", path: "/healthz" }, { port: 8787, name: "crawler API", path: "/health" }] as const;
 /**
  * The window mac_unusable_min covers, one day, so a daily run reads every minute since the last one. A single 1-min load sample said nothing
  * about the owner's Mac: from 04:28Z to 08:27Z on 10-23, 174 of 312 30-s samples read load 20 or more, and the watch read 2 of those minutes
