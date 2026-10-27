@@ -3,9 +3,9 @@
  * kill it at a chosen point. `inspect` reads the file without writing. `resume` reopens it, resumes and waits for the
  * same request id to settle, then reports the transcripts.
  *
- *   node --import tsx pi-host/prototype/test/crash-worker.ts <start|inspect|resume> <db file> <faux|real>
+ *   node --import tsx pi-host/test/durable/crash-worker.ts <start|inspect|resume> <db file> <faux|real>
  *
- * Every line on stdout is one JSON event. Faux mode needs FAKE_POOL_DIR, the state folder of ../../pool/test/fake-pool.mjs.
+ * Every line on stdout is one JSON event. Faux mode needs FAKE_POOL_DIR, the state folder of ../../../pi-pool/test/fake-pool.mjs.
  */
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { fauxProvider, type AssistantMessage, type Message } from "@earendil-works/pi-ai";
@@ -13,8 +13,8 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import type { ConversationId, EntryRecord, Harness, LiveState } from "@earendil-works/pi-durable";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { openDurableHost } from "../src/host.ts";
-import { poolProvider } from "../src/pool-provider.ts";
+import { openDurableHost } from "../../src/durable/open.ts";
+import { poolProvider } from "../../src/durable/pool-provider.ts";
 import { fauxRespond, INPUT, MODEL, REQUEST_ID, textOf, type EntrySummary } from "./crash-scenario.ts";
 
 const context = BACKGROUND_CONTEXT;

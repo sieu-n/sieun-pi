@@ -35,6 +35,7 @@ import { Scheduler } from "./scheduler.ts";
 import schedulerExtension from "./scheduler-extension.ts";
 import { withPoolRetries } from "../../pi-pool/src/retries.ts";
 import type { Job } from "./schedule.ts";
+import type { DurableCommands } from "./durable/commands.ts";
 
 export interface HostOptions {
   agentDir: string;
@@ -58,6 +59,8 @@ export interface HostOptions {
   dataDir?: string;
   /** Adds `replay: true` to the hello, which a scratch chat serve needs before it passes writes (user-history `src/read-only-daemon.ts`). */
   scratchChatMark?: boolean;
+  /** The durable threads and their `durable_*` commands (`src/durable`). Unset: the host serves only Pi sessions. */
+  durable?: DurableCommands;
   log?: (line: string) => void;
 }
 
@@ -160,6 +163,7 @@ export class PiHost implements HostApi {
 
   removeConnection(connection: Connection): void {
     this.connections.delete(connection);
+    void this.options.durable?.disconnect(connection.clientId);
     for (const session of this.sessions.values()) session.sinks.delete(connection.clientId);
   }
 
@@ -481,6 +485,7 @@ export class PiHost implements HostApi {
   async handle(command: HostCommand, connection: Connection, envelopeClientId?: string): Promise<Response | undefined> {
     const id = command.id;
     const type = command.type as string;
+    if (this.options.durable?.handles(type)) return this.options.durable.handle(command as unknown as { id?: string; type: string }, connection);
     if (!HOST_COMMANDS.has(command.type)) return fail(id, type, unknownCommand(type));
     try {
       return await this.dispatch(command, connection, envelopeClientId);
@@ -873,6 +878,7 @@ export class PiHost implements HostApi {
     this.scheduler.stop();
     for (const connection of this.connections) connection.write({ type: "daemon_closing", reason: "shutdown" });
     await Promise.all([...this.sessions.keys()].map(id => this.kill(id, "shutdown")));
+    await this.options.durable?.threads.shutdown();
     this.leases.releaseAll();
     publishHostApi(undefined);
   }

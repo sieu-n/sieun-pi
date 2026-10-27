@@ -8,7 +8,7 @@ Nothing here is live.
 
 ```sh
 cd packages
-node --import tsx pi-host/src/main.ts --socket <path> --agent-dir <dir> [--session-dir <dir>] [--data-dir <dir>] [--extension <path>]... [--extensions-file <path>] [--no-default-extensions] [--cwd <dir>] [--model <provider/id>] [--idle-unload-min <n>] [--scratch-chat]
+node --import tsx pi-host/src/main.ts --socket <path> --agent-dir <dir> [--session-dir <dir>] [--data-dir <dir>] [--extension <path>]... [--extensions-file <path>] [--no-default-extensions] [--cwd <dir>] [--model <provider/id>] [--idle-unload-min <n>] [--scratch-chat] [--durable-dir <dir>] [--no-durable]
 ```
 
 1. Every session loads the extensions in `pi-host/extensions.json`, with paths relative to that file, then each `--extension`, which repeats. `--extensions-file` names another list, and `--no-default-extensions` skips it.
@@ -16,6 +16,13 @@ node --import tsx pi-host/src/main.ts --socket <path> --agent-dir <dir> [--sessi
 3. `--idle-unload-min` unloads a session that is idle with no client attached, 30 by default and 0 for never.
 4. `--scratch-chat` adds `replay: true` to the hello, so a scratch chat serve with `--scratch --replay-daemon` passes its writes through.
 5. SIGTERM disposes every session, releases every lease, removes the socket and exits 0.
+6. `--durable-dir` is the folder of durable threads, `<data dir>/durable` by default, and `--no-durable` turns them off.
+
+## Durable threads
+
+Beside the Pi sessions, pi-host serves durable threads: one pi-durable Harness per root thread, each on its own SQLite file, so a crash or restart resumes every run, child task and sleep where it stopped.
+The chat reaches them through the `durable_*` commands on the same socket.
+`src/durable/README.md` describes the files, the commands and the crash tests.
 
 `pi-host.service.template` is a systemd user unit for later, and nothing enables it.
 

@@ -2,7 +2,7 @@
  * pi-host CLI:
  *
  *   node --import tsx pi-host/src/main.ts --socket <path> --agent-dir <dir> [--session-dir <dir>] [--data-dir <dir>] [--extension <path>]... [--cwd <dir>]
- *     [--model <provider/id>] [--idle-unload-min <n>] [--scratch-chat] [--extensions-file <path>] [--no-default-extensions]
+ *     [--model <provider/id>] [--idle-unload-min <n>] [--scratch-chat] [--extensions-file <path>] [--no-default-extensions] [--durable-dir <dir>] [--no-durable]
  *
  * Every session loads the extensions listed in `pi-host/extensions.json` (paths relative to that file), then each `--extension`, which repeats.
  * `--extensions-file` names another list, and `--no-default-extensions` skips the list. `--scratch-chat` marks the hello so a scratch chat serve passes writes. SIGTERM and
@@ -10,7 +10,11 @@
  */
 
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { homedir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { createModels } from "@earendil-works/pi-ai/models";
+import { poolProvider } from "./durable/pool-provider.ts";
+import { DurableCommands, DurableThreads } from "./durable/index.ts";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { HOST_SOCKET_ENV } from "./api.ts";
@@ -32,6 +36,8 @@ const { values } = parseArgs({
     "scratch-chat": { type: "boolean" },
     "extensions-file": { type: "string" },
     "no-default-extensions": { type: "boolean" },
+    "durable-dir": { type: "string" },
+    "no-durable": { type: "boolean" },
   },
 });
 
@@ -61,7 +67,23 @@ const [provider, ...modelId] = (values.model ?? "").split("/");
 const { setChildLoaderOptions } = await import("../../pi-rlm/src/children.ts");
 setChildLoaderOptions(() => ({ additionalExtensionPaths: extensions, extensionFactories: [schedulerExtension] }));
 
+const dataDir = values["data-dir"] ? resolve(values["data-dir"]) : join(agentDir, "pi-host");
+// Durable threads: one pi-durable file per root thread, each its own pi-pool tree. The default model is the newest Opus (c185).
+const durable = values["no-durable"] ? undefined : new DurableCommands(new DurableThreads({
+  dir: values["durable-dir"] ? resolve(values["durable-dir"]) : join(dataDir, "durable"),
+  models: threadId => {
+    const models = createModels();
+    models.setProvider(poolProvider({ treeKey: `pi-durable:${threadId}`, agentDir }));
+    return models;
+  },
+  defaultModel: values.model ? { provider, modelId: modelId.join("/") } : { provider: "anthropic", modelId: "claude-opus-5-5" },
+  defaultThinkingLevel: "high",
+  defaultCwd: values.cwd ? resolve(values.cwd) : homedir(),
+  log: line => host.log(line),
+}));
+
 const host = new PiHost({
+  durable,
   agentDir,
   sessionDir: values["session-dir"] ? resolve(values["session-dir"]) : undefined,
   dataDir: values["data-dir"] ? resolve(values["data-dir"]) : undefined,
@@ -73,6 +95,7 @@ const host = new PiHost({
 });
 installGuard(host);
 const server = await listen(host, socketPath, { scratchChatMark: values["scratch-chat"] === true });
+await durable?.threads.start().catch(error => host.log(`durable recovery failed: ${error instanceof Error ? error.stack : String(error)}`));
 void host.warmProviders().then(rows => host.log(`provider modules loaded: ${rows.map(row => `${row.api} ${row.ms} ms${row.error ? ` (${row.error})` : ""}`).join(", ")}`));
 host.log(`listening on ${socketPath} (pid ${process.pid}, agent dir ${agentDir}, ${extensions.length} extensions)`);
 await host.recoverInboxes().catch(error => host.log(`inbox recovery failed: ${error instanceof Error ? error.message : String(error)}`));

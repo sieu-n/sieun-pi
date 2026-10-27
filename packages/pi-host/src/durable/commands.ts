@@ -1,0 +1,152 @@
+/**
+ * The `durable_*` socket commands: the chat's view of durable threads. They sit beside the v7 subset on the same
+ * socket, and a watch sends `durable_event` lines to the connection that asked until `durable_unwatch` or disconnect.
+ */
+import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
+import type { ModelRef, SubmissionId } from "@earendil-works/pi-durable";
+import { randomUUID } from "node:crypto";
+import { fail, ok, type Response } from "../protocol.ts";
+import type { Sink } from "../session.ts";
+import type { DurableThreads, SubmitInput } from "./threads.ts";
+
+export const DURABLE_COMMANDS = new Set([
+  "durable_threads", "durable_create", "durable_submit", "durable_wait", "durable_watch", "durable_unwatch", "durable_abort", "durable_tree",
+  "durable_entries", "durable_search", "durable_usage", "durable_doc_get", "durable_doc_put", "durable_set",
+]);
+
+type Command = { id?: string; type: string; [key: string]: unknown };
+
+function modelRef(value: unknown): ModelRef | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === "object" && typeof (value as ModelRef).provider === "string" && typeof (value as ModelRef).modelId === "string") return value as ModelRef;
+  if (typeof value !== "string" || !value.includes("/")) throw new Error(`model must be "provider/id" or {provider, modelId}, got ${JSON.stringify(value)}`);
+  const [provider, ...rest] = value.split("/");
+  return { provider: provider!, modelId: rest.join("/") };
+}
+
+const str = (command: Command, key: string): string => {
+  const value = command[key];
+  if (typeof value !== "string" || !value) throw new Error(`${command.type} needs ${key}`);
+  return value;
+};
+const optStr = (command: Command, key: string): string | undefined => (typeof command[key] === "string" ? (command[key] as string) : undefined);
+const optNum = (command: Command, key: string): number | undefined => (typeof command[key] === "number" ? (command[key] as number) : undefined);
+
+export class DurableCommands {
+  /** Watches by connection, so a closed socket stops its streams. */
+  private readonly watches = new Map<string, Map<string, () => Promise<void>>>();
+
+  constructor(readonly threads: DurableThreads) {}
+
+  handles(type: string): boolean {
+    return DURABLE_COMMANDS.has(type);
+  }
+
+  async handle(command: Command, sink: Sink): Promise<Response> {
+    const id = command.id;
+    const done = (data?: unknown) => ok(id, command.type, data);
+    try {
+      switch (command.type) {
+        case "durable_threads":
+          return done({ threads: this.threads.list(typeof command.archived === "boolean" ? { archived: command.archived } : {}) });
+        case "durable_create": {
+          const model = modelRef(command.model);
+          return done({ thread: await this.threads.create({
+            ...(optStr(command, "name") ? { name: optStr(command, "name")! } : {}),
+            ...(model ? { model } : {}),
+            ...(optStr(command, "thinkingLevel") ? { thinkingLevel: optStr(command, "thinkingLevel") as ModelThinkingLevel } : {}),
+            ...(optStr(command, "cwd") ? { cwd: optStr(command, "cwd")! } : {}),
+          }) });
+        }
+        case "durable_submit": {
+          const input: SubmitInput = {
+            ...(optNum(command, "conversation") === undefined ? {} : { conversation: optNum(command, "conversation")! }),
+            ...(optStr(command, "text") === undefined ? {} : { text: optStr(command, "text")! }),
+            ...(Array.isArray(command.images) ? { images: command.images as SubmitInput["images"] } : {}),
+            ...(optStr(command, "requestId") === undefined ? {} : { requestId: optStr(command, "requestId")! }),
+            ...(optStr(command, "whenBusy") === undefined ? {} : { whenBusy: optStr(command, "whenBusy") as SubmitInput["whenBusy"] }),
+          };
+          const entry = command.entry as { kind?: unknown; data?: { from?: unknown; via?: unknown } } | undefined;
+          if (entry !== undefined) {
+            if (entry.kind !== "agent.message" || typeof entry.data?.from !== "string") throw new Error('durable_submit entry must be {kind: "agent.message", data: {from, via?}}');
+            input.entry = { kind: "agent.message", data: { from: entry.data.from, ...(typeof entry.data.via === "string" ? { via: entry.data.via } : {}) } };
+          }
+          return done(await this.threads.submit(str(command, "thread"), input));
+        }
+        case "durable_wait":
+          return done({ settled: await this.threads.wait(str(command, "thread"), command.submission as SubmissionId) });
+        case "durable_watch": {
+          const thread = str(command, "thread");
+          const watchId = `durable-watch:${randomUUID()}`;
+          const stop = await this.threads.watch(thread, {
+            ...(optNum(command, "conversation") === undefined ? {} : { conversation: optNum(command, "conversation")! }),
+            ...(optNum(command, "fromEntry") === undefined ? {} : { fromEntry: optNum(command, "fromEntry")! }),
+          }, event => sink.write({ type: "durable_event", thread, watch: watchId, event }));
+          let mine = this.watches.get(sink.clientId);
+          if (!mine) this.watches.set(sink.clientId, (mine = new Map()));
+          mine.set(watchId, stop);
+          return done({ watch: watchId });
+        }
+        case "durable_unwatch": {
+          const watchId = str(command, "watch");
+          const stop = this.watches.get(sink.clientId)?.get(watchId);
+          this.watches.get(sink.clientId)?.delete(watchId);
+          await stop?.();
+          return done({ stopped: stop !== undefined });
+        }
+        case "durable_abort":
+          await this.threads.abort(str(command, "thread"), optNum(command, "conversation"));
+          return done();
+        case "durable_tree":
+          return done({ conversations: await this.threads.tree(str(command, "thread")) });
+        case "durable_entries":
+          return done(await this.threads.entries(str(command, "thread"), {
+            ...(optNum(command, "conversation") === undefined ? {} : { conversation: optNum(command, "conversation")! }),
+            ...(optNum(command, "before") === undefined ? {} : { before: optNum(command, "before")! }),
+            ...(optNum(command, "after") === undefined ? {} : { after: optNum(command, "after")! }),
+            ...(optNum(command, "limit") === undefined ? {} : { limit: optNum(command, "limit")! }),
+          }));
+        case "durable_search":
+          return done({ hits: this.threads.search({
+            q: str(command, "q"),
+            ...(Array.isArray(command.threads) ? { threads: command.threads as string[] } : {}),
+            ...(optStr(command, "from") === undefined ? {} : { from: optStr(command, "from")! }),
+            ...(optNum(command, "after") === undefined ? {} : { after: optNum(command, "after")! }),
+            ...(optNum(command, "before") === undefined ? {} : { before: optNum(command, "before")! }),
+            ...(optNum(command, "limit") === undefined ? {} : { limit: optNum(command, "limit")! }),
+            ...(command.sort === "recent" || command.sort === "relevance" ? { sort: command.sort } : {}),
+          }) });
+        case "durable_usage":
+          return done({ usage: this.threads.usage({
+            ...(optNum(command, "since") === undefined ? {} : { since: optNum(command, "since")! }),
+            ...(optNum(command, "until") === undefined ? {} : { until: optNum(command, "until")! }),
+            ...(Array.isArray(command.threads) ? { threads: command.threads as string[] } : {}),
+          }) });
+        case "durable_doc_get":
+          return done({ value: await this.threads.docGet(str(command, "thread"), str(command, "name"), optNum(command, "conversation")) });
+        case "durable_doc_put":
+          await this.threads.docPut(str(command, "thread"), str(command, "name"), command.value ?? null, optNum(command, "conversation"));
+          return done();
+        case "durable_set": {
+          const model = modelRef(command.model);
+          return done({ thread: await this.threads.set(str(command, "thread"), {
+            ...(optStr(command, "name") === undefined ? {} : { name: optStr(command, "name")! }),
+            ...(model ? { model } : {}),
+            ...(optStr(command, "thinkingLevel") ? { thinkingLevel: optStr(command, "thinkingLevel") as ModelThinkingLevel } : {}),
+            ...(typeof command.archived === "boolean" ? { archived: command.archived } : {}),
+          }) });
+        }
+        default:
+          return fail(id, command.type, `Unknown durable command: ${command.type}`);
+      }
+    } catch (error) {
+      return fail(id, command.type, error);
+    }
+  }
+
+  async disconnect(clientId: string): Promise<void> {
+    const mine = this.watches.get(clientId);
+    this.watches.delete(clientId);
+    for (const stop of mine?.values() ?? []) await stop().catch(() => undefined);
+  }
+}

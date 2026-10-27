@@ -340,6 +340,7 @@ export type Outbound =
   | Response
   | { type: "daemon_closing"; reason: "shutdown" }
   | { type: "heartbeats_changed" }
+  | { type: "durable_event"; thread: string; watch: string; event: unknown }
   | { type: "roster_update"; changed: RosterEntry[]; removed?: string[]; resync?: true }
   | { type: "session_event"; activeSessionId: string; event: { type: string; [key: string]: unknown }; meta: EventMeta }
   | { type: "session_snapshot_begin"; activeSessionId: string; snapshotId: string; snapshot: Omit<SessionSnapshot, "messages">; messageCount: number; targetChunkBytes: number; purpose: "attach" }

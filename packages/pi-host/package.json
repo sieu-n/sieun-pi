@@ -11,11 +11,13 @@
     "./protocol": "./src/protocol.ts",
     "./host": "./src/host.ts",
     "./lease": "./src/lease.ts",
-    "./scheduler-extension": "./src/scheduler-extension.ts"
+    "./scheduler-extension": "./src/scheduler-extension.ts",
+    "./durable": "./src/durable/index.ts"
   },
   "scripts": {
     "start": "node --import tsx src/main.ts",
-    "test": "node --import tsx --test --test-force-exit \"test/*.test.ts\""
+    "test": "node --import tsx --test --test-force-exit \"test/*.test.ts\" \"test/durable/*.test.ts\"",
+    "test:real": "PI_DURABLE_REAL=1 node --import tsx --test --test-force-exit --test-isolation=none --test-name-pattern=\"real\" test/durable/host-crash.test.ts"
   },
   "dependencies": {
     "@earendil-works/chord": "1.4.0",

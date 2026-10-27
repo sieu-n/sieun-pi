@@ -10,7 +10,7 @@ The live chat on :5182, pi-pool's install and every live session stay on Prime u
 
 | Folder | What it holds |
 |---|---|
-| `pi-host/` | One Node process on the Pi SDK that holds many sessions behind a unix socket speaking a subset of Prime's v7 JSONL envelope, plus its scheduler for heartbeats and wakes. `prototype/` holds the pi-durable host prototype and its SIGKILL crash test. |
+| `pi-host/` | One Node process on the Pi SDK that holds many sessions behind a unix socket speaking a subset of Prime's v7 JSONL envelope, plus its scheduler for heartbeats and wakes. `src/durable/` holds its durable threads: one pi-durable SQLite file per root thread that resumes after a crash, served as `durable_*` commands on the same socket. |
 | `pi-rlm/` | The `ipython` tool, `bash()` notices, in-process `rlm.spawn` children and the vendored MIT Prime Python runtime under `python/`. `agent-bus/` holds `agent_message` and `agent_observe`, routed in-process for one tree and through pi-host for roots and closed sessions. |
 | `pi-harness/` | The continual harness: the same `harness_state.json` format, digest injection, `/refine`, auto-refine and rollback. |
 | `pi-pool/` | The pi-pool hooks on `before_provider_headers` and `message_end`. |
