@@ -27,7 +27,7 @@ FEED = ("PRIME_AGENT_DOWNLOAD_BASE_URL", "PRIME_AGENT_ALLOW_INSECURE_HTTP_FOR_TE
 FAKE = textwrap.dedent(
     """\
     #!/usr/bin/env python3
-    import json, os, socket, subprocess, sys, time
+    import hashlib, json, os, socket, subprocess, sys, time
     log = os.environ["FAKE_LOG"]
     with open(log, "a") as f:
         f.write(json.dumps({"pid": os.getpid(), "argv": sys.argv[1:]}) + "\\n")
@@ -69,14 +69,29 @@ FAKE = textwrap.dedent(
             subprocess.Popen([sys.argv[0], "--mode", "daemon", "--daemon-socket", sock], env=env, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         # Prime keeps the prepared manifest at <agent dir>/daemon-update-restarts/<sha256 of the socket>.json, and a coordinator
         # that finds no daemon restores it into a successor it starts, or reports skipped when there is none.
-        import hashlib
         manifest = os.path.join(os.environ["PRIME_AGENT_CODING_AGENT_DIR"], "daemon-update-restarts", hashlib.sha256(sock.encode()).hexdigest() + ".json")
+        restores = os.environ.get("FAKE_RESTORES")
+        def restored_once(session_file):
+            if restores:
+                with open(restores, "a") as f:
+                    f.write(session_file + "\\n")
         if not answers():
             if os.path.exists(manifest):
-                total = len(json.load(open(manifest))["sessions"])
+                raw = open(manifest, "rb").read()
+                plan = json.loads(raw)
+                # Prime's stoppedSinceManifest: a session archived at or after the manifest's createdAt is not restored.
+                stops = json.load(open(os.environ["FAKE_STOPS"])) if os.environ.get("FAKE_STOPS") else {}
+                stopped = [s["sessionFile"] for s in plan["sessions"] if s["sessionFile"] in stops and stops[s["sessionFile"]] >= plan["createdAt"]]
+                if os.environ.get("FAKE_RERUN_LOG"):
+                    with open(os.environ["FAKE_RERUN_LOG"], "w") as f:
+                        json.dump({"manifest_sha256": hashlib.sha256(raw).hexdigest(), "stopped": stopped}, f)
                 successor()
+                for s in plan["sessions"]:
+                    if s["sessionFile"] not in stopped:
+                        restored_once(s["sessionFile"])
                 os.remove(manifest)
-                status("complete", counts={"total": total, "restored": total, "resumed": total, "failed": 0})
+                total = len(plan["sessions"])
+                status("complete", counts={"total": total, "restored": total - len(stopped), "resumed": total - len(stopped), "failed": 0}, stoppedBeforeRestore=[{"sessionFile": f} for f in stopped])
                 sys.exit(0)
             status("skipped", message="No running daemon needed to be restarted", counts={"total": 0, "restored": 0, "resumed": 0, "failed": 0})
             sys.exit(0)
@@ -88,6 +103,10 @@ FAKE = textwrap.dedent(
             os.makedirs(os.path.dirname(manifest), exist_ok=True)
             with open(manifest, "w") as f:
                 json.dump({"formatVersion": 1, "createdAt": "2026-10-27T08:47:11.045Z", "sessions": [{"activeSessionId": f"a{n}", "sessionFile": f"/s/{n}.jsonl"} for n in range(total)]}, f)
+            if os.environ.get("FAKE_RERUN_LOG"):
+                with open(os.environ["FAKE_RERUN_LOG"] + ".first", "w") as f:
+                    f.write(hashlib.sha256(open(manifest, "rb").read()).hexdigest())
+            recoveries = manifest[:-len(".json")] + ".recoveries"
             counts = {"total": total, "restored": 0, "resumed": 0, "failed": 0}
             status("preparing", counts=counts, predecessor={"pid": old})
             if mode == "stuck-stop":
@@ -103,6 +122,11 @@ FAKE = textwrap.dedent(
                     sys.exit(0)
             for n in range(total):
                 time.sleep(float(os.environ.get("FAKE_RESTORE_SECONDS", "1")))
+                # Prime's failRestore keeps a pending recovery record for a transient update_restarting refusal.
+                os.makedirs(recoveries, exist_ok=True)
+                with open(os.path.join(recoveries, f"{n}.json"), "w") as f:
+                    json.dump({"formatVersion": 1, "updateId": f"2026-10-27T08:47:11.045Z:a{n}", "manifestCreatedAt": "2026-10-27T08:47:11.045Z", "session": {"activeSessionId": f"a{n}", "sessionFile": f"/s/{n}.jsonl"},
+                               "attempts": [{"outcome": "failed", "error": "Daemon is preparing an update restart"}], "state": {"status": "pending"}}, f)
                 print(f"Warning: could not restore /s/{n}.jsonl: Daemon is preparing an update restart", flush=True)
             os.remove(manifest)
             status("failed", message=f"Could not stop the predecessor daemon on {sock}", counts=dict(counts, failed=total))
@@ -523,6 +547,45 @@ class DaemonCtlTest(unittest.TestCase):
         self.assertIsNotNone(old.wait(timeout=5))
         self.assertNotEqual(self.pid_in_file(), old.pid)
         self.assertEqual(self.pid_in_file(), self.successor_pid())
+
+    def rerun_files(self):
+        return {name: str(self.dir / name) for name in ("restores", "rerun.json", "stops.json")}
+
+    def recoveries(self):
+        folder = Path(self.env["PRIME_AGENT_CODING_AGENT_DIR"]) / "daemon-update-restarts"
+        return {p.name: p.read_bytes() for p in sorted(folder.glob("*.recoveries/*.json"))}
+
+    def test_the_rerun_restores_the_kept_manifest_once_and_skips_a_session_stopped_after_it(self):
+        # The owner stops /s/1 at 08:48:30, after the manifest's createdAt of 08:47:11.045, while the predecessor is stuck.
+        # /s/2's stop at 08:40 is older than the manifest, so that session was live when the manifest named it.
+        files = self.rerun_files()
+        Path(files["stops.json"]).write_text(json.dumps({"/s/1.jsonl": "2026-10-27T08:48:30.000Z", "/s/2.jsonl": "2026-10-27T08:40:00.000Z"}))
+        old = self.serve(FAKE_STUCK="soft")
+        code, out, _ = self.update_in_process(FAKE_UPDATE_MODE="refusing", FAKE_SESSIONS="4", FAKE_RESTORE_SECONDS="1",
+                                              FAKE_RESTORES=files["restores"], FAKE_RERUN_LOG=files["rerun.json"], FAKE_STOPS=files["stops.json"])
+        self.assertEqual(code, 0, out)
+        self.assertIsNotNone(old.wait(timeout=5))
+        rerun = json.loads(Path(files["rerun.json"]).read_text())
+        self.assertEqual(rerun["manifest_sha256"], Path(files["rerun.json"] + ".first").read_text(), "the ctl must hand the rerun the manifest the first run kept, unchanged")
+        self.assertEqual(rerun["stopped"], ["/s/1.jsonl"])
+        self.assertEqual(Path(files["restores"]).read_text().splitlines(), ["/s/0.jsonl", "/s/2.jsonl", "/s/3.jsonl"])
+        self.assertIn("result=stop-forced restored 3 of 4", out)
+        pending = self.recoveries()
+        self.assertEqual(list(pending), ["0.json"], "the first run's one refusal leaves one pending record")
+        self.assertEqual(json.loads(pending["0.json"])["state"], {"status": "pending"}, "the ctl leaves Prime's pending record as Prime wrote it")
+
+    def test_a_stuck_stop_is_ended_before_the_first_restore_attempt_writes_a_recovery_record(self):
+        # In the 10-27 shape each refusal took 120 s, so the ctl's stopping-phase deadline fires before any restore returns.
+        files = self.rerun_files()
+        old = self.serve(FAKE_STUCK="soft")
+        code, out, _ = self.update_in_process(FAKE_UPDATE_MODE="stuck-stop", FAKE_SESSIONS="3", FAKE_RESTORE_SECONDS="30",
+                                              FAKE_RESTORES=files["restores"], FAKE_RERUN_LOG=files["rerun.json"])
+        self.assertEqual(code, 0, out)
+        self.assertIsNotNone(old.wait(timeout=5))
+        self.assertNotIn("could not restore", out)
+        self.assertEqual(self.recoveries(), {})
+        self.assertEqual(Path(files["restores"]).read_text().splitlines(), ["/s/0.jsonl", "/s/1.jsonl", "/s/2.jsonl"])
+        self.assertIn("result=stop-forced restored 3 of 3", out)
 
     def test_a_predecessor_that_outlives_sigkill_fails_the_update_loudly(self):
         old = self.serve(FAKE_STUCK="soft")
