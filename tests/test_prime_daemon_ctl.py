@@ -161,6 +161,12 @@ FAKE = textwrap.dedent(
         status("complete")
         sys.exit(0)
     sock = sys.argv[sys.argv.index("--daemon-socket") + 1]
+    if os.environ.get("FAKE_BEHAVIOR") == "worker":
+        # A session worker that is still writing worker_commit_update, and exits when its commit ends.
+        time.sleep(float(os.environ["FAKE_COMMIT_SECONDS"]))
+        with open(os.environ["FAKE_WORKER_EXITS"], "a") as f:
+            f.write(f"{time.time()}\\n")
+        sys.exit(0)
     with open(os.environ["FAKE_ENV_LOG"] + ".daemon", "w") as f:
         json.dump({"TMPDIR": os.environ.get("TMPDIR"), "socket": os.environ.get("PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_SOCKET"), "feed": [k for k in ("PRIME_AGENT_DOWNLOAD_BASE_URL", "PRIME_AGENT_ALLOW_INSECURE_HTTP_FOR_TESTS") if k in os.environ]}, f)
     behavior = os.environ.get("FAKE_BEHAVIOR", "serve")
@@ -192,14 +198,26 @@ FAKE = textwrap.dedent(
     with open(os.environ["FAKE_PIDS"], "a") as f:
         f.write(f"{os.getpid()}\\n")
     import signal
+    for n in range(int(os.environ.get("FAKE_WORKERS", "0"))):
+        subprocess.Popen([sys.argv[0], "--mode", "daemon", "--daemon-socket", os.path.join(os.path.dirname(sock), f"worker-5e1f-{n}.sock")],
+                         env=dict(os.environ, FAKE_BEHAVIOR="worker"), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    def signalled(name):
+        if os.environ.get("FAKE_SIGNALS"):
+            with open(os.environ["FAKE_SIGNALS"], "a") as f:
+                f.write(f"{name} {time.time()}\\n")
     def stop(*_):
+        signalled("SIGTERM")
         os.unlink(sock)
         sys.exit(0)
     signal.signal(signal.SIGTERM, stop)
     # FAKE_STUCK models Prime's supervisor on 10-27: it takes the shutdown (SIGUSR1 here), drops its signal handlers and
     # never finishes. "soft" then dies on SIGTERM and leaves its socket file; "hard" ignores SIGTERM too.
+    def dies(*_):
+        signalled("SIGTERM")
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+        os.kill(os.getpid(), signal.SIGTERM)
     def shutdown_that_hangs(*_):
-        signal.signal(signal.SIGTERM, signal.SIG_IGN if os.environ["FAKE_STUCK"] == "hard" else signal.SIG_DFL)
+        signal.signal(signal.SIGTERM, signal.SIG_IGN if os.environ["FAKE_STUCK"] == "hard" else dies)
     if os.environ.get("FAKE_STUCK"):
         signal.signal(signal.SIGUSR1, shutdown_that_hangs)
     hello = {"type": "daemon_hello", "protocol": {"version": 7}, "supervisorPid": os.getpid(), "supervisorSocketPath": sock}
@@ -586,6 +604,24 @@ class DaemonCtlTest(unittest.TestCase):
         self.assertEqual(self.recoveries(), {})
         self.assertEqual(Path(files["restores"]).read_text().splitlines(), ["/s/0.jsonl", "/s/1.jsonl", "/s/2.jsonl"])
         self.assertIn("result=stop-forced restored 3 of 3", out)
+
+    def test_no_signal_reaches_a_predecessor_while_a_worker_of_it_still_commits(self):
+        # 10-27 (CAUSE-draft.md step 3): the coordinator's first preparing refusal came while 2013592 was still sending
+        # worker_commit_update and stopping its 39 workers. Here the refusal comes after 1 s and the workers commit for 4 s.
+        signals, exits = str(self.dir / "signals"), str(self.dir / "worker-exits")
+        old = self.serve(FAKE_WORKERS="3", FAKE_COMMIT_SECONDS="4", FAKE_WORKER_EXITS=exits, FAKE_SIGNALS=signals)
+        code, out, _ = self.update_in_process(FAKE_UPDATE_MODE="refusing", FAKE_SESSIONS="8", FAKE_RESTORE_SECONDS="1")
+        self.assertEqual(code, 0, out)
+        self.assertIsNotNone(old.wait(timeout=5))
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and not (Path(exits).exists() and len(Path(exits).read_text().split()) == 3):
+            time.sleep(0.05)
+        last_exit = max(float(t) for t in Path(exits).read_text().split())
+        sent = [float(line.split()[1]) for line in Path(signals).read_text().splitlines()]
+        self.assertEqual(len(Path(exits).read_text().split()), 3)
+        self.assertTrue(sent and min(sent) > last_exit, f"signal at {sent}, last worker exit at {last_exit}\n{out}")
+        self.assertIn("after the predecessor's last worker exited", out)
+        self.assertIn("result=stop-forced restored 8 of 8", out)
 
     def test_a_predecessor_that_outlives_sigkill_fails_the_update_loudly(self):
         old = self.serve(FAKE_STUCK="soft")

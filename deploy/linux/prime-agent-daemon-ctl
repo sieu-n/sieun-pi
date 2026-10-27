@@ -38,17 +38,22 @@ stopped and Restart= starts it again. The journal line then reads result=restore
 says ok, and Prime's own recovery handles the sessions the coordinator did not restore.
 
 Prime's coordinator gives the predecessor 10 s to go after it sends `shutdown`. If the predecessor still answers then,
-the coordinator restores every planned session into it, but a predecessor in Prime's prepared update phase refuses each
-open with "Daemon is preparing an update restart" and the client waits 120 s on each. On 10-27 supervisor 2013592 started
-its shutdown at about 08:48:00Z and never finished it, so 39 roots cost 39 x 120 s, restored 0 of 188, and the box served
-no session until 12:56Z (~/work/update-empty-box/CAUSE.md). So update watches the coordinator. Once the coordinator is
-past its stop wait with the predecessor still alive, or prints that refusal, or exits on "Could not stop the predecessor
-daemon", the ctl stops the coordinator before it can restore or drop the manifest, gives the predecessor a last moment to
-finish its own shutdown, then SIGTERM and SIGKILL, each sent only after it reads the predecessor's pid and /proc start id
-again and both still match. With the predecessor gone it runs the coordinator once more, which finds no daemon, starts the
-successor in this unit and restores the kept manifest, and the journal line reads result=stop-forced. If the predecessor
-outlives SIGKILL, update logs result=stop-failed and exits 6, because nothing short of Prime can take a prepared supervisor
-back to serving.
+the coordinator restores every planned session into it, but a predecessor in Prime's update phases refuses each open
+with "Daemon is preparing an update restart" and the client waits 120 s on each. On 10-27 the coordinator's prepare
+timed out at 08:47:58.9Z while supervisor 2013592 was still committing its 39 workers, its shutdown was refused at once,
+and the 39 roots then cost 39 x 120 s, restored 0 of 188, and the box served no session until 12:56Z
+(~/work/update-empty-box/CAUSE.md, /home/sieun/work/prime-update-recovery/CAUSE-draft.md). So update watches the
+coordinator, and the predecessor's session workers. The ctl acts only once the predecessor's last worker has exited,
+because Prime sends worker_commit_update to each prepared worker and stops it before the supervisor leaves its commit,
+so a running worker may still be writing the commit or a discard. From then on, once the coordinator has been stopping
+for COORDINATOR_GAVE_UP_SECONDS, or prints that refusal, or exits on "Could not stop the predecessor daemon", the ctl
+stops the coordinator before it can restore or drop the manifest, gives the predecessor a last moment to finish its
+own shutdown, then SIGTERM and SIGKILL, each sent only after it reads the predecessor's pid and /proc start id again,
+both still match, and no worker of it runs. With the predecessor gone it runs the coordinator once more, which finds
+no daemon, starts the successor in this unit and restores the kept manifest, and the journal line reads
+result=stop-forced. If the predecessor outlives SIGKILL, or a worker of it starts again before a signal, update logs
+result=stop-failed and exits 6. A predecessor whose workers never exit gets no signal at all, and the coordinator's own
+result stands.
 
 When the daemon start launches exits before it answers, often with ELOCKED because a successor that Prime's
 coordinator started still holds the socket lock, start waits for that supervisor's hello and adopts it. It has no
@@ -122,8 +127,10 @@ COORDINATOR_PER_SESSION_SECONDS = 360
 SUCCESSOR_START_SECONDS = 180
 # Prime's coordinator waits 10 s for the predecessor after `shutdown` (shutdownConnectedDaemonAndWait(..., 10000) in
 # runDaemonUpdateRestartCoordinator, prime f48fb6fd). The 5 s on top cover its probe of the socket (1 s connect, then a
-# session list), so a coordinator still in phase stopping 15 s after the ctl saw that phase has started restoring into
-# the predecessor. On 10-27 that restore began within 0.2 s of the wait ending (first refusal 08:50:09.854, 120 s later).
+# session list), so a coordinator still in phase stopping 15 s after the ctl saw that phase, with the predecessor's last
+# worker gone, has started restoring into the predecessor. On 10-27 that restore began at about 08:48:09Z and its first
+# create returned 120 s later (first refusal 08:50:09.854), so a clock from the last worker exit at 08:48:12.7 ends
+# before any restore attempt returns or writes a recovery record.
 COORDINATOR_GAVE_UP_SECONDS = 15
 # After the ctl stops the coordinator, a predecessor that is still in its own shutdown gets this long to finish it. Its
 # worker stops run in parallel, each a 5 s archive request and a 2 s exit wait (stopWorkerUntracked), and on 10-25 the
@@ -572,19 +579,50 @@ def wait_gone(supervisor, seconds):
     return True
 
 
+def live_workers(supervisor):
+    """Pids of the session workers supervisor started that still run: its children in `--mode daemon` on a worker-*.sock.
+
+    Prime's prepareUpdateRestartFenced sends worker_commit_update to every prepared worker, which writes the commit and
+    discard records, and then stops each worker with stopWorker. Only after the last one exits does the supervisor reach
+    its prepared phase. So while one of them runs, a commit or discard may still be in flight, and on 10-27 the
+    coordinator's first preparing refusal came at 08:48:0x while the 39 workers were still committing (they exited at
+    08:48:12.69 to .72, /home/sieun/work/prime-update-recovery/CAUSE-draft.md step 3).
+    """
+    pids = []
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            stat = (entry / "stat").read_text().rsplit(")", 1)[1].split()
+            argv = (entry / "cmdline").read_bytes().split(b"\0")
+        except (OSError, IndexError):
+            continue
+        if stat[0] in ("Z", "X") or int(stat[1]) != supervisor.pid or b"--mode" not in argv or b"--daemon-socket" not in argv:
+            continue
+        i = argv.index(b"--daemon-socket")
+        if i + 1 < len(argv) and os.path.basename(argv[i + 1]).startswith(b"worker-"):
+            pids.append(int(entry.name))
+    return sorted(pids)
+
+
 def signal_supervisor(supervisor, sig):
-    """Send sig through a pidfd opened before the start id check, so it reaches that process or none. False when it is gone."""
+    """Send sig through a pidfd opened before the start id and worker checks, so it reaches that process or none.
+
+    Returns "sent", "gone", or "committing" when a worker of it still runs, which gets no signal.
+    """
     try:
         fd = os.pidfd_open(supervisor.pid)
     except ProcessLookupError:
-        return False
+        return "gone"
     try:
         if not still_runs(supervisor):
-            return False
+            return "gone"
+        if live_workers(supervisor):
+            return "committing"
         signal.pidfd_send_signal(fd, sig)
-        return True
+        return "sent"
     except ProcessLookupError:
-        return False
+        return "gone"
     finally:
         os.close(fd)
 
@@ -599,8 +637,13 @@ def end_supervisor(supervisor):
         print(f"prime-agent-daemon-ctl: supervisor {supervisor} finished its own shutdown", file=sys.stderr, flush=True)
         return True
     for sig in (signal.SIGTERM, signal.SIGKILL):
-        if not signal_supervisor(supervisor, sig):
+        sent = signal_supervisor(supervisor, sig)
+        if sent == "gone":
             return True
+        if sent == "committing":
+            print(f"prime-agent-daemon-ctl: sent no {sig.name} to supervisor {supervisor}, because its workers {' '.join(map(str, live_workers(supervisor)))} still run "
+                  "and may still be writing Prime's update commit", file=sys.stderr, flush=True)
+            return False
         print(f"prime-agent-daemon-ctl: sent {sig.name} to supervisor {supervisor}, which Prime asked to shut down and which still runs", file=sys.stderr, flush=True)
         if wait_gone(supervisor, SIGNAL_WAIT_SECONDS):
             return True
@@ -662,11 +705,14 @@ def coordinate(prime_agent, sock, agent_dir, env, suffix=""):
         stopping_at = None
         while run.proc.poll() is None:
             phase = read_status(status_path).get("phase")
-            if phase == "stopping" and stopping_at is None:
+            committed = bool(predecessor) and not live_workers(predecessor)
+            # The stuck-stop clock starts only once the coordinator is stopping and the predecessor's commit has ended.
+            if phase == "stopping" and committed and stopping_at is None:
                 stopping_at = time.monotonic()
             past = phase == "stopping" and stopping_at is not None and time.monotonic() - stopping_at > COORDINATOR_GAVE_UP_SECONDS
-            if predecessor and (run.refused.is_set() or past) and still_runs(predecessor):
-                stuck = f"it printed {PREPARING!r}" if run.refused.is_set() else f"it was still stopping the predecessor {COORDINATOR_GAVE_UP_SECONDS} s after Prime's 10 s stop wait began"
+            if predecessor and committed and (run.refused.is_set() or past) and still_runs(predecessor):
+                stuck = (f"it printed {PREPARING!r} after the predecessor's last worker exited" if run.refused.is_set()
+                         else f"it was still stopping the predecessor {COORDINATOR_GAVE_UP_SECONDS} s after the predecessor's last worker exited")
                 run.stop()
                 break
             time.sleep(POLL_SECONDS)
@@ -676,7 +722,7 @@ def coordinate(prime_agent, sock, agent_dir, env, suffix=""):
             copy.close()
     status = read_status(status_path) or None
     message = str((status or {}).get("message", ""))
-    if not stuck and predecessor and code != 0 and STOP_FAILED_MESSAGE in message and still_runs(predecessor):
+    if not stuck and predecessor and code != 0 and STOP_FAILED_MESSAGE in message and still_runs(predecessor) and not live_workers(predecessor):
         stuck = f"it exited on {message!r} while the predecessor still runs"
     report = "" if stuck else restart_report(status)
     sys.stdout.write(report)
