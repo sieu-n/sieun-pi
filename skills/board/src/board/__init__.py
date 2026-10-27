@@ -99,7 +99,8 @@ def _load(chat: str | None) -> tuple[str, dict]:
         if raw is None:
             raise NoBoard(f"No board for {chat_id} on the chat host. A root job started with create_session has its own id; pass chat=<chat session id>.")
         return chat_id, json.loads(raw)
-    path = _agent_dir() / "browser-chat" / "boards" / f"{chat_id}.json"
+    data_dir = Path(os.environ["AGENT_CHAT_DATA_DIR"]) if os.environ.get("AGENT_CHAT_DATA_DIR") else _agent_dir() / "browser-chat"
+    path = data_dir / "boards" / f"{chat_id}.json"
     try:
         return chat_id, json.loads(path.read_text())
     except FileNotFoundError:

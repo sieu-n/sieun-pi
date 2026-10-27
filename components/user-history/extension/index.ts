@@ -150,10 +150,11 @@ export default function historyExtension(pi: ExtensionAPI): void {
       return { content: [{ type: "text", text: result.text }], details: undefined };
     },
   });
-  // Same directory as the chat server: the agent-chat-data-dir flag, else <agentDir>/browser-chat.
+  // Same directory as the chat server: the agent-chat-data-dir flag, else AGENT_CHAT_DATA_DIR, else <agentDir>/browser-chat. pi-host beside
+  // Prime sets AGENT_CHAT_DATA_DIR to the :5183 canary's data dir, so its sessions' boards and prompts stay out of the live chat's.
   const dataDir = () => {
     const flag = pi.getFlag("agent-chat-data-dir");
-    return typeof flag === "string" && flag ? resolve(flag) : join(getAgentDir(), "browser-chat");
+    return typeof flag === "string" && flag ? resolve(flag) : process.env.AGENT_CHAT_DATA_DIR ? resolve(process.env.AGENT_CHAT_DATA_DIR) : join(getAgentDir(), "browser-chat");
   };
   // Each session's last provider payload for the Prompt view (src/prompt-capture.ts). No other extension hooks this event and user-history
   // loads last, so this is the request as sent. The JSON is built here; the file write runs after the request leaves.
