@@ -562,6 +562,20 @@ export function subagentFolder(row: Pick<SessionSummary, "sessionId" | "sessionF
   return row.parentSessionId ? dirname(row.sessionFile) : join(dirname(dirname(row.sessionFile)), "session-artifacts", row.sessionId);
 }
 
+/** The session ids and active session ids of `rows`, and the ids of the rows with a worker. */
+function ownIds(rows: readonly SessionSummary[]): { own: Set<string>; ownActive: Set<string> } {
+  const own = new Set<string>();
+  const ownActive = new Set<string>();
+  for (const row of rows) {
+    own.add(row.sessionId);
+    if (row.activeSessionId === undefined) continue;
+    own.add(row.activeSessionId);
+    ownActive.add(row.sessionId);
+    ownActive.add(row.activeSessionId);
+  }
+  return { own, ownActive };
+}
+
 /** How long a folder's spawned count is reused; the daemon tree covers subagents spawned since. */
 export const SPAWNED_MS = 30_000;
 async function countSpawned(folder: string): Promise<number> {
@@ -950,17 +964,7 @@ export class Catalog {
   private index(rows: readonly SessionSummary[]): void {
     const next = new Map<string, SessionSummary>();
     const children: SessionSummary[] = [];
-    const own = new Set<string>();
-    const ownActive = new Set<string>();
-    for (const row of rows) {
-      own.add(row.sessionId);
-      if (row.activeSessionId === undefined) continue;
-      own.add(row.activeSessionId);
-      ownActive.add(row.sessionId);
-      ownActive.add(row.activeSessionId);
-    }
-    this.own = own;
-    this.ownActive = ownActive;
+    ({ own: this.own, ownActive: this.ownActive } = ownIds(rows));
     for (const row of this.hosts ? [...rows, ...this.hosts.rows()] : rows) {
       if (!isTopLevel(row)) { children.push(row); continue; }
       const existing = next.get(row.sessionId);
@@ -1524,10 +1528,23 @@ export class Catalog {
     const host = this.hosts?.hostOf(id);
     if (!host) return this.placed.get(id) ?? null;
     this.placed.delete(id);
-    this.settle();
-    if (!this.own.has(id)) return host.name;
-    return !this.ownActive.has(id) && this.hosts!.isActive(id) ? host.name : null;
+    const { own, ownActive } = this.ownNow();
+    if (!own.has(id)) return host.name;
+    return !ownActive.has(id) && this.hosts!.isActive(id) ? host.name : null;
   }
+
+  /**
+   * This box's session ids and active session ids as its copy holds them now, kept per copy version, so `hostOf` reads them without indexing
+   * every row. Until 10-27 each hostOf call after a copy change ran `settle`, a full index of every box's rows with the roster hand-on: the
+   * daemon sent 331 roster updates in 60 s, the outbox, wake and unload paths asked hostOf between them, and in the 18:07Z to 18:55Z CPU
+   * profile those settles held the main thread 108.5 s of 2,849 s, with the projections' own index on top.
+   */
+  private ownNow(): { own: ReadonlySet<string>; ownActive: ReadonlySet<string> } {
+    if (!this.peer.listed) return { own: this.own, ownActive: this.ownActive };
+    if (this.ownAt?.version !== this.peer.version) this.ownAt = { version: this.peer.version, ...ownIds(this.peer.list()) };
+    return this.ownAt;
+  }
+  private ownAt: { version: number; own: Set<string>; ownActive: Set<string> } | undefined;
 
   /** The path the session's own daemon knows its file by: another box's path for a row whose file the catalog names by its local copy. */
   daemonPath(summary: Pick<SessionSummary, "sessionId" | "sessionFile">): string | undefined {
