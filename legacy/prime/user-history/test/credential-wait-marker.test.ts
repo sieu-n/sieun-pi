@@ -8,7 +8,7 @@ import { poolWait } from "../src/checkin-steps.ts";
 import { cutEnd } from "../src/cut-end.ts";
 import { lastTurnError, turnSince } from "../src/held-turns.ts";
 import { failureText, poolSlot } from "../src/shared/chat-feed.ts";
-import { endsOnPoolWait } from "../scripts/duties/whole-system.ts";
+import { fileSlotPark } from "../src/slot-park.ts";
 
 // stuck duty chat page from the mac (01a15a2b-be18) on us-metal02, 10-20: with dhx.3 Prime and the p692 hook, the hook answered exit 75 with a
 // slot at 17:32:00Z, and Prime wrote this wait marker at 17:30:08Z (copied from a dhx.3 session, provider and times set to the incident's).
@@ -42,7 +42,7 @@ test("the cut a session ends on carries the marker's retryAtMs as its slot", () 
 });
 
 test("the d1 pool-wait owners read a transcript that ends on the marker as waiting", () => {
-  assert.equal(endsOnPoolWait(lines), true);
+  assert.equal(fileSlotPark(lines).park !== undefined, true);
 });
 
 test("the chat reads the marker as a wait for its slot, not a failed turn", () => {

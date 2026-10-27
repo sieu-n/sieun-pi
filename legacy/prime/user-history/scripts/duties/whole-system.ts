@@ -8,10 +8,10 @@ import { ownerChats } from "../../src/owner-chats.ts";
 import { type CutSpan, cutWords, readCut, readCutSpans, tailLines, type CutCause } from "../../src/cut-end.ts";
 import { activePause, checkInSettings } from "../../src/checkin-settings.ts";
 import { BoardStore } from "../../src/chat-board-store.ts";
-import { OPEN, POOL_WAIT, walk } from "../../src/checkin-steps.ts";
+import { OPEN, walk } from "../../src/checkin-steps.ts";
+import { type PoolQueue, readPoolQueue, slotParkOf } from "../../src/slot-park.ts";
 import { stepSessions, unmovedSteps } from "../../src/unmoved-steps.ts";
 import { waitHolds } from "../../src/checkin-end-state.ts";
-import { turnError } from "../../src/shared/credential-wait.ts";
 import type { ChatBoard, MemoryGroupId, PlanItem } from "../../src/shared/types.ts";
 import { type AgentLine, type HostUsable, isLinuxReading, parseLinuxReading, readWatch, type StrayServerLine, type IdlePm2Line, type TestBrowserLine, UNREAD_AT_STOP, unusable, type WaitingTree, type WatchLine, type WorkerLine, type WorkerTree } from "../../src/mac-usable-watch.ts";
 import { QUIET_MINUTES, QUIET_TARGET_GB, quietMinutes } from "../../src/quiet-minutes.ts";
@@ -1629,21 +1629,15 @@ async function ownerActivity(agentDir: string, boards: ReadonlyMap<string, ChatB
 
 /** How much of a transcript's end `poolWaitingOwners` reads: in 1,448 job transcripts on 10-18 the last assistant line started at most 155 KB before the end. */
 export const POOL_TAIL_BYTES = 1_000_000;
-/** Whether a transcript's last assistant turn ended on a pi-pool slot wait (`POOL_WAIT`), from its last lines. */
-export function endsOnPoolWait(lines: readonly string[]): boolean {
-  for (let at = lines.length - 1; at >= 0; at--) {
-    if (!lines[at]!.includes('"role":"assistant"')) continue;
-    try {
-      const message = (JSON.parse(lines[at]!) as { message?: { stopReason?: unknown; errorMessage?: unknown; diagnostics?: unknown } }).message;
-      return message?.stopReason === "error" && POOL_WAIT.test(turnError(message) ?? "");
-    } catch { continue; }
-  }
-  return false;
-}
-
-/** The step owners whose transcript, a root's under sessions or a job's under its chat's session-artifacts, ends on a pi-pool slot wait. */
-async function poolWaitingOwners(agentDir: string, boards: ReadonlyMap<string, ChatBoard | null>, named: Inputs["named"] = new Map()): Promise<Set<string>> {
+/**
+ * The step owners whose transcript, a root's under sessions or a job's under its chat's session-artifacts, waits for a pi-pool slot
+ * (`slotParkOf` with this box's pool line, which the Mac's jobs use too). Since load.2 such a turn ends on "this run waits for a working slot,
+ * place 134 of 139", which the old `POOL_WAIT` test ("waits for its slot") missed, so d9 read every parked job's steps as stuck.
+ */
+export async function poolWaitingOwners(agentDir: string, boards: ReadonlyMap<string, ChatBoard | null>, named: Inputs["named"] = new Map(),
+  readPool: () => Promise<PoolQueue | null> = readPoolQueue, now = Date.now()): Promise<Set<string>> {
   const out = new Set<string>();
+  const pool = await readPool();
   for (const [chat, board] of boards) {
     const owners = new Set<string>();
     walk(board?.plan ?? [], item => { if (OPEN.has(item.status)) for (const session of stepSessions(item, named.get(chat) ?? new Map())) owners.add(session); });
@@ -1653,7 +1647,7 @@ async function poolWaitingOwners(agentDir: string, boards: ReadonlyMap<string, C
       const files = [join(agentDir, "sessions", `${session}.jsonl`), ...subs.map(sub => join(agentDir, "session-artifacts", chat, sub, `${session}.jsonl`))];
       const found = (await Promise.all(files.map(async file => ({ file, at: (await stat(file).catch(() => null))?.mtimeMs })))).filter(entry => entry.at !== undefined);
       const newest = found.sort((a, b) => b.at! - a.at!)[0];
-      if (newest && endsOnPoolWait(await tailLines(newest.file, POOL_TAIL_BYTES))) out.add(session);
+      if (newest && slotParkOf(await tailLines(newest.file, POOL_TAIL_BYTES), session, now, pool)) out.add(session);
     }
   }
   return out;

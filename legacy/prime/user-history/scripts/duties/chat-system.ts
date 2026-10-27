@@ -11,6 +11,7 @@ import { cancelHolds, JOB_CANCELS_FILE, parseJobCancels } from "../../src/job-ca
 import { planRiskSteps } from "../../src/checkin-findings.ts";
 import { LIVE_GAP_MS, OPEN, parkedBy, planHasOpenStep, walk } from "../../src/checkin-steps.ts";
 import { listedSessions } from "../../src/daemon-faults.ts";
+import { fileSlotPark } from "../../src/slot-park.ts";
 import { ownerChats } from "../../src/owner-chats.ts";
 import { chatDataDir } from "../../src/owner-ok.ts";
 import { CHECK_IN_DUTY_ID, type DutyPrecheck, type DutyRunRecord, type FlaggedSlice, type PrecheckOutput, shownValue } from "../../src/shared/chat-duties.ts";
@@ -25,7 +26,7 @@ import { stalledSince } from "../../src/shared/stalled-calls.ts";
 import { transientTurnError, turnErrorCause } from "../../src/turn-error.ts";
 import { turnError } from "../../src/shared/credential-wait.ts";
 import { daemonSessions, dutyFleet, type FleetDuty } from "./duty-fleet.ts";
-import { catalogCopyFiles, copyHosts, endsOnPoolWait, type HostHeldStep, mirroredSessions, planCounts, planInputs, POOL_TAIL_BYTES } from "./whole-system.ts";
+import { catalogCopyFiles, copyHosts, type HostHeldStep, mirroredSessions, planCounts, planInputs, POOL_TAIL_BYTES } from "./whole-system.ts";
 import { stepSessions, withDescendantActivity } from "../../src/unmoved-steps.ts";
 import { loadHosts, selfHost } from "../../src/hosts.ts";
 import { checkInStandingLine, checkInStandings, LATE_INTERVALS } from "../../src/checkin-schedule.ts";
@@ -395,7 +396,7 @@ async function poolCutJobs(stuck: readonly { chat: string; duty: string }[], run
     const last = (runs.get(entry.chat) ?? []).find(run => run.duty === entry.duty && run.job !== undefined);
     if (!last?.job || last.after || last.cut) continue;
     const copy = localCopy(file(last.job.id) ?? join(homedir(), ".prime/agent/sessions", `${last.job.id}.jsonl`));
-    if (copy && endsOnPoolWait(await tail(copy.file, POOL_TAIL_BYTES))) out.add(last.job.id);
+    if (copy && fileSlotPark(await tail(copy.file, POOL_TAIL_BYTES)).park) out.add(last.job.id);
   }
   return out;
 }

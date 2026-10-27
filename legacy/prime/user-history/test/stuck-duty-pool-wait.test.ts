@@ -3,7 +3,8 @@
 // Vent read "missed N runs" as "did not run".
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { endsOnPoolWait, measure } from "../scripts/duties/whole-system.ts";
+import { measure } from "../scripts/duties/whole-system.ts";
+import { fileSlotPark } from "../src/slot-park.ts";
 import type { DutyRunRecord } from "../src/shared/chat-duties.ts";
 import type { ChatBoard } from "../src/shared/types.ts";
 
@@ -16,9 +17,9 @@ const SLOT = "Failed to resolve API key for provider \"anthropic\" from shell co
 
 test("a transcript whose last assistant turn ended on a pi-pool slot wait reads as waiting for its slot", () => {
   const user = JSON.stringify({ type: "message", message: { role: "user", content: "[wake]" } });
-  assert.equal(endsOnPoolWait([assistant("stop"), user, assistant("error", SLOT), ""]), true);
-  assert.equal(endsOnPoolWait([assistant("error", SLOT), user, assistant("stop")]), false, "a later turn that ran ends the wait");
-  assert.equal(endsOnPoolWait([assistant("error", "Provider overloaded (529)")]), false, "another error is no slot wait");
+  assert.equal(fileSlotPark([assistant("stop"), user, assistant("error", SLOT), ""]).park !== undefined, true);
+  assert.equal(fileSlotPark([assistant("error", SLOT), user, assistant("stop")]).park !== undefined, false, "a later turn that ran ends the wait");
+  assert.equal(fileSlotPark([assistant("error", "Provider overloaded (529)")]).park !== undefined, false, "another error is no slot wait");
 });
 
 test("a red duty whose fix step's owner waits for its pi-pool slot or sleeps on a board.wake is not stuck, and the line names the duty link", () => {
