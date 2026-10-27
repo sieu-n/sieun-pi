@@ -25,6 +25,7 @@ import * as registry from "../../shared/registry.ts";
 import type { AgentEntry, BusMessage, Delivery, Identity } from "../../shared/registry.ts";
 import { publishHostApi, type HostApi, type HostEvent, type HostSessionInfo, type OpenRequest } from "./api.ts";
 import { Leases, SessionLockedError } from "./lease.ts";
+import { SavedIndex } from "./saved-index.ts";
 import {
   fail, HOST_COMMANDS, ok, PROTOCOL, unknownCommand, type AttachResult, type ClientCapability, type HostCommand, type Outbound, type ReplayInfo,
   type Response, type RosterEntry, type SavedSessionInfo, type SavedSessionSummary, type SessionSummary,
@@ -83,21 +84,6 @@ function headerCwd(path: string): string | undefined {
   } catch { return undefined; }
 }
 
-/** How long one scan of the saved session files answers `list` with `all`, since the chat lists every few seconds. */
-const SAVED_LIST_MS = 10_000;
-
-type SavedInfo = { path: string; id: string; cwd: string; name?: string; parentSessionPath?: string; created: Date; modified: Date; messageCount: number; firstMessage: string };
-
-function savedRow(info: SavedInfo): SavedSessionSummary {
-  const modified = info.modified.toISOString();
-  return {
-    id: info.id, sessionId: info.id, sessionFile: info.path, ...(info.name ? { sessionName: info.name } : {}), cwd: info.cwd, lifecycle: "archived", activity: "idle",
-    isSessionActive: false, isStreaming: false, isCompacting: false, attachedClients: 0, messageCount: info.messageCount, unfinishedActionCount: 0,
-    sessionActions: { queuedCount: 0, steering: [], followUps: [] }, created: info.created.toISOString(), modified, lastActivityAt: modified,
-    firstMessage: info.firstMessage, ...(info.parentSessionPath ? { parentSessionPath: info.parentSessionPath } : {}),
-  };
-}
-
 function saved(info: { path: string; id: string; cwd: string; name?: string; parentSessionPath?: string; created: Date; modified: Date; messageCount: number; firstMessage: string; allMessagesText: string }): SavedSessionInfo {
   return { ...info, created: info.created.toISOString(), modified: info.modified.toISOString() };
 }
@@ -129,7 +115,7 @@ export class PiHost implements HostApi {
   private readonly listeners = new Set<(event: HostEvent) => void>();
   private readonly idleTimer: NodeJS.Timeout | undefined;
   private closing = false;
-  private savedScan: { at: number; rows: Promise<SavedSessionSummary[]> } | undefined;
+  private savedIndex: SavedIndex | undefined;
   readonly scheduler: Scheduler;
 
   constructor(readonly options: HostOptions) {
@@ -462,12 +448,10 @@ export class PiHost implements HostApi {
 
   // ---- commands ----
 
-  /** The saved session files in the session dir, scanned at most once per SAVED_LIST_MS. */
+  /** The saved session files in the session dir, Prime's flat ones and Pi's cwd folders, from an index kept under the agent dir. */
   private savedRows(): Promise<SavedSessionSummary[]> {
-    if (this.savedScan && Date.now() - this.savedScan.at < SAVED_LIST_MS) return this.savedScan.rows;
-    const rows = SessionManager.listAll(this.options.sessionDir).then(infos => infos.map(savedRow), () => []);
-    this.savedScan = { at: Date.now(), rows };
-    return rows;
+    this.savedIndex ??= new SavedIndex([this.options.sessionDir ?? join(this.options.agentDir, "sessions")], join(this.options.dataDir ?? join(this.options.agentDir, "pi-host"), "saved-index.json"));
+    return this.savedIndex.rows();
   }
 
   private async target(command: SessionCommand): Promise<HostedSession> {
