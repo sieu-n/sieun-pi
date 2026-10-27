@@ -20,6 +20,8 @@ The brief has these parts, in this order.
 7. A job that waits for a CI run or a time sets `board.wake(run=...)` or `board.wake(at=...)` and ends its turn, and never ends a turn with `ci-run-status --wait`, `gh run watch` or a `sleep` still running, because that wait keeps its kernel and worker in memory.
 8. The brief ends with the reply line: `await agent_message.send(report, receiver_role="parent")` for a child, or `receiver_role="sibling", receiver_name=<your session name>` for a create_session root. Get the name from `current.sessionName` in `await agent_observe.list_agents()`.
 
+A brief for work on auto-sns-agent's 5180 demo, including a PIN move or a route or layout change, has the job read the frontend-implementation skill, names the page shape each touched app uses (AppFrame, ListPage or PageFrame in `$lib/ui`), and asks for an Aside shot of each touched app beside its shape's reference app (Inbox, the Campaigns list or Connections) taken in the same run (c78). On 10-27 a PIN-move brief asked the job to "compare with the accepted Staging apps", the job had no earlier image to compare with, and a floating campaign sidebar passed until the owner saw it.
+
 Everything you send another agent (briefs, relays, answers) is in English. After the owner's exact words, say in plain English what they mean and what to do, and translate any Korean (c2). The server sends `[brief check]` when a brief has the job wait for someone's go or sets a gate nobody asked for (c47); fix it in the job with a message.
 
 ## Split the work
