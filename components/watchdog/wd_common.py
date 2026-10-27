@@ -109,13 +109,37 @@ def pending_wake(sid):
     return next((p.name for p in sorted((CHAT_DATA / 'wakes').glob(f'{sid}-*.json'))), None) if sid else None
 
 
-def pool_queued(sid):
-    """Whether pi-pool's turn queue (turns.json) holds a run of session `sid` waiting for a working slot, or kept for its account wait."""
+def pool_kept(sid):
+    """Whether pi-pool's turn queue (turns.json `kept`) keeps the place of a run of session `sid` that it let go on an account wait or with
+    input queued, for the session's next run. A run that waits for a working slot reads through `slot_parks`."""
     try:
         turns = json.loads(POOL_TURNS.read_text())
     except (OSError, ValueError):
         return False
-    return any(sid in (turns.get(part) or {}) for part in ('queued', 'kept'))
+    return sid in (turns.get('kept') or {})
+
+
+# sieun-pi's one reader of a session parked on a pi-pool working slot (components/user-history/src/slot-park.ts), through the daemon reader's
+# `slot-park` command, which also reads `pi-pool queue --json`. On us-metal02 on 10-28 it read the 1,967 live session files in 3.2 s and all
+# 7,028 in 6.7 s at a load near 110.
+SLOT_PARK_S = 60
+
+
+def slot_parks(files):
+    """{session id: park} for each of the session `files` that waits for a pi-pool working slot, or None when this box has no reader or it
+    failed. A park is {since, place?, total?, resumeAt?, starting?, words}, and `words` reads "waits for a working slot, place 104 of 193"."""
+    files = sorted({f for f in files if f})
+    if not files:
+        return {}
+    reader = daemon_reader()
+    if not reader:
+        return None
+    try:
+        done = subprocess.run([*reader, 'slot-park', *files], capture_output=True, text=True, env=ENV, timeout=SLOT_PARK_S)
+        parks = json.loads(done.stdout).get('parks') if done.returncode == 0 else None
+    except (OSError, ValueError, AttributeError, subprocess.TimeoutExpired):
+        return None
+    return {sid: park for sid, park in parks.items() if isinstance(park, dict)} if isinstance(parks, dict) else None
 
 
 def pool_admitted_at(sid):

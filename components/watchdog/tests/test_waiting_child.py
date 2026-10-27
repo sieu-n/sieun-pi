@@ -2,7 +2,8 @@
 turn queue, its board.wake for 10:40Z on 10-25 was pending, and it reported to its parent at 19:33:50Z, while the cycle that read it at 19:33Z
 probed the model. At 19:35:33Z that cycle sent its parent "[watchdog] Your subagent 'checkin pushes goals' has produced nothing for 137.9
 minutes: its turn never dispatched and there is no shell process left to unblock. Cancel that child (rlm.delete_subagent) ...". A silent
-subagent with a pending wake, a run in pi-pool's turn queue or a message to its parent after its last prompt now gets no notice, and
+subagent with a pending wake, a run in pi-pool's turn queue (read by the shared slot-park reader) or a message to its parent after its last
+prompt now gets no notice, and
 ChildRanAgain replays pi cutover prep on 10-27, which pi-pool admitted while the cycle that read it silent probed the models.
 
 WATCHDOG_DIR=<folder with the old watchdog files> runs the same cases against the old cycle, where the waiting cases fail."""
@@ -11,8 +12,10 @@ from pathlib import Path
 
 HERE = Path(os.environ.get('WATCHDOG_DIR') or Path(__file__).resolve().parents[1])
 sys.path.insert(0, str(HERE))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 import wd_common  # noqa: E402
 import watchdog  # noqa: E402
+from slot_reader import use_reader  # noqa: E402
 
 CHILD, PARENT = '01a14d7c-1a93-7008-bc1e-bde0d047eaf9', '01a1164b-4a2d-742d-b27a-82f086ed0200'
 
@@ -68,6 +71,7 @@ class Cycle(unittest.TestCase):
         watchdog._descendants = lambda *a, **k: []
         watchdog._tls_count = lambda *a, **k: 0
         self.during_probe = None
+        self.pool = use_reader(self, {'enabled': True, 'working': [], 'queued': []})
         watchdog.probe_model = lambda model, *a, **k: (self.during_probe and self.during_probe()) or {'outcome': 'alive', 'model': model}
 
     def tearDown(self):
@@ -77,7 +81,8 @@ class Cycle(unittest.TestCase):
 
     def cycle(self, tail):
         child = self.dir / f'{CHILD}.jsonl'
-        child.write_text(''.join(json.dumps(e) + '\n' for e in [{'type': 'session', 'id': CHILD, 'timestamp': at(1200)}, *tail]))
+        # Prime writes compact JSON, and the reader's line filter looks for '"customType":"p'.
+        child.write_text(''.join(json.dumps(e, separators=(',', ':')) + '\n' for e in [{'type': 'session', 'id': CHILD, 'timestamp': at(1200)}, *tail]))
         parent = self.dir / f'{PARENT}.jsonl'
         parent.write_text(''.join(json.dumps(e) + '\n' for e in [{'type': 'session', 'id': PARENT, 'timestamp': at(3000)}, prompt(2), done(1)]))
         rows = [{'id': PARENT, 'sessionId': PARENT, 'sessionName': 'AI harness developer environment VP', 'sessionFile': str(parent),
@@ -107,9 +112,13 @@ class WaitingChild(Cycle):
         (self.data / 'wakes' / f'{CHILD}-time-1792924800.json').write_text(json.dumps(wake))
         self.assertEqual(self.cycle(TAIL), ('OK', []))
 
-    def test_a_child_queued_in_pi_pool_gets_no_notice(self):
-        self.turns.write_text(json.dumps({'working': {}, 'queued': {CHILD: {'tree': PARENT, 'since': 1792868727.6}}, 'owner': {}, 'lead': [],
-                                          'kept': {}}))
+    def test_a_child_queued_in_pi_pool_reads_its_slot_wait_and_gets_no_notice(self):
+        self.pool.write_text(json.dumps({'enabled': True, 'working': [], 'queued': [{'session': CHILD, 'position': 105, 'total': 105}]}))
+        self.assertEqual(self.cycle(TAIL), ('SLOT_WAIT', []))
+
+    def test_a_child_whose_place_pi_pool_keeps_for_its_next_run_gets_no_notice(self):
+        self.turns.write_text(json.dumps({'working': {}, 'queued': {}, 'owner': {}, 'lead': [],
+                                          'kept': {CHILD: {'since': 1792868727.6, 'slot_at': 1792869727.6}}}))
         self.assertEqual(self.cycle(TAIL), ('OK', []))
 
     def test_a_child_that_reported_while_the_cycle_probed_gets_no_notice(self):

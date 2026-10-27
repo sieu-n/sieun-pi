@@ -10,6 +10,7 @@ errors, turns that ended after a tool result, and replies that look cut off.
 Verdicts per session (transcript decides, not the list's activity flag):
   WORKING      streaming or running tools, recent output
   FROZEN       streaming, no tools, no real assistant output >= FROZEN_MIN
+  SLOT_WAIT    the session waits for a pi-pool working slot (the shared slot-park reader), with its place, and nothing is done
   POOL_WAIT    last turn is Prime's credential wait marker: pi-pool holds the tree until its slot, and nothing is done
   ACCOUNT_ERR  last turn ended in an auth/quota/rate/overload provider error
   NET_ERR      last turn ended in a connection error
@@ -29,7 +30,7 @@ import json, os, re, subprocess, sys, time, datetime as dt
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from wd_common import chat_ids, credential_wait_at, pa, stop_reason  # noqa: E402
+from wd_common import chat_ids, credential_wait_at, pa, slot_parks, stop_reason  # noqa: E402
 
 WATCH = Path.home() / '.prime/agent/watchdog'
 STATE_F = WATCH / 'triage_state.json'
@@ -105,7 +106,7 @@ def head_of(s, by):
     return cur
 
 
-def classify(s, t, archived=frozenset(), test_chats=frozenset()):
+def classify(s, t, archived=frozenset(), test_chats=frozenset(), park=None):
     evs = tail_events(s['sessionFile']) if s.get('sessionFile') and os.path.exists(s['sessionFile']) else []
     msgs = [e for e in evs if e.get('type') == 'message']
     last = msgs[-1] if msgs else None
@@ -125,7 +126,9 @@ def classify(s, t, archived=frozenset(), test_chats=frozenset()):
              last_age=round(last_age, 1) if last_age is not None else None,
              asst_age=round(asst_age, 1) if asst_age is not None else None, tail=txt[-240:], recent=recent[-6000:],
              stopped=stop_reason(s.get('sessionId'), s.get('sessionFile'), archived, test_chats))
-    if last_age is None:
+    if park:
+        v, r['wait'] = 'SLOT_WAIT', park['words']
+    elif last_age is None:
         v = 'UNKNOWN'
     elif last_age > STALE_H * 60 and not stream:
         v = 'STALE'
@@ -186,11 +189,12 @@ def triage():
                 by[k] = s
     selfs = {os.environ.get('FLEET_TRIAGE_SELF'), os.environ.get('PRIME_AGENT_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID')} - {None, ''}
     archived, test_chats = chat_ids('archived-chats.json'), chat_ids('clean-room-chats.json')
+    parks = slot_parks([s.get('sessionFile') for s in ss if s.get('lifecycle') == 'live']) or {}
     out = []
     for s in ss:
         if s.get('lifecycle') != 'live' or s['sessionId'] in selfs or s.get('activeSessionId') in selfs:
             continue
-        r = classify(s, t, archived, test_chats)
+        r = classify(s, t, archived, test_chats, parks.get(s['sessionId']))
         h = head_of(s, by)
         r['stopped'] = r['stopped'] or stop_reason(h['sessionId'], h.get('sessionFile'), archived, test_chats)
         r['head_sid'], r['head_name'] = h['sessionId'], h.get('sessionName') or ''
@@ -329,7 +333,8 @@ def main():
         for r in rows:
             r.pop('recent', None)
         print(json.dumps(rows, indent=1, default=str)); return 0
-    order = ['FROZEN', 'ACCOUNT_ERR', 'NET_ERR', 'DROPPED', 'CUT_OFF', 'MAYBE_CUT', 'ABORTED', 'WORKING', 'DONE', 'STALE', 'UNKNOWN']
+    order = ['FROZEN', 'ACCOUNT_ERR', 'NET_ERR', 'DROPPED', 'CUT_OFF', 'MAYBE_CUT', 'ABORTED', 'SLOT_WAIT', 'POOL_WAIT', 'WORKING', 'DONE', 'STALE',
+             'UNKNOWN']
     rows.sort(key=lambda r: (order.index(r['verdict']), r['last_age'] or 0))
     from collections import Counter
     print('counts:', dict(Counter(r['verdict'] for r in rows)))
@@ -337,7 +342,7 @@ def main():
         if r['verdict'] == 'STALE':
             continue
         print(f"{r['verdict']:<11} d{r['depth']} {r['last_age'] or 0:>7.1f}m {r['sid'][-12:]} {r['name'][:38]:<38} "
-              f"{r['model'] or '':<18} head={r['head_name'][:24]!r} {r['err'][:70]}")
+              f"{r['model'] or '':<18} head={r['head_name'][:24]!r} {(r.get('wait') or r['err'])[:70]}")
     return 0
 
 

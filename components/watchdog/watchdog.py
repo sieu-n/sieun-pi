@@ -12,7 +12,7 @@ import re
 import time
 
 from wd_common import (LOG_F, STATE_F, WATCH, _rp, _run, _tail_events, _ts, chat_ids, chat_jobs, credential_wait_at, gone_reason, log, outbox_notice,
-                       pa, pending_wake, pool_admitted_at, pool_queued, stop_reason, tree_root, work_done)
+                       pa, pending_wake, pool_admitted_at, pool_kept, slot_parks, stop_reason, tree_root, work_done)
 from wd_daemon import daemon_call, ui_retry, unwedge
 from wd_heartbeats import heartbeat_rearm
 from wd_probe import probe_model, probe_verdict
@@ -116,8 +116,11 @@ def child_waits(r):
     wake = pending_wake(r['sid'])
     if wake:
         return f'its board.wake {wake} is pending'
-    if pool_queued(r['sid']):
-        return "its run waits in pi-pool's turn queue"
+    park = ((slot_parks([r['file']]) if r.get('file') else None) or {}).get(r['sid'])
+    if park:
+        return f"it {park['words']}"
+    if pool_kept(r['sid']):
+        return "pi-pool keeps its run's place in the turn queue for its next run"
     evs = _tail_events(r['file']) if r.get('file') else []
     now = dt.datetime.now(dt.timezone.utc)
     spoke = max((t for e in evs if e.get('type') == 'message' and (e.get('message') or {}).get('role') == 'assistant'
@@ -221,6 +224,16 @@ def snapshot():
     return now, recs
 
 
+def mark_slot_parks(recs):
+    """Set each live session's `park`, its open wait for a pi-pool working slot, from one batched read of the shared reader, and return how
+    many wait, or 'unread' when the reader is missing or failed. A parked session gets no wake, nudge, stop or notice, and counts toward no
+    silent model cohort."""
+    read = slot_parks([r['file'] for r in recs if r['life'] == 'live' and r.get('file')])
+    for r in recs:
+        r['park'] = (read or {}).get(r['sid'])
+    return len(read) if read is not None else 'unread'
+
+
 def read_log(hours=3):
     """-> (session-uuid -> count of watchdog recoveries in the last `hours`, the (session-uuid, owed_since) pairs that got their resume notice).
 
@@ -267,7 +280,13 @@ def classify(r, prev, repeats=None):
         return 'HELD', 'under manual diagnosis, watchdog hands off'
     if r.get('stopped') and r['life'] == 'live':
         return 'ARCHIVED', r['stopped']
-    """-> (verdict, reason). Verdicts: SELF, HELD, ARCHIVED, NOTICED, WORK_DONE, OK, BUSY_TOOL, SUSPECT, FROZEN_TURN, FROZEN_TOOL, STUCK_TOOL."""
+    if r.get('park'):
+        # Since load.2 (us-metal02, 10-28) a turn that waits for a pi-pool working slot ends on a failed message, and the idle unload stops its
+        # worker, so a parked session reads idle with input owed, or working with no output, for as long as it waits. pi-pool wakes it when
+        # its slot starts.
+        return 'SLOT_WAIT', f"{r['park']['words']}; pi-pool wakes it when its slot starts"
+    """-> (verdict, reason). Verdicts: SELF, HELD, ARCHIVED, SLOT_WAIT, NOTICED, WORK_DONE, OK, BUSY_TOOL, SUSPECT, FROZEN_TURN, FROZEN_TOOL,
+    STUCK_TOOL."""
     if r['life'] == 'live' and r['act'] == 'idle' and (r.get('awaiting_min') or 0) >= 30 and r.get('limited'):
         # The turn ended on a 429 or a pi-pool slot refusal, and the chat service's idle unload stops such a session while the pool holds
         # its tree. resume_paused.py and the chat revive continue it once `pi-pool who` admits the tree. From 06:51Z to 08:31Z on 10-19
@@ -503,12 +522,13 @@ def _cycle(dry_run=False, verbose=True):
         except Exception:
             prev = {}
     now, recs = snapshot()
+    parked = mark_slot_parks(recs)
     repeats, noticed = read_log()
     life = {r['sid']: r['life'] for r in recs}
     shown = jobs = None
     for r in recs:
         r['noticed'] = (r['sid'], r.get('owed_since')) in noticed
-        if r['stopped'] or r['life'] != 'live' or not (r['act'] == 'working' or (r.get('awaiting_min') or 0) >= 30):
+        if r['stopped'] or r.get('park') or r['life'] != 'live' or not (r['act'] == 'working' or (r.get('awaiting_min') or 0) >= 30):
             continue
         if shown is None:
             chats, threads = chat_ids('chats.json'), chat_ids('threads.json')
@@ -523,7 +543,7 @@ def _cycle(dry_run=False, verbose=True):
     over = [o for o in (('swap', swap, SWAP_CAP_GIB), ('load', load, LOAD_CAP)) if o[1] > o[2]]
     counts = {'resumed': 0, 'skipped_budget': 0, 'over_pressure': 0, 'swap_gib': swap, 'load_1m': load}
     LAST_COUNTS.clear()
-    LAST_COUNTS.update(counts)
+    LAST_COUNTS.update(counts, slot_parks=parked)
 
     def admit(r, verdict):
         """Spend one wake from this cycle's budget, or log that the session waits for a later cycle. A pressure overrun is logged and admitted."""
@@ -548,7 +568,7 @@ def _cycle(dry_run=False, verbose=True):
     probes = {}
     for m in sorted({x['model'] for x in live_working}, key=str):
         cohort = [x for x in live_working if x['model'] == m]
-        silent = [x for x in cohort if (x.get('last_asst_min') is None or x['last_asst_min'] >= 15)]
+        silent = [x for x in cohort if not x.get('park') and (x.get('last_asst_min') is None or x['last_asst_min'] >= 15)]
         # One probe per suspect model per cycle decides it: a throwaway session that cannot get a
         # word out of the model proves the sessions are fine and the provider is not.
         if silent:
@@ -671,7 +691,7 @@ def _cycle(dry_run=False, verbose=True):
 
     # Restarts cancel rlm heartbeats silently: snapshot them and re-create them once when they vanish.
     try:
-        actions.extend(heartbeat_rearm([r for r in recs if not r.get('stopped')], admit, now, dry_run=dry_run))
+        actions.extend(heartbeat_rearm([r for r in recs if not r.get('stopped') and not r.get('park')], admit, now, dry_run=dry_run))
     except Exception as e:  # the heartbeat check must never stop a recovery cycle
         with open(LOG_F, 'a') as f:
             f.write(json.dumps({'kind': 'heartbeats_error', 'error': f'{type(e).__name__}: {e}'[:300],
@@ -685,7 +705,8 @@ def _cycle(dry_run=False, verbose=True):
     if verbose:
         print(f'== watchdog {now.isoformat(timespec="seconds")}')
         order = {'FROZEN_TURN': 0, 'FROZEN_TOOL': 0, 'STUCK_TOOL': 0, 'SUSPECT': 1,
-                 'PHANTOM_TURN': 0, 'DROPPED_TURN': 0, 'NOTICED': 1, 'WORK_DONE': 1, 'MODEL_STALL': 1, 'POOL_WAIT': 1, 'CHILD_WEDGED': 1, 'BUSY_TOOL': 2, 'IN_FLIGHT': 2,
+                 'PHANTOM_TURN': 0, 'DROPPED_TURN': 0, 'NOTICED': 1, 'WORK_DONE': 1, 'MODEL_STALL': 1, 'POOL_WAIT': 1, 'SLOT_WAIT': 1, 'CHILD_WEDGED': 1,
+                 'BUSY_TOOL': 2, 'IN_FLIGHT': 2,
                  'HELD': 2, 'ARCHIVED': 3, 'OK': 3, 'SELF': 4}
         for r in sorted([x for x in verdicts if x['verdict'] not in ('OK', 'SELF', 'IN_FLIGHT')],
                         key=lambda x: (order[x['verdict']], -(x['stale_min'] or 0))):

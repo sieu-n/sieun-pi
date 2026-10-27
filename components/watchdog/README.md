@@ -30,8 +30,17 @@ The watchdog finds Prime Agent sessions that stopped making progress and recover
 3. As hard gates they stopped every recovery on us-metal02, where 14,649 actions were skipped from 10-19 16:53Z to 10-24 08:46Z at 16 to 80 GiB swap used, while 132 GiB RAM sat free and the load sat near 200 on 80 cores.
 4. A subagent shares its parent's worker, so the cycle finds its own tools under the RLM kernel whose `RLM_HARNESS_STATE_DIR` names its session id.
 5. When a subagent has been silent 45 minutes while one of those tools burns CPU, the parent's `CHILD_WEDGED` notice names the pid, the command and its CPU minutes. On 10-24 a `git grep -w -F -f` with 1,117 patterns and a `reach.py` stuck in a regex burned 2.7 and 0.95 cores for over an hour under two code cut 3 subagents. `tests/test_stalled_tools.py` covers both parts.
-6. Right before a `CHILD_WEDGED` notice goes out, the cycle reads the subagent again and sends nothing when it has a pending `board.wake` file in `browser-chat/wakes/`, a run in pi-pool's turn queue (`turns.json` `queued` or `kept`), or an `agent_message.send` to its parent after its last prompt. The verdict turns `OK` and the cycle writes one `child_waits` line to `log.jsonl`. On 10-24 at 19:35:33Z a cycle told the AI harness chat to cancel checkin pushes goals, which sat 105th in that queue, held a wake for 10:40Z on 10-25 and had reported to its parent at 19:33:50Z. `tests/test_waiting_child.py` replays that case.
+6. Right before a `CHILD_WEDGED` notice goes out, the cycle reads the subagent again and sends nothing when it has a pending `board.wake` file in `browser-chat/wakes/`, a slot wait the shared reader reads, a place pi-pool keeps for its next run (`turns.json` `kept`), or an `agent_message.send` to its parent after its last prompt. The verdict turns `OK` and the cycle writes one `child_waits` line to `log.jsonl`. On 10-24 at 19:35:33Z a cycle told the AI harness chat to cancel checkin pushes goals, which sat 105th in that queue, held a wake for 10:40Z on 10-25 and had reported to its parent at 19:33:50Z. `tests/test_waiting_child.py` replays that case.
 7. That second read also counts the subagent's silence from the later of its last output and the pi-pool slot it holds now (`turns.json` `working`), so a subagent that got its slot or wrote output after the cycle read it gets no notice. On 10-27 a cycle read pi cutover prep at 19:08:57Z, silent 51.7 min while its parent's message sat 136th in that queue, and sent the AI harness chat "Cancel that child" at 19:15:31Z, after pi-pool had admitted the child at 19:14:37Z and it had written 7 tool calls. `tests/test_waiting_child.py` replays that case too.
+
+## Slot waits
+
+1. Since load.2 (us-metal02, 10-28) a turn that waits for a pi-pool working slot ends on "pi-pool: this run waits for a working slot, place 134 of 139", Prime writes `provider_quota_park`, and the idle unload stops the worker, so the session reads idle with input owed, or working with no output, for as long as it waits.
+2. Each cycle reads every live session file once through sieun-pi's one reader of that wait, `daemon-cli.mjs slot-park` (`components/user-history/src/slot-park.ts`, with `pi-pool queue --json`). On us-metal02 on 10-28 it read the 1,967 live files in 3.2 s.
+3. A parked session reads `SLOT_WAIT` with its place, such as "waits for a working slot, place 112 of 164". It gets no wake, nudge, stop, resume notice, parent notice or heartbeat re-arm, no gone or finished-work check, and it counts toward no silent model cohort, so it starts no model probe.
+4. Right before a `CHILD_WEDGED` notice goes out, the cycle reads the subagent's file through the same reader again, and pi-pool's `kept` place in `turns.json` still counts as a wait for the next run.
+5. `cron.jsonl` records `slot_parks`, the count of parked sessions, or `unread` when the reader is missing or failed, and then the cycle runs as it did before.
+6. `tests/test_slot_wait.py` replays cuts of `components/user-history/test/fixtures/slot-park-01a17f25-1028.jsonl` through the real reader, with pi-pool's line left out or stubbed by `tests/slot_reader.py`.
 
 ## Archived chats
 
@@ -87,6 +96,7 @@ python3 -B components/watchdog/install.py rollback
 ```sh
 python3 -B -m unittest discover -s components/watchdog/tests
 WATCHDOG_DIR=<folder with an old watchdog.py> python3 -B -m unittest components/watchdog/tests/test_probe.py
+WATCHDOG_DIR=<folder with the old watchdog files> python3 -B -m unittest components/watchdog/tests/test_slot_wait.py
 ```
 
 The second line runs the probe cases against an old `model_alive()`, where the 12:44Z, 12:54Z and 13:14Z cases fail.
