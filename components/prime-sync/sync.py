@@ -540,6 +540,34 @@ def apply_settings(checkout: Path, agent_dir: Path) -> list[str]:
     return [f"set {key}" for key in changed]
 
 
+# 4b. Queue modes of loaded sessions
+# Prime reads steeringMode and followUpMode from settings.json only when it loads a session, so a chat that stays loaded for days keeps the old
+# mode. modes.json holds the values this box last set on its loaded sessions, so a change goes out once, and a run that fails tries again. A box
+# with no daemon reader sets nothing, and its sessions take the mode when they next load.
+LIVE_MODES = ("steeringMode", "followUpMode")
+
+
+def push_modes(checkout: Path) -> list[str]:
+    shared_file = checkout / "config/settings.shared.json"
+    if not shared_file.exists():
+        return []
+    shared = json.loads(shared_file.read_text())
+    record = SHARE / "modes.json"
+    pushed = json.loads(record.read_text()) if record.exists() else {}
+    due = {key: shared[key] for key in LIVE_MODES if key in shared and pushed.get(key) != shared[key]}
+    if not due:
+        return []
+    reader = daemon_reader()
+    if not reader:
+        return []
+    result = subprocess.run([*reader, "modes", *(f"{key}={value}" for key, value in due.items())], capture_output=True, timeout=READER_S)
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.decode(errors="replace").strip()[-300:] or f"daemon-cli modes exited {result.returncode}")
+    counts = json.loads(result.stdout)
+    write_atomic(record, json.dumps({**pushed, **due}).encode(), 0o644)
+    return [f"set {', '.join(f'{key} {value}' for key, value in due.items())} on {counts['set']} of {counts['sessions']} loaded sessions"]
+
+
 # 5. Harness entries and the corrections ledger
 
 
@@ -919,6 +947,7 @@ def run() -> dict:
                  ("runtime", lambda: follow_runtime(config["checkout"], HOME, config["agentDir"], config.get("runtimeInstaller"))),
                  ("links", lambda: link_manifest(config["checkout"], HOME, config["agentDir"])),
                  ("settings", lambda: apply_settings(config["checkout"], config["agentDir"])),
+                 ("modes", lambda: push_modes(config["checkout"])),
                  ("state", lambda: sync_state(config))]
         blocking: list[str] = []
         for name, step in steps:
@@ -936,7 +965,7 @@ def run() -> dict:
         except Exception as error:
             report["watch"] = f"error: {type(error).__name__}: {error}"
     write_atomic(SHARE / "status.json", (json.dumps(report, indent=2) + "\n").encode(), 0o644)
-    if any(report.get(key) for key in ("index", "runtime", "links", "settings", "state")) or str(report.get("code")).startswith(("pulled", "rebased", "skipped", "alert")) or "error" in json.dumps(report):
+    if any(report.get(key) for key in ("index", "runtime", "links", "settings", "modes", "state")) or str(report.get("code")).startswith(("pulled", "rebased", "skipped", "alert")) or "error" in json.dumps(report):
         with open(SHARE / "sync.log", "a") as log:
             log.write(json.dumps(report) + "\n")
     return report

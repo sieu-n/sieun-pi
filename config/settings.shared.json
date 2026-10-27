@@ -15,6 +15,7 @@
     }
   },
   "steeringMode": "all",
+  "followUpMode": "all",
   "idleEvictionMinutes": 15,
   "skills": [
     "-../../.agents/skills/find-skills",

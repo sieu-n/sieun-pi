@@ -61,6 +61,34 @@ export async function daemonSend(target: string, message: string, open: () => Pr
   } finally { client.close(); }
 }
 
+/** The queue modes Prime reads from settings.json once, when it loads a session, and the daemon command that changes a loaded session's. */
+export const SESSION_MODES = { steeringMode: "set_steering_mode", followUpMode: "set_follow_up_mode" } as const;
+export type SessionMode = keyof typeof SESSION_MODES;
+export type ModeValue = "all" | "one-at-a-time";
+export type ModesResult = { sessions: number; set: number; failed: { activeSessionId: string; error: string }[] };
+
+/**
+ * Sets `modes` on every session this box's daemon holds loaded, since a loaded session keeps the modes settings.json had when it loaded.
+ * prime-sync runs it after it changes one of them in settings.json, so a long-running chat takes the new mode at once.
+ */
+export async function daemonSetModes(modes: Partial<Record<SessionMode, ModeValue>>, open: () => Promise<DaemonClient> = () => openDaemon()): Promise<ModesResult> {
+  const client = await twice("opening the daemon", open);
+  try {
+    const listed = await client.request({ type: "list" }, 60_000, { recoverable: false });
+    if (!listed.success) throw new Error(listed.error);
+    const rows = listRows<{ activeSessionId?: string; workerState?: string }>(listed.data).filter(row => row.activeSessionId && row.workerState !== "failed");
+    const failed: ModesResult["failed"] = [];
+    await Promise.all(rows.map(async ({ activeSessionId }) => {
+      for (const [mode, value] of Object.entries(modes) as [SessionMode, ModeValue][]) {
+        const answer = await client.request({ type: SESSION_MODES[mode], activeSessionId: activeSessionId!, mode: value }).catch((error: unknown) =>
+          ({ success: false as const, error: error instanceof Error ? error.message : String(error) }));
+        if (!answer.success) { failed.push({ activeSessionId: activeSessionId!, error: String(answer.error).slice(0, 200) }); return; }
+      }
+    }));
+    return { sessions: rows.length, set: rows.length - failed.length, failed };
+  } finally { client.close(); }
+}
+
 /** The session rows of a list answer, which is either `{ sessions }` or the bare array. */
 export function listRows<T>(data: unknown): T[] {
   if (Array.isArray(data)) return data as T[];
