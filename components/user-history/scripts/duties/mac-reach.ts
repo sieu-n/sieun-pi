@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
+import { writeFile } from "node:fs/promises";
 import { promisify } from "node:util";
-import { type FlaggedSlice, HOST_AWAY } from "../../src/shared/chat-duties.ts";
+import { type FlaggedSlice, HOST_AWAY, type PrecheckOutput } from "../../src/shared/chat-duties.ts";
 
 /**
  * Whether the owner's MacBook Pro is on the tailnet, for the duties that read it over `ssh mac` (box-parity.ts, chat-page-mac.ts). The Mac
@@ -78,4 +79,54 @@ export async function macAway(sshHost: string, what: string, at: number): Promis
   try { peer = macTailnet(status, address); } catch { return undefined; }
   const pong = peer?.online ? pongIn(await read("tailscale", ["ping", "-c", "1", address])) : undefined;
   return macAwayItem(status, address, what, at, pong);
+}
+
+/**
+ * The ssh command that runs a duty script from the Mac's sieun-pi checkout and prints its output file. PATH comes first because a plain
+ * `ssh mac` PATH has no node (10-18 to 10-19, `env: node: No such file or directory`).
+ */
+export function macCommand(script: string): string {
+  return "export PATH=/Users/sieunpark/.hermes/node/bin:$PATH; cd ~/Documents/Github/sieun-pi/components/user-history || exit 2; " +
+    `f=$(mktemp); OUTPUT_FILE=$f node --import tsx ${script}; s=$?; cat $f; rm -f $f; exit $s`;
+}
+
+export interface BoxDeps {
+  away: () => Promise<FlaggedSlice | undefined>;
+  /** Read after an ssh that exits 255: a `host_away` item when the Mac answers nothing on the tailnet either (`macSilent`). */
+  silent: () => Promise<FlaggedSlice | undefined>;
+  ssh: () => Promise<{ code: number; stdout: string; stderr: string }>;
+}
+
+/**
+ * The precheck output text and exit code: the Mac's own output when ssh reaches it, or a `host_away` output when Tailscale lists it offline
+ * or when ssh exits 255 on a Mac that answers no tailscale ping either.
+ */
+export async function boxPrecheck(deps: BoxDeps): Promise<{ code: number; text: string; stderr: string }> {
+  const awayOutput = (item: FlaggedSlice, stderr: string) => ({ code: 0, text: JSON.stringify({ metrics: {}, flagged: [item] } satisfies PrecheckOutput), stderr });
+  const away = await deps.away();
+  if (away) return awayOutput(away, "");
+  const { code, stdout, stderr } = await deps.ssh();
+  const silent = code === 255 ? await deps.silent() : undefined;
+  return silent ? awayOutput(silent, stderr) : { code, text: stdout, stderr };
+}
+
+/** Runs `command` on the Mac over `ssh mac` and resolves its exit code and output, 255 when ssh itself failed. */
+export function macSsh(command: string): Promise<{ code: number; stdout: string; stderr: string }> {
+  return new Promise(resolve => {
+    execFile("ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", MAC_HOST, command], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
+      (error, stdout, stderr) => resolve({ code: error ? (typeof error.code === "number" ? error.code : 1) : 0, stdout, stderr }));
+  });
+}
+
+/**
+ * The body of a box-side precheck script for a duty whose numbers come from `script` on the Mac: it writes the Mac's output, or a `host_away`
+ * output naming `what` as unmeasured, to `OUTPUT_FILE` (stdout without one) and sets the exit code.
+ */
+export async function runMacPrecheck(script: string, what: string): Promise<void> {
+  const { code, text, stderr } = await boxPrecheck({ away: () => macAway(MAC_HOST, what, Date.now()), silent: () => macSilent(MAC_HOST, what, Date.now()),
+    ssh: () => macSsh(macCommand(script)) });
+  if (stderr) process.stderr.write(stderr);
+  if (process.env.OUTPUT_FILE) await writeFile(process.env.OUTPUT_FILE, text);
+  else process.stdout.write(text);
+  process.exitCode = code;
 }

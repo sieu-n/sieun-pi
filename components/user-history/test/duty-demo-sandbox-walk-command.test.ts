@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { WALK_ERR_FILE, WALK_FILE, walkCommandBroke } from "../scripts/duties/demo-sandbox.ts";
-import { MAC_COMMAND } from "../scripts/duties/demo-sandbox-box.ts";
+import { macCommand } from "../scripts/duties/mac-reach.ts";
 
 const NODE_MISSING = "env: node: No such file or directory\n";
 const WARNING = "(node:18565) [DEP0205] DeprecationWarning: `module.register()` is deprecated. Use `module.registerHooks()` instead.\n";
@@ -38,7 +38,7 @@ test("an older error file or a walk that only warned is not flagged", async () =
 
 test("the walk command in onMiss sets the same node PATH as the precheck", () => {
   const duty = JSON.parse(readFileSync(new URL("../scripts/duties/demo-sandbox.duty.json", import.meta.url), "utf8")) as { onMiss: string };
-  const path = MAC_COMMAND.match(/export PATH=[^;]+;/)![0];
+  const path = macCommand("scripts/duties/demo-sandbox.ts").match(/export PATH=[^;]+;/)![0];
   const walk = duty.onMiss.match(/`(ssh mac '[^`]*offline\.spec\.ts[^`]*)`/)![1]!;
   assert.ok(walk.startsWith(`ssh mac '${path}`), walk);
   assert.ok(walk.includes(`2> ../../${WALK_ERR_FILE}`), walk);

@@ -1,8 +1,7 @@
 // Owner 10-19 (goal p1 of frontend bro): the 5180 demo works offline; these cases pin how the box side of its duty treats a sleeping Mac.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { boxPrecheck } from "../scripts/duties/demo-sandbox-box.ts";
-import { MAC_HOST } from "../scripts/duties/mac-reach.ts";
+import { boxPrecheck, MAC_HOST } from "../scripts/duties/mac-reach.ts";
 import { HOST_AWAY, hostAwayOf, type PrecheckOutput } from "../src/shared/chat-duties.ts";
 
 test("a Mac Tailscale lists offline gives a host_away output and no ssh", async () => {
