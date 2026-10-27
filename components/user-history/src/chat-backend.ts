@@ -63,7 +63,7 @@ import { readOwnersFor, startAlertBridge } from "./alert-bridge.ts";
 import { startBridgeWatch } from "./alert-bridge-health.ts";
 import { startAlertPoll } from "./alert-poll.ts";
 import { promptView, sessionFileFor } from "./prompt-view.ts";
-import { sessionFileOf, type TargetState } from "./send-once.ts";
+import { sessionFileOf, targetStateOf, type TargetState } from "./send-once.ts";
 import { AgentOutbox, stopRecords } from "./agent-outbox.ts";
 import { noticeOutbox } from "./notice-outbox.ts";
 import { relayHops, rowSubagent } from "./subagent-relay.ts";
@@ -214,12 +214,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     const response = client && await client.request({ type: "get_state", activeSessionId: session }, 30_000, { recoverable: false }).catch(() => null);
     if (!response) return null;
     if (!response.success) return REOPENABLE.test(response.error) ? { queued: [], busy: false } : null;
-    const data = response.data as { sessionActions?: { steering?: unknown; followUps?: unknown }; isStreaming?: unknown; isCompacting?: unknown;
-      isRunningTools?: unknown; unfinishedActionCount?: unknown };
-    const actions = data.sessionActions;
-    const unfinished = typeof data.unfinishedActionCount === "number" ? data.unfinishedActionCount : undefined;
-    return { queued: [actions?.steering, actions?.followUps].flatMap(list => Array.isArray(list) ? list.filter((item): item is string => typeof item === "string") : []),
-      busy: data.isStreaming === true || data.isCompacting === true || data.isRunningTools === true || (unfinished ?? 0) > 0, ...unfinished === undefined ? {} : { unfinished } };
+    return targetStateOf(response.data);
   };
   // The sessions in one tool call past STALL_MS on every box, with the process this box's watch (`calls`) sees under each, for the duty
   // runner's fix steps and the check-in's owners (src/shared/stalled-calls.ts).
@@ -284,6 +279,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       settings, claude: claudeReader(), poolAdmits, poolHeldFile: join(dataDir, "pool-held.json"), queue: queued,
       awake: working => awake.update(working), corrections: () => corrections.read(), duty: duties,
       cleanRoom: async id => (await cleanRoomChats.ids()).includes(id) ? new CorrectionLedger(dataDir, CLEAN_ROOM_CORRECTIONS_FILE).read() : null, duties: id => checkInDuties(duties.store, id, async other => (await chats.ids()).has(other)),
+      noDuties: async id => (await duties.store.read(id)).noDuties,
       dutyJobs: async id => (await duties.store.runs(id)).flatMap(run => run.job ? [run.job.id] : []),
       dutyRuns: id => duties.store.runs(id), prs: replay ? async () => new Map() : prStates(),
       archived: new IdIndex(join(dataDir, "archived-chats.json"), "Archived chat index"), cleanRoomChats,

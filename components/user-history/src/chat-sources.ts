@@ -423,6 +423,8 @@ export interface CheckInSource {
     writeDetail?(chatId: string, name: string, parts: readonly string[]): Promise<string> };
   /** The chat's duties (`<data dir>/duties/<chat>.json`), for the goals they run (`goalsToFold`) and a chat with goals and no duty (`goalsWithoutDuty`). Absent: neither is counted. */
   duties?: (id: string) => Promise<readonly DutyRef[]>;
+  /** The owner correction that keeps the chat free of duties (`DutyFile.noDuties`), which no `goalsWithoutDuty` finding asks a duty of. Absent: none does. */
+  noDuties?: (id: string) => Promise<string | undefined>;
   /** The session ids of the chat's duty jobs (its duty run records, check-ins included), whose subagents may own its steps. Absent: none. */
   dutyJobs?: (id: string) => Promise<readonly string[]>;
   /** The chat's duty runs, newest first, whose metric verdicts tell when a fix step is done (`metricFacts`). Absent: no fix step looks done. */

@@ -124,7 +124,11 @@ export interface Duty {
 }
 /** The built-in check-in duty's run state in a chat's duties file; its definition is `CHECK_IN_DUTY` and its schedule the check-in setting. */
 export interface CheckInDutyState { createdAt: number; runCount: number; lastRunAt?: number }
-export interface DutyFile { version: 1; duties: Duty[]; checkIn?: CheckInDutyState }
+/**
+ * `noDuties` names the owner correction that keeps a chat free of duties, such as c156 (10-22, msg mvj2es2m) for sep launch!!, an implementor
+ * chat whose duties live in duty threads like Crawler VP. Its check-in never asks it for a duty (`goalsWithoutDuty`).
+ */
+export interface DutyFile { version: 1; duties: Duty[]; checkIn?: CheckInDutyState; noDuties?: string }
 
 /**
  * Why a run started no job because the duty's last job still works. A standing duty's run still measures and records its verdict, with this
@@ -530,7 +534,8 @@ export function parseDutyFile(value: unknown): DutyFile {
   const checkIn = isRecord(value) && isRecord(value.checkIn) && typeof value.checkIn.createdAt === "number" && typeof value.checkIn.runCount === "number"
     ? { createdAt: value.checkIn.createdAt, runCount: value.checkIn.runCount, ...(typeof value.checkIn.lastRunAt === "number" ? { lastRunAt: value.checkIn.lastRunAt } : {}) } : undefined;
   return { version: 1, duties: duties.filter((duty): duty is Duty => isRecord(duty) && typeof duty.id === "string" && isRecord(duty.schedule) && isRecord(duty.precheck) &&
-    Array.isArray(duty.metrics) && (duty.status === "active" || duty.status === "paused") && typeof duty.runCount === "number"), ...(checkIn ? { checkIn } : {}) };
+    Array.isArray(duty.metrics) && (duty.status === "active" || duty.status === "paused") && typeof duty.runCount === "number"), ...(checkIn ? { checkIn } : {}),
+    ...(isRecord(value) && typeof value.noDuties === "string" && value.noDuties ? { noDuties: value.noDuties } : {}) };
 }
 
 export const CHECK_IN_DUTY_ID = "checkin";

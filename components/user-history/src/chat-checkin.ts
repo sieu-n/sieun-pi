@@ -67,6 +67,8 @@ export interface CheckInContext { self?: readonly string[];
   everyMs?: number;
   /** The chat's duties, for the goals they run (`goalsToFold`) and a chat with goals and no duty (`goalsWithoutDuty`); not given: neither counts them. */
   duties?: readonly DutyRef[];
+  /** The owner correction that keeps the chat free of duties (`DutyFile.noDuties`, c156 for sep launch!!): no goal of it is a goal without a duty. */
+  noDuties?: string;
   /** The roots the chat started (the job registry's names or ids): its own jobs, never another session's load (`oneSessionLoad`) or a thread that holds a goal (`heldElsewhere`). */
   jobs?: readonly string[];
   /**
@@ -107,7 +109,7 @@ export interface CheckInPrecheck {
   jobs: JobPush[];
   done: { item: PlanItem; reason: string; at: number }[]; loose: PlanItem[]; extra: ExtraGoal[]; underClosed: { item: PlanItem; parent: PlanItem }[];
   held: HeldGoal[]; waitsMet: WaitMet[]; noProgress: NoProgress | null; stale: StaleStep[]; fold: FoldGoal[]; load: SessionLoad[]; heartbeats: RedundantHeartbeat[];
-  /** The open goals when the chat has no active duty (`goalsWithoutDuty`); none when the context gave no duties. */
+  /** The open goals when the chat has no active duty (`goalsWithoutDuty`); none when the context gave no duties or the owner keeps the chat free of them. */
   noDuty: PlanItem[];
   /** The open goals with no done line (`goalsWithoutDoneLine`) and the open standing-risk steps (`planRiskSteps`), owner 10-18 (c110). */
   noDoneLine?: PlanItem[]; risks?: PlanItem[];
@@ -202,7 +204,7 @@ export function checkInPrecheck(previous: CheckInMemory | undefined, facts: read
     stale: context.boardError ? [] : staleSteps(board, facts, item => steps[item.id] ? recordedAt(steps[item.id]!) : now, self, context.everyMs ?? CHECK_IN_MS, now,
       context.rows ?? [], context.train),
     fold, load: oneSessionLoad(goaled, context.jobs, context.subagents, new Set([...context.queued?.keys() ?? [], ...context.asleep ?? []]), now),
-    heartbeats: redundantHeartbeats(context.heartbeats ?? [], context.duties ?? []), noDuty: context.boardError || !context.duties ? [] : goalsWithoutDuty(board, context.duties, now), facts: notes,
+    heartbeats: redundantHeartbeats(context.heartbeats ?? [], context.duties ?? []), noDuty: context.boardError || !context.duties || context.noDuties ? [] : goalsWithoutDuty(board, context.duties, now), facts: notes,
     noDoneLine: context.boardError ? [] : goalsWithoutDoneLine(board), risks: context.boardError ? [] : planRiskSteps(board),
     metOpen: context.boardError ? [] : metOpenItems(board?.plan ?? []),
     end: context.boardError ? [] : withWaitHolds(goaled.map(view => endState(view, board?.todos ?? [], context.rows ?? [], self, now, facts, movers))) };

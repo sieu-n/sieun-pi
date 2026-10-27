@@ -1729,6 +1729,7 @@ export class Chats {
   private async measure(id: string, { board, boardError, rows, facts, queued, asleep, wakes, name }: Gathered, previous: CheckInMemory | undefined, everyMs: number, at: number) {
     const self = name ? [id, name] : [id];
     const duties = await this.source.duties?.(id).catch(error => { this.log(`chat ${id.slice(0, 8)}: check-in duties: ${error instanceof Error ? error.message : String(error)}`); return undefined; });
+    const noDuties = await this.source.noDuties?.(id).catch(error => { this.log(`chat ${id.slice(0, 8)}: check-in no-duties flag: ${error instanceof Error ? error.message : String(error)}`); return undefined; });
     const jobs = this.source.registry ? await this.source.registry.rootsOf(self).catch(() => []) : [];
     const heartbeats = readHeartbeats(heartbeatsFile(id, this.source.home));
     const train = await readTrain(trainFile(this.source.home));
@@ -1738,7 +1739,7 @@ export class Chats {
     const hosts = await this.hostHolds(id, rows);
     const linked = board ? await linkedBoards(board, id, read, rows) : new Map<string, ChatBoard | null>();
     const precheck = checkInPrecheck(previous, facts, board ? withLinkedBoards(board, id, linked) : board, at,
-      { self, rows, linked, ...await this.ledger(id), everyMs, doneFacts, ...(duties ? { duties } : {}), jobs, subagents: this.subagents, heartbeats, queued, asleep, wakes, carried, ...(train ? { train } : {}), ...(boardError !== undefined ? { boardError } : {}),
+      { self, rows, linked, ...await this.ledger(id), everyMs, doneFacts, ...(duties ? { duties } : {}), ...(noDuties ? { noDuties } : {}), jobs, subagents: this.subagents, heartbeats, queued, asleep, wakes, carried, ...(train ? { train } : {}), ...(boardError !== undefined ? { boardError } : {}),
         ...(hosts ? { hosts } : {}),
         paused: await this.ownerPaused(at),
         owner: ownerSaid(this.messages(id) ?? []) });

@@ -445,8 +445,14 @@ const DAY_MS = 24 * 60 * 60_000;
 /**
  * Words in the owner's words for a goal that ask for standing or repeated work: "keep a page updated", "every morning", "daily", "never one
  * slow queue", "on its own". "every" and "each" count only before a time ("every day", "each week", "every 30 min"), never "for every source".
+ * "monitoring" counts at the end of a clause or before an object or "of" ("keep monitoring", "monitoring the queue", "monitoring of X"), never
+ * before a noun it names a kind of: sep launch!!'s p2 "for a list of thousands of monitoring brands" read as standing work 10 check-ins in a
+ * row on 10-27.
  */
-const STANDING = /\b(?:daily|weekly|hourly|nightly|standing|never|whenever|(?:every|each)\s+(?:day|morning|evening|night|week|month|hour|run|time|\d+\s*(?:min(?:ute)?s?|h|hours?|days?))|always|on its own|by itself|any ?more|keeps?|kept|stays?|ongoing|continuous(?:ly)?|monitor(?:s|ing)?|recurring|regularly|updated|up to date)\b/i;
+const MONITORING_OBJECT = "of|for|the|a|an|it|its|them|that|this|these|those|every|each|all|any|our|their|my|his|her|and|or|to|on|in|at|with|until|so|how|whether";
+const STANDING = new RegExp("\\b(?:daily|weekly|hourly|nightly|standing|never|whenever|(?:every|each)\\s+(?:day|morning|evening|night|week|month|hour|run|time|" +
+  "\\d+\\s*(?:min(?:ute)?s?|h|hours?|days?))|always|on its own|by itself|any ?more|keeps?|kept|stays?|ongoing|continuous(?:ly)?|monitors?|" +
+  `monitoring(?!\\s+(?!(?:${MONITORING_OBJECT})\\b)\\w)|recurring|regularly|updated|up to date)\\b`, "i");
 /**
  * Whether the owner's own words on a goal, its requirement lines, ask for standing or repeated work (`STANDING`). A goal's text is often an
  * agent's: r3d's p6 "Fix the prod discover page, which errors for every source", written by the chat, was flagged three check-ins in a row.
