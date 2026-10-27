@@ -23,6 +23,11 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  *   as a refused source on 10-25 at 08:35Z) and research-api/check as railway-breach-check/research-api (langfuse at 22:05Z on 10-25), so
  *   every user agent with "breach-check/" in it is left out. `lastEventAt.vent_key_refused_sources` is the newest refusal it counts, so a
  *   count whose sources stopped refusing reads as aging out of the window: on 10-26 d9 read d2 as stuck on two sources last seen 10-25.
+ * - vent_model_refused_callers: how many callers sent prod Vent a call it refused as vent_model_not_allowed in 24 h, read from otel.vent_calls
+ *   by vent.caller with the models and operations they named. Owner rule c185 (10-28): Vent lets through only the newest model of each tier
+ *   (claude-opus-5-5, claude-sonnet-5-5, claude-fable-5-1, gpt-6.1-sol, gpt-6.1-terra, gpt-6-luna, gpt-image-2.5-sunburst). The console leaves
+ *   refused calls out like vent_unauthorized, so a caller still on an old model would read as 100%: in the 7 days to 10-27 17:48Z, 25 model
+ *   names outside that set went through Vent, claude-opus-5 in 52,913 calls and gpt-6-sol in 39,899.
  * - vent_console_slow_reads_24h: how many of the 17 reads the prod Vent console runs cost 1 core-second or more on prod ClickHouse. vent-console-cost.py
  *   beside this file builds them with vent.telemetry_read and vent.health from apps/vent/src at origin/main, the build prod runs, runs each once
  *   through Grafana with a log_comment tag and reads its CPU from otel.query_cost. Until release 21 (10-25) prod's console decoded the whole
@@ -63,6 +68,8 @@ export interface HostRead { url: string; status: number; version?: string; error
 export interface VersionSpan { env: string; first: number; last: number }
 /** One source address whose keyed prod calls Vent refused as vent_unauthorized in 24 h, with the integrations its paths named. */
 export interface KeyRefusal { source: string; calls: number; last: number; integrations: string[] }
+/** One caller whose prod calls Vent refused as vent_model_not_allowed in 24 h, with the models and operations it named. */
+export interface ModelRefusal { caller: string; calls: number; last: number; models: string[]; operations: string[] }
 /** One read the prod Vent console runs and what one run of it cost on prod ClickHouse, null when otel.query_cost had no row for it. */
 export interface ConsoleRead { name: string; cpu_s: number | null; read_rows: number | null }
 type Failed = { error: string };
@@ -71,6 +78,7 @@ export interface IntegrationReads {
   hosts: { production: HostRead; staging: HostRead };
   spans: VersionSpan[] | Failed | null;
   refusals: KeyRefusal[] | Failed;
+  modelRefusals: ModelRefusal[] | Failed;
   consoleReads: ConsoleRead[] | Failed;
 }
 
@@ -135,6 +143,20 @@ export function integrationMetrics(reads: IntegrationReads, at: number): Prechec
     for (const refusal of refusals.slice(0, ITEMS)) {
       const named = refusal.integrations.length ? ` for ${refusal.integrations.join(", ")}` : "";
       flagged.push({ at, kind: "key_refused", item: refusal.source, excerpt: `${refusal.source}: ${refusal.calls} prod Vent calls${named} refused as vent_unauthorized with a key Vent does not know in 24 h, last at ${iso(refusal.last)}`.slice(0, 300) });
+    }
+  }
+
+  if (failed(reads.modelRefusals)) {
+    sourceError(`prod Vent calls refused for their model could not be read from ClickHouse: ${reads.modelRefusals.error}`);
+    metrics.vent_model_refused_callers = UNMEASURED;
+  } else {
+    const refusals = [...reads.modelRefusals].sort((a, b) => b.calls - a.calls);
+    metrics.vent_model_refused_callers = refusals.length;
+    if (refusals.length) lastEventAt.vent_model_refused_callers = Math.max(...refusals.map(refusal => refusal.last));
+    for (const refusal of refusals.slice(0, ITEMS)) {
+      const ops = refusal.operations.length ? ` on ${refusal.operations.join(", ")}` : "";
+      const models = refusal.models.length ? refusal.models.join(", ") : "an unnamed model";
+      flagged.push({ at, kind: "model_refused", item: refusal.caller, excerpt: `${refusal.caller}: ${refusal.calls} prod Vent calls${ops} refused as vent_model_not_allowed for ${models} in 24 h, last at ${iso(refusal.last)}`.slice(0, 300) });
     }
   }
 
@@ -261,6 +283,22 @@ async function keyRefusals(token: string): Promise<KeyRefusal[]> {
   }));
 }
 
+/** Prod calls Vent refused as vent_model_not_allowed in 24 h, per caller, with the models and operations they named (owner rule c185). */
+async function modelRefusals(token: string): Promise<ModelRefusal[]> {
+  const sql = "SELECT `vent.caller` AS caller, toFloat64(sum(greatest(toUInt64OrZero(`vent.count`), 1))) AS calls, " +
+    "toFloat64(toUnixTimestamp64Milli(max(Timestamp))) AS last, " +
+    "arrayStringConcat(arraySort(groupUniqArrayIf(`gen_ai.request.model`, `gen_ai.request.model` != '')), ',') AS models, " +
+    "arrayStringConcat(arraySort(groupUniqArrayIf(`vent.operation`, `vent.operation` != '')), ',') AS operations " +
+    "FROM otel.vent_calls WHERE ResourceAttributes['deployment.environment.name'] = 'production' AND Timestamp > now() - INTERVAL 24 HOUR " +
+    "AND `vent.outcome` = 'refused' AND `vent.error_code` = 'vent_model_not_allowed' GROUP BY caller";
+  const { rows, column } = await clickhouse(token, sql);
+  const list = (name: string, index: number) => String(column(name)[index] ?? "").split(",").filter(Boolean);
+  return Array.from({ length: rows }, (_, index) => ({
+    caller: String(column("caller")[index]) || "no caller", calls: Number(column("calls")[index]), last: Number(column("last")[index]),
+    models: list("models", index), operations: list("operations", index),
+  }));
+}
+
 async function main(): Promise<void> {
   const output = process.env.OUTPUT_FILE;
   if (!output) { process.stderr.write("vent-integrations: OUTPUT_FILE is not set\n"); process.exit(2); }
@@ -274,14 +312,15 @@ async function main(): Promise<void> {
       if (!production.version || !staging.version || production.version === staging.version) return null;
       return spans(token, production.version).catch((error: unknown) => ({ error: errorText(error) }));
     });
-    const [lightsRead, hosts, history, refusals, consoleCost] = await Promise.all([
+    const [lightsRead, hosts, history, refusals, modelRefused, consoleCost] = await Promise.all([
       typeof token === "string" ? lights(token, dir).catch((error: unknown) => ({ error: errorText(error) })) : Promise.resolve(token),
       hostsRead,
       spansRead,
       typeof token === "string" ? keyRefusals(token).catch((error: unknown) => ({ error: errorText(error) })) : Promise.resolve(token),
+      typeof token === "string" ? modelRefusals(token).catch((error: unknown) => ({ error: errorText(error) })) : Promise.resolve(token),
       typeof token === "string" ? consoleReads(token, dir).catch((error: unknown) => ({ error: errorText(error) })) : Promise.resolve(token),
     ]);
-    await writeFile(output, JSON.stringify(integrationMetrics({ lights: lightsRead, hosts, spans: history, refusals, consoleReads: consoleCost }, at), null, 2) + "\n");
+    await writeFile(output, JSON.stringify(integrationMetrics({ lights: lightsRead, hosts, spans: history, refusals, modelRefusals: modelRefused, consoleReads: consoleCost }, at), null, 2) + "\n");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
