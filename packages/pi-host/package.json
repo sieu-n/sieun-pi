@@ -4,5 +4,29 @@
   "private": true,
   "type": "module",
   "description": "Session host: many Pi sessions in one Node process behind a unix socket, with a scheduler for heartbeats and wakes.",
-  "license": "SEE LICENSE IN ../../NOTICE"
+  "license": "SEE LICENSE IN ../../NOTICE",
+  "exports": {
+    "./client": "./src/client.ts",
+    "./api": "./src/api.ts",
+    "./protocol": "./src/protocol.ts",
+    "./host": "./src/host.ts",
+    "./lease": "./src/lease.ts",
+    "./scheduler-extension": "./src/scheduler-extension.ts"
+  },
+  "scripts": {
+    "start": "node --import tsx src/main.ts",
+    "test": "node --import tsx --test --test-force-exit \"test/*.test.ts\""
+  },
+  "dependencies": {
+    "@earendil-works/chord": "1.4.0",
+    "@earendil-works/pi-agent-core": "1.4.0",
+    "@earendil-works/pi-ai": "1.4.0",
+    "@earendil-works/pi-coding-agent": "1.4.0",
+    "@earendil-works/pi-durable": "1.4.0",
+    "@sieun-pi/pi-family": "0.1.0",
+    "tsx": "4.23.13"
+  },
+  "devDependencies": {
+    "@sieun-pi/pi-testkit": "0.1.0"
+  }
 }
