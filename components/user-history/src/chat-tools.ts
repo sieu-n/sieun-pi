@@ -159,15 +159,17 @@ async function latestRechecks(file: string, since: number): Promise<Map<string, 
 /**
  * The newest run of any duty whose precheck runs skills-and-tools.ts, across every chat, with the checks its saved output flagged as failing or off.
  * A flagged check that CHECKS no longer has is dropped, so a removed check (paper_mcp, 10-19) leaves the panel at once instead of after the next run.
+ * It reads each duty's newest run from its runs file's tail (`newestRun`): the whole 3 MB file of the chat that holds the duty changed with each
+ * of its duties' runs, and parsing it again held api/tools 135 to 282 ms on a quiet copy of the live data on 10-27 against 37 to 156 ms for the tail.
  */
 export async function dailyRun(store: DutyStore): Promise<ToolsDailyRun | null> {
   let newest: { chatId: string; duty: Duty; record: DutyRunRecord } | undefined;
   for (const chatId of await store.chats()) {
     const duties = (await store.list(chatId).catch(() => [] as Duty[])).filter(duty => duty.precheck.command.join(" ").includes("skills-and-tools.ts"));
     if (!duties.length) continue;
-    for (const record of await store.runs(chatId)) {
-      const duty = duties.find(item => item.id === record.duty);
-      if (duty && (!newest || record.at > newest.record.at)) newest = { chatId, duty, record };
+    for (const duty of duties) {
+      const record = await store.newestRun(chatId, duty.id);
+      if (record && (!newest || record.at > newest.record.at)) newest = { chatId, duty, record };
     }
   }
   if (!newest) return null;

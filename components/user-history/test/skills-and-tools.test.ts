@@ -297,7 +297,7 @@ test("dailyRun drops a flagged check that CHECKS no longer has", async () => {
   await writeFile(detail, JSON.stringify({ flagged: [{ kind: "off", item: "aside_tabs", excerpt: "Mac asleep" }, { kind: "off", item: "paper_mcp", excerpt: "Paper closed" }] }));
   const duty = { id: "d5", name: "Skills and tools", precheck: { command: ["node", "scripts/duties/skills-and-tools.ts"] } } as unknown as Duty;
   const record = { duty: "d5", at: 1, detail, verdict: "met", metrics: {}, summary: "" } as unknown as DutyRunRecord;
-  const store = { dir, chats: async () => ["c1"], list: async () => [duty], runs: async () => [record] } as unknown as DutyStore;
+  const store = { dir, chats: async () => ["c1"], list: async () => [duty], newestRun: async (_chat: string, id: string) => id === "d5" ? record : undefined } as unknown as DutyStore;
   const run = await dailyRun(store);
   assert.deepEqual(run?.problems.map(problem => problem.id), ["aside_tabs"]);
   await rm(dir, { recursive: true, force: true });
