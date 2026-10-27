@@ -1106,6 +1106,16 @@ export function nameHungWorkers(faults: readonly DaemonFault[], watch: readonly 
   });
 }
 
+/**
+ * Whether the call failed on the chat service's own Tailscale read of its box (src/host-catalogs.ts `away`), so it never dialed the box. The
+ * service keeps a box read offline for MAX_BACKOFF_MS (src/host-reach.ts), so such a call can land in the first minute the watch reads the box
+ * online: at 00:20:10.042Z on 10-27 two resumes of Mac chats failed with "mac is offline (Tailscale last seen 0 min ago)", 0.55 s before the
+ * service read the Mac back, and d7 counted 00:20Z dirty; 14:27Z on 10-26 was the same.
+ */
+export function failedOffline(fault: DaemonFault): boolean {
+  return fault.what.includes(`${fault.host} is offline (Tailscale last seen `);
+}
+
 export function measure(input: Inputs): PrecheckOutput {
   const { now } = input;
   // A call that failed inside a supported Prime update restart on its box met the update's planned stop, not a harness fault: at 20:10:21Z on
@@ -1206,7 +1216,7 @@ export function measure(input: Inputs): PrecheckOutput {
     if (parked) why.push(`pi-pool refused ${parked.session.slice(0, 8)} for over 10 min while ${parked.room.join(", ")} took its class`);
     if (offline.size) offlineAny++;
     const minuteFaults = daemonFaults.filter(fault => fault.at >= from && fault.at < to);
-    const faults = minuteFaults.filter(fault => !offline.has(fault.host));
+    const faults = minuteFaults.filter(fault => !offline.has(fault.host) && !failedOffline(fault));
     offlineFaults += minuteFaults.length - faults.length;
     if (faults.length) {
       daemonFail++;
@@ -1310,7 +1320,8 @@ export function measure(input: Inputs): PrecheckOutput {
     `10 min in ${held}; a turn sat queued while pi-pool had ${FREE_SLOTS} or more slots it could give it, or pi-pool refused a tree for over 10 min while an account took its class, in ${freeSlot}; ` +
     `a tree waited over 10 min for a pi-pool cell at R4's pace, not counted dirty, in ${cellWait}; ` +
     `an open, status read, send or worker start failed or ran over ${SLOW_MS / 1000} s in ${daemonFail}, ${primeMin} of them a Prime fault, a worker crash or hang or a create Prime took over ${SLOW_MS / 1000} s to answer.` +
-    (offlineMin.size ? ` Tailscale read ${[...offlineMin].map(([name, at]) => `${name} offline in ${at.length}`).join(" and ")}, and ${offlineFaults} daemon calls to a box while it was offline are left out.` : "") });
+    (offlineMin.size ? ` Tailscale read ${[...offlineMin].map(([name, at]) => `${name} offline in ${at.length}`).join(" and ")}, and ${offlineFaults} daemon calls to a box while it was offline, or that failed because the service read their box offline, are left out.` :
+      offlineFaults ? ` ${offlineFaults} daemon calls that failed because the service read their box offline are left out.` : "") });
   if (input.ciCache) {
     metrics.ci_cache_age_s = Math.max(0, Math.round((now - input.ciCache.fetchedAt) / 1000));
     if (beatStale(input.ciCache, now)) flagged.push({ kind: "ci_cache_stale", excerpt: `The CI cache last read GitHub at ${clock(input.ciCache.fetchedAt)}, ` +

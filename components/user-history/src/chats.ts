@@ -1373,6 +1373,18 @@ export class Chats {
     return this.source.claude ? this.source.claude().catch(() => null) : null;
   }
 
+  /**
+   * The chat's box while Tailscale reads it offline, else null. A restart there fails at once on the service's own offline read and goes again
+   * on the next pass: from 21:00Z on 10-26 to 00:20Z on 10-27 two stopped Mac chats tried 593 times, one every 30 s, and the try at 00:20:10.042Z
+   * came 0.55 s before the service read the Mac back, so d7 counted that minute dirty. The revive goes on at its first pass after the box is back.
+   */
+  private async boxAway(id: string): Promise<string | null> {
+    const away = this.source.hostAway;
+    if (!away) return null;
+    const host = (await this.source.rows().catch(() => [])).find(row => row.id === id)?.host;
+    return host ? (await away(host).catch(() => null))?.name ?? null : null;
+  }
+
   private async revive(id: string, woke = false): Promise<void> {
     if (!this.chatIds.has(id)) return;
     const state = this.threads.state?.(id);
@@ -1383,6 +1395,7 @@ export class Chats {
     // A restart that brought no event yet counts as one, so a daemon that does not answer gets one restart per HUNG_TURN_MS, not one per wake.
     const from = Math.max(this.wokeAt, this.hungRestarts.get(id) ?? -Infinity);
     if (quiet !== null && hungTurn(quiet, from, now)) {
+      if (await this.boxAway(id)) return;
       const since = Math.max(quiet, from);
       this.hungRestarts.set(id, now);
       try {
@@ -1416,6 +1429,7 @@ export class Chats {
       ? await this.source.poolAdmits(id, provider).catch(() => false) : false;
     const action = stallAction({ stall, down, claude, attempts: last?.attempts ?? 0, since: last?.at ?? Math.min(stall.at, seen), now, woke, admits, stopped });
     if (action.kind !== "restart") { this.threads.setWait(id, action.kind === "wait" ? action.wait : null); return; }
+    if (await this.boxAway(id)) return;
     const attempts = (last?.attempts ?? 0) + 1;
     this.revivals.set(id, { attempts, at: now });
     this.threads.setWait(id, null);

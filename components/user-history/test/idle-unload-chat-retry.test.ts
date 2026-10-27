@@ -217,3 +217,37 @@ test("thread hub: a chat let go of asleep in its retry stays detached through th
   revived.close();
   await threads.close();
 });
+
+// Guards 21:00Z on 10-26 to 00:20Z on 10-27: two stopped Mac chats restarted every 30 s while Tailscale read the Mac offline, 593 resumes that
+// each failed at once with "mac is offline", and the one at 00:20:10.042Z came 0.55 s before the service read the Mac back.
+test("the revive leaves a stopped chat on a box Tailscale reads offline alone, and restarts it at the first pass after the box is back", async () => {
+  const home = await mkdtemp(join(tmpdir(), "chat-retry-away-"));
+  const CHAT = day.chats[0]!;
+  const calls: string[] = [];
+  const threads = { ...fakeThreads(calls), isLive: () => false };
+  const failedAt = at - 60 * MIN;
+  threads.transcripts.set(CHAT, [ownerAsks("ship it", failedAt - MIN), reply("error", failedAt, RATE)]);
+  threads.extras.set(CHAT, { info: { model: { provider: "anthropic", id: "claude-opus-5-5" } as ModelInfo, retryAttempt: 0, queuedActions: 0 },
+    queue: { steering: [], followUp: [] }, retry: null } as never);
+  const index = new IdIndex(join(home, "chats.json"), "Chat index");
+  await index.add(CHAT);
+  let now = at;
+  let macOffline = true;
+  const asked: string[] = [];
+  const revived = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(home, "extension-loads.json")), {
+    ...source(home, {}, () => now, () => [row(CHAT, new Date(now).toISOString(), { chat: true, host: "mac" })]), home, poolAdmits: async () => true,
+    hostAway: async name => { asked.push(name); return macOffline ? { name, lastSeen: new Date(now).toISOString() } : null; } });
+  const wake = async (seconds: number) => {
+    now = at + seconds * 1000;
+    calls.length = 0;
+    await revived.tick();
+    await revived.settled();
+    await new Promise(resolve => setTimeout(resolve, 20));
+    return calls.filter(call => call.startsWith("restart "));
+  };
+  for (const seconds of [0, 30, 60, 90]) assert.deepEqual(await wake(seconds), [], `no restart at +${seconds} s while the Mac reads offline`);
+  assert.ok(asked.includes("mac"));
+  macOffline = false;
+  assert.equal((await wake(120)).length, 1, "the first pass after the Mac reads online restarts it");
+  revived.close();
+});

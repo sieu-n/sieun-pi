@@ -49,3 +49,18 @@ test("an unreached Mac minute with no offline minute beside it, or a relay that 
   assert.equal(out.metrics.clean_min_30, 29);
   assert.equal(out.metrics.daemon_fail_min_30, 1);
 });
+
+// Guards d7's 00:20Z minute on 10-27 (and 14:27Z on 10-26): Tailscale read the Mac offline 00:02Z to 00:19Z, and at 00:20:10.042Z two resumes
+// failed on the chat service's own offline read, "mac is offline (Tailscale last seen 0 min ago)", 0.55 s before it read the Mac back.
+test("a daemon call whose error is the service's offline read of its box is left out in the first minute the Mac reads online", () => {
+  const back = Array.from({ length: 30 }, (_, minute) => line(minute, minute < 6 ? "offline" : "usable"));
+  const offlineRead = { at: minuteAt(6) + 10_000, host: "mac", session: "01a16213", what: "its resume got no answer, mac is offline (Tailscale last seen 0 min ago)" };
+  const out = run(back, [offlineRead]);
+  assert.equal(out.metrics.clean_min_30, 30);
+  assert.equal(out.metrics.daemon_fail_min_30, 0);
+  const dirty = run(back, [handshake(6)]);
+  assert.equal(dirty.metrics.clean_min_30, 29, "a handshake timeout to the Mac while it reads online stays dirty");
+  assert.equal(dirty.metrics.daemon_fail_min_30, 1);
+  const otherBox = run(back, [{ ...offlineRead, host: "us-metal03" }]);
+  assert.equal(otherBox.metrics.clean_min_30, 29, "the error must name the call's own box");
+});
