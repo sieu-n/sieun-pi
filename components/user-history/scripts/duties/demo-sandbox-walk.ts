@@ -49,7 +49,7 @@ globalThis.__walk = (() => {
   const ASSETS = ["img", "script", "link", "css", "video", "audio", "font"];
   let tab = null;
   let seen = { outside: [], violations: [], failed: [] };
-  const destroyed = (error) => /Execution context was destroyed|navigation|Target closed|detached/i.test(String(error));
+  const destroyed = (error) => /Execution context was destroyed|Cannot find context with specified id|navigation|Target closed|detached/i.test(String(error));
 
   function pageInstall() {
     const w = window;
