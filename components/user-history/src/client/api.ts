@@ -157,7 +157,8 @@ export const api = {
   toolOutput: (id: string, toolCallId: string) => get<{ toolCallId: string; toolName: string; arguments: unknown; output: string; isError: boolean | null }>(
     "api/threads/" + encodeURIComponent(id) + "/tool-output?toolCallId=" + encodeURIComponent(toolCallId)),
   /** Part `part` of the message `key` names (`messageKey` of an index into the loaded messages), whole: the snapshot clips long parts. */
-  part: (id: string, key: MessageKey, part: number) => get<{ text: string }>("api/threads/" + encodeURIComponent(id) + `/part?at=${key.at}&n=${key.n}&part=${part}`),
+  part: (id: string, key: MessageKey, part: number, place?: string) =>
+    get<{ text: string }>("api/threads/" + encodeURIComponent(id) + `/part?at=${key.at}&n=${key.n}&part=${part}` + (place ? "&place=" + encodeURIComponent(place) : "")),
   accounts: (id: string | null, model: string | null = null) => {
     const query = new URLSearchParams({ ...(id ? { id } : {}), ...(model ? { model } : {}) }).toString();
     return get<AccountsView>("api/accounts" + (query ? "?" + query : ""), 30000);

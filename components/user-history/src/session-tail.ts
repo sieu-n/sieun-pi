@@ -72,6 +72,8 @@ export interface BranchPage extends BranchTail {
   before: FilePlace | null;
   /** The bytes this read took from the file. */
   bytesRead: number;
+  /** Per shown message timestamp, the line of the newest message with it, the place `findMessage` starts from when a page names it. */
+  places: Map<number, FilePlace>;
 }
 
 /** One line of the current branch, newest first: its entry's ids from the start of the line, and its bytes. */
@@ -168,6 +170,7 @@ export async function readBranchPage(file: string, from: FilePlace | null, limit
     let found = 0;
     const read: { bytes: number; more: () => boolean; stopped?: FilePlace } = { bytes: 0, more: () => read.bytes < limits.bytes || found === 0 };
     const entries: SessionEntry[] = [];
+    const places = new Map<number, FilePlace>();
     let lastStamp: number | undefined;
     let before: FilePlace | null = null;
     for await (const line of branchLines(handle, head.first, size, from, read)) {
@@ -179,10 +182,13 @@ export async function readBranchPage(file: string, from: FilePlace | null, limit
       const full = read.bytes >= limits.bytes && found > 0;
       if (message ? (found >= limits.messages || full) && message.timestamp !== lastStamp : full) { before = { end: line.end, id: line.id }; break; }
       entries.push(entry);
-      if (message) { found++; lastStamp = message.timestamp; }
+      if (message) {
+        found++; lastStamp = message.timestamp;
+        if (!places.has(message.timestamp)) places.set(message.timestamp, { end: line.end, id: line.id });
+      }
     }
     before ??= read.stopped ?? null;
-    return { sessionId: head.sessionId, entries: entries.reverse(), before, whole: before === null, bytesRead: read.bytes };
+    return { sessionId: head.sessionId, entries: entries.reverse(), before, whole: before === null, bytesRead: read.bytes, places };
   } finally { await handle.close(); }
 }
 
@@ -229,24 +235,39 @@ export interface FoundMessage { entry: SessionEntry; message: AgentMessage; befo
  * such message, and undefined for a file a full open must migrate, so only that file takes a caller's whole-file read: until 10-27 a message
  * not on the branch read undefined too, and at 07:36Z and 07:37Z a part read of Crawler VP held the chat's event loop 1.8 and 1.9 s on that
  * read; on a copy of the 100 MB AI harness chat file it took 846 to 876 ms against 3 to 10 ms for this walk.
+ *
+ * `near` is the place a page named for the message (`BranchPage.places`), and the walk starts there and reads at most a page's bytes. A place
+ * the file no longer holds, after a rewrite, falls back to the walk from the leaf. That walk reads back to the message: at 18:00:30Z on 10-27
+ * a part read of a message far back in the Mac chat's 110 MB copy took 4.2 s at 1.7 runnable a core, and on the 108 MB AI harness chat file
+ * it read 0.56 s for a message near the start on an idle box. `read.bytes` counts what both walks read.
  */
-export async function findMessage(file: string, at: number, n: number): Promise<FoundMessage | null | undefined> {
+export async function findMessage(file: string, at: number, n: number, near: FilePlace | null = null, read: { bytes: number } = { bytes: 0 }): Promise<FoundMessage | null | undefined> {
   const handle = await open(file, "r");
   try {
     const { size } = await handle.stat();
     const head = await header(handle, size);
     if (!head) return undefined;
-    const needle = Buffer.from(`"timestamp":${at}`);
-    const hits: FoundMessage[] = [];
-    for await (const line of branchLines(handle, head.first, size, null, { bytes: 0 })) {
-      if (line.time < at - CLOCK_SKEW_MS) break;
-      if (!holdsStamp(line.bytes, needle)) continue;
-      const entry = parse(line);
-      const message = entry && shown(entry);
-      if (entry && message?.timestamp === at) hits.push({ entry, message, before: entry.parentId ? { end: line.start, id: entry.parentId } : null });
+    if (near) {
+      const page: { bytes: number; more: () => boolean; stopped?: FilePlace } = { bytes: 0, more: () => page.bytes < TAIL_BYTES };
+      const found = await walkTo(handle, head.first, size, near, page, at, n);
+      read.bytes += page.bytes;
+      if (found && page.stopped === undefined) return found;
     }
-    return hits[hits.length - 1 - n] ?? null;
+    return await walkTo(handle, head.first, size, null, read, at, n);
   } finally { await handle.close(); }
+}
+
+async function walkTo(handle: FileHandle, first: number, size: number, from: FilePlace | null, read: { bytes: number; more?: () => boolean; stopped?: FilePlace }, at: number, n: number): Promise<FoundMessage | null> {
+  const needle = Buffer.from(`"timestamp":${at}`);
+  const hits: FoundMessage[] = [];
+  for await (const line of branchLines(handle, first, size, from, read)) {
+    if (line.time < at - CLOCK_SKEW_MS) break;
+    if (!holdsStamp(line.bytes, needle)) continue;
+    const entry = parse(line);
+    const message = entry && shown(entry);
+    if (entry && message?.timestamp === at) hits.push({ entry, message, before: entry.parentId ? { end: line.start, id: entry.parentId } : null });
+  }
+  return hits[hits.length - 1 - n] ?? null;
 }
 
 /** Whether `bytes` hold `needle` followed by no digit, so `"timestamp":17` does not match `"timestamp":170`. */

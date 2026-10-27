@@ -25,7 +25,12 @@ export interface BashExecutionMessage {
 }
 export interface BranchSummaryMessage { role: "branchSummary"; summary: string; timestamp: number }
 export interface CompactionSummaryMessage { role: "compactionSummary"; summary: string; tokensBefore: number; timestamp: number }
-export type ThreadMessage = UserMessage | AssistantMessage | ToolResultMessage | CustomMessage | BashExecutionMessage | BranchSummaryMessage | CompactionSummaryMessage;
+/**
+ * Where a message read from the session file sits in it (a `f<end>.<id>` cursor, shared/message-key.ts), so a part read seeks there instead of
+ * walking back from the leaf (session-tail.ts `findMessage`). A message the page got from the live session has none.
+ */
+export interface MessagePlace { place?: string }
+export type ThreadMessage = (UserMessage | AssistantMessage | ToolResultMessage | CustomMessage | BashExecutionMessage | BranchSummaryMessage | CompactionSummaryMessage) & MessagePlace;
 
 export interface ModelInfo { provider: string; id: string; name: string; input: ("text" | "image")[]; contextWindow: number; reasoning: boolean; thinkingLevels?: ThinkingLevel[] }
 export interface ContextUsage { tokens: number; contextWindow: number; percent: number }

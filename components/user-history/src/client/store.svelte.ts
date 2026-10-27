@@ -395,7 +395,7 @@ class Store {
   part(id: string, index: number, part: number): Promise<{ text: string }> {
     const messages = this.entries[id]?.state?.messages;
     if (!messages?.[index]) return Promise.reject(new Error("That message is not loaded any more."));
-    return api.part(id, messageKey(messages, index), part);
+    return api.part(id, messageKey(messages, index), part, messages[index].place);
   }
 
   /**

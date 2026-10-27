@@ -4,6 +4,7 @@ import { constants as zlibConstants, createBrotliCompress, createGzip, gzipSync 
 import { readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { parseWake } from "./wakes.ts";
+import { parseCursor } from "./shared/message-key.ts";
 import { isTopLevel, sessionTitle, unplacedMessage } from "./chat-catalog.ts";
 import { otherBoxRoots, reopenSibling, type RootDirectory, rootsOf, sendCrossHost, siblingRow } from "./cross-host-message.ts";
 import { getAgentDir } from "prime-agent";
@@ -860,7 +861,8 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
           if (action === "part") {
             const at = Number(url.searchParams.get("at")); const n = Number(url.searchParams.get("n") ?? 0); const part = Number(url.searchParams.get("part") ?? 0);
             if (!Number.isSafeInteger(at) || at < 0 || !Number.isSafeInteger(n) || n < 0 || !Number.isSafeInteger(part) || part < 0) throw new RequestError(400, "Choose a message part.");
-            json(res, 200, await backend.threads.part(id, { at, n }, part)); return;
+            const place = parseCursor(url.searchParams.get("place") ?? "");
+            json(res, 200, await backend.threads.part(id, { at, n }, part, place?.kind === "file" ? { end: place.end, id: place.id } : null)); return;
           }
           if (action === "older") {
             const cursor = url.searchParams.get("cursor") ?? "";

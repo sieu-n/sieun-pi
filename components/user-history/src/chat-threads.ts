@@ -813,12 +813,20 @@ export class ThreadHub {
    * for a 171 MB transcript as for a small one. `older` is the cursor of the entries before them. A file at another version is read whole
    * through SessionManager, which migrates it: those are the files from before version 3, 3,432 files and 91 MB in all on 10-18.
    */
-  private async entries(summary: SessionSummary, from: FilePlace | null, limits: { messages: number; bytes: number }, held?: string): Promise<{ entries: SessionEntry[]; older: string | undefined; whole: boolean }> {
+  private async entries(summary: SessionSummary, from: FilePlace | null, limits: { messages: number; bytes: number }, held?: string): Promise<{ entries: SessionEntry[]; older: string | undefined; whole: boolean; places: ReadonlyMap<number, FilePlace> }> {
     const file = held ?? await this.sessionFile(summary);
     const page = await readBranchPage(file, from, limits);
-    if (!page) return { entries: this.linked(from ? [] : this.branch(summary, file), file), older: undefined, whole: true };
+    if (!page) return { entries: this.linked(from ? [] : this.branch(summary, file), file), older: undefined, whole: true, places: new Map() };
     if (page.sessionId !== summary.sessionId) throw new ThreadError(409, "The saved thread file changed. Refresh the list.");
-    return { entries: this.linked(page.entries, file), older: page.before ? formatCursor({ kind: "file", ...page.before }) : undefined, whole: page.whole };
+    return { entries: this.linked(page.entries, file), older: page.before ? formatCursor({ kind: "file", ...page.before }) : undefined, whole: page.whole, places: page.places };
+  }
+
+  /** A page's messages, each with the place its page read named for it (`MessagePlace`). */
+  private placed(entries: SessionEntry[], places: ReadonlyMap<number, FilePlace>): ThreadMessage[] {
+    return this.projector.messages(historyMessages(entries)).map(message => {
+      const at = places.get(message.timestamp);
+      return at ? { ...message, place: formatCursor({ kind: "file", ...at }) } : message;
+    });
   }
 
   /** The entries, with each image that `scripts/session-compact.ts` moved out of `file` linked in the image store, so its URL serves the file. */
@@ -829,8 +837,8 @@ export class ThreadHub {
 
   /** A saved thread's snapshot from its newest `limit` messages, with what the file says of its name, model and effort. */
   private async savedSnapshot(summary: SessionSummary, limit = FIRST_PAGE_MESSAGES): Promise<ThreadSnapshot> {
-    const { entries, older } = await this.entries(summary, null, { messages: limit, bytes: TAIL_BYTES });
-    const messages = this.projector.messages(historyMessages(entries));
+    const { entries, older, places } = await this.entries(summary, null, { messages: limit, bytes: TAIL_BYTES });
+    const messages = this.placed(entries, places);
     let name: string | undefined;
     let thinkingLevel: ThinkingLevel = "off";
     let ran: { provider: string; id: string } | null = null;
@@ -855,17 +863,17 @@ export class ThreadHub {
     const cursor = thread.state.older ? parseCursor(thread.state.older) : null;
     const want = TAIL_MESSAGES - thread.state.messages.length;
     if (cursor?.kind !== "file" || want <= 0) return;
-    const { entries, older } = await this.entries(summary, { end: cursor.end, id: cursor.id }, { messages: want, bytes: TAIL_BYTES });
+    const { entries, older, places } = await this.entries(summary, { end: cursor.end, id: cursor.id }, { messages: want, bytes: TAIL_BYTES });
     if (this.threads.get(thread.id) !== thread || thread.state.older !== formatCursor(cursor)) return;
-    thread.prepend(this.projector.messages(historyMessages(entries)), older);
+    thread.prepend(this.placed(entries, places), older);
   }
 
   /** The newest TAIL_MESSAGES from the file, for a snapshot after a compaction or a reconnect; none for a session whose file is not written yet. */
   private async fileTail(summary: SessionSummary | undefined): Promise<{ messages: ThreadMessage[]; older?: string }> {
     if (!summary?.sessionFile) return { messages: [] };
     try {
-      const { entries, older } = await this.entries(summary, null, { messages: TAIL_MESSAGES, bytes: TAIL_BYTES });
-      return { messages: this.projector.messages(historyMessages(entries)), ...(older ? { older } : {}) };
+      const { entries, older, places } = await this.entries(summary, null, { messages: TAIL_MESSAGES, bytes: TAIL_BYTES });
+      return { messages: this.placed(entries, places), ...(older ? { older } : {}) };
     } catch (error) {
       process.stderr.write(`history ${summary.sessionId.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}\n`);
       return { messages: [] };
@@ -911,8 +919,8 @@ export class ThreadHub {
       if (!found.before) return { messages: [] };
       from = found.before;
     }
-    const { entries, older } = await this.entries(summary, from, { messages: PAGE_MESSAGES, bytes: TAIL_BYTES }, file);
-    return { messages: this.projector.messages(historyMessages(entries)), ...(older ? { older } : {}) };
+    const { entries, older, places } = await this.entries(summary, from, { messages: PAGE_MESSAGES, bytes: TAIL_BYTES }, file);
+    return { messages: this.placed(entries, places), ...(older ? { older } : {}) };
   }
 
   /**
@@ -2045,11 +2053,11 @@ export class ThreadHub {
    * works for any page; a message the file does not hold yet comes from the live context. Until 10-18 `part` took an index into the messages
    * the server held, which pointed at another message once older pages loaded.
    */
-  private async rawMessage(id: string, key: MessageKey): Promise<AgentMessage> {
+  private async rawMessage(id: string, key: MessageKey, near: FilePlace | null = null): Promise<AgentMessage> {
     const summary = await this.summary(id);
     if (summary.sessionFile) {
       const file = await this.sessionFile(summary);
-      const found = await findMessage(file, key.at, key.n);
+      const found = await findMessage(file, key.at, key.n, near);
       if (found) return found.message;
       if (found === undefined) {
         const messages = historyMessages(this.branch(summary, file)).filter(shownMessage);
@@ -2087,8 +2095,9 @@ export class ThreadHub {
     return { toolCallId, toolName: call?.name ?? "", arguments: call?.arguments ?? {}, output: result?.text ?? "", isError: result?.isError ?? null };
   }
 
-  async part(id: string, key: MessageKey, partIndex: number): Promise<{ text: string }> {
-    const message = await this.rawMessage(id, key);
+  /** `near` is the place the page named for the message (`MessagePlace`), null for a message it got from the live session. */
+  async part(id: string, key: MessageKey, partIndex: number, near: FilePlace | null = null): Promise<{ text: string }> {
+    const message = await this.rawMessage(id, key, near);
     const content = "content" in message ? message.content : undefined;
     if (typeof content === "string") return { text: content };
     const part = Array.isArray(content) ? content[partIndex] : undefined;
