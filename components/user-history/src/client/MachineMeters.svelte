@@ -127,9 +127,9 @@
   .bar.warn span { background: var(--warning); }
   .bar.critical span { background: var(--danger); }
   .groups { display: flex; flex-direction: column; margin: -8px 0 0 136px; }
-  .group summary { display: grid; grid-template-columns: minmax(0, 1fr) 64px minmax(140px, 220px); align-items: center; gap: 16px; padding: 4px 0; cursor: pointer; list-style: none; }
+  .group summary { display: grid; grid-template-columns: minmax(0, 1fr) 64px minmax(140px, 220px); align-items: center; gap: 16px; padding: 4px 0; cursor: pointer; list-style: none; position: relative; }
   .group summary::-webkit-details-marker { display: none; }
-  .group summary::before { content: "▸"; position: absolute; margin-left: -14px; color: var(--text-faint); font-size: 10px; }
+  .group summary::before { content: "▸"; position: absolute; left: -14px; top: 50%; transform: translateY(-50%); color: var(--text-faint); font-size: 10px; }
   .group[open] summary::before { content: "▾"; }
   .group-name { font-weight: 500; }
   .group-size { text-align: right; font-variant-numeric: tabular-nums; color: var(--text-muted); }
