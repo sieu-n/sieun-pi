@@ -1,0 +1,10 @@
+[Unit]
+Description=Run box-follow every 15 minutes, so a Mac tool upgrade reaches the box before the next Box tools parity run
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,10 @@
+[Unit]
+Description=box-follow: install on us-metal02 the Mac's version of each Box tools parity row the box is behind (box-parity.ts --follow, recipes in box-parity.rows.json)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.local/node/bin:%h/.local/bin:%h/.bun/bin:/usr/local/bin:/usr/bin:/bin
+WorkingDirectory=%h/.local/share/sieun-pi-chat/current/legacy/prime/user-history
+ExecStart=%h/.local/node/bin/node --import tsx scripts/duties/box-parity.ts --follow

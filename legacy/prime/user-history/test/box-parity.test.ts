@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { commitGaps, compareVersions, containerLimits, foldName, judgeRows, type LimitContext, managerLimits, parseLayers, parseShow, type ProbeOutput, publicSsh, rcuBoostOff, type Row, shortfall, unitLimits, unpushedNote }
+import { commitGaps, compareVersions, containerLimits, followSteps, foldName, judgeRows, runFollow, type LimitContext, managerLimits, parseLayers, parseShow, type ProbeOutput, publicSsh, rcuBoostOff, type Row, shortfall, unitLimits, unpushedNote }
   from "../scripts/duties/box-parity.ts";
 import { macAway } from "../scripts/duties/mac-reach.ts";
 
@@ -374,4 +374,60 @@ test("a Mac Tailscale lists online that gives no pong to a tailscale ping is hos
     assert.equal(item?.host, "mac");
     assert.match(item!.excerpt, /^the Mac \(100\.66\.173\.18\) is listed online on the tailnet but gave no pong to a tailscale ping, a dark wake from sleep, so tool rows are not measured/);
   } finally { process.env.PATH = path; }
+});
+
+test("followSteps installs the Mac's version for a version row behind it, and the Mac's missing entries for a set", () => {
+  const rows: Row[] = [
+    { id: "bun", tool: "cli bun", probes: [{ version: ["bun", "--version"], follow: "bun_install" }] },
+    { id: "venv", tool: "kernel venv packages", probes: [{ distinfo: "~/venv", follow: "venv" }] },
+    { id: "jq", tool: "cli jq", probes: [{ version: ["jq", "--version"], follow: "jq_install" }] },
+    { id: "pdf", tool: "cli pdftotext", probes: [{ version: ["pdftotext", "-v"], follow: "pdf_install", intended: "no Linux build" }] },
+    { id: "docker", tool: "cli docker", probes: [{ version: ["docker", "--version"] }] },
+    { id: "claude", tool: "cli claude", mac: [{ version: ["claude", "--version"] }], box: [{ version: ["claude", "--version"], follow: "npm_global claude" }] },
+    { id: "odd", tool: "cli odd", probes: [{ version: ["odd"], follow: "odd_install" }] },
+  ];
+  const mac = output("mac", { bun: ["v:1.4.4"], venv: ['set:["a==1","python-dateutil==3.0.0","six==1.17.0"]'], jq: ["v:1.7.1"], pdf: ["v:26.10.0"],
+    docker: ["v:30.0.0"], claude: ["v:2.1.400"], odd: ["=1.0;rm"] });
+  const box = output("box", { bun: ["v:1.3.11"], venv: ['set:["a==1","python-dateutil==2.9.0.post0","six==1.17.0","extra==1"]'], jq: ["v:1.8.1"], pdf: ["v:26.07.0"],
+    docker: ["v:29.7.2"], claude: ["absent"], odd: ["absent"] });
+  assert.deepEqual(followSteps(rows, mac, box).map(step => [step.row.id, step.version, step.recipe]), [
+    ["bun", "1.4.4", "bun_install"],
+    ["venv", "python-dateutil==3.0.0", "venv"],
+    ["claude", "2.1.400", "npm_global claude"],
+  ]);
+});
+
+test("runFollow runs each step through box-follow.sh in turn and keeps a failed install's error", async () => {
+  const calls: string[][] = [];
+  const row: Row = { id: "bun", tool: "cli bun" };
+  const done = await runFollow([{ row, version: "1.4.4", recipe: "ok" }, { row, version: "2.0.0", recipe: "fails" }], async (file, args) => {
+    calls.push([file, ...args.slice(1)]);
+    if (args[2] === "fails") throw new Error("bash box-follow.sh 2.0.0: curl: (22) 404");
+    return "";
+  });
+  assert.deepEqual(calls, [["bash", "1.4.4", "ok"], ["bash", "2.0.0", "fails"]]);
+  assert.equal(done[0]!.error, undefined);
+  assert.match(done[1]!.error!, /404/);
+});
+
+test("box-follow.sh release unpacks a version into its own ~/.local/opt folder, lifts the top folder and links the bin", () => {
+  const home = mkdtempSync(join(tmpdir(), "box-follow-"));
+  const source = join(home, "src", "tool-1.2.3", "bin");
+  mkdirSync(source, { recursive: true });
+  writeFileSync(join(source, "tool"), "#!/bin/sh\necho tool 1.2.3\n", { mode: 0o755 });
+  execFileSync("tar", ["-czf", join(home, "tool.tar.gz"), "-C", join(home, "src"), "tool-1.2.3"]);
+  const script = join(import.meta.dirname, "../scripts/duties/box-follow.sh");
+  execFileSync("bash", [script, "1.2.3", `release tool "file://${home}/tool.tar.gz" bin/tool`], { env: { ...process.env, HOME: home } });
+  assert.equal(execFileSync(join(home, ".local/bin/tool"), { encoding: "utf8" }), "tool 1.2.3\n");
+  assert.equal(execFileSync("readlink", [join(home, ".local/bin/tool")], { encoding: "utf8" }).trim(), join(home, ".local/opt/tool-1.2.3/bin/tool"));
+});
+
+test("every follow recipe in box-parity.rows.json is valid bash that reads the Mac's version as $V or through a helper", () => {
+  const rows = JSON.parse(readFileSync(join(import.meta.dirname, "../scripts/duties/box-parity.rows.json"), "utf8")) as Row[];
+  const recipes = rows.flatMap(row => [...row.box ?? row.probes ?? []]).map(probe => probe.follow).filter((recipe): recipe is string => typeof recipe === "string");
+  assert.ok(recipes.length >= 40, `${recipes.length} recipes`);
+  for (const recipe of recipes) {
+    execFileSync("bash", ["-n", "-c", recipe]);
+    assert.match(recipe, /\$V|\{V\}|^(venv|nvm_default|npm_global \S+|conda .+|media .+)$/, recipe);
+  }
 });

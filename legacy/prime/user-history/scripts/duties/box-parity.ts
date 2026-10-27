@@ -30,6 +30,11 @@ import { CHECKS, type Outcome, realDeps, runChecks } from "./skills-and-tools.ts
  * the duty once Tailscale reads it online. A source that cannot be read leaves its metric out with a `source_error` item, so the run says not
  * measured instead of a miss.
  * STATE_FILE keeps the Mac CLI versions the probe had to run, keyed by path and mtime, so later runs only read the Mac.
+ * The box follows the Mac by itself: a box probe with a `follow` recipe that falls short gets the Mac's version installed by box-follow.sh before
+ * the rows are judged, and those rows are probed again, so a Mac upgrade (Homebrew, bun, uv, the kernel venv) needs no duty job. Each install is
+ * a `followed` item. `--follow` runs only that part, for box-follow.timer between duty runs. A version row with no recipe has a tool the box
+ * user cannot install or must not move on his own: docker and tailscale are system packages, git and gh's PATH entries are agent shims, prime-agent
+ * is the pinned sieun-pi runtime, aside runs on the Mac, cua-driver is a Mac app, ngrok's download URL carries a build hash, and pdftotext is `intended`.
  */
 
 const HERE = import.meta.dirname;
@@ -158,6 +163,56 @@ export function judgeRows(rows: readonly Row[], mac: ProbeOutput, box: ProbeOutp
   }
   return result;
 }
+
+export interface FollowStep { row: Row; version: string; recipe: string }
+export interface Followed extends FollowStep { ms: number; error?: string }
+/** A version or a list of name==version, passed to box-follow.sh as an argument, never through a shell, and still kept to these characters. */
+const FOLLOW_VERSION = /^[\w.+=-]+( [\w.+=-]+)*$/;
+
+/**
+ * The installs that bring the box to the Mac: each box probe with a `follow` recipe and no `intended` whose value falls short of the Mac's, with
+ * the Mac's version, or for a set such as the kernel venv's packages the Mac entries the box lacks.
+ */
+export function followSteps(rows: readonly Row[], mac: ProbeOutput, box: ProbeOutput): FollowStep[] {
+  const steps: FollowStep[] = [];
+  for (const row of rows) {
+    probesOf(row, "box").forEach((probe, index) => {
+      const macValue = mac.values[row.id]?.[index];
+      const boxValue = box.values[row.id]?.[index];
+      if (typeof probe.follow !== "string" || probe.intended !== undefined || !macValue || !shortfall(macValue, boxValue)) return;
+      const macSet = setOf(macValue);
+      const boxSet = boxValue ? setOf(boxValue) ?? [] : [];
+      const version = macValue.startsWith("v:") ? macValue.slice(2) : macSet ? macSet.filter(entry => !boxSet.includes(entry)).join(" ") : "";
+      if (FOLLOW_VERSION.test(version)) steps.push({ row, version, recipe: probe.follow });
+    });
+  }
+  return steps;
+}
+
+const FOLLOW = join(HERE, "box-follow.sh");
+
+/** Runs each step's recipe with box-follow.sh, one at a time, with no time limit, since a libvips source build took 65 s on 10-28. */
+export async function runFollow(steps: readonly FollowStep[], run: Exec = exec): Promise<Followed[]> {
+  const done: Followed[] = [];
+  for (const step of steps) {
+    const at = Date.now();
+    const error = await run("bash", [FOLLOW, step.version, step.recipe], { timeoutMs: 0 }).then(() => undefined, (failure: Error) => failure.message);
+    done.push({ ...step, ms: Date.now() - at, ...error ? { error } : {} });
+  }
+  return done;
+}
+
+/** The box after its follow steps: the probe values of the rows they touched read again, or the old box values when nothing ran. */
+async function follow(rows: readonly Row[], mac: ProbeOutput, box: ProbeOutput): Promise<{ box: ProbeOutput; followed: Followed[] }> {
+  const steps = followSteps(rows, mac, box);
+  if (!steps.length) return { box, followed: [] };
+  const followed = await runFollow(steps);
+  const again = await settle(probeBox(rows.filter(row => steps.some(step => step.row === row))));
+  return { box: again instanceof Error ? box : { ...box, values: { ...box.values, ...again.values } }, followed };
+}
+
+const followedText = ({ row, version, recipe, ms, error }: Followed): string =>
+  `${row.tool}: ${error ? "could not install" : "installed"} the Mac's ${version} with \`${recipe.slice(0, 160)}\` in ${Math.round(ms / 1000)} s${error ? `: ${error}` : ""}`;
 
 /** `systemctl show` output: one record per unit, split on blank lines. */
 export function parseShow(text: string): Record<string, string>[] {
@@ -451,7 +506,9 @@ export async function measure(rows: readonly Row[], known: Record<string, unknow
   else if (mac instanceof Error) sourceError(`the Mac read over ssh failed, so tool rows are not measured: ${mac.message}`);
   else if (box instanceof Error) sourceError(`the box probe failed: ${box.message}`);
   else {
-    const result = judgeRows(rows, mac, box, panel instanceof Error ? new Map() : panel);
+    const { box: followedBox, followed } = await follow(rows, mac, box);
+    for (const step of followed) flagged.push({ at, kind: "followed", item: step.row.id, excerpt: followedText(step).slice(0, 600) });
+    const result = judgeRows(rows, mac, followedBox, panel instanceof Error ? new Map() : panel);
     if (panel instanceof Error) sourceError(`the Skills and tools checks did not run: ${panel.message}`);
     metrics.tool_rows_off = result.off.length;
     for (const { row, why } of result.off) flagged.push({ at, kind: "tool_row_off", item: row.id, excerpt: `${row.tool}: ${why}${row.note ? ` (${row.note})` : ""}`.slice(0, 600) });
@@ -488,8 +545,20 @@ export async function measure(rows: readonly Row[], known: Record<string, unknow
   return { output: { metrics, flagged }, ...(mac instanceof Error ? {} : { versions: mac.versions }) };
 }
 
+/** `--follow`, for box-follow.timer: reads both hosts for the rows with a recipe and installs what the box lacks, one line per install. */
+async function followOnly(rows: readonly Row[]): Promise<void> {
+  const mine = rows.filter(row => probesOf(row, "box").some(probe => typeof probe.follow === "string"));
+  const away = await macAway(MAC, "tool rows are", Date.now());
+  if (away) { console.log(away.excerpt); return; }
+  const [mac, box] = await Promise.all([probeMac(mine, {}), probeBox(mine)]);
+  const { box: after, followed } = await follow(mine, mac, box);
+  for (const step of followed) console.log(followedText(step));
+  console.log(`${followSteps(mine, mac, after).length} installs still owed after ${followed.length} ran, over ${mine.length} rows with a recipe`);
+}
+
 async function main(): Promise<void> {
   const rows = JSON.parse(await readFile(join(HERE, "box-parity.rows.json"), "utf8")) as Row[];
+  if (process.argv.includes("--follow")) { await followOnly(rows); process.exit(0); }
   const stateFile = process.env.STATE_FILE;
   const state: { versions?: Record<string, unknown> } = stateFile ? await readFile(stateFile, "utf8").then(text => JSON.parse(text) as { versions?: Record<string, unknown> }, () => ({})) : {};
   const result = await measure(rows, state.versions ?? {});

@@ -2,7 +2,8 @@
 # ci-cache gh shim (box copy of the Mac's ai.virev.ci-cache wrapper): answers gh run view|list|watch and gh api .../actions/runs/<id>
 # from /home/sieun/.cache/virev/ci-runs.json, which ci-cache.service writes. Anything else runs the real gh.
 # It runs the shim code from the tip export (the box's dev/sieun), as ci-cache.service does.
-export CI_CACHE_REAL_GH=/home/sieun/.local/opt/gh-2.89.0/bin/gh
+# ~/.local/opt/gh links the gh version box-parity follows from the Mac (box-follow.sh).
+export CI_CACHE_REAL_GH=/home/sieun/.local/opt/gh/bin/gh
 HEAD_EXPORT=/home/sieun/.cache/virev/tip-export/current/scripts/dev
 case "$1" in
 run|api)

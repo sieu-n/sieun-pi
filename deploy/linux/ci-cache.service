@@ -6,7 +6,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 Environment=PATH=%h/.local/node/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
-Environment=CI_CACHE_REAL_GH=%h/.local/opt/gh-2.89.0/bin/gh
+Environment=CI_CACHE_REAL_GH=%h/.local/opt/gh/bin/gh
 Environment=CI_CACHE_QUOTA_PROM=%h/box-ops/obs/textfile/devbox-github-quota.prom
 WorkingDirectory=%h/.cache/virev/tip-export
 ExecStart=%h/.local/node/bin/node %h/.cache/virev/tip-export/current/scripts/dev/run-from-head.mjs --tip --follow-head %h/Documents/Github/auto-sns-agent scripts/dev/ci-cache.mjs poll

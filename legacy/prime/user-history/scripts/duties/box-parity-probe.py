@@ -399,7 +399,7 @@ def blobs(path, host):
 
 
 def probe(spec, host):
-    kind = next(k for k in spec if k not in ("expect", "cwd", "pattern", "at", "depth", "key", "names", "atTip", "intended", "shared"))
+    kind = next(k for k in spec if k not in ("expect", "cwd", "pattern", "at", "depth", "key", "names", "atTip", "intended", "shared", "follow"))
     if host == "mac" and kind not in READS:
         return "fail: %s is not a read, so the Mac side never runs it" % kind
     if kind == "const":
