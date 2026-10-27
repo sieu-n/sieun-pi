@@ -386,7 +386,11 @@ async function serve(options: Options): Promise<void> {
     if (hasCode(error, "EADDRINUSE")) throw new Error(`Port ${service.config.port} is already in use. No process was stopped. Choose --port with a separate --data-dir.`);
     throw error;
   });
-  const { DaemonKeeper } = await import("./chat-daemon.ts");
+  // One line per Prime call this process makes, reads included, for the board's p50, p99 and error rate per method (src/prime-calls.ts).
+  const [{ DaemonKeeper }, { CallLog, logPrimeCalls }] = await Promise.all([import("./chat-daemon.ts"), import("./prime-calls.ts")]);
+  const primeCalls = new CallLog(join(service.directory, "prime-calls.jsonl"),
+    error => process.stderr.write(`${new Date().toISOString()} prime calls: ${error instanceof Error ? error.message : String(error)}\n`));
+  logPrimeCalls(primeCalls);
   // Started first, so the daemon boots while the rest loads. The catalog and threads reconnect on their own once it answers.
   const keeper = !scratch && startsDaemon(primary)
     ? new DaemonKeeper({ socketPath: service.config.socketPath, log: line => process.stderr.write(`${new Date().toISOString()} ${line}\n`) }) : null;
@@ -448,6 +452,7 @@ async function serve(options: Options): Promise<void> {
         await timed("bridges", () => hosts?.bridge?.close());
         await timed("server", () => server.close());
         await timed("read-only", () => readOnly?.close());
+        await timed("call log", () => primeCalls.flushed());
         await timed("cpu profile", () => runProfile.stop().catch(error => process.stderr.write(`cpu profile: ${error instanceof Error ? error.message : String(error)}\n`)));
         process.stderr.write(`${new Date().toISOString()} stop: ${Date.now() - began} ms: ${parts.join(", ")}\n`);
       }

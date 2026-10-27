@@ -22,6 +22,9 @@ import type { Context, Sample } from "../otlp.ts";
  * 3. The supervisor's CPU: its main thread and the whole process, from /proc/<pid>/task/<pid>/stat on Linux and `ps -M` on macOS, as
  *    cumulative seconds. ~/work/daemon-hello-latency/REPORT.md found the main thread runnable for the whole of every 7 to 10 s hello stall.
  * 4. Supervisor and worker starts and stops from the live supervisor log, logs/daemon.sock.<sha256(socket)[:8]>.log.
+ * 5. Every Prime call the chat service and the kernels make, reads included, from browser-chat/prime-calls.jsonl (user-history
+ *    src/prime-calls.ts and src/message-limit-check.py, one line per call): time by quantile per writer, method and box, and a counter by
+ *    outcome for the error rate.
  * Box load is not sent again: harness_host_load (Linux, readers/memory-mac.ts), devbox_load1 (the Mac's Alloy) and harness_host_cores have it.
  */
 
@@ -69,6 +72,8 @@ type Probe = { ok: true; ms: number } | { ok: false; reason: string };
 export interface Call { at: number; method: string; host: string; s: number }
 /** A daemon call that ran into its caller's limit. */
 export interface Timeout { caller: string; method: string; limit: string; host: string }
+/** One line of browser-chat/prime-calls.jsonl, which user-history's src/prime-calls.ts and src/message-limit-check.py write per Prime call. */
+export interface PrimeCall { at: number; src: string; method: string; host: string; s: number; outcome: string; receipt?: { kind: string; state: string } }
 
 interface State {
   pending: { at: number } | null;
@@ -80,6 +85,9 @@ interface State {
   calls: Call[];
   timeouts: Map<string, number>;
   restarts: Map<string, number>;
+  primeCalls: PrimeCall[];
+  primeOutcomes: Map<string, number>;
+  primeReceipts: Map<string, number>;
   /** Counter series already sent; a new one goes out at 0 for one round first, so increase() sees its first events. */
   sent: Set<string>;
 }
@@ -87,7 +95,7 @@ interface State {
 const kept = (ctx: Context): State => {
   let state = ctx.state.get("latency") as State | undefined;
   if (!state) ctx.state.set("latency", state = { pending: null, hellos: [], probes: 0, over: new Map(), failed: new Map(), tails: new Map(), calls: [], timeouts: new Map(),
-    restarts: new Map(LIFECYCLE.map(([, kind]) => [kind, 0])), sent: new Set() });
+    restarts: new Map(LIFECYCLE.map(([, kind]) => [kind, 0])), primeCalls: [], primeOutcomes: new Map(), primeReceipts: new Map(), sent: new Set() });
   return state;
 };
 const bump = (map: Map<string, number>, key: string, by = 1) => map.set(key, (map.get(key) ?? 0) + by);
@@ -203,6 +211,29 @@ export function serviceEvents(lines: readonly string[], local: string): { calls:
   return { calls, timeouts };
 }
 
+const OUTCOMES = new Set(["ok", "refused", "timeout", "closed", "error", "unconfirmed"]);
+/** A method name as a label: the daemon command type or the kernel's request type, and "other" for anything else, so labels stay few. */
+const METHOD = /^[\w.:-]{1,64}$/;
+
+/**
+ * The calls in prime-calls.jsonl lines; a line that does not parse, or lacks a time, method or outcome, is skipped. A line with `receipt` is
+ * a receipt the kernel wrapper returned without a Prime call (message-limit-check.py `log_call`), counted apart from the call times.
+ */
+export function primeCalls(lines: readonly string[], local: string): PrimeCall[] {
+  const calls: PrimeCall[] = [];
+  for (const line of lines) {
+    let row: unknown;
+    try { row = JSON.parse(line); } catch { continue; }
+    if (!isRecord(row) || typeof row.ts !== "string" || typeof row.ms !== "number" || typeof row.method !== "string" || typeof row.outcome !== "string") continue;
+    const at = Date.parse(row.ts);
+    if (!Number.isFinite(at)) continue;
+    calls.push({ at, src: typeof row.src === "string" && METHOD.test(row.src) ? row.src : "other", method: METHOD.test(row.method) ? row.method : "other",
+      host: typeof row.host === "string" && METHOD.test(row.host) ? row.host : local, s: row.ms / 1000, outcome: OUTCOMES.has(row.outcome) ? row.outcome : "error",
+      ...typeof row.receipt === "string" ? { receipt: { kind: METHOD.test(row.receipt) ? row.receipt : "other", state: typeof row.state === "string" && METHOD.test(row.state) ? row.state : "none" } } : {} });
+  }
+  return calls;
+}
+
 /** prime-agent's cli/daemon-launch.ts probeDaemonVersion: the CLI waited 2 s for the box's own daemon's hello and got none. */
 export function cliHelloMisses(lines: readonly string[], socketPath: string): number {
   const miss = `daemon-launch: running daemon on ${socketPath} sent no recognizable hello`;
@@ -296,11 +327,12 @@ export async function read(ctx: Context): Promise<Sample[]> {
 
   const owner = await readFile(`${socketPath}.lock/owner.json`, "utf8").then(text => JSON.parse(text) as unknown, () => undefined);
   const pid = isRecord(owner) && typeof owner.pid === "number" ? owner.pid : undefined;
-  const [cpu, daemonLog, clientLog, serviceLog] = await Promise.all([
+  const [cpu, daemonLog, clientLog, serviceLog, callLog] = await Promise.all([
     pid ? supervisorCpu(ctx, pid) : undefined,
     newLines(state, join(logs, daemonLogName(socketPath)), 0),
     newLines(state, join(logs, "client-errors.log"), 0),
     ctx.chatHost ? newLines(state, join(ctx.home, ".prime/agent/browser-chat/service.log"), SERVICE_BACKFILL_BYTES) : undefined,
+    newLines(state, join(ctx.home, ".prime/agent/browser-chat/prime-calls.jsonl"), SERVICE_BACKFILL_BYTES),
   ]);
 
   for (const [kind, count] of lifecycleEvents(daemonLog.lines)) bump(state.restarts, kind, count);
@@ -311,7 +343,15 @@ export async function read(ctx: Context): Promise<Sample[]> {
     state.calls.push(...events.calls);
     if (!serviceLog.first) for (const timeout of events.timeouts) bump(state.timeouts, JSON.stringify(timeout));
   }
+  const rows = primeCalls(callLog.lines, ctx.host);
+  const calls = rows.filter(row => !row.receipt);
+  state.primeCalls.push(...calls);
+  if (!callLog.first) {
+    for (const call of calls) bump(state.primeOutcomes, JSON.stringify({ src: call.src, method: call.method, host: call.host, outcome: call.outcome }));
+    for (const row of rows) if (row.receipt) bump(state.primeReceipts, JSON.stringify({ src: row.src, method: row.method, receipt: row.receipt.kind, state: row.receipt.state }));
+  }
   state.calls = state.calls.filter(call => call.at >= now - WINDOW_MS);
+  state.primeCalls = state.primeCalls.filter(call => call.at >= now - WINDOW_MS);
   state.hellos = state.hellos.filter(hello => hello.at >= Date.now() - WINDOW_MS);
 
   const out: Sample[] = [];
@@ -337,6 +377,22 @@ export async function read(ctx: Context): Promise<Sample[]> {
       out.push(gauge("harness.latency.call", "Daemon call time over the last 30 min by method and the box whose daemon answered, from the chat service's log; a timed-out call counts at its limit.", value, { ...labels, q }, "s"));
     out.push(gauge("harness.latency.call_samples", "Daemon calls the chat service logged with a time in the last 30 min, by method and box.", values.length, labels));
   }
+  const byPrimeMethod = new Map<string, number[]>();
+  for (const call of state.primeCalls) {
+    const key = JSON.stringify({ src: call.src, method: call.method, host: call.host });
+    const values = byPrimeMethod.get(key);
+    if (values) values.push(call.s); else byPrimeMethod.set(key, [call.s]);
+  }
+  for (const [key, values] of byPrimeMethod) {
+    const labels = JSON.parse(key) as Labels;
+    for (const [q, value] of quantiles(values))
+      out.push(gauge("harness.latency.prime_call", "Prime call time over the last 30 min by writer (src: chat or kernel), method and the box whose daemon answered, from browser-chat/prime-calls.jsonl, one line per call.", value, { ...labels, q }, "s"));
+    out.push(gauge("harness.latency.prime_call_samples", "Prime calls in browser-chat/prime-calls.jsonl in the last 30 min, by writer, method and box.", values.length, labels));
+  }
+  for (const [key, value] of state.primeOutcomes)
+    out.push(counter("harness.latency.prime_calls", "Prime calls by writer, method, box and outcome (ok, refused, timeout, closed, error), from browser-chat/prime-calls.jsonl.", shown(key, value), JSON.parse(key) as Labels));
+  for (const [key, value] of state.primeReceipts)
+    out.push(counter("harness.latency.prime_receipts", "Receipts the kernel's send wrapper returned without a Prime call, by method, receipt (unconfirmed, delivered, refused) and state (timeout, closed, queued, busy, unknown, landed, trial_wall).", shown(`receipt ${key}`, value), JSON.parse(key) as Labels));
   for (const [key, value] of state.timeouts)
     out.push(counter("harness.latency.timeouts", "Daemon calls that ran into their caller's limit (`Timed out after <ms>ms waiting for the Prime Agent daemon`), by caller, method, limit and box.", shown(key, value), JSON.parse(key) as Labels));
   for (const [kind, value] of state.restarts)

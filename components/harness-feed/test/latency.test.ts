@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promName, type Context, type Sample } from "../otlp.ts";
-import { callerOf, cliHelloMisses, daemonLogName, lifecycleEvents, psThreadsCpu, quantiles, read, serviceEvents, statCpu } from "../readers/latency.ts";
+import { callerOf, cliHelloMisses, daemonLogName, lifecycleEvents, primeCalls, psThreadsCpu, quantiles, read, serviceEvents, statCpu } from "../readers/latency.ts";
 
 const FIXTURE = fileURLToPath(new URL("./fixtures/latency/", import.meta.url));
 const fixture = (name: string): string => readFileSync(join(FIXTURE, name), "utf8");
@@ -140,4 +140,40 @@ test("a socket that never says hello leaves one probe pending and holds no round
   assert.ok(value(second, "harness_latency_hello_pending_seconds")! >= 0.05);
   assert.equal(value(second, "harness_latency_hello_samples"), 0);
   assert.equal(value(second, "harness_latency_hello_seconds", { q: "max" }), undefined);
+});
+
+test("prime-calls.jsonl gives each writer's call time per method and box, and counts outcomes for the error rate", async t => {
+  const { dir } = await home(t, 30);
+  const calls = join(dir, ".prime/agent/browser-chat/prime-calls.jsonl");
+  const at = (minutes: number) => new Date(NOW - minutes * 60_000).toISOString();
+  const line = (row: Record<string, unknown>) => JSON.stringify(row) + "\n";
+  writeFileSync(calls, line({ ts: at(40), src: "chat", method: "get_state", ms: 9000, outcome: "ok" })
+    + line({ ts: at(5), src: "chat", method: "get_state", ms: 20, outcome: "ok" })
+    + line({ ts: at(4), src: "chat", method: "get_state", host: "mac", ms: 300, outcome: "ok" })
+    + "not json\n");
+  const ctx = context(dir);
+  const first = await read(ctx);
+  assert.equal(value(first, "harness_latency_prime_call_seconds", { src: "chat", method: "get_state", host: LOCAL, q: "max" }), 0.02, "the 40 min old call is out of the window");
+  assert.equal(value(first, "harness_latency_prime_call_seconds", { src: "chat", method: "get_state", host: "mac", q: "p50" }), 0.3);
+  assert.equal(value(first, "harness_latency_prime_calls_total"), undefined, "the backfill is not counted");
+
+  appendFileSync(calls, line({ ts: at(1), src: "kernel", method: "agent_message.send", target: "x", ms: 30000, outcome: "timeout", error: "Timed out" })
+    + line({ ts: at(1), src: "kernel", method: "agent_message.send", ms: 40, outcome: "ok" })
+    + line({ ts: at(1), src: "chat", method: "kill", ms: 5, outcome: "refused" })
+    + line({ ts: at(1), src: "kernel", method: "agent_message.send", ms: 0, outcome: "unconfirmed", receipt: "unconfirmed", state: "busy" }));
+  const second = await read(ctx);
+  assert.equal(value(second, "harness_latency_prime_call_seconds", { src: "kernel", method: "agent_message.send", q: "max" }), 30);
+  assert.equal(value(second, "harness_latency_prime_call_samples", { src: "kernel", method: "agent_message.send", host: LOCAL }), 2);
+  assert.equal(value(second, "harness_latency_prime_calls_total", { src: "kernel", method: "agent_message.send", outcome: "timeout" }), 0, "a new series goes out at 0 first");
+  const third = await read(ctx);
+  assert.equal(value(third, "harness_latency_prime_calls_total", { src: "kernel", method: "agent_message.send", outcome: "timeout" }), 1);
+  assert.equal(value(third, "harness_latency_prime_calls_total", { src: "kernel", method: "agent_message.send", outcome: "ok" }), 1);
+  assert.equal(value(third, "harness_latency_prime_calls_total", { src: "chat", method: "kill", host: LOCAL, outcome: "refused" }), 1);
+  assert.equal(value(third, "harness_latency_prime_calls_total", { outcome: "unconfirmed" }), undefined, "a receipt is no call");
+  assert.equal(value(third, "harness_latency_prime_receipts_total", { src: "kernel", method: "agent_message.send", receipt: "unconfirmed", state: "busy" }), 1);
+});
+
+test("primeCalls keeps labels few: an odd method or outcome reads as other or error", () => {
+  const [call] = primeCalls([JSON.stringify({ ts: "2026-10-27T01:00:00.000Z", src: "chat", method: "bad method name", ms: 5, outcome: "weird" })], LOCAL);
+  assert.deepEqual(call, { at: Date.parse("2026-10-27T01:00:00.000Z"), src: "chat", method: "other", host: LOCAL, s: 0.005, outcome: "error" });
 });

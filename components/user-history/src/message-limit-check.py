@@ -43,6 +43,9 @@ its own reference. It does three things.
    revived kernels had PATH /usr/bin:/bin:/usr/sbin:/sbin: mac-management, mcp for chris and frontend bro saw each cross-host send fail
    with "No such file or directory: 'node'" until they set PATH by hand, and the send guard's node check (kernel-guard.py) let every call
    through unjudged. The prelude runs a new VERSION at the next cell, so a running kernel gets its PATH back without a restart.
+9. The call log. Each Prime call this wrapper makes adds one line to DATA_DIR/prime-calls.jsonl with src "kernel", the fields the chat
+   service writes for its own calls (src/prime-calls.ts), so the board shows p50, p99 and the error rate per method (option C of the 10-27
+   prime-under-load page, which found no log of a delivery or a read).
 """
 
 import asyncio
@@ -57,7 +60,7 @@ import time
 
 CHECK = os.path.join(os.path.dirname(os.path.realpath(__file__)), "message-limit-check.ts")
 SEND_ONCE = os.path.join(os.path.dirname(os.path.realpath(__file__)), "send-once.ts")
-VERSION = 24
+VERSION = 26
 BRIEFS = "spawn-briefs"
 SAFE_ID = re.compile(r"^[\w-]{1,128}$")
 SEND_TIMEOUT = 'waiting for the Prime Agent daemon response to "send_message"'
@@ -486,11 +489,63 @@ def plain_request():
     return bare
 
 
+CALLS = "prime-calls.jsonl"
+CALL_TARGETS = ("sessionId", "session_id", "activeSessionId", "receiver_name", "name", "receiver_role")
+
+
+def call_outcome(error):
+    """The outcome field of a failed call: Prime's host reply raises RuntimeError with the daemon's refusal, anything else is this side's."""
+    text = str(error)
+    if "Timed out" in text or "timed out" in text:
+        return "timeout"
+    if CLIENT_CLOSED in text or "socket closed" in text or "daemon closed" in text:
+        return "closed"
+    return "refused" if isinstance(error, RuntimeError) else "error"
+
+
+def log_call(request_type, payload, started, outcome, error=None, receipt=None, state=None):
+    """One line per Prime call in DATA_DIR/prime-calls.jsonl, the fields src/prime-calls.ts writes for the chat service, with src "kernel".
+
+    A line with `receipt` is no Prime call: it records a receipt this wrapper returned on its own ("unconfirmed" after a timeout or for a held
+    resend, with `state`, and "refused" at a clean-room trial's wall), so one search counts every such receipt and the call times stay pure."""
+    folder = data_dir()
+    if not folder:
+        return
+    payload = payload if isinstance(payload, dict) else {}
+    target = next((str(payload[key]) for key in CALL_TARGETS if isinstance(payload.get(key), str) and payload[key]), None)
+    now = time.time()
+    line = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(now)) + ".%03dZ" % int(now % 1 * 1000), "src": "kernel", "method": str(request_type),
+            **({"target": target[:128]} if target else {}), "ms": round((time.monotonic() - started) * 1000), "outcome": outcome,
+            **({"error": str(error)[:200]} if error is not None else {}), **({"receipt": receipt} if receipt else {}), **({"state": state} if state else {})}
+    try:
+        fd = os.open(os.path.join(folder, CALLS), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        try:
+            os.write(fd, (json.dumps(line) + "\n").encode())
+        finally:
+            os.close(fd)
+    except OSError:
+        pass
+
+
+def timed(real):
+    """`real` with one prime-calls.jsonl line per call, so the board reads p50, p99 and the error rate of the kernel's calls per method."""
+    async def call(request_type, payload=None, *args, **kwargs):
+        started = time.monotonic()
+        try:
+            reply = await real(request_type, payload, *args, **kwargs)
+        except BaseException as error:
+            log_call(request_type, payload, started, call_outcome(error), error)
+            raise
+        log_call(request_type, payload, started, "ok")
+        return reply
+    return call
+
+
 async def request(request_type, payload=None, *args, **kwargs):
     # A kernel whose rlm module was reloaded or revived lost unchecked_host_request: on 10-17 agent_message.send then raised "'NoneType'
     # object is not callable" here in 01a141b8 and a job of "grafana done properly". So the checks never block a send: if one fails, the
     # request goes out through Prime's own host_request as it came.
-    real = plain_request()
+    real = timed(plain_request())
     send = request_type == "agent_message.send" and isinstance(payload, dict)
     note = None
     try:
@@ -505,6 +560,8 @@ async def request(request_type, payload=None, *args, **kwargs):
             if state == "landed":
                 UNCONFIRMED.pop(key, None)
             if state != "absent":
+                landed = state == "landed"
+                log_call(request_type, payload, time.monotonic(), "ok" if landed else "unconfirmed", receipt="delivered" if landed else "unconfirmed", state=state)
                 return with_note(held(payload, earlier, state, at), note)
     except Exception as error:
         print(f"user-history: the message check failed ({error}); sent as it came", file=sys.stderr)
@@ -513,8 +570,9 @@ async def request(request_type, payload=None, *args, **kwargs):
     if direct:
         try:
             await trial_wall(real, payload)
-        except TrialRefused:
+        except TrialRefused as error:
             UNCONFIRMED.pop(key, None)
+            log_call(request_type, payload, time.monotonic(), "refused", error, receipt="refused", state="trial_wall")
             raise
         except Exception as error:
             print(f"user-history: the clean-room check failed ({error}); sent as it came", file=sys.stderr)
@@ -553,6 +611,7 @@ async def request(request_type, payload=None, *args, **kwargs):
         if direct and (SEND_TIMEOUT in str(error) or CLIENT_CLOSED in str(error)):
             texts = (earlier or {}).get("texts", [])
             UNCONFIRMED[key] = {"since": started, "texts": list(dict.fromkeys(texts + [str(payload.get("message") or "").strip()]))}
+            log_call(request_type, payload, time.monotonic(), "unconfirmed", error, receipt="unconfirmed", state="timeout" if SEND_TIMEOUT in str(error) else "closed")
             return with_note(unconfirmed(payload, error), note)
         raise
 
