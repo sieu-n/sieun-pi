@@ -4,6 +4,7 @@ import importlib.machinery
 import importlib.util
 import io
 import json
+import shlex
 import os
 import signal
 import socket
@@ -22,6 +23,7 @@ CTL = ROOT / "deploy/linux/prime-agent-daemon-ctl"
 UNIT = ROOT / "deploy/linux/prime-agent-daemon.service"
 CHAT_UNIT = ROOT / "deploy/linux/sieun-pi-chat.service"
 INSTALL = ROOT / "deploy/linux/prime-install.sh"
+WRAPPER = ROOT / "deploy/linux/prime-agent"
 FEED = ("PRIME_AGENT_DOWNLOAD_BASE_URL", "PRIME_AGENT_ALLOW_INSECURE_HTTP_FOR_TESTS")
 
 FAKE = textwrap.dedent(
@@ -31,6 +33,21 @@ FAKE = textwrap.dedent(
     log = os.environ["FAKE_LOG"]
     with open(log, "a") as f:
         f.write(json.dumps({"pid": os.getpid(), "argv": sys.argv[1:]}) + "\\n")
+    if sys.argv[1] == "chat":
+        # Prime's ensureDaemonRunning: a CLI that finds no daemon on its socket spawns one detached, in its own cgroup.
+        sock = sys.argv[sys.argv.index("--daemon-socket") + 1] if "--daemon-socket" in sys.argv else os.path.join(os.environ.get("TMPDIR", "/tmp").rstrip("/"), f"prime-agent-{os.getuid()}", "daemon.sock")
+        def answers():
+            with socket.socket(socket.AF_UNIX) as probe:
+                return probe.connect_ex(sock) == 0
+        spawned = not answers()
+        if spawned:
+            subprocess.Popen([sys.argv[0], "--mode", "daemon", "--daemon-socket", sock], start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            deadline = time.time() + 10
+            while not answers() and time.time() < deadline:
+                time.sleep(0.02)
+        with open(os.environ["FAKE_CLI_LOG"], "w") as f:
+            json.dump({"spawned": spawned, "cgroup": open("/proc/self/cgroup").read()}, f)
+        sys.exit(0)
     if sys.argv[1] == "update":
         keys = ("TMPDIR", "PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_SOCKET", "PRIME_AGENT_INTERNAL_DAEMON_WORKER", "PRIME_AGENT_INTERACTIVE_SELF_UPDATE", "PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_REGISTRY_DIR", "PRIME_UPDATE_ARGS", "PRIME_AGENT_DOWNLOAD_BASE_URL", "PRIME_AGENT_ALLOW_INSECURE_HTTP_FOR_TESTS")
         coordinator = "--internal-update-restart-coordinator" in sys.argv
@@ -653,6 +670,64 @@ class DaemonCtlTest(unittest.TestCase):
         self.procs.append(proc)
         self.wait_for_socket()
         return proc
+
+    def shell_cli(self, binary, env):
+        """Run `<binary> chat` the way a login shell does, in its own transient scope, as the VS Code shell ran in session-c155369.scope."""
+        scope = f"pad-shell-{os.getpid()}-{time.monotonic_ns()}"
+        cli_log = self.dir / "cli.json"
+        args = ["systemd-run", "--user", "--scope", "--quiet", f"--unit={scope}"]
+        for key, value in dict(env, FAKE_CLI_LOG=str(cli_log)).items():
+            args += ["-E", f"{key}={value}"]
+        done = subprocess.run([*args, str(binary), "chat"], capture_output=True, text=True, timeout=60, env=self.bus_env())
+        return done, json.loads(cli_log.read_text())
+
+    def bus_env(self):
+        """Only what systemd-run needs to reach the user manager, so no live PRIME_AGENT_INTERNAL_* socket leaks into the scratch run."""
+        return {k: os.environ[k] for k in ("PATH", "HOME", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS") if k in os.environ}
+
+    def supervisor_cgroup(self):
+        pid = int(Path(self.env["FAKE_PIDS"]).read_text().split()[-1])
+        return pid, Path(f"/proc/{pid}/cgroup").read_text().strip()
+
+    def test_a_shell_cli_that_finds_no_daemon_gets_the_daemon_started_in_the_unit(self):
+        if subprocess.call(["systemd-run", "--user", "--scope", "--quiet", "true"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) != 0:
+            self.skipTest("no systemd user manager to make a scope and a unit in")
+        unit = f"pad-daemon-{os.getpid()}-{time.monotonic_ns()}.service"
+        env = {k: self.env[k] for k in ("FAKE_LOG", "FAKE_PIDS", "FAKE_ENV_LOG", "PRIME_AGENT_CODING_AGENT_DIR")}
+        env.update(PATH=os.environ["PATH"], HOME=os.environ["HOME"], TMPDIR=str(self.dir), PRIME_AGENT_REAL_BIN=str(self.fake), PRIME_AGENT_DAEMON_UNIT=unit,
+                   PRIME_AGENT_DAEMON_PIDFILE=self.pidfile, PRIME_AGENT_DAEMON_SOCKET=self.sock)
+        # A scratch copy of prime-agent-daemon.service: Type=forking with the ctl's start and this PIDFile, never the live unit or socket.
+        start = ["systemd-run", "--user", "--quiet", "--collect", f"--unit={unit}", "-p", "Type=forking", "-p", f"PIDFile={self.pidfile}"]
+        for key, value in env.items():
+            start += ["-E", f"{key}={value}"]
+        start += [sys.executable, "-B", str(CTL), "start", str(WRAPPER), self.sock, self.pidfile]
+        self.addCleanup(subprocess.call, ["systemctl", "--user", "stop", unit], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        start = ["env", "-i", *[f"{k}={v}" for k, v in self.bus_env().items()], *start]
+        self.assertNotEqual(self.sock, "/tmp/prime-agent-%d/daemon.sock" % os.getuid())
+        with self.subTest("without the wrapper the CLI's daemon lands in the shell's scope"):
+            _, cli = self.shell_cli(self.fake, env)
+            self.assertTrue(cli["spawned"])
+            pid, group = self.supervisor_cgroup()
+            self.assertEqual(group, cli["cgroup"].strip())
+            os.kill(pid, signal.SIGKILL)
+            Path(self.sock).unlink(missing_ok=True)
+        with self.subTest("with the wrapper the unit starts it and the CLI finds it"):
+            done, cli = self.shell_cli(WRAPPER, dict(env, PRIME_AGENT_DAEMON_START=shlex.join(start)))
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertIn(f"so this starts {unit} first", done.stderr)
+            self.assertFalse(cli["spawned"], "the CLI found the unit's daemon and spawned none")
+            pid, group = self.supervisor_cgroup()
+            self.assertTrue(group.endswith(f"/{unit}"), group)
+            self.assertEqual(self.pid_in_file(), pid)
+            self.assertEqual(subprocess.run(["systemctl", "--user", "show", "-p", "MainPID", "--value", unit], capture_output=True, text=True).stdout.strip(), str(pid))
+        with self.subTest("a second shell CLI finds the live daemon and starts nothing"):
+            done, cli = self.shell_cli(WRAPPER, dict(env, PRIME_AGENT_DAEMON_START="false"))
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertNotIn("starts", done.stderr)
+            self.assertFalse(cli["spawned"])
+        with self.subTest("a daemon start on the public socket from a shell is refused"):
+            done = subprocess.run([str(WRAPPER), "--mode", "daemon", "--daemon-socket", self.sock], env=dict(self.bus_env(), **env), capture_output=True, text=True, timeout=10)
+            self.assertEqual(done.returncode, 2, done.stderr)
 
     def test_an_outside_supervisor_is_adopted_and_the_next_reload_starts_its_successor_in_the_unit(self):
         old = self.serve_outside()

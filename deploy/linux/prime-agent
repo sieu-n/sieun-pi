@@ -1,0 +1,60 @@
+#!/bin/sh
+# ~/.local/bin/prime-agent on us-metal02, installed from sieun-pi deploy/linux/prime-agent in place of the link to
+# ~/.local/share/prime-agent/bin/prime-agent. A CLI that finds no daemon on its socket spawns one as its own child
+# (ensureDaemonRunning in Prime's daemon-launch.ts, detached: true), so the daemon lands in the caller's cgroup. On
+# 2026-10-27 at 12:56:35Z a prime-agent run from the owner's VS Code shell started supervisor 3052306 in
+# session-c155369.scope at oom_score_adj -500. Its workers and kernels grew to about 80 GB there, outside the unit's
+# limits, and hung the box at 15:14Z (~/work/update-empty-box/CAUSE.md). So when this socket has no live daemon, the
+# wrapper starts prime-agent-daemon.service first and runs the CLI after it, so the CLI finds the unit's daemon.
+# Prime has no launcher hook for this yet (~/work/update-empty-box/autostart-ask.md).
+#
+# It passes straight through for a call that cannot start the public daemon:
+# - a process already in the unit's cgroup, which is the ctl's own `--mode daemon` start, its update and every worker;
+# - a CLI aimed at another socket (--daemon-socket, PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_SOCKET or a TMPDIR other than /tmp);
+# - --version, --help, shutdown and update, which start no daemon.
+# `prime-agent --mode daemon` on the public socket from outside the unit is refused.
+# Tests set PRIME_AGENT_REAL_BIN, PRIME_AGENT_DAEMON_UNIT, PRIME_AGENT_DAEMON_PIDFILE, PRIME_AGENT_DAEMON_SOCKET and
+# PRIME_AGENT_DAEMON_START (tests/test_prime_daemon_ctl.py, a scratch unit and socket).
+real=${PRIME_AGENT_REAL_BIN:-$HOME/.local/share/prime-agent/bin/prime-agent}
+unit=${PRIME_AGENT_DAEMON_UNIT:-prime-agent-daemon.service}
+uid=$(id -u)
+pidfile=${PRIME_AGENT_DAEMON_PIDFILE:-${XDG_RUNTIME_DIR:-/run/user/$uid}/prime-agent-daemon.pid}
+public=${PRIME_AGENT_DAEMON_SOCKET:-/tmp/prime-agent-$uid/daemon.sock}
+
+case $(cat /proc/self/cgroup 2>/dev/null) in */"$unit") exec "$real" "$@" ;; esac
+
+tmp=${TMPDIR:-/tmp}
+while [ "${tmp%/}" != "$tmp" ] && [ "$tmp" != / ]; do tmp=${tmp%/}; done
+sock=${PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_SOCKET:-$tmp/prime-agent-$uid/daemon.sock}
+command="" prev="" daemon_mode="" skip=""
+for arg in "$@"; do
+  if [ "$prev" = "--daemon-socket" ]; then sock=$arg
+  elif [ "$prev" = "--mode" ]; then [ "$arg" = daemon ] && daemon_mode=1
+  else
+    case $arg in
+      --daemon-socket=*) sock=${arg#--daemon-socket=} ;;
+      --mode=daemon) daemon_mode=1 ;;
+      --version|-v|--help|-h) skip=1 ;;
+      -*) ;;
+      *) [ -z "$command" ] && command=$arg ;;
+    esac
+  fi
+  prev=$arg
+done
+[ "$(realpath -m "$sock")" = "$(realpath -m "$public")" ] || exec "$real" "$@"
+if [ -n "$daemon_mode" ]; then
+  echo "prime-agent: refused: a daemon on $public runs only inside $unit. Start it with: systemctl --user start $unit" >&2
+  exit 2
+fi
+case $command in shutdown|update|help) skip=1 ;; esac
+[ -n "$skip" ] && exec "$real" "$@"
+
+pid=$(cat "$pidfile" 2>/dev/null)
+if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then exec "$real" "$@"; fi
+echo "prime-agent: no daemon runs on $public, so this starts $unit first" >&2
+if [ -n "$PRIME_AGENT_DAEMON_START" ]; then sh -c "$PRIME_AGENT_DAEMON_START"; else systemctl --user start "$unit"; fi
+if [ $? -ne 0 ]; then
+  echo "prime-agent: could not start $unit; see journalctl --user -u $unit. The CLI does not start a daemon of its own here." >&2
+  exit 1
+fi
+exec "$real" "$@"
