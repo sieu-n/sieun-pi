@@ -192,6 +192,9 @@ export function fixWindowWait(metric: { key: string; windowMs?: number } | undef
   return times.length ? Math.max(...times) : undefined;
 }
 
+/** The duty as fixNotMoving read it before `windowWait`. */
+const unwaited = ({ windowWait, ...duty }: RedDuty): RedDuty => duty;
+
 /** A red duty whose live fix job does not move its number, with the push line that asks its chat to replace that fix. */
 export interface NotMoving { chat: string; duty: string; line: string }
 
@@ -618,7 +621,7 @@ export function chatSystemOutput(facts: ChatSystemFacts): PrecheckOutput {
   const aging = facts.fleet.red.filter(duty => duty.agingSince !== undefined);
   if (aging.length) flagged.push({ kind: "aging_duty", excerpt: `${aging.map(duty => `${name(duty.chat)} ${duty.duty}`).join(", ")} ${aging.length === 1 ? "is" : "are"} red only on ` +
     "counts over a trailing window with no new event since the run before, which fall as old events leave the window; they owe no fix job, so push nothing for them." });
-  const waiting = facts.fleet.red.filter(duty => duty.windowWait !== undefined && fixNotMoving([{ ...duty, windowWait: undefined }], name).length);
+  const waiting = facts.fleet.red.filter(duty => duty.windowWait !== undefined && fixNotMoving([unwaited(duty)], name).length);
   for (const duty of waiting) {
     flagged.push({ kind: "fix_window_wait", chat: duty.chat, item: duty.duty, excerpt: `${name(duty.chat)}: ${duty.name} (${duty.duty}) misses ${duty.metric?.key ?? "a windowed count"}, ` +
       `a count over a trailing window, while ${duty.fix}'s job waits inside that window, so the number can show the fix at ${minute(duty.windowWait!)} at the earliest; push no replacement for ${duty.fix}.` });
