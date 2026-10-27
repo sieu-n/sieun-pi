@@ -4,8 +4,17 @@ import { performance } from "node:perf_hooks";
 import type { DaemonClient, SessionSummary } from "prime-agent";
 import { parseSummaries, PROJECTION_SLICE_MS } from "./chat-catalog.ts";
 
+/**
+ * The live fields Prime's daemon row carries only while they are set: `waitingFor` and `waitingSince` during an extension's wait,
+ * `directAttachedClients` above 0, and `holdsDetachedProcesses`, `hasActiveHeartbeat` and `isQuotaParked` only when true. A newer row without
+ * one means it cleared. Until 10-27 a row kept the old value: a run that once waited for a pi-pool slot read `waitingFor` after it got the
+ * slot, so from 02:39Z us-metal02's watch counted 0 to 5 of the 12 slot holders as working and d7 read their trees as quiet (31.92 GB at
+ * 02:58Z), while `prime-agent list` named 12 working.
+ */
+const SPARSE_FIELDS = ["waitingFor", "waitingSince", "directAttachedClients", "holdsDetachedProcesses", "hasActiveHeartbeat", "isQuotaParked", "pendingCwd"] as const;
+
 const LIVE_FIELDS = ["activeSessionId", "rosterStatus", "isStreaming", "isCompacting", "isBashRunning", "isRunningTools", "hasRunningRlmChildren", "isSessionActive",
-  "workerState", "workerPid"] as const;
+  "workerState", "workerPid", ...SPARSE_FIELDS] as const;
 
 /** The key the daemon merges its own `list all` by, so a live roster row replaces the saved row of the same session. */
 export const rowKey = (row: SessionSummary): string => row.sessionFile ?? `id:${row.sessionId}`;
@@ -41,9 +50,12 @@ function dropStarting(rows: Map<string, SessionSummary>, row: SessionSummary): v
 /**
  * A row laid over the copy's row of the same session. A row with no active session is saved, so it drops the old row's live fields: the
  * roster lists inactive agents too (233 of 336 entries on the box on 10-18), and a spread alone kept the stopped worker's active session id.
+ * The fields the daemon leaves out while unset (SPARSE_FIELDS) come from the new row alone.
  */
 function merged(old: SessionSummary | undefined, row: SessionSummary): SessionSummary {
-  const next = { ...old, ...row };
+  const kept: Record<string, unknown> = { ...old };
+  for (const field of SPARSE_FIELDS) delete kept[field];
+  const next = { ...kept, ...row } as SessionSummary;
   return row.activeSessionId === undefined ? saved(next) : next;
 }
 
