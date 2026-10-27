@@ -13,7 +13,7 @@ import { LIVE_GAP_MS, OPEN, parkedBy, planHasOpenStep, walk } from "../../src/ch
 import { listedSessions } from "../../src/daemon-faults.ts";
 import { ownerChats } from "../../src/owner-chats.ts";
 import { chatDataDir } from "../../src/owner-ok.ts";
-import { CHECK_IN_DUTY_ID, type DutyPrecheck, type DutyRunRecord, type FlaggedSlice, type PrecheckOutput } from "../../src/shared/chat-duties.ts";
+import { CHECK_IN_DUTY_ID, type DutyPrecheck, type DutyRunRecord, type FlaggedSlice, type PrecheckOutput, shownValue } from "../../src/shared/chat-duties.ts";
 import { DutyStore } from "../../src/chat-duty-store.ts";
 import { D9_PUSH_PREFIX, serverNote } from "../../src/shared/chat-feed.ts";
 import type { ChatBoard, PlanItem } from "../../src/shared/types.ts";
@@ -249,7 +249,7 @@ export function fixNotMoving(red: readonly RedDuty[], name: (chat: string) => st
       under.moved || under.misses < CHANGE_APPROACH_MISSES) return [];
     const worked = under.worked;
     const stall = worked ? `${worked.item}, the item ${duty.fix} works, read ${show(worked.to)} against ${show(worked.target)}, no closer than its ${show(worked.from)} when the first of those runs measured it`
-      : `${show(metric.value)} against ${metric.op} ${show(metric.target)} and no closer than when ${duty.fix} began`;
+      : `${shownValue(metric.value, metric.target)} against ${metric.op} ${show(metric.target)} and no closer than when ${duty.fix} began`;
     return [{ chat: duty.chat, duty: duty.duty, line: `${name(duty.chat)}: ${duty.name} (${duty.duty}) missed ${metric.key} ${metric.misses} runs in a row, ` +
       `${under.misses} of them under its fix step ${duty.fix}, ${stall}, ` +
       `while ${duty.fix} has a live job. Replace that fix: start a root-cause job with rlm.create_session that finds why ${duty.fix} does not move the number and fixes that cause, ` +
@@ -706,7 +706,7 @@ export function chatSystemOutput(facts: ChatSystemFacts): PrecheckOutput {
   head("red_duty", facts.fleet.red.length, "red duties", chats(facts.fleet.red));
   for (const duty of spread(facts.fleet.red.filter(duty => duty.agingSince === undefined), EXAMPLES)) {
     flagged.push({ kind: "red_duty", chat: duty.chat, item: duty.duty, excerpt: `${name(duty.chat)}: ${duty.name} (${duty.duty}) is red` +
-      (duty.metric ? `, ${duty.metric.key} ${show(duty.metric.value)} against ${duty.metric.op} ${show(duty.metric.target)}` : "") + `, ${missRuns(duty)}.` });
+      (duty.metric ? `, ${duty.metric.key} ${shownValue(duty.metric.value, duty.metric.target)} against ${duty.metric.op} ${show(duty.metric.target)}` : "") + `, ${missRuns(duty)}.` });
   }
   const aging = facts.fleet.red.filter(duty => duty.agingSince !== undefined);
   if (aging.length) flagged.push({ kind: "aging_duty", excerpt: `${aging.map(duty => `${name(duty.chat)} ${duty.duty}`).join(", ")} ${aging.length === 1 ? "is" : "are"} red only on ` +
@@ -1065,7 +1065,7 @@ async function main(): Promise<void> {
     ...hostHeld.length ? [] : [section("Steps and red duties that wait on an offline box (0)", [])],
     section(`Open plan items that are upkeep or have no done line (${upkeep.length})`, upkeep.map(item => `${name(item.chat)}: ${item.id} ${quote(item.text)} ${item.why}.`)),
     section(`Red duties (${red.length}, ${fleet.metrics.duties_green_pct}% green)`, red.map(duty => `${name(duty.chat)}: ${duty.name} (${duty.duty}), ` +
-      `${duty.metric ? `${duty.metric.key} ${show(duty.metric.value)} against ${duty.metric.op} ${show(duty.metric.target)}, ` : ""}${missRuns(duty)}` +
+      `${duty.metric ? `${duty.metric.key} ${shownValue(duty.metric.value, duty.metric.target)} against ${duty.metric.op} ${show(duty.metric.target)}, ` : ""}${missRuns(duty)}` +
       `${duty.fix ? `, fix step ${duty.fix}` : duty.working ? `, its job ${duty.working} works on it` : ""}` +
       `${duty.agingSince !== undefined ? `, red only on counts that age out (newest event ${new Date(duty.agingSince).toISOString().slice(0, 16)}Z` +
         `${duty.agingUntil !== undefined ? `, clears at ${new Date(duty.agingUntil).toISOString().slice(0, 16)}Z` : ""}), so it owes no fix job` : ""}` +

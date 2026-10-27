@@ -290,7 +290,19 @@ export function nextRunAt(duty: Duty, now: number): number | null {
 }
 
 const met = (metric: DutyMetric, value: number): boolean => metric.op === "<=" ? value <= metric.target : value >= metric.target;
-const show = (metric: DutyMetric, value: number): string => `${Math.round(value * 10) / 10}${metric.unit ?? ""}`;
+/**
+ * A value to one decimal, with more places when one decimal would print it equal to `target` though it differs: d9 printed metal-management
+ * d3's profiles_p95_s 0.44 as "0.4 against <= 0.4" at 22:57Z on 10-27, a red that read as met.
+ */
+export function shownValue(value: number, target?: number): string {
+  for (let places = 1; places <= 4; places++) {
+    const scale = 10 ** places;
+    const shown = Math.round(value * scale) / scale;
+    if (target === undefined || value === target || shown !== Math.round(target * scale) / scale) return String(shown);
+  }
+  return String(value);
+}
+const show = (metric: DutyMetric, value: number): string => `${shownValue(value, value === metric.target ? undefined : metric.target)}${metric.unit ?? ""}`;
 
 /**
  * The line a run of a duty over the shape rule ends its summary with, so the duty job (which reads the summary as its measure) tells the

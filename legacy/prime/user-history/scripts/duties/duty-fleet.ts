@@ -10,7 +10,7 @@ import { withStalls, withWakes } from "../../src/checkin-load.ts";
 import { stalledCalls } from "../../src/shared/stalled-calls.ts";
 import { activePause, checkInSettings } from "../../src/checkin-settings.ts";
 import { jobFacts, liveJobs, liveWindowMs, ownerOf, OPEN, walk } from "../../src/checkin-steps.ts";
-import { CHECK_IN_DUTY, CHECK_IN_DUTY_ID, headlineMetric, type DutyMetric, type DutyRunRecord, type FixLink, type FlaggedSlice } from "../../src/shared/chat-duties.ts";
+import { CHECK_IN_DUTY, CHECK_IN_DUTY_ID, headlineMetric, type DutyMetric, type DutyRunRecord, type FixLink, type FlaggedSlice, shownValue } from "../../src/shared/chat-duties.ts";
 import { CHANGE_APPROACH_MISSES, effectiveRun, metricStreaks, missStreak, newestReading, type MetricStreak } from "../../src/shared/duty-streak.ts";
 import type { ChatBoard, ChildAgent, PlanItem, SessionRow } from "../../src/shared/types.ts";
 import { fixJobLive } from "../../src/shared/duty-fixes.ts";
@@ -306,7 +306,7 @@ export async function dutyFleet(options: { dataDir: string; now: number; session
     // Floored to a tenth, so one red duty reads under 100.
     metrics: { duties_green_pct: judged.length ? Math.floor(1000 * judged.filter(duty => duty.green).length / judged.length) / 10 : 100, stuck_duties: stuck.length },
     flagged: [...missing, ...stuck.map(duty => ({ chat: duty.chat, kind: "stuck_duty", item: duty.duty,
-      excerpt: `${names.get(duty.chat) ?? duty.chat}: ${duty.name} missed ${duty.misses} runs, ${duty.metric ? `${duty.metric.key} ${show(duty.metric.value)} against ${bound(duty.metric)}` : "no metric value"}, no live fix job` }))],
+      excerpt: `${names.get(duty.chat) ?? duty.chat}: ${duty.name} missed ${duty.misses} runs, ${duty.metric ? `${duty.metric.key} ${shownValue(duty.metric.value, duty.metric.target)} against ${bound(duty.metric)}` : "no metric value"}, no live fix job` }))],
     duties,
     ...sessionsMissing === undefined ? {} : { sessionsMissing },
   };
