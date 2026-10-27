@@ -113,12 +113,15 @@ export function refusalReason(error: string): string {
   if (/too many pending messages|target is full/.test(error)) return "pending limit";
   if (/message is too long/.test(error)) return "too long";
   if (/worker is (stopping|starting|closing)|worker's? (?:is )?(stopping|starting|closing)/.test(error)) return "worker stopping or starting";
+  if (/Session worker is (?:failed|recovering)\b/.test(error)) return "worker failed or recovering";
   if (/Timed out connecting to daemon session worker/.test(error)) return "worker not reachable";
   if (/cannot target the sending session/.test(error)) return "sent to itself";
   if (/update restart|update prepare/.test(error)) return "update restart";
   if (/Timed out after \d+ms/.test(error)) return "timed out after 30 s";
   if (/No API key found for/.test(error)) return "no api key";
-  if (/^\s*Error\s*$/.test(error)) return "no worker found";
+  // Prime's findWorker refusal: a bare `Error` where Bun dropped the stack header's message (oven-sh/bun#44608), and from Prime load-e on its
+  // DaemonSessionUnavailableError, whose log line keeps its message, so such a line reads by its text above.
+  if (/^\s*(?:DaemonSessionUnavailable)?Error\s*$/.test(error)) return "no worker found";
   return "other";
 }
 

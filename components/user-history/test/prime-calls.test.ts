@@ -7,7 +7,7 @@ import { mkdtemp, readFile, rm, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DaemonClient } from "prime-agent";
-import { CallLog, hostOf, logPrimeCalls, type PrimeCall } from "../src/prime-calls.ts";
+import { CallLog, hostOf, logPrimeCalls, outcomeOfError, type PrimeCall } from "../src/prime-calls.ts";
 
 const HELLO = `${JSON.stringify({ type: "daemon_hello", protocol: { name: "prime-agent.daemon", version: 7 }, schemaRevision: 30, appVersion: "fixture", serverCapabilities: ["agent_roster"] })}\n`;
 
@@ -90,4 +90,20 @@ test("a call to a client that is not connected is logged as closed, and the undo
 test("only a bridge socket names a box", () => {
   assert.equal(hostOf("/tmp/x/hosts/us-metal02.sock"), "us-metal02");
   assert.equal(hostOf("/tmp/prime-agent-1000/daemon.sock"), undefined);
+});
+
+// Prime load-e (10-27): a session no worker can serve fails as DaemonSessionUnavailableError, code session_unavailable, with its state. Prime's
+// own call log counts it refused, so the chat's line does too.
+test("a thrown DaemonSessionUnavailableError is a refused call, whatever its state", () => {
+  class DaemonSessionUnavailableError extends Error {
+    readonly code = "session_unavailable";
+    constructor(readonly activeSessionId: string, readonly state: string) {
+      super(state === "unknown" ? `Unknown active session: ${activeSessionId}` : `Session worker is ${state}`);
+      this.name = "DaemonSessionUnavailableError";
+    }
+  }
+  assert.deepEqual(outcomeOfError(new DaemonSessionUnavailableError("01a154c3", "unknown")), { outcome: "refused", error: "Unknown active session: 01a154c3" });
+  assert.deepEqual(outcomeOfError(new DaemonSessionUnavailableError("01a154c3", "recovering")), { outcome: "refused", error: "Session worker is recovering" });
+  assert.deepEqual(outcomeOfError(Object.assign(new Error("Session worker is failed"), { code: "session_unavailable" })), { outcome: "refused", error: "Session worker is failed" });
+  assert.equal(outcomeOfError(new Error("boom")).outcome, "error");
 });

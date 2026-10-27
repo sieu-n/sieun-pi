@@ -35,7 +35,8 @@ export interface DaemonFault {
 }
 
 const STAMPED = /^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z) (.*)$/;
-const SUPERVISOR = /^\[(\S+Z)\] supervisor: Supervisor command (\w+) failed: (?:Error: )?(.*)$/;
+/** The error's class leads its text: `Error`, and from Prime load-e `DaemonSessionUnavailableError` for a session no worker can serve. */
+const SUPERVISOR = /^\[(\S+Z)\] supervisor: Supervisor command (\w+) failed: (?:\w*Error: )?(.*)$/;
 const OPEN = /^open ([0-9a-f]{8})(?: on ([\w.-]+))? (?:live|saved) \d+ messages: (.*), total (\d+)ms$/;
 const WORKER_START = /^daemon (create|resume|reload) (.+?): (answered|refused) in ([\d.]+) s(?:: (.*))?$/;
 /**
@@ -168,7 +169,7 @@ export function faultReason(text: string): string | undefined {
   if (/Failed to connect to the Prime Agent daemon|Prime Agent daemon is not reachable/.test(text)) return "the daemon did not connect";
   if (/Prime Agent daemon client closed before the operation completed/.test(text)) return "the client closed before an answer";
   if (/Daemon worker (?:socket|client) closed/.test(text)) return "its worker's connection closed";
-  if ((found = /Session worker is (failed|stopping|starting)/.exec(text))) return `its session worker was ${found[1]}`;
+  if ((found = /Session worker is (failed|stopping|starting|recovering)/.exec(text))) return `its session worker was ${found[1]}`;
   if (/read ECONNRESET/.test(text)) return "its worker reset the connection";
   // A pending-limit refusal is no fault: the outbox keeps every such send until the target has room (src/agent-outbox.ts), and
   // `readQueueOverruns` shows it as detail. On 10-18 01a0cc5e's refusals made each minute from 11:15Z dirty.
@@ -319,7 +320,7 @@ export function readSupervisorFaults(lines: readonly string[], local: string, re
     if (!found || OTHER_CALLS.has(found[2]!) || STALE.test(found[3]!)) continue;
     const reason = faultReason(found[3]!);
     const at = Date.parse(found[1]!);
-    if (found[2] === "send_message" && /Session worker is failed/.test(found[3]!) && delivered.has(minuteOf(at))) continue;
+    if (found[2] === "send_message" && /Session worker is (?:failed|recovering)/.test(found[3]!) && delivered.has(minuteOf(at))) continue;
     if (found[2] === "wait_for_idle" && /Daemon worker client closed/.test(found[3]!) && at - askedStop <= ASKED_STOP_MS) continue;
     if (reason && Number.isFinite(at)) faults.push({ at, host: local, what: `the supervisor's ${found[2]} failed, ${reason}` });
   }

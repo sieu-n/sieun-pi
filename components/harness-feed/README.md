@@ -22,7 +22,7 @@ The owner asked for it on 10-19 (AI harness chat, msgs mvfhd7q5 and mvfhfzby): e
 | memory-mac | `host-stats.ts` (Settings > Hosts), PSI, workers, OOM kills, earlyoom kills from the journal, swap, zswap, oom_score_adj, the memory sysctls, heavy run scopes and Chrome for Testing on the Mac. |
 | messaging | Messages between agents: sent, bundled, delivered, dropped and refused by reason, the backlog per session, send-to-read time and runs to drain a backlog, from the outboxes, service.log, agent.jsonl, pi-pool runs and the daemon list copies. |
 | jobs | Jobs running, queued and parked on an account, cut, resumed, not resumed and deleted, and the wait before a job's first turn, from pi-pool turns.json and pi-pool.log, pool-held.json, service.log, job-cancels.json and the RLM ledger. |
-| latency | Prime's own latency on every box: one daemon hello probe a round, call time by method and 30 s timeouts by caller from service.log, every Prime call's time and outcome by method from prime-calls.jsonl, the supervisor's main-thread CPU and supervisor and worker restarts from the daemon log. |
+| latency | Prime's own latency on every box: one daemon hello probe a round, call time by method and 30 s timeouts by caller from service.log, every Prime call's time and outcome by method from prime-calls.jsonl and the supervisor's own `logs/daemon.sock.<hash8>.calls.jsonl` with its `.old` copy, the supervisor's main-thread CPU and supervisor and worker restarts from the daemon log. |
 
 A reader reuses the app's own function where plain node can load it (node 26 strips TS types, so a file with constructor parameter properties cannot load). Where it cannot, the reader copies the smallest parse step and names the source.
 

@@ -1,4 +1,4 @@
-import { open, readFile } from "node:fs/promises";
+import { open, readdir, readFile, stat } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { createConnection } from "node:net";
@@ -24,7 +24,9 @@ import type { Context, Sample } from "../otlp.ts";
  * 4. Supervisor and worker starts and stops from the live supervisor log, logs/daemon.sock.<sha256(socket)[:8]>.log.
  * 5. Every Prime call the chat service and the kernels make, reads included, from browser-chat/prime-calls.jsonl (user-history
  *    src/prime-calls.ts and src/message-limit-check.py, one line per call): time by quantile per writer, method and box, and a counter by
- *    outcome for the error rate.
+ *    outcome for the error rate. Prime's supervisor writes the same fields with src "supervisor" for every client command and hello, in
+ *    logs/daemon.sock.<hash8>.calls.jsonl, which it renames to `.old` at 20 MB (prime load-c, supervisor-call-log.ts); each such file of a
+ *    box goes into the same series.
  * Box load is not sent again: harness_host_load (Linux, readers/memory-mac.ts), devbox_load1 (the Mac's Alloy) and harness_host_cores have it.
  */
 
@@ -219,7 +221,7 @@ const METHOD = /^[\w.:-]{1,64}$/;
  * The calls in prime-calls.jsonl lines; a line that does not parse, or lacks a time, method or outcome, is skipped. A line with `receipt` is
  * a receipt the kernel wrapper returned without a Prime call (message-limit-check.py `log_call`), counted apart from the call times.
  */
-export function primeCalls(lines: readonly string[], local: string): PrimeCall[] {
+export function primeCalls(lines: readonly string[], local: string, src = "other"): PrimeCall[] {
   const calls: PrimeCall[] = [];
   for (const line of lines) {
     let row: unknown;
@@ -227,7 +229,7 @@ export function primeCalls(lines: readonly string[], local: string): PrimeCall[]
     if (!isRecord(row) || typeof row.ts !== "string" || typeof row.ms !== "number" || typeof row.method !== "string" || typeof row.outcome !== "string") continue;
     const at = Date.parse(row.ts);
     if (!Number.isFinite(at)) continue;
-    calls.push({ at, src: typeof row.src === "string" && METHOD.test(row.src) ? row.src : "other", method: METHOD.test(row.method) ? row.method : "other",
+    calls.push({ at, src: typeof row.src === "string" && METHOD.test(row.src) ? row.src : src, method: METHOD.test(row.method) ? row.method : "other",
       host: typeof row.host === "string" && METHOD.test(row.host) ? row.host : local, s: row.ms / 1000, outcome: OUTCOMES.has(row.outcome) ? row.outcome : "error",
       ...typeof row.receipt === "string" ? { receipt: { kind: METHOD.test(row.receipt) ? row.receipt : "other", state: typeof row.state === "string" && METHOD.test(row.state) ? row.state : "none" } } : {} });
   }
@@ -304,6 +306,12 @@ async function socketOf(ctx: Context): Promise<string> {
   return named ?? join(ctx.platform === "darwin" ? tmpdir() : "/tmp", `prime-agent-${userInfo().uid}`, "daemon.sock");
 }
 
+/** prime-agent config.ts getDaemonCallLogPath: `<socket basename>.<hash8>.calls.jsonl`, one per daemon socket of the box. */
+const SUPERVISOR_CALLS = /^([\w.-]+\.[0-9a-f]{8}\.calls\.jsonl)(?:\.old)?$/;
+/** Each supervisor call log in `logs` by its current name, also when only its `.old` copy is there. */
+export const supervisorCallLogs = async (logs: string): Promise<string[]> =>
+  [...new Set((await readdir(logs).catch(() => [] as string[])).flatMap(name => SUPERVISOR_CALLS.exec(name)?.[1] ?? []))].sort().map(name => join(logs, name));
+
 /** prime-agent config.ts getDaemonLogPath: `<socket basename>.<sha256 of the resolved socket path, 8 hex>.log` in the logs folder. */
 export const daemonLogName = (socketPath: string): string => {
   const normalized = resolve(socketPath);
@@ -318,6 +326,23 @@ async function newLines(state: State, file: string, firstBytes: number): Promise
   return { lines: read.lines, first: !known };
 }
 
+/**
+ * The lines added to a call log that its writer renames to `<file>.old` when it is full. A first read backfills the tail of `.old` and of the
+ * file; a file shorter than the offset read last was renamed, so the rest of `.old` from that offset comes first, then the new file from its start.
+ */
+async function rotatingLines(state: State, file: string, firstBytes: number): Promise<{ lines: string[]; first: boolean }> {
+  const known = state.tails.get(file);
+  const size = await stat(file).then(info => info.size, () => undefined);
+  let before: string[] = [];
+  if (!known || size !== undefined && size < known.offset) {
+    const old = await readNew(`${file}.old`, known, firstBytes);
+    if (old && (!known || old.tail.offset >= known.offset)) before = old.lines;
+  }
+  const current = await newLines(state, file, firstBytes);
+  if (size === undefined && !known && before.length) state.tails.set(file, { offset: 0, rest: Buffer.alloc(0) });
+  return { lines: [...before, ...current.lines], first: !known };
+}
+
 export async function read(ctx: Context): Promise<Sample[]> {
   const state = kept(ctx);
   const socketPath = await socketOf(ctx);
@@ -327,12 +352,13 @@ export async function read(ctx: Context): Promise<Sample[]> {
 
   const owner = await readFile(`${socketPath}.lock/owner.json`, "utf8").then(text => JSON.parse(text) as unknown, () => undefined);
   const pid = isRecord(owner) && typeof owner.pid === "number" ? owner.pid : undefined;
-  const [cpu, daemonLog, clientLog, serviceLog, callLog] = await Promise.all([
+  const [cpu, daemonLog, clientLog, serviceLog, callLog, supervisorLogs] = await Promise.all([
     pid ? supervisorCpu(ctx, pid) : undefined,
     newLines(state, join(logs, daemonLogName(socketPath)), 0),
     newLines(state, join(logs, "client-errors.log"), 0),
     ctx.chatHost ? newLines(state, join(ctx.home, ".prime/agent/browser-chat/service.log"), SERVICE_BACKFILL_BYTES) : undefined,
     newLines(state, join(ctx.home, ".prime/agent/browser-chat/prime-calls.jsonl"), SERVICE_BACKFILL_BYTES),
+    supervisorCallLogs(logs).then(files => Promise.all(files.map(file => rotatingLines(state, file, SERVICE_BACKFILL_BYTES)))),
   ]);
 
   for (const [kind, count] of lifecycleEvents(daemonLog.lines)) bump(state.restarts, kind, count);
@@ -343,10 +369,11 @@ export async function read(ctx: Context): Promise<Sample[]> {
     state.calls.push(...events.calls);
     if (!serviceLog.first) for (const timeout of events.timeouts) bump(state.timeouts, JSON.stringify(timeout));
   }
-  const rows = primeCalls(callLog.lines, ctx.host);
-  const calls = rows.filter(row => !row.receipt);
-  state.primeCalls.push(...calls);
-  if (!callLog.first) {
+  for (const [log, src] of [[callLog, undefined], ...supervisorLogs.map(log => [log, "supervisor"] as const)] as const) {
+    const rows = primeCalls(log.lines, ctx.host, src);
+    const calls = rows.filter(row => !row.receipt);
+    state.primeCalls.push(...calls);
+    if (log.first) continue;
     for (const call of calls) bump(state.primeOutcomes, JSON.stringify({ src: call.src, method: call.method, host: call.host, outcome: call.outcome }));
     for (const row of rows) if (row.receipt) bump(state.primeReceipts, JSON.stringify({ src: row.src, method: row.method, receipt: row.receipt.kind, state: row.receipt.state }));
   }
@@ -386,7 +413,7 @@ export async function read(ctx: Context): Promise<Sample[]> {
   for (const [key, values] of byPrimeMethod) {
     const labels = JSON.parse(key) as Labels;
     for (const [q, value] of quantiles(values))
-      out.push(gauge("harness.latency.prime_call", "Prime call time over the last 30 min by writer (src: chat or kernel), method and the box whose daemon answered, from browser-chat/prime-calls.jsonl, one line per call.", value, { ...labels, q }, "s"));
+      out.push(gauge("harness.latency.prime_call", "Prime call time over the last 30 min by writer (src: chat, kernel or supervisor), method and the box whose daemon answered, from browser-chat/prime-calls.jsonl and the supervisor's logs/daemon.sock.<hash8>.calls.jsonl, one line per call.", value, { ...labels, q }, "s"));
     out.push(gauge("harness.latency.prime_call_samples", "Prime calls in browser-chat/prime-calls.jsonl in the last 30 min, by writer, method and box.", values.length, labels));
   }
   for (const [key, value] of state.primeOutcomes)

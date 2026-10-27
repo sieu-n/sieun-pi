@@ -1,0 +1,3 @@
+{"ts":"{T-6m}","src":"supervisor","method":"send_message","target":"39fb99af880c","ms":41,"outcome":"ok"}
+{"ts":"{T-5m}","src":"supervisor","method":"hello","ms":2,"outcome":"ok"}
+{"ts":"{T-5m}","src":"supervisor","method":"send_message","target":"01a154c3","ms":3,"outcome":"refused","error":"Unknown active session: 01a154c3-0c30-7378-bc2a-fbc99ed29c44"}

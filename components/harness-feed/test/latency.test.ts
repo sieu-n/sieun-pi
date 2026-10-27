@@ -177,3 +177,51 @@ test("primeCalls keeps labels few: an odd method or outcome reads as other or er
   const [call] = primeCalls([JSON.stringify({ ts: "2026-10-27T01:00:00.000Z", src: "chat", method: "bad method name", ms: 5, outcome: "weird" })], LOCAL);
   assert.deepEqual(call, { at: Date.parse("2026-10-27T01:00:00.000Z"), src: "chat", method: "other", host: LOCAL, s: 0.005, outcome: "error" });
 });
+
+test("the supervisor's own call logs and their .old copies go into the same series with src supervisor, and none is needed", async t => {
+  const { dir, logs } = await home(t, 30);
+  const ctx = context(dir);
+  const none = await read(ctx);
+  assert.equal(value(none, "harness_latency_prime_call_samples", { src: "supervisor" }), undefined, "no call log reads as no series");
+
+  const file = join(logs, "daemon.sock.ee92e1d8.calls.jsonl");
+  const line = (minutes: number, method: string, ms: number, outcome = "ok") =>
+    JSON.stringify({ ts: new Date(NOW - minutes * 60_000).toISOString(), src: "supervisor", method, ms, outcome }) + "\n";
+  writeFileSync(`${file}.old`, line(8, "list", 900));
+  writeFileSync(file, stamped("supervisor-calls.jsonl"));
+  const first = await read(ctx);
+  assert.equal(value(first, "harness_latency_prime_call_samples", { src: "supervisor", method: "send_message", host: LOCAL }), 2);
+  assert.equal(value(first, "harness_latency_prime_call_seconds", { src: "supervisor", method: "send_message", q: "max" }), 0.041);
+  assert.equal(value(first, "harness_latency_prime_call_seconds", { src: "supervisor", method: "list", q: "max" }), 0.9, "the .old file's tail is backfilled");
+  assert.equal(value(first, "harness_latency_prime_calls_total", { src: "supervisor" }), undefined, "the backfill is not counted");
+
+  appendFileSync(file, line(2, "get_state", 7) + JSON.stringify({ ts: new Date(NOW - 2 * 60_000).toISOString(), method: "attach", ms: 5, outcome: "refused" }) + "\n");
+  await read(ctx);
+  const second = await read(ctx);
+  assert.equal(value(second, "harness_latency_prime_calls_total", { src: "supervisor", method: "get_state", outcome: "ok" }), 1);
+  assert.equal(value(second, "harness_latency_prime_calls_total", { src: "supervisor", method: "attach", outcome: "refused" }), 1, "a line with no src reads as the supervisor's");
+
+  // The supervisor renames the full file to .old and starts a new one: the lines written after the last read come from .old, once.
+  appendFileSync(file, line(1, "send_message", 60, "refused"));
+  writeFileSync(`${file}.old`, readFileSync(file));
+  writeFileSync(file, line(0, "send_message", 50, "refused"));
+  await read(ctx);
+  const third = await read(ctx);
+  assert.equal(value(third, "harness_latency_prime_calls_total", { src: "supervisor", method: "send_message", outcome: "refused" }), 2);
+  assert.equal(value(third, "harness_latency_prime_calls_total", { src: "supervisor", method: "get_state", outcome: "ok" }), 1, "the rotation reads no line twice");
+});
+
+test("a supervisor .old call log with no current file is read once", async t => {
+  const { dir, logs } = await home(t, 30);
+  const file = join(logs, "daemon.sock.0badc0de.calls.jsonl");
+  writeFileSync(`${file}.old`, stamped("supervisor-calls.jsonl"));
+  const ctx = context(dir);
+  await read(ctx);
+  const second = await read(ctx);
+  assert.equal(value(second, "harness_latency_prime_call_samples", { src: "supervisor", method: "send_message", host: LOCAL }), 2);
+  writeFileSync(file, JSON.stringify({ ts: new Date(NOW - 60_000).toISOString(), src: "supervisor", method: "kill", ms: 4, outcome: "ok" }) + "\n");
+  await read(ctx);
+  const third = await read(ctx);
+  assert.equal(value(third, "harness_latency_prime_call_samples", { src: "supervisor", method: "send_message", host: LOCAL }), 2);
+  assert.equal(value(third, "harness_latency_prime_calls_total", { src: "supervisor", method: "kill", outcome: "ok" }), 1);
+});

@@ -168,6 +168,20 @@ test("the supervisor's refusal for a worker that is stopping or starting is no f
   assert.deepEqual(faults.map(fault => fault.what), ["the supervisor's reload failed, its worker's connection closed"]);
 });
 
+// Prime load-e (10-27): the supervisor logs findWorker's refusals as DaemonSessionUnavailableError with the session's state, where crc.2
+// wrote `Error`. A stale id and a moving worker stay no fault, and a worker that is recovering, like a failed one, counts.
+test("the supervisor's DaemonSessionUnavailableError lines read as their Error lines did, by the session's state", () => {
+  const faults = readSupervisorFaults([
+    "[2026-10-27T05:26:15.913Z] supervisor: Supervisor command send_message failed: DaemonSessionUnavailableError: Unknown active session: 01a154c3-0c30-7378-bc2a-fbc99ed29c44",
+    "    at findWorker (/$bunfs/root/prime-agent:2245:83751)",
+    "[2026-10-27T05:27:01.811Z] supervisor: Supervisor command attach failed: DaemonSessionUnavailableError: Session worker is stopping",
+    "[2026-10-27T05:27:02.811Z] supervisor: Supervisor command attach failed: DaemonSessionUnavailableError: Session worker is starting",
+    "[2026-10-27T05:27:12.441Z] supervisor: Supervisor command attach failed: DaemonSessionUnavailableError: Session worker is recovering",
+    "[2026-10-27T05:28:12.441Z] supervisor: Supervisor command get_state failed: DaemonSessionUnavailableError: Session worker is failed",
+  ], "us-metal02");
+  assert.deepEqual(faults.map(fault => fault.what), ["the supervisor's attach failed, its session worker was recovering", "the supervisor's get_state failed, its session worker was failed"]);
+});
+
 // 10-18 on us-metal02: worker 7c1722343034 crashed at 16:37:39Z on an unhandled "Lock file is already being held", and the supervisor parked
 // it failed. At 16:42Z a brief to its subagent and the relay to its root 01a14edd met "Session worker is failed", the reopen made a new worker
 // and the send went out 2 s after the first refusal. d7 counted that one delivered send three times in 16:42Z and the crash not at all.

@@ -30,10 +30,15 @@ const TARGET_KEYS = ["activeSessionId", "targetActiveSessionId", "sessionId"] as
 /** src/hosts.ts names each bridge socket `<dir>/hosts/<box>.sock`. */
 const BRIDGE = /\/hosts\/([\w.-]+)\.sock$/;
 
+/**
+ * A thrown call's outcome. Prime load-e's DaemonSessionUnavailableError (code `session_unavailable`, with the session's state) is a refusal,
+ * as Prime's own call log counts it: the supervisor ran nothing because no worker could take the session.
+ */
 export function outcomeOfError(error: unknown): { outcome: PrimeCallOutcome; error: string } {
   const text = error instanceof Error ? error.message : String(error);
   const outcome: PrimeCallOutcome = text.startsWith("Timed out") ? "timeout"
-    : error instanceof Error && error.name === "DaemonSocketClosedError" || /not connected|closed before the operation completed|Daemon worker socket closed/.test(text) ? "closed" : "error";
+    : error instanceof Error && error.name === "DaemonSocketClosedError" || /not connected|closed before the operation completed|Daemon worker socket closed/.test(text) ? "closed"
+    : error instanceof Error && (error.name === "DaemonSessionUnavailableError" || Reflect.get(error, "code") === "session_unavailable") ? "refused" : "error";
   return { outcome, error: text.slice(0, ERROR_CHARS) };
 }
 

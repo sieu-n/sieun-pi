@@ -123,10 +123,25 @@ export async function sessionFileOf(sessionId: string, agentDir: string): Promis
 }
 
 /**
- * A target's worker as get_state reads it: its queued texts, whether it runs a turn, a tool or unfinished actions, and the count of those
- * actions the daemon holds against its pending message limit (absent when the daemon gave none).
+ * A target's worker as get_state reads it: its queued texts, whether it runs a turn, a tool or unfinished actions, and the count of messages
+ * the daemon holds against its pending message limit (absent when the daemon gave none), which the agent outbox reads for room.
  */
 export interface TargetState { queued: string[]; busy: boolean; unfinished?: number }
+
+/**
+ * The TargetState in get_state's `data`. A daemon that sends `sessionActions.queuedLanes` (Prime load-h) counts only queued input against its
+ * limit, and its `queuedCount` is that count. An older daemon counts every unfinished action, while its `queuedCount` reads the visible queue
+ * only, so its `unfinishedActionCount` stands for the limit's count.
+ */
+export function targetStateOf(data: unknown): TargetState {
+  const state = (typeof data === "object" && data !== null ? data : {}) as { sessionActions?: { steering?: unknown; followUps?: unknown; queuedCount?: unknown; queuedLanes?: unknown };
+    isStreaming?: unknown; isCompacting?: unknown; isRunningTools?: unknown; unfinishedActionCount?: unknown };
+  const actions = state.sessionActions;
+  const unfinished = typeof state.unfinishedActionCount === "number" ? state.unfinishedActionCount : undefined;
+  const limited = typeof actions?.queuedLanes === "object" && actions.queuedLanes !== null && typeof actions.queuedCount === "number" ? actions.queuedCount : unfinished;
+  return { queued: [actions?.steering, actions?.followUps].flatMap(list => Array.isArray(list) ? list.filter((item): item is string => typeof item === "string") : []),
+    busy: state.isStreaming === true || state.isCompacting === true || state.isRunningTools === true || (unfinished ?? 0) > 0, ...limited === undefined ? {} : { unfinished: limited } };
+}
 
 /**
  * `node send-once.ts` reads {sessionId, texts, since, agentDir} on stdin and prints {"landedAt": number | null}, for the agent_message

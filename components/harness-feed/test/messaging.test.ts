@@ -97,6 +97,18 @@ test("daemonRefusal counts the supervisor's and the worker's own lines and skips
   assert.equal(daemonRefusal(daemonLine("coding-agent.daemon-supervisor", "Supervisor command get_state failed: Error: Session worker is stopping")), null);
 });
 
+// Prime load-e (10-27): findWorker throws DaemonSessionUnavailableError with the session's state (unknown, starting, stopping, failed or
+// recovering), and its log line keeps the class name and message that Bun's lazy stack header used to drop.
+test("daemonRefusal reads Prime's DaemonSessionUnavailableError lines by their state", () => {
+  const supervisor = (text: string) => daemonRefusal(daemonLine("coding-agent.daemon-supervisor", `Supervisor command send_message failed: ${text}\n    at findWorker (/$bunfs/root/prime-agent:2245:83751)`));
+  assert.equal(supervisor("DaemonSessionUnavailableError: Unknown active session: 01a154c3-0c30-7378-bc2a-fbc99ed29c44"), "unknown session");
+  assert.equal(supervisor("DaemonSessionUnavailableError: Session worker is starting"), "worker stopping or starting");
+  assert.equal(supervisor("DaemonSessionUnavailableError: Session worker is stopping"), "worker stopping or starting");
+  assert.equal(supervisor("DaemonSessionUnavailableError: Session worker is failed"), "worker failed or recovering");
+  assert.equal(supervisor("DaemonSessionUnavailableError: Session worker is recovering"), "worker failed or recovering");
+  assert.equal(supervisor("DaemonSessionUnavailableError"), "no worker found");
+});
+
 test("outboxRefusal reads the outbox's refused tries and the waits it logs once", () => {
   assert.equal(outboxRefusal("2026-10-21T20:00:00.000Z outbox 01a115e2: m-0f526ad6-3664-491f-bbe2-ffa17c0b72f1 try 3 (may have gone): Timed out after 30000ms waiting for the Prime Agent daemon response to \"send_message\""), "timed out after 30 s");
   assert.equal(outboxRefusal("2026-10-21T20:00:00.000Z outbox 01a11ba8 on mac: m-0f526ad6-3664-491f-bbe2-ffa17c0b72f1 try 1: Daemon is preparing an update restart"), "update restart");
