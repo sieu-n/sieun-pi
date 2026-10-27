@@ -1,0 +1,22 @@
+{
+  "name": "@sieun-pi/pi-durable-host",
+  "private": true,
+  "type": "module",
+  "version": "0.1.0",
+  "description": "A pi-durable session on SQLite with pi-pool accounts and a foreground subagent, plus its SIGKILL crash test.",
+  "license": "SEE LICENSE IN ../../../NOTICE",
+  "exports": {
+    "./host": "./src/host.ts",
+    "./pool-provider": "./src/pool-provider.ts",
+    "./subagent": "./src/subagent.ts"
+  },
+  "scripts": {
+    "test": "node --import tsx --test --test-force-exit --test-isolation=none test/crash.test.ts",
+    "test:real": "PI_DURABLE_REAL=1 node --import tsx --test --test-force-exit --test-isolation=none --test-name-pattern=\"real model\" test/crash.test.ts"
+  },
+  "dependencies": {
+    "@earendil-works/chord": "1.4.0",
+    "@earendil-works/pi-ai": "1.4.0",
+    "@earendil-works/pi-durable": "1.4.0"
+  }
+}
