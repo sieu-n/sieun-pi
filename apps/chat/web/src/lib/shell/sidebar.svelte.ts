@@ -1,5 +1,4 @@
-import { SIDEBAR_FIXTURE } from "./fixture";
-import type { SidebarData, SidebarFilter, SidebarRow } from "./sidebar-types";
+import { connection, sidebar as liveSidebar, type ConversationSummary, type Sidebar as SidebarData } from "$lib/api";
 
 const FILTER_KEY = "chat.sidebarFilter";
 const WIDTH_KEY = "chat.sidebarWidth";
@@ -7,7 +6,9 @@ export const SIDEBAR_DEFAULT = 260;
 export const SIDEBAR_MIN = 220;
 export const SIDEBAR_MAX = 520;
 
-type LoadState = "loading" | "ready" | "error";
+export type SidebarFilter = "all" | "solo" | "team";
+
+const EMPTY: SidebarData = { solo: [], channels: [], dms: [], forYou: 0 };
 
 function read(key: string): string | null {
   try {
@@ -22,33 +23,20 @@ function write(key: string, value: string): void {
   } catch {}
 }
 
-/** Fixture mode is on with `?fixture` in the page URL or VITE_CHAT_FIXTURE=1 at build time. */
-export function fixtureMode(): boolean {
-  if (import.meta.env.VITE_CHAT_FIXTURE === "1") return true;
-  return typeof location !== "undefined" && new URLSearchParams(location.search).has("fixture");
-}
-
-class Sidebar {
-  data = $state<SidebarData>({ solo: [], channels: [], dms: [] });
-  state = $state<LoadState>("loading");
+/** Sidebar view state: the All, Solo and Team filter, width and collapse, over the chat server's live sidebar store. */
+class SidebarView {
   filter = $state<SidebarFilter>(parseFilter(read(FILTER_KEY)));
   width = $state(clampWidth(Number(read(WIDTH_KEY)) || SIDEBAR_DEFAULT));
   collapsed = $state(read("chat.sidebarCollapsed") === "1");
 
-  async load(): Promise<void> {
-    if (fixtureMode()) {
-      this.data = SIDEBAR_FIXTURE;
-      this.state = "ready";
-      return;
-    }
-    try {
-      const res = await fetch("/api/sidebar", { headers: { accept: "application/json" } });
-      if (!res.ok) throw new Error(`GET /api/sidebar ${res.status}`);
-      this.data = (await res.json()) as SidebarData;
-      this.state = "ready";
-    } catch {
-      this.state = "error";
-    }
+  /** Live rows from GET /api/sidebar and the `sidebar` event, empty until the first answer. */
+  get data(): SidebarData {
+    return liveSidebar.value ?? EMPTY;
+  }
+
+  get state(): "loading" | "ready" | "offline" {
+    if (liveSidebar.value) return connection.connected ? "ready" : "offline";
+    return "loading";
   }
 
   setFilter(f: SidebarFilter): void {
@@ -65,8 +53,9 @@ class Sidebar {
     if (kind !== this.filter) this.setFilter(kind);
   }
 
-  find(id: string): SidebarRow | undefined {
-    return this.data.solo.find((r) => r.id === id) ?? this.data.channels.find((r) => r.id === id) ?? this.data.dms.find((r) => r.id === id);
+  find(id: string): ConversationSummary | undefined {
+    const d = this.data;
+    return d.solo.find((r) => r.id === id) ?? d.channels.find((r) => r.id === id) ?? d.dms.find((r) => r.id === id);
   }
 
   setWidth(px: number): void {
@@ -88,4 +77,4 @@ function clampWidth(px: number): number {
   return Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, Math.round(px)));
 }
 
-export const sidebar = new Sidebar();
+export const sidebar = new SidebarView();

@@ -3,3 +3,5 @@
 @import "@fontsource/jetbrains-mono/500.css";
 @import "./tokens.css";
 @import "./base.css";
+@import "../lib/ui/chips.css";
+@import "../lib/ui/prose.css";

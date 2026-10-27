@@ -1,0 +1,76 @@
+/* Chip styles shared by IdChip, MentionChip and the HTML that Markdown renders, so both look the same. */
+.id-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 18px;
+  padding: 0 6px 0 5px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: hsl(var(--h) 40% 94%);
+  color: hsl(var(--h) 35% 28%);
+  font: 500 12px/1 var(--font-mono);
+  letter-spacing: 0;
+  text-decoration: none;
+  vertical-align: 1px;
+  white-space: nowrap;
+}
+:root[data-color-mode="dark"] .id-chip {
+  background: hsl(var(--h) 20% 22%);
+  color: hsl(var(--h) 50% 82%);
+}
+a.id-chip:hover,
+button.id-chip:hover {
+  filter: brightness(0.96);
+}
+.id-chip .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: hsl(var(--h) 55% 50%);
+}
+.mention {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  max-width: 16rem;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--affordance-mention);
+  color: var(--text-standard);
+  font: inherit;
+  font-weight: 500;
+  line-height: inherit;
+  text-decoration: none;
+  vertical-align: baseline;
+  white-space: nowrap;
+}
+a.mention:hover,
+button.mention:hover {
+  background: var(--affordance-mention-hover);
+}
+.mention.self {
+  background: var(--affordance-mention-self);
+  color: var(--text-mention-self);
+}
+.mention .text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mention .remove {
+  display: inline-grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  margin-left: 2px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: inherit;
+  opacity: 0.6;
+}
+.mention .remove:hover {
+  opacity: 1;
+}

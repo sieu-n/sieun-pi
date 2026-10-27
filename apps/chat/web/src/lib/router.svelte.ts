@@ -8,9 +8,10 @@
  *   #/board, #/board/<sub>                  Board and For you
  *   #/usage                                 Usage
  *   #/hosts                                 Hosts
+ *   #/ui                                    The lib/ui gallery, not in the top bar
  */
 
-export type PageId = "messages" | "agents" | "board" | "usage" | "hosts";
+export type PageId = "messages" | "agents" | "board" | "usage" | "hosts" | "ui";
 
 export type Route = {
   page: PageId;
@@ -28,6 +29,10 @@ export const PAGES: readonly { id: PageId; label: string; segment: string; icon:
   { id: "hosts", label: "Hosts", segment: "hosts", icon: "server" },
 ];
 
+/** Pages reachable by URL but not shown in the top bar. */
+const HIDDEN_PAGES: readonly { id: PageId; segment: string }[] = [{ id: "ui", segment: "ui" }];
+const ALL_PAGES = [...PAGES, ...HIDDEN_PAGES];
+
 export function parseHash(hash: string): Route {
   const raw = hash.replace(/^#\/?/, "");
   const q = raw.indexOf("?");
@@ -35,15 +40,15 @@ export function parseHash(hash: string): Route {
   const search = q === -1 ? "" : raw.slice(q + 1);
   const segments = path.split("/").filter(Boolean).map(safeDecode);
   const head = segments[0] ?? "";
-  const page = PAGES.find((p) => p.segment === head)?.id ?? "messages";
-  const rest = PAGES.some((p) => p.segment === head) ? segments.slice(1) : [];
+  const page = ALL_PAGES.find((p) => p.segment === head)?.id ?? "messages";
+  const rest = ALL_PAGES.some((p) => p.segment === head) ? segments.slice(1) : [];
   const params: Record<string, string> = {};
   for (const [k, v] of new URLSearchParams(search)) params[k] = v;
   return { page, rest, params };
 }
 
 export function hrefFor(page: PageId, rest: readonly string[] = [], params: Record<string, string | null | undefined> = {}): string {
-  const segment = PAGES.find((p) => p.id === page)?.segment ?? "c";
+  const segment = ALL_PAGES.find((p) => p.id === page)?.segment ?? "c";
   const path = [segment, ...rest.map((s) => encodeURIComponent(s))].join("/");
   const qs = new URLSearchParams();
   for (const [k, v] of Object.entries(params)) if (v != null && v !== "") qs.set(k, v);

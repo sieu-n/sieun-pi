@@ -1,0 +1,192 @@
+/* Rendered markdown, drawn by lib/ui/Markdown.svelte. Global because the HTML comes from {@html}. */
+.prose {
+  font: var(--text-message);
+  letter-spacing: var(--tracking-message);
+  color: inherit;
+  overflow-wrap: anywhere;
+}
+.prose.inline {
+  display: inline;
+}
+.prose > :first-child {
+  margin-top: 0;
+}
+.prose > :last-child {
+  margin-bottom: 0;
+}
+.prose p,
+.prose ul,
+.prose ol,
+.prose blockquote,
+.prose .code-block,
+.prose .table-wrap {
+  margin: 0 0 10px;
+}
+.prose h1,
+.prose h2,
+.prose h3,
+.prose h4 {
+  margin: 16px 0 8px;
+  font: var(--text-label);
+}
+.prose h1 {
+  font: var(--text-heading);
+  letter-spacing: var(--tracking-heading);
+}
+.prose strong {
+  font-weight: 500;
+}
+.prose ul,
+.prose ol {
+  padding-left: 22px;
+}
+.prose li + li {
+  margin-top: 2px;
+}
+.prose li > input[type="checkbox"] {
+  margin: 0 6px 0 -18px;
+  vertical-align: -1px;
+}
+.prose a {
+  color: var(--text-message-link);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+.prose .artifact-link {
+  display: inline;
+  text-decoration: none;
+  border-bottom: 1px solid color-mix(in srgb, currentColor 35%, transparent);
+}
+.prose .artifact-link:hover {
+  border-bottom-color: currentColor;
+}
+.prose .link-icon {
+  display: inline;
+  margin-right: 2px;
+  vertical-align: -2px;
+}
+.prose .path-link {
+  border-bottom: 1px dotted var(--text-metadata);
+}
+.prose code {
+  padding: 1px 5px;
+  border-radius: 6px;
+  background: color-mix(in srgb, currentColor 8%, transparent);
+  font: var(--text-mono);
+  font-size: 0.9em;
+}
+.prose blockquote {
+  padding-left: 12px;
+  border-left: 2px solid var(--border-message-thread);
+  color: var(--text-subtle);
+}
+.prose hr {
+  border: 0;
+  border-top: 1px solid var(--border-standard);
+  margin: 16px 0;
+}
+.prose .code-block {
+  border-radius: var(--radius-row);
+  background: var(--surface-inset);
+  box-shadow: inset 0 0 0 1px var(--border-standard);
+  overflow: hidden;
+}
+.prose .code-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 32px;
+  padding: 0 8px 0 14px;
+  font: var(--text-caption);
+  color: var(--text-metadata);
+}
+.prose .code-actions {
+  display: flex;
+  gap: 2px;
+}
+.prose .code-actions button {
+  height: 24px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  font: var(--text-caption);
+  color: var(--text-subtle);
+}
+.prose .code-actions button:hover {
+  background: var(--affordance-ghost-hover);
+  color: var(--text-standard);
+}
+.prose pre {
+  margin: 0;
+  padding: 2px 14px 12px;
+  overflow-x: auto;
+}
+.prose pre code {
+  padding: 0;
+  background: transparent;
+  font: var(--text-mono);
+  white-space: pre;
+}
+.prose .diagram-slot {
+  padding: 8px 14px 14px;
+  background: var(--surface-panel);
+}
+.prose .table-wrap {
+  overflow-x: auto;
+  border-radius: var(--radius-row);
+  box-shadow: inset 0 0 0 1px var(--border-standard);
+}
+.prose table {
+  width: 100%;
+  border-collapse: collapse;
+  font: var(--text-body-sm);
+}
+.prose th,
+.prose td {
+  padding: 6px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--border-standard);
+}
+.prose tr:last-child td {
+  border-bottom: 0;
+}
+.prose th {
+  font-weight: 500;
+  color: var(--text-subtle);
+}
+.prose .md-image {
+  display: block;
+  max-width: min(100%, 480px);
+  max-height: 360px;
+  margin: 6px 0;
+  border-radius: var(--radius-row);
+  cursor: zoom-in;
+}
+.prose .md-image.thumb {
+  display: inline-block;
+  max-width: 160px;
+  max-height: 96px;
+  margin: 0 2px;
+  vertical-align: middle;
+}
+.prose .inert-image {
+  color: var(--text-metadata);
+}
+.prose.streaming > :last-child::after,
+.prose.streaming:empty::after {
+  content: "";
+  display: inline-block;
+  width: 2px;
+  height: 1.1em;
+  margin-left: 2px;
+  vertical-align: -0.2em;
+  background: currentColor;
+  animation: caret 1s steps(1) infinite;
+}
+@keyframes caret {
+  50% {
+    opacity: 0;
+  }
+}

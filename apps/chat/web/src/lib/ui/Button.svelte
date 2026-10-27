@@ -18,6 +18,8 @@
     /** Render as a link. */
     href?: string;
     full?: boolean;
+    /** The rendered button or link, for anchoring a Menu or Picker. */
+    element?: HTMLElement | undefined;
     children?: Snippet;
   };
   let {
@@ -31,6 +33,7 @@
     disabled = false,
     type = "button",
     class: className = "",
+    element = $bindable(),
     children,
     ...rest
   }: Props = $props();
@@ -48,11 +51,12 @@
 {/snippet}
 
 {#if href}
-  <a class="btn {variant} {size} {className}" class:full {href} aria-disabled={disabled || loading} data-variant={variant}>
+  <a bind:this={element} class="btn {variant} {size} {className}" class:full {href} aria-disabled={disabled || loading} data-variant={variant}>
     {@render inner()}
   </a>
 {:else}
   <button
+    bind:this={element}
     class="btn {variant} {size} {className}"
     class:full
     {type}

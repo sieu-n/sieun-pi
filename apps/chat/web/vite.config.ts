@@ -12,6 +12,9 @@ export default defineConfig({
       $pages: fileURLToPath(new URL("./src/pages", import.meta.url)),
     },
   },
+  optimizeDeps: {
+    include: ["marked", "dompurify", "mermaid"],
+  },
   server: {
     proxy: {
       "/api": { target: chatServer, changeOrigin: true, ws: true },

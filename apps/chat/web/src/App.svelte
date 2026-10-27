@@ -3,7 +3,6 @@
   import Toaster from "$lib/ui/Toaster.svelte";
   import { trackKeyboardNavigation, modKey } from "$lib/ui/keyboard";
   import { router, hrefFor } from "$lib/router.svelte";
-  import { sidebar } from "$lib/shell/sidebar.svelte";
   import { search } from "$lib/shell/search.svelte";
   import "$lib/shell/theme.svelte";
   import ChannelPage from "$pages/channel/ChannelPage.svelte";
@@ -14,7 +13,6 @@
   import SearchDialog from "$pages/search/SearchDialog.svelte";
 
   trackKeyboardNavigation();
-  void sidebar.load();
 
   function onKeydown(e: KeyboardEvent) {
     if (!modKey(e) || e.altKey) return;
@@ -51,6 +49,8 @@
     <UsagePage />
   {:else if router.route.page === "hosts"}
     <HostsPage />
+  {:else if router.route.page === "ui"}
+    {#await import("$lib/ui/gallery/Gallery.svelte") then m}<m.default />{/await}
   {/if}
 </Shell>
 

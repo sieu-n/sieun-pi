@@ -11,15 +11,16 @@
     /** Replaces the icon, for example an Avatar for a DM. */
     leading?: Snippet;
     selected?: boolean;
+    /** Count badge, for mentions of the owner and open todos. */
     unread?: number;
+    /** New activity since the read mark: bold label and a dot when there is no count. */
+    fresh?: boolean;
     /** Agents working here now; non-empty shows typing dots in place of the badge. */
     working?: string[];
-    /** Show unread as a count badge instead of a dot. */
-    countBadge?: boolean;
     title?: string;
     oncontextmenu?: (e: MouseEvent) => void;
   };
-  let { href, label, icon, leading, selected = false, unread = 0, working = [], countBadge = false, title, oncontextmenu }: Props = $props();
+  let { href, label, icon, leading, selected = false, unread = 0, fresh = false, working = [], title, oncontextmenu }: Props = $props();
   const workingLabel = $derived(working.length ? `${working.join(", ")} working in ${label}` : "");
 </script>
 
@@ -27,11 +28,11 @@
   {href}
   class="row"
   class:selected
-  class:unread={unread > 0}
+  class:unread={fresh || unread > 0}
   aria-current={selected ? "page" : undefined}
   title={title ?? label}
   data-sidebar-row
-  data-unread={unread > 0 || undefined}
+  data-unread={fresh || unread > 0 || undefined}
   data-working={working.length > 0 || undefined}
   {oncontextmenu}
 >
@@ -43,7 +44,9 @@
     {#if working.length}
       <span class="working" title={workingLabel}><TypingDots label={workingLabel} /></span>
     {:else if unread > 0}
-      {#if countBadge}<Badge value={unread} />{:else}<Badge dot title="{unread} unread" />{/if}
+      <Badge value={unread} title="{unread} unread" />
+    {:else if fresh}
+      <Badge dot title="New activity" />
     {/if}
   </span>
 </a>
@@ -96,6 +99,9 @@
   .working {
     display: inline-flex;
     color: var(--text-subtle);
+  }
+  .selected .trail :global(.dot) {
+    background: var(--text-sidebar-selected);
   }
   .selected .working {
     color: var(--text-sidebar-selected);

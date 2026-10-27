@@ -1,14 +1,15 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import Tabs from "$lib/ui/Tabs.svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
   import Avatar from "$lib/ui/Avatar.svelte";
   import LoadingText from "$lib/ui/LoadingText.svelte";
-  import Button from "$lib/ui/Button.svelte";
+  import type { ConversationSummary } from "$lib/api";
   import ResizeHandle from "$lib/ui/ResizeHandle.svelte";
   import { conversationHref, hrefFor, router } from "$lib/router.svelte";
   import SidebarRow from "./SidebarRow.svelte";
   import { sidebar, SIDEBAR_DEFAULT, SIDEBAR_MAX, SIDEBAR_MIN } from "./sidebar.svelte";
-  import type { SidebarFilter } from "./sidebar-types";
+  import type { SidebarFilter } from "./sidebar.svelte";
 
   const filters: { id: SidebarFilter; label: string }[] = [
     { id: "all", label: "All" },
@@ -16,12 +17,15 @@
     { id: "team", label: "Team" },
   ];
   const current = $derived(router.conversationId);
+  const names = (row: ConversationSummary): string[] => row.working.map((w) => w.name);
   const showSolo = $derived(sidebar.filter !== "team");
   const showTeam = $derived(sidebar.filter !== "solo");
   const forYouSelected = $derived(router.route.page === "board" && router.route.rest[0] === "for-you");
 
   $effect(() => {
-    sidebar.follow(current);
+    const id = current;
+    if (sidebar.state !== "ready") return;
+    untrack(() => sidebar.follow(id));
   });
 </script>
 
@@ -32,16 +36,13 @@
 
   <div class="scroll">
     <div class="group">
-      <SidebarRow href={hrefFor("board", ["for-you"])} label="For you" icon="inbox" selected={forYouSelected} unread={sidebar.data.forYou ?? 0} countBadge />
+      <SidebarRow href={hrefFor("board", ["for-you"])} label="For you" icon="inbox" selected={forYouSelected} unread={sidebar.data.forYou} />
     </div>
 
     {#if sidebar.state === "loading"}
       <div class="note"><LoadingText text="Loading your sidebar…" /></div>
-    {:else if sidebar.state === "error"}
-      <div class="note">
-        <span>Offline · Showing saved conversations.</span>
-        <Button variant="ghost" size="sm" onclick={() => sidebar.load()}>Retry</Button>
-      </div>
+    {:else if sidebar.state === "offline"}
+      <div class="note"><span>Offline · Showing saved conversations.</span></div>
     {/if}
 
     {#if showSolo}
@@ -51,7 +52,7 @@
           <IconButton icon="plus" label="New chat" size="xs" onclick={() => router.navigate(hrefFor("messages", ["new"], { kind: "chat" }))} />
         </div>
         {#each sidebar.data.solo as row (row.id)}
-          <SidebarRow href={conversationHref(row.id)} label={row.title} icon="chat" selected={current === row.id} unread={row.unread} working={row.working} />
+          <SidebarRow href={conversationHref(row.id)} label={row.name} icon="chat" selected={current === row.id} unread={row.unread} fresh={row.hasNew} working={names(row)} />
         {:else}
           <SidebarRow href={hrefFor("messages", ["new"], { kind: "chat" })} label="New chat" icon="plus" />
         {/each}
@@ -69,10 +70,11 @@
           <SidebarRow
             href={conversationHref(row.id)}
             label={row.name}
-            icon={row.private ? "lock" : "hash"}
+            icon="hash"
             selected={current === row.id}
             unread={row.unread}
-            working={row.working}
+            fresh={row.hasNew}
+            working={names(row)}
           />
         {:else}
           <p class="empty">No channels yet.</p>
@@ -82,9 +84,9 @@
           <IconButton icon="plus" label="New message" size="xs" onclick={() => router.navigate(hrefFor("messages", ["new"], { kind: "dm" }))} />
         </div>
         {#each sidebar.data.dms as row (row.id)}
-          <SidebarRow href={conversationHref(row.id)} label={row.name} selected={current === row.id} unread={row.unread} working={row.working}>
+          <SidebarRow href={conversationHref(row.id)} label={row.name} selected={current === row.id} unread={row.unread} fresh={row.hasNew} working={names(row)}>
             {#snippet leading()}
-              <Avatar name={row.name} kind="agent" seed={row.agentId} size={20} status={row.status ?? null} />
+              <Avatar name={row.name} kind="agent" seed={row.agent ?? row.id} size={20} status={row.status === "working" ? "online" : row.status === "failed" ? "busy" : null} />
             {/snippet}
           </SidebarRow>
         {/each}
