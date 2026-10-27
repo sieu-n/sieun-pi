@@ -17,6 +17,7 @@ import { dutyLink } from "./shared/duty-fixes.ts";
 import { stallWords } from "./shared/stalled-calls.ts";
 import type { MetricStreak } from "./shared/duty-streak.ts";
 import type { JobModel } from "./job-resume.ts";
+import type { ServiceBrief } from "./brief-keeper.ts";
 import type { AgentQueueReading, SessionRow, ThinkingLevel, ThreadSchedule } from "./shared/types.ts";
 import { fileLines } from "./file-lines.ts";
 import { reportedSince, reportReader } from "./duty-job-report.ts";
@@ -503,6 +504,11 @@ export function dutyJobHost(input: { threads: DutyJobThreads; archives: { add(jo
   queue?: () => Promise<Pick<AgentQueueReading, "working" | "queued">>;
   /** Why a board.wake the service still owes keeps the job up (one the job or a session below it set), or null; absent: no wake keeps it. */
   waking?: (id: string) => Promise<string | null>;
+  /**
+   * The brief records of the jobs it starts (brief-keeper.ts `serviceBriefs`), so the brief keeper sends a brief again that the session never
+   * got; absent: none is kept.
+   */
+  briefs?: { add(brief: ServiceBrief): Promise<boolean>; drop(id: string): Promise<void> };
   refresh?: () => Promise<void>; lookupWaitsMs?: readonly number[]; sleep?: (ms: number) => Promise<void>; log?: (line: string) => void; now?: () => number }): DutyJobHost {
   const row = async (id: string) => (await input.rows()).find(candidate => candidate.id === id);
   const waits = input.lookupWaitsMs ?? DUTY_LOOKUP_WAITS_MS;
@@ -585,19 +591,23 @@ export function dutyJobHost(input: { threads: DutyJobThreads; archives: { add(jo
     },
     start: (chat, planned, brief, since, model) => serial(async () => {
       const { id, name } = await createOrAdopt(chat, planned, since, model);
+      const message = name === planned ? brief : brief.split(planned).join(name);
       try {
         await input.registry.add([id], chat.name, chat.id);
         await input.started?.(id, chat, name);
-        await input.threads.prompt(id, { message: name === planned ? brief : brief.split(planned).join(name), images: [], mode: "steer" });
+        await input.threads.prompt(id, { message, images: [], mode: "steer" });
       } catch (error) {
         await input.registry.remove([id]).catch(() => {});
         const archived = await input.archives.add({ id, name }).then(() => "queued its archive", archiveError => `its archive could not be queued: ${reason(archiveError)}`);
         throw new Error(`session ${id} could not be registered and briefed (${reason(error)}); ${archived}`);
       }
+      const kept = await input.briefs?.add({ id, name, prompt: message, at: (input.now ?? Date.now)(), ...model ? { model } : {} }).catch(error => reason(error));
+      if (typeof kept === "string" || kept === false) input.log?.(`duty job ${name}: its brief is not kept for the brief keeper (${kept === false ? "no session file" : kept})`);
       return { id, name };
     }),
     async retire(job) {
       await input.registry.remove([job.id]);
+      await input.briefs?.drop(job.id).catch(() => {});
       await input.archives.add(job);
     },
     async ended(last, older = []) {
@@ -630,7 +640,10 @@ export function dutyJobHost(input: { threads: DutyJobThreads; archives: { add(jo
       }
       return free;
     },
-    stop: job => input.archives.add(job),
+    async stop(job) {
+      await input.briefs?.drop(job.id).catch(() => {});
+      await input.archives.add(job);
+    },
     async cut(job) {
       if ((await row(job.id))?.working) return null;
       const file = await input.sessionFile?.(job.id);

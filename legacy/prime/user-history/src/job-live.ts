@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { tailLines } from "./cut-end.ts";
 import { waking } from "./wakes.ts";
+import { BRIEFS_DIR, owedBrief } from "./brief-keeper.ts";
 
 /**
  * Why a session that does not work now is about to run, else null: a board.wake the chat service still holds for it, a run of it waiting in
@@ -13,9 +14,9 @@ import { waking } from "./wakes.ts";
  * On 10-25 the watchdog stopped alert triage Crawler VP 07:43 (01a1753b) and sent it a continue at 23:49:35Z, the bridge read it as ended
  * at 23:50:07Z, and the continue's run reached pi-pool's queue at 23:50:12Z. The bridge started a second job, 08:50, on the same fires.
  */
-export interface LivePaths { wakes: string; turns: string; watchdogLog: string }
+export interface LivePaths { wakes: string; turns: string; watchdogLog: string; briefs?: string }
 
-export const livePaths = (dataDir: string, home = homedir()): LivePaths => ({ wakes: join(dataDir, "wakes"),
+export const livePaths = (dataDir: string, home = homedir()): LivePaths => ({ wakes: join(dataDir, "wakes"), briefs: join(dataDir, BRIEFS_DIR),
   turns: join(process.env.PI_POOL_DIR || join(home, ".config/pi-pool"), "turns.json"), watchdogLog: join(home, ".prime/agent/watchdog/log.jsonl") });
 
 /**
@@ -51,6 +52,10 @@ export async function watchdogSent(logFile: string, session: string, since: numb
 export async function jobLive(paths: LivePaths, session: string, now: number): Promise<string | null> {
   if (await waking(paths.wakes, session)) return "its board.wake is pending";
   if (await poolHolds(paths.turns, session)) return "its run waits in pi-pool's turn queue";
+  // A job the chat service started whose brief the keeper still owes or sent within RESENT_MS (brief-keeper.ts `serviceBriefs`): on 10-27
+  // the bridge read 01a17dd0 as ended at 16:49:42Z, 48 s after the supervisor restart lost its brief, and started a second triage job.
+  const owed = paths.briefs ? await owedBrief(paths.briefs, session, now, RESENT_MS) : null;
+  if (owed) return owed.sent ? `the brief keeper sent it its lost brief at ${new Date(owed.sent.at).toISOString().slice(11, 19)}Z` : "the brief keeper still owes it its brief";
   const sent = await watchdogSent(paths.watchdogLog, session, now - RESENT_MS);
   return sent === null ? null : `the watchdog sent it a continue at ${new Date(sent).toISOString().slice(11, 19)}Z`;
 }

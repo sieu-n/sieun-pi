@@ -1,4 +1,4 @@
-import { open, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, open, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { AgentKind } from "./outbox.ts";
 import { zTime } from "./checkin-goals.ts";
@@ -131,7 +131,9 @@ export async function seeBrief(record: BriefRecord): Promise<BriefSeen> {
   if (!file) return { started: false, prompted: false, ended, ...(record.kind === "child" && !admitted ? { unborn: true } : {}) };
   const sessionId = /([\w-]+)\.jsonl$/.exec(file)?.[1];
   const seen = await prompts(file, record.prompt);
-  return { ...(sessionId ? { sessionId } : {}), file, started: record.kind === "child" ? seen.task : seen.prompted, prompted: seen.prompted, ended };
+  // A root counts as started only once a prompt carries its brief, as a child does: the alert bridge sends a triage job each later fire of its
+  // chat, and on 10-27 it sent "alert triage CI and RepoOps 23:43" (01a17dd0) ci-runner-lost at 14:48:01Z, 5 min after its lost brief.
+  return { ...(sessionId ? { sessionId } : {}), file, started: seen.task, prompted: seen.prompted, ended };
 }
 
 /** What the keeper does with one record this tick. */
@@ -269,6 +271,43 @@ async function readRecords(dir: string): Promise<{ file: string; record: BriefRe
 async function writeRecord(file: string, record: BriefRecord): Promise<void> {
   await writeFile(`${file}.${process.pid}.tmp`, JSON.stringify(record), { mode: 0o600 });
   await rename(`${file}.${process.pid}.tmp`, file);
+}
+
+/** A record's file in the briefs folder, named as the kernel wrapper names it (message-limit-check.py record_brief). */
+export const briefFile = (dir: string, kind: BriefRecord["kind"], id: string): string => join(dir, `${kind}-${id}.json`);
+
+/** A root job the chat service started itself (chat-duty-job.ts start): its session id, name, first message, when the daemon took it, its model. */
+export interface ServiceBrief { id: string; name: string; prompt: string; at: number; model?: JobModel }
+
+/**
+ * The brief records of the root jobs the chat service starts itself: alert triage, duty and check-in jobs. These start through the daemon
+ * client, not a kernel, so until 10-28 no record kept their brief. On 10-27 the bridge started "alert triage CI and RepoOps 23:43" (01a17dd0)
+ * at 14:43:38Z; Prime took its brief, its run waited in pi-pool's turn queue with 73 others, every worker was gone by the supervisor restart
+ * at 16:48:54Z, and the session's file never got the brief, which Prime holds in memory until the first reply. `add` skips a session whose
+ * file it cannot find, since the keeper could never see that brief land; `drop` forgets a job the runner retired or stopped.
+ */
+export function serviceBriefs(dir: string, sessionFile: (id: string) => Promise<string | null>): { add(brief: ServiceBrief): Promise<boolean>; drop(id: string): Promise<void> } {
+  return {
+    async add({ id, name, prompt, at, model }) {
+      if (!ID.test(id)) return false;
+      const file = await sessionFile(id);
+      if (!file) return false;
+      await mkdir(dir, { recursive: true, mode: 0o700 });
+      await writeRecord(briefFile(dir, "root", id), { kind: "root", id, name, prompt, at, root: id, sessionFile: file,
+        ...model ? { model: `${model.provider}/${model.modelId}`, ...model.thinkingLevel ? { thinking: model.thinkingLevel } : {} } : {} });
+      return true;
+    },
+    async drop(id) {
+      if (ID.test(id)) await rm(briefFile(dir, "root", id), { force: true });
+    },
+  };
+}
+
+/** The record of root `id` while the keeper still owes it its brief or sent it within `withinMs`, else null. */
+export async function owedBrief(dir: string, id: string, now: number, withinMs: number): Promise<BriefRecord | null> {
+  if (!ID.test(id)) return null;
+  const record = await readFile(briefFile(dir, "root", id), "utf8").then(text => parseBriefRecord(JSON.parse(text)), () => null);
+  return record && (!record.sent || now - record.sent.at < withinMs) ? record : null;
 }
 
 /** The tree's worker, read only for a session that is late and has no brief; a failed read counts as no worker. */
