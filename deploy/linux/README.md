@@ -84,6 +84,11 @@ On 10-18 it held 32.6 GB of such dirs, about 1 GB per p8iso rig root plus repo c
 When user-1001 memory looks high, read `shmem` in its `memory.stat` and run `du -sxb /tmp/*` first, and ignore the 40+ GiB of page cache the kernel can reclaim.
 Before you remove a dir, check that no process has it open as cwd, fd or map, and a rig teardown stops the rig's `-r` and `-fake` units too.
 
+
+## Hardware watchdog
+
+Root arms the iDRAC's IPMI watchdog with `deploy/linux/watchdog/setup-watchdog.sh`, which converges on every run. If PID 1 stops running for 3 minutes, the BMC hard-resets the box. On 10-27 us-metal02 hung for 91 minutes after a global OOM with no watchdog armed, and `deploy/linux/watchdog/README.md` has that incident and the checks.
+
 ## CPU layers
 
 The page https://cho.sh/ko/1983DC says one greedy process should slow down and never take the box down, and the ways back in must stay protected. On 10-19 the owner answered t84 that CPU priority on us-metal02 follows that page and that metal-management owns it, which lifts c107 for these weights. None of them is a cap, so an idle box still gives any process every core.
