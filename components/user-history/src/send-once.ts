@@ -129,16 +129,24 @@ export async function sessionFileOf(sessionId: string, agentDir: string): Promis
 export interface TargetState { queued: string[]; busy: boolean; unfinished?: number }
 
 /**
- * The TargetState in get_state's `data`. A daemon that sends `sessionActions.queuedLanes` (Prime load-h) counts only queued input against its
- * limit, and its `queuedCount` is that count. An older daemon counts every unfinished action, while its `queuedCount` reads the visible queue
- * only, so its `unfinishedActionCount` stands for the limit's count.
+ * The count a daemon holds against its pending message limit. A daemon that sends the summary's top-level `queuedLanes` (Prime load-h) counts
+ * only queued input: its `sessionActions.queuedCount`, or the sum of the lanes on a roster row that carries no `sessionActions`. An older daemon
+ * sends no lanes and counts every unfinished action, while its `queuedCount` reads the visible queue only, so `unfinishedActionCount` stands in.
  */
+function limitCount(lanes: unknown, queuedCount: unknown, unfinished: number | undefined): number | undefined {
+  if (typeof lanes !== "object" || lanes === null) return unfinished;
+  if (typeof queuedCount === "number") return queuedCount;
+  const { steering, followUp } = lanes as { steering?: unknown; followUp?: unknown };
+  return (typeof steering === "number" ? steering : 0) + (typeof followUp === "number" ? followUp : 0);
+}
+
+/** The TargetState in get_state's `data`, or in a list or roster row, which share the SessionSummary fields it reads. */
 export function targetStateOf(data: unknown): TargetState {
-  const state = (typeof data === "object" && data !== null ? data : {}) as { sessionActions?: { steering?: unknown; followUps?: unknown; queuedCount?: unknown; queuedLanes?: unknown };
-    isStreaming?: unknown; isCompacting?: unknown; isRunningTools?: unknown; unfinishedActionCount?: unknown };
+  const state = (typeof data === "object" && data !== null ? data : {}) as { sessionActions?: { steering?: unknown; followUps?: unknown; queuedCount?: unknown };
+    queuedLanes?: unknown; isStreaming?: unknown; isCompacting?: unknown; isRunningTools?: unknown; unfinishedActionCount?: unknown };
   const actions = state.sessionActions;
   const unfinished = typeof state.unfinishedActionCount === "number" ? state.unfinishedActionCount : undefined;
-  const limited = typeof actions?.queuedLanes === "object" && actions.queuedLanes !== null && typeof actions.queuedCount === "number" ? actions.queuedCount : unfinished;
+  const limited = limitCount(state.queuedLanes, actions?.queuedCount, unfinished);
   return { queued: [actions?.steering, actions?.followUps].flatMap(list => Array.isArray(list) ? list.filter((item): item is string => typeof item === "string") : []),
     busy: state.isStreaming === true || state.isCompacting === true || state.isRunningTools === true || (unfinished ?? 0) > 0, ...limited === undefined ? {} : { unfinished: limited } };
 }
