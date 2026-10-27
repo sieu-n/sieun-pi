@@ -9,7 +9,7 @@
  * keyed by session id inside the factory closure.
  */
 
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Type } from "typebox";
@@ -19,10 +19,11 @@ import { dropKernelHandlers, kernelHandler } from "../shared/kernel-bridge.ts";
 import { sessionArtifactDir } from "../shared/paths.ts";
 import { identityOf, type Identity } from "../shared/registry.ts";
 import { bootstrapCode, parseSkillImportErrors } from "./src/bootstrap.ts";
-import { ChildManager, childRecordOf, type ChildRecord } from "./src/children.ts";
+import { ChildManager, childRecordOf, closingReason, setClosingReason, type ChildRecord, type CloseReason } from "./src/children.ts";
 import { GoalState } from "./src/goal.ts";
 import { createSession } from "./src/host-client.ts";
-import { Kernel, type CellResult, type HostRequest, type RestoreResult } from "./src/kernel.ts";
+import { hostApi, HOST_SOCKET_ENV } from "../host/src/api.ts";
+import { Kernel, KernelBusyError, relayPaths, type CellResult, type HostRequest, type KernelOptions, type RestoreResult } from "./src/kernel.ts";
 import { BASE_PROMPT, childSection, rlmSection, skillsSection } from "./src/prompt.ts";
 import { BUNDLED_SKILLS_DIR, kernelPython, pythonSkillOf, RUNTIME_SRC, type PythonSkill } from "./src/python.ts";
 
@@ -31,6 +32,17 @@ export { setChildLoaderOptions } from "./src/children.ts";
 const AGENT_MESSAGE_MIME = "application/vnd.prime-agent.agent-message+json";
 const IMAGE_MIMES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 const SNAPSHOT_LIMITS = { maxBytes: 256 * 1024 * 1024, maxVariableBytes: 16 * 1024 * 1024, pruneOversized: true };
+const BUSY_WAIT = "Wait and preserve state";
+const BUSY_KILL = "Kill kernel and restart";
+const BUSY_TITLE = [
+  "Interrupted Python cell is still running",
+  "Ctrl+C sent an interrupt, but the previous cell has not stopped yet. A new command cannot start until it finishes.",
+  "Waiting preserves the current kernel state. Killing restarts the kernel and loses in-memory variables, imports, and running tasks.",
+].join("\n");
+const BUSY_NO_UI =
+  "The previous Python cell ignored the interrupt and is still running, so this cell did not start. Nobody can choose to wait or restart here; call ipython again later, or end the turn.";
+const STILL_RUNNING = "[ipython_interrupt_pending]\nThe cell did not stop after the interrupt and is still running in the kernel. The next ipython call asks whether to wait for it or restart the kernel.";
+const RESUME_TEXT = "[host-restart]\n\nThe session host restarted while you were working. Your Python kernel and its bash() jobs kept running. Continue the task.";
 const KERNEL_RESET = [
   "<ipython_kernel_reset>",
   "The Python kernel was restarted after it exited. Variables, imports, async tasks, and open resources from before the restart are no longer available unless the snapshot revived them; recreate the rest before using them.",
@@ -68,9 +80,29 @@ function noticeMessage(n: Notice) {
   };
 }
 
+/** Kernels run under the relay when a pi-host holds the session, so a host restart leaves them and their `bash()` jobs running. */
+function useRelay(): boolean {
+  return hostApi() !== undefined || process.env.PI_RLM_RELAY === "1";
+}
+
+const HOST_LISTENER = Symbol.for("sieun-pi.pi-stack.rlm.host-listener");
+
+/** Records pi-host's close reason for each session before it disposes, once per process. */
+function listenToHost(): void {
+  const api = hostApi();
+  const g = globalThis as unknown as Record<symbol, unknown>;
+  if (!api || g[HOST_LISTENER] === api) return;
+  g[HOST_LISTENER] = api;
+  api.onEvent(event => {
+    const e = event as { type: string; sessionId?: string; reason?: CloseReason };
+    if (e.type === "closing" && e.sessionId && e.reason) setClosingReason(e.sessionId, e.reason);
+  });
+}
+
 interface KernelStart {
   kernel: Kernel;
   restarted: boolean;
+  reattached?: boolean;
   restore?: RestoreResult;
   skillErrors?: Record<string, string>;
 }
@@ -137,8 +169,9 @@ class RlmSession {
   }
 
   /** Loads the child index from disk, so a reopened parent lists its children and the bus can wake them. */
-  restoreChildren(): void {
-    if (existsSync(join(this.artifactDir, "rlm-children.json"))) this.childManager();
+  async restoreChildren(): Promise<void> {
+    if (!existsSync(join(this.artifactDir, "rlm-children.json"))) return;
+    await this.childManager().resumeInterrupted(record => relayPaths(record.sessionDir, record.sessionId).socket);
   }
 
   private kernelEnv(binDir: string | undefined): Record<string, string> {
@@ -159,27 +192,58 @@ class RlmSession {
 
   ensureKernel(onProgress: (text: string) => void): Promise<KernelStart> {
     if (this.kernel?.alive && !this.starting) return Promise.resolve({ kernel: this.kernel, restarted: false });
-    this.starting ??= this.startKernel(onProgress).finally(() => (this.starting = undefined));
+    this.starting ??= this.startKernel(onProgress, false).then(s => s!).finally(() => (this.starting = undefined));
     return this.starting;
   }
 
-  private async startKernel(onProgress: (text: string) => void): Promise<KernelStart> {
-    const restarted = this.kernelStarts > 0;
-    this.kernelStarts += 1;
+  /** Reattaches to a kernel a previous host left under its relay, so the events it buffered, such as finished `bash()` jobs, arrive now. */
+  async reattach(): Promise<void> {
+    if (!useRelay() || this.kernel?.alive || this.starting || !existsSync(relayPaths(this.artifactDir, this.id).socket)) return;
+    const job = this.startKernel(() => {}, true);
+    this.starting = job.then(s => s ?? this.startKernel(() => {}, false).then(x => x!)).finally(() => (this.starting = undefined));
+    await this.starting.catch(() => undefined);
+  }
+
+  private rootId(): string {
+    let identity = this.identity;
+    let id = this.id;
+    for (let i = 0; i < 16 && identity.parentId; i++) {
+      id = identity.parentId;
+      identity = identityOf(id, id);
+    }
+    return id;
+  }
+
+  private async startKernel(onProgress: (text: string) => void, attachOnly: boolean): Promise<KernelStart | undefined> {
     mkdirSync(this.artifactDir, { recursive: true });
     onProgress("Starting Python kernel...");
     const { python, binDir } = await kernelPython(this.agentDir, this.pythonSkills, onProgress);
-    const kernel = new Kernel({
+    let kernel: Kernel | undefined;
+    const options: KernelOptions = {
       python,
       cwd: this.ctx.cwd,
       env: this.kernelEnv(binDir),
       stderrLogPath: this.snapshotPath ? join(this.artifactDir, "kernel-stderr.log") : undefined,
       onHostRequest: request => this.hostRequest(request),
+      interruptGraceMs: Number(process.env.PI_RLM_INTERRUPT_GRACE_MS ?? 3000),
       onExit: () => {
         if (this.kernel === kernel) this.kernel = undefined;
       },
-    });
-    await kernel.ready;
+    };
+    if (useRelay()) {
+      const paths = relayPaths(this.artifactDir, this.id);
+      kernel = await Kernel.relay(options, { ...paths, hostSocket: hostApi()?.socketPath ?? process.env[HOST_SOCKET_ENV], wakeSession: this.rootId() }, !attachOnly);
+      if (!kernel) return undefined;
+    } else {
+      kernel = Kernel.spawn(options);
+    }
+    const ready = await kernel.ready;
+    if (ready.reattached) {
+      this.kernel = kernel;
+      return { kernel, restarted: false, reattached: true };
+    }
+    const restarted = this.kernelStarts > 0;
+    this.kernelStarts += 1;
     let restore: RestoreResult | undefined;
     if (this.snapshotPath && existsSync(this.snapshotPath)) {
       onProgress("Restoring Python state...");
@@ -195,11 +259,38 @@ class RlmSession {
     return { kernel, restore, restarted, skillErrors: parseSkillImportErrors(boot.stdout) };
   }
 
-  async snapshot(): Promise<void> {
+  /** The "Kill kernel and restart" choice. The next `ensureKernel` starts a fresh kernel from the last snapshot. */
+  async killKernel(): Promise<void> {
+    const kernel = this.kernel;
+    this.kernel = undefined;
+    await kernel?.kill();
+  }
+
+  async snapshot(timeoutMs = 60_000): Promise<void> {
     const path = this.snapshotPath;
     const kernel = this.kernel;
-    if (!path || !kernel?.alive) return;
-    await kernel.snapshot(path, join(this.artifactDir, "kernel-state.json"), SNAPSHOT_LIMITS).catch(() => undefined);
+    if (!path || !kernel?.alive || kernel.busy) return;
+    let timer: NodeJS.Timeout | undefined;
+    await Promise.race([
+      kernel.snapshot(path, join(this.artifactDir, "kernel-state.json"), SNAPSHOT_LIMITS).catch(() => undefined),
+      new Promise(r => (timer = setTimeout(r, timeoutMs))),
+    ]);
+    clearTimeout(timer);
+  }
+
+  private get interruptedPath(): string {
+    return join(this.artifactDir, "rlm-interrupted.json");
+  }
+
+  /** A root the host stopped mid-run gets a `[host-restart]` message when it reopens, as children do. */
+  resumeIfInterrupted(): void {
+    if (!existsSync(this.interruptedPath)) return;
+    let wasRunning = false;
+    try {
+      wasRunning = (JSON.parse(readFileSync(this.interruptedPath, "utf8")) as { wasRunning?: boolean }).wasRunning === true;
+    } catch {}
+    rmSync(this.interruptedPath, { force: true });
+    if (wasRunning && this.identity.role === "root") this.pi.sendMessage({ customType: "rlm_resume", content: RESUME_TEXT, display: true }, { triggerTurn: true, deliverAs: "steer" });
   }
 
   /** One kernel `host_request`. Another extension's handler in `shared/kernel-bridge.ts` wins over pi-rlm's own. */
@@ -268,7 +359,7 @@ class RlmSession {
   }
 
   /** Background `bash()` handles still running in the kernel, which hold a goal continuation as Prime's do. */
-  private async liveHandles(): Promise<number> {
+  async liveHandles(): Promise<number> {
     if (!this.kernel?.alive) return 0;
     const r = await this.kernel.execute('__import__("rlm.bash", fromlist=["_live_handles"])._live_handles.__len__()').catch(() => undefined);
     return r?.status === "ok" ? Number(r.result ?? 0) || 0 : 0;
@@ -342,13 +433,27 @@ class RlmSession {
     return { ...handle };
   }
 
+  /**
+   * Closes the session's kernel. When pi-host stops, the relayed kernel and its children's kernels detach and keep running, and the relay
+   * asks the next host to reopen the root. An idle unload detaches only a kernel with live `bash()` jobs. Any other close stops the kernel.
+   */
   async dispose(): Promise<void> {
     if (this.disposed) return;
     this.disposed = true;
-    await this.snapshot();
-    await this.children?.closeAll();
-    await this.kernel?.shutdown();
+    const reason = closingReason(this.id);
+    const kernel = this.kernel;
+    const wasRunning = !this.ctx.isIdle();
+    await this.snapshot(reason === "shutdown" ? 5_000 : 60_000);
+    const keep = !!kernel?.alive && kernel.relayed && (reason === "shutdown" || (reason === "idle_unload" && (await this.liveHandles()) > 0));
+    await this.children?.closeAll(reason);
+    if (keep && kernel) {
+      if (reason === "shutdown") writeFileSync(this.interruptedPath, JSON.stringify({ wasRunning, at: Date.now() }));
+      kernel.detach(reason === "shutdown" ? "now" : "on_event");
+    } else {
+      await kernel?.shutdown();
+    }
     this.kernel = undefined;
+    setClosingReason(this.id, undefined);
     dropKernelHandlers(this.id);
   }
 }
@@ -385,8 +490,12 @@ export default function piRlm(pi: ExtensionAPI): void {
 
   pi.on("resources_discover", () => ({ skillPaths: [BUNDLED_SKILLS_DIR] }));
 
-  pi.on("session_start", (_event, ctx) => {
-    of(ctx).restoreChildren();
+  pi.on("session_start", async (_event, ctx) => {
+    listenToHost();
+    const s = of(ctx);
+    await s.reattach();
+    void s.restoreChildren();
+    s.resumeIfInterrupted();
   });
 
   pi.on("before_agent_start", (event, ctx) => {
@@ -420,14 +529,37 @@ export default function piRlm(pi: ExtensionAPI): void {
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
       const s = of(ctx);
       const progress = (text: string) => onUpdate?.({ content: [{ type: "text", text }], details: { status: "starting" } });
-      const { kernel, restore, restarted, skillErrors } = await s.ensureKernel(progress);
-      const r = await kernel.execute(params.code, {
-        signal,
-        onStream: text => onUpdate?.({ content: [{ type: "text", text }], details: { status: "running" } }),
-      });
+      let start = await s.ensureKernel(progress);
+      let killed = false;
+      let r: CellResult;
+      for (;;) {
+        try {
+          r = await start.kernel.execute(params.code, {
+            signal,
+            onStream: text => onUpdate?.({ content: [{ type: "text", text }], details: { status: "running" } }),
+          });
+          break;
+        } catch (error) {
+          if (!(error instanceof KernelBusyError) || signal?.aborted) throw error;
+          const choice = ctx.hasUI ? await ctx.ui.select(BUSY_TITLE, [BUSY_WAIT, BUSY_KILL], { signal }) : undefined;
+          if (choice === BUSY_WAIT) {
+            progress("Waiting for Python kernel...");
+            await start.kernel.idle(signal);
+          } else if (choice === BUSY_KILL) {
+            progress("Restarting Python kernel...");
+            await s.killKernel();
+            start = await s.ensureKernel(progress);
+            killed = true;
+          } else {
+            throw new Error(BUSY_NO_UI);
+          }
+        }
+      }
+      const { restore, restarted, skillErrors } = start;
       let text = formatCell(r);
       const notes: string[] = [];
-      if (restarted) notes.push(KERNEL_RESET);
+      if (restarted || killed) notes.push(KERNEL_RESET);
+      if (r.stillRunning) text = `${text ? `${text}\n\n` : ""}${STILL_RUNNING}`;
       if (restore) notes.push(restoreLine(restore));
       if (skillErrors) notes.push(`[python-skills-unavailable]\n${Object.entries(skillErrors).map(([k, v]) => `- ${k}: ${v}`).join("\n")}`);
       if (notes.length) text = `${notes.join("\n\n")}${text ? `\n\n${text}` : ""}`;
@@ -448,7 +580,8 @@ export default function piRlm(pi: ExtensionAPI): void {
           result: r.result,
           backgroundOutput: r.backgroundOutput,
           sentAgentMessages,
-          kernelRestarted: restarted,
+          kernelRestarted: restarted || killed,
+          stillRunning: r.stillRunning,
           restored: restore ? { restored: restore.restored, failed: restore.failed } : undefined,
           error: r.error,
         },

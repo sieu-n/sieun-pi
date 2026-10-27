@@ -3,7 +3,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { before, test } from "node:test";
-import { Kernel, type HostRequest } from "../src/kernel.ts";
+import { existsSync } from "node:fs";
+import { Kernel, KernelBusyError, type HostRequest } from "../src/kernel.ts";
 import { RUNTIME_SRC } from "../src/python.ts";
 import { bootstrapCode } from "../src/bootstrap.ts";
 import { testPython } from "./helpers.ts";
@@ -15,7 +16,7 @@ before(async () => {
 
 function open(onHostRequest: (r: HostRequest) => Promise<unknown> = async () => ({})) {
   const dir = mkdtempSync(join(tmpdir(), "pi-rlm-kernel-"));
-  const kernel = new Kernel({
+  const kernel = Kernel.spawn({
     python,
     cwd: dir,
     env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", PYTHONPATH: RUNTIME_SRC, RLM_SESSION_DIR: dir },
@@ -88,5 +89,69 @@ test("a snapshot revives names in a fresh kernel process", async () => {
     await b.kernel.shutdown();
     rmSync(a.dir, { recursive: true, force: true });
     rmSync(b.dir, { recursive: true, force: true });
+  }
+});
+
+test("an interrupted cell that keeps running makes the kernel busy until it ends", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-rlm-busy-"));
+  const kernel = Kernel.spawn({
+    python,
+    cwd: dir,
+    env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", PYTHONPATH: RUNTIME_SRC },
+    onHostRequest: async () => ({}),
+    interruptGraceMs: 300,
+  });
+  try {
+    await kernel.execute(bootstrapCode([]));
+    const ac = new AbortController();
+    setTimeout(() => ac.abort(), 200);
+    const r = await kernel.execute("import signal, time\nsignal.signal(signal.SIGINT, signal.SIG_IGN)\ny = 5\ntime.sleep(2)", { signal: ac.signal });
+    assert.equal(r.status, "aborted");
+    assert.equal(r.stillRunning, true);
+    assert.equal(kernel.busy, true);
+    await assert.rejects(kernel.execute("y"), KernelBusyError);
+    const t0 = Date.now();
+    await kernel.idle();
+    assert.ok(Date.now() - t0 > 800, "idle() waited for the cell");
+    assert.equal((await kernel.execute("y")).result, "5");
+  } finally {
+    await kernel.shutdown();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a relayed kernel outlives its client, buffers a finished bash() notice and reattaches with its namespace", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-rlm-relay-"));
+  const socket = join(dir, "k.sock");
+  const seen: HostRequest[] = [];
+  const options = {
+    python,
+    cwd: dir,
+    env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", PYTHONPATH: RUNTIME_SRC, XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR ?? "" },
+    onHostRequest: async (r: HostRequest) => {
+      seen.push(r);
+      return {};
+    },
+  };
+  const relay = { socket, logPath: join(dir, "relay.log"), wakeSession: "s1", unit: `pi-rlm-test-${process.pid}-${Date.now()}` };
+  const a = (await Kernel.relay(options, relay, true))!;
+  try {
+    assert.equal((await a.ready).reattached, false);
+    await a.execute(bootstrapCode([]));
+    const started = await a.execute("x = 41\nh = bash('sleep 1.5; echo relayed')\nh.pid");
+    const pid = Number(started.result);
+    a.detach("on_event");
+    await new Promise(r => setTimeout(r, 3000));
+    assert.equal(seen.length, 0, "nothing reached the detached client");
+    const b = (await Kernel.relay(options, relay, false))!;
+    assert.equal((await b.ready).reattached, true);
+    assert.equal((await b.execute("x + 1")).result, "42");
+    assert.match((await b.execute("h.poll().output")).result ?? "", /relayed/);
+    assert.ok(seen.some(r => r.type === "bash.completed" && r.pid === pid), "the buffered bash.completed reached the new client");
+    await b.shutdown();
+    for (let i = 0; i < 50 && existsSync(socket); i++) await new Promise(r => setTimeout(r, 100));
+    assert.equal(existsSync(socket), false, "the relay removed its socket after the kernel shut down");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });

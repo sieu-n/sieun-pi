@@ -1,7 +1,10 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { appendFileSync, mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { appendFileSync, mkdirSync, openSync, closeSync } from "node:fs";
+import { createConnection, type Socket } from "node:net";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
+import type { Readable } from "node:stream";
 
 /** One host request from the kernel, after `parseHostRequest` checked it. */
 export interface HostRequest {
@@ -10,7 +13,7 @@ export interface HostRequest {
 }
 
 export type KernelEvent =
-  | { event: "ready"; protocol: number; python: string }
+  | { event: "ready"; protocol: number; python: string; reattached?: boolean; running?: string | null; unanswered?: string[] }
   | { event: "stdout" | "stderr"; id: string | null; text: string }
   | { event: "result"; id: string; text: string }
   | { event: "display"; id: string | null; data: Record<string, unknown> }
@@ -33,6 +36,8 @@ export interface CellResult {
   displays: Record<string, unknown>[];
   backgroundOutput: string;
   durationMs: number;
+  /** Set when the cell ignored the interrupt and still runs, so the kernel is busy until it ends. */
+  stillRunning?: boolean;
 }
 
 export interface SnapshotResult {
@@ -51,6 +56,20 @@ export interface RestoreResult {
   reason?: string;
 }
 
+export interface Ready {
+  protocol: number;
+  python: string;
+  /** True when this kernel was already running under its relay, so its namespace and `bash()` jobs are the ones from before. */
+  reattached: boolean;
+}
+
+/** Thrown by `execute` while an interrupted cell still runs. The caller waits with `idle()` or restarts with `kill()`. */
+export class KernelBusyError extends Error {
+  constructor() {
+    super("Interrupted Python cell is still running");
+  }
+}
+
 export interface KernelOptions {
   python: string;
   cwd: string;
@@ -60,16 +79,104 @@ export interface KernelOptions {
   onHostRequest(request: HostRequest): Promise<unknown>;
   /** Output and display events that no running cell owns, such as a background task writing after its cell ended. */
   onOrphanEvent?(event: KernelEvent): void;
-  onExit?(code: number | null, signal: NodeJS.Signals | null): void;
+  /** Every display event, owned by a cell or not, such as the `bash()` activity records. */
+  onDisplay?(data: Record<string, unknown>): void;
+  onExit?(reason: string): void;
+  /** How long an aborted cell may take to stop before `execute` returns and leaves it running. */
+  interruptGraceMs?: number;
+}
+
+/** Where a relayed kernel listens, and what the relay asks pi-host to reopen after a detach. */
+export interface RelayOptions {
+  socket: string;
+  logPath: string;
+  hostSocket?: string;
+  wakeSession: string;
+  /** The systemd unit name for the relay's scope, when systemd-run is there. */
+  unit: string;
 }
 
 const STDERR_TAIL = 16_384;
 const READY_TIMEOUT_MS = 120_000;
+const RELAY_SCRIPT = resolve(import.meta.dirname, "..", "relay", "kernel_relay.py");
 
-interface Pending {
-  onEvent(event: KernelEvent): void;
-  done(event: Extract<KernelEvent, { event: "done" }>): void;
-  fail(error: Error): void;
+interface Link {
+  readonly stdout: Readable;
+  readonly pid: number | undefined;
+  write(line: string): void;
+  end(): void;
+  kill(): void;
+  onClose(fn: (reason: string) => void): void;
+  onStderr?(fn: (chunk: string) => void): void;
+}
+
+function processLink(proc: ChildProcess): Link {
+  proc.stdin!.on("error", () => {});
+  proc.stderr!.setEncoding("utf8");
+  return {
+    stdout: proc.stdout!,
+    pid: proc.pid,
+    write: line => proc.stdin!.write(line),
+    end: () => proc.stdin!.end(),
+    kill: () => proc.kill("SIGKILL"),
+    onClose: fn => {
+      proc.on("error", error => fn(`spawn failed: ${error.message}`));
+      proc.on("exit", (code, signal) => fn(`exited (code ${code}, signal ${signal})`));
+    },
+    onStderr: fn => proc.stderr!.on("data", fn),
+  };
+}
+
+function socketLink(socket: Socket, pid: number | undefined): Link {
+  socket.on("error", () => {});
+  return {
+    stdout: socket,
+    pid,
+    write: line => socket.write(line),
+    end: () => socket.end(),
+    kill: () => socket.write('{"type":"relay_kill"}\n'),
+    onClose: fn => socket.on("close", () => fn("relay connection closed")),
+  };
+}
+
+function connect(path: string): Promise<Socket> {
+  return new Promise((resolvePromise, reject) => {
+    const socket = createConnection(path);
+    socket.once("connect", () => resolvePromise(socket));
+    socket.once("error", reject);
+  });
+}
+
+async function hasSystemdRun(): Promise<boolean> {
+  if (process.platform !== "linux" || !process.env.XDG_RUNTIME_DIR) return false;
+  return new Promise(r => {
+    const p = spawn("systemctl", ["--user", "is-system-running"], { stdio: "ignore" });
+    p.on("error", () => r(false));
+    p.on("exit", code => r(code === 0 || code === 1));
+  });
+}
+
+/** Starts `kernel_relay.py` outside this process's cgroup and session, so stopping pi-host leaves the kernel running. */
+async function startRelay(options: KernelOptions, relay: RelayOptions): Promise<void> {
+  mkdirSync(dirname(relay.socket), { recursive: true });
+  const log = openSync(relay.logPath, "a");
+  const argv = [options.python, RELAY_SCRIPT, "--socket", relay.socket, "--", options.python, "-m", "rlm.repl"];
+  const viaSystemd = await hasSystemdRun();
+  const [cmd, ...args] = viaSystemd ? ["systemd-run", "--user", "--scope", "--quiet", "--collect", `--unit=${relay.unit}`, ...argv] : argv;
+  const child = spawn(cmd!, args, { cwd: options.cwd, env: options.env, stdio: ["ignore", log, log], detached: true });
+  child.on("error", () => {});
+  child.unref();
+  closeSync(log);
+  const deadline = Date.now() + 30_000;
+  for (;;) {
+    try {
+      (await connect(relay.socket)).destroy();
+      return;
+    } catch {
+      if (Date.now() > deadline) throw new Error(`the kernel relay did not open ${relay.socket} within 30 s; see ${relay.logPath}`);
+      await new Promise(r => setTimeout(r, 50));
+    }
+  }
 }
 
 function parseEvent(line: string): KernelEvent | undefined {
@@ -90,41 +197,50 @@ function parseHostRequest(data: unknown): HostRequest {
   return data as HostRequest;
 }
 
+interface Pending {
+  onEvent(event: KernelEvent): void;
+  done(event: Extract<KernelEvent, { event: "done" }>): void;
+  fail(error: Error): void;
+}
+
 /**
- * One `python -m rlm.repl` process speaking protocol 3 (`python/src/rlm/repl.md`) over stdio.
+ * One `python -m rlm.repl` process speaking protocol 3 (`python/src/rlm/repl.md`), over its own stdio or through `relay/kernel_relay.py`.
  *
  * The runtime runs requests one at a time in arrival order, so the manager only tracks ids. Host requests are answered as they arrive,
- * because the cell that sent one is itself the running request.
+ * because the cell that sent one is itself the running request. A relayed kernel survives this process: `detach()` leaves it running,
+ * and `Kernel.attach` on the same socket later picks up its namespace, its `bash()` jobs and every event it sent meanwhile.
  */
 export class Kernel {
-  readonly ready: Promise<{ protocol: number; python: string }>;
-  private readonly proc: ChildProcess;
+  readonly ready: Promise<Ready>;
+  readonly relayed: boolean;
+  private readonly link: Link;
   private readonly pending = new Map<string, Pending>();
   private running: string | undefined;
+  private busyId: string | undefined;
+  private idleWaiters: (() => void)[] = [];
   private seq = 0;
-  private exited = false;
+  private closed = false;
   private stderrTail = "";
 
-  constructor(private readonly options: KernelOptions) {
+  private constructor(
+    private readonly options: KernelOptions,
+    link: Link,
+    relayed: boolean,
+  ) {
+    this.link = link;
+    this.relayed = relayed;
     if (options.stderrLogPath) mkdirSync(dirname(options.stderrLogPath), { recursive: true });
-    this.proc = spawn(options.python, ["-m", "rlm.repl"], {
-      cwd: options.cwd,
-      env: options.env,
-      stdio: ["pipe", "pipe", "pipe"],
-      detached: false,
-    });
-    let resolveReady!: (v: { protocol: number; python: string }) => void;
+    this.seq = Math.floor(Date.now() / 1000) * 1000;
+    let resolveReady!: (v: Ready) => void;
     let rejectReady!: (e: Error) => void;
-    this.ready = new Promise((resolve, reject) => {
-      resolveReady = resolve;
-      rejectReady = reject;
+    this.ready = new Promise((res, rej) => {
+      resolveReady = res;
+      rejectReady = rej;
     });
     this.ready.catch(() => {});
     const timer = setTimeout(() => rejectReady(new Error(`Python kernel did not start within ${READY_TIMEOUT_MS} ms.${this.stderrHint()}`)), READY_TIMEOUT_MS);
     timer.unref();
-    this.proc.on("error", error => rejectReady(error));
-    this.proc.stderr!.setEncoding("utf8");
-    this.proc.stderr!.on("data", (chunk: string) => {
+    link.onStderr?.(chunk => {
       this.stderrTail = (this.stderrTail + chunk).slice(-STDERR_TAIL);
       if (options.stderrLogPath) {
         try {
@@ -132,30 +248,34 @@ export class Kernel {
         } catch {}
       }
     });
-    this.proc.stdin!.on("error", () => {});
-    this.proc.on("exit", (code, signal) => {
-      this.exited = true;
+    link.onClose(reason => {
+      if (this.closed) return;
+      this.closed = true;
       clearTimeout(timer);
-      rejectReady(new Error(`Python kernel exited before it was ready (code ${code}, signal ${signal}).${this.stderrHint()}`));
-      const error = new Error(`Python kernel exited (code ${code}, signal ${signal}).${this.stderrHint()}`);
+      rejectReady(new Error(`Python kernel ${reason} before it was ready.${this.stderrHint()}`));
+      const error = new Error(`Python kernel ${reason}.${this.stderrHint()}`);
       for (const p of this.pending.values()) p.fail(error);
       this.pending.clear();
-      options.onExit?.(code, signal);
+      this.clearBusy();
+      options.onExit?.(reason);
     });
-    createInterface({ input: this.proc.stdout! }).on("line", line => {
+    createInterface({ input: link.stdout }).on("line", line => {
       const event = parseEvent(line);
       if (!event) return;
       if (event.event === "ready") {
         clearTimeout(timer);
-        resolveReady({ protocol: event.protocol, python: event.python });
+        if (event.running) this.markBusy(event.running);
+        resolveReady({ protocol: event.protocol, python: event.python, reattached: event.reattached === true });
         return;
       }
       if (event.event === "host_request") {
         void this.answer(event.id, event.data);
         return;
       }
+      if (event.event === "display") options.onDisplay?.(event.data);
       const owner = event.id ?? this.running;
       const p = owner ? this.pending.get(owner) : undefined;
+      if (event.event === "done" && event.id === this.busyId) this.clearBusy();
       if (!p) {
         options.onOrphanEvent?.(event);
         return;
@@ -170,12 +290,58 @@ export class Kernel {
     });
   }
 
+  /** A kernel on this process's own stdio, which ends with this process. */
+  static spawn(options: KernelOptions): Kernel {
+    const proc = spawn(options.python, ["-m", "rlm.repl"], { cwd: options.cwd, env: options.env, stdio: ["pipe", "pipe", "pipe"] });
+    return new Kernel(options, processLink(proc), false);
+  }
+
+  /** Attaches to a running relay, or starts one first when `start` is set and nothing listens on the socket. */
+  static async relay(options: KernelOptions, relay: RelayOptions, start: boolean): Promise<Kernel | undefined> {
+    let socket: Socket;
+    try {
+      socket = await connect(relay.socket);
+    } catch {
+      if (!start) return undefined;
+      await startRelay(options, relay);
+      socket = await connect(relay.socket);
+    }
+    const kernel = new Kernel(options, socketLink(socket, undefined), true);
+    socket.write(JSON.stringify({ type: "relay_hello", host_socket: relay.hostSocket ?? null, wake_session: relay.wakeSession }) + "\n");
+    return kernel;
+  }
+
   get pid(): number | undefined {
-    return this.proc.pid;
+    return this.link.pid;
   }
 
   get alive(): boolean {
-    return !this.exited;
+    return !this.closed;
+  }
+
+  /** The id of an interrupted cell that has not stopped yet, if any. */
+  get busy(): boolean {
+    return this.busyId !== undefined;
+  }
+
+  private markBusy(id: string): void {
+    this.busyId = id;
+  }
+
+  private clearBusy(): void {
+    this.busyId = undefined;
+    const waiters = this.idleWaiters;
+    this.idleWaiters = [];
+    for (const w of waiters) w();
+  }
+
+  /** Resolves when the interrupted cell ends or the kernel goes away. */
+  idle(signal?: AbortSignal): Promise<void> {
+    if (!this.busyId) return Promise.resolve();
+    return new Promise((res, rej) => {
+      this.idleWaiters.push(res);
+      signal?.addEventListener("abort", () => rej(new Error("Python execution aborted")), { once: true });
+    });
   }
 
   private stderrHint(): string {
@@ -191,18 +357,18 @@ export class Kernel {
     } catch (error) {
       reply = { status: "error", error: error instanceof Error ? error.message : String(error) };
     }
-    this.send({ type: "host_reply", id, data: reply });
+    if (!this.closed) this.send({ type: "host_reply", id, data: reply });
   }
 
   private send(message: unknown): void {
-    if (this.exited) throw new Error("Python kernel is not running");
-    this.proc.stdin!.write(JSON.stringify(message) + "\n");
+    if (this.closed) throw new Error("Python kernel is not running");
+    this.link.write(JSON.stringify(message) + "\n");
   }
 
   private request(message: Record<string, unknown>, onEvent: (e: KernelEvent) => void = () => {}): Promise<Extract<KernelEvent, { event: "done" }>> {
     const id = `r${++this.seq}`;
-    return new Promise((resolve, reject) => {
-      this.pending.set(id, { onEvent, done: resolve, fail: reject });
+    return new Promise((resolvePromise, reject) => {
+      this.pending.set(id, { onEvent, done: resolvePromise, fail: reject });
       try {
         this.send({ ...message, id });
       } catch (error) {
@@ -212,24 +378,37 @@ export class Kernel {
     });
   }
 
-  /** Runs one cell. `onStream` gets the cell's output so far after each stdout or stderr chunk. */
+  /**
+   * Runs one cell. `onStream` gets the cell's output so far after each stdout or stderr chunk. On abort the cell gets `interrupt`, and a
+   * cell that has not stopped after the grace period stays running: `execute` returns `stillRunning` and later calls throw
+   * `KernelBusyError` until it ends.
+   */
   async execute(code: string, options: { signal?: AbortSignal; onStream?(text: string): void } = {}): Promise<CellResult> {
     await this.ready;
+    if (this.busyId) throw new KernelBusyError();
     const started = performance.now();
     const out: CellResult = { status: "ok", stdout: "", stderr: "", displays: [], backgroundOutput: "", durationMs: 0 };
     let streamed = "";
     const id = `c${++this.seq}`;
+    let giveUp: (() => void) | undefined;
     const onAbort = () => {
       try {
         this.send({ type: "interrupt", id });
       } catch {}
+      const t = setTimeout(() => giveUp?.(), this.options.interruptGraceMs ?? 3000);
+      t.unref();
     };
     if (options.signal?.aborted) throw new Error("Python execution aborted");
     options.signal?.addEventListener("abort", onAbort, { once: true });
     try {
-      const done = await new Promise<Extract<KernelEvent, { event: "done" }>>((resolve, reject) => {
+      const done = await new Promise<Extract<KernelEvent, { event: "done" }> | "still_running">((resolvePromise, reject) => {
+        giveUp = () => {
+          if (!this.pending.has(id)) return;
+          this.markBusy(id);
+          resolvePromise("still_running");
+        };
         this.pending.set(id, {
-          done: resolve,
+          done: resolvePromise,
           fail: reject,
           onEvent: event => {
             if (event.event === "stdout" || event.event === "stderr") {
@@ -250,7 +429,12 @@ export class Kernel {
           reject(error);
         }
       });
-      out.status = done.status === "ok" ? "ok" : options.signal?.aborted ? "aborted" : "error";
+      if (done === "still_running") {
+        out.status = "aborted";
+        out.stillRunning = true;
+      } else {
+        out.status = done.status === "ok" ? "ok" : options.signal?.aborted ? "aborted" : "error";
+      }
     } finally {
       options.signal?.removeEventListener("abort", onAbort);
       out.durationMs = Math.round(performance.now() - started);
@@ -296,17 +480,49 @@ export class Kernel {
     return (done.names as string[]) ?? [];
   }
 
-  /** Sends `shutdown`, which kills live `bash()` process groups, and kills the process if it has not exited after `graceMs`. */
+  private closedPromise(): Promise<void> {
+    return new Promise(r => {
+      if (this.closed) return r();
+      this.link.onClose(() => r());
+    });
+  }
+
+  /** Sends `shutdown`, which kills live `bash()` process groups, and kills the kernel if it has not exited after `graceMs`. */
   async shutdown(graceMs = 3000): Promise<void> {
-    if (this.exited) return;
-    const exited = new Promise<void>(resolve => this.proc.once("exit", () => resolve()));
+    if (this.closed) return;
+    const closed = this.closedPromise();
     try {
       this.send({ type: "shutdown" });
-      this.proc.stdin!.end();
+      if (!this.relayed) this.link.end();
     } catch {}
-    const timer = setTimeout(() => this.proc.kill("SIGKILL"), graceMs);
+    const timer = setTimeout(() => this.link.kill(), graceMs);
     timer.unref();
-    await exited;
+    await closed;
     clearTimeout(timer);
   }
+
+  /** Kills the kernel at once, for the "Kill kernel and restart" choice. Its `bash()` jobs keep running in their own process groups. */
+  async kill(): Promise<void> {
+    if (this.closed) return;
+    const closed = this.closedPromise();
+    this.link.kill();
+    await closed;
+  }
+
+  /** Leaves a relayed kernel running and disconnects. `wake` tells the relay when to ask pi-host to reopen the session. */
+  detach(wake: "now" | "on_event"): void {
+    if (!this.relayed || this.closed) return;
+    this.closed = true;
+    try {
+      this.link.write(JSON.stringify({ type: "relay_detach", wake }) + "\n");
+      this.link.end();
+    } catch {}
+    for (const p of this.pending.values()) p.fail(new Error("the session detached from its Python kernel"));
+    this.pending.clear();
+  }
+}
+
+export function relayPaths(artifactDir: string, sessionId: string): { socket: string; logPath: string; unit: string } {
+  const runtime = process.env.XDG_RUNTIME_DIR && process.platform === "linux" ? join(process.env.XDG_RUNTIME_DIR, "pi-rlm") : join(tmpdir(), "pi-rlm");
+  return { socket: join(runtime, `kernel-${sessionId}.sock`), logPath: join(artifactDir, "kernel-relay.log"), unit: `pi-rlm-kernel-${sessionId.slice(0, 8)}-${Date.now().toString(36)}` };
 }

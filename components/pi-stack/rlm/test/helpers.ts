@@ -25,7 +25,7 @@ export async function testPython(): Promise<string> {
 }
 
 /** Like `test/faux.ts` `openRuntime`, with skills on, so extension-provided Python skills load into the kernel. */
-export async function openWithSkills(opts: { root: string; provider: ReturnType<typeof fauxProvider>; extensionFactories: ExtensionFactory[]; sessionFile?: string }): Promise<AgentSessionRuntime> {
+export async function openWithSkills(opts: { root: string; provider: ReturnType<typeof fauxProvider>; extensionFactories: ExtensionFactory[]; sessionFile?: string; select?: (title: string, options: string[]) => Promise<string | undefined> }): Promise<AgentSessionRuntime> {
   const cwd = join(opts.root, "ws");
   const agentDir = join(opts.root, "agent");
   mkdirSync(cwd, { recursive: true });
@@ -41,8 +41,16 @@ export async function openWithSkills(opts: { root: string; provider: ReturnType<
   };
   const sessionManager = opts.sessionFile ? SessionManager.open(opts.sessionFile, join(opts.root, "sessions"), cwd) : SessionManager.create(cwd, join(opts.root, "sessions"));
   const runtime = await createAgentSessionRuntime(createRuntime as never, { cwd, agentDir, sessionManager });
-  await runtime.session.bindExtensions({ onError: (e: unknown) => console.error("extension error", e) } as never);
+  const uiContext = opts.select ? fakeUi(opts.select) : undefined;
+  await runtime.session.bindExtensions({ onError: (e: unknown) => console.error("extension error", e), ...(uiContext ? { uiContext } : {}) } as never);
   const model = runtime.services.modelRuntime.getModel(opts.provider.provider, opts.provider.model);
   if (model) await runtime.session.setModel(model);
   return runtime;
+}
+
+/** A UI whose `select` the test answers; every other UI call does nothing. */
+function fakeUi(select: (title: string, options: string[]) => Promise<string | undefined>): unknown {
+  return new Proxy({ select, confirm: async () => false, input: async () => undefined }, {
+    get: (target, key) => (key in target ? target[key as keyof typeof target] : () => undefined),
+  });
 }

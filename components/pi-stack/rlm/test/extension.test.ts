@@ -210,3 +210,51 @@ test("goal and compact bridges: compact.run compacts at the turn end and resumes
     await rt.dispose();
   }
 });
+
+test("a cell that ignores the interrupt makes the next call ask to wait or restart, and both choices work", async () => {
+  process.env.PI_RLM_INTERRUPT_GRACE_MS = "300";
+  const asked: string[] = [];
+  let answer = "Wait and preserve state";
+  const faux = fauxProvider();
+  const stubborn = "import signal, time\nsignal.signal(signal.SIGINT, signal.SIG_IGN)\ny = 5\ntime.sleep(2.5)";
+  faux.queue([cell(stubborn), "unused after abort", cell("print('y is', y)"), say("waited"), cell(stubborn), "unused after abort", cell("print('y' in globals())"), say("restarted"), "spare"]);
+  const rt = await openWithSkills({
+    root: join(root, "busy"),
+    provider: faux,
+    extensionFactories: [piRlm],
+    select: async (title, options) => {
+      asked.push(title.split("\n")[0]!);
+      assert.deepEqual(options, ["Wait and preserve state", "Kill kernel and restart"]);
+      return answer;
+    },
+  });
+  try {
+    const run = rt.session.prompt("stubborn cell");
+    await new Promise(r => setTimeout(r, 1200));
+    await rt.session.abort();
+    await run.catch(() => undefined);
+    assert.match(toolTexts(rt).at(-1)!, /ipython_interrupt_pending/);
+    faux.core.setResponses([]);
+    faux.queue([cell("print('y is', y)"), say("waited"), cell(stubborn), "unused", cell("print('y' in globals())"), say("restarted"), "spare"]);
+    await rt.session.prompt("read y");
+    await settle(rt, faux, 5);
+    assert.deepEqual(asked, ["Interrupted Python cell is still running"]);
+    assert.match(toolTexts(rt).at(-1)!, /y is 5/);
+
+    answer = "Kill kernel and restart";
+    const run2 = rt.session.prompt("stubborn again");
+    await new Promise(r => setTimeout(r, 1200));
+    await rt.session.abort();
+    await run2.catch(() => undefined);
+    faux.core.setResponses([]);
+    faux.queue([cell("print('y' in globals())"), say("restarted"), "spare"]);
+    await rt.session.prompt("check y");
+    await settle(rt, faux, 1);
+    assert.equal(asked.length, 2);
+    const out = toolTexts(rt).at(-1)!;
+    assert.match(out, /ipython_kernel_reset/);
+  } finally {
+    delete process.env.PI_RLM_INTERRUPT_GRACE_MS;
+    await rt.dispose();
+  }
+});

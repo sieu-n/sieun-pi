@@ -68,6 +68,26 @@ export type ChildLoaderOptions = Omit<ConstructorParameters<typeof DefaultResour
 type ChildLoaderProvider = (parentSessionId: string) => ChildLoaderOptions;
 
 const LOADER_KEY = Symbol.for("sieun-pi.pi-stack.rlm.child-loader");
+const CLOSING_KEY = Symbol.for("sieun-pi.pi-stack.rlm.closing");
+
+/** Why a session is closing: pi-host's reason from its `closing` event, or the parent's for a child it closes. */
+export type CloseReason = "killed" | "idle_unload" | "shutdown";
+
+function closing(): Map<string, CloseReason> {
+  const g = globalThis as unknown as Record<symbol, Map<string, CloseReason> | undefined>;
+  return (g[CLOSING_KEY] ??= new Map());
+}
+
+export function setClosingReason(sessionId: string, reason: CloseReason | undefined): void {
+  if (reason) closing().set(sessionId, reason);
+  else closing().delete(sessionId);
+}
+
+export function closingReason(sessionId: string): CloseReason | undefined {
+  return closing().get(sessionId);
+}
+
+const RESUME_TEXT = "[host-restart]\n\nThe session host restarted while you were working. Your Python kernel and its bash() jobs kept running. Continue your task.";
 const CHILDREN_KEY = Symbol.for("sieun-pi.pi-stack.rlm.children");
 const SELF = resolve(import.meta.dirname, "..", "index.ts");
 const NOTE_INTERVAL_MS = 10_000;
@@ -158,6 +178,8 @@ export class ChildManager {
   private readonly records = new Map<string, ChildRecord>();
   private readonly live = new Map<string, Live>();
   private readonly indexPath: string;
+  /** Children that were running when the last process closed them, to reopen and resume. */
+  private readonly interrupted = new Set<string>();
 
   constructor(private readonly parent: ParentHooks) {
     this.indexPath = join(parent.artifactDir, "rlm-children.json");
@@ -174,10 +196,7 @@ export class ChildManager {
     }
     for (const row of rows) {
       if (row.deleted) continue;
-      if (row.status === "running" || row.status === "queued") {
-        row.status = "cancelled";
-        row.error = "the parent process ended while the child was running";
-      }
+      if (row.status === "running" || row.status === "queued") this.interrupted.add(row.id);
       this.records.set(row.id, row);
       this.registerDormantRow(row);
     }
@@ -208,6 +227,31 @@ export class ChildManager {
       firstMessage: row.task.slice(0, 200),
       wake: () => this.wake(row.id),
     });
+  }
+
+  /**
+   * Reopens every child that was running when the last process closed it and tells it to continue, and reopens every child whose kernel
+   * still runs under its relay, so the events that kernel buffered arrive. Each one keeps its own kernel and `bash()` jobs.
+   */
+  async resumeInterrupted(relaySocket: (record: ChildRecord) => string): Promise<void> {
+    for (const record of this.all()) {
+      const resume = this.interrupted.has(record.id);
+      if (!resume && !existsSync(relaySocket(record))) continue;
+      this.interrupted.delete(record.id);
+      try {
+        await this.wake(record.id);
+      } catch (error) {
+        if (resume) this.fail(record, error);
+        continue;
+      }
+      const live = this.live.get(record.id);
+      if (!resume || !live) continue;
+      live.owesNotice = true;
+      record.status = "running";
+      this.touch(record);
+      this.save();
+      live.session.sendCustomMessage({ customType: "rlm_resume", content: RESUME_TEXT, display: true }, { triggerTurn: true }).catch(error => this.fail(record, error));
+    }
   }
 
   all(): ChildRecord[] {
@@ -361,7 +405,7 @@ export class ChildManager {
   }
 
   private settle(record: ChildRecord, live: Live, aborted: boolean): void {
-    if (record.deleted || record.status === "cancelled") return;
+    if (record.deleted || record.status === "cancelled" || !this.live.has(record.id)) return;
     const last = [...live.session.messages].reverse().find(m => m.role === "assistant") as { stopReason?: string; errorMessage?: string } | undefined;
     const text = live.session.getLastAssistantText();
     record.answerPreview = text ? text.slice(0, PREVIEW) : undefined;
@@ -511,16 +555,22 @@ export class ChildManager {
     live.resolveSettled();
   }
 
-  /** Closes every open child when the parent shuts down, leaving dormant rows so the bus can wake them. */
-  async closeAll(): Promise<void> {
+  /** Closes every open child with the parent, leaving dormant rows so the bus can wake them. A host stop keeps running children running for the next host. */
+  async closeAll(reason?: CloseReason): Promise<void> {
     for (const record of this.all()) {
-      if (record.status === "running" || record.status === "queued") {
+      if ((record.status === "running" || record.status === "queued") && reason !== "shutdown") {
         record.status = "cancelled";
         record.error = "the parent session shut down";
       }
     }
     this.save();
-    await Promise.all([...this.live.keys()].map(id => this.close(id)));
+    await Promise.all(
+      [...this.live.keys()].map(id => {
+        const record = this.records.get(id)!;
+        setClosingReason(record.sessionId, reason);
+        return this.close(id);
+      }),
+    );
     for (const record of this.all()) this.registerDormantRow(record);
   }
 }
