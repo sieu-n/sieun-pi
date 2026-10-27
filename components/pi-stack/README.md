@@ -16,6 +16,7 @@ The live chat on :5182, pi-pool's install and every live session stay on Prime u
 | `agent-bus/` | 3 | The `pi-agent-bus` extension: `agent_message` and `agent_observe`, routed in-process for one tree and through pi-host for roots and closed sessions. |
 | `harness/` | 4 | The `pi-harness` extension: the same `harness_state.json` format, digest injection, `/refine`, auto-refine and rollback. |
 | `pool/` | 5 | The pi-pool hooks on `before_provider_headers` and `message_end`. |
+| `rules/` | rules port | The Pi tests and pi-host check rig for `components/global-rules`, `components/claude-rules` and `components/user-history/extension`, which `host/extensions.json` loads in every session. |
 | `shared/` | all | Code two or more parts share, such as the process-wide agent registry in `shared/registry.ts`. |
 | `test/` | all | Shared test helpers, such as the faux provider runtime in `test/faux.ts`. |
 

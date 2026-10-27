@@ -3,6 +3,9 @@
     "../agent-bus/index.ts",
     "../harness/index.ts",
     "../rlm/index.ts",
-    "../pool/index.ts"
+    "../pool/index.ts",
+    "../../global-rules/index.ts",
+    "../../claude-rules/index.ts",
+    "../../user-history/extension/index.ts"
   ]
 }
