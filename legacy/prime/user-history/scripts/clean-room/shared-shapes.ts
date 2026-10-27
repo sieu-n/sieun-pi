@@ -126,6 +126,8 @@ const ownCheckin = (text: string, name: string): boolean => text.startsWith(`[ag
   text.startsWith(`[agent-message from sibling:check-in ${name} `) || /^\[agent-message from [^\]]*\]\s*\[(?:relay|wake)\]/.test(text);
 /** A command that writes, as opposed to reading the real checkout's node_modules through the copy's links: a git write, a file move, copy or delete, a redirect, sed -i or an install. On 10-27 run2 failed on a read-only ls of that node_modules. */
 const WRITES_REAL = /\bgit\b[^|;&]*\b(?:commit|push|checkout|switch|reset|add|stash|clean|restore|rm|merge|rebase|cherry-pick|apply|worktree)\b|\b(?:rm|mv|cp|tee|touch|mkdir|ln)\s|\bsed\s+-i|>>?\s*\S|\b(?:pnpm|npm)\s+(?:i|install|add)\b/;
+/** A job message that says the build is finished. */
+const FINISHED = /\b(?:built|done|committed|finished|pushed|ready for (?:you|review))\b/i;
 const SPAWN = /rlm\.(?:spawn|create_session)\s*\(/;
 
 /** The verdict from the files the run changed, the family's shell commands and the head session; pure, so a unit test feeds it. */
@@ -135,7 +137,8 @@ export function verdictOf(input: JudgeInput): { verdict: Verdict; checks: Check[
   const add = (id: string, ok: boolean | null, detail: string): void => { checks.push({ id, ok, detail }); };
   const views = changed.filter(file => file.path.endsWith(".svelte") && !file.path.startsWith(SHARED));
   const reports = views.filter(file => /report/i.test(file.path) || /\bReports?\b/.test(file.text));
-  const reported = head.some(event => event.kind === "text" && event.customType === "agent_message" && event.relation === "child");
+  // A job's design or progress note is no finished build: run3 on 10-27 failed at 23:05Z on the job's "Design before build" message.
+  const reported = head.some(event => event.kind === "text" && event.customType === "agent_message" && event.relation === "child" && FINISHED.test(event.text));
   const settled = reported || ended;
 
   add("1", reports.length ? true : settled ? false : null, `${changed.length} changed demo files; Reports views ${reports.map(file => file.path).join(", ") || "none"}`);
