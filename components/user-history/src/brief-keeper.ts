@@ -73,11 +73,19 @@ export function parseBriefRecord(value: unknown): BriefRecord | null {
 export interface BriefSeen { sessionId?: string; file?: string; started: boolean; prompted: boolean; ended: boolean; unborn?: boolean }
 
 const TASK_LABEL = "[task from parent]";
+/** A brief's first BRIEF_HEAD characters with its whitespace collapsed, which a prompt that carries the brief holds. */
+const BRIEF_HEAD = 300;
+const squash = (text: string): string => text.replace(/\s+/g, " ").trim();
+
 /**
  * Whether a session file holds any prompt and whether one is a child's task. A message from a parent, sibling or check-in can land before
- * the task: from 10-13 to 10-16 07:39Z 11 of 65 children that never got their task had one, "duty prompt button" a check-in at 03:39Z.
+ * the task: from 10-13 to 10-16 07:39Z 11 of 65 children that never got their task had one, "duty prompt button" a check-in at 03:39Z. A
+ * prompt is the task when it opens with the task label or carries the brief itself: on 10-27 the AI harness chat sent "pi cutover prep" its
+ * lost 17:02:12Z brief again in an agent message at 17:08:52Z, the child worked through 563 entries, and the 19:17Z check-in still read it
+ * "never started" with "no first prompt".
  */
-async function prompts(file: string): Promise<{ prompted: boolean; task: boolean }> {
+async function prompts(file: string, brief: string): Promise<{ prompted: boolean; task: boolean }> {
+  const head = squash(brief).slice(0, BRIEF_HEAD);
   const lines = fileLines(file);
   let prompted = false;
   try {
@@ -89,7 +97,7 @@ async function prompts(file: string): Promise<{ prompted: boolean; task: boolean
       prompted = true;
       const content = message ? entry.content : entry.message!.content;
       const text = typeof content === "string" ? content : Array.isArray(content) ? content.map(part => isRecord(part) && typeof part.text === "string" ? part.text : "").join("") : "";
-      if (text.startsWith(TASK_LABEL)) return { prompted, task: true };
+      if (text.startsWith(TASK_LABEL) || (head && squash(text).includes(head))) return { prompted, task: true };
     }
   } catch { /* unreadable: what was read */ }
   return { prompted, task: false };
@@ -122,7 +130,7 @@ export async function seeBrief(record: BriefRecord): Promise<BriefSeen> {
   // SIGKILLed the chat's worker 67 ms after rlm.spawn returned, and Prime wrote nothing for the child, not even its ledger line.
   if (!file) return { started: false, prompted: false, ended, ...(record.kind === "child" && !admitted ? { unborn: true } : {}) };
   const sessionId = /([\w-]+)\.jsonl$/.exec(file)?.[1];
-  const seen = await prompts(file);
+  const seen = await prompts(file, record.prompt);
   return { ...(sessionId ? { sessionId } : {}), file, started: record.kind === "child" ? seen.task : seen.prompted, prompted: seen.prompted, ended };
 }
 

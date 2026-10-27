@@ -76,6 +76,24 @@ test("a child whose file shows a later message but not its task lost the brief, 
   assert.deepEqual((await unstartedJobs(data, record.at + 21 * 60_000, async () => ({ id: "w1", ran: true }))).map(job => job.key), [record.id], "the check-in reads it as not started");
 });
 
+test("a child whose parent sent its brief again in an agent message started, and the check-in reads it as working", async () => {
+  const root = await mkdtemp(join(tmpdir(), "brief-resent-"));
+  const { file, record } = await child(root, fixture.opensearch);
+  // 10-27: "pi cutover prep" (sub-9e1d3339 of the AI harness chat) never got its 17:02:12Z task. Its parent sent the brief again at 17:08:52Z
+  // in an agent message, the child worked through 563 entries, and the 19:17Z check-in still read it "never started" with "no first prompt".
+  await appendFile(file, JSON.stringify({ type: "custom_message", customType: "agent_message", timestamp: new Date(record.at + 6 * 60_000).toISOString(),
+    content: `[agent-message from parent:AI harness developer environment VP]\n\nYour first prompt never reached you, so here is your brief plus a later scope change. Do it once.\n\n${record.prompt}\n\nAlso add a test.` }) + "\n");
+  await appendFile(file, JSON.stringify({ type: "message", timestamp: new Date(record.at + 7 * 60_000).toISOString(),
+    message: { role: "assistant", stopReason: "toolUse", content: [{ type: "toolCall", id: "c1", name: "ipython", arguments: { code: "print(1)" } }] } }) + "\n");
+  const seen = await seeBrief(record);
+  assert.deepEqual([seen.started, seen.prompted], [true, true], "its brief landed inside the parent's message");
+  assert.deepEqual(briefAct(record, seen, { id: "w1", ran: true }, record.at + 130 * 60_000), { act: "drop", why: "started" });
+  const data = join(root, BRIEFS_DIR);
+  await mkdir(data, { recursive: true });
+  await writeFile(join(data, `child-${record.id}.json`), JSON.stringify({ ...record, sent: { at: record.at + 6 * 60_000, worker: "w1" } }));
+  assert.deepEqual(await unstartedJobs(data, record.at + 130 * 60_000, async () => ({ id: "w1", ran: true })), [], "the check-in does not read it as not started");
+});
+
 /** A Prime agent dir with one worker file per tree and its recovery journal, as Prime 0.9.8 writes them. */
 async function workersDir(entries: { id: string; root: string; pid: number; createdAt: string; journal: object[] }[]): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "brief-workers-"));

@@ -2,10 +2,11 @@
 turn queue, its board.wake for 10:40Z on 10-25 was pending, and it reported to its parent at 19:33:50Z, while the cycle that read it at 19:33Z
 probed the model. At 19:35:33Z that cycle sent its parent "[watchdog] Your subagent 'checkin pushes goals' has produced nothing for 137.9
 minutes: its turn never dispatched and there is no shell process left to unblock. Cancel that child (rlm.delete_subagent) ...". A silent
-subagent with a pending wake, a run in pi-pool's turn queue or a message to its parent after its last prompt now gets no notice.
+subagent with a pending wake, a run in pi-pool's turn queue or a message to its parent after its last prompt now gets no notice, and
+ChildRanAgain replays pi cutover prep on 10-27, which pi-pool admitted while the cycle that read it silent probed the models.
 
 WATCHDOG_DIR=<folder with the old watchdog files> runs the same cases against the old cycle, where the waiting cases fail."""
-import datetime as dt, json, os, sys, tempfile, unittest
+import datetime as dt, json, os, sys, tempfile, time, unittest
 from pathlib import Path
 
 HERE = Path(os.environ.get('WATCHDOG_DIR') or Path(__file__).resolve().parents[1])
@@ -44,7 +45,7 @@ def queued(minutes_ago):
 TAIL = [prompt(146), report(138.4), done(137.9), prompt(28), queued(28)]
 
 
-class WaitingChild(unittest.TestCase):
+class Cycle(unittest.TestCase):
     def setUp(self):
         self.dir = Path(tempfile.mkdtemp())
         self.data = self.dir / 'browser-chat'
@@ -94,6 +95,8 @@ class WaitingChild(unittest.TestCase):
         verdicts, _ = watchdog._cycle(verbose=False)
         return next(r['verdict'] for r in verdicts if r['sid'] == CHILD), [c for c in self.calls if c[:1] == ('send',)]
 
+
+class WaitingChild(Cycle):
     def test_a_child_with_no_reason_to_wait_still_gets_its_parent_a_notice(self):
         verdict, sends = self.cycle(TAIL)
         self.assertEqual(verdict, 'CHILD_WEDGED')
@@ -115,6 +118,56 @@ class WaitingChild(unittest.TestCase):
                 f.write(json.dumps(report(0)) + '\n')
         self.during_probe = reports
         self.assertEqual(self.cycle(TAIL), ('OK', []))
+
+
+def agent_message(minutes_ago):
+    return {'type': 'custom_message', 'customType': 'agent_message', 'timestamp': at(minutes_ago),
+            'content': '[agent-message from parent:AI harness developer environment VP]\n\nAdd the pi-host schedules test.'}
+
+
+def tool_call(minutes_ago):
+    return {'type': 'message', 'timestamp': at(minutes_ago), 'message': {'role': 'assistant', 'stopReason': 'toolUse', 'content': [
+        {'type': 'toolCall', 'id': 'call_2', 'name': 'ipython', 'arguments': {'code': 'print(1)'}}]}}
+
+
+# pi cutover prep (01a17e4f-f87a-756b-ac56-2ed15ad5b609) as the 19:08:57Z cycle on 10-27 read it: its turn ended at 18:17:37Z, its parent's
+# message at 18:27:58Z sat 136th in pi-pool's turn queue, and pi-pool admitted it at 19:14:37Z while that cycle probed three models.
+REOPENED = [prompt(120), done(51.7), agent_message(41.3), queued(41.3)]
+
+
+class ChildRanAgain(Cycle):
+    """The 19:08:57Z cycle read pi cutover prep silent 51.7 min and sent its parent "Cancel that child" at 19:15:31Z, after pi-pool had
+    admitted the child at 19:14:37Z and it had written 7 tool calls. A child that got its pool slot or wrote output after the cycle read it
+    gets no notice; one that holds its slot and has said nothing for 45 min still does."""
+
+    def queue(self):
+        self.turns.write_text(json.dumps({'working': {}, 'queued': {CHILD: {'tree': PARENT, 'since': time.time() - 41.3 * 60}}, 'owner': {},
+                                          'lead': [], 'kept': {}}))
+
+    def admit(self, minutes_ago):
+        self.turns.write_text(json.dumps({'working': {CHILD: {'tree': PARENT, 'kind': 'slot', 'since': time.time() - minutes_ago * 60}},
+                                          'queued': {}, 'owner': {}, 'lead': [], 'kept': {}}))
+
+    def test_a_child_admitted_and_working_while_the_cycle_probed_gets_no_notice(self):
+        self.queue()
+
+        def runs():
+            self.admit(0.9)
+            with open(self.dir / f'{CHILD}.jsonl', 'a') as f:
+                f.write(json.dumps(tool_call(0.8)) + '\n')
+        self.during_probe = runs
+        self.assertEqual(self.cycle(REOPENED), ('OK', []))
+
+    def test_a_child_admitted_while_the_cycle_probed_gets_no_notice_before_its_first_output(self):
+        self.queue()
+        self.during_probe = lambda: self.admit(0.2)
+        self.assertEqual(self.cycle(REOPENED), ('OK', []))
+
+    def test_a_child_that_holds_its_slot_and_says_nothing_for_45_minutes_still_gets_a_notice(self):
+        self.admit(50)
+        verdict, sends = self.cycle([prompt(120), done(70), agent_message(60), queued(60)])
+        self.assertEqual(verdict, 'CHILD_WEDGED')
+        self.assertEqual([(s[1], 'Cancel that child' in s[2]) for s in sends], [(PARENT, True)])
 
 
 if __name__ == '__main__':

@@ -118,6 +118,15 @@ def pool_queued(sid):
     return any(sid in (turns.get(part) or {}) for part in ('queued', 'kept'))
 
 
+def pool_admitted_at(sid):
+    """When pi-pool's turn queue (turns.json `working`) gave session `sid` the slot it holds now, else None."""
+    try:
+        since = ((json.loads(POOL_TURNS.read_text()).get('working') or {}).get(sid) or {}).get('since')
+    except (OSError, ValueError, AttributeError):
+        return None
+    return dt.datetime.fromtimestamp(since, dt.timezone.utc) if isinstance(since, (int, float)) else None
+
+
 def _rp():
     """resume_paused.py, loaded once."""
     global _resume_paused

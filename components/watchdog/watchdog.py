@@ -12,7 +12,7 @@ import re
 import time
 
 from wd_common import (LOG_F, STATE_F, WATCH, _rp, _run, _tail_events, _ts, chat_ids, chat_jobs, credential_wait_at, gone_reason, log, outbox_notice,
-                       pa, pending_wake, pool_queued, stop_reason, tree_root, work_done)
+                       pa, pending_wake, pool_admitted_at, pool_queued, stop_reason, tree_root, work_done)
 from wd_daemon import daemon_call, ui_retry, unwedge
 from wd_heartbeats import heartbeat_rearm
 from wd_probe import probe_model, probe_verdict
@@ -27,6 +27,7 @@ TURN_FREEZE = 25     # no tool running, no assistant turn produced
 TOOL_FREEZE = 35     # tool "running" but no process burning CPU
 BUSY_TOOL_MAX = 120  # a genuinely running tool this long is still a wedge
 CHILD_EXTRA = 15     # subagents get a longer leash
+CHILD_SILENT = 45    # a subagent silent this long since it last ran gets its parent a CHILD_WEDGED notice
 
 # Resume budget: after a reboot every session wakes at once and swap fills (2026-10-09). The 5 per cycle stays the only gate.
 MAX_RESUMES_PER_CYCLE = 5
@@ -106,13 +107,27 @@ def child_waits(r):
 
     checkin pushes goals (01a14d7c-1a93-7008-bc1e-bde0d047eaf9) on us-metal02, 10-24: its parent's prompt at 19:05:27Z sat 105th in pi-pool's
     turn queue, its board.wake for 10:40Z on 10-25 was pending, and it reported to its parent at 19:33:50Z. The cycle that read it at 19:33Z
-    sent its parent "[watchdog] Your subagent 'checkin pushes goals' has produced nothing for 137.9 minutes ... Cancel that child" at 19:35:33Z."""
+    sent its parent "[watchdog] Your subagent 'checkin pushes goals' has produced nothing for 137.9 minutes ... Cancel that child" at 19:35:33Z.
+
+    Its silence counts from the later of its last output and the pool slot it holds now, both read again here. pi cutover prep
+    (01a17e4f-f87a-756b-ac56-2ed15ad5b609) on us-metal02, 10-27: its parent's message at 18:27:58Z sat 136th in pi-pool's turn queue, the cycle
+    that read it at 19:08:57Z found it silent 51.7 min since 18:17:37Z, pi-pool admitted it at 19:14:37Z while that cycle probed three models,
+    and the cycle sent its parent "Cancel that child" at 19:15:31Z, after the child had written 7 tool calls."""
     wake = pending_wake(r['sid'])
     if wake:
         return f'its board.wake {wake} is pending'
     if pool_queued(r['sid']):
         return "its run waits in pi-pool's turn queue"
-    if r.get('file') and told_parent(_tail_events(r['file'])):
+    evs = _tail_events(r['file']) if r.get('file') else []
+    now = dt.datetime.now(dt.timezone.utc)
+    spoke = max((t for e in evs if e.get('type') == 'message' and (e.get('message') or {}).get('role') == 'assistant'
+                 and said_something(e['message']) and (t := _ts(e.get('timestamp')))), default=None)
+    if spoke and now - spoke < dt.timedelta(minutes=CHILD_SILENT):
+        return f'it wrote output at {spoke:%H:%M:%SZ}, after the cycle read it silent'
+    admitted = pool_admitted_at(r['sid'])
+    if admitted and now - admitted < dt.timedelta(minutes=CHILD_SILENT):
+        return f'pi-pool gave it its slot at {admitted:%H:%M:%SZ}, after a queue wait'
+    if told_parent(evs):
         return 'it sent its parent a message after its last prompt'
     return None
 
@@ -309,10 +324,10 @@ def classify(r, prev, repeats=None):
             and (r.get('awaiting_min') is None or r['awaiting_min'] >= 10)):
         return 'PHANTOM_TURN', (f"runtime says streaming but no request is open and nothing written for "
                                 f"{r.get('last_asst_min')}m; {r.get('queued', 0)} message(s) queued behind it")
-    if r['depth'] > 0 and (r.get('last_asst_min') or 0) >= 45 and r.get('own_busy'):
+    if r['depth'] > 0 and (r.get('last_asst_min') or 0) >= CHILD_SILENT and r.get('own_busy'):
         return 'CHILD_WEDGED', (f'subagent silent {r.get("last_asst_min")}m in one tool call burning CPU: {r["own_busy"][0]} -- '
                                 f'its parent owns the fix (stop that process or the child)')
-    if r['depth'] > 0 and (r.get('last_asst_min') or 0) >= 45 and not stuck_cell_procs(r['pid'], 20):
+    if r['depth'] > 0 and (r.get('last_asst_min') or 0) >= CHILD_SILENT and not stuck_cell_procs(r['pid'], 20):
         return 'CHILD_WEDGED', (f'subagent silent {r.get("last_asst_min")}m with no shell to kill -- '
                                 f'its parent owns the fix (cancel/respawn the child)')
     if aw is not None and not (r['tools'] or r['bash']):
