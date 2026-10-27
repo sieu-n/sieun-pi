@@ -41,6 +41,10 @@ export interface AgentEntry extends Identity {
   activity(): AgentActivity;
   deliver(message: BusMessage): Promise<Delivery>;
   preview(limit: number): MessagePreview[];
+  /** Stops the child's running turn. pi-rlm supplies it for children. */
+  cancel?(): Promise<void>;
+  /** Disposes the child's session and unregisters it. pi-rlm supplies it for children. */
+  dispose?(): Promise<void>;
 }
 
 interface Store {
