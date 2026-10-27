@@ -1,7 +1,7 @@
 {
   "name": "Prod box headroom",
   "ownerWords": "(10-18 06:21Z) just make this UX clean, snappy. it doesnt feel like it at all. then push through all the plans. lets go!\n\n(10-14, Crawler VP t38, on buying a second NVMe) NONONONONONONO I SAID NO TO THIS LIKE 10 times\n\n(10-19 15:32Z) 이런 느낌으로 푸쉬해줘. 모든 쓰레드에서 user intent를 분석하고, 꾸준히 발생했던 문제는 duties로 묶어야 돼.",
-  "goal": "us-metal01, the prod box, keeps room for the crawl push: profile reads on prod answer within 0.4 s at p95 over 1 h, prod's database drive nvme0 writes at most 4 TB a day so it lasts without a new drive, and no disk health alert fires on us-metal01 or us-metal02. us-metal01's RAID10 ran degraded from 10-14 and went offline on 10-25 at 10:40:38Z with no duty seeing it, so the firing metal-disk-* rules are a standing metric. Box CPU shows up through the profile p95, so CPU wait has no metric of its own: the census climb fills the box on purpose (c100), and p154 traced the profile p95 stalls to the API's own event loop. The p95 and drive metrics are the numbers of goals p8 and p83, and they miss until those goals are met: while p8 or p83 is open, a miss steers that goal's live job instead of starting a second one.",
+  "goal": "us-metal01, the prod box, keeps room for the crawl push: profile reads on prod answer within 0.4 s at p95 over 1 h, prod's database drive nvme0 writes at most 6.5 TB a day so it lasts without a new drive (the owner's t14 answer on 10-27 kept full-speed crawling and accepted about 6 TB a day after code cuts, which replaced the 4 TB line; at 6.5 TB a day the drive reaches 1,800 TBW around February 2027), and no disk health alert fires on us-metal01 or us-metal02. us-metal01's RAID10 ran degraded from 10-14 and went offline on 10-25 at 10:40:38Z with no duty seeing it, so the firing metal-disk-* rules are a standing metric. Box CPU shows up through the profile p95, so CPU wait has no metric of its own: the census climb fills the box on purpose (c100), and p154 traced the profile p95 stalls to the API's own event loop. The p95 and drive metrics are the numbers of goals p8 and p83, and they miss until those goals are met: while p8 or p83 is open, a miss steers that goal's live job instead of starting a second one.",
   "metrics": [
     {
       "key": "profiles_p95_s",
@@ -15,7 +15,7 @@
       "key": "nvme0_tb_24h",
       "label": "Writes to prod's database drive nvme0 in the last 24 h",
       "op": "<=",
-      "target": 4,
+      "target": 6.5,
       "unit": " TB"
     },
     {
