@@ -1,0 +1,34 @@
+#!/bin/sh
+# Refuses `prime-agent shutdown` on the live daemon from any process a kernel starts (kernel-read.py puts this folder first on PATH). On 10-27
+# at 16:55:06Z and 17:07:46Z a service-handoff proof ran `HOME=<scratch>/r01/h TMPDIR=/tmp/svh-r01 prime-agent shutdown --force --json` to
+# stop its scratch daemon. The CLI still used the public socket, so the live daemon stopped both times, every worker went down, and pi-pool
+# swept the queued first prompts of the new jobs as "process gone". A scratch daemon is stopped with an explicit --daemon-socket that names
+# its own socket. `prime-agent stop <agent>` stays open, since AGENTS.md names it as the way to restart one stuck agent.
+here=$(cd "$(dirname "$0")" && pwd -P)
+real=""
+rest=$PATH
+while [ -n "$rest" ]; do
+  dir=${rest%%:*}
+  case $rest in *:*) rest=${rest#*:} ;; *) rest="" ;; esac
+  [ -n "$dir" ] && [ -x "$dir/prime-agent" ] && [ "$(cd "$dir" 2>/dev/null && pwd -P)" != "$here" ] && { real=$dir/prime-agent; break; }
+done
+[ -n "$real" ] || { echo "prime-agent: command not found" >&2; exit 127; }
+public=$(realpath -m "/tmp/prime-agent-$(id -u)/daemon.sock")
+sock="" command="" prev=""
+for arg in "$@"; do
+  if [ "$prev" = "--daemon-socket" ]; then sock=$arg
+  else
+    case $arg in
+      --daemon-socket=*) sock=${arg#--daemon-socket=} ;;
+      -*) ;;
+      *) [ -z "$command" ] && command=$arg ;;
+    esac
+  fi
+  prev=$arg
+done
+if [ "$command" = "shutdown" ] && { [ -z "$sock" ] || [ "$(realpath -m "$sock")" = "$public" ]; }; then
+  echo "prime-agent: refused: 'prime-agent shutdown' would stop the live daemon on $public and every agent on this box (10-27 16:55Z and 17:07Z)." \
+    "To stop a scratch daemon, name its socket: prime-agent --daemon-socket <its socket> shutdown. To restart one stuck agent, run prime-agent stop <agent>." >&2
+  exit 2
+fi
+exec "$real" "$@"

@@ -77,6 +77,10 @@ Code in this sieun-pi tree, the chat release, the runtime copy, a skill folder o
 Each refusal is one JSON line in `~/.prime/agent/logs/transcript-refusals.jsonl` (`GLOBAL_RULES_TRANSCRIPT_LOG` moves it), with the session folder, the path and the session it belongs to, so the d10 audit can count repeats.
 With no `RLM_SESSION_DIR` below `session-artifacts` (CI, a person's shell) nothing is judged.
 
+`unit-env/prime-agent` refuses `prime-agent shutdown` from any process a kernel starts, since `kernel-read.py` puts `unit-env/` first on the kernel's `PATH`, unless an explicit `--daemon-socket` names a socket other than the public `/tmp/prime-agent-<uid>/daemon.sock`.
+On 10-27 at 16:55:06Z and 17:07:46Z a service-handoff proof ran `HOME=<scratch>/r01/h TMPDIR=/tmp/svh-r01 prime-agent shutdown --force --json` for its scratch daemon, the CLI used the public socket, and the live daemon on us-metal02 stopped both times with every agent on it.
+`prime-agent stop <agent>` still runs, since `AGENTS.md` names it as the way to restart one stuck agent. A call by the binary's full path skips the shim.
+
 `send-log.ts` keeps the record of outside sends (c37), so "did an agent send anything" has one answer.
 Each layer above writes one JSON line per send it judges to `~/.prime/agent/browser-chat/sends.jsonl`: the tool_call guard, `send-check.ts` for the kernel, the cua-driver proxy and the aside-browser skill.
 A line holds the time, the decision (`allowed` or `refused`), the layer, the chat and session, the target, the guard's reason and the OWNER_OK token.
