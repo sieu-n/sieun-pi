@@ -62,16 +62,17 @@ export const WEBHOOKS = [
  * Provider secrets that belong only in Vent once every caller moved: the cutover key inventory (inventory-keys.md) minus URLs, ids,
  * browser-side publishable keys, telemetry (Langfuse, Sentry), Vent's own caller keys and the GeoNode proxy URL, the one allowed exception.
  * Dead keys with no reader stay in, since the owner asked to "completely remove all legacy sdk, API keys from old deployments".
+ * B2 and PostHog keys are not here: apps call both directly with their own keys (owner rule c181, 2026-10-27).
  */
 export const PROVIDER_KEYS = new Set([
   "CLIPROXY_API_KEY", "CLIPROXY_SLACK_BOT_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "AIMLAPI_KEY", "ELEVENLABS_API_KEY",
   "PEXELS_API_KEY", "HEYGEN_API_KEY", "INSTAGRAM_ACCESS_TOKEN", "INSTAGRAM_APP_SECRET", "TYPESAFE_API_KEY", "ZEROBOUNCE_API_KEY", "RESEND_API_KEY",
   "SLACK_BOT_TOKEN_SALES", "SLACK_BOT_TOKEN_DEV", "STRIPE_SECRET_KEY", "ZERNIO_API_KEY", "GOOGLE_GMAIL_CLIENT_SECRET", "GOOGLE_CLIENT_SECRET",
   "GOOGLE_DRIVE_SYNC_CLIENT_SECRET", "CLERK_SECRET_KEY", "CLERK_DEV_SECRET_KEY", "LITELLM_API_KEY", "QDRANT_API_KEY", "YOUTUBE_API_KEY",
-  "POSTHOG_KEY", "POSTHOG_API_KEY", "ANYTHING_BUILDER_AUTH_TOKEN", "STRIPE_WEBHOOK_SECRET", "CLERK_WEBHOOK_SIGNING_SECRET",
+  "ANYTHING_BUILDER_AUTH_TOKEN", "STRIPE_WEBHOOK_SECRET", "CLERK_WEBHOOK_SIGNING_SECRET",
   "RESEND_WEBHOOK_SECRET", "ZERNIO_WEBHOOK_SECRET",
-  // Found by the p61 env key audit (10-22): B2 keys under a BACKBLAZE_ name, the b2-viewer keys, and the CLIProxy management key.
-  "BACKBLAZE_APPLICATION_KEY", "BACKBLAZE_KEY_ID", "B2_VIEWER_PROD_KEY", "B2_VIEWER_DEV_KEY", "CLIPROXY_MANAGEMENT_KEY",
+  // Found by the p61 env key audit (10-22): the CLIProxy management key.
+  "CLIPROXY_MANAGEMENT_KEY",
 ]);
 
 /** Vercel and Railway tokens count on the box, where the host services exporter (virev-services) calls those APIs at runtime: until 10-24
@@ -114,8 +115,7 @@ export interface ShareResult { refs: Record<string, { sha: string; sites: ShareS
 /** Share script statuses for a row whose call is no longer in the code: every file deleted, or the files no longer name the provider. */
 export const GONE = new Set(["removed", "gone"]);
 export interface WebhookVerdict { source: string; direct: boolean; vent: boolean }
-/** urlKeys: per location, the URL-shaped names whose value carries user:pass@ for an outside host (a B2 key inside RAW_ARCHIVE_URL). */
-export interface KeyListing { locations: Record<string, string[]>; unreadable: Record<string, string>; urlKeys?: Record<string, string[]> }
+export interface KeyListing { locations: Record<string, string[]>; unreadable: Record<string, string> }
 /** The tip's text lines that name a removed provider (`git grep -z -n` output) and apps/vent/src/vent/tables.py at the tip. */
 export interface RemovedReads { grep: string; tables: string }
 export interface VentReads { share: ShareResult | { error: string }; webhooks: WebhookVerdict[] | { error: string }; keys: KeyListing; removed: RemovedReads | { error: string } }
@@ -295,8 +295,7 @@ export function ventMetrics(reads: VentReads, at: number): PrecheckOutput {
   const leaks: string[] = [];
   for (const [location, names] of Object.entries(reads.keys.locations)) {
     if (!inScope(location)) continue;
-    const here = [...names.filter(name => (PROVIDER_KEYS.has(name) || (BOX_PLATFORM.test(name) && onBox(location))) && !(name === "SLACK_BOT_TOKEN_DEV" && ALARM_FALLBACK.test(location)) && !CI_VENT_INPUT(location, name)),
-      ...(reads.keys.urlKeys?.[location] ?? [])];
+    const here = names.filter(name => (PROVIDER_KEYS.has(name) || (BOX_PLATFORM.test(name) && onBox(location))) && !(name === "SLACK_BOT_TOKEN_DEV" && ALARM_FALLBACK.test(location)) && !CI_VENT_INPUT(location, name));
     for (const name of here) leaks.push(`${location} ${name}`);
     if (here.length) flagged.push({ at, kind: "key_outside_vent", item: location, excerpt: `${location} still holds ${here.join(", ")}`.slice(0, 300) });
   }
@@ -354,30 +353,20 @@ async function webhooks(): Promise<WebhookVerdict[]> {
 
 /** What BOX_READER of auto-sns-agent scripts/ci/vent-key-scan.mjs prints: env files, containers (stopped ones too) and host systemd units, names only. */
 export interface BoxReaderOut {
-  files: Record<string, string[]>; fileUrls?: Record<string, Record<string, boolean | null>>;
-  docker: Record<string, string[]>; dockerUrls?: Record<string, Record<string, boolean | null>>;
-  units?: Record<string, string[]>; errors?: string[];
+  files: Record<string, string[]>; docker: Record<string, string[]>; units?: Record<string, string[]>; errors?: string[];
 }
 
-/** Adds the box reader's places to `locations` as `box <file>`, `container <name>` and `unit <unit>`, and returns the URL-shaped names whose value carries a key. */
-export function boxLocations(out: BoxReaderOut, locations: Record<string, string[]>): Record<string, string[]> {
-  const urlKeys: Record<string, string[]> = {};
-  const add = (location: string, names: string[], urls: Record<string, boolean | null> = {}) => {
-    locations[location] = names;
-    const keyed = Object.entries(urls).filter(([, flag]) => flag === true).map(([name]) => name);
-    if (keyed.length) urlKeys[location] = keyed;
-  };
-  for (const [file, names] of Object.entries(out.files)) add(`box ${file}`, names, out.fileUrls?.[file]);
-  for (const [name, names] of Object.entries(out.docker)) add(`container ${name}`, names, out.dockerUrls?.[name]);
-  for (const [unit, names] of Object.entries(out.units ?? {})) add(`unit ${unit}`, names);
-  return urlKeys;
+/** Adds the box reader's places to `locations` as `box <file>`, `container <name>` and `unit <unit>`. */
+export function boxLocations(out: BoxReaderOut, locations: Record<string, string[]>): void {
+  for (const [file, names] of Object.entries(out.files)) locations[`box ${file}`] = names;
+  for (const [name, names] of Object.entries(out.docker)) locations[`container ${name}`] = names;
+  for (const [unit, names] of Object.entries(out.units ?? {})) locations[`unit ${unit}`] = names;
 }
 
 /** Every location's env names: the cutover listers, both Convex deployments, the tier files at main and us-metal01 through the key scan's BOX_READER. Values never leave this function. */
 async function keyListing(): Promise<KeyListing> {
   const locations: Record<string, string[]> = {};
   const unreadable: Record<string, string> = {};
-  const urlKeys: Record<string, string[]> = {};
   const tasks: Promise<void>[] = [];
   tasks.push(run("node", [`${LISTERS}/list-store-names.mjs`]).then(stdout => {
     const listed = JSON.parse(stdout) as { out: Record<string, string[]>; unreadable: Record<string, string> };
@@ -397,10 +386,10 @@ async function keyListing(): Promise<KeyListing> {
   })().catch((error: unknown) => { unreadable[`tier files at ${REF}`] = errorText(error); }));
   tasks.push(run("node", ["--input-type=module", "-e", `import(${JSON.stringify(join(REPO, "scripts/ci/vent-key-scan.mjs"))}).then(m => process.stdout.write(m.BOX_READER))`])
     .then(reader => run("ssh", ["-o", "BatchMode=yes", BOX, "python3", "-"], { input: reader }))
-    .then(stdout => { Object.assign(urlKeys, boxLocations(JSON.parse(stdout.trim().split("\n").pop()!) as BoxReaderOut, locations)); },
+    .then(stdout => { boxLocations(JSON.parse(stdout.trim().split("\n").pop()!) as BoxReaderOut, locations); },
       (error: unknown) => { unreadable[`${BOX} box reader`] = errorText(error); }));
   await Promise.all(tasks);
-  return { locations, unreadable, urlKeys };
+  return { locations, unreadable };
 }
 
 /** The tip's lines that name a removed provider, read with git grep (wiki content and binaries skipped), and tables.py at the tip. Exit 1 is no match. */

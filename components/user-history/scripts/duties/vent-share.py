@@ -3,7 +3,7 @@
 
 Moved from the auto-sns-agent session folder sessions/2026/10/18/1949-vent-share-measure/data/vent_share.py so the duty
 (vent-gateway.ts) runs tracked code. Reads the 1610 call-site inventory (83 rows at 8bc0fa3615), keeps the 70 rows the cutover
-coordinator counted as in scope, and decides for each one, at a git ref, whether the code at that site goes through Vent or still
+coordinator counted as in scope minus the 4 PostHog rows (20, 36, 41, 45) that c181 took out of Vent, and decides for each one, at a git ref, whether the code at that site goes through Vent or still
 calls the provider. The call sites at a ref are the rows whose call is still in the code there, since a row whose files are deleted
 (removed) or no longer name the provider (gone) has no caller left, plus every direct provider call the call scan finds in deployed
 code that no live row covers, so a new direct call counts as a site of its own. With --traffic
@@ -45,6 +45,9 @@ EXCEPTION_ROWS = {
 # Alarm paths call Vent first and keep a direct Slack fallback for when Vent is down, so a
 # partial verdict (Vent sign plus a direct line) is the target shape for these rows.
 FALLBACK_ROWS = {69, 70, 71}
+# Providers the apps call directly with their own keys, never through Vent (owner rule c181, 2026-10-27: "Posthog & B2 i dont
+# think needs to go through vent"). Their rows leave the in-scope list, and the call scan does not count their calls. No row is B2.
+DIRECT = {"posthog"}
 # Rows whose call is no longer in the code at a ref, which leave that ref's call-site list.
 GONE = ("removed", "gone")
 
@@ -66,7 +69,6 @@ P = {
     "notion": dict(strong=r"api\.notion\.com", sdk=r"(?!)"),
     "telegram": dict(strong=r"api\.telegram\.org|telegramSendMessageUrl", sdk=r"(?!)"),
     "slack-webhook": dict(strong=r"hooks\.slack\.com|fetch\(\s*webhook_?[uU]rl", sdk=r"(?!)"),
-    "posthog": dict(strong=r"i\.posthog\.com|(?<!PUBLIC_)POSTHOG_KEY", sdk=r"posthog-node|/capture"),
     "cliproxy": dict(strong=r"CLIPROXY_(BASE_URL|API_KEY)|cliproxy_(base_url|api_key)|cliproxy\.virev|LITELLM_API_KEY", sdk=r"\b(Async)?(OpenAI|Anthropic)\(|\bnew (OpenAI|Anthropic)\b"),
     "openai-paid": dict(strong=r"api\.openai\.com|OPENAI_API_KEY|openai_api_key", sdk=r"\b(Async)?OpenAI\("),
     "elevenlabs": dict(strong=r"elevenlabs\.io|ELEVENLABS_API_KEY|elevenlabs_api_key", sdk=r"(?!)"),
@@ -236,7 +238,7 @@ def load_sites(base: Tree) -> list[Site]:
     sites = []
     for i, line in enumerate(rows):
         c = [x.strip() for x in line.strip().strip("|").split("|")]
-        if any(k in c[6] for k in OUT_OF_SCOPE):
+        if any(k in c[6] for k in OUT_OF_SCOPE) or provider_of(i, c[2]) in DIRECT:
             continue
         files = resolve(split_paths(c[1]), base) + EXTRA_FILES.get(i, [])
         if not files:
@@ -379,14 +381,14 @@ CALL_HOST = re.compile(
     r"|[a-z0-9.-]*zernio\.com/api|gmail\.googleapis\.com|oauth2\.googleapis\.com|sheets\.googleapis\.com|searchconsole\.googleapis\.com"
     r"|www\.googleapis\.com/(drive|upload/drive|webmasters|oauth2)|generativelanguage\.googleapis\.com|api\.elevenlabs\.io|api\.pexels\.com"
     r"|api\.aimlapi\.com|api\.heygen\.com|graph\.instagram\.com|api\.instagram\.com|graph\.facebook\.com|rupload\.facebook\.com"
-    r"|[a-z]*\.?zerobounce\.net|api\.typesafe\.ai|api\.clerk\.com|api\.notion\.com|api\.telegram\.org|[a-z]+\.i\.posthog\.com"
+    r"|[a-z]*\.?zerobounce\.net|api\.typesafe\.ai|api\.clerk\.com|api\.notion\.com|api\.telegram\.org"
     r"|api\.indexnow\.org|www\.bing\.com/indexnow)"
 )
 CALL_BASE = re.compile(r"\bCLIPROXY_BASE_URL\b|\bcliproxy_base_url\b")
-CALL_CLIENT = re.compile(r"new (Stripe|PostHog|Resend|WebClient|OpenAI|Anthropic)\(|createClerkClient\(|\b(Async)?(OpenAI|Anthropic)\(|genai\.Client\(")
+CALL_CLIENT = re.compile(r"new (Stripe|Resend|WebClient|OpenAI|Anthropic)\(|createClerkClient\(|\b(Async)?(OpenAI|Anthropic)\(|genai\.Client\(")
 NOT_A_CALL = re.compile(r"\b(throw|badRequest\(|Error\(|placeholder)|^\s*\w+\s*:\s*(str|SecretStr|Optional\b)")
 # The provider a client constructor builds; an OpenAI-wire client is CLIProxy's or paid OpenAI's.
-CLIENT_PROVIDERS = [(r"new Stripe\(", ("stripe",)), (r"new PostHog\(", ("posthog",)), (r"new Resend\(", ("resend",)),
+CLIENT_PROVIDERS = [(r"new Stripe\(", ("stripe",)), (r"new Resend\(", ("resend",)),
                     (r"new WebClient\(", ("slack",)), (r"createClerkClient\(", ("clerk",)), (r"genai\.Client\(", ("gemini",)),
                     (r"OpenAI\(", ("cliproxy", "openai-paid")), (r"Anthropic\(", ("cliproxy",))]
 
@@ -573,7 +575,7 @@ def main() -> None:
     refs = a.ref or ["origin/sieun/dev"]
     base = Tree(INVENTORY_REF)
     sites = load_sites(base)
-    assert len(sites) == 70, f"expected 70 in-scope rows, got {len(sites)}"
+    assert len(sites) == 66, f"expected 66 in-scope rows (70 less the 4 c181 PostHog rows), got {len(sites)}"
     result: dict = {"inventory_ref": INVENTORY_REF, "refs": {}}
     for ref in refs:
         tree = Tree(ref)

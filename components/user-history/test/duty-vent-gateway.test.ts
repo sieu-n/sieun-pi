@@ -74,21 +74,30 @@ test("the CLIProxy gateway's tier files are out of scope, and other tiers still 
   assert.equal(inScope("tier apps/infra/.env"), true);
 });
 
-test("the box reader's stopped containers, host units, services.env tokens and keyed URLs count (p61 audit, 10-22)", () => {
+test("the box reader's stopped containers, host units and services.env tokens count (p61 audit, 10-22)", () => {
   const locations: Record<string, string[]> = {};
-  const urlKeys = boxLocations({
+  boxLocations({
     files: { "/srv/obs/secrets/services.env": ["RAILWAY_API_TOKEN", "VERCEL_TOKEN"], "/srv/prod/secrets/vent.env": ["STRIPE_SECRET_KEY"] },
-    docker: { "virev-prod-copy-oneoff": ["SOURCE_RAW_ARCHIVE_URL"], "virev-prod-crawler-api": ["RAW_ARCHIVE_URL"] },
-    dockerUrls: { "virev-prod-copy-oneoff": { SOURCE_RAW_ARCHIVE_URL: true }, "virev-prod-crawler-api": { RAW_ARCHIVE_URL: false } },
+    docker: { "virev-prod-copy-oneoff": ["OPENAI_API_KEY"] },
     units: { "opensearch-b2@prod.service": ["SLACK_BOT_TOKEN_DEV", "PATH"], "virev-digest.service": ["SLACK_BOT_TOKEN_DEV"] },
   }, locations);
   locations["github secrets repo"] = ["VERCEL_TOKEN", "RAILWAY_TOKEN"];
-  locations["box /home/x/.config/b2-viewer/env"] = ["B2_VIEWER_PROD_KEY"];
-  const output = ventMetrics(reads({ keys: { locations, unreadable: {}, urlKeys } }), 0);
-  // services.env 2, the stopped oneoff's keyed URL 1, a non-backup unit's Slack token 1, the b2-viewer key 1. Vent's own file, GitHub deploy tokens
+  const output = ventMetrics(reads({ keys: { locations, unreadable: {} } }), 0);
+  // services.env 2, the stopped oneoff's key 1, a non-backup unit's Slack token 1. Vent's own file, GitHub deploy tokens
   // and the backup unit, which runs dotenvx over the infra tier that holds the alarm fallback token, do not count.
-  assert.equal(output.metrics.provider_keys_outside_vent, 5);
+  assert.equal(output.metrics.provider_keys_outside_vent, 4);
   assert.equal(inScope("unit opensearch-b2@prod.service"), true);
+});
+
+// Owner rule c181 (10-27): apps call B2 and PostHog directly, so their keys sit in app tiers and on the box and never count.
+test("B2 and PostHog keys outside Vent do not count (c181)", () => {
+  const keys = { locations: {
+    "tier apps/crawler-v3/.env": ["B2_KEY_ID", "B2_APP_KEY", "RAW_ARCHIVE_URL", "BACKBLAZE_APPLICATION_KEY"],
+    "tier apps/search/.env": ["POSTHOG_KEY", "POSTHOG_API_KEY", "POSTHOG_PERSONAL_API_KEY"],
+    "box /home/x/.config/b2-viewer/env": ["B2_VIEWER_PROD_KEY"],
+    "tier apps/api-portal/.env": ["STRIPE_SECRET_KEY"],
+  }, unreadable: {} };
+  assert.equal(ventMetrics(reads({ keys }), 0).metrics.provider_keys_outside_vent, 1);
 });
 
 // On 10-24 1b0fa0fd17 moved virev-services' RAILWAY_API_TOKEN and VERCEL_TOKEN from /srv/obs/secrets/services.env into the prod infra tier,
@@ -173,6 +182,7 @@ test("registry webhook sources whose path receive.ts still routes read as direct
 
 // On 2026-10-19 the Vent cutover train checked the 7 rows the old rules read as direct or partial at sieun/dev 36d3466814 (#2, #13, #19, #35,
 // #36, #71, #77): each one goes through Vent, and the session's vent_share.py read 69 of 70 there. Each fixture holds the lines of the real file.
+// #36 (PostHog) left the count with c181 on 10-27, so 6 stay here.
 const DETECTOR_CASES: Record<string, { row: number; provider: string; files: Record<string, string>; deps?: Record<string, string> }> = {
   "#2 Resend component with an empty key": { row: 2, provider: "resend", files: {
     "convex/search/senders/resendClient.ts": "import { components } from '../../_generated/api';\nimport { Resend } from '@convex-dev/resend';\n\nexport const resend = new Resend(components.resend, {\n\tapiKey: '',\n\ttestMode: false,\n});\n",
@@ -184,8 +194,6 @@ const DETECTOR_CASES: Record<string, { row: number; provider: string; files: Rec
     "convex/search/workflows/stepActions.ts": "import { VENT_PROVIDER_TOKEN_HEADER, ventAuth, ventFetch, ventUrl } from '../../lib/vent';\n\tconst webhookUrl = await integrationSecret(ctx, orgId, String(config.connectionId ?? ''), 'slack_webhook');\n\tif (!isSlackWebhookUrl(webhookUrl)) throw badRequest('stored Slack webhook URL is invalid');\n\tconst res = await ventFetch(ventUrl('slack-webhook-user', ''), {\n\t\theaders: { ...ventAuth(), [VENT_PROVIDER_TOKEN_HEADER]: slackWebhookSecret(webhookUrl) },\n" } },
   "#35 svelte-clerk handler with the Backend API through clerk-vent": { row: 35, provider: "clerk", files: {
     "apps/search/src/hooks.server.ts": "import { env } from '$env/dynamic/private';\nimport { withClerkHandler } from 'svelte-clerk/server';\nimport { clerkVentOptions, withVentTokens } from '$lib/server/clerk-vent';\n" } },
-  "#36 PostHog posts to ${VENT_URL}/posthog": { row: 36, provider: "posthog", files: {
-    "apps/search/src/lib/server/posthog.ts": "import { env as publicEnv } from '$env/dynamic/public';\nimport { readVent } from './vent';\n\treturn [publicEnv.PUBLIC_POSTHOG_KEY].find(isUsable);\n\tconst vent = readVent(privateEnv);\n" } },
   "#71 ci_watch posts through _vent_post and keeps slack_api as the Vent-down fallback": { row: 71, provider: "slack", files: {
     "apps/infra/ci-server/alert/ci_watch.py": "def _vent_post(cfg, payload):\n    try:\n        return _chat_post(cfg[\"vent_api\"], credential(cfg[\"vent_credential\"]), payload)\n    except urllib.error.HTTPError as e:\n        code = e.headers.get(\"x-vent-error\") or vent_error_code(e.read())\n\ndef slack_post(cfg, text) -> bool:\n    if credential(cfg.get(\"vent_credential\", \"\")):\n        body = _vent_post(cfg, payload)\n    if body is None:\n        body = _chat_post(cfg[\"slack_api\"], token, payload)\n",
     "apps/infra/ci-server/alert/config.json.j2": "{\n  \"vent_api\": {{ ci.watch.vent_api | default('https://vent.virev.ai/slack-dev') | to_json }},\n  \"slack_api\": \"https://slack.com/api\",\n}\n" } },
@@ -193,12 +201,11 @@ const DETECTOR_CASES: Record<string, { row: number; provider: string; files: Rec
     "scripts/seo/virev_seo/indexnow.py": "from virev_seo import vent\nfrom virev_seo.config import INDEXNOW_KEY_DIR, INDEXNOW_ROOT_KEY_DIR, METRICS_DIR\nINDEXNOW_PATH = \"/indexnow/indexnow\"\nSENT_FILE = METRICS_DIR / \"indexnow-sent.json\"\nclass IndexNowError(RuntimeError):\n    pass\n    status, body = vent.call(\"indexnow\", INDEXNOW_PATH, payload)\n" } },
 };
 
-// A real bypass the narrowed rules must still catch: search's PostHog client at origin/main a8f85b4206 reads the private POSTHOG_KEY and
-// posts with posthog-node to us.i.posthog.com, with no Vent sign in the file.
-const BYPASS = { row: 36, provider: "posthog", files: {
-  "apps/search/src/lib/server/posthog.ts": "import { PostHog } from 'posthog-node';\nimport { env as privateEnv } from '$env/dynamic/private';\n\treturn [privateEnv.POSTHOG_KEY, privateEnv.PUBLIC_POSTHOG_KEY, publicEnv.PUBLIC_POSTHOG_KEY].find(isUsable);\n\t\t'https://us.i.posthog.com'\n" } };
+// A bypass the narrowed rules must still catch: a Stripe client built on the secret key with no Vent sign in the file.
+const BYPASS = { row: 5, provider: "stripe", files: {
+  "convex/lib/stripeClient.ts": "import Stripe from 'stripe';\nimport { env } from './env';\nreturn new Stripe(env.STRIPE_SECRET_KEY, {});\n" } };
 
-test("vent-share.py reads the 7 rows the cutover train checked as Vent, and still reads a direct PostHog client as direct", async () => {
+test("vent-share.py reads the 6 rows the cutover train checked as Vent, and still reads a direct Stripe client as direct", async () => {
   const { execFileSync } = await import("node:child_process");
   const { VENT_SHARE } = await import("../scripts/duties/vent-gateway.ts");
   const code = "import importlib.util, json, sys\nspec = importlib.util.spec_from_file_location('vs', sys.argv[1]); vs = importlib.util.module_from_spec(spec)\n" +
@@ -208,7 +215,7 @@ test("vent-share.py reads the 7 rows the cutover train checked as Vent, and stil
   const got = JSON.parse(execFileSync("python3", ["-c", code, VENT_SHARE, JSON.stringify({ ...DETECTOR_CASES, bypass: BYPASS })], { encoding: "utf8" })) as Record<string, [string, string[]]>;
   for (const name of Object.keys(DETECTOR_CASES)) assert.deepEqual(got[name], ["vent", name.startsWith("#71") ? got[name]![1] : []], name);
   assert.equal(got.bypass![0], "direct");
-  assert.match(got.bypass![1].join("\n"), /posthog-node|POSTHOG_KEY|us\.i\.posthog\.com/);
+  assert.match(got.bypass![1].join("\n"), /STRIPE_SECRET_KEY|new Stripe/);
 });
 
 test("the by-code counts read at main and at the sieun/dev tip, and a direct row at the tip is flagged for the cutover train", () => {
@@ -241,7 +248,7 @@ test("a site whose call is gone at the tip leaves the count, and a new direct ca
   assert.equal(output.flagged!.some(flag => flag.kind === "site_direct"), false);
 });
 
-test("vent-share.py reads a row whose files no longer name the provider as gone, and its call scan finds a new direct call but no covered one", async () => {
+test("vent-share.py reads a row whose files no longer name the provider as gone, and its call scan finds a new direct call but no covered or c181 PostHog one", async () => {
   const { execFileSync } = await import("node:child_process");
   const { VENT_SHARE } = await import("../scripts/duties/vent-gateway.ts");
   const files: Record<string, string> = {
@@ -251,6 +258,7 @@ test("vent-share.py reads a row whose files no longer name the provider as gone,
     "convex/search/hint.ts": "throw badRequest('That does not look like a Slack incoming-webhook URL (https://hooks.slack.com/services/…)');\n",
     "apps/search/svelte.config.js": "export default {};\n",
     "apps/search/src/lib/analytics/config.ts": "export const HOST = 'https://us.i.posthog.com';\n",
+    "apps/search/src/lib/server/posthog.ts": "import { PostHog } from 'posthog-node';\nexport const ph = new PostHog(env.POSTHOG_KEY, { host: 'https://us.i.posthog.com' });\n",
     "apps/crawler-v3/src/settings.py": "    cliproxy_base_url: str = \"\"\n",
   };
   const code = "import importlib.util, json, re, sys\nspec = importlib.util.spec_from_file_location('vs', sys.argv[1]); vs = importlib.util.module_from_spec(spec)\n" +
