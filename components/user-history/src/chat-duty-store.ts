@@ -142,7 +142,7 @@ export class DutyStore {
     if (parsed?.key !== key) {
       const before = parsed;
       const records = before && before.ino === info.ino && info.size > before.size
-        ? appendedRuns(path, before.size, info.size).then(async added => added ? [...added, ...await before.records] : parseRuns(path))
+        ? appendedRuns(path, info.ino, before.size, info.size).then(async added => added ? [...added, ...await before.records] : parseRuns(path))
         : parseRuns(path);
       const entry = { key, ino: info.ino, size: info.size, records };
       parsedRuns.set(path, entry);
@@ -165,10 +165,14 @@ const parsedRuns = new Map<string, { key: string; ino: bigint; size: bigint; rec
 const runsKey = (info: { ino: bigint; size: bigint; mtimeNs: bigint }): string => `${info.ino}:${info.size}:${info.mtimeNs}`;
 const statRuns = (path: string) => stat(path, { bigint: true }).catch(error => { if (missing(error)) return null; throw error; });
 
-/** The records appended to a runs file in [from, to), newest first; null when byte from - 1 is no line end, so the file did not only grow. */
-async function appendedRuns(path: string, from: bigint, to: bigint): Promise<DutyRunRecord[] | null> {
+/**
+ * The records appended to a runs file in [from, to), newest first; null when the file opened is no longer inode `ino` (a rewrite renamed a new
+ * file over it after the stat) or byte from - 1 is no line end, so the file did not only grow.
+ */
+export async function appendedRuns(path: string, ino: bigint, from: bigint, to: bigint): Promise<DutyRunRecord[] | null> {
   const handle = await open(path, "r");
   try {
+    if ((await handle.stat({ bigint: true })).ino !== ino) return null;
     const buffer = Buffer.alloc(Number(to - from) + 1);
     const { bytesRead } = await handle.read(buffer, 0, buffer.length, Number(from) - 1);
     if (bytesRead !== buffer.length || buffer[0] !== 0x0a) return null;
