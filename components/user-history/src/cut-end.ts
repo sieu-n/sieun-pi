@@ -216,9 +216,10 @@ const READS_AT_ONCE = 8;
  */
 export class SessionCuts {
   private readonly known = new Map<string, { key: string; cut: Cut | null }>();
+  private readonly seen: (cut: Cut) => void;
 
   /** `seen` gets each cut that came or moved on a read, so the server can send its continue then instead of at the next job sweep. */
-  constructor(private readonly seen: (cut: Cut) => void = () => {}) {}
+  constructor(seen: (cut: Cut) => void = () => {}) { this.seen = seen; }
 
   /** The cut last read for a session file; null when it ended well or was not read yet. */
   of(file: string | undefined): Cut | null {

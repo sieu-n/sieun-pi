@@ -258,7 +258,7 @@ export async function read(ctx: Context): Promise<Sample[]> {
     const all = [checkIn, ...file.duties];
     const states = new Map<string, number>();
     let green = 0, judged = 0, overdue = 0, stuckNoFix = 0;
-    const board: ChatBoard | null = await boards.view(id).catch(() => null);
+    const board: ChatBoard | null = await boards.read(id).catch(() => null);
     const openSteps = new Set<string>();
     const walkOpen = (items: ChatBoard["plan"]) => { for (const item of items) { if (item.status === "todo" || item.status === "doing" || item.status === "blocked") openSteps.add(item.id); walkOpen(item.children); } };
     walkOpen(board?.plan ?? []);
