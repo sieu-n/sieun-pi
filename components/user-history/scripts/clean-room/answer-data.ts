@@ -64,7 +64,7 @@ export function ownJob(chatName: string, event: { from?: string; text: string })
 }
 
 /** The session ids of the chat and every job collect saw under it: its subagent files, and root jobs from the agents snapshots. */
-function family(run: string, chat: string): { id: string; file: string }[] {
+export function family(run: string, chat: string): { id: string; file: string }[] {
   const out = new Map<string, string>();
   for (const file of sessionFiles(chat)) out.set(file.split("/").at(-1)!.replace(/\.jsonl$/, ""), file);
   const dir = join(run, "agents");

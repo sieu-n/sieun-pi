@@ -382,7 +382,7 @@ export function jobLedgerPrompt(ledger: Ledger | null, brief: string = ""): stri
 const COST_WORD = /\b(?:costs?|pric(?:e|es|ed|ing)|spend|budget|bill(?:s|ed|ing)?|usd)\b|\$\s?\d/i;
 const MODEL_WORD = /\b(?:tokens?|llms?|model calls?|gpt[- ]?\w*|claude|opus|sonnet|haiku|gemini|deepseek|jev|luna|openrouter|per 1M)\b|\/1M\b/i;
 /** The brief itself says the shared instructions are priced as cache reads; a price list with a cache-read column does not. */
-const NAMES_CACHE_READ = /(?:system prompt|instructions?|shared (?:prefix|part|prompt))[^.\n]{0,80}cache[- ]?read|cache[- ]?read[^.\n]{0,80}(?:system prompt|instructions?|shared (?:prefix|part|prompt))/i;
+const NAMES_CACHE_READ = /(?:system prompt|instructions?|shared (?:prefix|part|prompt))(?:[^.\n]|\.\d){0,80}cache[- ]?read|cache[- ]?read(?:[^.\n]|\.\d){0,80}(?:system prompt|instructions?|shared (?:prefix|part|prompt))/i;
 export const TOKEN_COST_RULE_LINE = "- c157 This job prices model calls, so price the shared system prompt and instructions, the part every call repeats, at " +
   "each model's cache-read rate, and fresh input only for each item's own text and images. Show fresh input, cache reads, cache writes and output " +
   "as separate columns, put the shared part first and byte-identical in every call so the cache hits, and confirm it with a measured cache-hit " +
