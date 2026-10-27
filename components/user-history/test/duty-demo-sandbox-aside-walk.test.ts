@@ -6,8 +6,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { readWalk, slowestPage } from "../scripts/duties/demo-sandbox.ts";
-import { asideRepl } from "../scripts/duties/aside-repl.ts";
-import { BROWSER_URL, MARKETING_TITLE, REPL_LIB, scenarioTitle, testErrors, walkReport } from "../scripts/duties/demo-sandbox-walk.ts";
+import { asideRepl, type Repl } from "../scripts/duties/aside-repl.ts";
+import { BROWSER_URL, MARKETING_TITLE, REPL_LIB, runWalk, scenarioTitle, testErrors, walkReport } from "../scripts/duties/demo-sandbox-walk.ts";
 import { BASE_URL } from "../scripts/duties/demo-sandbox.ts";
 
 const clean = { outside: [], violations: [], failed: [] };
@@ -46,6 +46,26 @@ test("the walk's tabs use their own .localhost host on 5180's port, which the RE
   assert.match(browser.hostname, /\.localhost$/);
   assert.equal(browser.port, base.port);
   assert.match(REPL_LIB, /url\.hostname\.endsWith\("\.localhost"\)/);
+});
+
+test("the walk opens every page on BROWSER_URL", async () => {
+  const opened: string[] = [];
+  const world = `${BROWSER_URL}/app/campaigns/heartleaf-toner-us?view=home&world=kbeauty-brand.000000000000`;
+  const answers: [RegExp, unknown][] = [
+    [/^open a tab/, "tab"], [/^open /, { status: 200, url: BROWSER_URL }], [/^land on/, world], [/^time the load$/, { ms: 1, longMs: 0 }],
+    [/^read the path$/, "/app"], [/^switch to /, { ms: 1, longMs: 0, document: false }], [/^close the tab$/, clean],
+  ];
+  const repl: Repl = {
+    async call<T>(name: string, code: string): Promise<T> {
+      const url = /__walk\.goto\("([^"]+)"\)/.exec(code)?.[1];
+      if (url) opened.push(url);
+      return (answers.find(([pattern]) => pattern.test(name))?.[1] ?? null) as T;
+    },
+    stop() {},
+  };
+  await runWalk(repl);
+  assert.ok(opened.length > 20);
+  assert.deepEqual(opened.filter(url => !url.startsWith(`${BROWSER_URL}/`)), []);
 });
 
 test("the REPL side of the walk is valid JavaScript with no TypeScript left in it", () => {
