@@ -13,7 +13,7 @@ import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createModels } from "@earendil-works/pi-ai/models";
-import { DURABLE_SETTINGS, poolProvider, TurnQueue } from "./durable/pool-provider.ts";
+import { DURABLE_SETTINGS, poolProvider, TurnQueue } from "@sieun-pi/pi-pool/durable";
 import { DurableCommands, DurableThreads } from "./durable/index.ts";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";

@@ -14,11 +14,11 @@ import { getAgentDir, type ExtensionAPI, type ExtensionContext, type ExtensionFa
 import { join } from "node:path";
 import { PRIME_BASE_PROMPT } from "@sieun-pi/pi-family/preamble";
 import { identityOf } from "@sieun-pi/pi-family/registry";
-import { accountCommand, POOLED_PROVIDERS, refreshStatus, STATUS_REFRESH_MS } from "./src/account.ts";
-import { rewriteFailure, type PoolCall } from "./src/errors.ts";
-import { credential, defaultPoolBin, poolEnv, runPool, vendOnce, type TreeKey } from "./src/pool-cli.ts";
+import { accountCommand, POOLED_PROVIDERS, refreshStatus, STATUS_REFRESH_MS } from "../core/account.ts";
+import { rewriteFailure, type PoolCall } from "../core/errors.ts";
+import { credential, defaultPoolBin, poolEnv, runPool, vendOnce, type TreeKey } from "../core/pool-cli.ts";
 import { clearPoolRetries, countPoolRetry } from "@sieun-pi/pi-family/retries";
-import { admitWait, ordinal } from "./src/turns.ts";
+import { admitWait, ordinal } from "../core/turns.ts";
 
 export interface PoolOptions {
   /** The token hook; defaults to `PI_POOL_TOKEN_BIN` or `<pool dir>/bin/pi-pool-token`. */

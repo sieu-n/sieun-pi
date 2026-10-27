@@ -27,6 +27,7 @@
     "@earendil-works/pi-coding-agent": "1.4.0",
     "@earendil-works/pi-durable": "1.4.0",
     "@sieun-pi/pi-family": "0.1.0",
+    "@sieun-pi/pi-pool": "0.1.0",
     "@sieun-pi/pi-rlm": "0.1.0",
     "tsx": "4.23.13"
   },

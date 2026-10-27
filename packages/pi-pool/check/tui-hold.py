@@ -65,7 +65,7 @@ env = {
     "PI_POOL_TOKEN_BIN": os.path.join(STACK, "pi-pool", "test", "fake-pool.mjs"), "PI_POOL_DIR": dirs["pool"],
     "FAKE_POOL_DIR": dirs["pool"], "FAKE_ANTHROPIC_URL": url, "TERM": "xterm-256color",
 }
-pi = [os.path.join(STACK, "node_modules", ".bin", "pi"), "-ne", "-e", os.path.join(STACK, "pi-pool", "index.ts"),
+pi = [os.path.join(STACK, "node_modules", ".bin", "pi"), "-ne", "-e", os.path.join(STACK, "pi-pool", "src", "pi", "index.ts"),
       "-e", os.path.join(STACK, "pi-pool", "check", "anthropic-at.ts"), "--model", "anthropic/claude-sonnet-4-5",
       "--session-dir", dirs["sessions"], "--no-skills", "--no-context-files", "--no-mcp", "-nt"]
 session = f"p1135-{a.name}"

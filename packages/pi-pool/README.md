@@ -811,18 +811,24 @@ S->>X: Pi's retry, before_provider_headers again
 
 | Path | What it holds |
 |---|---|
-| `index.ts` | The extension: providers, hooks, turn queue and `/account`. |
-| `src/pool-cli.ts` | Pool calls, the session key environment and the vend and slot-wait loop. |
-| `src/errors.ts` | The `message_end` rewrite of 429, 400 and 403 failures. |
-| `src/turns.ts` | The turn queue wait on `turns.json`. |
-| `src/account.ts` | `/account` and the account line. |
+| `src/pi/index.ts` | The stock Pi extension: providers, hooks, turn queue and `/account`. `package.json`'s `pi.extensions` names it. |
+| `src/durable/pool-provider.ts` | The pi-durable entry, `@sieun-pi/pi-pool/durable`: `poolProvider()`, a pi-ai Provider that vends each request's account and turns a slot wait into a stored sleep. pi-host uses it. |
+| `src/core/pool-cli.ts` | Pool calls, the session key environment and the vend and slot-wait loop (`@sieun-pi/pi-pool/pool-cli`). |
+| `src/core/errors.ts` | The `message_end` rewrite of 429, 400 and 403 failures (`@sieun-pi/pi-pool/errors`). |
+| `src/core/turns.ts` | The turn queue wait on `turns.json`. |
+| `src/core/account.ts` | `/account` and the account line. |
+| `src/retries.ts` | The retries a pooled provider takes on, off Pi's retry budget, which pi-host and pi-rlm read too. |
 | `check/` | The Q2 probe, the fake Anthropic server and the tmux rig that drives the real `pi` TUI. |
 | `test/` | Unit and runtime tests, and `fake-pool.mjs`, a stand-in for `pi-pool-token`. |
 
 ### Use it
 
+Install the Python side once, then add the package to stock Pi, or load it for one run.
+
 ```sh
-pi -e packages/pi-pool/index.ts --model anthropic/claude-opus-5-5
+/usr/bin/python3 -B packages/pi-pool/install.py
+pi install ./packages/pi-pool
+pi -e packages/pi-pool/src/pi/index.ts --model anthropic/claude-opus-5-5
 ```
 
 `PI_POOL_TOKEN_BIN` points the extension at another hook, and `PI_POOL_DIR` at another pool folder.
@@ -832,6 +838,7 @@ pi -e packages/pi-pool/index.ts --model anthropic/claude-opus-5-5
 ```sh
 cd packages
 node --import tsx --test --test-force-exit "pi-pool/test/*.test.ts"
+(cd pi-pool && /usr/bin/python3 -B -m unittest discover -s test)
 python3 -B pi-pool/check/tui-hold.py --name hold --wait-sec 600 --scratch <dir> --out <dir>
 python3 -B pi-pool/check/tui-hold.py --name esc --wait-sec 3600 --escape-after 600 --scratch <dir> --out <dir>
 ```

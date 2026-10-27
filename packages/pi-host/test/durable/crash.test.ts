@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { after, describe, test } from "node:test";
 import { crashAndResume, problems, shape, type CrashResult, type KillPoint } from "./crash-rig.ts";
 import { FAUX_CHILD_ANSWER, FAUX_FINAL } from "./crash-scenario.ts";
-import { SLOT_OPEN_TEXT } from "../../src/durable/pool-provider.ts";
+import { SLOT_OPEN_TEXT } from "@sieun-pi/pi-pool/durable";
 
 const scratch = mkdtempSync(join(tmpdir(), "pi-durable-crash-"));
 after(() => rmSync(scratch, { recursive: true, force: true }));

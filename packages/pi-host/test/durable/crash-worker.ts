@@ -14,7 +14,7 @@ import type { ConversationId, EntryRecord, Harness, LiveState } from "@earendil-
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { openDurableHost } from "../../src/durable/open.ts";
-import { poolProvider } from "../../src/durable/pool-provider.ts";
+import { poolProvider } from "@sieun-pi/pi-pool/durable";
 import { fauxRespond, INPUT, MODEL, REQUEST_ID, textOf, type EntrySummary } from "./crash-scenario.ts";
 
 const context = BACKGROUND_CONTEXT;

@@ -11,7 +11,7 @@ import { fauxProvider } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { DURABLE_SETTINGS, poolProvider, TurnQueue } from "../../src/durable/pool-provider.ts";
+import { DURABLE_SETTINGS, poolProvider, TurnQueue } from "@sieun-pi/pi-pool/durable";
 import { fauxRespond, MODEL } from "./crash-scenario.ts";
 import { DurableCommands, DurableThreads } from "../../src/durable/index.ts";
 import { PiHost } from "../../src/host.ts";

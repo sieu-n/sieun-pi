@@ -39,7 +39,7 @@ H-->>C: the same submission, nothing admitted twice
 | `commands.ts` | `DurableCommands`: the `durable_*` socket commands and the watches per connection. |
 | `registry.ts` | What every thread runs with: the preamble, pi-durable's coding tools in the thread's cwd, the subagent tool, `agent.message` entries and `chat.doc` documents. |
 | `open.ts` | `openDurableHost()` for one file and the Prime preamble extension. |
-| `pool-provider.ts` | `poolProvider()`: a pi-ai Provider that vends each request's account through pi-pool and turns a slot wait into a stored sleep. |
+| `@sieun-pi/pi-pool/durable` | `poolProvider()` in `packages/pi-pool/src/durable/pool-provider.ts`: a pi-ai Provider that vends each request's account through pi-pool and turns a slot wait into a stored sleep. |
 | `subagent.ts` | The `subagent` tool: a replay-safe call that owns one child conversation and returns its answer. |
 | `import.ts` | `parseSession()`: a Prime or Pi session file's active branch as entry drafts, for `durable_import`. |
 

@@ -3,7 +3,7 @@
     "../pi-rlm/src/pi/agent-bus.ts",
     "../pi-harness/index.ts",
     "../pi-rlm/src/pi/index.ts",
-    "../pi-pool/index.ts",
+    "../pi-pool/src/pi/index.ts",
     "../../components/global-rules/index.ts",
     "../../components/claude-rules/index.ts",
     "../../components/user-history/extension/index.ts"

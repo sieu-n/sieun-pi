@@ -4,5 +4,29 @@
   "private": true,
   "type": "module",
   "description": "Account pool for Pi: which account each request uses, slot waits and 429 moves.",
-  "license": "SEE LICENSE IN ../../NOTICE"
+  "license": "SEE LICENSE IN ../../NOTICE",
+  "exports": {
+    "./durable": "./src/durable/pool-provider.ts",
+    "./pool-cli": "./src/core/pool-cli.ts",
+    "./errors": "./src/core/errors.ts"
+  },
+  "pi": {
+    "extensions": [
+      "./src/pi/index.ts"
+    ]
+  },
+  "scripts": {
+    "test": "node --import tsx --test --test-force-exit \"test/*.test.ts\"",
+    "test:python": "/usr/bin/python3 -B -m unittest discover -s test"
+  },
+  "dependencies": {
+    "@sieun-pi/pi-family": "0.1.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@sieun-pi/pi-testkit": "0.1.0"
+  }
 }

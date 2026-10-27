@@ -3,10 +3,10 @@ import { test } from "node:test";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { isRetryableAssistantError } from "@earendil-works/pi-ai/compat";
 import { assignIdentity } from "@sieun-pi/pi-family/registry";
-import { rootOf } from "../index.ts";
-import { readFailure, rewriteFailure, type PoolCall } from "../src/errors.ts";
-import { credential, poolEnv, readVend, type Vend } from "../src/pool-cli.ts";
-import { admitReply, placeIn } from "../src/turns.ts";
+import { rootOf } from "../src/pi/index.ts";
+import { readFailure, rewriteFailure, type PoolCall } from "../src/core/errors.ts";
+import { credential, poolEnv, readVend, type Vend } from "../src/core/pool-cli.ts";
+import { admitReply, placeIn } from "../src/core/turns.ts";
 
 const failed = (errorMessage: string): AssistantMessage => ({
   role: "assistant", content: [], api: "anthropic-messages", provider: "anthropic", model: "claude-sonnet-4-5",

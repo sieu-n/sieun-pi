@@ -1,6 +1,6 @@
 /**
  * pi-pool as a pi-ai Provider for pi-durable. Each request asks pi-pool's token hook for the tree's account, the same
- * way the Pi extension in ../pool does, through ../pool/src/pool-cli.ts.
+ * way the Pi extension in ../pi does, through ../core/pool-cli.ts.
  *
  * A slot wait (the hook's exit 75) becomes a deferred response, so pi-durable's generation task commits a sleep until
  * the slot and holds no request while it waits. A restart during the wait finds the sleep in storage and polls again at
@@ -27,9 +27,9 @@ import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { rewriteFailure, type PoolCall } from "../../../pi-pool/src/errors.ts";
-import { admitReply, placeIn, type AdmitReply } from "../../../pi-pool/src/turns.ts";
-import { defaultPoolBin, poolEnv, runPool, vendOnce, WAIT_ASK_MS, type TreeKey, type Vend } from "../../../pi-pool/src/pool-cli.ts";
+import { rewriteFailure, type PoolCall } from "../core/errors.ts";
+import { admitReply, placeIn, type AdmitReply } from "../core/turns.ts";
+import { defaultPoolBin, poolEnv, runPool, vendOnce, WAIT_ASK_MS, type TreeKey, type Vend } from "../core/pool-cli.ts";
 
 export interface PoolProviderOptions {
   /** The pool tree's root key. One durable session file is one tree, so every conversation in it shares the account. */
@@ -54,9 +54,9 @@ export const SLOT_OPEN_TEXT = "pi-pool: the account slot is open; the service is
 export const TURN_HANDLE_ID = "pi-pool-turn";
 /** Retry text for a poll that found the run's working slot started. */
 export const TURN_OPEN_TEXT = "pi-pool: the working slot is open; the service is temporarily unavailable until the retry sends the request";
-/** How often a queued run reads its place, the extension's WAIT_READ_MS in ../../../pi-pool/src/turns.ts. */
+/** How often a queued run reads its place, the extension's WAIT_READ_MS in ../core/turns.ts. */
 export const TURN_POLL_MS = 1000;
-/** How often a working run renews its slot's lease, the extension's QUEUE_RENEW_MS in ../../../pi-pool/index.ts. */
+/** How often a working run renews its slot's lease, the extension's QUEUE_RENEW_MS in ../pi/index.ts. */
 export const TURN_RENEW_MS = 5 * 60_000;
 
 /**
