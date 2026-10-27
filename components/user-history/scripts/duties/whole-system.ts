@@ -1287,7 +1287,8 @@ export function measure(input: Inputs): PrecheckOutput {
   const allQuiet = quietReadings(input.watch, start, start + WINDOW_MS + MINUTE, quietMs);
   const starts = input.daemonStarts ?? [];
   const quiet = allQuiet.filter(reading => !settling(starts, reading.host, reading.at));
-  const voided = allQuiet.length - quiet.length;
+  // A box whose every quiet minute fell in its settle window has no reading, so the worst box is unknown and the headline gives none.
+  const settlingHosts = [...new Set(allQuiet.map(reading => reading.host))].filter(host => !quiet.some(reading => reading.host === host));
   const worst = quiet.reduce<QuietReading | undefined>((top, reading) => !top || reading.gb >= top.gb ? reading : top, undefined);
   const worstByHost = new Map<string, QuietReading>();
   for (const reading of quiet) if ((worstByHost.get(reading.host)?.gb ?? -1) <= reading.gb) worstByHost.set(reading.host, reading);
@@ -1312,7 +1313,7 @@ export function measure(input: Inputs): PrecheckOutput {
     parked_overtaken_over_10min: overtakenLong.length,
     cell_holds_30: poolHeld.filter(hold => hold.cell).length + poolCut.length,
     stuck_steps_all: stuck.reduce((sum, entry) => sum + entry.value, 0),
-    ...worst ? { quiet_agent_gb: worst.gb } : {},
+    ...worst && !settlingHosts.length ? { quiet_agent_gb: worst.gb } : {},
     oversized_procs: oversize.length,
     mac_test_browsers: browsers.length,
     usable_min_30: usable,
@@ -1396,9 +1397,10 @@ export function measure(input: Inputs): PrecheckOutput {
     `${Math.round((worst.at - worst.whole.since) / MINUTE)} min into a stretch with no session working that began by ${clock(worst.whole.since)}; ` +
     `the target is under ${QUIET_TARGET_GB} GB once ${quietWords} min pass with nobody working. ${quiet.filter(reading => reading.whole).length} box minutes in the window sat past that mark.` });
   else if (worst) flagged.push({ kind: "quiet_agents", excerpt: quietTreeWords(worst, quietWords) });
-  else if (voided) flagged.push({ kind: "gap", excerpt: `All ${voided} box minutes that read quiet memory fell within ${RESTART_SETTLE_MS / MINUTE} min after a daemon start ` +
-    `(${starts.filter(entry => entry.at < now && entry.at >= start - RESTART_SETTLE_MS).map(entry => `${entry.host} ${clock(entry.at)}`).join(", ")}), so quiet_agent_gb has no minute to judge` });
-  else flagged.push({ kind: "gap", excerpt: `No box line in the last 30 minutes listed its workers or went ${quietWords} min with no session working, so quiet_agent_gb has no minute to judge` });
+  else if (!settlingHosts.length) flagged.push({ kind: "gap", excerpt: `No box line in the last 30 minutes listed its workers or went ${quietWords} min with no session working, so quiet_agent_gb has no minute to judge` });
+  if (settlingHosts.length) flagged.push({ kind: "gap", excerpt: `${settlingHosts.join(" and ")} read quiet memory only within ${RESTART_SETTLE_MS / MINUTE} min after its daemon started ` +
+    `(${starts.filter(entry => settlingHosts.includes(entry.host) && entry.at < now && entry.at >= start - RESTART_SETTLE_MS).map(entry => `${entry.host} ${clock(entry.at)}`).join(", ")}), ` +
+    "before its workers can sit a quiet window, so quiet_agent_gb gives no reading this run" });
   const reads = latest ? hostViews(latest).filter(view => view.agents) : [];
   if (latest && reads.length) flagged.push({ kind: "agents_now", excerpt: `At ${clock(Date.parse(latest.at))}: ${reads.map(view => `${view.name} ${agentWords(view.agents!)}`).join("; ")}.` });
   for (const entry of oversize) flagged.push({ kind: "oversized", excerpt: entry.text });

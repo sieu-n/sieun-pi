@@ -39,7 +39,7 @@ test("quiet_agent_gb gives no reading within the settle window after a daemon st
   const fresh = measure({ ...base, daemonStarts: [{ host: "us-metal02", at: Date.parse("2026-10-19T20:00:00Z") }] });
   assert.equal(fresh.metrics.quiet_agent_gb, undefined);
   assert.equal(fresh.metrics.quiet_agent_gb_us_metal02, undefined);
-  assert.match(fresh.flagged?.find(slice => slice.kind === "gap")?.excerpt ?? "", /fell within 30 min after a daemon start \(us-metal02 /);
+  assert.match(fresh.flagged?.find(slice => slice.kind === "gap")?.excerpt ?? "", /^us-metal02 read quiet memory only within 30 min after its daemon started \(us-metal02 20:00Z\)/);
   const settled = measure({ ...base, daemonStarts: [{ host: "us-metal02", at: RUN - RESTART_SETTLE_MS - 31 * MIN }] });
   assert.equal(settled.metrics.quiet_agent_gb, 5.79);
   assert.equal(measure({ ...base, daemonStarts: [{ host: "mac", at: Date.parse("2026-10-19T20:00:00Z") }] }).metrics.quiet_agent_gb, 5.79, "another box's start voids nothing here");
