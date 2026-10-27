@@ -12,11 +12,10 @@ import { readFiringRules } from "../../src/alert-bridge.ts";
  * The precheck of the ops chat's duty "VPS and dev boxes" (`node --import tsx scripts/duties/vps-boxes.ts`). The chat's risk list
  * (infra-risks.json, written with the wiki risk page) names each standing risk of the boxes with the Grafana alert rules that check it.
  * risks_firing counts the risks with a rule in Grafana's firing list, read like the alert bridge does (grafana-alerts.json, a Viewer token).
- * disk_days_min is the fewest days until a disk on us-metal01 (/, /ci, /hdd.raid10) or us-metal02 (/, /drive2) is full at the rate
- * its rule reads (DISK_DAYS_QUERY, the math of the metal-host-disk-fill-30d and metal02-dev-disk-fill-30d rules), and air_runners_online counts the M1 Air's runners up, both from
- * the box Prometheus through Grafana ds/query. disk_days_min replaced root_disk_days on 10-19, which read us-metal01's / only (51 days) while
- * us-metal02's / read 6.9. alerts_firing counts the rules the alert bridge holds as firing for this chat, each held
- * by its triage job (prod-alerts.ts). oom_kills_24h sums the OOM kills on us-metal01 and us-metal02 in the last 24 h from node_vmstat_oom_kill,
+ * air_runners_online counts the M1 Air's runners up from the box Prometheus through Grafana ds/query. disk_days_min, the fewest days until a
+ * disk of us-metal01 or us-metal02 filled, left on 10-27 with the 30-day fill rules, after the owner answered todo t78 with "stop worrying about
+ * storage being used up" (c187); a disk that is really full still fires metal-host-disk-85.
+ * alerts_firing counts the rules the alert bridge holds as firing for this chat, each held by its triage job (prod-alerts.ts). oom_kills_24h sums the OOM kills on us-metal01 and us-metal02 in the last 24 h from node_vmstat_oom_kill,
  * and reads this box's /proc/vmstat when Prometheus has no series for it; it keeps the hold of p456, after us-metal02 had 45 kills since its
  * 10-14 boot, 40 of them from 13:14Z to 16:52Z on 10-19. It leaves out heavy_scope_kills, the kills on this box inside a scope of the `heavy`
  * wrapper (deploy/linux/memory/heavy), which hit the MemoryMax that job chose, not box pressure: two 8G scopes died at 17:26Z and 17:27Z on 10-19
@@ -32,20 +31,8 @@ const CHAT = "01a11af8-962e-773d-a19a-ee4104011987";
 export const RISKS_FILE = join(DATA_DIR, "duties", CHAT, "infra-risks.json");
 const GRAFANA_CONFIG = join(DATA_DIR, "grafana-alerts.json");
 const PROMETHEUS = { uid: "estate_prometheus_stg", type: "prometheus" };
-const DISK_BOXES = ["us-metal01", "us-metal02"] as const;
-const diskSeries = (mount: string): string => `node_filesystem_avail_bytes{job=~"host|devbox-linux",box=~"${DISK_BOXES.join("|")}",fstype=~"ext4|xfs|btrfs",${mount}}`;
-const TREND = diskSeries('box="us-metal01",mountpoint!~"/boot|/hdd.raid10|/drive2"');
-const METAL02_HIGH = `max_over_time(${diskSeries('box="us-metal02",mountpoint!~"/boot|/drive2"')}[6h])`;
-const HDD = diskSeries('mountpoint="/hdd.raid10"');
-const DRIVE2 = diskSeries('mountpoint="/drive2"');
-/** Each disk at the rate its Grafana rule reads (metal-host-disk-fill-30d, metal02-dev-disk-fill-30d): the 24 h deriv, except
- * us-metal02's /, whose rule takes the 24 h deriv of its 6 h high-water mark of free space, so a scratch rig that takes space and gives it
- * back within 6 h counts for nothing (measured: at 18:15Z on 10-22 the raw deriv read 6.2 days and the rule's rate 15.3), and
- * us-metal01's /hdd.raid10, which divides by what it lost over the last 24 h, because it changes in one OpenSearch snapshot step a
- * night and any 24 h window holds exactly one step, and us-metal02's /drive2, which keeps its rule's 7 d deriv for its batch moves.
- * measured: from 10-18 to 10-21 /hdd.raid10 lost 269, 328 and 514 GB a night while its 24 h deriv read 9 to 739 GB a day. */
-export const DISK_DAYS_QUERY = `${TREND} / clamp_min(-deriv(${TREND}[24h]) * 86400, 1) or ${METAL02_HIGH} / clamp_min(-deriv(${METAL02_HIGH}[24h:10m]) * 86400, 1) or ${HDD} / clamp_min(${HDD} offset 24h - ${HDD}, 1) or ${DRIVE2} / clamp_min(-deriv(${DRIVE2}[7d]) * 86400, 1)`;
-const OOM = `node_vmstat_oom_kill{box=~"${DISK_BOXES.join("|")}"}`;
+const BOXES = ["us-metal01", "us-metal02"] as const;
+const OOM = `node_vmstat_oom_kill{box=~"${BOXES.join("|")}"}`;
 export const OOM_KILLS_QUERY = `round(increase(${OOM}[1d]))`;
 export const OOM_LAST_QUERY = `max_over_time(timestamp(changes(${OOM}[2m]) > 0)[1d:1m])`;
 export const oomSinceQuery = (box: string, seconds: number): string => `round(increase(node_vmstat_oom_kill{box="${box}"}[${seconds}s]))`;
@@ -101,20 +88,6 @@ async function grafana(path: string, init?: RequestInit): Promise<unknown> {
   return response.json();
 }
 
-export interface DiskDays { box: string; mountpoint: string; days: number }
-
-const diskName = (disk: DiskDays): string => `${disk.box}'s ${disk.mountpoint} (${Math.round(disk.days * 10) / 10} days)`;
-
-/** The fewest days to full over every disk, and one line naming the disks under the 30-day target lowest first, or the lowest disk when none is. */
-export function diskDaysMin(disks: readonly DiskDays[], at: number): { days: number; flagged: FlaggedSlice } {
-  const missing = DISK_BOXES.filter(box => !disks.some(disk => disk.box === box));
-  if (missing.length) throw new Error(`Prometheus has no disk of ${missing.join(" or ")}`);
-  const sorted = [...disks].sort((a, b) => a.days - b.days);
-  const low = sorted.filter(disk => disk.days < 30);
-  const excerpt = low.length ? `fills within 30 days at its rule's rate: ${low.map(diskName).join(", ")}` : `every disk has 30 days or more; the lowest is ${diskName(sorted[0]!)}`;
-  return { days: Math.round(sorted[0]!.days * 10) / 10, flagged: { at, kind: "disk", excerpt } };
-}
-
 export interface Explained { box: string; until: number; step: string }
 export interface OomKills { box: string; kills: number; lastAt?: number; sinceBootAt?: number; heavy?: number; units?: string[]; outsideAt?: number; explained?: number; by?: Explained }
 
@@ -161,7 +134,7 @@ const stamp = (ms: number): string => `${new Date(ms).toISOString().slice(11, 16
  * a count of old kills read the same as a fresh one.
  */
 export function oomKills24h(boxes: readonly OomKills[], at: number): { kills: number; heavy: number; explained: number; flagged: FlaggedSlice[]; lastEventAt?: number } {
-  const missing = DISK_BOXES.filter(box => !boxes.some(entry => entry.box === box));
+  const missing = BOXES.filter(box => !boxes.some(entry => entry.box === box));
   if (missing.length) throw new Error(`no node_vmstat_oom_kill of ${missing.join(" or ")}`);
   const counted = boxes.map(entry => ({ ...entry, outside: Math.max(0, entry.kills - (entry.explained ?? 0) - (entry.heavy ?? 0)) }));
   const flagged = counted.flatMap((entry): FlaggedSlice[] => {
@@ -196,14 +169,6 @@ async function instant(expr: string): Promise<number> {
   const value = (await query(expr))[0]?.data?.values?.[1]?.at(-1);
   if (typeof value !== "number") throw new Error(`${expr}: no sample`);
   return value;
-}
-
-async function disks(): Promise<DiskDays[]> {
-  return (await query(DISK_DAYS_QUERY)).flatMap((frame): DiskDays[] => {
-    const labels = frame.schema?.fields?.[1]?.labels ?? {};
-    const days = frame.data?.values?.[1]?.at(-1);
-    return typeof days === "number" && labels.box && labels.mountpoint ? [{ box: labels.box, mountpoint: labels.mountpoint, days }] : [];
-  });
 }
 
 async function byBox(expr: string): Promise<Map<string, number>> {
@@ -241,7 +206,7 @@ async function oomBoxes(at: number): Promise<OomKills[]> {
   const boxes: OomKills[] = [...kills].map(([box, count]) => ({ box, kills: count, ...last.has(box) ? { lastAt: last.get(box)! * 1000 } : {} }));
   await explain(boxes, explained, at);
   const here = hostname().split(".")[0]!;
-  if (!(DISK_BOXES as readonly string[]).includes(here)) return boxes;
+  if (!(BOXES as readonly string[]).includes(here)) return boxes;
   if (!kills.has(here)) boxes.push(await procOomKills(here));
   const entry = boxes.find(box => box.box === here)!;
   const journal = (args: string[]): Promise<string> => run("journalctl", ["--user", "--no-pager", ...args]);
@@ -273,11 +238,6 @@ async function main(): Promise<void> {
     result.metrics.alerts_firing = counted.count;
     result.flagged!.push(...counted.flagged);
   } catch (error) { flag("source_error", `alerts_firing: ${error instanceof Error ? error.message : String(error)}`); }
-  try {
-    const counted = diskDaysMin(await disks(), at);
-    result.metrics.disk_days_min = counted.days;
-    result.flagged!.push(counted.flagged);
-  } catch (error) { flag("source_error", `disk_days_min: ${error instanceof Error ? error.message : String(error)}`); }
   try {
     const counted = oomKills24h(await oomBoxes(at), at);
     result.metrics.oom_kills_24h = counted.kills;

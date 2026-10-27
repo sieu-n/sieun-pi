@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { FiringAlert } from "../src/alert-bridge.ts";
 import { readFile } from "node:fs/promises";
-import { DUTY_FILE, countRisks, diskDaysMin, oomKills24h, parseExplained, parseRisks, splitOomLines } from "../scripts/duties/vps-boxes.ts";
+import { DUTY_FILE, countRisks, oomKills24h, parseExplained, parseRisks, splitOomLines } from "../scripts/duties/vps-boxes.ts";
 
 const alert = (uid: string, startsAt: string): FiringAlert =>
   ({ fingerprint: `${uid}-${startsAt}`, startsAt, alertname: uid, labels: { __alert_rule_uid__: uid }, summary: "", url: "" });
@@ -32,16 +32,6 @@ test("a risk's match narrows a shared rule to its own labels, and an alert witho
   assert.equal(countRisks(file, [disk("/"), disk("/ci")], known, 0).firing, 0);
   assert.equal(countRisks(file, [disk("/hdd.raid10")], known, 0).firing, 1);
   assert.equal(countRisks(file, [alert("metal-disk-raid-pd-failed", "2026-10-26T00:00:00.000Z")], known, 0).firing, 1);
-});
-
-// Guards 10-19: root_disk_days read us-metal01's / only (51 days) while us-metal02's / read 6.9, so disk_days_min reads every disk of both boxes.
-test("disk_days_min is the lowest disk of both boxes, names each disk under 30 days, and fails when a box has no disk", () => {
-  const disks = [{ box: "us-metal01", mountpoint: "/", days: 50.9 }, { box: "us-metal01", mountpoint: "/ci", days: 15.47 }, { box: "us-metal02", mountpoint: "/", days: 6.93 }];
-  const result = diskDaysMin(disks, 0);
-  assert.equal(result.days, 6.9);
-  assert.equal(result.flagged.excerpt, "fills within 30 days at its rule's rate: us-metal02's / (6.9 days), us-metal01's /ci (15.5 days)");
-  assert.match(diskDaysMin([{ box: "us-metal01", mountpoint: "/", days: 50.9 }, { box: "us-metal02", mountpoint: "/drive2", days: 71.8 }], 0).flagged.excerpt, /lowest is us-metal01's \/ \(50.9 days\)/);
-  assert.throws(() => diskDaysMin(disks.slice(0, 2), 0), /no disk of us-metal02/);
 });
 
 // Guards p456 (10-19): us-metal02 had 40 OOM kills from 13:14Z to 16:52Z and no duty counted them, so the 24 h hold after the fixes had no owner.
