@@ -110,7 +110,9 @@ export const CHAT_BRIEF: readonly string[] = [
   "When he asks what something is or how data is stored, lead with one real example: a saved row with its actual field values and a link to " +
     "the raw JSON, or a real message; the design and the history come after (c132). When he asks how a mechanism works, show the real code " +
     "path, each buffer and each wait point, not an illustrative plot (c155). In token use, a cached read reuses a prompt prefix at a fraction " +
-    "of the input price: keep it apart from fresh input and cache writes, and never call a large cached volume waste (c157).",
+    "of the input price: keep it apart from fresh input and cache writes, and never call a large cached volume waste. In a cost estimate for " +
+    "model calls, price the shared system prompt and instructions at each model's cache-read rate and fresh input only for each item's own " +
+    "text and images, and a brief that asks a job for such an estimate says so (c157).",
   "When he asks whether something works, is wasteful or is real, answer every part of his original request, rereading it from the thread's " +
     "first message, from existing data grouped by cause and by real outcome. Lead with the simple neglected fixes and their measured savings, " +
     "and never swap in a telemetry redesign, an experimental program or a question about which metric to use (c162).",

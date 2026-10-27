@@ -373,9 +373,30 @@ export const OUTSIDE_ACTION_RULE = "Before any outside action (an email, a ticke
 /** The rules a job reads as short lines: outside sends, vendor support, acting directly, the model and no model fallback, writing, Convex, merges and staging. */
 export const JOB_RULES: ReadonlySet<string> = new Set(["c18", "c20", "c30", "c31", "c35", "c37", "c47", "c49", "c50", "c79"]);
 export function jobLedgerPrompt(ledger: Ledger | null, brief: string = ""): string {
-  const ui = uiRuleLine(brief);
+  const lines = [uiRuleLine(brief), tokenCostRuleLine(brief)].filter((line): line is string => line !== null);
   return [`[corrections] The owner's corrections that bind jobs, live from the ledger; every other correction holds in this job too. ${OUTSIDE_ACTION_RULE} ${READ_RULE}`,
-    ...(ledger ? liveRules(ledger).filter(entry => JOB_RULES.has(entry.id)).map(shortLine) : []), ...(ui ? [ui] : [])].join("\n");
+    ...(ledger ? liveRules(ledger).filter(entry => JOB_RULES.has(entry.id)).map(shortLine) : []), ...lines].join("\n");
+}
+
+/** A brief that asks for what model calls cost: a cost, price or spend word near a model, token or LLM word. */
+const COST_WORD = /\b(?:costs?|pric(?:e|es|ed|ing)|spend|budget|bill(?:s|ed|ing)?|usd)\b|\$\s?\d/i;
+const MODEL_WORD = /\b(?:tokens?|llms?|model calls?|gpt[- ]?\w*|claude|opus|sonnet|haiku|gemini|deepseek|jev|luna|openrouter|per 1M)\b|\/1M\b/i;
+/** The brief itself says the shared instructions are priced as cache reads; a price list with a cache-read column does not. */
+const NAMES_CACHE_READ = /(?:system prompt|instructions?|shared (?:prefix|part|prompt))[^.\n]{0,80}cache[- ]?read|cache[- ]?read[^.\n]{0,80}(?:system prompt|instructions?|shared (?:prefix|part|prompt))/i;
+export const TOKEN_COST_RULE_LINE = "- c157 This job prices model calls, so price the shared system prompt and instructions, the part every call repeats, at " +
+  "each model's cache-read rate, and fresh input only for each item's own text and images. Show fresh input, cache reads, cache writes and output " +
+  "as separate columns, put the shared part first and byte-identical in every call so the cache hits, and confirm it with a measured cache-hit " +
+  "count. Never call a large cached volume waste.";
+/**
+ * The c157 line for a job's [corrections] block: TOKEN_COST_RULE_LINE when its brief asks what model calls cost and does not itself say the shared
+ * instructions are priced as cache reads, else null. The owner gave c157 on 10-22 ("check what a Cached read is."), and the chat brief held it only for explaining token use. On
+ * 10-27 at 19:14:01Z he asked Crawler VP for the cost of classifying creators with DeepSeek Flash, Jev or GPT luna. Its 19:14:31Z brief asked
+ * for "per-model prices ..., batch or cache discounts" with no word on the instructions, its own sketch priced every input token as fresh, and
+ * at 19:14:49Z he wrote "note that system prompt (instruction) should be registered as Cache read".
+ */
+export function tokenCostRuleLine(brief: string): string | null {
+  if (!COST_WORD.test(brief) || !MODEL_WORD.test(brief)) return null;
+  return NAMES_CACHE_READ.test(brief) ? null : TOKEN_COST_RULE_LINE;
 }
 
 /** A brief about one of auto-sns-agent's app screens: it names the demo or its shared UI, and a word for building or styling a screen. */
