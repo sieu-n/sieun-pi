@@ -379,7 +379,7 @@ export function jobLedgerPrompt(ledger: Ledger | null, brief: string = ""): stri
 }
 
 /** A brief about one of auto-sns-agent's app screens: it names the demo or its shared UI, and a word for building or styling a screen. */
-const UI_SURFACE = /\b51(?:80|74)\b|apps\/virev-demo|\bvirev-demo\b|\$lib\/ui\b|overlay\/src\/lib|shot-browser/i;
+const UI_SURFACE = /\b51(?:80|74)\b|apps\/virev-demo|\bvirev-demo\b|\$lib\/ui\b|overlay\/src\/lib/i;
 const UI_WORK = /\b(?:(?<!on )(?<!his )screens?|layouts?|redesign\w*|restyl\w*|styling|polish\w*|light and dark|dark mode|spacing|padding|page builders?)\b/i;
 const NAMES_DESIGN_SKILL = /frontend[- ]design|frontend-implementation/i;
 const NAMES_SHARED_COMPONENTS = /frontend-implementation|\$lib\/ui\b|shared (?:kit|components?|component set)|\bc78\b/i;

@@ -597,7 +597,7 @@ export function testBrowsers(latest: WatchLine | undefined): TestBrowser[] {
   return hostViews(latest).flatMap(view => (view.testBrowsers ?? []).map(browser => ({ root: browser.root, session: browser.session,
     text: `${view.name}: ${browser.command.includes("chrome-headless-shell") ? "chrome-headless-shell" : "Chrome for Testing"} pid ${browser.pid}` +
       `${browser.started === null ? "" : ` since ${clock(browser.started * 1000)}`}, started by ${browser.session ? `${browser.tree || browser.root} session ${browser.session}` : "no agent session its env names (a duty or an ssh command)"}; ` +
-      `agent browsers run on us-metal02 (aside-browser box Chrome, or apps/virev-demo/scripts/shot-browser.mjs for 5180)` })));
+      `agents browse only through Aside (c177)` })));
 }
 
 /**

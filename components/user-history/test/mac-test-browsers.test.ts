@@ -24,7 +24,7 @@ test("a job's Chrome for Testing on the Mac is flagged with the chat and job tha
   const found = testBrowsers(boxLine(mac));
   assert.equal(found.length, 1);
   assert.equal(found[0]!.root, "01a11b0b");
-  assert.match(found[0]!.text, /^mac: Chrome for Testing pid 65145 since 16:31Z, started by slack green guy session 01a154f4; agent browsers run on us-metal02/);
+  assert.match(found[0]!.text, /^mac: Chrome for Testing pid 65145 since 16:31Z, started by slack green guy session 01a154f4; agents browse only through Aside \(c177\)$/);
 });
 
 test("a browser whose env names no session reads as a duty or ssh command", () => {
