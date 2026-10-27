@@ -1,0 +1,473 @@
+{
+  "schema": 1,
+  "entries": {
+    "prompt": {
+      "prompt_global_0": {
+        "id": "prompt_global_0",
+        "kind": "prompt",
+        "title": "Policy 0: cache",
+        "content": "Always cache before prompt — 한국어 메모 修复登录 naïve café 0",
+        "path": "policy",
+        "scope": "global",
+        "reference": {},
+        "arguments": {},
+        "metadata": {},
+        "source": "agent",
+        "created_at": "2026-10-01T00:00:00+00:00",
+        "updated_at": "2026-10-20T00:00:00+00:00",
+        "version": 1
+      },
+      "prompt_global_1": {
+        "id": "prompt_global_1",
+        "kind": "prompt",
+        "title": "Policy 1: sync",
+        "content": "Always sync before token — 한국어 메모 修复登录 naïve café 1",
+        "path": "policy",
+        "scope": "global",
+        "reference": {},
+        "arguments": {},
+        "metadata": {},
+        "source": "agent",
+        "created_at": "2026-10-01T00:00:00+00:00",
+        "updated_at": "2026-10-20T00:00:00+00:00",
+        "version": 1
+      },
+      "prompt_global_2": {
+        "id": "prompt_global_2",
+        "kind": "prompt",
+        "title": "Policy 2: compaction",
+        "content": "Always compaction before prompt — 한국어 메모 修复登录 naïve café 2",
+        "path": "policy",
+        "scope": "global",
+        "reference": {},
+        "arguments": {},
+        "metadata": {},
+        "source": "agent",
+        "created_at": "2026-10-01T00:00:00+00:00",
+        "updated_at": "2026-10-20T00:00:00+00:00",
+        "version": 1
+      },
+      "prompt_global_3": {
+        "id": "prompt_global_3",
+        "kind": "prompt",
+        "title": "Policy 3: ledger",
+        "content": "Always ledger before refine — 한국어 메모 修复登录 naïve café 3",
+        "path": "policy",
+        "scope": "global",
+        "reference": {},
+        "arguments": {},
+        "metadata": {},
+        "source": "agent",
+        "created_at": "2026-10-01T00:00:00+00:00",
+        "updated_at": "2026-10-20T00:00:00+00:00",
+        "version": 1
+      },
+      "prompt_global_4": {
+        "id": "prompt_global_4",
+        "kind": "prompt",
+        "title": "Policy 4: session",
+        "content": "Always session before aside — 한국어 메모 修复登录 naïve café 4",
+        "path": "policy",
+        "scope": "global",
+        "reference": {},
+        "arguments": {},
+        "metadata": {},
+        "source": "agent",
+        "created_at": "2026-10-01T00:00:00+00:00",
+        "updated_at": "2026-10-20T00:00:00+00:00",
+        "version": 1
+      },
+      "prompt_global_5": {
+        "id": "prompt_global_5",
+        "kind": "prompt",
+        "title": "Policy 5: refine",
+        "content": "Always refine before pool — 한국어 메모 修复登录 naïve café 5",
+        "path": "policy",
+        "scope": "global",
+        "reference": {},
+        "arguments": {},
+        "metadata": {},
+        "source": "agent",
+        "created_at": "2026-10-01T00:00:00+00:00",
+        "updated_at": "2026-10-20T00:00:00+00:00",
+        "version": 1
+      },
+      "prompt_global_6": {
+        "id": "prompt_global_6",
+        "kind": "prompt",
+        "title": "Policy 6: prompt",
+        "content": "Always prompt before worktree — 한국어 메모 修复登录 naïve café 6",
+        "path": "policy",
+        "scope": "global",
+        "reference": {},
+        "arguments": {},
+        "metadata": {},
+        "source": "agent",
+        "created_at": "2026-10-01T00:00:00+00:00",
+        "updated_at": "2026-10-20T00:00:00+00:00",
+        "version": 1
+      },
+      "prompt_global_7": {
+        "id": "prompt_global_7",
+        "kind": "prompt",
+        "title": "Policy 7: session",
+        "content": "Always session before kernel — 한국어 메모 修复登录 naïve café 7",
+        "path": "policy",
+        "scope": "global",
+        "reference": {},
+        "arguments": {},
+        "metadata": {},
+        "source": "agent",
+        "created_at": "2026-10-01T00:00:00+00:00",
+        "updated_at": "2026-10-20T00:00:00+00:00",
+        "version": 1
+      }
+    },
+    "memory": {
+      "memory_global_0": {
+        "id": "memory_global_0",
+        "kind": "memory",
+        "title": "Compaction note 0 about browser",
+        "content": "When the compaction browser breaks, check cache first. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. ",
+        "path": "area/cache",
+        "scope": "global",
+        "reference": {},
+        "arguments": {},
+        "metadata": {},
+        "source": "agent",
+        "created_at": "2026-10-01T00:00:00+00:00",
+        "updated_at": "2026-10-10T00:00:00+00:00",
+        "version": 1
+      },
+      "memory_global_1": {
+        "id": "memory_global_1",
+        "kind": "memory",
+        "title": "Worktree note 1 about digest",
+        "content": "When the worktree digest breaks, check sync first. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. ",
+        "path": "area/sync",
+        "scope": "global",
+        "reference": {},
+        "arguments": {},
+        "metadata": {},
+        "source": "agent",
+        "created_at": "2026-10-01T00:00:00+00:00",
+        "updated_at": "2026-10-11T01:00:00+00:00",
+        "version": 2
+      },
+      "memory_global_2": {
+        "id": "memory_global_2",
+        "kind": "memory",
+        "title": "Aside note 2 about refine",
+        "content": "When the aside refine breaks, check session first. Long detail. ",
+        "path": "area/session",
+        "scope": "global",
+        "reference": {},
+        "arguments": {},
+        "metadata": {},
+        "source": "agent",
+        "created_at": "2026-10-01T00:00:00+00:00",
+        "updated_at": "2026-10-12T02:00:00+00:00",
+        "version": 3
+      },
+      "memory_global_3": {
+        "id": "memory_global_3",
+        "kind": "memory",
+        "title": "Cache note 3 about deploy",
+        "content": "When the cache deploy breaks, check worktree first. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. ",
+        "path": "area/worktree",
+        "scope": "global",
+        "reference": {},
+        "arguments": {},
+        "metadata": {},
+        "source": "agent",
+        "created_at": "2026-10-01T00:00:00+00:00",
+        "updated_at": "2026-10-13T03:00:00+00:00",
+        "version": 1
+      },
+      "memory_global_4": {
+        "id": "memory_global_4",
+        "kind": "memory",
+        "title": "Sync note 4 about worktree",
+        "content": "When the sync worktree breaks, check aside first. Long detail. Long detail. ",
+        "path": "area/aside",
+        "scope": "global",
+        "reference": {},
+        "arguments": {},
+        "metadata": {},
+        "source": "agent",
+        "created_at": "2026-10-01T00:00:00+00:00",
+        "updated_at": "2026-10-14T04:00:00+00:00",
+        "version": 2
+      },
+      "memory_global_5": {
+        "id": "memory_global_5",
+        "kind": "memory",
+        "title": "Sync note 5 about deploy",
+        "content": "When the sync deploy breaks, check digest first. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. ",
+        "path": "area/digest",
+        "scope": "global",
+        "reference": {},
+        "arguments": {},
+        "metadata": {},
+        "source": "agent",
+        "created_at": "2026-10-01T00:00:00+00:00",
+        "updated_at": "2026-10-15T05:00:00+00:00",
+        "version": 3
+      },
+      "memory_global_6": {
+        "id": "memory_global_6",
+        "kind": "memory",
+        "title": "Aside note 6 about digest",
+        "content": "When the aside digest breaks, check compaction first. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. ",
+        "path": "area/compaction",
+        "scope": "global",
+        "reference": {},
+        "arguments": {},
+        "metadata": {},
+        "source": "agent",
+        "created_at": "2026-10-01T00:00:00+00:00",
+        "updated_at": "2026-10-16T06:00:00+00:00",
+        "version": 1
+      },
+      "memory_global_7": {
+        "id": "memory_global_7",
+        "kind": "memory",
+        "title": "Worktree note 7 about session",
+        "content": "When the worktree session breaks, check ledger first. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. ",
+        "path": "area/ledger",
+        "scope": "global",
+        "reference": {},
+        "arguments": {},
+        "metadata": {},
+        "source": "agent",
+        "created_at": "2026-10-01T00:00:00+00:00",
+        "updated_at": "2026-10-17T07:00:00+00:00",
+        "version": 2
+      },
+      "memory_global_8": {
+        "id": "memory_global_8",
+        "kind": "memory",
+        "title": "Worktree note 8 about aside",
+        "content": "When the worktree aside breaks, check deploy first. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. ",
+        "path": "area/deploy",
+        "scope": "global",
+        "reference": {},
+        "arguments": {},
+        "metadata": {},
+        "source": "agent",
+        "created_at": "2026-10-01T00:00:00+00:00",
+        "updated_at": "2026-10-18T08:00:00+00:00",
+        "version": 3
+      },
+      "memory_global_9": {
+        "id": "memory_global_9",
+        "kind": "memory",
+        "title": "Harness note 9 about digest",
+        "content": "When the harness digest breaks, check cache first. Long detail. Long detail. Long detail. Long detail. ",
+        "path": "area/cache",
+        "scope": "global",
+        "reference": {},
+        "arguments": {},
+        "metadata": {},
+        "source": "agent",
+        "created_at": "2026-10-01T00:00:00+00:00",
+        "updated_at": "2026-10-19T09:00:00+00:00",
+        "version": 1
+      },
+      "memory_global_10": {
+        "id": "memory_global_10",
+        "kind": "memory",
+        "title": "Aside note 10 about session",
+        "content": "When the aside session breaks, check harness first. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. ",
+        "path": "area/harness",
+        "scope": "global",
+        "reference": {},
+        "arguments": {},
+        "metadata": {},
+        "source": "agent",
+        "created_at": "2026-10-01T00:00:00+00:00",
+        "updated_at": "2026-10-20T00:00:00+00:00",
+        "version": 2
+      },
+      "memory_global_11": {
+        "id": "memory_global_11",
+        "kind": "memory",
+        "title": "Refine note 11 about worktree",
+        "content": "When the refine worktree breaks, check session first. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. ",
+        "path": "area/session",
+        "scope": "global",
+        "reference": {},
+        "arguments": {},
+        "metadata": {},
+        "source": "agent",
+        "created_at": "2026-10-01T00:00:00+00:00",
+        "updated_at": "2026-10-21T01:00:00+00:00",
+        "version": 3
+      },
+      "memory_global_12": {
+        "id": "memory_global_12",
+        "kind": "memory",
+        "title": "Cache note 12 about refine",
+        "content": "When the cache refine breaks, check worktree first. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. ",
+        "path": "area/worktree",
+        "scope": "global",
+        "reference": {},
+        "arguments": {},
+        "metadata": {},
+        "source": "agent",
+        "created_at": "2026-10-01T00:00:00+00:00",
+        "updated_at": "2026-10-22T02:00:00+00:00",
+        "version": 1
+      },
+      "memory_global_13": {
+        "id": "memory_global_13",
+        "kind": "memory",
+        "title": "Browser note 13 about session",
+        "content": "When the browser session breaks, check deploy first. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. ",
+        "path": "area/deploy",
+        "scope": "global",
+        "reference": {},
+        "arguments": {},
+        "metadata": {},
+        "source": "agent",
+        "created_at": "2026-10-01T00:00:00+00:00",
+        "updated_at": "2026-10-23T03:00:00+00:00",
+        "version": 2
+      },
+      "clash": {
+        "id": "clash",
+        "kind": "memory",
+        "title": "Clash global",
+        "content": "global version",
+        "path": "general",
+        "scope": "global",
+        "reference": {},
+        "arguments": {},
+        "metadata": {},
+        "source": "agent",
+        "created_at": "2026-10-01T00:00:00+00:00",
+        "updated_at": "2026-10-20T00:00:00+00:00",
+        "version": 1
+      }
+    },
+    "skill": {
+      "skill_a": {
+        "id": "skill_a",
+        "kind": "skill",
+        "title": "Shot browser",
+        "content": "Take a shot.",
+        "path": "general",
+        "scope": "global",
+        "reference": {
+          "type": "python",
+          "import": "shot",
+          "callable": "take"
+        },
+        "arguments": {
+          "url": {
+            "type": "string",
+            "required": true
+          }
+        },
+        "metadata": {},
+        "source": "agent",
+        "created_at": "2026-10-01T00:00:00+00:00",
+        "updated_at": "2026-10-20T00:00:00+00:00",
+        "version": 1
+      }
+    },
+    "subagent": {
+      "subagent_a": {
+        "id": "subagent_a",
+        "kind": "subagent",
+        "title": "Reviewer",
+        "content": "Review a diff.",
+        "path": "general",
+        "scope": "global",
+        "reference": {},
+        "arguments": {},
+        "metadata": {},
+        "source": "agent",
+        "created_at": "2026-10-01T00:00:00+00:00",
+        "updated_at": "2026-10-20T00:00:00+00:00",
+        "version": 1
+      }
+    }
+  },
+  "refinements": [
+    {
+      "id": "refine_0000",
+      "trigger": "Trigger 0 ",
+      "changes": [],
+      "evidence": "e",
+      "outcome": "",
+      "created_at": "2026-10-10T00:00:00+00:00"
+    },
+    {
+      "id": "refine_0001",
+      "trigger": "Trigger 1 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "changes": [
+        "create memory:m1"
+      ],
+      "evidence": "e",
+      "outcome": "oooooooooooooooooooooooooooooo",
+      "created_at": "2026-10-11T00:00:00+00:00"
+    },
+    {
+      "id": "refine_0002",
+      "trigger": "Trigger 2 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "changes": [
+        "create memory:m2"
+      ],
+      "evidence": "e",
+      "outcome": "",
+      "created_at": "2026-10-12T00:00:00+00:00"
+    },
+    {
+      "id": "refine_0003",
+      "trigger": "Trigger 3 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "changes": [],
+      "evidence": "e",
+      "outcome": "oooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo",
+      "created_at": "2026-10-13T00:00:00+00:00"
+    },
+    {
+      "id": "refine_0004",
+      "trigger": "Trigger 4 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "changes": [
+        "create memory:m4"
+      ],
+      "evidence": "e",
+      "outcome": "",
+      "created_at": "2026-10-14T00:00:00+00:00"
+    },
+    {
+      "id": "refine_0005",
+      "trigger": "Trigger 5 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "changes": [
+        "create memory:m5"
+      ],
+      "evidence": "e",
+      "outcome": "oooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo",
+      "created_at": "2026-10-15T00:00:00+00:00"
+    },
+    {
+      "id": "refine_0006",
+      "trigger": "Trigger 6 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "changes": [],
+      "evidence": "e",
+      "outcome": "",
+      "created_at": "2026-10-16T00:00:00+00:00"
+    },
+    {
+      "id": "refine_0007",
+      "trigger": "Trigger 7 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "changes": [
+        "create memory:m7"
+      ],
+      "evidence": "e",
+      "outcome": "oooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo",
+      "created_at": "2026-10-17T00:00:00+00:00"
+    }
+  ]
+}

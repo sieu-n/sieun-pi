@@ -1,0 +1,87 @@
+{
+  "schema": 1,
+  "entries": {
+    "prompt": {
+      "prompt_local_0": {
+        "id": "prompt_local_0",
+        "kind": "prompt",
+        "title": "Policy 0: compaction",
+        "content": "Always compaction before browser — 한국어 메모 修复登录 naïve café 0",
+        "path": "policy",
+        "scope": "local",
+        "reference": {},
+        "arguments": {},
+        "metadata": {},
+        "source": "agent",
+        "created_at": "2026-10-01T00:00:00+00:00",
+        "updated_at": "2026-10-20T00:00:00+00:00",
+        "version": 1
+      }
+    },
+    "memory": {
+      "memory_local_0": {
+        "id": "memory_local_0",
+        "kind": "memory",
+        "title": "Digest note 0 about ledger",
+        "content": "When the digest ledger breaks, check refine first. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. Long detail. ",
+        "path": "area/refine",
+        "scope": "local",
+        "reference": {},
+        "arguments": {},
+        "metadata": {},
+        "source": "agent",
+        "created_at": "2026-10-01T00:00:00+00:00",
+        "updated_at": "2026-10-10T00:00:00+00:00",
+        "version": 1
+      },
+      "memory_local_1": {
+        "id": "memory_local_1",
+        "kind": "memory",
+        "title": "Ledger note 1 about harness",
+        "content": "When the ledger harness breaks, check session first. Long detail. Long detail. ",
+        "path": "area/session",
+        "scope": "local",
+        "reference": {},
+        "arguments": {},
+        "metadata": {},
+        "source": "agent",
+        "created_at": "2026-10-01T00:00:00+00:00",
+        "updated_at": "2026-10-11T01:00:00+00:00",
+        "version": 2
+      },
+      "memory_local_2": {
+        "id": "memory_local_2",
+        "kind": "memory",
+        "title": "Aside note 2 about kernel",
+        "content": "When the aside kernel breaks, check cache first. Long detail. Long detail. Long detail. Long detail. Long detail. ",
+        "path": "area/cache",
+        "scope": "local",
+        "reference": {},
+        "arguments": {},
+        "metadata": {},
+        "source": "agent",
+        "created_at": "2026-10-01T00:00:00+00:00",
+        "updated_at": "2026-10-12T02:00:00+00:00",
+        "version": 3
+      },
+      "clash": {
+        "id": "clash",
+        "kind": "memory",
+        "title": "Clash local",
+        "content": "local version",
+        "path": "general",
+        "scope": "local",
+        "reference": {},
+        "arguments": {},
+        "metadata": {},
+        "source": "agent",
+        "created_at": "2026-10-01T00:00:00+00:00",
+        "updated_at": "2026-10-20T00:00:00+00:00",
+        "version": 1
+      }
+    },
+    "skill": {},
+    "subagent": {}
+  },
+  "refinements": []
+}
