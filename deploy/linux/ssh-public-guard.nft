@@ -1,13 +1,13 @@
 #!/usr/sbin/nft -f
-# us-metal02: ssh on port 22 answers only over the tailnet, wg-prod and loopback (2026-10-18).
-# This file owns one table and never flushes the ruleset, so the Docker, tailscale, libvirt, ci and wg-prod tables stay as they are.
+# us-metal02: ssh on port 22 answers only over the tailnet and loopback (2026-10-18; wg-prod left on 2026-10-27, owner rule c180).
+# This file owns one table and never flushes the ruleset, so the Docker, tailscale, libvirt and ci tables stay as they are.
 # Rollback: nft delete table inet ssh_public_guard
 table inet ssh_public_guard
 delete table inet ssh_public_guard
 table inet ssh_public_guard {
   chain input {
     type filter hook input priority filter - 10; policy accept;
-    iifname { "lo", "tailscale0", "wg-prod" } tcp dport 22 accept
+    iifname { "lo", "tailscale0" } tcp dport 22 accept
     iifname "eno1" tcp dport 22 ct state new counter drop
   }
 }

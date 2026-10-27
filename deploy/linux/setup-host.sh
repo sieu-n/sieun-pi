@@ -31,24 +31,14 @@ command -v tailscale >/dev/null || curl -fsSL https://tailscale.com/install.sh |
 systemctl enable --now tailscaled
 tailscale set --operator="$DEV_USER" 2>/dev/null || true
 tailscale status >/dev/null 2>&1 || echo "run: tailscale up --ssh --hostname us-metal02-dev --operator=$DEV_USER"
-# Port 22 answers only on lo, tailscale0 and wg-prod. The guard owns one nft table; nftables.service stays off because
-# /etc/nftables.conf starts with flush ruleset, which would wipe the Docker, ci and wg-prod tables.
+# Port 22 answers only on lo and tailscale0. The guard owns one nft table; nftables.service stays off because
+# /etc/nftables.conf starts with flush ruleset, which would wipe the Docker and ci tables.
 here=$(cd "$(dirname "$0")" && pwd)
 install -m 644 "$here/ssh-public-guard.nft" /etc/nftables-ssh-guard.nft
 install -m 644 "$here/ssh-public-guard.service" /etc/systemd/system/ssh-public-guard.service
 systemctl daemon-reload
 systemctl enable ssh-public-guard
 systemctl restart ssh-public-guard
-# The wg-prod guard (wg-prod-guard.nft says what it admits) loads before wg-quick@wg-prod. wg-prod.conf and its key are
-# placed by hand. wg-quick@wg-prod requires the guard (its drop-in guard.conf), so a restart of the guard also takes
-# wg-prod down and up: on 2026-10-20 at 17:43:24Z one did, for about a second. A running guard reloads its table
-# with nft -f instead, in one transaction that leaves the link up.
-install -d -m 700 /etc/wireguard
-install -m 600 "$here/wg-prod-guard.nft" /etc/wireguard/wg-prod-guard.nft
-install -m 644 "$here/wg-prod-guard.service" /etc/systemd/system/wg-prod-guard.service
-systemctl daemon-reload
-systemctl enable wg-prod-guard
-if systemctl is-active --quiet wg-prod-guard; then nft -f /etc/wireguard/wg-prod-guard.nft; else systemctl start wg-prod-guard; fi
 
 # ssh to the Mac reuses one of 16 masters (ssh-mac.conf explains why), and ssh-mac-slot picks one by ssh's pid.
 install -d -m 755 -o "$DEV_USER" -g "$DEV_USER" "$home/.local" "$home/.local/bin"
