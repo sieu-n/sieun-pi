@@ -3,7 +3,7 @@
 // launch anywhere in the repo; the repo scan is the pre-commit hook's own (scripts/git-hooks/no-headless.mjs), which skips test code.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { CHECKS } from "../scripts/duties/skills-and-tools.ts";
@@ -25,10 +25,17 @@ test("no host tool, Skills and tools check or Settings pane row is a headless br
     daemonSocket: "/tmp/d.sock", ssh: null, roles: {}, tools: ["headless-browser"] }] }), /tools: needs a list of/);
 });
 
+/** The tracked files, or every file under the scanned roots in a release build's export, which has no .git. */
+function repoFiles(): string[] {
+  if (existsSync(join(REPO, ".git"))) return execFileSync("git", ["ls-files", "-z"], { cwd: REPO, encoding: "utf8", maxBuffer: 1 << 28 }).split("\0");
+  return ["skills", "components", "scripts", "config", "deploy"].filter(root => existsSync(join(REPO, root)))
+    .flatMap(root => readdirSync(join(REPO, root), { recursive: true, withFileTypes: true })
+      .filter(entry => entry.isFile()).map(entry => join(entry.parentPath, entry.name).slice(REPO.length + 1)));
+}
+
 test("no skill, component, script, config or deploy file launches a headless browser", () => {
-  const files = execFileSync("git", ["ls-files", "-z"], { cwd: REPO, encoding: "utf8", maxBuffer: 1 << 28 }).split("\0")
-    .filter((path: string) => inScope(path) && existsSync(join(REPO, path)));
-  assert.ok(files.length > 100, `only ${files.length} files in scope`);
+  const files = repoFiles().filter(path => inScope(path) && existsSync(join(REPO, path)));
+  assert.ok(files.length > 20, `only ${files.length} files in scope`);
   assert.deepEqual(files.flatMap((path: string) => headlessLaunches(path, readFileSync(join(REPO, path), "utf8"))), []);
 });
 
