@@ -302,13 +302,21 @@ export function walkReport(startedAt: number, tests: readonly WalkTest[]): WalkR
   };
 }
 
-/** Every outside call the dev server refused since it started, one line each, or the error that read gave. */
-async function serverEgress(): Promise<string[] | Error> {
+interface EgressEntry { at: string; kind: string; target: string; reason: string; world: string | null; stack: string[] }
+
+/** One line per refused outside call at or after `since`. */
+export const egressLines = (entries: readonly EgressEntry[], since: number): string[] => entries.filter(e => Date.parse(e.at) >= since)
+  .map(e => `${e.at} ${e.kind} ${e.target}: ${e.reason} (world ${e.world ?? "none"}; ${e.stack[0] ?? "no app frame"})`);
+
+/**
+ * Every outside call the dev server refused since `since`, the walk's start, one line each, or the error that read gave. The record holds
+ * the whole process's life, so until 10-28 a refusal one other tab hit hours before failed every walk until the next 5180 restart.
+ */
+async function serverEgress(since: number): Promise<string[] | Error> {
   try {
     const response = await fetch(`${BASE_URL}/__demo/egress`, { signal: AbortSignal.timeout(30_000) });
     if (!response.ok) return new Error(`GET /__demo/egress gave HTTP ${response.status}`);
-    const { entries } = await response.json() as { entries: { at: string; kind: string; target: string; reason: string; world: string | null; stack: string[] }[] };
-    return entries.map(e => `${e.at} ${e.kind} ${e.target}: ${e.reason} (world ${e.world ?? "none"}; ${e.stack[0] ?? "no app frame"})`);
+    return egressLines((await response.json() as { entries: EgressEntry[] }).entries, since);
   } catch (error) { return error instanceof Error ? error : new Error(String(error)); }
 }
 
@@ -339,7 +347,7 @@ function testWalk(repl: Repl) {
   return { step, failures };
 }
 
-async function scenarioTest(repl: Repl, scenario: string): Promise<WalkTest> {
+async function scenarioTest(repl: Repl, scenario: string, since: number): Promise<WalkTest> {
   const annotations: Annotation[] = [];
   const note = (type: string, value: unknown) => annotations.push({ type, description: JSON.stringify(value) });
   await repl.call(`open a tab for ${scenario}`, "return await __walk.open();");
@@ -435,10 +443,10 @@ async function scenarioTest(repl: Repl, scenario: string): Promise<WalkTest> {
   }
   for (const failure of walk.failures) note("page-failed", { scenario, ...failure });
   const seen = await repl.call<Seen>("close the tab", "return await __walk.close();");
-  return { title: scenarioTitle(scenario), annotations, errors: testErrors(walk.failures, PAGES.length, seen, await serverEgress()) };
+  return { title: scenarioTitle(scenario), annotations, errors: testErrors(walk.failures, PAGES.length, seen, await serverEgress(since)) };
 }
 
-async function marketingTest(repl: Repl): Promise<WalkTest> {
+async function marketingTest(repl: Repl, since: number): Promise<WalkTest> {
   const annotations: Annotation[] = [];
   await repl.call("open a tab for the marketing pages", "return await __walk.open();");
   const walk = testWalk(repl);
@@ -451,7 +459,7 @@ async function marketingTest(repl: Repl): Promise<WalkTest> {
   }
   for (const failure of walk.failures) annotations.push({ type: "page-failed", description: JSON.stringify({ scenario: "marketing", ...failure }) });
   const seen = await repl.call<Seen>("close the tab", "return await __walk.close();");
-  return { title: MARKETING_TITLE, annotations, errors: testErrors(walk.failures, MARKETING_PAGES.length, seen, await serverEgress()) };
+  return { title: MARKETING_TITLE, annotations, errors: testErrors(walk.failures, MARKETING_PAGES.length, seen, await serverEgress(since)) };
 }
 
 /** A test that could not run at all, such as one whose tab never opened, as one failed spec. */
@@ -461,8 +469,8 @@ export async function runWalk(repl: Repl, now: () => number = Date.now): Promise
   const startedAt = now();
   await repl.call("define the walk", REPL_LIB.replace(/"ok";\s*$/, "") + "return 'ok';");
   const tests: WalkTest[] = [];
-  for (const scenario of SCENARIOS) tests.push(await scenarioTest(repl, scenario).catch(error => brokenTest(scenarioTitle(scenario), error)));
-  tests.push(await marketingTest(repl).catch(error => brokenTest(MARKETING_TITLE, error)));
+  for (const scenario of SCENARIOS) tests.push(await scenarioTest(repl, scenario, startedAt).catch(error => brokenTest(scenarioTitle(scenario), error)));
+  tests.push(await marketingTest(repl, startedAt).catch(error => brokenTest(MARKETING_TITLE, error)));
   return walkReport(startedAt, tests);
 }
 

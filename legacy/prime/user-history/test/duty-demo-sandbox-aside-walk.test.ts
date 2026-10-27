@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { readWalk, slowestPage } from "../scripts/duties/demo-sandbox.ts";
 import { asideRepl, type Repl } from "../scripts/duties/aside-repl.ts";
-import { BROWSER_URL, MARKETING_TITLE, REPL_LIB, runWalk, scenarioTitle, testErrors, walkReport } from "../scripts/duties/demo-sandbox-walk.ts";
+import { BROWSER_URL, egressLines, MARKETING_TITLE, REPL_LIB, runWalk, scenarioTitle, testErrors, walkReport } from "../scripts/duties/demo-sandbox-walk.ts";
 import { BASE_URL } from "../scripts/duties/demo-sandbox.ts";
 
 const clean = { outside: [], violations: [], failed: [] };
@@ -30,6 +30,14 @@ test("the walk's report reads in the precheck: outside requests, other failures 
   assert.match(walk.otherFailures[1]!, /: failed: CSP violations$/);
   assert.deepEqual(walk.untimed, [scenarioTitle("fresh-start")]);
   assert.equal(slowestPage(walk.pages, []).ms, 900);
+});
+
+// 10-27 22:50Z: the walk failed all 3 tests on 4 refusals another tab hit at 22:47Z, because the egress record holds the process's life.
+test("a walk counts only the refused outside calls from its own start", () => {
+  const entry = (at: string) => ({ at, kind: "fetch", target: "https://x.cdninstagram.com/a.jpg", reason: "demo egress blocked", world: "kbeauty-brand.a", stack: [] });
+  const lines = egressLines([entry("2026-10-27T22:47:10.511Z"), entry("2026-10-27T22:51:21.000Z")], Date.parse("2026-10-27T22:50:16.431Z"));
+  assert.equal(lines.length, 1);
+  assert.match(lines[0]!, /^2026-10-27T22:51:21\.000Z fetch https:\/\/x\.cdninstagram\.com\/a\.jpg: demo egress blocked \(world kbeauty-brand\.a; no app frame\)$/);
 });
 
 test("a clean test passes, and the first failed clean check ends the list as offline.spec.ts's expect did", () => {
