@@ -16,12 +16,19 @@ import { effectiveRun, metricStreaks, newestReading } from "./shared/duty-streak
  * was the push, or read the duty afresh. From 00:30Z on 10-26 slack green guy's d1 got a push run every 30 s, since each one read red,
  * started no job ("the catalog does not list the chat") and left the 10-25 00:30Z job, which ended red at 00:57Z, as the newest job.
  */
+/**
+ * A run that started no job because the ended job is kept (`Duties.kept`, a Prime update or pi-pool's hold) read the duty afresh. From 09:25Z
+ * to 10:06Z on 10-27 the AI harness chat's d7 got 80 push runs, one every 30 s, each "skipped: previous run still working (job ... is kept
+ * while Prime update 658984-1793090758889 is stopping)", since a STILL_WORKING run never counted as the push that followed the 08:29Z end.
+ */
+const KEPT = / is kept[ ,]/;
+
 function endedUnpushed(runs: readonly DutyRunRecord[]): boolean {
   const index = runs.findIndex(run => run.job !== undefined);
   const last = runs[index];
   if (!last || (!last.after && !last.cut)) return false;
   const ended = last.after?.at ?? last.cut?.at ?? last.at;
-  if (runs.slice(0, index).some(run => run.verdict !== "skipped" && run.at >= ended && !run.summary.includes(STILL_WORKING))) return false;
+  if (runs.slice(0, index).some(run => run.verdict !== "skipped" && run.at >= ended && (!run.summary.includes(STILL_WORKING) || KEPT.test(run.summary)))) return false;
   const origin = last.trigger === "rerun" ? runs.find(run => run.at === last.rerunOf) ?? last : last;
   return last.trigger !== "push" && origin.trigger !== "push";
 }
