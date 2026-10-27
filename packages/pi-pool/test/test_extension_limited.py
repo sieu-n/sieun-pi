@@ -6,6 +6,7 @@ import fcntl, json, os, shutil, subprocess, sys, tempfile, time, unittest
 from pathlib import Path
 
 from fixture_isolation import isolate_test_module
+from prime_extension import EXTENSION
 
 
 def setUpModule():
@@ -13,7 +14,6 @@ def setUpModule():
 
 
 TESTS = Path(__file__).resolve().parent
-EXTENSION = TESTS.parent / "app" / "extension" / "index.ts"
 VEND = TESTS.parent / "vend.py"
 A, B = "aaaa1111-0000-0000-0000-000000000000", "bbbb2222-0000-0000-0000-000000000000"
 SESSION = "01a1-ext-429-tree"

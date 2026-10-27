@@ -13,7 +13,7 @@ import { readSession, sessionFiles, type RunState, type Scenario, type Verdict }
  * in the run folder's criteria.md.
  */
 export const TASK = "have a job count how many test files components/user-history has and how many of them start a python process. give me both numbers";
-export const FOLLOW_UP = "nice. now have a job count the same for components/pi-pool, and tell me what the first job's last message said";
+export const FOLLOW_UP = "nice. now have a job count the same for packages/pi-pool, and tell me what the first job's last message said";
 const HOME = homedir();
 const DATA = process.env.AGENT_CHAT_DATA_DIR ?? join(HOME, ".prime/agent/browser-chat");
 const ARTIFACTS = join(HOME, ".prime/agent/session-artifacts");

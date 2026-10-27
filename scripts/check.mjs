@@ -40,10 +40,10 @@ try {
   const python = (...args) => run("uv", ["run", "--locked", "--no-sync", "python", "-B", ...args]);
   python("scripts/check_skills.py");
   python("-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py");
-  const poolTests = readdirSync(join(root, "components/pi-pool/tests")).filter((name) => /^test_.*\.py$/.test(name)).sort();
+  const poolTests = readdirSync(join(root, "packages/pi-pool/test")).filter((name) => /^test_.*\.py$/.test(name)).sort();
   if (poolTests.length === 0) throw new Error("No pool Python suites found.");
   for (const suite of poolTests) {
-    python("-m", "unittest", "discover", "-s", "components/pi-pool/tests", "-p", suite);
+    python("-m", "unittest", "discover", "-s", "packages/pi-pool/test", "-p", suite);
   }
   python("-m", "unittest", "discover", "-s", "skills/linear-ticket/tests");
   python("-m", "unittest", "discover", "-s", "skills/aside-browser/tests");
@@ -62,7 +62,7 @@ try {
   run("bun", ["run", "typecheck"], poteto);
   const source = ["scripts", "tests", "components", "packages", "legacy", "skills", "utils"].flatMap((name) => files(join(root, name))).sort();
   const pythonFiles = source.filter((path) => path.endsWith(".py"));
-  pythonFiles.push(join(root, "components/pi-pool/bin/pi-pool"), join(root, "components/pi-pool/bin/pi-pool-token"));
+  pythonFiles.push(join(root, "packages/pi-pool/bin/pi-pool"), join(root, "packages/pi-pool/bin/pi-pool-token"));
   python("-c", "import ast, pathlib, sys; [ast.parse(pathlib.Path(p).read_bytes(), filename=p) for p in sys.argv[1:]]", ...pythonFiles);
   for (const path of source.filter((path) => /\.(mjs|js)$/.test(path))) run(process.execPath, ["--check", path]);
   run(process.execPath, ["--check", join(poteto, "watch-pr/watch-pr")]);

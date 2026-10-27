@@ -21,8 +21,8 @@ printf 'fixture-token-%s' 0123456789abcdefghij
 """
 
 
-def load_installer():
-    spec = importlib.util.spec_from_file_location("pool_installer", INSTALLER)
+def load_installer(path=INSTALLER):
+    spec = importlib.util.spec_from_file_location("pool_installer", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -39,12 +39,14 @@ class Install(unittest.TestCase):
         self.accounts.mkdir(parents=True)
         for provider in ("anthropic", "openai-codex"):
             (self.accounts / f"{provider}.json").write_text(json.dumps({"version": 1, "accounts": [{"id": "fixture-account"}]}))
-        component = self.repo / "components/pi-pool"
+        component = self.repo / "packages/pi-pool"
         for path, text in {"vend.py": "VERSION = 1\n", "bin/pi-pool": "#!/bin/sh\n", "bin/pi-pool-token": HOOK,
-                           "app/extension/index.ts": "export default () => {};\n",
-                           "tests/test_ok.py": "import unittest\nclass T(unittest.TestCase):\n    def test_ok(self): pass\n"}.items():
+                           "test/test_ok.py": "import unittest\nclass T(unittest.TestCase):\n    def test_ok(self): pass\n"}.items():
             (component / path).parent.mkdir(parents=True, exist_ok=True)
             (component / path).write_text(text)
+        self.extension = self.repo / "legacy/prime/pi-pool-extension/index.ts"
+        self.extension.parent.mkdir(parents=True)
+        self.extension.write_text("export default () => {};\n")
         for name in ("bin/pi-pool", "bin/pi-pool-token"):
             os.chmod(component / name, 0o755)
         shutil.copy(INSTALLER, component / "install.py")
@@ -61,13 +63,17 @@ class Install(unittest.TestCase):
 
     def commit(self, message, **files):
         for path, text in files.items():
-            (self.repo / "components/pi-pool" / path).write_text(text)
+            (self.repo / "packages/pi-pool" / path).parent.mkdir(parents=True, exist_ok=True)
+            (self.repo / "packages/pi-pool" / path).write_text(text)
         self.git("add", "-A")
         self.git("commit", "-q", "-m", message)
-        return self.git("rev-parse", "HEAD:components/pi-pool")[:12]
+        return self.release_id()
+
+    def release_id(self):
+        return load_installer(self.repo / "packages/pi-pool/install.py").release_id_of(self.git("rev-parse", "HEAD"))
 
     def run_installer(self, *args, env=None):
-        done = subprocess.run(["/usr/bin/python3", "-B", str(self.repo / "components/pi-pool/install.py"), *args,
+        done = subprocess.run(["/usr/bin/python3", "-B", str(self.repo / "packages/pi-pool/install.py"), *args,
                                "--home", str(self.home)], capture_output=True, text=True, env=env)
         return done.returncode, json.loads(done.stdout) if done.returncode == 0 else done.stderr
 
@@ -75,7 +81,7 @@ class Install(unittest.TestCase):
         return os.readlink(self.home / ".local/share/pi-pool/current")
 
     def test_install_links_every_runtime_path_through_current_and_is_idempotent(self):
-        first = self.git("rev-parse", "HEAD:components/pi-pool")[:12]
+        first = self.release_id()
         code, out = self.run_installer()
         self.assertEqual(code, 0, out)
         self.assertEqual((out["current"], out["previous"], self.current()), (first, None, f"releases/{first}"))
@@ -90,6 +96,18 @@ class Install(unittest.TestCase):
         code, again = self.run_installer()
         self.assertEqual((code, again["tests"], again["relinked"], again["previous"]), (0, "already installed", [], first))
 
+    def test_a_release_holds_the_python_side_and_the_prime_extension_and_nothing_else(self):
+        first = self.release_id()
+        unshipped = self.commit("pi side", **{"src/core/pool-cli.ts": "export {};\n", "package.json": "{}\n"})
+        self.assertEqual(unshipped, first, "a file the release does not ship keeps its id")
+        code, out = self.run_installer()
+        self.assertEqual((code, out["current"]), (0, first), out)
+        release = self.home / ".local/share/pi-pool/releases" / first
+        self.assertEqual(sorted(str(p.relative_to(release)) for p in release.rglob("*") if p.is_file()),
+                         ["RELEASE.json", "app/extension/index.ts", "bin/pi-pool", "bin/pi-pool-token", "install.py", "test/test_ok.py", "vend.py"])
+        self.extension.write_text("export default () => { /* changed */ };\n")
+        self.assertNotEqual(self.commit("extension"), first, "an extension change is a new release")
+
     def test_a_machine_with_no_pooled_account_yet_installs_and_skips_both_hooks(self):
         shutil.rmtree(self.accounts)
         (self.home / ".config/pi-pool/hook-fails").write_text("VERSION")
@@ -99,7 +117,7 @@ class Install(unittest.TestCase):
                          {"anthropic": (True, "no pooled account yet"), "openai-codex": (True, "no pooled account yet")})
 
     def borrow(self, holder, secret):
-        done = subprocess.run(["/usr/bin/python3", "-B", str(self.repo / "components/pi-pool/install.py"), "--borrow", holder,
+        done = subprocess.run(["/usr/bin/python3", "-B", str(self.repo / "packages/pi-pool/install.py"), "--borrow", holder,
                                "--home", str(self.home)], input=secret, capture_output=True, text=True)
         return done.returncode, json.loads(done.stdout) if done.returncode == 0 else done.stderr
 
@@ -124,7 +142,7 @@ class Install(unittest.TestCase):
         self.assertFalse((self.home / ".local/share/pi-pool/current").is_symlink())
 
     def test_pool_modules_ship_with_bytecode_for_the_hook_interpreter(self):
-        (self.repo / "components/pi-pool/pool").mkdir()
+        (self.repo / "packages/pi-pool/pool").mkdir()
         self.commit("pool", **{"pool/__init__.py": "VALUE = 1\n"})
         code, out = self.run_installer()
         self.assertEqual(code, 0, out)
@@ -136,8 +154,8 @@ class Install(unittest.TestCase):
     def add_client(self):
         source = INSTALLER.parent
         for name in ("bin/pi-pool-token.c", "deploy/systemd/pi-pool-hookd.service"):
-            (self.repo / "components/pi-pool" / name).parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy(source / name, self.repo / "components/pi-pool" / name)
+            (self.repo / "packages/pi-pool" / name).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy(source / name, self.repo / "packages/pi-pool" / name)
         self.commit("client")
 
     def test_install_builds_the_hook_client_and_writes_the_hookd_unit(self):
@@ -169,7 +187,7 @@ class Install(unittest.TestCase):
         self.assertEqual(out["client"], "no cc; bin/pi-pool-token is the Python hook")
 
     def add_node_test(self):
-        self.commit("native test", **{"tests/test_ok.py": """import subprocess, unittest
+        self.commit("native test", **{"test/test_ok.py": """import subprocess, unittest
 class T(unittest.TestCase):
     def test_node(self):
         self.assertEqual(subprocess.check_output(["node", "-p", "6 * 7"], text=True).strip(), "42")
@@ -203,13 +221,13 @@ class T(unittest.TestCase):
         self.assertEqual(out["client"], f"built with {compiler}")
 
     def test_only_committed_source_ships(self):
-        (self.repo / "components/pi-pool/vend.py").write_text("HALF EDITED\n")
+        (self.repo / "packages/pi-pool/vend.py").write_text("HALF EDITED\n")
         code, out = self.run_installer()
         self.assertEqual(code, 0, out)
         self.assertEqual((self.home / ".config/pi-pool/vend.py").read_text(), "VERSION = 1\n")
 
     def test_a_new_commit_flips_current_and_rollback_flips_it_back(self):
-        first = self.git("rev-parse", "HEAD:components/pi-pool")[:12]
+        first = self.release_id()
         self.run_installer()
         second = self.commit("second", **{"vend.py": "VERSION = 2\n"})
         code, out = self.run_installer()
@@ -221,7 +239,7 @@ class T(unittest.TestCase):
 
     def test_rollback_after_the_first_install_puts_the_old_links_back(self):
         (self.home / ".config/pi-pool").mkdir(parents=True, exist_ok=True)
-        checkout_bin = self.repo / "components/pi-pool/bin"
+        checkout_bin = self.repo / "packages/pi-pool/bin"
         (self.home / ".config/pi-pool/bin").symlink_to(checkout_bin)
         self.run_installer()
         code, back = self.run_installer("rollback")
@@ -232,9 +250,9 @@ class T(unittest.TestCase):
         self.assertFalse((self.home / ".local/share/pi-pool/current").is_symlink())
 
     def test_failing_tests_change_nothing(self):
-        first = self.git("rev-parse", "HEAD:components/pi-pool")[:12]
+        first = self.release_id()
         self.run_installer()
-        self.commit("broken", **{"tests/test_ok.py": "import unittest\nclass T(unittest.TestCase):\n    def test_no(self): self.fail('red')\n"})
+        self.commit("broken", **{"test/test_ok.py": "import unittest\nclass T(unittest.TestCase):\n    def test_no(self): self.fail('red')\n"})
         code, err = self.run_installer()
         self.assertEqual(code, 1)
         self.assertIn("pool tests failed", err)
@@ -242,7 +260,7 @@ class T(unittest.TestCase):
         self.assertEqual(sorted(p.name for p in (self.home / ".local/share/pi-pool/releases").iterdir()), [first])
 
     def test_a_release_whose_hook_fails_puts_the_previous_one_back(self):
-        first = self.git("rev-parse", "HEAD:components/pi-pool")[:12]
+        first = self.release_id()
         self.run_installer()
         self.commit("hook breaks", **{"vend.py": "VERSION = 3\n"})
         (self.home / ".config/pi-pool/hook-fails").write_text("VERSION = 3")
@@ -275,9 +293,9 @@ class T(unittest.TestCase):
         self.assertFalse((self.home / ".local/share/pi-pool/current").is_symlink())
 
     def test_a_release_without_the_hook_puts_the_previous_one_back(self):
-        first = self.git("rev-parse", "HEAD:components/pi-pool")[:12]
+        first = self.release_id()
         self.run_installer()
-        (self.repo / "components/pi-pool/bin/pi-pool-token").unlink()
+        (self.repo / "packages/pi-pool/bin/pi-pool-token").unlink()
         self.commit("hook deleted")
         code, err = self.run_installer()
         self.assertEqual(code, 1)

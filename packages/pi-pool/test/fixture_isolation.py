@@ -19,7 +19,7 @@ def isolate_test_module():
         "PI_POOL_TEST_ISOLATION_LOG": str(marker),
         "PI_POOL_TEST_ALLOW_LOOPBACK": "0",
         "PYTHONPATH": str(GUARD_DIR),
-        "NODE_OPTIONS": "--import " + json.dumps(str(GUARD_DIR.parent / "native/isolation.mjs")),
+        "NODE_OPTIONS": "--import " + json.dumps(str(GUARD_DIR / "isolation.mjs")),
     })
     environment.start()
     unittest.addModuleCleanup(environment.stop)

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { createRequire, syncBuiltinESMExports } from 'node:module';
 import test from 'node:test';
+import { pathToFileURL } from 'node:url';
 
 let active;
 const FAILED = Symbol('failed run');
@@ -12,7 +13,7 @@ childProcess.execFile = (_bin, args, _options, callback) => {
   else queueMicrotask(() => callback(null, JSON.stringify(reply), ''));
 };
 syncBuiltinESMExports();
-const { default: extension } = await import('../app/extension/index.ts');
+const { default: extension } = await import(pathToFileURL(process.env.PI_POOL_EXTENSION).href);
 
 const auto = { mode: 'auto' };
 const manual = { mode: 'manual', account_id: 'off-id' };

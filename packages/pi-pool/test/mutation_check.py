@@ -1,8 +1,8 @@
-"""Take each scheduler rule out of a copy of components/pi-pool and list the
-tests in tests/test_scheduler.py that then fail. Exits non-zero when a rule has
+"""Take each scheduler rule out of a copy of packages/pi-pool and list the
+tests in test/test_scheduler.py that then fail. Exits non-zero when a rule has
 no failing test.
 
-    /usr/bin/python3 -B components/pi-pool/tests/mutation_check.py
+    /usr/bin/python3 -B packages/pi-pool/test/mutation_check.py
 """
 import json, re, shutil, subprocess, sys, tempfile
 from pathlib import Path
@@ -54,7 +54,7 @@ def main():
             if old:
                 assert source.count(old) == 1, rule
                 target.write_text(source.replace(old, new))
-            run = subprocess.run(["/usr/bin/python3", "-B", "-m", "unittest", "test_scheduler"], cwd=copy / "tests",
+            run = subprocess.run(["/usr/bin/python3", "-B", "-m", "unittest", "test_scheduler"], cwd=copy / "test",
                                  capture_output=True, text=True, timeout=300)
             failed = sorted(set(re.findall(r"^(?:FAIL|ERROR): (\w+) \(test_scheduler\.(\w+)(?:\.\w+)?\)", run.stderr, re.M)))
             out[rule] = [f"{cls}.{name}" for name, cls in failed]

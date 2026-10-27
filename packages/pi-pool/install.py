@@ -1,17 +1,18 @@
 #!/usr/bin/python3 -B
 """Install pi-pool from a commit into its own folder, so Prime never runs checkout files.
 
-    /usr/bin/python3 -B components/pi-pool/install.py [install] [--ref <commit>] [--borrow <holder>]
+    /usr/bin/python3 -B packages/pi-pool/install.py [install] [--ref <commit>] [--borrow <holder>]
     (on macOS it re-runs itself under /opt/homebrew/bin/python3)
-    /usr/bin/python3 -B components/pi-pool/install.py rollback
-    /usr/bin/python3 -B components/pi-pool/install.py status
+    /usr/bin/python3 -B packages/pi-pool/install.py rollback
+    /usr/bin/python3 -B packages/pi-pool/install.py status
 
-install exports components/pi-pool at the commit (default HEAD) into a staging
-folder, runs the pool's Python tests there, renames it to releases/<tree id>,
-points every runtime link at <root>/current, flips `current` in one rename, and
-runs both token hooks through the runtime links. A hook that fails puts the
-previous release back. rollback swaps `current` and `previous` and runs the same
-check; after the first install it puts back the links that install replaced. State (state.json, pi-pool.log, config.json, accounts) never moves.
+install exports the pool's Python side from packages/pi-pool and Prime's pool extension from
+legacy/prime/pi-pool-extension at the commit (default HEAD) into a staging folder (SHIPS), runs the
+pool's Python tests there, renames it to releases/<id>, points every runtime link at <root>/current,
+flips `current` in one rename, and runs both token hooks through the runtime links. A hook that fails
+puts the previous release back. rollback swaps `current` and `previous` and runs the same check; after
+the first install it puts back the links that install replaced. State (state.json, pi-pool.log,
+config.json, accounts) never moves.
 
 --borrow sets the machine up to borrow tokens from the one machine that holds the accounts. <holder>
 is the holder's ssh target (user@host), whose ~/.config/pi-pool/serve.json gives the address and the
@@ -19,11 +20,16 @@ secret, or its pool URL (http://<tailnet ip>:7781) with the secret on stdin. It 
 points Prime's models.json at the token hook for both providers, and checks both hooks through the
 holder. Turn slots stay on this machine (pool/remote.py).
 """
-import argparse, json, os, shutil, stat, subprocess, sys, tarfile, tempfile, time
+import argparse, hashlib, json, os, shutil, stat, subprocess, sys, tarfile, tempfile, time
 from pathlib import Path
 
 CHECKOUT = Path(__file__).resolve().parents[2]
-COMPONENT = "components/pi-pool"
+PACKAGE = "packages/pi-pool"
+EXTENSION = "legacy/prime/pi-pool-extension"
+# Committed path -> path inside a release. A release keeps the layout that every runtime link below and every
+# extension a running session loaded name: bin/ beside app/extension/ (index.ts `poolBin`).
+SHIPS = {f"{PACKAGE}/{name}": name for name in ("README.md", "install.py", "vend.py", "pool", "bin", "deploy", "test")}
+SHIPS[f"{EXTENSION}/index.ts"] = "app/extension/index.ts"
 KEEP = 10
 PROVIDERS = (["--provider", "anthropic"], ["--provider", "openai-codex"])
 # Runtime link (under HOME) -> path inside the release. Prime's models.json names
@@ -90,16 +96,32 @@ def set_writable(path, writable):
             os.chmod(entry, (mode | stat.S_IWUSR) if writable else (mode & ~0o222))
 
 
+def shipped(commit):
+    """{committed path: object id} for each SHIPS path the commit has."""
+    rows = (row.split("\t", 1) for row in git("ls-tree", commit, "--", *SHIPS).splitlines())
+    return {path: meta.split()[2] for meta, path in rows}
+
+
+def release_id_of(commit):
+    """The release's id: 12 hex digits over the object ids it ships, so it changes exactly when a shipped file does."""
+    return hashlib.sha1("".join(f"{path} {oid}\n" for path, oid in sorted(shipped(commit).items())).encode()).hexdigest()[:12]
+
+
 def export(ref, into):
-    """components/pi-pool exactly as committed at `ref`: uncommitted edits never ship."""
-    archive = subprocess.run(["git", "-C", str(CHECKOUT), "archive", "--format=tar", ref, COMPONENT],
+    """The SHIPS paths exactly as committed at `ref`, at their release paths: uncommitted edits never ship."""
+    paths = list(shipped(ref))
+    archive = subprocess.run(["git", "-C", str(CHECKOUT), "archive", "--format=tar", ref, "--", *paths],
                              check=True, capture_output=True).stdout
     with tempfile.TemporaryDirectory() as unpack:
         tar = Path(unpack, "a.tar")
         tar.write_bytes(archive)
         with tarfile.open(tar) as t:
             t.extractall(unpack)
-        shutil.move(str(Path(unpack, COMPONENT)), str(into))
+        into.mkdir()
+        for path in paths:
+            target = into / SHIPS[path]
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(Path(unpack, path)), str(target))
 
 
 def holder_remote(holder, stdin=sys.stdin):
@@ -245,7 +267,7 @@ def restart_hookd(home):
 
 def run_tests(release):
     env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
-    done = subprocess.run(["/usr/bin/python3", "-B", "-m", "unittest", "discover", "-s", "tests"],
+    done = subprocess.run(["/usr/bin/python3", "-B", "-m", "unittest", "discover", "-s", "test"],
                           cwd=release, env=env, capture_output=True, text=True)
     tail = done.stderr.strip().splitlines()[-3:]
     if done.returncode:
@@ -362,7 +384,7 @@ def checked_switch(home, release_id, before, links_before):
 def install(home, ref, holder=None):
     root = root_of(home)
     commit = git("rev-parse", "--verify", f"{ref}^{{commit}}")
-    release_id = git("rev-parse", f"{commit}:{COMPONENT}")[:12]
+    release_id = release_id_of(commit)
     release = root / "releases" / release_id
     tests = client = "already installed"
     if not release.exists():

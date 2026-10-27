@@ -269,7 +269,7 @@ const utcMinute = (ms: number) => `${new Date(ms).toISOString().slice(5, 16).rep
 
 async function pool(deps: Deps, provider: "anthropic" | "openai-codex"): Promise<Outcome> {
   const result = await deps.exec("pi-pool", ["ls", "--json", ...(provider === "anthropic" ? [] : ["--provider", provider])], { timeoutMs: CALL_TIMEOUT_MS });
-  if (result.code !== 0) return FAIL("agent", `pi-pool ls ${failText(result)}`, "reinstall pi-pool with components/pi-pool/install.py in sieun-pi");
+  if (result.code !== 0) return FAIL("agent", `pi-pool ls ${failText(result)}`, "reinstall pi-pool with packages/pi-pool/install.py in sieun-pi");
   type Row = { id?: string; email?: string; usable?: boolean; reason?: string | null; disabled?: boolean; limited_until?: number | null; cooldown_until?: number | null; windows?: { resets_at?: number | null }[] };
   const rows = (parseJson(result.stdout) as { rows?: Row[] }).rows ?? [];
   const live = rows.filter(row => row.disabled !== true);

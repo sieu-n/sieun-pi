@@ -13,7 +13,8 @@ import unittest
 from unittest.mock import patch
 
 
-from fixture_isolation import isolate_test_module
+from fixture_isolation import GUARD_DIR, isolate_test_module
+from prime_extension import EXTENSION
 
 
 def setUpModule():
@@ -31,7 +32,9 @@ class RelocatedSource(unittest.TestCase):
         self.source = self.root / "checkout with spaces" / "pi-pool"
         self.source.mkdir(parents=True)
         shutil.copy2(SOURCE / "vend.py", self.source / "vend.py")
-        for directory in ("app", "bin", "pool"):
+        (self.source / "app" / "extension").mkdir(parents=True)
+        shutil.copy2(EXTENSION, self.source / "app" / "extension" / "index.ts")
+        for directory in ("bin", "pool"):
             shutil.copytree(SOURCE / directory, self.source / directory,
                             ignore=shutil.ignore_patterns("__pycache__"))
         self.home = self.root / "home"
@@ -43,7 +46,7 @@ class RelocatedSource(unittest.TestCase):
             directory.mkdir(parents=True)
         (self.prime / "package.json").write_text('{"version":"fixture","type":"module"}')
         guard_dir = self.root / "isolation"
-        shutil.copytree(SOURCE / "tests" / "isolation", guard_dir,
+        shutil.copytree(GUARD_DIR, guard_dir,
                         ignore=shutil.ignore_patterns("__pycache__"))
         inherited = {key: os.environ[key] for key in ("PATH", "NODE_OPTIONS", "PI_POOL_TEST_ISOLATION_LOG")
                      if key in os.environ}

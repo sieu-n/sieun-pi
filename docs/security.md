@@ -21,7 +21,7 @@ Private runtime data
 | Component | Sensitive behavior |
 | --- | --- |
 | `scripts/manage.py` | Creates source links and setup files. Receipts and replacement backups stay outside the checkout. Existing settings and authentication files are not installation payloads. |
-| `components/pi-pool/vend.py` | Reads parked credentials and macOS Keychain, contacts OAuth endpoints, and writes refresh rotations to private account stores. Its stdout is an access token. Do not paste or capture that output in public reports. |
+| `packages/pi-pool/vend.py` | Reads parked credentials and macOS Keychain, contacts OAuth endpoints, and writes refresh rotations to private account stores. Its stdout is an access token. Do not paste or capture that output in public reports. |
 | Pool patcher and updater | Change the installed Prime bundle. The updater uses a generated runtime copy outside the source checkout. Review it separately from source-link installation. |
 | `aside-browser` | Controls the real logged-in browser. Page contents, screenshots, downloads, and actions can expose or change account data. |
 | Saved history and agent chat | Exposes selected private sessions to Aside over random loopback URLs. Chat can send native prompts. Do not share the URL. Local processes and browser-managed copies are outside that protection. |

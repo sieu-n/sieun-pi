@@ -14,6 +14,6 @@
   "include": [
     "components/global-rules/**/*.ts",
     "components/claude-rules/**/*.ts",
-    "components/pi-pool/app/extension/**/*.ts"
+    "legacy/prime/pi-pool-extension/**/*.ts"
   ]
 }

@@ -18,10 +18,12 @@ const POOL_BIN = poolBin(HERE);
  * and on 10-14 sessions still on release 6601cc2bbdfd ran its owner-turn code after
  * 00a7feba9b52 went live at 11:32:34 KST, logging owner admits that waited 175.8 s
  * (12:06:26) and 32.3 s (12:22:13). So the CLI keeps accepting every argument an older
- * extension sends. A checkout, install.py's `.staging-` folder or any other folder calls its own CLI,
- * so the install tests run the staged CLI and not the live one.
+ * extension sends. install.py's `.staging-` folder or any other folder with app/extension calls its own CLI,
+ * so the install tests run the staged CLI and not the live one. The checkout keeps this extension in
+ * legacy/prime/pi-pool-extension and the CLI in packages/pi-pool/bin, so it calls that CLI.
  */
 export function poolBin(here: string): string {
+	if (basename(here) !== "extension") return join(dirname(dirname(dirname(here))), "packages", "pi-pool", "bin", "pi-pool-token");
 	const root = dirname(dirname(here));
 	const releases = dirname(root);
 	const staged = basename(root).startsWith(".staging-");

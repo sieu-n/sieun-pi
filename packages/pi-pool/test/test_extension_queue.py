@@ -6,6 +6,7 @@ import json, os, subprocess, tempfile, unittest
 from pathlib import Path
 
 from fixture_isolation import isolate_test_module
+from prime_extension import EXTENSION
 
 
 def setUpModule():
@@ -13,7 +14,6 @@ def setUpModule():
 
 
 TESTS = Path(__file__).resolve().parent
-EXTENSION = TESTS.parent / "app" / "extension" / "index.ts"
 CLI = TESTS.parent / "bin" / "pi-pool"
 
 

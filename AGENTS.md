@@ -4,7 +4,7 @@ This repository owns the custom Prime Agent setup. Runtime credentials, account 
 
 Use the root build, check and apply commands. Do not change the live setup from a worker. Only the coordinating session applies it after isolated-profile verification.
 
-The pool runs from an installed copy, not from this checkout. A change under `components/pi-pool` is live only after you commit it and run `/usr/bin/python3 -B components/pi-pool/install.py`; `install.py rollback` undoes the last install. Never edit files under `~/.config/pi-pool` or `~/.local/share/pi-pool`.
+The pool runs from an installed copy, not from this checkout. A change under `packages/pi-pool` or `legacy/prime/pi-pool-extension` is live only after you commit it and run `/usr/bin/python3 -B packages/pi-pool/install.py`; `install.py rollback` undoes the last install. Never edit files under `~/.config/pi-pool` or `~/.local/share/pi-pool`.
 
 Every box runs `components/prime-sync` each minute, which fast-forwards its checkout to GitHub `main` and links skills and `config/AGENTS.md` from it, so a skill or rule edit reaches the other boxes about a minute after it is pushed. Harness entries and the corrections ledger sync through the private repo `sieu-n/prime-shared-state` without a commit here. Install a prime-sync change with `python3 -B components/prime-sync/install.py --ref <sha>` on each box.
 

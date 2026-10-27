@@ -4,6 +4,7 @@ import subprocess
 import unittest
 
 from fixture_isolation import isolate_test_module
+from prime_extension import EXTENSION
 
 
 def setUpModule():
@@ -11,7 +12,6 @@ def setUpModule():
 
 
 TESTS = Path(__file__).resolve().parent
-EXTENSION = TESTS.parent / "app" / "extension" / "index.ts"
 
 
 class SessionStart(unittest.TestCase):

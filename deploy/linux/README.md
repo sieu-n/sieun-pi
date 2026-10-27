@@ -141,7 +141,7 @@ EOF
 # sieun-pi from the checkout, then the pool and the first chat release
 cd ~/src/sieun-pi && npm run develop
 node scripts/cli.mjs plan --out .work/plan.json && node scripts/cli.mjs apply --plan .work/plan.json && node scripts/cli.mjs verify
-/usr/bin/python3 -B components/pi-pool/install.py --ref "$(git rev-parse HEAD)"
+/usr/bin/python3 -B packages/pi-pool/install.py --ref "$(git rev-parse HEAD)"
 node scripts/release-chat.mjs "$(git rev-parse HEAD)" --no-kickstart
 /usr/bin/python3 -B components/prime-sync/install.py --ref "$(git rev-parse HEAD)"   # needs gh auth login, and origin set to GitHub
 
@@ -167,7 +167,7 @@ The watchdog lives in `components/watchdog`. Install it with `python3 -B compone
 
 Release a commit to the chat with `node scripts/release-chat.mjs <sha>`. On Linux it restarts `sieun-pi-chat.service` instead of kickstarting the LaunchAgent.
 `sieun-pi-chat.socket` holds port 5182 across a restart, so the kernel queues the page's requests while the service stops and starts instead of refusing them. When the release's `sieun-pi-chat.service` or `sieun-pi-chat.socket` differs from the installed one, release-chat copies both into `~/.config/systemd/user`, runs `daemon-reload`, stops the service, enables and starts the socket, then starts the service.
-Update the pool with `/usr/bin/python3 -B components/pi-pool/install.py --ref <sha>`.
+Update the pool with `/usr/bin/python3 -B packages/pi-pool/install.py --ref <sha>`.
 
 ## Tools
 

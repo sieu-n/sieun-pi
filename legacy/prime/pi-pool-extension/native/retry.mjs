@@ -1,4 +1,4 @@
-import { assertNoIsolationViolations } from './isolation.mjs';
+import { assertNoIsolationViolations } from '../../../../packages/pi-pool/test/isolation/isolation.mjs';
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';

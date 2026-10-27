@@ -1,4 +1,4 @@
-// pi-pool.log's `ts` is UTC since 10-27 (components/pi-pool/pool/base.py `log`); until then it was the writer's local time, and the
+// pi-pool.log's `ts` is UTC since 10-27 (packages/pi-pool/pool/base.py `log`); until then it was the writer's local time, and the
 // Agent queue chart read it as local time, which on the owner's Mac (KST) would put each UTC line 9 hours early.
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";

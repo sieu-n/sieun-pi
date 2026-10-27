@@ -1,4 +1,4 @@
-import { isolationEnv, assertNoIsolationViolations } from './isolation.mjs';
+import { isolationEnv, assertNoIsolationViolations } from '../../../../packages/pi-pool/test/isolation/isolation.mjs';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 // lid-closed dark wake slept in the middle of the pool hook, Prime killed it, and
 // the turn ended with "Failed to resolve API key", which Prime never retries.
 const here = dirname(fileURLToPath(import.meta.url));
-const poolSource = join(here, '..', '..');
+const poolSource = join(here, '..', '..', '..', '..', 'packages', 'pi-pool');
 const install = process.argv[2] ?? process.env.PI_POOL_PRIME_AGENT_ROOT;
 if (!install) throw new Error('Pass a copied Prime Agent install, or set PI_POOL_PRIME_AGENT_ROOT');
 const output = process.env.PI_POOL_TEST_OUTPUT_DIR;
@@ -89,7 +89,7 @@ const env = {
 };
 const withExtension = expectation === 'retry';
 const args = [join(install, 'dist/bundle/cli.js'), '--mode', 'rpc', '--offline', '--no-tools', '--no-extensions',
-  ...(withExtension ? ['--extension', join(poolSource, 'app', 'extension', 'index.ts')] : []),
+  ...(withExtension ? ['--extension', join(here, '..', 'index.ts')] : []),
   '--no-skills', '--no-prompt-templates', '--no-context-files', '--no-themes', '--provider', 'openai-codex', '--model', 'fixture-codex', '--thinking', 'off'];
 const child = spawn(process.execPath, args, { cwd: join(dir, 'cwd'), env, stdio: ['pipe', 'pipe', 'pipe'] });
 const closed = once(child, 'close');

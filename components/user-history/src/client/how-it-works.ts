@@ -21,7 +21,7 @@ export interface Rank { rank: number; name: string; setBy: string; rule: string 
 export interface Topic { id: "chats" | "pool" | "order"; label: string; intro: string; diagram: string; steps: Step[]; rules: Rule[] }
 
 const USER_HISTORY = "components/user-history/src/";
-const POOL_BASE = "components/pi-pool/pool/base.py";
+const POOL_BASE = "packages/pi-pool/pool/base.py";
 const q = (amount: number, unit: Unit): Quantity => ({ amount, unit });
 const pool = (key: PoolKey): Setting => ({ kind: "pool-config", key });
 const CODE: Setting = { kind: "code" };

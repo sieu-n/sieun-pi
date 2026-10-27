@@ -1,4 +1,4 @@
-import { isolationEnv, assertNoIsolationViolations } from './isolation.mjs';
+import { isolationEnv, assertNoIsolationViolations } from '../../../../packages/pi-pool/test/isolation/isolation.mjs';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
 import { EventEmitter, once } from 'node:events';

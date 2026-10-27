@@ -21,7 +21,7 @@ const CALLS = new Set(["send_message", "get_state"]);
 /** What a session file says about its worker over a stretch: when it wrote, and when it waited for a pi-pool turn slot. */
 export interface TranscriptMarks {
   writes: number[];
-  /** From a `pi-pool-queue` entry (components/pi-pool/app/extension/index.ts) to the next assistant message; `to` is absent while it waits. */
+  /** From a `pi-pool-queue` entry (legacy/prime/pi-pool-extension/index.ts) to the next assistant message; `to` is absent while it waits. */
   slotWaits: { from: number; to?: number }[];
 }
 

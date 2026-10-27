@@ -14,5 +14,6 @@ The layout is the wiki page `sessions/2026/10/28/0421-sieun-pi-final-layout/layo
 | `skills/` | `resume-paused-sessions` and the `skills.prime_agent` helpers, such as `fleet_health`. | `harness.resume()` in pi-host. |
 | `tests/` | The tests of the pieces above. | The packages' own tests. |
 | `utils/` | `prime-context.mjs` and `prime-version.mjs`. | Nothing. |
+| `pi-pool-extension/` | Prime's pi-pool extension (`/account`, the account line, the turn queue hooks) and its native tests against a copied Prime. `packages/pi-pool/install.py` ships it into each pool release as `app/extension`. | `packages/pi-pool/src/pi` and `src/durable`. |
 
 Each installer here still installs into the same place as before the move, so a box that reinstalls a piece from this folder gets the same files.

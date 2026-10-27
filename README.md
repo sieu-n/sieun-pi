@@ -101,7 +101,7 @@ It reads their local transcripts, so it needs no API key.
 ### What the pool needs
 
 - macOS with `/usr/bin/python3`. Claude credentials live in the macOS Keychain.
-- Install or update the pool with `/usr/bin/python3 -B components/pi-pool/install.py`, and undo it with `install.py rollback`. See [the pool README](components/pi-pool/README.md) for how a request picks an account, the config keys and the safety rules.
+- Install or update the pool with `/usr/bin/python3 -B packages/pi-pool/install.py`, and undo it with `install.py rollback`. See [the pool README](packages/pi-pool/README.md) for how a request picks an account, the config keys and the safety rules.
 
 ## 2. Browser chat
 
@@ -292,7 +292,7 @@ You need Node.js 22.8 or later with npm 10 or 11, Python 3.11 or later, Git and 
 git clone https://github.com/sieu-n/sieun-pi.git ~/src/sieun-pi && cd ~/src/sieun-pi
 npm install --global --ignore-scripts "./$(npm pack --silent)"
 sieun-pi plan --out ~/sieun-pi-plan.json && sieun-pi apply --plan ~/sieun-pi-plan.json && sieun-pi verify
-/usr/bin/python3 -B components/pi-pool/install.py
+/usr/bin/python3 -B packages/pi-pool/install.py
 pi-pool login && pi-pool login --provider openai-codex   # one per account
 pi-pool enable anthropic && pi-pool enable openai-codex
 sieun-pi chat start && sieun-pi open
@@ -335,7 +335,7 @@ It runs Prime Agent 0.9.8 on macOS. Every item below is public or installable.
 
 | Item | What it does |
 | --- | --- |
-| `pi-pool` extension | Picks a pooled account for each session and adds `/account` to move a running session to another account. `components/pi-pool/install.py` installs it. |
+| `pi-pool` extension | Picks a pooled account for each session and adds `/account` to move a running session to another account. `packages/pi-pool/install.py` installs it. |
 | `user-history` extension | Serves the browser chat app for native Prime sessions (`/what-did-i-say`, `/agent-chat`, `sieun-pi chat`). |
 | `global-rules` extension | Refuses a recursive grep of `~/.prime/agent`, history rewrites already on a remote in the sieun-pi checkout, outside sends and PR merges without the owner's ok. It adds no prompt text. |
 | `claude-rules` extension | Loads a repo's `.claude/rules/*.md` the way Claude Code does: unscoped rules at session start, and a rule with `paths:` globs the first time the session reads or edits a matching file. |
@@ -405,7 +405,7 @@ Other projects can depend on this Git package and import `detectAgentIdentity` f
 
 ```text
 sieun-pi
-  ├─ components/pi-pool/        install.py copies a commit to ~/.local/share/pi-pool
+  ├─ packages/pi-pool/          install.py copies a commit to ~/.local/share/pi-pool
   ├─ components/user-history/   the browser chat and its Prime extension
   ├─ components/global-rules/   global guards
   ├─ components/claude-rules/   a repo's .claude/rules for Prime sessions
@@ -414,5 +414,5 @@ sieun-pi
 ```
 
 Credentials, settings, sessions and account stores stay outside the source tree.
-More detail is in [the install guide](docs/install.md), [the pool README](components/pi-pool/README.md), [the chat README](components/user-history/README.md), [the skills README](skills/README.md), [security](docs/security.md) and [source provenance](docs/provenance.md).
+More detail is in [the install guide](docs/install.md), [the pool README](packages/pi-pool/README.md), [the chat README](components/user-history/README.md), [the skills README](skills/README.md), [security](docs/security.md) and [source provenance](docs/provenance.md).
 Third-party notices are in [NOTICE](NOTICE) and [LICENSES](LICENSES).

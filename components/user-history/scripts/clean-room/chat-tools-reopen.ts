@@ -10,7 +10,7 @@ import type { RunState, Scenario, Verdict } from "./session-read.ts";
  * reopens it. Nobody tells it anything about tools. The criteria live in the run folder's criteria.md.
  */
 export const TASK = "count how many test files components/user-history has and how many of them mention python, and keep both numbers on the board";
-export const FOLLOW_UP = "thanks. now do the same count for components/pi-pool and add it to the board next to the first one";
+export const FOLLOW_UP = "thanks. now do the same count for packages/pi-pool and add it to the board next to the first one";
 export const EXPECTED_TOOLS = ["ipython", "chat_board", "tell_owner", "correction_add", "poteto_mode"];
 const HOME = homedir();
 const DATA = process.env.AGENT_CHAT_DATA_DIR ?? join(HOME, ".prime/agent/browser-chat");

@@ -1,6 +1,7 @@
 # Native recovery regressions
 
-Run these against a copied Prime Agent install, never the installed package.
+Run these from the repo root against a copied Prime Agent install, never the installed package.
+They drive the extension in `../index.ts` and the pool in `packages/pi-pool`, and they share the guard `packages/pi-pool/test/isolation/isolation.mjs`.
 Set `PI_POOL_PRIME_AGENT_ROOT` to that copy and `PI_POOL_TEST_OUTPUT_DIR` to an existing temporary output directory.
 Use an isolated HOME and `PRIME_AGENT_CODING_AGENT_DIR` for the boundary tests.
 The RPC fixtures create isolated worker homes, sessions, and loopback providers. Every credential is synthetic.
@@ -12,20 +13,20 @@ The Python suite includes five probes that verify Keychain, URL, socket and fetc
 Do not remove the guard environment from child processes.
 
 ```text
-/usr/bin/python3 -B -m unittest discover -s tests
-node tests/native/recovery.mjs
-node tests/native/abort-hook.mjs --warm
-node tests/native/registry.mjs "$PI_POOL_PRIME_AGENT_ROOT"
-node tests/native/retry.mjs "$PI_POOL_PRIME_AGENT_ROOT"
-node tests/native/swap.mjs "$PI_POOL_PRIME_AGENT_ROOT"
-FIXTURE_EXPECT=baseline node tests/native/swap.mjs "$PI_POOL_PRIME_AGENT_ROOT"
-FIXTURE_FAILURE=terms node tests/native/swap.mjs "$PI_POOL_PRIME_AGENT_ROOT"
-FIXTURE_FAILURE=terms FIXTURE_EXPECT=baseline node tests/native/swap.mjs "$PI_POOL_PRIME_AGENT_ROOT"
-FIXTURE_FAILURE=all node tests/native/swap.mjs "$PI_POOL_PRIME_AGENT_ROOT"
-node tests/native/hook-timeout.mjs "$PI_POOL_PRIME_AGENT_ROOT"
-node tests/native/queue.mjs "$PI_POOL_PRIME_AGENT_ROOT"
-FIXTURE_HOOK=fail node tests/native/hook-timeout.mjs "$PI_POOL_PRIME_AGENT_ROOT"
-FIXTURE_EXPECT=baseline node tests/native/hook-timeout.mjs "$PI_POOL_PRIME_AGENT_ROOT"
+(cd packages/pi-pool && /usr/bin/python3 -B -m unittest discover -s test)
+node legacy/prime/pi-pool-extension/native/recovery.mjs
+node legacy/prime/pi-pool-extension/native/abort-hook.mjs --warm
+node legacy/prime/pi-pool-extension/native/registry.mjs "$PI_POOL_PRIME_AGENT_ROOT"
+node legacy/prime/pi-pool-extension/native/retry.mjs "$PI_POOL_PRIME_AGENT_ROOT"
+node legacy/prime/pi-pool-extension/native/swap.mjs "$PI_POOL_PRIME_AGENT_ROOT"
+FIXTURE_EXPECT=baseline node legacy/prime/pi-pool-extension/native/swap.mjs "$PI_POOL_PRIME_AGENT_ROOT"
+FIXTURE_FAILURE=terms node legacy/prime/pi-pool-extension/native/swap.mjs "$PI_POOL_PRIME_AGENT_ROOT"
+FIXTURE_FAILURE=terms FIXTURE_EXPECT=baseline node legacy/prime/pi-pool-extension/native/swap.mjs "$PI_POOL_PRIME_AGENT_ROOT"
+FIXTURE_FAILURE=all node legacy/prime/pi-pool-extension/native/swap.mjs "$PI_POOL_PRIME_AGENT_ROOT"
+node legacy/prime/pi-pool-extension/native/hook-timeout.mjs "$PI_POOL_PRIME_AGENT_ROOT"
+node legacy/prime/pi-pool-extension/native/queue.mjs "$PI_POOL_PRIME_AGENT_ROOT"
+FIXTURE_HOOK=fail node legacy/prime/pi-pool-extension/native/hook-timeout.mjs "$PI_POOL_PRIME_AGENT_ROOT"
+FIXTURE_EXPECT=baseline node legacy/prime/pi-pool-extension/native/hook-timeout.mjs "$PI_POOL_PRIME_AGENT_ROOT"
 ```
 
 `recovery.mjs` runs 38 cases across Codex and Claude. Add case names to select a subset.

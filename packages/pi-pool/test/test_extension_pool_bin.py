@@ -1,9 +1,8 @@
 import json
-from pathlib import Path
 import subprocess
 import unittest
 
-EXTENSION = Path(__file__).resolve().parent.parent / "app" / "extension" / "index.ts"
+from prime_extension import EXTENSION
 
 
 def pool_bin(here):
@@ -22,8 +21,8 @@ class PoolBin(unittest.TestCase):
                          "/h/.local/share/pi-pool/current/bin/pi-pool-token")
 
     def test_checkout_calls_its_own_cli(self):
-        self.assertEqual(pool_bin("/h/sieun-pi/components/pi-pool/app/extension"),
-                         "/h/sieun-pi/components/pi-pool/bin/pi-pool-token")
+        self.assertEqual(pool_bin("/h/sieun-pi/legacy/prime/pi-pool-extension"),
+                         "/h/sieun-pi/packages/pi-pool/bin/pi-pool-token")
 
     def test_install_staging_calls_its_own_cli(self):
         # 10-16 02:55Z and 04:05Z: the install of 71316c0 ran its extension tests in releases/.staging-*, which called the live release's

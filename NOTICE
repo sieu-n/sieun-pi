@@ -22,14 +22,14 @@ Prime Agent and Pi
   License: MIT, reproduced in LICENSES/prime-agent-MIT.txt.
   Source: https://github.com/PrimeIntellect-ai/prime-agent/tree/v0.9.4
   Scope: the pool extension's use of the public extension types and the
-  native regression tests in components/pi-pool/tests/native.
+  native regression tests in legacy/prime/pi-pool-extension/native.
   Prime Agent and its bundled dependencies are separate installations.
 
 Tokenmaxxing
   Copyright (c) 2026 anaclumos
   License: MIT, reproduced in LICENSES/tokenmaxxing-MIT.txt.
   Source: https://github.com/anaclumos/tokenmaxxing
-  Scope: components/pi-pool adapted tokenmaxxing's credential refresh,
+  Scope: packages/pi-pool adapted tokenmaxxing's credential refresh,
   usage-window and usage-sampling behavior (pool/base.py, pool/registry.py,
   pool/usage.py). This notice covers those adapted portions. It does not
   claim tokenmaxxing authorship of the whole account pool. pi-pool does not

@@ -44,7 +44,7 @@
   ],
   "pi": {
     "extensions": [
-      "./components/pi-pool/app/extension/index.ts",
+      "./legacy/prime/pi-pool-extension/index.ts",
       "./components/global-rules/index.ts",
       "./components/claude-rules/index.ts",
       "./components/user-history/extension/index.ts"
@@ -129,8 +129,10 @@
     "skills/**/*.lock",
     "skills/**/*.tsv",
     "skills/**/*.sh",
-    "components/pi-pool/bin/pi-pool",
-    "components/pi-pool/bin/pi-pool-token",
+    "packages/pi-pool/bin/pi-pool",
+    "packages/pi-pool/bin/pi-pool-token",
+    "packages/pi-pool/vend.py",
+    "packages/pi-pool/pool/*.py",
     "skills/poteto-mode/scripts/watch-pr/watch-pr",
     "components/**/LICENSE",
     "components/**/LICENSE.*",

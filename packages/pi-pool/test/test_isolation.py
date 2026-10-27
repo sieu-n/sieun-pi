@@ -9,8 +9,6 @@ import unittest
 from fixture_isolation import GUARD_DIR, isolate_test_module
 
 
-SOURCE = Path(__file__).resolve().parents[1]
-
 
 def setUpModule():
     isolate_test_module()
@@ -26,7 +24,7 @@ class IsolationSentinels(unittest.TestCase):
             env = {**os.environ, "PI_POOL_TEST_ISOLATION_LOG": str(marker),
                    "PYTHONPATH": str(GUARD_DIR), "PYTHONDONTWRITEBYTECODE": "1"}
             command = ([sys.executable, "-B", str(script)] if runtime == "python" else
-                       ["node", "--import", str(SOURCE / "tests/native/isolation.mjs"), str(script)])
+                       ["node", "--import", str(GUARD_DIR / "isolation.mjs"), str(script)])
             result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=10)
             self.assertNotEqual(result.returncode, 0, result.stdout)
             self.assertIn(expected, result.stderr)

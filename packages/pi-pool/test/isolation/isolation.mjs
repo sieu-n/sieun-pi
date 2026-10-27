@@ -49,7 +49,7 @@ globalThis.fetch = function (input, init) {
 export const isolationEnv = {
   PI_POOL_TEST_ISOLATION_LOG: marker,
   PI_POOL_TEST_ALLOW_LOOPBACK: '1',
-  PYTHONPATH: join(here, '..', 'isolation'),
+  PYTHONPATH: here,
   PYTHONDONTWRITEBYTECODE: '1',
   NODE_OPTIONS: `--import ${JSON.stringify(fileURLToPath(import.meta.url))}`,
 };

@@ -592,87 +592,87 @@
       "sha256": "662ed1ad53fb491e97b9c4eac7317fba8ec5ed722fec8d71beb94da0111619cf"
     },
     {
-      "path": "components/pi-pool/README.md",
+      "path": "packages/pi-pool/README.md",
       "origin": "~/.config/pi-pool/README.md",
       "sha256": "8d0bbfc465a90d49dcafeeb8221c7b5fa4e3b5917958e1c963a31e86ae374cb9"
     },
     {
-      "path": "components/pi-pool/app/extension/index.ts",
+      "path": "legacy/prime/pi-pool-extension/index.ts",
       "origin": "~/.config/pi-pool/app/extension/index.ts",
       "sha256": "6ea4b70539d9bb64d43095dc120941b7d9e620bba58f20a80b676320ef4cc4b8"
     },
     {
-      "path": "components/pi-pool/bin/pi-pool-token",
+      "path": "packages/pi-pool/bin/pi-pool-token",
       "origin": "~/.config/pi-pool/bin/pi-pool-token",
       "sha256": "22d5cd0f1a4d370e441f76ac8ae52e560cb385eedbe2cc0c927cee38ae61bde2"
     },
     {
-      "path": "components/pi-pool/tests/native/README.md",
+      "path": "legacy/prime/pi-pool-extension/native/README.md",
       "origin": "~/.config/pi-pool/tests/native/README.md",
       "sha256": "9abaf360589303b3aacceb750974b81e0fd7d7c7fda76a07e660dc3086038141"
     },
     {
-      "path": "components/pi-pool/tests/native/abort-hook.mjs",
+      "path": "legacy/prime/pi-pool-extension/native/abort-hook.mjs",
       "origin": "~/.config/pi-pool/tests/native/abort-hook.mjs",
       "sha256": "d0d8824a629aa5678c36fb68758b419011c2faad06260bd31b69e601d865428d"
     },
     {
-      "path": "components/pi-pool/tests/native/assertions.mjs",
+      "path": "legacy/prime/pi-pool-extension/native/assertions.mjs",
       "origin": "~/.config/pi-pool/tests/native/assertions.mjs",
       "sha256": "9b628cc4178302909f6b5f25f6d1c2df28845530b5c7de3faf0fec1d7faf3c02"
     },
     {
-      "path": "components/pi-pool/tests/native/blocked-hook.py",
+      "path": "legacy/prime/pi-pool-extension/native/blocked-hook.py",
       "origin": "~/.config/pi-pool/tests/native/blocked-hook.py",
       "sha256": "8d051818fc09783a99cec138a3eaa632fd44bd71814947c09a4388da075e113b"
     },
     {
-      "path": "components/pi-pool/tests/native/fixture-extension.mjs",
+      "path": "legacy/prime/pi-pool-extension/native/fixture-extension.mjs",
       "origin": "~/.config/pi-pool/tests/native/fixture-extension.mjs",
       "sha256": "f436e2afbee593357090e3808c6b35ddec585a8a525dbd2b591255cf3f8a4bc4"
     },
     {
-      "path": "components/pi-pool/tests/native/header.py",
+      "path": "legacy/prime/pi-pool-extension/native/header.py",
       "origin": "~/.config/pi-pool/tests/native/header.py",
       "sha256": "cf44e8b280bed306a751c69ed188148d42376a02e90eb937fa3e0483674d1dbd"
     },
     {
-      "path": "components/pi-pool/tests/native/hook.py",
+      "path": "legacy/prime/pi-pool-extension/native/hook.py",
       "origin": "~/.config/pi-pool/tests/native/hook.py",
       "sha256": "04085074fd9eff6ecf43c94cd5ad6be7e999081da2441dc310ca7d75853b447a"
     },
     {
-      "path": "components/pi-pool/tests/native/recovery.mjs",
+      "path": "legacy/prime/pi-pool-extension/native/recovery.mjs",
       "origin": "~/.config/pi-pool/tests/native/recovery.mjs",
       "sha256": "1040599ab93e351bde141f51ce9b244d5f54a7d111e24f8340da18122b297437"
     },
     {
-      "path": "components/pi-pool/tests/native/registry.mjs",
+      "path": "legacy/prime/pi-pool-extension/native/registry.mjs",
       "origin": "~/.config/pi-pool/tests/native/registry.mjs",
       "sha256": "e415278029992b47e1e81f9a095677131f9846e11595b34019dd63b99eb5b087"
     },
     {
-      "path": "components/pi-pool/tests/native/retry.mjs",
+      "path": "legacy/prime/pi-pool-extension/native/retry.mjs",
       "origin": "~/.config/pi-pool/tests/native/retry.mjs",
       "sha256": "d6ebaae726041030061f9343f4ddf554d49218dc5245a790749c0c119fd35a72"
     },
     {
-      "path": "components/pi-pool/tests/test_core.py",
+      "path": "packages/pi-pool/test/test_core.py",
       "origin": "~/.config/pi-pool/tests/test_core.py",
       "sha256": "3616d07962f7884a0e6149a04b4ab7a7d87e2be2a082ac196d232d0cdcfb82e6"
     },
     {
-      "path": "components/pi-pool/tests/test_enable_recovery.py",
+      "path": "packages/pi-pool/test/test_enable_recovery.py",
       "origin": "~/.config/pi-pool/tests/test_enable_recovery.py",
       "sha256": "45129c2d50cbe5fa19b40aae360f4d9ab6d5a0b84363b5dcf53b098fbbac7362"
     },
     {
-      "path": "components/pi-pool/vend.py",
+      "path": "packages/pi-pool/vend.py",
       "origin": "~/.config/pi-pool/vend.py",
       "sha256": "0122c0e13c54c80f736e327859d2fbe4bb14c8ae0ea86bcd5ff2be3a15e16843"
     },
     {
-      "path": "components/pi-pool/bin/pi-pool",
+      "path": "packages/pi-pool/bin/pi-pool",
       "origin": "~/.local/bin/pi-pool",
       "sha256": "3e52cebf5f6e2e1ac76dd86b7a66ac45ae571aba2700df23aaf9f1f4d950e62b"
     },

@@ -6,6 +6,7 @@ import json, os, stat, subprocess, sys, tempfile, time, unittest
 from pathlib import Path
 
 from fixture_isolation import isolate_test_module
+from prime_extension import EXTENSION
 from test_turns_park import FakePrime
 
 
@@ -14,7 +15,6 @@ def setUpModule():
 
 
 TESTS = Path(__file__).resolve().parent
-EXTENSION = TESTS.parent / "app" / "extension" / "index.ts"
 CLI = TESTS.parent / "bin" / "pi-pool"
 PARK_AFTER_MS = 60_000
 

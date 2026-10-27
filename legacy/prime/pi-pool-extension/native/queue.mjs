@@ -1,8 +1,8 @@
 // The turn queue inside a real Prime run: the pi-pool extension's `context` handler
 // holds the model call while the Mac is full, Stop (RPC abort) ends the wait and drops
 // the queue entry, a release lets the next run through, and agent_end gives the slot back.
-// node tests/native/queue.mjs "$PI_POOL_PRIME_AGENT_ROOT"
-import { isolationEnv, assertNoIsolationViolations } from './isolation.mjs';
+// node legacy/prime/pi-pool-extension/native/queue.mjs "$PI_POOL_PRIME_AGENT_ROOT"
+import { isolationEnv, assertNoIsolationViolations } from '../../../../packages/pi-pool/test/isolation/isolation.mjs';
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
 import { createServer } from 'node:http';
@@ -12,7 +12,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const poolSource = join(here, '..', '..');
+const poolSource = join(here, '..', '..', '..', '..', 'packages', 'pi-pool');
 const install = process.argv[2] ?? process.env.PI_POOL_PRIME_AGENT_ROOT;
 if (!install) throw new Error('Pass a copied Prime Agent install, or set PI_POOL_PRIME_AGENT_ROOT');
 const output = process.env.PI_POOL_TEST_OUTPUT_DIR;
@@ -90,7 +90,7 @@ const env = {
   NODE_COMPILE_CACHE: join(dir, 'node-cache'), NO_PROXY: '*', TERM: 'dumb',
 };
 const child = spawn(process.execPath, [join(install, 'dist/bundle/cli.js'), '--mode', 'rpc', '--offline', '--no-tools', '--no-extensions',
-  '--extension', join(poolSource, 'app', 'extension', 'index.ts'), '--no-skills', '--no-prompt-templates', '--no-context-files', '--no-themes',
+  '--extension', join(here, '..', 'index.ts'), '--no-skills', '--no-prompt-templates', '--no-context-files', '--no-themes',
   '--provider', 'openai-codex', '--model', 'fixture-codex', '--thinking', 'off'], { cwd: join(dir, 'cwd'), env, stdio: ['pipe', 'pipe', 'pipe'] });
 const closed = once(child, 'close');
 const bus = new EventEmitter();
