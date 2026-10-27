@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -35,4 +36,4 @@ async function main(): Promise<void> {
   await writeFile(output, JSON.stringify(result, null, 2) + "\n");
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) await main();
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) await main();

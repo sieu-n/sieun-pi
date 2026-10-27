@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -127,4 +127,4 @@ async function main(): Promise<void> {
 }
 
 // Not a top-level await: main imports harness-health.ts, which imports this module, and that import would wait on this one's evaluation.
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main().catch((error: unknown) => { process.stderr.write(`${String(error)}\n`); process.exit(1); });
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) main().catch((error: unknown) => { process.stderr.write(`${String(error)}\n`); process.exit(1); });

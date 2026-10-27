@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -129,7 +129,7 @@ async function cli(op: string): Promise<unknown> {
   throw new Error(`Unknown op ${op}.`);
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
   cli(process.argv[2] ?? "").then(
     answer => process.stdout.write(`${JSON.stringify(answer ?? { error: "The chat service has no cross-host route (404)." })}\n`),
     error => process.stdout.write(`${JSON.stringify({ error: error instanceof Error ? error.message : String(error) })}\n`));

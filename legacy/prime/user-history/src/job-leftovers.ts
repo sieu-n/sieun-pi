@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { hostExecFile } from "./spawn-host.ts";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { lstat, readdir, readFile, readlink, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, normalize, relative } from "node:path";
@@ -708,6 +708,6 @@ async function main(args: readonly string[]): Promise<void> {
   process.stdout.write(JSON.stringify(left) + "\n");
 }
 
-if (process.argv[1] && isAbsolute(process.argv[1]) && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (process.argv[1] && isAbsolute(process.argv[1]) && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
   await main(process.argv.slice(2)).catch(error => { process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`); process.exitCode = 1; });
 }

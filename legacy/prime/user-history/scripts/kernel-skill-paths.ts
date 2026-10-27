@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import { readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -87,7 +88,7 @@ export async function pinSkillPaths(options: { home?: string; venv?: string; ski
   }));
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
   const results = await pinSkillPaths();
   if (!results.length) { process.stderr.write(`kernel-skill-paths: no lib/python3.*/site-packages under ${kernelVenv()}\n`); process.exit(1); }
   for (const result of results) process.stdout.write(`${result.written ? "wrote" : "unchanged"} ${result.file}: ${result.paths.length} skill source folders\n`);

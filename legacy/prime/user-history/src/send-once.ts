@@ -1,7 +1,7 @@
 import { open, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 
 /*
  * How to tell whether a send that timed out still reached its target. The daemon gives the target's worker 30 s to confirm a send_message
@@ -157,7 +157,7 @@ export function targetStateOf(data: unknown): TargetState {
  * `node send-once.ts` reads {sessionId, texts, since, agentDir} on stdin and prints {"landedAt": number | null}, for the agent_message
  * wrapper in a session's Python kernel (message-limit-check.py).
  */
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
   const input = JSON.parse(readFileSync(0, "utf8")) as { sessionId?: unknown; texts?: unknown; since?: unknown; agentDir?: unknown };
   const ok = typeof input.sessionId === "string" && /^[\w-]{1,128}$/.test(input.sessionId) && Array.isArray(input.texts) && typeof input.since === "number" && typeof input.agentDir === "string";
   const file = ok ? await sessionFileOf(input.sessionId as string, input.agentDir as string) : null;

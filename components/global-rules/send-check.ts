@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { judgeShellText, type Verdict } from "./guard.ts";
 import { applyOwnerOk, httpSend, mcpSend, ownerOkToken, refusal } from "./send-guard.ts";
@@ -143,7 +143,7 @@ export async function serveSocket(path: string, idleMs = IDLE_MS, exit = () => p
 
 const IDLE_MS = 120_000;
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
 	if (process.argv[2] === "--serve-socket" && process.argv[3]) {
 		console.log = console.info = console.warn = console.error;
 		if (!(await serveSocket(process.argv[3], Number(process.argv[4]) || IDLE_MS))) process.exit(0);

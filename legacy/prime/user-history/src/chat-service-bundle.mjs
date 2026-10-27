@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import { build } from "esbuild";
 import { readFile } from "node:fs/promises";
 import { dirname, join, relative, sep } from "node:path";
@@ -36,7 +37,7 @@ export async function bundleChatService({ entry = join(SRC, "chat-service.ts"), 
   return outfile;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
   const started = performance.now();
   const file = await bundleChatService();
   process.stdout.write(`chat service bundle: ${file} in ${Math.round(performance.now() - started)} ms\n`);

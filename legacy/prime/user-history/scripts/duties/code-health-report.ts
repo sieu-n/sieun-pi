@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { readFile, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
@@ -327,4 +328,4 @@ async function main(): Promise<void> {
   else process.stdout.write(text);
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) await main();
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) await main();

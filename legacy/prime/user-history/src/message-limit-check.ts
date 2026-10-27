@@ -50,7 +50,7 @@ export function checkMessage(message: string, role?: string): string | null {
   return role === "child" ? steerWaitNote(message) : null;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
   const { message, role } = JSON.parse(readFileSync(0, "utf8")) as { message?: unknown; role?: unknown };
   const note = typeof message === "string" ? checkMessage(message, typeof role === "string" ? role : undefined) : null;
   process.stdout.write(`${JSON.stringify({ note })}\n`);

@@ -610,4 +610,4 @@ async function main(): Promise<void> {
   if (reason) { process.stderr.write(`wiki-dream: ${reason}\n`); process.exit(1); }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) await main();
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) await main();
