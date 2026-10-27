@@ -165,8 +165,13 @@ const iso = (at: number): string => new Date(at).toISOString();
 const clip = (text: string, length = 200): string => (text.length > length ? text.slice(0, length - 1) + "\u2026" : text).replace(/\s+/g, " ");
 const readJson = <T>(path: string): T | undefined => { try { return JSON.parse(readFileSync(path, "utf8")) as T; } catch { return undefined; } };
 interface Check { id: string; ok: boolean | null; detail: string }
-/** The chat's own check-in report, under the old "from check-in <name>" header and the 10-27 "from sibling:check-in <name>" one (r1-215eedc went void on it). */
-const ownCheckin = (text: string, name: string): boolean => text.startsWith(`[agent-message from check-in ${name} `) || text.startsWith(`[agent-message from sibling:check-in ${name} `);
+/**
+ * The system running, not someone stepping in: the chat's own check-in report, under the old "from check-in <name>" header and the 10-27
+ * "from sibling:check-in <name>" one (r1-215eedc went void on it), and the chat service's "[relay]" and "[wake]" notices (r2-7f3dc91 went void
+ * on a relayed wake for its stopped subagent).
+ */
+const ownCheckin = (text: string, name: string): boolean => text.startsWith(`[agent-message from check-in ${name} `) ||
+  text.startsWith(`[agent-message from sibling:check-in ${name} `) || /^\[agent-message from [^\]]*\]\s*\[(?:relay|wake)\]/.test(text);
 const parse = (input: string): Record<string, unknown> => { try { return JSON.parse(input) as Record<string, unknown>; } catch { return {}; } };
 
 type Reading = ReturnType<typeof measure>;
@@ -177,6 +182,13 @@ function lastMeasure(run: string): { deploy: Reading; restore: Reading } {
   const saved = last ? readJson<{ deploy?: Reading; restore?: Reading }>(join(run, last)) : undefined;
   const again = (reading: Reading | undefined): Reading => reading ? { ...reads(reading.output), output: `${reading.output} (from ${last})` } : gone;
   return { deploy: again(saved?.deploy), restore: again(saved?.restore) };
+}
+
+/** The newest board revision collect saved in the run folder, for a rejudge, which reads no live board. */
+function lastBoard(run: string): ChatBoard | undefined {
+  const dir = join(run, "boards");
+  const last = existsSync(dir) ? readdirSync(dir).filter(name => /^\d+\.json$/.test(name)).sort().at(-1) : undefined;
+  return last ? readJson<ChatBoard>(join(dir, last)) : undefined;
 }
 
 async function judge(run: string, state: RunState): Promise<{ verdict: Verdict; text: string }> {
@@ -193,7 +205,7 @@ async function judge(run: string, state: RunState): Promise<{ verdict: Verdict; 
   add("1", verdictOf(flows(deploy)), `after a deploy, 8 s of reads served ${deploy.served ?? "?"} and skipped ${deploy.skipped ?? "?"}; output "${clip(deploy.output, 160)}"`);
   add("2", verdictOf(flows(restore)), `after a restore deploy, 8 s of reads served ${restore.served ?? "?"} and skipped ${restore.skipped ?? "?"}; output "${clip(restore.output, 160)}"`);
 
-  const board = readJson<ChatBoard>(join(DATA, "boards", `${state.chat.id}.json`));
+  const board = readJson<ChatBoard>(join(DATA, "boards", `${state.chat.id}.json`)) ?? lastBoard(run);
   const openAsks = (board?.todos ?? []).filter(todo => todo.from === "agent").flatMap(todo => { const hit = todoHoldAsk(todo.text, todo.choices ?? []); return hit ? [`${todo.id} "${clip(hit, 100)}"`] : []; });
   const written: string[] = [];
   const told: string[] = [];
