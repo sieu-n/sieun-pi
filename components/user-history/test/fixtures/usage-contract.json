@@ -1,0 +1,1484 @@
+{
+ "now": 1793090264624,
+ "window": "30d",
+ "answers": {
+  "sum by (box, model) (increase(prime_agent_generation_output_tokens_total{job=\"prime-agent\"}[2592000s])) / sum by (box, model) (increase(prime_agent_generation_seconds_total{job=\"prime-agent\"}[2592000s]))": [
+   {
+    "metric": {
+     "box": "mbp",
+     "model": "claude-opus-5-5"
+    },
+    "value": [
+     1793090264.867,
+     "61.593100375044955"
+    ]
+   },
+   {
+    "metric": {
+     "box": "us-metal02",
+     "model": "claude-fable-5-1"
+    },
+    "value": [
+     1793090264.867,
+     "40.99728174076899"
+    ]
+   },
+   {
+    "metric": {
+     "box": "us-metal02",
+     "model": "claude-opus-5-5"
+    },
+    "value": [
+     1793090264.867,
+     "80.63589079319995"
+    ]
+   },
+   {
+    "metric": {
+     "box": "us-metal02",
+     "model": "gpt-6-astra"
+    },
+    "value": [
+     1793090264.867,
+     "22.11579213996032"
+    ]
+   },
+   {
+    "metric": {
+     "box": "us-metal02",
+     "model": "gpt-6.1-sol"
+    },
+    "value": [
+     1793090264.867,
+     "38.770068462985925"
+    ]
+   }
+  ],
+  "sum by (box, model) (increase(prime_agent_cost_USD_total{job=\"prime-agent\"}[2592000s]))": [
+   {
+    "metric": {
+     "box": "mbp",
+     "model": "claude-fable-5"
+    },
+    "value": [
+     1793090264.877,
+     "0"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "model": "claude-fable-5-1"
+    },
+    "value": [
+     1793090264.877,
+     "2658.64285868385"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "model": "claude-haiku-4-5"
+    },
+    "value": [
+     1793090264.877,
+     "0.12302188215293813"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "model": "claude-opus-4-7"
+    },
+    "value": [
+     1793090264.877,
+     "0"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "model": "claude-opus-5"
+    },
+    "value": [
+     1793090264.877,
+     "0"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "model": "claude-opus-5-5"
+    },
+    "value": [
+     1793090264.877,
+     "48860.48528747235"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "model": "claude-sonnet-5"
+    },
+    "value": [
+     1793090264.877,
+     "0"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "model": "claude-sonnet-5-5"
+    },
+    "value": [
+     1793090264.877,
+     "0.19153139628296983"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "model": "gpt-5.4-mini"
+    },
+    "value": [
+     1793090264.877,
+     "0"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "model": "gpt-5.6-sol"
+    },
+    "value": [
+     1793090264.877,
+     "0"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "model": "gpt-5.6-terra"
+    },
+    "value": [
+     1793090264.877,
+     "0"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "model": "gpt-6-astra"
+    },
+    "value": [
+     1793090264.877,
+     "8579.827679713764"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "model": "gpt-6-sol"
+    },
+    "value": [
+     1793090264.877,
+     "665.3649850044706"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "model": "gpt-6.1-sol"
+    },
+    "value": [
+     1793090264.877,
+     "27.250050766694653"
+    ]
+   },
+   {
+    "metric": {
+     "box": "us-metal02",
+     "model": "claude-fable-5-1"
+    },
+    "value": [
+     1793090264.877,
+     "11686.34599999897"
+    ]
+   },
+   {
+    "metric": {
+     "box": "us-metal02",
+     "model": "claude-haiku-4-5"
+    },
+    "value": [
+     1793090264.877,
+     "0.0587130476343533"
+    ]
+   },
+   {
+    "metric": {
+     "box": "us-metal02",
+     "model": "claude-opus-5-5"
+    },
+    "value": [
+     1793090264.877,
+     "137779.84933221037"
+    ]
+   },
+   {
+    "metric": {
+     "box": "us-metal02",
+     "model": "gpt-6-astra"
+    },
+    "value": [
+     1793090264.877,
+     "2522.6898963083145"
+    ]
+   },
+   {
+    "metric": {
+     "box": "us-metal02",
+     "model": "gpt-6-sol"
+    },
+    "value": [
+     1793090264.877,
+     "97.24479850164006"
+    ]
+   },
+   {
+    "metric": {
+     "box": "us-metal02",
+     "model": "gpt-6.1-sol"
+    },
+    "value": [
+     1793090264.877,
+     "109.92070941422658"
+    ]
+   }
+  ],
+  "sum by (box, model) (increase(prime_agent_calls_total{job=\"prime-agent\"}[2592000s]))": [
+   {
+    "metric": {
+     "box": "mbp",
+     "model": "anthropic/claude-fable-5.1"
+    },
+    "value": [
+     1793090264.838,
+     "0"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "model": "claude-fable-5"
+    },
+    "value": [
+     1793090264.838,
+     "0"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "model": "claude-fable-5-1"
+    },
+    "value": [
+     1793090264.838,
+     "10941.17109529787"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "model": "claude-haiku-4-5"
+    },
+    "value": [
+     1793090264.838,
+     "13.001670570207187"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "model": "claude-opus-4-7"
+    },
+    "value": [
+     1793090264.838,
+     "0"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "model": "claude-opus-5"
+    },
+    "value": [
+     1793090264.838,
+     "0"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "model": "claude-opus-5-5"
+    },
+    "value": [
+     1793090264.838,
+     "426051.3023423969"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "model": "claude-sonnet-5"
+    },
+    "value": [
+     1793090264.838,
+     "0"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "model": "claude-sonnet-5-5"
+    },
+    "value": [
+     1793090264.838,
+     "8.000125152529645"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "model": "gpt-5.4-mini"
+    },
+    "value": [
+     1793090264.838,
+     "0"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "model": "gpt-5.6-sol"
+    },
+    "value": [
+     1793090264.838,
+     "0"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "model": "gpt-5.6-terra"
+    },
+    "value": [
+     1793090264.838,
+     "0"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "model": "gpt-6-astra"
+    },
+    "value": [
+     1793090264.838,
+     "23898.373716792663"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "model": "gpt-6-sol"
+    },
+    "value": [
+     1793090264.838,
+     "21027.32454660597"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "model": "openai/gpt-6-astra"
+    },
+    "value": [
+     1793090264.838,
+     "0"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "model": "gpt-6.1-sol"
+    },
+    "value": [
+     1793090264.838,
+     "1194.0501226682827"
+    ]
+   },
+   {
+    "metric": {
+     "box": "us-metal02",
+     "model": "claude-fable-5-1"
+    },
+    "value": [
+     1793090264.838,
+     "25472.404734261672"
+    ]
+   },
+   {
+    "metric": {
+     "box": "us-metal02",
+     "model": "claude-haiku-4-5"
+    },
+    "value": [
+     1793090264.838,
+     "8.001028542041656"
+    ]
+   },
+   {
+    "metric": {
+     "box": "us-metal02",
+     "model": "claude-opus-5-5"
+    },
+    "value": [
+     1793090264.838,
+     "1199531.3479305145"
+    ]
+   },
+   {
+    "metric": {
+     "box": "us-metal02",
+     "model": "gpt-6-astra"
+    },
+    "value": [
+     1793090264.838,
+     "7058.18656729526"
+    ]
+   },
+   {
+    "metric": {
+     "box": "us-metal02",
+     "model": "gpt-6-sol"
+    },
+    "value": [
+     1793090264.838,
+     "3110.047676849068"
+    ]
+   },
+   {
+    "metric": {
+     "box": "us-metal02",
+     "model": "gpt-6.1-sol"
+    },
+    "value": [
+     1793090264.838,
+     "5011.964235375643"
+    ]
+   },
+   {
+    "metric": {
+     "box": "us-metal02",
+     "model": "openai/gpt-6.1-sol"
+    },
+    "value": [
+     1793090264.838,
+     "12.003146303093864"
+    ]
+   }
+  ],
+  "sum by (box, model, kind) (increase(prime_agent_tokens_total{job=\"prime-agent\"}[2592000s]))": [
+   {
+    "metric": {
+     "box": "mbp",
+     "kind": "cache_read",
+     "model": "claude-fable-5"
+    },
+    "value": [
+     1793090264.888,
+     "0"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "kind": "cache_read",
+     "model": "claude-fable-5-1"
+    },
+    "value": [
+     1793090264.888,
+     "2199236663.1013784"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "kind": "cache_read",
+     "model": "claude-haiku-4-5"
+    },
+    "value": [
+     1793090264.888,
+     "84141.81653381331"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "kind": "cache_read",
+     "model": "claude-opus-4-7"
+    },
+    "value": [
+     1793090264.888,
+     "0"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "kind": "cache_read",
+     "model": "claude-opus-5"
+    },
+    "value": [
+     1793090264.888,
+     "0"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "kind": "cache_read",
+     "model": "claude-opus-5-5"
+    },
+    "value": [
+     1793090264.888,
+     "71813301282.71284"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "kind": "cache_read",
+     "model": "claude-sonnet-5"
+    },
+    "value": [
+     1793090264.888,
+     "0"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "kind": "cache_read",
+     "model": "claude-sonnet-5-5"
+    },
+    "value": [
+     1793090264.888,
+     "234015.6608992209"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "kind": "cache_read",
+     "model": "gpt-5.4-mini"
+    },
+    "value": [
+     1793090264.888,
+     "0"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "kind": "cache_read",
+     "model": "gpt-5.6-sol"
+    },
+    "value": [
+     1793090264.888,
+     "0"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "kind": "cache_read",
+     "model": "gpt-5.6-terra"
+    },
+    "value": [
+     1793090264.888,
+     "0"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "kind": "cache_read",
+     "model": "gpt-6-astra"
+    },
+    "value": [
+     1793090264.888,
+     "4972920260.3686695"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "kind": "cache_read",
+     "model": "gpt-6-sol"
+    },
+    "value": [
+     1793090264.888,
+     "2599631931.349406"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "kind": "cache_write",
+     "model": "claude-fable-5"
+    },
+    "value": [
+     1793090264.888,
+     "0"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "kind": "cache_write",
+     "model": "claude-fable-5-1"
+    },
+    "value": [
+     1793090264.888,
+     "87880252.97126864"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "kind": "cache_write",
+     "model": "claude-haiku-4-5"
+    },
+    "value": [
+     1793090264.888,
+     "48897.272902232486"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "kind": "cache_write",
+     "model": "claude-opus-4-7"
+    },
+    "value": [
+     1793090264.888,
+     "0"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "kind": "cache_write",
+     "model": "claude-opus-5"
+    },
+    "value": [
+     1793090264.888,
+     "0"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "kind": "cache_write",
+     "model": "claude-opus-5-5"
+    },
+    "value": [
+     1793090264.888,
+     "3753041576.1411495"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "kind": "cache_write",
+     "model": "claude-sonnet-5"
+    },
+    "value": [
+     1793090264.888,
+     "0"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "kind": "cache_write",
+     "model": "claude-sonnet-5-5"
+    },
+    "value": [
+     1793090264.888,
+     "33866.52980194612"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "kind": "input",
+     "model": "claude-fable-5"
+    },
+    "value": [
+     1793090264.888,
+     "0"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "kind": "input",
+     "model": "claude-fable-5-1"
+    },
+    "value": [
+     1793090264.888,
+     "23512.367070997047"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "kind": "input",
+     "model": "claude-haiku-4-5"
+    },
+    "value": [
+     1793090264.888,
+     "71.00910957146522"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "kind": "input",
+     "model": "claude-opus-4-7"
+    },
+    "value": [
+     1793090264.888,
+     "0"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "kind": "input",
+     "model": "claude-opus-5"
+    },
+    "value": [
+     1793090264.888,
+     "0"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "kind": "input",
+     "model": "claude-opus-5-5"
+    },
+    "value": [
+     1793090264.888,
+     "926357.9109128548"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "kind": "input",
+     "model": "claude-sonnet-5"
+    },
+    "value": [
+     1793090264.888,
+     "0"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "kind": "input",
+     "model": "claude-sonnet-5-5"
+    },
+    "value": [
+     1793090264.888,
+     "26.000406745721346"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "kind": "input",
+     "model": "gpt-5.4-mini"
+    },
+    "value": [
+     1793090264.888,
+     "0"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "kind": "input",
+     "model": "gpt-5.6-sol"
+    },
+    "value": [
+     1793090264.888,
+     "0"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "kind": "input",
+     "model": "gpt-5.6-terra"
+    },
+    "value": [
+     1793090264.888,
+     "0"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "kind": "input",
+     "model": "gpt-6-astra"
+    },
+    "value": [
+     1793090264.888,
+     "265051903.9443574"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "kind": "input",
+     "model": "gpt-6-sol"
+    },
+    "value": [
+     1793090264.888,
+     "42181228.03529866"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "kind": "output",
+     "model": "claude-fable-5"
+    },
+    "value": [
+     1793090264.888,
+     "0"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "kind": "output",
+     "model": "claude-fable-5-1"
+    },
+    "value": [
+     1793090264.888,
+     "7116165.096335353"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "kind": "output",
+     "model": "claude-haiku-4-5"
+    },
+    "value": [
+     1793090264.888,
+     "3348.4295612009237"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "kind": "output",
+     "model": "claude-opus-4-7"
+    },
+    "value": [
+     1793090264.888,
+     "0"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "kind": "output",
+     "model": "claude-opus-5"
+    },
+    "value": [
+     1793090264.888,
+     "0"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "kind": "output",
+     "model": "claude-opus-5-5"
+    },
+    "value": [
+     1793090264.888,
+     "227320463.04083875"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "kind": "output",
+     "model": "claude-sonnet-5"
+    },
+    "value": [
+     1793090264.888,
+     "0"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "kind": "output",
+     "model": "claude-sonnet-5-5"
+    },
+    "value": [
+     1793090264.888,
+     "921.0144081849753"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "kind": "output",
+     "model": "gpt-5.4-mini"
+    },
+    "value": [
+     1793090264.888,
+     "0"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "kind": "output",
+     "model": "gpt-5.6-sol"
+    },
+    "value": [
+     1793090264.888,
+     "0"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "kind": "output",
+     "model": "gpt-5.6-terra"
+    },
+    "value": [
+     1793090264.888,
+     "0"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "kind": "output",
+     "model": "gpt-6-astra"
+    },
+    "value": [
+     1793090264.888,
+     "19127766.619375203"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "kind": "output",
+     "model": "gpt-6-sol"
+    },
+    "value": [
+     1793090264.888,
+     "6107614.266399136"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "kind": "cache_read",
+     "model": "gpt-6.1-sol"
+    },
+    "value": [
+     1793090264.888,
+     "127466981.6865609"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "kind": "input",
+     "model": "gpt-6.1-sol"
+    },
+    "value": [
+     1793090264.888,
+     "4668577.920010073"
+    ]
+   },
+   {
+    "metric": {
+     "box": "mbp",
+     "kind": "output",
+     "model": "gpt-6.1-sol"
+    },
+    "value": [
+     1793090264.888,
+     "516619.68029209337"
+    ]
+   },
+   {
+    "metric": {
+     "box": "us-metal02",
+     "kind": "cache_read",
+     "model": "claude-fable-5-1"
+    },
+    "value": [
+     1793090264.888,
+     "7690680488.620135"
+    ]
+   },
+   {
+    "metric": {
+     "box": "us-metal02",
+     "kind": "cache_read",
+     "model": "claude-haiku-4-5"
+    },
+    "value": [
+     1793090264.888,
+     "77244.92993057342"
+    ]
+   },
+   {
+    "metric": {
+     "box": "us-metal02",
+     "kind": "cache_read",
+     "model": "claude-opus-5-5"
+    },
+    "value": [
+     1793090264.888,
+     "206147203252.64136"
+    ]
+   },
+   {
+    "metric": {
+     "box": "us-metal02",
+     "kind": "cache_read",
+     "model": "gpt-6-astra"
+    },
+    "value": [
+     1793090264.888,
+     "1677597833.4398687"
+    ]
+   },
+   {
+    "metric": {
+     "box": "us-metal02",
+     "kind": "cache_read",
+     "model": "gpt-6-sol"
+    },
+    "value": [
+     1793090264.888,
+     "264683736.8909598"
+    ]
+   },
+   {
+    "metric": {
+     "box": "us-metal02",
+     "kind": "cache_read",
+     "model": "gpt-6.1-sol"
+    },
+    "value": [
+     1793090264.888,
+     "478848670.25044984"
+    ]
+   },
+   {
+    "metric": {
+     "box": "us-metal02",
+     "kind": "cache_write",
+     "model": "claude-fable-5-1"
+    },
+    "value": [
+     1793090264.888,
+     "470325376.7112159"
+    ]
+   },
+   {
+    "metric": {
+     "box": "us-metal02",
+     "kind": "cache_write",
+     "model": "claude-haiku-4-5"
+    },
+    "value": [
+     1793090264.888,
+     "13985.797891488814"
+    ]
+   },
+   {
+    "metric": {
+     "box": "us-metal02",
+     "kind": "cache_write",
+     "model": "claude-opus-5-5"
+    },
+    "value": [
+     1793090264.888,
+     "10482085998.141714"
+    ]
+   },
+   {
+    "metric": {
+     "box": "us-metal02",
+     "kind": "cache_write",
+     "model": "gpt-6-astra"
+    },
+    "value": [
+     1793090264.888,
+     "1050397.5540378266"
+    ]
+   },
+   {
+    "metric": {
+     "box": "us-metal02",
+     "kind": "input",
+     "model": "claude-fable-5-1"
+    },
+    "value": [
+     1793090264.888,
+     "64164.01569177715"
+    ]
+   },
+   {
+    "metric": {
+     "box": "us-metal02",
+     "kind": "input",
+     "model": "claude-haiku-4-5"
+    },
+    "value": [
+     1793090264.888,
+     "24.003085626124967"
+    ]
+   },
+   {
+    "metric": {
+     "box": "us-metal02",
+     "kind": "input",
+     "model": "claude-opus-5-5"
+    },
+    "value": [
+     1793090264.888,
+     "2670287.6011292897"
+    ]
+   },
+   {
+    "metric": {
+     "box": "us-metal02",
+     "kind": "input",
+     "model": "gpt-6-astra"
+    },
+    "value": [
+     1793090264.888,
+     "64694831.35203214"
+    ]
+   },
+   {
+    "metric": {
+     "box": "us-metal02",
+     "kind": "input",
+     "model": "gpt-6-sol"
+    },
+    "value": [
+     1793090264.888,
+     "17726852.70505196"
+    ]
+   },
+   {
+    "metric": {
+     "box": "us-metal02",
+     "kind": "input",
+     "model": "gpt-6.1-sol"
+    },
+    "value": [
+     1793090264.888,
+     "21031042.564637046"
+    ]
+   },
+   {
+    "metric": {
+     "box": "us-metal02",
+     "kind": "output",
+     "model": "claude-fable-5-1"
+    },
+    "value": [
+     1793090264.888,
+     "10010545.281880535"
+    ]
+   },
+   {
+    "metric": {
+     "box": "us-metal02",
+     "kind": "output",
+     "model": "claude-haiku-4-5"
+    },
+    "value": [
+     1793090264.888,
+     "4598.5911545384415"
+    ]
+   },
+   {
+    "metric": {
+     "box": "us-metal02",
+     "kind": "output",
+     "model": "claude-opus-5-5"
+    },
+    "value": [
+     1793090264.888,
+     "648936230.7429667"
+    ]
+   },
+   {
+    "metric": {
+     "box": "us-metal02",
+     "kind": "output",
+     "model": "gpt-6-astra"
+    },
+    "value": [
+     1793090264.888,
+     "5435996.434801804"
+    ]
+   },
+   {
+    "metric": {
+     "box": "us-metal02",
+     "kind": "output",
+     "model": "gpt-6-sol"
+    },
+    "value": [
+     1793090264.888,
+     "885434.5713344165"
+    ]
+   },
+   {
+    "metric": {
+     "box": "us-metal02",
+     "kind": "output",
+     "model": "gpt-6.1-sol"
+    },
+    "value": [
+     1793090264.888,
+     "1997375.725990757"
+    ]
+   }
+  ]
+ },
+ "models": [
+  {
+   "box": "mbp",
+   "model": "claude-fable-5-1",
+   "calls": 10941.17109529787,
+   "tokens": {
+    "input": 23512.367070997047,
+    "output": 7116165.096335353,
+    "cacheRead": 2199236663.1013784,
+    "cacheWrite": 87880252.97126864,
+    "total": 2294256593.5360537
+   },
+   "costUsd": 2658.64285868385,
+   "outputTps": null
+  },
+  {
+   "box": "mbp",
+   "model": "claude-haiku-4-5",
+   "calls": 13.001670570207187,
+   "tokens": {
+    "input": 71.00910957146522,
+    "output": 3348.4295612009237,
+    "cacheRead": 84141.81653381331,
+    "cacheWrite": 48897.272902232486,
+    "total": 136458.52810681818
+   },
+   "costUsd": 0.12302188215293813,
+   "outputTps": null
+  },
+  {
+   "box": "mbp",
+   "model": "claude-opus-5-5",
+   "calls": 426051.3023423969,
+   "tokens": {
+    "input": 926357.9109128548,
+    "output": 227320463.04083875,
+    "cacheRead": 71813301282.71284,
+    "cacheWrite": 3753041576.1411495,
+    "total": 75794589679.80574
+   },
+   "costUsd": 48860.48528747235,
+   "outputTps": 61.593100375044955
+  },
+  {
+   "box": "mbp",
+   "model": "claude-sonnet-5-5",
+   "calls": 8.000125152529645,
+   "tokens": {
+    "input": 26.000406745721346,
+    "output": 921.0144081849753,
+    "cacheRead": 234015.6608992209,
+    "cacheWrite": 33866.52980194612,
+    "total": 268829.2055160977
+   },
+   "costUsd": 0.19153139628296983,
+   "outputTps": null
+  },
+  {
+   "box": "mbp",
+   "model": "gpt-6-astra",
+   "calls": 23898.373716792663,
+   "tokens": {
+    "input": 265051903.9443574,
+    "output": 19127766.619375203,
+    "cacheRead": 4972920260.3686695,
+    "cacheWrite": 0,
+    "total": 5257099930.932402
+   },
+   "costUsd": 8579.827679713764,
+   "outputTps": null
+  },
+  {
+   "box": "mbp",
+   "model": "gpt-6-sol",
+   "calls": 21027.32454660597,
+   "tokens": {
+    "input": 42181228.03529866,
+    "output": 6107614.266399136,
+    "cacheRead": 2599631931.349406,
+    "cacheWrite": 0,
+    "total": 2647920773.6511035
+   },
+   "costUsd": 665.3649850044706,
+   "outputTps": null
+  },
+  {
+   "box": "mbp",
+   "model": "gpt-6.1-sol",
+   "calls": 1194.0501226682827,
+   "tokens": {
+    "input": 4668577.920010073,
+    "output": 516619.68029209337,
+    "cacheRead": 127466981.6865609,
+    "cacheWrite": 0,
+    "total": 132652179.28686307
+   },
+   "costUsd": 27.250050766694653,
+   "outputTps": null
+  },
+  {
+   "box": "us-metal02",
+   "model": "claude-fable-5-1",
+   "calls": 25472.404734261672,
+   "tokens": {
+    "input": 64164.01569177715,
+    "output": 10010545.281880535,
+    "cacheRead": 7690680488.620135,
+    "cacheWrite": 470325376.7112159,
+    "total": 8171080574.628923
+   },
+   "costUsd": 11686.34599999897,
+   "outputTps": 40.99728174076899
+  },
+  {
+   "box": "us-metal02",
+   "model": "claude-haiku-4-5",
+   "calls": 8.001028542041656,
+   "tokens": {
+    "input": 24.003085626124967,
+    "output": 4598.5911545384415,
+    "cacheRead": 77244.92993057342,
+    "cacheWrite": 13985.797891488814,
+    "total": 95853.3220622268
+   },
+   "costUsd": 0.0587130476343533,
+   "outputTps": null
+  },
+  {
+   "box": "us-metal02",
+   "model": "claude-opus-5-5",
+   "calls": 1199531.3479305145,
+   "tokens": {
+    "input": 2670287.6011292897,
+    "output": 648936230.7429667,
+    "cacheRead": 206147203252.64136,
+    "cacheWrite": 10482085998.141714,
+    "total": 217280895769.1272
+   },
+   "costUsd": 137779.84933221037,
+   "outputTps": 80.63589079319995
+  },
+  {
+   "box": "us-metal02",
+   "model": "gpt-6-astra",
+   "calls": 7058.18656729526,
+   "tokens": {
+    "input": 64694831.35203214,
+    "output": 5435996.434801804,
+    "cacheRead": 1677597833.4398687,
+    "cacheWrite": 1050397.5540378266,
+    "total": 1748779058.7807405
+   },
+   "costUsd": 2522.6898963083145,
+   "outputTps": 22.11579213996032
+  },
+  {
+   "box": "us-metal02",
+   "model": "gpt-6-sol",
+   "calls": 3110.047676849068,
+   "tokens": {
+    "input": 17726852.70505196,
+    "output": 885434.5713344165,
+    "cacheRead": 264683736.8909598,
+    "cacheWrite": 0,
+    "total": 283296024.1673462
+   },
+   "costUsd": 97.24479850164006,
+   "outputTps": null
+  },
+  {
+   "box": "us-metal02",
+   "model": "gpt-6.1-sol",
+   "calls": 5011.964235375643,
+   "tokens": {
+    "input": 21031042.564637046,
+    "output": 1997375.725990757,
+    "cacheRead": 478848670.25044984,
+    "cacheWrite": 0,
+    "total": 501877088.5410777
+   },
+   "costUsd": 109.92070941422658,
+   "outputTps": 38.770068462985925
+  },
+  {
+   "box": "us-metal02",
+   "model": "openai/gpt-6.1-sol",
+   "calls": 12.003146303093864,
+   "tokens": {
+    "input": 0,
+    "output": 0,
+    "cacheRead": 0,
+    "cacheWrite": 0,
+    "total": 0
+   },
+   "costUsd": 0,
+   "outputTps": null
+  }
+ ]
+}
