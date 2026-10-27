@@ -61,18 +61,6 @@ export const ALERT_TRIAGE_DUTY = "alert triage";
  */
 export const isAlertJob = (name: string): boolean => name.trim().toLowerCase().startsWith(`${ALERT_TRIAGE_DUTY} `);
 
-/**
- * The turn queue lead list (`pi-pool lead`): the chats, and every alert triage job (`isAlertJob`) a worker runs now on any box. A lead run
- * still waits for a free slot and its tree's limit, and takes the next one ahead of the other queued runs. On 10-26 triage job 01a17a05 asked
- * at 21:02:02Z behind 73 queued runs, 37 of them subagents of one low-class job tree (01a179eb) that asked from 20:54Z, and had its first
- * turn at 21:13:01Z after 659 s in the queue (pi-pool.log). As a lead run it would have taken the next slot, which freed at 21:02:24Z.
- * Only a triage job that a worker runs counts: at 23:15Z on 10-26 the lead list held 138 triage jobs that were not archived, nearly all done.
- */
-export function leadList(chats: Iterable<string>, rows: readonly { sessionId: string; sessionName?: string; lifecycle: string; isSessionActive: boolean }[]): string[] {
-  const triage = rows.filter(row => row.isSessionActive && row.lifecycle !== "archived" && isAlertJob(row.sessionName ?? "")).map(row => row.sessionId);
-  return [...new Set([...chats, ...triage])];
-}
-
 /** The class a duty job's first request carries: its chat's class for an alert triage job (`isAlertJob`), `checkInClass` of its chat for a
  * check-in job (`isCheckInJob`), low for every other duty job. */
 export const dutyJobPriority = (name: string, chat: PoolPriority): PoolPriority =>
