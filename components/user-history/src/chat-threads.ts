@@ -984,7 +984,7 @@ export class ThreadHub {
           if (native === "agent_start" || native === "agent_end" || (native === "message_end" && event.event.message.role === "user")) await this.refreshQueue(thread);
           if (native === "compaction_end" && !event.event.aborted) { for (const observer of [...this.observers]) observer.compacted?.(thread.id, thread.sessionFile); await this.resnapshot(thread); }
           // pi-host sends Pi's agent_settled after agent_end, and only then does its state read idle.
-          if (native === "agent_end" || native === "agent_settled" || native === "compaction_end" || native === "auto_retry_end" || native === "thinking_level_changed" || native === "session_info_changed") await this.refreshInfo(thread);
+          if (native === "agent_end" || (native as string) === "agent_settled" || native === "compaction_end" || native === "auto_retry_end" || native === "thinking_level_changed" || native === "session_info_changed") await this.refreshInfo(thread);
           return;
         }
         // A resync carries the snapshot the connection just took; asking for it again went to get_messages once any event had come since. A
