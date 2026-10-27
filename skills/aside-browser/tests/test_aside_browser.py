@@ -190,8 +190,32 @@ class TabOwnershipTests(Base):
         self.assertEqual(self.call(ab.close_tab()), "closed T1 - tabs left in this REPL: 0")
         self.assertEqual(len(mcp.calls), 2)
         self.assertIn('closeTab', mcp.calls[1]["code"])
-        self.assertIn('["T1"].includes(__id)', mcp.calls[1]["code"])
+        self.assertIn('["T1"].includes(__cur)', mcp.calls[1]["code"])
         self.assertNotIn("T1", ab._owned_tabs())
+
+    def test_open_tab_closes_this_sessions_earlier_tabs(self):
+        """2026-10-28: jobs held up to 4 Aside tabs each (36 tabs, 8.3 GB) because each open_tab() added one."""
+        ab._remember(["T0"], "https://example.com/old")
+        mcp = self.fake('{"title":"Example","url":"https://example.com/","targetId":"T1","closed":["T0"]}')
+        out = self.call(ab.open_tab("https://example.com", browser="aside"))
+        self.assertIn('["T0"].filter(i => i !== __p.targetId)', mcp.calls[0]["code"])
+        self.assertIn("runBeforeUnload: true", mcp.calls[0]["code"])
+        self.assertEqual(list(ab._owned_tabs()), ["T1"])
+        self.assertIn("Closed 1 earlier tab(s)", out)
+
+    def test_open_tab_keep_leaves_earlier_tabs_open(self):
+        ab._remember(["T0"], "https://example.com/old")
+        mcp = self.fake('{"title":"Example","url":"https://example.com/","targetId":"T1"}')
+        out = self.call(ab.open_tab("https://example.com", browser="aside", keep=True))
+        self.assertIn("for (const __id of [])", mcp.calls[0]["code"])
+        self.assertEqual(sorted(ab._owned_tabs()), ["T0", "T1"])
+        self.assertNotIn("earlier tab", out)
+
+    def test_close_own_tabs_keeps_the_record_of_a_tab_that_stayed_open(self):
+        ab._remember(["MINE", "STUCK"], "https://example.com/")
+        self.fake('{"closed":["MINE"],"left":["STUCK"]}')
+        self.assertEqual(self.call(ab.close_own_tabs()), ["MINE"])
+        self.assertEqual(list(ab._owned_tabs()), ["STUCK"])
 
     def test_close_tab_refuses_foreign_tab_without_sending_close(self):
         mcp = self.fake('{"targetId":"OTHER","closed":false,"left":1}')
@@ -285,6 +309,16 @@ class StaleTabSweepTests(Base):
         self.assertNotIn("LIVE", mcp.calls[0]["code"])
         self.assertFalse(os.path.exists(gone))
         self.assertTrue(os.path.exists(live))
+
+    def test_a_tab_that_closetab_only_detached_gets_page_close_and_keeps_its_record_until_gone(self):
+        """2026-10-28: Aside's closeTab() of another REPL session's tab only detaches it, so sweeps dropped records of 25 open tabs."""
+        gone = self.entry("/sessions/finished-job", self.dead_pid(), {"OLD": "https://example.com/"})
+        mcp = self.fake('{"closed":[],"left":["OLD"]}', '{"closed":["OLD"],"left":[]}')
+        self.assertEqual(self.call(ab.sweep_stale_tabs()), [])
+        self.assertIn("await __t.close({runBeforeUnload: true})", mcp.calls[0]["code"])
+        self.assertTrue(os.path.exists(gone))
+        self.assertEqual(self.call(ab.sweep_stale_tabs()), ["OLD"])
+        self.assertFalse(os.path.exists(gone))
 
     def test_a_reused_pid_counts_as_exited(self):
         path = self.entry("/sessions/old-kernel", os.getpid(), {"OLD": "https://example.com/"})
@@ -463,6 +497,25 @@ class BoxBrowserTests(Base):
             self.assertEqual(fh.read(4), b"\x89PNG")
         self.assertEqual([(t["targetId"], t["browser"], t["owned"]) for t in listed if t["browser"] == "box"], [("box-1", "box", True)])
         self.assertEqual(closed, ["box-1"])
+        self.assertEqual(mcp.calls, [])
+
+    def test_a_second_open_tab_replaces_the_first_on_the_box_unless_keep(self):
+        mcp = self.fake()
+        async def flow():
+            first = await ab.open_tab(self.url)
+            second = await ab.open_tab(self.url + "?b")
+            after_second = [t["targetId"] for t in await ab.tabs("box")]
+            await ab.open_tab(self.url + "?c", keep=True)
+            after_keep = [t["targetId"] for t in await ab.tabs("box")]
+            await ab.close_tab()
+            after_close = [t["targetId"] for t in await ab.tabs("box")]
+            return first, second, after_second, after_keep, after_close
+        first, second, after_second, after_keep, after_close = self.call(flow())
+        self.assertIn('"targetId":"box-1"', first)
+        self.assertIn('"closed":["box-1"]', second)
+        self.assertEqual(after_second, ["box-2"])
+        self.assertEqual(sorted(after_keep), ["box-2", "box-3"])
+        self.assertEqual(after_close, ["box-2"])
         self.assertEqual(mcp.calls, [])
 
     def test_the_box_browser_is_headful_on_its_own_display_and_leaves_nothing_when_killed(self):

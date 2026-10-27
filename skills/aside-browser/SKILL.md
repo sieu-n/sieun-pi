@@ -40,7 +40,8 @@ The fallback looks for the CLI at `ASIDE_CLI`, then `aside` on `PATH`, then `~/.
 await aside_browser("return await page.title()")   # run REPL JS; `return value` prints it (`aside guide repl`)
 await aside_browser.tabs()                       # [{targetId, active, title, url, owned, browser}]; on a box only its own tabs
 await aside_browser.tabs(browser="aside")        # the owner's Aside tabs, only when the task is about one of them
-await aside_browser.open_tab(url)                # sets `page`; this session owns the tab; the box's Chrome unless the URL needs a login
+await aside_browser.open_tab(url)                # sets `page`; replaces this session's earlier tab; the box's Chrome unless the URL needs a login
+await aside_browser.open_tab(url, keep=True)     # also keep this session's earlier tabs open, such as for a side-by-side compare
 await aside_browser.open_tab(url, browser="aside")  # only for a page that needs the owner's login, such as a box page that hit a sign-in
 await aside_browser.attach(target_id=None)       # reuse a tab the user has open (None = active tab); not owned
 await aside_browser.snapshot(interactive=True)   # a11y tree with [ref=eN]; then page.locator('eN').click()
@@ -94,8 +95,11 @@ The module records owned Aside tabs, with the kernel's pid, in one file per sess
 
 - Use `attach()` only when the task is about a page the user already has open.
 - Otherwise open your own tab with `open_tab()`, and call `close_own_tabs()` when done.
+- `open_tab()` closes this session's earlier tabs in the same browser, so a job holds one tab at a time. Pass `keep=True` only when you need two pages open at once. On 2026-10-28 jobs held up to 4 Aside tabs each, and 36 tabs used 8.3 GB on the owner's Mac.
+- Go to another page in your tab with `page.goto(url)` when you can, instead of opening a new one.
 - `open_tab()` and `tabs()` first close the Aside tabs of any agent kernel on this host that has exited, so a tab you leave open lives about as long as your kernel.
 - Tabs the owner opened have no record, so no sweep or close touches them.
+- In Aside, `closeTab()` of a tab that another REPL session opened only drops it from your session and leaves it open, and every kernel has its own session. The module's closes check the tab list afterwards and send Page.close to a tab that is still there, and a sweep keeps the record of a tab that did not close. Before 2026-10-28 sweeps dropped the records and left 25 job tabs open with no owner.
 - `close_tab()` refuses a tab this session did not open, attached tabs included.
 - `run()` refuses code that loops over `tabs` and closes them.
 - Never call `page.close()`.

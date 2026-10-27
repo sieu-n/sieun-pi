@@ -971,19 +971,35 @@ _BOX_NOTE = (
 )
 
 
-async def open_tab(url: str, browser: str | None = None) -> str:
+async def open_tab(url: str, browser: str | None = None, keep: bool = False) -> str:
     """Open url in a new tab owned by this session, set it as `page`, return title, final URL and targetId.
 
     browser=None picks by URL with browser_for(): a page that needs the owner's login opens in his Aside window, every other
     page (our own apps, public pages) in the box's Chrome. Later run(), snapshot() and screenshot() calls use that tab.
+
+    The new tab replaces this session's earlier tabs in that browser: they close in the same call, so a job holds one tab.
+    Pass keep=True to keep them open, for example to compare two pages side by side.
     """
     global _browser
     where = browser or browser_for(url)
     if where not in ("aside", "box"):
         raise ValueError("browser must be 'aside' or 'box'")
     await _sweep_quietly()
+    # On 2026-10-28 jobs held up to 4 Aside tabs each (36 tabs, 43 renderers, 8.3 GB) because every open_tab() added one.
+    if keep:
+        earlier = "[]"
+    elif where == "box":
+        earlier = "tabs.map(t => t.targetId).filter(i => i !== __p.targetId)"
+    else:
+        earlier = json.dumps([t for t in _owned_tabs() if not t.startswith(BOX_PREFIX)]) + ".filter(i => i !== __p.targetId)"
     text = await _repl(
-        _scoped(f"const __p = await openTab({_js_string(url)}); console.log(JSON.stringify({{title: await __p.title(), url: __p.url(), targetId: __p.targetId}}))"),
+        _scoped(
+            f"const __p = await openTab({_js_string(url)});"
+            " const __info = {title: await __p.title(), url: __p.url(), targetId: __p.targetId};"
+            + _close_js(earlier)
+            + " if (__closed.length) __info.closed = __closed.filter(i => !__left.includes(i));"
+            " console.log(JSON.stringify(__info))"
+        ),
         f"open {url}",
         browser=where,
     )
@@ -995,6 +1011,10 @@ async def open_tab(url: str, browser: str | None = None) -> str:
             except ValueError:
                 continue
             _remember([info.get("targetId", "")], info.get("url") or url)
+            closed = [str(t) for t in info.get("closed") or []]
+            _forget(closed)
+            if closed:
+                text += f"\n[aside-browser] Closed {len(closed)} earlier tab(s) of this session; pass keep=True to keep them open."
             if where == "box" and _LOGIN_PAGE.search(str(info.get("url") or "")) and not _LOGIN_PAGE.search(url):
                 text += f"\n[aside-browser hint] The box landed on a sign-in page. Open it in the owner's Aside instead: open_tab({url!r}, browser='aside')."
             elif where == "aside" and _LOGIN_PAGE.search(str(info.get("url") or "")):
@@ -1046,16 +1066,36 @@ async def screenshot(path: str, full_page: bool = False, annotated: bool = False
     return path
 
 
+def _close_js(ids_js: str) -> str:
+    """JS that closes each still-open tab in the JS array ids_js and defines __closed (ids it tried) and __left (ids still open).
+
+    In Aside, closeTab() of a tab that another REPL session opened only drops it from this session and leaves it open in the
+    window. Every kernel has its own REPL session, so sweeps and closes after a kernel or MCP restart used to drop the record
+    and leave the tab, and on 2026-10-28 the owner's Aside held 25 such job tabs. A tab still listed after closeTab() gets
+    page.close({runBeforeUnload: true}), which sends CDP Page.close and really closes it.
+    """
+    return (
+        "const __open = new Set((await listBrowserTabs()).map(t => t.targetId)); const __closed = [];"
+        f" for (const __id of {ids_js}) {{ if (!__open.has(__id)) continue;"
+        " await closeTab(getTabByTargetId(__id) || await attachBrowserTab(__id)); __closed.push(__id); }"
+        " let __now = new Set((await listBrowserTabs()).map(t => t.targetId)); const __stuck = __closed.filter(i => __now.has(i));"
+        " for (const __id of __stuck) { const __t = await attachBrowserTab(__id); await __t.close({runBeforeUnload: true});"
+        " await closeTab(__t).catch(() => {}); }"
+        " if (__stuck.length) { await sleep(300); __now = new Set((await listBrowserTabs()).map(t => t.targetId)); }"
+        " const __left = __closed.filter(i => __now.has(i));"
+    )
+
+
 async def _close(target_id: str) -> str:
     tid = _js_string(target_id)
-    return await _repl(
-        _scoped(
-            f"const __t = getTabByTargetId({tid}) || await attachBrowserTab({tid}); await closeTab(__t);"
-            " console.log('closed', " + tid + ", '- tabs left in this REPL:', tabs.length)"
-        ),
+    found = _json_line(await _repl(
+        _scoped(_close_js(f"[{tid}]") + " console.log(JSON.stringify({left: __left, tabs: tabs.length}))"),
         "close tab",
         browser="box" if target_id.startswith(BOX_PREFIX) else "aside",
-    )
+    ))
+    if target_id in (found.get("left") or []):
+        raise AsideError(f"Tab {target_id} is still open after closeTab() and Page.close.")
+    return f"closed {target_id} - tabs left in this REPL: {found.get('tabs')}"
 
 
 def _refuse_close(target_id: str) -> AsideError:
@@ -1084,12 +1124,12 @@ async def close_tab(target_id: str | None = None, force: bool = False) -> str:
         _forget([target_id])
         return text
     # One REPL call reads the current tab and closes it only when this session owns it, which saves a round trip to the Mac.
-    allowed = "true" if force or _current() == "box" else json.dumps(list(_owned_tabs())) + ".includes(__id)"
+    allowed = "true" if force or _current() == "box" else json.dumps(list(_owned_tabs())) + ".includes(__cur)"
     found = _json_line(await _repl(
         _scoped(
-            f"const __id = page ? page.targetId : null; const __ok = !!__id && {allowed};"
-            " if (__ok) await closeTab(getTabByTargetId(__id) || await attachBrowserTab(__id));"
-            " console.log(JSON.stringify({targetId: __id, closed: __ok, left: tabs.length}))"
+            f"const __cur = page ? page.targetId : null; const __ok = !!__cur && {allowed};"
+            + _close_js("(__ok ? [__cur] : [])")
+            + " console.log(JSON.stringify({targetId: __cur, closed: __ok && !__left.length, left: tabs.length}))"
         ),
         "close tab",
     ))
@@ -1097,24 +1137,21 @@ async def close_tab(target_id: str | None = None, force: bool = False) -> str:
     if not target_id:
         raise AsideError("No current `page` in this REPL session, so there is nothing to close.")
     if not found.get("closed"):
+        if force or target_id in _owned_tabs() or _current() == "box":
+            raise AsideError(f"Tab {target_id} is still open after closeTab() and Page.close.")
         raise _refuse_close(target_id)
     _forget([target_id])
     return f"closed {target_id} - tabs left in this REPL: {found.get('left')}"
 
 
-async def _close_open(ids: list[str], title: str) -> list[str]:
-    """Close those of ids that are still open in Aside, in one REPL call. Returns the closed targetIds."""
+async def _close_open(ids: list[str], title: str) -> tuple[list[str], list[str]]:
+    """Close those of ids that are still open in Aside, in one REPL call. Returns (closed, still open) targetIds."""
     found = _json_line(await _repl(
-        _scoped(
-            f"const __open = new Set((await listBrowserTabs()).map(t => t.targetId)); const __closed = [];"
-            f" for (const __id of {json.dumps(ids)}) {{ if (!__open.has(__id)) continue;"
-            " await closeTab(getTabByTargetId(__id) || await attachBrowserTab(__id)); __closed.push(__id); }"
-            " console.log(JSON.stringify({closed: __closed}))"
-        ),
+        _scoped(_close_js(json.dumps(ids)) + " console.log(JSON.stringify({closed: __closed.filter(i => !__left.includes(i)), left: __left}))"),
         title,
         browser="aside",
     ))
-    return [str(t) for t in found.get("closed") or []]
+    return [str(t) for t in found.get("closed") or []], [str(t) for t in found.get("left") or []]
 
 
 async def close_own_tabs() -> list[str]:
@@ -1129,8 +1166,9 @@ async def close_own_tabs() -> list[str]:
         closed += [str(t) for t in found.get("closed") or []]
     owned = list(_owned_tabs())
     if owned:
-        closed += await _close_open(owned, "close own tabs")
-        _forget(owned)
+        done, left = await _close_open(owned, "close own tabs")
+        closed += done
+        _forget([t for t in owned if t not in left])
     return closed
 
 
@@ -1154,8 +1192,10 @@ async def sweep_stale_tabs() -> list[str]:
         if entry.get("owner") != owner_key() and isinstance(entry.get("tabs"), dict) and not _alive(entry):
             stale[path] = [str(t) for t in entry["tabs"]]
     ids = [t for found in stale.values() for t in found]
-    closed = await _close_open(ids, "sweep stale tabs") if ids else []
-    for path in stale:
+    closed, left = await _close_open(ids, "sweep stale tabs") if ids else ([], [])
+    for path, found in stale.items():
+        if set(found) & set(left):
+            continue  # Keep the record of a tab that did not close, so the next sweep tries again.
         try:
             os.remove(path)
         except FileNotFoundError:
