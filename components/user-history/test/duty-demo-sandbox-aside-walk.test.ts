@@ -7,7 +7,8 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { readWalk, slowestPage } from "../scripts/duties/demo-sandbox.ts";
 import { asideRepl } from "../scripts/duties/aside-repl.ts";
-import { MARKETING_TITLE, REPL_LIB, scenarioTitle, testErrors, walkReport } from "../scripts/duties/demo-sandbox-walk.ts";
+import { BROWSER_URL, MARKETING_TITLE, REPL_LIB, scenarioTitle, testErrors, walkReport } from "../scripts/duties/demo-sandbox-walk.ts";
+import { BASE_URL } from "../scripts/duties/demo-sandbox.ts";
 
 const clean = { outside: [], violations: [], failed: [] };
 
@@ -37,6 +38,14 @@ test("a clean test passes, and the first failed clean check ends the list as off
   assert.equal(errors.length, 1);
   assert.match(errors[0]!, /^CSP violations\n/);
   assert.deepEqual(testErrors([], 9, clean, new Error("fetch failed")), ["outside calls the dev server refused (GET /__demo/egress): fetch failed"]);
+});
+
+test("the walk's tabs use their own .localhost host on 5180's port, which the REPL side counts as local", () => {
+  const browser = new URL(BROWSER_URL), base = new URL(BASE_URL);
+  assert.notEqual(browser.hostname, base.hostname, "the owner's localhost:5180 tabs fill that host's six connections (10-27 22:16Z)");
+  assert.match(browser.hostname, /\.localhost$/);
+  assert.equal(browser.port, base.port);
+  assert.match(REPL_LIB, /url\.hostname\.endsWith\("\.localhost"\)/);
 });
 
 test("the REPL side of the walk is valid JavaScript with no TypeScript left in it", () => {

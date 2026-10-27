@@ -6,6 +6,13 @@ import { asideCli, asideRepl, type Repl } from "./aside-repl.ts";
 import { BASE_URL, REPO, WALK_FILE, WALK_SOURCE, type BoxLoad, type WalkReport } from "./demo-sandbox.ts";
 
 /**
+ * The walk's tabs open 5180 on a host of their own, and Node's fetches stay on BASE_URL. Chrome gives each host six connections, and every
+ * localhost:5180 tab the owner keeps open holds one on its /__demo/events stream. On 2026-10-27 at 22:16Z his Aside had 21 such tabs, a
+ * Page.navigate to localhost:5180 had not committed after 25 s, and the same navigate to d1walk.localhost:5180 committed in 324 ms.
+ */
+export const BROWSER_URL = BASE_URL.replace("//localhost:", "//d1walk.localhost:");
+
+/**
  * The offline walk of the 5180 demo for d1 (demo-sandbox.ts), driven through the owner's Aside browser on the Mac where 5180 runs. Owner c177,
  * 10-27: "can you remove Headless browser???? NEVER put it back in. we'll always use Aside only." Until then the walk was
  * apps/virev-demo/tests/e2e/offline.spec.ts under Playwright with its browser on us-metal02 (shot-browser.mjs --run).
@@ -103,7 +110,7 @@ globalThis.__walk = (() => {
       done.add(key);
       const url = new URL(entry.name);
       if (!["http:", "https:", "ws:", "wss:"].includes(url.protocol)) continue;
-      if (!LOCAL.includes(url.hostname)) { out.outside.push(location.href + " -> " + entry.name); continue; }
+      if (!LOCAL.includes(url.hostname) && !url.hostname.endsWith(".localhost")) { out.outside.push(location.href + " -> " + entry.name); continue; }
       const type = entry.entryType === "navigation" ? "document" : entry.initiatorType;
       const status = entry.responseStatus ?? 0;
       if (status >= 500 || (status === 404 && ASSETS.includes(type))) out.failed.push(status + " " + type + " " + url.pathname + url.search + " (on " + location.href + ")");
@@ -339,7 +346,7 @@ async function scenarioTest(repl: Repl, scenario: string): Promise<WalkTest> {
   const walk = testWalk(repl);
   let world = "";
   const inWorld = (path: string) => world ? `${path}?world=${encodeURIComponent(world)}` : path;
-  const goto = (url: string) => repl.call<{ status: number; url: string }>(`open ${url}`, `return await __walk.goto(${js(BASE_URL + url)});`);
+  const goto = (url: string) => repl.call<{ status: number; url: string }>(`open ${url}`, `return await __walk.goto(${js(BROWSER_URL + url)});`);
 
   await walk.step("/configure", "configure", async attempt => {
     if (attempt === 1) {
@@ -437,7 +444,7 @@ async function marketingTest(repl: Repl): Promise<WalkTest> {
   const walk = testWalk(repl);
   for (const path of MARKETING_PAGES) {
     await walk.step(path, "load", async () => {
-      const { status } = await repl.call<{ status: number }>(`open ${path}`, `return await __walk.goto(${js(BASE_URL + path)});`);
+      const { status } = await repl.call<{ status: number }>(`open ${path}`, `return await __walk.goto(${js(BROWSER_URL + path)});`);
       if (status >= 400) throw new Error(`${path} gave HTTP ${status}`);
       await repl.call("let late requests land", "await __walk.settle(2000, false);");
     });
