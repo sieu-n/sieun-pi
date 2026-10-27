@@ -11,7 +11,7 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  *    article page it has not seen answer 200 yet, for its status and article:published_time;
  * 2. URL Inspection (seo-sources.py inspect, counted in metrics/inspect-quota.json) for articles that went live in the last 14 days, are live
  *    3 or more days, and that no earlier inspection in metrics/*.json or this duty's state saw indexed, at most once per article per
- *    REASK_AFTER_MS;
+ *    REASK_AFTER_MS, or at every run for one with an accepted Request indexing in REQUESTS_LOG;
  * 3. for detail lines only: metrics/indexnow-sent.json of the SEO program, for sitemap URLs `seo indexnow --new` would still send, and the
  *    program's ledger.jsonl, for checks past their date with no result and the share of the last 30 days' scored checks that won.
  * The state keeps each article's first-seen day, so the day an article went live is the day the sitemap first listed it. On the first run
@@ -84,6 +84,14 @@ export const seoulDay = (at: number): string => new Date(at + 9 * 3_600_000).toI
  * "Quota exceeded for sc-domain:virev.ai.", and it still answered 429 at 2026-10-26 00:08Z (Vent prod otel.vent_calls).
  */
 export const REASK_AFTER_MS = 24 * 3_600_000;
+/**
+ * The Request indexing log of the daily Search Console window (second google user's windows.py), one JSON row per attempt, under the program
+ * folder. An article with an accepted request is asked again at every run until it reads indexed, so the drop shows at the next run instead
+ * of up to 24 h later. On 10-28 at 02:41 KST d2 still counted 6 of the 7 counted articles the 10-27 03:31Z window requested, from verdicts
+ * taken at 01:20Z, and all 6 read "Submitted and indexed" at 18:45Z. It costs one call per requested article that is not indexed yet, 9 at
+ * that run, against Google's 2,000 a day.
+ */
+export const REQUESTS_LOG = "workers/place-pages/indexing-requests.jsonl";
 const NOT_ASKED_PREFIX = "not asked:";
 export const daysBetween = (from: string, to: string): number => Math.round((Date.parse(to.slice(0, 10)) - Date.parse(from.slice(0, 10))) / 86_400_000);
 const unescape = (text: string): string => text.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&quot;/g, '"').trim();
@@ -134,6 +142,18 @@ export function lastVerdictsFromMetrics(files: ReadonlyMap<string, unknown>): Re
         if (at > (out[row.url]?.at ?? -1)) out[row.url] = { at, verdict: row.verdict, coverage_state: row.coverage_state ?? null };
       }
     }
+  }
+  return out;
+}
+
+/** URLs the window's log shows an accepted Request indexing for ("Indexing requested"); a line that is not JSON is skipped. */
+export function requestedUrls(log: string): Set<string> {
+  const out = new Set<string>();
+  for (const line of log.split("\n")) {
+    try {
+      const row = JSON.parse(line) as { url?: unknown; result?: unknown };
+      if (typeof row.url === "string" && row.result === "Indexing requested") out.add(row.url);
+    } catch { continue; }
   }
   return out;
 }
@@ -241,7 +261,9 @@ export async function measureArticles(deps: ArticlesDeps, previous: ArticlesStat
       for (const [url, last] of Object.entries(lastVerdictsFromMetrics(files))) {
         if (due.includes(url) && last.at > (state.inspected[url]?.at ?? -1)) state.inspected[url] = last;
       }
-      const ask = due.filter(url => !(at - (state.inspected[url]?.at ?? -Infinity) < REASK_AFTER_MS));
+      const requested = await deps.readProgram(REQUESTS_LOG).then(requestedUrls, () => new Set<string>());
+      const ask = due.filter(url => requested.has(url) || !(at - (state.inspected[url]?.at ?? -Infinity) < REASK_AFTER_MS));
+      const reasked = ask.filter(url => requested.has(url) && at - (state.inspected[url]?.at ?? -Infinity) < REASK_AFTER_MS).length;
       // seo-sources.py inspect asks a failed URL once more itself, but never after a 429, and after a 429 any caller saw it asks one URL first.
       const { rows, not_asked: skipped, quota_left_before: quotaLeft }: InspectRead = ask.length ? await deps.inspect(ask) : { rows: [], not_asked: [] };
       const good = (row: InspectRow): boolean => row.http === 200 && !row.error;
@@ -264,7 +286,7 @@ export async function measureArticles(deps: ArticlesDeps, previous: ArticlesStat
         flagged.push(...listSlice("source_error", `URL Inspection failed for ${failed.length} of ${ask.length} asked; they count as not indexed:`, failed.map(row => `${path(row.url)} (${row.error ?? `HTTP ${row.http}`})`), at));
       }
       flagged.push({ at, kind: "inspect_calls", excerpt: `Detail: URL Inspection asked ${rows.filter(row => !row.error?.startsWith(NOT_ASKED_PREFIX)).length} of ${due.length} articles; ` +
-        `${due.length - ask.length} kept a verdict under 24 h old` + (stale.size ? `, and ${stale.size} kept their last verdict as stale because ` +
+        `${due.length - ask.length} kept a verdict under 24 h old` + (reasked ? `, and ${reasked} with a Request indexing were asked again before 24 h` : "") + (stale.size ? `, and ${stale.size} kept their last verdict as stale because ` +
         (refused ? `Google answered 429 "Quota exceeded"` : `metrics/inspect-quota.json had ${Math.max(0, quotaLeft ?? 0)} calls left for the UTC day`) +
         "; one that no inspection has seen indexed still counts as not indexed." : ".") });
       flagged.push(...listSlice("unindexed", `Articles that went live in the last ${NEW_WINDOW_DAYS} days, live ${INDEX_AFTER_DAYS} or more days, that Google has not indexed (${unindexed.length} of ${due.length}):`,
