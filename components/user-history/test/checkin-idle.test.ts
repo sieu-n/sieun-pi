@@ -17,7 +17,7 @@ const MIN = 60_000;
 const goal = (id: string): PlanItem => ({ id, text: `goal ${id}`, status: "doing", children: [] });
 const owner = { key: "sub-1", name: "metal agent queue", state: "working" } as const;
 const number = { metric: "hours held", target: 2, unit: "hours", op: ">=" as const, value: 0, measuredAt: 0, source: "", staleMs: 3_600_000 };
-const push = (extra: Partial<GoalPush>): GoalPush => ({ goal: goal("p22"), words: [], stale: false, act: "on_pace", number, ...extra }) as GoalPush;
+const push = (extra: Partial<GoalPush>): GoalPush => ({ goal: goal("p22"), words: [], paraphrased: [], stale: false, act: "on_pace", number, ...extra }) as GoalPush;
 
 test("a check-in with nothing due is idle; a due steer, a job push, a stuck step or a met item to close is not", () => {
   const quiet = push({ act: "steer", owner, trend: { kind: "still", runs: 3 }, quiet: { pushedAt: 0, nextAt: 3_600_000 } });

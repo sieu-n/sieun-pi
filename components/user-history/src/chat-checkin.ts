@@ -186,7 +186,7 @@ export function checkInPrecheck(previous: CheckInMemory | undefined, facts: read
   // check-in sent its p1 goal steer to the AI harness chat, which held p342 under p1.
   const ownJob = (fact: JobFact): boolean => !fact.key.startsWith("thread:") || roots.has(fact.name) || roots.has(fact.key.slice("thread:".length));
   const goals = context.boardError ? { pushes: [], memos: previous?.goals ?? {} }
-    : goalPushes(board, goaled, previous?.goals, context.everyMs ?? CHECK_IN_MS, now, doneFacts.metrics, new Set(fold.map(entry => entry.goal.id)), paused, ownJob, carriers);
+    : goalPushes(board, goaled, previous?.goals, context.everyMs ?? CHECK_IN_MS, now, doneFacts.metrics, new Set(fold.map(entry => entry.goal.id)), paused, ownJob, carriers, context.owner ?? []);
   const pushed = context.boardError ? { pushes: [], memos: previous?.jobs ?? {} }
     : jobPushes(facts, goaled, previous?.jobs, context.everyMs ?? CHECK_IN_MS, now,
       fact => !fact.name.startsWith("check-in ") && ownJob(fact),

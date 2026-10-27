@@ -7,7 +7,9 @@ import { CHECK_IN_DUTY_ID } from "./shared/chat-duties.ts";
 import { parseDutyLink, sessionBornAt } from "./shared/duty-fixes.ts";
 import type { ChatBoard, OwnerTodo, PlanItem } from "./shared/types.ts";
 import { type JobFact, ownerLabel, ownerState, waitBound, poolWait, quote, type StepView, walk } from "./checkin-steps.ts";
-import { poolSlot } from "./shared/chat-feed.ts";
+import { ownerMessageId, poolSlot } from "./shared/chat-feed.ts";
+import { ownerSaid } from "./chat-corrections.ts";
+import type { OwnerMessage } from "./shared/brief-check.ts";
 
 /**
  * The check-in's first job: push each open goal's number to its target (owner 10-15 on Crawler VP p71, Instagram Tier A indexed 14.9 of 100%
@@ -84,9 +86,14 @@ export interface GoalPush {
   /** A push already sent with no new reading since: when, and when the next one is due (`quietPush`). The goal still counts in goal_gaps. */
   quiet?: { pushedAt: number; nextAt: number };
   act: GoalAct;
-  /** The owner's words for the goal: its open and unmet requirement lines. */
-  words: string[];
+  /** The owner's words for the goal (`goalWords`): each requirement line that one of his messages in the chat holds, with that message's id. */
+  words: OwnerQuote[];
+  /** The goal's requirement lines that no owner message holds, which the chat wrote in its own words. */
+  paraphrased: string[];
 }
+
+/** A line the owner wrote, as a steer quotes it: the line, and the id (`ownerMessageId`) and time of his message that holds it. */
+export interface OwnerQuote { text: string; id: string; at: number }
 
 /**
  * An open fix step already on a goal's gap: its job, the job's state in words (`ownerState`), and when its session started. On 10-26 d5 started
@@ -338,11 +345,24 @@ export function goalWait(goal: PlanItem, push: StepView | undefined, now: number
   return undefined;
 }
 
-/** The owner's words for a goal: its requirement lines still open or unmet, else the goal's own text. */
-export const goalWords = (goal: PlanItem): string[] => {
-  const open = (goal.requirements ?? []).filter(line => line.status !== "met").map(line => line.text.trim());
-  return open.length ? open : [goal.text];
-};
+/**
+ * The owner's words for a goal: its requirement lines still open or unmet (all of them when every one is met), each matched to the owner
+ * message in the chat that holds it (`ownerSaid`). A line no message holds is the chat's paraphrase, and the goal's title is never his words.
+ * On 10-28 chat-2572's check-in steered its job with "Owner's words for p34 (verbatim): > Explain normal and Insight connections", a title the
+ * chat wrote, while the owner had asked "client 입장에선 똑같이 뜨는데..? 둘다 따로 연결 가능한거야?" (message mvr3yiiy).
+ */
+export function goalWords(goal: PlanItem, owner: readonly OwnerMessage[]): { words: OwnerQuote[]; paraphrased: string[] } {
+  const all = (goal.requirements ?? []).map(line => ({ status: line.status, text: line.text.trim() })).filter(line => line.text);
+  const open = all.filter(line => line.status !== "met");
+  const words: OwnerQuote[] = [];
+  const paraphrased: string[] = [];
+  for (const { text } of open.length ? open : all) {
+    const message = owner.findLast(said => ownerSaid(text, [said.text]));
+    if (message) words.push({ text, id: ownerMessageId(message.at), at: message.at });
+    else paraphrased.push(text);
+  }
+  return { words, paraphrased };
+}
 
 /** A metric of time held, like "hours metal held 70 to 80% CPU" or "days in a row with no failed run": only the clock moves it. */
 const HELD_UNIT_MS: Record<string, number> = { minute: 60_000, minutes: 60_000, min: 60_000, hour: 3_600_000, hours: 3_600_000, h: 3_600_000, day: 86_400_000, days: 86_400_000 };
@@ -393,14 +413,15 @@ export function quietPush(memo: GoalMemo | undefined, number: GoalNumber, now: n
 export function goalPushes(board: ChatBoard | null, views: readonly StepView[], memos: Readonly<Record<string, GoalMemo>> | undefined,
   everyMs: number, now: number, metrics: ReadonlyMap<string, MetricFact> = new Map(),
   folded: ReadonlySet<string> = new Set(), paused: ReadonlySet<string> = new Set(),
-  ownJob: (fact: JobFact) => boolean = () => true, carriers: ReadonlyMap<string, readonly JobFact[]> = stepCarriers(board, views)): { pushes: GoalPush[]; memos: Record<string, GoalMemo> } {
+  ownJob: (fact: JobFact) => boolean = () => true, carriers: ReadonlyMap<string, readonly JobFact[]> = stepCarriers(board, views),
+  said: readonly OwnerMessage[] = []): { pushes: GoalPush[]; memos: Record<string, GoalMemo> } {
   const todos: readonly OwnerTodo[] = board?.todos ?? [];
   const kept: Record<string, GoalMemo> = {};
   // The goal's message goes only to a job of this chat, so a step another chat owns names no owner or holder.
   const mine = views.filter(view => !view.owner || ownJob(view.owner));
   const pushes = openGoals(board?.plan ?? []).flatMap((goal): GoalPush[] => {
     if (folded.has(goal.id)) return [];
-    const words = goalWords(goal);
+    const { words, paraphrased } = goalWords(goal, said);
     const fixes = goalFixes(goal, mine);
     // A live fix step on the goal's duty metric outside the goal owns the number too: steer it rather than start a second job.
     const owner = goalOwner(goal, mine) ?? fixViews(goal, mine).find(working)?.owner;
@@ -409,7 +430,7 @@ export function goalPushes(board: ChatBoard | null, views: readonly StepView[], 
     const under = mine.filter(view => view.goal?.id === goal.id && view.item.id !== goal.id && view.item.job);
     const holder = (pushView?.item.job && mine.includes(pushView) ? pushView : undefined) ?? under.find(view => view.item.duty !== undefined) ?? under[0];
     const stepJob = holder?.item.job ? { step: holder.item.id, job: holder.owner?.name ?? holder.item.job, ...holder.item.duty ? { duty: holder.item.duty } : {} } : undefined;
-    const base = { goal, words, ...(owner ? { owner } : {}), ...(step ? { pushStep: step } : {}), ...(stepJob ? { stepJob } : {}), ...(fixes.length ? { fixes } : {}) };
+    const base = { goal, words, paraphrased, ...(owner ? { owner } : {}), ...(step ? { pushStep: step } : {}), ...(stepJob ? { stepJob } : {}), ...(fixes.length ? { fixes } : {}) };
     const number = goalNumber(goal, everyMs, metrics);
     const held = ownerHeld(goal, views, todos);
     // A goal with no number that waits on the owner's word needs his answer, not a target (frontend bro p62, its p52 and p31 parked by c40).
@@ -508,11 +529,17 @@ export function goalLine(push: GoalPush): string {
   return `${push.goal.id} ${numberText(push.number)}, ${trendText(push.number, push.trend!, push.stale)}; ${askText(push)}${fixes}`;
 }
 
-/** The message to steer a goal's owner, or the opening of a new owner job's brief: the owner's words, the measured gap and the ask. */
+/**
+ * The message to steer a goal's owner, or the opening of a new owner job's brief: the goal's title as the board's, the owner's words only from
+ * his messages with their ids (`goalWords`), the chat's own requirement lines apart, the measured gap and the ask.
+ */
 export function goalSteer(push: GoalPush): string {
-  const words = push.words.map(line => `> ${line}`).join("\n");
+  const owner = push.words.length
+    ? push.words.map(line => `Owner's words (verbatim, message ${line.id}, ${zTime(line.at)}):\n\n> ${line.text.split("\n").join("\n> ")}`).join("\n\n")
+    : "Owner's words: none on the board for this goal; quote him only from his messages in the chat, with their message id.";
+  const chat = push.paraphrased.length ? `\n\nRequirements in the chat's words, not the owner's:\n${push.paraphrased.map(line => `- ${line}`).join("\n")}` : "";
   const gap = push.number ? `${numberText(push.number)}, ${trendText(push.number, push.trend!, push.stale)}.` : "";
-  return `Owner's words for ${push.goal.id} ${quote(push.goal.text)} (verbatim):\n\n${words}\n\n${gap} Name the biggest blocker on this number and attack it now. ` +
+  return `Goal ${push.goal.id}: ${quote(push.goal.text)}\n\n${owner}${chat}\n\n${gap} Name the biggest blocker on this number and attack it now. ` +
     "Measure the number again when you have moved it, write it in the goal's target, and report it to the chat.";
 }
 
@@ -599,5 +626,9 @@ export function goalDueLine(push: GoalPush): string | null {
     ? `\n\nThe number did not move in the last ${push.trend.runs} check-ins, so this message alone has not moved it. Read the job's last report ` +
       "first. When it names a blocker, act on that blocker in this run: start a job on it, or add the For you todo when only the owner can move it. " +
       "Send the job only what is new, and tell the chat in one line what holds the number." : "";
-  return `${ask}:\n\n${goalSteer(push).split("\n").map(line => line ? `   ${line}` : "").join("\n")}${stuck}`;
+  // The board moves between the precheck and the send, more so while the check-in's turn waits for an account: chat-2572's 10-27 20:50Z
+  // check-in steered p34 with its precheck's metric "Verified MCP connection answer delivered", which the chat had since renamed to
+  // "Connection explanation published and answered".
+  const live = `\n\nRead board.get("${push.goal.id}") right before you send it, and send the goal's live title and target metric where they changed since this precheck.`;
+  return `${ask}:\n\n${goalSteer(push).split("\n").map(line => line ? `   ${line}` : "").join("\n")}${live}${stuck}`;
 }
