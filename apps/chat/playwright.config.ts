@@ -14,6 +14,8 @@ export default defineConfig({
   testDir: "test",
   testMatch: "**/*.spec.ts",
   fullyParallel: true,
+  // Chrome on the box sometimes drops a cold dev-server load with ERR_NETWORK_CHANGED.
+  retries: 1,
   workers: process.env.CI ? 2 : 4,
   timeout: 30_000,
   expect: { timeout: 5_000 },

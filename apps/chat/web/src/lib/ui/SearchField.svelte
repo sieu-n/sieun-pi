@@ -14,6 +14,8 @@
     suffix?: Snippet;
     label?: string;
     clearable?: boolean;
+    /** Show the leading search icon. The palette variant hides it by default. */
+    icon?: boolean;
     element?: HTMLInputElement | undefined;
     oninput?: (value: string) => void;
     onkeydown?: (e: KeyboardEvent) => void;
@@ -27,6 +29,7 @@
     suffix,
     label = "Search",
     clearable = true,
+    icon,
     element = $bindable(),
     oninput,
     onkeydown,
@@ -35,7 +38,7 @@
 </script>
 
 <div class="search {variant}">
-  <Icon name="search" size={variant === "palette" ? 20 : 16} />
+  {#if icon ?? variant !== "palette"}<Icon name="search" size={variant === "palette" ? 20 : 16} />{/if}
   {#if prefix}<div class="prefix">{@render prefix()}</div>{/if}
   <input
     bind:this={element}
@@ -53,7 +56,7 @@
     <IconButton
       icon="close"
       label="Clear"
-      size="xs"
+      size={variant === "palette" ? "sm" : "xs"}
       tip={false}
       onclick={() => {
         value = "";
@@ -83,8 +86,8 @@
     box-shadow: inset 0 0 0 1px var(--border-prominent);
   }
   .palette {
-    min-height: 56px;
-    padding: 12px 8px;
+    min-height: 78px;
+    padding: 25px 12px 24px;
   }
   .prefix {
     display: flex;

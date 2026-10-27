@@ -18,8 +18,14 @@
     selected?: boolean;
     /** Keyboard highlight in a list driven by arrow keys, separate from selection. */
     highlighted?: boolean;
-    /** row: 32 px list row. search: 52 px two-line result row. card: a padded row inside a settings card. */
-    variant?: "row" | "search" | "card";
+    /**
+     * row: 32 px list row. search: 64 px two-line result row. card: a padded row inside a settings card.
+     * inbox: a top-aligned row with a 32 px lead, a heading with a trailing time that gives way to `action` on hover,
+     * a two-line preview and a gray selected fill.
+     */
+    variant?: "row" | "search" | "card" | "inbox";
+    /** Inbox rows: controls shown in place of `trailing` on hover or keyboard focus. */
+    action?: Snippet;
     unread?: boolean;
     disabled?: boolean;
     role?: string;
@@ -35,6 +41,7 @@
     icon,
     leading,
     trailing,
+    action,
     labelContent,
     detailContent,
     href,
@@ -50,12 +57,23 @@
     onpointerenter,
     ...rest
   }: Props = $props();
+
+  const tag = $derived(href ? "a" : variant === "inbox" && action ? "div" : "button");
+  function onDivKey(e: KeyboardEvent) {
+    if (e.target !== e.currentTarget || (e.key !== "Enter" && e.key !== " ")) return;
+    e.preventDefault();
+    (e.currentTarget as HTMLElement).click();
+  }
 </script>
 
+<!-- An inbox row with actions is a focusable div, because a button cannot hold the action buttons. -->
+<!-- svelte-ignore a11y_no_static_element_interactions -->
 <svelte:element
-  this={href ? "a" : "button"}
+  this={tag}
   {href}
-  type={href ? undefined : "button"}
+  type={tag === "button" ? "button" : undefined}
+  tabindex={tag === "div" ? 0 : undefined}
+  onkeydown={tag === "div" ? onDivKey : undefined}
   class="nav-item {variant}"
   class:selected
   class:highlighted
@@ -63,7 +81,7 @@
   aria-current={selected && href ? "page" : undefined}
   aria-selected={role === "option" ? highlighted || selected : undefined}
   aria-disabled={disabled || undefined}
-  {role}
+  role={role ?? (tag === "div" ? "button" : undefined)}
   {id}
   {onclick}
   {oncontextmenu}
@@ -73,11 +91,22 @@
   {#if leading || icon}
     <span class="lead">{#if leading}{@render leading()}{:else if icon}<Icon name={icon} size={variant === "search" ? 20 : 18} />{/if}</span>
   {/if}
-  <span class="text">
-    <span class="label">{#if labelContent}{@render labelContent()}{:else}{label}{/if}</span>
-    {#if detailContent || detail}<span class="detail">{#if detailContent}{@render detailContent()}{:else}{detail}{/if}</span>{/if}
-  </span>
-  {#if trailing}<span class="trail">{@render trailing()}</span>{/if}
+  {#if variant === "inbox"}
+    <span class="text">
+      <span class="head">
+        <span class="label">{#if labelContent}{@render labelContent()}{:else}{label}{/if}</span>
+        {#if trailing}<span class="trail">{@render trailing()}</span>{/if}
+        {#if action}<span class="action">{@render action()}</span>{/if}
+      </span>
+      {#if detailContent || detail}<span class="detail">{#if detailContent}{@render detailContent()}{:else}{detail}{/if}</span>{/if}
+    </span>
+  {:else}
+    <span class="text">
+      <span class="label">{#if labelContent}{@render labelContent()}{:else}{label}{/if}</span>
+      {#if detailContent || detail}<span class="detail">{#if detailContent}{@render detailContent()}{:else}{detail}{/if}</span>{/if}
+    </span>
+    {#if trailing}<span class="trail">{@render trailing()}</span>{/if}
+  {/if}
 </svelte:element>
 
 <style>
@@ -102,8 +131,8 @@
     min-height: 32px;
   }
   .search {
-    min-height: 52px;
-    padding: 6px 12px;
+    min-height: 64px;
+    padding: 12px;
     border-radius: var(--radius-control);
     gap: 12px;
     color: var(--text-standard);
@@ -114,6 +143,50 @@
     border-radius: 0;
     color: var(--text-standard);
   }
+  .inbox {
+    align-items: flex-start;
+    gap: 12px;
+    padding: 12px;
+    border-radius: var(--radius-control);
+    color: var(--text-standard);
+  }
+  .inbox .lead {
+    min-width: 32px;
+  }
+  .head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 20px;
+  }
+  .head .label {
+    flex: 1;
+    min-width: 0;
+  }
+  .inbox .detail {
+    display: -webkit-box;
+    max-width: 64ch;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
+    white-space: normal;
+  }
+  .action {
+    display: none;
+    align-items: center;
+    gap: 2px;
+    margin: -6px -4px -6px 0;
+  }
+  .inbox:hover .action,
+  .inbox:focus-within .action,
+  .inbox:focus-visible .action {
+    display: inline-flex;
+  }
+  .inbox:hover:has(.action) .trail,
+  .inbox:focus-within:has(.action) .trail,
+  .inbox:focus-visible:has(.action) .trail {
+    display: none;
+  }
   .nav-item:hover,
   .highlighted {
     background: var(--affordance-sidebar-hover);
@@ -121,9 +194,19 @@
   }
   .search:hover,
   .search.highlighted,
-  .card:hover {
+  .card:hover,
+  .inbox:hover,
+  .inbox.highlighted {
     background: var(--bg-app);
     color: var(--text-standard);
+  }
+  .inbox.selected,
+  .inbox.selected:hover {
+    background: var(--interaction-selected);
+    color: var(--text-standard);
+  }
+  .inbox.selected .detail {
+    opacity: 1;
   }
   .selected,
   .selected:hover {

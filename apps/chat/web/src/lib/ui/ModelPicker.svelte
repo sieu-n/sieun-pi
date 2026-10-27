@@ -17,11 +17,12 @@
     /** Allow a model id that is not in the list. */
     allowCustom?: boolean;
     disabled?: boolean;
+    /** Open state, bindable so a card menu's "Change model" can open the picker. */
+    open?: boolean;
     onchange: (next: { model: string; effort?: string }) => void;
   };
-  let { models, value, efforts = [], effort, variant = "pill", allowCustom = true, disabled = false, onchange }: Props = $props();
+  let { models, value, efforts = [], effort, variant = "pill", allowCustom = true, disabled = false, open = $bindable(false), onchange }: Props = $props();
 
-  let open = $state(false);
   let trigger = $state<HTMLButtonElement>();
   let custom = $state("");
   const current = $derived(models.find((m) => m.id === value));
@@ -35,12 +36,12 @@
   <Icon name="chevron-down" size={14} />
 </button>
 
-<Picker bind:open anchor={trigger} {items} {value} searchable={models.length > 7} placeholder="Search models" label="Model" onselect={(id) => onchange({ model: id, ...(effort ? { effort } : {}) })}>
+<Picker bind:open anchor={trigger} {items} {value} width={320} searchable={models.length > 7} placeholder="Search models" label="Model" onselect={(id) => onchange({ model: id, ...(effort ? { effort } : {}) })}>
   {#snippet footer({ query, close })}
     {#if efforts.length}
-      <div class="row">
+      <div class="efforts">
         <span class="row-label">Thinking</span>
-        <Tabs items={effortTabs} value={effort ?? efforts[0]!} size="sm" label="Thinking effort" onchange={(e) => onchange({ model: value, effort: e })} />
+        <Tabs items={effortTabs} value={effort ?? efforts[0]!} size="sm" full label="Thinking effort" onchange={(e) => onchange({ model: value, effort: e })} />
       </div>
     {/if}
     {#if allowCustom}
@@ -116,6 +117,18 @@
     align-items: center;
     gap: 8px;
     padding: 6px 4px 2px;
+  }
+  .efforts {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 8px 4px 2px;
+  }
+  .efforts :global(.tab) {
+    min-width: 0;
+    padding: 0 4px;
+    font: var(--text-caption);
+    font-weight: 500;
   }
   .row-label {
     flex: 1;

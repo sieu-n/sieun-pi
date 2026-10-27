@@ -13,7 +13,7 @@ Open http://127.0.0.1:5185/#/ui with the dev server running to see every part in
 
 ## Tokens
 
-Colors, type, radii, shadows, spacing, motion and layout sizes are CSS variables in `src/styles/tokens.css`, with a dark set under `:root[data-color-mode="dark"]`. Use the variables and never a raw hex value. The type scale has utility classes in `src/styles/base.css`, such as `t-body-sm`, `t-caption` and `t-label`. Only weights 400 and 500 are used.
+Colors, chart series (`--chart-series-1` to `4`), type, radii, shadows, spacing, motion and layout sizes are CSS variables in `src/styles/tokens.css`, with a dark set under `:root[data-color-mode="dark"]`. Use the variables and never a raw hex value. The type scale has utility classes in `src/styles/base.css`, such as `t-body-sm`, `t-caption` and `t-label`. Only weights 400 and 500 are used.
 
 ## Controls
 
@@ -26,7 +26,7 @@ Colors, type, radii, shadows, spacing, motion and layout sizes are CSS variables
 | `Badge` | A count, a short label or a dot. | `value`, `tone` neutral, accent, danger, strong or outline; `dot` |
 | `Input` | A one-line text field. | `bind:value`, `size`, `icon`, `prefix`, `suffix`, `invalid`, `bind:element`, plus any input attribute |
 | `TextArea` | A multi-line field that grows with its text. | `bind:value`, `rows`, `maxRows`, `invalid` |
-| `SearchField` | A search input. | `variant` inline or palette; `prefix` for operator chips, `suffix`, `clearable`, `bind:element` |
+| `SearchField` | A search input. The palette variant is the 78 px search dialog row with no leading icon. | `variant` inline or palette; `icon`, `prefix` for operator chips, `suffix`, `clearable`, `bind:element` |
 | `Field` | A label, hint and error around one control. | `label`, `id`, `hint`, `error`, `optional`, `inline` |
 | `Checkbox` | A checkbox with a label. | `bind:checked`, `label`, `indeterminate`, `shape` square or round |
 | `Switch` | An on and off switch. | `bind:checked`, `label`, `showLabel` |
@@ -36,7 +36,8 @@ Colors, type, radii, shadows, spacing, motion and layout sizes are CSS variables
 
 | Part | What it is | Main props |
 |---|---|---|
-| `Avatar` | A circle for the owner and people, a squircle for agents, with generated art from a seed. | `name`, `kind` person or agent, `src`, `seed`, `size`, `status` |
+| `Avatar` | A circle for the owner and people, a squircle for agents that draws the seeded mascot. | `name`, `kind` person or agent, `src`, `seed`, `size`, `status` |
+| `Mascot` | The seeded agent figure with no clip, for agent cards and backdrops. `mascotSvg(seed, id?)` returns the same SVG as a string. | `seed`, `size`, `id`, `label` |
 | `AvatarStack` | Overlapping small avatars with a "+N". | `members`, `size`, `max` |
 | `StatusDot` | Online, away, offline or busy. | `status`, `size` |
 | `TypingDots` | The agent working signal. | `mode` working or waiting, `label` |
@@ -62,8 +63,8 @@ Colors, type, radii, shadows, spacing, motion and layout sizes are CSS variables
 |---|---|---|
 | `Popover` | A glass or solid surface next to an element or a point. Esc and an outside press close it. | `bind:open`, `anchor`, `placement`, `surface`, `width`, `onclose` |
 | `Menu` | A menu of actions, radios, checkboxes, labels, separators and submenus. A point anchor makes it a context menu. | `bind:open`, `anchor`, `items: MenuEntry[]`, `placement` |
-| `Picker` | The one shared picker for models, agents, channels and any other choice, with groups, a filter and keyboard moves. | `bind:open`, `anchor`, `items: PickerItem[]`, `value`, `multiple`, `searchable`, `onselect`, `footer` |
-| `ModelPicker` | A trigger plus a Picker grouped by model family, with a thinking effort control and a custom model id. | `models`, `value`, `efforts`, `effort`, `variant` pill or field, `onchange` |
+| `Picker` | The one shared picker for models, agents, channels and any other choice, with groups, a filter and keyboard moves. With `typeahead` it filters by an outside query, never takes focus and reads arrow keys, Enter and Tab from the text box, as the composer's @ and # lists need. | `bind:open`, `anchor`, `items: PickerItem[]`, `value`, `multiple`, `searchable`, `typeahead`, `onselect`, `footer` |
+| `ModelPicker` | A trigger plus a Picker grouped by model family, with a thinking effort control and a custom model id. | `models`, `value`, `efforts`, `effort`, `variant` pill or field, `bind:open`, `onchange` |
 | `Dialog` | A modal card, or the search palette anchored 128 px from the top. An outside click leaves a dirty dialog open. | `bind:open`, `title`, `description`, `presentation` center or search, `dirty`, `initialFocus`, `actions` |
 | `toast` | `toast.show(text)`, `toast.success(text)`, `toast.error(text, { action })`. `Toaster` is mounted once in App. | |
 | `tooltip` | `use:tooltip={"Close"}` or `use:tooltip={{ text, shortcut, placement }}`. | |
@@ -77,7 +78,7 @@ Colors, type, radii, shadows, spacing, motion and layout sizes are CSS variables
 | `Page` | A full page body: a fixed header and a centered scrolling column. | `header`, `measure` narrow, default, wide or full |
 | `PageHeader` | A page or section title with a subtitle, actions and a row below. | `title`, `subtitle`, `actions`, `below`, `size` page or section |
 | `CardGroup` | A titled card of rows with hairlines between them, for settings, hosts and usage. | `title`, `description`, `actions` |
-| `NavItem` | A list row with a leading icon or avatar, a two-line label and trailing content. | `variant` row, search or card; `selected`, `highlighted`, `unread`, `href`, `leading`, `trailing`, `labelContent` |
+| `NavItem` | A list row with a leading icon or avatar, a two-line label and trailing content. The inbox variant has a 32 px lead, a two-line preview, a gray selected fill and an `action` that replaces `trailing` on hover. | `variant` row, search (64 px), card or inbox; `selected`, `highlighted`, `unread`, `href`, `leading`, `trailing`, `action`, `labelContent` |
 | `SplitPane` | A list and a resizable detail pane, for inbox-style pages. | `list`, `detail`, `detailWidth`, `storageKey` |
 | `ResizeHandle` | A 14 px drag seam that also takes arrow keys. | `size`, `min`, `max`, `edge`, `onresize`, `oncommit` |
 | `Disclosure` | A header that shows or hides its body. | `bind:open`, `title`, `detail`, `actions` |

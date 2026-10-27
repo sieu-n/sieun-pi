@@ -1,6 +1,7 @@
 import DOMPurify from "dompurify";
 import { Marked, type TokenizerAndRendererExtension } from "marked";
 import { hueFor } from "./hash";
+import { ICONS } from "./icons";
 
 /**
  * Markdown for messages, reports and docs. Output is sanitized HTML that Markdown.svelte mounts and hydrates
@@ -92,6 +93,11 @@ function imageTag(src: string, alt: string, source: string, thumb = false): stri
   return `<img class="md-image${thumb ? " thumb" : ""}" src="${escapeHtml(src)}" alt="${escapeHtml(alt)}" title="${escapeHtml(source)}" loading="lazy" data-source="${escapeHtml(source)}">`;
 }
 
+/** The same 13 px glyph MentionChip draws, from the shared icon set. */
+function chipGlyph(name: "robot" | "hash"): string {
+  return `<svg class="icon" width="13" height="13" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name]}</svg>`;
+}
+
 let ctx: MarkdownContext = {};
 
 const wikiLinks: TokenizerAndRendererExtension = {
@@ -160,7 +166,8 @@ const mentions: TokenizerAndRendererExtension = {
   renderer(token) {
     const kind = String(token.kind);
     const text = kind === "person" ? `@${String(token.name)}` : String(token.name);
-    return `<button type="button" class="inline-chip mention${token.self ? " self" : ""}" data-mention-kind="${escapeHtml(kind)}" data-mention-id="${escapeHtml(String(token.id))}"><span class="text">${escapeHtml(text)}</span></button>`;
+    const glyph = kind === "agent" ? chipGlyph("robot") : kind === "channel" ? chipGlyph("hash") : "";
+    return `<button type="button" class="inline-chip mention${token.self ? " self" : ""}" data-mention-kind="${escapeHtml(kind)}" data-mention-id="${escapeHtml(String(token.id))}">${glyph}<span class="text">${escapeHtml(text)}</span></button>`;
   },
 };
 

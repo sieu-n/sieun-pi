@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { hashString, hueFor, initials } from "./hash";
+  import { hueFor, initials } from "./hash";
+  import { mascotParts, mascotSvg } from "./mascot";
   import type { Status } from "./types";
 
   type Props = {
@@ -20,12 +21,10 @@
 
   const key = $derived(seed ?? name);
   const hue = $derived(hueFor(key));
-  const h = $derived(hashString(key));
+  const tint = $derived(mascotParts(key).body);
   const radius = $derived(kind === "person" ? "50%" : `${Math.round(size * 0.32)}px`);
   const dot = $derived(Math.max(6, Math.round(size * 0.28)));
-  const eyeGap = $derived(4 + (h % 3));
-  const eyeY = $derived(9 + ((h >> 3) % 3));
-  const mouth = $derived((h >> 6) % 3);
+  const uid = Math.random().toString(36).slice(2, 8);
 </script>
 
 <span
@@ -35,6 +34,7 @@
   style:height="{size}px"
   style:--r={radius}
   style:--h={hue}
+  style:--tint={tint}
   title={title ?? name}
   data-kind={kind}
 >
@@ -43,17 +43,7 @@
   {:else if kind === "person"}
     <span class="initials" style:font-size="{Math.max(9, Math.round(size * 0.4))}px">{initials(name)}</span>
   {:else}
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <circle cx={12 - eyeGap / 2} cy={eyeY} r="1.4" />
-      <circle cx={12 + eyeGap / 2} cy={eyeY} r="1.4" />
-      {#if mouth === 0}
-        <path d="M9.5 15.5q2.5 2 5 0" />
-      {:else if mouth === 1}
-        <path d="M10 15.5h4" />
-      {:else}
-        <circle cx="12" cy="15.5" r="1" />
-      {/if}
-    </svg>
+    <span class="figure">{@html mascotSvg(key, `av-${uid}`)}</span>
     <span class="sr-only">{name}</span>
   {/if}
   {#if status}
@@ -76,10 +66,21 @@
     background: hsl(var(--h) 30% 30%);
     color: hsl(var(--h) 60% 88%);
   }
-  .agent {
-    background:
-      radial-gradient(circle at 30% 25%, hsl(calc(var(--h) + 40) 80% 88%) 0%, transparent 60%),
-      linear-gradient(150deg, hsl(var(--h) 70% 78%), hsl(calc(var(--h) + 30) 60% 64%));
+  .agent,
+  :global(:root[data-color-mode="dark"]) .agent {
+    background: color-mix(in srgb, var(--tint) 28%, var(--surface-panel));
+  }
+  .figure {
+    width: 100%;
+    height: 100%;
+    border-radius: var(--r);
+    overflow: hidden;
+    line-height: 0;
+  }
+  .figure :global(svg) {
+    width: 100%;
+    height: 100%;
+    transform: translateY(6%) scale(1.12);
   }
   .ring {
     box-shadow: 0 0 0 2px var(--surface-panel);
@@ -94,17 +95,6 @@
     font-weight: 500;
     letter-spacing: 0;
     line-height: 1;
-  }
-  svg {
-    width: 72%;
-    height: 72%;
-    fill: hsl(var(--h) 45% 16%);
-    stroke: hsl(var(--h) 45% 16%);
-    stroke-width: 1.4;
-    stroke-linecap: round;
-  }
-  svg path {
-    fill: none;
   }
   .status {
     position: absolute;

@@ -13,7 +13,7 @@
 
   $effect(() => {
     if (!src) return;
-    z = nextLayer() + 2000;
+    z = nextLayer();
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.preventDefault();

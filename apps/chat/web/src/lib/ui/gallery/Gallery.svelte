@@ -18,6 +18,7 @@
     Input,
     LoadingText,
     Markdown,
+    Mascot,
     MentionChip,
     Menu,
     Meter,
@@ -51,6 +52,8 @@
   let ctxOpen = $state(false);
   let ctxPoint = $state<{ x: number; y: number } | null>(null);
   let dialogOpen = $state(false);
+  let dlgMenuOpen = $state(false);
+  let dlgMenuAnchor = $state<HTMLElement>();
   let pickerOpen = $state(false);
   let pickerAnchor = $state<HTMLElement>();
   let picked = $state("vent");
@@ -175,6 +178,7 @@ flowchart LR
         <Avatar name={s} seed={s} size={32} status={s === "vent" ? "online" : s === "wiki" ? "away" : null} />
       {/each}
       <Avatar name="big" seed="honey" size={96} status="online" />
+      <Mascot seed="chat shell" size={96} label="chat shell" />
       <AvatarStack members={[{ id: "a", name: "Bumble" }, { id: "b", name: "Fizz" }, { id: "c", name: "Honey" }, { id: "d", name: "Sieun", kind: "person" }]} size={20} />
       <TypingDots /><TypingDots mode="waiting" /><Spinner />
     </div>
@@ -198,7 +202,7 @@ flowchart LR
       <Button bind:element={menuAnchor} onclick={() => (menuOpen = !menuOpen)} trailingIcon="chevron-down">Menu</Button>
       <button class="ctx" oncontextmenu={(e) => { e.preventDefault(); ctxPoint = { x: e.clientX, y: e.clientY }; ctxOpen = true; }}>Right click here</button>
       <Button bind:element={pickerAnchor} onclick={() => (pickerOpen = !pickerOpen)} trailingIcon="chevron-down">Pick: {picked}</Button>
-      <ModelPicker {models} value={model} efforts={["low", "medium", "high"]} {effort} onchange={(n) => { model = n.model; effort = n.effort ?? effort; }} />
+      <ModelPicker {models} value={model} efforts={["minimal", "low", "medium", "high", "xhigh"]} {effort} onchange={(n) => { model = n.model; effort = n.effort ?? effort; }} />
       <Button onclick={() => (dialogOpen = true)}>Dialog</Button>
       <Button onclick={() => toast.success("Saved")}>Toast</Button>
       <Button onclick={() => sidePanel.open({ key: "gallery", title: "Side panel", icon: "side-panel", body: paneBody })}>Side panel</Button>
@@ -228,6 +232,11 @@ flowchart LR
         <NavItem label="Vent" detail="2 jobs working" icon="chat" />
         <NavItem variant="search" label="general" detail="#general · 12 members" icon="hash" highlighted />
         <NavItem variant="search" label="Vent" detail="VP chat">{#snippet leading()}<Avatar name="Vent" seed="vent" size={24} />{/snippet}</NavItem>
+        <NavItem variant="inbox" label="Vent" detail="The job found two relay errors, both while the Mac slept. The canary itself is fine, and the relay log is clean since 02:11." selected>
+          {#snippet leading()}<Avatar name="Vent" seed="vent" size={32} />{/snippet}
+          {#snippet trailing()}9:41 PM{/snippet}
+          {#snippet action()}<IconButton icon="check" label="Archive" size="xs" onclick={(e) => (e.stopPropagation(), toast.show("Archived"))} />{/snippet}
+        </NavItem>
       </div>
       <CardGroup title="Hosts" description="Boxes that run agents.">
         <NavItem variant="card" label="us-metal02" detail="80 cores · Linux" icon="server">{#snippet trailing()}<StatusDot status="online" />{/snippet}</NavItem>
@@ -259,6 +268,10 @@ flowchart LR
 <Picker bind:open={pickerOpen} anchor={pickerAnchor} items={pickerItems} value={picked} searchable onselect={(id) => (picked = id)} />
 <Dialog bind:open={dialogOpen} title="Create agent" description="Name it and pick a model.">
   <Field label="Name" id="dlg-name"><Input id="dlg-name" placeholder="Agent name" /></Field>
+  <div style="margin-top: 12px">
+    <Button bind:element={dlgMenuAnchor} onclick={() => (dlgMenuOpen = !dlgMenuOpen)} trailingIcon="chevron-down">Sort: {sort}</Button>
+  </div>
+  <Menu bind:open={dlgMenuOpen} anchor={dlgMenuAnchor} items={menuItems} />
   {#snippet actions()}
     <Button variant="ghost" onclick={() => (dialogOpen = false)}>Cancel</Button>
     <Button variant="primary" onclick={() => (dialogOpen = false)}>Create agent</Button>

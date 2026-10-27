@@ -25,6 +25,11 @@
     onclose?: () => void;
     /** Extra rows under the list, for example a "Custom model" field or an effort control. */
     footer?: Snippet<[{ query: string; close: () => void }]>;
+    /**
+     * Typeahead mode for a text box that keeps the caret, such as the composer's @ list: the list filters by `query`,
+     * shows no search field, never takes focus, and reads ArrowUp, ArrowDown, Enter and Tab from `keys`.
+     */
+    typeahead?: { query: string; keys: HTMLElement };
   };
   let {
     open = $bindable(),
@@ -41,6 +46,7 @@
     onselect,
     onclose,
     footer,
+    typeahead,
   }: Props = $props();
 
   let query = $state("");
@@ -48,10 +54,10 @@
   let listEl = $state<HTMLElement>();
   const listId = `pick-${Math.random().toString(36).slice(2, 8)}`;
 
-  const showSearch = $derived(searchable ?? items.length > 7);
+  const showSearch = $derived(!typeahead && (searchable ?? items.length > 7));
   const selected = $derived(new Set(Array.isArray(value) ? value : value ? [value] : []));
   const filtered = $derived.by(() => {
-    const q = query.trim().toLowerCase();
+    const q = (typeahead ? typeahead.query : query).trim().toLowerCase();
     if (!q) return items;
     return items.filter((i) => [i.label, i.detail ?? "", i.group ?? "", ...(i.keywords ?? [])].join(" ").toLowerCase().includes(q));
   });
@@ -74,8 +80,24 @@
     }
   });
   $effect(() => {
-    void query;
     if (active >= filtered.length) active = Math.max(0, filtered.length - 1);
+  });
+  $effect(() => {
+    const keys = typeahead?.keys;
+    if (!open || !keys) return;
+    const onKeys = (e: KeyboardEvent) => {
+      if (e.key === "Tab") {
+        const item = filtered[active];
+        if (item) {
+          e.preventDefault();
+          choose(item);
+        }
+        return;
+      }
+      if (e.key === "ArrowDown" || e.key === "ArrowUp" || e.key === "Enter") onKeydown(e);
+    };
+    keys.addEventListener("keydown", onKeys, true);
+    return () => keys.removeEventListener("keydown", onKeys, true);
   });
 
   function close() {
@@ -109,7 +131,7 @@
   }
 </script>
 
-<Popover bind:open {anchor} {placement} {width} surface="glass" role="dialog" {label} onclose={close} padding={6}>
+<Popover bind:open {anchor} {placement} {width} surface="glass" role="dialog" {label} onclose={close} padding={6} autofocus={!typeahead}>
   <div class="picker" onkeydown={onKeydown} role="presentation">
     {#if showSearch}
       <div class="search"><SearchField bind:value={query} {placeholder} label={placeholder} data-autofocus aria-controls={listId} aria-activedescendant={filtered[active] ? `${listId}-${active}` : undefined} /></div>
@@ -140,6 +162,7 @@
               <span class="label">{item.label}</span>
               {#if item.detail}<span class="detail">{item.detail}</span>{/if}
             </span>
+            {#if item.trailing}<span class="trailing">{item.trailing}</span>{/if}
             {#if selected.has(item.id)}<Icon name="check" size={16} />{/if}
           </button>
         {/each}
@@ -212,6 +235,16 @@
   }
   .detail {
     font: var(--text-caption);
+    color: var(--text-metadata);
+  }
+  .trailing {
+    flex: none;
+    max-width: 40%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font: var(--text-mono);
+    letter-spacing: var(--tracking-mono);
     color: var(--text-metadata);
   }
   .empty {

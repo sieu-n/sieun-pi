@@ -68,6 +68,7 @@
   }
   .full .tab {
     flex: 1;
+    min-width: 0;
   }
   .tab {
     display: inline-flex;

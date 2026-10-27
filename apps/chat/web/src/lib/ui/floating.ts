@@ -47,7 +47,7 @@ export function portal(node: HTMLElement) {
 }
 
 let layer = 1000;
-/** A z-index above every floating surface opened before it. */
+/** A z-index above every floating surface or dialog opened before it, so a menu opened inside a dialog stacks above the dialog. */
 export function nextLayer(): number {
   layer += 1;
   return layer;

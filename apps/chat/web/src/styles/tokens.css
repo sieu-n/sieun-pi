@@ -64,6 +64,7 @@
   --affordance-subtle-hover: #dadada;
   --affordance-ghost-hover: rgb(0 0 0 / 5%);
   --affordance-ghost-pressed: rgb(0 0 0 / 8%);
+  --interaction-selected: #e8e8e8;
 
   --surface-sidebar-selected: #beda36;
   --text-sidebar-selected: #000000;
@@ -93,6 +94,12 @@
   --gradient-2: radial-gradient(at 8% 85%, #fac8d3 0%, transparent 60%), linear-gradient(150deg, #fff9f7 0%, #f5d5df 48%, #d5eafa 100%);
   --gradient-3: radial-gradient(at 85% 15%, #d8d0fb 0%, transparent 55%), radial-gradient(at 10% 90%, #c9e7f7 0%, transparent 60%), linear-gradient(153deg, #f7f8ff 0%, #dfe3fb 50%, #e2f1fb 100%);
   --gradient-4: radial-gradient(at 15% 20%, #f7d0ec 0%, transparent 55%), radial-gradient(at 90% 85%, #d6dcfb 0%, transparent 60%), linear-gradient(154deg, #fdf7fb 0%, #ecd8f3 50%, #dde5fb 100%);
+
+  /* Chart series, for multi-series charts such as daily cost */
+  --chart-series-1: #0d74ce;
+  --chart-series-2: #ef5f00;
+  --chart-series-3: #2b9a66;
+  --chart-series-4: #8e4ec6;
 
   /* Type scale */
   --text-display: 400 56px/1.1 var(--font-sans);
@@ -222,6 +229,7 @@
   --affordance-subtle-hover: #404040;
   --affordance-ghost-hover: rgb(255 255 255 / 7%);
   --affordance-ghost-pressed: rgb(255 255 255 / 11%);
+  --interaction-selected: #333333;
 
   --affordance-sidebar-hover: #202413;
   --text-sidebar-hover: #edf7d2;
@@ -245,6 +253,11 @@
   --gradient-2: radial-gradient(at 10% 85%, #3d0f1f 0%, transparent 55%), linear-gradient(150deg, #120a0d 0%, #2a1320 50%, #0c1725 100%);
   --gradient-3: radial-gradient(at 85% 15%, #1d1745 0%, transparent 55%), linear-gradient(153deg, #0b0c18 0%, #15183a 50%, #0b1a26 100%);
   --gradient-4: radial-gradient(at 15% 20%, #3a1235 0%, transparent 55%), linear-gradient(154deg, #120a12 0%, #2a1530 50%, #101633 100%);
+
+  --chart-series-1: #0090ff;
+  --chart-series-2: #c75a12;
+  --chart-series-3: #29a383;
+  --chart-series-4: #9a5cd0;
 
   --shadow-panel: 0 0 0 1px rgba(255, 255, 255, 0.08);
   --shadow-float: 0 0 0 1px rgba(255, 255, 255, 0.08), 0 8px 24px -4px rgba(0, 0, 0, 0.5);

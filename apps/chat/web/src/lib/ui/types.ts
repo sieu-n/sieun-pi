@@ -21,6 +21,8 @@ export type PickerItem = {
   group?: string;
   icon?: string;
   avatar?: { name: string; kind?: "person" | "agent"; seed?: string; src?: string | null };
+  /** Short mono text at the right of the row, such as an agent's kind or parent. */
+  trailing?: string;
   /** Extra words the filter matches. */
   keywords?: string[];
   disabled?: boolean;

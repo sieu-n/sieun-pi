@@ -43,7 +43,7 @@
   }: Props = $props();
 
   let card = $state<HTMLDivElement>();
-  let z = $state(2000);
+  let z = $state(1000);
   const titleId = `dlg-${Math.random().toString(36).slice(2, 8)}`;
 
   function close() {
@@ -53,7 +53,7 @@
 
   $effect(() => {
     if (!open) return;
-    z = nextLayer() + 1000;
+    z = nextLayer();
     const returnTo = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     void tick().then(() => {
       if (!card) return;
@@ -154,11 +154,10 @@
   }
   .dialog-header h2 {
     margin: 0;
-    font: var(--text-heading);
-    letter-spacing: var(--tracking-heading);
+    font: var(--text-label);
   }
   .dialog-header p {
-    margin: 8px 0 0;
+    margin: 4px 0 0;
     font: var(--text-body-sm);
     color: var(--text-subtle);
   }
