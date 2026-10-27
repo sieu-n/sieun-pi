@@ -16,7 +16,8 @@
     "@earendil-works/pi-coding-agent": "1.4.0",
     "@earendil-works/pi-ai": "1.4.0",
     "@earendil-works/pi-agent-core": "1.4.0",
-    "tsx": "4.23.13"
+    "tsx": "4.23.13",
+    "typebox": "1.3.27"
   },
   "devDependencies": {
     "@types/node": "22.15.30",
