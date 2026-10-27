@@ -259,7 +259,8 @@ export class PiHost implements HostApi {
   private onSessionLine(session: HostedSession, line: { event: { type: string; [key: string]: unknown } }): void {
     this.emitHost({ type: "session_event", sessionId: session.id, event: line.event });
     const type = line.event.type;
-    if (type === "agent_start" || type === "agent_end" || type === "session_info_changed" || type === "compaction_start" || type === "compaction_end") {
+    // Pi clears isStreaming only at agent_settled, after agent_end, so the roster row that says the run ended goes out then.
+    if (type === "agent_start" || type === "agent_end" || type === "agent_settled" || type === "session_info_changed" || type === "compaction_start" || type === "compaction_end") {
       this.broadcastRoster({ type: "roster_update", changed: [this.rosterEntry(session)] });
     }
   }
