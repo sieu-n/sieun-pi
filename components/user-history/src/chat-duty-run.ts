@@ -888,9 +888,16 @@ export class Duties {
   /**
    * Records a met check-in run for a chat with nothing to check (`checkInDue`: no job at work, no open plan step, no board error) when its
    * newest measured check-in did not read met, so a board that went clean stops reading red. On 10-22 chat 01a140fb closed p25 after its
-   * 04:16Z check-in missed goal_gaps, had nothing to check from then on, and the duty fleet still counted that miss at 08:00Z.
+   * 04:16Z check-in missed goal_gaps, had nothing to check from then on, and the duty fleet still counted that miss at 08:00Z. Every such run
+   * moves the check-in's lastRunAt, so its duties file shows the daily check-in of an empty plan ran: on 10-27 a reading of the duties files
+   * could not tell such a check-in from one that never runs.
    */
   async checkInClean(chatId: string, at: number, trigger: DutyTrigger): Promise<void> {
+    await this.store.updateFile(chatId, file => {
+      const state = file.checkIn ??= { createdAt: at, runCount: 0 };
+      state.runCount += 1;
+      state.lastRunAt = at;
+    });
     const newest = (await this.store.runs(chatId)).find(run => run.duty === CHECK_IN_DUTY_ID && ["met", "missed"].includes(effectiveRun(run).verdict));
     if (!newest || effectiveRun(newest).verdict === "met") return;
     const judged = judge(CHECK_IN_DUTY.metrics, { metrics: Object.fromEntries(CHECK_IN_DUTY.metrics.map(metric => [metric.key, 0])), flagged: [] });

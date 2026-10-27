@@ -9,7 +9,7 @@ import { parseAgentQueue, poolExecutable } from "../../src/chat-pool.ts";
 import { heldByTodo, withLinkedBoards } from "../../src/shared/todo-hold.ts";
 import { cancelHolds, JOB_CANCELS_FILE, parseJobCancels } from "../../src/job-cancels.ts";
 import { planRiskSteps } from "../../src/checkin-findings.ts";
-import { LIVE_GAP_MS, OPEN, parkedBy, walk } from "../../src/checkin-steps.ts";
+import { LIVE_GAP_MS, OPEN, parkedBy, planHasOpenStep, walk } from "../../src/checkin-steps.ts";
 import { listedSessions } from "../../src/daemon-faults.ts";
 import { ownerChats } from "../../src/owner-chats.ts";
 import { chatDataDir } from "../../src/owner-ok.ts";
@@ -28,6 +28,9 @@ import { daemonSessions, dutyFleet, type FleetDuty } from "./duty-fleet.ts";
 import { catalogCopyFiles, copyHosts, endsOnPoolWait, type HostHeldStep, mirroredSessions, planCounts, planInputs, POOL_TAIL_BYTES } from "./whole-system.ts";
 import { stepSessions } from "../../src/unmoved-steps.ts";
 import { loadHosts, selfHost } from "../../src/hosts.ts";
+import { checkInStandingLine, checkInStandings, LATE_INTERVALS } from "../../src/checkin-schedule.ts";
+import { checkInSettings } from "../../src/checkin-settings.ts";
+import { CLEAN_ROOM_CHATS_FILE } from "../../src/chat-corrections.ts";
 import { peerReach, readTailscaleStatus } from "../../src/host-reach.ts";
 import { type AwayHost, hostHolds } from "../../src/shared/host-hold.ts";
 
@@ -884,6 +887,32 @@ export function spotAuditLines(input: { spot: string; title: string; host?: stri
 const today = (now: number): string => new Date(now).toISOString().slice(0, 10);
 const section = (title: string, lines: readonly string[]): string => [`## ${title}`, "", ...lines.length ? lines.map((line, index) => `${index + 1}. ${line}`) : ["None."], ""].join("\n");
 
+const idsIn = async (dataDir: string, file: string): Promise<Set<string>> => {
+  const value = JSON.parse(await readFile(join(dataDir, file), "utf8").catch(() => "{}")) as { ids?: unknown };
+  return new Set((Array.isArray(value.ids) ? value.ids : []).filter((id): id is string => typeof id === "string"));
+};
+
+/**
+ * Every check-in's standing (`checkInStandings`): each owner chat's, and each thread's that has a check-in in its duties file while it is no
+ * longer a chat. A chat's newest check-in is the later of its duties file's lastRunAt and its newest check-in record (`runs`, newest first).
+ */
+async function checkInSchedule(dataDir: string, now: number, chats: readonly { id: string; runs: readonly DutyRunRecord[] }[], boards: ReadonlyMap<string, ChatBoard | null>) {
+  const store = new DutyStore(dataDir);
+  const [index, archived, cleanRoom] = await Promise.all([idsIn(dataDir, "chats.json"), idsIn(dataDir, "archived-chats.json"), idsIn(dataDir, CLEAN_ROOM_CHATS_FILE)]);
+  const owner = new Set(chats.map(chat => chat.id));
+  const recorded = new Map<string, number | null>();
+  for (const id of await store.chats()) {
+    if (archived.has(id) || (index.has(id) && !owner.has(id))) continue;
+    const file = await store.read(id).catch(() => null);
+    const newest = chats.find(chat => chat.id === id)?.runs.find(run => run.duty === CHECK_IN_DUTY_ID)?.at;
+    const at = Math.max(file?.checkIn?.lastRunAt ?? -Infinity, newest ?? -Infinity);
+    if (file?.checkIn || owner.has(id)) recorded.set(id, Number.isFinite(at) ? at : null);
+  }
+  const settings = await checkInSettings(join(dataDir, "check-in-settings.json")).all().catch(() => ({}));
+  const planOpen = new Map([...boards].map(([id, board]) => [id, board ? planHasOpenStep(board) : true] as const));
+  return checkInStandings({ now, chats: owner, archived, cleanRoom, recorded, settings, planOpen });
+}
+
 async function main(): Promise<void> {
   const output = process.env.OUTPUT_FILE;
   if (!output) { process.stderr.write("chat-system: OUTPUT_FILE is not set\n"); process.exit(2); }
@@ -991,6 +1020,10 @@ async function main(): Promise<void> {
     jobPushes: direct, stepMoves: routes.moves, unknownOwners: unknown, detail, hostHeld });
   const fleetMissing = fleet.flagged.filter(slice => slice.kind === "fleet_data_missing");
   result.flagged!.push(...fleetMissing);
+  const standings = await checkInSchedule(dataDir, now, plan.chats, plan.boards);
+  const lateCheckIns = standings.filter(standing => standing.state === "late");
+  result.flagged!.push(...lateCheckIns.map((standing): FlaggedSlice => ({ kind: "checkin_late", chat: standing.chat,
+    excerpt: `${checkInStandingLine(standing, name(standing.chat), now)}: find why in the chat service log ("chat ${standing.chat.slice(0, 8)}: check-in") and fix the scheduler` })));
 
   // The spot audit: one owner chat each run, the open cycle's next at random (`spotPick`), read by the duty job against what the owner asked in it.
   const picks = (await readFile(SPOT_PICKS_FILE, "utf8").catch(() => "")).split("\n").flatMap(line => {
@@ -1037,6 +1070,9 @@ async function main(): Promise<void> {
     section(`Red duty metrics that wait on the owner's open For you todo (${owned.ownerHeld.length})`, owned.ownerHeld.map(duty => `${duty.line}.`)),
     section(`Red duties whose live fix job does not move the number (${notMoving.length})`, notMoving.map(duty => `${duty.line}.`)),
     section(`Red windowed counts with no lastEventAt, read as lagging windows (${owned.lagging.length})`, owned.lagging.map(duty => `${duty.line}.`)),
+    section(`Check-ins late by more than ${LATE_INTERVALS} intervals (${lateCheckIns.length})`, lateCheckIns.map(standing => `${checkInStandingLine(standing, name(standing.chat), now)}.`)),
+    section(`Check-ins that do not run, with why (${standings.filter(standing => standing.state === "paused" || standing.state === "stopped").length})`,
+      standings.filter(standing => standing.state === "paused" || standing.state === "stopped").map(standing => `${checkInStandingLine(standing, name(standing.chat), now)}.`)),
   ].join("\n");
   await writeFile(detail, md);
   if ((pushes.length || direct.length) && recordsPushes(process.env.PRECHECK_MODE)) {
