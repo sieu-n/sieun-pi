@@ -13,7 +13,6 @@ const FULL = "Target session has too many pending messages: 20 unfinished, limit
 
 async function setup(t: TestContext, options: { host?: string; online?: () => boolean } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "outbox-copies-"));
-  t.after(() => rm(dir, { recursive: true, force: true }));
   const box = join(dir, "agent-outbox");
   const lines: string[] = [];
   const sent: string[] = [];
@@ -25,7 +24,12 @@ async function setup(t: TestContext, options: { host?: string; online?: () => bo
     fileOf: async () => null,
     ...options.host ? { hostOf: () => options.host!, reach: async () => ({ online: options.online!() }) as never } : {},
   });
-  t.after(() => outbox.close());
+  // The outbox stops before its folder goes: a refused send's lane writes its entry again every 2 ms, and an rm under it failed ENOTEMPTY.
+  t.after(async () => {
+    await outbox.close();
+    await outbox.outbox.idle();
+    await rm(dir, { recursive: true, force: true });
+  });
   const entries = async () => Promise.all((await readdir(box)).filter(name => name.endsWith(".json"))
     .map(async name => JSON.parse(await readFile(join(box, name), "utf8")) as { id: string; text: string; state: string }));
   return { lines, sent, outbox, entries, tick: (ms: number) => { now += ms; } };
