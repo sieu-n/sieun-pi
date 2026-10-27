@@ -18,7 +18,8 @@
       "id": "F1",
       "title": "Lane rates and pauses steered by hand",
       "designs": [
-        "01a115e2-9544-7204-b8db-8ce4d5319048/p170"
+        "01a115e2-9544-7204-b8db-8ce4d5319048/p170",
+        "01a11bd7-072f-7591-ad1d-f123c276cde5/p235"
       ],
       "done_at": "2026-10-19T15:15:00Z",
       "owner": "Crawler ops / Crawler VP (01a115e2), TikTok Shop thread, metal (01a11d24); throttle.crawl_per_minute and throttle.deep_crawl_per_minute for Instagram and TikTok are stepped by hand toward c100's GeoNode 150 MB/s (audits 14107, 14217, 14235 on 10-18), which the same lane rate controller takes over",
