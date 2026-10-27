@@ -11,14 +11,14 @@ const timing = (path: string, over: Partial<PageTiming> = {}): PageTiming =>
 const load = (long_ms: number) => ({ ms: 4000, long_ms });
 const scenario = (name: string, timings: PageTiming[], status = "passed", boxLoads: BoxLoad[] = []) => ({
   title: `${name}: every browser and server request stays on localhost`,
-  file: "offline.spec.ts",
+  file: "demo-sandbox-walk.ts",
   tests: [{ results: [{ status, annotations: [
     ...timings.map(entry => ({ type: "page-timing", description: JSON.stringify(entry) })),
     ...boxLoads.map(entry => ({ type: "box-load", description: JSON.stringify(entry) })),
   ] }] }],
 });
 const START = "2026-10-19T16:28:33.775Z";
-const report = (...specs: ReturnType<typeof scenario>[]): WalkReport => ({ stats: { startTime: START }, suites: [{ file: "offline.spec.ts", specs }] });
+const report = (...specs: ReturnType<typeof scenario>[]): WalkReport => ({ stats: { startTime: START }, suites: [{ file: "demo-sandbox-walk.ts", specs }] });
 
 test("a page's time is the slower of its in-app switch and its load's long tasks, and the load's wall time through the link does not count", () => {
   assert.equal(pageMs(timing("/app/inbox")), 300);

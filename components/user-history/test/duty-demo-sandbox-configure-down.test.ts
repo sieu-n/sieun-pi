@@ -7,7 +7,7 @@ import { measureSandbox, WALK_FILE, type WalkReport } from "../scripts/duties/de
 const NOW = Date.parse("2026-10-22T21:25:18Z");
 const cleanWalk: WalkReport = {
   stats: { startTime: "2026-10-22T06:47:56Z" },
-  suites: [{ file: "offline.spec.ts", specs: [{ title: "kbeauty-brand: every browser and server request stays on localhost", file: "offline.spec.ts", tests: [{ results: [{ status: "passed", annotations: [
+  suites: [{ file: "demo-sandbox-walk.ts", specs: [{ title: "kbeauty-brand: every browser and server request stays on localhost", file: "demo-sandbox-walk.ts", tests: [{ results: [{ status: "passed", annotations: [
     { type: "page-timing", description: JSON.stringify({ scenario: "kbeauty-brand", path: "/app/analytics/home", switches: [{ ms: 2083, long_ms: 0 }], loads: [] }) },
   ] }] }] }] }],
 };

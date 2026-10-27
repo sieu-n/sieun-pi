@@ -9,19 +9,19 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  * The Demo sandbox works duty's precheck (`node --import tsx scripts/duties/demo-sandbox.ts`) for the frontend chat: the 5180 demo
  * (apps/virev-demo in auto-sns-agent). No model call, no browser. Since 10-19 the demo runs only on the owner's Mac (owner: "for demo frontend
  * for now it should all be here"), so the duty's precheck command runs this script from the Mac's sieun-pi checkout over `ssh mac`. Its judged metrics (owner c75, 10-15: one headline plus at most 3):
- * - walk_problems, the headline: problems in the last offline walk of the 6 apps (tests/e2e/offline.spec.ts walks search, discover,
- *   analytics, campaigns, inbox and connections in two scenarios, plus the marketing pages). Each outside request counts 1, each test that
+ * - walk_problems, the headline: problems in the last offline walk of the 6 apps (demo-sandbox-walk.ts walks search, discover,
+ *   analytics, campaigns, inbox and connections in two scenarios, plus the marketing pages, through the owner's Aside on the Mac, c177). Each outside request counts 1, each test that
  *   failed for another reason counts 1, a missing walk or one over a day old counts 1, and so does a /configure probe without a 200. The owner: "no external connection should work
- *   off of internal fake database". This script reads the walk's Playwright JSON report from WALK_FILE and its stderr from WALK_ERR_FILE,
+ *   off of internal fake database". This script reads the walk's Playwright-shaped JSON report from WALK_FILE and its stderr from WALK_ERR_FILE,
  *   and starts the next walk itself, detached (WALK_COMMAND), when the last one started over WALK_REFRESH_MS ago and none is running, so the
  *   next run reads a fresh walk. Until 10-22 only a missed run's duty job ran the walk, so a run on target never refreshed it: the 21:25Z run on
  *   10-21 read a 19.6 h old walk and started nothing, and the push run at 02:56Z on 10-22 found it 25 h old and went red with no page at fault.
- * - slowest_page_ms: the slowest app page in the last offline walk, timed in the page itself (offline.spec.ts writes one `page-timing`
+ * - slowest_page_ms: the slowest app page in the last offline walk, timed in the page itself (demo-sandbox-walk.ts writes one `page-timing`
  *   annotation per page and scenario, with each of its 3 tries). A page's time is the slower of its fastest in-app switch (the click to the
- *   first frame whose <main> shows new text) and the lowest long-task time of its full loads (pageMs). The walk's browser runs on us-metal02, so
- *   load on that box only adds time to a try: on 10-20, at load 242 on 80 cores, one try read 12.7 s of long tasks for a page that loads in
- *   under 2 s. The fastest try is the page's own cost, and the box_load slice names the box's load during the walk. The load's own wall time is
- *   left out, since every module of a cold load crosses the 195 ms link to the Mac. It replaced health_ms on 10-19, because /health answered in 25 ms while the owner
+ *   first frame whose <main> shows new text) and the lowest long-task time of its full loads (pageMs). Load on the walk's browser host only adds
+ *   time to a try: on 10-20, with the browser on us-metal02 at load 242 on 80 cores, one try read 12.7 s of long tasks for a page that loads in
+ *   under 2 s. The fastest try is the page's own cost, and the box_load slice names the host's load during the walk. The load's own wall time is
+ *   left out, since it counts every module of a cold load. It replaced health_ms on 10-19, because /health answered in 25 ms while the owner
  *   found switching "infuriatingly slow" (10-09) and Creators slow to load (10-19, 2.3 s of long tasks before 7966ebbfd). A down server fails the
  *   walk, and a /configure probe that gets no 200 adds 1 to walk_problems, since the walk is a day old. A page that never showed or a scenario test with no timings reads as PAGE_TIMEOUT_MS. A missing or stale
  *   walk gives no reading: slowest_page_ms is left out, so the duty shows it as not measured, and a `gap` slice names the walk's state.
@@ -37,7 +37,7 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  * events stopped is not called stuck (`MetricStreak.quietSince`).
  */
 
-const REPO = process.env.LLM_WIKI_REPO || join(homedir(), "Documents/Github/auto-sns-agent");
+export const REPO = process.env.LLM_WIKI_REPO || join(homedir(), "Documents/Github/auto-sns-agent");
 
 /** Every live pid under `root`, `root` included, from `ps -axo pid=,ppid=`. */
 export function treePids(ps: string, root: number): number[] {
@@ -101,7 +101,7 @@ export function headlessChrome(ps: string): { browsers: number; processes: numbe
 export const BASE_URL = "http://localhost:5180";
 /** How long a probe waits for an answer: the 30 s timeout every 5180 health check uses. */
 export const ANSWER_TIMEOUT_MS = 30_000;
-/** What a page that never showed reads as: offline.spec.ts gives up on a page after SHOW_TIMEOUT_MS, the same 30 s. */
+/** What a page that never showed reads as: demo-sandbox-walk.ts gives up on a page after SHOW_TIMEOUT_MS, the same 30 s. */
 export const PAGE_TIMEOUT_MS = 30_000;
 /** Above this, /configure is flagged as slow in the run detail (10-13 measure: 1155 ms for a warm page under load 257 to 357). */
 export const CONFIGURE_SLOW_MS = 3000;
@@ -113,16 +113,16 @@ export const PM2_NAME = "virev-demo";
 /** The dev server's own report: its live demo worlds and its memory in MB (auto-sns-agent 2033e09cf, 10-19). */
 export const DEMO_HEALTH_URL = `${BASE_URL}/__demo/health`;
 interface DemoHealth { worlds?: number; memory?: { rssMb?: number; heapUsedMb?: number; heapTotalMb?: number; externalMb?: number } }
-/** Where the duty job saves the offline walk's Playwright JSON report, relative to the repo. */
+/** Where the offline walk saves its Playwright-shaped JSON report, relative to the repo. */
 export const WALK_FILE = ".cache/duties/virev-demo-offline.json";
 /** Where the duty's walk command sends its stderr, relative to the repo, so a command that never starts the walk leaves its reason here. */
 export const WALK_ERR_FILE = ".cache/duties/virev-demo-offline.err";
 /**
  * A stderr line that means the walk command itself broke and the walk never ran. From 10-18 to 10-19 a plain `ssh mac` PATH lacked node, so
- * playwright's shebang gave `env: node: No such file or directory` (exit 127) on 17 runs in a row, which showed only as walk_stale. Since 10-19 the walk's
- * browser runs on us-metal02 through apps/virev-demo/scripts/shot-browser.mjs, whose own failures start with `shot-browser: `.
+ * the walk gave `env: node: No such file or directory` (exit 127) on 17 runs in a row, which showed only as walk_stale. demo-sandbox-walk.ts
+ * starts its own fatal errors, such as an Aside that does not answer, with `demo-sandbox-walk: `.
  */
-const WALK_COMMAND_BROKE = /No such file or directory|command not found|Cannot find module|ERR_MODULE_NOT_FOUND|^shot-browser: /;
+const WALK_COMMAND_BROKE = /No such file or directory|command not found|Cannot find module|ERR_MODULE_NOT_FOUND|^demo-sandbox-walk: /;
 /**
  * The precheck starts a walk when the last one started longer ago than this. A daily run (06:25 KST) then always finds a walk that started at
  * most a day plus this long ago, since a run either starts one or found one under this age. 30 min keeps a burst of push runs (10-20: runs at
@@ -135,12 +135,17 @@ export const WALK_REFRESH_MS = 30 * 60_000;
  * left the daily walk a coin flip at each run.
  */
 export const WALK_STALE_MS = 25 * 3_600_000;
-/** The offline walk as the precheck starts it, run with `sh -c` from apps/virev-demo; its browser runs on us-metal02 through shot-browser.mjs. */
-export const WALK_COMMAND = `PLAYWRIGHT_JSON_OUTPUT_FILE=$PWD/../../${WALK_FILE} node scripts/shot-browser.mjs --run ../../node_modules/.bin/playwright test tests/e2e/offline.spec.ts --reporter=json 2> ../../${WALK_ERR_FILE}`;
+/** The test file the walk names in its report, which readWalk reads results from. */
+export const WALK_SOURCE = "demo-sandbox-walk.ts";
+/**
+ * The offline walk as the precheck starts it, run with `sh -c` from the sieun-pi checkout's components/user-history. It drives the owner's
+ * Aside on the Mac (c177: no headless browser) and writes WALK_FILE itself.
+ */
+export const WALK_COMMAND = `node --import tsx scripts/duties/${WALK_SOURCE} 2> "\${LLM_WIKI_REPO:-$HOME/Documents/Github/auto-sns-agent}/${WALK_ERR_FILE}"`;
 /** The pids of running offline walks, from `ps -axo pid=,ppid=,args=`. */
 export function runningWalks(ps: string): number[] {
   return ps.split("\n").map(line => /^\s*(\d+)\s+\d+\s+(.*)$/.exec(line)).filter(match => match !== null)
-    .filter(match => match[2]!.includes("tests/e2e/offline.spec.ts")).map(match => Number(match[1]));
+    .filter(match => match[2]!.includes(`scripts/duties/${WALK_SOURCE}`)).map(match => Number(match[1]));
 }
 /** The window for restarts and SSR timeouts: the duty runs daily (c66), so each run counts the whole day. */
 const DAY_MS = 24 * 3_600_000;
@@ -297,7 +302,7 @@ export interface WalkReport { stats?: { startTime?: string }; suites?: WalkSuite
 
 /** One timed try of a switch or a load, in ms: `ms` until the page showed, null when it never showed within the spec's 30 s, and the long-task ms in that span. */
 export interface PageTry { ms: number | null; long_ms: number }
-/** One page of one scenario as offline.spec.ts times it: each try of its in-app switch and of its full load. */
+/** One page of one scenario as demo-sandbox-walk.ts times it: each try of its in-app switch and of its full load. */
 export interface PageTiming { scenario: string; path: string; switches: PageTry[]; loads: PageTry[] }
 
 /** The fastest of `tries` by `cost`, or PAGE_TIMEOUT_MS when no try showed the page. */
@@ -329,13 +334,13 @@ export function boxLoadLine(loads: readonly BoxLoad[]): string {
 }
 
 /**
- * The offline walk's outcome from Playwright's JSON report: when it started, each outside request it saw (the spec's `<page> -> <url>`
+ * The offline walk's outcome from its Playwright-shaped JSON report: when it started, each outside request it saw (the spec's `<page> -> <url>`
  * entries in the failed `expect(seen.outside)`), the tests that failed for another reason, whose outside count is unknown, every page
  * timing, and the scenario tests (titles with `: every browser and server request`) that left none.
  */
 export function readWalk(report: WalkReport): { at: number; tests: number; outside: string[]; otherFailures: string[]; pages: PageTiming[]; untimed: string[]; boxLoads: BoxLoad[] } {
   const specs: WalkSpec[] = [];
-  const collect = (suite: WalkSuite) => { for (const spec of suite.specs ?? []) if ((spec.file ?? suite.file ?? "").endsWith("offline.spec.ts")) specs.push(spec); suite.suites?.forEach(collect); };
+  const collect = (suite: WalkSuite) => { for (const spec of suite.specs ?? []) if ((spec.file ?? suite.file ?? "").endsWith(WALK_SOURCE)) specs.push(spec); suite.suites?.forEach(collect); };
   report.suites?.forEach(collect);
   const outside = new Set<string>();
   const otherFailures: string[] = [];
@@ -474,7 +479,7 @@ export async function measureSandbox(deps: SandboxDeps): Promise<PrecheckOutput>
     psArgs = await deps.exec("ps", ["-axo", "pid=,ppid=,args="]);
     const chrome = headlessChrome(psArgs);
     metrics.headless_chrome = chrome.browsers;
-    flagged.push({ at, kind: "headless_chrome", excerpt: `${chrome.browsers} headless Chrome browsers run on this host in ${chrome.processes} processes; shot scripts run theirs on us-metal02 through apps/virev-demo/scripts/shot-browser.mjs` });
+    flagged.push({ at, kind: "headless_chrome", excerpt: `${chrome.browsers} headless Chrome browsers run on this host in ${chrome.processes} processes; agents browse only through Aside (c177), so each one is a leftover to stop` });
   } catch (error) {
     if (error instanceof Error) psArgs = error;
     sourceError("source", `ps for headless Chrome: ${error instanceof Error ? error.message : String(error)}`);
@@ -495,8 +500,8 @@ export async function measureSandbox(deps: SandboxDeps): Promise<PrecheckOutput>
     for (const failure of walk.otherFailures) flagged.push({ at, kind: "walk_failed", excerpt: `offline walk failed before its outside check: ${failure}` });
     if (!walk.tests) {
       metrics.walk_problems++;
-      flagged.push({ at, kind: "walk_missing", excerpt: `${WALK_FILE} has no offline.spec.ts result` });
-      noReading("the walk report has no offline.spec.ts result");
+      flagged.push({ at, kind: "walk_missing", excerpt: `${WALK_FILE} has no ${WALK_SOURCE} result` });
+      noReading(`the walk report has no ${WALK_SOURCE} result`);
     } else if (!Number.isFinite(walk.at) || at - walk.at > WALK_STALE_MS) {
       metrics.walk_problems++;
       const started = `the last offline walk in ${WALK_FILE} started ${Number.isFinite(walk.at) ? iso(walk.at) : "at an unknown time"}, over ${WALK_STALE_MS / 3_600_000} h ago`;
@@ -541,12 +546,15 @@ const exec: Exec = (file, args, env) => new Promise((resolve, reject) => {
     (error, stdout) => error ? reject(error) : resolve(stdout));
 });
 
-/** Runs WALK_COMMAND in its own session with no stdio, so it outlives this run and the `ssh mac` that started it. PATH comes from the precheck's command. */
+/**
+ * Runs WALK_COMMAND in its own session with no stdio, so it outlives this run and the `ssh mac` that started it. It runs from this checkout's
+ * components/user-history, the precheck's own cwd, and PATH comes from the precheck's command.
+ */
 function startWalk(): number {
-  const child = spawn("sh", ["-c", WALK_COMMAND], { cwd: join(REPO, "apps/virev-demo"), detached: true, stdio: "ignore" });
+  const child = spawn("sh", ["-c", WALK_COMMAND], { cwd: process.cwd(), detached: true, stdio: "ignore" });
   child.once("error", error => process.stderr.write(`demo-sandbox: the walk did not start: ${error.message}\n`));
   child.unref();
-  if (!child.pid) throw new Error(`sh -c did not start in ${join(REPO, "apps/virev-demo")}`);
+  if (!child.pid) throw new Error(`sh -c did not start in ${process.cwd()}`);
   return child.pid;
 }
 

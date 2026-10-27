@@ -9,10 +9,10 @@ import { measureSandbox, runningWalks, WALK_COMMAND, WALK_FILE, WALK_REFRESH_MS,
 
 const HOUR = 3_600_000;
 const NOW = Date.parse("2026-10-22T02:56:10Z");
-const WALK_PS = "75411 75405 node ../../node_modules/.bin/playwright test tests/e2e/offline.spec.ts --reporter=json\n";
+const WALK_PS = "75411 75405 node --import tsx scripts/duties/demo-sandbox-walk.ts\n";
 const walk = (startedAgoMs: number): WalkReport => ({
   stats: { startTime: new Date(NOW - startedAgoMs).toISOString() },
-  suites: [{ file: "offline.spec.ts", specs: [{ title: "kbeauty-brand: every browser and server request stays on localhost", file: "offline.spec.ts", tests: [{ results: [{ status: "passed", annotations: [
+  suites: [{ file: "demo-sandbox-walk.ts", specs: [{ title: "kbeauty-brand: every browser and server request stays on localhost", file: "demo-sandbox-walk.ts", tests: [{ results: [{ status: "passed", annotations: [
     { type: "page-timing", description: JSON.stringify({ scenario: "kbeauty-brand", path: "/app/analytics/home", switches: [{ ms: 2083, long_ms: 0 }], loads: [{ ms: 4000, long_ms: 255 }] }) },
   ] }] }] }] }],
 });
