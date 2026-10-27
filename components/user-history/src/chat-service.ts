@@ -38,7 +38,7 @@ type Instance = { pid: number; instanceId: string; url: string };
 type Service = { directory: string; config: Configuration; url: string; primary: boolean };
 
 /** Loading prime-agent costs about a CPU second (10 s at a load of 80), so only a command that needs its paths or the daemon loads it. */
-const defaultSocket = async (): Promise<string> => (await import("prime-agent")).defaultDaemonSocketPath();
+const defaultSocket = async (): Promise<string> => (await import("./daemon-sdk.ts")).defaultDaemonSocketPath();
 const secret = () => randomBytes(32).toString("hex");
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const isSecret = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
@@ -395,7 +395,9 @@ async function serve(options: Options): Promise<void> {
   // The keyed writes (src/daemon-write.ts) go on their own connections, which the DaemonClient patch does not see.
   setWriteObserver(({ socketPath, ...call }) => { const host = hostOf(socketPath); primeCalls.add({ ts: new Date().toISOString(), src: "chat", ...call, ...host ? { host } : {} }); });
   // Started first, so the daemon boots while the rest loads. The catalog and threads reconnect on their own once it answers.
-  const keeper = !scratch && startsDaemon(primary)
+  // pi-host runs as its own systemd unit or launchd job, so a chat on it starts no Prime daemon and keeps no Prime SDK in step.
+  const onPrime = (await import("./daemon-sdk.ts")).CHAT_BACKEND === "prime";
+  const keeper = onPrime && !scratch && startsDaemon(primary)
     ? new DaemonKeeper({ socketPath: service.config.socketPath, log: line => process.stderr.write(`${new Date().toISOString()} ${line}\n`) }) : null;
   void keeper?.start();
   const [{ buildClientBundle }, { createChatBackend }, { startChatServer }, { SdkSync, loadedClientVersion }, { startPromptPrune }, { getAgentDir }] = await Promise.all([
@@ -431,7 +433,7 @@ async function serve(options: Options): Promise<void> {
   const sdk = new SdkSync(join(service.directory, "sdk.json"), { client: loadedClientVersion(), build: bundle.then(built => built.version, () => "build failed"),
     canRestart: options.supervised === true && primary, restart: () => { process.exitCode = 75; stop(); } });
   // The SDK update rewrites the checkout's node_modules, which the live service runs from.
-  if (!scratch) backend.catalog.onDaemonVersion = version => { void sdk.daemonVersion(version); };
+  if (!scratch && onPrime) backend.catalog.onDaemonVersion = version => { void sdk.daemonVersion(version); };
   let stopped: () => void = () => {};
   const done = new Promise<void>(resolve => { stopped = resolve; });
   let closing: Promise<void> | undefined;

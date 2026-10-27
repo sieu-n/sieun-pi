@@ -1,4 +1,4 @@
-import type { DaemonAgentConnection } from "prime-agent";
+import type { DaemonAgentConnection } from "./daemon-sdk.ts";
 
 type NativeImage = NonNullable<NonNullable<Parameters<DaemonAgentConnection["prompt"]>[1]>["images"]>[number];
 type ImageMimeType = "image/png" | "image/jpeg" | "image/gif" | "image/webp";

@@ -1,4 +1,4 @@
-import { DaemonClient, defaultDaemonSocketPath } from "prime-agent";
+import { DaemonClient, defaultDaemonSocketPath } from "./daemon-sdk.ts";
 
 /**
  * Reads and writes the daemon for a script with a longer wait for the daemon's hello and a second try when the first fails. The prime-agent CLI

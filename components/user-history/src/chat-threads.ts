@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { stat } from "node:fs/promises";
-import { DaemonAgentConnection, DaemonClient, getAgentDir, SessionManager, type SessionEntry, type SessionSummary } from "prime-agent";
+import { getAgentDir, SessionManager, type SessionEntry, type SessionSummary } from "prime-agent";
+import { DaemonAgentConnection, DaemonClient } from "./daemon-sdk.ts";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { type Catalog, parseSummaries } from "./chat-catalog.ts";
 import { waitedOnHost } from "./chat-latency.ts";
@@ -982,7 +983,8 @@ export class ThreadHub {
           if (native === "agent_end") this.turnEnded(thread);
           if (native === "agent_start" || native === "agent_end" || (native === "message_end" && event.event.message.role === "user")) await this.refreshQueue(thread);
           if (native === "compaction_end" && !event.event.aborted) { for (const observer of [...this.observers]) observer.compacted?.(thread.id, thread.sessionFile); await this.resnapshot(thread); }
-          if (native === "agent_end" || native === "compaction_end" || native === "auto_retry_end" || native === "thinking_level_changed" || native === "session_info_changed") await this.refreshInfo(thread);
+          // pi-host sends Pi's agent_settled after agent_end, and only then does its state read idle.
+          if (native === "agent_end" || native === "agent_settled" || native === "compaction_end" || native === "auto_retry_end" || native === "thinking_level_changed" || native === "session_info_changed") await this.refreshInfo(thread);
           return;
         }
         // A resync carries the snapshot the connection just took; asking for it again went to get_messages once any event had come since. A

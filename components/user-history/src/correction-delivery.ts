@@ -35,6 +35,13 @@ export function deliverCorrections(input: {
   /** The correction ids the chat brief holds (BRIEF_CORRECTIONS): a chat reads those as a title line. */
   brief: ReadonlySet<string>;
   append: (data: Checkpoint) => void;
+  /**
+   * Which harness put the digests in context. `prime` (the default): Prime's buildSessionContext rule, the newest digest and its stacked
+   * updates, cut at a compaction that carries `harnessDigest`. `pi-harness`: every harness_digest message in the live context, since
+   * pi-harness drops none and sends a full digest again as a message after a compaction; its context hook removes refinement_outcome
+   * messages, so those count only while the messages still hold them.
+   */
+  digests?: "prime" | "pi-harness";
 }): AgentMessage[] {
   const { branch, ledger, job, append } = input;
   const compact = branch.findLastIndex(entry => entry.type === "compaction");
@@ -60,9 +67,11 @@ export function deliverCorrections(input: {
   // The digests Prime sends, as its buildSessionContext picks them: the newest and every "[harness-digest update]" it stacked on, back to the
   // first one that replaced its predecessors, and none before a compaction that folded them. Counting only the newest put the block one
   // message later at each stacked update past the second, and on 10-21 under s3int.1-test those calls rewrote the whole cached prefix.
-  const compactedDigest = compact >= 0 && branch[compact]?.type === "compaction" && branch[compact].harnessDigest !== undefined;
+  const piHarness = input.digests === "pi-harness";
+  const compactedDigest = !piHarness && compact >= 0 && branch[compact]?.type === "compaction" && branch[compact].harnessDigest !== undefined;
   const keptDigests = new Set<string>();
-  for (let index = branch.length - 1; index >= 0; index--) {
+  if (piHarness) for (const entry of live) if (entry.type === "custom_message" && entry.customType === "harness_digest") keptDigests.add(entry.id);
+  for (let index = piHarness ? -1 : branch.length - 1; index >= 0; index--) {
     const entry = branch[index]!;
     if (entry.type !== "custom_message" || entry.customType !== "harness_digest") continue;
     if (compactedDigest && index < compact) break;
@@ -71,7 +80,9 @@ export function deliverCorrections(input: {
   }
   // Counted back from the newest message, skipping failed replies: Prime keeps a retried call's failed reply in the session but not in the
   // context, so counting from the start put the checkpoint at the end, where it moved on every call and rewrote the prompt cache.
+  const outcomesShown = input.messages.some(value => value.role === "custom" && (value as { customType?: string }).customType === "refinement_outcome");
   const counted = live.filter(entry => !(entry.type === "custom_message" && entry.customType === "harness_digest" && !keptDigests.has(entry.id)) &&
+    !(piHarness && !outcomesShown && entry.type === "custom_message" && entry.customType === "refinement_outcome") &&
     (entry.type === "compaction" || visible(entry)) && (entry.type !== "message" || sent(entry.message))).map(entry => entry.id);
   const at = (after: string | null) => {
     let index = input.messages.length;

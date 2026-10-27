@@ -1,7 +1,7 @@
 import { watch } from "node:fs";
 import { readdir, readFile, realpath } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import type { DaemonClient } from "prime-agent";
+import type { DaemonClient } from "./daemon-sdk.ts";
 import { processStartId } from "./orphan-services.ts";
 
 /** The phases after which an update restart coordinator no longer restores sessions. */

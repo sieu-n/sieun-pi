@@ -1,7 +1,8 @@
 import { mkdir, open, readFile, rename } from "node:fs/promises";
 import { dirname } from "node:path";
 import { performance } from "node:perf_hooks";
-import type { DaemonClient, SessionSummary } from "prime-agent";
+import type { SessionSummary } from "prime-agent";
+import type { DaemonClient } from "./daemon-sdk.ts";
 import { parseSummaries, PROJECTION_SLICE_MS } from "./chat-catalog.ts";
 
 /**

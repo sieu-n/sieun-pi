@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import { createConnection, type Socket } from "node:net";
-import { DAEMON_PROTOCOL_NAME, DAEMON_PROTOCOL_VERSION, DaemonClient } from "prime-agent";
+import { DAEMON_PROTOCOL_NAME, DAEMON_PROTOCOL_VERSION } from "prime-agent";
+import { DaemonClient } from "./daemon-sdk.ts";
 
 /*
  * Daemon writes whose retries run once. A send_message, steer, follow_up or prompt that times out on the client still runs in the daemon, and

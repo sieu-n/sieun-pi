@@ -2,7 +2,8 @@ import { closeSync, existsSync, fstatSync, openSync, readFileSync, readSync, sta
 import { readdir, rename, writeFile } from "node:fs/promises";
 import { performance as loopPerformance } from "node:perf_hooks";
 import { basename, dirname, join } from "node:path";
-import { DaemonClient, parseSkillBlock, type SessionSummary } from "prime-agent";
+import { parseSkillBlock, type SessionSummary } from "prime-agent";
+import { DaemonClient } from "./daemon-sdk.ts";
 import type { ChatLabels } from "./chat-labels.ts";
 import { keptChatAgents, stepSessions, withQueue, withRates, withWaits, type AgentRow, type SubagentSession } from "./chat-agents.ts";
 import { type Cut, cutActivity, SessionCuts, type CutSource } from "./cut-end.ts";

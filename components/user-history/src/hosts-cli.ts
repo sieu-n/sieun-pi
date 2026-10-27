@@ -1,4 +1,4 @@
-import { DaemonClient } from "prime-agent";
+import { DaemonClient } from "./daemon-sdk.ts";
 import { copyPath, mirrorPath } from "./host-catalogs.ts";
 import { openDaemon, twice } from "./daemon-list.ts";
 import { mirrorFile } from "./host-mirror.ts";

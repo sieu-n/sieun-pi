@@ -1,6 +1,7 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
-import { parseSkillBlock, type DaemonAgentConnection, type SessionSummary } from "prime-agent";
+import { parseSkillBlock, type SessionSummary } from "prime-agent";
+import { type DaemonAgentConnection } from "./daemon-sdk.ts";
 import { imageKey, movedImage } from "./moved-images.ts";
 import { TELL_OWNER_TOOL } from "./shared/chat-feed.ts";
 import { turnError } from "./shared/credential-wait.ts";

@@ -1,7 +1,8 @@
 import { statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { DaemonClient, type SessionSummary } from "prime-agent";
+import { type SessionSummary } from "prime-agent";
+import { DaemonClient } from "./daemon-sdk.ts";
 import { waitedOnHost } from "./chat-latency.ts";
 import { mirrorFile, pruneMirror } from "./host-mirror.ts";
 import { HostReach, seenAgo } from "./host-reach.ts";

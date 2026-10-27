@@ -1,6 +1,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { defaultDaemonSocketPath, getAgentDir, SettingsManager } from "prime-agent";
+import { getAgentDir, SettingsManager } from "prime-agent";
+import { defaultDaemonSocketPath } from "./daemon-sdk.ts";
 import { BoardStore } from "./chat-board-store.ts";
 import { AGENTS_FILE, Catalog } from "./chat-catalog.ts";
 import type { HostCatalogs } from "./host-catalogs.ts";

@@ -1,5 +1,6 @@
 import { dirname } from "node:path";
-import type { DaemonClient, SessionSummary } from "prime-agent";
+import type { SessionSummary } from "prime-agent";
+import type { DaemonClient } from "./daemon-sdk.ts";
 import { poolFreeAt, type PoolStatus, type PoolThread, type ThreadParts, threadKey } from "./chat-pool.ts";
 import { lastTurnError } from "./held-turns.ts";
 import type { PrimeUpdate } from "./prime-update.ts";

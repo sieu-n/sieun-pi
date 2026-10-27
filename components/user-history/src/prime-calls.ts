@@ -1,6 +1,6 @@
 import { appendFile } from "node:fs/promises";
 import { performance } from "node:perf_hooks";
-import { DaemonClient } from "prime-agent";
+import { DaemonClient } from "./daemon-sdk.ts";
 
 /**
  * One JSON line per Prime daemon call the chat service makes, reads included, in `<data dir>/prime-calls.jsonl`. The prime-under-load page
