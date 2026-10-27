@@ -1044,9 +1044,14 @@ export class Duties {
     if (!(await this.host.jobs.working(last))) next = { last, lastRun: started };
     else if (reported) next = { last, lastRun: started, replaced: ` (replaced job ${last.name}, whose report was in)` };
     else {
+      // A run that found the job kept (`keptAt`) gives it a new stuck limit, but never past STUCK_MAX_MS since its run started. Before that cap
+      // the AI harness chat's Wiki dream job of 10-26 22:32Z was found in pi-pool's turn queue by 8 runs up to 08:35Z, and kept again at 14:30Z on
+      // 10-27, and each reset its 12 h limit: all 15 runs to 16:49Z skipped beside it, 18 h after it started, and handed it 345 items.
       const workingMs = this.now() - Math.max(started.at, started.keptAt ?? 0);
-      if (workingMs <= stuckAfterMs(schedule)) return { skipped: `${STILL_WORKING} (job ${last.name})`, working: last };
-      next = { last, lastRun: started, replaced: ` (replaced stuck job ${last.name}, working ${Math.round(workingMs / 60_000)} min)` };
+      const ageMs = this.now() - started.at;
+      if (workingMs <= stuckAfterMs(schedule) && ageMs <= STUCK_MAX_MS) return { skipped: `${STILL_WORKING} (job ${last.name})`, working: last };
+      next = { last, lastRun: started, replaced: workingMs > stuckAfterMs(schedule) ? ` (replaced stuck job ${last.name}, working ${Math.round(workingMs / 60_000)} min)`
+        : ` (replaced stuck job ${last.name}, working ${Math.round(ageMs / 3_600_000)} h since its run started)` };
     }
     const live = await this.olderLive(chatId, runs, last, schedule);
     return live ? { skipped: `${STILL_WORKING} (job ${live.name}, an older job of this duty)`, working: live } : next;
