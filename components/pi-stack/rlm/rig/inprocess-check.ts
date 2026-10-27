@@ -3,7 +3,7 @@
 // session file. Run from components/pi-stack: node --import tsx rlm/rig/inprocess-check.ts, with RIG_DIR, EVIDENCE_DIR and MODEL.
 import { spawnSync } from "node:child_process";
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { AgentSessionRuntime } from "@earendil-works/pi-coding-agent";
 import { openRuntime } from "../../test/faux.ts";
 import agentBus from "../../agent-bus/index.ts";
@@ -27,7 +27,7 @@ const summaryPath = join(out, "inproc-summary.json");
 const log = (o: unknown) => appendFileSync(eventsPath, JSON.stringify({ at: Date.now(), phase, ...(o as object) }) + "\n");
 startSampler(measurePath, `inproc-${phase}`);
 
-const extra = process.env.POOL ? [(await import("../../pool/index.ts")).default] : [];
+const extra = await Promise.all((process.env.EXTRA_EXTENSIONS ?? "").split(",").filter(Boolean).map(async p => (await import(resolve(import.meta.dirname, "..", "..", p))).default));
 setChildLoaderOptions(() => ({ extensionFactories: [...extra, agentBus, piRlm, measure], noContextFiles: true, noPromptTemplates: true, noThemes: true }));
 
 async function open(sessionFile?: string): Promise<AgentSessionRuntime> {

@@ -27,6 +27,12 @@ Every loaded Pi skill with a `pyproject.toml` and `src/<import name>/` is instal
 `RLM_MAX_DEPTH` (default 2) caps the depth, and `/rlm-max-depth <n>` changes it for one session.
 A child loads the parent's `-e` extension paths from argv, or what `setChildLoaderOptions(fn)` returns, which pi-host and the tests set.
 
+## Real-provider check
+
+`rig/rpc-check.mjs` runs P1, P2 with 10 children, a compaction and a restart in `pi --mode rpc`, and `rig/inprocess-check.ts` runs the same in an in-process runtime.
+Both take `RIG_DIR` (with `agent/models.json`), `EVIDENCE_DIR`, `MODEL`, `CHILDREN` and `EXTRA_EXTENSIONS`, and `rig/async-token.ts` vends pi-pool's token without Pi's `execSync`.
+The 2026-10-27 results are in `/home/sieun/work/pi-migration-build/step-2/report.md`.
+
 ## Tests
 
 ```sh
