@@ -285,6 +285,27 @@
         "3dee561ee0"
       ],
       "why": "Settings note 'the icon for section titles shouldn't be containerized ... (follow SAME componenet as Connections)': d3e01aa75e moved Settings onto the shared PageSection with bare title icons (p323), and 3dee561ee0 writes the bare section-title icon line into the frontend-implementation skill (p329)."
+    },
+    {
+      "at": "2026-10-27T17:12:20.624Z",
+      "commits": [
+        "99fd16622da",
+        "55def51979a",
+        "11b61b76c55",
+        "6b5df569a6c",
+        "417d01916c2",
+        "7979da508"
+      ],
+      "why": "Shared-components note 'Inbox - Watchlist - individual campaign: same component | Campaigns list - Outreach templates: same component ... Dashboard Connection Settings: same component': 99fd16622da writes the page-shape line into the frontend-implementation skill, 55def51979a, 11b61b76c55, 6b5df569a6c and 417d01916c2 move the pages onto the shared shapes, and 7979da508 points Staging email at email/one-picker, which renders Outreach templates through ListPage."
+    },
+    {
+      "at": "2026-10-27T18:03:27.416Z",
+      "commits": [
+        "394208c9a",
+        "17bff13f4fc",
+        "ef2484a64"
+      ],
+      "why": "Shared-components note 'adding brands here should be EXACTLY same as Watchlist's add brand/edit brand form, modals ... Go to watchlist UI': 394208c9a writes the rule into the skill, 17bff13f4fc moves the brand form to lib/watchlist-v3/brand-form, and ef2484a64 puts Scout Brand watch on that form with a Go to watchlist link on the Staging creators line."
     }
   ]
 }
