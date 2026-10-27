@@ -32,6 +32,7 @@ node --import tsx host/src/main.ts --socket <path> --agent-dir <dir> [--session-
 | `src/guard.ts` | The `uncaughtException` and `unhandledRejection` guard from research probe P6. |
 | `src/client.ts` | A small socket client for tests and scripts. |
 | `src/main.ts` | The CLI. |
+| `probes/scale.ts` | Opens copies of real sessions in one host, streams several against `probes/mock-openai.mjs`, and records RSS and event-loop delay. |
 
 ## Rules it keeps
 
