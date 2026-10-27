@@ -9,7 +9,7 @@ import test from "node:test";
 // its turn. These tests run the rewritten cell against a fake `rlm` module whose child replied and is still writing.
 const root = mkdtempSync(join(tmpdir(), "global-rules-rlm-delete-"));
 process.env.GLOBAL_RULES_LOG = join(root, "global-rules.log");
-const rlmDelete = await import("../components/global-rules/rlm-delete.ts");
+const rlmDelete = await import("../packages/sieun-rules/src/rlm-delete.ts");
 test.after(() => rmSync(root, { recursive: true, force: true }));
 
 const FAKE_RLM = `

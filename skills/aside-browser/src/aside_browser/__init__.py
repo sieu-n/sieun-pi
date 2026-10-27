@@ -606,7 +606,7 @@ def check_owner_ok(token: str, target: str = "") -> str | None:
 
 
 def send_log_path() -> str:
-    """The send log that every send guard layer writes (components/global-rules/send-log.ts sendLogPath, same order)."""
+    """The send log that every send guard layer writes (packages/sieun-rules/src/send-log.ts sendLogPath, same order)."""
     if os.environ.get("GLOBAL_RULES_SEND_LOG"):
         return os.environ["GLOBAL_RULES_SEND_LOG"]
     if os.environ.get("AGENT_CHAT_DATA_DIR"):

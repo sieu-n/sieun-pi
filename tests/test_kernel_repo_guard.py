@@ -1,4 +1,4 @@
-"""Run-time auto-sns-agent repo guard: components/global-rules/kernel-guard.py with send-check.ts and auto-sns-agent.ts.
+"""Run-time auto-sns-agent repo guard: packages/sieun-rules/src/kernel-guard.py with send-check.ts and auto-sns-agent.ts.
 
 A kernel's os.chdir is invisible to the tool_call guard. On 2026-10-14 at 14:40Z a job started in /Users/sieunpark ran
 bash("git push origin 7ac6657831...:refs/heads/sieun/dev") after os.chdir into the auto-sns-agent checkout, and no guard saw it.

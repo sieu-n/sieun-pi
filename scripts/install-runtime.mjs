@@ -38,7 +38,7 @@ function validateLinks(root, directory = root) {
 
 function validate(root, execute) {
   physicalDirectory(root);
-  for (const name of ["scripts/manage.py", "install-manifest.json", "components/global-rules/index.ts", "legacy/prime/user-history/extension/index.ts"]) {
+  for (const name of ["scripts/manage.py", "install-manifest.json", "packages/sieun-rules/src/index.ts", "legacy/prime/user-history/extension/index.ts"]) {
     if (!lstatSync(join(root, name)).isFile()) throw new Error(`Missing runtime file: ${name}`);
   }
   const manifest = JSON.parse(readFileSync(join(root, "install-manifest.json"), "utf8"));

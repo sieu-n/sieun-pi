@@ -7,7 +7,7 @@ import test from "node:test";
 
 // On 10-20 at 03:40Z 22 of the 23 biggest trees under ~/scratch on us-metal02 had no owned.json record, because jobs had to call board.own by
 // hand, so a job's end never deleted them and ~/scratch grew from 61 to 76 GB in 5 h. kernel-own.py records what the kernel makes (c130).
-const { PRELUDE } = await import("../components/global-rules/kernel-guard.ts");
+const { PRELUDE } = await import("../packages/sieun-rules/src/kernel-guard.ts");
 const root = realpathSync(mkdtempSync(join(tmpdir(), "global-rules-kernel-own-")));
 const home = join(root, "home");
 const scratch = join(home, "scratch");

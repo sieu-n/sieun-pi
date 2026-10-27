@@ -19,9 +19,9 @@ const saved = Object.fromEntries(["GLOBAL_RULES_LOG", "GLOBAL_RULES_SEND_LOG", "
 Object.assign(process.env, {
   GLOBAL_RULES_LOG: join(root, "global-rules.log"), GLOBAL_RULES_SEND_LOG: join(root, "sends.jsonl"), GIT_CONFIG_GLOBAL: gitConfig, GIT_CONFIG_NOSYSTEM: "1",
 });
-const guard = await import("../components/global-rules/guard.ts");
-const { UNKNOWN_CWD, cellSteps, kernelCwd, sessionDirOf } = await import("../components/global-rules/kernel-cwd.ts");
-const { PRELUDE } = await import("../components/global-rules/kernel-guard.ts");
+const guard = await import("../packages/sieun-rules/src/guard.ts");
+const { UNKNOWN_CWD, cellSteps, kernelCwd, sessionDirOf } = await import("../packages/sieun-rules/src/kernel-cwd.ts");
+const { PRELUDE } = await import("../packages/sieun-rules/src/kernel-guard.ts");
 test.after(() => {
   for (const [key, value] of Object.entries(saved)) {
     if (value === undefined) delete process.env[key];

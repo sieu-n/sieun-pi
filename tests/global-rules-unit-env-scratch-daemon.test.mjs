@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 // On 10-22 at 02:16:45Z a job started a scratch Prime daemon with systemd-run --user ... -E HOME=<scratch> sh -c 'prime-agent --mode daemon
 // --daemon-socket <scratch>/d.sock'. unit-env/systemd-run passed the kernel's PRIME_AGENT_CODING_AGENT_DIR=~/.prime/agent with -E, and the
 // daemon wrote a session, a lease, a worker folder and two logs into the live agent dir.
-const wrapper = join(dirname(fileURLToPath(import.meta.url)), "../components/global-rules/unit-env/systemd-run");
+const wrapper = join(dirname(fileURLToPath(import.meta.url)), "../packages/sieun-rules/src/unit-env/systemd-run");
 const root = realpathSync(mkdtempSync(join(tmpdir(), "unit-env-scratch-")));
 test.after(() => rmSync(root, { recursive: true, force: true }));
 const home = join(root, "home");

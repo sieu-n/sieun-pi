@@ -4,7 +4,7 @@
     "../pi-harness/src/pi/index.ts",
     "../pi-rlm/src/pi/index.ts",
     "../pi-pool/src/pi/index.ts",
-    "../../components/global-rules/index.ts",
+    "../sieun-rules/src/index.ts",
     "../../components/claude-rules/index.ts",
     "../../legacy/prime/user-history/extension/index.ts"
   ]

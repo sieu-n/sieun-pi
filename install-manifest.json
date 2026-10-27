@@ -233,7 +233,7 @@
     {
       "id": "global-rules",
       "kind": "link",
-      "source": "components/global-rules/index.ts",
+      "source": "packages/sieun-rules/src/index.ts",
       "scope": "home",
       "target": ".prime/agent/extensions/global-rules.ts"
     },

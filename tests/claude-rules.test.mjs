@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { CUSTOM_TYPE, globRegex, register } from "../components/claude-rules/rules.ts";
-import { cellStart, cellSteps } from "../components/global-rules/kernel-cwd.ts";
+import { cellStart, cellSteps } from "../packages/sieun-rules/src/kernel-cwd.ts";
 
 // A Prime session in a repo with .claude/rules gets the unscoped rules first in every model call, and a scoped rule once,
 // appended to the result of the first tool call that reads or edits a file its paths match.

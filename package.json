@@ -45,7 +45,7 @@
   "pi": {
     "extensions": [
       "./legacy/prime/pi-pool-extension/index.ts",
-      "./components/global-rules/index.ts",
+      "./packages/sieun-rules/src/index.ts",
       "./components/claude-rules/index.ts",
       "./legacy/prime/user-history/extension/index.ts"
     ],
@@ -139,6 +139,10 @@
     "skills/**/LICENSE",
     "skills/**/LICENSE.*",
     "components/**/NOTICE",
+    "packages/sieun-rules/src/**/*.ts",
+    "packages/sieun-rules/src/**/*.py",
+    "packages/sieun-rules/src/**/*.json",
+    "packages/sieun-rules/src/unit-env/*",
     "legacy/**/*.md",
     "legacy/**/*.py",
     "legacy/**/*.ts",

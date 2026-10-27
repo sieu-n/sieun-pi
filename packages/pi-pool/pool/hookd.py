@@ -39,6 +39,8 @@ FD_SPACE = socket.CMSG_SPACE(3 * array.array("i").itemsize)
 # Loaded once here, so a child pays for none of them: the pool imports these inside functions.
 PRELOAD = ("ctypes", "hmac", "http.client", "http.server", "ssl", "subprocess", "urllib.error", "urllib.parse",
            "urllib.request", "concurrent.futures", "runpy")
+# The guard's python-child folder: packages/sieun-rules/src since 10-28, and components/global-rules in a kernel started before that move.
+GUARD_DIRS = (os.path.join("packages", "sieun-rules", "src", "python-child"), os.path.join("components", "global-rules", "python-child"))
 
 
 def socket_path():
@@ -62,7 +64,7 @@ def python_path(value):
     only OAuth refreshes and count_tokens probes. On us-metal02 at 12:40Z on 10-18, 15 of 40 prime-agent processes
     carried it, and their 248 hook calls in 120 s fell back to the Python hook."""
     return ":".join(entry for entry in value.split(":")
-                    if not os.path.normpath(entry).endswith(os.path.join("components", "global-rules", "python-child")))
+                    if not os.path.normpath(entry).endswith(GUARD_DIRS))
 
 
 def utf8_locale(env):

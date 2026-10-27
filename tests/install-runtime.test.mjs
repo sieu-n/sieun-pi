@@ -26,11 +26,11 @@ function fixture(t) {
     write(join(directory, "package-lock.json"), JSON.stringify({ lockfileVersion: 3 }));
   }
   write(join(repo, "scripts/manage.py"), readFileSync(join(source, "scripts/manage.py")));
-  write(join(repo, "components/global-rules/index.ts"), "// fixture\n");
+  write(join(repo, "packages/sieun-rules/src/index.ts"), "// fixture\n");
   write(join(repo, "legacy/prime/user-history/extension/index.ts"), "// fixture\n");
   write(join(repo, "config/settings.example.json"), "{}\n");
   write(join(repo, "install-manifest.json"), JSON.stringify({ version: 1, entries: [
-    { id: "global-rules", kind: "link", scope: "home", source: "components/global-rules/index.ts", target: ".prime/agent/extensions/global-rules.ts" },
+    { id: "global-rules", kind: "link", scope: "home", source: "packages/sieun-rules/src/index.ts", target: ".prime/agent/extensions/global-rules.ts" },
     { id: "user-history", kind: "link", scope: "home", source: "legacy/prime/user-history", target: ".prime/agent/extensions/user-history" },
     { id: "settings", kind: "generated-json", scope: "home", source: "config/settings.example.json", target: ".prime/agent/settings.json", seed_only: true },
   ] }));
@@ -172,7 +172,7 @@ test("the user-history extension is bundled into one file in src/ and package.js
   const dir = join(root, "legacy/prime/user-history");
   const component = join(source, "legacy/prime/user-history");
   for (const name of ["extension", "src", "package.json"]) cpSync(join(component, name), join(dir, name), { recursive: true });
-  for (const name of ["prime-relay", "global-rules"]) cpSync(join(source, "components", name), join(root, "components", name), { recursive: true, filter: path => !path.includes("node_modules") });
+  for (const name of ["components/prime-relay", "packages/sieun-rules"]) cpSync(join(source, name), join(root, name), { recursive: true, filter: path => !path.includes("node_modules") });
   symlinkSync(join(component, "node_modules"), join(dir, "node_modules"));
   assert.equal(bundleExtension(dir), true);
   assert.deepEqual(JSON.parse(readFileSync(join(dir, "package.json"), "utf8")).pi.extensions, [`./${EXTENSION_BUNDLE}`]);

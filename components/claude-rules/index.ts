@@ -11,7 +11,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	try {
 		const dir = dirname(realpathSync(fileURLToPath(import.meta.url)));
 		const rules: typeof import("./rules.ts") = await import(join(dir, "rules.ts"));
-		const cwd: typeof import("../global-rules/kernel-cwd.ts") = await import(join(dir, "../global-rules/kernel-cwd.ts"));
+		const cwd: typeof import("../../packages/sieun-rules/src/kernel-cwd.ts") = await import(join(dir, "../../packages/sieun-rules/src/kernel-cwd.ts"));
 		rules.register(pi, cwd);
 	} catch (error) {
 		try {

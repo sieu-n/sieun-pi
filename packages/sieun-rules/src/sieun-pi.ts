@@ -9,7 +9,7 @@ import { SHELLS, effective, lex, shellScript, stripHeredocs } from "./shell.ts";
 // sieun-pi has one contributor, so its local checkout is ground truth (owner, 2026-10-09).
 // Rewriting commits that no remote branch holds needs no ask; history on a remote is never rewritten.
 // The rule follows the target checkout, so it applies whatever the session cwd is.
-const SOURCE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+const SOURCE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const ORIGIN = /[/:]sieu-n\/sieun-pi(?:\.git)?\/?$/;
 const REBASE_STEP = new Set(["--continue", "--abort", "--skip", "--quit", "--edit-todo", "--show-current-patch"]);
 const REBASE_VALUE_OPTS = new Set(["--onto", "-s", "--strategy", "-X", "--strategy-option", "-x", "--exec"]);

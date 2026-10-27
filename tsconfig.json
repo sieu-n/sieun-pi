@@ -12,7 +12,7 @@
     "allowImportingTsExtensions": true
   },
   "include": [
-    "components/global-rules/**/*.ts",
+    "packages/sieun-rules/src/**/*.ts",
     "components/claude-rules/**/*.ts",
     "legacy/prime/pi-pool-extension/**/*.ts"
   ]

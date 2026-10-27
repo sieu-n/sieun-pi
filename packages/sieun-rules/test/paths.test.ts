@@ -4,8 +4,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { after, test } from "node:test";
-import { agentDir, piAgentDir, piTranscriptId, sessionDirOf } from "../../../components/global-rules/paths.ts";
-import { sendLogPath, sessionOf } from "../../../components/global-rules/send-log.ts";
+import { agentDir, piAgentDir, piTranscriptId, sessionDirOf } from "../src/paths.ts";
+import { sendLogPath, sessionOf } from "../src/send-log.ts";
 
 const ROOT = "01a17c4b-9751-713e-9b70-3ab8c5d03cf5";
 const OTHER = "01a0cc5e-0ca4-762a-90e6-566c310bd50a";
@@ -48,7 +48,7 @@ test("the send log names a Pi transcript by its id, and Prime's paths as before"
 
 /** kernel-read.py's tool_call judge, run as transcript-guard.ts runs it, in a fake home with a Prime agent dir and a Pi agent dir. */
 function judge(home: string, piDir: string, session: string, path: string): string | null {
-  const script = resolve(import.meta.dirname, "../../../components/global-rules/kernel-read.py");
+  const script = resolve(import.meta.dirname, "../src/kernel-read.py");
   const run = spawnSync("python3", ["-B", script, "--judge"], {
     input: JSON.stringify({ tool: "read", path, cwd: home, session }), encoding: "utf8",
     env: { PATH: process.env.PATH, HOME: home, PI_CODING_AGENT_DIR: piDir, RLM_SESSION_DIR: session, PYTHONPATH: "" },

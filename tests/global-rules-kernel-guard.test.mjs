@@ -9,7 +9,7 @@ import test from "node:test";
 const root = realpathSync(mkdtempSync(join(tmpdir(), "global-rules-kernel-guard-")));
 const saved = { GLOBAL_RULES_LOG: process.env.GLOBAL_RULES_LOG, GLOBAL_RULES_GUARD: process.env.GLOBAL_RULES_GUARD };
 process.env.GLOBAL_RULES_LOG = join(root, "global-rules.log");
-const kernel = await import("../components/global-rules/kernel-guard.ts");
+const kernel = await import("../packages/sieun-rules/src/kernel-guard.ts");
 test.after(() => {
   for (const [key, value] of Object.entries(saved)) {
     if (value === undefined) delete process.env[key];
@@ -50,7 +50,7 @@ test("the prelude installs the guard in a fresh Python once and puts python-chil
 
 test("send-check.ts --serve answers each line in order with its id and exits after its idle time with no check", async () => {
   const { spawn } = await import("node:child_process");
-  const check = join(import.meta.dirname, "..", "components", "global-rules", "send-check.ts");
+  const check = join(import.meta.dirname, "..", "packages", "sieun-rules", "src", "send-check.ts");
   const judge = spawn(process.execPath, [check, "--serve", "1500"], { stdio: ["pipe", "pipe", "ignore"], env: { ...process.env, GLOBAL_RULES_SEND_LOG: join(root, "sends.jsonl") } });
   let out = "";
   judge.stdout.on("data", (chunk) => { out += chunk; });
@@ -75,7 +75,7 @@ test("send-check.ts --serve-socket judges for many processes in each one's envir
   const { spawn } = await import("node:child_process");
   const { createConnection } = await import("node:net");
   const { existsSync, readFileSync } = await import("node:fs");
-  const check = join(import.meta.dirname, "..", "components", "global-rules", "send-check.ts");
+  const check = join(import.meta.dirname, "..", "packages", "sieun-rules", "src", "send-check.ts");
   const path = join(root, "judge.sock");
   const start = () => spawn(process.execPath, [check, "--serve-socket", path, "1500"], { stdio: "ignore", env: process.env });
   const judge = start();

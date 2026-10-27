@@ -16,7 +16,7 @@ The live chat on :5182, pi-pool's install and every live session stay on Prime u
 | `pi-pool/` | The account pool: the Python pool, its token hook and `install.py`, the stock Pi extension in `src/pi` on `before_provider_headers` and `message_end`, and the pi-durable provider in `src/durable` that pi-host uses. |
 | `pi-family/` | The process-wide agent registry, kernel bridge, host API and pool retry counts that two or more packages share. |
 | `pi-testkit/` | Shared test helpers, such as the faux provider runtime in `faux.ts`. |
-| `sieun-rules/` | The Pi tests and pi-host check rig for `components/global-rules`, `components/claude-rules` and `legacy/prime/user-history/extension`, which `pi-host/extensions.json` loads in every session. |
+| `sieun-rules/` | The owner's guards, the global-rules extension in `src/`, which Prime and every pi-host session load, with its Pi tests and the pi-host check rig. |
 
 All of them share this folder's `package.json` and `node_modules` until the switch, when the repo root becomes the npm workspace root.
 The repo root's `node_modules` maps `@earendil-works/pi-coding-agent` to Prime 0.9.8 for the live runtime, so code in this folder must resolve upstream Pi from `packages/node_modules`.

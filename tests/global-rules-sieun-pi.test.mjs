@@ -20,7 +20,7 @@ writeFileSync(gitConfig, "[user]\n\tname = test\n\temail = test@example.com\n[in
 
 const saved = Object.fromEntries(["HOME", "GLOBAL_RULES_LOG", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM"].map((k) => [k, process.env[k]]));
 Object.assign(process.env, { HOME: home, GLOBAL_RULES_LOG: join(root, "global-rules.log"), GIT_CONFIG_GLOBAL: gitConfig, GIT_CONFIG_NOSYSTEM: "1" });
-const guard = await import("../components/global-rules/guard.ts");
+const guard = await import("../packages/sieun-rules/src/guard.ts");
 test.after(() => {
   for (const [key, value] of Object.entries(saved)) {
     if (value === undefined) delete process.env[key];

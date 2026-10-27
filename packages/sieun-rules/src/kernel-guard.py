@@ -612,7 +612,7 @@ def wrap_http_modules() -> None:
 
 def guard_prime_shutdown() -> None:
     """prime-shutdown.py refuses a `prime-agent shutdown` that could stop the live daemon (10-27 16:55Z and 17:07Z on us-metal02)."""
-    path = os.path.join(HERE, "prime-shutdown.py")
+    path = os.path.join(HERE, "..", "..", "..", "legacy", "prime", "rules", "prime-shutdown.py")
     try:
         with open(path, encoding="utf-8") as handle:
             exec(compile(handle.read(), path, "exec"), {"__name__": "global_rules_prime_shutdown", "__file__": path})

@@ -95,7 +95,7 @@ for (let pass = 1; pass <= 2; pass++) {
   for (const name of ["virev.ts", "global-rules.ts"]) {
     assert.equal(existsSync(join(cwd, ".prime/agent/extensions", name)), false, `No project-local ${name}`);
   }
-  const rulesPath = realpathSync(join(source, "components/global-rules/index.ts"));
+  const rulesPath = realpathSync(join(source, "packages/sieun-rules/src/index.ts"));
   assert(extensionPaths.includes(rulesPath));
   assert(!extensionPaths.some(path => path.includes("/components/virev/")), "The retired extension must not load");
   const rules = result.extensions.find(extension => realpathSync(extension.resolvedPath) === rulesPath);

@@ -52,7 +52,7 @@ try {
   python("-m", "unittest", "discover", "-s", "legacy/prime/daemon-keeper/tests");
   const rulesTests = readdirSync(join(root, "tests")).filter((name) => /^global-rules-.*\.test\.mjs$/.test(name)).sort();
   if (rulesTests.length === 0) throw new Error("No global-rules Node suites found.");
-  run(process.execPath, ["--test", ...rulesTests.map((name) => `tests/${name}`), "tests/claude-rules.test.mjs", "tests/agent-utilities.test.mjs", "tests/git-stale-index.test.mjs", "tests/git-mass-delete.test.mjs", "tests/git-escaped-newline.test.mjs", "tests/release-chat.test.mjs"]);
+  run(process.execPath, ["--test", ...rulesTests.map((name) => `tests/${name}`), "tests/claude-rules.test.mjs", "legacy/prime/rules/unit-env-prime-shutdown.test.mjs", "tests/agent-utilities.test.mjs", "tests/git-stale-index.test.mjs", "tests/git-mass-delete.test.mjs", "tests/git-escaped-newline.test.mjs", "tests/release-chat.test.mjs"]);
   run(process.execPath, ["node_modules/typescript/bin/tsc", "--project", "tsconfig.json"]);
   run("npm", ["test"], join(root, "legacy/prime/user-history"));
   run("npm", ["run", "typecheck"], join(root, "legacy/prime/user-history"));

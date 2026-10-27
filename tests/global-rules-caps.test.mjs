@@ -4,11 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-// The c107 cap guard (components/global-rules/caps.ts). These strings are only fed to the handler; nothing here runs them.
+// The c107 cap guard (packages/sieun-rules/src/caps.ts). These strings are only fed to the handler; nothing here runs them.
 const root = mkdtempSync(join(tmpdir(), "global-rules-caps-"));
 const saved = process.env.GLOBAL_RULES_LOG;
 process.env.GLOBAL_RULES_LOG = join(root, "global-rules.log");
-const guard = await import("../components/global-rules/guard.ts");
+const guard = await import("../packages/sieun-rules/src/guard.ts");
 test.after(() => {
   if (saved === undefined) delete process.env.GLOBAL_RULES_LOG;
   else process.env.GLOBAL_RULES_LOG = saved;

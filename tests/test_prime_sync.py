@@ -195,7 +195,7 @@ with open(runtime / "history.jsonl", "a") as log:
         site = box / ".prime/agent/kernel-venv/lib/python3.12/site-packages"
         site.mkdir(parents=True)
         (site / "skills.pth").write_text(str(releases / "pinned/skills/board/src") + "\n")
-        holder = subprocess.Popen(["python3", "-c", "import time; time.sleep(60)", str(releases / "argv/components/global-rules/send-check.ts")])
+        holder = subprocess.Popen(["python3", "-c", "import time; time.sleep(60)", str(releases / "argv/packages/sieun-rules/src/send-check.ts")])
         self.addCleanup(lambda: (holder.kill(), holder.wait()))
         report = self.sync(box)
         self.assertEqual(report["runtime"], ["removed release old"])

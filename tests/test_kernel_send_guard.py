@@ -1,4 +1,4 @@
-"""Run-time kernel send guard (owner correction c37): components/global-rules/kernel-guard.py.
+"""Run-time kernel send guard (owner correction c37): packages/sieun-rules/src/kernel-guard.py.
 
 Each case runs a fresh Python process that installs a fake `rlm.mcp`, loads the guard the way kernel-guard.ts does, and runs
 cells compiled as "<cell-N>". Nothing can leave the machine even if the guard is broken: HTTP goes to httpx.MockTransport or to
@@ -20,8 +20,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-GUARD = REPO / "components" / "global-rules" / "kernel-guard.py"
-CHILD_DIR = REPO / "components" / "global-rules" / "python-child"
+GUARD = REPO / "packages" / "sieun-rules" / "src" / "kernel-guard.py"
+CHILD_DIR = REPO / "packages" / "sieun-rules" / "src" / "python-child"
 CHAT = "01a00000-0000-7000-8000-0000000000c6"
 SESSION_A = "01a00000-0000-7000-8000-00000000000a"
 SESSION_B = "01a00000-0000-7000-8000-00000000000b"

@@ -49,7 +49,7 @@ if (!skip) {
     GLOBAL_RULES_SEND_LOG: join(root, "sends.jsonl"),
     REPO_GUARD_LOG: join(root, "repo-guard.jsonl"),
   });
-  const extension = (await import("../components/global-rules/index.ts")).default;
+  const extension = (await import("../packages/sieun-rules/src/index.ts")).default;
   await extension({ on: (name, handler) => handlers.push([name, handler]) });
 }
 test.after(() => {
@@ -108,7 +108,7 @@ test("a session outside the checkout keeps its other git and its env reads", { s
 test("rules that fail to load refuse nothing, and the failure is logged", { skip }, async () => {
   const script = `
     const handlers = [];
-    await (await import(${JSON.stringify(join(process.cwd(), "components/global-rules/index.ts"))})).default({ on: (n, h) => handlers.push([n, h]) });
+    await (await import(${JSON.stringify(join(process.cwd(), "packages/sieun-rules/src/index.ts"))})).default({ on: (n, h) => handlers.push([n, h]) });
     const ctx = (cwd) => ({ cwd, sessionManager: { getSessionId: () => "x", getSessionFile: () => undefined, getHeader: () => ({}) } });
     const call = async (text, c) => (await Promise.all(handlers.filter(([n]) => n === "tool_call").map(([, h]) => h({ toolName: "bash", input: { command: text } }, c)))).find((r) => r?.block)?.reason ?? null;
     console.log(JSON.stringify([await call("git push origin dev/sieun", ctx(${JSON.stringify(broken)})), await call("git -C ~/Documents/Github/auto-sns-agent push", ctx("/tmp")), await call("git push", ctx("/tmp"))]));`;
@@ -158,7 +158,7 @@ test("a live session follows a guard edit at its next tool call, with no worker 
   const app = appWithTests(live);
   const script = `
     const handlers = [];
-    await (await import(${JSON.stringify(join(process.cwd(), "components/global-rules/index.ts"))})).default({ on: (n, h) => handlers.push([n, h]) });
+    await (await import(${JSON.stringify(join(process.cwd(), "packages/sieun-rules/src/index.ts"))})).default({ on: (n, h) => handlers.push([n, h]) });
     const ctx = { cwd: ${JSON.stringify(app)}, sessionManager: { getSessionId: () => "x", getSessionFile: () => undefined, getHeader: () => ({}) } };
     const call = async (text) => {
       for (const [n, h] of handlers) if (n === "tool_call") { const r = await h({ toolName: "bash", input: { command: text } }, ctx); if (r?.block) return r.reason; }
@@ -229,7 +229,7 @@ test("a landed guard that fails to load keeps the last guard that loaded", { ski
   const loaded = [];
   process.env.GLOBAL_RULES_AUTO_SNS_AGENT = live;
   try {
-    const module = await import(`../components/global-rules/auto-sns-agent.ts?keep`);
+    const module = await import(`../packages/sieun-rules/src/auto-sns-agent.ts?keep`);
     await module.register({ on: (name, handler) => loaded.push([name, handler]) });
     const push = `git -C ${live} push origin HEAD:refs/heads/dev/sieun`;
     assert.match(await call("bash", push, ctx(HOME_CWD, "x"), loaded) ?? "", /git-push-dev-branch/);
@@ -248,14 +248,14 @@ test("an uncommitted edit to the checkout's guard files does not change the live
   const loaded = [];
   process.env.GLOBAL_RULES_AUTO_SNS_AGENT = live;
   try {
-    const module = await import(`../components/global-rules/auto-sns-agent.ts?dirty`);
+    const module = await import(`../packages/sieun-rules/src/auto-sns-agent.ts?dirty`);
     await module.register({ on: (name, handler) => loaded.push([name, handler]) });
     const push = `git -C ${live} push origin HEAD:refs/heads/dev/sieun`;
     assert.match(await call("bash", push, ctx(HOME_CWD, "x"), loaded) ?? "", /git-push-dev-branch/);
     writeFileSync(join(live, "scripts/repo/agent/guards/prime.mjs"), "export const registerRepoGuard = () => {};\nexport const onToolCall = () => undefined;\n");
     assert.match(await call("bash", push, ctx(HOME_CWD, "x"), loaded) ?? "", /git-push-dev-branch/);
     const fresh = [];
-    const again = await import(`../components/global-rules/auto-sns-agent.ts?dirty-fresh`);
+    const again = await import(`../packages/sieun-rules/src/auto-sns-agent.ts?dirty-fresh`);
     await again.register({ on: (name, handler) => fresh.push([name, handler]) });
     assert.match(await call("bash", push, ctx(HOME_CWD, "x"), fresh) ?? "", /git-push-dev-branch/);
   } finally {

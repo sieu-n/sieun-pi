@@ -17,7 +17,7 @@ The unscoped rules go in one message that the `context` hook puts first on every
 
 A scoped rule is appended to the result of the tool call that touched its file, and a `claude-rules` custom entry records it, so a reload, resume or fork does not load it twice. Earlier context never changes.
 
-The extension finds touched files in the `path` or `file_path` input of a tool, a `bash` command, and an `ipython` cell. In a cell it reads each path the code spells out against the cwd that part of the cell runs in, with `cellSteps` from `../global-rules/kernel-cwd.ts`. A path the cell builds at run time, such as one read from a variable an earlier cell set, does not count.
+The extension finds touched files in the `path` or `file_path` input of a tool, a `bash` command, and an `ipython` cell. In a cell it reads each path the code spells out against the cwd that part of the cell runs in, with `cellSteps` from `packages/sieun-rules/src/kernel-cwd.ts`. A path the cell builds at run time, such as one read from a variable an earlier cell set, does not count.
 
 `CLAUDE_RULES=off` turns the extension off for a process. A load error goes to the global-rules log.
 

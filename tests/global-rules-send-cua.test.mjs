@@ -16,8 +16,8 @@ const saved = { HOME: process.env.HOME, GLOBAL_RULES_LOG: process.env.GLOBAL_RUL
 process.env.HOME = home;
 process.env.GLOBAL_RULES_LOG = join(root, "global-rules.log");
 process.env.AGENT_CHAT_DATA_DIR = data;
-const cua = await import("../components/global-rules/cua-guard.ts");
-const guard = await import("../components/global-rules/guard.ts");
+const cua = await import("../packages/sieun-rules/src/cua-guard.ts");
+const guard = await import("../packages/sieun-rules/src/guard.ts");
 test.after(() => {
   for (const [key, value] of Object.entries(saved)) {
     if (value === undefined) delete process.env[key];
@@ -201,7 +201,7 @@ test("cua-13: Post or Tweet in a browser window on X / Twitter or LinkedIn is re
 async function proxy() {
   const log = join(root, `fake-${Math.random().toString(36).slice(2)}.log`);
   writeFileSync(log, "");
-  const child = spawn(process.execPath, ["components/global-rules/cua-guard.ts", process.execPath, "tests/fixtures-fake-cua.mjs"], {
+  const child = spawn(process.execPath, ["packages/sieun-rules/src/cua-guard.ts", process.execPath, "tests/fixtures-fake-cua.mjs"], {
     cwd: join(import.meta.dirname, ".."), env: { ...process.env, FAKE_CUA_LOG: log }, stdio: ["pipe", "pipe", "inherit"],
   });
   const waiting = new Map();

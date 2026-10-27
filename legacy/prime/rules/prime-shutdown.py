@@ -24,7 +24,7 @@ import shlex
 import sys
 
 HERE = os.path.dirname(os.path.realpath(__file__))
-SHIM = os.path.join(HERE, "unit-env", "prime-agent")
+SHIM = os.path.join(HERE, "..", "..", "..", "packages", "sieun-rules", "src", "unit-env", "prime-agent")
 SHELLS = frozenset({"sh", "bash", "dash", "zsh", "ksh"})
 # Options of prime-agent that take a value, so their value is not read as the command (prime-agent --help).
 VALUED = frozenset({

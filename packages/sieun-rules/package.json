@@ -3,6 +3,21 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Pi tests and the pi-host check rig for the owner's guards in components/global-rules.",
-  "license": "SEE LICENSE IN ../../NOTICE"
+  "description": "The owner's guards (global-rules) for Prime and Pi sessions: send, transcript, cap and git guards and their kernel prelude.",
+  "license": "SEE LICENSE IN ../../NOTICE",
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "scripts": {
+    "test": "node --import tsx --test --test-force-exit \"test/*.test.ts\""
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@sieun-pi/pi-host": "0.1.0",
+    "@sieun-pi/pi-rlm": "0.1.0"
+  }
 }

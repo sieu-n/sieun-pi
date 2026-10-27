@@ -8,7 +8,7 @@ import test from "node:test";
 // On 10-19 (runtime intent trace) and on 10-20 from 15:59Z to 16:10Z (p8-prepare-hold) jobs of chat-057a opened the transcripts of unrelated
 // roots under ~/.prime/agent/sessions to read their state lines, and the scope reminder in their brief came too late. kernel-read.py lets a
 // session read only its own chat's transcripts: the chat's root tree and the trees of the root jobs the chat started (chat-jobs.json).
-const { PRELUDE } = await import("../components/global-rules/kernel-guard.ts");
+const { PRELUDE } = await import("../packages/sieun-rules/src/kernel-guard.ts");
 const root = realpathSync(mkdtempSync(join(tmpdir(), "global-rules-kernel-read-")));
 const home = join(root, "home");
 const prime = join(home, ".prime/agent");
@@ -207,7 +207,7 @@ for top, dirs, names in sorted(os.walk(sys.argv[1])):
 attempt("unit scan", lambda: sh(f"systemd-run --user --unit=d5cache-scan --collect --same-dir -E PATH sh -c 'python3 ${scan} {P}/sessions > ${out} 2>&1'"))
 attempt("unit tail", lambda: sh(f"systemd-run --user --unit=t2 --collect -E PATH sh -c 'tail -1 {F['rootB']}'"))
 attempt("unit own", lambda: sh(f"systemd-run --user -u t3 -E PATH -- tail -1 {F['rootA']}"))
-`, { RLM_SESSION_DIR: me, PATH: [bin, ...process.env.PATH.split(":").filter((dir) => !dir.endsWith("global-rules/unit-env"))].join(":") }), ["unit scan ran", "unit tail refused TranscriptRefused True", "unit own ran"]);
+`, { RLM_SESSION_DIR: me, PATH: [bin, ...process.env.PATH.split(":").filter((dir) => !/(global-rules|sieun-rules\/src)\/unit-env$/.test(dir))].join(":") }), ["unit scan ran", "unit tail refused TranscriptRefused True", "unit own ran"]);
   assert.deepEqual(readFileSync(out, "utf8").trim().split("\n"), [`${A}.jsonl read`, `${B}.jsonl refused TranscriptRefused`,
     `${J}.jsonl read`, `${K}.jsonl read`]);
 });
@@ -290,7 +290,7 @@ attempt("tail other job by id", lambda: sh(f"tail -1 ${named("d1")} 2>/dev/null 
 });
 
 test("the read, grep and bash tools get the same answer from the tool_call half", async () => {
-  const { judgeTool } = await import("../components/global-rules/transcript-guard.ts");
+  const { judgeTool } = await import("../packages/sieun-rules/src/transcript-guard.ts");
   process.env.PRIME_AGENT_CODING_AGENT_DIR = prime;
   process.env.GLOBAL_RULES_TRANSCRIPT_LOG = join(root, "tool-refusals.jsonl");
   const data = process.env.AGENT_CHAT_DATA_DIR;

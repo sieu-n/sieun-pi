@@ -241,7 +241,7 @@ export function pinnedBrief(branch: readonly { type: string; customType?: string
 const BUILD_FILES = ["../extension/index.ts", "chats.ts", "chat-agents.ts", "chat-checkin.ts", "chat-guard.ts", "chat-guard-live.ts", "chat-brief.ts", "chat-sources.ts",
   "checkin-settings.ts", "checkin-steps.ts", "checkin-findings.ts", "shared/chat-board.ts", "shared/chat-feed.ts", "chat-corrections.ts",
   "correction-delivery.ts", "context-images.ts", "prime-notices.ts", "job-cancels.ts", "shared/reply-lint.ts", "shared/turns.ts", "shared/types.ts", "message-limit-check.ts",
-  "message-limit-check.py", "agent-board.ts", "shared/release-go.ts", "session-tail.ts", "../../../../components/global-rules/index.ts"];
+  "message-limit-check.py", "agent-board.ts", "shared/release-go.ts", "session-tail.ts", "../../../../packages/sieun-rules/src/index.ts"];
 /** A short hash of the extension sources on disk now. */
 export function extensionBuild(dir: string = import.meta.dirname): string {
   const hash = createHash("sha256");

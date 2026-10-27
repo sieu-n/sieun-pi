@@ -36,7 +36,7 @@ execFileSync("git", ["-C", clone, "remote", "set-url", "origin", "https://github
 
 const env: Record<string, string> = {
   HOME: process.env.HOME!, USER: process.env.USER ?? "", LANG: process.env.LANG ?? "C.UTF-8",
-  PATH: (process.env.PATH ?? "").split(":").filter(p => !p.includes("global-rules")).join(":"),
+  PATH: (process.env.PATH ?? "").split(":").filter(p => !/global-rules|sieun-rules\/src/.test(p)).join(":"),
   PI_OFFLINE: "1", PI_TELEMETRY: "0", PI_SKIP_VERSION_CHECK: "1", PI_RLM_PYTHON: process.env.PI_RLM_PYTHON ?? "",
   GLOBAL_RULES_LOG: join(dir, "global-rules.log"), GLOBAL_RULES_TRANSCRIPT_LOG: join(dir, "transcript-refusals.jsonl"),
   RULES_RIG_CONTEXT: contextLog, SIEUN_PI_HOSTS: join(dir, "no-hosts.json"), RLM_MAX_DEPTH: "2",

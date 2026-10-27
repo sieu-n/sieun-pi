@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 // bash ran `HOME=<scratch> TMPDIR=<scratch> prime-agent shutdown --force` by name. At 17:07:48Z the unit svh-teardown-r01 ran
 // `<release>/prime-agent shutdown --force --json` by full path. Both carried the kernel's PRIME_AGENT_CODING_AGENT_DIR, so Prime found the live
 // supervisor through the live workers' descriptors. Here a scratch daemon with one worker plays the live one, on its own socket and agent dir.
-const rules = join(dirname(fileURLToPath(import.meta.url)), "../components/global-rules");
+const rules = join(dirname(fileURLToPath(import.meta.url)), "../../../packages/sieun-rules/src");
 const unitEnv = join(rules, "unit-env");
 const root = realpathSync(mkdtempSync(join(tmpdir(), "gr-shutdown-")));
 const release = process.env.PRIME_AGENT_BIN || join(homedir(), ".local/share/prime-agent/bin/prime-agent");

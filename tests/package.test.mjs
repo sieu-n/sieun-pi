@@ -41,7 +41,7 @@ test("packed production install, native reload, update, rollback and uninstall",
       "legacy/prime/user-history/src/client/App.svelte", "legacy/prime/user-history/src/client/app.css",
       "legacy/prime/user-history/svelte.config.js", "legacy/prime/user-history/src/chat-images.ts",
       "legacy/prime/user-history/src/chat-service.ts", "legacy/prime/user-history/src/chat-service-cli.mjs",
-      "components/global-rules/index.ts", "skills/unslop/SKILL.md",
+      "packages/sieun-rules/src/index.ts", "skills/unslop/SKILL.md",
       "NOTICE", "LICENSES/pstack-MIT.txt", "LICENSES/tokenmaxxing-MIT.txt", "LICENSES/prime-agent-MIT.txt",
       "docs/attribution-pstack.json", "skills/poteto-mode/scripts/check-source-paths.test.mjs"]) assert(paths.includes(path), path);
     for (const path of ["skills/aside-browser/references/repl-api.md",

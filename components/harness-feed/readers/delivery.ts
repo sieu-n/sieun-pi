@@ -7,7 +7,7 @@ import type { ThreadMessage } from "../../../legacy/prime/user-history/src/share
 
 /*
  * Message delivery on the chat host: the chat service's two disk outboxes (legacy/prime/user-history/src/outbox.ts), the daemon queues the
- * thread's queue chips show (client/QueueChips.svelte), and the outside sends log (components/global-rules/send-log.ts). Every label names
+ * thread's queue chips show (client/QueueChips.svelte), and the outside sends log (packages/sieun-rules/src/send-log.ts). Every label names
  * the receiving tree's chat by its name, never by a session id.
  *
  * An outbox entry is written whole on each change and never changes again once it has `doneAt` (Outbox.finish, then only prune's unlink), so

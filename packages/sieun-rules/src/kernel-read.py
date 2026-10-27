@@ -200,7 +200,7 @@ def board_module():
     module = sys.modules.get("global_rules_board")
     if module is None:
         import importlib.util
-        spec = importlib.util.spec_from_file_location("global_rules_board", os.path.join(HERE, "..", "..", "skills", "board", "src", "board", "__init__.py"))
+        spec = importlib.util.spec_from_file_location("global_rules_board", os.path.join(HERE, "..", "..", "..", "skills", "board", "src", "board", "__init__.py"))
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         sys.modules["global_rules_board"] = module

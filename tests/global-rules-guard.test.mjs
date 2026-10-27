@@ -12,7 +12,7 @@ mkdirSync(join(home, ".prime/agent"), { recursive: true });
 const saved = { HOME: process.env.HOME, GLOBAL_RULES_LOG: process.env.GLOBAL_RULES_LOG };
 process.env.HOME = home;
 process.env.GLOBAL_RULES_LOG = join(root, "global-rules.log");
-const guard = await import("../components/global-rules/guard.ts");
+const guard = await import("../packages/sieun-rules/src/guard.ts");
 test.after(() => {
   for (const [key, value] of Object.entries(saved)) {
     if (value === undefined) delete process.env[key];

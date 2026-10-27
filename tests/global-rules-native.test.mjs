@@ -12,10 +12,10 @@ test("Prime's own loader discovers the global link, reloads edited modules, and 
   const temp = realpathSync(mkdtempSync(join(tmpdir(), "global-rules-native-")));
   const home = join(temp, "home");
   const agentDir = join(home, ".prime/agent");
-  const component = join(temp, "source/components/global-rules");
+  const component = join(temp, "source/packages/sieun-rules/src");
   const project = join(temp, "project");
   const logPath = join(temp, "native.log");
-  cpSync(join(source, "components/global-rules"), component, { recursive: true });
+  cpSync(join(source, "packages/sieun-rules/src"), component, { recursive: true });
   mkdirSync(join(project, ".git"), { recursive: true });
   mkdirSync(join(agentDir, "extensions"), { recursive: true });
   const entry = join(agentDir, "extensions/global-rules.ts");

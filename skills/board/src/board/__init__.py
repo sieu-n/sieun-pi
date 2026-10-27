@@ -281,7 +281,7 @@ def todos(all: bool = False, chat: str | None = None) -> str:  # noqa: A002
 
 
 def _send_log() -> Path:
-    """components/global-rules/send-log.ts sendLogPath, the same order."""
+    """packages/sieun-rules/src/send-log.ts sendLogPath, the same order."""
     if os.environ.get("GLOBAL_RULES_SEND_LOG"):
         return Path(os.environ["GLOBAL_RULES_SEND_LOG"])
     if os.environ.get("AGENT_CHAT_DATA_DIR"):

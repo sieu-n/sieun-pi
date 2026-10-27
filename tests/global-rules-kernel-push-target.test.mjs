@@ -43,7 +43,7 @@ test.after(() => rmSync(root, { recursive: true, force: true }));
 // judgeKernelCheck as kernel-guard.py runs it: a fresh node with the kernel's HOME, the checkout path and no RLM_SESSION_DIR.
 function judgeAll(home, checks) {
 	const script = `
-		const { judgeKernelCheck } = await import(${JSON.stringify(new URL("../components/global-rules/send-check.ts", import.meta.url).href)});
+		const { judgeKernelCheck } = await import(${JSON.stringify(new URL("../packages/sieun-rules/src/send-check.ts", import.meta.url).href)});
 		const out = [];
 		for (const c of ${JSON.stringify(checks)}) out.push(await judgeKernelCheck({ kind: "shell", repo: true, ...c }));
 		console.log(JSON.stringify(out));`;

@@ -62,7 +62,7 @@ The release preparation made these source changes:
 | `skills/linear-ticket/references/pipeline.md` and `spec-page.md` | Removed private deployment details and internal example links. Public mock guidance requires synthetic records and project-supplied configuration. |
 | `skills/linear-ticket/references/example-vir-371.md` and `example-after-openapi.json` | Removed the internal design example, social-profile data, and media references. |
 | `skills/spec-report/references/approved-email-editor-spec.md` | Removed the private spec reference. |
-| `components/virev/` | Removed on 2026-10-10. The sieun-pi Git rules moved to `components/global-rules/`. The writing rules are the `unslop` skill, which `config/AGENTS.md` points at. App Git and local-check rules live in the app's own repository. |
+| `components/virev/` | Removed on 2026-10-10. The sieun-pi Git rules moved to `components/global-rules/`, which moved to `packages/sieun-rules/src/` on 2026-10-28. The writing rules are the `unslop` skill, which `config/AGENTS.md` points at. App Git and local-check rules live in the app's own repository. |
 
 ### Account examples
 
