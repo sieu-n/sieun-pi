@@ -1,4 +1,5 @@
 import { childName, childWorking, stepOwner } from "./checkin-steps.ts";
+import { slotParkWords, type SlotPark } from "./slot-park.ts";
 import { createdSessions } from "./shared/created-sessions.ts";
 import { sortAgents } from "./shared/sessions-delta.ts";
 import type { AgentLink, AgentState, ChatAgent, ChatBoard, ChildAgent, PlanItem, QueuePlace, SessionRow, ThreadMessage, TokenRate } from "./shared/types.ts";
@@ -548,6 +549,19 @@ export function withWaits(agents: readonly ChatAgent[], wakes: readonly Wake[], 
   return agents.map(agent => {
     const owed = agent.sessionId && agent.state !== "working" ? treeWakes(agent.sessionId, below, wakes) : [];
     return owed.length ? { ...agent, state: "working", wait: wakeWait(owed) } : agent;
+  });
+}
+
+/**
+ * The agents not at work whose session waits for a pi-pool working slot (`parks`, from src/slot-park.ts): state working, with the wait in words,
+ * "waits for a working slot, place 104 of 193". Since load.2 such a job ends each wait on a failed reply and the idle unload stops it, and the
+ * agents panel read harness memory explainer and pi-pool-move failed or done on 10-28 while both sat in pi-pool's line.
+ */
+export function withSlotParks(agents: readonly ChatAgent[], parks: ReadonlyMap<string, SlotPark>): ChatAgent[] {
+  if (!parks.size) return [...agents];
+  return agents.map(agent => {
+    const park = agent.sessionId && agent.state !== "working" ? parks.get(agent.sessionId) : undefined;
+    return park ? { ...agent, state: "working", wait: slotParkWords(park) } : agent;
   });
 }
 

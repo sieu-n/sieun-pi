@@ -5,7 +5,8 @@ import { basename, dirname, join } from "node:path";
 import { parseSkillBlock, type SessionSummary } from "prime-agent";
 import { DaemonClient } from "./daemon-sdk.ts";
 import type { ChatLabels } from "./chat-labels.ts";
-import { keptChatAgents, stepSessions, withQueue, withRates, withWaits, type AgentRow, type SubagentSession } from "./chat-agents.ts";
+import { keptChatAgents, stepSessions, withQueue, withRates, withSlotParks, withWaits, type AgentRow, type SubagentSession } from "./chat-agents.ts";
+import { type FileSlotPark, poolPark, readFileSlotPark, type SlotPark } from "./slot-park.ts";
 import { type Cut, cutActivity, SessionCuts, type CutSource } from "./cut-end.ts";
 import { planCounts } from "./shared/chat-board.ts";
 import { unreadCount } from "./shared/chat-feed.ts";
@@ -1136,6 +1137,8 @@ export class Catalog {
     const below = (session: string) => (children.get(session) ?? []).map(child => child.sessionId);
     await breathe();
     for (const row of chatRows) row.agents = withWaits(withQueue(withRates(row.agents ?? [], rates), queued), wakes, below);
+    const parks = await wait(this.slotParks(chatRows.flatMap(row => row.agents ?? []), queued, now));
+    for (const row of chatRows) row.agents = withSlotParks(row.agents ?? [], parks);
     await breathe();
     for (const agent of chatRows.flatMap(row => row.agents ?? [])) {
       const session = agent.sessionId ? this.find(agent.sessionId) : undefined;
@@ -1447,6 +1450,20 @@ export class Catalog {
       asks.push({ session: row.sessionId, tree: top.sessionId, provider });
     }
     return asks;
+  }
+
+  /**
+   * The agents not at work that wait for a pi-pool slot, by session id: each one's file (`readFileSlotPark`, read again only when it changed)
+   * against the queue places this projection read.
+   */
+  private async slotParks(agents: readonly ChatAgent[], queued: ReadonlyMap<string, QueuePlace>, now: number): Promise<Map<string, SlotPark>> {
+    const pool = { queued, working: new Set<string>() };
+    const found = await Promise.all(agents.map(async agent => {
+      const file = agent.sessionId && agent.state !== "working" ? this.find(agent.sessionId)?.sessionFile : undefined;
+      const park = file ? poolPark((await readFileSlotPark(file).catch((): FileSlotPark => ({ complete: true }))).park, agent.sessionId!, now, pool) : null;
+      return park ? [[agent.sessionId!, park] as const] : [];
+    }));
+    return new Map(found.flat());
   }
 
   private find(sessionId: string): SessionSummary | undefined {

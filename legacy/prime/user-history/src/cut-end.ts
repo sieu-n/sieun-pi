@@ -3,6 +3,7 @@ import { clockTime } from "./checkin-settings.ts";
 import { poolSlot } from "./shared/chat-feed.ts";
 import { turnError } from "./shared/credential-wait.ts";
 import { turnErrorCause } from "./turn-error.ts";
+import { fileSlotPark } from "./slot-park.ts";
 
 /**
  * How a job's last turn ended when it was cut and nothing came after it, read from its transcript. On 10-16 at 00:19:57Z queued jobs (local agents
@@ -56,6 +57,10 @@ export const cutActivity = (cut: Cut): string =>
 export function cutEnd(lines: readonly string[]): Cut | null {
   const end = lastCut(lines);
   if (!end || reportedBefore(lines, end.index)) return null;
+  // A turn that ended on load.2's slot wait, which names its place in pi-pool's line, is parked, not cut: pi-pool wakes it. The agents panel read
+  // 01a17f25 "stopped on a provider error" from 20:56Z on 10-28 while it waited 134th of 139. The token hook's older wait, with no place and
+  // no wake, stays a cut the resume pass continues, and a worker recovery after a queue place still loses that turn (`recovered`).
+  if (end.cause !== "recovered" && fileSlotPark(lines).park?.place !== undefined) return null;
   const { index: _, ...cut } = end;
   return cut;
 }
