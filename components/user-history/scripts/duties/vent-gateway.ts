@@ -4,6 +4,7 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
+import { clickhouse } from "./vent-integrations.ts";
 
 /**
  * The Vent chat's "Vent gateway" precheck (`node --import tsx scripts/duties/vent-gateway.ts`). No model call, no browser, names only for keys.
@@ -24,6 +25,8 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  *   and dropped.
  * - removed_provider_refs: (provider, file) pairs at the tip that name a provider goal p22 removed (REMOVED_PROVIDERS) outside the guards
  *   that keep it out (KEPT_GUARDS), plus each removed integration tables.py lists again, so removed code or a removed Vent row that comes back misses.
+ * - test_calls_real_24h: test sends off production that reached a real provider in 24 h (TEST_SENDS_SQL, goal p85), one test_send_real row
+ *   per integration, caller and method.
  * A source it cannot read gives a source_error flagged slice with its reason, counted in source_errors, and leaves each metric it feeds out of
  * the output (the 999999 placeholder for a count to drive down), so the duty runner reads that metric as not measured, never as a value. Until
  * 10-24 a failed read wrote -1, which the runner judged as a measured miss: at 04:28Z prod ClickHouse waited 86 s on disk for the share
@@ -119,7 +122,37 @@ export interface WebhookVerdict { source: string; direct: boolean; vent: boolean
 export interface KeyListing { locations: Record<string, string[]>; unreadable: Record<string, string> }
 /** The tip's text lines that name a removed provider (`git grep -z -n` output) and apps/vent/src/vent/tables.py at the tip. */
 export interface RemovedReads { grep: string; tables: string }
-export interface VentReads { share: ShareResult | { error: string }; webhooks: WebhookVerdict[] | { error: string }; keys: KeyListing; removed: RemovedReads | { error: string } }
+/** One group of test sends that reached a real provider in 24 h (TEST_SENDS_SQL). */
+export interface TestSendRow { integration: string; caller: string; method: string; calls: number; last: number }
+export interface VentReads {
+  share: ShareResult | { error: string }; webhooks: WebhookVerdict[] | { error: string }; keys: KeyListing; removed: RemovedReads | { error: string };
+  testSends?: TestSendRow[] | { error: string };
+}
+
+/**
+ * test_calls_real_24h (goal p85, owner rule c174: "these shouldn't be actually being sent"): the calls Vent sent a real provider in the last
+ * 24 h on any tier but production, which has no real customers, on the sends that carry test traffic: Resend and Gmail sends, Langfuse trace
+ * export and Slack sales pings. Each of those is test traffic Vent should have answered from its fake, except a send whose every recipient
+ * domain (vent.recipient_domains, a82dcd731) is one of SINK_DOMAINS, the mail checks' own real targets, which prove real delivery on purpose.
+ * Stripe stays out: its staging calls run in test mode, which never charges, and its browser elements need the objects at Stripe, so the
+ * specs billing and card checks keep them real by decision. Before Vent wrote vent.recipient_domains, a mail check's send counts here too.
+ * Last week this read about 470 a day (Resend 405, Langfuse 61, Slack sales 5), from the test traffic audit of 10-27.
+ */
+export const SINK_DOMAINS = ["mailsink.virev.ai", "nomail.virev.ai"] as const;
+export const TEST_SENDS_SQL = `SELECT \`vent.integration\` AS integration, \`vent.caller\` AS caller, \`vent.method\` AS method,
+  sum(greatest(toUInt64OrZero(\`vent.count\`), 1)) AS calls, toUnixTimestamp64Milli(max(Timestamp)) AS last
+FROM otel.vent_calls
+WHERE Timestamp > now() - INTERVAL 24 HOUR AND ServiceName = 'vent' AND Body = 'vent.call'
+  AND ResourceAttributes['deployment.environment.name'] != 'production'
+  AND \`vent.route\` != 'webhook' AND \`vent.outcome\` != 'refused' AND \`vent.mock\` != 'true'
+  AND ((\`vent.integration\` = 'resend' AND \`vent.method\` IN ('POST /emails', 'POST /emails/batch'))
+    OR (\`vent.integration\` = 'gmail' AND \`vent.method\` = 'POST /gmail/v1/users/me/messages/send')
+    OR (\`vent.integration\` = 'langfuse' AND \`vent.method\` LIKE 'POST /api/public/otel%')
+    OR \`vent.integration\` = 'slack-sales')
+  AND NOT (LogAttributes['vent.recipient_domains'] != ''
+    AND arrayAll(d -> d IN (${SINK_DOMAINS.map(domain => `'${domain}'`).join(", ")}), splitByChar(',', LogAttributes['vent.recipient_domains'])))
+GROUP BY integration, caller, method
+ORDER BY calls DESC`;
 
 /**
  * The providers goal p22 removed to the root on 2026-10-19 to 10-21 (the owner: "not just from vent but 뿌리째 쭉쭉 지워. 원천 코드, 관련된
@@ -310,6 +343,18 @@ export function ventMetrics(reads: VentReads, at: number): PrecheckOutput {
   else flagged.push(...removed.flagged);
   metrics.removed_provider_refs = failed(removed) ? UNMEASURED : removed.refs;
 
+  if (reads.testSends !== undefined) {
+    if (failed(reads.testSends)) {
+      sourceError(`otel.vent_calls test sends could not be read: ${reads.testSends.error}`);
+      metrics.test_calls_real_24h = UNMEASURED;
+    } else {
+      metrics.test_calls_real_24h = reads.testSends.reduce((sum, row) => sum + row.calls, 0);
+      for (const row of reads.testSends) {
+        flagged.push({ at, kind: "test_send_real", item: `${row.integration} ${row.method}`, excerpt: `${row.calls} ${row.integration} ${row.method} calls from caller ${row.caller} off production reached the real provider in 24 h, the last at ${new Date(row.last).toISOString()}`.slice(0, 300) });
+      }
+    }
+  }
+
   metrics.source_errors = sourceErrors;
   return { metrics, flagged };
 }
@@ -330,6 +375,15 @@ async function grafanaToken(): Promise<string> {
   const token = (await run("npx", ["--no-install", "dotenvx", "get", "GRAFANA_AGENT_TOKEN", "-f", ".env"], { cwd: join(REPO, "apps/infra") })).trim();
   if (!token) throw new Error("GRAFANA_AGENT_TOKEN missing in apps/infra/.env");
   return token;
+}
+
+/** The test sends of TEST_SENDS_SQL, read from prod ClickHouse through the obs Grafana. */
+async function testSends(token: string): Promise<TestSendRow[]> {
+  const { rows, column } = await clickhouse(token, TEST_SENDS_SQL);
+  const [integration, caller, method, calls, last] = ["integration", "caller", "method", "calls", "last"].map(column);
+  return Array.from({ length: rows }, (_, i) => ({
+    integration: String(integration![i]), caller: String(caller![i]), method: String(method![i]), calls: Number(calls![i]), last: Number(last![i]),
+  }));
 }
 
 async function share(token: string | undefined, dir: string): Promise<ShareResult> {
@@ -412,13 +466,14 @@ async function main(): Promise<void> {
     const fetched = await run("git", ["fetch", "--quiet", "origin", "main", TIP_BRANCH]).then(() => null, (error: unknown) => errorText(error));
     const token = await grafanaToken().catch((error: unknown) => ({ error: errorText(error) }));
     const tokenText = typeof token === "string" ? token : undefined;
-    const [shareResult, hooks, keys, removed] = await Promise.all([
+    const [shareResult, hooks, keys, removed, sends] = await Promise.all([
       share(tokenText, dir).catch((error: unknown) => ({ error: errorText(error) })),
       webhooks().catch((error: unknown) => ({ error: errorText(error) })),
       keyListing(),
       removedReads().catch((error: unknown) => ({ error: errorText(error) })),
+      tokenText ? testSends(tokenText).catch((error: unknown) => ({ error: errorText(error) })) : Promise.resolve({ error: `no Grafana token: ${(token as { error: string }).error}` }),
     ]);
-    const result = ventMetrics({ share: shareResult, webhooks: hooks, keys, removed }, at);
+    const result = ventMetrics({ share: shareResult, webhooks: hooks, keys, removed, testSends: sends }, at);
     if (fetched) result.flagged!.push({ at, kind: "stale_ref", excerpt: `git fetch origin main ${TIP_BRANCH} failed, so ${REF} and ${TIP} may be old: ${fetched}`.slice(0, 300) });
     await writeFile(output, JSON.stringify(result, null, 2) + "\n");
   } finally {

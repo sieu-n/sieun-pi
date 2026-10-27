@@ -222,7 +222,7 @@ async function consoleReads(token: string, dir: string): Promise<ConsoleRead[]> 
 }
 
 /** One ClickHouse query through Grafana, as a column reader and its row count. */
-async function clickhouse(token: string, sql: string): Promise<{ rows: number; column: (name: string) => unknown[] }> {
+export async function clickhouse(token: string, sql: string): Promise<{ rows: number; column: (name: string) => unknown[] }> {
   const response = await fetch(`${GRAFANA}/api/ds/query`, {
     method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
     body: JSON.stringify({ queries: [{ refId: "A", datasource: { uid: "grafana_clickhouse" }, rawSql: sql, format: 1, queryType: "table" }], from: "now-1h", to: "now" }),

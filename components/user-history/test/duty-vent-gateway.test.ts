@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
-import { boxLocations, inScope, removedProviderRefs, TIP, UNMEASURED, VENT_SHARE, ventMetrics, webhookVerdicts, type ShareResult, type VentReads } from "../scripts/duties/vent-gateway.ts";
+import { boxLocations, inScope, removedProviderRefs, TEST_SENDS_SQL, TIP, UNMEASURED, VENT_SHARE, ventMetrics, webhookVerdicts, type ShareResult, type VentReads } from "../scripts/duties/vent-gateway.ts";
 
 const site = (row: number, status: string, extra: object = {}) => ({ row, app: "convex", provider: "Stripe", runs_in: "Convex staging, prod", status, ...extra });
 const TABLES = 'INTEGRATIONS: dict[str, Integration] = {\n    "zernio": Integration(ZERNIO, "ZERNIO_API_KEY"),\n    "cliproxy-openai": Integration(OPENAI, "CLIPROXY_API_KEY"),\n}\n';
@@ -335,4 +335,25 @@ test("the gateway and vent-share.py read the tip at origin/dev/sieun", () => {
   assert.equal(TIP, "origin/dev/sieun");
   const help = execFileSync("python3", [VENT_SHARE, "--help"], { encoding: "utf8" });
   assert.match(help, /default origin\/dev\/sieun/);
+});
+
+test("test sends that reached a provider off production sum into test_calls_real_24h, one row each, and a failed read is unmeasured (p85, c174)", () => {
+  const testSends = [
+    { integration: "resend", caller: "convex", method: "POST /emails", calls: 26, last: 0 },
+    { integration: "langfuse", caller: "research-agent-be", method: "POST /api/public/otel/v1/traces", calls: 30, last: 0 },
+  ];
+  const output = ventMetrics(reads({ testSends }), 0);
+  assert.equal(output.metrics.test_calls_real_24h, 56);
+  assert.deepEqual(output.flagged!.filter(flag => flag.kind === "test_send_real").map(flag => flag.item), ["resend POST /emails", "langfuse POST /api/public/otel/v1/traces"]);
+  assert.equal(ventMetrics(reads({ testSends: [] }), 0).metrics.test_calls_real_24h, 0);
+  const unread = ventMetrics(reads({ testSends: { error: "HTTP 502" } }), 0);
+  assert.equal(unread.metrics.test_calls_real_24h, UNMEASURED);
+  assert.equal(unread.metrics.source_errors, 1);
+});
+
+test("the test send query leaves out production, faked calls and sends whose every recipient is a mail check sink, and never counts Stripe", () => {
+  assert.match(TEST_SENDS_SQL, /deployment\.environment\.name'\] != 'production'/);
+  assert.match(TEST_SENDS_SQL, /`vent\.mock` != 'true'/);
+  assert.match(TEST_SENDS_SQL, /arrayAll\(d -> d IN \('mailsink\.virev\.ai', 'nomail\.virev\.ai'\)/);
+  assert.doesNotMatch(TEST_SENDS_SQL, /stripe/);
 });
