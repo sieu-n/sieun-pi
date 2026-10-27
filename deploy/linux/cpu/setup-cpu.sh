@@ -7,19 +7,26 @@ here=$(cd "$(dirname "$0")" && pwd)
 uid=$(id -u "$DEV_USER")
 home=$(getent passwd "$DEV_USER" | cut -d: -f6)
 user_ctl=(systemctl --user "--machine=$DEV_USER@")
-# Unit -> CPUWeight, against the default of 100. CI VMs (virev-ci.slice), dev docker (dev.slice) and world rigs (transient user units and ssh
-# login scopes) stay at 100, so they never win over agents or prod (c108). The weights at 300 sit on every level from the root down to the
-# Prime daemon, because a weight only counts against its siblings: user.slice against virev.slice and dev.slice, and the daemon against the
-# other units in app.slice. user@1001.service runs at 10000, the most systemd takes, because its siblings are the ssh login scopes, 69 of them
-# at 100 each from Mac jobs on 10-19 at 21:1xZ, which at 300 left the user manager about 300/7200 of user-1001.slice when all were busy. virev.slice at 400 holds prod at 300 and CI at 100.
+# Unit -> CPUWeight, against the default of 100. A weight only counts against its siblings, so the root level decides who wins between the
+# agents (user.slice) and the CI guests and prod (virev.slice), and the daemon's weight decides it against the other units in app.slice.
+# On t68 (10-27) the owner ranked CI above dev box work: "ci shouldn't be a bottleneck (higher priority) than dev box work itself, while it
+# shouldn't clog up unnecessary compute when idle". So virev.slice runs at 4000 against user.slice at 1000, and inside it virev-ci.slice runs
+# at 300 beside virev-prod.slice at 300, so busy CI outweighs the agents 2 to 1, a busy prod does too, and an idle guest takes nothing.
+# measured: from 10-20 to 10-27 at 93-100% host busy, with virev.slice at 400 and CI at 100 inside it, the CI guests saw 34% mean steal and
+# 27% of search / e2e jobs hit Convex's 1 s function limit (auto-sns-agent apps/infra/ci-server/RUNBOOK.md, "CPU weight of the CI guests").
+# system.slice and dev.slice run at 400, so with virev.slice at 4000 they keep the 5 or so cores they could count on at 100 under 1600 before.
+# measured: at 93-100% host busy those two used 2.4 and 3.3 to 4.1 cores. World rigs (transient user units and ssh login scopes) stay at 100.
+# user@1001.service runs at 10000, the most systemd takes, because its siblings are the ssh login scopes, 69 of them
+# at 100 each from Mac jobs on 10-19 at 21:1xZ, which at 300 left the user manager about 300/7200 of user-1001.slice when all were busy.
 # The Prime daemon runs at 10000 for the same reason one level down: its siblings in app.slice are the job rigs, 67 at 100 on 10-20 at 02:50Z,
 # and at 300 its supervisor waited 0.88 s in the run queue per second (0.31 s on CPU), with cpu.pressure some at 57%, and creates took 31 to 43 s.
 # At 10000 the wait fell to 0.41 s at load 218 to 265.
-# The chat runs at 10000 beside the daemon, and user.slice at 1000 over virev.slice at 400, so the chat's path wins at every level. On 10-20 at
+# The chat runs at 10000 beside the daemon, so its path wins at every level below the root, where a busy virev.slice outweighs user.slice
+# since 10-27 (t68); /home/sieun/work/ci-priority-01a17af1/A-report.md reads the chat's run-queue wait after that change. On 10-20 at
 # 06:4xZ virev.slice held 25.5 cores of CI VMs at 100 and 7.1 of prod at 300, and at 400 it outweighed user.slice at 300 at the root, while the
 # chat sat at 1000 below the daemon at 10000. Its main thread waited 0.31 s in the run queue per second on CPU and its 15 threads 0.84 s, at load
 # 202 to 254; after both changes at 06:41:40Z it waited 0.13 s and 0.35 s at load 204 to 221 (/home/sieun/work/cpu-weights/report.md).
-declare -A SYSTEM_WEIGHTS=([ssh.service]=1000 [tailscaled.service]=1000 [user.slice]=1000 [user@$uid.service]=10000 [virev.slice]=400 [virev-prod.slice]=300)
+declare -A SYSTEM_WEIGHTS=([ssh.service]=1000 [tailscaled.service]=1000 [user.slice]=1000 [user@$uid.service]=10000 [virev.slice]=4000 [virev-prod.slice]=300 [virev-ci.slice]=300 [system.slice]=400 [dev.slice]=400)
 declare -A USER_WEIGHTS=([sieun-pi-chat.service]=10000 [pi-pool-serve.service]=1000 [pi-pool-hookd.service]=1000 [prime-agent-daemon.service]=10000)
 
 dropin() {

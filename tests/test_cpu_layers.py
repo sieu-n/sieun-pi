@@ -30,22 +30,25 @@ class CpuProtectPlan(unittest.TestCase):
 class Setup(unittest.TestCase):
     def test_logins_get_1000_and_the_chat_and_daemon_the_most_systemd_takes(self):
         self.assertEqual(weights("SYSTEM"), {"ssh.service": 1000, "tailscaled.service": 1000, "user.slice": 1000, "user@1001.service": 10000,
-                                             "virev.slice": 400, "virev-prod.slice": 300})
+                                             "virev.slice": 4000, "virev-prod.slice": 300, "virev-ci.slice": 300,
+                                             "system.slice": 400, "dev.slice": 400})
         self.assertEqual(weights("USER"), {"sieun-pi-chat.service": 10000, "pi-pool-serve.service": 1000, "pi-pool-hookd.service": 1000,
                                            "prime-agent-daemon.service": 10000})
 
-    def test_the_chat_path_is_outweighed_at_no_level(self):
+    def test_the_chat_path_is_outweighed_below_the_root_at_no_level(self):
         system, user = weights("SYSTEM"), weights("USER")
-        self.assertGreater(system["user.slice"], max(system["virev.slice"], 100))
         self.assertGreater(system["user@1001.service"], 100)
         self.assertEqual(user["sieun-pi-chat.service"], max(user.values()))
 
-    def test_ci_dev_and_rigs_stay_at_the_default(self):
+    def test_busy_ci_outweighs_the_agents_and_system_and_dev_keep_their_old_floor(self):
         system = weights("SYSTEM")
-        for unit in ("virev-ci.slice", "dev.slice", "machine.slice"):
-            self.assertNotIn(unit, system)
-        prod_share = system["virev-prod.slice"] / (system["virev-prod.slice"] + 100)
-        self.assertEqual(system["virev.slice"] * prod_share, 300)
+        ci_at_root = system["virev.slice"] * system["virev-ci.slice"] / (system["virev-ci.slice"] + system["virev-prod.slice"])
+        self.assertEqual(ci_at_root, 2 * system["user.slice"])
+        root = system["user.slice"] + system["virev.slice"] + system["system.slice"] + system["dev.slice"]
+        old_floor = 80 * 100 / 1600
+        for unit in ("system.slice", "dev.slice"):
+            self.assertGreaterEqual(80 * system[unit] / root, old_floor)
+        self.assertNotIn("machine.slice", system)
 
     def test_no_unit_gets_a_cap(self):
         for path in CPU.iterdir():
