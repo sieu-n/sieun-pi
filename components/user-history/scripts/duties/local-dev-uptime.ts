@@ -62,8 +62,18 @@ export const MAC_WINDOW_MS = 24 * 60 * 60_000;
  * mtime under convex/ says whether a change came after that good push. Both are local times in the same format, so they compare as text.
  */
 export const MAC_REPO = "$HOME/Documents/Github/auto-sns-agent";
-export const MAC_CONVEX_COMMAND = `(cd "${MAC_REPO}" && echo "convex-push $("$HOME/.hermes/node/bin/node" scripts/repo/agent/convex-watcher.mjs status --json 2>/dev/null | tr -d '\\n')"; `
-  + `echo "convex-src $(find convex -type f -not -path 'convex/_generated/*' -not -path '*/node_modules/*' -exec stat -f '%Sm' -t '%Y-%m-%dT%H:%M:%S' {} + | sort | tail -1)")`;
+/** The shell line that prints `convex-push <status json>` and `convex-src <newest convex/ mtime>`; `mtimes` lists each file's mtime in that format. */
+export function convexCommand(node: string, repo: string, mtimes: string): string {
+  return `(cd "${repo}" && echo "convex-push $("${node}" scripts/repo/agent/convex-watcher.mjs status --json 2>/dev/null | tr -d '\\n')"; `
+    + `echo "convex-src $(find convex -type f -not -path 'convex/_generated/*' -not -path '*/node_modules/*' ${mtimes} | sort | tail -1)")`;
+}
+export const MAC_CONVEX_COMMAND = convexCommand("$HOME/.hermes/node/bin/node", MAC_REPO, "-exec stat -f '%Sm' -t '%Y-%m-%dT%H:%M:%S' {} +");
+/**
+ * This host's own Convex watcher on Linux (us-metal02), read the same way: from 10-24 07:36Z to 10-27 20:40Z each of its pushes failed on one
+ * local searchCrmViews row that the narrowed schema refused, while its status read healthy. GNU find prints fractional seconds, so the time is
+ * cut to the 19 characters of the pm2 log stamp.
+ */
+export const LOCAL_CONVEX_COMMAND = convexCommand(process.execPath, REPO, "-printf '%TY-%Tm-%TdT%TT\\n' | cut -c1-19");
 /** One read-only shell line on the Mac: load averages and free memory as run detail, each dev server's HTTP code within the owner's 5 s (000 is no answer), and the Convex watcher's push state. */
 export const MAC_COMMAND = ["sysctl -n vm.loadavg", "memory_pressure -Q",
   ...MAC_PORTS.map(({ port, path }) => `curl -s -o /dev/null -m ${ANSWER_TIMEOUT_MS / 1000} -w 'port ${port} %{http_code}\\n' http://localhost:${port}${path}`),
@@ -113,9 +123,23 @@ export async function measureStoreBox(deps: Pick<UptimeDeps, "exec">, at: number
  */
 export const MAC_RETRY_MS = 30_000;
 
-/** The watcher's newest push as convex-push-state.mjs reads it: `ok`, `failed`, `running` or `unknown`, with local times. */
-export interface ConvexPush { outcome: string; at: string | null; reason: string | null; lastGoodAt: string | null }
-export interface MacReading { load1: number; freePct: number; ports: Record<number, string>; convexPush?: ConvexPush; convexSrc?: string }
+/**
+ * The watcher's newest push as convex-push-state.mjs reads it: `ok`, `failed`, `running` or `unknown`, with local times. `lastFailedAt` (from
+ * auto-sns-agent 2cc9ee2e3) is the newest failed push, which a retry that starts in the same second leaves as `running`; a checkout before
+ * that commit gives no `lastFailedAt`.
+ */
+export interface ConvexPush { outcome: string; at: string | null; reason: string | null; lastGoodAt: string | null; lastFailedAt?: string | null }
+export interface ConvexReading { convexPush?: ConvexPush; convexSrc?: string }
+export interface MacReading extends ConvexReading { load1: number; freePct: number; ports: Record<number, string> }
+
+/** Parses the `convex-push <status json>` and `convex-src <newest mtime>` lines, which stay unset when the host gave no readable value. */
+export function parseConvexReading(text: string): ConvexReading {
+  const status = /^convex-push (\{.*\})\s*$/m.exec(text)?.[1];
+  let push: ConvexPush | undefined;
+  try { push = status ? (JSON.parse(status) as { push?: ConvexPush }).push : undefined; } catch { push = undefined; }
+  const convexSrc = /^convex-src (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})\s*$/m.exec(text)?.[1];
+  return { ...(push ? { convexPush: push } : {}), ...(convexSrc ? { convexSrc } : {}) };
+}
 
 /**
  * Parses MAC_COMMAND's output: `{ 7.26 6.95 7.77 }`, `System-wide memory free percentage: 37%`, one `port <n> <code>` line per server, and
@@ -126,11 +150,7 @@ export function parseMacReading(text: string): MacReading {
   const freePct = Number(/memory free percentage:\s*(\d+)%/.exec(text)?.[1]);
   if (!Number.isFinite(load1) || !Number.isFinite(freePct)) throw new Error(`unparsed Mac reading: ${text.trim().slice(0, 200)}`);
   const ports = Object.fromEntries([...text.matchAll(/^port (\d+) (\d{3})$/gm)].map(match => [Number(match[1]), match[2]!]));
-  const status = /^convex-push (\{.*\})\s*$/m.exec(text)?.[1];
-  let push: ConvexPush | undefined;
-  try { push = status ? (JSON.parse(status) as { push?: ConvexPush }).push : undefined; } catch { push = undefined; }
-  const convexSrc = /^convex-src (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})\s*$/m.exec(text)?.[1];
-  return { load1, freePct, ports, ...(push ? { convexPush: push } : {}), ...(convexSrc ? { convexSrc } : {}) };
+  return { load1, freePct, ports, ...parseConvexReading(text) };
 }
 
 /**
@@ -138,12 +158,32 @@ export function parseMacReading(text: string): MacReading {
  * newest change under convex/. From 10-22 17:49Z to 10-27 every push failed while status read healthy, and the backend served 4-day-old
  * functions. Undefined when the Mac gave no push state or no source time.
  */
-export function convexPushStale(reading: MacReading): { stale: boolean; detail: string } | undefined {
+export function convexPushStale(reading: ConvexReading, where = "Mac"): { stale: boolean; detail: string } | undefined {
   const push = reading.convexPush;
   if (!push || !reading.convexSrc) return undefined;
-  const stale = push.outcome === "failed" && (!push.lastGoodAt || push.lastGoodAt < reading.convexSrc);
-  const reason = push.reason ? `: ${push.reason.split("\n")[0]}` : "";
-  return { stale, detail: `Convex watcher: newest push ${push.outcome} at ${push.at ?? "?"}${push.outcome === "failed" ? reason : ""}, last good push ${push.lastGoodAt ?? "none in the log tail"}, newest convex/ change ${reading.convexSrc} (Mac local time)` };
+  const failedAt = push.lastFailedAt !== undefined ? push.lastFailedAt : push.outcome === "failed" ? push.at : null;
+  const failing = failedAt !== null && (!push.lastGoodAt || failedAt > push.lastGoodAt);
+  const stale = failing && (!push.lastGoodAt || push.lastGoodAt < reading.convexSrc);
+  const reason = failing && push.reason ? `: ${push.reason.split("\n")[0]}` : "";
+  const failed = !failing ? "" : push.outcome === "failed" ? reason : ` after a push failed at ${failedAt}${reason}`;
+  return { stale, detail: `Convex watcher: newest push ${push.outcome} at ${push.at ?? "?"}${failed}, last good push ${push.lastGoodAt ?? "none in the log tail"}, newest convex/ change ${reading.convexSrc} (${where} local time)` };
+}
+
+/**
+ * This Linux host's own Convex watcher: convex_push_stale is 1 when a push failed after the last good one and no push succeeded after the newest
+ * convex/ change. Not read on the Mac, where mac_convex_push_stale already reads the same watcher.
+ */
+export async function measureLocalConvex(deps: Pick<UptimeDeps, "exec" | "platform">, at: number): Promise<{ metrics: Record<string, number>; flagged: FlaggedSlice[] }> {
+  if (deps.platform !== "linux") return { metrics: {}, flagged: [] };
+  let text: string;
+  try {
+    text = await deps.exec("sh", ["-c", LOCAL_CONVEX_COMMAND]);
+  } catch (error) {
+    return { metrics: {}, flagged: [{ at, kind: "convex_read", excerpt: `Local Convex watcher: read failed: ${error instanceof Error ? error.message : String(error)}`.slice(0, 300) }] };
+  }
+  const convex = convexPushStale(parseConvexReading(text), "host");
+  if (!convex) return { metrics: {}, flagged: [{ at, kind: "convex_read", excerpt: `Local Convex watcher: no push state or convex/ mtime in the read: ${text.trim().slice(0, 200)}` }] };
+  return { metrics: { convex_push_stale: convex.stale ? 1 : 0 }, flagged: [{ at, kind: convex.stale ? "convex_stale" : "convex", excerpt: `Local ${convex.detail}`.slice(0, 300) }] };
 }
 
 /** Each Mac dev server that gave no 200, in plain words. */
@@ -296,6 +336,7 @@ export async function measureUptime(deps: UptimeDeps, previous: UptimeState | un
   const mac = measureMac(deps, at).catch((error: unknown): Awaited<ReturnType<typeof measureMac>> =>
     ({ metrics: {}, flagged: [{ at, kind: "mac_read", excerpt: `Mac: ${error instanceof Error ? error.message : String(error)}`.slice(0, 300) }] }));
   const store = measureStoreBox(deps, at);
+  const localConvex = measureLocalConvex(deps, at);
   const answers = await Promise.all([{ key: "wiki", url: deps.wiki + "/" }, ...SERVICES].map(async (service): Promise<FlaggedSlice> => {
     const where = target(service, deps.env);
     if ("off" in where) return { at, kind: "by_design", excerpt: `${service.key}: ${where.off}` };
@@ -313,6 +354,9 @@ export async function measureUptime(deps: UptimeDeps, previous: UptimeState | un
   const storeResult = await store;
   Object.assign(metrics, storeResult.metrics);
   flagged.push(...storeResult.flagged);
+  const convexResult = await localConvex;
+  Object.assign(metrics, convexResult.metrics);
+  flagged.push(...convexResult.flagged);
   if (metrics.servers_not_answering) {
     const load = await hostLoad(deps).catch((error: unknown) => `unread: ${String(error)}`);
     flagged.push({ at, kind: "mac", excerpt: `${deps.platform === "darwin" ? "Mac" : "Host"} at the probe: load ${load}`.slice(0, 300) });

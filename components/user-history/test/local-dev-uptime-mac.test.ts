@@ -2,10 +2,11 @@
 // load-under-20 check on 10-23 (~/work/mac-load-root-cause/metric-findings.md on us-metal02). Vent :8791 and the crawler API :8787 joined the servers on 10-27, and
 // mac_convex_push_stale reads the Mac's Convex watcher, whose pushes all failed from 10-22 to 10-27 while its status read healthy.
 // store_box_swap_used_mb joined on 10-27, after the M2 Air store box reached 8.5 GB of swap and local Convex schema evals passed 1 s.
+// convex_push_stale reads us-metal02's own watcher, whose pushes all failed from 10-24 to 10-27 while a retry kept its newest push at running.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { WatchLine } from "../src/mac-usable-watch.ts";
-import { convexPushStale, MAC_COMMAND, MAC_RETRY_MS, macDown, macUnusableMinutes, measureMac, measureStoreBox, parseMacReading, parseStoreBox, STORE_BOX, STORE_COMMAND } from "../scripts/duties/local-dev-uptime.ts";
+import { convexPushStale, LOCAL_CONVEX_COMMAND, MAC_COMMAND, measureLocalConvex, MAC_RETRY_MS, macDown, macUnusableMinutes, measureMac, measureStoreBox, parseMacReading, parseStoreBox, STORE_BOX, STORE_COMMAND } from "../scripts/duties/local-dev-uptime.ts";
 
 const push = (outcome: string, at: string, lastGoodAt: string | null) =>
   `convex-push {  "count": 1,  "watchers": [],  "push": {    "outcome": "${outcome}",    "at": "${at}",    "reason": ${outcome === "failed" ? '"schema eval timed out (1s)"' : "null"},    "lastGoodAt": ${lastGoodAt ? `"${lastGoodAt}"` : "null"}  }}\n`;
@@ -91,4 +92,27 @@ test("the store box over its swap line is flagged, under it is detail, and an un
   const away = await measureStoreBox({ exec: async () => { throw Object.assign(new Error("Command failed: ssh"), { code: 255 }); } }, 0);
   assert.deepEqual(away.metrics, {});
   assert.equal(away.flagged[0]!.kind, "store_box_unreachable");
+});
+
+const localPush = (push: Record<string, string | null>, src: string) => `convex-push {"count": 1, "watchers": [], "push": ${JSON.stringify(push)}}\nconvex-src ${src}\n`;
+
+test("this host's watcher is stale while a retry runs after a failed push and no push succeeded after the newest convex/ change", async () => {
+  const calls: string[][] = [];
+  const read = (text: string) => measureLocalConvex({ platform: "linux", exec: async (file, args) => { calls.push([file, ...args]); return text; } }, 0);
+  const retrying = await read(localPush({ outcome: "running", at: "2026-10-27T20:37:13", reason: "Schema validation failed.", lastGoodAt: "2026-10-24T07:24:28", lastFailedAt: "2026-10-27T20:37:13" }, "2026-10-27T20:30:00"));
+  assert.deepEqual(calls[0], ["sh", "-c", LOCAL_CONVEX_COMMAND]);
+  assert.deepEqual(retrying.metrics, { convex_push_stale: 1 });
+  assert.equal(retrying.flagged[0]!.kind, "convex_stale");
+  assert.match(retrying.flagged[0]!.excerpt, /newest push running at 2026-10-27T20:37:13 after a push failed at 2026-10-27T20:37:13: Schema validation failed\., last good push 2026-10-24T07:24:28/);
+  const healed = await read(localPush({ outcome: "running", at: "2026-10-27T20:41:04", reason: null, lastGoodAt: "2026-10-27T20:41:03", lastFailedAt: "2026-10-27T20:39:32" }, "2026-10-27T20:30:00"));
+  assert.deepEqual(healed.metrics, { convex_push_stale: 0 });
+  const unread = await read("convex-push \nconvex-src \n");
+  assert.deepEqual(unread.metrics, {});
+  assert.equal(unread.flagged[0]!.kind, "convex_read");
+  assert.deepEqual(await measureLocalConvex({ platform: "darwin", exec: async () => { throw new Error("not called"); } }, 0), { metrics: {}, flagged: [] });
+});
+
+test("the local read lists GNU find mtimes cut to the pm2 stamp's 19 characters", () => {
+  assert.match(LOCAL_CONVEX_COMMAND, /scripts\/repo\/agent\/convex-watcher\.mjs status --json/);
+  assert.match(LOCAL_CONVEX_COMMAND, /-printf '%TY-%Tm-%TdT%TT\\n' \| cut -c1-19 \| sort \| tail -1/);
 });
