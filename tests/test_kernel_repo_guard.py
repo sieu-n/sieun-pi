@@ -20,7 +20,7 @@ SOURCE = Path.home() / "Documents/Github/auto-sns-agent/scripts/repo/agent/guard
 AGENT = "/Users/sieunpark/.prime/agent"
 CRAWLER_OPS = f"{AGENT}/session-artifacts/01a115e2-9544-7204-b8db-8ce4d5319048/sub-ffb64cb8"
 RELEASE_OWNER = f"{AGENT}/session-artifacts/01a10810-34b5-710f-88fe-3d369f89a8c9"
-REAL_PUSH = "git push origin 7ac665783133be3e74975a5a117d213ff26d54dc:refs/heads/sieun/dev 2>&1 | tail -3; git ls-remote origin refs/heads/sieun/dev"
+REAL_PUSH = "git push origin 7ac665783133be3e74975a5a117d213ff26d54dc:refs/heads/dev/sieun 2>&1 | tail -3; git ls-remote origin refs/heads/dev/sieun"
 
 
 @unittest.skipUnless(SOURCE.is_dir(), "no auto-sns-agent checkout on this machine")
@@ -38,7 +38,7 @@ class RepoGuardAtRunTime(KernelGuardBase):
         for name in ("branches.mjs", "land-dispatch.mjs"):
             if (SOURCE.parents[2] / "ci" / name).exists():
                 shutil.copy(SOURCE.parents[2] / "ci" / name, self.checkout / "scripts/ci" / name)
-        subprocess.run(["/usr/bin/git", "init", "-q", "-b", "sieun/dev", str(self.checkout)], check=True)
+        subprocess.run(["/usr/bin/git", "init", "-q", "-b", "dev/sieun", str(self.checkout)], check=True)
         subprocess.run(["/usr/bin/git", "-C", str(self.checkout), "remote", "add", "origin", "https://github.com/sieu-n/auto-sns-agent"], check=True)
         self.commit_guards()
         self.repo_log = self.tmp / "repo-guard.jsonl"
@@ -60,14 +60,14 @@ class RepoGuardAtRunTime(KernelGuardBase):
     def test_the_10_14_push_is_refused_after_os_chdir(self):
         out = self.run_in_checkout(CRAWLER_OPS, REAL_PUSH)
         self.assertIsNotNone(out["refused"], f"not refused: {out}")
-        self.assertIn("repo guard (git-push-sieun-dev)", out["refused"])
+        self.assertIn("repo guard (git-push-dev-branch)", out["refused"])
         self.assertEqual(self.fake_runs(), [])
-        self.assertEqual([(l["rule"], l["verdict"], l["cwd"]) for l in self.logged()], [("git-push-sieun-dev", "block", str(self.checkout))])
+        self.assertEqual([(l["rule"], l["verdict"], l["cwd"]) for l in self.logged()], [("git-push-dev-branch", "block", str(self.checkout))])
 
     def test_the_release_owner_push_runs(self):
-        out = self.run_in_checkout(RELEASE_OWNER, "git push -q origin HEAD:refs/heads/sieun/dev")
+        out = self.run_in_checkout(RELEASE_OWNER, "git push -q origin HEAD:refs/heads/dev/sieun")
         self.assert_passed(out)
-        self.assertEqual(self.fake_runs(), ["git push -q origin HEAD:refs/heads/sieun/dev"])
+        self.assertEqual(self.fake_runs(), ["git push -q origin HEAD:refs/heads/dev/sieun"])
         self.assertEqual(self.logged()[-1]["verdict"], "owner-allow")
 
     def test_a_probe_ref_push_runs(self):

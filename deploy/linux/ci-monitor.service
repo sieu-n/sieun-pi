@@ -1,5 +1,5 @@
 [Unit]
-Description=ci-monitor: the CI access monitor (scripts/dev/ci-monitor.mjs run from the box's sieun/dev tip through run-from-head.mjs --tip), writing snapshot.md, history.jsonl, state.json and dashboard/ for the wiki's /playground/ci (box copy of the Mac's launchd ai.virev.ci-monitor)
+Description=ci-monitor: the CI access monitor (scripts/dev/ci-monitor.mjs run from the box's dev/sieun tip through run-from-head.mjs --tip), writing snapshot.md, history.jsonl, state.json and dashboard/ for the wiki's /playground/ci (box copy of the Mac's launchd ai.virev.ci-monitor)
 After=network-online.target
 Wants=network-online.target
 

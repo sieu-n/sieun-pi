@@ -1,5 +1,5 @@
 [Unit]
-Description=ci-history: fold ci-runs.json and the CI monitor's store.json and history.jsonl into the CI history store (apps/llm-wiki/content/.wiki/ci-history) that /playground/ci reads, run from the box's sieun/dev tip through run-from-head.mjs --tip like ci-monitor.service
+Description=ci-history: fold ci-runs.json and the CI monitor's store.json and history.jsonl into the CI history store (apps/llm-wiki/content/.wiki/ci-history) that /playground/ci reads, run from the box's dev/sieun tip through run-from-head.mjs --tip like ci-monitor.service
 After=network-online.target
 Wants=network-online.target
 

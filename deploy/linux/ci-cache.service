@@ -1,5 +1,5 @@
 [Unit]
-Description=ci-cache: the one GitHub Actions poller for sieu-n/auto-sns-agent (scripts/dev/ci-cache.mjs poll, run from the box's sieun/dev tip through run-from-head.mjs --tip --follow-head, restarted only when a file it loads changes), writing ~/.cache/virev/ci-runs.json for ci-run-status, the gh shim and board.wake(run=)
+Description=ci-cache: the one GitHub Actions poller for sieu-n/auto-sns-agent (scripts/dev/ci-cache.mjs poll, run from the box's dev/sieun tip through run-from-head.mjs --tip --follow-head, restarted only when a file it loads changes), writing ~/.cache/virev/ci-runs.json for ci-run-status, the gh shim and board.wake(run=)
 After=network-online.target
 Wants=network-online.target
 

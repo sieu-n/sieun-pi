@@ -2,14 +2,14 @@
 """Fast-forward this follower's auto-sns-agent checkout to the tip host's branch of the same name.
 
 The branch is the checkout's `agent.branch` git config key (`git config --get agent.branch`), else DEFAULT_BRANCH, so each
-developer's dev/<name> checkout follows its own branch (c119). Below, "the branch" is that name.
+machine's checkout follows that machine's one dev branch, dev/sieun on us-metal02 or dev/sieun-mac on the Mac (c119). Below, "the branch" is that name.
 
 Since 2026-10-18 11:24Z the tip host is us-metal02, and the Mac follows it. Until then the Mac held the tip, and at
 load 435 to 470 from about 10:50Z its sshd refused the box's lands, so about 30 commit.mjs and land-object.mjs runs on
 the box retried against it and nothing landed. A follower checkout has .git/agent-tip-host.json, so commit.mjs and
 land-object.mjs land on the tip host over ssh (tip-host.mjs), and this script brings the follower along.
 
-On 2026-10-19 the owner moved the Mac to its own branch, dev/sieun-mac-a, so no checkout follows a tip host now and
+On 2026-10-19 the owner moved the Mac to its own branch, now dev/sieun-mac, so no checkout follows a tip host now and
 nothing installs or runs this script: its launchd job, its Mac copy and the box's asa-follower-watch are gone.
 A follower runs it from launchd ai.virev.asa-tip-sync every minute and from tip-host.mjs after each land (the config's "sync"
 command). Installed as a copy in ~/.local/share/asa-tip-sync; its log, blocked.json and carried/ live in
@@ -73,8 +73,8 @@ READ_ENV = {**os.environ, "GIT_OPTIONAL_LOCKS": "0",
             "GIT_SSH_COMMAND": "ssh -o BatchMode=yes -o ConnectTimeout=15"}
 for k in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"):
     READ_ENV.pop(k, None)
-# A checkout with no agent.branch key works on the shared branch.
-DEFAULT_BRANCH = "sieun/dev"
+# A checkout with no agent.branch key works on us-metal02's branch, which was sieun/dev before the 2026-10-27 cutover.
+DEFAULT_BRANCH = "dev/sieun"
 NAME = subprocess.run([GIT, "-C", REPO, "config", "--get", "agent.branch"], env=READ_ENV, capture_output=True, text=True).stdout.strip() or DEFAULT_BRANCH
 BRANCH = f"refs/heads/{NAME}"
 TRACK = f"refs/remotes/tip/{NAME}"

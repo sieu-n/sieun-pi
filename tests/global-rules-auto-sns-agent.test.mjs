@@ -16,7 +16,7 @@ const checkout = join(root, "auto-sns-agent");
 const broken = join(root, "broken", "auto-sns-agent");
 const HOME_CWD = "/Users/sieunpark";
 const OWNER = "01a10810-34b5-710f-88fe-3d369f89a8c9";
-const REAL_PUSH = "git push origin 7ac665783133be3e74975a5a117d213ff26d54dc:refs/heads/sieun/dev 2>&1 | tail -3; git ls-remote origin refs/heads/sieun/dev";
+const REAL_PUSH = "git push origin 7ac665783133be3e74975a5a117d213ff26d54dc:refs/heads/dev/sieun 2>&1 | tail -3; git ls-remote origin refs/heads/dev/sieun";
 
 // The guard loads from the checkout's HEAD, so a fixture commits its guard files.
 const GIT_ID = { GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" };
@@ -30,7 +30,7 @@ function fixture(dir) {
   mkdirSync(join(dir, "scripts/repo/agent"), { recursive: true });
   cpSync(SOURCE, join(dir, "scripts/repo/agent/guards"), { recursive: true, filter: (src) => !src.endsWith(".test.mjs") });
   for (const rel of HEAD_MODULES) cpSync(join(SOURCE, "../../../..", rel), join(dir, rel));
-  execFileSync("/usr/bin/git", ["init", "-q", "-b", "sieun/dev", dir]);
+  execFileSync("/usr/bin/git", ["init", "-q", "-b", "dev/sieun", dir]);
   execFileSync("/usr/bin/git", ["-C", dir, "remote", "add", "origin", "https://github.com/sieu-n/auto-sns-agent"]);
   commitGuards(dir);
 }
@@ -77,16 +77,16 @@ test("the repo guard registers for a session started in /Users/sieunpark and log
 });
 
 test("the 10-14 14:40Z push is refused from a /Users/sieunpark session through cd, git -C and the repo URL", { skip }, async () => {
-  for (const text of [`cd ${checkout} && ${REAL_PUSH}`, `git -C ${checkout} push origin 7ac6657831:refs/heads/sieun/dev`,
-    "git push https://github.com/sieu-n/auto-sns-agent 7ac6657831:refs/heads/sieun/dev"]) {
-    assert.match(await call("bash", text, ctx(HOME_CWD, "01a13a10-9994-7636-ae01-bbf5d7d4f9ee")) ?? "", /^repo guard \(git-push-sieun-dev\)/, text);
+  for (const text of [`cd ${checkout} && ${REAL_PUSH}`, `git -C ${checkout} push origin 7ac6657831:refs/heads/dev/sieun`,
+    "git push https://github.com/sieu-n/auto-sns-agent 7ac6657831:refs/heads/dev/sieun"]) {
+    assert.match(await call("bash", text, ctx(HOME_CWD, "01a13a10-9994-7636-ae01-bbf5d7d4f9ee")) ?? "", /^repo guard \(git-push-dev-branch\)/, text);
   }
-  assert.match(await call("ipython", `r = await bash("cd ${checkout} && ${REAL_PUSH.replaceAll('"', '\\"')}")`, ctx(HOME_CWD, "x")) ?? "", /git-push-sieun-dev/);
+  assert.match(await call("ipython", `r = await bash("cd ${checkout} && ${REAL_PUSH.replaceAll('"', '\\"')}")`, ctx(HOME_CWD, "x")) ?? "", /git-push-dev-branch/);
 });
 
 test("the release owner's push passes from any cwd, and a ci/ push is refused from any cwd", { skip }, async () => {
   assert.equal(await call("bash", `cd ${checkout} && ${REAL_PUSH}`, ctx(HOME_CWD, OWNER)), null);
-  assert.equal(await call("bash", `git -C ${checkout} push -q origin HEAD:refs/heads/sieun/dev`, ctx(checkout, OWNER)), null);
+  assert.equal(await call("bash", `git -C ${checkout} push -q origin HEAD:refs/heads/dev/sieun`, ctx(checkout, OWNER)), null);
   assert.match(await call("bash", `cd ${checkout} && git push origin HEAD:refs/heads/ci/guard-everywhere`, ctx(HOME_CWD, "x")) ?? "", /^repo guard \(git-push-ci\)/);
 });
 
@@ -99,7 +99,7 @@ test("an ipython cell is judged where it runs after os.chdir, into the checkout 
 });
 
 test("a session outside the checkout keeps its other git and its env reads", { skip }, async () => {
-  for (const text of ["git push origin HEAD:refs/heads/sieun/dev", "git reset --hard", "printenv OPENAI_API_KEY", "env | grep PATH"]) {
+  for (const text of ["git push origin HEAD:refs/heads/dev/sieun", "git reset --hard", "printenv OPENAI_API_KEY", "env | grep PATH"]) {
     assert.equal(await call("bash", text, ctx(root, "x")), null, text);
   }
   assert.match(await call("bash", `git -C ${checkout} stash`, ctx(HOME_CWD, "x")) ?? "", /git-hazard/);
@@ -111,7 +111,7 @@ test("rules that fail to load refuse nothing, and the failure is logged", { skip
     await (await import(${JSON.stringify(join(process.cwd(), "components/global-rules/index.ts"))})).default({ on: (n, h) => handlers.push([n, h]) });
     const ctx = (cwd) => ({ cwd, sessionManager: { getSessionId: () => "x", getSessionFile: () => undefined, getHeader: () => ({}) } });
     const call = async (text, c) => (await Promise.all(handlers.filter(([n]) => n === "tool_call").map(([, h]) => h({ toolName: "bash", input: { command: text } }, c)))).find((r) => r?.block)?.reason ?? null;
-    console.log(JSON.stringify([await call("git push origin sieun/dev", ctx(${JSON.stringify(broken)})), await call("git -C ~/Documents/Github/auto-sns-agent push", ctx("/tmp")), await call("git push", ctx("/tmp"))]));`;
+    console.log(JSON.stringify([await call("git push origin dev/sieun", ctx(${JSON.stringify(broken)})), await call("git -C ~/Documents/Github/auto-sns-agent push", ctx("/tmp")), await call("git push", ctx("/tmp"))]));`;
   const log = join(root, "broken.log");
   const out = execFileSync(process.execPath, ["--input-type=module", "-e", script], {
     encoding: "utf8", env: { ...process.env, GLOBAL_RULES_AUTO_SNS_AGENT: broken, GLOBAL_RULES_LOG: log },
@@ -231,11 +231,11 @@ test("a landed guard that fails to load keeps the last guard that loaded", { ski
   try {
     const module = await import(`../components/global-rules/auto-sns-agent.ts?keep`);
     await module.register({ on: (name, handler) => loaded.push([name, handler]) });
-    const push = `git -C ${live} push origin HEAD:refs/heads/sieun/dev`;
-    assert.match(await call("bash", push, ctx(HOME_CWD, "x"), loaded) ?? "", /git-push-sieun-dev/);
+    const push = `git -C ${live} push origin HEAD:refs/heads/dev/sieun`;
+    assert.match(await call("bash", push, ctx(HOME_CWD, "x"), loaded) ?? "", /git-push-dev-branch/);
     writeFileSync(join(live, "scripts/repo/agent/guards/prime.mjs"), "throw new Error('fixture: a broken edit');\n");
     commitGuards(live, "a broken guard");
-    assert.match(await call("bash", push, ctx(HOME_CWD, "x"), loaded) ?? "", /git-push-sieun-dev/);
+    assert.match(await call("bash", push, ctx(HOME_CWD, "x"), loaded) ?? "", /git-push-dev-branch/);
   } finally {
     process.env.GLOBAL_RULES_AUTO_SNS_AGENT = checkout;
   }
@@ -250,14 +250,14 @@ test("an uncommitted edit to the checkout's guard files does not change the live
   try {
     const module = await import(`../components/global-rules/auto-sns-agent.ts?dirty`);
     await module.register({ on: (name, handler) => loaded.push([name, handler]) });
-    const push = `git -C ${live} push origin HEAD:refs/heads/sieun/dev`;
-    assert.match(await call("bash", push, ctx(HOME_CWD, "x"), loaded) ?? "", /git-push-sieun-dev/);
+    const push = `git -C ${live} push origin HEAD:refs/heads/dev/sieun`;
+    assert.match(await call("bash", push, ctx(HOME_CWD, "x"), loaded) ?? "", /git-push-dev-branch/);
     writeFileSync(join(live, "scripts/repo/agent/guards/prime.mjs"), "export const registerRepoGuard = () => {};\nexport const onToolCall = () => undefined;\n");
-    assert.match(await call("bash", push, ctx(HOME_CWD, "x"), loaded) ?? "", /git-push-sieun-dev/);
+    assert.match(await call("bash", push, ctx(HOME_CWD, "x"), loaded) ?? "", /git-push-dev-branch/);
     const fresh = [];
     const again = await import(`../components/global-rules/auto-sns-agent.ts?dirty-fresh`);
     await again.register({ on: (name, handler) => fresh.push([name, handler]) });
-    assert.match(await call("bash", push, ctx(HOME_CWD, "x"), fresh) ?? "", /git-push-sieun-dev/);
+    assert.match(await call("bash", push, ctx(HOME_CWD, "x"), fresh) ?? "", /git-push-dev-branch/);
   } finally {
     process.env.GLOBAL_RULES_AUTO_SNS_AGENT = checkout;
   }

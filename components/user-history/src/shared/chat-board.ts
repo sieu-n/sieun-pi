@@ -871,7 +871,7 @@ const MERGE = new RegExp([
 ].join("|"), "i");
 /**
  * A push that moves main or master: "push the fix to main", "git push origin
- * HEAD:main", "land it on master". A push to staging or a dev branch such as sieun/dev is none: staging needs no go.
+ * HEAD:main", "land it on master". A push to staging or a dev branch such as dev/sieun is none: staging needs no go.
  */
 const PUSH = new RegExp([
   String.raw`\bpush(?:es|ed|ing)?\s+(?:[\w.'#/-]+\s+){0,4}?(?:to|into|onto)\s+(?:origin\s+|upstream\s+)?(?:main|master)\b`,
@@ -957,12 +957,12 @@ export const approvedTodo = (todo: Pick<OwnerTodo, "answeredBy" | "reply" | "don
 };
 /*
  * Staging needs no go (owner 10-12, after a chat asked to land 32b to staging: "bro never fucking ask me for any confirmation to deploy to staging
- * ever again"). A step whose target is staging only, by its text, is exempt even when the chat marked it: it names staging, sieun/dev or a dev
+ * ever again"). A step whose target is staging only, by its text, is exempt even when the chat marked it: it names staging, dev/sieun, dev/sieun-mac, the old sieun/dev or a dev
  * branch, or it lands with no PR number, and it names no production target (prod, production, promote, main, master, a real app, a live site
  * or app, public).
  */
 const PRODUCTION = /\bprod(?:uction)?\b|\bpromot(?:e|es|ed|ing|ion)\b|\bmain\b|\bmaster\b|\breal\s+(?:[\w-]+\s+){0,2}app\b|\blive\s+(?:site|app)\b|\bpublic\b/i;
-const STAGING = /\bstaging\b|\bsieun\/dev\b|\bdev\s+branch\b/i;
+const STAGING = /\bstaging\b|\bsieun\/dev\b|\bdev\/sieun(?:-mac)?\b|\bdev\s+branch\b/i;
 const LAND = /\bland(?:s|ed)?\b/i;
 /** Whether a step's only target is staging, so it never needs the owner's go. */
 export const stagingOnly = (text: string): boolean => !PRODUCTION.test(text) && (STAGING.test(text) || (LAND.test(text) && !prNumbers(text).length));
@@ -989,7 +989,7 @@ const THREAD_GO = new RegExp([
 ].join("|"), "i");
 /** "metal GO about 14:00Z", "g-jev2 OKs": capitals only, so the verb "go" and a plain "ok" stay out, and so does an "OK," that opens a sentence or follows a colon as a reply. */
 const CAPS_GO = /\bGO\b|(?<!(?:^|:)\s*)\bOKs?\b(?!['\u2019]d)/;
-const GIT_MOVE = /\bpush|\bland(?:s|ed|ing)?\b|\bmerg|\bstaging\b|\bci\/|\bgithub\b|\bsieun\/dev\b|\bdeploy/i;
+const GIT_MOVE = /\bpush|\bland(?:s|ed|ing)?\b|\bmerg|\bstaging\b|\bci\/|\bgithub\b|\bsieun\/dev\b|\bdev\/sieun(?:-mac)?\b|\bdeploy/i;
 /** A step whose own action is a push, land, merge or deploy, so an owner's go in its waitFor is a go on that move. */
 const GIT_STEP = /\b(?:push|land|merg|deploy)\w*\b/i;
 /**
@@ -1031,7 +1031,7 @@ export function stepGoWait(item: Pick<PlanItem, "text" | "waitFor">): GoWait | n
   return (item.waitFor ? goWait(item.waitFor, { cued: true, scope }) : null) ?? goWait(item.text, { scope });
 }
 /** The fix for a wait for leave, said the same way by the board flag, the check-in and the brief check. */
-export const GO_WAIT_FIX = "Staging, sieun/dev, ci/ and other GitHub pushes and staging lands need nobody's go or word (c47, c50; the owner 10-12: " +
+export const GO_WAIT_FIX = "Staging, dev/sieun, dev/sieun-mac, ci/ and other GitHub pushes and staging lands need nobody's go or word (c47, c50; the owner 10-12: " +
   "\"NEVER wait for something, or ask for my permission to push to Github etc.\"). Do the next action now: push or land it yourself, and if a land " +
   "is busy, push to a ci/ ref and go on. " + (releaseGo.preapproval
     ? `Production merges, pushes to main and promotes need no go either: ${preApprovalText(releaseGo.preapproval)}`
@@ -1040,7 +1040,7 @@ export const goWaitText = (wait: GoWait): string =>
   `waits for ${wait.kind === "owner" ? "the owner's ok on a push or a staging land" : "another thread's go, word or slot"} (${quote(wait.phrase)})`;
 /** A todo sentence that asks for leave: "Go on staging ...?", "Approve the next staging release?", "Can we push ...?". */
 const LEAVE_ASK = /^\s*(?:go(?:\s+ahead)?|approve|ship|push|land|deploy|merge|promote|ok(?:ay)?|(?:can|may|should)\s+(?:i|we))\b/i;
-const LEAVE_MOVE = /\bpush(?:es|ed|ing)?\b|\bci\/|\bstaging\b|\bsieun\/dev\b|\bland\s+(?:\d+\w*|it|them|this|that)\b/i;
+const LEAVE_MOVE = /\bpush(?:es|ed|ing)?\b|\bci\/|\bstaging\b|\bsieun\/dev\b|\bdev\/sieun(?:-mac)?\b|\bland\s+(?:\d+\w*|it|them|this|that)\b/i;
 /**
  * Whether an agent's todo asks the owner for leave he never needs to give (c47, c50): it offers a go choice, and a question that asks for a go
  * names a push, a staging land, a ci/ push or another thread's go or slot and no production target. A todo about a PR merge, a public release

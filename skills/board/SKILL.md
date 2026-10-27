@@ -145,7 +145,7 @@ A step keeps its agent's thread id in `sessionId`, so the link survives when the
 
 Until the proper launch the owner pre-approves every prod promote, merge or push to main (c74, 2026-10-15). While that standing go is on, a step that merges, pushes to main or master, promotes or names another production target moves with no todo, even when marked. Never put a promote, merge or push go on For you and never wait for one. Owner rule c154 (2026-10-22) narrows it for prod deploys: a job's work ends at staging, the release owner walks each prod promote with the owner, and a step that waits on his answer to a prod deploy todo is waiting on him, so never close that todo or ship that deploy without his answer. Only crawler, observability dashboard and demo.virev.ai deploys still ship to prod without him. A step that sends something outside or publishes to a web store still needs the owner's answer on its todo (c37).
 
-A step whose only target is staging never needs a go, even when marked. Such a step names staging, sieun/dev or a dev branch, or lands with no PR number, and it names no prod, production, promote, main, master or real app (owner 10-12).
+A step whose only target is staging never needs a go, even when marked. Such a step names staging, dev/sieun, dev/sieun-mac or a dev branch, or lands with no PR number, and it names no prod, production, promote, main, master or real app (owner 10-12).
 
 The owner picking a design on a demo is not a go. Offer the go choice first, worded with Go, Ship or Yes, and a hold choice such as Not yet. A go said in chat does not count, so ask the owner to answer the todo. `references/git.md` holds the full merge rule and names `releaseGo.preapproval`, the switch that turns the standing go off after launch.
 

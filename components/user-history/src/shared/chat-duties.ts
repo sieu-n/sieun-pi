@@ -1,3 +1,4 @@
+import { dutyStrayBranches, STRAY_BRANCH_FIX } from "./machine-branches.ts";
 import type { PoolPriority } from "./types.ts";
 import type { StalledCall } from "./stalled-calls.ts";
 
@@ -512,6 +513,10 @@ export function parseDutyInput(value: unknown, id: string, now: number, schedule
 export function upsertDuty(duties: Duty[], definition: unknown, now: number, morning?: string): string {
   const name = isRecord(definition) && typeof definition.name === "string" ? definition.name.trim() : undefined;
   const before = duties.find(duty => duty.name === name);
+  if (isRecord(definition)) {
+    const stray = dutyStrayBranches(definition);
+    if (stray.length) throw new Error(`names ${stray.map(branch => `"${branch}"`).join(", ")}. ${STRAY_BRANCH_FIX}`);
+  }
   const parsed = parseDutyInput(definition, nextDutyId(duties), now, before?.schedule ?? (morning ? { kind: "daily", at: morning } : undefined));
   const existing = duties.find(duty => duty.name === parsed.name);
   if (!existing) { duties.push(parsed); return `added ${parsed.id}`; }

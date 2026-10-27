@@ -36,12 +36,12 @@ node scripts/release-chat.mjs <sha> [--no-kickstart]
 ## auto-sns-agent branches
 
 1. Staging is the trunk, and only land.yml writes it, so nobody pushes staging by hand.
-2. Each dev branch, such as sieun/dev on us-metal02, dev/sieun-mac-a on the Mac or any dev/<name>, takes commits on its own line, and a dev branch never rebases onto staging or takes staging back after a land.
+2. Each machine has one checkout and one dev branch (owner rule c119, 2026-10-27: "NO one machine should have one worktree. dev/sieun for metal-02, dev/sieun-mac for mac"). Every chat and job on us-metal02 commits on dev/sieun, and every chat and job on the Mac commits on dev/sieun-mac, with no per-job or per-session branch, clone or worktree. A dev branch takes commits on its own line, and it never rebases onto staging or takes staging back after a land.
 3. Each green verify-dev push run on a dev branch makes land.yml squash that branch's newest green commit onto staging with a Land-From trailer and no owner ask, and that Land-From sha is the base of the branch's next land.
 4. Only promote.yml moves main, by fast-forward to a checked staging sha, and only the release owner runs it.
 5. A job's regular work ends at staging (c154, 2026-10-22). The release owner walks each prod promote with the owner, and a red `staging-check.yml` run, the full check of staging, holds only that walk and never a land.
 6. The crawler, the observability dashboards and alert rules, and demo.virev.ai are the exceptions that jobs still ship to prod themselves, through `metal-deploy.yml`, `apps/infra/metal/deploy-obs.mjs` and the `deploy/virev-demo` ref that every dev push writes.
-7. Demo work goes on dev/sieun-mac-a, and `ci/*` branches and probe refs are throwaway refs that nobody commits on.
+7. Demo work goes on the Mac's dev/sieun-mac, and `ci/*` branches and probe refs are throwaway refs that nobody commits on.
 8. The full rules are in auto-sns-agent's `.agents/skills/repo/git-workflow/SKILL.md`, which you read with `node scripts/skills/read-skill.mjs repo/git-workflow` from that repo.
 
 ## Merges, pushes and promotes

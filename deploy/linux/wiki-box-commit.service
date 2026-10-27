@@ -1,5 +1,5 @@
 [Unit]
-Description=wiki-box-commit: commit the wiki pages written on this wiki host onto its sieun/dev
+Description=wiki-box-commit: commit the wiki pages written on this wiki host onto its dev/sieun
 After=network-online.target
 
 [Service]

@@ -10,10 +10,10 @@ run() { /usr/bin/python3 -B "$D/asa-tip-sync.py" | tail -1; }
 expect() { if tail -1 "$W/sync.log" | grep -q "$1"; then echo "PASS $2"; else echo "FAIL $2: $(tail -1 "$W/sync.log")"; fail=1; fi; }
 printf '#!/bin/sh\necho "$2 $3" >> "$(dirname "$0")/sent.txt"\n' > "$W/fake-prime"; chmod +x "$W/fake-prime"
 printf '#!/bin/sh\necho "$@" >> "$(dirname "$0")/board.txt"\necho "added a todo t9 \\"x\\""\n' > "$W/fake-board"; chmod +x "$W/fake-board"
-mkdir mac && cd mac && git init -q -b sieun/dev && mkdir -p apps/llm-wiki/content src
+mkdir mac && cd mac && git init -q -b dev/sieun && mkdir -p apps/llm-wiki/content src
 echo p1 > apps/llm-wiki/content/page.html; echo c1 > src/code.py; echo x > src/other.py
 git add . && $G commit -qm c1 && cd ..
-git clone -q -b sieun/dev mac box
+git clone -q -b dev/sieun mac box
 mac_commit() { (cd "$W/mac" && printf "$2" > "$1" && git add "$1" && $G commit -qm "$3"); }
 
 mac_commit src/code.py 'c2\n' c2; run >/dev/null; expect '"fast-forward"' "1 clean fast-forward"
@@ -71,9 +71,9 @@ grep -q "has not followed the tip host" "$W/sent.txt" && grep -q "follows the ti
 [ "$(grep -c "^01a11af8.* has not followed" "$W/sent.txt")" -le 3 ] && echo "PASS 12b one alert per block" || { echo "FAIL 12b $(grep -c "^01a11af8.* has not followed" "$W/sent.txt")"; fail=1; }
 (cd "$W/mac" && printf 'v1\n' > src/stale.py && git add src/stale.py && $G commit -qm stale0); run >/dev/null
 (cd "$W/mac" && printf 'v2\n' > src/stale.py && printf 'n1\n' > src/landed.py && git add src/stale.py src/landed.py && $G commit -qm land1)
-(cd "$W/box" && git fetch -q "$W/mac" sieun/dev && git update-ref refs/heads/sieun/dev FETCH_HEAD && printf 'never committed\n' > src/other.py)
+(cd "$W/box" && git fetch -q "$W/mac" dev/sieun && git update-ref refs/heads/dev/sieun FETCH_HEAD && printf 'never committed\n' > src/other.py)
 mac_commit src/stale.py 'v3\n' land2
-run >/dev/null; expect '"stale_index_count": 2' "13 a land that moved sieun/dev without the index leaves staged entries that no longer hold the move (Mac 86 staged paths, 10-18 11:35Z)"
+run >/dev/null; expect '"stale_index_count": 2' "13 a land that moved dev/sieun without the index leaves staged entries that no longer hold the move (Mac 86 staged paths, 10-18 11:35Z)"
 expect '"stale": \["src/stale.py", "src/landed.py"\]' "13b files on disk at a state the branch moved past take the tip's bytes"
 [ "$(cat "$W/box/src/stale.py")" = v3 ] && [ "$(cat "$W/box/src/landed.py")" = n1 ] && [ "$(cat "$W/box/src/other.py")" = "never committed" ] && [ "$(cat "$W"/carried/*/src/stale.py)" = v1 ] \
   && [ -z "$(cd "$W/box" && git status --porcelain -- src/stale.py src/landed.py)" ] && echo "PASS 13c tip bytes on disk, old bytes saved, the never-committed edit stays" || { echo "FAIL 13c $(tail -1 "$W/sync.log")"; fail=1; }
@@ -88,7 +88,7 @@ mkdir -p "$W/mac/apps/virev-demo"
 (cd "$W/mac" && printf 'base\n' > apps/virev-demo/app.css && printf 'v1\n' > apps/virev-demo/old.svelte && printf 'a\nb\nc\n' > src/ci.py \
   && git add apps/virev-demo src/ci.py && $G commit -qm demo0 && printf 'v2\n' > apps/virev-demo/old.svelte && git add apps/virev-demo && $G commit -qm demo1 \
   && git checkout -qb ci/demo-blue-sparingly && printf 'blue sparingly\n' > apps/virev-demo/app.css && printf 'a\nb\nc\nci\n' > src/ci.py \
-  && git add apps/virev-demo src/ci.py && $G commit -qm blue && git checkout -q sieun/dev); run >/dev/null
+  && git add apps/virev-demo src/ci.py && $G commit -qm blue && git checkout -q dev/sieun); run >/dev/null
 (cd "$W/box" && git fetch -q "$W/mac" ci/demo-blue-sparingly:refs/remotes/origin/ci/demo-blue-sparingly \
   && git show origin/ci/demo-blue-sparingly:apps/virev-demo/app.css > apps/virev-demo/app.css && git show origin/ci/demo-blue-sparingly:src/ci.py > src/ci.py \
   && printf 'v1\n' > apps/virev-demo/old.svelte && touch -d '2 hours ago' apps/virev-demo/app.css apps/virev-demo/old.svelte)
@@ -97,11 +97,11 @@ run >/dev/null; expect '"carried": \["src/ci.py"\]' "16 bytes that only a ci/ br
 expect '"kept_local": \["apps/virev-demo/app.css"\]' "16b a demo file the tip changes keeps its bytes"
 [ "$(cat "$W/box/apps/virev-demo/app.css")" = "blue sparingly" ] && [ "$(cat "$W/box/apps/virev-demo/old.svelte")" = v1 ] && [ "$(cat "$W/box/src/ci.py" | tr '\n' ' ')" = "A b c ci " ] \
   && echo "PASS 16c both demo files keep their bytes, also one at an older tip state, and the ci/ edit merges onto the tip" || { echo "FAIL 16c $(tail -1 "$W/sync.log")"; fail=1; }
-(cd "$W/mac" && git branch -q dev/sieun-mac-a sieun/dev && git checkout -q dev/sieun-mac-a)
-(cd "$W/box" && git config agent.branch dev/sieun-mac-a)
-run >/dev/null; expect 'not dev/sieun-mac-a' "17 a checkout whose agent.branch is dev/sieun-mac-a skips while it sits on sieun/dev"
-(cd "$W/box" && git fetch -q "$W/mac" dev/sieun-mac-a:dev/sieun-mac-a && git checkout -q dev/sieun-mac-a); mac_commit src/code.py 'dev\n' dev1
-run >/dev/null; expect '"fast-forward"' "17b it follows the tip host's dev/sieun-mac-a"
-[ "$(cd "$W/box" && git rev-parse dev/sieun-mac-a)" = "$(cd "$W/mac" && git rev-parse dev/sieun-mac-a)" ] && [ "$(cd "$W/box" && git rev-parse refs/remotes/tip/dev/sieun-mac-a)" = "$(cd "$W/mac" && git rev-parse HEAD)" ] \
-  && echo "PASS 17c dev/sieun-mac-a and refs/remotes/tip/dev/sieun-mac-a sit at the tip host's commit" || { echo "FAIL 17c $(tail -1 "$W/sync.log")"; fail=1; }
+(cd "$W/mac" && git branch -q dev/sieun-mac dev/sieun && git checkout -q dev/sieun-mac)
+(cd "$W/box" && git config agent.branch dev/sieun-mac)
+run >/dev/null; expect 'not dev/sieun-mac' "17 a checkout whose agent.branch is dev/sieun-mac skips while it sits on dev/sieun"
+(cd "$W/box" && git fetch -q "$W/mac" dev/sieun-mac:dev/sieun-mac && git checkout -q dev/sieun-mac); mac_commit src/code.py 'dev\n' dev1
+run >/dev/null; expect '"fast-forward"' "17b it follows the tip host's dev/sieun-mac"
+[ "$(cd "$W/box" && git rev-parse dev/sieun-mac)" = "$(cd "$W/mac" && git rev-parse dev/sieun-mac)" ] && [ "$(cd "$W/box" && git rev-parse refs/remotes/tip/dev/sieun-mac)" = "$(cd "$W/mac" && git rev-parse HEAD)" ] \
+  && echo "PASS 17c dev/sieun-mac and refs/remotes/tip/dev/sieun-mac sit at the tip host's commit" || { echo "FAIL 17c $(tail -1 "$W/sync.log")"; fail=1; }
 exit $fail

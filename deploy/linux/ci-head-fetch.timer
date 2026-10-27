@@ -1,5 +1,5 @@
 [Unit]
-Description=Run ci-head-fetch every 5 minutes, so the box's origin/sieun/dev follows the pushed head
+Description=Run ci-head-fetch every 5 minutes, so the box's origin/dev/sieun follows the pushed head
 
 [Timer]
 OnBootSec=1min

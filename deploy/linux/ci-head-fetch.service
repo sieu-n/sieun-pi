@@ -1,10 +1,10 @@
 [Unit]
-Description=ci-head-fetch: fetch origin's sieun/dev into refs/remotes/origin/sieun/dev of the box checkout, so pins and lands on the box see the pushed head. It writes that one ref and never sieun/dev, the working tree or .git/index.
+Description=ci-head-fetch: fetch origin's dev/sieun, us-metal02's one dev branch (c119), into refs/remotes/origin/dev/sieun of the box checkout, so pins and lands on the box see the pushed head. It writes that one ref and never dev/sieun, the working tree or .git/index.
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=oneshot
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
-ExecStart=/usr/bin/git -C %h/Documents/Github/auto-sns-agent -c gc.auto=0 -c maintenance.auto=false fetch --no-tags --no-write-fetch-head --no-recurse-submodules --quiet origin +refs/heads/sieun/dev:refs/remotes/origin/sieun/dev
+ExecStart=/usr/bin/git -C %h/Documents/Github/auto-sns-agent -c gc.auto=0 -c maintenance.auto=false fetch --no-tags --no-write-fetch-head --no-recurse-submodules --quiet origin +refs/heads/dev/sieun:refs/remotes/origin/dev/sieun
 TimeoutStartSec=2min
