@@ -94,3 +94,40 @@ export function onChange(listener: (event: { type: "registered" | "unregistered"
   store().listeners.add(listener);
   return () => store().listeners.delete(listener);
 }
+
+/**
+ * A family member that is known but not loaded, such as a closed RLM child or a root that pi-host unloaded.
+ * pi-rlm and pi-host register these rows. `wake()` opens the session and resolves with its entry once pi-agent-bus has registered it.
+ * While an entry with the same id is registered, `dormant()` and `dormantOf()` hide the row, and the owner replaces or removes it with `registerDormant` and `unregisterDormant`.
+ */
+export interface DormantAgent extends Identity {
+  id: string;
+  cwd: string;
+  sessionFile?: string;
+  firstMessage?: string;
+  wake(): Promise<AgentEntry>;
+}
+
+const DORMANT_KEY = Symbol.for("sieun-pi.pi-stack.registry.dormant");
+
+function dormantStore(): Map<string, DormantAgent> {
+  const g = globalThis as unknown as Record<symbol, Map<string, DormantAgent> | undefined>;
+  return (g[DORMANT_KEY] ??= new Map());
+}
+
+
+export function registerDormant(row: DormantAgent): void {
+  dormantStore().set(row.id, row);
+}
+
+export function unregisterDormant(sessionId: string): void {
+  dormantStore().delete(sessionId);
+}
+
+export function dormant(): DormantAgent[] {
+  return [...dormantStore().values()].filter(row => !store().agents.has(row.id));
+}
+
+export function dormantOf(sessionId: string): DormantAgent | undefined {
+  return store().agents.has(sessionId) ? undefined : dormantStore().get(sessionId);
+}
