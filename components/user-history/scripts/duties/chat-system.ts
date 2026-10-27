@@ -128,7 +128,9 @@ function localCopy(file: string | undefined): { file: string; host: string } | u
  * the lead metric's misses under its fix step with whether they moved (`underFix`, `fixStepStreak`), and when its fix can show in a windowed
  * count while the fix's job waits inside the window (`windowWait`, `fixWindowWait`).
  */
-export type RedDuty = FleetDuty & { agingSince?: number; agingUntil?: number; underFix?: ReturnType<typeof fixStepStreak>; windowWait?: number };
+export type RedDuty = FleetDuty & { agingSince?: number; agingUntil?: number; underFix?: ReturnType<typeof fixStepStreak>; windowWait?: number;
+  /** The fix step reads `blocked`: its fix is not in place yet (a build not installed, a land not made), so its runs judge no fix. */
+  fixBlocked?: true };
 
 /** The ids of the plan items above `id` on a board, nearest first: what a fix step's own number can be read from (`fixStepStreak`). */
 export function itemsAbove(board: ChatBoard | null, id: string): string[] {
@@ -229,7 +231,9 @@ export interface NotMoving { chat: string; duty: string; line: string }
  * measured: over the 7,011 runs in the 118 runs files on 10-22, a missed metric with no move reached its target within 10 more runs 86% of the
  * time after 1 miss, 76% after 2, 67% after 3 and 32% after 12 or more.
  * A windowed count with no new event (`quietSince`) only waits, as does one whose fix's job waits inside the window (`windowWait`), and a duty whose missed metrics' fix steps all wait on an open For you todo
- * (`FleetDuty.held`) waits on the owner and owes no new job.
+ * (`FleetDuty.held`) waits on the owner and owes no new job. A blocked fix step (`fixBlocked`) is a fix not yet in place: at 14:40Z on 10-27 d9
+ * asked to replace AI harness p1127, whose Prime build with ctx.waitForCredential was never installed on us-metal02, so pi-pool's park could not
+ * fire and quiet_agent_gb could not move.
  * When the runs read a number for the item the step works (`fixStepStreak` with `itemsAbove`), the move is judged on that number and the
  * line names it, since a count of goals or risks moves only when one clears.
  */
@@ -237,7 +241,7 @@ export function fixNotMoving(red: readonly RedDuty[], name: (chat: string) => st
   return red.flatMap(duty => {
     const metric = duty.metric;
     const under = duty.underFix;
-    if (duty.held || !duty.fix || metric?.fix?.step !== duty.fix || duty.agingSince !== undefined || metric.quietSince !== undefined || duty.windowWait !== undefined || !under ||
+    if (duty.held || duty.fixBlocked || !duty.fix || metric?.fix?.step !== duty.fix || duty.agingSince !== undefined || metric.quietSince !== undefined || duty.windowWait !== undefined || !under ||
       under.moved || under.misses < CHANGE_APPROACH_MISSES) return [];
     const worked = under.worked;
     const stall = worked ? `${worked.item}, the item ${duty.fix} works, read ${show(worked.to)} against ${show(worked.target)}, no closer than its ${show(worked.from)} when the first of those runs measured it`
@@ -922,7 +926,8 @@ async function main(): Promise<void> {
     const under = duty.fix && metric ? { underFix: fixStepStreak(own, metric.key, duty.fix, itemsAbove(board, duty.fix), judging) } : {};
     const judgedFrom = under.underFix?.judgedFrom;
     const waits = [fixWindowWait(metric, step, wakes, now), judgedFrom !== undefined && judgedFrom > now ? judgedFrom : undefined].filter((at): at is number => at !== undefined);
-    const entry: RedDuty = { ...duty, ...metric ? { metric } : {}, ...under, ...since === undefined ? {} : { agingSince: since }, ...until === undefined ? {} : { agingUntil: until } };
+    const entry: RedDuty = { ...duty, ...metric ? { metric } : {}, ...under, ...since === undefined ? {} : { agingSince: since }, ...until === undefined ? {} : { agingUntil: until },
+      ...step?.status === "blocked" ? { fixBlocked: true as const } : {} };
     // The wait is named only where it keeps d9 from asking to replace the fix, judged as before windows and the item's own reading.
     const plain = duty.fix && metric ? fixStepStreak(own, metric.key, duty.fix, itemsAbove(board, duty.fix)) : undefined;
     const hides = plain !== undefined && fixNotMoving([{ ...entry, underFix: plain }], () => "").length > 0;

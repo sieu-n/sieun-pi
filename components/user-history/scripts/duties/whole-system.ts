@@ -295,6 +295,28 @@ export function readDaemonStops(lines: readonly string[]): DaemonStops {
   return { restarts, sigterms };
 }
 
+/** A supervisor start on the box's own socket, /tmp/prime-agent-<uid>/daemon.sock; a rig's daemon logs to the same folder on its own socket. */
+const LIVE_SUPERVISOR_LISTENING = /^\[(\S+Z)\] supervisor: Prime Agent daemon supervisor \S+ listening on \/tmp\/prime-agent-\d+\/daemon\.sock$/;
+
+/** When the box's own daemon supervisor started listening, from its log lines: a restart, an update's handoff or the first start after a boot. */
+export function readDaemonStarts(lines: readonly string[]): number[] {
+  return lines.flatMap(line => {
+    const at = Date.parse(LIVE_SUPERVISOR_LISTENING.exec(line)?.[1] ?? "");
+    return Number.isFinite(at) ? [at] : [];
+  });
+}
+
+/**
+ * How long after its daemon starts a box's quiet_agent_gb gives no reading. No worker can read quiet until the quiet window after it loads, so
+ * the box reads near 0 while the restore and the resumes fill pi-pool's queue: after the 12:56:40Z start on 10-27 the queue grew from 39 runs
+ * at 12:57Z to 166 at 13:19Z, and after the 16:48:55Z start that day d7 read 0 GB at 16:49Z while 124 runs queued by 16:54Z.
+ */
+export const RESTART_SETTLE_MS = 30 * MINUTE;
+
+/** Whether a box minute falls within RESTART_SETTLE_MS after one of that box's daemon starts. */
+export const settling = (starts: readonly { host: string; at: number }[], host: string, at: number): boolean =>
+  starts.some(start => start.host === host && start.at <= at && at < start.at + RESTART_SETTLE_MS);
+
 /**
  * The proof that an archived cut was an interruption: its archive or abort fell inside a supervisor restart window or at a worker SIGTERM.
  * Undefined when there is none, which is a deliberate stop (a parent's rlm.delete_subagent, the parker, a person) or work replaced since.
@@ -710,6 +732,8 @@ export interface Inputs {
   now: number;
   /** The quiet window (src/quiet-minutes.ts) in ms; absent, QUIET_MINUTES. */
   quietMs?: number;
+  /** Each box's daemon supervisor starts (`readDaemonStarts`); quiet readings within RESTART_SETTLE_MS after one are void. */
+  daemonStarts?: readonly { host: string; at: number }[];
   watch: readonly WatchLine[];
   /** The last day of watch lines, for each harness process's normal size (`oversized`); absent, no process is judged. */
   day?: readonly WatchLine[];
@@ -1260,7 +1284,10 @@ export function measure(input: Inputs): PrecheckOutput {
   }).join("; ") });
   const { stuck, redDuties } = planCounts(input);
   const quietMs = input.quietMs ?? QUIET_MINUTES * MINUTE;
-  const quiet = quietReadings(input.watch, start, start + WINDOW_MS + MINUTE, quietMs);
+  const allQuiet = quietReadings(input.watch, start, start + WINDOW_MS + MINUTE, quietMs);
+  const starts = input.daemonStarts ?? [];
+  const quiet = allQuiet.filter(reading => !settling(starts, reading.host, reading.at));
+  const voided = allQuiet.length - quiet.length;
   const worst = quiet.reduce<QuietReading | undefined>((top, reading) => !top || reading.gb >= top.gb ? reading : top, undefined);
   const worstByHost = new Map<string, QuietReading>();
   for (const reading of quiet) if ((worstByHost.get(reading.host)?.gb ?? -1) <= reading.gb) worstByHost.set(reading.host, reading);
@@ -1369,6 +1396,8 @@ export function measure(input: Inputs): PrecheckOutput {
     `${Math.round((worst.at - worst.whole.since) / MINUTE)} min into a stretch with no session working that began by ${clock(worst.whole.since)}; ` +
     `the target is under ${QUIET_TARGET_GB} GB once ${quietWords} min pass with nobody working. ${quiet.filter(reading => reading.whole).length} box minutes in the window sat past that mark.` });
   else if (worst) flagged.push({ kind: "quiet_agents", excerpt: quietTreeWords(worst, quietWords) });
+  else if (voided) flagged.push({ kind: "gap", excerpt: `All ${voided} box minutes that read quiet memory fell within ${RESTART_SETTLE_MS / MINUTE} min after a daemon start ` +
+    `(${starts.filter(entry => entry.at < now && entry.at >= start - RESTART_SETTLE_MS).map(entry => `${entry.host} ${clock(entry.at)}`).join(", ")}), so quiet_agent_gb has no minute to judge` });
   else flagged.push({ kind: "gap", excerpt: `No box line in the last 30 minutes listed its workers or went ${quietWords} min with no session working, so quiet_agent_gb has no minute to judge` });
   const reads = latest ? hostViews(latest).filter(view => view.agents) : [];
   if (latest && reads.length) flagged.push({ kind: "agents_now", excerpt: `At ${clock(Date.parse(latest.at))}: ${reads.map(view => `${view.name} ${agentWords(view.agents!)}`).join("; ")}.` });
@@ -1721,6 +1750,7 @@ async function main(): Promise<void> {
   const result = measure({
     ...plan,
     watch, day, quietMs,
+    daemonStarts: supervisorLogs.flatMap(readDaemonStarts).map(at => ({ host: box, at })),
     log: readServiceLog(serviceLines),
     pool: readPoolLog(poolLines, now),
     // The heads are the sessions pi-pool leads, as its turns.json lists them, beside the owner's chats. At 03:31:09Z on 10-23 "three things 3"
