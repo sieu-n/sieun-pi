@@ -21,7 +21,7 @@ test("the box tip probe gives the same patch-ids from its cache, computes only n
   };
   const cacheFile = join(home, ".cache/box-parity/patch-ids.json");
   const cache = () => JSON.parse(readFileSync(cacheFile, "utf8")) as Record<string, string>;
-  git("init", "-q", "-b", "sieun/dev");
+  git("init", "-q", "-b", "dev/sieun");
   const first = commit("a.txt", "a");
   git("commit", "-q", "--allow-empty", "-m", "empty");
   const empty = git("rev-parse", "HEAD");
@@ -43,15 +43,15 @@ test("the box tip probe gives the same patch-ids from its cache, computes only n
   assert.match(cache()[second]!, /^[0-9a-f]{40}$/);
 });
 
-test("the box tip probe sends the hash of every commit sieun/dev holds, past its last 2000", () => {
+test("the box tip probe sends the hash of every commit dev/sieun holds, past its last 2000", () => {
   const home = mkdtempSync(join(tmpdir(), "box-parity-ids-"));
   const repo = join(home, "Documents/Github/auto-sns-agent");
   mkdirSync(repo, { recursive: true });
-  execFileSync("git", ["-C", repo, "init", "-q", "-b", "sieun/dev"]);
+  execFileSync("git", ["-C", repo, "init", "-q", "-b", "dev/sieun"]);
   const stream = Array.from({ length: 2002 }, (_, n) =>
-    `commit refs/heads/sieun/dev\nmark :${n + 1}\ncommitter t <t@t> ${1_700_000_000 + n} +0000\ndata 2\nc${n % 10}\n${n ? `from :${n}\n` : ""}`).join("\n");
+    `commit refs/heads/dev/sieun\nmark :${n + 1}\ncommitter t <t@t> ${1_700_000_000 + n} +0000\ndata 2\nc${n % 10}\n${n ? `from :${n}\n` : ""}`).join("\n");
   execFileSync("git", ["-C", repo, "fast-import", "--quiet"], { input: stream });
-  const oldest = execFileSync("git", ["-C", repo, "rev-list", "--max-parents=0", "sieun/dev"], { encoding: "utf8" }).trim();
+  const oldest = execFileSync("git", ["-C", repo, "rev-list", "--max-parents=0", "dev/sieun"], { encoding: "utf8" }).trim();
   const arg = Buffer.from(JSON.stringify({ host: "box", rows: [{ id: "tip", tool: "checkout tip", probes: [{ tip: true }] }], known: {} })).toString("base64");
   const tip = (JSON.parse(execFileSync("python3", [PROBE, arg], { env: { ...process.env, HOME: home }, encoding: "utf8" })) as { values: { tip: string[] } }).values.tip[0]!;
   const ids = (JSON.parse(tip.slice(8)) as { ids: string[] }).ids;

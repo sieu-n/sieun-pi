@@ -16,7 +16,7 @@ import { grafanaClient, readGrafanaAuth, sqlRows } from "./estate-reads.ts";
  * - ranked_metrics_shown reads the page the wiki serves and counts the 10 tracked metrics whose page rows show the newest store day's numbers, with
  *   code_health_page.py's own formatting: the 8 the agent-code-metrics page ranks for both repos, plus auto-sns-agent's tests and CI (sieun-pi has
  *   no GitHub CI). Tests count only when that day's test load holds every suite any test load of the 7 days ending on it held, so a load that read
- *   2 of 12 suites, as the 16:50Z run on 10-19 did, misses. A suite stops being expected once no sieun/dev verify-dev push run printed it for 24 h, read
+ *   2 of 12 suites, as the 16:50Z run on 10-19 did, misses. A suite stops being expected once no dev/sieun verify-dev push run printed it for 24 h, read
  *   from otel.ci_test_results on prod ClickHouse, which the ci-history service fills from the same job logs on its own. CI counts only when that day has ci-guarantees rows. The owner asked on 2026-10-15:
  *   "now the same system will monitor and report test stats, CI stats."
  * - backup_age_h reads the newest dated copy on the store box.
@@ -54,7 +54,7 @@ export const TRACKED: readonly Tracked[] = [
 /** Days of test loads, ending on the newest day, whose suites set the expected suite list. */
 export const SUITE_DAYS = 7;
 /**
- * A suite no sieun/dev verify-dev push run printed for this long has left CI and stops being expected, as pytest-seo did when ed6e0f5e7f dropped
+ * A suite no dev/sieun verify-dev push run printed for this long has left CI and stops being expected, as pytest-seo did when ed6e0f5e7f dropped
  * its leg on 10-19. The test load reads the verify-dev push runs of the last day (code-health.py TESTS_WINDOW), so this is the same window.
  */
 export const SUITE_GONE_MS = DAY;
@@ -64,8 +64,11 @@ export const SUITE_GONE_MS = DAY;
  * workflow_dispatch probe runs 39895441278, 39966570318 and 39972125601 printed it on 10-23, and the push-only load could never hold it.
  */
 export const CI_SUITES_SQL = "SELECT suite, toUnixTimestamp(max(completed_at)) AS last FROM otel.ci_test_results WHERE workflow = 'verify-dev.yml' " +
-  "AND head_branch = 'sieun/dev' AND completed_at > now() - INTERVAL 8 DAY " +
+  // sieun/dev stays only for runs before the 2026-10-27 08:17Z cutover to dev/sieun (c119), so older days of the 8-day window still count.
+  "AND head_branch IN ('dev/sieun', 'sieun/dev') AND completed_at > now() - INTERVAL 8 DAY " +
   "AND run_id IN (SELECT run_id FROM otel.ci_workflow_runs WHERE workflow = 'verify-dev.yml' AND event = 'push') GROUP BY suite";
+/** Where the page module is read from: us-metal02's dev branch (c119). */
+export const PAGE_MODULE_REF = "origin/dev/sieun";
 /** The steps one code-health-daily.mjs run logs, in its order. */
 export const STEPS = REPOS.flatMap(repo => [`run ${repo}`, `missing ${repo}`]).concat(["load-ci", "load-tests", "page", "backup"]);
 
@@ -219,7 +222,7 @@ export type Exec = (file: string, args: readonly string[], timeoutMs: number) =>
 /** Store days from today back 15 days, so the newest day has its 7 days of earlier test loads, read from a copy of the store so the timer's write lock never blocks the read. */
 async function storeDays(exec: Exec, now: number): Promise<Record<string, StoreDay>> {
   const module = join(tmpdir(), `code-health-page-${process.pid}.py`);
-  await writeFile(module, await exec("git", ["-C", CHECKOUT, "show", "origin/sieun/dev:apps/llm-wiki/scripts/code_health_page.py"], 20_000));
+  await writeFile(module, await exec("git", ["-C", CHECKOUT, "show", `${PAGE_MODULE_REF}:apps/llm-wiki/scripts/code_health_page.py`], 20_000));
   try {
     // measured 12 s on us-metal02 on 2026-10-18 for 9 days
     const out = await exec("uv", ["run", "-q", "--no-project", "--with", "duckdb", "python", "-c", HELPER, module, STORE, kstDay(now), "16"], 120_000);
@@ -267,7 +270,7 @@ export async function measure(exec: Exec, fetchPage: () => Promise<string>, read
       const lastInCi = await readCiSuites().catch((error: unknown) => { flag("source_error", `otel.ci_test_results: ${message(error)}; every suite of the window stays expected`); return null; });
       const suites = newest ? expectedSuites(days, newest, lastInCi, now) : [];
       const gone = newest && lastInCi ? expectedSuites(days, newest).filter(suite => !suites.includes(suite)) : [];
-      if (gone.length) flag("suites_gone", `no sieun/dev verify-dev push run printed ${gone.map(suite => `${suite} (last ${lastInCi![suite] ? new Date(lastInCi![suite]!).toISOString() : "not in 8 days"})`).join(", ")} in the last 24 h, so they are not expected`);
+      if (gone.length) flag("suites_gone", `no dev/sieun verify-dev push run printed ${gone.map(suite => `${suite} (last ${lastInCi![suite] ? new Date(lastInCi![suite]!).toISOString() : "not in 8 days"})`).join(", ")} in the last 24 h, so they are not expected`);
       const ranked = newest ? rankedGaps(page, pageHotspots(html), days[newest]!, suites) : TRACKED.map(({ name }) => ({ name, gaps: ["no store day of the last 16 has rows for both repos"] }));
       metrics.ranked_metrics_shown = ranked.filter(metric => !metric.gaps.length).length;
       flag("ranked", `${metrics.ranked_metrics_shown} of ${TRACKED.length} tracked metrics show ${newest ?? "the newest day"}'s numbers on the page; its test load holds ${newest ? days[newest]!.suites.length : 0} of the ${suites.length} suites the test loads of the last ${SUITE_DAYS} days held (${suites.join(", ") || "none"})`);

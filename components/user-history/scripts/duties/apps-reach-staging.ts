@@ -11,7 +11,7 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  * answers yet, or answered and still open); one with tap answers and no reply only waits on the owner and goes to owner_held_review_max_h, run
  * detail. Run detail, not judged: owner_held_review_max_h and each tab's 0 to 100% status (`tabs`), the owner's "report status (in
  * 0%-100%) of each tab". An unreadable Staging line or board fails the run, since neither the headline nor the reviews can be read without it.
- * It reads no CI: 5180 demo work stays on disk and never goes to sieun/dev (owner 10-18: "no need to push at all even. why check for CI?").
+ * It reads no CI: 5180 demo work stays on disk and never goes to dev/sieun (owner 10-18: "no need to push at all even. why check for CI?").
  * No model call, no browser.
  */
 

@@ -241,7 +241,7 @@ test("a glob with atTip names only files in folders the host's tip holds, so a d
   for (const app of ["web", "gone"]) mkdirSync(join(repo, "apps", app), { recursive: true });
   const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8",
     env: { ...process.env, HOME: home, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" } }).trim();
-  git("init", "-q", "-b", "sieun/dev");
+  git("init", "-q", "-b", "dev/sieun");
   writeFileSync(join(repo, "apps/web/package.json"), "{}");
   git("add", "apps/web/package.json");
   git("commit", "-q", "-m", "web");
@@ -253,13 +253,13 @@ test("a glob with atTip names only files in folders the host's tip holds, so a d
   assert.deepEqual(out.values.env, ['set:["apps/web/.env.local"]', 'set:[".env"]', 'set:["apps/gone/.env.local", "apps/web/.env.local"]']);
 });
 
-test("the tip probe reads the Mac's agent.branch and the box's sieun/dev", () => {
+test("the tip probe reads the Mac's agent.branch, else its current branch, and the box's dev/sieun", () => {
   const home = mkdtempSync(join(tmpdir(), "box-parity-tip-"));
   const repo = join(home, "Documents/Github/auto-sns-agent");
   mkdirSync(repo, { recursive: true });
   const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8",
     env: { ...process.env, HOME: home, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" } }).trim();
-  git("init", "-q", "-b", "sieun/dev");
+  git("init", "-q", "-b", "dev/sieun");
   git("commit", "-q", "--allow-empty", "-m", "shared");
   const shared = git("rev-parse", "HEAD").slice(0, 10);
   git("checkout", "-q", "-b", "dev/mac");
@@ -272,6 +272,8 @@ test("the tip probe reads the Mac's agent.branch and the box's sieun/dev", () =>
     const out = JSON.parse(execFileSync("python3", [join(import.meta.dirname, "../scripts/duties/box-parity-probe.py"), arg], { env: { ...process.env, HOME: home }, encoding: "utf8" })) as ProbeOutput;
     return out.values.tip![0]!;
   };
+  assert.deepEqual((JSON.parse(run("mac").slice(8)) as [string][]).map(([id]) => id), [own, shared]);
+  git("config", "agent.branch", "dev/sieun");
   assert.deepEqual((JSON.parse(run("mac").slice(8)) as [string][]).map(([id]) => id), [shared]);
   git("config", "agent.branch", "dev/mac");
   assert.deepEqual((JSON.parse(run("mac").slice(8)) as [string, string, string[], boolean][]).map(([id, , , pushed]) => [id, pushed]), [[own, false], [shared, false]]);

@@ -8,7 +8,7 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
 /**
  * The Vent chat's "Vent gateway" precheck (`node --import tsx scripts/duties/vent-gateway.ts`). No model call, no browser, names only for keys.
  * - through_vent_pct, the headline: the share of in-scope outside call sites and inbound webhooks that go through Vent in prod. The list of
- *   call sites comes from the code at the sieun/dev tip through vent-share.py beside this file: the inventory rows whose call is still there
+ *   call sites comes from the code at the dev/sieun tip through vent-share.py beside this file: the inventory rows whose call is still there
  *   (a row whose files are deleted or no longer name the provider leaves, as a site_removed row) plus each direct provider call its call
  *   scan finds that no row covers (new_direct_site, never through Vent). A row counts as through when its code at origin/main, which prod
  *   runs, goes through Vent with no direct call (owner rule c67: the code path, never demand). Row 63
@@ -38,8 +38,9 @@ const SESSIONS = "apps/llm-wiki/content/sessions/2026/10/18";
 export const VENT_SHARE = join(dirname(fileURLToPath(import.meta.url)), "vent-share.py");
 const LISTERS = `${SESSIONS}/1610-vent-cutover-all-callers/data`;
 export const REF = "origin/main";
-/** The release tip, where the cutover lands first: its by-code count shows the code ahead of the next prod promote. */
-export const TIP = "origin/sieun/dev";
+/** us-metal02's dev branch dev/sieun (c119), where the cutover lands first: its by-code count shows the code ahead of the next prod promote. */
+export const TIP_BRANCH = "dev/sieun";
+export const TIP = `origin/${TIP_BRANCH}`;
 /** Convex deployments, from the cutover inventory's env-names-before.json (2026-10-18). */
 export const CONVEX = { staging: "tremendous-eel-825", production: "befitting-sparrow-356" } as const;
 const BOX = "us-metal01";
@@ -408,7 +409,7 @@ async function main(): Promise<void> {
   const at = Date.now();
   const dir = await mkdtemp(join(tmpdir(), "vent-gateway-"));
   try {
-    const fetched = await run("git", ["fetch", "--quiet", "origin", "main", "sieun/dev"]).then(() => null, (error: unknown) => errorText(error));
+    const fetched = await run("git", ["fetch", "--quiet", "origin", "main", TIP_BRANCH]).then(() => null, (error: unknown) => errorText(error));
     const token = await grafanaToken().catch((error: unknown) => ({ error: errorText(error) }));
     const tokenText = typeof token === "string" ? token : undefined;
     const [shareResult, hooks, keys, removed] = await Promise.all([
@@ -418,7 +419,7 @@ async function main(): Promise<void> {
       removedReads().catch((error: unknown) => ({ error: errorText(error) })),
     ]);
     const result = ventMetrics({ share: shareResult, webhooks: hooks, keys, removed }, at);
-    if (fetched) result.flagged!.push({ at, kind: "stale_ref", excerpt: `git fetch origin main sieun/dev failed, so ${REF} and ${TIP} may be old: ${fetched}`.slice(0, 300) });
+    if (fetched) result.flagged!.push({ at, kind: "stale_ref", excerpt: `git fetch origin main ${TIP_BRANCH} failed, so ${REF} and ${TIP} may be old: ${fetched}`.slice(0, 300) });
     await writeFile(output, JSON.stringify(result, null, 2) + "\n");
   } finally {
     await rm(dir, { recursive: true, force: true });

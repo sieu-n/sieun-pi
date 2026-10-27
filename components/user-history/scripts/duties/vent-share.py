@@ -12,7 +12,7 @@ the integrations in apps/vent/src/vent/tables.py, so a new Vent integration need
 as traffic.error and the code verdicts still write, since the gateway duty's headline counts code paths, not traffic (owner rule c67).
 
 Run from the auto-sns-agent repo root:
-  python3 <this> [--ref origin/sieun/dev] [--ref origin/main] [--traffic] [--json out.json]
+  python3 <this> [--ref origin/dev/sieun] [--ref origin/main] [--traffic] [--json out.json]
 Stdlib only. Reads git objects, never the working tree (except the inventory file), so any ref works without a checkout.
 """
 from __future__ import annotations
@@ -518,12 +518,14 @@ def traffic_day(token: str, day: int) -> list[dict]:
 
 
 TABLES = "apps/vent/src/vent/tables.py"
+# us-metal02's dev branch (c119), where work lands before main.
+TIP_REF = "origin/dev/sieun"
 
 
 def tables_ref() -> str | None:
-    """The ref whose tables.py says what Vent serves: main, then sieun/dev, then the newest ci/ branch that has the file."""
+    """The ref whose tables.py says what Vent serves: main, then dev/sieun, then the newest ci/ branch that has the file."""
     newest_ci = git("for-each-ref", "--sort=-committerdate", "--format=%(refname:short)", "refs/remotes/origin/ci").split()
-    for ref in ["origin/main", "origin/sieun/dev", *newest_ci]:
+    for ref in ["origin/main", TIP_REF, *newest_ci]:
         if subprocess.run(["git", "cat-file", "-e", f"{ref}:{TABLES}"], capture_output=True).returncode == 0:
             return ref
     return None
@@ -567,12 +569,12 @@ def site_has_traffic(site: Site, rows: list[dict], env: str, integrations: dict[
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--ref", action="append", help="git ref to measure (repeatable); default origin/sieun/dev")
+    ap.add_argument("--ref", action="append", help="git ref to measure (repeatable); default " + TIP_REF)
     ap.add_argument("--traffic", action="store_true", help="also read Vent's vent.call rows from otel ClickHouse")
     ap.add_argument("--days", type=int, default=7)
     ap.add_argument("--json", help="write the full result here")
     a = ap.parse_args()
-    refs = a.ref or ["origin/sieun/dev"]
+    refs = a.ref or [TIP_REF]
     base = Tree(INVENTORY_REF)
     sites = load_sites(base)
     assert len(sites) == 66, f"expected 66 in-scope rows (70 less the 4 c181 PostHog rows), got {len(sites)}"

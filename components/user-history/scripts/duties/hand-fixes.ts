@@ -641,7 +641,7 @@ export async function macProcesses(signal: AbortSignal): Promise<MacProcess[]> {
 }
 
 /**
- * Whether a prod release holds a commit, in the auto-sns-agent checkout. A land squashes its pinned sieun/dev tip into one staging commit with
+ * Whether a prod release holds a commit, in the auto-sns-agent checkout. A land squashes its pinned dev/sieun tip into one staging commit with
  * the same tree (land 38, 43490e7e9f, is d2119eae32's tree), so the commit counts when it is an ancestor of the release or of a commit with the
  * release's tree, or when one of those holds a commit whose `Replayed-From` trailer names it (land-object.mjs replays an object onto the tip).
  */

@@ -16,7 +16,7 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  *   and the first owner message that asked for it. The rules and the patterns of his words for each are in staging-design-rules.rules.json.
  * - design_rule_test_failures: failed tests in the virev-demo unit tests that catch a design rule by script (each rule's `tests`).
  *   A repeat stops counting once it is handled: the rules file's `handled` names the note's time and the commits that wrote its skill line and
- *   fixed its pages, and every one of those commits is on origin/dev/sieun-mac-a. The note itself cannot be unsent, so without this the
+ *   fixed its pages, and every one of those commits is on origin at the Mac's dev branch (dev/sieun-mac). The note itself cannot be unsent, so without this the
  *   number sat at 1 for a day after the 10-22 08:28Z Settings note was already fixed and written down, and each run asked for a fix job
  *   with nothing left to fix.
  * Run detail: design_notes_24h (notes that match any rule), handled_repeats_24h (repeats in 24 h whose handling is on origin), rules_not_written (rules he repeated in 24 h with no correction in force and no
@@ -105,7 +105,16 @@ export function searchRun(tests: readonly string[], host = SEARCH_HOST, dir = SE
 
 interface VitestReport { testResults?: { name?: string; assertionResults?: { fullName?: string; status?: string; failureMessages?: string[] }[] }[] }
 
-export async function measure(opts: { now: number; sessionFile: string; ledgerFile: string; skillFile: string; rulesFile: string; demoDir: string; vitest: string; search?: (tests: readonly string[]) => Promise<string>; landed?: (commit: string) => Promise<boolean> }): Promise<PrecheckOutput> {
+/** The Mac checkout's own dev branch (c119): its `agent.branch`, else its current branch, so the check follows the Mac's move to dev/sieun-mac. */
+export async function devBranch(repo: string): Promise<string> {
+  for (const args of [["config", "--get", "agent.branch"], ["branch", "--show-current"]]) {
+    const out = await new Promise<string>(resolve => execFile("git", args, { cwd: repo, encoding: "utf8" }, (_error, stdout) => resolve((stdout ?? "").trim())));
+    if (out) return out;
+  }
+  throw new Error(`${repo} has no agent.branch and no current branch`);
+}
+
+export async function measure(opts: { now: number; sessionFile: string; ledgerFile: string; skillFile: string; rulesFile: string; demoDir: string; vitest: string; search?: (tests: readonly string[]) => Promise<string>; landed?: (commit: string) => Promise<boolean>; landedRef?: string }): Promise<PrecheckOutput> {
   const { now } = opts;
   const flagged: FlaggedSlice[] = [];
   const metrics: Record<string, number> = { repeated_design_notes_24h: 0, design_rule_test_failures: 0, design_notes_24h: 0, handled_repeats_24h: 0, rules_not_written: 0, search_design_rule_findings: 0, source_errors: 0 };
@@ -145,7 +154,7 @@ export async function measure(opts: { now: number; sessionFile: string; ledgerFi
       if (done && done.commits.length && !missing.length) { metrics.handled_repeats_24h!++; continue; }
       open.push(entry);
       const text = entry.text.replace(/\s+/g, " ");
-      const excerpt = done ? `handled in ${done.commits.join(", ")}, but ${missing.join(", ") || "no commit"} is not on origin/dev/sieun-mac-a yet: ${text}` : text;
+      const excerpt = done ? `handled in ${done.commits.join(", ")}, but ${missing.join(", ") || "no commit"} is not on ${opts.landedRef ?? "the Mac's dev branch (dev/sieun-mac)"} yet: ${text}` : text;
       flagged.push({ chat: CHAT, at: entry.at, kind: "design_rule_repeat", item: entry.rules.join(","), excerpt: excerpt.length > 240 ? `${excerpt.slice(0, 239)}…` : excerpt });
     }
     metrics.repeated_design_notes_24h! += open.length;
@@ -202,6 +211,7 @@ async function main(): Promise<void> {
   const output = process.env.OUTPUT_FILE;
   if (!output) { process.stderr.write("staging-design-rules: OUTPUT_FILE is not set\n"); process.exit(2); }
   const repo = process.env.LLM_WIKI_REPO || join(homedir(), "Documents/Github/auto-sns-agent");
+  const landedRef = `origin/${await devBranch(repo)}`;
   const result = await measure({
     now: Date.now(),
     sessionFile: process.env.SESSION_FILE || join(homedir(), `.prime/agent/sessions/${CHAT}.jsonl`),
@@ -211,8 +221,9 @@ async function main(): Promise<void> {
     demoDir: join(repo, "apps/virev-demo"),
     vitest: join(repo, "node_modules/.bin/vitest"),
     search: tests => capture(...searchRun(tests)),
+    landedRef,
     landed: commit => new Promise(resolve => {
-      execFile("git", ["merge-base", "--is-ancestor", commit, "origin/dev/sieun-mac-a"], { cwd: repo }, error => resolve(!error));
+      execFile("git", ["merge-base", "--is-ancestor", commit, landedRef], { cwd: repo }, error => resolve(!error));
     }),
   });
   await writeFile(output, JSON.stringify(result, null, 2) + "\n");

@@ -84,9 +84,9 @@ interface BoxCommits { ids: string[]; patches: string[]; bytes: string[]; fetche
 
 /**
  * The Mac's last commits on its branch that the box cannot work on, from the probe's `commits:` values. A Mac commit is on the box when the box's
- * sieun/dev has its hash, a commit with its patch-id (taken without context lines, so a change carried onto another base matches), or, for every
+ * dev/sieun has its hash, a commit with its patch-id (taken without context lines, so a change carried onto another base matches), or, for every
  * path it touched, a commit that wrote the same bytes there, which covers a wiki page batch the box wrote again in other commits; or when a branch
- * the box fetched from origin holds its hash, such as the Mac's own dev/sieun-mac-a (c119). A commit missing on the box that the Mac pushed is a
+ * the box fetched from origin holds its hash, such as the Mac's own dev/sieun-mac (c119). A commit missing on the box that the Mac pushed is a
  * box gap, fixed by a fetch on the box. One the Mac never pushed is `unpushed`: the box cannot reach it, and only the Mac can fix that.
  */
 export function commitGaps(mac: string, box: string): { missing: string[]; unpushed: string[]; total: number } {

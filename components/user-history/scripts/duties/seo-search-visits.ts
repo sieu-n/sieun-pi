@@ -7,7 +7,7 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
 
 /**
  * The SEO guy's Search traffic precheck (`node --import tsx scripts/duties/seo-search-visits.ts`), an upkeep duty: the pages Google sends
- * people to keep their impressions, every blog change on the sieun/dev tip reaches GitHub within a day, no article carries copy brief.md bans,
+ * people to keep their impressions, every blog change on the dev/sieun tip reaches GitHub within a day, no article carries copy brief.md bans,
  * and every source reads. The owner's growth goals (10,000 blog and tool visits a day, 300 sign-ups a day) live on the plan as goals p56 and p71 (owner 10-18: "plan -> achieved ->
  * cleared & written on duty for maintanence only"), so goal_visits_d7, google_clicks_d7 and signups_goal_d28 stay in the output and its
  * flagged lines for the run to write into those goals' targets, and the duty file counts none of them.
@@ -43,17 +43,18 @@ export const DROP_SHARE = 0.2;
  */
 export const DROP_LAUNCH_DAYS = 2;
 /**
- * unshipped_blog_changes: a commit under apps/blog on the sieun/dev tip that is not on GitHub's sieun/dev UNSHIPPED_AFTER_MS after its commit
+ * unshipped_blog_changes: a commit under apps/blog on the dev/sieun tip that is not on GitHub's dev/sieun UNSHIPPED_AFTER_MS after its commit
  * time. On 10-16 and 10-17 35 creator pages waited about 25 h unpushed, and on 10-18 five blog changes waited 7 h.
  */
 export const UNSHIPPED_AFTER_MS = 24 * 3_600_000;
 export const BLOG_PATH = "apps/blog";
 /**
- * The shared sieun/dev tip. Since 2026-10-18 11:24Z it lives in the us-metal02 checkout's local branch and the release owner pushes origin
- * from there; the Mac copy (refs/remotes/mac/sieun/dev) went stale at that move.
+ * us-metal02's dev branch (c119). The checkout moved from sieun/dev to dev/sieun on 2026-10-27 08:17Z, so origin/sieun/dev stopped moving. The tip
+ * is the checkout's local branch, and the release owner pushes origin from there.
  */
-export const TIP_REF = "refs/heads/sieun/dev";
-export const SHIPPED_REF = "refs/remotes/origin/sieun/dev";
+export const BRANCH = "dev/sieun";
+export const TIP_REF = `refs/heads/${BRANCH}`;
+export const SHIPPED_REF = `refs/remotes/origin/${BRANCH}`;
 /**
  * banned_copy: program/brief.md rule 4, "Articles say 180M+ creators (owner: \"no it's 180M+ tho still\"), never 200M+ or 12M", and rule 5,
  * "Articles never promise \"no credit card\" or free search", the same claims apps/blog's next-step-copy.test.ts and hero-next-step.test.ts
@@ -195,21 +196,21 @@ export function visitsOutput(read: VisitsRead, at: number): PrecheckOutput {
     flagged.push({ at, kind: "signups", excerpt: `Sign-ups in 28 days: ${signups.d28}, ${signups.matched} matched in PostHog, ${fromGoal} with a blog or tool first page. By first page: ${Object.entries(signups.by_section).map(([key, value]) => `${key} ${value}`).join(", ")}.` });
   }
   const ship = read.ship;
-  if (!ship || isErr(ship)) fail("Git (auto-sns-agent tip against origin/sieun/dev)", ship?.error ?? "no answer", ["unshipped_blog_changes"]);
+  if (!ship || isErr(ship)) fail(`Git (auto-sns-agent tip against origin/${BRANCH})`, ship?.error ?? "no answer", ["unshipped_blog_changes"]);
   else {
     const late = unshippedBlogChanges(ship.commits, at);
     metrics.unshipped_blog_changes = late.length;
     flagged.push({ at, kind: "unshipped_blog_changes", excerpt: late.length
-      ? `${late.length} of ${ship.commits.length} ${BLOG_PATH} commits on ${ship.tipRef} are not on origin/sieun/dev after 24 h: ${late.slice(0, 10).map(commit => `${commit.sha.slice(0, 10)} ${hoursAgo(commit.committedAt, at)} h "${commit.subject.slice(0, 80)}"`).join(", ")}${late.length > 10 ? ", and more" : ""}.`
-      : `${ship.commits.length} ${BLOG_PATH} commits on ${ship.tipRef} are not on origin/sieun/dev yet, none older than 24 h.` });
+      ? `${late.length} of ${ship.commits.length} ${BLOG_PATH} commits on ${ship.tipRef} are not on origin/${BRANCH} after 24 h: ${late.slice(0, 10).map(commit => `${commit.sha.slice(0, 10)} ${hoursAgo(commit.committedAt, at)} h "${commit.subject.slice(0, 80)}"`).join(", ")}${late.length > 10 ? ", and more" : ""}.`
+      : `${ship.commits.length} ${BLOG_PATH} commits on ${ship.tipRef} are not on origin/${BRANCH} yet, none older than 24 h.` });
   }
   const copy = read.copy;
-  if (!copy || isErr(copy)) fail(`Git (${BLOG_CONTENT} on sieun/dev)`, copy?.error ?? "no answer", ["banned_copy"]);
+  if (!copy || isErr(copy)) fail(`Git (${BLOG_CONTENT} on ${BRANCH})`, copy?.error ?? "no answer", ["banned_copy"]);
   else {
     metrics.banned_copy = copy.banned.length;
     flagged.push({ at, kind: "banned_copy", excerpt: copy.banned.length
-      ? `${copy.banned.length} of ${copy.pages} ${BLOG_CONTENT} pages on sieun/dev carry copy brief.md rules 4 and 5 ban: ${copy.banned.slice(0, 20).map(page => `${page.path.slice(BLOG_CONTENT.length + 1)} (${page.phrases.join(", ")})`).join(", ")}${copy.banned.length > 20 ? ", and more" : ""}.`
-      : `None of ${copy.pages} ${BLOG_CONTENT} pages on sieun/dev carries copy brief.md rules 4 and 5 ban.` });
+      ? `${copy.banned.length} of ${copy.pages} ${BLOG_CONTENT} pages on ${BRANCH} carry copy brief.md rules 4 and 5 ban: ${copy.banned.slice(0, 20).map(page => `${page.path.slice(BLOG_CONTENT.length + 1)} (${page.phrases.join(", ")})`).join(", ")}${copy.banned.length > 20 ? ", and more" : ""}.`
+      : `None of ${copy.pages} ${BLOG_CONTENT} pages on ${BRANCH} carries copy brief.md rules 4 and 5 ban.` });
   }
   return { metrics, flagged };
 }
@@ -220,18 +221,18 @@ const runGit = (repo: string): Git => args => new Promise((resolve, reject) => {
     (error, stdout, stderr) => error ? reject(new Error(`git ${args[0]}: ${`${error.message} ${stderr}`.trim().slice(0, 300)}`)) : resolve(stdout));
 });
 
-/** Fetches GitHub's sieun/dev, then lists the apps/blog commits on the local sieun/dev tip (`TIP_REF`) that GitHub lacks. */
+/** Fetches GitHub's dev/sieun, then lists the apps/blog commits on the local dev/sieun tip (`TIP_REF`) that GitHub lacks. */
 export async function readShip(git: Git): Promise<ShipRead> {
-  await git(["fetch", "--quiet", "--no-tags", "origin", `+refs/heads/sieun/dev:${SHIPPED_REF}`]);
+  await git(["fetch", "--quiet", "--no-tags", "origin", `+${TIP_REF}:${SHIPPED_REF}`]);
   const log = await git(["log", "--format=%H%x09%ct%x09%s", TIP_REF, `^${SHIPPED_REF}`, "--", BLOG_PATH]);
   const commits = log.split("\n").filter(Boolean).map(line => {
     const [sha, seconds, ...subject] = line.split("\t");
     return { sha: sha!, committedAt: Number(seconds) * 1000, subject: subject.join("\t") };
   });
-  return { tipRef: "sieun/dev", commits };
+  return { tipRef: BRANCH, commits };
 }
 
-/** Reads every Markdown page under BLOG_CONTENT on the sieun/dev tip (`TIP_REF`) and finds its banned copy. Run after readShip's fetch or alone. */
+/** Reads every Markdown page under BLOG_CONTENT on the dev/sieun tip (`TIP_REF`) and finds its banned copy. Run after readShip's fetch or alone. */
 export async function readCopy(git: Git): Promise<CopyRead> {
   const paths = (await git(["ls-tree", "-r", "--name-only", TIP_REF, "--", `${BLOG_CONTENT}/`])).split("\n").filter(path => path.endsWith(".md"));
   const pages = await Promise.all(paths.map(async path => ({ path, text: await git(["show", `${TIP_REF}:${path}`]) })));

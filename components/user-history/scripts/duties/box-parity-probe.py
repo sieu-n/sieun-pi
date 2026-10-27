@@ -280,16 +280,19 @@ def path_key(path, blob):
     return hashlib.sha1((path + "\0" + blob).encode()).hexdigest()[:12]
 
 
-# The box's shared branch, where every checkout's work lands.
-SHARED = "sieun/dev"
+# The box checkout's dev branch (c119): us-metal02 works on dev/sieun since the 2026-10-27 08:17Z cutover from sieun/dev.
+SHARED = "dev/sieun"
 
 
 def branch(host):
-    """The branch a host's commits are read from: the box's shared branch, or the Mac checkout's own `agent.branch` (c119), as asa-tip-sync reads it."""
+    """The branch a host's commits are read from: the box's dev branch, or the Mac checkout's own `agent.branch` (c119), else its current branch."""
     if host == "box":
         return SHARED
-    done = subprocess.run(["git", "-C", REPO, "config", "--get", "agent.branch"], capture_output=True, text=True, timeout=TIMEOUT_S, env=ENV)
-    return done.stdout.strip() or SHARED
+    for args in (["config", "--get", "agent.branch"], ["branch", "--show-current"]):
+        done = subprocess.run(["git", "-C", REPO] + args, capture_output=True, text=True, timeout=TIMEOUT_S, env=ENV)
+        if done.stdout.strip():
+            return done.stdout.strip()
+    return SHARED
 
 
 # A commit's patch-id never changes, so the box keeps each one by hash here. On us-metal02 on 10-19 at 21:25Z, `git log -p` of its last 2000
@@ -334,8 +337,8 @@ def commits(host):
     Each commit gives its 10-character hash, the `git patch-id --stable` of its diff without context lines (a merge diffs against its first
     parent), so a change carried onto another base keeps its id, and one key per path it touched from the path and the bytes it wrote. The Mac
     sends its last 100 as one list entry each, with whether its own origin/<branch> holds it, so a commit it never pushed is told apart from one the
-    box failed to fetch. The box sends the hashes of every commit sieun/dev holds, the patch-ids and path keys of its last 2000, plus the hashes
-    its fetched origin branches hold beyond sieun/dev, such as the Mac's pushed dev/sieun-mac-a (c119). Hashes cover all of sieun/dev because on
+    box failed to fetch. The box sends the hashes of every commit dev/sieun holds, the patch-ids and path keys of its last 2000, plus the hashes
+    its fetched origin branches hold beyond dev/sieun, such as the Mac's pushed dev/sieun-mac (c119). Hashes cover all of the box branch because on
     10-21 the box's last 2000 reached back only 33 hours (2214 commits in 34 h), so 8 Mac commits sieun/dev held fell out of the window and
     turned the row off; the full list is 16148 hashes, 0.4 s and 210 KB.
     """

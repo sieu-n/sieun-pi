@@ -1,9 +1,10 @@
 // Guards the Vent gateway duty (vent-gateway.ts). On 2026-10-18 Vent carried 0 of the 70 in-scope prod call sites, both Vent hosts failed
 // the TLS handshake and 112 provider keys still sat outside Vent, and the duty has to read those as misses, never as a pass.
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
-import { boxLocations, inScope, removedProviderRefs, UNMEASURED, ventMetrics, webhookVerdicts, type ShareResult, type VentReads } from "../scripts/duties/vent-gateway.ts";
+import { boxLocations, inScope, removedProviderRefs, TIP, UNMEASURED, VENT_SHARE, ventMetrics, webhookVerdicts, type ShareResult, type VentReads } from "../scripts/duties/vent-gateway.ts";
 
 const site = (row: number, status: string, extra: object = {}) => ({ row, app: "convex", provider: "Stripe", runs_in: "Convex staging, prod", status, ...extra });
 const TABLES = 'INTEGRATIONS: dict[str, Integration] = {\n    "zernio": Integration(ZERNIO, "ZERNIO_API_KEY"),\n    "cliproxy-openai": Integration(OPENAI, "CLIPROXY_API_KEY"),\n}\n';
@@ -12,7 +13,7 @@ const VENT_ROUTE = "export const VENT_WEBHOOK_PREFIX = '/webhooks/vent/';\nnew M
 
 function reads(overrides: Partial<VentReads> = {}): VentReads {
   return {
-    share: { refs: { "origin/main": { sha: "a", sites: [site(0, "vent"), site(1, "vent"), site(63, "direct", { exception: "GeoNode" })] }, "origin/sieun/dev": { sha: "b", sites: [site(0, "vent"), site(1, "vent"), site(63, "direct", { exception: "GeoNode" })] } }, traffic: { production: { sites_with_vent_traffic: [0, 1] } } },
+    share: { refs: { "origin/main": { sha: "a", sites: [site(0, "vent"), site(1, "vent"), site(63, "direct", { exception: "GeoNode" })] }, "origin/dev/sieun": { sha: "b", sites: [site(0, "vent"), site(1, "vent"), site(63, "direct", { exception: "GeoNode" })] } }, traffic: { production: { sites_with_vent_traffic: [0, 1] } } },
     webhooks: webhookVerdicts({ http: "", ventRoute: VENT_ROUTE }),
     keys: { locations: { "convex production befitting-sparrow-356": ["VENT_KEY", "PUBLIC_CLERK_PUBLISHABLE_KEY"] }, unreadable: {} },
     removed: { grep: "", tables: TABLES },
@@ -29,7 +30,7 @@ test("all sites and webhooks on Vent with prod traffic read 100%, and the GeoNod
 
 test("a site whose code at main is on Vent counts with or without prod traffic (c67); no traffic is a supporting number", () => {
   const sites = [site(0, "vent"), site(38, "vent"), site(1, "direct")];
-  const share = { refs: { "origin/main": { sha: "a", sites }, "origin/sieun/dev": { sha: "b", sites } }, traffic: { production: { sites_with_vent_traffic: [] } } };
+  const share = { refs: { "origin/main": { sha: "a", sites }, "origin/dev/sieun": { sha: "b", sites } }, traffic: { production: { sites_with_vent_traffic: [] } } };
   const output = ventMetrics(reads({ share, webhooks: [] }), 0);
   assert.equal(output.metrics.through_vent_pct, round(100 * 2 / 3));
   assert.equal(output.metrics.no_prod_traffic_sites, 1);
@@ -218,10 +219,10 @@ test("vent-share.py reads the 6 rows the cutover train checked as Vent, and stil
   assert.match(got.bypass![1].join("\n"), /STRIPE_SECRET_KEY|new Stripe/);
 });
 
-test("the by-code counts read at main and at the sieun/dev tip, and a direct row at the tip is flagged for the cutover train", () => {
+test("the by-code counts read at main and at the dev/sieun tip, and a direct row at the tip is flagged for the cutover train", () => {
   const share = { refs: {
     "origin/main": { sha: "a", sites: [site(0, "direct"), site(1, "vent"), site(63, "direct", { exception: "GeoNode" })] },
-    "origin/sieun/dev": { sha: "b", sites: [site(0, "vent"), site(1, "partial", { direct: ["x.ts:1: fetch('https://api.stripe.com')"] }), site(63, "direct", { exception: "GeoNode" })] },
+    "origin/dev/sieun": { sha: "b", sites: [site(0, "vent"), site(1, "partial", { direct: ["x.ts:1: fetch('https://api.stripe.com')"] }), site(63, "direct", { exception: "GeoNode" })] },
   }, traffic: { production: { sites_with_vent_traffic: [1] } } };
   const output = ventMetrics(reads({ share }), 0);
   assert.deepEqual([output.metrics.code_rows, output.metrics.code_vent_sites, output.metrics.tip_code_vent_sites], [2, 1, 1]);
@@ -237,7 +238,7 @@ test("the by-code counts read at main and at the sieun/dev tip, and a direct row
 test("a site whose call is gone at the tip leaves the count, and a new direct call at the tip counts against the share", () => {
   const share = { refs: {
     "origin/main": { sha: "a", sites: [site(0, "vent"), site(54, "direct"), site(62, "direct")] },
-    "origin/sieun/dev": { sha: "b", sites: [site(0, "vent"), site(54, "removed"), site(62, "gone")],
+    "origin/dev/sieun": { sha: "b", sites: [site(0, "vent"), site(54, "removed"), site(62, "gone")],
       new_sites: [{ path: "convex/search/newThing.ts", app: "convex", provider: "stripe", direct: ["convex/search/newThing.ts:3: await fetch('https://api.stripe.com/v1/charges')"] }] },
   }, traffic: { production: { sites_with_vent_traffic: [0] } } };
   const output = ventMetrics(reads({ share }), 0);
@@ -292,7 +293,7 @@ test("vent-share.py follows an import only into a helper that names the provider
 });
 
 test("removed_provider_refs counts a removed provider named outside the kept guards once per file, and a removed Vent integration listed again", () => {
-  const line = (path: string, text: string) => `origin/sieun/dev:${path}\0${1}\0${text}`;
+  const line = (path: string, text: string) => `origin/dev/sieun:${path}\0${1}\0${text}`;
   const grep = [
     line("apps/research-agent-be/src/media.py", "client = HeyGen(); pexels = Pexels()"),
     line("apps/research-agent-be/src/media.py", "HEYGEN_URL = 'https://api.heygen.com'"),
@@ -327,4 +328,11 @@ test("vent-share.py reads prod traffic one day per query and merges the days, be
   assert.match(got.day0, /Timestamp > now\(\) - INTERVAL 1 DAY GROUP BY/);
   assert.match(got.day3, /Timestamp > now\(\) - INTERVAL 4 DAY AND Timestamp <= now\(\) - INTERVAL 3 DAY/);
   assert.deepEqual(got.merged.map(r => [r.caller, r.calls, r.last]), [["virev", 5, 100], ["search", 1, 70]]);
+});
+
+// Owner rule c119: us-metal02 moved from sieun/dev to dev/sieun on 2026-10-27 08:17Z, and origin/sieun/dev stopped moving.
+test("the gateway and vent-share.py read the tip at origin/dev/sieun", () => {
+  assert.equal(TIP, "origin/dev/sieun");
+  const help = execFileSync("python3", [VENT_SHARE, "--help"], { encoding: "utf8" });
+  assert.match(help, /default origin\/dev\/sieun/);
 });

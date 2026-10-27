@@ -13,7 +13,7 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  * probes crawler /health, crawler /health/schema and the portal's /openapi.json every minute (every 5 min before auto-sns-agent 2e687fa79), and Prometheus scrapes the result every 60 s
  * from job api-portal-health with the label env="production" (labels checked on 2026-10-12: env, instance, job, target).
  * It also makes one free signed-out GET of https://api.virev.ai/openapi.json as a second view that does not depend on Convex.
- * It reads the api-portal env files apps/api-portal/.env and .env.staging from GitHub at main (what prod runs) and sieun/dev (what the next
+ * It reads the api-portal env files apps/api-portal/.env and .env.staging from GitHub at main (what prod runs) and dev/sieun (what the next
  * promote ships) and counts the key names staging has and prod lacks. Each deploy decrypts its tier's blob (scripts/repo/env/vercel-blobs.mjs),
  * so a staging-only key is a value prod code runs without, as BATCH_WORKER_SECRET is on main on 10-18 (board p9). Key names only, never values.
  * For main, prod's side is the .env the live prod Vercel blob was pushed from, found by the blob's `dotenvx-blob sha256:` comment
@@ -30,8 +30,9 @@ const REPO = process.env.LLM_WIKI_REPO || join(homedir(), "Documents/Github/auto
 const GRAFANA = "https://obs.virev.ai/api/ds/query";
 const PROM_UID = "estate_prometheus";
 const PORTAL_OPENAPI = "https://api.virev.ai/openapi.json";
-/** The refs whose api-portal env files are compared: prod's branch and the branch the next promote takes. */
-export const ENV_REFS = ["main", "sieun/dev"] as const;
+/** The refs whose api-portal env files are compared: prod's branch and the branch the next promote takes, us-metal02's dev/sieun (c119). */
+export const DEV_REF = "dev/sieun";
+export const ENV_REFS = ["main", DEV_REF] as const;
 /** The "could not measure" value, the same one auto-sns-agent scripts/duties/ci/ci-guarantees.mjs prints, so a missing source can never look on target. */
 export const UNMEASURED = 999999;
 /** The "could not measure" value of a share: below any target, so an unread uptime never looks on target the way 999999% would. */
@@ -210,10 +211,10 @@ const ghApi = (path: string, accept: string) => new Promise<string>((resolve, re
 /** One file of sieu-n/auto-sns-agent at a ref. */
 const githubRaw = (path: string, ref: string) => ghApi(`contents/${path}?ref=${encodeURIComponent(ref)}`, "application/vnd.github.raw");
 
-/** How many past versions of sieun/dev's apps/api-portal/.env are tried against the live blob's fingerprint. */
+/** How many past versions of dev/sieun's apps/api-portal/.env are tried against the live blob's fingerprint. */
 const LIVE_HISTORY = 20;
 
-/** The .env the live prod api-portal blob was pushed from: the newest of main's, sieun/dev's and sieun/dev's recent versions whose fingerprint is the blob's comment, with the .env.staging beside it. */
+/** The .env the live prod api-portal blob was pushed from: the newest of main's, dev/sieun's and dev/sieun's recent versions whose fingerprint is the blob's comment, with the .env.staging beside it. */
 async function liveProdSource(env: EnvFiles): Promise<LiveProd> {
   try {
     const blobs = await import(pathToFileURL(join(REPO, "scripts/repo/env/vercel-blobs.mjs")).href) as { blobRow(app: string, tier: string): Promise<{ comment?: string } | null> };
@@ -224,12 +225,12 @@ async function liveProdSource(env: EnvFiles): Promise<LiveProd> {
       const files = env[ref];
       if (files && "prod" in files && blobFingerprint(files.prod) === want) return { ref, text: files.prod, staging: files.staging };
     }
-    const commits = JSON.parse(await ghApi(`commits?path=apps/api-portal/.env&sha=sieun/dev&per_page=${LIVE_HISTORY}`, "application/vnd.github+json")) as { sha: string }[];
+    const commits = JSON.parse(await ghApi(`commits?path=apps/api-portal/.env&sha=${encodeURIComponent(DEV_REF)}&per_page=${LIVE_HISTORY}`, "application/vnd.github+json")) as { sha: string }[];
     for (const { sha } of commits) {
       const text = await githubRaw("apps/api-portal/.env", sha);
       if (blobFingerprint(text) === want) return { ref: sha.slice(0, 10), text, staging: await githubRaw("apps/api-portal/.env.staging", sha) };
     }
-    return { error: `no apps/api-portal/.env at main, sieun/dev or its last ${LIVE_HISTORY} versions has sha256:${want}` };
+    return { error: `no apps/api-portal/.env at main, ${DEV_REF} or its last ${LIVE_HISTORY} versions has sha256:${want}` };
   } catch (error) { return { error: errorText(error) }; }
 }
 
