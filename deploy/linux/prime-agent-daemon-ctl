@@ -37,6 +37,19 @@ stopped and Restart= starts it again. The journal line then reads result=restore
 `restored N of M` from the coordinator's update-restarts record, so neither it nor prime-install.sh's <log>.result
 says ok, and Prime's own recovery handles the sessions the coordinator did not restore.
 
+Prime's coordinator gives the predecessor 10 s to go after it sends `shutdown`. If the predecessor still answers then,
+the coordinator restores every planned session into it, but a predecessor in Prime's prepared update phase refuses each
+open with "Daemon is preparing an update restart" and the client waits 120 s on each. On 10-27 supervisor 2013592 started
+its shutdown at about 08:48:00Z and never finished it, so 39 roots cost 39 x 120 s, restored 0 of 188, and the box served
+no session until 12:56Z (~/work/update-empty-box/CAUSE.md). So update watches the coordinator. Once the coordinator is
+past its stop wait with the predecessor still alive, or prints that refusal, or exits on "Could not stop the predecessor
+daemon", the ctl stops the coordinator before it can restore or drop the manifest, gives the predecessor a last moment to
+finish its own shutdown, then SIGTERM and SIGKILL, each sent only after it reads the predecessor's pid and /proc start id
+again and both still match. With the predecessor gone it runs the coordinator once more, which finds no daemon, starts the
+successor in this unit and restores the kept manifest, and the journal line reads result=stop-forced. If the predecessor
+outlives SIGKILL, update logs result=stop-failed and exits 6, because nothing short of Prime can take a prepared supervisor
+back to serving.
+
 When the daemon start launches exits before it answers, often with ELOCKED because a successor that Prime's
 coordinator started still holds the socket lock, start waits for that supervisor's hello and adopts it. It has no
 hard timeout: TimeoutStartSec=infinity also covers ExecReload, and the wait logs one line past
@@ -66,12 +79,14 @@ import fcntl
 import json
 import os
 import shlex
+import signal
 import socket
 import subprocess
 import sys
 import time
 from datetime import datetime
 from pathlib import Path
+from typing import NamedTuple
 
 POLL_SECONDS = 0.1
 UPDATE_ARGS = ("--force", "--rollback")
@@ -92,6 +107,7 @@ USAGE = 2
 BUSY_REFUSED = 3
 PREPARE_REFUSED = 4
 RESTART_FAILED = 5
+STOP_FAILED = 6
 
 # Native deadlines in prime-agent 0.9.8-daemon-fix.1-mem.2 that bound one update restart coordinator.
 # Fixed steps: list 30 s, prepare_update_restart 120 s, predecessor stop 10 s, startup fence 60 s,
@@ -104,6 +120,20 @@ COORDINATOR_PER_SESSION_SECONDS = 360
 # The part of those deadlines that covers one successor from launch to hello: startup fence 60 s, daemon launch
 # 2 x 30 s, successor hello 60 s. start() logs once when a supervisor that holds the socket lock runs past it.
 SUCCESSOR_START_SECONDS = 180
+# Prime's coordinator waits 10 s for the predecessor after `shutdown` (shutdownConnectedDaemonAndWait(..., 10000) in
+# runDaemonUpdateRestartCoordinator, prime f48fb6fd). The 5 s on top cover its probe of the socket (1 s connect, then a
+# session list), so a coordinator still in phase stopping 15 s after the ctl saw that phase has started restoring into
+# the predecessor. On 10-27 that restore began within 0.2 s of the wait ending (first refusal 08:50:09.854, 120 s later).
+COORDINATOR_GAVE_UP_SECONDS = 15
+# After the ctl stops the coordinator, a predecessor that is still in its own shutdown gets this long to finish it. Its
+# worker stops run in parallel, each a 5 s archive request and a 2 s exit wait (stopWorkerUntracked), and on 10-25 the
+# 20:10Z and 22:32Z predecessors logged their last line within 0.04 s of their last worker stop.
+PREDECESSOR_EXIT_SECONDS = 10
+# How long the ctl waits for its SIGTERM and then its SIGKILL to take effect. On 10-27 the stuck 2013592 was gone 0.2 s
+# after a second shutdown request (12:56:34.954 to 12:56:35.134).
+SIGNAL_WAIT_SECONDS = 5
+PREPARING = "Daemon is preparing an update restart"
+STOP_FAILED_MESSAGE = "Could not stop the predecessor daemon"
 OWNER_FILE = "owner.json"
 LIBC = ctypes.CDLL(None, use_errno=True)
 AT_FDCWD = -100
@@ -353,7 +383,8 @@ def start(prime_agent, sock, pidfile):
                 print(f"supervisor {pid} took the socket first; stopped the one this unit started ({child.pid})", file=sys.stderr)
             write_pidfile(pidfile, pid)
             if cgroup(pid) != cgroup(os.getpid()):
-                print(f"supervisor {pid} runs outside this unit ({cgroup(pid)}) and stops with that cgroup; run updates with systemctl --user reload", file=sys.stderr)
+                print(f"supervisor {pid} runs outside this unit ({cgroup(pid)}) and stops with that cgroup; the next systemctl --user reload "
+                      "starts its successor inside this unit, because the coordinator runs here, and so does the next start after it exits", file=sys.stderr)
             print(f"supervisor {pid} owns {sock}")
             return OK
         coordinator = update_restart_coordinator(sock)
@@ -514,26 +545,162 @@ def keep_planned(agent_dir, status_path):
         return None
 
 
-def restart(prime_agent, sock):
-    agent_dir = Path(os.environ.get("PRIME_AGENT_CODING_AGENT_DIR") or "~/.prime/agent").expanduser()
-    restarts = agent_dir / "update-restarts"
-    restarts.mkdir(mode=0o700, parents=True, exist_ok=True)
-    status_path = restarts / f"ctl-{os.getpid()}-{int(time.time())}.json"
-    env = target_env(sock, PRIME_AGENT_CODING_AGENT_DIR=str(agent_dir))
-    copy = keep_planned(agent_dir, status_path)
+class Supervisor(NamedTuple):
+    """One process, named by its pid and the /proc start id that Prime records as processStartId, so a reused pid never matches."""
+    pid: int
+    start: str
+
+    def __str__(self):
+        return f"{self.pid} ({self.start})"
+
+
+def identify(pid):
+    start = start_id(pid) if pid else None
+    return Supervisor(pid, start) if start else None
+
+
+def still_runs(supervisor):
+    return alive(supervisor.pid) and start_id(supervisor.pid) == supervisor.start
+
+
+def wait_gone(supervisor, seconds):
+    deadline = time.monotonic() + seconds
+    while still_runs(supervisor):
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(POLL_SECONDS)
+    return True
+
+
+def signal_supervisor(supervisor, sig):
+    """Send sig through a pidfd opened before the start id check, so it reaches that process or none. False when it is gone."""
     try:
-        code, output = run([prime_agent, "update", COORDINATOR_FLAG, "--daemon-socket", sock, STATUS_FLAG, str(status_path)], env)
+        fd = os.pidfd_open(supervisor.pid)
+    except ProcessLookupError:
+        return False
+    try:
+        if not still_runs(supervisor):
+            return False
+        signal.pidfd_send_signal(fd, sig)
+        return True
+    except ProcessLookupError:
+        return False
+    finally:
+        os.close(fd)
+
+
+def end_supervisor(supervisor):
+    """End a predecessor whose stop Prime's coordinator gave up on, and return whether it is gone.
+
+    It first gets PREDECESSOR_EXIT_SECONDS to finish its own shutdown. Prime's supervisor drops its signal handlers when
+    its shutdown starts, so SIGTERM then ends it at once; SIGKILL follows if it does not.
+    """
+    if wait_gone(supervisor, PREDECESSOR_EXIT_SECONDS):
+        print(f"prime-agent-daemon-ctl: supervisor {supervisor} finished its own shutdown", file=sys.stderr, flush=True)
+        return True
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        if not signal_supervisor(supervisor, sig):
+            return True
+        print(f"prime-agent-daemon-ctl: sent {sig.name} to supervisor {supervisor}, which Prime asked to shut down and which still runs", file=sys.stderr, flush=True)
+        if wait_gone(supervisor, SIGNAL_WAIT_SECONDS):
+            return True
+    return False
+
+
+class Coordinator:
+    """One run of Prime's update restart coordinator, with its output copied to the journal line by line as it comes."""
+
+    def __init__(self, argv, env):
+        import threading
+        self.proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, text=True, errors="replace")
+        self.lines = []
+        self.refused = threading.Event()
+        self.reader = threading.Thread(target=self.read, daemon=True)
+        self.reader.start()
+
+    def read(self):
+        for line in self.proc.stdout:
+            sys.stdout.write(line)
+            sys.stdout.flush()
+            self.lines.append(line)
+            if PREPARING in line:
+                self.refused.set()
+
+    def stop(self):
+        self.proc.terminate()
+        try:
+            self.proc.wait(SIGNAL_WAIT_SECONDS)
+        except subprocess.TimeoutExpired:
+            self.proc.kill()
+
+    def finish(self):
+        code = self.proc.wait()
+        self.reader.join()
+        return code, "".join(self.lines)
+
+
+def read_status(path):
+    try:
+        status = json.loads(Path(path).read_text())
+    except (OSError, ValueError):
+        return {}
+    return status if isinstance(status, dict) else {}
+
+
+def coordinate(prime_agent, sock, agent_dir, env, suffix=""):
+    """Run the coordinator once, and stop it as soon as it has given up on stopping the predecessor.
+
+    Returns its exit code, its output with restart_report's line, its status record, and why the ctl judged the stop
+    stuck (None when it did not) together with the predecessor it judged.
+    """
+    status_path = agent_dir / "update-restarts" / f"ctl-{os.getpid()}-{int(time.time())}{suffix}.json"
+    predecessor = identify(supervisor_pid(sock))
+    copy = keep_planned(agent_dir, status_path)
+    stuck = None
+    try:
+        run = Coordinator([prime_agent, "update", COORDINATOR_FLAG, "--daemon-socket", sock, STATUS_FLAG, str(status_path)], env)
+        stopping_at = None
+        while run.proc.poll() is None:
+            phase = read_status(status_path).get("phase")
+            if phase == "stopping" and stopping_at is None:
+                stopping_at = time.monotonic()
+            past = phase == "stopping" and stopping_at is not None and time.monotonic() - stopping_at > COORDINATOR_GAVE_UP_SECONDS
+            if predecessor and (run.refused.is_set() or past) and still_runs(predecessor):
+                stuck = f"it printed {PREPARING!r}" if run.refused.is_set() else f"it was still stopping the predecessor {COORDINATOR_GAVE_UP_SECONDS} s after Prime's 10 s stop wait began"
+                run.stop()
+                break
+            time.sleep(POLL_SECONDS)
+        code, output = run.finish()
     finally:
         if copy:
             copy.close()
-    try:
-        status = json.loads(status_path.read_text())
-    except (OSError, ValueError):
-        status = None
-    report = restart_report(status)
+    status = read_status(status_path) or None
+    message = str((status or {}).get("message", ""))
+    if not stuck and predecessor and code != 0 and STOP_FAILED_MESSAGE in message and still_runs(predecessor):
+        stuck = f"it exited on {message!r} while the predecessor still runs"
+    report = "" if stuck else restart_report(status)
     sys.stdout.write(report)
     sys.stdout.flush()
-    return code, output + report, status
+    return code, output + report, status, (stuck, predecessor)
+
+
+def restart(prime_agent, sock):
+    """Run the coordinator, and when it cannot stop the predecessor, end that supervisor and run the coordinator once more.
+
+    Returns the exit code, output and status of the run that counts, and None, "stop-forced" or "stop-failed".
+    """
+    agent_dir = Path(os.environ.get("PRIME_AGENT_CODING_AGENT_DIR") or "~/.prime/agent").expanduser()
+    (agent_dir / "update-restarts").mkdir(mode=0o700, parents=True, exist_ok=True)
+    env = target_env(sock, PRIME_AGENT_CODING_AGENT_DIR=str(agent_dir))
+    code, output, status, (stuck, predecessor) = coordinate(prime_agent, sock, agent_dir, env)
+    if not stuck:
+        return code, output, status, None
+    print(f"prime-agent-daemon-ctl: stopped Prime's coordinator because {stuck}. Supervisor {predecessor} is in Prime's prepared update phase, "
+          f"refuses every session open with {PREPARING!r} and has no way back to serving, so the coordinator would restore nothing into it", file=sys.stderr, flush=True)
+    if not end_supervisor(predecessor):
+        return code, output, status, "stop-failed"
+    code, output, status, (again, _) = coordinate(prime_agent, sock, agent_dir, env, "-after-stop")
+    return code, output, status, "stop-failed" if again else "stop-forced"
 
 
 def restored(status):
@@ -559,13 +726,23 @@ def update(prime_agent, sock, pidfile, env_file=None):
         print(f"prime-agent-daemon-ctl: result=usage PRIME_UPDATE_ARGS takes only {' '.join(UPDATE_ARGS)}, got {' '.join(unknown)}", file=sys.stderr)
         return USAGE
     feed = {k: os.environ[k] for k in FEED if k in os.environ}
-    status = None
+    status = forced = None
     code, output = run([prime_agent, "update", "--self", *args], target_env(sock, PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_SOCKET=sock, **feed, **{INSTALL_ONLY: "1"}))
     if code == 0:
-        code, restart_output, status = restart(prime_agent, sock)
+        code, restart_output, status, forced = restart(prime_agent, sock)
         output += restart_output
+    if forced == "stop-failed":
+        print(f"prime-agent-daemon-ctl: result=stop-failed a supervisor Prime asked to shut down still runs on {sock} after SIGKILL, in Prime's prepared update phase, "
+              "so it serves no session; the PIDFile keeps it, and only Prime can take it back to serving (CAUSE.md, Ask for chat-057a)", file=sys.stderr, flush=True)
+        return STOP_FAILED
     code, message = classify(code, output)
     names = {OK: "ok", FAILED: "failed", BUSY_REFUSED: "busy-refused", PREPARE_REFUSED: "prepare-refused", RESTART_FAILED: "restart-failed"}
+    if code == OK and forced == "stop-forced":
+        started = start(prime_agent, sock, pidfile)
+        pid = Path(pidfile).read_text().strip() if started == OK else "none"
+        print(f"prime-agent-daemon-ctl: result=stop-forced {restored(status)}; Prime's coordinator could not stop the predecessor, so the ctl ended it and ran the coordinator again, "
+              f"which restored the kept manifest; supervisor {pid} owns {sock}", file=sys.stderr, flush=True)
+        return started
     if code != RESTART_FAILED:
         print(f"prime-agent-daemon-ctl: result={names[code]} {message}", file=sys.stderr if code else sys.stdout, flush=True)
         started = start(prime_agent, sock, pidfile)

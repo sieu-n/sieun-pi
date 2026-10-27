@@ -52,8 +52,61 @@ FAKE = textwrap.dedent(
         sock = sys.argv[sys.argv.index("--daemon-socket") + 1]
         status_path = sys.argv[sys.argv.index("--internal-update-restart-status") + 1]
         def status(phase, **extra):
-            with open(status_path, "w") as f:
+            with open(status_path + ".tmp", "w") as f:
                 json.dump({"phase": phase, "counts": {"total": 1, "restored": 1, "resumed": 1, "failed": 0}, **extra}, f)
+            os.replace(status_path + ".tmp", status_path)
+        def answers():
+            with socket.socket(socket.AF_UNIX) as probe:
+                return probe.connect_ex(sock) == 0
+        def runs(pid):
+            try:
+                return open(f"/proc/{pid}/stat").read().rsplit(")", 1)[1].split()[0] not in ("Z", "X")
+            except OSError:
+                return False
+        def successor():
+            env = dict(os.environ, FAKE_BEHAVIOR="serve", FAKE_LISTEN_DELAY=os.environ.get("FAKE_SUCCESSOR_DELAY", "2") if mode == "slow-successor" else "0")
+            env.pop("FAKE_STUCK", None)
+            subprocess.Popen([sys.argv[0], "--mode", "daemon", "--daemon-socket", sock], env=env, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        # Prime keeps the prepared manifest at <agent dir>/daemon-update-restarts/<sha256 of the socket>.json, and a coordinator
+        # that finds no daemon restores it into a successor it starts, or reports skipped when there is none.
+        import hashlib
+        manifest = os.path.join(os.environ["PRIME_AGENT_CODING_AGENT_DIR"], "daemon-update-restarts", hashlib.sha256(sock.encode()).hexdigest() + ".json")
+        if not answers():
+            if os.path.exists(manifest):
+                total = len(json.load(open(manifest))["sessions"])
+                successor()
+                os.remove(manifest)
+                status("complete", counts={"total": total, "restored": total, "resumed": total, "failed": 0})
+                sys.exit(0)
+            status("skipped", message="No running daemon needed to be restarted", counts={"total": 0, "restored": 0, "resumed": 0, "failed": 0})
+            sys.exit(0)
+        if mode in ("stuck-stop", "refusing"):
+            # 10-27 on us-metal02: the predecessor took the shutdown and never finished it, and the coordinator restored
+            # every planned session into it, each refused as preparing after a 120 s wait.
+            old = int(open(os.environ["FAKE_PIDS"]).read().split()[-1])
+            total = int(os.environ.get("FAKE_SESSIONS", "3"))
+            os.makedirs(os.path.dirname(manifest), exist_ok=True)
+            with open(manifest, "w") as f:
+                json.dump({"formatVersion": 1, "createdAt": "2026-10-27T08:47:11.045Z", "sessions": [{"activeSessionId": f"a{n}", "sessionFile": f"/s/{n}.jsonl"} for n in range(total)]}, f)
+            counts = {"total": total, "restored": 0, "resumed": 0, "failed": 0}
+            status("preparing", counts=counts, predecessor={"pid": old})
+            if mode == "stuck-stop":
+                status("stopping", counts=counts, predecessor={"pid": old})
+                os.kill(old, 10)
+                deadline = time.time() + float(os.environ.get("FAKE_STOP_WAIT", "1"))
+                while runs(old) and time.time() < deadline:
+                    time.sleep(0.01)
+                if not runs(old):
+                    successor()
+                    os.remove(manifest)
+                    status("complete", counts=dict(counts, restored=total, resumed=total))
+                    sys.exit(0)
+            for n in range(total):
+                time.sleep(float(os.environ.get("FAKE_RESTORE_SECONDS", "1")))
+                print(f"Warning: could not restore /s/{n}.jsonl: Daemon is preparing an update restart", flush=True)
+            os.remove(manifest)
+            status("failed", message=f"Could not stop the predecessor daemon on {sock}", counts=dict(counts, failed=total))
+            sys.exit(1)
         if mode == "prepare":
             status("failed", message="Could not prepare daemon sessions for automatic resume; the previous daemon is still running (Cannot prepare update restart while resident worker 6acc196dee81 is failed and disconnected (session s))")
             sys.exit(1)
@@ -77,8 +130,7 @@ FAKE = textwrap.dedent(
         os.kill(old, 15)
         while os.path.exists(sock):
             time.sleep(0.01)
-        env = dict(os.environ, FAKE_BEHAVIOR="serve", FAKE_LISTEN_DELAY=os.environ.get("FAKE_SUCCESSOR_DELAY", "2") if mode == "slow-successor" else "0")
-        subprocess.Popen([sys.argv[0], "--mode", "daemon", "--daemon-socket", sock], env=env, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        successor()
         if mode == "slow-successor":
             status("failed", message=f"Timed out waiting for daemon to start on {sock}.", counts={"total": 3, "restored": 0, "resumed": 0, "failed": 0})
             sys.exit(1)
@@ -107,6 +159,9 @@ FAKE = textwrap.dedent(
             except OSError as error:
                 print(f"{error.strerror}: rmdir '{lock}'", file=sys.stderr)
                 sys.exit(1)
+    with socket.socket(socket.AF_UNIX) as probe:
+        if os.path.exists(sock) and probe.connect_ex(sock) != 0:
+            os.unlink(sock)
     server = socket.socket(socket.AF_UNIX)
     server.bind(sock)
     server.listen(8)
@@ -117,6 +172,12 @@ FAKE = textwrap.dedent(
         os.unlink(sock)
         sys.exit(0)
     signal.signal(signal.SIGTERM, stop)
+    # FAKE_STUCK models Prime's supervisor on 10-27: it takes the shutdown (SIGUSR1 here), drops its signal handlers and
+    # never finishes. "soft" then dies on SIGTERM and leaves its socket file; "hard" ignores SIGTERM too.
+    def shutdown_that_hangs(*_):
+        signal.signal(signal.SIGTERM, signal.SIG_IGN if os.environ["FAKE_STUCK"] == "hard" else signal.SIG_DFL)
+    if os.environ.get("FAKE_STUCK"):
+        signal.signal(signal.SIGUSR1, shutdown_that_hangs)
     hello = {"type": "daemon_hello", "protocol": {"version": 7}, "supervisorPid": os.getpid(), "supervisorSocketPath": sock}
     while True:
         conn, _ = server.accept()
@@ -388,8 +449,7 @@ class DaemonCtlTest(unittest.TestCase):
         self.assertEqual(self.installs(), [])
 
     def test_update_reports_a_busy_session_refusal_apart_from_a_prepare_refusal(self):
-        # A restart failure whose successor start() adopts exits 0, so systemd keeps the unit active and reads the PIDFile.
-        cases = (("busy", 3, "result=busy-refused"), ("prepare", 4, "result=prepare-refused"), ("restart-failed", 0, "result=restore-failed-successor-adopted restored 1 of 1"))
+        cases = (("busy", 3, "result=busy-refused"), ("prepare", 4, "result=prepare-refused"))
         for mode, code, line in cases:
             with self.subTest(mode=mode):
                 Path(self.env["FAKE_PIDS"]).unlink(missing_ok=True)
@@ -400,6 +460,117 @@ class DaemonCtlTest(unittest.TestCase):
                 self.assertEqual(self.pid_in_file(), old.pid)
                 old.terminate()
                 old.wait()
+
+    def update_in_process(self, **env):
+        """Run update in this process with the stop timings cut to fit a test; production waits 15, 10 and 5 s."""
+        ctl = load_ctl()
+        ctl.COORDINATOR_GAVE_UP_SECONDS = 2
+        ctl.PREDECESSOR_EXIT_SECONDS = 0.5
+        ctl.SIGNAL_WAIT_SECONDS = 2
+        out = io.StringIO()
+        began = time.monotonic()
+        with mock.patch.dict(os.environ, dict(self.env, **env), clear=True), contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+            code = ctl.update(str(self.fake), self.sock, self.pidfile)
+        return code, out.getvalue(), time.monotonic() - began
+
+    def kill_fakes(self):
+        pids = Path(self.env["FAKE_PIDS"])
+        for pid in pids.read_text().split() if pids.exists() else []:
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(int(pid), signal.SIGKILL)
+        pids.unlink(missing_ok=True)
+        Path(self.sock).unlink(missing_ok=True)
+
+    def successor_pid(self):
+        return int(Path(self.env["FAKE_PIDS"]).read_text().split()[-1])
+
+    def test_a_predecessor_that_never_finishes_its_shutdown_is_ended_and_the_kept_manifest_restored(self):
+        # 10-27 08:48Z on us-metal02: 2013592 took Prime's shutdown and never finished it, the coordinator restored all 188
+        # sessions into it at 120 s a root, restored 0, and the ctl adopted it with exit 0. The box served nothing for 4 h.
+        for stuck, signals in (("soft", ["SIGTERM"]), ("hard", ["SIGTERM", "SIGKILL"])):
+            with self.subTest(stuck=stuck):
+                self.kill_fakes()
+                old = self.serve(FAKE_STUCK=stuck)
+                code, out, took = self.update_in_process(FAKE_UPDATE_MODE="stuck-stop", FAKE_SESSIONS="4", FAKE_RESTORE_SECONDS="3")
+                self.assertEqual(code, 0, out)
+                self.assertIn("result=stop-forced restored 4 of 4", out)
+                self.assertEqual(old.wait(timeout=5), -getattr(signal, signals[-1]))
+                self.assertNotEqual(self.pid_in_file(), old.pid)
+                self.assertEqual(self.pid_in_file(), self.successor_pid())
+                self.assertEqual([s for s in ("SIGTERM", "SIGKILL") if f"sent {s} to supervisor {old.pid} " in out], signals, out)
+                self.assertNotIn("could not restore", out)
+                self.assertLess(took, 15, out)
+
+    def test_restores_stop_at_the_first_preparing_refusal(self):
+        # Each refusal cost 120 s on 10-27; the ctl stops the coordinator on the first one, whatever phase it reports.
+        old = self.serve(FAKE_STUCK="soft")
+        code, out, took = self.update_in_process(FAKE_UPDATE_MODE="refusing", FAKE_SESSIONS="6", FAKE_RESTORE_SECONDS="1")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out.count("could not restore"), 1, out)
+        self.assertIn("stopped Prime's coordinator because it printed 'Daemon is preparing an update restart'", out)
+        self.assertIn("result=stop-forced restored 6 of 6", out)
+        self.assertIsNotNone(old.wait(timeout=5))
+        self.assertEqual(self.pid_in_file(), self.successor_pid())
+        self.assertLess(took, 6, out)
+
+    def test_a_coordinator_that_exits_on_could_not_stop_the_predecessor_never_leaves_it_adopted(self):
+        # With nothing to restore, the coordinator fails at once and leaves the prepared predecessor, which serves no session.
+        old = self.serve()
+        code, out, _ = self.update_in_process(FAKE_UPDATE_MODE="restart-failed")
+        self.assertEqual(code, 0, out)
+        self.assertIn("result=stop-forced restored 0 of 0", out)
+        self.assertNotIn("result=restore-failed-successor-adopted", out)
+        self.assertIsNotNone(old.wait(timeout=5))
+        self.assertNotEqual(self.pid_in_file(), old.pid)
+        self.assertEqual(self.pid_in_file(), self.successor_pid())
+
+    def test_a_predecessor_that_outlives_sigkill_fails_the_update_loudly(self):
+        old = self.serve(FAKE_STUCK="soft")
+        ctl = load_ctl()
+        ctl.COORDINATOR_GAVE_UP_SECONDS = 2
+        out = io.StringIO()
+        with mock.patch.object(ctl, "end_supervisor", return_value=False), mock.patch.dict(os.environ, dict(self.env, FAKE_UPDATE_MODE="stuck-stop", FAKE_SESSIONS="2", FAKE_RESTORE_SECONDS="3"), clear=True), contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+            code = ctl.update(str(self.fake), self.sock, self.pidfile)
+        self.assertEqual(code, ctl.STOP_FAILED, out.getvalue())
+        self.assertIn("result=stop-failed", out.getvalue())
+        self.assertNotIn("could not restore", out.getvalue())
+        self.assertIsNone(old.poll())
+
+    def test_a_stop_that_finishes_inside_prime_s_wait_gets_no_signal_from_the_ctl(self):
+        old = self.serve()
+        code, out, _ = self.update_in_process(FAKE_UPDATE_MODE="stuck-stop", FAKE_SESSIONS="2")
+        self.assertEqual(code, 0, out)
+        self.assertIn("result=ok", out)
+        self.assertNotIn("sent SIG", out)
+        self.assertEqual(old.wait(timeout=5), -signal.SIGUSR1)
+        self.assertEqual(self.pid_in_file(), self.successor_pid())
+
+    def serve_outside(self):
+        """A supervisor in its own transient scope, as 3052306 runs in session-c155369.scope since 10-27 12:56Z."""
+        if subprocess.call(["systemd-run", "--user", "--scope", "--quiet", "true"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) != 0:
+            self.skipTest("no systemd user manager to make a scope in")
+        proc = subprocess.Popen(["systemd-run", "--user", "--scope", "--quiet", f"--unit=pad-ctl-outside-{os.getpid()}-{time.monotonic_ns()}",
+                                 "-E", f"PRIME_AGENT_CODING_AGENT_DIR={self.env['PRIME_AGENT_CODING_AGENT_DIR']}", str(self.fake), "--mode", "daemon", "--daemon-socket", self.sock], env=self.env)
+        self.procs.append(proc)
+        self.wait_for_socket()
+        return proc
+
+    def test_an_outside_supervisor_is_adopted_and_the_next_reload_starts_its_successor_in_the_unit(self):
+        old = self.serve_outside()
+        own = Path("/proc/self/cgroup").read_text()
+        self.assertNotEqual(Path(f"/proc/{old.pid}/cgroup").read_text(), own)
+        adopted = self.ctl("start", str(self.fake), self.sock, self.pidfile)
+        self.assertEqual(adopted.returncode, 0, adopted.stdout)
+        self.assertEqual(self.pid_in_file(), old.pid)
+        self.assertIn(f"supervisor {old.pid} runs outside this unit", adopted.stdout)
+        self.assertIn("the next systemctl --user reload starts its successor inside this unit", adopted.stdout)
+        result = self.ctl("update", str(self.fake), self.sock, self.pidfile)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("result=ok", result.stdout)
+        new = self.pid_in_file()
+        self.assertNotEqual(new, old.pid)
+        self.assertEqual(Path(f"/proc/{new}/cgroup").read_text(), own)
+        self.assertNotIn("runs outside this unit", result.stdout)
 
     def test_update_exits_0_and_tracks_a_successor_that_listens_after_the_coordinator_timed_out(self):
         # 10-18 06:47Z on us-metal02: the successor listened 2 s after Prime's coordinator gave up, the reload exited 5,
