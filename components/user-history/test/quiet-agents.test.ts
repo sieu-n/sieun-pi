@@ -52,6 +52,14 @@ test("a session in a provider retry wait is not working: 220 retry rows read 0 w
   assert.equal(hostGlance(card), "18% CPU · 125 of 247 GB · 0 working, 220 waiting");
 });
 
+test("a run that waits for a pi-pool slot reads waiting, though Prime streams it while the pool holds its model call", () => {
+  // At 01:20Z on 10-27 all 59 queued runs on us-metal02 read isStreaming true with Prime's wait label, beside the 12 runs that held a slot.
+  const queued = (id: string, place: number) => row(id, { activity: "working", isSessionActive: true, isStreaming: true, waitingFor: `a turn, place ${place} of 59` });
+  const rows = [...Array.from({ length: 59 }, (_, index) => queued(`queued-${index}`, index + 1)), ...Array.from({ length: 12 }, (_, index) => row(`slot-${index}`,
+    { activity: "working", isSessionActive: true, isStreaming: true }))];
+  assert.deepEqual(agentCounts(rows), { working: 12, children: 0, retry: 59, idle: 0, hung: 0 });
+});
+
 test("the 23:46Z state reads red: Agent sessions held 101 GB 26 min after the last turn ended with 220 sessions in retry wait", () => {
   const lines = evening(101.26, at => at <= lastTurn);
   const latest = lines.at(-1)!;

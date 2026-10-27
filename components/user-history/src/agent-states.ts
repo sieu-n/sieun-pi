@@ -7,7 +7,9 @@
  *
  * - `working` streams from the model, runs a tool, or compacts.
  * - `children` does none of that and waits on a subagent of its own that still runs.
- * - `retry` does none of that and still holds its turn open, which is a wait on the provider or the pool.
+ * - `retry` does none of that and still holds its turn open, which is a wait on the provider or the pool. A run that waits for a pi-pool
+ *   slot reads `isStreaming` true, because the pool holds its model call, and Prime names the wait in `waitingFor` ("a turn, place 2 of 58").
+ *   At 01:20Z on 10-27 all 59 queued runs on us-metal02 read so, and Settings > Hosts counted them working beside the 12 that held a slot.
  * - `idle` holds no turn.
  * - `hung` runs a tool call that wrote nothing for an hour with no progress (src/hung-calls.ts), read from the watch's newest minute. On 10-19
  *   three such calls read working for 9 to 13 h, so us-metal02 never read 0 working from 01:43Z to 11:10Z.
@@ -21,9 +23,10 @@ const isRecord = (value: unknown): value is Record<string, unknown> => typeof va
 export function agentState(row: unknown, hung: ReadonlySet<string> = new Set()): AgentState | null {
   if (!isRecord(row) || (row.lifecycle !== "live" && row.lifecycle !== "draft") || typeof row.activeSessionId !== "string") return null;
   if (typeof row.sessionId === "string" && hung.has(row.sessionId)) return "hung";
-  if (row.isStreaming === true || row.isRunningTools === true || row.isCompacting === true) return "working";
+  const waits = typeof row.waitingFor === "string" && row.waitingFor.trim() !== "";
+  if (!waits && (row.isStreaming === true || row.isRunningTools === true || row.isCompacting === true)) return "working";
   if (row.hasRunningRlmChildren === true) return "children";
-  if (row.activity === "working" || row.isSessionActive === true) return "retry";
+  if (waits || row.activity === "working" || row.isSessionActive === true) return "retry";
   return "idle";
 }
 
