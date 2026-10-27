@@ -58,7 +58,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> => typeof va
 const number = (value: unknown): number | null => { const n = typeof value === "string" ? Number(value) : NaN; return Number.isFinite(n) ? n : null; };
 
 /** A fetch error with its cause, because undici says only "fetch failed" and keeps ECONNRESET or UND_ERR_CONNECT_TIMEOUT in `cause`. */
-function reason(error: unknown): string {
+export function reason(error: unknown): string {
   if (!(error instanceof Error)) return String(error);
   const cause = error.cause instanceof Error ? error.cause : null;
   const code = cause && "code" in cause && typeof cause.code === "string" ? cause.code : null;

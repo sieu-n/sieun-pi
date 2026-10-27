@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
+import { reason as fetchReason } from "../../src/usage/lgtm.ts";
 import { parseEnv } from "./local-dev-uptime.ts";
 
 /**
@@ -45,9 +46,21 @@ export function slice(thread: ReviewThread, subscription: Subscription | undefin
       `text "${text}"; screenshot ${thread.image_url ?? "none"}` };
 }
 
+/**
+ * One GET, tried a second time right away when fetch itself throws (a network error; an HTTP error status is an answer and is never retried).
+ * On 10-27 at 14:36Z the read failed with "fetch failed" while the box's DNS answered EAI_AGAIN, and a rerun at 14:42Z read fine. That
+ * outage ran 15 min (14:27:30Z to 14:42:30Z, see src/uplink-dark.ts), far past the 120 s precheck target, so no wait inside one run would
+ * have bridged it; the retry is immediate and covers only a single dropped lookup or connection. The thrown text names the undici cause.
+ */
 async function get<T>(deps: ReviewDeps, path: string, params: Record<string, string>): Promise<T> {
-  const response = await deps.fetch(`${deps.url}/rest/v1/${path}?${new URLSearchParams(params)}`, {
-    headers: { apikey: deps.key, Authorization: `Bearer ${deps.key}` } });
+  const url = `${deps.url}/rest/v1/${path}?${new URLSearchParams(params)}`;
+  const init = { headers: { apikey: deps.key, Authorization: `Bearer ${deps.key}` } };
+  let response: Response;
+  try { response = await deps.fetch(url, init); }
+  catch (first) {
+    try { response = await deps.fetch(url, init); }
+    catch (second) { throw new Error(`GET ${path} failed twice: ${fetchReason(second)}; first try ${fetchReason(first)}`); }
+  }
   const body = await response.text();
   if (!response.ok) throw new Error(`GET ${path} gave HTTP ${response.status}: ${body}`);
   return JSON.parse(body) as T;
