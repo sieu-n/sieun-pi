@@ -8,7 +8,7 @@ import { test, type TestContext } from "node:test";
 import { Catalog } from "../src/chat-catalog.ts";
 import { ChatLabels } from "../src/chat-labels.ts";
 import { ChatReadState } from "../src/chat-read-state.ts";
-import { OWNER_THREAD_FLAG } from "../src/chat-guard.ts";
+import { CHAT_FLAG, OWNER_THREAD_FLAG } from "../src/chat-guard.ts";
 import { ThreadHub } from "../src/chat-threads.ts";
 import type { HostCatalogs } from "../src/host-catalogs.ts";
 import { ThreadOrigins } from "../src/thread-origin.ts";
@@ -103,6 +103,27 @@ test("a rename the daemon refuses for a taken name kills the new session and thr
   await assert.rejects(hub.create({ cwd: "/home/sieun", host: "mac", name: "check-in vent 11:47" }), (error: Error) => error.message === taken);
   assert.deepEqual(sent.map(command => command.type), ["create", "rename", "kill"]);
   assert.deepEqual(sent[2], { type: "kill", activeSessionId: "fe473a344ace" });
+});
+
+test("a chat is created without its name and named by a rename before its first message, since a named create took 31 to 43 s on 10-26", async (t: TestContext) => {
+  const dir = await mkdtemp(join(tmpdir(), "remote-create-"));
+  const sent: Record<string, unknown>[] = [];
+  const box = { request: async (command: Record<string, unknown>) => {
+    sent.push(command);
+    return command.type === "create" ? { success: true, data: { sessionId: ID, activeSessionId: "fe473a344ace" } } : { success: true, data: undefined };
+  } };
+  const catalog = { hostClient: async () => box, isOtherHost: () => false, place: () => {}, hostOf: () => null, socketPathFor: () => join(dir, "missing.sock"), refresh: async () => {} } as unknown as Catalog;
+  const hub = new ThreadHub(join(dir, "box.sock"), catalog, () => ({ provider: null, modelId: null, thinkingLevel: null }));
+  t.after(() => hub.close());
+  await assert.rejects(hub.create({ cwd: "/home/sieun", host: "us-metal02", name: "load probe", kind: "chat" }), "the attach to the missing socket still fails");
+  assert.deepEqual(sent.map(command => command.type), ["create", "rename"]);
+  assert.equal(sent[0]!.name, undefined);
+  assert.deepEqual((sent[0]!.config as { extensionFlagValues?: unknown }).extensionFlagValues, { [CHAT_FLAG]: true });
+  assert.deepEqual(sent[1], { type: "rename", activeSessionId: "fe473a344ace", name: "load probe" });
+  sent.length = 0;
+  await assert.rejects(hub.create({ cwd: "/home/sieun", host: "us-metal02", name: "load probe 2", kind: "chat", first: { message: "hi", mode: "followUp" } }));
+  assert.deepEqual(sent.map(command => command.type), ["create", "rename", "prompt"], "the chat's first turn already has its name");
+  assert.equal(sent[0]!.name, undefined);
 });
 
 test("a new thread on another box asks that box's relay to send its first message, and sends none itself when the relay did", async (t: TestContext) => {

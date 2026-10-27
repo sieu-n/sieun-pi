@@ -1435,6 +1435,10 @@ export class ThreadHub {
    * one at a time, and d7 counted 6 of its 30 minutes at 02:22Z dirty for them. A rename the daemon refuses, such as a taken name, kills the
    * new session and throws that refusal, as the create refused it before.
    *
+   * A chat is named by that waited rename too, before its first message, so its first turn already has its name. On 10-26 a named chat create
+   * on us-metal02 took 31 to 43 s, while the new worker checked the name against 5,385 saved session files
+   * (wiki:sessions/2026/10/23/0132-harness-load-discussion/prime-under-load.html, step p1100).
+   *
    * `nameBeforeFirst` names a thread with a first message by that waited rename too, before the message goes. A clean-room fixture asks for it:
    * its trial harness store is filed under its name (src/trial-harness.ts), and with the rename after the message its first cells ran unnamed
    * and wrote the published store.
@@ -1442,7 +1446,7 @@ export class ThreadHub {
   async create(input: { cwd: string; provider?: string; modelId?: string; thinkingLevel?: ThinkingLevel; name?: string; kind?: "chat"; host?: string; first?: FirstMessage; nameBeforeFirst?: boolean }): Promise<Thread> {
     const client = await this.hostDaemon(input.host ?? null);
     const renamed = input.first && input.kind !== "chat" && !input.nameBeforeFirst ? input.name : undefined;
-    const named = (!input.first || input.nameBeforeFirst) && input.kind !== "chat" ? input.name : undefined;
+    const named = renamed ? undefined : input.name;
     // A spare made while the owner wrote (prewarm) takes the first message at once; a spare whose session is gone falls back to a create.
     const spare = input.first && input.host && input.kind !== "chat" && !named ? await this.takeSpare(spareKey({ ...input, host: input.host })) : null;
     if (spare && input.first) {
@@ -1452,7 +1456,6 @@ export class ThreadHub {
       void this.serviceKill(client, spare.sessionId, spare.activeSessionId!);
     }
     const flags = { ...(input.kind === "chat" ? { [CHAT_FLAG]: true } : {}), ...(input.first ? { [OWNER_THREAD_FLAG]: true } : {}) };
-    const name = renamed || named ? undefined : input.name;
     // Another box's relay sends the first message the moment its daemon answers the create (components/prime-relay/first-prompt.mjs), which
     // saves the round trip between that answer and this box's prompt: about 190 ms to the Mac on 10-20. The relay adds the prompt's result to
     // the answer; an answer without it came through an older relay, and the prompt goes from here as before.
@@ -1460,7 +1463,7 @@ export class ThreadHub {
     // Only the create's own refusal waits out a prepare: a refused rename comes after a session was made, which a second create would double.
     let made: unknown;
     const response = await this.startWorker(`create ${input.name ?? input.cwd}`, input.host ?? null, async client => {
-      const created = made = await client.request({ type: "create", lifecycle: "resident", ...(name ? { name } : {}), ...(relayed ? { [RELAY_FIRST_PROMPT]: relayed } : {}),
+      const created = made = await client.request({ type: "create", lifecycle: "resident", ...(relayed ? { [RELAY_FIRST_PROMPT]: relayed } : {}),
         config: { cwd: input.cwd, ...(input.provider && input.modelId ? { provider: input.provider, model: input.modelId } : {}), ...(input.thinkingLevel ? { thinking: input.thinkingLevel } : {}),
         ...(Object.keys(flags).length ? { extensionFlagValues: flags } : {}) } } as never, DAEMON_WORKER_START_MS, { recoverable: false });
       const activeSessionId = created.success && typeof created.data === "object" && created.data !== null && "activeSessionId" in created.data ? created.data.activeSessionId : undefined;
