@@ -1,4 +1,5 @@
 import { messageKey } from "./message-key.ts";
+import { PARK_STOP_REASON } from "./credential-wait.ts";
 import type { AssistantMessage, BashExecutionMessage, BranchSummaryMessage, CompactionSummaryMessage, CustomMessage, ThinkingPart, ThreadMessage, ToolCallPart, ToolResultMessage, ToolRun, UserMessage } from "./types.ts";
 
 export type SystemMessage = BashExecutionMessage | BranchSummaryMessage | CompactionSummaryMessage | CustomMessage;
@@ -94,6 +95,8 @@ export function triggerSummary(message: CustomMessage): { label: string; detail:
     const failed = message.customType === "rlm_child_failure";
     const child = /child:(\S+)/.exec(header)?.[1] ?? /^RLM child (\S+)/.exec(text)?.[1] ?? "";
     const state = /^child-exited:\s*(\S+)/.exec(header)?.[1];
+    // Prime calls a worker the idle unload stopped while its turn waited for a pi-pool slot "cancelled"; the job was not cancelled and still waits.
+    if (!failed && body === PARK_STOP_REASON) return { label: "Subagent waits for a working slot", detail: child, body: "Its worker stopped while its turn waited for a pi-pool slot. It was not cancelled, and pi-pool wakes it when its slot starts." };
     return { label: failed ? "Subagent failed" : "Subagent exited", detail: [child, state].filter(Boolean).join(", "), body };
   }
   if (message.customType === "prime-agent.update_restart") return { label: "Prime Agent restarted", detail: "", body: text.replace(/<\/?[a-z_]+>/g, "").trim() };

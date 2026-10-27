@@ -7,7 +7,10 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { SessionSummary } from "prime-agent";
-import { type DaemonAnswer, ENDED_MS, IdleUnloader, parkCandidates, quotaParkedUntil, unloadPlan } from "../src/idle-unload.ts";
+import { type DaemonAnswer, ENDED_MS, IdleUnloader, parkCandidates, unloadPlan } from "../src/idle-unload.ts";
+import { fileSlotPark, parkedUntil } from "../src/slot-park.ts";
+
+const quotaParkedUntil = (tail: string, now: number): number | null => parkedUntil(fileSlotPark(tail.split("\n")), now);
 import type { UnloadReceipt } from "../src/unloaded.ts";
 
 const tail = readFileSync(join(import.meta.dirname, "fixtures", "quota-park-tail-1021-0021.jsonl"), "utf8");

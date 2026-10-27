@@ -8,6 +8,7 @@ import type { WriteSlot } from "./daemon-write.ts";
 import { type AgentKind, type Bundled, MAX_BACKOFF_MS, type Obsolete, Outbox, type Sending, type Stored } from "./outbox.ts";
 import { isSendTimeout, messageAt, QUEUED_PREFIX, sendKey, type TargetState } from "./send-once.ts";
 import { relayNote, type StoppedSubagent, stoppedSubagent } from "./subagent-relay.ts";
+import { slotParkWords, type SlotPark } from "./slot-park.ts";
 import { moveOf } from "./worker-move.ts";
 
 /*
@@ -70,6 +71,12 @@ export interface AgentOutboxDeps {
   resident?: (session: string) => boolean | null;
   /** Whether that box is up (src/host-reach.ts); a message to a session on a box that reads offline waits with no try until it is back. */
   reach?: (host: string) => Promise<PeerReach>;
+  /**
+   * The session's pi-pool slot wait (src/slot-park.ts), or null. A message to a session that waits for its slot waits here with no try, no relay
+   * and no continue, and goes once the wait clears: a turn ran, or Prime's wake wrote provider_quota_resume, which since load.2 can drop the park
+   * with no turn, so the held message is what starts it again. On 10-28 relays and continues reached parked jobs and read as stopped ones.
+   */
+  slotPark?: (session: string) => Promise<SlotPark | null>;
   /** Records a message sent to a stopped subagent through its parent (`RelayRecord`), so the job cleanup keeps the subagent until it runs. */
   relayed?: (session: string, at: number) => Promise<void>;
   /** The record that stopped the target (`stopRecords`), or null. */
@@ -292,6 +299,8 @@ export class AgentOutbox {
   private readonly keeping = new Map<string, Promise<unknown>>();
   /** The entries held for a box that reads offline, with when the hold began; one line when it begins and one when it ends. */
   private readonly offline = new Map<string, number>();
+  /** The entries held while their target waits for a pi-pool slot (`AgentOutboxDeps.slotPark`), with when the hold began. */
+  private readonly parked = new Map<string, number>();
 
   private readonly now: () => number;
 
@@ -348,6 +357,16 @@ export class AgentOutbox {
       quiet: error => error instanceof Full || error instanceof Moving || error instanceof UpdateWaited || pendingCounts(error) !== undefined,
       again: error => error instanceof UpdateWaited,
       held: async entry => {
+        const park = deps.slotPark ? await deps.slotPark(entry.threadId).catch(() => null) : null;
+        const parkedSince = this.parked.get(entry.id);
+        if (park && parkedSince === undefined) {
+          this.parked.set(entry.id, this.now());
+          deps.log(`outbox ${this.where(entry.threadId)}: ${entry.id} waits with no try while the target ${slotParkWords(park)}`);
+        } else if (!park && parkedSince !== undefined) {
+          this.parked.delete(entry.id);
+          deps.log(`outbox ${this.where(entry.threadId)}: ${entry.id} waited ${Math.round((this.now() - parkedSince) / 1000)} s while the target waited for a slot; it goes now`);
+        }
+        if (park) return true;
         const host = deps.reach && this.hostFor(entry.threadId, entry.root);
         if (!host) return false;
         const away = !(await deps.reach!(host)).online;

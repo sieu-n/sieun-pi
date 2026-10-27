@@ -22,3 +22,10 @@ export function turnError(message: { errorMessage?: unknown; diagnostics?: unkno
   if (at !== null) return `token hook gave no token (credential_unavailable): pi-pool: this session waits for its slot at ${new Date(at).toISOString()}.`;
   return typeof message.errorMessage === "string" ? message.errorMessage : undefined;
 }
+
+/**
+ * Prime's reason on a child's end notice (`rlm_child_terminal_notice` "[child-exited: cancelled child:NAME]") when the idle unload stopped the
+ * child's worker while its turn waited for a slot. On 10-27 chat 01a1164b's job got it for pi-pool-move and pi-rlm-move at 21:47Z, both only
+ * waiting in pi-pool's line, and read it as a cancel.
+ */
+export const PARK_STOP_REASON = "Stopped while its turn waited for a provider credential";

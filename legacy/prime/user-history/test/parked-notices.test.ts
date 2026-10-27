@@ -7,7 +7,10 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { SessionManager } from "prime-agent";
 import { loadRecord } from "../src/chat-brief.ts";
-import { readQuotaPark } from "../src/held-turns.ts";
+import { readSlotPark } from "../src/slot-park.ts";
+
+const readQuotaPark = async (file: string, now: number): Promise<number | null> =>
+  (await readSlotPark(file, now, { queued: new Map(), working: new Set() }))?.resumeAt ?? null;
 import { heldNoticeRecord } from "../src/chat-sources.ts";
 import { Chats } from "../src/chats.ts";
 import type { ThreadHub } from "../src/chat-threads.ts";

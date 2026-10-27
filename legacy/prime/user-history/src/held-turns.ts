@@ -2,8 +2,8 @@ import { open, readdir, readFile, rename, stat, writeFile } from "node:fs/promis
 import { join } from "node:path";
 import type { JobFact } from "./checkin-steps.ts";
 import { JOB_CLEANUP_EVERY_MS } from "./chat-checkin.ts";
-import { CUT_CONFIRM_BYTES, CUT_TAIL_BYTES, tailLines } from "./cut-end.ts";
 import { turnError } from "./shared/credential-wait.ts";
+import { droppedWords, fileSlotPark, type PoolQueue, slotParkOf } from "./slot-park.ts";
 import type { InterruptedRun } from "./shared/interrupted.ts";
 
 /**
@@ -107,24 +107,34 @@ async function tailOf(file: string): Promise<string> {
  * stuck, and the server restarted it into another 429.
  */
 export async function withFailedTurns(facts: readonly JobFact[], agentDir: string, chat: string, sessionOf: (key: string) => string | undefined = () => undefined,
-  fileOf: (session: string) => Promise<string | undefined> = async () => undefined): Promise<JobFact[]> {
+  fileOf: (session: string) => Promise<string | undefined> = async () => undefined, pool: PoolQueue | null = null, now = Date.now()): Promise<JobFact[]> {
   const artifacts = join(agentDir, "session-artifacts", chat);
   const subs = (await readdir(artifacts).catch(() => [] as string[])).filter(name => name.startsWith("sub-"));
   const tail = async (file: string): Promise<string> => tailOf(file).catch(() => "");
   return Promise.all(facts.map(async fact => {
     if (fact.cancelled || fact.state === "unstarted") return fact;
     let text = "";
-    if (fact.key.startsWith("thread:")) text = await tail(join(agentDir, "sessions", `${fact.key.slice("thread:".length)}.jsonl`));
+    let session: string | undefined;
+    if (fact.key.startsWith("thread:")) { session = fact.key.slice("thread:".length); text = await tail(join(agentDir, "sessions", `${session}.jsonl`)); }
     else {
       // A spawned child whose row carries no session id still has its own folder, sub-<id>/, under the chat: VP of CI's sub-583d2972 and
       // metal-management's sub-1582194f were restarted at 01:05Z on 10-19 while both transcripts ended on a pool slot wait.
-      const session = fact.sessionId ?? sessionOf(fact.key) ?? (fact.key.startsWith("sub-") ? await soleSession(join(artifacts, fact.key)) : undefined);
+      session = fact.sessionId ?? sessionOf(fact.key) ?? (fact.key.startsWith("sub-") ? await soleSession(join(artifacts, fact.key)) : undefined);
       if (!session) return fact;
       // A job started with rlm.create_session is a root under sessions/; a spawned one sits under its chat's session-artifacts.
       text = await tail(join(agentDir, "sessions", `${session}.jsonl`));
       for (const sub of subs) { if (text) break; text = await tail(join(artifacts, sub, `${session}.jsonl`)); }
       if (!text) { const file = await fileOf(session).catch(() => undefined); if (file) text = await tail(file); }
     }
+    // A job that waits for a pi-pool slot, parked or queued with a ticket the pool still holds (`slotParkOf`), is working, not failed: the
+    // check-in neither nudges nor restarts it. 10-28: AI harness's check-in nudged "buzz ui study" while it was queued, and chat-2572's steered
+    // "mcp connection behavior" while its page writer sat 133rd of 133. A park Prime's wake dropped with no turn after (`dropped`) reads failed
+    // on that, and the check-in pushes it only after the resume pass's one continue had a check-in interval to run (`jobPushes`).
+    const lines = text.split("\n");
+    const park = slotParkOf(lines, session!, now, pool);
+    if (park) { const { wake: _, retrying: __, ...rest } = fact; return { ...rest, state: "working", slotPark: park }; }
+    const dropped = fileSlotPark(lines).dropped;
+    if (dropped !== undefined && !fact.queued) { const { wake: _, ...rest } = fact; return { ...rest, state: "failed", error: `it waited for a working slot, and ${droppedWords(dropped)}`, parkDropped: dropped }; }
     const error = lastTurnError(text);
     if (error === undefined) return fact;
     // A session the daemon still lists at work whose turn failed on a rate limit after a pi-pool slot is in Prime's provider retry, which queues
@@ -191,61 +201,4 @@ export function turnSince(text: string, since: number): TurnSince {
 /** `turnSince` over the transcript at `file`; a missing file has no turn. */
 export async function readTurnSince(file: string, since: number): Promise<TurnSince> {
   return turnSince(await readFile(file, "utf8").catch(() => ""), since);
-}
-
-const QUOTA_PARK = '"customType":"provider_quota_park"';
-const QUOTA_RESUME = '"customType":"provider_quota_resume"';
-const POOL_PLACE = '"customType":"pi-pool-queue"';
-
-/**
- * Whether a session's last turn ended parked with no reply: from the end of its lines, a failed assistant message, a provider quota park or
- * resume, or a pi-pool queue place comes before any assistant message that did not fail. Such a job did not end its task, whatever its reply
- * flag says, so its report is not in. mac-management 10-22 02:17Z: the service handed p24 back to the chat as "job metal agent queue reported
- * at 11:04", and that 02:04Z turn of 01a16159-1c35-76dd-abc6-77a8686fe2ff had parked on the Claude limit with no output.
- */
-export function endsParked(lines: readonly string[]): boolean {
-  for (let index = lines.length - 1; index >= 0; index--) {
-    const line = lines[index]!;
-    if (line.includes(QUOTA_PARK) || line.includes(QUOTA_RESUME) || line.includes(POOL_PLACE)) return true;
-    if (!line.includes('"role":"assistant"')) continue;
-    let entry: { type?: unknown; message?: { role?: unknown; stopReason?: unknown } };
-    try { entry = JSON.parse(line); } catch { continue; }
-    if (entry.type === "message" && entry.message?.role === "assistant") return entry.message.stopReason === "error";
-  }
-  return false;
-}
-
-/** `endsParked` over the last CUT_TAIL_BYTES of a session file; a missing file is not parked. */
-export async function readEndsParked(file: string): Promise<boolean> {
-  return endsParked(await tailLines(file, CUT_TAIL_BYTES));
-}
-
-/**
- * When Prime resumes a session it parked on a provider wait, from its transcript lines: the resumeAt of the last provider_quota_park entry
- * when that is after `now` and no provider_quota_resume entry follows it (agent-session.ts `_parkForQuotaReset`, `_completeQuotaParkResume`).
- * Null when the session is not parked; undefined when the lines hold neither entry.
- */
-export function quotaParkEnd(lines: readonly string[], now: number): number | null | undefined {
-  for (let index = lines.length - 1; index >= 0; index--) {
-    const line = lines[index]!;
-    if (line.includes(QUOTA_RESUME)) return null;
-    if (!line.includes(QUOTA_PARK)) continue;
-    let entry: { data?: { resumeAt?: unknown } };
-    try { entry = JSON.parse(line); } catch { continue; }
-    const at = typeof entry.data?.resumeAt === "string" ? Date.parse(entry.data.resumeAt) : NaN;
-    return at > now ? at : null;
-  }
-  return undefined;
-}
-
-/**
- * `quotaParkEnd` of a session file, from the tails `readCut` reads (CUT_TAIL_BYTES up to CUT_CONFIRM_BYTES) until one holds a park or resume
- * entry. A parked session writes little after its park, since the chat service holds its notices (`Chats.tell`). Null when the file is gone.
- */
-export async function readQuotaPark(file: string, now: number): Promise<number | null> {
-  for (const bytes of [CUT_TAIL_BYTES, 1_000_000, CUT_CONFIRM_BYTES]) {
-    const end = quotaParkEnd(await tailLines(file, bytes), now);
-    if (end !== undefined) return end;
-  }
-  return null;
 }

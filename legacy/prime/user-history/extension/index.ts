@@ -1,5 +1,5 @@
 import { appendFile, readFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "prime-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { agentLines } from "../src/chat-agents.ts";
@@ -15,6 +15,7 @@ import { TELL_OWNER_TOOL } from "../src/shared/chat-feed.ts";
 import { BOARD_OP_NAMES, boardRevLine, PLAN_STATUSES, renderOpenPlan } from "../src/shared/chat-board.ts";
 import { ImageFitter } from "../src/context-images.ts";
 import { shortNotices } from "../src/prime-notices.ts";
+import { childSessionFile, parkStopNotice, parkStopText, poolPark, readFileSlotPark, readPoolQueue } from "../src/slot-park.ts";
 import { childCancels, childEndId, type JobCancel, JOB_CANCELS_FILE, noticeOfCancel, parseJobCancels, stampOf, withCancelledNotices } from "../src/job-cancels.ts";
 import { chatCheckIn, checkInLine, checkInSettings, parseChatCheckIn } from "../src/checkin-settings.ts";
 import { planHasOpenStep } from "../src/checkin-steps.ts";
@@ -43,7 +44,9 @@ export default function historyExtension(pi: ExtensionAPI): void {
     const short = shortNotices(event.messages);
     let cancelled: typeof short;
     try { cancelled = await cancelledNotices(short ?? event.messages, ctx.sessionManager.getSessionId()); } catch { /* notices as Prime wrote them */ }
-    const changed = cancelled ?? short;
+    let parked: typeof short;
+    try { parked = await parkedNotices(cancelled ?? short ?? event.messages, ctx.sessionManager.getSessionFile()); } catch { /* notices as Prime wrote them */ }
+    const changed = parked ?? cancelled ?? short;
     const messages = await images.messages(changed ?? event.messages) ?? changed;
     return messages ? { messages } : undefined;
   });
@@ -64,6 +67,31 @@ export default function historyExtension(pi: ExtensionAPI): void {
       }
     }
     return withCancelledNotices(messages, (child, at) => noticeCancels.get(`${parent}/${child}@${at}`) ?? undefined);
+  };
+  // Prime's "[child-exited: cancelled ...] Stopped while its turn waited for a provider credential" is a child the idle unload stopped while it
+  // waited for a pi-pool slot (src/slot-park.ts). Each such notice is worded once, from the child's file when the notice first came, so the
+  // cached prompt prefix stays the same: still waiting with its place, its park dropped by Prime's wake, or run again since.
+  const parkTexts = new Map<string, string>();
+  const parkedNotices = async <T>(messages: readonly T[], parentFile: string | undefined): Promise<T[] | undefined> => {
+    if (!parentFile) return undefined;
+    let changed = false;
+    const out: T[] = [];
+    for (const message of messages) {
+      const stop = parkStopNotice(message);
+      if (!stop) { out.push(message); continue; }
+      const key = `${parentFile}/${stop.child}@${stampOf(message)}`;
+      let text = parkTexts.get(key);
+      if (text === undefined) {
+        const file = await childSessionFile(parentFile, stop.child, getAgentDir());
+        const read = file ? await readFileSlotPark(file) : { complete: true };
+        const park = file ? poolPark(read.park, basename(file, ".jsonl"), Date.now(), await readPoolQueue()) : null;
+        text = parkStopText(stop.name, { park, ...read.dropped !== undefined ? { dropped: read.dropped } : {} });
+        parkTexts.set(key, text);
+      }
+      changed = true;
+      out.push({ ...message, content: text });
+    }
+    return changed ? out : undefined;
   };
   pi.registerFlag(CHAT_FLAG, { description: "Create this session as a browser chat (the chat server sets it; the session entry chat_mode is the durable mark)", type: "boolean" });
   pi.registerFlag(OWNER_THREAD_FLAG, { description: "A thread the owner started with his first message (the chat server sets it), so no job registry lookup", type: "boolean" });

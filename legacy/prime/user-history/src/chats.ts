@@ -21,7 +21,9 @@ import { childSessionFile, replacedJob, sessionBrief, sessionModel, sessionRepli
 import { type AwayHost, hostHolds } from "./shared/host-hold.ts";
 import { heldByTodo, linkedBoards, withLinkedBoards } from "./shared/todo-hold.ts";
 import { PoolHeldJobs, resumeChatJobs } from "./chat-resume.ts";
-import { readEndsParked, readQuotaPark, withFailedTurns, withHeldTurns } from "./held-turns.ts";
+import { CUT_TAIL_BYTES, tailLines } from "./cut-end.ts";
+import { lastTurnError, withFailedTurns, withHeldTurns } from "./held-turns.ts";
+import { droppedWords, poolPark, readFileSlotPark, slotParkWords, type FileSlotPark, type SlotPark } from "./slot-park.ts";
 import { withUnstarted } from "./brief-keeper.ts";
 import { planJob } from "./shared/chat-board.ts";
 import { noticeStands } from "./no-report.ts";
@@ -937,10 +939,10 @@ export class Chats {
    */
   private async jobBusy(id: string, child: ChildAgent, sessionId: string | undefined): Promise<string | undefined> {
     if (sessionId !== undefined && await this.source.waking?.(sessionId)) return "it waits on a board.wake";
+    const held = sessionId === undefined ? undefined : await this.jobHeld(child, sessionId);
+    if (held !== undefined) return held;
     if (await this.jobLive(id, sessionId !== undefined ? { ...child, sessionId } : child)) return "a session under it waits on a board.wake or a subagent under it works";
     if (sessionId === undefined) return undefined;
-    const held = await this.jobHeld(child, sessionId);
-    if (held !== undefined) return held;
     if (await this.threads.sessionActive(sessionId)) return "its session runs a tool call or a background bash";
     for (const session of this.treeBelow(sessionId)) if (await this.threads.sessionActive(session)) return "a subagent under it runs a turn, a tool call or a background bash";
     return undefined;
@@ -967,9 +969,8 @@ export class Chats {
         return `a message for ${session === sessionId ? "it" : "a subagent under it"} went through its parent at ${new Date(relayedAt).toISOString().slice(11, 19)}Z, and that session has not run since`;
       if (turns?.sessions.has(session)) return `the resume pass gives back ${whose} cut turn`;
       if (pool.has(session)) return `pi-pool holds ${whose} tree until its pool time`;
-      const file = await this.summary(session).then(summary => summary?.sessionFile, () => undefined);
-      const parked = file ? await readQuotaPark(file, now).catch(() => null) : null;
-      if (parked !== null) return `Prime parks ${whose} turn on its provider quota until ${new Date(parked).toISOString().slice(11, 16)}Z`;
+      const parked = (await this.slotPark(session))?.park;
+      if (parked) return `${whose === "its" ? "it" : "a subagent under it"} ${slotParkWords(parked)}`;
     }
     return undefined;
   }
@@ -989,7 +990,7 @@ export class Chats {
    * (`handBackText`), then each step's job becomes the chat and its note names the job. The steer goes first, so a steer that fails leaves the
    * steps on the job for the next sweep: metal-management 10-18 06:46Z, the steer for p11 failed with "Daemon is preparing an update restart"
    * after the board write, and p11 became the chat's without the chat being told. The note keeps the job named, so the cleanup keeps it as it
-   * is. A job still at work (`jobBusy`), one whose last turn parked with no reply (`endsParked`), or one whose wakes cannot be read yet, keeps
+   * is. A job still at work or waiting for a slot (`jobBusy`), one whose last turn failed with no reply, or one whose wakes cannot be read yet, keeps
    * its steps.
    */
   private async handBack(id: string, child: ChildAgent, steps: readonly PlanItem[]): Promise<boolean> {
@@ -998,9 +999,9 @@ export class Chats {
       const sessionId = child.sessionId ?? this.subagents.get(id)?.find(row => row.id === child.id)?.sessionId;
       if (this.source.waking && sessionId === undefined) return false;
       if (await this.jobBusy(id, child, sessionId) !== undefined) return false;
-      // A job whose last turn parked on a quota or pool wait with no reply has not reported, so it keeps its steps (`endsParked`).
+      // A job whose last turn failed, or that waits for a slot (`jobBusy` reads that), has not reported, so it keeps its steps.
       const file = sessionId !== undefined ? await this.summary(sessionId).then(summary => summary?.sessionFile, () => undefined) : undefined;
-      if (file && await readEndsParked(file).catch(() => false)) return false;
+      if (file && lastTurnError((await tailLines(file, CUT_TAIL_BYTES).catch(() => [] as string[])).join("\n")) !== undefined) return false;
       const line = handBackNote(name, child.lastActivityAt ?? this.now());
       await this.tell(id, JOB_NOTICE_PREFIX + handBackText(child, steps));
       await this.source.resumes!.applyBoard(id, steps.map(step => ({ op: "plan_update", id: step.id, job: id,
@@ -1302,6 +1303,17 @@ export class Chats {
   private async wakeJob(threadId: string, stamp: string, woke: boolean, job?: ChatJob): Promise<void> {
     const now = this.now();
     if (await this.cancelled(threadId)) { this.jobWakes.delete(threadId); this.jobQuiet.set(threadId, stamp); this.keepQuiet(); return; }
+    // A job that waits for a pi-pool slot gets no wake: a "continue" aborts its wait and puts it at the end of the line. It is looked at again
+    // each tick until the wait clears. A park Prime's wake dropped gets the resume pass's one continue (resume_paused.py) and one plain note.
+    const slot = await this.slotPark(threadId);
+    if (slot?.park) { this.jobWakes.delete(threadId); return; }
+    if (slot?.dropped !== undefined) {
+      this.jobWakes.delete(threadId);
+      this.jobQuiet.set(threadId, stamp);
+      this.keepQuiet();
+      if (job) this.queue(job.chat, () => this.jobEndNote(threadId, job));
+      return;
+    }
     try {
       const state = await this.threads.view(threadId);
       const stall = state ? turnStall(turnViewOf(state, this.threads.running(threadId)), now) : null;
@@ -1416,6 +1428,9 @@ export class Chats {
       this.threads.setWait(id, null);
       return;
     }
+    // A chat that waits for its pi-pool slot gets no new turn: its turn ended on "this run waits for a working slot, place 106 of 164" with a
+    // credential_unavailable diagnostic, a healthy wait the pool ends by waking it.
+    if ((await this.slotPark(id))?.park) return;
     const provider = state.info?.model?.provider ?? null;
     const claude = provider === "anthropic" ? await this.claude() : null;
     const down = claudeDown(stall.error, provider, claude);
@@ -1457,6 +1472,8 @@ export class Chats {
       const state = await this.threads.view(threadId);
       const stall = state ? turnStall(turnViewOf(state, this.threads.running(threadId)), now) : null;
       if (!strandedInput(stall, now)) { this.ownerWakes.delete(threadId); return; }
+      // A thread that waits for its pi-pool slot holds its input until the slot starts; a "continue" would put it at the end of the line.
+      if ((await this.slotPark(threadId))?.park) return;
       // A job's transient failure is woken by `wakeJob` on its faster schedule.
       if (this.jobThreads.has(threadId) && failureCause(stall!.error) === "transient") return;
       this.ownerWakes.set(threadId, { attempts: (last?.attempts ?? 0) + 1, at: now });
@@ -1806,7 +1823,7 @@ export class Chats {
     const parks = quotaParks(await parkSchedules(id, roots, jobSessions, disk), this.now());
     const queued = pool?.queued ?? new Map<string, QueuePlace>();
     const pooled = await withFailedTurns(threads, join(this.source.home ?? homedir(), ".prime", "agent"), id, key => sessions.get(key),
-      async session => (await this.summary(session))?.sessionFile);
+      async session => (await this.summary(session))?.sessionFile, pool ?? null, this.now());
     const facts = withQueuePlaces(withQuotaParks(pooled, parks, key => sessions.get(key)).map(fact => {
       // A thread's report to the chat counts like a job's: at 16:10Z on 10-18 the check-in restarted "wiki memory moves 10-18b" for "nothing
       // moved" one minute after its 16:09Z report ("243 repo-fact memories are deleted ... 127 wiki-dream skill commits").
@@ -1886,6 +1903,9 @@ export class Chats {
     const folder = this.source.home ? join(this.source.home, ".prime", "agent", "session-artifacts", id, child.id) : join(artifactsRoot(), id, child.id);
     const tree = (await sessionTree(folder).catch(() => ({ sessions: [] as string[] }))).sessions;
     for (const each of new Set([...session !== undefined ? [session] : [], ...tree])) if (await this.source.waking?.(each).catch(() => false)) return true;
+    // A job that waits for a pi-pool slot, it or a session below it, ended no task: Prime ends each such turn on a failed reply and the idle
+    // unload stops its worker. On 10-28 chat 01a1164b was told "[job] harness memory explainer failed" while it only waited in pi-pool's line.
+    for (const each of new Set([...session !== undefined ? [session] : [], ...tree])) if ((await this.slotPark(each, join(folder, `${each}.jsonl`)))?.park) return true;
     const wakes = await this.source.wakes?.(this.now()).catch(() => []) ?? [];
     return liveJobs([session !== undefined ? { ...child, sessionId: session } : child], this.subagents, this.now(), 0, new Set(wakes.map(wake => wake.session))).size > 0;
   }
@@ -1986,7 +2006,7 @@ export class Chats {
     if (!this.chatIds.has(id)) return;
     const agents = this.roots.get(id) ?? [];
     const root = agents.find(agent => agent.sessionId === session);
-    if (!root || root.state === "working" || await this.cancelled(session) || await this.source.waking?.(session)) return;
+    if (!root || root.state === "working" || await this.cancelled(session) || await this.source.waking?.(session) || (await this.slotPark(session))?.park) return;
     if (this.threads.busy(id) && tries < NO_REPORT_BUSY_TRIES && !this.stall(id)) { this.laterRootSteps(id, session, tries + 1); return; }
     let board: ChatBoard | null;
     try { board = await this.source.board(id); }
@@ -2043,6 +2063,9 @@ export class Chats {
     const end = jobEnd(state.messages);
     const now = this.now();
     if (!end || now - end.at > JOB_END_NOTE_MAX_AGE_MS) return;
+    // A turn that ended on a slot wait is no end: the job waits in pi-pool's line, and is told only if Prime's wake drops its park.
+    const slot = await this.slotPark(threadId);
+    if (slot?.park) return;
     const child = agent.childId !== undefined ? this.children.get(chat)?.find(candidate => candidate.id === agent.childId) : undefined;
     // A subagent the server holds no snapshot of cannot be told apart from a cancelled job or one that replied.
     if (agent.link === "subagent" ? !child || childWorking(child) || child.status === "cancelled" : false) return;
@@ -2054,7 +2077,7 @@ export class Chats {
     try {
       if ((await this.source.memory.ends(chat))[key]?.at === end.at) return;
       const name = agent.sender || agent.name;
-      await this.tell(chat, JOB_NOTICE_PREFIX + jobEndText(name, end));
+      await this.tell(chat, JOB_NOTICE_PREFIX + (slot?.dropped !== undefined ? `${name} was waiting for a working slot, and ${droppedWords(slot.dropped)}` : jobEndText(name, end)));
       await this.source.memory.told(chat, key, { at: end.at, cause: end.cause, ...end.error ? { error: end.error } : {} });
       this.log(`chat ${chat.slice(0, 8)}: job ${name} ended (${end.cause}) with no report; told the chat`);
       if (child) this.noticedEnd.set(child.id, { end: child.lastActivityAt ?? end.at });
@@ -2064,8 +2087,8 @@ export class Chats {
   }
 
   /**
-   * Sends a server notice to a chat as a steer, or holds it while Prime has the chat parked on a provider wait until a later time
-   * (`readQuotaPark`). A steer to a parked chat starts a turn that fails at once on the same 429, and its messages move the chat's idle clock, so
+   * Sends a server notice to a chat as a steer, or holds it while the chat waits for a slot or Prime has it parked on a provider wait
+   * (`slotPark`). A steer to a parked chat starts a turn that fails at once on the same 429, and its messages move the chat's idle clock, so
    * the idle unload never frees the chat: on 10-20 Crawler VP was parked from 08:35Z to 10:16Z, took 27 notices from 08:57Z to 09:46Z, never
    * 12 min apart, and kept its 1.05 GB worker throughout. Held notices wait in `heldNotices`, behind any the chat already holds, and the tick
    * sends them in order once the park ended (`sendHeld`), so they join the resumed turn. The owner's own messages never come here: the owner
@@ -2083,12 +2106,12 @@ export class Chats {
     if (!record) return this.steer(chat, message);
     return new Promise((resolve, reject) => this.queue(heldLane(chat), async () => {
       try {
-        const until = await this.parkedUntil(chat);
-        if (until === null && !(await record.read()).get(chat)?.length) await this.steer(chat, message);
+        const park = (await this.slotPark(chat))?.park ?? null;
+        if (park === null && !(await record.read()).get(chat)?.length) await this.steer(chat, message);
         else {
           const held = await record.add(chat, message);
-          if (until === null) await this.sendHeld(chat);
-          else this.log(`chat ${chat.slice(0, 8)}: held a notice, Prime parks the chat until ${new Date(until).toISOString()} (${held} held)`);
+          if (park === null) await this.sendHeld(chat);
+          else this.log(`chat ${chat.slice(0, 8)}: held a notice, the chat ${slotParkWords(park)} (${held} held)`);
         }
         resolve();
       } catch (error) { reject(error); }
@@ -2100,10 +2123,17 @@ export class Chats {
     return this.source.notices ? this.source.notices.send(chat, message) : this.threads.prompt(chat, { message, images: [], mode: "steer" });
   }
 
-  /** When Prime resumes the chat it parked on a provider wait, from its session file; null when it is not parked or the file cannot be read. */
-  private async parkedUntil(chat: string): Promise<number | null> {
-    const file = (await this.summary(chat).catch(() => undefined))?.sessionFile;
-    return file ? readQuotaPark(file, this.now()).catch(() => null) : null;
+  /**
+   * The slot wait of a session from its file and every box's pi-pool line (`readFileSlotPark`, `poolPark`): `park` while it waits, else
+   * `dropped` when Prime's wake dropped its park with no turn after. Null when the daemon lists no file for it.
+   */
+  private async slotPark(session: string, fallback?: string): Promise<{ park: SlotPark | null; dropped?: number } | null> {
+    const file = await this.summary(session).then(summary => summary?.sessionFile, () => undefined) ?? fallback;
+    if (!file) return null;
+    const read: FileSlotPark = await readFileSlotPark(file);
+    // With no pool reading a wait lasts until the time it asks again, as Prime's own park does.
+    const pool = await this.source.queue?.().catch(() => null) ?? { queued: new Map(), working: new Set<string>() };
+    return { park: poolPark(read.park, session, this.now(), pool), ...read.dropped !== undefined ? { dropped: read.dropped } : {} };
   }
 
   /** Sends the notices held for a chat whose park ended, oldest first; each leaves the record once it went, and a failed send waits for the next tick. */
@@ -2111,7 +2141,7 @@ export class Chats {
     const record = this.source.heldNotices!;
     try {
       const held = (await record.read()).get(chat) ?? [];
-      if (!held.length || await this.parkedUntil(chat) !== null) return;
+      if (!held.length || (await this.slotPark(chat))?.park) return;
       let sent = 0;
       try { for (const message of held) { await this.steer(chat, message); sent++; } }
       finally { if (sent) await record.drop(chat, sent); }

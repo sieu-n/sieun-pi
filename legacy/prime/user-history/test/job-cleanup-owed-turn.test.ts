@@ -104,7 +104,7 @@ test("job cleanup: a quiet job whose cut turn the resume pass gives back is kept
 test("job cleanup: a quiet job Prime parked on its provider quota is kept", async () => {
   const { deleted, kept } = await sweep(ended => ({ parkUntil: ended + 90 * 60_000 }));
   assert.equal(deleted, false);
-  assert.match(kept.join("\n"), /Prime parks its turn on its provider quota until 02:22Z/);
+  assert.match(kept.join("\n"), /kept job 5180 into the real app: it waits for a working slot/);
 });
 
 test("job cleanup: a finished job owed nothing, with an older relay it already took, is still deleted", async () => {

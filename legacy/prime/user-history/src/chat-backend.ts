@@ -36,7 +36,8 @@ import { briefCheckRecord, deletedJobRecord, heldNoticeRecord, jobRegistry, chec
 import { jobResumes } from "./job-resume.ts";
 import { cutJobs, interruptedRuns } from "./chat-resume.ts";
 import { resumesNow, tailLines } from "./cut-end.ts";
-import { IdleUnloader, parkChanges, providerWaits, quotaParkedUntil, SWEEP_EVERY_MS, takesKillOrigin, unloadRequest } from "./idle-unload.ts";
+import { IdleUnloader, parkChanges, providerWaits, SWEEP_EVERY_MS, takesKillOrigin, unloadRequest } from "./idle-unload.ts";
+import { parkedUntil, poolPark, readFileSlotPark } from "./slot-park.ts";
 import { handOff, handoffSend, handsOffRow, systemPorts } from "./detached-handoff.ts";
 import { unfinishedHandoffs } from "./orphan-services.ts";
 import { readHeldTurns, readTurnSince, writeResumePending } from "./held-turns.ts";
@@ -332,6 +333,10 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   // Every agent message the service sends waits on disk until the daemon takes it, and one that may have gone is looked for before it goes
   // again (src/agent-outbox.ts). A scratch serve keeps its own folder, so it never delivers the live service's messages.
   const agentOutbox = new AgentOutbox(join(dataDir, quiet ? "agent-outbox-scratch" : "agent-outbox"), { log: dutyLog, hostOf: session => catalog.hostOf(session), reach: host => reach.reach(host),
+    slotPark: async session => {
+      const file = (await catalog.summary(session))?.sessionFile;
+      return file ? poolPark((await readFileSlotPark(file)).park, session, Date.now(), await queued()) : null;
+    },
     synced: () => catalog.hostsSynced(), subagentOf: async session => rowSubagent(await catalog.summary(session)), resident: session => catalog.resident(session),
     relayed: (session, at) => relays.add(session, at), stopped: stopRecords(dataDir),
     updateWindow: (host, error) => threads.updateWindow(host, error),
@@ -416,10 +421,10 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     // the chat once pi-pool admits it (Chats.revive).
     held: (rows, now, idleMs) => providerWaits(rows, now, idleMs, { all: catalog.daemonRows(), local: row => !catalog.hostOf(row.sessionId),
       tail: async file => (await tailLines(file, 64 * 1024)).join("\n"), read: threads => readPoolStatus(threads, { maxAgeMs: 60_000 }) }),
-    // A session in Prime's quota park stops at once: its durable quota-resume job loads it again at the reset (src/idle-unload.ts
-    // quotaParkedUntil). Only this box's sessions, whose transcripts this box holds.
+    // A session in Prime's quota or slot park stops at once: its durable quota-resume job or pi-pool loads it again (src/slot-park.ts
+    // parkedUntil). Only this box's sessions, whose transcripts this box holds.
     parked: async (rows, now) => new Map((await Promise.all(rows.filter(row => !catalog.hostOf(row.sessionId) && row.sessionFile).map(async row => {
-      const until = quotaParkedUntil((await tailLines(row.sessionFile!, 64 * 1024).catch(() => [] as string[])).join("\n"), now);
+      const until = parkedUntil(await readFileSlotPark(row.sessionFile!), now);
       return until === null ? [] : [[row.sessionId, until] as const];
     }))).flat()),
     release: id => threads.restAsleep(id),

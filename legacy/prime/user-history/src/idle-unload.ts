@@ -101,32 +101,8 @@ function own(row: SessionSummary, input: { attached: ReadonlySet<string>; chats?
  * second and parked again, and the woken workers lived a median 157 s and up to 1058 s, about 8 of them resident at any time, while d7 read
  * 7.18 GB of Agent sessions. 199 of the 290 idle stops in that stretch were of a session parked this way. The AI harness VP chat woke at
  * 00:21:29Z, parked until 02:03:20Z at 00:21:30Z, and kept its worker until the unload stopped it at 00:37:42Z.
- */
-export const QUOTA_PARK = "provider_quota_park";
-export const QUOTA_RESUME = "provider_quota_resume";
-
-/**
- * When a session's transcript tail says it sits in a quota park: its newest turn ended on a failed reply (`lastTurnError`), and its newest
- * park entry comes after any resume entry and names a `resumeAt` still ahead of `now`, so the daemon's durable wake restores it then. Null
- * otherwise, such as a park whose time passed or a session that took input or worked since.
- */
-export function quotaParkedUntil(tail: string, now: number): number | null {
-  if (lastTurnError(tail) === undefined) return null;
-  const lines = tail.split("\n");
-  for (let index = lines.length - 1; index >= 0; index--) {
-    let line: { type?: unknown; customType?: unknown; data?: { resumeAt?: unknown } };
-    try { line = JSON.parse(lines[index]!); } catch { continue; }
-    if (line.type !== "custom") continue;
-    if (line.customType === QUOTA_RESUME) return null;
-    if (line.customType !== QUOTA_PARK) continue;
-    const at = typeof line.data?.resumeAt === "string" ? Date.parse(line.data.resumeAt) : NaN;
-    return Number.isFinite(at) && at > now ? at : null;
-  }
-  return null;
-}
-
-/**
- * The rows that may sit in a quota park (`quotaParkedUntil`), for the caller to check against their transcripts: nothing runs, waits or is
+ *
+ * The rows that may sit in a quota park (`parkedUntil` in src/slot-park.ts), for the caller to check against their transcripts: nothing runs, waits or is
  * scheduled in the session but the park's own wake, nothing below it is at work, and no client holds it but a chat's service attach.
  */
 export function parkCandidates(rows: readonly SessionSummary[], input: PlanInput): SessionSummary[] {
@@ -197,7 +173,7 @@ export interface PlanInput { attached: ReadonlySet<string>; pool: ReadonlySet<st
    * null for a chat whose tree the pool names no time for.
    */
   held?: ReadonlyMap<string, number | null>;
-  /** Of `parkCandidates`, the sessions whose transcript shows a quota park (`quotaParkedUntil`), with its resume time; they stop at once. */
+  /** Of `parkCandidates`, the sessions whose transcript shows a quota park (`parkedUntil` in src/slot-park.ts), with its resume time; they stop at once. */
   parked?: ReadonlyMap<string, number>;
   /** The daemon's sessions root on this box, which its wake scan reads for schedules (`wokenByScan`); absent, a scheduled session stays. */
   sessionsDir?: string }
@@ -385,7 +361,7 @@ export interface UnloadSource {
    * (`poolHoldsPast`), with when the hold ends.
    */
   held(rows: readonly SessionSummary[], now: number, idleMs: number): Promise<ReadonlyMap<string, number | null>>;
-  /** Of `rows` (`parkCandidates`), the ones whose transcript shows a quota park (`quotaParkedUntil`), with its resume time. Absent, none. */
+  /** Of `rows` (`parkCandidates`), the ones whose transcript shows a quota park (`parkedUntil` in src/slot-park.ts), with its resume time. Absent, none. */
   parked?(rows: readonly SessionSummary[], now: number): Promise<ReadonlyMap<string, number>>;
   /**
    * Lets go of the service's own attach on a chat asleep in its provider retry, right before its kill, and keeps it detached until the owner,

@@ -9,7 +9,8 @@ import { loadRecord } from "../src/chat-brief.ts";
 import { JOB_CLEANUP_EVERY_MS } from "../src/chat-checkin.ts";
 import { Chats } from "../src/chats.ts";
 import type { CheckInSource } from "../src/chat-sources.ts";
-import { endsParked } from "../src/held-turns.ts";
+import { lastTurnError } from "../src/held-turns.ts";
+import { fileSlotPark } from "../src/slot-park.ts";
 import { IdIndex } from "../src/id-index.ts";
 import { jobResumes } from "../src/job-resume.ts";
 import type { BoardOp, ChatAgent, ChatBoard, ChildAgent, PlanItem, SessionRow, ThreadMessage } from "../src/shared/types.ts";
@@ -24,7 +25,10 @@ const failed = (at: number) => JSON.stringify({ type: "message", timestamp: new 
   message: { role: "assistant", stopReason: "error", content: [], errorMessage: "Provider rate limit exceeded (rate_limit_error, 429)" } });
 const park = (until: number) => JSON.stringify({ type: "custom", customType: "provider_quota_park", data: { resumeAt: new Date(until).toISOString() } });
 
-test("endsParked: a turn that failed or parked with no reply after it is parked; a reply after the park is not", () => {
+/** What keeps a job's steps from the hand back: a slot or quota wait (`fileSlotPark`, read by jobBusy) or a last turn that failed (`lastTurnError`). */
+const endsParked = (lines: readonly string[]): boolean => fileSlotPark(lines).park !== undefined || lastTurnError(lines.join("\n")) !== undefined;
+
+test("a turn that failed or parked with no reply after it keeps its steps; a reply after the park does not", () => {
   assert.equal(endsParked([ok(START), failed(START + 1000), park(START + 60_000)]), true);
   assert.equal(endsParked([ok(START), failed(START + 1000)]), true);
   assert.equal(endsParked([ok(START), JSON.stringify({ type: "custom", customType: "pi-pool-queue", data: {} })]), true);

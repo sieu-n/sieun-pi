@@ -4,6 +4,7 @@ import { clockTime, localTime } from "./checkin-settings.ts";
 import { savedStatePath } from "./job-resume.ts";
 import type { OwnerMessage } from "./shared/brief-check.ts";
 import type { StalledCall } from "./shared/stalled-calls.ts";
+import { slotParkWords, type SlotPark } from "./slot-park.ts";
 
 /** The check-in's step classes: the chat's job facts, the class of each open plan step (`stepClass`), and the line the duty job reads for it. */
 
@@ -45,6 +46,10 @@ export interface JobFact {
   parkedUntil?: number;
   /** It is in Prime's provider retry after a rate limit, and has not queued in pi-pool again since its last failed try (`inPoolRetry`). */
   retrying?: true;
+  /** It waits for a pi-pool working slot (`slotParkOf`): parked by Prime, or queued with a ticket the pool still holds. It moves, so nobody pushes it. */
+  slotPark?: SlotPark;
+  /** When Prime's wake dropped its slot park with no turn after (`fileSlotPark`): it waits for the resume pass's one continue, then a push. */
+  parkDropped?: number;
   /** The pending board.wake its session sleeps on (`wakeLabel`): it ended its turn and counts as working until the wake is due (`withWakes`). */
   wake?: string;
   /** The dead waits it sleeps on (`withDeadWakes`): board.wakes on runs that ended long enough ago that the service should have sent them. */
@@ -223,7 +228,7 @@ export const owns = (fact: JobFact, owner: string): boolean => fact.key === owne
  * them on a last turn that ended this way, and each restart added cache writes while pi-pool's backoff wanted quiet. A pool-wide hook outage
  * is the token hook alert's (src/token-hook-watch.ts), not the check-in's.
  */
-export const POOL_WAIT = /\bpi-pool:[^]*?\bwaits for (?:its|a) slot\b|from shell command: \S*pi-pool-token\b/;
+export const POOL_WAIT = /\bpi-pool:[^]*?\bwaits for (?:its|a(?: working)?) slot\b|from shell command: \S*pi-pool-token\b/;
 export const poolWait = (fact: Pick<JobFact, "error"> | undefined): boolean => fact?.error !== undefined && POOL_WAIT.test(fact.error);
 
 export const ownerOf = (item: PlanItem, facts: readonly JobFact[]): JobFact | undefined => {
@@ -383,7 +388,8 @@ const nth = (n: number): string => `${n}${n % 100 >= 11 && n % 100 <= 13 ? "th" 
  * A job that waits for an account, in words: its turn waits in pi-pool's queue ("queued 99th of 114 for an account"), or Prime parked it on a
  * provider limit until its quota-resume job ("waiting for an account until 10-21 23:45"). Undefined for any other job. Such a job is moving, not failed.
  */
-export const capacityWait = (fact: Pick<JobFact, "queued" | "parkedUntil" | "retrying">): string | undefined =>
+export const capacityWait = (fact: Pick<JobFact, "queued" | "parkedUntil" | "retrying" | "slotPark">): string | undefined =>
+  fact.slotPark ? slotParkWords(fact.slotPark) :
   fact.queued ? `queued ${nth(fact.queued.position)} of ${fact.queued.total} for an account` :
   fact.retrying ? "retrying for an account after a rate limit" :
   fact.parkedUntil !== undefined ? `waiting for an account until ${localTime(fact.parkedUntil).slice(5)}` : undefined;
