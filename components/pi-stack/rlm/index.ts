@@ -122,6 +122,7 @@ class RlmSession {
       sessionId: this.id,
       sessionName: () => this.pi.getSessionName() ?? this.identity.name,
       artifactDir: this.artifactDir,
+      sessionFile: this.ctx.sessionManager.getSessionFile(),
       agentDir: this.agentDir,
       cwd: this.ctx.cwd,
       depth: this.identity.depth,
@@ -149,6 +150,7 @@ class RlmSession {
     env.RLM_DEPTH = String(this.identity.depth);
     env.RLM_MAX_DEPTH = String(this.maxDepth());
     env.PI_CODING_AGENT_DIR = this.agentDir;
+    env.PRIME_AGENT_CODING_AGENT_DIR = this.agentDir;
     env.PRIME_AGENT_KERNEL_OWNER_PID = String(process.pid);
     return env;
   }

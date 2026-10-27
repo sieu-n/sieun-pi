@@ -128,6 +128,8 @@ export interface ParentHooks {
   sessionId: string;
   sessionName(): string;
   artifactDir: string;
+  /** Written as the child's header.parentSession, which user-history and global-rules read for depth, as Prime writes it. */
+  sessionFile?: string;
   agentDir: string;
   cwd: string;
   depth: number;
@@ -232,7 +234,7 @@ export class ChildManager {
     const id = `sub-${randomBytes(4).toString("hex")}`;
     const sessionDir = join(this.parent.artifactDir, id);
     mkdirSync(sessionDir, { recursive: true });
-    const sessionManager = SessionManager.create(this.parent.cwd, sessionDir);
+    const sessionManager = SessionManager.create(this.parent.cwd, sessionDir, this.parent.sessionFile ? { parentSession: this.parent.sessionFile } : undefined);
     const record: ChildRecord = {
       id,
       name: request.name,

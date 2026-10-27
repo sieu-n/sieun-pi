@@ -139,6 +139,7 @@ test("P2: rlm.spawn returns at once, the child's reply steers the parent, and a 
     const childFile = readdirSync(childDir).filter(d => d.startsWith("sub-")).flatMap(d => readdirSync(join(childDir, d)).filter(f => f.endsWith(".jsonl")).map(f => join(childDir, d, f)))[0]!;
     const childLog = readFileSync(childFile, "utf8");
     assert.match(childLog, /\[task from parent\]/);
+    assert.equal(JSON.parse(childLog.split("\n")[0]!).parentSession, rt.session.sessionManager.getSessionFile());
     assert.match(childLog, /(delivered|queued|started)[^"]* None/, "agent_message and goal are pre-imported in the child kernel");
     await rt.session.prompt("spawn a quiet one");
     await settle(rt, faux, 3);
