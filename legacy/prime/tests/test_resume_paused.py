@@ -1162,6 +1162,21 @@ class ResumePausedTests(unittest.TestCase):
         self.assertEqual(self.run_stranded(sid)["paused"], [], "the owner's Stop in job-cancels.json")
         self.assertEqual(self.sent, [])
 
+    def test_a_cancelled_wake_whose_input_load_i_prime_settled_or_left_uncertain_gets_nothing(self):
+        # Hand-made: load-i Prime's input records and its recovery entry's `uncertain` list, until chat-057a sends the real fixture.
+        sid = "01a17f1e-141e-723a-9afa-cc658e28bbe7"
+        entries = self.STRANDED[sid]["entries"]
+        park = next(index for index, entry in enumerate(entries) if entry.get("customType") == "provider_quota_park")
+        uncertain = {"type": "custom", "customType": "prime_input_recovery", "timestamp": "2026-10-27T21:35:39.000Z",
+                     "data": {"uncertain": [{"operationId": "op-1", "inputId": "in-1", "toolNames": ["ipython"]}]}}
+        delivered = {"type": "custom", "customType": "prime_input", "timestamp": "2026-10-27T21:35:39.000Z", "data": {"inputId": "in-1", "state": "delivered"}}
+        accepted = {"type": "custom", "customType": "prime_input", "timestamp": "2026-10-27T21:35:39.000Z", "data": {"inputId": "in-1", "state": "accepted"}}
+        for case, added, kept in (("an uncertain tool turn", uncertain, False), ("a delivered input", delivered, False), ("an accepted input", accepted, True)):
+            with self.subTest(case=case):
+                (self.root / "state.json").unlink(missing_ok=True)
+                report = self.run_stranded(sid, [*entries[:park + 1], added, *entries[park + 1:]])
+                self.assertEqual([p["session_id"] for p in report["paused"]], [sid] if kept else [])
+
     def test_credential_wait_at_reads_the_diagnostic_and_not_the_text(self):
         message = self.MARKER["message"]
         self.assertEqual(resume_paused.credential_wait_at(message), 1792517520000)

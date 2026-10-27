@@ -1409,6 +1409,21 @@ def stop_generation(path):
     return generation if isinstance(generation, int) and not isinstance(generation, bool) else None
 
 
+# load-i Prime records each input's progress (accepted, dequeued, delivered, consumed, completed) and lists the tool turns it cannot
+# prove done under `uncertain` in its recovery entry. An input in one of these states needs no continue, and an uncertain tool turn
+# must never be replayed.
+SETTLED_INPUT_STATES = frozenset({"delivered", "consumed", "completed", "recovered"})
+
+
+def settled_input(entry):
+    """The entry says an input already reached a turn or Prime recovered it, or names an uncertain tool turn."""
+    data = entry.get("data") if isinstance(entry.get("data"), dict) else {}
+    if data.get("uncertain") or entry.get("uncertain"):
+        return True
+    state = data.get("state") or data.get("status") or data.get("outcome")
+    return bool(data.get("inputId")) and state in SETTLED_INPUT_STATES
+
+
 def cancelled_wake(entries, path):
     """(the provider_quota_resume entry, the verdict) when Prime cancelled the wake of the run's last park only because the idle unload
     raised its stop generation, and nothing ran since; else None. load.2 Prime's recordOwnerStops bumps the generation on the unload's kill
@@ -1433,6 +1448,8 @@ def cancelled_wake(entries, path):
         return None
     if any((entry.get("type") == "custom_message" and entry.get("customType") != "harness_digest")
            or (entry.get("type") == "custom" and entry.get("customType") in WAKE_LATER_TYPES) for entry in since[wakes[0] + 1:]):
+        return None
+    if any(settled_input(entry) for entry in since):
         return None
     archives = [entry for entry in since if is_archive(entry)]
     if not archives or any((entry.get("state") or {}).get("reason") != "idle_unload" for entry in archives):
