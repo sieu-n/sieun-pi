@@ -20,7 +20,9 @@ export interface NoticeOutbox {
 export function noticeOutbox(dir: string, threads: Pick<ThreadHub, "prompt" | "copyOf">, log: (line: string) => void,
   options: Pick<OutboxDeps, "sleep" | "now" | "held"> = {}): NoticeOutbox {
   const outbox = new Outbox({ dir, log, ...options,
-    deliver: async (entry, sending) => { await threads.prompt(entry.threadId, { message: entry.text, images: [], mode: "steer", sending: () => sending() }); },
+    deliver: async (entry, sending) => {
+      await threads.prompt(entry.threadId, { message: entry.text, images: [], mode: "steer", sending: () => sending(), ...entry.write ? { write: entry.write } : {} });
+    },
     copy: (entry, since) => threads.copyOf(entry.threadId, entry.text, 0, since),
     final: error => error instanceof ThreadError && (error.status === 400 || error.status === 404) ? error.message : null,
     where: chat => `${chat.slice(0, 8)} notice`,

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { CLEAN_ROOM_CHATS_FILE } from "./chat-corrections.ts";
 import type { PeerReach } from "./host-reach.ts";
 import { type UpdateWindow, windowEnded } from "./prime-update.ts";
+import type { WriteSlot } from "./daemon-write.ts";
 import { type AgentKind, type Bundled, MAX_BACKOFF_MS, type Obsolete, Outbox, type Sending, type Stored } from "./outbox.ts";
 import { isSendTimeout, messageAt, QUEUED_PREFIX, sendKey, type TargetState } from "./send-once.ts";
 import { relayNote, type StoppedSubagent, stoppedSubagent } from "./subagent-relay.ts";
@@ -42,7 +43,7 @@ export interface AgentOutboxDeps {
    * One send_message to the daemon of `host` (`AgentOutbox.hostFor`, null for this box); "gone" when that daemon knows no such session, even
    * after a reopen from its file. Throws on any other failure.
    */
-  send: (session: string, text: string, host: string | null) => Promise<"sent" | "gone">;
+  send: (session: string, text: string, host: string | null, write?: WriteSlot) => Promise<"sent" | "gone">;
   /** The target's worker on `host`: its queued texts and whether it is busy; idle and empty when it has no worker, null when the daemon did not answer. */
   target: (session: string, host: string | null) => Promise<TargetState | null>;
   /** The target's session file, or null. */
@@ -313,7 +314,7 @@ export class AgentOutbox {
         const go = async () => {
           await sending(merged.change);
           await this.took(entry, merged);
-          return this.send(session, entry.id, entry.at, text, host);
+          return this.send(session, entry.id, entry.at, text, host, entry.write);
         };
         const stopped = deps.resident?.(session) === false ? await this.subagent(session) : null;
         if (stopped) {
@@ -331,7 +332,7 @@ export class AgentOutbox {
         if (entry.root && deps.startRoot) {
           await deps.startRoot(entry.root);
           await sending();
-          if (await deps.send(session, text, host) === "sent") return;
+          if (await deps.send(session, text, host, entry.write) === "sent") return;
         }
         if (host && deps.synced && !deps.synced()) throw new Error(`${host} has not listed its sessions in this run, so ${session.slice(0, 8)} may still be there`);
         deps.log(`messages: ${session.slice(0, 8)} is not a session the daemon${host ? ` on ${host}` : ""} has or can reopen; message ${entry.id} dropped`);
@@ -437,7 +438,9 @@ export class AgentOutbox {
     const joined: Stored[] = [];
     const settled: Settled[] = [];
     const lane = await this.outbox.waiting(session);
-    for (const other of lane.slice(lane.findIndex(item => item.id === entry.id) + 1)) {
+    // A resend of a try whose answer never came goes under that try's command id, and the daemon keeps the text that try sent, so it takes in
+    // nothing more (src/daemon-write.ts).
+    for (const other of entry.write?.again ? [] : lane.slice(lane.findIndex(item => item.id === entry.id) + 1)) {
       if (other.state !== "queued" || other.sentAt !== undefined || other.root !== entry.root) break;
       const theirs = other.bundle ?? [partOf(other)];
       const proof = other.bundle ? undefined : await this.obsolete(session, theirs[0]!);
@@ -487,9 +490,9 @@ export class AgentOutbox {
    * 10-26 a wake to reasons-fix (01a172c1) met "closing" at 05:59:53Z and went through the parent 2 s later, which left the move on record,
    * and the next wake, queued at 06:07:22.6Z and sent 0.4 s later, read "went after its target's worker was closing for 450 s".
    */
-  private async send(session: string, id: string, at: number, text: string, host: string | null): Promise<"sent" | "gone"> {
+  private async send(session: string, id: string, at: number, text: string, host: string | null, write?: WriteSlot): Promise<"sent" | "gone"> {
     let sent: "sent" | "gone";
-    try { sent = await this.deps.send(session, text, host); } catch (error) {
+    try { sent = await this.deps.send(session, text, host, write); } catch (error) {
       const window = await this.deps.updateWindow?.(host, error).catch(() => null);
       if (window) {
         const since = this.now();

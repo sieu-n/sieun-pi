@@ -13,6 +13,7 @@ import { Catalog } from "../src/chat-catalog.ts";
 import { ChatReadState } from "../src/chat-read-state.ts";
 import { ChatLabels } from "../src/chat-labels.ts";
 import { ThreadOrigins } from "../src/thread-origin.ts";
+import { writesThroughClient } from "./keyed-writes.ts";
 import { ThreadHub } from "../src/chat-threads.ts";
 
 type Call = { type: string; activeSessionId?: string; message?: string; via?: string };
@@ -52,6 +53,7 @@ async function liveChat(t: TestContext, prefix: string) {
   t.mock.method(catalog, "connect", async () => {});
   t.mock.method(DaemonClient.prototype, "connect", async () => {});
   t.mock.method(DaemonClient.prototype, "waitForHello", async () => ({}));
+  writesThroughClient(t);
   t.mock.method(DaemonClient.prototype, "request", async (command: Call) => { calls.push({ ...command, via: "box" }); return answer(command); });
   await catalog.refresh();
   const hub = new ThreadHub(`/isolated-${prefix}.sock`, catalog, () => ({ provider: null, modelId: null, thinkingLevel: null }));

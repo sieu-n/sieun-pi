@@ -387,10 +387,13 @@ async function serve(options: Options): Promise<void> {
     throw error;
   });
   // One line per Prime call this process makes, reads included, for the board's p50, p99 and error rate per method (src/prime-calls.ts).
-  const [{ DaemonKeeper }, { CallLog, logPrimeCalls }] = await Promise.all([import("./chat-daemon.ts"), import("./prime-calls.ts")]);
+  const [{ DaemonKeeper }, { CallLog, hostOf, logPrimeCalls }, { setWriteObserver }] = await Promise.all([import("./chat-daemon.ts"), import("./prime-calls.ts"),
+    import("./daemon-write.ts")]);
   const primeCalls = new CallLog(join(service.directory, "prime-calls.jsonl"),
     error => process.stderr.write(`${new Date().toISOString()} prime calls: ${error instanceof Error ? error.message : String(error)}\n`));
   logPrimeCalls(primeCalls);
+  // The keyed writes (src/daemon-write.ts) go on their own connections, which the DaemonClient patch does not see.
+  setWriteObserver(({ socketPath, ...call }) => { const host = hostOf(socketPath); primeCalls.add({ ts: new Date().toISOString(), src: "chat", ...call, ...host ? { host } : {} }); });
   // Started first, so the daemon boots while the rest loads. The catalog and threads reconnect on their own once it answers.
   const keeper = !scratch && startsDaemon(primary)
     ? new DaemonKeeper({ socketPath: service.config.socketPath, log: line => process.stderr.write(`${new Date().toISOString()} ${line}\n`) }) : null;

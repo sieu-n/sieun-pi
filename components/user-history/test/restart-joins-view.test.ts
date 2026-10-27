@@ -12,6 +12,7 @@ import { Catalog } from "../src/chat-catalog.ts";
 import { ChatReadState } from "../src/chat-read-state.ts";
 import { ChatLabels } from "../src/chat-labels.ts";
 import { ThreadOrigins } from "../src/thread-origin.ts";
+import { writesThroughClient } from "./keyed-writes.ts";
 import { ThreadHub } from "../src/chat-threads.ts";
 
 type Call = { type: string; activeSessionId?: string; message?: string; streamingBehavior?: string };
@@ -34,6 +35,7 @@ async function liveJob(t: TestContext) {
   t.mock.method(catalog, "connect", async () => {});
   t.mock.method(DaemonClient.prototype, "connect", async () => {});
   t.mock.method(DaemonClient.prototype, "waitForHello", async () => ({}));
+  writesThroughClient(t);
   // The real close rejects every request still in flight on that client ("client closed before the operation completed").
   t.mock.method(DaemonClient.prototype, "close", function (this: DaemonClient) {
     for (const reject of pending.get(this) ?? []) { closed.push("in flight"); reject(new Error("Prime Agent daemon client closed before the operation completed.")); }

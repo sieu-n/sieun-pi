@@ -11,6 +11,7 @@ import "./daemon-snapshot-count.ts";
 import { CHAT_FLAG, OWNER_THREAD_FLAG, ownerStopSinceActive } from "./chat-guard.ts";
 import { QUIET_MINUTES } from "./quiet-minutes.ts";
 import { UNKNOWN_ACTIVE } from "./chats.ts";
+import { keyedRequest, type WriteSlot } from "./daemon-write.ts";
 import { archiveSavedSession, resumeSince, type ResumeSince, ScheduledJobsLeft, ServicesStopPending, takesSavedArchive } from "./saved-archive.ts";
 import { type CancelTry, type PendingCancel, SavedArchiveQueue } from "./saved-archive-queue.ts";
 import type { ArchiveBy, ServiceArchive, ServiceArchiveReason, ServiceArchiveRecord } from "./service-archives.ts";
@@ -1528,15 +1529,15 @@ export class ThreadHub {
    * the hub still held the pre-update workers of chats 01a115e2 and 01a11af8, and from 11:20:18Z to 11:27:46Z their check-in lines and job end
    * notes went 8 times to ef0b3805c965 and f222d4f77262 and were refused as unknown sessions.
    */
-  async prompt(id: string, input: { message: string; images: ChatImage[]; mode: SendMode; owner?: boolean; sending?: () => Promise<void> }, trigger = "prompt"): Promise<void> {
+  async prompt(id: string, input: { message: string; images: ChatImage[]; mode: SendMode; owner?: boolean; sending?: () => Promise<void>; write?: WriteSlot }, trigger = "prompt"): Promise<void> {
     const remote = this.catalog.hostOf(id) !== null;
     if (input.owner && !remote) void this.markOwnerTurn(id);
     const resumed = this.resume(id, false, trigger);
     resumed.catch(() => {});
     const held = this.threads.get(id)?.live?.activeSessionId;
     const listed = held ?? liveSessionId(await this.summary(id));
-    const ask = async <T>(activeSessionId: string, type: "get_state" | "get_model_catalog" | "prompt", fields: Record<string, unknown> = {}): Promise<T> => {
-      const response = await (await this.hostDaemon(this.catalog.hostOf(id))).request({ type, activeSessionId, ...fields } as never, type === "prompt" ? PROMPT_REQUEST_MS : undefined, { recoverable: false });
+    const ask = async <T>(activeSessionId: string, type: "get_state" | "get_model_catalog"): Promise<T> => {
+      const response = await (await this.hostDaemon(this.catalog.hostOf(id))).request({ type, activeSessionId }, undefined, { recoverable: false });
       if (!response.success) throw new Error(response.error);
       return response.data as T;
     };
@@ -1555,12 +1556,19 @@ export class ThreadHub {
       if (command.source === "extension") throw new ThreadError(400, "Use this extension command in the Prime Agent terminal. Browser dialogs are unavailable.");
     }
     const fields = promptFields(id, input, remote);
+    // The prompt goes with the command id of an earlier try whose answer never came, which the owner outbox keeps on its entry, so the daemon
+    // runs it once (src/daemon-write.ts); a send with no slot gets its own.
+    const write = input.write ?? {};
+    const prompt = async (target: string): Promise<void> => {
+      const response = await keyedRequest(await this.hostDaemon(this.catalog.hostOf(id)), { type: "prompt", activeSessionId: target, ...fields }, write, PROMPT_REQUEST_MS);
+      if (!response.success) throw new Error(response.error);
+    };
     // `sending` marks the outbox entry as maybe delivered from here on (src/outbox.ts): a failure after it is looked for before a resend.
     await input.sending?.();
     // The daemon refuses a prompt to a worker that is stopping or starting before it takes it, so the send waits the move out and goes once more
     // (src/worker-move.ts `afterMove`). On 10-21 at 11:21Z, during the restore after a Prime update, the check-in restart of chat 01a14d31
     // (metal-management) failed with "Session worker is starting", a dirty d7 minute.
-    const send = (target: string) => afterMove(() => ask(target, "prompt", fields), () => this.stateOf(id, target));
+    const send = (target: string) => afterMove(() => prompt(target), () => this.stateOf(id, target));
     try { await send(activeSessionId); } catch (error) {
       if (activeSessionId !== listed || !isReopenable(error)) throw error;
       if (held) await this.reopenFailed(id);

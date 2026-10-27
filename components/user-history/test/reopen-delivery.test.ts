@@ -11,6 +11,7 @@ import { Catalog } from "../src/chat-catalog.ts";
 import { ChatReadState } from "../src/chat-read-state.ts";
 import { ChatLabels } from "../src/chat-labels.ts";
 import { ThreadOrigins } from "../src/thread-origin.ts";
+import { writesThroughClient } from "./keyed-writes.ts";
 import { ThreadHub } from "../src/chat-threads.ts";
 import type { ChatBackend } from "../src/chat-backend.ts";
 import { startChatServer } from "../src/chat-server.ts";
@@ -55,6 +56,7 @@ async function fixture(t: TestContext) {
   t.mock.method(catalog, "connect", async () => {});
   t.mock.method(DaemonClient.prototype, "connect", async () => {});
   t.mock.method(DaemonClient.prototype, "waitForHello", async () => ({}));
+  writesThroughClient(t);
   t.mock.method(DaemonClient.prototype, "request", async (command: typeof calls[number]) => {
     calls.push(command);
     switch (command.type) {

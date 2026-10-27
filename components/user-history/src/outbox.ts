@@ -1,6 +1,7 @@
 import { mkdir, open, readdir, readFile, rename, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import type { ChatImage } from "./chat-images.ts";
+import type { WriteSlot } from "./daemon-write.ts";
 import type { OutboxAccepted, OutboxEntry } from "./shared/outbox.ts";
 import type { SendMode } from "./shared/types.ts";
 
@@ -19,6 +20,11 @@ export interface Stored extends OutboxEntry {
   fingerprint: string;
   /** Set before each daemon request that may land: a failure after it is looked for before the next try. */
   sentAt?: number;
+  /**
+   * The daemon command id of the try whose answer never came (src/daemon-write.ts), so the next try sends the same id and the daemon runs the
+   * write once. Each try that has none gets `<id>:<attempt>`, written with `sentAt` before its request; it counts only with `sentAt`.
+   */
+  write?: WriteSlot & { again?: boolean };
   /** When it was delivered or failed; such entries stay to answer a resend of their id and go after `keepMs`. */
   doneAt?: number;
   /** Agent messages only: the tree root to start when the daemon knows no such target (src/agent-outbox.ts). */
@@ -111,7 +117,7 @@ const backoff = (attempt: number, same = 0) =>
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 
 export function publicEntry(entry: Stored): OutboxEntry {
-  const { images: _images, mode: _mode, fingerprint: _fingerprint, sentAt: _sentAt, doneAt: _doneAt, bundle: _bundle, ...shown } = entry;
+  const { images: _images, mode: _mode, fingerprint: _fingerprint, sentAt: _sentAt, doneAt: _doneAt, bundle: _bundle, write: _write, ...shown } = entry;
   return shown;
 }
 
@@ -244,7 +250,9 @@ export class Outbox {
     const { sentAt: _sentAt, ...unsent } = entry;
     // The try shows on the page at once and reaches the disk with `sentAt` (or its failure), so a send waits for one write before its request
     // instead of two; load() reads a "sending" entry back as queued anyway.
-    let current = this.update(unsent, { state: "sending", attempts: entry.attempts + 1 }, false);
+    // A try whose answer never came left its command id, which this try sends again (`again`); the deliveries keep its text as it went.
+    const write = entry.sentAt !== undefined && entry.write?.id ? { ...entry.write, again: true } : { id: `${entry.id}:${entry.attempts + 1}` };
+    let current = this.update(unsent, { state: "sending", attempts: entry.attempts + 1, write }, false);
     const sending = async (change?: Sending) => {
       if (this.closed) throw new Closed();
       this.out.add(current.threadId);
@@ -259,7 +267,10 @@ export class Outbox {
       }
       return this.finish(current, "delivered");
     } catch (error) {
-      if (error instanceof Closed) { current = this.update(current, { state: "queued" }); return; }
+      if (error instanceof Closed) {
+        current = this.update({ ...current, ...entry.sentAt === undefined ? {} : { sentAt: entry.sentAt }, ...entry.write ? { write: entry.write } : {} }, { state: "queued" });
+        return;
+      }
       const final = this.deps.final(error);
       if (final !== null) return this.finish(current, "failed", final);
       if (current.sentAt !== undefined && this.deps.uncertain && !this.deps.uncertain(error)) { const { sentAt: _at, ...refused } = current; current = refused; }
@@ -274,7 +285,8 @@ export class Outbox {
         this.deps.log(`outbox ${this.where(current.threadId)}: ${current.id} try ${current.attempts}${current.sentAt === undefined ? "" : " (may have gone)"}: ${said}` +
           (wait > MAX_BACKOFF_MS ? ` (the same failure ${times} tries in a row; next try in ${Math.round(wait / 1000)} s)` : ""));
       }
-      current = this.update(current, { state: "queued" });
+      const { write: slot, ...answered } = current;
+      current = this.update(current.sentAt !== undefined && slot?.id ? { ...current, write: { id: slot.id, ...slot.supervisor ? { supervisor: slot.supervisor } : {} } } : answered, { state: "queued" });
       if (!this.closed && !this.deps.again?.(error)) await this.sleep(wait);
     } finally { this.out.delete(current.threadId); }
   }
@@ -291,7 +303,7 @@ export class Outbox {
 
   private finish(entry: Stored, state: "delivered" | "failed" | "obsolete", error?: string): Promise<void> {
     this.failures.delete(entry.id);
-    const { images: _images, sentAt: _sentAt, ...rest } = entry;
+    const { images: _images, sentAt: _sentAt, write: _write, ...rest } = entry;
     const done: Stored = { ...rest, images: [], state, doneAt: this.now(), ...(error ? { error } : {}) };
     this.entries.set(done.id, done);
     void this.save(done).catch(failure => this.deps.log(`outbox: write ${done.id}: ${message(failure)}`));

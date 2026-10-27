@@ -38,7 +38,7 @@ export class OwnerOutbox {
         }
         if (archived()) throw new ArchivedFirst("The chat was archived before this message went.");
         // The owner's own message never waits in a box's turn queue: it goes as an owner turn.
-        await threads.prompt(id, { message: entry.text, images: entry.images, mode: entry.mode, owner: true, sending });
+        await threads.prompt(id, { message: entry.text, images: entry.images, mode: entry.mode, owner: true, sending, ...entry.write ? { write: entry.write } : {} });
       },
       copy: (entry, since) => threads.copyOf(entry.threadId, entry.text, entry.imageCount, since),
       final: error => error instanceof ArchivedFirst || (error instanceof ThreadError && error.status === 400) ? error.message : null,

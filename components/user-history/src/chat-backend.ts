@@ -23,6 +23,7 @@ import { CallWatch } from "./hung-calls.ts";
 import { CallStopper, interruptCell, pidAlive } from "./hung-stop.ts";
 import { HostReach } from "./host-reach.ts";
 import { relayWatch } from "./hosts.ts";
+import { closeWriters, keyedRequest } from "./daemon-write.ts";
 import type { PromptCapture } from "./prompt-capture.ts";
 import { readHostCapture } from "./prompt-host-capture.ts";
 import { artifactsRoot, dryLeftoverSource, hostLeftovers, leftoverSource, sshLeftovers } from "./job-leftovers.ts";
@@ -332,8 +333,9 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     synced: () => catalog.hostsSynced(), subagentOf: async session => rowSubagent(await catalog.summary(session)), resident: session => catalog.resident(session),
     relayed: (session, at) => relays.add(session, at), stopped: stopRecords(dataDir),
     updateWindow: (host, error) => threads.updateWindow(host, error),
-    send: async (session, text, host) => {
-      const response = await sendReopening(session, async target => (await (host ? catalog.hostClient(host) : catalog.daemonFor(session))).request({ type: "send_message", targetActiveSessionId: target, message: text }, 30_000, { recoverable: false }),
+    // Each try goes with the command id of the try before it whose answer never came, so the daemon runs the send once (src/daemon-write.ts).
+    send: async (session, text, host, write = {}) => {
+      const response = await sendReopening(session, async target => keyedRequest(await (host ? catalog.hostClient(host) : catalog.daemonFor(session)), { type: "send_message", targetActiveSessionId: target, message: text }, write, 30_000),
         id => reopenSession(catalog, { agentDir, ...replay ? {} : { adopt: (root: string) => adoptMoved(root, agentDir) } }, id), dutyLog);
       if (response.success) return "sent";
       // A subagent still unreachable after the reopen is relayed through its parent (AgentOutbox).
@@ -531,6 +533,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       awake.close();
       await threads.close();
       await catalog.close();
+      closeWriters();
       usage.close();
     },
   };
