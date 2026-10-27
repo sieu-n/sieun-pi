@@ -1,0 +1,12 @@
+[Unit]
+Description=pi-history full-text index of Prime session transcripts
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=@NODE@ @MAIN@
+RuntimeDirectory=pi-history
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
