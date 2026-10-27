@@ -13,7 +13,7 @@ import { stepSessions, unmovedSteps } from "../../src/unmoved-steps.ts";
 import { waitHolds } from "../../src/checkin-end-state.ts";
 import { turnError } from "../../src/shared/credential-wait.ts";
 import type { ChatBoard, MemoryGroupId, PlanItem } from "../../src/shared/types.ts";
-import { type AgentLine, type HostUsable, isLinuxReading, parseLinuxReading, readWatch, type TestBrowserLine, UNREAD_AT_STOP, unusable, type WaitingTree, type WatchLine, type WorkerLine, type WorkerTree } from "../../src/mac-usable-watch.ts";
+import { type AgentLine, type HostUsable, isLinuxReading, parseLinuxReading, readWatch, type StrayServerLine, type TestBrowserLine, UNREAD_AT_STOP, unusable, type WaitingTree, type WatchLine, type WorkerLine, type WorkerTree } from "../../src/mac-usable-watch.ts";
 import { QUIET_MINUTES, QUIET_TARGET_GB, quietMinutes } from "../../src/quiet-minutes.ts";
 import type { HungCall } from "../../src/hung-calls.ts";
 import type { StoppedCall } from "../../src/hung-stop.ts";
@@ -38,6 +38,8 @@ export interface HostView { name: string; usable: HostUsable | null; workers: nu
   offline?: true;
   /** The Playwright or Puppeteer browsers agents ran on the box that minute; only the Mac's helper lists them (HostWatchLine.testBrowsers). */
   testBrowsers?: readonly TestBrowserLine[];
+  /** The stray stdio MCP servers the box's footprint read stopped that minute (HostWatchLine.strayServers). */
+  strayServers?: readonly StrayServerLine[];
   /** Every worker of the box that minute (WatchLine.byWorker); absent on lines written before 10-20. */
   byWorker?: readonly WorkerTree[] }
 /** Lines written before 10-18 04:5xZ name no box, and the Mac wrote every one of them. */
@@ -88,12 +90,13 @@ export function hostViews(line: WatchLine): HostView[] {
   return [
     { name: line.host ?? UNNAMED_HOST, usable: own.usable, workers: line.workers, workerGb: line.workerGb, top: line.top,
       ...line.serviceGb === undefined ? {} : { serviceGb: line.serviceGb }, ...line.agents ? { agents: line.agents } : {}, ...own.error ? { error: own.error } : {},
-      ...line.testBrowsers ? { testBrowsers: line.testBrowsers } : {}, ...line.byWorker ? { byWorker: line.byWorker } : {} },
+      ...line.testBrowsers ? { testBrowsers: line.testBrowsers } : {}, ...line.strayServers ? { strayServers: line.strayServers } : {}, ...line.byWorker ? { byWorker: line.byWorker } : {} },
     ...(line.hosts ?? []).map(host => {
       const read = checked(host.usable);
       const error = host.error ?? read.error;
       return { name: host.name, usable: read.usable, workers: host.workers, workerGb: host.workerGb, top: host.top,
         ...host.agents ? { agents: host.agents } : {}, ...error ? { error } : {}, ...host.offline ? { offline: true as const } : {}, ...host.testBrowsers ? { testBrowsers: host.testBrowsers } : {},
+        ...host.strayServers ? { strayServers: host.strayServers } : {},
         ...host.byWorker ? { byWorker: host.byWorker } : {} };
     }),
   ];
@@ -623,6 +626,24 @@ export function testBrowsers(latest: WatchLine | undefined): TestBrowser[] {
     text: `${view.name}: ${browser.command.includes("chrome-headless-shell") ? "chrome-headless-shell" : "Chrome for Testing"} pid ${browser.pid}` +
       `${browser.started === null ? "" : ` since ${clock(browser.started * 1000)}`}, started by ${browser.session ? `${browser.tree || browser.root} session ${browser.session}` : "no agent session its env names (a duty or an ssh command)"}; ` +
       `agents browse only through Aside (c177)` })));
+}
+
+/**
+ * Each stdio MCP server (`aside mcp`, cua-guard.ts) a box's footprint read stopped in [`from`, `to`) because its kernel was gone
+ * (worker-footprint.py `stray_servers`), once per box, pid and start. At 07:30 KST on 10-28 the Mac held an `aside mcp` 5 days past its kernel, at 42 MB,
+ * which Aside's own exit on stdin end and its 30 s orphan check had missed. The read stops each one, and the count stays on the board so a
+ * spawner that leaks them every minute shows.
+ */
+export function strayServers(watch: readonly WatchLine[], from: number, to: number): string[] {
+  const seen = new Map<string, string>();
+  for (const line of watch) {
+    const at = Date.parse(line.at);
+    if (at < from || at >= to) continue;
+    for (const view of hostViews(line)) for (const stray of view.strayServers ?? [])
+      seen.set(`${view.name} ${stray.pid} ${stray.started}`, `${view.name}: stray ${stray.command.slice(0, 60)} pid ${stray.pid}${stray.started === null ? "" : ` since ${clock(stray.started * 1000)}`}, ` +
+        `${stray.mb} MB, its kernel gone; ${stray.signal ? `stopped with ${stray.signal} at ${clock(at)}` : `gone before its stop at ${clock(at)}`}`);
+  }
+  return [...seen.values()];
 }
 
 /**
@@ -1268,6 +1289,7 @@ export function measure(input: Inputs): PrecheckOutput {
   const latest = input.watch.findLast(line => Date.parse(line.at) > start);
   const oversize = oversized(latest, input.day ?? []);
   const browsers = testBrowsers(latest);
+  const strays = strayServers(input.watch, start, start + WINDOW_MS + MINUTE);
   const hung = hungNow(input.watch, start);
   // Each idle unload sweep (every 60 s) finishes an open handoff (src/idle-unload.ts `resumeUnloaded`), so one still open a whole window later is stuck.
   const stuckHandoffs = (input.openHandoffs ?? []).filter(entry => entry.at < now - WINDOW_MS);
@@ -1289,6 +1311,7 @@ export function measure(input: Inputs): PrecheckOutput {
     ...worst && !settlingHosts.length ? { quiet_agent_gb: worst.gb } : {},
     oversized_procs: oversize.length,
     mac_test_browsers: browsers.length,
+    stray_servers_30: strays.length,
     usable_min_30: usable,
     fed_min_30: fed,
     harness_unusable_min_30: harness,
@@ -1377,6 +1400,7 @@ export function measure(input: Inputs): PrecheckOutput {
   const reads = latest ? hostViews(latest).filter(view => view.agents) : [];
   if (latest && reads.length) flagged.push({ kind: "agents_now", excerpt: `At ${clock(Date.parse(latest.at))}: ${reads.map(view => `${view.name} ${agentWords(view.agents!)}`).join("; ")}.` });
   for (const entry of oversize) flagged.push({ kind: "oversized", excerpt: entry.text });
+  for (const text of strays) flagged.push({ kind: "stray_server", excerpt: text });
   for (const entry of browsers) flagged.push({ kind: "test_browser", ...entry.root ? { chat: entry.root } : {}, ...entry.session ? { item: entry.session } : {}, excerpt: entry.text });
   for (const call of hung?.calls ?? []) flagged.push({ kind: "hung_call", chat: call.root, item: call.session, excerpt: `${call.tree}: ${call.name} (${call.session}) ` +
     `has run one tool call for ${call.silentMin} min with no output${call.why === "kernel burning" ? `, its kernel burning ${call.kernelCores} cores` : `, its commands at ${call.workCores} cores`}` +

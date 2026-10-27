@@ -9,6 +9,7 @@ the kernel process's own bytes (`own`) and its largest non-Prime descendant (`ke
 orphan of the root and session that path names (`orphans`): on 10-15 at 00:45Z a deleted job's nohup'd runner.py started a 30 GB script that way.
 A shared service (`SHARED`) and every process under it belong to no tree.
 On macOS each Chrome for Testing or chrome-headless-shell main process is listed with the session that started it (`test_browsers`), since no agent browser may run there.
+It stops each stdio MCP server whose kernel is gone (`stray_servers`, SIGTERM, then SIGKILL after 3 s) and lists it, the one process it signals in a footprint read.
 `--session <id>[,<id>...]` prints the processes those sessions' kernels left detached (`strays`), which the service stops once their job is deleted or archived (src/job-leftovers.ts); `--handles` reads
 "<kernel pid> <since epoch s>" lines and prints the bash() handles those kernels started since then (`handles`), which the watch stops when the call hangs (src/hung-stop.ts); `--started <pid>`
 prints a process's start time, and `--inside` prints the processes that run in or hold the dirs it reads on stdin, one per line (`inside`), and a
@@ -394,6 +395,71 @@ def test_browsers(table):
     return [entry for entry in found if entry]
 
 
+# A stdio MCP server a kernel starts for its `mcp` calls (Prime's settings.json mcpServers): `aside mcp`, cua-guard.ts and the `cua-driver mcp`
+# it wraps. Its parent is its only client, so once the parent is gone it serves nobody.
+def stdio_server(argv):
+    if not argv:
+        return False
+    name = os.path.basename(argv[0])
+    return (name in ("aside", "cua-driver") and argv[1:2] == ["mcp"]) or any(arg.endswith("/cua-guard.ts") for arg in argv[1:3])
+
+
+# What adopts a process whose parent exited: launchd or init (pid 1), or on Linux the user's systemd, a child subreaper.
+SUBREAPER = re.compile(r"(^|/)systemd --user$")
+
+
+def argv_of(table, pid):
+    """A process's argv from the scan, or on Linux from /proc/<pid>/cmdline alone, since the user's systemd keeps its environ unreadable."""
+    entry = table.get(pid)
+    if entry and entry[3]:
+        return entry[3][0]
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as file:
+            return [part.decode("utf-8", "replace") for part in file.read().split(b"\0") if part]
+    except OSError:
+        return []
+
+
+def stray_servers(table):
+    """Each stdio MCP server (`stdio_server`) whose parent exited, so init or the user's systemd adopted it. At 07:30 KST on 10-28 the Mac held one
+    `aside mcp` 5 days after its kernel was gone, at 42 MB: its own orphan check and its exit at stdin end had not fired. Aside is not our code."""
+    found = []
+    for pid, (ppid, _, _, args) in table.items():
+        if not args or not stdio_server(args[0]):
+            continue
+        if ppid <= 1 or SUBREAPER.search(" ".join(argv_of(table, ppid))):
+            entry = process(table, pid, {"ppid": ppid})
+            if entry:
+                found.append(entry)
+    return found
+
+
+def reap(found, kill=os.kill, start=started, wait=3.0, sleep=None):
+    """SIGTERMs each stray server, then SIGKILLs the ones still running with the same start time after `wait` seconds. Returns the entries
+    with the signal that ended each (`signal`). A stdio server with no client has no work to lose."""
+    import time
+    sleep = sleep or time.sleep
+    for entry in found:
+        try:
+            kill(entry["pid"], 15)
+            entry["signal"] = "SIGTERM"
+        except OSError:
+            entry["signal"] = None
+    left = [entry for entry in found if entry["signal"]]
+    waited = 0.0
+    while left and waited < wait:
+        sleep(0.1)
+        waited += 0.1
+        left = [entry for entry in left if start(entry["pid"]) == entry["started"]]
+    for entry in left:
+        try:
+            kill(entry["pid"], 9)
+            entry["signal"] = "SIGKILL"
+        except OSError:
+            pass
+    return found
+
+
 def cpu():
     usage = resource.getrusage(resource.RUSAGE_SELF)
     return round(usage.ru_utime + usage.ru_stime, 3)
@@ -417,4 +483,4 @@ if __name__ == "__main__":
     workers = {line.strip(): tree(int(line), kernels, seen) for line in sys.stdin if line.strip().isdigit()}
     table = scan()
     print(json.dumps({"workers": workers, "kernels": kernels, "orphans": orphans(table, seen), "test_browsers": test_browsers(table),
-                      "swap_used_bytes": swap_used(), "pressure_level": pressure_level(), "cpu_s": cpu()}))
+                      "stray_servers": reap(stray_servers(table)), "swap_used_bytes": swap_used(), "pressure_level": pressure_level(), "cpu_s": cpu()}))

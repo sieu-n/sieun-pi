@@ -1158,7 +1158,7 @@ export async function read(ctx: Context): Promise<Sample[]> {
   }
   if (state.d7?.at) {
     out.push(gauge("harness.chat.d7_age", "Seconds since the Whole system duty's (d7) last precheck run.", (now - state.d7.at) / 1000, undefined, "s"));
-    for (const key of ["clean_min_30", "queue_holds_30", "cell_holds_30", "hung_calls", "quiet_agent_gb", "cut_jobs_held", "mac_test_browsers", "oversized_procs", "slot_wait_timeouts_30"])
+    for (const key of ["clean_min_30", "queue_holds_30", "cell_holds_30", "hung_calls", "quiet_agent_gb", "cut_jobs_held", "mac_test_browsers", "oversized_procs", "slot_wait_timeouts_30", "stray_servers_30"])
       if (key in state.d7.metrics) out.push(gauge("harness.chat.d7_metric", "The Whole system duty's (d7) own numbers from its last precheck run, to check the feed's live ones against.", state.d7.metrics[key]!, { key }));
   }
   return out;

@@ -174,7 +174,9 @@ export interface HostWatchLine { name: string; usable: HostUsable | null; worker
   /** Tailscale read the box offline, so its relay was not asked (src/host-reach.ts); absent on lines written before 10-18 16:xxZ. */
   offline?: true;
   /** The box's agent test browsers (`TestBrowserLine`); absent when there are none. */
-  testBrowsers?: TestBrowserLine[] }
+  testBrowsers?: TestBrowserLine[];
+  /** The stray stdio MCP servers the box's footprint read stopped this minute (`StrayServerLine`); absent when there were none. */
+  strayServers?: StrayServerLine[] }
 
 export interface WatchLine {
   at: string;
@@ -217,6 +219,8 @@ export interface WatchLine {
   services?: ServicesLine;
   /** This box's agent test browsers (`TestBrowserLine`); absent when there are none. */
   testBrowsers?: TestBrowserLine[];
+  /** The stray stdio MCP servers this box's footprint read stopped this minute (`StrayServerLine`); absent when there were none. */
+  strayServers?: StrayServerLine[];
 }
 /** How many handed-off services the records name, how many of them still run, and the first 5. */
 export interface ServicesLine { count: number; live: number; top: { session: string; unit: string; pid: number; live: boolean }[] }
@@ -265,6 +269,8 @@ function parseRow(value: unknown): Row | null {
 export interface Footprints { workers: Record<string, { pids: number; bytes: number; own?: number }>; kernels?: RawKernel[]; orphans?: RawOrphan[];
   /** The Mac's Chrome for Testing and chrome-headless-shell main processes, with the session whose RLM_HARNESS_STATE_DIR they carry; absent from a helper older than 10-19 17:xxZ. */
   test_browsers?: RawOrphan[];
+  /** The stdio MCP servers whose kernel was gone, which the helper signalled in this read; absent from a helper older than 10-28. */
+  stray_servers?: RawStray[];
   swap_used_bytes: number | null; pressure_level: number | null; cpu_s: number }
 /** One process the helper names: its footprint, its start time in epoch seconds (null when unreadable) and its command's first 200 characters. */
 export interface RawProcess { pid: number; bytes: number; started: number | null; command: string }
@@ -277,6 +283,12 @@ export interface RawKernel { pid: number; root: string; session: string; pids: n
   cpu_s?: number; work_cpu_s?: number }
 /** A process with RLM_HARNESS_STATE_DIR under no kernel and no Prime process (a deleted job's nohup'd runner), with the root and session the path names. */
 export interface RawOrphan extends RawProcess { root: string; session: string }
+/** A stdio MCP server (`aside mcp`, cua-guard.ts) init or the user's systemd adopted once its kernel exited, and the signal that ended it (null when it was gone first). */
+export interface RawStray extends RawProcess { ppid: number; signal: "SIGTERM" | "SIGKILL" | null }
+/** A stray stdio MCP server the box's footprint read stopped (`RawStray`), with its footprint in MB. */
+export interface StrayServerLine { pid: number; started: number | null; mb: number; signal: "SIGTERM" | "SIGKILL" | null; command: string }
+const strayLines = (footprints: Footprints): StrayServerLine[] => (footprints.stray_servers ?? []).map(stray => ({ pid: stray.pid, started: stray.started,
+  mb: Math.round(stray.bytes / 2 ** 20), signal: stray.signal, command: stray.command }));
 /**
  * A Playwright or Puppeteer browser running on the Mac, where no agent browser may run (skills/aside-browser/SKILL.md, c103): its pid, start, the
  * chat tree and session that started it ("" when its env names none, as for a duty walk over ssh) and its command's first 200 characters.
@@ -363,6 +375,7 @@ export function watchLine(input: { now: number; rows: readonly unknown[]; footpr
     trees: treeLines(input.footprints, owner).slice(0, 5),
     ...input.footprints.test_browsers?.length ? { testBrowsers: input.footprints.test_browsers.map(browser => ({ pid: browser.pid, started: browser.started,
       ...browser.root || browser.session ? owner(browser.session, browser.root) : { root: "", tree: "" }, session: browser.session, command: browser.command })) } : {},
+    ...input.footprints.stray_servers?.length ? { strayServers: strayLines(input.footprints) } : {},
     ...input.memory !== undefined ? { agents: agentLine(input.memory, input.rows, input.hung) } : {},
     mac: { swapGb: input.footprints.swap_used_bytes === null ? null : round(input.footprints.swap_used_bytes / GB, 1), pressureLevel: input.footprints.pressure_level },
     cpuMs: Math.round(input.cpuMs + input.footprints.cpu_s * 1000),
@@ -561,7 +574,7 @@ export async function hostWatchLine(remote: RemoteWatch, input: { now: number; c
     const line = watchLine({ now: input.now, rows: remote.rows, footprints: answer.footprints, queue: null, chats: input.chats, title: input.title, cpuMs: 0, usable });
     return { name: remote.name, usable, workers: line.workers, workerGb: line.workerGb, top: line.top, ...line.byWorker ? { byWorker: line.byWorker } : {}, live: line.live,
       working: line.working, agents, swapGb: line.mac.swapGb,
-      ...line.testBrowsers ? { testBrowsers: line.testBrowsers } : {} };
+      ...line.testBrowsers ? { testBrowsers: line.testBrowsers } : {}, ...line.strayServers ? { strayServers: line.strayServers } : {} };
   } catch (error) {
     return { name: remote.name, usable: null, workers: 0, workerGb: 0, top: [], live: 0, working: 0, swapGb: null, error: (error instanceof Error ? error.message : String(error)).slice(0, 200) };
   }
