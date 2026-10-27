@@ -56,37 +56,3 @@ test("a root whose chat already closed its step, or that sleeps on a board.wake,
   assert.deepEqual(await run(["working", "working"], p95()), [], "a board.wake sleep reads working, so its turn has not ended");
   assert.deepEqual(await run(["idle", "idle"], p95()), [], "a root first seen idle ended before this service looked, and the check-in or d9 reads it");
 });
-
-// The same chat, 16:02Z to 16:53Z on 10-24: p81 lost its job "domain rating" and sat open with no owner, no wait and no todo.
-const p81 = (fields: Partial<PlanItem> = {}): PlanItem => ({ id: "p81", text: "Plan and ship the next quiet authority round that earns links to virev.ai",
-  status: "doing", children: [], ...fields });
-
-async function ownerless(steps: readonly PlanItem[], todos: ChatBoard["todos"] = [], ticks = 1, paused = true): Promise<string[]> {
-  const dir = await mkdtemp(join(tmpdir(), "ownerless-steps-"));
-  try {
-    const index = new IdIndex(join(dir, "chats.json"), "Chat index");
-    await index.add("seo");
-    if (paused) await writeFile(join(dir, "check-in-settings.json"), JSON.stringify({ seo: { everyMs: 7_200_000, pausedUntil: "forever", pausedBy: "owner" } }));
-    const board: ChatBoard = { v: 2, rev: 1, updatedAt: at, todos, plan: [...steps] };
-    const calls: string[] = [];
-    const chats = new Chats(index, fakeThreads(calls), async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")),
-      { ...source(dir, { seo: board }, () => Date.parse(at) + 120_000, () => [row("seo", at, { chat: true, agents: [] })]), duty: dutySink().duty }, () => {});
-    await chats.adopt();
-    for (let tick = 0; tick < ticks; tick++) { await chats.tick(); await chats.settled(); }
-    chats.close();
-    return calls.filter(call => call.startsWith("steer seo ") && call.includes("no owner"));
-  } finally { await rm(dir, { recursive: true, force: true }); }
-}
-
-test("a paused chat is told once about an open step with no owner, no wait and no todo", async () => {
-  const told = await ownerless([p81()], [], 3);
-  assert.equal(told.length, 1, told.join("\n"));
-  assert.match(told[0]!, /This open step names no owner, and your check-in is paused, so nothing else moves it: p81 "Plan and ship the next quiet authority round.*" is doing\. Close each one/);
-});
-
-test("a step with a job, a step an open For you todo holds, and a chat whose check-in runs get no ownerless notice", async () => {
-  assert.deepEqual(await ownerless([p81({ job: "domain rating" })]), []);
-  assert.deepEqual(await ownerless([p81({ status: "blocked", waitFor: "Owner todo t18 on the six Reddit drafts" })],
-    [{ id: "t18", text: "Post the six Reddit drafts?", from: "agent", done: false, step: "p81", at }]), []);
-  assert.deepEqual(await ownerless([p81()], [], 1, false), [], "the check-in finds it there");
-});

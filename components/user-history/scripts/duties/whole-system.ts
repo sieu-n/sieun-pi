@@ -8,7 +8,8 @@ import { ownerChats } from "../../src/owner-chats.ts";
 import { type CutSpan, cutWords, readCut, readCutSpans, tailLines, type CutCause } from "../../src/cut-end.ts";
 import { activePause, checkInSettings } from "../../src/checkin-settings.ts";
 import { BoardStore } from "../../src/chat-board-store.ts";
-import { liveWindowMs, OPEN, parkedBy, POOL_WAIT, walk } from "../../src/checkin-steps.ts";
+import { OPEN, POOL_WAIT, walk } from "../../src/checkin-steps.ts";
+import { stepSessions, unmovedSteps } from "../../src/unmoved-steps.ts";
 import { waitHolds } from "../../src/checkin-end-state.ts";
 import { turnError } from "../../src/shared/credential-wait.ts";
 import type { ChatBoard, MemoryGroupId, PlanItem } from "../../src/shared/types.ts";
@@ -27,7 +28,7 @@ import { deliveryCandidates, outboxLandings, readSessionMarks, type SlotWaitTime
 import { CHECK_IN_DUTY_ID, type DutyRunRecord, type FlaggedSlice, type PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import { effectiveRun, metricStreaks, missStreak, newestReading } from "../../src/shared/duty-streak.ts";
 import { missedKeys, parseDutyLink } from "../../src/shared/duty-fixes.ts";
-import { dutyHold, heldByTodo, withLinkedBoards } from "../../src/shared/todo-hold.ts";
+import { dutyHold, withLinkedBoards } from "../../src/shared/todo-hold.ts";
 import type { HostHold } from "../../src/shared/host-hold.ts";
 import { readsTheShare } from "./duty-fleet.ts";
 
@@ -832,18 +833,6 @@ export function liveFix(run: DutyRunRecord, dutyId: string, board: ChatBoard | n
   return live;
 }
 
-/**
- * The sessions that own a step: its session id, and each session of a job of the chat, not deleted, that carries the step's job name (`named`).
- * At 07:40Z on 10-18 Crawler VP's p510 and p700 kept the session of the stopped "crawler ops train before move" while "crawler ops train",
- * its continuation after the host move, slept on 9 CI run wakes. A job field that holds a session id names that session: at 06:05Z on 10-25
- * SEO guy's p101 had job set to the thread "sep launch!!" (01a15427-145f) with no sessionId, so d9 read it as running on the chat's own
- * us-metal02 and counted it stuck, though that thread sat on the offline Mac that For you t30 asked the owner to bring back.
- */
-export function stepSessions(item: { sessionId?: string; job?: string }, named: ReadonlyMap<string, readonly string[]>): string[] {
-  const job = item.job ? named.get(item.job) ?? (SESSION_ID.test(item.job) ? [item.job] : []) : [];
-  return [...new Set([...item.sessionId ? [item.sessionId] : [], ...job])];
-}
-
 const clock = (at: number): string => new Date(at).toISOString().slice(11, 16) + "Z";
 /** A box's AgentLine in the flag's words: its GB as Settings > Hosts shows them, then its sessions by state. */
 const agentWords = (agents: AgentLine): string => `${agents.gb === null ? "an unread number of" : agents.gb} GB` +
@@ -964,7 +953,8 @@ export function planCounts(input: PlanInputs): { stuck: StuckSteps[]; redDuties:
       // p101 waited on "01a15427-145f-751d-ba15-d27b6c30f65f t30", sep launch!!'s open ask to wake the Mac, and counted as stuck.
       const own = input.boards?.get(chat.id);
       const board = own ? withLinkedBoards(own, chat.id, input.boards!) : own;
-      const items = unmovedSteps(board, input.now, chat.everyMs, input.ownerActivity ?? new Map(), live, input.named?.get(chat.id));
+      const items = unmovedSteps(board, input.now, chat.everyMs, { activity: input.ownerActivity ?? new Map(), live, named: input.named?.get(chat.id) ?? new Map() })
+        .map(item => item.id);
       const held = new Map<string, HostHold>();
       const unmoved: PlanItem[] = [];
       walk(board?.plan ?? [], item => {
@@ -1049,27 +1039,6 @@ export function planCounts(input: PlanInputs): { stuck: StuckSteps[]; redDuties:
       `(duty field ${links.length ? links.join(" or ") : `${duty.id}/<metricKey>`}) has a live owner now${waits ? `, while ${waits}` : ""}` }];
   }));
   return { stuck, redDuties, lagging, hostHeld, ownerHeld };
-}
-
-/**
- * The open leaf steps of a board that nobody moves, read from the board and the step owners alone, for a chat with no check-in snapshot to
- * count from. A step is held when an open For you todo links it (its step field or `heldByTodo`) or an owner correction parks it (`parkedBy`),
- * and moving when one of its owners (`stepSessions`) sleeps on a board.wake, waits for its pi-pool slot (`live`) or wrote within the check-in's
- * live window (`liveWindowMs`), as `goalsWithNoJob` in chat-system.ts reads a goal's owner.
- */
-export function unmovedSteps(board: ChatBoard | null | undefined, now: number, everyMs: number | undefined, activity: ReadonlyMap<string, number>,
-  live: ReadonlySet<string>, named: ReadonlyMap<string, readonly string[]> = new Map()): string[] {
-  const todos = board?.todos ?? [];
-  const asked = new Set(todos.filter(todo => !todo.done && todo.step).map(todo => todo.step));
-  const window = liveWindowMs(everyMs ?? Infinity);
-  const out: string[] = [];
-  walk(board?.plan ?? [], item => {
-    if (!OPEN.has(item.status) || item.children.some(child => OPEN.has(child.status))) return;
-    if (asked.has(item.id) || heldByTodo(item, todos) || parkedBy(item) !== undefined) return;
-    if (stepSessions(item, named).some(session => live.has(session) || now - (activity.get(session) ?? -Infinity) <= window)) return;
-    out.push(item.id);
-  });
-  return out;
 }
 
 /**

@@ -15,7 +15,8 @@ import { treeWakes, type Wake } from "./wakes.ts";
 import { withQueuePlaces } from "./chat-turn-queue.ts";
 import { type CheckInContext, type CheckInMemory, checkInPrecheck, checkInPrecheckText, classCounts, convergenceMisses, endedJobs, endedWithoutReport, finishedJobs, JOB_CLEANUP_EVERY_MS, ROOT_END_EVERY_MS, jobEnd, jobEndText,
   endedRoots, handBackNote, handBackSteps, handBackText, idleRoots, jobReport, lastJobMessages, leftOpenSteps, noReportNotice, openStepLines, openStepsNotice, reportedRoot, retryDue,
-  ownerlessNotice, ownerlessSteps, rootLeftSteps, rootStepsNotice } from "./chat-checkin.ts";
+  rootLeftSteps, rootStepsNotice } from "./chat-checkin.ts";
+import { rowOwnerReads, unmovedLine, unmovedNotice, unmovedSteps } from "./unmoved-steps.ts";
 import { childSessionFile, replacedJob, sessionBrief, sessionModel, sessionReplied } from "./job-resume.ts";
 import { type AwayHost, hostHolds } from "./shared/host-hold.ts";
 import { heldByTodo, linkedBoards, withLinkedBoards } from "./shared/todo-hold.ts";
@@ -209,8 +210,8 @@ export class Chats {
   /** Each chat's roots and step-linked threads as the last catalog read listed them, and each one's state then, by session id (`endedRoots`). */
   private readonly roots = new Map<string, readonly ChatAgent[]>();
   private readonly rootStates = new Map<string, ChatAgent["state"]>();
-  /** The steps each paused chat was last told have no owner (`ownerless`), so one set is told once. */
-  private readonly ownerlessTold = new Map<string, string>();
+  /** The steps each chat was last told nobody moves, and when (`unmoved`), so one set is told once per live window. */
+  private readonly unmovedTold = new Map<string, { key: string; at: number }>();
   /** Chats found stale while mid-turn; the end of the turn reloads them. */
   private readonly reloadWaiting = new Set<string>();
   /** Chats the owner's Update all chats reloads even on the current build; each leaves the set once its reload ran. */
@@ -776,11 +777,12 @@ export class Chats {
     if (now - this.lastScan >= ADOPT_SCAN_MS) { this.lastScan = now; this.queue("#scan", async () => { await this.rescan(); }); }
     const due: string[] = [];
     const active = new Set<string>();
+    const planned = new Map<string, number>();
     for (const id of this.chatIds) {
       if (this.children.has(id) && now - (this.cleanedAt.get(id) ?? -Infinity) >= JOB_CLEANUP_EVERY_MS) { this.cleanedAt.set(id, now); this.queue(id, () => this.cleanJobs(id)); }
       const setting = planCheckIn(settings[id] ?? DEFAULT_CHECK_IN, open.get(id) ?? true);
       const paused = activePause(setting, now) !== null;
-      if (paused && open.get(id)) this.queue(id, () => this.ownerless(id));
+      if (open.get(id)) planned.set(id, setting.everyMs);
       if (paused && ownerPause(setting)) continue;
       active.add(id);
       if (!this.reviving.has(id)) { this.reviving.add(id); this.queue(id, () => this.revive(id, woke).finally(() => this.reviving.delete(id))); }
@@ -795,7 +797,7 @@ export class Chats {
       this.queue(checkInLane(id), async () => { await this.checkIn(id); });
     }
     for (const id of this.reloadWaiting) if (!this.threads.running(id)) this.queue(id, () => this.refreshExtension(id));
-    this.queue("#jobs", () => this.jobs(active, woke));
+    this.queue("#jobs", () => this.jobs(active, woke, planned));
     if (this.source.heldNotices) this.queue("#held", () => this.releaseHeld());
     if (now - this.deletedSweptAt >= JOB_CLEANUP_EVERY_MS) { this.deletedSweptAt = now; this.queue("#deleted", () => this.sweepDeleted()); }
     if (!this.ticked) {
@@ -1118,13 +1120,14 @@ export class Chats {
    * root of a chat that is not paused for a turn that ended in a transient failure (`wakeJob`). A job is read again only when its activity
    * changed since it was last found fine, or while a failure of it waits for its wake.
    */
-  private async jobs(active: ReadonlySet<string>, woke: boolean): Promise<void> {
+  private async jobs(active: ReadonlySet<string>, woke: boolean, planned: ReadonlyMap<string, number> = new Map()): Promise<void> {
     let rows: readonly SessionRow[];
     try { rows = await this.source.rows(); }
     catch (error) { this.log(`chats: jobs: ${error instanceof Error ? error.message : String(error)}`); return; }
     const chatRows = rows.filter(row => this.chatIds.has(row.id));
     this.refreshJobs(chatRows);
     this.rootEnds(chatRows);
+    for (const row of chatRows) { const everyMs = planned.get(row.id); if (everyMs !== undefined) this.queue(row.id, () => this.unmoved(row, everyMs)); }
     if (this.now() - this.rootsEndedAt >= ROOT_END_EVERY_MS) {
       this.rootsEndedAt = this.now();
       for (const row of chatRows) if (active.has(row.id)) this.queue(row.id, () => this.endRoots(row));
@@ -1934,24 +1937,39 @@ export class Chats {
   }
 
   /**
-   * A chat whose check-in is paused runs no check-in to find a step nobody owns, so each tick it is told its open steps with no owner
-   * (`ownerlessSteps`) while no turn of it runs, once per set of steps.
+   * Each chat with an open plan is told its steps nobody moves (`unmovedSteps`, the rule d9 counts a paused chat's stuck steps by) once they go
+   * stuck, while no turn of it runs and no duty job of it works, and again each live window while the same steps stay unmoved. The end
+   * notices fire once, on a turn end this service saw, so a step whose owner ended unseen or whose chat answered without giving it a live
+   * owner waited for d9: on 10-27 the idle unload stopped frontend bro's "post lists as a feed" at 14:44Z with no notice, and metal-management
+   * was told "prod off metal02 code ended with p132 open" at about 17:10Z, kept p132 on that job, which last wrote at 17:27Z and set no wake,
+   * and d9 read p132 stuck at 18:48Z.
    */
-  private async ownerless(id: string): Promise<void> {
+  private async unmoved(row: SessionRow, everyMs: number): Promise<void> {
+    const id = row.id;
     await this.load();
     if (!this.chatIds.has(id) || this.threads.busy(id) || this.stall(id)) return;
+    // A chat on a box Tailscale reads offline takes no turn, so its notice would only queue: it is told at the first pass after the box is back.
+    if (row.host && await this.source.hostAway?.(row.host).catch(() => null)) return;
+    const duty = new Set(await this.source.dutyJobs?.(id).catch(() => []) ?? []);
+    if ((row.agents ?? []).some(agent => agent.sessionId !== undefined && duty.has(agent.sessionId) && agent.state === "working")) return;
     let board: ChatBoard | null;
     try { board = await this.source.board(id); }
-    catch (error) { this.log(`chat ${id.slice(0, 8)}: ownerless steps: ${error instanceof Error ? error.message : String(error)}`); return; }
-    const steps = ownerlessSteps(board);
-    const told = steps.map(step => step.id).join(",");
-    if (!steps.length || this.ownerlessTold.get(id) === told) { if (!steps.length) this.ownerlessTold.delete(id); return; }
-    this.ownerlessTold.set(id, told);
+    catch (error) { this.log(`chat ${id.slice(0, 8)}: unmoved steps: ${error instanceof Error ? error.message : String(error)}`); return; }
+    const now = this.now();
+    const reads = rowOwnerReads(row, now);
+    const steps = unmovedSteps(board, now, everyMs, reads);
+    if (!steps.length) { this.unmovedTold.delete(id); return; }
+    const key = steps.map(step => step.id).join(",");
+    const window = liveWindowMs(everyMs);
+    const last = this.unmovedTold.get(id);
+    if (last?.key === key && now - last.at < window) return;
+    this.unmovedTold.set(id, { key, at: now });
     try {
-      const detail = await this.noticeDetail(id, "ownerless-steps", openStepLines(steps));
-      await this.tell(id, JOB_NOTICE_PREFIX + ownerlessNotice(steps, detail));
-      this.log(`chat ${id.slice(0, 8)}: told the paused chat ${told} name no owner`);
-    } catch (error) { this.log(`chat ${id.slice(0, 8)}: ownerless steps: ${error instanceof Error ? error.message : String(error)}`); }
+      const lines = steps.map(step => unmovedLine(step, reads));
+      const detail = await this.noticeDetail(id, "unmoved-steps", lines);
+      await this.tell(id, JOB_NOTICE_PREFIX + unmovedNotice(lines, window, detail));
+      this.log(`chat ${id.slice(0, 8)}: told the chat nobody moves ${key}`);
+    } catch (error) { this.log(`chat ${id.slice(0, 8)}: unmoved steps: ${error instanceof Error ? error.message : String(error)}`); }
   }
 
   private laterRootSteps(id: string, session: string, tries = 0): void {

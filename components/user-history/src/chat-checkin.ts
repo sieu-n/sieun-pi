@@ -718,28 +718,6 @@ export function rootLeftSteps(root: ChatAgent, agents: readonly ChatAgent[], boa
   });
 }
 
-/**
- * The open leaf steps of a board that name no owner at all (`stepOwner`) and that no open For you todo holds (`heldByTodo`, or a todo's step)
- * and no owner correction parks (`parkedBy`), which d9 reads as stuck at once in a chat that runs no check-in. On 10-24 SEO guy, whose check-in
- * the owner had paused, took p81 off its ended subagent domain rating between 16:00Z and 16:02Z and left it open with no job, no wait and no
- * todo until d9's 16:53Z push.
- */
-export function ownerlessSteps(board: ChatBoard | null): PlanItem[] {
-  const todos = board?.todos ?? [];
-  const asked = new Set(todos.filter(todo => !todo.done && todo.step).map(todo => todo.step));
-  return openSteps(board).filter(item => !item.children.some(child => OPEN.has(child.status)) && stepOwner(item) === undefined &&
-    !asked.has(item.id) && !heldByTodo(item, todos) && parkedBy(item) === undefined);
-}
-
-/** The line a chat that runs no check-in gets for its open steps with no owner (`ownerlessSteps`). */
-export function ownerlessNotice(steps: readonly PlanItem[], detail?: string): string {
-  const lines = openStepLines(steps);
-  const rest = lines.length - BRIEF_ITEMS;
-  const listed = [...lines.slice(0, BRIEF_ITEMS), ...rest > 0 ? [`and ${rest} more${detail ? `, all listed in ${detail}` : ""}`] : []];
-  return `${steps.length === 1 ? "This open step names" : "These open steps name"} no owner, and your check-in is paused, so nothing else moves ` +
-    `${steps.length === 1 ? "it" : "them"}: ${listed.join("; ")}. Close each one whose work is done, give the rest a job, or link each to the open For you todo it waits on.`;
-}
-
 /** The line a chat gets when a root's turn ended and open steps still name it (`rootLeftSteps`). */
 export const rootStepsNotice = (root: ChatAgent, steps: readonly PlanItem[], detail?: string): string =>
   leftStepsNotice(root.sender || root.name, root.state === "failed" ? "failed" : "ended its turn", steps, detail);

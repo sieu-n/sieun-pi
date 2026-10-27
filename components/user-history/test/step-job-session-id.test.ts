@@ -2,7 +2,8 @@
 // Mac that For you t30 asked the owner to bring back, and it had no sessionId, so the step read as running on the chat's own box.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { pausedHold, type PlanInputs, planCounts, stepSessions } from "../scripts/duties/whole-system.ts";
+import { pausedHold, type PlanInputs, planCounts } from "../scripts/duties/whole-system.ts";
+import { stepSessions } from "../src/unmoved-steps.ts";
 import type { ChatBoard } from "../src/shared/types.ts";
 
 const THREAD = "01a15427-145f-751d-ba15-d27b6c30f65f";
