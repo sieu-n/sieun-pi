@@ -115,5 +115,16 @@ class Feed(unittest.TestCase):
         self.assertIsNone(feed.prime_exporter_box("i", lambda q: answers[q.split(" ")[0].split("(")[0]]))
 
 
+    def test_transcripts_finds_prime_files_pi_host_cwd_folders_and_rlm_children(self):
+        prime = self.dir / "agent"
+        (prime / "sessions" / "--home-sieun-ws--").mkdir(parents=True)
+        (prime / "session-artifacts" / "root" / "sub-0000abcd").mkdir(parents=True)
+        for path in [prime / "sessions" / "a.jsonl", prime / "sessions" / "--home-sieun-ws--" / "2026-10-27T07-34-36-470Z_b.jsonl",
+                     prime / "session-artifacts" / "root" / "sub-0000abcd" / "c.jsonl"]:
+            path.write_text(lines(HEADER))
+        (prime / "sessions" / "--home-sieun-ws--" / "notes.txt").write_text("x")
+        found = sorted(path.name for path in feed.transcripts(prime))
+        self.assertEqual(found, ["2026-10-27T07-34-36-470Z_b.jsonl", "a.jsonl", "c.jsonl"])
+
 if __name__ == "__main__":
     unittest.main()

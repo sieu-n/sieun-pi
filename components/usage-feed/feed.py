@@ -145,13 +145,18 @@ def epoch_ms(value: object) -> Optional[float]:
 
 
 def transcripts(prime: Path) -> Iterator[Path]:
-    """Prime session transcripts: ~/.prime/agent/sessions/*.jsonl and each RLM child's under session-artifacts/<root>/sub-*/.
-    sessions-archive is left out, because an archived transcript is a copy of one already read."""
+    """Session transcripts: Prime's ~/.prime/agent/sessions/*.jsonl, upstream Pi's sessions/--<cwd slug>--/<ts>_<id>.jsonl as pi-host writes
+    them, and each RLM child's under session-artifacts/<root>/sub-*/. sessions-archive is left out, because an archived transcript is a copy
+    of one already read."""
     sessions = prime / "sessions"
     if sessions.is_dir():
         for entry in os.scandir(sessions):
             if entry.name.endswith(".jsonl") and entry.is_file():
                 yield Path(entry.path)
+            elif entry.name.startswith("--") and entry.is_dir():
+                for inner in os.scandir(entry.path):
+                    if inner.name.endswith(".jsonl") and inner.is_file():
+                        yield Path(inner.path)
     artifacts = prime / "session-artifacts"
     if not artifacts.is_dir():
         return
