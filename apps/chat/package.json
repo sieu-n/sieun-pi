@@ -1,0 +1,27 @@
+{
+  "name": "sieun-pi-apps-chat",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "The chat server of apps/chat: threads, jobs, channels, search, boards, usage and hosts over pi-host.",
+  "engines": {
+    "node": ">=22.8.0"
+  },
+  "scripts": {
+    "start": "node --import tsx server/main.ts",
+    "fixture": "node --import tsx server/main.ts --fixture --port 5186",
+    "test": "node --import tsx --test --test-force-exit --test-timeout=120000 test/server/*.test.ts",
+    "typecheck": "tsc --noEmit -p server/tsconfig.json",
+    "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "tsx": "4.23.13",
+    "ws": "8.21.3"
+  },
+  "devDependencies": {
+    "@types/node": "25.3.0",
+    "@types/ws": "8.18.2",
+    "typescript": "5.9.3",
+    "@playwright/test": "1.64.1"
+  }
+}
