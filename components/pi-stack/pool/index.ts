@@ -8,8 +8,8 @@
  * retryable error in message_end, so Pi's own retry vends again and the pool moves the tree to its next account.
  */
 import type { AssistantMessage, AssistantMessageEvent, AssistantMessageEventStream, Model, Api, SimpleStreamOptions, TranscriptContext } from "@earendil-works/pi-ai";
-import { openAICodexResponsesApi } from "@earendil-works/pi-ai/compat";
-import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/utils/event-stream";
+// Pi's extension loader aliases only a few pi-ai entry points, so this file imports pi-ai through `compat` alone.
+import { createAssistantMessageEventStream, openAICodexResponsesApi } from "@earendil-works/pi-ai/compat";
 import { getAgentDir, type ExtensionAPI, type ExtensionContext, type ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
 import { PRIME_BASE_PROMPT } from "../shared/preamble.ts";
