@@ -74,6 +74,8 @@ export class Threads {
   channelSummaries: () => ConversationSummary[] = () => [];
   /** Channels each agent is in. */
   channelsOf: (agent: AgentId) => string[] = () => [];
+  /** A `doc` event from a watched thread, such as the chat writing `chat.board`. */
+  onDoc: (thread: string, name: string, value: unknown) => void = () => {};
 
   constructor(readonly host: Host, readonly store: Store, readonly events: ThreadEvents, readonly box: string, private readonly log: (line: string) => void = () => {}) {}
 
@@ -347,6 +349,10 @@ export class Threads {
   }
 
   private onEvent(id: ConversationId, live: LiveConversation, event: DurableEvent): void {
+    if (event.type === "doc") {
+      this.onDoc(live.thread, event.name, event.value);
+      return;
+    }
     if (event.type === "status") {
       if (live.conversation === 1) {
         const status = statusOf(event.status);

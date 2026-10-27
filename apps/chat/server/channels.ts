@@ -294,6 +294,10 @@ export class Channels {
       });
       this.setState(row, post, delivery, "answered", { answerPost: reply.item.id, answer: reply.item.id });
     } catch (error) {
+      if (/closed the connection|ECONNREFUSED|ENOENT/.test(String(error))) {
+        setTimeout(() => void this.awaitAnswer(row, post, delivery), 2000);
+        return;
+      }
       this.log(`delivery ${post.id} to ${delivery.target} failed: ${String(error)}`);
       this.setState(row, post, delivery, "failed", { error: error instanceof Error ? error.message : String(error) });
     }

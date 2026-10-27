@@ -69,6 +69,9 @@ export class App {
         this.sidebarSoon();
       },
     }, log);
+    this.threads.onDoc = (thread, name, value) => {
+      if (name === "chat.board") this.boards.docChanged(thread, value);
+    };
     this.search = new Search(host, this.threads, this.channels);
     this.wss.on("connection", socket => this.connect(socket));
   }

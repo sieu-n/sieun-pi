@@ -17,6 +17,7 @@ import type { Threads } from "./threads.ts";
 
 export const BOARD_DOC = "chat.board";
 const DEFAULT_CHECK_IN_MS = 120 * 60_000;
+const BOARD_TTL_MS = 15_000;
 
 export interface DutyFile { duties: Duty[]; runs: Record<string, DutyRunRecord[]>; checkIn?: { everyMs: number; pausedUntil: number | "forever" | null; lastAt: number | null } }
 export type DutyViewOut = DutyView & { card: DutyCardModel; last: { verdict: string; at: number; streak: number; afterJob: boolean } | null };
@@ -54,7 +55,8 @@ export function nextRun(schedule: DutySchedule, from: number): number {
 }
 
 export class Boards {
-  private readonly cache = new Map<string, ChatBoard | null>();
+  /** Boards read in the last BOARD_TTL_MS; a doc event or an owner op replaces one at once. */
+  private readonly cache = new Map<string, { board: ChatBoard | null; at: number }>();
   private timer?: NodeJS.Timeout;
 
   constructor(readonly host: Host, readonly store: Store, readonly threads: Threads, readonly events: BoardEvents, private readonly log: (line: string) => void = () => {}) {}
@@ -64,10 +66,12 @@ export class Boards {
   }
 
   async board(chat: string): Promise<ChatBoard | null> {
-    if (this.cache.has(chat)) return this.cache.get(chat)!;
+    const cached = this.cache.get(chat);
+    if (cached && Date.now() - cached.at < BOARD_TTL_MS) return cached.board;
     const value = await this.host.docGet(chat, BOARD_DOC).catch(() => null);
     const board = value ? parseBoard(value) : null;
-    this.cache.set(chat, board);
+    this.cache.set(chat, { board, at: Date.now() });
+    if (cached && JSON.stringify(cached.board) !== JSON.stringify(board) && board) this.events.board(chat, board, awaitingGo(board));
     return board;
   }
 
@@ -88,7 +92,7 @@ export class Boards {
       summaries.push(result.summary);
     }
     await this.host.docPut(chat, BOARD_DOC, board);
-    this.cache.set(chat, board);
+    this.cache.set(chat, { board, at: Date.now() });
     this.events.board(chat, board, awaitingGo(board));
     this.events.forYou(await this.forYouCount());
     if (summaries.length) {
@@ -103,7 +107,7 @@ export class Boards {
   /** A doc event from pi-host: the chat wrote its board. */
   docChanged(chat: string, value: unknown): void {
     const board = value ? parseBoard(value) : null;
-    this.cache.set(chat, board);
+    this.cache.set(chat, { board, at: Date.now() });
     if (board) this.events.board(chat, board, awaitingGo(board));
   }
 
