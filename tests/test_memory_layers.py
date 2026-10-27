@@ -70,6 +70,41 @@ class RunawaySession(unittest.TestCase):
         self.assertEqual(writes, {20: 200, 21: 200, 30: 1000, 31: 1000, 33: 1000})
 
 
+class LoginScopes(unittest.TestCase):
+    # 10-27 in small: a supervisor (70) that a command over ssh started in session-c155369.scope, with a worker (71), its
+    # kernel (72) and an agent command (73, session 73) that all inherited tailscaled's -500, beside another ssh login
+    # whose carrier (80) keeps -500 and whose command (81) goes back to 200.
+    units = {
+        "prime-agent-daemon.service": {10: "prime-agent"},
+        "session-c155369.scope": {69: "tailscaled", 70: "prime-agent", 71: "prime-agent", 72: "python", 73: "bash", 74: "node-MainThread"},
+        "session-c158784.scope": {80: "tailscaled", 81: "python3"},
+    }
+    current = {10: -500, 69: -500, 70: -500, 71: -500, 72: -500, 73: -500, 74: -500, 80: -500, 81: -500}
+
+    def test_a_command_over_ssh_goes_back_to_200_and_its_carrier_keeps_its_score(self):
+        units = {"session-c158784.scope": self.units["session-c158784.scope"]}
+        self.assertEqual(oom.plan(units, {}, self.current), {81: 200})
+
+    def test_the_scope_of_a_supervisor_started_over_ssh_is_scored_as_the_daemon(self):
+        scope = oom.daemon_scope(self.units, 70)
+        self.assertEqual(scope, "session-c155369.scope")
+        units = oom.with_scope_as_daemon(self.units, scope)
+        self.assertNotIn(scope, units)
+        writes = oom.plan(units, {"prime-agent-daemon.service": 70}, self.current, frozenset({73, 74}))
+        self.assertEqual(writes, {70: -900, 72: 200, 73: 1000, 74: 1000, 81: 200})
+
+    def test_its_agent_command_tree_can_be_marked_and_its_kernels_cannot(self):
+        units = oom.with_scope_as_daemon(self.units, "session-c155369.scope")
+        procs = units["prime-agent-daemon.service"]
+        sessions = {10: 10, 69: 69, 70: 69, 71: 71, 72: 71, 73: 73, 74: 73}
+        memory = {10: 900, 69: 10, 70: 900, 71: 500, 72: 3000, 73: 2000, 74: 2000}
+        self.assertEqual(oom.runaway(procs, 70, sessions, memory), 73)
+
+    def test_a_supervisor_inside_its_unit_leaves_the_login_scopes_alone(self):
+        self.assertIsNone(oom.daemon_scope(self.units, 10))
+        self.assertIs(oom.with_scope_as_daemon(self.units, None), self.units)
+
+
 class KillSessionHook(unittest.TestCase):
     def test_it_kills_only_the_marked_session_members_that_still_carry_the_mark(self):
         spec = importlib.util.spec_from_file_location("oom_kill_session", MEM / "oom-kill-session.py")
