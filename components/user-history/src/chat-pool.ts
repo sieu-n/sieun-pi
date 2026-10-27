@@ -303,6 +303,17 @@ export class PoolStatusReader {
     return this.turn().then(() => generation === this.generation ? this.status(threads) : this.current(threads, { maxAgeMs }));
   }
 
+  /**
+   * The queue and config of the last reading however old, with a read started behind it when it is over `maxAgeMs` old, for a pane that polls
+   * and must not wait; the next read's answer when nothing was read since the last pool change. At 17:58Z to 18:02Z on 10-27 the Agent queue
+   * pane's api/agent-queue read waited 1.4 to 2.3 s a minute for the next `pi-pool snapshot` at 1.6 to 2.8 runnable a core on us-metal02.
+   */
+  latest(maxAgeMs = this.tickMs): Promise<PoolStatus> {
+    if (!this.base) return this.current([], { maxAgeMs });
+    if (this.base.at < this.now() - maxAgeMs) void this.current([], { maxAgeMs }).catch(() => {});
+    return Promise.resolve(this.status([]));
+  }
+
   /** The last reading of a thread however old, for an answer that must not wait; null when none was read since the last pool change. */
   cached(thread: PoolThread): (ThreadParts & { at: number; config: PoolPart | null }) | null {
     const entry = this.threads.get(threadKey(thread));
@@ -595,6 +606,11 @@ function setRecord(value: unknown): PoolSetRecord | null {
 /** `pi-pool queue --json` from the shared read, at most `maxAgeMs` old (the tick by default). */
 export async function readAgentQueue(maxAgeMs?: number): Promise<AgentQueueReading> {
   return parseAgentQueue(JSON.parse(partOut((await readPoolStatus([], maxAgeMs === undefined ? {} : { maxAgeMs })).queue)));
+}
+
+/** The Agent queue pane's read: the last queue reading at once, refreshed behind it (`PoolStatusReader.latest`). */
+export async function latestAgentQueue(): Promise<AgentQueueReading> {
+  return parseAgentQueue(JSON.parse(partOut((await poolStatus.latest()).queue)));
 }
 
 export type AgentQueueKey = "agent_queue_on" | "working_max" | "tree_working_max";

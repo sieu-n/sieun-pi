@@ -16,6 +16,13 @@ export interface ChatLatency {
   /** The slowest GET that waited on another box (its relay, its daemon through the bridge or LGTM's Prometheus), in ms, and its route; absent when none did. */
   remoteMs?: number;
   remote?: string;
+  /**
+   * The longest a response took to reach the client after the service handed it over (`res.end` to its `finish`), in ms, and its route;
+   * absent when none took over 0 ms. It is the network's time, so `readMs` leaves it out: render.js, the 1.5 MB gzipped diagram renderer, took
+   * 2.3 s at 17:57Z, 1.6 s at 18:06Z and 1.2 s at 18:16Z on 10-27 on its way to the Mac in Korea, and d7 counted each minute dirty as the chat's own.
+   */
+  sendMs?: number;
+  send?: string;
   /** The event loop's longest delay since the last line, in ms (perf_hooks monitorEventLoopDelay). */
   loopMs: number;
   /** The longest garbage collection since the last line, in ms, and its kind; absent when none ran. */
@@ -73,6 +80,7 @@ export function poolWait(now = performance.now()): number {
 const REMOTE_READS = new Set(["api/hosts"]);
 let slowest = { ms: 0, route: "" };
 let slowestRemote = { ms: 0, route: "" };
+let slowestSend = { ms: 0, route: "" };
 const reading = new AsyncLocalStorage<{ remote: boolean }>();
 
 /**
@@ -110,9 +118,16 @@ export function timeRead(req: IncomingMessage, res: ServerResponse, base: string
   reading.enterWith(read);
   if (req.method !== "GET") return;
   const started = performance.now();
+  // The service's part of a read ends when it hands the whole response to `res.end`; the rest, up to `finish`, is the network's.
+  let ended: number | undefined;
+  const end = res.end;
+  res.end = function (this: ServerResponse, ...args: unknown[]) { ended ??= performance.now(); return Reflect.apply(end, this, args) as ServerResponse; } as ServerResponse["end"];
   res.once("finish", () => {
     const route = readRoute(req.url ?? "/", base);
-    const ms = Math.round(performance.now() - started);
+    const finished = performance.now();
+    const ms = Math.round((ended ?? finished) - started);
+    const sent = Math.round(finished - (ended ?? finished));
+    if (sent > slowestSend.ms) slowestSend = { ms: sent, route };
     if (read.remote) { if (ms > slowestRemote.ms) slowestRemote = { ms, route }; }
     else if (!REMOTE_READS.has(route) && ms > slowest.ms) slowest = { ms, route };
   });
@@ -122,11 +137,13 @@ export function timeRead(req: IncomingMessage, res: ServerResponse, base: string
 export function takeLatency(): ChatLatency | undefined {
   if (!loop) return undefined;
   const taken: ChatLatency = { readMs: slowest.ms, ...slowest.route ? { read: slowest.route } : {},
-    ...slowestRemote.ms ? { remoteMs: slowestRemote.ms, remote: slowestRemote.route } : {}, loopMs: Math.round(loop.max / 1e6),
+    ...slowestRemote.ms ? { remoteMs: slowestRemote.ms, remote: slowestRemote.route } : {},
+    ...slowestSend.ms ? { sendMs: slowestSend.ms, send: slowestSend.route } : {}, loopMs: Math.round(loop.max / 1e6),
     ...longestGc ? { gcMs: Math.round(longestGc.ms), gc: longestGc.kind } : {}, poolMs: Math.round(poolWait()) };
   slowest = { ms: 0, route: "" };
   longestPool = 0;
   slowestRemote = { ms: 0, route: "" };
+  slowestSend = { ms: 0, route: "" };
   longestGc = null;
   loop.reset();
   return taken;

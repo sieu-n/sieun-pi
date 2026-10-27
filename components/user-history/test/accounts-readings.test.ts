@@ -298,3 +298,23 @@ test("an ask for a thread with no reading skips the tick, so api/accounts for a 
   assert.ok((await fresh).threads.has("new|opus"));
   await poll;
 });
+
+// Guards 17:58Z to 18:02Z on 10-27: the Agent queue pane's api/agent-queue read waited 1.4 to 2.3 s a minute for the next pi-pool snapshot.
+test("latest answers an old reading at once and reads a new one behind it", async () => {
+  const pool = fakePool(), time = clock();
+  const status = new PoolStatusReader(pool.read, 2000, time.now, time.sleep);
+  const first = status.latest();
+  await settle();
+  pool.calls[0]!.answer();
+  assert.equal((await first).queue.out, '{"n":1}', "with nothing read, it waits for the first read");
+  time.advance(5000);
+  let answered: string | undefined;
+  void status.latest().then(answer => { answered = answer.queue.out; });
+  await settle(); await settle();
+  assert.equal(answered, '{"n":1}', "an old reading answers before the new read ends");
+  assert.equal(pool.calls.length, 2, "and a new read started behind it");
+  pool.calls[1]!.answer();
+  await settle(); await settle();
+  assert.equal((await status.latest()).queue.out, '{"n":2}');
+  assert.equal(pool.calls.length, 2, "a fresh reading starts no read");
+});

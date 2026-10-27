@@ -1,4 +1,4 @@
-import { readAgentQueue, setPoolKey, type AgentQueueKey } from "./chat-pool.ts";
+import { latestAgentQueue, setPoolKey, type AgentQueueKey } from "./chat-pool.ts";
 import type { AgentQueueInput, AgentQueueReading, AgentQueueRow, AgentQueueView, HostQueueInput, IdleEvictionMinutes, TurnHour } from "./shared/types.ts";
 import { turnHistory } from "./turn-history.ts";
 
@@ -53,9 +53,12 @@ export function queueRows(reading: Pick<AgentQueueReading, "working" | "queued">
   return [...working, ...waiting];
 }
 
-/** `title` names a session for the queue rows; null when the catalog does not know it. `read` and `set` default to the installed pi-pool, `history` to pi-pool.log. */
+/**
+ * `title` names a session for the queue rows; null when the catalog does not know it. `read` and `set` default to the installed pi-pool, `history` to
+ * pi-pool.log; `read` answers from the last reading and refreshes it behind the answer (`latestAgentQueue`).
+ */
 export function agentQueue(title: Title, idle: IdleEviction,
-  read: () => Promise<AgentQueueReading> = readAgentQueue, set: typeof setPoolKey = setPoolKey,
+  read: () => Promise<AgentQueueReading> = latestAgentQueue, set: typeof setPoolKey = setPoolKey,
   history: () => Promise<TurnHour[]> = turnHistory()): AgentQueue {
   async function view(): Promise<AgentQueueView> {
     const [pool, hours] = await Promise.all([read().then(reading => ({ state: "read" as const, ...reading, rows: queueRows(reading, title) }),
