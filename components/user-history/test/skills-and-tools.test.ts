@@ -156,6 +156,19 @@ test("websearch_query fails when the retry gets the DuckDuckGo fallback too", as
   assert.equal(calls.n, 2);
 });
 
+test("websearch_query runs the kernel venv's python on the linked skill's source, since a runtime release has no skill .venv", async () => {
+  const runs: { command: string; code: string }[] = [];
+  const outcome = await websearchQuery.run({
+    ...deps("darwin"),
+    home: "/Users/sieunpark",
+    realpath: async path => path.replace("/Users/sieunpark/.prime/agent/skills", "/Users/sieunpark/.local/share/sieun-pi-runtime/releases/abc/skills"),
+    exec: async (command, args) => { runs.push({ command, code: args[1] ?? "" }); return GOOGLE; },
+  });
+  assert.equal(outcome.status, "pass", JSON.stringify(outcome));
+  assert.equal(runs[0]!.command, "/Users/sieunpark/.prime/agent/kernel-venv/bin/python");
+  assert.ok(runs[0]!.code.includes('"/Users/sieunpark/.local/share/sieun-pi-runtime/releases/abc/skills/websearch/src"'), runs[0]!.code);
+});
+
 test("websearch_query searches once when Google answers the first time", async () => {
   const calls = { n: 0 };
   const outcome = await websearchQuery.run(searchDeps([GOOGLE], calls));

@@ -444,10 +444,14 @@ export const CHECKS: readonly Check[] = [
       `\`uv pip uninstall --python ${python} prime-agent-skill-websearch\`, then re-check in a fresh kernel`);
     return FAIL("agent", `the kernel loads ${where || "nothing"} (${failText(result)})`, `make ${own} the only websearch install in the kernel venv`);
   } },
+  /**
+   * Runs the search in the kernel venv's python on the linked skill's source, which is how `await websearch(...)` runs. A runtime release has no
+   * skill .venv, so on 10-27 the Mac's check spawned ~/.prime/agent/skills/websearch/.venv/bin/python and failed with ENOENT (exit 127).
+   */
   { id: "websearch_query", group: "web search", tool: "Virev search API", hostTool: "websearch", run: async deps => {
-    const skill = paths(deps).websearch;
+    const skill = await deps.realpath(paths(deps).websearch);
     const code = `import asyncio,sys; sys.path.insert(0,${JSON.stringify(join(skill, "src"))}); from websearch import run; print(asyncio.run(run('Prime Intellect', num_results=3, timeout=40)))`;
-    const search = () => deps.exec(join(skill, ".venv/bin/python"), ["-c", code], { timeoutMs: 55_000 });
+    const search = () => deps.exec(paths(deps).kernelPython, ["-c", code], { timeoutMs: 55_000 });
     // Google on the Virev crawler drops for a few minutes at a time: 4 of 9 rechecks in
     // skills-and-tools.rechecks.jsonl (10-17 to 10-18) got the DuckDuckGo note or a 502, and each passed
     // again minutes later. One more query before failing keeps such a drop from flagging the box alone.
@@ -459,7 +463,7 @@ export const CHECKS: readonly Check[] = [
     const results = /^Result \d+: /m.test(result.stdout);
     if (results && /NOTE: google is unavailable/.test(text)) return FAIL("agent", "Google is down on the Virev search backend; results came from the DuckDuckGo fallback", "report it to the crawler side; the key works");
     if (results && result.code === 0) return PASS(brief(result.stdout.split("\n").find(line => line.startsWith("Result 1:")) ?? "", 100));
-    return FAIL("agent", `no results: ${failText(result)}`, "check that api.virev.ai answers and the skill's .venv imports");
+    return FAIL("agent", `no results: ${failText(result)}`, `check that api.virev.ai answers and ${paths(deps).kernelPython} imports httpx`);
   } },
   { id: "aside_tabs", group: "browser", tool: "Aside browser MCP", hostTool: "aside", run: async deps => {
     const mac = await macReach(deps);
