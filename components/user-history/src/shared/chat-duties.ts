@@ -66,6 +66,11 @@ export const overrunWords = (overrun: PrecheckOverrun): string =>
  */
 export interface PrecheckOutput { metrics: Record<string, number>; flagged?: FlaggedSlice[]; lastEventAt?: Record<string, number>;
   /**
+   * The trailing window of each windowed count whose key names none (`countWindowMs`), in ms. Crawler VP's d9 throughput_goals_missed counts
+   * the census writer's worst slot of 24 h, so without it d9 printed no clear time for the aging miss and no push read it when the slot left.
+   */
+  windowMs?: Record<string, number>;
+  /**
    * The number of each board item a counted metric counts, by plan item id, read against that item's own target (`judge` keeps the valid
    * ones as `DutyRunRecord.items`). A fix of one item is judged on it (`fixStepStreak`): on 10-24 Crawler VP's d9 throughput_goals_missed went
    * 3 to 4 under p942 because p826 began to miss, while p850, the goal p942 works, went from 135 to 159 walks a minute against 252.
@@ -127,8 +132,8 @@ export const STILL_WORKING = "skipped: previous run still working";
 /** `host-back`: the rerun of a run that waited on a box Tailscale read offline (`DutyRunRecord.hostAway`), at the first tick it reads online. */
 export type DutyTrigger = "schedule" | "catch-up" | "owner" | "verify" | "push" | "rerun" | "host-back";
 export type DutyVerdict = "met" | "missed" | "error" | "skipped";
-/** `lastEventAt` is the precheck's time of the newest event a windowed count counts (`PrecheckOutput.lastEventAt`). */
-export interface MetricResult { value: number; target: number; op: DutyMetric["op"]; met: boolean; lastEventAt?: number }
+/** `lastEventAt` is the precheck's time of the newest event a windowed count counts (`PrecheckOutput.lastEventAt`), `windowMs` its window. */
+export interface MetricResult { value: number; target: number; op: DutyMetric["op"]; met: boolean; lastEventAt?: number; windowMs?: number }
 /** A duty job the server started: its session id and name. */
 export interface DutyJobRef { id: string; name: string }
 /**
@@ -424,7 +429,9 @@ function judgeCounted(metrics: readonly DutyMetric[], output: PrecheckOutput): {
   for (const metric of measured) {
     const value = output.metrics[metric.key]!;
     const lastEventAt = output.lastEventAt?.[metric.key];
-    results[metric.key] = { value, target: metric.target, op: metric.op, met: met(metric, value), ...typeof lastEventAt === "number" && Number.isFinite(lastEventAt) ? { lastEventAt } : {} };
+    const windowMs = output.windowMs?.[metric.key];
+    results[metric.key] = { value, target: metric.target, op: metric.op, met: met(metric, value), ...typeof lastEventAt === "number" && Number.isFinite(lastEventAt) ? { lastEventAt } : {},
+      ...typeof windowMs === "number" && windowMs > 0 && Number.isFinite(windowMs) ? { windowMs } : {} };
     if (!results[metric.key]!.met) misses.push(`${metric.key} ${show(metric, value)} (target ${metric.op === "<=" ? "at most" : "at least"} ${show(metric, metric.target)})`);
   }
   const lead = headline && results[headline.key]!.met ? `${headline.key} ${show(headline, results[headline.key]!.value)} (on target)` : undefined;

@@ -273,6 +273,8 @@ export interface GoalRow {
   unit: string; reads: string; extra?: string | undefined;
   /** For a row that reads the worst slot of a trailing window, the start of the newest slot that keeps it missed (`PrecheckOutput.lastEventAt`). */
   lastEventAt?: number;
+  /** The trailing window that `lastEventAt` waits to leave (`PrecheckOutput.windowMs`). */
+  windowMs?: number;
 }
 export const missed = (row: GoalRow): boolean => row.value === null || row.goal === null || (row.op === ">=" ? row.value < row.goal : row.value > row.goal);
 
@@ -379,7 +381,7 @@ export function writerLagRow(d: ThroughputData, rate: number | null): GoalRow {
   const over = worst.newestOver === null ? "" : `; the newest over ${fmt(WRITER_LAG_LINE)} (${when(worst.newestOver)}) leaves the 24 h window at ${when(worst.newestOver + WRITER_LAG_MS)}`;
   return { ...row, value: worst.lag, reads: `records of lag at most over 24 h (${when(worst.slot)})`,
     extra: `(${worst.slots} of 288 five-minute slots at ${fmt(rate)} Instagram profiles a minute or more, outside deploys${over})`,
-    ...(worst.newestOver === null ? {} : { lastEventAt: worst.newestOver }) };
+    ...(worst.newestOver === null ? {} : { lastEventAt: worst.newestOver, windowMs: WRITER_LAG_MS }) };
 }
 
 /** A time for a line, "10:55Z 10-26". */
@@ -402,10 +404,14 @@ export function report(d: ThroughputData, dutyMetrics: readonly DutyMetric[]): P
   const flagged: FlaggedSlice[] = [];
   const unmeasured = new Set<string>();
   const lastEventAt: Record<string, number> = {};
+  const windowMs: Record<string, number> = {};
   const rows = goalRows(d);
   const missedRows = rows.filter(missed);
   metrics.throughput_goals_missed = missedRows.length;
-  if (missedRows.length && missedRows.every(row => row.lastEventAt !== undefined)) lastEventAt.throughput_goals_missed = Math.max(...missedRows.map(row => row.lastEventAt!));
+  if (missedRows.length && missedRows.every(row => row.lastEventAt !== undefined && row.windowMs !== undefined)) {
+    lastEventAt.throughput_goals_missed = Math.max(...missedRows.map(row => row.lastEventAt!));
+    windowMs.throughput_goals_missed = Math.max(...missedRows.map(row => row.lastEventAt! + row.windowMs!)) - lastEventAt.throughput_goals_missed;
+  }
   if (rows.some(row => row.value === null || row.goal === null)) unmeasured.add("throughput_goals_missed");
   for (const row of rows) flagged.push({ at: d.now, kind: "goal", item: row.item, excerpt: goalLine(row).slice(0, 300) });
   const items = Object.fromEntries(rows.flatMap(row => row.value === null || row.goal === null ? [] : [[row.item, { value: row.value, target: row.goal, op: row.op }] as const]));
@@ -426,7 +432,7 @@ export function report(d: ThroughputData, dutyMetrics: readonly DutyMetric[]): P
     metrics.geonode_mbps = slowest.mbps;
     const under = hours.filter(h => h.mbps < 100);
     const newestUnder = under.at(-1)?.hour;
-    if (newestUnder !== undefined) lastEventAt.geonode_mbps = newestUnder;
+    if (newestUnder !== undefined) { lastEventAt.geonode_mbps = newestUnder; windowMs.geonode_mbps = GEONODE_HOURS * HOUR; }
     const leaves = newestUnder === undefined ? "" : `, the newest leaving the window at ${when(newestUnder + GEONODE_HOURS * HOUR)}`;
     flagged.push({ at: d.now, kind: "geonode", excerpt: `GeoNode carried ${slowest.mbps} Mbps in its slowest hour ${span} (${utc(slowest.hour).slice(6)}), ${hours.at(-1)!.mbps} in the last, with ${under.length} of ${hours.length} hours under the owner's 100 Mbps${under.length ? `: ${under.map(h => `${utc(h.hour).slice(6, 11)} ${h.mbps}`).join(", ")}${leaves}` : ""}. Handshakes count ${NEW_CONNECTION_BYTES.toLocaleString("en-US")} bytes per new connection.`.slice(0, 300) });
   }
@@ -448,7 +454,8 @@ export function report(d: ThroughputData, dutyMetrics: readonly DutyMetric[]): P
   const replaced = settle(dutyMetrics, metrics, unmeasured);
   if (replaced.length) flagged.unshift(unmeasuredFlag(replaced, d.now));
   if (metrics.ig_queues_growing_6h! > 0) lastEventAt.ig_queues_growing_6h = d.now;
-  return { metrics, flagged, ...Object.keys(items).length ? { items } : {}, ...Object.keys(lastEventAt).length ? { lastEventAt } : {} };
+  return { metrics, flagged, ...Object.keys(items).length ? { items } : {}, ...Object.keys(lastEventAt).length ? { lastEventAt } : {},
+    ...Object.keys(windowMs).length ? { windowMs } : {} };
 }
 
 /** What each goal's crawl counts: every Instagram profile read on any path (p826's own reading), and TikTok Shop's good products as its rate controller lane counts them. */

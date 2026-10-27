@@ -274,6 +274,7 @@ test("p895 dates its miss at the newest slot over 5,000, not the worst one, and 
   const out = report(data, METRICS);
   assert.equal(out.metrics.throughput_goals_missed, 1);
   assert.equal(out.lastEventAt?.throughput_goals_missed, later);
+  assert.equal(out.windowMs?.throughput_goals_missed, 24 * 3_600_000, "the key names no window, so the precheck names it");
   assert.ok(out.flagged!.find(item => item.item === "p895")!.excerpt.endsWith("Missed."));
   // Every counted slot under the line reads met with no time; another missed row with no time leaves the headline undated.
   assert.equal(report(base({ ...data, writerLag: [{ slot: calm, good: 3_622 }] }), METRICS).lastEventAt?.throughput_goals_missed, undefined);
@@ -287,6 +288,7 @@ test("geonode_mbps dates its miss at the newest hour under 100 Mbps and says whe
   const out = report(base({ geoHours, adLibrary: [] }), METRICS);
   assert.ok(out.metrics.geonode_mbps! < 100);
   assert.equal(out.lastEventAt?.geonode_mbps, GEO_FROM + 9 * 3_600_000);
+  assert.equal(out.windowMs?.geonode_mbps, 24 * 3_600_000);
   assert.match(out.flagged!.find(item => item.kind === "geonode")!.excerpt, /the newest leaving the window at 15:00Z 10-22\./);
   assert.equal(report(base({ geoHours: geoHours.map(h => ({ ...h, census: big })), adLibrary: [] }), METRICS).lastEventAt?.geonode_mbps, undefined);
 });

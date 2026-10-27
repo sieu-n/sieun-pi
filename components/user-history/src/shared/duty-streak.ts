@@ -27,6 +27,8 @@ export interface MetricStreak {
    * 11:38Z run compared it with the 14:07Z run of 10-20 and read "change approach" though promote 18's 09:35Z deploy had 0 down minutes.
    */
   quietSince?: number;
+  /** The window the precheck named for this count (`MetricResult.windowMs`). */
+  windowMs?: number;
   /**
    * CHANGE_APPROACH_MISSES or more misses, no move toward the target, and not `quietSince`. With a fix step, only the misses its run records name
    * the same fix for count (`fixMisses`): a fix job younger than the misses has not had them yet. Demo sandbox 10-18: restarts_24h read 4 from
@@ -179,7 +181,7 @@ export function metricStreaks(runs: readonly DutyRunRecord[]): MetricStreak[] {
     const previous = runs.filter(measured).find(run => run.at < newest.at);
     const quiet = result.lastEventAt !== undefined && previous !== undefined && result.lastEventAt < previous.at;
     streaks.push({ key, misses, moved, since, value: result.value, target: result.target, op: result.op, ...(fix ? { fix } : {}),
-      ...(quiet ? { quietSince: result.lastEventAt } : {}), stuck: judged >= CHANGE_APPROACH_MISSES && !moved && !quiet });
+      ...(quiet ? { quietSince: result.lastEventAt } : {}), ...(result.windowMs !== undefined ? { windowMs: result.windowMs } : {}), stuck: judged >= CHANGE_APPROACH_MISSES && !moved && !quiet });
   }
   return streaks;
 }

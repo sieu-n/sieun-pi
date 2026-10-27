@@ -62,8 +62,12 @@ export function pushMisses(runs: readonly DutyRunRecord[], counted: ReadonlySet<
   return Object.keys(parts).length ? missedKeys({ metrics: parts }) : null;
 }
 
-/** A windowed count's window from its key's `_<n>m`, `_<n>h` or `_<n>d` part (`noisy_rules_24h`, `probe_uptime_24h_pct`), or undefined. */
-export function countWindowMs(key: string): number | undefined {
+/**
+ * A windowed count's window: the one its precheck named (`MetricResult.windowMs`), else its key's `_<n>m`, `_<n>h` or `_<n>d` part
+ * (`noisy_rules_24h`, `probe_uptime_24h_pct`), or undefined.
+ */
+export function countWindowMs(key: string, result?: { windowMs?: number | undefined }): number | undefined {
+  if (result?.windowMs !== undefined) return result.windowMs;
   const found = /_(\d+)(m|h|d)(?:_|$)/.exec(key);
   if (!found) return undefined;
   return Number(found[1]) * { m: 60_000, h: 3_600_000, d: 86_400_000 }[found[2] as "m" | "h" | "d"];
@@ -87,7 +91,7 @@ export function agedOut(runs: readonly DutyRunRecord[], counted: ReadonlySet<str
   let left = 0;
   for (const key of missed) {
     const at = measured.metrics[key]?.lastEventAt;
-    const window = countWindowMs(key);
+    const window = countWindowMs(key, measured.metrics[key]);
     if (at === undefined || window === undefined) return undefined;
     left = Math.max(left, at + window);
   }

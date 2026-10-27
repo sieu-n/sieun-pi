@@ -161,7 +161,7 @@ export function agingUntil(runs: readonly DutyRunRecord[]): number | undefined {
   if (agingSince(runs) === undefined) return undefined;
   let until = 0;
   for (const streak of metricStreaks(runs)) {
-    const window = countWindowMs(streak.key);
+    const window = countWindowMs(streak.key, streak);
     if (window === undefined) return undefined;
     until = Math.max(until, streak.quietSince! + window);
   }
