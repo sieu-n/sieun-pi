@@ -53,3 +53,17 @@ test("d9 asks to replace no fix whose step is blocked, since that fix is not in 
   assert.equal(fixNotMoving([red], () => "AI harness").length, 1);
   assert.equal(fixNotMoving([{ ...red, fixBlocked: true }], () => "AI harness").length, 0);
 });
+
+test("after a restart us-metal02 reads unknown, not the Mac's 0 GB, though the Mac's quiet line is the only one", () => {
+  // 16:49Z to 17:14Z on 10-27: us-metal02 listed 8 to 53 workers each minute, but its daemon started at 16:48:55Z, 16:55:14Z and 17:07:56Z, so
+  // no worker sat 15 min quiet before 17:38Z; the Mac read 0 GB and d7's quiet_agents line named only the Mac.
+  const mac = { name: "mac", usable: null, workers: 0, workerGb: 0, top: [], live: 0, working: 0, byWorker: [], swapGb: null };
+  const both = watch.map(line => ({ ...line, hosts: [mac] }));
+  const base = { now: RUN, watch: both, log: { holds: [] }, chats: [], quietMs: 15 * MIN };
+  assert.equal(measure(base).metrics.quiet_agent_gb, 5.79);
+  const fresh = measure({ ...base, daemonStarts: [{ host: "us-metal02", at: Date.parse("2026-10-19T20:00:00Z") }] });
+  assert.equal(fresh.metrics.quiet_agent_gb_mac, 0);
+  assert.equal(fresh.metrics.quiet_agent_gb_us_metal02, undefined);
+  assert.equal(fresh.metrics.quiet_agent_gb, undefined, "the worst box is unknown while us-metal02 settles");
+  assert.ok(fresh.flagged?.some(slice => slice.kind === "gap" && slice.excerpt.startsWith("us-metal02 read quiet memory only within 30 min")));
+});
