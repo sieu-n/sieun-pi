@@ -114,6 +114,11 @@ USAGE = """usage: pi-pool [command]
   release <session> [--queued-input]
                                   free the turn's slot or drop its queue entry; --queued-input
                                   keeps the run's place for the session's next run
+  park <session>                 a run still queued gives up its process and keeps its place; prints
+                                  {"state":"parked","retry_at",...}, or the admit answer when its
+                                  slot came first (the extension asks after PARK_AFTER_MS)
+  wake-parked <session>          run `prime-agent wake` for a parked run whose slot started, and put
+                                  it back at its place when the wake fails (the pool starts this)
   owner-turn <session>           the session's next admit is the owner's and runs at once
   lead [<session>...]            replace the sessions whose queued runs start first; no
                                   sessions clears the list
@@ -154,6 +159,7 @@ def cli(args):
         "unlimited": pool.session_cmds.cmd_unlimited, "token": pool.session_cmds.cmd_token, "priority": pool.commands.cmd_priority,
         "admit": pool.turns.cmd_admit, "release": pool.turns.cmd_release,
         "owner-turn": pool.turns.cmd_owner_turn, "lead": pool.turns.cmd_lead, "queue": pool.turns.cmd_queue,
+        "park": pool.turns.cmd_park, "wake-parked": pool.turns.cmd_wake_parked,
         "serve": pool.remote.cmd_serve, "hookd": pool.hookd.cmd_hookd, "sample": pool.usage.cmd_sample, "file-login": pool.signin.cmd_file_login,
         "snapshot": lambda rest: pool.snapshot.cmd_snapshot(rest, cli),
     }

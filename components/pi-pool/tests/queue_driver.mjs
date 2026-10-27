@@ -11,7 +11,7 @@ const steps = JSON.parse(stepsJson);
 const CLI = join(new URL('.', import.meta.url).pathname, '..', 'bin', 'pi-pool');
 const { default: extension } = await import(pathToFileURL(file));
 const sessions = new Map();
-const out = { entries: [], waits: [], context: {}, queues: {} };
+const out = { entries: [], waits: [], context: {}, queues: {}, credential: [] };
 const files = join(process.env.PI_POOL_DIR, 'driver-sessions');
 mkdirSync(files, { recursive: true });
 
@@ -41,6 +41,10 @@ for (const step of steps) {
       isIdle: () => state.idle,
       hasPendingMessages: () => state.queued,
     };
+    // Prime's per-session credential wait; `credentialApi: true` stands for a Prime that has it.
+    if (step.credentialApi) {
+      ctx.waitForCredential = (retryAtMs, message) => out.credential.push({ session: step.name, retryAtMs, message });
+    }
     // Prime's ctx.setWaiting; `waitApi: false` stands for a Prime that lacks it.
     if (step.waitApi !== false) {
       ctx.setWaiting = (label) => {

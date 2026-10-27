@@ -428,7 +428,25 @@ function ordinal(n: number): string {
  * the model: admitted, the queue off, an error that leaves no entry in turns.json (fail open), or Stop, which drops the queue entry.
  * `onQueued` gets each queued answer.
  */
-interface AdmitWait { result: Promise<AdmitReply | "stopped" | "failed">; cancel: () => void }
+interface AdmitWait { result: Promise<AdmitReply | ParkReply | "stopped" | "failed">; cancel: () => void }
+/** `pi-pool park` when the run parked: its entry keeps its place with no process until its slot or `retry_at` (epoch sec). */
+interface ParkReply { state: "parked"; retry_at: number; position: number | null; total: number | null }
+
+/**
+ * A run still queued this long parks: its turn waits in Prime's credential wait until the pool wakes it at its slot, so
+ * Prime can park the turn and let the worker go (pool/turns.py `park`). measured: of the 35,978 slot admits on us-metal02
+ * from 10-24 00:00Z to 10-27 05:53Z the median wait was 135 s, 59% waited over 60 s, and those runs spent 89.5% of all
+ * queued run-time past their first 60 s, with a median 382 s still to go. A park costs one session reload, median 0.2 s
+ * and at most 23.7 s on 10-22.
+ */
+const PARK_AFTER_MS = 60_000;
+
+/** Prime's per-session credential wait for the next model call, when this Prime has it. */
+type CredentialWait = (retryAtMs: number, message: string) => void;
+function credentialWait(ctx: ExtensionContext): CredentialWait | undefined {
+	const api = ctx as ExtensionContext & { waitForCredential?: CredentialWait };
+	return typeof api.waitForCredential === "function" ? api.waitForCredential.bind(api) : undefined;
+}
 
 const WAIT_READ_MS = 1000;
 const WAIT_ASK_MS = 30_000;
@@ -489,15 +507,17 @@ function inputQueued(ctx: ExtensionContext): boolean {
 	}
 }
 
-function admitWait(sid: string, signal: AbortSignal | undefined, onQueued: (reply: AdmitReply) => void): AdmitWait {
+function admitWait(sid: string, signal: AbortSignal | undefined, onQueued: (reply: AdmitReply) => void, canPark: boolean): AdmitWait {
 	let cancel = () => {};
-	const result = new Promise<AdmitReply | "stopped" | "failed">((resolve) => {
+	const result = new Promise<AdmitReply | ParkReply | "stopped" | "failed">((resolve) => {
 		const args = ["admit", sid];
 		let done = false;
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		let askedAt = 0;
 		let seen = 0;
-		const finish = (result: AdmitReply | "stopped" | "failed") => {
+		const queuedAt = Date.now();
+		let parkAsked = !canPark;
+		const finish = (result: AdmitReply | ParkReply | "stopped" | "failed") => {
 			if (done) return;
 			done = true;
 			if (timer) clearTimeout(timer);
@@ -542,10 +562,34 @@ function admitWait(sid: string, signal: AbortSignal | undefined, onQueued: (repl
 			finish(reply.state === "admitted" || reply.state === "off" ? reply : "failed");
 			return true;
 		};
+		// One `park` per wait: an answer other than parked or admitted (a box that cannot wake, a failed run) leaves the run waiting here.
+		const park = async (): Promise<boolean> => {
+			parkAsked = true;
+			const res = await pool(["park", sid]);
+			if (stopped) return true;
+			let reply: AdmitReply | ParkReply | null = null;
+			try {
+				reply = JSON.parse(res.out.trim().split("\n").at(-1) ?? "") as AdmitReply | ParkReply;
+			} catch {
+				return false;
+			}
+			if (!res.ok || !reply) return false;
+			if (reply.state === "parked" && typeof reply.retry_at === "number") {
+				finish(reply);
+				return true;
+			}
+			if (reply.state === "admitted") {
+				finish(reply);
+				return true;
+			}
+			return false;
+		};
 		const tick = async () => {
 			timer = undefined;
 			if (done || stopped) return;
 			if (signal?.aborted) return stop();
+			if (!parkAsked && Date.now() - queuedAt >= PARK_AFTER_MS && await park()) return;
+			if (done || stopped) return;
 			let again = Date.now() - askedAt >= WAIT_ASK_MS;
 			if (!again) {
 				try {
@@ -607,7 +651,9 @@ export default function (pi: ExtensionAPI): void {
 	// This session's place in the turn queue: no run yet, a run waiting for its slot, a
 	// run that holds one, a run that goes without because the queue is off, or one that goes
 	// without after a pool error and may have left a queue entry that agent_end releases.
-	let slot: "none" | "held" | "free" | "failed" | Promise<void> = "none";
+	// "parked": the run gave up its place's process (pi-pool park) and waits in Prime's credential wait; it owes no release,
+	// and its next model call asks again, which takes the slot the pool started for it.
+	let slot: "none" | "held" | "free" | "failed" | "parked" | Promise<void> = "none";
 	let cancelWait = () => {};
 	let renewTimer: ReturnType<typeof setInterval> | undefined;
 	let renewedAt = 0;
@@ -632,9 +678,10 @@ export default function (pi: ExtensionAPI): void {
 			await pool(["admit", sid, "--renew"]);
 			return;
 		}
-		if (slot !== "none") return slot;
+		if (slot !== "none" && slot !== "parked") return slot;
 		if (!sid) return;
 		let told = false;
+		const waitForCredential = credentialWait(ctx);
 		const wait = admitWait(sid, ctx.signal, (reply) => {
 			const { position, total } = reply;
 			// A reload replaces this instance while its wait runs on; Prime then refuses the old pi and ctx, and the throw
@@ -650,7 +697,7 @@ export default function (pi: ExtensionAPI): void {
 			} catch {
 				wait.cancel();
 			}
-		});
+		}, waitForCredential !== undefined);
 		cancelWait = wait.cancel;
 		const waiting: Promise<void> = wait.result.then((result) => {
 			try {
@@ -661,6 +708,16 @@ export default function (pi: ExtensionAPI): void {
 			if (slot !== waiting) return;
 			if (result === "stopped") {
 				slot = "none";
+				return;
+			}
+			if (result !== "failed" && result.state === "parked") {
+				slot = "parked";
+				const place = result.position !== null && result.total !== null ? `, place ${result.position} of ${result.total}` : "";
+				try {
+					waitForCredential?.(result.retry_at * 1000, `pi-pool: this run waits for a working slot${place}; the pool wakes it when the slot starts, or it asks again at ${new Date(result.retry_at * 1000).toISOString()}.`);
+				} catch {
+					// A replaced session's ctx throws; its run is over, and the entry waits for the session's next ask.
+				}
 				return;
 			}
 			slot = result === "failed" ? "failed" : result.state === "admitted" ? "held" : "free";

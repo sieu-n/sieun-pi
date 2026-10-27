@@ -4,8 +4,8 @@ One run of one session holds one working slot, from the run's first model call t
 agent_end. turns.json keeps the queue under its own lock, turns.lock, apart from the
 account state.json and its lock:
 
-    working  {session: {tree, kind, since, queued_since, place, pid, lease_until}}
-    queued   {session: {tree, since, asked?, pid, waiter?}}
+    working  {session: {tree, kind, since, queued_since, place, pid, lease_until, parked?}}
+    queued   {session: {tree, since, asked?, pid, waiter?, parked?}}
     owner    {session: epoch sec of the owner-turn mark}
     lead     [session], the sessions whose queued runs go first (`lead`)
     kept     {session: {since, slot_at, reask?}}, the place of a run let go on an account wait or with input queued,
@@ -47,8 +47,16 @@ run's model calls (`admit --renew`), and releases at agent_end or when it finds 
 session idle. A slot whose lease ran out (a run stuck in one tool call reaches it after
 lease_s with no model call) or whose process (`pid`, the Prime worker that asked) is gone
 is dropped, and so is a queue entry whose `admit --wait` process (`waiter`) is gone.
+
+A run still queued after the extension's PARK_AFTER_MS parks (`park`): its entry keeps its place in `queued` with no pid and
+`parked` {at, retry_at, woke?}, and Prime parks the turn in a credential wait until retry_at, so its worker can go. The admit
+pass starts a parked entry like any other, keeps `parked` on the slot with a WAKE_LEASE_SEC lease, and after the lock runs
+`prime-agent wake <session>` (`wake-parked`). The resumed turn asks, finds its slot, and its ask drops `parked`. A wake that
+fails, or a slot that nobody takes within the lease, puts the entry back at its place with `woke` set, and the admit pass skips
+it until the session asks again at retry_at. A parked entry whose session has not asked by retry_at plus PARK_BACKSTOP_SEC
+is dropped as ended.
 """
-import json, os, sys, time
+import json, math, os, shutil, subprocess, sys, time
 
 from . import base, registry, sched
 
@@ -63,6 +71,15 @@ OWNER_MARK_TTL_SEC = 3600
 # --queued-input send none. measured: of the 8,756 re-asks on us-metal02 from 10-26 02:00Z to 10-27 03:13Z, 3,357 came within 2 s
 # of the release by the 1 s stamps of pi-pool.log, 46 in the third second and 79 in the fourth and fifth.
 REASK_SEC = 2.0
+# A parked run's session waits for its credential until retry_at, this long after the park, unless a wake ends the wait first.
+# Prime parks a credential wait, and lets its worker go, only when the wait outlasts idleEvictionMinutes, 15 on us-metal02;
+# 20 min clears that by 5. A backstop that finds the run still queued costs one reload, median 0.2 s and at most 23.7 s on
+# 10-22. measured: of the 35,978 slot admits on us-metal02 from 10-24 00:00Z to 10-27 05:53Z, 10% waited over 1,146 s in all,
+# so about one run in ten that parks after 60 s reaches a second park.
+PARK_BACKSTOP_SEC = 1200
+# The slot started for a parked run waits this long for its session to load and ask. The slowest of the session reloads
+# measured on 10-22 took 23.7 s (median 0.2 s); 60 s leaves room for the wake command and the daemon's resume job.
+WAKE_LEASE_SEC = 60
 # `admit --wait` re-reads turns.json this often while queued.
 WAIT_POLL_SEC = 1.0
 LOCK_TIMEOUT = 6.0
@@ -147,14 +164,22 @@ def order(turns):
 
 
 def sweep(turns, now, is_alive=alive):
-    """Drop entries whose process is gone, slots whose lease ran out, and owner marks
-    past their time. Returns what went."""
+    """Drop entries whose process is gone, slots whose lease ran out, parked entries past their backstop, and owner
+    marks past their time. A slot started for a parked run that nobody took goes back to its place. Returns what went."""
     gone = []
     for part in ("working", "queued"):
         for session, entry in list(turns[part].items()):
-            why = ("process gone" if not is_alive(entry.get("pid"))
-                   else "waiter gone" if entry.get("waiter") is not None and not is_alive(entry["waiter"])
-                   else "lease ran out" if entry.get("lease_until", now) < now else None)
+            if waking(entry):
+                if entry["lease_until"] < now:
+                    unwake(turns, session, "lease ran out")
+                    gone.append({"session": session, "part": part, "why": "wake lease ran out", "requeued": True})
+                continue
+            if entry.get("parked"):
+                why = "park ended" if now > entry["parked"]["retry_at"] + PARK_BACKSTOP_SEC else None
+            else:
+                why = ("process gone" if not is_alive(entry.get("pid"))
+                       else "waiter gone" if entry.get("waiter") is not None and not is_alive(entry["waiter"])
+                       else "lease ran out" if entry.get("lease_until", now) < now else None)
             if why:
                 del turns[part][session]
                 gone.append({"session": session, "part": part, "why": why})
@@ -167,11 +192,26 @@ def sweep(turns, now, is_alive=alive):
     return gone
 
 
+def waking(entry):
+    """A slot started for a parked run whose session has not asked yet."""
+    return bool(entry.get("parked")) and entry.get("pid") is None and "kind" in entry
+
+
 def start(turns, session, kind, now, lease):
-    """Move a queued session to working."""
+    """Move a queued session to working. A parked run's slot keeps `parked` and waits WAKE_LEASE_SEC for its session."""
     entry = turns["queued"].pop(session)
+    parked = entry.get("parked")
     turns["working"][session] = {"tree": entry["tree"], "kind": kind, "since": now, "queued_since": asked(entry), "place": entry["since"],
-                                 "pid": entry.get("pid"), "lease_until": now + lease}
+                                 "pid": None if parked else entry.get("pid"), "lease_until": now + (WAKE_LEASE_SEC if parked else lease),
+                                 **({"parked": parked} if parked else {})}
+
+
+def unwake(turns, session, why):
+    """Put a parked run's unclaimed slot back in line at its place, marked `woke`, so the admit pass skips it until the
+    session asks again at retry_at."""
+    entry = turns["working"].pop(session)
+    turns["queued"][session] = {"tree": entry["tree"], "since": entry["place"], "asked": entry["queued_since"], "pid": None,
+                                "parked": dict(entry["parked"], woke=why)}
 
 
 def admit_pass(turns, now, all_max, tree_max, lease):
@@ -184,7 +224,7 @@ def admit_pass(turns, now, all_max, tree_max, lease):
         if len(turns["working"]) >= all_max:
             break
         tree = turns["queued"][session]["tree"]
-        if trees.get(tree, 0) >= tree_max:
+        if trees.get(tree, 0) >= tree_max or (turns["queued"][session].get("parked") or {}).get("woke"):
             continue
         start(turns, session, "slot", now, lease)
         trees[tree] = trees.get(tree, 0) + 1
@@ -208,7 +248,8 @@ def view(turns, now, cfg):
     working = [{"session": s, "tree": e["tree"], "kind": e["kind"], "since": e["since"]}
                for s, e in sorted(turns["working"].items(), key=lambda kv: kv[1]["since"])]
     queued = [{"session": s, "tree": turns["queued"][s]["tree"], "position": i + 1, "total": len(queue),
-               "since": asked(turns["queued"][s]), "wait_s": round(now - asked(turns["queued"][s])), "lead": s in lead} for i, s in enumerate(queue)]
+               "since": asked(turns["queued"][s]), "wait_s": round(now - asked(turns["queued"][s])), "lead": s in lead,
+               **({"parked": True} if turns["queued"][s].get("parked") else {})} for i, s in enumerate(queue)]
     return {"enabled": limits(cfg)[0] is not None, "working_max": int(cfg["working_max"]),
             "working_max_set": last_set("working_max"), "tree_working_max": int(cfg["tree_working_max"]),
             "working": working, "queued": queued, "lead": turns["lead"]}
@@ -269,8 +310,11 @@ def ask(turns, a, now, cfg, waiter=None):
     entry = {"tree": a["tree"], "since": now, "pid": a["pid"]}
     if session in turns["working"]:
         turns["working"][session].update(pid=a["pid"], lease_until=now + lease)
+        turns["working"][session].pop("parked", None)
     elif session in turns["queued"] and not a["renew"]:
         turns["queued"][session].update(pid=a["pid"], waiter=waiter)
+        if turns["queued"][session].pop("parked", None):
+            admitted += admit_pass(turns, now, all_max, tree_max, lease)
     elif turns["owner"].pop(session, None) is not None:
         turns["queued"].pop(session, None)
         turns["kept"].pop(session, None)
@@ -291,8 +335,10 @@ def ask(turns, a, now, cfg, waiter=None):
 
 
 def admitted_events(turns, admitted, now):
+    """turn_admitted lines; `wake` marks a parked run's slot, whose session `locked` wakes after the lock."""
     return [("turn_admitted", {"session": s, "tree": turns["working"][s]["tree"], "kind": kind,
-                               "waited_s": round(now - turns["working"][s]["queued_since"], 1)}) for s, kind in admitted]
+                               "waited_s": round(now - turns["working"][s]["queued_since"], 1),
+                               **({"wake": True} if waking(turns["working"][s]) else {})}) for s, kind in admitted]
 
 
 def emit(answer):
@@ -300,9 +346,9 @@ def emit(answer):
     sys.stdout.flush()
 
 
-def locked(fn):
+def locked(fn, wake=None):
     """Run fn(turns, now) under turns.lock, and log and save what it returns.
-    fn returns (changed, result, events)."""
+    fn returns (changed, result, events). After the lock, each parked run that got a slot is woken."""
     with base.Flock(TURNS_LOCK, timeout=LOCK_TIMEOUT):
         first = not os.path.exists(TURNS)
         turns = migrate() if first else of(base.load_json(TURNS, {}))
@@ -312,6 +358,9 @@ def locked(fn):
             base.save_json(TURNS, turns)
     for event, fields in events:
         base.log(event, **fields)
+    for event, fields in events:
+        if event == "turn_admitted" and fields.get("wake"):
+            (wake or spawn_wake)(fields["session"])
     return result
 
 
@@ -412,6 +461,91 @@ def cmd_release(rest):
     if len(sessions) != 1 or any(tok != "--queued-input" for tok in flags):
         raise SystemExit("usage: pi-pool release <session> [--queued-input]")
     emit(release(sessions[0], reason="release", queued_input=bool(flags)))
+    return 0
+
+
+def can_wake():
+    """Whether this machine can wake a parked run: pi-pool parks only on Linux, beside the daemon it wakes, and the Mac
+    never parks (option E, p1127, 10-27). Without `prime-agent` on PATH there is nothing to run the wake."""
+    return sys.platform.startswith("linux") and shutil.which("prime-agent") is not None
+
+
+def park(turns, session, now, cfg):
+    """`park`: a queued run gives up its process until its slot or retry_at, and keeps its place. A run whose slot came
+    first is admitted instead. Returns (changed, answer, events)."""
+    changed, events = step(turns, now, cfg)
+    entry = turns["queued"].get(session)
+    if limits(cfg)[0] is None or entry is None:
+        return changed, (OFF if limits(cfg)[0] is None else reply(turns, session)), events
+    retry_at = math.ceil(now + PARK_BACKSTOP_SEC)
+    entry.pop("waiter", None)
+    entry.update(pid=None, parked={"at": now, "retry_at": retry_at})
+    events.append(("turn_parked", {"session": session, "tree": entry["tree"], "waited_s": round(now - asked(entry), 1), "retry_at": retry_at}))
+    return True, dict(reply(turns, session), state="parked", retry_at=retry_at), events
+
+
+def cmd_park(rest):
+    """`park <session>`: {"state": "parked", "retry_at", ...} when the run parked, else the admit answer."""
+    if len(rest) != 1 or rest[0].startswith("-"):
+        raise SystemExit("usage: pi-pool park <session>")
+    if not can_wake():
+        emit(dict(reply(current(), rest[0]), park="unsupported"))
+        return 0
+    emit(locked(lambda turns, now: park(turns, rest[0], now, base.config())))
+    return 0
+
+
+def wake_env():
+    """This environment without the Prime worker's internal keys, which would make a child prime-agent act as that worker."""
+    return {k: v for k, v in os.environ.items() if not k.startswith("PRIME_AGENT_INTERNAL_")}
+
+
+def spawn_wake(session):
+    """Run `wake-parked <session>` apart from this process, so no caller of the pool waits on the daemon."""
+    subprocess.Popen([sys.executable, "-B", os.path.join(base.CODE_ROOT, "bin", "pi-pool"), "wake-parked", session],
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True, env=wake_env())
+
+
+def run_wake(session):
+    """`prime-agent wake <session>`: "timer" or "park" when it woke the session's credential wait, else what went wrong."""
+    binary = shutil.which("prime-agent")
+    if binary is None:
+        return "no prime-agent"
+    try:
+        done = subprocess.run([binary, "wake", session], capture_output=True, text=True, timeout=WAKE_LEASE_SEC, env=wake_env())
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return type(e).__name__
+    try:
+        woke = json.loads(done.stdout.strip().splitlines()[-1]).get("woke")
+    except (ValueError, IndexError, AttributeError):
+        woke = None
+    if done.returncode == 0 and woke in ("timer", "park"):
+        return woke
+    return "none" if done.returncode == 3 else f"exit {done.returncode}"
+
+
+def wake_parked(session, run=run_wake):
+    """Wake a parked run whose slot started. A wake that fails puts the slot's run back at its place, and its session
+    comes back on its own at retry_at. Returns what the wake said."""
+    woke = run(session)
+    base.log("turn_wake", session=session, woke=woke)
+    if woke in ("timer", "park"):
+        return woke
+
+    def back(turns, now):
+        if not waking(turns["working"].get(session) or {}):
+            return False, woke, []
+        unwake(turns, session, woke)
+        changed, events = step(turns, now, base.config())
+        return True, woke, events
+    return locked(back)
+
+
+def cmd_wake_parked(rest):
+    """`wake-parked <session>`: the wake that `locked` starts for a parked run's new slot."""
+    if len(rest) != 1 or rest[0].startswith("-"):
+        raise SystemExit("usage: pi-pool wake-parked <session>")
+    emit({"session": rest[0], "woke": wake_parked(rest[0])})
     return 0
 
 

@@ -650,6 +650,7 @@ One run of one session holds one working slot from its first model call to its a
 - `pi-pool release <session> [--queued-input]` frees the slot or drops the queue entry, and a second release does nothing.
 - `pi-pool owner-turn <session>` marks the session's next admit as the owner's, which runs at once, and an agent run of the session already in the queue starts at once as kind `ahead`. While the queue is off it does nothing and prints `{"session","state":"off"}`.
 - `pi-pool lead [<session>...]` replaces the lead list, the sessions whose queued runs start before every other run, and prints `{"lead": [...]}`. With no sessions it clears the list, and the same list again writes nothing.
+- `pi-pool park <session>` parks a queued run and prints `{"state":"parked","retry_at",...}`, or the admit reply when its slot came first (see Parked runs below).
 - `pi-pool queue --json` prints the working runs with their kind (`slot`, `owner` or `ahead`), the queued runs with their positions, waits and `lead` flag, and the `lead` list.
 - `pi-pool snapshot --json [--thread <session> <model>]... [--tree <session>]...` prints `queue --json`, `config`, and for each thread `who --json` and `ls --json` per provider as one JSON line of `{code, out, err}` parts, each what the separate command prints. The chat service reads the pool this way, one process per 2 s at most (`pool/snapshot.py`). Each `--tree <session>` adds `{session, priority, label}` to `trees`, the account class (rule R7) that `priority --session <session>` keeps on that tree's record.
 
@@ -677,6 +678,26 @@ Stop reaches the waiting handler through `ctx.signal` and drops the entry (`test
 While the run holds its slot, its model calls renew the lease at most once every 5 minutes, and a timer releases the slot when it finds the session idle, because agent_end does not fire on some aborts.
 A run stuck in one tool call makes no model call, so its slot lapses after `lease_s` and its next model call takes it back at once: at 11:02 KST on 10-14 four runs held slots 2,653 to 2,937 s inside one bash or aside_browser call.
 A failed admit lets the run go, so a broken queue never stops the machine's agents.
+
+### Parked runs
+
+A queued run still holds its worker and its Python kernel while it waits.
+At 05:10Z on 10-27, 34 workers on us-metal02 whose sessions were only queued held 15.06 GB, and their 55 kernels held 3.25 GB.
+So a run still queued after `PARK_AFTER_MS` (60 s, in the extension) parks, and Prime can let its worker go until its slot comes.
+
+1. The extension runs `pi-pool park <session>`, which keeps the entry at its place in `queued` with no pid and `parked` {at, retry_at}, where retry_at is `PARK_BACKSTOP_SEC` (1,200 s) away.
+2. The extension hands Prime a credential wait until retry_at for the run's model call (`ctx.waitForCredential`), and the model call goes. Prime parks the turn when the wait outlasts idleEvictionMinutes (15 on us-metal02), and keeps it on a timer in the worker otherwise.
+3. The admit pass starts a parked entry like any other run, in the same order and under the same limits, and the slot keeps `parked` on a `WAKE_LEASE_SEC` (60 s) lease.
+4. After the lock, the process that started the slot spawns `pi-pool wake-parked <session>`, which runs `prime-agent wake <session>`. The answer `{"woke": "timer"}` or `{"woke": "park"}` means the session reloads and continues its turn.
+5. The resumed turn's model call asks as usual, finds its slot, and its ask drops `parked` and sets its pid and full lease.
+
+A wake that fails, or a slot that no ask takes within its lease, goes back to its place with `woke` set, and the admit pass skips it until the session asks again at retry_at.
+A parked entry whose session has not asked by retry_at plus another `PARK_BACKSTOP_SEC` ended for good, and the sweep drops it, as it does after a Stop that cancels Prime's park.
+A release drops a parked entry like any queued one, and the agent_end of a parked turn releases nothing.
+`queue --json` lists a parked run as queued with `"parked": true`.
+Only a Linux box with `prime-agent` on PATH parks, and the Mac never does, so a `park` there answers the admit reply with `"park": "unsupported"`.
+A Prime without `ctx.waitForCredential` never parks, and its runs wait in the worker as before.
+`park` and `wake-parked` stay on this machine when remote.json sends account commands to another pool.
 
 The first write after the 10-20 release moves the queue out of `state.json`. Its `turns` key goes to `turns.json` and leaves `state.json`, and a run that held a lent slot or a prod turn keeps working on a slot of its own.
 Until that write, `queue --json` reads the old key.
