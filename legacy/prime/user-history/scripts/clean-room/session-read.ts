@@ -42,6 +42,11 @@ export interface Scenario {
    * ends, since its jobs took 3.4 h and 3.5 h to report through account limit pauses and the third had not reported.
    */
   endsAtVerdict?: boolean;
+  /**
+   * Collect keeps every service.log line that names a known session of the run (a job's too), not only the chat's, and copies each pending wake
+   * file of those sessions into the run folder before the wake service removes it at delivery. w81-waiting-session reads both.
+   */
+  jobEvidence?: boolean;
   baseline(before: string): { verdict: Verdict; text: string };
 }
 /** `open`: the run has not yet reached a state a criterion needs, so it runs more cycles before a verdict. */

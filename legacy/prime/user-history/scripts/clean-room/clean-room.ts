@@ -95,6 +95,7 @@ import { answerData } from "./answer-data.ts";
 import { tokenCost } from "./token-cost.ts";
 import { dryMessage } from "./dry-message.ts";
 import { resumeModel } from "./resume-model.ts";
+import { keepWakes, waitingSession } from "./waiting-session.ts";
 import { currentRoot, judgeCurrent, judgedLine, judgeVersion, LOADED } from "./judge-version.ts";
 import { archivePath, archiveRun, DELIVERY, fileSha256, judgeFooter, rejudge } from "./run-archive.ts";
 
@@ -105,7 +106,7 @@ const RELEASES = join(homedir(), ".local/share/sieun-pi-chat");
 const SCENARIOS: Record<string, Scenario> = { "carried-release": carriedRelease, "carried-wait": carriedWait, "checkin-goal-push": checkinGoalPush, "checkin-real-task": checkinRealTask, "checkin-push-control": checkinPushControl, "correction-refine": correctionRefine, "dm-replies": dmReplies, "english-jobs": englishJobs, "everyday-task": everydayTask, "quiet-wakes": quietWakes, "import-speed": importSpeed,
   "checkin-job-steer": checkinJobSteer, "token-cost": tokenCost, "chat-tools-reopen": chatToolsReopen, "reopen-first-message": reopenFirstMessage, "kernel-revive": kernelRevive, "lost-brief": lostBrief, "ordinary-hour": ordinaryHour, "idle-unload": idleUnload, "owner-asks": ownerAsks, "plan-and-duties": planAndDuties, "task-and-upkeep": taskAndUpkeep, "soft-caps": softCaps, "step-ids": stepIds, "token-hook-resume": tokenHookResume, "wake-live": wakeLive, "box-browser-default": boxBrowserDefault, "box-tools": boxTools,
   "detached-report": detachedReport, "relative-duty": relativeDuty, "old-commit-tests": oldCommitTests, "readme-preview": readmePreview, "history-leftovers": historyLeftovers, "hold-ask": holdAsk, "machine-branch": machineBranch, "shared-shapes": sharedShapes, "plain-words": plainWords, "saved-login": savedLogin , "job-cancel-cleanup": jobCancelCleanup,
-  "transcript-boundary": transcriptBoundary, "published-build-keep": publishedBuildKeep, "task-owner": taskOwner, "answer-data": answerData, "dry-message": dryMessage, "resume-model": resumeModel, "unrelated-ci-wait": unrelatedCiWait, "unrelated-ci-controlled": unrelatedCiControlled };
+  "transcript-boundary": transcriptBoundary, "published-build-keep": publishedBuildKeep, "task-owner": taskOwner, "answer-data": answerData, "dry-message": dryMessage, "resume-model": resumeModel, "waiting-session": waitingSession, "unrelated-ci-wait": unrelatedCiWait, "unrelated-ci-controlled": unrelatedCiControlled };
 
 function args(argv: readonly string[]): { command: string; flags: Record<string, string> } {
   const [command = "", ...rest] = argv;
@@ -493,10 +494,12 @@ async function collectOnce(run: string, state: RunState, srv: Server, logOffset:
     const short = state.chat.id.slice(0, 8);
     // A delivery receipt (src/clean-room-subjects.ts) names its sender and target by full session id, a job's too, and the archive keeps them as the identity record.
     const ids = [...knownSessions(run, state)];
+    const every = SCENARIOS[state.scenario]?.jobEvidence === true;
     const mine = fd.split("\n").filter(line => line.includes(short) || line.includes(state.chat.name) || Object.values(state.fixtures).some(id => line.includes(id.slice(0, 8))) ||
-      (DELIVERY.test(line) && ids.some(id => line.includes(id))));
+      ((every || DELIVERY.test(line)) && ids.some(id => line.includes(id))));
     if (mine.length) appendFileSync(join(run, "service.log"), mine.join("\n") + "\n");
   }
+  if (SCENARIOS[state.scenario]?.jobEvidence) keepWakes(run, knownSessions(run, state));
   const own = [state.chat.id, ...(state.control ? [state.control.id] : []), ...await ownSessions(run, state, () => {})];
   for (const proof of recordUnits(run, [...new Set(own.flatMap(sessionFiles))], state.setupAt)) {
     log(run, `recorded ${proof.kind === "transient" ? `unit ${proof.unit} invocation ${proof.invocationId}` : `unit file ${proof.file} sha256 ${proof.sha256.slice(0, 12)}`} as made by ${proof.session}`);

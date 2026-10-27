@@ -69,7 +69,27 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
   add("c", again.length ? again.every(spawn => spawn.ran.model === want && spawn.ran.thinking === MODEL.thinkingLevel) : null, again.length
     ? again.map(spawn => `${spawn.child} got ${spawn.tasks} parent messages in its own session, on ${spawn.ran.model ?? "?"} at ${spawn.ran.thinking ?? "?"}`).join("; ")
     : "the release notice has not reached the job's session yet");
-  // d: nobody stepped in. The chat's own sessions are its check-in jobs (runs.jsonl), the sessions the agents snapshots list under it with link
+  // d: nobody stepped in (`nobodySteppedIn`).
+  const stepped = nobodySteppedIn(run, state);
+  add("d", stepped.ok, stepped.detail);
+  const verdict: Verdict = checks.find(check => check.id === "d")!.ok === false ? "void" : checks.some(check => check.ok === false) ? "fail"
+    : checks.some(check => check.ok === null) ? "open" : "pass";
+  const text = [
+    `# Clean-room run ${run.split("/").at(-1)}: ${verdict}`, "",
+    `The chat "${state.chat.name}" (${chat}) ran on ${state.release} from ${iso(state.windowStart)} to ${iso(Date.now())}. Judged by \`clean-room.ts evaluate\`.`,
+    `Criteria: ${join(run, "criteria.md")}. Evidence: the job's rlm-subagent.json and session file, and ${folder}.`, "",
+    ...checks.map(check => `- ${check.id} ${yes(check.ok)}: ${check.detail}`), "",
+  ].join("\n");
+  return { verdict, text };
+}
+
+/**
+ * Whether anybody stepped in: a typed message that is no seed, or an agent message to the chat from a session outside the trial. Shared by the
+ * w81 scenarios (resume-model, waiting-session). null while a sender cannot be placed yet.
+ */
+export function nobodySteppedIn(run: string, state: RunState): { ok: boolean | null; detail: string } {
+  const chat = state.chat.id;
+  // The chat's own sessions are its check-in jobs (runs.jsonl), the sessions the agents snapshots list under it with link
   // subagent or root and their descendants by recorded parentage; every other sender is placed by its recorded
   // identity (`senderOrigin`), as unrelated-ci-wait places it. run3 on 10-23 read the chat's own "check-in user history test count 17 24" as outside.
   const events = readSession(chat).filter(event => event.at >= state.windowStart);
@@ -91,19 +111,10 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
   const outside = placed.filter(({ origin }) => origin.kind === "outside");
   const unknown = placed.filter(({ origin }) => origin.kind === "unknown");
   const quoteOf = (event: { at: number; text?: string }, why = "") => `at ${iso(event.at)}: "${clip(event.text ?? "", 120)}"${why ? `; ${why}` : ""}`;
-  add("d", typed.length || outside.length ? false : unknown.length ? null : true, typed.length || outside.length
+  return { ok: typed.length || outside.length ? false : unknown.length ? null : true, detail: typed.length || outside.length
     ? [...typed.map(event => quoteOf(event as { at: number; text?: string })), ...outside.map(({ event, origin }) => quoteOf(event as { at: number; text?: string }, origin.kind === "outside" ? origin.why : ""))].join("; ")
     : unknown.length ? `open: ${unknown.map(({ event, origin }) => quoteOf(event as { at: number; text?: string }, origin.kind === "unknown" ? origin.why : "")).join("; ")}`
-    : "only the owner-style message, server notes and the chat's own sessions reached the chat");
-  const verdict: Verdict = checks.find(check => check.id === "d")!.ok === false ? "void" : checks.some(check => check.ok === false) ? "fail"
-    : checks.some(check => check.ok === null) ? "open" : "pass";
-  const text = [
-    `# Clean-room run ${run.split("/").at(-1)}: ${verdict}`, "",
-    `The chat "${state.chat.name}" (${chat}) ran on ${state.release} from ${iso(state.windowStart)} to ${iso(Date.now())}. Judged by \`clean-room.ts evaluate\`.`,
-    `Criteria: ${join(run, "criteria.md")}. Evidence: the job's rlm-subagent.json and session file, and ${folder}.`, "",
-    ...checks.map(check => `- ${check.id} ${yes(check.ok)}: ${check.detail}`), "",
-  ].join("\n");
-  return { verdict, text };
+    : "only the owner-style message, server notes and the chat's own sessions reached the chat" };
 }
 
 export const resumeModel: Scenario = {
