@@ -68,7 +68,8 @@ class Snapshot(unittest.TestCase):
                 for provider in base.PROVIDERS:
                     self.assertEqual(thread["ls"][provider], self.cli("ls", "--json", "--provider", provider, *flags))
         queue = json.loads(snapshot["queue"]["out"])
-        self.assertEqual(([w["session"] for w in queue["working"]], [q["session"] for q in queue["queued"]]), ([KEY.key], ["q1"]))
+        self.assertEqual(([w["session"] for w in queue["working"]], queue["queued"]), ([KEY.key, "q1"], []),
+                         "a queued run with a slot free reads as the next locked call leaves it")
         listed = json.loads(snapshot["threads"][1]["ls"]["anthropic"]["out"])
         self.assertEqual(([r["id"] for r in listed["rows"]], listed["session"]), (["a", "b"], KEY.key))
         self.assertEqual(snapshot["threads"][3]["who"]["code"], 2)
