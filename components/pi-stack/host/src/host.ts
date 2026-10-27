@@ -647,7 +647,8 @@ export class PiHost implements HostApi {
       case "get_available_models":
       case "get_model_catalog": {
         const session = await this.target(command);
-        const models = (await session.runtime.services.modelRuntime.getAvailable()).map(model => modelRef(model)!);
+        // The whole model, as Prime's daemon sent it, since the chat's model picker reads `input` and the thinking levels; headers stay out.
+        const models = (await session.runtime.services.modelRuntime.getAvailable()).map(({ headers: _headers, ...model }) => model);
         return done({ models, configuredProviders: [...new Set(models.map(model => model.provider))] });
       }
       case "get_session_header":
