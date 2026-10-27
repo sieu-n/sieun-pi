@@ -4,7 +4,7 @@ import { DaemonAgentConnection as PrimeConnection, DaemonClient as PrimeClient, 
 import { HostAgentConnection, HostClient } from "./pi-host-client.ts";
 
 /**
- * The one place the chat takes its daemon client from. `SIEUN_CHAT_BACKEND=pi-host` puts the chat on pi-host (components/pi-stack/host)
+ * The one place the chat takes its daemon client from. `SIEUN_CHAT_BACKEND=pi-host` puts the chat on pi-host (packages/pi-host)
  * through the client in src/pi-host-client.ts; unset or `prime`, the chat runs on Prime's SDK exactly as before.
  *
  * The types stay Prime's while Prime is the default, so every caller type-checks against one shape. The pi-host classes carry the subset of

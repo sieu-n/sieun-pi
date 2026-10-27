@@ -99,7 +99,7 @@ export interface ScheduledJob {
 /** `<home>/.prime/agent/session-artifacts/<chat id>/scheduled-jobs.json`, where Prime Agent keeps a session's heartbeats. */
 export const heartbeatsFile = (chatId: string, home: string = homedir()): string => join(home, ".prime", "agent", "session-artifacts", chatId, "scheduled-jobs.json");
 /**
- * pi-host's one schedules file for every session it hosts (components/pi-stack/host/src/scheduler.ts): `<data dir>/scheduled-jobs.json`, where
+ * pi-host's one schedules file for every session it hosts (packages/pi-host/src/scheduler.ts): `<data dir>/scheduled-jobs.json`, where
  * its data dir is `<agent dir>/pi-host` unless pi-host runs with `--data-dir`.
  */
 export const piHostJobsFile = (agentDir: string): string => join(agentDir, "pi-host", "scheduled-jobs.json");

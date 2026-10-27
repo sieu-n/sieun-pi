@@ -1,0 +1,8 @@
+{
+  "name": "@sieun-pi/pi-pool",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Account pool for Pi: which account each request uses, slot waits and 429 moves.",
+  "license": "SEE LICENSE IN ../../NOTICE"
+}

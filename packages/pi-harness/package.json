@@ -1,0 +1,8 @@
+{
+  "name": "@sieun-pi/pi-harness",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Continual harness for Pi: harness_state.json digest injection, /refine, auto-refine and rollback.",
+  "license": "SEE LICENSE IN ../../NOTICE"
+}

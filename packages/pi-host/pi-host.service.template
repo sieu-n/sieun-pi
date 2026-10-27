@@ -1,0 +1,21 @@
+# pi-host as a systemd user unit. A template only: nothing installs or enables it until the cutover (build step 7).
+# Every session loads the extensions in pi-host/extensions.json; add --extension <path> for more.
+# Copy to ~/.config/systemd/user/pi-host.service, replace the paths in angle brackets, then `systemctl --user daemon-reload`.
+[Unit]
+Description=pi-host, the Pi session host for sieun-pi
+After=default.target
+
+[Service]
+Type=simple
+WorkingDirectory=<sieun-pi checkout>/packages
+Environment=PI_TELEMETRY=0
+Environment=PI_SKIP_VERSION_CHECK=1
+ExecStart=/usr/bin/env node --import tsx pi-host/src/main.ts --socket %t/pi-host/host.sock --agent-dir <agent dir>
+RuntimeDirectory=pi-host
+KillSignal=SIGTERM
+TimeoutStopSec=60
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target

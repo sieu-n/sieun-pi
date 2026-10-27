@@ -1,0 +1,8 @@
+{
+  "name": "@sieun-pi/sieun-rules",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Pi tests and the pi-host check rig for the owner's guards in components/global-rules.",
+  "license": "SEE LICENSE IN ../../NOTICE"
+}

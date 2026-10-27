@@ -58,7 +58,7 @@ try {
   run(process.execPath, ["--test", "check-source-paths.test.mjs"], poteto);
   run("bun", ["test", "orch", "watch-pr"], poteto);
   run("bun", ["run", "typecheck"], poteto);
-  const source = ["scripts", "tests", "components", "skills", "utils"].flatMap((name) => files(join(root, name))).sort();
+  const source = ["scripts", "tests", "components", "packages", "skills", "utils"].flatMap((name) => files(join(root, name))).sort();
   const pythonFiles = source.filter((path) => path.endsWith(".py"));
   pythonFiles.push(join(root, "components/pi-pool/bin/pi-pool"), join(root, "components/pi-pool/bin/pi-pool-token"));
   python("-c", "import ast, pathlib, sys; [ast.parse(pathlib.Path(p).read_bytes(), filename=p) for p in sys.argv[1:]]", ...pythonFiles);

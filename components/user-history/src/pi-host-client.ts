@@ -2,8 +2,8 @@ import { randomUUID } from "node:crypto";
 import { createConnection, type Socket } from "node:net";
 
 /**
- * The chat's own client for pi-host (components/pi-stack/host), which speaks the subset of Prime's v7 daemon JSONL protocol listed in
- * `components/pi-stack/host/src/protocol.ts`. `HostClient` stands in for Prime's `DaemonClient` and `HostAgentConnection` for its
+ * The chat's own client for pi-host (packages/pi-host), which speaks the subset of Prime's v7 daemon JSONL protocol listed in
+ * `packages/pi-host/src/protocol.ts`. `HostClient` stands in for Prime's `DaemonClient` and `HostAgentConnection` for its
  * `DaemonAgentConnection`, with only the methods the chat calls. src/daemon-sdk.ts picks them when SIEUN_CHAT_BACKEND is "pi-host".
  *
  * Error texts keep Prime's wording ("the Prime Agent daemon is not reachable", "Timed out after ... handshake"), because the chat's retry and

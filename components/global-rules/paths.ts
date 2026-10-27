@@ -5,7 +5,7 @@ import { basename, dirname, join } from "node:path";
  * Where a session keeps its files, on Prime Agent and on upstream Pi. Prime names a root's transcript <agent dir>/sessions/<id>.jsonl and
  * keeps its kernel files in <agent dir>/session-artifacts/<id>. Pi names it <session dir>/<timestamp>_<id>.jsonl, with the session dir
  * <agent dir>/sessions/<cwd slug> or the one pi-host was given, and pi-rlm keeps the kernel files in <Pi agent dir>/session-artifacts/<id>
- * (pi-stack shared/paths.ts). A subagent's transcript sits in its own sub-<n> folder on both.
+ * (packages/pi-family/paths.ts). A subagent's transcript sits in its own sub-<n> folder on both.
  */
 
 const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";

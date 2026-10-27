@@ -1,4 +1,4 @@
-// pi-harness (components/pi-stack/harness) keeps every harness_digest message in the live context and removes refinement_outcome messages in
+// pi-harness (packages/pi-harness) keeps every harness_digest message in the live context and removes refinement_outcome messages in
 // its context hook, so deliverCorrections counts the messages that way under digests: "pi-harness" and the block stays after the first prompt.
 import assert from "node:assert/strict";
 import { test } from "node:test";

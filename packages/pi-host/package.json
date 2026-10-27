@@ -1,0 +1,8 @@
+{
+  "name": "@sieun-pi/pi-host",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Session host: many Pi sessions in one Node process behind a unix socket, with a scheduler for heartbeats and wakes.",
+  "license": "SEE LICENSE IN ../../NOTICE"
+}

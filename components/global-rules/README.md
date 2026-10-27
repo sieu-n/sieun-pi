@@ -129,13 +129,13 @@ After an edit, run `/reload` in an idle session. A new session loads the current
 
 ## Upstream Pi
 
-The same files load unchanged into a pi-host session or a plain `pi` CLI on upstream Pi 1.4.0 with pi-rlm, and `components/pi-stack/host/extensions.json` lists `index.ts` for every pi-host session.
+The same files load unchanged into a pi-host session or a plain `pi` CLI on upstream Pi 1.4.0 with pi-rlm, and `packages/pi-host/extensions.json` lists `index.ts` for every pi-host session.
 `paths.ts` is the one place that knows both layouts.
 A Prime root keeps `<agent dir>/sessions/<id>.jsonl`, and a Pi root keeps `<session dir>/<timestamp>_<id>.jsonl`, with its kernel folder at `<Pi agent dir>/session-artifacts/<id>` as pi-rlm makes it.
 The guards take the session's file and id from `ctx.sessionManager` and fall back to `RLM_SESSION_DIR` only when the context has none.
 `kernel-read.py` and `kernel-own.py` use the agent dir that holds `RLM_SESSION_DIR`, so a Pi kernel judges against Pi's folders, and the transcript guard treats `~/.prime/agent` and `~/.pi/agent` as transcript stores from either runtime.
 `rlm-delete.ts` stays off on Pi, because it works around a Prime 0.9.8 abort that pi-rlm does not have.
-`components/pi-stack/rules/` holds the Pi tests and the pi-host check rig, and `/home/sieun/work/pi-migration-build/rules-port/` holds its results.
+`packages/sieun-rules/` holds the Pi tests and the pi-host check rig, and `/home/sieun/work/pi-migration-build/rules-port/` holds its results.
 
 ## Settings
 

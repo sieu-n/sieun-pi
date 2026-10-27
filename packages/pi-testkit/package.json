@@ -1,0 +1,8 @@
+{
+  "name": "@sieun-pi/pi-testkit",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Faux provider runtime and rigs for testing sieun-pi's Pi packages.",
+  "license": "SEE LICENSE IN ../../NOTICE"
+}

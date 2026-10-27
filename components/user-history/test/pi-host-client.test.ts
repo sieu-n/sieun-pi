@@ -9,8 +9,8 @@ import { chatBackend } from "../src/daemon-sdk.ts";
 import { HostAgentConnection, HostClient, type HostConnectionEvent } from "../src/pi-host-client.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const piStack = resolve(here, "../../pi-stack");
-const noHost = !existsSync(join(piStack, "node_modules/@earendil-works/pi-coding-agent/package.json")) ? "components/pi-stack has no npm install" : false;
+const piStack = resolve(here, "../../../packages");
+const noHost = !existsSync(join(piStack, "node_modules/@earendil-works/pi-coding-agent/package.json")) ? "packages has no npm install" : false;
 
 /** Every method chat-threads.ts calls on a connection, read from its source, so a new call fails here before it fails on pi-host. */
 function calledConnectionMethods(): string[] {
@@ -43,8 +43,8 @@ test("against a real pi-host: attach streams the snapshot in chunks, events arri
   const root = mkdtempSync(join(tmpdir(), "chat-pi-host-"));
   mkdirSync(join(root, "ws"), { recursive: true });
   const socket = join(root, "host.sock");
-  const host = spawn(process.execPath, ["--import", "tsx", "host/src/main.ts", "--socket", socket, "--agent-dir", join(root, "agent"),
-    "--session-dir", join(root, "sessions"), "--cwd", join(root, "ws"), "--extension", "host/test/fixtures/echo.ts", "--model", "echo/m"], {
+  const host = spawn(process.execPath, ["--import", "tsx", "pi-host/src/main.ts", "--socket", socket, "--agent-dir", join(root, "agent"),
+    "--session-dir", join(root, "sessions"), "--cwd", join(root, "ws"), "--extension", "pi-host/test/fixtures/echo.ts", "--model", "echo/m"], {
     cwd: piStack, env: { ...process.env, PI_OFFLINE: "1", PI_TELEMETRY: "0", PI_SKIP_VERSION_CHECK: "1" }, stdio: ["ignore", "ignore", "pipe"],
   });
   let log = "";
@@ -121,8 +121,8 @@ test("a pi-host restart reattaches an open connection, with no closed event, as 
   const root = mkdtempSync(join(tmpdir(), "chat-pi-host-restart-"));
   mkdirSync(join(root, "ws"), { recursive: true });
   const socket = join(root, "host.sock");
-  const start = () => spawn(process.execPath, ["--import", "tsx", "host/src/main.ts", "--socket", socket, "--agent-dir", join(root, "agent"),
-    "--session-dir", join(root, "sessions"), "--cwd", join(root, "ws"), "--no-default-extensions", "--extension", "host/test/fixtures/echo.ts", "--model", "echo/m"], {
+  const start = () => spawn(process.execPath, ["--import", "tsx", "pi-host/src/main.ts", "--socket", socket, "--agent-dir", join(root, "agent"),
+    "--session-dir", join(root, "sessions"), "--cwd", join(root, "ws"), "--no-default-extensions", "--extension", "pi-host/test/fixtures/echo.ts", "--model", "echo/m"], {
     cwd: piStack, env: { ...process.env, PI_OFFLINE: "1", PI_TELEMETRY: "0", PI_SKIP_VERSION_CHECK: "1" }, stdio: "ignore",
   });
   const up = async () => { for (let i = 0; i < 200 && !existsSync(socket); i++) await new Promise(r => setTimeout(r, 100)); };

@@ -1,0 +1,8 @@
+{
+  "name": "@sieun-pi/pi-family",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "The process-wide agent registry and kernel bridge that sieun-pi's Pi packages share.",
+  "license": "SEE LICENSE IN ../../NOTICE"
+}

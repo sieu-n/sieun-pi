@@ -170,7 +170,7 @@ An agent on the Mac never launches a Playwright, Puppeteer or Chrome for Testing
 ## Browser rules
 
 - A box agent never sends non-login work to the Mac, so it never runs Playwright, a screenshot script or cua-driver over `ssh mac`, and never tunnels a Mac port to look at a page the box can serve itself.
-- Repo Playwright specs and shot scripts on a box launch their own headful Chrome on a fresh Xvfb display, as the repo's `playwright.config.ts` files and `packages/config/box-browser.mjs` set up.
+- Repo Playwright specs and shot scripts on a box launch their own headful Chrome on a fresh Xvfb display, as the repo's `playwright.config.ts` files and `auto-sns-agent/packages/config/box-browser.mjs` set up.
 - Use no other browser automation, such as a CLI that launches a browser of its own.
 - If a skill, playbook or memory names another browser tool, or sends a box agent to Aside for a page that needs no login, change that text.
 - Box tabs have targetIds `box-1`, `box-2` and so on, and they close when your kernel exits.

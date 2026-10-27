@@ -1,0 +1,11 @@
+{
+  "extensions": [
+    "../pi-rlm/agent-bus/index.ts",
+    "../pi-harness/index.ts",
+    "../pi-rlm/index.ts",
+    "../pi-pool/index.ts",
+    "../../components/global-rules/index.ts",
+    "../../components/claude-rules/index.ts",
+    "../../components/user-history/extension/index.ts"
+  ]
+}

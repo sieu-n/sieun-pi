@@ -1,0 +1,8 @@
+{
+  "name": "@sieun-pi/pi-rlm",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "The ipython kernel tool, rlm.spawn children and agent_message/agent_observe for Pi.",
+  "license": "SEE LICENSE IN ../../NOTICE"
+}
