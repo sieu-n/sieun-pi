@@ -1,6 +1,6 @@
 /**
  * Usage, the pool and hosts. Usage sums pi-host's `durable_usage` rows; the pool runs the installed pi-pool CLI; hosts reads the
- * hosts registry and each box's relay. The pool parsers are copied from today's chat (components/user-history/src/chat-pool.ts).
+ * hosts registry and each box's relay. The pool parsers are copied from today's chat (legacy/prime/user-history/src/chat-pool.ts).
  */
 import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";

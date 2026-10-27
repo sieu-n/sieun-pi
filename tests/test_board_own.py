@@ -17,7 +17,7 @@ def load_board():
 
 
 class BoardOwnTests(unittest.TestCase):
-    """board.own() writes the record a job's end reads (components/user-history/src/job-leftovers.ts readOwned), and refuses what it never deletes."""
+    """board.own() writes the record a job's end reads (legacy/prime/user-history/src/job-leftovers.ts readOwned), and refuses what it never deletes."""
 
     def test_own_records_paths_and_units_once_and_refuses_shared_folders(self):
         with tempfile.TemporaryDirectory() as raw:

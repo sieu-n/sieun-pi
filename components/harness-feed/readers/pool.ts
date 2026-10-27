@@ -5,9 +5,9 @@ import { StringDecoder } from "node:string_decoder";
 import { createConnection, type Socket } from "node:net";
 import { join } from "node:path";
 import type { Context, Sample } from "../otlp.ts";
-import { poolCaps, poolSummary } from "../../user-history/src/client/pool-meter.ts";
-import { turnHistory } from "../../user-history/src/turn-history.ts";
-import { TURN_KINDS, type PoolAccount, type PoolConfig, type PoolProvider, type PoolWindow, type TurnHour } from "../../user-history/src/shared/types.ts";
+import { poolCaps, poolSummary } from "../../../legacy/prime/user-history/src/client/pool-meter.ts";
+import { turnHistory } from "../../../legacy/prime/user-history/src/turn-history.ts";
+import { TURN_KINDS, type PoolAccount, type PoolConfig, type PoolProvider, type PoolWindow, type TurnHour } from "../../../legacy/prime/user-history/src/shared/types.ts";
 
 /**
  * The account pool and the agent turn queue, from one `pi-pool snapshot --json` a round (queue --json, config, and ls --json per provider with

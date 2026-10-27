@@ -21,7 +21,7 @@ node scripts/release-chat.mjs <sha> [--no-kickstart]
 ```
 
 1. The command builds `~/.local/share/sieun-pi-chat/release-<sha7>` from `git archive`, links both node_modules folders to the checkout, and runs `npm run typecheck` (tsc and svelte-check) and `npm test` inside the release, then writes the packed client bundle. Those three steps get PATH and the locale from your shell and a fresh HOME, TMPDIR and XDG dirs under /tmp, and nothing else, so no agent socket, worker token, session dir or API key reaches a test.
-2. `npm test` runs every file in `components/user-history/test`. Each one guards a real incident or an owner rule and names it on its first line. Add a test only for a failure that happened, with that line.
+2. `npm test` runs every file in `legacy/prime/user-history/test`. Each one guards a real incident or an owner rule and names it on its first line. Add a test only for a failure that happened, with that line.
 3. It points `current` at the release with one rename, restarts the chat and prints the release id on its last line. On a Linux box the restart is `systemctl --user restart sieun-pi-chat.service`, and only the Mac runs `launchctl kickstart -k gui/$UID/com.sieun.agent-chat`.
 4. It takes `~/.local/share/sieun-pi-chat/release.lock` before the build and holds it to the restart, so a second release waits through the first one's whole build and tests. A release waits even when the running release's commit holds its own, because that build can still fail, and then the waiting release builds the commit itself.
 5. It refuses, with exit 4, a commit that is not on origin's `main` as fetched at its start, so push the commit to `main` first. It never pushes anything itself. On 10-18 releases of unpushed commits went live, and release-322de20 had to be merged into `main` afterwards.
@@ -40,16 +40,16 @@ node scripts/release-chat.mjs <sha> [--no-kickstart]
 3. Each green verify-dev push run on a dev branch makes land.yml squash that branch's newest green commit onto staging with a Land-From trailer and no owner ask, and that Land-From sha is the base of the branch's next land.
 4. Only promote.yml moves main, by fast-forward to a checked staging sha, and only the release owner runs it.
 5. A job's regular work ends at staging (c154, 2026-10-22). The release owner walks each prod promote with the owner, and a red `staging-check.yml` run, the full check of staging, holds only that walk and never a land.
-6. The crawler, the observability dashboards and alert rules, and demo.virev.ai are the exceptions that jobs still ship to prod themselves, through `metal-deploy.yml`, `apps/infra/metal/deploy-obs.mjs` and the `deploy/virev-demo` ref that every dev push writes.
+6. The crawler, the observability dashboards and alert rules, and demo.virev.ai are the exceptions that jobs still ship to prod themselves, through `metal-deploy.yml`, `auto-sns-agent/apps/infra/metal/deploy-obs.mjs` and the `deploy/virev-demo` ref that every dev push writes.
 7. Demo work goes on the Mac's dev/sieun-mac, and `ci/*` branches and probe refs are throwaway refs that nobody commits on.
 8. The full rules are in auto-sns-agent's `.agents/skills/repo/git-workflow/SKILL.md`, which you read with `node scripts/skills/read-skill.mjs repo/git-workflow` from that repo.
 
 ## Merges, pushes and promotes
 
-The chat brief, the job reply guideline and the duty job brief all state the merge rule as `MERGE_RULE` in `components/user-history/src/shared/chat-board.ts`, and `test/merge-gate.test.ts` checks that this file holds it word for word:
+The chat brief, the job reply guideline and the duty job brief all state the merge rule as `MERGE_RULE` in `legacy/prime/user-history/src/shared/chat-board.ts`, and `test/merge-gate.test.ts` checks that this file holds it word for word:
 
 > Never ask the owner to confirm a staging land, merge or deploy: do it on your own (owner 10-12). Owner rule c74 (2026-10-15): Until the proper launch, the owner pre-approves every prod promote, merge or push to main. Never put a promote, merge or push go on For you and never wait for one; the release owner promotes as soon as staging checks out. Owner rule c154 (2026-10-22) narrows it for prod deploys: a job's work ends at staging, the release owner walks each prod promote with the owner, and a step that waits on his answer to a prod deploy todo is waiting on him, so never close that todo or ship that deploy without his answer. Only crawler, observability dashboard and demo.virev.ai deploys still ship to prod without him. An outside send (an email, a ticket or support reply, a customer message, a post) still needs the owner's ok on a For you todo first (c37).
 
 Do the merge or push yourself, and tell the owner what shipped in a chat message. An open todo that asks for a merge or push go can be checked off with a note that c74 covers it. In auto-sns-agent, c154 narrows this: a job lands to staging on its own, a prod promote is the release owner's walk with the owner outside the three exceptions above, and a prod deploy todo stays open until the owner answers it.
 
-After launch, an owner rule that takes the standing go back sets `releaseGo.preapproval` in `components/user-history/src/shared/release-go.ts` to null, and the briefs then carry the rule from that code.
+After launch, an owner rule that takes the standing go back sets `releaseGo.preapproval` in `legacy/prime/user-history/src/shared/release-go.ts` to null, and the briefs then carry the rule from that code.

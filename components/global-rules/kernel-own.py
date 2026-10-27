@@ -1,6 +1,6 @@
 """Records each path under ~/scratch that this Prime kernel creates in $RLM_SESSION_DIR/owned.json, through board.own (owner rule c130).
 
-A job's end deletes only the paths its owned.json names (components/user-history/src/job-leftovers.ts), and jobs that had to call board.own
+A job's end deletes only the paths its owned.json names (legacy/prime/user-history/src/job-leftovers.ts), and jobs that had to call board.own
 by hand mostly did not: on 10-20 at 03:40Z 22 of the 23 biggest trees under ~/scratch on us-metal02 had no record, and ~/scratch grew
 from 61 to 76 GB in 5 h. So the kernel records what it makes, at creation time:
 

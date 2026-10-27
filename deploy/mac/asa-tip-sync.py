@@ -56,7 +56,7 @@ HOST = os.uname().nodename.split(".")[0]
 # session that wrote a blocking path to hear of it at BLOCK_ALERT_S, and for one line on the AI harness chat's For you list at FORYOU_S.
 FORYOU_S = int(os.environ.get("ASA_SYNC_FORYOU_S") or 1800)
 FORYOU_CHAT = os.environ.get("ASA_SYNC_FORYOU_CHAT") or "01a1164b-4a2d-742d-b27a-82f086ed0200"
-USER_HISTORY = os.path.expanduser("~/.local/share/sieun-pi-chat/current/components/user-history")
+USER_HISTORY = os.path.expanduser("~/.local/share/sieun-pi-chat/current/legacy/prime/user-history")
 BOARD_APPLY = (os.environ["ASA_SYNC_BOARD_APPLY"].split() if os.environ.get("ASA_SYNC_BOARD_APPLY") else
                [os.path.expanduser("~/.local/node/bin/node"), "--import", "tsx", "scripts/board-apply.ts"])
 TRANSCRIPTS = os.environ.get("ASA_SYNC_TRANSCRIPTS") or os.path.expanduser("~/.prime/agent")

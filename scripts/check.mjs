@@ -30,7 +30,7 @@ try {
   requireFile(".venv/bin/python", "uv sync --locked");
   requireFile("node_modules/typescript/bin/tsc", "npm ci --ignore-scripts");
   requireFile("node_modules/prime-agent/dist/index.d.ts", "npm ci --ignore-scripts");
-  requireFile("components/user-history/node_modules/tsx/dist/cli.mjs", "npm ci --ignore-scripts --prefix components/user-history");
+  requireFile("legacy/prime/user-history/node_modules/tsx/dist/cli.mjs", "npm ci --ignore-scripts --prefix legacy/prime/user-history");
   requireFile("skills/poteto-mode/scripts/node_modules/typescript/bin/tsc", "cd skills/poteto-mode/scripts && bun install --frozen-lockfile");
   const host = JSON.parse(readFileSync(join(root, "node_modules/prime-agent/package.json"), "utf8"));
   const locked = lockedPrimeVersion(root);
@@ -54,8 +54,8 @@ try {
   if (rulesTests.length === 0) throw new Error("No global-rules Node suites found.");
   run(process.execPath, ["--test", ...rulesTests.map((name) => `tests/${name}`), "tests/claude-rules.test.mjs", "tests/agent-utilities.test.mjs", "tests/git-stale-index.test.mjs", "tests/git-mass-delete.test.mjs", "tests/git-escaped-newline.test.mjs", "tests/release-chat.test.mjs"]);
   run(process.execPath, ["node_modules/typescript/bin/tsc", "--project", "tsconfig.json"]);
-  run("npm", ["test"], join(root, "components/user-history"));
-  run("npm", ["run", "typecheck"], join(root, "components/user-history"));
+  run("npm", ["test"], join(root, "legacy/prime/user-history"));
+  run("npm", ["run", "typecheck"], join(root, "legacy/prime/user-history"));
   const poteto = join(root, "skills/poteto-mode/scripts");
   run(process.execPath, ["--test", "check-source-paths.test.mjs"], poteto);
   run("bun", ["test", "orch", "watch-pr"], poteto);

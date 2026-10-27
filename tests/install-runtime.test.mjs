@@ -21,17 +21,17 @@ function fixture(t) {
   mkdirSync(repo, { recursive: true });
   mkdirSync(home);
   const write = (path, text) => { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, text); };
-  for (const directory of [repo, join(repo, "components/user-history")]) {
+  for (const directory of [repo, join(repo, "legacy/prime/user-history")]) {
     write(join(directory, "package.json"), JSON.stringify({ name: "fixture", type: "module", dependencies: { "runtime-fixture": "1.0.0" } }));
     write(join(directory, "package-lock.json"), JSON.stringify({ lockfileVersion: 3 }));
   }
   write(join(repo, "scripts/manage.py"), readFileSync(join(source, "scripts/manage.py")));
   write(join(repo, "components/global-rules/index.ts"), "// fixture\n");
-  write(join(repo, "components/user-history/extension/index.ts"), "// fixture\n");
+  write(join(repo, "legacy/prime/user-history/extension/index.ts"), "// fixture\n");
   write(join(repo, "config/settings.example.json"), "{}\n");
   write(join(repo, "install-manifest.json"), JSON.stringify({ version: 1, entries: [
     { id: "global-rules", kind: "link", scope: "home", source: "components/global-rules/index.ts", target: ".prime/agent/extensions/global-rules.ts" },
-    { id: "user-history", kind: "link", scope: "home", source: "components/user-history", target: ".prime/agent/extensions/user-history" },
+    { id: "user-history", kind: "link", scope: "home", source: "legacy/prime/user-history", target: ".prime/agent/extensions/user-history" },
     { id: "settings", kind: "generated-json", scope: "home", source: "config/settings.example.json", target: ".prime/agent/settings.json", seed_only: true },
   ] }));
   const calls = [];
@@ -66,7 +66,7 @@ test("prepare exports a committed ref with physical dependencies and does not ac
   assert.equal(existsSync(join(f.root, "current")), false);
   assert.equal(existsSync(join(f.home, ".prime")), false);
   assert.equal(existsSync(join(f.root, ".installing")), false);
-  for (const directory of [".", "components/user-history"]) {
+  for (const directory of [".", "legacy/prime/user-history"]) {
     assert(realpathSync(join(prepared.release, directory, "node_modules")).startsWith(prepared.release));
     assert.equal(readlinkSync(join(prepared.release, directory, "node_modules/.bin/fixture")), "../runtime-fixture/index.js");
   }
@@ -86,7 +86,8 @@ test("activation applies the completed release, preserves settings and credentia
   f.write(join(f.home, ".prime/agent/sessions/fixture.jsonl"), "untouched history fixture\n");
   const initial = installRuntime(f.options, f.hooks);
   assert.equal(readlinkSync(initial.current), `releases/${first}`);
-  assert.equal(realpathSync(join(f.home, ".prime/agent/extensions/user-history")), join(initial.release, "components/user-history"));
+  assert.equal(realpathSync(join(f.home, ".prime/agent/extensions/user-history")), join(initial.release, "legacy/prime/user-history"));
+  assert.equal(readlinkSync(join(initial.release, "components/user-history")), "../legacy/prime/user-history");
   const apply = f.calls.findIndex(call => call.command === "python3" && call.args.includes("apply"));
   assert(f.calls.slice(0, apply).filter(call => call.command === "npm").length === 2);
   assert.equal(JSON.parse(readFileSync(initial.receipt)).state, "applied");
@@ -102,9 +103,9 @@ test("activation applies the completed release, preserves settings and credentia
 test("a release whose lockfiles match the active one clones its dependencies, and each activation is logged", t => {
   const f = fixture(t);
   const initial = installRuntime(f.options, f.hooks);
-  f.write(join(f.repo, "components/user-history/package-lock.json"), JSON.stringify({ lockfileVersion: 3, changed: true }));
+  f.write(join(f.repo, "legacy/prime/user-history/package-lock.json"), JSON.stringify({ lockfileVersion: 3, changed: true }));
   const next = installRuntime({ ...f.options, ref: second }, f.hooks);
-  assert.deepEqual(f.calls.filter(call => call.command === "npm").map(call => call.cwd.endsWith("components/user-history")), [false, true, true]);
+  assert.deepEqual(f.calls.filter(call => call.command === "npm").map(call => call.cwd.endsWith("legacy/prime/user-history")), [false, true, true]);
   assert.equal(f.calls.filter(call => call.command === "cp").length, 1);
   assert.equal(readFileSync(join(next.release, "node_modules/runtime-fixture/index.js"), "utf8"), "export const loaded = true;\n");
   assert(realpathSync(join(next.release, "node_modules")).startsWith(next.release));
@@ -116,14 +117,14 @@ test("a release whose lockfiles match the active one clones its dependencies, an
 test("a failed dependency build leaves the existing runtime and manifest links active", t => {
   const f = fixture(t);
   const initial = installRuntime(f.options, f.hooks);
-  f.write(join(f.repo, "components/user-history/package-lock.json"), JSON.stringify({ lockfileVersion: 3, changed: true }));
+  f.write(join(f.repo, "legacy/prime/user-history/package-lock.json"), JSON.stringify({ lockfileVersion: 3, changed: true }));
   const execute = (command, ...args) => {
     if (command === "npm") throw new Error("dependency install failed");
     return f.hooks.execute(command, ...args);
   };
   assert.throws(() => installRuntime({ ...f.options, ref: second }, { ...f.hooks, execute }), /dependency install failed/);
   assert.equal(readlinkSync(initial.current), `releases/${first}`);
-  assert.equal(realpathSync(join(f.home, ".prime/agent/extensions/user-history")), join(initial.release, "components/user-history"));
+  assert.equal(realpathSync(join(f.home, ".prime/agent/extensions/user-history")), join(initial.release, "legacy/prime/user-history"));
   assert.equal(existsSync(join(f.root, "releases", second)), false);
   assert.equal(existsSync(join(f.root, ".installing")), false);
 });
@@ -132,7 +133,7 @@ test("dependency links back into the source checkout are rejected before activat
   const f = fixture(t);
   const execute = (command, args, cwd, capture) => {
     const result = f.hooks.execute(command, args, cwd, capture);
-    if (command === "npm" && cwd.endsWith("components/user-history")) symlinkSync(f.repo, join(cwd, "node_modules/source-leak"));
+    if (command === "npm" && cwd.endsWith("legacy/prime/user-history")) symlinkSync(f.repo, join(cwd, "node_modules/source-leak"));
     return result;
   };
   assert.throws(() => installRuntime(f.options, { ...f.hooks, execute }), /symlink escapes its release/);
@@ -150,7 +151,7 @@ test("failed activation restores managed links through the existing installer re
   };
   assert.throws(() => installRuntime({ ...f.options, ref: second }, { ...f.hooks, execute }), /injected verification failure/);
   assert.equal(readlinkSync(initial.current), `releases/${first}`);
-  assert.equal(realpathSync(join(f.home, ".prime/agent/extensions/user-history")), join(initial.release, "components/user-history"));
+  assert.equal(realpathSync(join(f.home, ".prime/agent/extensions/user-history")), join(initial.release, "legacy/prime/user-history"));
   assert(f.calls.some(call => call.command === "python3" && call.args.includes("rollback")));
 });
 
@@ -168,8 +169,8 @@ test("the user-history extension is bundled into one file in src/ and package.js
   mkdirSync(scratch, { recursive: true });
   const root = realpathSync(mkdtempSync(join(scratch, "sieun-pi-bundle-test-")));
   t.after(() => rmSync(root, { recursive: true, force: true }));
-  const dir = join(root, "components/user-history");
-  const component = join(source, "components/user-history");
+  const dir = join(root, "legacy/prime/user-history");
+  const component = join(source, "legacy/prime/user-history");
   for (const name of ["extension", "src", "package.json"]) cpSync(join(component, name), join(dir, name), { recursive: true });
   for (const name of ["prime-relay", "global-rules"]) cpSync(join(source, "components", name), join(root, "components", name), { recursive: true, filter: path => !path.includes("node_modules") });
   symlinkSync(join(component, "node_modules"), join(dir, "node_modules"));
@@ -184,7 +185,7 @@ test("the user-history extension is bundled into one file in src/ and package.js
 
 test("a folder with no esbuild keeps its source entry", t => {
   const f = fixture(t);
-  const dir = join(f.repo, "components/user-history");
+  const dir = join(f.repo, "legacy/prime/user-history");
   assert.equal(bundleExtension(dir, () => { throw new Error("no build without esbuild"); }), false);
   assert.equal(JSON.parse(readFileSync(join(dir, "package.json"), "utf8")).pi, undefined);
 });
@@ -192,7 +193,7 @@ test("a folder with no esbuild keeps its source entry", t => {
 test("a release whose package.json differs only in the bundle's pi entry still clones its dependencies", t => {
   const f = fixture(t);
   const initial = installRuntime(f.options, f.hooks);
-  const installed = join(initial.release, "components/user-history/package.json");
+  const installed = join(initial.release, "legacy/prime/user-history/package.json");
   writeFileSync(installed, JSON.stringify({ ...JSON.parse(readFileSync(installed, "utf8")), pi: { extensions: [`./${EXTENSION_BUNDLE}`] } }));
   installRuntime({ ...f.options, ref: second }, f.hooks);
   assert.equal(f.calls.filter(call => call.command === "npm").length, 2);

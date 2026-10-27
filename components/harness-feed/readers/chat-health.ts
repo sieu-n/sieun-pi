@@ -2,22 +2,22 @@ import { closeSync, existsSync, openSync, readSync } from "node:fs";
 import { open, readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { Context, Sample } from "../otlp.ts";
-import type { AgentLine, HostUsable, HostWatchLine, TestBrowserLine, WaitingTree, WatchLine, WorkerLine } from "../../user-history/src/mac-usable-watch.ts";
+import type { AgentLine, HostUsable, HostWatchLine, TestBrowserLine, WaitingTree, WatchLine, WorkerLine } from "../../../legacy/prime/user-history/src/mac-usable-watch.ts";
 import type { LinuxUsable } from "../../prime-relay/host-stats.ts";
-import type { DaemonFault } from "../../user-history/src/daemon-faults.ts";
-import { readReopenedSends, readServiceFaults, readSupervisorFaults } from "../../user-history/src/daemon-faults.ts";
-import { harnessSlow, workerMisses } from "../../user-history/src/harness-slow.ts";
-import { quietMinutes } from "../../user-history/src/quiet-minutes.ts";
-import { stepOwner } from "../../user-history/src/checkin-steps.ts";
-import { BUCKETS, bucketOf, inSidebar, sidebarSections } from "../../user-history/src/client/organize.ts";
-import { readPulse, type PulseLevel } from "../../user-history/src/shared/pulse.ts";
-import type { PlanItem, Pulse, SessionRow, ThreadSchedule } from "../../user-history/src/shared/types.ts";
-import type { ThreadOrigin } from "../../user-history/src/thread-origin.ts";
+import type { DaemonFault } from "../../../legacy/prime/user-history/src/daemon-faults.ts";
+import { readReopenedSends, readServiceFaults, readSupervisorFaults } from "../../../legacy/prime/user-history/src/daemon-faults.ts";
+import { harnessSlow, workerMisses } from "../../../legacy/prime/user-history/src/harness-slow.ts";
+import { quietMinutes } from "../../../legacy/prime/user-history/src/quiet-minutes.ts";
+import { stepOwner } from "../../../legacy/prime/user-history/src/checkin-steps.ts";
+import { BUCKETS, bucketOf, inSidebar, sidebarSections } from "../../../legacy/prime/user-history/src/client/organize.ts";
+import { readPulse, type PulseLevel } from "../../../legacy/prime/user-history/src/shared/pulse.ts";
+import type { PlanItem, Pulse, SessionRow, ThreadSchedule } from "../../../legacy/prime/user-history/src/shared/types.ts";
+import type { ThreadOrigin } from "../../../legacy/prime/user-history/src/thread-origin.ts";
 import { copyIndex, sessionRows, type CopyRow } from "./session-copy.ts";
 
 // The chat's responsiveness and its agents, from the files the live chat service writes on its box: the usable watch's minute lines
 // (src/mac-usable-watch.ts), service.log, the supervisor's daemon logs, pi-pool.log, the catalog copies, unloaded.json and d7's last run.
-// The minute math is the Whole system duty's (components/user-history/scripts/duties/whole-system.ts `measure`), ported because that file's
+// The minute math is the Whole system duty's (legacy/prime/user-history/scripts/duties/whole-system.ts `measure`), ported because that file's
 // import tree has TS parameter properties that plain node cannot strip. Every log is read from a saved offset, so a round reads only new bytes.
 
 const MINUTE = 60_000;

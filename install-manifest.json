@@ -247,7 +247,7 @@
     {
       "id": "user-history",
       "kind": "link",
-      "source": "components/user-history",
+      "source": "legacy/prime/user-history",
       "scope": "home",
       "target": ".prime/agent/extensions/user-history"
     },

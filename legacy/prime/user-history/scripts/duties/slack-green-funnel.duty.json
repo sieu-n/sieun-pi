@@ -1,0 +1,59 @@
+{
+  "name": "Visitors become paying users",
+  "ownerWords": "conversion funnel-this is pretty bad right? have a goal to improve this and lets go wild\n\nalso keep doing experiments on the landing page. in the main My App Dashboard can you setup weekly conversion funnel metrics over time too\n\ni also want onboarding tests. the signup -> add workspace is also super important funnel.",
+  "goal": "The funnel measure keeps working: every PostHog source the precheck reads answers, and 90% of signed-out home visitors each day get the running home page test, read over the last 7 days when a day has under 30 of them. The growth targets live on the plan: p145 (2% of on-topic visitors sign up), p151 (60% of signups connect Slack) and p166 under p177 (10% of signups pay within 16 days, with 1% of on-topic visitors paying within 28 days as the long-run number), and each run writes its reading into them.",
+  "metrics": [
+    {
+      "key": "home_test_reach_pct",
+      "label": "Signed-out home visitors who got the home test, 24 h (7 days when 24 h has under 30)",
+      "op": ">=",
+      "target": 90,
+      "unit": "%",
+      "headline": true
+    },
+    {
+      "key": "source_errors",
+      "label": "Funnel sources that failed to read",
+      "op": "<=",
+      "target": 0
+    }
+  ],
+  "schedule": {
+    "kind": "daily",
+    "at": "09:30"
+  },
+  "precheck": {
+    "command": [
+      "node",
+      "--import",
+      "tsx",
+      "scripts/duties/slack-green-funnel.ts"
+    ],
+    "cwd": "../..",
+    "timeoutMs": 120000
+  },
+  "onMiss": "A miss names the broken check; start one fix job on it, or message the live job that already owns it. source_errors above 0: a source_error slice names the PostHog query that failed or gave no rows, so fix the precheck, the query or the PostHog key in slack-green scripts/seo-agent/.env. home_test_reach_pct under 90: signed-out home visitors miss the home test, so read the home_test slice. With a live sg-exp-home flag, fix the exposure code in landing-ab-wrapper.tsx. With no flag called, build the next home test (p54) or put the ready one on the owner's For you todo. Ship a fix as a PR, with its merge and launch on that todo. The funnel numbers are readings that this run already wrote into p145, p151 and p166; growth work on them belongs to those goals' jobs, not to this duty. Weekly rows come from `node --import tsx scripts/duties/slack-green-funnel.ts --weeks 4` in sieun-pi legacy/prime/user-history. Never merge, launch a flag, deploy prod or email users.",
+  "boardGoal": "p145",
+  "readings": [
+    {
+      "key": "on_topic_visit_to_signup_pct",
+      "label": "On-topic real visitors who sign up, 28 days (p145)",
+      "unit": "%"
+    },
+    {
+      "key": "signup_to_workspace_pct",
+      "label": "Signups who connect a Slack workspace, 28 days (p151)",
+      "unit": "%"
+    },
+    {
+      "key": "signup_to_paid_16d_pct",
+      "label": "Signups who pay within 16 days, signups 44 to 16 days ago (p166)",
+      "unit": "%"
+    },
+    {
+      "key": "on_topic_visit_to_paid_pct",
+      "label": "On-topic visitors who pay within 28 days, entries 56 to 28 days ago",
+      "unit": "%"
+    }
+  ]
+}

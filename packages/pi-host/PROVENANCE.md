@@ -15,7 +15,7 @@ The release `LICENSE` is the same file as `pi-rlm/python/LICENSE` (SHA-256 `b288
 
 ## The schedule grammar
 
-`src/schedule.ts` ports the schedule parser, the `/heartbeat` argument parser, the heartbeat deferral rule, the `heartbeat_prompt` message and the `rlm_heartbeat` response shape from the `prime-agent` 0.9.8 npm package, `"license": "MIT"`, installed at `components/user-history/node_modules/prime-agent`.
+`src/schedule.ts` ports the schedule parser, the `/heartbeat` argument parser, the heartbeat deferral rule, the `heartbeat_prompt` message and the `rlm_heartbeat` response shape from the `prime-agent` 0.9.8 npm package, `"license": "MIT"`, installed at `legacy/prime/user-history/node_modules/prime-agent`.
 `src/scheduler.ts` follows the claim, result and recovery order of the same file's `AgentCronJobStore` and `AgentCronScheduler`, and is new code.
 
 | Source file in `prime-agent/dist` | SHA-256 |

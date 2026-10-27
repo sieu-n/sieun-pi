@@ -19,7 +19,7 @@ until then it makes that restart and installs those units (after --no-kickstart,
 Any other commit that does not descend from the live release's commit is refused, so a late release never rolls back a newer one. --rollback allows it.
 --rollback onto a release folder already built skips the origin check and needs no network, so a known-good release stays usable offline
 or when its commit was rebased off main. --rollback onto a commit not built yet is checked against origin like any release.
-The build runs npm run typecheck and npm test of components/user-history inside the release before the flip, then writes the packed client bundle.
+The build runs npm run typecheck and npm test of legacy/prime/user-history inside the release before the flip, then writes the packed client bundle.
 Those steps get PATH and the locale from this shell and a private HOME, TMPDIR and XDG dirs, so they see no agent socket, token, session dir or key.
 --no-kickstart flips current only, for a release whose diff touches only scripts/duties or tests.
 A waiting release whose commit a release puts live (current holds it and the chat runs current) exits 0 at once, while the lock is still held.
@@ -256,6 +256,19 @@ function checkEnv(root) {
   return { ...env, npm_config_update_notifier: "false" };
 }
 
+const LEGACY_APP = "legacy/prime/user-history";
+const OLD_APP = "components/user-history";
+
+/**
+ * Where the chat sits in a release tree: legacy/prime/user-history since the layout move, components/user-history before it, so a
+ * --rollback onto a commit from before the move still builds. A release of the new layout also gets components/user-history as a link to
+ * the chat, because units, installed watchdog and reaper copies, chat duties and auto-sns-agent's ci-monitoring duty name
+ * ~/.local/share/sieun-pi-chat/current/components/user-history until the switch to Pi deletes legacy/prime.
+ */
+function chatAppPath(tree) {
+  return existsSync(join(tree, LEGACY_APP, "package.json")) ? LEGACY_APP : OLD_APP;
+}
+
 /** Builds release-<sha7> in a scratch folder and renames it into place, so a release folder that exists is complete. */
 async function build(options, home, sha, dir) {
   const scratch = join(home, `.building-${basename(dir)}-${process.pid}`);
@@ -266,8 +279,13 @@ async function build(options, home, sha, dir) {
     log(`git archive ${sha.slice(0, 7)} into ${scratch}`);
     await archive(options.repo, sha, scratch);
     symlinkSync(join(options.repo, "node_modules"), join(scratch, "node_modules"));
-    symlinkSync(join(options.repo, "components/user-history/node_modules"), join(scratch, "components/user-history/node_modules"));
-    const app = join(scratch, "components/user-history");
+    const appPath = chatAppPath(scratch);
+    symlinkSync(join(options.repo, appPath, "node_modules"), join(scratch, appPath, "node_modules"));
+    if (appPath === LEGACY_APP) {
+      mkdirSync(join(scratch, "components"), { recursive: true });
+      symlinkSync("../legacy/prime/user-history", join(scratch, OLD_APP));
+    }
+    const app = join(scratch, appPath);
     const env = checkEnv(checks);
     run("npm", ["run", "--silent", "typecheck"], app, env);
     await runNamingFailures("npm", ["run", "--silent", "test"], app, env);

@@ -8,7 +8,7 @@ import { busyRows, findRow, messageKind, rowName, type Copy } from "./delivery.t
 /*
  * Messaging between agents, from the records the chat service and Prime already write:
  *
- * 1. The chat service's agent outbox and owner outbox (components/user-history/src/outbox.ts, agent-outbox.ts): every message the service
+ * 1. The chat service's agent outbox and owner outbox (legacy/prime/user-history/src/outbox.ts, agent-outbox.ts): every message the service
  *    sends a session (wakes, alerts, relays, briefs, cross-host messages, the agent sends the daemon refused as full) and every owner send.
  *    An entry never changes once it has `doneAt`, so a done entry is read once. A delivered entry with `bundle` carried that many queued
  *    messages in one send_message; the others ended "obsolete" with "it went inside <head>" (the queue study of 10-22 counted 157 messages

@@ -589,8 +589,8 @@ def cell_sends(cell: str, page_url: str = "") -> str | None:
 
 
 def check_owner_ok(token: str, target: str = "") -> str | None:
-    """None when `<chat id>/<todo id>` is an approved For you todo for a send to `target` (the page URL), else the reason it is not (components/user-history/src/owner-ok.ts)."""
-    script = os.path.join(_REPO, "components", "user-history", "src", "owner-ok.ts")
+    """None when `<chat id>/<todo id>` is an approved For you todo for a send to `target` (the page URL), else the reason it is not (legacy/prime/user-history/src/owner-ok.ts)."""
+    script = os.path.join(_REPO, "legacy", "prime", "user-history", "src", "owner-ok.ts")
     if not os.path.exists(script):
         return f"the owner-ok check is missing at {script}"
     try:

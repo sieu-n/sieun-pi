@@ -2,7 +2,7 @@
 // Install harness-feed from one commit and keep it running: systemd harness-feed.service on Linux, launchd com.sieun.harness-feed on macOS.
 //   node components/harness-feed/install.mjs --ref <commit>
 //   node components/harness-feed/install.mjs uninstall
-// It unpacks the feed and the app files its readers import (components/prime-relay, components/user-history/src) from <commit> into
+// It unpacks the feed and the app files its readers import (components/prime-relay, legacy/prime/user-history/src) from <commit> into
 // ~/.local/share/harness-feed/release-<sha7>, points `current` at it with one rename and restarts the service, so a later checkout
 // change cannot alter the running copy. `uninstall` stops the service and keeps the log.
 import { execFileSync, spawnSync } from "node:child_process";
@@ -20,7 +20,7 @@ const unit = "harness-feed.service";
 const plist = join(home, "Library/LaunchAgents", `${label}.plist`);
 const unitFile = join(home, ".config/systemd/user", unit);
 const gitEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")));
-const PATHS = ["package.json", "components/harness-feed", "components/prime-relay", "components/user-history/package.json", "components/user-history/src"];
+const PATHS = ["package.json", "components/harness-feed", "components/prime-relay", "legacy/prime/user-history/package.json", "legacy/prime/user-history/src"];
 
 function write(path, text, mode = 0o644) {
   mkdirSync(dirname(path), { recursive: true });

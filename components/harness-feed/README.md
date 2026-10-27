@@ -36,5 +36,5 @@ tail ~/.local/share/harness-feed/feed.log
 node components/harness-feed/install.mjs uninstall
 ```
 
-The install unpacks `components/harness-feed`, `components/prime-relay` and `components/user-history/src` from the commit into `~/.local/share/harness-feed/release-<sha7>` and points `current` at it, so a checkout change does not alter the running copy.
+The install unpacks `components/harness-feed`, `components/prime-relay` and `legacy/prime/user-history/src` from the commit into `~/.local/share/harness-feed/release-<sha7>` and points `current` at it, so a checkout change does not alter the running copy.
 On 10-19 the whole feed used about 0.03 core on us-metal02 in steady state, measured over 199 s with systemd's CPUUsageNSec, and about 200 MB of memory.

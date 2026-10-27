@@ -361,7 +361,7 @@ class InstallerTests(unittest.TestCase):
 
     def test_generated_test_artifacts_do_not_change_source_fingerprint(self):
         plan = self.plan()
-        artifact = self.checkout / "components/user-history/.test-artifacts/session/auth.json"
+        artifact = self.checkout / "legacy/prime/user-history/.test-artifacts/session/auth.json"
         artifact.parent.mkdir(parents=True)
         artifact.write_text("synthetic test data")
         self.installer.apply_plan(plan)

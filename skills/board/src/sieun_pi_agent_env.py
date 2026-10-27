@@ -1,5 +1,5 @@
 """Loads ~/.config/sieun-pi/agent.env into os.environ at the start of every kernel-venv Python, through the last line of
-00_sieun_pi_skills.pth (components/user-history/scripts/kernel-skill-paths.ts). It lives beside the board package because the pin
+00_sieun_pi_skills.pth (legacy/prime/user-history/scripts/kernel-skill-paths.ts). It lives beside the board package because the pin
 already puts this folder on the path.
 
 Why (10-21): the Prime daemon reads agent.env only when it starts, and each worker and kernel inherits the daemon's environment. The

@@ -172,7 +172,7 @@ console.log(JSON.stringify(out));
 client.close();
 process.exit(created.success ? 0 : 1);
 """
-DAEMON_WORKER_START_MS = "1500000"  # measured: components/user-history/src/daemon-worker-start.ts DAEMON_WORKER_START_MS, a worker's cold start
+DAEMON_WORKER_START_MS = "1500000"  # measured: legacy/prime/user-history/src/daemon-worker-start.ts DAEMON_WORKER_START_MS, a worker's cold start
 
 
 def open_on(host, session_file, message):
@@ -193,7 +193,7 @@ def open_on(host, session_file, message):
 
 def retire_old_copies(dst, sid):
     """Renames the copy an earlier move left on the box the thread now comes back to, in `moved-to-<host>/sessions/`. sieun-pi's extension
-    (components/user-history/src/moved-copy.ts `movedTo`) refuses every tool call of a session whose file sits there, so on 10-19 slack green guy,
+    (legacy/prime/user-history/src/moved-copy.ts `movedTo`) refuses every tool call of a session whose file sits there, so on 10-19 slack green guy,
     moved back to the Mac at 12:46Z, ran without tools and let two audit messages go unanswered until a job renamed its old copy at 15:58Z."""
     script = (f"for f in {shlex.quote(dst['agent'])}/moved-to-*/sessions/{sid}.jsonl; do [ -e \"$f\" ] || continue; "
               f"mv \"$f\" \"$f.returned-to-{dst['name']}\" && echo \"$f\"; done")

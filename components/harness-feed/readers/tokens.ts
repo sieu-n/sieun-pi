@@ -1,9 +1,9 @@
 import { execFile } from "node:child_process";
 import { open, readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
-import { fileLines } from "../../user-history/src/file-lines.ts";
-import { cacheHealth } from "../../user-history/src/shared/cache-health.ts";
-import type { ThreadMessage } from "../../user-history/src/shared/types.ts";
+import { fileLines } from "../../../legacy/prime/user-history/src/file-lines.ts";
+import { cacheHealth } from "../../../legacy/prime/user-history/src/shared/cache-health.ts";
+import type { ThreadMessage } from "../../../legacy/prime/user-history/src/shared/types.ts";
 import { promisify } from "node:util";
 import type { Context, Sample } from "../otlp.ts";
 import { copyIndex, type CopyRow } from "./session-copy.ts";
@@ -11,7 +11,7 @@ import { copyIndex, type CopyRow } from "./session-copy.ts";
 /**
  * The tokens group. Token, cost, cache and throughput numbers are in LGTM already: legacy/prime/usage-feed sends Prime's five prime_agent_*
  * counters from the transcripts (feed="transcripts") until Prime's own exporter ships, and the dashboard copies the PromQL of
- * components/user-history/src/usage/lgtm.ts. This reader adds what LGTM lacks:
+ * legacy/prime/user-history/src/usage/lgtm.ts. This reader adds what LGTM lacks:
  * 1. usage-feed's own health on every box: running, handed off, release, start time, CPU, memory and the errors in its log.
  * 2. On the chat host, each chat's lifetime cost and tokens as the chat app shows them: the thread's own session usage (the ContextMeter's
  *    session cost), its subagents (the child-usage job costs, chat-catalog.ts childUsage) and the root job sessions chat-jobs.json gives it.

@@ -531,7 +531,7 @@ def own(*paths: str, unit: str | None = None, host: str | None = None) -> str:
 
 
 # Every Prime kernel pre-imports this module, so it gives the chat service's watch a way to interrupt a hung cell
-# (components/user-history/src/hung-stop.ts). At 05:51Z on 10-20 d7 read rb-api-portal 96 min into one ipython call, a backtracking
+# (legacy/prime/user-history/src/hung-stop.ts). At 05:51Z on 10-20 d7 read rb-api-portal 96 min into one ipython call, a backtracking
 # re.findall at 0.99 cores, and the watch had no bash() command to stop. Prime's kernel (rlm/repl.py) interrupts a cell only on an interrupt
 # frame from its worker, sent when a turn is aborted, and drops a SIGINT from anyone else. Nothing outside the worker can write that frame:
 # the request channel is a socketpair, and ptrace_scope 1 keeps another process from taking its fd.

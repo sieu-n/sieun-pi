@@ -36,11 +36,11 @@ test("packed production install, native reload, update, rollback and uninstall",
       assert(!/(^|\/)\.env(?:\.|$)/.test(path), path);
     }
     for (const path of ["scripts/cli.mjs", "scripts/manage.py", "install-manifest.json",
-      "components/user-history/package.json", "components/user-history/SOURCE.md",
-      "components/user-history/extension/index.ts", "components/user-history/src/chat-threads.ts",
-      "components/user-history/src/client/App.svelte", "components/user-history/src/client/app.css",
-      "components/user-history/svelte.config.js", "components/user-history/src/chat-images.ts",
-      "components/user-history/src/chat-service.ts", "components/user-history/src/chat-service-cli.mjs",
+      "legacy/prime/user-history/package.json", "legacy/prime/user-history/SOURCE.md",
+      "legacy/prime/user-history/extension/index.ts", "legacy/prime/user-history/src/chat-threads.ts",
+      "legacy/prime/user-history/src/client/App.svelte", "legacy/prime/user-history/src/client/app.css",
+      "legacy/prime/user-history/svelte.config.js", "legacy/prime/user-history/src/chat-images.ts",
+      "legacy/prime/user-history/src/chat-service.ts", "legacy/prime/user-history/src/chat-service-cli.mjs",
       "components/global-rules/index.ts", "skills/unslop/SKILL.md",
       "NOTICE", "LICENSES/pstack-MIT.txt", "LICENSES/tokenmaxxing-MIT.txt", "LICENSES/prime-agent-MIT.txt",
       "docs/attribution-pstack.json", "skills/poteto-mode/scripts/check-source-paths.test.mjs"]) assert(paths.includes(path), path);

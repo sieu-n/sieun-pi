@@ -36,11 +36,11 @@ The watchdog finds Prime Agent sessions that stopped making progress and recover
 ## Slot waits
 
 1. Since load.2 (us-metal02, 10-28) a turn that waits for a pi-pool working slot ends on "pi-pool: this run waits for a working slot, place 134 of 139", Prime writes `provider_quota_park`, and the idle unload stops the worker, so the session reads idle with input owed, or working with no output, for as long as it waits.
-2. Each cycle reads every live session file once through sieun-pi's one reader of that wait, `daemon-cli.mjs slot-park` (`components/user-history/src/slot-park.ts`, with `pi-pool queue --json`). On us-metal02 on 10-28 it read the 1,967 live files in 3.2 s.
+2. Each cycle reads every live session file once through sieun-pi's one reader of that wait, `daemon-cli.mjs slot-park` (`legacy/prime/user-history/src/slot-park.ts`, with `pi-pool queue --json`). On us-metal02 on 10-28 it read the 1,967 live files in 3.2 s.
 3. A parked session reads `SLOT_WAIT` with its place, such as "waits for a working slot, place 112 of 164". It gets no wake, nudge, stop, resume notice, parent notice or heartbeat re-arm, no gone or finished-work check, and it counts toward no silent model cohort, so it starts no model probe.
 4. Right before a `CHILD_WEDGED` notice goes out, the cycle reads the subagent's file through the same reader again, and pi-pool's `kept` place in `turns.json` still counts as a wait for the next run.
 5. `cron.jsonl` records `slot_parks`, the count of parked sessions, or `unread` when the reader is missing or failed, and then the cycle runs as it did before.
-6. `tests/test_slot_wait.py` replays cuts of `components/user-history/test/fixtures/slot-park-01a17f25-1028.jsonl` through the real reader, with pi-pool's line left out or stubbed by `tests/slot_reader.py`.
+6. `tests/test_slot_wait.py` replays cuts of `legacy/prime/user-history/test/fixtures/slot-park-01a17f25-1028.jsonl` through the real reader, with pi-pool's line left out or stubbed by `tests/slot_reader.py`.
 
 ## Archived chats
 
@@ -51,10 +51,10 @@ The watchdog finds Prime Agent sessions that stopped making progress and recover
 ## Answered turns
 
 1. A session owes an answer from the first input that no turn has answered yet, and `owed_since` in the cycle's record is that input's time.
-2. An input is a user message, a tool result or a custom message that wakes the agent (`PROMPT_TYPES`, from `turns.ts` in `components/user-history/src/shared`), and other custom messages, such as the correction refine's notes, owe nothing.
+2. An input is a user message, a tool result or a custom message that wakes the agent (`PROMPT_TYPES`, from `turns.ts` in `legacy/prime/user-history/src/shared`), and other custom messages, such as the correction refine's notes, owe nothing.
 3. A turn answers its inputs when the assistant said something, or when it ended with stopReason `stop` and no owner message was among them, so a chat may end a turn on an agent message, a check-in or a notice with no words.
 4. An owner message stays owed until the chat replies in text or through `tell_owner`, and a turn cut by an error, an abort, the length limit or a worker death leaves its inputs owed.
-5. A user message counts as the owner's unless it opens with a chat service note prefix (`SERVER_NOTES` in `components/user-history/src/shared/chat-feed.ts`), a Prime tag or `[watchdog]`, and `tests/test_silent_turn.py` checks both Python lists against those files.
+5. A user message counts as the owner's unless it opens with a chat service note prefix (`SERVER_NOTES` in `legacy/prime/user-history/src/shared/chat-feed.ts`), a Prime tag or `[watchdog]`, and `tests/test_silent_turn.py` checks both Python lists against those files.
 6. One owed input gets one resume notice, because each `resume_queue + send` line in `log.jsonl` holds its `owed_since`, and a later cycle reads that input as `NOTICED`. A failed send is tried once more after 5 s and then counts, because on the Mac from 10-20 to 10-22 five sessions got 1011 notices whose sends all failed with "Unknown active session", and those retries took the cycle's resume budget.
 7. On 10-21 the Mac's watchdog woke gpt sol at 20:08Z, 20:43Z, 21:19Z and 22:18Z with "the input was never answered", because each of its silent turn ends on a non-owner notice read as a dropped turn, and each wake ended silent again. On 10-22 the box's watchdog woke gpt sol (metal 02) at 01:47:55Z after it had answered its owner, because the correction refine's notes read as owed input.
 
@@ -75,7 +75,7 @@ The watchdog finds Prime Agent sessions that stopped making progress and recover
 
 ## Daemon reads
 
-1. A `list` or a plain `send` goes through sieun-pi's daemon reader (`components/user-history/src/daemon-cli.mjs` in the installed runtime or chat release), which waits 30 s for the daemon's hello and opens the daemon once more after a failed hello.
+1. A `list` or a plain `send` goes through sieun-pi's daemon reader (`legacy/prime/user-history/src/daemon-cli.mjs` in the installed runtime or chat release), which waits 30 s for the daemon's hello and opens the daemon once more after a failed hello.
 2. Every other command, and every command on a box without the reader, runs the prime-agent CLI and runs once more when the hello missed the CLI's fixed 3 s, since nothing was done then.
 3. On 10-22 65 of 108 probes on us-metal02 got the hello after 3 to 7 s, and at 04:42Z `prime-agent list` failed so twice; the reader's list took 17 s at that load and answered.
 

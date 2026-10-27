@@ -1,0 +1,49 @@
+{
+  "name": "Demo sandbox works",
+  "ownerWords": "is http://localhost:5180/ working properly? so it's half for demoing, half for development (like Claude design, you mock here and discuss with user).\n\nhonestly it doesn't seem like it's working, achieve this goal.\n\nand switching between tabs/apps/views is infuriatingly slow. it's just demo app why the fuck\n\nno external connection should work off of internal fake database",
+  "goal": "The 5180 demo works offline and answers every time the owner opens it: the daily offline walk of the 6 apps passes with 0 outside requests, every app page shows its content within 3 s, timed in the page, the dev server goes down unplanned at most once a day (a deliberate pm2 restart or stop and a restart a vite config edit asks for do not count), and no page hangs on an SSR timeout. Tell the owner only when 5180 stays down for over an hour.",
+  "metrics": [
+    {
+      "key": "walk_problems",
+      "label": "Problems in the demo walk (outside calls, fails, no walk in 25 h), plus 1 while /configure gets no answer",
+      "op": "<=",
+      "target": 0,
+      "headline": true
+    },
+    {
+      "key": "slowest_page_ms",
+      "label": "Slowest app page in the demo walk, timed in the page and the fastest of 3 tries: in-app switch until its content shows, or its load's long tasks (30000 means it never showed; no reading while the walk is stale or missing)",
+      "op": "<=",
+      "target": 3000,
+      "unit": " ms"
+    },
+    {
+      "key": "restarts_24h",
+      "label": "Times in 24 h the 5180 dev server went down unplanned (crashes, exit codes, dev-guard memory kills); a deliberate pm2 restart or stop does not count",
+      "op": "<=",
+      "target": 1
+    },
+    {
+      "key": "ssr_timeouts_24h",
+      "label": "Times in 24 h a 5180 page hung on an SSR timeout",
+      "op": "<=",
+      "target": 0
+    }
+  ],
+  "schedule": {
+    "kind": "daily",
+    "at": "06:25"
+  },
+  "precheck": {
+    "command": [
+      "node",
+      "--import",
+      "tsx",
+      "scripts/duties/demo-sandbox-box.ts"
+    ],
+    "cwd": "../..",
+    "timeoutMs": 120000
+  },
+  "onMiss": "The demo runs only on the owner's Mac (10-19), on branch dev/sieun-mac in ~/Documents/Github/auto-sns-agent, so every step below runs there over `ssh mac`. Every browser check runs in the owner's Aside on the Mac through the aside-browser skill or `aside mcp`, and no headless browser runs anywhere (c177, 10-27: \"we'll always use Aside only\"). The precheck starts the offline walk itself, detached, whenever the last one started over 30 min ago and none runs, and the next run reads it. The walk is sieun-pi's legacy/prime/user-history/scripts/duties/demo-sandbox-walk.ts: it opens one background tab per test in Aside, walks the same pages and checks the Playwright offline.spec.ts did, and writes .cache/duties/virev-demo-offline.json in auto-sns-agent. To check a fix before then, make sure no walk runs (`pgrep -f demo-sandbox-walk.ts` on the Mac), then run exactly `ssh mac 'export PATH=/Users/sieunpark/.hermes/node/bin:$PATH; cd ~/Documents/Github/sieun-pi/legacy/prime/user-history && node --import tsx scripts/duties/demo-sandbox-walk.ts 2> \"${LLM_WIKI_REPO:-$HOME/Documents/Github/auto-sns-agent}/.cache/duties/virev-demo-offline.err\"'`. The PATH line is the precheck's, since a plain `ssh mac` PATH has no node; the walk finds the Aside CLI at ~/.local/bin/aside (ASIDE_CLI overrides it), and a walk_command slice names its fatal error from the .err file, such as an Aside with no open window (\"Profile 0 is not connected to the daemon\"), which comes back only when the owner opens a window, so never open, quit or restart Aside yourself (c103). Each missed metric gets one fix job, or a steer to its live one. walk_problems: a job that makes the fake database answer each outside request, or fixes the failed page; when the walk failed because 5180 gave no answer, read virev-demo-error.log on the Mac, run `pm2 restart virev-demo` once there (PM2_HOME=.cache/pm2-dev) and start a job on the cause. slowest_page_ms: the walk keeps each page's fastest of 3 tries, since a busy Mac only adds time, and the box_load slice names the Mac's load during the walk; a job on the page the slowest_page slice names, which finds what that page waits on (its data load or its long tasks, from the walk's page-timing annotations and a performance profile taken in an Aside tab) and lands the fix, as 7966ebbfd did for Creators on 10-19. restarts_24h: steer \"5180 materialize crash loop fix\" for a materialize crash loop, else start a job on the cause the restart line names. ssr_timeouts_24h: steer or start \"5180 SSR hang fix\", which fixes the wait that never ends. Fixes are commits on dev/sieun-mac in the Mac checkout, pushed to origin dev/sieun-mac; no deploy, nothing to 5174, and no box copy of the demo. A Mac that Tailscale lists offline leaves the numbers unmeasured with a host_away item (demo-sandbox-box.ts), and the duty reruns by itself once the Mac is back online, so never try to wake the Mac; an ssh failure while Tailscale reads the Mac online is a precheck error to fix. Tell the owner only when 5180 is down over an hour.",
+  "boardGoal": "p1"
+}

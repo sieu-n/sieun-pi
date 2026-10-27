@@ -38,8 +38,8 @@ def _run(cmd: list[str], timeout: int = 120) -> tuple[int, str]:
 
 
 # sieun-pi's daemon reader in this checkout. prime-agent's CLI waits a fixed 3 s for the daemon's hello, and probes on us-metal02 got it after
-# 3 to 7 s on 10-22; the reader waits 30 s and opens the daemon once more after a failed hello (components/user-history/src/daemon-list.ts).
-DAEMON_CLI = Path(__file__).resolve().parents[5] / "components" / "user-history" / "src" / "daemon-cli.mjs"
+# 3 to 7 s on 10-22; the reader waits 30 s and opens the daemon once more after a failed hello (legacy/prime/user-history/src/daemon-list.ts).
+DAEMON_CLI = Path(__file__).resolve().parents[3] / "user-history" / "src" / "daemon-cli.mjs"
 
 
 def _daemon(*args: str, timeout: int = 180) -> tuple[int, str]:

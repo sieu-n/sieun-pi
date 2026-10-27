@@ -406,7 +406,7 @@ Other projects can depend on this Git package and import `detectAgentIdentity` f
 ```text
 sieun-pi
   ├─ packages/pi-pool/          install.py copies a commit to ~/.local/share/pi-pool
-  ├─ components/user-history/   the browser chat and its Prime extension
+  ├─ legacy/prime/user-history/   the browser chat and its Prime extension
   ├─ components/global-rules/   global guards
   ├─ components/claude-rules/   a repo's .claude/rules for Prime sessions
   ├─ skills/                    linked to ~/.prime/agent/skills/<name>
@@ -414,5 +414,5 @@ sieun-pi
 ```
 
 Credentials, settings, sessions and account stores stay outside the source tree.
-More detail is in [the install guide](docs/install.md), [the pool README](packages/pi-pool/README.md), [the chat README](components/user-history/README.md), [the skills README](skills/README.md), [security](docs/security.md) and [source provenance](docs/provenance.md).
+More detail is in [the install guide](docs/install.md), [the pool README](packages/pi-pool/README.md), [the chat README](legacy/prime/user-history/README.md), [the skills README](skills/README.md), [security](docs/security.md) and [source provenance](docs/provenance.md).
 Third-party notices are in [NOTICE](NOTICE) and [LICENSES](LICENSES).

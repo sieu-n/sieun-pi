@@ -49,7 +49,7 @@ def stamp() -> str:
 
 
 def prime_binary() -> str:
-    """The current release, the way components/user-history/src/chat-skills.ts resolves it."""
+    """The current release, the way legacy/prime/user-history/src/chat-skills.ts resolves it."""
     return os.path.realpath(PRIME_BIN)
 
 
@@ -112,7 +112,7 @@ def find_daemon(table: dict[int, dict]) -> dict | None:
     return None
 
 
-# sieun-pi's daemon reader (components/user-history/src/daemon-cli.mjs) in the installed runtime or chat release, both outside ~/Documents.
+# sieun-pi's daemon reader (legacy/prime/user-history/src/daemon-cli.mjs) in the installed runtime or chat release, both outside ~/Documents.
 # prime-agent's CLI waits a fixed 3 s for the daemon's hello, and on 10-22 65 of 108 probes on us-metal02 got it after 3 to 7 s; the reader
 # waits 30 s and tries a failed hello once more. Without it the CLI runs, and a missed hello is tried once more.
 READER_ROOTS = (HOME / ".local/share/sieun-pi-runtime/current", HOME / ".local/share/sieun-pi-chat/current")
@@ -123,8 +123,8 @@ HANDSHAKE_MISSES = ("waiting for the Prime Agent daemon handshake", "connecting 
 def daemon_reader() -> list[str] | None:
     """`node daemon-cli.mjs` from the first root that has it with its tsx, or None."""
     node = next((str(p) for p in (HOME / ".local/node/bin/node", HOME / ".local/bin/node") if p.exists()), None) or shutil.which("node")
-    script = next((root / "components/user-history/src/daemon-cli.mjs" for root in READER_ROOTS
-                   if (root / "components/user-history/src/daemon-cli.mjs").is_file() and (root / "components/user-history/node_modules/tsx").is_dir()), None)
+    script = next((root / "legacy/prime/user-history/src/daemon-cli.mjs" for root in READER_ROOTS
+                   if (root / "legacy/prime/user-history/src/daemon-cli.mjs").is_file() and (root / "legacy/prime/user-history/node_modules/tsx").is_dir()), None)
     return [node, str(script)] if node and script else None
 
 

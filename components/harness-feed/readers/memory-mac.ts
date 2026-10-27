@@ -227,7 +227,7 @@ export function feedChatNames(feed: unknown): Map<string, string> {
   return names;
 }
 
-const HELPER = new URL("../../user-history/src/worker-footprint.py", import.meta.url).pathname;
+const HELPER = new URL("../../../legacy/prime/user-history/src/worker-footprint.py", import.meta.url).pathname;
 async function footprints(pids: readonly number[]): Promise<Footprints> {
   return await new Promise((resolve, reject) => {
     const child = execFile("/usr/bin/python3", ["-B", HELPER], { maxBuffer: 8 * 1024 * 1024 }, (error, stdout) => {

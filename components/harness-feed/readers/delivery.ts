@@ -2,11 +2,11 @@ import { open, readdir, readFile, stat } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Context, Sample } from "../otlp.ts";
-import { chatLines, NUDGE_PREFIX, OWNER_RETRY_MARK, serverNote, unreadCount } from "../../user-history/src/shared/chat-feed.ts";
-import type { ThreadMessage } from "../../user-history/src/shared/types.ts";
+import { chatLines, NUDGE_PREFIX, OWNER_RETRY_MARK, serverNote, unreadCount } from "../../../legacy/prime/user-history/src/shared/chat-feed.ts";
+import type { ThreadMessage } from "../../../legacy/prime/user-history/src/shared/types.ts";
 
 /*
- * Message delivery on the chat host: the chat service's two disk outboxes (components/user-history/src/outbox.ts), the daemon queues the
+ * Message delivery on the chat host: the chat service's two disk outboxes (legacy/prime/user-history/src/outbox.ts), the daemon queues the
  * thread's queue chips show (client/QueueChips.svelte), and the outside sends log (components/global-rules/send-log.ts). Every label names
  * the receiving tree's chat by its name, never by a session id.
  *

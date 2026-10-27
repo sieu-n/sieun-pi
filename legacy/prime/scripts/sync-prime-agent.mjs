@@ -9,7 +9,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
-const history = join(root, "components", "user-history");
+const history = join(root, "legacy", "prime", "user-history");
 const RELEASE = "https://pub-728493de92a943e2a9b2d17b4719f318.r2.dev/releases";
 const PACKAGES = ["prime-agent", "prime-agent-ai", "prime-agent-tui"];
 const URL_PATTERN = /\/releases\/v\d+\.\d+\.\d+\/(prime-agent(?:-ai|-tui)?)-\d+\.\d+\.\d+\.tgz/g;

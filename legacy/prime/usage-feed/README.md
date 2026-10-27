@@ -1,7 +1,7 @@
 # usage-feed
 
 usage-feed sends the token usage of every Prime model call to LGTM, read from the session transcripts, until Prime's own OTLP exporter runs on the box.
-Settings > Usage, the sidebar Throughput line and the Skills and tools cache shares read `prime_agent_*` series from LGTM (`components/user-history/src/usage/lgtm.ts`).
+Settings > Usage, the sidebar Throughput line and the Skills and tools cache shares read `prime_agent_*` series from LGTM (`legacy/prime/user-history/src/usage/lgtm.ts`).
 Prime's exporter (prime-agent 973cf9c) writes those series, but on 10-19 no box ran a Prime build with it, so LGTM held none and the Usage page read 0.
 
 ## What it does

@@ -148,7 +148,7 @@ To send:
 2. Add a For you todo with the draft, the recipient, and choices such as "Send it" / "Not yet".
 3. After the owner approves the todo, pass `owner_ok="<chat id>/<todo id>"` to `run()` or `agent()`.
 
-The check reads the chat's board through `components/user-history/src/owner-ok.ts` in the sieun-pi repo.
+The check reads the chat's board through `legacy/prime/user-history/src/owner-ok.ts` in the sieun-pi repo.
 The todo must be checked off and answered by the owner with its first choice or another go.
 The check also gets the page URL, so when one todo asks about two sites and the answer splits, as in "no to Kaggle, yes to Reddit", only the site he said yes to passes.
 

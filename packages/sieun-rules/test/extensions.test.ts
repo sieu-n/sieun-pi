@@ -39,7 +39,7 @@ before(async () => {
   for (const key of Object.keys(process.env)) if (/^(RLM_|PRIME_AGENT_)|^PYTHONPATH$/.test(key)) delete process.env[key];
   host = new PiHost({
     agentDir, defaultCwd: ws(), defaultModel: { provider: "script", id: "m" }, extensionFactories: [scripted, piRlm],
-    extensions: ["global-rules/index.ts", "claude-rules/index.ts", "user-history/extension/index.ts"].map(path => join(COMPONENTS, path)),
+    extensions: [join(COMPONENTS, "global-rules/index.ts"), join(COMPONENTS, "claude-rules/index.ts"), join(COMPONENTS, "../legacy/prime/user-history/extension/index.ts")],
     resourceLoaderOptions: { noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true }, log: () => {},
   });
   chat = await host.openSession({ cwd: ws(), extensionFlagValues: { chat: true } });

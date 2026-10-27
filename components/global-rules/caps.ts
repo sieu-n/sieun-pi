@@ -4,7 +4,7 @@ import { SHELLS, lex, shellScript, stripHeredocs } from "./shell.ts";
 
 /*
  * Owner rule c107 (2026-10-18): no memory, CPU, IO, task or priority cap on a box unless he asked for that one. The box parity duty
- * (components/user-history/scripts/duties/box-parity.ts) counts each such setting as resource_limits_set. Every count so far came from a
+ * (legacy/prime/user-history/scripts/duties/box-parity.ts) counts each such setting as resource_limits_set. Every count so far came from a
  * hand-typed command: load-fakeprov.service with CPUQuota on 10-22 (board step p143), and `docker run --cpus 8` at 20:56Z, 21:35Z and 21:54Z
  * on 10-24, which made the duty read 2 at 21:55Z. This rule refuses such a command where it is a real argument of the program that sets it.
  * `heavy <size> -- <cmd>` stays allowed: the owner asked for it on 10-19 (memory layer 4 in deploy/linux/README.md).

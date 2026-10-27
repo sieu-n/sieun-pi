@@ -789,7 +789,7 @@ FORYOU_S = int(os.environ.get("PRIME_SYNC_FORYOU_S") or 1800)
 FORYOU_CHAT = os.environ.get("PRIME_SYNC_FORYOU_CHAT") or "01a1164b-4a2d-742d-b27a-82f086ed0200"
 PRIME_BIN = os.environ.get("PRIME_SYNC_PRIME_BIN") or str(HOME / ".local/share/prime-agent/bin/prime-agent")
 TRANSCRIPTS = Path(os.environ.get("PRIME_SYNC_TRANSCRIPTS") or HOME / ".prime/agent")
-USER_HISTORY = HOME / ".local/share/sieun-pi-chat/current/components/user-history"
+USER_HISTORY = HOME / ".local/share/sieun-pi-chat/current/legacy/prime/user-history"
 SESSION_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 WRITES = re.compile(r"'w'|\\\"w\\\"|write_text|write_bytes|old_str|sed -i|--write|\bcp |\bmv |checkout |git apply|tee | > ")
 FOLLOWING = ("at ", "pulled ", "rebased ", "ahead of ")
@@ -834,7 +834,7 @@ def watch_block(report: dict, config: dict, paths: list[str]) -> None:
     write_atomic(path, json.dumps(state).encode(), 0o644)
 
 
-# sieun-pi's daemon reader (components/user-history/src/daemon-cli.mjs) in the installed runtime or chat release. prime-agent's CLI waits a fixed
+# sieun-pi's daemon reader (legacy/prime/user-history/src/daemon-cli.mjs) in the installed runtime or chat release. prime-agent's CLI waits a fixed
 # 3 s for the daemon's hello, and on 10-22 65 of 108 probes on us-metal02 got it after 3 to 7 s; the reader waits 30 s and tries a failed hello
 # once more. PRIME_SYNC_PRIME_BIN, or a box with no reader, sends through the CLI, where a missed hello is tried once more.
 READER_ROOTS = (HOME / ".local/share/sieun-pi-runtime/current", HOME / ".local/share/sieun-pi-chat/current")
@@ -847,8 +847,8 @@ def daemon_reader() -> list[str] | None:
     if os.environ.get("PRIME_SYNC_PRIME_BIN"):
         return None
     node = next((str(p) for p in (HOME / ".local/node/bin/node", HOME / ".local/bin/node") if p.exists()), None) or shutil.which("node")
-    script = next((root / "components/user-history/src/daemon-cli.mjs" for root in READER_ROOTS
-                   if (root / "components/user-history/src/daemon-cli.mjs").is_file() and (root / "components/user-history/node_modules/tsx").is_dir()), None)
+    script = next((root / "legacy/prime/user-history/src/daemon-cli.mjs" for root in READER_ROOTS
+                   if (root / "legacy/prime/user-history/src/daemon-cli.mjs").is_file() and (root / "legacy/prime/user-history/node_modules/tsx").is_dir()), None)
     return [node, str(script)] if node and script else None
 
 

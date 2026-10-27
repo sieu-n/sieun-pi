@@ -44,8 +44,8 @@ function emptyIndexTree({ work, git, write }) {
   rmSync(path.join(work, "skills"), { recursive: true });
   const env = { GIT_INDEX_FILE: path.join(work, ".git/index-private") };
   git(["read-tree", "--empty"], env);
-  write("components/user-history/src/duty.ts", "duty\n");
-  git(["add", "components/user-history/src/duty.ts"], env);
+  write("legacy/prime/user-history/src/duty.ts", "duty\n");
+  git(["add", "legacy/prime/user-history/src/duty.ts"], env);
   return env;
 }
 

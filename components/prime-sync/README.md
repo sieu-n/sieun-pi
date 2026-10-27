@@ -32,7 +32,7 @@ Prime and the chat read only local files, so prime-sync writes those files in pl
 
 1. Prime writes `harness_state.json` from each kernel by reloading it when its mtime changed, editing it in memory and replacing it atomically, with no lock (`prime-agent-runtime/src/rlm/harness.py`, `HarnessState.save`).
 2. prime-sync replaces the file the same way, and only when the mtime is unchanged since it read the file. It reads the file again 2 seconds later, and if a Prime write landed in between, it leaves the base where it was, so the next run merges again and loses nothing.
-3. The chat writes the ledger under the `corrections.json.lock` directory (`components/user-history/src/locked-json.ts`), and prime-sync takes the same lock for its read, merge and write.
+3. The chat writes the ledger under the `corrections.json.lock` directory (`legacy/prime/user-history/src/locked-json.ts`), and prime-sync takes the same lock for its read, merge and write.
 4. Two boxes that both run the chat could each number a new correction `c100`, and the newer one would win. Only one box runs the chat, so this does not happen today.
 
 ## Install and use

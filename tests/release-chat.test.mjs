@@ -97,7 +97,7 @@ function fixture(t) {
     writeFileSync(path.join(repo, file), text);
   };
   const commit = (name) => {
-    write("components/user-history/src/version.txt", `${name}\n`);
+    write("legacy/prime/user-history/src/version.txt", `${name}\n`);
     git("add", "-A");
     git("commit", "-q", "-m", name);
     return git("rev-parse", "HEAD");
@@ -107,15 +107,15 @@ function fixture(t) {
   git("config", "user.email", "test@example.com");
   git("config", "user.name", "Test");
   write(".gitignore", "node_modules/\n");
-  write("components/user-history/src/chat-assets-prebuild.mjs", "");
-  write("components/user-history/src/chat-service-bundle.mjs", "");
+  write("legacy/prime/user-history/src/chat-assets-prebuild.mjs", "");
+  write("legacy/prime/user-history/src/chat-service-bundle.mjs", "");
   mkdirSync(path.join(dir, "controls"));
   mkdirSync(path.join(dir, "seen"));
   writeFileSync(path.join(dir, "build-step.mjs"), BUILD_STEP);
   const step = (name) => `node ${JSON.stringify(path.join(dir, "build-step.mjs"))} ${name} ${JSON.stringify(dir)}`;
-  write("components/user-history/package.json", JSON.stringify({ name: "fixture", private: true, scripts: { typecheck: step("typecheck"), test: step("test") } }));
+  write("legacy/prime/user-history/package.json", JSON.stringify({ name: "fixture", private: true, scripts: { typecheck: step("typecheck"), test: step("test") } }));
   mkdirSync(path.join(repo, "node_modules"));
-  mkdirSync(path.join(repo, "components/user-history/node_modules"));
+  mkdirSync(path.join(repo, "legacy/prime/user-history/node_modules"));
   const kicks = path.join(dir, "kicks.log");
   const launchctl = path.join(dir, "launchctl");
   // The chat service and the systemd socket as real processes: the fake chat serves the page port from what current holds (FAKE_CHAT), and the
@@ -224,7 +224,8 @@ function helperBeforeFold(dir) {
   const shown = spawnSync("git", ["-C", path.dirname(script), "show", `${BEFORE_FOLD}:scripts/release-chat.mjs`], { encoding: "utf8", env: cleanEnv });
   assert.equal(shown.status, 0, shown.stderr);
   const file = path.join(dir, "release-chat-before-fold.mjs");
-  writeFileSync(file, shown.stdout);
+  // That script predates the layout move, so it builds the chat where the fixture keeps it now.
+  writeFileSync(file, shown.stdout.replaceAll("components/user-history", "legacy/prime/user-history"));
   return file;
 }
 
@@ -342,9 +343,10 @@ test("a release builds the folder, flips current and kickstarts the chat", (t) =
   assert.equal(f.current(), id(f.c1));
   const dir = path.join(f.home, id(f.c1));
   assert.equal(JSON.parse(readFileSync(path.join(dir, "release.json"), "utf8")).sha, f.c1);
-  assert.equal(readFileSync(path.join(dir, "components/user-history/src/version.txt"), "utf8"), "one\n");
+  assert.equal(readFileSync(path.join(dir, "legacy/prime/user-history/src/version.txt"), "utf8"), "one\n");
   assert.equal(readlinkSync(path.join(dir, "node_modules")), path.join(f.repo, "node_modules"));
-  assert.equal(readlinkSync(path.join(dir, "components/user-history/node_modules")), path.join(f.repo, "components/user-history/node_modules"));
+  assert.equal(readlinkSync(path.join(dir, "legacy/prime/user-history/node_modules")), path.join(f.repo, "legacy/prime/user-history/node_modules"));
+  assert.equal(readlinkSync(path.join(dir, "components/user-history")), "../legacy/prime/user-history");
   assert.deepEqual(f.kicked(), [`kickstart -k gui/${userInfo().uid}/com.sieun.agent-chat`]);
   const next = f.release([f.c3, "--no-kickstart"]);
   assert.equal(next.status, 0, next.stderr);

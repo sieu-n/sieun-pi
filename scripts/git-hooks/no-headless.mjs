@@ -2,7 +2,7 @@
 // Owner c177, 10-27: "can you remove Headless browser???? NEVER put it back in. we'll always use Aside only."
 // Refuses a commit that adds a headless browser launch to a harness path: a skill, a component, a script, config or deploy.
 // Test code (test/, tests/, fixtures/) is left out, because a product's own test client may run its browser as it likes (c163).
-// components/user-history/test/no-headless-browser.test.ts runs the same scan over the whole tree.
+// legacy/prime/user-history/test/no-headless-browser.test.ts runs the same scan over the whole tree.
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 

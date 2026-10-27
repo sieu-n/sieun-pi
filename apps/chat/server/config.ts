@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 
 /** Today's chat, which this server ports from. One constant, so its move to legacy/prime/user-history is a one-line edit. */
-export const USER_HISTORY_DIR = "components/user-history";
+export const USER_HISTORY_DIR = "legacy/prime/user-history";
 
 export interface Config {
   port: number;

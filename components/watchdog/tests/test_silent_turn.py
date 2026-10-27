@@ -16,8 +16,8 @@ import wd_common  # noqa: E402
 import watchdog  # noqa: E402
 
 SID = '01a15f90-afb8-7434-814a-2e5fbcafb1ec'
-CHAT_FEED = Path(__file__).resolve().parents[2] / 'user-history/src/shared/chat-feed.ts'
-TURNS = Path(__file__).resolve().parents[2] / 'user-history/src/shared/turns.ts'
+CHAT_FEED = Path(__file__).resolve().parents[3] / 'legacy/prime/user-history/src/shared/chat-feed.ts'
+TURNS = Path(__file__).resolve().parents[3] / 'legacy/prime/user-history/src/shared/turns.ts'
 
 
 def at(minutes_ago):

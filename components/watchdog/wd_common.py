@@ -32,7 +32,7 @@ def log(entry):
     return entry
 
 
-# sieun-pi's daemon reader (components/user-history/src/daemon-cli.mjs, src/daemon-list.ts) in the installed runtime or chat release. The
+# sieun-pi's daemon reader (legacy/prime/user-history/src/daemon-cli.mjs, src/daemon-list.ts) in the installed runtime or chat release. The
 # prime-agent CLI waits a fixed 3 s for the daemon's hello, and on 10-22 65 of 108 probes on us-metal02 got it after 3 to 7 s, and at 04:42Z
 # `prime-agent list` failed so twice. The reader waits 30 s and opens the daemon once more after a failed hello.
 READER_ROOTS = (Path.home() / '.local/share/sieun-pi-runtime/current', Path.home() / '.local/share/sieun-pi-chat/current')
@@ -43,8 +43,8 @@ def daemon_reader():
     """[node, daemon-cli.mjs] from the first root that has it with its tsx, or None."""
     import shutil
     node = next((str(p) for p in (Path.home() / '.local/node/bin/node', Path.home() / '.local/bin/node') if p.exists()), None) or shutil.which('node', path=ENV.get('PATH'))
-    script = next((root / 'components/user-history/src/daemon-cli.mjs' for root in READER_ROOTS
-                   if (root / 'components/user-history/src/daemon-cli.mjs').is_file() and (root / 'components/user-history/node_modules/tsx').is_dir()), None)
+    script = next((root / 'legacy/prime/user-history/src/daemon-cli.mjs' for root in READER_ROOTS
+                   if (root / 'legacy/prime/user-history/src/daemon-cli.mjs').is_file() and (root / 'legacy/prime/user-history/node_modules/tsx').is_dir()), None)
     return [node, str(script)] if node and script else None
 
 
@@ -94,7 +94,7 @@ def _tail_events(path, n=30, window=400_000):
     return out[::-1]
 
 
-# The chat service's records (components/user-history): archived-chats.json holds the chats the owner archived, clean-room-chats.json the
+# The chat service's records (legacy/prime/user-history): archived-chats.json holds the chats the owner archived, clean-room-chats.json the
 # clean-room test chats, and chats.json and threads.json the chats and threads it shows. On 10-18 the watchdog sent plan-and-duties run-1's
 # test chat "[watchdog] Your last turn was dropped" at 14:34:58Z, 6.8 min after its teardown archived it, and the chat went on working into run-2.
 DEFAULT_CHAT_DATA = Path.home() / '.prime/agent/browser-chat'
@@ -119,7 +119,7 @@ def pool_kept(sid):
     return sid in (turns.get('kept') or {})
 
 
-# sieun-pi's one reader of a session parked on a pi-pool working slot (components/user-history/src/slot-park.ts), through the daemon reader's
+# sieun-pi's one reader of a session parked on a pi-pool working slot (legacy/prime/user-history/src/slot-park.ts), through the daemon reader's
 # `slot-park` command, which also reads `pi-pool queue --json`. On us-metal02 on 10-28 it read the 1,967 live session files in 3.2 s and all
 # 7,028 in 6.7 s at a load near 110.
 SLOT_PARK_S = 60
@@ -233,7 +233,7 @@ def gone_reason(file, root_life, shown):
 
 
 def chat_service():
-    """(base URL, write token, origin) of the chat service, as components/user-history/src/chat-host.ts chatService finds it: the chat host of
+    """(base URL, write token, origin) of the chat service, as legacy/prime/user-history/src/chat-host.ts chatService finds it: the chat host of
     hosts.json with ~/.config/sieun-pi/chat-access.json when that is another box, else this box's configuration.json. None when neither is set up."""
     import socket
     hosts_file = Path(os.environ.get('SIEUN_PI_HOSTS') or Path.home() / '.config/sieun-pi/hosts.json')

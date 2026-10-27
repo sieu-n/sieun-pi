@@ -1,10 +1,10 @@
 """01a17f25 on us-metal02, 10-27: from 20:55:56Z its turn waited for a pi-pool working slot, Prime ended the turn on "pi-pool: this run waits
 for a working slot, place 134 of 139", and the idle unload stopped its worker. Through 21:22:09Z it sat 104th to 139th in pi-pool's line, and
 the cycle read such a session as a frozen turn to stop and resend while its run waited inside a live model call, and probed its model
-every cycle. The cycle now reads the wait through sieun-pi's one reader (components/user-history/src/slot-park.ts, `daemon-cli.mjs slot-park`),
+every cycle. The cycle now reads the wait through sieun-pi's one reader (legacy/prime/user-history/src/slot-park.ts, `daemon-cli.mjs slot-park`),
 and a parked session reads SLOT_WAIT with its place and gets no probe, stop, send or notice.
 
-The cases replay cuts of components/user-history/test/fixtures/slot-park-01a17f25-1028.jsonl through the real reader, with pi-pool's line left
+The cases replay cuts of legacy/prime/user-history/test/fixtures/slot-park-01a17f25-1028.jsonl through the real reader, with pi-pool's line left
 out or stubbed. WATCHDOG_DIR=<folder with the old watchdog files> runs them against the old cycle, where the parked cases fail."""
 import datetime as dt, json, os, sys, tempfile, unittest
 from pathlib import Path

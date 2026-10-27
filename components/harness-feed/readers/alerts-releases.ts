@@ -4,7 +4,7 @@ import { createConnection } from "node:net";
 import { tmpdir, userInfo } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { primeUpdateRunning } from "../../user-history/src/prime-update.ts";
+import { primeUpdateRunning } from "../../../legacy/prime/user-history/src/prime-update.ts";
 import type { Context, Sample } from "../otlp.ts";
 
 // alerts-releases: the alert bridge, held resumes and saved job states, board wakes, chat releases and the Updates pane on the chat host, and
@@ -538,7 +538,7 @@ async function releases(ctx: Context, dir: string, daemonVersion: string | null)
   const [waiting, building] = await Promise.all([liveCount(pidOf(/^release\.lock\.(\d+)$/)), liveCount(pidOf(/^\.building-release-[0-9a-f]+-(\d+)$/))]);
   out.push(gauge("harness.release.waiting", "release-chat.mjs runs waiting for release.lock (live release.lock.<pid> drafts).", waiting),
     gauge("harness.release.building", "Release folders being built now (live .building-release-<sha>-<pid> folders).", building));
-  const client = live ? await packageVersion(join(home, live, "components/user-history/node_modules/prime-agent/package.json"))
+  const client = live ? await packageVersion(join(home, live, "legacy/prime/user-history/node_modules/prime-agent/package.json"))
     ?? await packageVersion(join(home, live, "node_modules/prime-agent/package.json")) : null;
   if (client) out.push(gauge("harness.release.client_version", "1 for the prime-agent SDK version the live release loads, the Updates pane's client.", 1, { version: client }));
   const sdk = sdkView(daemonVersion, client, await readJson(join(dir, "sdk.json")));
@@ -554,7 +554,7 @@ async function releases(ctx: Context, dir: string, daemonVersion: string | null)
 async function currentBrief(ctx: Context, live: string): Promise<string | null> {
   const state = kept(ctx);
   if (state.brief?.release === live) return state.brief.version;
-  const file = join(ctx.home, ".local/share/sieun-pi-chat", live, "components/user-history/src/chat-brief.ts");
+  const file = join(ctx.home, ".local/share/sieun-pi-chat", live, "legacy/prime/user-history/src/chat-brief.ts");
   const version = await import(pathToFileURL(file).href).then((module: { chatBrief?: () => { version: string } }) => module.chatBrief?.().version ?? null, () => null);
   state.brief = { release: live, version };
   return version;

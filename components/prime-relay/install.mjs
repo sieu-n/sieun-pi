@@ -21,7 +21,7 @@ const tokenFile = join(configDir, "token");
 /**
  * The folders another box may read, GET only. The daemon logs let the chat host's resume pass (resume_paused.py) see this box's daemon restarts
  * and worker stops, which archive and abort turns no one asked to stop. The prompt captures let the chat host's Prompt view show the payload a
- * session on this box last sent (components/user-history/src/prompt-capture.ts). A root a relay.json already lists stays.
+ * session on this box last sent (legacy/prime/user-history/src/prompt-capture.ts). A root a relay.json already lists stays.
  */
 const ROOTS = ["~/.prime/agent/sessions", "~/.prime/agent/session-artifacts", "~/.prime/agent/logs", "~/.prime/agent/browser-chat/prompts"];
 const gitEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")));
@@ -119,7 +119,7 @@ function main() {
   writeAtomic(join(share, "owner-turn.mjs"), show("owner-turn.mjs"), 0o644);
   writeAtomic(join(share, "first-prompt.mjs"), show("first-prompt.mjs"), 0o644);
   // POST /v1/watch runs sieun-pi's worker footprint helper on this box for the chat service on another box.
-  writeAtomic(join(share, "worker-footprint.py"), execFileSync("git", ["-C", repo, "show", `${sha}:components/user-history/src/worker-footprint.py`], { encoding: "utf8", env: gitEnv, maxBuffer: 16 * 1024 * 1024 }), 0o644);
+  writeAtomic(join(share, "worker-footprint.py"), execFileSync("git", ["-C", repo, "show", `${sha}:legacy/prime/user-history/src/worker-footprint.py`], { encoding: "utf8", env: gitEnv, maxBuffer: 16 * 1024 * 1024 }), 0o644);
   writeAtomic(script, show("relay.mjs"), 0o644);
   writeAtomic(join(share, "release.json"), `${JSON.stringify({ sha, installedAt: new Date().toISOString() })}\n`, 0o644);
   if (!existsSync(tokenFile)) writeAtomic(tokenFile, `${randomBytes(32).toString("hex")}\n`, 0o600);

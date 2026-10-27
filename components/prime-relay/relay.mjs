@@ -141,7 +141,7 @@ async function serveLead(request, response, lead) {
 
 /**
  * The turn queue settings another box may write here, each with its whole-number range: the switch takes 0 or 1, and the two limits 1 to 999,
- * the chat's own input bounds (LIMIT_MAX in components/user-history/src/chat-agent-queue.ts).
+ * the chat's own input bounds (LIMIT_MAX in legacy/prime/user-history/src/chat-agent-queue.ts).
  */
 const POOL_KEYS = { agent_queue_on: [0, 1], working_max: [1, 999], tree_working_max: [1, 999] };
 

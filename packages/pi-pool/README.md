@@ -457,7 +457,7 @@ Every refused request logs one `parked` line with `at` in epoch seconds, the slo
 `room`, the accounts R1 to R7 would let the tree enter now but for a cell (R4), so a tree
 held by its move budget (R6) logs no room, and the first request
 that gets an account after a wait logs one `unparked` line. The Whole system duty reads
-these (components/user-history/scripts/duties/whole-system.ts `readPoolLog`).
+these (legacy/prime/user-history/scripts/duties/whole-system.ts `readPoolLog`).
 `pi-pool status` counts today's `switch` lines per provider.
 
 Removed on 2026-10-12: the hop onto a depleted account when nothing was usable (on
@@ -669,12 +669,12 @@ The extension passes `--queued-input` at an agent_end when `ctx.hasPendingMessag
 Any other released run keeps its place for `REASK_SEC` (2 s), so a session on an extension loaded before `--queued-input` whose next run starts at once keeps it too.
 On 10-22 the metal box owner 01a11d24 got 3 runs from 09:57Z to 13:34Z, each after a wait of 2,802 s to 5,799 s at the back of the line, and each held its slot for under 70 s.
 The lead list holds no kind and skips no limit, so a lead run waits for a free slot like any run.
-pi-pool does not know what a lead session is. The chat service writes the ids of the chats that run on this machine with `pi-pool lead` each time its chat list loads or changes (`leadWriter` in components/user-history/src/chat-hosts.ts), and it reaches another machine's queue through that machine's prime-relay (`POST /v1/lead`).
+pi-pool does not know what a lead session is. The chat service writes the ids of the chats that run on this machine with `pi-pool lead` each time its chat list loads or changes (`leadWriter` in legacy/prime/user-history/src/chat-hosts.ts), and it reaches another machine's queue through that machine's prime-relay (`POST /v1/lead`).
 A replay of the runs of 10-20 and 10-21 with their real arrival times, hold times and slot counts cut the chat heads' p90 queue wait from 139 s and 414 s to 4 s and 6 s, while the job runs' p90 rose 2 to 5%.
 A run starts while the machine has fewer than `working_max` runs working and the run's tree fewer than `tree_working_max`, and every working run counts toward both.
 The owner sets both numbers by hand on each machine with `pi-pool set`, and no code changes them (owner, c88 on 10-16 and again on 10-19).
 An owner run never waits and still counts toward the limit, so background work waits behind it.
-Only the chat service marks an owner turn, with `pi-pool owner-turn` right before it sends the owner's prompt, on the machine that runs the session, and over ssh for a session on another machine (`ownerTurnMarker` in components/user-history/src/chat-pool.ts).
+Only the chat service marks an owner turn, with `pi-pool owner-turn` right before it sends the owner's prompt, on the machine that runs the session, and over ssh for a session on another machine (`ownerTurnMarker` in legacy/prime/user-history/src/chat-pool.ts).
 The extension marks none, because every prompt the daemon delivers reads as input source `interactive`: on 10-14 that hook marked 21 [job] notices, 6 [brief check] notes and 51 duty and check-in briefs as owner turns.
 An entry whose Prime worker or waiting `admit --wait` process is gone is dropped, and so is a slot whose lease (`lease_s`, 1,800 s) runs out.
 `pi-pool set agent_queue_on 0` turns the queue off and keeps the limits, and every admit then answers off.

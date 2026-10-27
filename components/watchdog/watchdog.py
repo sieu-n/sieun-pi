@@ -38,7 +38,7 @@ SWAP_CAP_GIB = 16.0  # ops guy 2026-10-10: the Mac target; at 8 nothing woke for
 LOAD_CAP = 30.0
 LAST_COUNTS = {}     # resumed/skipped counts of the latest cycle, read by cron_cycle.py
 
-# The custom messages that wake the agent (components/user-history/src/shared/turns.ts PROMPT_TYPES). Every other custom message is a note
+# The custom messages that wake the agent (legacy/prime/user-history/src/shared/turns.ts PROMPT_TYPES). Every other custom message is a note
 # no turn answers: on 10-18 at 00:11Z a harness_digest from the 23:40Z resume woke the paused chats SEO guy and spec and monitoring system,
 # and on 10-22 the correction refine's notes after gpt sol (metal 02)'s answered turn read as input owed since 00:58:56Z, and the cycle at
 # 01:47:55Z sent it "dropped 48.2 minutes ago".

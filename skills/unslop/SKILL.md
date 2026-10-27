@@ -9,7 +9,7 @@ Apply this to any text a human will read. Published text matters most, because a
 
 This file is the one writing standard. If another writing rule disagrees, this file wins.
 
-llm-wiki pages add the 메르 style, and a subagent writes each page. The body is numbered short lines, one plain sentence each, with a mermaid diagram or image for every flow, structure or comparison, short sections, and no prose paragraphs. That standard lives only in auto-sns-agent's `.agents/skills/apps/llm-wiki/references/writing.md` (read it with `node scripts/skills/read-skill.mjs apps/llm-wiki/references/writing.md`), and `apps/llm-wiki/scripts/prose-lint.mjs` enforces both files on every page write and commit.
+llm-wiki pages add the 메르 style, and a subagent writes each page. The body is numbered short lines, one plain sentence each, with a mermaid diagram or image for every flow, structure or comparison, short sections, and no prose paragraphs. That standard lives only in auto-sns-agent's `.agents/skills/apps/llm-wiki/references/writing.md` (read it with `node scripts/skills/read-skill.mjs apps/llm-wiki/references/writing.md`), and `auto-sns-agent/apps/llm-wiki/scripts/prose-lint.mjs` enforces both files on every page write and commit.
 
 ## The one test
 

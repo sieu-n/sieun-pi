@@ -4,7 +4,7 @@
 usage: python3 -B feed.py [--once] [--dry-run]
 
 Settings > Usage, the sidebar Throughput line and the Skills and tools cache shares read prime_agent_* series from LGTM
-(components/user-history/src/usage/lgtm.ts). Prime's OTLP exporter (prime-agent 973cf9c) writes them, but no box runs a Prime build
+(legacy/prime/user-history/src/usage/lgtm.ts). Prime's OTLP exporter (prime-agent 973cf9c) writes them, but no box runs a Prime build
 with it yet, so on 10-19 LGTM held no prime_agent series. This feed reads each assistant message's usage from the transcripts
 under ~/.prime/agent and sends the same five counters to the box's Alloy on 127.0.0.1:14318, with the extra label
 feed="transcripts". It counts calls that end after it starts; Prometheus cannot take older samples.

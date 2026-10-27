@@ -17,7 +17,7 @@ def load_board():
 
 
 class BoardWakeTests(unittest.TestCase):
-    """board.wake(run=, attempt=) writes the wake file the chat service ticks (components/user-history/src/wakes.ts parseWake)."""
+    """board.wake(run=, attempt=) writes the wake file the chat service ticks (legacy/prime/user-history/src/wakes.ts parseWake)."""
 
     def test_run_wake_keeps_a_later_attempt_and_drops_attempt_one(self):
         """10-21: wakes set on promote run 39493311906 after attempt 1's cancel went out at once, before the rerun reached them."""

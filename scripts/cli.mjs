@@ -18,9 +18,9 @@ try {
     run(process.env.SIEUN_PI_PYTHON || "python3", ["-B", resolve(root, "scripts/manage.py"), command, ...args], process.cwd());
   } else if (command === "chat" || command === "open") {
     // `sieun-pi open` is `sieun-pi chat open`: start the chat if needed, then open its app window or the URL.
-    run(process.execPath, [resolve(root, "components/user-history/src/chat-service-cli.mjs"), ...(command === "open" ? ["open"] : []), ...args], process.cwd());
+    run(process.execPath, [resolve(root, "legacy/prime/user-history/src/chat-service-cli.mjs"), ...(command === "open" ? ["open"] : []), ...args], process.cwd());
   } else if (command === "hosts") {
-    run(process.execPath, [resolve(root, "components/user-history/src/hosts-cli.mjs"), ...args], process.cwd());
+    run(process.execPath, [resolve(root, "legacy/prime/user-history/src/hosts-cli.mjs"), ...args], process.cwd());
   } else if (command === "sync") {
     const installed = resolve(homedir(), ".local/share/prime-sync/sync.py");
     if (args[0] === "install") run(process.env.SIEUN_PI_PYTHON || "python3", ["-B", resolve(root, "components/prime-sync/install.py"), ...args.slice(1)]);
@@ -36,7 +36,7 @@ try {
     run("npm", ["ci", "--ignore-scripts", "--include=dev"]);
     run("uv", ["sync", "--locked"]);
     run("bun", ["install", "--frozen-lockfile"], resolve(root, "skills/poteto-mode/scripts"));
-    run("npm", ["ci", "--ignore-scripts"], resolve(root, "components/user-history"));
+    run("npm", ["ci", "--ignore-scripts"], resolve(root, "legacy/prime/user-history"));
     run("git", ["config", "core.hooksPath", "scripts/git-hooks"]);
   } else {
     process.stdout.write(`sieun-pi (Prime Agent ${lockedPrimeVersion(root)})\n\nCommands: open, chat, hosts, sync, source, develop, check, build, plan, apply, verify, rollback, uninstall, sync-prime-agent\nRun a profile command with --help for options. Install and update never change HOME automatically.\n`);

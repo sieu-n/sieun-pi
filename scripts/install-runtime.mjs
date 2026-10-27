@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
 const checkout = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const packageDirs = [".", "components/user-history"];
+const packageDirs = [".", "legacy/prime/user-history"];
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !["GIT_DIR", "GIT_INDEX_FILE", "GIT_WORK_TREE", "NODE_PATH"].includes(key)));
 
 export function run(command, args, cwd, capture = false) {
@@ -38,7 +38,7 @@ function validateLinks(root, directory = root) {
 
 function validate(root, execute) {
   physicalDirectory(root);
-  for (const name of ["scripts/manage.py", "install-manifest.json", "components/global-rules/index.ts", "components/user-history/extension/index.ts"]) {
+  for (const name of ["scripts/manage.py", "install-manifest.json", "components/global-rules/index.ts", "legacy/prime/user-history/extension/index.ts"]) {
     if (!lstatSync(join(root, name)).isFile()) throw new Error(`Missing runtime file: ${name}`);
   }
   const manifest = JSON.parse(readFileSync(join(root, "install-manifest.json"), "utf8"));
@@ -143,7 +143,10 @@ export function installRuntime({ repo = checkout, home = homedir(), ref = "HEAD"
         if (sameDependencies(installed, join(staging, directory))) cloneTree(join(installed, "node_modules"), join(staging, directory, "node_modules"), execute);
         else execute("npm", ["ci", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund", "--cache", join(scratch, "npm-cache")], join(staging, directory));
       }
-      bundleExtension(join(staging, "components/user-history"), execute);
+      bundleExtension(join(staging, "legacy/prime/user-history"), execute);
+      // Installed watchdog and idle-reaper copies and chat duties name <runtime>/components/user-history until the switch to Pi.
+      mkdirSync(join(staging, "components"), { recursive: true });
+      symlinkSync("../legacy/prime/user-history", join(staging, "components/user-history"));
       validate(staging, execute);
       writeFileSync(join(staging, "release.json"), JSON.stringify({ sha, source: repo, builtAt: new Date().toISOString() }, null, 2) + "\n");
       renameSync(staging, release);

@@ -6,6 +6,6 @@
     "../pi-pool/src/pi/index.ts",
     "../../components/global-rules/index.ts",
     "../../components/claude-rules/index.ts",
-    "../../components/user-history/extension/index.ts"
+    "../../legacy/prime/user-history/extension/index.ts"
   ]
 }

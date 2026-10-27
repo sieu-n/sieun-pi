@@ -1,6 +1,6 @@
 /**
  * Prime's schedule grammar and job record, ported from prime-agent 0.9.8 `dist/core/cron-jobs.js` (MIT, the npm package under
- * `components/user-history/node_modules/prime-agent`). The grammar and the job fields stay the same, so `cron_list`, `heartbeat_get` and the
+ * `legacy/prime/user-history/node_modules/prime-agent`). The grammar and the job fields stay the same, so `cron_list`, `heartbeat_get` and the
  * `rlm_heartbeat` skill answer what the chat and the check-in already parse (user-history `src/chat-catalog.ts` parseSchedules,
  * `src/checkin-load.ts` ScheduledJob).
  *

@@ -197,14 +197,14 @@ OWNERS = set()
 OWED_ONLY = [False]
 # The cut runs --owed leaves alone, with what each was cut by.
 UNOWED = []
-# The chat service's own notes in a user message (components/user-history/src/shared/chat-feed.ts SERVER_NOTES and NUDGE_PREFIX), Prime's
+# The chat service's own notes in a user message (legacy/prime/user-history/src/shared/chat-feed.ts SERVER_NOTES and NUDGE_PREFIX), Prime's
 # snake_case notes (PRIME_NOTE) and the watchdog's notices: none of them is a message the owner typed. The watchdog reads owner input the same way.
 NOTE_PREFIXES = ("[watchdog]", "[check-in] ", "[job] ", "[reply check] ", "[brief check] ", "[correction check] ", "[board] Ops not applied: ",
                  "[board] Decisions not on the scratchpad: ", "Prime Agent restarted after an update", "Watchdog recovery checkpoint", "[from ",
                  "[resume]", "[relay]", "[cross-host message", "[d9 push ")
 PRIME_NOTE = re.compile(r"^<[a-z]+(?:_[a-z]+)+>\s")
 # The chat service's agent outbox heads a message that waited with its age, and several messages that go in one send with their count
-# (components/user-history/src/agent-outbox.ts agedText and bundleText). The owner's own sends never go through it, so neither is his.
+# (legacy/prime/user-history/src/agent-outbox.ts agedText and bundleText). The owner's own sends never go through it, so neither is his.
 OUTBOX_NOTE = re.compile(r"^\[(?:queued [^\]\n]* ago at |\d+ messages the chat service's outbox held )")
 # A job's brief quotes the owner and is no message from him: a subagent's task opens with "[task from parent]", and every chat brief opens
 # with "Owner's words:" (poteto-mode and the chat brief rules).
@@ -387,9 +387,9 @@ NEVER_STARTED_INTRO = ("[resume] Your parent spawned you, but its worker stopped
                        "Your task, as your parent wrote it:\n\n")
 
 
-# The daemon reader in this checkout (components/user-history/src/daemon-cli.mjs). prime-agent's CLI waits a fixed 3 s for the daemon's hello, and
+# The daemon reader in this checkout (legacy/prime/user-history/src/daemon-cli.mjs). prime-agent's CLI waits a fixed 3 s for the daemon's hello, and
 # from 10-21 to 10-22 136 passes failed on it and sent nothing until the next tick; the reader waits 30 s and tries a failed hello once more.
-DAEMON_CLI = Path(__file__).resolve().parents[5] / "components" / "user-history" / "src" / "daemon-cli.mjs"
+DAEMON_CLI = Path(__file__).resolve().parents[3] / "user-history" / "src" / "daemon-cli.mjs"
 # The reader's own longest run: two tries of a 30 s connect and a 30 s hello, then a 60 s list answer.
 DAEMON_CLI_S = 180
 HANDSHAKE_MISSES = ("waiting for the Prime Agent daemon handshake", "connecting to the Prime Agent daemon")
@@ -733,7 +733,7 @@ COPY_DIR = Path.home() / ".cache" / "sieun-pi" / "hosts"
 COPY_FRESH_S = 40 * 60
 COPY_IDENTITY_FIELDS = ("id", "sessionId", "sessionFile", "sessionName", "runtimeKind", "parentSessionId", "created", "modified", "lastActivityAt")
 HOSTS_FILE = Path(os.environ.get("SIEUN_PI_HOSTS") or Path.home() / ".config" / "sieun-pi" / "hosts.json")
-HOSTS_CLI = Path(__file__).resolve().parents[5] / "components" / "user-history" / "src" / "hosts-cli.mjs"
+HOSTS_CLI = Path(__file__).resolve().parents[3] / "user-history" / "src" / "hosts-cli.mjs"
 BOX = LocalBox()
 
 
@@ -829,7 +829,7 @@ class JobRecordError(RecordError):
 CHAT_FILES = {"deleted-jobs.json": "api/agent/deleted-jobs", "archived-chats.json": "api/agent/archived-chats", "unloaded.json": "api/agent/unloaded",
               "job-cancels.json": "api/agent/job-cancels", "service-archives.json": "api/agent/service-archives",
               "clean-room-chats.json": "api/agent/clean-room-chats", "chats.json": "api/agent/chats", "threads.json": "api/agent/threads"}
-# How long the chat host may take to answer, the same wait as every chat service call (components/user-history/src/chat-host.ts serviceCall).
+# How long the chat host may take to answer, the same wait as every chat service call (legacy/prime/user-history/src/chat-host.ts serviceCall).
 CHAT_HOST_WAIT_S = 30
 # {file name: (text or None, source)} from the chat host, read once per pass.
 CHAT_HOST_TEXT = {}
@@ -1381,7 +1381,7 @@ def unload_stop_holds(session, verdict):
     """The idle unload's stop keeps a run that is not live stopped unless its turn failed on the token hook, a rate limit, a pi-pool hold
     or a transient provider failure (INTERRUPTION_ERROR: a timeout, a connection error or reset, a DNS failure, overloaded, a 5xx) that Prime
     was still retrying when the unload stopped it: the unload stops a run asleep in its provider retry once pi-pool holds its tree past the
-    unload's minutes (components/user-history/src/idle-unload.ts providerWaits). The kill writes only the archive after the failed reply, so
+    unload's minutes (legacy/prime/user-history/src/idle-unload.ts providerWaits). The kill writes only the archive after the failed reply, so
     such a run gets its continue once the hook or `pi-pool who` lets its tree in (account_blocker). At 01:11Z on 10-19 176 runs slept that
     way, 91 on a 429 and 85 on the hook's "waits for its slot", each with "waits for its slot at" in its error. On 10-25 the unload stopped
     Prospect's p224 job (01a174fc) at 21:50:25Z and 21:57:25Z while it retried "Request timed out." in us-metal02's egress gap, and this
@@ -1795,7 +1795,7 @@ def daemon_restarts():
     return sorted(set(windows))
 
 
-# An archive writes its aborted reply within milliseconds; RESTART_ABORT_MS in components/user-history/src/cut-end.ts uses the same 5 s.
+# An archive writes its aborted reply within milliseconds; RESTART_ABORT_MS in legacy/prime/user-history/src/cut-end.ts uses the same 5 s.
 ARCHIVE_ABORT_S = 5.0
 
 
@@ -1894,7 +1894,7 @@ def recovered_after(entries, ts):
                for e in entries)
 
 
-# The inputs that start a turn (components/user-history/src/shared/turns.ts PROMPT_TYPES, less the update notice, which update_before reads):
+# The inputs that start a turn (legacy/prime/user-history/src/shared/turns.ts PROMPT_TYPES, less the update notice, which update_before reads):
 # a wake, a brief or any agent message lands as an agent_message custom message.
 INPUT_TYPES = ("agent_message", "heartbeat_prompt", "async_bash_completion", "goal_context", "rlm_child_terminal_notice", "rlm_child_failure")
 

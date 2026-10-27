@@ -89,8 +89,8 @@ for (let pass = 1; pass <= 2; pass++) {
     assert.equal(commands.filter(name => name === command).length, 1, `Expected one /${command} after pass ${pass}`);
   }
   const extensionPaths = result.extensions.map(extension => realpathSync(extension.resolvedPath));
-  assert(extensionPaths.includes(realpathSync(join(source, "components/user-history/extension/index.ts"))));
-  const history = result.extensions.find(extension => realpathSync(extension.resolvedPath) === realpathSync(join(source, "components/user-history/extension/index.ts")));
+  assert(extensionPaths.includes(realpathSync(join(source, "legacy/prime/user-history/extension/index.ts"))));
+  const history = result.extensions.find(extension => realpathSync(extension.resolvedPath) === realpathSync(join(source, "legacy/prime/user-history/extension/index.ts")));
   assert(history.flags.has("agent-chat-socket"), "Native history package must register --agent-chat-socket");
   for (const name of ["virev.ts", "global-rules.ts"]) {
     assert.equal(existsSync(join(cwd, ".prime/agent/extensions", name)), false, `No project-local ${name}`);

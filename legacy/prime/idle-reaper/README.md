@@ -6,7 +6,7 @@ launchd runs it every 5 minutes as `com.sieun.idle-reaper`.
 
 ## What one run does
 
-1. It reads the daemon's sessions through sieun-pi's `components/user-history/src/daemon-cli.mjs list` in `~/.local/share/sieun-pi-runtime/current` or the chat release, and the process table from `ps`.
+1. It reads the daemon's sessions through sieun-pi's `legacy/prime/user-history/src/daemon-cli.mjs list` in `~/.local/share/sieun-pi-runtime/current` or the chat release, and the process table from `ps`.
    That reader waits 30 s for the daemon's hello and tries a missed hello once more, where `prime-agent sessions --json` waits a fixed 3 s; on 10-22 65 of 108 probes on us-metal02 got the hello after 3 to 7 s.
    With no reader on the box it runs `prime-agent sessions --json` from `~/.local/share/prime-agent/bin/prime-agent` and tries a missed hello once more.
 2. It finds the daemon, the `prime-agent --mode daemon` process on `daemon.sock`, and treats each of its direct children on a `worker-*.sock` as a worker.

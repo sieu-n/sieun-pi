@@ -587,7 +587,7 @@ export function httpSend(method: string, url: string, body = ""): string | null 
 }
 
 const HERE = dirname(realpathSync(fileURLToPath(import.meta.url)));
-const OWNER_OK_SCRIPT = join(HERE, "..", "user-history", "src", "owner-ok.ts");
+const OWNER_OK_SCRIPT = join(HERE, "..", "..", "legacy", "prime", "user-history", "src", "owner-ok.ts");
 
 /** The OWNER_OK=<chat>/<todo> token in a tool call, or null. */
 export function ownerOkToken(text: string): string | null {
@@ -595,7 +595,7 @@ export function ownerOkToken(text: string): string | null {
 }
 
 /**
- * The approved For you todo the token names, or why it does not count. Runs components/user-history/src/owner-ok.ts, the one approval rule, with
+ * The approved For you todo the token names, or why it does not count. Runs legacy/prime/user-history/src/owner-ok.ts, the one approval rule, with
  * the send's target, so a split answer on a two-item todo approves only the item it says yes to.
  */
 export function ownerOkTodo(token: string, target = ""): { todo: { text: string } } | { reason: string } {
@@ -603,7 +603,7 @@ export function ownerOkTodo(token: string, target = ""): { todo: { text: string 
 	const last = (stdout: string) => JSON.parse(stdout.trim().split("\n").at(-1)!) as { ok?: boolean; reason?: string; todo?: { text: string } };
 	try {
 		const stdout = execFileSync(basename(process.execPath) === "node" ? process.execPath : "node", ["--import", "tsx", OWNER_OK_SCRIPT, token, target], {
-			cwd: join(HERE, "..", "user-history"), encoding: "utf8", timeout: 15000, stdio: ["ignore", "pipe", "pipe"],
+			cwd: join(HERE, "..", "..", "legacy", "prime", "user-history"), encoding: "utf8", timeout: 15000, stdio: ["ignore", "pipe", "pipe"],
 		});
 		const result = last(stdout);
 		return result.ok === true && result.todo ? { todo: result.todo } : { reason: "not approved" };

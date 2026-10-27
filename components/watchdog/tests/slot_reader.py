@@ -7,7 +7,7 @@ from pathlib import Path
 import wd_common
 
 REPO = Path(__file__).resolve().parents[3]
-FIXTURE = REPO / 'components/user-history/test/fixtures/slot-park-01a17f25-1028.jsonl'
+FIXTURE = REPO / 'legacy/prime/user-history/test/fixtures/slot-park-01a17f25-1028.jsonl'
 FIXTURE_ID = '01a17f25-f22d-71ef-9327-e68919164bb4'
 NO_POOL = {'enabled': False}
 

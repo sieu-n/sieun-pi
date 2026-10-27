@@ -1,6 +1,6 @@
 # rules
 
-The Pi tests and the pi-host check for sieun-pi's Prime extensions, which load unchanged on upstream Pi: `components/global-rules`, `components/claude-rules` and `components/user-history/extension`.
+The Pi tests and the pi-host check for sieun-pi's Prime extensions, which load unchanged on upstream Pi: `components/global-rules`, `components/claude-rules` and `legacy/prime/user-history/extension`.
 `pi-host/extensions.json` lists all three, so every pi-host session loads them next to pi-rlm.
 The extension code stays in its own component, because the live Prime loads the same files and prime-sync ships them.
 

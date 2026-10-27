@@ -1,8 +1,8 @@
 import { open, readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { Context, Sample } from "../otlp.ts";
-import type { DutyRunRecord, DutySchedule } from "../../user-history/src/shared/chat-duties.ts";
-import type { ChatBoard } from "../../user-history/src/shared/types.ts";
+import type { DutyRunRecord, DutySchedule } from "../../../legacy/prime/user-history/src/shared/chat-duties.ts";
+import type { ChatBoard } from "../../../legacy/prime/user-history/src/shared/types.ts";
 
 /**
  * Duties, check-ins, plans and goals of the owner's chats, read from the chat service's own files on the box that runs it. The rules are the
@@ -11,7 +11,7 @@ import type { ChatBoard } from "../../user-history/src/shared/types.ts";
  * and the Chat system duty's (d9) own last measure. The runs files (15 MB on us-metal02 on 10-19) are read from a saved offset each round.
  */
 
-const SRC = "../../user-history/src/";
+const SRC = "../../../legacy/prime/user-history/src/";
 /** How late a duty may run before it counts as overdue. Over the 3 days to 10-19 17:00Z, 95% of check-in runs came within 10.4 min of their interval and 95% of every-N-minutes duty runs within 1.1 min. */
 export const OVERDUE_GRACE_MS = 15 * 60_000;
 const DAY_MS = 24 * 60 * 60_000;
@@ -21,10 +21,10 @@ async function loadApp() {
   const [duties, streak, card, settings, board, store, owners] = await Promise.all([
     import(SRC + "shared/chat-duties.ts"), import(SRC + "shared/duty-streak.ts"), import(SRC + "client/duty-card.ts"), import(SRC + "checkin-settings.ts"),
     import(SRC + "shared/chat-board.ts"), import(SRC + "chat-board-store.ts"), import(SRC + "owner-chats.ts"),
-  ]) as [typeof import("../../user-history/src/shared/chat-duties.ts"), typeof import("../../user-history/src/shared/duty-streak.ts"),
-    typeof import("../../user-history/src/client/duty-card.ts"), typeof import("../../user-history/src/checkin-settings.ts"),
-    typeof import("../../user-history/src/shared/chat-board.ts"), typeof import("../../user-history/src/chat-board-store.ts"),
-    typeof import("../../user-history/src/owner-chats.ts")];
+  ]) as [typeof import("../../../legacy/prime/user-history/src/shared/chat-duties.ts"), typeof import("../../../legacy/prime/user-history/src/shared/duty-streak.ts"),
+    typeof import("../../../legacy/prime/user-history/src/client/duty-card.ts"), typeof import("../../../legacy/prime/user-history/src/checkin-settings.ts"),
+    typeof import("../../../legacy/prime/user-history/src/shared/chat-board.ts"), typeof import("../../../legacy/prime/user-history/src/chat-board-store.ts"),
+    typeof import("../../../legacy/prime/user-history/src/owner-chats.ts")];
   return { ...duties, ...streak, ...card, ...settings, ...board, ...store, ...owners };
 }
 

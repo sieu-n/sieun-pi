@@ -25,7 +25,7 @@ async function home(t: { after(fn: () => void): void }, hello: object | null, ro
   cpSync(FIXTURE, dir, { recursive: true });
   symlinkSync("release-abc1234", join(dir, ".local/share/sieun-pi-chat/current"));
   // A node_modules path, which .gitignore keeps out of the fixture folder.
-  const sdk = join(dir, ".local/share/sieun-pi-chat/release-abc1234/components/user-history/node_modules/prime-agent");
+  const sdk = join(dir, ".local/share/sieun-pi-chat/release-abc1234/legacy/prime/user-history/node_modules/prime-agent");
   mkdirSync(sdk, { recursive: true });
   writeFileSync(join(sdk, "package.json"), JSON.stringify({ name: "prime-agent", version: "0.9.8" }));
   const socket = join(dir, "daemon.sock");
