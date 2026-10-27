@@ -1,6 +1,6 @@
 /**
  * Who may see which hits. The owner's calls carry no caller and search everything. An agent's call carries its session id and transcript
- * path, and under the default `agentScope: "family"` it sees only its own chat family: the set components/global-rules/kernel-read.py lets a
+ * path, and under the default `agentScope: "family"` it sees only its own chat family: the set packages/sieun-rules/src/kernel-read.py lets a
  * kernel read (`root_of`, `chat_of`), so this search never reopens the reads that guard closed.
  */
 import { readFileSync, statSync } from "node:fs";

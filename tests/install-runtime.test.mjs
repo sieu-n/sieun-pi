@@ -172,7 +172,7 @@ test("the user-history extension is bundled into one file in src/ and package.js
   const dir = join(root, "legacy/prime/user-history");
   const component = join(source, "legacy/prime/user-history");
   for (const name of ["extension", "src", "package.json"]) cpSync(join(component, name), join(dir, name), { recursive: true });
-  for (const name of ["components/prime-relay", "packages/sieun-rules"]) cpSync(join(source, name), join(root, name), { recursive: true, filter: path => !path.includes("node_modules") });
+  for (const name of ["components/prime-relay", "packages/sieun-rules", "packages/pi-history"]) cpSync(join(source, name), join(root, name), { recursive: true, filter: path => !path.includes("node_modules") });
   symlinkSync(join(component, "node_modules"), join(dir, "node_modules"));
   assert.equal(bundleExtension(dir), true);
   assert.deepEqual(JSON.parse(readFileSync(join(dir, "package.json"), "utf8")).pi.extensions, [`./${EXTENSION_BUNDLE}`]);

@@ -4,11 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-// The pm2 home guard (components/global-rules/pm2.ts). These strings are only fed to the handler; nothing here runs them.
+// The pm2 home guard (packages/sieun-rules/src/pm2.ts). These strings are only fed to the handler; nothing here runs them.
 const root = mkdtempSync(join(tmpdir(), "global-rules-pm2-"));
 const saved = process.env.GLOBAL_RULES_LOG;
 process.env.GLOBAL_RULES_LOG = join(root, "global-rules.log");
-const guard = await import("../components/global-rules/guard.ts");
+const guard = await import("../packages/sieun-rules/src/guard.ts");
 test.after(() => {
   if (saved === undefined) delete process.env.GLOBAL_RULES_LOG;
   else process.env.GLOBAL_RULES_LOG = saved;
