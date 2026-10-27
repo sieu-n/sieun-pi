@@ -504,6 +504,16 @@ export function stepNamesJob(item: PlanItem, job: { id: string; names: readonly 
 }
 
 /**
+ * Whether a step's own job or sessionId field is the job's id, one of its names or its session id, exactly. The notice on a job's end ties
+ * steps to the job this way only, never by a word in a step's note or text: on 10-27 the AI harness chat was told "harness ended its turn"
+ * with p1097, p1106 and p1108 and "daemon ended its turn" with p1108 and p1113, two subagents of another job whose names stood in those steps.
+ */
+export function stepOwnedBy(item: PlanItem, job: { id: string; names: readonly (string | undefined)[] }): boolean {
+  const keys = new Set([job.id, ...job.names].filter((name): name is string => name !== undefined && name.trim() !== ""));
+  return [planJob(item.job), item.sessionId].some(field => field !== undefined && keys.has(field));
+}
+
+/**
  * Every open leaf step of a board (an open item with no open child) with its class, in board order. `changedAt` gives each step's last change
  * (the check-in memory); `self` holds the chat's id and name, so a step it owns is `mine`.
  */

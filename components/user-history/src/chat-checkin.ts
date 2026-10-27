@@ -9,7 +9,7 @@ import { BRIEF_ITEMS } from "./shared/brief-cap.ts";
 import type { OwnerMessage } from "./shared/brief-check.ts";
 import type { ChatAgent, ChatBoard, ChildAgent, PlanItem, SessionRow, StopReason, ThreadMessage } from "./shared/types.ts";
 import { ago, capacityWait, CHASE_ESCALATE_MS, childName, childWorking, classLine, clip, type JobFact, type JobMessage, OPEN, ownerLabel, ownerOf, ownerState, parkedBy, quote, readySteps,
-  noteFacts, readyReviewLine, readyReviews, recordedAt, STEP_CLASSES, type StepClass, type StepMemo, stepNamesJob, stepOwner, stepView, type StepView, todoForStep,
+  noteFacts, readyReviewLine, readyReviews, recordedAt, STEP_CLASSES, type StepClass, type StepMemo, stepNamesJob, stepOwnedBy, stepOwner, stepView, type StepView, todoForStep,
   waitBound, waitsOnOwner, walk, withGoals } from "./checkin-steps.ts";
 import { blockedLine, blockedOnOthers, type BlockedStep, deadRunWaits, type DutyRef, type ExtraGoal, extraGoals, extraGoalsLine, type FoldGoal, foldLine, type GateFinding,
   gateFindings, gateLine, goalsToFold, goalsWithoutDuty, heldElsewhere, type HeldGoal, heldLine, idleGoalLine, idleGoals,
@@ -653,18 +653,18 @@ export function endedJobs(before: readonly ChildAgent[], after: readonly ChildAg
 }
 
 /**
- * The open steps a job leaves behind when its turn ends: each open step that names it (`stepNamesJob`), less a step whose owner is another job
- * of the chat that still works. Ops guy 10-15: job limits duty drops complete was cancelled at 09:45Z after a report that said its work was done,
- * and p233 stayed doing for 8 h; check in duty green ended at 10:42Z and left p247 waiting on a check-in no job watched. From 10-14 15:00Z to
+ * The open steps a job leaves behind when its turn ends: each open step whose job or sessionId field is the job (`stepOwnedBy`), less a step
+ * whose owner is another job of the chat that still works. Ops guy 10-15: job limits duty drops complete was cancelled at 09:45Z after a report
+ * that said its work was done, and p233 stayed doing for 8 h; check in duty green ended at 10:42Z and left p247 waiting on a check-in no job watched. From 10-14 15:00Z to
  * 10-15 11:50Z, 45 of the 60 steps the check-ins of six chats found stuck named a job that was no longer at work: 34 waited on a land and 11
  * read job_ended.
  */
 export function leftOpenSteps(child: ChildAgent, children: readonly ChildAgent[], board: ChatBoard | null): PlanItem[] {
   const others = children.filter(other => other.id !== child.id && childWorking(other));
   return openSteps(board).filter(item => {
-    if (!stepNamesJob(item, jobRef(child)) || handedBack(item, childName(child))) return false;
+    if (!stepOwnedBy(item, jobRef(child)) || handedBack(item, childName(child))) return false;
     const owner = stepOwner(item);
-    return owner === undefined || !others.some(other => owner === other.id || owner === childName(other) || owner === other.sessionId);
+    return !others.some(other => owner === other.id || owner === childName(other) || owner === other.sessionId);
   });
 }
 
@@ -702,14 +702,17 @@ export function endedRoots(before: ReadonlyMap<string, ChatAgent["state"]>, agen
     before.get(agent.sessionId) === "working" && agent.state !== "working");
 }
 
-/** The open steps a root left when its turn ended (`endedRoots`): each open step that names it, less a step another working thread of the chat owns. */
+/**
+ * The open steps a root left when its turn ended (`endedRoots`): each open step whose job or sessionId field is the root (`stepOwnedBy`), less
+ * a step another working thread of the chat owns.
+ */
 export function rootLeftSteps(root: ChatAgent, agents: readonly ChatAgent[], board: ChatBoard | null): PlanItem[] {
   const others = agents.filter(agent => agent.sessionId !== root.sessionId && agent.state === "working");
   return openSteps(board).filter(item => {
     if (item.children.some(child => OPEN.has(child.status))) return false;
-    if (!stepNamesJob(item, { id: root.sessionId!, names: [root.name, root.sender] }) || handedBack(item, root.sender || root.name)) return false;
+    if (!stepOwnedBy(item, { id: root.sessionId!, names: [root.name, root.sender] }) || handedBack(item, root.sender || root.name)) return false;
     const owner = stepOwner(item);
-    return owner === undefined || !others.some(other => owner === other.sessionId || owner === other.name || owner === other.sender);
+    return !others.some(other => owner === other.sessionId || owner === other.name || owner === other.sender);
   });
 }
 
