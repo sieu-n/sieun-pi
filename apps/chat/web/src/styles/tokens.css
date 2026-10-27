@@ -1,0 +1,253 @@
+/*
+ * Design tokens. Values follow the reference values in apps/chat/UX-NOTES.md:
+ * accent citrus at the soft level, Inter and JetBrains Mono, 400 and 500 weights only.
+ */
+:root {
+  --font-sans: "Inter Variable", Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  --neutral-1: #ffffff;
+  --neutral-2: #f5f5f6;
+  --neutral-3: #e8e8e8;
+  --neutral-4: #dadada;
+  --neutral-5: #cccccc;
+  --neutral-6: #b3b3b3;
+  --neutral-7: #959595;
+  --neutral-8: #808080;
+  --neutral-9: #5f5f5f;
+  --neutral-10: #525252;
+  --neutral-11: #191919;
+  --neutral-12: #000000;
+
+  --accent-4: #e8f0cd;
+  --accent-9: #beda36;
+  --accent-9-hover: #bdd836;
+  --accent-9-pressed: #bcd83a;
+  --accent-12: #2b3110;
+  --accent-link: #485400;
+
+  --bg-app: #f1f1f2;
+  --texture-dots-color: color-mix(in srgb, #f1f1f2 94%, black);
+  --surface-panel: #ffffff;
+  --bg-panel: var(--surface-panel);
+  --surface-inset: #f5f5f6;
+  --surface-composer: #ffffff;
+  --surface-popover: #ffffff;
+  --bg-float: var(--surface-popover);
+  --popover-glass-fill: rgb(255 255 255 / 90%);
+  --bg-scrim: #00000060;
+
+  --text-standard: #0f0f0f;
+  --text-subtle: #525252;
+  --text-metadata: #5f5f5f;
+  --text-navigation: #404040;
+  --text-navigation-unread: #262626;
+  --text-on-accent: #000000;
+  --text-on-prominent: #ffffff;
+
+  --border-standard: #e8e8e8;
+  --border-prominent: #808080;
+  --border-focus: #000000;
+  --border-message-thread: #dadada;
+
+  --surface-message: #f3f3f4;
+  --surface-message-own: var(--accent-4);
+  --text-message-own: var(--accent-12);
+  --text-message-link: var(--accent-link);
+  --text-message-link-own: var(--accent-link);
+
+  --affordance-mention: #dadada;
+  --affordance-mention-hover: #cccccc;
+  --affordance-mention-self: #beda36;
+  --text-mention-self: #000000;
+  --affordance-subtle: #e8e8e8;
+  --affordance-subtle-hover: #dadada;
+  --affordance-ghost-hover: rgb(0 0 0 / 5%);
+  --affordance-ghost-pressed: rgb(0 0 0 / 8%);
+
+  --surface-sidebar-selected: #beda36;
+  --text-sidebar-selected: #000000;
+  --affordance-sidebar-hover: #f8fbef;
+  --text-sidebar-hover: #2b3110;
+
+  --affordance-accent-prominent: #beda36;
+  --affordance-accent-prominent-hover: #bdd836;
+  --affordance-accent-prominent-pressed: #bcd83a;
+  --affordance-prominent: #000000;
+  --affordance-prominent-hover: #262626;
+
+  --affordance-chrome: #e8e8e8;
+  --bg-chrome-selected: #ffffff;
+  --text-chrome-subtle: #525252;
+  --affordance-chrome-hover: #f1f1f2;
+
+  --status-online: #2b9a66;
+  --status-online-border: #218358;
+  --status-away: #ffba18;
+  --status-offline: #808080;
+  --text-danger: #641723;
+  --border-danger: #e5484d;
+  --surface-danger: #feebec;
+
+  --gradient-1: radial-gradient(at 88% 84%, #f5e99e 0%, transparent 60%), linear-gradient(148deg, #f8fbff 0%, #c6e8fb 50%, #d9f0d5 100%);
+  --gradient-2: radial-gradient(at 8% 85%, #fac8d3 0%, transparent 60%), linear-gradient(150deg, #fff9f7 0%, #f5d5df 48%, #d5eafa 100%);
+  --gradient-3: radial-gradient(at 85% 15%, #d8d0fb 0%, transparent 55%), radial-gradient(at 10% 90%, #c9e7f7 0%, transparent 60%), linear-gradient(153deg, #f7f8ff 0%, #dfe3fb 50%, #e2f1fb 100%);
+  --gradient-4: radial-gradient(at 15% 20%, #f7d0ec 0%, transparent 55%), radial-gradient(at 90% 85%, #d6dcfb 0%, transparent 60%), linear-gradient(154deg, #fdf7fb 0%, #ecd8f3 50%, #dde5fb 100%);
+
+  /* Type scale */
+  --text-display: 400 56px/1.1 var(--font-sans);
+  --text-title: 500 32px/1.1 var(--font-sans);
+  --text-heading: 500 24px/1.1 var(--font-sans);
+  --text-body-lg: 400 20px/1.4 var(--font-sans);
+  --text-label: 500 16px/24px var(--font-sans);
+  --text-body: 400 14px/20px var(--font-sans);
+  --text-body-sm: 400 14px/20px var(--font-sans);
+  --text-message: 400 14px/1.625 var(--font-sans);
+  --text-label-sm: 500 14px/20px var(--font-sans);
+  --text-caption: 400 12px/16px var(--font-sans);
+  --text-mono: 400 12px/16px var(--font-mono);
+  --tracking-display: -0.04em;
+  --tracking-title: -0.015em;
+  --tracking-heading: -0.0075em;
+  --tracking-body-lg: -0.01em;
+  --tracking-body: -0.005em;
+  --tracking-body-sm: -0.0025em;
+  --tracking-message: -0.0025em;
+  --tracking-label-sm: 0.0025em;
+  --tracking-caption: 0.0133em;
+  --tracking-mono: 0.03em;
+
+  /* Radii */
+  --radius-chip: 12px;
+  --radius-row: 16px;
+  --radius-icon-button: 18px;
+  --radius-control: 20px;
+  --radius-container: 24px;
+  --radius-panel: 28px;
+  --radius-capsule: 34px;
+  --radius-pill: 9999rem;
+
+  /* Shadows */
+  --shadow-panel: 0 0 0 1px rgba(0, 0, 0, 0.06), 0 1px 2px -1px rgba(0, 0, 0, 0.06), 0 2px 4px rgba(0, 0, 0, 0.04);
+  --shadow-sm: 0 0 2px rgba(0, 0, 0, 0.1), 0 4px 8px -2px rgba(0, 0, 0, 0.06);
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.05);
+  --shadow-float: 0 0 0 1px rgba(0, 0, 0, 0.06), 0 8px 24px -4px rgba(0, 0, 0, 0.14), 0 2px 6px rgba(0, 0, 0, 0.06);
+
+  /* Spacing */
+  --space-half: 2px;
+  --space-1: 4px;
+  --space-1-5: 6px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-16: 64px;
+  --space-panel-gap: 8px;
+  --space-panel-inset: 24px;
+  --space-section-gap: 32px;
+  --space-page-section-gap: 64px;
+
+  /* Motion */
+  --duration-fast: 120ms;
+  --duration-base: 150ms;
+  --duration-medium: 180ms;
+  --duration-slow: 220ms;
+  --ease-enter: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+
+  /* Layout sizes */
+  --size-topbar: 56px;
+  --size-nav-track: 40px;
+  --size-nav-tab: 32px;
+  --size-sidebar: 260px;
+  --size-sidebar-min: 220px;
+  --size-sidebar-max: 520px;
+  --size-side-panel: 420px;
+  --size-side-panel-min: 300px;
+  --size-panel-header: 40px;
+  --size-row: 28px;
+  --timeline-measure: 52rem;
+
+  color-scheme: light;
+}
+
+:root[data-color-mode="dark"] {
+  --neutral-1: #000000;
+  --neutral-2: #101010;
+  --neutral-3: #1a1a1a;
+  --neutral-4: #232323;
+  --neutral-5: #333333;
+  --neutral-6: #404040;
+  --neutral-7: #595959;
+  --neutral-8: #737373;
+  --neutral-9: #808080;
+  --neutral-10: #a4a4a4;
+  --neutral-11: #c7c7c7;
+  --neutral-12: #ffffff;
+
+  --accent-4: #292e16;
+  --accent-12: #edf7d2;
+  --accent-link: #cbe648;
+
+  --bg-app: #101010;
+  --texture-dots-color: color-mix(in srgb, #101010 92%, white);
+  --surface-panel: #1a1a1a;
+  --surface-inset: #101010;
+  --surface-composer: #232323;
+  --surface-popover: #282828;
+  --popover-glass-fill: rgb(40 40 40 / 90%);
+  --bg-scrim: #000000a6;
+
+  --text-standard: #ffffff;
+  --text-subtle: #c7c7c7;
+  --text-metadata: #a4a4a4;
+  --text-navigation: #c7c7c7;
+  --text-navigation-unread: #ffffff;
+  --text-on-prominent: #000000;
+
+  --border-standard: #333333;
+  --border-prominent: #737373;
+  --border-focus: #ffffff;
+  --border-message-thread: #404040;
+
+  --surface-message: #292929;
+
+  --affordance-mention: #404040;
+  --affordance-mention-hover: #333333;
+  --affordance-mention-self: #404040;
+  --text-mention-self: #cee28b;
+  --affordance-subtle: #333333;
+  --affordance-subtle-hover: #404040;
+  --affordance-ghost-hover: rgb(255 255 255 / 7%);
+  --affordance-ghost-pressed: rgb(255 255 255 / 11%);
+
+  --affordance-sidebar-hover: #202413;
+  --text-sidebar-hover: #edf7d2;
+
+  --affordance-prominent: #ffffff;
+  --affordance-prominent-hover: #e8e8e8;
+
+  --affordance-chrome: #232323;
+  --bg-chrome-selected: #333333;
+  --text-chrome-subtle: #c7c7c7;
+  --affordance-chrome-hover: #2c2c2c;
+
+  --status-online: #33b074;
+  --status-online-border: #3dd68c;
+  --status-away: #ffd60a;
+  --status-offline: #a4a4a4;
+  --text-danger: #ffd1d9;
+  --surface-danger: #3b1219;
+
+  --gradient-1: radial-gradient(at 85% 85%, #0d3b2e 0%, transparent 55%), radial-gradient(at 10% 10%, #0b2a3d 0%, transparent 55%), linear-gradient(153deg, #071311 0%, #0a2929 51%, #081722 100%);
+  --gradient-2: radial-gradient(at 10% 85%, #3d0f1f 0%, transparent 55%), linear-gradient(150deg, #120a0d 0%, #2a1320 50%, #0c1725 100%);
+  --gradient-3: radial-gradient(at 85% 15%, #1d1745 0%, transparent 55%), linear-gradient(153deg, #0b0c18 0%, #15183a 50%, #0b1a26 100%);
+  --gradient-4: radial-gradient(at 15% 20%, #3a1235 0%, transparent 55%), linear-gradient(154deg, #120a12 0%, #2a1530 50%, #101633 100%);
+
+  --shadow-panel: 0 0 0 1px rgba(255, 255, 255, 0.08);
+  --shadow-float: 0 0 0 1px rgba(255, 255, 255, 0.08), 0 8px 24px -4px rgba(0, 0, 0, 0.5);
+
+  color-scheme: dark;
+}
