@@ -26,7 +26,7 @@ import { transientTurnError, turnErrorCause } from "../../src/turn-error.ts";
 import { turnError } from "../../src/shared/credential-wait.ts";
 import { daemonSessions, dutyFleet, type FleetDuty } from "./duty-fleet.ts";
 import { catalogCopyFiles, copyHosts, endsOnPoolWait, type HostHeldStep, mirroredSessions, planCounts, planInputs, POOL_TAIL_BYTES } from "./whole-system.ts";
-import { stepSessions } from "../../src/unmoved-steps.ts";
+import { stepSessions, withDescendantActivity } from "../../src/unmoved-steps.ts";
 import { loadHosts, selfHost } from "../../src/hosts.ts";
 import { checkInStandingLine, checkInStandings, LATE_INTERVALS } from "../../src/checkin-schedule.ts";
 import { checkInSettings } from "../../src/checkin-settings.ts";
@@ -259,7 +259,7 @@ export function fixNotMoving(red: readonly RedDuty[], name: (chat: string) => st
 
 /** A catalog row as the boxes' copies keep it (session-copy.json and src/host-catalogs.ts `copyPath`), with the fields the push reads. */
 export interface CatalogRow { sessionId: string; sessionName?: string; sessionFile?: string; activity?: string; lastActivityAt?: string; created?: string;
-  lifecycle?: string; activeSessionId?: string; isRunningTools?: boolean; modified?: string }
+  lifecycle?: string; activeSessionId?: string; isRunningTools?: boolean; modified?: string; parentSessionId?: string }
 /**
  * Whether a catalog row works now: its activity says so and it does not sit in one tool call past STALL_MS (`stalledSince`). On 10-23 d9 read
  * p919 as owned by the job "codex fhnyq29tw5 sign-in" while one glob of it over all of home ran 2 h 53 min.
@@ -340,20 +340,24 @@ export function withLiveGoalGaps<T extends { chat: string; duty: string; keys: r
  * `planCounts`' owner reads with both boxes' catalog rows of each chat's jobs added: a row's session wrote at its `lastActivityAt`, now when it
  * works, and it is a session of the job its name names. `ownerActivity` reads only this box's transcripts, so at 00:29Z on 10-20 the Mac chats
  * frontend bro (p201, p296) and mcp for chris (p3) read as red duties with no live fix while the Mac's rows showed those fix jobs working.
+ * A session also moves its step while a session below it (`parentSessionId`, at any depth, in `all`) works or wrote (`withDescendantActivity`).
  */
 export function withCatalogOwners(plan: { ownerActivity?: ReadonlyMap<string, number>; named?: ReadonlyMap<string, ReadonlyMap<string, readonly string[]>> },
-  jobs: ReadonlyMap<string, readonly CatalogRow[]>, now: number): { ownerActivity: Map<string, number>; named: Map<string, Map<string, string[]>> } {
+  jobs: ReadonlyMap<string, readonly CatalogRow[]>, now: number, all: readonly CatalogRow[] = [...jobs.values()].flat()): { ownerActivity: Map<string, number>; named: Map<string, Map<string, string[]>> } {
   const ownerActivity = new Map(plan.ownerActivity ?? []);
+  for (const row of all) {
+    const at = rowWorks(row, now) ? now : ms(row.lastActivityAt);
+    if (at > (ownerActivity.get(row.sessionId) ?? 0)) ownerActivity.set(row.sessionId, at);
+  }
   const named = new Map([...plan.named ?? []].map(([chat, names]) => [chat, new Map([...names].map(([name, ids]) => [name, [...ids]]))]));
   for (const [chat, rows] of jobs) {
     const names = named.get(chat) ?? named.set(chat, new Map()).get(chat)!;
     for (const row of rows) {
-      const at = rowWorks(row, now) ? now : ms(row.lastActivityAt);
-      if (at > (ownerActivity.get(row.sessionId) ?? 0)) ownerActivity.set(row.sessionId, at);
       if (row.sessionName && !names.get(row.sessionName)?.includes(row.sessionId)) names.set(row.sessionName, [...names.get(row.sessionName) ?? [], row.sessionId]);
     }
   }
-  return { ownerActivity, named };
+  const parents = new Map(all.flatMap(row => row.parentSessionId ? [[row.sessionId, row.parentSessionId] as const] : []));
+  return { ownerActivity: withDescendantActivity(ownerActivity, parents), named };
 }
 
 /**
@@ -930,7 +934,7 @@ async function main(): Promise<void> {
   const jobs = jobsByChat(rows, plan.boards);
   const { self, away } = await awayHosts();
   const todos = [...plan.boards].flatMap(([chat, board]) => (board?.todos ?? []).map(todo => ({ chat, todo })));
-  const owners = withCatalogOwners(plan, jobs, now);
+  const owners = withCatalogOwners(plan, jobs, now, rows);
   const owned = planCounts({ ...plan, ...owners, away: new Set(away.map(host => host.name)), hosts: copyHosts([...parsed, ...await mirroredSessions()], self), holds: hostHolds(away, todos) });
   const runsByChat = new Map(plan.chats.map(chat => [chat.id, chat.runs]));
   const poolCut = await poolCutJobs(owned.redDuties, runsByChat, id => listedSessions(copies, [id]).get(id)?.file);

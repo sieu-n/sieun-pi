@@ -19,6 +19,23 @@ export function stepSessions(item: { sessionId?: string; job?: string }, named: 
   return [...new Set([...item.sessionId ? [item.sessionId] : [], ...job])];
 }
 
+/**
+ * Each session's last write raised to the newest write of any session below it (`parents`, child to parent, at any depth). A job that waits on
+ * its own subagents moves its step while they work: at 22:57Z on 10-27 d9 counted frontend bro's p354, whose job "ai chat like claude" went
+ * idle at 22:58Z on a pi-pool token failure while its subagents chat-cards-fix and chat-endpage-fix still worked on p354 on the Mac.
+ */
+export function withDescendantActivity(activity: ReadonlyMap<string, number>, parents: ReadonlyMap<string, string>): Map<string, number> {
+  const out = new Map(activity);
+  for (const [session, at] of activity) {
+    const seen = new Set([session]);
+    for (let up = parents.get(session); up !== undefined && !seen.has(up); up = parents.get(up)) {
+      seen.add(up);
+      if (at > (out.get(up) ?? -Infinity)) out.set(up, at);
+    }
+  }
+  return out;
+}
+
 /** What tells whether a step's owner moves it: when each session last wrote, the sessions a board.wake or a pool slot holds, and each job name's sessions. */
 export interface OwnerReads {
   activity: ReadonlyMap<string, number>;
