@@ -89,11 +89,9 @@ function buildTurn(draft: TurnDraft, ctx: TimelineContext, live: boolean): Item 
         usage.cacheWrite += message.usage.cacheWrite;
         usage.cost += message.usage.cost?.total ?? 0;
       }
-      if (message.stopReason === "aborted") stop = "aborted";
-      if (message.stopReason === "error") {
-        stop = "error";
-        error = message.errorMessage ?? "The model call failed.";
-      }
+      // Only the newest model call says how the turn ended: a retried slot wait or overload before it is no failure.
+      stop = message.stopReason === "aborted" ? "aborted" : message.stopReason === "error" ? "error" : undefined;
+      error = message.stopReason === "error" ? message.errorMessage ?? "The model call failed." : undefined;
       for (const block of blocks(message)) {
         if (block.type === "text" && block.text.trim()) texts.push(block.text);
         else if (block.type === "thinking" && block.thinking.trim()) steps.push({ kind: "thinking", text: block.thinking });

@@ -18,6 +18,8 @@ const CONTEXT_CLIP = 2048;
 const PAGE = 50;
 
 export interface ChannelEvents {
+  /** The owner's mention goes first in pi-pool's turn queue, as his own sends do (channels.md 4.2). */
+  ownerTurn(thread: string): void;
   items(conversation: string, items: Item[]): void;
   channel(channel: Channel): void;
   conversations(changed: ConversationSummary[]): void;
@@ -274,6 +276,7 @@ export class Channels {
         entry: { kind: "agent.message", data: { from: post.author, via: `#${row.name}` } },
       });
       this.setState(row, post, delivery, "delivered", { submission: submitted.submission });
+      if (post.author === "owner") this.events.ownerTurn(delivery.thread);
       void this.awaitAnswer(row, post, delivery);
     } catch (error) {
       this.setState(row, post, delivery, "failed", { error: error instanceof Error ? error.message : String(error) });

@@ -2,6 +2,7 @@
  * One real turn end to end on pi-host: create a thread, send, see the streamed answer, Stop, spawn a job and see it in the tree, mention
  * the thread from a channel and see the answer come back. It runs on the live pi-host socket and real model calls.
  * Run: cd apps/chat && APPS_CHAT_REAL=1 node --import tsx --test --test-force-exit --test-isolation=none test/server/pi-host.test.ts
+ * Add APPS_CHAT_URL=http://127.0.0.1:5184 to run the same steps against the installed service instead of a server in this process.
  */
 import assert from "node:assert/strict";
 import { after, before, describe, test } from "node:test";
@@ -18,7 +19,7 @@ describe("pi-host end to end", { skip: !real && "set APPS_CHAT_REAL=1 to run on 
   let thread: string;
 
   before(async () => {
-    s = await start({ real: true });
+    s = await start({ real: true, ...(process.env.APPS_CHAT_URL ? { url: process.env.APPS_CHAT_URL } : {}) });
     live = await s.live();
     const created = await s.send("POST", "/api/agents", { name: `apps-chat e2e ${new Date().toISOString().slice(0, 16)}` });
     assert.equal(created.status, 200, JSON.stringify(created.body));
@@ -55,14 +56,15 @@ describe("pi-host end to end", { skip: !real && "set APPS_CHAT_REAL=1 to run on 
     assert.ok(last.stop === "aborted" || !/3000\s*$/.test(last.text), `the turn ran to the end: ${last.text.slice(-80)}`);
   });
 
-  test("a spawned job shows in the tree and as a pill", { timeout: 300_000 }, async () => {
+  test("a spawned job shows in the tree and as a pill", { timeout: 900_000 }, async () => {
     await s.send("POST", `/api/c/${thread}/send`, {
       text: "Call the subagent tool once with the task: Reply with the single word kiwi. Then reply with exactly what the subagent answered.",
       requestId: `e2e-spawn-${thread}`,
     });
-    const jobs = await live.waitFor(e => e.type === "jobs" && e.thread === thread && e.jobs.length > 1, 240_000);
+    // The job's own model calls wait their place in pi-pool's turn queue like any agent's, so this allows for a full queue.
+    const jobs = await live.waitFor(e => e.type === "jobs" && e.thread === thread && e.jobs.length > 1, 600_000);
     assert.equal(jobs.type === "jobs" && jobs.jobs[1]!.parent, thread);
-    const page = await until(() => s.get<TimelinePage>(`/api/c/${thread}/items`), p => turns(p).some(t => t.jobs.length > 0 && !t.live), 240_000);
+    const page = await until(() => s.get<TimelinePage>(`/api/c/${thread}/items`), p => turns(p).some(t => t.jobs.length > 0 && !t.live), 800_000);
     const pill = turns(page).find(t => t.jobs.length > 0)!;
     assert.match(pill.jobs[0]!.conversation, new RegExp(`^${thread}:\\d+$`));
     const job = await s.get<TimelinePage>(`/api/c/${encodeURIComponent(pill.jobs[0]!.conversation)}/items`);

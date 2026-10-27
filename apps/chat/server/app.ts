@@ -14,6 +14,7 @@ import type { Host } from "./host/types.ts";
 import { Search } from "./search.ts";
 import { Store } from "./store.ts";
 import { modelRef, OWNER, parseConversationId, Threads } from "./threads.ts";
+import { ownerTurn } from "./usage.ts";
 
 export const MODELS: ModelCatalog = {
   models: [
@@ -56,6 +57,7 @@ export class App {
       jobs: (thread, jobs) => this.broadcast({ type: "jobs", thread, jobs }),
     }, config.box, log);
     this.channels = new Channels(this.store, host, this.threads, {
+      ownerTurn: thread => this.ownerTurn(thread),
       items: (conversation, items) => this.toWatchers(conversation, { type: "items", conversation, items }),
       channel: channel => this.broadcast({ type: "channel", channel }),
       conversations: changed => this.conversationsChanged(changed),
@@ -160,6 +162,7 @@ export class App {
     });
     this.store.state.reads[id] = { at: Date.now() };
     this.store.saveState();
+    this.ownerTurn(thread);
     const deliveries = [];
     for (const target of (request.mentions ?? []).filter(m => m !== id && m !== "owner")) {
       const where = parseConversationId(target);
@@ -177,6 +180,12 @@ export class App {
       item: { kind: "message", id: `r:${request.requestId}`, at: Date.now(), author: OWNER, text: request.text, images, mentions: request.mentions ?? [], deliveries, pending: true },
       deliveries,
     };
+  }
+
+  /** The owner's own input goes first in pi-pool's turn queue; the fixture has no pool. */
+  ownerTurn(thread: string): void {
+    if (this.config.fixture) return;
+    void ownerTurn(thread).catch(error => this.log(`owner-turn for ${thread} failed: ${String(error)}`));
   }
 
   private saveUpload(image: { data: string; mimeType: string }): ImageRef {

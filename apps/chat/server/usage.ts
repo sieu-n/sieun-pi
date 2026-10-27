@@ -96,6 +96,31 @@ export async function readPool(executable = poolExecutable()): Promise<AccountsV
   return { sessionId: null, checkedAt: new Date().toISOString(), providers, poolConfig };
 }
 
+/**
+ * Marks the owner's input to a thread as an owner turn in pi-pool's turn queue, so it runs at once instead of waiting its place (today's chat
+ * does the same with `markOwnerTurn`). pi-host keys a thread's runs as tree `pi-durable:<thread>` with a session id the chat cannot see, so
+ * this reads the queue for that tree's queued sessions and marks each one; a run that asks for its slot after the first read is caught by the
+ * later reads.
+ */
+export async function ownerTurn(thread: string, executable = poolExecutable(), reads = [300, 1500, 4000, 10_000]): Promise<string[]> {
+  const marked = new Set<string>();
+  for (const delay of reads) {
+    await new Promise(resolve => setTimeout(resolve, delay));
+    let queue: { queued?: { session: string; tree: string }[] };
+    try {
+      queue = JSON.parse(await run(executable, ["queue", "--json"])) as typeof queue;
+    } catch {
+      return [...marked];
+    }
+    const waiting = (queue.queued ?? []).filter(q => q.tree === `pi-durable:${thread}` && !marked.has(q.session));
+    for (const entry of waiting) {
+      await run(executable, ["owner-turn", entry.session]).then(() => marked.add(entry.session)).catch(() => undefined);
+    }
+    if (marked.size) return [...marked];
+  }
+  return [...marked];
+}
+
 /** USD per million tokens, for the split of a row pi-host stores only as a total; the total stays pi-host's own sum. */
 const PRICES: Record<string, { input: number; output: number; cacheRead: number; cacheWrite: number }> = {
   "claude-opus-5-5": { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 8 },

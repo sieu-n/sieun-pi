@@ -33,7 +33,9 @@ export interface LiveClient {
   close(): void;
 }
 
-export async function start(opts: { real?: boolean; wordMs?: number } = {}): Promise<Running> {
+/** With `url`, the specs run against a server that already runs there, such as the installed service on :5184. */
+export async function start(opts: { real?: boolean; wordMs?: number; url?: string } = {}): Promise<Running> {
+  if (opts.url) return remote(opts.url);
   const dataDir = mkdtempSync(join(tmpdir(), "apps-chat-test-"));
   const config = { ...readConfig([]), dataDir, port: 0, fixture: !opts.real, box: "test-box" };
   const host = opts.real ? new PiHost(config.socket) : new FixtureHost();
@@ -48,19 +50,31 @@ export async function start(opts: { real?: boolean; wordMs?: number } = {}): Pro
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   const sockets: WebSocket[] = [];
   return {
-    base, app, host,
-    async get(path) {
+    base, app, host, ...client(base, sockets),
+    async close() {
+      for (const socket of sockets) socket.close();
+      server.closeAllConnections();
+      server.close();
+      await app.stop();
+      rmSync(dataDir, { recursive: true, force: true });
+    },
+  };
+}
+
+function client(base: string, sockets: WebSocket[]) {
+  return {
+    async get(path: string) {
       const response = await fetch(base + path);
       const body = await response.json();
       if (!response.ok) throw new Error(`${path}: ${response.status} ${JSON.stringify(body)}`);
       return body;
     },
-    async send(method, path, body) {
+    async send(method: string, path: string, body?: unknown) {
       const response = await fetch(base + path, { method, headers: { "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
       return { status: response.status, body: await response.json() };
     },
-    async live() {
-      const socket = new WebSocket(`${base.replace("http", "ws")}/api/live`);
+    async live(): Promise<LiveClient> {
+      const socket = new WebSocket(`${base.replace(/^http/, "ws")}/api/live`);
       sockets.push(socket);
       const events: LiveEvent[] = [];
       const waiters: { match: (event: LiveEvent) => boolean; resolve: (event: LiveEvent) => void }[] = [];
@@ -77,7 +91,7 @@ export async function start(opts: { real?: boolean; wordMs?: number } = {}): Pro
       await new Promise(resolve => socket.once("open", resolve));
       return {
         events,
-        watch: conversation => socket.send(JSON.stringify({ type: "watch", conversation })),
+        watch: (conversation: string) => socket.send(JSON.stringify({ type: "watch", conversation })),
         waitFor: (match: (event: LiveEvent) => boolean, timeoutMs = 20_000) => {
           const seen = events.find(match);
           if (seen) return Promise.resolve(seen);
@@ -89,14 +103,17 @@ export async function start(opts: { real?: boolean; wordMs?: number } = {}): Pro
         close: () => socket.close(),
       } as LiveClient;
     },
+  };
+}
+
+async function remote(base: string): Promise<Running> {
+  const sockets: WebSocket[] = [];
+  return {
+    base, app: undefined as never, host: undefined as never, ...client(base, sockets),
     async close() {
       for (const socket of sockets) socket.close();
-      server.closeAllConnections();
-      server.close();
-      await app.stop();
-      rmSync(dataDir, { recursive: true, force: true });
     },
-  };
+  } as Running;
 }
 
 export const until = async <T>(read: () => Promise<T>, ok: (value: T) => boolean, timeoutMs = 20_000): Promise<T> => {
