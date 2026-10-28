@@ -1708,7 +1708,11 @@ export class ThreadHub {
    * stop, the archive still holds here and it throws ScheduledJobsLeft. When the daemon archived it and cancelled its jobs but holds the stop of
    * a handed-off service for a receipt it could not read, it throws ServicesStopPending and queues nothing, since Prime finishes that stop itself.
    */
+  /** Runs before each archive through this hub; the backend drops the session from unloaded.json there (forgetUnloaded). */
+  onArchive?: (id: string) => Promise<void>;
+
   async archive(id: string, by: ArchiveBy): Promise<void> {
+    await this.onArchive?.(id).catch(() => {});
     if (by === "owner") await this.ownerArchives(id);
     const operation = by === "owner" ? undefined : await this.noteArchive(id, by);
     this.archiveStarts.set(id, Date.now());

@@ -42,7 +42,7 @@ import { handOff, handoffSend, handsOffRow, systemPorts } from "./detached-hando
 import { unfinishedHandoffs } from "./orphan-services.ts";
 import { readHeldTurns, readTurnSince, writeResumePending } from "./held-turns.ts";
 import { jobLive, livePaths } from "./job-live.ts";
-import { recordUnloaded, writeReceipt } from "./unloaded.ts";
+import { forgetUnloaded, recordUnloaded, unloadedReader, writeReceipt } from "./unloaded.ts";
 import { quietMinutes } from "./quiet-minutes.ts";
 import { startTmpSweep } from "./tmp-sweep.ts";
 import { Chats, UNKNOWN_ACTIVE } from "./chats.ts";
@@ -188,7 +188,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const cleanRoomChats = new IdIndex(join(dataDir, CLEAN_ROOM_CHATS_FILE), "Clean-room chat index");
   const dutyLog = (line: string) => process.stderr.write(`${new Date().toISOString()} ${line}\n`);
   const relays = relayRecord(join(dataDir, "relayed.json"));
-  const catalog = new Catalog(socketPath, readState, labels, { ids: () => chats.ids(), checkIns: () => chats.checkIns(), links: (id, name) => chats.links(id, name), briefs: () => chats.briefs(), archivedIds: () => chats.archivedIds(), roster: children => { if (!quiet) void relayHops(relays, [...children.values()].flat(), dutyLog).catch(error => dutyLog(`relay: hops: ${error instanceof Error ? error.message : String(error)}`)); return chats.roster(children); } }, new ThreadOrigins(created, cleanRoomChats), options.hosts ?? null, options.copyFile ?? null, options.saveAgents ? join(dataDir, AGENTS_FILE) : null);
+  const catalog = new Catalog(socketPath, readState, labels, { ids: () => chats.ids(), checkIns: () => chats.checkIns(), links: (id, name) => chats.links(id, name), briefs: () => chats.briefs(), archivedIds: () => chats.archivedIds(), unloaded: unloadedReader(dataDir), roster: children => { if (!quiet) void relayHops(relays, [...children.values()].flat(), dutyLog).catch(error => dutyLog(`relay: hops: ${error instanceof Error ? error.message : String(error)}`)); return chats.roster(children); } }, new ThreadOrigins(created, cleanRoomChats), options.hosts ?? null, options.copyFile ?? null, options.saveAgents ? join(dataDir, AGENTS_FILE) : null);
   const boards = new BoardStore(dataDir);
   const corrections = new CorrectionLedger(sharedDataDir(dataDir));
   const threads = new ThreadHub(socketPath, catalog, () => defaults.read(), async id => (await chats.ids()).has(id) ? boards.read(id) : undefined,
@@ -196,6 +196,8 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       file: join(dataDir, "idle-clocks.json") }, new FirstPages(join(dataDir, "first-pages")), quiet, join(dataDir, "saved-archive-queue.json"));
   // Prime writes owner_stop or owner_archive for every archive the service sends, so the service's own archives carry their reason here.
   if (!quiet) threads.serviceArchives = serviceArchiveRecord(join(dataDir, SERVICE_ARCHIVES_FILE));
+  // A top-level thread the idle unload stopped stays listed while its daemon lists it archived (Catalog `unloaded`), until an archive through the hub.
+  if (!quiet) threads.onArchive = id => forgetUnloaded(dataDir, [id]);
   const registry = jobRegistry(join(dataDir, "chat-jobs.json"));
   const poolPriorities = new PoolPriorities({ rows: () => catalog.rows(), duties: rows => dutyJobIds(rows, registry), read: readPoolClasses, set: setPoolPriority,
     log: line => process.stderr.write(`${new Date().toISOString()} ${line}\n`) });
@@ -445,7 +447,9 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       // is rewritten as active, not only chats and threads.json threads: on 10-18 the jobs 'parity prod promote 12' and 'meta ads advertisers
       // push' stayed archived after the 12:53:07Z sweep. A chat he archived stays archived, and so does a thread an archive reached since `since`.
       const listed = isChat || !(await chats.archivedIds()).has(row.sessionId);
-      if (listed) await threads.keepListed(row.sessionId, since).catch(error => dutyLog(`idle unload: keep listed ${row.sessionId}: ${error instanceof Error ? error.message : String(error)}`));
+      const kept = listed && await threads.keepListed(row.sessionId, since).catch(error => { dutyLog(`idle unload: keep listed ${row.sessionId}: ${error instanceof Error ? error.message : String(error)}`); return true; });
+      // An archive that won over this stop leaves the file, so the catalog does not list the session again (Catalog `unloaded`).
+      if (!kept) await forgetUnloaded(dataDir, [row.sessionId]).catch(error => dutyLog(`idle unload: forget ${row.sessionId}: ${error instanceof Error ? error.message : String(error)}`));
     },
     receipt: entry => writeReceipt(dataDir, entry),
     // A root session on this box whose daemon lists detached_handoff hands its detached services to systemd scopes of their own, and then its

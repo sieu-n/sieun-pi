@@ -1,4 +1,4 @@
-import { appendFile, readFile, rename, writeFile } from "node:fs/promises";
+import { appendFile, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 /**
@@ -20,24 +20,54 @@ const writes = new Map<string, Promise<void>>();
  */
 export function recordUnloaded(dataDir: string, sessions: readonly string[], at: number): Promise<void> {
   if (!sessions.length) return Promise.resolve();
-  const file = join(dataDir, UNLOADED_FILE);
-  const next = (writes.get(file) ?? Promise.resolve()).catch(() => {}).then(() => write(file, sessions, at));
+  return update(join(dataDir, UNLOADED_FILE), at, kept => { for (const session of sessions) kept[session] = new Date(at).toISOString(); });
+}
+
+/**
+ * Drops `sessions` from UNLOADED_FILE, because an archive through this service reached them after the unload. The catalog keeps a top-level
+ * thread in the file listed while its daemon lists it archived (Catalog `unloaded`), so the owner's archive has to leave the file.
+ */
+export function forgetUnloaded(dataDir: string, sessions: readonly string[], now = Date.now()): Promise<void> {
+  if (!sessions.length) return Promise.resolve();
+  return update(join(dataDir, UNLOADED_FILE), now, kept => { for (const session of sessions) delete kept[session]; });
+}
+
+function update(file: string, at: number, change: (kept: Record<string, string>) => void): Promise<void> {
+  const next = (writes.get(file) ?? Promise.resolve()).catch(() => {}).then(() => write(file, at, change));
   const tail = next.catch(() => {});
   writes.set(file, tail);
   void tail.then(() => { if (writes.get(file) === tail) writes.delete(file); });
   return next;
 }
 
-async function write(file: string, sessions: readonly string[], at: number): Promise<void> {
+async function write(file: string, at: number, change: (kept: Record<string, string>) => void): Promise<void> {
   let kept: Record<string, string> = {};
   try {
     const read = JSON.parse(await readFile(file, "utf8")) as unknown;
     if (typeof read === "object" && read !== null && !Array.isArray(read))
       kept = Object.fromEntries(Object.entries(read).filter((entry): entry is [string, string] => typeof entry[1] === "string" && at - Date.parse(entry[1]) <= KEEP_MS));
   } catch { kept = {}; }
-  for (const session of sessions) kept[session] = new Date(at).toISOString();
+  change(kept);
   const temp = `${file}.${process.pid}.tmp`;
   await writeFile(temp, JSON.stringify(kept)).then(() => rename(temp, file));
+}
+
+/** UNLOADED_FILE as session id to stop time in ms, parsed again only when the file's mtime changes. An unreadable file reads as empty. */
+export function unloadedReader(dataDir: string): () => Promise<ReadonlyMap<string, number>> {
+  const file = join(dataDir, UNLOADED_FILE);
+  let held: { mtimeMs: number; map: ReadonlyMap<string, number> } | undefined;
+  return async () => {
+    const mtimeMs = await stat(file).then(found => found.mtimeMs, () => -1);
+    if (held?.mtimeMs === mtimeMs) return held.map;
+    const map = new Map<string, number>();
+    try {
+      const read = JSON.parse(await readFile(file, "utf8")) as unknown;
+      if (typeof read === "object" && read !== null && !Array.isArray(read))
+        for (const [session, at] of Object.entries(read)) { const ms = typeof at === "string" ? Date.parse(at) : NaN; if (Number.isFinite(ms)) map.set(session, ms); }
+    } catch { /* no file yet */ }
+    held = { mtimeMs, map };
+    return map;
+  };
 }
 
 /**
