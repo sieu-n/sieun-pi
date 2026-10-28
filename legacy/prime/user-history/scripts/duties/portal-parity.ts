@@ -10,17 +10,17 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
 /**
  * The api portal vp chat's "Portal matches crawler" precheck (`node --import tsx scripts/duties/portal-parity.ts`). No model call.
  * It answers the owner's "is all apis working that work in crawler api work for api portal? all working in prod?" on prod and staging:
- * 1. It reads three openapi.json files: crawler.virev.ai (the crawler routes), api.virev.ai (prod) and staging-api.virev.ai (through the
- *    Vercel automation bypass).
+ * 1. It reads four openapi.json files: crawler.virev.ai and crawler-staging.virev.ai (each env's crawler routes), api.virev.ai (prod) and
+ *    staging-api.virev.ai (through the Vercel automation bypass).
  * 2. On each env it calls every documented non-DM /v1 operation once with its own docs example. Staging calls go out under throwaway test
  *    orgs that it seeds through the staging Convex /api/test/seed route and deletes again through /api/test/cleanup. Prod calls use
  *    VIREV_API_KEY_PROD and skip only the writes SPEC-93 never makes on prod. The paid reads SPEC-93 leaves out of its prod run for cost
  *    (intelligence profile, contact and custom reads) are called here once a UTC day, and the run output lists what each prod call cost.
  * 3. It sorts each answer: 2xx works, an `upstream_*` or `capacity_exhausted` code is a crawler cause (the portal passes crawler errors on that way), anything
  *    else is a portal cause, and a call it could not make or judge is unprobed. A page-1 answer with a cursor gets one page-2 call.
- * 4. It maps answers to crawler routes through portal-parity.routes.json: a route works on an env when one of its /v1 operations works there,
- *    and a route with no /v1 operation in that env's openapi is missing there.
- * A source it cannot read gives -1 for its share, a source_errors count and a flagged slice. With no crawler openapi it scores every route in the map.
+ * 4. It maps answers to crawler routes through portal-parity.routes.json: an env scores a route its own crawler lists, the route works there
+ *    when one of its /v1 operations works there, and a route with no /v1 operation in that env's openapi is missing there.
+ * A source it cannot read, an env's crawler openapi included, gives -1 for that env's share, a source_errors count and a flagged slice.
  *
  * Sources for the targets in portal-parity.duty.json (the JSON cannot hold comments):
  * - prod_working_pct >= 100 and staging_working_pct >= 100: the owner's words ask for every crawler route, and board goal p18 "Every crawler
@@ -32,7 +32,12 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
 
 const REPO = process.env.LLM_WIKI_REPO || join(homedir(), "Documents/Github/auto-sns-agent");
 const HERE = dirname(fileURLToPath(import.meta.url));
-const CRAWLER_OPENAPI = "https://crawler.virev.ai/openapi.json";
+/**
+ * Each env's crawler openapi. Each env scores a route only when its own crawler lists it, because on 2026-10-27 the staging crawler moved
+ * every platform to /api/live/<network>/<op> (auto-sns-agent bcb1732a0d and the six commits after it) while prod kept the old routes until
+ * the next promote, and the 10-28 00:02Z run scored staging against prod's crawler and counted 63 renamed routes as portal failures.
+ */
+export const CRAWLER_OPENAPI: Record<"prod" | "staging", string> = { prod: "https://crawler.virev.ai/openapi.json", staging: "https://crawler-staging.virev.ai/openapi.json" };
 const PROD_OPENAPI = "https://api.virev.ai/openapi.json";
 /**
  * The prod org key: VIREV_API_KEY_PROD from the environment, else decrypted from apps/api-portal/.env with the repo's dotenvx.
@@ -81,7 +86,11 @@ const CURSOR_KEYS = ["next_cursor", "cursor", "continuationToken", "continuation
 interface Param { name: string; in: string; required?: boolean; example?: unknown; schema?: { example?: unknown }; examples?: Record<string, { value?: unknown }> }
 export interface Operation { parameters?: Param[]; requestBody?: { content?: Record<string, { example?: unknown; examples?: Record<string, { value?: unknown }>; schema?: { example?: unknown } }> }; "x-example-query"?: Record<string, unknown> }
 export type OpenApi = { paths?: Record<string, Record<string, Operation>> };
-export interface Route { crawler: string; group: string; portal: string[]; byDesign?: string }
+/**
+ * One crawler route and the /v1 operations that reach it. `envs` limits the entry to those envs, for a route whose crawler path stayed while
+ * the portal side changed on one env only, such as the Douyin stored reads that prod still pauses by design and staging serves.
+ */
+export interface Route { crawler: string; group: string; portal: string[]; byDesign?: string; envs?: Env[] }
 export interface ProbeRequest { method: string; path: string; query: Record<string, string>; body?: unknown }
 export type Verdict = "ok" | "crawler" | "portal" | "unprobed" | "skipped";
 export interface ProbeResult { op: string; verdict: Verdict; status: number; ms: number; code?: string | undefined; note: string; costUsd?: number }
@@ -248,6 +257,17 @@ export const UNMEASURED_PCT = -1;
 /** How one crawler route does through the portal on one env. `skipped` is a route SPEC-93 does not call on prod because it is a write. */
 export type RouteVerdict = "works" | "missing" | "portal" | "crawler" | "unprobed" | "skipped";
 
+/** Whether a route entry applies to an env: it names no envs, or names this one. */
+export const appliesTo = (route: Route, env: Env) => !route.envs || route.envs.includes(env);
+
+/**
+ * The routes an env scores: not byDesign, applying to the env, and listed in that env's crawler openapi. With that openapi unread
+ * (`crawlerOps` null) every applying route counts, and the env's share is unmeasured.
+ */
+export function scoredRoutes(routes: readonly Route[], env: Env, crawlerOps: Map<string, Operation> | null): Route[] {
+  return routes.filter(route => !route.byDesign && appliesTo(route, env) && (!crawlerOps || crawlerOps.has(route.crawler)));
+}
+
 /** A route's verdict on one env from that env's documented operations (null when unread) and that env's probe results. */
 export function routeVerdict(route: Route, ops: Map<string, Operation> | null, byOp: ReadonlyMap<string, ProbeResult>): RouteVerdict {
   if (!ops) return "unprobed";
@@ -263,33 +283,36 @@ export function routeVerdict(route: Route, ops: Map<string, Operation> | null, b
 
 /**
  * The duty's metrics. The headline is the share of customer crawler routes whose /v1 route works on prod; staging_working_pct is the same on
- * staging. routes_failing_portal counts routes that fail on either env for a portal cause (no /v1 route there, or a portal error), and
+ * staging. Each env scores the routes its own crawler openapi lists (scoredRoutes), and an env whose crawler openapi is unread has an
+ * unmeasured share. routes_failing_portal counts routes that fail on either env for a portal cause (no /v1 route there, or a portal error), and
  * routes_failing_crawler those that fail with an upstream crawler error and no portal cause. Every other count goes to the run detail.
  */
 export function parityMetrics(input: {
-  routes: readonly Route[]; crawler: OpenApi | null; docs: Record<Env, OpenApi | null>; probes: Record<Env, readonly ProbeResult[]>;
+  routes: readonly Route[]; crawler: Record<Env, OpenApi | null>; docs: Record<Env, OpenApi | null>; probes: Record<Env, readonly ProbeResult[]>;
   sourceErrors: readonly string[]; previous?: ParityState | undefined; at: number; prodCostUsd?: number; paid?: ReadonlySet<string>;
 }): { output: PrecheckOutput; state: ParityState } {
   const { routes, at } = input;
   const flagged: FlaggedSlice[] = input.sourceErrors.map(excerpt => ({ at, kind: "source_error", excerpt: excerpt.slice(0, 300) }));
-  const crawlerOps = input.crawler && operations(input.crawler);
-  const live = routes.filter(route => !crawlerOps || crawlerOps.has(route.crawler));
-  for (const route of routes) if (crawlerOps && !crawlerOps.has(route.crawler)) flagged.push({ at, kind: "crawler_route_gone", excerpt: `${route.crawler} is no longer in the crawler openapi; drop it from portal-parity.routes.json if that is meant` });
-  for (const route of live) if (route.byDesign) flagged.push({ at, kind: "by_design", excerpt: `${route.crawler}: ${route.byDesign}` });
-  const scored = live.filter(route => !route.byDesign);
+  const crawlerOps = Object.fromEntries(ENVS.map(env => [env, input.crawler[env] && operations(input.crawler[env]!)])) as Record<Env, Map<string, Operation> | null>;
+  const listedSomewhere = (route: Route) => ENVS.some(env => appliesTo(route, env) && (!crawlerOps[env] || crawlerOps[env]!.has(route.crawler)));
+  for (const route of routes) if (!listedSomewhere(route)) flagged.push({ at, kind: "crawler_route_gone", excerpt: `${route.crawler} is in neither crawler openapi it applies to; drop it from portal-parity.routes.json if that is meant` });
+  for (const route of routes) if (route.byDesign && listedSomewhere(route)) flagged.push({ at, kind: "by_design", excerpt: `${route.crawler}${route.envs ? ` on ${route.envs.join(", ")}` : ""}: ${route.byDesign}` });
+  const scoredBy = Object.fromEntries(ENVS.map(env => [env, scoredRoutes(routes, env, crawlerOps[env])])) as Record<Env, Route[]>;
+  const scored = routes.filter(route => ENVS.some(env => scoredBy[env].includes(route)));
   const metrics: Record<string, number> = {};
   const verdicts: Record<Env, Map<Route, RouteVerdict>> = { prod: new Map(), staging: new Map() };
   for (const env of ENVS) {
     const doc = input.docs[env];
     const ops = doc && operations(doc);
     const byOp = new Map(input.probes[env].map(probe => [probe.op, probe]));
-    for (const route of scored) verdicts[env].set(route, routeVerdict(route, ops, byOp));
+    for (const route of scoredBy[env]) verdicts[env].set(route, crawlerOps[env] ? routeVerdict(route, ops, byOp) : "unprobed");
     const count = (verdict: RouteVerdict) => [...verdicts[env].values()].filter(value => value === verdict).length;
-    const judged = scored.length - count("skipped");
-    metrics[`${env}_working_pct`] = ops && input.probes[env].length && judged ? Math.round(1000 * count("works") / judged) / 10 : UNMEASURED_PCT;
+    const judged = scoredBy[env].length - count("skipped");
+    metrics[`${env}_routes_scored`] = scoredBy[env].length;
+    metrics[`${env}_working_pct`] = ops && crawlerOps[env] && input.probes[env].length && judged ? Math.round(1000 * count("works") / judged) / 10 : UNMEASURED_PCT;
     for (const verdict of ["works", "missing", "portal", "crawler", "unprobed", "skipped"] as const) metrics[`${env}_routes_${verdict}`] = count(verdict);
     metrics[`${env}_v1_ops_called`] = input.probes[env].filter(probe => probe.verdict !== "skipped").length;
-    const missing = scored.filter(route => verdicts[env].get(route) === "missing");
+    const missing = scoredBy[env].filter(route => verdicts[env].get(route) === "missing");
     const byGroup = new Map<string, string[]>();
     for (const route of missing) byGroup.set(route.group, [...(byGroup.get(route.group) ?? []), route.crawler]);
     for (const [group, list] of byGroup) flagged.push({ at, kind: `missing_${env}`, item: group, excerpt: `${group}: ${list.length} crawler routes with no /v1 route on ${env}: ${list.join(", ")}`.slice(0, 600) });
@@ -301,7 +324,7 @@ export function parityMetrics(input: {
       if (before === "ok" && (probe.verdict === "portal" || probe.verdict === "crawler")) flagged.push({ at, kind: "regression", excerpt: `${probe.op} worked on ${env} at the last run and now fails (${probe.status} ${probe.code ?? ""})`.trim() });
     }
   }
-  const either = (wanted: RouteVerdict[]) => scored.filter(route => ENVS.some(env => wanted.includes(verdicts[env].get(route)!)));
+  const either = (wanted: RouteVerdict[]) => scored.filter(route => ENVS.some(env => { const verdict = verdicts[env].get(route); return verdict !== undefined && wanted.includes(verdict); }));
   const portalRoutes = either(["missing", "portal"]);
   const portalSet = new Set(portalRoutes);
   metrics.routes_failing_portal = portalRoutes.length;
@@ -466,6 +489,7 @@ interface ProbeTarget { env: Env; base: string; doc: OpenApi; orgs: Org[]; heade
  */
 async function probeEnv(target: ProbeTarget, routes: readonly Route[]): Promise<ProbeResult[]> {
   const { env, base, doc, orgs, skip } = target;
+  routes = routes.filter(route => appliesTo(route, env));
   const slot = target.perMinute ? pacedSlot(target.perMinute) : async () => {};
   // Another caller on the same key, such as a second run of this duty, also fills the portal's minute: on 10-19 at 15:10Z a push run of d2
   // and a hand run together got 52 prod answers of 429 rate_limit_exceeded. So a 429 rate_limit_exceeded waits its Retry-After and calls again.
@@ -500,7 +524,8 @@ async function probeEnv(target: ProbeTarget, routes: readonly Route[]): Promise<
   // the run ends sooner, and a call with no time on record counts as slowest.
   const lastMs = (op: string) => target.lastMs?.[`${env} ${op}`] ?? Number.POSITIVE_INFINITY;
   first.sort(([a], [b]) => lastMs(b) - lastMs(a));
-  const jobOps = [...new Set(routes.flatMap(route => route.portal).filter(op => op.endsWith(JOB) && !notScored.has(baseOp(op))))];
+  // A job entry this env does not document is not called: the map holds both grammars' job rows, and each env documents one of them.
+  const jobOps = [...new Set(routes.flatMap(route => route.portal).filter(op => op.endsWith(JOB) && all.has(baseOp(op)) && !notScored.has(baseOp(op))))];
   // The portal allows an org 5 open crawl jobs (the 429 rate_limited message, measured on staging 10-12 and prod 10-15), and a run has more
   // job-mode entries than that. So job calls go one at a time, and every job after the first, which the chained calls read, is cancelled
   // as soon as its receipt comes back. The first one is cancelled once the chained calls have read it: on 2026-10-18 a prod run 8 min
@@ -619,8 +644,9 @@ async function main(): Promise<void> {
   const readEnv = (name: string) => attempt(`auto-sns-agent apps/llm-wiki/specs/envs/${name}.json`, async () =>
     JSON.parse(await readFile(join(REPO, `apps/llm-wiki/specs/envs/${name}.json`), "utf8")) as EnvFile);
   const [env, prodEnv] = await Promise.all([readEnv("staging"), readEnv("prod")]);
-  const [crawler, prod, bypass, secret, prodKey, skips] = await Promise.all([
-    attempt(CRAWLER_OPENAPI, () => getJson(CRAWLER_OPENAPI)),
+  const [crawlerProd, crawlerStaging, prod, bypass, secret, prodKey, skips] = await Promise.all([
+    attempt(CRAWLER_OPENAPI.prod, () => getJson(CRAWLER_OPENAPI.prod)),
+    attempt(CRAWLER_OPENAPI.staging, () => getJson(CRAWLER_OPENAPI.staging)),
     attempt(PROD_OPENAPI, () => getJson(PROD_OPENAPI)),
     env ? attempt("VERCEL_AUTOMATION_BYPASS_SECRET key source", () => sh(env.keySources.VERCEL_AUTOMATION_BYPASS_SECRET!.cmd, REPO)) : null,
     env ? attempt("CONVEX_WEBHOOK_SECRET key source", () => sh(env.keySources.CONVEX_WEBHOOK_SECRET!.cmd, REPO)) : null,
@@ -656,7 +682,7 @@ async function main(): Promise<void> {
     if (env && secret) await Promise.all(orgs.map(org => cleanupOrg(env.urls.convex!, secret, org).catch((error: unknown) =>
       sourceErrors.push(`cleanup of test org ${org.id} failed: ${error instanceof Error ? error.message : String(error)}`))));
   }
-  const result = parityMetrics({ routes, crawler, docs: { prod, staging }, probes, sourceErrors, previous, at: start, ...(skips ? { paid: skips.paid } : {}), ...(probes.prod.length ? { prodCostUsd: spend.usd } : {}) });
+  const result = parityMetrics({ routes, crawler: { prod: crawlerProd, staging: crawlerStaging }, docs: { prod, staging }, probes, sourceErrors, previous, at: start, ...(skips ? { paid: skips.paid } : {}), ...(probes.prod.length ? { prodCostUsd: spend.usd } : {}) });
   await writeFile(output, JSON.stringify(result.output, null, 2) + "\n");
   if (stateFile && (probes.prod.length || probes.staging.length)) await writeFile(stateFile, JSON.stringify(result.state) + "\n");
 }
