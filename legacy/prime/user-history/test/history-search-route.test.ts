@@ -9,6 +9,7 @@ import { startChatServer } from "../src/chat-server.ts";
 import type { ChatBackend } from "../src/chat-backend.ts";
 import { startServer } from "../../../../packages/pi-history/src/server.ts";
 import { makeIndex } from "../../../../packages/pi-history/test/fixture.ts";
+import { takeLatency } from "../src/chat-latency.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "chat-search-"));
 const CHAT = "01a10001-0000-7000-8000-000000000000";
@@ -24,8 +25,8 @@ writeFileSync(join(dir, "chat-jobs.json"), JSON.stringify({ jobs: {} }));
 process.env.AGENT_CHAT_DATA_DIR = dir;
 process.env.PI_HISTORY_SOCKET = join(dir, "history.sock");
 
-async function servers(t: { after(fn: () => Promise<void>): void }): Promise<string> {
-  const history = await startServer({ dbPath: join(dir, "history.db"), socket: join(dir, "history.sock"), settingsFile: join(dir, "settings.json") });
+async function servers(t: { after(fn: () => Promise<void>): void }, history_: Partial<Parameters<typeof startServer>[0]> = {}): Promise<string> {
+  const history = await startServer({ dbPath: join(dir, "history.db"), socket: join(dir, "history.sock"), settingsFile: join(dir, "settings.json"), ...history_ });
   const chat = await startChatServer({ backend: { close: async () => {} } as unknown as ChatBackend, bundle: new Promise(() => {}), port: 0,
     capability: "cap", csrfToken: "token", stopToken: "stop", identity: { pid: process.pid, instanceId: "test", socketPath: "/isolated-search.sock" }, onStop: async () => {} });
   t.after(async () => { await chat.close(); await history.close(); });
@@ -63,4 +64,25 @@ test("api/search answers a bad query with 400 and the reason", async t => {
   const response = await fetch(`${base}api/search?q=${encodeURIComponent("x kind:nope")}`);
   assert.equal(response.status, 400);
   assert.match(JSON.stringify(await response.json()), /Unknown kind/);
+});
+
+// d7 counted us-metal02's 03:45Z minute on 10-28 dirty from an api/search of 2,005 ms, which was pi-history waiting out its 2 s peer timeout
+// on the Mac: that wait is the Mac's time, as a relay read's is, and this box's own part still counts.
+test("a merged api/search counts its wait on a slow peer as remote and only its own part as this box's read", async t => {
+  writeFileSync(join(dir, "peer-hosts.json"), JSON.stringify({ hosts: [{ name: "mac", hostname: "mac-test", address: "10.0.0.2", relayPort: 7790, token: "mac-token" }] }));
+  writeFileSync(join(dir, "peer-settings.json"), JSON.stringify({ box: "us-metal02", peers: join(dir, "peer-hosts.json"), durableIndexes: [] }));
+  const mac = (async () => {
+    await new Promise(resolve => setTimeout(resolve, 1200));
+    return new Response(JSON.stringify({ ranked: [], total: 0, box: { ok: true, tookMs: 5, backfillPct: 100 } }));
+  }) as typeof fetch;
+  const base = await servers(t, { settingsFile: join(dir, "peer-settings.json"), fetcher: mac });
+  takeLatency();
+  const body = await (await fetch(`${base}api/search?q=relay`)).json() as { total: number; boxes: Record<string, { ok: boolean }> };
+  assert.deepEqual([body.total, body.boxes.mac?.ok], [2, true]);
+  await new Promise(resolve => setTimeout(resolve, 20));
+  const line = takeLatency();
+  assert.ok(line);
+  assert.equal(line.remote, "api/search");
+  assert.ok((line.remoteMs ?? 0) >= 1200, `the whole read took ${line.remoteMs} ms`);
+  assert.ok(line.readMs < 1000, `this box's part read ${line.readMs} ms`);
 });

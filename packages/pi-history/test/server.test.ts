@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { historyGet, HistoryError } from "../src/client.ts";
+import { historyGet, HistoryError, historyRaw } from "../src/client.ts";
 import { type SearchResult, startServer, type Status } from "../src/server.ts";
 import type { ReadAnswer } from "../src/core/read.ts";
 import { makeDurable, makeIndex } from "./fixture.ts";
@@ -181,6 +181,27 @@ test("a peer that fails is skipped at once as offline, probed in the background,
       third = await historyGet<SearchResult>("/v1/search", { q: "relay" }, socket);
     }
     assert.equal(third.boxes.down!.ok, true, "the probe's answer brings the peer back");
+  } finally {
+    await server.close();
+  }
+});
+
+test("a merged search says how long it waited on a slow peer after its own part", async () => {
+  const slow = (async (input: string | URL | Request, init?: RequestInit) => {
+    if (new URL(String(input)).hostname === "10.0.0.2") await new Promise(resolve => setTimeout(resolve, 400));
+    return relay(input, init);
+  }) as typeof fetch;
+  const socket = join(dir, "slow-peer.sock");
+  const server = await startServer({ socket, dbPath: metalDb, settingsFile: settings("us-metal02-slow", { box: "us-metal02" }), fetcher: slow });
+  try {
+    const merged = await historyRaw("/v1/search", { q: "relay" }, socket);
+    assert.ok((merged.peerWaitMs ?? 0) >= 250, `waited ${merged.peerWaitMs} ms on the Mac`);
+    const body = JSON.parse(merged.body) as SearchResult;
+    assert.ok(body.boxes.mac!.tookMs >= 400 && merged.peerWaitMs! <= body.tookMs, "the wait is part of the search's time");
+    const mac = await historyRaw("/v1/search", { q: "relay", box: "mac" }, socket);
+    assert.ok((mac.peerWaitMs ?? 0) >= 350, "an ask for the Mac alone is all wait on the Mac");
+    const own = await historyRaw("/v1/search", { q: "relay", box: "us-metal02" }, socket);
+    assert.equal(own.peerWaitMs, undefined, "a search of this box alone waits on no peer");
   } finally {
     await server.close();
   }

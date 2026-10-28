@@ -7,7 +7,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { dirname, join } from "node:path";
 import { Worker } from "node:worker_threads";
 import { DatabaseSync } from "node:sqlite";
-import { socketPath } from "./client.ts";
+import { PEER_WAIT_HEADER, socketPath } from "./client.ts";
 import { parseQuery, QueryError, type Query } from "./core/query.ts";
 import { parseRef, ReadError, type ReadAnswer } from "./core/read.ts";
 import { type Hit, mergePages, type Page, pageAsk, type PageAsk, type Ranked } from "./core/search.ts";
@@ -67,9 +67,9 @@ const percentile = (values: number[], p: number): number | undefined => {
   return Math.round(sorted[Math.min(sorted.length - 1, Math.ceil(p * sorted.length) - 1)]! * 10) / 10;
 };
 
-function send(response: ServerResponse, status: number, body: unknown): void {
+function send(response: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}): void {
   const text = JSON.stringify(body);
-  response.writeHead(status, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(text) });
+  response.writeHead(status, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(text), ...headers });
   response.end(text);
 }
 
@@ -203,7 +203,8 @@ export async function startServer(options: ServerOptions): Promise<{ close(): Pr
   }, options.probeMs ?? PROBE_MS);
   probe.unref();
 
-  const search = async (params: URLSearchParams): Promise<SearchResult | PeerPage> => {
+  /** A search's answer, and for a merged one that asked a peer, how long it waited on peers after this box's own part (PEER_WAIT_HEADER). */
+  const search = async (params: URLSearchParams): Promise<{ body: SearchResult | PeerPage; peerWaitMs?: number }> => {
     const started = performance.now();
     const settings = settingsOf();
     const query = parseQuery({ q: one(params, "q"), kind: one(params, "kind"), box: one(params, "box"), chat: one(params, "chat"), agent: one(params, "agent"),
@@ -216,7 +217,7 @@ export async function startServer(options: ServerOptions): Promise<{ close(): Pr
     if (params.get("local") === "1") {
       const pages = wanted(settings.box) ? await localPages(query, ask, roots, settings) : [];
       const tookMs = performance.now() - started;
-      return { ranked: pages.flatMap(page => page.hits), total: pages.reduce((sum, page) => sum + page.total, 0), box: boxState(Math.round(tookMs)) };
+      return { body: { ranked: pages.flatMap(page => page.hits), total: pages.reduce((sum, page) => sum + page.total, 0), box: boxState(Math.round(tookMs)) } };
     }
     const forward = new URLSearchParams(params);
     for (const key of ["caller", "callerPath", "roots"]) forward.delete(key);
@@ -229,27 +230,31 @@ export async function startServer(options: ServerOptions): Promise<{ close(): Pr
       if (state) boxes[peer.name] = state;
       return !state;
     });
+    // Each answer keeps the time it came back, so a peer's tookMs is its own and not the time this box's query took before reading it.
     const remote = asked.map(peer => ({ peer, started: performance.now(),
-      answer: askPeer<PeerPage>(peer, "search", forward).then(page => ({ page }), (error: unknown) => ({ error })) }));
+      answer: askPeer<PeerPage>(peer, "search", forward).then(page => ({ page, at: performance.now() }), (error: unknown) => ({ error, at: performance.now() })) }));
     const pages: Page[] = [];
     if (wanted(settings.box)) {
       const local = await localPages(query, ask, roots, settings);
       pages.push(...local);
       boxes[settings.box] = boxState(Math.round(performance.now() - started));
     }
+    const ownDone = performance.now();
     for (const { peer, started: asked, answer } of remote) {
       const settled = await answer;
       if ("page" in settled) {
         pages.push({ hits: settled.page.ranked, total: settled.page.total });
-        boxes[peer.name] = { ...settled.page.box, tookMs: Math.round(performance.now() - asked) };
+        boxes[peer.name] = { ...settled.page.box, tookMs: Math.round(settled.at - asked) };
       } else {
         const error = settled.error;
-        boxes[peer.name] = { ok: false, error: error instanceof Error ? error.message : String(error), tookMs: Math.round(performance.now() - asked), backfillPct: 0 };
+        boxes[peer.name] = { ok: false, error: error instanceof Error ? error.message : String(error), tookMs: Math.round(settled.at - asked), backfillPct: 0 };
       }
     }
+    const peerWaitMs = remote.length ? Math.round(performance.now() - ownDone) : undefined;
     const merged = mergePages(pages, ask);
     const tookMs = Math.round((performance.now() - started) * 10) / 10;
-    return { hits: merged.hits, total: merged.total, ...merged.next ? { nextCursor: merged.next } : {}, tookMs, boxes, scope: roots ? "family" : "all" };
+    return { body: { hits: merged.hits, total: merged.total, ...merged.next ? { nextCursor: merged.next } : {}, tookMs, boxes, scope: roots ? "family" : "all" },
+      ...peerWaitMs !== undefined ? { peerWaitMs } : {} };
   };
 
   const read = async (params: URLSearchParams): Promise<ReadAnswer> => {
@@ -295,10 +300,10 @@ export async function startServer(options: ServerOptions): Promise<{ close(): Pr
       if (request.method !== "GET") throw new HttpError(405, "GET only.");
       if (url.pathname === "/v1/search") {
         const started = performance.now();
-        const result = await search(url.searchParams);
+        const { body, peerWaitMs } = await search(url.searchParams);
         timings.push(performance.now() - started);
         if (timings.length > TIMING_SAMPLES) timings.shift();
-        return send(response, 200, result);
+        return send(response, 200, body, peerWaitMs !== undefined ? { [PEER_WAIT_HEADER]: String(peerWaitMs) } : {});
       }
       if (url.pathname === "/v1/read") return send(response, 200, await read(url.searchParams));
       if (url.pathname === "/v1/status") return send(response, 200, await status(url.searchParams));

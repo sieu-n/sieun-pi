@@ -10,6 +10,13 @@ export function socketPath(): string {
   return join(homedir(), ".local", "state", "pi-history", "history.sock");
 }
 
+/**
+ * The header a merged /v1/search answers with: how long, in ms, it waited on peer boxes after this box's own part was done. The chat proxies
+ * the JSON unparsed, so it reads this to count that wait as another box's (user-history chat-latency.ts `waitedOnHost`). On 10-28 at
+ * 03:45Z us-metal02's api/search took 2,005 ms, the 2 s peer timeout on the Mac, and d7 counted the minute as this box's slow read.
+ */
+export const PEER_WAIT_HEADER = "X-History-Peer-Wait-Ms";
+
 export class HistoryError extends Error {
   readonly status: number;
   constructor(status: number, message: string) { super(message); this.status = status; }
@@ -18,15 +25,19 @@ export class HistoryError extends Error {
 export type HistoryPath = "/v1/search" | "/v1/read" | "/v1/status";
 export type HistoryParams = Record<string, string | number | null | undefined>;
 
-/** GETs one route from the socket and returns its status and JSON text unparsed. A socket nobody listens on answers 503. */
-export function historyRaw(path: HistoryPath, params: HistoryParams = {}, socket = socketPath()): Promise<{ status: number; body: string }> {
+/** One route's answer as it came: its status, its JSON text unparsed and, for a merged search that asked a peer, PEER_WAIT_HEADER's ms. */
+export interface RawAnswer { status: number; body: string; peerWaitMs?: number }
+
+/** GETs one route from the socket and returns its answer unparsed. A socket nobody listens on answers 503. */
+export function historyRaw(path: HistoryPath, params: HistoryParams = {}, socket = socketPath()): Promise<RawAnswer> {
   const query = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) if (value !== undefined && value !== null && value !== "") query.set(key, String(value));
   return new Promise((resolve, reject) => {
     const req = request({ socketPath: socket, path: `${path}?${query}`, method: "GET" }, res => {
       const chunks: Buffer[] = [];
       res.on("data", (chunk: Buffer) => chunks.push(chunk));
-      res.on("end", () => resolve({ status: res.statusCode ?? 500, body: Buffer.concat(chunks).toString("utf8") }));
+      const waited = Number(res.headers[PEER_WAIT_HEADER.toLowerCase()]);
+      res.on("end", () => resolve({ status: res.statusCode ?? 500, body: Buffer.concat(chunks).toString("utf8"), ...Number.isFinite(waited) && waited >= 0 ? { peerWaitMs: waited } : {} }));
       res.on("error", reject);
     });
     req.on("error", (error: NodeJS.ErrnoException) => reject(["ENOENT", "ECONNREFUSED"].includes(error.code ?? "")

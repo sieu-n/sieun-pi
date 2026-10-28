@@ -52,7 +52,7 @@ import { feedBoard } from "./shared/board-delta.ts";
 import { CHECK_IN_MIN_MINUTES, CHECK_IN_PAUSES, isThinkingLevel, type AccountAction, type AgentQueueInput, type AgentQueuePool, type ChatDefaultsInput, type HostQueueInput, type LabelAction, type ModelCatalog, type RemoteAccessInput, type SendMode, type SlackChannelSetup, type SlackChatInput, type SlackInput, type ThinkingLevel } from "./shared/types.ts";
 import { channelNameError } from "./shared/slack-channel.ts";
 import { parseStartSkill } from "./shared/start-skill.ts";
-import { timeRead } from "./chat-latency.ts";
+import { timeRead, waitedOnHost } from "./chat-latency.ts";
 import { SLOW_READ_MS } from "./harness-slow.ts";
 import { ScheduledJobsLeft } from "./saved-archive.ts";
 import { type ArchiveBy, isServiceArchiveReason, SERVICE_ARCHIVES_FILE } from "./service-archives.ts";
@@ -847,6 +847,8 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
             throw error instanceof HistoryError ? new RequestError(error.status, error.message) : error;
           });
           if (answer.status >= 400) { const error = historyError(answer.status, answer.body); throw new RequestError(error.status, error.message); }
+          // A merged search's wait on the Mac or another peer is that box's time, as a relay read's is (chat-latency.ts waitedOnHost).
+          if (answer.peerWaitMs !== undefined) waitedOnHost(answer.peerWaitMs);
           jsonText(res, answer.body);
           return;
         }

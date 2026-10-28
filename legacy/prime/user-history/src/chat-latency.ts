@@ -81,7 +81,9 @@ const REMOTE_READS = new Set(["api/hosts"]);
 let slowest = { ms: 0, route: "" };
 let slowestRemote = { ms: 0, route: "" };
 let slowestSend = { ms: 0, route: "" };
-const reading = new AsyncLocalStorage<{ remote: boolean }>();
+/** A read in progress: whether it waited on another box, and for how many ms of it when that part is known. */
+interface Reading { remote: boolean; waitedMs?: number }
+const reading = new AsyncLocalStorage<Reading>();
 
 /**
  * Marks the request in progress as one that waited on another box, so its time goes to `remoteMs` and not to this box's `readMs`. The relay
@@ -90,10 +92,16 @@ const reading = new AsyncLocalStorage<{ remote: boolean }>();
  * the Mac relay, and 16:29 and 16:30Z from a Prompt view that read a 5 MB capture through it (1.2 to 16.6 s in three reads on 10-22 with the box at its usual load). On 10-23
  * the slowest read of 130 watch minutes was an api/usage read waiting on LGTM's Prometheus at obs.virev.ai, 12 to 30 s in 117 of them, with
  * the loop under 1 s, and d7 counted all ten us-metal02 minutes from 08:09 to 08:18Z dirty from it.
+ *
+ * `waitedMs`, when the caller knows it, is the part of the read spent on the other box; the rest still counts to this box's `readMs`. A merged
+ * api/search runs this box's query beside its peers' and waits only for what is left of theirs (pi-history PEER_WAIT_HEADER), so a slow
+ * query here stays a slow read here.
  */
-export function waitedOnHost(): void {
+export function waitedOnHost(waitedMs?: number): void {
   const read = reading.getStore();
-  if (read) read.remote = true;
+  if (!read) return;
+  read.remote = true;
+  if (waitedMs !== undefined) read.waitedMs = (read.waitedMs ?? 0) + waitedMs;
 }
 let loop: IntervalHistogram | null = null;
 
@@ -114,7 +122,7 @@ export function timeRead(req: IncomingMessage, res: ServerResponse, base: string
       .observe({ entryTypes: ["gc"] });
     setInterval(probePool, POOL_PROBE_MS).unref();
   }
-  const read = { remote: false };
+  const read: Reading = { remote: false };
   reading.enterWith(read);
   if (req.method !== "GET") return;
   const started = performance.now();
@@ -128,8 +136,9 @@ export function timeRead(req: IncomingMessage, res: ServerResponse, base: string
     const ms = Math.round((ended ?? finished) - started);
     const sent = Math.round(finished - (ended ?? finished));
     if (sent > slowestSend.ms) slowestSend = { ms: sent, route };
-    if (read.remote) { if (ms > slowestRemote.ms) slowestRemote = { ms, route }; }
-    else if (!REMOTE_READS.has(route) && ms > slowest.ms) slowest = { ms, route };
+    if (read.remote && ms > slowestRemote.ms) slowestRemote = { ms, route };
+    const own = !read.remote ? ms : read.waitedMs !== undefined ? Math.max(0, ms - Math.round(read.waitedMs)) : 0;
+    if (!REMOTE_READS.has(route) && own > slowest.ms) slowest = { ms: own, route };
   });
 }
 
