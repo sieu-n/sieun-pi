@@ -209,7 +209,10 @@ export interface HostWatchLine { name: string; usable: HostUsable | null; worker
   /** The box's idle or relative-home pm2 God Daemons (`IdlePm2Line`); absent when there are none. */
   idlePm2?: IdlePm2Line[];
   /** The box's loaded sessions idle past the unload window (`LingerLine`); absent when there are none. */
-  lingering?: LingerLine[] }
+  lingering?: LingerLine[];
+  /** The box's chat trees by footprint with each one's largest process (`TreeLine`), at most 5; absent on lines written before 10-28 10:xxZ and when
+   * none holds a kernel or orphan. On 10-28 the Mac's 09:15:30Z swap minute left d1 no process to name, because remote lines dropped them. */
+  trees?: TreeLine[] }
 
 export interface WatchLine {
   at: string;
@@ -631,7 +634,7 @@ export async function hostWatchLine(remote: RemoteWatch, input: { now: number; c
     return { name: remote.name, usable, workers: line.workers, workerGb: line.workerGb, top: line.top, ...line.byWorker ? { byWorker: line.byWorker } : {}, live: line.live,
       working: line.working, agents, swapGb: line.mac.swapGb,
       ...line.testBrowsers ? { testBrowsers: line.testBrowsers } : {}, ...line.strayServers ? { strayServers: line.strayServers } : {}, ...line.idlePm2 ? { idlePm2: line.idlePm2 } : {},
-      ...line.lingering ? { lingering: line.lingering } : {} };
+      ...line.lingering ? { lingering: line.lingering } : {}, ...line.trees?.length ? { trees: line.trees } : {} };
   } catch (error) {
     return { name: remote.name, usable: null, workers: 0, workerGb: 0, top: [], live: 0, working: 0, swapGb: null, error: (error instanceof Error ? error.message : String(error)).slice(0, 200) };
   }
