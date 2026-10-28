@@ -56,6 +56,8 @@ test("a text that keeps cache reads apart, or does not count model tokens, goes 
     "Cache reads are not waste, they reuse the prefix.",
     "Prod p95 latency is 120 ms, 12% under target. The Opus seat bill is $4,600 a month.",
     "Input validation now covers 95% of the forms.",
+    "2 included seats plus $12.34 a seat gave a $12.34 line for a 3rd seat. Chat threads (tokens and images) are metered. The COST-1 query has no gpt-image-2 price row.",
+    "TypeSafe billed about $0.52 for 1,000 creators on Jev at 1.9k input tokens each.",
   ]) assert.deepEqual(tellOwner({ text, why: "answer", about: "token cut" }, tellTurn(turn)), { kind: "sent", text: TELL_OWNER_DONE }, text);
 });
 
