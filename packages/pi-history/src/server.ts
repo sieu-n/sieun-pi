@@ -43,10 +43,11 @@ export interface ServerOptions {
 }
 
 /**
- * How long a peer box gets to answer. Measured 10-28: prime-relay /v1/health from us-metal02 to the Mac took 375 to 391 ms over 5 runs,
- * and search.md section 4 measured query p95 at 35 ms on the family index, so a peer that has not answered in 5 s is down or stuck.
+ * How long a peer box gets to answer. Measured 10-28 02:26Z from us-metal02 at load 275 to 297: the Mac answered the 24 bench queries x 7
+ * runs x 2 sorts (336 calls) through its relay at p50 232 to 241 ms, p99 393 to 521 ms and max 1,707 ms. 2 s covers every one of them; a
+ * peer that misses it is marked down and skipped until its probe answers.
  */
-const PEER_TIMEOUT_MS = 5000;
+const PEER_TIMEOUT_MS = 2000;
 /** A down peer is probed every 30 s, so a box back online rejoins searches within half a minute (the parent's 10-28 design). */
 const PROBE_MS = 30_000;
 /** The query timings /v1/status reports, the same window as the indexer's lag samples (API.md). */
