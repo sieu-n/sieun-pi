@@ -54,6 +54,10 @@ try {
   if (rulesTests.length === 0) throw new Error("No global-rules Node suites found.");
   run(process.execPath, ["--test", ...rulesTests.map((name) => `tests/${name}`), "packages/pi-claude-rules/test/rules.test.mjs", "legacy/prime/rules/unit-env-prime-shutdown.test.mjs", "tests/agent-utilities.test.mjs", "tests/git-stale-index.test.mjs", "tests/git-mass-delete.test.mjs", "tests/git-escaped-newline.test.mjs", "tests/release-chat.test.mjs"]);
   run(process.execPath, ["node_modules/typescript/bin/tsc", "--project", "tsconfig.json"]);
+  // Prime drops an extension that throws at load with no log, so a box with Prime installed loads each configured one through it (10-27 23:37Z).
+  const primeBin = process.env.PRIME_AGENT_REAL_BIN ?? join(process.env.HOME ?? "", ".local/share/prime-agent/bin/prime-agent");
+  if (existsSync(primeBin) && existsSync(join(process.env.HOME ?? "", ".prime/agent/extensions"))) run(process.execPath, ["scripts/check-extension-tools.mjs"]);
+  else console.log("\nSkipped scripts/check-extension-tools.mjs: this box has no prime-agent binary or ~/.prime/agent/extensions.");
   run("npm", ["test"], join(root, "legacy/prime/user-history"));
   run("npm", ["run", "typecheck"], join(root, "legacy/prime/user-history"));
   const poteto = join(root, "skills/poteto-mode/scripts");
