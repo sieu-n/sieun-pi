@@ -124,6 +124,12 @@ The notes go only into the request; the entries keep the raw text, and each note
 | `[corrections]` | `deliverCorrections` (correction-delivery.ts) | not added again: `prime-prompt.ts` sends the same `ledgerPrompt` text as the pinned `corrections` section |
 | `[correction check]` | the legacy chat server (`chats.ts` `correctionStep`), not the extension | missing; apps/chat would have to send it |
 
+### What a running thread sees at the first request after the release
+
+1. A `pi.system` update that adds the five chat tools and replaces `send_message`'s description. pi-durable sends it after the history, so the cached prefix stays on a model that takes system messages mid-conversation.
+2. Every earlier owner input in the history now carries its `[message id]` note and every earlier input from anyone else its `[not from the owner]` note in the request, so that first request writes the whole history to the cache once; later requests keep it.
+3. A child conversation a subagent call made before this release stored only `remove: ["subagent", "send-message"]`, so if it runs again it is offered the chat's tools too (without the wrappers, which run only in the root). A child made from now on drops `prime-chat` as well.
+
 ### What the adapter skips, and why
 
 | Part of the extension | Reason |

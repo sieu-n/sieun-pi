@@ -15,12 +15,12 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall, type FauxResponseFactory, type Message } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { getCurrentTools, toToolDeclaration } from "@earendil-works/pi-ai/utils/transcript";
-import { Harness, ROOT_CONVERSATION_ID, type EntryRecord } from "@earendil-works/pi-durable";
+import { Harness, ROOT_CONVERSATION_ID, type ContextView, type EntryRecord } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { TELL_OWNER_DESCRIPTION, TELL_OWNER_PARAMETERS, WAKE_NOTE } from "../../../../legacy/prime/user-history/src/chat-guard.ts";
 import { messageIdNote, TELL_OWNER_HELD } from "../../../../legacy/prime/user-history/src/shared/chat-feed.ts";
 import { ChatApp } from "../../src/durable/chat-app.ts";
-import { loadPrimeChat, PRIME_CHAT_TOOLS, type ChatThread, type PrimeChat } from "../../src/durable/prime-chat.ts";
+import { loadPrimeChat, PRIME_CHAT_TOOLS, withTurnWrappers, type ChatThread, type PrimeChat } from "../../src/durable/prime-chat.ts";
 import { guidelines } from "../../src/durable/prime-prompt.ts";
 import { threadRegistry } from "../../src/durable/registry.ts";
 import { SEND_MESSAGE_TOOL } from "../../src/durable/send-message.ts";
@@ -142,6 +142,20 @@ test("an owner input reaches the model with Prime's message id, another sender's
   assert.equal(seen[1]!.role, "user");
   const stored = entries.find(entry => entry.kind === "agent.message")!.model![0] as Message;
   assert.equal(textOf(stored.content), "Check-in: read the board.");
+});
+
+test("an imported Prime message keeps its custom type, so only Prime's wake types get the note, and a summary gets no message id", () => {
+  const user = (text: string, at: number) => ({ role: "user" as const, content: [{ type: "text" as const, text }], timestamp: at });
+  const rows: [string, unknown, ReturnType<typeof user>][] = [
+    ["prime.custom", { customType: "heartbeat_prompt", display: true }, user("Heartbeat: check the relay.", 1)],
+    ["prime.custom", { customType: "rlm_task_brief", display: false }, user("Your task: count to three.", 2)],
+    ["pi.compaction", { reason: "threshold" }, user("The conversation history before this point was compacted.", 3)],
+    ["pi.user", undefined, user("And now?", 4)],
+  ];
+  const view = { head: undefined, entries: rows.map(([kind, data], index) => ({ id: index + 1, conversationId: 1, kind, data })), contributions: rows.map(([, , message]) => [message]),
+    messages: rows.map(([, , message]) => message) } as unknown as ContextView;
+  const out = withTurnWrappers(view.messages, view).map(message => (message.content as { text: string }[]).map(part => part.text));
+  assert.deepEqual(out, [["Heartbeat: check the relay.", WAKE_NOTE], ["Your task: count to three."], ["The conversation history before this point was compacted."], ["And now?", messageIdNote(4)]]);
 });
 
 test("tell_owner sends on the owner's turn, refuses a call with no why on a check-in and holds an update there, as Prime's guard does", async () => {

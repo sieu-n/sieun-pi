@@ -111,13 +111,18 @@ export async function loadPrimeChat(options: PrimeChatOptions): Promise<PrimeCha
 // ---------------------------------------------------------------------------------------------------------------------------
 // A durable conversation as Prime's messages.
 
-/** Who an input is from, as Prime's chat reads it: the owner's text, another sender's message (Prime's `agent_message`), or neither. */
-type Origin = "owner" | "agent" | "other";
+/**
+ * Who an input is from, as Prime's chat reads it: the owner's text, a custom message (another sender's `agent_message`, or the custom type an
+ * imported Prime message had), or neither, such as a compaction summary.
+ */
+type Origin = "owner" | { customType: string } | "other";
 
+const AGENT_MESSAGE = "agent_message";
 function originOf(entry: EntryRecord): Origin {
   if (entry.kind === "pi.user") return "owner";
-  if (entry.kind === "agent.message") return (entry.data as { from?: unknown } | undefined)?.from === "owner" ? "owner" : "agent";
-  if (entry.kind === "prime.custom") return "agent";
+  if (entry.kind === "agent.message") return (entry.data as { from?: unknown } | undefined)?.from === "owner" ? "owner" : { customType: AGENT_MESSAGE };
+  const customType = (entry.data as { customType?: unknown } | undefined)?.customType;
+  if (entry.kind === "prime.custom" && typeof customType === "string") return { customType };
   return "other";
 }
 
@@ -134,16 +139,15 @@ function origins(view: ContextView): Map<string, Origin> {
   return out;
 }
 
-const AGENT_MESSAGE = "agent_message";
 const OTHER_ROLE = "pi-host-other";
 
-/** A user message as Prime holds it: the owner's stays a user message, another sender's is a custom agent_message, and a summary is neither. */
+/** A user message as Prime holds it: the owner's stays a user message, another sender's is a custom message, and a summary is neither. */
 function toPrime<M extends { role: string }>(message: M, origin: Origin | undefined): M {
   if (message.role !== "user" || origin === undefined || origin === "owner") return message;
-  return origin === "agent" ? { ...message, role: "custom", customType: AGENT_MESSAGE } : { ...message, role: OTHER_ROLE };
+  return origin === "other" ? { ...message, role: OTHER_ROLE } : { ...message, role: "custom", customType: origin.customType };
 }
 function fromPrime(message: { role: string; customType?: unknown }): Message {
-  if (message.role === "custom" && message.customType === AGENT_MESSAGE) {
+  if (message.role === "custom") {
     const { customType: _drop, ...rest } = message;
     return { ...rest, role: "user" } as Message;
   }
