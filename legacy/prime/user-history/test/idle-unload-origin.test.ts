@@ -185,7 +185,7 @@ async function threadFixture(t: TestContext) {
     if (command.origin === undefined) return { success: false, error: "Unknown active session: worker-1" };
     killStarted();
     await killing;
-    SessionManager.open(file).appendSessionState({ status: "archived" });
+    SessionManager.open(file).appendSessionState({ status: "archived", reason: undefined });
     listed = archived;
     return { success: true };
   });

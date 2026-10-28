@@ -50,7 +50,7 @@ async function fixture(t: TestContext) {
   const kill = async (): Promise<DaemonAnswer> => {
     killStarted();
     await killing;
-    SessionManager.open(file).appendSessionState({ status: "archived" });
+    SessionManager.open(file).appendSessionState({ status: "archived", reason: undefined });
     listed = archived;
     return { success: true };
   };

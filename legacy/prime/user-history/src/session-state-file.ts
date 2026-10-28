@@ -69,7 +69,7 @@ export function setFileSessionState(sessionFile: string, status: "archived" | "a
   if (!fast) {
     const manager = SessionManager.open(sessionFile);
     const current = manager.getSessionState()?.status;
-    if (status === "archived" ? current !== "archived" : current === "archived") manager.appendSessionState({ status });
+    if (status === "archived" ? current !== "archived" : current === "archived") manager.appendSessionState(status === "archived" ? { status, reason: undefined } : { status });
     return;
   }
   if (status === "archived" ? fast.current === "archived" : fast.current !== "archived") return;

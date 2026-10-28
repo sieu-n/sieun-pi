@@ -421,10 +421,6 @@ async function serve(options: Options): Promise<void> {
   // Started first, so the daemon boots while the rest loads. The catalog and threads reconnect on their own once it answers.
   // pi-host runs as its own systemd unit or launchd job, so a chat on it starts no Prime daemon and keeps no Prime SDK in step.
   const onPrime = (await import("./daemon-sdk.ts")).CHAT_BACKEND === "prime";
-  // After a Prime restart each attached thread comes back through a paced restore that waits out a starting worker (src/restore-pace.ts).
-  if (onPrime && !(await import("./restore-pace.ts")).paceRestores()) {
-    process.stderr.write(`${new Date().toISOString()} restore pace: the Prime SDK has no restoreConnectionAfterDaemonRestart or attach to pace\n`);
-  }
   const keeper = onPrime && !scratch && startsDaemon(primary)
     ? new DaemonKeeper({ socketPath: service.config.socketPath, log: line => process.stderr.write(`${new Date().toISOString()} ${line}\n`) }) : null;
   void keeper?.start();

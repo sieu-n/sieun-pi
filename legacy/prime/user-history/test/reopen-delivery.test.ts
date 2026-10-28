@@ -32,7 +32,7 @@ async function fixture(t: TestContext) {
   const manager = SessionManager.create(dir, dir);
   manager.appendCustomEntry("chat_mode", { v: 1 });
   manager.appendMessage({ role: "user", content: "original history", timestamp: 1 });
-  manager.appendSessionState({ status: "archived" });
+  manager.appendSessionState({ status: "archived", reason: undefined });
   manager.flushNow();
   const id = manager.getSessionId(), file = manager.getSessionFile()!;
   const saved: SessionSummary = { id, sessionId: id, sessionFile: file, cwd: dir, lifecycle: "archived", activity: "idle",

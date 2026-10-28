@@ -203,7 +203,7 @@ test("a daemon replaced by an older one meanwhile gets nothing on the connection
 });
 
 test("an unloaded chat on this box is archived through archive_saved_session by its full path, with no kill and no wake", async t => {
-  const f = await fixture(t, { known: NEW, box: NEW, answer: path => { SessionManager.open(path).appendSessionState({ status: "archived" }); return { success: true }; } });
+  const f = await fixture(t, { known: NEW, box: NEW, answer: path => { SessionManager.open(path).appendSessionState({ status: "archived", reason: undefined }); return { success: true }; } });
   await f.chats.archive(f.id, "owner");
   assert.equal(f.box!.archives.length, 1);
   const [archive] = f.box!.archives;
@@ -598,7 +598,7 @@ test("a service archive's queued cancel lands its line on the service's operatio
   const f = await fixture(t, { known: NEW, box: NEW, answer: path => {
     if (refuse) return { success: false, error: "The supervisor is draining" };
     const writer = SessionManager.open(path);
-    writer.appendSessionState({ status: "archived" });
+    writer.appendSessionState({ status: "archived", reason: undefined });
     writer.flushNow();
     lines.push(writer.getEntries().at(-1)!.id);
     return { success: true };
