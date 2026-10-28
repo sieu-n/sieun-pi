@@ -171,6 +171,10 @@ export async function measure(opts: { now: number; sessionFile: string; ledgerFi
   }
 
   const tests = [...new Set(rules.flatMap(rule => rule.tests ?? []))];
+  const searchTests = [...new Set(rules.flatMap(rule => rule.searchTests ?? []))];
+  // The apps/search run on us-metal02 shares nothing with the demo run on the Mac, so it starts first and runs beside it. Run one after the
+  // other they took 185 s at 04:53Z on 10-28, past the 180 s precheck timeout, with the demo's shared-ui.test.ts alone at 56 s.
+  const searchReport = searchTests.length && opts.search ? opts.search(searchTests) : undefined;
   const report = join(tmpdir(), `staging-design-rules-${process.pid}.json`);
   await exec(opts.vitest, ["run", ...tests, "--reporter=json", `--outputFile=${report}`], opts.demoDir);
   try {
@@ -187,10 +191,9 @@ export async function measure(opts: { now: number; sessionFile: string; ledgerFi
     sourceError("design_rule_test_failures", `vitest report for ${tests.join(", ")}: ${error instanceof Error ? error.message : String(error)}`);
   } finally { await rm(report, { force: true }); }
 
-  const searchTests = [...new Set(rules.flatMap(rule => rule.searchTests ?? []))];
-  if (searchTests.length && opts.search) {
+  if (searchReport) {
     try {
-      const parsed = JSON.parse(await opts.search(searchTests)) as VitestReport;
+      const parsed = JSON.parse(await searchReport) as VitestReport;
       const seen = new Set((parsed.testResults ?? []).map(file => file.name ?? ""));
       for (const test of searchTests) if (![...seen].some(name => name.endsWith(test))) sourceError("search_design_rule_findings", `apps/search vitest wrote no result for ${test}`);
       for (const file of parsed.testResults ?? []) for (const result of file.assertionResults ?? []) {
