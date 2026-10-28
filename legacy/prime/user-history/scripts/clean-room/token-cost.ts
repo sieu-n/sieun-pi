@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { family, ownJob } from "./answer-data.ts";
-import { readSession, readSessionFile, type RunState, type Scenario, type SessionEvent, type Verdict } from "./session-read.ts";
+import { readSession, readSessionFile, sessionFile, type RunState, type Scenario, type SessionEvent, type Verdict } from "./session-read.ts";
 
 /**
  * The clean-room scenario for c157's cost-estimate repeat. On 10-27 at 19:14:01Z the owner asked Crawler VP what classifying creators with
@@ -49,7 +49,8 @@ export function judge(run: string, state: RunState, now = Date.now()): { verdict
     const text = brief?.kind === "text" ? brief.text : "";
     if (!COST_ASK.test(text) || !MODEL_ASK.test(text)) return [];
     let raw = "";
-    try { raw = session.file ? readFileSync(session.file, "utf8") : ""; } catch { raw = ""; }
+    const file = session.file || sessionFile(session.id, [chat]);
+    try { raw = file ? readFileSync(file, "utf8") : ""; } catch { raw = ""; }
     return [{ id: session.id, carried: PRICES_SHARED_AS_CACHED.test(text) ? "its brief" : [RULE_LINE, "c157 This job prices model calls"].some(line => raw.includes(line)) ? "its [corrections] block" : "" }];
   });
   const bare = jobs.filter(job => !job.carried);

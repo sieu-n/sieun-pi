@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { tokenCostRuleLine } from "../../src/chat-corrections.ts";
 import { cacheBlindTokenClaim } from "../../src/shared/token-claim.ts";
 import { family, ownJob } from "./answer-data.ts";
-import { readSession, readSessionFile, type RunState, type Scenario, type SessionEvent, type Verdict } from "./session-read.ts";
+import { readSession, readSessionFile, sessionFile, type RunState, type Scenario, type SessionEvent, type Verdict } from "./session-read.ts";
 
 /**
  * The clean-room scenario for c157's first case, where tokens are counted to argue for a cut. On 10-22 the owner asked gpt sol (metal 02) "also
@@ -39,7 +39,8 @@ export function judge(run: string, state: RunState, now = Date.now()): { verdict
     const text = brief?.kind === "text" ? brief.text : "";
     if (!tokenCostRuleLine(text)) return [];
     let raw = "";
-    try { raw = session.file ? readFileSync(session.file, "utf8") : ""; } catch { raw = ""; }
+    const file = session.file || sessionFile(session.id, [chat]);
+    try { raw = file ? readFileSync(file, "utf8") : ""; } catch { raw = ""; }
     return [{ id: session.id, carried: raw.includes(RULE_LINE) ? "its [corrections] block" : CARRIES.test(text) ? "its brief" : "" }];
   });
   const bare = jobs.filter(job => !job.carried);
