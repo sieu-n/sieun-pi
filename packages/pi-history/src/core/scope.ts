@@ -68,9 +68,23 @@ export interface JobEntry { chat?: string; chatId?: string }
 export interface Registry { jobs: Record<string, JobEntry> }
 
 /** The chat a root belongs to: the root itself, or the chat that started it, followed up the registry (`chat_of` in kernel-read.py). */
+/**
+ * Each chat name's id, built once per registry object. Built per call, it cost 0.8 ms over 1,746 jobs, and the indexer's 5,876 calls a sweep
+ * held us-metal02's main thread for 4.6 to 5.3 s on 10-28.
+ */
+const chatIds = new WeakMap<Registry, Map<string, string>>();
+function chatIdsOf(registry: Registry): Map<string, string> {
+  let names = chatIds.get(registry);
+  if (!names) {
+    names = new Map();
+    for (const entry of Object.values(registry.jobs)) if (entry?.chat && entry.chatId) names.set(entry.chat, entry.chatId);
+    chatIds.set(registry, names);
+  }
+  return names;
+}
+
 export function chatOf(root: string, registry: Registry, nameOf: (root: string) => string | null): string {
-  const names = new Map<string, string>();
-  for (const entry of Object.values(registry.jobs)) if (entry?.chat && entry.chatId) names.set(entry.chat, entry.chatId);
+  const names = chatIdsOf(registry);
   const seen = new Set<string>();
   let current = root;
   while (!seen.has(current)) {
