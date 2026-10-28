@@ -58,6 +58,8 @@ test("account samples match the Accounts table and the sidebar meters", () => {
   assert.equal(value(samples, "harness.pool.account_resets_left", two), undefined);
   assert.equal(value(samples, "harness.pool.account_window_resets", { ...one, window: "5h" }), 3600);
   assert.equal(value(samples, "harness.pool.account_window_resets", { ...one, window: "week" }), 86400);
+  assert.deepEqual(samples.filter(s => s.name === "harness.pool.account_public").map(s => [s.labels?.account, s.labels?.number, s.labels?.plan]),
+    [["one@example.com", "1", "max 20x"], ["two@example.com (team)", "2", "team 5x"], ["three@example.com", "3", "max"]]);
   assert.equal(samples.filter(s => s.name === "harness.pool.next_request_account").length, 0);
   // The sidebar: the off account drops out, the limited one counts full in both meters.
   assert.equal(value(samples, "harness.pool.provider_used", { provider: "anthropic", window: "5h" }), 0.7);

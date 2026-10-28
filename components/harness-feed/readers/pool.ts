@@ -184,8 +184,11 @@ export function accountSamples(provider: Provider, listing: unknown, config: Poo
   const rows = poolRows(listing, provider);
   const held = heldTrees(listing), resets = resetsLeft(listing);
   const out: Sample[] = [];
-  for (const row of rows) {
+  for (const [index, row] of rows.entries()) {
     const labels = { account: row.label, provider };
+    out.push({ name: "harness.pool.account_public", kind: "gauge",
+      help: "1 per account, labelled with its number in pi-pool's add order (accounts/<provider>.json, which signin.py appends to) and its plan, so a public page can name the account without its email.",
+      value: 1, labels: { ...labels, number: String(index + 1), plan: row.tier ?? "" } });
     for (const window of row.windows) {
       out.push({ name: "harness.pool.account_window_used", kind: "gauge", unit: "1", help: "Share of an account's usage window spent, as the Accounts table shows it (5h, week, 30d or a model cap).",
         value: window.pct / 100, labels: { ...labels, window: window.label } });
