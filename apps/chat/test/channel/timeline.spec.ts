@@ -41,7 +41,9 @@ test("an agent turn folds its thinking and tool calls into a step line that open
 
 test("a mermaid answer draws a diagram inside the bubble", async ({ page }) => {
   await open(page, `#/c/${VENT}`);
-  await expect(row(page, "t10").locator("svg").first()).toBeVisible({ timeout: 15_000 });
+  // A diagram draws once it scrolls near the view (lib/ui/mermaid.ts whenVisible).
+  await row(page, "t10").scrollIntoViewIfNeeded();
+  await expect(row(page, "t10").locator(".diagram-slot svg").first()).toBeVisible({ timeout: 15_000 });
 });
 
 test("a spawned job shows as a thread pill that opens its transcript in the 420 px side pane", async ({ page }) => {

@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { TELL_OWNER_DONE, tellOwner, tellTurn } from "../src/chat-guard.ts";
-import { LONG_REPLY_MARK, longReply } from "../src/shared/reply-lint.ts";
+import { LONG_REPLY_MARK, longReply, unfoldedProse } from "../src/shared/reply-lint.ts";
 import type { ThreadMessage } from "../src/shared/types.ts";
 
 const at = (clock: string): number => Date.parse(`2026-10-22T${clock}Z`);
@@ -55,6 +55,21 @@ test("a link, code span, URL or quote counts as one word", () => {
   const link = "[the account queue and job recovery page](wiki:https://us-metal02-dev.tail0c093d.ts.net:5176/page/sessions/2026/10/22/account-queue.html)";
   assert.deepEqual(longReply(`The page walks one real job through a 429, a park and its wake, ${link}.`), []);
   assert.deepEqual(longReply(`You wrote "${"word ".repeat(40).trim()}" and I did it.`), []);
+});
+
+test("a status table and a folded log do not count toward a long reply, and the same words as prose do (AGENTS.md rule 5)", () => {
+  const rows = ["Staging", "Production", "Phone layout", "Dark mode", "Search", "Board", "Usage", "Hosts"]
+    .map(surface => `| ${surface} | Live since this morning | 42 of 42 browser specs pass on the box |`).join("\n");
+  const log = Array.from({ length: 30 }, (_, i) => `ok ${i + 1} - the board panel folds the step list on a phone`).join("\n");
+  const text = [
+    "The board panel redesign is live on staging, and production waits for your ok.",
+    `| Surface | State | Evidence |\n| --- | --- | --- |\n${rows}`,
+    `<details><summary>Spec log, 30 lines</summary>\n\n\`\`\`text\n${log}\n\`\`\`\n\nEvery spec ran twice on the box with the same result each time.\n\n</details>`,
+    "Say yes and it goes out tomorrow at 10:00 KST.",
+  ].join("\n\n");
+  assert.deepEqual(longReply(text), []);
+  assert.equal(unfoldedProse(text), "The board panel redesign is live on staging, and production waits for your ok.\n\n\n\nSay yes and it goes out tomorrow at 10:00 KST.");
+  assert.deepEqual(longReply(rows.replaceAll("|", " ")), ["114 words in all"]);
 });
 
 test("the very same text sent again after the refusal goes out, so the check is a soft cap (c98)", () => {

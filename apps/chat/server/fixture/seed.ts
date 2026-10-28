@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ChatBoard, PlanItem } from "../../web/src/lib/api/types.ts";
 import type { Duty, DutyRunRecord } from "../../web/src/lib/api/shared/chat-duties.ts";
-import type { FixtureHost } from "../host/fixture.ts";
+import { richReply, type FixtureHost } from "../host/fixture.ts";
 import type { ContentBlock, EntryRecord, Message } from "../host/types.ts";
 import { runStamp } from "../duty-run.ts";
 import { writeJson, type ChannelRow, type Post, type StateFile } from "../store.ts";
@@ -23,6 +23,18 @@ export const FIXTURE_IDS = {
   cutoverChannel: "ch_cutover",
   generalChannel: "ch_general",
 };
+
+/** A drawn stand-in for a screenshot of the board panel, for the rich answer's embedded image (served by /api/local-image). */
+const BOARD_SHOT = `<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360" viewBox="0 0 640 360">
+<rect width="640" height="360" rx="18" fill="#f1f1f2"/>
+<rect x="16" y="16" width="608" height="40" rx="12" fill="#ffffff"/>
+<circle cx="40" cy="36" r="8" fill="#beda36"/><rect x="58" y="30" width="140" height="12" rx="6" fill="#5f5f5f"/>
+<rect x="16" y="68" width="190" height="276" rx="14" fill="#ffffff"/>
+${[0, 1, 2, 3, 4].map(i => `<rect x="32" y="${88 + i * 36}" width="${150 - i * 14}" height="12" rx="6" fill="${i === 1 ? "#beda36" : "#dadada"}"/>`).join("")}
+<rect x="218" y="68" width="406" height="276" rx="14" fill="#ffffff"/>
+${[0, 1, 2, 3, 4, 5].map(i => `<circle cx="244" cy="${96 + i * 40}" r="7" fill="${["#2b9a66", "#2b9a66", "#ef5f00", "#0d74ce", "#dadada", "#dadada"][i]}"/><rect x="262" y="${90 + i * 40}" width="${300 - i * 30}" height="12" rx="6" fill="#e8e8e8"/>`).join("")}
+</svg>
+`;
 
 /** One red 2x2 PNG. */
 const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFklEQVR42mP8z8DwnwEJMDIwMjAwAAANJQEBEtoaJgAAAABJRU5ErkJggg==";
@@ -76,8 +88,15 @@ export function seedFixture(host: FixtureHost, dataDir: string, now = Date.now()
   user(harness, harnessJob.id, "Rerun the cross-box test on the canary relay", at(0, -0.5));
   assistant(harness, harnessJob.id, [{ type: "toolCall", id: "call_h1", name: "bash", arguments: { command: "npm test -- cross-box" } }], at(0, -0.45), "toolUse");
 
-  // Crawler VP: its last turn failed.
+  // Crawler VP: a rich answer, then a last turn that failed.
   const crawler = host.addThread({ id: ids.crawler, name: "Crawler VP", createdAt: at(3), status: "failed" });
+  // The rich answer, before the failed turn: every format the chat renders, with a screenshot file, a link to Vent's job and the board's p1.
+  const shot = join(dataDir, "fixture-board-panel.svg");
+  mkdirSync(dataDir, { recursive: true });
+  writeFileSync(shot, BOARD_SHOT);
+  host.richImage = shot;
+  user(crawler, 1, "Where does the board panel work stand? Show me everything on one screen.", at(1, 5));
+  assistant(crawler, 1, [{ type: "text", text: richReply(shot, `${ids.vent}:${ventJob.id}`) }], at(1, 5.01));
   user(crawler, 1, "Move the crawler to the new relay port.", at(1, 6));
   assistant(crawler, 1, [{ type: "text", text: "" }], at(1, 6.01), "error", { errorMessage: "pi-pool: no account can serve claude-opus-5-5 until 07:00" });
   crawler.row.status = "failed";

@@ -43,6 +43,21 @@
 .prose li + li {
   margin-top: 2px;
 }
+.prose li.task-item {
+  list-style: none;
+}
+.prose li.task-item > input[type="checkbox"],
+.prose li.task-item > p:first-child > input[type="checkbox"] {
+  width: 13px;
+  height: 13px;
+  margin: 0 6px 0 -19px;
+  vertical-align: -2px;
+  accent-color: var(--status-online);
+  pointer-events: none;
+}
+.prose li.task-item.done {
+  color: var(--text-subtle);
+}
 .prose li > input[type="checkbox"] {
   margin: 0 6px 0 -18px;
   vertical-align: -1px;
@@ -53,18 +68,101 @@
   text-decoration-thickness: 1px;
   text-underline-offset: 2px;
 }
+/* Internal links (job:, thread:, wiki:, file paths) are pills; the scheme picks the icon in markdown.ts. */
 .prose .artifact-link {
-  display: inline;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  max-width: 100%;
+  padding: 0 6px 0 4px;
+  border-radius: 6px;
+  background: color-mix(in srgb, currentColor 9%, transparent);
+  font-weight: 500;
+  line-height: 20px;
   text-decoration: none;
-  border-bottom: 1px solid color-mix(in srgb, currentColor 35%, transparent);
+  vertical-align: bottom;
 }
 .prose .artifact-link:hover {
-  border-bottom-color: currentColor;
+  background: color-mix(in srgb, currentColor 16%, transparent);
+}
+.prose .artifact-link .link-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.prose .artifact-link.path-pill {
+  color: var(--text-standard);
+  font: 400 12px/20px var(--font-mono);
+  cursor: copy;
 }
 .prose .link-icon {
+  flex: none;
   display: inline;
-  margin-right: 2px;
   vertical-align: -2px;
+  opacity: 0.8;
+}
+/* Web links keep the underline and carry the site's icon, and the domain when the text does not say it. */
+.prose .web-link .favicon {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  margin-right: 3px;
+  border-radius: 3px;
+  vertical-align: -2px;
+}
+.prose .web-link .link-domain {
+  margin-left: 4px;
+  padding: 0 5px;
+  border-radius: 5px;
+  background: color-mix(in srgb, currentColor 8%, transparent);
+  color: var(--text-metadata);
+  font: var(--text-caption);
+  text-decoration: none;
+  display: inline-block;
+}
+/* A GitHub pull request, issue or commit: one compact line with repo, number and title. */
+.prose .gh-card {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 1px 8px 1px 6px;
+  border-radius: 8px;
+  background: var(--surface-panel);
+  box-shadow: inset 0 0 0 1px var(--border-standard);
+  color: var(--text-standard);
+  font: var(--text-body-sm);
+  line-height: 22px;
+  text-decoration: none;
+  vertical-align: bottom;
+}
+.prose a.gh-card {
+  color: var(--text-standard);
+}
+.prose .gh-card:hover {
+  box-shadow: inset 0 0 0 1px var(--border-prominent);
+}
+.prose .gh-mark {
+  flex: none;
+  color: var(--text-subtle);
+}
+.prose .gh-card[data-gh="pull"] .gh-mark {
+  color: var(--status-online);
+}
+.prose .gh-repo {
+  flex: none;
+  color: var(--text-metadata);
+}
+.prose .gh-ref {
+  flex: none;
+  font: 500 12px/22px var(--font-mono);
+}
+.prose .gh-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .prose .path-link {
   border-bottom: 1px dotted var(--text-metadata);
@@ -80,6 +178,67 @@
   padding-left: 12px;
   border-left: 2px solid var(--border-message-thread);
   color: var(--text-subtle);
+}
+/* GitHub callouts: > [!NOTE], [!TIP], [!IMPORTANT], [!WARNING], [!CAUTION]. */
+.prose .callout {
+  --callout: var(--chart-series-1);
+  margin: 0 0 10px;
+  padding: 8px 12px 8px 12px;
+  border-left: 3px solid var(--callout);
+  border-radius: 4px 12px 12px 4px;
+  background: color-mix(in srgb, var(--callout) 9%, var(--surface-panel));
+  color: var(--text-standard);
+}
+.prose .callout-tip {
+  --callout: var(--status-online);
+}
+.prose .callout-important {
+  --callout: var(--chart-series-4);
+}
+.prose .callout-warning {
+  --callout: var(--chart-series-2);
+}
+.prose .callout-caution {
+  --callout: var(--border-danger);
+}
+.prose .callout > :last-child {
+  margin-bottom: 0;
+}
+.prose .callout .callout-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 2px;
+  color: var(--callout);
+  font: var(--text-label-sm);
+}
+.prose .callout-icon {
+  flex: none;
+}
+/* <details> folds a long log or a side note. */
+.prose details {
+  margin: 0 0 10px;
+  border-radius: 12px;
+  box-shadow: inset 0 0 0 1px var(--border-standard);
+}
+.prose details > summary {
+  padding: 6px 12px;
+  cursor: pointer;
+  color: var(--text-subtle);
+  font: var(--text-label-sm);
+  list-style-position: inside;
+}
+.prose details > summary:hover {
+  color: var(--text-standard);
+}
+.prose details[open] > summary {
+  border-bottom: 1px solid var(--border-standard);
+}
+.prose details > :not(summary) {
+  margin: 8px 12px;
+}
+.prose details > .code-block {
+  margin: 8px;
 }
 .prose hr {
   border: 0;
@@ -123,38 +282,96 @@
   padding: 2px 14px 12px;
   overflow-x: auto;
 }
+/* A long code block shows its first 20 lines and a Show all button. */
+.prose .code-block.folded pre {
+  max-height: calc(20 * 16px + 14px);
+  overflow-y: hidden;
+  -webkit-mask-image: linear-gradient(to bottom, #000 75%, transparent);
+  mask-image: linear-gradient(to bottom, #000 75%, transparent);
+}
+.prose .code-more {
+  display: block;
+  width: 100%;
+  height: 30px;
+  border: 0;
+  border-top: 1px solid var(--border-standard);
+  background: transparent;
+  color: var(--text-subtle);
+  font: var(--text-caption);
+}
+.prose .code-more:hover {
+  background: var(--affordance-ghost-hover);
+  color: var(--text-standard);
+}
 .prose pre code {
   padding: 0;
   background: transparent;
   font: var(--text-mono);
   white-space: pre;
 }
+.prose .diagram-slot svg {
+  cursor: zoom-in;
+}
 .prose .diagram-slot {
+  min-height: 96px;
   padding: 8px 14px 14px;
   background: var(--surface-panel);
 }
+.prose .diagram-slot[hidden] {
+  display: none;
+}
+.prose .diagram-error {
+  margin: 0;
+  padding: 0 14px 6px;
+  color: var(--text-metadata);
+  font: var(--text-caption);
+}
+/* Tables stay compact, scroll both ways past 420 px, and keep their header row in view. */
 .prose .table-wrap {
-  overflow-x: auto;
-  border-radius: var(--radius-row);
+  max-height: 420px;
+  overflow: auto;
+  border-radius: 12px;
   box-shadow: inset 0 0 0 1px var(--border-standard);
+  background: var(--surface-panel);
 }
 .prose table {
   width: 100%;
-  border-collapse: collapse;
+  border-collapse: separate;
+  border-spacing: 0;
   font: var(--text-body-sm);
+  font-size: 13px;
+  line-height: 18px;
+  font-variant-numeric: tabular-nums;
 }
 .prose th,
 .prose td {
-  padding: 6px 12px;
+  padding: 5px 10px;
   text-align: left;
+  vertical-align: top;
   border-bottom: 1px solid var(--border-standard);
+}
+.prose th[align="right"],
+.prose td[align="right"] {
+  text-align: right;
+}
+.prose th[align="center"],
+.prose td[align="center"] {
+  text-align: center;
 }
 .prose tr:last-child td {
   border-bottom: 0;
 }
 .prose th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--surface-inset);
   font-weight: 500;
   color: var(--text-subtle);
+  white-space: nowrap;
+}
+.prose td code {
+  white-space: nowrap;
 }
 .prose .md-image {
   display: block;
@@ -173,6 +390,7 @@
 }
 .prose .inert-image {
   color: var(--text-metadata);
+  font: var(--text-caption);
 }
 .prose.streaming > :last-child::after,
 .prose.streaming:empty::after {
@@ -189,4 +407,9 @@
   50% {
     opacity: 0;
   }
+}
+/* A block after a paragraph keeps its gap, also inside a bubble, which zeroes paragraph margins. */
+.prose > * + :is(.callout, .code-block, .table-wrap, details, ul, ol, blockquote, .md-image),
+.prose > * + p:has(> .md-image:only-child) {
+  margin-top: 10px;
 }

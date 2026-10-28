@@ -45,6 +45,7 @@ Pages call the server through `web/src/lib/api` (`import { api, timeline, agents
 | `api.read(id, seq?)` | `POST /api/c/:id/read` | Sets the owner's read mark. |
 | `api.jobs(thread)` | `GET /api/threads/:id/jobs` | `JobNode[]`, the thread's job tree. |
 | `api.openDm(agent)` | `POST /api/dms` | Lists that root chat under DMs and returns its summary; a job is returned and stays unlisted. |
+| `![alt](/abs/path.png)` in markdown | `GET /api/local-image?path=` | An image file on this box by its absolute or `~/` path: PNG, JPEG, GIF, WebP or SVG up to 25 MiB whose bytes match its type. |
 
 1. A Solo row is a root thread of kind chat, and a DM row is a root chat the owner opened with `openDm`. A root job (a thread started for a chat, such as a duty run's thread), and a job inside a thread are kind `job` with their `parent`: they never sit under Direct messages, show under their parent agent (its Swarm and the Agents page's Jobs tab), and open by link.
 2. `around=<item id or e<entry>>` returns the page that holds that entry and `focus`, the id of the item that holds it, so a search hit opens at its message.
@@ -172,12 +173,12 @@ Pages call the server through `web/src/lib/api` (`import { api, timeline, agents
 
 `npm run fixture` seeds these, all over the last five days.
 
-1. Four chats are seeded: Vent (finished turns with thinking and tool steps, an image, a mermaid answer and a finished job), AI harness developer environment VP (a turn that runs for as long as the server runs, a running job and a board with every step state), Crawler VP (failed) and frontend bro.
+1. Four chats are seeded: Vent (finished turns with thinking and tool steps, an image, a mermaid answer and a finished job), AI harness developer environment VP (a turn that runs for as long as the server runs, a running job and a board with every step state), Crawler VP (a rich answer with callouts, a table, a diagram, a task list, GitHub cards, file, wiki, thread and board pills, a screenshot, a fold and code, then a failed turn) and frontend bro.
 2. pi cutover prep and Relay uptime duty <stamp> (the thread of duty d1's missed run) are root jobs of the AI harness VP, not DMs; Crawler VP is a chat opened as a DM; and old relay probe is archived.
 3. Each chat runs in `<data dir>/work/<name>`, with AGENTS.md files there and in `work/`, and `<data dir>/prime-agent` stands in for Prime's agent dir with a global AGENTS.md and a harness store of two memories.
 4. #pi-cutover has posts in answered, no_reply and queued states, a thread with two replies and an @owner post, and #general has one thread.
 5. The AI harness VP has two duties with runs and a check-in.
-6. A send to any thread gets an answer; a message with "spawn" starts a job, "fail" ends in an error, "slow" takes a minute for Stop, "queue" waits 2 s at place 3 then 1 of 7 before it starts, and "mermaid" answers with a diagram.
+6. A send to any thread gets an answer; a message with "spawn" starts a job, "fail" ends in an error, "slow" takes a minute for Stop, "queue" waits 2 s at place 3 then 1 of 7 before it starts, "mermaid" answers with a diagram, "broken diagram" with a mermaid block that does not parse, and "rich" with an answer in every format the chat renders.
 7. The words canary, relay and migration repeat across days and authors for search.
 
 ## Host seam

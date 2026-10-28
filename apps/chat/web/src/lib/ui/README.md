@@ -51,8 +51,8 @@ Colors, chart series (`--chart-series-1` to `4`), type, radii, shadows, spacing,
 | `Bubble` | A received or own message bubble, 8 px 16 px padding, about 21 px radius. | `own`, `position`, `footer` for reactions, `highlighted` |
 | `DayDivider` | The calendar glyph and a relative day label that updates at midnight. | `at` |
 | `SystemLine` | A centered caption line with up to 3 small avatars. | `members`, `text` |
-| `Markdown` | Sanitized markdown with code blocks, tables, wiki links, artifact links, board id chips, mentions, images with a lightbox, mermaid and a streaming caret. | `text`, `inline`, `context`, `streaming`, `onartifact`, `onboardid`, `onmention` |
-| `Mermaid` | One mermaid diagram, drawn on demand in the current color mode. | `source` |
+| `Markdown` | Sanitized markdown with code blocks (language, Copy, a fold past 20 lines), tables with a sticky header, GitHub callouts, task lists, `<details>` folds, wiki, job, thread and file path pills, board id chips, mentions, GitHub cards, web links with the site icon, images with a lightbox, mermaid drawn when it scrolls near, and a streaming caret. | `text`, `inline`, `context`, `streaming`, `onartifact`, `onboardid`, `onmention` |
+| `Mermaid` | One mermaid diagram in the design tokens of the current color mode; a parse error goes to `onerror`, or shows with the source. | `source`, `onerror` |
 | `Lightbox` | A full-screen image view. | `src`, `alt`, `onclose` |
 
 `renderMarkdown(text, context)` and `renderInline(text, context)` return the same HTML as strings, for places that cannot mount a component. The context names the chat's board ids (`board`) and the mention targets (`mentions`), and only those turn into chips.
