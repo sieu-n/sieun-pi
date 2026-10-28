@@ -156,7 +156,7 @@ for (let i = 0; i < 120 && childId; i++) {
   await wait(500);
 }
 record({ id: "T16", guard: "transcript (child)", what: `read tool in an rlm.spawn child (${childId ?? "none"})`, refused: true, expect: /global-rules refused reading/ }, { isError: true, text: childText });
-results.push({ id: "T17", guard: "headless browser", what: "no runtime guard refuses a headless browser on Prime (c177 lives in the pre-commit hook and box.mjs), so the check has nothing to fire", pass: true, text: "n/a" });
+results.push({ id: "T17", guard: "headless browser", what: "the browser guard (browser.ts, c177 and c103) acts only on the owner's Mac, so this Linux rig has nothing to fire; tests/global-rules-browser.test.mjs covers it", pass: true, text: "n/a" });
 
 const sendLog = existsSync(join(dir, "sends.jsonl")) ? readFileSync(join(dir, "sends.jsonl"), "utf8").trim().split("\n").map(l => JSON.parse(l)) : [];
 const refusals = existsSync(join(dir, "transcript-refusals.jsonl")) ? readFileSync(join(dir, "transcript-refusals.jsonl"), "utf8").trim().split("\n").length : 0;

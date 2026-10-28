@@ -7,10 +7,11 @@ import { PY_STRING, balancedSlice } from "./shell.ts";
 import { judgeSieunPi } from "./sieun-pi.ts";
 import { judgeCaps } from "./caps.ts";
 import { judgePm2 } from "./pm2.ts";
+import { judgeBrowser } from "./browser.ts";
 import { cellStart, cellSteps } from "./kernel-cwd.ts";
 
 export interface Verdict {
-	rule: "sieun-pi" | "send" | "cap" | "pm2";
+	rule: "sieun-pi" | "send" | "cap" | "pm2" | "browser";
 	command: string;
 	reason: string;
 }
@@ -89,6 +90,7 @@ export function judgeShellText(text: string, cwd: string): Verdict[] {
 		...judgeSendShell(text, cwd),
 		...judgeCaps(text),
 		...judgePm2(text),
+		...judgeBrowser(text, cwd),
 		...(text.includes("cua-driver") ? judgeCuaShell(text) : []),
 	];
 }

@@ -26,6 +26,14 @@ The extension adds no prompt text. The writing standard is the `unslop` skill, r
 `sieun-pi.ts` applies to any git command whose target is a sieun-pi checkout: this source tree, or a clone whose origin is `sieu-n/sieun-pi`. It follows `cd`, `git -C`, `--git-dir` and `--work-tree`, so the session cwd does not matter.
 It refuses a force push and `git reset --hard`. It allows `git rebase` and `git commit --amend` only while no remote branch holds a commit they rewrite.
 
+`browser.ts` refuses, on the owner's Mac only, a command that would launch a Playwright or Puppeteer browser (owner rules c177 and c103).
+The pre-commit hook `scripts/git-hooks/no-headless.mjs` scans only files committed here, so on 10-28 at 02:18:31Z a job copied its scripts to `/tmp/timings-mac` on the Mac, ran `node scout.mjs` through the kernel's `bash()`, and its `chromium.launch` started Chrome for Testing.
+It reads the script a runner starts (`node`, `tsx`, `bun`, `deno`, `python`, `uv run`, `npx`, inline `-e` or `-c` code) with the local files it imports, follows `cd`, `sh -c` and `nohup`, and also refuses a browser subcommand of the Playwright CLI, such as `playwright test`, and a package.json script that runs one.
+A launch needs both a Playwright or Puppeteer import and a `.launch(`, `launchPersistentContext(` or `launchServer(` call, so a script that only connects to Aside over CDP passes.
+The refusal points to the aside_browser skill and to us-metal02, where repo specs keep running, as they do in CI (c163).
+The kernel judges the same rule on each subprocess through `send-check.ts`, so a command built at run time is refused too.
+`GLOBAL_RULES_PLATFORM` stands in for `process.platform` in tests.
+
 `caps.ts` refuses a command that sets a memory, CPU, IO, task or priority cap (owner rule c107), because the box parity duty counts each one as `resource_limits_set` and every count so far came from a hand-typed command: `load-fakeprov.service` with `CPUQuota` on 10-22 (board step p143), and `docker run --cpus 8` at 20:56Z, 21:35Z and 21:54Z on 10-24.
 It covers `docker` or `podman` `run`, `create` and `update` with a cap flag such as `--cpus`, `-m` or `--pids-limit`, `systemd-run` with a cap property such as `-p CPUQuota=` or with `--nice`, `systemctl set-property` with a cap property, and `nice`, `renice`, `ionice`, `cpulimit` or `taskset` in front of a command.
 It judges a flag only where it is an argument of that program, before a container's image, and follows `sh -c`, `systemd-run`, `heavy`, `choom`, `timeout`, `sudo`, `ssh` and `$(...)` to the command they start, so a grep pattern, a heredoc body, a commit message or a brief that names the flag passes.

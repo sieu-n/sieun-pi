@@ -51,6 +51,9 @@ CAP_HINT = re.compile(
     r"--cpu|--memory|--kernel-memory|--pids-limit|--blkio|--device-(?:read|write)|(?:docker|podman)\b[\s\S]*\s-[a-zA-Z]*[cm]"
     r"|set-property|--property|-p\s*[A-Z]\w*=|--nice|\b(?:nice|renice|ionice|cpulimit|taskset)\b"
 )
+# On the owner's Mac a Python, uv or package manager command may also launch a Playwright browser, which browser.ts judges (c177, c103);
+# node, tsx, bun, deno, npx and shell scripts reach the judge through SHELL_HINT already.
+BROWSER_HINT = re.compile(r"\bpython|playwright|puppeteer|\b(?:uv|npm|pnpm|yarn)\b") if (os.environ.get("GLOBAL_RULES_PLATFORM") or sys.platform) == "darwin" else None
 MCP_HINT = re.compile(r"send|reply|forward|post|comment|message|submit|create|invite|exec|repl", re.I)
 WRITE = frozenset({"POST", "PUT", "PATCH"})
 OWN_PACKAGES = ("aside_browser",)
@@ -363,7 +366,8 @@ def on_shell(args, cwd, env, executable=None) -> None:
     text = shell_text(args)
     where = os.fsdecode(cwd) if cwd else os.getcwd()
     repo = touches_repo(text, where)
-    if not (repo or CAP_HINT.search(text) or (SHELL_HINT.search(text) and not plain_git(executable, args))) or owned_by_skill():
+    hinted = SHELL_HINT.search(text) or (BROWSER_HINT and BROWSER_HINT.search(text))
+    if not (repo or CAP_HINT.search(text) or (hinted and not plain_git(executable, args))) or owned_by_skill():
         return
     names = env if isinstance(env, dict) else os.environ
     expanded = re.sub(r"\$\{?([A-Za-z_]\w*)\}?", lambda m: os.fsdecode(names.get(m.group(1), m.group(0))), text)
