@@ -1118,13 +1118,39 @@ class ResumePausedTests(unittest.TestCase):
         self.assertEqual([h["session_id"] for h in resume_paused.HELD], [probe])
     def test_two_passes_that_save_the_state_at_once_keep_both_sends(self):
         path = self.root / "state.json"
-        first = {"a": "2026-10-05T19:50:00Z"}
-        second = {"b": "2026-10-05T19:55:00Z", "a": "2026-10-05T19:40:00Z"}
-        resume_paused.save_state(path, first, NOW, 1440)
+        resume_paused.save_state(path, {"a": {"cuts": ["2026-10-05T19:50:00Z"]}}, NOW, 1440)
+        second = {"b": {"cuts": ["2026-10-05T19:55:00Z"]}, "a": {"cuts": ["2026-10-05T19:40:00Z"]}}
         resume_paused.save_state(path, second, NOW, 1440)
-        self.assertEqual(json.loads(path.read_text()), {"a": "2026-10-05T19:50:00Z", "b": "2026-10-05T19:55:00Z"})
-        self.assertEqual(second["a"], "2026-10-05T19:50:00Z", "the pass sees the other pass's newer send")
+        self.assertEqual(json.loads(path.read_text()), {"a": {"cuts": ["2026-10-05T19:40:00Z", "2026-10-05T19:50:00Z"]}, "b": {"cuts": ["2026-10-05T19:55:00Z"]}})
+        self.assertEqual(second["a"]["cuts"], ["2026-10-05T19:40:00Z", "2026-10-05T19:50:00Z"], "the pass sees the other pass's send")
         self.assertEqual(sorted(p.name for p in self.root.glob("state.json*")), ["state.json"])
+
+    def test_each_cut_gets_one_continue_across_passes_and_restarts_and_a_cut_on_the_continue_itself_gets_none(self):
+        # 10-28 from 04:20Z: each chat release ran the sweep again. The state kept only the newest cut time of a session, mac transition proof's
+        # held 21:20:05Z, so its older 21:09:15Z cut (and wiki-refs' 23:29:22Z one) got a continue in every pass, 3 within minutes.
+        older, newer = at(50), at(40)
+        path = self.root / "state.json"
+        path.write_text(json.dumps({"0" * 24 + "macproof0001": newer}))
+        self.session("macproof0001", [role(60, "user"), assistant(50, "error", "Connection error.")])
+        for _ in range(3):
+            self.run_resume()
+        self.assertEqual(self.sent, [("macproof0001", "continue")], "one continue for the 21:09Z cut, kept across 3 passes")
+        self.assertEqual(json.loads(path.read_text())["0" * 24 + "macproof0001"]["cuts"], sorted([older, newer]))
+        # The continue (sent a minute before NOW here) reached the run and its turn failed again with no work: that is the same interruption.
+        kept = json.loads(path.read_text())
+        kept["0" * 24 + "macproof0001"]["sent"] = at(1)
+        path.write_text(json.dumps(kept))
+        self.sessions.clear()
+        self.session("macproof0001", [role(60, "user"), assistant(50, "error", "Connection error."), role(0.5, "user"), assistant(0.4, "error", "Connection error.")])
+        self.run_resume()
+        self.assertEqual(len(self.sent), 1, "a cut on the continue itself is handled")
+        # A turn that did work after the continue makes the next cut a new one.
+        self.sessions.clear()
+        self.session("macproof0001", [role(60, "user"), assistant(50, "error", "Connection error."), role(0.5, "user"),
+                                      {"type": "message", "timestamp": at(0.45), "message": {"role": "assistant", "stopReason": "toolUse", "content": [{"type": "text", "text": "on it"}]}},
+                                      assistant(0.4, "error", "Connection error.")])
+        self.run_resume()
+        self.assertEqual(len(self.sent), 2)
 
     def test_an_alert_ownership_note_owes_no_turn_and_a_parents_message_does(self):
         # vent, 10-28 02:34Z: the alert bridge told four finished triage jobs, idle 11 h to 4 days, that job 11:33 owns their rules. Each note

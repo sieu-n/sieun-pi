@@ -1915,19 +1915,60 @@ def load_state(path):
         return {}
 
 
+def state_entry(value):
+    """{"cuts": [cut time, ...], "sent": when the last continue went} of one session's state value. A file from before 10-28 holds only the
+    cut time of the last continue, as a string."""
+    if isinstance(value, str):
+        return {"cuts": [value]}
+    if not isinstance(value, dict):
+        return {"cuts": []}
+    cuts = [cut for cut in value.get("cuts") or [] if isinstance(cut, str)]
+    return {"cuts": cuts, **({"sent": value["sent"]} if isinstance(value.get("sent"), str) else {})}
+
+
+def record_sent(state, session_id, cut, now):
+    """Records the continue sent now for the cut at `cut`. Every cut a session got a continue for stays in the record, not only the last."""
+    entry = state_entry(state.get(session_id))
+    state[session_id] = {"cuts": sorted({*entry["cuts"], cut}), "sent": now.isoformat()}
+
+
+def handled(state, session_id, cut, entries):
+    """This pass already sent a continue for the cut at `cut`, or for an earlier cut that the run answered only with another failed call, with
+    no turn that did work since the send. On 10-28 from 04:20Z each chat release ran the sweep again, and since the state kept only the newest
+    cut time per session, mac transition proof's 21:09:15Z cut (state 21:20:05Z) and wiki-refs' 23:29:22Z cut got a continue in every pass."""
+    entry = state_entry(state.get(session_id))
+    if cut in entry["cuts"]:
+        return True
+    sent, at = parse_ts(entry.get("sent")), parse_ts(cut)
+    if not sent or not at or at < sent:
+        return False
+    worked = any(e.get("type") == "message" and (e.get("message") or {}).get("role") == "assistant"
+                 and (e.get("message") or {}).get("stopReason") != "error" and (parse_ts(e.get("timestamp")) or sent) > sent for e in entries)
+    return not worked
+
+
 def save_state(path, state, now, keep_minutes):
     cutoff = now - dt.timedelta(minutes=max(keep_minutes, 1440))
-    kept = {k: v for k, v in state.items() if (parse_ts(v) or now) >= cutoff}
+
+    def fresh(entry):
+        cuts = [cut for cut in entry["cuts"] if (parse_ts(cut) or now) >= cutoff]
+        sent = entry.get("sent") if (parse_ts(entry.get("sent")) or now) >= cutoff else None
+        return {"cuts": cuts, **({"sent": sent} if sent else {})} if cuts or sent else None
+
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     # Two passes can save at once: at 22:5xZ on 10-27 one pass's rename found the other's shared .tmp gone and exited 1 before its sends. Each
-    # save merges the file under a lock, so neither pass drops the other's sends and a run is never continued twice for one cut.
+    # save merges the file under a lock: the cuts of both are kept, so neither pass drops the other's sends and no cut gets two continues.
     with open(path.with_suffix(".lock"), "w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        for key, value in load_state(path).items():
-            if key not in kept or (parse_ts(value) or now) > (parse_ts(kept[key]) or now):
-                if (parse_ts(value) or now) >= cutoff:
-                    kept[key] = value
+        merged = {key: state_entry(value) for key, value in state.items()}
+        disk = load_state(path)
+        for key, value in disk.items():
+            theirs, mine = state_entry(value), state_entry(state.get(key))
+            sent = max(filter(None, (mine.get("sent"), theirs.get("sent"))), default=None, key=lambda stamp: parse_ts(stamp) or now)
+            merged[key] = {"cuts": sorted({*mine["cuts"], *theirs["cuts"]}), **({"sent": sent} if sent else {})}
+        kept = {key: entry for key, entry in ((key, fresh(entry)) for key, entry in merged.items()) if entry}
+        state.clear()
         state.update(kept)
         tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
         tmp.write_text(json.dumps(kept, indent=1))
@@ -2195,7 +2236,7 @@ def find_paused(sessions, since_minutes, state, now, direct=False, only=frozense
         age_min = (now - ts).total_seconds() / 60 if ts else None
         if since_minutes and age_min is not None and age_min > since_minutes:
             continue
-        if state.get(s.get("sessionId") or s["id"]) == last.get("timestamp"):
+        if handled(state, s.get("sessionId") or s["id"], last.get("timestamp"), entries_of(sid)):
             continue  # this script already resumed this interruption
         head = head_of(sid, by_id)
         if not direct and head != sid and head in by_id and ts:
@@ -2408,7 +2449,7 @@ def direct_resume(paused, args, state, now):
                     except CommandError as again:
                         res = {"error": str(again)[:300]}
                 if sent_ok(res):
-                    state[p["session_id"]] = p["errored_at"]
+                    record_sent(state, p["session_id"], p["errored_at"], now)
                     save_state(args.state, state, now, args.since_minutes)
             actions.append({"id": p["id"], "name": p["name"], "head": p["head"], "result": res})
     return {"paused": paused, "heads": [], "children": actions, "message": args.message,
@@ -2467,7 +2508,7 @@ def resume(sessions, args, now):
                     row["result"] = {"error": str(error)[:300]}
                 else:
                     for p in runs:
-                        state[p["session_id"]] = p["errored_at"]
+                        record_sent(state, p["session_id"], p["errored_at"], now)
                     save_state(args.state, state, now, args.since_minutes)
             actions.append(row)
 
@@ -2491,7 +2532,7 @@ def resume(sessions, args, now):
                     except CommandError as error:
                         res = {"error": str(error)[:300]}
                     else:
-                        state[p["session_id"]] = p["errored_at"]
+                        record_sent(state, p["session_id"], p["errored_at"], now)
                         save_state(args.state, state, now, args.since_minutes)
                 child_actions.append({"id": p["id"], "name": p["name"], "head": p["head"], "result": res})
 
