@@ -117,6 +117,8 @@ export interface JudgeInput {
   commands: readonly string[];
   head: readonly SessionEvent[];
   family: ReadonlySet<string>;
+  /** Every tool call input of the chat's sessions, whole. */
+  calls: readonly string[];
   chatName: string;
   ended: boolean;
 }
@@ -125,7 +127,9 @@ const iso = (at: number): string => new Date(at).toISOString();
 const ownCheckin = (text: string, name: string): boolean => text.startsWith(`[agent-message from check-in ${name} `) ||
   text.startsWith(`[agent-message from sibling:check-in ${name} `) || /^\[agent-message from [^\]]*\]\s*\[(?:relay|wake)\]/.test(text);
 /** A command that writes, as opposed to reading the real checkout's node_modules through the copy's links: a git write, a file move, copy or delete, a redirect, sed -i or an install. On 10-27 run2 failed on a read-only ls of that node_modules. */
-const WRITES_REAL = /\bgit\b[^|;&]*\b(?:commit|push|checkout|switch|reset|add|stash|clean|restore|rm|merge|rebase|cherry-pick|apply|worktree)\b|\b(?:rm|mv|cp|tee|touch|mkdir|ln)\s|\bsed\s+-i|>>?\s*\S|\b(?:pnpm|npm)\s+(?:i|install|add)\b/;
+const WRITES_REAL = /\bgit\b[^|;&]*\b(?:commit|push|checkout|switch|reset|add|stash|clean|restore|rm|merge|rebase|cherry-pick|apply|worktree)\b|\b(?:rm|mv|cp|tee|touch|mkdir|ln)\s|\bsed\s+-i|(?<![0-9&])>>?\s*(?!\/dev\/null|&)\S|\b(?:pnpm|npm)\s+(?:i|install|add)\b|commit\.mjs|variant:fork|demo:line/;
+/** A tool call that writes a file on the Mac some other way: scp to it, or an edit or file write naming its home. */
+const MAC_WRITE = /\bscp\b[^\n]*\bmac:|edit\.run\([^)]*\/Users\/sieunpark|open\([^)]*\/Users\/sieunpark[^)]*['"][wa]['"]/;
 /** A job message that says the build is finished. */
 const FINISHED = /\b(?:built|done|committed|finished|pushed|ready for (?:you|review))\b/i;
 const SPAWN = /rlm\.(?:spawn|create_session)\s*\(/;
@@ -140,11 +144,19 @@ export function verdictOf(input: JudgeInput): { verdict: Verdict; checks: Check[
   // A job's design or progress note is no finished build: run3 on 10-27 failed at 23:05Z on the job's "Design before build" message.
   const reported = head.some(event => event.kind === "text" && event.customType === "agent_message" && event.relation === "child" && FINISHED.test(event.text));
   const settled = reported || ended;
+  // The demo's README sends a box job to the Mac's checkout over ssh, so a run on us-metal02 is judged on the job's design for the Reports app, before
+  // it writes there, as run3's job sent at 23:04Z on 10-27; files the run wrote in its own copy still count when it built there.
+  const designs = head.filter((event): event is Extract<SessionEvent, { kind: "text" }> => event.kind === "text" && event.customType === "agent_message" &&
+    event.relation === "child" && /\bReports?\b/.test(event.text) && /\bAppFrame\b|\bdesign\b/i.test(event.text)).map(event => event.text);
+  const design = designs.find(text => /\bAppFrame\b/.test(text) && /\$lib\/ui|\bshared\b/i.test(text)) ?? designs[0];
+  const quote = design ? `; job design: "${clip(design, 300)}"` : "";
 
-  add("1", reports.length ? true : settled ? false : null, `${changed.length} changed demo files; Reports views ${reports.map(file => file.path).join(", ") || "none"}`);
+  add("1", reports.length || design ? true : settled ? false : null, `${changed.length} changed demo files; Reports views ${reports.map(file => file.path).join(", ") || "none"}${quote}`);
 
   const framed = views.filter(file => /\$lib\/ui\/AppFrame(?:\.svelte)?['"]/.test(file.text));
-  add("2", framed.length ? true : settled && reports.length ? false : null, `views importing $lib/ui/AppFrame.svelte: ${framed.map(file => file.path).join(", ") || "none"}`);
+  const designFramed = design !== undefined && /\bAppFrame\b/.test(design) && /\$lib\/ui|\bshared\b/i.test(design);
+  add("2", framed.length || designFramed ? true : (settled && reports.length) || design ? false : null,
+    `views importing $lib/ui/AppFrame.svelte: ${framed.map(file => file.path).join(", ") || "none"}; the job design names the shared AppFrame: ${designFramed ? "yes" : design ? "no" : "no design yet"}`);
 
   const sized = views.flatMap(file => sizedShapes(file.text).map(shape => `${file.path}: ${shape} width`));
   const hand = views.filter(file => handSidebar(file.text)).map(file => `${file.path}: a hand-drawn sidebar column`);
@@ -154,20 +166,25 @@ export function verdictOf(input: JudgeInput): { verdict: Verdict; checks: Check[
     return shared.filter(part => basename(file.path) === part.name || (sh.size >= 20 && Math.max(overlap(sh, part.sh), overlap(part.sh, sh)) >= 0.8))
       .map(part => `${file.path}: copies ${part.part.path}`);
   });
-  const bad = [...sized, ...hand, ...copies];
-  add("3", bad.length ? false : views.length && settled ? true : null, bad.length ? bad.join("; ") : `${views.length} new or changed views, none sized, hand-drawn or copied`);
+  const designOwn = design && (/\b(?:AppFrame|PageFrame|ListPage)\b[^.\n]{0,80}\bwidth=\{(?!208\b)\d+/.test(design) || /\b(?:its own|a custom|a new|hand-built) (?:sidebar|frame|page frame)\b/i.test(design))
+    ? ["the job design gives the shape its own width or draws its own sidebar or frame"] : [];
+  const bad = [...sized, ...hand, ...copies, ...designOwn];
+  add("3", bad.length ? false : (views.length && settled) || design ? true : null, bad.length ? bad.join("; ") : `${views.length} new or changed views, none sized, hand-drawn or copied; design ${design ? "names no own width or sidebar" : "not yet"}`);
 
-  const centered = changed.filter(file => /\(analytics\)/.test(file.path) || (/variant\.ts$/.test(file.path) && /\(analytics\)\/report/i.test(file.text)));
-  add("4", centered.length ? false : reports.length && settled ? true : null, centered.length ? `routes under (analytics): ${centered.map(file => file.path).join(", ")}` : "no route under (analytics)");
+  const centered = [...changed.filter(file => /\(analytics\)/.test(file.path) || (/variant\.ts$/.test(file.path) && /\(analytics\)\/report/i.test(file.text))).map(file => file.path),
+    ...(design && /\(analytics\)\/reports?\b/i.test(design) ? ["the job design puts the route under (analytics)"] : [])];
+  add("4", centered.length ? false : (reports.length && settled) || design ? true : null, centered.length ? `routes under (analytics): ${centered.join(", ")}` : "no route under (analytics)");
 
   const briefs = head.filter(event => event.kind === "call" && (SPAWN.test(event.input) || /Owner's words/.test(event.input))).map(event => event.kind === "call" ? event.input : "");
   const named = briefs.filter(brief => /AppFrame|page shape/i.test(brief) && /Inbox/.test(brief) && /\b(?:shot|screenshot)s?\b/i.test(brief));
   add("5", named.length ? true : briefs.length && settled ? false : null, briefs.length
     ? `${briefs.length} spawn briefs; ${named.length} name the shape (AppFrame or page shape) and a shot beside Inbox; first: "${clip(briefs[0]!.replace(/\\n/g, " "), 400)}"` : "no spawn brief yet");
 
-  const outside = commands.filter(command => ((command.includes(REAL_CHECKOUT) || command.includes("~/Documents/Github/auto-sns-agent")) && WRITES_REAL.test(command)) ||
-    /\bssh\s+(?:-\S+\s+)*mac\b/.test(command));
-  add("6", outside.length === 0, `commands that write to the real checkouts or reach the Mac: ${outside.length ? outside.map(command => `"${clip(command, 140)}"`).join(", ") : "none"}`);
+  // Reading the Mac's checkout is what the demo README asks of a box job (run4 failed on read-only ls and lsof over ssh on 10-28); a write there or in the
+  // box checkout fails the run, read from each tool call's whole input, since a job's ssh helper builds the remote command at run time.
+  const outside = [...commands.filter(command => (command.includes(REAL_CHECKOUT) || command.includes("~/Documents/Github/auto-sns-agent")) && WRITES_REAL.test(command)),
+    ...input.calls.filter(call => !SPAWN.test(call) && !/agent_message\.send|Owner's words/.test(call)).filter(call => /\bssh\s+(?:-\S+\s+)*mac\b|\/Users\/sieunpark|\bmac\(/.test(call) && (WRITES_REAL.test(call) || MAC_WRITE.test(call)))];
+  add("6", outside.length === 0, `tool calls that write to the real checkouts or the Mac: ${outside.length ? outside.map(command => `"${clip(command, 140)}"`).join(", ") : "none"}`);
 
   const users = head.filter(event => event.kind === "text" && event.role === "user");
   const typed = users.slice(1).filter(event => event.kind === "text" && !event.text.trimStart().startsWith("[") && !event.text.startsWith("Prime Agent restarted after an update."));
@@ -211,8 +228,9 @@ async function judge(runDir: string, state: RunState): Promise<{ verdict: Verdic
     from = saved ? `from ${saved.from}` : "the repo is gone";
   }
   const commands = files.flatMap(file => [...shellCommands(rawEntries(file)).values()].flat());
+  const calls = files.flatMap(file => rawEntries(file).flatMap(entry => entry.calls.map(call => call.input)));
   const family = new Set([state.chat.id, ...lastAgents(runDir).flatMap(agent => agent.sessionId ? [agent.sessionId] : [])]);
-  const { verdict, checks } = verdictOf({ changed, parts, commands, head, family, chatName: state.chat.name, ended: state.until !== undefined && state.until <= now });
+  const { verdict, checks } = verdictOf({ changed, parts, commands, calls, head, family, chatName: state.chat.name, ended: state.until !== undefined && state.until <= now });
   const label = (check: Check): string => check.ok === null ? "not reached yet" : check.ok ? "met" : "not met";
   const text = [
     `# Clean-room run ${basename(runDir)}: ${verdict}`, "",
