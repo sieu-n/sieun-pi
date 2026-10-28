@@ -219,7 +219,7 @@ export class Indexer {
       docs: this.docCount,
       bytesIndexed,
       bytesTotal,
-      backfillPct: bytesTotal ? Math.floor((bytesIndexed / bytesTotal) * 1000) / 10 : 100,
+      backfillPct: bytesTotal ? Math.floor((bytesIndexed / bytesTotal) * 1000) / 10 : this.lastSweepMs === undefined ? 0 : 100,
       newestAt: this.newestAt,
       lagP50Ms: percentile(lags, 50),
       lagP99Ms: percentile(lags, 99),
