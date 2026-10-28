@@ -64,11 +64,6 @@ export interface AgentOutboxDeps {
    * among them wakes to the live jobs 01a152a6, 01a15312 and 01a153b7 of frontend bro, which a relay through their parent reaches.
    */
   subagentOf?: (session: string) => Promise<StoppedSubagent | null>;
-  /**
-   * Whether a box's last list shows the session with a worker of its own (`Catalog.resident`), null when no box lists it. A subagent the list
-   * shows with none goes to its parent with no send first: on 10-21 the daemon refused 17 such sends as "Unknown active session" before each relay.
-   */
-  resident?: (session: string) => boolean | null;
   /** Whether that box is up (src/host-reach.ts); a message to a session on a box that reads offline waits with no try until it is back. */
   reach?: (host: string) => Promise<PeerReach>;
   /**
@@ -325,13 +320,11 @@ export class AgentOutbox {
           await this.took(entry, merged);
           return this.send(session, entry.id, entry.at, text, host, entry.write);
         };
-        const stopped = deps.resident?.(session) === false ? await this.subagent(session) : null;
-        if (stopped) {
-          await sending(merged.change);
-          await this.took(entry, merged);
-        } else if (await this.inTree(session, go) === "sent") return;
-        // A stopped subagent is reached through its parent's rlm handle, and a parent that is gone too through its own parent.
-        const child = stopped ?? await this.subagent(session);
+        // Since Prime load.3 the send opens a stopped subagent's tree from the spawn ledger, so it goes first even to a child with no worker.
+        if (await this.inTree(session, go) === "sent") return;
+        // A Prime before load.3 answers "gone" for a stopped subagent, which is reached through its parent's rlm handle, and a parent that is
+        // gone too through its own parent.
+        const child = await this.subagent(session);
         if (child) {
           await this.deliver(child.parents[0]!, relayNote(child, text), entry.root);
           await deps.relayed?.(session, this.now()).catch(error => deps.log(`relay: ${session.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`));

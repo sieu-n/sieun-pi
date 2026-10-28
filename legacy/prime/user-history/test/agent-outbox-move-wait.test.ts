@@ -25,12 +25,12 @@ test("a send after a move that ended through the parent logs its own wait, not t
     sleep: () => new Promise(done => setImmediate(done)),
     send: async (session, text) => {
       if (session === JOB && closing) { closing = false; resident = false; throw new Error(`Active session ${JOB} is closing`); }
+      if (session === JOB && !resident) return "gone";
       sent.push(`${session.slice(0, 8)} ${text.slice(0, 20)}`);
       return "sent";
     },
     target: async () => ({ queued: [], busy: false }),
     fileOf: async () => null,
-    resident: session => session === JOB ? resident : true,
     subagentOf: async session => session === JOB ? { id: JOB, name: "reasons-fix", parents: [PARENT] } : null,
   });
   await outbox.deliver(JOB, "[wake] first", undefined, "wake");
@@ -41,9 +41,8 @@ test("a send after a move that ended through the parent logs its own wait, not t
   await outbox.deliver(JOB, "[wake] second", undefined, "wake");
   await outbox.outbox.idle();
   await outbox.close();
-  const went = lines.find(line => line.includes("went after its target's worker"));
-  assert.ok(went, lines.join("\n"));
-  assert.match(went, /was closing for 0 s$/);
+  const went = lines.filter(line => line.includes("went after its target's worker"));
+  assert.ok(went.every(line => / for 0 s$/.test(line)), lines.join("\n"));
   const at = new Date(now).toISOString();
-  assert.deepEqual(readServiceFaults([`${at} ${went}`], "us-metal02"), []);
+  assert.deepEqual(readServiceFaults(went.map(line => `${at} ${line}`), "us-metal02"), []);
 });

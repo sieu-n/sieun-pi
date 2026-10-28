@@ -19,7 +19,6 @@ import { sessionFileOf } from "../src/send-once.ts";
 import { triggerSummary } from "../src/shared/turns.ts";
 import type { ChatAgent, ChildAgent, CustomMessage, SessionRow, ThreadMessage } from "../src/shared/types.ts";
 import { readSlotPark } from "../src/slot-park.ts";
-import { relayNote } from "../src/subagent-relay.ts";
 import { fakeThreads, row, source } from "./chats-helpers.ts";
 import { agentDir, at, CHAT, DROPPED, EMPTY, ID, LISTED, PARKED, QUEUED, SLOT_ERROR } from "./slot-park-replay.ts";
 
@@ -109,7 +108,7 @@ test("chats: a subagent that waits for its slot gets no no-report notice when it
   chats.close();
 });
 
-test("outbox: a message to a parked subagent gets no relay or continue while it waits, and goes through its parent once Prime dropped the park", async t => {
+test("outbox: a message to a parked subagent gets no relay or continue while it waits, and goes straight to it once Prime dropped the park", async t => {
   const agentDir = await mkdtemp(join(tmpdir(), "slot-park-outbox-"));
   await mkdir(join(agentDir, "sessions"), { recursive: true });
   await writeFile(join(agentDir, "sessions", `${CHAT}.jsonl`), "");
@@ -124,7 +123,6 @@ test("outbox: a message to a parked subagent gets no relay or continue while it 
     relayed: (session, when) => relayRecord(join(agentDir, "relayed.json")).add(session, when),
     send: async (session, text) => { sent.push([session, text]); return "sent"; },
     target: async () => ({ queued: [], busy: false }), fileOf: id => sessionFileOf(id, agentDir),
-    resident: session => session === ID ? false : true,
     slotPark: async session => session === ID ? readSlotPark(file, now, LISTED) : null });
   t.after(() => messages.close());
   const text = "[agent-message from parent:VP] continue";
@@ -133,5 +131,5 @@ test("outbox: a message to a parked subagent gets no relay or continue while it 
   assert.deepEqual(sent, [], "21:14Z: it waits 61st of 170, so neither a send nor a '[relay] ... is stopped' to its parent");
   await writeFile(file, DROPPED.join("\n") + "\n");
   await messages.outbox.idle();
-  assert.deepEqual(sent, [[CHAT, relayNote({ id: ID, name: "page writer" }, text)]], "the held message is what starts it again");
+  assert.deepEqual(sent, [[ID, text]], "the held message is what starts it again, and Prime load.3 opens the stopped child for it");
 });

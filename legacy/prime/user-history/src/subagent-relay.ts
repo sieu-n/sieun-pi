@@ -4,7 +4,7 @@ import type { SessionSummary } from "prime-agent";
 
 /**
  * A stopped subagent and the sessions above it. The daemon finds a subagent only while its tree's worker holds it, and the chat service's
- * idle unload and its restarts drop subagents from that worker. A send to one then answers "Unknown active session", but a message from
+ * idle unload and its restarts drop subagents from that worker. On a Prime before load.3 a send to one then answers "Unknown active session", but a message from
  * its parent's rlm handle (agent_message) reopens it in the parent's tree. On 10-18 at 05:00Z the wake ticker dropped the wakes of five
  * Crawler VP subagents this way (01a14d00, 01a1421b, 01a14c6e, 01a14cb4 and 01a14cce).
  */

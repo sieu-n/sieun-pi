@@ -336,7 +336,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     slotPark: async session => {
       return poolPark((await readRowSlotPark(await catalog.summary(session))).park, session, Date.now(), await queued());
     },
-    synced: () => catalog.hostsSynced(), subagentOf: async session => rowSubagent(await catalog.summary(session)), resident: session => catalog.resident(session),
+    synced: () => catalog.hostsSynced(), subagentOf: async session => rowSubagent(await catalog.summary(session)),
     relayed: (session, at) => relays.add(session, at), stopped: stopRecords(dataDir),
     updateWindow: (host, error) => threads.updateWindow(host, error),
     // Each try goes with the command id of the try before it whose answer never came, so the daemon runs the send once (src/daemon-write.ts).
