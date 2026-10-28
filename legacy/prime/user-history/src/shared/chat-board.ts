@@ -15,6 +15,19 @@ export const BOARD_PREFIX = "[board] ";
 export const PLAN_STATUSES: readonly PlanStatus[] = ["todo", "doing", "done", "blocked", "dropped"];
 const OWNER_OPS: ReadonlySet<BoardOp["op"]> = new Set(["todo_add", "todo_update", "todo_remove"]);
 export const BOARD_OP_NAMES: readonly BoardOp["op"][] = ["plan_set", "plan_add", "plan_update", "plan_remove", "todo_add", "todo_update", "todo_remove"];
+/** The line the chat service puts in a step's note when it hands a reported job's step to the chat (chat-checkin.ts handBackNote). */
+const HANDED_BACK = /^Handed back: job .+ reported at .+$/m;
+/**
+ * A rewritten note keeps the old note's "Handed back" line when the new one has none, so the step still names the reported job (`stepNamesJob`)
+ * that waits on it. Clean-room w81 run7 on 10-26: the service handed p2 of "test file counts 4" to the chat at about 11:13:28Z, 2 s after
+ * "test file count" reported; the chat's own plan_update at 11:13:32Z set p2's release wait with a new note and dropped the line, and p2 was the
+ * chat's with no job named. A note that names a new job (`op.job`) drops it as before.
+ */
+export function keepHandBack(old: string | undefined, note: string): string {
+  const line = HANDED_BACK.exec(old ?? "")?.[0];
+  return line && !HANDED_BACK.test(note) ? `${line}\n${note}` : note;
+}
+
 /** The refusal for a scratch op: the owner removed the scratchpad on 10-15 ("remove the notepad feature completely"). */
 export const SCRATCHPAD_REMOVED = "The board has no scratchpad any more; the owner removed it on 2026-10-15. Put the decision in the note of the step it concerns " +
   "(plan_update {id, note}).";
@@ -637,8 +650,10 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
       }
       if (op.note === null) { delete next.note; if (item.note) parts.push("cleared its note"); }
       else if (op.note !== undefined && op.note !== item.note) {
-        next.note = keepDoneLine(item.note, op.note);
-        parts.push(next.note === op.note ? "updated its note" : "updated its note and kept its Done when line");
+        const done = keepDoneLine(item.note, op.note);
+        // A note rewrite that leaves the step's job as it is keeps the server's "Handed back: job <name> reported at ..." line (`keepHandBack`).
+        next.note = op.job === undefined ? keepHandBack(item.note, done) : done;
+        parts.push(next.note === op.note ? "updated its note" : `updated its note and kept its ${next.note === done ? "Done when" : done === op.note ? "Handed back" : "Done when and Handed back"} line`);
       }
       if (op.waitUntil === null) { delete next.waitUntil; if (item.waitUntil) parts.push("cleared its wait time"); }
       else if (op.waitUntil !== undefined && op.waitUntil !== item.waitUntil) { next.waitUntil = op.waitUntil; parts.push(`set it to wait until ${op.waitUntil}`); }

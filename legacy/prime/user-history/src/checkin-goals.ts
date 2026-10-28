@@ -6,7 +6,7 @@ import { GOAL_PUSH_LINK, openGoals, targetOp, targetStaleMs, walkGoal } from "./
 import { CHECK_IN_DUTY_ID } from "./shared/chat-duties.ts";
 import { parseDutyLink, sessionBornAt } from "./shared/duty-fixes.ts";
 import type { ChatBoard, OwnerTodo, PlanItem } from "./shared/types.ts";
-import { type JobFact, ownerLabel, ownerState, waitBound, poolWait, quote, type StepView, walk } from "./checkin-steps.ts";
+import { type JobFact, ownerLabel, ownerState, waitBound, waitBoundJob, poolWait, quote, type StepView, walk } from "./checkin-steps.ts";
 import { ownerMessageId, poolSlot } from "./shared/chat-feed.ts";
 import { ownerSaid } from "./chat-corrections.ts";
 import type { OwnerMessage } from "./shared/brief-check.ts";
@@ -337,7 +337,7 @@ export function goalWait(goal: PlanItem, push: StepView | undefined, now: number
     const open = views.filter(view => view.goal?.id === goal.id && view.item.id !== goal.id);
     // A step whose reported job waits on it as the same session (`waitBound`) waits the same way (clean-room w81 run6 10-26).
     const asleep = (view: StepView): string | undefined => view.owner?.wake !== undefined ? `on ${view.owner.name}'s ${view.owner.wake.replace(/^a /, "")}`
-      : waitBound(view) ? `on ${view.owner!.name}'s wait for ${quote(view.item.waitFor!)}`
+      : waitBound(view) ? `on ${waitBoundJob(view)!.name}'s wait for ${quote(view.item.waitFor!)}`
       : Date.parse(view.item.waitUntil ?? "") > now ? `until ${zTime(Date.parse(view.item.waitUntil!))}` : undefined;
     const waits = open.map(asleep);
     if (open.length && waits.every(Boolean) && open.some(view => view.owner?.wake !== undefined || waitBound(view))) return [...new Set(waits)].join(" and ");

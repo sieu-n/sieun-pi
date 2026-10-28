@@ -401,17 +401,24 @@ export function ago(ms: number): string {
 }
 
 /**
- * A step whose reported job waits on it: the job reported and ended its turn, and the step names a waitFor that is still fresh (`waiting`).
- * The job stays the same session while it waits (the idle unload frees its memory, and the message it waits for loads it again), so the
- * check-in neither pushes the job nor counts the step stuck. Clean-room w81 run6 on 10-26: "test file count" reported at 09:13:47Z under p3,
- * which waits for the release owner's message; at 10:11Z, 58 min later, the check-in nudged it ("nothing moved for 58 min") and its check-in
- * job steered it for stuck_steps 1.
+ * A step whose reported job waits on it: the job reported and ended its turn, and the step names a waitFor that is still fresh. The job stays
+ * the same session while it waits (the idle unload frees its memory, and the message it waits for loads it again), so the check-in neither
+ * pushes the job nor counts the step stuck. Clean-room w81 run6 on 10-26: "test file count" reported at 09:13:47Z under p3, which waits for the
+ * release owner's message; at 10:11Z, 58 min later, the check-in nudged it ("nothing moved for 58 min") and its check-in job steered it for
+ * stuck_steps 1. The step is the job's (`owner`), or the chat's while it names that job (`waitsWith`): run7 on 10-26 handed p2 to the chat 2 s
+ * after the report, the chat set its release wait itself, and every check-in from 11:15Z to 12:13Z read stuck_steps 1 and goal_gaps 1.
+ * The job that waits, or undefined.
  */
-export function waitBound(view: Pick<StepView, "item" | "owner" | "cls">): boolean {
-  const owner = view.owner;
-  return view.cls === "waiting" && view.item.waitFor !== undefined && owner?.state === "ended" && owner.cancelled === undefined && owner.error === undefined &&
-    !owner.key.startsWith("thread:") && (owner.replied === true || owner.lastMessage !== undefined);
+export function waitBoundJob(view: Pick<StepView, "item" | "owner" | "cls"> & Partial<Pick<StepView, "mine" | "waitsWith">>): JobFact | undefined {
+  if (view.item.waitFor === undefined) return undefined;
+  if (view.cls === "waiting" && view.owner && reportedWait(view.owner)) return view.owner;
+  // A chat-owned step it changed within STEP_STALE_MS reads live (`stepClass`), so its fresh wait is that class.
+  return view.mine && view.cls === "live" && view.waitsWith && reportedWait(view.waitsWith) ? view.waitsWith : undefined;
 }
+export const waitBound = (view: Parameters<typeof waitBoundJob>[0]): boolean => waitBoundJob(view) !== undefined;
+/** A job that reported and ended its turn, with no error and not cancelled, and is no thread. */
+const reportedWait = (job: JobFact): boolean => job.state === "ended" && job.cancelled === undefined && job.error === undefined && !job.key.startsWith("thread:") &&
+  (job.replied === true || job.lastMessage !== undefined);
 
 /**
  * The class of one open leaf step at a tick; every chat converges to steps that are `live`, `foryou` or `waiting`. `live`: its owner is a job
@@ -553,9 +560,11 @@ export function stepView(item: PlanItem, changedAt: number, self: ReadonlySet<st
   const parked = parkedBy(item, active);
   const base = { item, changedAt, mine, owner, openTodos, ...(parked ? { parked } : {}) };
   const cls = stepClass(base, now);
+  // A chat-owned step that waits and names a reported job of the chat (`waitBoundJob`): the job, not the chat, takes the event.
+  const waitsWith = mine && item.waitFor !== undefined ? facts.find(fact => reportedWait(fact) && stepNamesJob(item, { id: fact.key, names: [fact.name, fact.sessionId] })) : undefined;
   const thread = owner?.key.startsWith("thread:") ? { id: owner.key.slice("thread:".length), name: owner.name } : undefined;
   const target = cls === "stale-chase" ? waitTarget(item.waitFor, rows, self) ?? thread : undefined;
-  return { ...base, cls, ...(target ? { target } : {}) };
+  return { ...base, cls, ...(target ? { target } : {}), ...(waitsWith ? { waitsWith } : {}) };
 }
 
 /**
@@ -570,6 +579,8 @@ export function parkedBy(item: Pick<PlanItem, "status" | "note">, active?: Reado
 }
 /** One open leaf step as the check-in sees it: its class and the thread to chase. */
 export interface StepView extends StepFacts { cls: StepClass; target?: { id: string; name: string } | undefined;
+  /** A chat-owned step's reported job that it names while it waits (`waitBoundJob`). */
+  waitsWith?: JobFact;
   /** The goal (top-level plan item) the step is under; itself for a top-level step. */
   goal?: { id: string; text: string } }
 
