@@ -127,6 +127,8 @@ export interface JobRef { conversation: ConversationId; name: string; status: Ru
 
 export type Step =
   | { kind: "thinking"; text: string }
+  /** A turn's own text when the agent talks through send_message: a private working note, shown only in the fold. */
+  | { kind: "note"; text: string }
   | { kind: "tool"; id: string; name: string; summary: string; status: "running" | "done" | "error"; output?: string; job?: ConversationId };
 
 /**
@@ -157,6 +159,11 @@ export type Item =
     }
   | {
       kind: "turn"; id: string; at: Ms; author: Principal; text: string; live: boolean; steps: Step[]; images: ImageRef[]; jobs: JobRef[];
+      /**
+       * Set when the agent talks through send_message: each call's text, one bubble each, and `text` is them joined. Empty on a quiet turn,
+       * which shows only its fold. Absent on a turn from before the conversation's first send_message call, whose `text` is the bubble.
+       */
+      sent?: string[];
       stop?: "aborted" | "error"; error?: string; model?: string;
       usage?: { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number };
     }

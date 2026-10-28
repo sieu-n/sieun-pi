@@ -4,12 +4,13 @@
   import Spinner from "$lib/ui/Spinner.svelte";
   import { stepsSummary } from "./present";
 
-  type Props = { steps: Step[]; live?: boolean; liveLabel?: string | null; onjob?: (job: string) => void };
-  let { steps, live = false, liveLabel = null, onjob }: Props = $props();
+  /** `label` replaces the folded summary, such as "Worked quietly" on a turn that sent nothing. */
+  type Props = { steps: Step[]; live?: boolean; liveLabel?: string | null; label?: string | null; onjob?: (job: string) => void };
+  let { steps, live = false, liveLabel = null, label = null, onjob }: Props = $props();
 
   let open = $state(false);
   let shownOutput = $state<Record<string, boolean>>({});
-  const summary = $derived(live && liveLabel ? liveLabel : stepsSummary(steps));
+  const summary = $derived(live && liveLabel ? liveLabel : live && !steps.length ? "Working" : (label ?? stepsSummary(steps)));
 </script>
 
 <div class="steps" data-steps>
@@ -23,6 +24,8 @@
       {#each steps as step, index (index)}
         {#if step.kind === "thinking"}
           <li class="thinking">{step.text}</li>
+        {:else if step.kind === "note"}
+          <li class="note" data-note-step>{step.text}</li>
         {:else}
           <li class="tool" data-status={step.status}>
             <div class="head">
@@ -103,6 +106,11 @@
   }
   .thinking {
     font-style: italic;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  .note {
+    color: var(--text-standard);
     white-space: pre-wrap;
     overflow-wrap: anywhere;
   }

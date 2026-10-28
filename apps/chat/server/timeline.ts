@@ -2,6 +2,11 @@
  * pi-durable entries to timeline items. A thread's page reads its entries oldest first: each input (the owner's text, another agent's
  * message) is a `message` item, every assistant and tool-result entry after it joins one `turn` item, and a compaction is a `system` item.
  * The same function builds a stored page and the live turn, so both read alike.
+ *
+ * An agent speaks to people only through `send_message` (pi-host's durable/send-message.ts): a turn's bubbles are its send_message texts,
+ * one bubble per call, and its other text is a private note that goes into the fold with its thinking and tool steps. A turn from before
+ * the conversation's first send_message call keeps its own text as the bubble (`speaksThroughSendMessage`), so an agent that never sent
+ * one reads as it did before the tool.
  */
 import type { ImageRef, Item, JobRef, Principal, RunStatus, Step } from "../web/src/lib/api/types.ts";
 import type { ContentBlock, EntryRecord, Message, TreeNode } from "./host/types.ts";
@@ -28,6 +33,60 @@ export interface TimelineContext {
   firstEntry?: number;
   /** A job's parent agent, the author of its task. */
   parent?: Principal;
+  /** The conversation's earliest send_message call the server has seen, beyond the entries at hand (`firstSendIn`). */
+  firstSend?: number;
+}
+
+export const SEND_MESSAGE_TOOL = "send_message";
+
+/** A send_message call's message, with the channel it names; undefined for any other block or an empty text. */
+export function sentMessage(block: ContentBlock): { id: string; text: string; to?: string } | undefined {
+  if (block.type !== "toolCall" || block.name !== SEND_MESSAGE_TOOL) return undefined;
+  const text = typeof block.arguments?.text === "string" ? block.arguments.text.trim() : "";
+  if (!text) return undefined;
+  const to = typeof block.arguments?.to === "string" && block.arguments.to.trim() ? block.arguments.to.trim() : undefined;
+  return { id: block.id, text, ...(to ? { to } : {}) };
+}
+
+/** The id of the first entry, in `entries`, that holds a send_message call. */
+export function firstSendIn(entries: readonly EntryRecord[]): number | undefined {
+  let first: number | undefined;
+  for (const entry of entries) {
+    const message = entry.model?.[0];
+    if (message?.role !== "assistant" || typeof message.content === "string") continue;
+    if (message.content.some(b => b.type === "toolCall" && b.name === SEND_MESSAGE_TOOL) && (first === undefined || entry.id < first)) first = entry.id;
+  }
+  return first;
+}
+
+/** The earlier of two first-send ids. */
+export const earliest = (a: number | undefined, b: number | undefined): number | undefined => (a === undefined ? b : b === undefined ? a : Math.min(a, b));
+
+/**
+ * Whether a turn talks through send_message, so only its sent texts are bubbles and its own text is a private note; otherwise its text is the
+ * bubble, as before the tool existed. A conversation talks through it from its first send_message call on (`firstSend`, the earliest known):
+ * a turn with an entry at or after that call does, and a turn that ended before it, or any turn of a conversation with no call known, does not.
+ * The live turn of such a conversation, before it has entries, does too.
+ */
+export function speaksThroughSendMessage(turn: readonly EntryRecord[], firstSend: number | undefined): boolean {
+  if (firstSend === undefined) return false;
+  return turn.length === 0 || turn.some(entry => entry.id >= firstSend);
+}
+
+/** The messages a turn sent, in order: each send_message call whose result is not an error. */
+export function sentMessages(turn: readonly EntryRecord[]): { id: string; text: string; to?: string }[] {
+  const failed = new Set(turn.flatMap(entry => {
+    const message = entry.model?.[0];
+    return message?.role === "toolResult" && message.isError && message.toolCallId ? [message.toolCallId] : [];
+  }));
+  return turn.flatMap(entry => {
+    const message = entry.model?.[0];
+    if (message?.role !== "assistant") return [];
+    return blocks(message).flatMap(block => {
+      const sent = sentMessage(block);
+      return sent && !failed.has(sent.id) ? [sent] : [];
+    });
+  });
 }
 
 export const entryKey = (id: number): string => `e${id}`;
@@ -65,7 +124,10 @@ const SUBAGENT_TOOLS = new Set(["subagent"]);
 /** A turn's id is its input's entry id, so the live turn keeps one id from the moment the input lands. */
 interface TurnDraft { key: number; entries: EntryRecord[] }
 
-function buildTurn(draft: TurnDraft, ctx: TimelineContext, live: boolean): Item {
+function buildTurn(draft: TurnDraft, ctx: TimelineContext, live: boolean, firstSend: number | undefined): Item {
+  const speaks = speaksThroughSendMessage(draft.entries, firstSend);
+  const sent = speaks ? sentMessages(draft.entries) : [];
+  const sendCalls = new Set<string>();
   const steps: Step[] = [];
   const toolIndex = new Map<string, number>();
   const texts: string[] = [];
@@ -93,8 +155,11 @@ function buildTurn(draft: TurnDraft, ctx: TimelineContext, live: boolean): Item 
       stop = message.stopReason === "aborted" ? "aborted" : message.stopReason === "error" ? "error" : undefined;
       error = message.stopReason === "error" ? message.errorMessage ?? "The model call failed." : undefined;
       for (const block of blocks(message)) {
-        if (block.type === "text" && block.text.trim()) texts.push(block.text);
-        else if (block.type === "thinking" && block.thinking.trim()) steps.push({ kind: "thinking", text: block.thinking });
+        if (speaks && block.type === "toolCall" && block.name === SEND_MESSAGE_TOOL) sendCalls.add(block.id);
+        else if (block.type === "text" && block.text.trim()) {
+          if (speaks) steps.push({ kind: "note", text: block.text });
+          else texts.push(block.text);
+        } else if (block.type === "thinking" && block.thinking.trim()) steps.push({ kind: "thinking", text: block.thinking });
         else if (block.type === "toolCall") {
           toolIndex.set(block.id, steps.length);
           const running = live && (ctx.runningTools?.has(block.id) ?? true);
@@ -108,6 +173,7 @@ function buildTurn(draft: TurnDraft, ctx: TimelineContext, live: boolean): Item 
         }
       }
     } else if (message.role === "toolResult") {
+      if (message.toolCallId && sendCalls.has(message.toolCallId)) continue;
       const index = message.toolCallId ? toolIndex.get(message.toolCallId) : undefined;
       const output = textOf(message);
       const childId = typeof message.details?.conversationId === "number" ? (message.details.conversationId as number) : undefined;
@@ -127,7 +193,8 @@ function buildTurn(draft: TurnDraft, ctx: TimelineContext, live: boolean): Item 
     jobs.push({ conversation: step.job, name: node?.name ?? step.summary, status: ctx.jobStatus(id), replies: 0, lastAt: node?.createdAt ?? at });
   }
   return {
-    kind: "turn", id: turnKey(draft.key), at, author: ctx.agent, text: texts.join("\n\n"), live, steps, images, jobs,
+    kind: "turn", id: turnKey(draft.key), at, author: ctx.agent, text: speaks ? sent.map(m => m.text).join("\n\n") : texts.join("\n\n"), live, steps, images, jobs,
+    ...(speaks ? { sent: sent.map(m => m.text) } : {}),
     ...(stop ? { stop } : {}), ...(error ? { error } : {}), ...(model ? { model } : {}), usage,
   };
 }
@@ -144,8 +211,9 @@ export function buildItems(entries: readonly EntryRecord[], ctx: TimelineContext
   const items: Item[] = [];
   let turn: TurnDraft | undefined;
   let lastInput: number | undefined;
+  const firstSend = earliest(ctx.firstSend, firstSendIn(entries.filter(e => e.conversationId === ctx.conversation)));
   const flush = (live: boolean) => {
-    if (turn) items.push(buildTurn(turn, ctx, live));
+    if (turn) items.push(buildTurn(turn, ctx, live, firstSend));
     turn = undefined;
   };
   for (const entry of entries) {
@@ -166,7 +234,10 @@ export function buildItems(entries: readonly EntryRecord[], ctx: TimelineContext
   flush(ctx.running);
   if (ctx.running && items.at(-1)?.kind === "message") {
     const last = items.at(-1)!;
-    items.push({ kind: "turn", id: turnKey(entryOf(last.id)!), at: last.at, author: ctx.agent, text: "", live: true, steps: [], images: [], jobs: [] });
+    items.push({
+      kind: "turn", id: turnKey(entryOf(last.id)!), at: last.at, author: ctx.agent, text: "", live: true, steps: [], images: [], jobs: [],
+      ...(speaksThroughSendMessage([], firstSend) ? { sent: [] } : {}),
+    });
   }
   return items;
 }

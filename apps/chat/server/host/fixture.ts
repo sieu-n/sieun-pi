@@ -4,6 +4,10 @@
  * A message that says "spawn" starts a job (a child conversation), "fail" ends the turn with an error, "slow" streams for a minute, and
  * "queue" waits two seconds in a fake turn queue (place 3 of 7, then 1 of 7) before it starts, "rich" answers with `richReply`, which uses
  * every format the chat renders, and "broken diagram" answers with a mermaid block that does not parse.
+ *
+ * The agents answer as pi-host's agents do, through `send_message` (packages/pi-host/src/durable/send-message.ts): each message is one call
+ * and its "Sent." result, the plain answer is two calls, and a message that says "quiet" writes only a private note and sends nothing.
+ * The seeded conversations keep their plain-text answers, and the AI harness VP answers in plain text, as threads from before the tool do.
  */
 import { randomUUID } from "node:crypto";
 import type { TurnPlace } from "../../web/src/lib/api/types.ts";
@@ -24,6 +28,8 @@ interface FakeThread {
   queued: Map<number, (() => void)[]>;
   /** Each conversation's place in the fake turn queue. */
   places: Map<number, TurnPlace>;
+  /** Answers in plain text, as an agent from before send_message. */
+  plain?: boolean;
 }
 
 type Sink = { conversation?: number; sink: (event: DurableEvent) => void };
@@ -36,6 +42,8 @@ export class FixtureHost implements Host {
   private readonly sinks = new Map<string, Set<Sink>>();
   /** Milliseconds between streamed words; tests set 0. */
   wordMs = 40;
+  /** Answers go out through send_message calls; false answers in plain text, as an agent from before the tool. */
+  sendMessage = true;
   /** Runs before each submit; a test makes pi-host slow (a promise that waits) or away (a throw). */
   beforeSubmit?: (thread: string, input: SubmitInput) => void | Promise<void>;
   /** The image the "rich" answer embeds: a file the seed wrote, or a data URL when nothing was seeded. */
@@ -66,7 +74,9 @@ export class FixtureHost implements Host {
     thread.row.updatedAt = Math.max(thread.row.updatedAt, at);
     const message = entry.model?.[0];
     if (conversation === 1 && message?.role === "assistant") {
-      const text = Array.isArray(message.content) ? message.content.flatMap(b => (b.type === "text" ? [b.text] : [])).join("\n") : message.content;
+      // pi-host's preview: a sent message, else the answer's text (packages/pi-host/src/durable/threads.ts `previewText`).
+      const sends = Array.isArray(message.content) ? message.content.flatMap(b => (b.type === "toolCall" && b.name === "send_message" && typeof b.arguments.text === "string" ? [b.arguments.text] : [])) : [];
+      const text = sends.at(-1) ?? (Array.isArray(message.content) ? message.content.flatMap(b => (b.type === "text" ? [b.text] : [])).join("\n") : message.content);
       if (text) thread.row.preview = text.slice(0, 200);
     }
     this.emit(thread, { type: "events", conversation, events: [{ type: "entry_appended", entry }] });
@@ -160,7 +170,10 @@ export class FixtureHost implements Host {
     node.status = "running";
     if (conversation === 1) this.setStatus(thread, "running");
     this.emit(thread, { type: "events", conversation, events: [{ type: "run_start", inputs: [submission.id] }] });
-    const words = (reply ?? replyFor(text, this.richImage)).split(/(?<= )/);
+    const sends = this.sendMessage && !thread.plain;
+    const quiet = sends && /\bquiet\b/i.test(text);
+    const messages = quiet ? [] : reply !== undefined ? [reply] : sends ? messagesFor(text, this.richImage) : [replyFor(text, this.richImage)];
+    const words = (quiet ? QUIET_NOTE : messages.join("\n\n")).split(/(?<= )/);
     const slow = /\bslow\b/i.test(text);
     const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
     if (/\bspawn\b/i.test(text)) {
@@ -185,8 +198,20 @@ export class FixtureHost implements Host {
       if (this.wordMs) await sleep(slow ? 1000 : this.wordMs);
     }
     const failed = /\bfail\b/i.test(text);
+    const speaks = sends && !stopped && !failed && !quiet;
+    if (speaks) {
+      // Each message is its own call and result, a beat apart, so the page shows the first before the second is sent.
+      for (const [index, said] of messages.entries()) {
+        const callId = `call_${randomUUID().slice(0, 8)}`;
+        this.append(thread, conversation, { kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "toolCall", id: callId, name: "send_message", arguments: { text: said } }], provider: "anthropic", model: "claude-opus-5-5", usage: USAGE(said.length / 4), stopReason: "toolUse", timestamp: this.now() }] });
+        this.emit(thread, { type: "events", conversation, events: [{ type: "tool_execution_start", toolCallId: callId, toolName: "send_message", args: { text: said } }] });
+        const result = this.append(thread, conversation, { kind: "pi.tool-result", model: [{ role: "toolResult", toolCallId: callId, toolName: "send_message", content: [{ type: "text", text: "Sent." }], isError: false, timestamp: this.now() }] });
+        this.emit(thread, { type: "events", conversation, events: [{ type: "tool_execution_end", toolCallId: callId, toolName: "send_message", entry: result }] });
+        if (index < messages.length - 1 && this.wordMs) await sleep(this.wordMs * 10);
+      }
+    }
     const message: Message = {
-      role: "assistant", content: [{ type: "text", text: sent }], provider: "anthropic", model: "claude-opus-5-5", usage: USAGE(words.length * 2),
+      role: "assistant", content: speaks ? [] : [{ type: "text", text: sent }], provider: "anthropic", model: "claude-opus-5-5", usage: USAGE(words.length * 2),
       stopReason: stopped ? "aborted" : failed ? "error" : "stop", ...(failed ? { errorMessage: "The model call failed: overloaded (fixture)." } : {}), timestamp: this.now(),
     };
     const answer = this.append(thread, conversation, { kind: "pi.assistant", model: [message] });
@@ -389,6 +414,16 @@ export function richReply(image: string, jobThread = "0f1e0000-0000-4000-8000-00
     `<details><summary>Spec log, 24 lines</summary>\n\n\`\`\`text\n${SPEC_LOG}\n\`\`\`\n\n</details>`,
     "```ts\nexport function foldSteps(steps: Step[], width: number): Step[] {\n  return width < 640 ? steps.filter(step => step.open) : steps;\n}\n```",
   ].join("\n\n");
+}
+
+/** The private note of a turn that sends nothing. */
+export const QUIET_NOTE = "Read the relay log and the board. Nothing changed since the last check, so nothing goes to the owner.";
+
+/** What a fixture agent sends for a message: the plain answer as two messages (the answer, then the check), any other answer as one. */
+export function messagesFor(text: string, image: string): string[] {
+  const reply = replyFor(text, image);
+  const split = reply.indexOf(" I checked the canary");
+  return split > 0 && reply.startsWith("Got it.") ? [reply.slice(0, split), reply.slice(split + 1)] : [reply];
 }
 
 function replyFor(text: string, image: string): string {

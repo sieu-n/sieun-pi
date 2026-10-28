@@ -1,13 +1,14 @@
 /**
  * Threads, jobs and agents as the pages see them, built from pi-host's thread list and trees, and the live side: one host watch per
- * conversation a page has open, turned into item upserts and status. Nothing streams: a turn shows as each entry with text lands.
+ * conversation a page has open, turned into item upserts and status. Nothing streams: a turn shows as each entry with text or a
+ * send_message call lands.
  */
 import type {
   AgentId, AgentSummary, ConversationId, ConversationSummary, Item, JobNode, LivePartial, ModelRef, Principal, RunStatus, ThinkingLevel, TimelinePage,
 } from "../web/src/lib/api/types.ts";
 import type { AgentEvent, DurableEvent, DurableThread, EntryRecord, Host, TreeNode } from "./host/types.ts";
 import type { Store } from "./store.ts";
-import { buildItems, entryOf, isInput, itemIdFor, type TimelineContext } from "./timeline.ts";
+import { buildItems, earliest, entryOf, firstSendIn, isInput, itemIdFor, SEND_MESSAGE_TOOL, sentMessages, speaksThroughSendMessage, type TimelineContext } from "./timeline.ts";
 
 export const OWNER: Principal = { id: "owner", kind: "owner", name: "You", avatar: { initials: "Me", hue: 210 } };
 
@@ -76,6 +77,11 @@ export class Threads {
   private readonly live = new Map<ConversationId, LiveConversation>();
   /** Each conversation's first entry id, which never changes once it exists. */
   private readonly firstEntries = new Map<ConversationId, number>();
+  /**
+   * The earliest send_message call seen in each conversation, from every page and live entry read: a page of a conversation that talks
+   * through send_message reads that way even when the page itself holds no call, such as a run of quiet turns.
+   */
+  private readonly firstSends = new Map<ConversationId, number>();
   private timer?: NodeJS.Timeout;
   /** Extra summaries the channel layer adds (channels), merged into conversations(). */
   channelSummaries: () => ConversationSummary[] = () => [];
@@ -262,9 +268,53 @@ export class Threads {
     return [...this.threadConversations(), ...this.channelSummaries()];
   }
 
+  /** Keeps the earliest send_message call in `entries` as the conversation's, and returns the earliest known. */
+  noteSends(thread: string, conversation: number, entries: readonly EntryRecord[]): number | undefined {
+    const id = conversationIdOf(thread, conversation);
+    const first = earliest(this.firstSends.get(id), firstSendIn(entries.filter(e => e.conversationId === conversation)));
+    if (first !== undefined) this.firstSends.set(id, first);
+    return first;
+  }
+
+  /** The conversation's earliest known send_message call; with none known yet, reads its newest page, as the page the owner opens would. */
+  async firstSend(thread: string, conversation: number): Promise<number | undefined> {
+    const known = this.firstSends.get(conversationIdOf(thread, conversation));
+    if (known !== undefined) return known;
+    return this.noteSends(thread, conversation, (await this.pageBefore(thread, conversation, undefined, PAGE)).entries);
+  }
+
+  /**
+   * One turn's entries, oldest first, from a settled submission: the entries after its input up to its answer, or back from its answer to
+   * the input before it when the record has no input entry.
+   */
+  async turnOf(thread: string, conversation: number, settled: { entry?: number; answer?: number }): Promise<EntryRecord[]> {
+    let entries: EntryRecord[];
+    if (settled.entry !== undefined) entries = (await this.pageAfter(thread, conversation, settled.entry, 1)).entries.filter(e => !isInput(e));
+    else if (settled.answer !== undefined) entries = (await this.pageBefore(thread, conversation, settled.answer + 1, 1)).entries.filter(e => !isInput(e));
+    else return [];
+    const turn = settled.answer === undefined ? entries : entries.filter(e => e.id <= settled.answer!);
+    this.noteSends(thread, conversation, turn);
+    return turn;
+  }
+
+  /**
+   * What a settled turn said to people, for a channel thread or a duty report: its send_message messages, or none, when the agent talks
+   * through send_message (`speaksThroughSendMessage`); otherwise, for an agent that has never called it, its answer's text as one message.
+   */
+  async said(thread: string, conversation: number, settled: { entry?: number; answer?: number }): Promise<{ text: string; to?: string }[]> {
+    const turn = await this.turnOf(thread, conversation, settled);
+    if (speaksThroughSendMessage(turn, await this.firstSend(thread, conversation))) return sentMessages(turn).map(({ text, to }) => ({ text, ...(to ? { to } : {}) }));
+    const answer = settled.answer === undefined ? undefined : (await this.host.entries(thread, { conversation, before: settled.answer + 1, limit: 1 })).entries[0]?.model?.[0];
+    if (answer?.role !== "assistant") return [];
+    const text = typeof answer.content === "string" ? answer.content : answer.content.flatMap(b => (b.type === "text" ? [b.text] : [])).join("\n\n");
+    return text.trim() ? [{ text }] : [];
+  }
+
   context(thread: string, conversation: number, live?: LiveConversation): TimelineContext {
     const agent = this.principal(conversationIdOf(thread, conversation));
+    const firstSend = this.firstSends.get(conversationIdOf(thread, conversation));
     return {
+      ...(firstSend === undefined ? {} : { firstSend }),
       thread, conversation, agent, ...(agent.parent ? { parent: this.principal(agent.parent) } : {}),
       ...(this.firstEntries.has(conversationIdOf(thread, conversation)) ? { firstEntry: this.firstEntries.get(conversationIdOf(thread, conversation))! } : {}),
       principal: from => this.principal(from),
@@ -329,7 +379,8 @@ export class Threads {
       const older = await this.pageBefore(thread, conversation, target + 1, Math.ceil(limit / 2));
       const newer = await this.pageAfter(thread, conversation, target, Math.floor(limit / 2));
       const entries = [...older.entries, ...newer.entries];
-      const items = buildItems(entries, { ...ctx, running: ctx.running && !newer.more });
+      this.noteSends(thread, conversation, entries);
+      const items = buildItems(entries, { ...this.context(thread, conversation, live), running: ctx.running && !newer.more });
       const focus = opts.around.startsWith("t") && items.some(i => i.id === opts.around) ? opts.around : itemIdFor(entries, target);
       return { items, ...(older.more && entries[0] ? { older: `e${entries[0].id}` } : {}), ...(newer.more && entries.at(-1) ? { newer: `e${entries.at(-1)!.id}` } : {}), ...(focus ? { focus } : {}) };
     }
@@ -343,12 +394,14 @@ export class Threads {
         const next = page.entries.findIndex(isInput);
         page.entries = next < 0 ? [] : page.entries.slice(next);
       }
-      const items = buildItems(page.entries, { ...ctx, running: ctx.running && !page.more }).filter(item => item.id !== opts.after);
+      this.noteSends(thread, conversation, page.entries);
+      const items = buildItems(page.entries, { ...this.context(thread, conversation, live), running: ctx.running && !page.more }).filter(item => item.id !== opts.after);
       return { items, ...(page.more && page.entries.at(-1) ? { newer: `e${page.entries.at(-1)!.id}` } : {}) };
     }
     const before = entryOf(opts.before);
     const page = await this.pageBefore(thread, conversation, before, limit);
-    const items = buildItems(page.entries, { ...ctx, ...(before === undefined ? {} : { running: false }) });
+    this.noteSends(thread, conversation, page.entries);
+    const items = buildItems(page.entries, { ...this.context(thread, conversation, live), ...(before === undefined ? {} : { running: false }) });
     return { items, ...(page.more && page.entries[0] ? { older: `e${page.entries[0].id}` } : {}) };
   }
 
@@ -385,7 +438,9 @@ export class Threads {
     const tail = await this.host.entries(live.thread, { conversation: live.conversation, limit: 1 });
     const newest = tail.entries[0]?.id;
     if (newest !== undefined) {
-      const page = await this.pageBefore(live.thread, live.conversation, newest + 1, 1);
+      // A page, not only the newest turn, so a live quiet turn of a conversation that talks through send_message reads as one.
+      const page = await this.pageBefore(live.thread, live.conversation, newest + 1, this.firstSends.has(id) ? 1 : PAGE);
+      this.noteSends(live.thread, live.conversation, page.entries);
       const start = page.entries.findLastIndex(isInput);
       live.recent = start >= 0 ? page.entries.slice(start) : page.entries;
     }
@@ -410,8 +465,9 @@ export class Threads {
       return;
     }
     if (event.type !== "events" || event.conversation !== live.conversation) return;
-    // No streaming: partial text, thinking and tool calls never go to the page. Items go out when an input or an answer with text
-    // lands, and when a run starts (an empty live turn, drawn as typing dots) or ends; the rest of a turn shows with its next item.
+    // No streaming: partial text, thinking and tool calls never go to the page. Items go out when an input, an answer with text or a
+    // send_message call lands, and when a run starts (an empty live turn, drawn as typing dots) or ends; the rest of a turn shows with its
+    // next item.
     let changed = false;
     for (const agentEvent of event.events as AgentEvent[]) {
       switch (agentEvent.type) {
@@ -450,6 +506,7 @@ export class Threads {
     if (!entry || entry.conversationId !== live.conversation || live.recent.some(e => e.id === entry.id)) return false;
     if (isInput(entry) && live.recent.length && !live.running) live.recent = [];
     live.recent.push(entry);
+    this.noteSends(live.thread, live.conversation, [entry]);
     live.recent.sort((a, b) => a.id - b.id);
     if (live.recent.length > TURN_READ_CAP) live.recent = live.recent.slice(-TURN_READ_CAP);
     return true;
@@ -460,10 +517,12 @@ export class Threads {
   }
 }
 
-/** An entry the page sees at once: an input, or an answer with text. */
-function shows(entry: EntryRecord): boolean {
+/** An entry the page sees at once: an input, an answer with text, or a send_message call, whose message shows the moment it is sent. */
+export function shows(entry: EntryRecord): boolean {
   if (isInput(entry)) return true;
   const message = entry.model?.[0];
   if (message?.role !== "assistant") return false;
-  return typeof message.content === "string" ? !!message.content.trim() : message.content.some(b => b.type === "text" && b.text.trim());
+  return typeof message.content === "string"
+    ? !!message.content.trim()
+    : message.content.some(b => (b.type === "text" && b.text.trim()) || (b.type === "toolCall" && b.name === SEND_MESSAGE_TOOL));
 }

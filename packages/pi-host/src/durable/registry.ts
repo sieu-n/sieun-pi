@@ -1,12 +1,13 @@
 /**
  * What every durable thread runs with: Prime's preamble, pi-durable's coding tools in the thread's cwd, the foreground
- * subagent tool and the chat's own document and entry kinds. One registry serves every thread in the host.
+ * subagent tool, the `send_message` tool the agent speaks to people through, and the chat's own document and entry kinds. One registry serves every thread in the host.
  */
 import type { JsonValue } from "@earendil-works/chord";
 import { createRegistry, defineDocFamily, defineEntry, type Registry } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { Preamble } from "./open.ts";
+import { SendMessage } from "./send-message.ts";
 import { Subagent } from "./subagent.ts";
 
 /** A message one agent or the owner sends another thread, placed as the input's entry so the transcript shows who sent it. */
@@ -29,6 +30,7 @@ export function threadRegistry(): Registry {
   registry.install(Preamble);
   registry.install(CodingTools);
   registry.install(Subagent);
+  registry.install(SendMessage);
   return registry;
 }
 

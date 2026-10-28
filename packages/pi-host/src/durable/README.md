@@ -38,10 +38,11 @@ H-->>C: the same submission, nothing admitted twice
 | `threads.ts` | `DurableThreads`: open, recover, submit, wait, abort, watch, tree, entries, documents and idle close. |
 | `index-db.ts` | `ThreadIndex`: the thread rows, each thread's last wake, the FTS5 search rows and the usage rows, all derived from the thread files. |
 | `commands.ts` | `DurableCommands`: the `durable_*` socket commands and the watches per connection. |
-| `registry.ts` | What every thread runs with: the preamble, pi-durable's coding tools in the thread's cwd, the subagent tool, `agent.message` entries and `chat.doc` documents. |
+| `registry.ts` | What every thread runs with: the preamble, pi-durable's coding tools in the thread's cwd, the subagent tool, the `send_message` tool, `agent.message` entries and `chat.doc` documents. |
 | `open.ts` | `openDurableHost()` for one file and the Prime preamble extension. |
 | `@sieun-pi/pi-pool/durable` | `poolProvider()` in `packages/pi-pool/src/durable/pool-provider.ts`: a pi-ai Provider that vends each request's account through pi-pool and turns a slot wait into a stored sleep. |
 | `subagent.ts` | The `subagent` tool: a replay-safe call that owns one child conversation and returns its answer. |
+| `send-message.ts` | The `send_message` tool, the one way an agent speaks to people: `{text, to?}`, result "Sent.", no effect outside the thread. |
 | `import.ts` | `parseSession()`: a Prime or Pi session file's active branch as entry drafts, for `durable_import`. |
 
 ## Socket commands
@@ -76,6 +77,17 @@ A `durable_event` line is `{type: "durable_event", thread, watch, event}`, and `
 5. `{type: "closed", reason}` ends the watch when the file closes at shutdown.
 
 Every entry reaches a watcher once, so a client that reconnects with `fromEntry` set to the newest id it has misses nothing.
+
+## Speaking through send_message
+
+Every root thread has `send_message {text, to?}`, and its description carries the rules for talking to people (`SEND_MESSAGE_DESCRIPTION`).
+
+1. The call does nothing outside the thread and returns "Sent.", so it is replay-safe: the call's arguments in the assistant entry are the message.
+2. The chat (`apps/chat/server/timeline.ts`) draws each call's text as its own bubble and folds the rest of the turn's text, as private notes, with its thinking and tool steps; a channel turn posts one reply per call. A conversation that has never called it keeps its turn text as the bubble.
+3. `to` is only for a turn a channel post started, and names that channel; the chat posts a call aimed at another channel nowhere.
+4. A subagent's child conversation is not offered the tool, because its parent reads its final text as the answer.
+5. The thread list's preview is the newest sent message, never its "Sent." result.
+6. Pi-durable stores extension names, not tools, and every conversation selects every installed extension unless it says otherwise, so a thread whose history predates the tool is offered it from its next model request on, through a new `pi.system` entry; `test/durable/send-message.test.ts` checks this on a file first run without the tool. A child created before this change stored only `remove: ["subagent"]` and is offered the tool too.
 
 ## Importing a Prime thread
 

@@ -46,6 +46,19 @@ export function cleanTool(raw: string): string {
 
 const TOOL_CALL = /^([A-Za-z_][\w.-]*) (\{.*\})$/;
 
+/** The tool an agent speaks to people through; its call's `text` is a message, not tool input (timeline.ts). */
+const SEND_MESSAGE = "send_message";
+
+/** A send_message call's message text from its JSON arguments; "" when it has none. */
+function sentText(json: string): string {
+  try {
+    const args = JSON.parse(json) as { text?: unknown };
+    return typeof args.text === "string" ? args.text : "";
+  } catch {
+    return "";
+  }
+}
+
 /** The string values of a tool call's arguments, longest last, so `bash {"command": "..."}` reads as its command. */
 function callText(json: string): string {
   try {
@@ -95,12 +108,15 @@ export function describe(kind: string, author: string, whole: string, terms: rea
   if (kind === "pi.assistant") {
     const human: string[] = [];
     const calls: { name: string; text: string }[] = [];
+    const sent: string[] = [];
     for (const line of text.split("\n")) {
       const call = TOOL_CALL.exec(line);
-      if (call) calls.push({ name: call[1]!, text: callText(call[2]!) });
+      if (call?.[1] === SEND_MESSAGE) sent.push(sentText(call[2]!));
+      else if (call) calls.push({ name: call[1]!, text: callText(call[2]!) });
       else human.push(line);
     }
-    const said = human.join("\n").trim();
+    // What the agent sent is its message to people and reads first; its other text is its working notes.
+    const said = [...sent, ...human].join("\n").trim();
     if (!calls.length || matches(said, terms)) return { role: "agent", text: said || calls.map(c => c.text).join("\n") };
     const call = calls.find(c => matches(c.text, terms)) ?? calls[0]!;
     return { role: "tool", tool: call.name, inCall: true, text: call.text };

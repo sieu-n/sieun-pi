@@ -149,14 +149,13 @@ describe("live turns", () => {
 });
 
 describe("channels and mentions", () => {
-  test("a mention routes to the agent and its answer comes back into the thread", async () => {
+  test("a mention routes to the agent and what it sends comes back into the thread, one post per message", async () => {
     const sent = await s.send("POST", `/api/c/${ids.cutoverChannel}/send`, { text: "@frontend bro is the relay page fine?", mentions: [ids.frontend], requestId: "mention-1" });
     assert.equal(sent.status, 200);
     assert.equal(sent.body.deliveries[0].state, "queued", "the post answers before its mention reaches the agent");
-    const thread = await until(() => s.get(`/api/c/${ids.cutoverChannel}/replies/${sent.body.item.id}`), t => t.items.length > 0);
+    const thread = await until(() => s.get(`/api/c/${ids.cutoverChannel}/replies/${sent.body.item.id}`), t => t.root.deliveries[0].state === "answered");
     assert.equal(thread.items[0].author.id, ids.frontend);
-    assert.equal(thread.root.deliveries[0].state, "answered");
-    assert.equal(thread.root.thread.replies, 1);
+    assert.equal(thread.root.thread.replies, 2);
     const entries = await s.get<TimelinePage>(`/api/c/${ids.frontend}/items`);
     assert.ok(entries.items.some(i => i.kind === "message" && i.author.id === "owner" && i.text.startsWith("[#pi-cutover · post")));
   });
