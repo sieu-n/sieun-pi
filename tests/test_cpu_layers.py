@@ -32,7 +32,7 @@ class Setup(unittest.TestCase):
         self.assertEqual(weights("SYSTEM"), {"ssh.service": 1000, "tailscaled.service": 1000, "user.slice": 1000, "user@1001.service": 10000,
                                              "virev.slice": 4000, "virev-prod.slice": 300, "virev-ci.slice": 300,
                                              "system.slice": 400, "dev.slice": 400})
-        self.assertEqual(weights("USER"), {"sieun-pi-chat.service": 10000, "pi-pool-serve.service": 1000, "pi-pool-hookd.service": 1000,
+        self.assertEqual(weights("USER"), {"sieun-pi-chat.service": 10000, "pi-history.service": 10000, "pi-pool-serve.service": 1000, "pi-pool-hookd.service": 1000,
                                            "prime-agent-daemon.service": 10000})
 
     def test_the_chat_path_is_outweighed_below_the_root_at_no_level(self):
