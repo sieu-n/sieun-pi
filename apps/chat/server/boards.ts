@@ -3,7 +3,7 @@
  * the board reducer copied from today's chat (web/src/lib/api/shared/chat-board.ts). Duties and the check-in clock live in the chat
  * server's data dir, and a due duty, check-in or wake reaches the chat as an input from "board".
  */
-import { readdirSync, rmSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { BoardOp, BoardRow, BoardView, ChatBoard, CheckInPatch, CheckInView, DutyAction, DutyView, ForYouItem, PlanItem } from "../web/src/lib/api/types.ts";
 import { applyBoardOp, BOARD_PREFIX, emptyBoard, needsGo, nextIds, parseBoard, parseBoardOps, stepGo } from "../web/src/lib/api/shared/chat-board.ts";
@@ -151,6 +151,51 @@ export class Boards {
       });
     }
     return rows;
+  }
+
+  /**
+   * Brings a Prime chat's board, duties, their runs and its check-in interval into a moved thread, from Prime's chat data dir (read only):
+   * `boards/<prime id>.json` becomes the thread's `chat.board`, `duties/<prime id>.json` and `.runs.jsonl` become its duties file, and
+   * `check-in-settings.json` gives the interval. `durable_import` moves the transcript; this moves the rest. Running it again replaces both.
+   */
+  async importPrime(chat: string, primeId: string, primeDir: string): Promise<{ board: boolean; duties: number; runs: number; checkInMs: number | null }> {
+    if (!/^[0-9a-f-]{36}$/.test(primeId)) throw new Error(`A Prime chat id is a session uuid, got ${primeId}.`);
+    if (!this.threads.thread(chat)) await this.threads.refresh();
+    if (!this.threads.thread(chat)) throw new Error(`No thread ${chat}.`);
+    const boardFile = join(primeDir, "boards", `${primeId}.json`);
+    const board = existsSync(boardFile) ? parseBoard(JSON.parse(readFileSync(boardFile, "utf8"))) : null;
+    if (board) {
+      await this.host.docPut(chat, BOARD_DOC, board);
+      this.cache.set(chat, { board, at: Date.now() });
+      this.events.board(chat, board, awaitingGo(board));
+      this.events.forYou(await this.forYouCount());
+    }
+    const prime = readJson<{ duties?: Duty[]; checkIn?: { lastRunAt?: number } }>(join(primeDir, "duties", `${primeId}.json`), {});
+    const runs: Record<string, DutyRunRecord[]> = {};
+    const runsFile = join(primeDir, "duties", `${primeId}.runs.jsonl`);
+    let runCount = 0;
+    if (existsSync(runsFile)) {
+      for (const line of readFileSync(runsFile, "utf8").split("\n")) {
+        if (!line.trim()) continue;
+        try {
+          const run = JSON.parse(line) as DutyRunRecord;
+          (runs[run.duty] ??= []).push(run);
+        } catch {
+          continue;
+        }
+      }
+      for (const id of Object.keys(runs)) {
+        runs[id] = runs[id]!.sort((a, b) => b.at - a.at).slice(0, 20);
+        runCount += runs[id]!.length;
+      }
+    }
+    const everyMs = readJson<Record<string, { everyMs?: number }>>(join(primeDir, "check-in-settings.json"), {})[primeId]?.everyMs ?? null;
+    const file = this.file(chat);
+    file.duties = prime.duties ?? [];
+    file.runs = Object.fromEntries(Object.entries(runs).filter(([id]) => file.duties.some(d => d.id === id)));
+    file.checkIn = { everyMs: everyMs ?? file.checkIn?.everyMs ?? DEFAULT_CHECK_IN_MS, pausedUntil: null, lastAt: prime.checkIn?.lastRunAt ?? null };
+    this.save(chat, file);
+    return { board: board !== null, duties: file.duties.length, runs: Object.values(file.runs).reduce((sum, list) => sum + list.length, 0), checkInMs: everyMs };
   }
 
   // Duties and check-ins

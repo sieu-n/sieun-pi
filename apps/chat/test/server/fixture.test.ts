@@ -3,6 +3,9 @@
  * Run: cd apps/chat && node --import tsx --test --test-force-exit --test-isolation=none test/server/fixture.test.ts
  */
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
 import type { Item, SearchResult, Sidebar, TimelinePage } from "../../web/src/lib/api/types.ts";
 import { FIXTURE_IDS as ids } from "../../server/fixture/seed.ts";
@@ -214,6 +217,30 @@ describe("boards", () => {
     const page = await until(() => s.get<TimelinePage>(`/api/c/${ids.harness}/items?limit=200`), p => p.items.some(i => i.kind === "message" && i.text.startsWith("[board]")));
     assert.ok(page);
     live.close();
+  });
+
+  test("a moved Prime chat gets its board, duties, runs and check-in interval in one call", async () => {
+    const prime = mkdtempSync(join(tmpdir(), "prime-chat-"));
+    const id = "01a14dd5-e9d3-705d-bd63-245c21b2eee2";
+    mkdirSync(join(prime, "boards"));
+    mkdirSync(join(prime, "duties"));
+    const board = { v: 2, rev: 3, updatedAt: new Date().toISOString(), plan: [{ id: "p1", text: "Moved step", status: "doing", children: [] }], todos: [{ id: "t1", text: "Moved ask", done: false, from: "agent", at: new Date().toISOString() }] };
+    writeFileSync(join(prime, "boards", `${id}.json`), JSON.stringify(board));
+    const duty = { id: "d1", name: "Moved duty", ownerWords: "keep it", goal: "it holds", metrics: [{ key: "up", label: "Up", op: ">=", target: 99, headline: true }],
+      schedule: { kind: "daily", at: "07:00" }, precheck: { command: ["true"], cwd: "/", timeoutMs: 1000 }, onMiss: "fix", status: "active", createdAt: 1, updatedAt: 1, runCount: 2 };
+    writeFileSync(join(prime, "duties", `${id}.json`), JSON.stringify({ version: 1, duties: [duty], checkIn: { createdAt: 1, runCount: 4, lastRunAt: 5 } }));
+    const run = (at: number, value: number) => JSON.stringify({ duty: "d1", at, trigger: "schedule", ms: 1, verdict: value >= 99 ? "met" : "missed", metrics: { up: { value, target: 99, op: ">=", met: value >= 99 } }, summary: "" });
+    writeFileSync(join(prime, "duties", `${id}.runs.jsonl`), [run(10, 100), run(20, 90), JSON.stringify({ duty: "checkin", at: 30, verdict: "met", metrics: {} })].join("\n"));
+    writeFileSync(join(prime, "check-in-settings.json"), JSON.stringify({ [id]: { everyMs: 21_600_000 } }));
+    s.app.config.sharedDir = prime;
+    const result = await s.send("POST", `/api/threads/${ids.frontend}/import-prime`, { prime: id });
+    assert.deepEqual(result.body, { board: true, duties: 1, runs: 2, checkInMs: 21_600_000 });
+    const view = await s.get(`/api/threads/${ids.frontend}/board`);
+    assert.equal(view.board.plan[0].text, "Moved step");
+    const duties = await s.get(`/api/threads/${ids.frontend}/duties`);
+    assert.equal(duties.duties[0].last.verdict, "missed");
+    assert.equal((await s.get(`/api/threads/${ids.frontend}/check-in`)).everyMs, 21_600_000);
+    assert.ok((await s.get("/api/for-you")).items.some((i: any) => i.chatId === ids.frontend && i.todo.text === "Moved ask"));
   });
 
   test("duties carry the card and the judged last run, and check-ins pause", async () => {

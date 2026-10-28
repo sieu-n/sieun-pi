@@ -87,6 +87,9 @@ export const api = {
 
   board: (chat: string) => call<BoardView>("GET", `/api/threads/${enc(chat)}/board`),
   boardOps: (chat: string, ops: BoardOp[]) => call<BoardView>("POST", `/api/threads/${enc(chat)}/board`, { ops }),
+  /** Copies a Prime chat's board, duties and check-in interval into the thread it moved to. */
+  importPrime: (chat: string, prime: string) =>
+    call<{ board: boolean; duties: number; runs: number; checkInMs: number | null }>("POST", `/api/threads/${enc(chat)}/import-prime`, { prime }),
   chatAgents: (chat: string) => call<{ agents: ChatAgent[] }>("GET", `/api/threads/${enc(chat)}/agents`),
   duties: (chat: string) => call<{ duties: DutyRow[] }>("GET", `/api/threads/${enc(chat)}/duties`),
   dutyAction: (chat: string, action: DutyAction) => call<{ duties: DutyRow[] }>("POST", `/api/threads/${enc(chat)}/duties`, action),

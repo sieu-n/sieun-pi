@@ -17,6 +17,8 @@ describe("pi-host end to end", { skip: !real && "set APPS_CHAT_REAL=1 to run on 
   let s: Running;
   let live: LiveClient;
   let thread: string;
+  /** Every channel the spec makes, archived in `after` whether its test passed or not, so the owner's sidebar stays clean. */
+  const channels: string[] = [];
 
   before(async () => {
     s = await start({ real: true, ...(process.env.APPS_CHAT_URL ? { url: process.env.APPS_CHAT_URL } : {}) });
@@ -29,6 +31,7 @@ describe("pi-host end to end", { skip: !real && "set APPS_CHAT_REAL=1 to run on 
 
   after(async () => {
     if (thread) await s.send("PATCH", `/api/c/${thread}`, { archived: true });
+    for (const id of channels) await s.send("PATCH", `/api/channels/${id}`, { archived: true });
     await s.close();
   });
 
@@ -76,6 +79,7 @@ describe("pi-host end to end", { skip: !real && "set APPS_CHAT_REAL=1 to run on 
   test("a channel mention reaches the thread and the answer comes back", { timeout: 300_000 }, async () => {
     const channel = await s.send("POST", "/api/channels", { name: `e2e-${Date.now().toString(36)}`, members: [thread] });
     assert.equal(channel.status, 200, JSON.stringify(channel.body));
+    channels.push(channel.body.id);
     const name = (await s.get(`/api/c/${thread}`)).summary.name;
     const posted = await s.send("POST", `/api/c/${channel.body.id}/send`, { text: `@${name} reply with the single word mango.`, mentions: [thread], requestId: `e2e-mention-${thread}` });
     assert.equal(posted.status, 200, JSON.stringify(posted.body));
@@ -84,6 +88,5 @@ describe("pi-host end to end", { skip: !real && "set APPS_CHAT_REAL=1 to run on 
     assert.equal(reply.items[0].author.id, thread);
     assert.match(reply.items[0].text, /mango/i);
     assert.equal(reply.root.deliveries[0].state, "answered");
-    await s.send("PATCH", `/api/channels/${channel.body.id}`, { archived: true });
   });
 });

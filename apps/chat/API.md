@@ -109,6 +109,7 @@ Pages call the server through `web/src/lib/api` (`import { api, timeline, agents
 | `api.dutyAction(chat, {duty, action, schedule})` | `POST /api/threads/:id/duties` | The duties after run, pause, resume or schedule. |
 | `api.checkIn(chat)` | `GET /api/threads/:id/check-in` | `CheckInView`. |
 | `api.setCheckIn(chat, {everyMs, pause})` | `POST /api/threads/:id/check-in` | The new `CheckInView`; pause is 1h, tomorrow, forever or null. |
+| `api.importPrime(chat, primeId)` | `POST /api/threads/:id/import-prime {prime}` | `{board, duties, runs, checkInMs}`: copies a moved Prime chat's board, duties, their last 20 runs each and its check-in interval from Prime's chat data dir into the thread. |
 | `api.forYou()` | `GET /api/for-you` | `{items: ForYouItem[]}` across every chat, open and done, newest first. |
 | `api.boards()` | `GET /api/boards` | `BoardRow[]`: per chat its progress, open asks, steps awaiting a go, check-in and duties. |
 

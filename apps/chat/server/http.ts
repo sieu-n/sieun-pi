@@ -91,6 +91,8 @@ export function routes(app: App): Route[] {
     })),
     route("GET", "/api/threads/:id/board", async (_r, p) => app.boards.view(p.id!)),
     route("POST", "/api/threads/:id/board", async (_r, p, _q, body) => app.boards.apply(p.id!, ((await body()) as { ops: unknown }).ops)),
+    route("POST", "/api/threads/:id/import-prime", async (_r, p, _q, body) =>
+      app.boards.importPrime(p.id!, String(((await body()) as { prime?: string }).prime ?? ""), app.config.sharedDir)),
     route("GET", "/api/threads/:id/agents", async (_r, p) => ({ agents: app.boards.chatAgents(p.id!) })),
     route("GET", "/api/threads/:id/duties", async (_r, p) => ({ duties: app.boards.duties(p.id!) })),
     route("POST", "/api/threads/:id/duties", async (_r, p, _q, body) => ({ duties: await app.boards.dutyAction(p.id!, (await body()) as never) })),
