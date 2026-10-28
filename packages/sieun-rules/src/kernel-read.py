@@ -64,8 +64,11 @@ KERNEL = os.getpid()
 STDLIB = tuple(os.path.realpath(p) + os.sep for p in {sysconfig.get_paths().get("stdlib", ""), sysconfig.get_paths().get("platstdlib", "")} if p)
 # The tools whose reads stand for the catalog and the duty prechecks: this sieun-pi tree, the chat release and the runtime copy, the
 # skill folders, and the Prime release with its skills. The kernel's own rlm package passes for open() only, since its bash() runs cells' commands.
+# HERE is packages/sieun-rules/src, three levels below the tree. The 10-27 move from components/global-rules kept two levels, so the tree
+# read as packages/, and from 21:41Z resume_paused.py and the board skill had their transcript reads refused in every agent kernel.
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(HERE)))
 TOOLS = tuple(os.path.realpath(p) + os.sep for p in (
-    os.path.dirname(os.path.dirname(HERE)), os.path.join(HOME, ".local", "share", "sieun-pi-chat"),
+    REPO, os.path.join(HOME, ".local", "share", "sieun-pi-chat"),
     os.path.join(HOME, ".local", "share", "sieun-pi-runtime"), os.path.join(PRIME, "skills"), os.path.join(HOME, ".local", "share", "prime-agent"),
 ))
 RLM = tuple(os.path.dirname(os.path.realpath(m.__file__)) + os.sep for m in [sys.modules.get("rlm")] if getattr(m, "__file__", None))

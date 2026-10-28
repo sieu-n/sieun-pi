@@ -107,8 +107,14 @@ attempt("rg chat tree", lambda: sh(f"rg -l session {P}/session-artifacts/${A} ||
 sys.path.insert(0, P + "/skills/catalog")
 import reader
 attempt("catalog tool", lambda: reader.first(F["rootB"]))
+# 10-28: the move to packages/sieun-rules/src left the tree two levels up, at packages/, so resume_paused.py's reads were refused in a kernel.
+import importlib.util
+spec = importlib.util.spec_from_file_location("resume_paused", ${JSON.stringify(join(import.meta.dirname, "../legacy/prime/skills/resume-paused-sessions/scripts/resume_paused.py"))})
+resume_paused = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(resume_paused)
+attempt("sieun-pi tool", lambda: resume_paused.LocalBox().read(F["rootB"]))
 `), ["own ran", "root ran", "sibling ran", "child ran", "root copy ran", "edges ran", "clean room ran", "listdir ran", "ls ran", "wc ran", "find ran",
-    "rg own ran", "tail sibling ran", "nephew ran", "duty job ran", "root job ran", "root job child ran", "rg chat tree ran", "catalog tool ran"]);
+    "rg own ran", "tail sibling ran", "nephew ran", "duty job ran", "root job ran", "root job child ran", "rg chat tree ran", "catalog tool ran", "sieun-pi tool ran"]);
 });
 
 test("a job's reads of another family's transcripts are refused in Python, in commands and in Python processes it starts", () => {
