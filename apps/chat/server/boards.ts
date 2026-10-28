@@ -56,6 +56,8 @@ export function nextRun(schedule: DutySchedule, from: number): number {
   return at;
 }
 
+const BOARDS_CACHE = "boards";
+
 export class Boards {
   /** Boards read in the last BOARD_TTL_MS; a doc event or an owner op replaces one at once. */
   private readonly cache = new Map<string, { board: ChatBoard | null; at: number }>();
@@ -66,7 +68,16 @@ export class Boards {
   /** This server's own base URL, which a duty job's brief names for the board. */
   selfUrl = "http://127.0.0.1:5184";
 
-  constructor(readonly host: Host, readonly store: Store, readonly threads: Threads, readonly events: BoardEvents, private readonly log: (line: string) => void = () => {}) {}
+  constructor(readonly host: Host, readonly store: Store, readonly threads: Threads, readonly events: BoardEvents, private readonly log: (line: string) => void = () => {}) {
+    // The boards of the last run, read again on first use, so For you and the sidebar count answer while pi-host starts.
+    for (const [chat, board] of Object.entries(store.cache<Record<string, ChatBoard | null>>(BOARDS_CACHE, {}))) this.cache.set(chat, { board, at: 0 });
+  }
+
+  private remember(chat: string, board: ChatBoard | null): void {
+    const changed = JSON.stringify(this.cache.get(chat)?.board ?? null) !== JSON.stringify(board) || !this.cache.has(chat);
+    this.cache.set(chat, { board, at: Date.now() });
+    if (changed) this.store.saveCache(BOARDS_CACHE, Object.fromEntries([...this.cache].map(([id, entry]) => [id, entry.board])));
+  }
 
   chats(): string[] {
     return this.threads.threadsList().filter(t => !t.archived && this.threads.meta(t.id).kind === "chat").map(t => t.id);
@@ -105,8 +116,11 @@ export class Boards {
     const cached = this.cache.get(chat);
     if (cached && cached.at > startedAt) return cached.board;
     const board = result ? (result.value ? parseBoard(result.value) : null) : (cached?.board ?? null);
-    this.cache.set(chat, { board, at: Date.now() });
-    if (cached && JSON.stringify(cached.board) !== JSON.stringify(board) && board) this.events.board(chat, board, awaitingGo(board));
+    this.remember(chat, board);
+    if (cached && JSON.stringify(cached.board) !== JSON.stringify(board)) {
+      if (board) this.events.board(chat, board, awaitingGo(board));
+      void this.forYouCount().then(count => this.events.forYou(count), () => undefined);
+    }
     return board;
   }
 
@@ -127,7 +141,7 @@ export class Boards {
       summaries.push(result.summary);
     }
     await this.host.docPut(chat, BOARD_DOC, board);
-    this.cache.set(chat, { board, at: Date.now() });
+    this.remember(chat, board);
     this.events.board(chat, board, awaitingGo(board));
     this.events.forYou(await this.forYouCount());
     if (summaries.length && actor === "owner") {
@@ -142,7 +156,7 @@ export class Boards {
   /** A doc event from pi-host: the chat wrote its board. */
   docChanged(chat: string, value: unknown): void {
     const board = value ? parseBoard(value) : null;
-    this.cache.set(chat, { board, at: Date.now() });
+    this.remember(chat, board);
     if (board) this.events.board(chat, board, awaitingGo(board));
   }
 
@@ -205,7 +219,7 @@ export class Boards {
     const board = existsSync(boardFile) ? parseBoard(JSON.parse(readFileSync(boardFile, "utf8"))) : null;
     if (board) {
       await this.host.docPut(chat, BOARD_DOC, board);
-      this.cache.set(chat, { board, at: Date.now() });
+      this.remember(chat, board);
       this.events.board(chat, board, awaitingGo(board));
       this.events.forYou(await this.forYouCount());
     }

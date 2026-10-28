@@ -26,6 +26,10 @@ export interface ChannelEvents {
   conversations(changed: ConversationSummary[]): void;
 }
 
+const ENVELOPE_TAIL = "your final answer is posted back into this thread";
+/** A LIKE pattern for the copy of a post that `envelope` sends into a thread; search finds the post itself in its channel. */
+export const CHANNEL_COPY_LIKE = `[#% · post % from % · ${ENVELOPE_TAIL}]%`;
+
 export class Channels {
   constructor(readonly store: Store, readonly host: Host, readonly threads: Threads, readonly events: ChannelEvents, private readonly log: (line: string) => void = () => {}) {}
 
@@ -251,7 +255,7 @@ export class Channels {
     const rootId = post.threadRoot ?? post.id;
     const thread = all.filter(p => (p.id === rootId || p.threadRoot === rootId) && p.id !== post.id).slice(-CONTEXT_POSTS);
     const lines = [
-      `[#${row.name} · post ${post.seq} from ${author.name}${author.kind === "owner" ? " (owner)" : ""} · your final answer is posted back into this thread]`,
+      `[#${row.name} · post ${post.seq} from ${author.name}${author.kind === "owner" ? " (owner)" : ""} · ${ENVELOPE_TAIL}]`,
       "",
       post.text,
     ];

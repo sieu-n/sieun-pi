@@ -248,7 +248,11 @@ export class FixtureHost implements Host {
 
   async search(query: SearchQuery): Promise<SearchPage> {
     const words = query.q.toLowerCase().split(/\s+/).map(w => w.replace(/^"|"$|\*$/g, "")).filter(Boolean);
-    const matches: { hit: Omit<SearchHit, "snippet">; text: string; score: number }[] = [];
+    type Match = { hit: Omit<SearchHit, "snippet">; text: string; score: number };
+    const matches: Match[] = [];
+    // pi-host's rules: a LIKE pattern leaves agent messages out, and copies of one entry show once, from an unarchived thread.
+    const skip = query.skipAgentMessages ? new RegExp(`^${query.skipAgentMessages.split("%").map(part => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("[\\s\\S]*")}$`, "i") : undefined;
+    const copies = new Map<string, { archived: number; match: Match }>();
     for (const thread of this.threadsById.values()) {
       if (query.threads && !query.threads.includes(thread.row.id)) continue;
       for (const entry of thread.entries) {
@@ -265,7 +269,14 @@ export class FixtureHost implements Host {
         if (query.from && author !== query.from) continue;
         if (query.conversation !== undefined && entry.conversationId !== query.conversation) continue;
         if (query.by && !(entry.kind === "agent.message" ? author === query.by.id : author !== "owner" && thread.row.id === query.by.thread && entry.conversationId === query.by.conversation)) continue;
-        matches.push({ hit: { thread: thread.row.id, conversation: entry.conversationId, entryId: entry.id, kind: entry.kind, author, at }, text, score: counts.reduce((a, b) => a + b, 0) });
+        if (skip && entry.kind === "agent.message" && skip.test(text)) continue;
+        const copyKey = `${entry.id} ${entry.kind} ${author} ${at}`;
+        const copy = copies.get(copyKey);
+        if (copy && (copy.archived <= Number(thread.row.archived))) continue;
+        if (copy) matches.splice(matches.indexOf(copy.match), 1);
+        const match: Match = { hit: { thread: thread.row.id, conversation: entry.conversationId, entryId: entry.id, kind: entry.kind, author, at }, text, score: counts.reduce((a, b) => a + b, 0) };
+        matches.push(match);
+        copies.set(copyKey, { archived: Number(thread.row.archived), match });
       }
     }
     matches.sort((a, b) => (query.sort === "recent" ? b.hit.at - a.hit.at : b.score - a.score || b.hit.at - a.hit.at));

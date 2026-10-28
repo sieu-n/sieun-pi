@@ -65,6 +65,9 @@ export interface ThreadEvents {
   jobs(thread: string, jobs: JobNode[]): void;
 }
 
+const THREADS_CACHE = "threads";
+type ThreadsCache = { threads: DurableThread[]; trees: [string, { updatedAt: number; nodes: TreeNode[] }][] };
+
 export class Threads {
   private list = new Map<string, DurableThread>();
   private trees = new Map<string, { updatedAt: number; nodes: TreeNode[] }>();
@@ -81,11 +84,32 @@ export class Threads {
   /** A `doc` event from a watched thread, such as the chat writing `chat.board`. */
   onDoc: (thread: string, name: string, value: unknown) => void = () => {};
 
-  constructor(readonly host: Host, readonly store: Store, readonly events: ThreadEvents, readonly box: string, private readonly log: (line: string) => void = () => {}) {}
+  private refreshing?: Promise<void>;
+  private cached = "";
 
+  constructor(readonly host: Host, readonly store: Store, readonly events: ThreadEvents, readonly box: string, private readonly log: (line: string) => void = () => {}) {
+    const cache = store.cache<ThreadsCache>(THREADS_CACHE, { threads: [], trees: [] });
+    this.list = new Map(cache.threads.map(t => [t.id, t]));
+    this.trees = new Map(cache.trees);
+    this.cached = JSON.stringify(cache);
+  }
+
+  /**
+   * With a thread list cached from the last run, the server serves it at once and reads pi-host behind it: after a restart on 10-28,
+   * pi-host took 8 to 13 s to listen, and the chat waited for it before it opened its port, so the sidebar was blank all that time.
+   */
   async start(pollMs = 2000): Promise<void> {
-    await this.refresh().catch(error => this.log(`first thread read failed: ${String(error)}`));
-    this.timer = setInterval(() => void this.refresh().catch(error => this.log(`thread refresh failed: ${String(error)}`)), pollMs);
+    const first = this.poll();
+    if (!this.list.size) await first;
+    this.timer = setInterval(() => void this.poll(), pollMs);
+  }
+
+  /** One refresh at a time: while pi-host restarts, a read waits up to 30 s, and the 2 s poll must not stack more behind it. */
+  private poll(): Promise<void> {
+    this.refreshing ??= this.refresh()
+      .catch(error => this.log(`thread refresh failed: ${String(error)}`))
+      .finally(() => { this.refreshing = undefined; });
+    return this.refreshing;
   }
 
   async stop(): Promise<void> {
@@ -107,6 +131,11 @@ export class Threads {
       }
     }
     this.list = next;
+    const cache = JSON.stringify({ threads, trees: [...this.trees] } satisfies ThreadsCache);
+    if (cache !== this.cached) {
+      this.cached = cache;
+      this.store.saveCache(THREADS_CACHE, JSON.parse(cache));
+    }
     const agents = this.agents({ archived: true });
     const changed = agents.filter(a => this.agentCache.get(a.id) !== JSON.stringify(a));
     const removed = [...this.agentCache.keys()].filter(id => !agents.some(a => a.id === id));

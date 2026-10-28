@@ -46,6 +46,8 @@ export interface SearchQuery {
   from?: string;
   /** Only what one agent said: its own entries in its thread and conversation, and the agent messages it sent as `id` anywhere. */
   by?: { thread: string; conversation: number; id: string };
+  /** Leaves out agent messages whose text matches this LIKE pattern, such as the chat's copies of channel posts, which it searches itself. */
+  skipAgentMessages?: string;
   after?: number;
   before?: number;
   limit?: number;
@@ -53,7 +55,7 @@ export interface SearchQuery {
   sort?: "relevance" | "recent";
 }
 
-/** One page of hits, each with its snippet, and the exact count of every match. */
+/** One page of hits, each with its snippet, and the exact count of every match; copies of one entry count and show once. */
 export interface SearchPage {
   hits: SearchHit[];
   total: number;
@@ -139,6 +141,32 @@ export function statusOf(row: Pick<ThreadRow, "wakeActive" | "wakeAt" | "failed"
 }
 
 /** FTS5 query text from what a person typed: each word becomes a quoted prefix term, so punctuation never breaks the parse. */
+const fold = (text: string): string => text.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
+
+/** The word prefixes a query matches, the way the unicode61 tokenizer splits them: "pi-host" is "pi" and "host". */
+export function snippetTerms(q: string): string[] {
+  return [...new Set(fold(q.replace(/"/g, " ")).match(/[\p{L}\p{N}]+/gu) ?? [])];
+}
+
+/** Up to 24 words around the first match, each matching word in <mark>, with … where the text is cut, like FTS5's snippet(). */
+export function snippetOf(text: string, terms: readonly string[], size = 24): string {
+  const words = [...text.matchAll(/[\p{L}\p{N}]+/gu)].map(m => ({ at: m.index, end: m.index + m[0].length, hit: terms.some(t => fold(m[0]).startsWith(t)) }));
+  if (!words.length) return text.slice(0, 200);
+  const first = Math.max(0, words.findIndex(w => w.hit));
+  const from = Math.max(0, Math.min(first - Math.floor(size / 4), words.length - size));
+  const shown = words.slice(from, from + size);
+  const start = from === 0 ? 0 : shown[0]!.at;
+  const end = from + size >= words.length ? text.length : shown.at(-1)!.end;
+  let out = from === 0 ? "" : "…";
+  let cursor = start;
+  for (const word of shown) {
+    if (!word.hit) continue;
+    out += `${text.slice(cursor, word.at)}<mark>${text.slice(word.at, word.end)}</mark>`;
+    cursor = word.end;
+  }
+  return `${out}${text.slice(cursor, end)}${end < text.length ? "…" : ""}`;
+}
+
 export function ftsQuery(q: string): string {
   const words = q.split(/\s+/).map(word => word.replace(/"/g, "")).filter(Boolean);
   return words.map(word => `"${word}"*`).join(" ");
@@ -253,6 +281,10 @@ export class ThreadIndex {
     }
   }
 
+  /**
+   * One page of matches and their exact count. Copies of one entry, such as an imported thread beside the archived thread it came from,
+   * count once and show from the unarchived, newest thread: a copy keeps the entry's id, kind, author and time.
+   */
   search(query: SearchQuery): SearchPage {
     const match = ftsQuery(query.q);
     if (!match) return { hits: [], total: 0 };
@@ -268,20 +300,37 @@ export class ThreadIndex {
       where.push("((kind = 'agent.message' AND author = ?) OR (kind <> 'agent.message' AND author <> 'owner' AND thread = ? AND CAST(conversation AS INTEGER) = ?))");
       values.push(query.by.id, query.by.thread, query.by.conversation);
     }
+    if (query.skipAgentMessages) { where.push("NOT (kind = 'agent.message' AND text LIKE ?)"); values.push(query.skipAgentMessages); }
     if (query.after !== undefined) { where.push("CAST(at AS INTEGER) >= ?"); values.push(query.after); }
     if (query.before !== undefined) { where.push("CAST(at AS INTEGER) < ?"); values.push(query.before); }
-    const total = Number((this.db.prepare(`SELECT count(*) AS n FROM entries WHERE ${where.join(" AND ")}`).get(...values) as Row).n);
-    const order = query.sort === "recent" ? "CAST(at AS INTEGER) DESC" : "rank";
-    // The snippet is built only for the rows of the page: building it for every match took 2.8 s for the 16,254 matches of "a" on us-metal02.
-    const sql = `SELECT thread, conversation, entry_id, kind, author, at, snippet(entries, 0, '<mark>', '</mark>', '…', 24) AS snippet
-      FROM entries WHERE ${where.join(" AND ")} ORDER BY ${order} LIMIT ? OFFSET ?`;
-    const rows = this.db.prepare(sql).all(...values, query.limit ?? 50, query.offset ?? 0) as Row[];
+    const recent = query.sort === "recent";
+    const page = this.db.prepare(`WITH m AS MATERIALIZED (
+        SELECT rowid AS id, thread, kind, author, CAST(at AS INTEGER) AS at, CAST(entry_id AS INTEGER) AS entry, ${recent ? "0" : "rank"} AS score
+        FROM entries WHERE ${where.join(" AND ")}
+      ), firsts AS (
+        SELECT m.id, m.at, m.score, ROW_NUMBER() OVER (PARTITION BY m.entry, m.kind, m.author, m.at ORDER BY t.archived, t.updated_at DESC, m.id) AS copy
+        FROM m LEFT JOIN threads t ON t.id = m.thread
+      )
+      SELECT id, count(*) OVER () AS total FROM firsts WHERE copy = 1 ORDER BY ${recent ? "at DESC" : "score"}, id LIMIT ? OFFSET ?`)
+      .all(...values, query.limit ?? 50, query.offset ?? 0) as Row[];
+    const total = page.length
+      ? Number(page[0]!.total)
+      : Number((this.db.prepare(`SELECT count(*) AS n FROM (SELECT 1 FROM entries WHERE ${where.join(" AND ")}
+          GROUP BY CAST(entry_id AS INTEGER), kind, author, CAST(at AS INTEGER))`).get(...values) as Row).n);
+    if (!page.length) return { hits: [], total };
+    // Each page row is read by rowid with no MATCH and gets its snippet here: FTS5's snippet() with "rowid IN (...)" ran the whole match
+    // once per row, 1.1 s for the page of "a" (16,254 matches) on us-metal02.
+    const read = this.db.prepare("SELECT thread, conversation, entry_id, kind, author, at, text FROM entries WHERE rowid = ?");
+    const words = snippetTerms(query.q);
     return {
       total,
-      hits: rows.map(row => ({
-        thread: String(row.thread), conversation: Number(row.conversation), entryId: Number(row.entry_id), kind: String(row.kind),
-        author: String(row.author), at: Number(row.at), snippet: String(row.snippet),
-      })),
+      hits: page.flatMap(({ id }) => {
+        const row = read.get(Number(id)) as Row | undefined;
+        return row ? [{
+          thread: String(row.thread), conversation: Number(row.conversation), entryId: Number(row.entry_id), kind: String(row.kind),
+          author: String(row.author), at: Number(row.at), snippet: snippetOf(String(row.text), words),
+        }] : [];
+      }),
     };
   }
 

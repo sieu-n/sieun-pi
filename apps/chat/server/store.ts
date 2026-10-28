@@ -54,6 +54,14 @@ export class Store {
     this.channels = readJson<{ channels: ChannelRow[] }>(join(dir, "channels.json"), { channels: [] }).channels;
   }
 
+  /** A copy of what pi-host last said, such as the thread list, so pages render while pi-host starts. */
+  cache<T>(name: string, fallback: T): T {
+    return readJson<T>(join(this.dir, "cache", `${name}.json`), fallback);
+  }
+  saveCache(name: string, value: unknown): void {
+    writeJson(join(this.dir, "cache", `${name}.json`), value);
+  }
+
   saveState(): void {
     writeJson(join(this.dir, "state.json"), this.state);
   }

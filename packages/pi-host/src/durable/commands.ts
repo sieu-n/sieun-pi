@@ -122,6 +122,7 @@ export class DurableCommands {
             ...(optNum(command, "conversation") === undefined ? {} : { conversation: optNum(command, "conversation")! }),
             ...(optStr(command, "from") === undefined ? {} : { from: optStr(command, "from")! }),
             ...(command.by === undefined ? {} : { by: byOf(command.by) }),
+            ...(optStr(command, "skipAgentMessages") === undefined ? {} : { skipAgentMessages: optStr(command, "skipAgentMessages")! }),
             ...(optNum(command, "after") === undefined ? {} : { after: optNum(command, "after")! }),
             ...(optNum(command, "before") === undefined ? {} : { before: optNum(command, "before")! }),
             ...(optNum(command, "limit") === undefined ? {} : { limit: optNum(command, "limit")! }),

@@ -3,7 +3,7 @@
  * from:, in:, after: and before: (~/work/slack-layer-design/search.md section 5). `total` is the exact count for the same filters (c191).
  */
 import type { ConversationKind, ConversationSummary, SearchHit, SearchResult } from "../web/src/lib/api/types.ts";
-import type { Channels } from "./channels.ts";
+import { CHANNEL_COPY_LIKE, type Channels } from "./channels.ts";
 import type { Host, SearchHit as HostHit } from "./host/types.ts";
 import { conversationIdOf, parseConversationId, type Threads } from "./threads.ts";
 
@@ -98,7 +98,7 @@ export class Search {
       const fromAgent = query.from && query.from !== "owner" ? parseConversationId(query.from) : undefined;
       // The merged page holds at most offset + limit thread hits, so the host builds snippets for those rows only.
       const page = await this.host.search({
-        q: query.q, sort, limit: offset + limit,
+        q: query.q, sort, limit: offset + limit, skipAgentMessages: CHANNEL_COPY_LIKE,
         ...(scope ? { threads: [scope.thread], conversation: scope.conversation } : {}),
         ...(query.from === "owner" ? { from: "owner" } : {}),
         ...(fromAgent ? { by: { thread: fromAgent.thread, conversation: fromAgent.conversation, id: query.from! } } : {}),

@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { ThreadIndex } from "../../src/durable/index.ts";
+import { snippetOf, snippetTerms } from "../../src/durable/index-db.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "pi-host-index-"));
 after(() => rmSync(dir, { recursive: true, force: true }));
@@ -51,4 +52,36 @@ test("a search returns one page with snippets and the exact count, and narrows t
   assert.equal(index.search({ q: "relay", by: { thread: "other", conversation: 2, id: "t2:2" } }).total, entries.filter(e => e.kind === "agent.message").length);
   assert.equal(index.search({ q: "relay", from: "owner" }).total, entries.filter(e => e.author === "owner").length);
   index.close();
+});
+
+test("copies of one entry in an imported thread and its archived source count and show once, from the unarchived thread", () => {
+  const index = new ThreadIndex(join(dir, "copies.sqlite"));
+  for (const [id, archived] of [["old", true], ["new", false]] as const) {
+    index.insertThread({ id, name: "vent", provider: "anthropic", modelId: "claude-opus-5-5", thinkingLevel: "high", cwd: "/", createdAt: 1, updatedAt: 1 });
+    if (archived) index.update(id, { archived: true });
+    index.addEntries(id, Array.from({ length: 6 }, (_, i) => ({
+      thread: id, conversation: 1, entryId: i + 1, kind: "pi.assistant", author: "anthropic/claude-opus-5-5", at: 1000 + i, text: `the guard allows it ${i}`,
+    })), []);
+  }
+  index.addEntries("new", [
+    { thread: "new", conversation: 1, entryId: 7, kind: "agent.message", author: "owner", at: 2000, text: "[#vent-dev · post 2 from You (owner) · reply here]\n\nis the guard up" },
+    { thread: "new", conversation: 1, entryId: 8, kind: "pi.user", author: "owner", at: 2001, text: "[#not a channel copy] the guard again" },
+  ], []);
+  const all = index.search({ q: "guard", limit: 100 });
+  assert.equal(all.total, 8);
+  assert.equal(all.hits.length, 8);
+  assert.ok(all.hits.every(hit => hit.thread === "new"));
+  const skipped = index.search({ q: "guard", limit: 3, offset: 3, skipAgentMessages: "[#% · post % from %", sort: "recent" });
+  assert.equal(skipped.total, 7);
+  assert.deepEqual(skipped.hits.map(hit => hit.entryId), [4, 3, 2]);
+  assert.equal(index.search({ q: "guard", offset: 50 }).total, 8);
+  assert.equal(index.search({ q: "guard", threads: ["old"] }).total, 6);
+  index.close();
+});
+
+test("a snippet marks word prefixes around the first match and cuts long text with an ellipsis", () => {
+  const long = `${Array.from({ length: 40 }, (_, i) => `w${i}`).join(" ")} the Pi-host relay is Ünder load ${Array.from({ length: 40 }, (_, i) => `z${i}`).join(" ")}`;
+  const snippet = snippetOf(long, snippetTerms('"pi-host" under'));
+  assert.match(snippet, /^…w35 .*<mark>Pi<\/mark>-<mark>host<\/mark> relay is <mark>Ünder<\/mark> load .*…$/);
+  assert.equal(snippetOf("all good here", snippetTerms("go")), "all <mark>good</mark> here");
 });

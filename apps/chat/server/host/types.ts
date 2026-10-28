@@ -60,9 +60,11 @@ export interface SearchHit { thread: string; conversation: number; entryId: numb
 /** pi-host's durable_search: `from` matches the author column, `by` is what one agent said (its own entries and the agent messages it sent). */
 export interface SearchQuery {
   q: string; threads?: string[]; conversation?: number; from?: string; by?: { thread: string; conversation: number; id: string };
+  /** A LIKE pattern: agent messages whose text matches it are left out, such as the copies of channel posts. */
+  skipAgentMessages?: string;
   after?: number; before?: number; limit?: number; offset?: number; sort?: "relevance" | "recent";
 }
-/** One page of hits and the exact count of every match. */
+/** One page of hits and the exact count of every match; copies of one entry in several threads count and show once. */
 export interface SearchPage { hits: SearchHit[]; total: number }
 export interface UsageTotal {
   thread: string; model: string; turns: number; input: number; output: number; cacheRead: number; cacheWrite: number;
