@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { truncateSync } from "node:fs";
+import { statSync, truncateSync } from "node:fs";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
@@ -136,4 +136,28 @@ test("fts indexes kind beside text, for new docs and for a version 1 database it
   append(t.rootFile, header(ROOT), user("after"));
   await until("the rewrite", () => kinds("{text} : kindcheck").length === 0);
   db.exec("INSERT INTO fts(fts, rank) VALUES('integrity-check', 1)");
+});
+
+test("a big append to one file does not hold a small append to another", async () => {
+  const t = tempHome();
+  write(t.rootFile, header(ROOT), named("big"));
+  write(t.childFile, header(CHILD), named("small"));
+  const db = openDb(join(t.home, "history.db"));
+  const ix = new Indexer({ db, dirs: t.dirs, sweepMs: 60_000 });
+  open.push(ix);
+  await ix.start();
+  await ix.idle();
+  const lines: string[] = [];
+  for (let i = 0; i < 40_000; i++) lines.push(user(`bulk ${i} ${"word ".repeat(80)}`));
+  append(t.rootFile, lines.join(""));
+  await new Promise((r) => setTimeout(r, 50));
+  append(t.childFile, user("smallappend"));
+  const progress = () => db.prepare("SELECT indexed_to, size FROM files WHERE path = ?").get(t.rootFile) as { indexed_to: number; size: number };
+  const bigSize = statSync(t.rootFile).size;
+  const atSmall = await until("the small append", () => {
+    const hit = db.prepare("SELECT count(*) AS n FROM fts WHERE fts MATCH 'smallappend'").get() as { n: number };
+    return Number(hit.n) === 1 && progress().indexed_to;
+  });
+  assert.ok(atSmall < bigSize / 2, `the small append waited for ${atSmall} of ${bigSize} bytes of the big one`);
+  await ix.idle();
 });

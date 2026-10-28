@@ -19,7 +19,8 @@ The FTS5 table `fts` indexes `text` and `kind`, so a search can leave out thinki
 1. On start the indexer walks the three folders and indexes the newest files first.
 2. Each file keeps `indexed_to`, the byte after its last indexed newline, so a half-written line waits for the next pass.
 3. A file that shrinks below `indexed_to`, or whose byte before `indexed_to` is no longer a newline, was rewritten, so the indexer drops its docs and reads it again.
-4. One step reads up to 1 MB of one file and writes its docs and the new `indexed_to` in one transaction, so a crash resumes where the last commit ended.
+4. One step reads up to 1 MB of one file during backfill and 256 KB while tailing and writes its docs and the new `indexed_to` in one transaction, so a crash resumes where the last commit ended.
+   While tailing, a file with more to read goes to the back of the queue after each step, so one big append does not hold the others.
 5. On Linux it watches each folder that changed in the last two days with `fs.watch`, and on macOS it watches each tree with one FSEvents stream.
 6. A stat sweep every 30 s catches whatever the watchers miss.
 

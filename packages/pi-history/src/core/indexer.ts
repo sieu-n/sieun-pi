@@ -13,7 +13,7 @@ export interface IndexerOptions {
   /** Folders to scan for transcripts. */
   dirs?: string[];
   sweepMs?: number;
-  /** Bytes read per step, one transaction each. */
+  /** Bytes read per step, one transaction each; sets both the tail and the backfill size. */
   chunkBytes?: number;
   /** A folder whose mtime or newest transcript is younger than this gets an fs.watch. */
   watchRecentMs?: number;
@@ -78,6 +78,13 @@ export function placeOf(path: string, session: string): { root: string; depth: n
 const LAG_SAMPLES = 1000;
 /** A sweep yields to the event loop after this much work, so a search waits at most one slice. */
 const SWEEP_SLICE_MS = 20;
+/**
+ * Step sizes. Over 490 MB of this chat's transcripts at load average 255 to 298 on us-metal02 (10-28), step p99 was 298 to 709 ms at
+ * 1 MB, 190 to 361 ms at 256 KB and 116 to 145 ms at 64 KB, and the whole pass took 43 to 67 s, 49 to 83 s and 67 to 85 s. Tail mode
+ * takes the 256 KB middle, and backfill keeps 1 MB for its throughput.
+ */
+const TAIL_CHUNK_BYTES = 256 << 10;
+const BACKFILL_CHUNK_BYTES = 1 << 20;
 /** A step or policy pass this long holds every search behind it, so the log names it. */
 const SLOW_MS = 250;
 /** macOS FSEvents watches a whole tree with one stream, so the Mac needs no per-folder watchers. */
@@ -94,7 +101,8 @@ export class Indexer {
   private readonly dbPath?: string;
   private readonly dirs: string[];
   private readonly sweepMs: number;
-  private readonly chunkBytes: number;
+  private readonly tailChunkBytes: number;
+  private readonly backfillChunkBytes: number;
   private readonly watchRecentMs: number;
   private readonly log: (line: string) => void;
   private readonly policy?: ToolPolicy;
@@ -136,7 +144,8 @@ export class Indexer {
     this.dbPath = options.dbPath;
     this.dirs = options.dirs ?? defaultDirs();
     this.sweepMs = options.sweepMs ?? 30_000;
-    this.chunkBytes = options.chunkBytes ?? 1 << 20;
+    this.tailChunkBytes = options.chunkBytes ?? TAIL_CHUNK_BYTES;
+    this.backfillChunkBytes = options.chunkBytes ?? BACKFILL_CHUNK_BYTES;
     this.watchRecentMs = options.watchRecentMs ?? 2 * 86_400_000;
     this.log = options.log ?? (() => {});
     this.policy = options.policy;
@@ -424,6 +433,8 @@ export class Indexer {
       if (done) {
         this.hot.delete(path);
         if (this.backlog[0] === path) this.backlog.shift();
+      } else if (this.hot.delete(path)) {
+        this.hot.add(path);
       }
       if (this.mode === "backfill" && !this.backlog.length && !this.sweeping) this.finishBackfill();
       await new Promise((resolve) => setImmediate(resolve));
@@ -501,7 +512,8 @@ export class Indexer {
           this.log(`pi-history: ${path} was rewritten, reindexing (${gone} docs dropped)`);
         }
         const start = row.indexedTo;
-        let want = Math.min(this.chunkBytes, size - start);
+        const chunkBytes = this.mode === "tail" ? this.tailChunkBytes : this.backfillChunkBytes;
+        let want = Math.min(chunkBytes, size - start);
         let buf = Buffer.alloc(0);
         let end = -1;
         while (want > 0) {
@@ -511,7 +523,7 @@ export class Indexer {
           buf = Buffer.concat([buf, more.subarray(0, n)]);
           end = buf.lastIndexOf(NEWLINE);
           if (end >= 0) break;
-          want = Math.min(this.chunkBytes, size - start - buf.length);
+          want = Math.min(chunkBytes, size - start - buf.length);
         }
         let header: { cwd?: string; created?: number; parent?: string } = {};
         const now = Date.now();
