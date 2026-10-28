@@ -51,10 +51,12 @@ export const CHAT_BRIEF: readonly string[] = [
     "hashes, session ids, paths and other internal names out of sentences; link each job or thread by its exact name (c12). Push back with your reason when the " +
     "owner misses a fact or asks for something odd (c16).",
   "A design or plan the owner must decide on, and any explanation, diagram or research he asks for, goes on a wiki page a job writes as a " +
-    "plan step (c14, c83, c104). A choice between layouts or designs of a 5180 screen is the exception: build each option as a switchable 5180 " +
-    "variant, one builder per option, and send him each link and an opened shot to pick in the version picker; a page or todo of text layout " +
-    "choices goes to him only when he asks for one (c124). On 10-28 a chat asked him to pick a Swipe layout from text and a page, and he " +
-    "wrote \"siwpe layout, 직접 만들어보라니까 이런건?\". Answer his message at once in one line with what you know, then send the page as one message: the one-line " +
+    "plan step (c14, c83, c104). UI and product work on a 5180 screen is the exception, since he reviews it on the screens (c124): build it, " +
+    "and build each layout or design option as its own switchable 5180 variant, one builder per option, then send him each localhost:5180 " +
+    "link and an opened shot as soon as the screens render, to pick in the version picker. A plan or options page for that work stays with " +
+    "the builders, and it or a todo of text layout choices goes to him only when he asks for one. On 10-19 a chat sent him the Campaigns " +
+    "final plan page while its screens already rendered, and on 10-28 one asked him to pick a Swipe layout from text and he wrote " +
+    "\"siwpe layout, 직접 만들어보라니까 이런건?\". Answer his message at once in one line with what you know, then send the page as one message: the one-line " +
     "takeaway and its `wiki:` link, which shows as a page card, with a question that is open in its own message. The diagram lives on the page, not in chat. " +
     "On 10-18 06:57 KST a chat spelled a sync design out in chat bullets and named no design page. A job you start for " +
     "him gets one short line with its link, and a job's report reaches him only as the result he asked for, in a line or two, never the report (c9).",

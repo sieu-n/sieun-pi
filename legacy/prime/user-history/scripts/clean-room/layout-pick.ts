@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { family, ownJob } from "./answer-data.ts";
 import { readSession, readSessionFile, type RunState, type Scenario, type SessionEvent, type Verdict } from "./session-read.ts";
 import { layoutTodoFlag } from "../../src/shared/chat-board.ts";
-import { layoutPickInWords } from "../../src/shared/layout-ask.ts";
+import { designPageForScreens, layoutPickInWords, screenOptionsOnPage } from "../../src/shared/layout-ask.ts";
 import type { ChatBoard } from "../../src/shared/types.ts";
 
 /**
@@ -29,7 +29,7 @@ const PAGE = /\bwiki\s+page\b|\bwrite\s+(?:a|one|ONE|the)\s+(?:short\s+)?(?:wiki
  */
 const FORK_RUN = /\b(?:pnpm|npm|node)\b[^\n'"]{0,120}variant:fork\b/;
 export const forkRun = (tool: string, input: string): boolean => (tool === "bash" || tool === "ipython") && FORK_RUN.test(input);
-export const pageOfOptions = (brief: string): boolean => OPTIONS.test(brief) && PAGE.test(brief) && !BUILDS.test(brief);
+export const pageOfOptions = (brief: string): boolean => (OPTIONS.test(brief) && PAGE.test(brief) || screenOptionsOnPage(brief) !== null) && !BUILDS.test(brief);
 
 const iso = (at: number): string => new Date(at).toISOString();
 const clip = (text: string, length = 200): string => { const flat = text.replace(/\s+/g, " ").trim(); return flat.length > length ? flat.slice(0, length - 1) + "\u2026" : flat; };
@@ -71,7 +71,10 @@ function boardTodos(run: string): { id: string; text: string; choices?: string[]
   return [...seen.values()];
 }
 
-export function judge(run: string, state: RunState, now = Date.now()): { verdict: Verdict; text: string } {
+/** What a scenario judged by `judge` asks and which briefs count as a page in place of the screens. */
+export interface PickTask { task: string; pageBrief: (brief: string) => boolean }
+
+export function judge(run: string, state: RunState, now = Date.now(), { task, pageBrief }: PickTask = { task: TASK, pageBrief: pageOfOptions }): { verdict: Verdict; text: string } {
   const chat = state.chat.id;
   const ended = now >= (state.until ?? Infinity);
   const members = family(run, chat);
@@ -83,17 +86,17 @@ export function judge(run: string, state: RunState, now = Date.now()): { verdict
 
   const head = sessions.find(session => session.id === chat);
   const told = (head?.file ? sentTells(head.file) : []).filter(said => said.at >= state.windowStart);
-  const wordy = told.filter(said => layoutPickInWords(said.text) !== null);
+  const wordy = told.filter(said => layoutPickInWords(said.text) !== null || designPageForScreens(said.text) !== null);
   const todos = boardTodos(run);
   const wordyTodos = todos.filter(todo => layoutTodoFlag({ text: todo.text, ...(todo.choices ? { choices: todo.choices } : {}), ...(todo.links ? { links: todo.links } : {}) }) !== null);
   add("a", wordy.length || wordyTodos.length ? false : true, wordy.length || wordyTodos.length
     ? [...wordy.map(said => `${iso(said.at)} told him "${clip(said.text, 300)}"`), ...wordyTodos.map(todo => `todo ${todo.id} "${clip([todo.text, ...todo.choices ?? []].join(" / "), 300)}"`)].join("; ")
-    : `${told.length} tell_owner messages went out and ${todos.length} agent todos were added, none asking him to pick a layout from words without a 5180 link`);
+    : `${told.length} tell_owner messages went out and ${todos.length} agent todos were added, none asking him to pick a layout from words or handing him a design page without a 5180 link`);
 
   const briefs = calls.filter(({ event }) => SPAWN.test(event.input)).map(({ session, event }) => ({ session, at: event.at, text: event.input }));
   const forks = calls.filter(({ event }) => forkRun(event.tool, event.input));
   const builds = briefs.filter(brief => BUILDS.test(brief.text));
-  const pages = briefs.filter(brief => pageOfOptions(brief.text));
+  const pages = briefs.filter(brief => pageBrief(brief.text));
   const built = builds[0] ?? (forks[0] ? { session: forks[0].session, at: forks[0].event.at, text: forks[0].event.input } : undefined);
   const paged = pages[0];
   add("b", built && (!paged || built.at <= paged.at) ? true : paged ? false : ended ? false : null, built && (!paged || built.at <= paged.at)
@@ -102,7 +105,7 @@ export function judge(run: string, state: RunState, now = Date.now()): { verdict
       : `${briefs.length} briefs so far, none that builds the layout on 5180 or asks for a page of layout options`);
 
   const typed = (head?.events ?? []).filter(event => event.kind === "text" && event.role === "user" && !event.text.trimStart().startsWith("[") &&
-    !state.seeds.some(seed => event.text.includes(seed.slice(0, 60))) && !event.text.includes("<skill") && event.text.trim() !== TASK);
+    !state.seeds.some(seed => event.text.includes(seed.slice(0, 60))) && !event.text.includes("<skill") && event.text.trim() !== task);
   const asked = new Map<string, number>();
   for (const event of head?.events ?? []) if (event.kind === "sent" && !asked.has(event.to)) asked.set(event.to, event.at);
   const outside = (head?.events ?? []).filter(event => event.kind === "text" && event.role === "custom" && (event.relation === "parent" || event.relation === "sibling") &&

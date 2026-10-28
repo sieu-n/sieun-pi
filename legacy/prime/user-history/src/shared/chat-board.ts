@@ -4,7 +4,7 @@ import { DUTY_LINK_SHAPE, dutyLinkProblem, parseDutyLink, type DutyKeys } from "
 import { JARGON_HINT, jargonTerms } from "./reply-lint.ts";
 import { hasDoneLine, keepDoneLine, upkeepWords } from "./upkeep-title.ts";
 import { VENDOR_SUPPORT_ERROR, vendorSupportAsk } from "./vendor-support.ts";
-import { LAYOUT_WORDS_FIX, layoutPickInWords } from "./layout-ask.ts";
+import { DESIGN_PAGE_FIX, designPageForScreens, LAYOUT_WORDS_FIX, layoutPickInWords, screenOptionsOnPage } from "./layout-ask.ts";
 import { preApprovalText, releaseGo, type PreApproval } from "./release-go.ts";
 import { REQUIREMENT_STATUSES, type ArtifactLink, type BoardActor, type BoardOp, type ChatBoard, type GoalTarget, type OwnerTodo, type PlanItem, type PlanItemInput, type PlanStatus,
   type Requirement, type RequirementStatus } from "./types.ts";
@@ -413,11 +413,34 @@ export function todoJargon(text: string): string | null {
   return terms.length ? `For you is read by the owner in one pass, and this todo uses ${terms.map(term => `"${term}"`).join(", ")}: ` +
     `reword it with todo_update; ${JARGON_HINT} (c32).` : null;
 }
-/** The flag for a todo that has the owner pick a screen's layout from words with no 5180 link in its text, choices or links (c124), or null. */
+/**
+ * The flag for a todo that has the owner pick a screen's layout from words, or review a design or plan page for a screen, with no 5180 link in
+ * its text, choices or links (c124), or null.
+ */
 export function layoutTodoFlag(todo: Pick<OwnerTodo, "text" | "choices" | "links">): string | null {
-  const layout = layoutPickInWords(todo.text, todo.choices ?? [], (todo.links ?? []).map(link => link.target));
-  return layout ? `This todo asks the owner to pick a layout ("${layout}") from words. ${LAYOUT_WORDS_FIX}, with each link on this todo ` +
-    "through todo_update, or remove it. Keep it as it is only if he asked for these choices in words." : null;
+  const targets = (todo.links ?? []).map(link => link.target);
+  const layout = layoutPickInWords(todo.text, todo.choices ?? [], targets);
+  if (layout) return `This todo asks the owner to pick a layout ("${layout}") from words. ${LAYOUT_WORDS_FIX}, with each link on this todo ` +
+    "through todo_update, or remove it. Keep it as it is only if he asked for these choices in words.";
+  const page = designPageForScreens([todo.text, ...todo.choices ?? []].join("\n"), targets);
+  return page ? `This todo hands the owner a design page ("${page}") for a screen. ${DESIGN_PAGE_FIX}. Put the link on this todo through ` +
+    "todo_update, or remove it. Keep it as it is only if he asked for this page." : null;
+}
+/** The c157 flag for an agent's text the owner reads on the board that counts tokens or prices model calls with no cache split, or null. */
+export function cacheSplitFlag(what: string, texts: readonly (string | null | undefined)[]): string | null {
+  const claim = cacheBlindTokenClaim(texts.filter((text): text is string => typeof text === "string").join("\n"));
+  return claim ? `This ${what} counts tokens or prices model calls with no cache split ("${claim}"). ${CACHE_SPLIT_FIX}. Reword it, or keep ` +
+    "it as it is if the cache split does not apply." : null;
+}
+/** The c157 flag on the notes, texts and requirement lines a plan op writes. The op is saved either way. */
+function stepCacheFlags(op: BoardOp): string[] {
+  const texts: (string | null | undefined)[] = [];
+  const item = (input: { text?: string; note?: string | null; requirements?: readonly Requirement[] | null }) =>
+    texts.push(input.text, input.note, ...(input.requirements ?? []).flatMap(line => [line.text, line.evidence, line.note]));
+  if (op.op === "plan_set") walkInputs(op.items, item);
+  else if (op.op === "plan_add" || op.op === "plan_update") item(op);
+  const flag = cacheSplitFlag("step note", texts);
+  return flag ? [flag] : [];
 }
 /** The c32, c47 and c124 flags on an agent's todo: a leave ask, internal terms, a review ask with nothing to open, a layout picked from words. The todo is saved either way. */
 function todoFlags(todo: OwnerTodo): string[] {
@@ -578,7 +601,7 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
     if (actor === "agent") {
       flags.push(...softFlags(op));
       if (next.plan) {
-        flags.push(...waitPushes(board, next.plan), ...goWaits(board, next.plan), ...upkeepTitles(board, next.plan), ...noDoneLines(board, next.plan),
+        flags.push(...waitPushes(board, next.plan), ...goWaits(board, next.plan), ...upkeepTitles(board, next.plan), ...noDoneLines(board, next.plan), ...screenPageSteps(board, next.plan),
           ...metOpenFlags(board, next.plan), ...(duties ? staleLinks(next.plan, duties) : []));
         const open = openCount(next.plan);
         if (open > BOARD_LIMITS.planItems && open > openCount(board.plan)) flags.push(`The open plan has ${open} goals and steps, over the ${BOARD_LIMITS.planItems} target; mark finished ones done or dropped.`);
@@ -1171,6 +1194,26 @@ function goWaits(before: ChatBoard, plan: readonly PlanItem[]): string[] {
     const wait = stepGoWait(item);
     if (wait) flags.push(`${item.id} ${quote(item.text)} ${goWaitText(wait)}. ${GO_WAIT_FIX} Set the step to that action, and give it a waitFor ` +
       "only for a real event the action needs, like a run's result.");
+  });
+  return flags;
+}
+/**
+ * The agent's plan change against a design page in place of screens (c124): an open step whose new or changed title or note has a job put a
+ * 5180 screen's options on a page (`screenOptionsOnPage`). A step that records his pick of a layout is fine, so a layout word alone is not read. On 10-28 frontend bro added p374 "The owner knows what Swipe is
+ * for and picks how to reorganize it", whose note had a wiki page give "2 or 3 options with a pick", and the owner answered "siwpe layout,
+ * 직접 만들어보라니까 이런건?".
+ */
+function screenPageSteps(before: ChatBoard, plan: readonly PlanItem[]): string[] {
+  const was = new Map<string, PlanItem>();
+  walk(before.plan, item => was.set(item.id, item));
+  const flags: string[] = [];
+  walk(plan, item => {
+    const prior = was.get(item.id);
+    if (!OPEN_STATUSES.has(item.status) || (prior && prior.text === item.text && prior.note === item.note)) return;
+    const text = `${item.text}\n${item.note ?? ""}`;
+    const words = screenOptionsOnPage(text);
+    if (words) flags.push(`${item.id} ${quote(item.text)} puts a screen's options on a page (${quote(words)}). ${LAYOUT_WORDS_FIX}. ` +
+      "Make the step that build, or keep it only if he asked for a page (c124).");
   });
   return flags;
 }
