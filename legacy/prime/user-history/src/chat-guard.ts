@@ -9,6 +9,7 @@ import type { PlanItem, ThreadMessage } from "./shared/types.ts";
 import { targetMet } from "./shared/chat-board.ts";
 import { ALLOWED_SHELL, SHELL_LIST } from "./chat-brief.ts";
 import { fileLines } from "./file-lines.ts";
+import { CAUTIOUS_FIX, cautiousList, cautiousSettings } from "./shared/cautious-setting.ts";
 import { LONG_REPLY_MARK, longReply, SHOP_TALK_MARK, shopTalk } from "./shared/reply-lint.ts";
 import { DESIGN_PAGE_FIX, designPageForScreens, LAYOUT_WORDS_FIX, layoutPickInWords, ownerAskedForPage } from "./shared/layout-ask.ts";
 import { type ServiceArchive, serviceArchiveLines } from "./service-archives.ts";
@@ -445,6 +446,7 @@ const UNLOOKED_MARK = "Not sent, you have not opened a screenshot of this screen
  */
 const UI_HANDOFF = /\b(?:localhost|127\.0\.0\.1|[\w-]+(?:\.[\w-]+)+):1?5180\b|!\[[^\]]*\]\([^)\s]+\.(?:png|jpe?g|webp|gif)\)/iu;
 const WIKI_LINK_MARK = "Not sent, a wiki: link in it opens no page";
+const CAUTIOUS_MARK = "Not sent, it keeps or asks about a cautious setting";
 const LAYOUT_WORDS_MARK = "Not sent, it asks him to pick a layout from words";
 const DESIGN_PAGE_MARK = "Not sent, it hands him a design page for a screen";
 /** Every `wiki:` link a text holds as written, with trailing sentence punctuation left out (markdown.ts reads bare targets the same way). */
@@ -554,7 +556,7 @@ export function tellTurn(messages: readonly ThreadMessage[]): TellTurn {
     }
     if (message.role === "user" || message.role === "custom") looked = false;
     if (message.role === "toolResult" && message.content.some(part => part.type === "image")) looked = true;
-    if (message.role === "toolResult" && message.toolName === TELL_OWNER_TOOL && [SHOP_TALK_MARK, LONG_REPLY_MARK, REPEAT_MARK, REASK_MARK, UNLOOKED_MARK, INCIDENT_MARK, SAME_ASK_MARK, PROGRESS_MARK, NEEDLESS_OK_MARK, WITHDRAW_MARK, WIKI_LINK_MARK, SPLIT_MARK, EMPTY_ASK_MARK, LAYOUT_WORDS_MARK, DESIGN_PAGE_MARK].some(mark => messageText(message).startsWith(mark))) {
+    if (message.role === "toolResult" && message.toolName === TELL_OWNER_TOOL && [SHOP_TALK_MARK, CAUTIOUS_MARK, LONG_REPLY_MARK, REPEAT_MARK, REASK_MARK, UNLOOKED_MARK, INCIDENT_MARK, SAME_ASK_MARK, PROGRESS_MARK, NEEDLESS_OK_MARK, WITHDRAW_MARK, WIKI_LINK_MARK, SPLIT_MARK, EMPTY_ASK_MARK, LAYOUT_WORDS_MARK, DESIGN_PAGE_MARK].some(mark => messageText(message).startsWith(mark))) {
       const text = told.get(message.toolCallId);
       if (text) resent.add(text);
     }
@@ -688,6 +690,11 @@ export function tellOwner(input: TellInput, turn: TellTurn, now = Date.now(), pa
       "Before you hand him a 5180 link or screenshots, open each screenshot of what it shows with attach_image and compare it with the " +
       "accepted Staging app it should match, its page frame, title, filter row, row icons and spacing. A screen that looks unlike the accepted " +
       "apps goes back to the job, not to him. If you compared them in this turn, send the very same text again and it goes out (c118, c98)." };
+    // c72: on 10-14 a chat asked him in five messages to switch a proxy pause off by hand, and none of the tell_owner checks read it.
+    const cautious = turn.resent?.has(told) ? [] : cautiousSettings(told, { asks: true });
+    if (cautious.length) return { kind: "refused", text: `${CAUTIOUS_MARK}: it ${cautiousList(cautious)}, with no measured harm behind it. ` +
+      `${CAUTIOUS_FIX}. Then tell him what you deleted or raised. If a number backs it or it is his own setting, send the very same text again ` +
+      "and it goes out (c72, c98)." };
     const asked = turn.resent?.has(told) || ownerAskedForPage(turn.ownerText);
     const layout = asked ? null : layoutPickInWords(told);
     if (layout) return { kind: "refused", text: `${LAYOUT_WORDS_MARK} ("${layout}") with no 5180 link. ${LAYOUT_WORDS_FIX}. If he asked for ` +

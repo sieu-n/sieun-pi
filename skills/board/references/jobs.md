@@ -26,7 +26,7 @@ A brief for work on auto-sns-agent's 5180 demo, including a PIN move or a route 
 
 A UI brief names the shared parts the screen needs, in the app it touches, and has the job draw none of its own (c78). On the 5180 demo and in apps/search that is `$lib/ui` through the frontend-implementation skill, for proposals as much as for the Staging line, since the owner reviews proposals in the version picker. In sieun-pi's chat web client it is `apps/chat/web/src/lib/ui`, whose README lists each part. On 10-28 the chat web client's builders had only that README and the chat's own "(c78)" to go on, and the job brief block now adds the c78 line to any such brief that does not name lib/ui.
 
-Everything you send another agent (briefs, relays, answers) is in English. After the owner's exact words, say in plain English what they mean and what to do, and translate any Korean (c2). The server sends `[brief check]` when a brief has the job wait for someone's go or sets a gate nobody asked for (c47); fix it in the job with a message.
+Everything you send another agent (briefs, relays, answers) is in English. After the owner's exact words, say in plain English what they mean and what to do, and translate any Korean (c2). The server sends `[brief check]` when a brief has the job wait for someone's go or sets a gate nobody asked for (c47), or keeps, adds or holds work under a cautious setting with no measured harm behind it, such as a pause, an idle account, an avoided login, a held push, a country pin or another chat's stop line (c72); fix it in the job with a message.
 
 ## Split the work
 

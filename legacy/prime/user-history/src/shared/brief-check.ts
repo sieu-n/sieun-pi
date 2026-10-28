@@ -1,5 +1,6 @@
 import { BOARD_PREFIX, GO_WAIT_FIX, goWait, goWaitText, type GoWait } from "./chat-board.ts";
 import { BRIEF_CHECK_PREFIX } from "./chat-feed.ts";
+import { CAUTIOUS_FIX, cautiousList, cautiousSettings, type CautiousHit } from "./cautious-setting.ts";
 import { INVENTED_GATE_FIX, inventedGates, type InventedGate } from "./invented-gates.ts";
 import { LAYOUT_WORDS_FIX, ownerAskedForPage, screenOptionsOnPage } from "./layout-ask.ts";
 import { STRAY_BRANCH_FIX, strayBranches } from "./machine-branches.ts";
@@ -10,14 +11,16 @@ import type { ThreadMessage } from "./types.ts";
  * The brief check: whether a job brief a chat wrote, from its Split line on, sets a gate with no cause and no owner rule behind it
  * (`inventedGates`, c47) or has the job wait for another thread's go, word or slot, or for the owner's ok on a push or a staging land (`goWait`,
  * c47), names a branch other than the machine's one dev branch (`strayBranches`, c119), or has the job put a 5180 screen's options on a page
- * instead of building them as variants when the owner's words before the Split line asked for no page (`screenOptionsOnPage`, c124). The owner
- * repeated c47 on 10-12, c119 on 10-27 and c124 on 10-28. The chat server steers a `[brief check]` after a spawn whose brief fails.
+ * instead of building them as variants when the owner's words before the Split line asked for no page (`screenOptionsOnPage`, c124), or keeps,
+ * adds or holds work under a cautious setting with no measured harm behind it (`cautiousSettings`, c72). The owner repeated c47 on 10-12, c119
+ * on 10-27, c72 on 10-27 and c124 on 10-28. The chat server steers a `[brief check]` after a spawn whose brief fails.
  */
 
 /** A message the owner typed in the chat: its text and its time (ms). */
 export interface OwnerMessage { text: string; at: number }
 export type BriefFinding =
   | { kind: "invented-gate"; gates: InventedGate[] }
+  | { kind: "cautious-setting"; hits: CautiousHit[] }
   | { kind: "waits-for-leave"; wait: GoWait }
   | { kind: "stray-branch"; branches: string[] }
   | { kind: "screen-options-page"; words: string };
@@ -35,6 +38,8 @@ export function briefCheck(brief: string): BriefFinding[] {
   const task = split ? brief.slice(split.index) : brief;
   const gates = inventedGates(task);
   if (gates.length) findings.push({ kind: "invented-gate", gates });
+  const cautious = cautiousSettings(task);
+  if (cautious.length) findings.push({ kind: "cautious-setting", hits: cautious });
   const wait = goWait(task);
   if (wait) findings.push({ kind: "waits-for-leave", wait });
   const branches = strayBranches(task);
@@ -49,6 +54,7 @@ export function briefCheck(brief: string): BriefFinding[] {
 export function briefFindingLine(finding: BriefFinding): string {
   switch (finding.kind) {
     case "invented-gate": return `- It sets a gate nobody asked for: ${finding.gates.map(gate => `"${gate.phrase}"`).join(", ")}. ${INVENTED_GATE_FIX}`;
+    case "cautious-setting": return `- It ${cautiousList(finding.hits)}, with no measured harm behind it (c72). ${CAUTIOUS_FIX}.`;
     case "waits-for-leave": return `- It has the job wait: it ${goWaitText(finding.wait)}. ${GO_WAIT_FIX} Tell the job to take that action itself.`;
     case "stray-branch": return `- It names a branch other than the machine's: ${finding.branches.map(branch => `"${branch}"`).join(", ")}. ${STRAY_BRANCH_FIX}`;
     case "screen-options-page": return `- It has the job put a screen's ${finding.words} on a page, and the owner asked for no page. ${LAYOUT_WORDS_FIX}. ` +
@@ -63,10 +69,12 @@ export function briefCheckNote(job: string, findings: readonly BriefFinding[]): 
     ...kinds.has("invented-gate") || kinds.has("waits-for-leave") ? ["has the job wait or sets a gate (c47)"] : [],
     ...kinds.has("stray-branch") ? ["names a branch the owner retired (c119)"] : [],
     ...kinds.has("screen-options-page") ? ["has the job describe screen options on a page instead of building them (c124)"] : [],
+    ...kinds.has("cautious-setting") ? ["keeps or adds a cautious setting (c72)"] : [],
   ].join(" and ");
   const send = `\`await agent_message.send(text, receiver_role="child", receiver_name="${job}")\``;
   const fix = kinds.has("invented-gate") || kinds.has("waits-for-leave") ? `Fix it in the job, not with a new job: ${send} with the action it takes without waiting.`
     : kinds.has("stray-branch") ? `Fix it in the job, not with a new job: ${send} with the machine's branch to work on.`
+    : kinds.has("cautious-setting") ? `Fix it in the job, not with a new job: ${send} with the setting it deletes or raises now.`
     : `Tell the job with ${send} to leave the options off its page, and start one builder per option.`;
   return `${BRIEF_CHECK_PREFIX}Your brief for [${job}](job:${job}) ${what}:\n${findings.map(briefFindingLine).join("\n")}\n${fix}`;
 }

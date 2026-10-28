@@ -12,7 +12,8 @@ async function summaries(ops: unknown[]): Promise<string[]> {
   return (await applyAgentOps(mkdtempSync(join(tmpdir(), "hold-ask-")), CHAT, ops)).summaries;
 }
 const flagged = async (ops: unknown[]) => assert.ok((await summaries(ops)).some(line => FLAG.test(line)), JSON.stringify(ops));
-const passes = async (ops: unknown[]) => assert.ok(!(await summaries(ops)).some(line => /c72, rule 7/.test(line)), JSON.stringify(ops));
+/** No hold-ask flag; an ask to delete a setting the chat may delete itself carries the cautious-setting flag instead (cautious-setting.test.ts). */
+const passes = async (ops: unknown[]) => assert.ok(!(await summaries(ops)).some(line => /asks the owner to keep, narrow or scope/.test(line)), JSON.stringify(ops));
 
 const T33 = "Each crawler deploy pauses new Instagram logins for 10 minutes, which starved Watchlist reads three times today. Keep that pause only for a database restore?";
 const T33_CHOICES = ["Pause only after a database restore (my pick)", "Keep the pause after every deploy"];

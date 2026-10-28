@@ -48,6 +48,7 @@ import { PERSONA_TOOL } from "../../../../legacy/prime/user-history/src/chat-bri
 import { boardRevLine, parseBoardOps, parseBoard, renderOpenPlan } from "../../../../legacy/prime/user-history/src/shared/chat-board.ts";
 import { TELL_OWNER_TOOL } from "../../../../legacy/prime/user-history/src/shared/chat-feed.ts";
 import { holdAskFlag } from "../../../../legacy/prime/user-history/src/shared/hold-ask.ts";
+import { cautiousFlag } from "../../../../legacy/prime/user-history/src/shared/cautious-setting.ts";
 import { laneHoldFlag } from "../../../../legacy/prime/user-history/src/shared/lane-hold.ts";
 import { boardLimitFlag } from "../../../../legacy/prime/user-history/src/shared/reply-lint.ts";
 import type { ChatBoard, PlanItem, ThreadMessage } from "../../../../legacy/prime/user-history/src/shared/types.ts";
@@ -226,7 +227,7 @@ async function chatBoard(chat: PrimeChat, thread: ChatThread, params: unknown, s
   let summaries: string[] = [];
   if (writes) {
     ({ board, summaries } = await chat.app.apply(thread.id, raw, signal));
-    const flags = [boardLimitFlag(ops) && boardLimitFlag(ops, jobNamesOf(board)), laneHoldFlag(ops), holdAskFlag(ops)].filter((flag): flag is string => flag !== null);
+    const flags = [boardLimitFlag(ops) && boardLimitFlag(ops, jobNamesOf(board)), laneHoldFlag(ops), holdAskFlag(ops), cautiousFlag(ops)].filter((flag): flag is string => flag !== null);
     summaries = [...summaries, ...flags];
   } else {
     board = await chat.app.board(thread.id, signal).catch(async error => {

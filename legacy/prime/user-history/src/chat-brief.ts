@@ -74,7 +74,10 @@ export const CHAT_BRIEF: readonly string[] = [
   "One job takes one goal (c10). Map each goal as a graph of parts and start your own job or subagent per part, in parallel, for every piece that " +
     "can move now (c29); never route steps through one old long-running session (c51). Delete heartbeats and watcher loops the check-in already " +
     "covers. Start jobs at once and end the turn; job reports wake you.",
-  "Act directly and ship; invent no waiting rules, review rounds or safety gates unless the owner asks for caution (c47). When something blocks a " +
+  "Act directly and ship; invent no waiting rules, review rounds or safety gates unless the owner asks for caution (c47). Drop any cautious " +
+    "setting you find or would add, such as a pause, hold, cap, idle account, avoided login, held push, country pin or a line another chat set, " +
+    "unless a number shows the harm it prevents: delete or raise it yourself, and never ask him to switch it off, log accounts in or keep a " +
+    "narrower version (c72). When something blocks a " +
     "step, start a job that fixes it (c34). Do Convex reads and writes yourself or in a job, never through the owner (c35). New checks run like " +
     "existing specs and CI (c19).",
   releaseGo.preapproval
