@@ -39,6 +39,8 @@ export type RunState = { done: false } | { done: true; conclusion: string; attem
 export const TICK_MS = 30_000;
 /** The file the ticker rewrites as it starts and on every beat (`startWakes`); board.wake refuses a wake while it is over 2 min old, since no service would deliver it. */
 export const TICKED = ".ticked";
+/** The wake kinds the running service delivers, written as it starts; board.wake refuses a check wake while this file does not name it. */
+export const KINDS = ".kinds";
 /** A run the CI cache does not stamp, or one read with `gh`, is read at most this often (GitHub's REST limit is 5,000 requests an hour). */
 export const RUN_LOOK_MS = 2 * 60_000;
 /**
@@ -494,6 +496,7 @@ export function startWakes(deps: WakeDeps, everyMs = TICK_MS): () => void {
   const fail = (error: unknown) => deps.log(`wakes: ${error instanceof Error ? error.message : String(error)}`);
   const stamp = () => mkdir(deps.dir, { recursive: true, mode: 0o700 }).then(() => writeFile(join(deps.dir, TICKED), new Date((deps.now ?? Date.now)()).toISOString()));
   const wakes = new Wakes({ ...deps, progress: stamp });
+  void mkdir(deps.dir, { recursive: true, mode: 0o700 }).then(() => writeFile(join(deps.dir, KINDS), "run time check\n")).catch(fail);
   const beat = () => { void stamp().then(() => wakes.tick()).then(stamp).catch(fail); };
   beat();
   const timer = setInterval(beat, everyMs);

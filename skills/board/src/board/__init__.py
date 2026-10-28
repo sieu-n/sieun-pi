@@ -433,6 +433,9 @@ def wake(run: int | str | None = None, at: str | float | None = None, note: str 
     if quiet is None or quiet > 120:
         raise RuntimeError(f"No chat service delivers wakes now ({folder / '.ticked'} is {'missing' if quiet is None else f'{int(quiet)} s old'}). "
                            "Wait inside this turn with await bash(...) instead.")
+    kinds = (folder / ".kinds").read_text(errors="replace").split() if (folder / ".kinds").exists() else []
+    if on["kind"] == "check" and "check" not in kinds:
+        raise RuntimeError("The chat service here does not deliver check wakes yet, and it would drop the file. Set a time wake instead.")
     path = folder / f"{session}-{key}.json"
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(record))

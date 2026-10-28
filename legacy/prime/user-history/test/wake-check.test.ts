@@ -6,7 +6,8 @@ import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { parseWake, POLL_HINT, pendingWakes, runCheck, wakeLabel, Wakes, wakeText } from "../src/wakes.ts";
+import { readFile } from "node:fs/promises";
+import { KINDS, parseWake, POLL_HINT, pendingWakes, runCheck, startWakes, wakeLabel, Wakes, wakeText } from "../src/wakes.ts";
 
 const START = Date.parse("2026-10-28T03:00:00Z");
 const MIN = 60_000;
@@ -57,4 +58,13 @@ test("a time wake tells a polling job about check wakes, and a check runs in sh 
   assert.equal(parseWake({ session, on: { ...check, every: 0 }, note: "", since: START }), null);
   assert.deepEqual(await runCheck("echo ok; exit 0", 10_000), { ok: true, output: "ok\n" });
   assert.equal((await runCheck("echo no; exit 3", 10_000)).ok, false);
+});
+
+test("a running service names check among the wake kinds it delivers, which board.wake reads before it writes a check wake", async t => {
+  const dir = await mkdtemp(join(tmpdir(), "wake-check-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const stop = startWakes({ dir, runState: async () => ({ done: false }), deliver: async () => {}, log: () => {} }, 60_000);
+  t.after(stop);
+  for (let i = 0; i < 50 && !(await readdir(dir)).includes(KINDS); i++) await new Promise(resolve => setTimeout(resolve, 10));
+  assert.deepEqual((await readFile(join(dir, KINDS), "utf8")).split(/\s+/).filter(Boolean), ["run", "time", "check"]);
 });
