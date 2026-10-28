@@ -5,6 +5,7 @@ import { Projector } from "../../src/chat-projection.ts";
 import { historyMessages, readBranchPage } from "../../src/session-tail.ts";
 import { chatLines, unreadCount, type ChatLine } from "../../src/shared/chat-feed.ts";
 import type { ChatBoard, ThreadMessage } from "../../src/shared/types.ts";
+import { ownJob } from "./answer-data.ts";
 import { sentences, words } from "./dry-message.ts";
 import { readSession, sessionFile, type RunState, type Scenario, type Verdict } from "./session-read.ts";
 
@@ -22,6 +23,7 @@ export const MIN_QUIET_TURNS = 3;
 /** The few words a quiet turn may end with: one sentence within c104's sentence size. */
 export const MAX_WORDS = 25;
 const TODO_ID = /\bt\d{1,4}\b/;
+const TODO_IDS = /\bt\d{1,4}\b/g;
 const FOR_YOU = /\bfor you\b|\bstill (?:open|waiting|need)|\bwaiting (?:on|for) (?:you|your)\b|\byour (?:call|pick|answer|decision)\b/i;
 const DATA = process.env.AGENT_CHAT_DATA_DIR ?? join(homedir(), ".prime/agent/browser-chat");
 const iso = (at: number): string => new Date(at).toISOString();
@@ -65,7 +67,14 @@ export async function judgeLines(lines: readonly ChatLine[], messages: readonly 
   add("b", ends.length < MIN_QUIET_TURNS && !bad.length ? null : !bad.length, bad.length ? bad.join("; ")
     : `${notes.length} closing texts after the question, each one sentence of at most ${MAX_WORDS} words with no reminder`);
   const sent = lines.filter((line): line is Extract<ChatLine, { kind: "agent" }> => line.kind === "agent" && line.at > asked);
-  const reasks = sent.filter(line => TODO_ID.test(line.text) || FOR_YOU.test(line.text));
+  // A new question names its own new todo (run1's t3 at 01:08Z), so only a todo id an earlier message already named, or For you wording, reminds.
+  const named = new Set<string>();
+  const reasks = sent.filter(line => {
+    const ids = line.text.match(TODO_IDS) ?? [];
+    const again = ids.some(id => named.has(id)) || FOR_YOU.test(line.text);
+    ids.forEach(id => named.add(id));
+    return again;
+  });
   add("c", !reasks.length, reasks.length ? reasks.map(line => `at ${iso(line.at)}: "${clip(line.text)}"`).join("; ")
     : `${sent.length} messages sent to him after the question, none a reminder of it`);
   const unread = unreadCount(messages, asked);
@@ -81,11 +90,17 @@ async function judge(run: string, state: RunState): Promise<{ verdict: Verdict; 
   const board = existsSync(boardFile) ? JSON.parse(readFileSync(boardFile, "utf8")) as ChatBoard : undefined;
   const asks = (board?.todos ?? []).filter(todo => (todo as { from?: string }).from === "agent").map(todo => Date.parse((todo as { at?: string }).at ?? ""))
     .filter(at => Number.isFinite(at) && at >= state.windowStart);
-  const checks = await judgeLines(chatLines(messages), messages, asks.length ? Math.min(...asks) : undefined);
+  // The board's todo time, else the session's own chat_board result, since teardown removes the todos and the archive holds no board.
+  const added = messages.filter(message => message.role === "toolResult" && (message as { toolName?: string }).toolName === "chat_board" &&
+    /Added a todo t\d+/.test(JSON.stringify(message.content))).map(message => message.timestamp ?? 0);
+  const first = [...asks, ...added];
+  const checks = await judgeLines(chatLines(messages), messages, first.length ? Math.min(...first) : undefined);
   const events = readSession(chat).filter(event => event.at >= state.windowStart);
   const typed = events.filter(event => event.kind === "text" && event.role === "user" && !event.text.trimStart().startsWith("[") &&
     !event.text.trimStart().startsWith("<") && !state.seeds.some(seed => event.text.includes(seed.slice(0, 60))));
-  const outside = events.filter(event => event.kind === "text" && event.role === "custom" && (event.relation === "parent" || event.relation === "sibling"));
+  // The chat's own duty jobs, the check-in among them, write to it as siblings (run1 read "check-in duty watch 07 54" as stepping in).
+  const outside = events.filter(event => event.kind === "text" && event.role === "custom" && (event.relation === "parent" || event.relation === "sibling") &&
+    !ownJob(state.chat.name, event));
   checks.push({ id: "e", ok: typed.length === 0 && outside.length === 0, detail: typed.length || outside.length
     ? [...typed, ...outside].map(event => `at ${iso(event.at)}: "${clip(event.kind === "text" ? event.text : "", 120)}"`).join("; ")
     : "only the owner-style message, server notes and the chat's own jobs reached the chat" });

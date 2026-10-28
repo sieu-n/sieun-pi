@@ -119,7 +119,9 @@ export function withMessageIds<M extends ContextMessage>(messages: readonly M[])
  * path says the default at the point the chat reads it (c117). It depends only on its own message, so the cached prefix holds.
  */
 export const WAKE_NOTE = "[not from the owner: send no tell_owner for it unless it finishes a goal he asked for, needs a decision or a blocker only he can clear, or answers his question, " +
-  "and then set why and about. News he already got, a fix of your own earlier message, and progress on work still going are none of those]";
+  "and then set why and about. News he already got, a fix of your own earlier message, and progress on work still going are none of those. " +
+  "End the turn with no text, or a few words on what you changed, never a status recap or a reminder of an open For you todo, since the " +
+  "base prompt's progress updates and final answer do not apply here]";
 /**
  * The server's restart of a failed turn. It belongs to the turn that failed: after an aborted owner turn the note carries no OWNER_RETRY_MARK,
  * and the answer it brings is still his (10-19 measurement: 2 of 4 labelled restart messages were needed answers).

@@ -3,6 +3,7 @@
 // Only what a chat sends him counts as unread now: a reply on his turn or a tell_owner message, never a fold of job lines and notes.
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { WAKE_NOTE } from "../src/chat-guard.ts";
 import { chatFeed, unreadCount } from "../src/shared/chat-feed.ts";
 import type { ThreadMessage } from "../src/shared/types.ts";
 
@@ -42,4 +43,10 @@ test("a tell_owner message and a reply on his turn still count as unread", () =>
   assert.equal(unreadCount(messages, at("13:00:00")), 1, "the t4 ask he had not read");
   messages.push(owner("what was issue and is it fixed? tldr pls", "18:44:09"), text("A crawler change broke one API test, and the fix is one line.", "18:44:40"));
   assert.equal(unreadCount(messages, at("18:44:10")), 1);
+});
+
+test("the note after each wake tells the chat to end that turn with no recap and no todo reminder, over the base prompt's progress updates", () => {
+  // quiet-wakes run1 (10-28): on release-18b73ec, with the brief line alone, a fresh chat still closed 13 quiet turns with recaps of up to 21 sentences.
+  assert.match(WAKE_NOTE, /End the turn with no text, or a few words on what you changed, never a status recap or a reminder of an open For you todo/);
+  assert.match(WAKE_NOTE, /progress updates and final answer do not apply here/);
 });

@@ -36,7 +36,7 @@ export const CHAT_BRIEF: readonly string[] = [
     "bare mermaid block and a paragraph, each quoting his message; he asked for one line plus a document instead. On a turn the owner did " +
     "not start (a job report, another thread, a check-in, a [job] notice, a wake, a duty run, an alert, a restart), the default is no " +
     "tell_owner: update the board and end the turn with no text, or a few words on what you changed, never a status recap or a reminder of an open For you todo, because the todo " +
-    "already waits on For you (c117). On 10-27 api portal vp ended about 11 such turns with a recap that reminded him of t4, and he wrote " +
+    "already waits on For you (c117). This replaces the base prompt's progress updates and final answer on such turns. On 10-27 api portal vp ended about 11 such turns with a recap that reminded him of t4, and he wrote " +
     "\"이딴거 마구 쳐 보내지마\". Send one there only for a goal he asked for that finished, with its result, a decision " +
     "only he can make, a blocker only he can clear, or the answer to a question he asked, and give its why and about; the tool keeps any " +
     "other call there as a note (c117). On 10-19 469 of the 597 messages chats sent in a day came on such turns, mostly relayed job reports. " +

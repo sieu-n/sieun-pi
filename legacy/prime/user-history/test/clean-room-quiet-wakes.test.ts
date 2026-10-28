@@ -29,3 +29,13 @@ test("the judge fails a chat that ends its quiet turns with the recap and passes
   const none = await judgeLines(chatLines(quiet), quiet, undefined);
   assert.deepEqual(none.map(check => check.ok), [null, null, null, null]);
 });
+
+test("a new question that names its own new todo is no reminder, and one that names an earlier todo again is", async () => {
+  const tell = (id: string, body: string, clock: string): ThreadMessage[] => [
+    ({ role: "assistant", content: [{ type: "toolCall", id, name: "tell_owner", arguments: { text: body, why: "decision" } }], stopReason: "toolUse", timestamp: at(clock) }) as unknown as ThreadMessage,
+    ({ role: "toolResult", toolCallId: id, toolName: "tell_owner", content: [{ type: "text", text: "told the owner" }], isError: false, timestamp: at(clock) }) as ThreadMessage];
+  const fresh = [...tell("a", "Should owner corrections run once a day (t1)?", "13:08:00"), ...tell("b", "Stop the extra wiki dream runs (t3)?", "14:08:00")];
+  assert.equal((await judgeLines(chatLines(fresh), fresh, at("13:07:00"))).find(check => check.id === "c")!.ok, true);
+  const again = [...fresh, ...tell("c", "Any call on t1 yet?", "15:08:00")];
+  assert.equal((await judgeLines(chatLines(again), again, at("13:07:00"))).find(check => check.id === "c")!.ok, false);
+});
