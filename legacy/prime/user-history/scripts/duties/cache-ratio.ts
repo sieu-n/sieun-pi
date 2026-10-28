@@ -55,15 +55,29 @@ export function windowShare(tokens: readonly Sample[], calls: readonly Sample[])
   return { share: percent(total), calls: Math.round(finished), failures: Math.round(failures), writers };
 }
 
-/** Both shares, and for a share under its target the box and model pairs that wrote the most cache in that window. */
-export async function measureCache(prometheus: Prometheus, targets: Record<CacheMetric, number>): Promise<{ metrics: Record<CacheMetric, number>; flagged: FlaggedSlice[] }> {
-  const metrics = {} as Record<CacheMetric, number>;
+/** The `source_error` item for shares LGTM could not answer: the duty judge reads a share left out of the output as not measured, with this reason. */
+export const lgtmFailure = (keys: readonly CacheMetric[], error: unknown): FlaggedSlice =>
+  ({ kind: "source_error", excerpt: `${keys.join(" and ")} not measured: LGTM did not answer: ${error instanceof Error ? error.message : String(error)}` });
+
+/**
+ * Both shares, and for a share under its target the box and model pairs that wrote the most cache in that window. A window whose query fails
+ * has no value and one `lgtmFailure` item. On 10-28 at 18:50Z a staging deploy recreated the staging Prometheus, LGTM answered HTTP 502, and
+ * both shares read 0, a red duty with a false cause.
+ */
+export async function measureCache(prometheus: Prometheus, targets: Record<CacheMetric, number>): Promise<{ metrics: Partial<Record<CacheMetric, number>>; flagged: FlaggedSlice[] }> {
+  const metrics: Partial<Record<CacheMetric, number>> = {};
   const flagged: FlaggedSlice[] = [];
   for (const [key, span] of Object.entries(WINDOWS) as [CacheMetric, string][]) {
-    const [tokens, calls] = await Promise.all([
-      prometheus.query(`sum by (box, provider, model, kind) (increase(prime_agent_tokens_total{${JOB}}[${span}]))`),
-      prometheus.query(`sum by (provider, stop_reason) (increase(prime_agent_calls_total{${JOB}}[${span}]))`),
-    ]);
+    let tokens: Sample[], calls: Sample[];
+    try {
+      [tokens, calls] = await Promise.all([
+        prometheus.query(`sum by (box, provider, model, kind) (increase(prime_agent_tokens_total{${JOB}}[${span}]))`),
+        prometheus.query(`sum by (provider, stop_reason) (increase(prime_agent_calls_total{${JOB}}[${span}]))`),
+      ]);
+    } catch (error) {
+      flagged.push(lgtmFailure([key], error));
+      continue;
+    }
     const window = windowShare(tokens, calls);
     const alsoFailed = window.failures ? ` (${window.failures} more ended in an error)` : "";
     if (window.calls < MIN_CALLS) {

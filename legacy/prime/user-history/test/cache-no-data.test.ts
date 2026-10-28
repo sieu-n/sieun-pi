@@ -1,6 +1,6 @@
 // Owner 10-10 (c41): "the cache read ratio of hour/day should stay high". On 10-19 LGTM held no prime_agent series and both shares read 100.
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -8,7 +8,7 @@ import { measureCache, MIN_CALLS, WINDOWS, type CacheMetric } from "../scripts/d
 import { measureHarness } from "../scripts/duties/harness-health.ts";
 import { withHarness } from "../scripts/duties/skills-and-tools.ts";
 import { judge, type DutyMetric } from "../src/shared/chat-duties.ts";
-import type { Prometheus, Sample } from "../src/usage/lgtm.ts";
+import { grafanaPrometheus, type Prometheus, type Sample } from "../src/usage/lgtm.ts";
 
 const duty = JSON.parse(readFileSync(new URL("../scripts/duties/skills-and-tools.duty.json", import.meta.url), "utf8")) as { metrics: DutyMetric[] };
 const targets = Object.fromEntries(Object.keys(WINDOWS).map(key => [key, duty.metrics.find(metric => metric.key === key)!.target])) as Record<CacheMetric, number>;
@@ -29,7 +29,7 @@ const warm: Sample[] = [
 test("a window with no series is a miss with the reason no data", async () => {
   const cache = await measureCache(prometheus([], 0), targets);
   for (const key of keys) {
-    assert.ok(cache.metrics[key] < targets[key], `${key} reads ${cache.metrics[key]}, which meets its target on no data`);
+    assert.ok(cache.metrics[key]! < targets[key], `${key} reads ${cache.metrics[key]}, which meets its target on no data`);
     assert.match(cache.flagged.find(slice => slice.kind === key)!.excerpt, /^no data: /);
   }
   const verdict = judge(duty.metrics, withHarness(tools, { metrics: { skills_to_prune: 0, ...cache.metrics }, flagged: cache.flagged }));
@@ -40,7 +40,7 @@ test("a window with no series is a miss with the reason no data", async () => {
 test("a window with fewer than MIN_CALLS calls is a miss even when its share is high", async () => {
   const cache = await measureCache(prometheus(warm, MIN_CALLS - 1), targets);
   for (const key of keys) {
-    assert.ok(cache.metrics[key] < targets[key]);
+    assert.ok(cache.metrics[key]! < targets[key]);
     assert.match(cache.flagged.find(slice => slice.kind === key)!.excerpt, /^no data: 19 calls/);
   }
 });
@@ -51,11 +51,27 @@ test("a window with enough calls reads its share", async () => {
   assert.deepEqual(cache.flagged, []);
 });
 
-test("an LGTM failure is a miss with the reason no data", async () => {
+// On 10-28 at 18:50Z a staging deploy recreated the staging Prometheus, Grafana's proxy answered HTTP 502 with an empty body, and both shares read 0.
+test("an LGTM 502 leaves both shares unmeasured, with the reason, and never 0", async () => {
+  const config = join(mkdtempSync(join(tmpdir(), "cache-no-data-")), "grafana-alerts.json");
+  writeFileSync(config, JSON.stringify({ url: "https://obs.example", token: "viewer" }));
+  const down = grafanaPrometheus(config, (async () => new Response("", { status: 502 })) as typeof fetch);
+  const cache = await measureCache(down, targets);
+  assert.deepEqual(cache.metrics, {});
+  for (const key of keys) assert.match(cache.flagged.find(slice => slice.excerpt.startsWith(key))!.excerpt, /not measured: LGTM did not answer: LGTM query failed \(HTTP 502\)/);
+  const verdict = judge(duty.metrics, withHarness(tools, { metrics: { skills_to_prune: 0, ...cache.metrics }, flagged: cache.flagged }));
+  assert.equal(verdict.verdict, "met");
+  for (const key of keys) assert.equal(verdict.metrics[key], undefined);
+  assert.match(verdict.summary, /not measured: the precheck gave no value for cache_read_ratio_1h, cache_read_ratio_24h \(cache_read_ratio_1h not measured: LGTM did not answer/);
+});
+
+test("a cache check that throws leaves both shares out of the harness output", async () => {
   const dataDir = mkdtempSync(join(tmpdir(), "cache-no-data-"));
   const output = await measureHarness({ roots: [], views: async () => [], dataDir, now: Date.parse("2026-10-19T15:30:00Z"),
     cache: () => Promise.reject(new Error("LGTM unreachable")), history: async () => ({ owner: [], refines: [] }), commitTime: async () => undefined, transcripts: async () => [], smoke: { python: "python3" } });
-  for (const key of keys) assert.ok(output.metrics[key]! < targets[key]);
-  assert.match(output.flagged!.find(slice => slice.kind === "cache_error")!.excerpt, /^no data: /);
-  assert.equal(judge(duty.metrics, withHarness(tools, output)).verdict, "missed");
+  for (const key of keys) assert.equal(key in output.metrics, false);
+  assert.match(output.flagged!.find(slice => slice.kind === "source_error")!.excerpt, /^cache_read_ratio_1h and cache_read_ratio_24h not measured: LGTM did not answer: LGTM unreachable$/);
+  const verdict = judge(duty.metrics, withHarness(tools, output));
+  for (const key of keys) assert.equal(verdict.metrics[key], undefined);
+  assert.match(verdict.summary, /not measured: .*LGTM unreachable/);
 });

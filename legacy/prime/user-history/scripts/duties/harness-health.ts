@@ -11,7 +11,7 @@ import { chatHistory, fileChatHistory } from "../../src/owner-history.ts";
 import { readAppended } from "./read-appended.ts";
 import { firstFixLanded, fixRepos, gitCommitTime, sideLabel, splitLastEvents, splitMetrics, splitRepeats } from "./repeat-split.ts";
 import { grafanaPrometheus } from "../../src/usage/lgtm.ts";
-import { measureCache, NO_DATA, WINDOWS, type CacheMetric } from "./cache-ratio.ts";
+import { lgtmFailure, measureCache, WINDOWS, type CacheMetric } from "./cache-ratio.ts";
 import { SMOKE_SESSION, smokeSkills, type SmokeEnv } from "./skill-smoke.ts";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
 
@@ -56,7 +56,7 @@ export interface SkillSmoke { skill: string; pass: boolean; detail?: string }
 export interface HarnessDeps {
   roots: readonly SkillRoot[]; views: (since: string) => Promise<View[]>; dataDir: string; now: number;
   /** The cache read shares from LGTM (`measureCache`) against the duty's targets. */
-  cache: () => Promise<{ metrics: Record<CacheMetric, number>; flagged: FlaggedSlice[] }>;
+  cache: () => Promise<{ metrics: Partial<Record<CacheMetric, number>>; flagged: FlaggedSlice[] }>;
   /** A chat's owner words and `/refine` commands, for the repeats the owner gave (`repeatsBetween`). */
   history: (chat: string) => Promise<ChatHistory>;
   /** When a commit a correction's ref names landed (`splitRepeats`), undefined for one no repo knows. */
@@ -236,9 +236,8 @@ export async function measureHarness(deps: HarnessDeps): Promise<PrecheckOutput 
     ...unread.map(skill => ({ kind: "unread_14d", excerpt: `${skill.id} (${skill.dir}) has no ${deps.roots.find(root => root.name === skill.root)?.transcripts ? "agent read in a Prime transcript" : "view event"} since ${since.slice(0, 10)}` })),
     ...listed.slice(0, 8).map(pair => ({ kind: "overlap", excerpt: `${pair.a} and ${pair.b} share ${Math.round(pair.score * 100)}% of description words: ${pair.shared.slice(0, 12).join(", ")}` })),
   ];
-  // An LGTM failure is no data: both shares read NO_DATA, a miss, and the skill checks still report.
-  const cache = await deps.cache().catch((error: unknown) => ({ metrics: Object.fromEntries(Object.keys(WINDOWS).map(key => [key, NO_DATA])),
-    flagged: [{ kind: "cache_error", excerpt: `no data: the cache read shares could not be read from LGTM: ${error instanceof Error ? error.message : String(error)}` }] }));
+  // A cache check that throws leaves both shares out, so the judge reads them as not measured, and the skill checks still report.
+  const cache = await deps.cache().catch((error: unknown) => ({ metrics: {}, flagged: [lgtmFailure(Object.keys(WINDOWS) as CacheMetric[], error)] }));
   const untracked = skills.filter(skill => skill.lastRead === undefined).length;
   if (untracked) flagged.push({ kind: "untracked", excerpt: `${untracked} skills have no read tracking (no llm-wiki view events for their root), so unread_14d leaves them out` });
   const prune = new Set([...failures.map(result => result.skill), ...unread.map(skill => skill.id)]);
