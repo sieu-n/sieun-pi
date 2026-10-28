@@ -67,6 +67,12 @@ function postSnippet(text: string, words: string[]): string {
   return (start > 0 ? "…" : "") + slice.split(re).map((part, i) => (i % 2 === 1 ? `<mark>${escapeHtml(part)}</mark>` : escapeHtml(part))).join("") + (start + 220 < text.length ? "…" : "");
 }
 
+/**
+ * Reciprocal rank fusion (Cormack, Clarke and Buettcher, SIGIR 2009, with their k = 60): the thread hits in pi-host's bm25 order and the posts
+ * in match-count order merge by their rank in each list, so the best post sits beside the best thread hit.
+ */
+const fused = (rank: number): number => 1 / (60 + rank);
+
 /** A thread hit or a channel post, ranked before its hit is built; only the page's rows become hits. */
 type Ranked = { score: number; at: number; build: () => SearchHit };
 
@@ -100,9 +106,10 @@ export class Search {
       });
       total += page.total;
       const summaries = new Map(this.threads.conversations().map(c => [c.id, c]));
-      page.hits.forEach((hit, rank) => ranked.push({ score: page.total - rank, at: hit.at, build: () => this.threadHit(hit, summaries.get(conversationIdOf(hit.thread, hit.conversation))) }));
+      page.hits.forEach((hit, rank) => ranked.push({ score: fused(rank), at: hit.at, build: () => this.threadHit(hit, summaries.get(conversationIdOf(hit.thread, hit.conversation))) }));
     }
     if (!inId || inChannel) {
+      const posts: Ranked[] = [];
       for (const { row, post } of this.channels.allPosts()) {
         if (inChannel && row.id !== inChannel.id) continue;
         if (query.from && post.author !== query.from) continue;
@@ -111,7 +118,7 @@ export class Search {
         const score = postMatch(post.text, words);
         if (!score) continue;
         total += 1;
-        ranked.push({
+        posts.push({
           score, at: post.at,
           build: () => {
             const author = this.threads.principal(post.author);
@@ -122,6 +129,7 @@ export class Search {
           },
         });
       }
+      posts.sort((a, b) => b.score - a.score || b.at - a.at).forEach((post, rank) => ranked.push({ ...post, score: fused(rank) }));
     }
     if (sort === "recent") ranked.sort((a, b) => b.at - a.at);
     else ranked.sort((a, b) => b.score - a.score || b.at - a.at);

@@ -20,11 +20,12 @@ export type DutyRow = DutyView & { card: DutyCardModel; last: { verdict: string;
 
 const enc = encodeURIComponent;
 
-async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
+async function call<T>(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
   const response = await fetch(path, {
     method,
     headers: body === undefined ? {} : { "content-type": "application/json" },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    ...(signal ? { signal } : {}),
   });
   const text = await response.text();
   const value = text ? (JSON.parse(text) as unknown) : undefined;
@@ -95,7 +96,7 @@ export const api = {
   dutyAction: (chat: string, action: DutyAction) => call<{ duties: DutyRow[] }>("POST", `/api/threads/${enc(chat)}/duties`, action),
   checkIn: (chat: string) => call<CheckInView>("GET", `/api/threads/${enc(chat)}/check-in`),
   setCheckIn: (chat: string, patch: CheckInPatch) => call<CheckInView>("POST", `/api/threads/${enc(chat)}/check-in`, patch),
-  forYou: () => call<{ items: ForYouItem[] }>("GET", "/api/for-you"),
+  forYou: (signal?: AbortSignal) => call<{ items: ForYouItem[] }>("GET", "/api/for-you", undefined, signal),
   boards: () => call<BoardRow[]>("GET", "/api/boards"),
 
   usage: (opts: { days: number; thread?: string; host?: string }) => call<UsageReport>("GET", `/api/usage${query(opts)}`),

@@ -334,12 +334,16 @@ export class BoardStore {
 }
 export const boardStore = (chatId: string): BoardStore => new BoardStore(chatId);
 
+/** How long For you waits for /api/for-you before it shows an error with Retry; with board reads cached it answered in 10 to 680 ms during searches on 10-28. */
+export const FOR_YOU_DEADLINE_MS = 10_000;
+
 class ForYouStore {
   items = $state<ForYouItem[]>([]);
   loading = $state(true);
   error = $state<string | null>(null);
   private started = false;
   private timer: ReturnType<typeof setTimeout> | undefined;
+  private latest = 0;
 
   start(): void {
     if (this.started) return;
@@ -353,14 +357,21 @@ class ForYouStore {
     void this.refresh();
   }
 
+  /** Only the newest call writes, so a slow answer never replaces a newer one or ends its loading. */
   async refresh(): Promise<void> {
+    const mine = ++this.latest;
+    if (!this.items.length) this.loading = true;
+    const signal = AbortSignal.timeout(FOR_YOU_DEADLINE_MS);
     try {
-      this.items = (await api.forYou()).items;
+      const items = (await api.forYou(signal)).items;
+      if (mine !== this.latest) return;
+      this.items = items;
       this.error = null;
     } catch (error) {
-      this.error = message(error);
+      if (mine !== this.latest) return;
+      this.error = signal.aborted ? `For you did not answer in ${FOR_YOU_DEADLINE_MS / 1000} s.` : message(error);
     } finally {
-      this.loading = false;
+      if (mine === this.latest) this.loading = false;
     }
   }
 }

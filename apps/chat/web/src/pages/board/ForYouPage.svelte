@@ -79,7 +79,7 @@
   <div class="list-pane">
     {@render toolbar()}
     <div class="scroll">
-      {#if forYou.error && !items.length}
+      {#if forYou.error && !items.length && !forYou.loading}
         <div class="notice" role="alert"><p class="t-body">{forYou.error}</p><Button size="sm" onclick={() => forYou.refresh()}>Retry For you</Button></div>
       {:else if forYou.loading && !items.length}
         <div class="notice"><LoadingText text="Loading For you…" /></div>

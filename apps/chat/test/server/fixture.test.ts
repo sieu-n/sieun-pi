@@ -193,6 +193,14 @@ describe("search", () => {
     assert.ok(all.hits.every(h => !/<(?!\/?mark>)/.test(h.snippet)));
   });
 
+  test("the best channel post ranks beside the best thread hit", async () => {
+    const all = await s.get<SearchResult>("/api/search?q=relay&limit=100");
+    const posts = all.hits.filter(h => h.kind === "post").length;
+    assert.ok(posts > 0 && posts < all.total);
+    const top = await s.get<SearchResult>("/api/search?q=relay&limit=2");
+    assert.deepEqual(top.hits.map(h => h.kind === "post").sort(), [false, true]);
+  });
+
   test("a hit's messageId opens the page around it, focused on the turn that holds it", async () => {
     const result = await s.get<SearchResult>(`/api/search?q=ECONNREFUSED&limit=10`);
     const hit = result.hits.find(h => h.kind === "turn")!;

@@ -59,6 +59,8 @@ export function nextRun(schedule: DutySchedule, from: number): number {
 export class Boards {
   /** Boards read in the last BOARD_TTL_MS; a doc event or an owner op replaces one at once. */
   private readonly cache = new Map<string, { board: ChatBoard | null; at: number }>();
+  /** The one pi-host read in flight per chat, which every caller shares. */
+  private readonly reading = new Map<string, Promise<ChatBoard | null>>();
   private timer?: NodeJS.Timeout;
 
   /** This server's own base URL, which a duty job's brief names for the board. */
@@ -73,8 +75,36 @@ export class Boards {
   async board(chat: string): Promise<ChatBoard | null> {
     const cached = this.cache.get(chat);
     if (cached && Date.now() - cached.at < BOARD_TTL_MS) return cached.board;
-    const value = await this.host.docGet(chat, BOARD_DOC).catch(() => null);
-    const board = value ? parseBoard(value) : null;
+    return this.read(chat);
+  }
+
+  /**
+   * The last board read for a list page, even past its TTL, with a fresh read behind it. A pi-host call waits behind every command queued
+   * there, such as a search that takes seconds, so For you, the board index and the sidebar count wait on pi-host only for a chat never read.
+   */
+  private async known(chat: string): Promise<ChatBoard | null> {
+    const cached = this.cache.get(chat);
+    if (!cached) return this.read(chat);
+    if (Date.now() - cached.at >= BOARD_TTL_MS) void this.read(chat).catch(error => this.log(`board read for ${chat} failed: ${String(error)}`));
+    return cached.board;
+  }
+
+  private read(chat: string): Promise<ChatBoard | null> {
+    let pending = this.reading.get(chat);
+    if (!pending) {
+      pending = this.fetchBoard(chat).finally(() => this.reading.delete(chat));
+      this.reading.set(chat, pending);
+    }
+    return pending;
+  }
+
+  /** A failed read keeps the board read before it; a doc event or op that lands while the read runs wins over it. */
+  private async fetchBoard(chat: string): Promise<ChatBoard | null> {
+    const startedAt = Date.now();
+    const result = await this.host.docGet(chat, BOARD_DOC).then(value => ({ value }), () => null);
+    const cached = this.cache.get(chat);
+    if (cached && cached.at > startedAt) return cached.board;
+    const board = result ? (result.value ? parseBoard(result.value) : null) : (cached?.board ?? null);
     this.cache.set(chat, { board, at: Date.now() });
     if (cached && JSON.stringify(cached.board) !== JSON.stringify(board) && board) this.events.board(chat, board, awaitingGo(board));
     return board;
@@ -118,8 +148,10 @@ export class Boards {
 
   async forYou(): Promise<ForYouItem[]> {
     const out: ForYouItem[] = [];
-    for (const chat of this.chats()) {
-      const board = await this.board(chat);
+    const chats = this.chats();
+    const boards = await Promise.all(chats.map(chat => this.known(chat)));
+    for (const [i, chat] of chats.entries()) {
+      const board = boards[i];
       if (!board) continue;
       const steps = new Map<string, PlanItem>();
       walk(board.plan, item => steps.set(item.id, item));
@@ -137,8 +169,10 @@ export class Boards {
 
   async index(): Promise<BoardRow[]> {
     const rows: BoardRow[] = [];
-    for (const chat of this.chats()) {
-      const board = await this.board(chat);
+    const chats = this.chats();
+    const boards = await Promise.all(chats.map(chat => this.known(chat)));
+    for (const [i, chat] of chats.entries()) {
+      const board = boards[i];
       if (!board) continue;
       let done = 0;
       let total = 0;
