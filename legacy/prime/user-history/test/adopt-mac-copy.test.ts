@@ -42,7 +42,6 @@ async function restart(t: TestContext, hosts: HostCatalogs, ids: string[]) {
   t.mock.method(labels, "snapshot", async () => ({ tags: [], threads: {} }));
   const chatIds = { ids: async () => new Set<string>(), checkIns: async () => new Map(), links: async () => ({ children: [], board: null, roots: [], messages: [] }) };
   const catalog = new Catalog("unused", reads, labels, chatIds, new ThreadOrigins({ ids: async () => [] }), hosts);
-  catalog.fullListClient = () => catalog.client;
   t.after(() => catalog.close());
   let connected = false;
   t.mock.method(catalog.client, "reconnect", async () => { connected = true; });

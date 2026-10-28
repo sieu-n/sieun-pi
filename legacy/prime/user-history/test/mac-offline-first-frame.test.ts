@@ -65,7 +65,6 @@ async function boxWithMac(t: TestContext, relayPort: number, online: boolean) {
   t.mock.method(labels, "snapshot", async () => ({ tags: [], threads: {} }));
   const chats = { ids: async () => new Set<string>(), checkIns: async () => new Map(), links: async () => ({ children: [], board: null, roots: [], messages: [] }) };
   const catalog = new Catalog(join(dir, "box.sock"), reads, labels, chats, new ThreadOrigins({ ids: async () => [] }), hosts);
-  catalog.fullListClient = () => catalog.client;
   t.after(() => catalog.close());
   let connected = false;
   t.mock.method(catalog.client, "reconnect", async () => { connected = true; });

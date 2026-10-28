@@ -52,7 +52,6 @@ test("a refresh that waits past 30 s rejects for its caller and leaves the page 
   t.mock.method(labels, "snapshot", async () => ({ tags: [], threads: {} }));
   const ids = { ids: async () => new Set<string>(), checkIns: async () => new Map(), links: async () => ({ children: [], board: null, roots: [], messages: [] }) };
   const catalog = new Catalog("unused", reads, labels, ids, new ThreadOrigins({ ids: async () => [] }));
-  catalog.fullListClient = () => catalog.client;
   t.after(() => catalog.close());
   const dir = await mkdtemp(join(tmpdir(), "session-copy-banner-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
@@ -145,7 +144,6 @@ test("the first frame after a service start is the box's copy from disk, with no
   t.mock.method(labels, "snapshot", async () => ({ tags: [], threads: {} }));
   const ids = { ids: async () => new Set<string>(), checkIns: async () => new Map(), links: async () => ({ children: [], board: null, roots: [], messages: [] }) };
   const catalog = new Catalog("unused", reads, labels, ids, new ThreadOrigins({ ids: async () => [] }), null, copy);
-  catalog.fullListClient = () => catalog.client;
   t.after(() => catalog.close());
   const daemon = fakeDaemon({ live: [rows[0]!], saved: [rows[1]!] });
   let release!: () => void;
