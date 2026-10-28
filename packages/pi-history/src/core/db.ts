@@ -3,7 +3,7 @@ import { homedir, platform } from "node:os";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 /** Each entry moves the database from version i to i + 1. */
 const MIGRATIONS: string[] = [
@@ -24,6 +24,7 @@ const MIGRATIONS: string[] = [
   `DROP TABLE fts;
   CREATE VIRTUAL TABLE fts USING fts5(text, kind, content='docs', content_rowid='id', tokenize='unicode61 remove_diacritics 2');
   INSERT INTO fts(fts) VALUES('rebuild');`,
+  `CREATE INDEX docs_meta ON docs(id, file, kind, is_error, author);`,
 ];
 
 export function defaultDbPath(): string {
