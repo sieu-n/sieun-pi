@@ -31,7 +31,7 @@ const AGENTS_MD = `# Order reports
 
 This folder holds the weekly order summary, \`${SUMMARY}\`, built from \`data/orders.csv\`.
 
-- \`tools/current\` points at the installed release of the report tools, a copy of sieun-pi's \`legacy/prime/user-history\` with the report scripts added. A new release replaces it and its old release folder is deleted.
+- \`tools/current\` points at the installed release of the report tools, sieun-pi's \`legacy/prime/user-history\` with the report scripts added. A new release replaces it and its old release folder is deleted.
 - \`tools/current/legacy/prime/user-history/${DUTY_PATH}\` is the freshness check for a chat that keeps the summary.
 - To put that check on a chat, run \`sh tools/current/add-duty.sh <chat id>\` from this folder.
 - \`node scripts/report/build.mjs\` in \`tools/current/legacy/prime/user-history\` rebuilds the summary in about 6 minutes.
@@ -242,7 +242,7 @@ export const relativeDuty: Scenario = {
   setupNotes: state => [
     `# Run setup: ${state.chat.name}`, "",
     `The chat ${state.chat.id} was opened through POST api/threads in ${state.sandbox} on ${state.release}, with one ordinary first message and no seeded board, todo or job.`,
-    "The project folder holds data/orders.csv, a built out/order-summary.md 3 h old, an AGENTS.md and tools/current pointing at one release folder: an export of legacy/prime/user-history at the live release's commit, the report scripts, the duty file and add-duty.sh.", "",
+    "The project folder holds data/orders.csv, a built out/order-summary.md 3 h old, an AGENTS.md and tools/current pointing at one release folder: links to legacy/prime/user-history in the sieun-pi checkout, the report scripts, the duty file and add-duty.sh.", "",
     "## The first message", "", `> ${TASK}`, "",
   ].join("\n"),
   evaluate: (run, state) => judge(run, state),

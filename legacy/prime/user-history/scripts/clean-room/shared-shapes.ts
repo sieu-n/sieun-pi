@@ -1,74 +1,36 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { familyFiles, lastAgents, rawEntries, shellCommands } from "./detached-report.ts";
 import { readSessionFile, type RunState, type Scenario, type SessionEvent, type Verdict } from "./session-read.ts";
 
 /**
- * The clean-room scenario for c78, one shared page shape per 5180 app: a chat in a sparse throwaway copy of auto-sns-agent at the dev/sieun-mac
- * commit that added the three page shapes to the frontend-implementation skill gets the owner-style ask to add a Reports app to 5180 like
- * Inbox. It passes when the new app draws its frame with the shared `$lib/ui/AppFrame.svelte`, copies no lib/ui part, passes no width of its
- * own, puts no route under the `(analytics)` layout's centered column, and the chat's build brief names the shape and a shot beside Inbox. The
+ * The clean-room scenario for c78, one shared page shape per 5180 app: a chat gets the owner-style ask to add a Reports app to 5180 like Inbox.
+ * It passes when the new app draws its frame with the shared `$lib/ui/AppFrame.svelte`, copies no lib/ui part, passes no width of its own,
+ * puts no route under the `(analytics)` layout's centered column, and the chat's build brief names the shape and a shot beside Inbox. The
  * owner, 2026-10-27: "why is 5180 one broken? i said i want it to be like Inbox/Outreach template's sidebar?" and "make sure things that should
  * be shared are only written once and shared at the code level". The criteria live in ~/.prime/agent/clean-room/c78-shared-shapes/criteria.md.
+ *
+ * Setup refuses a new run. The ask builds an app, so the chat needs a writable auto-sns-agent tree. Runs 1 to 5 got a sparse copy of the
+ * repo, which c193 bans (2026-10-28: "Copying the repo to do the test: THIS MUST BE BANNED"). The machine's one checkout and branch (c119)
+ * would land the trial's app on dev/sieun or dev/sieun-mac for real. The judge stays, so `rejudge` still reads the archived runs.
  */
 export const TASK = "add a Reports app to 5180 like Inbox. sidebar with saved reports (weekly brand check-in, campaign results, competitor posts) " +
   "and the report itself on the right";
 /** The dev/sieun-mac commit with the shape paragraph and tests/unit/shape-width.test.ts, given to setup; the judge reads it from baseline.json. */
 const baseOf = (runDir: string): string => (JSON.parse(readFileSync(join(runDir, "baseline.json"), "utf8")) as { base: string }).base;
-const BRANCH = "dev/sieun";
-const SCRATCH = join(homedir(), "scratch", "01a17e93-4acd-764d-8c37-22942272d029");
-const PREFIX = join(SCRATCH, "auto-sns-agent-");
 const REAL_CHECKOUT = join(homedir(), "Documents/Github/auto-sns-agent");
-const PATHS = [".gitignore", "AGENTS.md", "CLAUDE.md", ".agents", ".claude", "scripts", "apps/virev-demo", "packages", "package.json", "pnpm-workspace.yaml", "tsconfig.json",
-  "tsconfig.base.json", "apps/search/src/lib", "apps/crawler-v3/src/catalog/niches.json"];
 const APP = "apps/virev-demo";
 const SHARED = `${APP}/overlay/src/lib/ui/`;
 const HINTS = /\b(test|tests|testing|fixtures?|clean[- ]?room|twin|blind|evaluator|criteria)\b/i;
 
-const git = (cwd: string, args: string[]): string => execFileSync("git", ["-c", "user.name=Sieun Park", "-c", "user.email=sieun@users.noreply.github.com", ...args],
-  { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], maxBuffer: 64 << 20 });
+const git = (cwd: string, args: string[]): string => execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], maxBuffer: 64 << 20 });
 const tryGit = (cwd: string, args: string[]): string | null => { try { return git(cwd, args); } catch { return null; } };
-export const originOf = (project: string): string => `${project}-origin.git`;
 
-function prepare(runDir: string): string {
-  const project = PREFIX + basename(runDir);
-  const origin = originOf(project);
-  if (existsSync(project) || existsSync(origin)) throw new Error(`${project} already exists`);
-  const BASE = process.env.C78_CLEAN_ROOM_BASE ?? "";
-  if (!/^[0-9a-f]{40}$/.test(BASE)) throw new Error(`C78_CLEAN_ROOM_BASE "${BASE}" is not a full sha`);
-  const objects = join(REAL_CHECKOUT, ".git/objects");
-  mkdirSync(SCRATCH, { recursive: true });
-  git(SCRATCH, ["init", "-q", "--bare", "-b", BRANCH, origin]);
-  writeFileSync(join(origin, "objects/info/alternates"), objects + "\n");
-  git(origin, ["update-ref", `refs/heads/${BRANCH}`, BASE]);
-  git(SCRATCH, ["init", "-q", "-b", BRANCH, project]);
-  writeFileSync(join(project, ".git/objects/info/alternates"), objects + "\n");
-  git(project, ["config", "agent.branch", BRANCH]);
-  git(project, ["remote", "add", "origin", origin]);
-  git(project, ["fetch", "-q", "origin"]);
-  git(project, ["sparse-checkout", "set", "--no-cone", ...PATHS.map(path => `/${path}`)]);
-  git(project, ["reset", "-q", "--hard", `origin/${BRANCH}`]);
-  git(project, ["branch", "-q", "--set-upstream-to", `origin/${BRANCH}`]);
-  symlinkSync(join(REAL_CHECKOUT, "node_modules"), join(project, "node_modules"));
-  symlinkSync(join(REAL_CHECKOUT, APP, "node_modules"), join(project, APP, "node_modules"));
-  for (const pkg of readdirSync(join(REAL_CHECKOUT, "packages"))) {
-    const modules = join(REAL_CHECKOUT, "packages", pkg, "node_modules");
-    if (existsSync(modules) && existsSync(join(project, "packages", pkg)) && !existsSync(join(project, "packages", pkg, "node_modules")))
-      symlinkSync(modules, join(project, "packages", pkg, "node_modules"));
-  }
-  mkdirSync(runDir, { recursive: true });
-  writeFileSync(join(runDir, "baseline.json"), JSON.stringify({ at: new Date().toISOString(), base: BASE, project }, null, 1) + "\n");
-  return project;
-}
-
-function cleanup(state: RunState): string | void {
-  if (!state.sandbox.startsWith(PREFIX)) return;
-  rmSync(state.sandbox, { recursive: true, force: true });
-  rmSync(originOf(state.sandbox), { recursive: true, force: true });
-  return `removed the repo ${state.sandbox} and its origin ${originOf(state.sandbox)}`;
-}
+export const REFUSED = "shared-shapes needs a writable auto-sns-agent tree for the Reports app it asks for. A copy of the repo is banned (c193), " +
+  "and the machine's one checkout and branch (c119) would land the trial's app for real, so this scenario starts no new run.";
+function prepare(): string { throw new Error(REFUSED); }
 
 /** The demo's .svelte and variant.ts files the run added or changed against BASE, committed or not, with their text; materialized src/ is left out. */
 export interface Changed { path: string; text: string }
@@ -252,16 +214,10 @@ async function judge(runDir: string, state: RunState): Promise<{ verdict: Verdic
 export const sharedShapes: Scenario = {
   name: "shared-shapes",
   prepare,
-  cleanup,
   headMessage: () => TASK,
   fixtures: [],
   endsAtVerdict: true,
-  setupNotes: state => [
-    `# Run setup: ${state.chat.name}`, "",
-    `The chat ${state.chat.id} was opened through POST api/threads in ${state.sandbox} on ${state.release}, with one ordinary first message and no seeded board, todo or job.`,
-    `The repo is a sparse copy of auto-sns-agent at ${process.env.C78_CLEAN_ROOM_BASE ?? "the C78_CLEAN_ROOM_BASE commit"} on ${BRANCH} (${PATHS.join(", ")}), with node_modules linked from ${REAL_CHECKOUT} and a bare origin ${originOf(state.sandbox)}.`, "",
-    "## The first message", "", `> ${TASK}`, "",
-  ].join("\n"),
+  setupNotes: () => REFUSED,
   evaluate: (runDir, state) => judge(runDir, state),
   baseline: () => { throw new Error("this scenario has no baseline"); },
 };

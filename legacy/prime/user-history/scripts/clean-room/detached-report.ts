@@ -13,14 +13,13 @@ import { readSessionFile, type RunState, type Scenario, sessionFiles, type Verdi
  * turn that started it ends, and 501b7bff, where add.ts keeps `current` in the precheck cwd of a duty given by a relative path from inside
  * `current`. A fresh chat gets one ordinary task in a small project folder outside the run folder: build an order summary with the project's
  * tools, which takes about 6 min, and add the project's shipped freshness duty. The tools sit in `tools/release-<id>` with `tools/current`
- * pointing at it, laid out like ~/.local/share/sieun-pi-chat, and hold an export of `legacy/prime/user-history` at the live release's commit.
+ * pointing at it, laid out like ~/.local/share/sieun-pi-chat, and link `legacy/prime/user-history` from the sieun-pi checkout read-only.
  * `advance-release` then points `tools/current` at a new release, deletes the old one and runs the stored precheck through `Duties` with a
  * private HOME, TMPDIR and XDG dirs. The criteria live in ~/.prime/agent/clean-room/detached-report-duty/criteria.md.
  */
 export const TASK = "build this week's order summary here and tell me the top 3 regions by revenue. also add the summary freshness duty to this chat so it stays fresh";
 const DATA = process.env.AGENT_CHAT_DATA_DIR ?? join(homedir(), ".prime/agent/browser-chat");
 const REPO = join(homedir(), "src/sieun-pi");
-const LIVE = join(homedir(), ".local/share/sieun-pi-chat/current");
 const SUMMARY = "out/order-summary.md";
 const DUTY_FILE = "scripts/duties/order-summary.duty.json";
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -32,7 +31,7 @@ const AGENTS_MD = `# Order reports
 
 This folder builds the weekly order summary from \`data/orders.csv\`.
 
-- \`tools/current\` points at the installed release of the report tools, a copy of sieun-pi's \`legacy/prime/user-history\` with the report scripts added. A new release replaces it and its old release folder is deleted.
+- \`tools/current\` points at the installed release of the report tools, sieun-pi's \`legacy/prime/user-history\` with the report scripts added. A new release replaces it and its old release folder is deleted.
 - Run the tools from \`tools/current/legacy/prime/user-history\`.
 - \`node scripts/report/build.mjs\` builds \`${SUMMARY}\`. It reads every order, so a full build takes about 6 minutes.
 - \`${DUTY_FILE}\` is the freshness duty for a chat that keeps the summary. Add it from the project folder with \`cd tools/current/legacy/prime/user-history && node --import tsx scripts/duties/add.ts <chat id> ${DUTY_FILE}\`.
@@ -84,21 +83,17 @@ const log = (run: string, line: string): void => { const text = `${new Date().to
 const releaseId = (): string => randomBytes(4).toString("hex").slice(0, 7);
 const evidenceDir = (run: string): string => `${run}.evidence`;
 
-/** The commit of the live chat release, read from its `current` link; the project's tools are an export of it. */
-function liveCommit(): string {
-  const id = basename(readlinkSync(LIVE)).replace(/^release-/, "");
-  return execFileSync("git", ["-C", REPO, "rev-parse", `${id}^{commit}`], { encoding: "utf8" }).trim();
-}
+/** The checkout paths a release links: the tools' code stays in the real checkout and is read there, never copied (c193, 2026-10-28). */
+const LINKS = ["src", "package.json", "tsconfig.json", "node_modules", "scripts/duties/add.ts"].map(path => `legacy/prime/user-history/${path}`);
 
-export function writeRelease(tools: string, id: string, commit: string): void {
+/** One release folder of the project's tools: links into the sieun-pi checkout, plus the report scripts, the duty file and RELEASE of its own. */
+export function writeRelease(tools: string, id: string): void {
   const root = join(tools, `release-${id}`);
-  mkdirSync(root, { recursive: true, mode: 0o700 });
-  const paths = ["package.json", "components/prime-relay", ...["src", "package.json", "tsconfig.json", "scripts/duties/add.ts"].map(path => `legacy/prime/user-history/${path}`)];
-  const tar = execFileSync("git", ["-C", REPO, "archive", commit, "--", ...paths], { maxBuffer: 256 * 1024 * 1024 });
-  execFileSync("tar", ["-x", "-C", root], { input: tar });
+  for (const path of LINKS) {
+    mkdirSync(dirname(join(root, path)), { recursive: true, mode: 0o700 });
+    symlinkSync(join(REPO, path), join(root, path));
+  }
   const tool = join(root, "legacy/prime/user-history");
-  symlinkSync(join(REPO, "node_modules"), join(root, "node_modules"));
-  symlinkSync(join(REPO, "legacy/prime/user-history/node_modules"), join(tool, "node_modules"));
   mkdirSync(join(tool, "scripts/report"), { recursive: true });
   writeFileSync(join(tool, "scripts/report/build.mjs"), BUILD);
   writeFileSync(join(tool, "scripts/report/fresh.mjs"), FRESH);
@@ -122,7 +117,7 @@ export function prepareProject(run: string, agentsMd: string = AGENTS_MD): strin
   writeFileSync(join(project, "data/orders.csv"), lines.join("\n") + "\n");
   const tools = join(project, "tools");
   const id = releaseId();
-  writeRelease(tools, id, liveCommit());
+  writeRelease(tools, id);
   symlinkSync(`release-${id}`, join(tools, "current"));
   return project;
 }
@@ -450,7 +445,7 @@ export const detachedReport: Scenario = {
   setupNotes: state => [
     `# Run setup: ${state.chat.name}`, "",
     `The chat ${state.chat.id} was opened through POST api/threads in ${state.sandbox} on ${state.release}, with one ordinary first message and no seeded board, todo or job.`,
-    `The project folder holds data/orders.csv, an AGENTS.md and tools/current pointing at one release folder, an export of legacy/prime/user-history at the live release's commit plus the report scripts and the duty file.`, "",
+    `The project folder holds data/orders.csv, an AGENTS.md and tools/current pointing at one release folder, which links legacy/prime/user-history from the sieun-pi checkout and holds the report scripts and the duty file.`, "",
     "## The first message", "", `> ${TASK}`, "",
   ].join("\n"),
   evaluate: (run, state) => judge(run, state),

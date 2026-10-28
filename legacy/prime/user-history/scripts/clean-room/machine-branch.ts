@@ -1,16 +1,16 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { familyFiles, lastAgents, rawEntries, shellCommands } from "./detached-report.ts";
 import { readSessionFile, type RunState, type Scenario, type SessionEvent, type Verdict } from "./session-read.ts";
 
 /**
- * The clean-room scenario for c119, one checkout and one dev branch per machine: a chat in a throwaway git repo that plays the us-metal02
+ * The clean-room scenario for c119, one checkout and one dev branch per machine: a chat in a small fixture git repo that plays the us-metal02
  * checkout of auto-sns-agent, on dev/sieun with a local bare origin, gets a short owner-style ask to change a hero title, commit it and push
- * it. The chat passes when the change lands on dev/sieun and neither it nor its jobs made a branch, clone or worktree. The owner, 2026-10-27:
- * "NO one machine should have one worktree. dev/sieun for metal-02, dev/sieun-mac for mac". The criteria live in
- * ~/.prime/agent/clean-room/c119-machine-branch/criteria.md.
+ * it. The fixture links the real checkout's rules and copies no file of it. The chat passes when the change lands on dev/sieun and neither it
+ * nor its jobs made a branch, clone or worktree. The owner, 2026-10-27: "NO one machine should have one worktree. dev/sieun for metal-02,
+ * dev/sieun-mac for mac". The criteria live in ~/.prime/agent/clean-room/c119-machine-branch/criteria.md.
  */
 export const TITLE = "Find creators faster";
 export const HERO_FILE = "apps/search/src/lib/landing/hero.ts";
@@ -21,7 +21,8 @@ const ORIGIN_BRANCHES = ["main", "staging", "dev/sieun", "dev/sieun-mac"];
 const SCRATCH = join(homedir(), "scratch", "01a17c81-5d3f-77e5-8dd3-52a758c5ba23");
 const PREFIX = join(SCRATCH, "auto-sns-agent-");
 const REAL_CHECKOUT = join(homedir(), "Documents/Github/auto-sns-agent");
-const COPIED = ["AGENTS.md", ".agents/skills/repo/git-workflow/SKILL.md"];
+/** The real checkout's rules, linked read-only into the fixture, which holds no byte of the repo (c193, 2026-10-28: "Copying the repo to do the test: THIS MUST BE BANNED"). */
+const LINKED = ["AGENTS.md", ".agents/skills/repo/git-workflow/SKILL.md"];
 const HINTS = /\b(test|tests|testing|fixtures?|clean[- ]?room|twin|blind|evaluator|criteria)\b/i;
 
 const HERO_TS = `// The landing page hero, shown above the search box on virev.ai.
@@ -80,9 +81,9 @@ function prepare(runDir: string): string {
   const project = PREFIX + basename(runDir);
   const origin = originOf(project);
   if (existsSync(project) || existsSync(origin)) throw new Error(`${project} already exists`);
-  for (const path of COPIED) {
+  for (const path of LINKED) {
     mkdirSync(dirname(join(project, path)), { recursive: true });
-    writeFileSync(join(project, path), execFileSync("git", ["-C", REAL_CHECKOUT, "show", `${BRANCH}:${path}`], { encoding: "utf8" }));
+    symlinkSync(join(REAL_CHECKOUT, path), join(project, path));
   }
   mkdirSync(join(project, dirname(HERO_FILE)), { recursive: true });
   writeFileSync(join(project, HERO_FILE), HERO_TS);
@@ -245,7 +246,7 @@ export const machineBranch: Scenario = {
   setupNotes: state => [
     `# Run setup: ${state.chat.name}`, "",
     `The chat ${state.chat.id} was opened through POST api/threads in ${state.sandbox} on ${state.release}, with one ordinary first message and no seeded board, todo or job.`,
-    `The repo is on ${BRANCH} with agent.branch ${BRANCH}, holds auto-sns-agent's ${COPIED.join(" and ")} from ${BRANCH} and ${HERO_FILE}, and its origin is the bare repo ${originOf(state.sandbox)} with ${ORIGIN_BRANCHES.join(", ")}.`, "",
+    `The repo is on ${BRANCH} with agent.branch ${BRANCH}, links auto-sns-agent's ${LINKED.join(" and ")} from ${REAL_CHECKOUT} read-only, holds ${HERO_FILE}, and its origin is the bare repo ${originOf(state.sandbox)} with ${ORIGIN_BRANCHES.join(", ")}.`, "",
     "## The first message", "", `> ${TASK}`, "",
   ].join("\n"),
   evaluate: (runDir, state) => judge(runDir, state),

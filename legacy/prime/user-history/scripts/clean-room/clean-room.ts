@@ -42,61 +42,22 @@ import { transactJsonFile } from "../../src/locked-json.ts";
 import { adoptedWorkspace, createBody, type CreateIo, type CreateRecord, createOrAdopt, findSession, sessionFacts } from "./create-reconcile.ts";
 import { emptyBoard, parseBoard } from "../../src/shared/chat-board.ts";
 import type { ChatBoard } from "../../src/shared/types.ts";
-import { checkinGoalPush } from "./checkin-goal-push.ts";
-import { carriedRelease, carriedWait } from "./carried-wait.ts";
 import { admit, type AdmissionIo, type AdmissionState, type AdmissionStep, type DeferredScenario, isDeferred } from "./deferred-admission.ts";
-import { unrelatedCiControlled } from "./unrelated-ci-controlled.ts";
-import { unrelatedCiWait } from "./unrelated-ci-wait.ts";
-import { checkinJobSteer } from "./checkin-job-steer.ts";
-import { checkinPushControl } from "./checkin-push-control.ts";
-import { type ArchiveMark, chatEntries, chatToolsReopen, FOLLOW_UP } from "./chat-tools-reopen.ts";
+import { type ArchiveMark, chatEntries, FOLLOW_UP } from "./chat-tools-reopen.ts";
 import { reopenFirstMessage } from "./reopen-first-message.ts";
-import { boxBrowserDefault } from "./box-browser-default.ts";
-import { boxTools } from "./box-tools.ts";
-import { checkinRealTask } from "./checkin-real-task.ts";
-import { advanceRelease, detachedReport } from "./detached-report.ts";
-import { relativeDuty } from "./relative-duty.ts";
-import { correctionRefine } from "./correction-refine.ts";
-import { dmReplies } from "./dm-replies.ts";
-import { englishJobs } from "./english-jobs.ts";
-import { everydayTask } from "./everyday-task.ts";
-import { quietWakes } from "./quiet-wakes.ts";
-import { historyLeftovers } from "./history-leftovers.ts";
-import { holdAsk } from "./hold-ask.ts";
-import { machineBranch } from "./machine-branch.ts";
-import { sharedShapes } from "./shared-shapes.ts";
-import { idleUnload } from "./idle-unload.ts";
-import { importSpeed } from "./import-speed.ts";
-import { kernelRevive } from "./kernel-revive.ts";
-import { killWorker, lostBrief } from "./lost-brief.ts";
-import { lostBriefModel } from "./lost-brief-model.ts";
-import { oldCommitTests } from "./old-commit-tests.ts";
-import { cancelFile, type CancelRecord, jobCancelCleanup } from "./job-cancel-cleanup.ts";
+import { advanceRelease } from "./detached-report.ts";
+import { killWorker } from "./lost-brief.ts";
+import { cancelFile, type CancelRecord } from "./job-cancel-cleanup.ts";
 import { jobDirs, ownedPaths } from "./owned-evidence.ts";
-import { ordinaryHour } from "./ordinary-hour.ts";
-import { readmePreview } from "./readme-preview.ts";
-import { savedLogin } from "./saved-login.ts";
-import { ownerAsks } from "./owner-asks.ts";
-import { plainWords } from "./plain-words.ts";
-import { planAndDuties } from "./plan-and-duties.ts";
-import { taskAndUpkeep } from "./task-and-upkeep.ts";
 import { readSessionFile, type RunState, type Scenario, type ScenarioModel, type SessionEvent, sessionFiles } from "./session-read.ts";
 import { endUnits, recordUnits, userSystemd } from "./trial-units.ts";
 import { fileTrialHarness, fileTrialName, keepTrialHarness, seedTrialHarness } from "../../src/trial-harness.ts";
 import { CLEAN_ROOM_SUBJECTS_FILE, fileSubjects, forgetSubjects } from "../../src/clean-room-subjects.ts";
-import { softCaps } from "./soft-caps.ts";
-import { stepIds } from "./step-ids.ts";
 import { archiveTestPages } from "./wiki-pages.ts";
-import { killHooks, tokenHookResume } from "./token-hook-resume.ts";
-import { wakeLive } from "./wake-live.ts";
-import { transcriptBoundary } from "./transcript-boundary.ts";
-import { publishedBuildKeep } from "./published-build-keep.ts";
-import { taskOwner } from "./task-owner.ts";
-import { answerData } from "./answer-data.ts";
-import { tokenCost } from "./token-cost.ts";
-import { dryMessage } from "./dry-message.ts";
-import { resumeModel } from "./resume-model.ts";
-import { keepWakes, waitingSession } from "./waiting-session.ts";
+import { killHooks } from "./token-hook-resume.ts";
+import { keepWakes } from "./waiting-session.ts";
+import { repoCopyOf } from "./repo-copy.ts";
+import { SCENARIOS } from "./scenarios.ts";
 import { currentRoot, judgeCurrent, judgedLine, judgeVersion, LOADED } from "./judge-version.ts";
 import { archivePath, archiveRun, DELIVERY, fileSha256, judgeFooter, rejudge } from "./run-archive.ts";
 import { registerCriteria, REGISTRATION_FILE, withCriteriaCheck } from "./criteria-registration.ts";
@@ -105,10 +66,6 @@ const DATA = process.env.AGENT_CHAT_DATA_DIR ?? join(homedir(), ".prime/agent/br
 /** Prime's agent dir, whose harness/ folder holds the published global harness store. */
 const AGENT_DIR = process.env.PRIME_AGENT_CODING_AGENT_DIR || join(homedir(), ".prime/agent");
 const RELEASES = join(homedir(), ".local/share/sieun-pi-chat");
-const SCENARIOS: Record<string, Scenario> = { "carried-release": carriedRelease, "carried-wait": carriedWait, "checkin-goal-push": checkinGoalPush, "checkin-real-task": checkinRealTask, "checkin-push-control": checkinPushControl, "correction-refine": correctionRefine, "dm-replies": dmReplies, "english-jobs": englishJobs, "everyday-task": everydayTask, "quiet-wakes": quietWakes, "import-speed": importSpeed,
-  "checkin-job-steer": checkinJobSteer, "token-cost": tokenCost, "chat-tools-reopen": chatToolsReopen, "reopen-first-message": reopenFirstMessage, "kernel-revive": kernelRevive, "lost-brief": lostBrief, "lost-brief-model": lostBriefModel, "ordinary-hour": ordinaryHour, "idle-unload": idleUnload, "owner-asks": ownerAsks, "plan-and-duties": planAndDuties, "task-and-upkeep": taskAndUpkeep, "soft-caps": softCaps, "step-ids": stepIds, "token-hook-resume": tokenHookResume, "wake-live": wakeLive, "box-browser-default": boxBrowserDefault, "box-tools": boxTools,
-  "detached-report": detachedReport, "relative-duty": relativeDuty, "old-commit-tests": oldCommitTests, "readme-preview": readmePreview, "history-leftovers": historyLeftovers, "hold-ask": holdAsk, "machine-branch": machineBranch, "shared-shapes": sharedShapes, "plain-words": plainWords, "saved-login": savedLogin , "job-cancel-cleanup": jobCancelCleanup,
-  "transcript-boundary": transcriptBoundary, "published-build-keep": publishedBuildKeep, "task-owner": taskOwner, "answer-data": answerData, "dry-message": dryMessage, "resume-model": resumeModel, "waiting-session": waitingSession, "unrelated-ci-wait": unrelatedCiWait, "unrelated-ci-controlled": unrelatedCiControlled };
 
 function args(argv: readonly string[]): { command: string; flags: Record<string, string> } {
   const [command = "", ...rest] = argv;
@@ -337,6 +294,8 @@ async function setup(flags: Record<string, string>): Promise<void> {
     sandbox = scenario.prepare ? scenario.prepare(run) : scenario.agentsMd ? join(run, "sandbox") : need(flags, "cwd");
     if (scenario.agentsMd) { mkdirSync(sandbox, { recursive: true }); writeFileSync(join(sandbox, "AGENTS.md"), scenario.agentsMd(sandbox)); }
   }
+  const copy = repoCopyOf(sandbox);
+  if (copy) throw new Error(`${sandbox} sits in ${copy}, a copy of the repo, which c193 bans; run the trial in the repo's own checkout`);
   const pending: Pending = earlier ?? { sandbox, creates: {} };
   writeJson(pendingFile(run), pending);
   const harness = seedTrialHarness(run, AGENT_DIR);
