@@ -713,6 +713,26 @@ export function projectionLine(ms: readonly number[], windowMs = PROJECTION_LOG_
     + (busy === undefined ? "" : `, main thread ${round(busy * 100)}% busy`);
 }
 
+/**
+ * A reader of the main thread's busy share since its last call (0 to 1): the CPU time this thread ran (process.threadCpuUsage) over the wall
+ * time between two calls. Until 10-29 the line read eventLoopUtilization, which the always-on run profile (src/run-profile.ts) holds near 0.6
+ * to 0.86 with no work at all: its sampler wakes the loop every 1 ms. The live line read 76 to 82% busy every day from that profile's start on
+ * 10-20 while the profiles' own samples had the main thread busy 36% (14:53 to 15:27Z on 10-28). A thread waiting for a core on a loaded box
+ * counts as idle here; a projection's wall time against its own code shows that wait.
+ */
+export function mainThreadBusy(now: () => number = () => loopPerformance.now(), cpu: () => number = () => { const used = process.threadCpuUsage(); return (used.user + used.system) / 1000; }): () => number {
+  let wall = now();
+  let ran = cpu();
+  return () => {
+    const atWall = now();
+    const atCpu = cpu();
+    const share = atWall > wall ? Math.min(1, Math.max(0, (atCpu - ran) / (atWall - wall))) : 0;
+    wall = atWall;
+    ran = atCpu;
+    return share;
+  };
+}
+
 /** How often a working agent's output rate is read again and pushed with the rows; the usage feed's own cadence. */
 export const RATES_MS = 2000;
 
@@ -805,11 +825,9 @@ export class Catalog {
   /** Wall ms of each projection since the last `projectionLine`, and the ms of each that its own code ran. */
   private projectionMs: number[] = [];
   private projectionOwnMs: number[] = [];
-  private loopUse = loopPerformance.eventLoopUtilization();
+  private readonly busy = mainThreadBusy();
   private readonly projectionTimer = setInterval(() => {
-    const use = loopPerformance.eventLoopUtilization(this.loopUse);
-    this.loopUse = loopPerformance.eventLoopUtilization();
-    const line = projectionLine(this.projectionMs, PROJECTION_LOG_MS, use.utilization, this.projectionOwnMs);
+    const line = projectionLine(this.projectionMs, PROJECTION_LOG_MS, this.busy(), this.projectionOwnMs);
     this.projectionMs = [];
     this.projectionOwnMs = [];
     if (line) process.stderr.write(`${new Date().toISOString()} ${line}\n`);
