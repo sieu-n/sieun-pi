@@ -51,17 +51,23 @@ test("the grid has Buzz's measures: a 768 px column, 192 px tracks, 244 px cards
   expect(Math.round(button.x + button.width - toolbar.x)).toBe(720);
 });
 
-test("a chat card opens its channel view, and a job card opens its parent with the job's pane", async ({ page, request }) => {
+test("a card opens its configuration, and Message opens a chat's conversation or a job's pane beside its parent", async ({ page, request }) => {
   const agents = await listAgents(request);
   const chat = agents.find((agent) => agent.kind === "chat");
   test.skip(!chat, "no chats on this server");
   await openAgents(page);
   await card(page, chat!).click({ position: { x: 40, y: 120 } });
+  await expect(page).toHaveURL(new RegExp(`#/agents/${chat!.id}$`));
+  await expect(card(page, chat!)).toHaveAttribute("aria-selected", "true");
+  await page.getByTestId("agent-config").getByRole("button", { name: "Message" }).click();
   await expect(page).toHaveURL(new RegExp(`#/c/${chat!.id}$`));
   const job = agents.find((agent) => agent.kind === "job" && agent.parent);
   if (!job) return;
   await openAgents(page, "jobs");
   await card(page, job).click({ position: { x: 40, y: 120 } });
+  await expect(page).toHaveURL(new RegExp(`#/agents/${encodeURIComponent(job.id)}$`));
+  await expect(page.getByRole("tab", { name: /Jobs/ })).toHaveAttribute("aria-selected", "true");
+  await page.getByTestId("agent-config").getByRole("button", { name: "Message" }).click();
   await expect(page).toHaveURL(new RegExp(`#/c/${job.parent!.id}\\?thread=${encodeURIComponent(job.id)}$`));
 });
 
@@ -73,15 +79,15 @@ test("the ... button and a right click open the same menu, with Stop only while 
     const cell = card(page, agent);
     await cell.getByRole("button", { name: `Actions for ${agent.name}` }).click();
     const menu = page.getByRole("menu");
-    const expected = ["Open thread", "Change model", ...(agent.status === "working" || agent.status === "sleeping" ? ["Stop"] : []), "Archive"];
+    const expected = ["Message", "Change model", ...(agent.status === "working" || agent.status === "sleeping" ? ["Stop"] : []), "Archive"];
     await expect(menu.getByRole("menuitem")).toHaveText(expected);
     await page.keyboard.press("Escape");
     await expect(menu).toHaveCount(0);
   }
   const first = card(page, agents[0]!);
   await first.click({ button: "right", position: { x: 40, y: 120 } });
-  await expect(page.getByRole("menu").getByRole("menuitem", { name: "Open thread" })).toBeVisible();
-  await page.getByRole("menu").getByRole("menuitem", { name: "Open thread" }).click();
+  await expect(page.getByRole("menu").getByRole("menuitem", { name: "Message" })).toBeVisible();
+  await page.getByRole("menu").getByRole("menuitem", { name: "Message" }).click();
   await expect(page).toHaveURL(new RegExp(`#/c/${agents[0]!.id}$`));
 });
 
@@ -104,7 +110,7 @@ test("Stop sends the abort for that agent", async ({ page, request }) => {
   await expect(page.getByText(`Stopped ${working.name}`)).toBeVisible();
 });
 
-test("arrow keys move between cards and Enter opens one", async ({ page, request }) => {
+test("arrow keys move between cards, Enter opens one's configuration and Esc closes it", async ({ page, request }) => {
   const chats = (await listAgents(request)).filter((agent) => agent.kind === "chat");
   test.skip(chats.length < 2, "needs two chats");
   await openAgents(page);
@@ -114,5 +120,10 @@ test("arrow keys move between cards and Enter opens one", async ({ page, request
   await expect(cells.nth(1)).toBeFocused();
   const id = await cells.nth(1).getAttribute("data-agent-id");
   await page.keyboard.press("Enter");
-  await expect(page).toHaveURL(new RegExp(`#/c/${id}`));
+  await expect(page).toHaveURL(new RegExp(`#/agents/${id}$`));
+  await expect(page.getByTestId("agent-config")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page).toHaveURL(/#\/agents$/);
+  await expect(page.getByTestId("agent-config")).toHaveCount(0);
+  await expect(cells.nth(1)).toBeFocused();
 });

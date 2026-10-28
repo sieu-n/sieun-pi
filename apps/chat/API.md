@@ -44,9 +44,9 @@ Pages call the server through `web/src/lib/api` (`import { api, timeline, agents
 | `api.patch(id, {name, archived, model, thinkingLevel})` | `PATCH /api/c/:id` | The new header. A job inside a thread takes model changes only. |
 | `api.read(id, seq?)` | `POST /api/c/:id/read` | Sets the owner's read mark. |
 | `api.jobs(thread)` | `GET /api/threads/:id/jobs` | `JobNode[]`, the thread's job tree. |
-| `api.openDm(agent)` | `POST /api/dms` | Lists that agent under DMs and returns its summary. |
+| `api.openDm(agent)` | `POST /api/dms` | Lists that root chat under DMs and returns its summary; a job is returned and stays unlisted. |
 
-1. A Solo row is a root thread of kind chat, and a DM row is a root job (a thread started for a chat) or any agent the owner opened with `openDm`.
+1. A Solo row is a root thread of kind chat, and a DM row is a root chat the owner opened with `openDm`. A root job (a thread started for a chat, such as a duty run's thread), and a job inside a thread are kind `job` with their `parent`: they never sit under Direct messages, show under their parent agent (its Swarm and the Agents page's Jobs tab), and open by link.
 2. `around=<item id or e<entry>>` returns the page that holds that entry and `focus`, the id of the item that holds it, so a search hit opens at its message.
 3. A thread page always starts at an input, so a turn never splits across two pages.
 4. In a thread, `message` items are inputs, `turn` items hold the answer text, the steps (thinking and tool calls with name, one-line summary, status and output) and the jobs the turn spawned, and `system` items are notes such as a compaction.
@@ -67,6 +67,7 @@ Pages call the server through `web/src/lib/api` (`import { api, timeline, agents
 |---|---|---|
 | `api.agents({archived})` | `GET /api/agents` | `AgentSummary[]`, one card per chat and job, newest first. |
 | `api.createAgent({name, model, thinkingLevel, cwd, kind, parent})` | `POST /api/agents` | The new root thread's `AgentSummary`; `kind: "job"` with a `parent` files it under that chat. |
+| `api.agentConfig(id)` | `GET /api/agents/:id/config` | `AgentConfig`: identity and purpose, where it runs, its board, memory, instructions, swarm and 7-day usage. |
 | `api.setAgentModel(id, "provider/id", level)` | `PATCH /api/c/:id` | The new header. |
 | `api.stopAgent(id)` | `POST /api/c/:id/abort` | Stop. |
 | `api.archiveAgent(id, archived)` | `PATCH /api/c/:id` | Archive or restore a root thread. |
@@ -74,6 +75,11 @@ Pages call the server through `web/src/lib/api` (`import { api, timeline, agents
 
 1. An agent's `status` is working, idle, sleeping or failed.
 2. `parent` is the chat or job that started it, and `channels` lists the channels it is in.
+3. `AgentConfig` reads each part where it lives (`server/agent-config.ts`): name, model, status and cwd from pi-host's thread row and tree; `purpose` from the conversation's first entry (the owner's first message, or the brief a parent or duty sent); the system text from `PRIME_BASE_PROMPT` in the running pi-host's `packages/pi-family/preamble.ts`; the thread file `<durable dir>/threads/<thread>.sqlite`; the board from its chat's `chat.board`; duties and the check-in from `<data dir>/boards/<chat>/duties.json`; usage from `durable_usage`.
+4. A job's board, duties and check-in are its chat's: the root of its thread, or the chat a root job is filed under.
+5. `memory` is `{kind: "none", note, related}` today: pi-host's durable registry gives a thread only the Prime preamble, coding tools and the subagent tool, so it has no memory store. `related` names the stores near it, such as Prime's continual harness (`<agent dir>/harness/harness_state.json`, which only Prime and pi-rlm kernels read) and its duties' precheck state files, each with `loaded: false`.
+6. `instructions.files` are the AGENTS.md and CLAUDE.md files in its cwd and each folder above it, then `<agent dir>/AGENTS.md`, each `loaded: false`, since pi-durable loads none of them.
+7. The web client opens a configuration at `#/agents/<id>` (with `?section=` overview, runs, board, memory, instructions or swarm) in the side panel; a card click or Enter opens it, Esc or back closes it, and Message opens the conversation.
 
 ## Channels
 
@@ -164,11 +170,12 @@ Pages call the server through `web/src/lib/api` (`import { api, timeline, agents
 `npm run fixture` seeds these, all over the last five days.
 
 1. Four chats are seeded: Vent (finished turns with thinking and tool steps, an image, a mermaid answer and a finished job), AI harness developer environment VP (a turn that runs for as long as the server runs, a running job and a board with every step state), Crawler VP (failed) and frontend bro.
-2. pi cutover prep is a root job of the AI harness VP, listed as a DM, and old relay probe is archived.
-3. #pi-cutover has posts in answered, no_reply and queued states, a thread with two replies and an @owner post, and #general has one thread.
-4. The AI harness VP has two duties with runs and a check-in.
-5. A send to any thread gets an answer; a message with "spawn" starts a job, "fail" ends in an error, "slow" takes a minute for Stop, "queue" waits 2 s at place 3 then 1 of 7 before it starts, and "mermaid" answers with a diagram.
-6. The words canary, relay and migration repeat across days and authors for search.
+2. pi cutover prep and Relay uptime duty <stamp> (the thread of duty d1's missed run) are root jobs of the AI harness VP, not DMs; Crawler VP is a chat opened as a DM; and old relay probe is archived.
+3. Each chat runs in `<data dir>/work/<name>`, with AGENTS.md files there and in `work/`, and `<data dir>/prime-agent` stands in for Prime's agent dir with a global AGENTS.md and a harness store of two memories.
+4. #pi-cutover has posts in answered, no_reply and queued states, a thread with two replies and an @owner post, and #general has one thread.
+5. The AI harness VP has two duties with runs and a check-in.
+6. A send to any thread gets an answer; a message with "spawn" starts a job, "fail" ends in an error, "slow" takes a minute for Stop, "queue" waits 2 s at place 3 then 1 of 7 before it starts, and "mermaid" answers with a diagram.
+7. The words canary, relay and migration repeat across days and authors for search.
 
 ## Host seam
 

@@ -5,6 +5,7 @@ import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { extname, join, normalize } from "node:path";
 import type { ChannelInput, ConversationPatch, SendRequest } from "../web/src/lib/api/types.ts";
+import { agentConfig } from "./agent-config.ts";
 import { App, MODELS, NotFound } from "./app.ts";
 import { readJson } from "./store.ts";
 import { usageReport, readPool, hostsReport } from "./usage.ts";
@@ -58,6 +59,7 @@ export function routes(app: App): Route[] {
     route("GET", "/api/directory", async () => ({ agents: app.threads.agents(), channels: app.channels.list() })),
     route("GET", "/api/models", async () => MODELS),
     route("GET", "/api/agents", async (_r, _p, q) => app.threads.agents({ archived: q.get("archived") === "1" })),
+    route("GET", "/api/agents/:id/config", async (_r, p) => agentConfig(app, p.id!)),
     route("POST", "/api/agents", async (_r, _p, _q, body) => app.createAgent((await body()) as Parameters<App["createAgent"]>[0])),
     route("GET", "/api/c/:id", async (_r, p) => app.header(p.id!)),
     route("PATCH", "/api/c/:id", async (_r, p, _q, body) => app.patch(p.id!, (await body()) as ConversationPatch)),

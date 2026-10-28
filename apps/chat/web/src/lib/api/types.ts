@@ -89,7 +89,7 @@ export interface Sidebar {
   solo: ConversationSummary[];
   /** Channels he is a member of, by name. */
   channels: ConversationSummary[];
-  /** Direct conversations with jobs he opened, newest first. */
+  /** Root chats he opened as DMs, newest first; jobs and duty threads never sit here. */
   dms: ConversationSummary[];
   /** Open For you todos across every chat. */
   forYou: number;
@@ -252,6 +252,82 @@ export interface HostView {
   threads: HostThread[];
 }
 export interface HostsReport { checkedAt: Ms; registryError: string | null; hosts: HostView[] }
+
+/** A file the config names: where it is, whether it is there, and a short look inside. `loaded` says whether the agent's model sees it. */
+export interface ConfigFile {
+  label: string;
+  path: string;
+  exists: boolean;
+  size: number | null;
+  modifiedAt: Ms | null;
+  /** The first lines, or the newest entries of a store. */
+  preview?: string;
+  /** Entries in a store, such as the memories in a harness file. */
+  count?: number;
+  loaded?: boolean;
+  note?: string;
+}
+
+/**
+ * `GET /api/agents/:id/config`: one agent as a role, not a thread. Who it is and what it is for, where it runs, the data it shares with its
+ * jobs (board, memory, instructions), and its swarm (jobs, channels, duties, check-in). Every field is read from where it lives; see API.md.
+ */
+export interface AgentConfig {
+  agent: AgentSummary;
+  identity: {
+    /** The first input of its conversation: the owner's first message, or the brief its parent or a duty gave it. */
+    purpose: { text: string; truncated: boolean; from: { id: string; name: string }; at: Ms; via?: string } | null;
+    /** The system text its model runs with. */
+    system: { text: string | null; source: string };
+    /** The duty whose run started it, for a duty job. */
+    duty: { chat: AgentId; id: string; name: string } | null;
+    wakeAt: Ms | null;
+  };
+  runs: {
+    host: string;
+    /** The seam the server reads it through: pi-host, or the in-memory fixture. */
+    hostKind: string;
+    hostVersion: string | null;
+    socket: string;
+    /** Its working directory, where its tools run; a thread imported from another box can name a folder this box lacks. */
+    cwd: string;
+    cwdExists: boolean;
+    thread: string;
+    conversation: number;
+    /** The pi-durable file that holds its transcript, jobs and documents; null on the fixture host. */
+    threadFile: ConfigFile | null;
+    dataDir: string;
+  };
+  board: {
+    chat: AgentId;
+    chatName: string;
+    /** False when the agent works on the board of the chat it belongs to. */
+    own: boolean;
+    doc: string;
+    rev: number;
+    updatedAt: string;
+    goals: { id: string; text: string; status: PlanStatus; open: number; done: number }[];
+    steps: { open: number; done: number; total: number };
+    awaitingGo: number;
+    openTodos: { id: string; text: string; at: string; step?: string }[];
+  } | null;
+  memory:
+    | { kind: "none"; note: string; related: ConfigFile[] }
+    | { kind: "files"; files: ConfigFile[]; note?: string };
+  instructions: { files: ConfigFile[]; note: string };
+  swarm: {
+    parent: { id: AgentId; name: string } | null;
+    jobs: { id: AgentId; name: string; kind: "job" | "duty" | "root job"; status: RunStatus; createdAt: Ms | null; parent: AgentId | null; depth: number }[];
+    channels: { id: ChannelId; name: string }[];
+    duties: { id: string; name: string; goal: string; schedule: string; paused: boolean; nextAt: Ms | null; lastVerdict: string | null; lastAt: Ms | null; runs: number }[];
+    /** The check-in clock of its chat, when one is set. */
+    checkIn: { everyMs: number; paused: boolean; nextAt: Ms | null; lastAt: Ms | null } | null;
+    /** The file that holds the duties, their runs and the check-in. */
+    dutiesFile: ConfigFile | null;
+  };
+  /** pi-host's own sums for its whole thread file over the last 7 days; null when the host does not answer. */
+  usage: { days: number; turns: number; cost: number; tokens: { input: number; output: number; cacheRead: number; cacheWrite: number }; scope: string } | null;
+}
 
 export interface Me { owner: Principal; host: string; fixture: boolean; wikiBase: string; version: string }
 

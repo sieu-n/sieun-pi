@@ -7,7 +7,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
-import type { Item, SearchResult, Sidebar, TimelinePage } from "../../web/src/lib/api/types.ts";
+import type { ConversationSummary, Item, SearchResult, Sidebar, TimelinePage } from "../../web/src/lib/api/types.ts";
 import { FIXTURE_IDS as ids } from "../../server/fixture/seed.ts";
 import { start, until, type Running } from "./helpers.ts";
 
@@ -24,10 +24,10 @@ const turnText = (page: TimelinePage) => page.items.filter(i => i.kind === "turn
 describe("conversations", () => {
   test("the sidebar groups solo threads, channels and DMs", async () => {
     const sidebar = await s.get<Sidebar>("/api/sidebar");
-    assert.deepEqual(sidebar.solo.map(c => c.name).sort(), ["AI harness developer environment VP", "Crawler VP", "Vent", "frontend bro"]);
+    assert.deepEqual(sidebar.solo.map(c => c.name).sort(), ["AI harness developer environment VP", "Vent", "frontend bro"]);
     assert.deepEqual(sidebar.channels.map(c => c.name), ["general", "pi-cutover"]);
-    assert.ok(sidebar.dms.some(c => c.name === "pi cutover prep"));
-    assert.ok(sidebar.dms.some(c => c.id.startsWith(`${ids.vent}:`)));
+    // Only root chats are DMs: a root job, a duty run's thread and a job inside a thread stay out even when listed in `dms`.
+    assert.deepEqual(sidebar.dms.map(c => c.name), ["Crawler VP"]);
     assert.equal(sidebar.forYou, 4);
     assert.ok(!sidebar.solo.some(c => c.name === "old relay probe"), "archived threads stay out");
   });
@@ -45,7 +45,7 @@ describe("conversations", () => {
   });
 
   test("a job's transcript starts with its parent's task", async () => {
-    const job = (await s.get<Sidebar>("/api/sidebar")).dms.find(c => c.id.startsWith(`${ids.vent}:`))!;
+    const job = (await s.get<ConversationSummary[]>("/api/conversations")).find(c => c.id.startsWith(`${ids.vent}:`))!;
     const page = await s.get<TimelinePage>(`/api/c/${encodeURIComponent(job.id)}/items`);
     assert.equal(page.items[0]!.kind === "message" && page.items[0]!.author.name, "Vent");
     assert.match(turnText(page)[0]!, /Two relay errors/);
@@ -109,7 +109,7 @@ describe("live turns", () => {
   });
 
   test("a job's live transcript keeps its parent as the author of the task", async () => {
-    const job = (await s.get<Sidebar>("/api/sidebar")).dms.find(c => c.id.startsWith(`${ids.vent}:`))!;
+    const job = (await s.get<ConversationSummary[]>("/api/conversations")).find(c => c.id.startsWith(`${ids.vent}:`))!;
     const live = await s.live();
     live.watch(job.id);
     await s.send("POST", `/api/c/${encodeURIComponent(job.id)}/send`, { text: "one more check", requestId: "job-live-1" });

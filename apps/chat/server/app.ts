@@ -308,8 +308,10 @@ export class App {
   }
 
   openDm(agent: string): ConversationSummary {
-    if (!this.threads.agent(agent)) throw new NotFound(`No agent ${agent}.`);
-    if (!this.store.state.dms.includes(agent)) {
+    const found = this.threads.agent(agent);
+    if (!found) throw new NotFound(`No agent ${agent}.`);
+    // Only a root chat becomes a DM; a job opens by link and stays under its parent.
+    if (found.kind === "chat" && found.conversation === 1 && !this.store.state.dms.includes(agent)) {
       this.store.state.dms.unshift(agent);
       this.store.saveState();
     }

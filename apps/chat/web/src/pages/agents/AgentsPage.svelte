@@ -1,14 +1,20 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onDestroy, onMount } from "svelte";
   import { agents, api, connection, type AgentSummary, type ModelCatalog, type ThinkingLevel } from "$lib/api";
   import { Button, EmptyState, Menu, PanelHeader, Skeleton, Tabs, toast, type Anchor, type MenuEntry } from "$lib/ui";
   import { router, hrefFor } from "$lib/router.svelte";
+  import { sidePanel } from "$lib/shell/side-panel.svelte";
   import AgentCard from "./AgentCard.svelte";
+  import AgentConfigPanel from "./AgentConfigPanel.svelte";
   import CreateAgentDialog from "./CreateAgentDialog.svelte";
   import NewAgentTile from "./NewAgentTile.svelte";
-  import { ACTION_LABEL, TABS, actionsFor, agentsIn, countsByTab, openTarget, tabFromRoute, type AgentsTab } from "./agents-model";
+  import {
+    ACTION_LABEL, TABS, actionsFor, agentFromRoute, agentsIn, countsByTab, openTarget, sectionFromParams, tabFromRoute, type AgentsTab, type ConfigSection,
+  } from "./agents-model";
 
-  const tab = $derived(tabFromRoute(router.route.rest));
+  /** `#/agents/<id>` opens that agent's configuration in the side panel, over the tab it belongs to. */
+  const configId = $derived(agentFromRoute(router.route.rest));
+  const section = $derived(sectionFromParams(router.route.params));
   let catalog = $state<ModelCatalog | null>(null);
   /** The first list over HTTP, so the page can show an error when the live socket never connects. */
   let fetched = $state<AgentSummary[] | null>(null);
@@ -23,6 +29,8 @@
 
   const ready = $derived(agents.ready || fetched !== null);
   const all = $derived(agents.ready ? agents.list : (fetched ?? []));
+  const configAgent = $derived(configId ? (all.find((agent) => agent.id === configId) ?? null) : null);
+  const tab = $derived(tabFromRoute(router.route.rest, configAgent));
   const shown = $derived(agentsIn(all, tab));
   const counts = $derived(countsByTab(all));
   const tabItems = $derived(TABS.map((item) => ({ ...item, badge: counts[item.id] || null, href: hrefFor("agents", item.id === "jobs" ? ["jobs"] : []) })));
@@ -45,6 +53,16 @@
   function setTab(next: AgentsTab) {
     router.navigate(hrefFor("agents", next === "jobs" ? ["jobs"] : []));
   }
+  /** A card opens its configuration; Message opens its conversation. */
+  function configure(agent: AgentSummary) {
+    router.navigate(hrefFor("agents", [agent.id]));
+  }
+  function closeConfig() {
+    router.navigate(hrefFor("agents", tab === "jobs" ? ["jobs"] : []));
+  }
+  function setSection(next: ConfigSection) {
+    router.setParams({ section: next === "overview" ? null : next }, { replace: true });
+  }
   function open(agent: AgentSummary) {
     const target = openTarget(agent);
     router.openConversation(target.id, target.thread ? { thread: target.thread } : {});
@@ -64,7 +82,40 @@
   function archive(agent: AgentSummary) {
     void run("Archive", () => api.archiveAgent(agent.id), `Archived ${agent.name}`).then(() => {
       if (fetched) fetched = fetched.map((a) => (a.id === agent.id ? { ...a, archived: true } : a));
+      if (configId === agent.id) closeConfig();
     });
+  }
+  function stop(agent: AgentSummary) {
+    void run("Stop", () => api.stopAgent(agent.id), `Stopped ${agent.name}`);
+  }
+
+  // The configuration pane lives in the shell's side panel; the route owns whether it is open, so back, forward and links work.
+  let paneKey: string | null = null;
+  let leaving = false;
+  $effect(() => {
+    const id = configId;
+    const title = configAgent?.name ?? "Agent";
+    if (!id) {
+      if (paneKey) sidePanel.close(paneKey);
+      paneKey = null;
+      return;
+    }
+    paneKey = `agent:${id}`;
+    sidePanel.open({ key: paneKey, title, icon: "robot", body: configPane, onclose: () => {
+      if (!leaving && agentFromRoute(router.route.rest) === id) closeConfig();
+    } });
+  });
+  onDestroy(() => {
+    leaving = true;
+    if (paneKey) sidePanel.close(paneKey);
+  });
+  /** Esc closes the configuration unless a menu, picker or dialog has it. */
+  function onWindowKey(event: KeyboardEvent) {
+    if (event.key !== "Escape" || event.defaultPrevented || !configId) return;
+    if (document.querySelector('[role="dialog"], [role="menu"], [role="listbox"]')) return;
+    event.preventDefault();
+    closeConfig();
+    requestAnimationFrame(() => configAgent && elements[configAgent.id]?.focus());
   }
   const menuItems = $derived.by((): MenuEntry[] => {
     if (!menu) return [];
@@ -73,7 +124,7 @@
       const item = { id: action, label: ACTION_LABEL[action] };
       if (action === "open") return [{ ...item, icon: "chat", onselect: () => open(agent) }];
       if (action === "model") return [{ ...item, icon: "cpu", onselect: () => requestAnimationFrame(() => cards[agent.id]?.openModelPicker()) }];
-      if (action === "stop") return [{ ...item, icon: "stop", onselect: () => void run("Stop", () => api.stopAgent(agent.id), `Stopped ${agent.name}`) }];
+      if (action === "stop") return [{ ...item, icon: "stop", onselect: () => stop(agent) }];
       return [{ type: "separator" }, { ...item, icon: "trash", tone: "danger", onselect: () => archive(agent) }];
     });
   });
@@ -97,6 +148,24 @@
   }
   const focusId = $derived(shown.some((agent) => agent.id === focused) ? focused : (shown[0]?.id ?? null));
 </script>
+
+<svelte:window onkeydown={onWindowKey} />
+
+{#snippet configPane()}
+  {#if configId}
+    <AgentConfigPanel
+      agentId={configId}
+      agent={configAgent}
+      {catalog}
+      {section}
+      onsection={setSection}
+      onmessage={open}
+      onmodel={setModel}
+      onstop={stop}
+      onarchive={archive}
+    />
+  {/if}
+{/snippet}
 
 <PanelHeader title="Agents" icon="robot" level={1} divider />
 <div class="inventory">
@@ -132,8 +201,9 @@
                 {catalog}
                 {now}
                 focusable={agent.id === focusId}
+                selected={agent.id === configId}
                 onfocus={() => (focused = agent.id)}
-                onopen={() => open(agent)}
+                onopen={() => configure(agent)}
                 onmenu={(anchor) => (menu = { agent, anchor })}
                 onmodel={(model, level) => setModel(agent, model, level)}
               />
