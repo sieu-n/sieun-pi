@@ -5,6 +5,7 @@
  * on 2026-10-28. Here the text is split and cleaned before the snippet is cut.
  */
 import { snippetOf, snippetTerms } from "../../../packages/pi-host/src/durable/index-db.ts";
+import { SPEAKING_TOOLS } from "./timeline.ts";
 
 export type HitRole = "owner" | "agent" | "tool" | "system";
 
@@ -46,10 +47,7 @@ export function cleanTool(raw: string): string {
 
 const TOOL_CALL = /^([A-Za-z_][\w.-]*) (\{.*\})$/;
 
-/** The tool an agent speaks to people through; its call's `text` is a message, not tool input (timeline.ts). */
-const SEND_MESSAGE = "send_message";
-
-/** A send_message call's message text from its JSON arguments; "" when it has none. */
+/** A speaking call's message text (tell_owner, send_message: timeline.ts SPEAKING_TOOLS) from its JSON arguments; "" when it has none. */
 function sentText(json: string): string {
   try {
     const args = JSON.parse(json) as { text?: unknown };
@@ -111,7 +109,7 @@ export function describe(kind: string, author: string, whole: string, terms: rea
     const sent: string[] = [];
     for (const line of text.split("\n")) {
       const call = TOOL_CALL.exec(line);
-      if (call?.[1] === SEND_MESSAGE) sent.push(sentText(call[2]!));
+      if (call && SPEAKING_TOOLS.has(call[1]!)) sent.push(sentText(call[2]!));
       else if (call) calls.push({ name: call[1]!, text: callText(call[2]!) });
       else human.push(line);
     }

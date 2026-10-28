@@ -8,7 +8,7 @@ import type {
 } from "../web/src/lib/api/types.ts";
 import type { AgentEvent, DurableEvent, DurableThread, EntryRecord, Host, TreeNode } from "./host/types.ts";
 import type { Store } from "./store.ts";
-import { buildItems, earliest, entryOf, firstSendIn, isInput, itemIdFor, SEND_MESSAGE_TOOL, sentMessages, speaksThroughSendMessage, type TimelineContext } from "./timeline.ts";
+import { buildItems, earliest, entryOf, firstSendIn, isInput, itemIdFor, sentMessages, speaks, speaksThroughSendMessage, type TimelineContext } from "./timeline.ts";
 
 export const OWNER: Principal = { id: "owner", kind: "owner", name: "You", avatar: { initials: "Me", hue: 210 } };
 
@@ -517,12 +517,12 @@ export class Threads {
   }
 }
 
-/** An entry the page sees at once: an input, an answer with text, or a send_message call, whose message shows the moment it is sent. */
+/** An entry the page sees at once: an input, an answer with text, or a tell_owner or send_message call, whose message shows the moment it is sent. */
 export function shows(entry: EntryRecord): boolean {
   if (isInput(entry)) return true;
   const message = entry.model?.[0];
   if (message?.role !== "assistant") return false;
   return typeof message.content === "string"
     ? !!message.content.trim()
-    : message.content.some(b => (b.type === "text" && b.text.trim()) || (b.type === "toolCall" && b.name === SEND_MESSAGE_TOOL));
+    : message.content.some(b => (b.type === "text" && b.text.trim()) || speaks(b));
 }

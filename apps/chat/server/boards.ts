@@ -129,8 +129,11 @@ export class Boards {
     return { board, awaitingGo: awaitingGo(board) };
   }
 
-  /** The owner's board ops; each one also reaches the chat as a `[board]` line, as today. */
-  async apply(chat: string, raw: unknown, actor: "owner" | "agent" = "owner"): Promise<BoardView> {
+  /**
+   * The owner's or an agent's board ops; each of the owner's also reaches the chat as a `[board]` line, as today. The answer carries each op's
+   * summary line, which the chat's own `chat_board` call returns to it (packages/pi-host/src/durable/prime-chat.ts), as Prime's agent-board route does.
+   */
+  async apply(chat: string, raw: unknown, actor: "owner" | "agent" = "owner"): Promise<BoardView & { summaries: string[] }> {
     const ops: BoardOp[] = parseBoardOps(raw);
     const now = new Date().toISOString();
     let board = (await this.board(chat)) ?? emptyBoard(now);
@@ -150,7 +153,7 @@ export class Boards {
         entry: { kind: "agent.message", data: { from: "owner", via: "board" } },
       }).catch(error => this.log(`board note to ${chat} failed: ${String(error)}`));
     }
-    return { board, awaitingGo: awaitingGo(board) };
+    return { board, awaitingGo: awaitingGo(board), summaries };
   }
 
   /** A doc event from pi-host: the chat wrote its board. */

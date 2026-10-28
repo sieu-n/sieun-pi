@@ -51,7 +51,7 @@ Pages call the server through `web/src/lib/api` (`import { api, timeline, agents
 2. `around=<item id or e<entry>>` returns the page that holds that entry and `focus`, the id of the item that holds it, so a search hit opens at its message.
 3. A thread page always starts at an input, so a turn never splits across two pages.
 4. In a thread, `message` items are inputs, `turn` items hold the answer text, the steps (thinking and tool calls with name, one-line summary, status and output) and the jobs the turn spawned, and `system` items are notes such as a compaction.
-   An agent speaks to people only through pi-host's `send_message` tool. A turn of an agent that does holds `sent`, each call's text in order, which the page draws as one bubble each, and `text` is them joined by a blank line. Its other text becomes `note` steps beside its thinking and tool steps in the fold, and the `send_message` calls themselves are not steps. A turn with `sent: []` sent nothing and draws only its fold, as "Worked quietly · N steps".
+   An agent speaks to people only through its speaking tools, Prime's `tell_owner` (which pi-host's durable chat threads run from Prime's own chat extension) and pi-host's `send_message`, drawn alike (`SPEAKING_TOOLS` in `server/timeline.ts`). A turn of an agent that does holds `sent`, each call's text in order, which the page draws as one bubble each, and `text` is them joined by a blank line. Its other text becomes `note` steps beside its thinking and tool steps in the fold, and the calls themselves are not steps. A `tell_owner` call its guard held (its result opens with `Kept as a note, not sent`) is a `note` step, as Prime's feed shows it, and a refused one (an error result) is neither. A turn with `sent: []` sent nothing and draws only its fold, as "Worked quietly · N steps".
    A turn from before the conversation's first `send_message` call has no `sent`, and its own text is its bubble, so an agent that has never called the tool reads as before (`speaksThroughSendMessage` in `server/timeline.ts`). The server keeps the earliest call it has seen per conversation, so a page of quiet turns after it still reads as sent-only.
 5. A turn's `jobs` hold each child conversation a `subagent` call made, which the page draws as a thread pill under the turn; a step's `job` names it too.
 6. In a channel every post is a `message` item; a root post carries `thread` with its reply count, last reply and authors, and replies come from `replies`.
@@ -117,7 +117,7 @@ Pages call the server through `web/src/lib/api` (`import { api, timeline, agents
 | Call | Endpoint | Returns |
 |---|---|---|
 | `api.board(chat)` | `GET /api/threads/:id/board` | `BoardView`: `{board, awaitingGo}`, with the ids of plan steps that wait for the owner's go. |
-| `api.boardOps(chat, ops)` | `POST /api/threads/:id/board` | The new `BoardView`; the ops are today's `BoardOp`s, applied as the owner. |
+| `api.boardOps(chat, ops)` | `POST /api/threads/:id/board` | The new `BoardView` and `summaries`, one line per applied op; the ops are today's `BoardOp`s, applied as the owner. |
 | `api.chatAgents(chat)` | `GET /api/threads/:id/agents` | `{agents: ChatAgent[]}` for the step owner chips. |
 | `api.duties(chat)` | `GET /api/threads/:id/duties` | `{duties: DutyRow[]}`: today's `DutyView` plus `card` (`dutyCard`) and `last` (`judgedRun`, `missStreak`). |
 | `api.dutyAction(chat, {duty, action, schedule})` | `POST /api/threads/:id/duties` | The duties after run, pause, resume or schedule. |

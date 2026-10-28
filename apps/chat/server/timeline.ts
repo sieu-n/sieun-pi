@@ -3,13 +3,16 @@
  * message) is a `message` item, every assistant and tool-result entry after it joins one `turn` item, and a compaction is a `system` item.
  * The same function builds a stored page and the live turn, so both read alike.
  *
- * An agent speaks to people only through `send_message` (pi-host's durable/send-message.ts): a turn's bubbles are its send_message texts,
- * one bubble per call, and its other text is a private note that goes into the fold with its thinking and tool steps. A turn from before
- * the conversation's first send_message call keeps its own text as the bubble (`speaksThroughSendMessage`), so an agent that never sent
- * one reads as it did before the tool.
+ * An agent speaks to people only through its speaking tools (`SPEAKING_TOOLS`): Prime's `tell_owner`, which pi-host's durable chat
+ * threads run from Prime's own chat extension (packages/pi-host/src/durable/prime-chat.ts), and `send_message` (durable/send-message.ts).
+ * A turn's bubbles are their call texts, one bubble per call, and its other text is a private note that goes into the fold with its
+ * thinking and tool steps. A tell_owner call its guard held (`TELL_OWNER_HELD`) is a note, as Prime's feed shows it. A turn from before the
+ * conversation's first such call keeps its own text as the bubble (`speaksThroughSendMessage`), so an agent that never sent one reads as it
+ * did before the tools.
  */
 import type { ImageRef, Item, JobRef, Principal, RunStatus, Step } from "../web/src/lib/api/types.ts";
 import type { ContentBlock, EntryRecord, Message, TreeNode } from "./host/types.ts";
+import { TELL_OWNER_HELD, TELL_OWNER_TOOL } from "../web/src/lib/api/shared/chat-feed.ts";
 
 export const INPUT_KINDS = new Set(["pi.user", "agent.message", "prime.custom"]);
 export const TURN_KINDS = new Set(["pi.assistant", "pi.tool-result"]);
@@ -38,23 +41,26 @@ export interface TimelineContext {
 }
 
 export const SEND_MESSAGE_TOOL = "send_message";
+/** The tools whose call text is the agent's message to people: Prime's tell_owner and pi-host's send_message, drawn alike. */
+export const SPEAKING_TOOLS: ReadonlySet<string> = new Set([TELL_OWNER_TOOL, SEND_MESSAGE_TOOL]);
+export const speaks = (block: ContentBlock): boolean => block.type === "toolCall" && SPEAKING_TOOLS.has(block.name);
 
-/** A send_message call's message, with the channel it names; undefined for any other block or an empty text. */
+/** A speaking call's message, with the channel it names; undefined for any other block or an empty text. */
 export function sentMessage(block: ContentBlock): { id: string; text: string; to?: string } | undefined {
-  if (block.type !== "toolCall" || block.name !== SEND_MESSAGE_TOOL) return undefined;
+  if (block.type !== "toolCall" || !SPEAKING_TOOLS.has(block.name)) return undefined;
   const text = typeof block.arguments?.text === "string" ? block.arguments.text.trim() : "";
   if (!text) return undefined;
   const to = typeof block.arguments?.to === "string" && block.arguments.to.trim() ? block.arguments.to.trim() : undefined;
   return { id: block.id, text, ...(to ? { to } : {}) };
 }
 
-/** The id of the first entry, in `entries`, that holds a send_message call. */
+/** The id of the first entry, in `entries`, that holds a speaking call. */
 export function firstSendIn(entries: readonly EntryRecord[]): number | undefined {
   let first: number | undefined;
   for (const entry of entries) {
     const message = entry.model?.[0];
     if (message?.role !== "assistant" || typeof message.content === "string") continue;
-    if (message.content.some(b => b.type === "toolCall" && b.name === SEND_MESSAGE_TOOL) && (first === undefined || entry.id < first)) first = entry.id;
+    if (message.content.some(speaks) && (first === undefined || entry.id < first)) first = entry.id;
   }
   return first;
 }
@@ -73,18 +79,28 @@ export function speaksThroughSendMessage(turn: readonly EntryRecord[], firstSend
   return turn.length === 0 || turn.some(entry => entry.id >= firstSend);
 }
 
-/** The messages a turn sent, in order: each send_message call whose result is not an error. */
-export function sentMessages(turn: readonly EntryRecord[]): { id: string; text: string; to?: string }[] {
-  const failed = new Set(turn.flatMap(entry => {
+/** The calls of a turn whose message did not go out: an error result, or a tell_owner its guard kept as a note. */
+function unsent(turn: readonly EntryRecord[]): { failed: Set<string>; held: Set<string> } {
+  const failed = new Set<string>();
+  const held = new Set<string>();
+  for (const entry of turn) {
     const message = entry.model?.[0];
-    return message?.role === "toolResult" && message.isError && message.toolCallId ? [message.toolCallId] : [];
-  }));
+    if (message?.role !== "toolResult" || !message.toolCallId) continue;
+    if (message.isError) failed.add(message.toolCallId);
+    else if (message.toolName === TELL_OWNER_TOOL && textOf(message).startsWith(TELL_OWNER_HELD)) held.add(message.toolCallId);
+  }
+  return { failed, held };
+}
+
+/** The messages a turn sent, in order: each speaking call whose result is not an error and that its guard did not hold. */
+export function sentMessages(turn: readonly EntryRecord[]): { id: string; text: string; to?: string }[] {
+  const { failed, held } = unsent(turn);
   return turn.flatMap(entry => {
     const message = entry.model?.[0];
     if (message?.role !== "assistant") return [];
     return blocks(message).flatMap(block => {
       const sent = sentMessage(block);
-      return sent && !failed.has(sent.id) ? [sent] : [];
+      return sent && !failed.has(sent.id) && !held.has(sent.id) ? [sent] : [];
     });
   });
 }
@@ -125,8 +141,9 @@ const SUBAGENT_TOOLS = new Set(["subagent"]);
 interface TurnDraft { key: number; entries: EntryRecord[] }
 
 function buildTurn(draft: TurnDraft, ctx: TimelineContext, live: boolean, firstSend: number | undefined): Item {
-  const speaks = speaksThroughSendMessage(draft.entries, firstSend);
-  const sent = speaks ? sentMessages(draft.entries) : [];
+  const speaking = speaksThroughSendMessage(draft.entries, firstSend);
+  const sent = speaking ? sentMessages(draft.entries) : [];
+  const held = speaking ? unsent(draft.entries).held : new Set<string>();
   const sendCalls = new Set<string>();
   const steps: Step[] = [];
   const toolIndex = new Map<string, number>();
@@ -155,9 +172,13 @@ function buildTurn(draft: TurnDraft, ctx: TimelineContext, live: boolean, firstS
       stop = message.stopReason === "aborted" ? "aborted" : message.stopReason === "error" ? "error" : undefined;
       error = message.stopReason === "error" ? message.errorMessage ?? "The model call failed." : undefined;
       for (const block of blocks(message)) {
-        if (speaks && block.type === "toolCall" && block.name === SEND_MESSAGE_TOOL) sendCalls.add(block.id);
-        else if (block.type === "text" && block.text.trim()) {
-          if (speaks) steps.push({ kind: "note", text: block.text });
+        if (speaking && block.type === "toolCall" && SPEAKING_TOOLS.has(block.name)) {
+          sendCalls.add(block.id);
+          // A held tell_owner is a note in the fold, as Prime's feed shows it.
+          const text = typeof block.arguments?.text === "string" ? block.arguments.text.trim() : "";
+          if (held.has(block.id) && text) steps.push({ kind: "note", text });
+        } else if (block.type === "text" && block.text.trim()) {
+          if (speaking) steps.push({ kind: "note", text: block.text });
           else texts.push(block.text);
         } else if (block.type === "thinking" && block.thinking.trim()) steps.push({ kind: "thinking", text: block.thinking });
         else if (block.type === "toolCall") {
@@ -193,8 +214,8 @@ function buildTurn(draft: TurnDraft, ctx: TimelineContext, live: boolean, firstS
     jobs.push({ conversation: step.job, name: node?.name ?? step.summary, status: ctx.jobStatus(id), replies: 0, lastAt: node?.createdAt ?? at });
   }
   return {
-    kind: "turn", id: turnKey(draft.key), at, author: ctx.agent, text: speaks ? sent.map(m => m.text).join("\n\n") : texts.join("\n\n"), live, steps, images, jobs,
-    ...(speaks ? { sent: sent.map(m => m.text) } : {}),
+    kind: "turn", id: turnKey(draft.key), at, author: ctx.agent, text: speaking ? sent.map(m => m.text).join("\n\n") : texts.join("\n\n"), live, steps, images, jobs,
+    ...(speaking ? { sent: sent.map(m => m.text) } : {}),
     ...(stop ? { stop } : {}), ...(error ? { error } : {}), ...(model ? { model } : {}), usage,
   };
 }

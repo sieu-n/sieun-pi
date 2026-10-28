@@ -1,7 +1,7 @@
 /**
  * An agent speaks to people only through send_message: a turn's bubbles are its send_message texts, its other text and steps go into the
  * fold, a turn that sent nothing is only a fold row, and a channel thread gets one post per call. A conversation that never called it
- * keeps its turn text as the bubble and a channel answer as its text.
+ * keeps its turn text as the bubble and a channel answer as its text. Prime's tell_owner, which durable chat threads run, renders the same way.
  * Run: cd apps/chat && node --import tsx --test --test-force-exit --test-isolation=none test/server/send-message.test.ts
  */
 import assert from "node:assert/strict";
@@ -11,7 +11,8 @@ import { FixtureHost, QUIET_NOTE } from "../../server/host/fixture.ts";
 import type { ContentBlock, EntryRecord } from "../../server/host/types.ts";
 import { describe as describeHit } from "../../server/search-snippet.ts";
 import { shows } from "../../server/threads.ts";
-import { buildItems, speaksThroughSendMessage, type TimelineContext } from "../../server/timeline.ts";
+import { buildItems, firstSendIn, sentMessages, SPEAKING_TOOLS, speaksThroughSendMessage, type TimelineContext } from "../../server/timeline.ts";
+import { TELL_OWNER_HELD, TELL_OWNER_TOOL } from "../../web/src/lib/api/shared/chat-feed.ts";
 import { start, until, type Running } from "./helpers.ts";
 
 type Turn = Extract<Item, { kind: "turn" }>;
@@ -81,6 +82,33 @@ describe("timeline projection", () => {
     assert.equal(turns(buildItems(quiet, ctx()))[0]!.text, "Private.");
     // The live turn of such a conversation, before its first entry, is ready for bubbles.
     assert.deepEqual(turns(buildItems([user("next")], ctx({ running: true, firstSend: sending[1]!.id })))[0]!.sent, []);
+  });
+
+  test("a tell_owner call renders like a send_message call, and a call its guard held is a note in the fold", () => {
+    const tell = (id: string, text: string): ContentBlock => ({ type: "toolCall", id, name: TELL_OWNER_TOOL, arguments: { text } });
+    const entries = [
+      user("Is the relay up?"),
+      assistant({ type: "text", text: "Reading the log." }, tell("t1", "The relay is up since 02:11.")),
+      result("t1", TELL_OWNER_TOOL, "told the owner"),
+      user("[check-in]"),
+      assistant(tell("t2", "Still up.")),
+      result("t2", TELL_OWNER_TOOL, `${TELL_OWNER_HELD}. The owner did not start this turn.`),
+      assistant(tell("t3", "half")),
+      result("t3", TELL_OWNER_TOOL, "why is required on a turn the owner did not start.", true),
+    ];
+    const [answer, quiet] = turns(buildItems(entries, ctx()));
+    const sendEntries = [user("Is the relay up?"), assistant({ type: "text", text: "Reading the log." }, send("t1", "The relay is up since 02:11.")), result("t1", "send_message", "Sent.")];
+    const [sendAnswer] = turns(buildItems(sendEntries, ctx()));
+    assert.deepEqual([answer!.sent, answer!.text, answer!.steps], [sendAnswer!.sent, sendAnswer!.text, sendAnswer!.steps]);
+    assert.deepEqual(quiet!.sent, []);
+    assert.deepEqual(quiet!.steps, [{ kind: "note", text: "Still up." }]);
+    assert.deepEqual(sentMessages(entries), [{ id: "t1", text: "The relay is up since 02:11." }]);
+    assert.equal(firstSendIn(entries), entries[1]!.id);
+    assert.ok(SPEAKING_TOOLS.has(TELL_OWNER_TOOL) && SPEAKING_TOOLS.has("send_message"));
+    assert.equal(shows(assistant(tell("x", "hi"))), true);
+    const said = describeHit("pi.assistant", "anthropic/claude-opus-5-5", `Private note.\ntell_owner ${JSON.stringify({ text: "The zebra relay is up." })}`, ["zebra"]);
+    assert.equal(said.role, "agent");
+    assert.match(said.text, /^The zebra relay is up\./);
   });
 
   test("an entry with a send_message call shows at once, like an answer with text", () => {
