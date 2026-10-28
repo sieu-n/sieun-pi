@@ -1018,8 +1018,8 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
       if (route === "api/agent/wakes") {
         // board.wake from a box without the chat role: the same file it writes on the chat host, delivered through that box's relay (src/wakes.ts).
         const wake = parseWake(body);
-        if (!wake) throw new RequestError(400, "Send {session, on: {kind: run|time, ...}, note, since}.");
-        const key = wake.on.kind === "run" ? `run-${wake.on.run}` : `time-${Math.floor(wake.on.at / 1000)}`;
+        if (!wake) throw new RequestError(400, "Send {session, on: {kind: run|time|check, ...}, note, since}.");
+        const key = wake.on.kind === "run" ? `run-${wake.on.run}` : wake.on.kind === "check" ? `check-${wake.since}` : `time-${Math.floor(wake.on.at / 1000)}`;
         const folder = join(dirname(backend.boards.dir), "wakes");
         const path = join(folder, `${wake.session}-${key}.json`);
         await writeFile(`${path}.tmp`, JSON.stringify(wake), { mode: 0o600 });

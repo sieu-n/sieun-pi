@@ -17,7 +17,19 @@ import type { AgentKind } from "./outbox.ts";
  * finished run sets attempt to the next one; promote 17 (run 39493311906) on 10-21 had attempt 1 cancelled at 23:16Z and its rerun from 01:02Z,
  * and wakes set on it at 01:00Z went out at once on attempt 1's cancel.
  */
-export type WakeOn = { kind: "run"; run: number; repo?: string; attempt?: number } | { kind: "time"; at: number };
+/**
+ * `check`: a shell command the service runs on its own box every `every` ms, waking the session once it exits 0, or at `at` if it never does.
+ * Before it a job that waited for something with no CI run of its own, such as a promote reaching prod, a sha on origin/staging or a unit's
+ * end, polled with time wakes: each one reloaded the session and its kernel to run one command and set the next wake. On 10-27 to 10-28,
+ * 1,167 of the 1,434 time wakes in 24 h went to 162 sessions woken 3 times or more, and a stopped subagent's wake also took a turn of its parent
+ * (src/agent-outbox.ts relay). The 31 finished-looking subagents of sep launch!! and frontend bro on the Mac took 311 wakes in 12 h this way,
+ * and the idle unload stopped them 167 times between them.
+ */
+export type WakeOn = { kind: "run"; run: number; repo?: string; attempt?: number } | { kind: "time"; at: number } | { kind: "check"; command: string; every: number; at: number };
+/** What one run of a check wake's command gave: whether it exited 0, and the tail of what it printed. */
+export interface CheckResult { ok: boolean; output: string }
+/** How much of a check's output its wake quotes. */
+const CHECK_TAIL = 1500;
 /** `root`: the chat tree's root session, when the wake's session is a child of it; board.wake reads it from RLM_SESSION_DIR. */
 export interface Wake { session: string; root?: string; on: WakeOn; note: string; since: number }
 /** What a run's state read answers: still going, finished with its conclusion, or not readable now (looked at again next tick). */
@@ -64,17 +76,34 @@ export function parseWake(value: unknown): Wake | null {
     return { session: value.session, ...root, note, since, on: { kind: "run", run: on.run, ...(typeof on.repo === "string" && on.repo ? { repo: on.repo } : {}), ...attempt } };
   }
   if (on.kind === "time" && typeof on.at === "number" && Number.isFinite(on.at)) return { session: value.session, ...root, note, since, on: { kind: "time", at: on.at } };
+  if (on.kind === "check" && typeof on.command === "string" && on.command.trim() && typeof on.every === "number" && on.every > 0 && typeof on.at === "number" && Number.isFinite(on.at))
+    return { session: value.session, ...root, note, since, on: { kind: "check", command: on.command, every: on.every, at: on.at } };
   return null;
 }
 
+/**
+ * The line every time wake ends with, for a job that only looks whether something happened and sets the next wake: a check wake keeps it
+ * unloaded until then (`WakeOn` check).
+ */
+export const POLL_HINT = "If this wake only looks whether something happened and then sets another wake, set board.wake(check=\"<shell command that exits 0 once it happened>\", " +
+  "at=<deadline>) instead: the chat service runs the command every few minutes and wakes you only once it passes, so no turn or kernel is spent on each look.";
+
 /** The agent message a due wake sends; it names the wait so the job knows which of its waits ended. */
-export function wakeText(wake: Wake, state: RunState | null, now: number): string {
+export function wakeText(wake: Wake, state: RunState | null, now: number, check?: CheckResult): string {
   const note = wake.note ? ` Your note: ${wake.note}` : "";
+  if (wake.on.kind === "check") {
+    const said = check?.output.trim() ? ` It printed: ${check.output.trim().slice(-CHECK_TAIL)}` : "";
+    return check?.ok
+      ? `[wake] Your board.wake check passed at ${new Date(now).toISOString()}: \`${wake.on.command}\` exited 0.${said}${note}`
+      : `[wake] It is ${new Date(now).toISOString()}, the deadline you set with board.wake (${new Date(wake.on.at).toISOString()}), and your check ` +
+        `\`${wake.on.command}\` never exited 0${check ? "" : " (it never ran)"}.${check ? ` Its last run${said ? said.replace(" It printed:", " printed:") : " printed nothing"}` : ""}${note}`;
+  }
   if (wake.on.kind === "run" && state && "error" in state) {
     return `[wake] Run ${wake.on.run}${wake.on.repo ? ` in ${wake.on.repo}` : ""} could not be read for ${Math.round(UNREADABLE_MS / 60_000)} min: ${state.error}. ` +
       `If it runs in another repo than the CI cache's, set board.wake(run=${wake.on.run}, repo="owner/name") again.${note}`;
   }
-  if (wake.on.kind === "time") return `[wake] It is ${new Date(now).toISOString()}, the time you set with board.wake (${new Date(wake.on.at).toISOString()}).${note}`;
+  if (wake.on.kind === "time") return `[wake] It is ${new Date(now).toISOString()}, the time you set with board.wake (${new Date(wake.on.at).toISOString()}).${note} ` +
+    POLL_HINT;
   const done = state && "done" in state && state.done ? state : null;
   if (done && rerunMissed(wake, done, now)) {
     const ended = done.endedAt === undefined ? "" : ` at ${new Date(done.endedAt).toISOString().slice(0, 16)}Z`;
@@ -107,6 +136,8 @@ export interface WakeDeps {
    * 30 s and a tick with 5 sessions due took over 2.5 min, so TICKED aged past WAKE_LATE_MS while the tick ran and board.wake refused everywhere.
    */
   progress?: () => Promise<void>;
+  /** Runs a check wake's command (`runCheck` by default), killed after `timeoutMs`, which is the check's own pace. */
+  check?: (command: string, timeoutMs: number) => Promise<CheckResult>;
   log: (line: string) => void;
 }
 
@@ -119,6 +150,8 @@ export class Wakes {
   private readonly handling = new Set<string>();
   /** The run reads under way, which a later pass shares instead of starting its own. */
   private readonly reading = new Map<number, Promise<RunState | null>>();
+  /** Each check wake file's last run: when it ran and what it gave. */
+  private readonly checked = new Map<string, { at: number; result: CheckResult }>();
   private readonly now: () => number;
   constructor(private readonly deps: WakeDeps) { this.now = deps.now ?? Date.now; }
 
@@ -147,6 +180,8 @@ export class Wakes {
     for (const { wake } of parsed) if (wake.on.kind === "run") runs.add(wake.on.run);
     for (const run of this.looked.keys()) if (!runs.has(run)) this.looked.delete(run);
     for (const run of this.failing.keys()) if (!runs.has(run)) this.failing.delete(run);
+    const files = new Set(parsed.map(({ file }) => file));
+    for (const file of this.checked.keys()) if (!files.has(file)) this.checked.delete(file);
     // Every run is read at once and every session is sent at once: after the chat moved to us-metal02 (10-18 04:19Z) 170 wakes waited, and one
     // at a time at 3 to 5 s a send, a time wake set for 04:40:30Z went out at 04:42:58Z. The outbox keeps each send single (src/agent-outbox.ts).
     const mine = parsed.filter(({ file }) => !this.handling.has(file));
@@ -158,7 +193,7 @@ export class Wakes {
     }
     const results = await Promise.all([...groups.values()].map(async group => {
       try {
-        const due: { file: string; wake: Wake; state: RunState | null }[] = [];
+        const due: { file: string; wake: Wake; state: RunState | null; check?: CheckResult }[] = [];
         const states = new Map<number, RunState | null>(await Promise.all([...new Set(group.flatMap(({ wake }) => wake.on.kind === "run" ? [wake.on.run] : []))]
           .map(async run => [run, await this.read(group.find(({ wake }) => wake.on.kind === "run" && wake.on.run === run)!.wake.on as Extract<WakeOn, { kind: "run" }>, now)] as const)));
         if (states.size) await this.moved();
@@ -169,6 +204,12 @@ export class Wakes {
             const failed = this.failing.get(wake.on.run);
             if (failed && now - failed.since >= UNREADABLE_MS) state = { error: failed.error };
             else if (!state || !("done" in state) || !state.done || ((wake.on.attempt ?? 1) > (state.attempt ?? 1) && !rerunMissed(wake, state, now))) continue;
+          } else if (wake.on.kind === "check") {
+            const result = await this.checkNow(file, wake.on, now);
+            if (!result?.ok && wake.on.at > now) continue;
+            const last = result ?? this.checked.get(file)?.result;
+            due.push({ file, wake, state, ...last ? { check: last } : {} });
+            continue;
           } else if (wake.on.at > now) continue;
           due.push({ file, wake, state });
         }
@@ -188,11 +229,11 @@ export class Wakes {
   }
 
   /** One session's due wakes as one message to the outbox; their files go once it is on disk. */
-  private async send(wakes: { file: string; wake: Wake; state: RunState | null }[], now: number): Promise<boolean> {
+  private async send(wakes: { file: string; wake: Wake; state: RunState | null; check?: CheckResult }[], now: number): Promise<boolean> {
     const session = wakes[0]!.wake.session;
-    const what = wakes.map(({ wake }) => wake.on.kind === "run" ? `run ${wake.on.run}` : "its time").join(", ");
+    const what = wakes.map(({ wake, check }) => wake.on.kind === "run" ? `run ${wake.on.run}` : wake.on.kind === "check" ? (check?.ok ? "its check" : "its check's deadline") : "its time").join(", ");
     try {
-      const text = wakes.map(({ wake, state }) => wakeText(wake, state, now)).join("\n");
+      const text = wakes.map(({ wake, state, check }) => wakeText(wake, state, now, check)).join("\n");
       const root = wakes.find(({ wake }) => wake.root)?.wake.root;
       await this.deps.deliver(session, text, root, "wake", Math.max(...wakes.map(({ wake }) => wake.since)));
       for (const { file } of wakes) await rm(file, { force: true });
@@ -208,6 +249,15 @@ export class Wakes {
     await this.deps.progress?.().catch(error => this.deps.log(`wakes: ${TICKED}: ${error instanceof Error ? error.message : String(error)}`));
   }
 
+  /** A check wake's command run now, or null when it ran less than its `every` ago. */
+  private async checkNow(file: string, on: Extract<WakeOn, { kind: "check" }>, now: number): Promise<CheckResult | null> {
+    const last = this.checked.get(file);
+    if (last && now - last.at < on.every) return null;
+    const result = await (this.deps.check ?? runCheck)(on.command, on.every).catch((error: unknown) => ({ ok: false, output: error instanceof Error ? error.message : String(error) }));
+    this.checked.set(file, { at: now, result });
+    return result;
+  }
+
   /** The run's state, or null when its stamp did not move and it was read less than RUN_LOOK_MS ago. */
   private async look(on: Extract<WakeOn, { kind: "run" }>, now: number): Promise<RunState | null> {
     const stamp = on.repo || !this.deps.stamp ? null : await this.deps.stamp(on.run).catch(() => null);
@@ -221,6 +271,16 @@ export class Wakes {
     } else this.failing.delete(on.run);
     return state;
   }
+}
+
+/** Runs a check wake's command with sh in the home folder; it passes on exit 0, and its output's tail comes back either way. */
+export function runCheck(command: string, timeoutMs: number): Promise<CheckResult> {
+  return new Promise(resolve => {
+    hostExecFile("sh", ["-c", command], { cwd: homedir(), timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024, env: { ...process.env, PATH: PATH_WITH_LOCAL } }, (error, stdout, stderr) => {
+      const output = `${stdout}${stderr}`.slice(-CHECK_TAIL);
+      resolve({ ok: !error, output: error && !output.trim() ? error.message : output });
+    });
+  });
 }
 
 const CI_CACHE = process.env.CI_CACHE_DIR ?? join(homedir(), ".cache", "virev");
@@ -386,10 +446,12 @@ export async function pendingWakes(dir: string, now: number): Promise<Wake[]> {
   return owedWakes(wakes, Number.isFinite(tickedAt) ? tickedAt : undefined, now);
 }
 
+const clockOf = (at: number): string => `${new Date(at).toISOString().slice(11, 16)}Z`;
+
 /** What a session's owed wakes wait for: "a board.wake at 14:40Z", or "board.wakes on run 38555915600 and at 15:00Z". */
 export function wakeLabel(wakes: readonly Wake[]): string {
-  const what = [...wakes].sort((a, b) => (a.on.kind === "time" ? a.on.at : 0) - (b.on.kind === "time" ? b.on.at : 0))
-    .map(({ on }) => on.kind === "time" ? `at ${new Date(on.at).toISOString().slice(11, 16)}Z` : `on run ${on.run}${on.repo ? ` in ${on.repo}` : ""}`);
+  const what = [...wakes].sort((a, b) => (a.on.kind === "run" ? 0 : a.on.at) - (b.on.kind === "run" ? 0 : b.on.at))
+    .map(({ on }) => on.kind === "time" ? `at ${clockOf(on.at)}` : on.kind === "check" ? `on a check by ${clockOf(on.at)}` : `on run ${on.run}${on.repo ? ` in ${on.repo}` : ""}`);
   return `${what.length === 1 ? "a board.wake" : "board.wakes"} ${what.length > 1 ? `${what.slice(0, -1).join(", ")} and ${what.at(-1)}` : what[0]}`;
 }
 
@@ -406,8 +468,8 @@ export function treeWakes(session: string, below: (session: string) => readonly 
 
 /** A job's wakes in the Agents card's words, soonest time first: "waits for run 39080016700", "waits for 14:40Z", "waits for run 1 and 15:00Z". */
 export function wakeWait(wakes: readonly Wake[]): string {
-  const what = [...new Set([...wakes].sort((a, b) => (a.on.kind === "time" ? a.on.at : 0) - (b.on.kind === "time" ? b.on.at : 0))
-    .map(({ on }) => on.kind === "time" ? `${new Date(on.at).toISOString().slice(11, 16)}Z` : `run ${on.run}`))];
+  const what = [...new Set([...wakes].sort((a, b) => (a.on.kind === "run" ? 0 : a.on.at) - (b.on.kind === "run" ? 0 : b.on.at))
+    .map(({ on }) => on.kind === "time" ? clockOf(on.at) : on.kind === "check" ? `a check by ${clockOf(on.at)}` : `run ${on.run}`))];
   return `waits for ${what.length > 1 ? `${what.slice(0, -1).join(", ")} and ${what.at(-1)}` : what[0] ?? "a board.wake"}`;
 }
 

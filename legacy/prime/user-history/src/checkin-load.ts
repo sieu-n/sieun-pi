@@ -355,7 +355,7 @@ export function wakeWatches(wakes: readonly Wake[], train?: Train, carried: Read
   };
   return new Map([...bySession].map(([session, owed]) => {
     const carry = carries(owed);
-    const times = owed.flatMap(({ on, note }) => on.kind === "time" ? [{ at: on.at, note }] : []);
+    const times = owed.flatMap(({ on, note }) => on.kind !== "run" ? [{ at: on.at, note }] : []);
     return [session, { label: wakeLabel(owed), works: new Set(owed.flatMap(works)), ...carry ? { carries: carry } : {}, ...times.length ? { times } : {} }];
   }));
 }

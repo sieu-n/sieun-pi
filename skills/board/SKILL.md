@@ -1,6 +1,6 @@
 ---
 name: board
-description: Read a browser chat's board, corrections and the log of outside sends from Python, set a kernel-free wake for a CI run or a time, record the paths and units a job throws away, plus the chat_board op rules and a VP chat's rules for jobs, check-ins and git.
+description: Read a browser chat's board, corrections and the log of outside sends from Python, set a kernel-free wake for a CI run, a time or a shell check, record the paths and units a job throws away, plus the chat_board op rules and a VP chat's rules for jobs, check-ins and git.
 ---
 
 # Board
@@ -33,7 +33,10 @@ board.wake(run=38556270524, note="land r11 on green")   # read from the local CI
 board.wake(run=39493311906, attempt=2)                  # wait for the rerun of a finished run, not its old result
 board.wake(run=123, repo="sieu-n/sieun-pi")             # a run in another repo, read with gh every 2 min
 board.wake(at="2026-10-14T22:30:00Z", note="remeasure") # a time, instead of bash("sleep ...")
+board.wake(check="curl -s https://virev.ai/_app/version.json | grep -q 0bfedc2", at="2026-10-29T03:00:00Z", every=5)  # until it happened
 ```
+
+A check wake is for a wait on something with no CI run of its own, such as a sha reaching prod or staging or a unit ending. The chat service runs the command with `sh -c` on the chat host (us-metal02) from the home folder every `every` minutes, and the wake goes out with its output once it exits 0, or at the deadline `at` if it never does. Never poll with a time wake that only looks and sets the next one, because each such wake reloads the session and a fresh kernel, and a stopped subagent's wake takes a turn of its parent too. On 10-27 to 10-28, 1,167 of 1,434 time wakes in 24 h went to sessions woken 3 or more times, and 31 subagents of two Mac trees were woken 311 times in 12 h.
 
 A run wake follows the run's latest attempt, and its `[wake]` text names that attempt. A rerun keeps the run id, so a wake set on a run that already finished goes out at once with the old result. When you wait for a rerun, pass `attempt=` with the attempt you wait for.
 
