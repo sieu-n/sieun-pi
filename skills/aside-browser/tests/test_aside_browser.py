@@ -94,16 +94,27 @@ class WrapTests(Base):
         wrapped = ab.wrap_code("console.log(1) // done")
         self.assertIn("// done\n", wrapped)
 
-    def test_tab_tracking_only_when_code_opens_a_tab(self):
-        self.assertNotIn("__asideBefore", ab.wrap_code("console.log(1)"))
-        self.assertIn("__asideBefore", ab.wrap_code("const p = await openTab('https://example.com')"))
+    def test_every_wrapped_call_reports_the_tabs_it_opens(self):
+        # 10-28: the owner's Aside held 10 job tabs on localhost:5180 that no record named; a tab opened by a click went unrecorded.
+        self.assertIn("__asideBefore", ab.wrap_code("console.log(1)"))
+        self.assertIn("__asideBefore", ab.wrap_code("await page.click('a[target=_blank]')"))
+
+    def test_a_tab_a_click_opens_is_owned(self):
+        mcp = self.fake('clicked\n' + ab._OPENED_MARK + '["NEWTAB1"]')
+        out = self.call(ab.run("await page.click('a[target=_blank]')"))
+        self.assertNotIn(ab._OPENED_MARK, out)
+        self.assertIn("NEWTAB1", ab._owned_tabs())
+        self.assertIn("__asideBefore", mcp.calls[0]["code"])
 
     def test_run_sends_wrapped_code_and_raw_when_asked(self):
         mcp = self.fake("ok", "ok")
         self.call(ab.run("const x = 1"))
         self.call(ab.run("const x = 1", wrap=False))
-        self.assertTrue(mcp.calls[0]["code"].startswith("await (async () => { const x = 1"))
-        self.assertEqual(mcp.calls[1]["code"], "const x = 1")
+        self.assertTrue(mcp.calls[0]["code"].startswith("await (async () => { " + ab._TRACK_HEAD + "const x = 1"))
+        raw = mcp.calls[1]["code"]
+        self.assertIn("; const x = 1\n", raw)
+        self.assertNotIn("async () =>", raw)
+        self.assertIn("globalThis.__asideBefore", raw)
 
 
 class ExplainTests(unittest.TestCase):

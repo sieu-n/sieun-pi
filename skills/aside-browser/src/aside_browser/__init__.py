@@ -85,21 +85,24 @@ _TRACK_TAIL = (
     " } finally { const __asideNew = tabs.filter((t) => t && t.targetId && !__asideBefore.has(t.targetId))"
     f".map((t) => t.targetId); if (__asideNew.length) console.log({_js_string(_OPENED_MARK)} + JSON.stringify(__asideNew)); }}"
 )
-_OPENS_TAB = re.compile(r"\bopenTab\s*\(")
-
-
-def wrap_code(code: str, track_tabs: bool | None = None) -> str:
+def wrap_code(code: str) -> str:
     """Wrap REPL code in an async function so `const`/`let` names never collide across calls.
 
     The user code starts on line 1, so REPL line numbers still match the caller's lines.
-    A `return value` inside the code prints that value. With `track_tabs` (default: the code
-    calls openTab), tabs opened by the code are reported back so this session owns them.
+    A `return value` inside the code prints that value. Every tab the code opens, by openTab(),
+    a click that opens a tab or any other way, is reported back so this session owns it and
+    the job's end closes it. On 2026-10-28 the owner's Aside held 10 job tabs on localhost:5180
+    that no record named, so no job end or sweep could close them.
     """
-    if track_tabs is None:
-        track_tabs = bool(_OPENS_TAB.search(code))
-    head = "await (async () => { " + (_TRACK_HEAD if track_tabs else "")
-    tail = "\n" + (_TRACK_TAIL if track_tabs else "") + "})().then(" + _RESULT_PRINTER + ");"
-    return head + code + tail
+    return "await (async () => { " + _TRACK_HEAD + code + "\n" + _TRACK_TAIL + "})().then(" + _RESULT_PRINTER + ");"
+
+
+def track_raw(code: str) -> str:
+    """Raw top-level REPL code (run(wrap=False)) with the same tab report around it, outside any block, so its names stay global."""
+    return (
+        "globalThis.__asideBefore = new Set((await listBrowserTabs()).map((t) => t.targetId)); " + code + "\n;{"
+        + _TRACK_TAIL.replace(" } finally {", "", 1).replace("__asideBefore", "globalThis.__asideBefore")
+    )
 
 
 # ---------------------------------------------------------------- error translation
@@ -920,9 +923,9 @@ async def run(code: str, title: str = "aside repl", wrap: bool = True, force: bo
     Print values with console.log(), or `return value` to print it.
 
     wrap=True (default) runs the code inside an async function: `const`/`let` names are
-    local to this call, and tabs the code opens with openTab() become owned by this session.
-    Keep a value for later calls with `globalThis.name = value`. wrap=False sends the code
-    unchanged into the REPL's persistent top-level scope.
+    local to this call. Keep a value for later calls with `globalThis.name = value`. wrap=False
+    runs the code in the REPL's persistent top-level scope. Either way, every tab the code opens
+    becomes owned by this session.
     Code that loops over `tabs` and closes them is refused unless force=True; use
     close_own_tabs(). Code that presses Send on a webmail page or submits on a support ticket page is
     refused unless owner_ok names the owner's approved For you todo as "<chat id>/<todo id>".
@@ -937,7 +940,7 @@ async def run(code: str, title: str = "aside repl", wrap: bool = True, force: bo
         )
     global _browser
     where = _route(code)
-    text = await _repl(wrap_code(code) if wrap else code, title, owner_ok=owner_ok, plain=code, browser=where)
+    text = await _repl(wrap_code(code) if wrap else track_raw(code), title, owner_ok=owner_ok, plain=code, browser=where)
     _browser = where or _browser
     return text
 

@@ -61,7 +61,8 @@ await aside_browser.memory_search("what does the user work on")
 - Each call runs inside an async function, so the next call can reuse a `const` or `let` name.
 - `page`, `tabs` and the other REPL globals persist between calls.
 - To keep a value for a later call, set `globalThis.name = value`.
-- `wrap=False` sends the code unchanged into the REPL's shared top-level scope.
+- `wrap=False` runs the code in the REPL's shared top-level scope.
+- Every tab a call opens, by `openTab()`, a click or any other way, is recorded as this session's, so the job's end closes it. A raw `aside repl` or `mcp.call_tool("aside", ...)` call records nothing, so open tabs only through this skill.
 - Each REPL call times out after 120 s, so hand a long multi-step task to `agent()`.
 
 ## Errors
