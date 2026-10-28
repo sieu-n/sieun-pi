@@ -24,8 +24,8 @@ import { GOAL_PUSH_LINK, type GoalPush } from "./checkin-goals.ts";
  * completion", after ops guy's p45 and p221 sat at 64 of 71 and 60 of 69 steps with no end in sight (board skill, references/plan-and-duties.md).
  * An area that holds goals with targets is no goal (`openGoals`): it is done when they are.
  */
-export const goalsWithoutDoneLine = (board: ChatBoard | null): PlanItem[] =>
-  openGoals(board?.plan ?? []).filter(goal => !goal.target && !/\bdone when\b/i.test(goal.note ?? ""));
+const hasDoneLine = (goal: PlanItem): boolean => !!goal.target || /\bdone when\b/i.test(goal.note ?? "");
+export const goalsWithoutDoneLine = (board: ChatBoard | null): PlanItem[] => openGoals(board?.plan ?? []).filter(goal => !hasDoneLine(goal));
 /** The goal the alert bridge filed firing alerts under until 10-18; the bridge now starts a triage job per firing rule and files no step. */
 export const ALERT_GOAL_TEXT = "Firing prod alerts";
 /**
@@ -64,8 +64,13 @@ export function riskStepsLine(items: readonly PlanItem[]): string {
  * The open top-level items with no step under them: a step filed as a goal. An item below the top level with a target and no steps is a step
  * whose done line is measured, and goal_gaps reads its number: Crawler VP's p683 "Refresh every read Instagram account at least weekly" under
  * goal p829 has a target, a live job and a dated wait, and loose_goals told the chat to give it a step in 9 check-ins in a row on 10-21.
+ * A top-level goal with a done line and a live owner (a working job or a waitFor) is one finishable task, and a step under it would only copy
+ * it: Crawler VP's p1076 "Let onboarding render several shop pages at once" had a target, a "Done when" note, crawler ops train working on it
+ * and a waitFor, and on 10-28 loose_goals told the chat to add a step under it in two check-ins in a row while its due list said to add none.
  */
-export const looseGoals = (board: ChatBoard | null): PlanItem[] => openTops(board?.plan ?? []).filter(goal => !goal.children.length);
+export const looseGoals = (board: ChatBoard | null, facts: readonly JobFact[] = []): PlanItem[] =>
+  openTops(board?.plan ?? []).filter(goal => !goal.children.length &&
+    !(hasDoneLine(goal) && (!!goal.waitFor?.trim() || ownerOf(goal, facts)?.state === "working")));
 /** An open goal past BOARD_LIMITS.openGoals that has no number, or no live job to push it: `open` is how many open goals the board holds. */
 export interface ExtraGoal { goal: PlanItem; lacks: "number" | "owner"; open: number }
 /**

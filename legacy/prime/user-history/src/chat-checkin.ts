@@ -199,7 +199,7 @@ export function checkInPrecheck(previous: CheckInMemory | undefined, facts: read
   return { memory: { at: now, steps, since, goals: goals.memos, jobs: pushed.memos }, jobs: pushed.pushes, steps: goaled, scope: context.boardError ? [] : scopeMisses(board, context.handoffs ?? [], context.self ?? []), gates,
     stalled: context.boardError ? [] : stalledSteps(goaled, steps, context.rows ?? [], self, now, context.train, movers).filter(stall => !onOthers.has(stall.view.item.id)),
     goals: goals.pushes, blocked, done,
-    loose: context.boardError ? [] : looseGoals(board), extra: extraGoals(goals.pushes), underClosed: context.boardError ? [] : openUnderClosed(board),
+    loose: context.boardError ? [] : looseGoals(board, facts), extra: extraGoals(goals.pushes), underClosed: context.boardError ? [] : openUnderClosed(board),
     held: context.boardError ? [] : heldElsewhere(goaled, board, context.rows ?? [], self, context.jobs, paused),
     noProgress: context.boardError ? null : noProgress(board, goaled, steps, since, context.rows ?? [], self, now, context.train, queued, { done, prs: doneFacts.prs }, movers),
     waitsMet: context.boardError ? [] : [...waitsMet(goaled, board, context.rows ?? [], self, context.linked), ...deadRunWaits(goaled, context.train, now)],

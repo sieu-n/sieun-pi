@@ -38,5 +38,33 @@ test("a step with a target under an area is no loose goal", () => {
 
 test("a top-level item with no steps is still a loose goal, with or without a target", () => {
   const bare: PlanItem = { id: "p91", text: "Simplify the box's web addresses", status: "doing", children: [] };
-  assert.deepEqual(loose([p829, bare, { ...p683, id: "p700" }]), ["p91", "p700"]);
+  const { job: _job, waitFor: _wait, ...ownerless } = p683;
+  assert.deepEqual(loose([p829, bare, { ...ownerless, id: "p700" }]), ["p91", "p700"]);
+});
+
+// Crawler VP 10-28: loose_goals told the chat to add a step under p1076 in two check-ins in a row while its due list said to add none. p1076
+// is one finishable goal with a target, a "Done when" note, a working owner thread and a waitFor, so a step under it would copy it.
+const p1076: PlanItem = { id: "p1076", text: "Let onboarding render several shop pages at once, so busy signups still get countries and prices", status: "doing",
+  job: "crawler ops train", sessionId: "01a15984-a584-7668-aaec-d5a67c824796",
+  note: "Asked by mac-management. Done when the slot count comes from measured headroom on staging and prod, 3 parallel renders finish under 60 s on staging.",
+  waitFor: "crawler ops train measures one 3-at-once render on crawler-staging now",
+  target: { metric: "Onboarding shop renders that finish under 60 s when 3 run at once on staging", target: 3, unit: "renders", direction: "up" } as GoalTarget,
+  children: [] };
+const train: JobFact = { key: "thread:01a15984-a584-7668-aaec-d5a67c824796", name: "crawler ops train", state: "working", activityAt: now - 60_000 };
+
+test("a top-level goal with a done line and a live owner is no loose goal", () => {
+  assert.deepEqual(loose([p1076], [train]), []);
+  const { waitFor: _wait, ...noWait } = p1076;
+  assert.deepEqual(loose([noWait], [train]), []);
+  assert.deepEqual(loose([p1076]), []);
+  const { target: _target, ...noteOnly } = p1076;
+  assert.deepEqual(loose([noteOnly], [train]), []);
+});
+
+test("a top-level goal with a done line but no live owner, or a live owner but no done line, is still loose", () => {
+  const { waitFor: _wait, ...noWait } = p1076;
+  assert.deepEqual(loose([noWait]), ["p1076"]);
+  assert.deepEqual(loose([noWait], [{ ...train, state: "ended" }]), ["p1076"]);
+  const { target: _target, note: _note, ...noDoneLine } = p1076;
+  assert.deepEqual(loose([noDoneLine], [train]), ["p1076"]);
 });
