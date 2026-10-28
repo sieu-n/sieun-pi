@@ -81,6 +81,7 @@ export class App {
         this.sidebarSoon();
       },
     }, log);
+    this.boards.selfUrl = `http://127.0.0.1:${config.port}`;
     this.threads.onDoc = (thread, name, value) => {
       if (name === "chat.board") this.boards.docChanged(thread, value);
     };

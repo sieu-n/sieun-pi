@@ -3,6 +3,7 @@
  * over the last five days with repeated words (canary, relay, migration) so search can rank, filter by date and by author.
  */
 import { mkdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ChatBoard, PlanItem } from "../../web/src/lib/api/types.ts";
 import type { Duty, DutyRunRecord } from "../../web/src/lib/api/shared/chat-duties.ts";
@@ -157,7 +158,8 @@ export function seedFixture(host: FixtureHost, dataDir: string, now = Date.now()
 
   const duty = (id: string, name: string, goal: string, metricKey: string, target: number): Duty => ({
     id, name, ownerWords: `keep ${name.toLowerCase()} healthy`, goal, metrics: [{ key: metricKey, label: name, op: ">=", target, unit: "%", headline: true }],
-    schedule: { kind: "daily", at: "07:40" }, precheck: { command: ["true"], cwd: "/home/sieun", timeoutMs: 60_000 }, onMiss: "Find the cause and fix it.", status: "active",
+    schedule: { kind: "daily", at: "07:40" },
+    precheck: { command: ["node", "-e", `require("fs").writeFileSync(process.env.OUTPUT_FILE, JSON.stringify({ metrics: { ${metricKey}: ${target + 0.5} } }))`], cwd: tmpdir(), timeoutMs: 60_000 }, onMiss: "Find the cause and fix it.", status: "active",
     createdAt: at(5), updatedAt: at(1), runCount: 3, lastRunAt: at(0, -8),
   });
   const run = (dutyId: string, key: string, when: number, value: number, target: number): DutyRunRecord => ({

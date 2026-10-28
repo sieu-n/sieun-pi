@@ -243,6 +243,40 @@ describe("boards", () => {
     assert.ok((await s.get("/api/for-you")).items.some((i: any) => i.chatId === ids.frontend && i.todo.text === "Moved ask"));
   });
 
+  test("a duty run runs its precheck, records the judged run, and a miss starts a duty job whose answer reaches the chat", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "duty-"));
+    const file = join(s.app.store.dir, "boards", ids.frontend, "duties.json");
+    mkdirSync(join(s.app.store.dir, "boards", ids.frontend), { recursive: true });
+    const script = `const fs = require("fs"); const seen = JSON.parse(fs.readFileSync(process.env.STATE_FILE, "utf8")); ` +
+      `fs.writeFileSync(process.env.STATE_FILE, JSON.stringify({ runs: (seen.runs ?? 0) + 1 })); ` +
+      `fs.writeFileSync(process.env.OUTPUT_FILE, JSON.stringify({ metrics: { up: (seen.runs ?? 0) === 0 ? 90 : 100 }, flagged: [] }))`;
+    const duty = { id: "d9", name: "Spec uptime", ownerWords: "keep it up", goal: "it stays up", metrics: [{ key: "up", label: "Up", op: ">=", target: 99, headline: true }],
+      schedule: { kind: "daily", at: "07:00" }, precheck: { command: ["node", "-e", script], cwd: dir, timeoutMs: 30_000 }, onMiss: "fix it", status: "active", createdAt: Date.now(), updatedAt: Date.now(), lastRunAt: Date.now(), runCount: 0 };
+    writeFileSync(file, JSON.stringify({ duties: [duty], runs: {} }));
+    const ran = await s.send("POST", `/api/threads/${ids.frontend}/duties`, { duty: "d9", action: "run" });
+    assert.equal(ran.status, 200);
+    const missed = await until(() => s.get(`/api/threads/${ids.frontend}/duties`), v => v.duties[0].runs.length === 1);
+    const run = missed.duties[0].runs[0];
+    assert.equal(run.verdict, "missed");
+    assert.equal(run.metrics.up.value, 90);
+    assert.match(run.job.name, /^Spec uptime duty /);
+    const agents = await s.get<any[]>("/api/agents");
+    assert.equal(agents.find(a => a.id === run.job.id).parent.id, ids.frontend);
+    await until(() => s.get<TimelinePage>(`/api/c/${ids.frontend}/items?limit=200`), p => p.items.some(i => i.kind === "message" && i.text.startsWith("[duty d9]") && i.author.id === run.job.id));
+    await s.send("POST", `/api/threads/${ids.frontend}/duties`, { duty: "d9", action: "run" });
+    const met = await until(() => s.get(`/api/threads/${ids.frontend}/duties`), v => v.duties[0].runs.length === 2);
+    assert.equal(met.duties[0].runs[0].verdict, "met");
+    assert.equal(met.duties[0].runs[0].job, undefined, "a met run with nothing flagged starts no job");
+  });
+
+  test("an agent's board op through the API applies as the agent", async () => {
+    const result = await s.send("POST", `/api/threads/${ids.harness}/board`, { actor: "agent", ops: [{ op: "plan_add", text: "Agent step" }] });
+    assert.equal(result.status, 200, JSON.stringify(result.body));
+    const refused = await s.send("POST", `/api/threads/${ids.harness}/board`, { actor: "agent", ops: [{ op: "todo_update", id: "t2", reply: "yes" }] });
+    assert.equal(refused.status, 400);
+    assert.match(refused.body.error, /Only the owner answers a todo/);
+  });
+
   test("duties carry the card and the judged last run, and check-ins pause", async () => {
     const duties = await s.get(`/api/threads/${ids.harness}/duties`);
     const d1 = duties.duties.find((d: any) => d.duty.id === "d1");

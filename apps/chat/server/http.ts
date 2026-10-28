@@ -90,7 +90,13 @@ export function routes(app: App): Route[] {
       sort: q.get("sort") === "recent" ? "recent" : "relevance", limit: num(q.get("limit")), cursor: str(q.get("cursor")),
     })),
     route("GET", "/api/threads/:id/board", async (_r, p) => app.boards.view(p.id!)),
-    route("POST", "/api/threads/:id/board", async (_r, p, _q, body) => app.boards.apply(p.id!, ((await body()) as { ops: unknown }).ops)),
+    route("POST", "/api/threads/:id/board", async (_r, p, _q, body) => {
+      const input = (await body()) as { ops: unknown; actor?: string };
+      // A refused op (a bad shape, or an agent answering a todo) is the caller's error.
+      return app.boards.apply(p.id!, input.ops, input.actor === "agent" ? "agent" : "owner").catch(error => {
+        throw new BadRequest(error instanceof Error ? error.message : String(error));
+      });
+    }),
     route("POST", "/api/threads/:id/import-prime", async (_r, p, _q, body) =>
       app.boards.importPrime(p.id!, String(((await body()) as { prime?: string }).prime ?? ""), app.config.sharedDir)),
     route("GET", "/api/threads/:id/agents", async (_r, p) => ({ agents: app.boards.chatAgents(p.id!) })),

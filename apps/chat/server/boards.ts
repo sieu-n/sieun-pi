@@ -3,11 +3,13 @@
  * the board reducer copied from today's chat (web/src/lib/api/shared/chat-board.ts). Duties and the check-in clock live in the chat
  * server's data dir, and a due duty, check-in or wake reaches the chat as an input from "board".
  */
-import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { BoardOp, BoardRow, BoardView, ChatBoard, CheckInPatch, CheckInView, DutyAction, DutyView, ForYouItem, PlanItem } from "../web/src/lib/api/types.ts";
 import { applyBoardOp, BOARD_PREFIX, emptyBoard, needsGo, nextIds, parseBoard, parseBoardOps, stepGo } from "../web/src/lib/api/shared/chat-board.ts";
-import type { Duty, DutyRunRecord, DutySchedule } from "../web/src/lib/api/shared/chat-duties.ts";
+import type { Duty, DutyRunRecord, DutySchedule, DutyTrigger } from "../web/src/lib/api/shared/chat-duties.ts";
+import { DEFAULT_MODEL } from "./config.ts";
+import { measure, runStamp } from "./duty-run.ts";
 import { dutyCard, judgedRun, missStreak, type DutyCardModel } from "../web/src/lib/api/shared/duty-card.ts";
 import type { ChatAgent } from "../web/src/lib/api/shared/types.ts";
 import type { Host } from "./host/types.ts";
@@ -59,6 +61,9 @@ export class Boards {
   private readonly cache = new Map<string, { board: ChatBoard | null; at: number }>();
   private timer?: NodeJS.Timeout;
 
+  /** This server's own base URL, which a duty job's brief names for the board. */
+  selfUrl = "http://127.0.0.1:5184";
+
   constructor(readonly host: Host, readonly store: Store, readonly threads: Threads, readonly events: BoardEvents, private readonly log: (line: string) => void = () => {}) {}
 
   chats(): string[] {
@@ -81,13 +86,13 @@ export class Boards {
   }
 
   /** The owner's board ops; each one also reaches the chat as a `[board]` line, as today. */
-  async apply(chat: string, raw: unknown): Promise<BoardView> {
+  async apply(chat: string, raw: unknown, actor: "owner" | "agent" = "owner"): Promise<BoardView> {
     const ops: BoardOp[] = parseBoardOps(raw);
     const now = new Date().toISOString();
     let board = (await this.board(chat)) ?? emptyBoard(now);
     const summaries: string[] = [];
     for (const op of ops) {
-      const result = applyBoardOp(board, op, "owner", now, nextIds(board));
+      const result = applyBoardOp(board, op, actor, now, nextIds(board));
       board = result.board;
       summaries.push(result.summary);
     }
@@ -95,7 +100,7 @@ export class Boards {
     this.cache.set(chat, { board, at: Date.now() });
     this.events.board(chat, board, awaitingGo(board));
     this.events.forYou(await this.forYouCount());
-    if (summaries.length) {
+    if (summaries.length && actor === "owner") {
       await this.host.submit(chat, {
         text: `${BOARD_PREFIX}${summaries.join("\n")}`, whenBusy: "followUp", requestId: `board:${chat}:${board.rev}`,
         entry: { kind: "agent.message", data: { from: "owner", via: "board" } },
@@ -195,6 +200,13 @@ export class Boards {
     file.runs = Object.fromEntries(Object.entries(runs).filter(([id]) => file.duties.some(d => d.id === id)));
     file.checkIn = { everyMs: everyMs ?? file.checkIn?.everyMs ?? DEFAULT_CHECK_IN_MS, pausedUntil: null, lastAt: prime.checkIn?.lastRunAt ?? null };
     this.save(chat, file);
+    // Each duty's precheck state (`<duty>.state.json`) carries what the last run saw, so the next run reads changes since then.
+    const stateDir = join(this.store.dir, "boards", chat, "duties");
+    mkdirSync(stateDir, { recursive: true });
+    for (const duty of file.duties) {
+      const from = join(primeDir, "duties", primeId, `${duty.id}.state.json`);
+      if (existsSync(from)) copyFileSync(from, join(stateDir, `${duty.id}.state.json`));
+    }
     return { board: board !== null, duties: file.duties.length, runs: Object.values(file.runs).reduce((sum, list) => sum + list.length, 0), checkInMs: everyMs };
   }
 
@@ -241,20 +253,75 @@ export class Boards {
     if (action.action === "pause") duty.status = "paused";
     else if (action.action === "resume") duty.status = "active";
     else if (action.action === "schedule") duty.schedule = action.schedule as DutySchedule;
-    else if (action.action === "run") await this.runDuty(chat, duty, "owner");
     duty.updatedAt = Date.now();
     this.save(chat, file);
+    if (action.action === "run") void this.runDuty(chat, duty, "owner");
     return this.duties(chat);
   }
 
-  private async runDuty(chat: string, duty: Duty, trigger: string): Promise<void> {
-    duty.runCount += 1;
-    duty.lastRunAt = Date.now();
-    await this.host.submit(chat, {
-      text: `[duty ${duty.id}] ${duty.name}: run it now (${trigger}). Goal: ${duty.goal}. On a miss: ${duty.onMiss}`, whenBusy: "followUp",
-      requestId: `duty:${chat}:${duty.id}:${duty.runCount}`, entry: { kind: "agent.message", data: { from: "board", via: `duty ${duty.id}` } },
-    });
+  private readonly dutyRuns = new Map<string, Promise<void>>();
+
+  /**
+   * One duty run: the precheck, the judged record, and a duty job when something is due (`measure` in duty-run.ts). The job is a durable
+   * thread filed under the chat; its final answer reaches the chat as an input from that job. A second start while one runs shares it.
+   */
+  private runDuty(chat: string, duty: Duty, trigger: DutyTrigger): Promise<void> {
+    const key = `${chat}/${duty.id}`;
+    const going = this.dutyRuns.get(key);
+    if (going) return going;
+    const run = this.runDutyOnce(chat, duty.id, trigger).catch(error => this.log(`duty ${key} failed: ${String(error)}`)).finally(() => this.dutyRuns.delete(key));
+    this.dutyRuns.set(key, run);
+    return run;
   }
+
+  private async runDutyOnce(chat: string, dutyId: string, trigger: DutyTrigger): Promise<void> {
+    const before = this.file(chat);
+    const duty = before.duties.find(d => d.id === dutyId);
+    if (!duty) return;
+    duty.lastRunAt = Date.now();
+    duty.runCount += 1;
+    this.save(chat, before);
+    const dir = join(this.store.dir, "boards", chat, "duties");
+    const working = new Set(this.threads.agents().filter(a => a.status === "working").map(a => a.name));
+    const { record, brief } = await measure({
+      duty, chat: { id: chat, name: this.threads.thread(chat)?.name ?? chat }, dir, trigger, previous: before.runs[dutyId] ?? [], board: await this.board(chat),
+      liveJob: job => working.has(job), boardApi: `${this.selfUrl}/api/threads/${chat}/board`, log: this.log,
+    });
+    if (brief) {
+      const name = `${duty.name} duty ${runStamp(record.at)}`;
+      try {
+        const job = await this.host.create({ name, model: DEFAULT_MODEL, thinkingLevel: "high", ...(duty.precheck.cwd ? { cwd: duty.precheck.cwd } : {}) });
+        this.store.state.threads[job.id] = { kind: "job", parent: chat };
+        this.store.saveState();
+        await this.threads.refresh().catch(() => undefined);
+        const submitted = await this.host.submit(job.id, { text: brief, requestId: `duty:${chat}:${duty.id}:${record.at}`, entry: { kind: "agent.message", data: { from: chat, via: `duty ${duty.id}` } } });
+        record.job = { id: job.id, name };
+        void this.reportDutyJob(chat, duty, job.id, submitted.submission);
+      } catch (error) {
+        this.log(`duty ${chat}/${duty.id}: the duty job did not start: ${String(error)}`);
+      }
+    }
+    const after = this.file(chat);
+    after.runs[dutyId] = [record, ...(after.runs[dutyId] ?? [])].sort((a, b) => b.at - a.at).slice(0, 20);
+    this.save(chat, after);
+    this.log(`duty ${chat.slice(0, 8)}/${duty.id}: ${record.verdict}, ${record.summary}${record.job ? `, job ${record.job.name}` : ""}`);
+  }
+
+  /** Posts the duty job's final answer to the chat, unless it says there is nothing to report. */
+  private async reportDutyJob(chat: string, duty: Duty, job: string, submission: number): Promise<void> {
+    try {
+      const settled = await this.host.wait(job, submission);
+      if (settled.answer === undefined) return;
+      const got = await this.host.entries(job, { before: settled.answer + 1, limit: 1 });
+      const message = got.entries[0]?.model?.[0];
+      const text = !message ? "" : typeof message.content === "string" ? message.content : message.content.flatMap(b => (b.type === "text" ? [b.text] : [])).join("\n\n");
+      if (!text.trim() || /^nothing to report\.?$/i.test(text.trim())) return;
+      await this.host.submit(chat, { text: `[duty ${duty.id}] ${text}`, whenBusy: "followUp", requestId: `duty-report:${job}`, entry: { kind: "agent.message", data: { from: job, via: `duty ${duty.id}` } } });
+    } catch (error) {
+      this.log(`duty ${chat}/${duty.id}: its job's report did not reach the chat: ${String(error)}`);
+    }
+  }
+
 
   checkIn(chat: string): CheckInView {
     const state = this.file(chat).checkIn ?? { everyMs: DEFAULT_CHECK_IN_MS, pausedUntil: null, lastAt: null };
@@ -310,13 +377,13 @@ export class Boards {
           }).catch(error => this.log(`check-in for ${chat} failed: ${String(error)}`));
         }
       }
+      if (dirty) this.save(chat, file);
+      // Each due duty runs on its own; runDuty writes the duties file itself, so the tick does not wait for a precheck.
       for (const duty of file.duties) {
         if (duty.status !== "active") continue;
         if (nextRun(duty.schedule, duty.lastRunAt ?? duty.createdAt) > now) continue;
-        await this.runDuty(chat, duty, "schedule").catch(error => this.log(`duty ${duty.id} for ${chat} failed: ${String(error)}`));
-        dirty = true;
+        void this.runDuty(chat, duty, "schedule");
       }
-      if (dirty) this.save(chat, file);
     }
     await this.deliverWakes(now);
   }

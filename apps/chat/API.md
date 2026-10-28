@@ -109,13 +109,15 @@ Pages call the server through `web/src/lib/api` (`import { api, timeline, agents
 | `api.dutyAction(chat, {duty, action, schedule})` | `POST /api/threads/:id/duties` | The duties after run, pause, resume or schedule. |
 | `api.checkIn(chat)` | `GET /api/threads/:id/check-in` | `CheckInView`. |
 | `api.setCheckIn(chat, {everyMs, pause})` | `POST /api/threads/:id/check-in` | The new `CheckInView`; pause is 1h, tomorrow, forever or null. |
-| `api.importPrime(chat, primeId)` | `POST /api/threads/:id/import-prime {prime}` | `{board, duties, runs, checkInMs}`: copies a moved Prime chat's board, duties, their last 20 runs each and its check-in interval from Prime's chat data dir into the thread. |
+| `api.importPrime(chat, primeId)` | `POST /api/threads/:id/import-prime {prime}` | `{board, duties, runs, checkInMs}`: copies a moved Prime chat's board, duties, their last 20 runs each, each duty's precheck state and its check-in interval from Prime's chat data dir into the thread. |
 | `api.forYou()` | `GET /api/for-you` | `{items: ForYouItem[]}` across every chat, open and done, newest first. |
 | `api.boards()` | `GET /api/boards` | `BoardRow[]`: per chat its progress, open asks, steps awaiting a go, check-in and duties. |
 
 1. A chat's board is the `chat.board` document of its root conversation in pi-host, changed through today's reducer (`lib/api/shared/chat-board.ts`).
 2. Each owner op also reaches the chat as a `[board] ...` input, as today.
-3. A due check-in, duty or wake reaches the chat as an input from `board`; a wake is a JSON file `{id, thread, conversation?, at, text}` in `<data dir>/wakes/`.
+3. A duty run works as in today's chat: the server runs the duty's precheck command with STATE_FILE, LAST_RUNS_FILE, OUTPUT_FILE and PRECHECK_MODE, judges its metrics, and records the run; when something is due (a miss, an error, an overrun or flagged items) it starts a duty job, a thread filed under the chat, whose final answer reaches the chat as a `[duty <id>]` input from that job.
+4. A duty job, or any agent, changes a board with `POST /api/threads/:id/board {actor: "agent", ops}`; only the owner answers a todo, and a refused op answers 400.
+5. A due check-in or wake reaches the chat as an input from `board`; a wake is a JSON file `{id, thread, conversation?, at, text}` in `<data dir>/wakes/`.
 
 ## Usage, pool and hosts
 
