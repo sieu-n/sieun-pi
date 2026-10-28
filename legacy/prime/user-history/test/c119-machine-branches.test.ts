@@ -3,13 +3,14 @@
 // 10-22 gave each job its own dev/sieun-mac-<job> branch and 34 such branches reached origin, while the ledger line, the board skill and the
 // duties still named dev/sieun-mac-a, sieun/dev or "any dev/<name>". Every check below fails on the tip before this fix.
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { briefCheck, briefCheckNote } from "../src/shared/brief-check.ts";
 import { upsertDuty } from "../src/shared/chat-duties.ts";
-import { dutyStrayBranches, MACHINE_BRANCHES, strayBranches } from "../src/shared/machine-branches.ts";
+import { dutyStrayBranches, harnessStrayBranches, MACHINE_BRANCHES, strayBranches } from "../src/shared/machine-branches.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "../../../..");
@@ -72,4 +73,24 @@ test("no checked-in duty, skill or rule file names a retired branch", () => {
   }
   assert.deepEqual(faults, []);
   assert.match(readFileSync(join(root, "skills/board/references/git.md"), "utf8"), /every chat and job on the Mac commits on dev\/sieun-mac, with no per-job or per-session branch/);
+});
+
+test("a harness entry that names a retired branch is a fault, and the published store holds none", t => {
+  const note = (title: string, content: string) => ({ id: "x", title, content });
+  const state = { entries: {
+    prompt: {
+      c119_v1: note("Each developer works on their own dev/<name> branch", "1. Demo frontend work lives on the owner's Mac. Commit it on dev/sieun-mac-a in logical commits and push to origin as a backup."),
+      c119_v2: note("One checkout and one dev branch per machine", "us-metal02 uses dev/sieun, and the Mac uses dev/sieun-mac. Never create a per-job branch, clone or worktree."),
+    },
+    memory: { frontend_bro: note("Frontend bro owns p1", "The frontend bro chat owns only p1: the 5180 design sandbox apps in apps/virev-demo on dev/sieun-mac-a.") },
+    skill: "not a map",
+  } };
+  assert.deepEqual(harnessStrayBranches(state), ["prompt:c119_v1: dev/<name>, dev/sieun-mac-a", "memory:frontend_bro: dev/sieun-mac-a"]);
+  assert.deepEqual(harnessStrayBranches(null), []);
+
+  // Every Prime kernel's digest loads the published global store; RLM_GLOBAL_HARNESS_STATE_DIR points a clean-room trial at its own copy.
+  const store = join(process.env.RLM_GLOBAL_HARNESS_STATE_DIR ?? join(homedir(), ".prime/agent/harness"), "harness_state.json");
+  if (!existsSync(store)) return t.skip(`no harness store at ${store}`);
+  assert.deepEqual(harnessStrayBranches(JSON.parse(readFileSync(store, "utf8"))), [],
+    "update each listed global entry with rlm.harness.update_prompt_note or update_memory (global_=True) to name dev/sieun or dev/sieun-mac");
 });

@@ -52,6 +52,30 @@ export function dutyStrayBranches(definition: { goal?: unknown; onMiss?: unknown
   return [...new Set(parts.flatMap(part => typeof part === "string" ? strayBranches(part, { retiredShared: true }) : []))];
 }
 
+/** The entry kinds of a continual harness store (`harness_state.json`), whose global entries load into every session's digest. */
+const HARNESS_KINDS = ["prompt", "memory", "skill", "subagent"] as const;
+
+/**
+ * Each harness entry whose title or content names a branch c119 retired, as `<kind>:<id>: <names>`. On 2026-10-28 four global prompt notes
+ * still said demo work goes on dev/sieun-mac-a, after the board skill, duties and briefs had moved to dev/sieun-mac, and every session's
+ * digest carried them. `state` is the parsed store; a kind or entry of another shape is skipped.
+ */
+export function harnessStrayBranches(state: unknown): string[] {
+  const entries = typeof state === "object" && state !== null ? (state as { entries?: unknown }).entries : undefined;
+  if (typeof entries !== "object" || entries === null) return [];
+  const faults: string[] = [];
+  for (const kind of HARNESS_KINDS) {
+    const byId = (entries as Record<string, unknown>)[kind];
+    if (typeof byId !== "object" || byId === null) continue;
+    for (const [id, entry] of Object.entries(byId)) {
+      const { title, content } = (entry ?? {}) as { title?: unknown; content?: unknown };
+      const stray = [...new Set([title, content].flatMap(part => typeof part === "string" ? strayBranches(part) : []))];
+      if (stray.length) faults.push(`${kind}:${id}: ${stray.join(", ")}`);
+    }
+  }
+  return faults;
+}
+
 /** The fix line a check prints next to stray branch names. */
 export const STRAY_BRANCH_FIX = "Each machine has one checkout and one dev branch (c119): dev/sieun on us-metal02 and dev/sieun-mac on the Mac. " +
   "Name the machine's branch, and never give a job its own branch, clone or worktree.";
