@@ -303,6 +303,14 @@ test("a push whose named step waits only on an open For you todo owes no followu
   assert.equal(pushSettled({ plan: [{ ...step, waitFor: "the next cut" }], todos: [todo] } as unknown as ChatBoard, ["p518"]), false);
 });
 
+test("a push that named a duty settles once that duty is no longer red", () => {
+  const board = { plan: [{ id: "p38", text: "walk", status: "done", children: [] }], todos: [] } as unknown as ChatBoard;
+  assert.equal(pushSettled(board, ["p38", "checkin"]), true);
+  assert.equal(pushSettled(board, ["p38", "checkin"], new Set(["checkin"])), false);
+  assert.equal(pushSettled(board, ["d2"], new Set(["d3"])), true);
+  assert.equal(pushSettled(board, ["d2"], new Set(["d2"])), false);
+});
+
 // From 10-24 to 10-26 d9 pushed frontend bro 6 times while every turn of it failed on its Manual pi-pool account's 429.
 const turn = (at: string, failed: boolean) => JSON.stringify({ type: "message", timestamp: at, message: { role: "assistant", provider: "anthropic",
   ...failed ? { stopReason: "error", errorMessage: "Provider rate limit exceeded (rate_limit_error, 429). pi-pool: Manual f6cee98e-a8df remains selected." } : { stopReason: "stop" } } });

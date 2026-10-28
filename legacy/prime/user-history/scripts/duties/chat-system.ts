@@ -423,15 +423,18 @@ export interface Push { at: number; chat: string; tag: string; items: string[]; 
 export interface PushCheck { push: Push; delivered: boolean; read: boolean; jobStarted: boolean; away?: string; settled?: boolean }
 
 /**
- * Whether every step a push named has closed on the chat's board since, or waits on an open For you todo (`heldByTodo`): then the chat acted
- * and owes no followup. On 10-24 the 23:10 run asked to steer ops guy again about p475, which the chat had dropped as a duplicate of p450,
+ * Whether every step a push named has closed on the chat's board since, or waits on an open For you todo (`heldByTodo`), and every duty it
+ * named is no longer red (`redDuties`, the chat's red duty ids): then the chat acted and owes no followup. On 10-24 the 23:10 run asked to steer ops guy again about p475, which the chat had dropped as a duplicate of p450,
  * whose job sleeps on a wake, and the 20:53Z run asked to steer ops guy again about p518, which waited only on the owner's t34.
  */
-export function pushSettled(board: ChatBoard | null, items: readonly string[]): boolean {
+export function pushSettled(board: ChatBoard | null, items: readonly string[], redDuties: ReadonlySet<string> = new Set()): boolean {
   if (!items.length || !board) return false;
   const steps = new Map<string, PlanItem>();
   walk(board.plan, item => { steps.set(item.id, item); });
   return items.every(id => {
+    // A duty the push named (d2, checkin) is settled once it reads green: on 10-28 the 10:50Z run asked to steer (temp) mcp again about
+    // "p30, p38, checkin" after its check-in went green at 10:02Z and both steps were done or held on For you t11.
+    if (/^(?:d\d+|checkin)$/.test(id)) return !redDuties.has(id);
     const step = steps.get(id);
     return step !== undefined && (!OPEN.has(step.status) || heldByTodo(step, board.todos));
   });
@@ -997,7 +1000,7 @@ async function main(): Promise<void> {
     const reached = file ? pushReached(await tail(file.file, TRANSCRIPT_TAIL_BYTES), push.tag) : { delivered: false, read: false };
     const offline = file && away.some(host => host.name === file.host) ? { away: file.host } : {};
     followUps.push({ push, ...reached, jobStarted: (jobs.get(push.chat) ?? []).some(row => ms(row.created) > push.at), ...offline,
-      ...pushSettled(linked(push.chat), push.items) ? { settled: true } : {} });
+      ...pushSettled(linked(push.chat), push.items, new Set(red.filter(duty => duty.chat === push.chat).map(duty => duty.duty))) ? { settled: true } : {} });
   }
   const tag = pushTag(now);
   const name = (chat: string): string => names.get(chat) ?? chat.slice(0, 8);
