@@ -6,6 +6,7 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { DutyMetric, FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
+import { checkCleanup } from "./test-org-cleanup.ts";
 import { DAY, MINUTE, REPO, SOURCE_DEADLINE_MS, frameRows, grafanaClient, readGrafanaAuth, settle, unmeasuredFlag, utc } from "./estate-reads.ts";
 
 /**
@@ -362,7 +363,8 @@ async function stagingProbes(signal: AbortSignal): Promise<ProbeResult[]> {
     return await probeEnv("staging", key, { "x-vercel-protection-bypass": bypass }, query, signal);
   } finally {
     if (keyId) await post("/api/test/revoke-key", { keyId }).catch(() => undefined);
-    await post("/api/test/cleanup", { orgId }).catch(() => undefined);
+    // A cleanup that fails throws here, so "staging probes" becomes a source error naming the org and its metrics are unmeasured, never a pass.
+    await checkCleanup(post("/api/test/cleanup", { orgId }), orgId);
   }
 }
 

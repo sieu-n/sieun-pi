@@ -6,6 +6,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
+import { checkCleanup } from "./test-org-cleanup.ts";
 
 /**
  * The api portal vp chat's "Portal matches crawler" precheck (`node --import tsx scripts/duties/portal-parity.ts`). No model call.
@@ -307,9 +308,11 @@ export function routeVerdict(route: Route, ops: Map<string, Operation> | null, b
 export function parityMetrics(input: {
   routes: readonly Route[]; crawler: Record<Env, OpenApi | null>; docs: Record<Env, OpenApi | null>; probes: Record<Env, readonly ProbeResult[]>;
   sourceErrors: readonly string[]; previous?: ParityState | undefined; at: number; prodCostUsd?: number; paid?: ReadonlySet<string>;
+  cleanupErrors?: readonly string[];
 }): { output: PrecheckOutput; state: ParityState } {
   const { routes, at } = input;
-  const flagged: FlaggedSlice[] = input.sourceErrors.map(excerpt => ({ at, kind: "source_error", excerpt: excerpt.slice(0, 300) }));
+  const cleanupErrors = input.cleanupErrors ?? [];
+  const flagged: FlaggedSlice[] = [...input.sourceErrors, ...cleanupErrors].map(excerpt => ({ at, kind: "source_error", excerpt: excerpt.slice(0, 300) }));
   const crawlerOps = Object.fromEntries(ENVS.map(env => [env, input.crawler[env] && operations(input.crawler[env]!)])) as Record<Env, Map<string, Operation> | null>;
   const listedSomewhere = (route: Route) => ENVS.some(env => appliesTo(route, env) && (!crawlerOps[env] || crawlerOps[env]!.has(route.crawler)));
   for (const route of routes) if (!listedSomewhere(route)) flagged.push({ at, kind: "crawler_route_gone", excerpt: `${route.crawler} is in neither crawler openapi it applies to; drop it from portal-parity.routes.json if that is meant` });
@@ -347,7 +350,9 @@ export function parityMetrics(input: {
   metrics.routes_failing_portal = portalRoutes.length;
   metrics.routes_failing_crawler = either(["crawler"]).filter(route => !portalSet.has(route)).length;
   metrics.routes_scored = scored.length;
-  metrics.source_errors = input.sourceErrors.length;
+  metrics.source_errors = input.sourceErrors.length + cleanupErrors.length;
+  // A run whose staging test orgs were not deleted never passes: its staging share is unmeasured (test-org-cleanup.ts).
+  if (cleanupErrors.length) metrics.staging_working_pct = UNMEASURED_PCT;
   if (input.prodCostUsd !== undefined) metrics.prod_cost_usd = Math.round(input.prodCostUsd * 10_000) / 10_000;
   const paid = input.probes.prod.filter(probe => probe.costUsd).sort((a, b) => b.costUsd! - a.costUsd!);
   if (paid.length) flagged.push({ at, kind: "prod_cost", excerpt: `Prod cost per call, highest first: ${paid.map(probe => `${probe.op} $${probe.costUsd}`).join(", ")}`.slice(0, 600) });
@@ -389,7 +394,7 @@ async function seedOrg(convex: string, secret: string, index: number, at: number
 async function cleanupOrg(convex: string, secret: string, org: Org): Promise<void> {
   const post = (path: string, body: object) => fetch(`${convex}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...body, secret }) });
   if (org.keyId) await post("/api/test/revoke-key", { keyId: org.keyId });
-  await post("/api/test/cleanup", { orgId: org.id });
+  await checkCleanup(post("/api/test/cleanup", { orgId: org.id }), org.id);
 }
 
 type Answer = ProbeResult & { body: unknown; retryAfterS?: number };
@@ -671,6 +676,7 @@ async function main(): Promise<void> {
   const previous = stateFile ? await readFile(stateFile, "utf8").then(parseState).catch(() => undefined) : undefined;
   const routes = (JSON.parse(await readFile(join(HERE, "portal-parity.routes.json"), "utf8")) as { routes: Route[] }).routes;
   const sourceErrors: string[] = [];
+  const cleanupErrors: string[] = [];
   const attempt = async <T>(what: string, run: () => Promise<T>): Promise<T | null> => {
     try { return await run(); } catch (error) { sourceErrors.push(`${what}: ${error instanceof Error ? error.message : String(error)}`); return null; }
   };
@@ -714,9 +720,9 @@ async function main(): Promise<void> {
     ]);
   } finally {
     if (env && secret) await Promise.all(orgs.map(org => cleanupOrg(env.urls.convex!, secret, org).catch((error: unknown) =>
-      sourceErrors.push(`cleanup of test org ${org.id} failed: ${error instanceof Error ? error.message : String(error)}`))));
+      cleanupErrors.push(error instanceof Error ? error.message : `cleanup of test org ${org.id} failed: ${String(error)}`))));
   }
-  const result = parityMetrics({ routes, crawler: { prod: crawlerProd, staging: crawlerStaging }, docs: { prod, staging }, probes, sourceErrors, previous, at: start, ...(skips ? { paid: skips.paid } : {}), ...(probes.prod.length ? { prodCostUsd: spend.usd } : {}) });
+  const result = parityMetrics({ routes, cleanupErrors, crawler: { prod: crawlerProd, staging: crawlerStaging }, docs: { prod, staging }, probes, sourceErrors, previous, at: start, ...(skips ? { paid: skips.paid } : {}), ...(probes.prod.length ? { prodCostUsd: spend.usd } : {}) });
   await writeFile(output, JSON.stringify(result.output, null, 2) + "\n");
   if (stateFile && (probes.prod.length || probes.staging.length)) await writeFile(stateFile, JSON.stringify(result.state) + "\n");
 }
