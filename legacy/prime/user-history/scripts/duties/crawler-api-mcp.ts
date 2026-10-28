@@ -13,7 +13,9 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  * auto-sns-agent scripts/duties/crawler/crawler-api.mjs from the API portal chat's d2 detail file, plus each Query MCP call that fails on
  * prod https://virev.ai/mcp on either tier. The supporting counts, minutes the API and its health snapshots were down in 24 h (prod
  * Prometheus through obs.virev.ai) and the Instagram posts behind the prod OpenSearch alias crawler_v3_posts (0 when the alias is off),
- * come from the same crawler-api.mjs run. The posts count keeps p689, closed on 10-24 at 1,411.8M against 1,007M.
+ * come from the same crawler-api.mjs run. The posts count keeps p689, closed on 10-24 at 1,411.8M against 1,007M. The onboarding render
+ * count, also from crawler-api.mjs, keeps p1076: 3 shop page renders fired at once at the prod crawler, counted when they answer under
+ * onboarding's 60 s render limit.
  * The MCP half calls prod the way a customer's agent does (JSON-RPC over Streamable HTTP, a bearer token): describe, a sql count, a search
  * count and the owner's follower-bucket sql (10-15 23:58Z: "팔로워 구간별로 좋아요 수 비율 분석해줘" as one group-by sql call), per tier.
  * The identity is the prod test user mcp-duty-checker with orgs org_mcp_duty_standard and org_mcp_duty_full (dataApi allow), made on 10-20
@@ -155,6 +157,7 @@ export function report(api: PrecheckOutput | Error, mcp: Record<string, CallResu
     api_down_minutes_24h: read("api_down_minutes_24h"),
     health_snapshot_down_minutes_24h: read("health_snapshot_down_minutes_24h"),
     ig_posts_searchable: read("ig_posts_searchable", -UNMEASURED),
+    onboarding_renders_3x_under_60s: read("onboarding_renders_3x_under_60s", -UNMEASURED),
   };
   const unmeasured = Object.entries(metrics).filter(([, value]) => Math.abs(value) === UNMEASURED).map(([key]) => key);
   if (unmeasured.length) flagged.push({ at: now, kind: "unmeasured", excerpt: `Not measured this run, so the value is ${UNMEASURED} or -${UNMEASURED} and counts as a miss: ${unmeasured.join(", ")}. Fix the source error first.` });

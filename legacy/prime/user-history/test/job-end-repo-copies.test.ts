@@ -4,11 +4,12 @@
 // At 16:46Z 41 `git archive <sha> apps/<app>` exports (1.9 GB), 3 bare mirrors (1.2 GB) and a .venv were still there, because only .git,
 // pnpm-workspace.yaml and scripts/repo counted as a copy.
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { open } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { endLeftovers, type LeftoverSource, openedWikiSessions, removeRepoCopies, repoCopies } from "../src/job-leftovers.ts";
+import { endLeftovers, type LeftoverSource, openedWikiSessions, removeRepoCopies, repoCopies, SCAN_CHUNK } from "../src/job-leftovers.ts";
 
 function put(root: string, path: string, text = "x"): void {
   mkdirSync(dirname(join(root, path)), { recursive: true });
@@ -46,6 +47,31 @@ test("the session folders a transcript opened come from the POST /api/agent/sess
   const file = join(dir, "t.jsonl");
   writeFileSync(file, opened + `{"text":"du: 167M\\t${"sessions/2026/10/18/1950-tip-guard-reds"}"}\n` + `{'id': 'sessions/2026/10/17/0901-py-dict', 'path': 'sessions/2026/10/17/0901-py-dict/index.html', 'version': 1}\n`);
   assert.deepEqual((await openedWikiSessions([file])).sort(), ["sessions/2026/10/17/0901-py-dict", SESSION]);
+});
+
+// 10-28 at 15:31Z d7 read us-metal02 dirty from a 1.1 s duties read while the first sweep of deleted jobs after a restart read every transcript
+// whole as UTF-8 on the main thread, up to 579 ms a block. The search now reads each file in pieces and decodes only the bytes before each
+// "/index.html", so a transcript longer than V8's longest string (about 512 MB), which the whole-file read gave up on, still names its folders.
+test("a transcript longer than the longest string is searched in pieces and still names the folder it opened", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "job-transcript-"));
+  const file = join(dir, "big.jsonl");
+  const tail = Buffer.from(opened);
+  const size = 600 * 1024 * 1024;
+  const handle = await open(file, "w");
+  try {
+    try { await handle.truncate(size); await handle.write(tail, 0, tail.length, size); } finally { await handle.close(); }
+    assert.deepEqual(await openedWikiSessions([file]), [SESSION]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("an answer that crosses two pieces of the search is found", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "job-transcript-"));
+  const files = [0, 20, opened.indexOf("index.html"), opened.length - 2].map(cut => {
+    const file = join(dir, `cut-${cut}.jsonl`);
+    writeFileSync(file, Buffer.concat([Buffer.alloc(SCAN_CHUNK - cut, 0x20), Buffer.from(opened)]));
+    return file;
+  });
+  try { for (const file of files) assert.deepEqual(await openedWikiSessions([file]), [SESSION], file); } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 test("repo copies are the folders with .git, pnpm-workspace.yaml, scripts/repo, a bare repo or an app export, plus each node_modules and .venv, and nothing above them", async () => {
