@@ -806,15 +806,16 @@ export class Duties {
   }
 
   async view(chatId: string): Promise<DutyView[]> {
-    const [file, runs, checkIn, priority] = await Promise.all([this.store.read(chatId), this.store.runs(chatId), this.host.checkIn?.view(chatId) ?? null,
-      this.host.priority?.(chatId) ?? "high" as const]);
+    const [[file, runs], checkIn, priority] = await Promise.all([this.store.read(chatId).then(async file =>
+      [file, await this.store.recentRuns(chatId, [CHECK_IN_DUTY_ID, ...file.duties.map(duty => duty.id)], VIEW_RUNS)] as const),
+      this.host.checkIn?.view(chatId) ?? null, this.host.priority?.(chatId) ?? "high" as const]);
     const now = this.now();
     const views: DutyView[] = file.duties.map(duty => ({ duty, schedule: duty.schedule, paused: duty.status === "paused", nextAt: nextRunAt(duty, now),
-      running: this.running.has(`${chatId}/${duty.id}`), runs: runs.filter(run => run.duty === duty.id).slice(0, VIEW_RUNS), priority }));
+      running: this.running.has(`${chatId}/${duty.id}`), runs: runs.get(duty.id) ?? [], priority }));
     if (!checkIn) return views;
     return [{ duty: { ...CHECK_IN_DUTY, status: checkIn.paused ? "paused" : "active" }, builtin: "checkin", schedule: { kind: "every", minutes: Math.round(checkIn.everyMs / 60_000) },
       paused: checkIn.paused, nextAt: checkIn.nextAt, running: this.running.has(`${chatId}/${CHECK_IN_DUTY_ID}`),
-      runs: runs.filter(run => run.duty === CHECK_IN_DUTY_ID).slice(0, VIEW_RUNS), priority }, ...views];
+      runs: runs.get(CHECK_IN_DUTY_ID) ?? [], priority }, ...views];
   }
 
   /**
