@@ -20,7 +20,7 @@ const JOURNAL = [
   ...run("2026-10-19T16:00:00Z", [["apps/convex/index.html", CONFLICT], [SESSION, CONFLICT], ["apps/landed-later.html", RETIRED]]),
   `${sec("2026-10-19T16:20:00Z")} us-metal02 node[1]: wiki-box-commit: left out ${C}apps/outside-a-run.html: ${RETIRED}`,
   ...run("2026-10-19T16:25:00Z", [["apps/convex/index.html", CONFLICT], [SESSION, CONFLICT]]),
-  ...run("2026-10-19T16:46:00Z", [["apps/crawler-v3/youtube-index-gaps/index.html", RETIRED]]),
+  ...run("2026-10-19T16:46:00Z", [["apps/convex/index.html", CONFLICT], [SESSION, CONFLICT], ["apps/crawler-v3/youtube-index-gaps/index.html", RETIRED]]),
   ...run("2026-10-19T16:51:00Z", [["apps/convex/index.html", CONFLICT], [SESSION, CONFLICT], ["apps/crawler-v3/youtube-index-gaps/index.html", RETIRED]]),
   `${sec("2026-10-19T16:56:00Z")} us-metal02 systemd[257985]: Starting wiki-box-commit.service - still running`,
   `${sec("2026-10-19T16:56:10Z")} us-metal02 node[3]: wiki-box-commit: left out ${C}apps/still-running.html: ${RETIRED}`,
@@ -52,7 +52,7 @@ test("a curated page the wiki host batch keeps leaving out of git for 30 min cou
   assert.equal(result.metrics.source_errors, 0);
   const unlanded = (result.flagged ?? []).filter(slice => slice.kind.startsWith("unlanded"));
   assert.deepEqual(unlanded.map(slice => [slice.kind, slice.item]), [["unlanded", "apps/convex/index.html"], ["unlanded_session", SESSION]]);
-  assert.match(unlanded[0]!.excerpt, /in 3 runs from 2026-10-19T16:00Z to 2026-10-19T16:51Z: it was edited from its copy at 075b86f2c2/);
+  assert.match(unlanded[0]!.excerpt, /in 4 runs from 2026-10-19T16:00Z to 2026-10-19T16:51Z: it was edited from its copy at 075b86f2c2/);
   assert.equal(result.info.unlanded_sessions, 1);
   assert.equal(result.info.box_runs_24h, 4);
 });
@@ -61,4 +61,41 @@ test("a wiki host journal with no finished run leaves wiki_problems unmeasured",
   const result = await measureDream(deps("-- No entries --"), []);
   assert.equal(result.metrics.wiki_problems, 999_999);
   assert.ok((result.flagged ?? []).some(slice => slice.kind === "source_error" && /journalctl wiki-box-commit/.test(slice.excerpt)));
+});
+
+const failedRun = (iso: string, leftOut: [string, string][]): string[] => [
+  ...run(iso, leftOut).slice(0, -1),
+  `${sec(iso)} us-metal02 systemd[257985]: wiki-box-commit.service: Failed with result 'exit-code'.`,
+];
+
+// The 10-28 14:34Z d4 after-measure read wiki_problems 1 from apps/search/brand-tracking.html. The batch left it out once at 10:29Z, the page
+// landed four times after that, and the batch left it out again only from 14:20Z, so its streak was 15 min old, inside UNLANDED_MS.
+test("a page the batch left out once hours ago and again for under 30 min now does not count", async () => {
+  const AHEAD = "it cites convex/search/watches/counterFold.ts, which the tip does not have yet; the page reaches git with the code commit that adds it";
+  const PAGE = "apps/search/brand-tracking.html";
+  const journal = [
+    ...run("2026-10-19T12:29:00Z", [[PAGE, AHEAD]]),
+    ...run("2026-10-19T12:34:00Z", []),
+    ...run("2026-10-19T16:20:00Z", [[PAGE, AHEAD]]),
+    ...run("2026-10-19T16:25:00Z", [[PAGE, AHEAD]]),
+    ...run("2026-10-19T16:30:00Z", [[PAGE, AHEAD]]),
+    ...run("2026-10-19T16:35:00Z", [[PAGE, AHEAD]]),
+  ].join("\n");
+  const result = await measureDream(deps(journal), []);
+  assert.equal(result.metrics.unlanded, 0);
+  assert.equal(result.metrics.wiki_problems, 0);
+});
+
+test("a failed run that names no page keeps a 30 min left-out streak going, and a finished one ends it", async () => {
+  const PAGE = "apps/convex/index.html";
+  const streak = (middle: string[]): string => [
+    ...run("2026-10-19T16:00:00Z", [[PAGE, CONFLICT]]),
+    ...middle,
+    ...run("2026-10-19T16:51:00Z", [[PAGE, CONFLICT]]),
+  ].join("\n");
+  const failed = await measureDream(deps(streak(failedRun("2026-10-19T16:25:00Z", []))), []);
+  assert.equal(failed.metrics.unlanded, 1);
+  assert.match((failed.flagged ?? []).find(slice => slice.kind === "unlanded")!.excerpt, /in 2 runs from 2026-10-19T16:00Z to 2026-10-19T16:51Z/);
+  const finished = await measureDream(deps(streak(run("2026-10-19T16:25:00Z", []))), []);
+  assert.equal(finished.metrics.unlanded, 0);
 });

@@ -38,7 +38,7 @@ const JOURNAL_TIMEOUT_MS = 20_000;
 /** The wiki host batch's systemd user unit (auto-sns-agent scripts/repo/agent/wiki-box-commit.mjs, every 5 min). */
 export const BOX_UNIT = "wiki-box-commit";
 /**
- * A page counts as unlanded when the batch left it out in its latest run and in a run at least this long before it. In the
+ * A page counts as unlanded when the batch has left it out in every finished run for at least this long, up to its latest run. In the
  * 48 h of journal up to 2026-10-19 16:51Z (439 runs), 15 of 39 finished left-out streaks ended within 15 min, as the writer
  * fixed the page, and none ended between 15 and 30 min. The long ones held pages out for hours: email-finder-round4 for
  * 950 min, then its fix was reset on disk and lost while wiki_problems read 0.
@@ -354,8 +354,8 @@ export function freshCorrections(file: unknown, since: number): FlaggedSlice[] {
 
 const CONTENT = "apps/llm-wiki/content/";
 const LEFT_OUT = /^wiki-box-commit: left out (\S+): (.*)$/;
-/** One finished run of the wiki host batch: its start time and the pages it left out (wiki-content paths) with the batch's reason. */
-export interface BoxRun { at: number; leftOut: Map<string, string> }
+/** One finished run of the wiki host batch: its start time, whether systemd marked it failed, and the pages it left out (wiki-content paths) with the batch's reason. */
+export interface BoxRun { at: number; failed: boolean; leftOut: Map<string, string> }
 
 /**
  * Parses `journalctl -o short-unix` output of the wiki-box-commit unit into its finished runs, oldest first. A run starts at
@@ -369,8 +369,9 @@ export function parseBoxJournal(text: string): BoxRun[] {
     if (!match) continue;
     const at = Number(match[1]) * 1000;
     const body = match[2]!;
-    if (body.startsWith(`Starting ${BOX_UNIT}.service`)) open = { at, leftOut: new Map() };
-    else if (open && (body.startsWith(`Finished ${BOX_UNIT}.service`) || body.startsWith(`${BOX_UNIT}.service: Failed with result`))) { runs.push(open); open = undefined; }
+    if (body.startsWith(`Starting ${BOX_UNIT}.service`)) open = { at, failed: false, leftOut: new Map() };
+    else if (open && body.startsWith(`Finished ${BOX_UNIT}.service`)) { runs.push(open); open = undefined; }
+    else if (open && body.startsWith(`${BOX_UNIT}.service: Failed with result`)) { runs.push({ ...open, failed: true }); open = undefined; }
     else if (open) {
       const left = LEFT_OUT.exec(body);
       if (left) open.leftOut.set(left[1]!.startsWith(CONTENT) ? left[1]!.slice(CONTENT.length) : left[1]!, left[2]!);
@@ -380,15 +381,25 @@ export function parseBoxJournal(text: string): BoxRun[] {
 }
 
 export interface UnlandedPage { path: string; reason: string; session: boolean; firstAt: number; lastAt: number; runs: number }
-/** Pages the latest run left out that a run at least UNLANDED_MS earlier also left out, with the latest reason. Session pages are marked. */
+/**
+ * Pages the latest run left out whose current left-out streak started at least UNLANDED_MS before it, with the latest reason. Session pages
+ * are marked. A finished run that did not leave the page out ends the streak, since the page landed or had nothing to land then; a failed run
+ * that did not name it may have stopped before reaching it, so it neither ends nor extends the streak. Until 10-28 the first run in 24 h that
+ * left the page out started the clock, so the d4 after-measure at 14:34Z counted apps/search/brand-tracking.html, left out once at 10:29Z,
+ * landed four times since, and left out again only from 14:20Z, and d9 read d4 as a stuck duty at 14:45Z. In 72 h of journal up to 10-28
+ * 14:50Z, every finished run inside a left-out streak named the page.
+ */
 export function unlandedPages(runs: readonly BoxRun[]): UnlandedPage[] {
   const latest = runs[runs.length - 1];
   if (!latest) return [];
   return [...latest.leftOut].flatMap(([path, reason]) => {
-    const seen = runs.filter(run => run.leftOut.has(path));
-    const firstAt = seen[0]!.at;
+    let firstAt = latest.at;
+    let count = 0;
+    for (const run of [...runs].reverse()) {
+      if (run.leftOut.has(path)) { firstAt = run.at; count += 1; } else if (!run.failed) break;
+    }
     if (latest.at - firstAt < UNLANDED_MS) return [];
-    return [{ path, reason, session: path.startsWith("sessions/"), firstAt, lastAt: latest.at, runs: seen.length }];
+    return [{ path, reason, session: path.startsWith("sessions/"), firstAt, lastAt: latest.at, runs: count }];
   });
 }
 
