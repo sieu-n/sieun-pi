@@ -1,7 +1,6 @@
-import { open, stat } from "node:fs/promises";
+import { open, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { StringDecoder } from "node:string_decoder";
 import type { TurnHour } from "./shared/types.ts";
 
 /** pi-pool.log, where every admit and release of the turn queue lands as one JSON line (pool/base.py `log`). PI_POOL_DIR moves it, as it moves the pool. */
@@ -65,40 +64,87 @@ export function hours(buckets: Map<number, Bucket>, now: number): TurnHour[] {
 /** `at` stamped as pi-pool stamps `ts`. */
 const utcTs = (at: number): string => new Date(at).toISOString().slice(0, 19);
 
+/** The file in the chat's data dir a stop saves the read hours to (`TurnHistory.save`). */
+export const TURN_HISTORY_FILE = "turn-history.json";
+/** What `TurnHistory.save` writes: the hour buckets and the byte offset of the first line not read yet, in the file with inode `ino`. */
+type SavedHistory = { ino: number; offset: number; buckets: [number, Bucket][] };
+const SLICE_BYTES = 1 << 20;
+
+export interface TurnHistory {
+  (now?: number): Promise<TurnHour[]>;
+  /** Writes what was read to the `saved` file, for the next start; nothing before the first read, so a saved file nobody took stays. */
+  save(): Promise<void>;
+}
+
 /**
- * Reads pi-pool.log by hour for the Agent queue chart. The first read scans the whole file (19 MB on 10-16, about 0.2 s); each later read
- * reads only the bytes added since, and a file that shrank (a new log) is read again from the start. Hours older than the chart are dropped.
+ * Reads pi-pool.log by hour for the Agent queue chart. The first read scans the whole file; each later read reads only the bytes added since,
+ * and a file that shrank or was replaced (a new log) is read again from the start. Hours older than the chart are dropped. The log was 19 MB
+ * on 10-16 (about 0.2 s) and 137 MB on 10-28, when each chat service start scanned it again: 1.5 to 1.7 s of the main thread in 8 MB slices
+ * (CPU profiles of the 18:02Z and 18:14Z starts), and the first ran beside an api/threads/<id>/older read that took 1.02 s (d7 counted 18:05Z
+ * dirty). So a stop saves the buckets and offset to `saved` (`save`), the next start's first read takes them and reads only what came since,
+ * and a scan yields to the loop after each SLICE_BYTES.
  */
-export function turnHistory(path = POOL_LOG): (now?: number) => Promise<TurnHour[]> {
+export function turnHistory(path = POOL_LOG, saved: string | null = null): TurnHistory {
   let buckets = new Map<number, Bucket>();
   let offset = 0;
-  let rest = "";
-  let decoder = new StringDecoder("utf8");
+  let ino: number | null = null;
+  let taken = saved === null;
   let reading: Promise<void> | null = null;
 
+  async function take(): Promise<void> {
+    taken = true;
+    let text: string;
+    try { text = await readFile(saved!, "utf8"); } catch { return; }
+    await unlink(saved!).catch(() => {});
+    try {
+      const value = JSON.parse(text) as Partial<SavedHistory>;
+      if (typeof value.ino !== "number" || typeof value.offset !== "number" || !Array.isArray(value.buckets)) return;
+      buckets = new Map(value.buckets.filter(([at, bucket]) => typeof at === "number" && typeof bucket?.finished === "number" && Array.isArray(bucket.waits)));
+      ino = value.ino;
+      offset = value.offset;
+    } catch {}
+  }
+
   async function catchUp(): Promise<void> {
-    const size = (await stat(path)).size;
-    if (size < offset) { buckets = new Map(); offset = 0; rest = ""; decoder = new StringDecoder("utf8"); }
-    if (size === offset) return;
+    if (!taken) await take();
+    const info = await stat(path);
+    if (info.size < offset || (ino !== null && info.ino !== ino)) { buckets = new Map(); offset = 0; }
+    ino = info.ino;
+    if (info.size === offset) return;
     const file = await open(path, "r");
     try {
-      const chunk = Buffer.alloc(Math.min(size - offset, 8 << 20));
-      while (offset < size) {
-        const { bytesRead } = await file.read(chunk, 0, Math.min(chunk.length, size - offset), offset);
+      const chunk = Buffer.alloc(Math.min(info.size - offset, SLICE_BYTES));
+      let carry = 0;
+      while (offset + carry < info.size) {
+        const { bytesRead } = await file.read(chunk, carry, Math.min(chunk.length - carry, info.size - offset - carry), offset + carry);
         if (!bytesRead) break;
-        offset += bytesRead;
-        const lines = (rest + decoder.write(chunk.subarray(0, bytesRead))).split("\n");
-        rest = lines.pop() ?? "";
-        for (const line of lines) addLine(buckets, line);
+        const filled = carry + bytesRead;
+        // Only whole lines are read: a newline byte never sits inside a UTF-8 character, so the cut never splits one.
+        const end = chunk.lastIndexOf(0x0a, filled - 1) + 1;
+        if (end === 0 && filled === chunk.length) { offset += filled; carry = 0; continue; }
+        for (const line of chunk.toString("utf8", 0, end).split("\n")) addLine(buckets, line);
+        offset += end;
+        carry = filled - end;
+        chunk.copy(chunk, 0, end, filled);
+        if (offset + carry < info.size) await new Promise<void>(resolve => { setImmediate(resolve); });
       }
     } finally { await file.close(); }
   }
 
-  return async (now = Date.now()) => {
+  const read = async (now = Date.now()): Promise<TurnHour[]> => {
     reading ??= catchUp().finally(() => { reading = null; });
     try { await reading; } catch { return []; }
     const floor = (hourOf(utcTs(now)) ?? now) - HISTORY_HOURS * HOUR_MS;
     for (const at of buckets.keys()) if (at < floor) buckets.delete(at);
     return hours(buckets, now);
   };
+  return Object.assign(read, {
+    async save(): Promise<void> {
+      if (saved === null || !taken || ino === null) return;
+      await reading?.catch(() => {});
+      const temp = `${saved}.${process.pid}.tmp`;
+      await writeFile(temp, JSON.stringify({ ino, offset, buckets: [...buckets] } satisfies SavedHistory), { mode: 0o600 });
+      await rename(temp, saved);
+    },
+  });
 }

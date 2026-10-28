@@ -32,6 +32,7 @@ import { readHostCapture } from "./prompt-host-capture.ts";
 import { artifactsRoot, dryLeftoverSource, hostLeftovers, leftoverSource, sshLeftovers } from "./job-leftovers.ts";
 import { ALERT_TRIAGE_DUTY, chatPoolPriority, dutyJobIds, dutyJobPriority, PoolPriorities } from "./chat-pool-priority.ts";
 import { agentQueue, type AgentQueue, type IdleEviction } from "./chat-agent-queue.ts";
+import { POOL_LOG, TURN_HISTORY_FILE, turnHistory } from "./turn-history.ts";
 import { briefCheckRecord, deletedJobRecord, heldNoticeRecord, jobRegistry, checkRecord, quietJobRecord, relayRecord } from "./chat-sources.ts";
 import { jobResumes } from "./job-resume.ts";
 import { cutJobs, interruptedRuns } from "./chat-resume.ts";
@@ -502,10 +503,12 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       return null;
     }) };
   };
+  // A stop saves the Agent queue chart's hours for the next start (TURN_HISTORY_FILE), as the catalog saves its heads and tails.
+  const turnHistoryRead = turnHistory(POOL_LOG, options.saveAgents ? join(dataDir, TURN_HISTORY_FILE) : null);
   let closed = false;
   return {
     catalog, threads, readState, labels, defaults, newChat, chats, boards, created, usage, duties, poolPriorities, calls,
-    agentQueue: agentQueue(id => catalog.title(id), defaults),
+    agentQueue: agentQueue(id => catalog.title(id), defaults, undefined, undefined, turnHistoryRead),
     drainSends: async () => { stopWakes(); await agentOutbox.close(); await notices.close(); },
     prompt: async (id, via) => {
       const capture = hostCapture(id);
@@ -543,6 +546,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       awake.close();
       await threads.close();
       await catalog.close();
+      await turnHistoryRead.save().catch(error => dutyLog(`agent queue: saving the turn history: ${error instanceof Error ? error.message : String(error)}`));
       closeWriters();
       usage.close();
     },

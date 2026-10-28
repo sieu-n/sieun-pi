@@ -249,6 +249,8 @@ export const resumesNow = (cut: Cut, now: number): boolean => cut.cause !== "arc
 /** A session file to check and the key that changes when the session gets a new message (the daemon row's `modified` and message count). */
 export interface CutSource { file: string; key: string }
 
+const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+
 /** Files read at once by `SessionCuts.update`, so a cold start of some 2,700 sessions does not queue thousands of reads on the disk. */
 const READS_AT_ONCE = 8;
 
@@ -267,6 +269,22 @@ export class SessionCuts {
   /** The cut last read for a session file; null when it ended well or was not read yet. */
   of(file: string | undefined): Cut | null {
     return file ? this.known.get(file)?.cut ?? null : null;
+  }
+
+  /** Every cut read so far, with the key it was read at, for the next start (chat-catalog.ts `TAILS_FILE`). */
+  held(): Record<string, { key: string; cut: Cut | null }> { return Object.fromEntries(this.known); }
+
+  /**
+   * Takes the cuts a last run read, so `update` reads again only the files whose key changed since. A file this run read already keeps its
+   * own reading, and an entry of another shape is left out and read as before.
+   */
+  take(saved: unknown): void {
+    if (!isObject(saved)) return;
+    for (const [file, value] of Object.entries(saved)) {
+      if (this.known.has(file) || !isObject(value) || typeof value.key !== "string") continue;
+      const { cut } = value;
+      if (cut === null || (isObject(cut) && typeof cut.at === "number" && typeof cut.cause === "string")) this.known.set(file, { key: value.key, cut: cut as Cut | null });
+    }
   }
 
   /** Reads each file whose key changed (`readCut`); true when any file's cut came, went or moved. */

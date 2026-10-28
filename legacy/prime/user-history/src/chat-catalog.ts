@@ -6,7 +6,7 @@ import { parseSkillBlock, type SessionSummary } from "prime-agent";
 import { DaemonClient } from "./daemon-sdk.ts";
 import type { ChatLabels } from "./chat-labels.ts";
 import { keptChatAgents, stepSessions, withQueue, withRates, withSlotParks, withWaits, type AgentRow, type SubagentSession } from "./chat-agents.ts";
-import { type FileSlotPark, poolPark, readRowSlotPark, type SlotPark } from "./slot-park.ts";
+import { type FileSlotPark, heldSlotParkReads, poolPark, readRowSlotPark, type SlotPark, takeSlotParkReads } from "./slot-park.ts";
 import { type Cut, cutActivity, SessionCuts, type CutSource } from "./cut-end.ts";
 import { planCounts } from "./shared/chat-board.ts";
 import { unreadCount } from "./shared/chat-feed.ts";
@@ -50,6 +50,25 @@ function takeSavedAgents(path: string): ReadonlyMap<string, readonly ChatAgent[]
  * is final once read, so the start takes them as they are; the file is deleted as it is read, like AGENTS_FILE.
  */
 export const HEADS_FILE = "chat-heads.json";
+
+/**
+ * The session file tails a run read (`SessionCuts` and the slot-park readings), saved beside AGENTS_FILE at its stop for the next start. Each
+ * start read the tail of every stopped job again, up to 4 MB each: in the CPU profile of the run started at 18:19:36Z on 10-28 that was 6.6 s
+ * of readTail on the main thread between 6 and 25 s after the start, and an api/threads/<id>/older read in that window took 1.2 s. Each
+ * reading carries the key it was read at (the daemon row's modified time and message count, or the file's size and mtime), so a file that
+ * changed since is read again. The file is deleted as it is read, like AGENTS_FILE.
+ */
+export const TAILS_FILE = "chat-tails.json";
+function takeSavedTails(path: string, cuts: SessionCuts): void {
+  let text: string;
+  try { text = readFileSync(path, "utf8"); } catch { return; }
+  try { unlinkSync(path); } catch (error) { process.stderr.write(`catalog: deleting ${path}: ${error instanceof Error ? error.message : String(error)}\n`); }
+  let parsed: unknown;
+  try { parsed = JSON.parse(text); } catch { return; }
+  if (!isRecord(parsed)) return;
+  cuts.take(parsed.cuts);
+  takeSlotParkReads(parsed.parks);
+}
 
 /** The refusal for a session no box's rows place while another box has not listed yet (`Catalog.unplaced`). */
 export const unplacedMessage = (id: string): string => `Session ${id.slice(0, 8)} is not on this box, and another box has not listed its sessions yet.`;
@@ -850,6 +869,7 @@ export class Catalog {
     this.client = new DaemonClient(socketPath);
     this.saved = agentsFile ? takeSavedAgents(agentsFile) : undefined;
     if (agentsFile) takeSavedHeads(join(dirname(agentsFile), HEADS_FILE), origins);
+    if (agentsFile) takeSavedTails(join(dirname(agentsFile), TAILS_FILE), this.cuts);
     // Roster updates were up to 116 a minute (10-12); this box's lay into one frame per 150 ms, the wait its roster refresh had before.
     // The link waits 30 s for the socket and the hello, as daemon-list.ts does for d9. With 1.5 s waits, service.log on us-metal02 held 374 calls
     // to this box's daemon that failed on the hello by 10-27, the link's own syncs and the service commands that went through it, while probes got
@@ -1411,6 +1431,15 @@ export class Catalog {
     await rename(temp, path);
   }
 
+  /** Writes the session file tails this run read to TAILS_FILE beside `agentsFile`, for the next start's cut and slot-park reads. */
+  private async saveTails(): Promise<void> {
+    if (!this.agentsFile) return;
+    const path = join(dirname(this.agentsFile), TAILS_FILE);
+    const temp = `${path}.${process.pid}.tmp`;
+    await writeFile(temp, JSON.stringify({ savedAt: new Date().toISOString(), cuts: this.cuts.held(), parks: heldSlotParkReads() }), { mode: 0o600 });
+    await rename(temp, path);
+  }
+
   /** Like `subscribe`, without the refresh a page load asks for: a page's agents feed starts on each chat it opens or unfolds. */
   watch(listener: (event: SessionsEvent) => void): () => void {
     this.listeners.add(listener);
@@ -1737,6 +1766,7 @@ export class Catalog {
     this.closed = true;
     if (first) await this.saveAgents().catch(error => { process.stderr.write(`catalog: saving the chats' agents: ${error instanceof Error ? error.message : String(error)}\n`); });
     if (first) await this.saveHeads().catch(error => { process.stderr.write(`catalog: saving the session heads: ${error instanceof Error ? error.message : String(error)}\n`); });
+    if (first) await this.saveTails().catch(error => { process.stderr.write(`catalog: saving the session tails: ${error instanceof Error ? error.message : String(error)}\n`); });
     clearInterval(this.projectionTimer);
     this.peer.close();
     clearTimeout(this.schedulesTimer);

@@ -188,6 +188,22 @@ export async function readFileSlotPark(file: string): Promise<FileSlotPark> {
   return read;
 }
 
+/** Every file's reading so far, with the key it was read at, for the next start (chat-catalog.ts `TAILS_FILE`). */
+export const heldSlotParkReads = (): Record<string, { key: string; read: FileSlotPark }> => Object.fromEntries(fileReads);
+
+/**
+ * Takes the readings a last run saved, so `readFileSlotPark` reads again only a file whose size or mtime changed since. A file this run read
+ * already keeps its own reading, and an entry of another shape is left out and read as before.
+ */
+export function takeSlotParkReads(saved: unknown): void {
+  if (typeof saved !== "object" || saved === null) return;
+  for (const [file, value] of Object.entries(saved as Record<string, unknown>)) {
+    const { key, read } = (typeof value === "object" && value !== null ? value : {}) as { key?: unknown; read?: unknown };
+    if (fileReads.has(file) || typeof key !== "string" || typeof read !== "object" || read === null || typeof (read as FileSlotPark).complete !== "boolean") continue;
+    fileReads.set(file, { key, read: read as FileSlotPark });
+  }
+}
+
 /** `slotParkOf` for a session file (`readFileSlotPark`). The session id is the file's name. */
 export async function readSlotPark(file: string, now: number, pool: PoolQueue | null): Promise<SlotPark | null> {
   return poolPark((await readFileSlotPark(file)).park, basename(file, ".jsonl"), now, pool);
