@@ -40,6 +40,27 @@ class BoardWakeTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     board.wake(run=39493311906, attempt=0)
 
+    def test_check_wake_warns_when_its_check_already_passes(self):
+        """10-28: a pi-pool.log grep that older lines matched woke prime build installs 30 times in 7.5 h."""
+        with tempfile.TemporaryDirectory() as raw:
+            home = Path(raw)
+            session = home / ".prime/agent/session-artifacts/01a14210-4e7d-72c3-aa67-e3d476f4e728"
+            session.mkdir(parents=True)
+            data = home / "chat"
+            (data / "wakes").mkdir(parents=True)
+            (data / "wakes" / ".ticked").write_text("")
+            (data / "wakes" / ".kinds").write_text("run time check\n")
+            (home / "old.log").write_text("install done\n")
+            env = {"HOME": str(home), "RLM_SESSION_DIR": str(session), "AGENT_CHAT_DATA_DIR": str(data), "SIEUN_PI_HOSTS": str(home / "none.json")}
+            with patch.dict(os.environ, env), patch.object(Path, "home", return_value=home):
+                board = load_board()
+                text = board.wake(check="grep -q 'install done' old.log", at="2026-10-29T03:00:00Z", every=1)
+                self.assertIn("Warning: `grep -q 'install done' old.log` exits 0 now", text)
+                self.assertEqual(len(list((data / "wakes").glob("*-check-*.json"))), 1)
+                text = board.wake(check="test -e new.flag", at="2026-10-29T03:00:00Z", every=1)
+                self.assertNotIn("Warning", text)
+                self.assertTrue(text.startswith("Wake set"))
+
 
 if __name__ == "__main__":
     unittest.main()

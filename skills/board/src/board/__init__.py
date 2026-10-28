@@ -14,6 +14,7 @@ import os
 import re
 import signal
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -386,7 +387,8 @@ def wake(run: int | str | None = None, at: str | float | None = None, note: str 
 
     `check` is a shell command the chat service runs every `every` minutes on the chat host (us-metal02), from the home folder; the wake goes out
     once it exits 0, with its output, or at the deadline `at` if it never does. Use it instead of a time wake that only looks whether something
-    happened, such as a sha reaching prod or a unit ending, so the session stays unloaded until it happened.
+    happened, such as a sha reaching prod or a unit ending, so the session stays unloaded until it happened. On the chat host board.wake runs
+    the check once as you arm it and puts a warning in front of its reply when the check already exits 0, and still sets the wake.
 
     The chat service sends the wake as an agent message, which reopens the session even after Prime passivated it, so the wait holds no
     Python kernel and no worker. `repo` ("owner/name") reads the run with gh instead of the local CI cache. `note` comes back in the wake.
@@ -436,12 +438,30 @@ def wake(run: int | str | None = None, at: str | float | None = None, note: str 
     kinds = (folder / ".kinds").read_text(errors="replace").split() if (folder / ".kinds").exists() else []
     if on["kind"] == "check" and "check" not in kinds:
         raise RuntimeError("The chat service here does not deliver check wakes yet, and it would drop the file. Set a time wake instead.")
+    warning = _check_passes_now(on) if on["kind"] == "check" else ""
     path = folder / f"{session}-{key}.json"
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(record))
     os.replace(tmp, path)
-    return _Text(f"Wake set: the chat service messages this session when {what}. End this turn now with no bash handle, sleep or wait left running, "
+    return _Text(f"{warning}Wake set: the chat service messages this session when {what}. End this turn now with no bash handle, sleep or wait left running, "
                  f"so Prime can unload the session while it waits. ({path})")
+
+
+def _check_passes_now(on: dict) -> str:
+    """A warning when a check wake's command already exits 0 as it is armed, run the way the chat service runs it (wakes.ts runCheck).
+
+    On 10-28 a grep of pi-pool.log that older lines already matched woke prime build installs 30 times in 7.5 h. The warning is soft and the
+    wake is still set. The run ends after the check's own pace, the same limit the chat service puts on each run of it.
+    """
+    try:
+        done = subprocess.run(["sh", "-c", on["command"]], cwd=str(Path.home()), capture_output=True, timeout=on["every"] / 1000)
+    except (subprocess.TimeoutExpired, OSError):
+        return ""
+    if done.returncode != 0:
+        return ""
+    return (f"Warning: `{on['command']}` exits 0 now, before the event, so this wake goes out on the chat service's next tick and reloads the "
+            "session for nothing. Change the check so it exits nonzero until the new event happens, such as a file appearing or a unit ending, "
+            "and set the wake again. ")
 
 
 _UNIT = re.compile(r"^[A-Za-z0-9:_.@-]{1,200}\.(service|scope|timer)$")
