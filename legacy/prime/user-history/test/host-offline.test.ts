@@ -148,3 +148,36 @@ test("a Mac Tailscale reads online that does not answer still makes its minutes 
   assert.equal(result.metrics.unknown_min_30_mac, 30);
   assert.equal(result.flagged?.find(slice => slice.kind === "offline_minutes"), undefined);
 });
+
+// 10-28: the relay could not reach the Mac at 01:38:30Z, 01:39:27Z and 01:40:30Z, each minute with handshake timeouts to its sessions, and
+// Tailscale first read it offline at 01:41:30Z; d7's 01:42Z run counted 01:38Z and 01:39Z dirty.
+test("unreached reads in the lines just before Tailscale reads the box offline count offline, and their daemon calls are left out", () => {
+  const macUp = { pressureLevel: 1, swapoutsPerS: 0, kernelTaskPct: 5, owners: [] };
+  const errors: Record<number, string> = { 26: "The operation was aborted due to timeout", 27: "unread: the chat service stopped before the relay answered", 28: "fetch failed" };
+  const watch = Array.from({ length: 30 }, (_line, minute): WatchLine => {
+    const line = lineAt(minute, "offline");
+    const mac = line.hosts![0]!;
+    if (minute >= 29) return line;
+    const { offline: _offline, error: _error, ...rest } = mac;
+    return { ...line, hosts: [minute < 26 ? { ...rest, usable: macUp } : { ...rest, error: errors[minute]! }] } as WatchLine;
+  });
+  const faults = [26, 27].flatMap(minute => [10_000, 40_000].map(offset => ({ at: minuteAt(minute) + offset, host: "mac", session: "01a14ecb", what: "an outbox send failed, the handshake timed out after 10 s" })));
+  const result = measure({ now: RUN, watch, log: { holds: [] }, chats: [], daemonFaults: faults });
+  assert.equal(result.metrics.offline_min_30_mac, 4);
+  assert.equal(result.metrics.daemon_fail_min_30, 0);
+  assert.equal(result.metrics.unknown_min_30_mac, 0);
+  assert.equal(result.metrics.clean_min_30, 30);
+});
+
+test("an unreached read more than three lines before Tailscale reads the box offline stays a daemon fault", () => {
+  const watch = Array.from({ length: 30 }, (_line, minute): WatchLine => {
+    const line = lineAt(minute, "offline");
+    if (minute >= 29) return line;
+    const { offline: _offline, error: _error, ...rest } = line.hosts![0]!;
+    return { ...line, hosts: [{ ...rest, error: "fetch failed" }] } as WatchLine;
+  });
+  const faults = [25].flatMap(minute => [10_000, 40_000].map(offset => ({ at: minuteAt(minute) + offset, host: "mac", session: "01a14ecb", what: "an outbox send failed, the handshake timed out after 10 s" })));
+  const result = measure({ now: RUN, watch, log: { holds: [] }, chats: [], daemonFaults: faults });
+  assert.equal(result.metrics.offline_min_30_mac, 4);
+  assert.equal(result.metrics.daemon_fail_min_30, 1);
+});

@@ -74,17 +74,36 @@ export function usableAround(watch: readonly WatchLine[], box: string, from: num
 export const UNREACHED = /^(?:fetch failed|The operation was aborted due to timeout)/;
 
 /**
- * Whether Tailscale read `box` offline in the watch line just before [from, to) or in the one just after, each within a minute of it. A box
- * the relay could not reach (UNREACHED) next to such a minute was falling asleep, waking or flapping, so that minute is offline too. On 10-23
- * Tailscale read the Mac offline 13:53Z to 13:55Z and 13:57Z to 14:22Z, its relay read "fetch failed" at 13:56Z, and d7 counted the minute
- * unknown; at 14:29Z, between offline stretches, the same read came with 2 handshake timeouts to the Mac and d7 counted the minute dirty. Of the
- * Mac's 233 unreached reads from 10-01 to 10-23, 8 sat next to an offline read, 5 of them between two.
+ * Whether Tailscale read `box` offline within OFFLINE_LAG_READS watch lines before [from, to) or after it, each line within a minute of the
+ * one before, with every line between them unreached (UNREACHED) or unread at a stop. A box the relay could not reach next to such a minute was
+ * falling asleep, waking or flapping, so that minute is offline too. On 10-23 Tailscale read the Mac offline 13:53Z to 13:55Z and 13:57Z to
+ * 14:22Z, its relay read "fetch failed" at 13:56Z, and d7 counted the minute unknown; at 14:29Z, between offline stretches, the same read came
+ * with 2 handshake timeouts to the Mac and d7 counted the minute dirty. Of the Mac's 233 unreached reads from 10-01 to 10-23, 8 sat next to an
+ * offline read, 5 of them between two.
  */
 export function offlineAround(watch: readonly WatchLine[], box: string, from: number, to: number): boolean {
-  const offline = (line: WatchLine | undefined): boolean => !!line && !!hostViews(line).find(candidate => candidate.name === box)?.offline;
-  return offline(watch.findLast(line => { const at = Date.parse(line.at); return at < from && at >= from - MINUTE; }))
-    || offline(watch.find(line => { const at = Date.parse(line.at); return at >= to && at < to + MINUTE; }));
+  const view = (line: WatchLine) => hostViews(line).find(candidate => candidate.name === box);
+  const unreached = (line: WatchLine): boolean => { const read = view(line); return !!read && !read.usable && (UNREACHED.test(read.error ?? "") || read.error === UNREAD_AT_STOP); };
+  for (const back of [true, false]) {
+    let edge = back ? from : to;
+    for (let step = 0; step < OFFLINE_LAG_READS; step++) {
+      const line = back ? watch.findLast(entry => { const at = Date.parse(entry.at); return at < edge && at >= edge - MINUTE; })
+        : watch.find(entry => { const at = Date.parse(entry.at); return at >= edge && at < edge + MINUTE; });
+      if (!line) break;
+      if (view(line)?.offline) return true;
+      if (!unreached(line)) break;
+      edge = back ? Date.parse(line.at) : Date.parse(line.at) + 1;
+    }
+  }
+  return false;
 }
+
+/**
+ * How many watch lines an unreached box may sit from Tailscale's offline read and still count offline (`offlineAround`). On 10-28 the relay
+ * could not reach the Mac at 01:38:30Z (timeout), 01:39:27Z (unread at a chat stop) and 01:40:30Z (fetch failed), with 9 handshake timeouts
+ * to its sessions, and Tailscale first read it offline at 01:41:30Z, last seen 1 min before; d7 counted 01:38Z and 01:39Z dirty.
+ */
+const OFFLINE_LAG_READS = 3;
 
 /** The boxes of a watch line, the writer first. Since 04:20Z on 10-18 the chat runs on us-metal02 and reads the Mac through its relay. */
 export function hostViews(line: WatchLine): HostView[] {
