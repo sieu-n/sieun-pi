@@ -20,7 +20,8 @@
       "key": "oom_kills_24h",
       "label": "OOM kills on us-metal01 and us-metal02 in the last 24 h outside heavy scopes and after the kills a fix step explains",
       "op": "<=",
-      "target": 0
+      "target": 0,
+      "windowMs": 86400000
     }
   ],
   "explainedKills": [
@@ -43,6 +44,11 @@
       "box": "us-metal02",
       "until": "2026-10-27T15:14:52Z",
       "step": "p557"
+    },
+    {
+      "box": "us-metal01",
+      "until": "2026-10-28T02:31:24Z",
+      "step": "p1054 (3ebcc037b5)"
     }
   ],
   "precheck": {

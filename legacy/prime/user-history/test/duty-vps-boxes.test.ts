@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { FiringAlert } from "../src/alert-bridge.ts";
 import { readFile } from "node:fs/promises";
-import { DUTY_FILE, countRisks, oomKills24h, parseExplained, parseRisks, splitOomLines } from "../scripts/duties/vps-boxes.ts";
+import { DUTY_FILE, OOM_LAST_QUERY, OOM_WINDOW_MS, countRisks, oomKills24h, parseExplained, parseRisks, splitOomLines } from "../scripts/duties/vps-boxes.ts";
 
 const alert = (uid: string, startsAt: string): FiringAlert =>
   ({ fingerprint: `${uid}-${startsAt}`, startsAt, alertname: uid, labels: { __alert_rule_uid__: uid }, summary: "", url: "" });
@@ -42,7 +42,7 @@ test("oom_kills_24h sums both boxes, names each box with a kill and its last kil
   assert.deepEqual(result.flagged.map(slice => slice.excerpt), ["us-metal02: 42 OOM kills outside heavy scopes in the last 24 h, the last kill of any kind at about 16:52Z on 10-19"]);
   const fallback = oomKills24h([{ box: "us-metal01", kills: 0 }, { box: "us-metal02", kills: 45, sinceBootAt: Date.parse("2026-10-14T20:47:00Z") }], 0);
   assert.match(fallback.flagged[0]!.excerpt, /us-metal02: 45 OOM kills outside heavy scopes in \/proc\/vmstat since its boot at 20:47Z on 10-14/);
-  assert.deepEqual(oomKills24h([{ box: "us-metal01", kills: 0 }, { box: "us-metal02", kills: 0 }], 0), { kills: 0, heavy: 0, explained: 0, flagged: [] });
+  assert.deepEqual(oomKills24h([{ box: "us-metal01", kills: 0 }, { box: "us-metal02", kills: 0 }], 0), { kills: 0, heavy: 0, explained: 0, flagged: [], windowMs: OOM_WINDOW_MS });
   assert.throws(() => oomKills24h([{ box: "us-metal01", kills: 0 }], 0), /no node_vmstat_oom_kill of us-metal02/);
 });
 
@@ -87,10 +87,27 @@ test("oom_kills_24h leaves out the kills up to the newest until a fix step expla
   assert.match(newer.flagged[0]!.excerpt, /^us-metal02: 2 OOM kills outside heavy scopes since 16:52Z on 10-19; the journal names sf-bill-q.service; p456 explains the 41 kills/);
 });
 
-test("the checked-in duty file names p557 for the us-metal02 kills up to 15:14:52Z on 10-27 and p490 for the us-metal01 backup kill at 22:08Z on 10-21", async () => {
-  const explained = parseExplained(JSON.parse(await readFile(DUTY_FILE, "utf8")));
+test("the checked-in duty file names p557 for the us-metal02 kills up to 15:14:52Z on 10-27 and p1054 for the us-metal01 global OOM at 02:31:24Z on 10-28", async () => {
+  const file = JSON.parse(await readFile(DUTY_FILE, "utf8")) as { metrics: { key: string; windowMs?: number }[] };
+  const explained = parseExplained(file);
   assert.equal(explained.get("us-metal02")?.step, "p557");
-  assert.equal(explained.get("us-metal01")?.step, "p490");
+  assert.deepEqual(explained.get("us-metal01"), { box: "us-metal01", until: Date.parse("2026-10-28T02:31:24Z"), step: "p1054 (3ebcc037b5)" });
+  assert.equal(file.metrics.find(metric => metric.key === "oom_kills_24h")?.windowMs, OOM_WINDOW_MS);
+});
+
+// Guards d9's 09:30Z flag on 10-28: the 16:50 KST run read 1 kill on us-metal01, dated it to the run itself and gave no window, so d9 read d2 as
+// off target with no live fix step. The kill was the global OOM at 02:31:24Z (a prod signer chromium) that an 80 GB agent_ro ClickHouse read
+// caused, fixed by 3ebcc037b5, and a scrape gap from 02:28:03Z to 02:31:33Z hid it from changes() over 2 minutes.
+test("oom_kills_24h reports its day window with a red count, and the us-metal01 kill p1054 explains leaves the count at 0", () => {
+  const at = Date.parse("2026-10-28T07:50:22Z");
+  const kill = Date.parse("2026-10-28T02:32:00Z");
+  const red = oomKills24h([{ box: "us-metal01", kills: 1, lastAt: kill }, { box: "us-metal02", kills: 1, heavy: 1 }], at);
+  assert.deepEqual([red.kills, red.lastEventAt, red.windowMs], [1, kill, 86_400_000]);
+  const by = parseExplained({ explainedKills: [{ box: "us-metal01", until: "2026-10-28T02:31:24Z", step: "p1054 (3ebcc037b5)" }] }).get("us-metal01")!;
+  const fixed = oomKills24h([{ box: "us-metal01", kills: 1, explained: 1, lastAt: kill, by }, { box: "us-metal02", kills: 1, heavy: 1 }], at);
+  assert.deepEqual([fixed.kills, fixed.explained, fixed.lastEventAt, fixed.windowMs], [0, 1, undefined, 86_400_000]);
+  assert.equal(fixed.flagged[0]!.excerpt, "us-metal01: no OOM kill outside heavy scopes since 02:31Z on 10-28; p1054 (3ebcc037b5) explains the 1 kill up to 02:31Z on 10-28");
+  assert.match(OOM_LAST_QUERY, /last_over_time\(node_vmstat_oom_kill\{[^}]+\}\[1d\]\) > last_over_time\(node_vmstat_oom_kill\{[^}]+\}\[1d\] offset 1m\)/);
 });
 
 // AI harness d9 read oom_kills_24h as a lagging window on 10-22 because the precheck gave no lastEventAt, so it could not tell a count of

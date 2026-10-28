@@ -35,7 +35,14 @@ const PROMETHEUS = { uid: "estate_prometheus_stg", type: "prometheus" };
 const BOXES = ["us-metal01", "us-metal02"] as const;
 const OOM = `node_vmstat_oom_kill{box=~"${BOXES.join("|")}"}`;
 export const OOM_KILLS_QUERY = `round(increase(${OOM}[1d]))`;
-export const OOM_LAST_QUERY = `max_over_time(timestamp(changes(${OOM}[2m]) > 0)[1d:1m])`;
+/** oom_kills_24h counts a trailing day, so d9 reads a red count whose newest kill is old as a lagging window (`PrecheckOutput.windowMs`). */
+export const OOM_WINDOW_MS = 86_400_000;
+/**
+ * The minute of each box's newest kill in the last day: the minute its last sample of the day rose over the one a minute before. last_over_time
+ * reaches across a missed scrape, which changes() over 2 minutes did not: the global OOM on us-metal01 at 02:31:24Z on 10-28 stopped its
+ * scrapes from 02:28:03Z to 02:31:33Z, so the 16:50 KST run had no last kill for it and dated the kill to the run itself.
+ */
+export const OOM_LAST_QUERY = `max_over_time(timestamp(last_over_time(${OOM}[1d]) > last_over_time(${OOM}[1d] offset 1m))[1d:1m])`;
 export const oomSinceQuery = (box: string, seconds: number): string => `round(increase(node_vmstat_oom_kill{box="${box}"}[${seconds}s]))`;
 export const DUTY_FILE = join(dirname(fileURLToPath(import.meta.url)), "vps-boxes.duty.json");
 export const AIR_RUNNERS_QUERY = 'sum(devbox_runner_up{job="devbox",box="m1-air"})';
@@ -132,9 +139,10 @@ const stamp = (ms: number): string => `${new Date(ms).toISOString().slice(11, 16
  * one line for each box with a kill outside or an explained kill, naming its count, its last kill, the units the journal names and the step.
  * `lastEventAt` is the newest counted kill over the boxes with one: the newest outside journal line on this box, else the box's newest kill in
  * Prometheus, else this run when only /proc/vmstat counts it. A count of 0 gives none. AI harness d9 asked for it on 10-22, because without it
- * a count of old kills read the same as a fresh one.
+ * a count of old kills read the same as a fresh one. `windowMs` is the day the count covers, which d9 needs with `lastEventAt` to read a red
+ * count as lagging; the 16:50 KST run on 10-28 gave only lastEventAt, and d9 flagged d2 at 09:30Z as off target with no live fix step.
  */
-export function oomKills24h(boxes: readonly OomKills[], at: number): { kills: number; heavy: number; explained: number; flagged: FlaggedSlice[]; lastEventAt?: number } {
+export function oomKills24h(boxes: readonly OomKills[], at: number): { kills: number; heavy: number; explained: number; flagged: FlaggedSlice[]; windowMs: number; lastEventAt?: number } {
   const missing = BOXES.filter(box => !boxes.some(entry => entry.box === box));
   if (missing.length) throw new Error(`no node_vmstat_oom_kill of ${missing.join(" or ")}`);
   const counted = boxes.map(entry => ({ ...entry, outside: Math.max(0, entry.kills - (entry.explained ?? 0) - (entry.heavy ?? 0)) }));
@@ -150,7 +158,7 @@ export function oomKills24h(boxes: readonly OomKills[], at: number): { kills: nu
   });
   const sum = (pick: (entry: typeof counted[number]) => number) => counted.reduce((total, entry) => total + pick(entry), 0);
   const newest = counted.filter(entry => entry.outside).map(entry => entry.outsideAt ?? entry.lastAt ?? at);
-  return { kills: sum(entry => entry.outside), heavy: sum(entry => entry.heavy ?? 0), explained: sum(entry => entry.explained ?? 0), flagged,
+  return { kills: sum(entry => entry.outside), heavy: sum(entry => entry.heavy ?? 0), explained: sum(entry => entry.explained ?? 0), flagged, windowMs: OOM_WINDOW_MS,
     ...newest.length ? { lastEventAt: Math.max(...newest) } : {} };
 }
 
@@ -244,6 +252,7 @@ async function main(): Promise<void> {
     result.metrics.oom_kills_24h = counted.kills;
     result.metrics.heavy_scope_kills = counted.heavy;
     result.metrics.oom_kills_explained = counted.explained;
+    result.windowMs = { oom_kills_24h: counted.windowMs };
     if (counted.lastEventAt !== undefined) result.lastEventAt = { oom_kills_24h: counted.lastEventAt };
     result.flagged!.push(...counted.flagged);
   } catch (error) { flag("source_error", `oom_kills_24h: ${error instanceof Error ? error.message : String(error)}`); }
