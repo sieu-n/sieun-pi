@@ -151,3 +151,34 @@ test("a query that does not parse answers 400 with the reason", async () => {
   await assert.rejects(search({ q: "x kind:nope" }), (error: HistoryError) => error.status === 400 && /Unknown kind/.test(error.message));
   await assert.rejects(historyGet("/v1/search", {}, join(dir, "none.sock")), (error: HistoryError) => error.status === 503);
 });
+
+test("a peer that fails is skipped at once as offline, probed in the background, and rejoins when it answers", async () => {
+  let up = false;
+  const calls: string[] = [];
+  const flaky = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = new URL(String(input));
+    if (url.hostname !== "10.0.0.3") return relay(input, init);
+    calls.push(url.pathname);
+    if (!up) throw new TypeError("fetch failed: connect ETIMEDOUT");
+    return new Response(JSON.stringify(url.pathname.endsWith("/status") ? { backfillPct: 100 } : { ranked: [], total: 0, box: { ok: true, tookMs: 1, backfillPct: 100 } }));
+  }) as typeof fetch;
+  const socket = join(dir, "flaky.sock");
+  const server = await startServer({ socket, dbPath: metalDb, settingsFile: settings("us-metal02-flaky", { box: "us-metal02" }), fetcher: flaky, probeMs: 30 });
+  try {
+    const first = await historyGet<SearchResult>("/v1/search", { q: "relay" }, socket);
+    assert.equal(first.boxes.down!.ok, false);
+    assert.deepEqual(calls.filter(path => path.endsWith("/search")), ["/v1/history/search"]);
+    const second = await historyGet<SearchResult>("/v1/search", { q: "relay" }, socket);
+    assert.match(second.boxes.down!.error!, /^offline since \d{4}-\d{2}-\d{2}T.*ETIMEDOUT/);
+    assert.equal(second.boxes.down!.tookMs, 0);
+    assert.deepEqual(calls.filter(path => path.endsWith("/search")), ["/v1/history/search"], "a search does not ask a peer that is down");
+    assert.equal(second.total, 5, "the other boxes still answer");
+    up = true;
+    for (let wait = 0; wait < 100 && calls.at(-1) !== "/v1/history/status"; wait++) await new Promise(resolve => setTimeout(resolve, 10));
+    await new Promise(resolve => setTimeout(resolve, 20));
+    const third = await historyGet<SearchResult>("/v1/search", { q: "relay" }, socket);
+    assert.equal(third.boxes.down!.ok, true, "the probe's answer brings the peer back");
+  } finally {
+    await server.close();
+  }
+});

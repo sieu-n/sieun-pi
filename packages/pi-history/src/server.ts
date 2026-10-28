@@ -38,6 +38,8 @@ export interface ServerOptions {
   indexer?: { status(): IndexerState };
   settingsFile?: string;
   fetcher?: typeof fetch;
+  /** How often a down peer is asked for its status; PROBE_MS unless a test sets it. */
+  probeMs?: number;
 }
 
 /**
@@ -45,6 +47,8 @@ export interface ServerOptions {
  * and search.md section 4 measured query p95 at 35 ms on the family index, so a peer that has not answered in 5 s is down or stuck.
  */
 const PEER_TIMEOUT_MS = 5000;
+/** A down peer is probed every 30 s, so a box back online rejoins searches within half a minute (the parent's 10-28 design). */
+const PROBE_MS = 30_000;
 /** The query timings /v1/status reports, the same window as the indexer's lag samples (API.md). */
 const TIMING_SAMPLES = 1000;
 const LIMIT_DEFAULT = 20;
@@ -177,14 +181,37 @@ export async function startServer(options: ServerOptions): Promise<{ close(): Pr
     return [{ hits: hits.prime, total: count.total }, ...hits.durable];
   };
 
+  /** Peers that failed to answer: a search skips them at once, and a probe asks each for its status until it answers again. */
+  const down = new Map<string, { since: number; error: string }>();
   const askPeer = async <T>(peer: { name: string; url: string; token: string }, path: string, params: URLSearchParams): Promise<T> => {
-    const response = await fetcher(`${peer.url}/${path}?${params}`, {
-      headers: { Authorization: `Bearer ${peer.token}` }, signal: AbortSignal.timeout(PEER_TIMEOUT_MS),
-    });
+    let response: Response;
+    try {
+      response = await fetcher(`${peer.url}/${path}?${params}`, {
+        headers: { Authorization: `Bearer ${peer.token}` }, signal: AbortSignal.timeout(PEER_TIMEOUT_MS),
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!down.has(peer.name)) down.set(peer.name, { since: Date.now(), error: message });
+      throw error;
+    }
     const body = await response.text();
-    if (!response.ok) throw new Error(`${response.status} ${body.slice(0, 200)}`);
+    if (!response.ok) {
+      // A 4xx is about the request; a 5xx means the peer's pi-history or relay cannot answer, so the peer counts as down.
+      if (response.status >= 500 && !down.has(peer.name)) down.set(peer.name, { since: Date.now(), error: `${response.status}` });
+      throw new Error(`${response.status} ${body.slice(0, 200)}`);
+    }
+    down.delete(peer.name);
     return JSON.parse(body) as T;
   };
+  const downState = (name: string): BoxState | null => {
+    const state = down.get(name);
+    return state ? { ok: false, error: `offline since ${new Date(state.since).toISOString()} (${state.error})`, tookMs: 0, backfillPct: 0 } : null;
+  };
+  const probe = setInterval(() => {
+    const settings = settingsOf();
+    for (const peer of peers(settings).filter(candidate => down.has(candidate.name))) void askPeer(peer, "status", new URLSearchParams({ local: "1" })).catch(() => {});
+  }, options.probeMs ?? PROBE_MS);
+  probe.unref();
 
   const search = async (params: URLSearchParams): Promise<SearchResult | PeerPage> => {
     const started = performance.now();
@@ -206,10 +233,15 @@ export async function startServer(options: ServerOptions): Promise<{ close(): Pr
     forward.set("local", "1");
     if (seeds) forward.set("roots", seeds.join(","));
     // Each peer's answer settles into a value at once, so one that fails while this box runs its own query is never an unhandled rejection.
-    const remote = peers(settings).filter(peer => wanted(peer.name)).map(peer => ({ peer, started: performance.now(),
+    const boxes: Record<string, BoxState> = {};
+    const asked = peers(settings).filter(peer => wanted(peer.name)).filter(peer => {
+      const state = downState(peer.name);
+      if (state) boxes[peer.name] = state;
+      return !state;
+    });
+    const remote = asked.map(peer => ({ peer, started: performance.now(),
       answer: askPeer<PeerPage>(peer, "search", forward).then(page => ({ page }), (error: unknown) => ({ error })) }));
     const pages: Page[] = [];
-    const boxes: Record<string, BoxState> = {};
     if (wanted(settings.box)) {
       const local = await localPages(query, ask, roots, settings);
       pages.push(...local);
@@ -302,6 +334,7 @@ export async function startServer(options: ServerOptions): Promise<{ close(): Pr
       server.close(() => resolve());
       server.closeAllConnections();
       for (const worker of workers) void worker.terminate();
+      clearInterval(probe);
       db?.close();
       for (const handle of durables.values()) handle?.close();
     }),
