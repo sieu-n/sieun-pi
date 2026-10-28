@@ -272,6 +272,36 @@ test("a chat the idle unload stopped while the archive's kill was out still gets
   assert.deepEqual(f.box!.archives.map(archive => archive.sessionPath), [f.file]);
 });
 
+// p1263 (10-29): a Mac thread the idle unload stopped stays listed (p1254), and Prime's kill knows only an active session, so the owner's
+// archive of that row must reach the Mac as archive_saved_session, and his Stop must send nothing that fails on an unloaded session.
+test("the owner's archive of a Mac thread the idle unload stopped, whose row still names its old worker, goes to the Mac as archive_saved_session after the kill finds it gone", async t => {
+  let f!: Awaited<ReturnType<typeof fixture>>;
+  f = await fixture(t, { known: NEW, box: NEW, mac: NEW, host: "mac", kill: active => {
+    f.list(rows => rows.map(row => row.activeSessionId === active ? { ...unloaded(row), lifecycle: "archived" } : row));
+    return { success: false, error: `Unknown active session: ${active}` };
+  } });
+  f.list(rows => rows.map(row => row.sessionId === f.id ? { ...row, activeSessionId: "w-mac", workerState: "ready" } : row));
+  await f.catalog.refresh();
+  await f.hub.archive(f.id, "owner");
+  assert.deepEqual(f.sent.map(command => [command.type, command.activeSessionId, command.host]), [["kill", "w-mac", "mac"]]);
+  assert.deepEqual(f.mac!.archives.map(archive => [archive.sessionPath, archive.acked]), [[f.macFile, true]], "the Mac's daemon writes owner_archive and cancels the jobs");
+  assert.equal(f.box!.connections(), 0, "this box's daemon gets nothing");
+  assert.deepEqual(await f.pending(), [], "the Mac confirmed it, so no cancel is left to retry");
+  assert.equal((await f.row())?.archived, true);
+});
+
+test("the owner's Stop of a Mac thread the idle unload stopped sends no command, and his archive after it still reaches the Mac", async t => {
+  const f = await fixture(t, { known: NEW, box: NEW, mac: NEW, host: "mac" });
+  f.list(rows => rows.map(row => row.sessionId === f.id ? { ...row, lifecycle: "archived" } : row));
+  await f.catalog.refresh();
+  await f.hub.abort(f.id);
+  assert.deepEqual(f.sent, [], "no kill, abort, attach or resume goes out for a session no worker holds");
+  assert.equal(f.mac!.connections(), 0);
+  await f.hub.archive(f.id, "owner");
+  assert.deepEqual(f.mac!.archives.map(archive => archive.sessionPath), [f.macFile]);
+  assert.deepEqual(f.sent, []);
+});
+
 test("a failed archive_saved_session is reported, the owner's archive still holds, and the cancel is queued by box and full path", async t => {
   let fail = true;
   const f = await fixture(t, { known: NEW, box: NEW, answer: () => fail ? { success: false, error: "The supervisor is draining" } : { success: true } });
