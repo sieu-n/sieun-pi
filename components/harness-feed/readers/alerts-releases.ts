@@ -216,9 +216,23 @@ async function jsonFiles(dir: string): Promise<unknown[]> {
 }
 
 /**
+ * The session file of a `pending` or `unresolved` recovery record whose session has not run since the record's state was written. A session
+ * that ran later was brought back another way, such as by its parent: on 10-28 an `unresolved` record from 10:47Z of a subagent that ran again
+ * until 21:35Z kept sessions_expected at 1, and devbox-prime-daemon-empty fired at 21:54Z once idle eviction left 0 sessions loaded.
+ */
+async function waitingRecovery(record: unknown): Promise<string | null> {
+  if (!isRecord(record) || !isRecord(record.state) || (record.state.status !== "pending" && record.state.status !== "unresolved")) return null;
+  if (!isRecord(record.session) || typeof record.session.sessionFile !== "string") return null;
+  const since = Date.parse(String(record.state.at ?? record.manifestCreatedAt ?? ""));
+  const written = await stat(record.session.sessionFile).then(info => info.mtimeMs, () => null);
+  return written !== null && Number.isFinite(since) && written > since ? null : record.session.sessionFile;
+}
+
+/**
  * The session files Prime should hold loaded on this daemon, by source, read only from its files. Prime keys them by the sha256 of the resolved
  * socket path (config.ts getDaemonUpdateRestartManifestPath, daemon-supervisor.ts descriptorKey).
- * - recovery: `daemon-update-restarts/<hash>.recoveries/*.json` records still `pending` or `unresolved`, which the supervisor restores on start
+ * - recovery: `daemon-update-restarts/<hash>.recoveries/*.json` records still `pending` or `unresolved` whose session has not run since
+ *   (waitingRecovery), which the supervisor restores on start
  *   (daemon-update-restart-recovery.ts daemonUpdateRestartRecoveryViews). On 10-27 all 188 sessions of the 08:47Z update sat here until 12:56Z.
  * - manifest: `daemon-update-restarts/<hash>.json`, the sessions an update prepare wrote down for its successor to restore.
  * - worker: `daemon-workers/<hash12>/*.json` descriptors in lifecycle `recovering`, workers the supervisor brings back. 39 sat there from
@@ -237,9 +251,9 @@ export async function expectedSessions(agentDir: string, socketPath: string,
     primeUpdateRunning(agentDir, socketPath, startId).catch(() => null),
   ]);
   const planned = running ? await readJson(running.file.replace(/\.json$/, ".planned.json")) : undefined;
+  const waiting = await Promise.all(records.map(waitingRecovery));
   return {
-    recovery: new Set(records.flatMap(record => isRecord(record) && isRecord(record.state) && (record.state.status === "pending" || record.state.status === "unresolved")
-      && isRecord(record.session) && typeof record.session.sessionFile === "string" ? [record.session.sessionFile] : [])),
+    recovery: new Set(waiting.flatMap(file => file ? [file] : [])),
     manifest: new Set(isRecord(manifest) ? sessionFiles(manifest.sessions) : []),
     worker: new Set(descriptors.flatMap(descriptor => isRecord(descriptor) && descriptor.lifecycle === "recovering" && typeof descriptor.sessionFile === "string"
       ? [descriptor.sessionFile] : [])),

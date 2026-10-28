@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { cpSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -240,6 +240,24 @@ test("a really idle box reads 0 loaded and 0 expected, since restored and stoppe
   const samples = await read(context(dir, false));
   assert.equal(value(samples, "harness.prime.sessions_loaded"), 0);
   assert.equal(value(samples, "harness.prime.sessions_expected"), 0);
+});
+
+test("an unresolved recovery whose session ran after it expects nothing, and one whose session has not run since still counts", async t => {
+  const dir = mkdtempSync(join(tmpdir(), "expected-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const socket = "/tmp/prime-agent-1001/daemon.sock";
+  const prime = primeDirs(dir, socket);
+  const ran = join(dir, "ran.jsonl");
+  const stale = join(dir, "stale.jsonl");
+  writeFileSync(ran, "");
+  writeFileSync(stale, "");
+  utimesSync(ran, new Date("2026-10-28T21:35:25Z"), new Date("2026-10-28T21:35:25Z"));
+  utimesSync(stale, new Date("2026-10-28T10:40:00Z"), new Date("2026-10-28T10:40:00Z"));
+  const state = { status: "unresolved", at: "2026-10-28T10:47:12.400Z", reason: "Session worker did not preserve its assigned active session id" };
+  for (const [name, file] of [["ran", ran], ["stale", stale]] as const)
+    writeFileSync(join(prime.recoveries, `${name}.json`), JSON.stringify({ ...recovery(0, state), session: { sessionId: name, sessionFile: file } }));
+  const expected = await expectedSessions(prime.agent, socket, async () => null);
+  assert.deepEqual([...expected.recovery], [stale]);
 });
 
 test("loaded counts only the rows the daemon marks isSessionActive, and a refused list reads list_ok 0 with no loaded count", async t => {
