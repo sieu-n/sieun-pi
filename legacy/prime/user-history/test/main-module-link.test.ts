@@ -29,3 +29,23 @@ test("every main-module check compares against the real path of argv[1]", () => 
   const raw = [...files("src"), ...files("scripts")].filter(file => readFileSync(file, "utf8").includes("pathToFileURL(process.argv[1]"));
   assert.deepEqual(raw, []);
 });
+
+// 10-28 at 23:37Z: inside Prime's compiled binary argv[1] is "/$bunfs/root/prime-agent", which realpathSync refuses, so the realpath check
+// of 04b5dc19 threw at import and the whole user-history extension failed to load in every session started or reloaded after it.
+test("a module the extension imports loads when argv[1] is no disk path", () => {
+  const run = spawnSync(process.execPath, ["--import", "tsx", "-e", [
+    "process.argv[1] = '/$bunfs/root/prime-agent';",
+    "const { isMain } = await import('./src/main-module.ts');",
+    "for (const file of ['message-limit-check', 'cross-host-message', 'send-once', 'job-leftovers']) await import(`./src/${file}.ts`);",
+    "console.log(JSON.stringify({ main: isMain(import.meta.url) }));",
+  ].join("\n"), "--input-type=module"], { cwd: APP, encoding: "utf8", input: "" });
+  assert.equal(run.status, 0, run.stderr);
+  assert.deepEqual(JSON.parse(run.stdout.trim().split("\n").at(-1) ?? "null"), { main: false });
+});
+
+test("no module in src runs realpathSync on argv[1] outside isMain", () => {
+  const raw = readdirSync(join(APP, "src"), { withFileTypes: true, recursive: true })
+    .filter(entry => entry.isFile() && /\.(ts|mts)$/.test(entry.name) && entry.name !== "main-module.ts")
+    .map(entry => join(entry.parentPath, entry.name)).filter(file => readFileSync(file, "utf8").includes("realpathSync(process.argv[1]"));
+  assert.deepEqual(raw, []);
+});

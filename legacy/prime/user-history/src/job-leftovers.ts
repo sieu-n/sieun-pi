@@ -1,16 +1,16 @@
 import { spawn } from "node:child_process";
 import { hostExecFile } from "./spawn-host.ts";
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { lstat, readdir, readFile, readlink, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, dirname, isAbsolute, join, normalize, relative } from "node:path";
-import { pathToFileURL } from "node:url";
+import { basename, dirname, join, normalize, relative } from "node:path";
 import type { Host } from "./hosts.ts";
 import { jobFolders } from "./chat-brief.ts";
 import { wikiContentDir } from "./chat-wiki.ts";
 import type { RawProcess } from "./mac-usable-watch.ts";
 import { stopOrphanServices } from "./orphan-services.ts";
 import { removeTree, walkTree } from "./walk-tree.ts";
+import { isMain } from "./main-module.ts";
 
 /**
  * What a job leaves behind once it is gone, and the stop of it. On 10-15 at 00:45Z a deleted job's nohup'd runner.py went on to start a 30 GB
@@ -737,6 +737,6 @@ async function main(args: readonly string[]): Promise<void> {
   process.stdout.write(JSON.stringify(left) + "\n");
 }
 
-if (process.argv[1] && isAbsolute(process.argv[1]) && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
+if (isMain(import.meta.url)) {
   await main(process.argv.slice(2)).catch(error => { process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`); process.exitCode = 1; });
 }

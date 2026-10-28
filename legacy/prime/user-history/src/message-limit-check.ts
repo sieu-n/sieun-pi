@@ -1,6 +1,7 @@
 import { readFileSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
+import { isMain } from "./main-module.ts";
 import { steerWaitNote } from "./shared/steer-wait.ts";
 
 /*
@@ -50,7 +51,7 @@ export function checkMessage(message: string, role?: string): string | null {
   return role === "child" ? steerWaitNote(message) : null;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
+if (isMain(import.meta.url)) {
   const { message, role } = JSON.parse(readFileSync(0, "utf8")) as { message?: unknown; role?: unknown };
   const note = typeof message === "string" ? checkMessage(message, typeof role === "string" ? role : undefined) : null;
   process.stdout.write(`${JSON.stringify({ note })}\n`);
