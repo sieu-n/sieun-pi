@@ -54,3 +54,25 @@ test("an open no_fix line keeps the headline live at every run, so a real repeat
 test("an empty window has no event and gives no lastEventAt", () => {
   assert.deepEqual(splitLastEvents([], now), {});
 });
+
+test("a commit a ref gains after its fix flipped a repeat does not date the headline (c117, d10 10-28 02:44Z)", async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "repeat-quiet-flip-"));
+  // 18b73ec8 flipped the owner's 18:43Z repeat at 22:45Z; db3b622, the wake note touch-up, joined the ref at 01:48Z.
+  const times: Record<string, string> = { "18b73ec8": "2026-10-27T22:45:00Z", db3b622: "2026-10-28T01:48:54Z" };
+  const time = async (hash: string) => times[hash] ? at(times[hash]!) : undefined;
+  const said = "2026-10-27T18:43:55Z";
+  const c117 = entry("c117", "2026-10-19T06:02:55Z", "sieun-pi 18b73ec8 (brief line), wake note fix db3b622");
+  writeFileSync(join(dataDir, "corrections.json"), JSON.stringify({ corrections: [{ ...c117, repeats: [{ at: said, chat: vp, words: "stop sending these" }] }] }));
+  const measure = (when: string) => measureHarness({ roots: [], views: async () => [], dataDir, now: at(when), cache: async () => ({ metrics: { cache_read_ratio_1h: 95, cache_read_ratio_24h: 95 }, flagged: [] }),
+    history: async () => ({ owner: [{ text: "stop sending these", at: at(said) }], refines: [] }), commitTime: time, transcripts: async () => [], smoke: { python: "python3" } });
+  const output = await measure("2026-10-28T02:44:00Z");
+  assert.deepEqual([output.metrics.repeat_corrections_7d, output.metrics.repeats_before_fix_7d], [1, 1]);
+  assert.deepEqual(output.lastEventAt, { repeat_corrections_7d: at(times["18b73ec8"]!), repeats_before_fix_7d: at(times["18b73ec8"]!) });
+  assert.match(output.flagged!.find(slice => slice.kind === "repeat_corrections_7d")!.excerpt, /^before fix of 10-28 01:48Z: c117 /);
+
+  const metric: DutyMetric = { key: "repeat_corrections_7d", label: "Owner corrections he had to give again in the last 7 days, all chats", op: "<=", target: 0, headline: true };
+  const run = (when: string): DutyRunRecord => ({ duty: "d10", at: at(when), trigger: "schedule", ms: 1, ...judge([metric], output) });
+  const [streak] = metricStreaks([run("2026-10-28T02:44:00Z"), run("2026-10-28T01:44:00Z"), run("2026-10-28T00:43:00Z")]);
+  assert.equal(streak!.quietSince, at(times["18b73ec8"]!));
+  assert.equal(streak!.stuck, false);
+});

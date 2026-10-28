@@ -13,7 +13,13 @@ import { fixRefs, type CountedRepeat } from "../../src/chat-corrections.ts";
  */
 export const REPEAT_SIDES = ["before_fix", "after_fix", "no_fix"] as const;
 export type RepeatSide = (typeof REPEAT_SIDES)[number];
-export interface SplitRepeat extends CountedRepeat { side: RepeatSide; /** When the newest fix the entry's ref names landed, in ms. */ fixed?: number }
+export interface SplitRepeat extends CountedRepeat {
+  side: RepeatSide;
+  /** When the newest fix the entry's ref names landed, in ms. */
+  fixed?: number;
+  /** For a before_fix line, when the first fix at or after the owner said it landed: the time the line turned before_fix (`splitLastEvents`). */
+  flipped?: number;
+}
 
 /** A commit hash in a ref: 7 to 40 hex characters with at least one digit and one letter, so a word or a plain number is no hash. */
 const HASH = /(?<![\w./-])(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}(?![\w])/g;
@@ -35,10 +41,15 @@ export function fixMarks(ref: string, given: number, now: number): { commits: st
   return { commits, messages, refines };
 }
 
-/** When the newest fix a ref names landed: the latest message or refine id time or commit time (`commitTime`, undefined for a commit no repo knows) or message id time. */
-export async function fixLanded(ref: string, given: number, now: number, commitTime: (hash: string) => Promise<number | undefined>): Promise<number | undefined> {
+/** When each fix a ref names landed: its message and refine id times and its commit times (`commitTime`, undefined for a commit no repo knows). */
+async function fixTimes(ref: string, given: number, now: number, commitTime: (hash: string) => Promise<number | undefined>): Promise<number[]> {
   const { commits, messages, refines } = fixMarks(ref, given, now);
-  const times = [...messages, ...refines, ...(await Promise.all(commits.map(commitTime))).filter((at): at is number => at !== undefined)];
+  return [...messages, ...refines, ...(await Promise.all(commits.map(commitTime))).filter((at): at is number => at !== undefined)];
+}
+
+/** When the newest fix a ref names landed: the latest message or refine id time or commit time. */
+export async function fixLanded(ref: string, given: number, now: number, commitTime: (hash: string) => Promise<number | undefined>): Promise<number | undefined> {
+  const times = await fixTimes(ref, given, now, commitTime);
   return times.length ? Math.max(...times) : undefined;
 }
 
@@ -57,8 +68,11 @@ export const repeatSide = (said: number, fixed: number | undefined): RepeatSide 
 
 export async function splitRepeats(repeats: readonly CountedRepeat[], now: number, commitTime: (hash: string) => Promise<number | undefined>): Promise<SplitRepeat[]> {
   return Promise.all(repeats.map(async repeat => {
-    const fixed = await fixLanded(fixRefs(repeat.entry), Date.parse(repeat.entry.at), now, commitTime);
-    return { ...repeat, side: repeatSide(repeat.said, fixed), ...(fixed === undefined ? {} : { fixed }) };
+    const times = await fixTimes(fixRefs(repeat.entry), Date.parse(repeat.entry.at), now, commitTime);
+    const fixed = times.length ? Math.max(...times) : undefined;
+    const side = repeatSide(repeat.said, fixed);
+    const flipped = side === "before_fix" ? Math.min(...times.filter(time => time >= repeat.said)) : undefined;
+    return { ...repeat, side, ...(fixed === undefined ? {} : { fixed }), ...(flipped === undefined ? {} : { flipped }) };
   }));
 }
 
@@ -70,14 +84,17 @@ export function splitMetrics(split: readonly SplitRepeat[]): Record<`repeats_${R
 
 /**
  * `lastEventAt` for repeat_corrections_7d and its split: the time of the newest change to a counted line's state. A before_fix line changed last
- * when its fix landed (`fixed`), so a headline of only such lines reads quiet once a run has passed since the newest fix and starts no job, while
- * its lines age out of the 7 days. On 10-20 d10 missed 8 runs in a row on 21 before_fix lines and two fix jobs (p770, p793) could not move it.
+ * when the first fix after the owner said it landed (`flipped`), so a headline of only such lines reads quiet once a run has passed since the
+ * newest such flip and starts no job, while its lines age out of the 7 days. On 10-20 d10 missed 8 runs in a row on 21 before_fix lines and two
+ * fix jobs (p770, p793) could not move it. A later commit the ref gains is no change to the line: d10's 02:44Z run on 10-28 read 13 before_fix
+ * lines dated 01:48Z by db3b622, a wake note touch-up c117's ref gained after 18b73ec8 had flipped its 18:43Z repeat at 22:45Z, and was told to
+ * "change approach" for the 118th run in a row, though the newest flip, 22:45Z, came before the 01:44Z run.
  * An after_fix or no_fix line is open: the owner said it again after any fix, and it needs work until a new fix lands and turns it before_fix.
  * Its `said` would read quiet a run later with the work still undone, so an open line dates its count `now` and keeps it live. An empty count
  * has no event and no `lastEventAt`.
  */
 export function splitLastEvents(split: readonly SplitRepeat[], now: number): Partial<Record<"repeat_corrections_7d" | `repeats_${RepeatSide}_7d`, number>> {
-  const fixes = split.filter(repeat => repeat.side === "before_fix").map(repeat => repeat.fixed!);
+  const fixes = split.filter(repeat => repeat.side === "before_fix").map(repeat => repeat.flipped ?? repeat.fixed!);
   const open = split.some(repeat => repeat.side !== "before_fix");
   const events: Partial<Record<"repeat_corrections_7d" | `repeats_${RepeatSide}_7d`, number>> = {};
   if (fixes.length) events.repeats_before_fix_7d = Math.max(...fixes);
