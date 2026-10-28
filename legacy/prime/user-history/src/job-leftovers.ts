@@ -81,6 +81,30 @@ export interface LeftoverSource {
   stopServices: (sessions: readonly string[]) => Promise<readonly string[]>;
 }
 
+/**
+ * The folder where the aside-browser skill keeps its tab records, one `<sha1 of owner>.json` per agent session: `{"owner": <RLM_SESSION_DIR>,
+ * "tabs": {<targetId>: <url>}}` (skills/aside-browser `_registry_path`). The skill moved its records here from `aside-browser-tabs.json` in the
+ * session folder on 10-18 (ea2c0a4c), and the job end read only that old file, so 1,949 job ends in the us-metal02 service log up to 10-28 00:12Z
+ * all closed 0 Aside tabs, and finished jobs kept their tabs open in the owner's Aside (32 renderers at 4.9 GB on 10-27 at 23:36Z).
+ */
+export const asideOwnersDir = (): string => process.env.ASIDE_BROWSER_STATE || join(homedir(), ".local", "state", "aside-browser", "owners");
+
+/** The tab ids and record files in `asideOwnersDir` whose owner is one of these session folders or a folder under one (its subagents). */
+export async function ownerTabRecords(dirs: readonly string[], folder = asideOwnersDir()): Promise<{ tabs: string[]; files: string[] }> {
+  const tabs: string[] = [];
+  const files: string[] = [];
+  for (const name of await readdir(folder).catch(() => [] as string[])) {
+    if (!name.endsWith(".json")) continue;
+    const file = join(folder, name);
+    const record = await readFile(file, "utf8").then(text => JSON.parse(text) as { owner?: unknown; tabs?: unknown }, () => null);
+    const owner = typeof record?.owner === "string" ? record.owner : "";
+    if (!owner || !dirs.some(dir => owner === dir || owner.startsWith(dir + "/"))) continue;
+    const ids = record && typeof record.tabs === "object" && record.tabs ? Object.keys(record.tabs) : [];
+    if (ids.length) { tabs.push(...ids); files.push(file); }
+  }
+  return { tabs, files };
+}
+
 /** The session ids, transcripts, Aside tab ids, tab record files and ownership records (`OWNED_FILE`) of a session folder and every folder under it (its subagents). */
 export async function sessionTree(dir: string): Promise<{ sessions: string[]; transcripts: string[]; tabs: string[]; tabFiles: string[]; ownedFiles: string[] }> {
   const sessions: string[] = [];
@@ -489,11 +513,15 @@ export async function endLeftovers(source: LeftoverSource, dirs: string | readon
   const handed = sessions.length ? await source.stopServices(sessions).catch(() => []) : [];
   const stopped = sessions.length ? await stopProcesses(source, await source.strays(sessions)) : [];
   if (session) source.later(KILL_AFTER_MS, () => { void source.strays(sessions).then(found => stopProcesses(source, found)).catch(() => []); });
-  const ids = trees.flatMap(tree => tree.tabs);
+  const recorded = await ownerTabRecords(typeof dirs === "string" ? [dirs] : dirs);
+  const ids = [...new Set([...trees.flatMap(tree => tree.tabs), ...recorded.tabs])];
   const tabs = ids.length ? await source.closeTabs(ids).catch(() => -1) : 0;
-  if (tabs >= 0) for (const file of trees.flatMap(tree => tree.tabFiles)) {
-    const record = await readFile(file, "utf8").then(text => JSON.parse(text) as Record<string, unknown>, () => null);
-    if (record) await writeFile(file, JSON.stringify({ ...record, tabs: {} })).catch(() => {});
+  if (tabs >= 0) {
+    for (const file of trees.flatMap(tree => tree.tabFiles)) {
+      const record = await readFile(file, "utf8").then(text => JSON.parse(text) as Record<string, unknown>, () => null);
+      if (record) await writeFile(file, JSON.stringify({ ...record, tabs: {} })).catch(() => {});
+    }
+    for (const file of recorded.files) await unlink(file).catch(() => {});
   }
   const transcripts = trees.flatMap(tree => tree.transcripts);
   const copies = await source.removeCopies(transcripts).catch(() => []);
@@ -537,13 +565,14 @@ function systemctl(args: readonly string[]): Promise<{ ok: boolean; output: stri
 }
 
 /**
- * Closes Aside tabs with a one-shot `aside repl`: each still open tab is attached and runs window.close(), and the count is what the next list
- * no longer shows within 5 s (on 10-17 at 20:39Z, under load, a 500 ms look counted 0 for a tab that did close). closeTab closes only a tab its own REPL session opened; from another session it only lets the tab go (tried 10-16 01:5xZ
- * through both `aside repl` and `aside mcp`, and the tab stayed open), and a gone job's session is gone.
+ * Closes Aside tabs with a one-shot `aside repl`: each still open tab is attached and gets page.close({runBeforeUnload: true}), which sends CDP
+ * Page.close, and the count is what the next list no longer shows within 5 s (on 10-17 at 20:39Z, under load, a 500 ms look counted 0 for a tab
+ * that did close). closeTab closes only a tab its own REPL session opened; from another session it only lets the tab go (tried 10-16 01:5xZ
+ * through both `aside repl` and `aside mcp`, and again on 10-28 by the aside job tabs job), and a gone job's session is gone.
  */
 export function closeAsideTabs(ids: readonly string[], cli = process.env.ASIDE_CLI ?? join(homedir(), ".local", "bin", "aside")): Promise<number> {
   const code = `const __leftoverIds = ${JSON.stringify(ids)}; const __leftoverOpen = new Set((await listBrowserTabs()).map(tab => tab.targetId));
-for (const id of __leftoverIds) if (__leftoverOpen.has(id)) { const tab = await attachBrowserTab(id); await tab.evaluate(() => window.close()).catch(() => {}); }
+for (const id of __leftoverIds) if (__leftoverOpen.has(id)) { const tab = await attachBrowserTab(id); await tab.close({ runBeforeUnload: true }).catch(() => {}); }
 let __leftoverLeft = new Set(); for (let i = 0; i < 20; i++) { await sleep(250); __leftoverLeft = new Set((await listBrowserTabs()).map(tab => tab.targetId)); if (!__leftoverIds.some(id => __leftoverLeft.has(id))) break; }
 console.log("LEFTOVER_CLOSED " + __leftoverIds.filter(id => __leftoverOpen.has(id) && !__leftoverLeft.has(id)).length);`;
   return new Promise((resolve, reject) => {
