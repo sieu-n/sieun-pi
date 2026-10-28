@@ -57,7 +57,7 @@ import { SLOW_READ_MS } from "./harness-slow.ts";
 import { ScheduledJobsLeft } from "./saved-archive.ts";
 import { type ArchiveBy, isServiceArchiveReason, SERVICE_ARCHIVES_FILE } from "./service-archives.ts";
 import { type CancelBy, parseCancelBy } from "./job-cancels.ts";
-import { historyGet, HistoryError } from "../../../../packages/pi-history/src/client.ts";
+import { historyError, HistoryError, historyRaw } from "../../../../packages/pi-history/src/client.ts";
 
 const SEARCH_PARAMS = new Set(["q", "sort", "kind", "box", "chat", "agent", "since", "until", "limit", "cursor"]);
 const READ_PARAMS = new Set(["ref", "before", "after"]);
@@ -842,8 +842,12 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
           // The search panel's calls on this box's pi-history socket, owner scope: an agent's caller fields and a peer's fan-out fields stay out.
           const keys = route === "api/search" ? SEARCH_PARAMS : READ_PARAMS;
           const params = Object.fromEntries([...url.searchParams].filter(([key]) => keys.has(key)));
-          try { json(res, 200, await historyGet(route === "api/search" ? "/v1/search" : "/v1/read", params)); }
-          catch (error) { throw error instanceof HistoryError ? new RequestError(error.status, error.message) : error; }
+          // pi-history's JSON goes out as it came, never parsed and written again on this busy event loop.
+          const answer = await historyRaw(route === "api/search" ? "/v1/search" : "/v1/read", params).catch((error: unknown) => {
+            throw error instanceof HistoryError ? new RequestError(error.status, error.message) : error;
+          });
+          if (answer.status >= 400) { const error = historyError(answer.status, answer.body); throw new RequestError(error.status, error.message); }
+          jsonText(res, answer.body);
           return;
         }
         if (route === "api/wiki-page") {
