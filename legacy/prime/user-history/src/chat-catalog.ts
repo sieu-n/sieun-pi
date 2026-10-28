@@ -304,8 +304,8 @@ export function isTopLevel(row: SessionSummary): boolean {
 }
 
 /**
- * Whether the only archive of a top-level row is the idle unload's stop at `unloadedAt` (unloaded.json): Prime's kill writes the archived state
- * even with origin idle_unload, and this box cannot rewrite another box's file. On 10-28 the Mac chat frontend bro was hidden from 17:20Z to
+ * Whether the only archive of another box's top-level row is the idle unload's stop at `unloadedAt` (unloaded.json): Prime's kill writes the
+ * archived state even with origin idle_unload, and this box cannot rewrite another box's file. On 10-28 the Mac chat frontend bro was hidden from 17:20Z to
  * 18:02Z this way. Activity after the stop means a later archive did it, and an archive through this service drops the entry (forgetUnloaded).
  */
 export function unloadedOnly(row: SessionSummary, unloadedAt: number | undefined): boolean {
@@ -1110,7 +1110,9 @@ export class Catalog {
       // idle unload's kill does. This box cannot write another box's file, so on 10-28 the Mac chat frontend bro kept the archived state the
       // 17:11Z unload wrote, the 17:14Z release dropped the hold that covered it, and the 17:20Z Mac list hid it from the sidebar for 42 min.
       if (chat && !archived && held !== "archived") projected.archived = false;
-      else if (projected.archived && held !== "archived" && unloadedOnly(row, unloaded?.get(row.sessionId))) projected.archived = false;
+      // Only another box's row: keepListed rewrites a file on this box as active, so an archived row here was archived after the unload. On
+      // 10-28 47236480 without this check listed again 61 of this box's duty jobs archived after their unload.
+      else if (remote && projected.archived && held !== "archived" && unloadedOnly(row, unloaded?.get(row.sessionId))) projected.archived = false;
       // A chat the owner archived stays out of the sidebar when an agent message resumes its session; only his unarchive brings it back.
       if (archived) projected.archived = true;
       if (!chat) kept.set(row.sessionId, { key, row: projected });

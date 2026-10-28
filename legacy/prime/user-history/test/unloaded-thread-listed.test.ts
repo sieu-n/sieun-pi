@@ -15,7 +15,7 @@ import { forgetUnloaded, recordUnloaded, UNLOADED_FILE, unloadedReader } from ".
 
 const STOP = Date.parse("2026-10-28T17:11:20.048Z");
 
-async function catalogOf(t: TestContext, dataDir: string, rows: SessionSummary[]) {
+async function catalogOf(t: TestContext, dataDir: string, rows: SessionSummary[], macRows: SessionSummary[]) {
   const reads = new ChatReadState("unused");
   t.mock.method(reads, "snapshot", async () => ({ baseline: 0, sessions: {} }));
   const labels = new ChatLabels("unused");
@@ -23,7 +23,8 @@ async function catalogOf(t: TestContext, dataDir: string, rows: SessionSummary[]
   const chats = { ids: async () => new Set<string>(), checkIns: async () => new Map(), archivedIds: async () => new Set<string>(), unloaded: unloadedReader(dataDir),
     links: async () => ({ children: [], board: null, roots: [], messages: [] }) };
   const hosts = { selfName: "us-metal02", onChange: () => {}, start: () => {}, close: () => {}, allListed: () => true, allSynced: () => true, loaded: async () => {},
-    hostOf: () => null, isActive: () => false, rows: () => [], hostRows: () => [], client: () => null, ready: async () => null };
+    hostOf: (id: string) => macRows.some(row => row.sessionId === id) ? { name: "mac" } : null, isActive: () => false, rows: () => macRows, hostRows: () => [],
+    client: () => null, ready: async () => null };
   const catalog = new Catalog("unused", reads, labels, chats, new ThreadOrigins({ ids: async () => [] }), hosts as unknown as HostCatalogs);
   t.after(() => catalog.close());
   let connected = false;
@@ -36,7 +37,7 @@ async function catalogOf(t: TestContext, dataDir: string, rows: SessionSummary[]
   return catalog;
 }
 
-test("a top-level thread the idle unload stopped stays listed while its daemon lists it archived, until an archive through the hub drops it", async (t: TestContext) => {
+test("another box's top-level thread the idle unload stopped stays listed while its daemon lists it archived, until an archive through the hub drops it", async (t: TestContext) => {
   const dir = mkdtempSync(join(tmpdir(), "unloaded-listed-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const saved = (sessionId: string, lastActivityAt: string, extra: Partial<SessionSummary> = {}): SessionSummary => {
@@ -50,15 +51,17 @@ test("a top-level thread the idle unload stopped stays listed while its daemon l
     saved("job", "2026-10-28T16:52:56.668Z", { runtimeKind: "subagent", rlmDepth: 1, rlmChildId: "c1" } as Partial<SessionSummary>),
     saved("never-unloaded", "2026-10-28T16:52:56.668Z"),
   ];
-  await recordUnloaded(dir, ["unloaded", "active-after", "job"], STOP);
-  const catalog = await catalogOf(t, dir, rows);
+  // This box's own unloaded thread: keepListed rewrote its file as active, so its archived state came later, as a duty job's archive does.
+  const local = saved("local-duty-job", "2026-10-28T16:52:56.668Z");
+  await recordUnloaded(dir, ["unloaded", "active-after", "job", "local-duty-job"], STOP);
+  const catalog = await catalogOf(t, dir, [local], rows);
   const archived = async () => Object.fromEntries((await catalog.rows()).map(row => [row.id, row.archived]));
   const before = await archived();
-  assert.deepEqual([before.unloaded, before["active-after"], before["never-unloaded"]], [false, true, true],
-    "only the top-level thread whose last activity is before its unload stop stays listed");
+  assert.deepEqual([before.unloaded, before["active-after"], before["never-unloaded"], before["local-duty-job"]], [false, true, true, true],
+    "only another box's top-level thread whose last activity is before its unload stop stays listed");
   assert.equal(unloadedOnly(rows[2]!, STOP), false, "a job's archive may be its parent's delete, so a job is left as its daemon lists it");
   await forgetUnloaded(dir, ["unloaded"]);
   catalog.holdLifecycle("unloaded", "archived");
   assert.equal((await archived()).unloaded, true, "an archive through the hub hides it again");
-  assert.deepEqual(JSON.parse(readFileSync(join(dir, UNLOADED_FILE), "utf8")), { "active-after": new Date(STOP).toISOString(), job: new Date(STOP).toISOString() });
+  assert.deepEqual(JSON.parse(readFileSync(join(dir, UNLOADED_FILE), "utf8")), { "active-after": new Date(STOP).toISOString(), job: new Date(STOP).toISOString(), "local-duty-job": new Date(STOP).toISOString() });
 });
