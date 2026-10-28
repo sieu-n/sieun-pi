@@ -420,6 +420,20 @@
       }
     },
     {
+      "id": "F29",
+      "title": "Staging's watch mode left out the doc-ids refresher, so its Facebook and Instagram operation ids froze and a job set a staging Facebook doc id by hand",
+      "designs": [
+        "01a11bd7-072f-7591-ad1d-f123c276cde5/p242",
+        "commit:d7b9d4419e"
+      ],
+      "owner": "Prospect feature bro (01a11bd7) job 'staging doc ids refresh fault' (session 01a1803a-1718), step p242, filed by d3 on 10-28: staging audit 14609 (2026-10-28 01:50Z) set facebook.doc_id.ProfileCometAppCollectionReelsRendererPaginationQuery to 28993930466939828 by hand (api portal vp job facebook-reads, step p88), because staging's frozen id 28275011465462976 answered missing_required_variable_value or field_exception. Staging's crawler-api runs the watch mode of apps/crawler-v3/src/run/modes.py, whose role tuple had no doc-ids-refresh, so the last staging facebook-doc-ids-extract write was 2026-09-23 06:17Z (audit 13576) and the last doc-ids-extract write 2026-09-29 03:31Z (audit 13644), while prod's workers mode runs the role. Commit d7b9d4419e (the metal box owner, session 01a11d24) adds DOC_IDS_ROLE to the watch tuple with its case in tests/unit/test_runtime_roles.py, so every staging deploy starts the refresher and doc_ids.refresh_enabled already defaults true there. The Instagram doc_id_ keys share the cause and F16 already matches them.",
+      "match": {
+        "config_key_prefixes": [
+          "facebook.doc_id."
+        ]
+      }
+    },
+    {
       "id": "F30",
       "title": "The search-sync drain batch was a live control, so a hand step of search_sync.batch looked like a tuning lever on prod while the OpenSearch write pool was the limit",
       "designs": [
