@@ -1,7 +1,7 @@
 {
   "name": "Vent gateway",
   "ownerWords": "is Vent fully implemented and functioning rn? make it so it is. follow the original proposal discussion, all external API/webhook should pass here, we should be tracking OTEL ...\n\ncompletely remove all legacy sdk, API keys from old deployments.\n\n10-19: ACTUALLY remove all the direct API keys from all apps",
-  "goal": "Every in-scope outside API call site and inbound webhook goes through Vent in prod, with GeoNode proxy egress the one allowed exception, and no deployment other than Vent holds a provider key, except the Slack token the alarm fallback keeps. On 10-19 the intent audit moved call success and host health to the duty Vent integrations, so this duty holds the cutover and the keys. Two problems kept coming back here: key copies left in old places (.bak files on us-metal01, the old Railway vent service, research-agent-be tier files, expired Instagram copies), which provider_keys_outside_vent counts, and direct provider calls showing up again at main outside the inventory (search's old PostHog client, 28 unlisted files on 10-19), which the new_direct_site rows show. Since 10-19 the call-site list comes from the code at the dev/sieun tip, so a site whose call the tip removed leaves the count and a new direct call there counts. Since 10-22 it also holds goal p22's removals: removed_provider_refs fails when code, a test or a Vent integration of a removed provider comes back at the tip. Since 10-22 no_prod_traffic_sites is a number the precheck shows with no target, because whether customers connect a provider is demand and the owner asked only that every call goes through Vent (c67); on 10-22 it read 3 (Notion, Telegram, the Slack incoming webhook) while each of the three reached its provider through prod Vent and got the provider's own auth error. Since 10-27 it also reads test_calls_real_24h, the number of goal p85, as a reading with no target here (owner rule c174, \"these shouldn't be actually being sent\"): the Resend and Gmail sends, Langfuse trace exports and Slack sales pings that Vent on staging, CI or a local box sent a real provider in 24 h instead of answering from its fake, without the mail checks' sends to their own real sinks mailsink.virev.ai and nomail.virev.ai. Stripe stays out, because its staging calls run in test mode and the billing and card checks keep them real on purpose.",
+  "goal": "Every in-scope outside API call site and inbound webhook goes through Vent in prod, with GeoNode proxy egress the one allowed exception, and no deployment other than Vent holds a provider key, except the Slack token the alarm fallback keeps. On 10-19 the intent audit moved call success and host health to the duty Vent integrations, so this duty holds the cutover and the keys. Two problems kept coming back here: key copies left in old places (.bak files on us-metal01, the old Railway vent service, research-agent-be tier files, expired Instagram copies), which provider_keys_outside_vent counts, and direct provider calls showing up again at main outside the inventory (search's old PostHog client, 28 unlisted files on 10-19), which the new_direct_site rows show. Since 10-19 the call-site list comes from the code at the dev/sieun tip, so a site whose call the tip removed leaves the count and a new direct call there counts. Since 10-22 it also holds goal p22's removals: removed_provider_refs fails when code, a test or a Vent integration of a removed provider comes back at the tip. Since 10-22 no_prod_traffic_sites is a number the precheck shows with no target, because whether customers connect a provider is demand and the owner asked only that every call goes through Vent (c67); on 10-22 it read 3 (Notion, Telegram, the Slack incoming webhook) while each of the three reached its provider through prod Vent and got the provider's own auth error. Since 10-27 it also reads test_calls_real_24h, the number of goal p85, and since 10-28 it is a metric with a target of 0 (owner rule c174, \"these shouldn't be actually being sent\"): the Resend and Gmail sends, Langfuse trace exports and Slack sales pings that Vent on staging, CI or a local box sent a real provider in 24 h instead of answering from its fake, without the mail checks' sends to their own real sinks mailsink.virev.ai and nomail.virev.ai. Stripe stays out, because its staging calls run in test mode and the billing and card checks keep them real on purpose.",
   "metrics": [
     {
       "key": "through_vent_pct",
@@ -24,12 +24,12 @@
       "op": "<=",
       "target": 0,
       "unit": " refs"
-    }
-  ],
-  "readings": [
+    },
     {
       "key": "test_calls_real_24h",
-      "label": "Test sends off production (Resend, Gmail, Langfuse trace export, Slack sales) that reached the real provider in 24 h, the number of goal p85 (target 0)",
+      "label": "Test sends off production (Resend, Gmail, Langfuse trace export, Slack sales) that reached the real provider in 24 h, the number of goal p85",
+      "op": "<=",
+      "target": 0,
       "unit": " calls/day"
     }
   ],

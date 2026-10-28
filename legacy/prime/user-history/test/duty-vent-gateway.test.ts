@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
+import { dutyShapeProblem, type DutyMetric } from "../src/shared/chat-duties.ts";
 import { boxLocations, inScope, removedProviderRefs, TEST_SENDS_SQL, TIP, UNMEASURED, VENT_SHARE, ventMetrics, webhookVerdicts, type ShareResult, type VentReads } from "../scripts/duties/vent-gateway.ts";
 
 const site = (row: number, status: string, extra: object = {}) => ({ row, app: "convex", provider: "Stripe", runs_in: "Convex staging, prod", status, ...extra });
@@ -123,7 +124,7 @@ test("the infra tier copy virev-services loads counts its Vercel and Railway tok
 test("a failed share script leaves through_vent_pct unmeasured with a source error, never -1", async () => {
   const { judge } = await import("../src/shared/chat-duties.ts");
   const duty = JSON.parse(await readFile(new URL("../scripts/duties/vent-gateway.duty.json", import.meta.url), "utf8"));
-  const output = ventMetrics(reads({ share: { error: "exit 1" } }), 0);
+  const output = ventMetrics(reads({ share: { error: "exit 1" }, testSends: [] }), 0);
   assert.equal("through_vent_pct" in output.metrics, false);
   assert.ok(Object.values(output.metrics).every(value => value !== -1));
   assert.equal(output.metrics.source_errors, 1);
@@ -356,4 +357,16 @@ test("the test send query leaves out production, faked calls and sends whose eve
   assert.match(TEST_SENDS_SQL, /`vent\.mock` != 'true'/);
   assert.match(TEST_SENDS_SQL, /arrayAll\(d -> d IN \('mailsink\.virev\.ai', 'nomail\.virev\.ai'\)/);
   assert.doesNotMatch(TEST_SENDS_SQL, /stripe/);
+});
+
+// On 10-28 the chat system duty's quiet-spot audit found goal p85 linked to d1/test_calls_real_24h while d1 kept it as a reading with no target,
+// so a test send that reached a real provider never read as a miss (owner rule c174, "these shouldn't be actually being sent").
+test("the duty keeps one headline and at most 3 metrics, and test_calls_real_24h is one of them with a target of 0", () => {
+  return readFile(new URL("../scripts/duties/vent-gateway.duty.json", import.meta.url), "utf8").then(text => {
+    const duty = JSON.parse(text) as { metrics: DutyMetric[]; readings?: unknown };
+    assert.equal(dutyShapeProblem(duty.metrics), null);
+    assert.deepEqual(duty.metrics.map(metric => metric.key), ["through_vent_pct", "provider_keys_outside_vent", "removed_provider_refs", "test_calls_real_24h"]);
+    assert.deepEqual(duty.metrics.find(metric => metric.key === "test_calls_real_24h")!.target, 0);
+    assert.equal(duty.readings, undefined);
+  });
 });
