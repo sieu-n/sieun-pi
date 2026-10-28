@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { hostExecFile } from "./spawn-host.ts";
 import { existsSync } from "node:fs";
-import { appendFile, lstat, mkdir, readdir, readFile, readlink, unlink, writeFile } from "node:fs/promises";
+import { appendFile, lstat, mkdir, open, readdir, readFile, readlink, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, normalize, relative } from "node:path";
 import { loadHosts, selfHost, type Host } from "./hosts.ts";
@@ -360,12 +360,42 @@ async function endOwned(source: LeftoverSource, files: readonly string[], dirs: 
  * "<id>/index.html",...}`, printed raw, as a Python dict or escaped inside a tool result.
  */
 const OPENED_SESSION = /id[\\"']*\s*:\s*[\\"']*(sessions\/\d{4}\/\d{2}\/\d{2}\/\d{4}-[a-z0-9-]+)[\\"']*\s*,\s*[\\"']*path[\\"']*\s*:\s*[\\"']*\1\/index\.html/g;
+/** The end of every `OPENED_SESSION` match, which the raw bytes are searched for before any of them is decoded. */
+const INDEX_HTML = Buffer.from("/index.html");
+/** The bytes before an `INDEX_HTML` hit that hold its match: the id and the path, each under 100 characters, with any quotes and escapes between. */
+const MATCH_BYTES = 1024;
+/** The transcript bytes read and searched at a time. */
+export const SCAN_CHUNK = 4 * 1024 * 1024;
 
+/**
+ * The wiki session folders these transcripts opened (`OPENED_SESSION`). Each file is read in SCAN_CHUNK pieces and searched as bytes for
+ * INDEX_HTML, and only the MATCH_BYTES before each hit are decoded for the pattern. Until 10-29 each file was read whole as UTF-8 and the
+ * pattern ran over all of it on the main thread: the service's first sweep of deleted jobs after each start read every transcript again, and
+ * in the CPU profile of 15:27 to 15:33Z on 10-28 that held the main thread 24 s, plus 10 s of decoding, in blocks of up to 579 ms, and d7 read
+ * 15:31Z dirty from a 1.1 s duties read. Over the 3,199 transcripts (2.7 GB) of chat 01a1164b the old read took 11.9 s of main thread and
+ * this one 1.1 s, with the same 143 folders.
+ */
 export async function openedWikiSessions(transcripts: readonly string[]): Promise<string[]> {
   const found = new Set<string>();
+  const buffer = Buffer.allocUnsafe(MATCH_BYTES + SCAN_CHUNK);
   for (const file of transcripts) {
-    const text = await readFile(file, "utf8").catch(() => "");
-    for (const match of text.matchAll(OPENED_SESSION)) found.add(match[1]!);
+    const handle = await open(file, "r").catch(() => null);
+    if (!handle) continue;
+    try {
+      // The last MATCH_BYTES of a piece stay at the buffer's start, so a match that crosses two pieces is found in the second.
+      let kept = 0;
+      for (let at = 0; ;) {
+        const { bytesRead } = await handle.read(buffer, kept, SCAN_CHUNK, at);
+        if (!bytesRead) break;
+        at += bytesRead;
+        const end = kept + bytesRead;
+        const bytes = buffer.subarray(0, end);
+        for (let hit = bytes.indexOf(INDEX_HTML); hit >= 0; hit = bytes.indexOf(INDEX_HTML, hit + 1))
+          for (const match of bytes.toString("utf8", Math.max(0, hit - MATCH_BYTES), hit + INDEX_HTML.length).matchAll(OPENED_SESSION)) found.add(match[1]!);
+        kept = Math.min(MATCH_BYTES, end);
+        buffer.copy(buffer, 0, end - kept, end);
+      }
+    } catch { /* a file that cannot be read opened nothing */ } finally { await handle.close().catch(() => {}); }
   }
   return [...found];
 }
