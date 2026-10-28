@@ -168,15 +168,17 @@ function kindMatch(match: string, query: Query): string {
   return query.thinking ? text : `${text} NOT kind : "thinking"`;
 }
 
-/** The SQL pieces of one branch: its FROM for hit rows, for the exact count and for the rank window, its WHERE, and its snippet MATCH text. */
-interface BranchSql { from: string; countFrom: string; rankFrom: string; id: string; where: Clause; fts: boolean; match: string | null; sessions: string[] }
+/**
+ * The SQL pieces of one branch: its FROM for hit rows, for the exact count and for the rank window, its WHERE, the rank window's WHERE and
+ * its snippet MATCH text. The rank window filters kinds on the docs row, never in the MATCH: bm25 counts every phrase of the MATCH across the
+ * whole index, and `kind : "thinking"` (720,000 docs) cost each relevant search about 105 ms, even one with 2 hits, on 10-28.
+ */
+interface BranchSql { from: string; countFrom: string; rankFrom: string; id: string; where: Clause; rankWhere: Clause; fts: boolean; match: string | null; sessions: string[] }
 
-function branchFrom(db: DatabaseSync, branch: Branch, query: Query, roots: string[] | null): BranchSql {
+function branchWhere(branch: Branch, query: Query, roots: string[] | null, match: string | null, kindsInMatch: boolean): Clause {
   const fts = branch.match !== null;
   const id = fts ? "fts.rowid" : "d.id";
   const where = clause();
-  const kindsInMatch = fts && ftsHasKind(db);
-  const match = kindsInMatch ? kindMatch(branch.match!, query) : branch.match;
   if (fts) { where.sql.push("fts MATCH ?"); where.values.push(match); }
   else if (query.exclude) { where.sql.push("d.id NOT IN (SELECT rowid FROM fts WHERE fts MATCH ?)"); where.values.push(query.exclude); where.rows = true; }
   if (branch.sessions.length) {
@@ -188,11 +190,19 @@ function branchFrom(db: DatabaseSync, branch: Branch, query: Query, roots: strin
   where.sql.push(...filters.sql);
   where.values.push(...filters.values);
   where.rows ||= filters.rows || !fts;
+  return where;
+}
+
+function branchFrom(db: DatabaseSync, branch: Branch, query: Query, roots: string[] | null): BranchSql {
+  const fts = branch.match !== null;
+  const kinds = fts && ftsHasKind(db);
+  const text = !fts ? null : kinds ? `{text} : (${branch.match})` : branch.match;
+  const where = branchWhere(branch, query, roots, kinds ? kindMatch(branch.match!, query) : branch.match, kinds);
   const from = fts ? "fts JOIN docs d ON d.id = fts.rowid JOIN files f ON f.id = d.file" : "docs d JOIN files f ON f.id = d.file";
   const docs = hasMetaIndex(db) ? "docs d INDEXED BY docs_meta" : "docs d";
   const countFrom = !where.rows ? "fts" : fts ? `fts JOIN ${docs} ON d.id = fts.rowid` : "docs d";
-  const snippetMatch = !fts ? null : kindsInMatch ? `{text} : (${branch.match})` : branch.match;
-  return { from, countFrom, rankFrom: `fts JOIN ${docs} ON d.id = fts.rowid`, id, where, fts, match: snippetMatch, sessions: branch.sessions };
+  return { from, countFrom, rankFrom: `fts JOIN ${docs} ON d.id = fts.rowid`, id: fts ? "fts.rowid" : "d.id", where,
+    rankWhere: branchWhere(branch, query, roots, text, false), fts, match: text, sessions: branch.sessions };
 }
 
 const whereSql = (where: Clause, extra: string[] = []): string => {
@@ -234,7 +244,7 @@ export function primeHits(db: DatabaseSync, box: string, query: Query, ask: Page
     // a snippet in the ranking query was made for all 2,000 rows before the sort kept 21, and the window's floor as a subquery ran the MATCH
     // a second time: "did not answer in" took 660 ms to rank that way.
     const scored = (prepare(db, `SELECT fts.rowid AS id, bm25(fts) * ${weightCase("d.kind")} AS score FROM ${part.rankFrom}
-      ${whereSql(part.where)} ORDER BY fts.rowid DESC LIMIT ${RANK_WINDOW}`).all(...part.where.values) as Row[])
+      ${whereSql(part.rankWhere)} ORDER BY fts.rowid DESC LIMIT ${RANK_WINDOW}`).all(...part.rankWhere.values) as Row[])
       .sort((a, b) => Number(a.score) - Number(b.score) || Number(b.id) - Number(a.id)).slice(0, want);
     if (!scored.length) continue;
     const scores = new Map(scored.map(row => [Number(row.id), Number(row.score)]));
