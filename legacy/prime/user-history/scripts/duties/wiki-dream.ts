@@ -29,9 +29,11 @@ export const CHURN_MS = 7 * DAY;
 export const FLAGGED_MAX = 80;
 /**
  * wiki-health.mjs took 96 s alone and timed out at the old 100 s twice inside the precheck at 02:4xZ on 2026-10-24, with us-metal02 at load 220
- * on 80 cores; the d4 prechecks before it took 66 to 88 s in all. The duty's precheck limit (wiki-dream.duty.json) is 300 s to match.
+ * on 80 cores; the d4 prechecks before it took 66 to 88 s in all. On 2026-10-28 at 20:17Z it timed out at the old 240 s inside the precheck with
+ * us-metal02 at load 283, and alone at 20:18Z it took 228 s at load 224 to 283, so the limit is twice that. The duty's precheck limit
+ * (wiki-dream.duty.json) is 600 s to match.
  */
-const HEALTH_TIMEOUT_MS = 240_000;
+const HEALTH_TIMEOUT_MS = 480_000;
 const GIT_TIMEOUT_MS = 20_000;
 /** journalctl read this unit's last 48 h (11,603 lines) in under 1 s on us-metal02 on 2026-10-19. */
 const JOURNAL_TIMEOUT_MS = 20_000;
