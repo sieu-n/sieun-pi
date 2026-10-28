@@ -73,12 +73,14 @@ export const onHandOf = (accounts: readonly Account[]): Account[] =>
   accounts.filter(account => !(DEAD as readonly string[]).includes(account.status) && !(account.reason ?? "").startsWith(MOVED_PREFIX));
 export type Cause = "instagram" | "first_login" | "bad_password" | "ours" | "unknown";
 /**
- * A copy of CODE_CAUSES in apps/crawler-v3/src/control/metrics/engage_deaths.py (sieun/dev, 2026-10-12), plus the two codes prod accounts 55 and 74
- * died with on 10-12: login_redirect (every usertags read answered 302 to the login page after both had served pages) and instagram_session_killed.
+ * A copy of CODE_CAUSES in apps/crawler-v3/src/control/metrics/engage_deaths.py (auto-sns-agent dev/sieun, 2026-10-28), which also holds the two codes
+ * prod accounts 55 and 74 died with on 10-12: login_redirect (every usertags read answered 302 to the login page after both had served pages) and
+ * instagram_session_killed. checkpoint_required is the jar check's verdict on prod 62, 262 and 267 on 10-18. The crawler's canary stop counts the same
+ * map since auto-sns-agent a92e4b001, so a code missing here would stop the canary while d1 called the death unknown.
  */
 export const CODE_CAUSES: Readonly<Record<string, Cause>> = {
   account_suspended: "instagram", action_blocked: "instagram", challenge: "instagram", challenge_required: "instagram", challenged: "instagram",
-  instagram_session_killed: "instagram", login_redirect: "instagram", sentry_block: "instagram", suspended_on_first_contact: "instagram",
+  checkpoint_required: "instagram", instagram_session_killed: "instagram", login_redirect: "instagram", sentry_block: "instagram", suspended_on_first_contact: "instagram",
   bad_password: "bad_password",
   budget_meter_failed: "ours", exit_pinned: "ours", exit_unusable: "ours", geo_blocked: "ours", proxy_blocked: "ours", transport: "ours",
 };
