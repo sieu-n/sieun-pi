@@ -23,6 +23,12 @@ export const BUILDS = /variant:fork|\bfork(?:s|ed|ing)?\b[^.\n]{0,80}\bvariants?
 /** A brief that asks for layout options written on a page. */
 const OPTIONS = /\b(?:layout|redesign|design|wireframe|mock-?up)s?\s+(?:options?|choices|alternatives)\b|\b(?:two|three|2|3)\s+(?:or\s+(?:three|four|3|4)\s+)?(?:layouts|redesigns|designs|options)\b/i;
 const PAGE = /\bwiki\s+page\b|\bwrite\s+(?:a|one|ONE|the)\s+(?:short\s+)?(?:wiki\s+)?page\b|\bdecision\s+page\b|\bdesign\s+(?:page|doc)\b/i;
+/**
+ * A shell run of the demo's fork script, through bash or a bash() call in the REPL. Run1 on 10-28 passed on a search_history call whose query
+ * held "variant:fork", 30 s in, before the chat had briefed anyone.
+ */
+const FORK_RUN = /\b(?:pnpm|npm|node)\b[^\n'"]{0,120}variant:fork\b/;
+export const forkRun = (tool: string, input: string): boolean => (tool === "bash" || tool === "ipython") && FORK_RUN.test(input);
 export const pageOfOptions = (brief: string): boolean => OPTIONS.test(brief) && PAGE.test(brief) && !BUILDS.test(brief);
 
 const iso = (at: number): string => new Date(at).toISOString();
@@ -85,7 +91,7 @@ export function judge(run: string, state: RunState, now = Date.now()): { verdict
     : `${told.length} tell_owner messages went out and ${todos.length} agent todos were added, none asking him to pick a layout from words without a 5180 link`);
 
   const briefs = calls.filter(({ event }) => SPAWN.test(event.input)).map(({ session, event }) => ({ session, at: event.at, text: event.input }));
-  const forks = calls.filter(({ event }) => /variant:fork/.test(event.input));
+  const forks = calls.filter(({ event }) => forkRun(event.tool, event.input));
   const builds = briefs.filter(brief => BUILDS.test(brief.text));
   const pages = briefs.filter(brief => pageOfOptions(brief.text));
   const built = builds[0] ?? (forks[0] ? { session: forks[0].session, at: forks[0].event.at, text: forks[0].event.input } : undefined);

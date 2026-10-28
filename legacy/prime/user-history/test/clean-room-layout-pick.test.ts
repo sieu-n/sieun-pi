@@ -2,7 +2,7 @@
 // fails it, and the 15:09Z brief that forked one variant per layout passes it.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { BUILDS, pageOfOptions } from "../scripts/clean-room/layout-pick.ts";
+import { BUILDS, forkRun, pageOfOptions } from "../scripts/clean-room/layout-pick.ts";
 import { SCENARIOS } from "../scripts/clean-room/scenarios.ts";
 
 const PAGE_BRIEF = `rlm.spawn(b_swipe) Task: write ONE wiki page (open a wiki session, apps/llm-wiki skill) the owner can read in two minutes.
@@ -24,4 +24,10 @@ test("the 15:09Z brief that forks one variant per layout builds on 5180", () => 
 
 test("the scenario is registered and ends at its first verdict", () => {
   assert.equal(SCENARIOS["layout-pick"]?.endsAtVerdict, true);
+});
+
+test("a history search for variant:fork is no fork, and a pnpm run of it is", () => {
+  assert.equal(forkRun("search_history", JSON.stringify({ query: "variant:fork kind:tool box:us-metal02", limit: 8 })), false);
+  assert.equal(forkRun("ipython", JSON.stringify({ code: "r = await bash('cd ~/Documents/Github/auto-sns-agent && pnpm --filter virev-demo variant:fork watchlist/lean-1028 feed-a')" })), true);
+  assert.equal(forkRun("ipython", JSON.stringify({ code: "await search_history(query='variant:fork')" })), false);
 });
