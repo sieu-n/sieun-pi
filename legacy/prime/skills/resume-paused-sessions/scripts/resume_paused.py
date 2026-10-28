@@ -284,9 +284,13 @@ def agent_unanswered(entries):
         message = entry.get("message") or {}
         if entry.get("type") == "message" and message.get("role") == "assistant" and said_something(message):
             owed = None
-        elif entry.get("type") == "custom_message" and entry.get("customType") == "agent_message":
+        elif entry.get("type") == "custom_message" and entry.get("customType") == "agent_message" and not INFO_NOTE.search(str(entry.get("content") or "")):
             owed = owed or entry.get("timestamp") or "?"
     return owed
+
+
+# Agent messages that ask for no work: the alert bridge's note that another triage job owns a rule (alert-bridge.ts ownedByText).
+INFO_NOTE = re.compile(r"\[alert\] [^\n]* now belongs? to this chat's triage job ")
 
 
 def said_something(message):
@@ -2262,8 +2266,9 @@ def find_paused(sessions, since_minutes, state, now, direct=False, only=frozense
                                    "head_session_id": head_session(head_of(sid, by_id), s), "archived_at": last.get("timestamp"), "error": held[1],
                                    **({"host": BOX.name} if BOX.remote else {})})
             continue
-        # A park is an input whose turn never ran, so a cancelled wake owes that turn.
-        if not woke and not owed(s, sid, full, verdict, last.get("timestamp")):
+        # A cancelled wake is continued only while work is owed, as any cut is: on 10-28 four vent triage jobs idle 11 h to 4 days woke on an
+        # alert bridge note that needed no answer, parked, had their wakes dropped and took a working slot each through this continue.
+        if not owed(s, sid, full, verdict, last.get("timestamp")):
             continue
         ts = parse_ts(last.get("timestamp"))
         age_min = (now - ts).total_seconds() / 60 if ts else None

@@ -608,3 +608,24 @@ test("a rule's old per-rule job is told the chat's triage job owns it", async ()
   const told = f.sent.find(({ session }) => session === "old-0");
   assert.match(told?.text ?? "", /^\[alert\] crawler-a now belongs to this chat's triage job "alert crawler-b" \(session old-1\)/);
 });
+
+test("a finished job that had the rule is not told who owns it, so it does not wake for nothing", async () => {
+  // vent, 10-28 02:34Z to 02:35Z: triage jobs 22:09, 09:32, 18:07 and 01:51, idle 11 h to 4 days, got this note when a new triage job took
+  // their rules, parked in pi-pool's queue, had their park wakes dropped and took a working slot each through the job sweep's continue.
+  const f0 = await fixture();
+  f0.set([crawler("cccc000000000001", "crawler-a")]);
+  await f0.bridge.tick();
+  const state = await f0.state();
+  const key = Object.keys(state.rules)[0]!;
+  const days = 4 * 24 * 60 * 60_000;
+  const old = { id: "old-0", name: "alert triage vent 22:09", chat: CRAWLER, at: NOW - days, ranAt: NOW - days + 60_000 };
+  const stale = { ...state, rules: { [key]: { ...state.rules[key]!, job: { id: old.id, name: old.name, at: old.at }, wokeAt: NOW } }, jobs: { ...state.jobs, [old.id]: old } };
+  for (const [ran, told] of [[true, false], [false, true]] as const) {
+    const f = await fixture({ state: stale });
+    f.turns.set("old-0", ran ? { ran: true, at: old.ranAt } : { ran: false, error: SLOT_WAIT });
+    f.set([crawler("cccc000000000001", "crawler-a")]);
+    await f.bridge.tick();
+    assert.equal(f.started.length, 1);
+    assert.equal(f.sent.some(({ session }) => session === "old-0"), told, ran ? "old-0 answered its rule and ended" : "old-0 never ran, so it may still wake");
+  }
+});

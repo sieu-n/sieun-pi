@@ -506,17 +506,32 @@ export class AlertBridge {
    * worker. At 20:30Z on 10-19 eight per-rule jobs for hyperdx-error-logs from before the per-chat change woke at once and read the same fault.
    */
   private async point(snapshot: BridgeState, keys: readonly string[], owner: TriageJob, previous: TriageJob | undefined): Promise<void> {
-    const old = new Map<string, { name: string; rules: string[] }>();
+    const old = new Map<string, { name: string; at: number; rules: string[] }>();
     for (const key of keys) {
       const was = snapshot.rules[key]!.job;
       if (!was || was.id === owner.id || was.id === previous?.id) continue;
-      old.set(was.id, { name: was.name, rules: [...old.get(was.id)?.rules ?? [], snapshot.rules[key]!.rule] });
+      old.set(was.id, { name: was.name, at: Math.min(was.at, old.get(was.id)?.at ?? Infinity), rules: [...old.get(was.id)?.rules ?? [], snapshot.rules[key]!.rule] });
     }
-    for (const [id, { name, rules }] of old) {
+    for (const [id, { name, at, rules }] of old) {
+      // Only a job that may still take a turn on the rule hears it: one that works, or whose turn since it took the rule has not run. A finished
+      // job would wake for nothing and take a working slot. On 10-28 at 02:34Z to 02:35Z four vent triage jobs idle 11 h to 4 days (22:09,
+      // 09:32, 18:07, 01:51) got this note, parked on pi-pool's queue, had their park wakes dropped and were continued by the job sweep.
+      if (!(await this.mayTurn({ id, name }, at))) {
+        this.deps.log(`alerts: did not tell job ${name} (${id.slice(0, 8)}) that triage job ${owner.name} owns ${rules.join(", ")}: it ended`);
+        continue;
+      }
       await this.deps.deliver(id, ownedByText(rules, owner)).then(
         () => this.deps.log(`alerts: told job ${name} (${id.slice(0, 8)}) that triage job ${owner.name} owns ${rules.join(", ")}`),
         error => this.deps.log(`alerts: tell job ${id.slice(0, 8)} its owner: ${message(error)}`));
     }
+  }
+
+  /** The job works, or no turn of it ran since `since`; true when the bridge cannot read either. */
+  private async mayTurn(job: AlertJob, since: number): Promise<boolean> {
+    if (await (this.deps.jobWorking?.(job) ?? Promise.resolve(false)).catch(() => true)) return true;
+    if (!this.deps.jobTurn) return this.deps.jobWorking === undefined;
+    const turn = await this.deps.jobTurn(job, since).catch(() => null);
+    return turn === null || !turn.ran;
   }
 
   /**

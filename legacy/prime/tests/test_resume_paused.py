@@ -1189,6 +1189,28 @@ class ResumePausedTests(unittest.TestCase):
         self.assertEqual(second["a"], "2026-10-05T19:50:00Z", "the pass sees the other pass's newer send")
         self.assertEqual(sorted(p.name for p in self.root.glob("state.json*")), ["state.json"])
 
+    def test_a_cancelled_wake_is_continued_only_while_work_is_owed(self):
+        # vent, 10-28: triage job 22:09 ended its work days before, the alert bridge told it at 02:34Z that job 11:33 owns its rule, the note
+        # parked on pi-pool's queue, the idle unload stopped it, and the wake was dropped. That note asks for nothing, so no continue is owed.
+        sid = "01a17f1e-141e-723a-9afa-cc658e28bbe7"
+        entries = self.STRANDED[sid]["entries"]
+        park = next(index for index, entry in enumerate(entries) if entry.get("customType") == "provider_quota_park")
+        done = {"type": "message", "timestamp": "2026-10-24T13:20:00.000Z", "message": {"role": "assistant", "stopReason": "stop",
+                "content": [{"type": "text", "text": "vent-down-prod is resolved; nothing more to do."}]}}
+        note = {"type": "custom_message", "customType": "agent_message", "timestamp": "2026-10-27T21:34:24.000Z",
+                "content": "[agent-message from c4e27c6be50b]\n\n[alert] vent-down-prod now belongs to this chat's triage job \"alert triage vent 11:33\" (session x)"}
+        finished = [done, note, *entries[park - 1:]]
+        (self.root / "chats.json").write_text(json.dumps({"ids": []}))
+        (self.root / "threads.json").write_text(json.dumps({"ids": []}))
+        with patch.object(resume_paused, "CHAT_INDEX", self.root / "chats.json"), patch.object(resume_paused, "THREAD_INDEX", self.root / "threads.json"), \
+                patch.object(resume_paused, "OWED_ONLY", [True]), patch.object(resume_paused, "CHAT_SESSIONS", []), patch.object(resume_paused, "UNOWED", []):
+            self.assertEqual(self.run_stranded(sid, finished)["paused"], [])
+            self.assertEqual([run["session_id"] for run in resume_paused.UNOWED], [sid])
+            (self.root / "state.json").unlink(missing_ok=True)
+            asked = [done, {**note, "content": "[agent-message from parent:vent]\n\ncheck vent-down-prod again"}, *entries[park - 1:]]
+            self.assertEqual([p["session_id"] for p in self.run_stranded(sid, asked)["paused"]], [sid], "a parent's message is owed its turn")
+        self.assertEqual(self.sent, [])
+
     def test_credential_wait_at_reads_the_diagnostic_and_not_the_text(self):
         message = self.MARKER["message"]
         self.assertEqual(resume_paused.credential_wait_at(message), 1792517520000)
