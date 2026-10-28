@@ -29,8 +29,8 @@ import { Leases, SessionLockedError } from "../lease.ts";
 import { statusOf, ThreadIndex, type IndexedEntry, type SearchPage, type SearchQuery, type ThreadRow, type ThreadStatus, type UsageRow, type UsageTotal } from "./index-db.ts";
 import { headFor, parseSession } from "./import.ts";
 import { AgentMessageEntry, ChatDoc, threadEnv, threadRegistry } from "./registry.ts";
+import { SPEAKING_TOOLS, type PrimeChat } from "./prime-chat.ts";
 import type { PrimePromptOptions } from "./prime-prompt.ts";
-import { SEND_MESSAGE_TOOL } from "./send-message.ts";
 
 const context: Context = BACKGROUND_CONTEXT;
 const PREVIEW_CHARS = 200;
@@ -61,6 +61,8 @@ export interface DurableThreadsOptions {
   now?: () => number;
   /** Prime's agent dir and prompt options: each thread then runs with Prime's system prompt (`prime-prompt.ts`); unset, with the preamble alone. */
   prompt?: Omit<PrimePromptOptions, "thread" | "log">;
+  /** Prime's chat extension, loaded once (`loadPrimeChat`): each thread's root conversation then offers its tools and turn wrappers. */
+  chat?: PrimeChat;
 }
 
 export interface ThreadInfo extends ThreadRow {
@@ -155,14 +157,14 @@ export function describeEntry(entry: EntryRecord, now: number): { text: string; 
 }
 
 /**
- * The thread list's preview line from one entry: the message a send_message call sent, nothing for its "Sent." result, and the searchable
- * text of any other entry.
+ * The thread list's preview line from one entry: the message a tell_owner or send_message call sent, nothing for its result, and the
+ * searchable text of any other entry.
  */
 export function previewText(entry: EntryRecord, now: number): string | undefined {
   const message = entry.model?.[0] as Message | undefined;
-  if (message?.role === "toolResult" && message.toolName === SEND_MESSAGE_TOOL) return undefined;
+  if (message?.role === "toolResult" && SPEAKING_TOOLS.has(message.toolName)) return undefined;
   if (message?.role === "assistant") {
-    const sent = message.content.flatMap(c => (c.type === "toolCall" && c.name === SEND_MESSAGE_TOOL && typeof c.arguments?.text === "string" ? [c.arguments.text as string] : []));
+    const sent = message.content.flatMap(c => (c.type === "toolCall" && SPEAKING_TOOLS.has(c.name) && typeof c.arguments?.text === "string" ? [c.arguments.text as string] : []));
     if (sent.length) return sent.at(-1);
   }
   return describeEntry(entry, now)?.text || undefined;
@@ -280,13 +282,18 @@ export class DurableThreads {
     const real = this.leases.acquire(file, id);
     let state: OpenThread | undefined;
     let wake: Wake = { active: false };
+    let openHarness: Harness | undefined;
     try {
       const storage = await openNodeSqliteStorage(file);
+      const name = () => this.index.get(id)?.name ?? row.name;
+      const chat = this.options.chat && {
+        chat: this.options.chat,
+        thread: { id, file, name, cwd: row.cwd, harness: () => openHarness, boardDoc: () => this.docGet(id, "chat.board"), log: (line: string) => this.log(`${id} ${line}`) },
+      };
+      const prompt = this.options.prompt && { ...this.options.prompt, thread: { id, file, name, cwd: row.cwd, query: () => this.lastText.get(id) }, log: (line: string) => this.log(`${id} ${line}`) };
       const harness = await Harness.open(storage, {
         models: this.options.models(id),
-        registry: this.options.prompt
-          ? threadRegistry({ ...this.options.prompt, thread: { id, file, name: () => this.index.get(id)?.name ?? row.name, cwd: row.cwd, query: () => this.lastText.get(id) }, log: line => this.log(`${id} ${line}`) })
-          : this.registry,
+        registry: prompt || chat ? threadRegistry(prompt, chat) : this.registry,
         env: threadEnv(row.cwd),
         ...(this.options.settings === undefined ? {} : { settings: this.options.settings }),
         onWake: next => {
@@ -296,6 +303,7 @@ export class DurableThreads {
         },
         onReport: (error: unknown, info: ReportInfo) => this.log(`${id} ${info.type}${"reason" in info && info.reason ? ` ${String(info.reason)}` : ""}: ${error instanceof Error ? error.message : String(error)}`),
       }, context);
+      openHarness = harness;
       const root = await harness.root(context, init ? { agent: init.agent } : undefined);
       if (root.id !== ROOT_CONVERSATION_ID) throw new Error(`${file}: the root conversation is ${root.id}`);
       await this.backfill(id, harness);

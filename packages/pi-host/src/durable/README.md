@@ -38,7 +38,9 @@ H-->>C: the same submission, nothing admitted twice
 | `threads.ts` | `DurableThreads`: open, recover, submit, wait, abort, watch, tree, entries, documents and idle close. |
 | `index-db.ts` | `ThreadIndex`: the thread rows, each thread's last wake, the FTS5 search rows and the usage rows, all derived from the thread files. |
 | `commands.ts` | `DurableCommands`: the `durable_*` socket commands and the watches per connection. |
-| `registry.ts` | What every thread runs with: Prime's prompt (or the preamble alone without an agent dir), pi-durable's coding tools in the thread's cwd, the subagent tool, the `send_message` tool, `agent.message` entries and `chat.doc` documents. |
+| `registry.ts` | What every thread runs with: Prime's prompt (or the preamble alone without an agent dir), pi-durable's coding tools in the thread's cwd, the subagent tool, the `send_message` tool, Prime's chat extension when the host loaded it, `agent.message` entries and `chat.doc` documents. |
+| `pi-extensions.ts` | The adapter that runs a pi coding-agent extension in pi-host: a recording `ExtensionAPI`, its events fired with a thread's pi context, and each registered tool as a pi-durable tool with the extension's own definition. |
+| `prime-chat.ts`, `chat-app.ts` | Prime's chat extension (user-history) in a thread's root conversation: `search_history`, `chat_board`, `tell_owner`, `correction_add`, `poteto_mode` and the `[message id]` and `[not from the owner]` wrappers, with `chat_board` and `tell_owner` on apps/chat's board API; `docs/prime-pi-prompt-parity.md` lists each binding and what is skipped. |
 | `prime-prompt.ts` | A Prime chat's system prompt, built by prime-agent's own `buildSystemPrompt` from the agent dir's AGENTS.md files, skills, chat brief, harness and corrections ledger, as pi-durable sections; `docs/prime-pi-prompt-parity.md` maps each part. |
 | `open.ts` | `openDurableHost()` for one file and the Prime preamble extension. |
 | `@sieun-pi/pi-pool/durable` | `poolProvider()` in `packages/pi-pool/src/durable/pool-provider.ts`: a pi-ai Provider that vends each request's account through pi-pool and turns a slot wait into a stored sleep. |
@@ -81,7 +83,9 @@ Every entry reaches a watcher once, so a client that reconnects with `fromEntry`
 
 ## Speaking through send_message
 
-Every root thread has `send_message {text, to?}`, and its description carries the rules for talking to people (`SEND_MESSAGE_DESCRIPTION`).
+A root thread on a host that loaded Prime's chat extension speaks to the owner through Prime's `tell_owner`, with Prime's guard, and keeps `send_message` as an alias for channel replies and duty reports (`SEND_MESSAGE_ALIAS_DESCRIPTION`); apps/chat draws both alike. The rest of this section holds for both tools.
+
+Every root thread has `send_message {text, to?}`, and without the chat extension its description carries the rules for talking to people (`SEND_MESSAGE_DESCRIPTION`).
 
 1. The call does nothing outside the thread and returns "Sent.", so it is replay-safe: the call's arguments in the assistant entry are the message.
 2. The chat (`apps/chat/server/timeline.ts`) draws each call's text as its own bubble and folds the rest of the turn's text, as private notes, with its thinking and tool steps; a channel turn posts one reply per call. A conversation that has never called it keeps its turn text as the bubble.

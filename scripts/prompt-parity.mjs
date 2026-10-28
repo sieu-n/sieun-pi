@@ -11,7 +11,10 @@
  * pi side: what pi-host's prompt builder (packages/pi-host/src/durable/prime-prompt.ts) renders for the same cwd, session file and brief,
  * and what the pi thread's file holds today (the replayed `pi.system` entries of its root conversation).
  *
- * Writes prime/*.txt, builder/*.txt, pi-live/*.txt, summary.json and summary.md under --out.
+ * Tools: each tool of the capture against the definition a pi thread offers, as pi-ai's Anthropic provider sends it (name, description,
+ * `input_schema` {type, properties, required}); the chat tools come from Prime's own chat extension as pi-host loads it (prime-chat.ts).
+ *
+ * Writes prime/*.txt, builder/*.txt, pi-live/*.txt, pi-tools.json, summary.json and summary.md under --out.
  */
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -119,6 +122,23 @@ if (thread) {
   write("pi-live/tools.json", [...tools.values()]);
 }
 
+// ---- Tools: what a pi thread offers, from the same code pi-host runs (prime-chat.ts loads the user-history extension as a chat).
+const chatModule = await import("../packages/pi-host/src/durable/prime-chat.ts");
+const chat = await chatModule.loadPrimeChat({ agentDir, dataDir: join(agentDir, "browser-chat") });
+const wire = tool => ({ name: tool.name, description: tool.description,
+  input_schema: { type: "object", properties: tool.parameters?.properties ?? {}, required: tool.parameters?.required ?? [] } });
+const piTools = new Map(chat.tools.map(tool => [tool.name, wire(tool)]));
+write("pi-tools.json", [...piTools.values()]);
+const sameJson = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+const toolRows = payload.tools.map(tool => {
+  const pi = piTools.get(tool.name);
+  if (!pi) return { name: tool.name, parity: "missing in pi", primeBytes: bytes(tool.description) };
+  const primeWire = { name: tool.name, description: tool.description, input_schema: { type: "object", properties: tool.input_schema?.properties ?? {}, required: tool.input_schema?.required ?? [] } };
+  const parity = sameJson(pi, primeWire) ? "identical" : sameJson(pi.description, primeWire.description) ? "different schema" : "different description";
+  return { name: tool.name, parity, primeBytes: bytes(tool.description), piBytes: bytes(pi.description) };
+});
+for (const name of piTools.keys()) if (!payload.tools.some(tool => tool.name === name)) toolRows.push({ name, parity: "pi only (not in this capture)", piBytes: bytes(piTools.get(name).description) });
+
 // ---- Compare.
 const lineDiff = (pi, prime) => {
   if (pi === prime || prime === null || prime === undefined) return null;
@@ -138,7 +158,7 @@ const rows = parts.map(part => {
 const summary = {
   capturedAt: capture.capturedAt, session, sessionFile: capture.sessionFile, cwd, brief: pinned, tools, bundledSkillsDir, installedBundled,
   primeSystemBytes: bytes(system), builderPrimeBytes: bytes(primeJoined), systemIdentical: primeJoined === system, systemDiff: firstDiff(primeJoined, system),
-  identity: identity, primeTools: payload.tools.map(tool => tool.name), live, rows,
+  identity: identity, primeTools: payload.tools.map(tool => tool.name), live, rows, toolRows,
 };
 write("summary.json", summary);
 const md = [
@@ -155,6 +175,10 @@ const md = [
   "|---|---|---|---|---|",
   ...rows.map(row => `| ${row.key} | ${row.builderBytes} | ${row.primeAt}${row.primeBytes === null ? "" : `, ${row.primeBytes} bytes`} | ${row.parity}` +
     `${row.lines ? ` (${row.lines.shared} lines shared, ${row.lines.onlyPrime} only in Prime, ${row.lines.onlyPi} only in pi)` : ""} | ${row.liveBytes} |`),
+  "",
+  "| Tool | Parity with the capture | Prime description bytes | pi description bytes |",
+  "|---|---|---|---|",
+  ...toolRows.map(row => `| ${row.name} | ${row.parity} | ${row.primeBytes ?? ""} | ${row.piBytes ?? ""} |`),
   "",
   `Prime tools: ${summary.primeTools.join(", ")}.`,
   live ? `pi thread ${live.thread} tools: ${live.tools.join(", ")}; its sections today: ${live.sections.map(section => `${section.key} (${section.bytes} bytes)`).join(", ")}.` : "No pi thread found.",

@@ -5,6 +5,11 @@
  *
  * Adapted from prime-agent-chat's `tell_owner` (legacy/prime/user-history/src/chat-guard.ts, chat-brief.ts), without its checks: one point
  * per message, no recap on a turn the owner did not start (c117), never "nothing needs you".
+ *
+ * A thread that runs Prime's chat extension (`prime-chat.ts`) speaks to the owner through Prime's own `tell_owner`, with its guard, as a
+ * Prime chat does. There send_message stays as an alias (`SendMessageAlias`, same tool and result, a description that points to
+ * tell_owner) for what apps/chat still asks for by this name: a channel post's reply (channels.ts) and a duty job's report (duty-run.ts),
+ * which a guard built for the owner's DM would hold. apps/chat draws both tools' calls as the agent's bubbles.
  */
 import { Type } from "@earendil-works/pi-ai";
 import { defineExtension, defineTool, type Extension } from "@earendil-works/pi-durable";
@@ -20,14 +25,20 @@ export const SEND_MESSAGE_DESCRIPTION =
   "a decision or a blocker needs him, or it answers his question. Never send a recap, a status reminder or \"nothing needs you\". " +
   "Use markdown, a table, a mermaid block, links and an embedded image when they carry the content better than prose (config/AGENTS.md rule 5).";
 
+/** send_message beside tell_owner: the same tool for a channel thread's reply or a duty report, and tell_owner for the owner. */
+export const SEND_MESSAGE_ALIAS_DESCRIPTION =
+  "Post one chat message into the channel thread a channel post started, or send the report a duty job's brief asks for with this tool. " +
+  "To speak to the owner in your own chat, call tell_owner instead. Everything else you write is a private working note. " +
+  "Write like a person in a Slack thread, in the owner's language: the answer first, short, one point per message. Two points are two calls.";
+
 export interface SendMessageArgs { text: string; to?: string }
 
-export const SendMessage: Extension = defineExtension({
+const sendMessage = (description: string): Extension => defineExtension({
   name: "send-message",
   tools: [
     defineTool({
       name: SEND_MESSAGE_TOOL,
-      description: SEND_MESSAGE_DESCRIPTION,
+      description,
       parameters: Type.Object({
         text: Type.String({ description: "The message, as the person reads it." }),
         to: Type.Optional(Type.String({ description: "Only on a turn a channel post started: the channel's name, like #general. Leave it out otherwise." })),
@@ -38,3 +49,7 @@ export const SendMessage: Extension = defineExtension({
     }),
   ],
 });
+
+export const SendMessage: Extension = sendMessage(SEND_MESSAGE_DESCRIPTION);
+/** The same extension name, so a subagent's child drops either. */
+export const SendMessageAlias: Extension = sendMessage(SEND_MESSAGE_ALIAS_DESCRIPTION);

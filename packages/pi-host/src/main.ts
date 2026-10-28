@@ -15,6 +15,7 @@ import { dirname, join, resolve } from "node:path";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { DURABLE_SETTINGS, poolProvider, TurnQueue } from "@sieun-pi/pi-pool/durable";
 import { DurableCommands, DurableThreads } from "./durable/index.ts";
+import { loadPrimeChat, type PrimeChat } from "./durable/prime-chat.ts";
 import { promptTools } from "./durable/prime-prompt.ts";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
@@ -72,6 +73,13 @@ const dataDir = values["data-dir"] ? resolve(values["data-dir"]) : join(agentDir
 // Durable threads: one pi-durable file per root thread, each its own pi-pool tree. The default model is the newest Opus (c185).
 // One line for every run on the box (pi-pool's turn queue): each durable request takes its run's place, and a settled input gives it back.
 const turns = new TurnQueue({ agentDir });
+// Prime's chat extension (user-history), loaded once as a chat: every thread's root conversation offers its tools and turn wrappers.
+// PI_HOST_PRIME_CHAT=0 leaves it out; a failed load leaves it out too, and the host says so in its log.
+let chat: PrimeChat | undefined;
+if (!values["no-durable"] && process.env.PI_HOST_PRIME_CHAT !== "0") {
+  chat = await loadPrimeChat({ agentDir, log: line => process.stderr.write(`${line}\n`) })
+    .catch(error => { process.stderr.write(`prime chat extension failed to load: ${error instanceof Error ? error.stack : String(error)}\n`); return undefined; });
+}
 const durable = values["no-durable"] ? undefined : new DurableCommands(new DurableThreads({
   dir: values["durable-dir"] ? resolve(values["durable-dir"]) : join(dataDir, "durable"),
   models: threadId => {
@@ -90,6 +98,7 @@ const durable = values["no-durable"] ? undefined : new DurableCommands(new Durab
   },
   // Every thread's system prompt is a Prime chat's, built from this agent dir's AGENTS.md, skills, harness and the chat's ledger.
   prompt: { agentDir, tools: promptTools() },
+  ...(chat ? { chat } : {}),
   log: line => host.log(line),
 }));
 

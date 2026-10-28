@@ -1,15 +1,17 @@
 /**
  * What every durable thread runs with: Prime's system prompt (`prime-prompt.ts`) when the host knows Prime's agent dir, else Prime's
- * preamble alone, pi-durable's coding tools in the thread's cwd, the foreground subagent tool, the `send_message` tool the agent speaks to
- * people through, and the chat's own document and entry kinds. Each thread file gets its own registry, so its prompt can name its file.
+ * preamble alone, pi-durable's coding tools in the thread's cwd, the foreground subagent tool, the `send_message` tool, and, when the host
+ * loaded it, Prime's chat extension (`prime-chat.ts`: `tell_owner`, `chat_board`, `correction_add`, `search_history`, `poteto_mode` and the
+ * turn wrappers), plus the chat's own document and entry kinds. Each thread file gets its own registry, so its prompt can name its file.
  */
 import type { JsonValue } from "@earendil-works/chord";
 import { createRegistry, defineDocFamily, defineEntry, type Registry } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { Preamble } from "./open.ts";
+import { primeChat, type ChatThread, type PrimeChat } from "./prime-chat.ts";
 import { primePrompt, type PrimePromptOptions } from "./prime-prompt.ts";
-import { SendMessage } from "./send-message.ts";
+import { SendMessage, SendMessageAlias } from "./send-message.ts";
 import { Subagent } from "./subagent.ts";
 
 /** A message one agent or the owner sends another thread, placed as the input's entry so the transcript shows who sent it. */
@@ -27,12 +29,14 @@ export const ChatDoc = defineDocFamily<{ value: JsonValue }, null>({
   checkpointWhen: () => true,
 });
 
-export function threadRegistry(prompt?: PrimePromptOptions): Registry {
+export function threadRegistry(prompt?: PrimePromptOptions, chat?: { chat: PrimeChat; thread: ChatThread }): Registry {
   const registry = createRegistry();
   registry.install(prompt ? primePrompt(prompt) : Preamble);
   registry.install(CodingTools);
   registry.install(Subagent);
-  registry.install(SendMessage);
+  // With Prime's chat extension, tell_owner is how the agent speaks to the owner, and send_message stays as an alias (send-message.ts).
+  registry.install(chat ? SendMessageAlias : SendMessage);
+  if (chat) registry.install(primeChat(chat.chat, chat.thread));
   return registry;
 }
 

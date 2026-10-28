@@ -51,36 +51,119 @@ The harness section differs from Prime's for two reasons:
 
 ## Tools
 
+A thread's root conversation now runs Prime's own chat extension, `legacy/prime/user-history/extension/index.ts`, through an adapter (`packages/pi-host/src/durable/pi-extensions.ts` and `prime-chat.ts`).
+pi-host loads the extension once at start as a Prime chat (flags `chat` and `owner-thread`) and fires its `session_start`, so it registers what a Prime chat's session gets.
+Each registered tool becomes a pi-durable tool with the extension's own name, description and parameters, in the order a Prime chat's request lists them.
+
+On 2026-10-28 at 18:35 UTC `scripts/prompt-parity.mjs` compared every tool of Prime chat `01a11af8`'s captured request with what pi-host offers, as pi-ai's Anthropic provider sends it (name, description, `input_schema`):
+
 | Prime tool or module | Where Prime has it | pi equivalent | Status |
 |---|---|---|---|
-| `ipython`, the persistent Python REPL | tool | `bash`, `read`, `write`, `edit` | missing; the prompt still describes it |
+| `search_history` | user-history tool | the same tool, the extension's own execute (pi-history's socket) | identical definition (484 bytes); replay-safe |
+| `chat_board` | user-history tool | the same tool on apps/chat's board, check-in and agents API for the thread | identical definition (182 bytes); output in Prime's words |
+| `tell_owner` | user-history tool | the same tool with Prime's live guard | identical definition (3,445 bytes); replay-safe |
+| `correction_add` | user-history tool | the same tool, the extension's own execute, on the shared ledger | identical definition (160 bytes) |
+| `poteto_mode` | user-history tool that carries a guideline | the same tool | identical definition (38 bytes) |
+| `job_reply` | user-history tool of a chat's job | none; a child conversation gets its guideline in `guidance` | missing tool, text identical |
+| `ipython`, the persistent Python REPL | pi-rlm tool | `bash`, `read`, `write`, `edit` | missing; the prompt still describes it, see below |
 | `bash()` handles and the nonblocking control loop | REPL | `bash` tool, blocking with a timeout | different: no background handle and no completion follow-up |
 | `rlm.spawn`, `list_subagents`, `collect`, `progress_note`, `delete_subagent` | REPL | `subagent {task}`, foreground, returns the answer | different: one blocking child per call, no names or handles |
 | `rlm.create_session` | REPL | none (the chat creates threads with `durable_create`) | missing |
 | `rlm.harness.*`, `refine.run()` | REPL, `refine` skill | none; pi reads the global harness but writes nothing | missing |
-| `tell_owner` | user-history tool | `send_message {text, to?}` | equivalent under another name; the brief still says `tell_owner` |
-| `chat_board` | user-history tool | none in pi-host; apps/chat keeps the board in the `chat.board` doc | missing |
-| `correction_add` | user-history tool | none | missing; the pi-host canary may not write the ledger anyway (`SHARED_LEDGER_REFUSAL`) |
-| `search_history` | user-history tool | none (pi-host has the `durable_search` command, not a tool) | missing |
-| `poteto_mode`, `job_reply` | tools that only carry a guideline | the same lines in `guidance` | text identical |
-| `agent_message.send` | Python skill | `send_message` reaches people; inbound agent messages are `agent.message` entries; no agent-to-agent send | missing for agent to agent |
+| `agent_message.send` | Python skill | inbound agent messages are `agent.message` entries; no agent-to-agent send | missing for agent to agent |
 | `agent_observe` | Python skill | none | missing |
-| `board` (`board.wake`, `board.corrections`, `board.own`) | Python skill | none; its CLI is not on pi's PATH | missing |
+| `board` (`board.wake`, `board.corrections`, `board.own`) | Python skill | `chat_board` for the board; no wakes | missing outside `chat_board` |
 | `edit` | Python skill | `edit` tool | equivalent |
 | `attach_image` | Python skill | `read` returns an image file as an image | equivalent |
 | `goal`, `compact`, `rlm_heartbeat` | Python skills | none (pi-durable compacts by itself) | missing |
-| `websearch`, `aside_browser`, the `mcp` object for `aside` | Python skills and REPL | none; `websearch` and `attach_image` CLIs exist in `~/.prime/agent/kernel-venv/bin`, which is not on pi's PATH | missing |
+| `websearch`, `aside_browser`, the `mcp` object for `aside` | Python skills and REPL | none; their CLIs in `~/.prime/agent/kernel-venv/bin` are not on pi's PATH | missing |
 | markdown skills (`unslop`, `how`, `why`, `spec-report`, `setup-pstack`, `typescript-best-practices`, `resume-paused-sessions`, `skill-creator`, `mcp`) | read with ipython | read with `read` at the same `<location>` | equivalent |
-| none | | `subagent`, `send_message` | pi only |
+| none | | `read`, `write`, `edit`, `bash`, `subagent`, `send_message` | pi only |
+
+The tool list a pi chat thread offers is `read, write, edit, bash, subagent, send_message, search_history, chat_board, tell_owner, correction_add, poteto_mode`; a Prime chat's is `ipython, search_history, chat_board, tell_owner, correction_add, poteto_mode`.
+A subagent's child conversation offers `read, write, edit, bash` and none of the chat's tools, as a Prime job has no `tell_owner`.
+
+### How each chat tool runs in a thread
+
+| Tool | Runs | Store | Replay after a restart |
+|---|---|---|---|
+| `search_history` | the extension's execute, with the thread id as the caller | pi-history's socket, as in Prime | safe: it only reads |
+| `chat_board` | Prime's `parseBoardOps`, its c43, c72 lane-hold and hold-ask flags, `chatCheckIn`, `checkInLine`, `renderOpenPlan`, `boardRevLine` and `agentLines` | apps/chat (`PI_HOST_CHAT_URL`, default `http://127.0.0.1:5184`): `POST /api/threads/<thread>/board {ops, actor: "agent"}`, which now answers each op's summary, `GET .../board`, `GET`/`POST .../check-in`, `GET .../agents`; a read falls back to the thread's `chat.board` document when the chat server does not answer. Never the legacy `browser-chat/boards`. | unsafe: a rerun would apply the ops twice, so an interrupted call gets pi-durable's `interrupted` result |
+| `tell_owner` | Prime's live guard (`liveGuard`: `tellTurn`, `tellOwner`, `askedTodos`, the same file a Prime chat loads), over the thread's messages up to the call | the board's asked todos from apps/chat, and on a decision or blocker the other chats' open asks from apps/chat's For you list | safe: nothing leaves the thread; the message is the call's `text` |
+| `correction_add` | the extension's execute | the ledger Prime chats share: `AGENT_CHAT_SHARED_DIR` (pi-host's unit sets it to `~/.prime/agent/browser-chat`), or the chat host's corrections route when hosts.json names another box | unsafe: a rerun could record it twice |
+| `poteto_mode` | the extension's execute | none | safe |
+
+A throw from any of them is an error result whose text is the error's message, as pi's agent loop sends it, without pi-durable's `<harness>` wrapper.
+
+Three differences remain in what these tools do:
+
+1. apps/chat keeps no `pausedBy`, so every check-in pause reads as the owner's, which Prime's rule lets no agent lift. A chat that paused its own check-in cannot resume it until apps/chat records who paused.
+2. The c43 limit-claim flag leaves out the job names of this board's steps; Prime leaves out the job names of every legacy board (`jobNames`).
+3. `correction_add`'s answer says the service refines the global harness when the turn ends (`AUTO_REFINE`); the legacy chat service does that for its own chats only, so nothing refines after a thread's turn yet.
+
+### `tell_owner` and `send_message`
+
+`tell_owner` is the tool the brief names and the one a thread speaks to the owner through, with Prime's guard: a turn the owner did not start needs `why` and `about`, an `update` there is kept as a note, and the reply lints run.
+apps/chat draws a `tell_owner` call exactly as a `send_message` call (one constant, `SPEAKING_TOOLS` in `apps/chat/server/timeline.ts`, used by the timeline, the live page, channels, duty reports and search), and draws a held call as a note in the fold, as Prime's feed does.
+
+`send_message` stays beside it as an alias, with the same result and a description that points to `tell_owner` (`SendMessageAlias`).
+Dropping it now would break two things apps/chat still asks for by name: a channel post's reply (`channels.ts` tells the agent "what you send with send_message is posted back into this thread") and a duty job's report (`duty-run.ts` "Send it with send_message"), and Prime's guard would hold both, since neither turn is the owner's.
+Remove the alias once those two texts name `tell_owner` and the guard knows a channel turn.
+A host without the chat extension (`PI_HOST_PRIME_CHAT=0`, or a failed load, which pi-host logs) offers the old `send_message` with its old description.
+
+### Turn wrappers
+
+The extension's context hook runs as a pi-durable `beforeRequest` hook of the root conversation, with Prime's own `withMessageIds` and `withWakeNotes`, in that order.
+The hook reads the conversation's entries to tell who sent each input: a `pi.user` entry and an `agent.message` from `owner` are the owner's and get `[message id: <id>; reply_to it only after he sends a newer message]`; any other `agent.message` (a check-in, a wake, a duty report, another agent, a channel post by an agent) is Prime's `agent_message` and gets the `[not from the owner: ...]` note.
+The notes go only into the request; the entries keep the raw text, and each note depends only on its message, so the cached prefix holds.
+
+| Wrapper | Source | pi now |
+|---|---|---|
+| `[message id: ...]` | `withMessageIds` (chat-guard.ts) | identical, on each owner input |
+| `[not from the owner: ...]` | `withWakeNotes` (chat-guard.ts) | identical, on each input from anyone else |
+| `[corrections]` | `deliverCorrections` (correction-delivery.ts) | not added again: `prime-prompt.ts` sends the same `ledgerPrompt` text as the pinned `corrections` section |
+| `[correction check]` | the legacy chat server (`chats.ts` `correctionStep`), not the extension | missing; apps/chat would have to send it |
+
+### What the adapter skips, and why
+
+| Part of the extension | Reason |
+|---|---|
+| The first context hook: notice rewording for cancelled and parked rlm children, the image fitter | A thread has no rlm child notices; pi-durable's `read` fits images. |
+| `before_provider_request`: the prompt capture and a child's parent label | pi-host has no Prompt view for threads; a durable child's label is in its `preamble`. |
+| `tool_call`, `tool_result`: ipython code rewrites, the job registry, load-wait notes, the moved-session block | They act on `ipython` and Prime's job registry, which a thread lacks. |
+| `before_agent_start`, `session_compact` | They find a job's chat in Prime session files and re-pin the brief; the brief pin is the `guidance` section's. |
+| `job_reply` | Registered only for a session whose parent is a Prime chat session file. |
+| `registerCommand` (`what-did-i-say`, `agent-chat`), `registerFlag`, `appendEntry` | They open the legacy chat or write Prime session entries; the adapter records them (`skipped`, `appended`). |
+
+### `ipython`, the RLM kernel and agent-bus
+
+These are not in pi threads yet, and pi threads keep `bash`, `read`, `write` and `edit`.
+The base prompt Prime's builder writes for the `prime` tools profile still describes `ipython`, `rlm.*` and the Python skill modules, so a pi thread reads about a REPL it does not have.
+pi-rlm's `ipython` tool (`packages/pi-rlm/src/pi/index.ts`) could load through the same adapter, but it depends on more than a tool:
+
+1. Its kernel is a child process keyed by the pi session and dies with pi-host. A call a restart interrupts would get `interrupted` (it cannot be replay-safe), and the next call starts a fresh kernel; pi-rlm revives state only at a pi `session_start`, which a thread has no equivalent of.
+2. `rlm.spawn` and `rlm.create_session` create Pi sessions through pi-host's non-durable host, not child conversations, so their children would not be in the thread file and would not resume with it.
+3. The nonblocking loop (`bash()` handles, completion follow-ups, `rlm_heartbeat`, goals) runs on pi's `agent_before_settle`, `agent_settled` and `turn_end` events; pi-durable has `onYield` and `afterTools`, which would need a mapping of their own.
+4. agent-bus delivers agent messages into a Pi session's queue; a thread takes them as `agent.message` inputs through `durable_submit`.
+
+Recommendation: keep `bash` in pi threads for now, and decide between the `prime` tools profile (text identical to Prime, describing a REPL pi lacks) and `PI_HOST_PROMPT_TOOLS=pi` (Prime's own builder drops the REPL parts). A durable `ipython` needs a kernel per conversation that pi-host restarts on the thread's next call with the revive step, `rlm.*` mapped to child conversations, and the settle events mapped to pi-durable hooks.
+
+### Harness memories
+
+The `harness` section is Prime's own `formatHarnessStateForPrompt` over the global store, as before.
+pi-harness (`packages/pi-harness/src/pi/index.ts`) keeps a local store per Pi session file and refines it after runs (`agent_settled`, kernel `refine.run`), which a thread cannot drive yet, so the section still lacks local entries and later `[harness-digest update]` messages.
 
 ## What pi-host does now
 
 | File | Change |
 |---|---|
+| `packages/pi-host/src/durable/pi-extensions.ts` | The adapter: loads a pi coding-agent extension with a recording `ExtensionAPI`, keeps its tools, handlers and flags, fires its events with a pi context that answers with the thread's ids, name, file and cwd, and turns each tool into a pi-durable tool with its own definition and a replay policy. |
 | `packages/pi-host/src/durable/prime-prompt.ts` | The builder and the `prime-prompt` extension. It calls prime-agent's `buildSystemPrompt`, `DefaultResourceLoader`, `formatSkillsForPrompt` and harness formatter from the installed `prime-agent` package, and imports `CHAT_BRIEF`, `personaGuideline`, `jobReplyGuideline`, `ledgerPrompt` and `jobLedgerPrompt` from the legacy chat and `SessionRules` from pi-claude-rules. No Prime text is retyped. |
-| `packages/pi-host/src/durable/registry.ts` | `threadRegistry(prompt?)` installs `prime-prompt` in place of the 3-line `Preamble` when it gets prompt options. |
+| `packages/pi-host/src/durable/prime-chat.ts`, `chat-app.ts` | The user-history extension as a thread's `prime-chat` extension: its tools with their bindings, the turn wrappers hook, and the apps/chat client. |
+| `packages/pi-host/src/durable/registry.ts` | `threadRegistry(prompt?, chat?)` installs `prime-prompt` in place of the 3-line `Preamble` when it gets prompt options, and `prime-chat` with the `send_message` alias when it gets the chat. |
 | `packages/pi-host/src/durable/threads.ts` | `DurableThreadsOptions.prompt`; each thread file gets its own registry, so "Conversation log:" names its file, a child names its chat, and the owner's newest text ranks the digest. |
-| `packages/pi-host/src/main.ts` | Passes `prompt: {agentDir}` from `--agent-dir`. `PI_HOST_PROMPT_TOOLS=pi` switches the tools profile. |
+| `packages/pi-host/src/main.ts` | Passes `prompt: {agentDir}` from `--agent-dir`. `PI_HOST_PROMPT_TOOLS=pi` switches the tools profile. Loads the chat extension at start; `PI_HOST_PRIME_CHAT=0` leaves it out. |
+| `apps/chat/server/timeline.ts`, `threads.ts`, `search-snippet.ts`, `boards.ts` | `SPEAKING_TOOLS`: a `tell_owner` call is drawn, previewed, posted and searched as a `send_message` call; a held one is a note. The agent's board write answers its summaries. |
 | `scripts/prompt-parity.mjs` | The capture and comparison above. |
 | `packages/pi-host/test/durable/prime-prompt.test.ts`, `test/fixtures/prime-agent/` | The tests below. |
 
@@ -118,8 +201,9 @@ A thread from before this change keeps its first system message, the old preambl
 
 | Gap | Recommendation |
 |---|---|
-| The prompt describes `ipython`, `rlm.*`, Python skills and `tell_owner`, which a pi thread lacks. | Decide between the default `prime` profile, which keeps the text identical as asked, and `PI_HOST_PROMPT_TOOLS=pi`, where Prime's own builder drops the REPL parts (the preamble shrinks from 11,139 to 3,277 bytes and the delegation and MCP sections go). The lasting fix is to give pi the tools: a Python REPL tool on pi-rlm's kernel, `chat_board`, `correction_add` and an agent-to-agent message tool. |
-| The brief says `tell_owner`, pi has `send_message`. | Name the tool `tell_owner` in pi, or let the brief name the tool the runtime has. Either keeps one text for both. |
+| The prompt describes `ipython`, `rlm.*` and Python skills, which a pi thread lacks. | Decide between the default `prime` profile, which keeps the text identical as asked, and `PI_HOST_PROMPT_TOOLS=pi`, where Prime's own builder drops the REPL parts (the preamble shrinks from 11,139 to 3,277 bytes and the delegation and MCP sections go). The lasting fix is a durable `ipython` (see above) and an agent-to-agent message tool. |
+| `send_message` beside `tell_owner`. | Move apps/chat's channel and duty texts to `tell_owner`, teach the guard a channel turn, then drop the alias. |
+| No `[correction check]` after an owner message that reads as a correction. | Port the legacy server's `correctionStep` to apps/chat. |
 | Prime sends `rules`, the digest and corrections as messages; pi puts them in the system prompt. | Keep it: the text is the same, and a system section keeps the cache when it changes. |
 | The digest has no local entries and no later updates. | Add pi's own local harness store, or accept global memories only. |
 | A job's corrections block misses the brief-dependent lines (`uiRuleLine`, `tokenCostRuleLine`), because a section cannot see the child's task. | Pass the task to the child through a document when the subagent tool creates it. |
@@ -129,6 +213,18 @@ A thread from before this change keeps its first system message, the old preambl
 | pi-host imports from `legacy/prime/user-history/src` and the root `prime-agent` package. | Both ship in every pi-host release (a whole-repo export). Move `chat-brief.ts` and `chat-corrections.ts` to a package when the legacy chat goes. |
 
 ## Tests
+
+`packages/pi-host/test/durable/prime-chat.test.ts` runs the real user-history extension through the adapter against a fake apps/chat server:
+
+1. The extension registers a Prime chat's five tools, and their promptGuidelines are the lines `prime-prompt.ts` renders as `guidance`.
+2. A thread offers them after `read, write, edit, bash, subagent, send_message`, each equal to the definition the extension registered.
+3. An owner input reaches the model with `messageIdNote(<its time>)` and a check-in with `WAKE_NOTE`, while the entries keep the raw text.
+4. `tell_owner` answers `told the owner` on the owner's turn, refuses a call with no `why` on a check-in, and holds an `update` there.
+5. `chat_board` posts the ops to apps/chat as the agent and returns Prime's summary and open-plan lines.
+6. `correction_add` writes `corrections.json` in the shared dir with the thread as the chat.
+7. A subagent's child conversation gets none of the chat's tools and no wrappers.
+
+`apps/chat/test/server/send-message.test.ts` checks that a `tell_owner` call renders, previews and searches like a `send_message` call, and that a held one is a note.
 
 `packages/pi-host/test/durable/prime-prompt.test.ts` builds from the fixture agent dir in `test/fixtures/prime-agent`:
 

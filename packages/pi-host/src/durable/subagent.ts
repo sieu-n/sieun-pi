@@ -1,6 +1,7 @@
 import type { Context } from "@earendil-works/chord";
 import { Type, type AssistantMessage } from "@earendil-works/pi-ai";
 import { AssistantEntry, configure, defineExtension, defineTool, type EntryId, type Extension, type ToolExecutionApi } from "@earendil-works/pi-durable";
+import { PrimeChatName } from "./prime-chat.ts";
 import { SendMessage } from "./send-message.ts";
 
 async function answerText(api: ToolExecutionApi, answer: EntryId, context: Context): Promise<string> {
@@ -13,7 +14,7 @@ async function answerText(api: ToolExecutionApi, answer: EntryId, context: Conte
  * A foreground subagent: the tool call creates a child conversation it owns, submits the task there and returns the
  * child's answer. It is replay-safe, because a rerun after a crash finds the child through the ownership index and the
  * child's submission through its request id, so the child is made once and asked once. The child answers its parent with its
- * final text, so it gets no `send_message`, which would take its answer out of that text.
+ * final text, so it gets no `send_message` and none of the chat's tools (`prime-chat`), as a Prime chat's job has no tell_owner.
  */
 export const Subagent: Extension = defineExtension({
   name: "subagent",
@@ -28,7 +29,7 @@ export const Subagent: Extension = defineExtension({
           const existing = (await tx.scanConversations({ ownerTaskId: api.taskId }, 1)).items[0];
           if (existing !== undefined) return existing.id;
           const created = await tx.createConversation({ ownership: { kind: "task", taskId: api.taskId } });
-          await configure(tx, created.id, { extensions: { remove: [Subagent, SendMessage] } });
+          await configure(tx, created.id, { extensions: { remove: [Subagent, SendMessage, PrimeChatName] } });
           return created.id;
         }, context);
         await api.details({ conversationId: child }, context);
