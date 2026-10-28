@@ -250,8 +250,14 @@ export function primeHits(db: DatabaseSync, box: string, query: Query, ask: Page
       .sort((a, b) => Number(a.score) - Number(b.score) || Number(b.id) - Number(a.id)).slice(0, want);
     if (!scored.length) continue;
     const scores = new Map(scored.map(row => [Number(row.id), Number(row.score)]));
+    // A prefix term is expanded for each id an IN list hands FTS5 (compac* took 232 ms for 21 ids at load 160 on 10-28), so its page reads
+    // one rowid range and filters the ids outside FTS5 (16 ms). A phrase or plain term seeks each id faster (board.wake 17 ms against 89 ms).
+    const ids = [...scores.keys()];
+    const pick = part.match!.includes("*")
+      ? { sql: "fts.rowid BETWEEN ? AND ? AND (fts.rowid + 0) IN (SELECT value FROM json_each(?))", values: [Math.min(...ids), Math.max(...ids), JSON.stringify(ids)] }
+      : { sql: "fts.rowid IN (SELECT value FROM json_each(?))", values: [JSON.stringify(ids)] };
     const rows = prepare(db, `SELECT ${HIT_COLUMNS}, ${snippet} FROM fts JOIN docs d ON d.id = fts.rowid JOIN files f ON f.id = d.file
-      WHERE fts MATCH ? AND fts.rowid IN (SELECT value FROM json_each(?))`).all(part.match, JSON.stringify([...scores.keys()])) as Row[];
+      WHERE fts MATCH ? AND ${pick.sql}`).all(part.match, ...pick.values) as Row[];
     for (const row of rows) add(row, true, scores.get(Number(row.id)) ?? 0);
   }
   const out = [...hits.values()];
