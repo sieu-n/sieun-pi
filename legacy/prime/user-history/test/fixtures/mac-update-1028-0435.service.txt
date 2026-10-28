@@ -1,0 +1,77 @@
+2026-10-28T04:34:57.333Z relay: 01a180b0 (fit-speed) ran at 2026-10-28T04:34:51.675Z, 16 s after its message went through its parent
+chat 01a15427: kept job failed send status: it waits on a board.wake
+2026-10-28T04:34:59.622Z outbox 01a15427 on mac: m-26669e8d-d30a-45f2-8109-286beea4c0be met the daemon's update prepare; it and the sends after it wait for it to end
+2026-10-28T04:34:59.886Z idle unload: stopped 1 idle sessions: pool wait reported to prime (parked on its provider quota until 04:55Z)
+chat 01a15427: kept job failed send status: it waits on a board.wake
+2026-10-28T04:35:04.499Z catalog: 45 projections in 60 s, median 326 ms, p90 587 ms, max 763 ms, own code median 208 ms, p90 260 ms, main thread 91% busy
+2026-10-28T04:35:05.341Z wakes: woke 01a1582d-7f91-708e-8dfe-47846561cae3 for its time, waited 42 min, queued 1 s after the tick began
+2026-10-28T04:35:05.341Z wakes: woke 01a17f3e-69d6-703b-9e58-37ba9e8643e1 for its time, waited 28 min, queued 1 s after the tick began
+2026-10-28T04:35:05.398Z outbox 01a17f3e: m-ecf73dd7-1980-4392-bf2f-4e12e4050269 waits with no try while the target waits for a working slot, place 12 of 24
+2026-10-28T04:35:05.574Z idle unload: 01a18007-8644-74cd-9fbc-3260a0855ca4: Daemon is preparing an update restart
+2026-10-28T04:35:05.574Z idle unload: 01a18021-e3d1-7083-830d-bd6c34b27938: Daemon is preparing an update restart
+2026-10-28T04:35:05.574Z idle unload: 01a18021-fa4a-7322-870d-42c2b7fd8ff6: Daemon is preparing an update restart
+open 01a180c3 live 11 messages: catalog 0ms, first page 142ms, queue 0ms, attach 75ms, snapshot+project 15ms, total 233ms
+2026-10-28T04:35:06.290Z relay: 01a1582d (instagram discovery) is stopped; its message goes through its parent 01a115e2
+2026-10-28T04:35:06.549Z idle unload: stopped 3 idle sessions: update-fix, staging probe queue wait, mac archived sessions memory
+2026-10-28T04:35:07.629Z duty 01a1164b/d4: red on wiki_problems with no job at work on it; a push run starts
+2026-10-28T04:35:09.924Z outbox 01a18073: m-6ec8a19d-4f6e-4370-a1ec-41e513737fce waited 60 s while the target waited for a slot; it goes now
+wake 01a11bd7: catalog, dormant 2 min
+2026-10-28T04:35:16.869Z daemon reload 01a16cdc: answered in 0.5 s
+job 01a16cdc: extension reloaded, build 83ccac803fe7978e
+2026-10-28T04:35:17.410Z daemon reload 01a11d25: answered in 0.5 s
+job 01a11d25: extension reloaded, build 83ccac803fe7978e
+2026-10-28T04:35:27.553Z relay: 01a17f82 (mac push checks) ran at 2026-10-28T04:35:27.358Z, 46 s after its message went through its parent
+chat 01a15427: kept job failed send status: it waits on a board.wake
+chat 01a11ba8: hand back the steps of best of 5174 into 5180: Unknown active session: 01a17eff-1a10-7429-a2b9-96de9172b443
+2026-10-28T04:35:29.289Z hosts: mac: relay mac refused the daemon tunnel: 502
+chat 01a11ba8: handed p369 back to the chat: job campaign creators on convex reported with them open
+2026-10-28T04:35:32.836Z duty 01a1164b/d7: after its job, missed, quiet_agent_gb 1.1 GB (on target), clean_min_30 27 min (target at least 30 min)
+chat 01a11bd7: extension reloaded, build 83ccac803fe7978e, brief 6d7258e9
+2026-10-28T04:35:34.373Z duty job whole system AI harness developer environment 13:26: its turn ended; queued its archive
+2026-10-28T04:35:35.939Z outbox 01a18072: m-084b3f61-fdb4-4ee8-9657-f7dded6b047a waited 90 s while the target waited for a slot; it goes now
+2026-10-28T04:35:39.583Z relay: 01a1582d (instagram discovery) ran at 2026-10-28T04:35:39.240Z, 33 s after its message went through its parent
+2026-10-28T04:35:40.026Z hosts: copy mac: Timed out after 10000ms waiting for the Prime Agent daemon handshake. Socket: /home/sieun/.local/state/sieun-pi/hosts/mac.sock. Daemon log: /home/sieun/.prime/agent/logs/mac.sock.7f502fe7.log.
+2026-10-28T04:35:40.027Z outbox 01a11ba8 notice: n-2b2e7910-5cfe-4798-b551-0d1783035910 try 1 (may have gone): Timed out after 10000ms waiting for the Prime Agent daemon handshake. Socket: /home/sieun/.local/state/sieun-pi/hosts/mac.sock. Daemon log: /home/sieun/.prime/agent/logs/mac.sock.7f502fe7.log.
+chat 01a11ba8: hand back the steps of best of 5174 into 5180: Timed out after 10000ms waiting for the Prime Agent daemon handshake. Socket: /home/sieun/.local/state/sieun-pi/hosts/mac.sock. Daemon log: /home/sieun/.prime/agent/logs/mac.sock.7f502fe7.log.
+chat 01a11ba8: handed p361, p362, p363 back to the chat: job best of 5174 into 5180 reported with them open
+2026-10-28T04:35:41.655Z idle unload: stopped 1 idle sessions: bun security release (parked on its provider quota until 04:55Z)
+chat 01a11ba8: told the chat brand watch and watchlist data ended with p380 open
+2026-10-28T04:35:45.024Z idle unload: stopped 1 idle sessions: clean room without repo copies (parked on its provider quota until 04:55Z)
+2026-10-28T04:35:45.570Z idle unload: stopped 1 idle sessions: world-no-copy (parked on its provider quota until 04:55Z)
+2026-10-28T04:35:46.124Z idle unload: stopped 1 idle sessions: staging design fix 10-28 (parked on its provider quota until 04:55Z)
+2026-10-28T04:35:53.481Z outbox 01a17b26: m-900d2a21-6cd4-482f-9ce3-ead85f56aaab waits with no try while the target waits for a working slot, place 11 of 25
+2026-10-28T04:35:53.532Z relay: 01a17dae (mac transition proof) is stopped; its message goes through its parent 01a17b26
+2026-10-28T04:35:53.592Z relay: 01a17fb1 (wiki-refs) is stopped; its message goes through its parent 01a17f82
+2026-10-28T04:35:59.297Z daemon reload 01a1804b: answered in 0.2 s
+job 01a1804b: extension reloaded, build 83ccac803fe7978e
+2026-10-28T04:36:03.272Z outbox 01a15427 on mac: the daemon's update prepare ended (restarted) after 64 s; m-26669e8d-d30a-45f2-8109-286beea4c0be goes again
+2026-10-28T04:36:04.502Z catalog: 53 projections in 60 s, median 302 ms, p90 533 ms, max 735 ms, own code median 196 ms, p90 232 ms, main thread 94% busy
+2026-10-28T04:36:05.686Z outbox 01a17f3e: m-ecf73dd7-1980-4392-bf2f-4e12e4050269 waited 60 s while the target waited for a slot; it goes now
+2026-10-28T04:36:06.299Z wakes: woke 01a18041-e86a-77b7-b6ca-1787aaf5b8b4 for its time, waited 3 min, queued 2 s after the tick began
+2026-10-28T04:36:06.299Z wakes: woke 01a16a55-482b-744b-8661-fb9e62a4f9b1 for its time, waited 29 min, queued 2 s after the tick began
+2026-10-28T04:36:06.301Z outbox 01a18041: m-6105921f-ef12-4a9c-96c1-e9372e01b6e0 waits with no try while the target waits for a working slot, place 22 of 24
+2026-10-28T04:36:07.048Z idle unload: 01a180c9-46c4-713e-a426-c10245554476: the daemon shows it at work since the row was listed; kept
+open 01a180c2 live 51 messages: catalog 0ms, first page 90ms, queue 0ms, attach 1046ms, snapshot+project 13ms, total 1150ms
+chat 01a15427: kept job failed send status: it waits on a board.wake
+2026-10-28T04:36:10.710Z idle unload: stopped 4 idle sessions: alert triage Crawler VP 02:21, parity staging live reads, restore-child-race, burst-replay
+2026-10-28T04:36:13.405Z duty 01a1301d/checkin: after its job, met, goal_gaps 0 (on target); all 4 on target
+2026-10-28T04:36:15.086Z duty job check-in api portal vp 13:26: its turn ended; queued its archive
+job mac transition proof: interrupted (error at 2026-10-27T21:09:15.603Z); continue: {"deliveryStatus":"queued","deliveryMode":"outbox"}
+job wiki-refs: interrupted (error at 2026-10-27T23:29:22.918Z); continue: {"deliveryStatus":"queued","deliveryMode":"outbox"}
+job ob-b-campaign-home: interrupted (daemon_restart at 2026-10-28T04:35:09.977Z); continue: {"deliveryStatus":"queued","deliveryMode":"outbox"}
+job foryou-motion: interrupted (daemon_restart at 2026-10-28T04:35:16.342Z); continue: {"deliveryStatus":"queued","deliveryMode":"outbox"}
+job seg-tabs-tags: interrupted (daemon_restart at 2026-10-28T04:35:18.358Z); continue: {"deliveryStatus":"queued","deliveryMode":"outbox"}
+job platform parity map: held by pi-pool until 2026-10-28T04:54:04+00:00: pi-pool gave this session a slot at 2026-10-28T04:54:04+00:00 (cut at 2026-10-28T04:34:03.387Z, tree 01a1180e, 01a17afc-e962-707e-88e5-715c1c026fc3)
+job tiktok-build: held by pi-pool until 2026-10-28T04:53:29+00:00: pi-pool gave this session a slot at 2026-10-28T04:53:29+00:00 (cut at 2026-10-28T04:33:28.479Z, tree 01a1180e, 01a17b6b-029c-772c-a309-e942a60e14db)
+job scorer: held by pi-pool until 2026-10-28T04:54:26+00:00: pi-pool gave this session a slot at 2026-10-28T04:54:26+00:00 (cut at 2026-10-28T04:34:25.399Z, tree 01a1180e, 01a17f54-5492-700a-84df-912ece3e4c5a)
+job pick-run: held by pi-pool until 2026-10-28T04:54:24+00:00: pi-pool gave this session a slot at 2026-10-28T04:54:24+00:00 (cut at 2026-10-28T04:34:23.680Z, tree 01a1180e, 01a18063-23c3-70d8-b3b4-e5a5366b1951)
+job pi-runs: held by pi-pool until 2026-10-28T04:54:02+00:00: pi-pool gave this session a slot at 2026-10-28T04:54:02+00:00 (cut at 2026-10-28T04:34:01.573Z, tree 01a1164b, 01a18072-7418-704f-be7d-1568eb97b45a)
+job load-lr: held by pi-pool until 2026-10-28T04:53:15+00:00: pi-pool gave this session a slot at 2026-10-28T04:53:15+00:00 (cut at 2026-10-28T04:33:14.075Z, tree 01a14210, 01a180c7-af88-70ab-95f8-d968aed54c69)
+job d7 clean minutes api search root cause 10-28: held by pi-pool until 2026-10-28T04:54:55+00:00: pi-pool gave this session a slot at 2026-10-28T04:54:55+00:00 (cut at 2026-10-28T04:34:54.700Z, tree 01a180a7, 01a180a7-e2d9-72ee-a36a-06b5dd314c06)
+job pool wait reported to prime: held by pi-pool until 2026-10-28T04:55:00+00:00: pi-pool gave this session a slot at 2026-10-28T04:55:00+00:00 (cut at 2026-10-28T04:34:59.383Z, tree 01a1164b, 01a180c9-46c4-713e-a426-c10245554476)
+job 01a11d24-ac9b-757d-ac51-9b2b7598782f: held by pi-pool until 2026-10-28T04:53:53+00:00: pi-pool gave this session a slot at 2026-10-28T04:53:53+00:00 (cut at 2026-10-28T04:33:52.154Z, tree 01a11d24, 01a11d24-ac9b-757d-ac51-9b2b7598782f)
+2026-10-28T04:36:15.877Z relay: 01a180ba (foryou-motion) is stopped; its message goes through its parent 01a1804f
+2026-10-28T04:36:16.082Z relay: 01a180bd (seg-tabs-tags) is stopped; its message goes through its parent 01a1804f
+2026-10-28T04:36:16.173Z outbox 01a1804f on mac: m-486e2cca-1012-4394-b191-d6b8562e05b7 carries 2 queued messages in one send, taking in m-2be2dd30-126d-424a-b874-40060a9312b3
+2026-10-28T04:36:16.263Z relay: 01a1804f (app motion) is stopped; its message goes through its parent 01a11ba8
+2026-10-28T04:36:21.199Z idle unload: stopped 1 idle sessions: 01a10810-34b5-710f-88fe-3d369f89a8c9 (parked on its provider quota until 04:56Z)

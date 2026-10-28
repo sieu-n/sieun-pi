@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 
 const USAGE = `usage: node components/prime-relay/install.mjs --ref <commit> [--listen <tailnet ip>] [--port 7790] [--daemon-socket <path>]
 
-Copies relay.mjs, host-stats.ts, rig-cpu.ts, cpu-groups.ts, kernel-read.ts, slim-snapshot.mjs, line-delta.ts, owner-turn.mjs, first-prompt.mjs and sieun-pi's worker-footprint.py from <commit> to ~/.local/share/prime-relay, writes ~/.config/prime-relay/relay.json and a token file when they are missing, adds the default read roots (sessions, session-artifacts, logs, browser-chat/prompts) to it,
+Copies relay.mjs, host-stats.ts, rig-cpu.ts, cpu-groups.ts, kernel-read.ts, slim-snapshot.mjs, line-delta.ts, owner-turn.mjs, first-prompt.mjs and sieun-pi's worker-footprint.py from <commit> to ~/.local/share/prime-relay, writes ~/.config/prime-relay/relay.json and a token file when they are missing, adds the default read roots (sessions, session-artifacts, logs, browser-chat/prompts, update-restarts) to it,
 and (re)starts the service: prime-relay.service (systemd --user) on Linux, com.sieun.prime-relay (launchd) on macOS.
 Flags given on the command line overwrite the matching relay.json keys. Prints the health of the running relay.`;
 
@@ -21,9 +21,10 @@ const tokenFile = join(configDir, "token");
 /**
  * The folders another box may read, GET only. The daemon logs let the chat host's resume pass (resume_paused.py) see this box's daemon restarts
  * and worker stops, which archive and abort turns no one asked to stop. The prompt captures let the chat host's Prompt view show the payload a
- * session on this box last sent (legacy/prime/user-history/src/prompt-capture.ts). A root a relay.json already lists stays.
+ * session on this box last sent (legacy/prime/user-history/src/prompt-capture.ts). The update records let the chat host's d7 run read this
+ * box's Prime update restarts as planned maintenance (src/prime-update.ts `hostUpdateSpans`). A root a relay.json already lists stays.
  */
-const ROOTS = ["~/.prime/agent/sessions", "~/.prime/agent/session-artifacts", "~/.prime/agent/logs", "~/.prime/agent/browser-chat/prompts"];
+const ROOTS = ["~/.prime/agent/sessions", "~/.prime/agent/session-artifacts", "~/.prime/agent/logs", "~/.prime/agent/browser-chat/prompts", "~/.prime/agent/update-restarts"];
 const gitEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")));
 
 function args(argv) {

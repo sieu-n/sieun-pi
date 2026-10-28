@@ -29,7 +29,7 @@ export function loadConfig(file) {
   const raw = JSON.parse(readFileSync(file, "utf8"));
   const config = {
     listen: String(raw.listen), port: Number(raw.port), daemonSocket: expand(String(raw.daemonSocket)),
-    roots: (raw.roots ?? ["~/.prime/agent/sessions", "~/.prime/agent/session-artifacts", "~/.prime/agent/logs", "~/.prime/agent/browser-chat/prompts"]).map(root => expand(String(root))),
+    roots: (raw.roots ?? ["~/.prime/agent/sessions", "~/.prime/agent/session-artifacts", "~/.prime/agent/logs", "~/.prime/agent/browser-chat/prompts", "~/.prime/agent/update-restarts"]).map(root => expand(String(root))),
     token: readFileSync(expand(String(raw.tokenFile)), "utf8").trim(),
     historySocket: raw.historySocket ? expand(String(raw.historySocket)) : historySocket(),
   };
@@ -54,8 +54,12 @@ function daemonAnswers(socketPath) {
   });
 }
 
-/** The real path of `path` when it lies inside one of the roots, else null. */
-async function allowed(path, roots) {
+/**
+ * The real path of `path` when it lies inside one of the roots, else null. A `~/` path is this box's home, so another box reads a folder such
+ * as `~/.prime/agent/update-restarts` without knowing this box's user (d7's `hostUpdateSpans`).
+ */
+async function allowed(asked, roots) {
+  const path = expand(asked);
   if (!isAbsolute(path)) return null;
   let real;
   try { real = await realpath(path); } catch { return undefined; }

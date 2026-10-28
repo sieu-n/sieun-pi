@@ -67,6 +67,26 @@ export async function readUpdateSpans(agentDir: string): Promise<UpdateSpan[]> {
   return records.filter((span): span is UpdateSpan => span !== null);
 }
 
+/** What `hostUpdateSpans` reads another box's records with: its relay's folder list and file read (src/hosts.ts `listHostDir`, `readHostFile`). */
+export interface HostFiles {
+  list(path: string): Promise<{ name: string; type: string; mtimeMs: number }[]>;
+  read(path: string): Promise<string>;
+}
+
+/**
+ * The update spans another box's coordinators recorded, read through that box's relay from `<its home>/.prime/agent/update-restarts/`, for
+ * the records written since `since`. d7 read only this box's records, so the Mac's load.2.1 update of 10-28, recorded there from 04:34:57Z to
+ * 04:36:15Z with 45 of 45 sessions restored, left 04:35Z dirty from two handshakes its prepare refused. A relay that cannot list the folder,
+ * an older one without that root or a box offline, gives no spans, so its calls stay faults as before.
+ */
+export async function hostUpdateSpans(home: string, files: HostFiles, since: number): Promise<UpdateSpan[]> {
+  const dir = `${home}/.prime/agent/update-restarts`;
+  const entries = await files.list(dir).catch(() => []);
+  const fresh = entries.filter(entry => entry.type === "file" && entry.name.endsWith(".json") && !entry.name.endsWith(".planned.json") && entry.mtimeMs >= since);
+  const spans = await Promise.all(fresh.map(async entry => updateSpan(await files.read(`${dir}/${entry.name}`).then(text => JSON.parse(text) as unknown, () => null), entry.name)));
+  return spans.filter((span): span is UpdateSpan => span !== null);
+}
+
 /** The daemon's answer to a mutation it fenced out while it prepares an update restart (prime-agent's UPDATE_RESTART_PREPARING_MESSAGE). */
 const PREPARING = "Daemon is preparing an update restart";
 

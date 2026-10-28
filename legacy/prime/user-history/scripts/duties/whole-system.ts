@@ -23,7 +23,7 @@ import { processEvidence } from "../../src/proc-evidence.ts";
 import { harnessSlow, slowChatRead, workerMisses } from "../../src/harness-slow.ts";
 import { chatNamer, type DaemonFault, faultWords, type ListedSession, listedSessions, type QueueOverrun, readQueueOverruns, readReopenedSends, readServiceFaults, readSupervisorFaults, SLOW_MS } from "../../src/daemon-faults.ts";
 import { readRecords } from "../../src/orphan-services.ts";
-import { readUpdateSpans, type UpdateSpan } from "../../src/prime-update.ts";
+import { hostUpdateSpans, readUpdateSpans, type UpdateSpan } from "../../src/prime-update.ts";
 import { deliveryCandidates, outboxLandings, readSessionMarks, type SlotWaitTimeout, splitSlotWaits } from "../../src/slot-wait-timeouts.ts";
 import { CHECK_IN_DUTY_ID, type DutyRunRecord, type FlaggedSlice, type PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import { effectiveRun, metricStreaks, missStreak, newestReading } from "../../src/shared/duty-streak.ts";
@@ -31,6 +31,7 @@ import { missedKeys, parseDutyLink } from "../../src/shared/duty-fixes.ts";
 import { dutyHold, withLinkedBoards } from "../../src/shared/todo-hold.ts";
 import type { HostHold } from "../../src/shared/host-hold.ts";
 import { readsTheShare } from "./duty-fleet.ts";
+import { listHostDir, loadHosts, readHostFile } from "../../src/hosts.ts";
 
 /** One box's numbers in a watch line: the box that wrote the line, then each other box it read through that box's relay (HostWatchLine). */
 export interface HostView { name: string; usable: HostUsable | null; workers: number; workerGb: number; top: readonly WorkerLine[]; serviceGb?: number; agents?: AgentLine; error?: string;
@@ -1776,6 +1777,18 @@ export async function planInputs(dataDir: string, now: number, names: ReadonlyMa
     waking: await wakingOwners(agentDir, join(dataDir, "wakes"), boards, now, named), poolWaiting: await poolWaitingOwners(agentDir, boards, named) };
 }
 
+/** Every other hosts.json box's update spans since `since`, read through its relay (`hostUpdateSpans`); none when hosts.json is absent. */
+async function otherBoxUpdates(box: string, since: number): Promise<(UpdateSpan & { host: string })[]> {
+  const registry = await loadHosts().catch(() => null);
+  if (!registry) return [];
+  const others = registry.hosts.filter(host => host.name !== box);
+  const spans = await Promise.all(others.map(async host => (await hostUpdateSpans("~", {
+    list: path => listHostDir(host, path),
+    read: async path => (await readHostFile(host, path)).bytes.toString("utf8"),
+  }, since)).map(span => ({ ...span, host: host.name }))));
+  return spans.flat();
+}
+
 async function main(): Promise<void> {
   const output = process.env.OUTPUT_FILE;
   if (!output) { process.stderr.write("whole-system: OUTPUT_FILE is not set\n"); process.exit(2); }
@@ -1815,7 +1828,7 @@ async function main(): Promise<void> {
     // still runs jobs but leads nothing: counting archived chats as heads read 01a14210's 2,330 s wait as a head held at the 10:21Z run.
     smooth: readSmoothness(poolLines, new Set([...live, ...poolLead]), now - WINDOW_MS, now),
     daemonFaults,
-    primeUpdates: (await readUpdateSpans(join(dataDir, ".."))).map(update => ({ ...update, host: box })),
+    primeUpdates: [...(await readUpdateSpans(join(dataDir, ".."))).map(update => ({ ...update, host: box })), ...await otherBoxUpdates(box, now - WINDOW_MS - 2 * MINUTE)],
     workerMisses: workerPolls,
     queueOverruns,
     slotWaits,
