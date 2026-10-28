@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { parseDutyInput } from "../src/shared/chat-duties.ts";
-import { type AuditRow, type Deploy, type Fault, type HandData, type RefState, auditSql, classifyConfig, designOnProd, gitReleaseHolds, groupAudit, handExecs, experimentExecs, isSessionProcess, nextState, startedByTest, hostWriters, oneOffs, parseBox, parseRegistry, releaseAt, report, WRITES, HOST_WRITES } from "../scripts/duties/hand-fixes.ts";
+import { type AuditRow, type Deploy, type Fault, type HandData, type RefState, auditSql, classifyConfig, designOnProd, gitReleaseHolds, groupAudit, handExecs, experimentExecs, filedAfter, isSessionProcess, nextState, startedByTest, hostWriters, oneOffs, parseBox, parseRegistry, releaseAt, report, WRITES, HOST_WRITES } from "../scripts/duties/hand-fixes.ts";
 
 const DIR = join(import.meta.dirname, "..", "scripts", "duties");
 const AT = Date.parse("2026-10-16T05:08:27Z");
@@ -394,4 +394,15 @@ test("a write to the c170 cap meta_ads.walker_sessions_max is exempt, while a wr
   const [both] = groupAudit("prod", [write(16888, "meta_ads.walker_sessions_max"), write(16889, "meta_ads.walker_sessions")]);
   const mixed = classifyConfig(both!, reg);
   assert.equal(mixed.kind === "fault" && mixed.fault.id, "F1");
+});
+
+test("a lane ceiling write (lanes.max_processes.<role>) is a c170 cap and exempt, and a filed fault for it clears", async () => {
+  const reg = await registry();
+  const write = (id: number, key: string, reason: string): AuditRow => ({ id, ts: AT, actor: "metal", source: "metal-owner", key, reason });
+  const [meta] = groupAudit("prod", [write(16879, "lanes.max_processes.meta-ads-writer", "prod PG at 610/600 connections; measured 12 writers carry about 62 pages/s at 93 ms")]);
+  assert.equal(classifyConfig(meta!, reg).kind, "exempt");
+  const [census] = groupAudit("prod", [write(16881, "lanes.max_processes.instagram-census-writer", "prod PG still full after meta-ads-writer 12")]);
+  assert.equal(classifyConfig(census!, reg).kind, "exempt");
+  const filed = filedAfter([{ keys: ["lanes.max_processes.instagram-census-writer"], at: AT, text: "prod PG still full", line: "prod" }], [], reg);
+  assert.deepEqual(filed, []);
 });
