@@ -111,7 +111,7 @@ On 2026-10-28 at 18:35 UTC `scripts/prompt-parity.mjs` compared every tool of Pr
 | `rlm.harness.*`, `refine.run()` | REPL, `refine` skill | none; pi reads the global store and the thread's local store (`threadHarnessDir`) but writes neither, and the kernel answers that `refine.*` does not run in durable threads yet | missing |
 | `agent_message.send` | Python skill | pi-rlm's skill; the kernel's request lands as an `agent.message` input of the parent, a sibling (another child of the same parent, or another thread's root) or a child | equivalent, with Prime's reach rule and headers |
 | `agent_observe` | Python skill | pi-rlm's skill over the thread's conversations and the other threads' roots | equivalent; `tool_use_count` and `activity` are null |
-| `board` (`board.wake`, `board.corrections`, `board.own`) | Python skill | the same module: a kernel with `PI_HOST_THREAD` reads the thread's board from apps/chat and sets a time wake through `POST /api/threads/<thread>/wakes` | run and check wakes fail with a message that names the gap, because apps/chat delivers time wakes only |
+| `board` (`board.wake`, `board.corrections`, `board.own`) | Python skill | the same module: a kernel with `PI_HOST_THREAD` reads the thread's board from apps/chat and sets run, time and check wakes through `POST /api/threads/<thread>/wakes` | none |
 | `edit` | Python skill | pi-rlm's copy in the kernel, and the `edit` tool | equivalent |
 | `attach_image` | Python skill | on the kernel's path but not installed, because it needs Prime's `prime-agent-runtime` package, so the kernel lists it under `[python-skills-unavailable]`; `read` returns an image file as an image | different |
 | `goal`, `compact`, `rlm_heartbeat` | Python skills | `compact.run` asks pi-durable to compact; `goal.*` and `rlm_heartbeat.*` answer that they do not run in durable threads yet | missing except `compact` |
@@ -222,7 +222,7 @@ The `subagent` tool now starts its child the same way and returns at once with `
 The parent's run ends meanwhile, so an owner message or a steer sent while a child works starts or joins the parent's next run instead of waiting behind the child, as AI harness VP measured on 2026-10-29 (a steer queued 45 minutes behind a foreground subagent call).
 A subagent call made before this change owns its child and still waits for it when it reruns, so its answer lands once.
 
-The board skill reads the thread's board from apps/chat when its kernel has `PI_HOST_THREAD`, and `board.wake(at=...)` posts a time wake to apps/chat's `POST /api/threads/<thread>/wakes`, which its clock delivers as `[wake] ...`.
+The board skill reads the thread's board from apps/chat when its kernel has `PI_HOST_THREAD`, and `board.wake(...)` posts a run, time or check wake to apps/chat's `POST /api/threads/<thread>/wakes`. apps/chat ticks them with the legacy chat's own ticker (`legacy/prime/user-history/src/wakes.ts`, imported by `apps/chat/server/wakes.ts`) and delivers each as the same `[wake] ...` text.
 A run or check wake fails with a message that names the gap, because only the legacy chat on :5182 delivers those, and it delivers them to Prime sessions.
 
 ### Harness memories
@@ -242,7 +242,7 @@ Nothing writes a thread's local store yet: pi-harness (`packages/pi-harness/src/
 | `packages/pi-host/src/durable/rlm.ts`, `children.ts`, `subagent.ts` | `ipython` on pi-rlm's kernel, one per conversation, and the family it answers for; the `rlm.child` document and the `rlm.deliver` task; the `subagent` tool that returns at once. pi-rlm exports the result texts and helpers they use (`formatCell`, `KERNEL_RESET`, `baseEnv`, `label` and others). |
 | `packages/pi-host/src/durable/threads.ts` | `DurableThreadsOptions.prompt`; each thread file gets its own registry, so "Conversation log:" names its file and a child names its chat. `submit` records the harness digest of a root input before it admits it, one thread at a time. |
 | `packages/pi-host/src/main.ts` | Passes `prompt: {agentDir}` from `--agent-dir`. `PI_HOST_PROMPT_TOOLS=pi` switches the tools profile. Loads the chat extension and the durable `ipython` at start; `PI_HOST_PRIME_CHAT=0` and `PI_HOST_RLM=0` leave them out. |
-| `apps/chat/server/timeline.ts`, `threads.ts`, `search-snippet.ts`, `boards.ts`, `http.ts` | `SPEAKING_TOOLS`: a `tell_owner` call is drawn, previewed, posted and searched as a `send_message` call; a held one is a note. The agent's board write answers its summaries. An `ipython` cell's `details.conversations` gives a job pill per spawned child, and `POST /api/threads/<thread>/wakes` records a time wake. |
+| `apps/chat/server/timeline.ts`, `threads.ts`, `search-snippet.ts`, `boards.ts`, `http.ts` | `SPEAKING_TOOLS`: a `tell_owner` call is drawn, previewed, posted and searched as a `send_message` call; a held one is a note. The agent's board write answers its summaries. An `ipython` cell's `details.conversations` gives a job pill per spawned child, and `POST /api/threads/<thread>/wakes` arms a run, time or check wake. |
 | `skills/board/src/board/__init__.py` | In a durable kernel (`PI_HOST_THREAD`), reads the thread's board from apps/chat and sets time wakes there. |
 | `scripts/prompt-parity.mjs` | The capture and comparison above. |
 | `packages/pi-host/test/durable/prime-prompt.test.ts`, `test/fixtures/prime-agent/` | The tests below. |
@@ -284,7 +284,6 @@ A thread from before this change keeps its first system message, the old preambl
 |---|---|
 | A pi thread offers `read`, `write`, `edit`, `bash`, `subagent` and `send_message` beside Prime's tools. | Drop them once durable `ipython` has run in production, so the tool list is Prime's. |
 | `goal.*`, `refine.*` and `rlm_heartbeat.*` fail in a durable kernel, and `attach_image` is not installed there. | Map goals to pi-durable's `onYield`, refine to pi-harness, heartbeats to apps/chat's clock; install attach_image's Pillow without Prime's runtime package. |
-| apps/chat delivers time wakes only, so `board.wake(run=...)` and `board.wake(check=...)` fail in a pi thread. | Move the legacy chat's run and check wakes into apps/chat's clock. |
 | A depth-2 child's prompt says depth 1 and names the thread as its parent. | Compute the depth from the conversation's owners in `prime-prompt.ts`. |
 | `send_message` beside `tell_owner`. | Move apps/chat's channel and duty texts to `tell_owner`, teach the guard a channel turn, then drop the alias. |
 | No `[correction check]` after an owner message that reads as a correction. | Port the legacy server's `correctionStep` to apps/chat. |

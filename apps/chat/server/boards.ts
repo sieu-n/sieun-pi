@@ -1,9 +1,9 @@
 /**
  * Boards, For you, duties and check-ins. A chat's board is the `chat.board` document of its root conversation in pi-host, changed through
  * the board reducer copied from today's chat (web/src/lib/api/shared/chat-board.ts). Duties and the check-in clock live in the chat
- * server's data dir, and a due duty, check-in or wake reaches the chat as an input from "board".
+ * server's data dir, and a due duty, check-in or wake reaches the chat as an input from "board". Wakes are server/wakes.ts.
  */
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { BoardOp, BoardRow, BoardView, ChatBoard, CheckInPatch, CheckInView, DutyAction, DutyView, ForYouItem, PlanItem } from "../web/src/lib/api/types.ts";
 import { applyBoardOp, BOARD_PREFIX, emptyBoard, needsGo, nextIds, parseBoard, parseBoardOps, stepGo } from "../web/src/lib/api/shared/chat-board.ts";
@@ -16,6 +16,7 @@ import type { Host } from "./host/types.ts";
 import { readJson, writeJson, type Store } from "./store.ts";
 import { OWNER_ZONE_OFFSET_MS } from "./search.ts";
 import type { Threads } from "./threads.ts";
+import { armWake, startThreadWakes } from "./wakes.ts";
 
 export const BOARD_DOC = "chat.board";
 const DEFAULT_CHECK_IN_MS = 120 * 60_000;
@@ -23,7 +24,6 @@ const BOARD_TTL_MS = 15_000;
 
 export interface DutyFile { duties: Duty[]; runs: Record<string, DutyRunRecord[]>; checkIn?: { everyMs: number; pausedUntil: number | "forever" | null; lastAt: number | null } }
 export type DutyViewOut = DutyView & { card: DutyCardModel; last: { verdict: string; at: number; streak: number; afterJob: boolean } | null };
-export interface Wake { id: string; thread: string; conversation?: number; at: number; text: string }
 
 export interface BoardEvents {
   board(chatId: string, board: ChatBoard, awaitingGo: string[]): void;
@@ -64,6 +64,7 @@ export class Boards {
   /** The one pi-host read in flight per chat, which every caller shares. */
   private readonly reading = new Map<string, Promise<ChatBoard | null>>();
   private timer?: NodeJS.Timeout;
+  private stopWakes?: () => void;
 
   /** This server's own base URL, which a duty job's brief names for the board. */
   selfUrl = "http://127.0.0.1:5184";
@@ -410,9 +411,11 @@ export class Boards {
 
   start(everyMs = 30_000): void {
     this.timer = setInterval(() => void this.tick().catch(error => this.log(`board tick failed: ${String(error)}`)), everyMs);
+    this.stopWakes = startThreadWakes({ dir: this.wakeDir, host: this.host, log: this.log });
   }
   stop(): void {
     clearInterval(this.timer);
+    this.stopWakes?.();
   }
 
   async tick(now = Date.now()): Promise<void> {
@@ -438,44 +441,19 @@ export class Boards {
         void this.runDuty(chat, duty, "schedule");
       }
     }
-    await this.deliverWakes(now);
+  }
+
+  get wakeDir(): string {
+    return join(this.store.dir, "wakes");
   }
 
   /**
-   * Records one time wake for a thread's conversation, as the board skill's `board.wake(at=...)` asks for it from a durable thread's kernel.
-   * The same id twice writes one file, so a retried request sets one wake.
+   * Sets a wake for a thread's conversation, as the board skill's `board.wake(...)` asks for it from a durable thread's kernel: a run, a time
+   * or a check (server/wakes.ts). The same file id twice writes one file, so a retried request sets one wake.
    */
-  addWake(thread: string, input: { at?: unknown; text?: unknown; conversation?: unknown; id?: unknown }): Wake {
-    const at = Number(input.at);
-    if (!Number.isFinite(at) || at <= 0) throw new Error("A wake needs at=<epoch ms>.");
-    const conversation = Number.isInteger(input.conversation) && (input.conversation as number) > 1 ? (input.conversation as number) : undefined;
-    const id = typeof input.id === "string" && /^[\w.-]{1,128}$/.test(input.id) ? input.id : `${thread}-${conversation ?? 1}-${Math.round(at)}`;
-    const wake: Wake = { id, thread, ...(conversation ? { conversation } : {}), at, text: typeof input.text === "string" ? input.text : "" };
-    writeJson(join(this.store.dir, "wakes", `${id}.json`), wake);
-    return wake;
-  }
-
-  /** A wake is one JSON file in `<data dir>/wakes/`: `{id, thread, conversation?, at, text}`, delivered once at `at`. */
-  async deliverWakes(now: number): Promise<void> {
-    const dir = join(this.store.dir, "wakes");
-    let names: string[] = [];
-    try {
-      names = readdirSync(dir).filter(n => n.endsWith(".json"));
-    } catch {
-      return;
-    }
-    for (const name of names) {
-      const wake = readJson<Wake | null>(join(dir, name), null);
-      if (!wake || wake.at > now) continue;
-      try {
-        await this.host.submit(wake.thread, {
-          ...(wake.conversation && wake.conversation !== 1 ? { conversation: wake.conversation } : {}),
-          text: `[wake] ${wake.text}`, whenBusy: "followUp", requestId: `wake:${wake.id}`, entry: { kind: "agent.message", data: { from: "board", via: "wake" } },
-        });
-        rmSync(join(dir, name), { force: true });
-      } catch (error) {
-        this.log(`wake ${wake.id} failed: ${String(error)}`);
-      }
-    }
+  async addWake(thread: string, body: Record<string, unknown>): ReturnType<typeof armWake> {
+    if (!this.threads.thread(thread)) await this.threads.refresh().catch(() => undefined);
+    if (!this.threads.thread(thread)) throw new Error(`No thread ${thread}.`);
+    return armWake(this.wakeDir, thread, body);
   }
 }

@@ -7,7 +7,7 @@ owner's corrections ledger, <agent dir>/browser-chat/corrections.json, whose [co
 On a box where hosts.json puts the chat role on another box, every call reads and writes through that chat service's API instead.
 
 In a pi-host durable thread's kernel (PI_HOST_THREAD set), the board is the thread's board in the new chat (apps/chat, PI_HOST_CHAT_URL), read
-through GET /api/threads/<thread>/board, and wake(at=...) asks that chat for a time wake; it delivers no run or check wake yet.
+through GET /api/threads/<thread>/board, and wake(...) asks that chat for a run, time or check wake (apps/chat/server/wakes.ts).
 """
 
 from __future__ import annotations
@@ -94,13 +94,13 @@ def _pi_thread() -> tuple[str, str, int] | None:
     return url, thread, conversation
 
 
-def _pi_call(path: str, body: dict | None = None) -> dict:
+def _pi_call(path: str, body: dict | None = None, timeout: float = 30) -> dict:
     """GET (or POST with body) a route of the new chat for this thread."""
     url, _thread, _conversation = _pi_thread()  # type: ignore[misc]
     request = urllib.request.Request(f"{url}/{path}", data=json.dumps(body).encode() if body is not None else None,
                                      headers={"Content-Type": "application/json"} if body is not None else {})
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.loads(response.read() or b"{}")
     except urllib.error.HTTPError as error:
         raise RuntimeError(f"The chat at {url} answered {error.code}: {error.read().decode(errors='replace')[:300]}") from None
@@ -454,13 +454,13 @@ def wake(run: int | str | None = None, at: str | float | None = None, note: str 
         key, what = f"time-{int(when)}", f"it is {datetime.fromtimestamp(when, timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}"
     if _pi_thread():
         url, thread, conversation = _pi_thread()  # type: ignore[misc]
-        if on["kind"] != "time":
-            raise RuntimeError(f"The new chat at {url} delivers time wakes only (apps/chat/server/boards.ts deliverWakes), so a {on['kind']} wake "
-                               "cannot be set for a pi-host thread yet. Set board.wake(at=<time>) and check the run or command when it comes.")
-        text = f"It is {datetime.fromtimestamp(when, timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}." + (f" {note}" if note else "")
-        _pi_call(f"api/threads/{urllib.parse.quote(thread)}/wakes",
-                 {"id": f"{thread}-{conversation}-{key}", "at": int(when * 1000), "text": text, "conversation": conversation})
-        return _Text(f"Wake set: the chat messages this thread when {what}. End this turn now with no bash handle, sleep or wait left running. ({url})")
+        # The chat runs a check once as it arms it, on its own box, so the request waits up to the check's own pace.
+        armed = _pi_call(f"api/threads/{urllib.parse.quote(thread)}/wakes",
+                         {"id": f"{thread}-{conversation}-{key}", "conversation": conversation, "on": on, "note": note, "since": int(time.time() * 1000)},
+                         timeout=30 + (on["every"] / 1000 if on["kind"] == "check" else 0))
+        warning = _check_warning(on["command"]) if armed.get("passes") else ""
+        return _Text(f"{warning}Wake set: the chat messages this thread when {what}. End this turn now with no bash handle, sleep or wait left running. "
+                     f"({url}, {armed.get('path', 'wakes')})")
     session = _own_session()
     parts = Path(os.environ.get("RLM_SESSION_DIR", "")).parts
     root = parts[parts.index("session-artifacts") + 1] if "session-artifacts" in parts and parts.index("session-artifacts") + 1 < len(parts) else session
@@ -501,9 +501,12 @@ def _check_passes_now(on: dict) -> str:
         done = subprocess.run(["sh", "-c", on["command"]], cwd=str(Path.home()), capture_output=True, timeout=on["every"] / 1000)
     except (subprocess.TimeoutExpired, OSError):
         return ""
-    if done.returncode != 0:
-        return ""
-    return (f"Warning: `{on['command']}` exits 0 now, before the event, so this wake goes out on the chat service's next tick and reloads the "
+    return _check_warning(on["command"]) if done.returncode == 0 else ""
+
+
+def _check_warning(command: str) -> str:
+    """The warning in front of board.wake's reply when a check wake's command already exits 0 as it is armed."""
+    return (f"Warning: `{command}` exits 0 now, before the event, so this wake goes out on the chat service's next tick and reloads the "
             "session for nothing. Change the check so it exits nonzero until the new event happens, such as a file appearing or a unit ending, "
             "and set the wake again. ")
 

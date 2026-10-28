@@ -133,7 +133,7 @@ Pages call the server through `web/src/lib/api` (`import { api, timeline, agents
 2. Each owner op also reaches the chat as a `[board] ...` input, as today.
 3. A duty run works as in today's chat: the server runs the duty's precheck command with STATE_FILE, LAST_RUNS_FILE, OUTPUT_FILE and PRECHECK_MODE, judges its metrics, and records the run; when something is due (a miss, an error, an overrun or flagged items) it starts a duty job, a thread filed under the chat, whose `send_message` texts reach the chat as one `[duty <id>]` input from that job (a job that never called it sends its final answer, and "nothing to report" sends nothing).
 4. A duty job, or any agent, changes a board with `POST /api/threads/:id/board {actor: "agent", ops}`; only the owner answers a todo, and a refused op answers 400.
-5. A due check-in or wake reaches the chat as an input from `board`; a wake is a JSON file `{id, thread, conversation?, at, text}` in `<data dir>/wakes/`.
+5. A due check-in or wake reaches the chat as an input from `board`. `POST /api/threads/:id/wakes {id?, conversation?, on, note, since}` arms a wake, where `on` is the board skill's run, time or check wait; it answers `{wake, path, passes?}`, and `passes` means the check already exits 0. A wake is a JSON file in `<data dir>/wakes/` in the legacy chat's format, ticked by its own code (`server/wakes.ts`).
 
 ## Usage, pool and hosts
 

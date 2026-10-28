@@ -110,7 +110,7 @@ export function routes(app: App): Route[] {
     }),
     route("POST", "/api/threads/:id/wakes", async (_r, p, _q, body) => {
       try {
-        return { wake: app.boards.addWake(p.id!, (await body()) as Record<string, unknown>) };
+        return await app.boards.addWake(p.id!, (await body()) as Record<string, unknown>);
       } catch (error) {
         throw new BadRequest(error instanceof Error ? error.message : String(error));
       }

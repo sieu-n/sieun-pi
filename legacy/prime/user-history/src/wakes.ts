@@ -2,7 +2,6 @@ import { hostExecFile } from "./spawn-host.ts";
 import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { AgentKind } from "./outbox.ts";
 
 /**
  * Kernel-free waits. A job that waits for a CI run or a time calls `board.wake(...)` (skills/board), which writes one file to
@@ -130,9 +129,10 @@ export interface WakeDeps {
   /**
    * Hands the session the text on disk (src/agent-outbox.ts), which delivers it in the background: through a stopped subagent's parent, and
    * after starting the tree `root` when the daemon does not find the session. The daemon finds a child only while its tree's worker runs
-   * (10-14 13:37Z: the idle sweep evicted this job's tree and wake-probe-2's wake at 13:39Z was dropped).
+   * (10-14 13:37Z: the idle sweep evicted this job's tree and wake-probe-2's wake at 13:39Z was dropped). `kind` is outbox.ts's AgentKind
+   * "wake", written as a literal so this file imports nothing but spawn-host.ts, and apps/chat/server/wakes.ts imports it as it is.
    */
-  deliver: (session: string, text: string, root?: string, kind?: AgentKind, setAt?: number) => Promise<void>;
+  deliver: (session: string, text: string, root?: string, kind?: "wake", setAt?: number) => Promise<void>;
   /**
    * Called after each run read and each send, so TICKED shows a tick that is still moving. 10-15 12:16 to 12:35Z each send timed out after
    * 30 s and a tick with 5 sessions due took over 2.5 min, so TICKED aged past WAKE_LATE_MS while the tick ran and board.wake refused everywhere.

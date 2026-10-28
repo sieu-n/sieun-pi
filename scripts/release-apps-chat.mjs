@@ -121,7 +121,9 @@ async function takeLock(home, request) {
 
 async function archive(repo, sha, into) {
   const tar = spawn("tar", ["-x", "-C", into], { stdio: ["pipe", "inherit", "inherit"] });
-  const source = spawn("git", ["-C", repo, "archive", "--format=tar", sha, "apps/chat", "config/allowed-models.ts", "packages/pi-host/src/durable/index-db.ts", "deploy/linux/sieun-pi-apps-chat.service"], { stdio: ["ignore", "pipe", "inherit"], env: gitEnv });
+  const source = spawn("git", ["-C", repo, "archive", "--format=tar", sha, "apps/chat", "config/allowed-models.ts", "packages/pi-host/src/durable/index-db.ts", "deploy/linux/sieun-pi-apps-chat.service",
+    // server/wakes.ts imports today's chat's wake ticker as it is.
+    "legacy/prime/user-history/src/wakes.ts", "legacy/prime/user-history/src/spawn-host.ts", "legacy/prime/user-history/src/spawn-host-child.mjs"], { stdio: ["ignore", "pipe", "inherit"], env: gitEnv });
   source.stdout.pipe(tar.stdin);
   const codes = await Promise.all([source, tar].map(child => new Promise(done => child.on("close", done))));
   if (codes.some(code => code !== 0)) throw new Error(`git archive ${sha} | tar -x failed (${codes.join(", ")})`);
