@@ -234,13 +234,13 @@ export class Indexer {
   /** Reads the registry again and drops the tool docs of every excluded root not purged yet. Running it twice changes nothing. */
   async applyPolicy(): Promise<void> {
     if (!this.policy) return;
-    const began = performance.now();
     try {
       await this.policy.refresh();
     } catch (err) {
       this.log(`pi-history: tool output policy unread: ${(err as Error).message}`);
       return;
     }
+    const began = performance.now();
     for (const root of this.policy.excludedRoots()) {
       if (this.purged.has(root)) continue;
       const gone = this.purgeTools(root);
