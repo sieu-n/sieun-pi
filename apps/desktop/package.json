@@ -1,0 +1,12 @@
+{
+  "name": "sieun-pi-apps-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The Mac app of apps/chat: a Tauri window that opens the chat on us-metal02.",
+  "scripts": {
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.12.4"
+  }
+}

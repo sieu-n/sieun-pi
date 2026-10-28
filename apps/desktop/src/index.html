@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Sieun Chat</title>
+    <style>
+      html, body { height: 100%; margin: 0; }
+      body {
+        display: grid; place-items: center;
+        font: 14px/1.5 -apple-system, system-ui, sans-serif;
+        color: #1f1f1f; background: #ffffff;
+        -webkit-user-select: none; user-select: none; cursor: default;
+      }
+      @media (prefers-color-scheme: dark) { body { color: #ececec; background: #161616; } }
+      main { max-width: 360px; padding: 24px; text-align: center; }
+      main[hidden] { display: none; }
+      h1 { font-size: 17px; font-weight: 500; margin: 0 0 8px; }
+      p { margin: 0 0 20px; opacity: 0.7; }
+      button {
+        font: inherit; padding: 6px 18px; border-radius: 8px; border: 0;
+        background: #beda36; color: #2b3110; cursor: pointer;
+      }
+      button:disabled { opacity: 0.5; cursor: default; }
+      a { display: inline-block; margin-top: 14px; font-size: 12px; color: inherit; opacity: 0.55; }
+    </style>
+  </head>
+  <body>
+    <main id="offline" hidden>
+      <h1>Can't reach the chat</h1>
+      <p>The Mac can't reach us-metal02 right now. Check that Tailscale is connected.</p>
+      <button id="retry" type="button">Retry</button>
+      <br />
+      <a id="anyway" href="#">Load it anyway</a>
+    </main>
+    <script>
+      // The Rust shell opens this page with ?to=<chat URL> at start and on Cmd+R.
+      const target = new URLSearchParams(location.search).get("to");
+      const offline = document.getElementById("offline");
+      const retry = document.getElementById("retry");
+      let timer;
+
+      async function reachable() {
+        const abort = new AbortController();
+        const timeout = setTimeout(() => abort.abort(), 8000);
+        try {
+          // An opaque no-cors answer is enough: any HTTP reply means the box is up.
+          await fetch(new URL("/", target), { mode: "no-cors", cache: "no-store", signal: abort.signal });
+          return true;
+        } catch {
+          return false;
+        } finally {
+          clearTimeout(timeout);
+        }
+      }
+
+      async function attempt() {
+        clearTimeout(timer);
+        retry.disabled = true;
+        retry.textContent = "Connecting...";
+        if (await reachable()) {
+          location.replace(target);
+          return;
+        }
+        offline.hidden = false;
+        retry.disabled = false;
+        retry.textContent = "Retry";
+        timer = setTimeout(attempt, 10000);
+      }
+
+      retry.addEventListener("click", attempt);
+      document.getElementById("anyway").addEventListener("click", (event) => {
+        event.preventDefault();
+        location.replace(target);
+      });
+      window.addEventListener("online", attempt);
+      attempt();
+    </script>
+  </body>
+</html>

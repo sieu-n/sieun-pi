@@ -1,0 +1,20 @@
+[package]
+name = "sieun-chat"
+version = "0.1.0"
+description = "The Mac app of apps/chat"
+edition = "2021"
+publish = false
+
+[build-dependencies]
+tauri-build = { version = "2.7", features = [] }
+
+[dependencies]
+tauri = { version = "2.12", features = [] }
+tauri-plugin-opener = "2.7"
+tauri-plugin-window-state = "2.5"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true
