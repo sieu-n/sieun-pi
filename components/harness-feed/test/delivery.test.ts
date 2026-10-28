@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import type { Context, Sample } from "../otlp.ts";
-import { busyRows, findRow, messageKind, read, readOutbox, readSends, readTranscriptEnd, readTranscriptNew, rowAt, slackSamples } from "../readers/delivery.ts";
+import { busyRows, chatSamples, findRow, messageKind, read, readOutbox, readSends, readTranscriptEnd, readTranscriptNew, rowAt, slackSamples } from "../readers/delivery.ts";
 
 const FIXTURE = fileURLToPath(new URL("./fixtures/delivery/home", import.meta.url));
 const NOW = 1792430000000;
@@ -38,6 +38,33 @@ test("rowAt and findRow cut one row out of a copy, past nested ids and escaped q
   assert.equal(findRow(copies, "01a0aaaa-0000-7000-8000-000000000000")?.lifecycle, "archived");
   assert.equal(findRow(copies, "01a19999-0000-7000-8000-000000000000"), null);
   assert.equal(rowAt(bytes, 0), null);
+});
+
+test("rowAt, findRow and busyRows read a copy saved a row a line, as the chat service saves it since 10-26", () => {
+  const copy = JSON.parse(readFileSync(join(FIXTURE, ".prime/agent/browser-chat/session-copy.json"), "utf8")) as { fullAt: number; rows: unknown[] };
+  const bytes = Buffer.from(`{"version":1,"fullAt":${copy.fullAt},"rows":[\n${copy.rows.map(row => JSON.stringify(row)).join(",\n")}\n]}`);
+  const copies = [{ host: "us-metal02", busy: [], bytes: () => bytes }];
+  assert.equal(findRow(copies, "01a154b4-bd46-70e9-bca0-14ec068d3c4a")?.sessionName, "image serving");
+  assert.equal(findRow(copies, CHAT)?.sessionName, "Crawler  VP");
+  assert.equal(findRow(copies, "01a0aaaa-0000-7000-8000-000000000000")?.lifecycle, "archived");
+  assert.equal(findRow(copies, "01a19999-0000-7000-8000-000000000000"), null);
+  assert.equal(rowAt(bytes, 0), null);
+  assert.deepEqual(busyRows(bytes).map(row => row.sessionName).sort(), ["Crawler  VP", "image serving"]);
+});
+
+test("chatSamples sends one sample per chat name, summing the chats that show the same name", () => {
+  const transcript = (jobs: { at: number; source: string; from: string }[]) => ({ file: "", offset: 0, messages: [], jobs });
+  const samples = chatSamples([
+    { chat: "unknown chat", since: 0, transcript: transcript([{ at: NOW - MINUTE, source: "agent", from: "a" }]) },
+    { chat: "unknown chat", since: 0, transcript: transcript([{ at: NOW - 2 * MINUTE, source: "agent", from: "b" }, { at: NOW - 3 * MINUTE, source: "agent", from: "a" }]) },
+    { chat: "Crawler VP", since: 0, transcript: transcript([]) },
+  ], NOW);
+  const series = samples.map(s => `${s.name}${JSON.stringify(s.labels ?? {})}`);
+  assert.equal(new Set(series).size, series.length);
+  assert.equal(pick(samples, "harness.delivery.job_messages_24h", { chat: "unknown chat", source: "agent" })[0]?.value, 3);
+  assert.equal(pick(samples, "harness.delivery.reporting_jobs_24h", { chat: "unknown chat" })[0]?.value, 2);
+  assert.equal(pick(samples, "harness.delivery.last_report_age", { chat: "unknown chat" })[0]?.value, 60);
+  assert.equal(pick(samples, "harness.delivery.unread", { chat: "Crawler VP" }).length, 1);
 });
 
 test("busyRows keeps the live rows with queued input or unfinished actions only", () => {

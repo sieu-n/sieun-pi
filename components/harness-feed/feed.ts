@@ -8,7 +8,7 @@ import { pathToFileURL } from "node:url";
 import { homedir, hostname } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
-import { payload, type Context, type Sample } from "./otlp.ts";
+import { firstOfEach, payload, type Context, type Sample } from "./otlp.ts";
 import { READERS } from "./readers/index.ts";
 
 const ENDPOINT = process.env.HARNESS_FEED_ENDPOINT ?? "http://127.0.0.1:14318/v1/metrics";
@@ -44,7 +44,12 @@ export async function round(ctx: Context, readers = READERS, only: string[] | nu
       { name: "harness.feed.reader_duration", kind: "gauge", unit: "s", help: "How long the reader's last round took.", value: (performance.now() - started) / 1000, labels: { group } });
   }));
   tagRunsOn(samples);
-  return { samples, errors };
+  const { kept, repeats } = firstOfEach(samples);
+  for (const [metric, value] of repeats) {
+    kept.push({ name: "harness.feed.repeated_samples", kind: "gauge", value, labels: { metric },
+      help: "Samples a reader sent again for a series it already sent this round, which the feed dropped; above 0 means a reader's labels collide." });
+  }
+  return { samples: kept, errors };
 }
 
 /** The `box` label Alloy gives a host whose hosts.json name differs from it: the Mac's Alloy labels its series box="mbp". */

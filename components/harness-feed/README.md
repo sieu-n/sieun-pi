@@ -10,6 +10,7 @@ The owner asked for it on 10-19 (AI harness chat, msgs mvfhd7q5 and mvfhfzby): e
 3. Each reader returns gauges, or counters for sources that are cumulative already, with low-cardinality labels such as `chat`, `kind`, `account` and `host`. Top-N holders go out as separate series with a `rank` label.
 4. Readers of the chat's own files (`~/.prime/agent/browser-chat`) return nothing unless `instance.json` names a live pid, so only the chat host sends them.
 5. Every reader reports `harness_feed_reader_ok` and `harness_feed_reader_duration_seconds`, and the feed reports its own CPU per round and RSS.
+6. The feed sends one sample per series a round and keeps the first. It counts each repeat a reader sent in `harness_feed_repeated_samples` by metric, because Prometheus answers a second sample of one series at one time with a 400 that drops Alloy's whole batch of 500, the box's node and cAdvisor series too.
 
 | Reader | What it reads |
 |---|---|

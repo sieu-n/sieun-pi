@@ -103,21 +103,35 @@ export async function readOutbox(dir: string, outbox: OutboxName, cache: Map<str
  */
 export interface Copy { host: string; busy: Row[]; bytes: () => Buffer | null; changed?: boolean }
 
+const ROWS_KEY = Buffer.from('"rows":[');
 const ROW_START = Buffer.from(',{"id":"');
-const FIRST_ROW = Buffer.from('[{"id":"');
+const NEWLINE = 0x0a;
+const COMMA = 0x2c;
 
 /**
- * The row that holds byte `at` of a copy. Rows are the objects of the copy's `rows` array, each opening with its "id" key, and inside a
- * JSON string a quote is escaped, so `,{"id":"` (or `[{"id":"` for the first row) appears only where a row starts.
+ * The row that holds byte `at` of a copy. Since 06a9e3e3 (10-26) the chat service saves each row on a line of its own (session-peer.ts
+ * `readCopy`), so the row is that line without its trailing comma. Until this read lines, it cut only at `,{"id":"` and found no row in such a
+ * copy, every chat read "unknown chat", and the 16 chats' unread and job message gauges went out as one series 16 times a round, which the
+ * staging Prometheus refused with a 400 that dropped Alloy's whole batch of 500 us-metal02 samples, about 45 times an hour from 10-27 01Z.
+ * A copy saved on one line, as before 10-26, is cut at `,{"id":"`: rows open with their "id" key, and inside a JSON string a quote is
+ * escaped, so that appears only where a row starts.
  */
 export function rowAt(bytes: Buffer, at: number): Row | null {
-  const first = bytes.indexOf(FIRST_ROW);
-  if (first < 0 || first > at) return null;
-  const comma = bytes.lastIndexOf(ROW_START, at);
-  const start = Math.max(comma, first);
-  const next = bytes.indexOf(ROW_START, at);
-  const end = next < 0 ? bytes.lastIndexOf("]") : next;
-  try { return JSON.parse(bytes.toString("utf8", start + 1, end)) as Row; } catch { return null; }
+  const rows = bytes.indexOf(ROWS_KEY);
+  const first = rows + ROWS_KEY.length;
+  if (rows < 0 || at < first) return null;
+  let start: number, end: number;
+  if (bytes[first] === NEWLINE) {
+    start = bytes.lastIndexOf(NEWLINE, at) + 1;
+    end = bytes.indexOf(NEWLINE, at);
+    if (end < 0) end = bytes.length;
+    if (bytes[end - 1] === COMMA) end--;
+  } else {
+    start = Math.max(bytes.lastIndexOf(ROW_START, at) + 1, first);
+    const next = bytes.indexOf(ROW_START, at);
+    end = next < 0 ? bytes.lastIndexOf("]") : next;
+  }
+  try { return JSON.parse(bytes.toString("utf8", start, end)) as Row; } catch { return null; }
 }
 
 /** The row of `session` in the copies, the first copy that lists it winning. */
@@ -597,28 +611,33 @@ async function chatList(dir: string): Promise<{ id: string; since: number }[]> {
 /** How many jobs ranked by messages sent in the last 24 h go out one by one. Their name goes in `sender`, since Alloy's `job` label is "harness". */
 const TOP_REPORTERS = 10;
 
-/** The unread and job message numbers of the chats, per chat by name. */
+/**
+ * The unread and job message numbers of the chats, per chat by name. Chats that show one name, such as "unknown chat" for chats no copy lists,
+ * sum into one sample, because Prometheus refuses a second sample of one series at one time.
+ */
 export function chatSamples(chats: readonly { chat: string; since: number; transcript: Transcript }[], now: number): Sample[] {
-  const unread: Sample[] = [];
-  const counts: Sample[] = [];
-  const reporters: { chat: string; job: string; count: number }[] = [];
+  const byName = new Map<string, { unread: number; day: Map<string, number>; recent: Map<string, number>; senders: Map<string, number>; newest: number }>();
   let unreadAll = 0;
   for (const { chat, since, transcript } of chats) {
     const count = unreadOf(transcript, since);
     unreadAll += count;
+    const held = byName.get(chat) ?? { unread: 0, day: new Map(), recent: new Map(), senders: new Map(), newest: -Infinity };
+    byName.set(chat, held);
+    held.unread += count;
+    for (const job of transcript.jobs) {
+      held.day.set(job.source, (held.day.get(job.source) ?? 0) + 1);
+      if (now - job.at < WINDOW_MS) held.recent.set(job.source, (held.recent.get(job.source) ?? 0) + 1);
+      if (job.source !== "agent") continue;
+      held.senders.set(job.from, (held.senders.get(job.from) ?? 0) + 1);
+      held.newest = Math.max(held.newest, job.at);
+    }
+  }
+  const unread: Sample[] = [];
+  const counts: Sample[] = [];
+  const reporters: { chat: string; job: string; count: number }[] = [];
+  for (const [chat, { unread: count, day, recent, senders, newest }] of byName) {
     unread.push({ name: "harness.delivery.unread", kind: "gauge", value: count, labels: { chat },
       help: "Feed rows of the chat the owner has not read, the sidebar's unread count (shown as 99+ past 99), 0 when he read them all." });
-    const day = new Map<string, number>();
-    const recent = new Map<string, number>();
-    const senders = new Map<string, number>();
-    let newest = -Infinity;
-    for (const job of transcript.jobs) {
-      day.set(job.source, (day.get(job.source) ?? 0) + 1);
-      if (now - job.at < WINDOW_MS) recent.set(job.source, (recent.get(job.source) ?? 0) + 1);
-      if (job.source !== "agent") continue;
-      senders.set(job.from, (senders.get(job.from) ?? 0) + 1);
-      newest = Math.max(newest, job.at);
-    }
     for (const [source, value] of recent) counts.push({ name: "harness.delivery.job_messages_30m", kind: "gauge", value, labels: { chat, source },
       help: "Messages jobs, agents and the server sent the chat in the last 30 min, per chat and source (agent, check-in, jobs and the other server notes)." });
     for (const [source, value] of day) counts.push({ name: "harness.delivery.job_messages_24h", kind: "gauge", value, labels: { chat, source },

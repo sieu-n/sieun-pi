@@ -34,6 +34,18 @@ test("a failing reader reports ok 0 and leaves the others' samples", async () =>
   assert.match(errors.bad, /boom/);
 });
 
+test("a round keeps the first sample of each series and counts the repeats a reader sent", async () => {
+  const { samples } = await round(ctx, {
+    twice: async () => [
+      { name: "d", kind: "gauge", help: "D.", value: 1, labels: { chat: "x", source: "a" } },
+      { name: "d", kind: "gauge", help: "D.", value: 2, labels: { source: "a", chat: "x" } },
+      { name: "d", kind: "gauge", help: "D.", value: 3, labels: { chat: "y", source: "a" } },
+    ],
+  });
+  assert.deepEqual(samples.filter(s => s.name === "d").map(s => s.value), [1, 3]);
+  assert.equal(samples.find(s => s.name === "harness.feed.repeated_samples" && s.labels?.metric === "d")?.value, 1);
+});
+
 test("every chat sample gets the box its chat runs on, and every host sample the box it names, in the board's box names", () => {
   const samples = [
     { name: "harness.tokens.chat_cost_usd", kind: "gauge" as const, help: "C.", value: 1, labels: { chat: "frontend bro", part: "thread", runs_on: "mac" } },
