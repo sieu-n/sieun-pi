@@ -253,7 +253,7 @@ test("with no deploy read a commit design falls back to done_at, and with no don
   assert.equal(report(dated, await metrics(dated.now)).metrics.repeats_after_design, 1);
 });
 
-test("the box read lists each ok prod deploy from deploy.log, and a release holds a commit by its tree's pinned tip or a Replayed-From trailer", async () => {
+test("the box read lists each ok prod deploy from deploy.log, and a release holds a commit by its tree's pinned tip, a Replayed-From trailer or a crawler cut's Crawler-Cut-Pick trailer", async () => {
   const { deploys } = parseBox(["D\t2026-10-15T10:24:30Z\ta8f85b420699", "D\t2026-10-18T12:31:13Z\t43490e7e9f94", "D\tnot-a-time\tabc"].join("\n"));
   assert.deepEqual(deploys, DEPLOYS);
   assert.equal(releaseAt(DEPLOYS, Date.parse("2026-10-18T12:31:12Z"))!.release, "a8f85b420699");
@@ -262,12 +262,14 @@ test("the box read lists each ok prod deploy from deploy.log, and a release hold
     if (args[0] === "log" && args[1] === "--all") return "land38 T38\npin T38\nland37 T37\n";
     if (args[0] === "rev-parse") { const [ref, kind] = args[2]!.split("^"); return `${kind === "{tree}" ? "T38" : ref}\n`; }
     if (args[0] === "merge-base") { if (ancestors[args[3]!]?.includes(args[2]!)) return ""; throw new Error("exit 1"); }
-    if (args[0] === "log") return args.at(-1) === "pin" && args.includes("--grep=Replayed-From: object") ? "replay\n" : "";
+    if (args[0] === "log" && args.at(-1) === "pin" && args.includes("--grep=Replayed-From: object")) return "replay\n";
+    if (args[0] === "log") return args.at(-1) === "land38" && args.includes("--grep=Crawler-Cut-Pick: picked") ? "land38\n" : "";
     throw new Error(`unexpected git ${args.join(" ")}`);
   };
   const holds = gitReleaseHolds(git);
   assert.equal(await holds("land38", "e0d09f5a42"), true);
   assert.equal(await holds("land38", "object"), true);
+  assert.equal(await holds("land38", "picked"), true);
   assert.equal(await holds("land38", "other"), false);
 });
 

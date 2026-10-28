@@ -714,7 +714,8 @@ export function gitReleaseHolds(git: (args: string[]) => Promise<string>): (rele
     const tree = (await git(["rev-parse", "--verify", `${tip}^{tree}`])).trim();
     for (const head of new Set([tip, ...(await byTree()).get(tree) ?? []])) {
       if (await git(["merge-base", "--is-ancestor", sha, head]).then(() => true, () => false)) return true;
-      if ((await git(["log", "-1", "--format=%H", "--fixed-strings", `--grep=Replayed-From: ${sha}`, head])).trim()) return true;
+      // A crawler-only cut picks dev commits onto prod's line and names each one in a Crawler-Cut-Pick trailer (cut p1026, 7d0de6ae3d, 10-28).
+      if ((await git(["log", "-1", "--format=%H", "--fixed-strings", `--grep=Replayed-From: ${sha}`, `--grep=Crawler-Cut-Pick: ${sha}`, head])).trim()) return true;
     }
     return false;
   };
