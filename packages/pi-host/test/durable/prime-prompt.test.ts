@@ -204,3 +204,73 @@ test("pi-host's threads run with it: the thread file is the conversation log, an
     await threads.shutdown();
   }
 });
+
+test("a thread moved to a new cwd runs its next request there: its tools, its Working directory line and that folder's AGENTS.md chain", async () => {
+  const f = fixture("move");
+  const home = join(dir, "move", "home-folder");
+  mkdirSync(home);
+  // A checkout like sieun-pi: an AGENTS.md and no .claude rules or repo skills.
+  const project = join(dir, "move", "project");
+  mkdirSync(project);
+  writeFileSync(join(project, "AGENTS.md"), "# Project rules\n\nCommit only your own files.\n");
+  let prompt = "";
+  const threads = new DurableThreads({
+    dir: join(dir, "move-durable"),
+    models: () => {
+      const faux = fauxProvider({ provider: MODEL.provider, models: [{ id: MODEL.modelId }], tokensPerSecond: 0 });
+      faux.setResponses(Array.from({ length: 8 }, () => ({ messages }: { messages: Message[] }) => {
+        prompt = getCurrentSystemPrompt(messages);
+        const last = textOf([...messages].reverse().find(m => m.role === "user")?.content ?? "");
+        if (last === "where are you?" && messages.at(-1)?.role !== "toolResult") return fauxAssistantMessage([fauxToolCall("bash", { command: "pwd" })], { stopReason: "toolUse" });
+        return fauxAssistantMessage("ok");
+      }));
+      const models = createModels();
+      models.setProvider(faux.provider);
+      return models;
+    },
+    defaultModel: MODEL,
+    defaultThinkingLevel: "off",
+    defaultCwd: home,
+    prompt: { agentDir: f.agentDir, bundledSkillsDir: f.bundled, ledgerDir: f.ledgerDir },
+  });
+  const ask = async (id: string, text: string) => {
+    const { submission } = await threads.submit(id, { text });
+    assert.equal((await threads.wait(id, submission)).status, "done");
+  };
+  const all = async (id: string) => (await threads.entries(id, { after: 0, limit: 500 })).entries;
+  try {
+    const thread = await threads.create({ name: "factory" });
+    await ask(thread.id, "first");
+    assert.match(prompt, new RegExp(`Working directory: ${home}\n`));
+    assert.doesNotMatch(prompt, /Commit only your own files\./);
+    const before = systemEntries(await all(thread.id))[0]!;
+
+    await assert.rejects(threads.set(thread.id, { cwd: "relative/repo" }), /absolute path/);
+    await assert.rejects(threads.set(thread.id, { cwd: join(project, "missing") }), /not a folder/);
+    const moved = await threads.set(thread.id, { cwd: project });
+    assert.equal(moved.cwd, project);
+    assert.equal(threads.info(thread.id).cwd, project);
+
+    await ask(thread.id, "where are you?");
+    let entries = await all(thread.id);
+    let systems = systemEntries(entries);
+    assert.equal(systems.length, 2, "one patch entry, so the cached prefix up to the changed sections stays");
+    // Prime's preamble names the cwd in its "Working directory:" line, so it changes with the context section and nothing else does.
+    assert.deepEqual(Object.keys(systems[1]!).sort(), ["context", "preamble"]);
+    assert.equal(systems[1]!.preamble, before.preamble!.replace(`Working directory: ${home}\n`, `Working directory: ${project}\n`));
+    assert.equal(systems[1]!.context, `${before.context}## ${join(project, "AGENTS.md")}\n\n# Project rules\n\nCommit only your own files.\n\n\n`);
+    const pwd = entries.map(entry => entry.model?.[0]).find(message => message?.role === "toolResult");
+    assert.equal(textOf(pwd!.content).trim(), project, "the bash tool runs in the new cwd");
+
+    // A folder with .claude rules adds the rules section before the corrections, which pi-durable sends as one full baseline; the pinned brief keeps its text.
+    await threads.set(thread.id, { cwd: f.cwd });
+    await ask(thread.id, "third");
+    entries = await all(thread.id);
+    systems = systemEntries(entries);
+    assert.match(prompt, /Run npm test before a commit\./);
+    assert.match(prompt, /Always name the file you changed\./);
+    assert.equal(systems.at(-1)!.guidance, before.guidance);
+  } finally {
+    await threads.shutdown();
+  }
+});

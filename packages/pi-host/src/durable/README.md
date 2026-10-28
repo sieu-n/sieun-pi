@@ -70,7 +70,7 @@ Each command is one JSON line with `type` and `id`, and the response is a v7 `re
 | `durable_usage` | `since?`, `until?`, `threads?` | `usage`: per thread and model, turns, input, output, cacheRead and cacheWrite tokens, and cost with costInput, costOutput, costCacheRead and costCacheWrite apart. |
 | `durable_doc_get` | `thread`, `name`, `conversation?` | `value` |
 | `durable_doc_put` | `thread`, `name`, `value`, `conversation?` | |
-| `durable_set` | `thread`, `name?`, `model?`, `thinkingLevel?`, `archived?` | `thread` |
+| `durable_set` | `thread`, `name?`, `model?`, `thinkingLevel?`, `archived?`, `cwd?` (an absolute folder on this box; the thread's next request runs its tools, prompt and kernels there) | `thread` |
 | `durable_import` | `path` (a Prime or Pi session JSONL), `name?`, `model?`, `cwd?` | `thread` with `imported` and `skipped` counts. |
 
 A `durable_event` line is `{type: "durable_event", thread, watch, event}`, and `event` is one of these.

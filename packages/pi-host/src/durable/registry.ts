@@ -51,5 +51,5 @@ export function threadRegistry(prompt?: PrimePromptOptions, chat?: { chat: Prime
   return registry;
 }
 
-/** The environment a conversation's tools run in: the host's machine, in the conversation's cwd or the host's default. */
-export const threadEnv = (defaultCwd: string) => (target: { cwd?: string }) => new NodeExecutionEnv({ cwd: target.cwd ?? defaultCwd });
+/** The environment a conversation's tools run in: the host's machine, in the conversation's cwd or else the thread's cwd at that call. */
+export const threadEnv = (defaultCwd: () => string) => (target: { cwd?: string }) => new NodeExecutionEnv({ cwd: target.cwd ?? defaultCwd() });

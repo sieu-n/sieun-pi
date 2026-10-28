@@ -93,6 +93,8 @@ class Slot {
   lastUsed = Date.now();
   /** Set once this process killed whatever kernel a previous process left for this conversation. */
   cleared = false;
+  /** The folder the kernel works in, so a thread whose cwd changed moves its kernel there before the next cell. */
+  cwd: string | undefined;
   readonly session: string;
   readonly artifactDir: string;
 
@@ -261,9 +263,10 @@ export class DurableRlm {
       PI_HOST_CONVERSATION: String(slot.conversation),
       PI_HOST_CHAT_URL: this.options.chatUrl ?? process.env[CHAT_URL_ENV] ?? DEFAULT_CHAT_URL,
     });
+    const cwd = slot.thread.cwd;
     let kernel: Kernel | undefined;
     kernel = await Kernel.relay({
-      python, cwd: slot.thread.cwd, env, stderrLogPath: join(slot.artifactDir, "kernel-stderr.log"),
+      python, cwd, env, stderrLogPath: join(slot.artifactDir, "kernel-stderr.log"),
       onHostRequest: request => this.hostRequest(slot, request),
       interruptGraceMs: Number(process.env.PI_RLM_INTERRUPT_GRACE_MS ?? 3000),
       onExit: () => { if (slot.kernel === kernel) slot.kernel = undefined; },
@@ -285,6 +288,7 @@ export class DurableRlm {
       throw new Error(`Failed to initialize the rlm runtime in the Python kernel:\n${boot.stderr}\n${boot.error?.traceback.join("\n") ?? ""}`);
     }
     slot.kernel = kernel;
+    slot.cwd = cwd;
     const skillErrors = parseSkillImportErrors(boot.stdout);
     return { kernel, restarted, ...(restore ? { restore } : {}), ...(skillErrors ? { skillErrors } : {}) };
   }
@@ -301,6 +305,11 @@ export class DurableRlm {
     try {
       const depth = await this.depthOf(thread, api.conversationId);
       const start = await this.ensure(slot, depth, progress);
+      if (slot.cwd !== thread.cwd) {
+        const moved = await start.kernel.execute(`__import__("os").chdir(${JSON.stringify(thread.cwd)})`);
+        if (moved.status === "ok") slot.cwd = thread.cwd;
+        else this.log(`${slot.session}: the kernel did not move to ${thread.cwd}: ${moved.error?.evalue ?? moved.stderr}`);
+      }
       let r: CellResult;
       try {
         r = await start.kernel.execute(String(params.code ?? ""), {

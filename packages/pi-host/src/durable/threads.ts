@@ -23,8 +23,8 @@ import {
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import type { OwnerMark, TurnTicket } from "@sieun-pi/pi-pool/durable";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
+import { isAbsolute, join } from "node:path";
 import { Leases, SessionLockedError } from "../lease.ts";
 import { statusOf, ThreadIndex, type IndexedEntry, type SearchPage, type SearchQuery, type ThreadRow, type ThreadStatus, type UsageRow, type UsageTotal } from "./index-db.ts";
 import { headFor, parseSession } from "./import.ts";
@@ -291,15 +291,17 @@ export class DurableThreads {
     try {
       const storage = await openNodeSqliteStorage(file);
       const name = () => this.index.get(id)?.name ?? row.name;
+      // The row's cwd at each read, so a `set` cwd reaches the open file's tools, prompt, chat extension and kernels from the next call on.
+      const cwd = () => this.index.get(id)?.cwd ?? row.cwd;
       const chat = this.options.chat && {
         chat: this.options.chat,
-        thread: { id, file, name, cwd: row.cwd, harness: () => openHarness, boardDoc: () => this.docGet(id, "chat.board"), log: (line: string) => this.log(`${id} ${line}`) },
+        thread: { id, file, name, get cwd() { return cwd(); }, harness: () => openHarness, boardDoc: () => this.docGet(id, "chat.board"), log: (line: string) => this.log(`${id} ${line}`) },
       };
-      const prompt = this.options.prompt && { ...this.options.prompt, thread: { id, file, name, cwd: row.cwd, harness: () => openHarness }, log: (line: string) => this.log(`${id} ${line}`) };
+      const prompt = this.options.prompt && { ...this.options.prompt, thread: { id, file, name, get cwd() { return cwd(); }, harness: () => openHarness }, log: (line: string) => this.log(`${id} ${line}`) };
       const harness = await Harness.open(storage, {
         models: this.options.models(id),
-        registry: prompt || chat || this.options.rlm ? threadRegistry(prompt, chat, { thread: { id, file }, ...(this.options.rlm ? { rlm: this.options.rlm.extension(this.rlmThread(id, file, name, row.cwd, () => openHarness)) } : {}) }) : this.registry,
-        env: threadEnv(row.cwd),
+        registry: prompt || chat || this.options.rlm ? threadRegistry(prompt, chat, { thread: { id, file }, ...(this.options.rlm ? { rlm: this.options.rlm.extension(this.rlmThread(id, file, name, cwd, () => openHarness)) } : {}) }) : this.registry,
+        env: threadEnv(cwd),
         ...(this.options.settings === undefined ? {} : { settings: this.options.settings }),
         onWake: next => {
           wake = next;
@@ -325,9 +327,10 @@ export class DurableThreads {
   }
 
   /** The thread as the RLM runtime reaches it: its conversations' inputs, the other threads' roots, and new threads for `rlm.create_session`. */
-  private rlmThread(id: string, file: string, name: () => string, cwd: string, harness: () => Harness | undefined): RlmThread {
+  private rlmThread(id: string, file: string, name: () => string, cwd: () => string, harness: () => Harness | undefined): RlmThread {
     return {
-      id, file, name, cwd, harness,
+      id, file, name, harness,
+      get cwd() { return cwd(); },
       submit: input => this.submit(id, { conversation: input.conversation, text: input.text, requestId: input.requestId, whenBusy: input.whenBusy, entry: input.entry }),
       roots: () => this.list().map(row => ({ id: row.id, name: row.name, cwd: row.cwd })),
       submitRoot: (thread, input) => this.submit(thread, { text: input.text, requestId: input.requestId, whenBusy: input.whenBusy, entry: input.entry }),
@@ -632,14 +635,26 @@ export class DurableThreads {
     await (await this.conversation(open, conversation)).abort(context);
   }
 
-  async set(id: string, change: { name?: string; model?: ModelRef; thinkingLevel?: ModelThinkingLevel; archived?: boolean }): Promise<ThreadInfo> {
+  /**
+   * Changes a thread's name, model, thinking level, archived flag or cwd. A new cwd goes into the root conversation's agent, which its next
+   * request reads for the tools' environment and Prime's prompt, and into the row, which the open file's chat extension and kernels read.
+   */
+  async set(id: string, change: { name?: string; model?: ModelRef; thinkingLevel?: ModelThinkingLevel; archived?: boolean; cwd?: string }): Promise<ThreadInfo> {
     this.info(id);
-    if (change.model || change.thinkingLevel) {
+    if (change.cwd !== undefined) {
+      if (!isAbsolute(change.cwd)) throw new Error(`cwd must be an absolute path, got ${JSON.stringify(change.cwd)}`);
+      if (!existsSync(change.cwd) || !statSync(change.cwd).isDirectory()) throw new Error(`cwd ${change.cwd} is not a folder on this box`);
+    }
+    if (change.model || change.thinkingLevel || change.cwd !== undefined) {
       const open = await this.thread(id);
-      await open.root.configure({ ...(change.model ? { model: change.model } : {}), ...(change.thinkingLevel ? { thinkingLevel: change.thinkingLevel } : {}) }, context);
+      await open.root.configure({
+        ...(change.model ? { model: change.model } : {}), ...(change.thinkingLevel ? { thinkingLevel: change.thinkingLevel } : {}),
+        ...(change.cwd === undefined ? {} : { cwd: change.cwd }),
+      }, context);
     }
     this.index.update(id, {
       ...(change.name === undefined ? {} : { name: change.name }),
+      ...(change.cwd === undefined ? {} : { cwd: change.cwd }),
       ...(change.model ? { provider: change.model.provider, modelId: change.model.modelId } : {}),
       ...(change.thinkingLevel ? { thinkingLevel: change.thinkingLevel } : {}),
       ...(change.archived === undefined ? {} : { archived: change.archived }),

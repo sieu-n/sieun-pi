@@ -9,6 +9,7 @@
  *    child's whole answer arrives as an input when it ends.
  * 5. A pi-host kill mid-cell gives that call pi-durable's `interrupted`; the next call starts a fresh kernel with pi-rlm's reset note, and
  *    the old kernel is gone.
+ * 6. A thread whose cwd changed moves its live kernel to the new folder before the next cell.
  */
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
@@ -69,6 +70,24 @@ test("every conversation is offered ipython with pi-rlm's own definition, and th
   assert.deepEqual(ipython, toToolDeclaration({ name: tool.name, description: tool.description, parameters: tool.parameters as never }));
   assert.ok(tools.some(t => t.name === "subagent"));
   assert.deepEqual(out.map(r => [r.name, r.text.trim(), r.isError]), [[IPYTHON_TOOL, "set module", false], [IPYTHON_TOOL, "42", false]]);
+});
+
+test("a thread whose cwd changed moves its live kernel there before the next cell", async () => {
+  const moved = join(dir, "moved-project");
+  mkdirSync(moved, { recursive: true });
+  const { harness, root, thread } = await openThread(join(dir, "threads", "cwd.sqlite"), "cwd", rlm, ({ messages }) => {
+    const last = lastText(messages);
+    if (last === "where") return cell("import os\nprint(os.getcwd())");
+    if (messages.at(-1)?.role === "toolResult") return say("done");
+    return say(`unexpected: ${last}`);
+  }, dir);
+  await (await root.submit({ type: "input", content: "where" }, context)).wait(context);
+  thread.cwd = moved;
+  await (await root.submit({ type: "input", content: "where" }, context)).wait(context);
+  const out = results(await entriesOf(harness));
+  await harness.close(context);
+  await rlm.closeThread("cwd", "idle");
+  assert.deepEqual(out.map(r => r.text.trim()), [dir, moved]);
 });
 
 test("rlm.spawn returns at admission, the parent answers while the child works, and the child's notice or reply arrives as its own input", async () => {

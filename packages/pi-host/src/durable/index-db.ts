@@ -315,7 +315,7 @@ export class ThreadIndex {
     this.db.prepare("UPDATE threads SET wake_active = 1, failed = 0, updated_at = ? WHERE id = ?").run(now, id);
   }
 
-  update(id: string, change: { name?: string; provider?: string; modelId?: string; thinkingLevel?: string; archived?: boolean; failed?: boolean; preview?: string; children?: number; updatedAt?: number }): void {
+  update(id: string, change: { name?: string; cwd?: string; provider?: string; modelId?: string; thinkingLevel?: string; archived?: boolean; failed?: boolean; preview?: string; children?: number; updatedAt?: number }): void {
     const sets: string[] = [];
     const values: (string | number)[] = [];
     const put = (column: string, value: string | number | undefined) => {
@@ -324,6 +324,7 @@ export class ThreadIndex {
       values.push(value);
     };
     put("name", change.name);
+    put("cwd", change.cwd);
     put("provider", change.provider);
     put("model_id", change.modelId);
     put("thinking", change.thinkingLevel);
