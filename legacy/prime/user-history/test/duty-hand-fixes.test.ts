@@ -282,8 +282,11 @@ test("the lane rate controller's writes are F1's design at work, not hand fixes"
   assert.equal(classifyConfig(groupAudit("prod", [controller(14850, CLOSED + 60_000)])[0]!, await registry()).kind, "automatic");
 });
 
+// F1 as it stood on 10-19, designed by p170 alone, before later designs (p235, p246 and their commits) joined it.
+const asOf1019 = async () => { const reg = await registry(); return { ...reg, faults: reg.faults.map(fault => fault.id === "F1" ? { ...fault, designs: [P170] } : fault) }; };
+
 test("a closed step-only fault with no done_at counts no hand fix from before the run that first read its steps done", async () => {
-  const reg = await registry();
+  const reg = await asOf1019();
   const undated = { ...reg, faults: reg.faults.map(({ done_at: _, ...fault }) => fault) };
   const closed = new Map([...refs(), [P170, { kind: "step", status: "done" } as RefState]]);
   const before = hand(14858, CLOSED - 3_600_000, "instagram_census.history_per_minute", "Load-shed test, step 1 of 3");
@@ -301,7 +304,7 @@ test("F1 is dated by p170's close, so only the hand writes after 15:15Z on 10-19
   const now = CLOSED + 1_800_000;
   const prod = [hand(14858, CLOSED - 600_000, "instagram_census.history_per_minute", "Load-shed test, step 1 of 3"),
     hand(14867, CLOSED + 900_000, "instagram_census.history_per_minute", "Load-shed test, step 3 of 3"), controller(14870, CLOSED + 1_000_000)];
-  assert.equal(report({ ...(await data(now, prod)), refs: closed }, await metrics(now)).metrics.repeats_after_design, 1);
+  assert.equal(report({ ...(await data(now, prod)), registry: await asOf1019(), refs: closed }, await metrics(now)).metrics.repeats_after_design, 1);
 });
 
 // 10-19 15:59Z: tblspc-bench, p438-sig-new and p438-sig-head ran on the default bridge, where no prod or staging store resolves, and
