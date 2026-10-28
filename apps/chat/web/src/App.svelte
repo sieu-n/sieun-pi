@@ -11,6 +11,7 @@
   import BoardPage from "$pages/board/BoardPage.svelte";
   import SettingsPage from "$pages/settings/SettingsPage.svelte";
   import SearchDialog from "$pages/search/SearchDialog.svelte";
+  import SearchPage from "$pages/search/SearchPage.svelte";
 
   trackKeyboardNavigation();
   initZoom();
@@ -57,6 +58,8 @@
     <BoardPage />
   {:else if router.route.page === "settings"}
     <SettingsPage />
+  {:else if router.route.page === "search"}
+    <SearchPage />
   {:else if router.route.page === "ui"}
     {#await import("$lib/ui/gallery/Gallery.svelte") then m}<m.default />{/await}
   {/if}

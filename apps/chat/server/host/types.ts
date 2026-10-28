@@ -56,12 +56,16 @@ export type DurableEvent =
   | { type: "doc"; conversation: number; name: string; value: unknown }
   | { type: "closed"; reason: string };
 
-export interface SearchHit { thread: string; conversation: number; entryId: number; kind: string; author: string; at: number; snippet: string }
+/** `text` is the entry's whole indexed text, only when the query asked `withText`. */
+export interface SearchHit { thread: string; conversation: number; entryId: number; kind: string; author: string; at: number; snippet: string; text?: string }
 /** pi-host's durable_search: `from` matches the author column, `by` is what one agent said (its own entries and the agent messages it sent). */
 export interface SearchQuery {
   q: string; threads?: string[]; conversation?: number; from?: string; by?: { thread: string; conversation: number; id: string };
   /** A LIKE pattern: agent messages whose text matches it are left out, such as the copies of channel posts. */
   skipAgentMessages?: string;
+  /** An author to leave out; `kinds` and `skipKinds` keep or leave out entry kinds; `demoteKinds` rank after every other match by relevance. */
+  notFrom?: string; kinds?: string[]; skipKinds?: string[]; demoteKinds?: string[];
+  withText?: boolean;
   after?: number; before?: number; limit?: number; offset?: number; sort?: "relevance" | "recent";
 }
 /** One page of hits and the exact count of every match; copies of one entry in several threads count and show once. */

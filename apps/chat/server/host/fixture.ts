@@ -261,7 +261,8 @@ export class FixtureHost implements Host {
       for (const entry of thread.entries) {
         const message = entry.model?.[0];
         if (!message || message.role === "system") continue;
-        const text = typeof message.content === "string" ? message.content : message.content.flatMap(b => (b.type === "text" ? [b.text] : [])).join("\n");
+        // pi-host indexes a tool call as its name and JSON arguments beside the answer's text.
+        const text = typeof message.content === "string" ? message.content : message.content.flatMap(b => (b.type === "text" ? [b.text] : b.type === "toolCall" ? [`${b.name} ${JSON.stringify(b.arguments ?? {})}`] : [])).join("\n");
         const lower = text.toLowerCase();
         const counts = words.map(w => lower.split(w).length - 1);
         if (!words.length || counts.some(c => c === 0)) continue;
@@ -270,6 +271,9 @@ export class FixtureHost implements Host {
         if (query.before !== undefined && at >= query.before) continue;
         const author = entry.kind === "agent.message" ? String((entry.data as { from?: string }).from) : message.role === "user" ? "owner" : message.role === "assistant" ? `${message.provider}/${message.model}` : `tool:${message.toolName}`;
         if (query.from && author !== query.from) continue;
+        if (query.notFrom && author === query.notFrom) continue;
+        if (query.kinds?.length && !query.kinds.includes(entry.kind)) continue;
+        if (query.skipKinds?.includes(entry.kind)) continue;
         if (query.conversation !== undefined && entry.conversationId !== query.conversation) continue;
         if (query.by && !(entry.kind === "agent.message" ? author === query.by.id : author !== "owner" && thread.row.id === query.by.thread && entry.conversationId === query.by.conversation)) continue;
         if (skip && entry.kind === "agent.message" && skip.test(text)) continue;
@@ -282,12 +286,13 @@ export class FixtureHost implements Host {
         copies.set(copyKey, { archived: Number(thread.row.archived), match });
       }
     }
-    matches.sort((a, b) => (query.sort === "recent" ? b.hit.at - a.hit.at : b.score - a.score || b.hit.at - a.hit.at));
+    const tier = (m: Match) => (query.sort !== "recent" && query.demoteKinds?.includes(m.hit.kind) ? 1 : 0);
+    matches.sort((a, b) => (query.sort === "recent" ? b.hit.at - a.hit.at : tier(a) - tier(b) || b.score - a.score || b.hit.at - a.hit.at));
     const offset = query.offset ?? 0;
     const mark = new RegExp(`(${words.map(w => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})`, "gi");
     const hits = matches.slice(offset, offset + (query.limit ?? 50)).map(({ hit, text }) => {
       const start = Math.max(0, text.toLowerCase().indexOf(words[0]!) - 40);
-      return { ...hit, snippet: (start ? "…" : "") + text.slice(start, start + 160).replace(mark, "<mark>$1</mark>") };
+      return { ...hit, snippet: (start ? "…" : "") + text.slice(start, start + 160).replace(mark, "<mark>$1</mark>"), ...(query.withText ? { text } : {}) };
     });
     return { hits, total: matches.length };
   }

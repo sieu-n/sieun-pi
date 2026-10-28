@@ -7,12 +7,13 @@
  *   #/agents, #/agents/<sub>                Agents
  *   #/board, #/board/<sub>                  Board and For you
  *   #/settings/<section>                    Settings, one section such as usage or hosts, opened from the avatar menu
+ *   #/search?q=&from=&in=&after=&before=&sort=&type=   Full search results, opened with Enter in the Cmd K search
  *   #/ui                                    The lib/ui gallery, not in the top bar
  *
  * The old #/usage and #/hosts links redirect to #/settings/usage and #/settings/hosts with their query kept.
  */
 
-export type PageId = "messages" | "agents" | "board" | "settings" | "ui";
+export type PageId = "messages" | "agents" | "board" | "settings" | "search" | "ui";
 
 export type Route = {
   page: PageId;
@@ -31,6 +32,7 @@ export const PAGES: readonly { id: PageId; label: string; segment: string; icon:
 /** Pages reachable by URL but not shown in the top bar. */
 const HIDDEN_PAGES: readonly { id: PageId; segment: string }[] = [
   { id: "settings", segment: "settings" },
+  { id: "search", segment: "search" },
   { id: "ui", segment: "ui" },
 ];
 const ALL_PAGES = [...PAGES, ...HIDDEN_PAGES];

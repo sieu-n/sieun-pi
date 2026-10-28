@@ -22,7 +22,7 @@ test("a real message search shows the server's exact count and opens the hit at 
   const field = page.locator("[data-search-palette]").getByRole("combobox");
   await field.fill(word);
   await expect(page.getByTestId("search-count")).toHaveText(`${real.total.toLocaleString("en-US")} ${real.total === 1 ? "message" : "messages"}`);
-  const hits = page.locator("[data-search-palette] [role=group][aria-label='Most relevant'] [data-search-result]");
+  const hits = page.locator("[data-search-palette] [role=group][aria-label='Messages'] [data-search-result]");
   await expect(hits.first()).toBeVisible();
   await hits.first().click();
   const hit = real.hits[0]!;

@@ -213,16 +213,37 @@ export interface ConversationPatch { name?: string; archived?: boolean; model?: 
 
 export interface SearchHit {
   id: string;
-  conversation: { id: ConversationId; kind: ConversationKind; name: string };
+  /** Where it was said: a channel, a solo chat, a DM or a job, with the agent a job or DM belongs to as `parent`. */
+  conversation: { id: ConversationId; kind: ConversationKind; name: string; parent?: { id: ConversationId; name: string }; archived?: boolean };
   /** `e<entry>` for a thread hit and `p<n>` for a post: open `/api/c/<conversation>/items?around=<messageId>`, whose `focus` is the item that holds it. */
   messageId: string;
-  author: { id: string; name: string; kind: "owner" | "agent" };
+  /** The owner, an agent, or for a system note (a check-in, a job report, a board change) `system` with the note's label as its name. */
+  author: { id: string; name: string; kind: "owner" | "agent" | "system" };
   at: Ms;
   kind: "message" | "turn" | "tool" | "post";
-  /** Escaped text with only <mark> tags around matches. */
+  /**
+   * What holds the match: the owner's or an agent's own words, a tool's call or output (`tool` names it, and `inCall` says the match sits
+   * in the call's arguments), or a system note.
+   */
+  role: "owner" | "agent" | "tool" | "system";
+  tool?: string;
+  inCall?: boolean;
+  /** A channel reply: the root post of its thread. */
+  threadRoot?: string;
+  /** Escaped text with only <mark> tags around matches, about 36 words of the human text; tool output comes cleaned of JSON punctuation. */
   snippet: string;
+  /** The longer text "Show more" opens, up to 2,000 characters in the same form, only when it holds more than the snippet. */
+  text?: string;
 }
 export interface SearchResult { hits: SearchHit[]; total: number; nextCursor?: string }
+/**
+ * `from` is `owner`, `agents` (anyone but the owner) or one agent id; `type` keeps only messages (no tool output) or only tool output;
+ * `in` is a conversation id; `after` and `before` are YYYY-MM-DD in KST.
+ */
+export interface SearchQuery {
+  q: string; from?: string; in?: string; after?: string; before?: string; sort?: "relevance" | "recent"; type?: "messages" | "tools";
+  limit?: number; cursor?: string;
+}
 
 export interface JobNode { id: ConversationId; parent: ConversationId | null; name: string; depth: number; status: RunStatus; model: string | null; createdAt: Ms | null }
 

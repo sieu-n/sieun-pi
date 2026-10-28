@@ -4,16 +4,24 @@
  */
 import type { ConversationKind, ConversationSummary, SearchHit, SearchResult } from "../web/src/lib/api/types.ts";
 import { CHANNEL_COPY_LIKE, type Channels } from "./channels.ts";
+import { describe, fullText, searchTerms, snippet } from "./search-snippet.ts";
 import { existsSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
 import { openIndexReadOnly, searchIndex } from "../../../packages/pi-host/src/durable/index-db.ts";
+import { safeSnippet } from "./search-snippet.ts";
 import type { Host, SearchHit as HostHit, SearchPage, SearchQuery } from "./host/types.ts";
 import { conversationIdOf, parseConversationId, type Threads } from "./threads.ts";
 
 /** The owner reads dates in KST. */
 export const OWNER_ZONE_OFFSET_MS = 9 * 3600_000;
 
-export interface SearchParams { q: string; from?: string; in?: string; after?: string; before?: string; sort?: "relevance" | "recent"; limit?: number; cursor?: string }
+/** `from` is `owner`, `agents` or one agent id, and `type` keeps messages only or tool output only. */
+export interface SearchParams {
+  q: string; from?: string; in?: string; after?: string; before?: string; sort?: "relevance" | "recent"; type?: "messages" | "tools"; limit?: number; cursor?: string;
+}
+
+/** Tool output ranks after every message by relevance and is what `type` keeps or leaves out. */
+const TOOL_KINDS = ["pi.tool-result"];
 
 /** Pulls `from:x in:y after:2026-10-01 before:2026-10-28` out of the text; explicit params win. */
 export function parseQuery(params: SearchParams): Required<Pick<SearchParams, "q">> & Omit<SearchParams, "q"> {
@@ -37,12 +45,7 @@ export function dayStart(day: string): number {
   return Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])) - OWNER_ZONE_OFFSET_MS;
 }
 
-const escapeHtml = (text: string): string => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-
-/** pi-host's snippet is raw text with <mark> tags; escape everything else. */
-export function safeSnippet(raw: string): string {
-  return raw.split(/(<mark>|<\/mark>)/).map(part => (part === "<mark>" || part === "</mark>" ? part : escapeHtml(part))).join("");
-}
+export { safeSnippet } from "./search-snippet.ts";
 
 function terms(q: string): string[] {
   return (q.match(/"[^"]*"|\S+/g) ?? []).map(t => t.replace(/^"|"$/g, "").replace(/\*$/, "").toLowerCase()).filter(t => t && !/^(AND|OR|NOT)$/i.test(t));
@@ -61,23 +64,14 @@ function postMatch(text: string, words: string[]): number {
   return score;
 }
 
-function postSnippet(text: string, words: string[]): string {
-  const lower = text.toLowerCase();
-  const first = Math.min(...words.map(w => lower.indexOf(w)).filter(i => i >= 0));
-  const start = Math.max(0, first - 60);
-  const slice = text.slice(start, start + 220);
-  const re = new RegExp(`(${words.map(w => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})`, "giu");
-  return (start > 0 ? "…" : "") + slice.split(re).map((part, i) => (i % 2 === 1 ? `<mark>${escapeHtml(part)}</mark>` : escapeHtml(part))).join("") + (start + 220 < text.length ? "…" : "");
-}
-
 /**
  * Reciprocal rank fusion (Cormack, Clarke and Buettcher, SIGIR 2009, with their k = 60): the thread hits in pi-host's bm25 order and the posts
  * in match-count order merge by their rank in each list, so the best post sits beside the best thread hit.
  */
 const fused = (rank: number): number => 1 / (60 + rank);
 
-/** A thread hit or a channel post, ranked before its hit is built; only the page's rows become hits. */
-type Ranked = { score: number; at: number; build: () => SearchHit };
+/** A thread hit or a channel post, ranked before its hit is built; only the page's rows become hits. Tier 1 (tool output) ranks after tier 0. */
+type Ranked = { tier: number; score: number; at: number; build: () => SearchHit };
 
 export class Search {
   private index?: DatabaseSync;
@@ -116,6 +110,7 @@ export class Search {
     const query = parseQuery(params);
     const words = terms(query.q);
     if (!words.length) return { hits: [], total: 0 };
+    const marks = searchTerms(query.q);
     const after = query.after ? dayStart(query.after) : undefined;
     const before = query.before ? dayStart(query.before) : undefined;
     const sort = query.sort ?? "relevance";
@@ -126,38 +121,47 @@ export class Search {
 
     const inId = query.in;
     const inChannel = inId ? this.channels.row(inId) : undefined;
+    const agents = query.from === "agents";
     if (!inChannel) {
       const scope = inId ? parseConversationId(inId) : undefined;
-      const fromAgent = query.from && query.from !== "owner" ? parseConversationId(query.from) : undefined;
+      const fromAgent = query.from && query.from !== "owner" && !agents ? parseConversationId(query.from) : undefined;
       // The merged page holds at most offset + limit thread hits, so the host builds snippets for those rows only.
       const page = await this.threadSearch({
-        q: query.q, sort, limit: offset + limit, skipAgentMessages: CHANNEL_COPY_LIKE,
+        q: query.q, sort, limit: offset + limit, skipAgentMessages: CHANNEL_COPY_LIKE, withText: true,
+        ...(sort === "relevance" ? { demoteKinds: TOOL_KINDS } : {}),
+        ...(query.type === "tools" ? { kinds: TOOL_KINDS } : query.type === "messages" ? { skipKinds: TOOL_KINDS } : {}),
         ...(scope ? { threads: [scope.thread], conversation: scope.conversation } : {}),
-        ...(query.from === "owner" ? { from: "owner" } : {}),
+        ...(query.from === "owner" ? { from: "owner" } : agents ? { notFrom: "owner" } : {}),
         ...(fromAgent ? { by: { thread: fromAgent.thread, conversation: fromAgent.conversation, id: query.from! } } : {}),
         ...(after === undefined ? {} : { after }), ...(before === undefined ? {} : { before }),
       });
       total += page.total;
       const summaries = new Map(this.threads.conversations().map(c => [c.id, c]));
-      page.hits.forEach((hit, rank) => ranked.push({ score: fused(rank), at: hit.at, build: () => this.threadHit(hit, summaries.get(conversationIdOf(hit.thread, hit.conversation))) }));
+      page.hits.forEach((hit, rank) => ranked.push({
+        tier: sort === "relevance" && TOOL_KINDS.includes(hit.kind) ? 1 : 0, score: fused(rank), at: hit.at,
+        build: () => this.threadHit(hit, summaries.get(conversationIdOf(hit.thread, hit.conversation)), marks),
+      }));
     }
-    if (!inId || inChannel) {
+    if ((!inId || inChannel) && query.type !== "tools") {
       const posts: Ranked[] = [];
       for (const { row, post } of this.channels.allPosts()) {
         if (inChannel && row.id !== inChannel.id) continue;
-        if (query.from && post.author !== query.from) continue;
+        if (agents ? post.author === "owner" : query.from && post.author !== query.from) continue;
         if (after !== undefined && post.at < after) continue;
         if (before !== undefined && post.at >= before) continue;
         const score = postMatch(post.text, words);
         if (!score) continue;
         total += 1;
         posts.push({
-          score, at: post.at,
+          tier: 0, score, at: post.at,
           build: () => {
             const author = this.threads.principal(post.author);
+            const long = fullText(post.text, marks);
             return {
-              id: `${row.id}/${post.id}`, conversation: { id: row.id, kind: "channel", name: row.name }, messageId: post.id,
-              author: { id: author.id, name: author.name, kind: author.kind === "owner" ? "owner" : "agent" }, at: post.at, kind: "post", snippet: postSnippet(post.text, words),
+              id: `${row.id}/${post.id}`, conversation: { id: row.id, kind: "channel", name: row.name, ...(row.archived ? { archived: true } : {}) }, messageId: post.id,
+              author: { id: author.id, name: author.name, kind: author.kind === "owner" ? "owner" : "agent" }, at: post.at, kind: "post",
+              role: author.kind === "owner" ? "owner" : "agent", ...(post.threadRoot ? { threadRoot: post.threadRoot } : {}),
+              snippet: snippet(post.text, marks) || long, ...(post.text.length > 240 ? { text: long } : {}),
             };
           },
         });
@@ -165,24 +169,44 @@ export class Search {
       posts.sort((a, b) => b.score - a.score || b.at - a.at).forEach((post, rank) => ranked.push({ ...post, score: fused(rank) }));
     }
     if (sort === "recent") ranked.sort((a, b) => b.at - a.at);
-    else ranked.sort((a, b) => b.score - a.score || b.at - a.at);
-    const hits = ranked.slice(offset, offset + limit).map(row => row.build());
+    else ranked.sort((a, b) => a.tier - b.tier || b.score - a.score || b.at - a.at);
+    let hits = ranked.slice(offset, offset + limit).map(row => row.build());
+    // An answer whose match sits only in a tool call's arguments is found by its text, so it sinks below the messages of its own page.
+    if (sort === "relevance") hits = [...hits.filter(hit => hit.role !== "tool"), ...hits.filter(hit => hit.role === "tool")];
     return { hits, total, ...(offset + limit < total ? { nextCursor: String(offset + limit) } : {}) };
   }
 
   /** A thread hit opens at its entry: the timeline's `around=e<id>` answers with the item that holds it as `focus`. */
-  private threadHit(hit: HostHit, summary: ConversationSummary | undefined): SearchHit {
+  private threadHit(hit: HostHit, summary: ConversationSummary | undefined, marks: string[]): SearchHit {
     const conversationId = conversationIdOf(hit.thread, hit.conversation);
     const kind: ConversationKind = summary?.kind ?? (hit.conversation === 1 ? "solo" : "job");
+    const said = hit.text === undefined ? undefined : describe(hit.kind, hit.author, hit.text, marks);
+    const role = said?.role ?? (hit.kind === "pi.tool-result" ? "tool" : hit.author === "owner" ? "owner" : "agent");
+    const shown = said ? snippet(said.text, marks) : "";
+    const long = said ? fullText(said.text, marks) : "";
+    const parentId = summary?.parent ?? (kind === "solo" ? undefined : this.threads.principal(conversationId).parent);
     return {
-      id: `${conversationId}/e${hit.entryId}`, conversation: { id: conversationId, kind, name: summary?.name ?? this.threads.thread(hit.thread)?.name ?? hit.thread },
-      messageId: `e${hit.entryId}`, author: this.authorOf(hit), at: hit.at,
-      kind: hit.kind === "pi.assistant" ? "turn" : hit.kind === "pi.tool-result" ? "tool" : "message", snippet: safeSnippet(hit.snippet),
+      id: `${conversationId}/e${hit.entryId}`,
+      conversation: {
+        id: conversationId, kind, name: summary?.name ?? this.threads.thread(hit.thread)?.name ?? hit.thread,
+        ...(parentId && parentId !== conversationId ? { parent: { id: parentId, name: this.threads.principal(parentId).name } } : {}),
+        ...(summary?.archived || this.threads.thread(hit.thread)?.archived ? { archived: true } : {}),
+      },
+      messageId: `e${hit.entryId}`, author: this.authorOf(hit, said), at: hit.at,
+      kind: hit.kind === "pi.assistant" ? "turn" : hit.kind === "pi.tool-result" ? "tool" : "message", role,
+      ...(said?.tool ? { tool: said.tool } : hit.kind === "pi.tool-result" ? { tool: hit.author.replace(/^tool:/, "") } : {}),
+      ...(said?.inCall ? { inCall: true } : {}),
+      snippet: shown || safeSnippet(hit.snippet), ...(said && said.text.length > 240 ? { text: long } : {}),
     };
   }
 
-  private authorOf(hit: HostHit): SearchHit["author"] {
+  private authorOf(hit: HostHit, said: ReturnType<typeof describe> | undefined): SearchHit["author"] {
+    if (said?.role === "system") return { id: "system", name: said.label ?? "System", kind: "system" };
     if (hit.author === "owner") return { id: "owner", name: "You", kind: "owner" };
+    if (said?.from) {
+      const p = this.threads.principal(said.from);
+      return { id: p.id, name: p.name, kind: p.kind === "owner" ? "owner" : "agent" };
+    }
     if (hit.kind === "agent.message") {
       const p = this.threads.principal(hit.author);
       return { id: p.id, name: p.name, kind: p.kind === "owner" ? "owner" : "agent" };

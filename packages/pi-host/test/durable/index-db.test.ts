@@ -79,6 +79,27 @@ test("copies of one entry in an imported thread and its archived source count an
   index.close();
 });
 
+test("tool output ranks after what people wrote, and kinds, authors and the whole text narrow or widen a search", () => {
+  const index = new ThreadIndex(join(dir, "kinds.sqlite"));
+  index.insertThread({ id: "t3", name: "kinds", provider: "anthropic", modelId: "claude-opus-5-5", thinkingLevel: "high", cwd: "/", createdAt: 1, updatedAt: 1 });
+  index.addEntries("t3", [
+    { thread: "t3", conversation: 1, entryId: 1, kind: "pi.tool-result", author: "tool:bash", at: 1000, text: "otter otter otter otter in a log" },
+    { thread: "t3", conversation: 1, entryId: 2, kind: "pi.user", author: "owner", at: 1001, text: "where is the otter" },
+    { thread: "t3", conversation: 1, entryId: 3, kind: "pi.assistant", author: "anthropic/claude-opus-5-5", at: 1002, text: "The otter sits in the log." },
+  ], []);
+  assert.deepEqual(index.search({ q: "otter" }).hits.map(hit => hit.entryId)[0], 1);
+  const demoted = index.search({ q: "otter", demoteKinds: ["pi.tool-result"], withText: true });
+  assert.equal(demoted.total, 3);
+  assert.equal(demoted.hits.at(-1)!.entryId, 1);
+  assert.equal(demoted.hits.find(hit => hit.entryId === 2)!.text, "where is the otter");
+  assert.equal(index.search({ q: "otter", demoteKinds: ["pi.tool-result"], sort: "recent" }).hits[0]!.entryId, 3);
+  assert.deepEqual(index.search({ q: "otter", kinds: ["pi.tool-result"] }).hits.map(hit => hit.entryId), [1]);
+  assert.equal(index.search({ q: "otter", skipKinds: ["pi.tool-result"] }).total, 2);
+  assert.deepEqual(index.search({ q: "otter", notFrom: "owner" }).hits.map(hit => hit.entryId).sort(), [1, 3]);
+  assert.equal(index.search({ q: "otter" }).hits[0]!.text, undefined);
+  index.close();
+});
+
 test("a snippet marks word prefixes around the first match and cuts long text with an ellipsis", () => {
   const long = `${Array.from({ length: 40 }, (_, i) => `w${i}`).join(" ")} the Pi-host relay is Ünder load ${Array.from({ length: 40 }, (_, i) => `z${i}`).join(" ")}`;
   const snippet = snippetOf(long, snippetTerms('"pi-host" under'));

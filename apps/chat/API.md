@@ -96,15 +96,18 @@ Pages call the server through `web/src/lib/api` (`import { api, timeline, agents
 
 ## Search
 
-`api.search({q, from, in, after, before, sort, limit, cursor})` is `GET /api/search` and returns `SearchResult`: `{hits, total, nextCursor}`.
+`api.search({q, from, in, after, before, sort, type, limit, cursor})` is `GET /api/search` and returns `SearchResult`: `{hits, total, nextCursor}`.
 
 1. It covers every thread entry through pi-host's FTS5 index and every channel post. The server reads pi-host's `index.sqlite` (`--durable-index`, default `~/.prime/agent/pi-host/durable/index.sqlite`) on its own read-only connection with pi-host's `searchIndex`, so search answers while pi-host starts or is busy; `durable_search` over the socket answers only when that file is missing.
 2. `q` may carry `from:`, `in:`, `after:` and `before:` tokens, and the separate params win over them.
-3. `from` is a principal id (`owner` or an agent id), `in` a conversation id, and `after` and `before` are YYYY-MM-DD in KST, with `before` excluding that day.
-4. `sort` is relevance (default) or recent, and `limit` is 1 to 100 (default 20).
+3. `from` is a principal id (`owner` or an agent id) or `agents` (anyone but the owner), `in` a conversation id, and `after` and `before` are YYYY-MM-DD in KST, with `before` excluding that day.
+4. `sort` is relevance (default) or recent, `type` is `messages` (no tool output) or `tools` (tool output only), and `limit` is 1 to 100 (default 20).
 5. `total` is the exact count for the same filters (c191): pi-host counts every thread match and sends snippets for the page's rows only, and the server adds every matching post. Each message counts and shows once: copies of one entry in several threads show from the unarchived one, and the copy of a channel post sent into a mentioned agent's thread is left out, since the post itself is found in its channel.
 6. A thread hit's `messageId` is its entry, `e<n>`, and a post's is `p<n>`, so `#/c/<conversation>?m=<messageId>` opens `items?around=<messageId>`, whose `focus` names the item that holds it. Search reads no thread file, so the first search after a start answers in under a second.
-7. A snippet is escaped text whose only tags are `<mark>` around the matches.
+7. A snippet is escaped text whose only tags are `<mark>` around the matches, about 36 words of the message's human text (`server/search-snippet.ts`): an answer's own words before its tool calls, a tool's output with its JSON escapes and punctuation gone, and no routing or `[agent-message from X]` header. `text` holds up to 2,000 characters in the same form for "Show more", only when the message is longer.
+8. Each hit says what it is. `role` is owner, agent, tool or system; a tool hit names its `tool`, and `inCall` says the match sits in a tool call's arguments rather than its output. `author.kind` is owner, agent or system (a check-in, job report or board note, with its label as the name), and an `[agent-message from X]` note names X. `conversation` carries `parent` (the agent a job or job DM belongs to) and `archived`, and a channel reply carries `threadRoot`.
+9. By relevance, tool output (pi-host's `demoteKinds`) ranks after every message, and a hit whose match sits only in a tool call sinks below the messages of its page. pi-host's `durable_search` also takes `notFrom`, `kinds` and `skipKinds`, and in process `withText`.
+10. The web client shows hits in the Cmd K rows (author, AGENT badge, place, kind and age) and on the full results page `#/search?q=&from=&in=&after=&before=&sort=&type=`, which Enter on the query opens. Each card reads the messages before and after it from `items?around=` (or `replies` for a thread reply) when it is expanded or keyboard-focused.
 
 ## Boards, For you, duties and check-ins
 

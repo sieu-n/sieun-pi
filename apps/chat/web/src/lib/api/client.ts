@@ -4,7 +4,7 @@
  */
 import type {
   AgentConfig, AgentId, AgentSummary, BoardOp, BoardRow, BoardView, Channel, ChannelInput, CheckInPatch, CheckInView, ChatAgent, ConversationHeader, ConversationId,
-  ConversationPatch, ConversationSummary, DutyAction, DutyView, ForYouItem, HostsReport, Item, JobNode, Me, ModelCatalog, SearchResult, SendRequest,
+  ConversationPatch, ConversationSummary, DutyAction, DutyView, ForYouItem, HostsReport, Item, JobNode, Me, ModelCatalog, SearchQuery, SearchResult, SendRequest,
   SendResult, Sidebar, ThinkingLevel, TimelinePage, UsageReport, AccountsView,
 } from "./types.ts";
 import type { DutyCardModel } from "./shared/duty-card.ts";
@@ -89,8 +89,8 @@ export const api = {
   addMembers: (id: string, agents: AgentId[], wakeOn?: "mention" | "all" | "none") => call<Channel>("POST", `/api/channels/${enc(id)}/members`, { agents, ...(wakeOn ? { wakeOn } : {}) }),
   removeMember: (id: string, agent: AgentId) => call<Channel>("DELETE", `/api/channels/${enc(id)}/members/${enc(agent)}`),
 
-  search: (params: { q: string; from?: string; in?: string; after?: string; before?: string; sort?: "relevance" | "recent"; limit?: number; cursor?: string }) =>
-    call<SearchResult>("GET", `/api/search${query(params)}`),
+  search: (params: SearchQuery) =>
+    call<SearchResult>("GET", `/api/search${query({ ...params })}`),
 
   board: (chat: string) => call<BoardView>("GET", `/api/threads/${enc(chat)}/board`),
   boardOps: (chat: string, ops: BoardOp[]) => call<BoardView>("POST", `/api/threads/${enc(chat)}/board`, { ops }),

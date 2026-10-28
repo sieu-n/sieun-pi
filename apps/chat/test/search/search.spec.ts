@@ -38,10 +38,11 @@ test("text shows named groups before messages, with an exact count and underline
   await field(page).fill("relay");
   await expect(count(page)).toHaveText(messages(await total(page, { q: "relay" })));
   const names = await groupNames(page);
-  expect(names.at(-1)).toBe("Most relevant");
-  expect(names.indexOf("Chats")).toBeLessThan(names.indexOf("Most relevant"));
-  expect(names.indexOf("Agents")).toBeLessThan(names.indexOf("Most relevant"));
-  const marks = await palette(page).locator("[role=group][aria-label='Most relevant'] mark").allInnerTexts();
+  expect(names[0]).toBe("All results");
+  expect(names.at(-1)).toBe("Messages");
+  expect(names.indexOf("Conversations")).toBeLessThan(names.indexOf("Messages"));
+  expect(names.indexOf("Agents")).toBeLessThan(names.indexOf("Messages"));
+  const marks = await palette(page).locator("[role=group][aria-label='Messages'] mark").allInnerTexts();
   expect(marks.length).toBeGreaterThan(0);
   for (const mark of marks) expect(mark.toLowerCase()).toBe("relay");
 });
@@ -94,7 +95,7 @@ test("after: offers date presets, and a bad date stays as text", async ({ page }
 test("arrow keys move the highlight, Enter opens the hit at its message", async ({ page }) => {
   await page.keyboard.press(`${mod}+k`);
   await field(page).fill("migration");
-  const hits = palette(page).locator("[role=group][aria-label='Most relevant'] [data-search-result]");
+  const hits = palette(page).locator("[role=group][aria-label='Messages'] [data-search-result]");
   await expect(hits.first()).toBeVisible();
   const first = await palette(page).locator("[data-search-result]").first().getAttribute("id");
   await expect(field(page)).toHaveAttribute("aria-activedescendant", first!);
@@ -112,7 +113,8 @@ test("arrow keys move the highlight, Enter opens the hit at its message", async 
 test("a hit opens the conversation scrolled to that message with a flash", async ({ page }) => {
   await page.keyboard.press(`${mod}+k`);
   await field(page).fill("relay");
-  const hit = palette(page).locator("[role=group][aria-label='Most relevant'] [data-search-result]").first();
+  // A channel post: its message id is its row's id. A thread hit's row is the turn that holds it, and the fixture's live turn keeps adding hits.
+  const hit = palette(page).locator("[role=group][aria-label='Messages'] [data-search-result][data-key^='hit:ch_']").first();
   await hit.click();
   const id = new URL(page.url().replace("#/", "")).searchParams.get("m");
   expect(id).toBeTruthy();
@@ -127,15 +129,15 @@ test("Cmd F scopes search to this conversation, sorts, and the scope chip remove
   await expect(page.getByRole("dialog", { name: "Search this conversation" })).toBeVisible();
   await field(page).fill("relay");
   await expect(count(page)).toHaveText(messages(await total(page, { q: "relay", in: "ch_cutover" })));
-  expect(await groupNames(page)).toEqual(["Most relevant"]);
+  expect(await groupNames(page)).toEqual(["All results", "Most relevant"]);
   await page.getByRole("button", { name: "Sort messages" }).click();
   await page.getByRole("menuitemradio", { name: "Most recent" }).click();
-  expect(await groupNames(page)).toEqual(["Most recent"]);
+  expect(await groupNames(page)).toEqual(["All results", "Most recent"]);
   await palette(page).getByRole("button", { name: /search scope/ }).click();
   await expect(page.getByRole("dialog", { name: "Search" })).toBeVisible();
   await expect(count(page)).toHaveText(messages(await total(page, { q: "relay" })));
   expect(await groupNames(page)).toContain("This conversation");
-  expect((await groupNames(page)).at(-1)).toBe("Most relevant");
+  expect((await groupNames(page)).at(-1)).toBe("Messages");
 });
 
 test("Show more pages through every hit up to the exact count", async ({ page }) => {
