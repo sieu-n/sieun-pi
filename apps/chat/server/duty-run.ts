@@ -181,6 +181,8 @@ export function dutyJobBrief(input: { duty: Duty; chat: { id: string; name: stri
       return `- ${streak.key}: missed ${streak.misses} run${streak.misses === 1 ? "" : "s"} in a row${fix ? `, fix step ${fix.step}${fix.job ? ` (job ${fix.job}${fix.live ? ", working" : ", not working"})` : ""}` : ", no fix step yet"}.`;
     }).join("\n") + "\n\nA miss is never accepted as it stands. A fix step is a plan step with `duty` set to `" + duty.id + "/<metricKey>`."] : []),
     "## How to work",
+    `The precheck is \`${duty.precheck.command.join(" ")}\` in ${duty.precheck.cwd}; read its script there and its per-run output in the findings file above.`,
+    "Search only named folders with rg, and never walk all of home with find, grep -r or a glob: home holds repo copies that take hours to scan (sieun-pi AGENTS.md rule 6).",
     `The chat's board is GET ${boardApi} (JSON with the plan and the owner's todos). Change it with POST ${boardApi} and the body {"actor": "agent", "ops": [...]}, ` +
       "where the ops are the board's plan_add, plan_update, todo_add and the rest; read it first, then check the real state behind it.",
     "Fix what you find, script what can be scripted, and skip nitpicks. Use the subagent tool for each separate part of the work.",
