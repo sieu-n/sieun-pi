@@ -112,6 +112,38 @@ function exportCommit(repo, sha, directory, execute) {
   rmSync(archive);
 }
 
+/**
+ * Points each editable skill install in the Prime kernel venv that names an older runtime release at the same folder in `release`.
+ * The venv's _editable_impl_<name>.pth files hold the release path that was current when Prime installed the skill, and nothing
+ * rewrote them, so on 10-29 the Mac kernels still imported aside_browser, board and websearch from bf27d527 under release 3c9c8021.
+ * A file whose folder is gone from the new release keeps its old path. Returns the rewritten files.
+ */
+export function refreshKernelPaths(home, release) {
+  const releases = join(home, ".local/share/sieun-pi-runtime/releases") + "/";
+  const lib = join(home, ".prime/agent/kernel-venv/lib");
+  const rewritten = [];
+  for (const python of existsSync(lib) ? readdirSync(lib) : []) {
+    const site = join(lib, python, "site-packages");
+    for (const name of existsSync(site) ? readdirSync(site) : []) {
+      if (!name.startsWith("_editable_impl_") || !name.endsWith(".pth")) continue;
+      const path = join(site, name);
+      const text = readFileSync(path, "utf8");
+      const lines = text.split("\n").map(line => {
+        if (!line.startsWith(releases)) return line;
+        const inner = line.slice(releases.length).split("/").slice(1).join("/");
+        const target = join(release, inner);
+        return inner && existsSync(target) ? target : line;
+      });
+      const next = lines.join("\n");
+      if (next === text) continue;
+      writeFileSync(`${path}.tmp`, next);
+      renameSync(`${path}.tmp`, path);
+      rewritten.push(path);
+    }
+  }
+  return rewritten;
+}
+
 export function installRuntime({ repo = checkout, home = homedir(), ref = "HEAD", prepareOnly = false } = {}, { execute = run, archive = exportCommit } = {}) {
   repo = realpathSync(repo);
   home = realpathSync(home);
@@ -181,7 +213,8 @@ export function installRuntime({ repo = checkout, home = homedir(), ref = "HEAD"
       }
       throw error;
     }
-    return { sha, release, current, receipt };
+    const kernelPaths = refreshKernelPaths(home, release);
+    return { sha, release, current, receipt, kernelPaths };
   } finally {
     if (scratch) rmSync(scratch, { recursive: true, force: true });
     rmSync(lock, { recursive: true, force: true });

@@ -100,6 +100,22 @@ test("activation applies the completed release, preserves settings and credentia
   assert.equal(readFileSync(join(f.home, ".prime/agent/sessions/fixture.jsonl"), "utf8"), "untouched history fixture\n");
 });
 
+test("activation points the kernel venv's editable skill installs at the new release and leaves other paths alone", t => {
+  const f = fixture(t);
+  f.write(join(f.repo, "skills/aside-browser/src/aside_browser/__init__.py"), "");
+  const initial = installRuntime(f.options, f.hooks);
+  const site = join(f.home, ".prime/agent/kernel-venv/lib/python3.11/site-packages");
+  const prime = join(f.home, ".local/share/prime-agent/releases/x/skills/edit/src");
+  f.write(join(site, "_editable_impl_aside_browser.pth"), join(initial.release, "skills/aside-browser/src") + "\n");
+  f.write(join(site, "_editable_impl_gone.pth"), join(initial.release, "skills/gone/src") + "\n");
+  f.write(join(site, "_editable_impl_edit.pth"), prime + "\n");
+  const next = installRuntime({ ...f.options, ref: second }, f.hooks);
+  assert.equal(readFileSync(join(site, "_editable_impl_aside_browser.pth"), "utf8"), join(next.release, "skills/aside-browser/src") + "\n");
+  assert.equal(readFileSync(join(site, "_editable_impl_gone.pth"), "utf8"), join(initial.release, "skills/gone/src") + "\n");
+  assert.equal(readFileSync(join(site, "_editable_impl_edit.pth"), "utf8"), prime + "\n");
+  assert.deepEqual(next.kernelPaths, [join(site, "_editable_impl_aside_browser.pth")]);
+});
+
 test("a release whose lockfiles match the active one clones its dependencies, and each activation is logged", t => {
   const f = fixture(t);
   const initial = installRuntime(f.options, f.hooks);
