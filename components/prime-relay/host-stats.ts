@@ -149,6 +149,25 @@ export function memoryGroups(feed: unknown, now: number): MemoryGroup[] | null {
   return grouped(items, ["docker"]);
 }
 
+/**
+ * The feed's CPU by group in cores, from each owner's cpu_pct (100 is one core) and kernel_task_cpu_pct as System, over the feed's own window
+ * (interval_s, 10 s). Null for a stale or unknown feed.
+ */
+export function feedCpuGroups(feed: unknown, now: number): { id: MemoryGroupId; cores: number }[] | null {
+  if (typeof feed !== "object" || feed === null) return null;
+  const { v, ts, owners, kernel_task_cpu_pct: kernelPct } = feed as Record<string, unknown>;
+  if (v !== 1 || typeof ts !== "string" || !(now - Date.parse(ts) < FEED_FRESH_MS) || !Array.isArray(owners)) return null;
+  const cores = new Map<MemoryGroupId, number>();
+  const add = (id: MemoryGroupId, pct: number): void => { cores.set(id, (cores.get(id) ?? 0) + pct / 100); };
+  for (const item of owners as unknown[]) {
+    if (typeof item !== "object" || item === null) continue;
+    const { owner, cpu_pct: pct } = item as Record<string, unknown>;
+    if (typeof owner === "string" && typeof pct === "number" && pct > 0) add(groupOf(owner), pct);
+  }
+  if (typeof kernelPct === "number" && kernelPct > 0) add("system", kernelPct);
+  return [...cores].map(([id, value]) => ({ id, cores: Math.round(100 * value) / 100 }));
+}
+
 /** Memory Used as Activity Monitor counts it: app memory (anonymous minus purgeable), wired, and compressed pages. */
 export function parseVmStat(text: string): number | null {
   const pageSize = Number(/page size of (\d+) bytes/.exec(text)?.[1]);
@@ -516,6 +535,30 @@ async function linuxCpu(): Promise<Omit<MachineView["cpu"], "load">> {
     lastCpu = { snapshot, ...groups ? { groups } : {} };
   }
   return { percent, cores, ...lastCpu.groups ? { groups: lastCpu.groups } : {} };
+}
+
+/** The CPU snapshot `groupReading` took last, apart from the card's, so a push every minute covers its own minute whatever the card polls. */
+let pushCpu: CpuSnapshot | null = null;
+/**
+ * The box's CPU cores and resident memory by group for the metrics push (metrics-push.ts): on Linux the cores since the previous call
+ * (`cpuGroups`, null on the first) and each memory group's RAM (`bytes` less `swapBytes`); on macOS the pressure feed's CPU (`feedCpuGroups`) and
+ * memory owners. The same classifiers as the card, so a group reads the same in Grafana as in Settings > Hosts.
+ */
+export async function groupReading(): Promise<{ cpu: { id: MemoryGroupId; cores: number }[] | null; memory: { id: MemoryGroupId; bytes: number }[] | null }> {
+  const { groups } = await memoryByGroup();
+  const memory = groups?.map(group => ({ id: group.id, bytes: ram(group) })) ?? null;
+  if (process.platform === "darwin") {
+    const feed = await readFile(PRESSURE_FEED, "utf8").then(text => JSON.parse(text) as unknown).catch(() => null);
+    return { cpu: feedCpuGroups(feed, Date.now()), memory };
+  }
+  const snapshot = await readCpu(), before = pushCpu;
+  pushCpu = snapshot;
+  if (!before?.stat || !snapshot.stat) return { cpu: null, memory };
+  const start = cpuSample(before.stat), end = cpuSample(snapshot.stat);
+  const ticks = end.total - start.total;
+  const busyCores = ticks > 0 ? Math.max(0, end.cores * (end.busy - start.busy) / ticks) : 0;
+  const classifier = { leafHolder: (path: string) => leafHolder(path), processHolder, groupLabels: GROUP_LABELS };
+  return { cpu: cpuGroups(before, snapshot, classifier, busyCores, end.cores)?.map(group => ({ id: group.id, cores: group.cores })) ?? null, memory };
 }
 
 export async function machineView(): Promise<MachineView> {

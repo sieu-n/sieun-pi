@@ -10,6 +10,7 @@ import { dirname, isAbsolute, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { hostStats, poolReading, usableRaw } from "./host-stats.ts";
 import { DELTA_HEADER, encodeLineDeltas } from "./line-delta.ts";
+import { startGroupPush } from "./metrics-push.ts";
 import { firstPromptTunnel } from "./first-prompt.mjs";
 import { ownerTurnLines, piPoolLead, piPoolOwnerTurn, piPoolSet, SESSION } from "./owner-turn.mjs";
 import { SLIM_HEADER, slimSnapshots } from "./slim-snapshot.mjs";
@@ -318,4 +319,5 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === realpathSync(process.a
   const log = line => process.stderr.write(`${new Date().toISOString()} ${line}\n`);
   createRelay(config, log).listen(config.port, config.listen, () => log(`prime-relay ${VERSION} on ${config.listen}:${config.port} for ${config.daemonSocket}`));
   holdAwake(config.daemonSocket, log);
+  startGroupPush(log);
 }

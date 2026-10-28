@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 
 const USAGE = `usage: node components/prime-relay/install.mjs --ref <commit> [--listen <tailnet ip>] [--port 7790] [--daemon-socket <path>]
 
-Copies relay.mjs, host-stats.ts, rig-cpu.ts, cpu-groups.ts, kernel-read.ts, slim-snapshot.mjs, line-delta.ts, owner-turn.mjs, first-prompt.mjs and sieun-pi's worker-footprint.py from <commit> to ~/.local/share/prime-relay, writes ~/.config/prime-relay/relay.json and a token file when they are missing, adds the default read roots (sessions, session-artifacts, logs, browser-chat/prompts, update-restarts) to it,
+Copies relay.mjs, host-stats.ts, rig-cpu.ts, cpu-groups.ts, kernel-read.ts, metrics-push.ts, slim-snapshot.mjs, line-delta.ts, owner-turn.mjs, first-prompt.mjs and sieun-pi's worker-footprint.py from <commit> to ~/.local/share/prime-relay, writes ~/.config/prime-relay/relay.json and a token file when they are missing, adds the default read roots (sessions, session-artifacts, logs, browser-chat/prompts, update-restarts) to it,
 and (re)starts the service: prime-relay.service (systemd --user) on Linux, com.sieun.prime-relay (launchd) on macOS.
 Flags given on the command line overwrite the matching relay.json keys. Prints the health of the running relay.`;
 
@@ -115,6 +115,7 @@ function main() {
   writeAtomic(join(share, "rig-cpu.ts"), show("rig-cpu.ts"), 0o644);
   writeAtomic(join(share, "cpu-groups.ts"), show("cpu-groups.ts"), 0o644);
   writeAtomic(join(share, "kernel-read.ts"), show("kernel-read.ts"), 0o644);
+  writeAtomic(join(share, "metrics-push.ts"), show("metrics-push.ts"), 0o644);
   writeAtomic(join(share, "slim-snapshot.mjs"), show("slim-snapshot.mjs"), 0o644);
   writeAtomic(join(share, "line-delta.ts"), show("line-delta.ts"), 0o644);
   writeAtomic(join(share, "owner-turn.mjs"), show("owner-turn.mjs"), 0o644);
