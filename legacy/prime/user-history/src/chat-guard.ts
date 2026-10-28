@@ -10,6 +10,7 @@ import { targetMet } from "./shared/chat-board.ts";
 import { ALLOWED_SHELL, SHELL_LIST } from "./chat-brief.ts";
 import { fileLines } from "./file-lines.ts";
 import { LONG_REPLY_MARK, longReply, SHOP_TALK_MARK, shopTalk } from "./shared/reply-lint.ts";
+import { LAYOUT_WORDS_FIX, layoutPickInWords, ownerAskedForPage } from "./shared/layout-ask.ts";
 import { type ServiceArchive, serviceArchiveLines } from "./service-archives.ts";
 
 /** What makes a session a chat and what a chat may run: the chat_mode marker, its tools, the tell_owner tool, the owner message ids, and the shell guard. */
@@ -444,6 +445,7 @@ const UNLOOKED_MARK = "Not sent, you have not opened a screenshot of this screen
  */
 const UI_HANDOFF = /\b(?:localhost|127\.0\.0\.1|[\w-]+(?:\.[\w-]+)+):1?5180\b|!\[[^\]]*\]\([^)\s]+\.(?:png|jpe?g|webp|gif)\)/iu;
 const WIKI_LINK_MARK = "Not sent, a wiki: link in it opens no page";
+const LAYOUT_WORDS_MARK = "Not sent, it asks him to pick a layout from words";
 /** Every `wiki:` link a text holds as written, with trailing sentence punctuation left out (markdown.ts reads bare targets the same way). */
 const WIKI_TOKEN = /(?<![\w-])wiki:[^\s<>()[\]`"'*]+/g;
 export const wikiLinks = (text: string): string[] =>
@@ -551,7 +553,7 @@ export function tellTurn(messages: readonly ThreadMessage[]): TellTurn {
     }
     if (message.role === "user" || message.role === "custom") looked = false;
     if (message.role === "toolResult" && message.content.some(part => part.type === "image")) looked = true;
-    if (message.role === "toolResult" && message.toolName === TELL_OWNER_TOOL && [SHOP_TALK_MARK, LONG_REPLY_MARK, REPEAT_MARK, REASK_MARK, UNLOOKED_MARK, INCIDENT_MARK, SAME_ASK_MARK, PROGRESS_MARK, NEEDLESS_OK_MARK, WITHDRAW_MARK, WIKI_LINK_MARK, SPLIT_MARK, EMPTY_ASK_MARK].some(mark => messageText(message).startsWith(mark))) {
+    if (message.role === "toolResult" && message.toolName === TELL_OWNER_TOOL && [SHOP_TALK_MARK, LONG_REPLY_MARK, REPEAT_MARK, REASK_MARK, UNLOOKED_MARK, INCIDENT_MARK, SAME_ASK_MARK, PROGRESS_MARK, NEEDLESS_OK_MARK, WITHDRAW_MARK, WIKI_LINK_MARK, SPLIT_MARK, EMPTY_ASK_MARK, LAYOUT_WORDS_MARK].some(mark => messageText(message).startsWith(mark))) {
       const text = told.get(message.toolCallId);
       if (text) resent.add(text);
     }
@@ -595,7 +597,9 @@ export function tellTurn(messages: readonly ThreadMessage[]): TellTurn {
  * done for a step under a goal that misses its target (`openGoalDone`, `plan`), a decision with no question, pick or todo in it (`CHOICE_WORDS`),
  * and a text that names a todo the chat took back unanswered (`takenBack`, `dropped`). A text it would send with a `wiki:` link that opens no page (`brokenWikiLinks`)
  * is refused once the same way, with the form that works, since on 10-22 two links went out as `wiki:https://...:5176/page/...` and the owner
- * answered "often links to wrong page." on 10-23.
+ * answered "often links to wrong page." on 10-23. A text that asks him to pick a screen's layout from words with no 5180 link (`layoutPickInWords`)
+ * is refused once the same way, unless his latest message asked for a page, since on 10-28 a chat asked him to pick a Swipe layout from text
+ * and he answered "siwpe layout, 직접 만들어보라니까 이런건?" (c124).
  */
 export function tellOwner(input: TellInput, turn: TellTurn, now = Date.now(), pageExists = localWikiPages()): { kind: "sent" | "refused" | "held"; text: string } {
   const told = typeof input.text === "string" ? input.text.trim() : "";
@@ -681,6 +685,9 @@ export function tellOwner(input: TellInput, turn: TellTurn, now = Date.now(), pa
       "Before you hand him a 5180 link or screenshots, open each screenshot of what it shows with attach_image and compare it with the " +
       "accepted Staging app it should match, its page frame, title, filter row, row icons and spacing. A screen that looks unlike the accepted " +
       "apps goes back to the job, not to him. If you compared them in this turn, send the very same text again and it goes out (c118, c98)." };
+    const layout = turn.resent?.has(told) || ownerAskedForPage(turn.ownerText) ? null : layoutPickInWords(told);
+    if (layout) return { kind: "refused", text: `${LAYOUT_WORDS_MARK} ("${layout}") with no 5180 link. ${LAYOUT_WORDS_FIX}. If he asked for ` +
+      "these choices in words, send the very same text again and it goes out (c98)." };
     return { kind: "sent", text: TELL_OWNER_DONE };
   }
 if (!named(input.why)) return { kind: "refused", text: "why is required on a turn the owner did not start. Call tell_owner again " +

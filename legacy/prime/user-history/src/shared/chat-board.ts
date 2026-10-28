@@ -4,6 +4,7 @@ import { DUTY_LINK_SHAPE, dutyLinkProblem, parseDutyLink, type DutyKeys } from "
 import { JARGON_HINT, jargonTerms } from "./reply-lint.ts";
 import { hasDoneLine, keepDoneLine, upkeepWords } from "./upkeep-title.ts";
 import { VENDOR_SUPPORT_ERROR, vendorSupportAsk } from "./vendor-support.ts";
+import { LAYOUT_WORDS_FIX, layoutPickInWords } from "./layout-ask.ts";
 import { preApprovalText, releaseGo, type PreApproval } from "./release-go.ts";
 import { REQUIREMENT_STATUSES, type ArtifactLink, type BoardActor, type BoardOp, type ChatBoard, type GoalTarget, type OwnerTodo, type PlanItem, type PlanItemInput, type PlanStatus,
   type Requirement, type RequirementStatus } from "./types.ts";
@@ -412,10 +413,17 @@ export function todoJargon(text: string): string | null {
   return terms.length ? `For you is read by the owner in one pass, and this todo uses ${terms.map(term => `"${term}"`).join(", ")}: ` +
     `reword it with todo_update; ${JARGON_HINT} (c32).` : null;
 }
-/** The c32 and c47 flags on an agent's todo: a leave ask, internal terms, a review ask with nothing to open. The todo is saved either way. */
+/** The flag for a todo that has the owner pick a screen's layout from words with no 5180 link in its text, choices or links (c124), or null. */
+export function layoutTodoFlag(todo: Pick<OwnerTodo, "text" | "choices" | "links">): string | null {
+  const layout = layoutPickInWords(todo.text, todo.choices ?? [], (todo.links ?? []).map(link => link.target));
+  return layout ? `This todo asks the owner to pick a layout ("${layout}") from words. ${LAYOUT_WORDS_FIX}, with each link on this todo ` +
+    "through todo_update, or remove it. Keep it as it is only if he asked for these choices in words." : null;
+}
+/** The c32, c47 and c124 flags on an agent's todo: a leave ask, internal terms, a review ask with nothing to open, a layout picked from words. The todo is saved either way. */
 function todoFlags(todo: OwnerTodo): string[] {
   const jargon = todoJargon(todo.text);
-  return [...leaveAsk(todo) ? [LEAVE_ASK_FLAG] : [], ...jargon ? [jargon] : [], ...reviewAskWithoutLink(todo) ? [REVIEW_LINK_FLAG] : []];
+  const layout = layoutTodoFlag(todo);
+  return [...leaveAsk(todo) ? [LEAVE_ASK_FLAG] : [], ...jargon ? [jargon] : [], ...reviewAskWithoutLink(todo) ? [REVIEW_LINK_FLAG] : [], ...layout ? [layout] : []];
 }
 
 /** The parts of an agent's op over a soft target in BOARD_LIMITS: long text, many links or requirements, a choice list off 2 to 4. */
