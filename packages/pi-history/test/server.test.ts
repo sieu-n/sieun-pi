@@ -174,9 +174,12 @@ test("a peer that fails is skipped at once as offline, probed in the background,
     assert.deepEqual(calls.filter(path => path.endsWith("/search")), ["/v1/history/search"], "a search does not ask a peer that is down");
     assert.equal(second.total, 5, "the other boxes still answer");
     up = true;
-    for (let wait = 0; wait < 100 && calls.at(-1) !== "/v1/history/status"; wait++) await new Promise(resolve => setTimeout(resolve, 10));
-    await new Promise(resolve => setTimeout(resolve, 20));
-    const third = await historyGet<SearchResult>("/v1/search", { q: "relay" }, socket);
+    const deadline = Date.now() + 10_000;
+    let third = await historyGet<SearchResult>("/v1/search", { q: "relay" }, socket);
+    while (!third.boxes.down!.ok && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 20));
+      third = await historyGet<SearchResult>("/v1/search", { q: "relay" }, socket);
+    }
     assert.equal(third.boxes.down!.ok, true, "the probe's answer brings the peer back");
   } finally {
     await server.close();
