@@ -170,8 +170,28 @@ function archivedJustBefore(lines: readonly string[], index: number, at: number)
   return {};
 }
 
-/** The last `bytes` of a file as lines, the first (partial) line dropped; none when the file is gone. */
+/**
+ * How many tail reads run at once. A read from the page cache comes back far faster than the main thread splits it into lines, so libuv
+ * hands all the reads that finished meanwhile to one loop turn: the catalog's slot-park pass over every chat's stopped jobs started about
+ * 830 reads at once and stalled the loop 485 ms on its own, and each chat start from release-e709db1 on 10-28 stalled it 1.4 to 3 s, which
+ * d7 counted as dirty us-metal02 minutes. With 4 in flight a loop turn splits at most 4 tails.
+ */
+const TAILS_AT_ONCE = 4;
+let tailsOut = 0;
+const tailsWaiting: (() => void)[] = [];
+
+/** The last `bytes` of a file as lines, the first (partial) line dropped; none when the file is gone. At most TAILS_AT_ONCE run at a time. */
 export async function tailLines(file: string, bytes: number): Promise<string[]> {
+  if (tailsOut >= TAILS_AT_ONCE) await new Promise<void>(resolve => tailsWaiting.push(resolve));
+  else tailsOut++;
+  try { return await readTail(file, bytes); }
+  finally {
+    const next = tailsWaiting.shift();
+    if (next) next(); else tailsOut--;
+  }
+}
+
+async function readTail(file: string, bytes: number): Promise<string[]> {
   const handle = await open(file, "r").catch(() => null);
   if (!handle) return [];
   try {
