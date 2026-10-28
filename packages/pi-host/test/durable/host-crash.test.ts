@@ -163,7 +163,7 @@ describe("pi-host durable threads survive SIGKILL, faux", () => {
   });
 
   test("SIGKILL during a pool slot wait; the new host's wake timer reopens and resumes it", async () => {
-    await crashCase("slot-wait", "faux", "slot-wait", { waitUntil: Date.now() / 1000 + 4 });
+    await crashCase("slot-wait", "faux", "slot-wait", { waitUntil: Date.now() / 1000 + 20 });
   });
 
   test("every run waits its turn in pi-pool's queue, across a SIGKILL in the wait, and gives its slot back", async () => {

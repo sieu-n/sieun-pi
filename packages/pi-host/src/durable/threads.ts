@@ -121,6 +121,8 @@ interface OpenThread {
   watchers: Set<Watcher>;
   wake: Wake;
   idleTimer?: NodeJS.Timeout;
+  /** Resumes the open file at its earliest sleep; pi-durable arms no timer of its own once the host takes `onWake`. */
+  sleepTimer?: NodeJS.Timeout;
   stopCommits: () => void;
 }
 
@@ -162,6 +164,8 @@ function usageOf(entry: EntryRecord, thread: string, now: number): UsageRow | un
 export class DurableThreads {
   readonly index: ThreadIndex;
   private readonly open = new Map<string, Promise<OpenThread>>();
+  /** The slot release of each conversation's last settled input, by `<thread>:<conversation>`, until it is done. */
+  private readonly releasing = new Map<string, Promise<void>>();
   private readonly leases = new Leases("pi-host-durable");
   private readonly registry = threadRegistry();
   private readonly threadsDir: string;
@@ -349,7 +353,7 @@ export class DurableThreads {
           if (record.status === "unanswered") failed = true;
           if (record.status === "done") failed = false;
         }
-        if (record.type === "input" && (record.status === "done" || record.status === "unanswered")) setImmediate(() => void this.settled(open, record.conversationId));
+        if (record.type === "input" && (record.status === "done" || record.status === "unanswered")) this.settle(open, record.conversationId);
       } else if (change.type === "conversation") {
         void this.announceConversation(open, change.value);
       }
@@ -362,7 +366,21 @@ export class DurableThreads {
     }
   }
 
-  /** Runs off the commit listener, which must not call Session APIs. */
+  /**
+   * Gives a settled input's slot back off the commit listener, which must not call Session APIs. The release is kept
+   * per conversation from the settle commit on, so `submit` waits for it before it reads the queue and admits.
+   */
+  private settle(open: OpenThread, conversation: ConversationId): void {
+    const key = `${open.id}:${conversation}`;
+    const released = (this.releasing.get(key) ?? Promise.resolve())
+      .then(() => new Promise<void>(resolve => setImmediate(resolve)))
+      .then(() => this.settled(open, conversation));
+    this.releasing.set(key, released);
+    void released.then(() => {
+      if (this.releasing.get(key) === released) this.releasing.delete(key);
+    });
+  }
+
   private async settled(open: OpenThread, conversation: ConversationId): Promise<void> {
     if (!this.options.inputSettled) return;
     try {
@@ -396,7 +414,26 @@ export class DurableThreads {
     const status = row ? statusOf(row) : wake.active ? "running" : "idle";
     for (const watcher of open.watchers) watcher.sink({ type: "status", status, ...(wake.at === undefined ? {} : { wakeAt: wake.at }) });
     this.touch(open);
+    this.armSleep(open);
     this.armWakes();
+  }
+
+  /**
+   * Resumes an open file at its earliest sleep whatever `wake.active` says: a sleep under a running task, such as a
+   * child's turn poll or retry backoff while the root's subagent call waits on it, has no other timer.
+   */
+  private armSleep(open: OpenThread): void {
+    if (open.sleepTimer) clearTimeout(open.sleepTimer);
+    open.sleepTimer = undefined;
+    const at = open.wake.at;
+    if (at === undefined || this.closing || this.open.get(open.id) === undefined) return;
+    open.sleepTimer = setTimeout(() => {
+      open.sleepTimer = undefined;
+      open.harness.resume();
+      // An unchanged wake gives no onWake, so a sleep still ahead of the clock keeps its timer from here.
+      if (open.wake.at === at && at > this.now()) this.armSleep(open);
+    }, Math.min(Math.max(0, at - this.now()), 2 ** 31 - 1));
+    open.sleepTimer.unref();
   }
 
   /** One timer for the earliest sleep among files with no runnable work; it opens the file if needed and resumes it. */
@@ -438,6 +475,7 @@ export class DurableThreads {
     this.open.delete(id);
     const open = await opening;
     if (open.idleTimer) clearTimeout(open.idleTimer);
+    if (open.sleepTimer) clearTimeout(open.sleepTimer);
     open.stopCommits();
     for (const watcher of open.watchers) {
       for (const stream of watcher.streams.values()) await stream.stop().catch(() => undefined);
@@ -494,6 +532,9 @@ export class DurableThreads {
     const requestId = input.requestId ?? `pi-host:${randomUUID()}`;
     const turns = this.options.turns;
     const session = turns ? await this.sessionOf(open, conversation.id) : undefined;
+    // Right after a settle, turns.json still shows the ended run working until its release lands, which would skip the
+    // mark and let the next run renew a slot that the release then drops.
+    await this.releasing.get(`${id}:${conversation.id}`);
     let owner: OwnerMark | undefined;
     if (input.ownerTurn && turns && session && turns.ticket(id, session).place.state !== "working") owner = await turns.ownerTurn(id, session);
     this.index.markActive(id, this.now());
