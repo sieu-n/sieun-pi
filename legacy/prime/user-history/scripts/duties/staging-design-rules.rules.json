@@ -19,7 +19,11 @@
         "same style"
       ],
       "tests": [
-        "tests/unit/shared-ui.test.ts"
+        "tests/unit/shared-ui-controls.test.ts",
+        "tests/unit/shared-ui-layout.test.ts",
+        "tests/unit/shared-ui-shapes.test.ts",
+        "tests/unit/shared-ui-toasts.test.ts",
+        "tests/unit/shape-width.test.ts"
       ],
       "searchTests": [
         "tests/unit/shared-ui.test.ts"

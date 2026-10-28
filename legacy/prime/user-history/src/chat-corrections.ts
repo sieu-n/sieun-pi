@@ -374,7 +374,7 @@ export const OUTSIDE_ACTION_RULE = "Before any outside action (an email, a ticke
 /** The rules a job reads as short lines: outside sends, vendor support, acting directly, the model and no model fallback, writing, Convex, merges and staging. */
 export const JOB_RULES: ReadonlySet<string> = new Set(["c18", "c20", "c30", "c31", "c35", "c37", "c47", "c49", "c50", "c79"]);
 export function jobLedgerPrompt(ledger: Ledger | null, brief: string = ""): string {
-  const lines = [uiRuleLine(brief), tokenCostRuleLine(brief)].filter((line): line is string => line !== null);
+  const lines = [uiRuleLine(brief), chatWebRuleLine(brief), tokenCostRuleLine(brief)].filter((line): line is string => line !== null);
   return [`[corrections] The owner's corrections that bind jobs, live from the ledger; every other correction holds in this job too. ${OUTSIDE_ACTION_RULE} ${READ_RULE}`,
     ...(ledger ? liveRules(ledger).filter(entry => JOB_RULES.has(entry.id)).map(shortLine) : []), ...lines].join("\n");
 }
@@ -401,7 +401,9 @@ export function tokenCostRuleLine(brief: string): string | null {
 }
 
 /** A brief about one of auto-sns-agent's app screens: it names the demo or its shared UI, and a word for building or styling a screen. */
-const UI_SURFACE = /\b51(?:80|74)\b|apps\/virev-demo|\bvirev-demo\b|\$lib\/ui\b|overlay\/src\/lib/i;
+const UI_SURFACE = /\b51(?:80|74)\b|apps\/virev-demo|\bvirev-demo\b|apps\/search\b|\$lib\/ui\b|overlay\/src\/lib/i;
+/** An auto-sns-agent app by name, so a chat web client brief that says `$lib/ui` gets that client's line and not this one. */
+const AUTO_SNS_APP = /\b51(?:80|74)\b|apps\/virev-demo|\bvirev-demo\b|apps\/search\b|overlay\/src\/lib/i;
 const UI_WORK = /\b(?:(?<!on )(?<!his )screens?|layouts?|laid out|sidebars?|views?|frontend-implementation|redesign\w*|restyl\w*|styling|polish\w*|light and dark|dark mode|spacing|padding|page builders?)\b/i;
 const NAMES_DESIGN_SKILL = /frontend[- ]design|frontend-implementation/i;
 const NAMES_SHARED_COMPONENTS = /frontend-implementation|\$lib\/ui\b|shared (?:kit|components?|component set)|\bc78\b/i;
@@ -427,8 +429,28 @@ export const UI_RULE_LINE = "- c48 This job reads as UI work, so before you desi
  */
 export function uiRuleLine(brief: string): string | null {
   if (!UI_SURFACE.test(brief) || !UI_WORK.test(brief)) return null;
+  if (CHAT_WEB_SURFACE.test(brief) && !AUTO_SNS_APP.test(brief)) return null;
   const named = NAMES_DESIGN_SKILL.test(brief) && NAMES_SHARED_COMPONENTS.test(brief) && NAMES_SHAPE.test(brief) && NAMES_SIDE_SHOT.test(brief);
   return named ? null : UI_RULE_LINE;
+}
+
+/** A brief about sieun-pi's chat web client (apps/chat/web, served on :5184 and :5185 in dev), which keeps its own shared parts in web/src/lib/ui. */
+const CHAT_WEB_SURFACE = /apps\/chat\/web|\bapps\/chat\b[^.\n]{0,40}\bweb\b|\bnew chat app\b|\bchat web client\b|:518[45]\b/i;
+const CHAT_WEB_WORK = /\b(?:pages?|screens?|views?|layouts?|top ?bar|sidebars?|buttons?|menus?|pickers?|dialogs?|popovers?|tabs?|panels?|filters?|inputs?|toasts?|settings|components?|redesign\w*|restyl\w*|styling|polish\w*)\b/i;
+const NAMES_CHAT_WEB_PARTS = /(?:web\/src\/|\$)lib\/ui\b|lib\/ui\/README/i;
+export const CHAT_WEB_RULE_LINE = "- c78 This job reads as UI work on sieun-pi's chat web client (apps/chat/web), so take every button, menu, picker, " +
+  "input, text area, tab, dialog, popover, toast and panel from apps/chat/web/src/lib/ui, whose README lists each part (the #/ui page shows them " +
+  "all), and draw no look-alike of your own. When a part or a variant is missing, add it to lib/ui once with its README row and use it from " +
+  "there. Name lib/ui in the brief of every builder you start. apps/chat test/server/web-shared-ui.test.ts fails on a page that draws its own " +
+  "select, input, text area, menu, tabs or dialog.";
+/**
+ * The c78 line for a chat web client job's [corrections] block: CHAT_WEB_RULE_LINE when its brief is UI work on apps/chat/web and does not
+ * name its lib/ui, else null. The c48 line above names only auto-sns-agent's apps, and from 10-27 the AI harness chat's jobs built the chat web
+ * client's shell, Agents, Search, Board, Usage, Hosts and Settings pages with only lib/ui/README.md and the chat's own "(c78)" to hold the rule.
+ */
+export function chatWebRuleLine(brief: string): string | null {
+  if (!CHAT_WEB_SURFACE.test(brief) || !CHAT_WEB_WORK.test(brief)) return null;
+  return NAMES_CHAT_WEB_PARTS.test(brief) ? null : CHAT_WEB_RULE_LINE;
 }
 
 /** An owner message or a `/refine` command in a chat's session file, with its time in ms. */

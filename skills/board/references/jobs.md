@@ -24,6 +24,8 @@ A brief for a choice between layouts or designs on the 5180 demo starts one buil
 
 A brief for work on auto-sns-agent's 5180 demo, including a PIN move or a route or layout change, has the job read the frontend-implementation skill, names the page shape each touched app uses (AppFrame, ListPage or PageFrame in `$lib/ui`), and asks for an Aside shot of each touched app beside its shape's reference app (Inbox, the Campaigns list or Connections) taken in the same run (c78). On 10-27 a PIN-move brief asked the job to "compare with the accepted Staging apps", the job had no earlier image to compare with, and a floating campaign sidebar passed until the owner saw it.
 
+A UI brief names the shared parts the screen needs, in the app it touches, and has the job draw none of its own (c78). On the 5180 demo and in apps/search that is `$lib/ui` through the frontend-implementation skill, for proposals as much as for the Staging line, since the owner reviews proposals in the version picker. In sieun-pi's chat web client it is `apps/chat/web/src/lib/ui`, whose README lists each part. On 10-28 the chat web client's builders had only that README and the chat's own "(c78)" to go on, and the job brief block now adds the c78 line to any such brief that does not name lib/ui.
+
 Everything you send another agent (briefs, relays, answers) is in English. After the owner's exact words, say in plain English what they mean and what to do, and translate any Korean (c2). The server sends `[brief check]` when a brief has the job wait for someone's go or sets a gate nobody asked for (c47); fix it in the job with a message.
 
 ## Split the work
