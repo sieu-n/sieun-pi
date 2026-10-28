@@ -26,7 +26,7 @@ const JOURNAL = [
   `${sec("2026-10-19T16:56:10Z")} us-metal02 node[3]: wiki-box-commit: left out ${C}apps/still-running.html: ${RETIRED}`,
 ].join("\n");
 
-function deps(journal: string): DreamDeps {
+function deps(journal: string, disk: Record<string, string> = {}): DreamDeps {
   const facts = { hub_orphans: 0, dead_links: 0, session_links: 0, superseded_linked: 0, missing_meta: 0, stale_vs_code: 0, lint_failing_pages: 0 };
   const files: Record<string, string> = {
     corrections: JSON.stringify({ corrections: [] }),
@@ -36,7 +36,11 @@ function deps(journal: string): DreamDeps {
   return {
     now: NOW, node: "node", repos: { wiki: "/wiki", pi: "/pi" },
     files: { corrections: "corrections", harness: "harness", ledger: "ledger", agentDir: "/nonexistent-agent-dir" },
-    readText: async path => files[path]!,
+    readText: async path => {
+      const text = files[path] ?? disk[path];
+      if (text === undefined) throw Object.assign(new Error(`ENOENT: ${path}`), { code: "ENOENT" });
+      return text;
+    },
     exec: async file => {
       if (file === "node") return JSON.stringify({ facts, items: [], errors: [], dupPairs: [], signals: [], stale: { stale: [] } });
       if (file === "journalctl") return journal;
@@ -98,4 +102,59 @@ test("a failed run that names no page keeps a 30 min left-out streak going, and 
   assert.match((failed.flagged ?? []).find(slice => slice.kind === "unlanded")!.excerpt, /in 2 runs from 2026-10-19T16:00Z to 2026-10-19T16:51Z/);
   const finished = await measureDream(deps(streak(run("2026-10-19T16:25:00Z", []))), []);
   assert.equal(finished.metrics.unlanded, 0);
+});
+
+// From 14:20Z on 10-28 the batch held apps/search/brand-tracking.html until the code it cites was committed, by design (wiki-box-commit.mjs
+// aheadRows), while that code sat uncommitted in the checkout, and wiki_problems read 1 and fired push runs for a page with nothing to fix.
+const AHEAD_HOLD = "it cites convex/search/watches/counterFold.ts, convex/search/watches/counterFold.ts::fold, convex/search/imports/jobs.ts::pushLater, "
+  + "sieun-pi:packages/pi-pool, which the tip does not have yet; the page reaches git with the code commit that adds it";
+const HELD = "apps/search/brand-tracking.html";
+const held = [
+  ...run("2026-10-19T16:00:00Z", [[HELD, AHEAD_HOLD]]),
+  ...run("2026-10-19T16:25:00Z", [[HELD, AHEAD_HOLD]]),
+  ...run("2026-10-19T16:51:00Z", [[HELD, AHEAD_HOLD]]),
+].join("\n");
+const CODE = {
+  "/wiki/convex/search/watches/counterFold.ts": "export function fold() {}",
+  "/wiki/convex/search/imports/jobs.ts": "export const pushLater = 1;",
+};
+const folder = async (path: string): Promise<string> => {
+  if (path === "/pi/packages/pi-pool") throw Object.assign(new Error("EISDIR"), { code: "EISDIR" });
+  throw Object.assign(new Error(`ENOENT: ${path}`), { code: "ENOENT" });
+};
+
+test("a page held until the code it cites is committed, with that code on disk, is info and not a wiki problem", async () => {
+  const base = deps(held, CODE);
+  const result = await measureDream({ ...base, readText: path => base.readText(path).catch(() => folder(path)) }, []);
+  assert.equal(result.metrics.unlanded, 0);
+  assert.equal(result.metrics.wiki_problems, 0);
+  assert.equal(result.info.unlanded_ahead, 1);
+  const slice = (result.flagged ?? []).find(item => item.item === HELD)!;
+  assert.equal(slice.kind, "unlanded_ahead");
+  assert.match(slice.excerpt, /every cited ref is on disk in the checkout/);
+});
+
+test("a held page counts in wiki_problems once a cited file or definition is gone from disk", async () => {
+  for (const disk of [
+    { "/wiki/convex/search/imports/jobs.ts": CODE["/wiki/convex/search/imports/jobs.ts"] },
+    { ...CODE, "/wiki/convex/search/watches/counterFold.ts": "export function unfold() {}" },
+  ]) {
+    const base = deps(held, disk);
+    const result = await measureDream({ ...base, readText: path => base.readText(path).catch(() => folder(path)) }, []);
+    assert.equal(result.metrics.unlanded, 1);
+    assert.equal(result.metrics.wiki_problems, 1);
+    assert.equal(result.info.unlanded_ahead, 0);
+    assert.equal((result.flagged ?? []).find(item => item.item === HELD)!.kind, "unlanded");
+  }
+});
+
+test("a gate refusal counts in wiki_problems even when every path it names is on disk", async () => {
+  const DEAD = "it cites convex/search/watches/counterFold.ts, which git does not have; fix the path, leave it out, or say on the same line that it was removed";
+  const journal = [
+    ...run("2026-10-19T16:00:00Z", [[HELD, DEAD]]),
+    ...run("2026-10-19T16:51:00Z", [[HELD, DEAD]]),
+  ].join("\n");
+  const result = await measureDream(deps(journal, CODE), []);
+  assert.equal(result.metrics.unlanded, 1);
+  assert.equal(result.info.unlanded_ahead, 0);
 });
