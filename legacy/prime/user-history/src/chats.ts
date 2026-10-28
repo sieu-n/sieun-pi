@@ -35,7 +35,7 @@ import { BRIEF_ITEMS } from "./shared/brief-cap.ts";
 import { spawnRecord } from "./spawn-record.ts";
 import { pooledProviders } from "./chat-pool.ts";
 import { checkInLane, type ClaudeState, claudeDown, failureCause, hungMessage, hungTurn, jobWake, type JobWake, ownerPause, revivalMessage, type Stall, stallAction, strandedInput, turnStall, turnViewOf, wokeFromSleep } from "./chat-recovery.ts";
-import { CHECK_IN_PREFIX, JOB_NOTICE_PREFIX, poolSlot, TELL_OWNER_TOOL } from "./shared/chat-feed.ts";
+import { asServerNote, CHECK_IN_PREFIX, JOB_NOTICE_PREFIX, poolSlot, TELL_OWNER_TOOL } from "./shared/chat-feed.ts";
 import { checkInIdle, checkInPrompt } from "./chat-checkin.ts";
 import { type JobPush, jobPushLine, jobPushMessage } from "./checkin-jobs.ts";
 import { correctionStep } from "./correction-refine.ts";
@@ -2124,8 +2124,12 @@ export class Chats {
     }));
   }
 
-  /** One notice as a steer: through the notice outbox, which sends it again until it lands (`CheckInSource.notices`), else straight to the daemon. */
-  private steer(chat: string, message: string): Promise<void> {
+  /**
+   * One notice as a steer: through the notice outbox, which sends it again until it lands (`CheckInSource.notices`), else straight to the daemon.
+   * Every notice opens with a server prefix (`asServerNote`), so the turn it starts never reads as the owner's (c117).
+   */
+  private steer(chat: string, text: string): Promise<void> {
+    const message = asServerNote(text);
     return this.source.notices ? this.source.notices.send(chat, message) : this.threads.prompt(chat, { message, images: [], mode: "steer" });
   }
 

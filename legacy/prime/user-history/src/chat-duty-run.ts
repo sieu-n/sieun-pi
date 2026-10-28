@@ -11,6 +11,7 @@ import { goalReadingOps } from "./goal-readings.ts";
 import { type AfterMeasure, CHECK_IN_DUTY, CHECK_IN_DUTY_ID, dailySlot, dutyDue, ERROR_RUNS_TARGET, errorStreak, headlineMetric, hostAwayOf, judge, nextRunAt, outputReadings, overrunWords, parseSchedule, type Duty, type DutyJobRef,
   type DutyCut, type DutyMetric, type DutyRunRecord, type DutySchedule, type DutyTrigger, type DutyView, type FixLink, type FlaggedSlice, type PrecheckOutput, type PrecheckOverrun, STILL_WORKING, verdictMetrics } from "./shared/chat-duties.ts";
 import { briefFindings, headlineWords } from "./shared/brief-cap.ts";
+import { CHECK_IN_PREFIX } from "./shared/chat-feed.ts";
 import { agedOut, pushMisses } from "./duty-push.ts";
 import { transientTurnError } from "./turn-error.ts";
 import type { TellSource } from "./clean-room-subjects.ts";
@@ -1163,12 +1164,12 @@ export class Duties {
    * Hands the chat itself, as one server notice, the new `handOff` items of a check-in run whose job pi-pool or a quota park holds (`kept`), since
    * that job takes no message until its slot. On 10-23 sep launch!!'s check-in job of 03:39Z was cut on a 429 at 05:05Z and held for its
    * 08:09Z slot, so the 17 check-ins from 03:55Z to 08:12Z all skipped, and the stuck steps they counted (up to 23 at 04:27Z and 15 at 06:27Z)
-   * reached no check-in (~/work/checkin-skip-orphans).
+   * reached no check-in (~/work/checkin-skip-orphans). It opens with CHECK_IN_PREFIX, so the turn it starts is not the owner's (c117).
    */
   private async handToChat(chatId: string, dutyId: string, held: { job: DutyJobRef; why: string }, handOff: HandOff, dutyName: string, at: number): Promise<number> {
     const tell = this.host.tell;
     if (!tell) return 0;
-    return this.handNew(chatId, dutyId, held.job, handOff, fresh => tell(chatId, [`The ${dutyName} run of ${new Date(at).toISOString().slice(0, 16)}Z ` +
+    return this.handNew(chatId, dutyId, held.job, handOff, fresh => tell(chatId, [`${CHECK_IN_PREFIX}The ${dutyName} run of ${new Date(at).toISOString().slice(0, 16)}Z ` +
       `found ${fresh.length} step${fresh.length === 1 ? "" : "s"} nobody moves, and its job ${held.job.name} ${held.why}, so it takes no message until then. ` +
       `Give each a live owner in this turn: steer its job, start one, link a For you todo, or close it on evidence. The run's findings are in ` +
       `${handOff.detail}.`, ...fresh.map(itemLine)].join("\n"), { chat: chatId, duty: dutyId }), "the chat");

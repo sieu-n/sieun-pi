@@ -60,6 +60,14 @@ const SERVER_NOTES: readonly [string, string][] = [[CHECK_IN_PREFIX, "check-in"]
  * underscore, as in "<b>bold</b> is fine?", is his.
  */
 const PRIME_NOTE = /^<[a-z]+(?:_[a-z]+)+>\s/;
+/**
+ * A server notice as the chat must receive it: opened by a SERVER_NOTES prefix, so the turn it starts is not the owner's. A text with none gets
+ * CHECK_IN_PREFIX; a slash command such as `/refine` goes as it is, since Prime runs it and writes no message. Until 10-29 the check-in's hand-off
+ * to a chat whose job pi-pool held ("The Check-in run of ... found 1 step nobody moves") went with no prefix, 8 times in 5 chats from 10-23 to
+ * 10-27, so the feed, the tell_owner check, the unread count, Slack and d11 read each turn it started as the owner's: on 10-23 at 13:04Z AI
+ * harness developer environment VP closed it with two status recaps that reached him as replies (c117).
+ */
+export const asServerNote = (text: string): string => serverNote(text.trim()) !== undefined || text.startsWith("/") ? text : CHECK_IN_PREFIX + text;
 /** In a server note that restarts a failed owner turn: the turn it starts stays the owner's, so the chat's answer is a bubble. */
 export const OWNER_RETRY_MARK = "The owner's message is still unanswered: ";
 /** The first line of a chat_board result when the chat changed its own check-in; the feed shows that line as a notice. */

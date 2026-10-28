@@ -13,6 +13,7 @@ import { checkInPrecheck, convergenceMisses } from "../src/chat-checkin.ts";
 import type { JobFact } from "../src/checkin-steps.ts";
 import { Duties } from "../src/chat-duty-run.ts";
 import { DutyStore } from "../src/chat-duty-store.ts";
+import { serverNote } from "../src/shared/chat-feed.ts";
 import type { DutyJobRef, FlaggedSlice } from "../src/shared/chat-duties.ts";
 import type { ChatBoard, PlanItem } from "../src/shared/types.ts";
 
@@ -69,6 +70,7 @@ test("a check-in that finds its job working steers it the new stuck steps, and t
     assert.equal(tells[0]!.chat, CHAT);
     assert.ok(tells[0]!.text.includes("waits on pi-pool for its slot") && tells[0]!.text.includes("- stuck_steps p35:") && tells[0]!.text.includes("p36"), tells[0]!.text);
     assert.ok(!tells[0]!.text.includes("p54"), "a step the job was handed is not told again");
+    assert.equal(serverNote(tells[0]!.text), "check-in", "the turn it starts is not the owner's (c117, 10-23 13:02Z)");
     assert.match(kept.summary, /waits on pi-pool for its slot\); handed the chat 2 new flagged items$/);
 
     await checkIn("2026-10-23T05:43:18Z", ["p35", "p36"]);

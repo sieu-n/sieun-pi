@@ -31,7 +31,7 @@ const iso = (at: number): string => new Date(at).toISOString();
 const clip = (text: string, length = 160): string => { const flat = text.replace(/\s+/g, " ").trim(); return flat.length > length ? flat.slice(0, length - 1) + "\u2026" : flat; };
 const yes = (ok: boolean | null): string => ok === null ? "not reached yet" : ok ? "met" : "not met";
 
-async function messagesOf(file: string): Promise<ThreadMessage[]> {
+export async function messagesOf(file: string): Promise<ThreadMessage[]> {
   const pages: unknown[][] = [];
   let from = null;
   for (;;) {

@@ -16,6 +16,7 @@ import { dmReplies } from "./dm-replies.ts";
 import { englishJobs } from "./english-jobs.ts";
 import { everydayTask } from "./everyday-task.ts";
 import { quietWakes } from "./quiet-wakes.ts";
+import { noticeTurns } from "./notice-turns.ts";
 import { historyLeftovers } from "./history-leftovers.ts";
 import { holdAsk } from "./hold-ask.ts";
 import { machineBranch } from "./machine-branch.ts";
@@ -46,6 +47,7 @@ import { publishedBuildKeep } from "./published-build-keep.ts";
 import { taskOwner } from "./task-owner.ts";
 import { answerData } from "./answer-data.ts";
 import { tokenCost } from "./token-cost.ts";
+import { tokenUse } from "./token-use.ts";
 import { dryMessage } from "./dry-message.ts";
 import { resumeModel } from "./resume-model.ts";
 import { waitingSession } from "./waiting-session.ts";
@@ -53,7 +55,7 @@ import { ownerView } from "./owner-view.ts";
 import type { Scenario } from "./session-read.ts";
 
 /** Every clean-room scenario by the name `clean-room.ts setup --scenario` takes. */
-export const SCENARIOS: Record<string, Scenario> = { "carried-release": carriedRelease, "carried-wait": carriedWait, "checkin-goal-push": checkinGoalPush, "checkin-real-task": checkinRealTask, "checkin-push-control": checkinPushControl, "correction-refine": correctionRefine, "dm-replies": dmReplies, "english-jobs": englishJobs, "everyday-task": everydayTask, "quiet-wakes": quietWakes, "import-speed": importSpeed,
-  "checkin-job-steer": checkinJobSteer, "token-cost": tokenCost, "chat-tools-reopen": chatToolsReopen, "reopen-first-message": reopenFirstMessage, "kernel-revive": kernelRevive, "lost-brief": lostBrief, "lost-brief-model": lostBriefModel, "ordinary-hour": ordinaryHour, "idle-unload": idleUnload, "owner-asks": ownerAsks, "plan-and-duties": planAndDuties, "task-and-upkeep": taskAndUpkeep, "soft-caps": softCaps, "step-ids": stepIds, "token-hook-resume": tokenHookResume, "wake-live": wakeLive, "box-browser-default": boxBrowserDefault, "box-tools": boxTools,
+export const SCENARIOS: Record<string, Scenario> = { "carried-release": carriedRelease, "carried-wait": carriedWait, "checkin-goal-push": checkinGoalPush, "checkin-real-task": checkinRealTask, "checkin-push-control": checkinPushControl, "correction-refine": correctionRefine, "dm-replies": dmReplies, "english-jobs": englishJobs, "everyday-task": everydayTask, "quiet-wakes": quietWakes, "notice-turns": noticeTurns, "import-speed": importSpeed,
+  "checkin-job-steer": checkinJobSteer, "token-cost": tokenCost, "token-use": tokenUse, "chat-tools-reopen": chatToolsReopen, "reopen-first-message": reopenFirstMessage, "kernel-revive": kernelRevive, "lost-brief": lostBrief, "lost-brief-model": lostBriefModel, "ordinary-hour": ordinaryHour, "idle-unload": idleUnload, "owner-asks": ownerAsks, "plan-and-duties": planAndDuties, "task-and-upkeep": taskAndUpkeep, "soft-caps": softCaps, "step-ids": stepIds, "token-hook-resume": tokenHookResume, "wake-live": wakeLive, "box-browser-default": boxBrowserDefault, "box-tools": boxTools,
   "detached-report": detachedReport, "relative-duty": relativeDuty, "old-commit-tests": oldCommitTests, "readme-preview": readmePreview, "history-leftovers": historyLeftovers, "hold-ask": holdAsk, "machine-branch": machineBranch, "shared-shapes": sharedShapes, "layout-pick": layoutPick, "chat-web-parts": chatWebParts, "design-page": designPage, "plain-words": plainWords, "saved-login": savedLogin , "job-cancel-cleanup": jobCancelCleanup,
   "transcript-boundary": transcriptBoundary, "published-build-keep": publishedBuildKeep, "task-owner": taskOwner, "answer-data": answerData, "dry-message": dryMessage, "resume-model": resumeModel, "waiting-session": waitingSession, "unrelated-ci-wait": unrelatedCiWait, "unrelated-ci-controlled": unrelatedCiControlled, "owner-view": ownerView };
