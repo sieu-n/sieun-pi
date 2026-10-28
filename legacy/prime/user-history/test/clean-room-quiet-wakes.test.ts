@@ -20,9 +20,14 @@ test("the 10-27 recap fails the quiet-turn check and a few words on the change p
 
 test("the judge fails a chat that ends its quiet turns with the recap and passes one that ends them with a few words", async () => {
   const loud = turns(RECAP);
-  const failed = await judgeLines(chatLines(loud), loud, at("13:07:00"));
+  // The feed before the quiet-note trim showed each closing text whole.
+  const whole = chatLines(loud).map(line => line.kind === "notes" && line.full ? { ...line, text: line.full } : line);
+  const failed = await judgeLines(whole, loud, at("13:07:00"));
   assert.equal(failed.find(check => check.id === "b")!.ok, false);
   assert.equal(failed.find(check => check.id === "d")!.ok, true);
+  const trimmed = await judgeLines(chatLines(loud), loud, at("13:07:00"));
+  assert.equal(trimmed.find(check => check.id === "b")!.ok, true);
+  assert.match(trimmed.find(check => check.id === "b")!.detail, /the chat wrote 3 of them longer or with a reminder/);
   const quiet = turns("Added the newest check to p3.");
   const passed = await judgeLines(chatLines(quiet), quiet, at("13:07:00"));
   assert.deepEqual(passed.map(check => check.ok), [true, true, true, true]);

@@ -121,7 +121,8 @@ export function withMessageIds<M extends ContextMessage>(messages: readonly M[])
 export const WAKE_NOTE = "[not from the owner: send no tell_owner for it unless it finishes a goal he asked for, needs a decision or a blocker only he can clear, or answers his question, " +
   "and then set why and about. News he already got, a fix of your own earlier message, and progress on work still going are none of those. " +
   "End the turn with no text, or a few words on what you changed, never a status recap or a reminder of an open For you todo, since the " +
-  "base prompt's progress updates and final answer do not apply here]";
+  "base prompt's progress updates and final answer do not apply here. His page shows only your first sentence that does not speak to him " +
+  "or name a todo, cut to 25 words]";
 /**
  * The server's restart of a failed turn. It belongs to the turn that failed: after an aborted owner turn the note carries no OWNER_RETRY_MARK,
  * and the answer it brings is still his (10-19 measurement: 2 of 4 labelled restart messages were needed answers).

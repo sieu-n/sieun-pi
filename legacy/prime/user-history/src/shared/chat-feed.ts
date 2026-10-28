@@ -91,7 +91,7 @@ export type ChatLine =
   | { kind: "user"; id: string; text: string; images: ImagePart[]; at: number; pending?: true; failed?: string; replies?: string[] }
   | { kind: "agent"; id: string; text: string; at: number; streaming?: true; told?: true; replyTo?: ReplyQuote }
   | { kind: "job"; id: string; from: string; title: string; body: string; at: number; clipped?: { message: number; part: number } }
-  | { kind: "notes"; id: string; text: string; at: number }
+  | { kind: "notes"; id: string; text: string; at: number; full?: string }
   | { kind: "notice"; id: string; text: string; at: number }
   | { kind: "quiet"; id: string; text: string; at: number; wait?: true };
 /**
@@ -197,6 +197,27 @@ function toldText(part: AssistantMessage["content"][number], refused: Refused): 
   return typeof part.arguments.text === "string" ? part.arguments.text.trim() : "";
 }
 
+/** The most a closing text on a turn the owner did not start shows of itself: one sentence of c104's size. */
+export const QUIET_NOTE_WORDS = 25;
+/** A sentence that speaks to the owner or names a For you todo: on a turn he did not start it is a reminder or a relay, never news (c117). */
+const TO_OWNER = /\b(?:you|your|yours)\b|\bt\d{1,4}\b|\bfor you\b/i;
+/**
+ * What the owner's page shows of the chat's closing text on a turn he did not start: its first sentence that neither speaks to him nor names
+ * a todo, cut to QUIET_NOTE_WORDS, with tables, bullets and headings left out; "" when none is left. The c117 clean room showed the text rule
+ * alone does not hold: run1 on release-18b73ec closed 13 such turns with recaps of up to 21 sentences, and run2 on release-db3b622 still closed
+ * 7 with 2 or 3 sentences and once with "Your answers on t2 and t3 are still open."
+ */
+export function quietNote(text: string): string {
+  const lines = text.replace(/```[\s\S]*?```/g, "\n").split("\n")
+    .filter(line => !/^\s*(?:\||#{1,6}\s|[-*+\u2022]\s|\d{1,2}[.)]\s)/.test(line)).join("\n");
+  const sentences = lines.split(/\n+/).flatMap(line => line.replace(/\b(vs|e\.g|i\.e|approx|etc)\.(?=\s)/gi, "$1").split(/(?<=[.!?])["')\]]*\s+(?=\S)/))
+    .map(part => part.replace(/\*\*/g, "").trim()).filter(part => /[\p{L}\p{N}]/u.test(part));
+  const first = sentences.find(part => !TO_OWNER.test(part));
+  if (!first) return "";
+  const words = first.split(/\s+/);
+  return words.length > QUIET_NOTE_WORDS ? words.slice(0, QUIET_NOTE_WORDS).join(" ") + "\u2026" : first;
+}
+
 /**
  * The turn a message belongs to: `shown` is how the chat's text shows, a reply bubble or notes (a wake-up, or an owner turn the chat answered with
  * tell_owner), and `owner` says the owner started it, so an error that ends it shows on its own.
@@ -210,7 +231,10 @@ function assistantLines(message: AssistantMessage, id: string, turn: Turn, strea
   if (text && turn.shown === "reply") {
     const quote = answer(replyTo, id);
     lines.push({ kind: "agent", id, text, at: message.timestamp, ...(streaming ? { streaming: true } : {}), ...(quote ? { replyTo: quote } : {}) });
-  } else if (text && !streaming) lines.push({ kind: "notes", id, text, at: message.timestamp });
+  } else if (text && !streaming) {
+    const shown = turn.owner ? text : quietNote(text);
+    if (shown) lines.push({ kind: "notes", id, text: shown, at: message.timestamp, ...(shown === text ? {} : { full: text }) });
+  }
   if (streaming) return lines;
   message.content.forEach((part, index) => {
     const changed = part.type === "toolCall" ? checkInChanged(part.id) : undefined;

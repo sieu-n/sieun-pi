@@ -3,7 +3,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { Projector } from "../../src/chat-projection.ts";
 import { historyMessages, readBranchPage } from "../../src/session-tail.ts";
-import { chatLines, unreadCount, type ChatLine } from "../../src/shared/chat-feed.ts";
+import { chatLines, ownerTyped, unreadCount, type ChatLine } from "../../src/shared/chat-feed.ts";
+import { isPromptCustom } from "../../src/shared/turns.ts";
 import type { ChatBoard, ThreadMessage } from "../../src/shared/types.ts";
 import { ownJob } from "./answer-data.ts";
 import { sentences, words } from "./dry-message.ts";
@@ -62,10 +63,15 @@ export async function judgeLines(lines: readonly ChatLine[], messages: readonly 
   }
   const ends = messages.filter(message => message.role === "assistant" && (message as { stopReason?: string }).stopReason === "stop" && (message.timestamp ?? 0) > asked);
   add("a", ends.length >= MIN_QUIET_TURNS ? true : null, `${ends.length} turns ended after the first question at ${iso(asked)}`);
-  const notes = lines.filter((line): line is Extract<ChatLine, { kind: "notes" }> => line.kind === "notes" && line.at > asked && !/-t\d+$/.test(line.id));
+  // Criterion b covers turns the owner did not start: a note counts when the last message that started a turn before it is not one he typed
+  // (run2's judge also scored his first turn at 01:59:44Z). It judges what his page shows of each closing text, and names what the chat wrote.
+  const starts = messages.filter(message => message.role === "user" || (message.role === "custom" && isPromptCustom(message as never)));
+  const quiet = (at: number): boolean => { const start = starts.filter(message => (message.timestamp ?? 0) <= at).at(-1); return !start || !ownerTyped(start); };
+  const notes = lines.filter((line): line is Extract<ChatLine, { kind: "notes" }> => line.kind === "notes" && line.at > asked && !/-t\d+$/.test(line.id) && quiet(line.at));
   const bad = notes.flatMap(line => { const found = noteFaults(line.text); return found.length ? [`at ${iso(line.at)} (${found.join(", ")}): "${clip(line.text)}"`] : []; });
+  const written = notes.filter(line => line.full && noteFaults(line.full).length).length;
   add("b", ends.length < MIN_QUIET_TURNS && !bad.length ? null : !bad.length, bad.length ? bad.join("; ")
-    : `${notes.length} closing texts after the question, each one sentence of at most ${MAX_WORDS} words with no reminder`);
+    : `${notes.length} closing texts after the question show one sentence of at most ${MAX_WORDS} words with no reminder; the chat wrote ${written} of them longer or with a reminder, which the page trimmed`);
   const sent = lines.filter((line): line is Extract<ChatLine, { kind: "agent" }> => line.kind === "agent" && line.at > asked);
   // A new question names its own new todo (run1's t3 at 01:08Z), so only a todo id an earlier message already named, or For you wording, reminds.
   const named = new Set<string>();
@@ -85,7 +91,8 @@ export async function judgeLines(lines: readonly ChatLine[], messages: readonly 
 async function judge(run: string, state: RunState): Promise<{ verdict: Verdict; text: string }> {
   const chat = state.chat.id;
   const file = sessionFile(chat);
-  const messages = file ? (await messagesOf(file)).filter(message => (message.timestamp ?? 0) >= state.windowStart) : [];
+  // Whole, since the first owner-style message lands just before windowStart and makes the first turn his (run2 read it as a quiet turn).
+  const messages = file ? await messagesOf(file) : [];
   const boardFile = join(DATA, "boards", `${chat}.json`);
   const board = existsSync(boardFile) ? JSON.parse(readFileSync(boardFile, "utf8")) as ChatBoard : undefined;
   const asks = (board?.todos ?? []).filter(todo => (todo as { from?: string }).from === "agent").map(todo => Date.parse((todo as { at?: string }).at ?? ""))
