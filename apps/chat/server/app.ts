@@ -100,10 +100,12 @@ export class App {
     this.boards.stop();
     this.queues.stop();
     clearTimeout(this.sidebarTimer);
+    // The host client closes first: a watch's unwatch sent to a pi-host that restarts beside the chat retried for 30 s, past systemd's
+    // 20 s stop timeout, so restarting both services on 10-28 ended in a SIGKILL. pi-host drops a closed connection's watches itself.
+    await this.host.close();
     await this.threads.stop();
     for (const client of this.clients) client.socket.close();
     this.search.close();
-    await this.host.close();
   }
 
   me(): Me {

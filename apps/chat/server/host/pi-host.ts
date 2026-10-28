@@ -134,6 +134,7 @@ export class PiHost implements Host {
     const repeatable = type !== "durable_create" && type !== "durable_import" && !(type === "durable_submit" && !fields.requestId);
     const end = Date.now() + RESTART_WAIT_MS;
     for (;;) {
+      if (this.closed) throw new Error(`pi-host client is closed; ${type} not sent`);
       try {
         return await this.callOnce(type, fields, timeoutMs);
       } catch (error) {
