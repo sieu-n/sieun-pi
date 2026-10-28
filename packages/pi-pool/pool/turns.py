@@ -306,15 +306,19 @@ def ask(turns, a, now, cfg, waiter=None):
         return turns["queued"].pop(session, None) is not None, OFF, []
     lease = int(cfg["lease_s"])
     events = [("turn_swept", g) for g in sweep(turns, now)]
-    admitted = admit_pass(turns, now, all_max, tree_max, lease)
+    # A run that joins the queue, or asks again from its place, is in line before the pass, so a slot this call's sweep
+    # frees goes by `order`. At 23:13:54Z on 10-27 the ask of the chat head 01a1180e, a lead, swept 01a17b20's lapsed
+    # wake slot, the pass gave it to the parked job 01a17f88 before the head was in line, and the head queued 44.2 s.
+    joins = not a["renew"] and session not in turns["working"] and (session in turns["queued"] or session not in turns["owner"])
+    admitted = [] if joins else admit_pass(turns, now, all_max, tree_max, lease)
     entry = {"tree": a["tree"], "since": now, "pid": a["pid"]}
     if session in turns["working"]:
         turns["working"][session].update(pid=a["pid"], lease_until=now + lease)
         turns["working"][session].pop("parked", None)
     elif session in turns["queued"] and not a["renew"]:
         turns["queued"][session].update(pid=a["pid"], waiter=waiter)
-        if turns["queued"][session].pop("parked", None):
-            admitted += admit_pass(turns, now, all_max, tree_max, lease)
+        turns["queued"][session].pop("parked", None)
+        admitted += admit_pass(turns, now, all_max, tree_max, lease)
     elif turns["owner"].pop(session, None) is not None:
         turns["queued"].pop(session, None)
         turns["kept"].pop(session, None)

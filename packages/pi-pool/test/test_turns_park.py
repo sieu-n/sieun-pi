@@ -92,6 +92,21 @@ class Wake(unittest.TestCase):
         self.assertEqual((answer["state"], answer["position"]), ("queued", 1), "at retry_at the session asks with its old place")
         self.assertNotIn("parked", t["queued"]["job"])
 
+    def test_a_slot_the_asking_runs_sweep_frees_goes_to_that_run_when_it_leads(self):
+        """23:13:54Z on 10-27: the chat head 01a1180e, a lead, asked as 01a17b20's wake slot lapsed. Its own sweep freed the
+        slot, the pass gave it to the parked job 01a17f88 before the head was in line, and the head queued 44.2 s."""
+        t = turns.empty()
+        line(t)
+        turns.ask(t, ask_args("job2", tree="J2"), 30, CFG)
+        turns.park(t, "job2", 100, CFG)
+        turns.leave(t, "blocker", 300, CFG)
+        self.assertTrue(turns.waking(t["working"]["job"]))
+        t["lead"] = ["head"]
+        changed, answer, events = turns.ask(t, ask_args("head", tree="H"), 300 + turns.WAKE_LEASE_SEC + 1, CFG)
+        self.assertEqual(answer["state"], "admitted")
+        self.assertEqual([(e, f["session"]) for e, f in events], [("turn_swept", "job"), ("turn_admitted", "head")])
+        self.assertEqual(turns.order(t), ["job", "late", "job2"], "the parked runs keep their places")
+
     def test_an_owner_prompt_to_a_parked_session_starts_it_ahead_and_wakes_it(self):
         t = turns.empty()
         line(t)
