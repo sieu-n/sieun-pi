@@ -202,8 +202,8 @@ describe("boards", () => {
 
 describe("agents, usage and hosts", () => {
   test("create, rename, change model and archive a thread", async () => {
-    const created = await s.send("POST", "/api/agents", { name: "spec thread", model: "anthropic/claude-sonnet-5", thinkingLevel: "medium" });
-    assert.equal(created.body.model.id, "claude-sonnet-5");
+    const created = await s.send("POST", "/api/agents", { name: "spec thread", model: "anthropic/claude-sonnet-5-5", thinkingLevel: "medium" });
+    assert.equal(created.body.model.id, "claude-sonnet-5-5");
     const id = created.body.id;
     const renamed = await s.send("PATCH", `/api/c/${id}`, { name: "spec thread 2", model: "anthropic/claude-opus-5-5" });
     assert.equal(renamed.body.summary.name, "spec thread 2");

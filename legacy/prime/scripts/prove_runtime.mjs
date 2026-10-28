@@ -45,7 +45,7 @@ const aiEntry = execFileSync(process.execPath, ["--input-type=module", "-e",
   'process.stdout.write(import.meta.resolve("@earendil-works/pi-ai"))'],
   { cwd: primeRoot, encoding: "utf8" });
 const { getModel, streamSimple } = await import(aiEntry);
-const model = getModel("anthropic", "claude-fable-5");
+const model = getModel("anthropic", "claude-fable-5-1");
 assert(model, "The native catalog must include the chosen serialization model");
 const noNetwork = new Error("offline provider payload capture");
 let fetchCalls = 0;

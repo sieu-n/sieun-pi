@@ -57,7 +57,7 @@
   let pickerOpen = $state(false);
   let pickerAnchor = $state<HTMLElement>();
   let picked = $state("vent");
-  let model = $state("claude-opus-5.5");
+  let model = $state("claude-opus-5-5");
   let effort = $state("high");
   let sort = $state("recent");
   let unreadOnly = $state(true);
@@ -88,9 +88,9 @@
     { id: "ops", label: "ops", icon: "lock", group: "Channels", disabled: true },
   ];
   const models = [
-    { id: "claude-opus-5.5", label: "Opus 5.5", family: "Claude" },
-    { id: "claude-sonnet-5", label: "Sonnet 5", family: "Claude" },
-    { id: "gpt-6", label: "GPT-6", family: "OpenAI", detail: "via pool" },
+    { id: "claude-opus-5-5", label: "Opus 5.5", family: "Claude" },
+    { id: "claude-sonnet-5-5", label: "Sonnet 5.5", family: "Claude" },
+    { id: "gpt-6.1-sol", label: "GPT-6.1 sol", family: "OpenAI", detail: "via pool" },
   ];
   const md = `Here is the plan for **launch**, see [[projects/launch.html|the launch page]] and wiki:sessions/2026/10/28/plan.md.
 

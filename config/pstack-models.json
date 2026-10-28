@@ -132,7 +132,7 @@
    "inherit-parent",
    "anthropic/claude-opus-5-5",
    "anthropic/claude-fable-5-1",
-   "openai-codex/gpt-6-astra"
+   "openai-codex/gpt-6.1-sol"
   ],
   "recommended": {
    "frontend": [

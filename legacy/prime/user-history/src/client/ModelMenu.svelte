@@ -1,6 +1,9 @@
 <script module lang="ts">
+  import type { AllowedModel } from "../../../../../config/allowed-models.ts";
+
   const FAVORITES_KEY = "chat.favoriteModels";
-  const DEFAULT_FAVORITES = ["openai-codex/gpt-6-astra", "anthropic/claude-opus-5-5", "anthropic/claude-fable-5-1"];
+  // Only models from config/allowed-models.ts (c185); test/default-models-allowed.test.ts checks this list.
+  const DEFAULT_FAVORITES: readonly AllowedModel[] = ["anthropic/claude-opus-5-5", "anthropic/claude-fable-5-1", "openai-codex/gpt-6.1-sol", "anthropic/claude-sonnet-5-5", "openai-codex/gpt-6-luna"];
   const PROVIDER_NAME: Record<string, string> = { anthropic: "Anthropic", "openai-codex": "OpenAI Codex", openai: "OpenAI", google: "Google" };
   const providerName = (provider: string): string => PROVIDER_NAME[provider] ?? provider.charAt(0).toUpperCase() + provider.slice(1);
 
@@ -9,7 +12,7 @@
       const stored: unknown = JSON.parse(localStorage.getItem(FAVORITES_KEY) ?? "null");
       if (Array.isArray(stored) && stored.every(entry => typeof entry === "string")) return stored;
     } catch { /* fall back to the defaults */ }
-    return DEFAULT_FAVORITES;
+    return [...DEFAULT_FAVORITES];
   }
 </script>
 

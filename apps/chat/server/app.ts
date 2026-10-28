@@ -5,8 +5,9 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { WebSocket, WebSocketServer } from "ws";
 import type {
-  AgentSummary, ConversationHeader, ConversationId, ConversationPatch, ConversationSummary, ImageRef, LiveCommand, LiveEvent, Me, ModelCatalog, SendRequest, SendResult, Sidebar,
+  AgentSummary, ConversationHeader, ConversationId, ConversationPatch, ConversationSummary, ImageRef, LiveCommand, LiveEvent, Me, ModelCatalog, ModelInfo, SendRequest, SendResult, Sidebar, ThinkingLevel,
 } from "../web/src/lib/api/types.ts";
+import type { AllowedModel } from "../../../config/allowed-models.ts";
 import { Boards } from "./boards.ts";
 import { Channels, publicDelivery } from "./channels.ts";
 import type { Config } from "./config.ts";
@@ -16,13 +17,23 @@ import { Store } from "./store.ts";
 import { modelRef, OWNER, parseConversationId, Threads } from "./threads.ts";
 import { ownerTurn } from "./usage.ts";
 
+/** A model the pickers offer, which must be one of config/allowed-models.ts (owner rule c185: the newest model of each tier only). */
+function offered(key: AllowedModel, label: string, family: string, levels: ThinkingLevel[]): ModelInfo {
+  const [provider, id] = key.split("/") as [string, string];
+  return { provider, id, label, family, levels };
+}
+
+const DEFAULT_MODEL: AllowedModel = "anthropic/claude-opus-5-5";
+
 export const MODELS: ModelCatalog = {
   models: [
-    { provider: "anthropic", id: "claude-opus-5-5", label: "Opus 5.5", family: "claude", levels: ["off", "low", "medium", "high", "xhigh"] },
-    { provider: "anthropic", id: "claude-sonnet-5", label: "Sonnet 5", family: "claude", levels: ["off", "low", "medium", "high"] },
-    { provider: "openai-codex", id: "gpt-5.5", label: "GPT-5.5", family: "gpt", levels: ["low", "medium", "high", "xhigh"] },
+    offered("anthropic/claude-opus-5-5", "Opus 5.5", "claude", ["off", "low", "medium", "high", "xhigh"]),
+    offered("anthropic/claude-sonnet-5-5", "Sonnet 5.5", "claude", ["off", "low", "medium", "high"]),
+    offered("anthropic/claude-fable-5-1", "Fable 5.1", "claude", ["off", "low", "medium", "high", "xhigh"]),
+    offered("openai-codex/gpt-6.1-sol", "GPT-6.1 sol", "gpt", ["low", "medium", "high", "xhigh"]),
+    offered("openai-codex/gpt-6-luna", "GPT-6 luna", "gpt", ["low", "medium", "high", "xhigh"]),
   ],
-  default: { model: "anthropic/claude-opus-5-5", thinkingLevel: "high" },
+  default: { model: DEFAULT_MODEL, thinkingLevel: "high" },
 };
 
 type Client = { socket: WebSocket; watching: Set<ConversationId> };

@@ -11,9 +11,9 @@ import { senderOrigin } from "./unrelated-ci-wait.ts";
  * release owner's message. Until 10-26 the cleanup ended such a job after an hour and started "<job> resumed HH:MM" in its place. The judge
  * reads the job's spawn record, the chat's job-resumes folder and the job's own session file.
  */
-export const MODEL = { provider: "openai-codex", modelId: "gpt-6-astra", thinkingLevel: "medium" };
+export const MODEL = { provider: "openai-codex", modelId: "gpt-6.1-sol", thinkingLevel: "medium" };
 export const TASK = "how many test files are in legacy/prime/user-history/test of ~/src/sieun-pi right now? have one job count them and put the " +
-  "number on the board, on openai-codex/gpt-6-astra with medium thinking. the same job counts again after the next sieun-pi chat release " +
+  "number on the board, on openai-codex/gpt-6.1-sol with medium thinking. the same job counts again after the next sieun-pi chat release " +
   "lands on this box and puts the difference on the board. the release owner will message you when it lands, so nobody needs to poll for it";
 const HOME = homedir();
 const DATA = process.env.AGENT_CHAT_DATA_DIR ?? join(HOME, ".prime/agent/browser-chat");
@@ -120,7 +120,7 @@ export function nobodySteppedIn(run: string, state: RunState): { ok: boolean | n
 export const resumeModel: Scenario = {
   name: "resume-model",
   // The chat runs on the job's model too: run2 sat 3 h on an Anthropic account slot and never spawned its job.
-  model: { provider: "openai-codex", modelId: "gpt-6-astra", thinkingLevel: "high" },
+  model: { provider: "openai-codex", modelId: "gpt-6.1-sol", thinkingLevel: "high" },
   headMessage: () => TASK,
   fixtures: [],
   setupNotes: state => [
