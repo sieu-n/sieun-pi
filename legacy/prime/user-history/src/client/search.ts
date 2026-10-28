@@ -8,6 +8,8 @@ export type HitKind = "user" | "assistant" | "thinking" | "tool_call" | "tool_re
 export interface Hit {
   ref: string; box: string; source: "prime" | "durable"; session: string; root: string; parent?: string; depth: number; thread: string; rootName?: string;
   kind: HitKind; tool?: string; toolCallId?: string; author: string; at: number; snippet: string; isError?: boolean;
+  /** The relevance rank a box gave the hit with sort=relevant, lower is better; asked for in the contract, absent until the api sends it. */
+  score?: number;
 }
 /** `bytesTotal` is asked for in the contract; the backfill line names the GB only when every reading box sends it. */
 export interface BoxState { ok: boolean; error?: string; tookMs: number; newestAt?: number; backfillPct: number; lagP50Ms?: number; lagP99Ms?: number; bytesTotal?: number }
@@ -24,18 +26,93 @@ export const KIND_FILTERS: readonly { value: string; label: string }[] = [
   { value: "tool", label: "Tool calls and results" }, { value: "thinking", label: "Thinking" }, { value: "summary", label: "Summaries" },
 ];
 
-/** The query string of api/search for the text, the filters and a page cursor. */
-export function searchQuery(q: string, filters: SearchFilters, cursor?: string): string {
+/** The query string of api/search for the text, the filters, the one box to answer from (`ALL_BOXES` for the merged answer) and a page cursor. */
+export function searchQuery(q: string, filters: SearchFilters, box: string = ALL_BOXES, cursor?: string): string {
   const params = new URLSearchParams({ q: q.trim(), sort: filters.sort });
-  for (const key of ["kind", "box", "chat"] as const) if (filters[key] !== "any") params.set(key, filters[key]);
+  for (const key of ["kind", "chat"] as const) if (filters[key] !== "any") params.set(key, filters[key]);
+  if (box !== ALL_BOXES) params.set("box", box);
   if (filters.from) params.set("since", filters.from);
   if (filters.to) params.set("until", filters.to);
   if (cursor) params.set("cursor", cursor);
   return params.toString();
 }
 
-export const searchMessages = (q: string, filters: SearchFilters, cursor?: string): Promise<SearchResult> =>
-  get<SearchResult>("api/search?" + searchQuery(q, filters, cursor));
+export const searchMessages = (q: string, filters: SearchFilters, box: string = ALL_BOXES, cursor?: string): Promise<SearchResult> =>
+  get<SearchResult>("api/search?" + searchQuery(q, filters, box, cursor));
+
+/**
+ * One search asks each box on its own (`box=<name>`), so a slow box never holds the others' hits. `ALL_BOXES` is the one merged ask the
+ * panel sends while it knows no box names: a page whose rows carry no host, before any answer named its boxes.
+ */
+export const ALL_BOXES = "*";
+export type Ask = { state: "loading" } | { state: "failed"; error: string } | { state: "done"; result: SearchResult; hits: Hit[]; next?: string };
+export type Asks = Record<string, Ask>;
+
+/** The boxes a search asks: the Box filter's one box, else every box known, else the one merged ask. */
+export function boxesToAsk(filter: string, known: readonly string[]): string[] {
+  if (filter !== "any") return [filter];
+  return known.length ? [...new Set(known)].sort() : [ALL_BOXES];
+}
+
+/** What the panel draws from the asks so far: the hits to show in order, the summed count and each box's state. */
+export interface Merged {
+  hits: Hit[]; total: number; tookMs: number; boxes: Record<string, BoxState>;
+  /** Boxes still on their way, by name; the merged ask has none to name. */
+  loading: string[];
+  /** The ask whose next page the list needs before it can show more, or null when no answered ask has one. */
+  more: string | null;
+  /** The rank of the last hit shown, the `floor` of the next merge. */
+  shownTo: number;
+  /** True when hits already shown sort after the `more` ask's last loaded hit, so its next page fills a gap above them: fetch it at once. */
+  gap: boolean;
+  /** Set when no ask answered and at least one failed: the first failure's text. */
+  error: string | null;
+}
+
+/**
+ * Merges each box's answer into one list. Newest first orders by `at`; Most relevant by `score`, or by each box's own rank when the boxes send
+ * no score. A box with a next page bounds what shows: a hit sorting after that box's last loaded hit waits, since the box's next page may hold
+ * hits that sort before it. A hit shown once stays shown (`floor`, the last merge's `shownTo`), so a slow box's answer never takes rows away.
+ */
+export function mergeAsks(asks: Asks, sort: SearchSort, floor = -Infinity): Merged {
+  const done = Object.entries(asks).flatMap(([box, ask]) => ask.state === "done" ? [{ box, ask }] : []);
+  const scored = sort === "relevant" && done.every(({ ask }) => ask.hits.every(hit => typeof hit.score === "number"));
+  const rankOf = (hit: Hit, index: number): number => sort === "newest" ? -hit.at : scored ? hit.score! : index;
+  const ranked = done.flatMap(({ ask }) => ask.hits.map((hit, index) => ({ hit, rank: rankOf(hit, index) })));
+  ranked.sort((a, b) => a.rank - b.rank || b.hit.at - a.hit.at || (a.hit.ref < b.hit.ref ? -1 : a.hit.ref > b.hit.ref ? 1 : 0));
+  let bound = Infinity, more: string | null = null;
+  for (const { box, ask } of done) {
+    if (!ask.next || !ask.hits.length) continue;
+    const last = rankOf(ask.hits.at(-1)!, ask.hits.length - 1);
+    if (last < bound) { bound = last; more = box; }
+  }
+  const shown = ranked.filter(item => item.rank <= Math.max(bound, floor));
+  const boxes: Record<string, BoxState> = {};
+  for (const { ask } of done) Object.assign(boxes, ask.result.boxes);
+  for (const [box, ask] of Object.entries(asks)) if (ask.state === "failed" && box !== ALL_BOXES) boxes[box] = { ok: false, error: ask.error, tookMs: 0, backfillPct: 0 };
+  const failed = Object.values(asks).find(ask => ask.state === "failed");
+  return {
+    hits: shown.map(item => item.hit),
+    total: done.reduce((sum, { ask }) => sum + ask.result.total, 0),
+    tookMs: Math.max(0, ...done.map(({ ask }) => ask.result.tookMs)),
+    boxes, loading: Object.entries(asks).flatMap(([box, ask]) => ask.state === "loading" && box !== ALL_BOXES ? [box] : []), more,
+    shownTo: Math.max(floor, shown.at(-1)?.rank ?? -Infinity), gap: more !== null && floor > bound,
+    error: !done.length && failed?.state === "failed" ? failed.error : null,
+  };
+}
+
+const BOXES_KEY = "chat.searchBoxes";
+/** The box names the last answers named, kept in the browser for a page whose rows carry no host. */
+export function rememberedBoxes(): string[] {
+  try { const saved: unknown = JSON.parse(localStorage.getItem(BOXES_KEY) ?? "[]"); return Array.isArray(saved) ? saved.filter((box): box is string => typeof box === "string") : []; }
+  catch { return []; }
+}
+export function rememberBoxes(boxes: readonly string[]): void {
+  try { localStorage.setItem(BOXES_KEY, JSON.stringify([...new Set(boxes)].sort())); } catch { /* Private mode keeps the names for this page only. */ }
+}
+
+/** The line for a box that has not answered yet. */
+export const searchingLine = (box: string): string => box === "mac" ? "Searching the Mac…" : `Searching ${box}…`;
 
 /** One thread's hits in result order; the panel shows the first `SHOWN_PER_THREAD` and counts the rest. */
 export interface ThreadGroup { key: string; box: string; session: string; thread: string; rootName?: string; depth: number; hits: Hit[] }

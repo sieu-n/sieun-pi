@@ -29,6 +29,10 @@ const START = Date.UTC(2026, 9, 23, 4, 0, 0);
 /** Thread lines one minute apart; the hits name lines 12, 20, 24 and 27, so the opened one sits well above the thread's bottom. */
 const at = (line: number) => START + line * 60_000;
 const SUB_AT = START + 90 * 60_000;
+/** The Mac's one hit is the newest, so when the Mac answers late its thread lands above the rows already shown. */
+const MAC_AT = START + 120 * 60_000;
+/** How long the fake Mac takes to answer, and so the merged answer that waits for it. */
+const MAC_MS = 2000;
 
 /** A saved session file: the header, then a user and an assistant message per pair of lines, each with its own timestamp. */
 function sessionFile(path: string, id: string, cwd: string, lines: { at: number; text: string }[]): void {
@@ -57,10 +61,18 @@ const FIXTURE: SearchResult = {
       root: THREAD, parent: THREAD, depth: 1, thread: "relay probe", rootName: "hosts relay timeout job", author: "parent", kind: "agent_message" }),
     hit(THREAD, 20, "user", "why <mark>did</mark> the relay <mark>not</mark> <mark>answer</mark> <mark>in</mark> time?"),
     hit(THREAD, 12, "assistant", "first sign: the relay <mark>did</mark> <mark>not</mark> <mark>answer</mark> <mark>in</mark> 15000 ms"),
-    hit(MAC, 3, "assistant", "on the Mac the daemon list <mark>did</mark> <mark>not</mark> <mark>answer</mark> <mark>in</mark> 3 s", { ref: `mac:${MAC}@${at(3)}#3`, box: "mac", thread: "slack green guy" }),
+    hit(MAC, 3, "assistant", "on the Mac the daemon list <mark>did</mark> <mark>not</mark> <mark>answer</mark> <mark>in</mark> 3 s", { ref: `mac:${MAC}@${MAC_AT}#3`, at: MAC_AT, box: "mac", thread: "slack green guy" }),
   ],
-  total: 6, tookMs: 14, scope: "all",
+  total: 49, tookMs: 14, scope: "all",
   boxes: { "us-metal02": { ok: true, tookMs: 9, backfillPct: 61, bytesTotal: 14e9 }, mac: { ok: false, error: "relay mac did not answer in 3000 ms", tookMs: 3000, backfillPct: 0 } },
+};
+/** Older hits in threads of their own, so the list scrolls and can hold a chosen row in place while rows land above it. */
+const FILLER: Hit[] = Array.from({ length: 16 }, (_, index) => hit(`01a1face-0000-7000-8000-0000000001${String(index).padStart(2, "0")}`, -10 - index, "assistant",
+  `older run ${index}: the relay <mark>did</mark> <mark>not</mark> <mark>answer</mark> <mark>in</mark> time`, { thread: `older job ${index}` }));
+/** Each box's own answer to `box=<name>`: us-metal02 counts 40 hits and the Mac 9, the 49 of the merged answer. */
+const BOX_ANSWERS: Record<string, SearchResult> = {
+  "us-metal02": { hits: [...FIXTURE.hits.filter(one => one.box === "us-metal02"), ...FILLER], total: 40, tookMs: 9, scope: "all", boxes: { "us-metal02": { ok: true, tookMs: 9, backfillPct: 100 } } },
+  mac: { hits: FIXTURE.hits.filter(one => one.box === "mac"), total: 9, tookMs: 30, scope: "all", boxes: { mac: { ok: true, tookMs: 30, backfillPct: 100 } } },
 };
 
 test("sidebar typing offers message search, the panel groups hits by thread, and Enter opens the thread at that message", { skip: chrome ? false : "no Chrome on this host", timeout: 120_000 }, async t => {
@@ -107,11 +119,16 @@ test("sidebar typing offers message search, the panel groups hits by thread, and
   // A fake pi-history on its own socket: the serve's api/search reaches it through PI_HISTORY_SOCKET, and it records each query it got.
   const historySocket = join(dir, "history.sock");
   const searches: Record<string, string>[] = [];
+  // Without box= it answers once the Mac does, as pi-history merges; with box=us-metal02 at once and with box=mac after MAC_MS.
+  let macAnswered = false;
   const history = createHttpServer((req, res) => {
     const url = new URL(req.url ?? "/", "http://pi-history");
     if (url.pathname !== "/v1/search") { res.writeHead(404, { "content-type": "application/json" }).end(JSON.stringify({ error: "not found" })); return; }
     searches.push(Object.fromEntries(url.searchParams));
-    res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(FIXTURE));
+    const box = url.searchParams.get("box");
+    const answer = box ? BOX_ANSWERS[box]! : FIXTURE;
+    const reply = () => { if (box === "mac") macAnswered = true; res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(answer)); };
+    if (box === "us-metal02") reply(); else setTimeout(reply, MAC_MS);
   });
   await new Promise<void>(resolve => history.listen(historySocket, resolve));
   t.after(() => { history.closeAllConnections(); history.close(); });
@@ -164,25 +181,27 @@ test("sidebar typing offers message search, the panel groups hits by thread, and
   assert.equal(await evaluate(`document.querySelector("[data-search-messages]").innerText.replace(/\\s+/g, " ").trim()`), "Search messages for “did not answer in” ↵");
   await key("Enter", "Enter", 13, 0, "\r");
 
-  await until(`document.querySelectorAll(".hit").length === 5`, "the panel shows three hits of the thread, the subagent's and the Mac's");
+  // A page whose rows name no box asks once for the merged answer, and keeps the box names it names for the next search.
+  await until(`document.querySelectorAll(".hit").length === 5`, "the panel shows the Mac's hit, the subagent's and three of the thread");
   assert.deepEqual(searches, [{ q: "did not answer in", sort: "newest" }]);
-  const groups = await evaluate(`[...document.querySelectorAll(".thread")].map(head => head.innerText.replace(/\\s+/g, " ").trim())`);
+  const groups = await evaluate(`[...document.querySelectorAll("#search-results .thread")].map(head => head.innerText.replace(/\\s+/g, " ").trim())`);
   assert.equal(groups.length, 3, groups.join("\n"));
-  assert.match(groups[0], /^hosts relay timeout job us-metal02 Oct 23, /);
+  assert.match(groups[0], /^slack green guy mac Oct 23, /);
   assert.match(groups[1], /^hosts relay timeout job relay probe us-metal02 /);
-  assert.match(groups[2], /^slack green guy mac /);
+  assert.match(groups[2], /^hosts relay timeout job us-metal02 /);
   assert.deepEqual(await evaluate(`[...document.querySelectorAll(".more")].map(more => more.innerText.trim())`), ["1 more in this thread"]);
   assert.equal(await evaluate(`[...document.querySelectorAll(".hit .kind")].map(kind => kind.innerText).join(" | ")`),
-    "assistant | tool error (ipython) | you | agent message from parent | assistant");
-  assert.equal(await evaluate(`document.querySelectorAll(".hit")[1].querySelector(".snippet").innerText`), "relay mac (100.66.173.18:7790) did not answer in 15000 ms <tag>");
-  assert.equal(await evaluate(`document.querySelectorAll(".hit")[1].querySelectorAll("mark").length`), 4);
-  assert.match(await evaluate(`document.querySelector(".count").innerText`), /^6 results in 14 ms$/);
+    "assistant | agent message from parent | assistant | tool error (ipython) | you");
+  const errorHit = `.hit[data-at="${at(24)}"]`;
+  assert.equal(await evaluate(`document.querySelector(${JSON.stringify(errorHit)}).querySelector(".snippet").innerText`), "relay mac (100.66.173.18:7790) did not answer in 15000 ms <tag>");
+  assert.equal(await evaluate(`document.querySelector(${JSON.stringify(errorHit)}).querySelectorAll("mark").length`), 4);
+  assert.match(await evaluate(`document.querySelector(".count").innerText`), /^49 results in 14 ms$/);
   assert.deepEqual(await evaluate(`[...document.querySelectorAll(".notice")].map(notice => notice.innerText)`),
     ["The Mac is offline, so its messages are not in these results.", "Still reading older history: 61% of 14.0 GB. Newer messages are searched already."]);
 
-  // The thread shows lines 27, 24 and 20 and folds line 12 into "1 more"; Down twice lands on line 20, and Enter opens the thread there.
-  await key("ArrowDown", "ArrowDown", 40);
-  await key("ArrowDown", "ArrowDown", 40);
+  // The rows run Mac, subagent, then the thread's lines 27, 24 and 20 with line 12 folded into "1 more"; Down four times lands on line 20,
+  // and Enter opens the thread there.
+  for (let step = 0; step < 4; step += 1) await key("ArrowDown", "ArrowDown", 40);
   assert.equal(await evaluate(`document.querySelector(".hit.active").dataset.at`), String(at(20)));
   await key("Enter", "Enter", 13, 0, "\r");
   await until(`!document.querySelector("dialog[aria-label='Search messages']")`, "Enter closes the panel");
@@ -202,12 +221,29 @@ test("sidebar typing offers message search, the panel groups hits by thread, and
   assert.equal(await evaluate(`location.search + location.hash`), `?t=${SUB}#${SUB}@${SUB_AT}`);
   await until(`document.querySelector('[data-at="${SUB_AT}"].linked')`, "the subagent's thread flashes the hit's message");
 
-  // "1 more in this thread" asks again with the thread as the Chat filter.
+  // "1 more in this thread" asks again with the thread as the Chat filter, now once per box the first answer named: us-metal02's hits show while
+  // the Mac still answers, and the Mac's newer thread lands above them without moving the chosen row.
   await key("F", "KeyF", 70, 2 | 8);
   await until(`document.querySelector(".more")`, "the panel shows the more line");
   await evaluate(`document.querySelector(".more").click()`);
-  for (let waited = 0; searches.length < 2 && waited < 5000; waited += 50) await delay(50);
-  assert.deepEqual(searches[1], { q: "did not answer in", sort: "newest", chat: THREAD });
+  await until(`document.querySelectorAll(".hit").length === 4 + ${FILLER.length} && !document.querySelector('.hit[data-session="${MAC}"]')`, "us-metal02's hits show before the Mac answers");
+  assert.equal(macAnswered, false, "the local hits waited for the Mac");
+  assert.deepEqual((searches as Record<string, string>[]).slice(1).sort((a, b) => String(a.box).localeCompare(String(b.box))), [
+    { q: "did not answer in", sort: "newest", chat: THREAD, box: "mac" }, { q: "did not answer in", sort: "newest", chat: THREAD, box: "us-metal02" }]);
+  assert.match(await evaluate(`document.querySelector(".count").innerText`), /^40 results in 9 ms$/);
+  assert.deepEqual(await evaluate(`[...document.querySelectorAll(".notice")].map(notice => notice.innerText)`), ["Searching the Mac…"]);
+  await key("ArrowDown", "ArrowDown", 40);
+  const chosen = `.hit[data-at="${at(27)}"]`;
+  assert.equal(await evaluate(`document.querySelector(".hit.active") === document.querySelector(${JSON.stringify(chosen)})`), true);
+  const topBefore = await evaluate(`document.querySelector(${JSON.stringify(chosen)}).getBoundingClientRect().top`);
+  await until(`document.querySelector('.hit[data-session="${MAC}"]')`, "the Mac's hit merges in once it answers");
+  await delay(100);
+  assert.match(await evaluate(`document.querySelector(".count").innerText`), /^49 results in 30 ms$/);
+  assert.deepEqual(await evaluate(`[...document.querySelectorAll(".notice")].map(notice => notice.innerText)`), []);
+  assert.match(await evaluate(`document.querySelector("#search-results .thread").innerText.replace(/\\s+/g, " ")`), /^slack green guy mac /);
+  assert.equal(await evaluate(`document.querySelector(".hit.active") === document.querySelector(${JSON.stringify(chosen)})`), true, "the chosen row stays chosen");
+  const topAfter = await evaluate(`document.querySelector(${JSON.stringify(chosen)}).getBoundingClientRect().top`);
+  assert.ok(Math.abs(topAfter - topBefore) < 2, `the chosen row moved from ${topBefore} to ${topAfter} px`);
   await key("Escape", "Escape", 27);
   await until(`!document.querySelector("dialog[aria-label='Search messages']")`, "Esc closes the panel");
 });
