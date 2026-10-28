@@ -67,13 +67,17 @@ export interface Fault { id: string; title: string; designs: string[]; owner: st
 /** config_sources names a supervised writer by config_audit.source, for an actor such as metal that also writes by hand. */
 export interface Registry {
   automatic_writers: { config_actors: string[]; config_sources?: string[] };
-  exempt: { config_reason_regex: string; config_key_regex?: string; box_exec_regex?: string };
+  exempt: { config_reason_regex: string; config_key_regex?: string; declared_cap_regex?: string; box_exec_regex?: string };
   faults: Fault[];
 }
 
 export type World = "prod" | "staging";
 /** `cleared` is a row whose new value is empty: it deletes the hand row, so the key reads its code default again. */
-export interface AuditRow { id: number; ts: number; actor: string; key: string; reason: string; source: string; cleared?: boolean }
+/**
+ * `value` is the row's new value. `declared` is set by measure on a row of a key in exempt.declared_cap_regex whose value equals that key's
+ * default committed in crawler-v3 settings at the write (declaredCaps), so the write only applies a committed lane cap.
+ */
+export interface AuditRow { id: number; ts: number; actor: string; key: string; reason: string; source: string; cleared?: boolean; value?: string; declared?: boolean }
 export interface StatusEvent { accountId: number; at: number; outcome: string; errorCode: string }
 export interface BoardStep { id: string; status: string; job?: string }
 /** What a design ref resolves to: a board step's status, or whether a branch or commit exists. */
@@ -106,9 +110,9 @@ export interface HandFix { source: string; at: number; what: string; text: strin
 export type Verdict = { kind: "automatic" } | { kind: "exempt" } | { kind: "fault"; fault: Fault } | { kind: "undesigned" };
 export type StepState = "none" | "live" | "done";
 
-export type Source = "grafana auth" | "registry" | "board" | "box" | "mac" | "prod deploys" | `${World} config` | `${World} engage`;
+export type Source = "grafana auth" | "registry" | "board" | "box" | "mac" | "prod deploys" | "declared caps" | `${World} config` | `${World} engage`;
 const WORLDS: readonly World[] = ["prod", "staging"];
-const READS: readonly Source[] = ["registry", "prod config", "staging config", "prod engage", "staging engage"];
+const READS: readonly Source[] = ["registry", "prod config", "staging config", "prod engage", "staging engage", "declared caps"];
 export const NEEDS: Readonly<Record<string, readonly Source[]>> = {
   faults_without_job: ["registry", "board"], undesigned_hand_fixes: READS, repeats_after_design: [...READS, "board"], hand_run_processes: ["mac", "box"],
 };
@@ -139,6 +143,7 @@ export function parseRegistry(value: unknown): Registry {
     if (registry.exempt.box_exec_regex) new RegExp(registry.exempt.box_exec_regex);
     if (registry.exempt.config_key_regex !== undefined && typeof registry.exempt.config_key_regex !== "string") throw new Error("exempt.config_key_regex is not a string");
     if (registry.exempt.config_key_regex) new RegExp(registry.exempt.config_key_regex);
+    if (registry.exempt.declared_cap_regex) new RegExp(registry.exempt.declared_cap_regex);
     for (const pattern of [fault.match.config_reason_tag, fault.match.config_reason_regex, fault.match.mac_process_regex, fault.match.box_exec_regex, fault.match.box_container_regex])
       if (pattern) new RegExp(pattern);
   }
@@ -146,13 +151,14 @@ export function parseRegistry(value: unknown): Registry {
 }
 
 /** Config rows grouped into hand fixes: rows of one world, actor, source and reason written in the same minute are one change. */
-export function groupAudit(world: World, rows: readonly AuditRow[]): (HandFix & { actor: string; writer: string; keys: string[]; cleared: boolean })[] {
-  const groups = new Map<string, HandFix & { actor: string; writer: string; keys: string[]; cleared: boolean }>();
+export function groupAudit(world: World, rows: readonly AuditRow[]): (HandFix & { actor: string; writer: string; keys: string[]; cleared: boolean; declared: boolean })[] {
+  const groups = new Map<string, HandFix & { actor: string; writer: string; keys: string[]; cleared: boolean; declared: boolean }>();
   for (const row of rows) {
     const id = `${row.actor}\u0000${row.source}\u0000${row.reason}\u0000${Math.floor(row.ts / 60_000)}`;
     const group = groups.get(id);
-    if (group) { if (!group.keys.includes(row.key)) group.keys.push(row.key); group.cleared &&= row.cleared === true; continue; }
-    groups.set(id, { source: `${world} config`, at: row.ts, what: `audit ${row.id}`, text: row.reason, actor: row.actor, writer: row.source, keys: [row.key], cleared: row.cleared === true });
+    if (group) { if (!group.keys.includes(row.key)) group.keys.push(row.key); group.cleared &&= row.cleared === true; group.declared &&= row.declared === true; continue; }
+    groups.set(id, { source: `${world} config`, at: row.ts, what: `audit ${row.id}`, text: row.reason, actor: row.actor, writer: row.source, keys: [row.key],
+      cleared: row.cleared === true, declared: row.declared === true });
   }
   return [...groups.values()].map(group => ({ ...group, what: `${group.what} ${group.keys.join(",")}`.slice(0, 160) }));
 }
@@ -178,10 +184,11 @@ const capsOnly = (fix: { keys: readonly string[] }, regex?: string): boolean => 
   return fix.keys.length > 0 && fix.keys.every(key => cap.test(key));
 };
 
-export function classifyConfig(fix: { actor: string; writer?: string; keys: readonly string[]; text: string; cleared?: boolean }, registry: Registry): Verdict {
+export function classifyConfig(fix: { actor: string; writer?: string; keys: readonly string[]; text: string; cleared?: boolean; declared?: boolean }, registry: Registry): Verdict {
   const automatic = registry.automatic_writers;
   if (automatic.config_actors.includes(fix.actor) || (fix.writer && automatic.config_sources?.includes(fix.writer))) return { kind: "automatic" };
-  if (new RegExp(registry.exempt.config_reason_regex).test(fix.text) || handsBack(fix) || capsOnly(fix, registry.exempt.config_key_regex)) return { kind: "exempt" };
+  if (new RegExp(registry.exempt.config_reason_regex).test(fix.text) || handsBack(fix) || capsOnly(fix, registry.exempt.config_key_regex) || fix.declared === true)
+    return { kind: "exempt" };
   const named = NAMED_FAULT.exec(fix.text)?.[1];
   if (named) { const listed = registry.faults.find(item => item.id === named); return listed ? { kind: "fault", fault: listed } : { kind: "undesigned" }; }
   const fault = registry.faults.find(item => item.match.config_reason_tag && new RegExp(`^(?:${item.match.config_reason_tag})`).test(fix.text)) ??
@@ -518,7 +525,7 @@ export function nextState(state: HandState, data: HandData): HandState {
 }
 
 export const auditSql = (lastId: number | undefined, now: number): string =>
-  `select id, ts, actor, key, coalesce(reason, '') as reason, coalesce(source, '') as source, ` +
+  `select id, ts, actor, key, coalesce(reason, '') as reason, coalesce(source, '') as source, coalesce(new_value, '') as new_value, ` +
   `case when coalesce(new_value, '') = '' then 1 else 0 end as cleared from config_audit where ` +
   (lastId ? `(id > ${Math.floor(lastId)} or ` : "(") + `ts >= to_timestamp(${Math.floor((now - DAY) / 1000)})) order by id`;
 export const eventsSql = (after: number): string =>
@@ -658,6 +665,42 @@ export async function macProcesses(signal: AbortSignal): Promise<MacProcess[]> {
  * the same tree (land 38, 43490e7e9f, is d2119eae32's tree), so the commit counts when it is an ancestor of the release or of a commit with the
  * release's tree, or when one of those holds a commit whose `Replayed-From` trailer names it (land-object.mjs replays an object onto the tip).
  */
+/** The crawler-v3 files that hold each tier's control defaults and the constants they name. */
+const SETTINGS_PATH = "apps/crawler-v3/src/settings.py";
+const TUNING_PATH = "apps/crawler-v3/src/control/tuning.py";
+const DEFAULTS_BLOCK: Readonly<Record<World, string>> = { prod: "_PROD_CONTROL_DEFAULTS", staging: "_STAGING_CONTROL_DEFAULTS" };
+/** Every machine's dev branch (auto-sns-agent scripts/ci/branches.mjs HOST_BRANCHES), local or as fetched; a missing ref is skipped. */
+const DEV_REFS = ["refs/heads/dev/sieun", "refs/remotes/origin/dev/sieun", "refs/heads/dev/sieun-mac", "refs/remotes/origin/dev/sieun-mac"];
+
+/** A tier's `("key", value)` control defaults in settings.py, each value an int literal or a constant settings.py or control/tuning.py sets. */
+export function parseControlDefaults(settings: string, tuning: string, world: World): Map<string, number> {
+  const start = settings.indexOf(`${DEFAULTS_BLOCK[world]}:`);
+  const out = new Map<string, number>();
+  if (start < 0) return out;
+  const block = settings.slice(start, settings.indexOf("\n)\n", start));
+  const constant = (name: string) => new RegExp(`^${name}\\s*(?::[^=\\n]+)?=\\s*(\\d[\\d_]*)\\s*$`, "m").exec(`${settings}\n${tuning}`)?.[1];
+  for (const [, key, raw] of block.matchAll(/\(\s*"([\w.]+)",\s*([A-Za-z_]\w*|\d[\d_]*)\s*,?\s*\)/g)) {
+    const digits = /^\d/.test(raw!) ? raw : constant(raw!);
+    if (digits) out.set(key!, Number(digits.replaceAll("_", "")));
+  }
+  return out;
+}
+
+/** Each control's committed default in `world` at the newest commit before `at` on each dev branch, so a cap committed on either machine counts. */
+export function gitDeclaredCaps(git: (args: string[]) => Promise<string>): (world: World, at: number) => Promise<Map<string, number[]>> {
+  const shown = new Map<string, Promise<string>>();
+  const show = (sha: string, path: string) => { const id = `${sha}:${path}`; if (!shown.has(id)) shown.set(id, git(["show", id])); return shown.get(id)!; };
+  return async (world, at) => {
+    const out = new Map<string, number[]>();
+    for (const ref of DEV_REFS) {
+      const sha = (await git(["log", "-1", "--format=%H", `--before=${new Date(at).toISOString()}`, ref, "--", SETTINGS_PATH, TUNING_PATH]).catch(() => "")).trim();
+      if (!sha) continue;
+      for (const [key, value] of parseControlDefaults(await show(sha, SETTINGS_PATH), await show(sha, TUNING_PATH), world)) out.set(key, [...out.get(key) ?? [], value]);
+    }
+    return out;
+  };
+}
+
 export function gitReleaseHolds(git: (args: string[]) => Promise<string>): (release: string, commit: string) => Promise<boolean> {
   let trees: Promise<Map<string, string[]>> | undefined;
   const byTree = () => trees ??= git(["log", "--all", "--format=%H %T"]).then(out => {
@@ -690,6 +733,8 @@ export interface HandDeps {
   registry: () => Promise<unknown>;
   /** One chat's board, or null when it has none. */
   board: (chat: string) => Promise<{ plan?: unknown[] } | null>;
+  /** Each control's committed crawler-v3 default in `world` on every dev branch at time `at` (gitDeclaredCaps), a key to its values. */
+  declared: (world: World, at: number) => Promise<ReadonlyMap<string, readonly number[]>>;
   /** Whether a `branch:<name>` or `commit:<sha>` ref exists in the auto-sns-agent checkout. */
   gitRef: (ref: string) => Promise<boolean>;
   /** Whether a prod release (a sha from deploy.log) holds a commit; throws when either cannot be read. */
@@ -708,7 +753,8 @@ export async function measure(deps: HandDeps): Promise<HandData> {
     for (const world of WORLDS) for (const kind of ["config", "engage"] as const) data.errors.push({ source: `${world} ${kind}`, message: "not read: no Grafana login" });
   }
   const audit = (world: World) => step(`${world} config`, async () => (await sqlRows(query!, PG[world], auditSql(deps.state.audit?.[world], deps.now))).map(row => ({
-    id: num(row.id) ?? 0, ts: num(row.ts) ?? 0, actor: String(row.actor ?? ""), key: String(row.key ?? ""), reason: String(row.reason ?? ""), source: String(row.source ?? ""), cleared: num(row.cleared) === 1 })));
+    id: num(row.id) ?? 0, ts: num(row.ts) ?? 0, actor: String(row.actor ?? ""), key: String(row.key ?? ""), reason: String(row.reason ?? ""), source: String(row.source ?? ""),
+    cleared: num(row.cleared) === 1, value: String(row.new_value ?? "") })));
   const events = (world: World) => step(`${world} engage`, async () => (await sqlRows(query!, PG[world], eventsSql(Math.min(deps.state.events?.[world] ?? deps.now, deps.now - DAY)))).map(row => ({
     accountId: num(row.account_id) ?? 0, at: num(row.at) ?? 0, outcome: String(row.outcome ?? ""), errorCode: String(row.error_code ?? "") })));
   const [registry, board, box, mac, prodAudit, stagingAudit, prodEvents, stagingEvents] = await Promise.all([
@@ -740,8 +786,19 @@ export async function measure(deps: HandDeps): Promise<HandData> {
   if (stagingAudit) data.audit.staging = stagingAudit;
   if (prodEvents) data.events.prod = prodEvents;
   if (stagingEvents) data.events.staging = stagingEvents;
+  const capRegex = registry?.exempt.declared_cap_regex;
+  if (capRegex) await step("declared caps", () => markDeclared(data, new RegExp(capRegex), deps.declared));
   if (registry && data.deploys) data.held = await heldBy(deps, data, registry);
   return data;
+}
+
+/** Marks each audit row that writes a key matching `regex` to the value crawler-v3 committed as that key's default before the write. */
+export async function markDeclared(data: HandData, regex: RegExp, declared: HandDeps["declared"]): Promise<void> {
+  for (const world of WORLDS)
+    for (const row of data.audit[world] ?? []) {
+      if (row.cleared || !regex.test(row.key) || !/^-?\d+$/.test(row.value ?? "")) continue;
+      row.declared = (await declared(world, row.ts)).get(row.key)?.includes(Number(row.value)) === true;
+    }
 }
 
 /** The `commit:` refs each needed release holds: the release prod ran at each listed fault's hand fix, and the one it runs now. */
@@ -782,6 +839,7 @@ async function main(): Promise<void> {
   const data = await measure({ now, state, query, authError,
     registry: async () => JSON.parse(await readFile(REGISTRY_FILE, "utf8")),
     board: chat => new BoardStore(join(homedir(), ".prime/agent/browser-chat")).read(chat) as never,
+    declared: gitDeclaredCaps(args => run("git", ["-C", REPO, ...args], signal)),
     gitRef: ref => run("git", ["-C", REPO, "rev-parse", "--verify", "--quiet", ref.startsWith("branch:") ? `refs/heads/${ref.slice(7)}` : `${ref.slice(7)}^{commit}`], signal).then(() => true, () => false),
     releaseHolds: gitReleaseHolds(args => run("git", ["-C", REPO, ...args], signal)),
     box: () => run("ssh", ["-o", "BatchMode=yes", BOX, "bash -s"], signal, BOX_SCRIPT),

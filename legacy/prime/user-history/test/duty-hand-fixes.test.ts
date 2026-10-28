@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { parseDutyInput } from "../src/shared/chat-duties.ts";
-import { type AuditRow, type Deploy, type Fault, type HandData, type RefState, auditSql, classifyConfig, designOnProd, gitReleaseHolds, groupAudit, handExecs, experimentExecs, filedAfter, isSessionProcess, nextState, startedByTest, hostWriters, oneOffs, parseBox, parseRegistry, releaseAt, report, WRITES, HOST_WRITES } from "../scripts/duties/hand-fixes.ts";
+import { type AuditRow, type Deploy, type Fault, type HandData, type RefState, auditSql, classifyConfig, designOnProd, gitDeclaredCaps, gitReleaseHolds, markDeclared, parseControlDefaults, groupAudit, handExecs, experimentExecs, filedAfter, isSessionProcess, nextState, startedByTest, hostWriters, oneOffs, parseBox, parseRegistry, releaseAt, report, WRITES, HOST_WRITES } from "../scripts/duties/hand-fixes.ts";
 
 const DIR = join(import.meta.dirname, "..", "scripts", "duties");
 const AT = Date.parse("2026-10-16T05:08:27Z");
@@ -20,10 +20,10 @@ const data = async (now: number, prod: AuditRow[]): Promise<HandData> => ({ now,
   deploys: [{ at: Date.parse("2026-10-15T10:24:30Z"), release: "a8f85b420699" }], held: new Map([["a8f85b420699", new Set(["commit:98c14dbd1a"])]]) });
 const metrics = async (now: number) => parseDutyInput(JSON.parse(await readFile(join(DIR, "hand-fixes.duty.json"), "utf8")), "d", now).metrics;
 
-test("audit 13533 is a lane rate change of F1, since a guard named in the prose does not beat the keys", async () => {
+test("audit 13533 is a census cap step of F31, since a guard named in the prose does not beat the keys", async () => {
   const [fix] = groupAudit("prod", rows(AT));
   const verdict = classifyConfig(fix!, await registry());
-  assert.equal(verdict.kind === "fault" && verdict.fault.id, "F1");
+  assert.equal(verdict.kind === "fault" && verdict.fault.id, "F31");
   const now = AT + 3_600_000;
   const output = report(await data(now, rows(AT)), await metrics(now));
   assert.equal(output.metrics.repeats_after_design, 0);
@@ -85,7 +85,7 @@ test("a write that cites the owner's answer on a todo is exempt, and a capacity 
   assert.equal(fault(["instagram_census.crawl_concurrency"], "Owner's fixed census cap (todo t67, c170): crawl_concurrency 64 per process."), "exempt");
   assert.equal(fault(["instagram_census.weekly_min_followers"], "p944/p683, owner rule on t65 (10-26): \"1k+ every month, 10K+ every week\""), "exempt");
   assert.equal(fault(["meta_ads.walker_sessions"], "F1: 7ddecf3eb live in p1014 (21:58Z): +20% sessions toward 25.7k advertiser walks an hour"), "F1");
-  assert.equal(fault(["instagram_census.crawl_concurrency"], "raise census, the owner wants more reads"), "F1");
+  assert.equal(fault(["instagram_census.crawl_concurrency"], "raise census, the owner wants more reads"), "F31");
 });
 
 test("a hand write no fault covers is filed and counts as a fault without a job until the registry lists one for its key", async () => {
@@ -286,12 +286,12 @@ test("a closed step-only fault with no done_at counts no hand fix from before th
   const reg = await registry();
   const undated = { ...reg, faults: reg.faults.map(({ done_at: _, ...fault }) => fault) };
   const closed = new Map([...refs(), [P170, { kind: "step", status: "done" } as RefState]]);
-  const before = hand(14858, CLOSED - 3_600_000, "instagram_census.crawl_concurrency", "Load-shed test, step 1 of 3");
+  const before = hand(14858, CLOSED - 3_600_000, "instagram_census.history_per_minute", "Load-shed test, step 1 of 3");
   const first = { ...(await data(CLOSED + 600_000, [before])), registry: undated, refs: closed };
   assert.equal(report(first, await metrics(first.now)).metrics.repeats_after_design, 0);
   const seen = nextState({}, first).doneSeen!;
   assert.equal(seen.F1, first.now);
-  const later = hand(14867, first.now + 600_000, "instagram_census.crawl_concurrency", "Load-shed test, step 3 of 3");
+  const later = hand(14867, first.now + 600_000, "instagram_census.history_per_minute", "Load-shed test, step 3 of 3");
   const second = { ...first, now: first.now + 1_200_000, audit: { prod: [before, later], staging: [] }, doneSeen: seen };
   assert.equal(report(second, await metrics(second.now)).metrics.repeats_after_design, 1);
 });
@@ -299,8 +299,8 @@ test("a closed step-only fault with no done_at counts no hand fix from before th
 test("F1 is dated by p170's close, so only the hand writes after 15:15Z on 10-19 are repeats", async () => {
   const closed = new Map([...refs(), [P170, { kind: "step", status: "done" } as RefState]]);
   const now = CLOSED + 1_800_000;
-  const prod = [hand(14858, CLOSED - 600_000, "instagram_census.crawl_concurrency", "Load-shed test, step 1 of 3"),
-    hand(14867, CLOSED + 900_000, "instagram_census.crawl_concurrency", "Load-shed test, step 3 of 3"), controller(14870, CLOSED + 1_000_000)];
+  const prod = [hand(14858, CLOSED - 600_000, "instagram_census.history_per_minute", "Load-shed test, step 1 of 3"),
+    hand(14867, CLOSED + 900_000, "instagram_census.history_per_minute", "Load-shed test, step 3 of 3"), controller(14870, CLOSED + 1_000_000)];
   assert.equal(report({ ...(await data(now, prod)), refs: closed }, await metrics(now)).metrics.repeats_after_design, 1);
 });
 
@@ -405,4 +405,56 @@ test("a lane ceiling write (lanes.max_processes.<role>) is a c170 cap and exempt
   assert.equal(classifyConfig(census!, reg).kind, "exempt");
   const filed = filedAfter([{ keys: ["lanes.max_processes.instagram-census-writer"], at: AT, text: "prod PG still full", line: "prod" }], [], reg);
   assert.deepEqual(filed, []);
+});
+
+
+// Prod audit 16839 (10-27 07:58Z) set history_years from the owner's answer "3 years" on the Crawler VP's todo t74 and read as an F1 repeat.
+test("a write that cites the owner's todo answer as 'owner t74' is exempt", async () => {
+  const reg = await registry();
+  const verdict = classifyConfig({ actor: "api-key", writer: "ops-api", keys: ["instagram_census.history_years"],
+    text: "p684, owner t74 (10-27 ~07:50Z) and msg mvqdjz7e: the once-only history walk goes 3 years back or 1,000 posts" }, reg);
+  assert.equal(verdict.kind, "exempt");
+});
+
+const SETTINGS = `from src.control.tuning import CENSUS_CRAWL_SLOTS_MAX
+_WORKER_TASKS: int = 40
+_STAGING_CONTROL_DEFAULTS: tuple[tuple[str, int], ...] = (
+    ("instagram_census.crawl_concurrency", 8),
+)
+_PROD_CONTROL_DEFAULTS: tuple[tuple[str, int], ...] = (
+    # measured: a reading
+    ("instagram_census.new_per_minute", 142_400),
+    ("instagram_census.crawl_concurrency", CENSUS_CRAWL_SLOTS_MAX),
+    ("crawl.concurrency.tiktok", _WORKER_TASKS),
+    ("pause.media", False),
+)
+`;
+
+test("a tier's control defaults resolve int literals and the constants settings.py or control/tuning.py set", () => {
+  const prod = parseControlDefaults(SETTINGS, "CENSUS_CRAWL_SLOTS_MAX = 80\n", "prod");
+  assert.deepEqual([...prod], [["instagram_census.new_per_minute", 142_400], ["instagram_census.crawl_concurrency", 80], ["crawl.concurrency.tiktok", 40]]);
+  assert.deepEqual([...parseControlDefaults(SETTINGS, "", "staging")], [["instagram_census.crawl_concurrency", 8]]);
+});
+
+// Prod audits 16834-16936 stepped census slots 80-64-32-48-32-48 by hand in 23 h for box load (F31, design 01a11bd7/p246).
+test("a declared cap write counts only when its value differs from the default committed before it on a dev branch", async () => {
+  const reg = await registry();
+  const commits: Record<string, string> = { "refs/heads/dev/sieun": "a1", "refs/remotes/origin/dev/sieun-mac": "b2" };
+  const files: Record<string, string> = {
+    "a1:apps/crawler-v3/src/settings.py": SETTINGS, "a1:apps/crawler-v3/src/control/tuning.py": "CENSUS_CRAWL_SLOTS_MAX = 80\n",
+    "b2:apps/crawler-v3/src/settings.py": SETTINGS, "b2:apps/crawler-v3/src/control/tuning.py": "CENSUS_CRAWL_SLOTS_MAX = 48\n" };
+  const git = async (args: string[]) => {
+    if (args[0] === "log") { const sha = commits[args[4]!]; if (!sha) throw new Error(`fatal: bad revision '${args[4]}'`); return `${sha}\n`; }
+    return files[args[1]!] ?? "";
+  };
+  const write = (id: number, value: string): AuditRow => ({ id, ts: AT + id * 120_000, actor: "api-key", source: "ops-api", key: "instagram_census.crawl_concurrency",
+    reason: "p1023 fixed census cap step", value });
+  const data: HandData = { now: AT, audit: { prod: [write(1, "48"), write(2, "80"), write(3, "32")], staging: [] }, events: {}, errors: [] };
+  await markDeclared(data, new RegExp(reg.exempt.declared_cap_regex!), gitDeclaredCaps(git));
+  const verdicts = groupAudit("prod", data.audit.prod!).map(fix => { const verdict = classifyConfig(fix, reg); return verdict.kind === "fault" ? verdict.fault.id : verdict.kind; });
+  assert.deepEqual(verdicts, ["exempt", "exempt", "F31"]);
+});
+
+test("the audit read selects each row's new value", () => {
+  assert.match(auditSql(undefined, AT), /coalesce\(new_value, ''\) as new_value/);
 });
