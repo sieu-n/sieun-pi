@@ -1979,7 +1979,8 @@ export class Chats {
     try { board = await this.source.board(id); }
     catch (error) { this.log(`chat ${id.slice(0, 8)}: unmoved steps: ${error instanceof Error ? error.message : String(error)}`); return; }
     const now = this.now();
-    const reads = rowOwnerReads(row, now);
+    const owed = await this.source.wakes?.(now).catch((): readonly Wake[] => []) ?? [];
+    const reads = rowOwnerReads(row, now, owed.map(wake => wake.session));
     const chats = await this.source.rows().catch((): readonly SessionRow[] => []);
     const others = board ? await linkedBoards(board, id, chat => this.source.board(chat), chats) : new Map<string, ChatBoard | null>();
     const steps = unmovedSteps(board, now, everyMs, reads, { self: id, others, chats });

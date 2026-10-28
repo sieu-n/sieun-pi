@@ -11,6 +11,7 @@ import { loadRecord } from "../src/chat-brief.ts";
 import { Chats } from "../src/chats.ts";
 import { IdIndex } from "../src/id-index.ts";
 import type { ChatAgent, ChatBoard, PlanItem, SessionRow } from "../src/shared/types.ts";
+import type { Wake } from "../src/wakes.ts";
 import { dutySink, fakeThreads, row, source } from "./chats-helpers.ts";
 
 const CHAT = "01a14d31-6ec0-7005-bbe8-c38b7ae73cfb";
@@ -23,10 +24,10 @@ const p132 = (fields: Partial<PlanItem> = {}): PlanItem => ({ id: "p132", text: 
 const job = (fields: Partial<ChatAgent> = {}): ChatAgent => ({ key: "child:sub-1", childId: "sub-1", sessionId: JOB, name: "prod off metal02 code", job: "sub-1",
   sender: "prod off metal02 code", link: "subagent", state: "idle", steps: ["p132"], lastActivityAt: ended, ...fields });
 
-interface Rig { steps?: PlanItem[]; todos?: ChatBoard["todos"]; agents?: ChatAgent[]; paused?: boolean; minutes?: number[]; duty?: string[]; others?: Record<string, ChatBoard> }
+interface Rig { steps?: PlanItem[]; todos?: ChatBoard["todos"]; agents?: ChatAgent[]; paused?: boolean; minutes?: number[]; duty?: string[]; others?: Record<string, ChatBoard>; wakes?: Wake[] }
 
 /** The steers the chat gets over one tick at each of `minutes` after the job's last write. */
-async function told({ steps = [p132()], todos = [], agents = [job()], paused = true, minutes = [33], duty, others = {} }: Rig): Promise<string[]> {
+async function told({ steps = [p132()], todos = [], agents = [job()], paused = true, minutes = [33], duty, others = {}, wakes }: Rig): Promise<string[]> {
   const dir = await mkdtemp(join(tmpdir(), "unmoved-steps-"));
   try {
     const index = new IdIndex(join(dir, "chats.json"), "Chat index");
@@ -37,7 +38,7 @@ async function told({ steps = [p132()], todos = [], agents = [job()], paused = t
     const rows = (): SessionRow[] => [row(CHAT, "2026-10-27T17:26:00Z", { chat: true, agents })];
     const calls: string[] = [];
     const chats = new Chats(index, fakeThreads(calls), async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")),
-      { ...source(dir, { [CHAT]: board, ...others }, () => now, rows), duty: dutySink().duty, ...duty ? { dutyJobs: async () => duty } : {} }, () => {});
+      { ...source(dir, { [CHAT]: board, ...others }, () => now, rows), duty: dutySink().duty, ...duty ? { dutyJobs: async () => duty } : {}, ...wakes ? { wakes: async () => wakes } : {} }, () => {});
     await chats.adopt();
     for (const minute of minutes) {
       now = Date.parse(ended) + minute * MIN;
@@ -88,4 +89,14 @@ test("a step whose wait hands it to another chat's open step is that chat's to m
   const handed = [p132({ waitFor: `${CREW} p1021 going live with the c180 commits` })];
   assert.deepEqual(await told({ steps: handed, others: { [CREW]: crew("doing") } }), []);
   assert.equal((await told({ steps: handed, others: { [CREW]: crew("done") } })).length, 1, "once p1021 closed, the wait is over and the step is told");
+});
+
+test("a step owned by the chat's own session is not told while that session sleeps on a board.wake", async () => {
+  // (temp) mcp on 10-29: p30 and p41 named the chat's own session as job and sessionId and waited for p40's packet, and that session slept on
+  // a board.wake at 09:15 KST, yet at 02:00 KST the chat was told neither had a wake.
+  const own = (id: string, text: string): PlanItem => ({ id, text, status: "blocked", job: CHAT, sessionId: CHAT, waitFor: "p40 supplies the final pin", children: [] });
+  const steps = [own("p30", "Pass on the replacement release decision"), own("p41", "Prepare the replacement release page")];
+  const wake: Wake = { session: CHAT, on: { kind: "time", at: Date.parse(ended) + 7 * 60 * MIN }, note: "Prepare the 10:00 release walk", since: Date.parse(ended) };
+  assert.deepEqual(await told({ steps, agents: [], paused: false, wakes: [wake] }), []);
+  assert.equal((await told({ steps, agents: [], paused: false, wakes: [{ ...wake, session: JOB }] })).length, 1, "another session's wake holds neither step");
 });

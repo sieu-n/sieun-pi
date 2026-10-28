@@ -72,11 +72,13 @@ export function unmovedSteps(board: ChatBoard | null | undefined, now: number, e
 /**
  * The owner reads of one chat from its catalog row, as d9 reads both boxes' rows (`withCatalogOwners`): the chat and each of its jobs wrote at
  * its `lastActivityAt`, or now while it works; a job asleep on a board.wake, queued for a pi-pool slot or with a subagent at work below it is
- * live; and each job's name and sender name its session.
+ * live; and each job's name and sender name its session. Each session in `asleep`, which sleeps on a board.wake the service still owes, is live
+ * too, the chat's own session included: a row carries the wait of its jobs only, so on 10-29 at 02:00 KST (temp) mcp was told its p30 and p41
+ * had no wake while both named the chat's own session, which slept on a board.wake at 09:15 KST.
  */
-export function rowOwnerReads(row: Pick<SessionRow, "id" | "working" | "lastActivityAt" | "agents">, now: number): OwnerReads {
+export function rowOwnerReads(row: Pick<SessionRow, "id" | "working" | "lastActivityAt" | "agents">, now: number, asleep: Iterable<string> = []): OwnerReads {
   const activity = new Map<string, number>();
-  const live = new Set<string>();
+  const live = new Set<string>(asleep);
   const named = new Map<string, string[]>();
   const wrote = (session: string, at: number) => { if (Number.isFinite(at) && at > (activity.get(session) ?? -Infinity)) activity.set(session, at); };
   wrote(row.id, row.working ? now : Date.parse(row.lastActivityAt ?? ""));
