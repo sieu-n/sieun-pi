@@ -29,7 +29,8 @@ const PACKAGE_MANAGERS = new Set(["npm", "pnpm", "yarn", "bun"]);
 const PW_BROWSER_COMMANDS = new Set(["test", "screenshot", "pdf", "open", "codegen", "cr", "ff", "wk", "show-trace", "show-report"]);
 const NODE_VALUE_FLAGS = /^(?:--import|--require|-r|--loader|--experimental-loader|--env-file|--conditions|-C|--input-type|--test-reporter|--test-reporter-destination|--tsconfig)$/;
 const UV_VALUE_FLAGS = /^(?:--with|--with-requirements|--project|--directory|-p|--python|--env-file|--package|--group|--extra|--index|--index-url)$/;
-const JS_LIBRARY = /(?:\bfrom\s*|\brequire\s*\(\s*|\bimport\s*\(?\s*)["'](?:@playwright\/test|playwright(?:-core|-chromium|-firefox|-webkit)?|puppeteer(?:-core|-extra)?|patchright(?:-core)?)["']/;
+/** A Playwright or Puppeteer module name or path in quotes, so `createRequire(...)("playwright")` and an import of node_modules/playwright/index.mjs count too. */
+const JS_LIBRARY = /["'`](?:[^"'`\n]*\/)?(?:@playwright\/test|playwright(?:-core|-chromium|-firefox|-webkit)?|puppeteer(?:-core|-extra)?|patchright(?:-core)?)(?:\/[^"'`\n]*)?["'`]/;
 const PY_LIBRARY = /^\s*(?:from|import)\s+(?:playwright|pyppeteer|patchright)\b/m;
 const LAUNCH = /\.\s*(?:launch|launchPersistentContext|launchServer|launch_persistent_context|launch_server)\s*\(/;
 const JS_IMPORT = /(?:\bfrom\s*|\bimport\s*\(?\s*|\brequire\s*\(\s*)["'](\.{1,2}\/[^"']+)["']/g;

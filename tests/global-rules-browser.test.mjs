@@ -30,6 +30,7 @@ writeFileSync(join(timings, "scout.mjs"), [
 ].join("\n"));
 writeFileSync(join(timings, "lib", "browser.ts"), 'import puppeteer from "puppeteer";\nexport const open = () => puppeteer.launch();\n');
 writeFileSync(join(timings, "via-helper.mjs"), 'import { open } from "./lib/browser.js";\nawait open();\n');
+writeFileSync(join(timings, "by-path.mjs"), 'import { createRequire } from "node:module";\nconst { chromium } = createRequire(import.meta.url)("/Users/sieunpark/Documents/Github/auto-sns-agent/node_modules/playwright");\nawait chromium.launch({ channel: "chromium" });\n');
 writeFileSync(join(timings, "scout.py"), "from playwright.sync_api import sync_playwright\nwith sync_playwright() as p:\n    p.chromium.launch()\n");
 writeFileSync(join(timings, "aside.mjs"), 'import { chromium } from "playwright";\nconst b = await chromium.connectOverCDP("http://127.0.0.1:9222");\n');
 writeFileSync(join(timings, "plain.mjs"), "console.log(await fetch('http://localhost:5180').then((r) => r.status));\n");
@@ -62,6 +63,7 @@ test("on the Mac, the 10-28 scout.mjs run through the kernel's bash() is refused
   refused("bash", [
     `cd ${timings} && RUNS=1 node scout.mjs`,
     `node ${join(timings, "via-helper.mjs")}`,
+    `cd ${timings} && node by-path.mjs`,
     `cd ${timings} && python3 scout.py`,
     `cd ${timings} && uv run scout.py`,
     `node -e 'const { chromium } = require("playwright"); chromium.launch()'`,
