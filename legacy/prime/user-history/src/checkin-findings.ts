@@ -170,7 +170,9 @@ export const heldLine = ({ goal, steps }: HeldGoal): string => `${goal.id} ${quo
  * board's done p8. Such an id, and one tied to a chat's session id ("t17 in chat <id>", `waitRefs`), is read on that chat's board (`others`),
  * and the wait is not over while one cannot be read: CI and RepoOps p420's "t17 in chat 01a16213-..." read the chat's own done t17. A `t9` or `p9` right after a name word or inside a ref ("queue cuts t9", "ci/queue-cuts-t9") is a push or version name,
  * not a board id; an id counts standalone or after a small word ("todo t9", "For you t9", "on t18", "p8 and p9"). After a hyphenated name
- * with a number ("land-39 p3") it is a part of that land: Crawler VP 10-16 p535 waited for "land-39 p3 20880ecc10 green" and read done goal p3. VP of CI 10-14: p135 waited
+ * with a number ("land-39 p3") it is a part of that land: Crawler VP 10-16 p535 waited for "land-39 p3 20880ecc10 green" and read done goal p3. A
+ * name word in an open bracket still counts, and a percentile followed by a number ("p95 2.5 s", "p99 under 1 s") is a latency: Crawler VP 10-28
+ * p1057 waited for "2bdb47f274 (cold p95 2.5 s, from 11 s) ride crawler cut 1024", and two check-ins read done p95. VP of CI 10-14: p135 waited
  * for "run 38414179195 (queue cuts t9 on f0a8ed462f) green", and four check-ins read that t9 as answered todo t9. A clause that names a CI run
  * id and an awaited "green" stays open whatever ids it also names ("is green (run 38289995168)" is a run already seen). A waitFor that names
  * another thread is left out, since its ids may be that thread's. The step is due now, whatever its waitUntil.
@@ -184,9 +186,12 @@ const AWAITED_GREEN = /(?<!\b(?:is|was|are|were|went|turned|stayed)\s+)\bgreen\b
 const ID_WORDS = new Set(["a", "the", "on", "of", "for", "to", "at", "in", "by", "from", "after", "before", "until", "till", "with", "and", "or", "nor",
   "plus", "then", "see", "also", "via", "once", "when", "while", "both", "is", "are", "was", "were", "answer", "answers", "answered", "await", "awaits",
   "wait", "waits", "you", "todo", "todos", "step", "steps", "plan", "goal"]);
+const PERCENTILE = /^p(?:50|75|90|95|99|999)$/;
+const MEASURE_AFTER = /^\s*(?:(?:under|below|over|above|at|near|around|of|is|was|from|to|latency)\s+){0,2}[<>=~:]?\s*\d+(?:[.,]\d+)*\s*(?:ms|s|sec|min|%)?\b/i;
 const boardIds = (text: string): string[] => [...new Set([...text.matchAll(/\b[pt]\d+\b/g)].filter(({ 0: id, index }) => {
-  const word = /(\S+)\s+$/.exec(text.slice(0, index))?.[1] ?? "";
-  return !/[-/_.]$/.test(text.slice(0, index)) && !/^(?:[-/_]|\.\w)/.test(text.slice(index + id.length)) &&
+  const word = (/(\S+)\s+$/.exec(text.slice(0, index))?.[1] ?? "").replace(/^[("'\u2018\u201c[]+/, "");
+  const after = text.slice(index + id.length);
+  return !/[-/_.]$/.test(text.slice(0, index)) && !/^(?:[-/_]|\.\w)/.test(after) && !(PERCENTILE.test(id) && MEASURE_AFTER.test(after)) &&
     !(/^[a-z]+$/i.test(word) && !ID_WORDS.has(word.toLowerCase())) && !/^[a-z]+-\d+[a-z]?$/i.test(word);
 }).map(([id]) => id))];
 export function waitsMet(views: readonly StepView[], board: ChatBoard | null, rows: readonly Pick<SessionRow, "id" | "name" | "archived">[], self: ReadonlySet<string>,
