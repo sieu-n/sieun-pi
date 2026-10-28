@@ -9,7 +9,7 @@
 
   /**
    * Usage: what every chat spent, from pi-host's own usage rows, with each token kind priced apart (c157) and every count exact (c191),
-   * plus the account pool. The period and the chat and host filters live in the URL, as #/usage?days=7&thread=<id>&host=<box>.
+   * plus the account pool. The period and the chat and host filters live in the URL, as #/settings/usage?days=7&thread=<id>&host=<box>.
    */
   const PERIODS = ["1", "7", "30", "90"] as const;
   type Period = (typeof PERIODS)[number];

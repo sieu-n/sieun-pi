@@ -10,7 +10,7 @@ type Host = {
 type Report = { checkedAt: number; registryError: string | null; hosts: Host[] };
 
 test("every box shows with its machine, services and threads, and a thread opens its channel", async ({ page }) => {
-  await page.goto("/#/hosts");
+  await page.goto("/#/settings/hosts");
   await expect(page.getByTestId("hosts-summary")).toBeVisible();
   const data = (await (await page.request.get("/api/hosts")).json()) as Report;
   const threads = data.hosts.reduce((sum, host) => sum + host.threads.length, 0);
@@ -31,7 +31,7 @@ test("every box shows with its machine, services and threads, and a thread opens
 });
 
 test("the page reads the hosts again every 2 seconds", async ({ page }) => {
-  await page.goto("/#/hosts");
+  await page.goto("/#/settings/hosts");
   await page.waitForRequest(request => request.url().endsWith("/api/hosts"));
   const started = Date.now();
   await page.waitForRequest(request => request.url().endsWith("/api/hosts"));
@@ -47,7 +47,7 @@ test("a box that does not answer says so, never zeros, and a down pi-host is nam
     const down: Host = { ...first!, piHost: { state: "down", error: "socket refused" } };
     await route.fulfill({ response, json: { ...data, hosts: [down, ...rest, away] } });
   });
-  await page.goto("/#/hosts");
+  await page.goto("/#/settings/hosts");
   const far = page.getByTestId("host-far-box");
   await expect(far.getByText("Not answering", { exact: true })).toBeVisible();
   await expect(far.getByText("connect ETIMEDOUT").first()).toBeVisible();
@@ -60,7 +60,7 @@ test("a box that does not answer says so, never zeros, and a down pi-host is nam
 test("a failed hosts read shows the reason and Try again", async ({ page }) => {
   let fail = true;
   await page.route("**/api/hosts", route => (fail ? route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "hosts.json unreadable" }) }) : route.continue()));
-  await page.goto("/#/hosts");
+  await page.goto("/#/settings/hosts");
   await expect(page.getByText("Hosts aren't available")).toBeVisible();
   await expect(page.getByText("hosts.json unreadable")).toBeVisible();
   fail = false;

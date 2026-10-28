@@ -6,12 +6,13 @@
  *   #/c                                     Messages with nothing open
  *   #/agents, #/agents/<sub>                Agents
  *   #/board, #/board/<sub>                  Board and For you
- *   #/usage                                 Usage
- *   #/hosts                                 Hosts
+ *   #/settings/<section>                    Settings, one section such as usage or hosts, opened from the avatar menu
  *   #/ui                                    The lib/ui gallery, not in the top bar
+ *
+ * The old #/usage and #/hosts links redirect to #/settings/usage and #/settings/hosts with their query kept.
  */
 
-export type PageId = "messages" | "agents" | "board" | "usage" | "hosts" | "ui";
+export type PageId = "messages" | "agents" | "board" | "settings" | "ui";
 
 export type Route = {
   page: PageId;
@@ -25,16 +26,27 @@ export const PAGES: readonly { id: PageId; label: string; segment: string; icon:
   { id: "messages", label: "Messages", segment: "c", icon: "messages" },
   { id: "agents", label: "Agents", segment: "agents", icon: "robot" },
   { id: "board", label: "Board", segment: "board", icon: "board" },
-  { id: "usage", label: "Usage", segment: "usage", icon: "chart-bar" },
-  { id: "hosts", label: "Hosts", segment: "hosts", icon: "server" },
 ];
 
 /** Pages reachable by URL but not shown in the top bar. */
-const HIDDEN_PAGES: readonly { id: PageId; segment: string }[] = [{ id: "ui", segment: "ui" }];
+const HIDDEN_PAGES: readonly { id: PageId; segment: string }[] = [
+  { id: "settings", segment: "settings" },
+  { id: "ui", segment: "ui" },
+];
 const ALL_PAGES = [...PAGES, ...HIDDEN_PAGES];
 
-export function parseHash(hash: string): Route {
+/** Top-level segments that moved into Settings, each now `#/settings/<segment>`. */
+const MOVED_TO_SETTINGS: readonly string[] = ["usage", "hosts"];
+
+/** The settings link for an old `#/usage` or `#/hosts` hash, or null when the hash did not move. */
+export function movedHash(hash: string): string | null {
   const raw = hash.replace(/^#\/?/, "");
+  const head = raw.split(/[/?]/)[0] ?? "";
+  return MOVED_TO_SETTINGS.includes(head) ? `#/settings/${raw}` : null;
+}
+
+export function parseHash(hash: string): Route {
+  const raw = (movedHash(hash) ?? hash).replace(/^#\/?/, "");
   const q = raw.indexOf("?");
   const path = q === -1 ? raw : raw.slice(0, q);
   const search = q === -1 ? "" : raw.slice(q + 1);
@@ -74,9 +86,17 @@ class Router {
 
   constructor() {
     if (typeof window === "undefined") return;
+    this.redirectMoved();
     window.addEventListener("hashchange", () => {
+      this.redirectMoved();
       this.route = parseHash(location.hash);
     });
+  }
+
+  /** Rewrites an old `#/usage` or `#/hosts` address to its Settings section in place, so back skips the old one. */
+  private redirectMoved(): void {
+    const moved = movedHash(location.hash);
+    if (moved) history.replaceState(history.state, "", moved);
   }
 
   /** The open conversation id on Messages, or null. */

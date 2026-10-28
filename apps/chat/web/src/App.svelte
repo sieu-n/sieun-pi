@@ -9,8 +9,7 @@
   import ChannelPage from "$pages/channel/ChannelPage.svelte";
   import AgentsPage from "$pages/agents/AgentsPage.svelte";
   import BoardPage from "$pages/board/BoardPage.svelte";
-  import UsagePage from "$pages/usage/UsagePage.svelte";
-  import HostsPage from "$pages/hosts/HostsPage.svelte";
+  import SettingsPage from "$pages/settings/SettingsPage.svelte";
   import SearchDialog from "$pages/search/SearchDialog.svelte";
 
   trackKeyboardNavigation();
@@ -56,10 +55,8 @@
     <AgentsPage />
   {:else if router.route.page === "board"}
     <BoardPage />
-  {:else if router.route.page === "usage"}
-    <UsagePage />
-  {:else if router.route.page === "hosts"}
-    <HostsPage />
+  {:else if router.route.page === "settings"}
+    <SettingsPage />
   {:else if router.route.page === "ui"}
     {#await import("$lib/ui/gallery/Gallery.svelte") then m}<m.default />{/await}
   {/if}

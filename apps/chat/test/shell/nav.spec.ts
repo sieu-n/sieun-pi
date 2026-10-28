@@ -12,8 +12,6 @@ test("top bar pills open each page and mark the current one", async ({ page }) =
   for (const [label, hash] of [
     ["Agents", "#/agents"],
     ["Board", "#/board"],
-    ["Usage", "#/usage"],
-    ["Hosts", "#/hosts"],
   ] as const) {
     await nav.getByRole("tab", { name: label }).click();
     await expect(page).toHaveURL(new RegExp(`${hash}$`));
@@ -21,6 +19,41 @@ test("top bar pills open each page and mark the current one", async ({ page }) =
   }
   await nav.getByRole("tab", { name: "Messages" }).click();
   await expect(page).toHaveURL(/#\/c\/ch_general$/);
+});
+
+test("the top bar holds only Messages, Agents and Board, with Usage and Hosts behind Settings", async ({ page }) => {
+  const nav = page.getByRole("navigation", { name: "Pages" });
+  await expect(nav.getByRole("tab")).toHaveText(["Messages", "Agents", "Board"]);
+  const bar = page.locator("header.topbar");
+  await expect(bar.getByText("Usage")).toHaveCount(0);
+  await expect(bar.getByText("Hosts")).toHaveCount(0);
+});
+
+test("the Settings button opens Settings at Usage, and its list switches to Hosts", async ({ page }) => {
+  await page.locator("header.topbar").getByRole("button", { name: "Settings", exact: true }).click();
+  await expect(page).toHaveURL(/#\/settings\/usage$/);
+  const sections = page.getByRole("navigation", { name: "Settings" });
+  await expect(sections.getByRole("link", { name: "Usage" })).toHaveAttribute("aria-current", "page");
+  await expect(page.getByRole("heading", { name: "Usage", level: 1 })).toBeVisible();
+  await sections.getByRole("link", { name: "Hosts" }).click();
+  await expect(page).toHaveURL(/#\/settings\/hosts$/);
+  await expect(sections.getByRole("link", { name: "Hosts" })).toHaveAttribute("aria-current", "page");
+  await expect(page.getByRole("heading", { name: "Hosts", level: 1 })).toBeVisible();
+});
+
+test("the avatar menu opens Settings", async ({ page }) => {
+  await page.getByRole("button", { name: "Profile, appearance and settings" }).click();
+  await page.getByRole("menuitem", { name: "Settings" }).click();
+  await expect(page).toHaveURL(/#\/settings\/usage$/);
+});
+
+test("old #/usage and #/hosts links land in their Settings section with the query kept", async ({ page }) => {
+  await page.goto("/#/usage?days=7");
+  await expect(page).toHaveURL(/#\/settings\/usage\?days=7$/);
+  await expect(page.getByRole("combobox", { name: "Period", exact: true })).toHaveValue("7");
+  await page.goto("/#/hosts");
+  await expect(page).toHaveURL(/#\/settings\/hosts$/);
+  await expect(page.getByTestId("hosts-summary")).toBeVisible();
 });
 
 test("the capsule is 40 px tall and centered in a 56 px top bar", async ({ page }) => {

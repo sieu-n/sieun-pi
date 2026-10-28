@@ -32,6 +32,8 @@
     { id: "dm", label: "New DM", icon: "messages", onselect: () => router.navigate(hrefFor("messages", ["new"], { kind: "dm" })) },
   ];
   const profileItems: MenuEntry[] = $derived([
+    { id: "settings", label: "Settings", icon: "settings", onselect: () => router.navigate(hrefFor("settings", ["usage"])) },
+    { type: "separator" },
     { type: "label", label: "Appearance" },
     { type: "radio", id: "light", group: "mode", label: "Light", checked: theme.mode === "light", onselect: () => theme.set("light") },
     { type: "radio", id: "dark", group: "mode", label: "Dark", checked: theme.mode === "dark", onselect: () => theme.set("dark") },
@@ -60,7 +62,8 @@
   </div>
 
   <div class="right">
-    <button bind:this={profileAnchor} class="profile" type="button" aria-label="Profile and appearance" onclick={() => (profileOpen = !profileOpen)}>
+    <IconButton icon="settings" label="Settings" pressed={router.route.page === "settings"} onclick={() => router.navigate(hrefFor("settings", ["usage"]))} />
+    <button bind:this={profileAnchor} class="profile" type="button" aria-label="Profile, appearance and settings" onclick={() => (profileOpen = !profileOpen)}>
       <Avatar name={ownerName} kind="person" size={28} status="online" />
     </button>
   </div>

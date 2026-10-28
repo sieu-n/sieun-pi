@@ -21,7 +21,7 @@ function sums(rows: Row[]) {
 }
 
 test("the headline, turns and every token kind equal the server's rows exactly", async ({ page }) => {
-  await page.goto("/#/usage");
+  await page.goto("/#/settings/usage");
   await expect(page.getByTestId("usage-cost")).toBeVisible();
   const data = await report(page);
   test.skip(!data.rows.length, "no usage in the last 30 days on this server");
@@ -39,7 +39,7 @@ test("the headline, turns and every token kind equal the server's rows exactly",
 });
 
 test("By chat lists every chat, costliest first, and a row opens its channel", async ({ page }) => {
-  await page.goto("/#/usage");
+  await page.goto("/#/settings/usage");
   const data = await report(page);
   test.skip(!data.rows.length, "no usage in the last 30 days on this server");
   const byThread = new Map<string, { name: string; cost: number }>();
@@ -53,12 +53,12 @@ test("By chat lists every chat, costliest first, and a row opens its channel", a
 });
 
 test("the period and chat filters live in the URL and ask the server again", async ({ page }) => {
-  await page.goto("/#/usage");
+  await page.goto("/#/settings/usage");
   await expect(page.getByTestId("usage-filters")).toBeVisible();
   const asked = page.waitForRequest(request => request.url().includes("/api/usage?days=7"));
   await page.getByRole("combobox", { name: "Period", exact: true }).selectOption("7");
   await asked;
-  await expect(page).toHaveURL(/#\/usage\?days=7$/);
+  await expect(page).toHaveURL(/#\/settings\/usage\?days=7$/);
   await expect(page.getByText("Cost · last 7 days")).toBeVisible();
 
   const data = await report(page, 7);
@@ -73,7 +73,7 @@ test("the period and chat filters live in the URL and ask the server again", asy
 });
 
 test("each pool provider shows its accounts with their 5h and week meters", async ({ page }) => {
-  await page.goto("/#/usage");
+  await page.goto("/#/settings/usage");
   const pool = (await (await page.request.get("/api/pool")).json()) as { providers: { provider: string; rows: { id: string; usable: boolean; disabled: boolean; windows: { label: string; pct: number }[] }[] }[] };
   for (const provider of pool.providers.filter(entry => entry.rows.length)) {
     const live = provider.rows.filter(row => !row.disabled);
@@ -92,7 +92,7 @@ test("each pool provider shows its accounts with their 5h and week meters", asyn
 test("a failed read shows the reason and Try again reads again", async ({ page }) => {
   let fail = true;
   await page.route("**/api/usage?*", route => (fail ? route.fulfill({ status: 502, contentType: "application/json", body: JSON.stringify({ error: "pi-host did not answer" }) }) : route.continue()));
-  await page.goto("/#/usage");
+  await page.goto("/#/settings/usage");
   await expect(page.getByText("Usage isn't available")).toBeVisible();
   await expect(page.getByText("pi-host did not answer")).toBeVisible();
   fail = false;
@@ -103,7 +103,7 @@ test("a failed read shows the reason and Try again reads again", async ({ page }
 test("a period with no calls says so instead of showing zeros", async ({ page }) => {
   await page.route("**/api/usage?*", route =>
     route.fulfill({ contentType: "application/json", body: JSON.stringify({ at: Date.now(), since: 0, until: Date.now(), rows: [], days: [], previous: { cost: 0, complete: true } }) }));
-  await page.goto("/#/usage");
+  await page.goto("/#/settings/usage");
   await expect(page.getByText("No usage in this period")).toBeVisible();
   await expect(page.getByTestId("usage-cost")).toHaveCount(0);
 });
