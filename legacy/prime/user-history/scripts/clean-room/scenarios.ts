@@ -20,6 +20,7 @@ import { historyLeftovers } from "./history-leftovers.ts";
 import { holdAsk } from "./hold-ask.ts";
 import { machineBranch } from "./machine-branch.ts";
 import { sharedShapes } from "./shared-shapes.ts";
+import { layoutPick } from "./layout-pick.ts";
 import { idleUnload } from "./idle-unload.ts";
 import { importSpeed } from "./import-speed.ts";
 import { kernelRevive } from "./kernel-revive.ts";
@@ -51,5 +52,5 @@ import type { Scenario } from "./session-read.ts";
 /** Every clean-room scenario by the name `clean-room.ts setup --scenario` takes. */
 export const SCENARIOS: Record<string, Scenario> = { "carried-release": carriedRelease, "carried-wait": carriedWait, "checkin-goal-push": checkinGoalPush, "checkin-real-task": checkinRealTask, "checkin-push-control": checkinPushControl, "correction-refine": correctionRefine, "dm-replies": dmReplies, "english-jobs": englishJobs, "everyday-task": everydayTask, "quiet-wakes": quietWakes, "import-speed": importSpeed,
   "checkin-job-steer": checkinJobSteer, "token-cost": tokenCost, "chat-tools-reopen": chatToolsReopen, "reopen-first-message": reopenFirstMessage, "kernel-revive": kernelRevive, "lost-brief": lostBrief, "lost-brief-model": lostBriefModel, "ordinary-hour": ordinaryHour, "idle-unload": idleUnload, "owner-asks": ownerAsks, "plan-and-duties": planAndDuties, "task-and-upkeep": taskAndUpkeep, "soft-caps": softCaps, "step-ids": stepIds, "token-hook-resume": tokenHookResume, "wake-live": wakeLive, "box-browser-default": boxBrowserDefault, "box-tools": boxTools,
-  "detached-report": detachedReport, "relative-duty": relativeDuty, "old-commit-tests": oldCommitTests, "readme-preview": readmePreview, "history-leftovers": historyLeftovers, "hold-ask": holdAsk, "machine-branch": machineBranch, "shared-shapes": sharedShapes, "plain-words": plainWords, "saved-login": savedLogin , "job-cancel-cleanup": jobCancelCleanup,
+  "detached-report": detachedReport, "relative-duty": relativeDuty, "old-commit-tests": oldCommitTests, "readme-preview": readmePreview, "history-leftovers": historyLeftovers, "hold-ask": holdAsk, "machine-branch": machineBranch, "shared-shapes": sharedShapes, "layout-pick": layoutPick, "plain-words": plainWords, "saved-login": savedLogin , "job-cancel-cleanup": jobCancelCleanup,
   "transcript-boundary": transcriptBoundary, "published-build-keep": publishedBuildKeep, "task-owner": taskOwner, "answer-data": answerData, "dry-message": dryMessage, "resume-model": resumeModel, "waiting-session": waitingSession, "unrelated-ci-wait": unrelatedCiWait, "unrelated-ci-controlled": unrelatedCiControlled };
