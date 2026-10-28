@@ -16,6 +16,8 @@ export interface Config {
   listen: string;
   dataDir: string;
   socket: string;
+  /** pi-host's index.sqlite, which search reads on its own read-only connection; none on the fixture host. */
+  durableIndex?: string;
   fixture: boolean;
   webDir: string;
   box: string;
@@ -33,19 +35,22 @@ export function readConfig(argv = process.argv.slice(2), env = process.env): Con
       listen: { type: "string" },
       "data-dir": { type: "string" },
       socket: { type: "string" },
+      "durable-index": { type: "string" },
       fixture: { type: "boolean" },
       "web-dir": { type: "string" },
       version: { type: "string" },
     },
   });
   const appDir = resolve(import.meta.dirname, "..");
+  const fixture = values.fixture ?? env.APPS_CHAT_FIXTURE === "1";
   const runtime = env.XDG_RUNTIME_DIR ?? `/run/user/${process.getuid?.() ?? 1000}`;
   return {
     port: Number(values.port ?? env.APPS_CHAT_PORT ?? 5184),
     listen: values.listen ?? "127.0.0.1",
     dataDir: resolve(values["data-dir"] ?? env.APPS_CHAT_DATA_DIR ?? join(homedir(), ".pi/agent/chat")),
     socket: values.socket ?? env.PI_HOST_SOCKET ?? join(runtime, "pi-host/host.sock"),
-    fixture: values.fixture ?? env.APPS_CHAT_FIXTURE === "1",
+    ...(fixture ? {} : { durableIndex: resolve(values["durable-index"] ?? env.PI_HOST_DURABLE_INDEX ?? join(homedir(), ".prime/agent/pi-host/durable/index.sqlite")) }),
+    fixture,
     webDir: resolve(values["web-dir"] ?? join(appDir, "web/dist")),
     box: env.APPS_CHAT_BOX ?? hostname(),
     sharedDir: env.AGENT_CHAT_SHARED_DIR ?? join(homedir(), ".prime/agent/browser-chat"),

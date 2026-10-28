@@ -90,7 +90,7 @@ Pages call the server through `web/src/lib/api` (`import { api, timeline, agents
 
 `api.search({q, from, in, after, before, sort, limit, cursor})` is `GET /api/search` and returns `SearchResult`: `{hits, total, nextCursor}`.
 
-1. It covers every thread entry through pi-host's FTS5 index (`durable_search`) and every channel post.
+1. It covers every thread entry through pi-host's FTS5 index and every channel post. The server reads pi-host's `index.sqlite` (`--durable-index`, default `~/.prime/agent/pi-host/durable/index.sqlite`) on its own read-only connection with pi-host's `searchIndex`, so search answers while pi-host starts or is busy; `durable_search` over the socket answers only when that file is missing.
 2. `q` may carry `from:`, `in:`, `after:` and `before:` tokens, and the separate params win over them.
 3. `from` is a principal id (`owner` or an agent id), `in` a conversation id, and `after` and `before` are YYYY-MM-DD in KST, with `before` excluding that day.
 4. `sort` is relevance (default) or recent, and `limit` is 1 to 100 (default 20).

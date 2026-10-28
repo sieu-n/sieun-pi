@@ -4,7 +4,10 @@
  */
 import type { ConversationKind, ConversationSummary, SearchHit, SearchResult } from "../web/src/lib/api/types.ts";
 import { CHANNEL_COPY_LIKE, type Channels } from "./channels.ts";
-import type { Host, SearchHit as HostHit } from "./host/types.ts";
+import { existsSync } from "node:fs";
+import type { DatabaseSync } from "node:sqlite";
+import { openIndexReadOnly, searchIndex } from "../../../packages/pi-host/src/durable/index-db.ts";
+import type { Host, SearchHit as HostHit, SearchPage, SearchQuery } from "./host/types.ts";
 import { conversationIdOf, parseConversationId, type Threads } from "./threads.ts";
 
 /** The owner reads dates in KST. */
@@ -77,7 +80,37 @@ const fused = (rank: number): number => 1 / (60 + rank);
 type Ranked = { score: number; at: number; build: () => SearchHit };
 
 export class Search {
-  constructor(readonly host: Host, readonly threads: Threads, readonly channels: Channels) {}
+  private index?: DatabaseSync;
+
+  /** With `indexPath`, thread hits come from pi-host's index.sqlite on a read-only connection, so search never waits on pi-host. */
+  constructor(readonly host: Host, readonly threads: Threads, readonly channels: Channels, private readonly indexPath?: string) {}
+
+  close(): void {
+    this.index?.close();
+    this.index = undefined;
+  }
+
+  /**
+   * pi-host's search rules on the chat's own read-only connection: after a restart on 10-28, pi-host took 7 to 12 s to listen, and every
+   * search waited for it. pi-host's socket answers only while the file is missing or unreadable.
+   */
+  private threadSearch(query: SearchQuery): Promise<SearchPage> {
+    if (!this.index && this.indexPath && existsSync(this.indexPath)) {
+      try {
+        this.index = openIndexReadOnly(this.indexPath);
+      } catch {
+        this.index = undefined;
+      }
+    }
+    if (this.index) {
+      try {
+        return Promise.resolve(searchIndex(this.index, query));
+      } catch {
+        this.close();
+      }
+    }
+    return this.host.search(query);
+  }
 
   async run(params: SearchParams): Promise<SearchResult> {
     const query = parseQuery(params);
@@ -97,7 +130,7 @@ export class Search {
       const scope = inId ? parseConversationId(inId) : undefined;
       const fromAgent = query.from && query.from !== "owner" ? parseConversationId(query.from) : undefined;
       // The merged page holds at most offset + limit thread hits, so the host builds snippets for those rows only.
-      const page = await this.host.search({
+      const page = await this.threadSearch({
         q: query.q, sort, limit: offset + limit, skipAgentMessages: CHANNEL_COPY_LIKE,
         ...(scope ? { threads: [scope.thread], conversation: scope.conversation } : {}),
         ...(query.from === "owner" ? { from: "owner" } : {}),

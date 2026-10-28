@@ -85,7 +85,7 @@ export class App {
     this.threads.onDoc = (thread, name, value) => {
       if (name === "chat.board") this.boards.docChanged(thread, value);
     };
-    this.search = new Search(host, this.threads, this.channels);
+    this.search = new Search(host, this.threads, this.channels, config.fixture ? undefined : config.durableIndex);
     this.queues = new QueueWatch(host, this.threads, (conversation, place) => this.toWatchers(conversation, { type: "queue", conversation, place }), log);
     this.wss.on("connection", socket => this.connect(socket));
   }
@@ -102,6 +102,7 @@ export class App {
     clearTimeout(this.sidebarTimer);
     await this.threads.stop();
     for (const client of this.clients) client.socket.close();
+    this.search.close();
     await this.host.close();
   }
 

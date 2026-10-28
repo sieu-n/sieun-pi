@@ -172,6 +172,71 @@ export function ftsQuery(q: string): string {
   return words.map(word => `"${word}"*`).join(" ");
 }
 
+/**
+ * One page of matches and their exact count. Copies of one entry, such as an imported thread beside the archived thread it came from,
+ * count once and show from the unarchived, newest thread: a copy keeps the entry's id, kind, author and time. It only reads, so the chat
+ * runs it on its own read-only connection (`openIndexReadOnly`) as well as pi-host on its own.
+ */
+export function searchIndex(db: DatabaseSync, query: SearchQuery): SearchPage {
+  const match = ftsQuery(query.q);
+  if (!match) return { hits: [], total: 0 };
+  const where = ["entries MATCH ?"];
+  const values: (string | number)[] = [match];
+  if (query.threads?.length) {
+    where.push(`thread IN (${query.threads.map(() => "?").join(", ")})`);
+    values.push(...query.threads);
+  }
+  if (query.conversation !== undefined) { where.push("CAST(conversation AS INTEGER) = ?"); values.push(query.conversation); }
+  if (query.from) { where.push("author = ?"); values.push(query.from); }
+  if (query.by) {
+    where.push("((kind = 'agent.message' AND author = ?) OR (kind <> 'agent.message' AND author <> 'owner' AND thread = ? AND CAST(conversation AS INTEGER) = ?))");
+    values.push(query.by.id, query.by.thread, query.by.conversation);
+  }
+  if (query.skipAgentMessages) { where.push("NOT (kind = 'agent.message' AND text LIKE ?)"); values.push(query.skipAgentMessages); }
+  if (query.after !== undefined) { where.push("CAST(at AS INTEGER) >= ?"); values.push(query.after); }
+  if (query.before !== undefined) { where.push("CAST(at AS INTEGER) < ?"); values.push(query.before); }
+  const recent = query.sort === "recent";
+  const page = db.prepare(`WITH m AS MATERIALIZED (
+      SELECT rowid AS id, thread, kind, author, CAST(at AS INTEGER) AS at, CAST(entry_id AS INTEGER) AS entry, ${recent ? "0" : "rank"} AS score
+      FROM entries WHERE ${where.join(" AND ")}
+    ), firsts AS (
+      SELECT m.id, m.at, m.score, ROW_NUMBER() OVER (PARTITION BY m.entry, m.kind, m.author, m.at ORDER BY t.archived, t.updated_at DESC, m.id) AS copy
+      FROM m LEFT JOIN threads t ON t.id = m.thread
+    )
+    SELECT id, count(*) OVER () AS total FROM firsts WHERE copy = 1 ORDER BY ${recent ? "at DESC" : "score"}, id LIMIT ? OFFSET ?`)
+    .all(...values, query.limit ?? 50, query.offset ?? 0) as Row[];
+  const total = page.length
+    ? Number(page[0]!.total)
+    : Number((db.prepare(`SELECT count(*) AS n FROM (SELECT 1 FROM entries WHERE ${where.join(" AND ")}
+        GROUP BY CAST(entry_id AS INTEGER), kind, author, CAST(at AS INTEGER))`).get(...values) as Row).n);
+  if (!page.length) return { hits: [], total };
+  // Each page row is read by rowid with no MATCH and gets its snippet here: FTS5's snippet() with "rowid IN (...)" ran the whole match
+  // once per row, 1.1 s for the page of "a" (16,254 matches) on us-metal02.
+  const read = db.prepare("SELECT thread, conversation, entry_id, kind, author, at, text FROM entries WHERE rowid = ?");
+  const words = snippetTerms(query.q);
+  return {
+    total,
+    hits: page.flatMap(({ id }) => {
+      const row = read.get(Number(id)) as Row | undefined;
+      return row ? [{
+        thread: String(row.thread), conversation: Number(row.conversation), entryId: Number(row.entry_id), kind: String(row.kind),
+        author: String(row.author), at: Number(row.at), snippet: snippetOf(String(row.text), words),
+      }] : [];
+    }),
+  };
+}
+
+
+/**
+ * A read-only connection to pi-host's index.sqlite. In WAL mode a reader never waits for pi-host's writes and pi-host never waits for it,
+ * so the chat searches while pi-host starts or works through its command queue.
+ */
+export function openIndexReadOnly(path: string): DatabaseSync {
+  const db = new DatabaseSync(path, { readOnly: true });
+  db.exec("PRAGMA busy_timeout = 2000;");
+  return db;
+}
+
 export class ThreadIndex {
   private readonly db: DatabaseSync;
   /** Set when this open changed the schema of derived rows, so every thread's search and usage rows are read again. */
@@ -281,57 +346,8 @@ export class ThreadIndex {
     }
   }
 
-  /**
-   * One page of matches and their exact count. Copies of one entry, such as an imported thread beside the archived thread it came from,
-   * count once and show from the unarchived, newest thread: a copy keeps the entry's id, kind, author and time.
-   */
   search(query: SearchQuery): SearchPage {
-    const match = ftsQuery(query.q);
-    if (!match) return { hits: [], total: 0 };
-    const where = ["entries MATCH ?"];
-    const values: (string | number)[] = [match];
-    if (query.threads?.length) {
-      where.push(`thread IN (${query.threads.map(() => "?").join(", ")})`);
-      values.push(...query.threads);
-    }
-    if (query.conversation !== undefined) { where.push("CAST(conversation AS INTEGER) = ?"); values.push(query.conversation); }
-    if (query.from) { where.push("author = ?"); values.push(query.from); }
-    if (query.by) {
-      where.push("((kind = 'agent.message' AND author = ?) OR (kind <> 'agent.message' AND author <> 'owner' AND thread = ? AND CAST(conversation AS INTEGER) = ?))");
-      values.push(query.by.id, query.by.thread, query.by.conversation);
-    }
-    if (query.skipAgentMessages) { where.push("NOT (kind = 'agent.message' AND text LIKE ?)"); values.push(query.skipAgentMessages); }
-    if (query.after !== undefined) { where.push("CAST(at AS INTEGER) >= ?"); values.push(query.after); }
-    if (query.before !== undefined) { where.push("CAST(at AS INTEGER) < ?"); values.push(query.before); }
-    const recent = query.sort === "recent";
-    const page = this.db.prepare(`WITH m AS MATERIALIZED (
-        SELECT rowid AS id, thread, kind, author, CAST(at AS INTEGER) AS at, CAST(entry_id AS INTEGER) AS entry, ${recent ? "0" : "rank"} AS score
-        FROM entries WHERE ${where.join(" AND ")}
-      ), firsts AS (
-        SELECT m.id, m.at, m.score, ROW_NUMBER() OVER (PARTITION BY m.entry, m.kind, m.author, m.at ORDER BY t.archived, t.updated_at DESC, m.id) AS copy
-        FROM m LEFT JOIN threads t ON t.id = m.thread
-      )
-      SELECT id, count(*) OVER () AS total FROM firsts WHERE copy = 1 ORDER BY ${recent ? "at DESC" : "score"}, id LIMIT ? OFFSET ?`)
-      .all(...values, query.limit ?? 50, query.offset ?? 0) as Row[];
-    const total = page.length
-      ? Number(page[0]!.total)
-      : Number((this.db.prepare(`SELECT count(*) AS n FROM (SELECT 1 FROM entries WHERE ${where.join(" AND ")}
-          GROUP BY CAST(entry_id AS INTEGER), kind, author, CAST(at AS INTEGER))`).get(...values) as Row).n);
-    if (!page.length) return { hits: [], total };
-    // Each page row is read by rowid with no MATCH and gets its snippet here: FTS5's snippet() with "rowid IN (...)" ran the whole match
-    // once per row, 1.1 s for the page of "a" (16,254 matches) on us-metal02.
-    const read = this.db.prepare("SELECT thread, conversation, entry_id, kind, author, at, text FROM entries WHERE rowid = ?");
-    const words = snippetTerms(query.q);
-    return {
-      total,
-      hits: page.flatMap(({ id }) => {
-        const row = read.get(Number(id)) as Row | undefined;
-        return row ? [{
-          thread: String(row.thread), conversation: Number(row.conversation), entryId: Number(row.entry_id), kind: String(row.kind),
-          author: String(row.author), at: Number(row.at), snippet: snippetOf(String(row.text), words),
-        }] : [];
-      }),
-    };
+    return searchIndex(this.db, query);
   }
 
   usage(range: { since?: number; until?: number; threads?: string[] }): UsageTotal[] {
