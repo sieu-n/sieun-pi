@@ -17,12 +17,21 @@ const checkpoint = (entry: SessionEntry): Checkpoint | null => {
     typeof data.text === "string" && (typeof data.after === "string" || data.after === null) ? data as Checkpoint : null;
 };
 
-/** A session's first prompt, a job's brief, read from the whole branch so the block a compaction brings back reads it too; "" with none. */
+/**
+ * A session's first prompt, a job's brief, read from the whole branch so the block a compaction brings back reads it too; "" with none. A job
+ * started with rlm.spawn gets its brief as an `agent_message` custom message that opens "[task from parent]", a root as its first user message.
+ * Until 10-29 only a user message was read, so no spawned job got the brief lines (c48, c78, c157): the c157 clean room of 10-28 had two jobs
+ * asked where tokens go and how to cut them, and neither got the c157 line.
+ */
 function firstPrompt(branch: readonly SessionEntry[]): string {
+  const text = (content: string | readonly { type: string; text?: string }[]): string =>
+    typeof content === "string" ? content : content.flatMap(part => part.type === "text" && typeof part.text === "string" ? [part.text] : []).join("\n");
   for (const entry of branch) {
-    if (entry.type !== "message" || entry.message.role !== "user") continue;
-    const content = entry.message.content;
-    return typeof content === "string" ? content : content.flatMap(part => part.type === "text" ? [part.text] : []).join("\n");
+    if (entry.type === "custom_message" && entry.customType === "agent_message") {
+      const task = text(entry.content);
+      if (task.startsWith("[task from parent]")) return task;
+    }
+    if (entry.type === "message" && entry.message.role === "user") return text(entry.message.content);
   }
   return "";
 }
