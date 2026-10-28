@@ -43,6 +43,8 @@ function activate(sha) {
     writeFileSync(plist, fill(`${LABEL}.plist`));
     const domain = `gui/${process.getuid()}`;
     spawnSync("launchctl", ["bootout", `${domain}/${LABEL}`], { stdio: "ignore" });
+    // bootout returns before the old process exits, and a bootstrap then fails with "5: Input/output error" (seen 10-28 on the Mac).
+    while (spawnSync("launchctl", ["print", `${domain}/${LABEL}`], { stdio: "ignore" }).status === 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200);
     run("launchctl", ["bootstrap", domain, plist]);
   } else {
     const unit = join(homedir(), ".config/systemd/user/pi-history.service");
