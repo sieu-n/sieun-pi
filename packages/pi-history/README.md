@@ -10,6 +10,8 @@ The indexer reads every file named `<uuid>.jsonl` or `<prefix>_<uuid>.jsonl` und
 `src/core/extract.ts` turns each line into docs of eight kinds: user, assistant, thinking, tool_call, tool_result, agent_message, notice and summary.
 It skips base64 images, thinking signatures, the `details` copy of tool output, bookkeeping entries and the custom messages in its `BOILERPLATE` list.
 Tool results stay whole.
+A chat named in settings.json `excludeToolOutput.chats` keeps no tool_call or tool_result docs, for its root, its root jobs in chat-jobs.json and every subagent under them, and the default list holds Vent (`01a14dd5-e9d3-705d-bd63-245c21b2eee2`), whose tool output carries secrets.
+On each start and each sweep the indexer reads chat-jobs.json again and drops the tool docs of any root that has joined an excluded chat.
 The FTS5 table `fts` indexes `text` and `kind`, so a search can leave out thinking with `NOT kind : "thinking"` and count hits without reading `docs`.
 
 ## How it follows the files

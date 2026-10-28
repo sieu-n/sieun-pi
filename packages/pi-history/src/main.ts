@@ -1,11 +1,12 @@
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { homedir, hostname, platform } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { defaultDbPath, openDb } from "./core/db.ts";
-import { Indexer, type IndexStatus } from "./core/indexer.ts";
+import { ToolOutputPolicy } from "./core/exclude.ts";
+import { defaultDirs, Indexer, type IndexStatus } from "./core/indexer.ts";
 
 export interface ServerContext {
   dbPath: string;
@@ -72,7 +73,9 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   const socket = values.socket ?? defaultSocketPath();
   const db = openDb(dbPath);
   const log = (line: string) => process.stderr.write(`${new Date().toISOString()} ${line}\n`);
-  const indexer = new Indexer({ db, dbPath, dirs: values.dir, log });
+  const dirs = values.dir ?? defaultDirs();
+  const policy = new ToolOutputPolicy(db, dirs.find((d) => basename(d) === "sessions") ?? dirs[0]!);
+  const indexer = new Indexer({ db, dbPath, dirs, log, policy });
   const started = indexer.start();
   const server = await (await loadStartServer())({ dbPath, socket, box: boxName(), indexer });
   log(`pi-history: serving ${socket}, database ${dbPath}`);

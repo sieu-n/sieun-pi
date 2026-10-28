@@ -4,6 +4,7 @@ import { homedir, platform } from "node:os";
 import { basename, join, sep } from "node:path";
 import type { DatabaseSync, StatementSync } from "node:sqlite";
 import { extract, sessionOfPath, TRANSCRIPT, type Doc } from "./extract.ts";
+import { TOOL_KINDS } from "./exclude.ts";
 import { getMeta, setMeta } from "./db.ts";
 
 export interface IndexerOptions {
@@ -17,6 +18,15 @@ export interface IndexerOptions {
   /** A folder whose mtime or newest transcript is younger than this gets an fs.watch. */
   watchRecentMs?: number;
   log?: (line: string) => void;
+  /** Which roots keep no tool docs (exclude.ts ToolOutputPolicy). */
+  policy?: ToolPolicy;
+}
+
+export interface ToolPolicy {
+  refreshedAt: number;
+  refresh(): Promise<void>;
+  excludes(root: string): boolean;
+  excludedRoots(): string[];
 }
 
 export interface IndexStatus {
@@ -39,6 +49,7 @@ export interface IndexStatus {
 interface FileRow {
   id: number;
   session: string;
+  root: string;
   name: string | null;
   indexedTo: number;
   size: number;
@@ -83,6 +94,8 @@ export class Indexer {
   private readonly chunkBytes: number;
   private readonly watchRecentMs: number;
   private readonly log: (line: string) => void;
+  private readonly policy?: ToolPolicy;
+  private readonly purged = new Set<string>();
 
   private readonly rows = new Map<string, FileRow>();
   private readonly seen = new Map<string, Seen>();
@@ -123,6 +136,7 @@ export class Indexer {
     this.chunkBytes = options.chunkBytes ?? 1 << 20;
     this.watchRecentMs = options.watchRecentMs ?? 2 * 86_400_000;
     this.log = options.log ?? (() => {});
+    this.policy = options.policy;
     const db = this.db;
     this.st = {
       insertFile: db.prepare("INSERT INTO files(path, session, root, parent, depth) VALUES(?, ?, ?, ?, ?) RETURNING id"),
@@ -137,8 +151,8 @@ export class Indexer {
       ftsDeleteFile: db.prepare("INSERT INTO fts(fts, rowid, text, kind) SELECT 'delete', id, text, kind FROM docs WHERE file = ?"),
       deleteDocs: db.prepare("DELETE FROM docs WHERE file = ?"),
     };
-    for (const r of db.prepare("SELECT id, path, session, name, indexed_to, size, mtime FROM files").all() as any[]) {
-      this.rows.set(r.path, { id: r.id, session: r.session, name: r.name, indexedTo: r.indexed_to, size: r.size, mtime: r.mtime });
+    for (const r of db.prepare("SELECT id, path, session, root, name, indexed_to, size, mtime FROM files").all() as any[]) {
+      this.rows.set(r.path, { id: r.id, session: r.session, root: r.root, name: r.name, indexedTo: r.indexed_to, size: r.size, mtime: r.mtime });
     }
     this.docCount = Number((db.prepare("SELECT count(*) AS n FROM docs").get() as { n: number }).n);
     const newest = db.prepare("SELECT at FROM docs ORDER BY id DESC LIMIT 1").get() as { at: number } | undefined;
@@ -154,6 +168,7 @@ export class Indexer {
     this.stopped = false;
     this.backfillStartedAt = Date.now();
     if (RECURSIVE_WATCH) for (const dir of this.dirs) this.watchTree(dir);
+    await this.applyPolicy();
     await this.sweep();
     this.kick();
     this.sweepTimer = setInterval(() => void this.sweep().then(() => this.kick()), this.sweepMs);
@@ -213,8 +228,43 @@ export class Indexer {
     };
   }
 
+  /** Reads the registry again and drops the tool docs of every excluded root not purged yet. Running it twice changes nothing. */
+  async applyPolicy(): Promise<void> {
+    if (!this.policy) return;
+    try {
+      await this.policy.refresh();
+    } catch (err) {
+      this.log(`pi-history: tool output policy unread: ${(err as Error).message}`);
+      return;
+    }
+    for (const root of this.policy.excludedRoots()) {
+      if (this.purged.has(root)) continue;
+      const gone = this.purgeTools(root);
+      this.purged.add(root);
+      if (gone) this.log(`pi-history: dropped ${gone} tool docs of excluded root ${root}`);
+    }
+  }
+
+  private purgeTools(root: string): number {
+    const kinds = TOOL_KINDS.map((k) => `'${k}'`).join(", ");
+    const files = "SELECT id FROM files WHERE root = ?";
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db
+        .prepare(`INSERT INTO fts(fts, rowid, text, kind) SELECT 'delete', id, text, kind FROM docs WHERE file IN (${files}) AND kind IN (${kinds})`)
+        .run(root);
+      const gone = Number(this.db.prepare(`DELETE FROM docs WHERE file IN (${files}) AND kind IN (${kinds})`).run(root).changes);
+      this.db.exec("COMMIT");
+      this.docCount -= gone;
+      return gone;
+    } catch (err) {
+      this.db.exec("ROLLBACK");
+      throw err;
+    }
+  }
+
   sweep(): Promise<void> {
-    this.sweeping ??= this.sweepOnce().finally(() => {
+    this.sweeping ??= this.applyPolicy().then(() => this.sweepOnce()).finally(() => {
       this.sweeping = undefined;
     });
     return this.sweeping;
@@ -351,6 +401,9 @@ export class Indexer {
     while (!this.stopped) {
       const path: string | undefined = this.hot.size ? this.hot.values().next().value : this.backlog[0];
       if (path === undefined) break;
+      if (this.policy && !this.rows.has(path) && this.policy.refreshedAt <= (this.seen.get(path)?.mtime ?? Date.now())) {
+        await this.applyPolicy();
+      }
       let done = true;
       const began = performance.now();
       try {
@@ -384,7 +437,7 @@ export class Indexer {
     if (row) return row;
     const { root, depth } = placeOf(path, session);
     const r = this.st.insertFile.get(path, session, root, null, depth) as { id: number };
-    row = { id: r.id, session, name: null, indexedTo: 0, size: 0, mtime: 0 };
+    row = { id: r.id, session, root, name: null, indexedTo: 0, size: 0, mtime: 0 };
     this.rows.set(path, row);
     return row;
   }
@@ -429,6 +482,7 @@ export class Indexer {
       this.seen.set(path, { size, mtime });
       const row = this.rowFor(path, session);
       const tail = this.caughtUp.has(path);
+      const noTools = this.policy?.excludes(row.root) ?? false;
       const db = this.db;
       db.exec("BEGIN IMMEDIATE");
       try {
@@ -476,7 +530,10 @@ export class Indexer {
             if (x.name) row.name = x.name;
             const at = x.at ?? lastAt;
             lastAt = at;
-            for (const d of x.docs) this.insertDoc(row, d, x.entry, at, offset, tail, now);
+            for (const d of x.docs) {
+              if (noTools && (d.kind === "tool_call" || d.kind === "tool_result")) continue;
+              this.insertDoc(row, d, x.entry, at, offset, tail, now);
+            }
           }
         }
         const consumed = end >= 0 ? end + 1 : 0;
@@ -501,8 +558,8 @@ export class Indexer {
   }
 
   private reload(path: string): void {
-    const r = this.db.prepare("SELECT id, session, name, indexed_to, size, mtime FROM files WHERE path = ?").get(path) as any;
-    if (r) this.rows.set(path, { id: r.id, session: r.session, name: r.name, indexedTo: r.indexed_to, size: r.size, mtime: r.mtime });
+    const r = this.db.prepare("SELECT id, session, root, name, indexed_to, size, mtime FROM files WHERE path = ?").get(path) as any;
+    if (r) this.rows.set(path, { id: r.id, session: r.session, root: r.root, name: r.name, indexedTo: r.indexed_to, size: r.size, mtime: r.mtime });
     else this.rows.delete(path);
   }
 
