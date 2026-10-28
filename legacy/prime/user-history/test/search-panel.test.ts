@@ -1,6 +1,7 @@
 // Guards the owner's 10-28 ask for Slack-like message search on the :5182 chat (wiki sessions/2026/10/28/0410-slack-layer-design): typing in the
 // sidebar box offers "Search messages for", the panel groups hits by thread with three per thread, and a hit opens its thread at that message,
-// a subagent's hit in the subagent's own thread. It drives a real serve with its own --port and --data-dir and a fake daemon, never the live chat.
+// a subagent's hit in the subagent's own thread. It drives a real serve with its own --port and --data-dir, a fake daemon and a fake pi-history
+// socket behind api/search, never the live chat.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -103,11 +104,23 @@ test("sidebar typing offers message search, the panel groups hits by thread, and
   await new Promise<void>(resolve => daemon.listen(socketPath, resolve));
   t.after(() => { for (const socket of sockets) socket.destroy(); daemon.close(); });
 
+  // A fake pi-history on its own socket: the serve's api/search reaches it through PI_HISTORY_SOCKET, and it records each query it got.
+  const historySocket = join(dir, "history.sock");
+  const searches: Record<string, string>[] = [];
+  const history = createHttpServer((req, res) => {
+    const url = new URL(req.url ?? "/", "http://pi-history");
+    if (url.pathname !== "/v1/search") { res.writeHead(404, { "content-type": "application/json" }).end(JSON.stringify({ error: "not found" })); return; }
+    searches.push(Object.fromEntries(url.searchParams));
+    res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(FIXTURE));
+  });
+  await new Promise<void>(resolve => history.listen(historySocket, resolve));
+  t.after(() => { history.closeAllConnections(); history.close(); });
+
   const port = await freePort();
   mkdirSync(data, { recursive: true, mode: 0o700 });
   const pool = join(dir, "pi-pool");
   writeFileSync(pool, "#!/bin/sh\necho '{}'\n", { mode: 0o755 });
-  const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, PI_POOL_BIN: pool, SIEUN_PI_CHAT_START_DAEMON: "0", SIEUN_PI_CHAT_OPEN_AT_LOGIN: "0", SIEUN_PI_SLACK: "0" };
+  const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, PI_POOL_BIN: pool, SIEUN_PI_CHAT_START_DAEMON: "0", SIEUN_PI_CHAT_OPEN_AT_LOGIN: "0", SIEUN_PI_SLACK: "0", PI_HISTORY_SOCKET: historySocket };
   for (const name of ["LISTEN_FDS", "LISTEN_PID", "LISTEN_FDNAMES", "PRIME_AGENT_CODING_AGENT_DIR", "PRIME_AGENT_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID"]) delete env[name];
   const child = spawn(process.execPath, [cli, "serve", "--data-dir", data, "--port", String(port), "--socket", socketPath], { env, stdio: ["ignore", "pipe", "pipe"] });
   let log = "";
@@ -127,16 +140,6 @@ test("sidebar typing offers message search, the panel groups hits by thread, and
   const { sessionId } = await browser.send("Target.attachToTarget", { targetId: page.targetId, flatten: true });
   const send = (method: string, params: object = {}) => browser!.send(method, params, sessionId);
   await send("Page.enable");
-  // The route stub: api/search answers the fixture and records each query it got.
-  await send("Page.addScriptToEvaluateOnNewDocument", { source: `
-    window.__searches = [];
-    const realFetch = window.fetch.bind(window);
-    window.fetch = (input, init) => {
-      const url = new URL(typeof input === "string" ? input : input.url, location.href);
-      if (!/\\/api\\/search$/.test(url.pathname)) return realFetch(input, init);
-      window.__searches.push(Object.fromEntries(url.searchParams));
-      return Promise.resolve(new Response(JSON.stringify(${JSON.stringify(FIXTURE)}), { headers: { "content-type": "application/json" } }));
-    };` });
   const loaded = new Promise<void>(resolve => browser!.onEvent("Page.loadEventFired", sessionId, resolve));
   await send("Page.navigate", { url: base });
   await loaded;
@@ -162,7 +165,7 @@ test("sidebar typing offers message search, the panel groups hits by thread, and
   await key("Enter", "Enter", 13, 0, "\r");
 
   await until(`document.querySelectorAll(".hit").length === 5`, "the panel shows three hits of the thread, the subagent's and the Mac's");
-  assert.deepEqual(await evaluate(`window.__searches`), [{ q: "did not answer in", sort: "newest" }]);
+  assert.deepEqual(searches, [{ q: "did not answer in", sort: "newest" }]);
   const groups = await evaluate(`[...document.querySelectorAll(".thread")].map(head => head.innerText.replace(/\\s+/g, " ").trim())`);
   assert.equal(groups.length, 3, groups.join("\n"));
   assert.match(groups[0], /^hosts relay timeout job us-metal02 Oct 23, /);
@@ -203,8 +206,8 @@ test("sidebar typing offers message search, the panel groups hits by thread, and
   await key("F", "KeyF", 70, 2 | 8);
   await until(`document.querySelector(".more")`, "the panel shows the more line");
   await evaluate(`document.querySelector(".more").click()`);
-  await until(`window.__searches.length === 2`, "the more line searches the thread");
-  assert.deepEqual(await evaluate(`window.__searches[1]`), { q: "did not answer in", sort: "newest", chat: THREAD });
+  for (let waited = 0; searches.length < 2 && waited < 5000; waited += 50) await delay(50);
+  assert.deepEqual(searches[1], { q: "did not answer in", sort: "newest", chat: THREAD });
   await key("Escape", "Escape", 27);
   await until(`!document.querySelector("dialog[aria-label='Search messages']")`, "Esc closes the panel");
 });
