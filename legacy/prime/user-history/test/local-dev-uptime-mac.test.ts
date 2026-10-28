@@ -12,7 +12,7 @@ const push = (outcome: string, at: string, lastGoodAt: string | null) =>
   `convex-push {  "count": 1,  "watchers": [],  "push": {    "outcome": "${outcome}",    "at": "${at}",    "reason": ${outcome === "failed" ? '"schema eval timed out (1s)"' : "null"},    "lastGoodAt": ${lastGoodAt ? `"${lastGoodAt}"` : "null"}  }}\n`;
 const reading = (load: string, free: number, codes: [string, string, string?, string?], convex = push("ok", "2026-10-28T02:44:38", "2026-10-28T02:44:38") + "convex-src 2026-10-28T02:40:00\n") =>
   `{ ${load} 6.95 7.77 }\nThe system has 34359738368 (2097152 pages with a page size of 16384).\nSystem-wide memory free percentage: ${free}%\nport 5174 ${codes[0]}\nport 5180 ${codes[1]}\nport 8791 ${codes[2] ?? "200"}\nport 8787 ${codes[3] ?? "200"}\n${convex}`;
-const minute = (kernelTaskPct: number, swapoutsPerS = 0): WatchLine => ({ host: "us-metal02", at: "2026-10-23T04:39:00.000Z", usable: null, workers: 0, workerGb: 0, top: [],
+const minute = (kernelTaskPct: number, swapoutsPerS = 0, at = "2026-10-23T04:39:00.000Z"): WatchLine => ({ host: "us-metal02", at, usable: null, workers: 0, workerGb: 0, top: [],
   hosts: [{ name: "mac", usable: { pressureLevel: 1, swapoutsPerS, kernelTaskPct }, workers: 0, workerGb: 0, top: [] }] } as unknown as WatchLine);
 
 test("parses load, free memory and each dev server's code", () => {
@@ -48,7 +48,13 @@ test("the Convex push is stale only when the newest push failed and no good push
 });
 
 test("counts the watched minutes that read unusable, by cause", () => {
-  assert.deepEqual(macUnusableMinutes([minute(25), minute(123, 11971), minute(108)]), { read: 3, unusable: 2, by: { swapouts: 1, kernel_task: 2 } });
+  assert.deepEqual(macUnusableMinutes([minute(25, 0, "2026-10-23T04:39:30.000Z"), minute(123, 11971, "2026-10-23T04:40:30.000Z"), minute(108, 0, "2026-10-23T04:41:30.000Z")]),
+    { read: 3, unusable: 2, by: { swapouts: 1, kernel_task: 2 } });
+});
+
+test("two watch lines in one clock minute count as one minute, as at 20:16:10Z and 20:16:30Z on 10-27", () => {
+  assert.deepEqual(macUnusableMinutes([minute(94, 10758, "2026-10-27T20:16:10.870Z"), minute(114, 4364, "2026-10-27T20:16:30.013Z"), minute(25, 0, "2026-10-27T20:17:30.000Z")]),
+    { read: 2, unusable: 1, by: { swapouts: 1, kernel_task: 1 } });
 });
 
 test("a Mac ssh cannot reach is unreachable, and its watched minutes still count", async () => {

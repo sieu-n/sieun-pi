@@ -193,19 +193,25 @@ export function macDown(reading: MacReading): string[] {
     .map(({ port, name }) => `${name} :${port} gave ${reading.ports[port] === "000" || !reading.ports[port] ? "no answer" : `HTTP ${reading.ports[port]}`}`);
 }
 
-/** The minutes of `lines` that carry a Mac reading, how many of them read unusable, and how many each miss caused. */
+/**
+ * The distinct clock minutes of `lines` that carry a Mac reading, how many of them read unusable, and in how many each miss showed. The
+ * watch writes more than one line in some minutes: on 10-27 it wrote 20:16:10Z and 20:16:30Z, both unusable, and counting lines read
+ * 13 unusable minutes as 14.
+ */
 export function macUnusableMinutes(lines: readonly WatchLine[]): { read: number; unusable: number; by: Partial<Record<UsableMiss, number>> } {
-  const by: Partial<Record<UsableMiss, number>> = {};
-  let read = 0, bad = 0;
+  const read = new Set<number>();
+  const missedIn = new Map<number, Set<UsableMiss>>();
   for (const line of lines) {
     const usable = hostViews(line).find(view => view.name === MAC_HOST)?.usable;
     if (!usable) continue;
-    read++;
+    const minute = Math.floor(Date.parse(line.at) / 60_000);
+    read.add(minute);
     const missed = unusable(usable);
-    if (missed.length) bad++;
-    for (const miss of missed) by[miss] = (by[miss] ?? 0) + 1;
+    if (missed.length) missedIn.set(minute, new Set([...missedIn.get(minute) ?? [], ...missed]));
   }
-  return { read, unusable: bad, by };
+  const by: Partial<Record<UsableMiss, number>> = {};
+  for (const misses of missedIn.values()) for (const miss of misses) by[miss] = (by[miss] ?? 0) + 1;
+  return { read: read.size, unusable: missedIn.size, by };
 }
 
 /**
