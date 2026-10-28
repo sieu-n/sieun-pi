@@ -1,5 +1,5 @@
 [package]
-name = "sieun-chat"
+name = "sw-factory"
 version = "0.1.0"
 description = "The Mac app of apps/chat"
 edition = "2021"

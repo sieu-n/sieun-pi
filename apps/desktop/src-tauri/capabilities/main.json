@@ -1,0 +1,16 @@
+{
+  "identifier": "main",
+  "description": "The chat page on the box may drag the window by its top row and zoom it on a double click.",
+  "windows": [
+    "main"
+  ],
+  "remote": {
+    "urls": [
+      "https://us-metal02-dev.tail0c093d.ts.net:5184"
+    ]
+  },
+  "permissions": [
+    "core:window:allow-start-dragging",
+    "core:window:allow-internal-toggle-maximize"
+  ]
+}

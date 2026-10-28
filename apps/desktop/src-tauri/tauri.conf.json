@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Sieun Chat",
+  "productName": "sw factory",
   "version": "0.1.0",
   "identifier": "com.sieun.chat",
   "build": {
@@ -10,7 +10,10 @@
     "windows": [
       {
         "label": "main",
-        "title": "Sieun Chat",
+        "title": "sw factory",
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "trafficLightPosition": { "x": 20, "y": 30 },
         "url": "https://us-metal02-dev.tail0c093d.ts.net:5184",
         "create": false,
         "width": 1280,

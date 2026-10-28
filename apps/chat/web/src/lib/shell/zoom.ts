@@ -4,6 +4,7 @@ const MAX = 1.6;
 
 function apply(scale: number): void {
   document.documentElement.style.zoom = scale === 1 ? "" : String(scale);
+  document.documentElement.style.setProperty("--interface-scale", String(scale));
 }
 
 /** Interface size, changed in 0.1 steps with Cmd +, Cmd - and Cmd 0, and kept across reloads. */

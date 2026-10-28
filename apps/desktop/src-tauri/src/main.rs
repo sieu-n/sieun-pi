@@ -105,5 +105,5 @@ fn main() {
             Ok(())
         })
         .run(tauri::generate_context!())
-        .expect("Sieun Chat failed to start");
+        .expect("sw factory failed to start");
 }

@@ -85,3 +85,26 @@ test("browser back returns to the previous page", async ({ page }) => {
   await page.getByRole("button", { name: "Back" }).click();
   await expect(page).toHaveURL(/#\/c\/ch_general$/);
 });
+
+
+test("inside the Mac app the top bar leaves room for the window buttons and drags the window, at any interface scale", async ({ page }) => {
+  await page.addInitScript(() => Object.assign(window, { __TAURI_INTERNALS__: {} }));
+  for (const scale of [null, "1.3"]) {
+    await page.evaluate((value) => (value ? localStorage.setItem("chat.interfaceScale", value) : localStorage.removeItem("chat.interfaceScale")), scale);
+    await page.reload();
+    const bar = page.locator("header.topbar");
+    await expect(bar).toHaveAttribute("data-tauri-drag-region", "deep");
+    const box = (await bar.boundingBox())!;
+    expect(Math.round(box.height)).toBe(56);
+    const toggle = (await bar.getByRole("button", { name: /sidebar/ }).boundingBox())!;
+    expect(Math.round(toggle.x)).toBe(88);
+    expect(Math.abs(toggle.y + toggle.height / 2 - 28)).toBeLessThanOrEqual(1);
+  }
+});
+
+test("in a browser the top bar has no window-button room and no drag region", async ({ page }) => {
+  const bar = page.locator("header.topbar");
+  await expect(bar).not.toHaveAttribute("data-tauri-drag-region", /.*/);
+  const toggle = (await bar.getByRole("button", { name: /sidebar/ }).boundingBox())!;
+  expect(Math.round(toggle.x)).toBe(8);
+});

@@ -11,6 +11,7 @@
   import { sidebar } from "./sidebar.svelte";
   import { search } from "./search.svelte";
   import { theme } from "./theme.svelte";
+  import { inDesktopShell } from "./desktop";
 
   type Props = { ownerName?: string };
   let { ownerName = "Sieun" }: Props = $props();
@@ -42,7 +43,7 @@
   const searchKey = isMac ? "⌘K" : "Ctrl K";
 </script>
 
-<header class="topbar">
+<header class="topbar" class:desktop={inDesktopShell} data-tauri-drag-region={inDesktopShell ? "deep" : undefined}>
   <div class="left">
     <IconButton icon="sidebar" label={sidebar.collapsed ? "Show sidebar" : "Hide sidebar"} onclick={() => sidebar.toggle()} />
     <IconButton icon="arrow-left" label="Back" shortcut={isMac ? "⌘[" : "Alt ←"} onclick={() => history.back()} />
@@ -80,11 +81,11 @@
     justify-content: space-between;
     min-height: var(--size-topbar);
     padding: 0 8px;
-    -webkit-app-region: drag;
   }
-  .topbar :global(button),
-  .topbar :global(a) {
-    -webkit-app-region: no-drag;
+  /* apps/desktop puts the macOS window buttons at x 20 to 80 and centers them 28 px from the top, so the row keeps that room at any interface scale. */
+  .topbar.desktop {
+    min-height: calc(var(--size-topbar) / var(--interface-scale, 1));
+    padding-left: calc(88px / var(--interface-scale, 1));
   }
   .left,
   .right {
