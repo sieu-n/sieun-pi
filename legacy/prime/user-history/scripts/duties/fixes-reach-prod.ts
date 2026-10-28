@@ -1,6 +1,6 @@
 import { realpathSync } from "node:fs";
 import { execFile, execFileSync } from "node:child_process";
-import { homedir } from "node:os";
+import { userInfo } from "node:os";
 import { join } from "node:path";
 import { writeFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
@@ -309,7 +309,8 @@ export async function readCandidates(deps: ReachDeps, compare: Compare): Promise
   return candidates;
 }
 
-export const AUTO_SNS = process.env.LLM_WIKI_REPO || join(homedir(), "Documents/Github/auto-sns-agent");
+/** The account's home from the passwd entry, not $HOME, since the release's scoped checks run with a fresh HOME. */
+export const AUTO_SNS = process.env.LLM_WIKI_REPO || join(userInfo().homedir, "Documents/Github/auto-sns-agent");
 interface CiRun { id: number; status: string; conclusion: string | null }
 export type GhRead = (args: readonly string[]) => Promise<string>;
 export type GitRaw = (...args: string[]) => string;
