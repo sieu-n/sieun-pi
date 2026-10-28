@@ -23,10 +23,11 @@ export function sendKey(session: string, text: string): string {
 /**
  * A send failure after which the daemon may still deliver: its 30 s timeout, or its client closing mid-send. 10-17 22:11Z a wake to 01a14be9
  * failed with "daemon client closed before the operation completed", landed at 22:11:57Z anyway, and its resend landed again at 22:14:32Z.
- * A keyed resend whose first send still runs reads uncertain (src/daemon-write.ts WriteUncertain), and the next try sends that id again.
+ * A keyed resend whose first send still runs reads uncertain (src/daemon-write.ts WriteUncertain), and the next try sends that id again. So does
+ * a worker socket that closed after the supervisor dispatched the send, since the relaunched worker may run it from its accepted input.
  */
 export const isSendTimeout = (error: unknown): boolean =>
-  /Timed out after \d+ms waiting for the Prime Agent daemon response to "send_message"|Timed out waiting for daemon worker response|daemon client closed before the operation completed|The previous command result is uncertain/
+  /Timed out after \d+ms waiting for the Prime Agent daemon response to "send_message"|Timed out waiting for daemon worker response|daemon client closed before the operation completed|The previous command result is uncertain|Daemon worker socket closed/
     .test(error instanceof Error ? error.message : String(error));
 
 /** One agent message line of a session file: the text it carried and when it was written. */

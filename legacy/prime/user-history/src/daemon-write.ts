@@ -28,7 +28,10 @@ export interface WriteSlot { id?: string; supervisor?: string }
 
 export type WriteAnswer = { success: true; data?: unknown } | { success: false; error: string; errorInfo?: Record<string, unknown> };
 
-/** The daemon's answer to a resend whose first send has no result yet: the write may still run, so it is not sent again. */
+/**
+ * An answer that leaves the write's outcome open: a resend whose first send has no result yet, so the write may still run, or a worker socket
+ * that closed after the supervisor dispatched the write. The slot keeps its id either way, so the next try is the same Prime operation.
+ */
 export class WriteUncertain extends Error {}
 
 /** Each call the writers make, for the call log (src/prime-calls.ts). */
@@ -38,6 +41,12 @@ let observer: ((call: WriteCall) => void) | null = null;
 export function setWriteObserver(next: ((call: WriteCall) => void) | null): void { observer = next; }
 
 const UNCERTAIN = "command_result_uncertain";
+/**
+ * The supervisor's answer when its worker's socket closed after it dispatched the write. The worker may have taken the input into its
+ * accepted-input file first, and its relaunch then runs it under the operation id [clientId, commandId]: in the load.3.9.8 native proof
+ * (~/work/prime-load-fixes/integration/load3.9.8-native/idle-unload-send, case 3) the send answered this, and the relaunched worker ran it once.
+ */
+const CLOSED_AFTER_DISPATCH = /Daemon worker socket closed/;
 const HELLO_MS = 30_000;
 
 type Hello = { protocol?: { version?: number }; supervisorOwnerToken?: string; supervisorPid?: number; supervisorProcessStartId?: string };
@@ -73,7 +82,7 @@ export class DaemonWriter {
       return answer;
     } catch (error) {
       const text = error instanceof Error ? error.message : String(error);
-      note(text.startsWith("Timed out") ? "timeout" : /closed before/.test(text) ? "closed" : "error", text);
+      note(text.startsWith("Timed out") ? "timeout" : /closed before|socket closed/.test(text) ? "closed" : "error", text);
       throw error;
     }
   }
@@ -108,8 +117,11 @@ export class DaemonWriter {
       delete slot.id; delete slot.supervisor;
       return "lost";
     }
-    delete slot.id; delete slot.supervisor;
     link.socket.write(this.envelope({ id: `ack-${randomUUID()}`, type: "ack_result", commandId: id }, version));
+    // The supervisor's answer came, so it holds nothing to wait for, but the input may run in the relaunched worker; a resend under the same id
+    // is the same operation, which the worker answers and does not run again.
+    if (answer.success !== true && typeof answer.error === "string" && CLOSED_AFTER_DISPATCH.test(answer.error)) throw new WriteUncertain(answer.error);
+    delete slot.id; delete slot.supervisor;
     if (answer.success === true) return { success: true, ...answer.data === undefined ? {} : { data: answer.data } };
     return { success: false, error: typeof answer.error === "string" ? answer.error : `${command.type} failed with no error text`, ...info ? { errorInfo: info } : {} };
   }
