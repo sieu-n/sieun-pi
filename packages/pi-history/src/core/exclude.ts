@@ -29,7 +29,9 @@ const NAME_LINE = /"type":"session_info"[^\n]*?"name":"((?:[^"\\]|\\.)*)"/;
 export class ToolOutputPolicy {
   private registry: Registry = { jobs: {} };
   private chats = new Set<string>();
-  private readonly names = new Map<string, string>();
+  /** The registry and chat list the cached verdicts were made from. */
+  private basis = "";
+  private readonly names = new Map<string, string | null>();
   private readonly verdicts = new Map<string, boolean>();
   private readonly reader: RegistryReader;
   private readonly db: DatabaseSync;
@@ -46,9 +48,15 @@ export class ToolOutputPolicy {
   async refresh(): Promise<void> {
     const started = Date.now();
     const registry = await this.reader.read();
-    this.registry = registry;
-    this.chats = excludedChats();
-    this.verdicts.clear();
+    const chats = excludedChats();
+    const basis = JSON.stringify([[...chats], registry.jobs]);
+    if (basis !== this.basis) {
+      this.basis = basis;
+      this.registry = registry;
+      this.chats = chats;
+      this.verdicts.clear();
+      this.names.clear();
+    }
     this.refreshedAt = started;
   }
 
@@ -61,6 +69,12 @@ export class ToolOutputPolicy {
     return verdict;
   }
 
+  /** Drops what is cached for a root, for when its transcript names it. */
+  forget(root: string): void {
+    this.verdicts.delete(root);
+    this.names.delete(root);
+  }
+
   /** Every root in the index that loses its tool docs. */
   excludedRoots(): string[] {
     const roots = this.db.prepare("SELECT DISTINCT root FROM files").all() as { root: string }[];
@@ -70,10 +84,10 @@ export class ToolOutputPolicy {
   /** A root's name from the index, else from the session_info line near the top of its transcript, which may not be indexed yet. */
   private nameOf(root: string): string | null {
     const known = this.names.get(root);
-    if (known) return known;
+    if (known !== undefined) return known;
     const row = this.db.prepare("SELECT name FROM files WHERE session = ? AND depth = 0 AND name IS NOT NULL LIMIT 1").get(root) as { name: string } | undefined;
     const name = row?.name ?? this.peekName(root);
-    if (name) this.names.set(root, name);
+    this.names.set(root, name);
     return name;
   }
 

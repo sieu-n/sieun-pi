@@ -7,6 +7,8 @@ import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { openDb } from "../src/core/db.ts";
 import { Indexer } from "../src/core/indexer.ts";
+import { ToolOutputPolicy } from "../src/core/exclude.ts";
+import type { Registry, RegistryReader } from "../src/core/scope.ts";
 import { append, assistant, getJson, header, line, named, tempHome, toolResult, until, user, write } from "./helpers.ts";
 
 const MAIN = fileURLToPath(new URL("../src/main.ts", import.meta.url));
@@ -92,4 +94,29 @@ test("a Vent tree keeps its user and assistant text in the index and never its t
   assert.equal(secretDocs(), 0);
   for (const q of ["ventuserone", "ventreplyone", "ventreplytwo", "ventuserjob"]) assert.equal((await search(q)).total, 1, `${q} is found`);
   assert.equal((await search("othersecretok")).total, 1, "tool results of other chats stay searchable");
+});
+
+test("the policy judges each root once per registry, and judges again when the registry changes", async () => {
+  const t = tempHome();
+  const db = openDb(join(t.home, "history.db"));
+  write(join(t.dirs[0]!, `${JOB_BY_NAME}.jsonl`), header(JOB_BY_NAME), named("vent deploy job"));
+  const roots = [VENT, JOB_BY_NAME, OTHER];
+  for (const [i, root] of roots.entries()) db.prepare("INSERT INTO files(id, path, session, root, depth) VALUES(?, ?, ?, ?, 0)").run(i + 1, `/x/${root}.jsonl`, root, root);
+  let scans = 0;
+  const counted = (jobs: Registry["jobs"]): Registry => ({ jobs: new Proxy(jobs, { ownKeys: (target) => (scans++, Reflect.ownKeys(target)) }) });
+  let registry = counted({});
+  const reader = { read: async () => registry } as unknown as RegistryReader;
+  const policy = new ToolOutputPolicy(db, t.dirs[0]!, reader);
+  process.env.PI_HISTORY_SETTINGS = join(t.home, "settings.json");
+  await policy.refresh();
+  assert.deepEqual(policy.excludedRoots(), [VENT]);
+  const first = scans;
+  for (let i = 0; i < 5; i++) {
+    await policy.refresh();
+    assert.deepEqual(policy.excludedRoots(), [VENT]);
+  }
+  assert.ok(scans - first <= 5, `an unchanged registry re-judges no root (${scans - first} registry scans in 5 refreshes)`);
+  registry = counted({ "vent deploy job": { chat: "vent", chatId: VENT } });
+  await policy.refresh();
+  assert.deepEqual(policy.excludedRoots().sort(), [VENT, JOB_BY_NAME].sort());
 });

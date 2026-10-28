@@ -27,6 +27,7 @@ export interface ToolPolicy {
   refresh(): Promise<void>;
   excludes(root: string): boolean;
   excludedRoots(): string[];
+  forget(root: string): void;
 }
 
 export interface IndexStatus {
@@ -482,7 +483,6 @@ export class Indexer {
       this.seen.set(path, { size, mtime });
       const row = this.rowFor(path, session);
       const tail = this.caughtUp.has(path);
-      const noTools = this.policy?.excludes(row.root) ?? false;
       const db = this.db;
       db.exec("BEGIN IMMEDIATE");
       try {
@@ -527,11 +527,14 @@ export class Indexer {
             if (x.header) {
               header = { cwd: x.header.cwd, created: x.header.created, parent: x.header.parentSession ? sessionOfPath(x.header.parentSession) : undefined };
             }
-            if (x.name) row.name = x.name;
+            if (x.name && x.name !== row.name) {
+              row.name = x.name;
+              if (row.session === row.root) this.policy?.forget(row.root);
+            }
             const at = x.at ?? lastAt;
             lastAt = at;
             for (const d of x.docs) {
-              if (noTools && (d.kind === "tool_call" || d.kind === "tool_result")) continue;
+              if ((d.kind === "tool_call" || d.kind === "tool_result") && this.policy?.excludes(row.root)) continue;
               this.insertDoc(row, d, x.entry, at, offset, tail, now);
             }
           }
