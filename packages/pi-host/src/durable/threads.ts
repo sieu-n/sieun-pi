@@ -29,6 +29,7 @@ import { Leases, SessionLockedError } from "../lease.ts";
 import { statusOf, ThreadIndex, type IndexedEntry, type SearchPage, type SearchQuery, type ThreadRow, type ThreadStatus, type UsageRow, type UsageTotal } from "./index-db.ts";
 import { headFor, parseSession } from "./import.ts";
 import { AgentMessageEntry, ChatDoc, threadEnv, threadRegistry } from "./registry.ts";
+import type { PrimePromptOptions } from "./prime-prompt.ts";
 import { SEND_MESSAGE_TOOL } from "./send-message.ts";
 
 const context: Context = BACKGROUND_CONTEXT;
@@ -58,6 +59,8 @@ export interface DurableThreadsOptions {
   };
   log?: (line: string) => void;
   now?: () => number;
+  /** Prime's agent dir and prompt options: each thread then runs with Prime's system prompt (`prime-prompt.ts`); unset, with the preamble alone. */
+  prompt?: Omit<PrimePromptOptions, "thread" | "log">;
 }
 
 export interface ThreadInfo extends ThreadRow {
@@ -181,6 +184,8 @@ export class DurableThreads {
   private readonly open = new Map<string, Promise<OpenThread>>();
   /** The slot release of each conversation's last settled input, by `<thread>:<conversation>`, until it is done. */
   private readonly releasing = new Map<string, Promise<void>>();
+  /** Each thread's newest owner text, which ranks the harness digest of its first request (prime-prompt.ts). */
+  private readonly lastText = new Map<string, string>();
   private readonly leases = new Leases("pi-host-durable");
   private readonly registry = threadRegistry();
   private readonly threadsDir: string;
@@ -279,7 +284,9 @@ export class DurableThreads {
       const storage = await openNodeSqliteStorage(file);
       const harness = await Harness.open(storage, {
         models: this.options.models(id),
-        registry: this.registry,
+        registry: this.options.prompt
+          ? threadRegistry({ ...this.options.prompt, thread: { id, file, name: () => this.index.get(id)?.name ?? row.name, cwd: row.cwd, query: () => this.lastText.get(id) }, log: line => this.log(`${id} ${line}`) })
+          : this.registry,
         env: threadEnv(row.cwd),
         ...(this.options.settings === undefined ? {} : { settings: this.options.settings }),
         onWake: next => {
@@ -545,6 +552,7 @@ export class DurableThreads {
     if (input.text) content.push({ type: "text", text: input.text });
     for (const image of input.images ?? []) content.push({ type: "image", data: image.data, mimeType: image.mimeType });
     if (!content.length) throw new Error("durable_submit needs text or images");
+    if (input.text && conversation.id === ROOT_CONVERSATION_ID) this.lastText.set(id, input.text);
     const requestId = input.requestId ?? `pi-host:${randomUUID()}`;
     const turns = this.options.turns;
     const session = turns ? await this.sessionOf(open, conversation.id) : undefined;

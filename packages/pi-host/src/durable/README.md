@@ -38,7 +38,8 @@ H-->>C: the same submission, nothing admitted twice
 | `threads.ts` | `DurableThreads`: open, recover, submit, wait, abort, watch, tree, entries, documents and idle close. |
 | `index-db.ts` | `ThreadIndex`: the thread rows, each thread's last wake, the FTS5 search rows and the usage rows, all derived from the thread files. |
 | `commands.ts` | `DurableCommands`: the `durable_*` socket commands and the watches per connection. |
-| `registry.ts` | What every thread runs with: the preamble, pi-durable's coding tools in the thread's cwd, the subagent tool, the `send_message` tool, `agent.message` entries and `chat.doc` documents. |
+| `registry.ts` | What every thread runs with: Prime's prompt (or the preamble alone without an agent dir), pi-durable's coding tools in the thread's cwd, the subagent tool, the `send_message` tool, `agent.message` entries and `chat.doc` documents. |
+| `prime-prompt.ts` | A Prime chat's system prompt, built by prime-agent's own `buildSystemPrompt` from the agent dir's AGENTS.md files, skills, chat brief, harness and corrections ledger, as pi-durable sections; `docs/prime-pi-prompt-parity.md` maps each part. |
 | `open.ts` | `openDurableHost()` for one file and the Prime preamble extension. |
 | `@sieun-pi/pi-pool/durable` | `poolProvider()` in `packages/pi-pool/src/durable/pool-provider.ts`: a pi-ai Provider that vends each request's account through pi-pool and turns a slot wait into a stored sleep. |
 | `subagent.ts` | The `subagent` tool: a replay-safe call that owns one child conversation and returns its answer. |

@@ -1,12 +1,14 @@
 /**
- * What every durable thread runs with: Prime's preamble, pi-durable's coding tools in the thread's cwd, the foreground
- * subagent tool, the `send_message` tool the agent speaks to people through, and the chat's own document and entry kinds. One registry serves every thread in the host.
+ * What every durable thread runs with: Prime's system prompt (`prime-prompt.ts`) when the host knows Prime's agent dir, else Prime's
+ * preamble alone, pi-durable's coding tools in the thread's cwd, the foreground subagent tool, the `send_message` tool the agent speaks to
+ * people through, and the chat's own document and entry kinds. Each thread file gets its own registry, so its prompt can name its file.
  */
 import type { JsonValue } from "@earendil-works/chord";
 import { createRegistry, defineDocFamily, defineEntry, type Registry } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { Preamble } from "./open.ts";
+import { primePrompt, type PrimePromptOptions } from "./prime-prompt.ts";
 import { SendMessage } from "./send-message.ts";
 import { Subagent } from "./subagent.ts";
 
@@ -25,9 +27,9 @@ export const ChatDoc = defineDocFamily<{ value: JsonValue }, null>({
   checkpointWhen: () => true,
 });
 
-export function threadRegistry(): Registry {
+export function threadRegistry(prompt?: PrimePromptOptions): Registry {
   const registry = createRegistry();
-  registry.install(Preamble);
+  registry.install(prompt ? primePrompt(prompt) : Preamble);
   registry.install(CodingTools);
   registry.install(Subagent);
   registry.install(SendMessage);

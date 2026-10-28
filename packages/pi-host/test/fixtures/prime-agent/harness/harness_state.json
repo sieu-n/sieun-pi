@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "entries": {
+    "prompt": {},
+    "memory": {
+      "fixture_memory": { "id": "fixture_memory", "kind": "memory", "title": "Fixture memory", "content": "The fixture repo runs its checks with npm test.", "path": "memories/fixture.md", "version": 1, "scope": "global", "created_at": "2026-10-28T00:00:00Z", "updated_at": "2026-10-28T00:00:00Z" }
+    },
+    "skill": {},
+    "subagent": {}
+  },
+  "refinements": []
+}

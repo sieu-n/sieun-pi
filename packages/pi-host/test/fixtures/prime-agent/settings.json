@@ -1,0 +1,5 @@
+{
+  "mcpServers": { "aside": { "type": "stdio", "command": "/bin/true" } },
+  "bundledSkills": { "websearch": false },
+  "skills": ["-prime-intellect/SKILL.md"]
+}

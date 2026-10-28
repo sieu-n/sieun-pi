@@ -1,0 +1,6 @@
+{
+  "corrections": [
+    { "id": "c900", "at": "2026-10-28T00:00:00.000Z", "chat": { "id": "fixture", "name": "fixture chat" }, "words": "stop doing that", "rule": "Fixture rule nobody holds yet. Second sentence.", "enforcedBy": "brief", "ref": "", "status": "active", "theme": ["fixture"], "repeats": [] },
+    { "id": "c31", "at": "2026-10-27T00:00:00.000Z", "chat": { "id": "fixture", "name": "fixture chat" }, "words": "use opus", "rule": "Jobs run on the chat's model.", "enforcedBy": "brief", "ref": "", "status": "active", "theme": ["model"], "repeats": [] }
+  ]
+}

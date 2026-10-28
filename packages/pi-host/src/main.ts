@@ -15,6 +15,7 @@ import { dirname, join, resolve } from "node:path";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { DURABLE_SETTINGS, poolProvider, TurnQueue } from "@sieun-pi/pi-pool/durable";
 import { DurableCommands, DurableThreads } from "./durable/index.ts";
+import { promptTools } from "./durable/prime-prompt.ts";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { HOST_SOCKET_ENV } from "./api.ts";
@@ -87,6 +88,8 @@ const durable = values["no-durable"] ? undefined : new DurableCommands(new Durab
     ownerTurn: (threadId, session) => turns.ownerTurn({ root: `pi-durable:${threadId}`, session }),
     ticket: (threadId, session) => turns.ticket({ root: `pi-durable:${threadId}`, session }),
   },
+  // Every thread's system prompt is a Prime chat's, built from this agent dir's AGENTS.md, skills, harness and the chat's ledger.
+  prompt: { agentDir, tools: promptTools() },
   log: line => host.log(line),
 }));
 
