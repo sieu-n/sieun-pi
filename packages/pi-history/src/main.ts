@@ -4,6 +4,7 @@ import { homedir, hostname, platform } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
+import { monitorEventLoopDelay } from "node:perf_hooks";
 import { defaultDbPath, openDb } from "./core/db.ts";
 import { ToolOutputPolicy } from "./core/exclude.ts";
 import { defaultDirs, Indexer, type IndexStatus } from "./core/indexer.ts";
@@ -79,6 +80,14 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   const started = indexer.start();
   const server = await (await loadStartServer())({ dbPath, socket, box: boxName(), indexer });
   log(`pi-history: serving ${socket}, database ${dbPath}`);
+  const loop = monitorEventLoopDelay({ resolution: 10 });
+  loop.enable();
+  setInterval(() => {
+    const ms = (ns: number) => Math.round(ns / 1e6);
+    const st = indexer.status();
+    log(`pi-history: event loop p50 ${ms(loop.percentile(50))} ms, p99 ${ms(loop.percentile(99))} ms, max ${ms(loop.max)} ms; lag p50 ${st.lagP50Ms} ms, p99 ${st.lagP99Ms} ms; step p99 ${st.stepP99Ms} ms`);
+    loop.reset();
+  }, 60_000).unref();
   const shutdown = async () => {
     await server.close();
     await indexer.stop();

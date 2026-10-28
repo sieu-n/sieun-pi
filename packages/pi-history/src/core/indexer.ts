@@ -78,6 +78,8 @@ export function placeOf(path: string, session: string): { root: string; depth: n
 const LAG_SAMPLES = 1000;
 /** A sweep yields to the event loop after this much work, so a search waits at most one slice. */
 const SWEEP_SLICE_MS = 20;
+/** A step or policy pass this long holds every search behind it, so the log names it. */
+const SLOW_MS = 250;
 /** macOS FSEvents watches a whole tree with one stream, so the Mac needs no per-folder watchers. */
 const RECURSIVE_WATCH = platform() === "darwin";
 const NEWLINE = 0x0a;
@@ -232,6 +234,7 @@ export class Indexer {
   /** Reads the registry again and drops the tool docs of every excluded root not purged yet. Running it twice changes nothing. */
   async applyPolicy(): Promise<void> {
     if (!this.policy) return;
+    const began = performance.now();
     try {
       await this.policy.refresh();
     } catch (err) {
@@ -244,6 +247,8 @@ export class Indexer {
       this.purged.add(root);
       if (gone) this.log(`pi-history: dropped ${gone} tool docs of excluded root ${root}`);
     }
+    const took = Math.round(performance.now() - began);
+    if (took >= SLOW_MS) this.log(`pi-history: slow tool output policy pass ${took} ms`);
   }
 
   private purgeTools(root: string): number {
@@ -409,8 +414,10 @@ export class Indexer {
       const began = performance.now();
       try {
         done = this.step(path);
-        this.steps.push(Math.round(performance.now() - began));
+        const took = Math.round(performance.now() - began);
+        this.steps.push(took);
         if (this.steps.length > LAG_SAMPLES) this.steps.shift();
+        if (took >= SLOW_MS) this.log(`pi-history: slow step ${took} ms on ${path}`);
       } catch (err) {
         this.log(`pi-history: ${path}: ${(err as Error).message}`);
       }
