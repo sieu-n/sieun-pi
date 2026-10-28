@@ -53,14 +53,32 @@ test("waiting-session: pass on one session through unload and wake; fail on a st
   assert.equal(pass.verdict, "pass", pass.text);
   const steered = judge([...head, ...unload, JSON.stringify({ type: "custom_message", customType: "agent_message", timestamp: at(20), content: "[agent-message from parent] count now" }), wake, reply(37)]);
   assert.equal(steered.verdict, "fail", steered.text);
-  assert.match(steered.text, /- d not met: .*before it, after the unload, the job got/);
+  assert.match(steered.text, /- d not met: .*before it, after the last unload \(.*\), the job got/);
   const noUnload = judge([...head, wake, reply(37)]);
   assert.equal(noUnload.verdict, "fail", noUnload.text);
   assert.match(noUnload.text, /- c not met/);
   const otherModel = judge([...head, ...unload, wake, reply(37, { provider: "anthropic", model: "claude-opus-5-5" })]);
   assert.match(otherModel.text, /- f not met/);
   const failed = judge([...head, ...unload, wake, reply(37, { stopReason: "error" })]);
-  assert.equal(failed.verdict, "void", failed.text);
+  assert.equal(failed.verdict, "open", "a pool wait right after the wake leaves e and f open while the window runs");
+  const ended = waitingSession.evaluate(run, { ...state, until: START }) as { verdict: string; text: string };
+  assert.equal(ended.verdict, "void", ended.text);
+  // run2 on 10-28: the pool resumed the job's own parked turn ("continue", with Prime's harness digest) after the first unload, the job
+  // finished that turn and was unloaded again before the wake. Neither message counts, and the last unload before the wake is the one d reads.
+  const park = JSON.stringify({ type: "custom", customType: "provider_quota_park", timestamp: at(9), data: { resumeAt: at(29) } });
+  const digest = JSON.stringify({ type: "custom_message", customType: "harness-digest", timestamp: at(29), content: "[harness-digest] The persistent memories" });
+  const resume = JSON.stringify({ type: "custom_message", customType: "agent_message", timestamp: at(29), content: "[agent-message from parent:test file recount 2]  continue" });
+  const reunload = JSON.stringify({ type: "session_state", timestamp: at(33), state: { status: "archived", reason: "idle_unload" } });
+  const resumed = judge([...head, ...unload, reply(9, { stopReason: "error" }), park, digest, resume, reply(30), reunload, wake, reply(37)]);
+  assert.equal(resumed.verdict, "pass", resumed.text);
+  assert.match(resumed.text, /not counted: .*harness digest, .*pool resume/);
+  const asked = judge([...head, ...unload, JSON.stringify({ type: "custom_message", customType: "agent_message", timestamp: at(29), content: "[agent-message from parent:x]  continue" }),
+    reply(30), reunload, wake, reply(37)]);
+  assert.equal(asked.verdict, "pass", "a message before the last unload does not count for d");
+  const late = judge([...head, ...unload, reunload, JSON.stringify({ type: "custom_message", customType: "agent_message", timestamp: at(34), content: "[agent-message from parent:x]  continue" }), wake, reply(37)]);
+  assert.equal(late.verdict, "fail", "a 'continue' with no park before it, after the last unload, still counts");
+  const early = judge([...head, ...unload, reunload, JSON.stringify({ type: "custom_message", customType: "agent_message", timestamp: at(34), content: "[agent-message from parent:x] count now" }), wake]);
+  assert.equal(early.verdict, "open", "d is not met, but the verdict waits for e and f");
   const waiting = judge([...head, ...unload]);
   assert.equal(waiting.verdict, "open", waiting.text);
 });

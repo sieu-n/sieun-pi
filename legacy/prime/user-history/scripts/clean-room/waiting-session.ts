@@ -38,13 +38,26 @@ export interface JobFile {
   assistant: { at: number; model: string; stop?: string }[];
   /** Each board.wake call the job made. */
   wakeCalls: number[];
-  /** Each message the session got after its task: a user turn or a custom message, with its text. */
-  inputs: { at: number; text: string }[];
+  /**
+   * Each message the session got after its task: a user turn or a custom message, with its text. `system` names a message the system sends on
+   * its own: Prime's harness digest, or the pool's "continue" that resumes the job's own parked turn (after a `provider_quota_park` entry and
+   * before the next turn that got a model reply). w81-waiting-session run2 on 10-28 got both at 00:38:00Z, between the first unload after the
+   * board.wake call and the wake, and its judge read them as someone reaching the job.
+   */
+  inputs: { at: number; text: string; system?: "harness digest" | "pool resume" }[];
 }
+
+/** The message body under an agent-message header line, trimmed. */
+const body = (text: string): string => text.replace(/^\[agent-message from [^\]]*\]\s*/, "").trim();
 
 export function readJobFile(file: string): JobFile {
   const out: JobFile = { models: [], thinking: [], states: [], assistant: [], wakeCalls: [], inputs: [] };
   if (!existsSync(file)) return out;
+  let parked = false;
+  const input = (at: number, text: string) => {
+    const system = text.trimStart().startsWith("[harness-digest]") ? "harness digest" as const : parked && body(text) === "continue" ? "pool resume" as const : undefined;
+    out.inputs.push({ at, text, ...system ? { system } : {} });
+  };
   for (const line of readFileSync(file, "utf8").split("\n")) {
     if (!line.trim()) continue;
     let entry: Record<string, unknown>;
@@ -56,11 +69,13 @@ export function readJobFile(file: string): JobFile {
     else if (entry.type === "session_state") {
       const state = (entry.state ?? {}) as { status?: unknown; reason?: unknown };
       out.states.push({ at, status: String(state.status ?? ""), ...typeof state.reason === "string" ? { reason: state.reason } : {} });
-    } else if (entry.type === "custom_message") out.inputs.push({ at, text: blockText(entry.content) });
+    } else if (entry.type === "custom" && entry.customType === "provider_quota_park") parked = true;
+    else if (entry.type === "custom_message") input(at, blockText(entry.content));
     else if (entry.type === "message") {
       const message = (entry.message ?? {}) as { role?: string; content?: unknown; provider?: unknown; model?: unknown; stopReason?: unknown };
-      if (message.role === "user") out.inputs.push({ at, text: blockText(message.content) });
+      if (message.role === "user") input(at, blockText(message.content));
       if (message.role !== "assistant") continue;
+      if (message.stopReason !== "error" && message.stopReason !== "aborted") parked = false;
       out.assistant.push({ at, model: `${String(message.provider)}/${String(message.model)}`, ...typeof message.stopReason === "string" ? { stop: message.stopReason } : {} });
       for (const block of Array.isArray(message.content) ? message.content as Record<string, unknown>[] : []) {
         if (block.type === "toolCall" && /\bboard\.wake\s*\(/.test(JSON.stringify(block.arguments ?? {}))) out.wakeCalls.push(at);
@@ -128,21 +143,28 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
   add("c", !read || setAt === undefined ? null : unloads.length ? true : wakeIn ? false : null, !read || setAt === undefined ? "no wake set yet"
     : `session_state idle_unload in the job's file: ${unloads.map(entry => iso(entry.at)).join(", ") || "none"}${unloadLines.length ? `; service.log: ${unloadLines.map(line => clip(line)).join(" | ")}` : ""}`);
 
-  // d: the wake service delivered the wake, and it was the first message the job got after the unload.
+  // d: the wake service delivered the wake, and it was the first message the job got after its last unload before the wake. A message the system
+  // sends on its own (`JobFile.inputs` system: Prime's harness digest, the pool's resume of the job's own parked turn) is listed, not counted.
   const woke = log.filter(line => /wakes: woke \S+ for its time/.test(line));
-  const unloadAt = unloads[0]?.at;
-  const before = read && unloadAt !== undefined ? read.inputs.filter(input => input.at > unloadAt && (wakeIn === undefined || input.at < wakeIn.at)) : [];
+  const unloadAt = unloads.at(-1)?.at;
+  const between = read && unloadAt !== undefined ? read.inputs.filter(input => input.at > unloadAt && (wakeIn === undefined || input.at < wakeIn.at)) : [];
+  const before = between.filter(input => !input.system);
+  const systemSent = read && setAt !== undefined && wakeIn ? read.inputs.filter(input => input.system && input.at > setAt && input.at < wakeIn.at) : [];
   add("d", !wakeIn ? null : woke.length > 0 && before.length === 0, !wakeIn ? "the wake has not reached the job's session yet"
     : `the job got "${clip(wakeIn.text, 120)}" at ${iso(wakeIn.at)}; service.log: ${woke.map(line => clip(line)).join(" | ") || "no 'woke ... for its time' line"}` +
-      (before.length ? `; before it, after the unload, the job got: ${before.map(input => `${iso(input.at)} "${clip(input.text, 80)}"`).join("; ")}` : "; nothing else reached the job in between"));
+      (before.length ? `; before it, after the last unload (${iso(unloadAt!)}), the job got: ${before.map(input => `${iso(input.at)} "${clip(input.text, 80)}"`).join("; ")}`
+        : `; nothing else reached the job after its last unload before the wake${unloadAt !== undefined ? ` (${iso(unloadAt)})` : ""}`) +
+      (systemSent.length ? `; system messages between the board.wake call and the wake, not counted: ${systemSent.map(input => `${iso(input.at)} ${input.system}`).join(", ")}` : ""));
 
   // e: the same session before and after the wake: its file's own id, its spawn record's file, no saved state and no copy of the job.
   const after = read && wakeIn ? read.assistant.filter(turn => turn.at > wakeIn.at) : [];
+  // A turn after the wake that got a model reply; a pool wait or an error right after the wake leaves e and f open until one comes.
+  const answered = after.some(turn => turn.stop !== "error" && turn.stop !== "aborted");
   const beforeTurns = read && setAt !== undefined ? read.assistant.filter(turn => turn.at <= setAt) : [];
   const folder = join(DATA, "job-resumes", chat);
   const saved = existsSync(folder) ? readdirSync(folder).filter(name => job && name.startsWith(job.child)) : [];
   const copies = spawns.filter(spawn => job && spawn.child !== job.child && spawn.name.startsWith(job.name));
-  add("e", !wakeIn || !after.length ? null : read!.id === session && beforeTurns.length > 0 && !saved.length && !copies.length, !wakeIn || !after.length
+  add("e", !wakeIn || !answered ? null : read!.id === session && beforeTurns.length > 0 && !saved.length && !copies.length, !wakeIn || !after.length
     ? "no turn after the wake yet"
     : `session ${read!.id} (file ${job!.file}) holds ${beforeTurns.length} assistant messages up to the wake call and ${after.length} after the wake; ` +
       `saved states naming the job: ${saved.join(", ") || "none"}; other jobs with its name: ${copies.map(spawn => spawn.child).join(", ") || "none"}`);
@@ -151,7 +173,7 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
   const wrongModels = read ? read.models.filter(entry => entry.model !== want) : [];
   const wrongLevels = read ? read.thinking.filter(entry => entry.level !== MODEL.thinkingLevel) : [];
   const wrongTurns = read ? read.assistant.filter(turn => turn.model !== want) : [];
-  add("f", !after.length ? null : !wrongModels.length && !wrongLevels.length && !wrongTurns.length, !read ? "no job yet"
+  add("f", !answered ? null : !wrongModels.length && !wrongLevels.length && !wrongTurns.length, !read ? "no job yet"
     : `model_change: ${read.models.map(entry => `${iso(entry.at)} ${entry.model}`).join(", ") || "none"}; thinking_level_change: ${read.thinking.map(entry => `${iso(entry.at)} ${entry.level}`).join(", ") || "none"}; ` +
       `assistant messages: ${beforeTurns.length} before the wake call and ${after.length} after the wake, ${wrongTurns.length ? `${wrongTurns.length} not on ${want} (${wrongTurns.slice(0, 3).map(turn => `${iso(turn.at)} ${turn.model}`).join(", ")})` : `all on ${want}`}`);
 
@@ -159,11 +181,13 @@ function judge(run: string, state: RunState): { verdict: Verdict; text: string }
   const stepped = nobodySteppedIn(run, state);
   add("g", stepped.ok, stepped.detail);
 
-  // Void with no model turn after the wake: the wake came, but every reply after it failed (no assistant message that did not end in an error).
-  const answered = after.some(turn => turn.stop !== "error" && turn.stop !== "aborted");
-  const noTurn = wakeIn !== undefined && after.length > 0 && !answered;
-  const verdict: Verdict = stepped.ok === false || noTurn ? "void" : checks.some(check => check.ok === false) ? "fail"
-    : checks.some(check => check.ok === null) ? "open" : "pass";
+  // Void with no model turn after the wake: the wake came, but by the window end no turn after it got a model reply. A verdict waits until every
+  // criterion is decided: run2 on 10-28 failed on d at 00:51:29Z, 13 s after the wake reached the job, and its teardown stopped the job's
+  // turn after the wake (owner_stop), so e and f were never read.
+  const ended = state.until !== undefined && Date.now() >= state.until;
+  const noTurn = wakeIn !== undefined && !answered && ended;
+  const verdict: Verdict = stepped.ok === false || noTurn ? "void" : checks.some(check => check.ok === null) ? "open"
+    : checks.some(check => check.ok === false) ? "fail" : "pass";
   const text = [
     `# Clean-room run ${run.split("/").at(-1)}: ${verdict}`, "",
     `The chat "${state.chat.name}" (${chat}) ran on ${state.release} from ${iso(state.windowStart)} to ${iso(Date.now())}. Judged by \`clean-room.ts evaluate\`.`,
