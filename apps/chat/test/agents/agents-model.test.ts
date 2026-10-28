@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { actionsFor, agentsIn, countsByTab, levelsFor, modelOptions, openTarget, tabFromRoute } from "../../web/src/pages/agents/agents-model.ts";
+import { ACTION_LABEL, actionsFor, agentFromRoute, agentsIn, bytesLabel, canArchive, countsByTab, everyLabel, levelsFor, modelOptions, openTarget, sectionFromParams, shortPath, tabFromRoute } from "../../web/src/pages/agents/agents-model.ts";
 
 type Agent = Parameters<typeof agentsIn>[0][number];
 const agent = (over: Partial<Agent>): Agent => ({
@@ -44,4 +44,33 @@ test("models are keyed provider/id with family labels and their levels", () => {
   assert.deepEqual(levelsFor(typed, "x/y"), []);
   assert.equal(tabFromRoute(["jobs"]), "jobs");
   assert.equal(tabFromRoute([]), "yours");
+});
+
+test("#/agents/<id> names the agent whose configuration is open, over the tab it belongs to", () => {
+  assert.equal(agentFromRoute([]), null);
+  assert.equal(agentFromRoute(["jobs"]), null);
+  assert.equal(agentFromRoute(["t1:4"]), "t1:4");
+  assert.equal(tabFromRoute(["t1:4"], agent({ id: "t1:4", kind: "job" })), "jobs");
+  assert.equal(tabFromRoute(["t1"], agent({ id: "t1" })), "yours");
+  assert.equal(tabFromRoute(["t1"], null), "yours");
+  assert.equal(sectionFromParams({ section: "memory" }), "memory");
+  assert.equal(sectionFromParams({ section: "nope" }), "overview");
+  assert.equal(sectionFromParams({}), "overview");
+});
+
+test("Message replaces Open thread, and only a root thread archives", () => {
+  assert.equal(ACTION_LABEL.open, "Message");
+  assert.equal(canArchive(agent({ conversation: 1 })), true);
+  assert.equal(canArchive(agent({ id: "t1:4", kind: "job", conversation: 4 })), false);
+});
+
+test("sizes, home paths and check-in intervals read short", () => {
+  assert.equal(bytesLabel(null), "");
+  assert.equal(bytesLabel(512), "512 B");
+  assert.equal(bytesLabel(25_714_688), "25 MB");
+  assert.equal(bytesLabel(1536), "1.5 KB");
+  assert.equal(shortPath("/home/sieun/.prime/agent/AGENTS.md"), "~/.prime/agent/AGENTS.md");
+  assert.equal(shortPath("/Users/sieunpark/x"), "/Users/sieunpark/x");
+  assert.equal(everyLabel(6 * 3600_000), "every 6 h");
+  assert.equal(everyLabel(90 * 60_000), "every 90 min");
 });

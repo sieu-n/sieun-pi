@@ -1,12 +1,14 @@
 <script lang="ts">
   import type { AgentSummary, ModelCatalog, ThinkingLevel } from "$lib/api";
   import { ModelPicker, IconButton, TypingDots, ageLabel, mascotSvg } from "$lib/ui";
-    import { STATUS_LABEL, levelsFor, modelKey, modelOptions } from "./agents-model";
+  import { STATUS_LABEL, levelsFor, modelKey, modelOptions } from "./agents-model";
 
   type Props = {
     agent: AgentSummary;
     catalog: ModelCatalog | null;
     focusable: boolean;
+    /** Its configuration is open in the side panel. */
+    selected?: boolean;
     now: number;
     onopen: () => void;
     onmenu: (anchor: HTMLElement | { x: number; y: number }) => void;
@@ -14,7 +16,7 @@
     onfocus: () => void;
     element?: HTMLElement;
   };
-  let { agent, catalog, focusable, now, onopen, onmenu, onmodel, onfocus, element = $bindable() }: Props = $props();
+  let { agent, catalog, focusable, selected = false, now, onopen, onmenu, onmodel, onfocus, element = $bindable() }: Props = $props();
 
   const art = $derived(mascotSvg(agent.name, `card-${agent.id.replace(/[^a-z0-9]/gi, "")}`));
   const backdrop = $derived(`url("data:image/svg+xml;utf8,${encodeURIComponent(mascotSvg(agent.name, "bd"))}")`);
@@ -61,6 +63,7 @@
   class="card"
   role="gridcell"
   tabindex={focusable ? 0 : -1}
+  aria-selected={selected}
   aria-label="{agent.name}, {agent.kind === 'job' ? 'job' : 'chat'}, {STATUS_LABEL[agent.status]}"
   data-agent-id={agent.id}
   data-status={agent.status}
@@ -127,6 +130,9 @@
   }
   .card:focus-visible {
     box-shadow: 0 0 0 2px var(--border-focus);
+  }
+  .card[aria-selected="true"] {
+    box-shadow: 0 0 0 2px var(--border-prominent);
   }
   .card:hover .wash {
     opacity: 0.76;

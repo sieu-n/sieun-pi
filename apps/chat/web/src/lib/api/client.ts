@@ -3,7 +3,7 @@
  * message. Paths are relative, so the page works behind Vite's proxy on :5185 and from the server on :5184 alike.
  */
 import type {
-  AgentId, AgentSummary, BoardOp, BoardRow, BoardView, Channel, ChannelInput, CheckInPatch, CheckInView, ChatAgent, ConversationHeader, ConversationId,
+  AgentConfig, AgentId, AgentSummary, BoardOp, BoardRow, BoardView, Channel, ChannelInput, CheckInPatch, CheckInView, ChatAgent, ConversationHeader, ConversationId,
   ConversationPatch, ConversationSummary, DutyAction, DutyView, ForYouItem, HostsReport, Item, JobNode, Me, ModelCatalog, SearchResult, SendRequest,
   SendResult, Sidebar, ThinkingLevel, TimelinePage, UsageReport, AccountsView,
 } from "./types.ts";
@@ -57,9 +57,11 @@ export const api = {
   models: () => call<ModelCatalog>("GET", "/api/models"),
 
   agents: (opts: { archived?: boolean } = {}) => call<AgentSummary[]>("GET", `/api/agents${query({ archived: opts.archived ? 1 : undefined })}`),
-  /** A new root thread: `kind` "job" with a `parent` files it under that chat and lists it as a DM. */
+  /** A new root thread: `kind` "job" with a `parent` files it under that chat as a job, which is not a DM. */
   createAgent: (input: { name?: string; model?: string; thinkingLevel?: ThinkingLevel; cwd?: string; kind?: "chat" | "job"; parent?: AgentId }) =>
     call<AgentSummary>("POST", "/api/agents", input),
+  /** One agent as a role: purpose, where it runs, its board, memory, instructions and swarm (API.md, Agents). */
+  agentConfig: (id: AgentId) => call<AgentConfig>("GET", `/api/agents/${enc(id)}/config`),
   setAgentModel: (id: AgentId, model: string, thinkingLevel?: ThinkingLevel) => call<ConversationHeader>("PATCH", `/api/c/${enc(id)}`, { model, ...(thinkingLevel ? { thinkingLevel } : {}) }),
   stopAgent: (id: AgentId) => call<{ ok: true }>("POST", `/api/c/${enc(id)}/abort`),
   archiveAgent: (id: AgentId, archived = true) => call<ConversationHeader>("PATCH", `/api/c/${enc(id)}`, { archived }),

@@ -1,0 +1,122 @@
+/**
+ * `GET /api/agents/:id/config` on the fixture host: identity and purpose, where it runs, its board, memory, instructions and swarm, and the
+ * DM rule (only root chats are DMs; duty threads and jobs sit under their parent).
+ * Run: cd apps/chat && node --import tsx --test --test-force-exit --test-isolation=none test/server/agent-config.test.ts
+ */
+import assert from "node:assert/strict";
+import { join } from "node:path";
+import { after, before, test } from "node:test";
+import type { AgentConfig, ConversationSummary, Sidebar } from "../../web/src/lib/api/types.ts";
+import { readPreamble } from "../../server/agent-config.ts";
+import { FIXTURE_IDS as ids } from "../../server/fixture/seed.ts";
+import { start, type Running } from "./helpers.ts";
+
+let s: Running;
+before(async () => {
+  s = await start({ wordMs: 0 });
+});
+after(async () => {
+  await s.close();
+});
+
+const config = (id: string) => s.get<AgentConfig>(`/api/agents/${encodeURIComponent(id)}/config`);
+
+test("a chat's config names its purpose, host, cwd, board, memory, instructions and swarm", async () => {
+  const c = await config(ids.harness);
+  assert.equal(c.agent.id, ids.harness);
+  assert.equal(c.identity.purpose?.text, "What still blocks the migration to pi-host?");
+  assert.equal(c.identity.purpose?.from.id, "owner");
+  assert.equal(c.identity.duty, null);
+
+  assert.equal(c.runs.host, "test-box");
+  assert.equal(c.runs.hostKind, "fixture");
+  assert.equal(c.runs.cwd, join(s.app.config.dataDir, "work", "harness"));
+  assert.equal(c.runs.cwdExists, true);
+  assert.equal(c.runs.thread, ids.harness);
+  assert.equal(c.runs.conversation, 1);
+  assert.equal(c.runs.threadFile, null, "the fixture host keeps threads in memory");
+  assert.equal(c.runs.socket, s.app.config.socket);
+
+  assert.ok(c.board);
+  assert.equal(c.board.chat, ids.harness);
+  assert.equal(c.board.own, true);
+  assert.equal(c.board.doc, "chat.board");
+  assert.deepEqual(c.board.goals.map(g => g.id), ["p1", "p7"]);
+  assert.deepEqual(c.board.steps, { open: 5, done: 1, total: 6 });
+  assert.equal(c.board.awaitingGo, (await s.get(`/api/threads/${ids.harness}/board`)).awaitingGo.length);
+  assert.deepEqual(c.board.openTodos.map(t => t.id).sort(), ["t1", "t2"]);
+
+  assert.equal(c.memory.kind, "none");
+  assert.ok(c.memory.kind === "none" && /no memory of its own/.test(c.memory.note));
+  const harness = c.memory.kind === "none" ? c.memory.related.find(f => f.path.endsWith("harness_state.json")) : undefined;
+  assert.equal(harness?.count, 2);
+  assert.equal(harness?.loaded, false);
+  assert.match(harness?.preview ?? "", /pi-pool slots free up/);
+  assert.ok(c.memory.kind === "none" && c.memory.related.some(f => f.label === "duty d1 precheck state" && f.exists && /downMinutes/.test(f.preview ?? "")));
+
+  const paths = c.instructions.files.map(f => f.path);
+  assert.equal(paths[0], join(s.app.config.dataDir, "work", "harness", "AGENTS.md"), "the cwd's AGENTS.md comes first");
+  assert.ok(paths.includes(join(s.app.config.dataDir, "work", "AGENTS.md")));
+  assert.equal(paths.at(-1), join(s.app.config.dataDir, "prime-agent", "AGENTS.md"));
+  assert.ok(c.instructions.files.every(f => f.loaded === false && f.exists && (f.size ?? 0) > 0));
+  assert.match(c.instructions.files[0]!.preview ?? "", /Ask the owner before a deploy/);
+
+  const jobs = new Map(c.swarm.jobs.map(j => [j.id, j]));
+  assert.equal(jobs.get(ids.uptimeDuty)?.kind, "duty");
+  assert.equal(jobs.get(ids.cutover)?.kind, "root job");
+  assert.ok(c.swarm.jobs.some(j => j.kind === "job" && j.id.startsWith(`${ids.harness}:`) && j.status === "working"));
+  assert.deepEqual(c.swarm.channels, [{ id: "ch_cutover", name: "pi-cutover" }]);
+  assert.deepEqual(c.swarm.duties.map(d => [d.id, d.schedule, d.paused]), [["d1", "daily at 07:40 KST", false], ["d2", "daily at 07:40 KST", true]]);
+  assert.equal(c.swarm.checkIn?.everyMs, 120 * 60_000);
+  assert.equal(c.swarm.dutiesFile?.path, join(s.app.config.dataDir, "boards", ids.harness, "duties.json"));
+  assert.ok(c.usage && c.usage.days === 7);
+});
+
+test("a duty thread names its duty and the brief it was given, and shares its chat's board", async () => {
+  const c = await config(ids.uptimeDuty);
+  assert.equal(c.agent.kind, "job");
+  assert.deepEqual(c.identity.duty, { chat: ids.harness, id: "d1", name: "Relay uptime" });
+  assert.equal(c.identity.purpose?.from.id, ids.harness);
+  assert.equal(c.identity.purpose?.via, "duty d1");
+  assert.match(c.identity.purpose?.text ?? "", /^You are the duty job/);
+  assert.equal(c.board?.chat, ids.harness);
+  assert.equal(c.board?.own, false);
+  assert.deepEqual(c.swarm.duties, [], "duties belong to the chat");
+  assert.equal(c.swarm.parent?.id, ids.harness);
+});
+
+test("a job inside a thread reads its task as its purpose and its thread's board", async () => {
+  const job = (await s.get<ConversationSummary[]>("/api/conversations")).find(c => c.id.startsWith(`${ids.vent}:`))!;
+  const c = await config(job.id);
+  assert.match(c.identity.purpose?.text ?? "", /Read the canary logs/);
+  assert.equal(c.runs.thread, ids.vent);
+  assert.notEqual(c.runs.conversation, 1);
+  assert.equal(c.board?.chat, ids.vent);
+  assert.equal(c.board?.own, false);
+});
+
+test("an unknown agent is a 404", async () => {
+  const response = await s.send("GET", "/api/agents/no-such-agent/config");
+  assert.equal(response.status, 404);
+});
+
+test("Direct messages hold only root chats; a duty thread, a root job and a job open by link", async () => {
+  const sidebar = await s.get<Sidebar>("/api/sidebar");
+  assert.deepEqual(sidebar.dms.map(c => c.id), [ids.crawler]);
+  const all = await s.get<ConversationSummary[]>("/api/conversations");
+  const duty = all.find(c => c.id === ids.uptimeDuty);
+  assert.equal(duty?.kind, "job");
+  assert.equal(duty?.parent, ids.harness);
+  assert.equal(all.find(c => c.id === ids.cutover)?.kind, "job");
+  const opened = await s.send("POST", "/api/dms", { agent: ids.cutover });
+  assert.equal(opened.status, 200);
+  assert.ok(!(await s.get<Sidebar>("/api/sidebar")).dms.some(c => c.id === ids.cutover), "opening a job by DM does not list it");
+  assert.equal((await s.get(`/api/c/${ids.uptimeDuty}`)).summary.kind, "job");
+});
+
+test("the preamble parses from pi-family's source", () => {
+  const got = readPreamble([join(import.meta.dirname, "../../../../packages/pi-family/preamble.ts")]);
+  assert.match(got.text ?? "", /^You are a general purpose agent/);
+  assert.equal(got.text?.split("\n").length, 3);
+  assert.equal(readPreamble(["/no/such/file"]).text, null);
+});

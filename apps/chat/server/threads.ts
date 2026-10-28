@@ -242,13 +242,14 @@ export class Threads {
       const working = agents.filter(a => a.status === "working").map(a => ({ id: a.id, name: a.name }));
       const status = statusOf(row.status);
       out.push({
-        id: row.id, kind: meta.kind === "job" || dms.has(row.id) ? "dm" : "solo", name: row.name || "Untitled", status, archived: row.archived,
+        // Only a root chat is a DM; a root job, such as a duty run's thread, sits under its parent agent and opens by link (owner, 10-28).
+        id: row.id, kind: meta.kind === "job" ? "job" : dms.has(row.id) ? "dm" : "solo", name: row.name || "Untitled", status, archived: row.archived,
         lastActivityAt: row.updatedAt, preview: row.preview.slice(0, 200), unread: this.unread(row.id, row.updatedAt, status),
-        hasNew: row.updatedAt > (this.store.state.reads[row.id]?.at ?? 0), working, agent: row.id,
+        hasNew: row.updatedAt > (this.store.state.reads[row.id]?.at ?? 0), working, agent: row.id, ...(meta.kind === "job" && meta.parent ? { parent: meta.parent } : {}),
       });
       for (const agent of agents.slice(1)) {
         out.push({
-          id: agent.id, kind: dms.has(agent.id) ? "dm" : "job", name: agent.name, status: agent.status, archived: row.archived, lastActivityAt: agent.updatedAt,
+          id: agent.id, kind: "job", name: agent.name, status: agent.status, archived: row.archived, lastActivityAt: agent.updatedAt,
           preview: "", unread: 0, hasNew: false, working: agent.status === "working" ? [{ id: agent.id, name: agent.name }] : [], agent: agent.id,
           ...(agent.parent ? { parent: agent.parent.id } : {}),
         });

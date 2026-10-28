@@ -9,6 +9,7 @@ import type { ChatBoard, PlanItem } from "../../web/src/lib/api/types.ts";
 import type { Duty, DutyRunRecord } from "../../web/src/lib/api/shared/chat-duties.ts";
 import type { FixtureHost } from "../host/fixture.ts";
 import type { ContentBlock, EntryRecord, Message } from "../host/types.ts";
+import { runStamp } from "../duty-run.ts";
 import { writeJson, type ChannelRow, type Post, type StateFile } from "../store.ts";
 
 export const FIXTURE_IDS = {
@@ -18,6 +19,7 @@ export const FIXTURE_IDS = {
   frontend: "0f1e0000-0000-4000-8000-000000000004",
   cutover: "0f1e0000-0000-4000-8000-000000000005",
   archived: "0f1e0000-0000-4000-8000-000000000006",
+  uptimeDuty: "0f1e0000-0000-4000-8000-000000000007",
   cutoverChannel: "ch_cutover",
   generalChannel: "ch_general",
 };
@@ -90,6 +92,12 @@ export function seedFixture(host: FixtureHost, dataDir: string, now = Date.now()
   agentMsg(cutover, 1, ids.harness, "spawn", "Prepare the pi-host cutover: list what moves and in which order.", at(1, 1));
   assistant(cutover, 1, [{ type: "text", text: "The cutover moves the chat first, then the relay, then the pool. The canary send key is in 32dac069." }], at(1, 1.2));
 
+  // A duty run's thread, filed under the AI harness VP: a job, not a DM.
+  const dutyAt = at(1);
+  const uptimeDuty = host.addThread({ id: ids.uptimeDuty, name: `Relay uptime duty ${runStamp(dutyAt)}`, createdAt: dutyAt });
+  agentMsg(uptimeDuty, 1, ids.harness, "duty d1", "You are the duty job of the chat \"AI harness developer environment VP\". Uptime measured 97.2% against a target of at least 99%. Find the cause and fix it, then report in at most 3 lines.", dutyAt);
+  assistant(uptimeDuty, 1, [{ type: "text", text: "Uptime dipped while the Mac slept for 41 minutes. Nothing to fix on this box; the next run should meet the target." }], dutyAt + 0.2 * HOUR);
+
   const archived = host.addThread({ id: ids.archived, name: "old relay probe", createdAt: at(6), archived: true });
   user(archived, 1, "ping the relay", at(6, 1));
   assistant(archived, 1, [{ type: "text", text: "The relay answers." }], at(6, 1.01));
@@ -128,7 +136,8 @@ export function seedFixture(host: FixtureHost, dataDir: string, now = Date.now()
 
   // The chat server's own files: thread kinds, DMs, read marks, channels, duties and the check-in.
   const state: StateFile = {
-    v: 1, threads: { [ids.cutover]: { kind: "job", parent: ids.harness } }, dms: [`${ids.vent}:${ventJob.id}`],
+    // Crawler VP is a chat the owner opened as a DM. The Vent job in `dms` predates the rule that only a root chat is a DM, so it stays out.
+    v: 1, threads: { [ids.cutover]: { kind: "job", parent: ids.harness }, [ids.uptimeDuty]: { kind: "job", parent: ids.harness } }, dms: [ids.crawler, `${ids.vent}:${ventJob.id}`],
     reads: { [ids.vent]: { at: at(1, 3.5) }, [ids.frontend]: { at: now }, [ids.cutoverChannel]: { at: at(1), seq: 4 } },
   };
   writeJson(join(dataDir, "state.json"), state);
@@ -169,11 +178,29 @@ export function seedFixture(host: FixtureHost, dataDir: string, now = Date.now()
   writeJson(join(dataDir, "boards", ids.harness, "duties.json"), {
     duties: [duty("d1", "Relay uptime", "The canary relay answers every minute.", "relay_up_pct", 99), { ...duty("d2", "Search freshness", "Search covers every entry within a minute.", "fresh_pct", 95), status: "paused" }],
     runs: {
-      d1: [run("d1", "relay_up_pct", at(2), 99.5, 99), run("d1", "relay_up_pct", at(1), 97.2, 99), run("d1", "relay_up_pct", at(0, -8), 98.1, 99)],
+      d1: [run("d1", "relay_up_pct", at(2), 99.5, 99), { ...run("d1", "relay_up_pct", dutyAt, 97.2, 99), job: { id: ids.uptimeDuty, name: uptimeDuty.row.name } }, run("d1", "relay_up_pct", at(0, -8), 98.1, 99)],
       d2: [run("d2", "fresh_pct", at(1), 100, 95)],
     },
     checkIn: { everyMs: 120 * 60_000, pausedUntil: null, lastAt: at(0, -1.5) },
   });
+
+  // Where the agents run and what they could read: a cwd per chat with its AGENTS.md, Prime's agent dir with its global AGENTS.md and
+  // harness store, and a duty's precheck state. The config page reads these as it reads the real ones.
+  for (const [thread, slug] of [[vent, "vent"], [harness, "harness"], [crawler, "crawler"], [frontend, "frontend"], [cutover, "harness"], [uptimeDuty, "harness"], [archived, "vent"]] as const) {
+    thread.row.cwd = join(dataDir, "work", slug);
+    mkdirSync(thread.row.cwd, { recursive: true });
+  }
+  writeFileSync(join(dataDir, "work", "AGENTS.md"), "# Work\n\nEvery project folder under work/ follows these rules.\n\n1. Run the tests before you report.\n");
+  writeFileSync(join(dataDir, "work", "harness", "AGENTS.md"), "# AI harness\n\nThe harness VP owns the move of :5182 onto pi-host.\n\n1. Ask the owner before a deploy.\n");
+  const primeDir = join(dataDir, "prime-agent");
+  mkdirSync(join(primeDir, "harness"), { recursive: true });
+  writeFileSync(join(primeDir, "AGENTS.md"), "# Prime\n\nRules every Prime session on this box reads.\n");
+  const memory = (id: string, title: string, when: number) => ({ id, kind: "memory", title, content: title, path: "general", scope: "global", reference: {}, arguments: {}, metadata: {}, source: "agent", created_at: new Date(when).toISOString(), updated_at: new Date(when).toISOString(), version: 1 });
+  writeJson(join(primeDir, "harness", "harness_state.json"), {
+    schema: 1, refinements: [],
+    entries: { prompt: {}, skill: {}, subagent: {}, memory: { m1: memory("m1", "The Mac sleeps at night, so cross-box tests run in the day", at(3)), m2: memory("m2", "pi-pool slots free up at 07:00 KST", at(1)) } },
+  });
+  writeJson(join(dataDir, "boards", ids.harness, "duties", "d1.state.json"), { lastSeenAt: new Date(at(0, -8)).toISOString(), downMinutes: 41 });
 
   // Keep one turn streaming for as long as the fixture runs.
   const stream = async () => {
