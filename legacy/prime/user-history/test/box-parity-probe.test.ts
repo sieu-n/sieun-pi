@@ -8,6 +8,13 @@ import { test } from "node:test";
 
 const PROBE = join(import.meta.dirname, "../scripts/duties/box-parity-probe.py");
 
+/** An empty bare repo for the box checkout's origin, since the box tip probe fetches origin's dev branches first. */
+const bareOrigin = (home: string) => {
+  const origin = join(home, "origin.git");
+  execFileSync("git", ["init", "-q", "--bare", origin]);
+  return origin;
+};
+
 test("the box tip probe gives the same patch-ids from its cache, computes only new commits, and the Mac side writes no cache", () => {
   const home = mkdtempSync(join(tmpdir(), "box-parity-cache-"));
   const repo = join(home, "Documents/Github/auto-sns-agent");
@@ -22,6 +29,7 @@ test("the box tip probe gives the same patch-ids from its cache, computes only n
   const cacheFile = join(home, ".cache/box-parity/patch-ids.json");
   const cache = () => JSON.parse(readFileSync(cacheFile, "utf8")) as Record<string, string>;
   git("init", "-q", "-b", "dev/sieun");
+  git("remote", "add", "origin", bareOrigin(home));
   const first = commit("a.txt", "a");
   git("commit", "-q", "--allow-empty", "-m", "empty");
   const empty = git("rev-parse", "HEAD");
@@ -48,6 +56,7 @@ test("the box tip probe sends the hash of every commit dev/sieun holds, past its
   const repo = join(home, "Documents/Github/auto-sns-agent");
   mkdirSync(repo, { recursive: true });
   execFileSync("git", ["-C", repo, "init", "-q", "-b", "dev/sieun"]);
+  execFileSync("git", ["-C", repo, "remote", "add", "origin", bareOrigin(home)]);
   const stream = Array.from({ length: 2002 }, (_, n) =>
     `commit refs/heads/dev/sieun\nmark :${n + 1}\ncommitter t <t@t> ${1_700_000_000 + n} +0000\ndata 2\nc${n % 10}\n${n ? `from :${n}\n` : ""}`).join("\n");
   execFileSync("git", ["-C", repo, "fast-import", "--quiet"], { input: stream });
@@ -73,4 +82,32 @@ test("the Playwright browsers row skips the __dirlock folder playwright install 
   assert.equal(mac, 'set:["chromium-1243", "ffmpeg-1011"]');
   assert.equal(shortfall(mac, read("box", ".cache/ms-playwright", [".links", "chromium-1243", "ffmpeg-1011"])), null);
   assert.match(shortfall(mac, read("box", ".cache/ms-playwright", ["__dirlock", "chromium-1243"]))!, /box lacks 1 of the Mac's 2: ffmpeg-1011/);
+});
+
+test("the box tip probe fetches origin's dev branches before it lists them, and a failed fetch is a fail value", () => {
+  const home = mkdtempSync(join(tmpdir(), "box-parity-fetch-"));
+  const env = { ...process.env, HOME: home, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" };
+  const origin = bareOrigin(home);
+  const repo = join(home, "Documents/Github/auto-sns-agent");
+  const mac = join(home, "mac");
+  const git = (dir: string, ...args: string[]) => execFileSync("git", ["-C", dir, ...args], { encoding: "utf8", env }).trim();
+  execFileSync("git", ["clone", "-q", origin, mac], { env, stdio: "ignore" });
+  git(mac, "checkout", "-q", "-b", "dev/sieun");
+  git(mac, "commit", "-q", "--allow-empty", "-m", "base");
+  git(mac, "push", "-q", "origin", "dev/sieun");
+  execFileSync("git", ["clone", "-q", "-b", "dev/sieun", origin, repo], { env, stdio: "ignore" });
+  git(mac, "checkout", "-q", "-b", "dev/sieun-mac");
+  git(mac, "commit", "-q", "--allow-empty", "-m", "pushed after the box's last fetch");
+  git(mac, "push", "-q", "origin", "dev/sieun-mac");
+  const pushed = git(mac, "rev-parse", "HEAD");
+  const head = git(repo, "rev-parse", "HEAD");
+  const arg = Buffer.from(JSON.stringify({ host: "box", rows: [{ id: "tip", tool: "checkout tip", probes: [{ tip: true }] }], known: {} })).toString("base64");
+  const tip = () => (JSON.parse(execFileSync("python3", [PROBE, arg], { env, encoding: "utf8" })) as { values: { tip: string[] } }).values.tip[0]!;
+
+  assert.deepEqual((JSON.parse(tip().slice(8)) as { fetched: string[] }).fetched, [pushed.slice(0, 10)]);
+  assert.equal(git(repo, "rev-parse", "HEAD"), head, "the fetch leaves the box's branch where it was");
+  assert.equal(git(repo, "status", "--porcelain"), "");
+
+  git(repo, "remote", "set-url", "origin", join(home, "gone.git"));
+  assert.match(tip(), /^fail: git fetch: /);
 });

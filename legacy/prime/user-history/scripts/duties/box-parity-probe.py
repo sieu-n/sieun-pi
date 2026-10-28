@@ -338,7 +338,7 @@ def commits(host):
     parent), so a change carried onto another base keeps its id, and one key per path it touched from the path and the bytes it wrote. The Mac
     sends its last 100 as one list entry each, with whether its own origin/<branch> holds it, so a commit it never pushed is told apart from one the
     box failed to fetch. The box sends the hashes of every commit dev/sieun holds, the patch-ids and path keys of its last 2000, plus the hashes
-    its fetched origin branches hold beyond dev/sieun, such as the Mac's pushed dev/sieun-mac (c119). Hashes cover all of the box branch because on
+    origin's dev branches hold beyond dev/sieun, such as the Mac's pushed dev/sieun-mac (c119), fetched just before. Hashes cover all of the box branch because on
     10-21 the box's last 2000 reached back only 33 hours (2214 commits in 34 h), so 8 Mac commits sieun/dev held fell out of the window and
     turned the row off; the full list is 16148 hashes, 0.4 s and 210 KB.
     """
@@ -348,6 +348,12 @@ def commits(host):
         raw = git_bytes(["log", "--no-abbrev", "--raw", "--format=@%H", "-n", count, "--no-renames", "--diff-merges=first-parent", name]).decode("utf-8", "replace")
         patch_of = patch_ids([line[1:] for line in raw.splitlines() if line.startswith("@")], host)
         if host == "box":
+            # The box fetches origin's dev branches before it lists `fetched`, and box-parity.ts starts this read after the Mac read finished,
+            # so every commit the Mac reported as pushed is already on origin. ci-head-fetch.timer fetches only dev/sieun, every 5 minutes, and
+            # on 10-28 the row listed 9, then 2 Mac commits pushed to dev/sieun-mac since the box's last fetch. A fetch writes only refs under
+            # refs/remotes/origin/dev/, never dev/sieun, the working tree or .git/index, and a failed fetch makes the value a fail.
+            git_bytes(["fetch", "--no-tags", "--no-write-fetch-head", "--no-recurse-submodules", "--no-auto-maintenance", "--quiet", "origin",
+                       "+refs/heads/dev/*:refs/remotes/origin/dev/*"])
             held = git_bytes(["rev-list", name]).decode().split()
             fetched = git_bytes(["rev-list", "--remotes=origin", "--not", name]).decode().split()
         else:

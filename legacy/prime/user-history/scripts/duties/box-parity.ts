@@ -420,6 +420,22 @@ async function probeBox(rows: readonly Row[]): Promise<ProbeOutput> {
   return JSON.parse(await exec("python3", [PROBE, probeArg("box", rows, {})], { timeoutMs: 80_000 })) as ProbeOutput;
 }
 
+/**
+ * The box read, with the rows whose probe reads the checkout tip started only once the Mac read has settled: the box probe fetches origin's dev
+ * branches before it lists them, so a commit the Mac pushed just before its read is on origin by then. On 10-28 a parallel read listed 9, then 2
+ * Mac commits pushed since the box's last fetch as box gaps. Every other row reads at once, alongside the Mac.
+ */
+export async function probeBoxAfterMac(rows: readonly Row[], mac: Promise<unknown>, probe: (rows: readonly Row[]) => Promise<ProbeOutput> = probeBox):
+  Promise<ProbeOutput> {
+  const readsTip = (row: Row) => probesOf(row, "box").some(spec => spec.tip === true);
+  const later = rows.filter(readsTip);
+  const read = (part: readonly Row[]) => part.length ? probe(part) : Promise.resolve(undefined);
+  const [first, second] = await Promise.all([read(rows.filter(row => !readsTip(row))), mac.then(() => read(later), () => read(later))]);
+  const parts = [first, second].filter((part): part is ProbeOutput => part !== undefined);
+  return { host: "box", values: Object.assign({}, ...parts.map(part => part.values)) as Record<string, string[]>,
+    versions: Object.assign({}, ...parts.map(part => part.versions)) as Record<string, unknown>, ms: parts.reduce((sum, part) => sum + part.ms, 0) };
+}
+
 async function probeMac(rows: readonly Row[], known: Record<string, unknown>): Promise<ProbeOutput> {
   const script = await readFile(PROBE, "utf8");
   const text = await exec("timeout", [String(MAC_TIMEOUT_S), "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=40", MAC, "/usr/bin/python3", "-", probeArg("mac", rows, known)],
@@ -494,8 +510,9 @@ export async function measure(rows: readonly Row[], known: Record<string, unknow
   const away = await macAway(MAC, "tool rows are", at);
   // With the Mac away the box side of the rows has nothing to match, so neither the box probe nor the panel checks run.
   const skip = <T>(read: () => Promise<T>): Promise<T | Error> => away ? Promise.resolve(new Error(away.excerpt)) : settle(read());
+  const macRead = skip(() => probeMac(rows, known));
   const [mac, box, panel, limits, outside, guard, rcuUnit, stallTimeout, layers] = await Promise.all([
-    skip(() => probeMac(rows, known)), skip(() => probeBox(rows)), skip(() => panelOutcomes(rows)), settle(resourceLimits()), settle(outsideSsh()),
+    macRead, skip(() => probeBoxAfterMac(rows, macRead)), skip(() => panelOutcomes(rows)), settle(resourceLimits()), settle(outsideSsh()),
     showUnit("ssh-public-guard.service", "ActiveState,Result"), showUnit("rcu-boost.service", "ActiveState,SubState"),
     settle(readFile("/sys/module/rcupdate/parameters/rcu_cpu_stall_timeout", "utf8")), settle(readLayers()),
   ]);

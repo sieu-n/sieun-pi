@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { commitGaps, compareVersions, containerLimits, followSteps, foldName, judgeRows, runFollow, type LimitContext, managerLimits, parseLayers, parseShow, type ProbeOutput, publicSsh, rcuBoostOff, type Row, shortfall, unitLimits, unpushedNote }
+import { commitGaps, compareVersions, containerLimits, followSteps, foldName, judgeRows, probeBoxAfterMac, runFollow, type LimitContext, managerLimits, parseLayers, parseShow, type ProbeOutput, publicSsh, rcuBoostOff, type Row, shortfall, unitLimits, unpushedNote }
   from "../scripts/duties/box-parity.ts";
 import { macAway } from "../scripts/duties/mac-reach.ts";
 
@@ -260,6 +260,8 @@ test("the tip probe reads the Mac's agent.branch, else its current branch, and t
   const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8",
     env: { ...process.env, HOME: home, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" } }).trim();
   git("init", "-q", "-b", "dev/sieun");
+  execFileSync("git", ["init", "-q", "--bare", join(home, "origin.git")]);
+  git("remote", "add", "origin", join(home, "origin.git"));
   git("commit", "-q", "--allow-empty", "-m", "shared");
   const shared = git("rev-parse", "HEAD").slice(0, 10);
   git("checkout", "-q", "-b", "dev/mac");
@@ -430,4 +432,28 @@ test("every follow recipe in box-parity.rows.json is valid bash that reads the M
     execFileSync("bash", ["-n", "-c", recipe]);
     assert.match(recipe, /\$V|\{V\}|^(venv|nvm_default|npm_global \S+|conda .+|media .+)$/, recipe);
   }
+});
+
+test("the box reads the checkout tip row only after the Mac read settles, so a commit the Mac just pushed is on origin when the box fetches", async () => {
+  const rows: Row[] = [{ id: "node", tool: "node", probes: [{ version: "node" }] }, { id: "tip", tool: "checkout tip", probes: [{ tip: true }] }];
+  const events: string[] = [];
+  let finishMac!: () => void;
+  const mac = new Promise<void>(resolve => { finishMac = resolve; });
+  const probe = async (part: readonly Row[]) => {
+    events.push(`box ${part.map(row => row.id).join(",")}`);
+    return output("box", Object.fromEntries(part.map(row => [row.id, [`read ${row.id}`]])));
+  };
+  const box = probeBoxAfterMac(rows, mac, probe);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(events, ["box node"], "every other row reads alongside the Mac");
+  events.push("mac done");
+  finishMac();
+  const read = await box;
+  assert.deepEqual(events, ["box node", "mac done", "box tip"]);
+  assert.deepEqual(read.values, { node: ["read node"], tip: ["read tip"] });
+  assert.equal(read.ms, 2);
+
+  const failed = await probeBoxAfterMac(rows, Promise.reject(new Error("ssh")), probe);
+  assert.deepEqual(failed.values.tip, ["read tip"], "a failed Mac read still lets the tip row read");
+  assert.match(shortfall('commits:[["aaaaaaaaaa","",[],true]]', "fail: git fetch: could not read from remote")!, /box fail: git fetch/);
 });
