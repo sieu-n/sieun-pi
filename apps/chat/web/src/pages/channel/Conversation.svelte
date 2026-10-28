@@ -20,7 +20,7 @@
   import ThreadPane from "./ThreadPane.svelte";
   import Timeline from "./Timeline.svelte";
   import { directory } from "./directory.svelte";
-  import { avatarKind, mentionContext, withPartial, type Outgoing } from "./present";
+  import { avatarKind, mentionContext, placeText, withPartial, type Outgoing } from "./present";
 
   type Props = { id: string; around?: string };
   let { id, around }: Props = $props();
@@ -43,6 +43,7 @@
   const author = $derived(agent ? { id: agent.id, kind: agent.kind, name: agent.name, avatar: agent.avatar } : null);
   const items = $derived(withPartial(store.items, store.partial, author));
   const waiting = $derived(store.status === "sleeping");
+  const waitText = $derived(placeText(store.queue));
   const liveLabel = $derived(
     store.partial?.tool ? `Running ${store.partial.tool}` : store.partial?.thinking && !store.partial.text ? "Thinking" : waiting ? "Waiting for a model slot" : null,
   );
@@ -267,6 +268,7 @@
     focus={store.focus}
     {context}
     {liveLabel}
+    queue={store.queue}
     openThread={threadParam}
     canReply={isChannel}
     {statusOf}
@@ -282,6 +284,9 @@
     {#if workingNames.length}
       <TypingDots mode="working" />
       <span>{workingNames.length > 2 ? "Agents" : workingNames.join(" and ")} working now</span>
+    {:else if waitText && agent}
+      <TypingDots mode="waiting" />
+      <span>{agent.name} {waitText}</span>
     {:else if waiting && agent}
       <TypingDots mode="waiting" />
       <span>{agent.name} waits for a model slot</span>

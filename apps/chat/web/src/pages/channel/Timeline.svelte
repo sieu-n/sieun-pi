@@ -1,6 +1,6 @@
 <script lang="ts">
   import { tick } from "svelte";
-  import type { Item } from "$lib/api";
+  import type { Item, TurnPlace } from "$lib/api";
   import Button from "$lib/ui/Button.svelte";
   import DayDivider from "$lib/ui/DayDivider.svelte";
   import LoadingText from "$lib/ui/LoadingText.svelte";
@@ -8,7 +8,7 @@
   import type { MarkdownContext } from "$lib/ui/markdown";
   import type { Status } from "$lib/ui/types";
   import MessageRow from "./MessageRow.svelte";
-  import { avatarKind } from "./present";
+  import { avatarKind, waitingSend } from "./present";
   import { layoutRows } from "./rows";
 
   type Props = {
@@ -22,6 +22,8 @@
     focus?: string;
     context: MarkdownContext;
     liveLabel?: string | null;
+    /** The run's place in the turn queue, shown under the send that waits for it. */
+    queue?: TurnPlace | null;
     openThread?: string | null;
     canReply?: boolean;
     /** The side pane draws a tighter column. */
@@ -36,11 +38,12 @@
     onbottom?: () => void;
   };
   let {
-    items, loading, error, hasOlder, loadingOlder, loadOlder, focus, context, liveLabel = null, openThread = null, canReply = false, compact = false,
+    items, loading, error, hasOlder, loadingOlder, loadOlder, focus, context, liveLabel = null, queue = null, openThread = null, canReply = false, compact = false,
     statusOf, onretry, onthread, oncopylink, onmention, onboardid, onartifact, onbottom,
   }: Props = $props();
 
   const rows = $derived(layoutRows(items));
+  const waitingId = $derived(queue ? waitingSend(items) : null);
   const liveId = $derived(items.findLast((item) => item.kind === "turn" && item.live)?.id ?? null);
   let scroller = $state<HTMLElement>();
   let stick = true;
@@ -156,6 +159,7 @@
               last={row.last}
               {context}
               liveLabel={row.item.id === liveId ? liveLabel : null}
+              queue={row.item.id === waitingId ? queue : null}
               flash={flashId === row.item.id}
               {openThread}
               canReply={canReply && row.item.kind === "message" && !row.item.threadRoot}

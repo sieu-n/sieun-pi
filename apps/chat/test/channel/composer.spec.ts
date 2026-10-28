@@ -109,3 +109,15 @@ test("Reply to thread in the side pane sends to the job", async ({ page }) => {
   await expect(pane.locator(".row.own").filter({ hasText: word })).toBeVisible();
   await expect(row(page, "t12")).toBeVisible();
 });
+
+test("a send that waits for a working slot shows its place in the turn queue until the run starts", async ({ page, request }) => {
+  const agent = (await (await request.post("/api/agents", { data: { kind: "chat", name: `queue ${tag()}` } })).json()) as { id: string };
+  await open(page, `#/c/${agent.id}`);
+  await composerInput(conversation(page)).click();
+  await page.keyboard.type(`queue ${tag()}`);
+  await page.keyboard.press("Enter");
+  const note = conversation(page).locator(".row.own [data-note]").last();
+  await expect(note).toHaveText("Waits at place 3 of 7 for a working slot.");
+  await expect(page.locator(".typing")).toContainText("waits at place 3 of 7");
+  await expect(conversation(page).locator(".row.own [data-note]")).toHaveCount(0, { timeout: 10_000 });
+});

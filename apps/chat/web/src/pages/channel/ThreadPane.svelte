@@ -61,6 +61,7 @@
       loadOlder={() => job?.loadOlder() ?? Promise.resolve()}
       {context}
       {liveLabel}
+      queue={job?.queue ?? null}
       compact
       {statusOf}
       onretry={() => retry++}

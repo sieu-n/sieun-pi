@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { Item } from "$lib/api";
+  import type { Item, TurnPlace } from "$lib/api";
   import Avatar from "$lib/ui/Avatar.svelte";
   import Bubble from "$lib/ui/Bubble.svelte";
   import Icon from "$lib/ui/Icon.svelte";
@@ -12,7 +12,7 @@
   import type { Status } from "$lib/ui/types";
   import StepLine from "./StepLine.svelte";
   import ThreadPill from "./ThreadPill.svelte";
-  import { avatarKind, deliveryText, isOwn, runningTool } from "./present";
+  import { avatarKind, deliveryText, isOwn, placeText, runningTool } from "./present";
 
   type Props = {
     item: Exclude<Item, { kind: "system" }>;
@@ -21,6 +21,8 @@
     context: MarkdownContext;
     /** The live tool or thinking line of the streaming turn. */
     liveLabel?: string | null;
+    /** The conversation's queue place, when this row is the send that waits for it. */
+    queue?: TurnPlace | null;
     flash?: boolean;
     /** The thread key open in the side pane: a job id or a channel root post id. */
     openThread?: string | null;
@@ -33,7 +35,7 @@
     onboardid?: (id: string, chatId: string, e: MouseEvent) => void;
     onartifact?: (target: string, e: MouseEvent) => void;
   };
-  let { item, first, last, context, liveLabel = null, flash = false, openThread = null, canReply = false, statusOf, onthread, oncopylink, onmention, onboardid, onartifact }: Props = $props();
+  let { item, first, last, context, liveLabel = null, queue = null, flash = false, openThread = null, canReply = false, statusOf, onthread, oncopylink, onmention, onboardid, onartifact }: Props = $props();
 
   const own = $derived(isOwn(item));
   const turn = $derived(item.kind === "turn" ? item : null);
@@ -43,7 +45,11 @@
   const hasBubble = $derived(!!item.text || (turn ? turn.steps.length > 0 || live : item.images.length === 0));
   const toolNow = $derived(turn ? runningTool(turn.steps) : null);
   const stepLabel = $derived(liveLabel ?? (toolNow ? `Running ${toolNow}` : null));
-  const notes = $derived(message?.deliveries.map(deliveryText).filter((text): text is string => !!text) ?? []);
+  const waits = $derived(placeText(message?.queue ?? queue));
+  const notes = $derived([
+    ...(waits ? [`${waits.charAt(0).toUpperCase()}${waits.slice(1)} for a working slot.`] : []),
+    ...(message?.deliveries.map(deliveryText).filter((text): text is string => !!text) ?? []),
+  ]);
   let lightbox = $state<string | null>(null);
   let copied = $state(false);
 
@@ -101,7 +107,7 @@
   {#if turn?.stop || turn?.error}
     <p class="note danger" role="status">{turn.stop === "aborted" ? "Response stopped" : turn.error || "The answer failed"}</p>
   {/if}
-  {#each notes as note (note)}<p class="note">{note}</p>{/each}
+  {#each notes as note (note)}<p class="note" data-note>{note}</p>{/each}
   {#if turn}
     {#each turn.jobs as job (job.conversation)}
       <ThreadPill
