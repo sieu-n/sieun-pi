@@ -1307,16 +1307,13 @@ export class Chats {
     const now = this.now();
     if (await this.cancelled(threadId)) { this.jobWakes.delete(threadId); this.jobQuiet.set(threadId, stamp); this.keepQuiet(); return; }
     // A job that waits for a pi-pool slot gets no wake: a "continue" aborts its wait and puts it at the end of the line. It is looked at again
-    // each tick until the wait clears. A park Prime's wake dropped gets the resume pass's one continue (resume_paused.py) and one plain note.
+    // each tick until the wait clears. A park Prime's wake dropped (load.2 only; load.2.1 runs the wake) gets one plain note.
     const slot = await this.slotPark(threadId);
     if (slot?.park) { this.jobWakes.delete(threadId); return; }
     if (slot?.dropped !== undefined) {
       this.jobWakes.delete(threadId);
       this.jobQuiet.set(threadId, stamp);
       this.keepQuiet();
-      // The pass runs at the next tick, not up to JOB_CLEANUP_EVERY_MS later: on 10-28 from 00:32Z the chat read about 15 such notices and sent
-      // each continue by hand 40 to 60 s after the drop, before any pass reached the job.
-      this.interruptedSoon(0);
       if (job) this.queue(job.chat, () => this.jobEndNote(threadId, job));
       return;
     }

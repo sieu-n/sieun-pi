@@ -1116,69 +1116,6 @@ class ResumePausedTests(unittest.TestCase):
         sent = self.run_named(probe, entries, now, unloaded)
         self.assertEqual((sent["paused"], self.sent), ([], []), "the job sweep's send pass")
         self.assertEqual([h["session_id"] for h in resume_paused.HELD], [probe])
-    # Two runs of the AI harness chat on us-metal02, 10-27, copied from their files with long texts cut: the idle unload stopped each
-    # right after its park, load.2 Prime's recordOwnerStops raised its stop generation for that kill, and at the pool's wake
-    # _continueCredentialPark wrote provider_quota_resume "cancelled" and ran no turn. "generation" is the record after the wake.
-    STRANDED = json.loads((Path(__file__).parent / "fixtures" / "stranded-wakes.json").read_text())
-
-    def run_stranded(self, sid, entries=None, generation=None, dry_run=True):
-        case = self.STRANDED[sid]
-        gens = self.root / "stop-generations"
-        gens.mkdir(exist_ok=True)
-        path = str(self.root / "sessions" / f"{sid}.jsonl")
-        record = {"sessionPath": path, "stopGeneration": case["generation"] if generation is None else generation}
-        (gens / f"{resume_paused.hashlib.sha256(path.encode()).hexdigest()}.json").write_text(json.dumps(record))
-        with patch.object(resume_paused, "STOP_GENERATIONS_DIR", gens, create=True):
-            return self.run_named(sid, case["entries"] if entries is None else entries, resume_paused.parse_ts(case["now"]), dry_run=dry_run)
-
-    def test_a_run_whose_park_wake_prime_cancelled_after_the_idle_unload_gets_one_continue(self):
-        for sid, wake in (("01a17f25-f22d-71ef-9327-e68919164bb4", "2026-10-27T21:16:40.332Z"),
-                          ("01a17f1e-141e-723a-9afa-cc658e28bbe7", "2026-10-27T21:35:39.660Z"),
-                          # A duty job the chat service started as a root, 10-28: chat system AI harness developer environment 09:57.
-                          ("01a18003-e010-7458-a291-d12b168e2d4f", "2026-10-28T01:06:45.925Z")):
-            with self.subTest(sid=sid):
-                self.sent.clear()
-                (self.root / "state.json").unlink(missing_ok=True)
-                report = self.run_stranded(sid, dry_run=False)
-                self.assertEqual([(p["session_id"], p["reason"], p["errored_at"]) for p in report["paused"]], [(sid, "error", wake)])
-                self.assertIn("Prime cancelled its pi-pool wake", report["paused"][0]["error"])
-                self.assertEqual(self.sent, [(sid, "continue")])
-                self.assertEqual(self.run_stranded(sid, dry_run=False)["paused"], [], "the state file keys the continue to that wake")
-                self.assertEqual(self.sent, [(sid, "continue")])
-
-    def test_a_cancelled_wake_with_a_stop_or_a_later_turn_gets_nothing(self):
-        sid = "01a17f1e-141e-723a-9afa-cc658e28bbe7"
-        entries = self.STRANDED[sid]["entries"]
-        owner_stop = {"type": "session_state", "timestamp": "2026-10-27T21:35:50.000Z", "state": {"status": "archived", "reason": "owner_stop"}}
-        steer = {"type": "custom_message", "customType": "agent_message", "timestamp": "2026-10-27T21:35:50.000Z", "content": "continue"}
-        queued = {"type": "custom", "customType": "pi-pool-queue", "timestamp": "2026-10-27T21:35:50.100Z", "data": {"position": 3, "total": 9}}
-        for case, kept, generation in (("the owner stopped it", [*entries, owner_stop], None),
-                                       ("a Stop raised the generation past the unloads", entries, 5),
-                                       ("its generation never rose", entries, 2),
-                                       ("a later message queued it again", [*entries, steer, queued], None)):
-            with self.subTest(case=case):
-                (self.root / "state.json").unlink(missing_ok=True)
-                self.assertEqual(self.run_stranded(sid, kept, generation)["paused"], [])
-        (self.root / "state.json").unlink(missing_ok=True)
-        (self.root / "job-cancels.json").write_text(json.dumps({sid: {"at": 1793136950000, "by": "owner", "how": "stop"}}))
-        self.assertEqual(self.run_stranded(sid)["paused"], [], "the owner's Stop in job-cancels.json")
-        self.assertEqual(self.sent, [])
-
-    def test_a_cancelled_wake_whose_input_load_i_prime_settled_or_left_uncertain_gets_nothing(self):
-        # Hand-made: load-i Prime's input records and its recovery entry's `uncertain` list, until chat-057a sends the real fixture.
-        sid = "01a17f1e-141e-723a-9afa-cc658e28bbe7"
-        entries = self.STRANDED[sid]["entries"]
-        park = next(index for index, entry in enumerate(entries) if entry.get("customType") == "provider_quota_park")
-        uncertain = {"type": "custom", "customType": "prime_input_recovery", "timestamp": "2026-10-27T21:35:39.000Z",
-                     "data": {"uncertain": [{"operationId": "op-1", "inputId": "in-1", "toolNames": ["ipython"]}]}}
-        delivered = {"type": "custom", "customType": "prime_input", "timestamp": "2026-10-27T21:35:39.000Z", "data": {"inputId": "in-1", "state": "delivered"}}
-        accepted = {"type": "custom", "customType": "prime_input", "timestamp": "2026-10-27T21:35:39.000Z", "data": {"inputId": "in-1", "state": "accepted"}}
-        for case, added, kept in (("an uncertain tool turn", uncertain, False), ("a delivered input", delivered, False), ("an accepted input", accepted, True)):
-            with self.subTest(case=case):
-                (self.root / "state.json").unlink(missing_ok=True)
-                report = self.run_stranded(sid, [*entries[:park + 1], added, *entries[park + 1:]])
-                self.assertEqual([p["session_id"] for p in report["paused"]], [sid] if kept else [])
-
     def test_two_passes_that_save_the_state_at_once_keep_both_sends(self):
         path = self.root / "state.json"
         first = {"a": "2026-10-05T19:50:00Z"}
@@ -1189,27 +1126,16 @@ class ResumePausedTests(unittest.TestCase):
         self.assertEqual(second["a"], "2026-10-05T19:50:00Z", "the pass sees the other pass's newer send")
         self.assertEqual(sorted(p.name for p in self.root.glob("state.json*")), ["state.json"])
 
-    def test_a_cancelled_wake_is_continued_only_while_work_is_owed(self):
-        # vent, 10-28: triage job 22:09 ended its work days before, the alert bridge told it at 02:34Z that job 11:33 owns its rule, the note
-        # parked on pi-pool's queue, the idle unload stopped it, and the wake was dropped. That note asks for nothing, so no continue is owed.
-        sid = "01a17f1e-141e-723a-9afa-cc658e28bbe7"
-        entries = self.STRANDED[sid]["entries"]
-        park = next(index for index, entry in enumerate(entries) if entry.get("customType") == "provider_quota_park")
-        done = {"type": "message", "timestamp": "2026-10-24T13:20:00.000Z", "message": {"role": "assistant", "stopReason": "stop",
+    def test_an_alert_ownership_note_owes_no_turn_and_a_parents_message_does(self):
+        # vent, 10-28 02:34Z: the alert bridge told four finished triage jobs, idle 11 h to 4 days, that job 11:33 owns their rules. Each note
+        # queued a turn, and the sweep continued each one after load.2 dropped its park wake.
+        done = {"type": "message", "timestamp": at(60), "message": {"role": "assistant", "stopReason": "stop",
                 "content": [{"type": "text", "text": "vent-down-prod is resolved; nothing more to do."}]}}
-        note = {"type": "custom_message", "customType": "agent_message", "timestamp": "2026-10-27T21:34:24.000Z",
+        note = {"type": "custom_message", "customType": "agent_message", "timestamp": at(30),
                 "content": "[agent-message from c4e27c6be50b]\n\n[alert] vent-down-prod now belongs to this chat's triage job \"alert triage vent 11:33\" (session x)"}
-        finished = [done, note, *entries[park - 1:]]
-        (self.root / "chats.json").write_text(json.dumps({"ids": []}))
-        (self.root / "threads.json").write_text(json.dumps({"ids": []}))
-        with patch.object(resume_paused, "CHAT_INDEX", self.root / "chats.json"), patch.object(resume_paused, "THREAD_INDEX", self.root / "threads.json"), \
-                patch.object(resume_paused, "OWED_ONLY", [True]), patch.object(resume_paused, "CHAT_SESSIONS", []), patch.object(resume_paused, "UNOWED", []):
-            self.assertEqual(self.run_stranded(sid, finished)["paused"], [])
-            self.assertEqual([run["session_id"] for run in resume_paused.UNOWED], [sid])
-            (self.root / "state.json").unlink(missing_ok=True)
-            asked = [done, {**note, "content": "[agent-message from parent:vent]\n\ncheck vent-down-prod again"}, *entries[park - 1:]]
-            self.assertEqual([p["session_id"] for p in self.run_stranded(sid, asked)["paused"]], [sid], "a parent's message is owed its turn")
-        self.assertEqual(self.sent, [])
+        asked = {**note, "content": "[agent-message from parent:vent]\n\ncheck vent-down-prod again"}
+        self.assertIsNone(resume_paused.agent_unanswered([done, note]))
+        self.assertEqual(resume_paused.agent_unanswered([done, asked]), at(30))
 
     def test_credential_wait_at_reads_the_diagnostic_and_not_the_text(self):
         message = self.MARKER["message"]
