@@ -198,8 +198,9 @@ export function macDown(reading: MacReading): string[] {
  * watch writes more than one line in some minutes: on 10-27 it wrote 20:16:10Z and 20:16:30Z, both unusable, and counting lines read
  * 13 unusable minutes as 14.
  */
-export function macUnusableMinutes(lines: readonly WatchLine[]): { read: number; unusable: number; by: Partial<Record<UsableMiss, number>> } {
+export function macUnusableMinutes(lines: readonly WatchLine[]): { read: number; unusable: number; by: Partial<Record<UsableMiss, number>>; lastAt?: number } {
   const read = new Set<number>();
+  let lastAt: number | undefined;
   const missedIn = new Map<number, Set<UsableMiss>>();
   for (const line of lines) {
     const usable = hostViews(line).find(view => view.name === MAC_HOST)?.usable;
@@ -207,19 +208,29 @@ export function macUnusableMinutes(lines: readonly WatchLine[]): { read: number;
     const minute = Math.floor(Date.parse(line.at) / 60_000);
     read.add(minute);
     const missed = unusable(usable);
-    if (missed.length) missedIn.set(minute, new Set([...missedIn.get(minute) ?? [], ...missed]));
+    if (!missed.length) continue;
+    missedIn.set(minute, new Set([...missedIn.get(minute) ?? [], ...missed]));
+    lastAt = Math.max(lastAt ?? 0, Date.parse(line.at));
   }
   const by: Partial<Record<UsableMiss, number>> = {};
   for (const misses of missedIn.values()) for (const miss of misses) by[miss] = (by[miss] ?? 0) + 1;
-  return { read: read.size, unusable: missedIn.size, by };
+  return { read: read.size, unusable: missedIn.size, by, ...lastAt === undefined ? {} : { lastAt } };
 }
+
+/**
+ * What measureMac read: the Mac's metrics and flagged lines, and for mac_unusable_min its 24 h window and the time of its newest unusable
+ * minute, so d9 reads red minutes that only wait to leave the window as a lagging count (`PrecheckOutput.lastEventAt`).
+ */
+export interface MacResult extends Pick<PrecheckOutput, "lastEventAt" | "windowMs"> { metrics: Record<string, number>; flagged: FlaggedSlice[] }
 
 /**
  * Reads the Mac over ssh (or in place when this run is on the Mac). ssh exits 255 when it cannot reach the host, which is a sleeping or
  * offline Mac: that sets mac_unreachable and leaves mac_servers_not_answering unmeasured. mac_unusable_min comes from the watch lines either way.
  */
-export async function measureMac(deps: Pick<UptimeDeps, "exec" | "platform" | "watch" | "wait">, at: number): Promise<{ metrics: Record<string, number>; flagged: FlaggedSlice[] }> {
+export async function measureMac(deps: Pick<UptimeDeps, "exec" | "platform" | "watch" | "wait">, at: number): Promise<MacResult> {
   const day = macUnusableMinutes(await deps.watch().catch(() => []));
+  const windows: Pick<MacResult, "lastEventAt" | "windowMs"> = day.read
+    ? { windowMs: { mac_unusable_min: MAC_WINDOW_MS }, ...day.lastAt === undefined ? {} : { lastEventAt: { mac_unusable_min: day.lastAt } } } : {};
   const usable: FlaggedSlice = day.read
     ? { at, kind: day.unusable ? "mac_unusable" : "mac_usable", excerpt: `Mac: ${day.unusable} of ${day.read} watched minutes in the last 24 h read unusable${day.unusable ? ` (${Object.entries(day.by).map(([miss, n]) => `${miss} ${n}`).join(", ")})` : ""}` }
     : { at, kind: "mac_read", excerpt: "Mac: the usable watch holds no Mac minute in the last 24 h" };
@@ -234,8 +245,8 @@ export async function measureMac(deps: Pick<UptimeDeps, "exec" | "platform" | "w
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    if ((error as { code?: unknown }).code === 255) return { metrics: { ...watched, mac_unreachable: 1 }, flagged: [usable, { at, kind: "mac_unreachable", excerpt: `Mac: ssh ${MAC_HOST} could not reach it (asleep or offline), so its dev servers were not read: ${message}`.slice(0, 300) }] };
-    return { metrics: watched, flagged: [usable, { at, kind: "mac_read", excerpt: `Mac: read failed: ${message}`.slice(0, 300) }] };
+    if ((error as { code?: unknown }).code === 255) return { ...windows, metrics: { ...watched, mac_unreachable: 1 }, flagged: [usable, { at, kind: "mac_unreachable", excerpt: `Mac: ssh ${MAC_HOST} could not reach it (asleep or offline), so its dev servers were not read: ${message}`.slice(0, 300) }] };
+    return { ...windows, metrics: watched, flagged: [usable, { at, kind: "mac_read", excerpt: `Mac: read failed: ${message}`.slice(0, 300) }] };
   }
   const reading = parseMacReading(text);
   const down = macDown(reading);
@@ -244,7 +255,7 @@ export async function measureMac(deps: Pick<UptimeDeps, "exec" | "platform" | "w
   const convexFlag: FlaggedSlice = convex
     ? { at, kind: convex.stale ? "mac_convex_stale" : "mac_convex", excerpt: convex.detail.slice(0, 300) }
     : { at, kind: "mac_read", excerpt: `Mac: no Convex watcher push state or convex/ mtime in the read: ${(/^convex-(push|src).*$/gm.exec(text)?.[0] ?? "no convex lines").slice(0, 200)}` };
-  return { metrics: { ...watched, mac_servers_not_answering: down.length, mac_unreachable: 0, ...(convex ? { mac_convex_push_stale: convex.stale ? 1 : 0 } : {}) },
+  return { ...windows, metrics: { ...watched, mac_servers_not_answering: down.length, mac_unreachable: 0, ...(convex ? { mac_convex_push_stale: convex.stale ? 1 : 0 } : {}) },
     flagged: [usable, { at, kind: down.length ? "mac_down" : "mac_answer", excerpt: (down.length ? `Mac dev servers not answering 200: ${down.join(", ")} (${summary})` : `Mac dev servers answer: ${summary}`).slice(0, 300) }, convexFlag] };
 }
 
@@ -355,9 +366,9 @@ export async function measureUptime(deps: UptimeDeps, previous: UptimeState | un
   }));
   metrics.servers_not_answering = answers.filter(answer => answer.kind === "down").length;
   flagged.push(...answers);
-  const macResult = await mac;
-  Object.assign(metrics, macResult.metrics);
-  flagged.push(...macResult.flagged);
+  const { metrics: macMetrics, flagged: macFlagged, ...windows } = await mac;
+  Object.assign(metrics, macMetrics);
+  flagged.push(...macFlagged);
   const storeResult = await store;
   Object.assign(metrics, storeResult.metrics);
   flagged.push(...storeResult.flagged);
@@ -398,7 +409,7 @@ export async function measureUptime(deps: UptimeDeps, previous: UptimeState | un
     list = JSON.parse(text.slice(text.indexOf("["))) as Pm2Process[];
   } catch (error) {
     flagged.push({ at, kind: "pm2", excerpt: `pm2 (PM2_HOME ${deps.pm2.home}): pm2 jlist failed: ${error instanceof Error ? error.message : String(error)}`.slice(0, 300) });
-    return { output: { metrics, flagged }, state };
+    return { output: { metrics, flagged, ...windows }, state };
   }
   for (const name of PM2_NAMES) {
     if (name === "llm-wiki" && unit) continue;
@@ -416,7 +427,7 @@ export async function measureUptime(deps: UptimeDeps, previous: UptimeState | un
       flagged.push({ at, kind: "wiki_memory", excerpt: `pm2 ${name}: memory read failed: ${error instanceof Error ? error.message : String(error)}`.slice(0, 300) });
     }
   }
-  return { output: { metrics, flagged }, state };
+  return { output: { metrics, flagged, ...windows }, state };
 }
 
 const exec: Exec = (file, args, env) => new Promise((resolve, reject) => {

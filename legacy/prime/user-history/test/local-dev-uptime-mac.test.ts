@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { WatchLine } from "../src/mac-usable-watch.ts";
-import { convexPushStale, LOCAL_CONVEX_COMMAND, MAC_COMMAND, measureLocalConvex, MAC_RETRY_MS, macDown, macUnusableMinutes, measureMac, measureStoreBox, parseMacReading, parseStoreBox, STORE_BOX, STORE_COMMAND } from "../scripts/duties/local-dev-uptime.ts";
+import { convexPushStale, LOCAL_CONVEX_COMMAND, MAC_COMMAND, measureLocalConvex, MAC_RETRY_MS, MAC_WINDOW_MS, macDown, macUnusableMinutes, measureMac, measureStoreBox, parseMacReading, parseStoreBox, STORE_BOX, STORE_COMMAND } from "../scripts/duties/local-dev-uptime.ts";
 
 const push = (outcome: string, at: string, lastGoodAt: string | null) =>
   `convex-push {  "count": 1,  "watchers": [],  "push": {    "outcome": "${outcome}",    "at": "${at}",    "reason": ${outcome === "failed" ? '"schema eval timed out (1s)"' : "null"},    "lastGoodAt": ${lastGoodAt ? `"${lastGoodAt}"` : "null"}  }}\n`;
@@ -49,12 +49,21 @@ test("the Convex push is stale only when the newest push failed and no good push
 
 test("counts the watched minutes that read unusable, by cause", () => {
   assert.deepEqual(macUnusableMinutes([minute(25, 0, "2026-10-23T04:39:30.000Z"), minute(123, 11971, "2026-10-23T04:40:30.000Z"), minute(108, 0, "2026-10-23T04:41:30.000Z")]),
-    { read: 3, unusable: 2, by: { swapouts: 1, kernel_task: 2 } });
+    { read: 3, unusable: 2, by: { swapouts: 1, kernel_task: 2 }, lastAt: Date.parse("2026-10-23T04:41:30.000Z") });
 });
 
 test("two watch lines in one clock minute count as one minute, as at 20:16:10Z and 20:16:30Z on 10-27", () => {
   assert.deepEqual(macUnusableMinutes([minute(94, 10758, "2026-10-27T20:16:10.870Z"), minute(114, 4364, "2026-10-27T20:16:30.013Z"), minute(25, 0, "2026-10-27T20:17:30.000Z")]),
-    { read: 2, unusable: 1, by: { swapouts: 1, kernel_task: 1 } });
+    { read: 2, unusable: 1, by: { swapouts: 1, kernel_task: 1 }, lastAt: Date.parse("2026-10-27T20:16:30.013Z") });
+});
+
+test("mac_unusable_min reports its 24 h window and its newest unusable minute, so d9 reads old red minutes as a lagging window", async () => {
+  const deps = { platform: "linux", exec: async () => reading("7.26", 37, ["200", "200"]), wait: async () => {} } as const;
+  const red = await measureMac({ ...deps, watch: async () => [minute(113, 0, "2026-10-28T01:17:30.013Z"), minute(98, 10969, "2026-10-28T03:13:30.038Z"), minute(40, 0, "2026-10-28T06:24:30.000Z")] }, 0);
+  assert.equal(red.metrics.mac_unusable_min, 2);
+  assert.deepEqual({ lastEventAt: red.lastEventAt, windowMs: red.windowMs }, { lastEventAt: { mac_unusable_min: Date.parse("2026-10-28T03:13:30.038Z") }, windowMs: { mac_unusable_min: MAC_WINDOW_MS } });
+  const clean = await measureMac({ ...deps, watch: async () => [minute(40)] }, 0);
+  assert.deepEqual({ lastEventAt: clean.lastEventAt, windowMs: clean.windowMs }, { lastEventAt: undefined, windowMs: { mac_unusable_min: MAC_WINDOW_MS } });
 });
 
 test("a Mac ssh cannot reach is unreachable, and its watched minutes still count", async () => {
