@@ -106,6 +106,13 @@ export function routes(app: App): Route[] {
         throw new BadRequest(error instanceof Error ? error.message : String(error));
       });
     }),
+    route("POST", "/api/threads/:id/wakes", async (_r, p, _q, body) => {
+      try {
+        return { wake: app.boards.addWake(p.id!, (await body()) as Record<string, unknown>) };
+      } catch (error) {
+        throw new BadRequest(error instanceof Error ? error.message : String(error));
+      }
+    }),
     route("POST", "/api/threads/:id/import-prime", async (_r, p, _q, body) =>
       app.boards.importPrime(p.id!, String(((await body()) as { prime?: string }).prime ?? ""), app.config.sharedDir)),
     route("GET", "/api/threads/:id/agents", async (_r, p) => ({ agents: app.boards.chatAgents(p.id!) })),

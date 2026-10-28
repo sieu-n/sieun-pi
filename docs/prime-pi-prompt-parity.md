@@ -104,23 +104,23 @@ On 2026-10-28 at 18:35 UTC `scripts/prompt-parity.mjs` compared every tool of Pr
 | `correction_add` | user-history tool | the same tool, the extension's own execute, on the shared ledger | identical definition (160 bytes) |
 | `poteto_mode` | user-history tool that carries a guideline | the same tool | identical definition (38 bytes) |
 | `job_reply` | user-history tool of a chat's job | none; a child conversation gets its guideline in `guidance` | missing tool, text identical |
-| `ipython`, the persistent Python REPL | pi-rlm tool | `bash`, `read`, `write`, `edit` | missing; the prompt still describes it, see below |
-| `bash()` handles and the nonblocking control loop | REPL | `bash` tool, blocking with a timeout | different: no background handle and no completion follow-up |
-| `rlm.spawn`, `list_subagents`, `collect`, `progress_note`, `delete_subagent` | REPL | `subagent {task}`, foreground, returns the answer | different: one blocking child per call, no names or handles |
-| `rlm.create_session` | REPL | none (the chat creates threads with `durable_create`) | missing |
-| `rlm.harness.*`, `refine.run()` | REPL, `refine` skill | none; pi reads the global store and the thread's local store (`threadHarnessDir`) but writes neither | missing |
-| `agent_message.send` | Python skill | inbound agent messages are `agent.message` entries; no agent-to-agent send | missing for agent to agent |
-| `agent_observe` | Python skill | none | missing |
-| `board` (`board.wake`, `board.corrections`, `board.own`) | Python skill | `chat_board` for the board; no wakes | missing outside `chat_board` |
-| `edit` | Python skill | `edit` tool | equivalent |
-| `attach_image` | Python skill | `read` returns an image file as an image | equivalent |
-| `goal`, `compact`, `rlm_heartbeat` | Python skills | none (pi-durable compacts by itself) | missing |
-| `websearch`, `aside_browser`, the `mcp` object for `aside` | Python skills and REPL | none; their CLIs in `~/.prime/agent/kernel-venv/bin` are not on pi's PATH | missing |
-| markdown skills (`unslop`, `how`, `why`, `spec-report`, `setup-pstack`, `typescript-best-practices`, `resume-paused-sessions`, `skill-creator`, `mcp`) | read with ipython | read with `read` at the same `<location>` | equivalent |
+| `ipython`, the persistent Python REPL | pi-rlm tool | the same tool on pi-rlm's kernel, one kernel per conversation (`rlm.ts`) | identical definition (444 bytes, checked 2026-10-29 against chat `01a1180e`); not replay-safe, so a restart gives `interrupted` |
+| `bash()` handles and the nonblocking control loop | REPL | the same `bash()` in the kernel; a handle that ends after its cell sends `[bash-done pid:<pid> exit:<code>]` as an input, held while a run goes | equivalent, without goal continuations |
+| `rlm.spawn`, `list_subagents`, `collect`, `progress_note`, `delete_subagent`, `find_models` | REPL | child conversations in the thread file, each started by a background `rlm.deliver` task (`children.ts`) | equivalent: `rlm.spawn` returns at admission with Prime's handle, and the child's notice or reply is a later input |
+| `rlm.create_session` | REPL | a new durable thread with the prompt as its first input | equivalent |
+| `rlm.harness.*`, `refine.run()` | REPL, `refine` skill | none; pi reads the global store and the thread's local store (`threadHarnessDir`) but writes neither, and the kernel answers that `refine.*` does not run in durable threads yet | missing |
+| `agent_message.send` | Python skill | pi-rlm's skill; the kernel's request lands as an `agent.message` input of the parent, a sibling (another child of the same parent, or another thread's root) or a child | equivalent, with Prime's reach rule and headers |
+| `agent_observe` | Python skill | pi-rlm's skill over the thread's conversations and the other threads' roots | equivalent; `tool_use_count` and `activity` are null |
+| `board` (`board.wake`, `board.corrections`, `board.own`) | Python skill | the same module: a kernel with `PI_HOST_THREAD` reads the thread's board from apps/chat and sets a time wake through `POST /api/threads/<thread>/wakes` | run and check wakes fail with a message that names the gap, because apps/chat delivers time wakes only |
+| `edit` | Python skill | pi-rlm's copy in the kernel, and the `edit` tool | equivalent |
+| `attach_image` | Python skill | on the kernel's path but not installed, because it needs Prime's `prime-agent-runtime` package, so the kernel lists it under `[python-skills-unavailable]`; `read` returns an image file as an image | different |
+| `goal`, `compact`, `rlm_heartbeat` | Python skills | `compact.run` asks pi-durable to compact; `goal.*` and `rlm_heartbeat.*` answer that they do not run in durable threads yet | missing except `compact` |
+| `websearch`, `aside_browser`, the `mcp` object for `aside` | Python skills and REPL | the agent dir's `websearch` and `aside_browser` load in the kernel, and `mcp` is the vendored runtime's | equivalent as far as their own code goes |
+| markdown skills (`unslop`, `how`, `why`, `spec-report`, `setup-pstack`, `typescript-best-practices`, `resume-paused-sessions`, `skill-creator`, `mcp`) | read with ipython | read with ipython or `read` at the same `<location>` | equivalent |
 | none | | `read`, `write`, `edit`, `bash`, `subagent`, `send_message` | pi only |
 
-The tool list a pi chat thread offers is `read, write, edit, bash, subagent, send_message, search_history, chat_board, tell_owner, correction_add, poteto_mode`; a Prime chat's is `ipython, search_history, chat_board, tell_owner, correction_add, poteto_mode`.
-A subagent's child conversation offers `read, write, edit, bash` and none of the chat's tools, as a Prime job has no `tell_owner`.
+The tool list a pi chat thread offers is `read, write, edit, bash, subagent, send_message, search_history, chat_board, tell_owner, correction_add, poteto_mode, ipython`; a Prime chat's is `ipython, search_history, chat_board, tell_owner, correction_add, poteto_mode`.
+A child conversation, from `rlm.spawn` or the `subagent` tool, offers `read, write, edit, bash, ipython` and none of the chat's tools, as a Prime job has no `tell_owner`.
 
 ### How each chat tool runs in a thread
 
@@ -180,18 +180,50 @@ The notes go only into the request; the entries keep the raw text, and each note
 | `job_reply` | Registered only for a session whose parent is a Prime chat session file. |
 | `registerCommand` (`what-did-i-say`, `agent-chat`), `registerFlag`, `appendEntry` | They open the legacy chat or write Prime session entries; the adapter records them (`skipped`, `appended`). |
 
-### `ipython`, the RLM kernel and agent-bus
+### `ipython`, the RLM kernel and the family
 
-These are not in pi threads yet, and pi threads keep `bash`, `read`, `write` and `edit`.
-The base prompt Prime's builder writes for the `prime` tools profile still describes `ipython`, `rlm.*` and the Python skill modules, so a pi thread reads about a REPL it does not have.
-pi-rlm's `ipython` tool (`packages/pi-rlm/src/pi/index.ts`) could load through the same adapter, but it depends on more than a tool:
+Every conversation of a thread offers Prime's `ipython`, with the definition pi-rlm's extension registers (`packages/pi-rlm/src/pi/index.ts`), loaded through the adapter by `packages/pi-host/src/durable/rlm.ts`.
+The cell runs on pi-rlm's own kernel code: `Kernel` and `kernel_relay.py` under a `systemd-run --user --scope` unit (`pi-rlm-kernel-*.scope`), the bootstrap cell, and the Python skills the prompt lists, with pi-rlm's copies of `goal`, `compact`, `edit`, `agent_message` and `agent_observe`.
+The result text is pi-rlm's (`formatCell`, `<ipython_kernel_reset>`, `[python-state-restored]`, `[python-skills-unavailable]`).
+The kernels use their own venv, `<agent dir>/pi-host/durable/rlm/kernel-venv`, so the skill set of durable kernels and of pi-host's other sessions never rebuild each other's venv.
 
-1. Its kernel is a child process keyed by the pi session and dies with pi-host. A call a restart interrupts would get `interrupted` (it cannot be replay-safe), and the next call starts a fresh kernel; pi-rlm revives state only at a pi `session_start`, which a thread has no equivalent of.
-2. `rlm.spawn` and `rlm.create_session` create Pi sessions through pi-host's non-durable host, not child conversations, so their children would not be in the thread file and would not resume with it.
-3. The nonblocking loop (`bash()` handles, completion follow-ups, `rlm_heartbeat`, goals) runs on pi's `agent_before_settle`, `agent_settled` and `turn_end` events; pi-durable has `onYield` and `afterTools`, which would need a mapping of their own.
-4. agent-bus delivers agent messages into a Pi session's queue; a thread takes them as `agent.message` inputs through `durable_submit`.
+```mermaid
+flowchart TD
+  call[ipython call] --> slot{kernel up?}
+  slot -- no --> start[relay in a scope] --> restore[restore snapshot]
+  restore --> cell[run cell]
+  slot -- yes --> cell
+  cell --> settle[run settles] --> snap[snapshot]
+  snap --> idle{idle 10 min?}
+  idle -- yes --> free[free kernel]
+```
 
-Recommendation: keep `bash` in pi threads for now, and decide between the `prime` tools profile (text identical to Prime, describing a REPL pi lacks) and `PI_HOST_PROMPT_TOOLS=pi` (Prime's own builder drops the REPL parts). A durable `ipython` needs a kernel per conversation that pi-host restarts on the thread's next call with the revive step, `rlm.*` mapped to child conversations, and the settle events mapped to pi-durable hooks.
+1. A conversation gets its kernel at its first `ipython` call, and keeps it across turns while pi-host runs.
+2. After each settled run, pi-host writes pi-rlm's snapshot (`kernel-state.dill`) in the conversation's folder, `<durable dir>/session-artifacts/<thread>-<conversation>`.
+3. A kernel with no cell, no run and no live `bash()` handle for the threads' idle close time (10 minutes) is freed, and a thread file that closes frees its kernels (owner rule c92). pi-host's stop frees every kernel.
+4. The next call after any of these starts a fresh kernel, revives what the snapshot holds, and puts pi-rlm's reset note and the revived names before the cell's output.
+5. A kill of pi-host leaves the relay running with no client. The next pi-host kills it before it starts that conversation's kernel, and an orphaned relay ends itself after the idle close time (`PI_RLM_RELAY_TTL_S`). The cell the kill cut off gets pi-durable's `interrupted`, because a cell cannot be replay-safe.
+
+The kernel's host requests are answered from the thread file:
+
+| Request | What answers it |
+|---|---|
+| `rlm.run` (`rlm.spawn`) | One commit makes a background `rlm.deliver` task in the parent conversation and a child conversation that task owns, with the parent's model or `model=`, its `thinking=`, and no `subagent`, `send_message` or chat tools. It returns Prime's handle at admission: `rlm_child_id`, `name`, `session_dir` and `model`. |
+| the child's end | The task gives the child `[task from parent]` and waits for that run. When the child did not reply with `agent_message.send(receiver_role="parent")`, the parent gets pi-rlm's `[child-exited: no-reply child:<name>]` with the child's last text, or `[child-failed child:<name>]`, as an `agent.message` input from `<thread>:<conversation>`. |
+| `rlm.list_subagents`, `rlm.collect`, `rlm.delete_subagent`, `rlm.progress.note`, `rlm.find_models` | The parent's children, kept as an `rlm.child` document on each child conversation. |
+| `rlm.create_session` | A new thread, with the prompt as its first input. |
+| `agent_message.send` | An `agent.message` input with Prime's header, `[agent-message from <relationship>:<name>]`. A message to a child runs the same task, so its run's end notifies the parent as Prime's `owesNotice` does. |
+| `agent_observe.list`, `get`, `recent` | The thread's agents and the other threads' roots, with Prime's reach rule (pi-rlm `bus/family.ts`). |
+| `bash.completed` | `[bash-done pid:<pid> exit:<code>]` as an input, held until a running cell or run ends, and dropped when a live cell read the handle first. |
+| `compact.run`, `model.info` | pi-durable's compaction, the conversation's model. |
+| `goal.*`, `refine.*`, `heartbeat.*` and anything else | An error that says the request does not run in durable threads yet. |
+
+The `subagent` tool now starts its child the same way and returns at once with `Started the subagent...`; the child's whole answer arrives later as `[subagent-answer child:<first line of the task>]`.
+The parent's run ends meanwhile, so an owner message or a steer sent while a child works starts or joins the parent's next run instead of waiting behind the child, as AI harness VP measured on 2026-10-29 (a steer queued 45 minutes behind a foreground subagent call).
+A subagent call made before this change owns its child and still waits for it when it reruns, so its answer lands once.
+
+The board skill reads the thread's board from apps/chat when its kernel has `PI_HOST_THREAD`, and `board.wake(at=...)` posts a time wake to apps/chat's `POST /api/threads/<thread>/wakes`, which its clock delivers as `[wake] ...`.
+A run or check wake fails with a message that names the gap, because only the legacy chat on :5182 delivers those, and it delivers them to Prime sessions.
 
 ### Harness memories
 
@@ -206,10 +238,12 @@ Nothing writes a thread's local store yet: pi-harness (`packages/pi-harness/src/
 | `packages/pi-host/src/durable/prime-prompt.ts` | The builder and the `prime-prompt` extension. It calls prime-agent's `buildSystemPrompt`, `DefaultResourceLoader` and `formatSkillsForPrompt` from the installed `prime-agent` package, and imports `CHAT_BRIEF`, `personaGuideline`, `jobReplyGuideline`, `ledgerPrompt` and `jobLedgerPrompt` from the legacy chat and `SessionRules` from pi-claude-rules. No Prime text is retyped. Its `beforeRequest` hook puts the harness digests in, and `deliverHarnessDigest` records the one an input gets. |
 | `packages/pi-host/src/durable/prime-harness.ts`, `vendor/prime-harness.ts` | The digest's stores, delivery and placement, and Prime's harness code copied verbatim from the running release's source by `scripts/vendor-prime-harness.mjs`, which `--check` compares again. |
 | `packages/pi-host/src/durable/prime-chat.ts`, `chat-app.ts` | The user-history extension as a thread's `prime-chat` extension: its tools with their bindings, the turn wrappers hook, and the apps/chat client. |
-| `packages/pi-host/src/durable/registry.ts` | `threadRegistry(prompt?, chat?)` installs `prime-prompt` in place of the 3-line `Preamble` when it gets prompt options, and `prime-chat` with the `send_message` alias when it gets the chat. |
+| `packages/pi-host/src/durable/registry.ts` | `threadRegistry(prompt?, chat?, extras?)` installs `prime-prompt` in place of the 3-line `Preamble` when it gets prompt options, `prime-chat` with the `send_message` alias when it gets the chat, the `rlm.deliver` task, and `ipython` when it gets the RLM extension. |
+| `packages/pi-host/src/durable/rlm.ts`, `children.ts`, `subagent.ts` | `ipython` on pi-rlm's kernel, one per conversation, and the family it answers for; the `rlm.child` document and the `rlm.deliver` task; the `subagent` tool that returns at once. pi-rlm exports the result texts and helpers they use (`formatCell`, `KERNEL_RESET`, `baseEnv`, `label` and others). |
 | `packages/pi-host/src/durable/threads.ts` | `DurableThreadsOptions.prompt`; each thread file gets its own registry, so "Conversation log:" names its file and a child names its chat. `submit` records the harness digest of a root input before it admits it, one thread at a time. |
-| `packages/pi-host/src/main.ts` | Passes `prompt: {agentDir}` from `--agent-dir`. `PI_HOST_PROMPT_TOOLS=pi` switches the tools profile. Loads the chat extension at start; `PI_HOST_PRIME_CHAT=0` leaves it out. |
-| `apps/chat/server/timeline.ts`, `threads.ts`, `search-snippet.ts`, `boards.ts` | `SPEAKING_TOOLS`: a `tell_owner` call is drawn, previewed, posted and searched as a `send_message` call; a held one is a note. The agent's board write answers its summaries. |
+| `packages/pi-host/src/main.ts` | Passes `prompt: {agentDir}` from `--agent-dir`. `PI_HOST_PROMPT_TOOLS=pi` switches the tools profile. Loads the chat extension and the durable `ipython` at start; `PI_HOST_PRIME_CHAT=0` and `PI_HOST_RLM=0` leave them out. |
+| `apps/chat/server/timeline.ts`, `threads.ts`, `search-snippet.ts`, `boards.ts`, `http.ts` | `SPEAKING_TOOLS`: a `tell_owner` call is drawn, previewed, posted and searched as a `send_message` call; a held one is a note. The agent's board write answers its summaries. An `ipython` cell's `details.conversations` gives a job pill per spawned child, and `POST /api/threads/<thread>/wakes` records a time wake. |
+| `skills/board/src/board/__init__.py` | In a durable kernel (`PI_HOST_THREAD`), reads the thread's board from apps/chat and sets time wakes there. |
 | `scripts/prompt-parity.mjs` | The capture and comparison above. |
 | `packages/pi-host/test/durable/prime-prompt.test.ts`, `test/fixtures/prime-agent/` | The tests below. |
 
@@ -248,7 +282,10 @@ A thread from before this change keeps its first system message, the old preambl
 
 | Gap | Recommendation |
 |---|---|
-| The prompt describes `ipython`, `rlm.*` and Python skills, which a pi thread lacks. | Decide between the default `prime` profile, which keeps the text identical as asked, and `PI_HOST_PROMPT_TOOLS=pi`, where Prime's own builder drops the REPL parts (the preamble shrinks from 11,139 to 3,277 bytes and the delegation and MCP sections go). The lasting fix is a durable `ipython` (see above) and an agent-to-agent message tool. |
+| A pi thread offers `read`, `write`, `edit`, `bash`, `subagent` and `send_message` beside Prime's tools. | Drop them once durable `ipython` has run in production, so the tool list is Prime's. |
+| `goal.*`, `refine.*` and `rlm_heartbeat.*` fail in a durable kernel, and `attach_image` is not installed there. | Map goals to pi-durable's `onYield`, refine to pi-harness, heartbeats to apps/chat's clock; install attach_image's Pillow without Prime's runtime package. |
+| apps/chat delivers time wakes only, so `board.wake(run=...)` and `board.wake(check=...)` fail in a pi thread. | Move the legacy chat's run and check wakes into apps/chat's clock. |
+| A depth-2 child's prompt says depth 1 and names the thread as its parent. | Compute the depth from the conversation's owners in `prime-prompt.ts`. |
 | `send_message` beside `tell_owner`. | Move apps/chat's channel and duty texts to `tell_owner`, teach the guard a channel turn, then drop the alias. |
 | No `[correction check]` after an owner message that reads as a correction. | Port the legacy server's `correctionStep` to apps/chat. |
 | Prime sends `rules`, the digest and corrections as messages; pi puts them in the system prompt. | Keep it: the text is the same, and a system section keeps the cache when it changes. |
@@ -256,7 +293,7 @@ A thread from before this change keeps its first system message, the old preambl
 | Nothing writes a thread's local harness store. | Point the kernel's `RLM_HARNESS_STATE_DIR` at `threadHarnessDir` when it lands, and run pi-harness's refine after a thread's runs. |
 | A Prime update can change its digest code. | Run `node scripts/vendor-prime-harness.mjs` after a Prime install; `prime-harness.test.ts` fails on this box until the copy matches the running release. |
 | A job's corrections block misses the brief-dependent lines (`uiRuleLine`, `tokenCostRuleLine`), because a section cannot see the child's task. | Pass the task to the child through a document when the subagent tool creates it. |
-| A job's `jobReplyGuideline` names a `~/scratch/<thread>-<conversation>` folder that nothing deletes, and tells it to report with `agent_message.send`, while a pi child answers with its final text. | Keep the text; add the cleanup when pi jobs become threads of their own. |
+| A job's `jobReplyGuideline` names a `~/scratch/<thread>-<conversation>` folder that nothing deletes. | Delete it with the child when `rlm.delete_subagent` or the thread's archive ends it. |
 | Skill CLIs are not on pi's PATH. | Add `~/.prime/agent/kernel-venv/bin` to the PATH of `NodeExecutionEnv`, after checking each CLI runs outside the kernel. |
 | `apps/chat/server/agent-config.ts` still reports the system text as `PRIME_BASE_PROMPT`. | Point it at the builder once this lands. |
 | pi-host imports from `legacy/prime/user-history/src` and the root `prime-agent` package. | Both ship in every pi-host release (a whole-repo export). Move `chat-brief.ts` and `chat-corrections.ts` to a package when the legacy chat goes. |
@@ -272,6 +309,15 @@ A thread from before this change keeps its first system message, the old preambl
 5. `chat_board` posts the ops to apps/chat as the agent and returns Prime's summary and open-plan lines.
 6. `correction_add` writes `corrections.json` in the shared dir with the thread as the chat.
 7. A subagent's child conversation gets none of the chat's tools and no wrappers.
+
+`packages/pi-host/test/durable/rlm.test.ts` runs a real kernel on a faux model:
+
+1. Every conversation is offered `ipython` with pi-rlm's registered definition, and a variable set in one turn is read in the next.
+2. `rlm.spawn` returns at admission while the child is still running, an input sent meanwhile is answered, the child's no-reply notice arrives later as an input from the child, a child that replied with `agent_message.send` sends no notice, and `rlm.list_subagents` lists both.
+3. The `subagent` tool returns in about 60 ms, and a steer sent while its child runs for 120 s is answered in about 15 ms; the child's whole answer arrives as an input when it ends.
+4. A worker process is killed with SIGKILL inside a sleeping cell; the reopened thread gives that call `interrupted`, the next call shows pi-rlm's reset note with `x` gone, and the old kernel process ends.
+
+`apps/chat/test/server/rlm-jobs.test.ts` checks that a cell's spawned children each get a job pill and that a child's notice and reply are drawn as messages from that job.
 
 `apps/chat/test/server/send-message.test.ts` checks that a `tell_owner` call renders, previews and searches like a `send_message` call, and that a held one is a note.
 

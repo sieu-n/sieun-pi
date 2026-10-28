@@ -16,7 +16,7 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { Preamble } from "../../src/durable/open.ts";
 import { threadRegistry } from "../../src/durable/registry.ts";
 import { SEND_MESSAGE_RESULT, SEND_MESSAGE_TOOL } from "../../src/durable/send-message.ts";
-import { Subagent } from "../../src/durable/subagent.ts";
+import { ForegroundSubagent as Subagent, SUBAGENT_STARTED } from "../../src/durable/subagent.ts";
 import { previewText } from "../../src/durable/threads.ts";
 import { MODEL, textOf } from "./crash-scenario.ts";
 
@@ -95,7 +95,7 @@ test("a thread from before the tool gets send_message on its next request, and e
   assert.ok(entries.some(entry => entry.kind === "pi.assistant" && textOf((entry.model?.[0] as Message).content) === "The old answer, as plain text."));
 });
 
-test("a subagent's child conversation is not offered send_message, so its answer stays its final text", async () => {
+test("a subagent's child conversation is not offered send_message, so its answer stays its final text and reaches the parent as an input", async () => {
   const file = join(dir, "child.sqlite");
   const offered = new Map<string, boolean>();
   const task = "List three primes.";
@@ -107,14 +107,19 @@ test("a subagent's child conversation is not offered send_message, so its answer
       return fauxAssistantMessage("2, 3, 5");
     }
     offered.set("root", offers(messages, SEND_MESSAGE_TOOL));
-    if (messages.at(-1)?.role === "toolResult" && lastUser(messages) === "Ask a subagent.") {
-      const result = messages.at(-1) as Extract<Message, { role: "toolResult" }>;
-      if (result.toolName === "subagent") return fauxAssistantMessage([fauxToolCall(SEND_MESSAGE_TOOL, { text: `It said ${textOf(result.content)}.` })], { stopReason: "toolUse" });
-      return fauxAssistantMessage("");
-    }
+    const last = messages.at(-1)!;
+    if (last.role === "toolResult") return fauxAssistantMessage("");
+    const text = textOf(last.content as Message["content"]);
+    if (text.startsWith("[subagent-answer")) return fauxAssistantMessage([fauxToolCall(SEND_MESSAGE_TOOL, { text: `It said ${text.split("\n\n")[1]}.` })], { stopReason: "toolUse" });
     return fauxAssistantMessage([fauxToolCall("subagent", { task })], { stopReason: "toolUse" });
   });
-  const entries = await ask(root, "Ask a subagent.");
+  const first = await ask(root, "Ask a subagent.");
+  assert.equal(results(first).find(r => r.name === "subagent")?.text, SUBAGENT_STARTED);
+  let entries: EntryRecord[] = [];
+  for (let i = 0; i < 200 && !calls(entries).some(call => call.name === SEND_MESSAGE_TOOL); i++) {
+    await new Promise(resolve => setTimeout(resolve, 50));
+    entries = [...(await root.entries({ order: "ascending" }, 1000, undefined, context)).items];
+  }
   await harness.close(context);
   assert.deepEqual(Object.fromEntries(offered), { root: true, child: false, "child read": true });
   assert.deepEqual(calls(entries).filter(call => call.name === SEND_MESSAGE_TOOL).map(call => call.args), [{ text: "It said 2, 3, 5." }]);

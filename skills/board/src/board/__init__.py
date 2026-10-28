@@ -5,6 +5,9 @@ checklist; these calls read the rest. A chat's kernel and every job under it fin
 owner's corrections ledger, <agent dir>/browser-chat/corrections.json, whose [corrections] block shows some rules by id and theme only.
 
 On a box where hosts.json puts the chat role on another box, every call reads and writes through that chat service's API instead.
+
+In a pi-host durable thread's kernel (PI_HOST_THREAD set), the board is the thread's board in the new chat (apps/chat, PI_HOST_CHAT_URL), read
+through GET /api/threads/<thread>/board, and wake(at=...) asks that chat for a time wake; it delivers no run or check wake yet.
 """
 
 from __future__ import annotations
@@ -78,9 +81,36 @@ def _call(path: str, body: dict | None = None) -> bytes | None:
         raise RuntimeError(f"Chat service at {base.split('/', 3)[2]} answered {error.code}: {error.read().decode(errors='replace')[:300]}") from None
 
 
+def _pi_thread() -> tuple[str, str, int] | None:
+    """The new chat's URL, the thread and the conversation of a pi-host durable thread's kernel; None in a Prime kernel."""
+    thread = os.environ.get("PI_HOST_THREAD", "").strip()
+    if not thread:
+        return None
+    url = (os.environ.get("PI_HOST_CHAT_URL") or "http://127.0.0.1:5184").rstrip("/")
+    try:
+        conversation = int(os.environ.get("PI_HOST_CONVERSATION") or "1")
+    except ValueError:
+        conversation = 1
+    return url, thread, conversation
+
+
+def _pi_call(path: str, body: dict | None = None) -> dict:
+    """GET (or POST with body) a route of the new chat for this thread."""
+    url, _thread, _conversation = _pi_thread()  # type: ignore[misc]
+    request = urllib.request.Request(f"{url}/{path}", data=json.dumps(body).encode() if body is not None else None,
+                                     headers={"Content-Type": "application/json"} if body is not None else {})
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return json.loads(response.read() or b"{}")
+    except urllib.error.HTTPError as error:
+        raise RuntimeError(f"The chat at {url} answered {error.code}: {error.read().decode(errors='replace')[:300]}") from None
+
+
 def _chat_id(chat: str | None) -> str:
     if chat:
         return chat.removeprefix("thread:")
+    if _pi_thread():
+        return _pi_thread()[1]  # type: ignore[index]
     parts = Path(os.environ.get("RLM_SESSION_DIR", "")).parts
     if "session-artifacts" in parts and parts.index("session-artifacts") + 1 < len(parts):
         return parts[parts.index("session-artifacts") + 1]
@@ -95,6 +125,11 @@ def _load(chat: str | None) -> tuple[str, dict]:
     chat_id = _chat_id(chat)
     if not _ID.match(chat_id):
         raise ValueError(f"Not a session id: {chat_id!r}")
+    if _pi_thread():
+        board = _pi_call(f"api/threads/{urllib.parse.quote(chat_id)}/board").get("board")
+        if not board:
+            raise NoBoard(f"Thread {chat_id} has no board yet in the chat at {_pi_thread()[0]}.")  # type: ignore[index]
+        return chat_id, board
     if _chat_host():
         raw = _call(f"api/agent/board?chat={urllib.parse.quote(chat_id)}")
         if raw is None:
@@ -417,6 +452,15 @@ def wake(run: int | str | None = None, at: str | float | None = None, note: str 
         when = float(at) if isinstance(at, (int, float)) else datetime.fromisoformat(str(at).replace("Z", "+00:00")).timestamp()
         on = {"kind": "time", "at": int(when * 1000)}
         key, what = f"time-{int(when)}", f"it is {datetime.fromtimestamp(when, timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}"
+    if _pi_thread():
+        url, thread, conversation = _pi_thread()  # type: ignore[misc]
+        if on["kind"] != "time":
+            raise RuntimeError(f"The new chat at {url} delivers time wakes only (apps/chat/server/boards.ts deliverWakes), so a {on['kind']} wake "
+                               "cannot be set for a pi-host thread yet. Set board.wake(at=<time>) and check the run or command when it comes.")
+        text = f"It is {datetime.fromtimestamp(when, timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}." + (f" {note}" if note else "")
+        _pi_call(f"api/threads/{urllib.parse.quote(thread)}/wakes",
+                 {"id": f"{thread}-{conversation}-{key}", "at": int(when * 1000), "text": text, "conversation": conversation})
+        return _Text(f"Wake set: the chat messages this thread when {what}. End this turn now with no bash handle, sleep or wait left running. ({url})")
     session = _own_session()
     parts = Path(os.environ.get("RLM_SESSION_DIR", "")).parts
     root = parts[parts.index("session-artifacts") + 1] if "session-artifacts" in parts and parts.index("session-artifacts") + 1 < len(parts) else session

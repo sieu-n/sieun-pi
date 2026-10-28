@@ -27,7 +27,7 @@ H-->>C: the same submission, nothing admitted twice
 1. pi-host marks a thread active in `index.sqlite` before it admits an input, and the Harness's `onWake` keeps the mark current after each commit, so a crash between the two still reopens the file.
 2. At start pi-host opens every thread marked active or with a due sleep and calls `resume()`.
 3. A thread whose tasks only sleep, such as a pi-pool slot wait, is closed after 10 idle minutes, and one timer for the earliest sleep reopens it when it is due.
-   An open file also keeps a timer for its own earliest sleep, because pi-durable arms none once the host takes `onWake`, and a child's turn poll or retry backoff sleeps while the root's subagent call keeps the file active.
+   An open file also keeps a timer for its own earliest sleep, because pi-durable arms none once the host takes `onWake`, and a child's turn poll or retry backoff sleeps while the child's `rlm.deliver` task keeps the file active.
 4. One pi-host is the only writer of each file, through a lockfile next to it as for Pi session files.
 5. A repeated `requestId` returns the first submission, so a client that retries after a restart never doubles an input.
 
@@ -38,14 +38,15 @@ H-->>C: the same submission, nothing admitted twice
 | `threads.ts` | `DurableThreads`: open, recover, submit, wait, abort, watch, tree, entries, documents and idle close. |
 | `index-db.ts` | `ThreadIndex`: the thread rows, each thread's last wake, the FTS5 search rows and the usage rows, all derived from the thread files. |
 | `commands.ts` | `DurableCommands`: the `durable_*` socket commands and the watches per connection. |
-| `registry.ts` | What every thread runs with: Prime's prompt (or the preamble alone without an agent dir), pi-durable's coding tools in the thread's cwd, the subagent tool, the `send_message` tool, Prime's chat extension when the host loaded it, `agent.message` entries and `chat.doc` documents. |
+| `registry.ts` | What every thread runs with: Prime's prompt (or the preamble alone without an agent dir), pi-durable's coding tools in the thread's cwd, the subagent tool, the `send_message` tool, Prime's chat extension when the host loaded it, Prime's `ipython` when the host loaded it, the `rlm.deliver` task, `agent.message` entries and `chat.doc` documents. |
 | `pi-extensions.ts` | The adapter that runs a pi coding-agent extension in pi-host: a recording `ExtensionAPI`, its events fired with a thread's pi context, and each registered tool as a pi-durable tool with the extension's own definition. |
 | `prime-chat.ts`, `chat-app.ts` | Prime's chat extension (user-history) in a thread's root conversation: `search_history`, `chat_board`, `tell_owner`, `correction_add`, `poteto_mode` and the `[message id]` and `[not from the owner]` wrappers, with `chat_board` and `tell_owner` on apps/chat's board API; `docs/prime-pi-prompt-parity.md` lists each binding and what is skipped. |
 | `prime-prompt.ts` | A Prime chat's system prompt, built by prime-agent's own `buildSystemPrompt` from the agent dir's AGENTS.md files, skills, chat brief and corrections ledger, as pi-durable sections; `docs/prime-pi-prompt-parity.md` maps each part. |
 | `prime-harness.ts`, `vendor/prime-harness.ts` | Prime's harness digest and its updates from the global store and the thread's local one, sent as messages before the inputs they go with, with Prime's own code copied by `scripts/vendor-prime-harness.mjs`. |
 | `open.ts` | `openDurableHost()` for one file and the Prime preamble extension. |
 | `@sieun-pi/pi-pool/durable` | `poolProvider()` in `packages/pi-pool/src/durable/pool-provider.ts`: a pi-ai Provider that vends each request's account through pi-pool and turns a slot wait into a stored sleep. |
-| `subagent.ts` | The `subagent` tool: a replay-safe call that owns one child conversation and returns its answer. |
+| `subagent.ts` | The `subagent` tool: the call starts a child conversation through an `rlm.deliver` task and returns at once, and the child's whole answer reaches the parent later as an input. A call from before this change still owns its child and returns its answer. `ForegroundSubagent` keeps the old tool for `openDurableHost`. |
+| `rlm.ts`, `children.ts` | Prime's `ipython` on pi-rlm's kernel, one kernel per conversation, with `rlm.spawn`, `agent_message` and `agent_observe` answered from the thread file; the `rlm.child` document and the `rlm.deliver` task. `docs/prime-pi-prompt-parity.md` describes both. |
 | `send-message.ts` | The `send_message` tool, the one way an agent speaks to people: `{text, to?}`, result "Sent.", no effect outside the thread. |
 | `import.ts` | `parseSession()`: a Prime or Pi session file's active branch as entry drafts, for `durable_import`. |
 
@@ -143,12 +144,13 @@ end
 
 ## Crash tests
 
-1. `test/durable/host-crash.test.ts` starts a real pi-host in a child process, submits through the socket, sends SIGKILL while the subagent streams, while a pool slot wait sleeps or while the run waits in the turn queue, starts a new pi-host on the same folder and checks through the socket that the host reopened the thread by itself and that the input was answered once, with the child's answer as the tool result, plus search, usage and documents after the restart.
+1. `test/durable/host-crash.test.ts` starts a real pi-host in a child process, submits through the socket, sends SIGKILL while the subagent streams, while a pool slot wait sleeps or while the run waits in the turn queue, starts a new pi-host on the same folder and checks through the socket that the host reopened the thread by itself and that the input was answered once and the child's answer reached the root once as its own input, plus search, usage and documents after the restart.
    In the turn-queue case it also checks that no token went out before the admit and that every session that asked gave its slot back.
 2. `test/durable/owner-turn.test.ts` runs the real `pool/turns.py` queue in its own `PI_POOL_DIR` with one slot held and two runs queued, and checks that an agent input queues third while an owner input with `ownerTurn: true` is admitted as kind `owner` with no wait and answers, with each ticket over the socket and `durable_usage`'s four costs. `test/durable/owner-turn-settle.test.ts` slows each release by 1 s and checks that an owner input sent right after the last one settled is still admitted as kind `owner` and leaves no mark behind.
-3. `test/durable/child-turn.test.ts` runs the real `pool/turns.py` queue with a root whose subagent's first ask queues, gives the child the slot, and checks that the child sends its request and the root answers within 15 s.
-4. `test/durable/crash.test.ts` runs the crash cases of item 1 on one file without pi-host, with kills mid root stream, mid child stream and in a slot wait.
-5. The crash tests run on the faux provider behind the real pool wrapper and `pi-pool/test/fake-pool.mjs`, and `PI_DURABLE_REAL=1` adds a case on the real `claude-opus-5-5` through pi-pool.
+3. `test/durable/child-turn.test.ts` runs the real `pool/turns.py` queue with a subagent whose first ask queues behind two blockers after its root's run ended, gives the child a slot, and checks that the child sends its request and the root answers its answer within 15 s.
+4. `test/durable/rlm.test.ts` runs Prime's `ipython` on a real kernel: state across turns, `rlm.spawn` at admission with the child's notice as a later input, a steer answered while a subagent child runs for 120 s, and a SIGKILL mid-cell that gives `interrupted` and then a fresh kernel.
+5. `test/durable/crash.test.ts` runs the crash cases of item 1 on one file without pi-host, with kills mid root stream, mid child stream and in a slot wait.
+6. The crash tests run on the faux provider behind the real pool wrapper and `pi-pool/test/fake-pool.mjs`, and `PI_DURABLE_REAL=1` adds a case on the real `claude-opus-5-5` through pi-pool.
 
 ```sh
 cd packages

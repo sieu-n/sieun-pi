@@ -16,7 +16,7 @@
  * Replay safety is the binding's choice per tool (`replay: "safe"` only for idempotent ones); unset, a call a restart interrupts gets
  * pi-durable's `interrupted` result.
  */
-import type { Context } from "@earendil-works/chord";
+import type { Context, JsonValue } from "@earendil-works/chord";
 import type { TextContent, ImageContent } from "@earendil-works/pi-ai";
 import { defineTool, type ToolExecutionApi, type ToolExecutionResult, type ToolRegistration } from "@earendil-works/pi-durable";
 
@@ -28,6 +28,8 @@ export interface PiTool {
   parameters: Record<string, unknown>;
   promptSnippet?: string;
   promptGuidelines?: readonly string[];
+  /** pi's `sequential` keeps the calls of one assistant message from running at once, as pi-rlm's ipython asks. */
+  executionMode?: "sequential" | "parallel";
   execute(toolCallId: string, params: unknown, signal: AbortSignal | undefined, onUpdate: ((partial: unknown) => void) | undefined, ctx: unknown): Promise<PiToolResult>;
 }
 export interface PiToolResult { content?: (TextContent | ImageContent)[]; details?: unknown; isError?: boolean }
@@ -143,6 +145,8 @@ export interface DurableToolBinding {
   session: (api: ToolExecutionApi, context: Context) => PiSession | Promise<PiSession>;
   /** Runs the call instead of the extension's own execute, for a tool whose store differs in a durable thread. Same result shape. */
   execute?: (params: unknown, api: ToolExecutionApi, context: Context) => Promise<PiToolResult>;
+  /** The result's details to keep in the transcript for UIs (pi-durable stores them with the result); default none. */
+  details?: (result: PiToolResult) => JsonValue | undefined;
 }
 
 /** Text a pi result's content holds, for a running update's output. */
@@ -159,6 +163,7 @@ export function durableTool(tool: PiTool, binding: DurableToolBinding): ToolRegi
     description: tool.description,
     parameters: tool.parameters as never,
     ...(binding.replay ? { replay: binding.replay } : {}),
+    ...(tool.executionMode ? { executionMode: tool.executionMode } : {}),
     execute: async (args, api, context): Promise<ToolExecutionResult> => {
       let result: PiToolResult;
       try {
@@ -178,7 +183,8 @@ export function durableTool(tool: PiTool, binding: DurableToolBinding): ToolRegi
         if (context.abortSignal?.aborted) throw error;
         return { output: [{ type: "text", text: error instanceof Error ? error.message : String(error) }], isError: true };
       }
-      return { output: result.content ?? [], ...(result.isError ? { isError: true } : {}) };
+      const details = binding.details?.(result);
+      return { output: result.content ?? [], ...(result.isError ? { isError: true } : {}), ...(details !== undefined ? { details } : {}) };
     },
   });
 }

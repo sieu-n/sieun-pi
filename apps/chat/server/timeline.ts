@@ -150,6 +150,7 @@ function buildTurn(draft: TurnDraft, ctx: TimelineContext, live: boolean, firstS
   const texts: string[] = [];
   const images: ImageRef[] = [];
   const jobs: JobRef[] = [];
+  const extraJobs: number[] = [];
   let stop: "aborted" | "error" | undefined;
   let error: string | undefined;
   let model: string | undefined;
@@ -198,12 +199,15 @@ function buildTurn(draft: TurnDraft, ctx: TimelineContext, live: boolean, firstS
       const index = message.toolCallId ? toolIndex.get(message.toolCallId) : undefined;
       const output = textOf(message);
       const childId = typeof message.details?.conversationId === "number" ? (message.details.conversationId as number) : undefined;
+      // An ipython cell that ran rlm.spawn lists every child it started; the step links the first and the turn shows a pill for each.
+      const more = Array.isArray(message.details?.conversations) ? (message.details.conversations as unknown[]).filter((id): id is number => typeof id === "number" && id !== childId) : [];
       if (index !== undefined) {
         const step = steps[index] as Extract<Step, { kind: "tool" }>;
         step.status = message.isError ? "error" : "done";
         step.output = output.length > 4000 ? `${output.slice(0, 4000)}\n...` : output;
         if (childId !== undefined) step.job = `${ctx.thread}:${childId}`;
       }
+      extraJobs.push(...more);
       images.push(...imageRefs(ctx.thread, entry));
     }
   }
@@ -212,6 +216,10 @@ function buildTurn(draft: TurnDraft, ctx: TimelineContext, live: boolean, firstS
     const id = Number(step.job.split(":")[1]);
     const node = ctx.tree.find(n => n.id === id);
     jobs.push({ conversation: step.job, name: node?.name ?? step.summary, status: ctx.jobStatus(id), replies: 0, lastAt: node?.createdAt ?? at });
+  }
+  for (const id of extraJobs) {
+    const node = ctx.tree.find(n => n.id === id);
+    jobs.push({ conversation: `${ctx.thread}:${id}`, name: node?.name ?? `job ${id}`, status: ctx.jobStatus(id), replies: 0, lastAt: node?.createdAt ?? at });
   }
   return {
     kind: "turn", id: turnKey(draft.key), at, author: ctx.agent, text: speaking ? sent.map(m => m.text).join("\n\n") : texts.join("\n\n"), live, steps, images, jobs,

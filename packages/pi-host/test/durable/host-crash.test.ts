@@ -1,7 +1,7 @@
 /**
  * SIGKILL pi-host while a durable thread's subagent streams, or while it sleeps on a pool slot, start a new pi-host on
- * the same folder, and check through the socket alone that the host reopened the thread by itself and the input was
- * answered once, with the child's answer as the tool result. Faux mode runs in CI; PI_DURABLE_REAL=1 adds the case on
+ * the same folder, and check through the socket alone that the host reopened the thread by itself, the input was
+ * answered once, and the child's answer reached the root once, as its own input after the subagent call returned. Faux mode runs in CI; PI_DURABLE_REAL=1 adds the case on
  * the real claude-opus-5-5 through pi-pool.
  */
 import { strict as assert } from "node:assert";
@@ -14,6 +14,8 @@ import { fileURLToPath } from "node:url";
 import { after, describe, test } from "node:test";
 import type { EntryRecord } from "@earendil-works/pi-durable";
 import { CHILD_TASK, FAUX_CHILD_ANSWER, INPUT, textOf } from "./crash-scenario.ts";
+import { SUBAGENT_STARTED } from "../../src/durable/subagent.ts";
+import { label } from "../../../pi-rlm/src/pi/children.ts";
 import { HostClient } from "../../src/client.ts";
 import type { HostCommand } from "../../src/protocol.ts";
 import type { ThreadInfo, TreeNode } from "../../src/durable/index.ts";
@@ -94,7 +96,8 @@ async function crashCase(name: string, mode: "faux" | "real", killOn: "child-str
   first.child.kill("SIGKILL");
   await new Promise(resolve => first.child.once("exit", resolve));
   a.close();
-  assert.ok(!durableLines(a).some(line => line.event.events?.some(e => e.type === "run_end")), "the run ended before the kill");
+  // The subagent tool returns at once, so the root's first run may end before the kill; the child's run never does.
+  assert.ok(!durableLines(a).some(line => line.event.conversation !== 1 && line.event.events?.some(e => e.type === "run_end")), "the child's run ended before the kill");
 
   const resumedAt = Date.now();
   const second = startHost(socket, dir, mode, env);
@@ -108,6 +111,9 @@ async function crashCase(name: string, mode: "faux" | "real", killOn: "child-str
     const again = await call<{ submission: number; status: string }>(b, { type: "durable_submit", thread: thread.id, text: INPUT, requestId: "host-crash-1" });
     assert.equal(again.submission, submitted.submission, "the same request id must find the same submission");
 
+    // The child's answer reaches the root later, as its own input, and the root answers it.
+    const reported = (entries: EntryRecord[]) => entries.some(entry => entry.kind === "agent.message") && entries.at(-1)?.kind === "pi.assistant";
+    for (let tries = 0; !reported(await allEntries(b, thread.id, 1)) && tries < (mode === "real" ? 6000 : 1200); tries++) await new Promise(resolve => setTimeout(resolve, 100));
     const tree = await call<{ conversations: TreeNode[] }>(b, { type: "durable_tree", thread: thread.id });
     assert.equal(tree.conversations.length, 2, JSON.stringify(tree));
     const childNode = tree.conversations.find(node => node.parent === 1)!;
@@ -119,15 +125,18 @@ async function crashCase(name: string, mode: "faux" | "real", killOn: "child-str
     const users = root.filter(entry => entry.kind === "pi.user");
     assert.equal(users.length, 1, kinds(root));
     assert.equal(textOf(users[0]!.model![0]!.content as never), INPUT);
-    assert.equal(child.filter(entry => entry.kind === "pi.user").length, 1, kinds(child));
+    assert.equal(child.filter(entry => entry.kind === "agent.message").length, 1, kinds(child));
     const childAnswers = child.filter(entry => entry.kind === "pi.assistant" && (entry.model![0] as { stopReason: string }).stopReason === "stop");
     assert.equal(childAnswers.length, 1, kinds(child));
     const results = root.filter(entry => entry.kind === "pi.tool-result");
     assert.equal(results.length, 1, kinds(root));
+    assert.equal(textOf(results[0]!.model![0]!.content as never), SUBAGENT_STARTED);
     const childText = textOf(childAnswers[0]!.model![0]!.content as never);
-    assert.equal(textOf(results[0]!.model![0]!.content as never), childText);
     if (mode === "faux") assert.equal(childText, FAUX_CHILD_ANSWER);
-    assert.equal(root.filter(entry => entry.kind === "pi.assistant" && (entry.model![0] as { stopReason: string }).stopReason === "stop").length, 1, kinds(root));
+    const reports = root.filter(entry => entry.kind === "agent.message");
+    assert.equal(reports.length, 1, kinds(root));
+    assert.equal(textOf(reports[0]!.model![0]!.content as never), `[subagent-answer child:${label(CHILD_TASK.slice(0, 80))}]\n\n${childText}`);
+    assert.equal(root.filter(entry => entry.kind === "pi.assistant" && (entry.model![0] as { stopReason: string }).stopReason === "stop").length, 2, kinds(root));
 
     assert.deepEqual(await call(b, { type: "durable_doc_get", thread: thread.id, name: "chat.meta" }), { value: { title: "crash test", kind: "solo" } });
     const { hits } = await call<{ hits: { conversation: number; snippet: string }[] }>(b, { type: "durable_search", q: "prime numbers", threads: [thread.id] });

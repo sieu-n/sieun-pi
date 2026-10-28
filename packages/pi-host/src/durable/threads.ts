@@ -30,6 +30,7 @@ import { statusOf, ThreadIndex, type IndexedEntry, type SearchPage, type SearchQ
 import { headFor, parseSession } from "./import.ts";
 import { AgentMessageEntry, ChatDoc, threadEnv, threadRegistry } from "./registry.ts";
 import { SPEAKING_TOOLS, type PrimeChat } from "./prime-chat.ts";
+import { rlmChildName, type DurableRlm, type RlmThread } from "./rlm.ts";
 import { deliverHarnessDigest, type PrimePromptOptions } from "./prime-prompt.ts";
 
 const context: Context = BACKGROUND_CONTEXT;
@@ -63,6 +64,8 @@ export interface DurableThreadsOptions {
   prompt?: Omit<PrimePromptOptions, "thread" | "log">;
   /** Prime's chat extension, loaded once (`loadPrimeChat`): each thread's root conversation then offers its tools and turn wrappers. */
   chat?: PrimeChat;
+  /** Prime's `ipython` and its RLM runtime (`DurableRlm.load`): every conversation then offers it, with one kernel each. */
+  rlm?: DurableRlm;
 }
 
 export interface ThreadInfo extends ThreadRow {
@@ -295,7 +298,7 @@ export class DurableThreads {
       const prompt = this.options.prompt && { ...this.options.prompt, thread: { id, file, name, cwd: row.cwd, harness: () => openHarness }, log: (line: string) => this.log(`${id} ${line}`) };
       const harness = await Harness.open(storage, {
         models: this.options.models(id),
-        registry: prompt || chat ? threadRegistry(prompt, chat) : this.registry,
+        registry: prompt || chat || this.options.rlm ? threadRegistry(prompt, chat, { thread: { id, file }, ...(this.options.rlm ? { rlm: this.options.rlm.extension(this.rlmThread(id, file, name, row.cwd, () => openHarness)) } : {}) }) : this.registry,
         env: threadEnv(row.cwd),
         ...(this.options.settings === undefined ? {} : { settings: this.options.settings }),
         onWake: next => {
@@ -319,6 +322,25 @@ export class DurableThreads {
       this.leases.release(real);
       throw error;
     }
+  }
+
+  /** The thread as the RLM runtime reaches it: its conversations' inputs, the other threads' roots, and new threads for `rlm.create_session`. */
+  private rlmThread(id: string, file: string, name: () => string, cwd: string, harness: () => Harness | undefined): RlmThread {
+    return {
+      id, file, name, cwd, harness,
+      submit: input => this.submit(id, { conversation: input.conversation, text: input.text, requestId: input.requestId, whenBusy: input.whenBusy, entry: input.entry }),
+      roots: () => this.list().map(row => ({ id: row.id, name: row.name, cwd: row.cwd })),
+      submitRoot: (thread, input) => this.submit(thread, { text: input.text, requestId: input.requestId, whenBusy: input.whenBusy, entry: input.entry }),
+      createSession: async input => {
+        const created = await this.create({
+          ...(input.name ? { name: input.name } : {}), ...(input.model ? { model: input.model } : {}), cwd: input.cwd,
+          ...(input.thinking ? { thinkingLevel: input.thinking as ModelThinkingLevel } : {}),
+        });
+        await this.submit(created.id, { text: input.prompt, entry: { kind: "agent.message", data: { from: id, via: "rlm.create_session" } } });
+        return { id: created.id, name: created.name, file: this.fileOf(created.id), model: `${created.provider}/${created.modelId}` };
+      },
+      log: line => this.log(`${id} ${line}`),
+    };
   }
 
   /** Adds every entry the index has not seen, so search and usage cover what a crashed process committed. */
@@ -407,7 +429,8 @@ export class DurableThreads {
     const key = `${open.id}:${conversation}`;
     const released = (this.releasing.get(key) ?? Promise.resolve())
       .then(() => new Promise<void>(resolve => setImmediate(resolve)))
-      .then(() => this.settled(open, conversation));
+      .then(() => this.settled(open, conversation))
+      .then(() => this.options.rlm?.settled(open.id, conversation).catch(error => this.log(`${open.id} kernel settle failed: ${error instanceof Error ? error.message : String(error)}`)));
     this.releasing.set(key, released);
     void released.then(() => {
       if (this.releasing.get(key) === released) this.releasing.delete(key);
@@ -515,6 +538,7 @@ export class DurableThreads {
       watcher.sink({ type: "closed", reason });
     }
     open.watchers.clear();
+    await this.options.rlm?.closeThread(id, reason).catch(error => this.log(`${id} kernels did not close: ${error instanceof Error ? error.message : String(error)}`));
     await open.harness.close(context).catch(error => this.log(`${id} close failed: ${error instanceof Error ? error.message : String(error)}`));
     this.leases.release(open.file);
   }
@@ -656,7 +680,7 @@ export class DurableThreads {
       const agent = await conversation.agent(context);
       nodes.push({
         id: record.id, parent: record.owner?.conversationId ?? null, ownerTask: record.owner?.taskId ?? null,
-        name: record.id === ROOT_CONVERSATION_ID ? this.info(id).name : (described?.text ?? "").split("\n")[0]!.slice(0, 80),
+        name: record.id === ROOT_CONVERSATION_ID ? this.info(id).name : (await rlmChildName(open.harness, record.id, context)) ?? (described?.text ?? "").split("\n")[0]!.slice(0, 80),
         depth: depthOf(record.id), status: live?.run ? "running" : "idle", model: agent.model ? `${agent.model.provider}/${agent.model.modelId}` : null,
         createdAt: described?.at ?? null,
       });

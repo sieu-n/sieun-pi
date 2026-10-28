@@ -17,6 +17,7 @@ import { DURABLE_SETTINGS, poolProvider, TurnQueue } from "@sieun-pi/pi-pool/dur
 import { DurableCommands, DurableThreads } from "./durable/index.ts";
 import { loadPrimeChat, type PrimeChat } from "./durable/prime-chat.ts";
 import { promptTools } from "./durable/prime-prompt.ts";
+import { DurableRlm } from "./durable/rlm.ts";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { HOST_SOCKET_ENV } from "./api.ts";
@@ -80,6 +81,13 @@ if (!values["no-durable"] && process.env.PI_HOST_PRIME_CHAT !== "0") {
   chat = await loadPrimeChat({ agentDir, log: line => process.stderr.write(`${line}\n`) })
     .catch(error => { process.stderr.write(`prime chat extension failed to load: ${error instanceof Error ? error.stack : String(error)}\n`); return undefined; });
 }
+// Prime's ipython in every durable conversation, one kernel each, freed after the threads' idle close time. PI_HOST_RLM=0 leaves it out,
+// and a failed load leaves it out too, which the host log says.
+let rlm: DurableRlm | undefined;
+if (!values["no-durable"] && process.env.PI_HOST_RLM !== "0") {
+  rlm = await DurableRlm.load({ agentDir, log: line => process.stderr.write(`${line}\n`) })
+    .catch(error => { process.stderr.write(`durable ipython failed to load: ${error instanceof Error ? error.stack : String(error)}\n`); return undefined; });
+}
 const durable = values["no-durable"] ? undefined : new DurableCommands(new DurableThreads({
   dir: values["durable-dir"] ? resolve(values["durable-dir"]) : join(dataDir, "durable"),
   models: threadId => {
@@ -99,6 +107,7 @@ const durable = values["no-durable"] ? undefined : new DurableCommands(new Durab
   // Every thread's system prompt is a Prime chat's, built from this agent dir's AGENTS.md, skills, harness and the chat's ledger.
   prompt: { agentDir, tools: promptTools() },
   ...(chat ? { chat } : {}),
+  ...(rlm ? { rlm } : {}),
   log: line => host.log(line),
 }));
 

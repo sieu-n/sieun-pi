@@ -93,8 +93,8 @@ const CHILDREN_KEY = Symbol.for("sieun-pi.pi-stack.rlm.children");
 const SELF = resolve(import.meta.dirname, "index.ts");
 /** pi-rlm's package root, which `pi -e <dir>` loads through its package.json. */
 const PACKAGE_DIR = resolve(import.meta.dirname, "..", "..");
-const NOTE_INTERVAL_MS = 10_000;
-const PREVIEW = 2000;
+export const NOTE_INTERVAL_MS = 10_000;
+export const PREVIEW = 2000;
 
 export function setChildLoaderOptions(provider: ChildLoaderProvider | undefined): void {
   const g = globalThis as unknown as Record<symbol, ChildLoaderProvider | undefined>;
@@ -143,7 +143,7 @@ function addUsage(total: Usage, u: { input?: number; output?: number; cacheRead?
   total.cost += u.cost?.total ?? 0;
 }
 
-function label(name: string): string {
+export function label(name: string): string {
   return name.replace(/[\s,:[\]]+/g, " ").trim();
 }
 

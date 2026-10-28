@@ -31,7 +31,7 @@ export { setChildLoaderOptions } from "./children.ts";
 
 const AGENT_MESSAGE_MIME = "application/vnd.prime-agent.agent-message+json";
 const IMAGE_MIMES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
-const SNAPSHOT_LIMITS = { maxBytes: 256 * 1024 * 1024, maxVariableBytes: 16 * 1024 * 1024, pruneOversized: true };
+export const SNAPSHOT_LIMITS = { maxBytes: 256 * 1024 * 1024, maxVariableBytes: 16 * 1024 * 1024, pruneOversized: true };
 const BUSY_WAIT = "Wait and preserve state";
 const BUSY_KILL = "Kill kernel and restart";
 const BUSY_TITLE = [
@@ -39,18 +39,18 @@ const BUSY_TITLE = [
   "Ctrl+C sent an interrupt, but the previous cell has not stopped yet. A new command cannot start until it finishes.",
   "Waiting preserves the current kernel state. Killing restarts the kernel and loses in-memory variables, imports, and running tasks.",
 ].join("\n");
-const BUSY_NO_UI =
+export const BUSY_NO_UI =
   "The previous Python cell ignored the interrupt and is still running, so this cell did not start. Nobody can choose to wait or restart here; call ipython again later, or end the turn.";
-const STILL_RUNNING = "[ipython_interrupt_pending]\nThe cell did not stop after the interrupt and is still running in the kernel. The next ipython call asks whether to wait for it or restart the kernel.";
+export const STILL_RUNNING = "[ipython_interrupt_pending]\nThe cell did not stop after the interrupt and is still running in the kernel. The next ipython call asks whether to wait for it or restart the kernel.";
 const RESUME_TEXT = "[host-restart]\n\nThe session host restarted while you were working. Your Python kernel and its bash() jobs kept running. Continue the task.";
-const KERNEL_RESET = [
+export const KERNEL_RESET = [
   "<ipython_kernel_reset>",
   "The Python kernel was restarted after it exited. Variables, imports, async tasks, and open resources from before the restart are no longer available unless the snapshot revived them; recreate the rest before using them.",
   "</ipython_kernel_reset>",
 ].join("\n");
 
 /** The env a kernel starts from: the host's env without Prime's own kernel and worker variables, which name another runtime's files. */
-function baseEnv(): Record<string, string> {
+export function baseEnv(): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) {
     if (v === undefined) continue;
@@ -65,13 +65,13 @@ function maxDepthFromEnv(): number {
   return Number.isInteger(n) && n >= 0 ? n : 2;
 }
 
-interface Notice {
+export interface Notice {
   pid: number;
   command: string;
   exitCode: number | null;
 }
 
-function noticeMessage(n: Notice) {
+export function noticeMessage(n: Notice) {
   return {
     customType: "async_bash_completion",
     content: `[bash-done pid:${n.pid} exit:${n.exitCode}]\n\nCommand: ${JSON.stringify(n.command)}`,
@@ -460,7 +460,7 @@ class RlmSession {
   }
 }
 
-function formatCell(r: CellResult): string {
+export function formatCell(r: CellResult): string {
   let text = r.stdout;
   if (r.stderr) text += (text ? "\n" : "") + r.stderr;
   if (r.result) text += (text ? "\n" : "") + r.result;
@@ -469,7 +469,7 @@ function formatCell(r: CellResult): string {
   return text;
 }
 
-function restoreLine(r: RestoreResult): string {
+export function restoreLine(r: RestoreResult): string {
   const lines = ["[python-state-restored]"];
   if (r.restored.length) lines.push(`Your Python kernel state was revived from your previous session. These names are available again: ${r.restored.join(", ")}.`);
   else lines.push("Your previous Python kernel state could not be revived; the kernel is starting fresh.");

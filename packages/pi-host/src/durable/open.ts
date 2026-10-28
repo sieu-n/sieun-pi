@@ -4,7 +4,7 @@ import type { Models } from "@earendil-works/pi-ai/models";
 import { createRegistry, defineExtension, Harness, ROOT_CONVERSATION_ID, section, type Conversation, type HarnessSettings, type ReportInfo } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { PRIME_BASE_PROMPT } from "@sieun-pi/pi-family/preamble";
-import { Subagent } from "./subagent.ts";
+import { ForegroundSubagent } from "./subagent.ts";
 
 /** Anthropic refuses a subscription token under an unknown preamble (../shared/preamble.ts), so every conversation gets Prime's. */
 export const Preamble = defineExtension({ name: "preamble", sections: [section("preamble", () => PRIME_BASE_PROMPT, { tag: false })] });
@@ -29,7 +29,7 @@ export interface DurableHost {
 export async function openDurableHost(opts: OpenOptions, context: Context): Promise<DurableHost> {
   const registry = createRegistry();
   registry.install(Preamble);
-  registry.install(Subagent);
+  registry.install(ForegroundSubagent);
   const storage = await openNodeSqliteStorage(opts.file);
   const harness = await Harness.open(storage, {
     models: opts.models,

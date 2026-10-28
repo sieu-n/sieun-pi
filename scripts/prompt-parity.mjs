@@ -16,7 +16,8 @@
  * the fingerprint that message recorded, since they change all day; the capture's own digest is from an older state.
  *
  * Tools: each tool of the capture against the definition a pi thread offers, as pi-ai's Anthropic provider sends it (name, description,
- * `input_schema` {type, properties, required}); the chat tools come from Prime's own chat extension as pi-host loads it (prime-chat.ts).
+ * `input_schema` {type, properties, required}); the chat tools come from Prime's own chat extension as pi-host loads it (prime-chat.ts),
+ * and ipython from pi-rlm's extension as rlm.ts loads it.
  *
  * Writes prime/*.txt, builder/*.txt, pi-live/*.txt, pi-tools.json, summary.json and summary.md under --out.
  */
@@ -195,7 +196,9 @@ const chatModule = await import("../packages/pi-host/src/durable/prime-chat.ts")
 const chat = await chatModule.loadPrimeChat({ agentDir, dataDir: join(agentDir, "browser-chat") });
 const wire = tool => ({ name: tool.name, description: tool.description,
   input_schema: { type: "object", properties: tool.parameters?.properties ?? {}, required: tool.parameters?.required ?? [] } });
-const piTools = new Map(chat.tools.map(tool => [tool.name, wire(tool)]));
+// Prime's ipython as pi-host's durable threads offer it: pi-rlm's own registration, loaded through the same adapter (rlm.ts).
+const ipython = await (await import("../packages/pi-host/src/durable/rlm.ts")).loadIpythonTool();
+const piTools = new Map([ipython, ...chat.tools].map(tool => [tool.name, wire(tool)]));
 write("pi-tools.json", [...piTools.values()]);
 const sameJson = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const toolRows = payload.tools.map(tool => {

@@ -1,9 +1,10 @@
 /**
- * A child conversation's turn-queue wait ends on time while its root waits on it: a real pool/turns.py queue in its own
- * PI_POOL_DIR with two working slots, one held by a blocker, so the root's run takes the other and its subagent's first
- * ask queues. Releasing the blocker gives the child the slot, and the child must send its request and answer within
- * seconds. The root's subagent tool call keeps the file's wake active the whole time, so only a timer at the child's
- * sleep wakes its poll and its retry.
+ * A child conversation's turn-queue wait ends on time: a real pool/turns.py queue in its own PI_POOL_DIR with two working
+ * slots, one held by a blocker, so the root's run takes the other. A second blocker queues while the root runs, so it takes
+ * the root's slot when the root's run ends (the subagent call returns at once) and the subagent's first ask stays queued.
+ * Releasing the blockers gives the child a slot, and the child must send its request and answer within seconds. The
+ * subagent's delivery task keeps the file's wake active the whole time, so only a timer at the child's sleep wakes its poll
+ * and its retry.
  */
 import { strict as assert } from "node:assert";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
@@ -69,6 +70,8 @@ test("a queued child conversation sends its request and answers within seconds o
   try {
     const { thread } = await call<{ thread: ThreadInfo }>(client, { type: "durable_create", name: "root with a child" });
     const sent = await call<Submitted>(client, { type: "durable_submit", thread: thread.id, text: INPUT });
+    await until(() => call<{ ticket: TurnTicket }>(client, { type: "durable_ticket", thread: thread.id }), r => r.ticket.place.state === "working", "the root never got its slot");
+    assert.equal(pool("admit", "blocker2", "--pid", String(process.pid), "--tree", "busy2").state, "queued");
     const child = await until(() => call<{ conversations: TreeNode[] }>(client, { type: "durable_tree", thread: thread.id }),
       r => r.conversations.some(c => c.parent !== null), "the root never created its child conversation");
     const childId = child.conversations.find(c => c.parent !== null)!.id;
@@ -78,24 +81,26 @@ test("a queued child conversation sends its request and answers within seconds o
     await new Promise(resolve => setTimeout(resolve, 2500));
     assert.equal(poolLog().filter(line => line.event === "turn_admitted" && line.session === queued.ticket.session).length, 0, "the child started before the blocker let go");
 
+    const settled = await call<{ settled: { status: string } }>(client, { type: "durable_wait", thread: thread.id, submission: sent.submission }, 20_000);
+    assert.equal(settled.settled.status, "done", "the root's input settles while its child still waits for a slot");
     const released = Date.now();
     pool("release", "blocker");
-    const settled = await call<{ settled: { status: string } }>(client, { type: "durable_wait", thread: thread.id, submission: sent.submission }, 20_000)
-      .catch(error => assert.fail(`the root never settled after the child got its slot: ${error instanceof Error ? error.message : String(error)}\n${JSON.stringify(poolLog().slice(-6))}\n${stderr.slice(-4000)}`));
+    pool("release", "blocker2");
+    const rootEntries = await until(async () => (await call<{ entries: { kind: string }[] }>(client, { type: "durable_entries", thread: thread.id, limit: 50 })).entries,
+      entries => entries.some(entry => entry.kind === "agent.message") && entries[0]?.kind === "pi.assistant", "the child's answer never reached the root", 20_000)
+      .catch(error => assert.fail(`${error instanceof Error ? error.message : String(error)}\n${JSON.stringify(poolLog().slice(-6))}\n${stderr.slice(-4000)}`));
     const tookMs = Date.now() - released;
-    assert.equal(settled.settled.status, "done", stderr);
-    assert.ok(tookMs < 15_000, `the root settled ${tookMs} ms after the child got its slot`);
-    t.diagnostic(`the root settled ${tookMs} ms after the blocker let go`);
+    assert.ok(tookMs < 15_000, `the root answered the child ${tookMs} ms after the child got its slot`);
+    t.diagnostic(`the root answered the child ${tookMs} ms after the blockers let go`);
 
     const childAdmit = poolLog().find(line => line.event === "turn_admitted" && line.session === queued.ticket.session);
     assert.equal(childAdmit?.kind, "slot", JSON.stringify(poolLog().slice(-10)));
     const { entries: childEntries } = await call<{ entries: { kind: string; model?: { role?: string; content?: unknown }[] }[] }>(client, { type: "durable_entries", thread: thread.id, conversation: childId, limit: 50 });
     const childText = JSON.stringify(childEntries);
     assert.ok(childText.includes(JSON.stringify(FAUX_CHILD_ANSWER).slice(1, 40)), "the child answered");
-    const { entries: rootEntries } = await call<{ entries: unknown[] }>(client, { type: "durable_entries", thread: thread.id, limit: 50 });
     const rootText = JSON.stringify(rootEntries);
     assert.ok(rootText.includes(FAUX_FINAL), "the root answered after the child");
-    assert.ok(rootText.includes(JSON.stringify(FAUX_CHILD_ANSWER).slice(1, 40)), "the root got the child's answer as the tool result");
+    assert.ok(rootText.includes(JSON.stringify(FAUX_CHILD_ANSWER).slice(1, 40)), "the root got the child's answer as its own input");
     const queue = await until(async () => pool("queue", "--json") as { working: { session: string }[]; queued: { session: string }[] },
       q => q.working.length === 0 && q.queued.length === 0, "a slot was never given back after the input settled");
     assert.deepEqual(queue, { ...queue, working: [], queued: [] });

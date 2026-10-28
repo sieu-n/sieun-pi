@@ -439,6 +439,20 @@ export class Boards {
     await this.deliverWakes(now);
   }
 
+  /**
+   * Records one time wake for a thread's conversation, as the board skill's `board.wake(at=...)` asks for it from a durable thread's kernel.
+   * The same id twice writes one file, so a retried request sets one wake.
+   */
+  addWake(thread: string, input: { at?: unknown; text?: unknown; conversation?: unknown; id?: unknown }): Wake {
+    const at = Number(input.at);
+    if (!Number.isFinite(at) || at <= 0) throw new Error("A wake needs at=<epoch ms>.");
+    const conversation = Number.isInteger(input.conversation) && (input.conversation as number) > 1 ? (input.conversation as number) : undefined;
+    const id = typeof input.id === "string" && /^[\w.-]{1,128}$/.test(input.id) ? input.id : `${thread}-${conversation ?? 1}-${Math.round(at)}`;
+    const wake: Wake = { id, thread, ...(conversation ? { conversation } : {}), at, text: typeof input.text === "string" ? input.text : "" };
+    writeJson(join(this.store.dir, "wakes", `${id}.json`), wake);
+    return wake;
+  }
+
   /** A wake is one JSON file in `<data dir>/wakes/`: `{id, thread, conversation?, at, text}`, delivered once at `at`. */
   async deliverWakes(now: number): Promise<void> {
     const dir = join(this.store.dir, "wakes");
