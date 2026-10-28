@@ -20,6 +20,8 @@ export const TASK = "watchlist on 5180 needs a rethink. what is it even for, and
 const SPAWN = /rlm\.(?:spawn|create_session)\s*\(/;
 /** A brief that builds the layout on 5180: a variant fork, or a variant named with 5180 or the version picker. */
 export const BUILDS = /variant:fork|\bfork(?:s|ed|ing)?\b[^.\n]{0,80}\bvariants?\b|\bvariants?\b[^.\n]{0,160}(?:\b5180\b|version picker)|(?:\b5180\b|version picker)[^.\n]{0,160}\bvariants?\b/i;
+/** A message to another chat, such as the one that owns the 5180 sandbox. */
+const ASKS_BUILD = /agent_message\.send\s*\(/;
 /** A brief that asks for layout options written on a page. */
 const OPTIONS = /\b(?:layout|redesign|design|wireframe|mock-?up)s?\s+(?:options?|choices|alternatives)\b|\b(?:two|three|2|3)\s+(?:or\s+(?:three|four|3|4)\s+)?(?:layouts|redesigns|designs|options)\b/i;
 const PAGE = /\bwiki\s+page\b|\bwrite\s+(?:a|one|ONE|the)\s+(?:short\s+)?(?:wiki\s+)?page\b|\bdecision\s+page\b|\bdesign\s+(?:page|doc)\b/i;
@@ -95,7 +97,10 @@ export function judge(run: string, state: RunState, now = Date.now(), { task, pa
 
   const briefs = calls.filter(({ event }) => SPAWN.test(event.input)).map(({ session, event }) => ({ session, at: event.at, text: event.input }));
   const forks = calls.filter(({ event }) => forkRun(event.tool, event.input));
-  const builds = briefs.filter(brief => BUILDS.test(brief.text));
+  // An ask to the chat that owns 5180 counts as a build too: in run1 of design-page on 10-28 the chat asked frontend bro for "two layouts as
+  // switchable fork variants, one builder each", and the clean room's wall refused the send.
+  const asks = calls.filter(({ event }) => ASKS_BUILD.test(event.input) && BUILDS.test(event.input)).map(({ session, event }) => ({ session, at: event.at, text: event.input }));
+  const builds = [...briefs.filter(brief => BUILDS.test(brief.text)), ...asks].sort((a, b) => a.at - b.at);
   const pages = briefs.filter(brief => pageBrief(brief.text));
   const built = builds[0] ?? (forks[0] ? { session: forks[0].session, at: forks[0].event.at, text: forks[0].event.input } : undefined);
   const paged = pages[0];

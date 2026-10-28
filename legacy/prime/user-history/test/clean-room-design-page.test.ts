@@ -18,6 +18,7 @@ test("a brief that builds on 5180, or a research note for builders, passes", () 
   for (const brief of [
     "Task: fork creators/lean-1028 with `pnpm --filter virev-demo variant:fork creators/lean-1028 brand-report`, write a short decision page for the builders, then build the report and send its ?v.creators=brand-report link and one shot.",
     "Task: read the Convex tables and list which fields hold a creator's posts about the brand, in your report to me. Do not write a page.",
+    "A separate writer subagent writes that page from your findings, so your output is evidence, not prose for the owner.",
   ]) assert.equal(planPage(brief), false, brief);
 });
 

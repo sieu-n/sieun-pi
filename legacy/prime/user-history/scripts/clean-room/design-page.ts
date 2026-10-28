@@ -11,8 +11,11 @@ import type { Scenario } from "./session-read.ts";
  * with no 5180 link. The criteria live in ~/.prime/agent/clean-room/c124-design-page/criteria.md.
  */
 export const TASK = "campaigns on 5180 needs a brand report. per creator, how many posts they made about us and how those did. figure out what data we actually have and how it should work";
-/** A plan, design or decision page, or any page or doc written for the owner to read, pick or decide from. */
-const PLAN_PAGE = /\b(?:decision\s+page|design\s+(?:page|doc)|plan\s+page)\b|\b(?:page|doc)\b[^.\n]{0,80}\b(?:the\s+owner|for\s+him|he\s+(?:can\s+)?(?:reads?|picks?|decides?)|to\s+(?:pick|decide|approve))\b/i;
+/**
+ * A plan, design or decision page, or a page or doc written for the owner to read, pick or decide from. Run1 on 10-28 failed on a data brief
+ * that said "your output is evidence, not prose for the owner", so the owner has to be the page's reader, not any mention of him.
+ */
+const PLAN_PAGE = /\b(?:decision\s+page|design\s+(?:page|doc)|plan\s+page)\b|\b(?:page|doc)\b[^.\n]{0,80}\b(?:(?:the\s+owner|he)\s+(?:can\s+)?(?:reads?|picks?|decides?|approves?)|for\s+(?:the\s+owner|him)\s+to\s+(?:read|pick|decide|approve))\b/i;
 /** A brief that has a job write a plan, design or options page for the owner and build nothing on 5180. A research page for builders is fine. */
 export const planPage = (brief: string): boolean => !BUILDS.test(brief) && (screenOptionsOnPage(brief) !== null || PLAN_PAGE.test(brief));
 
