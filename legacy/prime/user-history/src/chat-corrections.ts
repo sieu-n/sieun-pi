@@ -401,13 +401,19 @@ export function tokenCostRuleLine(brief: string): string | null {
 
 /** A brief about one of auto-sns-agent's app screens: it names the demo or its shared UI, and a word for building or styling a screen. */
 const UI_SURFACE = /\b51(?:80|74)\b|apps\/virev-demo|\bvirev-demo\b|\$lib\/ui\b|overlay\/src\/lib/i;
-const UI_WORK = /\b(?:(?<!on )(?<!his )screens?|layouts?|redesign\w*|restyl\w*|styling|polish\w*|light and dark|dark mode|spacing|padding|page builders?)\b/i;
+const UI_WORK = /\b(?:(?<!on )(?<!his )screens?|layouts?|laid out|sidebars?|views?|frontend-implementation|redesign\w*|restyl\w*|styling|polish\w*|light and dark|dark mode|spacing|padding|page builders?)\b/i;
 const NAMES_DESIGN_SKILL = /frontend[- ]design|frontend-implementation/i;
 const NAMES_SHARED_COMPONENTS = /frontend-implementation|\$lib\/ui\b|shared (?:kit|components?|component set)|\bc78\b/i;
+/** The page shape and a shot beside its reference app, which a 5180 brief names since the owner's 10-27 "why is 5180 one broken?" (c78). */
+const NAMES_SHAPE = /\b(?:AppFrame|PageFrame|ListPage|page shape)\b/;
+const NAMES_SIDE_SHOT = /\b(?:beside|next to|side by side with)\b[^.\n]{0,80}\b(?:Inbox|Connections|Campaigns list|reference app)\b/i;
 export const UI_RULE_LINE = "- c48 This job reads as UI work, so before you design or change a screen read auto-sns-agent's frontend-implementation skill " +
   "(`node scripts/skills/read-skill.mjs workflows/frontend-implementation`), which holds the frontend design rules, the shared $lib/ui components to " +
   "reuse (c78) and the reference app for sibling screens (the Dashboards app). Keep each screen compact with no gray, padded or boxed tables or " +
-  "containers, and name that skill in the brief of every builder you start.";
+  "containers, and name that skill in the brief of every builder you start. Each 5180 app uses its look-alikes' page shape from $lib/ui (AppFrame " +
+  "like Inbox, Watchlist and a campaign; ListPage like the Campaigns list and Outreach templates; PageFrame like Connections and Settings) and passes " +
+  "it no width of its own (c78). After any screen, route, layout or PIN change, take an Aside shot of each app you touched beside its shape's reference " +
+  "app (Inbox, the Campaigns list or Connections) in the same run, and put the shape and that shot in every builder's brief.";
 /**
  * The c48 line for a job's [corrections] block: UI_RULE_LINE when its brief reads as UI work and does not name both the frontend design skill
  * and the shared components, else null. The owner gave c48 in frontend bro on 10-12 06:55Z ("use frontend design skill ... never use this gray
@@ -415,10 +421,13 @@ export const UI_RULE_LINE = "- c48 This job reads as UI work, so before you desi
  * JOB_RULES leaves them out. On 10-19 frontend bro's UI briefs said "Read the frontend design and frontend-implementation skills first" until
  * 08:57Z, none it wrote from 09:01 to 17:11Z named the skill, and at 17:14Z the owner gave c48 again: "it doens't do fat-as-fuck containers
  * fix that ... also frontend design skill please". Of the 2,782 job briefs in us-metal02's session artifacts on 10-20, 5 get the line.
+ * Since 10-28 the brief must also name the page shape and a shot beside its reference app: the c78 clean room's run5 chat named the skill and the
+ * shared components, but its job brief named neither, after the owner's "why is 5180 one broken?" on 10-27.
  */
 export function uiRuleLine(brief: string): string | null {
   if (!UI_SURFACE.test(brief) || !UI_WORK.test(brief)) return null;
-  return NAMES_DESIGN_SKILL.test(brief) && NAMES_SHARED_COMPONENTS.test(brief) ? null : UI_RULE_LINE;
+  const named = NAMES_DESIGN_SKILL.test(brief) && NAMES_SHARED_COMPONENTS.test(brief) && NAMES_SHAPE.test(brief) && NAMES_SIDE_SHOT.test(brief);
+  return named ? null : UI_RULE_LINE;
 }
 
 /** An owner message or a `/refine` command in a chat's session file, with its time in ms. */

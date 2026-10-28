@@ -1,6 +1,7 @@
 // Guards owner rule c48 (with c78): on 10-19 frontend bro's UI job briefs stopped naming the frontend design skill after 08:57Z, and at 17:14Z the
 // owner repeated "it doens't do fat-as-fuck containers fix that ... also frontend design skill please". A job whose brief reads as UI work now
-// gets the c48 line in its [corrections] block unless the brief names the frontend design skill and the shared components.
+// gets the c48 line in its [corrections] block unless the brief names the frontend design skill and the shared components, and since 10-28 (c78)
+// the page shape and a shot beside its reference app.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
@@ -18,6 +19,11 @@ const ONBOARDING_START_FLOW = "Take one desktop shot per page at 1440x900 (c25).
   "spawned flat.\nRules:\n- Read the frontend design and frontend-implementation skills first.\n- Use only the shared kit ($lib/ui, Menu, FormPanel, FilterMenu, " +
   "AddRow and InlineField), with Watchlist as the first pattern source (c78, c48, c54).\n- Don't restyle Watchlist, the Inbox desk, the wide profile viewer or " +
   "Connections.\n- Never kill 5180.";
+// From the c78 clean room's run5 chat, 10-28 01:50Z, which named the skill and the shared components but no page shape and no shot beside Inbox.
+const REPORTS_RUN5 = "Build a new app \"reports\" laid out like the Staging Inbox (variants/inbox/one-picker) on 5180. Read the frontend-implementation skill. Reuse " +
+  "Inbox and Watchlist patterns; keep one shared component per kind of control (c78). Check each report in Aside, one desktop render check in the light theme.";
+// The same brief with the shape and the side-by-side shot.
+const REPORTS_NAMED = REPORTS_RUN5 + " Use the AppFrame page shape from $lib/ui with no width of its own, and take an Aside shot of Reports beside Inbox in the same run.";
 // After its 'shot relay cache' brief, 10-19 17:02Z, a 5180 job that changes no screen, with the browser path moved to Aside (c177).
 const SHOT_RELAY_CACHE = "Owner rule c177 sends every browser check through Aside, so every demo job opens the Mac's localhost:5180 in a background Aside " +
   "tab. My read: cold Vite module loads make every page slow there. Task: cut page time to a few seconds warm.";
@@ -27,8 +33,14 @@ test("a UI job brief that does not name the frontend design skill gets the c48 l
   assert.match(jobLedgerPrompt(null, DASHBOARD_FIRST_RUN), /^- c48 .*frontend-implementation.*\$lib\/ui.*Dashboards app/m);
 });
 
-test("a UI brief that names the skill and the shared components, and a 5180 job that builds no screen, get no c48 line", () => {
-  assert.equal(uiRuleLine(ONBOARDING_START_FLOW), null);
+test("a 5180 UI brief that names the skill and the shared components but no page shape or shot beside its reference app gets the c48 line", () => {
+  assert.equal(uiRuleLine(REPORTS_RUN5), UI_RULE_LINE);
+  assert.equal(uiRuleLine(ONBOARDING_START_FLOW), UI_RULE_LINE);
+  assert.match(UI_RULE_LINE, /AppFrame.*no width of its own.*beside its shape's reference app/);
+});
+
+test("a UI brief that names the skill, the shared components, the page shape and the shot beside Inbox, and a 5180 job that builds no screen, get no c48 line", () => {
+  assert.equal(uiRuleLine(REPORTS_NAMED), null);
   assert.equal(uiRuleLine(SHOT_RELAY_CACHE), null);
   assert.doesNotMatch(jobLedgerPrompt(null, SHOT_RELAY_CACHE), /c48/);
 });

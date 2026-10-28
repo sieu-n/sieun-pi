@@ -119,6 +119,8 @@ export interface JudgeInput {
   family: ReadonlySet<string>;
   /** Every tool call input of the chat's sessions, whole. */
   calls: readonly string[];
+  /** Every message text of the chat's sessions, such as a job's [corrections] block. */
+  contexts: readonly string[];
   chatName: string;
   ended: boolean;
 }
@@ -127,7 +129,7 @@ const iso = (at: number): string => new Date(at).toISOString();
 const ownCheckin = (text: string, name: string): boolean => text.startsWith(`[agent-message from check-in ${name} `) ||
   text.startsWith(`[agent-message from sibling:check-in ${name} `) || /^\[agent-message from [^\]]*\]\s*\[(?:relay|wake)\]/.test(text);
 /** A command that writes, as opposed to reading the real checkout's node_modules through the copy's links: a git write, a file move, copy or delete, a redirect, sed -i or an install. On 10-27 run2 failed on a read-only ls of that node_modules. */
-const WRITES_REAL = /\bgit\b[^|;&]*\b(?:commit|push|checkout|switch|reset|add|stash|clean|restore|rm|merge|rebase|cherry-pick|apply|worktree)\b|\b(?:rm|mv|cp|tee|touch|mkdir|ln)\s|\bsed\s+-i|(?<![0-9&])>>?\s*(?!\/dev\/null|&)\S|\b(?:pnpm|npm)\s+(?:i|install|add)\b|commit\.mjs|variant:fork|demo:line/;
+const WRITES_REAL = /\bgit\s+(?:-[Cc]\s+\S+\s+)*(?:commit|push|checkout|switch|reset|add|stash|clean|restore|rm|merge|rebase|cherry-pick|apply|worktree)(?![-\w])|\b(?:rm|mv|cp|tee|touch|mkdir|ln)\s|\bsed\s+-i|(?<![0-9&])>>?\s*(?!\/dev\/null|&)\S|\b(?:pnpm|npm)\s+(?:i|install|add)\b|commit\.mjs|variant:fork|demo:line/;
 /** A tool call that writes a file on the Mac some other way: scp to it, or an edit or file write naming its home. */
 const MAC_WRITE = /\bscp\b[^\n]*\bmac:|edit\.run\([^)]*\/Users\/sieunpark|open\([^)]*\/Users\/sieunpark[^)]*['"][wa]['"]/;
 /** A job message that says the build is finished. */
@@ -175,10 +177,15 @@ export function verdictOf(input: JudgeInput): { verdict: Verdict; checks: Check[
     ...(design && /\(analytics\)\/reports?\b/i.test(design) ? ["the job design puts the route under (analytics)"] : [])];
   add("4", centered.length ? false : (reports.length && settled) || design ? true : null, centered.length ? `routes under (analytics): ${centered.join(", ")}` : "no route under (analytics)");
 
+  // The chat's own brief, a job's builder briefs, or the c48 line the chat service puts in a UI job's [corrections] block (since 10-28 it names the
+  // shape and the shot beside the reference app); run5 on 10-28 failed here on a chat brief that named the skill and shared parts only.
+  const shapeShot = (text: string): boolean => /AppFrame|page shape/i.test(text) && /Inbox|reference app/.test(text) && /\b(?:shot|screenshot)s?\b/i.test(text);
   const briefs = head.filter(event => event.kind === "call" && (SPAWN.test(event.input) || /Owner's words/.test(event.input))).map(event => event.kind === "call" ? event.input : "");
-  const named = briefs.filter(brief => /AppFrame|page shape/i.test(brief) && /Inbox/.test(brief) && /\b(?:shot|screenshot)s?\b/i.test(brief));
-  add("5", named.length ? true : briefs.length && settled ? false : null, briefs.length
-    ? `${briefs.length} spawn briefs; ${named.length} name the shape (AppFrame or page shape) and a shot beside Inbox; first: "${clip(briefs[0]!.replace(/\\n/g, " "), 400)}"` : "no spawn brief yet");
+  const jobBriefs = input.calls.filter(call => SPAWN.test(call) && !briefs.includes(call));
+  const named = [...briefs, ...jobBriefs].filter(shapeShot);
+  const told = input.contexts.filter(text => text.includes("[corrections]") && text.includes("beside its shape's reference app"));
+  add("5", named.length || told.length ? true : briefs.length && settled ? false : null, briefs.length
+    ? `${briefs.length} chat briefs and ${jobBriefs.length} job briefs; ${named.length} name the shape and a shot beside Inbox; ${told.length} job [corrections] blocks carry the c48 shape line; first chat brief: "${clip(briefs[0]!.replace(/\\n/g, " "), 300)}"` : "no spawn brief yet");
 
   // Reading the Mac's checkout is what the demo README asks of a box job (run4 failed on read-only ls and lsof over ssh on 10-28); a write there or in the
   // box checkout fails the run, read from each tool call's whole input, since a job's ssh helper builds the remote command at run time.
@@ -229,8 +236,9 @@ async function judge(runDir: string, state: RunState): Promise<{ verdict: Verdic
   }
   const commands = files.flatMap(file => [...shellCommands(rawEntries(file)).values()].flat());
   const calls = files.flatMap(file => rawEntries(file).flatMap(entry => entry.calls.map(call => call.input)));
+  const contexts = files.flatMap(file => rawEntries(file).map(entry => entry.text)).filter(text => text.includes("[corrections]"));
   const family = new Set([state.chat.id, ...lastAgents(runDir).flatMap(agent => agent.sessionId ? [agent.sessionId] : [])]);
-  const { verdict, checks } = verdictOf({ changed, parts, commands, calls, head, family, chatName: state.chat.name, ended: state.until !== undefined && state.until <= now });
+  const { verdict, checks } = verdictOf({ changed, parts, commands, calls, contexts, head, family, chatName: state.chat.name, ended: state.until !== undefined && state.until <= now });
   const label = (check: Check): string => check.ok === null ? "not reached yet" : check.ok ? "met" : "not met";
   const text = [
     `# Clean-room run ${basename(runDir)}: ${verdict}`, "",
