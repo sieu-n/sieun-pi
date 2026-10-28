@@ -9,7 +9,7 @@ import { Worker } from "node:worker_threads";
 import { DatabaseSync } from "node:sqlite";
 import { socketPath } from "./client.ts";
 import { parseQuery, QueryError, type Query } from "./core/query.ts";
-import { parseRef, readDurable, readPrime, ReadError, type ReadAnswer } from "./core/read.ts";
+import { parseRef, ReadError, type ReadAnswer } from "./core/read.ts";
 import { type Hit, mergePages, type Page, pageAsk, type PageAsk, type Ranked } from "./core/search.ts";
 import type { SearchAnswer, SearchJob, SearchReply } from "./query-worker.ts";
 import { callerRoot, chatOf, expandHome, familyRoots, type HostEntry, hostsFile, localRoots, readHosts, readSettings, RegistryReader, registrySource, settingsPath, type Settings,
@@ -91,7 +91,6 @@ export async function startServer(options: ServerOptions): Promise<{ close(): Pr
   const registry = new RegistryReader(() => registrySource(settingsOf()), fetcher);
   const timings: number[] = [];
   let db: DatabaseSync | null = null;
-  const durables = new Map<string, DatabaseSync | null>();
 
   const index = (): DatabaseSync => {
     if (!db) {
@@ -100,16 +99,6 @@ export async function startServer(options: ServerOptions): Promise<{ close(): Pr
     }
     return db;
   };
-  /** Each durable index that exists, opened read-only once; a missing file is looked for again on the next call. */
-  const durableIndexes = (settings: Settings): { at: number; db: DatabaseSync }[] => settings.durableIndexes.flatMap((path, at) => {
-    let handle = durables.get(path) ?? null;
-    if (!handle && existsSync(path)) {
-      try { handle = new DatabaseSync(path, { readOnly: true }); } catch { handle = null; }
-      durables.set(path, handle);
-    }
-    return handle ? [{ at, db: handle }] : [];
-  });
-
   /** The roots a call may see: null for the owner or `agentScope: "all"`, else the caller's chat family (or a peer's `roots=` seeds, expanded here). */
   const scopeOf = async (params: URLSearchParams, settings: Settings): Promise<{ roots: string[] | null; seeds: string[] | null }> => {
     const caller = one(params, "caller");
@@ -167,7 +156,7 @@ export async function startServer(options: ServerOptions): Promise<{ close(): Pr
       current.off("error", failed);
       idle.push(current);
       if ("answer" in reply) resolve(reply.answer as T);
-      else reject(reply.error.startsWith("No index") ? new HttpError(503, reply.error) : new Error(reply.error));
+      else reject(reply.status ? new ReadError(reply.status, reply.error) : reply.error.startsWith("No index") ? new HttpError(503, reply.error) : new Error(reply.error));
     });
     current.postMessage(job);
   });
@@ -274,10 +263,10 @@ export async function startServer(options: ServerOptions): Promise<{ close(): Pr
       const forward = new URLSearchParams({ ref: params.get("ref")!, before: String(before), after: String(after), local: "1", ...seeds ? { roots: seeds.join(",") } : {} });
       return askPeer<ReadAnswer>(peer, "read", forward);
     }
-    if (ref.source === "prime") return readPrime(index(), settings.box, ref, before, after, roots);
-    const durable = durableIndexes(settings).find(candidate => candidate.at === ref.index);
-    if (!durable) throw new ReadError(404, `No durable index ${ref.index} on ${settings.box}.`);
-    return readDurable(durable.db, settings.box, ref, before, after, roots);
+    await warm;
+    const answer = await run<Extract<SearchAnswer, { op: "read" }>>({ op: "read", dbPath: options.dbPath, box: settings.box, durableIndexes: settings.durableIndexes,
+      ref, before, after, roots });
+    return answer.read;
   };
 
   const status = async (params: URLSearchParams): Promise<Status> => {
@@ -336,7 +325,6 @@ export async function startServer(options: ServerOptions): Promise<{ close(): Pr
       for (const worker of workers) void worker.terminate();
       clearInterval(probe);
       db?.close();
-      for (const handle of durables.values()) handle?.close();
     }),
   };
 }

@@ -8,11 +8,13 @@ import { DatabaseSync } from "node:sqlite";
 import { existsSync } from "node:fs";
 import type { Query } from "./core/query.ts";
 import { countPrime, type Page, type PageAsk, primeHits, type Ranked, searchDurable } from "./core/search.ts";
+import { type ReadAnswer, ReadError, readDurable, readPrime, type Ref } from "./core/read.ts";
 
 interface JobBase { dbPath: string; box: string; durableIndexes: string[]; query: Query; ask: PageAsk; roots: string[] | null }
-export type SearchJob = (JobBase & { op: "hits" }) | (JobBase & { op: "count" }) | { op: "open"; dbPath: string };
-export type SearchAnswer = { op: "hits"; prime: Ranked[]; durable: Page[] } | { op: "count"; total: number } | { op: "open" };
-export type SearchReply = { answer: SearchAnswer } | { error: string };
+interface ReadJob { op: "read"; dbPath: string; box: string; durableIndexes: string[]; ref: Ref; before: number; after: number; roots: string[] | null }
+export type SearchJob = (JobBase & { op: "hits" }) | (JobBase & { op: "count" }) | ReadJob | { op: "open"; dbPath: string };
+export type SearchAnswer = { op: "hits"; prime: Ranked[]; durable: Page[] } | { op: "count"; total: number } | { op: "read"; read: ReadAnswer } | { op: "open" };
+export type SearchReply = { answer: SearchAnswer } | { error: string; status?: number };
 
 const open = new Map<string, DatabaseSync | null>();
 function handle(path: string): DatabaseSync | null {
@@ -33,6 +35,13 @@ export function runJob(job: SearchJob): SearchAnswer {
     return { op: "open" };
   }
   if (job.op === "count") return { op: "count", total: countPrime(prime, job.query, job.roots) };
+  if (job.op === "read") {
+    const { ref } = job;
+    if (ref.source === "prime") return { op: "read", read: readPrime(prime, job.box, ref, job.before, job.after, job.roots) };
+    const durable = job.durableIndexes[ref.index] ? handle(job.durableIndexes[ref.index]!) : null;
+    if (!durable) throw new ReadError(404, `No durable index ${ref.index} on ${job.box}.`);
+    return { op: "read", read: readDurable(durable, job.box, ref, job.before, job.after, job.roots) };
+  }
   return {
     op: "hits", prime: primeHits(prime, job.box, job.query, job.ask, job.roots),
     durable: job.durableIndexes.flatMap((path, at) => {
@@ -44,6 +53,8 @@ export function runJob(job: SearchJob): SearchAnswer {
 
 parentPort?.on("message", (job: SearchJob) => {
   let reply: SearchReply;
-  try { reply = { answer: runJob(job) }; } catch (error) { reply = { error: error instanceof Error ? error.message : String(error) }; }
+  try { reply = { answer: runJob(job) }; } catch (error) {
+    reply = { error: error instanceof Error ? error.message : String(error), ...error instanceof ReadError ? { status: error.status } : {} };
+  }
   parentPort!.postMessage(reply);
 });

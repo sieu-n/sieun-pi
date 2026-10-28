@@ -37,9 +37,13 @@ export function readPrime(db: DatabaseSync, box: string, ref: Extract<Ref, { sou
     .get(ref.id) as Row | undefined;
   if (!hit) throw new ReadError(404, `No message ${ref.id} on ${box}; the index may have been rebuilt, so search again.`);
   if (roots && !roots.includes(String(hit.root))) throw new ReadError(403, `${String(hit.session)} is outside this session's chat family.`);
+  // Ordered by (at, id) so docs_file_at(file, at) yields the rows in order: ORDER BY id alone sorted every doc of the file first, 543 ms
+  // for one busy session on 10-28. id is at * 1024 + seq, so both orders agree.
   const columns = "id, at, kind, tool, author, text";
-  const older = db.prepare(`SELECT ${columns} FROM docs WHERE file = ? AND id < ? AND kind != 'thinking' ORDER BY id DESC LIMIT ?`).all(Number(hit.file), ref.id, before) as Row[];
-  const newer = db.prepare(`SELECT ${columns} FROM docs WHERE file = ? AND id > ? AND kind != 'thinking' ORDER BY id LIMIT ?`).all(Number(hit.file), ref.id, after) as Row[];
+  const older = db.prepare(`SELECT ${columns} FROM docs WHERE file = ? AND at <= ? AND id < ? AND kind != 'thinking' ORDER BY at DESC, id DESC LIMIT ?`)
+    .all(Number(hit.file), Number(hit.at), ref.id, before) as Row[];
+  const newer = db.prepare(`SELECT ${columns} FROM docs WHERE file = ? AND at >= ? AND id > ? AND kind != 'thinking' ORDER BY at, id LIMIT ?`)
+    .all(Number(hit.file), Number(hit.at), ref.id, after) as Row[];
   return {
     box, session: String(hit.session), thread: hit.name ? String(hit.name) : String(hit.session),
     messages: [...older.reverse().map(row => message(row, false)), message(hit, true), ...newer.map(row => message(row, false))],
