@@ -36,7 +36,7 @@
       "skillSince": null,
       "match": [
         "unslop",
-        "bloat",
+        "bloat(ed)?\\W{0,3}(text|copy|description|words)",
         "junk",
         "filler",
         "unnecessary description",
@@ -246,7 +246,7 @@
     },
     {
       "key": "smooth_motion",
-      "rule": "View switches, resizes and panels animate smoothly everywhere.",
+      "rule": "View switches, resizes, panels and actions animate smoothly everywhere through the shared lib/ui motion, so a confirmed row turns into its new state and slides away while the rows below glide up, and the pressed button bounces.",
       "corrections": [],
       "skill": "smooth animations everywhere",
       "skillSince": "2026-10-20",
@@ -255,7 +255,8 @@
         "transition"
       ],
       "tests": [
-        "tests/unit/smooth-motion.test.ts"
+        "tests/unit/smooth-motion.test.ts",
+        "tests/unit/shared-motion.test.ts"
       ],
       "searchTests": [
         "tests/unit/smooth-motion.test.ts"
