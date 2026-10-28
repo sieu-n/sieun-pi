@@ -1133,7 +1133,9 @@ class ResumePausedTests(unittest.TestCase):
 
     def test_a_run_whose_park_wake_prime_cancelled_after_the_idle_unload_gets_one_continue(self):
         for sid, wake in (("01a17f25-f22d-71ef-9327-e68919164bb4", "2026-10-27T21:16:40.332Z"),
-                          ("01a17f1e-141e-723a-9afa-cc658e28bbe7", "2026-10-27T21:35:39.660Z")):
+                          ("01a17f1e-141e-723a-9afa-cc658e28bbe7", "2026-10-27T21:35:39.660Z"),
+                          # A duty job the chat service started as a root, 10-28: chat system AI harness developer environment 09:57.
+                          ("01a18003-e010-7458-a291-d12b168e2d4f", "2026-10-28T01:06:45.925Z")):
             with self.subTest(sid=sid):
                 self.sent.clear()
                 (self.root / "state.json").unlink(missing_ok=True)

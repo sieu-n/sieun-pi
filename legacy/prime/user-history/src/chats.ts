@@ -1311,6 +1311,9 @@ export class Chats {
       this.jobWakes.delete(threadId);
       this.jobQuiet.set(threadId, stamp);
       this.keepQuiet();
+      // The pass runs at the next tick, not up to JOB_CLEANUP_EVERY_MS later: on 10-28 from 00:32Z the chat read about 15 such notices and sent
+      // each continue by hand 40 to 60 s after the drop, before any pass reached the job.
+      this.interruptedSoon(0);
       if (job) this.queue(job.chat, () => this.jobEndNote(threadId, job));
       return;
     }

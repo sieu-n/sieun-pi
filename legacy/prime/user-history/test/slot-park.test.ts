@@ -63,7 +63,7 @@ test("a park-stop notice reads as parked, dropped or run since, never as cancell
   const parked = parkStopText("pi-pool-move", { park: slotParkOf(upTo("2026-10-27T20:56:58.575Z"), ID, at("2026-10-27T21:00:00Z"), null) });
   assert.match(parked, /^\[child-parked child:pi-pool-move\] pi-pool-move was not cancelled: Prime stopped its worker while it waits for a working slot, place 134 of 139/);
   const dropped = parkStopText("pi-pool-move", { park: null, ...fileSlotPark(upTo("2026-10-27T21:17:00.755Z")) });
-  assert.match(dropped, /^\[child-park-dropped child:pi-pool-move\] .*its slot park was dropped at .*it runs again only when it gets a message\. Send it a message/);
+  assert.match(dropped, /^\[child-park-dropped child:pi-pool-move\] .*its slot park was dropped at .*the job sweep sends it one continue .*\. Send it a message only if/);
   assert.doesNotMatch(parked + dropped, /exited|cancelled child/);
 });
 
