@@ -469,7 +469,9 @@ def refusal(path: str):
             + (f". It belongs to {owner}" if owner else ", so its owner is unknown") + ". Only the owner, or a job's end through its own "
             "board.own record, deletes a tree on this box (c130); a guess that a tree has ended deleted live work on 10-19 and on 10-20. "
             "List the path, its size and its likely owner for the chat that owns it instead, and never record another job's tree with "
-            "board.own to delete it. If you made it yourself before the kernel recorded folders, record it with board.own(path) and delete it.")
+            "board.own to delete it. If you made it yourself before the kernel recorded folders, record it with board.own(path) and delete it. "
+            "When its owner is unknown, `node --import tsx src/job-leftovers.ts unowned < <file of paths>` in sieun-pi's legacy/prime/user-history "
+            "deletes it only if no record on any box names it, nothing uses it and nothing in it changed for 2 h.")
 
 
 def resolve(word: str, cwd: str, env) -> list:

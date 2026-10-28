@@ -329,7 +329,8 @@ def handles(table, wanted):
 
 
 def held_paths(pid):
-    """(executable, cwd and open files) of a process from Linux /proc; (None, []) on macOS, where only its arguments and environment are read."""
+    """(executable, cwd, open files and mapped files) of a process from Linux /proc; (None, []) on macOS, where only its arguments and environment
+    are read. A process keeps a file it mapped after it closes the fd, such as a native addon in a node_modules tree."""
     if sys.platform == "darwin":
         return None, []
     def link(name):
@@ -342,6 +343,11 @@ def held_paths(pid):
     except OSError:
         fds = []
     held = [link("cwd")] + [link(f"fd/{fd}") for fd in fds]
+    try:
+        with open(f"{PROC}/{pid}/maps", encoding="utf-8", errors="replace") as handle:
+            held += {fields[5].rstrip("\n") for fields in (line.split(None, 5) for line in handle) if len(fields) == 6 and fields[5].startswith("/")}
+    except OSError:
+        pass
     return link("exe"), [path for path in held if path]
 
 

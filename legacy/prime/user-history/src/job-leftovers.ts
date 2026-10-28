@@ -1,10 +1,10 @@
 import { spawn } from "node:child_process";
 import { hostExecFile } from "./spawn-host.ts";
 import { existsSync } from "node:fs";
-import { lstat, readdir, readFile, readlink, unlink, writeFile } from "node:fs/promises";
+import { appendFile, lstat, mkdir, readdir, readFile, readlink, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, normalize, relative } from "node:path";
-import type { Host } from "./hosts.ts";
+import { loadHosts, selfHost, type Host } from "./hosts.ts";
 import { jobFolders } from "./chat-brief.ts";
 import { wikiContentDir } from "./chat-wiki.ts";
 import type { RawProcess } from "./mac-usable-watch.ts";
@@ -557,6 +557,13 @@ function docker(args: readonly string[]): Promise<{ ok: boolean; output: string 
   });
 }
 
+/** The running Docker containers as `docker inspect` prints them; none on a box with no docker. */
+async function runningContainers(): Promise<DockerContainer[]> {
+  const ids = (await docker(["ps", "-q"])).output.split("\n").filter(Boolean);
+  const listed = ids.length ? await docker(["inspect", ...ids]) : null;
+  return listed?.ok ? JSON.parse(listed.output) as DockerContainer[] : [];
+}
+
 /** Runs `systemctl --user` with these arguments: whether it exited 0, and its trimmed stdout. */
 function systemctl(args: readonly string[]): Promise<{ ok: boolean; output: string }> {
   return new Promise(resolve => {
@@ -623,9 +630,7 @@ export const leftoverSource: LeftoverSource = {
     return stopped;
   },
   stopContainers: async dirs => {
-    const ids = (await docker(["ps", "-q"])).output.split("\n").filter(Boolean);
-    const listed = ids.length ? await docker(["inspect", ...ids]) : null;
-    const running = listed?.ok ? JSON.parse(listed.output) as DockerContainer[] : [];
+    const running = await runningContainers();
     const removed: string[] = [];
     for (const name of mountedIn(running, dirs)) if ((await docker(["rm", "-f", name])).ok) removed.push(name);
     return removed;
@@ -643,6 +648,118 @@ export const leftoverSource: LeftoverSource = {
 /** A replay serve's source (`serve --replay-daemon`): the same reads, with no kill, unit stop, tab close, delete or record write, and a tab count of -1 so no tab record is emptied. */
 export const dryLeftoverSource: LeftoverSource = { ...leftoverSource, kill: () => {}, closeTabs: async () => -1, removeCopies: async () => [], removeTmp: async () => [],
   stopContainers: async () => [], stopUnits: async () => [], writeOwned: async () => {} };
+
+/**
+ * A file or folder changed this recently keeps an owner-less tree: on 10-20 at 04:00Z a disk cleanup deleted ~/scratch/crawler-lab-window-2/build-b12
+ * and build-b13 of a live Crawler ops lab job, whose newest file was over 1 h old.
+ */
+export const UNOWNED_IDLE_MS = 2 * 60 * 60 * 1000;
+/** One JSON line per tree `reapUnowned` judged: its path, its real folder, its bytes, and whether it was deleted or why it was kept. */
+export const unownedLog = (): string => join(homedir(), ".local", "state", "sieun-pi", "unowned-reaped.jsonl");
+
+export interface UnownedSource extends Pick<LeftoverSource, "inside" | "removeTmp"> {
+  /** Every path an owner record on any box names for this box, with the record's folder; throws when a box's records cannot be read. */
+  records: () => Promise<readonly { path: string; owner: string }[]>;
+  /** A file or folder in the tree at `dir` that changed at or after `since` (epoch ms), or `dir` when the tree cannot be read whole; null otherwise. */
+  written: (dir: string, since: number) => Promise<string | null>;
+  /** The dirs among these that a running container bind-mounts, or a path below them. */
+  mounted: (dirs: readonly string[]) => Promise<readonly string[]>;
+}
+
+/**
+ * Deletes the trees under ~/scratch that no owner record on any box names and nothing uses, with their attic copy (`ATTIC`), for the leftovers
+ * that the kernel's guard (sieun-rules kernel-own.py `refusal`) refuses to let any job delete, since no session family owns them. On 10-28
+ * us-metal02's ~/scratch/mac-run held 56 per-job repo copies of Mac jobs from before the kernel recorded the trees it makes, 43 of them links into
+ * the attic, and owner rule c193 bans such copies. A tree is kept when a record names it, a folder above it or a path in it, when it is a job's
+ * own ~/scratch/<session id>, when it changed within UNOWNED_IDLE_MS, when a container mounts it, and when a process runs in, holds, maps or
+ * names it or our user does not own it (`removeFree`).
+ */
+export async function reapUnowned(source: UnownedSource, candidates: readonly string[], now = Date.now()): Promise<{ removed: string[]; kept: Map<string, string> }> {
+  const scratch = join(homedir(), "scratch");
+  const paths = [...new Set(candidates.map(path => normalize(path).replace(/\/+$/, "")))];
+  const kept = new Map<string, string>();
+  for (const path of paths) {
+    if (!path.startsWith(scratch + "/")) kept.set(path, "it is not below ~/scratch");
+    else if (SESSION.test(path.slice(scratch.length + 1).split("/")[0]!)) kept.set(path, "it is a job's own ~/scratch/<session id> folder");
+  }
+  const records = await source.records().catch((error: unknown) => {
+    for (const path of paths) if (!kept.has(path)) kept.set(path, `the owner records could not all be read: ${error instanceof Error ? error.message : String(error)}`);
+    return [];
+  });
+  for (const { path: named, owner } of records) for (const path of paths)
+    if (!kept.has(path) && (named === path || named.startsWith(path + "/") || path.startsWith(named + "/"))) kept.set(path, `the record of ${owner} names ${named === path ? "it" : named}`);
+  const real = new Map<string, string>();
+  for (const path of paths.filter(path => !kept.has(path))) {
+    real.set(path, await realFolder(path));
+    const file = await source.written(real.get(path)!, now - UNOWNED_IDLE_MS);
+    if (file) kept.set(path, `${file} changed within the last ${UNOWNED_IDLE_MS / 3_600_000} h`);
+  }
+  const idle = paths.filter(path => !kept.has(path));
+  const mounted = new Set(idle.length ? await source.mounted(idle.map(path => real.get(path)!)) : []);
+  for (const path of idle) if (mounted.has(real.get(path)!)) kept.set(path, "a running container mounts it");
+  const free = idle.filter(path => !kept.has(path));
+  const none: { paths: readonly string[]; removed: readonly string[]; kept: Map<string, string> } = { paths: [], removed: [], kept: new Map() };
+  const { paths: ours, removed, kept: held } = free.length ? await removeFree({ ...source, stopContainers: async () => [] }, free) : none;
+  for (const [path, why] of held) kept.set(path, why);
+  for (const path of free) if (!removed.includes(path) && !kept.has(path)) kept.set(path, ours.includes(path) ? "a process runs in, holds or names it" : "our user does not own it");
+  return { removed: [...removed], kept };
+}
+
+/** Each record's paths for the box named `self` on the box that runs it: `{"path": "~/...", "owner": "<session folder>"}` per line. */
+const HOST_RECORDS = `import json, os, sys
+root = os.path.expanduser("~/.prime/agent/session-artifacts")
+for folder, _, files in os.walk(root):
+    if "owned.json" in files:
+        try:
+            with open(os.path.join(folder, "owned.json"), encoding="utf-8") as handle:
+                hosts = json.load(handle).get("hosts") or {}
+        except (OSError, ValueError, AttributeError):
+            continue
+        for path in hosts.get(sys.argv[1], []) if isinstance(hosts, dict) else []:
+            print(json.dumps({"path": path, "owner": os.path.relpath(folder, root)}))
+`;
+
+/** The records on another box that name paths on the box `self`, read over ssh as `sshLeftovers` reaches the box. */
+function hostRecords(host: Host, self: string): Promise<{ path: string; owner: string }[]> {
+  return new Promise((resolve, reject) => {
+    if (!host.ssh) { reject(new Error(`hosts.json gives ${host.name} no ssh target`)); return; }
+    const quote = (text: string) => `'${text.replace(/'/g, "'\\''")}'`;
+    hostExecFile("ssh", ["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", host.ssh, `python3 -c ${quote(HOST_RECORDS)} ${quote(self)}`], { maxBuffer: 16 * 1024 * 1024 }, (error, stdout, stderr) => {
+      if (error) { reject(new Error(`the records on ${host.name}: ${String(stderr).trim().slice(0, 300) || error.message}`)); return; }
+      const lines = String(stdout).split("\n").filter(Boolean).map(line => JSON.parse(line) as { path: string; owner: string });
+      resolve(lines.flatMap(line => hostPaths([line.path]).map(path => ({ path, owner: `${host.name}:${line.owner}` }))));
+    });
+  });
+}
+
+/** The real source of `reapUnowned`: this box's records and those of every other box in hosts.json, `find`, docker and the footprint helper. */
+export const unownedSource: UnownedSource = {
+  inside: leftoverSource.inside,
+  removeTmp: leftoverSource.removeTmp,
+  records: async () => {
+    const local = (await otherRecords([])).map(entry => { const [path, owner] = entry.split("\0") as [string, string]; return { path, owner: relative(artifactsRoot(), owner) }; });
+    const registry = await loadHosts();
+    const self = selfHost(registry);
+    if (!self) throw new Error("hosts.json does not name this box, so the other boxes' records for it cannot be read");
+    const away = await Promise.all(registry.hosts.filter(host => host.name !== self.name).map(host => hostRecords(host, self.name)));
+    return [...local, ...away.flat()];
+  },
+  written: (dir, since) => new Promise(resolve => {
+    const at = `@${Math.floor(since / 1000)}`;
+    hostExecFile("find", [dir, "(", "-newermt", at, "-o", "-newerct", at, ")", "-print", "-quit"], { maxBuffer: 1024 * 1024 }, (error, stdout) => {
+      const found = String(stdout).split("\n")[0]!.trim();
+      resolve(found || (error ? dir : null));
+    });
+  }),
+  mounted: async dirs => { const running = await runningContainers(); return dirs.filter(dir => mountedIn(running, [dir]).length); },
+};
+
+/** The bytes of the tree at `dir`, as `du -sb` counts them; 0 when du fails. */
+function treeBytes(dir: string): Promise<number> {
+  return new Promise(resolve => {
+    hostExecFile("du", ["-sb", "--", dir], { maxBuffer: 1024 * 1024 }, (_error, stdout) => resolve(Number(String(stdout).split("\t")[0]) || 0));
+  });
+}
 
 /** Runs this module's CLI (`main`) on another box with these arguments and returns what it printed. */
 export type RemoteLeftovers = (host: Host, args: readonly string[]) => Promise<Leftovers>;
@@ -720,7 +837,8 @@ export const sshLeftovers: RemoteLeftovers = (host, args) => new Promise((resolv
 /**
  * `node --import tsx src/job-leftovers.ts end <session>[/sub-...] [session]` ends the leftovers of that folder under this box's `artifactsRoot`, and
  * `deleted <chat>` those of the chat's deleted jobs, and `away <path>...` deletes the paths another box's record names on this box (`hostPaths`)
- * that no process uses; each prints the Leftovers as one JSON line. The process stays up for the SIGKILL pass and
+ * that no process uses; each prints the Leftovers as one JSON line. `unowned < paths` deletes the owner-less trees among the paths on stdin
+ * (`reapUnowned`). The process stays up for the SIGKILL pass and
  * the second strays read (`stopProcesses`, `endLeftovers`), which the service's unref'd timers would drop here.
  */
 async function main(args: readonly string[]): Promise<void> {
@@ -733,8 +851,28 @@ async function main(args: readonly string[]): Promise<void> {
     const { removed, kept, containers } = await removeFree(source, hostPaths(args.slice(1)));
     left = { stopped: [], tabs: 0, copies: [], artifacts: [], units: [], owned: removed, ...kept.size ? { kept: keptNotes(kept) } : {}, ...containers.length ? { containers } : {} };
   }
-  else throw new Error("usage: job-leftovers.ts end <session>[/sub-...] [session] | deleted <chat> | away <path>...");
+  else if (kind === "unowned") { await mainUnowned(); return; }
+  else throw new Error("usage: job-leftovers.ts end <session>[/sub-...] [session] | deleted <chat> | away <path>... | unowned < paths");
   process.stdout.write(JSON.stringify(left) + "\n");
+}
+
+/**
+ * `unowned` reads one absolute path per line on stdin, since a path on this process's own command line would read as a process that names it
+ * (worker-footprint.py `--inside`), runs `reapUnowned` on them, appends a line per path to `unownedLog` and prints the totals as one JSON line.
+ */
+async function mainUnowned(): Promise<void> {
+  let input = "";
+  for await (const chunk of process.stdin) input += String(chunk);
+  const paths = input.split("\n").map(line => line.trim()).filter(Boolean);
+  const bytes = new Map(await Promise.all(paths.map(async path => [path, await treeBytes(await realFolder(path))] as const)));
+  const { removed, kept } = await reapUnowned(unownedSource, paths);
+  const at = new Date().toISOString();
+  const lines = [...removed.map(path => ({ at, path, bytes: bytes.get(path) ?? 0, deleted: true })),
+    ...[...kept].map(([path, why]) => ({ at, path, bytes: bytes.get(path) ?? 0, deleted: false, kept: why }))];
+  await mkdir(dirname(unownedLog()), { recursive: true });
+  await appendFile(unownedLog(), lines.map(line => JSON.stringify(line) + "\n").join(""));
+  const freed = removed.reduce((sum, path) => sum + (bytes.get(path) ?? 0), 0);
+  process.stdout.write(JSON.stringify({ removed, freedBytes: freed, kept: keptNotes(kept), log: unownedLog() }) + "\n");
 }
 
 if (isMain(import.meta.url)) {
