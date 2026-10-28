@@ -110,6 +110,7 @@ KEEP_INTERNAL = ("PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_REGISTRY_DIR",)
 FEED = ("PRIME_AGENT_DOWNLOAD_BASE_URL", "PRIME_AGENT_ALLOW_INSECURE_HTTP_FOR_TESTS")
 INSTALL_ONLY = "PRIME_AGENT_INTERACTIVE_SELF_UPDATE"
 DROP = (INSTALL_ONLY, "PRIME_UPDATE_ARGS", *FEED)
+LAUNCH_HOOK = ("PRIME_AGENT_DAEMON_LAUNCH_COMMAND", "PRIME_AGENT_DAEMON_LAUNCH_FOR_SOCKET")
 COORDINATOR_FLAG = "--internal-update-restart-coordinator"
 STATUS_FLAG = "--internal-update-restart-status"
 # Prime's exit code for an install-only update that installed nothing: no newer release, a refused downgrade or an
@@ -169,9 +170,16 @@ def alive(pid):
     return state not in ("Z", "X")
 
 
-def target_env(sock, **extra):
-    """The environment for every prime-agent this script starts, pinned to the socket argument."""
+def target_env(sock, hook=True, **extra):
+    """The environment for every prime-agent this script starts, pinned to the socket argument.
+
+    hook=False drops Prime's daemon launch hook. Its command starts this unit, so a prime-agent client this script runs
+    inside the unit's start or reload job must never run it: `systemctl --user start` would wait on that same job.
+    The supervisor and the update restart coordinator never run the hook and keep it, so the workers inherit it.
+    """
     env = {k: v for k, v in os.environ.items() if not (k.startswith("PRIME_AGENT_INTERNAL_") and k not in KEEP_INTERNAL) and k not in DROP}
+    if not hook:
+        env = {k: v for k, v in env.items() if k not in LAUNCH_HOOK}
     env["TMPDIR"] = str(Path(sock).parent.parent)
     return {**env, **extra}
 
@@ -813,7 +821,7 @@ def update(prime_agent, sock, pidfile, env_file=None):
         return USAGE
     feed = {k: os.environ[k] for k in FEED if k in os.environ}
     status = forced = None
-    code, output = run([prime_agent, "update", "--self", *args], target_env(sock, PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_SOCKET=sock, **feed, **{INSTALL_ONLY: "1"}))
+    code, output = run([prime_agent, "update", "--self", *args], target_env(sock, hook=False, PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_SOCKET=sock, **feed, **{INSTALL_ONLY: "1"}))
     if code == 0:
         code, restart_output, status, forced = restart(prime_agent, sock)
         output += restart_output

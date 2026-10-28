@@ -163,6 +163,7 @@
     "legacy/prime/deploy/*.service",
     "legacy/prime/deploy/prime-agent-daemon-ctl",
     "legacy/prime/deploy/prime-agent",
+    "legacy/prime/deploy/environment.d/*.conf",
     "skills/**/NOTICE",
     "!**/node_modules/**",
     "!**/.venv/**",

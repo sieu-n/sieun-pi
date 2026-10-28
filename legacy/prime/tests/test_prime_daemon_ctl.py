@@ -54,6 +54,8 @@ FAKE = textwrap.dedent(
         coordinator = "--internal-update-restart-coordinator" in sys.argv
         with open(os.environ["FAKE_ENV_LOG"] + (".restart" if coordinator else ""), "w") as f:
             json.dump({k: os.environ.get(k) for k in keys}, f)
+        with open(os.environ["FAKE_ENV_LOG"] + (".restart" if coordinator else "") + ".launch", "w") as f:
+            json.dump({k: os.environ.get(k) for k in ("PRIME_AGENT_DAEMON_LAUNCH_COMMAND", "PRIME_AGENT_DAEMON_LAUNCH_FOR_SOCKET")}, f)
         mode = os.environ.get("FAKE_UPDATE_MODE", "restart")
         if not coordinator:
             if mode == "busy":
@@ -514,6 +516,15 @@ class DaemonCtlTest(unittest.TestCase):
         self.assertEqual(len(coordinator), 1)
         self.assertEqual(coordinator[0][2:4], ["--daemon-socket", self.sock])
         self.assertTrue(coordinator[0][5].startswith(str(self.dir / "agent/update-restarts") + "/"))
+
+    def test_the_install_never_sees_the_launch_hook_and_the_coordinator_passes_it_to_the_successor(self):
+        # The hook's command starts this unit. A client run inside its reload job that ran it would wait on that same job.
+        self.serve()
+        hook = {"PRIME_AGENT_DAEMON_LAUNCH_COMMAND": "systemctl --user start prime-agent-daemon.service", "PRIME_AGENT_DAEMON_LAUNCH_FOR_SOCKET": self.sock}
+        result = self.ctl("update", str(self.fake), self.sock, self.pidfile, env=dict(self.env, PRIME_UPDATE_ARGS="--force", **hook))
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(self.env_seen(".launch"), dict.fromkeys(hook))
+        self.assertEqual(self.env_seen(".restart.launch"), hook)
 
     def test_update_keeps_a_metadata_copy_of_the_planned_restore_after_the_manifest_is_consumed(self):
         self.serve()
@@ -1156,6 +1167,43 @@ class DaemonUnitTest(unittest.TestCase):
         self.assertIn("EnvironmentFile=-%h/.config/sieun-pi/prime-update.env", lines)
         self.assertIn("TimeoutStartSec=infinity", lines)
         self.assertFalse([line for line in lines if line.startswith(("TimeoutSec=", "TimeoutReloadSec="))])
+
+
+LAUNCH_KEYS = ("PRIME_AGENT_DAEMON_LAUNCH_COMMAND", "PRIME_AGENT_DAEMON_LAUNCH_FOR_SOCKET")
+ENV_D = ROOT / "legacy/prime/deploy/environment.d/60-prime-agent-launch.conf"
+
+
+class LaunchHookEnvTest(unittest.TestCase):
+    """Prime load.3 runs PRIME_AGENT_DAEMON_LAUNCH_COMMAND for the socket that PRIME_AGENT_DAEMON_LAUNCH_FOR_SOCKET names."""
+
+    def expected(self):
+        return {LAUNCH_KEYS[0]: "systemctl --user start prime-agent-daemon.service", LAUNCH_KEYS[1]: f"/tmp/prime-agent-{os.getuid()}/daemon.sock"}
+
+    def test_the_unit_sets_both_for_its_supervisor_and_workers(self):
+        env = {}
+        for line in UNIT.read_text().splitlines():
+            if line.startswith("Environment="):
+                key, value = shlex.split(line.removeprefix("Environment="))[0].split("=", 1)
+                env[key] = value.replace("%n", UNIT.name).replace("%U", str(os.getuid()))
+        self.assertEqual({k: env.get(k) for k in LAUNCH_KEYS}, self.expected())
+        # No re-entry: the command is systemctl, never a prime-agent client that could run the hook again.
+        self.assertEqual(shlex.split(env[LAUNCH_KEYS[0]])[:3], ["systemctl", "--user", "start"])
+
+    def test_the_installed_environment_d_file_sets_both_for_every_user_service(self):
+        rendered = ENV_D.read_text().replace("@UID@", str(os.getuid()))
+        env = dict(line.split("=", 1) for line in rendered.splitlines() if line and not line.startswith("#"))
+        self.assertEqual(env, self.expected())
+
+    def test_the_wrapper_exports_both_to_a_login_caller(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = Path(tmp) / "prime-agent"
+            fake.write_text("#!/bin/sh\nenv\n")
+            fake.chmod(0o755)
+            env = {"PATH": os.environ["PATH"], "HOME": os.environ["HOME"], "PRIME_AGENT_REAL_BIN": str(fake)}
+            done = subprocess.run([str(WRAPPER), "--version"], env=env, capture_output=True, text=True, timeout=10)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        seen = dict(line.split("=", 1) for line in done.stdout.splitlines() if "=" in line)
+        self.assertEqual({k: seen.get(k) for k in LAUNCH_KEYS}, self.expected())
 
 
 FAKE_SYSTEMCTL = textwrap.dedent(

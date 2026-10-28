@@ -6,7 +6,10 @@
 # session-c155369.scope at oom_score_adj -500. Its workers and kernels grew to about 80 GB there, outside the unit's
 # limits, and hung the box at 15:14Z (~/work/update-empty-box/CAUSE.md). So when this socket has no live daemon, the
 # wrapper starts prime-agent-daemon.service first and runs the CLI after it, so the CLI finds the unit's daemon.
-# Prime has no launcher hook for this yet (~/work/update-empty-box/autostart-ask.md).
+# From Prime load.3 on, the CLI and a worker that find no supervisor run PRIME_AGENT_DAEMON_LAUNCH_COMMAND instead,
+# when PRIME_AGENT_DAEMON_LAUNCH_FOR_SOCKET names their socket (Prime docs/daemon.md). The wrapper exports both for
+# the public socket, so a stale idle daemon that the CLI replaces is also restarted in the unit. The start-first step
+# stays for a build without the hook, such as a rollback.
 #
 # It passes straight through for a call that cannot start the public daemon:
 # - a process already in the unit's cgroup, which is the ctl's own `--mode daemon` start, its update and every worker;
@@ -20,6 +23,8 @@ unit=${PRIME_AGENT_DAEMON_UNIT:-prime-agent-daemon.service}
 uid=$(id -u)
 pidfile=${PRIME_AGENT_DAEMON_PIDFILE:-${XDG_RUNTIME_DIR:-/run/user/$uid}/prime-agent-daemon.pid}
 public=${PRIME_AGENT_DAEMON_SOCKET:-/tmp/prime-agent-$uid/daemon.sock}
+: "${PRIME_AGENT_DAEMON_LAUNCH_COMMAND:=systemctl --user start $unit}" "${PRIME_AGENT_DAEMON_LAUNCH_FOR_SOCKET:=$public}"
+export PRIME_AGENT_DAEMON_LAUNCH_COMMAND PRIME_AGENT_DAEMON_LAUNCH_FOR_SOCKET
 
 case $(cat /proc/self/cgroup 2>/dev/null) in */"$unit") exec "$real" "$@" ;; esac
 

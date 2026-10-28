@@ -7,6 +7,10 @@ Type=forking
 PIDFile=%t/prime-agent-daemon.pid
 Environment=PATH=%h/.local/node/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=NO_COLOR=1
+# Prime load.3's service-placement hook: a worker that finds no supervisor on this socket runs the command instead of
+# spawning one in its own process group (Prime docs/daemon.md). The supervisor passes both to its workers.
+Environment="PRIME_AGENT_DAEMON_LAUNCH_COMMAND=systemctl --user start %n"
+Environment=PRIME_AGENT_DAEMON_LAUNCH_FOR_SOCKET=/tmp/prime-agent-%U/daemon.sock
 EnvironmentFile=-%h/.config/sieun-pi/agent.env
 EnvironmentFile=-%h/.config/sieun-pi/prime-update.env
 ExecStartPre=/bin/mkdir -p -m 0700 /tmp/prime-agent-%U
