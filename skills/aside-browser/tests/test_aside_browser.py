@@ -11,7 +11,7 @@ import sys
 import tempfile
 import types
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import aside_browser as ab
 
@@ -177,6 +177,35 @@ class ErrorTranslationTests(Base):
         self.assertIn("not connected to the daemon", str(caught.exception))
         self.assertIn("no open window", caught.exception.hint)
         self.assertIn("c103", caught.exception.hint)
+
+
+# Live text from `aside repl "await sleep(125000)"` on the owner's Mac, 2026-10-28, while Aside and its daemon were up.
+LIVE_LIMIT = (
+    "fetch failed: other side closed\nAside isn't running on this machine.\n  - Start Aside Browser and retry, or\n"
+    "  - control another machine / Aside Cloud instead: run 'aside login' once, then 'aside exec --host <host>' (see 'aside host list')."
+)
+
+
+class CallLimitTests(Base):
+    """10-27 13:23Z to 23:44Z: the 5180 jobs read 'Aside isn't running' 104 times while Aside was up, and each one was a REPL call that waited past Aside's 120 s limit."""
+
+    def run_with_clock(self, error, seconds):
+        self.fake(RuntimeError(error))
+        clock = types.SimpleNamespace(monotonic=Mock(side_effect=[0.0, seconds]))
+        with patch.object(ab, "time", clock), self.assertRaises(ab.AsideError) as caught:
+            self.call(ab.run("await page.waitForSelector('#late', {timeout: 150000})"))
+        return caught.exception
+
+    def test_a_call_closed_at_the_limit_says_aside_is_still_running(self):
+        err = self.run_with_clock(LIVE_LIMIT, 120.3)
+        self.assertIn("past Aside's 120 s limit", str(err))
+        self.assertIn("Aside is still running", str(err))
+        self.assertNotIn("isn't running on this machine", str(err))
+        self.assertIn("well under 120 s", err.hint)
+
+    def test_a_quick_closed_connection_keeps_aside_s_own_text(self):
+        err = self.run_with_clock(LIVE_LIMIT, 3.0)
+        self.assertIn("isn't running on this machine", str(err))
 
 
 class TabOwnershipTests(Base):

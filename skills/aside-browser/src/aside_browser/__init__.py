@@ -40,6 +40,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -679,6 +680,20 @@ def _page_target(info: dict[str, Any]) -> str:
 
 
 _STALE_SERVER = ("REPL session not found", "Connection closed")
+# measured: `aside repl --help` (CLI 1.26.1015.732) says "120s timeout"; on 2026-10-28 a 125 s sleep failed at 120.26 s and a 110 s sleep returned ok.
+REPL_LIMIT_S = 120
+_LIMIT_HINT = (
+    "Aside ends a REPL call at 120 s by closing its connection, and the CLI then says 'Aside isn't running' though Aside is up. "
+    "Keep each call well under 120 s: give waitForSelector and polling loops a shorter timeout, and repeat the call from Python "
+    "when you need a longer wait. A wait that long usually means the page never reached that state, so take a snapshot or a "
+    "screenshot to see why. A tab on localhost:5180 that never loads means that host's connection pool is full, so open it on "
+    "<name>.localhost:5180."
+)
+
+
+def past_limit(message: str, elapsed: float) -> bool:
+    """True when Aside closed a REPL call at its per-call limit, which the CLI reports as 'Aside isn't running'."""
+    return "other side closed" in message and elapsed >= REPL_LIMIT_S
 
 
 async def _call(tool: str, arguments: dict[str, Any]) -> str:
@@ -871,11 +886,18 @@ async def _repl(code: str, title: str, owner_ok: str | None = None, plain: str |
             approved = True
     if not approved:
         code = guard_clicks(code)
+    started = time.monotonic()
     try:
         text = await (_box_call(code) if browser == "box" else _call("repl", {"title": title, "code": code}))
     except AsideError as exc:
         message, opened = _strip_opened(str(exc))
         _remember(opened)
+        elapsed = time.monotonic() - started
+        if past_limit(message, elapsed):
+            raise AsideError(
+                f"This REPL call ran {elapsed:.0f} s, past Aside's {REPL_LIMIT_S} s limit per call, so Aside closed it. Aside is still running.",
+                _LIMIT_HINT,
+            ) from exc.__cause__
         refused = _click_refusals(message)
         for click in refused:
             _record_send("refused", click.get("reason", ""), click.get("target", ""), owner_ok)

@@ -70,6 +70,7 @@ Errors raise `AsideError`. For a known mistake, the message ends with an `[aside
 
 - Page globals such as `document`, `window` and `location` do not exist in the REPL, so read them with `await page.evaluate(() => document.title)`.
 - REPL helpers such as `sleep` and `page` do not exist inside `page.evaluate`, so wait there with `await new Promise(r => setTimeout(r, ms))`.
+- "fetch failed: other side closed" followed by "Aside isn't running on this machine" after a call of 120 s means the call ran past Aside's 120 s limit per call, and Aside is still up. Between 13:23Z on 10-27 and 23:44Z the 5180 jobs read it 104 times while Aside had run for 9 days and its daemon for 43 h, so `run()` now names the limit instead, and a call that polls or waits for a page keeps its own timeout well under 120 s and repeats from Python.
 - "Profile 0 is not connected to the daemon" means the owner's Aside has no open window, because the profile's bridge needs one, so it comes back only when he opens a window. Never quit, restart or open Aside windows on his Mac yourself (c103); on 2026-10-22 he closed his last window at 01:08Z and a job blamed its own 1 MB upload.
 
 The Aside REPL lacks some Playwright methods:
