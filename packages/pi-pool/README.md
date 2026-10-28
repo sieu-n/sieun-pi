@@ -695,7 +695,7 @@ At 05:10Z on 10-27, 34 workers on us-metal02 whose sessions were only queued hel
 So a run still queued after `PARK_AFTER_MS` (60 s, in the extension) parks, and Prime can let its worker go until its slot comes.
 
 1. The extension runs `pi-pool park <session>`, which keeps the entry at its place in `queued` with no pid and `parked` {at, retry_at}, where retry_at is `PARK_BACKSTOP_SEC` (1,200 s) away.
-2. The extension hands Prime a credential wait until retry_at for the run's model call (`ctx.waitForCredential`), and the model call goes. Prime parks the turn when the wait outlasts idleEvictionMinutes (15 on us-metal02), and keeps it on a timer in the worker otherwise.
+2. The extension hands Prime a credential wait until retry_at for the run's model call (`ctx.waitForCredential`), and the model call goes. It passes `{ waitingFor: "a working slot, place N of M" }` with its place at the park, which a load.3 Prime (schema 39) reports as the session's waiting state, and an older Prime drops. Prime parks the turn when the wait outlasts idleEvictionMinutes (15 on us-metal02), and keeps it on a timer in the worker otherwise.
 3. The admit pass starts a parked entry like any other run, in the same order and under the same limits, and the slot keeps `parked` on a `WAKE_LEASE_SEC` (60 s) lease.
 4. After the lock, the process that started the slot spawns `pi-pool wake-parked <session>`, which runs `prime-agent wake <session>`. The answer `{"woke": "timer"}` or `{"woke": "park"}` means the session reloads and continues its turn.
 5. The resumed turn's model call asks as usual, finds its slot, and its ask drops `parked` and sets its pid and full lease.

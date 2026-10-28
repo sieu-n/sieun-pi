@@ -41,8 +41,11 @@ for (const step of steps) {
       isIdle: () => state.idle,
       hasPendingMessages: () => state.queued,
     };
-    // Prime's per-session credential wait; `credentialApi: true` stands for a Prime that has it.
-    if (step.credentialApi) {
+    // Prime's per-session credential wait; `credentialApi: true` stands for a Prime that has it with load.2's two parameters, as its
+    // wrapper drops a third, and `credentialApi: "options"` for load.3's, which also takes `{ waitingFor }`.
+    if (step.credentialApi === "options") {
+      ctx.waitForCredential = (retryAtMs, message, options) => out.credential.push({ session: step.name, retryAtMs, message, options: options ?? null });
+    } else if (step.credentialApi) {
       ctx.waitForCredential = (retryAtMs, message) => out.credential.push({ session: step.name, retryAtMs, message });
     }
     // Prime's ctx.setWaiting; `waitApi: false` stands for a Prime that lacks it.

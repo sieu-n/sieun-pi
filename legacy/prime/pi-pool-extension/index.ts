@@ -443,8 +443,11 @@ interface ParkReply { state: "parked"; retry_at: number; position: number | null
  */
 const PARK_AFTER_MS = 60_000;
 
-/** Prime's per-session credential wait for the next model call, when this Prime has it. */
-type CredentialWait = (retryAtMs: number, message: string) => void;
+/**
+ * Prime's per-session credential wait for the next model call, when this Prime has it. Since load.3 (schema 39) Prime keeps `waitingFor`
+ * and reports the session as waiting for it; an older Prime's wrapper takes two parameters and drops the third.
+ */
+type CredentialWait = (retryAtMs: number, message: string, options?: { waitingFor?: string }) => void;
 function credentialWait(ctx: ExtensionContext): CredentialWait | undefined {
 	const api = ctx as ExtensionContext & { waitForCredential?: CredentialWait };
 	return typeof api.waitForCredential === "function" ? api.waitForCredential.bind(api) : undefined;
@@ -714,9 +717,9 @@ export default function (pi: ExtensionAPI): void {
 			}
 			if (result !== "failed" && result.state === "parked") {
 				slot = "parked";
-				const place = result.position !== null && result.total !== null ? `, place ${result.position} of ${result.total}` : "";
+				const waitingFor = `a working slot${result.position !== null && result.total !== null ? `, place ${result.position} of ${result.total}` : ""}`;
 				try {
-					waitForCredential?.(result.retry_at * 1000, `pi-pool: this run waits for a working slot${place}; the pool wakes it when the slot starts, or it asks again at ${new Date(result.retry_at * 1000).toISOString()}.`);
+					waitForCredential?.(result.retry_at * 1000, `pi-pool: this run waits for ${waitingFor}; the pool wakes it when the slot starts, or it asks again at ${new Date(result.retry_at * 1000).toISOString()}.`, { waitingFor });
 				} catch {
 					// A replaced session's ctx throws; its run is over, and the entry waits for the session's next ask.
 				}
