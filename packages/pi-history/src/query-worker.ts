@@ -27,7 +27,11 @@ function handle(path: string): DatabaseSync | null {
 export function runJob(job: SearchJob): SearchAnswer {
   const prime = handle(job.dbPath);
   if (!prime) throw new Error(`No index at ${job.dbPath} yet.`);
-  if (job.op === "open") return { op: "open" };
+  if (job.op === "open") {
+    // Reads the schema and the fts structure record now, which a fresh connection's first search paid for (about 150 ms on 10-28).
+    prime.prepare("SELECT count(*) FROM fts WHERE fts MATCH ?").get('"pi"');
+    return { op: "open" };
+  }
   if (job.op === "count") return { op: "count", total: countPrime(prime, job.query, job.roots) };
   return {
     op: "hits", prime: primeHits(prime, job.box, job.query, job.ask, job.roots),

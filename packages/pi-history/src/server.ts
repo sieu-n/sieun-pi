@@ -291,6 +291,9 @@ export async function startServer(options: ServerOptions): Promise<{ close(): Pr
   const server = createServer((request, response) => { void handle(request, response); });
   mkdirSync(dirname(options.socket), { recursive: true, mode: 0o700 });
   rmSync(options.socket, { force: true });
+  // The socket opens once the two workers hold the index: their start took 140 to 165 ms on us-metal02 on 10-28, which a search right after a
+  // restart waited for.
+  await warm;
   await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(options.socket, () => resolve()); });
   chmodSync(options.socket, 0o600);
   return {
