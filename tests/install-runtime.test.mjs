@@ -109,11 +109,13 @@ test("activation points the kernel venv's editable skill installs at the new rel
   f.write(join(site, "_editable_impl_aside_browser.pth"), join(initial.release, "skills/aside-browser/src") + "\n");
   f.write(join(site, "_editable_impl_gone.pth"), join(initial.release, "skills/gone/src") + "\n");
   f.write(join(site, "_editable_impl_edit.pth"), prime + "\n");
+  f.write(join(site, "00_sieun_pi_skills.pth"), join(initial.release, "skills/aside-browser/src") + "\nimport sieun_pi_agent_env\n");
   const next = installRuntime({ ...f.options, ref: second }, f.hooks);
+  assert.equal(readFileSync(join(site, "00_sieun_pi_skills.pth"), "utf8"), join(next.release, "skills/aside-browser/src") + "\nimport sieun_pi_agent_env\n");
   assert.equal(readFileSync(join(site, "_editable_impl_aside_browser.pth"), "utf8"), join(next.release, "skills/aside-browser/src") + "\n");
   assert.equal(readFileSync(join(site, "_editable_impl_gone.pth"), "utf8"), join(initial.release, "skills/gone/src") + "\n");
   assert.equal(readFileSync(join(site, "_editable_impl_edit.pth"), "utf8"), prime + "\n");
-  assert.deepEqual(next.kernelPaths, [join(site, "_editable_impl_aside_browser.pth")]);
+  assert.deepEqual(next.kernelPaths.sort(), [join(site, "00_sieun_pi_skills.pth"), join(site, "_editable_impl_aside_browser.pth")]);
 });
 
 test("a release whose lockfiles match the active one clones its dependencies, and each activation is logged", t => {

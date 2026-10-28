@@ -116,8 +116,13 @@ function exportCommit(repo, sha, directory, execute) {
  * Points each editable skill install in the Prime kernel venv that names an older runtime release at the same folder in `release`.
  * The venv's _editable_impl_<name>.pth files hold the release path that was current when Prime installed the skill, and nothing
  * rewrote them, so on 10-29 the Mac kernels still imported aside_browser, board and websearch from bf27d527 under release 3c9c8021.
- * A file whose folder is gone from the new release keeps its old path. Returns the rewritten files.
+ * The pin the Skills and tools duty writes (legacy/prime/user-history/scripts/kernel-skill-paths.ts PIN_FILE) holds the real paths of the
+ * release that was current then and sorts first, so after 412fafc2 was installed at 20:05Z on 10-29 the Mac kernels still imported
+ * aside_browser from 89fbb34b through it; it gets the same rewrite. A file whose folder is gone from the new release keeps its old path.
+ * Returns the rewritten files.
  */
+const KERNEL_PIN = "00_sieun_pi_skills.pth";
+
 export function refreshKernelPaths(home, release) {
   const releases = join(home, ".local/share/sieun-pi-runtime/releases") + "/";
   const lib = join(home, ".prime/agent/kernel-venv/lib");
@@ -125,7 +130,7 @@ export function refreshKernelPaths(home, release) {
   for (const python of existsSync(lib) ? readdirSync(lib) : []) {
     const site = join(lib, python, "site-packages");
     for (const name of existsSync(site) ? readdirSync(site) : []) {
-      if (!name.startsWith("_editable_impl_") || !name.endsWith(".pth")) continue;
+      if (!(name.startsWith("_editable_impl_") || name === KERNEL_PIN) || !name.endsWith(".pth")) continue;
       const path = join(site, name);
       const text = readFileSync(path, "utf8");
       const lines = text.split("\n").map(line => {
