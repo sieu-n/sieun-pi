@@ -58,7 +58,8 @@ class ParkWiring(unittest.TestCase):
         [wait] = run["credential"]
         self.assertEqual(wait["session"], "job")
         self.assertGreater(wait["retryAtMs"] - time.time() * 1000, 15 * 60_000, "past idleEvictionMinutes, so Prime parks")
-        self.assertIn("place 1 of 1", wait["message"])
+        self.assertIn("pi-pool: this run waits for a working slot, place 1 of 1; the pool wakes it", wait["message"])
+        self.assertNotIn("options", wait, "a load.2 Prime's wrapper takes two parameters")
         self.assertEqual([(q["session"], q.get("parked")) for q in run["queues"]["parked"]["queued"]], [("job", True)])
         self.assertEqual([(q["session"], q.get("parked")) for q in run["queues"]["ended"]["queued"]], [("job", True)],
                          "the parked turn's agent_end leaves its place in line")
@@ -69,13 +70,6 @@ class ParkWiring(unittest.TestCase):
         [wait] = run["credential"]
         self.assertEqual(wait["options"], {"waitingFor": "a working slot, place 1 of 1"})
         self.assertIn("waits for a working slot, place 1 of 1;", wait["message"])
-
-    def test_a_load_2_prime_with_two_parameters_parks_as_before(self):
-        run = self.drive(*self.parked(credential=True))
-        [wait] = run["credential"]
-        self.assertNotIn("options", wait)
-        self.assertIn("pi-pool: this run waits for a working slot, place 1 of 1; the pool wakes it", wait["message"])
-        self.assertEqual([(q["session"], q.get("parked")) for q in run["queues"]["parked"]["queued"]], [("job", True)])
 
     def test_a_prime_without_the_credential_wait_keeps_the_run_waiting_in_its_worker(self):
         run = self.drive(*self.parked(credential=False))
