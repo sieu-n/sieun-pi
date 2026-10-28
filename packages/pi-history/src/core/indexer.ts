@@ -45,6 +45,9 @@ export interface IndexStatus {
   lastSweepMs?: number;
   stepP50Ms?: number;
   stepP99Ms?: number;
+  /** From the watch event or sweep that found new bytes to their commit, the indexer's own share of lag. */
+  delayP50Ms?: number;
+  delayP99Ms?: number;
 }
 
 interface FileRow {
@@ -116,6 +119,11 @@ export class Indexer {
   private readonly watchers = new Map<string, FSWatcher>();
   private readonly lags: number[] = [];
   private readonly steps: number[] = [];
+  /** Time from the first watch event or sweep that found a file's new bytes to the commit that indexed them. */
+  private readonly delays: number[] = [];
+  private readonly heardAt = new Map<string, number>();
+  private lastStep = { bytes: 0, docs: 0, commitMs: 0 };
+  private stepAts: number[] = [];
   private docCount = 0;
   private newestAt: number | undefined;
   private mode: "backfill" | "tail" = "backfill";
@@ -214,6 +222,7 @@ export class Indexer {
     }
     const lags = [...this.lags].sort((a, b) => a - b);
     const steps = [...this.steps].sort((a, b) => a - b);
+    const delays = [...this.delays].sort((a, b) => a - b);
     let dbBytes = 0;
     if (this.dbPath) {
       for (const suffix of ["", "-wal", "-shm"]) {
@@ -236,6 +245,8 @@ export class Indexer {
       backfillMs: this.backfillMs,
       lastSweepMs: this.lastSweepMs,
       stepP50Ms: percentile(steps, 50),
+      delayP50Ms: percentile(delays, 50),
+      delayP99Ms: percentile(delays, 99),
       stepP99Ms: percentile(steps, 99),
     };
   }
@@ -333,7 +344,7 @@ export class Indexer {
     this.lastSweepMs = Date.now() - now;
     if (!found.length) return;
     if (this.mode === "tail") {
-      for (const path of found) this.hot.add(path);
+      for (const path of found) this.markHot(path);
       return;
     }
     const queued = new Set(this.backlog);
@@ -346,7 +357,7 @@ export class Indexer {
     try {
       const w = watch(dir, { persistent: false, recursive: true }, (_event, name) => {
         if (name && TRANSCRIPT.test(basename(String(name)))) {
-          this.hot.add(join(dir, String(name)));
+          this.markHot(join(dir, String(name)));
           this.kick();
         }
       });
@@ -374,7 +385,7 @@ export class Indexer {
     if (!name) return;
     const path = join(dir, name);
     if (TRANSCRIPT.test(name)) {
-      this.hot.add(path);
+      this.markHot(path);
       this.kick();
       return;
     }
@@ -399,9 +410,15 @@ export class Indexer {
       if (e.isDirectory()) {
         this.watchDir(path);
         await this.scanNewDir(path);
-      } else if (TRANSCRIPT.test(e.name)) this.hot.add(path);
+      } else if (TRANSCRIPT.test(e.name)) this.markHot(path);
     }
     this.kick();
+  }
+
+  /** Queues a file for the next step and notes when the indexer first heard of its new bytes. */
+  private markHot(path: string): void {
+    this.hot.add(path);
+    if (!this.heardAt.has(path)) this.heardAt.set(path, Date.now());
   }
 
   private kick(): void {
@@ -426,7 +443,10 @@ export class Indexer {
         const took = Math.round(performance.now() - began);
         this.steps.push(took);
         if (this.steps.length > LAG_SAMPLES) this.steps.shift();
-        if (took >= SLOW_MS) this.log(`pi-history: slow step ${took} ms on ${path}`);
+        if (took >= SLOW_MS) {
+          const { bytes, docs, commitMs } = this.lastStep;
+          this.log(`pi-history: slow step ${took} ms (${bytes} bytes, ${docs} docs, commit ${commitMs} ms) on ${path}`);
+        }
       } catch (err) {
         this.log(`pi-history: ${path}: ${(err as Error).message}`);
       }
@@ -501,6 +521,8 @@ export class Indexer {
       this.seen.set(path, { size, mtime });
       const row = this.rowFor(path, session);
       const tail = this.caughtUp.has(path);
+      const docsAtStart = this.docCount;
+      this.stepAts = [];
       const db = this.db;
       db.exec("BEGIN IMMEDIATE");
       try {
@@ -564,8 +586,21 @@ export class Indexer {
         row.size = reachedEnd ? size : row.size;
         row.mtime = reachedEnd ? mtime : row.mtime;
         this.st.updateFile.run(row.name, header.cwd ?? null, header.created ?? null, header.parent ?? null, row.indexedTo, row.size, row.mtime, now, row.id);
+        const commitStart = performance.now();
         db.exec("COMMIT");
-        if (reachedEnd) this.caughtUp.add(path);
+        const committed = Date.now();
+        this.lastStep = { bytes: consumed, docs: this.docCount - docsAtStart, commitMs: Math.round(performance.now() - commitStart) };
+        for (const at of this.stepAts) this.lags.push(committed - at);
+        if (this.lags.length > LAG_SAMPLES) this.lags.splice(0, this.lags.length - LAG_SAMPLES);
+        const heard = this.heardAt.get(path);
+        if (tail && consumed > 0 && heard !== undefined) {
+          this.delays.push(committed - heard);
+          if (this.delays.length > LAG_SAMPLES) this.delays.shift();
+        }
+        if (reachedEnd) {
+          this.caughtUp.add(path);
+          this.heardAt.delete(path);
+        }
         return reachedEnd;
       } catch (err) {
         db.exec("ROLLBACK");
@@ -592,10 +627,7 @@ export class Indexer {
     this.st.insertFts.run(id, d.text, d.kind);
     this.docCount++;
     if (this.newestAt === undefined || at > this.newestAt) this.newestAt = at;
-    if (tail) {
-      this.lags.push(now - at);
-      if (this.lags.length > LAG_SAMPLES) this.lags.shift();
-    }
+    if (tail) this.stepAts.push(at);
   }
 }
 
