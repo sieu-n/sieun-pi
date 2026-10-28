@@ -2,7 +2,7 @@
 // the kernel's guard refused every job's rm of them, since no session family owns them (c193 cleanup). `unowned` deletes exactly those.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -52,4 +52,29 @@ test("unowned keeps every tree when a box's records cannot be read", { skip: pro
   assert.deepEqual(removed, []);
   assert.match(kept.get(idle) ?? "", /could not all be read: the records on mac/);
   assert.ok(existsSync(join(idle, "repo", "package.json")));
+});
+
+test("unowned deletes an idle tree whose hard-linked file has a new ctime and an old mtime, and keeps a single-link file with a new ctime", { skip: process.platform !== "linux" }, async t => {
+  const home = mkdtempSync(join(tmpdir(), "job-unowned-"));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  process.env.HOME = home;
+  const { reapUnowned, unownedSource, UNOWNED_IDLE_MS } = await import("../src/job-leftovers.ts");
+  const runs = join(home, "scratch", "mac-run");
+  const linked = join(runs, "dev_sieun-mac-et");
+  const copied = join(runs, "dev_sieun-mac-mm");
+  const store = write(join(home, "store", "index.d.ts"));
+  const types = join(linked, "repo", "node_modules", "ssf", "types");
+  mkdirSync(types, { recursive: true });
+  linkSync(store, join(types, "index.d.ts"));
+  write(join(copied, "repo", "package.json"));
+  const old = new Date(Date.now() - UNOWNED_IDLE_MS - 60 * 60_000);
+  for (const path of [store, join(copied, "repo", "package.json"), types, join(types, ".."), join(types, "..", ".."), join(linked, "repo"), linked, join(copied, "repo"), copied])
+    utimesSync(path, old, old);
+  const since = Date.now() - UNOWNED_IDLE_MS;
+  assert.ok(statSync(store).nlink === 2 && statSync(store).ctimeMs >= since && statSync(store).mtimeMs < since, "the linked file's ctime is new and its mtime old");
+  const source = { ...unownedSource, mounted: async () => [], records: async () => [] };
+  const { removed, kept } = await reapUnowned(source, [linked, copied]);
+  assert.deepEqual(removed, [linked]);
+  assert.ok(!existsSync(linked));
+  assert.match(kept.get(copied) ?? "", /package\.json changed within the last 2 h/);
 });

@@ -660,7 +660,11 @@ export const unownedLog = (): string => join(homedir(), ".local", "state", "sieu
 export interface UnownedSource extends Pick<LeftoverSource, "inside" | "removeTmp"> {
   /** Every path an owner record on any box names for this box, with the record's folder; throws when a box's records cannot be read. */
   records: () => Promise<readonly { path: string; owner: string }[]>;
-  /** A file or folder in the tree at `dir` that changed at or after `since` (epoch ms), or `dir` when the tree cannot be read whole; null otherwise. */
+  /**
+   * A file or folder in the tree at `dir` that changed at or after `since` (epoch ms), or `dir` when the tree cannot be read whole; null otherwise.
+   * A path with more than one link counts by its mtime alone, since a link made or removed anywhere moves its ctime: on 10-28 one pnpm-store file
+   * linked 47 times across ~/scratch/mac-run kept all 13 idle repo copies there fresh, as each delete of another copy moved the file's ctime.
+   */
   written: (dir: string, since: number) => Promise<string | null>;
   /** The dirs among these that a running container bind-mounts, or a path below them. */
   mounted: (dirs: readonly string[]) => Promise<readonly string[]>;
@@ -746,7 +750,7 @@ export const unownedSource: UnownedSource = {
   },
   written: (dir, since) => new Promise(resolve => {
     const at = `@${Math.floor(since / 1000)}`;
-    hostExecFile("find", [dir, "(", "-newermt", at, "-o", "-newerct", at, ")", "-print", "-quit"], { maxBuffer: 1024 * 1024 }, (error, stdout) => {
+    hostExecFile("find", [dir, "(", "-newermt", at, "-o", "-links", "1", "-newerct", at, ")", "-print", "-quit"], { maxBuffer: 1024 * 1024 }, (error, stdout) => {
       const found = String(stdout).split("\n")[0]!.trim();
       resolve(found || (error ? dir : null));
     });
