@@ -10,6 +10,7 @@ The indexer reads every file named `<uuid>.jsonl` or `<prefix>_<uuid>.jsonl` und
 `src/core/extract.ts` turns each line into docs of eight kinds: user, assistant, thinking, tool_call, tool_result, agent_message, notice and summary.
 It skips base64 images, thinking signatures, the `details` copy of tool output, bookkeeping entries and the custom messages in its `BOILERPLATE` list.
 Tool results stay whole.
+The FTS5 table `fts` indexes `text` and `kind`, so a search can leave out thinking with `NOT kind : "thinking"` and count hits without reading `docs`.
 
 ## How it follows the files
 

@@ -132,9 +132,9 @@ export class Indexer {
       insertDoc: db.prepare(
         "INSERT INTO docs(id, file, entry, at, line_offset, kind, tool, tool_call_id, author, is_error, text) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       ),
-      insertFts: db.prepare("INSERT INTO fts(rowid, text) VALUES(?, ?)"),
+      insertFts: db.prepare("INSERT INTO fts(rowid, text, kind) VALUES(?, ?, ?)"),
       maxIdIn: db.prepare("SELECT max(id) AS id FROM docs WHERE id >= ? AND id < ?"),
-      ftsDeleteFile: db.prepare("INSERT INTO fts(fts, rowid, text) SELECT 'delete', id, text FROM docs WHERE file = ?"),
+      ftsDeleteFile: db.prepare("INSERT INTO fts(fts, rowid, text, kind) SELECT 'delete', id, text, kind FROM docs WHERE file = ?"),
       deleteDocs: db.prepare("DELETE FROM docs WHERE file = ?"),
     };
     for (const r of db.prepare("SELECT id, path, session, name, indexed_to, size, mtime FROM files").all() as any[]) {
@@ -510,7 +510,7 @@ export class Indexer {
     const id = this.nextId(at);
     const author = d.author ?? row.name ?? row.session;
     this.st.insertDoc.run(id, row.id, entry ?? null, at, offset, d.kind, d.tool ?? null, d.toolCallId ?? null, author, d.isError ? 1 : 0, d.text);
-    this.st.insertFts.run(id, d.text);
+    this.st.insertFts.run(id, d.text, d.kind);
     this.docCount++;
     if (this.newestAt === undefined || at > this.newestAt) this.newestAt = at;
     if (tail) {

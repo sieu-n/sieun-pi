@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { truncateSync } from "node:fs";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import { openDb } from "../src/core/db.ts";
+import { DatabaseSync } from "node:sqlite";
+import { getMeta, openDb, SCHEMA_VERSION } from "../src/core/db.ts";
 import { Indexer, placeOf } from "../src/core/indexer.ts";
 import { agentMessage, append, assistant, CHILD, digest, header, named, ROOT, tempHome, toolResult, until, user, write } from "./helpers.ts";
 
@@ -101,4 +102,38 @@ test("docs from different files in the same millisecond get distinct ids in time
   assert.equal(ids.length, 3);
   assert.equal(new Set(ids).size, 3);
   for (const id of ids) assert.equal(Math.floor(id / 1024), at);
+});
+
+test("fts indexes kind beside text, for new docs and for a version 1 database it migrates", async () => {
+  const t = tempHome();
+  write(t.rootFile, header(ROOT), named("vp chat"), assistant("kindcheck plan"));
+  const path = join(t.home, "history.db");
+  const old = new DatabaseSync(path);
+  old.exec(`CREATE TABLE files(id INTEGER PRIMARY KEY, path TEXT NOT NULL UNIQUE, session TEXT NOT NULL, root TEXT NOT NULL, parent TEXT, depth INTEGER NOT NULL,
+    name TEXT, cwd TEXT, created INTEGER, indexed_to INTEGER NOT NULL DEFAULT 0, size INTEGER NOT NULL DEFAULT 0, mtime INTEGER NOT NULL DEFAULT 0, indexed_at INTEGER);
+  CREATE TABLE docs(id INTEGER PRIMARY KEY, file INTEGER NOT NULL, entry TEXT, at INTEGER NOT NULL, line_offset INTEGER NOT NULL, kind TEXT NOT NULL,
+    tool TEXT, tool_call_id TEXT, author TEXT, is_error INTEGER NOT NULL DEFAULT 0, text TEXT NOT NULL);
+  CREATE VIRTUAL TABLE fts USING fts5(text, content='docs', content_rowid='id', tokenize='unicode61 remove_diacritics 2');
+  CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
+  INSERT INTO meta VALUES('schema_version', '1');
+  INSERT INTO files(id, path, session, root, depth) VALUES(1, '/gone.jsonl', 'old', 'old', 0);
+  INSERT INTO docs(id, file, at, line_offset, kind, text) VALUES(1024, 1, 1, 0, 'thinking', 'oldthought here');
+  INSERT INTO fts(rowid, text) VALUES(1024, 'oldthought here');`);
+  old.close();
+
+  const db = openDb(path);
+  assert.equal(getMeta(db, "schema_version"), String(SCHEMA_VERSION));
+  const ix = new Indexer({ db, dirs: t.dirs });
+  open.push(ix);
+  await ix.start();
+  await ix.idle();
+  const kinds = (match: string) => (db.prepare("SELECT d.kind FROM fts JOIN docs d ON d.id = fts.rowid WHERE fts MATCH ? ORDER BY d.id").all(match) as { kind: string }[]).map((r) => r.kind);
+  assert.deepEqual(kinds('{text} : oldthought AND kind : "thinking"'), ["thinking"]);
+  assert.deepEqual(kinds('{text} : kindcheck NOT kind : "thinking"'), ["assistant"]);
+  assert.deepEqual(kinds('{text} : kindcheck AND kind : "thinking"'), ["thinking"]);
+
+  truncateSync(t.rootFile, 0);
+  append(t.rootFile, header(ROOT), user("after"));
+  await until("the rewrite", () => kinds("{text} : kindcheck").length === 0);
+  db.exec("INSERT INTO fts(fts, rank) VALUES('integrity-check', 1)");
 });
