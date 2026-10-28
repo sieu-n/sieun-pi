@@ -1087,11 +1087,16 @@ export class Catalog {
       const key = [...fixed, ...below];
       const checkIn = checkIns?.get(row.sessionId);
       const brief = briefs?.get(row.sessionId);
+      const held = this.heldLifecycle.get(row.sessionId);
       const projected = this.applyHeld(row, projectRow(row, readAt, baseline, {
         ...(labelsFor ? { labels: labelsFor } : {}), ...(schedule ? { schedule } : {}), subtree, origin,
         ...(chat ? { chat: true, ...(checkIn ? { checkIn } : {}), ...(brief ? { brief } : {}) } : {}),
         ...(working ? { pulse: sessionPulse(row, running) } : {}) }));
       if (host) projected.host = host;
+      // A chat in the index that the owner did not archive stays listed when its daemon lists it archived, since only the daemon wrote that, as the
+      // idle unload's kill does. This box cannot write another box's file, so on 10-28 the Mac chat frontend bro kept the archived state the
+      // 17:11Z unload wrote, the 17:14Z release dropped the hold that covered it, and the 17:20Z Mac list hid it from the sidebar for 42 min.
+      if (chat && !archived && held !== "archived") projected.archived = false;
       // A chat the owner archived stays out of the sidebar when an agent message resumes its session; only his unarchive brings it back.
       if (archived) projected.archived = true;
       if (!chat) kept.set(row.sessionId, { key, row: projected });
