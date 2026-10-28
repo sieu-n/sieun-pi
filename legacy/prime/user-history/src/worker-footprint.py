@@ -3,7 +3,7 @@
 Reads worker pids, one per line, on stdin. Prints one JSON object: each worker's tree (the worker and every descendant, from
 proc_listchildpids) with its pid count, summed phys_footprint in bytes and the worker process's own phys_footprint (`own`) (the memory macOS counts, compressed and swapped pages
 included), the host's swap use and, on macOS, its memory pressure level, and this process's own CPU seconds. On macOS it uses libproc and sysctl through ctypes;
-on Linux it reads /proc, counts resident plus swapped bytes for phys_footprint and has no pressure level. It starts no other process, so one call costs well under a second of CPU at 1,000 processes.
+on Linux it reads /proc, counts resident plus swapped bytes for phys_footprint and has no pressure level. Its one other process is the `aside` CLI's tab list on macOS (`aside_tabs`), so one call costs well under a second of CPU at 1,000 processes.
 Each `python -m rlm.repl` kernel in a worker tree is reported with its session and root (from RLM_HARNESS_STATE_DIR), its subtree's bytes,
 the kernel process's own bytes (`own`) and its largest non-Prime descendant (`kernels`), and every process that carries RLM_HARNESS_STATE_DIR but sits under no kernel and no Prime process is an
 orphan of the root and session that path names (`orphans`): on 10-15 at 00:45Z a deleted job's nohup'd runner.py started a 30 GB script that way.
@@ -21,6 +21,7 @@ import json
 import os
 import re
 import resource
+import subprocess
 import sys
 
 # The wrapper Prime's bash() runs each handle in: `/bin/bash -c "...{\n<command>\n} 8>&- 9>&-...prime-agent-complete..."`.
@@ -484,6 +485,52 @@ def pm2_daemons(table):
     return [entry for entry in found if entry]
 
 
+# The owner's Aside on the Mac holds the tabs agents open through aside_browser beside his own, and the pressure feed sums both into one
+# browser:aside owner. From 19:05Z to 19:17Z on 10-29 Aside grew from 5.2 to 10.2 GB while 15 of its 17 tabs were live 5180 jobs', and d7 put 7 of
+# the 8 kernel_task minutes on the owner's side. aside_browser writes one owner record a session in ASIDE_OWNERS, each with the targetIds it opened.
+ASIDE = os.path.expanduser("~/.local/bin/aside")
+ASIDE_OWNERS = os.environ.get("ASIDE_BROWSER_STATE") or os.path.expanduser("~/.local/state/aside-browser/owners")
+LIST_TABS = "console.log(JSON.stringify((await listBrowserTabs()).map(t => t.targetId)))"
+
+
+def open_tabs():
+    """The targetIds of every open Aside tab, or None when Aside does not answer. The read took 0.25 s at 19:45Z on 10-29; the 10 s cut keeps
+    the helper inside the relay's 30 s kill, since Aside's own REPL limit is 120 s."""
+    try:
+        out = subprocess.run([ASIDE, "repl", LIST_TABS], capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    for line in out.splitlines():
+        if line.startswith("["):
+            try:
+                return {str(tab) for tab in json.loads(line)}
+            except ValueError:
+                return None
+    return None
+
+
+def aside_tabs(owners=ASIDE_OWNERS, live=open_tabs, platform=sys.platform):
+    """On macOS, how many open Aside tabs agent sessions opened (`agent`, by their owner records) and how many are open (`all`); None elsewhere
+    or when Aside does not answer. A record's tab that is already closed counts for nobody."""
+    if platform != "darwin":
+        return None
+    tabs = live()
+    if tabs is None:
+        return None
+    agent = set()
+    for name in os.listdir(owners) if os.path.isdir(owners) else []:
+        if not name.endswith(".json"):
+            continue
+        try:
+            with open(os.path.join(owners, name), encoding="utf-8") as file:
+                record = json.load(file)
+        except (OSError, ValueError):
+            continue
+        if isinstance(record, dict) and isinstance(record.get("tabs"), dict):
+            agent.update(str(tab) for tab in record["tabs"])
+    return {"agent": len(agent & tabs), "all": len(tabs)}
+
+
 def cpu():
     usage = resource.getrusage(resource.RUSAGE_SELF)
     return round(usage.ru_utime + usage.ru_stime, 3)
@@ -507,4 +554,4 @@ if __name__ == "__main__":
     workers = {line.strip(): tree(int(line), kernels, seen) for line in sys.stdin if line.strip().isdigit()}
     table = scan()
     print(json.dumps({"workers": workers, "kernels": kernels, "orphans": orphans(table, seen), "test_browsers": test_browsers(table),
-                      "stray_servers": reap(stray_servers(table)), "pm2_daemons": pm2_daemons(table), "swap_used_bytes": swap_used(), "pressure_level": pressure_level(), "cpu_s": cpu()}))
+                      "stray_servers": reap(stray_servers(table)), "pm2_daemons": pm2_daemons(table), "aside_tabs": aside_tabs(), "swap_used_bytes": swap_used(), "pressure_level": pressure_level(), "cpu_s": cpu()}))

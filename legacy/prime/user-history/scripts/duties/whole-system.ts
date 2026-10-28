@@ -13,7 +13,7 @@ import { type PoolQueue, readPoolQueue, slotParkOf } from "../../src/slot-park.t
 import { stepSessions, unmovedSteps } from "../../src/unmoved-steps.ts";
 import { waitHolds } from "../../src/checkin-end-state.ts";
 import type { ChatBoard, MemoryGroupId, PlanItem } from "../../src/shared/types.ts";
-import { type AgentLine, type HostUsable, LINGER_MS, type LingerLine, isLinuxReading, parseLinuxReading, readWatch, type StrayServerLine, type IdlePm2Line, type TestBrowserLine, UNREAD_AT_STOP, unusable, type WaitingTree, type WatchLine, type WorkerLine, type WorkerTree } from "../../src/mac-usable-watch.ts";
+import { type AgentLine, type AsideTabs, type HostUsable, LINGER_MS, type LingerLine, isLinuxReading, parseLinuxReading, readWatch, type StrayServerLine, type IdlePm2Line, type TestBrowserLine, UNREAD_AT_STOP, unusable, type WaitingTree, type WatchLine, type WorkerLine, type WorkerTree } from "../../src/mac-usable-watch.ts";
 import { QUIET_MINUTES, QUIET_TARGET_GB, quietMinutes } from "../../src/quiet-minutes.ts";
 import type { HungCall } from "../../src/hung-calls.ts";
 import type { StoppedCall } from "../../src/hung-stop.ts";
@@ -46,7 +46,9 @@ export interface HostView { name: string; usable: HostUsable | null; workers: nu
   /** Every worker of the box that minute (WatchLine.byWorker); absent on lines written before 10-20. */
   byWorker?: readonly WorkerTree[];
   /** The box's loaded sessions idle past the unload window that minute (HostWatchLine.lingering). */
-  lingering?: readonly LingerLine[] }
+  lingering?: readonly LingerLine[];
+  /** The Mac's open Aside tabs and how many agents opened that minute (HostWatchLine.asideTabs). */
+  asideTabs?: AsideTabs }
 /** Lines written before 10-18 04:5xZ name no box, and the Mac wrote every one of them. */
 export const UNNAMED_HOST = "mac";
 
@@ -122,7 +124,7 @@ export function hostViews(line: WatchLine): HostView[] {
       return { name: host.name, usable: read.usable, workers: host.workers, workerGb: host.workerGb, top: host.top,
         ...host.agents ? { agents: host.agents } : {}, ...error ? { error } : {}, ...host.offline ? { offline: true as const } : {}, ...host.testBrowsers ? { testBrowsers: host.testBrowsers } : {},
         ...host.strayServers ? { strayServers: host.strayServers } : {}, ...host.idlePm2 ? { idlePm2: host.idlePm2 } : {},
-        ...host.byWorker ? { byWorker: host.byWorker } : {}, ...host.lingering ? { lingering: host.lingering } : {} };
+        ...host.byWorker ? { byWorker: host.byWorker } : {}, ...host.lingering ? { lingering: host.lingering } : {}, ...host.asideTabs ? { asideTabs: host.asideTabs } : {} };
     }),
   ];
 }
@@ -134,7 +136,7 @@ const feedGroups = (usable: HostUsable | null): Partial<Record<MemoryGroupId, nu
  * line before, by the groups the Mac's pressure feed sums every owner into (`groups`); a reading with no groups (a Linux box, or a Mac line
  * written before 10-18 01:40Z) is never the harness's. Agent sessions take
  * at least the Prime workers' footprint the watch measures itself plus the chat service, since each chat tree is its own feed owner and most
- * fall below the 8 largest. Whether a minute is unusable at all comes only from the box's reading (`unusable`). A fixed 16 GB line, and before it a
+ * fall below the 8 largest, and they take the agents' share of Aside from Browsers (`agentAsideGb`). Whether a minute is unusable at all comes only from the box's reading (`unusable`). A fixed 16 GB line, and before it a
  * 14-turn line, sent minutes with 22 to 26 job turns at work to the apps' side (01:10Z and 01:24Z on 10-18).
  */
 export function memoryShares(view: HostView): Map<MemoryGroupId, number> {
@@ -143,7 +145,31 @@ export function memoryShares(view: HostView): Map<MemoryGroupId, number> {
   // The harness's share holds the agent services too, which the feed groups apart from Agent sessions since 10-21.
   shares.set("agents", Math.max((shares.get("agents") ?? 0) + (shares.get("services") ?? 0), view.workerGb + (view.serviceGb ?? 0)));
   shares.delete("services");
+  const tabs = agentAsideGb(view);
+  if (tabs > 0) {
+    shares.set("agents", shares.get("agents")! + tabs);
+    shares.set("browsers", Math.max(0, (shares.get("browsers") ?? 0) - tabs));
+  }
   return shares;
+}
+
+/**
+ * The part of Aside's footprint the agents' tabs hold, by their share of its open tabs (HostView.asideTabs), in GB; 0 with no tab count or no
+ * Aside owner among the feed's largest. The feed sums every Aside process into one browser:aside owner in Browsers, beside the owner's Chrome and
+ * Helium, so from 19:05Z to 19:17Z on 10-29 Aside grew from 5.17 to 10.22 GB with 15 of its 17 tabs opened by live 5180 jobs, and d7 put 7 of
+ * the 8 kernel_task minutes on the owner's side. A tab count is the split the Mac can read: Aside names no tab of a renderer process.
+ */
+export function agentAsideGb(view: HostView): number {
+  const usable = view.usable, tabs = view.asideTabs;
+  if (!usable || isLinuxReading(usable) || !tabs?.agent || !tabs.all) return 0;
+  const aside = usable.owners?.find(owner => owner.owner === "browser:aside")?.gb ?? 0;
+  return Math.round(100 * aside * tabs.agent / tabs.all) / 100;
+}
+
+/** The agents' Aside tabs of a Mac minute in the flag's words, empty when they hold none. */
+export function asideWords(view: HostView): string {
+  const gb = agentAsideGb(view);
+  return gb > 0 ? `; agents' Aside tabs ${view.asideTabs!.agent} of ${view.asideTabs!.all}, about ${gb} GB` : "";
 }
 
 const leads = (shares: ReadonlyMap<MemoryGroupId, number>): boolean => {
@@ -1289,7 +1315,7 @@ export function measure(input: Inputs): PrecheckOutput {
       }
       if (!miss.length) { count.usable++; continue; }
       count.unusable++;
-      why.push(`${view.name} unusable (${miss.join(", ")}${slow.length ? `: ${slow.join(", ")}` : ""}${memoryWords(view)}${rigWords(view, faultName)})`);
+      why.push(`${view.name} unusable (${miss.join(", ")}${slow.length ? `: ${slow.join(", ")}` : ""}${memoryWords(view)}${asideWords(view)}${rigWords(view, faultName)})`);
       // A slow read of the chat service is the harness's own code, whoever used the most cores: at 20:32Z on 10-24 api/threads/<id>/agents
       // took 2.8 s waiting for a projection at 1.09 runnable a core, and the minute went to the apps' side for their 21.99 cores to the harness's 20.12.
       const read = found.includes("cpu") && slowChatRead(own, line.chat) ? "harness" : side(line, view);

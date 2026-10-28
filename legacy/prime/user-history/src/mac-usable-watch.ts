@@ -210,6 +210,8 @@ export interface HostWatchLine { name: string; usable: HostUsable | null; worker
   idlePm2?: IdlePm2Line[];
   /** The box's loaded sessions idle past the unload window (`LingerLine`); absent when there are none. */
   lingering?: LingerLine[];
+  /** The Mac's open Aside tabs and the agents' share of them (`AsideTabs`); absent off macOS, when Aside did not answer and on lines written before 10-29. */
+  asideTabs?: AsideTabs;
   /** The box's chat trees by footprint with each one's largest process (`TreeLine`), at most 5; absent on lines written before 10-28 10:xxZ and when
    * none holds a kernel or orphan. On 10-28 the Mac's 09:15:30Z swap minute left d1 no process to name, because remote lines dropped them. */
   trees?: TreeLine[] }
@@ -313,7 +315,17 @@ export interface Footprints { workers: Record<string, { pids: number; bytes: num
   stray_servers?: RawStray[];
   /** The box's pm2 God Daemons (`RawPm2`); absent from a helper older than 10-28. */
   pm2_daemons?: RawPm2[];
+  /** The Mac's open Aside tabs and how many of them agent sessions opened (`AsideTabs`); null when Aside did not answer, absent off macOS and from a helper older than 10-29. */
+  aside_tabs?: AsideTabs | null;
   swap_used_bytes: number | null; pressure_level: number | null; cpu_s: number }
+/** The owner's open Aside tabs (`all`) and how many of them agent sessions opened through aside_browser (`agent`), from worker-footprint.py `aside_tabs`. */
+export interface AsideTabs { agent: number; all: number }
+const tabCount = (value: unknown): value is number => Number.isInteger(value) && (value as number) >= 0;
+/** A helper's `aside_tabs` checked at the edge: two whole counts with `agent` at most `all` and at least one tab open, else null. */
+export function parseAsideTabs(value: unknown): AsideTabs | null {
+  if (!isRecord(value) || !tabCount(value.agent) || !tabCount(value.all) || value.all < 1 || value.agent > value.all) return null;
+  return { agent: value.agent, all: value.all };
+}
 /** One process the helper names: its footprint, its start time in epoch seconds (null when unreadable) and its command's first 200 characters. */
 export interface RawProcess { pid: number; bytes: number; started: number | null; command: string }
 /**
@@ -631,10 +643,11 @@ export async function hostWatchLine(remote: RemoteWatch, input: { now: number; c
       ...usable.groups.services !== undefined ? [{ id: "services" as const, label: "", bytes: usable.groups.services * GB, top: [] }] : []] } : null, remote.rows);
     if (answer.footprints === null) return { name: remote.name, usable, workers: 0, workerGb: 0, top: [], live: 0, working: 0, agents, swapGb: null, error: answer.error.slice(0, 200) };
     const line = watchLine({ now: input.now, rows: remote.rows, footprints: answer.footprints, queue: null, chats: input.chats, title: input.title, cpuMs: 0, usable });
+    const asideTabs = parseAsideTabs(answer.footprints.aside_tabs);
     return { name: remote.name, usable, workers: line.workers, workerGb: line.workerGb, top: line.top, ...line.byWorker ? { byWorker: line.byWorker } : {}, live: line.live,
       working: line.working, agents, swapGb: line.mac.swapGb,
       ...line.testBrowsers ? { testBrowsers: line.testBrowsers } : {}, ...line.strayServers ? { strayServers: line.strayServers } : {}, ...line.idlePm2 ? { idlePm2: line.idlePm2 } : {},
-      ...line.lingering ? { lingering: line.lingering } : {}, ...line.trees?.length ? { trees: line.trees } : {} };
+      ...line.lingering ? { lingering: line.lingering } : {}, ...line.trees?.length ? { trees: line.trees } : {}, ...asideTabs ? { asideTabs } : {} };
   } catch (error) {
     return { name: remote.name, usable: null, workers: 0, workerGb: 0, top: [], live: 0, working: 0, swapGb: null, error: (error instanceof Error ? error.message : String(error)).slice(0, 200) };
   }
