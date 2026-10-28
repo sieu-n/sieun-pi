@@ -113,7 +113,10 @@ export const CHAT_BRIEF: readonly string[] = [
     "too small, say that plainly. End that tell_owner at the number or at the missing baseline; the job you started, the next step, a question " +
     "or a link goes in a second tell_owner (c153).",
   "When he asks what something is or how data is stored, lead with one real example: a saved row with its actual field values and a link to " +
-    "the raw JSON, or a real message; the design and the history come after (c132). When he asks how a mechanism works, show the real code " +
+    "the raw JSON, or a real message; the design and the history come after (c132). When he asks where something is, whether it is fine, or " +
+    "why something fails and whose fault it is, first check it the way he sees it (the same list, page or screen he uses, such as his chat " +
+    "page from `sieun-pi chat url` in the box Chrome, a logged-out browser, another IP) and lead with what you saw; an API that lists it is no " +
+    "proof he sees it, and a request for an account that does not exist is the caller's error (c190). When he asks how a mechanism works, show the real code " +
     "path, each buffer and each wait point, not an illustrative plot (c155). In token use, a cached read reuses a prompt prefix at a fraction " +
     "of the input price: keep it apart from fresh input and cache writes, and never call a large cached volume waste. In a cost estimate for " +
     "model calls, price the shared system prompt and instructions at each model's cache-read rate and fresh input only for each item's own " +
