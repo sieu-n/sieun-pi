@@ -207,10 +207,13 @@ export function seedFixture(host: FixtureHost, dataDir: string, now = Date.now()
 
   // Where the agents run and what they could read: a cwd per chat with its AGENTS.md, Prime's agent dir with its global AGENTS.md and
   // harness store, and a duty's precheck state. The config page reads these as it reads the real ones.
-  for (const [thread, slug] of [[vent, "vent"], [harness, "harness"], [crawler, "crawler"], [frontend, "frontend"], [cutover, "harness"], [uptimeDuty, "harness"], [archived, "vent"]] as const) {
+  for (const [thread, slug] of [[vent, "vent"], [harness, "harness"], [crawler, "crawler"], [cutover, "harness"], [uptimeDuty, "harness"], [archived, "vent"]] as const) {
     thread.row.cwd = join(dataDir, "work", slug);
     mkdirSync(thread.row.cwd, { recursive: true });
   }
+  // The frontend chat sits in the fixture's home folder (`fixtureFolders`), as a thread made with no project does, so its config flags it.
+  frontend.row.cwd = join(dataDir, "home");
+  mkdirSync(frontend.row.cwd, { recursive: true });
   writeFileSync(join(dataDir, "work", "AGENTS.md"), "# Work\n\nEvery project folder under work/ follows these rules.\n\n1. Run the tests before you report.\n");
   writeFileSync(join(dataDir, "work", "harness", "AGENTS.md"), "# AI harness\n\nThe harness VP owns the move of :5182 onto pi-host.\n\n1. Ask the owner before a deploy.\n");
   const primeDir = join(dataDir, "prime-agent");

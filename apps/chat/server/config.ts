@@ -25,6 +25,20 @@ export interface Config {
   sharedDir: string;
   wikiBase: string;
   version: string;
+  /** The home folder, which the server refuses as a thread's cwd: no project's AGENTS.md, skills or rules load there. */
+  home: string;
+  /** Project checkouts a new agent can run in, first the default; `server/projects.ts` keeps the ones on this box. */
+  projects: string[];
+}
+
+/** The checkouts the agents work in on the Linux box and the Mac; APPS_CHAT_PROJECTS (colon-separated) replaces the list. */
+export function defaultProjects(home: string): string[] {
+  return [join(home, "src/sieun-pi"), join(home, "Documents/Github/auto-sns-agent"), join(home, "Documents/Github/sieun-pi")];
+}
+
+/** The fixture's home folder and projects, under its data dir, as `seedFixture` creates them. */
+export function fixtureFolders(dataDir: string): Pick<Config, "home" | "projects"> {
+  return { home: join(dataDir, "home"), projects: [join(dataDir, "work", "harness"), join(dataDir, "work", "crawler")] };
 }
 
 export function readConfig(argv = process.argv.slice(2), env = process.env): Config {
@@ -44,6 +58,7 @@ export function readConfig(argv = process.argv.slice(2), env = process.env): Con
   const appDir = resolve(import.meta.dirname, "..");
   const fixture = values.fixture ?? env.APPS_CHAT_FIXTURE === "1";
   const runtime = env.XDG_RUNTIME_DIR ?? `/run/user/${process.getuid?.() ?? 1000}`;
+  const home = homedir();
   return {
     port: Number(values.port ?? env.APPS_CHAT_PORT ?? 5184),
     listen: values.listen ?? "127.0.0.1",
@@ -56,6 +71,8 @@ export function readConfig(argv = process.argv.slice(2), env = process.env): Con
     sharedDir: env.AGENT_CHAT_SHARED_DIR ?? join(homedir(), ".prime/agent/browser-chat"),
     wikiBase: env.APPS_CHAT_WIKI_BASE ?? "https://us-metal02-dev.tail0c093d.ts.net:5176",
     version: values.version ?? env.APPS_CHAT_VERSION ?? releaseVersion(appDir),
+    home,
+    projects: env.APPS_CHAT_PROJECTS ? env.APPS_CHAT_PROJECTS.split(":").filter(Boolean) : defaultProjects(home),
   };
 }
 

@@ -122,6 +122,7 @@ export class FixtureHost implements Host {
   async create(opts: { name?: string; model?: string; thinkingLevel?: string; cwd?: string }): Promise<DurableThread> {
     const thread = this.addThread({ name: opts.name ?? "New thread", createdAt: this.now(), ...(opts.model ? { model: opts.model } : {}) });
     if (opts.thinkingLevel) thread.row.thinkingLevel = opts.thinkingLevel;
+    if (opts.cwd) thread.row.cwd = opts.cwd;
     return { ...thread.row };
   }
 
@@ -364,9 +365,10 @@ export class FixtureHost implements Host {
     this.emit(thread, { type: "doc", conversation: 1, name, value });
   }
 
-  async set(id: string, patch: { name?: string; model?: string; thinkingLevel?: string; archived?: boolean }): Promise<DurableThread> {
+  async set(id: string, patch: { name?: string; model?: string; thinkingLevel?: string; archived?: boolean; cwd?: string }): Promise<DurableThread> {
     const thread = this.get(id);
     if (patch.name !== undefined) thread.row.name = patch.name;
+    if (patch.cwd !== undefined) thread.row.cwd = patch.cwd;
     if (patch.archived !== undefined) thread.row.archived = patch.archived;
     if (patch.thinkingLevel !== undefined) thread.row.thinkingLevel = patch.thinkingLevel;
     if (patch.model) {

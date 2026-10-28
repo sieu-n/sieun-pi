@@ -211,7 +211,7 @@ export class PiHost implements Host {
   async docPut(thread: string, name: string, value: unknown): Promise<void> {
     await this.call("durable_doc_put", { thread, name, value });
   }
-  async set(thread: string, patch: { name?: string; model?: string; thinkingLevel?: string; archived?: boolean }): Promise<DurableThread> {
+  async set(thread: string, patch: { name?: string; model?: string; thinkingLevel?: string; archived?: boolean; cwd?: string }): Promise<DurableThread> {
     return ((await this.call("durable_set", { thread, ...patch })) as { thread: DurableThread }).thread;
   }
   async ping(): Promise<{ ok: true; version: string } | { ok: false; error: string }> {

@@ -216,7 +216,12 @@ export interface SendResult { item: Item; deliveries: Delivery[]; queue?: TurnPl
 export interface ChannelInput { name: string; purpose?: string; members?: AgentId[]; homeChat?: string }
 export interface Channel { id: ChannelId; name: string; purpose: string; homeChat?: string; createdAt: Ms; archived: boolean; members: Member[]; lastSeq: number }
 
-export interface ConversationPatch { name?: string; archived?: boolean; model?: string; thinkingLevel?: ThinkingLevel }
+/** `cwd` moves a root thread to another project folder; its next request runs there. */
+export interface ConversationPatch { name?: string; archived?: boolean; model?: string; thinkingLevel?: ThinkingLevel; cwd?: string }
+
+/** `GET /api/projects`: the project checkouts on this box a new agent can run in, the default first, and the home folder the server refuses. */
+export interface ProjectFolder { path: string; name: string }
+export interface ProjectList { projects: ProjectFolder[]; default: string | null; home: string }
 
 export interface SearchHit {
   id: string;
@@ -320,6 +325,10 @@ export interface AgentConfig {
     /** Its working directory, where its tools run; a thread imported from another box can name a folder this box lacks. */
     cwd: string;
     cwdExists: boolean;
+    /** False when the cwd is the home folder or above it, so no project's AGENTS.md, skills or rules load. */
+    project: boolean;
+    /** True for a root thread, whose cwd `PATCH /api/c/:id` can change; a job inside a thread follows its thread. */
+    canMove: boolean;
     thread: string;
     conversation: number;
     /** The pi-durable file that holds its transcript, jobs and documents; null on the fixture host. */

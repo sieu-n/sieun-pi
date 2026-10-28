@@ -41,7 +41,7 @@ Pages call the server through `web/src/lib/api` (`import { api, timeline, agents
 | `api.retrySend(id, requestId)` | `POST /api/c/:id/send/:requestId/retry` | `SendResult`: a failed thread send tries again now. |
 | `api.discardSend(id, requestId)` | `DELETE /api/c/:id/send/:requestId` | Drops a failed thread send; its item goes away on every page. |
 | `api.abort(id)` | `POST /api/c/:id/abort` | Stops the running turn of that conversation; for a channel, of every member. |
-| `api.patch(id, {name, archived, model, thinkingLevel})` | `PATCH /api/c/:id` | The new header. A job inside a thread takes model changes only. |
+| `api.patch(id, {name, archived, model, thinkingLevel, cwd})` | `PATCH /api/c/:id` | The new header. A job inside a thread takes model changes only. `cwd` moves a root thread to another project folder, and its next request runs there; the server answers 400 for the home folder, a folder above it, a relative path or a missing folder. |
 | `api.read(id, seq?)` | `POST /api/c/:id/read` | Sets the owner's read mark. |
 | `api.jobs(thread)` | `GET /api/threads/:id/jobs` | `JobNode[]`, the thread's job tree. |
 | `api.openDm(agent)` | `POST /api/dms` | Lists that root chat under DMs and returns its summary; a job is returned and stays unlisted. |
@@ -69,7 +69,9 @@ Pages call the server through `web/src/lib/api` (`import { api, timeline, agents
 | Call | Endpoint | Returns |
 |---|---|---|
 | `api.agents({archived})` | `GET /api/agents` | `AgentSummary[]`, one card per chat and job, newest first. |
-| `api.createAgent({name, model, thinkingLevel, cwd, kind, parent})` | `POST /api/agents` | The new root thread's `AgentSummary`; `kind: "job"` with a `parent` files it under that chat. |
+| `api.createAgent({name, model, thinkingLevel, cwd, kind, parent})` | `POST /api/agents` | The new root thread's `AgentSummary`; `kind: "job"` with a `parent` files it under that chat. It runs in `cwd`, else in the default project folder; the home folder is refused with 400. |
+| `api.projects()` | `GET /api/projects` | `ProjectList`: the configured project checkouts on this box (`APPS_CHAT_PROJECTS`, else `~/src/sieun-pi`, `~/Documents/Github/auto-sns-agent` and `~/Documents/Github/sieun-pi`), the first as `default`, and the `home` folder the server refuses. |
+| `api.setAgentCwd(id, cwd)` | `PATCH /api/c/:id {cwd}` | The new header, with the root thread moved to `cwd`. |
 | `api.agentConfig(id)` | `GET /api/agents/:id/config` | `AgentConfig`: identity and purpose, where it runs, its board, memory, instructions, swarm and 7-day usage. |
 | `api.setAgentModel(id, "provider/id", level)` | `PATCH /api/c/:id` | The new header. |
 | `api.stopAgent(id)` | `POST /api/c/:id/abort` | Stop. |
@@ -123,7 +125,7 @@ Pages call the server through `web/src/lib/api` (`import { api, timeline, agents
 | `api.dutyAction(chat, {duty, action, schedule})` | `POST /api/threads/:id/duties` | The duties after run, pause, resume or schedule. |
 | `api.checkIn(chat)` | `GET /api/threads/:id/check-in` | `CheckInView`. |
 | `api.setCheckIn(chat, {everyMs, pause})` | `POST /api/threads/:id/check-in` | The new `CheckInView`; pause is 1h, tomorrow, forever or null. |
-| `api.importPrime(chat, primeId)` | `POST /api/threads/:id/import-prime {prime}` | `{board, duties, runs, checkInMs}`: copies a moved Prime chat's board, duties, their last 20 runs each, each duty's precheck state and its check-in interval from Prime's chat data dir into the thread. |
+| `api.importPrime(chat, primeId)` | `POST /api/threads/:id/import-prime {prime, cwd?}` | `{board, duties, runs, checkInMs}`: copies a moved Prime chat's board, duties, their last 20 runs each, each duty's precheck state and its check-in interval from Prime's chat data dir into the thread. With `cwd`, it first moves the thread to that project folder. |
 | `api.forYou()` | `GET /api/for-you` | `{items: ForYouItem[]}` across every chat, open and done, newest first. |
 | `api.boards()` | `GET /api/boards` | `BoardRow[]`: per chat its progress, open asks, steps awaiting a go, check-in and duties. |
 

@@ -1,7 +1,8 @@
 <script lang="ts">
-  import { api, type AgentSummary, type ModelCatalog, type ThinkingLevel } from "$lib/api";
+  import { api, type AgentSummary, type ModelCatalog, type ProjectList, type ThinkingLevel } from "$lib/api";
   import { Button, Dialog, Field, Input, ModelPicker, mascotSvg } from "$lib/ui";
-    import { levelsFor, modelOptions } from "./agents-model";
+  import { levelsFor, modelOptions } from "./agents-model";
+  import ProjectPicker from "./ProjectPicker.svelte";
 
   type Props = {
     open: boolean;
@@ -18,7 +19,19 @@
   let error = $state("");
   let nameError = $state<string | null>(null);
   let touched = $state(false);
+  let projects = $state<ProjectList | null>(null);
+  let cwd = $state("");
 
+  $effect(() => {
+    if (!open || projects) return;
+    api.projects().then(
+      (list) => {
+        projects = list;
+        if (!cwd) cwd = list.default ?? "";
+      },
+      () => (projects = { projects: [], default: null, home: "" }),
+    );
+  });
   $effect(() => {
     if (open && !model && catalog) {
       model = catalog.default.model;
@@ -32,6 +45,7 @@
     name = "";
     model = catalog?.default.model ?? "";
     level = catalog?.default.thinkingLevel;
+    cwd = projects?.default ?? "";
     error = "";
     nameError = null;
     touched = false;
@@ -52,7 +66,7 @@
     pending = true;
     error = "";
     try {
-      const agent = await api.createAgent({ name: name.trim(), ...(model ? { model } : {}), ...(level ? { thinkingLevel: level } : {}) });
+      const agent = await api.createAgent({ name: name.trim(), ...(model ? { model } : {}), ...(level ? { thinkingLevel: level } : {}), ...(cwd.trim() ? { cwd: cwd.trim() } : {}) });
       open = false;
       reset();
       oncreated(agent);
@@ -102,7 +116,15 @@
           }}
         />
       </div>
-      <p class="hint t-caption">A new agent is a new root thread on pi-host. You can change its model later from its card.</p>
+      <div class="setting">
+        <span class="t-body">Project</span>
+        <ProjectPicker {projects} bind:value={cwd} disabled={pending || !projects} id="create-agent-project" onchange={() => (touched = true)} />
+      </div>
+      <p class="hint t-caption">
+        A new agent is a new root thread on pi-host, in its project folder, whose AGENTS.md, skills and rules it reads.
+        {#if projects && !projects.default}No project folder is configured on this box, so name one.{/if}
+        You can change its model and folder later from its card.
+      </p>
     </div>
     {#if error}<p class="error t-body-sm" role="alert">{error}</p>{/if}
   </form>

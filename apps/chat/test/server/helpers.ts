@@ -9,7 +9,7 @@ import { join } from "node:path";
 import WebSocket from "ws";
 import type { LiveEvent } from "../../web/src/lib/api/types.ts";
 import { App } from "../../server/app.ts";
-import { readConfig } from "../../server/config.ts";
+import { fixtureFolders, readConfig } from "../../server/config.ts";
 import { FixtureHost } from "../../server/host/fixture.ts";
 import { PiHost } from "../../server/host/pi-host.ts";
 import { serve } from "../../server/http.ts";
@@ -40,7 +40,7 @@ export interface LiveClient {
 export async function start(opts: { real?: boolean; wordMs?: number; url?: string; dataDir?: string } = {}): Promise<Running> {
   if (opts.url) return remote(opts.url);
   const dataDir = opts.dataDir ?? mkdtempSync(join(tmpdir(), "apps-chat-test-"));
-  const config = { ...readConfig([]), dataDir, port: 0, fixture: !opts.real, box: "test-box" };
+  const config = { ...readConfig([]), dataDir, port: 0, fixture: !opts.real, box: "test-box", ...(opts.real ? {} : fixtureFolders(dataDir)) };
   const host = opts.real ? new PiHost(config.socket) : new FixtureHost();
   if (host instanceof FixtureHost) {
     host.wordMs = opts.wordMs ?? 0;

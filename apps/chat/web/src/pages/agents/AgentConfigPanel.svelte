@@ -1,10 +1,11 @@
 <script lang="ts">
-  import { api, type AgentConfig, type AgentSummary, type ConfigFile, type ModelCatalog, type RunStatus, type ThinkingLevel } from "$lib/api";
+  import { api, type AgentConfig, type AgentSummary, type ConfigFile, type ModelCatalog, type ProjectList, type RunStatus, type ThinkingLevel } from "$lib/api";
   import { Avatar, Badge, Button, Chip, EmptyState, IconButton, LoadingText, Meter, ModelPicker, StatusDot, Tabs, TypingDots, stampLabel, toast } from "$lib/ui";
   import { conversationHref, hrefFor } from "$lib/router.svelte";
   import {
     JOB_KIND_LABEL, SECTIONS, STATUS_LABEL, bytesLabel, canArchive, everyLabel, levelsFor, modelKey, modelOptions, shortPath, type ConfigSection,
   } from "./agents-model";
+  import ProjectPicker from "./ProjectPicker.svelte";
 
   type Props = {
     agentId: string;
@@ -23,6 +24,33 @@
   let config = $state<AgentConfig | null>(null);
   let error = $state("");
   let pickerOpen = $state(false);
+  let moving = $state(false);
+  let projects = $state<ProjectList | null>(null);
+  let nextCwd = $state("");
+  let saving = $state(false);
+  let moveError = $state("");
+
+  async function startMove() {
+    moveError = "";
+    moving = true;
+    projects ??= await api.projects().catch(() => ({ projects: [], default: null, home: "" }));
+    nextCwd = config?.runs.project ? config.runs.cwd : (projects.default ?? "");
+  }
+  async function saveMove() {
+    if (!config || saving) return;
+    saving = true;
+    moveError = "";
+    try {
+      await api.setAgentCwd(agentId, nextCwd.trim());
+      moving = false;
+      toast.success("Its next turn runs in the new folder");
+      await load(agentId);
+    } catch (reason) {
+      moveError = reason instanceof Error ? reason.message : String(reason);
+    } finally {
+      saving = false;
+    }
+  }
 
   async function load(id: string) {
     error = "";
@@ -36,6 +64,7 @@
   $effect(() => {
     const id = agentId;
     config = null;
+    moving = false;
     void load(id);
   });
   // A new status or model on the live card reads the config again, so jobs, board and usage follow the run.
@@ -138,6 +167,29 @@
     {:else if !config}
       <div class="loading"><LoadingText text="Reading its configuration…" /></div>
     {:else if section === "overview"}
+      <section class="block project" aria-label="Project folder" data-fact="cwd" data-project={config.runs.project ? "yes" : "no"}>
+        <div class="project-head">
+          <h3 class="t-caption heading">Project folder</h3>
+          {#if !config.runs.project}<Badge tone="danger">No project</Badge>{/if}
+          {#if !config.runs.cwdExists}<span class="t-caption warn">Not on this box</span>{/if}
+          {#if config.runs.canMove && !moving}<button type="button" class="more t-caption" aria-label="Change project folder" onclick={startMove}>Change</button>{/if}
+        </div>
+        {@render path(config.runs.cwd, "working directory")}
+        {#if !config.runs.project}
+          <p class="t-caption warn">It runs in the home folder, so it reads no project's AGENTS.md, skills or rules.</p>
+        {/if}
+        {#if moving}
+          <div class="move">
+            <ProjectPicker {projects} bind:value={nextCwd} disabled={saving || !projects} id="agent-project" />
+            <div class="move-actions">
+              <Button size="sm" variant="ghost" onclick={() => (moving = false)} disabled={saving}>Cancel</Button>
+              <Button size="sm" variant="primary" onclick={saveMove} loading={saving} disabled={saving || !nextCwd.trim() || nextCwd.trim() === config.runs.cwd}>Move</Button>
+            </div>
+            <p class="t-caption meta">Its next turn runs its tools, prompt and Python kernel in this folder.</p>
+            {#if moveError}<p class="t-caption warn" role="alert">{moveError}</p>{/if}
+          </div>
+        {/if}
+      </section>
       <section class="block" aria-label="Purpose">
         <h3 class="t-caption heading">Responsibility</h3>
         {#if config.identity.purpose}
@@ -152,8 +204,6 @@
       <dl class="facts">
         <dt>Host</dt>
         <dd data-fact="host">{config.runs.host} <span class="t-caption meta">{hostLine}</span></dd>
-        <dt>Home directory</dt>
-        <dd data-fact="cwd">{@render path(config.runs.cwd, "working directory")}{#if !config.runs.cwdExists}<span class="t-caption warn">Not on this box</span>{/if}</dd>
         <dt>Board</dt>
         <dd data-fact="board">
           {#if config.board}
@@ -187,8 +237,8 @@
         <dd>{hostLine}{config.runs.hostVersion ? "" : " (not answering)"}</dd>
         <dt>pi-host socket</dt>
         <dd>{@render path(config.runs.socket, "pi-host socket")}</dd>
-        <dt>Home directory</dt>
-        <dd>{@render path(config.runs.cwd, "working directory")}{#if !config.runs.cwdExists}<span class="t-caption warn">Not on this box: its tools fail there until the thread moves</span>{/if}</dd>
+        <dt>Project folder</dt>
+        <dd>{@render path(config.runs.cwd, "working directory")}{#if !config.runs.project}<Badge tone="danger">No project</Badge>{/if}{#if !config.runs.cwdExists}<span class="t-caption warn">Not on this box: its tools fail there until the thread moves</span>{/if}</dd>
         <dt>Thread</dt>
         <dd>{@render path(config.runs.thread, "thread id")}</dd>
         <dt>Conversation</dt>
@@ -433,6 +483,44 @@
   }
   .warn {
     color: var(--text-danger);
+  }
+  .project {
+    padding: var(--space-3) var(--space-4);
+    border: 1px solid var(--border-standard);
+    border-radius: var(--radius-container);
+  }
+  .project[data-project="no"] {
+    border-color: var(--text-danger);
+  }
+  .project-head {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+  .project .path code {
+    color: var(--text-standard);
+  }
+  .project .warn {
+    margin: 0;
+  }
+  .move {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    min-width: 0;
+    gap: var(--space-2);
+    padding-top: var(--space-2);
+  }
+  .move :global([data-testid="project-picker"]) {
+    align-items: flex-start;
+  }
+  .move-actions {
+    display: flex;
+    justify-content: flex-start;
+    gap: var(--space-2);
+  }
+  .move .meta {
+    margin: 0;
   }
   .note {
     margin: 0;

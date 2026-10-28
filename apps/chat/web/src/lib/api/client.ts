@@ -4,7 +4,7 @@
  */
 import type {
   AgentConfig, AgentId, AgentSummary, BoardOp, BoardRow, BoardView, Channel, ChannelInput, CheckInPatch, CheckInView, ChatAgent, ConversationHeader, ConversationId,
-  ConversationPatch, ConversationSummary, DutyAction, DutyView, ForYouItem, HostsReport, Item, JobNode, Me, ModelCatalog, SearchQuery, SearchResult, SendRequest,
+  ConversationPatch, ConversationSummary, DutyAction, DutyView, ForYouItem, HostsReport, Item, JobNode, Me, ModelCatalog, ProjectList, SearchQuery, SearchResult, SendRequest,
   SendResult, Sidebar, ThinkingLevel, TimelinePage, UsageReport, AccountsView,
 } from "./types.ts";
 import type { DutyCardModel } from "./shared/duty-card.ts";
@@ -62,6 +62,8 @@ export const api = {
     call<AgentSummary>("POST", "/api/agents", input),
   /** One agent as a role: purpose, where it runs, its board, memory, instructions and swarm (API.md, Agents). */
   agentConfig: (id: AgentId) => call<AgentConfig>("GET", `/api/agents/${enc(id)}/config`),
+  projects: () => call<ProjectList>("GET", "/api/projects"),
+  setAgentCwd: (id: AgentId, cwd: string) => call<ConversationHeader>("PATCH", `/api/c/${enc(id)}`, { cwd }),
   setAgentModel: (id: AgentId, model: string, thinkingLevel?: ThinkingLevel) => call<ConversationHeader>("PATCH", `/api/c/${enc(id)}`, { model, ...(thinkingLevel ? { thinkingLevel } : {}) }),
   stopAgent: (id: AgentId) => call<{ ok: true }>("POST", `/api/c/${enc(id)}/abort`),
   archiveAgent: (id: AgentId, archived = true) => call<ConversationHeader>("PATCH", `/api/c/${enc(id)}`, { archived }),

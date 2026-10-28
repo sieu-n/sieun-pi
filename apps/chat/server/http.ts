@@ -8,6 +8,7 @@ import type { ChannelInput, ConversationPatch, SendRequest } from "../web/src/li
 import { agentConfig } from "./agent-config.ts";
 import { App, MODELS, NotFound } from "./app.ts";
 import { LocalImageError, readLocalImage } from "./local-image.ts";
+import { CwdRefused } from "./projects.ts";
 import { readJson } from "./store.ts";
 import { usageReport, readPool, hostsReport } from "./usage.ts";
 
@@ -62,6 +63,7 @@ export function routes(app: App): Route[] {
     route("GET", "/api/agents", async (_r, _p, q) => app.threads.agents({ archived: q.get("archived") === "1" })),
     route("GET", "/api/agents/:id/config", async (_r, p) => agentConfig(app, p.id!)),
     route("POST", "/api/agents", async (_r, _p, _q, body) => app.createAgent((await body()) as Parameters<App["createAgent"]>[0])),
+    route("GET", "/api/projects", async () => app.projects()),
     route("GET", "/api/c/:id", async (_r, p) => app.header(p.id!)),
     route("PATCH", "/api/c/:id", async (_r, p, _q, body) => app.patch(p.id!, (await body()) as ConversationPatch)),
     route("GET", "/api/c/:id/items", async (_r, p, q) => {
@@ -113,8 +115,12 @@ export function routes(app: App): Route[] {
         throw new BadRequest(error instanceof Error ? error.message : String(error));
       }
     }),
-    route("POST", "/api/threads/:id/import-prime", async (_r, p, _q, body) =>
-      app.boards.importPrime(p.id!, String(((await body()) as { prime?: string }).prime ?? ""), app.config.sharedDir)),
+    route("POST", "/api/threads/:id/import-prime", async (_r, p, _q, body) => {
+      const input = (await body()) as { prime?: string; cwd?: string };
+      // `cwd` names the project folder of the moved Prime chat; the thread keeps the cwd its import gave it without one.
+      if (typeof input.cwd === "string") await app.patch(p.id!, { cwd: input.cwd });
+      return app.boards.importPrime(p.id!, String(input.prime ?? ""), app.config.sharedDir);
+    }),
     route("GET", "/api/threads/:id/agents", async (_r, p) => ({ agents: app.boards.chatAgents(p.id!) })),
     route("GET", "/api/threads/:id/duties", async (_r, p) => ({ duties: app.boards.duties(p.id!) })),
     route("POST", "/api/threads/:id/duties", async (_r, p, _q, body) => ({ duties: await app.boards.dutyAction(p.id!, (await body()) as never) })),
@@ -188,7 +194,7 @@ async function handle(app: App, table: Route[], req: IncomingMessage, res: Serve
     return serveWeb(app, path, res);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    const status = error instanceof NotFound ? 404 : error instanceof BadRequest || /^(No |A |An |Dates|around|after|.* is not in #)/.test(message) ? 400 : 500;
+    const status = error instanceof NotFound ? 404 : error instanceof BadRequest || error instanceof CwdRefused || /^(No |A |An |Dates|around|after|.* is not in #)/.test(message) ? 400 : 500;
     if (status === 500) app.log(`${req.method} ${path} failed: ${error instanceof Error ? error.stack : message}`);
     if (!res.headersSent) json(res, status, { error: message });
     else res.end();

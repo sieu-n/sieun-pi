@@ -107,7 +107,8 @@ export interface Host {
   usage(range: { since?: number; until?: number; threads?: string[] }): Promise<UsageTotal[]>;
   docGet(thread: string, name: string): Promise<unknown>;
   docPut(thread: string, name: string, value: unknown): Promise<void>;
-  set(thread: string, patch: { name?: string; model?: string; thinkingLevel?: string; archived?: boolean }): Promise<DurableThread>;
+  /** `cwd` moves the thread: pi-host runs its next request's tools, prompt and kernels there. */
+  set(thread: string, patch: { name?: string; model?: string; thinkingLevel?: string; archived?: boolean; cwd?: string }): Promise<DurableThread>;
   /** True while the host answers. */
   ping(): Promise<{ ok: true; version: string } | { ok: false; error: string }>;
   close(): Promise<void>;

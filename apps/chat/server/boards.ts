@@ -341,7 +341,9 @@ export class Boards {
     if (brief) {
       const name = `${duty.name} duty ${runStamp(record.at)}`;
       try {
-        const job = await this.host.create({ name, model: DEFAULT_MODEL, thinkingLevel: "high", ...(duty.precheck.cwd ? { cwd: duty.precheck.cwd } : {}) });
+        // The duty job works where its precheck runs, else in its chat's project folder, so it reads that folder's AGENTS.md chain.
+        const cwd = duty.precheck.cwd || this.threads.thread(chat)?.cwd;
+        const job = await this.host.create({ name, model: DEFAULT_MODEL, thinkingLevel: "high", ...(cwd ? { cwd } : {}) });
         this.store.state.threads[job.id] = { kind: "job", parent: chat };
         this.store.saveState();
         await this.threads.refresh().catch(() => undefined);

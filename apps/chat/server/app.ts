@@ -5,7 +5,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { WebSocket, WebSocketServer } from "ws";
 import type {
-  AgentSummary, ConversationHeader, ConversationId, Delivery, ConversationPatch, ConversationSummary, ImageRef, Item, LiveCommand, LiveEvent, Me, ModelCatalog, ModelInfo, SendRequest, SendResult, Sidebar, ThinkingLevel,
+  AgentSummary, ConversationHeader, ConversationId, Delivery, ConversationPatch, ConversationSummary, ImageRef, Item, LiveCommand, LiveEvent, Me, ModelCatalog, ModelInfo, ProjectList, SendRequest, SendResult, Sidebar, ThinkingLevel,
   TimelinePage,
 } from "../web/src/lib/api/types.ts";
 import type { AllowedModel } from "../../../config/allowed-models.ts";
@@ -14,6 +14,7 @@ import { Channels, publicDelivery } from "./channels.ts";
 import { DEFAULT_MODEL, type Config } from "./config.ts";
 import type { Host } from "./host/types.ts";
 import { Outbox, type OutboxRow } from "./outbox.ts";
+import { projectCwd, projectList } from "./projects.ts";
 import { Search } from "./search.ts";
 import { Store } from "./store.ts";
 import { modelRef, OWNER, parseConversationId, Threads } from "./threads.ts";
@@ -286,18 +287,26 @@ export class App {
     }
     const { thread, conversation } = parseConversationId(id);
     if (conversation !== 1 && (patch.name !== undefined || patch.archived !== undefined)) throw new Error("Rename and archive the job's thread instead; a job inside a thread has no name of its own in pi-host.");
+    if (conversation !== 1 && patch.cwd !== undefined) throw new Error("A job inside a thread runs in its thread's folder; move the thread's root instead.");
     await this.host.set(thread, {
       ...(patch.name !== undefined ? { name: patch.name } : {}), ...(patch.archived !== undefined ? { archived: patch.archived } : {}),
+      ...(patch.cwd !== undefined ? { cwd: projectCwd(this.config, patch.cwd) } : {}),
       ...(patch.model !== undefined ? { model: patch.model } : {}), ...(patch.thinkingLevel !== undefined ? { thinkingLevel: patch.thinkingLevel } : {}),
     });
     await this.threads.refresh();
     return this.header(id);
   }
 
+  /** The project folders a new agent can run in on this box (`server/projects.ts`). */
+  projects(): ProjectList {
+    return projectList(this.config);
+  }
+
+  /** A new root thread in a project folder: the one given, else the default project, never the home folder. */
   async createAgent(input: { name?: string; model?: string; thinkingLevel?: string; cwd?: string; kind?: "chat" | "job"; parent?: string }): Promise<AgentSummary> {
+    const cwd = projectCwd(this.config, input.cwd);
     const created = await this.host.create({
-      ...(input.name ? { name: input.name } : {}), model: input.model ?? MODELS.default.model, thinkingLevel: input.thinkingLevel ?? MODELS.default.thinkingLevel,
-      ...(input.cwd ? { cwd: input.cwd } : {}),
+      ...(input.name ? { name: input.name } : {}), model: input.model ?? MODELS.default.model, thinkingLevel: input.thinkingLevel ?? MODELS.default.thinkingLevel, cwd,
     });
     if (input.kind === "job" || input.parent) {
       this.store.state.threads[created.id] = { kind: "job", ...(input.parent ? { parent: input.parent } : {}) };

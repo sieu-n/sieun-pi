@@ -3,7 +3,7 @@
  *
  * | Part | Read from |
  * |---|---|
- * | name, model, status, cwd, created | pi-host's thread row (`durable_threads`) and tree (`durable_tree`) |
+ * | name, model, status, cwd, created | pi-host's thread row (`durable_threads`) and tree (`durable_tree`); `project` is false for the home folder (`projects.ts`) |
  * | purpose | the conversation's first entry (`durable_entries after 0`): the owner's first message or the brief its parent or a duty sent |
  * | system text | pi-host's durable Preamble, `PRIME_BASE_PROMPT` in packages/pi-family/preamble.ts of the pi-host that runs |
  * | thread file | `<durable dir>/threads/<thread>.sqlite`, beside pi-host's `index.sqlite` |
@@ -20,6 +20,7 @@ import type { AgentConfig, AgentId, ChatBoard, ConfigFile, PlanItem } from "../w
 import type { Duty, DutyRunRecord } from "../web/src/lib/api/shared/chat-duties.ts";
 import { NotFound, type App } from "./app.ts";
 import { awaitingGo, BOARD_DOC, nextRun, type DutyFile } from "./boards.ts";
+import { isNoProject } from "./projects.ts";
 import { readJson } from "./store.ts";
 import { conversationIdOf, parseConversationId } from "./threads.ts";
 
@@ -261,7 +262,7 @@ export async function agentConfig(app: App, id: AgentId): Promise<AgentConfig> {
     },
     runs: {
       host: app.config.box, hostKind: app.host.name, hostVersion: ping.ok ? ping.version : null, socket: app.config.socket, cwd: row.cwd, cwdExists: existsSync(row.cwd),
-      thread, conversation, threadFile, dataDir: app.store.dir,
+      project: !isNoProject(row.cwd, app.config.home), canMove: conversation === 1, thread, conversation, threadFile, dataDir: app.store.dir,
     },
     board: chat && board ? { chat, chatName: app.threads.thread(chat)?.name ?? chat, own: chat === id, ...boardSummary(board) } : null,
     memory: {
