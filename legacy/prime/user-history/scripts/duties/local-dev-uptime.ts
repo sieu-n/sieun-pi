@@ -63,9 +63,13 @@ export const MAC_WINDOW_MS = 24 * 60 * 60_000;
  * mtime under convex/ says whether a change came after that good push. Both are local times in the same format, so they compare as text.
  */
 export const MAC_REPO = "$HOME/Documents/Github/auto-sns-agent";
-/** The shell line that prints `convex-push <status json>` and `convex-src <newest convex/ mtime>`; `mtimes` lists each file's mtime in that format. */
+/**
+ * The shell line that prints `convex-push <status json>` and `convex-src <newest convex/ mtime>`; `mtimes` lists each file's mtime in that format.
+ * printf, not echo: dash's echo turns the `\n` escapes of a failed push's reason into newlines, so on 10-28 at 07:18Z the one-line JSON broke and
+ * d1 read convex_read instead of convex_push_stale while us-metal02's watcher failed on a type error.
+ */
 export function convexCommand(node: string, repo: string, mtimes: string): string {
-  return `(cd "${repo}" && echo "convex-push $("${node}" scripts/repo/agent/convex-watcher.mjs status --json 2>/dev/null | tr -d '\\n')"; `
+  return `(cd "${repo}" && printf 'convex-push %s\\n' "$("${node}" scripts/repo/agent/convex-watcher.mjs status --json 2>/dev/null | tr -d '\\n')"; `
     + `echo "convex-src $(find convex -type f -not -path 'convex/_generated/*' -not -path '*/node_modules/*' ${mtimes} | sort | tail -1)")`;
 }
 export const MAC_CONVEX_COMMAND = convexCommand("$HOME/.hermes/node/bin/node", MAC_REPO, "-exec stat -f '%Sm' -t '%Y-%m-%dT%H:%M:%S' {} +");

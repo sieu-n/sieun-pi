@@ -5,8 +5,12 @@
 // convex_push_stale reads us-metal02's own watcher, whose pushes all failed from 10-24 to 10-27 while a retry kept its newest push at running.
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { WatchLine } from "../src/mac-usable-watch.ts";
-import { convexPushStale, LOCAL_CONVEX_COMMAND, MAC_COMMAND, measureLocalConvex, MAC_RETRY_MS, MAC_WINDOW_MS, macDown, macUnusableMinutes, measureMac, measureStoreBox, parseMacReading, parseStoreBox, STORE_BOX, STORE_COMMAND } from "../scripts/duties/local-dev-uptime.ts";
+import { convexCommand, convexPushStale, LOCAL_CONVEX_COMMAND, MAC_COMMAND, measureLocalConvex, MAC_RETRY_MS, MAC_WINDOW_MS, macDown, macUnusableMinutes, measureMac, measureStoreBox, parseConvexReading, parseMacReading, parseStoreBox, STORE_BOX, STORE_COMMAND } from "../scripts/duties/local-dev-uptime.ts";
 
 const push = (outcome: string, at: string, lastGoodAt: string | null) =>
   `convex-push {  "count": 1,  "watchers": [],  "push": {    "outcome": "${outcome}",    "at": "${at}",    "reason": ${outcome === "failed" ? '"schema eval timed out (1s)"' : "null"},    "lastGoodAt": ${lastGoodAt ? `"${lastGoodAt}"` : "null"}  }}\n`;
@@ -130,4 +134,21 @@ test("this host's watcher is stale while a retry runs after a failed push and no
 test("the local read lists GNU find mtimes cut to the pm2 stamp's 19 characters", () => {
   assert.match(LOCAL_CONVEX_COMMAND, /scripts\/repo\/agent\/convex-watcher\.mjs status --json/);
   assert.match(LOCAL_CONVEX_COMMAND, /-printf '%TY-%Tm-%TdT%TT\\n' \| cut -c1-19 \| sort \| tail -1/);
+});
+
+test("the shell line keeps a failed push's multi-line reason on one convex-push line", () => {
+  const repo = mkdtempSync(join(tmpdir(), "d1-convex-"));
+  try {
+    mkdirSync(join(repo, "scripts/repo/agent"), { recursive: true });
+    mkdirSync(join(repo, "convex"));
+    writeFileSync(join(repo, "convex/a.ts"), "");
+    const status = { push: { outcome: "running", at: "2026-10-28T07:19:41", reason: "TypeScript typecheck via `tsc` failed.\nconvex/x.ts:1:1 - error", lastGoodAt: "2026-10-28T07:16:44", lastFailedAt: "2026-10-28T07:18:18" } };
+    writeFileSync(join(repo, "scripts/repo/agent/convex-watcher.mjs"), `console.log(${JSON.stringify(JSON.stringify(status, null, 2))});`);
+    const text = execFileSync("/bin/sh", ["-c", convexCommand(process.execPath, repo, "-printf '%TY-%Tm-%TdT%TT\\n' | cut -c1-19")], { encoding: "utf8" });
+    const parsed = parseConvexReading(text);
+    assert.deepEqual(parsed.convexPush, status.push);
+    assert.match(parsed.convexSrc ?? "", /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
 });
