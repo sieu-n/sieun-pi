@@ -98,6 +98,7 @@ import { resumeModel } from "./resume-model.ts";
 import { keepWakes, waitingSession } from "./waiting-session.ts";
 import { currentRoot, judgeCurrent, judgedLine, judgeVersion, LOADED } from "./judge-version.ts";
 import { archivePath, archiveRun, DELIVERY, fileSha256, judgeFooter, rejudge } from "./run-archive.ts";
+import { registerCriteria, REGISTRATION_FILE, withCriteriaCheck } from "./criteria-registration.ts";
 
 const DATA = process.env.AGENT_CHAT_DATA_DIR ?? join(homedir(), ".prime/agent/browser-chat");
 /** Prime's agent dir, whose harness/ folder holds the published global harness store. */
@@ -318,7 +319,9 @@ async function setup(flags: Record<string, string>): Promise<void> {
   const criteria = need(flags, "criteria");
   if (existsSync(join(run, "run.json"))) throw new Error(`${run} already holds a run`);
   mkdirSync(run, { recursive: true });
-  copyFileSync(criteria, join(run, "criteria.md"));
+  // Setup registers the criteria from the clock and the file before it makes anything, so nobody types a time or hash into them.
+  const registered = registerCriteria(run, criteria);
+  log(run, `registered the criteria ${criteria} at ${registered.registeredAt} with sha256 ${registered.sha256} in ${REGISTRATION_FILE}`);
   // A setup that stopped before its window line runs again with the same run folder: the project it built and its creates come from the
   // pending file, and nothing is built twice. --chat adopts a chat by id in the folder its session runs in and builds nothing either.
   const earlier = existsSync(pendingFile(run)) ? readJson<Pending>(pendingFile(run)) : undefined;
@@ -514,7 +517,7 @@ async function reachedVerdict(run: string, state: RunState, scenarios: Record<st
   const scenario = scenarios[state.scenario];
   if (!scenario?.endsAtVerdict) return false;
   try {
-    const judged = await judgeCurrent(run, async () => scenario.evaluate(run, state));
+    const judged = await judgeCurrent(run, async () => withCriteriaCheck(run, await scenario.evaluate(run, state)));
     if ("unjudged" in judged) { log(run, `judge: ${judged.unjudged}`); return false; }
     return judged.verdict !== "open";
   } catch (error) { log(run, `judge: ${error instanceof Error ? error.message : String(error)}`); return false; }
@@ -665,7 +668,7 @@ async function reopenRun(flags: Record<string, string>, run: string, until: numb
   mkdirSync(evidence, { recursive: true });
   const state = readJson<RunState>(join(run, "run.json"));
   writeJson(join(run, "run.json"), { ...state, until: Math.min(until, Date.now()) });
-  for (const file of ["run.json", "setup.md", "criteria.md", "archive.json", "check-in-setting.json", "service.log", "clean-room.log"]) {
+  for (const file of ["run.json", "setup.md", "criteria.md", REGISTRATION_FILE, "archive.json", "check-in-setting.json", "service.log", "clean-room.log"]) {
     if (existsSync(join(run, file))) copyFileSync(join(run, file), join(evidence, file));
   }
   // Evaluate and teardown log to the run's clean-room.log and stdout, and teardown deletes the run folder, so stdout goes to the copy meanwhile.
@@ -692,7 +695,7 @@ async function evaluate(flags: Record<string, string>): Promise<void> {
   const srv = await server().catch(() => null);
   if (srv) await collectOnce(run, state, srv, { at: 0 });
   // A judge newer than the one this process loaded judges in a fresh process, and one that cannot run leaves the run open with its inputs kept.
-  const judged = await judgeCurrent(run, async () => scenario.evaluate(run, state));
+  const judged = await judgeCurrent(run, async () => withCriteriaCheck(run, await scenario.evaluate(run, state)));
   const ended = state.until !== undefined && state.until <= Date.now();
   const kept = "unjudged" in judged ? `\nThe inputs ${ended ? "go" : "stay in the run folder and go"} to ${archivePath(run)} at teardown. ` +
     `Judge them with \`clean-room.ts rejudge --archive ${archivePath(run)}\`.\n` : "";
@@ -970,7 +973,7 @@ async function main(): Promise<void> {
     const state = readJson<RunState>(join(run, "run.json"));
     // rejudge pins the clock at the window end, so a judge that reads Date.now sees the window as it ended.
     if (flags.now) { const at = Date.parse(flags.now); Date.now = () => at; }
-    const { verdict, text } = await SCENARIOS[state.scenario]!.evaluate(run, state);
+    const { verdict, text } = withCriteriaCheck(run, await SCENARIOS[state.scenario]!.evaluate(run, state));
     process.stdout.write(judgedLine(verdict, text));
     return;
   }
