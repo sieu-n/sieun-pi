@@ -6,7 +6,9 @@ import { Session } from "node:inspector/promises";
 import { test, type TestContext } from "node:test";
 import { mainThreadBusy } from "../src/chat-catalog.ts";
 
-const burn = (ms: number): void => { const until = performance.now() + ms; while (performance.now() < until) { /* busy */ } };
+/** Runs this thread for `ms` of its own CPU time, so a loaded box or a parallel suite still gets the same work. */
+const cpuMs = (): number => { const used = process.threadCpuUsage(); return (used.user + used.system) / 1000; };
+const burn = (ms: number): void => { const until = cpuMs() + ms; while (cpuMs() < until) { /* busy */ } };
 const wait = (ms: number): Promise<void> => new Promise(resolve => { setTimeout(resolve, ms); });
 
 test("the busy share is the thread's CPU time over the wall time between two reads", () => {
@@ -30,9 +32,12 @@ test("an idle loop under a running CPU profiler reads near 0% busy, and a loop t
   await wait(1500);
   const idle = busy();
   assert.ok(idle < 0.15, `idle loop read ${(idle * 100).toFixed(1)}% busy`);
-  const timer = setInterval(() => burn(30), 100);
+  const started = performance.now();
+  let burnt = 0;
+  const timer = setInterval(() => { burn(30); burnt += 30; }, 100);
   await wait(1500);
   clearInterval(timer);
   const working = busy();
-  assert.ok(working > 0.15 && working < 0.6, `30 ms of every 100 read ${(working * 100).toFixed(1)}% busy`);
+  const share = burnt / (performance.now() - started);
+  assert.ok(working >= share * 0.9 && working < share + 0.15, `30 ms of CPU per timer tick (${(share * 100).toFixed(1)}% of the window) read ${(working * 100).toFixed(1)}% busy`);
 });

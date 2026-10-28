@@ -171,7 +171,9 @@ test("concurrent owner sends with different request ids reopen the chat once and
     await f.delivered();
     assert.deepEqual(await f.membership(), { chats: [f.id], archived: [] });
     assert.equal(f.calls.filter(c => c.type === "create").length, 1);
-    assert.deepEqual(prompts(f).map(c => c.message), ["message a", "message b"], "one thread's sends go in the order they came");
+    // The two posts go over two HTTP connections at once, so which reaches the server first is the race of this test's client, not an order
+    // the chat sets: 1 run in 5 had b first (release of fbf3fe05 on 10-28). Each message goes once.
+    assert.deepEqual(prompts(f).map(c => c.message).sort(), ["message a", "message b"], "each send is delivered once");
   } finally { await f.close(); }
 });
 
