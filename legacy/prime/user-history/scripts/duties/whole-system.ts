@@ -13,7 +13,7 @@ import { type PoolQueue, readPoolQueue, slotParkOf } from "../../src/slot-park.t
 import { stepSessions, unmovedSteps } from "../../src/unmoved-steps.ts";
 import { waitHolds } from "../../src/checkin-end-state.ts";
 import type { ChatBoard, MemoryGroupId, PlanItem } from "../../src/shared/types.ts";
-import { type AgentLine, type HostUsable, isLinuxReading, parseLinuxReading, readWatch, type StrayServerLine, type IdlePm2Line, type TestBrowserLine, UNREAD_AT_STOP, unusable, type WaitingTree, type WatchLine, type WorkerLine, type WorkerTree } from "../../src/mac-usable-watch.ts";
+import { type AgentLine, type HostUsable, LINGER_MS, type LingerLine, isLinuxReading, parseLinuxReading, readWatch, type StrayServerLine, type IdlePm2Line, type TestBrowserLine, UNREAD_AT_STOP, unusable, type WaitingTree, type WatchLine, type WorkerLine, type WorkerTree } from "../../src/mac-usable-watch.ts";
 import { QUIET_MINUTES, QUIET_TARGET_GB, quietMinutes } from "../../src/quiet-minutes.ts";
 import type { HungCall } from "../../src/hung-calls.ts";
 import type { StoppedCall } from "../../src/hung-stop.ts";
@@ -43,7 +43,9 @@ export interface HostView { name: string; usable: HostUsable | null; workers: nu
   /** The pm2 God Daemons on the box that minute that run no process or have a relative home (HostWatchLine.idlePm2). */
   idlePm2?: readonly IdlePm2Line[];
   /** Every worker of the box that minute (WatchLine.byWorker); absent on lines written before 10-20. */
-  byWorker?: readonly WorkerTree[] }
+  byWorker?: readonly WorkerTree[];
+  /** The box's loaded sessions idle past the unload window that minute (HostWatchLine.lingering). */
+  lingering?: readonly LingerLine[] }
 /** Lines written before 10-18 04:5xZ name no box, and the Mac wrote every one of them. */
 export const UNNAMED_HOST = "mac";
 
@@ -111,14 +113,15 @@ export function hostViews(line: WatchLine): HostView[] {
   return [
     { name: line.host ?? UNNAMED_HOST, usable: own.usable, workers: line.workers, workerGb: line.workerGb, top: line.top,
       ...line.serviceGb === undefined ? {} : { serviceGb: line.serviceGb }, ...line.agents ? { agents: line.agents } : {}, ...own.error ? { error: own.error } : {},
-      ...line.testBrowsers ? { testBrowsers: line.testBrowsers } : {}, ...line.strayServers ? { strayServers: line.strayServers } : {}, ...line.idlePm2 ? { idlePm2: line.idlePm2 } : {}, ...line.byWorker ? { byWorker: line.byWorker } : {} },
+      ...line.testBrowsers ? { testBrowsers: line.testBrowsers } : {}, ...line.strayServers ? { strayServers: line.strayServers } : {}, ...line.idlePm2 ? { idlePm2: line.idlePm2 } : {}, ...line.byWorker ? { byWorker: line.byWorker } : {},
+      ...line.lingering ? { lingering: line.lingering } : {} },
     ...(line.hosts ?? []).map(host => {
       const read = checked(host.usable);
       const error = host.error ?? read.error;
       return { name: host.name, usable: read.usable, workers: host.workers, workerGb: host.workerGb, top: host.top,
         ...host.agents ? { agents: host.agents } : {}, ...error ? { error } : {}, ...host.offline ? { offline: true as const } : {}, ...host.testBrowsers ? { testBrowsers: host.testBrowsers } : {},
         ...host.strayServers ? { strayServers: host.strayServers } : {}, ...host.idlePm2 ? { idlePm2: host.idlePm2 } : {},
-        ...host.byWorker ? { byWorker: host.byWorker } : {} };
+        ...host.byWorker ? { byWorker: host.byWorker } : {}, ...host.lingering ? { lingering: host.lingering } : {} };
     }),
   ];
 }
@@ -666,6 +669,16 @@ export function testBrowsers(latest: WatchLine | undefined): TestBrowser[] {
     text: `${view.name}: ${browser.command.includes("chrome-headless-shell") ? "chrome-headless-shell" : "Chrome for Testing"} pid ${browser.pid}` +
       `${browser.started === null ? "" : ` since ${clock(browser.started * 1000)}`}, started by ${browser.session ? `${browser.tree || browser.root} session ${browser.session}` : "no agent session its env names (a duty or an ssh command)"}; ` +
       `agents browse only through Aside (c177)` })));
+}
+
+/**
+ * Each box's loaded sessions idle past the unload window in the newest watch line (`LingerLine`), the boxes whose read failed or that were
+ * offline left out. The idle unload stops a finished session within the quiet window on every box, and this count shows when it stops doing so
+ * on any of them. At 03:12Z on 10-28 a hand count of the Mac's archived rows read 56 finished sessions in its workers, though none was loaded.
+ */
+export function lingering(latest: WatchLine | undefined): { host: string; sessions: readonly LingerLine[] }[] {
+  if (!latest) return [];
+  return hostViews(latest).filter(view => !view.offline && !view.error).map(view => ({ host: view.name, sessions: view.lingering ?? [] }));
 }
 
 /**
@@ -1330,6 +1343,8 @@ export function measure(input: Inputs): PrecheckOutput {
   const oversize = oversized(latest, input.day ?? []);
   const browsers = testBrowsers(latest);
   const pm2 = idlePm2(latest, now);
+  const lingered = lingering(latest);
+  const lingerCount = lingered.reduce((sum, box) => sum + box.sessions.length, 0);
   const strays = strayServers(input.watch, start, start + WINDOW_MS + MINUTE);
   const hung = hungNow(input.watch, start);
   // Each idle unload sweep (every 60 s) finishes an open handoff (src/idle-unload.ts `resumeUnloaded`), so one still open a whole window later is stuck.
@@ -1354,6 +1369,7 @@ export function measure(input: Inputs): PrecheckOutput {
     mac_test_browsers: browsers.length,
     stray_servers_30: strays.length,
     idle_pm2_daemons: pm2.length,
+    ...lingered.length ? { lingering_sessions: lingerCount } : {},
     usable_min_30: usable,
     fed_min_30: fed,
     harness_unusable_min_30: harness,
@@ -1394,6 +1410,11 @@ export function measure(input: Inputs): PrecheckOutput {
     const services = reading.whole?.agents.servicesGb;
     if (services !== undefined) metrics[`quiet_services_gb_${key}`] = services;
   }
+  for (const box of lingered) metrics[`lingering_sessions_${box.host.replace(/[^A-Za-z0-9]+/g, "_")}`] = box.sessions.length;
+  if (lingerCount) flagged.push({ kind: "lingering_sessions", excerpt: `${lingerCount} loaded ${lingerCount === 1 ? "session" : "sessions"} sat idle past ` +
+    `${LINGER_MS / MINUTE} min with no client but a chat's own attach, which the idle unload should have stopped: ` +
+    lingered.filter(box => box.sessions.length).map(box => `${box.host} ${box.sessions.slice(0, 5).map(row => `${row.name || row.session.slice(0, 8)} in ${row.tree} (worker ${row.worker}, idle ${row.idleMin} min)`).join(", ")}`).join("; ") +
+    `. Read the service log's "idle unload" lines on that box.` });
   for (const [name, count] of perHost) {
     const key = name.replace(/[^A-Za-z0-9]+/g, "_");
     metrics[`usable_min_30_${key}`] = count.usable;

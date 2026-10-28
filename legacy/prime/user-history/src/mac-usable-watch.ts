@@ -9,6 +9,7 @@ import { listOrphanServices, type OrphanServiceLine } from "./orphan-services.ts
 import { bounded } from "../../../../components/prime-relay/kernel-read.ts";
 import { CPU_SIDES, type CpuSides, FEED_FRESH_MS, PRESSURE_FEED, groupOf, linuxUsable, type LinuxUsable, type MemoryGroup, memoryByGroup, type SchedstatMark, schedstatMark, seedSchedstat } from "../../../../components/prime-relay/host-stats.ts";
 import { type AgentCounts, agentCounts, agentState } from "./agent-states.ts";
+import { QUIET_MINUTES } from "./quiet-minutes.ts";
 import { type CallMark, callMarks, CallWatch, type HungCall, PROGRESS_WINDOW_MS } from "./hung-calls.ts";
 import type { CallHandle, CallStopper, StoppedCall } from "./hung-stop.ts";
 import type { AgentQueueReading, MemoryGroupId } from "./shared/types.ts";
@@ -142,6 +143,29 @@ export interface WorkerLine { pid: number; gb: number; sessions: number; root: s
  * no box had gone 15 min with none since 14:29Z, so the box-wide reading never came. Absent on lines written before 10-20.
  */
 export interface WorkerTree { pid: number; gb: number; root: string; tree: string; sessions: number; working: number }
+/**
+ * A session a worker still holds loaded (`activeSessionId` set) that read idle with no client but a chat's service attach for over LINGER_MS,
+ * which the idle unload (src/idle-unload.ts) should have stopped by then on any box: its session, name, chat tree, worker and idle minutes.
+ * Only a row with `activeSessionId` is resident. Prime's list also names each tree's finished subagents from the spawn ledger, with no runtime
+ * and no kernel, stamped with the tree worker's pid (daemon-mode.ts `buildSessionListWithPassiveRlmSubagents`, daemon-supervisor.ts
+ * `publicSummary`), and every archived row is one of them, since a resident session always reads live or draft (`activeLifecycleForSession`).
+ * At 23:36Z on 10-27 a count of the Mac's archived rows with a `workerPid` read 56 sessions "still sat in workers"; none had an
+ * `activeSessionId`, and at 03:20Z on 10-28 the Mac's 64 kernels matched its 68 loaded rows while 22 archived rows had none.
+ */
+export interface LingerLine { session: string; name: string; tree: string; worker: number; idleMin: number }
+/** The quiet window plus two 60 s unload sweeps. */
+export const LINGER_MS = (QUIET_MINUTES + 2) * MINUTE;
+
+/** Every loaded idle session past LINGER_MS (`LingerLine`), the longest idle first. */
+export function lingerLines(rows: readonly unknown[], now: number, chats: ReadonlySet<string>, tree: (id: string) => string): LingerLine[] {
+  return rows.flatMap((raw): LingerLine[] => {
+    if (agentState(raw) !== "idle" || !isRecord(raw) || typeof raw.sessionId !== "string" || typeof raw.workerPid !== "number") return [];
+    const idleMs = now - (typeof raw.lastActivityAt === "string" ? Date.parse(raw.lastActivityAt) : NaN);
+    const clients = typeof raw.attachedClients === "number" ? raw.attachedClients : 0;
+    if (!(idleMs > LINGER_MS) || clients > (chats.has(raw.sessionId) ? 1 : 0) || raw.hasRegisteredHeartbeat === true || raw.hasRegisteredCronJob === true) return [];
+    return [{ session: raw.sessionId, name: typeof raw.sessionName === "string" ? raw.sessionName : "", tree: tree(raw.sessionId), worker: raw.workerPid, idleMin: Math.round(idleMs / MINUTE) }];
+  }).sort((a, b) => b.idleMin - a.idleMin);
+}
 /** A chat tree and how many of its sessions a count holds. */
 export interface TreeCount { root: string; tree: string; count: number }
 export interface QueueLine {
@@ -178,7 +202,9 @@ export interface HostWatchLine { name: string; usable: HostUsable | null; worker
   /** The stray stdio MCP servers the box's footprint read stopped this minute (`StrayServerLine`); absent when there were none. */
   strayServers?: StrayServerLine[];
   /** The box's idle or relative-home pm2 God Daemons (`IdlePm2Line`); absent when there are none. */
-  idlePm2?: IdlePm2Line[] }
+  idlePm2?: IdlePm2Line[];
+  /** The box's loaded sessions idle past the unload window (`LingerLine`); absent when there are none. */
+  lingering?: LingerLine[] }
 
 export interface WatchLine {
   at: string;
@@ -225,6 +251,8 @@ export interface WatchLine {
   strayServers?: StrayServerLine[];
   /** This box's idle or relative-home pm2 God Daemons (`IdlePm2Line`); absent when there are none. */
   idlePm2?: IdlePm2Line[];
+  /** This box's loaded sessions idle past the unload window (`LingerLine`); absent when there are none. */
+  lingering?: LingerLine[];
 }
 /** How many handed-off services the records name, how many of them still run, and the first 5. */
 export interface ServicesLine { count: number; live: number; top: { session: string; unit: string; pid: number; live: boolean }[] }
@@ -380,6 +408,10 @@ export function watchLine(input: { now: number; rows: readonly unknown[]; footpr
     const id = root || session;
     return { root: id, tree: input.title(id) ?? id.slice(0, 8) };
   };
+  const lingering = lingerLines(input.rows, input.now, input.chats, id => {
+    const row = byId.get(id);
+    return row ? tree(row).tree : id.slice(0, 8);
+  });
   const idlePm2 = strayPm2(input.footprints.pm2_daemons ?? []).map((daemon): IdlePm2Line => ({ pid: daemon.pid, started: daemon.started, home: daemon.home,
     apps: daemon.apps, mb: Math.round(daemon.bytes / 2 ** 20), ...daemon.root || daemon.session ? owner(daemon.session, daemon.root) : { root: "", tree: "" }, session: daemon.session }));
   return {
@@ -394,6 +426,7 @@ export function watchLine(input: { now: number; rows: readonly unknown[]; footpr
       ...browser.root || browser.session ? owner(browser.session, browser.root) : { root: "", tree: "" }, session: browser.session, command: browser.command })) } : {},
     ...input.footprints.stray_servers?.length ? { strayServers: strayLines(input.footprints) } : {},
     ...idlePm2.length ? { idlePm2 } : {},
+    ...lingering.length ? { lingering } : {},
     ...input.memory !== undefined ? { agents: agentLine(input.memory, input.rows, input.hung) } : {},
     mac: { swapGb: input.footprints.swap_used_bytes === null ? null : round(input.footprints.swap_used_bytes / GB, 1), pressureLevel: input.footprints.pressure_level },
     cpuMs: Math.round(input.cpuMs + input.footprints.cpu_s * 1000),
@@ -592,7 +625,8 @@ export async function hostWatchLine(remote: RemoteWatch, input: { now: number; c
     const line = watchLine({ now: input.now, rows: remote.rows, footprints: answer.footprints, queue: null, chats: input.chats, title: input.title, cpuMs: 0, usable });
     return { name: remote.name, usable, workers: line.workers, workerGb: line.workerGb, top: line.top, ...line.byWorker ? { byWorker: line.byWorker } : {}, live: line.live,
       working: line.working, agents, swapGb: line.mac.swapGb,
-      ...line.testBrowsers ? { testBrowsers: line.testBrowsers } : {}, ...line.strayServers ? { strayServers: line.strayServers } : {}, ...line.idlePm2 ? { idlePm2: line.idlePm2 } : {} };
+      ...line.testBrowsers ? { testBrowsers: line.testBrowsers } : {}, ...line.strayServers ? { strayServers: line.strayServers } : {}, ...line.idlePm2 ? { idlePm2: line.idlePm2 } : {},
+      ...line.lingering ? { lingering: line.lingering } : {} };
   } catch (error) {
     return { name: remote.name, usable: null, workers: 0, workerGb: 0, top: [], live: 0, working: 0, swapGb: null, error: (error instanceof Error ? error.message : String(error)).slice(0, 200) };
   }
