@@ -13,6 +13,7 @@ export function childActivity(child: ChildAgent): string {
   const activity = child.activity;
   if (!activity) return "Starting";
   if (activity.kind === "executing") return activity.toolName ? "Running " + activity.toolName : "Running a tool";
+  if (activity.kind === "waiting") return activity.waitingFor?.trim() ? "Waiting for " + activity.waitingFor.trim() : "Waiting";
   return activity.kind === "writing" ? "Writing" : "Thinking";
 }
 

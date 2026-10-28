@@ -23,7 +23,7 @@ import { heldByTodo, linkedBoards, withLinkedBoards } from "./shared/todo-hold.t
 import { PoolHeldJobs, resumeChatJobs } from "./chat-resume.ts";
 import { CUT_TAIL_BYTES, tailLines } from "./cut-end.ts";
 import { lastTurnError, withFailedTurns, withHeldTurns } from "./held-turns.ts";
-import { droppedWords, poolPark, readFileSlotPark, slotParkWords, type FileSlotPark, type SlotPark } from "./slot-park.ts";
+import { droppedWords, poolPark, primePark, readRowSlotPark, slotParkWords, type FileSlotPark, type SlotPark } from "./slot-park.ts";
 import { withUnstarted } from "./brief-keeper.ts";
 import { planJob } from "./shared/chat-board.ts";
 import { noticeStands } from "./no-report.ts";
@@ -2129,13 +2129,14 @@ export class Chats {
   }
 
   /**
-   * The slot wait of a session from its file and every box's pi-pool line (`readFileSlotPark`, `poolPark`): `park` while it waits, else
-   * `dropped` when Prime's wake dropped its park with no turn after. Null when the daemon lists no file for it.
+   * The slot wait of a session from Prime's park on its row, else its file, and every box's pi-pool line (`readRowSlotPark`, `poolPark`):
+   * `park` while it waits, else `dropped` when Prime's wake dropped its park with no turn after. Null when the daemon lists neither for it.
    */
   private async slotPark(session: string, fallback?: string): Promise<{ park: SlotPark | null; dropped?: number } | null> {
-    const file = await this.summary(session).then(summary => summary?.sessionFile, () => undefined) ?? fallback;
-    if (!file) return null;
-    const read: FileSlotPark = await readFileSlotPark(file);
+    const row = await this.summary(session).catch(() => undefined);
+    const file = row?.sessionFile ?? fallback;
+    if (!file && !primePark(row)) return null;
+    const read: FileSlotPark = await readRowSlotPark(row, file);
     // With no pool reading a wait lasts until the time it asks again, as Prime's own park does.
     const pool = await this.source.queue?.().catch(() => null) ?? { queued: new Map(), working: new Set<string>() };
     return { park: poolPark(read.park, session, this.now(), pool), ...read.dropped !== undefined ? { dropped: read.dropped } : {} };

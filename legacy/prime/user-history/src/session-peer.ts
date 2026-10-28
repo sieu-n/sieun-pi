@@ -12,7 +12,13 @@ import { parseSummaries, PROJECTION_SLICE_MS } from "./chat-catalog.ts";
  * slot, so from 02:39Z us-metal02's watch counted 0 to 5 of the 12 slot holders as working and d7 read their trees as quiet (31.92 GB at
  * 02:58Z), while `prime-agent list` named 12 working.
  */
-const SPARSE_FIELDS = ["waitingFor", "waitingSince", "directAttachedClients", "holdsDetachedProcesses", "hasActiveHeartbeat", "isQuotaParked", "pendingCwd"] as const;
+const SPARSE_FIELDS = ["waitingFor", "waitingSince", "credentialPark", "directAttachedClients", "holdsDetachedProcesses", "hasActiveHeartbeat", "isQuotaParked",
+  "pendingCwd"] as const;
+/**
+ * The verdict Prime sends on a row only while it is current (`isSummaryCurrent`), on live and saved rows alike, so a newer row without it means
+ * a later message landed. A kept taskState "waiting" would read a resumed session as still parked (`primePark` in src/slot-park.ts).
+ */
+const CURRENT_FIELDS = ["taskState"] as const;
 
 const LIVE_FIELDS = ["activeSessionId", "rosterStatus", "isStreaming", "isCompacting", "isBashRunning", "isRunningTools", "hasRunningRlmChildren", "isSessionActive",
   "workerState", "workerPid", ...SPARSE_FIELDS] as const;
@@ -51,11 +57,11 @@ function dropStarting(rows: Map<string, SessionSummary>, row: SessionSummary): v
 /**
  * A row laid over the copy's row of the same session. A row with no active session is saved, so it drops the old row's live fields: the
  * roster lists inactive agents too (233 of 336 entries on the box on 10-18), and a spread alone kept the stopped worker's active session id.
- * The fields the daemon leaves out while unset (SPARSE_FIELDS) come from the new row alone.
+ * The fields the daemon leaves out while unset (SPARSE_FIELDS) or no longer current (CURRENT_FIELDS) come from the new row alone.
  */
 function merged(old: SessionSummary | undefined, row: SessionSummary): SessionSummary {
   const kept: Record<string, unknown> = { ...old };
-  for (const field of SPARSE_FIELDS) delete kept[field];
+  for (const field of [...SPARSE_FIELDS, ...CURRENT_FIELDS]) delete kept[field];
   const next = { ...kept, ...row } as SessionSummary;
   return row.activeSessionId === undefined ? saved(next) : next;
 }

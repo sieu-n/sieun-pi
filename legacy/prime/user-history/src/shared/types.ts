@@ -64,7 +64,11 @@ export interface ChildAgent {
   /** Its daemon session id, when the daemon's list gave it (`rosterChildren`); the hub's snapshots have none. */
   sessionId?: string;
   durationMs?: number; recap?: string; error?: string; answerPreview?: string;
-  activity?: { kind: "waiting" | "writing" | "executing"; toolName?: string };
+  /**
+   * Its rlm child snapshot's activity. While it waits, `waitingFor` names what for, as an extension's wait ("a turn, place 3 of 7") or, from
+   * load.3 on, a credential park ("a working slot, place 3 of 9") gives it; that snapshot's times are epoch ms (`waitingSinceMs`, `resumeAtMs`).
+   */
+  activity?: { kind: "waiting" | "writing" | "executing"; toolName?: string; waitingFor?: string };
   /** The child messaged its parent since its current task arrived; absent when the daemon cannot tell (a child resumed after a restart). */
   repliedSinceTask?: boolean;
   /** Epoch ms of the child's last model, tool or progress-note event. */

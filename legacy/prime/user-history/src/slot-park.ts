@@ -19,8 +19,8 @@ import { PARK_STOP_REASON, turnError } from "./shared/credential-wait.ts";
  * "cancelled" and ran no turn, so it waited on nothing until a message came at 21:22:09Z (test/fixtures/slot-park-01a17f25-1028.jsonl).
  */
 export type SlotPark = {
-  /** When the open wait began: its oldest entry since the last turn, resume or stop. */
-  since: number;
+  /** When the open wait began: its oldest entry since the last turn, resume or stop, or Prime's `waitingSince`. A verdict-only Prime park has none. */
+  since?: number;
   /** Place and line length, from pi-pool now when it lists the session, else from the newest entry that names them. */
   place?: number;
   total?: number;
@@ -33,6 +33,11 @@ export type SlotPark = {
    * and its worker can stop. Absent while the newest entry is a `pi-pool-queue` place, a turn that waits inside a live model call.
    */
   ended?: true;
+  /**
+   * What Prime says the session waits for, when Prime reported the park itself (`primePark`): pi-pool's "a working slot, place 3 of 9" from
+   * load.3 on, or Prime's own "a provider credential". Such a park lasts until Prime clears it.
+   */
+  label?: string;
 };
 
 /** One session file's own reading: its open wait, or when Prime dropped its park with no turn after (`dropped`), and whether the lines held a clear. */
@@ -129,8 +134,36 @@ export function poolPark(park: SlotPark | undefined, sessionId: string, now: num
   if (!pool) return park;
   const queued = pool.queued.get(sessionId);
   if (queued) return { ...park, place: queued.position, total: queued.total };
-  if (pool.working.has(sessionId)) return { since: park.since, ...park.resumeAt !== undefined ? { resumeAt: park.resumeAt } : {}, starting: true };
-  return park.resumeAt !== undefined && park.resumeAt > now ? park : null;
+  if (pool.working.has(sessionId)) return { ...park.since !== undefined ? { since: park.since } : {}, ...park.resumeAt !== undefined ? { resumeAt: park.resumeAt } : {}, starting: true };
+  return park.label !== undefined || (park.resumeAt !== undefined && park.resumeAt > now) ? park : null;
+}
+
+/** Prime's credential park on a summary row (load.3, schema 39 `SessionCredentialPark`): its times are ISO strings, as agent_observe gives them. */
+type RowPark = { credentialPark?: { waitingFor?: unknown; waitingSince?: unknown; resumeAt?: unknown }; taskState?: unknown; summary?: unknown };
+
+/**
+ * Prime's own park on a daemon summary row, or undefined on a Prime before load.3 or a row with none. A resident row carries `credentialPark`
+ * {waitingFor, waitingSince?, resumeAt}; a saved row carries only the verdict, taskState "waiting" with summary "Waiting for <waitingFor>",
+ * which Prime sends only while it is current. Prime ends both when the turn runs or stops, and a wake that drops the park leaves an "error"
+ * verdict, so the file's reading (`readFileSlotPark`) still finds the dropped park.
+ */
+export function primePark(row: object | undefined): SlotPark | undefined {
+  const { credentialPark: park, taskState, summary } = (row ?? {}) as RowPark;
+  if (park && typeof park.waitingFor === "string" && park.waitingFor.trim()) {
+    const since = time(park.waitingSince);
+    const resumeAt = time(park.resumeAt);
+    return { label: park.waitingFor.trim(), ...since !== undefined ? { since } : {}, ...resumeAt !== undefined ? { resumeAt } : {}, ended: true };
+  }
+  if (taskState !== "waiting") return undefined;
+  const label = typeof summary === "string" ? summary.trim().replace(/^Waiting for\s+/, "") : "";
+  return { label: label || "a provider credential", ended: true };
+}
+
+/** A session's open wait: Prime's own on its daemon row (`primePark`) when the row has one, else the reading of its file (`readFileSlotPark`). */
+export async function readRowSlotPark(row: { sessionFile?: string | undefined } | undefined, file = row?.sessionFile): Promise<FileSlotPark> {
+  const park = primePark(row);
+  if (park) return { park, complete: true };
+  return file ? readFileSlotPark(file) : { complete: true };
 }
 
 const fileReads = new Map<string, { key: string; read: FileSlotPark }>();
@@ -198,7 +231,7 @@ export function parkedUntil(read: Pick<FileSlotPark, "park">, now: number): numb
 /** A slot wait in words for a notice or a roster row: "waits for a working slot, place 104 of 193". */
 export function slotParkWords(park: SlotPark): string {
   if (park.starting) return "waits for its working slot to start";
-  if (park.place === undefined) return "waits for a working slot";
+  if (park.place === undefined) return `waits for ${park.label ?? "a working slot"}`;
   return `waits for a working slot, place ${park.place}${park.total !== undefined ? ` of ${park.total}` : ""}`;
 }
 

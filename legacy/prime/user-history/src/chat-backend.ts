@@ -37,7 +37,7 @@ import { jobResumes } from "./job-resume.ts";
 import { cutJobs, interruptedRuns } from "./chat-resume.ts";
 import { resumesNow, tailLines } from "./cut-end.ts";
 import { IdleUnloader, parkChanges, providerWaits, SWEEP_EVERY_MS, takesKillOrigin, unloadRequest } from "./idle-unload.ts";
-import { parkedUntil, poolPark, readFileSlotPark } from "./slot-park.ts";
+import { parkedUntil, poolPark, readRowSlotPark } from "./slot-park.ts";
 import { handOff, handoffSend, handsOffRow, systemPorts } from "./detached-handoff.ts";
 import { unfinishedHandoffs } from "./orphan-services.ts";
 import { readHeldTurns, readTurnSince, writeResumePending } from "./held-turns.ts";
@@ -334,8 +334,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   // again (src/agent-outbox.ts). A scratch serve keeps its own folder, so it never delivers the live service's messages.
   const agentOutbox = new AgentOutbox(join(dataDir, quiet ? "agent-outbox-scratch" : "agent-outbox"), { log: dutyLog, hostOf: session => catalog.hostOf(session), reach: host => reach.reach(host),
     slotPark: async session => {
-      const file = (await catalog.summary(session))?.sessionFile;
-      return file ? poolPark((await readFileSlotPark(file)).park, session, Date.now(), await queued()) : null;
+      return poolPark((await readRowSlotPark(await catalog.summary(session))).park, session, Date.now(), await queued());
     },
     synced: () => catalog.hostsSynced(), subagentOf: async session => rowSubagent(await catalog.summary(session)), resident: session => catalog.resident(session),
     relayed: (session, at) => relays.add(session, at), stopped: stopRecords(dataDir),
@@ -424,7 +423,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     // A session in Prime's quota or slot park stops at once: its durable quota-resume job or pi-pool loads it again (src/slot-park.ts
     // parkedUntil). Only this box's sessions, whose transcripts this box holds.
     parked: async (rows, now) => new Map((await Promise.all(rows.filter(row => !catalog.hostOf(row.sessionId) && row.sessionFile).map(async row => {
-      const until = parkedUntil(await readFileSlotPark(row.sessionFile!), now);
+      const until = parkedUntil(await readRowSlotPark(row), now);
       return until === null ? [] : [[row.sessionId, until] as const];
     }))).flat()),
     release: id => threads.restAsleep(id),
