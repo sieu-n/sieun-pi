@@ -13,7 +13,6 @@ import { type DutyCard, type DutyCut, type DutyJobRef, headlineMetric, type Metr
 import { poolSlot } from "./shared/chat-feed.ts";
 import { CUT_TAIL_BYTES, tailLines } from "./cut-end.ts";
 import { lastTurnError } from "./held-turns.ts";
-import { readFileSlotPark } from "./slot-park.ts";
 import { dutyLink } from "./shared/duty-fixes.ts";
 import { stallWords } from "./shared/stalled-calls.ts";
 import type { MetricStreak } from "./shared/duty-streak.ts";
@@ -408,7 +407,6 @@ export const archiveDutyJob = (threads: { archive(id: string, by: ArchiveBy): Pr
 
 /** Why a job the chat's revive holds for pi-pool stays up (`DutyJobHost.kept`). */
 const POOL_HELD = "waits on pi-pool for its slot";
-const PARK_DROPPED = "its slot park was dropped with no turn, and the job sweep sends it one continue";
 
 /**
  * Why the tree rooted at `tree` waits in pi-pool's turn queue, or null: a run of the tree is queued and none of its runs holds a working slot.
@@ -564,15 +562,6 @@ export function dutyJobHost(input: { threads: DutyJobThreads; archives: { add(jo
     }
     throw new Error(`no session after ${CREATE_TRIES} creates: ${cause}`);
   };
-  /**
-   * Prime's wake dropped the job's slot park with no turn after (`readFileSlotPark`), so its brief's turn never ran: the job is still going,
-   * and the job sweep sends it one continue. On 10-28 the runner read chat system AI harness developer environment 09:57 (01a18003) as cut
-   * 22 s after its 01:06:45Z dropped wake and archived it, and the chat sent its continue by hand.
-   */
-  const parkDropped = async (id: string): Promise<boolean> => {
-    const file = await input.sessionFile?.(id).catch(() => null);
-    return file ? (await readFileSlotPark(file)).dropped !== undefined : false;
-  };
   return {
     async chat(chatId) {
       let found = await row(chatId);
@@ -596,7 +585,6 @@ export function dutyJobHost(input: { threads: DutyJobThreads; archives: { add(jo
     async working(job) {
       const found = await row(job.id);
       if (!found || found.archived) return false;
-      if (!found.working && await parkDropped(job.id)) return true;
       if (found.working || !input.treeWait) return found.working;
       const scheduled = input.schedules ? await input.schedules().catch(() => null) : new Map<string, ThreadSchedule>();
       return scheduled === null || await input.treeWait(job.id, scheduled).catch(() => "unread") !== null;
@@ -635,13 +623,6 @@ export function dutyJobHost(input: { threads: DutyJobThreads; archives: { add(jo
         scheduled = read;
         ended = ended.filter(job => !read.has(job.id));
       }
-      const going: DutyJobRef[] = [];
-      for (const job of ended) {
-        if (!(await parkDropped(job.id))) { going.push(job); continue; }
-        if (held.get(job.id) !== PARK_DROPPED) input.log?.(`duty job ${job.name}: not stopped, ${PARK_DROPPED}`);
-        held.set(job.id, PARK_DROPPED);
-      }
-      ended = going;
       const pooled = input.held?.();
       if (pooled?.size) ended = ended.filter(job => {
         if (!pooled.has(job.id)) return true;

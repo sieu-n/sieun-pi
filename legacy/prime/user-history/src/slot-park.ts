@@ -202,12 +202,9 @@ export function slotParkWords(park: SlotPark): string {
   return `waits for a working slot, place ${park.place}${park.total !== undefined ? ` of ${park.total}` : ""}`;
 }
 
-/**
- * A dropped park in words: "its slot park was dropped at 21:16, when Prime's wake ran no turn, and the job sweep sends it one continue". The
- * sweep's pass runs at the next tick (`Chats.wakeJob`, resume_paused.py cancelled_wake); a stop record keeps the job stopped.
- */
+/** A dropped park in words: "its slot park was dropped at 21:16, when Prime's wake ran no turn, so it runs again only when it gets a message". */
 export const droppedWords = (at: number): string =>
-  `its slot park was dropped at ${clockTime(at)}, when Prime's wake ran no turn, and the job sweep sends it one continue within a few minutes unless a stop holds it`;
+  `its slot park was dropped at ${clockTime(at)}, when Prime's wake ran no turn, so it runs again only when it gets a message`;
 
 
 /** The child a park-stop notice names (its rlm child id and name), or null for any other message. */
@@ -227,7 +224,7 @@ export function parkStopText(name: string, read: { park: SlotPark | null; droppe
   if (read.park) return `[child-parked child:${name}] ${name} was not cancelled: Prime stopped its worker while it ${slotParkWords(read.park)}, and pi-pool ` +
     "wakes it when its slot starts. Leave it as it is and do not start a copy of it.";
   if (read.dropped !== undefined) return `[child-park-dropped child:${name}] ${name} was not cancelled: it waited for a working slot, and ${droppedWords(read.dropped)}. ` +
-    "Send it a message only if it has not run again by then.";
+    "Send it a message to continue its task.";
   return `[child-parked child:${name}] ${name} was not cancelled: Prime stopped its worker while its turn waited for a working slot, and it has run again since.`;
 }
 

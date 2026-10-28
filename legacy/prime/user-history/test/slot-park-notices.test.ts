@@ -41,7 +41,7 @@ test("check-in: a parked or ticketed job reads working and gets no nudge or rest
   assert.equal(push([stale!]).length, 1);
   const [dropped] = await withFailedTurns([fact], await agentDir(DROPPED), CHAT, () => undefined, async () => undefined, EMPTY, at("2026-10-27T21:18:00Z"));
   assert.equal(dropped!.state, "failed");
-  assert.match(dropped!.error ?? "", /its slot park was dropped at .*the job sweep sends it one continue/);
+  assert.match(dropped!.error ?? "", /its slot park was dropped at .*it runs again only when it gets a message/);
   assert.deepEqual(push([dropped!]), [], "21:18Z: the resume pass's one continue goes first");
   const late = jobPushes([dropped!], [{ ...view, owner: dropped! } as never], { [fact.key]: { mark: 0, since: at("2026-10-27T19:00:00Z") } }, 30 * 60_000,
     at("2026-10-27T21:50:00Z"), () => true, () => 0).pushes;
@@ -80,7 +80,7 @@ test("chats: a parked job gets no failed, ended or no-report notice, and a dropp
   await writeFile(file, DROPPED.join("\n") + "\n");
   now = at("2026-10-27T21:17:30Z");
   assert.deepEqual(await step(), [`steer c1 [job] page writer was waiting for a working slot, and its slot park was dropped at ${clockTime(at("2026-10-27T21:16:40.332Z"))}, ` +
-    "when Prime's wake ran no turn, and the job sweep sends it one continue within a few minutes unless a stop holds it"]);
+    "when Prime's wake ran no turn, so it runs again only when it gets a message"]);
   chats.close();
 });
 
