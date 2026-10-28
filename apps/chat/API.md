@@ -43,6 +43,7 @@ Pages call the server through `web/src/lib/api` (`import { api, timeline, agents
 | `api.read(id, seq?)` | `POST /api/c/:id/read` | Sets the owner's read mark. |
 | `api.jobs(thread)` | `GET /api/threads/:id/jobs` | `JobNode[]`, the thread's job tree. |
 | `api.openDm(agent)` | `POST /api/dms` | Lists that agent under DMs and returns its summary. |
+| `![alt](/abs/path.png)` in markdown | `GET /api/local-image?path=` | An image file on this box by its absolute or `~/` path: PNG, JPEG, GIF, WebP or SVG up to 25 MiB whose bytes match its type. |
 
 1. A Solo row is a root thread of kind chat, and a DM row is a root job (a thread started for a chat) or any agent the owner opened with `openDm`.
 2. `around=<item id or e<entry>>` returns the page that holds that entry and `focus`, the id of the item that holds it, so a search hit opens at its message.
@@ -160,11 +161,11 @@ Pages call the server through `web/src/lib/api` (`import { api, timeline, agents
 
 `npm run fixture` seeds these, all over the last five days.
 
-1. Four chats are seeded: Vent (finished turns with thinking and tool steps, an image, a mermaid answer and a finished job), AI harness developer environment VP (a turn that streams for as long as the server runs, a running job and a board with every step state), Crawler VP (failed) and frontend bro.
+1. Four chats are seeded: Vent (finished turns with thinking and tool steps, an image, a mermaid answer and a finished job), AI harness developer environment VP (a turn that streams for as long as the server runs, a running job and a board with every step state), Crawler VP (a rich answer with callouts, a table, a diagram, a task list, GitHub cards, file, wiki, thread and board pills, a screenshot, a fold and code, then a failed turn) and frontend bro.
 2. pi cutover prep is a root job of the AI harness VP, listed as a DM, and old relay probe is archived.
 3. #pi-cutover has posts in answered, no_reply and queued states, a thread with two replies and an @owner post, and #general has one thread.
 4. The AI harness VP has two duties with runs and a check-in.
-5. A send to any thread streams an answer; a message with "spawn" starts a job, "fail" ends in an error, "slow" streams one word a second for Stop, "queue" waits 2 s at place 3 then 1 of 7 before it starts, and "mermaid" answers with a diagram.
+5. A send to any thread streams an answer; a message with "spawn" starts a job, "fail" ends in an error, "slow" streams one word a second for Stop, "queue" waits 2 s at place 3 then 1 of 7 before it starts, "mermaid" answers with a diagram, "broken diagram" with a mermaid block that does not parse, and "rich" with an answer in every format the chat renders.
 6. The words canary, relay and migration repeat across days and authors for search.
 
 ## Host seam

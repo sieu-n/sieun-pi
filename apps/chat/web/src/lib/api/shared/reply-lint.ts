@@ -299,9 +299,30 @@ export const LONG_SENTENCE = 35;
 export const LONG_MESSAGE = 80;
 export const LONG_REPLY_MARK = "Not sent, it runs long";
 
-/** What makes a tell_owner text long, as short phrases with the start of the sentence in question; empty when it is not long. */
+/** A table row, its header and its `| --- |` line. */
+const TABLE_ROW = /^\s*\|.*\|\s*$/;
+
+/**
+ * The text without its table rows and without every `<details>` fold, summary and body, which longReply leaves out: config/AGENTS.md rule 5
+ * asks for a table for a status or a comparison and a fold for a long log, and the owner scans a table and opens a fold on purpose.
+ */
+export function unfoldedProse(text: string): string {
+  let depth = 0;
+  return text.split("\n").filter(line => {
+    const opens = line.match(/<details\b/gi)?.length ?? 0;
+    const closes = line.match(/<\/details>/gi)?.length ?? 0;
+    const inFold = depth > 0 || opens > 0;
+    depth = Math.max(0, depth + opens - closes);
+    return !inFold && !TABLE_ROW.test(line);
+  }).join("\n");
+}
+
+/**
+ * What makes a tell_owner text long, as short phrases with the start of the sentence in question; empty when it is not long. Table rows and
+ * `<details>` folds do not count (`unfoldedProse`).
+ */
 export function longReply(text: string): string[] {
-  const sentences = proseLines(text).flatMap(line => line.words.split(SENTENCE)).map(sentence => sentence.trim().split(/\s+/).filter(Boolean)).filter(words => words.length);
+  const sentences = proseLines(unfoldedProse(text)).flatMap(line => line.words.split(SENTENCE)).map(sentence => sentence.trim().split(/\s+/).filter(Boolean)).filter(words => words.length);
   const found: string[] = [];
   const longest = sentences.reduce<string[]>((best, words) => words.length > best.length ? words : best, []);
   if (longest.length > LONG_SENTENCE) found.push(`a ${longest.length}-word sentence ("${clipQuote(longest.join(" "))}")`);

@@ -2,7 +2,8 @@
  * An in-memory `Host` for fixture mode and tests. It keeps threads, conversations, entries and documents the way pi-durable shapes them,
  * and answers each input with a streamed reply, so pages see partial text, tool steps, jobs, Stop and status without pi-host.
  * A message that says "spawn" starts a job (a child conversation), "fail" ends the turn with an error, "slow" streams for a minute, and
- * "queue" waits two seconds in a fake turn queue (place 3 of 7, then 1 of 7) before it starts.
+ * "queue" waits two seconds in a fake turn queue (place 3 of 7, then 1 of 7) before it starts, "rich" answers with `richReply`, which uses
+ * every format the chat renders, and "broken diagram" answers with a mermaid block that does not parse.
  */
 import { randomUUID } from "node:crypto";
 import type { TurnPlace } from "../../web/src/lib/api/types.ts";
@@ -35,6 +36,8 @@ export class FixtureHost implements Host {
   private readonly sinks = new Map<string, Set<Sink>>();
   /** Milliseconds between streamed words; tests set 0. */
   wordMs = 40;
+  /** The image the "rich" answer embeds: a file the seed wrote, or a data URL when nothing was seeded. */
+  richImage = `data:image/png;base64,${TINY_PNG}`;
   now = () => Date.now();
 
   // Seeding
@@ -154,7 +157,7 @@ export class FixtureHost implements Host {
     node.status = "running";
     if (conversation === 1) this.setStatus(thread, "running");
     this.emit(thread, { type: "events", conversation, events: [{ type: "run_start", inputs: [submission.id] }] });
-    const words = (reply ?? replyFor(text)).split(/(?<= )/);
+    const words = (reply ?? replyFor(text, this.richImage)).split(/(?<= )/);
     const slow = /\bslow\b/i.test(text);
     const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
     if (/\bspawn\b/i.test(text)) {
@@ -351,8 +354,39 @@ export class FixtureHost implements Host {
   }
 }
 
-function replyFor(text: string): string {
+/** One red 2x2 PNG. */
+const TINY_PNG = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFklEQVR42mP8z8DwnwEJMDIwMjAwAAANJQEBEtoaJgAAAABJRU5ErkJggg==";
+
+const SPEC_LOG = Array.from({ length: 24 }, (_, i) => `ok ${i + 1} - board panel ${["folds the step list", "keeps the header in view", "draws the dark theme", "opens a step"][i % 4]} (${120 + i * 7} ms)`).join("\n");
+
+/**
+ * An agent answer that uses every format the chat renders, after the reply guide in config/AGENTS.md rule 5: the answer first, a callout for
+ * the owner's ask, a status table, a mermaid flow, a task list, links to the PR, the commit, a file line, a wiki page, a job thread and a board
+ * step, a screenshot, a warning, a folded log and a short code block. `image` is the screenshot's path or URL.
+ */
+export function richReply(image: string, jobThread = "0f1e0000-0000-4000-8000-000000000001:14", step = "p1"): string {
+  return [
+    "The board panel redesign is live on staging, and 42 of 42 browser specs pass. Production waits for your ok.",
+    "> [!IMPORTANT]\n> Say yes on the For you ask and it goes to production at 10:00 KST tomorrow.",
+    "| Surface | State | Evidence |\n| --- | --- | --- |\n| Staging | Live | 42 of 42 specs pass |\n| Production | Waits for your ok | Not started |\n" +
+      "| Phone layout | Fixed | 3 of 3 screenshots match |\n| Dark mode | Fixed | Header contrast 7.1 to 1 |",
+    "```mermaid\nflowchart TD\n  pr[PR 42 merged] --> stage[Staging build]\n  stage --> specs{Browser specs}\n  specs -- pass --> ok[Your ok on For you]\n" +
+      "  specs -- fail --> fix[Fix and rebuild]\n  fix --> stage\n  ok --> prod[Production]\n```",
+    "- [x] Fold the step list on phones.\n- [x] Fix the header contrast in dark mode.\n- [ ] Ship to production after your ok.",
+    "The change is [Board panel redesign](https://github.com/sieu-n/sieun-pi/pull/42) with [the fold fix](https://github.com/sieu-n/sieun-pi/commit/51e88622a1b2c3d4). " +
+      "The panel lives in `apps/chat/web/src/pages/board/BoardPanel.svelte:48`, the notes are on [the board panel page](wiki:sessions/2026/10/28/board-panel.md), " +
+      `the spec run is in [the spec job](thread:${jobThread}), and board step ${step} waits on it.`,
+    `![Board panel on staging](${image})`,
+    "> [!WARNING]\n> The old panel styles stay until production ships, so one hard refresh may show both for a moment.",
+    `<details><summary>Spec log, 24 lines</summary>\n\n\`\`\`text\n${SPEC_LOG}\n\`\`\`\n\n</details>`,
+    "```ts\nexport function foldSteps(steps: Step[], width: number): Step[] {\n  return width < 640 ? steps.filter(step => step.open) : steps;\n}\n```",
+  ].join("\n\n");
+}
+
+function replyFor(text: string, image: string): string {
+  if (/\bbroken diagram\b/i.test(text)) return "This one does not parse:\n\n```mermaid\nflowchart LR\n  a --> [unclosed\n```\n\nThe source shows instead.";
   if (/\bmermaid\b/i.test(text)) return "Here is the flow:\n\n```mermaid\nflowchart LR\n  owner --> chat --> pi-host\n```\n\nThe chat server sits in the middle.";
+  if (/\brich\b/i.test(text)) return richReply(image);
   if (/\bslow\b/i.test(text)) return Array.from({ length: 60 }, (_, i) => `word${i + 1}`).join(" ");
   return `Got it. You said: "${text.split("\n").find(line => line.trim() && !line.startsWith("["))?.slice(0, 120) ?? text.slice(0, 120)}". I checked the canary and the relay, and both answer.`;
 }

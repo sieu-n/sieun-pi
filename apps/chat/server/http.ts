@@ -6,6 +6,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { extname, join, normalize } from "node:path";
 import type { ChannelInput, ConversationPatch, SendRequest } from "../web/src/lib/api/types.ts";
 import { App, MODELS, NotFound } from "./app.ts";
+import { LocalImageError, readLocalImage } from "./local-image.ts";
 import { readJson } from "./store.ts";
 import { usageReport, readPool, hostsReport } from "./usage.ts";
 
@@ -155,6 +156,7 @@ async function handle(app: App, table: Route[], req: IncomingMessage, res: Serve
   try {
     if (path.startsWith("/api/images/")) return await serveEntryImage(app, path, res);
     if (path.startsWith("/api/uploads/")) return serveFile(res, app.store.imagePath(path.slice("/api/uploads/".length).replace(/[^\w.-]/g, "")), true);
+    if (path === "/api/local-image" && req.method === "GET") return await serveLocalImage(url.searchParams.get("path") ?? "", res);
     if (path.startsWith("/api/")) {
       for (const r of table) {
         if (r.method !== req.method) continue;
@@ -194,6 +196,21 @@ async function serveEntryImage(app: App, path: string, res: ServerResponse): Pro
   if (!block || block.type !== "image") throw new NotFound("No such image.");
   res.writeHead(200, { "content-type": block.mimeType, "cache-control": "private, max-age=31536000, immutable" });
   res.end(Buffer.from(block.data, "base64"));
+}
+
+/** An image file an agent linked by its path on this box (local-image.ts). */
+async function serveLocalImage(path: string, res: ServerResponse): Promise<void> {
+  let image: Awaited<ReturnType<typeof readLocalImage>>;
+  try {
+    image = await readLocalImage(path);
+  } catch (error) {
+    if (error instanceof LocalImageError) return json(res, error.status, { error: error.message });
+    throw error;
+  }
+  // An SVG opened on its own is a document; the sandbox keeps any script in it from running as this page.
+  if (image.mimeType === "image/svg+xml") res.setHeader("content-security-policy", "default-src 'none'; style-src 'unsafe-inline'; img-src data:; sandbox");
+  res.writeHead(200, { "content-type": image.mimeType, "content-length": image.bytes.length, "cache-control": "private, max-age=60", "x-content-type-options": "nosniff" });
+  res.end(image.bytes);
 }
 
 function serveFile(res: ServerResponse, file: string, immutable = false): void {
