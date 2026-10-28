@@ -131,6 +131,23 @@ export function jobRequest(request: ProbeRequest): ProbeRequest {
 }
 /** Operations whose path id comes from an earlier answer in the same run. */
 export const CHAINED = /\{(job_id|snapshot_id)\}/;
+
+/**
+ * Operations whose query input comes only from another operation's answer in this run, called with the first item id of that answer.
+ * A Xiaohongshu note opens only with the xsec_token an explore answer issues, so note_detail's fixed docs example answered 502
+ * acquisition_credential_unavailable on staging on 2026-10-28 at 00:02Z, while 10 of 10 notes from an explore answer opened there at 01:4xZ.
+ */
+export const QUERY_CHAINS: Readonly<Record<string, { from: string; param: string }>> = {
+  "GET /v1/xiaohongshu/note_detail": { from: "GET /v1/xiaohongshu/explore", param: "note_id" },
+};
+
+/** The first item id of a list answer, whose `data` is the list or holds it as `items`. */
+export function firstItemId(body: unknown): string | undefined {
+  const data = (body as { data?: unknown } | null)?.data;
+  const list = Array.isArray(data) ? data : (data as { items?: unknown } | null)?.items;
+  const id = Array.isArray(list) ? (list[0] as { id?: unknown } | undefined)?.id : undefined;
+  return typeof id === "string" && id ? id : undefined;
+}
 /**
  * Runs the chained operations of one id with every read answered before any write starts, so a cancel or a delete never ends the job or
  * snapshot that a read of the same run is about to read. On staging, where the cancel is called, the reads and the cancel used to start
@@ -519,7 +536,12 @@ async function probeEnv(target: ProbeTarget, routes: readonly Route[]): Promise<
   const notScored = new Set(routes.filter(route => route.byDesign).flatMap(route => route.portal.map(baseOp)).filter(op => !scoredOps.has(op)));
   const ops = [...all].filter(([op]) => !isDm(op) && !notScored.has(op));
   const later: [string, Operation][] = [];
-  const first = ops.filter(([op, operation]) => { if (CHAINED.test(op)) { later.push([op, operation]); return false; } return true; });
+  const fedLater: [string, Operation][] = [];
+  const first = ops.filter(([op, operation]) => {
+    if (CHAINED.test(op)) { later.push([op, operation]); return false; }
+    if (QUERY_CHAINS[op]) { fedLater.push([op, operation]); return false; }
+    return true;
+  });
   // With perMinute, calls start one every 60 s / perMinute. The calls slowest at the last run go first, so
   // the run ends sooner, and a call with no time on record counts as slowest.
   const lastMs = (op: string) => target.lastMs?.[`${env} ${op}`] ?? Number.POSITIVE_INFINITY;
@@ -579,10 +601,22 @@ async function probeEnv(target: ProbeTarget, routes: readonly Route[]): Promise<
     const name = CHAINED.exec(op)![1]!;
     return call(orgs[sources[chained[name]!.from]!.org]!, op, request, "id from this run, same test org");
   });
+  const fed = await Promise.all(fedLater.map(async ([op, operation]) => {
+    const before = preset(op);
+    if (before) return before;
+    const chain = QUERY_CHAINS[op]!;
+    const index = first.findIndex(([name]) => name === chain.from);
+    const source = index >= 0 ? phase1[index] : undefined;
+    const value = source?.verdict === "ok" ? firstItemId(source.body) : undefined;
+    if (!value) return { op, verdict: "unprobed" as const, status: 0, ms: 0, note: `no ${chain.param} from a ${chain.from} answer in this run`, body: null };
+    const request = buildRequest(op, operation);
+    if ("missing" in request) return { op, verdict: "unprobed" as const, status: 0, ms: 0, note: request.missing, body: null };
+    return call(orgs[index % orgs.length]!, op, { ...request, query: { ...request.query, [chain.param]: value } }, `${chain.param} from this run's ${chain.from} answer`);
+  }));
   await Promise.all([...pageTwoRuns, ...opened.map(job => cancel(job.org, job.id))]);
   // A page-2 failure counts against the operation: a customer cannot get past page 1. A page 2 the run did not reach leaves page 1's verdict.
   const out: ProbeResult[] = [];
-  for (const result of [...phase1, ...jobs, ...phase2]) {
+  for (const result of [...phase1, ...jobs, ...phase2, ...fed]) {
     const second = pageTwo.get(result.op);
     const failed = second && (second.verdict === "portal" || second.verdict === "crawler" || (second.verdict === "unprobed" && second.status === 0 && second.ms > 0));
     const { body: _body, ...plain } = failed ? { ...second, op: result.op, note: `page 1 worked, ${second.note}` } : result;
