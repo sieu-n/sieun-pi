@@ -38,6 +38,8 @@ export interface JobFact {
   lastMessage?: JobMessage;
   /** A duty job's subagent's session id, which a step's stored `sessionId` names. */
   sessionId?: string;
+  /** A thread that is a chat (`SessionRow.chat`): another chat holding a step on this board, never a job of this chat. */
+  chat?: true;
   /** Its turn waits for a working slot in its box's turn queue (`pi-pool queue --json`). */
   queued?: QueuePlace;
   /** Its run holds a working slot in its box's turn queue: it streams from the model or runs a tool call, within pi-pool's 1,800 s lease. */
@@ -291,7 +293,7 @@ export function jobFacts(children: readonly ChildAgent[], board: ChatBoard | nul
     if (!row || row.id === self) return;
     const at = Date.parse(row.lastActivityAt ?? "");
     facts.set("thread:" + row.id, { key: "thread:" + row.id, name: row.name, state: row.working ? "working" : row.failure ? "failed" : "ended",
-      ...(Number.isFinite(at) ? { activityAt: at } : {}), ...(row.failure ? { error: row.failure } : {}), messages: row.messageCount, item: link });
+      ...(row.chat ? { chat: true as const } : {}), ...(Number.isFinite(at) ? { activityAt: at } : {}), ...(row.failure ? { error: row.failure } : {}), messages: row.messageCount, item: link });
   });
   return [...facts.values()];
 }

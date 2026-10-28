@@ -26,7 +26,7 @@ const board = (): ChatBoard => ({ v: 2, rev: 1, updatedAt: "2026-10-23T03:32:31Z
 
 test("a goal's owner and steer never name another chat that holds a step under it", () => {
   const facts: JobFact[] = [
-    { key: `thread:${HARNESS}`, sessionId: HARNESS, name: "AI harness developer environment VP", state: "working", activityAt: NOW - 60_000 },
+    { key: `thread:${HARNESS}`, sessionId: HARNESS, name: "AI harness developer environment VP", state: "working", chat: true, activityAt: NOW - 60_000 },
     { key: "sub-push", name: "push wait root cause", state: "ended", activityAt: NOW - 5 * 60 * 60_000 },
   ];
   const memo = { readings: [{ value: 297.6, at: Date.parse("2026-10-23T03:32:31.611Z") - 3_600_000 }, { value: 297.6, at: Date.parse("2026-10-23T03:32:31.611Z") - 1_800_000 }], still: 2 };

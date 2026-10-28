@@ -182,9 +182,11 @@ export function checkInPrecheck(previous: CheckInMemory | undefined, facts: read
   const done = context.boardError ? [] : finishedOpen(board, doneFacts);
   const fold = context.boardError ? [] : goalsToFold(board, facts, self, context.duties ?? []);
   const roots = new Set(context.jobs ?? []);
-  // A thread the chat did not start, such as another chat that owns a step on this board, is no job of this chat: on 10-23 at 16:25Z VP of CI's
-  // check-in sent its p1 goal steer to the AI harness chat, which held p342 under p1.
-  const ownJob = (fact: JobFact): boolean => !fact.key.startsWith("thread:") || roots.has(fact.name) || roots.has(fact.key.slice("thread:".length));
+  // Another chat that owns a step on this board is no job of this chat: on 10-23 at 16:25Z VP of CI's check-in sent its p1 goal steer to the AI
+  // harness chat, which held p342 under p1. A root job that is no chat is one, whichever chat started it: on 10-28 Prospect feature bro's p98
+  // under p229 was owned by "g2g accounts setup 10-20", a root the AI harness chat started on 10-20, queued 64th of 66 for a slot, and goal_gaps
+  // read p229 "no live job owns it" in two check-ins in a row, after the chat dropped the push step p241 the first one added for that same job.
+  const ownJob = (fact: JobFact): boolean => fact.chat !== true || roots.has(fact.name) || roots.has(fact.key.slice("thread:".length));
   const goals = context.boardError ? { pushes: [], memos: previous?.goals ?? {} }
     : goalPushes(board, goaled, previous?.goals, context.everyMs ?? CHECK_IN_MS, now, doneFacts.metrics, new Set(fold.map(entry => entry.goal.id)), paused, ownJob, carriers, context.owner ?? []);
   const pushed = context.boardError ? { pushes: [], memos: previous?.jobs ?? {} }

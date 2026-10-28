@@ -1,0 +1,67 @@
+{
+ "v": 2,
+ "rev": 5651,
+ "updatedAt": "2026-10-28T04:27:47.427Z",
+ "plan": [
+  {
+   "id": "p229",
+   "text": "Engage accounts spread their pages across the day on prod, busiest hour at most a tenth of the day",
+   "status": "doing",
+   "note": "Goal for p98, moved here on 10-26 from closed p168, whose target (accounts unable to read) is met. Done when one full UTC prod day reads 0.10 or less with all 165 accounts bound.",
+   "target": {
+    "metric": "paced busiest-hour share on a full UTC prod day",
+    "target": 0.1,
+    "unit": "share",
+    "current": 0.157,
+    "measuredAt": "2026-10-27T23:59:59.000Z",
+    "source": "g2g closing read of 10-27 on prod 9a6b6e0769: 23 accounts with 200+ sends, top hours all 06-08Z",
+    "direction": "down"
+   },
+   "children": [
+    {
+     "id": "p98",
+     "text": "Build: engage accounts pace their daily pages across 24 h and re-bind a moved exit themselves",
+     "status": "doing",
+     "job": "g2g accounts setup 10-20",
+     "children": [],
+     "note": "Done when a full UTC day on prod reads the paced busiest-hour share at 0.10 or less, with every account bound (unbound 0, all 165 bound). 10-23 read 0.282: idle accounts spent their day in 3 to 4 evening hours while about 20 in-session accounts carried the day. Fix 9b25dd088e (on origin/sieun/dev): each account at most a 24th of its day per hour, background pages spread through the hour, and a canary's hour is its day divided by engage.canary_hourly_divisor. The 10-23 replay reads 0.073 at a divisor of 48 and 0.094 at 36, all 19,169 pages served, with openings about doubling (121 to 226 a day). Default 36 is in 685015b496 (on box sieun/dev): at 48 a canary would max near 1,000 a day, under the 1,167 the canary group read on 10-20, and at 36 it maxes near 1,333. Raising it to 2,000 later is one config row (24).\n00:5xZ 10-28: the closing read of 10-27 FAILED, paced p50 0.157 over 23 accounts (153 active, 0 unbound). Every top hour falls in 06-08Z: 13.4k of 22.8k pages were sent in 06-09Z, because watch due times cluster (7,568 of 9,873 monitor tagged rows are due 04-09Z) and cadence keeps each cohort's phase. The pace held: the busiest watch_feed account-hour at 07Z averaged 15.5 pages (2,503 pages over 161 accounts). Job p98-watch-due-spread spreads the due times over 24 h by a stable per-target phase. Reads now go through Grafana grafana_ro ({w}p98-paced-grafana.sql).\n09:3xZ 10-26: the watch is caught up on fa7ff27c82 (ae22adb415, live 08:28Z). Claims settle ok in a median of 24-122 s, 0 starved, 0 open. 0 of 9,894 monitor posts targets are due, and 9,204 ran in the last 24 h. Closing read: 10-27 at 10-28 00:20Z.",
+     "waitFor": "p1023 (carries due spread ec2e5ab039) deploys once verify 40630371387 leaves the CI queue (CI's job 'staging probe queue wait'); then the first full UTC day, 10-29, reads at 10-30 00:2xZ",
+     "sessionId": "01a158eb-1de0-74a2-b73b-55b09d1621ba"
+    },
+    {
+     "id": "p241",
+     "text": "Push: get the paced busiest-hour share on a full UTC prod day from 0.157 to 0.10 or less",
+     "status": "dropped",
+     "job": "g2g accounts setup 10-20",
+     "sessionId": "01a158eb-1de0-74a2-b73b-55b09d1621ba",
+     "note": "Done when one full UTC prod day reads 0.10 or less with every account bound. Duplicate of p98, which tracks the same full-day busiest-hour read and the due-time spread fix with the same job.",
+     "duty": "checkin/goal_gaps",
+     "children": []
+    }
+   ],
+   "requirements": [
+    {
+     "text": "read 100k pages/day",
+     "status": "met",
+     "evidence": "The 10-23 replay of the pace served all 19,169 pages at divisor 36, and a canary account can still reach about 1,333 pages a day (p98 note)."
+    },
+    {
+     "text": "without accounts dieing",
+     "status": "open",
+     "note": "d1 at 00:00Z 10-26 reads engage_accounts_stuck 0 and fleet_ig_killed_pct 0 with 165 bound, but that day ran before the full pace; the first full UTC day on p1005 settles it."
+    },
+    {
+     "text": "Prod accounts outside the canary that Instagram killed in 24 h ≤ 2%",
+     "status": "open",
+     "note": "Read on the same full UTC day on p1005 as the busiest-hour share; 10-26 00:00Z read 0%."
+    },
+    {
+     "text": "most importantly staging and prod watchlist all green",
+     "status": "unmet",
+     "note": "The grid pace d36157570e starved the prod watch and owner Watchlist fell to 96.8% at 07:30Z 10-26. Stopgap 52699ff1f3 (metal-deploy 40285750726) and ae22adb415 (p1005) give the watch its own pace; the 10-26 replay serves every claim. p230 owns the read-back."
+    }
+   ]
+  }
+ ],
+ "todos": []
+}
