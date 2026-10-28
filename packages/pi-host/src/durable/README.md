@@ -60,7 +60,7 @@ Each command is one JSON line with `type` and `id`, and the response is a v7 `re
 | `durable_abort` | `thread`, `conversation?` | |
 | `durable_tree` | `thread` | `conversations`: id, parent, ownerTask, name, depth, status, model, createdAt. |
 | `durable_entries` | `thread`, `conversation?`, `before?`, `after?`, `limit?` | `entries` newest first (oldest first with `after`), `more`. |
-| `durable_search` | `q`, `threads?`, `from?`, `after?`, `before?`, `limit?`, `sort?` (relevance, recent) | `hits`: thread, conversation, entryId, kind, author, at, snippet with `<mark>`. |
+| `durable_search` | `q`, `threads?`, `conversation?`, `from?` (author), `by?` ({thread, conversation, id}: what one agent said), `after?`, `before?`, `limit?`, `offset?`, `sort?` (relevance, recent) | `hits`: one page of thread, conversation, entryId, kind, author, at, snippet with `<mark>`; `total`: the exact count of every match. |
 | `durable_usage` | `since?`, `until?`, `threads?` | `usage`: per thread and model, turns, input, output, cacheRead and cacheWrite tokens, and cost with costInput, costOutput, costCacheRead and costCacheWrite apart. |
 | `durable_doc_get` | `thread`, `name`, `conversation?` | `value` |
 | `durable_doc_put` | `thread`, `name`, `value`, `conversation?` | |

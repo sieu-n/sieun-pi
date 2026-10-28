@@ -40,11 +40,23 @@ export interface SearchHit {
 export interface SearchQuery {
   q: string;
   threads?: string[];
+  /** Only this conversation's entries; pair it with one thread in `threads`. */
+  conversation?: number;
+  /** Only entries whose author column is this, such as `owner`. */
   from?: string;
+  /** Only what one agent said: its own entries in its thread and conversation, and the agent messages it sent as `id` anywhere. */
+  by?: { thread: string; conversation: number; id: string };
   after?: number;
   before?: number;
   limit?: number;
+  offset?: number;
   sort?: "relevance" | "recent";
+}
+
+/** One page of hits, each with its snippet, and the exact count of every match. */
+export interface SearchPage {
+  hits: SearchHit[];
+  total: number;
 }
 
 export interface IndexedEntry {
@@ -241,26 +253,36 @@ export class ThreadIndex {
     }
   }
 
-  search(query: SearchQuery): SearchHit[] {
+  search(query: SearchQuery): SearchPage {
     const match = ftsQuery(query.q);
-    if (!match) return [];
+    if (!match) return { hits: [], total: 0 };
     const where = ["entries MATCH ?"];
     const values: (string | number)[] = [match];
     if (query.threads?.length) {
       where.push(`thread IN (${query.threads.map(() => "?").join(", ")})`);
       values.push(...query.threads);
     }
+    if (query.conversation !== undefined) { where.push("CAST(conversation AS INTEGER) = ?"); values.push(query.conversation); }
     if (query.from) { where.push("author = ?"); values.push(query.from); }
+    if (query.by) {
+      where.push("((kind = 'agent.message' AND author = ?) OR (kind <> 'agent.message' AND author <> 'owner' AND thread = ? AND CAST(conversation AS INTEGER) = ?))");
+      values.push(query.by.id, query.by.thread, query.by.conversation);
+    }
     if (query.after !== undefined) { where.push("CAST(at AS INTEGER) >= ?"); values.push(query.after); }
     if (query.before !== undefined) { where.push("CAST(at AS INTEGER) < ?"); values.push(query.before); }
+    const total = Number((this.db.prepare(`SELECT count(*) AS n FROM entries WHERE ${where.join(" AND ")}`).get(...values) as Row).n);
     const order = query.sort === "recent" ? "CAST(at AS INTEGER) DESC" : "rank";
+    // The snippet is built only for the rows of the page: building it for every match took 2.8 s for the 16,254 matches of "a" on us-metal02.
     const sql = `SELECT thread, conversation, entry_id, kind, author, at, snippet(entries, 0, '<mark>', '</mark>', '…', 24) AS snippet
-      FROM entries WHERE ${where.join(" AND ")} ORDER BY ${order} LIMIT ?`;
-    const rows = this.db.prepare(sql).all(...values, query.limit ?? 50) as Row[];
-    return rows.map(row => ({
-      thread: String(row.thread), conversation: Number(row.conversation), entryId: Number(row.entry_id), kind: String(row.kind),
-      author: String(row.author), at: Number(row.at), snippet: String(row.snippet),
-    }));
+      FROM entries WHERE ${where.join(" AND ")} ORDER BY ${order} LIMIT ? OFFSET ?`;
+    const rows = this.db.prepare(sql).all(...values, query.limit ?? 50, query.offset ?? 0) as Row[];
+    return {
+      total,
+      hits: rows.map(row => ({
+        thread: String(row.thread), conversation: Number(row.conversation), entryId: Number(row.entry_id), kind: String(row.kind),
+        author: String(row.author), at: Number(row.at), snippet: String(row.snippet),
+      })),
+    };
   }
 
   usage(range: { since?: number; until?: number; threads?: string[] }): UsageTotal[] {

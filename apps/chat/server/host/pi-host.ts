@@ -4,7 +4,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { connect, type Socket } from "node:net";
-import type { DurableEvent, DurableThread, EntryRecord, Host, SearchHit, SearchQuery, SubmissionRecord, Submitted, SubmitInput, Ticket, TreeNode, UsageTotal } from "./types.ts";
+import type { DurableEvent, DurableThread, EntryRecord, Host, SearchPage, SearchQuery, SubmissionRecord, Submitted, SubmitInput, Ticket, TreeNode, UsageTotal } from "./types.ts";
 
 type Pending = { resolve: (data: unknown) => void; reject: (error: Error) => void; timer: NodeJS.Timeout };
 type Watch = { thread: string; conversation?: number; fromEntry?: number; sink: (event: DurableEvent) => void; hostId?: string; stopped: boolean };
@@ -198,8 +198,8 @@ export class PiHost implements Host {
       if (watch.hostId) await this.call("durable_unwatch", { watch: watch.hostId }).catch(() => undefined);
     };
   }
-  async search(query: SearchQuery): Promise<SearchHit[]> {
-    return ((await this.call("durable_search", { ...query })) as { hits: SearchHit[] }).hits;
+  async search(query: SearchQuery): Promise<SearchPage> {
+    return (await this.call("durable_search", { ...query })) as SearchPage;
   }
   async usage(range: { since?: number; until?: number; threads?: string[] }): Promise<UsageTotal[]> {
     return ((await this.call("durable_usage", range)) as { usage: UsageTotal[] }).usage;

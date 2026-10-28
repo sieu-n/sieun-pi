@@ -193,12 +193,13 @@ describe("search", () => {
     assert.ok(all.hits.every(h => !/<(?!\/?mark>)/.test(h.snippet)));
   });
 
-  test("a hit's messageId opens the page around it", async () => {
+  test("a hit's messageId opens the page around it, focused on the turn that holds it", async () => {
     const result = await s.get<SearchResult>(`/api/search?q=ECONNREFUSED&limit=10`);
     const hit = result.hits.find(h => h.kind === "turn")!;
+    assert.equal(hit.messageId, hit.id.split("/").at(-1));
     const page = await s.get<TimelinePage>(`/api/c/${encodeURIComponent(hit.conversation.id)}/items?around=${hit.messageId}`);
-    assert.equal(page.focus, hit.messageId);
-    assert.ok(page.items.some(i => i.id === hit.messageId));
+    assert.match(page.focus ?? "", /^t\d+$/);
+    assert.ok(page.items.some(i => i.id === page.focus));
   });
 });
 

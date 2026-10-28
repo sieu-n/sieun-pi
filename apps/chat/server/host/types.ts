@@ -57,7 +57,13 @@ export type DurableEvent =
   | { type: "closed"; reason: string };
 
 export interface SearchHit { thread: string; conversation: number; entryId: number; kind: string; author: string; at: number; snippet: string }
-export interface SearchQuery { q: string; threads?: string[]; from?: string; after?: number; before?: number; limit?: number; sort?: "relevance" | "recent" }
+/** pi-host's durable_search: `from` matches the author column, `by` is what one agent said (its own entries and the agent messages it sent). */
+export interface SearchQuery {
+  q: string; threads?: string[]; conversation?: number; from?: string; by?: { thread: string; conversation: number; id: string };
+  after?: number; before?: number; limit?: number; offset?: number; sort?: "relevance" | "recent";
+}
+/** One page of hits and the exact count of every match. */
+export interface SearchPage { hits: SearchHit[]; total: number }
 export interface UsageTotal {
   thread: string; model: string; turns: number; input: number; output: number; cacheRead: number; cacheWrite: number;
   cost: number; costInput: number; costOutput: number; costCacheRead: number; costCacheWrite: number;
@@ -91,7 +97,7 @@ export interface Host {
   /** Newest first with `before`, oldest first with `after`. */
   entries(thread: string, opts: { conversation?: number; before?: number; after?: number; limit?: number }): Promise<{ entries: EntryRecord[]; more: boolean }>;
   watch(thread: string, opts: { conversation?: number; fromEntry?: number }, sink: (event: DurableEvent) => void): Promise<() => Promise<void>>;
-  search(query: SearchQuery): Promise<SearchHit[]>;
+  search(query: SearchQuery): Promise<SearchPage>;
   usage(range: { since?: number; until?: number; threads?: string[] }): Promise<UsageTotal[]>;
   docGet(thread: string, name: string): Promise<unknown>;
   docPut(thread: string, name: string, value: unknown): Promise<void>;

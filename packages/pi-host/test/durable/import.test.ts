@@ -56,8 +56,8 @@ test("a Prime session imports as a thread, and the next input sees the summary a
     assert.equal(thread.cwd, dir);
     const { entries } = await threads.entries(thread.id, { limit: 50 });
     assert.deepEqual(entries.reverse().map(entry => entry.kind), ["pi.user", "pi.assistant", "pi.user", "pi.assistant", "pi.compaction", "prime.custom", "pi.assistant"]);
-    assert.equal(threads.search({ q: "zebras" }).length, 0);
-    assert.equal(threads.search({ q: "alpacas" }).length >= 2, true);
+    assert.equal(threads.search({ q: "zebras" }).total, 0);
+    assert.equal(threads.search({ q: "alpacas" }).total >= 2, true);
     const [usageRow] = threads.usage({ threads: [thread.id] });
     assert.equal(usageRow?.turns, 3);
     assert.deepEqual([usageRow!.costInput, usageRow!.costOutput, usageRow!.costCacheRead, usageRow!.costCacheWrite, usageRow!.cost].map(n => Math.round(n * 100) / 100), [0.3, 0.6, 0.09, 0.12, 1.11]);

@@ -26,7 +26,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { Leases, SessionLockedError } from "../lease.ts";
-import { statusOf, ThreadIndex, type IndexedEntry, type SearchHit, type SearchQuery, type ThreadRow, type ThreadStatus, type UsageRow, type UsageTotal } from "./index-db.ts";
+import { statusOf, ThreadIndex, type IndexedEntry, type SearchPage, type SearchQuery, type ThreadRow, type ThreadStatus, type UsageRow, type UsageTotal } from "./index-db.ts";
 import { headFor, parseSession } from "./import.ts";
 import { AgentMessageEntry, ChatDoc, threadEnv, threadRegistry } from "./registry.ts";
 
@@ -709,7 +709,7 @@ export class DurableThreads {
     return { ...this.info(created.id), imported: parsed.drafts.length, skipped: parsed.skipped };
   }
 
-  search(query: SearchQuery): SearchHit[] {
+  search(query: SearchQuery): SearchPage {
     return this.index.search(query);
   }
 

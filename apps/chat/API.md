@@ -94,8 +94,8 @@ Pages call the server through `web/src/lib/api` (`import { api, timeline, agents
 2. `q` may carry `from:`, `in:`, `after:` and `before:` tokens, and the separate params win over them.
 3. `from` is a principal id (`owner` or an agent id), `in` a conversation id, and `after` and `before` are YYYY-MM-DD in KST, with `before` excluding that day.
 4. `sort` is relevance (default) or recent, and `limit` is 1 to 100 (default 20).
-5. `total` is the exact count for the same filters (c191), counted from every match and never capped.
-6. A hit's `messageId` is the timeline item id, `e<n>`, `t<n>` or `p<n>`, so `#/c/<conversation>?m=<messageId>` opens `items?around=<messageId>`.
+5. `total` is the exact count for the same filters (c191): pi-host counts every thread match and sends snippets for the page's rows only, and the server adds every matching post.
+6. A thread hit's `messageId` is its entry, `e<n>`, and a post's is `p<n>`, so `#/c/<conversation>?m=<messageId>` opens `items?around=<messageId>`, whose `focus` names the item that holds it. Search reads no thread file, so the first search after a start answers in under a second.
 7. A snippet is escaped text whose only tags are `<mark>` around the matches.
 
 ## Boards, For you, duties and check-ins

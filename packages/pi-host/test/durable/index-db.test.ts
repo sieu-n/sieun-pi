@@ -32,3 +32,23 @@ test("an index without the cost split is rebuilt, and a current one is not", () 
   assert.equal(again.rebuilt, false);
   again.close();
 });
+
+test("a search returns one page with snippets and the exact count, and narrows to a conversation or to what one agent said", () => {
+  const index = new ThreadIndex(join(dir, "search.sqlite"));
+  index.insertThread({ id: "t2", name: "search", provider: "anthropic", modelId: "claude-opus-5-5", thinkingLevel: "high", cwd: "/", createdAt: 1, updatedAt: 1 });
+  const entries = Array.from({ length: 30 }, (_, i) => ({
+    thread: "t2", conversation: i % 3 === 0 ? 2 : 1, entryId: i + 1, kind: i % 5 === 0 ? "agent.message" : i % 2 ? "pi.user" : "pi.assistant",
+    author: i % 5 === 0 ? "t2:2" : i % 2 ? "owner" : "anthropic/claude-opus-5-5", at: 1000 + i, text: `relay check number ${i}`,
+  }));
+  index.addEntries("t2", entries, []);
+  const page = index.search({ q: "relay", limit: 5, offset: 5, sort: "recent" });
+  assert.equal(page.total, 30);
+  assert.deepEqual(page.hits.map(hit => hit.entryId), [25, 24, 23, 22, 21]);
+  assert.ok(page.hits.every(hit => hit.snippet.includes("<mark>relay</mark>")));
+  assert.equal(index.search({ q: "relay", threads: ["t2"], conversation: 2 }).total, entries.filter(e => e.conversation === 2).length);
+  const said = entries.filter(e => (e.kind === "agent.message" && e.author === "t2:2") || (e.kind !== "agent.message" && e.author !== "owner" && e.conversation === 2));
+  assert.equal(index.search({ q: "relay", by: { thread: "t2", conversation: 2, id: "t2:2" }, limit: 100 }).total, said.length);
+  assert.equal(index.search({ q: "relay", by: { thread: "other", conversation: 2, id: "t2:2" } }).total, entries.filter(e => e.kind === "agent.message").length);
+  assert.equal(index.search({ q: "relay", from: "owner" }).total, entries.filter(e => e.author === "owner").length);
+  index.close();
+});

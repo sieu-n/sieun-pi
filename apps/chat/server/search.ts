@@ -2,7 +2,7 @@
  * Full-text search over every thread's entries (pi-host's FTS5 index through `durable_search`) and every channel post, with the filters
  * from:, in:, after: and before: (~/work/slack-layer-design/search.md section 5). `total` is the exact count for the same filters (c191).
  */
-import type { ConversationKind, SearchHit, SearchResult } from "../web/src/lib/api/types.ts";
+import type { ConversationKind, ConversationSummary, SearchHit, SearchResult } from "../web/src/lib/api/types.ts";
 import type { Channels } from "./channels.ts";
 import type { Host, SearchHit as HostHit } from "./host/types.ts";
 import { conversationIdOf, parseConversationId, type Threads } from "./threads.ts";
@@ -67,7 +67,8 @@ function postSnippet(text: string, words: string[]): string {
   return (start > 0 ? "…" : "") + slice.split(re).map((part, i) => (i % 2 === 1 ? `<mark>${escapeHtml(part)}</mark>` : escapeHtml(part))).join("") + (start + 220 < text.length ? "…" : "");
 }
 
-type Scored = { hit: Omit<SearchHit, "messageId"> & { messageId?: string; entry?: { thread: string; conversation: number; entryId: number } }; score: number };
+/** A thread hit or a channel post, ranked before its hit is built; only the page's rows become hits. */
+type Ranked = { score: number; at: number; build: () => SearchHit };
 
 export class Search {
   constructor(readonly host: Host, readonly threads: Threads, readonly channels: Channels) {}
@@ -79,35 +80,27 @@ export class Search {
     const after = query.after ? dayStart(query.after) : undefined;
     const before = query.before ? dayStart(query.before) : undefined;
     const sort = query.sort ?? "relevance";
-    const scored: Scored[] = [];
+    const offset = Number(query.cursor ?? 0) || 0;
+    const limit = Math.min(Math.max(query.limit ?? 20, 1), 100);
+    const ranked: Ranked[] = [];
+    let total = 0;
 
     const inId = query.in;
     const inChannel = inId ? this.channels.row(inId) : undefined;
     if (!inChannel) {
       const scope = inId ? parseConversationId(inId) : undefined;
       const fromAgent = query.from && query.from !== "owner" ? parseConversationId(query.from) : undefined;
-      const threads = scope ? [scope.thread] : fromAgent ? [fromAgent.thread] : undefined;
-      const raw = await this.host.search({
-        q: query.q, ...(threads ? { threads } : {}), ...(after === undefined ? {} : { after }), ...(before === undefined ? {} : { before }), sort, limit: 1_000_000,
+      // The merged page holds at most offset + limit thread hits, so the host builds snippets for those rows only.
+      const page = await this.host.search({
+        q: query.q, sort, limit: offset + limit,
+        ...(scope ? { threads: [scope.thread], conversation: scope.conversation } : {}),
+        ...(query.from === "owner" ? { from: "owner" } : {}),
+        ...(fromAgent ? { by: { thread: fromAgent.thread, conversation: fromAgent.conversation, id: query.from! } } : {}),
+        ...(after === undefined ? {} : { after }), ...(before === undefined ? {} : { before }),
       });
-      raw.forEach((hit, rank) => {
-        if (scope && hit.conversation !== scope.conversation) return;
-        const author = this.authorOf(hit);
-        if (query.from) {
-          if (query.from === "owner" ? author.id !== "owner" : author.id !== query.from) return;
-        }
-        const conversationId = conversationIdOf(hit.thread, hit.conversation);
-        const summary = this.threads.conversations().find(c => c.id === conversationId);
-        const kind: ConversationKind = summary?.kind ?? (hit.conversation === 1 ? "solo" : "job");
-        scored.push({
-          score: raw.length - rank,
-          hit: {
-            id: `${conversationId}/e${hit.entryId}`, conversation: { id: conversationId, kind, name: summary?.name ?? this.threads.thread(hit.thread)?.name ?? hit.thread },
-            author, at: hit.at, kind: hit.kind === "pi.assistant" ? "turn" : hit.kind === "pi.tool-result" ? "tool" : "message", snippet: safeSnippet(hit.snippet),
-            entry: { thread: hit.thread, conversation: hit.conversation, entryId: hit.entryId },
-          },
-        });
-      });
+      total += page.total;
+      const summaries = new Map(this.threads.conversations().map(c => [c.id, c]));
+      page.hits.forEach((hit, rank) => ranked.push({ score: page.total - rank, at: hit.at, build: () => this.threadHit(hit, summaries.get(conversationIdOf(hit.thread, hit.conversation))) }));
     }
     if (!inId || inChannel) {
       for (const { row, post } of this.channels.allPosts()) {
@@ -117,27 +110,34 @@ export class Search {
         if (before !== undefined && post.at >= before) continue;
         const score = postMatch(post.text, words);
         if (!score) continue;
-        const author = this.threads.principal(post.author);
-        scored.push({
-          score,
-          hit: {
-            id: `${row.id}/${post.id}`, conversation: { id: row.id, kind: "channel", name: row.name }, messageId: post.id,
-            author: { id: author.id, name: author.name, kind: author.kind === "owner" ? "owner" : "agent" }, at: post.at, kind: "post", snippet: postSnippet(post.text, words),
+        total += 1;
+        ranked.push({
+          score, at: post.at,
+          build: () => {
+            const author = this.threads.principal(post.author);
+            return {
+              id: `${row.id}/${post.id}`, conversation: { id: row.id, kind: "channel", name: row.name }, messageId: post.id,
+              author: { id: author.id, name: author.name, kind: author.kind === "owner" ? "owner" : "agent" }, at: post.at, kind: "post", snippet: postSnippet(post.text, words),
+            };
           },
         });
       }
     }
-    if (sort === "recent") scored.sort((a, b) => b.hit.at - a.hit.at);
-    else scored.sort((a, b) => b.score - a.score || b.hit.at - a.hit.at);
-    const offset = Number(query.cursor ?? 0) || 0;
-    const limit = Math.min(Math.max(query.limit ?? 20, 1), 100);
-    const page = scored.slice(offset, offset + limit);
-    const hits = await Promise.all(page.map(async ({ hit }) => {
-      const { entry, ...rest } = hit;
-      const messageId = entry ? await this.threads.itemIdOf(entry.thread, entry.conversation, entry.entryId).catch(() => `e${entry.entryId}`) : hit.messageId!;
-      return { ...rest, messageId };
-    }));
-    return { hits, total: scored.length, ...(offset + limit < scored.length ? { nextCursor: String(offset + limit) } : {}) };
+    if (sort === "recent") ranked.sort((a, b) => b.at - a.at);
+    else ranked.sort((a, b) => b.score - a.score || b.at - a.at);
+    const hits = ranked.slice(offset, offset + limit).map(row => row.build());
+    return { hits, total, ...(offset + limit < total ? { nextCursor: String(offset + limit) } : {}) };
+  }
+
+  /** A thread hit opens at its entry: the timeline's `around=e<id>` answers with the item that holds it as `focus`. */
+  private threadHit(hit: HostHit, summary: ConversationSummary | undefined): SearchHit {
+    const conversationId = conversationIdOf(hit.thread, hit.conversation);
+    const kind: ConversationKind = summary?.kind ?? (hit.conversation === 1 ? "solo" : "job");
+    return {
+      id: `${conversationId}/e${hit.entryId}`, conversation: { id: conversationId, kind, name: summary?.name ?? this.threads.thread(hit.thread)?.name ?? hit.thread },
+      messageId: `e${hit.entryId}`, author: this.authorOf(hit), at: hit.at,
+      kind: hit.kind === "pi.assistant" ? "turn" : hit.kind === "pi.tool-result" ? "tool" : "message", snippet: safeSnippet(hit.snippet),
+    };
   }
 
   private authorOf(hit: HostHit): SearchHit["author"] {

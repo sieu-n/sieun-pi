@@ -7,7 +7,7 @@
 import { randomUUID } from "node:crypto";
 import type { TurnPlace } from "../../web/src/lib/api/types.ts";
 import { DEFAULT_MODEL } from "../config.ts";
-import type { ContentBlock, DurableEvent, DurableThread, EntryRecord, Host, Message, SearchHit, SearchQuery, SubmissionRecord, Submitted, SubmitInput, Ticket, TreeNode, UsageTotal } from "./types.ts";
+import type { ContentBlock, DurableEvent, DurableThread, EntryRecord, Host, Message, SearchHit, SearchPage, SearchQuery, SubmissionRecord, Submitted, SubmitInput, Ticket, TreeNode, UsageTotal } from "./types.ts";
 
 interface FakeThread {
   row: DurableThread;
@@ -246,9 +246,9 @@ export class FixtureHost implements Host {
     };
   }
 
-  async search(query: SearchQuery): Promise<SearchHit[]> {
+  async search(query: SearchQuery): Promise<SearchPage> {
     const words = query.q.toLowerCase().split(/\s+/).map(w => w.replace(/^"|"$|\*$/g, "")).filter(Boolean);
-    const hits: (SearchHit & { score: number })[] = [];
+    const matches: { hit: Omit<SearchHit, "snippet">; text: string; score: number }[] = [];
     for (const thread of this.threadsById.values()) {
       if (query.threads && !query.threads.includes(thread.row.id)) continue;
       for (const entry of thread.entries) {
@@ -263,15 +263,19 @@ export class FixtureHost implements Host {
         if (query.before !== undefined && at >= query.before) continue;
         const author = entry.kind === "agent.message" ? String((entry.data as { from?: string }).from) : message.role === "user" ? "owner" : message.role === "assistant" ? `${message.provider}/${message.model}` : `tool:${message.toolName}`;
         if (query.from && author !== query.from) continue;
-        const first = lower.indexOf(words[0]!);
-        const start = Math.max(0, first - 40);
-        const slice = text.slice(start, start + 160);
-        const snippet = (start ? "…" : "") + slice.replace(new RegExp(`(${words.map(w => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})`, "gi"), "<mark>$1</mark>");
-        hits.push({ thread: thread.row.id, conversation: entry.conversationId, entryId: entry.id, kind: entry.kind, author, at, snippet, score: counts.reduce((a, b) => a + b, 0) });
+        if (query.conversation !== undefined && entry.conversationId !== query.conversation) continue;
+        if (query.by && !(entry.kind === "agent.message" ? author === query.by.id : author !== "owner" && thread.row.id === query.by.thread && entry.conversationId === query.by.conversation)) continue;
+        matches.push({ hit: { thread: thread.row.id, conversation: entry.conversationId, entryId: entry.id, kind: entry.kind, author, at }, text, score: counts.reduce((a, b) => a + b, 0) });
       }
     }
-    hits.sort((a, b) => (query.sort === "recent" ? b.at - a.at : b.score - a.score || b.at - a.at));
-    return hits.slice(0, query.limit ?? 50).map(({ score: _score, ...hit }) => hit);
+    matches.sort((a, b) => (query.sort === "recent" ? b.hit.at - a.hit.at : b.score - a.score || b.hit.at - a.hit.at));
+    const offset = query.offset ?? 0;
+    const mark = new RegExp(`(${words.map(w => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})`, "gi");
+    const hits = matches.slice(offset, offset + (query.limit ?? 50)).map(({ hit, text }) => {
+      const start = Math.max(0, text.toLowerCase().indexOf(words[0]!) - 40);
+      return { ...hit, snippet: (start ? "…" : "") + text.slice(start, start + 160).replace(mark, "<mark>$1</mark>") };
+    });
+    return { hits, total: matches.length };
   }
 
   async usage(range: { since?: number; until?: number; threads?: string[] }): Promise<UsageTotal[]> {

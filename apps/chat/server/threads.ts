@@ -322,12 +322,6 @@ export class Threads {
     return { items, ...(page.more && page.entries[0] ? { older: `e${page.entries[0].id}` } : {}) };
   }
 
-  /** The item id that holds an entry, for a search hit. */
-  async itemIdOf(thread: string, conversation: number, entryId: number): Promise<string> {
-    const page = await this.pageBefore(thread, conversation, entryId + 1, 1);
-    return itemIdFor(page.entries, entryId) ?? `e${entryId}`;
-  }
-
   // Live side
 
   async watch(id: ConversationId): Promise<{ items: Item[]; partial: LivePartial | null; status: RunStatus }> {

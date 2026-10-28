@@ -202,7 +202,7 @@ export interface ConversationPatch { name?: string; archived?: boolean; model?: 
 export interface SearchHit {
   id: string;
   conversation: { id: ConversationId; kind: ConversationKind; name: string };
-  /** The item id the timeline uses: open `/api/c/<conversation>/items?around=<messageId>`. */
+  /** `e<entry>` for a thread hit and `p<n>` for a post: open `/api/c/<conversation>/items?around=<messageId>`, whose `focus` is the item that holds it. */
   messageId: string;
   author: { id: string; name: string; kind: "owner" | "agent" };
   at: Ms;
