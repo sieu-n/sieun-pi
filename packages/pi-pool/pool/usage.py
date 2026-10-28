@@ -7,6 +7,8 @@ from . import base, registry, vending
 
 CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
+CODEX_MODELS_URL = "https://chatgpt.com/backend-api/codex/models"
+CODEX_LIST_VERSION = "999.0.0"
 READ_TIMEOUT = 10
 FIVE_HOURS_SEC = 5 * 3600
 WEEK_SEC = 7 * 24 * 3600
@@ -120,10 +122,26 @@ def fetch_usage(provider, account, token, started):
                         {"Authorization": f"Bearer {token}", "anthropic-beta": "oauth-2025-04-20"})
         tier = tier_label(base.KeychainAdapter(account.cred.service).read() or {})
         return claude_windows(body, started), {"tier": tier} if tier else {}
-    body = get_json(CODEX_USAGE_URL, {"Authorization": f"Bearer {token}", "User-Agent": "codex-cli",
-                                      "ChatGPT-Account-Id": account.id})
-    return codex_windows(body, started), {k: body[v] for k, v in (("email", "email"), ("tier", "plan_type"))
-                                          if isinstance(body.get(v), str)}
+    headers = {"Authorization": f"Bearer {token}", "User-Agent": "codex-cli", "ChatGPT-Account-Id": account.id}
+    body = get_json(CODEX_USAGE_URL, headers)
+    extra = {k: body[v] for k, v in (("email", "email"), ("tier", "plan_type")) if isinstance(body.get(v), str)}
+    models = codex_models(headers)
+    if models:
+        extra["models"] = models
+    return codex_windows(body, started), extra
+
+
+def codex_models(headers):
+    """The model ids Codex serves this account, or None when the list cannot be read. The list hides each model
+    whose minimal_client_version is above client_version, so CODEX_LIST_VERSION asks for every one: on 10-28
+    client_version 0.130.0 listed 1 model for the free account ungsugoe5 and 0.200.0 and up listed 5. A failed
+    list read keeps the account's last list."""
+    try:
+        body = get_json(CODEX_MODELS_URL + "?" + urllib.parse.urlencode({"client_version": CODEX_LIST_VERSION}), headers)
+    except Exception:
+        return None
+    slugs = [m.get("slug") for m in (body.get("models") if isinstance(body, dict) else None) or [] if isinstance(m, dict)]
+    return [s for s in slugs if isinstance(s, str)] or None
 
 
 def read_account(provider, account, cfg):

@@ -62,6 +62,11 @@ class HookWriter:
         if reason:
             prov.setdefault("cooldown_reasons", {})[account_id] = reason
 
+    def refuse_model(self, provider, account, model, now):
+        """The provider refused `model` on `account`. The fact holds while the account keeps the plan it has now."""
+        facts = self._state["providers"][provider].setdefault("model_refusals", {}).setdefault(account.id, {})
+        facts[model] = {"at": now, "plan": account.plan}
+
     def start_reads(self, provider, ids, now):
         """A background usage read of these accounts starts now."""
         reads = self._state["providers"][provider].setdefault("usage_reads", {})
@@ -206,7 +211,7 @@ class IntentWriter:
     def forget_account(self, provider, account_id):
         """Drop account health and waits, but keep explicit account selections."""
         prov = self._state["providers"][provider]
-        for key in ("disabled", "cooldowns", "cooldown_reasons", "limits", "admissions"):
+        for key in ("disabled", "cooldowns", "cooldown_reasons", "limits", "admissions", "model_refusals"):
             (prov.get(key) or {}).pop(account_id, None)
         for rec in self._state["sessions"].values():
             waits = rec.get("wait") or {}
@@ -564,6 +569,20 @@ def decision(state, key, provider, accounts, cfg, now):
     return sched.decide(tree, accounts, sched.book_for(state, provider, key, cfg, now), cooldowns, cfg, now), tree
 
 
+def no_account_error(state, key, provider, accounts, cfg, now):
+    """The hook's error when no account can serve the tree now or later. It names each account's reason when one
+    of them cannot serve the tree's model, so the turn fails once with the cause instead of retrying."""
+    accounts = registry.with_pool_state(accounts, state, provider)
+    accounts = registry.with_models(accounts, registry.session_models(state, key, provider, cfg, now), cfg)
+    unserved = next((a.unserved for a in accounts if a.unserved), None)
+    if unserved is None:
+        return f"no {provider} account can serve this session"
+    cooldowns = state["providers"][provider]["cooldowns"]
+    why = [f"{a.label} does not serve {a.unserved}" if a.unserved else f"{a.label} is {sched.credential_reason(a, cooldowns, now) or 'full with no known reset'}"
+           for a in accounts]
+    return f"no {provider} account can serve {unserved}: " + ", ".join(why)
+
+
 def manual_mark(tree):
     """{"manual": True} for a tree pinned to one account, for its parked and unparked lines. A pinned tree's return
     to its own account writes no vend line, so on 10-22 the Whole system duty read 01a11ba8, pinned to claude8 and
@@ -681,7 +700,7 @@ def vend(provider):
         sys.stdout.write(token)
         return
     if d is None:
-        raise RuntimeError(f"no {provider} account can serve this session")
+        raise RuntimeError(no_account_error(state, key, provider, accounts, cfg, now))
     revalidated = None
     if provider == "anthropic" and isinstance(d, sched.Blocked) and d.reason == "cooldown":
         prov = state["providers"][provider]

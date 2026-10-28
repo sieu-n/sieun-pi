@@ -380,6 +380,8 @@ async function retryHookFailure(message: AgentMessage): Promise<AgentMessage | u
 		const result = manualFailure(message, info.selection);
 		return info.error ? { ...result, errorMessage: `${result.errorMessage} ${info.error}` } : result;
 	}
+	// An Auto error means no account can serve the session's model now or later, so a retry meets the same answer.
+	if (info.error) return { ...message, errorMessage: `${message.errorMessage} pi-pool: ${info.error}` };
 	if (wait && typeof wait.slot_at === "number") {
 		const said = `pi-pool: this session waits for its slot at ${new Date(wait.slot_at * 1000).toISOString()}.`;
 		return waitFailure(message, message.errorMessage ?? "", said, {}, waitMs(wait.slot_at), undefined);

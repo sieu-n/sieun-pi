@@ -120,6 +120,71 @@ class Precedence(unittest.TestCase):
         self.assertEqual(sched.tree_for(state, child, "anthropic").pin, "c")
 
 
+class CodexModelSupport(unittest.TestCase):
+    """10-28 06:03Z to 06:41Z: pro sieunpark77 was full, the pool moved two gpt-6-astra trees to the free ungsugoe5,
+    and each turn failed in about 2 s with "The 'gpt-6-astra' model is not supported when using Codex with a
+    ChatGPT account". An account that does not serve the tree's model is out for that tree, so the tree waits for
+    an account that does, and a tree on a model the account serves still enters it."""
+
+    FREE_MODELS = ("gpt-reserve", "gpt-6-luna", "gpt-5.6-terra", "gpt-5.6-luna", "codex-auto-review")
+    FREE = dataclasses.replace(codex_account("f", "free@x", "free"), models=FREE_MODELS)
+    RESET_MS = (NOW + 3600) * 1000
+    PRO_FULL = dataclasses.replace(codex_account("p", "pro@x", "pro", weekly_pct=100), models=FREE_MODELS + ("gpt-6-astra",),
+                                   windows=({"name": None, "usedPercentage": 100, "resetsAt": RESET_MS, "windowSeconds": 604800},))
+
+    def state(self, model, current=None, refusals=None, pin=None):
+        prov = registry.empty_provider_state()
+        if refusals:
+            prov["model_refusals"] = refusals
+        return {"version": 2, "providers": {"anthropic": registry.empty_provider_state(), "openai-codex": prov},
+                "sessions": {KEY.key: {"uuid": KEY.uuid, "active_id": KEY.active_id, "last_seen": NOW,
+                                       "pins": {"openai-codex": {"account_id": pin, "at": NOW}} if pin else {},
+                                       "models": {"openai-codex": {KEY.key: {"model": model, "at": NOW}}},
+                                       "vends": {"openai-codex": vend_record(current)} if current else {}}}}
+
+    def decide(self, state, accounts):
+        return vending.decision(state, KEY, "openai-codex", accounts, CFG, NOW)[0]
+
+    def test_a_free_account_that_does_not_list_gpt_6_astra_gets_no_astra_tree(self):
+        for current in (None, "p", "f"):
+            d = self.decide(self.state("gpt-6-astra", current=current), [self.FREE, self.PRO_FULL])
+            self.assertIsInstance(d, sched.Wait, current)
+            self.assertEqual((d.slot_account.id, d.slot_at, d.vend and d.vend.id), ("p", NOW + 3600, "p" if current == "p" else None))
+
+    def test_a_tree_on_a_model_the_free_account_lists_still_enters_it(self):
+        d = self.decide(self.state("gpt-6-luna"), [self.FREE, self.PRO_FULL])
+        self.assertEqual((type(d), d.account.id), (sched.Admit, "f"))
+
+    def test_an_account_with_no_model_list_on_file_still_serves(self):
+        d = self.decide(self.state("gpt-6-astra"), [dataclasses.replace(self.FREE, models=None), self.PRO_FULL])
+        self.assertEqual((type(d), d.account.id), (sched.Admit, "f"))
+
+    def test_a_model_the_provider_refused_on_the_account_keeps_it_out_while_its_plan_holds(self):
+        free = dataclasses.replace(self.FREE, models=None)
+        refusals = {"f": {"gpt-6-astra": {"at": NOW - 60, "plan": "free"}}}
+        d = self.decide(self.state("gpt-6-astra", current="f", refusals=refusals), [free, self.PRO_FULL])
+        self.assertEqual((type(d), d.slot_account.id), (sched.Wait, "p"))
+        upgraded = dataclasses.replace(free, plan="plus")
+        d = self.decide(self.state("gpt-6-astra", current="f", refusals=refusals), [upgraded, self.PRO_FULL])
+        self.assertEqual((type(d), d.account.id), (sched.Stay, "f"))
+
+    def test_with_no_account_that_serves_the_model_the_hook_names_why(self):
+        state = self.state("gpt-6-astra", current="f")
+        self.assertIsNone(self.decide(state, [self.FREE]))
+        self.assertEqual(vending.no_account_error(state, KEY, "openai-codex", [self.FREE], CFG, NOW),
+                         "no openai-codex account can serve gpt-6-astra: free@x does not serve gpt-6-astra")
+
+    def test_a_manual_pin_on_an_account_that_does_not_serve_the_model_is_blocked(self):
+        d = self.decide(self.state("gpt-6-astra", pin="f"), [self.FREE, self.PRO_FULL])
+        self.assertEqual(d, sched.Blocked("f", "model-unsupported"))
+
+    def test_the_codex_refusal_text_names_the_model(self):
+        text = ("Provider rejected the request (400): {\"detail\":\"The 'gpt-6-astra' model is not supported when using "
+                "Codex with a ChatGPT account.\"}")
+        self.assertEqual(base.model_refusal(text), "gpt-6-astra")
+        self.assertIsNone(base.model_refusal("prompt is too long"))
+
+
 class CodexPlanTier(unittest.TestCase):
     """A session's current account, and only that, yields to a higher codex
     plan. It otherwise moves only when it cannot serve, so a free account taken

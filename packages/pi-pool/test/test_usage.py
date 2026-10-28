@@ -119,6 +119,15 @@ class CodexReads(Store):
                          [(None, 7, 1800003600000), (None, 30, 1800300000000), ("GPT-5.3-Codex-Spark", 1, None)])
         self.assertEqual((rec["email"], rec["tier"]), ("c@new", "pro"))
 
+    def test_the_models_codex_lists_for_the_account_land_and_a_failed_list_keeps_the_last(self):
+        self.bodies["codex/models?client_version=999.0.0"] = {"models": [{"slug": "gpt-6-luna"}, {"slug": "gpt-5.6-terra"}]}
+        self.bodies["token-c"] = CODEX
+        self.assertTrue(self.read("openai-codex", "c")["ok"])
+        self.assertEqual(self.record("openai-codex", "c")["models"], ["gpt-6-luna", "gpt-5.6-terra"])
+        self.bodies["codex/models?client_version=999.0.0"] = RuntimeError("usage read failed (HTTP 500)")
+        self.assertTrue(self.read("openai-codex", "c")["ok"])
+        self.assertEqual(registry.load_index("openai-codex")[0].models, ("gpt-6-luna", "gpt-5.6-terra"))
+
 
 class Refresh(Store):
     def run_refresh(self, *args):
@@ -230,7 +239,8 @@ class RevokedCodexGrant(unittest.TestCase):
                 raise urllib.error.HTTPError(req.full_url, code, "", {}, io.BytesIO(json.dumps(body).encode()))
             return contextlib.closing(io.BytesIO(json.dumps(body).encode()))
         token = req.headers["Authorization"].split(" ", 1)[1]
-        self.usage_tokens.append(token)
+        if req.full_url == usage.CODEX_USAGE_URL:
+            self.usage_tokens.append(token)
         if token == self.old:
             raise urllib.error.HTTPError(req.full_url, 401, "", {}, io.BytesIO(b"{}"))
         return contextlib.closing(io.BytesIO(json.dumps(CODEX).encode()))

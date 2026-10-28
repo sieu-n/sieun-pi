@@ -89,12 +89,22 @@ def model_gated(model_id, cfg):
 
 
 def with_models(accounts, models, cfg):
-    """Lift the per-model cap for a session that runs no gated model. No known
-    model keeps the cap: an unknown session may be on Fable."""
+    """Fit the accounts to the models the tree runs. A tree that runs no gated model
+    has the per-model cap lifted; no known model keeps the cap, since an unknown
+    session may be on Fable. An account marks the first of the tree's models it
+    cannot serve as `unserved`: its provider's model list leaves the model out, or
+    the provider refused the model on it (`pi-pool refused`). On 10-28 from 06:03Z
+    to 06:41Z the free codex account ungsugoe5 took two gpt-6-astra trees, and each
+    turn failed in about 2 s with "The 'gpt-6-astra' model is not supported when
+    using Codex with a ChatGPT account"."""
     models = [m for m in models or () if m]
-    if not models or any(model_gated(m, cfg) for m in models):
-        return accounts
-    return [dataclasses.replace(a, gate_off=True) for a in accounts]
+    lift = bool(models) and not any(model_gated(m, cfg) for m in models)
+    out = []
+    for a in accounts:
+        unserved = next((m for m in models if m in a.refused_models
+                         or (a.models is not None and m not in a.models)), None)
+        out.append(dataclasses.replace(a, gate_off=a.gate_off or lift, unserved=unserved) if lift or unserved else a)
+    return out
 
 
 def tree_records(state, key):
@@ -182,6 +192,13 @@ class Account:
     # Epoch seconds until which the provider refused this account with a 429
     # (`pi-pool limited`). 0 when no limit is on file.
     limited_until: float = 0
+    # The model ids the provider lists for this account (codex `/models`, read with
+    # its usage); None while no read listed them.
+    models: "tuple | None" = None
+    # Models the provider refused on this account under its current plan (`pi-pool refused`).
+    refused_models: tuple = ()
+    # The first of the tree's models this account cannot serve (with_models); None when it serves them all.
+    unserved: "str | None" = None
     # What people see: the email, plus the organization when another pooled
     # account shares the email (one login can hold several organizations).
     label: str = ""
@@ -324,6 +341,7 @@ def _load_index_codex():
             weekly_pct=weekly_pct, gated_pct=0, cred=CredFile(base.codex_secret(a["id"])),
             plan=(a.get("tier") or "").lower(), tier=a.get("tier") or "",
             windows=tuple(a.get("windows") or ()), usage_at=(a.get("lastUsageAt") or 0) / 1000,
+            models=tuple(a["models"]) if isinstance(a.get("models"), list) and a["models"] else None,
         ))
     return out
 
@@ -352,16 +370,22 @@ def empty_provider_state():
 
 
 def with_pool_state(accounts, state, provider):
-    """Apply what state.json knows about each account and the index does not: `pi-pool off` and the provider's own 429 (`pi-pool limited`)."""
+    """Apply what state.json knows about each account and the index does not: `pi-pool off`, the provider's own 429
+    (`pi-pool limited`) and the models it refused on the account while the account kept the plan it had then
+    (`pi-pool refused`)."""
     prov = state["providers"][provider]
     off = prov.get("disabled") or {}
     limits = prov.get("limits") or {}
+    refusals = prov.get("model_refusals") or {}
     out = []
     for a in accounts:
         if a.id in off:
             a = dataclasses.replace(a, disabled=True)
         if a.id in limits:
             a = dataclasses.replace(a, limited_until=limits[a.id]["until"])
+        refused = tuple(m for m, fact in (refusals.get(a.id) or {}).items() if fact.get("plan") == a.plan)
+        if refused:
+            a = dataclasses.replace(a, refused_models=refused)
         out.append(a)
     return out
 

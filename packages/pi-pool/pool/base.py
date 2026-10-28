@@ -371,6 +371,14 @@ def account_refusal(text):
     return None
 
 
+def model_refusal(text):
+    """The model an API error body says the account's plan does not serve, or None. Codex answers a free ChatGPT
+    plan's gpt-6-astra request with a 400 "The 'gpt-6-astra' model is not supported when using Codex with a ChatGPT
+    account" (10-28 06:03Z, ungsugoe5), while the same request on a pro account is served."""
+    m = re.search(r"The '([^']+)' model is not supported when using Codex", text)
+    return m.group(1) if m else None
+
+
 @dataclasses.dataclass(frozen=True)
 class ProbeAccepted:
     pass

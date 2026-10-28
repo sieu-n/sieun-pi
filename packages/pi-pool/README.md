@@ -481,6 +481,16 @@ with a 400 "not supported when using Codex with a ChatGPT account". The upgrade 
 the tree to an account on a higher plan (reason `upgrade`), and a higher plan ranks first
 for every admission. Anthropic accounts carry no plan, so it never fires there.
 
+An account that does not serve the tree's model is out for that tree, as an account that
+needs a new login is (reason `model-unsupported`). Each codex usage read also reads the
+models Codex lists for the account (`/backend-api/codex/models`) into its index record, and
+`pi-pool refused` records the model of a "not supported when using Codex with a ChatGPT
+account" 400 against the account while the account keeps its plan. The tree then waits
+for an account that serves its model, and when no account can, the token hook fails once
+with an error that names each account's reason. On 10-28 from 06:03Z to 06:41Z the free
+account ungsugoe5 took two gpt-6-astra trees while the pro account was full, and every
+turn failed in about 2 s.
+
 ## Auto retries can rotate accounts
 
 Manual mode keeps the original provider failure and diagnostics. It never rewrites a

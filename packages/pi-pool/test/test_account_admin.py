@@ -201,6 +201,49 @@ class TermsRefusalTakesTheAccountOut(PoolFixture):
         self.assertEqual(self.state(), before)
 
 
+class ModelRefusalKeepsTheAccountForOtherModels(PoolFixture):
+    """10-28: Codex refused gpt-6-astra on the free ungsugoe5 with a 400. `pi-pool refused` records that the account
+    does not serve the model, cools nothing down, and the tree waits for the pro account's reset."""
+    C, D = "cccc3333-0000-0000-0000-000000000000", "dddd4444-0000-0000-0000-000000000000"
+    SESSION = "01a1-astra-session"
+    TEXT = "Provider rejected the request (400): The 'gpt-6-astra' model is not supported when using Codex with a ChatGPT account."
+
+    def setUp(self):
+        super().setUp()
+        self.reset = time.time() + 7200
+        self.write_index("openai-codex", {"version": 1, "accounts": [
+            {"id": self.C, "email": "c@x", "label": "c@x", "tier": "free", "windows": []},
+            {"id": self.D, "email": "d@x", "label": "d@x", "tier": "pro",
+             "windows": [{"windowSeconds": 604800, "usedPercentage": 100, "resetsAt": self.reset * 1000}]}]})
+        now = time.time()
+        self.write_state({"version": 2, "providers": {
+            "anthropic": {"pin": None, "cooldowns": {}, "disabled": {}},
+            "openai-codex": {"pin": None, "cooldowns": {}, "disabled": {}}},
+            "sessions": {self.SESSION: {"uuid": self.SESSION, "active_id": None, "last_seen": now, "pins": {},
+                                        "models": {"openai-codex": {self.SESSION: {"model": "gpt-6-astra", "at": now}}},
+                                        "vends": {"openai-codex": {"account_id": self.C, "email": "c@x", "at": now, "n": 3}}}}})
+
+    def test_the_refused_model_sends_the_tree_to_wait_for_an_account_that_serves_it(self):
+        code, out = self.cli("refused", "--provider", "openai-codex", "--session", self.SESSION, self.TEXT)
+        self.assertEqual(code, 0, out)
+        reply = json.loads(out)
+        self.assertEqual((reply["account"], reply["reason"], reply["next"]), ("c@x", "does not serve gpt-6-astra", None))
+        self.assertGreaterEqual(reply["retry_at"], math.floor(self.reset))
+        prov = self.state()["providers"]["openai-codex"]
+        self.assertEqual((prov["cooldowns"], list(prov["model_refusals"][self.C])), ({}, ["gpt-6-astra"]))
+        self.assertEqual(prov["model_refusals"][self.C]["gpt-6-astra"]["plan"], "free")
+        code, out = self.cli("who", "--json", "--session", self.SESSION)
+        self.assertEqual(json.loads(out)["providers"]["openai-codex"]["wait"]["account"], self.D, out)
+
+    def test_with_no_account_that_serves_the_model_who_names_why(self):
+        self.write_index("openai-codex", {"version": 1, "accounts": [
+            {"id": self.C, "email": "c@x", "label": "c@x", "tier": "free", "windows": [], "models": ["gpt-6-luna"]}]})
+        code, out = self.cli("who", "--json", "--session", self.SESSION)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(json.loads(out)["providers"]["openai-codex"]["error"],
+                         "no openai-codex account can serve gpt-6-astra: c@x does not serve gpt-6-astra")
+
+
 class OffAndOn(PoolFixture):
     def test_off_keeps_the_account_listed_but_never_usable(self):
         self.assertEqual(self.cli("off", "a@x"), (0, "a@x is off; excluded from Auto, available in Manual"))

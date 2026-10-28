@@ -114,11 +114,15 @@ def cmd_refused(rest):
     """A request of this session tree failed with an error whose text names an
     account-level refusal (account_refusal). Cool the account the tree last
     vended down, as a probe refusal does, and print {"account", "reason",
-    "next", "retry_at"}. Error text that names no refusal prints {"reason": null}
-    and changes nothing."""
+    "next", "retry_at"}. A refused model (model_refusal) cools nothing down: it
+    records that the account does not serve that model, so the retry goes to an
+    account that does or waits for one. Error text that names no refusal prints
+    {"reason": null} and changes nothing."""
     f = status_view.parse_flags(rest)
     provider = f["provider"]
-    reason = base.account_refusal(" ".join(f["positional"]))
+    text = " ".join(f["positional"])
+    model = base.model_refusal(text)
+    reason = f"does not serve {model}" if model else base.account_refusal(text)
     if reason is None:
         state = registry.load_state()
         key = status_view.session_key_for(f["session"], state)
@@ -134,9 +138,12 @@ def cmd_refused(rest):
     if account is None:
         print(json.dumps({"error": f"no {provider} vend on file for this session"}))
         return 2
-    vending.apply_refusal(provider, account, reason, cfg, now)
+    if model is None:
+        vending.apply_refusal(provider, account, reason, cfg, now)
     with limited.pool_lock():
         state = registry.load_state()
+        if model:
+            vending.HookWriter(state).refuse_model(provider, account, model, now)
         d = limited.plan_next(state, key, provider, accounts, cfg, now)
         base.save_json(base.STATE, state)
     out = {"account": account.label, "reason": reason, **limited.next_fields(d)}
@@ -193,6 +200,8 @@ def cmd_who(rest):
         if isinstance(d, sched.Blocked):
             why = state["providers"][provider].get("cooldown_reasons", {}).get(d.account_id) or d.reason
             providers_out[provider]["error"] = f"Manual account {current.label if current else d.account_id}: {why}"
+        elif d is None and key and any(a.unserved for a in accounts):
+            providers_out[provider]["error"] = vending.no_account_error(state, key, provider, registry.load_index(provider), cfg, now)
     out = {"session": key.key if key else None, "priority": priority, "providers": providers_out}
     if f["json"]:
         print(json.dumps(out, indent=2))

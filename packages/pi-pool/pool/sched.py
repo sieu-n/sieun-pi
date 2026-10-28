@@ -134,11 +134,13 @@ def used_pct(a):
 
 
 def credential_reason(a, cooldowns, now):
-    """Why the account fails every request whatever its usage, or None."""
+    """Why the account fails every request of this tree whatever its usage, or None."""
     if a.disabled:
         return "disabled"
     if a.needs_reauth:
         return "needs-reauth"
+    if a.unserved:
+        return "model-unsupported"
     if cooldowns.get(a.id, 0) > now:
         return "cooldown"
     return None
@@ -191,8 +193,8 @@ def window_reset_at(window):
 
 def admissible_at(a, cooldowns, cfg, now, priority="normal", manual=False):
     """When the account passes R2 for this class again, epoch seconds; inf when
-    no reset is known or its credential cannot serve."""
-    if a.disabled or a.needs_reauth:
+    no reset is known or its credential or plan cannot serve."""
+    if a.disabled or a.needs_reauth or a.unserved:
         return float("inf")
     at = max(now, a.limited_until, cooldowns.get(a.id, 0))
     families = [f.lower() for f in cfg["switch_models"]]
