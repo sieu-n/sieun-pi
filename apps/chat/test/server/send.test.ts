@@ -122,8 +122,8 @@ describe("thread sends", () => {
     await live.waitFor(e => e.type === "items" && e.items.some(i => i.kind === "turn" && !i.live && i.text.includes(text)));
     const mine = live.events.filter((e): e is Extract<LiveEvent, { type: "items" }> => e.type === "items" && e.conversation === agent.id);
     assert.ok(!live.events.some(e => e.type === "partial" && !!e.partial), "no partial text");
-    // The input, the run's start, the one answer with text before the job, and the run's end.
-    assert.ok(mine.filter(e => e.items.some(i => i.kind === "turn")).length <= 4, `${mine.length} item events`);
+    // The input, the run's start, the one answer with text before the job, each of its two send_message calls, and the run's end.
+    assert.ok(mine.filter(e => e.items.some(i => i.kind === "turn")).length <= 6, `${mine.length} item events`);
     live.close();
   });
 });

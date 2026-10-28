@@ -1,7 +1,8 @@
 /**
  * Channels after ~/work/slack-layer-design/channels.md sections 3 and 4. A channel is a named room with members and one post log in the
- * chat server's data dir. A post that @mentions an agent goes to that agent's conversation as an `agent.message` input, and the answer of
- * the turn it starts comes back into the post's thread as the agent's post. Each mention is one delivery with its own state.
+ * chat server's data dir. A post that @mentions an agent goes to that agent's conversation as an `agent.message` input, and what the agent
+ * sends with send_message in the turn it starts comes back into the post's thread, one post per call. Each mention is one delivery with its
+ * own state.
  */
 import { randomUUID } from "node:crypto";
 import type {
@@ -26,9 +27,12 @@ export interface ChannelEvents {
   conversations(changed: ConversationSummary[]): void;
 }
 
-const ENVELOPE_TAIL = "your final answer is posted back into this thread";
-/** A LIKE pattern for the copy of a post that `envelope` sends into a thread; search finds the post itself in its channel. */
-export const CHANNEL_COPY_LIKE = `[#% · post % from % · ${ENVELOPE_TAIL}]%`;
+const ENVELOPE_TAIL = "what you send with send_message is posted back into this thread";
+/**
+ * A LIKE pattern for the copy of a post that `envelope` sends into a thread; search finds the post itself in its channel. It also matches
+ * the tail copies had before send_message, "your final answer is posted back into this thread".
+ */
+export const CHANNEL_COPY_LIKE = "[#% · post % from % · %posted back into this thread]%";
 
 export class Channels {
   constructor(readonly store: Store, readonly host: Host, readonly threads: Threads, readonly events: ChannelEvents, private readonly log: (line: string) => void = () => {}) {}
@@ -301,18 +305,23 @@ export class Channels {
   private async awaitAnswer(row: ChannelRow, post: Post, delivery: StoredDelivery): Promise<void> {
     try {
       const settled = await this.host.wait(delivery.thread, delivery.submission!);
-      const answer = settled.answer === undefined ? "" : await this.answerText(delivery, settled.answer);
-      if (!answer.trim()) {
+      const replies = await this.answersOf(row, delivery, settled);
+      if (!replies.length) {
         delete delivery.queue;
         this.setState(row, post, delivery, "no_reply");
         return;
       }
-      const reply = await this.post(row.id, delivery.target, {
-        text: answer, requestId: `answer:${post.id}:${delivery.target}`, threadRoot: post.threadRoot ?? post.id,
-        mentions: this.mentionsIn(row, answer, delivery.target), hops: post.hops + 1,
-      });
+      let first: string | undefined;
+      for (const [index, text] of replies.entries()) {
+        // The first post keeps the id an answer had before send_message, so a delivery a restart re-awaits never posts twice.
+        const reply = await this.post(row.id, delivery.target, {
+          text, requestId: `answer:${post.id}:${delivery.target}${index ? `:${index}` : ""}`, threadRoot: post.threadRoot ?? post.id,
+          mentions: this.mentionsIn(row, text, delivery.target), hops: post.hops + 1,
+        });
+        first ??= reply.item.id;
+      }
       delete delivery.queue;
-      this.setState(row, post, delivery, "answered", { answerPost: reply.item.id, answer: reply.item.id });
+      this.setState(row, post, delivery, "answered", { answerPost: first, answer: first });
     } catch (error) {
       if (/closed the connection|ECONNREFUSED|ENOENT/.test(String(error))) {
         setTimeout(() => void this.awaitAnswer(row, post, delivery), 2000);
@@ -323,11 +332,13 @@ export class Channels {
     }
   }
 
-  private async answerText(delivery: StoredDelivery, entryId: number): Promise<string> {
-    const got = await this.host.entries(delivery.thread, { conversation: delivery.conversation, before: entryId + 1, limit: 1 });
-    const message = got.entries[0]?.model?.[0];
-    if (!message || message.role !== "assistant") return "";
-    return typeof message.content === "string" ? message.content : message.content.flatMap(b => (b.type === "text" ? [b.text] : [])).join("\n\n");
+  /**
+   * What the turn a delivery started posts back: each send_message text it sent to this channel, or none. Only a target that has never
+   * called send_message posts its answer's text, as before the tool (`Threads.said`).
+   */
+  private async answersOf(row: ChannelRow, delivery: StoredDelivery, settled: { entry?: number; answer?: number }): Promise<string[]> {
+    const said = await this.threads.said(delivery.thread, delivery.conversation, settled);
+    return said.filter(m => !m.to || namesChannel(row, m.to)).map(m => m.text);
   }
 
   /** Members an agent's answer names as `@Name`, so it can hand work on. */
@@ -357,6 +368,12 @@ export class Channels {
   static newRequestId(): string {
     return randomUUID();
   }
+}
+
+/** Whether a send_message `to` names this channel: `#name`, `name` or its id. */
+export function namesChannel(row: ChannelRow, to: string): boolean {
+  const name = to.trim().replace(/^#/, "").toLowerCase();
+  return name === row.name || name === row.id.toLowerCase();
 }
 
 export function publicDelivery(d: StoredDelivery): Delivery {

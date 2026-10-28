@@ -12,7 +12,7 @@
   import type { Status } from "$lib/ui/types";
   import StepLine from "./StepLine.svelte";
   import ThreadPill from "./ThreadPill.svelte";
-  import { avatarKind, deliveryText, isOwn, placeText, runningTool } from "./present";
+  import { avatarKind, deliveryText, isOwn, placeText, QUIET_TURN, runningTool } from "./present";
 
   type Props = {
     item: Exclude<Item, { kind: "system" }>;
@@ -47,10 +47,13 @@
   const pending = $derived(message?.pending || item.id.startsWith("r:"));
   /** A pending send draws at full strength, as in Slack, with one small line under it: Sending…, Sent, or Not delivered. */
   const sendState = $derived(pending ? (message?.send ?? "sending") : null);
+  /** A turn of an agent that talks through send_message: one bubble per sent message, and its fold on a row of its own. */
+  const sent = $derived(turn?.sent ?? null);
   const hasBubble = $derived(!!item.text || (turn ? turn.steps.length > 0 || live : item.images.length === 0));
   const toolNow = $derived(turn ? runningTool(turn.steps) : null);
   const stepLabel = $derived(liveLabel ?? (toolNow ? `Running ${toolNow}` : null));
   const waits = $derived(placeText(message?.queue ?? queue));
+  const stackPosition = (index: number, count: number): "single" | "first" | "middle" | "last" => (count === 1 ? "single" : index === 0 ? "first" : index === count - 1 ? "last" : "middle");
   const notes = $derived([
     ...(waits ? [`${waits.charAt(0).toUpperCase()}${waits.slice(1)} for a working slot.`] : []),
     ...(message?.deliveries.map(deliveryText).filter((text): text is string => !!text) ?? []),
@@ -81,7 +84,18 @@
       {/if}
     </div>
     <div class="stack">
-      {#if hasBubble}
+      {#if turn && sent}
+        {#if turn.steps.length || live}
+          <div class="fold" data-fold data-quiet={!sent.length && !live ? "" : undefined}>
+            <StepLine steps={turn.steps} {live} liveLabel={stepLabel} label={!live && !sent.length ? QUIET_TURN : null} onjob={onthread} />
+          </div>
+        {/if}
+        {#each sent as text, index (index)}
+          <Bubble {own} highlighted={flash} position={stackPosition(index, sent.length)} class="msg-bubble" data-sent={index}>
+            <Markdown {text} {context} {onmention} {onboardid} {onartifact} class="msg-text" />
+          </Bubble>
+        {/each}
+      {:else if hasBubble}
         <Bubble {own} highlighted={flash} class="msg-bubble">
           {#if turn && (turn.steps.length || (live && stepLabel))}
             <StepLine steps={turn.steps} {live} liveLabel={stepLabel} onjob={onthread} />
@@ -224,6 +238,20 @@
   }
   .stack :global(.msg-text) {
     min-width: 0;
+  }
+  /* As wide as its line, so the folded summary never cuts, and no wider than a bubble once open. */
+  .fold {
+    box-sizing: border-box;
+    width: max-content;
+    max-width: min(100%, calc(60ch + 32px));
+    padding: 0 12px 0 8px;
+  }
+  .fold :global([data-steps]) {
+    margin: 0;
+  }
+  /* The toggle's -4px hang would take 4px off the fold's own width and cut the summary. */
+  .fold :global([data-steps] > button) {
+    margin-left: 0;
   }
   .waiting {
     display: inline-flex;

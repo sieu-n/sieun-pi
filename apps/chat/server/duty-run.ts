@@ -2,7 +2,7 @@
  * One duty run as today's chat does it (legacy/prime/user-history/src/chat-duty-run.ts `Duties.run`): run the duty's precheck command with
  * STATE_FILE, LAST_RUNS_FILE, OUTPUT_FILE and PRECHECK_MODE, judge its metrics against the targets, record the run, and when something is
  * due (a miss, a precheck error, an overrun, flagged items or a hand-off) start one duty job with the findings as its brief. On pi-host the
- * duty job is a durable thread filed under the chat, and its final answer comes back to the chat as an input from the job.
+ * duty job is a durable thread filed under the chat, and what it sends with send_message comes back to the chat as an input from the job.
  */
 import { execFile } from "node:child_process";
 import { copyFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
@@ -187,7 +187,7 @@ export function dutyJobBrief(input: { duty: Duty; chat: { id: string; name: stri
       "where the ops are the board's plan_add, plan_update, todo_add and the rest; read it first, then check the real state behind it.",
     "Fix what you find, script what can be scripted, and skip nitpicks. Use the subagent tool for each separate part of the work.",
     "## Report",
-    "End with one plain report of at most 3 lines: the headline number and its gap, what you changed, and what is left. The chat server posts your final answer to the chat; " +
-      "when nothing needs the chat, answer exactly: nothing to report.",
+    "End with one plain report of at most 3 lines: the headline number and its gap, what you changed, and what is left. Send it with send_message " +
+      "(with no such tool, make it your final answer), and the chat server posts it to the chat; when nothing needs the chat, send nothing.",
   ].join("\n\n");
 }

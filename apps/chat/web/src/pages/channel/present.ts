@@ -4,16 +4,20 @@ import type { MarkdownContext } from "$lib/ui/markdown";
 export type TurnItem = Extract<Item, { kind: "turn" }>;
 export type MessageItem = Extract<Item, { kind: "message" }>;
 
-/** The line a step disclosure shows while folded: "Thought, ran bash and read" or "3 steps". */
+/** The line a step disclosure shows while folded: "Thought, ran bash, read", "Notes" when it holds only private notes, or "3 steps". */
 export function stepsSummary(steps: readonly Step[]): string {
   const tools = steps.filter((step): step is Extract<Step, { kind: "tool" }> => step.kind === "tool");
   const thought = steps.some(step => step.kind === "thinking");
   const names = [...new Set(tools.map(tool => tool.name))];
   const ran = names.length === 0 ? "" : names.length <= 3 ? `ran ${names.join(", ")}` : `ran ${tools.length} tools`;
   const parts = [thought ? "Thought" : "", ran].filter(Boolean);
+  if (!parts.length && steps.length && steps.every(step => step.kind === "note")) return "Notes";
   const text = parts.join(", ");
   return text ? text.charAt(0).toUpperCase() + text.slice(1) : `${steps.length} steps`;
 }
+
+/** A finished turn of an agent that talks through send_message and sent nothing: its fold is all it shows. */
+export const QUIET_TURN = "Worked quietly";
 
 export function runningTool(steps: readonly Step[]): string | null {
   for (let index = steps.length - 1; index >= 0; index--) {

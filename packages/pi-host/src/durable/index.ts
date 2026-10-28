@@ -2,4 +2,5 @@
 export { DurableCommands, DURABLE_COMMANDS } from "./commands.ts";
 export { ThreadIndex, statusOf, type SearchHit, type SearchPage, type SearchQuery, type ThreadRow, type ThreadStatus, type UsageTotal } from "./index-db.ts";
 export { AgentMessageEntry, ChatDoc, threadRegistry } from "./registry.ts";
+export { SEND_MESSAGE_DESCRIPTION, SEND_MESSAGE_RESULT, SEND_MESSAGE_TOOL, SendMessage, type SendMessageArgs } from "./send-message.ts";
 export { describeEntry, DurableThreads, type DurableEvent, type DurableThreadsOptions, type SubmitInput, type ThreadInfo, type TreeNode } from "./threads.ts";

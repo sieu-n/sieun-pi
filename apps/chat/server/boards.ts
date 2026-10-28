@@ -311,7 +311,7 @@ export class Boards {
 
   /**
    * One duty run: the precheck, the judged record, and a duty job when something is due (`measure` in duty-run.ts). The job is a durable
-   * thread filed under the chat; its final answer reaches the chat as an input from that job. A second start while one runs shares it.
+   * thread filed under the chat; what it sends reaches the chat as an input from that job (`reportDutyJob`). A second start while one runs shares it.
    */
   private runDuty(chat: string, duty: Duty, trigger: DutyTrigger): Promise<void> {
     const key = `${chat}/${duty.id}`;
@@ -355,14 +355,14 @@ export class Boards {
     this.log(`duty ${chat.slice(0, 8)}/${duty.id}: ${record.verdict}, ${record.summary}${record.job ? `, job ${record.job.name}` : ""}`);
   }
 
-  /** Posts the duty job's final answer to the chat, unless it says there is nothing to report. */
+  /**
+   * Posts what the duty job sent with send_message to the chat, as one input; a job that never called it posts its final answer. Nothing
+   * sent, or "nothing to report", posts nothing.
+   */
   private async reportDutyJob(chat: string, duty: Duty, job: string, submission: number): Promise<void> {
     try {
       const settled = await this.host.wait(job, submission);
-      if (settled.answer === undefined) return;
-      const got = await this.host.entries(job, { before: settled.answer + 1, limit: 1 });
-      const message = got.entries[0]?.model?.[0];
-      const text = !message ? "" : typeof message.content === "string" ? message.content : message.content.flatMap(b => (b.type === "text" ? [b.text] : [])).join("\n\n");
+      const text = (await this.threads.said(job, 1, settled)).map(m => m.text).join("\n\n");
       if (!text.trim() || /^nothing to report\.?$/i.test(text.trim())) return;
       await this.host.submit(chat, { text: `[duty ${duty.id}] ${text}`, whenBusy: "followUp", requestId: `duty-report:${job}`, entry: { kind: "agent.message", data: { from: job, via: `duty ${duty.id}` } } });
     } catch (error) {

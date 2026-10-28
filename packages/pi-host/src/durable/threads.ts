@@ -29,6 +29,7 @@ import { Leases, SessionLockedError } from "../lease.ts";
 import { statusOf, ThreadIndex, type IndexedEntry, type SearchPage, type SearchQuery, type ThreadRow, type ThreadStatus, type UsageRow, type UsageTotal } from "./index-db.ts";
 import { headFor, parseSession } from "./import.ts";
 import { AgentMessageEntry, ChatDoc, threadEnv, threadRegistry } from "./registry.ts";
+import { SEND_MESSAGE_TOOL } from "./send-message.ts";
 
 const context: Context = BACKGROUND_CONTEXT;
 const PREVIEW_CHARS = 200;
@@ -148,6 +149,20 @@ export function describeEntry(entry: EntryRecord, now: number): { text: string; 
   }
   if (message.role === "toolResult") return { text: textOfContent(message.content), author: `tool:${message.toolName}`, at };
   return undefined;
+}
+
+/**
+ * The thread list's preview line from one entry: the message a send_message call sent, nothing for its "Sent." result, and the searchable
+ * text of any other entry.
+ */
+export function previewText(entry: EntryRecord, now: number): string | undefined {
+  const message = entry.model?.[0] as Message | undefined;
+  if (message?.role === "toolResult" && message.toolName === SEND_MESSAGE_TOOL) return undefined;
+  if (message?.role === "assistant") {
+    const sent = message.content.flatMap(c => (c.type === "toolCall" && c.name === SEND_MESSAGE_TOOL && typeof c.arguments?.text === "string" ? [c.arguments.text as string] : []));
+    if (sent.length) return sent.at(-1);
+  }
+  return describeEntry(entry, now)?.text || undefined;
 }
 
 function usageOf(entry: EntryRecord, thread: string, now: number): UsageRow | undefined {
@@ -296,22 +311,23 @@ export class DurableThreads {
     const conversations = await this.conversations(harness);
     const entries: IndexedEntry[] = [];
     const usage: UsageRow[] = [];
+    let preview: string | undefined;
     for (const record of conversations) {
       const conversation = await harness.conversation(record.id, context);
       if (!conversation) continue;
       let cursor: Parameters<Conversation["entries"]>[2];
       do {
         const page = await conversation.entries({ order: "ascending", minEntryId: (mark + 1) as EntryRecord["id"] }, PAGE_MAX, cursor, context);
-        for (const entry of page.items) this.collect(id, entry, now, entries, usage);
+        for (const entry of page.items) {
+          this.collect(id, entry, now, entries, usage);
+          if (record.id === ROOT_CONVERSATION_ID) preview = previewText(entry, now) ?? preview;
+        }
         cursor = page.next;
       } while (cursor !== undefined);
     }
     this.index.addEntries(id, entries.sort((a, b) => a.entryId - b.entryId), usage);
     const root = conversations.find(c => c.id === ROOT_CONVERSATION_ID);
-    if (root) {
-      const last = [...entries].reverse().find(entry => entry.conversation === ROOT_CONVERSATION_ID && entry.text);
-      this.index.update(id, { children: conversations.length - 1, ...(last ? { preview: last.text.slice(0, PREVIEW_CHARS) } : {}) });
-    }
+    if (root) this.index.update(id, { children: conversations.length - 1, ...(preview ? { preview: preview.slice(0, PREVIEW_CHARS) } : {}) });
   }
 
   private collect(thread: string, entry: EntryRecord, now: number, entries: IndexedEntry[], usage: UsageRow[]): void {
@@ -344,7 +360,7 @@ export class DurableThreads {
       if (change.type === "entry") {
         this.collect(open.id, change.value, now, entries, usage);
         if (change.value.conversationId === ROOT_CONVERSATION_ID) {
-          const text = entries.at(-1)?.entryId === change.value.id ? entries.at(-1)?.text : undefined;
+          const text = previewText(change.value, now);
           if (text) preview = text.slice(0, PREVIEW_CHARS);
         }
       } else if (change.type === "submission") {

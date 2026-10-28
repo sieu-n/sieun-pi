@@ -80,6 +80,8 @@ export function seedFixture(host: FixtureHost, dataDir: string, now = Date.now()
 
   // AI harness VP: a running job and a turn that streams for as long as the fixture runs.
   const harness = host.addThread({ id: ids.harness, name: "AI harness developer environment VP", createdAt: at(4) });
+  // An agent from before send_message: its endless turn keeps the typing dots and plain-text answers of such a thread.
+  harness.plain = true;
   user(harness, 1, "What still blocks the migration to pi-host?", at(4, 2));
   assistant(harness, 1, [{ type: "text", text: "Two items block the migration: cross-box messaging and the canary send key. Both sit with CI and RepoOps." }], at(4, 2.01));
   agentMsg(harness, 1, ids.crawler, "#pi-cutover", "[#pi-cutover · post 3 from Crawler VP] The crawler still uses the old relay port.", at(2, 1));
