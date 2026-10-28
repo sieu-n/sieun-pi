@@ -99,8 +99,22 @@ export interface ImageRef { url: string; mimeType: string; width?: number; heigh
 /** An image the composer attaches, base64 without the data: prefix. */
 export interface ImageUpload { data: string; mimeType: string }
 
+/**
+ * Where a conversation's run stands in pi-pool's turn queue: working (kind owner, ahead, slot and so on), queued at a position, marked as
+ * the owner's turn and not started yet, or none (no run asks for a slot).
+ */
+export type TurnPlace =
+  | { state: "working"; kind: string }
+  | { state: "queued"; position: number; total: number }
+  | { state: "marked" }
+  | { state: "none" };
+
 export type DeliveryState = "queued" | "delivered" | "read" | "answered" | "no_reply" | "stopped" | "failed";
-export interface Delivery { target: AgentId; name: string; state: DeliveryState; at: Ms; answer?: string; error?: string }
+export interface Delivery {
+  target: AgentId; name: string; state: DeliveryState; at: Ms; answer?: string; error?: string;
+  /** While the target's run waits for a working slot: its place in pi-pool's turn queue. */
+  queue?: TurnPlace;
+}
 
 /** A job a turn spawned, drawn as a thread pill under that turn. */
 export interface JobRef { conversation: ConversationId; name: string; status: RunStatus; replies: number; lastAt: Ms }
@@ -126,6 +140,8 @@ export type Item =
       deliveries: Delivery[];
       /** The input waits in the agent's inbox behind a running turn. */
       pending?: boolean;
+      /** A pending send's place in pi-pool's turn queue; the live `queue` event updates it. */
+      queue?: TurnPlace;
     }
   | {
       kind: "turn"; id: string; at: Ms; author: Principal; text: string; live: boolean; steps: Step[]; images: ImageRef[]; jobs: JobRef[];
@@ -155,6 +171,8 @@ export interface ConversationHeader {
   agent?: AgentSummary;
   /** Live answer text that has not become an item yet. */
   partial?: LivePartial | null;
+  /** While the conversation's run waits for a working slot: its place in pi-pool's turn queue. */
+  queue?: TurnPlace | null;
   /** Channels: the chat whose board the side panel shows. */
   homeChat?: string;
   purpose?: string;
@@ -174,7 +192,7 @@ export interface SendRequest {
   /** For a busy thread: steer the running turn (default) or wait for it to end. */
   whenBusy?: "steer" | "followUp";
 }
-export interface SendResult { item: Item; deliveries: Delivery[] }
+export interface SendResult { item: Item; deliveries: Delivery[]; queue?: TurnPlace | null }
 
 export interface ChannelInput { name: string; purpose?: string; members?: AgentId[]; homeChat?: string }
 export interface Channel { id: ChannelId; name: string; purpose: string; homeChat?: string; createdAt: Ms; archived: boolean; members: Member[]; lastSeq: number }
@@ -236,6 +254,8 @@ export type LiveEvent =
   | { type: "items"; conversation: ConversationId; items: Item[] }
   | { type: "partial"; conversation: ConversationId; partial: LivePartial | null }
   | { type: "status"; conversation: ConversationId; status: RunStatus }
+  /** Only to tabs that watch it: the run's place in pi-pool's turn queue while it waits, then null once it works or ends. */
+  | { type: "queue"; conversation: ConversationId; place: TurnPlace | null }
   | { type: "jobs"; thread: string; jobs: JobNode[] }
   | { type: "board"; chatId: string; board: ChatBoard; awaitingGo: string[] }
   | { type: "for_you"; count: number }

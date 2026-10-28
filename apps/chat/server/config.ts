@@ -3,6 +3,11 @@ import { homedir, hostname } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 
+import type { AllowedModel } from "../../../config/allowed-models.ts";
+
+/** A new thread's model when none is named: the newest Opus, one of config/allowed-models.ts (c185). */
+export const DEFAULT_MODEL: AllowedModel = "anthropic/claude-opus-5-5";
+
 /** Today's chat, which this server ports from. One constant, so its move to legacy/prime/user-history is a one-line edit. */
 export const USER_HISTORY_DIR = "legacy/prime/user-history";
 

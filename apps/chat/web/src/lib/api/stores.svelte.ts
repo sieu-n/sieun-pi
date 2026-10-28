@@ -7,7 +7,7 @@ import { api } from "./client.ts";
 import { live } from "./live.svelte.ts";
 import type {
   AgentId, AgentSummary, BoardOp, BoardView, ConversationHeader, ConversationId, ConversationSummary, ForYouItem, ImageUpload, Item, JobNode, LivePartial, Me,
-  RunStatus, SendRequest, Sidebar,
+  RunStatus, SendRequest, Sidebar, TurnPlace,
 } from "./types.ts";
 
 const byTime = (a: Item, b: Item) => a.at - b.at || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
@@ -135,6 +135,8 @@ export class Timeline {
   header = $state<ConversationHeader | null>(null);
   partial = $state<LivePartial | null>(null);
   status = $state<RunStatus>("idle");
+  /** While the run waits for a working slot: its place in pi-pool's turn queue ("queued, 3 of 7"); null once it works. */
+  queue = $state<TurnPlace | null>(null);
   loading = $state(true);
   loadingOlder = $state(false);
   error = $state<string | null>(null);
@@ -150,6 +152,7 @@ export class Timeline {
       if (event.type === "items" && event.conversation === id) this.upsert(event.items);
       else if (event.type === "partial" && event.conversation === id) this.partial = event.partial;
       else if (event.type === "status" && event.conversation === id) this.status = event.status;
+      else if (event.type === "queue" && event.conversation === id) this.queue = event.place;
     });
     void this.load(opts.around);
   }
@@ -160,6 +163,7 @@ export class Timeline {
       this.header = header;
       this.status = header.summary.status;
       this.partial = header.partial ?? null;
+      this.queue = header.queue ?? null;
       this.upsert(page.items);
       this.older = page.older;
       this.focus = page.focus;
@@ -211,6 +215,7 @@ export class Timeline {
     if (!opts.threadRoot) this.upsert([optimistic]);
     try {
       const result = await api.send(this.id, request);
+      if (result.queue !== undefined) this.queue = result.queue;
       if (this.isChannel) this.upsert(opts.threadRoot ? [] : [result.item]);
       if (this.isChannel) this.items = this.items.filter(i => i.id !== optimistic.id);
     } catch (error) {

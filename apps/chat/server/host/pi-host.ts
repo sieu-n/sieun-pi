@@ -4,12 +4,20 @@
  */
 import { randomUUID } from "node:crypto";
 import { connect, type Socket } from "node:net";
-import type { DurableEvent, DurableThread, EntryRecord, Host, SearchHit, SearchQuery, SubmissionRecord, SubmitInput, TreeNode, UsageTotal } from "./types.ts";
+import type { DurableEvent, DurableThread, EntryRecord, Host, SearchHit, SearchQuery, SubmissionRecord, Submitted, SubmitInput, Ticket, TreeNode, UsageTotal } from "./types.ts";
 
 type Pending = { resolve: (data: unknown) => void; reject: (error: Error) => void; timer: NodeJS.Timeout };
 type Watch = { thread: string; conversation?: number; fromEntry?: number; sink: (event: DurableEvent) => void; hostId?: string; stopped: boolean };
 
 const COMMAND_TIMEOUT_MS = 120_000;
+/** How long a call waits for pi-host to come back after a restart; its unit restarts in about 2 s. */
+const RESTART_WAIT_MS = 30_000;
+
+class ConnectionLost extends Error {
+  constructor(message: string, readonly sent: boolean) {
+    super(message);
+  }
+}
 
 export class PiHost implements Host {
   readonly name = "pi-host";
@@ -86,11 +94,19 @@ export class PiHost implements Host {
     this.buffer = "";
     for (const [id, pending] of this.pending) {
       clearTimeout(pending.timer);
-      pending.reject(new Error("pi-host closed the connection"));
+      pending.reject(new ConnectionLost("pi-host closed the connection", true));
       this.pending.delete(id);
     }
     for (const watch of this.watches) watch.hostId = undefined;
-    if (!this.closed && this.watches.size) setTimeout(() => void this.open().catch(error => this.log(`pi-host reconnect failed: ${String(error)}`)), 1000);
+    if (!this.closed && this.watches.size) this.reconnect(1000);
+  }
+
+  /** Opens the socket again until pi-host answers, so live watches come back after a pi-host restart. */
+  private reconnect(delay: number): void {
+    setTimeout(() => {
+      if (this.closed || !this.watches.size) return;
+      this.open().catch(() => this.reconnect(Math.min(delay * 2, 10_000)));
+    }, delay);
   }
 
   private async rewatch(): Promise<void> {
@@ -109,8 +125,27 @@ export class PiHost implements Host {
     }
   }
 
-  /** `timeoutMs` 0 waits as long as the connection lives, for `durable_wait`. */
+  /**
+   * Sends one command. While pi-host restarts (its socket refuses, or it closes mid-call), the call tries again for up to 30 s, except a
+   * command that would act twice: `durable_create` and `durable_import` make a new thread each time, and a submit without a requestId.
+   * `timeoutMs` 0 waits as long as the connection lives, for `durable_wait`.
+   */
   async call(type: string, fields: Record<string, unknown> = {}, timeoutMs = COMMAND_TIMEOUT_MS): Promise<unknown> {
+    const repeatable = type !== "durable_create" && type !== "durable_import" && !(type === "durable_submit" && !fields.requestId);
+    const end = Date.now() + RESTART_WAIT_MS;
+    for (;;) {
+      try {
+        return await this.callOnce(type, fields, timeoutMs);
+      } catch (error) {
+        const lost = error instanceof ConnectionLost || /ECONNREFUSED|ENOENT|EPIPE|ECONNRESET/.test(String(error));
+        const sent = error instanceof ConnectionLost && error.sent;
+        if (!lost || this.closed || Date.now() > end || (sent && !repeatable)) throw error;
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+    }
+  }
+
+  private async callOnce(type: string, fields: Record<string, unknown>, timeoutMs: number): Promise<unknown> {
     const socket = await this.open();
     const id = randomUUID();
     return new Promise((resolve, reject) => {
@@ -129,8 +164,11 @@ export class PiHost implements Host {
   async create(opts: { name?: string; model?: string; thinkingLevel?: string; cwd?: string }): Promise<DurableThread> {
     return ((await this.call("durable_create", opts)) as { thread: DurableThread }).thread;
   }
-  async submit(thread: string, input: SubmitInput): Promise<{ submission: number; status: string }> {
-    return (await this.call("durable_submit", { thread, ...input })) as { submission: number; status: string };
+  async submit(thread: string, input: SubmitInput): Promise<Submitted> {
+    return (await this.call("durable_submit", { thread, ...input })) as Submitted;
+  }
+  async ticket(thread: string, conversation?: number): Promise<Ticket | null> {
+    return ((await this.call("durable_ticket", { thread, ...(conversation === undefined ? {} : { conversation }) })) as { ticket: Ticket | null }).ticket;
   }
   async abort(thread: string, conversation?: number): Promise<void> {
     await this.call("durable_abort", { thread, ...(conversation === undefined ? {} : { conversation }) });

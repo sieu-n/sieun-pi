@@ -96,48 +96,10 @@ export async function readPool(executable = poolExecutable()): Promise<AccountsV
   return { sessionId: null, checkedAt: new Date().toISOString(), providers, poolConfig };
 }
 
-/**
- * Marks the owner's input to a thread as an owner turn in pi-pool's turn queue, so it runs at once instead of waiting its place (today's chat
- * does the same with `markOwnerTurn`). pi-host keys a thread's runs as tree `pi-durable:<thread>` with a session id the chat cannot see, so
- * this reads the queue for that tree's queued sessions and marks each one; a run that asks for its slot after the first read is caught by the
- * later reads.
- */
-export async function ownerTurn(thread: string, executable = poolExecutable(), reads = [300, 1500, 4000, 10_000]): Promise<string[]> {
-  const marked = new Set<string>();
-  for (const delay of reads) {
-    await new Promise(resolve => setTimeout(resolve, delay));
-    let queue: { queued?: { session: string; tree: string }[] };
-    try {
-      queue = JSON.parse(await run(executable, ["queue", "--json"])) as typeof queue;
-    } catch {
-      return [...marked];
-    }
-    const waiting = (queue.queued ?? []).filter(q => q.tree === `pi-durable:${thread}` && !marked.has(q.session));
-    for (const entry of waiting) {
-      await run(executable, ["owner-turn", entry.session]).then(() => marked.add(entry.session)).catch(() => undefined);
-    }
-    if (marked.size) return [...marked];
-  }
-  return [...marked];
-}
-
-/** USD per million tokens, for the split of a row pi-host stores only as a total; the total stays pi-host's own sum. */
-const PRICES: Record<string, { input: number; output: number; cacheRead: number; cacheWrite: number }> = {
-  "claude-opus-5-5": { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 8 },
-  "claude-sonnet-5": { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 6 },
-};
-const DEFAULT_PRICE = { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 };
-
-export function priced(total: UsageTotal): UsageRow["cost"] {
-  if (total.costInput !== undefined) {
-    return { input: total.costInput, output: total.costOutput ?? 0, cacheRead: total.costCacheRead ?? 0, cacheWrite: total.costCacheWrite ?? 0, total: total.cost };
-  }
-  const price = PRICES[total.model.split("/").at(-1) ?? ""] ?? DEFAULT_PRICE;
-  const parts = { input: total.input * price.input, output: total.output * price.output, cacheRead: total.cacheRead * price.cacheRead, cacheWrite: total.cacheWrite * price.cacheWrite };
-  const sum = parts.input + parts.output + parts.cacheRead + parts.cacheWrite;
-  const scale = sum > 0 ? total.cost / sum : 0;
-  return { input: parts.input * scale, output: parts.output * scale, cacheRead: parts.cacheRead * scale, cacheWrite: parts.cacheWrite * scale, total: total.cost };
-}
+/** One row's cost by kind, as pi-host sums it from each answer's own usage. */
+export const costOf = (total: UsageTotal): UsageRow["cost"] => ({
+  input: total.costInput, output: total.costOutput, cacheRead: total.costCacheRead, cacheWrite: total.costCacheWrite, total: total.cost,
+});
 
 const DAY = 86_400_000;
 export const localDayStart = (at: number): number => Math.floor((at + OWNER_ZONE_OFFSET_MS) / DAY) * DAY - OWNER_ZONE_OFFSET_MS;
@@ -151,7 +113,7 @@ export async function usageReport(host: Host, threads: Threads, box: string, opt
   const totals = await host.usage({ since, until, ...scope });
   const rows: UsageRow[] = totals.map(t => ({
     thread: t.thread, threadName: threads.thread(t.thread)?.name ?? t.thread, host: box, model: t.model, turns: t.turns,
-    tokens: { input: t.input, output: t.output, cacheRead: t.cacheRead, cacheWrite: t.cacheWrite }, cost: priced(t),
+    tokens: { input: t.input, output: t.output, cacheRead: t.cacheRead, cacheWrite: t.cacheWrite }, cost: costOf(t),
   }));
   const perDay = await Promise.all(Array.from({ length: days }, async (_, i) => {
     const start = since + i * DAY;

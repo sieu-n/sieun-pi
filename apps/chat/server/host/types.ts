@@ -2,6 +2,7 @@
  * The one seam between the chat server and pi-host. Every host call goes through `Host`, which pi-host's socket (`pi-host.ts`) and the
  * fixture (`fixture.ts`) both implement. The shapes mirror pi-host's `durable_*` commands (packages/pi-host/src/durable/README.md).
  */
+import type { TurnPlace } from "../../web/src/lib/api/types.ts";
 
 export type ThreadStatus = "idle" | "running" | "sleeping" | "failed";
 
@@ -57,20 +58,32 @@ export type DurableEvent =
 
 export interface SearchHit { thread: string; conversation: number; entryId: number; kind: string; author: string; at: number; snippet: string }
 export interface SearchQuery { q: string; threads?: string[]; from?: string; after?: number; before?: number; limit?: number; sort?: "relevance" | "recent" }
-export interface UsageTotal { thread: string; model: string; turns: number; input: number; output: number; cacheRead: number; cacheWrite: number; cost: number;
-  /** Present when pi-host keeps the split; otherwise the server prices it. */
-  costInput?: number; costOutput?: number; costCacheRead?: number; costCacheWrite?: number }
+export interface UsageTotal {
+  thread: string; model: string; turns: number; input: number; output: number; cacheRead: number; cacheWrite: number;
+  cost: number; costInput: number; costOutput: number; costCacheRead: number; costCacheWrite: number;
+}
+
+export interface Ticket { session: string; tree: string; place: TurnPlace }
+export interface Submitted {
+  submission: number; requestId?: string; status: string; ticket?: Ticket | null;
+  /** With `ownerTurn`: whether pi-pool marked the run as the owner's, and how many runs it put it ahead of. */
+  owner?: { state: "marked" | "off" | "failed"; ahead?: number };
+}
 
 export interface SubmitInput {
   conversation?: number; text?: string; images?: { data: string; mimeType: string }[]; requestId?: string;
   whenBusy?: "steer" | "followUp" | "reject"; entry?: { kind: "agent.message"; data: { from: string; via?: string } };
+  /** The owner's own input: pi-host marks the run with `pi-pool owner-turn`, so it starts at once. */
+  ownerTurn?: boolean;
 }
 
 export interface Host {
   readonly name: string;
   threads(opts?: { archived?: boolean }): Promise<DurableThread[]>;
   create(opts: { name?: string; model?: string; thinkingLevel?: string; cwd?: string }): Promise<DurableThread>;
-  submit(thread: string, input: SubmitInput): Promise<{ submission: number; status: string }>;
+  submit(thread: string, input: SubmitInput): Promise<Submitted>;
+  /** The conversation's run in pi-pool's turn queue now, or null when it has none. */
+  ticket(thread: string, conversation?: number): Promise<Ticket | null>;
   abort(thread: string, conversation?: number): Promise<void>;
   /** Resolves once the submission is done or unanswered; `answer` is the entry that answered it. */
   wait(thread: string, submission: number): Promise<SubmissionRecord>;

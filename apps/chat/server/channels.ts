@@ -5,10 +5,11 @@
  */
 import { randomUUID } from "node:crypto";
 import type {
-  AgentId, Channel, ChannelInput, ConversationSummary, Delivery, DeliveryState, ImageRef, Item, Member, Principal, SendRequest, TimelinePage,
+  AgentId, Channel, ChannelInput, TurnPlace, ConversationSummary, Delivery, DeliveryState, ImageRef, Item, Member, Principal, SendRequest, TimelinePage,
 } from "../web/src/lib/api/types.ts";
 import type { Host } from "./host/types.ts";
 import type { ChannelRow, Post, Store, StoredDelivery } from "./store.ts";
+import { waitingPlace } from "./queue.ts";
 import { OWNER, parseConversationId, type Threads } from "./threads.ts";
 
 /** Hard: money, an agent loop runs paid model turns nobody reads (channels.md 4.3). */
@@ -18,8 +19,8 @@ const CONTEXT_CLIP = 2048;
 const PAGE = 50;
 
 export interface ChannelEvents {
-  /** The owner's mention goes first in pi-pool's turn queue, as his own sends do (channels.md 4.2). */
-  ownerTurn(thread: string): void;
+  /** Follows a delivery's place in pi-pool's turn queue until its run works or ends. */
+  queue(target: AgentId, place: TurnPlace | null, listener: (place: TurnPlace | null) => void): void;
   items(conversation: string, items: Item[]): void;
   channel(channel: Channel): void;
   conversations(changed: ConversationSummary[]): void;
@@ -33,7 +34,7 @@ export class Channels {
     for (const row of this.store.channels) {
       for (const post of this.store.postsOf(row.id)) {
         for (const delivery of post.deliveries) {
-          if ((delivery.state === "delivered" || delivery.state === "read") && delivery.submission !== undefined) void this.awaitAnswer(row, post, delivery);
+          if ((delivery.state === "queued" || delivery.state === "delivered" || delivery.state === "read") && delivery.submission !== undefined) void this.awaitAnswer(row, post, delivery);
         }
       }
     }
@@ -274,9 +275,16 @@ export class Channels {
         requestId: `channel:${row.id}:${post.id}:${delivery.target}`,
         whenBusy: "followUp",
         entry: { kind: "agent.message", data: { from: post.author, via: `#${row.name}` } },
+        // The owner's mention starts at once, as his own sends do; an agent's mention waits its place (channels.md 4.2).
+        ...(post.author === "owner" ? { ownerTurn: true } : {}),
       });
-      this.setState(row, post, delivery, "delivered", { submission: submitted.submission });
-      if (post.author === "owner") this.events.ownerTurn(delivery.thread);
+      const place = waitingPlace(submitted.ticket?.place);
+      this.setState(row, post, delivery, place?.state === "queued" ? "queued" : "delivered", { submission: submitted.submission, ...(place ? { queue: place } : {}) });
+      this.events.queue(delivery.target, submitted.ticket?.place ?? null, next => {
+        if (delivery.state !== "queued" && delivery.state !== "delivered") return;
+        delete delivery.queue;
+        this.setState(row, post, delivery, next?.state === "queued" ? "queued" : "delivered", next ? { queue: next } : {});
+      });
       void this.awaitAnswer(row, post, delivery);
     } catch (error) {
       this.setState(row, post, delivery, "failed", { error: error instanceof Error ? error.message : String(error) });
@@ -288,6 +296,7 @@ export class Channels {
       const settled = await this.host.wait(delivery.thread, delivery.submission!);
       const answer = settled.answer === undefined ? "" : await this.answerText(delivery, settled.answer);
       if (!answer.trim()) {
+        delete delivery.queue;
         this.setState(row, post, delivery, "no_reply");
         return;
       }
@@ -295,6 +304,7 @@ export class Channels {
         text: answer, requestId: `answer:${post.id}:${delivery.target}`, threadRoot: post.threadRoot ?? post.id,
         mentions: this.mentionsIn(row, answer, delivery.target), hops: post.hops + 1,
       });
+      delete delivery.queue;
       this.setState(row, post, delivery, "answered", { answerPost: reply.item.id, answer: reply.item.id });
     } catch (error) {
       if (/closed the connection|ECONNREFUSED|ENOENT/.test(String(error))) {
@@ -343,7 +353,10 @@ export class Channels {
 }
 
 export function publicDelivery(d: StoredDelivery): Delivery {
-  return { target: d.target, name: d.name, state: d.state, at: d.at, ...(d.answerPost ? { answer: d.answerPost } : {}), ...(d.error ? { error: d.error } : {}) };
+  return {
+    target: d.target, name: d.name, state: d.state, at: d.at, ...(d.answerPost ? { answer: d.answerPost } : {}), ...(d.error ? { error: d.error } : {}),
+    ...(d.queue ? { queue: d.queue } : {}),
+  };
 }
 
 export const OWNER_PRINCIPAL = OWNER;

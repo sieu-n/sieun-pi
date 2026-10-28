@@ -5,25 +5,23 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { WebSocket, WebSocketServer } from "ws";
 import type {
-  AgentSummary, ConversationHeader, ConversationId, ConversationPatch, ConversationSummary, ImageRef, LiveCommand, LiveEvent, Me, ModelCatalog, ModelInfo, SendRequest, SendResult, Sidebar, ThinkingLevel,
+  AgentSummary, ConversationHeader, ConversationId, Delivery, ConversationPatch, ConversationSummary, ImageRef, LiveCommand, LiveEvent, Me, ModelCatalog, ModelInfo, SendRequest, SendResult, Sidebar, ThinkingLevel,
 } from "../web/src/lib/api/types.ts";
 import type { AllowedModel } from "../../../config/allowed-models.ts";
 import { Boards } from "./boards.ts";
 import { Channels, publicDelivery } from "./channels.ts";
-import type { Config } from "./config.ts";
+import { DEFAULT_MODEL, type Config } from "./config.ts";
 import type { Host } from "./host/types.ts";
 import { Search } from "./search.ts";
 import { Store } from "./store.ts";
 import { modelRef, OWNER, parseConversationId, Threads } from "./threads.ts";
-import { ownerTurn } from "./usage.ts";
+import { QueueWatch, waitingPlace } from "./queue.ts";
 
 /** A model the pickers offer, which must be one of config/allowed-models.ts (owner rule c185: the newest model of each tier only). */
 function offered(key: AllowedModel, label: string, family: string, levels: ThinkingLevel[]): ModelInfo {
   const [provider, id] = key.split("/") as [string, string];
   return { provider, id, label, family, levels };
 }
-
-const DEFAULT_MODEL: AllowedModel = "anthropic/claude-opus-5-5";
 
 export const MODELS: ModelCatalog = {
   models: [
@@ -44,6 +42,7 @@ export class App {
   readonly channels: Channels;
   readonly boards: Boards;
   readonly search: Search;
+  readonly queues: QueueWatch;
   private readonly clients = new Set<Client>();
   private sidebarTimer?: NodeJS.Timeout;
   private lastSidebar = "";
@@ -68,7 +67,7 @@ export class App {
       jobs: (thread, jobs) => this.broadcast({ type: "jobs", thread, jobs }),
     }, config.box, log);
     this.channels = new Channels(this.store, host, this.threads, {
-      ownerTurn: thread => this.ownerTurn(thread),
+      queue: (target, place, listener) => this.queues.follow(target, place, listener),
       items: (conversation, items) => this.toWatchers(conversation, { type: "items", conversation, items }),
       channel: channel => this.broadcast({ type: "channel", channel }),
       conversations: changed => this.conversationsChanged(changed),
@@ -86,6 +85,7 @@ export class App {
       if (name === "chat.board") this.boards.docChanged(thread, value);
     };
     this.search = new Search(host, this.threads, this.channels);
+    this.queues = new QueueWatch(host, this.threads, (conversation, place) => this.toWatchers(conversation, { type: "queue", conversation, place }), log);
     this.wss.on("connection", socket => this.connect(socket));
   }
 
@@ -97,6 +97,7 @@ export class App {
 
   async stop(): Promise<void> {
     this.boards.stop();
+    this.queues.stop();
     clearTimeout(this.sidebarTimer);
     await this.threads.stop();
     for (const client of this.clients) client.socket.close();
@@ -154,49 +155,48 @@ export class App {
     const agent = this.threads.agent(id);
     if (!summary || !agent) throw new NotFound(`No conversation ${id}.`);
     const members = [{ principal: OWNER, role: "owner" as const, wakeOn: "all" as const }, { principal: this.threads.principal(agent.id), role: "member" as const, wakeOn: "all" as const, status: agent.status }];
-    return { summary, members, model: agent.model, thinkingLevel: agent.thinkingLevel, agent };
+    return { summary, members, model: agent.model, thinkingLevel: agent.thinkingLevel, agent, queue: this.queues.place(id) };
   }
 
   async send(id: ConversationId, request: SendRequest): Promise<SendResult> {
     if (!request.text?.trim() && !request.images?.length) throw new Error("A message needs text or an image.");
     if (!request.requestId) throw new Error("A send needs a requestId, so a retry lands once.");
     const images = (request.images ?? []).map(image => this.saveUpload(image));
-    if (this.isChannel(id)) {
-      const posted = await this.channels.post(id, "owner", { ...request, images: undefined as never }, images);
-      return posted;
-    }
+    if (this.isChannel(id)) return this.channels.post(id, "owner", { ...request, images: undefined as never }, images);
     const { thread, conversation } = parseConversationId(id);
     if (!this.threads.thread(thread)) throw new NotFound(`No thread ${thread}.`);
-    await this.host.submit(thread, {
+    const submitted = await this.host.submit(thread, {
       ...(conversation === 1 ? {} : { conversation }), text: request.text, ...(request.images?.length ? { images: request.images } : {}),
-      requestId: request.requestId, whenBusy: request.whenBusy ?? "steer",
+      requestId: request.requestId, whenBusy: request.whenBusy ?? "steer", ownerTurn: true,
     });
     this.store.state.reads[id] = { at: Date.now() };
     this.store.saveState();
-    this.ownerTurn(thread);
-    const deliveries = [];
+    const queue = waitingPlace(submitted.ticket?.place);
+    this.queues.follow(id, submitted.ticket?.place ?? null);
+    const deliveries: Delivery[] = [];
     for (const target of (request.mentions ?? []).filter(m => m !== id && m !== "owner")) {
       const where = parseConversationId(target);
+      const name = this.threads.principal(target).name;
       try {
-        await this.host.submit(where.thread, {
+        const sent = await this.host.submit(where.thread, {
           ...(where.conversation === 1 ? {} : { conversation: where.conversation }), text: request.text, requestId: `${request.requestId}:${target}`, whenBusy: "followUp",
-          entry: { kind: "agent.message", data: { from: "owner", via: id } },
+          entry: { kind: "agent.message", data: { from: "owner", via: id } }, ownerTurn: true,
         });
-        deliveries.push({ target, name: this.threads.principal(target).name, state: "delivered" as const, at: Date.now() });
+        const place = waitingPlace(sent.ticket?.place);
+        deliveries.push({ target, name, state: place?.state === "queued" ? "queued" : "delivered", at: Date.now(), ...(place ? { queue: place } : {}) });
+        this.queues.follow(target, sent.ticket?.place ?? null);
       } catch (error) {
-        deliveries.push({ target, name: this.threads.principal(target).name, state: "failed" as const, at: Date.now(), error: error instanceof Error ? error.message : String(error) });
+        deliveries.push({ target, name, state: "failed", at: Date.now(), error: error instanceof Error ? error.message : String(error) });
       }
     }
     return {
-      item: { kind: "message", id: `r:${request.requestId}`, at: Date.now(), author: OWNER, text: request.text, images, mentions: request.mentions ?? [], deliveries, pending: true },
+      item: {
+        kind: "message", id: `r:${request.requestId}`, at: Date.now(), author: OWNER, text: request.text, images, mentions: request.mentions ?? [], deliveries, pending: true,
+        ...(queue ? { queue } : {}),
+      },
       deliveries,
+      queue,
     };
-  }
-
-  /** The owner's own input goes first in pi-pool's turn queue; the fixture has no pool. */
-  ownerTurn(thread: string): void {
-    if (this.config.fixture) return;
-    void ownerTurn(thread).catch(error => this.log(`owner-turn for ${thread} failed: ${String(error)}`));
   }
 
   private saveUpload(image: { data: string; mimeType: string }): ImageRef {
@@ -307,6 +307,7 @@ export class App {
       if (live.items.length) this.send1(client, { type: "items", conversation: command.conversation, items: live.items });
       this.send1(client, { type: "partial", conversation: command.conversation, partial: live.partial });
       this.send1(client, { type: "status", conversation: command.conversation, status: live.status });
+      this.send1(client, { type: "queue", conversation: command.conversation, place: this.queues.place(command.conversation) });
     } else if (command.type === "unwatch") {
       if (!client.watching.delete(command.conversation)) return;
       if (!this.isChannel(command.conversation)) await this.threads.unwatch(command.conversation);

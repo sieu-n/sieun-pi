@@ -86,6 +86,34 @@ describe("live turns", () => {
     live.close();
   });
 
+  test("a waiting send carries its queue place until the run starts", async () => {
+    (s.host as any).wordMs = 5;
+    const live = await s.live();
+    live.watch(ids.frontend);
+    await live.waitFor(e => e.type === "status" && e.conversation === ids.frontend);
+    const sent = await s.send("POST", `/api/c/${ids.frontend}/send`, { text: "queue this one", requestId: "queue-1" });
+    assert.deepEqual(sent.body.queue, { state: "queued", position: 3, total: 7 });
+    assert.deepEqual(sent.body.item.queue, { state: "queued", position: 3, total: 7 });
+    const header = await s.get(`/api/c/${ids.frontend}`);
+    assert.equal(header.queue.state, "queued");
+    await live.waitFor(e => e.type === "queue" && e.conversation === ids.frontend && e.place === null, 15_000);
+    await live.waitFor(e => e.type === "items" && e.items.some(i => i.kind === "turn" && i.text.includes("queue this one")), 15_000);
+    (s.host as any).wordMs = 2;
+    live.close();
+  });
+
+  test("a job's live transcript keeps its parent as the author of the task", async () => {
+    const job = (await s.get<Sidebar>("/api/sidebar")).dms.find(c => c.id.startsWith(`${ids.vent}:`))!;
+    const live = await s.live();
+    live.watch(job.id);
+    await s.send("POST", `/api/c/${encodeURIComponent(job.id)}/send`, { text: "one more check", requestId: "job-live-1" });
+    const event = await live.waitFor(e => e.type === "items" && e.conversation === job.id && e.items.some(i => i.kind === "turn" && i.text.includes("one more check")));
+    assert.ok(event.type === "items" && event.items.every(i => i.kind !== "message" || i.text !== "Read the canary logs from the last day and list every relay error" || i.author.name === "Vent"));
+    const page = await s.get<TimelinePage>(`/api/c/${encodeURIComponent(job.id)}/items?around=e15`);
+    assert.equal(page.items[0]!.kind === "message" && page.items[0]!.author.name, "Vent");
+    live.close();
+  });
+
   test("Stop ends a running turn as aborted", async () => {
     (s.host as any).wordMs = 30;
     const live = await s.live();

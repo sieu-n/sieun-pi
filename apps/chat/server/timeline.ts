@@ -24,8 +24,8 @@ export interface TimelineContext {
   running: boolean;
   /** Tool calls running now, from tool_execution_start. */
   runningTools?: Set<string>;
-  /** The entries start at the conversation's first entry, so a job's first input is its parent's task. */
-  fromStart?: boolean;
+  /** The conversation's first entry: in a job it is its parent's task, so its author is the parent. */
+  firstEntry?: number;
   /** A job's parent agent, the author of its task. */
   parent?: Principal;
 }
@@ -152,7 +152,7 @@ export function buildItems(entries: readonly EntryRecord[], ctx: TimelineContext
     if (entry.conversationId !== ctx.conversation) continue;
     if (isInput(entry)) {
       flush(false);
-      items.push(inputItem(entry, ctx, ctx.fromStart === true && lastInput === undefined && items.length === 0));
+      items.push(inputItem(entry, ctx, entry.id === ctx.firstEntry));
       lastInput = entry.id;
     } else if (TURN_KINDS.has(entry.kind)) {
       turn ??= { key: lastInput ?? entry.id, entries: [] };

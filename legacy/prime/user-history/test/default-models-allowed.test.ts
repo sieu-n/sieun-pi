@@ -21,7 +21,7 @@ const NAMED_FILES = [
   `${CLEAN_ROOM}/waiting-session.ts`,
   "legacy/prime/scripts/prove_runtime.mjs",
   "apps/chat/server/app.ts",
-  "apps/chat/server/host/fixture.ts",
+  "apps/chat/server/config.ts",
   "packages/pi-host/src/main.ts",
 ];
 /** Every clean-room scenario script, since a scenario fixes the model its chat and job run on. */

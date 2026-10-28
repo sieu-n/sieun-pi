@@ -71,6 +71,8 @@ export class Threads {
   private agentCache = new Map<AgentId, string>();
   private convCache = new Map<ConversationId, string>();
   private readonly live = new Map<ConversationId, LiveConversation>();
+  /** Each conversation's first entry id, which never changes once it exists. */
+  private readonly firstEntries = new Map<ConversationId, number>();
   private timer?: NodeJS.Timeout;
   /** Extra summaries the channel layer adds (channels), merged into conversations(). */
   channelSummaries: () => ConversationSummary[] = () => [];
@@ -234,6 +236,7 @@ export class Threads {
     const agent = this.principal(conversationIdOf(thread, conversation));
     return {
       thread, conversation, agent, ...(agent.parent ? { parent: this.principal(agent.parent) } : {}),
+      ...(this.firstEntries.has(conversationIdOf(thread, conversation)) ? { firstEntry: this.firstEntries.get(conversationIdOf(thread, conversation))! } : {}),
       principal: from => this.principal(from),
       tree: this.tree(thread),
       jobStatus: id => this.statusOfConversation(thread, id),
@@ -276,8 +279,17 @@ export class Threads {
     }
   }
 
+  /** Reads and keeps the conversation's first entry id, so `context` can name the author of a job's task. */
+  async loadFirstEntry(thread: string, conversation: number): Promise<void> {
+    const id = conversationIdOf(thread, conversation);
+    if (this.firstEntries.has(id)) return;
+    const first = (await this.host.entries(thread, { conversation, after: 0, limit: 1 })).entries[0];
+    if (first) this.firstEntries.set(id, first.id);
+  }
+
   async timeline(id: ConversationId, opts: { before?: string; after?: string; around?: string; limit?: number }): Promise<TimelinePage> {
     const { thread, conversation } = parseConversationId(id);
+    await this.loadFirstEntry(thread, conversation);
     const limit = Math.min(Math.max(opts.limit ?? PAGE, 1), 200);
     const live = this.live.get(id);
     const ctx = this.context(thread, conversation, live);
@@ -287,7 +299,7 @@ export class Threads {
       const older = await this.pageBefore(thread, conversation, target + 1, Math.ceil(limit / 2));
       const newer = await this.pageAfter(thread, conversation, target, Math.floor(limit / 2));
       const entries = [...older.entries, ...newer.entries];
-      const items = buildItems(entries, { ...ctx, running: ctx.running && !newer.more, fromStart: !older.more });
+      const items = buildItems(entries, { ...ctx, running: ctx.running && !newer.more });
       const focus = opts.around.startsWith("t") && items.some(i => i.id === opts.around) ? opts.around : itemIdFor(entries, target);
       return { items, ...(older.more && entries[0] ? { older: `e${entries[0].id}` } : {}), ...(newer.more && entries.at(-1) ? { newer: `e${entries.at(-1)!.id}` } : {}), ...(focus ? { focus } : {}) };
     }
@@ -306,7 +318,7 @@ export class Threads {
     }
     const before = entryOf(opts.before);
     const page = await this.pageBefore(thread, conversation, before, limit);
-    const items = buildItems(page.entries, { ...ctx, ...(before === undefined ? {} : { running: false }), fromStart: !page.more });
+    const items = buildItems(page.entries, { ...ctx, ...(before === undefined ? {} : { running: false }) });
     return { items, ...(page.more && page.entries[0] ? { older: `e${page.entries[0].id}` } : {}) };
   }
 
@@ -346,6 +358,7 @@ export class Threads {
   }
 
   private async attach(id: ConversationId, live: LiveConversation): Promise<void> {
+    await this.loadFirstEntry(live.thread, live.conversation);
     const tail = await this.host.entries(live.thread, { conversation: live.conversation, limit: 1 });
     const newest = tail.entries[0]?.id;
     if (newest !== undefined) {

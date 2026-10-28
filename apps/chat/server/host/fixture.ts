@@ -1,10 +1,13 @@
 /**
  * An in-memory `Host` for fixture mode and tests. It keeps threads, conversations, entries and documents the way pi-durable shapes them,
  * and answers each input with a streamed reply, so pages see partial text, tool steps, jobs, Stop and status without pi-host.
- * A message that says "spawn" starts a job (a child conversation), "fail" ends the turn with an error, and "slow" streams for a minute.
+ * A message that says "spawn" starts a job (a child conversation), "fail" ends the turn with an error, "slow" streams for a minute, and
+ * "queue" waits two seconds in a fake turn queue (place 3 of 7, then 1 of 7) before it starts.
  */
 import { randomUUID } from "node:crypto";
-import type { ContentBlock, DurableEvent, DurableThread, EntryRecord, Host, Message, SearchHit, SearchQuery, SubmissionRecord, SubmitInput, TreeNode, UsageTotal } from "./types.ts";
+import type { TurnPlace } from "../../web/src/lib/api/types.ts";
+import { DEFAULT_MODEL } from "../config.ts";
+import type { ContentBlock, DurableEvent, DurableThread, EntryRecord, Host, Message, SearchHit, SearchQuery, SubmissionRecord, Submitted, SubmitInput, Ticket, TreeNode, UsageTotal } from "./types.ts";
 
 interface FakeThread {
   row: DurableThread;
@@ -18,6 +21,8 @@ interface FakeThread {
   waiters: Map<number, ((record: SubmissionRecord) => void)[]>;
   /** Inputs that wait for the running turn of their conversation, as `whenBusy: followUp`. */
   queued: Map<number, (() => void)[]>;
+  /** Each conversation's place in the fake turn queue. */
+  places: Map<number, TurnPlace>;
 }
 
 type Sink = { conversation?: number; sink: (event: DurableEvent) => void };
@@ -36,14 +41,14 @@ export class FixtureHost implements Host {
 
   addThread(input: { id?: string; name: string; status?: DurableThread["status"]; createdAt: number; model?: string; archived?: boolean }): FakeThread {
     const id = input.id ?? randomUUID();
-    const [provider, modelId] = (input.model ?? "anthropic/claude-opus-5-5").split("/");
+    const [provider, modelId] = (input.model ?? DEFAULT_MODEL).split("/");
     const thread: FakeThread = {
       row: {
         id, name: input.name, provider: provider!, modelId: modelId!, thinkingLevel: "high", cwd: "/home/sieun", createdAt: input.createdAt, updatedAt: input.createdAt,
         failed: input.status === "failed", archived: input.archived ?? false, preview: "", children: 0, status: input.status ?? "idle",
       },
-      nodes: [{ id: 1, parent: null, ownerTask: null, name: input.name, depth: 0, status: "idle", model: input.model ?? "anthropic/claude-opus-5-5", createdAt: input.createdAt }],
-      entries: [], docs: new Map(), nextId: 2, submissions: new Map(), byRequest: new Map(), running: new Map(), waiters: new Map(), queued: new Map(),
+      nodes: [{ id: 1, parent: null, ownerTask: null, name: input.name, depth: 0, status: "idle", model: input.model ?? DEFAULT_MODEL, createdAt: input.createdAt }],
+      entries: [], docs: new Map(), nextId: 2, submissions: new Map(), byRequest: new Map(), running: new Map(), waiters: new Map(), queued: new Map(), places: new Map(),
     };
     this.threadsById.set(id, thread);
     return thread;
@@ -105,9 +110,9 @@ export class FixtureHost implements Host {
     return { ...thread.row };
   }
 
-  async submit(id: string, input: SubmitInput): Promise<{ submission: number; status: string }> {
+  async submit(id: string, input: SubmitInput): Promise<Submitted> {
     const thread = this.get(id);
-    if (input.requestId && thread.byRequest.has(input.requestId)) return { submission: thread.byRequest.get(input.requestId)!, status: "placed" };
+    if (input.requestId && thread.byRequest.has(input.requestId)) return { submission: thread.byRequest.get(input.requestId)!, status: "placed", ticket: this.ticketOf(thread, input.conversation ?? 1) };
     const conversation = input.conversation ?? 1;
     if (!thread.nodes.some(n => n.id === conversation)) throw new Error(`No conversation ${conversation} in ${id}`);
     const content: ContentBlock[] = [{ type: "text", text: input.text ?? "" }, ...(input.images ?? []).map(i => ({ type: "image" as const, data: i.data, mimeType: i.mimeType }))];
@@ -116,10 +121,29 @@ export class FixtureHost implements Host {
     const submission: SubmissionRecord = { id: thread.nextId++, conversationId: conversation, ...(input.requestId ? { requestId: input.requestId } : {}), type: "input", status: "placed", entry: entry.id };
     thread.submissions.set(submission.id, submission);
     if (input.requestId) thread.byRequest.set(input.requestId, submission.id);
-    const start = () => void this.answer(thread, conversation, submission, input.text ?? "");
+    const begin = () => {
+      thread.places.set(conversation, { state: "working", kind: input.ownerTurn ? "owner" : "slot" });
+      void this.answer(thread, conversation, submission, input.text ?? "");
+    };
+    const waits = /\bqueue\b/i.test(input.text ?? "") && this.wordMs > 0;
+    const start = waits
+      ? () => {
+          thread.places.set(conversation, { state: "queued", position: 3, total: 7 });
+          setTimeout(() => thread.places.set(conversation, { state: "queued", position: 1, total: 7 }), 1000);
+          setTimeout(begin, 2000);
+        }
+      : begin;
     if (!thread.running.has(conversation)) start();
     else thread.queued.set(conversation, [...(thread.queued.get(conversation) ?? []), start]);
-    return { submission: submission.id, status: "placed" };
+    return { submission: submission.id, status: "placed", ticket: this.ticketOf(thread, conversation), ...(input.ownerTurn ? { owner: { state: "off" as const } } : {}) };
+  }
+
+  private ticketOf(thread: FakeThread, conversation: number): Ticket {
+    return { session: `${thread.row.id}:${conversation}`, tree: `pi-durable:${thread.row.id}`, place: thread.places.get(conversation) ?? { state: "none" } };
+  }
+
+  async ticket(id: string, conversation = 1): Promise<Ticket | null> {
+    return this.ticketOf(this.get(id), conversation);
   }
 
   /** Streams an answer word by word as message_update events, then appends it. */
@@ -162,6 +186,7 @@ export class FixtureHost implements Host {
     const answer = this.append(thread, conversation, { kind: "pi.assistant", model: [message] });
     this.emit(thread, { type: "events", conversation, events: [{ type: "message_end", entry: answer }, { type: "run_end", inputs: [submission.id] }] });
     thread.running.delete(conversation);
+    thread.places.delete(conversation);
     node.status = "idle";
     submission.status = stopped || failed ? "unanswered" : "done";
     submission.answer = answer.id;
@@ -261,13 +286,17 @@ export class FixtureHost implements Host {
         if (range.until !== undefined && at >= range.until) continue;
         const model = `${message.provider}/${message.model}`;
         const key = `${thread.row.id} ${model}`;
-        const row = rows.get(key) ?? { thread: thread.row.id, model, turns: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
+        const row = rows.get(key) ?? { thread: thread.row.id, model, turns: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, costInput: 0, costOutput: 0, costCacheRead: 0, costCacheWrite: 0 };
         row.turns += 1;
         row.input += message.usage.input;
         row.output += message.usage.output;
         row.cacheRead += message.usage.cacheRead;
         row.cacheWrite += message.usage.cacheWrite;
         row.cost += message.usage.cost.total;
+        row.costInput += message.usage.cost.input;
+        row.costOutput += message.usage.cost.output;
+        row.costCacheRead += message.usage.cost.cacheRead;
+        row.costCacheWrite += message.usage.cost.cacheWrite;
         rows.set(key, row);
       }
     }
