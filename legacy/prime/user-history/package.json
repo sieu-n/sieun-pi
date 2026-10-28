@@ -15,7 +15,9 @@
   "scripts": {
     "test": "node --import tsx --test --test-force-exit --test-concurrency=20 --test-timeout=120000 test/*.test.ts",
     "test:one": "node --import tsx --test --test-force-exit --test-timeout=120000",
-    "typecheck": "tsc --noEmit && svelte-check --tsconfig ./tsconfig.json --fail-on-warnings"
+    "typecheck": "tsc --noEmit && svelte-check --tsconfig ./tsconfig.json --fail-on-warnings",
+    "typecheck:ts": "tsc --noEmit",
+    "typecheck:svelte": "svelte-check --tsconfig ./tsconfig.json --fail-on-warnings"
   },
   "dependencies": {
     "@earendil-works/pi-ai": "https://pub-728493de92a943e2a9b2d17b4719f318.r2.dev/releases/v0.9.8/prime-agent-ai-0.9.8.tgz",

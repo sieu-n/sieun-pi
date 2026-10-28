@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from "node:child_process";
-import { get } from "node:http";
+import { createServer, get } from "node:http";
 import { existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, hostname, userInfo } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { scopedPlan } from "./release-chat-scope.mjs";
 
 const USAGE = `usage: node scripts/release-chat.mjs <commit|release-id> [--rollback] [--no-kickstart] [--repo <dir>]
 
@@ -12,18 +13,21 @@ Builds ~/.local/share/sieun-pi-chat/release-<sha7> from the commit, points curre
 or on Linux restarts the systemd user unit sieun-pi-chat.service. When the release's deploy/linux sieun-pi-chat.service or .socket differs from
 ~/.config/systemd/user, it installs them, runs daemon-reload, stops the service, enables and starts the socket, and starts the service.
 The commit must be on origin's main, fetched at the start: push it first. The command never pushes or publishes anyone's source itself.
-One release runs at a time: a second command waits for the first one's lock, then checks again, so a commit that the release holding
-the lock holds goes live through that release, or through its own build when that release fails.
+One release runs at a time: a second command waits for the first one's lock. Latest wins: a waiting release whose commit the release holding
+the lock or another waiting release holds gives way at once, exits 0 and prints the release id that carries its commit (release-<that sha7>).
 A commit that current already holds exits 0 with nothing built ("already live in release-X") once the chat runs current with its units;
 until then it makes that restart and installs those units (after --no-kickstart, or when the installed units were changed).
 Any other commit that does not descend from the live release's commit is refused, so a late release never rolls back a newer one. --rollback allows it.
 --rollback onto a release folder already built skips the origin check and needs no network, so a known-good release stays usable offline
 or when its commit was rebased off main. --rollback onto a commit not built yet is checked against origin like any release.
-The build runs npm run typecheck and npm test of legacy/prime/user-history inside the release before the flip, then writes the packed client bundle.
+Before it builds, the release runs the scoped checks in this checkout (--repo): the legacy/prime/user-history tests that reach a file changed
+since the live release's commit (scripts/release-chat-scope.mjs), tsc when a changed file is typed and svelte-check when one is a .svelte file.
+A --rollback runs none. The release folder itself runs no test: it writes the packed client and service bundles, then a boot check starts the
+service from the folder on a scratch port and data dir, waits until it answers GET /, and stops it.
 Those steps get PATH and the locale from this shell and a private HOME, TMPDIR and XDG dirs, so they see no agent socket, token, session dir or key.
 --no-kickstart flips current only, for a release whose diff touches only scripts/duties or tests.
 A waiting release whose commit a release puts live (current holds it and the chat runs current) exits 0 at once, while the lock is still held.
-After a failed build the name of each failing test goes into the log and build.failed, and the next release that waited for the lock also tries
+After a failed build the name of each failing scoped test goes into the log and build.failed, and the next release that waited for the lock also tries
 origin main's tip first, unless the failed build was that same tip's retry.
 Releases that queue up are folded: the release that takes the lock reads the requests waiting for it, picks the queued commit on origin main
 that holds its own commit and the most queued ones, builds that one, flips current, restarts and names each request it covered. The covered
@@ -183,7 +187,9 @@ function liveHolding(repo, home, sha) {
 /** Whether commit `outer` holds `inner`: the same commit or a descendant. */
 const contains = (repo, outer, inner) => spawnSync("git", ["-C", repo, "merge-base", "--is-ancestor", inner, outer], { env: gitEnv }).status === 0;
 
-class Covered extends Error {}
+class Covered extends Error {
+  constructor(message, release = null) { super(message); this.release = release; }
+}
 
 function alive(pid) {
   try { process.kill(pid, 0); return true; } catch (error) { return error.code === "EPERM"; }
@@ -193,9 +199,8 @@ function alive(pid) {
  * Takes <home>/release.lock, waiting while a live process holds it; a lock whose pid is gone is taken over. Returns the release function and
  * whether this release waited for another one.
  * The lock and the draft `release.lock.<pid>` written while it waits hold the request: pid, sha, startedAt, kickstart and rollback.
- * A release waits even when the holder's commit holds its own: that build can still fail, and then this one is the release that ships the commit.
- * `covered` runs on each wait and throws Covered once a release put this commit live: on 10-19 from 17:52Z waiters that release-bf42653 held
- * stayed queued behind the next build for 12 min and more, since they checked only when they took the lock.
+ * `covered` runs on each wait and throws Covered once a release put this commit live, or once a newer release that holds this commit is
+ * running or queued: on 10-28 at 03:47Z four releases waited on each other for 10 to 25 min, each to build a commit the next one held.
  */
 async function takeLock(home, request, covered = () => {}) {
   const lock = join(home, "release.lock");
@@ -269,6 +274,83 @@ function chatAppPath(tree) {
   return existsSync(join(tree, LEGACY_APP, "package.json")) ? LEGACY_APP : OLD_APP;
 }
 
+/**
+ * Runs the scoped checks for `from`..`to` in the checkout `repo` (scopedPlan): the tests that reach a changed file of the chat, tsc when a changed
+ * file is typed, svelte-check when one is a .svelte file. Null `from` (a rollback, or no live release) runs none.
+ */
+async function checkScoped(repo, from, to) {
+  if (!from) { log(`no scoped checks for ${shortSha(to)}: a rollback or a first release has no range to scope`); return; }
+  const appPath = chatAppPath(repo);
+  const app = join(repo, appPath);
+  const plan = scopedPlan(repo, appPath, from, to);
+  const head = git(repo, ["rev-parse", "HEAD"]);
+  if (head && !contains(repo, head, to)) log(`the checkout's HEAD ${shortSha(head)} does not hold ${shortSha(to)}; the scoped checks run the checkout's files`);
+  log(`${shortSha(from)}..${shortSha(to)} changes ${plan.changed.length} file(s) of ${appPath}; scoped checks: ${plan.tests.length} test file(s)` +
+    `${plan.tsc ? ", tsc" : ""}${plan.svelte ? ", svelte-check" : ""}`);
+  if (!plan.tests.length && !plan.tsc && !plan.svelte) return;
+  const checks = mkdtempSync("/tmp/release-chat-");
+  try {
+    const env = checkEnv(checks);
+    if (plan.tsc) run("npm", ["run", "--silent", "typecheck:ts"], app, env);
+    if (plan.svelte) run("npm", ["run", "--silent", "typecheck:svelte"], app, env);
+    // One file runs with --test-isolation=none: under --test-force-exit the default isolation drops trailing cases (nodejs/node#64857, AGENTS.md rule 6).
+    if (plan.tests.length)
+      await runNamingFailures("npm", ["run", "--silent", "test:one", "--", "--test-concurrency=20", ...(plan.tests.length === 1 ? ["--test-isolation=none"] : []), ...plan.tests], app, env);
+  } finally {
+    rmSync(checks, { recursive: true, force: true });
+  }
+}
+
+const freePort = () => new Promise((done, fail) => {
+  const server = createServer().listen(0, "127.0.0.1", () => { const { port } = server.address(); server.close(() => done(port)); }).on("error", fail);
+});
+
+/**
+ * Starts the service from the release folder on a scratch port and data dir, with no daemon, Slack or pi-pool, waits until GET / answers below
+ * 500, and stops it. A serve outside the live data dir only reads (scratch-serve-read-only.test.ts). On us-metal02 at 03:52Z on 10-28 such a
+ * serve of release-a6d1c07 answered 4.5 s after its start at a load near 300, and stopped 0.14 s after SIGTERM.
+ */
+async function bootCheck(app, root, env) {
+  const port = await freePort();
+  const data = join(root, "boot-data");
+  mkdirSync(data, { mode: 0o700 });
+  const args = ["src/chat-service-cli.mjs", "serve", "--data-dir", data, "--port", String(port), "--socket", join(root, "no-daemon.sock")];
+  log(`boot check: node ${args.join(" ")} (in ${app})`);
+  const child = spawn(process.execPath, args, { cwd: app, stdio: ["ignore", "pipe", "pipe"],
+    env: { ...env, SIEUN_PI_CHAT_START_DAEMON: "0", SIEUN_PI_CHAT_OPEN_AT_LOGIN: "0", SIEUN_PI_SLACK: "0", PI_POOL_BIN: join(root, "no-pi-pool") } });
+  step = child;
+  let output = "";
+  const keep = chunk => { output = (output + chunk).slice(-4000); };
+  child.stdout.on("data", keep);
+  child.stderr.on("data", keep);
+  const exited = new Promise(done => child.on("close", (status, signal) => done(signal ?? status)));
+  let ended = null;
+  exited.then(code => { ended = code; });
+  const startedAt = Date.now();
+  const url = `http://127.0.0.1:${port}/`;
+  let last = "no answer yet", failure = null;
+  try {
+    for (;;) {
+      if (stopping) { failure = `stopped by ${stopping}`; break; }
+      if (ended !== null) { failure = `the service exited (${ended}) ${seconds(Date.now() - startedAt)} after its start, before it answered ${url}`; break; }
+      const status = await ask(url, AbortSignal.timeout(2_000));
+      if (typeof status === "number" && status < 500) { log(`boot check: the release answered ${url} with ${status} ${seconds(Date.now() - startedAt)} after its start`); break; }
+      last = typeof status === "number" ? `HTTP ${status}` : status;
+      if (Date.now() - startedAt >= ANSWER_MS) { failure = `the service did not answer ${url} within ${seconds(ANSWER_MS)} of its start (${last})`; break; }
+      await sleep(POLL_MS);
+    }
+  } finally {
+    if (ended === null) {
+      child.kill("SIGTERM");
+      const kill = setTimeout(() => child.kill("SIGKILL"), 10_000);
+      await exited;
+      clearTimeout(kill);
+    }
+    step = null;
+  }
+  if (failure) throw new Error(`boot check failed: ${failure}\n${output.trimEnd()}`);
+}
+
 /** Builds release-<sha7> in a scratch folder and renames it into place, so a release folder that exists is complete. */
 async function build(options, home, sha, dir) {
   const scratch = join(home, `.building-${basename(dir)}-${process.pid}`);
@@ -287,13 +369,12 @@ async function build(options, home, sha, dir) {
     }
     const app = join(scratch, appPath);
     const env = checkEnv(checks);
-    run("npm", ["run", "--silent", "typecheck"], app, env);
-    await runNamingFailures("npm", ["run", "--silent", "test"], app, env);
     // The packed client bundle, so the service start reads it instead of compiling it (6.5 s at a load of 50 on 10-18) while every shell waits.
     run("node", ["src/chat-assets-prebuild.mjs"], app, env);
     // The service's own bundle, which chat-service-cli.mjs loads with no tsx: a start in a new release folder compiled every .ts file again,
     // and on a scratch serve of 10-20 the bundle took the start to listening from 4.1 to 4.3 s of main-thread CPU to 2.3 to 2.4 s.
     run("node", ["src/chat-service-bundle.mjs"], app, env);
+    await bootCheck(app, checks, env);
     writeFileSync(join(scratch, "release.json"), JSON.stringify({ sha, id: basename(dir), builtAt: new Date().toISOString() }, null, 2) + "\n");
     renameSync(scratch, dir);
   } catch (error) {
@@ -664,7 +745,31 @@ async function main() {
     if (holder && !existsSync(join(home, OWED)) && (!options.kickstart || applied(home)))
       throw new Covered(`${short} already live in ${holder}; nothing to do, since it went live while this release waited`);
   };
-  const { waited } = await takeLock(home, own, wentLive);
+  // Latest wins: checked on each wait, it gives way to a running or queued release whose commit holds this one. contains() is cached per sha.
+  const holds = new Map();
+  const givesWay = () => {
+    if (options.rollback) return;
+    const others = [];
+    try {
+      const holder = JSON.parse(readFileSync(join(home, "release.lock"), "utf8"));
+      if (holder.pid !== process.pid && alive(holder.pid)) others.push({ pid: holder.pid, sha: String(holder.sha), kickstart: holder.kickstart !== false, rollback: holder.rollback === true, running: true });
+    } catch {}
+    others.push(...waiting(home));
+    const holding = (outer, inner) => {
+      const key = `${outer} ${inner}`;
+      if (!holds.has(key)) holds.set(key, /^[0-9a-f]{40}$/.test(outer) && contains(options.repo, outer, inner));
+      return holds.get(key);
+    };
+    const carriers = others.filter(other => !other.rollback && !(options.kickstart && !other.kickstart) &&
+      !(other.sha === sha && !other.running && other.pid > process.pid) && holding(other.sha, sha));
+    if (!carriers.length) return;
+    // The running release first, else the queued commit no other carrier holds: the one the next batch builds.
+    const best = carriers.find(other => other.running) ?? carriers.find(other => !carriers.some(next => next.sha !== other.sha && holding(next.sha, other.sha))) ?? carriers[0];
+    const carrier = `release-${shortSha(best.sha)}`;
+    throw new Covered(`${short} gives way to the ${best.running ? "running" : "queued"} release of ${shortSha(best.sha)} by pid ${best.pid}, which holds it; ` +
+      `${short} goes live in ${carrier}${best.running ? "" : " or a newer release that holds it"}`, carrier);
+  };
+  const { waited } = await takeLock(home, own, () => { wentLive(); givesWay(); });
   await payOwed(home);
   const kept = holding();
   if (kept) {
@@ -682,7 +787,11 @@ async function main() {
     const planId = basename(planDir);
     try {
       if (existsSync(planDir)) log(`${planId} is built already; reusing it`);
-      else await build(options, home, plan.sha, planDir);
+      else {
+        const live = liveRelease(home);
+        await checkScoped(options.repo, options.rollback || !live ? null : releaseCommit(options.repo, resolve(home, live)), plan.sha);
+        await build(options, home, plan.sha, planDir);
+      }
     } catch (error) {
       writeFileSync(join(home, FAILED), JSON.stringify({ sha: plan.sha, tests: error.failing ?? [], retry: plan.retry === true, at: new Date().toISOString() }) + "\n");
       if (plan.sha === sha || stopping) throw error;
@@ -709,7 +818,7 @@ async function main() {
 
 main().catch(error => {
   log(error.message);
-  if (error instanceof Covered) { console.log(liveRelease(chatHome()) ?? ""); process.exit(0); }
+  if (error instanceof Covered) { console.log(error.release ?? liveRelease(chatHome()) ?? ""); process.exit(0); }
   if (error instanceof UsageError) process.stderr.write(`${USAGE}\n`);
   process.exit(error instanceof Refused ? 3 : error instanceof UsageError ? 2 : error instanceof Unpublished ? 4 : error instanceof StartFailed ? 5 : error instanceof NoChatRole ? 6 : 1);
 });

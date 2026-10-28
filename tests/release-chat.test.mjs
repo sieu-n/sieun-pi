@@ -6,19 +6,25 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlink
 import { hostname, tmpdir, userInfo } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const script = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../scripts/release-chat.mjs");
 const cleanEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")));
-const BUILD_CONTROLS = ["TYPECHECK_FAIL", "TYPECHECK_MS", "TEST_FAIL", "TEST_FAIL_NAME", "TEST_HANG"];
+// A build control is <STEP>_MS, _FAIL, _FAIL_NAME or _HANG for the step it names: BOOT for the boot check in the release folder, TYPECHECK and
+// TEST for the old helper's in-release steps, and SCOPED_TEST, TSC and SVELTE for the scoped checks in the checkout, which take them from CHECKOUT.
+const BUILD_CONTROL = /^(BOOT|TYPECHECK|TEST|SCOPED_TEST|TSC|SVELTE)_(MS|FAIL|FAIL_NAME|HANG)$/;
+// Each step runs from the release folder it builds (id release-<sha7>) or from the checkout (id checkout), and appends what it ran to seen/steps.log.
 const BUILD_STEP = `import { connect } from "node:net";
-import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
+import { appendFileSync, existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
-const [step, dir] = process.argv.slice(2);
-const id = /\\.building-(release-[0-9a-f]+)-/.exec(process.cwd())[1];
+const [step, dir, ...args] = process.argv.slice(2);
+const id = /\\.building-(release-[0-9a-f]+)-/.exec(process.cwd())?.[1] ?? "checkout";
 const controls = path.join(dir, "controls", id + ".json");
 const control = existsSync(controls) ? JSON.parse(readFileSync(controls, "utf8")) : {};
+const key = step.toUpperCase().replaceAll("-", "_");
 const live = path.join(dir, "live");
+appendFileSync(path.join(dir, "seen", "steps.log"), JSON.stringify({ id, step, cwd: process.cwd(), args }) + "\\n");
 writeFileSync(path.join(dir, "seen", id + "-" + step + ".json"), JSON.stringify(process.env));
 writeFileSync(path.join(dir, "seen", id + "-" + step + ".kicks"), existsSync(path.join(dir, "kicks.log")) ? readFileSync(path.join(dir, "kicks.log"), "utf8") : "");
 for (const [key, value] of Object.entries(process.env)) {
@@ -27,12 +33,15 @@ for (const [key, value] of Object.entries(process.env)) {
   if (stat?.isSocket()) await new Promise(done => connect(value).on("connect", function () { this.end(key); done(); }).on("error", done));
   else if (stat?.isDirectory()) writeFileSync(path.join(value, "touched-" + key), step);
 }
-if (step === "test" && control.TEST_FAIL_NAME) process.stdout.write("✔ a passing test (1ms)\\n✖ failing tests:\\n\\ntest at test/flaky.test.ts:1:1\\n✖ " + control.TEST_FAIL_NAME + " (4027.4ms)\\n  AssertionError\\n");
-if (control[step.toUpperCase() + "_FAIL"]) process.exit(1);
-if (step === "typecheck") await new Promise(done => setTimeout(done, Number(control.TYPECHECK_MS || 0)));
-if (step === "test" && control.TEST_HANG) {
-  writeFileSync(path.join(dir, "seen", id + "-test.pid"), String(process.pid));
+if (control[key + "_FAIL_NAME"]) process.stdout.write("✔ a passing test (1ms)\\n✖ failing tests:\\n\\ntest at test/flaky.test.ts:1:1\\n✖ " + control[key + "_FAIL_NAME"] + " (4027.4ms)\\n  AssertionError\\n");
+if (control[key + "_FAIL"]) process.exit(1);
+await new Promise(done => setTimeout(done, Number(control[key + "_MS"] || 0)));
+if (control[key + "_HANG"]) {
+  writeFileSync(path.join(dir, "seen", id + "-" + step + ".pid"), String(process.pid));
   setInterval(() => {}, 1000);
+} else if (step === "boot") {
+  const port = Number(args[args.indexOf("--port") + 1]);
+  createServer((req, res) => { res.writeHead(404); res.end(); }).listen(port, "127.0.0.1");
 }
 `;
 
@@ -113,7 +122,10 @@ function fixture(t) {
   mkdirSync(path.join(dir, "seen"));
   writeFileSync(path.join(dir, "build-step.mjs"), BUILD_STEP);
   const step = (name) => `node ${JSON.stringify(path.join(dir, "build-step.mjs"))} ${name} ${JSON.stringify(dir)}`;
-  write("legacy/prime/user-history/package.json", JSON.stringify({ name: "fixture", private: true, scripts: { typecheck: step("typecheck"), test: step("test") } }));
+  write("legacy/prime/user-history/package.json", JSON.stringify({ name: "fixture", private: true, scripts: { typecheck: step("typecheck"), test: step("test"),
+    "test:one": step("scoped-test"), "typecheck:ts": step("tsc"), "typecheck:svelte": step("svelte") } }));
+  // The service the boot check starts from the release folder: the build step as "boot", which listens on --port.
+  write("legacy/prime/user-history/src/chat-service-cli.mjs", `process.argv.splice(2, 0, "boot", ${JSON.stringify(dir)});\nawait import(${JSON.stringify(pathToFileURL(path.join(dir, "build-step.mjs")).href)});\n`);
   mkdirSync(path.join(repo, "node_modules"));
   mkdirSync(path.join(repo, "legacy/prime/user-history/node_modules"));
   const kicks = path.join(dir, "kicks.log");
@@ -168,9 +180,10 @@ function fixture(t) {
   const publish = (ref = "main") => git("push", "-q", "origin", `${ref}:main`);
   publish();
   const env = (args, extra = {}) => {
-    const control = Object.fromEntries(Object.entries(extra).filter(([key]) => BUILD_CONTROLS.includes(key)));
+    const control = Object.fromEntries(Object.entries(extra).filter(([key]) => BUILD_CONTROL.test(key)));
     writeFileSync(path.join(dir, "controls", `${id(args[0])}.json`), JSON.stringify(control));
-    const rest = Object.fromEntries(Object.entries(extra).filter(([key]) => !BUILD_CONTROLS.includes(key)));
+    writeFileSync(path.join(dir, "controls", "checkout.json"), JSON.stringify(extra.CHECKOUT ?? {}));
+    const rest = Object.fromEntries(Object.entries(extra).filter(([key]) => !BUILD_CONTROL.test(key) && key !== "CHECKOUT"));
     return { ...cleanEnv, SIEUN_PI_HOSTS: path.join(dir, "no-hosts.json"), SIEUN_PI_CHAT_HOME: home, SIEUN_PI_CHAT_LAUNCHCTL: launchctl, SIEUN_PI_CHAT_SYSTEMCTL: launchctl, SIEUN_PI_CHAT_SERVICE_MANAGER: "launchd",
       SIEUN_PI_CHAT_URL: `http://127.0.0.1:${port}/`, SIEUN_PI_CHAT_HOLD_MS: "300", ...rest };
   };
@@ -191,13 +204,14 @@ function fixture(t) {
   const kicked = () => (existsSync(kicks) ? readFileSync(kicks, "utf8").trim().split("\n") : []);
   const seen = (sha, step) => JSON.parse(readFileSync(path.join(dir, "seen", `${id(sha)}-${step}.json`), "utf8"));
   const kicksAt = (sha, step) => readFileSync(path.join(dir, "seen", `${id(sha)}-${step}.kicks`), "utf8").trim().split("\n").filter(Boolean);
+  const steps = () => (existsSync(path.join(dir, "seen", "steps.log")) ? readFileSync(path.join(dir, "seen", "steps.log"), "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)) : []);
   const stopService = () => writeFileSync(state, "stopped\n");
   const page = () => new Promise((done) => get(`http://127.0.0.1:${port}/`, { agent: false }, (response) => {
     let body = "";
     response.on("data", (chunk) => { body += chunk; });
     response.on("end", () => done(JSON.parse(body).release));
   }).on("error", (error) => done(error.code)));
-  return { dir, repo, home, port, page, kicksAt, stopService, spawnRelease, c1, c2, c3, c4, side, git, write, commit, publish, env, release, releaseAsync, current, kicked, seen };
+  return { dir, repo, home, port, page, kicksAt, steps, stopService, spawnRelease, c1, c2, c3, c4, side, git, write, commit, publish, env, release, releaseAsync, current, kicked, seen };
 }
 
 const id = (sha) => (sha.startsWith("release-") ? sha : `release-${sha.slice(0, 7)}`);
@@ -212,10 +226,17 @@ async function queued(f, requests) {
   mkdirSync(f.home, { recursive: true });
   const lock = path.join(f.home, "release.lock");
   writeFileSync(lock, JSON.stringify({ pid: process.pid, sha: "held-by-test", startedAt: new Date().toISOString() }));
-  const results = requests.map(([args, extra, helper]) => f.releaseAsync(args, extra, helper));
-  await waitWhile(() => drafts(f.home) < requests.length);
+  const results = requests.map(([args, extra, helper]) => settles(f.releaseAsync(args, extra, helper)));
+  // A request that gives way to a newer queued one (latest wins) has left by then, its draft gone.
+  await waitWhile(() => drafts(f.home) + results.filter((result) => result.settled).length < requests.length);
   rmSync(lock);
   return Promise.all(results);
+}
+
+// Marks the promise of a release once it ends, so a wait can count the requests that already left.
+function settles(promise) {
+  promise.then(() => { promise.settled = true; });
+  return promise;
 }
 
 // The helper every box ran before the fold, read from this repository's history.
@@ -229,7 +250,7 @@ function helperBeforeFold(dir) {
   return file;
 }
 
-const built = (f) => readdirSync(path.join(f.dir, "seen")).filter((name) => name.endsWith("-typecheck.json")).map((name) => name.replace(/-typecheck\.json$/, "")).sort();
+const built = (f) => [...new Set(readdirSync(path.join(f.dir, "seen")).filter((name) => /^release-.*-(boot|typecheck)\.json$/.test(name)).map((name) => name.replace(/-(boot|typecheck)\.json$/, "")))].sort();
 
 async function waitWhile(pending) {
   const deadline = Date.now() + 60_000;
@@ -319,20 +340,29 @@ test("a start that answers, passes the hold and dies in its first pass goes back
   assert.equal(f.current(), id(slow));
 });
 
-test("a queued commit whose start dies fails only its own request, and the older request goes live", { timeout: 120000 }, async (t) => {
+test("an older request gives way to a queued newer one whose start then dies, so only the release before both stays live", { timeout: 120000 }, async (t) => {
+  // Latest wins (10-28): the older caller is told at once which release carries its commit, and a failed carrier fails only its own caller.
   const f = fixture(t);
   assert.equal(f.release([f.c1]).status, 0);
   f.write("chat-behavior.json", JSON.stringify({ exitMs: 150 }));
   const bad = f.commit("dies at listen");
   f.publish();
-  const [older, newer] = await queued(f, [[[f.c3]], [[bad]]]);
+  mkdirSync(f.home, { recursive: true });
+  const lock = path.join(f.home, "release.lock");
+  writeFileSync(lock, JSON.stringify({ pid: process.pid, sha: "held-by-test", startedAt: new Date().toISOString() }));
+  const newer = f.releaseAsync([bad]);
+  await waitWhile(() => drafts(f.home) < 1);
+  const older = await f.releaseAsync([f.c3]);
   assert.equal(older.status, 0, older.stderr);
-  assert.equal(older.stdout.trim(), id(f.c3));
-  assert.equal(newer.status, 5, newer.stderr);
-  assert.match(newer.stderr, new RegExp(`the chat on ${id(bad)} exited`));
-  assert.equal(f.current(), id(f.c3));
-  assert.equal(await f.page(), id(f.c3));
-  assert.equal(JSON.parse(readFileSync(path.join(f.home, "started.json"), "utf8")).id, id(f.c3));
+  assert.match(older.stderr, new RegExp(`${f.c3.slice(0, 7)} gives way to the queued release of ${bad.slice(0, 7)} by pid \\d+, which holds it; ${f.c3.slice(0, 7)} goes live in ${id(bad)} or a newer release that holds it`));
+  assert.equal(older.stdout.trim(), id(bad));
+  rmSync(lock);
+  const failed = await newer;
+  assert.equal(failed.status, 5, failed.stderr);
+  assert.match(failed.stderr, new RegExp(`the chat on ${id(bad)} exited`));
+  assert.equal(f.current(), id(f.c1));
+  assert.equal(await f.page(), id(f.c1));
+  assert.equal(JSON.parse(readFileSync(path.join(f.home, "started.json"), "utf8")).id, id(f.c1));
 });
 
 test("a release builds the folder, flips current and kickstarts the chat", (t) => {
@@ -363,20 +393,21 @@ test("on a Linux host the release restarts the systemd user unit instead", (t) =
   assert.deepEqual(f.kicked(), ["--user restart sieun-pi-chat.service"]);
 });
 
-test("a release whose commit the in-flight release holds waits for it, then exits 0 with nothing built and one restart", async (t) => {
-  // 10-18 11:25Z: three jobs queued da7e7e0c3 behind the release of 8957c594a, which held it already.
+test("a release whose commit the running release holds gives way at once, names the release that carries it, and nothing more is built", async (t) => {
+  // 10-18 11:25Z: three jobs queued da7e7e0c3 behind the release of 8957c594a, which held it already. 10-28 03:47Z: four releases queued
+  // behind each other for 10 to 25 min, each to build a commit the next one held.
   const f = fixture(t);
   assert.equal(f.release([f.c1, "--no-kickstart"]).status, 0);
-  const newer = f.releaseAsync([f.c3], { TYPECHECK_MS: "1500" });
+  const newer = f.releaseAsync([f.c3], { BOOT_MS: "1500" });
   await waitWhile(() => !existsSync(path.join(f.home, "release.lock")));
   const [older, same] = await Promise.all([f.releaseAsync([f.c2]), f.releaseAsync([f.c3])]);
+  assert.ok(existsSync(path.join(f.home, "release.lock")), "the waiters left before the running release ended");
   const won = await newer;
   assert.equal(won.status, 0, won.stderr);
   for (const [sha, result] of [[f.c2, older], [f.c3, same]]) {
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stderr, /waiting for the release of/);
-    assert.doesNotMatch(result.stderr, /is already in the release of/);
-    assert.match(result.stderr, new RegExp(`${sha.slice(0, 7)} (already live|is already) in ${id(f.c3)}`));
+    assert.match(result.stderr, new RegExp(`${sha.slice(0, 7)} gives way to the running release of ${f.c3.slice(0, 7)} by pid \\d+, which holds it; ${sha.slice(0, 7)} goes live in ${id(f.c3)}`));
     assert.equal(result.stdout.trim(), id(f.c3));
   }
   assert.equal(f.current(), id(f.c3));
@@ -385,19 +416,22 @@ test("a release whose commit the in-flight release holds waits for it, then exit
   assert.equal(existsSync(path.join(f.home, "restart.owed")), false);
 });
 
-test("a waiter whose commit the in-flight release holds goes live itself when that release fails", async (t) => {
+test("a waiter gives way to the running release that holds its commit even when that build then fails, and the next release retries the tip", async (t) => {
   const f = fixture(t);
   assert.equal(f.release([f.c1, "--no-kickstart"]).status, 0);
-  const newer = f.releaseAsync([f.c3], { TYPECHECK_MS: "1500", TEST_FAIL: "1" });
+  const newer = f.releaseAsync([f.c3], { BOOT_MS: "1500", BOOT_FAIL: "1" });
   await waitWhile(() => !existsSync(path.join(f.home, "release.lock")));
   const older = await f.releaseAsync([f.c2]);
+  assert.equal(older.status, 0, older.stderr);
+  assert.equal(older.stdout.trim(), id(f.c3));
   const failed = await newer;
   assert.equal(failed.status, 1, failed.stderr);
-  assert.equal(older.status, 0, older.stderr);
-  // The waiter retries origin main's tip after the failed build, and the tip holds its commit.
-  assert.equal(older.stdout.trim(), id(f.c4));
+  assert.match(failed.stderr, /boot check failed: the service exited \(1\)/);
+  assert.equal(f.current(), id(f.c1));
+  const [next] = await queued(f, [[[f.c2]]]);
+  assert.equal(next.status, 0, next.stderr);
+  assert.equal(next.stdout.trim(), id(f.c4));
   assert.equal(f.current(), id(f.c4));
-  assert.ok(existsSync(path.join(f.home, id(f.c4), "release.json")));
   assert.equal(f.kicked().length, 1);
 });
 
@@ -484,7 +518,7 @@ test("a commit the live release already holds exits 0 with nothing built, flippe
 test("two releases started together end on the newer one", async (t) => {
   const f = fixture(t);
   assert.equal(f.release([f.c1, "--no-kickstart"]).status, 0);
-  const [older, newer] = await Promise.all([f.releaseAsync([f.c2], { TYPECHECK_MS: "300" }), f.releaseAsync([f.c3], { TYPECHECK_MS: "300" })]);
+  const [older, newer] = await Promise.all([f.releaseAsync([f.c2], { BOOT_MS: "300" }), f.releaseAsync([f.c3], { BOOT_MS: "300" })]);
   assert.equal(newer.status, 0, newer.stderr);
   assert.ok([0, 3].includes(older.status), older.stderr);
   assert.equal(f.current(), id(f.c3));
@@ -512,12 +546,13 @@ test("going back to an older or unrelated commit needs --rollback, and an older 
   assert.equal(f.kicked().length, 2);
 });
 
-test("a failed typecheck or test leaves current and the folders as they were", (t) => {
+test("a failed boot check leaves current and the folders as they were", (t) => {
   const f = fixture(t);
   assert.equal(f.release([f.c1, "--no-kickstart"]).status, 0);
-  for (const fail of ["TYPECHECK_FAIL", "TEST_FAIL"]) {
-    const failed = f.release([f.c2], { [fail]: "1" });
-    assert.equal(failed.status, 1, fail);
+  for (const extra of [{ BOOT_FAIL: "1" }, { BOOT_HANG: "1", SIEUN_PI_CHAT_ANSWER_MS: "800" }]) {
+    const failed = f.release([f.c2], extra);
+    assert.equal(failed.status, 1, failed.stderr);
+    assert.match(failed.stderr, /boot check failed: the service (exited \(1\)|did not answer http:\/\/127\.0\.0\.1:\d+\/ within 0\.8 s)/);
     assert.equal(f.current(), id(f.c1));
     assert.equal(existsSync(path.join(f.home, id(f.c2))), false);
     assert.equal(existsSync(path.join(f.home, "release.lock")), false);
@@ -537,14 +572,14 @@ test("a lock left by a dead process is taken over", (t) => {
 test("a release that ends while a newer one waits makes its own restart, and the waiter restarts once more after its build", async (t) => {
   const f = fixture(t);
   assert.equal(f.release([f.c1, "--no-kickstart"]).status, 0);
-  const first = f.releaseAsync([f.c2], { TYPECHECK_MS: "1500" });
+  const first = f.releaseAsync([f.c2], { BOOT_MS: "1500" });
   await waitWhile(() => !existsSync(path.join(f.home, "release.lock")));
   const second = f.releaseAsync([f.c3]);
   const [a, b] = await Promise.all([first, second]);
   assert.equal(a.status, 0, a.stderr);
   assert.equal(b.status, 0, b.stderr);
   for (const result of [a, b]) assert.doesNotMatch(result.stderr, /restart left to|restart this release was left/);
-  assert.equal(f.kicksAt(f.c3, "typecheck").length, 1);
+  assert.equal(f.kicksAt(f.c3, "boot").length, 1);
   assert.equal(f.current(), id(f.c3));
   assert.equal(f.kicked().length, 2);
   assert.equal(JSON.parse(readFileSync(path.join(f.home, "started.json"), "utf8")).id, id(f.c3));
@@ -554,41 +589,41 @@ test("a release that ends while a newer one waits makes its own restart, and the
 test("a waiting release whose build fails leaves the chat on the release before it, which made its own restart", async (t) => {
   const f = fixture(t);
   assert.equal(f.release([f.c1, "--no-kickstart"]).status, 0);
-  const first = f.releaseAsync([f.c2], { TYPECHECK_MS: "1500" });
+  const first = f.releaseAsync([f.c2], { BOOT_MS: "1500" });
   await waitWhile(() => !existsSync(path.join(f.home, "release.lock")));
-  const second = f.releaseAsync([f.c3], { TEST_FAIL: "1" });
+  const second = f.releaseAsync([f.c3], { BOOT_FAIL: "1" });
   const [a, b] = await Promise.all([first, second]);
   assert.equal(a.status, 0, a.stderr);
   assert.equal(b.status, 1, b.stderr);
-  assert.deepEqual(f.kicksAt(f.c3, "typecheck"), [`kickstart -k gui/${userInfo().uid}/com.sieun.agent-chat`]);
+  assert.deepEqual(f.kicksAt(f.c3, "boot"), [`kickstart -k gui/${userInfo().uid}/com.sieun.agent-chat`]);
   assert.equal(f.current(), id(f.c2));
   assert.equal(JSON.parse(readFileSync(path.join(f.home, "started.json"), "utf8")).id, id(f.c2));
   assert.equal(f.kicked().length, 1);
   assert.equal(existsSync(path.join(f.home, "restart.owed")), false);
 });
 
-test("a waiting release whose tests hang finds the chat already restarted onto the release before it", { timeout: 120000 }, async (t) => {
+test("a waiting release whose boot check hangs finds the chat already restarted onto the release before it", { timeout: 120000 }, async (t) => {
   const f = fixture(t);
   assert.equal(f.release([f.c1, "--no-kickstart"]).status, 0);
-  const first = f.releaseAsync([f.c2], { TYPECHECK_MS: "1500" });
+  const first = f.releaseAsync([f.c2], { BOOT_MS: "1500" });
   await waitWhile(() => !existsSync(path.join(f.home, "release.lock")));
-  const second = f.spawnRelease([f.c3], { TEST_HANG: "1" });
+  const second = f.spawnRelease([f.c3], { BOOT_HANG: "1" });
   let stderr = "";
   second.stderr.on("data", (chunk) => { stderr += chunk; });
   const ended = new Promise((done) => second.on("close", done));
   const a = await first;
   assert.equal(a.status, 0, a.stderr);
   assert.doesNotMatch(a.stderr, /restart left to/);
-  const pid = path.join(f.dir, "seen", `${id(f.c3)}-test.pid`);
+  const pid = path.join(f.dir, "seen", `${id(f.c3)}-boot.pid`);
   await waitWhile(() => !existsSync(pid));
-  assert.deepEqual(f.kicksAt(f.c3, "typecheck"), [`kickstart -k gui/${userInfo().uid}/com.sieun.agent-chat`]);
+  assert.deepEqual(f.kicksAt(f.c3, "boot"), [`kickstart -k gui/${userInfo().uid}/com.sieun.agent-chat`]);
   assert.deepEqual(f.kicked(), [`kickstart -k gui/${userInfo().uid}/com.sieun.agent-chat`]);
   assert.equal(JSON.parse(readFileSync(path.join(f.home, "started.json"), "utf8")).id, id(f.c2));
   assert.equal(existsSync(path.join(f.home, "restart.owed")), false);
   second.kill("SIGTERM");
   process.kill(Number(readFileSync(pid, "utf8")), "SIGTERM");
   assert.equal(await ended, 1, stderr);
-  assert.match(stderr, /npm run --silent test failed \((SIGTERM|143)\)/);
+  assert.match(stderr, /boot check failed: (stopped by SIGTERM|the service exited \((SIGTERM|143)\))/);
   assert.equal(f.current(), id(f.c2));
   assert.equal(existsSync(path.join(f.home, id(f.c3))), false);
   assert.deepEqual(f.kicked(), [`kickstart -k gui/${userInfo().uid}/com.sieun.agent-chat`]);
@@ -599,9 +634,9 @@ test("in a steady queue each release restarts at its own end, so no restart pass
   const f = fixture(t);
   assert.equal(f.release([f.c1, "--no-kickstart"]).status, 0);
   const lockHolder = () => { try { return JSON.parse(readFileSync(path.join(f.home, "release.lock"), "utf8")).sha; } catch { return null; } };
-  const first = f.releaseAsync([f.c2], { TYPECHECK_MS: "1500" });
+  const first = f.releaseAsync([f.c2], { BOOT_MS: "1500" });
   await waitWhile(() => lockHolder() !== f.c2);
-  const second = f.releaseAsync([f.c3], { TYPECHECK_MS: "1500" });
+  const second = f.releaseAsync([f.c3], { BOOT_MS: "1500" });
   await waitWhile(() => !readdirSync(f.home).some((name) => /^release\.lock\.\d+$/.test(name)));
   await waitWhile(() => lockHolder() !== f.c3);
   const third = f.releaseAsync([f.c4]);
@@ -610,8 +645,8 @@ test("in a steady queue each release restarts at its own end, so no restart pass
     assert.equal(result.status, 0, result.stderr);
     assert.doesNotMatch(result.stderr, /restart left to|restart this release was left/);
   }
-  assert.equal(f.kicksAt(f.c3, "typecheck").length, 1);
-  assert.equal(f.kicksAt(f.c4, "typecheck").length, 2);
+  assert.equal(f.kicksAt(f.c3, "boot").length, 1);
+  assert.equal(f.kicksAt(f.c4, "boot").length, 2);
   assert.equal(f.current(), id(f.c4));
   assert.equal(f.kicked().length, 3);
   assert.equal(existsSync(path.join(f.home, "restart.owed")), false);
@@ -663,7 +698,7 @@ test("a release that finds its commit live once it takes the lock still makes th
   assert.equal(existsSync(lock), false);
 });
 
-test("the typecheck and tests see none of the agent's sockets, dirs, tokens or keys, and the restart keeps them", { timeout: 120000 }, async (t) => {
+test("the boot check sees none of the agent's sockets, dirs, tokens or keys, and the restart keeps them", { timeout: 120000 }, async (t) => {
   const f = fixture(t);
   const live = path.join(f.dir, "live");
   const dirs = Object.fromEntries(["HOME", "TMPDIR", "XDG_RUNTIME_DIR", "XDG_DATA_HOME", "XDG_CONFIG_HOME", "RLM_SESSION_DIR", "RLM_HARNESS_STATE_DIR", "PRIME_AGENT_CODING_AGENT_DIR", "PI_POOL_DIR"]
@@ -682,7 +717,7 @@ test("the typecheck and tests see none of the agent's sockets, dirs, tokens or k
   assert.deepEqual(f.kicked(), ["--user restart sieun-pi-chat.service"]);
   assert.match(readFileSync(path.join(f.dir, "kick.env"), "utf8"), new RegExp(`^XDG_RUNTIME_DIR=${dirs.XDG_RUNTIME_DIR}$`, "m"));
   const own = ["HOME", "TMPDIR", "XDG_RUNTIME_DIR", "XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME"];
-  for (const step of ["typecheck", "test"]) {
+  for (const step of ["boot"]) {
     const env = f.seen(f.c1, step);
     for (const key of Object.keys(hostile).filter((key) => !own.includes(key))) assert.equal(env[key], undefined, `${step} saw ${key}`);
     for (const key of own) {
@@ -726,15 +761,16 @@ test("six queued linear requests fold into one build and one restart, and each c
   const before = built(f);
   const results = await queued(f, shas.map((sha) => [[sha]]));
   const newest = id(shas.at(-1));
+  // A request that gave way names the queued release it gave way to, which holds its commit; the newest one carries them all.
   for (const [index, result] of results.entries()) {
     assert.equal(result.status, 0, result.stderr);
-    assert.equal(result.stdout.trim(), newest, `request ${index}`);
+    assert.ok(shas.slice(index).map(id).includes(result.stdout.trim()), `request ${index}: ${result.stderr}`);
   }
-  const leaders = results.filter((result) => /folding the queued requests/.test(result.stderr));
+  // Latest wins: each older request gives way to the newest queued one, unless it took the lock first and folded the rest into its build.
+  const leaders = results.filter((result) => /current: .* -> /.test(result.stderr));
   assert.equal(leaders.length, 1);
-  assert.match(leaders[0].stderr, new RegExp(`${newest} covers the requests of ${shas.map(() => "[0-9a-f]{7} \\(pid \\d+(, this release)?\\)").join(", ")}$`, "m"));
-  for (const sha of shas) assert.match(leaders[0].stderr, new RegExp(`${sha.slice(0, 7)} \\(pid`));
-  for (const result of results.filter((result) => result !== leaders[0])) assert.match(result.stderr, new RegExp(`already live in ${newest}; nothing to do`));
+  for (const result of results.filter((result) => result !== leaders[0]))
+    assert.match(result.stderr, new RegExp(`already live in ${newest}; nothing to do|gives way to the queued release of [0-9a-f]{7} by pid \\d+, which holds it`));
   assert.deepEqual(built(f).filter((name) => !before.includes(name)), [newest]);
   assert.equal(f.kicked().length, 1);
   assert.equal(f.current(), newest);
@@ -749,46 +785,52 @@ test("requests that arrive during a batch's build wait for the next batch, and t
   const c5 = f.commit("five");
   const c6 = f.commit("six");
   f.publish();
-  const firstBatch = queued(f, [[[f.c2]], [[f.c3], { TYPECHECK_MS: "1500" }]]);
-  await waitWhile(() => !existsSync(path.join(f.dir, "seen", `${id(f.c3)}-typecheck.json`)));
-  const late = [f.releaseAsync([f.c4]), f.releaseAsync([c5]), f.releaseAsync([c6])];
-  await waitWhile(() => drafts(f.home) < 4);
+  const firstBatch = queued(f, [[[f.c2]], [[f.c3], { BOOT_MS: "1500" }]]);
+  await waitWhile(() => !existsSync(path.join(f.dir, "seen", `${id(f.c3)}-boot.json`)));
+  const late = [f.releaseAsync([f.c4]), f.releaseAsync([c5]), f.releaseAsync([c6])].map(settles);
+  await waitWhile(() => drafts(f.home) + late.filter((result) => result.settled).length < 3);
   const [a, b] = await firstBatch;
   for (const result of [a, b]) {
     assert.equal(result.status, 0, result.stderr);
-    assert.ok([id(f.c3), id(c6)].includes(result.stdout.trim()), result.stderr);
+    assert.equal(result.stdout.trim(), id(f.c3), result.stderr);
   }
-  const first = [a, b].find((result) => /folding the queued requests/.test(result.stderr));
+  const first = [a, b].find((result) => /current: .* -> /.test(result.stderr));
   assert.match(first.stderr, new RegExp(`current: ${id(f.c1)} -> ${id(f.c3)}`));
-  assert.match(first.stderr, new RegExp(`${id(f.c3)} covers the requests of `));
   assert.doesNotMatch(first.stderr, new RegExp(`${f.c4.slice(0, 7)}|${c5.slice(0, 7)}|${c6.slice(0, 7)}`));
   const rest = await Promise.all(late);
   for (const result of rest) {
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.stdout.trim(), id(c6));
   }
-  assert.deepEqual(f.kicksAt(c6, "typecheck"), [`kickstart -k gui/${userInfo().uid}/com.sieun.agent-chat`]);
+  assert.deepEqual(f.kicksAt(c6, "boot"), [`kickstart -k gui/${userInfo().uid}/com.sieun.agent-chat`]);
   assert.deepEqual(built(f), [id(f.c1), id(f.c3), id(c6)].sort());
   assert.equal(f.kicked().length, 2);
   assert.equal(f.current(), id(c6));
   assert.equal(JSON.parse(readFileSync(path.join(f.home, "started.json"), "utf8")).id, id(c6));
 });
 
-test("a failed build of the newest queued commit fails only its own request, and the older ones go live in one build", { timeout: 120000 }, async (t) => {
+test("latest wins: older queued requests give way to the newest one, so a failed newest build leaves current where it was", { timeout: 120000 }, async (t) => {
   const f = fixture(t);
   assert.equal(f.release([f.c1, "--no-kickstart"]).status, 0);
-  const [r2, r3, r4] = await queued(f, [[[f.c2]], [[f.c3]], [[f.c4], { TEST_FAIL: "1" }]]);
+  mkdirSync(f.home, { recursive: true });
+  const lock = path.join(f.home, "release.lock");
+  writeFileSync(lock, JSON.stringify({ pid: process.pid, sha: "held-by-test", startedAt: new Date().toISOString() }));
+  const newest = f.releaseAsync([f.c4], { BOOT_FAIL: "1" });
+  await waitWhile(() => drafts(f.home) < 1);
+  const [r2, r3] = await Promise.all([f.releaseAsync([f.c2]), f.releaseAsync([f.c3])]);
+  rmSync(lock);
+  const r4 = await newest;
   assert.equal(r4.status, 1, r4.stderr);
-  assert.match(r4.stderr, /npm run --silent test failed/);
+  assert.match(r4.stderr, /boot check failed/);
   for (const result of [r2, r3]) {
     assert.equal(result.status, 0, result.stderr);
-    assert.equal(result.stdout.trim(), id(f.c3));
+    assert.equal(result.stdout.trim(), id(f.c4));
+    assert.match(result.stderr, new RegExp(`gives way to the queued release of ${f.c4.slice(0, 7)} by pid \\d+, which holds it`));
   }
-  assert.match(r2.stderr + r3.stderr, new RegExp(`${id(f.c3)} covers the requests of `));
-  assert.equal(f.current(), id(f.c3));
+  assert.equal(f.current(), id(f.c1));
   assert.equal(existsSync(path.join(f.home, id(f.c4))), false);
-  assert.deepEqual(built(f), [id(f.c1), id(f.c3), id(f.c4)].sort());
-  assert.equal(f.kicked().length, 1);
+  assert.deepEqual(built(f), [id(f.c1), id(f.c4)].sort());
+  assert.equal(f.kicked().length, 0);
   assert.equal(existsSync(path.join(f.home, "release.lock")), false);
 });
 
@@ -857,8 +899,8 @@ test("helpers from before the fold finish next to it: their waiters exit 0 on it
   assert.equal(f.kicked().length, 1);
   assert.equal(existsSync(path.join(f.home, id(f.c2))), false);
 
-  const leader = f.releaseAsync([c5], { TYPECHECK_MS: "1500" });
-  await waitWhile(() => !existsSync(path.join(f.dir, "seen", `${id(c5)}-typecheck.json`)));
+  const leader = f.releaseAsync([c5], { BOOT_MS: "1500" });
+  await waitWhile(() => !existsSync(path.join(f.dir, "seen", `${id(c5)}-boot.json`)));
   const oldWaiters = [f.releaseAsync([f.c4], {}, old), f.releaseAsync([c5], {}, old)];
   await waitWhile(() => drafts(f.home) < 2);
   const [led, ...waited] = await Promise.all([leader, ...oldWaiters]);
@@ -871,8 +913,8 @@ test("helpers from before the fold finish next to it: their waiters exit 0 on it
 
   const oldLeader = f.releaseAsync([c6], { TYPECHECK_MS: "1500" }, old);
   await waitWhile(() => !existsSync(path.join(f.dir, "seen", `${id(c6)}-typecheck.json`)));
-  const newWaiters = [f.releaseAsync([c7]), f.releaseAsync([c7])];
-  await waitWhile(() => drafts(f.home) < 2);
+  const newWaiters = [f.releaseAsync([c7]), f.releaseAsync([c7])].map(settles);
+  await waitWhile(() => drafts(f.home) + newWaiters.filter((result) => result.settled).length < 2);
   const [oldLed, ...newWaited] = await Promise.all([oldLeader, ...newWaiters]);
   assert.equal(oldLed.status, 0, oldLed.stderr);
   assert.match(oldLed.stderr, /restart left to the waiting release of/);
@@ -881,7 +923,7 @@ test("helpers from before the fold finish next to it: their waiters exit 0 on it
     assert.equal(result.stdout.trim(), id(c7));
   }
   assert.match(newWaited.map((result) => result.stderr).join(""), new RegExp(`restarting onto ${id(c6)} for the restart this release was left`));
-  assert.equal(f.kicksAt(c7, "typecheck").length, 3);
+  assert.equal(f.kicksAt(c7, "boot").length, 3);
   assert.equal(f.kicked().length, 4);
   assert.equal(f.current(), id(c7));
   assert.equal(JSON.parse(readFileSync(path.join(f.home, "started.json"), "utf8")).id, id(c7));
@@ -914,24 +956,29 @@ test("a waiter exits 0 as soon as a release puts its commit live, while another 
   rmSync(lock);
 });
 
-test("after a failed build the log names the failing test, and the next waiter retries origin main's tip", { timeout: 120000 }, async (t) => {
+test("after a failed scoped test the log names it, and the next waiter retries origin main's tip", { timeout: 120000 }, async (t) => {
   const f = fixture(t);
   assert.equal(f.release([f.c1]).status, 0);
-  const failed = f.release([f.c3], { TEST_FAIL: "1", TEST_FAIL_NAME: "the shell came while the service thread was still importing" });
+  f.write("legacy/prime/user-history/test/flaky.test.ts", "// flaky\n");
+  const flaky = f.commit("flaky test");
+  f.publish();
+  const failing = { CHECKOUT: { SCOPED_TEST_FAIL: "1", SCOPED_TEST_FAIL_NAME: "the shell came while the service thread was still importing" } };
+  const failed = f.release([flaky], failing);
   assert.equal(failed.status, 1, failed.stderr);
-  assert.match(failed.stderr, /npm run --silent test failed \(1\); failing tests: test\/flaky\.test\.ts: the shell came while the service thread was still importing\n/);
-  assert.equal(JSON.parse(readFileSync(path.join(f.home, "build.failed"), "utf8")).sha, f.c3);
+  assert.match(failed.stderr, /npm run --silent test:one -- --test-concurrency=20 --test-isolation=none test\/flaky\.test\.ts failed \(1\); failing tests: test\/flaky\.test\.ts: the shell came while the service thread was still importing\n/);
+  assert.equal(JSON.parse(readFileSync(path.join(f.home, "build.failed"), "utf8")).sha, flaky);
+  assert.equal(existsSync(path.join(f.home, id(flaky))), false);
   const [waiter] = await queued(f, [[[f.c2]]]);
   assert.equal(waiter.status, 0, waiter.stderr);
-  assert.match(waiter.stderr, new RegExp(`the last build, of ${f.c3.slice(0, 7)}, failed on test/flaky\\.test\\.ts: the shell came while the service thread was still importing; trying origin main's tip ${f.c4.slice(0, 7)} first`));
-  assert.equal(waiter.stdout.trim(), id(f.c4));
-  assert.equal(f.current(), id(f.c4));
+  assert.match(waiter.stderr, new RegExp(`the last build, of ${flaky.slice(0, 7)}, failed on test/flaky\\.test\\.ts: the shell came while the service thread was still importing; trying origin main's tip ${flaky.slice(0, 7)} first`));
+  assert.equal(waiter.stdout.trim(), id(flaky));
+  assert.equal(f.current(), id(flaky));
   assert.equal(existsSync(path.join(f.home, "build.failed")), false, "a live build that holds the failed commit clears the record");
   // A release that takes the lock at once builds what it asked for, even after a failure.
-  f.git("checkout", "-q", "-b", "later", f.c4);
+  f.git("checkout", "-q", "-b", "later", flaky);
   const c5 = f.commit("five");
   f.publish("later");
-  assert.equal(f.release([c5], { TEST_FAIL: "1" }).status, 1);
+  assert.equal(f.release([c5], { BOOT_FAIL: "1" }).status, 1);
   const c6 = f.commit("six");
   f.publish("later");
   const direct = f.release([c5]);
@@ -939,6 +986,40 @@ test("after a failed build the log names the failing test, and the next waiter r
   assert.doesNotMatch(direct.stderr, /trying origin main's tip/);
   assert.equal(f.current(), id(c5));
   assert.notEqual(c6, c5);
+});
+
+test("a release runs the scoped checks of its range in the checkout and only the boot check in its release folder (c193)", { timeout: 120000 }, async (t) => {
+  // Owner rule c193, 10-28: "Copying the repo to do the test: THIS MUST BE BANNED". Each release ran npm run typecheck and the whole
+  // npm test of 592 files inside its release folder; on 10-28 from 02:52Z four releases queued 10 to 25 min each and every one failed on
+  // load-timing tests their diffs did not touch.
+  const f = fixture(t);
+  assert.equal(f.release([f.c4]).status, 0);
+  f.write("legacy/prime/user-history/src/thing.ts", "export const thing = 1;\n");
+  f.write("legacy/prime/user-history/test/thing.test.ts", 'import { thing } from "../src/thing.ts";\n');
+  f.write("legacy/prime/user-history/test/other.test.ts", "// unrelated\n");
+  f.write("legacy/prime/user-history/src/View.svelte", "<p>view</p>\n");
+  const added = f.commit("thing");
+  f.write("legacy/prime/user-history/src/thing.ts", "export const thing = 2;\n");
+  f.write("scripts/unrelated.mjs", "\n");
+  const changed = f.commit("thing changes");
+  f.publish();
+  const first = f.release([added]);
+  assert.equal(first.status, 0, first.stderr);
+  const result = f.release([changed]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(f.current(), id(changed));
+  const app = path.join(f.repo, "legacy/prime/user-history");
+  const ran = (sha) => f.steps().filter((entry) => entry.id === id(sha)).map((entry) => entry.step);
+  for (const sha of [added, changed]) assert.deepEqual(ran(sha), ["boot"], "the release folder runs only the boot check");
+  const checkout = f.steps().filter((entry) => entry.id === "checkout");
+  for (const entry of checkout) assert.equal(entry.cwd, app);
+  assert.deepEqual(checkout.map((entry) => [entry.step, entry.args.filter((arg) => !arg.startsWith("--"))]), [
+    ["tsc", []], ["svelte", []], ["scoped-test", ["test/other.test.ts", "test/thing.test.ts"]],
+    ["tsc", []], ["scoped-test", ["test/thing.test.ts"]],
+  ]);
+  assert.match(result.stderr, new RegExp(`${added.slice(0, 7)}\\.\\.${changed.slice(0, 7)} changes 2 file\\(s\\) of legacy/prime/user-history; scoped checks: 1 test file\\(s\\), tsc\\n`));
+  assert.match(result.stderr, /boot check: the release answered http:\/\/127\.0\.0\.1:\d+\/ with 404/);
+  assert.doesNotMatch(result.stderr, /npm run --silent (typecheck|test)\b(?!:)/);
 });
 
 test("a box that hosts.json lists with no chat role builds nothing and names the chat's box, as the Mac's build of b6219fb did at 10-21 17:55Z", { timeout: 60000 }, (t) => {
