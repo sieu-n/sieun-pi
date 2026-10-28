@@ -24,6 +24,8 @@ export interface Hit {
   at: number;
   snippet: string;
   isError?: boolean;
+  /** sort=relevant only: bm25 times the kind weight, lower is better, so a client merging boxes sorts by it. */
+  score?: number;
 }
 
 /** A hit with the keys a merge across sources sorts by: `key` orders newest first, `score` orders relevant (lower is better). */
@@ -376,7 +378,7 @@ export function mergePages(pages: Page[], ask: PageAsk): { hits: Hit[]; total: n
   all.sort((a, b) => a.score - b.score || b.key - a.key);
   const hits = all.slice(ask.offset, ask.offset + ask.limit);
   const more = all.length > ask.offset + ask.limit;
-  return { hits: hits.map(item => item.hit), total, ...more ? { next: encodeCursor({ o: ask.offset + ask.limit }) } : {} };
+  return { hits: hits.map(item => ({ ...item.hit, score: item.score })), total, ...more ? { next: encodeCursor({ o: ask.offset + ask.limit }) } : {} };
 }
 
 type Cursor = { k: number; seen: string[] } | { o: number };

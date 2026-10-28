@@ -63,6 +63,13 @@ for (const [ftsKind, docsMeta] of [[false, false], [true, false], [true, true]] 
     const kinds = page.hits.map(item => item.hit.kind);
     assert.ok(kinds.indexOf("user") < kinds.indexOf("tool_result"), kinds.join());
     assert.equal(page.total, 5);
+    const ask = pageAsk("relevant", 20, null);
+    const merged = mergePages([page], ask);
+    const scores = merged.hits.map(hit => hit.score!);
+    assert.ok(scores.every(score => typeof score === "number"), "each relevant hit carries its score");
+    assert.deepEqual(scores, [...scores].sort((a, b) => a - b), "lower scores come first");
+    const newestAsk = pageAsk("newest", 20, null);
+    assert.equal(mergePages([searchPrime(db, "us-metal02", parseQuery({ q: "relay" }), newestAsk, null)], newestAsk).hits[0]!.score, undefined, "newest hits carry no score");
   });
 
   test(`${label}: filters cut the hits and the exact total alike`, () => {
