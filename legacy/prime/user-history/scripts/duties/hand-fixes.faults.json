@@ -418,6 +418,20 @@
           "crawl.concurrency."
         ]
       }
+    },
+    {
+      "id": "F30",
+      "title": "The search-sync drain batch was a live control, so a hand step of search_sync.batch looked like a tuning lever on prod while the OpenSearch write pool was the limit",
+      "designs": [
+        "01a11bd7-072f-7591-ad1d-f123c276cde5/p243",
+        "commit:3b01d8026"
+      ],
+      "owner": "Prospect feature bro (01a11bd7) job 'search sync batch fault' (session 01a1803a), step p243, filed by d3 on 10-28: on prod the Crawler VP's step p1042 stepped search_sync.batch by hand through the metal box owner, 5000 -> 10000 (config_audit 16856, 2026-10-27 23:13Z), 10000 -> 20000 (16857, 10-28 00:10Z), then back to 5000 (about 00:59Z). The measured drain was 2,636 rows/s at 5000 and 2,352 rows/s at 10000 (6 x 120 s), with the OpenSearch write pool at 72/72 active, queue 18, 0 rejected, so a bigger batch did not help. Commit 3b01d8026 deletes the search_sync.batch control: the drain and the backfill feed read SEARCH_SYNC_BATCH = 5,000 from apps/crawler-v3/src/index/tuning.py, and PATCH /ops/config refuses the key (tests/unit/test_search_sync_batch.py). Related: c244a30b38 (limit 20000, p1020).",
+      "match": {
+        "config_key_prefixes": [
+          "search_sync."
+        ]
+      }
     }
   ],
   "exempt": {
