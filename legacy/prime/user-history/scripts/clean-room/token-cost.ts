@@ -14,8 +14,8 @@ import { readSession, readSessionFile, type RunState, type Scenario, type Sessio
 export const TASK = "how much would it cost to run every creator bio we have through deepseek flash or gpt luna to tag a category? ballpark is fine";
 /** A text that prices the part every call repeats as cache reads, the same test as `tokenCostRuleLine`'s, with "cached" and "prompt prefix" too. */
 export const PRICES_SHARED_AS_CACHED = /(?:system prompt|instructions?|shared (?:prefix|part|prompt)|prompt prefix|fixed prompt)(?:[^.\n]|\.\d){0,100}(?:cache[- ]?reads?|cached)|(?:cache[- ]?reads?|cached)(?:[^.\n]|\.\d){0,100}(?:system prompt|instructions?|shared (?:prefix|part|prompt)|prompt prefix|fixed prompt)/i;
-/** The c157 line jobLedgerPrompt adds to a job that prices model calls, by its first words. */
-const RULE_LINE = "c157 This job prices model calls";
+/** The c157 line jobLedgerPrompt adds to a job that counts tokens or prices model calls, by its first words. */
+const RULE_LINE = "c157 This job counts tokens or prices model calls";
 const COST_ASK = /\b(?:costs?|pric(?:e|es|ed|ing)|spend|budget)\b/i;
 const MODEL_ASK = /\b(?:tokens?|llms?|deepseek|luna|gpt[- ]?\w*|model calls?)\b/i;
 const DOLLARS = /\$\s?\d/;
@@ -50,7 +50,7 @@ export function judge(run: string, state: RunState, now = Date.now()): { verdict
     if (!COST_ASK.test(text) || !MODEL_ASK.test(text)) return [];
     let raw = "";
     try { raw = session.file ? readFileSync(session.file, "utf8") : ""; } catch { raw = ""; }
-    return [{ id: session.id, carried: PRICES_SHARED_AS_CACHED.test(text) ? "its brief" : raw.includes(RULE_LINE) ? "its [corrections] block" : "" }];
+    return [{ id: session.id, carried: PRICES_SHARED_AS_CACHED.test(text) ? "its brief" : [RULE_LINE, "c157 This job prices model calls"].some(line => raw.includes(line)) ? "its [corrections] block" : "" }];
   });
   const bare = jobs.filter(job => !job.carried);
   add("b", bare.length === 0, jobs.length === 0 ? "no job was asked for a model cost"

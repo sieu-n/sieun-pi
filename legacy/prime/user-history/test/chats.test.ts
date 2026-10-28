@@ -586,6 +586,8 @@ test("chat brief: a task's owner comes from the owner's own message, progress co
   assert.match(line("c155"), /show the real code path, each buffer and each wait point/);
   assert.match(line("c157"), /never call a large cached volume waste/);
   assert.match(line("c157"), /In a cost estimate for model calls, price the shared system prompt and instructions at each model's cache-read rate/);
+  assert.match(line("c157"), /use a raw-token share to argue for shorter warm history; judge a cut by net cache-aware cost and measured useful work/);
+  assert.match(line("c157"), /A brief that asks a job where tokens go, how to cut them or what model calls cost says all of this/);
   assert.match(line("c162"), /answer every part of his original request/);
   assert.match(line("c162"), /never swap in a telemetry redesign, an experimental program or a question about which metric/);
   assert.match(line("c153"), /End that tell_owner at the number or at the missing baseline; the job you started, the next step, a question or a link goes in a second tell_owner/);

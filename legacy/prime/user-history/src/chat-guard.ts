@@ -12,6 +12,7 @@ import { fileLines } from "./file-lines.ts";
 import { CAUTIOUS_FIX, cautiousList, cautiousSettings } from "./shared/cautious-setting.ts";
 import { LONG_REPLY_MARK, longReply, SHOP_TALK_MARK, shopTalk } from "./shared/reply-lint.ts";
 import { DESIGN_PAGE_FIX, designPageForScreens, LAYOUT_WORDS_FIX, layoutPickInWords, ownerAskedForPage } from "./shared/layout-ask.ts";
+import { CACHE_SPLIT_FIX, cacheBlindTokenClaim } from "./shared/token-claim.ts";
 import { type ServiceArchive, serviceArchiveLines } from "./service-archives.ts";
 
 /** What makes a session a chat and what a chat may run: the chat_mode marker, its tools, the tell_owner tool, the owner message ids, and the shell guard. */
@@ -448,6 +449,7 @@ const UI_HANDOFF = /\b(?:localhost|127\.0\.0\.1|[\w-]+(?:\.[\w-]+)+):1?5180\b|!\
 const WIKI_LINK_MARK = "Not sent, a wiki: link in it opens no page";
 const CAUTIOUS_MARK = "Not sent, it keeps or asks about a cautious setting";
 const LAYOUT_WORDS_MARK = "Not sent, it asks him to pick a layout from words";
+const CACHE_SPLIT_MARK = "Not sent, it counts tokens or prices model calls with no cache split";
 const DESIGN_PAGE_MARK = "Not sent, it hands him a design page for a screen";
 /** Every `wiki:` link a text holds as written, with trailing sentence punctuation left out (markdown.ts reads bare targets the same way). */
 const WIKI_TOKEN = /(?<![\w-])wiki:[^\s<>()[\]`"'*]+/g;
@@ -556,7 +558,7 @@ export function tellTurn(messages: readonly ThreadMessage[]): TellTurn {
     }
     if (message.role === "user" || message.role === "custom") looked = false;
     if (message.role === "toolResult" && message.content.some(part => part.type === "image")) looked = true;
-    if (message.role === "toolResult" && message.toolName === TELL_OWNER_TOOL && [SHOP_TALK_MARK, CAUTIOUS_MARK, LONG_REPLY_MARK, REPEAT_MARK, REASK_MARK, UNLOOKED_MARK, INCIDENT_MARK, SAME_ASK_MARK, PROGRESS_MARK, NEEDLESS_OK_MARK, WITHDRAW_MARK, WIKI_LINK_MARK, SPLIT_MARK, EMPTY_ASK_MARK, LAYOUT_WORDS_MARK, DESIGN_PAGE_MARK].some(mark => messageText(message).startsWith(mark))) {
+    if (message.role === "toolResult" && message.toolName === TELL_OWNER_TOOL && [SHOP_TALK_MARK, CAUTIOUS_MARK, LONG_REPLY_MARK, REPEAT_MARK, REASK_MARK, UNLOOKED_MARK, INCIDENT_MARK, SAME_ASK_MARK, PROGRESS_MARK, NEEDLESS_OK_MARK, WITHDRAW_MARK, WIKI_LINK_MARK, SPLIT_MARK, EMPTY_ASK_MARK, LAYOUT_WORDS_MARK, CACHE_SPLIT_MARK, DESIGN_PAGE_MARK].some(mark => messageText(message).startsWith(mark))) {
       const text = told.get(message.toolCallId);
       if (text) resent.add(text);
     }
@@ -602,7 +604,9 @@ export function tellTurn(messages: readonly ThreadMessage[]): TellTurn {
  * is refused once the same way, with the form that works, since on 10-22 two links went out as `wiki:https://...:5176/page/...` and the owner
  * answered "often links to wrong page." on 10-23. A text that asks him to pick a screen's layout from words with no 5180 link (`layoutPickInWords`)
  * is refused once the same way, unless his latest message asked for a page, since on 10-28 a chat asked him to pick a Swipe layout from text
- * and he answered "siwpe layout, 직접 만들어보라니까 이런건?" (c124). A text that hands him a design or plan page for a screen with no 5180
+ * and he answered "siwpe layout, 직접 만들어보라니까 이런건?" (c124). A text that counts tokens or prices model calls with no cache split
+ * (`cacheBlindTokenClaim`) is refused once the same way, since on 10-22 a chat told him "99.7% of recorded tokens are input" to argue for
+ * shorter history and he answered "check what a Cached read is." (c157). A text that hands him a design or plan page for a screen with no 5180
  * link (`designPageForScreens`) is refused once the same way, since on 10-19 the chat sent him the Campaigns final plan page while its fork
  * already rendered (c124).
  */
@@ -702,6 +706,9 @@ export function tellOwner(input: TellInput, turn: TellTurn, now = Date.now(), pa
     const page = asked ? null : designPageForScreens(told);
     if (page) return { kind: "refused", text: `${DESIGN_PAGE_MARK} ("${page}") with no 5180 link. ${DESIGN_PAGE_FIX}. If he asked for this ` +
       "page, send the very same text again and it goes out (c98)." };
+    const blind = turn.resent?.has(told) ? null : cacheBlindTokenClaim(told);
+    if (blind) return { kind: "refused", text: `${CACHE_SPLIT_MARK} ("${blind}"). ${CACHE_SPLIT_FIX}. If the cache split does not apply, ` +
+      "send the very same text again and it goes out (c98)." };
     return { kind: "sent", text: TELL_OWNER_DONE };
   }
 if (!named(input.why)) return { kind: "refused", text: "why is required on a turn the owner did not start. Call tell_owner again " +

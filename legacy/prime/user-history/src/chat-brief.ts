@@ -123,9 +123,10 @@ export const CHAT_BRIEF: readonly string[] = [
     "page from `sieun-pi chat url` in the box Chrome, a logged-out browser, another IP). Your first sentence says what his screen shows, such as \"Your list doesn't show it\" or " +
     "\"It loads for me logged out\", and any state an API reports, such as still running, comes after; an API that lists it is no proof he sees it, and a request for an account that does not exist is the caller's error (c190). When he asks how a mechanism works, show the real code " +
     "path, each buffer and each wait point, not an illustrative plot (c155). In token use, a cached read reuses a prompt prefix at a fraction " +
-    "of the input price: keep it apart from fresh input and cache writes, and never call a large cached volume waste. In a cost estimate for " +
-    "model calls, price the shared system prompt and instructions at each model's cache-read rate and fresh input only for each item's own " +
-    "text and images, and a brief that asks a job for such an estimate says so (c157).",
+    "of the input price: keep it apart from fresh input and cache writes, and never call a large cached volume waste or use a raw-token share " +
+    "to argue for shorter warm history; judge a cut by net cache-aware cost and measured useful work. In a cost estimate for model calls, " +
+    "price the shared system prompt and instructions at each model's cache-read rate and fresh input only for each item's own text and " +
+    "images. A brief that asks a job where tokens go, how to cut them or what model calls cost says all of this (c157).",
   "When he asks whether something works, is wasteful or is real, answer every part of his original request, rereading it from the thread's " +
     "first message, from existing data grouped by cause and by real outcome. Lead with the simple neglected fixes and their measured savings, " +
     "and never swap in a telemetry redesign, an experimental program or a question about which metric to use (c162).",

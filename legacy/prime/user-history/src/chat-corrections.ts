@@ -380,24 +380,37 @@ export function jobLedgerPrompt(ledger: Ledger | null, brief: string = ""): stri
 }
 
 /** A brief that asks for what model calls cost: a cost, price or spend word near a model, token or LLM word. */
-const COST_WORD = /\b(?:costs?|pric(?:e|es|ed|ing)|spend|budget|bill(?:s|ed|ing)?|usd)\b|\$\s?\d/i;
-const MODEL_WORD = /\b(?:tokens?|llms?|model calls?|gpt[- ]?\w*|claude|opus|sonnet|haiku|gemini|deepseek|jev|luna|openrouter|per 1M)\b|\/1M\b/i;
+const COST_WORD = /\b(?:costs?|pric(?:e|es|ed|ing)|spend(?:s|ing)?|spent|budget|bill(?:s|ed|ing)?|usd|expenses?|dollars?|how much|run us)\b|\$\s?\d|비용|얼마|요금/iu;
+const MODEL_WORD = /\b(?:tokens?|llms?|model calls?|gpt[- ]?\w*|claude|opus|sonnet|haiku|gemini|deepseek|jev|luna|openrouter|per 1M)\b|\/1M\b|토큰/iu;
+/**
+ * A brief that asks where model tokens go or how to cut them: "tokens" or a "token use" phrase, which a brief about an auth token does not say,
+ * and a word for use, share, waste or a cut. On 10-22 the owner's "also is Check-in taking up alot of tokens?" and "토큰 비효율을 분석해서 ...
+ * 50% 이상 줄일 수 있을 ... 감축안을 제안해" went to a job with no cost word in its ask.
+ */
+const MODEL_TOKENS = /\btokens\b|\btoken[- ](?:use|usage|counts?|costs?|spend\w*|waste|budget|share|efficiency|inefficiency|reduction|cuts?)\b|토큰/iu;
+/** Tokens that are no model's: design tokens of a UI and credentials. */
+const OTHER_TOKENS = /\b(?:design|css|colou?r|style|theme|spacing|auth|access|api|oauth|refresh|bearer|session|csrf|github|npm|bot|invite)\s+tokens?\b/giu;
+const USE_WORD = /\b(?:use[sd]?|usage|spend\w*|shares?|wast\w*|cut\w*|reduc\w*|halve|trim\w*|shorten\w*|sav(?:e|es|ing|ings)|inefficien\w*|burn\w*|taking up|eat\w*|replay\w*)\b|비효율|줄|감축|절감|낭비/iu;
 /** The brief itself says the shared instructions are priced as cache reads; a price list with a cache-read column does not. */
 const NAMES_CACHE_READ = /(?:system prompt|instructions?|shared (?:prefix|part|prompt))(?:[^.\n]|\.\d){0,80}cache[- ]?read|cache[- ]?read(?:[^.\n]|\.\d){0,80}(?:system prompt|instructions?|shared (?:prefix|part|prompt))/i;
-export const TOKEN_COST_RULE_LINE = "- c157 This job prices model calls, so price the shared system prompt and instructions, the part every call repeats, at " +
-  "each model's cache-read rate, and fresh input only for each item's own text and images. Show fresh input, cache reads, cache writes and output " +
-  "as separate columns, put the shared part first and byte-identical in every call so the cache hits, and confirm it with a measured cache-hit " +
-  "count. Never call a large cached volume waste.";
+export const TOKEN_COST_RULE_LINE = "- c157 This job counts tokens or prices model calls, so keep fresh input, cache reads, cache writes and output as " +
+  "separate columns, each with its own price. Price the shared system prompt and instructions, the part every call repeats, at each model's " +
+  "cache-read rate, and fresh input only for each item's own text and images; put the shared part first and byte-identical in every call so the " +
+  "cache hits, and confirm it with a measured cache-hit count. Never call a large cached volume waste, and never argue for shorter warm history " +
+  "or prompts from a raw-token share; judge a cut by net cache-aware cost, counting new cache writes, summaries and lost cache reuse, and by " +
+  "measured useful work.";
 /**
- * The c157 line for a job's [corrections] block: TOKEN_COST_RULE_LINE when its brief asks what model calls cost and does not itself say the shared
- * instructions are priced as cache reads, else null. The owner gave c157 on 10-22 ("check what a Cached read is."), and the chat brief held it only for explaining token use. On
- * 10-27 at 19:14:01Z he asked Crawler VP for the cost of classifying creators with DeepSeek Flash, Jev or GPT luna. Its 19:14:31Z brief asked
- * for "per-model prices ..., batch or cache discounts" with no word on the instructions, its own sketch priced every input token as fresh, and
- * at 19:14:49Z he wrote "note that system prompt (instruction) should be registered as Cache read".
+ * The c157 line for a job's [corrections] block: TOKEN_COST_RULE_LINE when its brief asks what model calls cost, unless it itself says the shared
+ * instructions are priced as cache reads, or asks where model tokens go or how to cut them, else null. The owner gave c157 on 10-22 ("check
+ * what a Cached read is.") after a chat told him "99.7% of recorded tokens are input" to argue for shorter history; the job behind that ask had
+ * no cost word in its brief. On 10-27 at 19:14:01Z he asked Crawler VP for the cost of classifying creators with DeepSeek Flash, Jev or GPT
+ * luna. Its 19:14:31Z brief asked for "per-model prices ..., batch or cache discounts" with no word on the instructions, its own sketch priced
+ * every input token as fresh, and at 19:14:49Z he wrote "note that system prompt (instruction) should be registered as Cache read".
  */
 export function tokenCostRuleLine(brief: string): string | null {
-  if (!COST_WORD.test(brief) || !MODEL_WORD.test(brief)) return null;
-  return NAMES_CACHE_READ.test(brief) ? null : TOKEN_COST_RULE_LINE;
+  const tokenUse = MODEL_TOKENS.test(brief.replace(OTHER_TOKENS, "")) && USE_WORD.test(brief);
+  const cost = COST_WORD.test(brief) && MODEL_WORD.test(brief) && !NAMES_CACHE_READ.test(brief);
+  return tokenUse || cost ? TOKEN_COST_RULE_LINE : null;
 }
 
 /** A brief about one of auto-sns-agent's app screens: it names the demo or its shared UI, and a word for building or styling a screen. */

@@ -4,6 +4,7 @@ import { DUTY_LINK_SHAPE, dutyLinkProblem, parseDutyLink, type DutyKeys } from "
 import { JARGON_HINT, jargonTerms } from "./reply-lint.ts";
 import { hasDoneLine, keepDoneLine, upkeepWords } from "./upkeep-title.ts";
 import { VENDOR_SUPPORT_ERROR, vendorSupportAsk } from "./vendor-support.ts";
+import { CACHE_SPLIT_FIX, cacheBlindTokenClaim } from "./token-claim.ts";
 import { DESIGN_PAGE_FIX, designPageForScreens, LAYOUT_WORDS_FIX, layoutPickInWords, screenOptionsOnPage } from "./layout-ask.ts";
 import { preApprovalText, releaseGo, type PreApproval } from "./release-go.ts";
 import { REQUIREMENT_STATUSES, type ArtifactLink, type BoardActor, type BoardOp, type ChatBoard, type GoalTarget, type OwnerTodo, type PlanItem, type PlanItemInput, type PlanStatus,
@@ -442,11 +443,13 @@ function stepCacheFlags(op: BoardOp): string[] {
   const flag = cacheSplitFlag("step note", texts);
   return flag ? [flag] : [];
 }
-/** The c32, c47 and c124 flags on an agent's todo: a leave ask, internal terms, a review ask with nothing to open, a layout picked from words. The todo is saved either way. */
+/** The c32, c47, c124 and c157 flags on an agent's todo: a leave ask, internal terms, a review ask with nothing to open, a layout picked from words, tokens with no cache split. The todo is saved either way. */
 function todoFlags(todo: OwnerTodo): string[] {
   const jargon = todoJargon(todo.text);
   const layout = layoutTodoFlag(todo);
-  return [...leaveAsk(todo) ? [LEAVE_ASK_FLAG] : [], ...jargon ? [jargon] : [], ...reviewAskWithoutLink(todo) ? [REVIEW_LINK_FLAG] : [], ...layout ? [layout] : []];
+  const cache = cacheSplitFlag("todo", [todo.text, ...todo.choices ?? []]);
+  return [...leaveAsk(todo) ? [LEAVE_ASK_FLAG] : [], ...jargon ? [jargon] : [], ...reviewAskWithoutLink(todo) ? [REVIEW_LINK_FLAG] : [], ...layout ? [layout] : [],
+    ...cache ? [cache] : []];
 }
 
 /** The parts of an agent's op over a soft target in BOARD_LIMITS: long text, many links or requirements, a choice list off 2 to 4. */
@@ -599,7 +602,7 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
     }
     const flags: string[] = [...extra];
     if (actor === "agent") {
-      flags.push(...softFlags(op));
+      flags.push(...softFlags(op), ...stepCacheFlags(op));
       if (next.plan) {
         flags.push(...waitPushes(board, next.plan), ...goWaits(board, next.plan), ...upkeepTitles(board, next.plan), ...noDoneLines(board, next.plan), ...screenPageSteps(board, next.plan),
           ...metOpenFlags(board, next.plan), ...(duties ? staleLinks(next.plan, duties) : []));
