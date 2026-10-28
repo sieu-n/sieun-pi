@@ -155,3 +155,29 @@ test("a relayed kernel outlives its client, buffers a finished bash() notice and
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("a relayed kernel that has run no cell reads as fresh to the next client, which then runs the bootstrap", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-rlm-relay-"));
+  const options = {
+    python,
+    cwd: dir,
+    env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", PYTHONPATH: RUNTIME_SRC, XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR ?? "" },
+    onHostRequest: async () => ({}),
+  };
+  const relay = { socket: join(dir, "k.sock"), logPath: join(dir, "relay.log"), wakeSession: "s1", unit: `pi-rlm-test-${process.pid}-${Date.now()}-fresh` };
+  const first = (await Kernel.relay(options, relay, true))!;
+  try {
+    assert.equal((await first.ready).reattached, false);
+    first.detach("on_event");
+    const second = (await Kernel.relay(options, relay, false))!;
+    assert.equal((await second.ready).reattached, false, "a client that saw ready and left before any cell does not make the kernel reattached");
+    await second.execute(bootstrapCode([]));
+    second.detach("on_event");
+    const third = (await Kernel.relay(options, relay, false))!;
+    assert.equal((await third.ready).reattached, true);
+    assert.equal((await third.execute("callable(bash) and rlm is not None")).result, "True");
+    await third.shutdown();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

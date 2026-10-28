@@ -156,8 +156,12 @@ async function hasSystemdRun(): Promise<boolean> {
   });
 }
 
-/** Starts `kernel_relay.py` outside this process's cgroup and session, so stopping pi-host leaves the kernel running. */
-async function startRelay(options: KernelOptions, relay: RelayOptions): Promise<void> {
+/**
+ * Starts `kernel_relay.py` outside this process's cgroup and session, so stopping pi-host leaves the kernel running, and returns the
+ * first connection to it. Under load a probe connection closed and a second one made after the kernel printed `ready` read as a
+ * reattach, so the session skipped its bootstrap cell.
+ */
+async function startRelay(options: KernelOptions, relay: RelayOptions): Promise<Socket> {
   mkdirSync(dirname(relay.socket), { recursive: true, mode: 0o700 });
   const log = openSync(relay.logPath, "a");
   const argv = [options.python, RELAY_SCRIPT, "--socket", relay.socket, "--", options.python, "-m", "rlm.repl"];
@@ -170,8 +174,7 @@ async function startRelay(options: KernelOptions, relay: RelayOptions): Promise<
   const deadline = Date.now() + 30_000;
   for (;;) {
     try {
-      (await connect(relay.socket)).destroy();
-      return;
+      return await connect(relay.socket);
     } catch {
       if (Date.now() > deadline) throw new Error(`the kernel relay did not open ${relay.socket} within 30 s; see ${relay.logPath}`);
       await new Promise(r => setTimeout(r, 50));
@@ -303,8 +306,7 @@ export class Kernel {
       socket = await connect(relay.socket);
     } catch {
       if (!start) return undefined;
-      await startRelay(options, relay);
-      socket = await connect(relay.socket);
+      socket = await startRelay(options, relay);
     }
     const kernel = new Kernel(options, socketLink(socket, undefined), true);
     socket.write(JSON.stringify({ type: "relay_hello", host_socket: relay.hostSocket ?? null, wake_session: relay.wakeSession }) + "\n");

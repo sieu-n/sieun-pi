@@ -5,7 +5,9 @@ kernel or the `bash()` process groups the kernel owns. The relay holds the kerne
 unix socket to one client at a time, which is the session's pi-rlm.
 
 While no client is attached, the relay keeps every kernel event in order and replays it to the next client, after a fresh `ready`
-event that carries `reattached: true`, the id of a request still running, and the ids of host requests nobody answered. Host
+event that carries the id of a request still running and the ids of host requests nobody answered. It carries `reattached: true`
+only once a client has sent the kernel a cell, because pi-rlm skips its bootstrap cell for a reattached kernel. A client that saw
+`ready` and left before any cell leaves the kernel fresh. Host
 requests the old client never answered are sent again, so a cell awaiting `rlm.spawn` or a `bash.completed` notice is not lost.
 
 Relay-only requests from the client, never forwarded to the kernel:
@@ -41,6 +43,7 @@ class Relay:
         self.buffer: list[bytes] = []
         self.ready: dict | None = None
         self.running: str | None = None
+        self.executed = False
         self.unanswered: dict[str, bytes] = {}
         self.host_socket: str | None = None
         self.wake_session: str | None = None
@@ -116,7 +119,7 @@ class Relay:
         self.client = writer
         ready = dict(self.ready or {"event": "ready", "protocol": 3})
         if self.ready is not None:
-            ready.update({"reattached": True, "running": self.running, "unanswered": list(self.unanswered)})
+            ready.update({"reattached": self.executed, "running": self.running, "unanswered": list(self.unanswered)})
         replay = [json.dumps(ready).encode() + b"\n"] if self.ready is not None else []
         replayed = set()
         for line in self.buffer:
@@ -167,6 +170,7 @@ class Relay:
             return
         if kind == "execute":
             self.running = str(req.get("id"))
+            self.executed = True
         elif kind == "host_reply":
             self.unanswered.pop(str(req.get("id")), None)
         assert self.kernel and self.kernel.stdin
