@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { composerInput, conversation, FRONTEND, open, row, tag, VENT_JOB, VENT } from "./helpers";
 
-test("Enter sends, Shift Enter adds a line, and the answer streams into a new bubble", async ({ page }) => {
+test("Enter sends, Shift Enter adds a line, and the answer lands in a new bubble", async ({ page }) => {
   await open(page, `#/c/${FRONTEND}`);
   const word = tag();
   const input = composerInput(conversation(page));
@@ -120,4 +120,56 @@ test("a send that waits for a working slot shows its place in the turn queue unt
   await expect(note).toHaveText("Waits at place 3 of 7 for a working slot.");
   await expect(page.locator(".typing")).toContainText("waits at place 3 of 7");
   await expect(conversation(page).locator(".row.own [data-note]")).toHaveCount(0, { timeout: 10_000 });
+});
+
+test("sends while the agent works show at once at full strength, and the next send never waits on the last", async ({ page, request }) => {
+  test.setTimeout(60_000);
+  const agent = (await (await request.post("/api/agents", { data: { kind: "chat", name: `steer ${tag()}` } })).json()) as { id: string };
+  await open(page, `#/c/${agent.id}`);
+  const input = composerInput(conversation(page));
+  await input.click();
+  await page.keyboard.type(`slow ${tag()}`);
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("stop")).toBeVisible({ timeout: 8_000 });
+  // pi-host takes its time; the chat server must not make the page wait for it.
+  await page.route(`**/api/c/${agent.id}/send`, async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    await route.continue();
+  });
+  const words = [tag(), tag(), tag()];
+  for (const word of words) {
+    await page.keyboard.type(`steer ${word}`);
+    await page.keyboard.press("Enter");
+    await expect(input).toHaveText("");
+  }
+  for (const word of words) {
+    const mine = conversation(page).locator(".row.own").filter({ hasText: `steer ${word}` });
+    await expect(mine).toBeVisible({ timeout: 1_000 });
+    await expect(mine).toHaveCSS("opacity", "1");
+  }
+  await expect(conversation(page).locator('[data-send-state="sending"]')).toHaveCount(0, { timeout: 10_000 });
+  await page.unroute(`**/api/c/${agent.id}/send`);
+  await open(page, `#/c/${agent.id}`);
+  await expect(conversation(page).locator(".row.own").filter({ hasText: `steer ${words[2]}` })).toBeVisible();
+});
+
+test("a send the chat server never gets reads Not delivered, and Retry sends it", async ({ page, request }) => {
+  test.setTimeout(60_000);
+  const agent = (await (await request.post("/api/agents", { data: { kind: "chat", name: `offline ${tag()}` } })).json()) as { id: string };
+  await open(page, `#/c/${agent.id}`);
+  await page.route(`**/api/c/${agent.id}/send`, (route) => route.abort("connectionrefused"));
+  const word = tag();
+  await composerInput(conversation(page)).click();
+  await page.keyboard.type(`offline ${word}`);
+  await page.keyboard.press("Enter");
+  const mine = conversation(page).locator(".row.own").filter({ hasText: `offline ${word}` });
+  await expect(mine).toBeVisible({ timeout: 1_000 });
+  const state = mine.locator("[data-send-state]");
+  await expect(state).toHaveAttribute("data-send-state", "failed", { timeout: 10_000 });
+  await expect(state).toContainText("Not delivered");
+  await page.unroute(`**/api/c/${agent.id}/send`);
+  await state.getByRole("button", { name: "Retry" }).click();
+  await expect(conversation(page).locator(".row.own").filter({ hasText: `offline ${word}` })).toHaveCount(1);
+  await expect(conversation(page).locator('[data-message-id^="e"]').filter({ hasText: `offline ${word}` })).toBeVisible({ timeout: 8_000 });
+  await expect(conversation(page).locator("[data-send-state]")).toHaveCount(0);
 });

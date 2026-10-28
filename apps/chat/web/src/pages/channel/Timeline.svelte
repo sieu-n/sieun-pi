@@ -30,6 +30,9 @@
     compact?: boolean;
     statusOf?: (id: string) => Status | null;
     onretry: () => void;
+    /** Retry and Discard on a send that was not delivered. */
+    onretrysend?: (item: Item) => void;
+    ondiscardsend?: (item: Item) => void;
     onthread: (key: string) => void;
     oncopylink: (item: Item) => void;
     onmention?: (id: string, kind: string, e: MouseEvent) => void;
@@ -39,7 +42,7 @@
   };
   let {
     items, loading, error, hasOlder, loadingOlder, loadOlder, focus, context, liveLabel = null, queue = null, openThread = null, canReply = false, compact = false,
-    statusOf, onretry, onthread, oncopylink, onmention, onboardid, onartifact, onbottom,
+    statusOf, onretry, onretrysend, ondiscardsend, onthread, oncopylink, onmention, onboardid, onartifact, onbottom,
   }: Props = $props();
 
   const rows = $derived(layoutRows(items));
@@ -164,6 +167,8 @@
               {openThread}
               canReply={canReply && row.item.kind === "message" && !row.item.threadRoot}
               {statusOf}
+              {onretrysend}
+              {ondiscardsend}
               {onthread}
               {oncopylink}
               {onmention}

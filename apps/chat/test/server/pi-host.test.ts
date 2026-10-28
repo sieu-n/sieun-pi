@@ -1,5 +1,5 @@
 /**
- * One real turn end to end on pi-host: create a thread, send, see the streamed answer, Stop, spawn a job and see it in the tree, mention
+ * One real turn end to end on pi-host: create a thread, send, see the answer land, Stop, spawn a job and see it in the tree, mention
  * the thread from a channel and see the answer come back. It runs on the live pi-host socket and real model calls.
  * Run: cd apps/chat && APPS_CHAT_REAL=1 node --import tsx --test --test-force-exit --test-isolation=none test/server/pi-host.test.ts
  * Add APPS_CHAT_URL=http://127.0.0.1:5184 to run the same steps against the installed service instead of a server in this process.
@@ -35,7 +35,7 @@ describe("pi-host end to end", { skip: !real && "set APPS_CHAT_REAL=1 to run on 
     await s.close();
   });
 
-  test("a send streams the answer into the timeline", { timeout: 180_000 }, async () => {
+  test("a send's answer lands in the timeline", { timeout: 180_000 }, async () => {
     const sent = await s.send("POST", `/api/c/${thread}/send`, { text: "Reply with exactly the word pong and nothing else.", requestId: `e2e-pong-${thread}` });
     assert.equal(sent.status, 200, JSON.stringify(sent.body));
     await live.waitFor(e => e.type === "status" && e.conversation === thread && e.status === "working", 60_000);
@@ -50,7 +50,8 @@ describe("pi-host end to end", { skip: !real && "set APPS_CHAT_REAL=1 to run on 
     const before = live.events.length;
     await s.send("POST", `/api/c/${thread}/send`, { text: "Write the numbers from 1 to 3000, one per line, with no other text.", requestId: `e2e-stop-${thread}` });
     await live.waitFor(e => live.events.indexOf(e) >= before && e.type === "status" && e.conversation === thread && e.status === "working", 60_000);
-    await live.waitFor(e => live.events.indexOf(e) >= before && e.type === "partial" && e.conversation === thread && (e.partial?.text.length ?? 0) > 20, 150_000);
+    // Nothing streams to the page, so the turn gets a few seconds to write before Stop.
+    await new Promise(resolve => setTimeout(resolve, 8000));
     const stopped = await s.send("POST", `/api/c/${thread}/abort`);
     assert.equal(stopped.status, 200);
     await live.waitFor(e => live.events.indexOf(e) >= before && e.type === "status" && e.conversation === thread && e.status === "idle", 60_000);

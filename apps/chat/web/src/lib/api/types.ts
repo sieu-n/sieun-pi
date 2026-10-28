@@ -109,6 +109,12 @@ export type TurnPlace =
   | { state: "marked" }
   | { state: "none" };
 
+/**
+ * An owner send the chat server holds until the agent has it: sending (pi-host has not taken it yet), sent (pi-host took it, maybe as a
+ * steer that waits for the running turn) or failed (pi-host refused it for good, or the page could not reach the chat server).
+ */
+export type SendState = "sending" | "sent" | "failed";
+
 export type DeliveryState = "queued" | "delivered" | "read" | "answered" | "no_reply" | "stopped" | "failed";
 export interface Delivery {
   target: AgentId; name: string; state: DeliveryState; at: Ms; answer?: string; error?: string;
@@ -138,8 +144,14 @@ export type Item =
       /** Channel root posts: the thread's size and last reply. */
       thread?: { replies: number; lastAt: Ms; authors: Principal[] };
       deliveries: Delivery[];
-      /** The input waits in the agent's inbox behind a running turn. */
+      /** An owner send `r:<requestId>` that has not shown as an entry yet. */
       pending?: boolean;
+      /** A pending send's state; the page shows Sending…, nothing once sent, and Not delivered with Retry when failed. */
+      send?: SendState;
+      /** Why a send failed, or why its delivery keeps retrying. */
+      sendError?: string;
+      /** The send's request id: on a pending send and on the owner's channel posts, so the page swaps its own copy for it. */
+      requestId?: string;
       /** A pending send's place in pi-pool's turn queue; the live `queue` event updates it. */
       queue?: TurnPlace;
     }
@@ -251,7 +263,7 @@ export type LiveEvent =
   | { type: "agent_removed"; id: AgentId }
   | { type: "conversation"; conversation: ConversationSummary }
   /** Only for a conversation the page watches. */
-  | { type: "items"; conversation: ConversationId; items: Item[] }
+  | { type: "items"; conversation: ConversationId; items: Item[]; /** Ids to drop, such as a pending send that landed or was discarded. */ removed?: string[] }
   | { type: "partial"; conversation: ConversationId; partial: LivePartial | null }
   | { type: "status"; conversation: ConversationId; status: RunStatus }
   /** Only to tabs that watch it: the run's place in pi-pool's turn queue while it waits, then null once it works or ends. */

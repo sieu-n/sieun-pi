@@ -71,7 +71,7 @@ describe("conversations", () => {
 });
 
 describe("live turns", () => {
-  test("a send streams partial text, then the turn, then idle", async () => {
+  test("a send shows at once as sending, then the turn lands whole, then idle, with no partial text", async () => {
     (s.host as any).wordMs = 30;
     const live = await s.live();
     live.watch(ids.frontend);
@@ -79,10 +79,12 @@ describe("live turns", () => {
     const sent = await s.send("POST", `/api/c/${ids.frontend}/send`, { text: "tell me about the canary", requestId: "live-1" });
     assert.equal(sent.status, 200);
     assert.equal(sent.body.item.pending, true);
-    await live.waitFor(e => e.type === "partial" && e.conversation === ids.frontend && !!e.partial?.text);
+    assert.equal(sent.body.item.send, "sending");
+    await live.waitFor(e => e.type === "items" && e.conversation === ids.frontend && e.items.some(i => i.kind === "turn" && i.live && !i.text));
     const done = await live.waitFor(e => e.type === "items" && e.items.some(i => i.kind === "turn" && !i.live && i.text.includes("tell me about the canary")));
     assert.equal(done.type, "items");
     await live.waitFor(e => e.type === "status" && e.conversation === ids.frontend && e.status === "idle");
+    assert.ok(!live.events.some(e => e.type === "partial" && !!e.partial), "nothing streams");
     const again = await s.send("POST", `/api/c/${ids.frontend}/send`, { text: "tell me about the canary", requestId: "live-1" });
     assert.equal(again.status, 200);
     (s.host as any).wordMs = 2;
@@ -95,8 +97,9 @@ describe("live turns", () => {
     live.watch(ids.frontend);
     await live.waitFor(e => e.type === "status" && e.conversation === ids.frontend);
     const sent = await s.send("POST", `/api/c/${ids.frontend}/send`, { text: "queue this one", requestId: "queue-1" });
-    assert.deepEqual(sent.body.queue, { state: "queued", position: 3, total: 7 });
-    assert.deepEqual(sent.body.item.queue, { state: "queued", position: 3, total: 7 });
+    assert.equal(sent.status, 200);
+    const queued = await live.waitFor(e => e.type === "queue" && e.conversation === ids.frontend && e.place?.state === "queued");
+    assert.deepEqual(queued.type === "queue" && queued.place, { state: "queued", position: 3, total: 7 });
     const header = await s.get(`/api/c/${ids.frontend}`);
     assert.equal(header.queue.state, "queued");
     await live.waitFor(e => e.type === "queue" && e.conversation === ids.frontend && e.place === null, 15_000);
@@ -122,7 +125,7 @@ describe("live turns", () => {
     const live = await s.live();
     live.watch(ids.vent);
     await s.send("POST", `/api/c/${ids.vent}/send`, { text: "slow answer please", requestId: "stop-1" });
-    await live.waitFor(e => e.type === "partial" && e.conversation === ids.vent && !!e.partial?.text);
+    await live.waitFor(e => e.type === "items" && e.conversation === ids.vent && e.items.some(i => i.kind === "turn" && i.live));
     const stopped = await s.send("POST", `/api/c/${ids.vent}/abort`);
     assert.equal(stopped.status, 200);
     await live.waitFor(e => e.type === "items" && e.items.some(i => i.kind === "turn" && i.stop === "aborted"));
@@ -149,7 +152,7 @@ describe("channels and mentions", () => {
   test("a mention routes to the agent and its answer comes back into the thread", async () => {
     const sent = await s.send("POST", `/api/c/${ids.cutoverChannel}/send`, { text: "@frontend bro is the relay page fine?", mentions: [ids.frontend], requestId: "mention-1" });
     assert.equal(sent.status, 200);
-    assert.equal(sent.body.deliveries[0].state, "delivered");
+    assert.equal(sent.body.deliveries[0].state, "queued", "the post answers before its mention reaches the agent");
     const thread = await until(() => s.get(`/api/c/${ids.cutoverChannel}/replies/${sent.body.item.id}`), t => t.items.length > 0);
     assert.equal(thread.items[0].author.id, ids.frontend);
     assert.equal(thread.root.deliveries[0].state, "answered");

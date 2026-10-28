@@ -33,10 +33,13 @@ export interface LiveClient {
   close(): void;
 }
 
-/** With `url`, the specs run against a server that already runs there, such as the installed service on :5184. */
-export async function start(opts: { real?: boolean; wordMs?: number; url?: string } = {}): Promise<Running> {
+/**
+ * With `url`, the specs run against a server that already runs there, such as the installed service on :5184. With `dataDir`, the server
+ * uses that dir and leaves it on close, so a spec can start a second server on it as a restart.
+ */
+export async function start(opts: { real?: boolean; wordMs?: number; url?: string; dataDir?: string } = {}): Promise<Running> {
   if (opts.url) return remote(opts.url);
-  const dataDir = mkdtempSync(join(tmpdir(), "apps-chat-test-"));
+  const dataDir = opts.dataDir ?? mkdtempSync(join(tmpdir(), "apps-chat-test-"));
   const config = { ...readConfig([]), dataDir, port: 0, fixture: !opts.real, box: "test-box" };
   const host = opts.real ? new PiHost(config.socket) : new FixtureHost();
   if (host instanceof FixtureHost) {
@@ -56,7 +59,7 @@ export async function start(opts: { real?: boolean; wordMs?: number; url?: strin
       server.closeAllConnections();
       server.close();
       await app.stop();
-      rmSync(dataDir, { recursive: true, force: true });
+      if (!opts.dataDir) rmSync(dataDir, { recursive: true, force: true });
     },
   };
 }

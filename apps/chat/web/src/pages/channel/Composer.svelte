@@ -20,6 +20,7 @@
     draftKey?: string;
     autofocus?: boolean;
     compact?: boolean;
+    /** Takes the message and returns at once; the page shows it as sending. A rejection puts the text back in an empty box. */
     onsend: (out: Outgoing) => Promise<void>;
     onstop?: () => void;
   };
@@ -31,7 +32,8 @@
   let mentions = $state<string[]>([]);
   let attachments = $state<Attachment[]>([]);
   let query = $state<Query | null>(null);
-  let sending = $state(false);
+  /** Only while attached images are read; the network never holds the next send. */
+  let encoding = $state(false);
   let dragging = $state(false);
   let fileInput = $state<HTMLInputElement>();
   let savedRange: Range | null = null;
@@ -181,25 +183,36 @@
   }
 
   async function submit() {
-    if (!box || sending) return;
+    if (!box || encoding) return;
     const draft = readDraft(box);
     if (!draft.text.trim() && !attachments.length) return;
-    sending = true;
-    try {
-      const images = await Promise.all(attachments.map((a) => imageUpload(a.file)));
-      const sent = onsend({ text: draft.text, mentions: draft.mentions, images });
-      box.innerHTML = "";
-      for (const a of attachments) URL.revokeObjectURL(a.url);
-      attachments = [];
-      sync();
-      await sent;
-    } catch (error) {
-      if (!readDraft(box).text) box.textContent = draft.text;
-      sync();
-      toast.error(error instanceof Error ? error.message : "Could not send the message");
-    } finally {
-      sending = false;
+    const files = attachments;
+    box.innerHTML = "";
+    attachments = [];
+    sync();
+    let images: Outgoing["images"] = [];
+    if (files.length) {
+      encoding = true;
+      try {
+        images = await Promise.all(files.map((a) => imageUpload(a.file)));
+      } catch (error) {
+        if (!readDraft(box).text) box.textContent = draft.text;
+        attachments = [...files, ...attachments];
+        sync();
+        toast.error(error instanceof Error ? error.message : "Could not read the image");
+        return;
+      } finally {
+        encoding = false;
+      }
+      for (const a of files) URL.revokeObjectURL(a.url);
     }
+    onsend({ text: draft.text, mentions: draft.mentions, images }).catch((error: unknown) => {
+      if (box && !readDraft(box).text) {
+        box.textContent = draft.text;
+        sync();
+      }
+      toast.error(error instanceof Error ? error.message : "Could not send the message");
+    });
   }
 
   function mentionButton() {
@@ -276,7 +289,7 @@
     {#if working && onstop}
       <IconButton icon="stop" label="Stop" size="md" variant="outline" onclick={onstop} data-testid="stop" />
     {/if}
-    <IconButton icon="arrow-up" label="Send" size="md" variant={hasContent ? "accent" : "ghost"} disabled={!hasContent} loading={sending} onclick={submit} data-testid="send" />
+    <IconButton icon="arrow-up" label="Send" size="md" variant={hasContent ? "accent" : "ghost"} disabled={!hasContent} loading={encoding} onclick={submit} data-testid="send" />
   </div>
 </div>
 

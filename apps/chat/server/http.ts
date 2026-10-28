@@ -63,10 +63,15 @@ export function routes(app: App): Route[] {
     route("PATCH", "/api/c/:id", async (_r, p, _q, body) => app.patch(p.id!, (await body()) as ConversationPatch)),
     route("GET", "/api/c/:id/items", async (_r, p, q) => {
       const opts = { before: str(q.get("before")), after: str(q.get("after")), around: str(q.get("around")), limit: num(q.get("limit")) };
-      return app.isChannel(p.id!) ? app.channels.timeline(p.id!, opts) : app.threads.timeline(p.id!, opts);
+      return app.items(p.id!, opts);
     }),
     route("GET", "/api/c/:id/replies/:root", async (_r, p) => app.channels.replies(p.id!, p.root!)),
     route("POST", "/api/c/:id/send", async (_r, p, _q, body) => app.send(p.id!, (await body()) as SendRequest)),
+    route("POST", "/api/c/:id/send/:requestId/retry", async (_r, p) => app.retrySend(p.id!, p.requestId!)),
+    route("DELETE", "/api/c/:id/send/:requestId", async (_r, p) => {
+      app.discardSend(p.id!, p.requestId!);
+      return { ok: true };
+    }),
     route("POST", "/api/c/:id/abort", async (_r, p) => {
       await app.abort(p.id!);
       return { ok: true };

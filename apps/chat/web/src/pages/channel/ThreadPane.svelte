@@ -6,7 +6,7 @@
   import Composer from "./Composer.svelte";
   import Timeline from "./Timeline.svelte";
   import { directory } from "./directory.svelte";
-  import { withPartial, type Outgoing } from "./present";
+  import type { Outgoing } from "./present";
 
   type Props = {
     /** The channel a channel thread lives in. */
@@ -32,9 +32,7 @@
     posts?.close();
   });
 
-  const author = $derived(job?.header?.agent ? { id: job.header.agent.id, kind: job.header.agent.kind, name: job.header.agent.name, avatar: job.header.agent.avatar } : null);
-  const items = $derived(job ? withPartial(job.items, job.partial, author) : posts?.root ? [rootOnly(posts.root), ...posts.items] : []);
-  const liveLabel = $derived(job?.partial?.tool ? `Running ${job.partial.tool}` : job?.partial?.thinking && !job.partial.text ? "Thinking" : null);
+  const items = $derived(job ? job.items : posts?.root ? [rootOnly(posts.root), ...posts.items] : []);
   let retry = $state(0);
 
   /** The pane already is the thread, so its root shows no pill to itself. */
@@ -44,9 +42,19 @@
     return rest;
   }
 
-  async function send(out: Outgoing) {
-    if (job) await job.send(out.text, { images: out.images, mentions: out.mentions });
-    else await posts?.send(out.text, { images: out.images, mentions: out.mentions });
+  function send(out: Outgoing): Promise<void> {
+    if (job) return job.send(out.text, { images: out.images, mentions: out.mentions });
+    return posts?.send(out.text, { images: out.images, mentions: out.mentions }) ?? Promise.resolve();
+  }
+
+  function retrySend(item: Item) {
+    if (job) job.retrySend(item.id);
+    else posts?.retrySend(item.id);
+  }
+
+  function discardSend(item: Item) {
+    if (job) job.discardSend(item.id);
+    else posts?.discardSend(item.id);
   }
 </script>
 
@@ -60,11 +68,12 @@
       loadingOlder={job?.loadingOlder ?? false}
       loadOlder={() => job?.loadOlder() ?? Promise.resolve()}
       {context}
-      {liveLabel}
       queue={job?.queue ?? null}
       compact
       {statusOf}
       onretry={() => retry++}
+      onretrysend={retrySend}
+      ondiscardsend={discardSend}
       {onthread}
       oncopylink={(item) => oncopylink(item, channel ?? threadKey)}
       {onmention}

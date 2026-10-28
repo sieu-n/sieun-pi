@@ -25,7 +25,7 @@ Pages call the server through `web/src/lib/api` (`import { api, timeline, agents
 1. An agent's id is the id of its own conversation, so `/api/c/<agent id>` opens its transcript and a DM with it.
 2. The owner's principal id is `owner`.
 3. A turn's id is the id of the input it answers, so the live turn keeps one id from the moment the input lands.
-4. A pending send is `r:<requestId>` until its real item arrives.
+4. A pending send is `r:<requestId>` until its real item arrives: an input with its text in a thread, or the post with its `requestId` in a channel.
 
 ## Conversations and the sidebar
 
@@ -34,10 +34,12 @@ Pages call the server through `web/src/lib/api` (`import { api, timeline, agents
 | `api.sidebar()` | `GET /api/sidebar` | `Sidebar`: `solo`, `channels`, `dms` and the open For you count. |
 | `api.conversations({archived})` | `GET /api/conversations?archived=1` | `ConversationSummary[]` for every solo thread, DM, job and channel. |
 | `api.directory()` | `GET /api/directory` | `{agents, channels}` for the @ and # typeahead. |
-| `api.header(id)` | `GET /api/c/:id` | `ConversationHeader`: summary, members, model, the agent, partial text, channel purpose and home chat. |
-| `api.items(id, {before, after, around, limit})` | `GET /api/c/:id/items` | `TimelinePage`: items oldest first, with `older`, `newer` and `focus` cursors. |
+| `api.header(id)` | `GET /api/c/:id` | `ConversationHeader`: summary, members, model, the agent, channel purpose and home chat. |
+| `api.items(id, {before, after, around, limit})` | `GET /api/c/:id/items` | `TimelinePage`: items oldest first, with `older`, `newer` and `focus` cursors; a thread's newest page ends with its pending sends. |
 | `api.replies(channel, root)` | `GET /api/c/:id/replies/:root` | A channel thread: `{root, items}`. |
-| `api.send(id, SendRequest)` | `POST /api/c/:id/send` | `SendResult`: the item, pending for a thread, and one delivery per mention. |
+| `api.send(id, SendRequest)` | `POST /api/c/:id/send` | `SendResult` at once: a thread's pending item `r:<requestId>`, or a channel's post with its deliveries. |
+| `api.retrySend(id, requestId)` | `POST /api/c/:id/send/:requestId/retry` | `SendResult`: a failed thread send tries again now. |
+| `api.discardSend(id, requestId)` | `DELETE /api/c/:id/send/:requestId` | Drops a failed thread send; its item goes away on every page. |
 | `api.abort(id)` | `POST /api/c/:id/abort` | Stops the running turn of that conversation; for a channel, of every member. |
 | `api.patch(id, {name, archived, model, thinkingLevel})` | `PATCH /api/c/:id` | The new header. A job inside a thread takes model changes only. |
 | `api.read(id, seq?)` | `POST /api/c/:id/read` | Sets the owner's read mark. |
@@ -51,10 +53,10 @@ Pages call the server through `web/src/lib/api` (`import { api, timeline, agents
 5. A turn's `jobs` hold each child conversation a `subagent` call made, which the page draws as a thread pill under the turn; a step's `job` names it too.
 6. In a channel every post is a `message` item; a root post carries `thread` with its reply count, last reply and authors, and replies come from `replies`.
 7. Send takes `text`, `images` (`{data, mimeType}`, base64 without the data: prefix), `mentions` (agent ids), `threadRoot` for a channel reply, `whenBusy` (steer, the default, or followUp) and a `requestId`, and a repeated `requestId` lands once.
-8. A thread send goes to pi-host as the owner's input, and each mention in it also goes to that agent as an agent message.
-9. A channel send writes the post, and each mention goes to that agent's conversation as an `agent.message` input with a `[#channel · post N from You]` header and the thread so far (channels.md 4.1).
+8. A send lands in the chat server and answers at once, as in Slack; no answer waits on pi-host. A thread send is written to the outbox (`<data dir>/outbox.jsonl`), shows on every watching page as the owner's message `r:<requestId>` with `send: "sending"`, and goes to pi-host behind the answer as the owner's input, retried with backoff until pi-host takes it (`send: "sent"`, also a steer that waits for the running turn), and across a restart. The item goes away (`items` with `removed`) once the input with its text shows in the conversation. pi-host refusing it for good (no thread, archived) makes it `send: "failed"` with `sendError`, until Retry or Discard. Each mention in it goes to that agent as an agent message once pi-host has the send.
+9. A channel send writes the post and answers; each mention goes to that agent's conversation as an `agent.message` input with a `[#channel · post N from You]` header and the thread so far (channels.md 4.1).
 10. Every owner send and owner mention reaches pi-host with `ownerTurn: true`, so pi-pool starts its run at once; an agent's mention waits its place in the turn queue.
-11. While a run waits for a working slot, the send's item and `SendResult.queue` carry its place (`TurnPlace`: queued with position and total, or marked), the header has `queue`, and watchers get `queue` events until it works, when the place goes to null; a channel delivery carries the same place in `queue` and reads `queued` while it waits.
+11. While a run waits for a working slot, the header and the `queue` events carry its place (`TurnPlace`: queued with position and total, or marked), the header has `queue`, and watchers get `queue` events until it works, when the place goes to null; a channel delivery carries the same place in `queue` and reads `queued` while it waits.
 12. The answer of the turn a mention starts comes back into the post's thread as that agent's post, and the delivery reads `answered`; a turn with no text reads `no_reply`; a post 6 agent hops from the owner reads `stopped`.
 13. A delivery's states are queued, delivered, read, answered, no_reply, stopped and failed.
 14. Mentioning a non-member answers 400 with the line "X is not in #name. Add it to the channel first."
@@ -140,31 +142,32 @@ Pages call the server through `web/src/lib/api` (`import { api, timeline, agents
 | `conversations.list`, `conversations.byId(id)` | `ConversationSummary[]`, upserted on each `conversation` event. |
 | `forYou.items`, `forYou.count` | Every todo, refetched on each board change, and the open count. |
 | `connection.connected` | Whether the live socket is open. |
-| `timeline(id, {around})` | `Timeline`: `items`, `older`, `loadOlder()`, `header`, `partial`, `status`, `queue`, `focus`, `send(text, {images, mentions, threadRoot})`, `stop()`, `markRead()`, `close()`. |
-| `replies(channel, root)` | `Replies`: `root`, `items`, `send(text, opts)`, `close()`. |
+| `timeline(id, {around})` | `Timeline`: `items`, `older`, `loadOlder()`, `header`, `status`, `queue`, `focus`, `send(text, {images, mentions, threadRoot})`, `retrySend(itemId)`, `discardSend(itemId)`, `stop()`, `markRead()`, `close()`. |
+| `replies(channel, root)` | `Replies`: `root`, `items`, `send(text, opts)`, `retrySend(itemId)`, `discardSend(itemId)`, `close()`. |
 | `jobsStore(thread)` | `JobsStore`: `jobs`, live. |
 | `boardStore(chat)` | `BoardStore`: `view` (`BoardView`), `apply(ops)`, `refresh()`, `close()`. |
 
 1. A page makes a per-view store when it opens and calls `close()` when it leaves, so the server stops watching that conversation.
-2. The partial text of a streaming answer comes as `timeline.partial` (`{itemId, text, thinking, tool}`), and the finished entry replaces the turn item by id.
+2. `send` shows the message at once as `r:<requestId>` and returns; the composer takes the next message right away. The post runs behind and tries 3 more times with the same requestId while the chat server cannot be reached; then the message stays on screen as failed with Retry and Discard. A pending item never steps back from sent to sending, and the real message replaces it when it lands.
+3. Nothing streams: no partial text, thinking or tool calls. A running turn shows as an empty live turn (typing dots) from its run's start, and its item updates when an input or an answer with text lands, and when the run ends.
 
 ## Live socket
 
 `/api/live` is one WebSocket per tab, and `lib/api/live.svelte.ts` owns it.
 
 1. The server sends `hello` (me, sidebar, agents, conversations) on connect, then `sidebar`, `agent`, `agent_removed`, `conversation`, `status`, `jobs`, `board`, `for_you` and `channel` to every tab.
-2. `items`, `partial` and `queue` go only to tabs that watch that conversation.
-3. A tab sends `{type: "watch", conversation, after}` and `{type: "unwatch", conversation}`, and `after` is the newest item id it holds, so a reconnect gets what it missed.
+2. `items` and `queue` go only to tabs that watch that conversation; `items` may carry `removed`, ids to drop, such as a pending send that landed or was discarded. The server sends no `partial`.
+3. A tab sends `{type: "watch", conversation, after}` and `{type: "unwatch", conversation}`, and `after` is the newest item id it holds, so a reconnect gets what it missed, and the thread's pending sends.
 
 ## Fixture mode
 
 `npm run fixture` seeds these, all over the last five days.
 
-1. Four chats are seeded: Vent (finished turns with thinking and tool steps, an image, a mermaid answer and a finished job), AI harness developer environment VP (a turn that streams for as long as the server runs, a running job and a board with every step state), Crawler VP (failed) and frontend bro.
+1. Four chats are seeded: Vent (finished turns with thinking and tool steps, an image, a mermaid answer and a finished job), AI harness developer environment VP (a turn that runs for as long as the server runs, a running job and a board with every step state), Crawler VP (failed) and frontend bro.
 2. pi cutover prep is a root job of the AI harness VP, listed as a DM, and old relay probe is archived.
 3. #pi-cutover has posts in answered, no_reply and queued states, a thread with two replies and an @owner post, and #general has one thread.
 4. The AI harness VP has two duties with runs and a check-in.
-5. A send to any thread streams an answer; a message with "spawn" starts a job, "fail" ends in an error, "slow" streams one word a second for Stop, "queue" waits 2 s at place 3 then 1 of 7 before it starts, and "mermaid" answers with a diagram.
+5. A send to any thread gets an answer; a message with "spawn" starts a job, "fail" ends in an error, "slow" takes a minute for Stop, "queue" waits 2 s at place 3 then 1 of 7 before it starts, and "mermaid" answers with a diagram.
 6. The words canary, relay and migration repeat across days and authors for search.
 
 ## Host seam

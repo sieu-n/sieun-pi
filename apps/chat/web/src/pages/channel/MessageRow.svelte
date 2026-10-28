@@ -29,19 +29,24 @@
     /** Channel root posts get Reply in thread. */
     canReply?: boolean;
     statusOf?: (id: string) => Status | null;
+    /** Retry and Discard on the owner's send that was not delivered. */
+    onretrysend?: (item: Item) => void;
+    ondiscardsend?: (item: Item) => void;
     onthread: (key: string) => void;
     oncopylink: (item: Item) => void;
     onmention?: (id: string, kind: string, e: MouseEvent) => void;
     onboardid?: (id: string, chatId: string, e: MouseEvent) => void;
     onartifact?: (target: string, e: MouseEvent) => void;
   };
-  let { item, first, last, context, liveLabel = null, queue = null, flash = false, openThread = null, canReply = false, statusOf, onthread, oncopylink, onmention, onboardid, onartifact }: Props = $props();
+  let { item, first, last, context, liveLabel = null, queue = null, flash = false, openThread = null, canReply = false, statusOf, onretrysend, ondiscardsend, onthread, oncopylink, onmention, onboardid, onartifact }: Props = $props();
 
   const own = $derived(isOwn(item));
   const turn = $derived(item.kind === "turn" ? item : null);
   const message = $derived(item.kind === "message" ? item : null);
   const live = $derived(turn?.live ?? false);
   const pending = $derived(message?.pending || item.id.startsWith("r:"));
+  /** A pending send draws at full strength, as in Slack, with one small line under it: Sending…, Sent, or Not delivered. */
+  const sendState = $derived(pending ? (message?.send ?? "sending") : null);
   const hasBubble = $derived(!!item.text || (turn ? turn.steps.length > 0 || live : item.images.length === 0));
   const toolNow = $derived(turn ? runningTool(turn.steps) : null);
   const stepLabel = $derived(liveLabel ?? (toolNow ? `Running ${toolNow}` : null));
@@ -82,7 +87,7 @@
             <StepLine steps={turn.steps} {live} liveLabel={stepLabel} onjob={onthread} />
           {/if}
           {#if item.text}
-            <Markdown text={item.text} {context} streaming={live} {onmention} {onboardid} {onartifact} class="msg-text" />
+            <Markdown text={item.text} {context} {onmention} {onboardid} {onartifact} class="msg-text" />
           {:else if live && !stepLabel}
             <span class="waiting"><TypingDots mode="working" label="Writing" /></span>
           {/if}
@@ -104,6 +109,19 @@
       </div>
     </div>
   </div>
+  {#if sendState === "failed"}
+    <p class="send-state failed" role="status" data-send-state="failed" title={message?.sendError ?? ""}>
+      <span>Not delivered</span>
+      <span aria-hidden="true">·</span>
+      <button type="button" onclick={() => onretrysend?.(item)}>Retry</button>
+      <span aria-hidden="true">·</span>
+      <button type="button" onclick={() => ondiscardsend?.(item)}>Discard</button>
+    </p>
+  {:else if sendState === "sending"}
+    <p class="send-state sending" data-send-state="sending" title={message?.sendError ?? ""}>Sending…</p>
+  {:else if sendState === "sent"}
+    <p class="send-state sent" data-send-state="sent" title="The agent has it and reads it when its turn allows."><Icon name="check" size={12} /><span>Sent</span></p>
+  {/if}
   {#if turn?.stop || turn?.error}
     <p class="note danger" role="status">{turn.stop === "aborted" ? "Response stopped" : turn.error || "The answer failed"}</p>
   {/if}
@@ -147,9 +165,6 @@
   }
   .row.first {
     padding-top: 14px;
-  }
-  .row.pending {
-    opacity: 0.6;
   }
   .byline {
     display: flex;
@@ -270,6 +285,41 @@
   .own .note {
     align-self: flex-end;
     margin: 4px calc(var(--gutter) + var(--gap) + 16px) 0 0;
+  }
+  .send-state {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    align-self: flex-end;
+    margin: 2px calc(var(--gutter) + var(--gap) + 16px) 0 0;
+    font: var(--text-caption);
+    letter-spacing: var(--tracking-caption);
+    color: var(--text-metadata);
+  }
+  .send-state.sending {
+    /* A send that lands quickly never shows the line. */
+    animation: send-appear 0s linear 600ms both;
+  }
+  @keyframes send-appear {
+    from {
+      visibility: hidden;
+    }
+    to {
+      visibility: visible;
+    }
+  }
+  .send-state.failed {
+    color: var(--text-danger);
+  }
+  .send-state button {
+    padding: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+    font-weight: 500;
+    text-decoration: underline;
+    cursor: pointer;
   }
   .note.danger {
     color: var(--text-danger);

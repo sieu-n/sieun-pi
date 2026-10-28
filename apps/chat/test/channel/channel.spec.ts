@@ -41,3 +41,22 @@ test("Reply in thread on the hover bar opens that post's thread", async ({ page 
   await expect(page).toHaveURL(/thread=p4/);
   await expect(page.getByTestId("thread-pane")).toContainText("Canary send key");
 });
+
+test("a post shows at once while the server answers, and becomes the post once it does", async ({ page }) => {
+  await open(page, "#/c/ch_general");
+  await page.route("**/api/c/ch_general/send", async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    await route.continue();
+  });
+  const word = tag();
+  const input = composerInput(conversation(page));
+  await input.click();
+  await page.keyboard.type(`post ${word}`);
+  await page.keyboard.press("Enter");
+  await expect(input).toHaveText("");
+  const mine = conversation(page).locator(".row.own").filter({ hasText: `post ${word}` });
+  await expect(mine).toBeVisible({ timeout: 1_000 });
+  await expect(mine).toHaveAttribute("data-message-id", /^r:/);
+  await expect(mine).toHaveAttribute("data-message-id", /^p\d+$/, { timeout: 8_000 });
+  await expect(mine).toHaveCount(1);
+});

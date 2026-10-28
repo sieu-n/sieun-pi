@@ -15,7 +15,7 @@ test.afterEach(async ({ request }) => {
   made = [];
 });
 
-test("a new chat sends its first message to a real agent and the answer streams back into a bubble", async ({ page }) => {
+test("a new chat sends its first message to a real agent and the answer lands in a bubble", async ({ page }) => {
   await open(page, "#/c/new?kind=chat", "composer-input");
   await composerInput(page).click();
   const word = `pong${tag()}`;
@@ -36,8 +36,9 @@ test("Stop ends a long real answer", async ({ page, request }) => {
   await composerInput(conversation(page)).click();
   await page.keyboard.type("Write the numbers from 1 to 400 as words, one per line, with no other text.");
   await page.keyboard.press("Enter");
-  const live = conversation(page).locator("[data-live] .msg-text").last();
-  await expect(live).toContainText(/\w+/, { timeout: 200_000 });
+  // Nothing streams to the page: the live turn shows typing dots, so the answer gets a few seconds to start before Stop.
+  await expect(page.getByTestId("stop")).toBeVisible({ timeout: 200_000 });
+  await page.waitForTimeout(8_000);
   await page.getByTestId("stop").click();
   await expect(conversation(page).getByText("Response stopped").last()).toBeVisible({ timeout: 30_000 });
   await expect(page.getByTestId("stop")).toBeHidden({ timeout: 30_000 });

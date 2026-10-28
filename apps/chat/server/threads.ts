@@ -1,13 +1,13 @@
 /**
  * Threads, jobs and agents as the pages see them, built from pi-host's thread list and trees, and the live side: one host watch per
- * conversation a page has open, turned into item upserts, partial text and status.
+ * conversation a page has open, turned into item upserts and status. Nothing streams: a turn shows as each entry with text lands.
  */
 import type {
   AgentId, AgentSummary, ConversationId, ConversationSummary, Item, JobNode, LivePartial, ModelRef, Principal, RunStatus, ThinkingLevel, TimelinePage,
 } from "../web/src/lib/api/types.ts";
 import type { AgentEvent, DurableEvent, DurableThread, EntryRecord, Host, TreeNode } from "./host/types.ts";
 import type { Store } from "./store.ts";
-import { buildItems, entryOf, isInput, itemIdFor, turnKey, type TimelineContext } from "./timeline.ts";
+import { buildItems, entryOf, isInput, itemIdFor, type TimelineContext } from "./timeline.ts";
 
 export const OWNER: Principal = { id: "owner", kind: "owner", name: "You", avatar: { initials: "Me", hue: 210 } };
 
@@ -49,8 +49,8 @@ interface LiveConversation {
   recent: EntryRecord[];
   running: boolean;
   runningTools: Set<string>;
+  /** Always null: the page gets no partial text (see onEvent). */
   partial: LivePartial | null;
-  partialTimer?: NodeJS.Timeout;
   stop?: () => Promise<void>;
   watchers: number;
   ready: Promise<void>;
@@ -376,7 +376,6 @@ export class Threads {
     live.watchers -= 1;
     if (live.watchers > 0) return;
     this.live.delete(id);
-    clearTimeout(live.partialTimer);
     await live.stop?.().catch(() => undefined);
   }
 
@@ -410,14 +409,11 @@ export class Threads {
       return;
     }
     if (event.type !== "events" || event.conversation !== live.conversation) return;
+    // No streaming: partial text, thinking and tool calls never go to the page. Items go out when an input or an answer with text
+    // lands, and when a run starts (an empty live turn, drawn as typing dots) or ends; the rest of a turn shows with its next item.
     let changed = false;
     for (const agentEvent of event.events as AgentEvent[]) {
       switch (agentEvent.type) {
-        case "snapshot": {
-          const message = agentEvent.generation?.message;
-          if (message) this.setPartial(id, live, partialOf(live, message));
-          break;
-        }
         case "run_start":
           if (!live.running) {
             live.running = true;
@@ -428,36 +424,19 @@ export class Threads {
         case "run_end":
           live.running = false;
           live.runningTools.clear();
-          this.setPartial(id, live, null);
           changed = true;
           this.events.status(id, this.statusOfConversation(live.thread, live.conversation) === "sleeping" ? "sleeping" : "idle");
           break;
-        case "message_start":
-          if (agentEvent.message.role === "assistant") this.setPartial(id, live, partialOf(live, agentEvent.message));
-          break;
-        case "message_update":
-          for (const change of agentEvent.changes) {
-            const partial = live.partial ?? { itemId: currentTurnId(live), text: "", thinking: "" };
-            if (change.type === "text_delta") partial.text += (change as { delta?: string }).delta ?? "";
-            else if (change.type === "thinking_delta") partial.thinking += (change as { delta?: string }).delta ?? "";
-            else if (change.type === "toolcall_start") partial.tool = ((change as { block?: { name?: string } }).block?.name) ?? partial.tool;
-            else if (change.type === "message") Object.assign(partial, partialOf(live, (change as unknown as { message: { content: unknown } }).message));
-            this.setPartial(id, live, partial, true);
-          }
-          break;
         case "message_end":
         case "entry_appended":
-          if (this.addEntry(live, agentEvent.entry)) changed = true;
-          if (agentEvent.type === "message_end") this.setPartial(id, live, null);
+          if (this.addEntry(live, agentEvent.entry) && shows(agentEvent.entry)) changed = true;
           break;
         case "tool_execution_start":
           live.runningTools.add(agentEvent.toolCallId);
-          changed = true;
           break;
         case "tool_execution_end":
           live.runningTools.delete(agentEvent.toolCallId);
-          if (agentEvent.entry) this.addEntry(live, agentEvent.entry);
-          changed = true;
+          this.addEntry(live, agentEvent.entry);
           break;
         default:
           break;
@@ -478,33 +457,12 @@ export class Threads {
   private emitItems(id: ConversationId, live: LiveConversation): void {
     this.events.items(id, buildItems(live.recent, this.context(live.thread, live.conversation, live)));
   }
-
-  private setPartial(id: ConversationId, live: LiveConversation, partial: LivePartial | null, throttle = false): void {
-    live.partial = partial;
-    if (!throttle) {
-      clearTimeout(live.partialTimer);
-      live.partialTimer = undefined;
-      this.events.partial(id, partial ? { ...partial } : null);
-      return;
-    }
-    live.partialTimer ??= setTimeout(() => {
-      live.partialTimer = undefined;
-      this.events.partial(id, live.partial ? { ...live.partial } : null);
-    }, 80);
-  }
 }
 
-function currentTurnId(live: LiveConversation): string {
-  const input = live.recent.find(isInput);
-  return turnKey(input?.id ?? live.recent[0]?.id ?? 0);
-}
-
-function partialOf(live: LiveConversation, message: { content: unknown }): LivePartial {
-  const blocks = Array.isArray(message.content) ? (message.content as { type: string; text?: string; thinking?: string; name?: string }[]) : [];
-  return {
-    itemId: currentTurnId(live),
-    text: blocks.filter(b => b.type === "text").map(b => b.text ?? "").join(""),
-    thinking: blocks.filter(b => b.type === "thinking").map(b => b.thinking ?? "").join(""),
-    ...(blocks.some(b => b.type === "toolCall") ? { tool: blocks.findLast(b => b.type === "toolCall")?.name ?? "" } : {}),
-  };
+/** An entry the page sees at once: an input, or an answer with text. */
+function shows(entry: EntryRecord): boolean {
+  if (isInput(entry)) return true;
+  const message = entry.model?.[0];
+  if (message?.role !== "assistant") return false;
+  return typeof message.content === "string" ? !!message.content.trim() : message.content.some(b => b.type === "text" && b.text.trim());
 }

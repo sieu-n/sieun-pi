@@ -1,25 +1,8 @@
-import type { AgentSummary, Channel, Delivery, ImageUpload, Item, LivePartial, Principal, Step, TurnPlace } from "$lib/api";
+import type { AgentSummary, Channel, Delivery, ImageUpload, Item, Principal, Step, TurnPlace } from "$lib/api";
 import type { MarkdownContext } from "$lib/ui/markdown";
 
 export type TurnItem = Extract<Item, { kind: "turn" }>;
 export type MessageItem = Extract<Item, { kind: "message" }>;
-
-/** Folds the streaming partial into the live turn it belongs to, or adds a live turn when the item has not landed yet. */
-export function withPartial(items: readonly Item[], partial: LivePartial | null, author: Principal | null): Item[] {
-  if (!partial) return [...items];
-  const index = items.findIndex(item => item.id === partial.itemId);
-  const found = index >= 0 ? items[index] : undefined;
-  if (found?.kind === "turn") {
-    if (!found.live) return [...items];
-    const next = [...items];
-    next[index] = { ...found, text: partial.text.length >= found.text.length ? partial.text : found.text };
-    return next;
-  }
-  if (found || !author) return [...items];
-  const input = items.find(item => item.id === `e${partial.itemId.slice(1)}`);
-  const at = input ? input.at + 1 : Date.now();
-  return [...items, { kind: "turn", id: partial.itemId, at, author, text: partial.text, live: true, steps: [], images: [], jobs: [] }];
-}
 
 /** The line a step disclosure shows while folded: "Thought, ran bash and read" or "3 steps". */
 export function stepsSummary(steps: readonly Step[]): string {

@@ -35,6 +35,8 @@ export class FixtureHost implements Host {
   private readonly sinks = new Map<string, Set<Sink>>();
   /** Milliseconds between streamed words; tests set 0. */
   wordMs = 40;
+  /** Runs before each submit; a test makes pi-host slow (a promise that waits) or away (a throw). */
+  beforeSubmit?: (thread: string, input: SubmitInput) => void | Promise<void>;
   now = () => Date.now();
 
   // Seeding
@@ -111,6 +113,7 @@ export class FixtureHost implements Host {
   }
 
   async submit(id: string, input: SubmitInput): Promise<Submitted> {
+    await this.beforeSubmit?.(id, input);
     const thread = this.get(id);
     if (input.requestId && thread.byRequest.has(input.requestId)) return { submission: thread.byRequest.get(input.requestId)!, status: "placed", ticket: this.ticketOf(thread, input.conversation ?? 1) };
     const conversation = input.conversation ?? 1;

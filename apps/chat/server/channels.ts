@@ -154,7 +154,7 @@ export class Channels {
     const authors = [...new Set(replies.map(r => r.author))].slice(0, 3).map(a => this.threads.principal(a));
     return {
       kind: "message", id: post.id, at: post.at, author: this.threads.principal(post.author), text: post.text, images: post.images, mentions: post.mentions, seq: post.seq,
-      ...(post.threadRoot ? { threadRoot: post.threadRoot } : {}),
+      ...(post.threadRoot ? { threadRoot: post.threadRoot } : {}), ...(post.author === "owner" && post.requestId ? { requestId: post.requestId } : {}),
       ...(replies.length ? { thread: { replies: replies.length, lastAt: replies.at(-1)!.at, authors } } : {}),
       deliveries: post.deliveries.map(publicDelivery),
     };
@@ -197,7 +197,10 @@ export class Channels {
     return { root: this.item(rootPost, all), items: all.filter(p => p.threadRoot === root).map(p => this.item(p, all)) };
   }
 
-  /** Writes a post and routes each mention. The owner's posts carry hops 0. */
+  /**
+   * Writes a post and answers once it is on disk and on every watching page; each mention is routed behind it, and a delivery that
+   * cannot reach its agent reads `failed` on the post. The owner's posts carry hops 0.
+   */
   async post(id: string, author: "owner" | AgentId, request: SendRequest & { hops?: number; images?: never }, images: ImageRef[] = []): Promise<{ item: Item; deliveries: Delivery[] }> {
     const row = this.require(id);
     const posts = this.store.postsOf(row.id);
@@ -228,7 +231,7 @@ export class Channels {
       this.store.setDelivery(post, delivery);
     }
     this.emitPost(row, post);
-    await Promise.all(post.deliveries.map(d => this.deliver(row, post, d)));
+    for (const delivery of post.deliveries) void this.deliver(row, post, delivery).catch(error => this.log(`delivery ${post.id} to ${delivery.target} failed: ${String(error)}`));
     return { item: this.item(post), deliveries: post.deliveries.map(publicDelivery) };
   }
 

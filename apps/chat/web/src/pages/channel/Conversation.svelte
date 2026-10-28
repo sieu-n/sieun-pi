@@ -20,7 +20,7 @@
   import ThreadPane from "./ThreadPane.svelte";
   import Timeline from "./Timeline.svelte";
   import { directory } from "./directory.svelte";
-  import { avatarKind, mentionContext, placeText, withPartial, type Outgoing } from "./present";
+  import { avatarKind, mentionContext, placeText, type Outgoing } from "./present";
 
   type Props = { id: string; around?: string };
   let { id, around }: Props = $props();
@@ -40,13 +40,10 @@
   const isChannel = $derived(kind === "channel");
   const name = $derived(summary?.name ?? "");
   const agent = $derived(header?.agent ?? null);
-  const author = $derived(agent ? { id: agent.id, kind: agent.kind, name: agent.name, avatar: agent.avatar } : null);
-  const items = $derived(withPartial(store.items, store.partial, author));
+  const items = $derived(store.items);
   const waiting = $derived(store.status === "sleeping");
   const waitText = $derived(placeText(store.queue));
-  const liveLabel = $derived(
-    store.partial?.tool ? `Running ${store.partial.tool}` : store.partial?.thinking && !store.partial.text ? "Thinking" : waiting ? "Waiting for a model slot" : null,
-  );
+  const liveLabel = $derived(waiting ? "Waiting for a model slot" : null);
   const others = $derived(header?.members.filter((m) => m.principal.id !== "owner") ?? []);
   const working = $derived(store.status === "working");
   const workingNames = $derived(
@@ -173,8 +170,8 @@
     else router.navigate(boardHref(chatId, boardId));
   }
 
-  async function send(out: Outgoing) {
-    await store.send(out.text, { images: out.images, mentions: out.mentions });
+  function send(out: Outgoing): Promise<void> {
+    return store.send(out.text, { images: out.images, mentions: out.mentions });
   }
 
   function stop() {
@@ -273,6 +270,8 @@
     canReply={isChannel}
     {statusOf}
     onretry={() => location.reload()}
+    onretrysend={(item) => store.retrySend(item.id)}
+    ondiscardsend={(item) => store.discardSend(item.id)}
     onthread={openThread}
     oncopylink={(item) => copyLink(item)}
     {onmention}

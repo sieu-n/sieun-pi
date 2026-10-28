@@ -1,17 +1,19 @@
 /**
  * Wires the host seam, the chat server's store and the services, and holds the one live hub every page connects to over /api/live.
  */
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { WebSocket, WebSocketServer } from "ws";
 import type {
-  AgentSummary, ConversationHeader, ConversationId, Delivery, ConversationPatch, ConversationSummary, ImageRef, LiveCommand, LiveEvent, Me, ModelCatalog, ModelInfo, SendRequest, SendResult, Sidebar, ThinkingLevel,
+  AgentSummary, ConversationHeader, ConversationId, Delivery, ConversationPatch, ConversationSummary, ImageRef, Item, LiveCommand, LiveEvent, Me, ModelCatalog, ModelInfo, SendRequest, SendResult, Sidebar, ThinkingLevel,
+  TimelinePage,
 } from "../web/src/lib/api/types.ts";
 import type { AllowedModel } from "../../../config/allowed-models.ts";
 import { Boards } from "./boards.ts";
 import { Channels, publicDelivery } from "./channels.ts";
 import { DEFAULT_MODEL, type Config } from "./config.ts";
 import type { Host } from "./host/types.ts";
+import { Outbox, type OutboxRow } from "./outbox.ts";
 import { Search } from "./search.ts";
 import { Store } from "./store.ts";
 import { modelRef, OWNER, parseConversationId, Threads } from "./threads.ts";
@@ -43,6 +45,7 @@ export class App {
   readonly boards: Boards;
   readonly search: Search;
   readonly queues: QueueWatch;
+  readonly outbox: Outbox;
   private readonly clients = new Set<Client>();
   private sidebarTimer?: NodeJS.Timeout;
   private lastSidebar = "";
@@ -58,7 +61,10 @@ export class App {
         this.sidebarSoon();
       },
       conversations: changed => this.conversationsChanged(changed),
-      items: (conversation, items) => this.toWatchers(conversation, { type: "items", conversation, items }),
+      items: (conversation, items) => {
+        this.toWatchers(conversation, { type: "items", conversation, items });
+        this.outbox.reconcile(conversation, items);
+      },
       partial: (conversation, partial) => this.toWatchers(conversation, { type: "partial", conversation, partial }),
       status: (conversation, status) => {
         this.broadcast({ type: "status", conversation, status });
@@ -87,6 +93,14 @@ export class App {
     };
     this.search = new Search(host, this.threads, this.channels, config.fixture ? undefined : config.durableIndex);
     this.queues = new QueueWatch(host, this.threads, (conversation, place) => this.toWatchers(conversation, { type: "queue", conversation, place }), log);
+    this.outbox = new Outbox(config.dataDir, {
+      host,
+      submitted: (row, result) => this.queues.follow(row.conversation, result.ticket?.place ?? null),
+      mentions: row => this.deliverMentions(row),
+      changed: (conversation, items, removed) => this.toWatchers(conversation, { type: "items", conversation, items, ...(removed.length ? { removed } : {}) }),
+      image: ref => this.readUpload(ref),
+      log,
+    });
     this.wss.on("connection", socket => this.connect(socket));
   }
 
@@ -94,10 +108,12 @@ export class App {
     await this.threads.start(this.config.fixture ? 1000 : 2000);
     this.channels.resume();
     this.boards.start();
+    this.outbox.start();
   }
 
   async stop(): Promise<void> {
     this.boards.stop();
+    this.outbox.stop();
     this.queues.stop();
     clearTimeout(this.sidebarTimer);
     // The host client closes first: a watch's unwatch sent to a pi-host that restarts beside the chat retried for 30 s, past systemd's
@@ -162,29 +178,56 @@ export class App {
     return { summary, members, model: agent.model, thinkingLevel: agent.thinkingLevel, agent, queue: this.queues.place(id) };
   }
 
+  /**
+   * A send lands in the chat server and answers at once, as in Slack: a channel post is written and its mentions go out behind it, and
+   * a thread send goes to the outbox, which shows it on every watching page and hands it to pi-host with retries (server/outbox.ts).
+   */
   async send(id: ConversationId, request: SendRequest): Promise<SendResult> {
     if (!request.text?.trim() && !request.images?.length) throw new Error("A message needs text or an image.");
     if (!request.requestId) throw new Error("A send needs a requestId, so a retry lands once.");
-    const images = (request.images ?? []).map(image => this.saveUpload(image));
-    if (this.isChannel(id)) return this.channels.post(id, "owner", { ...request, images: undefined as never }, images);
-    const { thread, conversation } = parseConversationId(id);
+    if (this.isChannel(id)) {
+      const images = (request.images ?? []).map(image => this.saveUpload(image));
+      return this.channels.post(id, "owner", { ...request, images: undefined as never }, images);
+    }
+    const { thread } = parseConversationId(id);
     if (!this.threads.thread(thread)) throw new NotFound(`No thread ${thread}.`);
-    const submitted = await this.host.submit(thread, {
-      ...(conversation === 1 ? {} : { conversation }), text: request.text, ...(request.images?.length ? { images: request.images } : {}),
-      requestId: request.requestId, whenBusy: request.whenBusy ?? "steer", ownerTurn: true,
+    const open = this.outbox.get(request.requestId);
+    if (open && open.conversation !== id) throw new Error(`A requestId names one send; ${request.requestId} went to ${open.conversation}.`);
+    const images = open ? open.images : (request.images ?? []).map(image => this.saveUpload(image));
+    const item = this.outbox.add({
+      requestId: request.requestId, conversation: id, text: request.text ?? "", images, mentions: (request.mentions ?? []).filter(m => m !== id && m !== "owner"),
+      whenBusy: request.whenBusy ?? "steer",
     });
     this.store.state.reads[id] = { at: Date.now() };
     this.store.saveState();
-    const queue = waitingPlace(submitted.ticket?.place);
-    this.queues.follow(id, submitted.ticket?.place ?? null);
+    return { item, deliveries: item.kind === "message" ? item.deliveries : [] };
+  }
+
+  /** Tries a failed or waiting send again now. */
+  retrySend(id: ConversationId, requestId: string): SendResult {
+    const row = this.outbox.get(requestId);
+    if (!row || row.conversation !== id) throw new NotFound(`No pending send ${requestId} in ${id}.`);
+    const item = this.outbox.retry(requestId)!;
+    return { item, deliveries: row.deliveries };
+  }
+
+  /** Drops a pending send the owner gave up on. */
+  discardSend(id: ConversationId, requestId: string): void {
+    const row = this.outbox.get(requestId);
+    if (!row || row.conversation !== id) throw new NotFound(`No pending send ${requestId} in ${id}.`);
+    this.outbox.discard(requestId);
+  }
+
+  /** Each @mention in a thread send goes to that agent as an agent message from the owner, once the send reached pi-host. */
+  private async deliverMentions(row: OutboxRow): Promise<Delivery[]> {
     const deliveries: Delivery[] = [];
-    for (const target of (request.mentions ?? []).filter(m => m !== id && m !== "owner")) {
+    for (const target of row.mentions.filter(m => m !== row.conversation && m !== "owner")) {
       const where = parseConversationId(target);
       const name = this.threads.principal(target).name;
       try {
         const sent = await this.host.submit(where.thread, {
-          ...(where.conversation === 1 ? {} : { conversation: where.conversation }), text: request.text, requestId: `${request.requestId}:${target}`, whenBusy: "followUp",
-          entry: { kind: "agent.message", data: { from: "owner", via: id } }, ownerTurn: true,
+          ...(where.conversation === 1 ? {} : { conversation: where.conversation }), text: row.text, requestId: `${row.requestId}:${target}`, whenBusy: "followUp",
+          entry: { kind: "agent.message", data: { from: "owner", via: row.conversation } }, ownerTurn: true,
         });
         const place = waitingPlace(sent.ticket?.place);
         deliveries.push({ target, name, state: place?.state === "queued" ? "queued" : "delivered", at: Date.now(), ...(place ? { queue: place } : {}) });
@@ -193,14 +236,17 @@ export class App {
         deliveries.push({ target, name, state: "failed", at: Date.now(), error: error instanceof Error ? error.message : String(error) });
       }
     }
-    return {
-      item: {
-        kind: "message", id: `r:${request.requestId}`, at: Date.now(), author: OWNER, text: request.text, images, mentions: request.mentions ?? [], deliveries, pending: true,
-        ...(queue ? { queue } : {}),
-      },
-      deliveries,
-      queue,
-    };
+    return deliveries;
+  }
+
+  /** A timeline page; the newest page of a thread also carries the sends pi-host has not shown yet, after its entries. */
+  async items(id: ConversationId, opts: { before?: string; after?: string; around?: string; limit?: number }): Promise<TimelinePage> {
+    if (this.isChannel(id)) return this.channels.timeline(id, opts);
+    const page = await this.threads.timeline(id, opts);
+    this.outbox.reconcile(id, page.items);
+    if (opts.before || page.newer) return page;
+    const pending = this.outbox.items(id);
+    return pending.length ? { ...page, items: [...page.items, ...pending] } : page;
   }
 
   private saveUpload(image: { data: string; mimeType: string }): ImageRef {
@@ -208,6 +254,16 @@ export class App {
     const name = `${randomUUID()}.${ext}`;
     writeFileSync(this.store.imagePath(name), Buffer.from(image.data, "base64"));
     return { url: `/api/uploads/${name}`, mimeType: image.mimeType };
+  }
+
+  private readUpload(ref: ImageRef): { data: string; mimeType: string } | undefined {
+    const name = ref.url.startsWith("/api/uploads/") ? ref.url.slice("/api/uploads/".length).replace(/[^\w.-]/g, "") : "";
+    if (!name) return undefined;
+    try {
+      return { data: readFileSync(this.store.imagePath(name)).toString("base64"), mimeType: ref.mimeType };
+    } catch {
+      return undefined;
+    }
   }
 
   async abort(id: ConversationId): Promise<void> {
@@ -305,11 +361,13 @@ export class App {
       }
       if (command.after) {
         const page = await this.threads.timeline(command.conversation, { after: command.after, limit: 200 });
+        this.outbox.reconcile(command.conversation, page.items);
         if (page.items.length) this.send1(client, { type: "items", conversation: command.conversation, items: page.items });
       }
       const live = await this.threads.watch(command.conversation);
-      if (live.items.length) this.send1(client, { type: "items", conversation: command.conversation, items: live.items });
-      this.send1(client, { type: "partial", conversation: command.conversation, partial: live.partial });
+      this.outbox.reconcile(command.conversation, live.items);
+      const items: Item[] = [...live.items, ...this.outbox.items(command.conversation)];
+      if (items.length) this.send1(client, { type: "items", conversation: command.conversation, items });
       this.send1(client, { type: "status", conversation: command.conversation, status: live.status });
       this.send1(client, { type: "queue", conversation: command.conversation, place: this.queues.place(command.conversation) });
     } else if (command.type === "unwatch") {
