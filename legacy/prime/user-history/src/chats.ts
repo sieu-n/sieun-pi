@@ -1980,7 +1980,9 @@ export class Chats {
     catch (error) { this.log(`chat ${id.slice(0, 8)}: unmoved steps: ${error instanceof Error ? error.message : String(error)}`); return; }
     const now = this.now();
     const reads = rowOwnerReads(row, now);
-    const steps = unmovedSteps(board, now, everyMs, reads);
+    const chats = await this.source.rows().catch((): readonly SessionRow[] => []);
+    const others = board ? await linkedBoards(board, id, chat => this.source.board(chat), chats) : new Map<string, ChatBoard | null>();
+    const steps = unmovedSteps(board, now, everyMs, reads, { self: id, others, chats });
     if (!steps.length) { this.unmovedTold.delete(id); return; }
     const key = steps.map(step => step.id).join(",");
     const window = liveWindowMs(everyMs);

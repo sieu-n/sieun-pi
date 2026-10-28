@@ -1,4 +1,4 @@
-import { coversStep } from "./chat-board.ts";
+import { coversStep, firstClause } from "./chat-board.ts";
 import type { ChatBoard, OwnerTodo, PlanItem } from "./types.ts";
 
 /**
@@ -57,6 +57,26 @@ function chatNamed(before: string, chats: readonly NamedChat[]): string | null {
   }
   return found.size === 1 ? [...found][0]! : null;
 }
+/**
+ * The open step on another chat's board that the first clause of a step's wait names (`waitRefs`: "<session id> p476", "CI and RepoOps's
+ * p476"), if any. Such a wait hands the work to that chat, which owns it: its own check-in, its notices and d9 count that step when nobody moves
+ * it, so the waiting step counts once, at the step that carries the blocker. On 10-28 vent's p89 and p94 waited for "the next walked prod
+ * release" on an idle job with no wake and read stuck at each d9 run, while CI and RepoOps' p476 "The next production release goes out with
+ * the owner's go" carried that release with the release owner.
+ */
+export function handedStep(item: Pick<PlanItem, "waitFor">, self: ReadonlySet<string>, others: ReadonlyMap<string, ChatBoard | null | undefined>,
+  chats: readonly NamedChat[] = []): { chat: string; item: PlanItem } | undefined {
+  for (const ref of waitRefs(firstClause(item.waitFor ?? ""), chats).refs) {
+    if (ref.chat === null || self.has(ref.chat) || !ref.id.startsWith("p")) continue;
+    let found: PlanItem | undefined;
+    const visit = (items: readonly PlanItem[]): void => { for (const each of items) { if (each.id === ref.id) found = each; else visit(each.children); } };
+    visit(others.get(ref.chat)?.plan ?? []);
+    if (found && OPEN_STEP.has(found.status)) return { chat: ref.chat, item: found };
+  }
+  return undefined;
+}
+const OPEN_STEP: ReadonlySet<PlanItem["status"]> = new Set(["todo", "doing", "blocked"]);
+
 /** A todo as `holdingTodo` reads it: one of this chat's, or another chat's that a wait here links (`chat`, its session id). */
 export type HoldingTodo = Pick<OwnerTodo, "id" | "text" | "step" | "reply" | "done" | "from"> & { chat?: string };
 

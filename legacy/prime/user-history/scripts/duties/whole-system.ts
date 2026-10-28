@@ -996,8 +996,8 @@ export function planCounts(input: PlanInputs): { stuck: StuckSteps[]; redDuties:
       // p101 waited on "01a15427-145f-751d-ba15-d27b6c30f65f t30", sep launch!!'s open ask to wake the Mac, and counted as stuck.
       const own = input.boards?.get(chat.id);
       const board = own ? withLinkedBoards(own, chat.id, input.boards!) : own;
-      const items = unmovedSteps(board, input.now, chat.everyMs, { activity: input.ownerActivity ?? new Map(), live, named: input.named?.get(chat.id) ?? new Map() })
-        .map(item => item.id);
+      const items = unmovedSteps(board, input.now, chat.everyMs, { activity: input.ownerActivity ?? new Map(), live, named: input.named?.get(chat.id) ?? new Map() },
+        { self: chat.id, others: input.boards ?? new Map(), chats: input.chats.map(each => ({ id: each.id, name: each.name })) }).map(item => item.id);
       const held = new Map<string, HostHold>();
       const unmoved: PlanItem[] = [];
       walk(board?.plan ?? [], item => {

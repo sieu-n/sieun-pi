@@ -1,7 +1,7 @@
 import { OWNER_WAIT } from "./shared/chat-board.ts";
 import { type HostHold, holdWords } from "./shared/host-hold.ts";
-import { heldByTodo } from "./shared/todo-hold.ts";
-import type { OwnerTodo, PlanItem, SessionRow } from "./shared/types.ts";
+import { handedStep, heldByTodo } from "./shared/todo-hold.ts";
+import type { ChatBoard, OwnerTodo, PlanItem, SessionRow } from "./shared/types.ts";
 import { landWaitCommits, type WakeWatch } from "./checkin-load.ts";
 import { zTime } from "./checkin-goals.ts";
 import { stallWords } from "./shared/stalled-calls.ts";
@@ -72,7 +72,8 @@ export interface EndStateView { view: StepView; state: EndState; reason: string;
 
 /**
  * The end state of one open leaf step, rules in order. A parked step (an owner correction in force), a step whose owner is a working job or a
- * working thread, and a step whose wait names a working job of this chat (`waitCarrier`, from `facts`) are fine; a step the chat owns is moving when it changed within STEP_STALE_MS and waits on nothing. Next an explicit For you
+ * working thread, a step whose wait names a working job of this chat (`waitCarrier`, from `facts`) and a step whose wait hands it to another
+ * chat's open step (`handedStep`) are fine; a step the chat owns is moving when it changed within STEP_STALE_MS and waits on nothing. Next an explicit For you
  * link (`heldByTodo`), then a job on a box that reads offline while an open For you todo asks the owner to bring it back (`hostHeld`). Every
  * other step is stuck, by what it waits on: the owner with no todo, a release, a CI run, another thread, an event,
  * a time; else its job ended or is gone, else it has no owner.
@@ -93,6 +94,8 @@ export function endState(view: StepView, todos: Parameters<typeof heldByTodo>[1]
   if (carrier) return out("moving", `its wait is on ${ownerLabel(carrier)}, which ${carrier.wake ? `sleeps on ${carrier.wake}` : "works on it"}`);
   const carried = movers.steps ? stepCarrier(item, movers.steps) : undefined;
   if (carried) return out("moving", carriedText(carried));
+  const handed = movers.linked ? handedStep(item, self, movers.linked, rows) : undefined;
+  if (handed) return out("moving", `its wait is on ${handed.item.id} ${quote(handed.item.text)} of chat ${rows.find(row => row.id === handed.chat)?.name ?? handed.chat}, which owns it`);
   const mover = outsideMover(view, movers, rows, self, now);
   if (mover) return out("moving", mover);
   if (mine && !wait && !item.waitUntil && now - view.changedAt < STEP_STALE_MS) return out("moving", "the chat changed it within 2 h");
@@ -170,7 +173,9 @@ export interface Movers { watches?: ReadonlyMap<string, WakeWatch>; queued?: Rea
   /** The live owners that carry each plan item (`stepCarriers`), for a step whose wait names another step (`stepCarrier`). Absent: none. */
   steps?: ReadonlyMap<string, readonly JobFact[]>;
   /** The box the chat runs on (absent: this box) and each offline box an open For you todo asks the owner to bring back (`hostHolds`). Absent: none. */
-  hosts?: { chatHost?: string; held: ReadonlyMap<string, HostHold> } }
+  hosts?: { chatHost?: string; held: ReadonlyMap<string, HostHold> };
+  /** The other chats' boards this chat's waits name (`linkedBoards`), for a wait that hands a step to another chat's open step (`handedStep`). */
+  linked?: ReadonlyMap<string, ChatBoard | null> }
 
 /**
  * The chat's own time wake that owns a step with no job: a pending board.wake of one of the chat's sessions (`self`) whose note names the step

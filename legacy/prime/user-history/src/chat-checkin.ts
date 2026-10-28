@@ -175,7 +175,7 @@ export function checkInPrecheck(previous: CheckInMemory | undefined, facts: read
   // two lines with two different asks (34 steps from 10-13 09:15 to 23:59 KST, VP of CI's nine waits on the secrets cache at 14:29 among them).
   const onOthers = new Set(blocked.map(block => block.view.item.id));
   const movers = { watches: wakeWatches(context.wakes ?? [], context.train, context.carried), queued,
-    steps: carriers, ...context.hosts ? { hosts: context.hosts } : {} };
+    steps: carriers, ...context.hosts ? { hosts: context.hosts } : {}, ...context.linked ? { linked: context.linked } : {} };
   const working = new Set<string>();
   walk(board?.plan ?? [], item => { if (OPEN.has(item.status) && ownerOf(item, facts)?.state === "working") working.add(item.id); });
   const doneFacts = { ...context.doneFacts ?? NO_FACTS, working };

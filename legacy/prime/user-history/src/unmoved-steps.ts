@@ -2,7 +2,7 @@ import { clockTime } from "./checkin-settings.ts";
 import { liveWindowMs, OPEN, parkedBy, quote, walk } from "./checkin-steps.ts";
 import { BRIEF_ITEMS } from "./shared/brief-cap.ts";
 import { jobSession } from "./shared/chat-board.ts";
-import { heldByTodo } from "./shared/todo-hold.ts";
+import { handedStep, heldByTodo, type NamedChat } from "./shared/todo-hold.ts";
 import type { ChatBoard, PlanItem, SessionRow } from "./shared/types.ts";
 
 /**
@@ -46,10 +46,15 @@ export interface OwnerReads {
 /**
  * The open leaf steps of a board that nobody moves, read from the board and the step owners alone. A step is held when an open For you todo
  * links it (its step field or `heldByTodo`) or an owner correction parks it (`parkedBy`), and moving when one of its owners (`stepSessions`)
- * sleeps on a board.wake, waits for its pi-pool slot (`live`) or wrote within the check-in's live window (`liveWindowMs`). d9 counts a paused
+ * sleeps on a board.wake, waits for its pi-pool slot (`live`) or wrote within the check-in's live window (`liveWindowMs`), or when its wait hands
+ * it to another chat's open step (`handedStep`, read only with `links`), which that chat owns. d9 counts a paused
  * chat's stuck steps with it, and the chat service tells every chat the same steps as they go stuck (`unmovedNotice`).
  */
-export function unmovedSteps(board: ChatBoard | null | undefined, now: number, everyMs: number | undefined, { activity, live, named }: OwnerReads): PlanItem[] {
+/** The other chats' boards a step's wait can hand it to (`handedStep`), with this chat's id and the chat names a wait may use. */
+export interface WaitLinks { self: string; others: ReadonlyMap<string, ChatBoard | null | undefined>; chats?: readonly NamedChat[] }
+
+export function unmovedSteps(board: ChatBoard | null | undefined, now: number, everyMs: number | undefined, { activity, live, named }: OwnerReads,
+  links?: WaitLinks): PlanItem[] {
   const todos = board?.todos ?? [];
   const asked = new Set(todos.filter(todo => !todo.done && todo.step).map(todo => todo.step));
   const window = liveWindowMs(everyMs ?? Infinity);
@@ -57,6 +62,7 @@ export function unmovedSteps(board: ChatBoard | null | undefined, now: number, e
   walk(board?.plan ?? [], item => {
     if (!OPEN.has(item.status) || item.children.some(child => OPEN.has(child.status))) return;
     if (asked.has(item.id) || heldByTodo(item, todos) || parkedBy(item) !== undefined) return;
+    if (links && handedStep(item, new Set([links.self]), links.others, links.chats)) return;
     if (stepSessions(item, named).some(session => live.has(session) || now - (activity.get(session) ?? -Infinity) <= window)) return;
     out.push(item);
   });
@@ -101,5 +107,6 @@ export function unmovedNotice(lines: readonly string[], windowMs: number, detail
   return `${one ? "This open step has" : "These open steps have"} no live owner: nobody wrote on ${one ? "it" : "them"} for ${Math.round(windowMs / 60_000)} min, ` +
     `and no board.wake, pi-pool slot or open For you todo holds ${one ? "it" : "them"}, so d9 counts ${one ? "it" : "them"} as stuck: ${listed.join("; ")}. ` +
     "Give each one a live owner now: send its job the next action or start a job for it, have the job that waits on something set a board.wake for it, " +
-    "link it to the open For you todo it waits on, or close it with its evidence.";
+    "link it to the open For you todo it waits on, start its wait with the other chat's step that carries the blocker, such as the release owner's " +
+    "step for a prod release (\"<chat name>'s p123\"), or close it with its evidence.";
 }

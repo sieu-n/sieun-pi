@@ -23,10 +23,10 @@ const p132 = (fields: Partial<PlanItem> = {}): PlanItem => ({ id: "p132", text: 
 const job = (fields: Partial<ChatAgent> = {}): ChatAgent => ({ key: "child:sub-1", childId: "sub-1", sessionId: JOB, name: "prod off metal02 code", job: "sub-1",
   sender: "prod off metal02 code", link: "subagent", state: "idle", steps: ["p132"], lastActivityAt: ended, ...fields });
 
-interface Rig { steps?: PlanItem[]; todos?: ChatBoard["todos"]; agents?: ChatAgent[]; paused?: boolean; minutes?: number[]; duty?: string[] }
+interface Rig { steps?: PlanItem[]; todos?: ChatBoard["todos"]; agents?: ChatAgent[]; paused?: boolean; minutes?: number[]; duty?: string[]; others?: Record<string, ChatBoard> }
 
 /** The steers the chat gets over one tick at each of `minutes` after the job's last write. */
-async function told({ steps = [p132()], todos = [], agents = [job()], paused = true, minutes = [33], duty }: Rig): Promise<string[]> {
+async function told({ steps = [p132()], todos = [], agents = [job()], paused = true, minutes = [33], duty, others = {} }: Rig): Promise<string[]> {
   const dir = await mkdtemp(join(tmpdir(), "unmoved-steps-"));
   try {
     const index = new IdIndex(join(dir, "chats.json"), "Chat index");
@@ -37,7 +37,7 @@ async function told({ steps = [p132()], todos = [], agents = [job()], paused = t
     const rows = (): SessionRow[] => [row(CHAT, "2026-10-27T17:26:00Z", { chat: true, agents })];
     const calls: string[] = [];
     const chats = new Chats(index, fakeThreads(calls), async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")),
-      { ...source(dir, { [CHAT]: board }, () => now, rows), duty: dutySink().duty, ...duty ? { dutyJobs: async () => duty } : {} }, () => {});
+      { ...source(dir, { [CHAT]: board, ...others }, () => now, rows), duty: dutySink().duty, ...duty ? { dutyJobs: async () => duty } : {} }, () => {});
     await chats.adopt();
     for (const minute of minutes) {
       now = Date.parse(ended) + minute * MIN;
@@ -80,4 +80,12 @@ test("a step with no owner, or one handed back to a chat that went quiet, is tol
   const lines = await told({ steps: [{ id: "p132", text: TITLE, status: "doing", children: [] }], agents: [] });
   assert.match(lines[0] ?? "", /p132 "Move every prod workload.*" is doing \(no owner\)/);
   assert.match((await told({ steps: [{ id: "p132", text: TITLE, status: "doing", job: CHAT, children: [] }], agents: [] }))[0] ?? "", /\(01a14d31-6ec0-7005-bbe8-c38b7ae73cfb, quiet since \d\d:\d\d\)/);
+});
+
+test("a step whose wait hands it to another chat's open step is that chat's to move, and is not told", async () => {
+  const CREW = "01a115e2-9544-7204-b8db-8ce4d5319048";
+  const crew = (status: PlanItem["status"]): ChatBoard => ({ v: 2, rev: 1, updatedAt: ended, todos: [], plan: [{ id: "p1021", text: "Ship the c180 commits to prod", status, children: [] }] });
+  const handed = [p132({ waitFor: `${CREW} p1021 going live with the c180 commits` })];
+  assert.deepEqual(await told({ steps: handed, others: { [CREW]: crew("doing") } }), []);
+  assert.equal((await told({ steps: handed, others: { [CREW]: crew("done") } })).length, 1, "once p1021 closed, the wait is over and the step is told");
 });
