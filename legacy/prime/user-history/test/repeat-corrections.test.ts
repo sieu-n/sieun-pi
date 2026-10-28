@@ -84,6 +84,25 @@ test("an old rule given again in another chat counts (c18, frontend bro 10-19 13
   assert.deepEqual(await count({ corrections: [c18] }, histories), [`c18 ${words}`]);
 });
 
+test("a second repeat in the same chat and burst of the owner's messages counts once, and one after the burst or in another chat counts (c78, frontend bro 10-27)", async () => {
+  const fb = { id: "01a11ba8-9d2c-727c-8ded-38f819ca9f29", name: "frontend bro" };
+  const broken = "why is 5180 one broken? i said i want it to be like Inbox/Outreach template's sidebar?";
+  const shared = "make sure things that should be shared are only written once and shared at the code level";
+  const later = "component 통합. EVERYWHERE. to the second style. all apps, systematically clear duplicate";
+  const c78: Correction = { id: "c78", at: "2026-10-15T15:39:01.484Z", chat: fb, words: "PLEASE FOR THE LOVE OF GOD USE CONSISTENT COMPONENTS.",
+    rule: "UI jobs use one shared component set.", enforcedBy: "test", ref: "auto-sns-agent 0e90bb1421", status: "active", theme: ["ui", "component"],
+    repeats: [{ at: "2026-10-27T17:09:09.376Z", chat: fb, words: broken }, { at: "2026-10-27T17:12:57.730Z", chat: fb, words: shared },
+      { at: "2026-10-27T19:44:12.632Z", chat: fb, words: later }] };
+  const owner = [{ text: broken, at: at("2026-10-27T17:08:51Z") }, { text: shared, at: at("2026-10-27T17:12:40Z") }, { text: later, at: at("2026-10-27T19:43:55Z") }];
+  const window = (ledger: Ledger, histories: Record<string, ChatHistory>) => repeatsBetween(ledger, at("2026-10-22T00:00:00Z"), at("2026-10-29T00:00:00Z"),
+    async id => histories[id] ?? { owner: [], refines: [] }, async () => at("2026-10-22T12:16:00Z"));
+  const words = async (ledger: Ledger, histories: Record<string, ChatHistory>) => (await window(ledger, histories)).map(({ repeat }) => repeat.words);
+  assert.deepEqual(await words({ corrections: [c78] }, { [fb.id]: { owner, refines: [] } }), [broken, later]);
+  const other = { id: "01a1164b-0000-7000-8000-000000000000", name: "another chat" };
+  const elsewhere = { ...c78, repeats: [c78.repeats[0]!, { ...c78.repeats[1]!, chat: other }] };
+  assert.deepEqual(await words({ corrections: [elsewhere] }, { [fb.id]: { owner, refines: [] }, [other.id]: { owner, refines: [] } }), [broken, shared]);
+});
+
 test("a repeat whose words the owner never wrote in the chat does not count", async () => {
   assert.deepEqual(await count({ corrections: [c103] }, { [chat.id]: { owner: vpOwner.slice(0, 1), refines: [] } }), []);
 });

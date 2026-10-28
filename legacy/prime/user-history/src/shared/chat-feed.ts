@@ -45,6 +45,11 @@ const DECISION_STEER_PREFIX = "[board] Decisions not on the scratchpad: ";
  * d11 counted it as his unanswered burst.
  */
 export const D9_PUSH_PREFIX = "[d9 push ";
+/**
+ * The gap that ends one burst of the owner's messages in a chat: a message less than this after his previous one is the same burst. d11's
+ * unanswered_bursts (owner-messages.ts) wants one reply per burst, and repeat_corrections_7d counts one repeat of a correction per burst.
+ */
+export const OWNER_BURST_GAP_MS = 10 * 60_000;
 const SERVER_NOTES: readonly [string, string][] = [[CHECK_IN_PREFIX, "check-in"], [JOB_NOTICE_PREFIX, "jobs"], [REPLY_CHECK_PREFIX, "reply check"], [BRIEF_CHECK_PREFIX, "brief check"],
   [CORRECTION_CHECK_PREFIX, "corrections"], [OPS_STEER_PREFIX, "board"], [DECISION_STEER_PREFIX, "board"], [D9_PUSH_PREFIX, "d9"],
   ["Prime Agent restarted after an update", "Prime"], ["Watchdog recovery checkpoint", "watchdog"]];

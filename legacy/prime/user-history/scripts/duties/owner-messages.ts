@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import { Projector } from "../../src/chat-projection.ts";
 import { readBranchPage, historyMessages } from "../../src/session-tail.ts";
-import { chatLines, lineId, OWNER_RETRY_MARK, serverNote } from "../../src/shared/chat-feed.ts";
+import { chatLines, lineId, OWNER_BURST_GAP_MS, OWNER_RETRY_MARK, serverNote } from "../../src/shared/chat-feed.ts";
 import { isPromptCustom, messageText } from "../../src/shared/turns.ts";
 import { noiseAging, noiseLastEvent, noiseMetrics, noiseSide, splitNoise } from "./noise-split.ts";
 import { fixRepos, gitCommitTime } from "./repeat-split.ts";
@@ -39,7 +39,6 @@ const ANSWER_GRACE_MS = 30 * 60_000;
  * label it: on 10-24 the 01:35Z run met, its job left the 00:54Z CI and RepoOps line unlabeled, and the 01:55Z run read unlabeled_lines 1.
  */
 const UNCOUNTED = "not counted yet, label it in this run even when every metric is met, since the next run counts it; ";
-const BURST_GAP_MS = 10 * 60_000;
 const PLACES = [join(homedir(), ".prime/agent/sessions"), join(homedir(), ".cache/sieun-pi/hosts/mac/Users/sieunpark/.prime/agent/sessions")];
 
 const args = process.argv.slice(2);
@@ -115,7 +114,7 @@ for (const chat of chats) {
     const line = seq[k]!;
     if (line.kind !== "user" || line.at < start || line.at > end - ANSWER_GRACE_MS) continue;
     const next = seq[k + 1];
-    if (next?.kind === "user" && next.at - line.at < BURST_GAP_MS) continue;
+    if (next?.kind === "user" && next.at - line.at < OWNER_BURST_GAP_MS) continue;
     if (!seq.slice(k + 1).some(later => later.kind === "agent")) {
       unanswered++;
       flagged.push({ kind: "unanswered", chat, at: line.at, excerpt: `no reply to: ${line.text.replace(/\s+/g, " ").slice(0, 300)}` });

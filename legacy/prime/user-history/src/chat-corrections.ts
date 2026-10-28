@@ -2,6 +2,7 @@ import { join } from "node:path";
 import { missing, readJsonFile, transactJsonFile, type JsonFile } from "./locked-json.ts";
 import { refineCovers } from "./correction-refine.ts";
 import { normal } from "./shared/brief-check.ts";
+import { OWNER_BURST_GAP_MS } from "./shared/chat-feed.ts";
 
 export const CORRECTION_TOOL = "correction_add";
 export const CORRECTIONS_FILE = "corrections.json";
@@ -453,6 +454,10 @@ export interface ChatHistory { owner: readonly Timed[]; refines: readonly Timed[
  *    at 09:17Z he wrote "wheres the campaign app i requested?"; the fix b90f0cc4 landed on 10-20. A line in another chat, or a day or more
  *    later, still counts: c48's 10-19 17:16Z line in frontend bro came 7 days after he first gave it there, and c18's 13:51Z line came in
  *    frontend bro while c18 was first given in the AI harness chat.
+ * 4. A second repeat of the entry in the same chat and the same burst of his messages (`OWNER_BURST_GAP_MS` after the one before it), since he
+ *    gave the correction again once. On 10-27 frontend bro filed c78 at 17:09Z ("why is 5180 one broken? i said i want it to be like
+ *    Inbox/Outreach template's sidebar?") and at 17:12Z ("make sure things that should be shared are only written once and shared at the code
+ *    level"), and d10 read 15 repeats where he had said one again on 14 occasions. His 19:44Z line there, 2.5 h later, still counts.
  */
 export interface CountedRepeat { entry: Correction; repeat: CorrectionRepeat; /** When the owner wrote it, in ms: his message's own time. */ said: number }
 export async function repeatsBetween(ledger: Ledger, since: number, until: number, history: (chat: string) => Promise<ChatHistory>,
@@ -469,11 +474,18 @@ export async function repeatsBetween(ledger: Ledger, since: number, until: numbe
   for (const entry of new Set(inWindow.filter(({ entry, repeat }) => repeat.chat.id === entry.chat.id).map(({ entry }) => entry))) fixed.set(entry, await firstFix(entry));
   const chase = (entry: Correction, repeat: CorrectionRepeat, said: number): boolean => repeat.chat.id === entry.chat.id &&
     said - Date.parse(entry.at) < CHASE_MS && said <= (fixed.get(entry) ?? Infinity);
-  return inWindow.flatMap(({ entry, repeat }) => {
+  const counted = inWindow.flatMap(({ entry, repeat }) => {
     const said = (chats.get(repeat.chat.id)?.owner ?? []).filter(message => ownerSaid(repeat.words, [message.text]));
     const filed = said.filter(message => message.at <= Date.parse(repeat.at));
     const message = (filed.length ? filed : said).at(-1);
     return message !== undefined && message.at > inForce(entry) && !chase(entry, repeat, message.at) ? [{ entry, repeat, said: message.at }] : [];
+  }).sort((a, b) => a.said - b.said);
+  const previous = new Map<string, number>();
+  return counted.filter(({ entry, repeat, said }) => {
+    const key = `${entry.id} ${repeat.chat.id}`;
+    const before = previous.get(key);
+    previous.set(key, said);
+    return before === undefined || said - before >= OWNER_BURST_GAP_MS;
   }).sort((a, b) => a.repeat.at.localeCompare(b.repeat.at));
 }
 /** How long after a correction a line in its own chat reads as a chase while no fix has landed: a day, the owner's "the next day" (10-09). */
