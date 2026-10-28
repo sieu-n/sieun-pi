@@ -154,6 +154,7 @@ test("wakes set through the route survive a restart of the chat server", async t
   assert.equal(none.status, 400);
   await first.close();
   assert.equal(readdirSync(join(dataDir, "wakes")).filter(name => name.endsWith(".json")).length, 3);
+  writeFileSync(join(dataDir, "wakes", `${thread}-1-time-old.json`), JSON.stringify({ id: `${thread}-1-time-old`, thread, at, text: `It is ${new Date(at).toISOString()}. file of the old chat` }));
   await new Promise(done => setTimeout(done, Math.max(0, at - Date.now()) + 100));
   const second = await start({ dataDir });
   t.after(() => second.close());
@@ -161,12 +162,13 @@ test("wakes set through the route survive a restart of the chat server", async t
   const end = Date.now() + 40_000;
   while ((await wakes()).length < 1 && Date.now() < end) await new Promise(done => setTimeout(done, 50));
   const got = await wakes();
-  assert.equal(got.length, 1, "one message carries both due wakes of the conversation");
+  assert.equal(got.length, 1, "one message carries every due wake of the conversation");
   assert.deepEqual(got[0]!.data, { from: "board", via: "wake" });
   const text = (got[0]!.model![0] as { content: { type: string; text: string }[] }).content[0]!.text;
   const lines = text.split("\n");
-  assert.equal(lines.length, 2);
+  assert.equal(lines.length, 3);
   assert.ok(lines.every(line => line.startsWith("[wake] It is ")));
-  assert.ok(lines.some(line => line.includes("Your note: after restart")) && lines.some(line => line.includes("Your note: old kernel")));
+  assert.ok(lines.some(line => line.includes("Your note: after restart")) && lines.some(line => line.includes("Your note: old kernel"))
+    && lines.some(line => line.includes("Your note: file of the old chat")));
   assert.deepEqual(readdirSync(join(dataDir, "wakes")).filter(name => name.endsWith(".json")).length, 1, "the check wake waits on");
 });

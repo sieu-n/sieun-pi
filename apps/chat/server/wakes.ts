@@ -3,6 +3,7 @@
  * (legacy/prime/user-history/src/wakes.ts), imported as they are. This file only names a thread's conversation as a wake "session", arms a wake
  * from the board skill's request, and hands a due wake to pi-host as an agent message from "board", which the turn wrappers mark as not the owner's.
  */
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   cacheWatch, type CheckResult, parseWake, readRunState, runCheck, runStamp, startWakes, type Wake, type WakeDeps,
@@ -65,8 +66,29 @@ export interface ThreadWakeOptions {
   check?: WakeDeps["check"];
 }
 
+/**
+ * Rewrites each time wake that apps/chat wrote before it took run and check wakes (`{id, thread, conversation?, at, text}`) in the legacy
+ * format, which the ticker would otherwise remove as not a wake.
+ */
+export function adoptOldWakes(dir: string, log: (line: string) => void): void {
+  let names: string[] = [];
+  try { names = readdirSync(dir).filter(name => name.endsWith(".json")); } catch { return; }
+  for (const name of names) {
+    try {
+      const old = JSON.parse(readFileSync(join(dir, name), "utf8")) as Record<string, unknown>;
+      if (typeof old.thread !== "string" || old.on !== undefined || old.session !== undefined) continue;
+      const { wake } = parseArm(old.thread, old, Date.now());
+      writeJson(join(dir, name), wake);
+      log(`wakes: ${name} moved to the legacy format`);
+    } catch (error) {
+      log(`wakes: ${name} not moved: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+}
+
 /** Starts the legacy ticker on `dir`, delivering to pi-host threads; returns its stop. */
 export function startThreadWakes(options: ThreadWakeOptions): () => void {
+  adoptOldWakes(options.dir, options.log);
   const stale = cacheWatch(options.log);
   return startWakes({
     dir: options.dir, log: options.log, ...(options.now ? { now: options.now } : {}), ...(options.check ? { check: options.check } : {}),
