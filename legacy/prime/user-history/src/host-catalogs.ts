@@ -78,13 +78,16 @@ export class HostCatalogs {
    * `copies` keeps each box's copy on disk (`copyPath`) so a restart lists nothing; tests leave it off. `reach` reads which boxes are offline
    * (src/host-reach.ts); the watch and the outbox share it, so one Tailscale read serves them all.
    */
+  /** A new client for each full list of a box (`PeerOptions.fullClient`); a test that fakes a box's client points this at it. */
+  fullListClient: (host: Host) => DaemonClient = host => new DaemonClient(this.bridge.socketPath(host.name));
+
   constructor(readonly registry: HostsRegistry, private readonly bridge: HostBridge, readonly self: Host | null = selfHost(registry),
     private readonly log: (line: string) => void = () => {}, copies = false,
     readonly reach: HostReach = new HostReach({ addressOf: name => registry.hosts.find(host => host.name === name)?.address, log })) {
     for (const host of registry.hosts) {
       if (host.name === self?.name) continue;
       const client = new DaemonClient(bridge.socketPath(host.name));
-      const peer = new SessionPeer({ name: host.name, client, file: copies ? copyPath(host.name) : null, deadlines: { socketMs: 5000, helloMs: 10_000, subscribeMs: 30_000 },
+      const peer = new SessionPeer({ name: host.name, client, fullClient: () => this.fullListClient(host), file: copies ? copyPath(host.name) : null, deadlines: { socketMs: 5000, helloMs: 10_000, subscribeMs: 30_000 },
         changeMs: CHANGE_DEBOUNCE_MS, reconnectMs: RECONNECT_MS, pollMs: REMOTE_POLL_MS, reach: () => this.away(host), log: line => this.log(`hosts: ${line}`),
         onChange: () => { if (copies) this.pruneCopies(host.name); this.onChange(); } });
       this.remotes.set(host.name, { host, client, peer });

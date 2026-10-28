@@ -160,6 +160,13 @@ export type PeerOptions = {
   /** The box's hosts.json name, for logs and errors. */
   name: string;
   client: DaemonClient;
+  /**
+   * A new client for one full list, closed once it answers. Unset, the full list goes through `client`, and every reply on that link waits
+   * behind its answer: on 10-28 the Mac's supervisor answered get_state in 6 ms at 16:19:11Z and 16:19:35Z, and the chat on us-metal02 read
+   * the first as a 30 s timeout and the second after 26.8 s, at 16:20:02.6Z, when the Mac's 2,869-row full list that began at 16:18:20Z ended.
+   * Each 30 min resync held the idle checks on that link 7.9 to 21.8 s the same way that day.
+   */
+  fullClient?: () => DaemonClient;
   /** Where the copy is kept across restarts; null keeps it in memory only. */
   file: string | null;
   /** Deadlines of the socket connect, the daemon hello and roster_subscribe on this link. */
@@ -324,10 +331,17 @@ export class SessionPeer {
   }
 
   private async request(all: boolean): Promise<SessionSummary[]> {
-    // No deadline: the list keeps running until the box answers or the link closes, and a slow one only delays the copy.
-    const response = await this.options.client.request(all ? { type: "list", all: true } : { type: "list" }, 2 ** 31 - 1, { recoverable: false });
-    if (!response.success) throw new Error(response.error);
-    return parseSummaries(response.data);
+    const own = all ? this.options.fullClient?.() : undefined;
+    try {
+      if (own) {
+        await own.reconnect(this.options.deadlines.socketMs);
+        await own.waitForHello(this.options.deadlines.helloMs);
+      }
+      // No deadline: the list keeps running until the box answers or the link closes, and a slow one only delays the copy.
+      const response = await (own ?? this.options.client).request(all ? { type: "list", all: true } : { type: "list" }, 2 ** 31 - 1, { recoverable: false });
+      if (!response.success) throw new Error(response.error);
+      return parseSummaries(response.data);
+    } finally { own?.close(); }
   }
 
   private async roster(): Promise<void> {

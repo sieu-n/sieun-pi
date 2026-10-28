@@ -816,6 +816,9 @@ export class Catalog {
   }, PROJECTION_LOG_MS).unref();
   private closed = false;
 
+  /** A new client for each full list of this box (`PeerOptions.fullClient`); a test that fakes `client` points this at it. */
+  fullListClient: () => DaemonClient = () => new DaemonClient(this.socketPath);
+
   constructor(private readonly socketPath: string, private readonly readState: ChatReadState, private readonly labels: ChatLabels, private readonly chats: Pick<Chats, "ids" | "checkIns" | "links"> & Partial<Pick<Chats, "briefs" | "archivedIds" | "roster">>,
     private readonly origins: ThreadOrigins, private readonly hosts: HostCatalogs | null = null, copyFile: string | null = null, private readonly agentsFile: string | null = null) {
     this.client = new DaemonClient(socketPath);
@@ -825,7 +828,7 @@ export class Catalog {
     // The link waits 30 s for the socket and the hello, as daemon-list.ts does for d9. With 1.5 s waits, service.log on us-metal02 held 374 calls
     // to this box's daemon that failed on the hello by 10-27, the link's own syncs and the service commands that went through it, while probes got
     // the supervisor's hello after 3 to 7 s (~/work/prime-under-load/LOGS.md).
-    this.peer = new SessionPeer({ name: hosts?.selfName ?? "this box", client: this.client, file: copyFile, deadlines: { socketMs: CATALOG_LINK_MS, helloMs: CATALOG_LINK_MS }, changeMs: 150,
+    this.peer = new SessionPeer({ name: hosts?.selfName ?? "this box", client: this.client, fullClient: () => this.fullListClient(), file: copyFile, deadlines: { socketMs: CATALOG_LINK_MS, helloMs: CATALOG_LINK_MS }, changeMs: 150,
       reconnectMs: 2000, log: line => process.stderr.write(`catalog: ${line}\n`), onChange: () => this.peerChanged(),
       onHello: hello => {
         this.observedDaemonVersion = { version: hello.appVersion };

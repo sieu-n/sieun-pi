@@ -24,6 +24,7 @@ async function catalogBesideOfflineMac(t: TestContext, listFirst: boolean) {
   const hosts = { selfName: "us-metal02", onChange: () => {}, start: () => {}, close: () => {}, allListed: () => false, allSynced: () => false, loaded: async () => {},
     hostOf: () => null, isActive: () => false, rows: () => [], hostRows: () => [], client: () => null, ready: async () => null };
   const catalog = new Catalog("unused", reads, labels, chats, new ThreadOrigins({ ids: async () => [] }), hosts as unknown as HostCatalogs);
+  catalog.fullListClient = () => catalog.client;
   t.after(() => catalog.close());
   let connected = false;
   t.mock.method(catalog.client, "reconnect", async () => { connected = true; });

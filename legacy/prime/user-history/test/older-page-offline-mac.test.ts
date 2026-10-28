@@ -25,6 +25,7 @@ test("a lookup of an old session the rows lack answers without listing the roste
   t.mock.method(labels, "snapshot", async () => ({ tags: [], threads: {} }));
   const ids = { ids: async () => new Set<string>(), checkIns: async () => new Map(), links: async () => ({ children: [], board: null, roots: [], messages: [] }) };
   const catalog = new Catalog("unused", reads, labels, ids, new ThreadOrigins({ ids: async () => [] }));
+  catalog.fullListClient = () => catalog.client;
   t.after(() => catalog.close());
   const asked: string[] = [];
   let connected = false;
