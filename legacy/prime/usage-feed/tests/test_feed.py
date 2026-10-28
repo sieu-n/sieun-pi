@@ -29,7 +29,7 @@ class Feed(unittest.TestCase):
         self.dir = Path(tempfile.mkdtemp())
         self.files = []
         self.usage = feed.Usage()
-        self.tail = feed.Tail(lambda: iter(self.files))
+        self.tail = feed.Tail(lambda: iter(self.files), walk_every_s=0)
 
     def transcript(self, name, text):
         path = self.dir / name
@@ -125,6 +125,43 @@ class Feed(unittest.TestCase):
         (prime / "sessions" / "--home-sieun-ws--" / "notes.txt").write_text("x")
         found = sorted(path.name for path in feed.transcripts(prime))
         self.assertEqual(found, ["2026-10-27T07-34-36-470Z_b.jsonl", "a.jsonl", "c.jsonl"])
+
+    def test_between_walks_only_files_that_grew_since_the_walk_before_are_read(self):
+        clock, walks = [1000.0], []
+        busy = self.transcript("busy.jsonl", lines(HEADER))
+        quiet = self.transcript("quiet.jsonl", lines(HEADER))
+        tail = feed.Tail(lambda: walks.append(clock[0]) or iter(self.files), clock=lambda: clock[0])
+        tail.read(self.usage)
+        busy.write_text(busy.read_text() + lines(call()))
+        clock[0] += feed.WALK_EVERY_S
+        self.assertEqual(tail.read(self.usage), 1)
+        self.assertEqual(tail.hot, {busy})
+        busy.write_text(busy.read_text() + lines(call()))
+        quiet.write_text(quiet.read_text() + lines(call()))
+        clock[0] += feed.INTERVAL_S
+        self.assertEqual(tail.read(self.usage), 1)
+        self.assertEqual(len(walks), 2)
+        clock[0] += feed.WALK_EVERY_S
+        self.assertEqual(tail.read(self.usage), 1)
+        self.assertEqual(len(walks), 3)
+        self.assertEqual(tail.hot, {busy, quiet})
+
+    def test_a_new_file_waits_for_the_next_walk_and_is_read_from_its_start(self):
+        clock = [1000.0]
+        tail = feed.Tail(lambda: iter(self.files), clock=lambda: clock[0])
+        tail.read(self.usage)
+        self.transcript("new.jsonl", lines(HEADER, call(), call()))
+        clock[0] += feed.INTERVAL_S
+        self.assertEqual(tail.read(self.usage), 0)
+        clock[0] += feed.WALK_EVERY_S
+        self.assertEqual(tail.read(self.usage), 2)
+
+    def test_a_walk_forgets_files_that_are_gone(self):
+        path = self.transcript("gone.jsonl", lines(HEADER))
+        self.tail.read(self.usage)
+        self.files.remove(path)
+        self.tail.read(self.usage)
+        self.assertNotIn(path, self.tail.offsets)
 
 if __name__ == "__main__":
     unittest.main()

@@ -24,7 +24,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Dict, Iterator, List, Optional, Tuple
+from typing import Callable, Dict, Iterator, List, Optional, Set, Tuple
 
 HOME = Path.home()
 PRIME = HOME / ".prime/agent"
@@ -36,6 +36,9 @@ DATASOURCE = "estate_prometheus_stg"
 INTERVAL_S = 10
 # How often the feed asks LGTM whether Prime's own exporter writes this box's series.
 HANDOFF_EVERY_S = 60
+# How often the feed walks the transcript folders for new files; between walks it reads only the files that grew since the walk before.
+# measured: on the Mac on 10-29 one walk of 13,801 transcripts took 0.32 to 0.44 s of CPU and a stat of every one 0.06 s, so the walk on each 10 s tick cost 4.7% of a core (2 h 28 min of CPU in 64 h).
+WALK_EVERY_S = 60
 FEED = "transcripts"
 # A session point goes out for this long after its last call, then stops: lgtm.ts rates() reads a session's live speed over [1m], and two
 # windows of 10 s exports keep two samples in it. Before 10-23 every session point went out every 10 s for the feed's whole life, so one feed
@@ -197,47 +200,65 @@ def header_session(path: Path) -> Optional[str]:
 
 class Tail:
     """Byte offsets per transcript. A file seen at the first scan starts at its end, so only calls after the feed started count;
-    a file that shows up later is read from its start. A file that shrank starts again at its new end."""
+    a file that shows up later is read from its start. A file that shrank starts again at its new end. The folders are walked once
+    every `walk_every_s`; a read between walks looks only at the files that grew since the walk before, so a file that starts to grow
+    again after a quiet window is read at the next walk, from where it stopped."""
 
-    def __init__(self, files: Callable[[], Iterator[Path]]):
-        self.files = files
+    def __init__(self, files: Callable[[], Iterator[Path]], walk_every_s: float = WALK_EVERY_S, clock: Callable[[], float] = time.time):
+        self.files, self.walk_every_s, self.clock = files, walk_every_s, clock
         self.offsets: Dict[Path, int] = {}
         self.sessions: Dict[Path, Optional[str]] = {}
         self.started = False
+        self.walked_at: Optional[float] = None
+        self.hot: Set[Path] = set()
+        self.grew: Set[Path] = set()
 
     def read(self, usage: Usage) -> int:
-        calls = 0
-        for path in self.files():
-            try:
-                size = path.stat().st_size
-            except OSError:
-                continue
-            if path not in self.offsets:
-                self.offsets[path] = 0 if self.started else size
-                self.sessions[path] = header_session(path)
-            offset = self.offsets[path]
-            if size < offset:
-                self.offsets[path] = size
-                continue
-            if size == offset:
-                continue
-            with open(path, "rb") as handle:
-                handle.seek(offset)
-                chunk = handle.read(size - offset)
-            end = chunk.rfind(b"\n") + 1
-            if self.sessions[path] is None:
-                self.sessions[path] = header_session(path)
-            for line in chunk[:end].splitlines():
-                if b'"assistant"' not in line:
-                    continue
-                try:
-                    entry = json.loads(line)
-                except ValueError:
-                    continue
-                if isinstance(entry, dict) and usage.record(entry, self.sessions[path]):
-                    calls += 1
-            self.offsets[path] = offset + end
+        now = self.clock()
+        walk = self.walked_at is None or now - self.walked_at >= self.walk_every_s
+        paths = list(self.files()) if walk else list(self.hot)
+        calls = sum(self.read_one(path, usage) for path in paths)
+        if walk:
+            self.walked_at = now
+            seen = set(paths)
+            self.offsets = {path: offset for path, offset in self.offsets.items() if path in seen}
+            self.sessions = {path: session for path, session in self.sessions.items() if path in seen}
+            self.hot, self.grew = self.grew, set()
         self.started = True
+        return calls
+
+    def read_one(self, path: Path, usage: Usage) -> int:
+        try:
+            size = path.stat().st_size
+        except OSError:
+            return 0
+        if path not in self.offsets:
+            self.offsets[path] = 0 if self.started else size
+            self.sessions[path] = header_session(path)
+        offset = self.offsets[path]
+        if size == offset:
+            return 0
+        self.grew.add(path)
+        if size < offset:
+            self.offsets[path] = size
+            return 0
+        with open(path, "rb") as handle:
+            handle.seek(offset)
+            chunk = handle.read(size - offset)
+        end = chunk.rfind(b"\n") + 1
+        if self.sessions[path] is None:
+            self.sessions[path] = header_session(path)
+        calls = 0
+        for line in chunk[:end].splitlines():
+            if b'"assistant"' not in line:
+                continue
+            try:
+                entry = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(entry, dict) and usage.record(entry, self.sessions[path]):
+                calls += 1
+        self.offsets[path] = offset + end
         return calls
 
 
