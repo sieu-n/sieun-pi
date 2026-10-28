@@ -15,9 +15,9 @@ export const REPEAT_SIDES = ["before_fix", "after_fix", "no_fix"] as const;
 export type RepeatSide = (typeof REPEAT_SIDES)[number];
 export interface SplitRepeat extends CountedRepeat {
   side: RepeatSide;
-  /** When the newest fix the entry's ref names landed, in ms. */
+  /** For an after_fix line, when the newest fix in place as the owner said it landed (the fix that failed); otherwise the newest fix any ref names, in ms. */
   fixed?: number;
-  /** For a before_fix line, when the first fix at or after the owner said it landed: the time the line turned before_fix (`splitLastEvents`). */
+  /** When the first fix at or after the owner said it landed: when a before_fix line turned before_fix, or an after_fix line was fixed again (`splitLastEvents`). */
   flipped?: number;
 }
 
@@ -25,6 +25,11 @@ export interface SplitRepeat extends CountedRepeat {
 const HASH = /(?<![\w./-])(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}(?![\w])/g;
 /** A chat message id: the send time in ms, base 36, such as mvfilflf for 10-19 17:14:48Z. */
 const MESSAGE = /(?<![\w./-])m[0-9a-z]{7}(?![\w])/g;
+/**
+ * The words before a commit that a test fails on, the old tip a fix was proved against and no fix: c157's ref says its test "fails on fc7490a1",
+ * a pi-pool commit of 10-27, and c78's says shared-ui.test.ts "fails at 8883b9521a", a feature commit that landed before the owner's 10-27 repeat.
+ */
+const OLD_TIP = /\bfail(?:s|ed)? (?:on|at) $/;
 /** A /refine id: its UTC time to the ms, such as refine_20261022063009003 for 10-22 06:30:09.003Z. */
 const REFINE = /(?<![\w./-])refine_(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})(\d{3})(?!\d)/g;
 
@@ -35,7 +40,7 @@ const REFINE = /(?<![\w./-])refine_(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})(\d
  */
 export function fixMarks(ref: string, given: number, now: number): { commits: string[]; messages: number[]; refines: number[] } {
   const inWindow = (at: number) => at >= given && at <= now;
-  const commits = [...new Set(ref.match(HASH) ?? [])];
+  const commits = [...new Set([...ref.matchAll(HASH)].filter(match => !OLD_TIP.test(ref.slice(0, match.index))).map(([hash]) => hash))];
   const messages = (ref.match(MESSAGE) ?? []).map(id => parseInt(id, 36)).filter(inWindow);
   const refines = [...ref.matchAll(REFINE)].map(([, y, mo, d, h, mi, s, ms]) => Date.UTC(+y!, +mo! - 1, +d!, +h!, +mi!, +s!, +ms!)).filter(inWindow);
   return { commits, messages, refines };
@@ -66,12 +71,22 @@ export async function firstFixLanded(ref: string, given: number, now: number, co
 /** A repeat the owner wrote after the fix landed is `after_fix`; at or before it, `before_fix`; with no landed fix, `no_fix`. */
 export const repeatSide = (said: number, fixed: number | undefined): RepeatSide => fixed === undefined ? "no_fix" : said > fixed ? "after_fix" : "before_fix";
 
+/**
+ * Each repeat's side against the fixes in place when the owner said it: any fix that landed after the correction and before his words makes it
+ * after_fix, however many fixes landed since. Judged against the newest fix alone, every repeat read before_fix once the next fix landed, and
+ * d10's onMiss skips before_fix lines as needing no work. At 17:53Z on 10-28 the split read 14 before_fix and 0 after_fix, while 9 of those 14
+ * came after a fix that had landed, such as c117's 10-27 18:43Z line after seven tell_owner checks and c78's three 10-27 lines after
+ * 0e90bb1421; p1240 then only waited for them to age out.
+ */
 export async function splitRepeats(repeats: readonly CountedRepeat[], now: number, commitTime: (hash: string) => Promise<number | undefined>): Promise<SplitRepeat[]> {
   return Promise.all(repeats.map(async repeat => {
-    const times = await fixTimes(fixRefs(repeat.entry), Date.parse(repeat.entry.at), now, commitTime);
-    const fixed = times.length ? Math.max(...times) : undefined;
-    const side = repeatSide(repeat.said, fixed);
-    const flipped = side === "before_fix" ? Math.min(...times.filter(time => time >= repeat.said)) : undefined;
+    const given = Date.parse(repeat.entry.at);
+    const times = await fixTimes(fixRefs(repeat.entry), given, now, commitTime);
+    const held = times.filter(time => time >= given && time < repeat.said);
+    const later = times.filter(time => time >= repeat.said);
+    const side: RepeatSide = held.length ? "after_fix" : later.length ? "before_fix" : "no_fix";
+    const fixed = held.length ? Math.max(...held) : times.length ? Math.max(...times) : undefined;
+    const flipped = later.length ? Math.min(...later) : undefined;
     return { ...repeat, side, ...(fixed === undefined ? {} : { fixed }), ...(flipped === undefined ? {} : { flipped }) };
   }));
 }
@@ -89,25 +104,29 @@ export function splitMetrics(split: readonly SplitRepeat[]): Record<`repeats_${R
  * fix jobs (p770, p793) could not move it. A later commit the ref gains is no change to the line: d10's 02:44Z run on 10-28 read 13 before_fix
  * lines dated 01:48Z by db3b622, a wake note touch-up c117's ref gained after 18b73ec8 had flipped its 18:43Z repeat at 22:45Z, and was told to
  * "change approach" for the 118th run in a row, though the newest flip, 22:45Z, came before the 01:44Z run.
- * An after_fix or no_fix line is open: the owner said it again after any fix, and it needs work until a new fix lands and turns it before_fix.
- * Its `said` would read quiet a run later with the work still undone, so an open line dates its count `now` and keeps it live. An empty count
- * has no event and no `lastEventAt`.
+ * An after_fix line changed last when a fix after the owner said it landed (`flipped`), the same way, and stays after_fix in the count: the
+ * fix in place when he said it failed. A no_fix line, and an after_fix line with no fix since, is open: it needs work until a fix lands. Its
+ * `said` would read quiet a run later with the work still undone, so an open line dates its count `now` and keeps it live. An empty count has
+ * no event and no `lastEventAt`.
  */
 export function splitLastEvents(split: readonly SplitRepeat[], now: number): Partial<Record<"repeat_corrections_7d" | `repeats_${RepeatSide}_7d`, number>> {
-  const fixes = split.filter(repeat => repeat.side === "before_fix").map(repeat => repeat.flipped ?? repeat.fixed!);
-  const open = split.some(repeat => repeat.side !== "before_fix");
+  const settled = (repeat: SplitRepeat): number | undefined => repeat.side === "before_fix" ? repeat.flipped ?? repeat.fixed! : repeat.side === "after_fix" ? repeat.flipped : undefined;
   const events: Partial<Record<"repeat_corrections_7d" | `repeats_${RepeatSide}_7d`, number>> = {};
-  if (fixes.length) events.repeats_before_fix_7d = Math.max(...fixes);
-  for (const side of ["after_fix", "no_fix"] as const) if (split.some(repeat => repeat.side === side)) events[`repeats_${side}_7d`] = now;
-  if (open) events.repeat_corrections_7d = now;
-  else if (fixes.length) events.repeat_corrections_7d = Math.max(...fixes);
+  for (const side of REPEAT_SIDES) {
+    const lines = split.filter(repeat => repeat.side === side);
+    if (lines.length) events[`repeats_${side}_7d`] = lines.some(repeat => settled(repeat) === undefined) ? now : Math.max(...lines.map(repeat => settled(repeat)!));
+  }
+  if (split.length) events.repeat_corrections_7d = split.some(repeat => settled(repeat) === undefined) ? now : Math.max(...split.map(repeat => settled(repeat)!));
   return events;
 }
 
-/** The line's lead in the flagged excerpt, such as "after fix of 10-19 07:16Z". */
+const minute = (time: number): string => new Date(time).toISOString().slice(5, 16).replace("T", " ") + "Z";
+/** The line's lead in the flagged excerpt, such as "after fix of 10-19 07:16Z" or "after fix of 10-22 12:16Z, fixed again 10-27 18:48Z". */
 export function sideLabel(repeat: SplitRepeat): string {
-  const fixed = repeat.fixed === undefined ? "" : ` of ${new Date(repeat.fixed).toISOString().slice(5, 16).replace("T", " ")}Z`;
-  return repeat.side === "no_fix" ? "no landed fix" : `${repeat.side === "after_fix" ? "after" : "before"} fix${fixed}`;
+  const fixed = repeat.fixed === undefined ? "" : ` of ${minute(repeat.fixed)}`;
+  if (repeat.side === "no_fix") return "no landed fix";
+  if (repeat.side === "before_fix") return `before fix${fixed}`;
+  return `after fix${fixed}${repeat.flipped === undefined ? "" : `, fixed again ${minute(repeat.flipped)}`}`;
 }
 
 /** The checkouts a ref's commits live in: sieun-pi on the box and on the Mac, and auto-sns-agent. */

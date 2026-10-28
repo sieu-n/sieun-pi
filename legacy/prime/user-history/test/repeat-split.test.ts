@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { applyCorrection, fixRefs, parseLedger, type CountedRepeat, type Correction } from "../src/chat-corrections.ts";
-import { firstFixLanded, fixLanded, fixMarks, gitCommitTime, sideLabel, splitMetrics, splitRepeats } from "../scripts/duties/repeat-split.ts";
+import { firstFixLanded, fixLanded, fixMarks, gitCommitTime, sideLabel, splitLastEvents, splitMetrics, splitRepeats } from "../scripts/duties/repeat-split.ts";
 import { measureHarness } from "../scripts/duties/harness-health.ts";
 
 const at = Date.parse;
@@ -99,4 +99,31 @@ test("a /refine id is a fix that landed at its UTC time, and one from before the
   assert.equal(split!.side, "before_fix");
   assert.equal(sideLabel(split!), "before fix of 10-22 06:30Z");
   assert.equal(await firstFixLanded(c104.ref, at(c104.at), later, commitTime), at("2026-10-22T06:30:09.003Z"));
+});
+
+test("a repeat after any fix in place when the owner said it is after_fix, though a newer fix landed since (c117 and c78, 10-27; p1253)", async () => {
+  const times: Record<string, string> = { b084c910: "2026-10-21T09:40:00Z", "18b73ec8": "2026-10-27T22:45:00Z", "0e90bb1421": "2026-10-22T12:16:55Z",
+    "11b61b76c5": "2026-10-27T18:48:18Z", fc7490a1: "2026-10-27T20:00:00Z", "5f353fe0": "2026-10-27T22:30:00Z" };
+  const time = async (hash: string) => times[hash] ? at(times[hash]!) : undefined;
+  const later = at("2026-10-28T17:53:00Z");
+  const c117 = { ...entry("c117", "2026-10-19T06:02:55.151Z", "sieun-pi 18b73ec8 (unread counts only lines sent to the owner)"),
+    pastRefs: [{ ref: "tell_owner checks b084c910", until: "2026-10-27T22:51:24.515Z" }] };
+  const c78 = { ...entry("c78", "2026-10-15T15:39:01.484Z", "auto-sns-agent 11b61b76c5 (shared-ui.test.ts maps each page to its shape)"),
+    pastRefs: [{ ref: "shared-ui.test.ts extended in 0e90bb1421", until: "2026-10-27T23:38:42.735Z" }] };
+  const split = await splitRepeats([counted(c117, "2026-10-27T18:43:55.446Z"), counted(c78, "2026-10-27T17:09:09.376Z", fb), counted(c78, "2026-10-22T11:32:44.624Z", fb)], later, time);
+  assert.deepEqual(split.map(item => item.side), ["after_fix", "after_fix", "before_fix"]);
+  assert.deepEqual(split.map(sideLabel), ["after fix of 10-21 09:40Z, fixed again 10-27 22:45Z", "after fix of 10-22 12:16Z, fixed again 10-27 18:48Z", "before fix of 10-27 18:48Z"]);
+  assert.deepEqual(splitMetrics(split), { repeats_before_fix_7d: 1, repeats_after_fix_7d: 2, repeats_no_fix_7d: 0 });
+  // Fixed again since, so the lines date the counts at the newest such fix and read quiet, as before_fix lines do.
+  assert.deepEqual(splitLastEvents(split, later), { repeats_before_fix_7d: at(times["0e90bb1421"]!), repeats_after_fix_7d: at(times["18b73ec8"]!), repeat_corrections_7d: at(times["18b73ec8"]!) });
+  // An after_fix line with no fix since stays open.
+  const [open] = await splitRepeats([counted({ ...c117, ref: "tell_owner checks b084c910", pastRefs: [] }, "2026-10-27T18:43:55.446Z")], later, time);
+  assert.equal(sideLabel(open!), "after fix of 10-21 09:40Z");
+  assert.deepEqual(splitLastEvents([open!], later), { repeats_after_fix_7d: later, repeat_corrections_7d: later });
+  // The commit a test fails on is the old tip, no fix: c157's ref names fc7490a1, a pi-pool commit that landed before nothing of c157's.
+  const c157 = entry("c157", "2026-10-22T04:56:58.979Z", "sieun-pi 5f353fe0 (test token-cost-c157.test.ts fails on fc7490a1)");
+  assert.deepEqual(fixMarks(c157.ref, at(c157.at), later).commits, ["5f353fe0"]);
+  assert.deepEqual(fixMarks("shared-ui.test.ts (fails at 8883b9521a on a layout, passes at 7979da5081)", at(c78.at), later).commits, ["7979da5081"]);
+  const [cost] = await splitRepeats([counted(c157, "2026-10-27T21:00:00Z")], later, time);
+  assert.equal(cost!.side, "before_fix");
 });
