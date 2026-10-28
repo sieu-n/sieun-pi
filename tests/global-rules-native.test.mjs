@@ -57,7 +57,7 @@ test("Prime's own loader discovers the global link, reloads edited modules, and 
   const blocked = { type: "tool_call", toolCallId: "native", toolName: "bash", input: { command: send } };
 
   let extension = await load();
-  assert.deepEqual([...extension.handlers.keys()].sort(), ["tool_call"]);
+  assert.deepEqual([...extension.handlers.keys()].sort(), ["agent_end", "tool_call"]);
   const toolCall = () => extension.handlers.get("tool_call")[0](blocked, ctx);
   assert.match((await toolCall()).reason, /^global-rules send guard/);
   const ipython = { ...blocked, toolName: "ipython", input: { code: `bash("${send}")` } };

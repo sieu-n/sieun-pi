@@ -57,6 +57,13 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	}
 
 	try {
+		const asideTabs: typeof import("./aside-tabs.ts") = await import(join(dir, "aside-tabs.ts"));
+		pi.on("agent_end", (_event, ctx) => asideTabs.onAgentEnd(ctx));
+	} catch (error) {
+		loadFailed("aside-tabs.ts", error);
+	}
+
+	try {
 		const autoSnsAgent: typeof import("./auto-sns-agent.ts") = await import(join(dir, "auto-sns-agent.ts"));
 		await autoSnsAgent.register(pi);
 	} catch (error) {

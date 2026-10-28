@@ -699,8 +699,23 @@ def past_limit(message: str, elapsed: float) -> bool:
     return "other side closed" in message and elapsed >= REPL_LIMIT_S
 
 
+# rlm.repl's own texts when this process has no Prime host, such as the detached close that sieun-rules' aside-tabs.ts starts at a job's turn end.
+_NO_HOST = ("repl runtime is not serving", "host connection closed")
+
+
+def _no_host(exc: BaseException | None) -> bool:
+    while exc is not None:
+        if any(s in str(exc) for s in _NO_HOST):
+            return True
+        exc = exc.__cause__ or exc.__context__
+    return False
+
+
 async def _call(tool: str, arguments: dict[str, Any]) -> str:
-    from rlm import mcp
+    try:
+        from rlm import mcp
+    except ImportError:
+        return await _cli_fallback(tool, arguments)
 
     try:
         try:
@@ -716,6 +731,8 @@ async def _call(tool: str, arguments: dict[str, Any]) -> str:
     except KeyError:
         return await _cli_fallback(tool, arguments)
     except Exception as exc:  # McpToolError and transport errors
+        if _no_host(exc):
+            return await _cli_fallback(tool, arguments)
         raise AsideError(str(exc)) from exc
     if isinstance(result, str):
         return result
@@ -1200,8 +1217,8 @@ async def close_own_tabs() -> list[str]:
 async def sweep_stale_tabs() -> list[str]:
     """Close the Aside tabs of agent kernels on this host that have exited, and drop their records. Returns the closed targetIds.
 
-    open_tab() and tabs() run this first, so a tab lives about as long as the kernel that opened it. Tabs the owner opened
-    have no record, so the sweep never touches them.
+    open_tab() and tabs() run this first, for the tabs of a kernel that exited before its job's turn end closed them. Tabs the
+    owner opened have no record, so the sweep never touches them.
     """
     folder = _state_dir()
     stale: dict[str, list[str]] = {}

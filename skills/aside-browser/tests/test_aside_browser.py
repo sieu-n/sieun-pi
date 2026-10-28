@@ -257,6 +257,23 @@ class TabOwnershipTests(Base):
         self.assertEqual(self.call(ab.close_own_tabs()), ["MINE"])
         self.assertEqual(list(ab._owned_tabs()), ["STUCK"])
 
+    def test_close_own_tabs_from_a_process_with_no_prime_host_uses_the_cli(self):
+        """sieun-rules' aside-tabs.ts closes a job's tabs at its turn end from a fresh kernel-venv python, where rlm.mcp has no host."""
+        ab._remember(["MINE"], "https://example.com/")
+        try:
+            raise RuntimeError("repl runtime is not serving")
+        except RuntimeError as cause:
+            no_host = RuntimeError("Could not load MCP configuration for 'aside'")
+            no_host.__cause__ = cause
+        self.fake(no_host)
+        ran = subprocess.CompletedProcess([], 0, stdout='[ok | 20ms]\n{"closed":["MINE"],"left":[]}\n', stderr="")
+        with patch.object(ab.subprocess, "run", return_value=ran) as cli:
+            self.assertEqual(self.call(ab.close_own_tabs()), ["MINE"])
+        self.assertEqual(cli.call_args.args[0][1], "repl")
+        self.assertIn('["MINE"]', cli.call_args.args[0][2])
+        self.assertEqual(ab._owned_tabs(), {})
+        self.assertFalse(os.path.exists(ab._registry_path()))
+
     def test_close_tab_refuses_foreign_tab_without_sending_close(self):
         mcp = self.fake('{"targetId":"OTHER","closed":false,"left":1}')
         with self.assertRaises(ab.AsideError) as caught:
