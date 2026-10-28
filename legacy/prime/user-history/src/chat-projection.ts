@@ -59,6 +59,13 @@ export class ImageStore {
  */
 const argumentLimit = (tool: string, key: string): number => tool === TELL_OWNER_TOOL && key === "text" ? USER_TEXT_LIMIT : ARGUMENT_LIMIT;
 
+/**
+ * An agent message keeps up to USER_TEXT_LIMIT, since the job cleanup reads a job's last report for words that it still waits (`parkedWork`).
+ * (temp) mcp 10-28: "updated release page" sent a 2,153-character report ending "I'm waiting for p40", the cut at NOTE_LIMIT dropped those
+ * words, and the cleanup deleted the job at 18:18:10Z as finished.
+ */
+const customLimit = (customType: string): number => customType === "agent_message" ? USER_TEXT_LIMIT : NOTE_LIMIT;
+
 function clip(text: string, limit: number): { text: string; truncated: boolean } {
   return text.length > limit ? { text: text.slice(0, limit), truncated: true } : { text, truncated: false };
 }
@@ -136,7 +143,7 @@ export class Projector {
       case "user": return this.user(message.content, message.timestamp);
       case "assistant": return this.assistant(message);
       case "toolResult": return this.toolResult(message);
-      case "custom": return message.display ? { role: "custom", customType: message.customType, content: this.userContent(message.content, NOTE_LIMIT), timestamp: message.timestamp } : null;
+      case "custom": return message.display ? { role: "custom", customType: message.customType, content: this.userContent(message.content, customLimit(message.customType)), timestamp: message.timestamp } : null;
       case "bashExecution": {
         const output = clip(message.output, TEXT_LIMIT);
         return { role: "bashExecution", command: message.command, output: output.text, ...(message.exitCode === undefined ? {} : { exitCode: message.exitCode }),

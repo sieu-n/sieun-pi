@@ -752,6 +752,8 @@ export function idleRoots(agents: readonly ChatAgent[], board: ChatBoard | null,
  * report (AI harness 10-14) listed "'released'" among the words a waitFor can name.
  */
 const PARKED_WORK = /\b(?:at|on|for|after|until|relay|forward)\s+(?:(?:your|Fable's|the release driver's)\s+)?["'\u2018\u201c]released["'\u2019\u201d]|\bstill (?:waiting|wait) (?:for|on)\b|\b(?:I'm|I am) waiting (?:for|on)\b|\bwait (?:is )?armed\b|\b(?:my|the) wait follows\b|\btimer (?:is )?(?:set|armed)\b|\bonce it(?:'s|\u2019s| is) (?:on prod|promoted|landed|live)\b|\bparked (?:pushes|items?|work)\b/i;
+/** What a report the projection cut before its end counts as: its end is unread, so it may say the job still waits, and the job is kept. */
+const CUT_REPORT = "a report cut before its end";
 /** The words of a job's message that say it holds parked work (PARKED_WORK), or undefined. */
 export const parkedWork = (text: string): string | undefined => PARKED_WORK.exec(text)?.[0];
 /** Messages a job sends this close together are one reply (instagram access canary 10-14 01:49:41Z: one reply in two messages, 1 ms apart). */
@@ -789,8 +791,9 @@ function jobMessage(message: { role: string; customType?: string; content?: unkn
   const text = typeof message.content === "string" ? message.content
     : Array.isArray(message.content) ? message.content.map(part => typeof part === "object" && part && "text" in part ? String((part as { text: unknown }).text) : "").join("") : "";
   const head = agentMessageHead(text);
+  const cut = Array.isArray(message.content) && message.content.some(part => typeof part === "object" && part !== null && (part as { truncated?: unknown }).truncated === true);
   const read: ReadJobMessage | null = head ? { name: head.name, at: message.timestamp ?? 0, text: head.body.split("\n").map(line => line.trim()).find(Boolean) ?? "",
-    facts: noteFacts(head.body).length > 0, parked: parkedWork(head.body) } : null;
+    facts: noteFacts(head.body).length > 0, parked: parkedWork(head.body) ?? (cut ? CUT_REPORT : undefined) } : null;
   readJobMessages.set(message, read);
   return read;
 }
