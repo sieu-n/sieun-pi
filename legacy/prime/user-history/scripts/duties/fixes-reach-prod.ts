@@ -1,5 +1,7 @@
 import { realpathSync } from "node:fs";
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { writeFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
@@ -8,12 +10,16 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  * The Fixes reach prod duty's precheck (`node --import tsx scripts/duties/fixes-reach-prod.ts`) for the auto-sns-agent chat (Engage reads,
  * Watchlist). No model call, no browser. It reads what the owner would check: GitHub's compare of auto-sns-agent main...staging (main is what
  * prod runs, since promote.yml moves main only after every prod deploy and check passes), the staging and prod crawlers' /health versions, and
- * the newest land.yml, staging-deploy.yml and promote.yml runs with the job and step that failed, and whether staging's head is promotable.
- * promote.yml ships only staging's head (its git preflight reads origin/staging), and its gates need two things on that sha that this precheck
- * reads from the head's commit statuses: the newest deploy/staging status is a success ("gate / staging serves this sha"), and the newest
- * verify-dev/probe status names the full verify of that sha, the verify-dev probe run staging-check.yml dispatches, which must have finished
- * ("gate / staging CI green", release-evidence.mjs stagingCheckProof). The precheck takes that run's conclusion, where the gate judges its jobs in
- * the promote's deploy scope, so a red job the gate would only warn on still reads not promotable here.
+ * the newest land.yml, staging-deploy.yml and promote.yml runs with the job and step that failed, and the newest promotable staging sha.
+ * promote.yml ships staging's head or an older staging land given as its sha input, and its gates need two things on that sha: the newest
+ * deploy/staging status is a success ("gate / staging serves this sha"), and the full verify of that sha, the verify-dev probe run
+ * staging-check.yml dispatches, passes the promote's critical set for the sha's deploy scope ("gate / staging CI green"). The precheck walks the
+ * staging-only commits newest first and judges each with auto-sns-agent's own scripts/ci (promote-preflight.mjs stagingCheckMiss over
+ * promote-critical.mjs promoteJudge, and deploy-staging.mjs scopeOf), loaded from its checkout, so a verify red only on a warn-only task reads
+ * promotable here as it does in promote.yml.
+ * Incident: on 10-28 staging 68132a1f87 was pinned for promote 21 with a critical-green staging check, while its full verify 40656926422 was red
+ * only on the warn-only linux (rest) //#ci:guards, and this precheck flagged no_promotable_staging_sha because it took the run's conclusion and read
+ * only staging's head.
  * The headline, oldest_fix_wait_h, is how long the oldest commit on staging and not on main has waited, from its committer time, which is when
  * land.yml squashed it onto staging. failed_promotes_24h counts promote.yml runs started in the last 24 h that ended in failure after the newest
  * successful promote, since a later green promote passed the gate an earlier failure hit (10-25: 40169054833 and 40170404510 failed, their fixes
@@ -49,12 +55,16 @@ export interface Run { id: number; status: string; conclusion: string; createdAt
 export interface FailedJob { name: string; steps: string[] }
 export interface Health { world: string; sha?: string; error?: string }
 export interface Status { state: string; url: string }
-/** The newest github-actions[bot] status of each gate context on staging's head. */
+/** The newest github-actions[bot] status of each gate context on a staging sha. */
 export interface HeadStatuses { sha: string; deploy?: Status; verify?: Status }
 
 /** Runs a program with no shell and gives its stdout. */
 export type Exec = (file: string, args: readonly string[]) => Promise<string>;
-export interface ReachDeps { exec: Exec; fetch: typeof fetch; now: () => number }
+/** A staging sha's full verify judged as promote.yml judges it: miss is null when it passes the critical set, else why not; run is the verify run. */
+export interface VerifyVerdict { miss: string | null; run?: number }
+/** auto-sns-agent's own promote rules: judges the full verify of a staging sha against the promote's critical set for its deploy scope from main. */
+export type VerifyJudge = (sha: string, mainSha: string) => Promise<VerifyVerdict>;
+export interface ReachDeps { exec: Exec; fetch: typeof fetch; now: () => number; judgeVerify: VerifyJudge }
 
 const short = (sha: string | undefined) => sha ? sha.slice(0, 10) : "none";
 const hours = (now: number, at: number) => Math.max(0, Math.round((now - at) / HOUR_MS * 10) / 10);
@@ -79,10 +89,6 @@ export async function readRuns(deps: ReachDeps, workflow: string, filters: reado
   return (JSON.parse(out) as RunRow[]).map(runOf);
 }
 
-export async function readRun(deps: ReachDeps, id: number): Promise<Run> {
-  return runOf(JSON.parse(await deps.exec("gh", ["run", "view", String(id), "--repo", REPO, "--json", RUN_FIELDS])) as RunRow);
-}
-
 /** The API lists a commit's statuses newest first, so the first of each context is the one promote.yml's gates take. */
 export async function readHeadStatuses(deps: ReachDeps, sha: string): Promise<HeadStatuses> {
   const out = await deps.exec("gh", ["api", `repos/${REPO}/commits/${sha}/statuses?per_page=100`, "--jq",
@@ -99,10 +105,6 @@ export async function readHeadStatuses(deps: ReachDeps, sha: string): Promise<He
 
 /** The commit a full verify tested, from its run name "probe <sha>" (auto-sns-agent scripts/ci/is-probe.mjs). */
 export const testedSha = (run: Run): string | undefined => /^probe ([0-9a-f]{40})$/.exec(run.title ?? "")?.[1];
-export const runIdOf = (url: string): number | undefined => {
-  const id = /\/actions\/runs\/(\d+)/.exec(url)?.[1];
-  return id ? Number(id) : undefined;
-};
 
 /** A job with a failed step counts even when gh gives the job no conclusion, as land run 39915261080's "land / light" read on 10-23. */
 export async function readFailedJobs(deps: ReachDeps, id: number): Promise<FailedJob[]> {
@@ -164,9 +166,9 @@ export interface Reading {
   landPassed?: Run;
   /** staging-deploy.yml runs on the staging branch. */
   stagingDeploys?: Run[];
-  /** The gate statuses on staging's head. */
-  headStatuses?: HeadStatuses;
-  /** verify-dev.yml probe runs on staging, the full verifies, plus the run the head's verify-dev/probe status names. */
+  /** The staging-only commits judged for a promote, newest first, down to the first promotable one. */
+  candidates?: Candidate[];
+  /** verify-dev.yml probe runs on staging, the full verifies. */
   fullVerifies?: Run[];
   failedJobs: Map<number, FailedJob[]>;
   health: Health[];
@@ -220,7 +222,7 @@ export function reachMetrics(reading: Reading, now: number): PrecheckOutput {
       excerpt: `the newest successful land is run ${run.id} of ${run.branch} from ${iso(run.createdAt)}, ${hours(now, run.createdAt)} h ago, and ${headWords}: ${run.url}` });
   }
   flagged.push(...stagingDeployFlags(reading.stagingDeploys, reading.failedJobs, stagingHead, now));
-  flagged.push(...promotableFlags(reading.headStatuses, reading.fullVerifies, reading.failedJobs, stagingHead, now));
+  flagged.push(...promotableFlags(reading.candidates, reading.fullVerifies, reading.failedJobs, stagingHead, now));
 
   const unread = reading.promotes ? 0 : 1;
   const metrics: Record<string, number> = {
@@ -254,34 +256,35 @@ export function stagingDeployFlags(runs: readonly Run[] | undefined, failedJobs:
   return flagged;
 }
 
-/** Why promote.yml's gates would refuse staging's head, from its deploy/staging and verify-dev/probe statuses and the full verify run the latter names. */
-export function headRefusals(head: HeadStatuses, verifies: readonly Run[]): string[] {
-  const refusals: string[] = [];
-  if (!head.deploy) refusals.push(`it has no ${DEPLOY_STATUS} status`);
-  else if (head.deploy.state !== "success") refusals.push(`its newest ${DEPLOY_STATUS} status is ${head.deploy.state}`);
-  if (!head.verify) return [...refusals, `it has no full verify yet (no ${VERIFY_STATUS} status)`];
-  const id = runIdOf(head.verify.url);
-  const run = verifies.find(item => item.id === id);
-  if (!run) return [...refusals, `its ${VERIFY_STATUS} status names ${head.verify.url}, which is no verify-dev run read here`];
-  if (testedSha(run) !== head.sha) return [...refusals, `its ${VERIFY_STATUS} status names run ${run.id}, which tested ${short(testedSha(run))}`];
-  if (run.status !== "completed") refusals.push(`its full verify, run ${run.id}, is ${run.status}`);
-  else if (run.conclusion !== "success") refusals.push(`its full verify, run ${run.id}, ended ${run.conclusion}`);
-  else if (head.verify.state !== "success") refusals.push(`its newest ${VERIFY_STATUS} status is ${head.verify.state}`);
-  return refusals;
+/** One staging sha judged for a promote: refusals is empty when promote.yml's gates would take it; verifyRun is its full verify. */
+export interface Candidate { sha: string; refusals: string[]; verifyRun?: number }
+
+/** Why promote.yml's gates would refuse a staging sha: its deploy/staging status, then its full verify against the promote's critical set. */
+export async function judgeCandidate(statuses: HeadStatuses, mainSha: string, judgeVerify: VerifyJudge): Promise<Candidate> {
+  const { sha, deploy } = statuses;
+  if (!deploy) return { sha, refusals: [`it has no ${DEPLOY_STATUS} status`] };
+  if (deploy.state !== "success") return { sha, refusals: [`its newest ${DEPLOY_STATUS} status is ${deploy.state}`] };
+  const verdict = await judgeVerify(sha, mainSha);
+  return { sha, refusals: verdict.miss ? [verdict.miss] : [], ...(verdict.run ? { verifyRun: verdict.run } : {}) };
 }
 
-/** promotable names staging's head when both gates pass on it; otherwise no_promotable_staging_sha says why, with the newest finished full verify and its red jobs. */
-export function promotableFlags(head: HeadStatuses | undefined, verifies: readonly Run[] | undefined, failedJobs: ReadonlyMap<number, FailedJob[]>, stagingHead: string, now: number): FlaggedSlice[] {
+const candidateWords = (candidate: Candidate) => `${short(candidate.sha)}: ${candidate.refusals.join(", and ")}`;
+
+/** promotable names the newest staging sha both gates pass; otherwise no_promotable_staging_sha says why for each sha read, with the newest finished full verify and its red jobs. */
+export function promotableFlags(candidates: readonly Candidate[] | undefined, verifies: readonly Run[] | undefined, failedJobs: ReadonlyMap<number, FailedJob[]>, stagingHead: string, now: number): FlaggedSlice[] {
   const probes = (verifies ?? []).filter(run => testedSha(run));
   const flagged: FlaggedSlice[] = [];
   for (const run of probes) {
     if (run.status !== "completed") flagged.push({ at: now, kind: "full_verify_in_flight", item: String(run.id), excerpt: `full verify run ${run.id} of ${short(testedSha(run))} is ${run.status}, started ${iso(run.createdAt)}: ${run.url}` });
   }
-  const refusals = head && verifies ? headRefusals(head, probes) : ["its gate statuses or the full verify runs could not be read"];
-  if (!refusals.length) {
-    const run = probes.find(item => item.id === runIdOf(head!.verify!.url))!;
-    flagged.push({ at: now, kind: "promotable", item: stagingHead,
-      excerpt: `promotable: staging's head ${short(stagingHead)} has a successful ${DEPLOY_STATUS} status and its full verify, run ${run.id} from ${iso(run.createdAt)}, passed: ${run.url}` });
+  const passing = (candidates ?? []).find(candidate => !candidate.refusals.length);
+  const refused = (candidates ?? []).filter(candidate => candidate.refusals.length);
+  if (passing) {
+    const where = passing.sha === stagingHead ? "staging's head" : `staging sha, under staging's head ${short(stagingHead)}, so promote it with --sha ${passing.sha}`;
+    const newer = refused.length ? `; newer staging shas are not promotable: ${refused.map(candidateWords).join("; ")}` : "";
+    flagged.push({ at: now, kind: "promotable", item: passing.sha,
+      excerpt: `promotable: ${short(passing.sha)} is the newest promotable ${where}: it has a successful ${DEPLOY_STATUS} status and its full verify` +
+        `${passing.verifyRun ? `, run ${passing.verifyRun},` : ""} passes promote.yml's critical set${newer}` });
     return flagged;
   }
   const newest = newestDecided(probes);
@@ -289,9 +292,58 @@ export function promotableFlags(head: HeadStatuses | undefined, verifies: readon
     ? `the newest finished full verify is run ${newest.id} of ${short(testedSha(newest))} from ${iso(newest.createdAt)}, which ended ${newest.conclusion}` +
       (FAILED.includes(newest.conclusion) ? ` in ${jobWords(failedJobs.get(newest.id) ?? [])}` : "") + `: ${newest.url}`
     : "no finished full verify is listed";
+  const why = candidates ? (refused.length ? refused.map(candidateWords).join("; ") : "staging has no commit main lacks") : "the staging shas' gate statuses could not be read";
   flagged.push({ at: now, kind: "no_promotable_staging_sha", item: stagingHead,
-    excerpt: `no promotable staging sha: promote.yml ships only staging's head ${short(stagingHead)}, and ${refusals.join(", and ")}; ${verifyWords}` });
+    excerpt: `no promotable staging sha: promote.yml's gates refuse every staging sha main lacks, ${why}; ${verifyWords}` });
   return flagged;
+}
+
+/** Judges staging's commits main lacks, newest first, and stops at the first promotable one, the newest sha a promote can take. */
+export async function readCandidates(deps: ReachDeps, compare: Compare): Promise<Candidate[]> {
+  const candidates: Candidate[] = [];
+  for (const commit of [...compare.commits].reverse()) {
+    const candidate = await judgeCandidate(await readHeadStatuses(deps, commit.sha), compare.mainSha, deps.judgeVerify);
+    candidates.push(candidate);
+    if (!candidate.refusals.length) break;
+  }
+  return candidates;
+}
+
+export const AUTO_SNS = process.env.LLM_WIKI_REPO || join(homedir(), "Documents/Github/auto-sns-agent");
+interface CiRun { id: number; status: string; conclusion: string | null }
+export type GhRead = (args: readonly string[]) => Promise<string>;
+export type GitRaw = (...args: string[]) => string;
+export interface PromoteCi {
+  githubReader(): GhRead;
+  stagingCheckOf(read: GhRead, sha: string): Promise<CiRun | null>;
+  jobsOf(read: GhRead, run: CiRun): Promise<unknown[]>;
+  stagingCheckMiss(sha: string, check: (CiRun & { jobs?: unknown[] }) | null, what: string, flags: Record<string, boolean>): string | null;
+  scopeOf(paths: string[]): Record<string, boolean>;
+  changedPaths(io: { gitRaw: GitRaw }, base: string, head: string): string[];
+}
+
+/** auto-sns-agent's own scripts/ci modules the verify judge runs, loaded from its checkout. */
+export async function loadPromoteCi(repo = AUTO_SNS): Promise<PromoteCi> {
+  const load = async (file: string) => await import(pathToFileURL(join(repo, "scripts/ci", file)).href) as Partial<PromoteCi>;
+  return Object.assign({}, ...await Promise.all(["release-evidence.mjs", "promote-preflight.mjs", "deploy-staging.mjs"].map(load))) as PromoteCi;
+}
+
+export const gitIn = (repo: string): GitRaw => (...args) =>
+  execFileSync("git", args, { cwd: repo, encoding: "utf8", maxBuffer: Infinity, stdio: ["ignore", "pipe", "pipe"] });
+
+/** The verify judge promote.yml's gate and the release owner's preflight use: the deploy scope of main..sha (deploy-staging.mjs), the sha's full
+ *  verify with its jobs and turbo task lines (release-evidence.mjs), and stagingCheckMiss over promoteJudge (promote-preflight.mjs,
+ *  promote-critical.mjs). The checkout fetches staging and main only when it lacks a sha the diff needs. */
+export function verifyJudge(ci: PromoteCi, read: GhRead, git: GitRaw): VerifyJudge {
+  const has = (sha: string) => { try { git("cat-file", "-e", `${sha}^{commit}`); return true; } catch { return false; } };
+  return async (sha, mainSha) => {
+    if (!has(sha) || !has(mainSha)) git("fetch", "--quiet", "origin", "staging", "main");
+    const flags = ci.scopeOf(ci.changedPaths({ gitRaw: git }, mainSha, sha));
+    const check = await ci.stagingCheckOf(read, sha);
+    const judged = check?.status === "completed" && check.conclusion !== "success" ? { ...check, jobs: await ci.jobsOf(read, check) } : check;
+    const miss = ci.stagingCheckMiss(sha, judged, "sha", flags);
+    return { miss: miss ? miss.split(". Dispatch once")[0]! : null, ...(check ? { run: check.id } : {}) };
+  };
 }
 
 export async function measureReach(deps: ReachDeps): Promise<PrecheckOutput> {
@@ -299,10 +351,10 @@ export async function measureReach(deps: ReachDeps): Promise<PrecheckOutput> {
   const errors: string[] = [];
   const fail = (what: string) => (error: unknown): undefined => { errors.push(`${what}: ${message(error)}`); return undefined; };
   const comparing = readCompare(deps);
-  const statusing = comparing.then(compare => readHeadStatuses(deps, compare.commits.at(-1)?.sha ?? compare.mainSha)).catch(fail("staging head statuses"));
-  const [compare, headStatuses, fullVerifies, promotes, lands, landsPassed, stagingDeploys, ...health] = await Promise.all([
+  const judging = comparing.then(compare => readCandidates(deps, compare)).catch(fail("staging sha gates"));
+  const [compare, candidates, fullVerifies, promotes, lands, landsPassed, stagingDeploys, ...health] = await Promise.all([
     comparing,
-    statusing,
+    judging,
     readRuns(deps, "verify-dev.yml", ["--branch", "staging", "--event", "workflow_dispatch"]).catch(fail("verify-dev.yml full verify runs")),
     readRuns(deps, "promote.yml").catch(fail("promote.yml runs")),
     readRuns(deps, "land.yml", ["--limit", String(LAND_RUNS)]).catch(fail("land.yml runs")),
@@ -311,11 +363,6 @@ export async function measureReach(deps: ReachDeps): Promise<PrecheckOutput> {
     readHealth(deps, "staging"),
     readHealth(deps, "prod"),
   ]);
-  const headVerifyId = headStatuses?.verify ? runIdOf(headStatuses.verify.url) : undefined;
-  if (fullVerifies && headVerifyId && !fullVerifies.some(run => run.id === headVerifyId)) {
-    const run = await readRun(deps, headVerifyId).catch(fail(`full verify run ${headVerifyId}`));
-    if (run) fullVerifies.push(run);
-  }
   const newestDeploy = newestDecided(stagingDeploys ?? []);
   const newestVerify = newestDecided((fullVerifies ?? []).filter(run => testedSha(run)));
   const failedRuns = [...(promotes ?? []).filter(run => run.createdAt >= now - DAY_MS), ...newestPerBranch(promotes ?? []), ...newestPerBranch(lands ?? []),
@@ -327,7 +374,7 @@ export async function measureReach(deps: ReachDeps): Promise<PrecheckOutput> {
     if (jobs) failedJobs.set(id, jobs);
   }));
   return reachMetrics({ compare, ...(promotes ? { promotes } : {}), ...(lands ? { lands } : {}), ...(landsPassed?.[0] ? { landPassed: landsPassed[0] } : {}),
-    ...(stagingDeploys ? { stagingDeploys } : {}), ...(headStatuses ? { headStatuses } : {}), ...(fullVerifies ? { fullVerifies } : {}), failedJobs, health, errors }, now);
+    ...(stagingDeploys ? { stagingDeploys } : {}), ...(candidates ? { candidates } : {}), ...(fullVerifies ? { fullVerifies } : {}), failedJobs, health, errors }, now);
 }
 
 const exec: Exec = (file, args) => new Promise((resolve, reject) => {
@@ -338,7 +385,7 @@ const exec: Exec = (file, args) => new Promise((resolve, reject) => {
 async function main(): Promise<void> {
   const output = process.env.OUTPUT_FILE;
   if (!output) { process.stderr.write("fixes-reach-prod: OUTPUT_FILE is not set\n"); process.exit(2); }
-  await writeFile(output, JSON.stringify(await measureReach({ exec, fetch, now: Date.now }), null, 2) + "\n");
+  await writeFile(output, JSON.stringify(await measureReach({ exec, fetch, now: Date.now, judgeVerify: await loadPromoteCi().then(ci => verifyJudge(ci, ci.githubReader(), gitIn(AUTO_SNS))) }), null, 2) + "\n");
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) await main();

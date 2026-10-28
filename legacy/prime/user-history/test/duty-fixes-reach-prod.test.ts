@@ -6,7 +6,8 @@
 // as release clearance while its full verify, verify-dev run 40067724892, had failed in crawler, search / e2e and three more jobs.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { type Compare, type FailedJob, type HeadStatuses, type Run, measureReach, newestPerBranch, reachMetrics, readFailedJobs } from "../scripts/duties/fixes-reach-prod.ts";
+import { type Candidate, type Compare, type FailedJob, type HeadStatuses, type Run, type VerifyJudge, judgeCandidate, loadPromoteCi, measureReach, newestPerBranch,
+  reachMetrics, readFailedJobs, verifyJudge } from "../scripts/duties/fixes-reach-prod.ts";
 
 const NOW = Date.parse("2026-10-23T03:50:00Z");
 const HEAD = "6e71eb047898f76ecba23e8e5d002f4a4e018be2";
@@ -57,9 +58,6 @@ test("measureReach reads the decided land, the last successful land and the stag
     if (args[1]?.includes("/statuses")) return JSON.stringify([{ context: "verify-dev/probe", state: "failure", url: "https://github.com/sieu-n/auto-sns-agent/actions/runs/40067724892" },
       { context: "deploy/staging", state: "success", url: "https://github.com/sieu-n/auto-sns-agent/actions/runs/39856360527/attempts/1" }]);
     if (args[1]?.startsWith("repos/")) return JSON.stringify({ main: COMPARE.mainSha, ahead: 1, behind: 0, commits: [{ sha: HEAD, at: "2026-10-22T17:08:03Z", title: "land 60" }] });
-    if (args[0] === "run" && args[1] === "view" && args[2] === "40067724892")
-      return JSON.stringify({ databaseId: 40067724892, status: "in_progress", conclusion: "", createdAt: "2026-10-23T03:30:00Z", headBranch: "staging", headSha: HEAD,
-        url: "https://github.com/r/40067724892", displayTitle: `probe ${HEAD}` });
     if (args[0] === "run" && args[1] === "view") {
       const jobs = args[2] === "39856360527" ? [{ name: "scope / light", conclusion: "failure", steps: [{ name: DEPLOY_JOBS[0]!.steps[0]!, conclusion: "failure" }] }]
         : [{ name: "land / light", conclusion: "failure", steps: [{ name: LAND_JOBS[0]!.steps[0]!, conclusion: "failure" }, { name: "setup", conclusion: "success" }] }];
@@ -73,7 +71,9 @@ test("measureReach reads the decided land, the last successful land and the stag
     return rows([run(39902388842, "cancelled", "2026-10-23T03:49:37Z"), run(39893313784, "failure", "2026-10-23T02:41:00Z")]);
   };
   const fetch = (async () => new Response(JSON.stringify({ git_sha: HEAD }))) as typeof globalThis.fetch;
-  const output = await measureReach({ exec, fetch, now: () => NOW });
+  const judged: string[] = [];
+  const judgeVerify: VerifyJudge = async sha => { judged.push(sha); return { miss: `sha ${sha.slice(0, 10)} has staging check 40067724892 still in_progress`, run: 40067724892 }; };
+  const output = await measureReach({ exec, fetch, now: () => NOW, judgeVerify });
   assert.deepEqual(kinds(output.flagged).filter(kind => ["land_failed", "land_last_success", "staging_deploy_failed", "staging_deploy_passed"].includes(kind)),
     ["land_failed", "land_last_success", "staging_deploy_failed", "staging_deploy_passed"]);
   assert.match(line(output.flagged, "land_failed"), /basics \/ search build/);
@@ -81,15 +81,15 @@ test("measureReach reads the decided land, the last successful land and the stag
   assert.ok(calls.some(args => args.includes("--branch") && args.includes("staging")));
   assert.ok(calls.some(args => args.includes("--limit") && args.includes("100")));
   assert.ok(calls.some(args => args[0] === "api" && args[1] === `repos/sieu-n/auto-sns-agent/commits/${HEAD}/statuses?per_page=100`));
-  assert.ok(calls.some(args => args[0] === "run" && args[1] === "view" && args[2] === "40067724892"));
-  assert.match(line(output.flagged, "no_promotable_staging_sha"), /its full verify, run 40067724892, is in_progress/);
+  assert.deepEqual(judged, [HEAD]);
+  assert.match(line(output.flagged, "no_promotable_staging_sha"), /6e71eb0478: sha 6e71eb0478 has staging check 40067724892 still in_progress/);
 });
 
 test("a job gh lists with no conclusion but a failed step still names that step", async () => {
   const exec = async (): Promise<string> => JSON.stringify({ jobs: [
     { name: "land / light", conclusion: "", steps: [{ name: "pick / the newest tested tree of each dev branch, merged onto staging", conclusion: "failure" }] },
     { name: "land / push", conclusion: "skipped", steps: [] }] });
-  const jobs = await readFailedJobs({ exec, fetch: globalThis.fetch, now: () => NOW }, 39915261080);
+  const jobs = await readFailedJobs({ exec, fetch: globalThis.fetch, now: () => NOW, judgeVerify: async () => ({ miss: null }) }, 39915261080);
   assert.deepEqual(jobs, [{ name: "land / light", steps: ["pick / the newest tested tree of each dev branch, merged onto staging"] }]);
 });
 
@@ -97,32 +97,53 @@ const VERIFIED = "3b0fcfee0ba8d84de520d381beb6cec85344906c";
 const VERIFIED_COMPARE: Compare = { ...COMPARE, commits: [{ sha: VERIFIED, at: Date.parse("2026-10-24T05:41:00Z"), title: "land: dev/sieun-mac-mail-warmup fe1762da8" }] };
 const verifyRun = (id: number, conclusion: string, sha = VERIFIED): Run =>
   run(id, conclusion, "2026-10-24T05:48:54Z", { branch: "staging", sha, title: `probe ${sha}` });
-const statuses = (verify: string): HeadStatuses => ({ sha: VERIFIED,
-  deploy: { state: "success", url: "https://github.com/sieu-n/auto-sns-agent/actions/runs/40067355666/attempts/1" },
-  verify: { state: verify, url: "https://github.com/sieu-n/auto-sns-agent/actions/runs/40067724892" } });
+const statuses = (deploy: string, sha = VERIFIED): HeadStatuses => ({ sha,
+  deploy: { state: deploy, url: "https://github.com/sieu-n/auto-sns-agent/actions/runs/40067355666/attempts/1" },
+  verify: { state: "failure", url: "https://github.com/sieu-n/auto-sns-agent/actions/runs/40067724892" } });
 const VERIFY_JOBS: FailedJob[] = ["macos (tasks)", "crawler", "search / e2e", "linux (rest)", "linux (demo)"].map(name => ({ name, steps: [] }));
+const RED_CRITICAL = "sha 3b0fcfee0b has staging check 40067724892 failure, red on the promote's critical set: metal: 'crawler' task crawler-v3#test:unit: failed";
 
-test("a green staging deploy with a red full verify reads no promotable staging sha with the verify's red jobs, never promotable", () => {
+test("a green staging deploy with a full verify red on the critical set reads no promotable staging sha with the verify's red jobs, never promotable", () => {
   const stagingDeploys = [run(40067355666, "success", "2026-10-24T05:43:00Z", { branch: "staging", sha: VERIFIED })];
-  const output = reachMetrics({ compare: VERIFIED_COMPARE, promotes: [], lands: [], stagingDeploys, headStatuses: statuses("failure"),
+  const candidates: Candidate[] = [{ sha: VERIFIED, refusals: [RED_CRITICAL], verifyRun: 40067724892 }];
+  const output = reachMetrics({ compare: VERIFIED_COMPARE, promotes: [], lands: [], stagingDeploys, candidates,
     fullVerifies: [verifyRun(40067724892, "failure")], failedJobs: new Map([[40067724892, VERIFY_JOBS]]), health: [], errors: [] }, Date.parse("2026-10-24T07:00:00Z"));
   assert.ok(!kinds(output.flagged).includes("promotable"));
   assert.match(line(output.flagged, "staging_deploy_passed"), /^staging deploy passed \(not release clearance\): .* is 3b0fcfee0b, run 40067355666/);
-  assert.equal(line(output.flagged, "no_promotable_staging_sha"), "no promotable staging sha: promote.yml ships only staging's head 3b0fcfee0b, and its full verify, run 40067724892, " +
-    "ended failure; the newest finished full verify is run 40067724892 of 3b0fcfee0b from 2026-10-24T05:48Z, which ended failure in macos (tasks); crawler; " +
+  assert.equal(line(output.flagged, "no_promotable_staging_sha"), `no promotable staging sha: promote.yml's gates refuse every staging sha main lacks, 3b0fcfee0b: ${RED_CRITICAL}; ` +
+    "the newest finished full verify is run 40067724892 of 3b0fcfee0b from 2026-10-24T05:48Z, which ended failure in macos (tasks); crawler; " +
     "search / e2e; linux (rest); linux (demo): https://github.com/r/40067724892");
 });
 
-test("staging's head reads promotable only when its deploy/staging status and its own full verify both passed", () => {
-  const read = (headStatuses: HeadStatuses, fullVerifies: Run[]) => reachMetrics({ compare: VERIFIED_COMPARE, promotes: [], lands: [], headStatuses, fullVerifies,
-    failedJobs: new Map(), health: [], errors: [] }, NOW);
-  const green = read(statuses("success"), [verifyRun(40067724892, "success")]);
-  assert.match(line(green.flagged, "promotable"), /^promotable: staging's head 3b0fcfee0b has a successful deploy\/staging status and its full verify, run 40067724892/);
-  assert.ok(!kinds(green.flagged).includes("no_promotable_staging_sha"));
-  const otherSha = read(statuses("success"), [verifyRun(40067724892, "success", HEAD)]);
-  assert.match(line(otherSha.flagged, "no_promotable_staging_sha"), /names run 40067724892, which tested 6e71eb0478/);
-  const noVerify = read({ sha: VERIFIED, deploy: { state: "pending", url: "" } }, []);
-  assert.match(line(noVerify.flagged, "no_promotable_staging_sha"), /its newest deploy\/staging status is pending, and it has no full verify yet/);
+test("a staging sha needs a successful deploy/staging status before its full verify is judged, and the newest sha both gates pass is named with --sha", async () => {
+  const judged: string[] = [];
+  const judge: VerifyJudge = async sha => { judged.push(sha); return sha === VERIFIED ? { miss: null, run: 40067724892 } : { miss: RED_CRITICAL, run: 40067724893 }; };
+  assert.deepEqual(await judgeCandidate(statuses("pending"), COMPARE.mainSha, judge), { sha: VERIFIED, refusals: ["its newest deploy/staging status is pending"] });
+  assert.deepEqual(await judgeCandidate({ sha: VERIFIED }, COMPARE.mainSha, judge), { sha: VERIFIED, refusals: ["it has no deploy/staging status"] });
+  assert.deepEqual(judged, []);
+  const head = await judgeCandidate(statuses("success", HEAD), COMPARE.mainSha, judge);
+  const older = await judgeCandidate(statuses("success"), COMPARE.mainSha, judge);
+  assert.deepEqual(older, { sha: VERIFIED, refusals: [], verifyRun: 40067724892 });
+  const output = reachMetrics({ compare: { ...COMPARE, aheadBy: 2, commits: [...VERIFIED_COMPARE.commits, ...COMPARE.commits] }, promotes: [], lands: [],
+    candidates: [head, older], failedJobs: new Map(), health: [], errors: [] }, NOW);
+  assert.equal(line(output.flagged, "promotable"), `promotable: 3b0fcfee0b is the newest promotable staging sha, under staging's head 6e71eb0478, so promote it with --sha ${VERIFIED}: ` +
+    `it has a successful deploy/staging status and its full verify, run 40067724892, passes promote.yml's critical set; newer staging shas are not promotable: 6e71eb0478: ${RED_CRITICAL}`);
+  assert.ok(!kinds(output.flagged).includes("no_promotable_staging_sha"));
+});
+
+// 10-28: staging 68132a1f87 was pinned for promote 21 with a critical-green staging check, while its full verify 40656926422 was red only on the
+// warn-only linux (rest) //#ci:guards, and d4 flagged no_promotable_staging_sha. This runs auto-sns-agent's own promote rules from its checkout.
+test("a full verify whose only red is a warn-only task reads promotable by auto-sns-agent's own promote rules, and a red critical task refuses", async () => {
+  const ci = await loadPromoteCi();
+  const sha = "68132a1f870a8ca504773f932d2a5c8d85f9388e";
+  const leg = (tasks: [string, boolean][]) => ({ id: 2, name: "linux (rest)", conclusion: tasks.every(([, pass]) => pass) ? "success" : "failure", steps: [],
+    turbo: { tasks: new Map(tasks.map(([task, pass]) => [task, { pass, line: `${task} ${pass ? "passed" : "failed"}` }])) } });
+  const judgeWith = (rest: ReturnType<typeof leg>) => verifyJudge({ ...ci,
+    stagingCheckOf: async () => ({ id: 40656926422, status: "completed", conclusion: "failure" }),
+    jobsOf: async () => [{ id: 1, name: "plan", conclusion: "success", steps: [] }, rest] }, async () => "", (...args) => args[0] === "diff" ? "docs/readme.md\0" : "");
+  assert.deepEqual(await judgeWith(leg([["//#ci:secrets-scan", true], ["//#ci:guards", false]]))(sha, COMPARE.mainSha), { miss: null, run: 40656926422 });
+  const red = await judgeWith(leg([["//#ci:secrets-scan", false], ["//#ci:guards", false]]))(sha, COMPARE.mainSha);
+  assert.match(red.miss ?? "", /^sha 68132a1f87 has staging check 40656926422 failure, red on the promote's critical set: always: 'linux \(rest\)' task \/\/#ci:secrets-scan/);
 });
 
 test("a failed promote that a later green promote followed leaves failed_promotes_24h", () => {
