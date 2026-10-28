@@ -20,6 +20,7 @@ The script only reads. It writes `prime/`, `builder/`, `pi-live/`, `summary.json
 |---|---|---|
 | Prime | `<agent dir>/browser-chat/prompts/<session>.json`, which the legacy chat's user-history extension writes from `before_provider_request` on every request (`legacy/prime/user-history/src/prompt-capture.ts`). By default the newest capture of a chat listed in `browser-chat/chats.json`. | The payload as sent on the wire, after every extension. No Prime process is started. |
 | Builder | `packages/pi-host/src/durable/prime-prompt.ts` for the capture's cwd, session file and pinned brief (the session's last `chat_brief` entry since its last compaction), and the capture's Prime release for bundled skills when it is still on disk | The text a pi thread gets for the same inputs |
+| Harness | The chat's newest `harness_digest` message in its session file, against what `packages/pi-host/src/durable/prime-harness.ts` sends for the same global and local stores and the same messages, read the way an imported thread holds them | Byte for byte, when the stores still have the state fingerprint that message recorded; it writes `harness.json` and `harness/*.txt` |
 | pi today | The newest thread under `<agent dir>/pi-host/durable/threads/`, opened with `?mode=ro`; its root conversation's `pi.system` entries replayed | The sections and tools that thread's file holds now |
 
 A Prime session file does not store the system prompt, so the capture is the only exact record of it.
@@ -38,16 +39,54 @@ Bytes are from Prime chat `01a1180e` (VP of CI) at 18:05 UTC on 2026-10-28, cwd 
 | 5 | `context` | "# Project Context": `~/.prime/agent/AGENTS.md` (from `config/AGENTS.md`), then AGENTS.md or CLAUDE.md of the cwd and each folder above it (Prime's `loadProjectContextFiles`) | system prompt | 13,298 | no | identical |
 | 6 | `skills` | `formatSkillsForPrompt` over Prime's loaded skills: `~/.prime/agent/skills/*` (from `skills/`) and the release's bundled skills, filtered by `settings.json` | system prompt | 10,388 | no | identical |
 | 7 | `rules` | claude-rules (`packages/pi-claude-rules`): the cwd repo's unscoped `.claude/rules/*.md` | first user message of every request | 52,028 | no | identical text, in the system prompt |
-| 8 | `harness` | Prime's harness digest (`formatHarnessStateForPrompt`) over `~/.prime/agent/harness` | `[harness-digest]` message at the session's first turn, then `[harness-digest update]` messages | 10,011 (Prime: 39,955) | no | different, see below |
+| 8 | `harness` | Prime's harness digest (`formatHarnessStateForPrompt` of the running release) over `~/.prime/agent/harness` merged with the session's local store | `[harness-digest]` message before a turn's input, then `[harness-digest update]` messages | 10,616 (pi before: 9,898, global only) | no | identical bytes, as a message before the turn's input, see [Harness digest](#harness-digest) |
 | 9 | `corrections` | `ledgerPrompt` over `browser-chat/corrections.json` (`chat-corrections.ts`), or `jobLedgerPrompt` for a job | `[corrections]` user message, once per context | 21,750 (Prime: 21,418) | no | same rules; pi lists the 1 correction added since that chat's snapshot |
 
 Sections 1 to 6 joined with a blank line are the exact string Prime's `buildSystemPrompt` returns.
-Sections 7 to 9 follow them in the system prompt, because pi-durable can add text only as sections or as hooks that are not stored.
+Sections 7 and 9 follow them in the system prompt, because pi-durable can add text only as sections or as hooks that are not stored.
+Section 8 goes where Prime puts it, as the next section explains.
 
-The harness section differs from Prime's for two reasons:
+## Harness digest
 
-1. Prime merges the session's own local harness entries into the digest, and a pi thread has none.
-2. Prime ranks entries by the newest four messages and the goal and shows six per kind. pi ranks by the owner's newest message when the section is first built.
+A thread's root conversation gets Prime's harness digest with the same bytes and in the same place as a Prime chat, for the same entries.
+On 2026-10-28 from 19:20 to 19:25 UTC, `scripts/prompt-parity.mjs` compared the newest digest message of each of the 11 Prime chat roots on us-metal02 with what pi-host sends for the same stores and messages.
+In the 7 chats whose stores still had the state fingerprint of that message, the full digest and the message were both byte-identical; the other 4 chats were idle and their stores had changed since.
+
+| Chat | Local entries | Prime's full digest | pi before | pi now | Prime's message (an update) | pi now |
+|---|---|---|---|---|---|---|
+| `01a1164b` | 110 | 10,616 | 9,898, 24 lines differ | 10,616, identical | 2,495 | 2,495, identical |
+| `01a1180e` (VP of CI) | 467 | 11,112 | 9,898, 22 lines differ | 11,112, identical | 2,267 | 2,267, identical |
+| `01a115e2` | 648 | 10,377 | 9,898, 24 lines differ | 10,377, identical | 733 | 733, identical |
+| `01a11af8` | 468 | 10,448 | | 10,448, identical | 733 | 733, identical |
+| `01a11bd7` | 92 | 10,408 | | 10,408, identical | 732 | 732, identical |
+| `01a14d31` | 6 | 9,915 | | 9,915, identical | 732 | 732, identical |
+| `01a162bc` | 2 | 9,332 | | 9,332, identical | 732 | 732, identical |
+
+"pi before" is the old `harness` section for the same global store: the published prime-agent 0.9.8 formatter over the global store only.
+The 21,986 bytes a capture of `01a1164b` shows for its digest are its first message, which is the compaction summary with the digest snapshot (10,208 bytes) in front of it.
+
+What pi-host does, and where it comes from:
+
+| Part | Prime | pi now |
+|---|---|---|
+| Formatter, ranking, update and fingerprint | `refinement.ts` of the running release: Okapi BM25 ranking with stemming and stopwords (`scoreHarnessEntries`), `formatHarnessStateForPrompt`, `formatHarnessDigestDelta`, `harnessDigestFingerprint` | the same code, copied verbatim into `packages/pi-host/src/durable/vendor/prime-harness.ts` by `scripts/vendor-prime-harness.mjs` from the commit `build: version <release>` in Prime's source; the published 0.9.8 package ranks with an older scorer and gives other bytes |
+| Global store | `~/.prime/agent/harness/harness_state.json` | the same file |
+| Local store | `session-artifacts/<session>/harness/harness_state.json` next to the sessions folder | `~/.prime/agent/pi-host/durable/session-artifacts/<thread>/harness/harness_state.json`, by Prime's rule next to the threads folder (`threadHarnessDir`); a child conversation's is `<thread>-<conversation>`. The kernel's `rlm.harness` and `refine.run()` write it once `RLM_HARNESS_STATE_DIR` points there |
+| When | at each turn it starts, and at a cold boundary such as a resume | at each input submitted to the root conversation, unless it steers a running turn |
+| What | the full digest when the context has none, nothing when the newest digest has the state's fingerprint, else `[harness-digest update]` with the lines that changed | the same function (`nextDelivery`, Prime's `_nextHarnessDigestMessage`) |
+| Ranked by | the turn's input at weight 4, the goal at 3, the last four messages at 2, 1.5, 1 and 1 | the same; a thread has no goal |
+| Where | a custom message before the turn's input; it stays there, so the cached prefix holds | a user message before the input, with no timestamp so the turn wrappers leave it alone as they leave Prime's custom message; stored in the conversation's `prime.harness-digests` document with the entry it follows, and put into each request by `prime-prompt`'s `beforeRequest` hook |
+| After a compaction | the summary carries a snapshot of the digest, and digest messages from before it are dropped | deliveries from before the compaction are dropped, and the next input gets the full digest |
+
+The digest is a document, not an entry, because an entry with a user message shows in apps/chat and its search as a message the owner sent.
+On us-metal02 an input whose stores did not change costs about 46 ms (the fingerprint of 1,334 entries); one that needs a digest costs about 0.6 s more to rank them for a long input, in pi-host's one process, as it does in a Prime worker.
+A thread from before this change drops its pinned `harness` section at its next request (one `pi.system` update after the history) and gets the full digest before its next input.
+
+Three differences remain:
+
+1. Prime also appends an update at a cold boundary, such as a session load after an idle unload; pi sends the same lines before the next input, so one pi update can hold what Prime sent as two.
+2. A subagent's child conversation still gets the digest as the pinned `harness` section, built from the global store and its own local store with no ranking, because the subagent tool cannot record a delivery yet. A Prime job ranks its first digest by its task.
+3. `packages/pi-harness/src/core/digest.ts`, which Pi sessions in pi-host's non-durable host use, is a rewrite of an older release and ranks with the old scorer.
 
 ## Tools
 
@@ -69,7 +108,7 @@ On 2026-10-28 at 18:35 UTC `scripts/prompt-parity.mjs` compared every tool of Pr
 | `bash()` handles and the nonblocking control loop | REPL | `bash` tool, blocking with a timeout | different: no background handle and no completion follow-up |
 | `rlm.spawn`, `list_subagents`, `collect`, `progress_note`, `delete_subagent` | REPL | `subagent {task}`, foreground, returns the answer | different: one blocking child per call, no names or handles |
 | `rlm.create_session` | REPL | none (the chat creates threads with `durable_create`) | missing |
-| `rlm.harness.*`, `refine.run()` | REPL, `refine` skill | none; pi reads the global harness but writes nothing | missing |
+| `rlm.harness.*`, `refine.run()` | REPL, `refine` skill | none; pi reads the global store and the thread's local store (`threadHarnessDir`) but writes neither | missing |
 | `agent_message.send` | Python skill | inbound agent messages are `agent.message` entries; no agent-to-agent send | missing for agent to agent |
 | `agent_observe` | Python skill | none | missing |
 | `board` (`board.wake`, `board.corrections`, `board.own`) | Python skill | `chat_board` for the board; no wakes | missing outside `chat_board` |
@@ -156,18 +195,19 @@ Recommendation: keep `bash` in pi threads for now, and decide between the `prime
 
 ### Harness memories
 
-The `harness` section is Prime's own `formatHarnessStateForPrompt` over the global store, as before.
-pi-harness (`packages/pi-harness/src/pi/index.ts`) keeps a local store per Pi session file and refines it after runs (`agent_settled`, kernel `refine.run`), which a thread cannot drive yet, so the section still lacks local entries and later `[harness-digest update]` messages.
+The digest and its updates are Prime's, from the global store and the thread's local store (see [Harness digest](#harness-digest)).
+Nothing writes a thread's local store yet: pi-harness (`packages/pi-harness/src/pi/index.ts`) refines a Pi session's store after its runs (`agent_settled`, kernel `refine.run`), which a thread cannot drive, and the kernel's `rlm.harness` needs `RLM_HARNESS_STATE_DIR` set to `threadHarnessDir(<thread file>, <thread id>)`.
 
 ## What pi-host does now
 
 | File | Change |
 |---|---|
 | `packages/pi-host/src/durable/pi-extensions.ts` | The adapter: loads a pi coding-agent extension with a recording `ExtensionAPI`, keeps its tools, handlers and flags, fires its events with a pi context that answers with the thread's ids, name, file and cwd, and turns each tool into a pi-durable tool with its own definition and a replay policy. |
-| `packages/pi-host/src/durable/prime-prompt.ts` | The builder and the `prime-prompt` extension. It calls prime-agent's `buildSystemPrompt`, `DefaultResourceLoader`, `formatSkillsForPrompt` and harness formatter from the installed `prime-agent` package, and imports `CHAT_BRIEF`, `personaGuideline`, `jobReplyGuideline`, `ledgerPrompt` and `jobLedgerPrompt` from the legacy chat and `SessionRules` from pi-claude-rules. No Prime text is retyped. |
+| `packages/pi-host/src/durable/prime-prompt.ts` | The builder and the `prime-prompt` extension. It calls prime-agent's `buildSystemPrompt`, `DefaultResourceLoader` and `formatSkillsForPrompt` from the installed `prime-agent` package, and imports `CHAT_BRIEF`, `personaGuideline`, `jobReplyGuideline`, `ledgerPrompt` and `jobLedgerPrompt` from the legacy chat and `SessionRules` from pi-claude-rules. No Prime text is retyped. Its `beforeRequest` hook puts the harness digests in, and `deliverHarnessDigest` records the one an input gets. |
+| `packages/pi-host/src/durable/prime-harness.ts`, `vendor/prime-harness.ts` | The digest's stores, delivery and placement, and Prime's harness code copied verbatim from the running release's source by `scripts/vendor-prime-harness.mjs`, which `--check` compares again. |
 | `packages/pi-host/src/durable/prime-chat.ts`, `chat-app.ts` | The user-history extension as a thread's `prime-chat` extension: its tools with their bindings, the turn wrappers hook, and the apps/chat client. |
 | `packages/pi-host/src/durable/registry.ts` | `threadRegistry(prompt?, chat?)` installs `prime-prompt` in place of the 3-line `Preamble` when it gets prompt options, and `prime-chat` with the `send_message` alias when it gets the chat. |
-| `packages/pi-host/src/durable/threads.ts` | `DurableThreadsOptions.prompt`; each thread file gets its own registry, so "Conversation log:" names its file, a child names its chat, and the owner's newest text ranks the digest. |
+| `packages/pi-host/src/durable/threads.ts` | `DurableThreadsOptions.prompt`; each thread file gets its own registry, so "Conversation log:" names its file and a child names its chat. `submit` records the harness digest of a root input before it admits it, one thread at a time. |
 | `packages/pi-host/src/main.ts` | Passes `prompt: {agentDir}` from `--agent-dir`. `PI_HOST_PROMPT_TOOLS=pi` switches the tools profile. Loads the chat extension at start; `PI_HOST_PRIME_CHAT=0` leaves it out. |
 | `apps/chat/server/timeline.ts`, `threads.ts`, `search-snippet.ts`, `boards.ts` | `SPEAKING_TOOLS`: a `tell_owner` call is drawn, previewed, posted and searched as a `send_message` call; a held one is a note. The agent's board write answers its summaries. |
 | `scripts/prompt-parity.mjs` | The capture and comparison above. |
@@ -197,7 +237,8 @@ A model without that support gets the whole system prompt rebuilt, which is one 
 | A Prime release update | `skills` (bundled paths) | after the session reloads |
 | The cwd | `preamble`, `context`, `rules` | |
 | A thread rename | a child conversation's `preamble` (its `guidance` is pinned) | |
-| The chat brief, the poteto line, the harness, the corrections ledger | none: these are pinned to the text the conversation first got | brief and corrections pinned until compaction; digest updates as deltas |
+| The chat brief, the poteto line, the corrections ledger | none: these are pinned to the text the conversation first got | pinned until compaction |
+| The global or local harness store | none: a `[harness-digest update]` message goes before the next input, after the history | the same update, at the next turn |
 | `.claude/rules` | none until pi-host restarts (read once per repo, as claude-rules reads it once per session) | once per session |
 
 The builder keeps what it loaded until a file it read changes. It checks about 100 file stamps per request, and a request with pinned sections builds in about 3 ms.
@@ -211,7 +252,9 @@ A thread from before this change keeps its first system message, the old preambl
 | `send_message` beside `tell_owner`. | Move apps/chat's channel and duty texts to `tell_owner`, teach the guard a channel turn, then drop the alias. |
 | No `[correction check]` after an owner message that reads as a correction. | Port the legacy server's `correctionStep` to apps/chat. |
 | Prime sends `rules`, the digest and corrections as messages; pi puts them in the system prompt. | Keep it: the text is the same, and a system section keeps the cache when it changes. |
-| The digest has no local entries and no later updates. | Add pi's own local harness store, or accept global memories only. |
+| A child conversation gets the digest as an unranked section. | Record the child's delivery when the subagent tool, or the kernel's `rlm.spawn`, creates it, ranked by its task. |
+| Nothing writes a thread's local harness store. | Point the kernel's `RLM_HARNESS_STATE_DIR` at `threadHarnessDir` when it lands, and run pi-harness's refine after a thread's runs. |
+| A Prime update can change its digest code. | Run `node scripts/vendor-prime-harness.mjs` after a Prime install; `prime-harness.test.ts` fails on this box until the copy matches the running release. |
 | A job's corrections block misses the brief-dependent lines (`uiRuleLine`, `tokenCostRuleLine`), because a section cannot see the child's task. | Pass the task to the child through a document when the subagent tool creates it. |
 | A job's `jobReplyGuideline` names a `~/scratch/<thread>-<conversation>` folder that nothing deletes, and tells it to report with `agent_message.send`, while a pi child answers with its final text. | Keep the text; add the cleanup when pi jobs become threads of their own. |
 | Skill CLIs are not on pi's PATH. | Add `~/.prime/agent/kernel-venv/bin` to the PATH of `NodeExecutionEnv`, after checking each CLI runs outside the kernel. |
@@ -232,11 +275,19 @@ A thread from before this change keeps its first system message, the old preambl
 
 `apps/chat/test/server/send-message.test.ts` checks that a `tell_owner` call renders, previews and searches like a `send_message` call, and that a held one is a note.
 
+`packages/pi-host/test/durable/prime-harness.test.ts` holds the digest to Prime:
+
+1. For the stores in `test/fixtures/prime-harness`, the digest, its fingerprint and the update after a change are byte for byte `expected.json`, which `scripts/vendor-prime-harness.mjs` writes by running Prime's whole, unchanged `refinement.ts` from the release commit.
+2. On a box with the Prime source checkout and an installed release, `vendor/prime-harness.ts` and `expected.json` are what the running release's commit gives.
+3. A delivery goes before the first input after its anchor, waits while that input is queued, and ends at a compaction.
+4. Prime's turn wrappers leave the digest message alone and mark the owner's input.
+5. A thread gets the digest before its first input, nothing new while the stores stay, and then only an update, with every earlier message in place.
+
 `packages/pi-host/test/durable/prime-prompt.test.ts` builds from the fixture agent dir in `test/fixtures/prime-agent`:
 
 1. The sections come in Prime's order, each with its source's text.
 2. The Prime sections are byte for byte what prime-agent's `buildSystemPrompt` returns for the same skills, AGENTS.md files and guidelines, for a chat, a job and the `pi` profile.
-3. A thread keeps its prompt across turns with no new `pi.system` entry; a changed AGENTS.md sends only `context`, the first system message stays the same, and the pinned digest and corrections stay; a child conversation gets a job's prompt.
-4. `DurableThreads` with `prompt` names the thread file as the conversation log, and the owner's words rank the digest.
+3. A thread keeps its prompt across turns with no new `pi.system` entry; a changed AGENTS.md sends only `context`, the first system message stays the same, and the pinned corrections stay; the root's system prompt holds no digest; a child conversation gets a job's prompt.
+4. `DurableThreads` with `prompt` names the thread file as the conversation log, and the digest message before the owner's words is ranked by them.
 
 The real comparison against Prime's captured requests is `scripts/prompt-parity.mjs`, because the captures hold private session text and cannot be a fixture.

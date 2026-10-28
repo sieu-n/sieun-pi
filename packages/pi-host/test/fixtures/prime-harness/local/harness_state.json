@@ -1,0 +1,68 @@
+{
+  "schema": 1,
+  "entries": {
+    "prompt": {
+      "local_rule": {
+        "id": "local_rule",
+        "kind": "prompt",
+        "title": "Reply with shas",
+        "content": "Reply with the shas pushed, the bytes and the test counts.",
+        "path": "session/reply",
+        "scope": "local",
+        "reference": {},
+        "arguments": {},
+        "metadata": {},
+        "source": "fixture",
+        "created_at": "2026-10-20T10:00:00.000Z",
+        "updated_at": "2026-10-20T10:00:00.000Z",
+        "version": 1
+      }
+    },
+    "memory": {
+      "thread_progress": {
+        "id": "thread_progress",
+        "kind": "memory",
+        "title": "This thread's harness digest job",
+        "content": "The job vendors Prime's digest code into pi-host and checks it against live chats.",
+        "path": "session/progress",
+        "scope": "local",
+        "reference": {},
+        "arguments": {},
+        "metadata": {},
+        "source": "fixture",
+        "created_at": "2026-10-20T10:00:00.000Z",
+        "updated_at": "2026-10-20T10:00:00.000Z",
+        "version": 1
+      },
+      "staging_deploys": {
+        "id": "staging_deploys",
+        "kind": "memory",
+        "title": "This thread deploys staging by hand",
+        "content": "Run the deploy script once checks are green.",
+        "path": "session/deploys",
+        "scope": "local",
+        "reference": {},
+        "arguments": {},
+        "metadata": {},
+        "source": "fixture",
+        "created_at": "2026-10-20T10:00:00.000Z",
+        "updated_at": "2026-10-20T10:00:00.000Z",
+        "version": 1
+      }
+    },
+    "skill": {},
+    "subagent": {}
+  },
+  "refinements": [
+    {
+      "id": "refine_l0",
+      "trigger": "Local refinement",
+      "changes": [
+        "create memory:thread_progress"
+      ],
+      "evidence": "fixture",
+      "outcome": "Kept",
+      "created_at": "2026-10-21T00:00:00.000Z"
+    }
+  ]
+}

@@ -1,7 +1,8 @@
 /**
  * A durable thread's system prompt is a Prime chat's: built from a fixture agent dir, its sections come in Prime's order, the Prime part is
  * byte for byte what prime-agent's own `buildSystemPrompt` returns for the same skills, AGENTS.md files and guidelines, a turn with unchanged
- * files sends no new system entry, and a changed AGENTS.md sends only its section while the pinned brief, digest and corrections stay.
+ * files sends no new system entry, a changed AGENTS.md sends only its section while the pinned brief and corrections stay, and a thread's
+ * root conversation gets the harness digest as a message before its input, as Prime sends it, and no `harness` section.
  */
 import { strict as assert } from "node:assert";
 import { cpSync, mkdirSync, mkdtempSync, opendirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -131,7 +132,7 @@ test("a thread sends Prime's prompt, keeps it across turns, and sends only a cha
 
   await ask("first");
   const parts = await primePromptParts({ agentDir: f.agentDir, cwd: f.cwd, messagesPath: file, depth: 0, bundledSkillsDir: f.bundled, ledgerDir: f.ledgerDir });
-  assert.equal(prompts[0], parts.map(part => part.text).join("\n\n"), "the model gets every section, joined as pi-ai joins them");
+  assert.equal(prompts[0], parts.filter(part => part.key !== "harness").map(part => part.text).join("\n\n"), "the model gets every section but the digest, joined as pi-ai joins them");
   assert.ok(prompts[0]!.startsWith(await primeSystemPrompt({ agentDir: f.agentDir, cwd: f.cwd, messagesPath: file, depth: 0, bundledSkillsDir: f.bundled })));
 
   // Unchanged files: the second turn writes no new system entry, so the cached prefix holds.
@@ -139,7 +140,7 @@ test("a thread sends Prime's prompt, keeps it across turns, and sends only a cha
   assert.equal(systemEntries(entries).length, 1);
   assert.equal(prompts[1], prompts[0]);
 
-  // A changed AGENTS.md, harness and ledger: only the context section goes again; the digest and the corrections stay as first sent.
+  // A changed AGENTS.md, harness and ledger: only the context section goes again; the corrections stay as first sent.
   writeFileSync(join(f.cwd, "AGENTS.md"), "# Repo rules\n\nRun npm test and npm run lint before a commit.\n");
   writeFileSync(join(f.agentDir, "harness", "harness_state.json"), JSON.stringify({ schema: 1, entries: { prompt: {}, memory: {}, skill: {}, subagent: {} }, refinements: [] }));
   writeFileSync(join(f.ledgerDir, "corrections.json"), JSON.stringify({ corrections: [] }));
@@ -149,7 +150,7 @@ test("a thread sends Prime's prompt, keeps it across turns, and sends only a cha
   assert.deepEqual(Object.keys(systems[1]!), ["context"]);
   assert.match(systems[1]!.context!, /Run npm test and npm run lint before a commit\./);
   assert.equal(firsts[2], firsts[0], "the first system message, the cached prefix, is unchanged");
-  assert.match(prompts[2]!, /fixture_memory/);
+  assert.doesNotMatch(prompts[2]!, /\[harness-digest\]/, "the root's digest is a message, never a section");
   assert.match(prompts[2]!, /- c900 Fixture rule/);
 
   // A subagent's child conversation gets a chat job's prompt: depth 1, spawned by the chat, job_reply and no brief.
@@ -164,7 +165,7 @@ test("a thread sends Prime's prompt, keeps it across turns, and sends only a cha
   await harness.close(context);
 });
 
-test("pi-host's threads run with it: the thread file is the conversation log, and the owner's words rank the digest", async () => {
+test("pi-host's threads run with it: the thread file is the conversation log, and the digest before the owner's words is ranked by them", async () => {
   const f = fixture("threads");
   // A second memory that only a question about deploys ranks first: the digest shows six entries a kind, so add enough to cut.
   const state = JSON.parse(readFileSync(join(f.agentDir, "harness", "harness_state.json"), "utf8"));
@@ -172,11 +173,12 @@ test("pi-host's threads run with it: the thread file is the conversation log, an
   state.entries.memory.zz_deploys = { ...state.entries.memory.fixture_memory, id: "zz_deploys", title: "Deploys", content: "Staging deploys run from the staging branch.", path: "memories/zz.md" };
   writeFileSync(join(f.agentDir, "harness", "harness_state.json"), JSON.stringify(state));
   let prompt = "";
+  let sent: Message[] = [];
   const threads = new DurableThreads({
     dir: join(dir, "threads-durable"),
     models: () => {
       const faux = fauxProvider({ provider: MODEL.provider, models: [{ id: MODEL.modelId }], tokensPerSecond: 0 });
-      faux.setResponses([({ messages }) => { prompt = getCurrentSystemPrompt(messages); return fauxAssistantMessage("ok"); }]);
+      faux.setResponses([({ messages }) => { prompt = getCurrentSystemPrompt(messages); sent = messages; return fauxAssistantMessage("ok"); }]);
       const models = createModels();
       models.setProvider(faux.provider);
       return models;
@@ -191,8 +193,13 @@ test("pi-host's threads run with it: the thread file is the conversation log, an
     const { submission } = await threads.submit(thread.id, { text: "how do staging deploys run?" });
     assert.equal((await threads.wait(thread.id, submission)).status, "done");
     assert.match(prompt, new RegExp(`Conversation log: ${threads.fileOf(thread.id)}\n`));
-    assert.match(prompt, /- \[global:zz_deploys\] Deploys/);
-    assert.match(prompt, /entries ranked by relevance to the current task/);
+    assert.doesNotMatch(prompt, /\[harness-digest\]/);
+    const users = sent.filter(message => message.role === "user").map(message => textOf(message.content));
+    assert.equal(users.length, 2);
+    assert.match(users[0]!, /^\[harness-digest\]\n/);
+    assert.match(users[0]!, /- \[global:zz_deploys\] Deploys/);
+    assert.match(users[0]!, /entries ranked by relevance to the current task/);
+    assert.equal(users[1], "how do staging deploys run?");
   } finally {
     await threads.shutdown();
   }

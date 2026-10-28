@@ -1,0 +1,13 @@
+{
+  "input": [
+    "how do staging deploys run on pi-pool 0.9.8? 스킬 이나 프롬프트"
+  ],
+  "recent": [
+    "The owner asked about deploys.",
+    "",
+    "I checked the slots and the releases.",
+    "Fixes land with tests.",
+    "Keep the cache prefix."
+  ],
+  "since": "2026-10-28T18:00:00.000Z"
+}

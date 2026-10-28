@@ -1,0 +1,325 @@
+{
+  "schema": 1,
+  "entries": {
+    "prompt": {
+      "prompt_rule_0": {
+        "id": "prompt_rule_0",
+        "kind": "prompt",
+        "title": "Rule 0 for chats",
+        "content": "Chats follow rule 0: name the file and the commit for every change.",
+        "path": "chats/rule-0",
+        "scope": "global",
+        "reference": {},
+        "arguments": {},
+        "metadata": {},
+        "source": "fixture",
+        "created_at": "2026-10-20T10:00:00.000Z",
+        "updated_at": "2026-10-20T10:00:00.000Z",
+        "version": 1
+      },
+      "prompt_rule_1": {
+        "id": "prompt_rule_1",
+        "kind": "prompt",
+        "title": "Rule 1 for chats",
+        "content": "Chats follow rule 1: name the file and the commit for every change.",
+        "path": "chats/rule-1",
+        "scope": "global",
+        "reference": {},
+        "arguments": {},
+        "metadata": {},
+        "source": "fixture",
+        "created_at": "2026-10-20T10:00:00.000Z",
+        "updated_at": "2026-10-20T10:00:00.000Z",
+        "version": 1
+      },
+      "prompt_rule_2": {
+        "id": "prompt_rule_2",
+        "kind": "prompt",
+        "title": "Rule 2 for chats",
+        "content": "Chats follow rule 2: name the file and the commit for every change.",
+        "path": "chats/rule-2",
+        "scope": "global",
+        "reference": {},
+        "arguments": {},
+        "metadata": {},
+        "source": "fixture",
+        "created_at": "2026-10-20T10:00:00.000Z",
+        "updated_at": "2026-10-20T10:00:00.000Z",
+        "version": 1
+      },
+      "prompt_rule_3": {
+        "id": "prompt_rule_3",
+        "kind": "prompt",
+        "title": "Rule 3 for chats",
+        "content": "Chats follow rule 3: name the file and the commit for every change.",
+        "path": "chats/rule-3",
+        "scope": "global",
+        "reference": {},
+        "arguments": {},
+        "metadata": {},
+        "source": "fixture",
+        "created_at": "2026-10-20T10:00:00.000Z",
+        "updated_at": "2026-10-20T10:00:00.000Z",
+        "version": 1
+      },
+      "prompt_rule_4": {
+        "id": "prompt_rule_4",
+        "kind": "prompt",
+        "title": "Rule 4 for chats",
+        "content": "Chats follow rule 4: name the file and the commit for every change.",
+        "path": "chats/rule-4",
+        "scope": "global",
+        "reference": {},
+        "arguments": {},
+        "metadata": {},
+        "source": "fixture",
+        "created_at": "2026-10-20T10:00:00.000Z",
+        "updated_at": "2026-10-20T10:00:00.000Z",
+        "version": 1
+      },
+      "prompt_rule_5": {
+        "id": "prompt_rule_5",
+        "kind": "prompt",
+        "title": "Rule 5 for chats",
+        "content": "Chats follow rule 5: name the file and the commit for every change.",
+        "path": "chats/rule-5",
+        "scope": "global",
+        "reference": {},
+        "arguments": {},
+        "metadata": {},
+        "source": "fixture",
+        "created_at": "2026-10-20T10:00:00.000Z",
+        "updated_at": "2026-10-20T10:00:00.000Z",
+        "version": 1
+      },
+      "prompt_rule_6": {
+        "id": "prompt_rule_6",
+        "kind": "prompt",
+        "title": "Rule 6 for chats",
+        "content": "Chats follow rule 6: name the file and the commit for every change.",
+        "path": "chats/rule-6",
+        "scope": "global",
+        "reference": {},
+        "arguments": {},
+        "metadata": {},
+        "source": "fixture",
+        "created_at": "2026-10-20T10:00:00.000Z",
+        "updated_at": "2026-10-20T10:00:00.000Z",
+        "version": 1
+      }
+    },
+    "memory": {
+      "pi_pool_slots": {
+        "id": "pi_pool_slots",
+        "kind": "memory",
+        "title": "pi-pool admits a run only with a free slot",
+        "content": "pi-pool's turn queue holds a run until an account slot frees; slots are a hard limit set by the owner.",
+        "path": "pi-pool/slots",
+        "scope": "global",
+        "reference": {},
+        "arguments": {},
+        "metadata": {},
+        "source": "fixture",
+        "created_at": "2026-10-20T10:00:00.000Z",
+        "updated_at": "2026-10-20T10:00:00.000Z",
+        "version": 1
+      },
+      "prime_release_0_9_8": {
+        "id": "prime_release_0_9_8",
+        "kind": "memory",
+        "title": "Prime 0.9.8 releases install through prime-install",
+        "content": "Each load.3.9 test release installs with prime-install and keeps bin/previous for a rollback.",
+        "path": "prime/releases",
+        "scope": "global",
+        "reference": {},
+        "arguments": {},
+        "metadata": {},
+        "source": "fixture",
+        "created_at": "2026-10-20T10:00:00.000Z",
+        "updated_at": "2026-10-20T10:00:00.000Z",
+        "version": 1
+      },
+      "cjk_owner_words": {
+        "id": "cjk_owner_words",
+        "kind": "memory",
+        "title": "The owner writes in Korean",
+        "content": "Quote him as-is, such as 스킬 이나 프롬프트 같은거, and reply in his language only in chat.",
+        "path": "owner/language",
+        "scope": "global",
+        "reference": {},
+        "arguments": {},
+        "metadata": {},
+        "source": "fixture",
+        "created_at": "2026-10-20T10:00:00.000Z",
+        "updated_at": "2026-10-20T10:00:00.000Z",
+        "version": 1
+      },
+      "fixes_fixed_fixing": {
+        "id": "fixes_fixed_fixing",
+        "kind": "memory",
+        "title": "Fixes land with a test",
+        "content": "Every fixed bug gets a test that fails before the fix and passes after fixing it.",
+        "path": "git/tests",
+        "scope": "global",
+        "reference": {},
+        "arguments": {},
+        "metadata": {},
+        "source": "fixture",
+        "created_at": "2026-10-20T10:00:00.000Z",
+        "updated_at": "2026-10-20T10:00:00.000Z",
+        "version": 1
+      },
+      "cache_prefix": {
+        "id": "cache_prefix",
+        "kind": "memory",
+        "title": "Keep the provider cache prefix",
+        "content": "A changed early message rewrites the cached prefix; append changes after the history instead.",
+        "path": "prompt/cache",
+        "scope": "global",
+        "reference": {},
+        "arguments": {},
+        "metadata": {},
+        "source": "fixture",
+        "created_at": "2026-10-20T10:00:00.000Z",
+        "updated_at": "2026-10-20T10:00:00.000Z",
+        "version": 1
+      },
+      "long_entry": {
+        "id": "long_entry",
+        "kind": "memory",
+        "title": "A long entry about many things",
+        "content": "This entry talks about deploys, slots, releases, caches, tests and search. This entry talks about deploys, slots, releases, caches, tests and search. This entry talks about deploys, slots, releases, caches, tests and search. This entry talks about deploys, slots, releases, caches, tests and search. This entry talks about deploys, slots, releases, caches, tests and search. This entry talks about deploys, slots, releases, caches, tests and search. This entry talks about deploys, slots, releases, caches, tests and search. This entry talks about deploys, slots, releases, caches, tests and search. This entry talks about deploys, slots, releases, caches, tests and search. This entry talks about deploys, slots, releases, caches, tests and search. This entry talks about deploys, slots, releases, caches, tests and search. This entry talks about deploys, slots, releases, caches, tests and search.",
+        "path": "misc/long",
+        "scope": "global",
+        "reference": {},
+        "arguments": {},
+        "metadata": {},
+        "source": "fixture",
+        "created_at": "2026-10-20T10:00:00.000Z",
+        "updated_at": "2026-10-20T10:00:00.000Z",
+        "version": 1
+      }
+    },
+    "skill": {
+      "board_wake": {
+        "id": "board_wake",
+        "kind": "skill",
+        "title": "Wake on a CI run",
+        "content": "Call board.wake(run=<id>) and end the turn.",
+        "path": "skills/board",
+        "scope": "global",
+        "reference": {
+          "module": "board",
+          "function": "wake"
+        },
+        "arguments": {
+          "run": "CI run id"
+        },
+        "metadata": {},
+        "source": "fixture",
+        "created_at": "2026-10-20T10:00:00.000Z",
+        "updated_at": "2026-10-20T10:00:00.000Z",
+        "version": 1
+      }
+    },
+    "subagent": {
+      "api_reviewer": {
+        "id": "api_reviewer",
+        "kind": "subagent",
+        "title": "API reviewer",
+        "content": "Reviews an API change for breaking callers.",
+        "path": "subagents/api",
+        "scope": "global",
+        "reference": {},
+        "arguments": {},
+        "metadata": {},
+        "source": "fixture",
+        "created_at": "2026-10-20T10:00:00.000Z",
+        "updated_at": "2026-10-20T10:00:00.000Z",
+        "version": 1
+      }
+    }
+  },
+  "refinements": [
+    {
+      "id": "refine_g0",
+      "trigger": "Global refinement 0",
+      "changes": [
+        "create memory:m0"
+      ],
+      "evidence": "fixture",
+      "outcome": "Outcome 0",
+      "created_at": "2026-10-20T00:00:00.000Z"
+    },
+    {
+      "id": "refine_g1",
+      "trigger": "Global refinement 1",
+      "changes": [
+        "create memory:m1"
+      ],
+      "evidence": "fixture",
+      "outcome": "Outcome 1",
+      "created_at": "2026-10-21T01:00:00.000Z"
+    },
+    {
+      "id": "refine_g2",
+      "trigger": "Global refinement 2",
+      "changes": [
+        "create memory:m2"
+      ],
+      "evidence": "fixture",
+      "outcome": "Outcome 2",
+      "created_at": "2026-10-22T02:00:00.000Z"
+    },
+    {
+      "id": "refine_g3",
+      "trigger": "Global refinement 3",
+      "changes": [
+        "create memory:m3"
+      ],
+      "evidence": "fixture",
+      "outcome": "Outcome 3",
+      "created_at": "2026-10-20T03:00:00.000Z"
+    },
+    {
+      "id": "refine_g4",
+      "trigger": "Global refinement 4",
+      "changes": [
+        "create memory:m4"
+      ],
+      "evidence": "fixture",
+      "outcome": "Outcome 4",
+      "created_at": "2026-10-21T04:00:00.000Z"
+    },
+    {
+      "id": "refine_g5",
+      "trigger": "Global refinement 5",
+      "changes": [
+        "create memory:m5"
+      ],
+      "evidence": "fixture",
+      "outcome": "Outcome 5",
+      "created_at": "2026-10-22T05:00:00.000Z"
+    },
+    {
+      "id": "refine_g6",
+      "trigger": "Global refinement 6",
+      "changes": [
+        "create memory:m6"
+      ],
+      "evidence": "fixture",
+      "outcome": "Outcome 6",
+      "created_at": "2026-10-20T06:00:00.000Z"
+    },
+    {
+      "id": "refine_g7",
+      "trigger": "Global refinement 7",
+      "changes": [
+        "delete memory:search_rg_only"
+      ],
+      "evidence": "fixture",
+      "outcome": "Removed",
+      "created_at": "2026-10-28T19:00:00.000Z"
+    }
+  ]
+}

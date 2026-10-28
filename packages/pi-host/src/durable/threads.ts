@@ -30,7 +30,7 @@ import { statusOf, ThreadIndex, type IndexedEntry, type SearchPage, type SearchQ
 import { headFor, parseSession } from "./import.ts";
 import { AgentMessageEntry, ChatDoc, threadEnv, threadRegistry } from "./registry.ts";
 import { SPEAKING_TOOLS, type PrimeChat } from "./prime-chat.ts";
-import type { PrimePromptOptions } from "./prime-prompt.ts";
+import { deliverHarnessDigest, type PrimePromptOptions } from "./prime-prompt.ts";
 
 const context: Context = BACKGROUND_CONTEXT;
 const PREVIEW_CHARS = 200;
@@ -130,6 +130,10 @@ interface OpenThread {
   /** Resumes the open file at its earliest sleep; pi-durable arms no timer of its own once the host takes `onWake`. */
   sleepTimer?: NodeJS.Timeout;
   stopCommits: () => void;
+  /** The prompt options of this thread, which also deliver Prime's harness digest before each root input. */
+  prompt?: PrimePromptOptions & { thread: NonNullable<PrimePromptOptions["thread"]> };
+  /** The newest digest check, so the next waits for it and two never record the same digest. */
+  digesting: Promise<void>;
 }
 
 const textOfContent = (content: Message["content"] | undefined): string => {
@@ -186,8 +190,6 @@ export class DurableThreads {
   private readonly open = new Map<string, Promise<OpenThread>>();
   /** The slot release of each conversation's last settled input, by `<thread>:<conversation>`, until it is done. */
   private readonly releasing = new Map<string, Promise<void>>();
-  /** Each thread's newest owner text, which ranks the harness digest of its first request (prime-prompt.ts). */
-  private readonly lastText = new Map<string, string>();
   private readonly leases = new Leases("pi-host-durable");
   private readonly registry = threadRegistry();
   private readonly threadsDir: string;
@@ -290,7 +292,7 @@ export class DurableThreads {
         chat: this.options.chat,
         thread: { id, file, name, cwd: row.cwd, harness: () => openHarness, boardDoc: () => this.docGet(id, "chat.board"), log: (line: string) => this.log(`${id} ${line}`) },
       };
-      const prompt = this.options.prompt && { ...this.options.prompt, thread: { id, file, name, cwd: row.cwd, query: () => this.lastText.get(id) }, log: (line: string) => this.log(`${id} ${line}`) };
+      const prompt = this.options.prompt && { ...this.options.prompt, thread: { id, file, name, cwd: row.cwd, harness: () => openHarness }, log: (line: string) => this.log(`${id} ${line}`) };
       const harness = await Harness.open(storage, {
         models: this.options.models(id),
         registry: prompt || chat ? threadRegistry(prompt, chat) : this.registry,
@@ -307,7 +309,7 @@ export class DurableThreads {
       const root = await harness.root(context, init ? { agent: init.agent } : undefined);
       if (root.id !== ROOT_CONVERSATION_ID) throw new Error(`${file}: the root conversation is ${root.id}`);
       await this.backfill(id, harness);
-      state = { id, file, harness, root, watchers: new Set(), wake, stopCommits: () => {} };
+      state = { id, file, harness, root, watchers: new Set(), wake, stopCommits: () => {}, ...(prompt ? { prompt } : {}), digesting: Promise.resolve() };
       const opened = state;
       opened.stopCommits = harness.subscribeCommits(publication => this.onCommit(opened, publication));
       this.onWake(opened, harness.wake());
@@ -560,7 +562,6 @@ export class DurableThreads {
     if (input.text) content.push({ type: "text", text: input.text });
     for (const image of input.images ?? []) content.push({ type: "image", data: image.data, mimeType: image.mimeType });
     if (!content.length) throw new Error("durable_submit needs text or images");
-    if (input.text && conversation.id === ROOT_CONVERSATION_ID) this.lastText.set(id, input.text);
     const requestId = input.requestId ?? `pi-host:${randomUUID()}`;
     const turns = this.options.turns;
     const session = turns ? await this.sessionOf(open, conversation.id) : undefined;
@@ -570,6 +571,7 @@ export class DurableThreads {
     let owner: OwnerMark | undefined;
     if (input.ownerTurn && turns && session && turns.ticket(id, session).place.state !== "working") owner = await turns.ownerTurn(id, session);
     this.index.markActive(id, this.now());
+    if (open.prompt && conversation.id === ROOT_CONVERSATION_ID) await this.deliverDigest(open, conversation.id, input);
     const submission = await conversation.submit({
       type: "input", content, requestId,
       ...(input.whenBusy ? { whenBusy: input.whenBusy } : {}),
@@ -583,6 +585,15 @@ export class DurableThreads {
       ...(turns && session ? { ticket: turns.ticket(id, session) } : {}),
       ...(owner ? { owner } : {}),
     };
+  }
+
+  /** Prime's harness check for the turn the input starts (`deliverHarnessDigest`), one at a time per thread; a failure only logs. */
+  private deliverDigest(open: OpenThread, conversation: ConversationId, input: SubmitInput): Promise<void> {
+    const prompt = open.prompt!;
+    const run = open.digesting.then(() => deliverHarnessDigest(prompt, open.harness, conversation, { text: input.text ?? "", ...(input.whenBusy ? { whenBusy: input.whenBusy } : {}) }, context, this.now()))
+      .catch(error => this.log(`${open.id} harness digest failed: ${error instanceof Error ? error.message : String(error)}`));
+    open.digesting = run;
+    return run;
   }
 
   async wait(id: string, submission: SubmissionId, waitContext: Context = context): Promise<SettledSubmissionRecord> {

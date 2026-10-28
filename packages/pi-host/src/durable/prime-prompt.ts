@@ -2,20 +2,24 @@
  * The system prompt of a durable thread, built from the same sources and by the same code as a Prime chat's: Prime's own
  * `buildSystemPrompt` (prime-agent `core/system-prompt.js`), its resource loader for skills and AGENTS.md files, the legacy chat's
  * brief and poteto-mode line (`legacy/prime/user-history/src/chat-brief.ts`), its corrections block (`chat-corrections.ts`),
- * claude-rules' start-up rules (`packages/pi-claude-rules`) and Prime's harness digest formatter. Nothing here retypes Prime's text,
+ * claude-rules' start-up rules (`packages/pi-claude-rules`) and Prime's harness digest code (`vendor/prime-harness.ts`). Nothing here retypes Prime's text,
  * so the two cannot drift; `docs/prime-pi-prompt-parity.md` maps every part and its gaps.
  *
  * The parts render as pi-durable sections in Prime's order. pi-ai joins sections with a blank line, so `preamble` through `skills`
- * join to the exact string Prime's builder returns for the same inputs (`primeSystemPrompt`); `rules`, `harness` and `corrections`
- * follow them, where Prime sends the same texts as messages.
+ * join to the exact string Prime's builder returns for the same inputs (`primeSystemPrompt`); `rules` and `corrections` follow them, where
+ * Prime sends the same texts as messages. A thread's root conversation gets the harness digest where Prime puts it, as a message before
+ * the turn's input (`prime-harness.ts`); a child conversation still gets it as the `harness` section.
  */
 import { existsSync, opendirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { defineExtension, ROOT_CONVERSATION_ID, section, type Extension, type PromptInput } from "@earendil-works/pi-durable";
+import type { Context } from "@earendil-works/chord";
+import { defineExtension, GenerationTask, hook, LiveDoc, ROOT_CONVERSATION_ID, section, type ConversationId, type Extension, type Harness, type PromptInput } from "@earendil-works/pi-durable";
 import { BRIEF_CORRECTIONS, CHAT_BRIEF, jobReplyGuideline, personaGuideline } from "../../../../legacy/prime/user-history/src/chat-brief.ts";
 import { jobLedgerPrompt, ledgerPrompt, parseLedger, type Ledger } from "../../../../legacy/prime/user-history/src/chat-corrections.ts";
 import { SessionRules } from "../../../pi-claude-rules/src/core/rules.ts";
+import { contextTail, contextTexts, digestFlags, digestQueryTerms, HarnessDigestDoc, mergedHarnessState, nextDelivery, placeDeliveries, threadHarnessDir, withDigests } from "./prime-harness.ts";
+import { formatHarnessStateForPrompt, HARNESS_DIGEST_PREFIX, HARNESS_DIGEST_SUFFIX } from "./vendor/prime-harness.ts";
 
 /**
  * Which tools Prime's builder is told the session has. It gates the REPL parts of Prime's text on `ipython`.
@@ -25,7 +29,7 @@ import { SessionRules } from "../../../pi-claude-rules/src/core/rules.ts";
  */
 export type PromptTools = "prime" | "pi";
 export const PROMPT_TOOLS_ENV = "PI_HOST_PROMPT_TOOLS";
-const TOOLS: Record<PromptTools, { root: string[]; child: string[] }> = {
+export const TOOLS: Record<PromptTools, { root: string[]; child: string[] }> = {
   // A browser chat's active tools (a capture's `tools`), and a chat job's: Prime's builder reads only ipython, bash and edit of them.
   prime: { root: ["ipython", "search_history", "chat_board", "tell_owner", "correction_add", "poteto_mode"], child: ["ipython", "job_reply", "poteto_mode"] },
   pi: { root: ["read", "bash", "edit", "write"], child: ["read", "bash", "edit", "write"] },
@@ -61,17 +65,20 @@ export interface PrimePromptInput {
   brief?: readonly string[];
   /** The folder of the corrections ledger (`corrections.json`); default `chatDataDir(agentDir)`. */
   ledgerDir?: string;
+  /** The conversation's local harness store (`threadHarnessDir`), merged over the global one in the digest. */
+  harnessDir?: string;
   /** Leave out the parts Prime sends as messages: claude-rules, the harness digest and the corrections block. */
   primeOnly?: boolean;
   /** Extra parts not to build, such as pinned ones a conversation already shows. */
   skip?: ReadonlySet<PromptKey>;
-  /** The conversation's newest user text, which ranks the harness digest's entries by relevance as Prime's first digest does. */
+  /** The input of the turn the digest goes with, which ranks its entries as Prime's digest at that turn does. */
   query?: string;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------
 // Prime's own code, from the prime-agent package this repo installs. Its `exports` names only the index, which lacks
-// buildSystemPrompt and the harness formatter, so the modules are loaded by their path next to the index.
+// buildSystemPrompt, so the modules are loaded by their path next to the index. Its harness code is older than the releases the daemon
+// runs, so the digest comes from `vendor/prime-harness.ts`, copied from the source of the running release.
 
 interface Skill { name: string; filePath: string; disableModelInvocation?: boolean }
 interface ContextFile { path: string; content: string }
@@ -79,20 +86,14 @@ interface PrimeModules {
   buildSystemPrompt(options: Record<string, unknown>): string;
   formatSkillsForPrompt(skills: Skill[]): string;
   DefaultResourceLoader: new (options: Record<string, unknown>) => { reload(): Promise<void>; getSkills(): { skills: Skill[] }; getAgentsFiles(): { agentsFiles: ContextFile[] } };
-  loadHarnessState(dir: string, scope: string): unknown;
-  formatHarnessStateForPrompt(state: unknown, options: Record<string, unknown>): string;
-  harnessQueryTerms(text: string): Iterable<string>;
-  HARNESS_DIGEST_PREFIX: string;
-  HARNESS_DIGEST_SUFFIX: string;
 }
 let modules: Promise<PrimeModules> | undefined;
 export function primeModules(): Promise<PrimeModules> {
   modules ??= (async () => {
     const index = import.meta.resolve("prime-agent");
     const load = (path: string) => import(new URL(path, index).href) as Promise<Record<string, unknown>>;
-    const [prompt, loader, skills, refinement, messages] = await Promise.all([load("./core/system-prompt.js"), load("./core/resource-loader.js"),
-      load("./core/skills.js"), load("./core/refinement/index.js"), load("./core/messages.js")]);
-    return { ...prompt, ...loader, ...skills, ...refinement, ...messages } as unknown as PrimeModules;
+    const [prompt, loader, skills] = await Promise.all([load("./core/system-prompt.js"), load("./core/resource-loader.js"), load("./core/skills.js")]);
+    return { ...prompt, ...loader, ...skills } as unknown as PrimeModules;
   })();
   return modules;
 }
@@ -255,7 +256,7 @@ export async function primePromptParts(input: PrimePromptInput): Promise<PromptP
   const full = prime.buildSystemPrompt(options);
   const parts = splitParts(prime, options, full, tools);
   if (input.primeOnly) return parts;
-  return [...parts, ...await extraParts(prime, input, tools)];
+  return [...parts, ...extraParts(input, tools, resources.skills)];
 }
 
 function splitParts(prime: PrimeModules, options: Record<string, unknown> & { skills: Skill[] }, full: string, tools: readonly string[]): PromptPart[] {
@@ -290,7 +291,7 @@ function splitParts(prime: PrimeModules, options: Record<string, unknown> & { sk
 const claudeRules = new SessionRules({ cellStart: () => "", cellSteps: (code, start) => [{ code, cwd: start }] });
 
 /** The parts Prime sends as messages rather than in its system prompt, in the order they reach the model there. */
-async function extraParts(prime: PrimeModules, input: PrimePromptInput, tools: readonly string[]): Promise<PromptPart[]> {
+function extraParts(input: PrimePromptInput, tools: readonly string[], skills: readonly Skill[]): PromptPart[] {
   const out: PromptPart[] = [];
   // claude-rules' context hook puts the cwd repo's unscoped .claude/rules first in every request.
   let rules: string | null = null;
@@ -300,13 +301,11 @@ async function extraParts(prime: PrimeModules, input: PrimePromptInput, tools: r
     rules = null;
   }
   if (rules && !input.skip?.has("rules")) out.push({ key: "rules", text: rules, source: "packages/pi-claude-rules SessionRules.startup (Prime: first user message)" });
-  // Prime's harness digest, the first custom message of a session: the global continual harness state through Prime's formatter.
+  // Prime's harness digest at a session's first turn: the global store merged with the session's local one, ranked by the turn's input.
   if (!input.skip?.has("harness")) {
-    const hasIpython = tools.includes("ipython");
-    const state = prime.loadHarnessState(join(input.agentDir, "harness"), "global");
-    const digest = prime.formatHarnessStateForPrompt(state, { includeIpythonExamples: hasIpython, includeShellExamples: tools.includes("bash"), includeRefineExamples: hasIpython,
-      ...(input.query ? { queryTerms: queryTerms(prime, input.query) } : {}) });
-    out.push({ key: "harness", text: prime.HARNESS_DIGEST_PREFIX + digest + prime.HARNESS_DIGEST_SUFFIX, source: "prime-agent formatHarnessStateForPrompt over <agentDir>/harness (Prime: [harness-digest] message)" });
+    const state = mergedHarnessState(input.agentDir, input.harnessDir);
+    const digest = formatHarnessStateForPrompt(state, { ...digestFlags(tools, skills), ...(input.query ? { queryTerms: digestQueryTerms([input.query], []) } : {}) });
+    out.push({ key: "harness", text: HARNESS_DIGEST_PREFIX + digest + HARNESS_DIGEST_SUFFIX, source: "Prime's formatHarnessStateForPrompt (vendor/prime-harness.ts) over <agentDir>/harness and the local store (Prime: [harness-digest] message)" });
   }
   // The legacy chat's corrections block, which its context hook puts in once per context.
   if (input.skip?.has("corrections")) return out;
@@ -314,19 +313,6 @@ async function extraParts(prime: PrimeModules, input: PrimePromptInput, tools: r
   const corrections = input.depth === 0 ? ledger && ledgerPrompt(ledger, BRIEF_CORRECTIONS) : jobLedgerPrompt(ledger);
   if (corrections) out.push({ key: "corrections", text: corrections, source: "chat-corrections.ts ledgerPrompt or jobLedgerPrompt (Prime: [corrections] message)" });
   return out;
-}
-
-/**
- * Prime's relevance terms for a session's first digest (`_buildHarnessDigestQueryTerms`): the terms of its newest user message at weight 2,
- * at most 48. Prime adds the goal objective and the last four messages; a pi thread's first request has only the owner's message.
- */
-function queryTerms(prime: PrimeModules, text: string): Map<string, number> {
-  const terms = new Map<string, number>();
-  for (const term of prime.harnessQueryTerms(text)) {
-    if (terms.size >= 48 && !terms.has(term)) break;
-    if (!terms.has(term)) terms.set(term, 2);
-  }
-  return terms;
 }
 
 function readLedger(dir: string): Ledger | null {
@@ -351,7 +337,7 @@ export interface PrimePromptOptions {
   bundledSkillsDir?: string;
   ledgerDir?: string;
   /** The thread the registry serves: its file for "Conversation log:", its name for a child's lines, its cwd when a conversation has none. */
-  thread?: { id: string; file: string; name: () => string; cwd: string; query?: () => string | undefined };
+  thread?: { id: string; file: string; name: () => string; cwd: string; harness?: () => Harness | undefined };
   log?: (line: string) => void;
 }
 
@@ -361,7 +347,8 @@ export function promptTools(env: NodeJS.ProcessEnv = process.env): PromptTools {
 
 /**
  * The pi-durable extension that renders Prime's prompt as sections. All sections of one request share one build. A pinned section keeps
- * the text the conversation already shows; every other section is rebuilt, and pi-durable sends only a changed section again.
+ * the text the conversation already shows; every other section is rebuilt, and pi-durable sends only a changed section again. The root
+ * conversation gets no `harness` section: its `beforeRequest` hook puts each digest `deliverHarnessDigest` recorded before its input.
  */
 export function primePrompt(options: PrimePromptOptions): Extension {
   const builds = new WeakMap<object, Promise<Map<PromptKey, string>>>();
@@ -371,14 +358,14 @@ export function primePrompt(options: PrimePromptOptions): Extension {
       const depth = input.conversationId === ROOT_CONVERSATION_ID ? 0 : 1;
       const cwd = input.agent.cwd ?? (input.env as { cwd?: string } | undefined)?.cwd ?? options.thread?.cwd ?? process.cwd();
       const thread = options.thread;
+      const session = thread && `${thread.id}-${input.conversationId}`;
       pending = primePromptParts({
         agentDir: options.agentDir,
         cwd,
-        ...(thread ? { messagesPath: thread.file, parentName: thread.name(), session: `${thread.id}-${input.conversationId}` } : {}),
-        ...(depth === 0 && thread?.query?.() ? { query: thread.query()! } : {}),
+        ...(thread ? { messagesPath: thread.file, parentName: thread.name(), session: session!, harnessDir: threadHarnessDir(thread.file, session!) } : {}),
         depth,
         tools: options.tools ?? "prime",
-        skip: new Set([...PINNED_SECTIONS].filter(key => input.shown[key] !== undefined)),
+        skip: new Set([...PINNED_SECTIONS].filter(key => input.shown[key] !== undefined || (key === "harness" && depth === 0))),
         ...(options.bundledSkillsDir ? { bundledSkillsDir: options.bundledSkillsDir } : {}),
         ...(options.ledgerDir ? { ledgerDir: options.ledgerDir } : {}),
       }).then(parts => new Map(parts.map(part => [part.key, part.text])));
@@ -388,8 +375,47 @@ export function primePrompt(options: PrimePromptOptions): Extension {
     return pending;
   };
   const render = (key: PromptKey) => async (input: PromptInput): Promise<string | undefined> => {
+    if (key === "harness" && input.conversationId === ROOT_CONVERSATION_ID) return undefined;
     if (PINNED_SECTIONS.has(key) && input.shown[key] !== undefined) return input.shown[key];
     return (await build(input)).get(key);
   };
-  return defineExtension({ name: "prime-prompt", sections: [...PRIME_SECTIONS, ...EXTRA_SECTIONS].map(key => section(key, render(key), { tag: false })) });
+  return defineExtension({
+    name: "prime-prompt",
+    sections: [...PRIME_SECTIONS, ...EXTRA_SECTIONS].map(key => section(key, render(key), { tag: false })),
+    hooks: [hook(GenerationTask, {
+      beforeRequest: async ({ messages }, api, context) => {
+        const harness = options.thread?.harness?.();
+        if (api.conversationId !== ROOT_CONVERSATION_ID || !harness) return undefined;
+        const doc = await api.snapshot(HarnessDigestDoc, api.conversationId, context);
+        if (!doc?.deliveries.length) return undefined;
+        const view = await (await harness.conversation(api.conversationId, context))?.context(context);
+        const out = view && withDigests(messages, view, doc.deliveries);
+        return out ? { messages: out } : undefined;
+      },
+    })],
+  });
+}
+
+/**
+ * Prime's harness check at a turn it starts, for an input about to be submitted to a thread's root conversation: records the digest or the
+ * update the turn gets, if any, in the conversation's `prime.harness-digests` document. A steer into a running turn gets none, as Prime
+ * checks only when a turn starts. Calls for one thread must not overlap.
+ */
+export async function deliverHarnessDigest(options: PrimePromptOptions & { thread: NonNullable<PrimePromptOptions["thread"]> }, harness: Harness,
+  conversationId: ConversationId, input: { text: string; whenBusy?: "steer" | "followUp" | "reject" }, context: Context, now = Date.now()): Promise<void> {
+  if (conversationId !== ROOT_CONVERSATION_ID) return;
+  if (input.whenBusy === "steer" && (await harness.snapshot(LiveDoc, conversationId, context))?.run) return;
+  const conversation = await harness.conversation(conversationId, context);
+  if (!conversation) return;
+  const view = await conversation.context(context);
+  const cwd = (await conversation.agent(context)).cwd ?? options.thread.cwd;
+  const tools = TOOLS[options.tools ?? "prime"].root;
+  const { skills } = await primeResources(options.agentDir, cwd, options.bundledSkillsDir ?? bundledSkillsDir());
+  const state = mergedHarnessState(options.agentDir, threadHarnessDir(options.thread.file, options.thread.id));
+  await conversation.commit(async tx => {
+    const doc = await tx.doc(HarnessDigestDoc, conversationId);
+    const kept = placeDeliveries(view, doc.deliveries).map(placed => placed.delivery);
+    const next = nextDelivery({ state, flags: digestFlags(tools, skills), input: [input.text], recent: contextTexts(view), delivered: kept, after: contextTail(view), now });
+    if (next || kept.length !== doc.deliveries.length) doc.deliveries = [...kept, ...(next ? [next] : [])];
+  }, context);
 }
