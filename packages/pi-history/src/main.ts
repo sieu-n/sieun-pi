@@ -99,6 +99,8 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   openDb(dbPath).close();
   const log = (line: string) => process.stderr.write(`${new Date().toISOString()} ${line}\n`);
   const indexer = startIndexerThread(dbPath, values.dir ?? defaultDirs());
+  const checkpointer = new Worker(new URL("./checkpoint-worker.ts", import.meta.url), { workerData: { dbPath } });
+  checkpointer.unref();
   const server = await (await loadStartServer())({ dbPath, socket, box: boxName(), indexer });
   log(`pi-history: serving ${socket}, database ${dbPath}`);
   const loop = monitorEventLoopDelay({ resolution: 10 });

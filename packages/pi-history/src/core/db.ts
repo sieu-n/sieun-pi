@@ -63,12 +63,17 @@ export function migrate(db: DatabaseSync): void {
   }
 }
 
-export function openDb(path: string = defaultDbPath(), options: { readOnly?: boolean } = {}): DatabaseSync {
+/**
+ * `manualCheckpoint` turns off SQLite's checkpoint inside COMMIT. On the 9 GB us-metal02 index that checkpoint made commits of 1 to 2 docs
+ * take 300 to 735 ms (slow step log, 10-28 03:01Z), so the indexer leaves it to the checkpoint thread in main.ts.
+ */
+export function openDb(path: string = defaultDbPath(), options: { readOnly?: boolean; manualCheckpoint?: boolean } = {}): DatabaseSync {
   if (!options.readOnly) mkdirSync(dirname(path), { recursive: true });
   const db = new DatabaseSync(path, { readOnly: options.readOnly ?? false });
   if (options.readOnly) return db;
   db.exec("PRAGMA journal_mode = WAL");
   db.exec("PRAGMA synchronous = NORMAL");
   migrate(db);
+  if (options.manualCheckpoint) db.exec("PRAGMA wal_autocheckpoint = 0");
   return db;
 }

@@ -161,3 +161,10 @@ test("a big append to one file does not hold a small append to another", async (
   assert.ok(atSmall < bigSize / 2, `the small append waited for ${atSmall} of ${bigSize} bytes of the big one`);
   await ix.idle();
 });
+
+test("the indexer's connection leaves checkpoints to the checkpoint thread", () => {
+  const t = tempHome();
+  const db = openDb(join(t.home, "history.db"), { manualCheckpoint: true });
+  assert.equal((db.prepare("PRAGMA wal_autocheckpoint").get() as { wal_autocheckpoint: number }).wal_autocheckpoint, 0);
+  db.close();
+});

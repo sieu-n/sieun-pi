@@ -17,7 +17,7 @@ export interface IndexerWorkerData {
 export const STATUS_EVERY_MS = 1000;
 
 const { dbPath, dirs } = workerData as IndexerWorkerData;
-const db = openDb(dbPath);
+const db = openDb(dbPath, { manualCheckpoint: true });
 const log = (line: string) => process.stderr.write(`${new Date().toISOString()} ${line}\n`);
 const policy = new ToolOutputPolicy(db, dirs.find((d) => basename(d) === "sessions") ?? dirs[0]!);
 const indexer = new Indexer({ db, dbPath, dirs, log, policy });
