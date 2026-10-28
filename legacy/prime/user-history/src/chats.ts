@@ -1154,7 +1154,10 @@ export class Chats {
           }
           if (!resume) return;
           const hidden = new Set(await this.mine([...await this.archivedIds()]).catch(() => []));
-          await resumeChatJobs(swept, this.chatIds, resume, line => this.log(line), await this.stepOwners(swept), this.heldJobs, hidden, this.replaced);
+          // The jobs of a chat whose check-ins the owner paused count too: the pause stops check-ins and the chat's own revive, while the chat
+          // still runs its jobs. On 10-28 SEO guy (01a11a24, paused forever) left authority studies (01a17f38) and its 4 studies stranded after
+          // Prime cancelled their park wakes, from 22:30Z on 10-27 to 02:1xZ, until the chat sent its own continue.
+          await resumeChatJobs(chatRows, this.chatIds, resume, line => this.log(line), await this.stepOwners(chatRows), this.heldJobs, hidden, this.replaced);
         });
       }
     }

@@ -102,7 +102,7 @@ test("resumeJobs runs nothing more when no job of a chat is interrupted", async 
   assert.deepEqual(calls, [["--dry-run", "--direct", "--owed"]]);
 });
 
-test("the server resumes the interrupted jobs of its active chats and their root jobs once per job sweep", async () => {
+test("the server resumes the interrupted jobs of its chats, paused ones too, and their root jobs once per job sweep", async () => {
   const dir = await mkdtemp(join(tmpdir(), "interrupted-jobs-"));
   const calls: string[] = [];
   const threads = fakeThreads(calls);
@@ -123,8 +123,9 @@ test("the server resumes the interrupted jobs of its active chats and their root
   await chats.setCheckIn("c2", { pause: "forever" }, OWNER_UI);
   const step = async (ms: number) => { now += ms; await chats.tick(); await chats.settled(); };
   await step(0);
-  assert.deepEqual(asked.map(found => found.map(run => run.session_id)), [["j-alert", "j-nested", "r1"]],
-    "jobs of c1 at any depth and its root job; never a chat, a job of a chat the owner paused, or a run outside the chats");
+  // SEO guy, 10-28: its check-ins were paused forever, and its job authority studies and that job's 4 subagents sat stranded for hours.
+  assert.deepEqual(asked.map(found => found.map(run => run.session_id)), [["j-alert", "j-nested", "r1", "j-paused-chat"]],
+    "jobs of c1 at any depth and its root job, and the jobs of c2 whose check-ins the owner paused; never a chat or a run outside the chats");
   await step(JOB_CLEANUP_EVERY_MS - 1);
   assert.equal(asked.length, 1, "once per job sweep");
   await step(1);
