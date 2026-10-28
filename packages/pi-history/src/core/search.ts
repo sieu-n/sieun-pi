@@ -82,6 +82,17 @@ function prepare(db: DatabaseSync, sql: string): StatementSync {
 interface Clause { sql: string[]; values: SQLInputValue[]; rows: boolean }
 const clause = (): Clause => ({ sql: [], values: [], rows: false });
 
+const metaIndex = new WeakMap<DatabaseSync, boolean>();
+/**
+ * Whether docs has the covering index docs_meta(id, file, kind, is_error, author). A count with a row filter then reads that index per hit
+ * instead of each docs row, measured on a 1.5M-doc copy of the live index on 10-28: board.wake 3,736 to 269 ms cold, "the" 33.4 s to 0.9 s.
+ */
+function hasMetaIndex(db: DatabaseSync): boolean {
+  let has = metaIndex.get(db);
+  if (has === undefined) metaIndex.set(db, has = !!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'docs_meta'").get());
+  return has;
+}
+
 const kindColumn = new WeakMap<DatabaseSync, boolean>();
 /**
  * Whether fts indexes `kind` beside `text`. Then "everything but thinking" is a MATCH term and an exact count needs no docs join, which
@@ -94,10 +105,10 @@ function ftsHasKind(db: DatabaseSync): boolean {
 }
 
 /** The WHERE terms every prime query shares: kinds, error flag, time, chat, author and the scope's roots. */
-function primeFilters(filters: Filters, thinking: boolean, roots: string[] | null, idColumn: string, thinkingInMatch: boolean): Clause {
+function primeFilters(filters: Filters, thinking: boolean, roots: string[] | null, idColumn: string, kindsInMatch: boolean): Clause {
   const out = clause();
-  if (filters.kinds) { out.sql.push(`d.kind IN (SELECT value FROM json_each(?))`); out.values.push(JSON.stringify(filters.kinds)); }
-  if (!thinking && !thinkingInMatch) out.sql.push(`d.kind != 'thinking'`);
+  if (filters.kinds && !kindsInMatch) { out.sql.push(`d.kind IN (SELECT value FROM json_each(?))`); out.values.push(JSON.stringify(filters.kinds)); }
+  if (!thinking && !kindsInMatch) out.sql.push(`d.kind != 'thinking'`);
   if (filters.isError) out.sql.push("d.is_error = 1");
   if (filters.since !== undefined) { out.sql.push(`${idColumn} >= ?`); out.values.push(filters.since * 1024); }
   if (filters.until !== undefined) { out.sql.push(`${idColumn} < ?`); out.values.push(filters.until * 1024); }
@@ -150,13 +161,22 @@ function branches(query: Query): Branch[] {
   return out;
 }
 
-/** The FROM and WHERE of one branch, without paging, and the FROM its exact count needs. */
-function branchFrom(db: DatabaseSync, branch: Branch, query: Query, roots: string[] | null): { from: string; countFrom: string; id: string; where: Clause; fts: boolean } {
+/** MATCH text that also holds the kind filter, for an fts that indexes kind: the asked kinds, else every kind but thinking. */
+function kindMatch(match: string, query: Query): string {
+  const text = `{text} : (${match})`;
+  if (query.filters.kinds) return `${text} AND kind : (${query.filters.kinds.map(kind => `"${kind}"`).join(" OR ")})`;
+  return query.thinking ? text : `${text} NOT kind : "thinking"`;
+}
+
+/** The SQL pieces of one branch: its FROM for hit rows, for the exact count and for the rank window, its WHERE, and its snippet MATCH text. */
+interface BranchSql { from: string; countFrom: string; rankFrom: string; id: string; where: Clause; fts: boolean; match: string | null; sessions: string[] }
+
+function branchFrom(db: DatabaseSync, branch: Branch, query: Query, roots: string[] | null): BranchSql {
   const fts = branch.match !== null;
   const id = fts ? "fts.rowid" : "d.id";
   const where = clause();
-  const thinkingInMatch = fts && !query.thinking && ftsHasKind(db);
-  const match = fts && ftsHasKind(db) ? `{text} : (${branch.match})${thinkingInMatch ? ` NOT kind : "thinking"` : ""}` : branch.match;
+  const kindsInMatch = fts && ftsHasKind(db);
+  const match = kindsInMatch ? kindMatch(branch.match!, query) : branch.match;
   if (fts) { where.sql.push("fts MATCH ?"); where.values.push(match); }
   else if (query.exclude) { where.sql.push("d.id NOT IN (SELECT rowid FROM fts WHERE fts MATCH ?)"); where.values.push(query.exclude); where.rows = true; }
   if (branch.sessions.length) {
@@ -164,12 +184,15 @@ function branchFrom(db: DatabaseSync, branch: Branch, query: Query, roots: strin
     where.values.push(...branch.sessions.map(sessionId => sessionId + "%"));
     where.rows = true;
   }
-  const filters = primeFilters(query.filters, query.thinking, roots, id, thinkingInMatch);
+  const filters = primeFilters(query.filters, query.thinking, roots, id, kindsInMatch);
   where.sql.push(...filters.sql);
   where.values.push(...filters.values);
   where.rows ||= filters.rows || !fts;
   const from = fts ? "fts JOIN docs d ON d.id = fts.rowid JOIN files f ON f.id = d.file" : "docs d JOIN files f ON f.id = d.file";
-  return { from, countFrom: where.rows ? from : "fts", id, where, fts };
+  const docs = hasMetaIndex(db) ? "docs d INDEXED BY docs_meta" : "docs d";
+  const countFrom = !where.rows ? "fts" : fts ? `fts JOIN ${docs} ON d.id = fts.rowid` : "docs d";
+  const snippetMatch = !fts ? null : kindsInMatch ? `{text} : (${branch.match})` : branch.match;
+  return { from, countFrom, rankFrom: `fts JOIN ${docs} ON d.id = fts.rowid`, id, where, fts, match: snippetMatch, sessions: branch.sessions };
 }
 
 const whereSql = (where: Clause, extra: string[] = []): string => {
@@ -183,41 +206,80 @@ function empty(query: Query): boolean {
   return !query.match && !query.sessionIds.length && !f.in.length && !f.from.length && !f.kinds && !f.isError && f.since === undefined && f.until === undefined;
 }
 
-/** Hits and the exact total from one box's prime index. */
-export function searchPrime(db: DatabaseSync, box: string, query: Query, ask: PageAsk, roots: string[] | null): Page {
-  if (empty(query)) return { hits: [], total: 0 };
+/** One page of hits from one box's prime index, without the total (`countPrime` counts it, so the two can run side by side). */
+export function primeHits(db: DatabaseSync, box: string, query: Query, ask: PageAsk, roots: string[] | null): Ranked[] {
+  if (empty(query)) return [];
   const parts = branches(query).map(branch => branchFrom(db, branch, query, roots));
   const hits = new Map<number, Ranked>();
+  const add = (row: Row, fts: boolean, score: number) => {
+    const id = Number(row.id);
+    if (hits.has(id)) return;
+    const text = String(row.snippet ?? "");
+    hits.set(id, { hit: primeHit(row, box, fts ? markSnippet(text) : plainSnippet(text)), key: id, score });
+  };
+  const want = ask.sort === "newest" ? ask.limit + (ask.before?.seen.length ?? 0) + 1 : ask.offset + ask.limit + 1;
   for (const part of parts) {
-    const snippet = part.fts ? `snippet(fts, 0, '${OPEN}', '${CLOSE}', '…', ${SNIPPET_TOKENS})` : "substr(d.text, 1, 400)";
-    let sql: string;
-    let values: SQLInputValue[];
+    if (!part.fts) {
+      for (const row of plainRows(db, part, ask, want)) add(row, false, 0);
+      continue;
+    }
+    const snippet = `snippet(fts, 0, '${OPEN}', '${CLOSE}', '…', ${SNIPPET_TOKENS}) AS snippet`;
     if (ask.sort === "newest") {
       const before = ask.before ? [`${part.id} <= ?`] : [];
-      sql = `SELECT ${HIT_COLUMNS}, ${snippet} AS snippet, 0 AS score FROM ${part.from} ${whereSql(part.where, before)} ORDER BY ${part.id} DESC LIMIT ?`;
-      values = [...part.where.values, ...ask.before ? [ask.before.k] : [], ask.limit + (ask.before?.seen.length ?? 0) + 1];
-    } else if (part.fts) {
-      const floor = `SELECT min(r) FROM (SELECT fts.rowid AS r FROM ${part.from} ${whereSql(part.where)} ORDER BY fts.rowid DESC LIMIT ${RANK_WINDOW})`;
-      sql = `SELECT ${HIT_COLUMNS}, ${snippet} AS snippet, bm25(fts) * ${weightCase("d.kind")} AS score FROM ${part.from}
-        ${whereSql(part.where, [`fts.rowid >= (${floor})`])} ORDER BY score LIMIT ?`;
-      values = [...part.where.values, ...part.where.values, ask.offset + ask.limit + 1];
-    } else {
-      sql = `SELECT ${HIT_COLUMNS}, ${snippet} AS snippet, 0 AS score FROM ${part.from} ${whereSql(part.where)} ORDER BY d.id DESC LIMIT ?`;
-      values = [...part.where.values, ask.offset + ask.limit + 1];
+      const sql = `SELECT ${HIT_COLUMNS}, ${snippet} FROM ${part.from} ${whereSql(part.where, before)} ORDER BY ${part.id} DESC LIMIT ?`;
+      for (const row of prepare(db, sql).all(...part.where.values, ...ask.before ? [ask.before.k] : [], want) as Row[]) add(row, true, 0);
+      continue;
     }
-    for (const row of prepare(db, sql).all(...values) as Row[]) {
-      const id = Number(row.id);
-      if (hits.has(id)) continue;
-      const text = String(row.snippet ?? "");
-      hits.set(id, { hit: primeHit(row, box, part.fts ? markSnippet(text) : plainSnippet(text)), key: id, score: Number(row.score) });
-    }
+    // Scores the newest RANK_WINDOW hits in one pass and sorts them here, then builds hit rows and snippets for the page's ids only. On 10-28
+    // a snippet in the ranking query was made for all 2,000 rows before the sort kept 21, and the window's floor as a subquery ran the MATCH
+    // a second time: "did not answer in" took 660 ms to rank that way.
+    const scored = (prepare(db, `SELECT fts.rowid AS id, bm25(fts) * ${weightCase("d.kind")} AS score FROM ${part.rankFrom}
+      ${whereSql(part.where)} ORDER BY fts.rowid DESC LIMIT ${RANK_WINDOW}`).all(...part.where.values) as Row[])
+      .sort((a, b) => Number(a.score) - Number(b.score) || Number(b.id) - Number(a.id)).slice(0, want);
+    if (!scored.length) continue;
+    const scores = new Map(scored.map(row => [Number(row.id), Number(row.score)]));
+    const rows = prepare(db, `SELECT ${HIT_COLUMNS}, ${snippet} FROM fts JOIN docs d ON d.id = fts.rowid JOIN files f ON f.id = d.file
+      WHERE fts MATCH ? AND fts.rowid IN (SELECT value FROM json_each(?))`).all(part.match, JSON.stringify([...scores.keys()])) as Row[];
+    for (const row of rows) add(row, true, scores.get(Number(row.id)) ?? 0);
   }
+  const out = [...hits.values()];
+  return ask.sort === "relevant" ? out.sort((a, b) => a.score - b.score || b.key - a.key) : out;
+}
+
+/**
+ * Newest rows for a branch with no MATCH text. With session ids it reads each named file through docs_file_at, newest first: the plain
+ * `ORDER BY d.id DESC` walked every newer doc of the whole index to find one session's rows (3.8 s cold for 01a1164b on 10-28).
+ */
+function plainRows(db: DatabaseSync, part: BranchSql, ask: PageAsk, want: number): Row[] {
+  const before = ask.sort === "newest" && ask.before ? ask.before.k : null;
+  const bound = before === null ? [] : ["d.at <= ?", "d.id <= ?"];
+  const boundValues = before === null ? [] : [Math.floor(before / 1024), before];
+  const snippet = "substr(d.text, 1, 400) AS snippet";
+  if (!part.sessions.length) {
+    const sql = `SELECT ${HIT_COLUMNS}, ${snippet} FROM ${part.from} ${whereSql(part.where, bound.slice(1))} ORDER BY d.id DESC LIMIT ?`;
+    return prepare(db, sql).all(...part.where.values, ...boundValues.slice(1), want) as Row[];
+  }
+  const files = prepare(db, `SELECT id FROM files WHERE ${part.sessions.map(() => "session LIKE ?").join(" OR ")}`).all(...part.sessions.map(id => id + "%")) as Row[];
+  const sql = `SELECT ${HIT_COLUMNS}, ${snippet} FROM ${part.from} ${whereSql(part.where, ["d.file = ?", ...bound])} ORDER BY d.at DESC, d.id DESC LIMIT ?`;
+  return files.flatMap(file => prepare(db, sql).all(...part.where.values, Number(file.id), ...boundValues, want) as Row[])
+    .sort((a, b) => Number(b.id) - Number(a.id)).slice(0, want);
+}
+
+/** The exact number of hits a query has in one box's prime index (owner rule c191). */
+export function countPrime(db: DatabaseSync, query: Query, roots: string[] | null): number {
+  if (empty(query)) return 0;
+  const parts = branches(query).map(branch => branchFrom(db, branch, query, roots));
   const count = parts.length === 1
     ? `SELECT count(*) AS n FROM ${parts[0]!.countFrom} ${whereSql(parts[0]!.where)}`
     : `SELECT count(*) AS n FROM (${parts.map(part => `SELECT ${part.id} AS id FROM ${part.countFrom} ${whereSql(part.where)}`).join(" UNION ")})`;
-  const total = Number((prepare(db, count).get(...parts.flatMap(part => part.where.values)) as Row).n);
-  return { hits: [...hits.values()], total };
+  return Number((prepare(db, count).get(...parts.flatMap(part => part.where.values)) as Row).n);
 }
+
+/** Hits and the exact total from one box's prime index. */
+export function searchPrime(db: DatabaseSync, box: string, query: Query, ask: PageAsk, roots: string[] | null): Page {
+  return { hits: primeHits(db, box, query, ask, roots), total: countPrime(db, query, roots) };
+}
+
 
 /** pi-host's durable entry kinds (packages/pi-host/src/durable/import.ts) as this index's kinds. */
 const DURABLE_KINDS: Record<string, Kind> = {

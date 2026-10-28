@@ -5,11 +5,13 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { dirname, join } from "node:path";
+import { Worker } from "node:worker_threads";
 import { DatabaseSync } from "node:sqlite";
 import { socketPath } from "./client.ts";
 import { parseQuery, QueryError, type Query } from "./core/query.ts";
 import { parseRef, readDurable, readPrime, ReadError, type ReadAnswer } from "./core/read.ts";
-import { type Hit, mergePages, type Page, pageAsk, type PageAsk, type Ranked, searchDurable, searchPrime } from "./core/search.ts";
+import { type Hit, mergePages, type Page, pageAsk, type PageAsk, type Ranked } from "./core/search.ts";
+import type { SearchAnswer, SearchJob, SearchReply } from "./query-worker.ts";
 import { callerRoot, chatOf, expandHome, familyRoots, type HostEntry, hostsFile, localRoots, readHosts, readSettings, RegistryReader, registrySource, settingsPath, type Settings,
   sieunPiConfig } from "./core/scope.ts";
 
@@ -145,10 +147,35 @@ export async function startServer(options: ServerOptions): Promise<{ close(): Pr
     };
   };
 
-  const localPages = (query: Query, ask: PageAsk, roots: string[] | null, settings: Settings): Page[] => [
-    searchPrime(index(), settings.box, query, ask, roots),
-    ...durableIndexes(settings).map(durable => searchDurable(durable.db, durable.at, settings.box, query, ask, roots)),
-  ];
+  // One worker per job in flight: a free one is reused, and when none is free a new one starts, so a slow search never holds up another.
+  const idle: Worker[] = [];
+  const workers = new Set<Worker>();
+  const run = <T extends SearchAnswer>(job: SearchJob): Promise<T> => new Promise((resolve, reject) => {
+    let worker = idle.pop();
+    if (!worker) {
+      worker = new Worker(new URL("./query-worker.ts", import.meta.url));
+      workers.add(worker);
+    }
+    const current = worker;
+    const failed = (error: Error) => { workers.delete(current); reject(error); };
+    current.once("error", failed);
+    current.once("message", (reply: SearchReply) => {
+      current.off("error", failed);
+      idle.push(current);
+      if ("answer" in reply) resolve(reply.answer as T);
+      else reject(reply.error.startsWith("No index") ? new HttpError(503, reply.error) : new Error(reply.error));
+    });
+    current.postMessage(job);
+  });
+  // Two workers open the index at start, the pair a first search uses, so the first search after a restart does not pay for their start.
+  const warm = Promise.all([run({ op: "open", dbPath: options.dbPath }), run({ op: "open", dbPath: options.dbPath })]).catch(() => {});
+
+  const localPages = async (query: Query, ask: PageAsk, roots: string[] | null, settings: Settings): Promise<Page[]> => {
+    await warm;
+    const job = { dbPath: options.dbPath, box: settings.box, durableIndexes: settings.durableIndexes, query, ask, roots };
+    const [hits, count] = await Promise.all([run<Extract<SearchAnswer, { op: "hits" }>>({ ...job, op: "hits" }), run<Extract<SearchAnswer, { op: "count" }>>({ ...job, op: "count" })]);
+    return [{ hits: hits.prime, total: count.total }, ...hits.durable];
+  };
 
   const askPeer = async <T>(peer: { name: string; url: string; token: string }, path: string, params: URLSearchParams): Promise<T> => {
     const response = await fetcher(`${peer.url}/${path}?${params}`, {
@@ -170,7 +197,7 @@ export async function startServer(options: ServerOptions): Promise<{ close(): Pr
     const { roots, seeds } = await scopeOf(params, settings);
     const wanted = (box: string): boolean => !query.filters.boxes.length || query.filters.boxes.includes(box);
     if (params.get("local") === "1") {
-      const pages = wanted(settings.box) ? localPages(query, ask, roots, settings) : [];
+      const pages = wanted(settings.box) ? await localPages(query, ask, roots, settings) : [];
       const tookMs = performance.now() - started;
       return { ranked: pages.flatMap(page => page.hits), total: pages.reduce((sum, page) => sum + page.total, 0), box: boxState(Math.round(tookMs)) };
     }
@@ -184,7 +211,7 @@ export async function startServer(options: ServerOptions): Promise<{ close(): Pr
     const pages: Page[] = [];
     const boxes: Record<string, BoxState> = {};
     if (wanted(settings.box)) {
-      const local = localPages(query, ask, roots, settings);
+      const local = await localPages(query, ask, roots, settings);
       pages.push(...local);
       boxes[settings.box] = boxState(Math.round(performance.now() - started));
     }
@@ -271,6 +298,7 @@ export async function startServer(options: ServerOptions): Promise<{ close(): Pr
     close: () => new Promise<void>(resolve => {
       server.close(() => resolve());
       server.closeAllConnections();
+      for (const worker of workers) void worker.terminate();
       db?.close();
       for (const handle of durables.values()) handle?.close();
     }),

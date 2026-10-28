@@ -65,7 +65,7 @@ const relay = (async (input: string | URL | Request, init?: RequestInit) => {
 
 const servers: { close(): Promise<void> }[] = [];
 before(async () => {
-  servers.push(await startServer({ socket: sockets["10.0.0.1"]!, dbPath: metalDb, settingsFile: settings("us-metal02", { durableIndexes: [join(dir, "durable.sqlite")] }),
+  servers.push(await startServer({ socket: sockets["10.0.0.1"]!, dbPath: metalDb, settingsFile: settings("us-metal02", { agentScope: "family", durableIndexes: [join(dir, "durable.sqlite")] }),
     fetcher: relay }));
   servers.push(await startServer({ socket: sockets["10.0.0.2"]!, dbPath: macDb, settingsFile: settings("mac"), fetcher: relay,
     indexer: { status: () => ({ files: 2, docs: 2, bytesIndexed: 50, bytesTotal: 100, backfillPct: 50, newestAt: min(4), lagP50Ms: 120, lagP99Ms: 900, dbBytes: 4096 }) } }));
@@ -107,7 +107,7 @@ test("box: asks only the boxes it names", async () => {
   assert.deepEqual(Object.keys(mac.boxes), ["mac"]);
 });
 
-test("an agent call sees only its chat family on both boxes, whatever scope it asks for", async () => {
+test("under agentScope family an agent call sees only its chat family on both boxes, whatever scope it asks for", async () => {
   relayCalls.length = 0;
   const result = await search({ q: "relay", caller: JOB, callerPath: `/x/.prime/agent/sessions/${JOB}.jsonl`, roots: OTHER });
   assert.equal(result.scope, "family");
@@ -124,7 +124,7 @@ test("agentScope all lets an agent search everything", async () => {
   const result = await search({ q: "relay", caller: JOB });
   assert.equal(result.scope, "all");
   assert.equal(result.total, 6);
-  writeFileSync(file, JSON.stringify({ box: "us-metal02", peers: hosts, durableIndexes: [join(dir, "durable.sqlite")] }));
+  writeFileSync(file, JSON.stringify({ box: "us-metal02", peers: hosts, agentScope: "family", durableIndexes: [join(dir, "durable.sqlite")] }));
 });
 
 test("read answers around a hit on this box and fetches a peer's hit through its relay", async () => {

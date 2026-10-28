@@ -42,15 +42,15 @@ test("the caller's root comes from the index, else from the artifact folder in i
   db.close();
 });
 
-test("settings default to family scope and the durable index, and change when the file does", () => {
+test("settings default to scope all and the durable index, and change when the file does", () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-history-settings-"));
   const file = join(dir, "settings.json");
   const first = readSettings(file);
-  assert.equal(first.agentScope, "family");
+  assert.equal(first.agentScope, "all");
   assert.match(first.durableIndexes[0]!, /\.prime\/agent\/pi-host\/durable\/index\.sqlite$/);
-  writeFileSync(file, JSON.stringify({ agentScope: "all", box: "mac", durableIndexes: [] }));
+  writeFileSync(file, JSON.stringify({ agentScope: "family", box: "mac", durableIndexes: [] }));
   const second = readSettings(file);
-  assert.deepEqual([second.agentScope, second.box, second.durableIndexes], ["all", "mac", []]);
+  assert.deepEqual([second.agentScope, second.box, second.durableIndexes], ["family", "mac", []]);
 });
 
 test("a remote registry is fetched on each read and the last copy stands when the chat host is down", async () => {

@@ -1,7 +1,7 @@
 /**
  * Who may see which hits. The owner's calls carry no caller and search everything. An agent's call carries its session id and transcript
- * path, and under the default `agentScope: "family"` it sees only its own chat family: the set packages/sieun-rules/src/kernel-read.py lets a
- * kernel read (`root_of`, `chat_of`), so this search never reopens the reads that guard closed.
+ * path. The owner let agents search every chat on 10-28 (board todo t113), so `agentScope` defaults to "all". Set to "family", an agent sees
+ * only its own chat family, the set packages/sieun-rules/src/kernel-read.py lets a kernel read (`root_of`, `chat_of`).
  */
 import { readFileSync, statSync } from "node:fs";
 import { homedir, hostname } from "node:os";
@@ -56,7 +56,7 @@ export function readSettings(path = settingsPath()): Settings {
   const box = typeof raw.box === "string" && raw.box ? raw.box
     : readHosts(hostsFile({ peers })).find(host => host.hostname && short(host.hostname) === short(hostname()))?.name ?? short(hostname());
   const settings: Settings = {
-    agentScope: raw.agentScope === "all" ? "all" : "family", box, peers,
+    agentScope: raw.agentScope === "family" ? "family" : "all", box, peers,
     durableIndexes: (Array.isArray(raw.durableIndexes) ? raw.durableIndexes.map(String) : ["~/.prime/agent/pi-host/durable/index.sqlite"]).map(expandHome),
   };
   cached = { key: `${path}:${key}`, settings };

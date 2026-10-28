@@ -20,10 +20,11 @@ export interface FixtureFile { session: string; root?: string; parent?: string; 
 export interface FixtureDoc { session: string; at: number; kind: string; text: string; author?: string; tool?: string; toolCallId?: string; isError?: boolean }
 
 /** `ftsKind` builds fts with `kind` as a second column, the schema the api worker asked the indexer for. */
-export function makeIndex(path: string, files: FixtureFile[], docs: FixtureDoc[], { ftsKind = false } = {}): DatabaseSync {
+export function makeIndex(path: string, files: FixtureFile[], docs: FixtureDoc[], { ftsKind = false, docsMeta = false } = {}): DatabaseSync {
   const db = new DatabaseSync(path);
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec(ftsKind ? SCHEMA.replace("fts5(text,", "fts5(text, kind,") : SCHEMA);
+  if (docsMeta) db.exec("CREATE INDEX docs_meta ON docs(id, file, kind, is_error, author)");
   const ids = new Map<string, number>();
   for (const file of files) {
     const result = db.prepare(`INSERT INTO files(path, session, root, parent, depth, name, size, indexed_to) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(

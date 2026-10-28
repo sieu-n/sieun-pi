@@ -15,7 +15,7 @@ const CHAT = "01a10000-0000-7000-8000-000000000001";
 const JOB = "01a10001-0000-7000-8000-000000000002";
 const SUB = "01a10002-0000-7000-8000-000000000003";
 const OTHER = "01a20000-0000-7000-8000-000000000004";
-const build = (ftsKind: boolean) => makeIndex(join(dir, `h-${ftsKind}.db`), [
+const build = (ftsKind: boolean, docsMeta: boolean) => makeIndex(join(dir, `h-${ftsKind}-${docsMeta}.db`), [
   { session: CHAT, name: "frontend bro" },
   { session: JOB, name: "relay timeout job" },
   { session: SUB, root: JOB, parent: JOB, depth: 1, name: "relay probe" },
@@ -28,11 +28,11 @@ const build = (ftsKind: boolean) => makeIndex(join(dir, `h-${ftsKind}.db`), [
   { session: OTHER, at: min(4), kind: "agent_message", author: "parent", text: "relay relay relay relay" },
   { session: OTHER, at: min(5), kind: "tool_call", tool: "bash", text: "curl the relay health" },
   { session: JOB, at: min(6), kind: "assistant", text: `job ${CHAT.slice(0, 8)} report` },
-], { ftsKind });
+], { ftsKind, docsMeta });
 
-for (const ftsKind of [false, true]) {
-  const db = build(ftsKind);
-  const label = ftsKind ? "fts with kind" : "fts text only";
+for (const [ftsKind, docsMeta] of [[false, false], [true, false], [true, true]] as const) {
+  const db = build(ftsKind, docsMeta);
+  const label = `${ftsKind ? "fts with kind" : "fts text only"}${docsMeta ? ", docs_meta" : ""}`;
   const newest = (q: string, roots: string[] | null = null, limit = 20) => searchPrime(db, "us-metal02", parseQuery({ q }), pageAsk("newest", limit, null), roots);
 
   test(`${label}: newest first walks entry time backwards, leaves thinking out and counts every hit`, () => {
@@ -85,6 +85,16 @@ for (const ftsKind of [false, true]) {
     assert.deepEqual(page.hits.map(item => item.hit.at).sort(), [min(1), min(6)]);
     assert.equal(page.total, 2);
     assert.equal(newest(`${CHAT.slice(0, 8)} relay`).total, 1);
+    const job = (ask: ReturnType<typeof pageAsk>) => mergePages([searchPrime(db, "us-metal02", parseQuery({ q: JOB.slice(0, 8) }), ask, null)], ask);
+    const ats: number[] = [];
+    let ask = pageAsk("newest", 1, null);
+    for (;;) {
+      const merged = job(ask);
+      ats.push(...merged.hits.map(hit => hit.at));
+      if (!merged.next) break;
+      ask = pageAsk("newest", 1, merged.next);
+    }
+    assert.deepEqual(ats, [min(6), min(2)], "a session's own messages page newest first through its file");
   });
 
   test(`${label}: family roots limit hits to the chat tree`, () => {
@@ -105,7 +115,7 @@ for (const ftsKind of [false, true]) {
   });
 
   test(`${label}: durable thread hits merge with prime hits and count in the total`, () => {
-    const durable = makeDurable(join(dir, `durable-${ftsKind}.sqlite`), [{ id: "thread-a", name: "durable thread" }], [
+    const durable = makeDurable(join(dir, `durable-${ftsKind}-${docsMeta}.sqlite`), [{ id: "thread-a", name: "durable thread" }], [
       { thread: "thread-a", kind: "pi.user", author: "owner", at: min(10), text: "relay is back" },
       { thread: "thread-a", kind: "pi.assistant", author: "durable thread", at: min(11), text: "nothing here" },
     ]);
