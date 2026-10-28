@@ -31,6 +31,7 @@ const str = (command: Command, key: string): string => {
 };
 const optStr = (command: Command, key: string): string | undefined => (typeof command[key] === "string" ? (command[key] as string) : undefined);
 const optNum = (command: Command, key: string): number | undefined => (typeof command[key] === "number" ? (command[key] as number) : undefined);
+const strs = (value: unknown): string[] | undefined => (Array.isArray(value) && value.every(v => typeof v === "string") ? (value as string[]) : undefined);
 /** `by` of durable_search: the agent's thread and conversation, and the id it sends agent messages as. */
 function byOf(value: unknown): { thread: string; conversation: number; id: string } {
   const by = (value ?? {}) as { thread?: unknown; conversation?: unknown; id?: unknown };
@@ -123,6 +124,10 @@ export class DurableCommands {
             ...(optStr(command, "from") === undefined ? {} : { from: optStr(command, "from")! }),
             ...(command.by === undefined ? {} : { by: byOf(command.by) }),
             ...(optStr(command, "skipAgentMessages") === undefined ? {} : { skipAgentMessages: optStr(command, "skipAgentMessages")! }),
+            ...(optStr(command, "notFrom") === undefined ? {} : { notFrom: optStr(command, "notFrom")! }),
+            ...(strs(command.kinds) ? { kinds: strs(command.kinds)! } : {}),
+            ...(strs(command.skipKinds) ? { skipKinds: strs(command.skipKinds)! } : {}),
+            ...(strs(command.demoteKinds) ? { demoteKinds: strs(command.demoteKinds)! } : {}),
             ...(optNum(command, "after") === undefined ? {} : { after: optNum(command, "after")! }),
             ...(optNum(command, "before") === undefined ? {} : { before: optNum(command, "before")! }),
             ...(optNum(command, "limit") === undefined ? {} : { limit: optNum(command, "limit")! }),

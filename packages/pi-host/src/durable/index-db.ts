@@ -35,6 +35,8 @@ export interface SearchHit {
   author: string;
   at: number;
   snippet: string;
+  /** With `withText`: the entry's whole indexed text, so a caller in the same process can build its own snippet. */
+  text?: string;
 }
 
 export interface SearchQuery {
@@ -48,6 +50,16 @@ export interface SearchQuery {
   by?: { thread: string; conversation: number; id: string };
   /** Leaves out agent messages whose text matches this LIKE pattern, such as the chat's copies of channel posts, which it searches itself. */
   skipAgentMessages?: string;
+  /** Leaves out entries whose author column is this, such as `owner` for what agents said. */
+  notFrom?: string;
+  /** Only entries of these kinds, such as `pi.tool-result`. */
+  kinds?: string[];
+  /** Leaves out entries of these kinds. */
+  skipKinds?: string[];
+  /** In relevance order, entries of these kinds rank after every other match, so tool output never buries what people wrote. */
+  demoteKinds?: string[];
+  /** Each hit also carries its whole indexed text. */
+  withText?: boolean;
   after?: number;
   before?: number;
   limit?: number;
@@ -193,18 +205,23 @@ export function searchIndex(db: DatabaseSync, query: SearchQuery): SearchPage {
     values.push(query.by.id, query.by.thread, query.by.conversation);
   }
   if (query.skipAgentMessages) { where.push("NOT (kind = 'agent.message' AND text LIKE ?)"); values.push(query.skipAgentMessages); }
+  if (query.notFrom) { where.push("author <> ?"); values.push(query.notFrom); }
+  if (query.kinds?.length) { where.push(`kind IN (${query.kinds.map(() => "?").join(", ")})`); values.push(...query.kinds); }
+  if (query.skipKinds?.length) { where.push(`kind NOT IN (${query.skipKinds.map(() => "?").join(", ")})`); values.push(...query.skipKinds); }
   if (query.after !== undefined) { where.push("CAST(at AS INTEGER) >= ?"); values.push(query.after); }
   if (query.before !== undefined) { where.push("CAST(at AS INTEGER) < ?"); values.push(query.before); }
   const recent = query.sort === "recent";
+  const demote = !recent && query.demoteKinds?.length ? query.demoteKinds : [];
+  const tier = demote.length ? `(kind IN (${demote.map(() => "?").join(", ")}))` : "0";
   const page = db.prepare(`WITH m AS MATERIALIZED (
-      SELECT rowid AS id, thread, kind, author, CAST(at AS INTEGER) AS at, CAST(entry_id AS INTEGER) AS entry, ${recent ? "0" : "rank"} AS score
+      SELECT rowid AS id, thread, kind, author, CAST(at AS INTEGER) AS at, CAST(entry_id AS INTEGER) AS entry, ${recent ? "0" : "rank"} AS score, ${tier} AS tier
       FROM entries WHERE ${where.join(" AND ")}
     ), firsts AS (
-      SELECT m.id, m.at, m.score, ROW_NUMBER() OVER (PARTITION BY m.entry, m.kind, m.author, m.at ORDER BY t.archived, t.updated_at DESC, m.id) AS copy
+      SELECT m.id, m.at, m.score, m.tier, ROW_NUMBER() OVER (PARTITION BY m.entry, m.kind, m.author, m.at ORDER BY t.archived, t.updated_at DESC, m.id) AS copy
       FROM m LEFT JOIN threads t ON t.id = m.thread
     )
-    SELECT id, count(*) OVER () AS total FROM firsts WHERE copy = 1 ORDER BY ${recent ? "at DESC" : "score"}, id LIMIT ? OFFSET ?`)
-    .all(...values, query.limit ?? 50, query.offset ?? 0) as Row[];
+    SELECT id, count(*) OVER () AS total FROM firsts WHERE copy = 1 ORDER BY ${recent ? "at DESC" : "tier, score"}, id LIMIT ? OFFSET ?`)
+    .all(...demote, ...values, query.limit ?? 50, query.offset ?? 0) as Row[];
   const total = page.length
     ? Number(page[0]!.total)
     : Number((db.prepare(`SELECT count(*) AS n FROM (SELECT 1 FROM entries WHERE ${where.join(" AND ")}
@@ -221,6 +238,7 @@ export function searchIndex(db: DatabaseSync, query: SearchQuery): SearchPage {
       return row ? [{
         thread: String(row.thread), conversation: Number(row.conversation), entryId: Number(row.entry_id), kind: String(row.kind),
         author: String(row.author), at: Number(row.at), snippet: snippetOf(String(row.text), words),
+        ...(query.withText ? { text: String(row.text) } : {}),
       }] : [];
     }),
   };

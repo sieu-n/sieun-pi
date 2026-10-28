@@ -1,7 +1,7 @@
 <script lang="ts">
   import { tick } from "svelte";
   import { agents, api, conversations, me, type SearchResult } from "$lib/api";
-  import { router } from "$lib/router.svelte";
+  import { hrefFor, router } from "$lib/router.svelte";
   import type { SearchScope } from "$lib/shell/search.svelte";
   import Avatar from "$lib/ui/Avatar.svelte";
   import Button from "$lib/ui/Button.svelte";
@@ -14,9 +14,13 @@
   import SearchField from "$lib/ui/SearchField.svelte";
   import { isMac } from "$lib/ui/keyboard";
   import Highlight from "./Highlight.svelte";
+  import HitAvatar from "./HitAvatar.svelte";
+  import HitMeta from "./HitMeta.svelte";
+  import { shortAge } from "./hit-view";
   import { pieces } from "./match";
+  import { resultParams } from "./results-model";
   import { absorb, chipLabel, filters, prompt, withOperator, withoutPrompt, type NamedOperator, type Operator } from "./operators";
-  import { buildGroups, messageGroupLabel, type Action, type Icon, type Messages, type Person, type Row, type Sort } from "./search-model";
+  import { buildGroups, messageGroupLabel, SEE_ALL, type Action, type Icon, type Messages, type Person, type Row, type Sort } from "./search-model";
 
   type Props = { open: boolean; scope: SearchScope; query: string; onclose: () => void };
   let { open, scope, query, onclose }: Props = $props();
@@ -36,11 +40,13 @@
   let sortButton = $state<HTMLButtonElement>();
   let sortOpen = $state(false);
   let list = $state<HTMLDivElement>();
+  let now = $state(new Date());
   const listId = "search-results";
 
   $effect(() => {
     if (!open) return;
     text = query;
+    now = new Date();
     operators = [];
     scopeId = scope.kind === "conversation" ? scope.id : undefined;
     sort = "relevance";
@@ -115,8 +121,10 @@
 
   function show(result: SearchResult, append: boolean) {
     const before = append && messages.state === "ready" ? messages.hits : [];
+    // A conversation that grows between two pages shifts the offsets, so a hit can come twice.
+    const seen = new Set(before.map(hit => hit.id));
     cursor = result.nextCursor;
-    messages = { state: "ready", hits: [...before, ...result.hits], total: result.total, more: !!result.nextCursor, loadingMore: false };
+    messages = { state: "ready", hits: [...before, ...result.hits.filter(hit => !seen.has(hit.id))], total: result.total, more: !!result.nextCursor, loadingMore: false };
   }
 
   async function loadMore() {
@@ -141,11 +149,13 @@
       conversations: conversations.list,
       people,
       messages,
-      now: new Date(),
+      now,
     }),
   );
   const rows = $derived(groups.flatMap(group => group.rows));
-  const messageLabel = $derived(messageGroupLabel(scopeId ? sort : "relevance"));
+  const messageLabel = $derived(messageGroupLabel(sort, !!scopeId));
+  /** Shift Cmd 1 to 9 pick the rows under "See all results". */
+  const numbered = $derived(rows.filter(row => row.key !== SEE_ALL));
   const hasQuery = $derived(!!text.trim() || operators.length > 0);
 
   $effect(() => {
@@ -194,6 +204,12 @@
         void loadMore();
         focusInput();
         return;
+      case "page": {
+        const params = request ?? filters(text, operators);
+        close();
+        router.navigate(hrefFor("search", [], resultParams({ ...params, ...(scopeId ? { in: scopeId } : {}), sort: scopeId ? sort : "relevance" })));
+        return;
+      }
     }
   }
 
@@ -207,7 +223,7 @@
     const index = active ? rows.findIndex(row => row.key === active) : -1;
     const digit = /^Digit([1-9])$/.exec(e.code)?.[1];
     if (digit && e.shiftKey && (isMac ? e.metaKey : e.ctrlKey) && !e.altKey) {
-      const row = rows[Number(digit) - 1];
+      const row = numbered[Number(digit) - 1];
       if (row) {
         e.preventDefault();
         if (!e.repeat) run(row.action);
@@ -295,7 +311,7 @@
         {#each groups as group (group.label)}
           {#if group.rows.length || group.empty !== undefined}
             <div role="group" aria-label={group.label} class="group" data-group={group.label}>
-              <h2 class="heading">
+              <h2 class="heading" class:sr-only={group.hideLabel}>
                 <span>{group.label}</span>
                 {#if group.count !== undefined}
                   <span class="count" data-testid="search-count">{group.count.toLocaleString("en-US")} {group.count === 1 ? "message" : "messages"}</span>
@@ -325,30 +341,63 @@
 </Dialog>
 
 {#snippet result(row: Row)}
-  {#snippet avatar()}
-    {#if row.avatar}
-      <Avatar name={row.avatar.name} kind={row.avatar.shape === "circle" ? "person" : "agent"} seed={row.key.replace(/^person:/, "")} src={row.avatar.src ?? null} size={24} />
-    {/if}
-  {/snippet}
+  {#if row.hit}
+    {@render hitRow(row, row.hit)}
+  {:else}
+    {#snippet avatar()}
+      {#if row.avatar}
+        <Avatar name={row.avatar.name} kind={row.avatar.shape === "circle" ? "person" : "agent"} seed={row.key.replace(/^person:/, "")} src={row.avatar.src ?? null} size={24} />
+      {/if}
+    {/snippet}
+    {#snippet enter()}
+      {#if row.key === SEE_ALL}<kbd class="enter">Enter</kbd>{/if}
+    {/snippet}
+    <NavItem
+      variant="search"
+      role="option"
+      id={optionId(row.key)}
+      data-key={row.key}
+      data-search-result=""
+      tabindex={-1}
+      label={row.label}
+      detail={row.detail}
+      icon={row.avatar ? undefined : icons[row.icon]}
+      leading={row.avatar ? avatar : undefined}
+      trailing={row.key === SEE_ALL ? enter : undefined}
+      highlighted={active === row.key}
+      onpointermove={() => (active = row.key)}
+      onclick={() => run(row.action)}
+    >
+      {#snippet labelContent()}
+        <Highlight pieces={row.snippet ?? pieces(row.label, row.positions)} />
+      {/snippet}
+    </NavItem>
+  {/if}
+{/snippet}
+
+{#snippet hitRow(row: Row, hit: NonNullable<Row["hit"]>)}
+  {#snippet lead()}<HitAvatar {hit} size={24} />{/snippet}
+  {#snippet meta()}<HitMeta {hit} showPlace={!scopeId} />{/snippet}
+  {#snippet text()}<span class="snippet" class:tool={hit.role === "tool"}><Highlight pieces={row.snippet ?? []} /></span>{/snippet}
+  {#snippet age()}<time class="age" datetime={new Date(hit.at).toISOString()} title={new Date(hit.at).toLocaleString()}>{shortAge(hit.at, now)}</time>{/snippet}
   <NavItem
     variant="search"
     role="option"
     id={optionId(row.key)}
     data-key={row.key}
     data-search-result=""
+    data-role={hit.role ?? ""}
     tabindex={-1}
     label={row.label}
     detail={row.detail}
-    icon={row.avatar ? undefined : icons[row.icon]}
-    leading={row.avatar ? avatar : undefined}
+    leading={lead}
+    labelContent={meta}
+    detailContent={text}
+    trailing={age}
     highlighted={active === row.key}
     onpointermove={() => (active = row.key)}
     onclick={() => run(row.action)}
-  >
-    {#snippet labelContent()}
-      <Highlight pieces={row.snippet ?? pieces(row.label, row.positions)} />
-    {/snippet}
-  </NavItem>
+  />
 {/snippet}
 
 <style>
@@ -408,5 +457,26 @@
   }
   .retry {
     padding: 0 4px;
+  }
+  .snippet {
+    color: var(--text-standard);
+  }
+  .snippet.tool {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--text-subtle);
+  }
+  .age {
+    color: var(--text-metadata);
+    font: var(--text-caption);
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+  }
+  .enter {
+    padding: 1px 6px;
+    border: 1px solid var(--border-standard);
+    border-radius: 6px;
+    color: var(--text-metadata);
+    font: var(--text-caption);
   }
 </style>
