@@ -67,7 +67,7 @@ export interface Fault { id: string; title: string; designs: string[]; owner: st
 /** config_sources names a supervised writer by config_audit.source, for an actor such as metal that also writes by hand. */
 export interface Registry {
   automatic_writers: { config_actors: string[]; config_sources?: string[] };
-  exempt: { config_reason_regex: string; box_exec_regex?: string };
+  exempt: { config_reason_regex: string; config_key_regex?: string; box_exec_regex?: string };
   faults: Fault[];
 }
 
@@ -137,6 +137,8 @@ export function parseRegistry(value: unknown): Registry {
     if (fault.done_at !== undefined && Number.isNaN(Date.parse(fault.done_at))) throw new Error(`fault ${fault.id}: done_at ${fault.done_at} is not a time`);
     for (const ref of fault.designs) if (!/^(?:branch:\S+|commit:[0-9a-f]{7,40}|(?:[0-9a-f-]{36}\/)?p\d+)$/.test(ref)) throw new Error(`fault ${fault.id}: design ref ${ref} is not pN, <chat id>/pN, branch:<name> or commit:<sha>`);
     if (registry.exempt.box_exec_regex) new RegExp(registry.exempt.box_exec_regex);
+    if (registry.exempt.config_key_regex !== undefined && typeof registry.exempt.config_key_regex !== "string") throw new Error("exempt.config_key_regex is not a string");
+    if (registry.exempt.config_key_regex) new RegExp(registry.exempt.config_key_regex);
     for (const pattern of [fault.match.config_reason_tag, fault.match.config_reason_regex, fault.match.mac_process_regex, fault.match.box_exec_regex, fault.match.box_container_regex])
       if (pattern) new RegExp(pattern);
   }
@@ -166,10 +168,20 @@ const NAMED_FAULT = /^(F\d+): /;
 const handsBack = (fix: { keys: readonly string[]; cleared?: boolean }): boolean =>
   fix.cleared === true && fix.keys.length > 0 && !fix.keys.some(key => key.startsWith("pause."));
 
+/**
+ * A change that only sets keys the registry's exempt.config_key_regex names is design: owner rule c170 (10-26) has operators set a lane's fixed
+ * cap by hand from measured good reads, and prod audit 16886 (meta_ads.walker_sessions_max = 360, 10-28 03:51Z) read as an F1 hand fix.
+ */
+const capsOnly = (fix: { keys: readonly string[] }, regex?: string): boolean => {
+  if (!regex) return false;
+  const cap = new RegExp(regex);
+  return fix.keys.length > 0 && fix.keys.every(key => cap.test(key));
+};
+
 export function classifyConfig(fix: { actor: string; writer?: string; keys: readonly string[]; text: string; cleared?: boolean }, registry: Registry): Verdict {
   const automatic = registry.automatic_writers;
   if (automatic.config_actors.includes(fix.actor) || (fix.writer && automatic.config_sources?.includes(fix.writer))) return { kind: "automatic" };
-  if (new RegExp(registry.exempt.config_reason_regex).test(fix.text) || handsBack(fix)) return { kind: "exempt" };
+  if (new RegExp(registry.exempt.config_reason_regex).test(fix.text) || handsBack(fix) || capsOnly(fix, registry.exempt.config_key_regex)) return { kind: "exempt" };
   const named = NAMED_FAULT.exec(fix.text)?.[1];
   if (named) { const listed = registry.faults.find(item => item.id === named); return listed ? { kind: "fault", fault: listed } : { kind: "undesigned" }; }
   const fault = registry.faults.find(item => item.match.config_reason_tag && new RegExp(`^(?:${item.match.config_reason_tag})`).test(fix.text)) ??

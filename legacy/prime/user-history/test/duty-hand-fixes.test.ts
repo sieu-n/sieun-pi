@@ -382,3 +382,16 @@ test("a staging A/B exec whose script writes no store is an experiment; unread, 
   assert.equal(flagged.metrics.hand_run_processes, 0);
   assert.equal((flagged.flagged ?? []).filter(item => item.kind === "box_experiment").length, 2);
 });
+
+test("a write to the c170 cap meta_ads.walker_sessions_max is exempt, while a write to meta_ads.walker_sessions still counts as F1", async () => {
+  const reg = await registry();
+  const write = (id: number, key: string): AuditRow => ({ id, ts: AT, actor: "api-key", source: "ops-api", key, reason: "Meta Ads walker cap 360 from measured good reads" });
+  const [cap] = groupAudit("prod", [write(16886, "meta_ads.walker_sessions_max")]);
+  assert.equal(classifyConfig(cap!, reg).kind, "exempt");
+  const [lane] = groupAudit("prod", [write(16887, "meta_ads.walker_sessions")]);
+  const verdict = classifyConfig(lane!, reg);
+  assert.equal(verdict.kind === "fault" && verdict.fault.id, "F1");
+  const [both] = groupAudit("prod", [write(16888, "meta_ads.walker_sessions_max"), write(16889, "meta_ads.walker_sessions")]);
+  const mixed = classifyConfig(both!, reg);
+  assert.equal(mixed.kind === "fault" && mixed.fault.id, "F1");
+});
