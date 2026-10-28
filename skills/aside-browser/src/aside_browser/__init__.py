@@ -887,7 +887,115 @@ def _current() -> str:
     return _browser or ("box" if box_available() else "aside")
 
 
+# ---------------------------------------------------------------- idle tabs
+
+# A job's Aside tab on one of our local apps closes after PARK_S seconds with no aside_browser call, and its next run(), snapshot() or
+# screenshot() opens the same URL again first. Across 1,036 calls of 53 frontend bro 5180 sessions on 10-28 and 10-29, 90% of the gaps
+# between two calls were under 116 s, and 74% of the time those sessions held a tab fell in gaps over 120 s. At 19:17Z on 10-29 such tabs
+# held about 9 GB of the owner's Aside (15 of its 17 tabs) while his Mac paged.
+PARK_S = 120
+_PARK_HOST = re.compile(r"^(?:localhost|.+\.localhost|127\.0\.0\.1|::1)$", re.I)
+_park_lock = threading.Lock()
+_park_gen = 0
+_park_timer: threading.Timer | None = None
+_parked: dict[str, str] = {}
+
+
+def _parkable(url: str) -> bool:
+    try:
+        return bool(_PARK_HOST.match(urlsplit(url or "").hostname or ""))
+    except ValueError:
+        return False
+
+
+def _park_ids() -> list[str]:
+    """This session's Aside tabs that may close while idle: tabs on a local app, of a job (a sub-<n> session), since a top-level chat may
+    open a page for the owner to look at."""
+    if not os.path.basename(owner_key().rstrip("/")).startswith("sub-"):
+        return []
+    return [tid for tid, url in _owned_tabs().items() if not tid.startswith(BOX_PREFIX) and _parkable(url)]
+
+
+def _hold_park() -> None:
+    """A call is starting: cancel the idle close, and wait for one that is already running."""
+    global _park_gen, _park_timer
+    with _park_lock:
+        _park_gen += 1
+        if _park_timer:
+            _park_timer.cancel()
+            _park_timer = None
+
+
+def _arm_park() -> None:
+    global _park_timer
+    with _park_lock:
+        if _park_timer or not _park_ids():
+            return
+        _park_timer = threading.Timer(PARK_S, _park_idle, (_park_gen,))
+        _park_timer.daemon = True
+        _park_timer.start()
+
+
+def _park_idle(gen: int) -> list[str]:
+    """Close this session's idle local-app Aside tabs through the aside CLI, which runs off the kernel's event loop, and keep each one's URL
+    in _parked. The tab the Aside window shows (`active`) stays. Returns the closed targetIds."""
+    global _park_timer
+    with _park_lock:
+        _park_timer = None
+        ids = _park_ids()
+        if gen != _park_gen or not ids:
+            return []
+        js = _scoped(
+            "const __listed = await listBrowserTabs(); const __urls = Object.fromEntries(__listed.map(t => [t.targetId, t.url]));"
+            f" const __ids = {json.dumps(ids)}.filter(i => !__listed.some(t => t.targetId === i && t.active));"
+            + _close_js("__ids")
+            + " console.log(JSON.stringify({closed: __closed.filter(i => !__left.includes(i)), urls: __urls}))"
+        )
+        try:
+            out = subprocess.run([CLI, "repl", js], capture_output=True, text=True, timeout=REPL_LIMIT_S).stdout
+            found = _json_line(_ANSI.sub("", out))
+        except (OSError, subprocess.TimeoutExpired, ValueError):
+            return []
+        owned = _owned_tabs()
+        closed = [str(t) for t in found.get("closed") or [] if str(t) in owned]
+        urls = found.get("urls") or {}
+        for tid in closed:
+            _parked[tid] = str(urls.get(tid) or owned[tid])
+        _forget(closed)
+        return closed
+
+
+async def _unpark() -> None:
+    """Open the URL of this session's last tab that closed while idle, as the current `page`, and say so in the cell's output."""
+    with _park_lock:
+        parked = list(_parked.items())
+        _parked.clear()
+    if not parked:
+        return
+    url = parked[-1][1]
+    await open_tab(url, browser="aside", keep=True)
+    print(
+        f"[aside-browser] This job's Aside tab sat idle over {PARK_S} s and closed to free the owner's Mac. It opened {url} again,"
+        " so clicks, scroll and typed text from before are gone.",
+        flush=True,
+    )
+
+
+def _drop_parked() -> None:
+    with _park_lock:
+        _parked.clear()
+
+
 async def _repl(code: str, title: str, owner_ok: str | None = None, plain: str | None = None, browser: str | None = None) -> str:
+    """`_repl_now` with this session's idle close held for the call and armed again after it."""
+    _hold_park()
+    try:
+        return await _repl_now(code, title, owner_ok, plain, browser)
+    finally:
+        _arm_park()
+
+
+async def _repl_now(code: str, title: str, owner_ok: str | None = None, plain: str | None = None, browser: str | None = None) -> str:
     """Send code as is to `browser` (default: the browser of the last open_tab or attach). Records tabs reported by the open-tab marker and adds hints to known errors.
 
     Every REPL call passes the outside send check here; `plain` is the caller's code before wrapping.
@@ -957,6 +1065,10 @@ async def run(code: str, title: str = "aside repl", wrap: bool = True, force: bo
         )
     global _browser
     where = _route(code)
+    if "openTab(" in code:
+        _drop_parked()
+    elif (where or _current()) == "aside":
+        await _unpark()
     text = await _repl(wrap_code(code) if wrap else track_raw(code), title, owner_ok=owner_ok, plain=code, browser=where)
     _browser = where or _browser
     return text
@@ -1026,6 +1138,8 @@ async def open_tab(url: str, browser: str | None = None, keep: bool = False) -> 
     where = browser or browser_for(url)
     if where not in ("aside", "box"):
         raise ValueError("browser must be 'aside' or 'box'")
+    if where == "aside":
+        _drop_parked()
     await _sweep_quietly()
     # On 2026-10-28 jobs held up to 4 Aside tabs each (36 tabs, 43 renderers, 8.3 GB) because every open_tab() added one.
     if keep:
@@ -1055,6 +1169,7 @@ async def open_tab(url: str, browser: str | None = None, keep: bool = False) -> 
             _remember([info.get("targetId", "")], info.get("url") or url)
             closed = [str(t) for t in info.get("closed") or []]
             _forget(closed)
+            _arm_park()
             if closed:
                 text += f"\n[aside-browser] Closed {len(closed)} earlier tab(s) of this session; pass keep=True to keep them open."
             if where == "box" and _LOGIN_PAGE.search(str(info.get("url") or "")) and not _LOGIN_PAGE.search(url):
@@ -1085,6 +1200,8 @@ async def snapshot(interactive: bool = True, selector: str | None = None, show_h
     opts: dict[str, Any] = {"interactive": interactive, "showHidden": show_hidden}
     if selector:
         opts["selector"] = selector
+    if _current() == "aside":
+        await _unpark()
     return await _repl(_scoped(f"const __s = await snapshot(page, {json.dumps(opts)}); console.log(__s.tree)"), "snapshot")
 
 
@@ -1093,6 +1210,8 @@ async def screenshot(path: str, full_page: bool = False, annotated: bool = False
 
     annotated=True draws ref-id boxes (Aside's annotatedScreenshot) for click targeting.
     """
+    if _current() == "aside":
+        await _unpark()
     if annotated:
         js = "const __shot = await annotatedScreenshot(page); const __buf = Buffer.from(__shot.base64Image, 'base64');"
     else:
@@ -1198,6 +1317,7 @@ async def _close_open(ids: list[str], title: str) -> tuple[list[str], list[str]]
 
 async def close_own_tabs() -> list[str]:
     """Close every still-open tab this agent session opened, Aside and box. Returns the closed targetIds."""
+    _drop_parked()
     closed: list[str] = []
     if _box.running():
         found = _json_line(await _repl(

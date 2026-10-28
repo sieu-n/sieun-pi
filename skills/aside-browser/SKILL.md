@@ -98,6 +98,7 @@ The module records owned Aside tabs, with the kernel's pid, in one file per sess
 - Use `attach()` only when the task is about a page the user already has open.
 - Otherwise open your own tab with `open_tab()`, and call `close_own_tabs()` when done.
 - `open_tab()` closes this session's earlier tabs in the same browser, so a job holds one tab at a time. Pass `keep=True` only when you need two pages open at once. On 2026-10-28 jobs held up to 4 Aside tabs each, and 36 tabs used 8.3 GB on the owner's Mac.
+- A job's Aside tab on a local app, such as `http://[::1]:5180`, closes after 120 s with no aside_browser call, and the next `run()`, `snapshot()` or `screenshot()` opens its last URL again and prints a line that says so. Clicks, scroll and typed text from before that line are gone, so redo them. A top-level chat's tabs and the tab the Aside window shows stay open.
 - Go to another page in your tab with `page.goto(url)` when you can, instead of opening a new one.
 - A job's Aside tabs close when its turn ends, because sieun-rules' `aside-tabs.ts` runs `close_own_tabs()` for any subagent session at `agent_end`. On 2026-10-29 the kernels of finished jobs stayed alive, and 15 of the 17 tabs in the owner's Aside belonged to jobs that had ended their turn.
 - A top-level chat keeps its tabs after its turn ends, so it can leave a page open for the owner, and it closes them with `close_own_tabs()` when he is done.

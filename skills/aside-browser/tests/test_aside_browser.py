@@ -610,6 +610,77 @@ class BoxBrowserTests(Base):
         self.assertEqual(alive, [])
 
 
+
+class IdleParkTests(Base):
+    """10-29: 15 of the owner's 17 Aside tabs were live 5180 jobs' and held about 9 GB while his Mac paged, though 74% of the time those
+    jobs held a tab fell in gaps over 120 s between their calls."""
+
+    def setUp(self):
+        super().setUp()
+        self.job = os.path.join(self.tmp.name, "sub-1234abcd")
+        os.environ["RLM_SESSION_DIR"] = self.job
+        ab._parked.clear()
+        self.addCleanup(ab._hold_park)
+        self.addCleanup(ab._parked.clear)
+
+    def cli(self, *replies):
+        calls = []
+        def fake_run(argv, **kwargs):
+            calls.append(argv)
+            return subprocess.CompletedProcess(argv, 0, stdout=replies[len(calls) - 1], stderr="")
+        patcher = patch.object(ab.subprocess, "run", side_effect=fake_run)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return calls
+
+    def test_a_job_tab_on_a_local_app_arms_the_idle_close_after_each_call(self):
+        self.fake('{"title":"Virev","url":"http://[::1]:5180/app","targetId":"T1"}')
+        self.call(ab.open_tab("http://[::1]:5180/app", browser="aside"))
+        self.assertIsNotNone(ab._park_timer)
+        self.assertEqual(ab._park_timer.interval, ab.PARK_S)
+
+    def test_no_idle_close_for_a_top_level_chat_or_a_page_off_our_local_apps(self):
+        ab._remember(["T1"], "https://mail.google.com/mail/u/0/")
+        ab._arm_park()
+        self.assertIsNone(ab._park_timer)
+        os.environ["RLM_SESSION_DIR"] = self.tmp.name
+        ab._owned.clear()
+        ab._remember(["T2"], "http://localhost:5180/app")
+        ab._arm_park()
+        self.assertIsNone(ab._park_timer)
+
+    def test_an_idle_tab_closes_and_the_next_screenshot_opens_its_url_again(self):
+        ab._remember(["T1"], "http://localhost:5180/app")
+        calls = self.cli('{"closed":["T1"],"urls":{"T1":"http://localhost:5180/app/campaigns?world=w1","OWNER":"https://mail.google.com/"}}')
+        self.assertEqual(ab._park_idle(ab._park_gen), ["T1"])
+        self.assertIn('["T1"].filter(i => !__listed.some(t => t.targetId === i && t.active))', calls[0][2])
+        self.assertEqual(ab._owned_tabs(), {})
+        mcp = self.fake('{"title":"Virev","url":"http://localhost:5180/app/campaigns?world=w1","targetId":"T2"}', ab._B64_MARK + "aGk=")
+        with patch("builtins.print") as printed:
+            path = self.call(ab.screenshot(os.path.join(self.tmp.name, "shot.png")))
+        self.assertIn('openTab("http://localhost:5180/app/campaigns?world=w1")', mcp.calls[0]["code"])
+        self.assertIn("page.screenshot", mcp.calls[1]["code"])
+        self.assertTrue(os.path.exists(path))
+        self.assertIn("opened http://localhost:5180/app/campaigns?world=w1 again", printed.call_args[0][0])
+        self.assertEqual(list(ab._owned_tabs()), ["T2"])
+
+    def test_a_call_after_the_timer_was_armed_keeps_the_tab(self):
+        ab._remember(["T1"], "http://localhost:5180/app")
+        calls = self.cli()
+        armed = ab._park_gen
+        ab._hold_park()
+        self.assertEqual(ab._park_idle(armed), [])
+        self.assertEqual(calls, [])
+        self.assertIn("T1", ab._owned_tabs())
+
+    def test_open_tab_after_an_idle_close_opens_only_the_new_page(self):
+        ab._parked["T1"] = "http://localhost:5180/app"
+        mcp = self.fake('{"title":"Virev","url":"http://localhost:5180/app/outreach","targetId":"T3"}')
+        self.call(ab.open_tab("http://localhost:5180/app/outreach", browser="aside"))
+        self.assertEqual(len(mcp.calls), 1)
+        self.assertNotIn('openTab("http://localhost:5180/app")', "".join(call["code"] for call in mcp.calls))
+        self.assertEqual(ab._parked, {})
+
 if __name__ == "__main__":
     unittest.main()
 
