@@ -54,6 +54,8 @@ const OWNER_LOGS_IN = /\byou(?:r)?\s+(?:to\s+)?(?:\S+\s+){0,2}?(?:log|sign|passw
 const AVOIDED_LOGIN = /\b(?:do\s+not|don['\u2019]?t|never|skip|avoid|hold\s+off\s+on|stop)\s+(?:\S+\s+){0,1}?(?:re-?)?(?:log(?:ging)?\s+(?:\S+\s+){0,4}?in\b|sign(?:ing)?\s+(?:\S+\s+){0,4}?in\b|re-?log\w*)/iu;
 const SWITCH_OFF = new RegExp(String.raw`\b(?:turn|switch|shut|flip|set)(?:s|ed|ing|ting)?\s+(?:\S+\s+){0,5}?${SETTING}\s+(?:\S+\s+){0,1}?off\b|\b(?:turn|switch|shut)(?:s|ed|ing)?\s+off\s+(?:\S+\s+){0,4}?${SETTING}|` +
   String.raw`\b(?:lift|remove|drop|delete|disable|raise|unpause|clear|end)(?:s|ed|ing)?\s+(?:\S+\s+){0,4}?${SETTING}`, "iu");
+/** An ask to put idle or spare accounts to work: "Want me to drop the 6 spares too?", "Should we use the reserve accounts?". */
+const SPARES_OFF = /\b(?:drop|remov|us|put|mov|free|wak|activat|lift|zero)\w*\s+(?:\S+\s+){0,4}?(?:spares?|idle\s+(?:accounts?|profiles?)|reserve\s+(?:accounts?|profiles?))\b/iu;
 const ASKS = /\?\s*$|\bwhether\b|\bfor\s+you\b|\byour\s+(?:ok|okay|go|pick|call|answer|approval|say-?so)\b|\bshould\s+(?:I|we)\b|\b(?:can|may)\s+(?:I|we)\b|\bwant\s+me\s+to\b|\bok\s+to\b/iu;
 const PROXY = /\b(?:geonode|proxy|proxies|exit\s+nodes?|exits?|residential|ip\s+pool)\b/iu;
 const COUNTRY = /\bcountry\s*[=:]|\b(?:pin|lock|restrict|limit|route|use|pass|add|set|ask\s+for|pick|choose|only)\w*\s+(?:\S+\s+){0,4}?(?:countr(?:y|ies)|US|USA|KR|Korea|Korean|Seoul|Japan|JP|EU)\b|\b(?:US|USA|KR|Korea|Korean|Seoul|Japan|JP|EU)[\s-]+(?:only\s+)?(?:pool|exits?|proxies|nodes?)\b/u;
@@ -94,7 +96,7 @@ function statedCase(sentence: string, asking = false): CautiousKind | null {
 
 /** The case an ask states: one that asks the owner to switch off a setting the chat may switch off itself, or whether to log accounts in. */
 function askedCase(sentence: string): CautiousKind | null {
-  if (SWITCH_OFF.test(sentence)) return "switch-off-ask";
+  if (SWITCH_OFF.test(sentence) || SPARES_OFF.test(sentence)) return "switch-off-ask";
   if (LOGIN_ASK.test(sentence) && ACCOUNT_WORD.test(sentence) && !OWNER_LOGS_IN.test(sentence)) return "login-ask";
   return null;
 }

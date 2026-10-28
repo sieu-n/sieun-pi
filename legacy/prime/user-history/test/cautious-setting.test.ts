@@ -34,6 +34,7 @@ test("the 10-14 tell_owner texts that asked him whether to log accounts in or to
   refused("I misquoted the risk: the 7 of 8 bans came from a different, older login method, while this one got 2 of 35 prod accounts banned within 3 days. So I put one question in For you: whether to log the 10 expired accounts back in and let the system re-log by itself.");
   refused("Watchlist green fell to 48%: our crawler's proxy safety pause keeps stopping all reading, so prod got 39 good reads last hour against about 1,900 before. The fix is in the next release, hours away, so I put one question in For you: switch the pause off by hand on prod now.");
   refused("Turning the pause off in For you would let reads retry through the failures.");
+  refused("Want me to drop the 6 spares too?");
 });
 
 test("tell_owner texts that report a lane held until a fix, under another chat's line, or a setting kept or added to be safe are refused once", () => {
