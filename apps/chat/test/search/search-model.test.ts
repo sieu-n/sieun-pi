@@ -69,6 +69,10 @@ test("scoped search shows only messages, with a Show more row", () => {
   assert.equal(groups[0]!.rows.at(-1)!.key, "more-messages");
 });
 
+test("global search always reads Most relevant, whatever the scoped sort was", () => {
+  assert.equal(buildGroups({ ...base, sort: "recent", text: "x" }).at(-1)!.label, "Most relevant");
+});
+
 test("loading says it is searching, and an error says search is unavailable", () => {
   assert.equal(buildGroups({ ...base, text: "a", messages: { state: "loading" } }).at(-1)!.empty, "Searching messages…");
   assert.equal(buildGroups({ ...base, text: "a", messages: { state: "error", message: "x" } }).at(-1)!.empty, "Message search is unavailable.");

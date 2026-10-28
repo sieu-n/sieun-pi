@@ -145,6 +145,7 @@
     }),
   );
   const rows = $derived(groups.flatMap(group => group.rows));
+  const messageLabel = $derived(messageGroupLabel(scopeId ? sort : "relevance"));
   const hasQuery = $derived(!!text.trim() || operators.length > 0);
 
   $effect(() => {
@@ -304,13 +305,13 @@
                 {@render result(row)}
               {/each}
               {#if !group.rows.length && group.empty}
-                {#if messages.state === "loading" && group.label === messageGroupLabel(sort)}
+                {#if messages.state === "loading" && group.label === messageLabel}
                   <p class="empty"><LoadingText text={group.empty} /></p>
                 {:else}
                   <p class="empty">{group.empty}</p>
                 {/if}
               {/if}
-              {#if messages.state === "error" && group.label === messageGroupLabel(sort) && !group.rows.length}
+              {#if messages.state === "error" && group.label === messageLabel && !group.rows.length}
                 <div class="retry">
                   <Button variant="ghost" size="sm" onclick={retry}>Retry messages</Button>
                 </div>

@@ -133,7 +133,9 @@ test("Cmd F scopes search to this conversation, sorts, and the scope chip remove
   expect(await groupNames(page)).toEqual(["Most recent"]);
   await palette(page).getByRole("button", { name: /search scope/ }).click();
   await expect(page.getByRole("dialog", { name: "Search" })).toBeVisible();
-  expect(await groupNames(page)).toContain("Channels");
+  await expect(count(page)).toHaveText(messages(await total(page, { q: "relay" })));
+  expect(await groupNames(page)).toContain("This conversation");
+  expect((await groupNames(page)).at(-1)).toBe("Most relevant");
 });
 
 test("Show more pages through every hit up to the exact count", async ({ page }) => {

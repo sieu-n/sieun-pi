@@ -195,7 +195,7 @@ export function buildGroups(input: SearchInput): Group[] {
   const text = searchText(input.text);
   const hasQuery = !!text || input.operators.length > 0;
   const messages: Group = {
-    label: messageGroupLabel(input.sort),
+    label: messageGroupLabel(input.scope ? input.sort : "relevance"),
     rows: messageRows(input),
     empty: messageEmpty(input, hasQuery),
     count: input.messages.state === "ready" && hasQuery ? input.messages.total : undefined,
