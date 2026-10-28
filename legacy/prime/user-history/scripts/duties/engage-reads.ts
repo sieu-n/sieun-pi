@@ -16,11 +16,11 @@ import {
  *   with its last config_audit writer;
  * - estate_prometheus: crawler_v3_engage_admissible_now{world="prod"} (the accounts that can read now: active, bound and passing egress admission,
  *   GET /ops/engage/health admissible_now), and crawler_v3_engage_deaths_24h{cause} to cross-check the death count;
- * - prod ig_engage_session_bindings and ig_engage_session_renewals as owner_ro (estate-reads.ts prodReader; grafana_ro cannot read the
- *   renewals), for the active accounts whose proxy session binding ran out and that the renewal loop retries (LAPSED_SQL below);
- * - prod watch_targets as owner_ro the same way (grafana_ro cannot read watch_targets on prod), for the deep collab walks, and staging
- *   watch_targets through estate_pg_stg, for the oldest due staging collab read.
- * grafana_ro cannot read the actor, transition and from_status columns of ig_engage_account_events, so a death here is a dead-outcome event, and
+ * - prod ig_engage_session_bindings and ig_engage_session_renewals through estate_pg_prod as psql lines (estate-reads.ts prodReader), for the
+ *   active accounts whose proxy session binding ran out and that the renewal loop retries (LAPSED_SQL below);
+ * - prod watch_targets the same way, for the deep collab walks, and staging watch_targets through estate_pg_stg, for the oldest due staging
+ *   collab read.
+ * grafana_ro cannot read the actor and from_status columns of ig_engage_account_events, so a death here is a dead-outcome event, and
  * its cause is that event's error_code through CODE_CAUSES below.
  */
 
@@ -358,8 +358,8 @@ const DEATHS_SQL = `select e.account_id, extract(epoch from e.at) * 1000 as at, 
   (select coalesce(sum(l.pages), 0) from ig_engage_read_log l where l.account_id = e.account_id and l.at <= e.at and l.at > e.at - interval '24 hours') as pages_24h
 from ig_engage_account_events e join ig_engage_accounts a on a.id = e.account_id where a.world = 'prod' and e.outcome in ${DEAD_SQL} order by e.at`;
 /** The lapsed session bindings, as lapsedOf parses them; the 60 s is READ_PAGE_TIMEOUT_SECONDS, the margin the egress admission keeps. */
-export const LAPSED_SQL = `select count(*) filter (where r.status is distinct from 'blocked'), count(*) filter (where r.status = 'blocked'),
-  coalesce(round(extract(epoch from min(b.expires_at)) * 1000), 0)
+export const LAPSED_SQL = `select count(*) filter (where r.status is distinct from 'blocked') as waiting, count(*) filter (where r.status = 'blocked') as blocked,
+  coalesce(round(extract(epoch from min(b.expires_at)) * 1000), 0) as oldest_ms
 from ig_engage_accounts a join ig_engage_session_bindings b on b.account_id = a.id and b.credential_generation = a.credential_generation
 left join ig_engage_session_renewals r on r.account_id = a.id
 where a.world = 'prod' and a.status = 'active' and b.expires_at <= now() + interval '60 seconds';`;
@@ -382,13 +382,15 @@ const CONFIG_SQL = "select key, value from config where key like 'engage.canary%
  * walks that kept reading counted as stops named "since", which hid their code permanent_error.
  */
 export const DEEP_WALKS_SQL = `with walks as (
-  select *, walk_done_at is null and walk_since + make_interval(days => depth_days) < now() - make_interval(days => coalesce(cadence_days,
+  select walk_done_at, walk_end, walk_since, last_error_code, last_outcome, last_run_at,
+    walk_done_at is null and walk_since + make_interval(days => depth_days) < now() - make_interval(days => coalesce(cadence_days,
     case when tier = 'monitor' or coalesce(last_activity_at, created_at) > now() - interval '30 days' then 1 else 7 end)) as past_cadence
   from watch_targets where platform = 'instagram' and kind = 'tagged' and depth_days >= 365
 )
 select case when walk_done_at is null then case when past_cadence then 'stuck' else 'retrying' end
-    when walk_end in ('since', 'exhausted') then 'reached' else 'error' end,
-  case when walk_done_at is null then coalesce(last_error_code, 'error') when walk_end in ('since', 'exhausted') then '' else coalesce(nullif(walk_end, ''), 'error') end, count(*)
+    when walk_end in ('since', 'exhausted') then 'reached' else 'error' end as state,
+  case when walk_done_at is null then coalesce(last_error_code, 'error') when walk_end in ('since', 'exhausted') then '' else coalesce(nullif(walk_end, ''), 'error') end as code,
+  count(*) as walks
 from walks
 where walk_done_at > now() - interval '24 hours'
   or (walk_done_at is null and walk_since is not null and last_outcome = 'error' and (past_cadence or last_run_at > now() - interval '24 hours'))
@@ -402,7 +404,7 @@ export const STUCK_SQL = `with last_change as (
   select distinct on (e.account_id) e.account_id, e.at, e.outcome, e.error_code from ig_engage_account_events e
   join ig_engage_accounts a on a.id = e.account_id where a.world = 'prod' and e.transition order by e.account_id, e.id desc
 )
-select 'frozen_shared_exit', a.id, round(extract(epoch from e.at) * 1000), '', '', 0 from ig_engage_accounts a join last_change e on e.account_id = a.id
+select 'frozen_shared_exit' as kind, a.id, round(extract(epoch from e.at) * 1000) as since, '' as reason, '' as location, 0 as redirects from ig_engage_accounts a join last_change e on e.account_id = a.id
 where a.world = 'prod' and a.status = 'frozen' and e.outcome = 'frozen' and e.at < now() - interval '${STUCK_HOURS} hours' and (
   e.error_code = 'exit_shared' or (coalesce(e.error_code, '') = '' and exists (
     select 1 from ig_engage_session_bindings fb where fb.account_id = e.account_id and fb.started_at <= e.at and fb.expires_at > e.at and (
@@ -417,7 +419,7 @@ group by a.id, 4, 5
 union all
 select 'parked_dead_jar', a.id, round(extract(epoch from e.at) * 1000), '', '', 0 from ig_engage_accounts a join last_change e on e.account_id = a.id
 join ig_engage_browser_jars j on j.account_id = a.id
-where a.world = 'prod' and a.status = 'parked' and a.login_mode = 'jar' and not j.valid and e.at < now() - interval '${STUCK_HOURS} hours';`;
+where a.world = 'prod' and a.status = 'parked' and not j.valid and e.at < now() - interval '${STUCK_HOURS} hours';`;
 
 const STUCK_KINDS: ReadonlySet<string> = new Set<StuckKind>(["frozen_shared_exit", "parked_dead_jar"]);
 /** The redirect paths that mean a lost session, as _LOGIN_REDIRECT_PATHS in apps/crawler-v3/src/platforms/instagram/engage/classify.py. */
@@ -489,12 +491,10 @@ export async function measure(query: DsQuery | null, authError: string | null, n
   const step = async <T>(source: Source, read: () => Promise<T>): Promise<T | undefined> => {
     try { return await read(); } catch (error) { data.errors.push({ source, message: error instanceof Error ? error.message : String(error) }); return undefined; }
   };
-  // The three prod reads log in as owner_ro, whose CONNECTION LIMIT 8 (owner-ro-prod.sql, 3 until 10-19) the owner's TablePlus, the other prechecks and
-  // jobs share, so they run one after another: on 10-19 at 15:20:31Z they ran side by side next to one job's session and two of them got
-  // "too many connections for role owner_ro". step never rejects, so a failed read does not stop the next one.
+  // step never rejects, so a failed prod read does not stop the others.
   const deepWalks = step("prod deep walks", async () => deepWalksOf(await prodRead(DEEP_WALKS_SQL)));
-  const lapsedBindings = deepWalks.then(() => step("prod lapsed bindings", async () => lapsedOf(await prodRead(LAPSED_SQL))));
-  const stuckAccounts = lapsedBindings.then(() => step("prod stuck accounts", async () => stuckOf(await prodRead(STUCK_SQL))));
+  const lapsedBindings = step("prod lapsed bindings", async () => lapsedOf(await prodRead(LAPSED_SQL)));
+  const stuckAccounts = step("prod stuck accounts", async () => stuckOf(await prodRead(STUCK_SQL)));
   if (!query) {
     data.errors.push({ source: "grafana auth", message: authError ?? "no Grafana login" });
     for (const source of ["prod read log", "staging read log", "staging due reads", "staging config", "prod accounts", "prod config", "prod healthy gauge"] as const) data.errors.push({ source, message: "not read: no Grafana login" });
@@ -536,7 +536,8 @@ async function main(): Promise<void> {
   let query: DsQuery | null = null;
   let authError: string | null = null;
   try { query = grafanaClient(fetch, await readGrafanaAuth(), now, signal); } catch (error) { authError = error instanceof Error ? error.message : String(error); }
-  const result = report(await measure(query, authError, now, prodReader("engage-reads-duty", signal)), dutyMetrics);
+  const prodRead: ProdRead = query ? prodReader(query) : async () => { throw new Error("not read: no Grafana login"); };
+  const result = report(await measure(query, authError, now, prodRead), dutyMetrics);
   await writeFile(output, JSON.stringify(result, null, 2) + "\n");
   process.stdout.write(`engage-reads: ${Object.entries(result.metrics).map(([key, value]) => `${key}=${value}`).join(" ")}\n`);
 }

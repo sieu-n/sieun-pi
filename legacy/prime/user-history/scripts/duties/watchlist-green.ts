@@ -15,8 +15,8 @@ import {
  * call, reads only. It measures goal p35 (the Watchlist screen, /app/analytics/monitor, all green on staging and prod, collabs included) from:
  * - the owner org's watch keys: prod Convex befitting-sparrow-356, internalQuery search/watchTargets:pageKeys with orgId, paged in this one node
  *   process with an admin key the owner's Convex CLI login (~/.convex/config.json) authorizes, the call `convex run --deployment-name` makes;
- * - prod watch_targets monitor rows and the watch runs settled in 24 h (watch_target_claims): one psql session as owner_ro in a read-only
- *   transaction (estate-reads.ts prodReader; grafana_ro cannot read watch_targets on prod), and staging watch_targets monitor rows from estate_pg_stg;
+ * - prod watch_targets monitor rows and the watch runs settled in 24 h (watch_target_claims): two reads through estate_pg_prod
+ *   (estate-reads.ts prodReader), and staging watch_targets monitor rows from estate_pg_stg;
  * - the prod watch gauges of estate_prometheus through Grafana (detail and the loop age), and pause.watch from estate_pg_prod.
  * Green follows sessions/2026/10/10/1026-prod-watchlist-readback/findings.md in auto-sns-agent: an unpaused monitor row whose last_outcome is
  * ok and whose last_run_at is inside 24 h. An unpaused row on an account the platform removed or holds private is green at any age, as the
@@ -50,7 +50,7 @@ const DUTY_FILE = join(dirname(fileURLToPath(import.meta.url)), "watchlist-green
  * The rest is run detail, written to output.metrics after the judged keys and never judged: collab_pushed_pct, owner_stopped_watches, prod_posts_fresh_pct, prod_loop_age_s,
  * staging_posts_green_pct, staging_tagged_not_green and source_errors. A failed source still misses the metrics it feeds (NEEDS), and a prod
  * watch scheduler loop that is stalled past LOOP_STALL_S, or never ticked, misses prod_read_error_pct, since no read can finish while it stands.
- * The schedule, daily at 06:28 (c66), runs the Convex walk (22 pages, 10.4 s measured 2026-10-12) and the owner_ro and staging reads once a day.
+ * The schedule, daily at 06:28 (c66), runs the Convex walk (22 pages, 10.4 s measured 2026-10-12) and the prod and staging reads once a day.
  * The duty's timeoutMs 120000 is the runner's soft target, PRECHECK_TARGET_MS in src/shared/chat-duties.ts.
  */
 
@@ -522,7 +522,7 @@ const STAGING_ROWS_SQL = ROWS_SQL + "'f' as renamed from watch_targets w where w
 /** ROWS_SQL's columns in parseRows order, to print Grafana's table rows as the lines psql prints. */
 const ROW_COLUMNS = ["platform", "kind", "target", "paused", "last_outcome", "last_run_at", "last_stop_reason", "last_error_code", "is_private", "err_streak", "due", "last_ok_at", "added_at", "renamed"];
 export const rowLines = (rows: Record<string, unknown>[]): string => rows.map(row => ROW_COLUMNS.map(column => String(row[column] ?? "")).join("\t")).join("\n");
-const RECEIPTS_SQL = "select 'receipt', outcome, count(*) from watch_target_claims where settled_at > now() - interval '24 hours' and outcome is not null group by outcome;";
+const RECEIPTS_SQL = "select 'receipt' as kind, outcome, count(*) as runs from watch_target_claims where settled_at > now() - interval '24 hours' and outcome is not null group by outcome";
 
 export interface WatchDeps {
   query: DsQuery | null; authError: string | null; keys: () => Promise<string[]>; rows: () => Promise<string>; staging: () => Promise<string>;
@@ -553,7 +553,7 @@ export async function measure(deps: WatchDeps): Promise<WatchData> {
   ]);
   const rows = prodText === undefined ? undefined : parseRows(prodText);
   const staging = stagingText === undefined ? undefined : parseRows(stagingText);
-  if (rows && !rows.length) data.errors.push({ source: "prod rows", message: "the owner_ro read returned no prod watch_targets monitor row" });
+  if (rows && !rows.length) data.errors.push({ source: "prod rows", message: "the estate_pg_prod read returned no prod watch_targets monitor row" });
   if (staging && !staging.length) data.errors.push({ source: "staging rows", message: "estate_pg_stg returned no staging watch_targets monitor row" });
   if (screen && !screen.length) data.errors.push({ source: "screen read", message: "the screen read sent no chunk to crawler.virev.ai" });
   Object.assign(data, keys && { keys }, screen?.length && { screen }, rows?.length && { rows, receipts: parseReceipts(prodText!) }, staging?.length && { staging }, stagingKeys?.length && { stagingKeys },
@@ -576,7 +576,11 @@ async function main(): Promise<void> {
   const data = await measure({ query, authError, now,
     keys: async () => convexKeys(fetch, await convexToken(), signal),
     stagingKeys: async () => convexKeys(fetch, await convexToken(), signal, STAGING_CONVEX, STAGING_OWNER_ORG),
-    rows: () => prodReader("watchlist-green-duty", signal)(`${PROD_ROWS_SQL};\n${RECEIPTS_SQL}`),
+    rows: async () => {
+      if (!query) throw new Error("not read: no Grafana login");
+      const read = prodReader(query);
+      return await read(PROD_ROWS_SQL) + await read(RECEIPTS_SQL);
+    },
     staging: async () => { if (!query) throw new Error("not read: no Grafana login"); return rowLines(await sqlRows(query, PG.staging, STAGING_ROWS_SQL)); },
     screen: async keys => screenRead(fetch, await readCrawlerKey(), keys, signal) });
   const result = report(data, dutyMetrics);

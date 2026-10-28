@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { DutyMetric } from "../src/shared/chat-duties.ts";
-import { codeOf, failedOf, report, runSendingState, sendableOf } from "../scripts/duties/dm-outreach.ts";
+import { censusOf, codeOf, failedOf, report, runSendingState, sendableOf } from "../scripts/duties/dm-outreach.ts";
 
 /** sendingState as prod runs it at a8f85b4206, with the constant it names, and as auto-sns-agent sieun/dev has it after 60aa3284dc. */
 const DEPLOYED = `const HEALTH_TIMEOUT_MS = 3_000;
@@ -60,4 +60,11 @@ test("an unread source misses every metric it feeds instead of reading green", (
   assert.ok(output.metrics.sendable_accounts! < 1);
   assert.equal(output.metrics.failed_sends_24h, 0);
   assert.ok(output.flagged!.some(flag => flag.kind === "source_error"));
+});
+
+// auto-sns-agent a2ac03c64f (migration 0210) drops login_mode, and GET /ops/engage/health's census then counts each status as one number.
+test("the census counts a status given as one number, the shape after 0210", () => {
+  const census = censusOf({ ok: true, data: { census: { new: 2, active: 153, challenged: 16 } } });
+  assert.equal(sendableOf(census), 155);
+  assert.throws(() => censusOf({ ok: true, data: { census: { frozen: 14 } } }), /no census.new or census.active/);
 });

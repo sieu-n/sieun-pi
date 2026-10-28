@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { DutyMetric, FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
-import { REPO, SOURCE_DEADLINE_MS, prodReader, settle, unmeasuredFlag, utc } from "./estate-reads.ts";
+import { REPO, SOURCE_DEADLINE_MS, grafanaClient, prodReader, readGrafanaAuth, settle, unmeasuredFlag, utc } from "./estate-reads.ts";
 
 /**
  * The api portal vp chat's "DM outreach works" precheck (`node --import tsx scripts/duties/dm-outreach.ts`). No model call, reads only, sends nothing.
@@ -15,7 +15,7 @@ import { REPO, SOURCE_DEADLINE_MS, prodReader, settle, unmeasuredFlag, utc } fro
  *    crawler's GET /ops/engage/health answer, so the headline is the state the prod page shows. On 10-15 prod's sendingState counted only aiograpi
  *    accounts and the page showed "Paused while we add capacity" with 127 active jar accounts (auto-sns-agent 60aa3284dc fixed it on sieun/dev).
  * 2. It sums census.new and census.active over every login mode from the same answer, the accounts the crawler's outreach claim can take.
- * 3. It reads prod ig_engage_messages as owner_ro in a read-only transaction (estate-reads.ts prodReader): outbound rows of the last 24 h whose
+ * 3. It reads prod ig_engage_messages through Grafana's estate_pg_prod (estate-reads.ts prodReader): outbound rows of the last 24 h whose
  *    status is failed or delivery_unknown. A daily_send_limit_reached refusal writes no row (fleet/budget charges before the row), and the query
  *    leaves one out if it ever does.
  *
@@ -35,7 +35,8 @@ const ENGAGE_DM = "apps/api-portal/src/lib/server/engage-dm.ts";
 export const DAILY_LIMIT_CODE = "daily_send_limit_reached";
 
 export type Sending = "available" | "paused" | "unknown";
-export type Census = Record<string, Record<string, number>>;
+/** A status's count, or its count per login mode, the shape prod serves until auto-sns-agent a2ac03c64f (0210) drops login_mode there. */
+export type Census = Record<string, number | Record<string, number>>;
 export interface FailedSend { id: number; status: string; code: string; at: number }
 export type Source = "prod deployment" | "prod sendingState" | "crawler engage health" | "prod sends";
 export const FEEDS: Readonly<Record<Source, readonly string[]>> = {
@@ -90,15 +91,17 @@ export async function runSendingState(source: string, health: { status: number; 
 export function censusOf(body: unknown): Census {
   const data = (body as { data?: unknown } | null)?.data ?? body;
   const census = (data as { census?: Census } | null)?.census;
-  if (!census || typeof census.new !== "object" || typeof census.active !== "object") throw new Error("GET /ops/engage/health has no census.new or census.active");
+  const band = (value: unknown): boolean => typeof value === "number" || (typeof value === "object" && value !== null);
+  if (!census || !band(census.new) || !band(census.active)) throw new Error("GET /ops/engage/health has no census.new or census.active");
   return census;
 }
 
 export const sendableOf = (census: Census): number =>
-  [census.new, census.active].reduce((sum, band) => sum + Object.values(band ?? {}).reduce((total, count) => total + (Number(count) || 0), 0), 0);
+  [census.new, census.active].reduce<number>((sum, band) =>
+    sum + (typeof band === "number" ? band : Object.values(band ?? {}).reduce((total, count) => total + (Number(count) || 0), 0)), 0);
 
 /** The outbound sends of the last 24 h that did not go out, as one TSV row each: id, status, code, created_at in ms. */
-export const FAILED_SQL = `select m.id, m.status, coalesce(nullif(m.last_error_code, ''), nullif(m.error, ''), 'none'), round(extract(epoch from m.created_at) * 1000)
+export const FAILED_SQL = `select m.id, m.status, coalesce(nullif(m.last_error_code, ''), nullif(m.error, ''), 'none') as error, round(extract(epoch from m.created_at) * 1000) as at
 from ig_engage_messages m join ig_engage_accounts a on a.id = m.account_id
 where a.world = 'prod' and m.direction = 'out' and m.status in ('failed', 'delivery_unknown') and m.created_at > now() - interval '24 hours'
   and coalesce(m.last_error_code, m.error, '') not like '${DAILY_LIMIT_CODE}%'
@@ -176,7 +179,7 @@ async function measure(now: number, signal: AbortSignal): Promise<DmData> {
       if (response.status !== 200) throw new Error(`GET ${prod.urls.crawler}/ops/engage/health gave HTTP ${response.status}`);
       return { status: response.status, body };
     }),
-    step("prod sends", async () => failedOf(await prodReader("dm-outreach-duty", signal)(FAILED_SQL))),
+    step("prod sends", async () => failedOf(await prodReader(grafanaClient(fetch, await readGrafanaAuth(), now, signal))(FAILED_SQL))),
   ]);
   if (sha) data.sha = sha;
   if (failed) data.failed = failed;
