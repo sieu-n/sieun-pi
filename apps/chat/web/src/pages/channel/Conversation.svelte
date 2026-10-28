@@ -1,6 +1,8 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
-  import { agents, me, timeline, type Item } from "$lib/api";
+  import { agents, api, boardStore, me, timeline, type Item } from "$lib/api";
+  import BoardPanel from "$pages/board/BoardPanel.svelte";
+  import { boardHref, boardTitles, rememberTitles } from "$pages/board/chips";
   import { conversationHref, router } from "$lib/router.svelte";
   import { search } from "$lib/shell/search.svelte";
   import { sidePanel } from "$lib/shell/side-panel.svelte";
@@ -49,7 +51,6 @@
   const workingNames = $derived(
     summary?.working.length ? summary.working.map((w) => w.name) : working && agent ? [agent.name] : working && others.length === 1 ? [others[0]!.principal.name] : [],
   );
-  const context = $derived({ mentions: mentionContext(directory.agents, directory.channels, me.value?.owner.name ?? ""), plain: true });
   const boardChat = $derived(isChannel ? (header?.homeChat ?? null) : agent?.kind === "chat" ? agent.id : null);
 
   function statusOf(principal: string): Status | null {
@@ -70,19 +71,52 @@
     return agents.byId(threadParam)?.name ?? "Thread";
   });
 
+  /** `?board=<id>` opens the chat's board in the side pane focused on that id, and `?board=1` opens it unfocused. */
+  const boardParam = $derived(router.route.params.board ?? null);
+  const boardFocus = $derived(boardParam && boardParam !== "1" ? boardParam : null);
+
   $effect(() => {
     const key = threadParam;
     const title = threadTitle;
-    if (!key) {
+    const board = boardParam && boardChat ? boardChat : null;
+    if (!key && !board) {
       if (paneKey) sidePanel.close(paneKey);
       paneKey = null;
       return;
     }
-    paneKey = `thread:${key}`;
-    sidePanel.open({ key: paneKey, title, icon: isChannel ? "thread" : "robot", body: pane, onclose: () => {
-      if (!leaving) router.setParams({ thread: null });
-    } });
+    if (key) {
+      paneKey = `thread:${key}`;
+      sidePanel.open({ key: paneKey, title, icon: isChannel ? "thread" : "robot", body: pane, onclose: () => {
+        if (!leaving) router.setParams({ thread: null });
+      } });
+    } else if (board) {
+      paneKey = `board:${board}`;
+      sidePanel.open({ key: paneKey, title: "Board", icon: "board", body: boardPane, actions: boardActions, onclose: () => {
+        if (!leaving) router.setParams({ board: null });
+      } });
+    }
   });
+
+  function openBoard(focus?: string) {
+    router.setParams({ board: focus ?? "1", thread: null });
+  }
+
+  const boardView = $derived(boardChat ? boardStore(boardChat) : null);
+  $effect(() => {
+    const current = boardView;
+    return () => current?.close();
+  });
+  let dutyTitles = $state<{ id: string; name: string }[]>([]);
+  $effect(() => {
+    const chat = boardChat;
+    dutyTitles = [];
+    if (chat) void api.duties(chat).then((body) => (dutyTitles = body.duties.map((d) => d.duty))).catch(() => undefined);
+  });
+  const boardContext = $derived(boardChat && boardView?.view?.board ? { chatId: boardChat, titles: boardTitles(boardView.view.board, dutyTitles) } : null);
+  $effect(() => {
+    if (boardContext) rememberTitles(boardContext.chatId, boardContext.titles);
+  });
+  const context = $derived({ mentions: mentionContext(directory.agents, directory.channels, me.value?.owner.name ?? ""), board: boardContext, plain: true });
 
   let composer = $state<Composer>();
   let menuOpen = $state(false);
@@ -107,7 +141,7 @@
   }
 
   function openThread(key: string) {
-    router.setParams({ thread: key });
+    router.setParams({ thread: key, board: null });
   }
 
   function onmention(target: string, mentionKind: string) {
@@ -134,7 +168,8 @@
   }
 
   function onboardid(boardId: string, chatId: string) {
-    router.navigate(`#/board/${encodeURIComponent(chatId || boardChat || "")}?focus=${encodeURIComponent(boardId)}`);
+    if (!chatId || chatId === boardChat) openBoard(boardId);
+    else router.navigate(boardHref(chatId, boardId));
   }
 
   async function send(out: Outgoing) {
@@ -151,7 +186,12 @@
   const menuItems = $derived<MenuEntry[]>([
     { id: "search", label: "Search in this conversation", icon: "search", shortcut: "⌘F", onselect: () => search.open({ kind: "conversation", id }) },
     { id: "link", label: "Copy link", icon: "link", onselect: () => void navigator.clipboard.writeText(`${location.origin}${location.pathname}${conversationHref(id)}`).then(() => toast.show("Link copied")) },
-    ...(boardChat ? [{ id: "board", label: "Open board", icon: "board", onselect: () => router.navigate(`#/board/${encodeURIComponent(boardChat)}`) }] : []),
+    ...(boardChat
+      ? [
+          { id: "board", label: "Show board", icon: "board", onselect: () => openBoard() },
+          { id: "board-page", label: "Open board page", icon: "external", onselect: () => router.navigate(boardHref(boardChat)) },
+        ]
+      : []),
     ...(working ? [{ type: "separator" as const }, { id: "stop", label: "Stop", icon: "stop", onselect: stop }] : []),
   ]);
 
@@ -183,6 +223,18 @@
   {/if}
 {/snippet}
 
+{#snippet boardPane()}
+  {#if boardChat}
+    {#key `${boardChat}|${boardFocus ?? ""}`}
+      <div class="board-pane" data-testid="board-pane"><BoardPanel chatId={boardChat} where="panel" focus={boardFocus} onboardid={(boardId) => openBoard(boardId)} /></div>
+    {/key}
+  {/if}
+{/snippet}
+
+{#snippet boardActions()}
+  {#if boardChat}<IconButton icon="external" label="Open board page" size="sm" onclick={() => router.navigate(boardHref(boardChat, boardFocus ?? undefined))} />{/if}
+{/snippet}
+
 {#snippet titleContent()}
   <h1 class="title t-label-sm" data-testid="conversation-title">{name}</h1>
   {#if header?.purpose}<span class="purpose">{header.purpose}</span>{/if}
@@ -198,7 +250,7 @@
     <IconButton icon="stop" label="Stop" size="sm" onclick={stop} data-testid="header-stop" />
   {/if}
   {#if boardChat}
-    <IconButton icon="board" label="Board" size="sm" onclick={() => router.navigate(`#/board/${encodeURIComponent(boardChat)}`)} />
+    <IconButton icon="board" label="Board" size="sm" pressed={!!boardParam} onclick={() => (boardParam ? router.setParams({ board: null }) : openBoard())} data-testid="board-button" />
   {/if}
   <IconButton icon="more" label={isChannel ? "Channel actions" : "Chat actions"} size="sm" bind:element={menuAnchor} onclick={() => (menuOpen = !menuOpen)} />
 {/snippet}
@@ -273,6 +325,10 @@
     white-space: nowrap;
     color: var(--text-subtle);
     font: var(--text-caption);
+  }
+  .board-pane {
+    height: 100%;
+    overflow-y: auto;
   }
   .members {
     display: inline-flex;
