@@ -148,8 +148,11 @@ export function parkChanges(seen: Map<string, string>, rows: readonly SessionSum
  */
 export const ENDED_MS = 2 * 60_000;
 
-/** The sessions with a session below them, at any depth, that is not idle or holds a detached process, which the daemon's guard would refuse to close. */
-function busyAncestors(rows: readonly UnloadRow[]): Set<string> {
+/**
+ * The sessions with a session below them, at any depth, that is not idle or holds a detached process, which the daemon's guard would refuse to
+ * close. d7's lingering count (src/mac-usable-watch.ts `lingerLines`) leaves them out by the same rule.
+ */
+export function busyAncestors(rows: readonly UnloadRow[]): Set<string> {
   const parent = new Map(rows.flatMap(row => row.parentSessionId ? [[row.sessionId, row.parentSessionId] as const] : []));
   const busy = new Set<string>();
   for (const row of rows) {

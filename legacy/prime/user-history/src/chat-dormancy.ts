@@ -46,6 +46,17 @@ export function silentSince(child: ChildAgent, children: readonly ChildAgent[], 
 export const unsilent = (children: readonly ChildAgent[], now: number): ChildAgent[] => children.filter(child => silentSince(child, children, now) === null);
 
 /**
+ * A chat's children that can hold it attached (`ThreadHub.resting`): not silent, and loaded, which the activity time the daemon seeds at a
+ * child's admission and drops at its stop shows. A running child with no activity time is one the daemon stopped mid-turn, such as in its pool
+ * wait, and it runs nothing until a message or its resume loads it again; its report loads the chat too. From 05:30Z to 06:01Z on 10-28
+ * frontend bro sat attached, loaded alone on its Mac worker and idle 18 to 48 min, while pi-pool held seven of its stopped jobs until 06:00Z,
+ * and from 05:49Z to 06:00Z Crawler VP did the same behind one stopped job held until 06:01:30Z, so the idle unload left both and d7 read them
+ * as lingering sessions.
+ */
+export const holding = (children: readonly ChildAgent[], now: number): ChildAgent[] =>
+  children.filter(child => child.lastActivityAt !== undefined && silentSince(child, children, now) === null);
+
+/**
  * Whether a child's new entry shows work: a new status other than a cancel, a reply, new preview, recap or error words, a later activity time or
  * a new activity. An entry that only drops its activity time or activity is the daemon unloading the idle child, and a cancel of a job that
  * ran no turn is the cleanup deleting it.

@@ -7,7 +7,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { type Catalog, parseSummaries } from "./chat-catalog.ts";
 import { waitedOnHost } from "./chat-latency.ts";
 import type { SubagentDelete } from "./chat-sources.ts";
-import { childrenStirred, Dormancy, type IdleDetach, showsWork, unsilent } from "./chat-dormancy.ts";
+import { childrenStirred, Dormancy, holding, type IdleDetach, showsWork } from "./chat-dormancy.ts";
 import "./daemon-snapshot-count.ts";
 import { CHAT_FLAG, OWNER_THREAD_FLAG, ownerStopSinceActive } from "./chat-guard.ts";
 import { QUIET_MINUTES } from "./quiet-minutes.ts";
@@ -399,13 +399,13 @@ export class ThreadHub {
 
   /**
    * Nothing in the thread's tree runs or waits: no turn, tool or session action, no queued input, no running or queued child but a silent one
-   * (`silentSince`). At 08:17 KST on 10-14, 8 of 9 chat trees held a running or stale "working" child, so they never detached. An open tab
+   * (`silentSince`) or one the daemon stopped (`holding`). At 08:17 KST on 10-14, 8 of 9 chat trees held a running or stale "working" child, so they never detached. An open tab
    * does not hold the chat: its open and close count as activity (`subscribe`), and it gets the snapshot when the chat attaches again. A tab
    * left open on frontend bro from 16:02Z on 10-14 held its 4.3 GB worker through a 74 min idle spell, and the worker stayed up 31 h.
    */
   private resting(thread: Thread): boolean {
     const { queue } = thread.state;
-    return !isThreadBusy({ ...thread.state, children: unsilent(thread.state.children, this.dormant.now()) }) &&
+    return !isThreadBusy({ ...thread.state, children: holding(thread.state.children, this.dormant.now()) }) &&
       queue.steering.length === 0 && queue.followUp.length === 0 &&
       !this.resuming.has(thread.id) && !this.opening.has(thread.id) && !this.using.has(thread.id);
   }
@@ -437,6 +437,8 @@ export class ThreadHub {
     const live = thread.live;
     if (!live || !this.resting(thread) || this.threads.get(id) !== thread) return false;
     this.dormant.sleep(id, this.dormant.now() - thread.activeAt, how);
+    const stopped = thread.state.children.filter(child => (child.status === "running" || child.status === "queued") && child.lastActivityAt === undefined);
+    if (stopped.length) process.stderr.write(`rest ${id.slice(0, 8)}: detached past ${stopped.length} stopped jobs that still read running: ${stopped.map(child => child.sessionName ?? child.id).join(", ")}\n`);
     thread.flush();
     thread.live = null;
     live.unsubscribe();

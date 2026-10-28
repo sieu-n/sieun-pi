@@ -1,6 +1,7 @@
 // Guards d7's count of finished sessions still loaded on any box. At 03:12Z on 10-28 a hand count of the Mac's `sessions --json` read 56
 // archived sessions "still sat in workers", though every one was a spawn-ledger row with no activeSessionId, no runtime and no kernel, stamped
 // with its tree worker's pid. No watch line counted the sessions a worker really held idle past the unload window, on the Mac or the box.
+// At 06:34Z on 10-28 d7 named SEO guy, 01a17f05 and dm-extension, each above a session at work that the daemon's guard keeps them for.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { lingering } from "../scripts/duties/whole-system.ts";
@@ -21,10 +22,13 @@ const rows = [
   loaded("ticking", 40, { hasRegisteredHeartbeat: true }),
   loaded("busy", 40, { activity: "working", isStreaming: true }),
   { ...loaded("chat", 30, { attachedClients: 1 }), parentSessionId: undefined, sessionName: "slack green guy" },
+  loaded("parent", 40),
+  loaded("child", 40, { parentSessionId: "parent" }),
+  loaded("grandchild", 1, { parentSessionId: "child", activity: "working", isSessionActive: true, isRunningTools: true }),
 ];
 const line = (input: readonly unknown[]) => watchLine({ now, rows: input, footprints, queue: null, chats: new Set(["chat"]), title: () => null, cpuMs: 0 });
 
-test("a loaded session idle past the unload window lingers, and an archived or ledger row with a worker pid does not", () => {
+test("a loaded session idle past the unload window lingers, and an archived or ledger row with a worker pid or a session above one at work does not", () => {
   assert.equal(LINGER_MS, 17 * 60_000);
   assert.deepEqual(line(rows).lingering, [
     { session: "finished", name: "finished", tree: "frontend bro", worker: 55844, idleMin: 40 },

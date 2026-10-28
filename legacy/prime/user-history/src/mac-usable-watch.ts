@@ -9,6 +9,7 @@ import { listOrphanServices, type OrphanServiceLine } from "./orphan-services.ts
 import { bounded } from "../../../../components/prime-relay/kernel-read.ts";
 import { CPU_SIDES, type CpuSides, FEED_FRESH_MS, PRESSURE_FEED, groupOf, linuxUsable, type LinuxUsable, type MemoryGroup, memoryByGroup, type SchedstatMark, schedstatMark, seedSchedstat } from "../../../../components/prime-relay/host-stats.ts";
 import { type AgentCounts, agentCounts, agentState } from "./agent-states.ts";
+import { busyAncestors, type UnloadRow } from "./idle-unload.ts";
 import { QUIET_MINUTES } from "./quiet-minutes.ts";
 import { type CallMark, callMarks, CallWatch, type HungCall, PROGRESS_WINDOW_MS } from "./hung-calls.ts";
 import type { CallHandle, CallStopper, StoppedCall } from "./hung-stop.ts";
@@ -145,7 +146,10 @@ export interface WorkerLine { pid: number; gb: number; sessions: number; root: s
 export interface WorkerTree { pid: number; gb: number; root: string; tree: string; sessions: number; working: number }
 /**
  * A session a worker still holds loaded (`activeSessionId` set) that read idle with no client but a chat's service attach for over LINGER_MS,
- * which the idle unload (src/idle-unload.ts) should have stopped by then on any box: its session, name, chat tree, worker and idle minutes.
+ * and with no session below it at work, which the idle unload (src/idle-unload.ts) should have stopped by then on any box: its session, name,
+ * chat tree, worker and idle minutes. The unload keeps a session with a busy session below it (`busyAncestors`), since the daemon's guard refuses
+ * to close it: at 06:34Z on 10-28 d7 named SEO guy, 01a17f05 and dm-extension, idle 19 to 22 min, while review-caption-length under SEO
+ * guy's authority studies and dm-ext-core under dm-extension worked.
  * Only a row with `activeSessionId` is resident. Prime's list also names each tree's finished subagents from the spawn ledger, with no runtime
  * and no kernel, stamped with the tree worker's pid (daemon-mode.ts `buildSessionListWithPassiveRlmSubagents`, daemon-supervisor.ts
  * `publicSummary`), and every archived row is one of them, since a resident session always reads live or draft (`activeLifecycleForSession`).
@@ -158,8 +162,9 @@ export const LINGER_MS = (QUIET_MINUTES + 2) * MINUTE;
 
 /** Every loaded idle session past LINGER_MS (`LingerLine`), the longest idle first. */
 export function lingerLines(rows: readonly unknown[], now: number, chats: ReadonlySet<string>, tree: (id: string) => string): LingerLine[] {
+  const busy = busyAncestors(rows.filter((raw): raw is UnloadRow => isRecord(raw) && typeof raw.sessionId === "string"));
   return rows.flatMap((raw): LingerLine[] => {
-    if (agentState(raw) !== "idle" || !isRecord(raw) || typeof raw.sessionId !== "string" || typeof raw.workerPid !== "number") return [];
+    if (agentState(raw) !== "idle" || !isRecord(raw) || typeof raw.sessionId !== "string" || typeof raw.workerPid !== "number" || busy.has(raw.sessionId)) return [];
     const idleMs = now - (typeof raw.lastActivityAt === "string" ? Date.parse(raw.lastActivityAt) : NaN);
     const clients = typeof raw.attachedClients === "number" ? raw.attachedClients : 0;
     if (!(idleMs > LINGER_MS) || clients > (chats.has(raw.sessionId) ? 1 : 0) || raw.hasRegisteredHeartbeat === true || raw.hasRegisteredCronJob === true) return [];
