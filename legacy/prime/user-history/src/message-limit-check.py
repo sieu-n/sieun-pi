@@ -46,6 +46,9 @@ its own reference. It does three things.
 9. The call log. Each Prime call this wrapper makes adds one line to DATA_DIR/prime-calls.jsonl with src "kernel", the fields the chat
    service writes for its own calls (src/prime-calls.ts), so the board shows p50, p99 and the error rate per method (option C of the 10-27
    prime-under-load page, which found no log of a delivery or a read).
+10. pi-host threads. Prime's daemon knows no pi-host thread (c93), so a root's agent_observe.list_agents lists pi-host's threads as
+   siblings too, and a sibling send to a thread's full id, or to its exact name when no Prime root here or on another box has that name,
+   goes to the thread as an agent.message input (src/pi-thread-message.ts). A name that names a Prime root and a thread raises with both ids.
 """
 
 import asyncio
@@ -57,10 +60,11 @@ import shutil
 import subprocess
 import sys
 import time
+import uuid
 
 CHECK = os.path.join(os.path.dirname(os.path.realpath(__file__)), "message-limit-check.ts")
 SEND_ONCE = os.path.join(os.path.dirname(os.path.realpath(__file__)), "send-once.ts")
-VERSION = 26
+VERSION = 27
 BRIEFS = "spawn-briefs"
 SAFE_ID = re.compile(r"^[\w-]{1,128}$")
 SEND_TIMEOUT = 'waiting for the Prime Agent daemon response to "send_message"'
@@ -317,35 +321,36 @@ def own_root():
     return name if UUID.match(name) else None
 
 
-RESTARTING = re.compile(r"Chat service answered 50[234]|fetch failed|ECONNREFUSED|has not listed its sessions yet|No chat service is set up")
+RESTARTING = re.compile(r"Chat service answered 50[234]|fetch failed|ECONNREFUSED|has not listed its sessions yet|No chat service is set up|pi-host did not answer")
 # A chat service restart leaves the cross-host routes down or without the other boxes' roots for about 23 s (10-18: stop 05:14:32Z, start
-# 05:14:37Z, Mac listed 05:14:55Z); box sessions' sends to Fable and the release owner failed in that gap. A send retries through 60 s.
+# 05:14:37Z, Mac listed 05:14:55Z); box sessions' sends to Fable and the release owner failed in that gap. A send retries through 60 s, and
+# a send to a pi-host thread retries the same way, with one request id, through a pi-host restart.
 RESTART_WAIT = 60
 RESTART_STEP = 5
 
 
-async def cross_host(op, body):
-    """The chat service's answer to one cross-host op, through cross-host-message.ts; raises with the service's error, after retrying through
-    a restart of the chat service (RESTARTING) for up to RESTART_WAIT s."""
+async def cross_host(op, body, script=CROSS_HOST):
+    """The chat service's answer to one cross-host op, through cross-host-message.ts (or pi-host's, through script); raises with the service's
+    error, after retrying through a restart of the chat service (RESTARTING) for up to RESTART_WAIT s."""
     deadline = time.time() + RESTART_WAIT
     while True:
         try:
-            return await cross_host_once(op, body)
+            return await cross_host_once(op, body, script)
         except RuntimeError as error:
             if not RESTARTING.search(str(error)) or time.time() + RESTART_STEP > deadline:
                 raise
             await asyncio.sleep(RESTART_STEP)
 
 
-async def cross_host_once(op, body):
+async def cross_host_once(op, body, script=CROSS_HOST):
     # tsx, since chat-host.ts imports hosts.ts, whose parameter properties node's own type stripping refuses.
-    proc = await asyncio.create_subprocess_exec("node", "--import", "tsx", CROSS_HOST, op, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+    proc = await asyncio.create_subprocess_exec("node", "--import", "tsx", script, op, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
                                                 stderr=asyncio.subprocess.PIPE, cwd=os.path.dirname(os.path.dirname(CROSS_HOST)))
     out, err = await proc.communicate(json.dumps({**body, "dataDir": data_dir()}).encode())
     try:
         answer = json.loads(out.decode().strip().splitlines()[-1])
     except (ValueError, IndexError):
-        raise RuntimeError(f"cross-host message helper failed: {err.decode()[-300:]}") from None
+        raise RuntimeError(f"{os.path.basename(script)} failed: {err.decode()[-300:]}") from None
     if isinstance(answer, dict) and "error" in answer:
         raise RuntimeError(answer["error"])
     return answer
@@ -360,7 +365,8 @@ async def with_other_boxes(roster):
         extra = (await cross_host("siblings", {"session": root})).get("agents", [])
     except Exception as error:
         print(f"user-history: other boxes' roots not listed: {error}", file=sys.stderr)
-        return roster
+        extra = []
+    extra = extra + await pi_threads()
     known = {agent.get("sessionId") for agent in roster["agents"] if isinstance(agent, dict)}
     return {**roster, "agents": roster["agents"] + [agent for agent in extra if agent.get("sessionId") not in known]}
 
@@ -379,14 +385,54 @@ async def other_roots(root):
     return OTHER_ROOTS["agents"]
 
 
+PI_THREAD = os.path.join(os.path.dirname(os.path.realpath(__file__)), "pi-thread-message.ts")
+PI_THREADS = {"at": 0.0, "agents": []}
+
+
+async def pi_threads():
+    """pi-host's threads as sibling rows (pi-thread-message.ts siblings), read once per OTHER_ROOTS_TTL; none while pi-host does not answer."""
+    if time.time() - PI_THREADS["at"] > OTHER_ROOTS_TTL:
+        try:
+            agents = (await cross_host_once("siblings", {}, PI_THREAD)).get("agents", [])
+        except Exception as error:
+            print(f"user-history: pi-host threads not listed: {error}", file=sys.stderr)
+            agents = []
+        PI_THREADS.update(at=time.time(), agents=[agent for agent in agents if isinstance(agent, dict) and agent.get("piThread")])
+    return PI_THREADS["agents"]
+
+
+async def elsewhere(root):
+    """The roots on other boxes and pi-host's threads; a catalog that does not read leaves the threads."""
+    try:
+        roots = await other_roots(root)
+    except Exception as error:
+        print(f"user-history: the other boxes' roots did not read ({error})", file=sys.stderr)
+        roots = []
+    return roots + await pi_threads()
+
+
+class Ambiguous(RuntimeError):
+    """A sibling name that names a pi-host thread and another root or thread (point 10)."""
+
+
+def ambiguous(wanted, agents):
+    named = ", ".join(f"{'the pi-host thread' if agent.get('piThread') else 'the Prime root'} {agent.get('sessionName')} ({agent.get('sessionId')})" for agent in agents)
+    return Ambiguous(f'agent_message: "{wanted}" names {named}; send to one full id.')
+
+
 def pick_other(agents, to):
-    """The one root `to` names among other boxes' roots, the way pickRoot in cross-host-message.ts reads it, with how it matched; else None."""
+    """The one root `to` names among other boxes' roots, the way pickRoot in cross-host-message.ts reads it, or the pi-host thread its full id
+    or exact name names, with how it matched; else None. Raises Ambiguous when a name names a thread and another root or thread."""
     wanted = str(to or "").strip()
     exact = [agent for agent in agents if wanted in (agent.get("sessionId"), agent.get("activeSessionId"))]
     if len(exact) == 1:
         return exact[0], "id"
-    named = [agent for agent in agents if str(agent.get("sessionName") or "").strip().lower() == wanted.lower() or
-             (len(wanted) >= 8 and str(agent.get("sessionId") or "").startswith(wanted))]
+    # A thread matches by its exact name only, never by an id prefix (c149).
+    named = [agent for agent in agents if str(agent.get("sessionName") or "").strip() == wanted if agent.get("piThread")] + [
+        agent for agent in agents if not agent.get("piThread") and (str(agent.get("sessionName") or "").strip().lower() == wanted.lower() or
+                                                                    (len(wanted) >= 8 and str(agent.get("sessionId") or "").startswith(wanted)))]
+    if len(named) > 1 and any(agent.get("piThread") for agent in named):
+        raise ambiguous(wanted, named)
     return (named[0], "name") if len(named) == 1 else None
 
 
@@ -399,7 +445,7 @@ async def other_box_first(real, payload):
     root = own_root()
     if not root or payload.get("receiver_role") != "sibling" or not payload.get("receiver_name"):
         return None
-    found = pick_other(await other_roots(root), payload.get("receiver_name"))
+    found = pick_other(await elsewhere(root), payload.get("receiver_name"))
     if not found:
         return None
     target, how = found
@@ -407,9 +453,22 @@ async def other_box_first(real, payload):
         roster = await real("agent_observe.list")
         here = [agent for agent in (roster.get("agents", []) if isinstance(roster, dict) else []) if isinstance(agent, dict) and
                 agent.get("relationship") == "sibling" and str(agent.get("sessionName") or "").strip().lower() == str(payload["receiver_name"]).strip().lower()]
-        if any(agent.get("sessionId") != target.get("sessionId") for agent in here):
+        others = [agent for agent in here if agent.get("sessionId") != target.get("sessionId")]
+        if others and target.get("piThread"):
+            raise ambiguous(str(payload["receiver_name"]).strip(), others + [target])
+        if others:
             return None
     return target
+
+
+async def send_pi_thread(real, payload, target):
+    """A root's sibling send to a pi-host thread (point 10). One message id for every retry, so pi-host admits it once."""
+    roster = await real("agent_observe.list")
+    me = roster.get("current") if isinstance(roster, dict) else None
+    root = own_root()
+    name = str(me.get("sessionName") or root) if isinstance(me, dict) else root
+    return await cross_host("send", {"from": {"id": root, "name": name}, "to": target["sessionId"], "message": payload.get("message"),
+                                     "id": str(uuid.uuid4())}, PI_THREAD)
 
 
 async def send_other_box(payload, error, resend):
@@ -465,7 +524,7 @@ async def trial_wall(real, payload):
     target = roster_target(roster, payload)
     to = target.get("sessionId") if target else None
     if not to:
-        found = pick_other(await other_roots(root), payload.get("receiver_name"))
+        found = pick_other(await elsewhere(root), payload.get("receiver_name"))
         to = found[0].get("sessionId") if found else None
     if not to:
         return
@@ -581,9 +640,13 @@ async def request(request_type, payload=None, *args, **kwargs):
         if direct:
             try:
                 target = await other_box_first(real, payload)
+            except Ambiguous:
+                raise
             except Exception as error:
                 print(f"user-history: the other boxes' roots did not read ({error}); sent here first", file=sys.stderr)
-        if target:
+        if target and target.get("piThread"):
+            reply = await send_pi_thread(real, payload, target)
+        elif target:
             reply = await cross_host("send", {"from": own_root(), "to": target["sessionId"], "message": payload.get("message")})
         else:
             reply = await queued(real, payload) if direct and (payload.get("receiver_role"), payload.get("receiver_name")) in QUEUED_TO else None

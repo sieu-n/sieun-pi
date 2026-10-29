@@ -87,7 +87,8 @@ test("a send to a session with 21 pending returns queued, lands once when the qu
   const sessionDir = join(dir, "session-artifacts", SENDER);
   await mkdir(sessionDir, { recursive: true });
   const run = promisify(execFile)("python3", ["-c", script], { cwd: dir, encoding: "utf8",
-    env: { ...process.env, PYTHONPATH: dir, RLM_SESSION_DIR: sessionDir, SIEUN_PI_HOSTS: join(dir, "no-hosts.json") } });
+    env: { ...process.env, PYTHONPATH: dir, RLM_SESSION_DIR: sessionDir, SIEUN_PI_HOSTS: join(dir, "no-hosts.json"),
+        PI_HOST_SOCKET: join(dir, "no-pi-host.sock"), PI_AGENT_BUS_BOXES: join(dir, "no-boxes.json") } });
   await until(() => access(join(dir, "queued")).then(() => true, () => false));
   assert.deepEqual(daemon.delivered, [], "nothing reaches the target while it is full");
   assert.equal(daemon.refused, 0, "the outbox reads the target's room before it sends, so the daemon refuses nothing more");

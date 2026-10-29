@@ -67,7 +67,8 @@ test("a kernel that installed an older message check sends to a moved chat acros
     const sessionDir = join(dir, "session-artifacts", RELEASE_OWNER);
     await mkdir(sessionDir, { recursive: true });
     const run = await promisify(execFile)("python3", ["-c", script], { cwd: dir, encoding: "utf8",
-      env: { ...process.env, PYTHONPATH: dir, RLM_SESSION_DIR: sessionDir, SIEUN_PI_HOSTS: join(dir, "no-hosts.json") } });
+      env: { ...process.env, PYTHONPATH: dir, RLM_SESSION_DIR: sessionDir, SIEUN_PI_HOSTS: join(dir, "no-hosts.json"),
+        PI_HOST_SOCKET: join(dir, "no-pi-host.sock"), PI_AGENT_BUS_BOXES: join(dir, "no-boxes.json") } });
     const receipt = JSON.parse(run.stdout.trim().split("\n").at(-1)!);
     assert.deepEqual([receipt.deliveryStatus, receipt.host, receipt.crossHost], ["queued", "us-metal02", true]);
     assert.equal(sent.length, 1);

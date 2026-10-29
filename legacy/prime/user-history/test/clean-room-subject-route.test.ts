@@ -117,7 +117,8 @@ test("a root's sibling send across the wall raises the service's line in the sen
       "asyncio.run(main())",
     ].join("\n");
     const run = await promisify(execFile)("python3", ["-c", script], { cwd: dir, encoding: "utf8",
-      env: { ...process.env, PYTHONPATH: dir, PYTHONDONTWRITEBYTECODE: "1", RLM_SESSION_DIR: sessionDir, SIEUN_PI_HOSTS: join(dir, "no-hosts.json") } });
+      env: { ...process.env, PYTHONPATH: dir, PYTHONDONTWRITEBYTECODE: "1", RLM_SESSION_DIR: sessionDir, SIEUN_PI_HOSTS: join(dir, "no-hosts.json"),
+        PI_HOST_SOCKET: join(dir, "no-pi-host.sock"), PI_AGENT_BUS_BOXES: join(dir, "no-boxes.json") } });
     return JSON.parse(run.stdout.trim().split("\n").at(-1)!);
   };
   try {

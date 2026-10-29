@@ -72,7 +72,8 @@ test("a Mac root's send to a chat the catalog lists on the box goes to the box, 
     const sessionDir = join(dir, "session-artifacts", OWNER);
     await mkdir(sessionDir, { recursive: true });
     const run = await promisify(execFile)("python3", ["-c", script], { cwd: dir, encoding: "utf8",
-      env: { ...process.env, PYTHONPATH: dir, RLM_SESSION_DIR: sessionDir, SIEUN_PI_HOSTS: join(dir, "no-hosts.json") } });
+      env: { ...process.env, PYTHONPATH: dir, RLM_SESSION_DIR: sessionDir, SIEUN_PI_HOSTS: join(dir, "no-hosts.json"),
+        PI_HOST_SOCKET: join(dir, "no-pi-host.sock"), PI_AGENT_BUS_BOXES: join(dir, "no-boxes.json") } });
     const [tiktok, untitled] = JSON.parse(run.stdout.trim().split("\n").at(-1)!);
     assert.deepEqual([tiktok.host, tiktok.crossHost, tiktok.local], ["us-metal02", true, undefined]);
     assert.deepEqual(sent, [{ host: "us-metal02", session: TIKTOK }]);
