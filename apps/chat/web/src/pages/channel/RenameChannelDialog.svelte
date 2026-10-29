@@ -16,6 +16,8 @@
   let pending = $state(false);
   let error = $state<string | null>(null);
 
+  /** Lowercases and turns spaces into dashes as the owner types, as Slack does, so the field shows the name the server keeps. */
+  const slug = (text: string): string => text.trimStart().replace(/^#/, "").toLowerCase().replace(/\s+/g, "-");
   const typed = $derived(name.trim().replace(/^#/, ""));
   const unchanged = $derived(!typed || typed === target.name);
 
@@ -47,7 +49,10 @@
         spellcheck={false}
         invalid={!!error}
         disabled={pending}
-        oninput={() => (error = null)}
+        oninput={() => {
+          name = slug(name);
+          error = null;
+        }}
         onfocus={(e) => e.currentTarget.select()}
       />
     </Field>

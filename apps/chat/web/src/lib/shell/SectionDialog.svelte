@@ -59,6 +59,7 @@
       </Field>
     </form>
     {#snippet actions()}
+      <Button variant="ghost" onclick={close}>Cancel</Button>
       <Button variant="primary" type="submit" form="section-name-form">{target.kind === "rename" ? "Save" : "Create section"}</Button>
     {/snippet}
   </Dialog>

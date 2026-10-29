@@ -35,6 +35,7 @@ test("a channel renamed from its header menu shows the new name everywhere, keep
   await field.fill("  ");
   await expect(submit).toBeDisabled();
   await field.fill(`Renamed ${word}`);
+  await expect(field).toHaveValue(after);
   await submit.click();
   await expect(dialog).toHaveCount(0);
   await expect(page.getByText(`Renamed to #${after}`)).toBeVisible();

@@ -35,6 +35,11 @@ test("a section takes channels by menu and drag, renames, folds with the built-i
   const dialog = page.getByRole("dialog", { name: "New section" });
   await dialog.getByRole("button", { name: "Create section" }).click();
   await expect(dialog.getByRole("alert")).toHaveText("Give the section a name");
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await expect(dialog).toHaveCount(0);
+  await block(page, "channels").getByRole("heading", { name: "Channels" }).hover();
+  await sidebar(page).getByRole("button", { name: "Channels options" }).click();
+  await page.getByRole("menuitem", { name: "New section" }).click();
   await nameSection(page, "New section", "Projects");
   await expect(section(page, "Projects")).toBeVisible();
 
