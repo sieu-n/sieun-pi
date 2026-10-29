@@ -63,7 +63,7 @@ test("a standing duty's met run with only informational findings starts no job; 
 });
 
 // On 10-25 the Wiki dream read wiki_problems_following 0 at 12:30Z and nothing read it again until 16:30Z, so a met duty with parts now gets
-// a push run each check-in interval (`pushMisses`). Its precheck flags every page retouched in 7 days on every run (76 at 08:27Z on 10-25),
+// a push run each `PART_READ_MS`, or each check-in interval when that is sooner (`pushMisses`). Its precheck flags every page retouched in 7 days on every run (76 at 08:27Z on 10-25),
 // so such a push run starts a job only when a part is off target.
 test("a push run of a met duty with parts starts no job while every part is on target, and starts one once a part is off", async () => {
   const dir = await mkdtemp(join(tmpdir(), "duty-push-remeasure-"));
@@ -105,9 +105,9 @@ test("a push run of a met duty with parts starts no job while every part is on t
     assert.equal(quiet.trigger, "push");
     assert.ok(quiet.summary.endsWith(NOTHING_DUE), quiet.summary);
     assert.deepEqual(started, []);
-    now += 30 * MIN;
-    assert.equal((await push(3)).at, quiet.at, "no push before the check-in interval");
-    now += 31 * MIN;
+    now += 10 * MIN;
+    assert.equal((await push(3)).at, quiet.at, "no push before PART_READ_MS");
+    now += 6 * MIN;
     const behind = await push(3);
     assert.equal(behind.trigger, "push");
     assert.equal(started.length, 1, "a push run that reads a part off target starts its job");

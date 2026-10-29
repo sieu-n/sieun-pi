@@ -3,7 +3,7 @@
 // verdict leaves out would otherwise never start the push run that rewrites those pages.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { pushMisses } from "../src/duty-push.ts";
+import { PART_READ_MS, pushMisses } from "../src/duty-push.ts";
 import type { DutyRunRecord, MetricResult } from "../src/shared/chat-duties.ts";
 
 const MIN = 60_000;
@@ -48,7 +48,7 @@ test("the Wiki dream's runs of 10-25 get a push within one check-in interval of 
   ];
   const everyMs = 60 * MIN;
   const first = [...Array(240).keys()].map(minute => at("12:31:00") + minute * MIN).find(now => pushMisses(runs, counted, everyMs, now) !== null);
-  assert.equal(first, at("12:52:00"));
+  assert.equal(first, at("12:31:00"), "PART_READ_MS after 11:51Z had passed, so the first minute after the after-job measure gets it");
   assert.deepEqual(pushMisses(runs, counted, everyMs, first!), []);
   assert.ok(first! <= at("13:30:00"));
 });
@@ -86,4 +86,17 @@ test("a duty whose non-push job ended red gets its push at once, once, and a qui
   const quietAfter = { ...after, metrics: { wiki_problems: { ...result(2), lastEventAt: NOW - 600 * MIN }, open_mistakes: result(0) } };
   const before: DutyRunRecord = { ...run(NOW - 9 * 60 * MIN, "missed", { wiki_problems: 2, open_mistakes: 0 }), trigger: "schedule" };
   assert.equal(pushMisses([{ ...raced, metrics: quietAfter.metrics }, { ...scheduled, after: quietAfter }, before], COUNTED, 120 * MIN, NOW), null, "a quiet windowed count owes no fix job");
+});
+
+// From 10-27 to 10-29 the d4 run after a met run came at p50 60.3 min on the hourly check-in interval, past the 70 min follow window less a
+// 52.7 min rewrite, so pages that fell behind between reads counted at the next one: the 16:50Z verify of 10-29 read 1 and the next read 57.
+test("a met run with parts is read again after PART_READ_MS when the check-in interval is longer", () => {
+  const hourly = 60 * MIN;
+  const met = (age: number, following: number) => [run(NOW - age, "met", { wiki_problems: 0, open_mistakes: 0 }, { wiki_problems_following: following })];
+  assert.equal(PART_READ_MS, 15 * MIN);
+  assert.deepEqual(pushMisses(met(PART_READ_MS, 0), COUNTED, hourly, NOW), [], "every part on target, read again after 15 min");
+  assert.deepEqual(pushMisses(met(PART_READ_MS, 3), COUNTED, hourly, NOW), ["wiki_problems_following"]);
+  assert.equal(pushMisses(met(PART_READ_MS - MIN, 3), COUNTED, hourly, NOW), null, "not before 15 min");
+  assert.deepEqual(pushMisses(met(10 * MIN, 0), COUNTED, 10 * MIN, NOW), [], "a shorter check-in interval still wins");
+  assert.equal(pushMisses([run(NOW - 30 * MIN, "met", { wiki_problems: 0, open_mistakes: 0 })], COUNTED, hourly, NOW), null, "no parts: the interval holds");
 });

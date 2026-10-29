@@ -34,6 +34,16 @@ function endedUnpushed(runs: readonly DutyRunRecord[]): boolean {
 }
 
 /**
+ * How often a met duty whose counted metric has parts is read again, when that is sooner than the check-in interval. A part such as the Wiki
+ * dream's `wiki_problems_following` turns into the counted metric after its follow window (70 min, `FOLLOW_WINDOW_MS` in
+ * scripts/duties/wiki-dream.ts), so a page that falls behind must be read and handed to a writer with time left for the rewrite: 70 min less the
+ * p90 rewrite of 52.7 min and the precheck's 2.6 min (the 19:50Z run of 10-29 took 153.5 s) leaves 14.7 min. measured: from 10-27 to 10-29 the
+ * d4 run after a met run came at p50 60.3 and p90 78.8 min on the hourly check-in interval, after which the window had passed, and from
+ * 20:46Z to 22:45Z on 10-29 the take-ins 5b30292754 and be6da6c8d6 and the session commits put 30 pages an hour behind between those reads.
+ */
+export const PART_READ_MS = 15 * 60_000;
+
+/**
  * The counted metrics a push run of a standing duty goes after, or null when the duty gets no push now. `runs` are the duty's runs, newest
  * first. The duty is red when its newest met-or-missed reading (`newestReading`, so a run whose after-job measure is met counts green) missed a
  * counted metric. It gets a push once its newest run of any verdict is `everyMs` old, the chat's check-in interval: the owner's own push
@@ -46,8 +56,8 @@ function endedUnpushed(runs: readonly DutyRunRecord[]): boolean {
  * and one rewrite take, so they are rewritten before they count; on 10-20 cited code changed under 20 pages in the 15 min after 48 were
  * rewritten. Until then no duty's met run had a part off target, so this pushes no other duty.
  *
- * A met run whose counted metric has parts gets a push with no keys (`[]`) once it is `everyMs` old even with every part on target, so a page
- * that falls behind later is seen within one interval; the push run starts no job when it reads met with every part on target (`run` in
+ * A met run whose counted metric has parts gets a push with no keys (`[]`) once it is `PART_READ_MS` old, or `everyMs` when that is sooner,
+ * even with every part on target, so a page that falls behind later is read while its follow window leaves time to rewrite it; the push run starts no job when it reads met with every part on target (`run` in
  * src/chat-duty-run.ts). On 10-25 the Wiki dream's after-job measure of 12:30Z read wiki_problems_following 0, no run read d4 again until its
  * 16:30Z schedule run, and that run read wiki_problems 45 and wiki_problems_following 13.
  */
@@ -64,9 +74,10 @@ export function pushMisses(runs: readonly DutyRunRecord[], counted: ReadonlySet<
     const owed = endedUnpushed(runs) ? keys.filter(key => !quiet.has(key)) : [];
     return owed.length ? owed : null;
   }
-  if (now - newest.at < everyMs) return null;
   const parts = Object.fromEntries(Object.entries(measured.parts ?? {}).filter(([key]) => [...counted].some(metric => key.startsWith(`${metric}_`))));
-  return Object.keys(parts).length ? missedKeys({ metrics: parts }) : null;
+  if (!Object.keys(parts).length) return null;
+  if (now - newest.at < Math.min(everyMs, PART_READ_MS)) return null;
+  return missedKeys({ metrics: parts });
 }
 
 /**
