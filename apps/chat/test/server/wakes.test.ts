@@ -87,14 +87,17 @@ test("a time wake goes out at its time with Prime's text", async t => {
   assert.ok(sent[0]!.input.text!.endsWith(POLL_HINT));
 });
 
-/** ci-run-status and gh answers for one run, as the CI cache and GitHub give them; `state` moves the run along. */
+/**
+ * ci-run-status and gh answers for one run, as the CI cache and GitHub give them; `state` moves the run along. `updatedAt` reads the clock,
+ * because a fixed date made rerunMissed answer the attempt 2 wake once that date was RERUN_GAP_MS old.
+ */
 function ciFixture(run: number) {
   const state = { status: "in_progress", conclusion: "", attempt: 1 };
   const calls: string[] = [];
   const exec = async (command: string, args: string[]) => {
     calls.push([command, ...args].join(" "));
     const body = { databaseId: run, status: state.status, conclusion: state.conclusion, attempt: state.attempt, url: `https://github.com/sieu-n/auto-sns-agent/actions/runs/${run}`,
-      workflowName: "land", headBranch: "main", updatedAt: "2026-10-29T03:00:00Z" };
+      workflowName: "land", headBranch: "main", updatedAt: new Date().toISOString() };
     if (command === "ci-run-status" || command === "gh" || command === REAL_GH) return JSON.stringify(body);
     throw new Error(`unexpected ${command}`);
   };
