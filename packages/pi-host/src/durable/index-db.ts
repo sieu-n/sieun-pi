@@ -264,6 +264,9 @@ export function openIndexReadOnly(path: string): DatabaseSync {
   return db;
 }
 
+/** The index version whose rows credit a child conversation's task input to the conversation that wrote it (threads.ts `taskAuthor`). */
+const TASK_AUTHOR_VERSION = 1;
+
 export class ThreadIndex {
   private readonly db: DatabaseSync;
   /** Set when this open changed the schema of derived rows, so every thread's search and usage rows are read again. */
@@ -279,6 +282,11 @@ export class ThreadIndex {
       this.db.exec(`ALTER TABLE usage ADD COLUMN cost_input REAL NOT NULL DEFAULT 0; ALTER TABLE usage ADD COLUMN cost_output REAL NOT NULL DEFAULT 0;
         ALTER TABLE usage ADD COLUMN cost_cache_read REAL NOT NULL DEFAULT 0; ALTER TABLE usage ADD COLUMN cost_cache_write REAL NOT NULL DEFAULT 0;
         DELETE FROM entries; DELETE FROM usage; UPDATE threads SET indexed_entry = 0;`);
+      this.rebuilt = true;
+    }
+    if (Number((this.db.prepare("PRAGMA user_version").get() as Row).user_version) < TASK_AUTHOR_VERSION) {
+      // An index from before task authors credited every child conversation's task input to the owner, so its search rows start over.
+      this.db.exec(`DELETE FROM entries; DELETE FROM usage; UPDATE threads SET indexed_entry = 0; PRAGMA user_version = ${TASK_AUTHOR_VERSION};`);
       this.rebuilt = true;
     }
   }

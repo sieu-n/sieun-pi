@@ -141,7 +141,19 @@ interface OpenThread {
   prompt?: PrimePromptOptions & { thread: NonNullable<PrimePromptOptions["thread"]> };
   /** The newest digest check, so the next waits for it and two never record the same digest. */
   digesting: Promise<void>;
+  /** Each task-owned conversation's first input, its task, which its owner conversation wrote: the entry once seen, and the owner. */
+  tasks: Map<number, TaskInput>;
 }
+
+/** A child conversation's task: the input its owner wrote, which the index must not credit to the owner of the box. */
+interface TaskInput { owner: number; entry?: number }
+
+/** A task sent as an agent message, which needs no credit of its own. */
+const NO_TASK_INPUT = -1;
+const isInput = (entry: EntryRecord): boolean => entry.kind === "pi.user" || entry.kind === AgentMessageEntry.kind;
+
+/** The author of a task input: the conversation that wrote it, as apps/chat names conversations (`<thread>` for the root, else `<thread>:<n>`). */
+export const taskAuthor = (thread: string, owner: number): string => (owner === ROOT_CONVERSATION_ID ? thread : `${thread}:${owner}`);
 
 const textOfContent = (content: Message["content"] | undefined): string => {
   if (content === undefined) return "";
@@ -319,8 +331,8 @@ export class DurableThreads {
       openHarness = harness;
       const root = await harness.root(context, init ? { agent: init.agent } : undefined);
       if (root.id !== ROOT_CONVERSATION_ID) throw new Error(`${file}: the root conversation is ${root.id}`);
-      await this.backfill(id, harness);
-      state = { id, file, harness, root, watchers: new Set(), wake, stopCommits: () => {}, ...(prompt ? { prompt } : {}), digesting: Promise.resolve() };
+      const tasks = await this.backfill(id, harness);
+      state = { id, file, harness, root, watchers: new Set(), wake, stopCommits: () => {}, ...(prompt ? { prompt } : {}), digesting: Promise.resolve(), tasks };
       const opened = state;
       opened.stopCommits = harness.subscribeCommits(publication => this.onCommit(opened, publication));
       this.onWake(opened, harness.wake());
@@ -361,22 +373,31 @@ export class DurableThreads {
     };
   }
 
-  /** Adds every entry the index has not seen, so search and usage cover what a crashed process committed. */
-  private async backfill(id: string, harness: Harness): Promise<void> {
+  /**
+   * Adds every entry the index has not seen, so search and usage cover what a crashed process committed, and answers each task-owned
+   * conversation's task input, so the commits after it keep crediting that input to the conversation that wrote it.
+   */
+  private async backfill(id: string, harness: Harness): Promise<Map<number, TaskInput>> {
     const mark = this.index.indexedEntry(id);
     const now = this.now();
     const conversations = await this.conversations(harness);
     const entries: IndexedEntry[] = [];
     const usage: UsageRow[] = [];
+    const tasks = new Map<number, TaskInput>();
     let preview: string | undefined;
     for (const record of conversations) {
       const conversation = await harness.conversation(record.id, context);
       if (!conversation) continue;
+      if (record.owner) {
+        // The task is the conversation's first input; one sent as an agent message (8116f3dd on) already names its sender.
+        const first = (await conversation.entries({ order: "ascending" }, 8, undefined, context)).items.find(isInput);
+        tasks.set(record.id, { owner: record.owner.conversationId, ...(first ? { entry: first.kind === "pi.user" ? first.id : NO_TASK_INPUT } : {}) });
+      }
       let cursor: Parameters<Conversation["entries"]>[2];
       do {
         const page = await conversation.entries({ order: "ascending", minEntryId: (mark + 1) as EntryRecord["id"] }, PAGE_MAX, cursor, context);
         for (const entry of page.items) {
-          this.collect(id, entry, now, entries, usage);
+          this.collect(id, entry, now, entries, usage, tasks);
           if (record.id === ROOT_CONVERSATION_ID) preview = previewText(entry, now) ?? preview;
         }
         cursor = page.next;
@@ -385,10 +406,14 @@ export class DurableThreads {
     this.index.addEntries(id, entries.sort((a, b) => a.entryId - b.entryId), usage);
     const root = conversations.find(c => c.id === ROOT_CONVERSATION_ID);
     if (root) this.index.update(id, { children: conversations.length - 1, ...(preview ? { preview: preview.slice(0, PREVIEW_CHARS) } : {}) });
+    return tasks;
   }
 
-  private collect(thread: string, entry: EntryRecord, now: number, entries: IndexedEntry[], usage: UsageRow[]): void {
+  private collect(thread: string, entry: EntryRecord, now: number, entries: IndexedEntry[], usage: UsageRow[], tasks: Map<number, TaskInput>): void {
     const described = describeEntry(entry, now);
+    const task = isInput(entry) ? tasks.get(entry.conversationId) : undefined;
+    if (task && task.entry === undefined) task.entry = entry.kind === "pi.user" ? entry.id : NO_TASK_INPUT;
+    if (described && task?.entry === entry.id) described.author = taskAuthor(thread, task.owner);
     if (described) entries.push({ thread, conversation: entry.conversationId, entryId: entry.id, kind: entry.kind, ...described });
     const row = usageOf(entry, thread, now);
     if (row) usage.push(row);
@@ -414,8 +439,13 @@ export class DurableThreads {
     let preview: string | undefined;
     let failed: boolean | undefined;
     for (const change of publication.changes) {
+      if (change.type !== "conversation") continue;
+      const owner = (change.value as ConversationRecord).owner;
+      if (owner && !open.tasks.has(change.value.id)) open.tasks.set(change.value.id, { owner: owner.conversationId });
+    }
+    for (const change of publication.changes) {
       if (change.type === "entry") {
-        this.collect(open.id, change.value, now, entries, usage);
+        this.collect(open.id, change.value, now, entries, usage, open.tasks);
         if (change.value.conversationId === ROOT_CONVERSATION_ID) {
           const text = previewText(change.value, now);
           if (text) preview = text.slice(0, PREVIEW_CHARS);

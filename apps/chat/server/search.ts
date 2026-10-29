@@ -219,7 +219,7 @@ export class Search {
       const p = this.threads.principal(said.from);
       return { id: p.id, name: p.name, kind: p.kind === "owner" ? "owner" : "agent" };
     }
-    if (hit.kind === "agent.message") {
+    if (hit.kind === "agent.message" || hit.kind === "pi.user") {
       const p = this.threads.principal(hit.author);
       return { id: p.id, name: p.name, kind: p.kind === "owner" ? "owner" : "agent" };
     }
