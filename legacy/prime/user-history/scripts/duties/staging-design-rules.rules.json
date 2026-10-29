@@ -332,6 +332,24 @@
         "78675297d9f"
       ],
       "why": "View editor note 'button like Save cancel, they aren't virev style, and top bar, bottom bar too fat tall bloat' with the one-Campaigns and icon selector asks: a7244317056 writes the slim-bars and shared-Button line into the skill, cce5c4739b6 makes the one lib/ui IconPicker the campaign icon selector draws through, db0b86054bc and f6e8d055e6d build the two-pane view editor with a live rail preview, an h-10 top bar, an h-11 footer and Save and Cancel on @virev/ui Button, f3725f45300 adds the one configurable Campaigns item, and 78675297d9f puts Staging sidebar on sidebar/rail-editor."
+    },
+    {
+      "at": "2026-10-28T18:45:26.060Z",
+      "commits": [
+        "f03c2be6ff8",
+        "021f1a14a5c",
+        "ba5675f17df"
+      ],
+      "why": "Post view note 'follow Virev style in general. more icons, nice transition/animations, currently things like topbar is too fat': f03c2be6ff8 writes the one-slim-shared-top-bar line into the skill, 021f1a14a5c gives the theater, vertical and column layouts one shared 36px PostBar with icons, and ba5675f17df makes post/column the Staging post view; checked in Aside on 5180 at 00:40Z."
+    },
+    {
+      "at": "2026-10-28T19:02:26.295Z",
+      "commits": [
+        "f03c2be6ff8",
+        "17b60db5534",
+        "d9cb9779405"
+      ],
+      "why": "For you note 'Get started doesn't feel virev AT ALL. button ugly, no icon, super fat as fuc, super round as fuck' and '이 이상한 animation 치우고': f03c2be6ff8 writes the shared-Button-with-icon and no-ambient-animation lines into the skill, 17b60db5534 redraws Get started as a plain PageSection with hairline icon rows and small @virev/ui Buttons and drops the moving setup timeline, and d9cb9779405 puts Staging home on home/tidy-1029, a fork of home/get-started; checked in Aside on 5180 at 00:40Z."
     }
   ]
 }
