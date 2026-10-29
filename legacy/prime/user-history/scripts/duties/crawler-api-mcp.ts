@@ -11,11 +11,11 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  * The owner merged the Crawler API and Query MCP duties on 10-22 (msg mvj491h5): "merge Crawler API & Query MCP".
  * The headline counts what fails on prod for a customer: the documented crawler API routes that fail for a crawler reason, read by
  * auto-sns-agent scripts/duties/crawler/crawler-api.mjs from the API portal chat's d2 detail file, plus each Query MCP call that fails on
- * prod https://virev.ai/mcp on either tier. The supporting counts, minutes the API and its health snapshots were down in 24 h (prod
- * Prometheus through obs.virev.ai) and the Instagram posts behind the prod OpenSearch alias crawler_v3_posts (0 when the alias is off),
- * come from the same crawler-api.mjs run. The posts count keeps p689, closed on 10-24 at 1,411.8M against 1,007M. The onboarding render
- * count, also from crawler-api.mjs, keeps p1076: 3 shop page renders fired at once at the prod crawler, counted when they answer under
- * onboarding's 60 s render limit.
+ * prod https://virev.ai/mcp on either tier. The 3 supporting counts come from the same crawler-api.mjs run: minutes the API and its health
+ * snapshots were down in 24 h (prod Prometheus through obs.virev.ai), and the onboarding renders that keep p1076, 3 shop page renders fired
+ * at once at the prod crawler and counted when they answer under onboarding's 60 s render limit. A duty holds one headline and at most 3
+ * supporting metrics (c75, c133), so the Instagram posts behind the prod OpenSearch alias crawler_v3_posts, which keep p689 (closed on 10-24
+ * at 1,411.8M against 1,007M), are a detail line of each run, and a low count from crawler-api.mjs shows as a detail line too.
  * The MCP half calls prod the way a customer's agent does (JSON-RPC over Streamable HTTP, a bearer token): describe, a sql count, a search
  * count and the owner's follower-bucket sql (10-15 23:58Z: "팔로워 구간별로 좋아요 수 비율 분석해줘" as one group-by sql call), per tier.
  * The identity is the prod test user mcp-duty-checker with orgs org_mcp_duty_standard and org_mcp_duty_full (dataApi allow), made on 10-20
@@ -33,6 +33,7 @@ const TIERS = ["standard", "full"] as const;
 /** The "could not measure" value, the same one auto-sns-agent scripts/duties/ci/duty-sources.mjs gives a metric it could not read. */
 export const UNMEASURED = 999999;
 export const HEADLINE = "prod_routes_and_mcp_tools_failing";
+const POSTS = "ig_posts_searchable";
 /** Token lifetime: one run. The whole MCP check took 26 to 38 s on prod (10-19 17:30Z and 23:22Z), so an hour covers it with room. */
 const TOKEN_TTL_S = 3600;
 /** One MCP call. The slowest call, the follower-bucket sql on the standard tier, stops at that tier's 10 s max_execution_time. */
@@ -137,9 +138,13 @@ export function report(api: PrecheckOutput | Error, mcp: Record<string, CallResu
   const flagged: FlaggedSlice[] = [];
   const read = (key: string, missing = UNMEASURED) => (api instanceof Error ? missing : api.metrics[key] ?? missing);
   if (api instanceof Error) flagged.push({ at: now, kind: "source_error", excerpt: `crawler-api.mjs failed: ${api.message}`.slice(0, 299) });
-  else for (const slice of api.flagged ?? []) {
-    if (slice.kind === "unmeasured") continue;
-    flagged.push(slice.kind === "prod_routes_failing_crawler" ? { ...slice, kind: HEADLINE } : slice);
+  else {
+    for (const slice of api.flagged ?? []) {
+      if (slice.kind === "unmeasured") continue;
+      flagged.push(slice.kind === "prod_routes_failing_crawler" ? { ...slice, kind: HEADLINE } : slice.kind === POSTS ? { ...slice, kind: "detail" } : slice);
+    }
+    const posts = api.metrics[POSTS];
+    flagged.push({ at: now, kind: "detail", excerpt: `Instagram posts searchable on prod OpenSearch (alias crawler_v3_posts, p689 kept it at 1,007M or more): ${posts === undefined ? "not read" : posts.toLocaleString("en-US")}.` });
   }
   let mcpFailing = UNMEASURED;
   if (mcp instanceof Error) flagged.push({ at: now, kind: "source_error", excerpt: `Query MCP read failed: ${mcp.message}`.slice(0, 299) });
@@ -156,7 +161,6 @@ export function report(api: PrecheckOutput | Error, mcp: Record<string, CallResu
     [HEADLINE]: routes === UNMEASURED || mcpFailing === UNMEASURED ? UNMEASURED : routes + mcpFailing,
     api_down_minutes_24h: read("api_down_minutes_24h"),
     health_snapshot_down_minutes_24h: read("health_snapshot_down_minutes_24h"),
-    ig_posts_searchable: read("ig_posts_searchable", -UNMEASURED),
     onboarding_renders_3x_under_60s: read("onboarding_renders_3x_under_60s", -UNMEASURED),
   };
   const unmeasured = Object.entries(metrics).filter(([, value]) => Math.abs(value) === UNMEASURED).map(([key]) => key);
