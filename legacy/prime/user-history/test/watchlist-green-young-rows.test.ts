@@ -2,7 +2,7 @@
 // 01:37Z); these cases pin that a row has its first 24 h to be read, as crawler health.py _NO_GOOD_READ gives it, and stays red after that.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { type WatchRow, isClosed, parseRows, report, stopReason } from "../scripts/duties/watchlist-green.ts";
+import { type WatchRow, groupKeys, isClosed, parseRows, report, stopReason, watchGroupId } from "../scripts/duties/watchlist-green.ts";
 
 const DAY = 24 * 3_600_000;
 const NOW = 30 * DAY;
@@ -61,4 +61,18 @@ test("staging_green_pct scores only the owner org's keys and lists another org's
   assert.match((out.flagged ?? []).find(flag => flag.kind === "staging_other_orgs")!.excerpt, /^1 unpaused staging monitor rows \(posts 1, collabs 0\)/);
   const unread = report({ now: NOW, errors: [], staging: [owner, leak] }, metrics);
   assert.equal(unread.metrics.staging_green_pct, 50, "no keys read: every row counts, as before");
+});
+
+test("the staging owner keys come from the crawler's group read of the owner org, every page", async () => {
+  // Convex watchGroupId of the staging owner org; on 10-29 the group read named its 212 unpaused rows while d2's Convex keys named 1,458.
+  assert.equal(watchGroupId("org_3FLEJTtegZpZqZPYYByywRFfDjI"), "b1fde6ad8c2c173e");
+  const bodies: unknown[] = [];
+  const pages = [{ rows: [{ key: "instagram:posts:a" }], next: "instagram:posts:a" }, { rows: [{ key: "instagram:tagged:a" }], next: null }];
+  const fetcher = (async (_url: string, init: RequestInit) => {
+    bodies.push(JSON.parse(String(init.body)));
+    return new Response(JSON.stringify({ ok: true, data: pages.shift() }));
+  }) as typeof fetch;
+  const keys = await groupKeys(fetcher, "k", "b1fde6ad8c2c173e", AbortSignal.timeout(5_000));
+  assert.deepEqual(keys, ["instagram:posts:a", "instagram:tagged:a"]);
+  assert.deepEqual(bodies, [{ grp: "b1fde6ad8c2c173e", limit: 5000 }, { grp: "b1fde6ad8c2c173e", limit: 5000, after: "instagram:posts:a" }]);
 });

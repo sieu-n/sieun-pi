@@ -1,5 +1,6 @@
 import { realpathSync } from "node:fs";
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -16,7 +17,8 @@ import {
  * - the owner org's watch keys: prod Convex befitting-sparrow-356, internalQuery search/watchTargets:pageKeys with orgId, paged in this one node
  *   process with an admin key the owner's Convex CLI login (~/.convex/config.json) authorizes, the call `convex run --deployment-name` makes;
  * - prod watch_targets monitor rows and the watch runs settled in 24 h (watch_target_claims): two reads through estate_pg_prod
- *   (estate-reads.ts prodReader), and staging watch_targets monitor rows from estate_pg_stg;
+ *   (estate-reads.ts prodReader), and staging watch_targets monitor rows from estate_pg_stg, scored only for the staging owner org's unpaused
+ *   watches, which the staging crawler's group read names (groupKeys);
  * - the prod watch gauges of estate_prometheus through Grafana (detail and the loop age), and pause.watch from estate_pg_prod.
  * Green follows sessions/2026/10/10/1026-prod-watchlist-readback/findings.md in auto-sns-agent: an unpaused monitor row whose last_outcome is
  * ok and whose last_run_at is inside 24 h. An unpaused row on an account the platform removed or holds private is green at any age, as the
@@ -68,10 +70,9 @@ export const LOOP_STALL_S = 300;
 /** The owner's org on prod, from findings.md ("the only prod org with about 9,846 watched accounts"). */
 export const OWNER_ORG = "org_3IrtoOAEP0nk1aCQHGVME02Dy6E";
 export const PROD_CONVEX = "befitting-sparrow-356";
-/** Staging's Convex and the owner's org on it (Adapt Korea, the 23,877-key org t17 keeps about 10 accounts of on): staging_green_pct
- *  judges only the rows of this org's watch keys, so a sign-up check's throwaway org (mac-management, 2026-10-20 16:17Z and 17:0xZ, which
- *  unpaused about 1,000 and 21 old rows for minutes) never moves it. */
-export const STAGING_CONVEX = "tremendous-eel-825";
+/** The owner's org on staging (Adapt Korea, the 23,877-key org t17 keeps about 10 accounts of on): staging_green_pct judges only the rows of
+ *  this org's unpaused watches, so another org that unpauses a shared row (a sign-up check's throwaway org, mac-management, 2026-10-20 16:17Z
+ *  and 17:0xZ, unpaused about 1,000 old rows for minutes) never moves it. */
 export const STAGING_OWNER_ORG = "org_3FLEJTtegZpZqZPYYByywRFfDjI";
 
 /** The unread-records fill of a stream's byte cap that the bus-unread-near-cap alert fires at (crawler-bus-retention.yaml, 2b5d936b50). */
@@ -225,7 +226,7 @@ export function rowsGreen(rows: readonly WatchRow[], now: number, kinds: readonl
   return { rows: live.length, green: Object.values(byKind).reduce((sum, kind) => sum + kind.green, 0), byKind, why: tally(why), young };
 }
 
-/** The staging rows of the owner org's watch keys, and the rest. With no keys read (the Convex read failed), every row is the owner's,
+/** The staging rows of the owner org's unpaused watches, and the rest. With no keys read (the group read failed), every row is the owner's,
  *  as before 2026-10-20, so a failed key read never empties staging_green_pct. */
 export function splitByKeys(rows: readonly WatchRow[], keys: readonly string[] | undefined): { owned: WatchRow[]; others: WatchRow[] } {
   if (!keys?.length) return { owned: [...rows], others: [] };
@@ -292,7 +293,7 @@ export function report(data: WatchData, dutyMetrics: readonly DutyMetric[]): Pre
       (staging.why.length ? `; not green: ${listWhy(staging.why)}` : "") + (staging.young ? `; ${staging.young} added under 24 h ago and not read ok yet` : "") + `; ${owned.length - staging.rows} rows of other kinds are left out, and paused rows are not read (t17: "only like 10 accounts" in staging)` });
     const leaking = rowsGreen(others, now);
     detail.staging_other_org_unpaused = leaking.rows;
-    if (leaking.rows) flagged.push({ at, kind: "staging_other_orgs", excerpt: `${leaking.rows} unpaused staging monitor rows (posts ${leaking.byKind.posts!.rows}, collabs ${leaking.byKind.tagged!.rows}) belong to no key of ${STAGING_OWNER_ORG}; they are not scored in staging_green_pct, and a test org left after its check shows here` });
+    if (leaking.rows) flagged.push({ at, kind: "staging_other_orgs", excerpt: `${leaking.rows} unpaused staging monitor rows (posts ${leaking.byKind.posts!.rows}, collabs ${leaking.byKind.tagged!.rows}) belong to no unpaused watch of ${STAGING_OWNER_ORG}; they are not scored in staging_green_pct, and a test org left after its check shows here` });
     if (!staging.rows) flagged.push({ at, kind: "no_staging_rows", excerpt: "staging watch_targets has no unpaused posts or tagged monitor row, so the staging Watchlist is empty" });
   }
   if (data.receipts) {
@@ -471,11 +472,37 @@ export function screenKeys(keys: readonly string[]): string[] {
 
 /** The crawler route the search server reads for the chips, and the key it sends: CRAWLER_API_URL and CRAWLER_API_KEY of apps/search/.env, prod. */
 export const SUMMARY_URL = "https://crawler.virev.ai/api/watch-targets/summary";
-export async function readCrawlerKey(): Promise<string> {
-  const { stdout } = await promisify(execFile)(join(REPO, "node_modules/.bin/dotenvx"), ["get", "CRAWLER_API_KEY", "-f", join(REPO, "apps/search/.env")]);
+export async function readCrawlerKey(envFile = "apps/search/.env"): Promise<string> {
+  const { stdout } = await promisify(execFile)(join(REPO, "node_modules/.bin/dotenvx"), ["get", "CRAWLER_API_KEY", "-f", join(REPO, envFile)]);
   const key = stdout.trim();
-  if (!key || key.startsWith("encrypted:")) throw new Error("CRAWLER_API_KEY did not decrypt from apps/search/.env");
+  if (!key || key.startsWith("encrypted:")) throw new Error(`CRAWLER_API_KEY did not decrypt from ${envFile}`);
   return key;
+}
+
+/** The staging crawler's read of one org's rows: the targets of the org's unpaused watches, keyed by the org's group id. */
+export const STAGING_GROUP_URL = "https://crawler-staging.virev.ai/api/watch-targets/summary/group";
+/** Rows one group page carries, the route's GROUP_PAGE_MAX (crawler-v3 watch_targets/tuning.py). */
+const GROUP_PAGE_ROWS = 5000;
+/** The crawler's opaque group id of an org, as Convex convex/search/watches/watchGroup.ts watchGroupId computes it. */
+export const watchGroupId = (orgId: string): string => createHash("sha256").update(`virev-watch-group:v1:${orgId}`).digest("hex").slice(0, 16);
+/**
+ * The keys of an org's unpaused watches on staging, from the crawler's group read. Crawler rows are shared per target, and a row reads unpaused
+ * while any org's watch on it is unpaused, so the owner org's keys from Convex also named rows only other orgs unpaused: at 06:15Z on 10-29 d2
+ * scored 1,458 staging rows at 36.1% after a sign-up walk's org watched 3,761 creators at about 06:00Z, while the owner org's own 212 rows read
+ * 207 green.
+ */
+export async function groupKeys(fetcher: typeof fetch, apiKey: string, grp: string, signal: AbortSignal): Promise<string[]> {
+  const keys: string[] = [];
+  let after: string | null = null;
+  do {
+    const response = await fetcher(STAGING_GROUP_URL, { method: "POST", signal, headers: { "content-type": "application/json", "x-api-key": apiKey },
+      body: JSON.stringify({ grp, limit: GROUP_PAGE_ROWS, ...(after ? { after } : {}) }) });
+    const body = await response.json().catch(() => null) as { data?: { rows?: { key: string }[]; next?: string | null } } | null;
+    if (!response.ok || !body?.data?.rows) throw new Error(`the staging group read gave HTTP ${response.status}`);
+    keys.push(...body.data.rows.map(row => row.key));
+    after = body.data.next ?? null;
+  } while (after);
+  return keys;
 }
 
 /** Reads the keys in the screen's chunks, SCREEN.inFlight at a time, each with the screen's budget, as one ScreenChunk per chunk in order. */
@@ -580,7 +607,7 @@ async function main(): Promise<void> {
   try { query = grafanaClient(fetch, await readGrafanaAuth(), now, signal); } catch (error) { authError = error instanceof Error ? error.message : String(error); }
   const data = await measure({ query, authError, now,
     keys: async () => convexKeys(fetch, await convexToken(), signal),
-    stagingKeys: async () => convexKeys(fetch, await convexToken(), signal, STAGING_CONVEX, STAGING_OWNER_ORG),
+    stagingKeys: async () => groupKeys(fetch, await readCrawlerKey("apps/search/.env.staging"), watchGroupId(STAGING_OWNER_ORG), signal),
     rows: async () => {
       if (!query) throw new Error("not read: no Grafana login");
       const read = prodReader(query);
