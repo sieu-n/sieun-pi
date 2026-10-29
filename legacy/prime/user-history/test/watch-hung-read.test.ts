@@ -30,7 +30,9 @@ test("a sample whose footprint read never returns writes its minute's line by th
   const helper = hang(t, FOOTPRINTS);
   const source: WatchSource = { dataDir, now: () => at, rows: () => [{ sessionId: "s1", lifecycle: "live", activeSessionId: "a1", workerPid: 1, activity: "working" }],
     chats: async () => new Set<string>(), title: () => null, queue: async () => ({ working: [], queued: [], workingMax: 8, treeWorkingMax: 8 }), log: () => {},
-    footprints: () => { helpers++; return helper.read(); }, feed: async () => READING, memory: async () => ({ groups: null }), services: async () => [], host: "us-metal02" };
+    footprints: () => { helpers++; return helper.read(); }, feed: async () => READING, memory: async () => ({ groups: null }), services: async () => [], host: "us-metal02",
+    // The real uplink read missed this 200 ms cut at load 109 on 10-29 and came back unread, failing release-chat runs of 5bb2ea9 twice.
+    uplink: async () => false };
   const first = await within(sample(source), 3_000);
   assert.notEqual(first, "still out", "the sample answered by the next tick");
   at = Date.parse("2026-10-20T11:46:29.800Z");
@@ -94,7 +96,8 @@ test("a hung cgroup file leaves the reading its memory and run queue, holds one 
   const hung = kernelFile(fifo);
   for (let call = 0; call < 2; call++) {
     const unread: string[] = [];
-    const reading = await linuxUsable(Date.now(), new Promise(done => setTimeout(done, 300)), unread);
+    // A 300 ms cut left the /proc lane unread too at load 109 on 10-29 under release-chat's 20 test files at once; the hung cgroup read stays out however long the cut.
+    const reading = await linuxUsable(Date.now(), new Promise(done => setTimeout(done, 3_000)), unread);
     assert.equal(reading?.kind, "linux", "the /proc lane still reads");
     assert.equal(reading?.cpuCores, undefined);
     assert.deepEqual(unread, ["cgroups", "rigs"]);
