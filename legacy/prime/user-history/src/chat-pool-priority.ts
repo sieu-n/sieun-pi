@@ -17,13 +17,18 @@ export const chatPoolPriority = (label: Priority): PoolPriority => LABEL_POOL_PR
  * 3. a chat is high;
  * 4. a job a chat started (an Agents entry linked as root) or gave a step to (linked as step) takes the highest class among those chats;
  * 5. a thread the owner started is high, and any other thread is normal.
- * Archived and saved (not loaded) threads are left out: they send no requests.
+ * Archived and saved (not loaded) threads get no class: they send no requests. A saved chat still lends its class to its jobs (rule 4):
+ * until 10-29 only a loaded chat did, so each idle stop or quota park of a chat dropped its jobs to normal for as long as it slept. Such a
+ * job kept the cell it got as normal while high trees that parked after it went first: chat 01a11bd7's quota park at 04:24:27Z dropped
+ * 01a18587 to normal at 04:24:28Z, and 01a115e2's idle stop at 03:17:27Z dropped 01a11d24 to normal at 03:17:55Z, so it parked as normal
+ * at 04:02:04Z and d7's 05:19Z run read it held 56.2 min.
  */
 export function poolPriorities(rows: readonly SessionRow[], duties: ReadonlySet<string>): Map<string, PoolPriority> {
   const live = rows.filter(row => row.kind === "live" && !row.archived);
   const label = (row: SessionRow): PoolPriority | null => LABEL_POOL_PRIORITY[row.priority];
   const owned = new Map<string, PoolPriority>();
-  for (const chat of live) {
+  for (const chat of rows) {
+    if (chat.archived) continue;
     if (!chat.chat) continue;
     const own = chatPoolPriority(chat.priority);
     for (const agent of chat.agents ?? []) {

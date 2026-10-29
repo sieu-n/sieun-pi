@@ -50,3 +50,17 @@ test("an alert triage job runs in its chat's class, so a firing rule gets its tu
   assert.equal(classes.get("tr-ops"), "low");
   assert.equal(classes.get("tr-new"), "high", "a triage job the chat's roster does not list yet is high, so a sync cannot drop it to low");
 });
+
+test("a job keeps its chat's class while the chat sleeps, saved or quota parked", () => {
+  // 10-29: chat 01a11bd7's quota park at 04:24:27Z dropped its job 01a18587 to normal at 04:24:28Z, and the next sync put it back at high.
+  const rows = [
+    row("chat", "Crawler VP", { chat: true, kind: "saved", agents: [root("job")] }),
+    row("job", "crawler census fix"),
+    row("gone", "AI harness", { chat: true, kind: "saved", archived: true, agents: [root("orphan")] }),
+    row("orphan", "an archived chat's job"),
+  ];
+  const classes = poolPriorities(rows, new Set());
+  assert.equal(classes.get("job"), "high", "a saved chat's job stays high");
+  assert.equal(classes.has("chat"), false, "a saved chat sends no requests, so it gets no class itself");
+  assert.equal(classes.get("orphan"), "normal", "an archived chat lends no class");
+});
