@@ -162,6 +162,35 @@ export async function readsThenWrites<E extends readonly [string, ...unknown[]],
   return [...reads, ...await Promise.all(entries.filter(entry => !isRead(entry)).map(run))];
 }
 
+/** The batch statuses the docs name as still running: GET /v1/batch/snapshot/{snapshot_id} answers 409 snapshot_not_ready while a job is in one. */
+const BATCH_RUNNING = new Set(["starting", "running"]);
+export const SNAPSHOT_READ = "GET /v1/batch/snapshot/{snapshot_id}";
+/** One progress read a second keeps a job's polls at 60 a minute, under the 100 calls a minute its org may make (ORG_PER_MINUTE). */
+export const BATCH_POLL_MS = 1_000;
+/**
+ * The longest a docs-example job can run: its 3 rows run at once (MAX_INFLIGHT_PER_ORG is 8 in auto-sns-agent convex/apiPortal/batch/model.ts),
+ * and each row makes at most MAX_ITEM_ATTEMPTS 3 calls, each ended by Vercel's 300 s function limit, with retry waits of 10 s and 20 s
+ * (RETRY_BASE_MS doubling) between them.
+ */
+export const BATCH_DEADLINE_MS = 3 * 300_000 + 10_000 + 20_000;
+
+/**
+ * Polls GET /v1/batch/progress/{snapshot_id} until the job leaves `starting` and `running`, as the docs tell a caller to before it downloads
+ * ("poll `progress`, download the finished snapshot"). On 10-29 at 02:25Z the run read a snapshot 0.8 s after its trigger and got 409
+ * snapshot_not_ready, and a staging repro at 05:33Z read 409 1.0 s after the trigger, then ready on the first progress read and 200 on the download.
+ * It stops early on a progress answer that is not 2xx and once BATCH_DEADLINE_MS has passed, and gives the number of progress reads.
+ */
+export async function untilBatchEnds(read: () => Promise<{ status: number; body: unknown }>, now: () => number = Date.now,
+  sleep: (ms: number) => Promise<unknown> = ms => new Promise(resolve => setTimeout(resolve, ms))): Promise<number> {
+  const end = now() + BATCH_DEADLINE_MS;
+  for (let reads = 1; ; reads++) {
+    const answer = await read();
+    const status = (answer.body as { data?: { status?: unknown } } | null)?.data?.status;
+    if (answer.status < 200 || answer.status >= 300 || typeof status !== "string" || !BATCH_RUNNING.has(status) || now() >= end) return reads;
+    await sleep(BATCH_POLL_MS);
+  }
+}
+
 const exampleOf = (param: Param) => param.example ?? param.schema?.example ?? Object.values(param.examples ?? {})[0]?.value;
 
 /**
@@ -604,7 +633,10 @@ async function probeEnv(target: ProbeTarget, routes: readonly Route[]): Promise<
     const request = buildRequest(op, operation, ids);
     if ("missing" in request) return { op, verdict: "unprobed" as const, status: 0, ms: 0, note: request.missing, body: null };
     const name = CHAINED.exec(op)![1]!;
-    return call(orgs[sources[chained[name]!.from]!.org]!, op, request, "id from this run, same test org");
+    const org = orgs[sources[chained[name]!.from]!.org]!;
+    if (op !== SNAPSHOT_READ) return call(org, op, request, "id from this run, same test org");
+    const reads = await untilBatchEnds(() => call(org, "GET /v1/batch/progress/{snapshot_id}", { method: "GET", path: `/v1/batch/progress/${encodeURIComponent(ids.snapshot_id!)}`, query: {} }, "progress poll"));
+    return call(org, op, request, `id from this run, same test org, after ${reads} progress read${reads === 1 ? "" : "s"}`);
   });
   const fed = await Promise.all(fedLater.map(async ([op, operation]) => {
     const before = preset(op);

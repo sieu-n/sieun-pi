@@ -1,7 +1,7 @@
 // 10-20: staging runs of Portal matches crawler started POST /v1/jobs/{job_id}/cancel together with the reads of the same job, and when the cancel won, GET /v1/jobs/{job_id}/results read a cancelled job and answered 502 upstream_error, so staging_working_pct read 99.4%.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { QUERY_CHAINS, firstItemId, readsThenWrites } from "../scripts/duties/portal-parity.ts";
+import { BATCH_DEADLINE_MS, BATCH_POLL_MS, QUERY_CHAINS, firstItemId, readsThenWrites, untilBatchEnds } from "../scripts/duties/portal-parity.ts";
 
 test("no chained write starts before every chained read of the run has answered", async () => {
   const log: string[] = [];
@@ -25,4 +25,20 @@ test("note_detail takes its note_id from the first note of this run's explore an
   assert.equal(firstItemId({ data: { items: [{ id: "6ab90fef000000000b0074a1" }] } }), "6ab90fef000000000b0074a1");
   assert.equal(firstItemId({ data: [] }), undefined);
   assert.equal(firstItemId(null), undefined);
+});
+
+// 10-29: the run read GET /v1/batch/snapshot/{snapshot_id} 0.8 s after the trigger and got 409 snapshot_not_ready while the job still ran.
+test("the snapshot read waits for a progress answer that leaves starting and running", async () => {
+  const statuses = ["starting", "running", "running", "ready"];
+  const slept: number[] = [];
+  const reads = await untilBatchEnds(async () => ({ status: 200, body: { data: { status: statuses.shift() } } }), () => 0, async ms => { slept.push(ms); });
+  assert.equal(reads, 4);
+  assert.deepEqual(slept, [BATCH_POLL_MS, BATCH_POLL_MS, BATCH_POLL_MS]);
+});
+
+test("the progress poll stops on a failed progress answer and at the deadline", async () => {
+  assert.equal(await untilBatchEnds(async () => ({ status: 404, body: null }), () => 0, async () => {}), 1);
+  let clock = 0;
+  const reads = await untilBatchEnds(async () => ({ status: 200, body: { data: { status: "running" } } }), () => clock, async ms => { clock += ms; });
+  assert.equal(reads, BATCH_DEADLINE_MS / BATCH_POLL_MS + 1);
 });
