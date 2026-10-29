@@ -58,7 +58,7 @@ test("against a real pi-host: attach streams the snapshot in chunks, events arri
     return client;
   };
   try {
-    for (let i = 0; i < 200 && !existsSync(socket); i++) await new Promise(r => setTimeout(r, 100));
+    while (!existsSync(socket) && host.exitCode === null) await new Promise(r => setTimeout(r, 100));
     const control = await connect();
     assert.equal(control.hello?.host, "pi-host");
     const created = await control.request({ type: "create", config: { cwd: join(root, "ws") } });
@@ -125,7 +125,7 @@ test("a pi-host restart reattaches an open connection, with no closed event, as 
     "--session-dir", join(root, "sessions"), "--cwd", join(root, "ws"), "--no-default-extensions", "--extension", "pi-host/test/fixtures/echo.ts", "--model", "echo/m"], {
     cwd: piStack, env: { ...process.env, PI_OFFLINE: "1", PI_TELEMETRY: "0", PI_SKIP_VERSION_CHECK: "1" }, stdio: "ignore",
   });
-  const up = async () => { for (let i = 0; i < 200 && !existsSync(socket); i++) await new Promise(r => setTimeout(r, 100)); };
+  const up = async () => { while (!existsSync(socket) && host.exitCode === null) await new Promise(r => setTimeout(r, 100)); };
   let host = start();
   const clients: HostClient[] = [];
   const connect = async () => { const client = new HostClient(socket); clients.push(client); await client.connect(3000); await client.waitForHello(10_000); return client; };
