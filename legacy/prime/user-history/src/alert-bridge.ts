@@ -792,10 +792,12 @@ export class AlertBridge {
   }
 }
 
-/** The firing rules of `chat` in the state file, for a duty's precheck; a missing file means none fire. */
+/**
+ * The firing rules of `chat` in the state file, for a duty's precheck. A missing file throws, so the precheck reports a source error and
+ * never a count of 0 it did not read: the bridge writes the file at its first poll, and the duties run on the box where the bridge runs.
+ */
 export async function readFiringRules(file: string, chat: string): Promise<Tracked[]> {
-  const text = await readFile(file, "utf8").catch((error: unknown) => { if (missing(error)) return null; throw error; });
-  return text === null ? [] : firingRules(parseState(JSON.parse(text)), chat);
+  return firingRules(parseState(JSON.parse(await readFile(file, "utf8"))), chat);
 }
 
 export class GrafanaError extends Error {
@@ -821,36 +823,51 @@ export async function readGrafanaAlerts(configFile: string): Promise<FiringAlert
   return value === null ? null : parseAlerts(value);
 }
 
+/** What Grafana's rule list says of one rule: whether it has not evaluated since Grafana started, and how many of its instances alert now. */
+export interface RuleState { unevaluated: boolean; alerting: number }
+
 /**
- * The uids of the rules Grafana has not evaluated since it started. Grafana 12.3 lists such a rule with lastEvaluation 0001-01-01T00:00:00Z
- * ("default other fields for unscheduled rules" in pkg/services/ngalert/api/prometheus/api_prometheus.go). A paused rule never evaluates, so
- * it is left out.
+ * Each rule of Grafana's rule list by uid. Grafana 12.3 lists a rule it has not evaluated since it started with lastEvaluation
+ * 0001-01-01T00:00:00Z ("default other fields for unscheduled rules" in pkg/services/ngalert/api/prometheus/api_prometheus.go), and counts
+ * its instances by state in `totals`, where a Recovering instance still fires. A paused rule never evaluates, so it is left out.
  */
-export function parseUnevaluated(value: unknown): Set<string> {
+export function parseRuleStates(value: unknown): Map<string, RuleState> {
   const groups = isRecord(value) && isRecord(value.data) && Array.isArray(value.data.groups) ? value.data.groups : null;
   if (!groups) throw new Error("Grafana's rule list has no groups");
   const rules = groups.flatMap(group => isRecord(group) && Array.isArray(group.rules) ? group.rules : []);
-  return new Set(rules.flatMap(rule => isRecord(rule) && typeof rule.uid === "string" && rule.isPaused !== true &&
-    !(Date.parse(typeof rule.lastEvaluation === "string" ? rule.lastEvaluation : "") > 0) ? [rule.uid] : []));
+  const count = (totals: unknown, state: string): number => isRecord(totals) && typeof totals[state] === "number" ? totals[state] as number : 0;
+  return new Map(rules.flatMap(rule => isRecord(rule) && typeof rule.uid === "string" && rule.isPaused !== true ? [[rule.uid, {
+    unevaluated: !(Date.parse(typeof rule.lastEvaluation === "string" ? rule.lastEvaluation : "") > 0),
+    alerting: count(rule.totals, "alerting") + count(rule.totals, "recovering"),
+  }] as const] : []));
 }
 
-export async function readUnevaluatedRules(configFile: string): Promise<Set<string>> {
-  return parseUnevaluated(await readGrafana(configFile, GRAFANA_RULES_PATH));
+export async function readRuleStates(configFile: string): Promise<Map<string, RuleState>> {
+  return parseRuleStates(await readGrafana(configFile, GRAFANA_RULES_PATH));
 }
 
 /**
- * The current list plus each alert of the last list that is missing from it and whose rule Grafana has not evaluated since it started, so
- * the bridge does not resolve it. A restarted Grafana lists a firing alert only after that rule's first evaluation. On 10-19 virev-obs-grafana
- * stopped at 17:20:47Z, the alert list answered 502 at 17:20:58Z, and the first list of the new Grafana at 17:22:07Z
- * lacked every CI rule, so the bridge resolved them all, ci-jobs-waiting among them, while each still fired. The rule list is read only when
- * an alert went missing, and a failed read fails the poll, so nothing resolves on it.
+ * The current list plus each alert of the last list that is missing from it while Grafana's rule list says its rule still fires, so the
+ * bridge does not resolve it: the rule has not evaluated since Grafana started, or Grafana counts more of its instances alerting than the
+ * alert list holds. A restarted Grafana lists a firing alert only some time after it evaluates the rule again. On 10-19 virev-obs-grafana
+ * stopped at 17:20:47Z, the alert list answered 502 at 17:20:58Z, and the first list of the new Grafana at 17:22:07Z lacked every CI rule,
+ * so the bridge resolved them all, ci-jobs-waiting among them, while each still fired. On 10-29 the obs deploy of 7a2f0d2868 recreated
+ * virev-obs-grafana, and its alert list at the bridge's poll at 15:42:52Z lacked the firing CI rules after each had evaluated again, so the
+ * bridge resolved them all for one poll and d4's precheck read alerts_firing 0 at 15:43:23Z, while Grafana's state history kept
+ * ci-turbo-force-failed and ci-staging-check-task-red Alerting throughout. The rule list is read only when an alert went missing, and a failed read fails the poll, so nothing resolves on it.
  */
-export async function holdUnevaluated(previous: readonly FiringAlert[] | null, current: FiringAlert[], unevaluated: () => Promise<ReadonlySet<string>>): Promise<FiringAlert[]> {
+export async function holdStillFiring(previous: readonly FiringAlert[] | null, current: FiringAlert[], states: () => Promise<ReadonlyMap<string, RuleState>>): Promise<FiringAlert[]> {
   const listed = new Set(current.map(alertKey));
   const gone = (previous ?? []).filter(alert => !listed.has(alertKey(alert)));
   if (!gone.length) return current;
-  const waiting = await unevaluated();
-  return [...current, ...gone.filter(alert => waiting.has(ruleOf(alert)))];
+  const rules = await states();
+  const shown = new Map<string, number>();
+  for (const alert of current) shown.set(ruleOf(alert), (shown.get(ruleOf(alert)) ?? 0) + 1);
+  const fires = (alert: FiringAlert): boolean => {
+    const rule = rules.get(ruleOf(alert));
+    return rule !== undefined && (rule.unevaluated || rule.alerting > (shown.get(ruleOf(alert)) ?? 0));
+  };
+  return [...current, ...gone.filter(fires)];
 }
 
 export async function readOwnersFor(configFile: string, home: string): Promise<OwnerMap | null> {
