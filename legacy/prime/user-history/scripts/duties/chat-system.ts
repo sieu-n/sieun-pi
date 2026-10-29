@@ -29,6 +29,7 @@ import { agingSince, agingUntil, daemonSessions, dutyFleet, type FleetDuty } fro
 export { agingSince, agingUntil };
 import { catalogCopyFiles, copyHosts, type HostHeldStep, mirroredSessions, planCounts, planInputs, POOL_TAIL_BYTES } from "./whole-system.ts";
 import { stepSessions, withDescendantActivity } from "../../src/unmoved-steps.ts";
+import { mirroredParkOwners, relayTail } from "./mirror-parks.ts";
 import { loadHosts, selfHost } from "../../src/hosts.ts";
 import { checkInStandingLine, checkInStandings, LATE_INTERVALS } from "../../src/checkin-schedule.ts";
 import { checkInSettings } from "../../src/checkin-settings.ts";
@@ -912,6 +913,7 @@ async function main(): Promise<void> {
   const { self, away } = await awayHosts();
   const todos = [...plan.boards].flatMap(([chat, board]) => (board?.todos ?? []).map(todo => ({ chat, todo })));
   const owners = withCatalogOwners(plan, jobs, now, rows);
+  plan.poolWaiting = new Set([...plan.poolWaiting, ...await mirroredParkOwners(plan.boards, owners.named, parsed, now, relayTail(new Set(away.map(host => host.name))))]);
   const owned = planCounts({ ...plan, ...owners, away: new Set(away.map(host => host.name)), hosts: copyHosts([...parsed, ...await mirroredSessions()], self), holds: hostHolds(away, todos) });
   const runsByChat = new Map(plan.chats.map(chat => [chat.id, chat.runs]));
   const poolCut = await poolCutJobs(owned.redDuties, runsByChat, id => listedSessions(copies, [id]).get(id)?.file);
