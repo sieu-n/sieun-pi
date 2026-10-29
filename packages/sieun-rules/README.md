@@ -11,7 +11,7 @@ auto-sns-agent is the one exception: its rules stay in that repo's `scripts/repo
 
 | Event | Module | Effect |
 | --- | --- | --- |
-| `tool_call` (`bash`, `ipython`) | `guard.ts` | Refuses a history rewrite in the sieun-pi checkout, an outside send without the owner's ok, a resource cap the owner did not ask for, and a kill by pattern. |
+| `tool_call` (`bash`, `ipython`) | `guard.ts` | Refuses a history rewrite in the sieun-pi checkout, an outside send without the owner's ok, a resource cap the owner did not ask for, a kill by pattern, and a repo copy. |
 | `tool_call` (`ipython`) | `kernel-guard.ts` | Installs `kernel-guard.py` in the Python kernel, which refuses an outside send at run time. |
 | `tool_call` (`ipython`) | `rlm-delete.ts` | In a subagent, makes `rlm.delete_subagent` wait until a child that already replied is idle. |
 | `tool_call` (`ipython`) | `kernel-guard.ts` | Also installs `kernel-own.py`, which records each path under `~/scratch` the kernel makes, on this box or on another one over ssh, in the session's `owned.json`, and refuses a recursive delete below `~/scratch` of a tree the job did not make (c130). An owner-less leftover goes through `job-leftovers.ts unowned` in `legacy/prime/user-history` instead. |
@@ -40,6 +40,10 @@ The kernel judges the same rule on each subprocess through `send-check.ts`, so a
 On 10-29 at 04:24:48 KST a job on the owner's Mac ran `pkill -f 'svelte-check' -U $(id -u)`, macOS pkill read `-U` and 501 as more patterns, and it closed the Prime worker that held 43 sessions (board step p1266); at 05:44 KST another job ran `pkill -9 -f 'autopair-real-ig.mjs --local'` after a prompt note had banned it.
 A `kill` of a literal pid or process group, a pid from `$!` or a pid file, and `h.kill()` on a bash() handle pass, and the refusal points to them.
 It is a hard limit, because a stray kill is a destructive action on shared state (c98).
+
+`repo-copy.ts` refuses a repo copy on every host and in every repo: `git worktree add`, a `git clone` whose source is a local path or a `file://` URL, and `git archive` into a folder.
+The owner banned such copies on 10-28 (c193), and on 10-29 slack green guy's jobs still ran tsc and next dev in per-job worktrees on his Mac at about 1 GB each in red minutes, while auto-sns-agent's own guard covered only that repo.
+Listing, removing and pruning worktrees and a clone from a remote URL pass, and the refusal points to the existing checkout and a private-index commit.
 The kernel judges the same rule on each subprocess through `send-check.ts`, so a command built at run time is refused too.
 
 `caps.ts` refuses a command that sets a memory, CPU, IO, task or priority cap (owner rule c107), because the box parity duty counts each one as `resource_limits_set` and every count so far came from a hand-typed command: `load-fakeprov.service` with `CPUQuota` on 10-22 (board step p143), and `docker run --cpus 8` at 20:56Z, 21:35Z and 21:54Z on 10-24.

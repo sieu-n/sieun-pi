@@ -9,10 +9,11 @@ import { judgeCaps } from "./caps.ts";
 import { judgePm2 } from "./pm2.ts";
 import { judgeBrowser } from "./browser.ts";
 import { judgeKill } from "./kill.ts";
+import { judgeRepoCopy } from "./repo-copy.ts";
 import { cellStart, cellSteps } from "./kernel-cwd.ts";
 
 export interface Verdict {
-	rule: "sieun-pi" | "send" | "cap" | "pm2" | "browser" | "kill";
+	rule: "sieun-pi" | "send" | "cap" | "pm2" | "browser" | "kill" | "repo-copy";
 	command: string;
 	reason: string;
 }
@@ -93,6 +94,7 @@ export function judgeShellText(text: string, cwd: string): Verdict[] {
 		...judgePm2(text),
 		...judgeBrowser(text, cwd),
 		...judgeKill(text),
+		...judgeRepoCopy(text),
 		...(text.includes("cua-driver") ? judgeCuaShell(text) : []),
 	];
 }
