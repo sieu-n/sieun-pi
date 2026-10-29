@@ -113,7 +113,9 @@ export const CHECK_IN_FOCUS: readonly string[] = [
     "on that step instead of adding another. A goal with no number gets a target from the " +
     "owner's words in this run.",
   "Then the steps: every step the detail file lists under Stuck steps ends this run with a live owner (steer its job, or start one with " +
-    "rlm.create_session and set the step's job), a For you todo that links it when only the owner can unblock it, or a close on evidence. Fix " +
+    "rlm.create_session and set the step's job), a For you todo that links it when only the owner can unblock it, or a close on evidence. A " +
+    "step under Held on an offline box needs nothing: never add a For you todo asking the owner to wake a box or bring it back on Tailscale, " +
+    "since the check-in reruns once the box is back (c178). Fix " +
     "the plan shape the detail file lists with board ops: close or fold what shipped, move a loose step under its goal with plan_update parent, " +
     "and fix stale notes, so the owner never has to ask a chat to tidy its plan (c44).",
   "A goal held only by other threads or a step whose wait is over is finished work behind a wait: check the wait against the real state. When " +
@@ -587,7 +589,9 @@ export class Duties {
    * `rerunOf`, and it leaves the schedule where it was. The owner's MacBook Pro sleeps through most morning slots: d1 and d2 of the
    * metal-management chat went from 10-23 to 10-26 with no Mac reading, though Tailscale saw the Mac online on some of those days. A rerun
    * that finds the box offline again waits again, and the precheck flags a box only when Tailscale reads it offline, so a box that is online
-   * but fails its read gets one rerun and a source error, never a rerun each tick.
+   * but fails its read gets one rerun and a source error, never a rerun each tick. A check-in whose newest run held steps on an offline box
+   * (`host_held`) reruns the same way, so the jobs that box stopped are read, steered or restarted at once: on 10-29 sep launch!!'s p133 and
+   * p137 sat on failed jobs on the sleeping Mac.
    */
   private async rerunHostBack(runsByChat: ReadonlyMap<string, readonly DutyRunRecord[]>): Promise<void> {
     const online = this.host.hostOnline;
@@ -598,15 +602,17 @@ export class Duties {
       for (const run of runs) {
         if (run.verdict === "skipped" || seen.has(run.duty)) continue;
         seen.add(run.duty);
-        const host = run.after ? run.after.hostAway : run.hostAway;
+        const checkIn = run.duty === CHECK_IN_DUTY_ID;
+        const host = checkIn ? run.flagged?.find(slice => slice.kind === "host_held" && slice.host)?.host : run.after ? run.after.hostAway : run.hostAway;
         const key = `${chatId}/${run.duty}`;
-        if (!host || run.duty === CHECK_IN_DUTY_ID || this.running.has(key) || this.afters.has(key) || this.reran.has(`${key}@${run.at}`)) continue;
+        if (!host || this.running.has(key) || this.afters.has(key) || this.reran.has(`${key}@${run.at}`)) continue;
         let read = reads.get(host);
         if (!read) { read = online(host).catch(() => false); reads.set(host, read); }
         if (!(await read) || !(await this.dutyActive(chatId, run.duty))) continue;
         this.reran.add(`${key}@${run.at}`);
         this.log(`duty ${chatId.slice(0, 8)}/${run.duty}: ${host} is back online, so its run of ${new Date(run.at).toISOString()} that waited on it reruns`);
-        this.start(chatId, run.duty, "host-back", null, run.at);
+        if (checkIn) void this.host.checkIn?.run(chatId, "host-back", run.at).catch(error => this.log(`duty ${chatId.slice(0, 8)}/${run.duty}: host-back rerun: ${message(error)}`));
+        else this.start(chatId, run.duty, "host-back", null, run.at);
       }
     }
   }
