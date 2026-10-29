@@ -100,6 +100,7 @@ export class App {
       saveUpload: image => this.saveUpload(image), readUpload: ref => this.readUpload(ref), log,
     });
     this.threads.roomSummaries = () => this.rooms.summaries();
+    this.threads.testSendsOf = thread => this.rooms.testSendsOf(thread);
     this.threads.onRefresh = () => {
       this.rooms.poll();
       this.migrateSoon();
@@ -126,6 +127,7 @@ export class App {
       if (name === "chat.board") this.boards.docChanged(thread, value);
     };
     this.search = new Search(host, this.threads, this.channels, config.fixture ? undefined : config.durableIndex);
+    this.search.testSends = () => this.rooms.allTestSends();
     this.queues = new QueueWatch(host, this.threads, (conversation, place) => {
       this.toWatchers(conversation, { type: "queue", conversation, place });
       const record = this.agents.ofWorkThread(conversation);
@@ -292,6 +294,12 @@ export class App {
     if (!row || row.conversation !== id) throw new NotFound(`No pending send ${requestId} in ${id}.`);
     const item = this.outbox.retry(requestId)!;
     return { item, deliveries: row.deliveries };
+  }
+
+  /** Marks a DM post that a job typed into the owner's composer as that job's test send (rooms.ts `markTestSend`). */
+  markTestSend(id: ConversationId, postId: string, input: { by?: unknown; reason?: unknown }): SendResult {
+    if (!isRoomId(id)) throw new Error("A test send mark is for a DM post; name its room, such as dm_vent.");
+    return this.rooms.markTestSend(this.roomAgent(id), postId, input);
   }
 
   /** Drops a pending send the owner gave up on. A DM post is stored, so it stays. */

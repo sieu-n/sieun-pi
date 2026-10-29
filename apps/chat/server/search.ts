@@ -73,8 +73,13 @@ const fused = (rank: number): number => 1 / (60 + rank);
 /** A thread hit or a channel post, ranked before its hit is built; only the page's rows become hits. Tier 1 (tool output) ranks after tier 0. */
 type Ranked = { tier: number; score: number; at: number; build: () => SearchHit };
 
+/** A work-thread input that was a job's test send typed into the owner's DM (rooms.ts `allTestSends`). */
+export interface TestSendEntry { thread: string; entry: number; by: string; reason: string }
+
 export class Search {
   private index?: DatabaseSync;
+  /** The test sends: `from:owner` leaves them out, and their hits name the job as the author. Set by the app once it has the rooms. */
+  testSends: () => TestSendEntry[] = () => [];
 
   /** With `indexPath`, thread hits come from pi-host's index.sqlite on a read-only connection, so search never waits on pi-host. */
   constructor(readonly host: Host, readonly threads: Threads, readonly channels: Channels, private readonly indexPath?: string) {}
@@ -123,6 +128,8 @@ export class Search {
     const inChannel = inId ? this.channels.row(inId) : undefined;
     const agents = query.from === "agents";
     if (!inChannel) {
+      const tests = this.testSends();
+      const testOf = new Map(tests.map(t => [`${t.thread}:${t.entry}`, t]));
       const scope = inId ? parseConversationId(this.threads.conversationOf(inId)) : undefined;
       const fromAgent = query.from && query.from !== "owner" && !agents ? parseConversationId(this.threads.conversationOf(query.from)) : undefined;
       // The merged page holds at most offset + limit thread hits, so the host builds snippets for those rows only.
@@ -131,7 +138,7 @@ export class Search {
         ...(sort === "relevance" ? { demoteKinds: TOOL_KINDS } : {}),
         ...(query.type === "tools" ? { kinds: TOOL_KINDS } : query.type === "messages" ? { skipKinds: TOOL_KINDS } : {}),
         ...(scope ? { threads: [scope.thread], conversation: scope.conversation } : {}),
-        ...(query.from === "owner" ? { from: "owner" } : agents ? { notFrom: "owner" } : {}),
+        ...(query.from === "owner" ? { from: "owner", ...(tests.length ? { skipEntries: tests.map(({ thread, entry }) => ({ thread, entry })) } : {}) } : agents ? { notFrom: "owner" } : {}),
         ...(fromAgent ? { by: { thread: fromAgent.thread, conversation: fromAgent.conversation, id: query.from! } } : {}),
         ...(after === undefined ? {} : { after }), ...(before === undefined ? {} : { before }),
       });
@@ -139,7 +146,7 @@ export class Search {
       const summaries = new Map(this.threads.conversations().map(c => [c.id, c]));
       page.hits.forEach((hit, rank) => ranked.push({
         tier: sort === "relevance" && TOOL_KINDS.includes(hit.kind) ? 1 : 0, score: fused(rank), at: hit.at,
-        build: () => this.threadHit(hit, summaries.get(conversationIdOf(hit.thread, hit.conversation)), marks),
+        build: () => this.threadHit(hit, summaries.get(conversationIdOf(hit.thread, hit.conversation)), marks, hit.kind === "pi.user" ? testOf.get(`${hit.thread}:${hit.entryId}`) : undefined),
       }));
     }
     if ((!inId || inChannel) && query.type !== "tools") {
@@ -177,11 +184,11 @@ export class Search {
   }
 
   /** A thread hit opens at its entry: the timeline's `around=e<id>` answers with the item that holds it as `focus`. */
-  private threadHit(hit: HostHit, summary: ConversationSummary | undefined, marks: string[]): SearchHit {
+  private threadHit(hit: HostHit, summary: ConversationSummary | undefined, marks: string[], test?: TestSendEntry): SearchHit {
     const conversationId = conversationIdOf(hit.thread, hit.conversation);
     const kind: ConversationKind = summary?.kind ?? (hit.conversation === 1 ? "solo" : "job");
     const said = hit.text === undefined ? undefined : describe(hit.kind, hit.author, hit.text, marks);
-    const role = said?.role ?? (hit.kind === "pi.tool-result" ? "tool" : hit.author === "owner" ? "owner" : "agent");
+    const role = test ? "agent" : said?.role ?? (hit.kind === "pi.tool-result" ? "tool" : hit.author === "owner" ? "owner" : "agent");
     const shown = said ? snippet(said.text, marks) : "";
     const long = said ? fullText(said.text, marks) : "";
     const parentId = summary?.parent ?? (kind === "solo" ? undefined : this.threads.principal(conversationId).parent);
@@ -192,12 +199,17 @@ export class Search {
         ...(parentId && parentId !== conversationId ? { parent: { id: parentId, name: this.threads.principal(parentId).name } } : {}),
         ...(summary?.archived || this.threads.thread(hit.thread)?.archived ? { archived: true } : {}),
       },
-      messageId: `e${hit.entryId}`, author: this.authorOf(hit, said), at: hit.at,
+      messageId: `e${hit.entryId}`, author: test ? this.testAuthor(test) : this.authorOf(hit, said), at: hit.at, ...(test ? { testSend: { reason: test.reason } } : {}),
       kind: hit.kind === "pi.assistant" ? "turn" : hit.kind === "pi.tool-result" ? "tool" : "message", role,
       ...(said?.tool ? { tool: said.tool } : hit.kind === "pi.tool-result" ? { tool: hit.author.replace(/^tool:/, "") } : {}),
       ...(said?.inCall ? { inCall: true } : {}),
       snippet: shown || safeSnippet(hit.snippet), ...(said && said.text.length > 240 ? { text: long } : {}),
     };
+  }
+
+  private testAuthor(test: TestSendEntry): SearchHit["author"] {
+    const p = this.threads.principal(test.by);
+    return { id: p.id, name: p.name, kind: "agent" };
   }
 
   private authorOf(hit: HostHit, said: ReturnType<typeof describe> | undefined): SearchHit["author"] {

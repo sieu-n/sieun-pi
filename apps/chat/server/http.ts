@@ -123,6 +123,11 @@ export function routes(app: App): Route[] {
       app.discardSend(p.id!, p.requestId!);
       return { ok: true };
     }),
+    route("PATCH", "/api/c/:id/posts/:post", async (_r, p, _q, body) => {
+      const { testSend, ...rest } = ((await body()) ?? {}) as { testSend?: { by?: unknown; reason?: unknown } };
+      if (!testSend || typeof testSend !== "object" || Object.keys(rest).length) throw new BadRequest("A post patch carries only testSend: {by, reason}.");
+      return app.markTestSend(p.id!, p.post!, testSend);
+    }),
     route("POST", "/api/c/:id/abort", async (_r, p) => {
       await app.abort(p.id!);
       return { ok: true };

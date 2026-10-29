@@ -65,6 +65,8 @@ export interface SearchQuery {
   skipAgentMessages?: string;
   /** An author to leave out; `kinds` and `skipKinds` keep or leave out entry kinds; `demoteKinds` rank after every other match by relevance. */
   notFrom?: string; kinds?: string[]; skipKinds?: string[]; demoteKinds?: string[];
+  /** Entries to leave out by thread and entry id, such as a job's test sends for `from: "owner"`. */
+  skipEntries?: { thread: string; entry: number }[];
   withText?: boolean;
   after?: number; before?: number; limit?: number; offset?: number; sort?: "relevance" | "recent";
 }

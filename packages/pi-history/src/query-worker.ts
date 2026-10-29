@@ -7,10 +7,10 @@ import { parentPort } from "node:worker_threads";
 import { DatabaseSync } from "node:sqlite";
 import { existsSync } from "node:fs";
 import type { Query } from "./core/query.ts";
-import { countPrime, type Page, type PageAsk, primeHits, type Ranked, searchDurable } from "./core/search.ts";
+import { countPrime, type Page, type PageAsk, primeHits, type Ranked, searchDurable, type TestSend } from "./core/search.ts";
 import { type ReadAnswer, ReadError, readDurable, readPrime, type Ref } from "./core/read.ts";
 
-interface JobBase { dbPath: string; box: string; durableIndexes: string[]; query: Query; ask: PageAsk; roots: string[] | null }
+interface JobBase { dbPath: string; box: string; durableIndexes: string[]; query: Query; ask: PageAsk; roots: string[] | null; testSends?: TestSend[] }
 interface ReadJob { op: "read"; dbPath: string; box: string; durableIndexes: string[]; ref: Ref; before: number; after: number; roots: string[] | null }
 export type SearchJob = (JobBase & { op: "hits" }) | (JobBase & { op: "count" }) | ReadJob | { op: "open"; dbPath: string };
 export type SearchAnswer = { op: "hits"; prime: Ranked[]; durable: Page[] } | { op: "count"; total: number } | { op: "read"; read: ReadAnswer } | { op: "open" };
@@ -46,7 +46,7 @@ export function runJob(job: SearchJob): SearchAnswer {
     op: "hits", prime: primeHits(prime, job.box, job.query, job.ask, job.roots),
     durable: job.durableIndexes.flatMap((path, at) => {
       const db = handle(path);
-      return db ? [searchDurable(db, at, job.box, job.query, job.ask, job.roots)] : [];
+      return db ? [searchDurable(db, at, job.box, job.query, job.ask, job.roots, job.testSends)] : [];
     }),
   };
 }

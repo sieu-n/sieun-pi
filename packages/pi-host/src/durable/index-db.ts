@@ -56,6 +56,8 @@ export interface SearchQuery {
   kinds?: string[];
   /** Leaves out entries of these kinds. */
   skipKinds?: string[];
+  /** Leaves out these entries by thread and entry id, with their copies in other threads, such as the chat's test sends for `from: "owner"`. */
+  skipEntries?: { thread: string; entry: number }[];
   /** In relevance order, entries of these kinds rank after every other match, so tool output never buries what people wrote. */
   demoteKinds?: string[];
   /** Each hit also carries its whole indexed text. */
@@ -213,18 +215,25 @@ export function searchIndex(db: DatabaseSync, query: SearchQuery): SearchPage {
   const recent = query.sort === "recent";
   const demote = !recent && query.demoteKinds?.length ? query.demoteKinds : [];
   const tier = demote.length ? `(kind IN (${demote.map(() => "?").join(", ")}))` : "0";
-  const page = db.prepare(`WITH m AS MATERIALIZED (
+  // A skipped entry leaves out the copy that would show and so every copy of it, such as the chat's test send and its import.
+  const skips = query.skipEntries ?? [];
+  const kept = ["copy = 1", ...skips.map(() => "NOT (thread = ? AND entry = ?)")].join(" AND ");
+  const skipValues = skips.flatMap(skip => [skip.thread, skip.entry]);
+  const firsts = `WITH m AS MATERIALIZED (
       SELECT rowid AS id, thread, kind, author, CAST(at AS INTEGER) AS at, CAST(entry_id AS INTEGER) AS entry, ${recent ? "0" : "rank"} AS score, ${tier} AS tier
       FROM entries WHERE ${where.join(" AND ")}
     ), firsts AS (
-      SELECT m.id, m.at, m.score, m.tier, ROW_NUMBER() OVER (PARTITION BY m.entry, m.kind, m.author, m.at ORDER BY t.archived, t.updated_at DESC, m.id) AS copy
+      SELECT m.id, m.thread, m.entry, m.at, m.score, m.tier, ROW_NUMBER() OVER (PARTITION BY m.entry, m.kind, m.author, m.at ORDER BY t.archived, t.updated_at DESC, m.id) AS copy
       FROM m LEFT JOIN threads t ON t.id = m.thread
-    )
-    SELECT id, count(*) OVER () AS total FROM firsts WHERE copy = 1 ORDER BY ${recent ? "at DESC" : "tier, score"}, id LIMIT ? OFFSET ?`)
-    .all(...demote, ...values, query.limit ?? 50, query.offset ?? 0) as Row[];
+    )`;
+  const page = db.prepare(`${firsts}
+    SELECT id, count(*) OVER () AS total FROM firsts WHERE ${kept} ORDER BY ${recent ? "at DESC" : "tier, score"}, id LIMIT ? OFFSET ?`)
+    .all(...demote, ...values, ...skipValues, query.limit ?? 50, query.offset ?? 0) as Row[];
   const total = page.length
     ? Number(page[0]!.total)
-    : Number((db.prepare(`SELECT count(*) AS n FROM (SELECT 1 FROM entries WHERE ${where.join(" AND ")}
+    : skips.length
+      ? Number((db.prepare(`${firsts} SELECT count(*) AS n FROM firsts WHERE ${kept}`).get(...demote, ...values, ...skipValues) as Row).n)
+      : Number((db.prepare(`SELECT count(*) AS n FROM (SELECT 1 FROM entries WHERE ${where.join(" AND ")}
         GROUP BY CAST(entry_id AS INTEGER), kind, author, CAST(at AS INTEGER))`).get(...values) as Row).n);
   if (!page.length) return { hits: [], total };
   // Each page row is read by rowid with no MATCH and gets its snippet here: FTS5's snippet() with "rowid IN (...)" ran the whole match

@@ -96,6 +96,8 @@ export class Threads {
   onRefresh: () => void = () => {};
   /** The agent records (agents.ts), set once the app has made them. */
   agentRecords?: Agents;
+  /** A work thread's inputs that were a job's test send (rooms.ts `testSendsOf`), set once the app has made the rooms. */
+  testSendsOf: (thread: string) => ReadonlyMap<number, { by: string; reason: string }> = () => new Map();
 
   private refreshing?: Promise<void>;
   private cached = "";
@@ -363,6 +365,7 @@ export class Threads {
       thread, conversation, agent, ...(agent.parent ? { parent: this.principal(agent.parent) } : {}),
       ...(this.firstEntries.has(conversationIdOf(thread, conversation)) ? { firstEntry: this.firstEntries.get(conversationIdOf(thread, conversation))! } : {}),
       principal: from => this.principal(from),
+      ...(conversation === 1 ? { testSends: this.testSendsOf(thread) } : {}),
       tree: this.tree(thread),
       jobStatus: id => this.statusOfConversation(thread, id),
       running: live ? live.running : this.statusOfConversation(thread, conversation) === "working",

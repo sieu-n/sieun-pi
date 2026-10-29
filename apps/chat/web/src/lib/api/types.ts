@@ -173,6 +173,8 @@ export type Item =
       work?: { conversation: ConversationId; around: string };
       /** DM agent posts: the jobs the post's turn started, drawn as job pills. */
       jobs?: JobRef[];
+      /** A post or input a job typed into the owner's composer to test it: `author` is that job, and the page says it was a test send. */
+      testSend?: { by: Principal; reason: string };
     }
   | {
       kind: "turn"; id: string; at: Ms; author: Principal; text: string; live: boolean; steps: Step[]; images: ImageRef[]; jobs: JobRef[];
@@ -250,6 +252,8 @@ export interface SearchHit {
   messageId: string;
   /** The owner, an agent, or for a system note (a check-in, a job report, a board change) `system` with the note's label as its name. */
   author: { id: string; name: string; kind: "owner" | "agent" | "system" };
+  /** A job's test send typed into the owner's DM: `author` is that job. */
+  testSend?: { reason: string };
   at: Ms;
   kind: "message" | "turn" | "tool" | "post";
   /**

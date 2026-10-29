@@ -64,6 +64,7 @@
   const waits = $derived(placeText(message?.queue ?? queue));
   const stackPosition = (index: number, count: number): "single" | "first" | "middle" | "last" => (count === 1 ? "single" : index === 0 ? "first" : index === count - 1 ? "last" : "middle");
   const notes = $derived([
+    ...(message?.testSend ? [`Test send from ${message.testSend.by.name}, not from you. ${message.testSend.reason}`] : []),
     ...(waits ? [`${waits.charAt(0).toUpperCase()}${waits.slice(1)} for a working slot.`] : []),
     ...(message?.deliveries.map(deliveryText).filter((text): text is string => !!text) ?? []),
   ]);

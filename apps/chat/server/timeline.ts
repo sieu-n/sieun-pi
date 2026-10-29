@@ -38,6 +38,8 @@ export interface TimelineContext {
   parent?: Principal;
   /** The conversation's earliest send_message call the server has seen, beyond the entries at hand (`firstSendIn`). */
   firstSend?: number;
+  /** Inputs that were a job's test send typed into the owner's DM (rooms.ts `testSendsOf`), by entry id: they read as the job's. */
+  testSends?: ReadonlyMap<number, { by: string; reason: string }>;
 }
 
 export const SEND_MESSAGE_TOOL = "send_message";
@@ -231,8 +233,13 @@ function buildTurn(draft: TurnDraft, ctx: TimelineContext, live: boolean, firstS
 function inputItem(entry: EntryRecord, ctx: TimelineContext, first: boolean): Item {
   const message = entry.model?.[0];
   const data = (entry.data ?? {}) as { from?: string; via?: string };
-  const author = entry.kind === "agent.message" && data.from ? ctx.principal(data.from) : first && ctx.parent ? ctx.parent : ctx.principal("owner");
-  return { kind: "message", id: entryKey(entry.id), at: message?.timestamp ?? 0, author, text: textOf(message), images: imageRefs(ctx.thread, entry), mentions: [], deliveries: [] };
+  const test = entry.kind === "pi.user" ? ctx.testSends?.get(entry.id) : undefined;
+  const testSend = test ? { by: ctx.principal(test.by), reason: test.reason } : undefined;
+  const author = testSend?.by ?? (entry.kind === "agent.message" && data.from ? ctx.principal(data.from) : first && ctx.parent ? ctx.parent : ctx.principal("owner"));
+  return {
+    kind: "message", id: entryKey(entry.id), at: message?.timestamp ?? 0, author, text: textOf(message), images: imageRefs(ctx.thread, entry), mentions: [], deliveries: [],
+    ...(testSend ? { testSend } : {}),
+  };
 }
 
 /** Items for entries given oldest first. The newest turn is live while the conversation runs. */

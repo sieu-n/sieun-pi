@@ -26,6 +26,8 @@ export interface Hit {
   isError?: boolean;
   /** sort=relevant only: bm25 times the kind weight, lower is better, so a client merging boxes sorts by it. */
   score?: number;
+  /** An owner input that was a job's test send (`TestSend`): `author` is the job and this is the reason it gave. */
+  testSend?: string;
 }
 
 /** A hit with the keys a merge across sources sorts by: `key` orders newest first, `score` orders relevant (lower is better). */
@@ -299,6 +301,12 @@ export function searchPrime(db: DatabaseSync, box: string, query: Query, ask: Pa
 }
 
 
+/**
+ * An owner input in a pi-host thread that a job typed into the owner's DM to test it, as the chat on :5184 lists them in test-sends.json
+ * (apps/chat/server/rooms.ts). `from:owner` leaves it out, and its hit names the job as the author.
+ */
+export interface TestSend { thread: string; entry: number; by: string; reason: string }
+
 /** pi-host's durable entry kinds (packages/pi-host/src/durable/import.ts) as this index's kinds. */
 const DURABLE_KINDS: Record<string, Kind> = {
   "pi.user": "user", "pi.assistant": "assistant", "pi.tool-result": "tool_result", "agent.message": "agent_message",
@@ -308,7 +316,7 @@ export const durableKind = (name: string): Kind => DURABLE_KINDS[name] ?? "notic
 const durableKinds = (kinds: readonly Kind[]): string[] => Object.entries(DURABLE_KINDS).filter(([, kind]) => kinds.includes(kind)).map(([name]) => name);
 
 /** Hits and the exact total from one pi-host durable index (packages/pi-host/src/durable/index-db.ts), opened read-only. */
-export function searchDurable(db: DatabaseSync, index: number, box: string, query: Query, ask: PageAsk, roots: string[] | null): Page {
+export function searchDurable(db: DatabaseSync, index: number, box: string, query: Query, ask: PageAsk, roots: string[] | null, testSends: readonly TestSend[] = []): Page {
   const f = query.filters;
   // A durable entry has no session id file and no error flag, so a query that needs either finds nothing there.
   if (!query.match || query.sessionIds.length || f.isError) return { hits: [], total: 0 };
@@ -326,18 +334,20 @@ export function searchDurable(db: DatabaseSync, index: number, box: string, quer
   }
   if (f.from.length) {
     const named = f.from.filter(value => !["owner", "tool"].includes(value.toLowerCase()));
+    const owner = f.from.some(value => value.toLowerCase() === "owner");
     const terms = [
-      ...f.from.some(value => value.toLowerCase() === "owner") ? ["e.kind = 'pi.user'"] : [],
+      ...owner ? [["e.kind = 'pi.user'", ...testSends.map(() => "NOT (e.thread = ? AND CAST(e.entry_id AS INTEGER) = ?)")].join(" AND ")] : [],
       ...f.from.some(value => value.toLowerCase() === "tool") ? ["e.kind = 'pi.tool-result'"] : [],
       ...named.map(() => "e.author LIKE ? ESCAPE '\\'"),
     ];
     where.sql.push("(" + terms.join(" OR ") + ")");
+    if (owner) where.values.push(...testSends.flatMap(test => [test.thread, test.entry]));
     where.values.push(...named.map(value => "%" + like(value) + "%"));
   }
   if (roots) { where.sql.push("e.thread IN (SELECT value FROM json_each(?))"); where.values.push(JSON.stringify(roots)); }
   const from = "entries e LEFT JOIN threads t ON t.id = e.thread";
   const key = "(CAST(e.at AS INTEGER) * 1024 + e.rowid % 1024)";
-  const columns = `e.rowid AS id, e.thread AS thread, e.kind AS kind, e.author AS author, CAST(e.at AS INTEGER) AS at, t.name AS name,
+  const columns = `e.rowid AS id, e.thread AS thread, CAST(e.entry_id AS INTEGER) AS entry, e.kind AS kind, e.author AS author, CAST(e.at AS INTEGER) AS at, t.name AS name,
     snippet(entries, 0, '${OPEN}', '${CLOSE}', '…', ${SNIPPET_TOKENS}) AS snippet, ${key} AS k`;
   let sql: string;
   let values: SQLInputValue[];
@@ -353,12 +363,13 @@ export function searchDurable(db: DatabaseSync, index: number, box: string, quer
   const hits = (prepare(db, sql).all(...values) as Row[]).map((row): Ranked => {
     const thread = String(row.thread);
     const at = Number(row.at);
+    const test = row.kind === "pi.user" ? testSends.find(t => t.thread === thread && t.entry === Number(row.entry)) : undefined;
     return {
       key: Number(row.k), score: Number(row.score),
       hit: {
         ref: `${box}:${thread}@${at}#d${index}.${Number(row.id)}`, box, source: "durable", session: thread, root: thread, depth: 0,
-        thread: row.name ? String(row.name) : thread, kind: durableKind(String(row.kind)), author: String(row.author ?? ""), at,
-        snippet: markSnippet(String(row.snippet ?? "")),
+        thread: row.name ? String(row.name) : thread, kind: durableKind(String(row.kind)), author: test ? test.by : String(row.author ?? ""), at,
+        snippet: markSnippet(String(row.snippet ?? "")), ...test ? { testSend: test.reason } : {},
       },
     };
   });

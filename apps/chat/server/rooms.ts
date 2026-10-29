@@ -12,7 +12,7 @@
  */
 import type { ConversationSummary, Delivery, ImageRef, ImageUpload, Item, JobRef, RunStatus, SendRequest, SendResult, TimelinePage } from "../web/src/lib/api/types.ts";
 import { serverNote, TELL_OWNER_HELD, TELL_OWNER_TOOL } from "../web/src/lib/api/shared/chat-feed.ts";
-import type { AgentRecord, AgentStore, FeedCursor, RoomId, RoomPost } from "./agent-store.ts";
+import type { AgentRecord, AgentStore, FeedCursor, RoomId, RoomPost, TestSend } from "./agent-store.ts";
 import type { Agents } from "./agents.ts";
 import type { ContentBlock, EntryRecord, Host, Message, Submitted } from "./host/types.ts";
 import { refusedForGood, retryWait } from "./outbox.ts";
@@ -78,6 +78,16 @@ function jobsIn(thread: string, message: Message): string[] {
 
 const held = (message: Message): boolean => message.toolName === TELL_OWNER_TOOL && textOf(message).startsWith(TELL_OWNER_HELD);
 
+/** The `via` of a test send's agent message: the post itself, delivered after its mark, and the notice for one the owner's delivery took. */
+export const TEST_SEND_VIA = "test-send";
+
+/** The agent message that tells an agent a post in its DM came from a job's test, not from the owner. */
+export function testSendNotice(post: RoomPost, mark: TestSend, by: string): string {
+  const quoted = post.text.length > 200 ? `${post.text.slice(0, 200)}…` : post.text;
+  return `[test send from ${by}] Post ${post.id} in your DM, "${quoted}", came from ${by}'s test, not from the owner. ${mark.reason.trim()}\n\n` +
+    "It asked you for nothing. Drop anything you did or planned because of it, and do not answer it.";
+}
+
 export class Rooms {
   /** The wait before the next try of a delivery; a test shortens it. */
   backoff: (attempts: number) => number = retryWait;
@@ -90,6 +100,9 @@ export class Rooms {
   /** The work thread's `updatedAt` at the last feed read per agent. */
   private readonly seen = new Map<string, number>();
   private readonly statuses = new Map<RoomId, RunStatus>();
+  /** `testSendsOf` per work thread, dropped when a mark changes. */
+  private readonly testSends = new Map<string, Map<number, { by: string; reason: string }>>();
+  private readonly settleTries = new Map<string, number>();
 
   constructor(private readonly deps: RoomDeps) {}
 
@@ -101,12 +114,14 @@ export class Rooms {
     this.stopped = false;
     for (const record of this.deps.agents.list()) {
       for (const post of this.store.postsOf(record.room)) {
+        if (post.testSend && (post.testSend.entry === undefined || post.testSend.notice === undefined)) void this.settleTestSend(record, post);
         if (post.author !== "owner" || post.imported || /^[hi]:/.test(post.requestId)) continue;
         // A post written just before a crash may have no delivery line yet.
         if (!post.delivery) this.store.set(post, { delivery: this.newDelivery(post, record) });
         if (post.delivery!.state === "sending") this.schedule(post, 0);
       }
     }
+    this.store.saveTestSends(this.allTestSends());
     this.poll();
   }
 
@@ -190,10 +205,18 @@ export class Rooms {
     this.inflight.add(key);
     const images = post.images.map(ref => this.deps.readUpload(ref)).filter((image): image is { data: string; mimeType: string } => !!image);
     try {
+      // A test send reaches the agent as the job's agent message, so the agent never reads it as the owner's words.
+      const asTest = post.testSend;
+      const from = asTest ? { entry: { kind: "agent.message" as const, data: { from: asTest.by, via: TEST_SEND_VIA } } } : { ownerTurn: true };
       const result = await this.deps.host.submit(record.workThread, {
-        text: post.text, ...(images.length ? { images } : {}), requestId: delivery.requestId, whenBusy: "steer", ownerTurn: true,
+        text: post.text, ...(images.length ? { images } : {}), requestId: delivery.requestId, whenBusy: "steer", ...from,
       });
-      this.store.set(post, { delivery: { target: delivery.target, state: "delivered", attempts: delivery.attempts + 1, at: Date.now(), requestId: delivery.requestId, submission: result.submission } });
+      this.store.set(post, { delivery: {
+        target: delivery.target, state: "delivered", attempts: delivery.attempts + 1, at: Date.now(), requestId: delivery.requestId, submission: result.submission,
+        ...(asTest ? { testSend: true } : {}),
+      } });
+      // A mark that came while the owner's input was on its way: the agent got it as the owner's, so it gets the notice.
+      if (post.testSend && !asTest) void this.settleTestSend(record, post);
       this.changed(record, [post]);
       this.deps.events.submitted(record, result);
     } catch (error) {
@@ -213,6 +236,81 @@ export class Rooms {
     } finally {
       this.inflight.delete(key);
     }
+  }
+
+  // Test sends
+
+  /**
+   * Marks an owner post as job `by`'s test send, with the reason. The post reads as the job's from now on. A post still on its way goes to
+   * the agent as the job's agent message; for one the owner's delivery already took, `settleTestSend` tells the agent and finds its entry.
+   */
+  markTestSend(record: AgentRecord, postId: string, input: { by?: unknown; reason?: unknown }): SendResult {
+    const by = typeof input.by === "string" ? input.by.trim() : "";
+    const reason = typeof input.reason === "string" ? input.reason.trim() : "";
+    if (!by || !reason) throw new Error("A test send needs `by`, the job that sent it, and `reason`, both strings that are not blank.");
+    const post = this.store.postsOf(record.room).find(p => p.id === postId);
+    if (!post) throw new Error(`No post ${postId} in ${record.room}.`);
+    if (post.author !== "owner" || post.imported) throw new Error(`A test send is an owner post typed in the room; ${postId} in ${record.room} is not one.`);
+    if (post.testSend?.by !== by || post.testSend.reason !== reason) {
+      this.store.set(post, { testSend: { ...post.testSend, by, reason, at: Date.now() } });
+      this.testSends.delete(record.workThread);
+      this.changed(record, [post]);
+    }
+    void this.settleTestSend(record, post);
+    return this.result(post);
+  }
+
+  /** The test sends the owner's delivery took to the work thread: the agent gets the notice once, then the post's entry is found. */
+  private async settleTestSend(record: AgentRecord, post: RoomPost): Promise<void> {
+    const mark = post.testSend;
+    const delivery = post.delivery;
+    const key = `t:${post.room}/${post.id}`;
+    if (this.stopped || !mark || delivery?.state !== "delivered" || delivery.testSend || this.inflight.has(key)) return;
+    this.inflight.add(key);
+    try {
+      if (mark.notice === undefined) {
+        const text = testSendNotice(post, mark, this.deps.threads.principal(mark.by).name);
+        await this.deps.host.submit(record.workThread, {
+          text, requestId: `t:${post.id}:${record.id}`, whenBusy: "steer", entry: { kind: "agent.message", data: { from: mark.by, via: TEST_SEND_VIA } },
+        });
+        this.store.set(post, { testSend: { ...post.testSend!, notice: Date.now() } });
+      }
+      if (post.testSend!.entry === undefined && delivery.submission !== undefined) {
+        const { entry } = await this.deps.host.wait(record.workThread, delivery.submission);
+        if (entry !== undefined) {
+          this.store.set(post, { testSend: { ...post.testSend!, entry } });
+          this.testSends.delete(record.workThread);
+          this.store.saveTestSends(this.allTestSends());
+        }
+      }
+      this.settleTries.delete(key);
+    } catch (error) {
+      const tries = (this.settleTries.get(key) ?? 0) + 1;
+      this.settleTries.set(key, tries);
+      const wait = this.backoff(tries);
+      this.deps.log(`rooms: test send ${record.room} ${post.id} attempt ${tries} failed, retry in ${wait} ms: ${error instanceof Error ? error.message : String(error)}`);
+      if (!this.stopped) setTimeout(() => void this.settleTestSend(record, post), wait);
+    } finally {
+      this.inflight.delete(key);
+    }
+  }
+
+  /** The work-thread inputs that were test sends, by entry id, for search and the thread's timeline. */
+  testSendsOf(thread: string): ReadonlyMap<number, { by: string; reason: string }> {
+    let found = this.testSends.get(thread);
+    if (found) return found;
+    found = new Map();
+    const record = this.deps.agents.ofWorkThread(thread);
+    for (const post of record ? this.store.postsOf(record.room) : []) {
+      if (post.testSend?.entry !== undefined) found.set(post.testSend.entry, { by: post.testSend.by, reason: post.testSend.reason });
+    }
+    this.testSends.set(thread, found);
+    return found;
+  }
+
+  /** Every room's test sends whose entry is known, for search. */
+  allTestSends(): { thread: string; entry: number; by: string; reason: string }[] {
+    return this.deps.agents.list().flatMap(record => [...this.testSendsOf(record.workThread)].map(([entry, mark]) => ({ thread: record.workThread, entry, ...mark })));
   }
 
   private changed(record: AgentRecord, posts: RoomPost[]): void {
@@ -323,11 +421,12 @@ export class Rooms {
     const base = { kind: "message" as const, id: post.id, seq: post.seq, at: post.at, text: post.text, images: post.images, mentions: [] };
     if (post.author === "owner") {
       const d = post.delivery;
+      const test = post.testSend ? { by: this.deps.threads.principal(post.testSend.by), reason: post.testSend.reason } : undefined;
       const deliveries: Delivery[] = d
         ? [{ target: d.target, name: record?.name ?? d.target, state: d.state === "sending" ? "queued" : d.state, at: d.at, ...(d.error ? { error: d.error } : {}) }]
         : [];
       return {
-        ...base, author: OWNER, deliveries, requestId: post.requestId,
+        ...base, author: test?.by ?? OWNER, deliveries, requestId: post.requestId, ...(test ? { testSend: test } : {}),
         ...(d ? { send: d.state === "delivered" ? "sent" as const : d.state, ...(d.error ? { sendError: d.error } : {}) } : {}),
       };
     }

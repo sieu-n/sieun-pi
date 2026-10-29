@@ -141,6 +141,23 @@ for (const [ftsKind, docsMeta] of [[false, false], [true, false], [true, true]] 
     durable.close();
   });
 
+  test(`${label}: a test send the chat lists reads as the job's, and from:owner leaves it out`, () => {
+    const durable = makeDurable(join(dir, `durable-test-send-${ftsKind}-${docsMeta}.sqlite`), [{ id: "thread-v", name: "vent" }], [
+      { thread: "thread-v", kind: "pi.user", author: "owner", at: min(20), text: "relay check from the owner" },
+      { thread: "thread-v", kind: "pi.user", author: "owner", at: min(21), text: "relay check from a job" },
+    ]);
+    const tests = [{ thread: "thread-v", entry: 2, by: "agent factory's DM rooms job", reason: "It checked the DM room." }];
+    const ask = pageAsk("newest", 5, null);
+    const owner = searchDurable(durable, 0, "us-metal02", parseQuery({ q: "relay from:owner" }), ask, null, tests);
+    assert.equal(owner.total, 1);
+    assert.deepEqual(owner.hits.map(item => item.hit.at), [min(20)]);
+    const all = searchDurable(durable, 0, "us-metal02", parseQuery({ q: "relay check" }), ask, null, tests);
+    const job = all.hits.find(item => item.hit.at === min(21))!.hit;
+    assert.deepEqual([job.author, job.testSend], ["agent factory's DM rooms job", "It checked the DM room."]);
+    assert.equal(all.hits.find(item => item.hit.at === min(20))!.hit.author, "owner");
+    durable.close();
+  });
+
   test(`${label}: read returns the messages around a hit and refuses one outside the family`, () => {
     const ref = parseRef(`us-metal02:${SUB}@${min(3)}#${min(3) * 1024}`);
     assert.equal(ref.source, "prime");

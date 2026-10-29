@@ -7,6 +7,7 @@ import { readFileSync, statSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { join, sep } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
+import type { TestSend } from "./search.ts";
 
 export type AgentScope = "family" | "all";
 
@@ -17,6 +18,8 @@ export interface Settings {
   /** The hosts.json path, relative to ~/.config/sieun-pi. */
   peers: string;
   durableIndexes: string[];
+  /** The chat's list of test sends (apps/chat/server/rooms.ts), owner inputs that a job typed and search reads as the job's. */
+  testSends: string;
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -58,6 +61,7 @@ export function readSettings(path = settingsPath()): Settings {
   const settings: Settings = {
     agentScope: raw.agentScope === "family" ? "family" : "all", box, peers,
     durableIndexes: (Array.isArray(raw.durableIndexes) ? raw.durableIndexes.map(String) : ["~/.prime/agent/pi-host/durable/index.sqlite"]).map(expandHome),
+    testSends: expandHome(typeof raw.testSends === "string" && raw.testSends ? raw.testSends : "~/.pi/agent/chat/test-sends.json"),
   };
   cached = { key: `${path}:${key}`, settings };
   return settings;
@@ -186,4 +190,20 @@ export class RegistryReader {
       return { jobs: {} };
     }
   }
+}
+
+let testSendsCache: { key: string; list: TestSend[] } | null = null;
+
+/** The chat's test-sends.json, read again whenever the file changes (one stat per request); none while it is missing or torn. */
+export function readTestSends(path: string): TestSend[] {
+  let key = "missing";
+  try { const stat = statSync(path); key = `${path}:${stat.mtimeMs}:${stat.size}`; } catch { return []; }
+  if (testSendsCache?.key === key) return testSendsCache.list;
+  let list: TestSend[] = [];
+  try {
+    const raw = (JSON.parse(readFileSync(path, "utf8")) as { entries?: unknown }).entries;
+    list = Array.isArray(raw) ? raw.filter((t): t is TestSend => !!t && typeof t.thread === "string" && typeof t.entry === "number" && typeof t.by === "string" && typeof t.reason === "string") : [];
+  } catch { list = []; }
+  testSendsCache = { key, list };
+  return list;
 }

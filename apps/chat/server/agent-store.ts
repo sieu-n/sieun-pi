@@ -44,6 +44,8 @@ export interface RoomDelivery {
   requestId: string;
   submission?: number;
   error?: string;
+  /** The delivery went as a test send's agent message, so the agent never read the post as the owner's. */
+  testSend?: true;
 }
 
 export interface RoomPost {
@@ -67,9 +69,18 @@ export interface RoomPost {
   jobs?: string[];
   delivery?: RoomDelivery;
   imported?: boolean;
+  /** Set on an owner post that a job typed into the room to test it: the post reads as that job's, never as the owner's. */
+  testSend?: TestSend;
 }
 
-export type PostPatch = Partial<Pick<RoomPost, "delivery" | "jobs" | "text">>;
+/**
+ * A job's test send. `by` names the job (a ConversationId `<thread>:<n>`, an agent id or a name). `entry` is the work-thread input the delivery
+ * wrote, once known; search and the work thread's timeline read that entry as the job's. `notice` is when the agent got the agent message
+ * that says the post was a test send.
+ */
+export interface TestSend { by: string; reason: string; at: Ms; entry?: number; notice?: Ms }
+
+export type PostPatch = Partial<Pick<RoomPost, "delivery" | "jobs" | "text" | "testSend">>;
 type LogLine = { t: "post"; post: RoomPost } | { t: "set"; post: string; patch: PostPatch };
 
 export interface RoomRow { id: RoomId; kind: "dm"; agent: AgentId; createdAt: Ms; archived: boolean }
@@ -114,6 +125,10 @@ export class AgentStore {
   }
   saveRooms(): void {
     writeJson(join(this.dir, "rooms.json"), this.rooms);
+  }
+  /** `test-sends.json`: the work-thread inputs that were a job's test send, which pi-history's search reads as the job's too. */
+  saveTestSends(entries: { thread: string; entry: number; by: string; reason: string }[]): void {
+    writeJson(join(this.dir, "test-sends.json"), { v: 1, entries });
   }
 
   /** The agent a thread id or agent id belongs to. */

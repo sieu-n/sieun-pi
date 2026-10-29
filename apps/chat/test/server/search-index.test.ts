@@ -80,3 +80,10 @@ test("a write pi-host commits after the chat opened the index shows in the next 
   assert.equal(body.total, 1);
   assert.equal(body.hits[0]!.messageId, "e302");
 });
+
+test("skipEntries leaves those entries out of the hits and the exact total, as from:owner does for the chat's test sends", () => {
+  const owner = index.search({ q: "zebra", from: "owner", limit: 200 });
+  const skipped = index.search({ q: "zebra", from: "owner", limit: 200, skipEntries: [{ thread: "live", entry: 1 }, { thread: "live", entry: 3 }] });
+  assert.equal(skipped.total, owner.total - 2);
+  assert.equal(skipped.hits.some(h => h.thread === "live" && (h.entryId === 1 || h.entryId === 3)), false);
+});

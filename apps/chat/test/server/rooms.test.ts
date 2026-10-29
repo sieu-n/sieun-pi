@@ -4,11 +4,11 @@
  * Run: cd apps/chat && node --import tsx --test --test-force-exit --test-isolation=none test/server/rooms.test.ts
  */
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
-import type { Item, LiveEvent, Sidebar, TimelinePage } from "../../web/src/lib/api/types.ts";
+import type { Item, LiveEvent, SearchResult, Sidebar, TimelinePage } from "../../web/src/lib/api/types.ts";
 import { TELL_OWNER_HELD } from "../../web/src/lib/api/shared/chat-feed.ts";
 import { FIXTURE_AGENTS as agents, FIXTURE_IDS as ids, seedFixture } from "../../server/fixture/seed.ts";
 import { FixtureHost } from "../../server/host/fixture.ts";
@@ -193,5 +193,104 @@ describe("restarts", () => {
     } finally {
       rmSync(dataDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("test sends", () => {
+  let s: Running;
+  let host: FixtureHost;
+  before(async () => {
+    s = await start({ wordMs: 0 });
+    host = s.host as FixtureHost;
+  });
+  after(async () => {
+    await s.close();
+  });
+
+  const BY = "agent factory's DM rooms job";
+  const REASON = "It typed this into your composer to check that the DM room delivers; you did not write it.";
+  const notices = (): EntryRecord[] =>
+    host.threadsById.get(ids.vent)!.entries.filter(e => e.kind === "agent.message" && (e.data as { via?: string }).via === "test-send" && JSON.stringify(e.model?.[0]?.content).includes("[test send from"));
+  const stored = (id: string) => s.app.agentStore.postsOf(ROOM).find(p => p.id === id)!;
+
+  test("a delivered post marked as a job's test send reads as the job's in the room, the work thread and search, and the agent gets one notice", async () => {
+    const word = `zebraprobe${Date.now()}`;
+    const text = `Phase 2 check ${word}: reply with one line.`;
+    const sent = await s.send("POST", `/api/c/${ROOM}/send`, { text, requestId: "probe-1" });
+    const id: string = sent.body.item.id;
+    await until(() => posts(s), page => page.find(p => p.id === id)?.send === "sent");
+    const entry = inputs(host, text)[0]!;
+    assert.ok(entry, "the owner's delivery wrote a pi.user input");
+
+    const marked = await s.send("PATCH", `/api/c/${ROOM}/posts/${id}`, { testSend: { by: BY, reason: REASON } });
+    assert.equal(marked.status, 200);
+    assert.equal(marked.body.item.author.name, BY);
+    assert.notEqual(marked.body.item.author.id, "owner");
+    assert.deepEqual(marked.body.item.testSend, { by: marked.body.item.author, reason: REASON });
+    await until(() => Promise.resolve(stored(id).testSend), mark => mark?.entry === entry.id && mark.notice !== undefined);
+    assert.equal((await s.send("PATCH", `/api/c/${ROOM}/posts/${id}`, { testSend: { by: BY, reason: REASON } })).status, 200);
+    await s.app.rooms.feed(s.app.agents.record(agents.vent)!);
+    const sentNotices = notices();
+    assert.equal(sentNotices.length, 1, "one notice for one post, however often it is marked");
+    assert.deepEqual(sentNotices[0]!.data, { from: BY, via: "test-send" });
+    const noticeText = JSON.stringify(sentNotices[0]!.model?.[0]?.content);
+    assert.match(noticeText, new RegExp(`Post ${id} in your DM`));
+    assert.match(noticeText, /not from the owner/);
+
+    const inRoom = (await posts(s)).find(p => p.id === id)!;
+    assert.equal(inRoom.author.name, BY);
+    assert.equal(inRoom.testSend?.reason, REASON);
+    assert.equal(inRoom.send, "sent", "the delivery line stays");
+
+    const work = await s.get<TimelinePage>(`/api/c/${ids.vent}/items?around=e${entry.id}&limit=6`);
+    const input = work.items.find(item => item.id === `e${entry.id}`) as Message;
+    assert.equal(input.author.name, BY);
+    assert.equal(input.testSend?.reason, REASON);
+
+    const all = await s.get<SearchResult>(`/api/search?q=${word}&limit=100`);
+    const hit = all.hits.find(h => h.messageId === `e${entry.id}` && h.conversation.id === ids.vent)!;
+    assert.equal(hit.author.name, BY);
+    assert.equal(hit.role, "agent");
+    assert.deepEqual(hit.testSend, { reason: REASON });
+    const owner = await s.get<SearchResult>(`/api/search?q=${word}%20from:owner&limit=100`);
+    assert.equal(owner.hits.some(h => h.messageId === `e${entry.id}`), false, "from:owner leaves the test send out");
+    assert.equal(owner.total, owner.hits.length);
+    const listed = JSON.parse(readFileSync(join(s.app.config.dataDir, "test-sends.json"), "utf8"));
+    assert.deepEqual(listed.entries, [{ thread: ids.vent, entry: entry.id, by: BY, reason: REASON }], "pi-history's search reads the same list");
+  });
+
+  test("a post marked while its delivery still retries reaches the agent as the job's agent message and needs no notice", async () => {
+    const text = `Phase 2 retry check ${Date.now()}`;
+    let marked = false;
+    host.beforeSubmit = (_thread: string, input: SubmitInput) => {
+      if (input.text === text && !marked) throw new Error("connect ENOENT /run/user/1000/pi-host/host.sock");
+    };
+    s.app.rooms.backoff = () => 30;
+    try {
+      const sent = await s.send("POST", `/api/c/${ROOM}/send`, { text, requestId: "probe-2" });
+      const id: string = sent.body.item.id;
+      await until(() => Promise.resolve(stored(id).delivery?.attempts ?? 0), n => n >= 1);
+      const before = notices().length;
+      assert.equal((await s.send("PATCH", `/api/c/${ROOM}/posts/${id}`, { testSend: { by: BY, reason: REASON } })).status, 200);
+      marked = true;
+      await until(() => Promise.resolve(stored(id).delivery?.state), state => state === "delivered");
+      assert.equal(stored(id).delivery?.testSend, true);
+      const got = host.threadsById.get(ids.vent)!.entries.filter(e => (e.kind === "pi.user" || e.kind === "agent.message") && JSON.stringify(e.model?.[0]?.content).includes(text));
+      assert.deepEqual(got.map(e => [e.kind, e.data]), [["agent.message", { from: BY, via: "test-send" }]]);
+      assert.equal(notices().length, before);
+    } finally {
+      host.beforeSubmit = undefined;
+    }
+  });
+
+  test("a mark needs a job and a reason, and only an owner post takes one", async () => {
+    const page = await posts(s);
+    const own = page.find(p => p.author.id === "owner" && !p.testSend)!;
+    const agentPost = page.find(p => p.author.id === agents.vent)!;
+    assert.equal((await s.send("PATCH", `/api/c/${ROOM}/posts/${own.id}`, { testSend: { by: BY } })).status, 400);
+    assert.equal((await s.send("PATCH", `/api/c/${ROOM}/posts/${own.id}`, { text: "edited" })).status, 400);
+    assert.equal((await s.send("PATCH", `/api/c/${ROOM}/posts/${agentPost.id}`, { testSend: { by: BY, reason: REASON } })).status, 400);
+    assert.equal((await s.send("PATCH", `/api/c/${ROOM}/posts/p99999`, { testSend: { by: BY, reason: REASON } })).status, 400);
+    assert.equal((await posts(s)).find(p => p.id === own.id)!.author.id, "owner");
   });
 });

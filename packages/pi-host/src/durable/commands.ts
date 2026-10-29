@@ -39,6 +39,13 @@ function byOf(value: unknown): { thread: string; conversation: number; id: strin
   return { thread: by.thread, conversation: by.conversation, id: by.id };
 }
 
+/** `skipEntries` of durable_search: the entries to leave out, each {thread, entry}. */
+function skipEntriesOf(value: unknown): { thread: string; entry: number }[] {
+  const list = Array.isArray(value) ? (value as { thread?: unknown; entry?: unknown }[]) : [];
+  if (!Array.isArray(value) || list.some(e => typeof e?.thread !== "string" || typeof e.entry !== "number")) throw new Error(`skipEntries must be [{thread, entry}], got ${JSON.stringify(value)}`);
+  return list.map(e => ({ thread: e.thread as string, entry: e.entry as number }));
+}
+
 export class DurableCommands {
   /** Watches by connection, so a closed socket stops its streams. */
   private readonly watches = new Map<string, Map<string, () => Promise<void>>>();
@@ -127,6 +134,7 @@ export class DurableCommands {
             ...(optStr(command, "notFrom") === undefined ? {} : { notFrom: optStr(command, "notFrom")! }),
             ...(strs(command.kinds) ? { kinds: strs(command.kinds)! } : {}),
             ...(strs(command.skipKinds) ? { skipKinds: strs(command.skipKinds)! } : {}),
+            ...(command.skipEntries === undefined ? {} : { skipEntries: skipEntriesOf(command.skipEntries) }),
             ...(strs(command.demoteKinds) ? { demoteKinds: strs(command.demoteKinds)! } : {}),
             ...(optNum(command, "after") === undefined ? {} : { after: optNum(command, "after")! }),
             ...(optNum(command, "before") === undefined ? {} : { before: optNum(command, "before")! }),

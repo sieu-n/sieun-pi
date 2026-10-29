@@ -303,6 +303,7 @@ export class FixtureHost implements Host {
         if (query.notFrom && author === query.notFrom) continue;
         if (query.kinds?.length && !query.kinds.includes(entry.kind)) continue;
         if (query.skipKinds?.includes(entry.kind)) continue;
+        if (query.skipEntries?.some(skip => skip.thread === thread.row.id && skip.entry === entry.id)) continue;
         if (query.conversation !== undefined && entry.conversationId !== query.conversation) continue;
         if (query.by && !(entry.kind === "agent.message" ? author === query.by.id : author !== "owner" && thread.row.id === query.by.thread && entry.conversationId === query.by.conversation)) continue;
         if (skip && entry.kind === "agent.message" && skip.test(text)) continue;

@@ -12,7 +12,7 @@ import { parseQuery, QueryError, type Query } from "./core/query.ts";
 import { parseRef, ReadError, type ReadAnswer } from "./core/read.ts";
 import { type Hit, mergePages, type Page, pageAsk, type PageAsk, type Ranked } from "./core/search.ts";
 import type { SearchAnswer, SearchJob, SearchReply } from "./query-worker.ts";
-import { callerRoot, chatOf, expandHome, familyRoots, type HostEntry, hostsFile, localRoots, readHosts, readSettings, RegistryReader, registrySource, settingsPath, type Settings,
+import { callerRoot, chatOf, expandHome, familyRoots, type HostEntry, hostsFile, localRoots, readHosts, readSettings, readTestSends, RegistryReader, registrySource, settingsPath, type Settings,
   sieunPiConfig } from "./core/scope.ts";
 
 export interface BoxState { ok: boolean; error?: string; tookMs: number; newestAt?: number; backfillPct: number; bytesTotal?: number; lagP50Ms?: number; lagP99Ms?: number }
@@ -166,7 +166,7 @@ export async function startServer(options: ServerOptions): Promise<{ close(): Pr
 
   const localPages = async (query: Query, ask: PageAsk, roots: string[] | null, settings: Settings): Promise<Page[]> => {
     await warm;
-    const job = { dbPath: options.dbPath, box: settings.box, durableIndexes: settings.durableIndexes, query, ask, roots };
+    const job = { dbPath: options.dbPath, box: settings.box, durableIndexes: settings.durableIndexes, query, ask, roots, testSends: readTestSends(settings.testSends) };
     const [hits, count] = await Promise.all([run<Extract<SearchAnswer, { op: "hits" }>>({ ...job, op: "hits" }), run<Extract<SearchAnswer, { op: "count" }>>({ ...job, op: "count" })]);
     return [{ hits: hits.prime, total: count.total }, ...hits.durable];
   };
