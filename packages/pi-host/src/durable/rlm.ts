@@ -41,6 +41,7 @@ import { CHAT_URL_ENV, DEFAULT_CHAT_URL } from "./chat-app.ts";
 import { agentIdOf, artifactDirOf, DeliverTask, RlmChildDoc, sessionOf, textOfMessage, type RlmChild } from "./children.ts";
 import { durableTool, loadPiExtension, type PiTool, type PiToolResult } from "./pi-extensions.ts";
 import { PrimeChatName } from "./prime-chat.ts";
+import { piThreadHeader } from "./prime-roots.ts";
 import { threadHarnessDir } from "./prime-harness.ts";
 import { bundledSkillsDir, primeResources } from "./prime-prompt.ts";
 import { SendMessage } from "./send-message.ts";
@@ -71,13 +72,31 @@ export interface RlmThread {
   harness: () => Harness | undefined;
   /** Admits an input to a conversation of this thread; default the conversation's own submit. pi-host passes `DurableThreads.submit`. */
   submit?: (input: RlmSubmit) => Promise<unknown>;
-  /** The other threads' roots, which Prime's reach rule makes siblings of this thread's root. */
-  roots?: () => { id: string; name: string; cwd?: string }[];
-  /** Admits an input to another thread's root. */
-  submitRoot?: (thread: string, input: Omit<RlmSubmit, "conversation">) => Promise<unknown>;
+  /**
+   * The roots Prime's reach rule makes siblings of this thread's root: the other threads' and the Prime root sessions (`prime-roots.ts`), with
+   * why some are missing when a listing failed.
+   */
+  roots?: () => Promise<{ rows: RootRow[]; missing?: string }>;
+  /** Admits an input to another root: a thread's root conversation, or a Prime root through the chat service's outbox. */
+  submitRoot?: (root: RootRow, input: Omit<RlmSubmit, "conversation">) => Promise<unknown>;
   /** `rlm.create_session`: a new thread with this first input. */
   createSession?: (input: { prompt: string; name?: string; model?: ModelRef; thinking?: string; cwd: string }) => Promise<{ id: string; name: string; file: string; model: string }>;
   log?: (line: string) => void;
+}
+
+/** Another pi-host thread's root. */
+export interface PiRootRow { kind: "pi"; id: string; name: string; cwd?: string; status?: string }
+/** A Prime root session on some box; `activeId` is its active session id, which a send may name as well. */
+export interface PrimeRootRow { kind: "prime"; id: string; activeId?: string; name: string; box: string; status: string }
+export type RootRow = PiRootRow | PrimeRootRow;
+
+/** A member of the thread's family: a conversation of this thread, or another root, whose row says where a send to it goes. */
+interface Known { member: Member; conversation?: number; thread: string; root?: RootRow }
+
+/** A member as an error names it, with its full id and where it runs. */
+function described(known: Known): string {
+  const where = known.root?.kind === "prime" ? `, a Prime session on ${known.root.box}` : known.root?.kind === "pi" ? ", a pi-host thread" : "";
+  return `${known.member.name} (${known.member.id}${where})`;
 }
 
 interface Start { kernel: Kernel; restarted: boolean; restore?: RestoreResult; skillErrors?: Record<string, string> }
@@ -533,13 +552,16 @@ export class DurableRlm {
     return out;
   }
 
-  /** Every member of the thread and the other threads' roots, in pi-rlm's member shape. */
-  private async members(thread: RlmThread): Promise<{ member: Member; conversation?: number; thread: string }[]> {
+  /**
+   * Every member of the thread in pi-rlm's member shape, and with `roots` the other roots, which only the root conversation reaches, so a
+   * child's call never waits on the Prime listing.
+   */
+  private async members(thread: RlmThread, roots = false): Promise<{ all: Known[]; missing?: string }> {
     const harness = this.harnessOf(thread);
     const records = await this.records(thread);
     const parents = new Map(records.map(record => [record.id as number, record.owner?.conversationId as number | undefined]));
     const depth = (id: number) => { let d = 0; for (let at: number | undefined = id; at !== undefined && at !== ROOT_CONVERSATION_ID && d < 64; at = parents.get(at)) d++; return d; };
-    const out: { member: Member; conversation?: number; thread: string }[] = [];
+    const out: Known[] = [];
     for (const record of records) {
       const id = record.id as number;
       if (id === ROOT_CONVERSATION_ID) {
@@ -551,12 +573,14 @@ export class DurableRlm {
       const parent = parents.get(id);
       out.push({ member: { id: agentIdOf(thread.id, id), name: doc.name, role: "child", depth: depth(id), ...(parent !== undefined ? { parentId: agentIdOf(thread.id, parent) } : {}) }, conversation: id, thread: thread.id });
     }
-    for (const root of thread.roots?.() ?? []) if (root.id !== thread.id) out.push({ member: { id: root.id, name: root.name, role: "root", depth: 0 }, thread: root.id });
-    return out;
+    if (!roots || !thread.roots) return { all: out };
+    const listed = await thread.roots();
+    for (const root of listed.rows) if (root.id !== thread.id) out.push({ member: { id: root.id, name: root.name, role: "root", depth: 0 }, thread: root.id, root });
+    return { all: out, ...(listed.missing ? { missing: listed.missing } : {}) };
   }
 
   private async self(slot: Slot): Promise<Member> {
-    const all = await this.members(slot.thread);
+    const { all } = await this.members(slot.thread);
     const self = all.find(m => m.thread === slot.thread.id && m.conversation === slot.conversation);
     if (!self) throw new Error(`conversation ${slot.conversation} is not an agent of thread ${slot.thread.id}`);
     return self.member;
@@ -717,12 +741,15 @@ export class DurableRlm {
     if (typeof payload.message !== "string") throw new Error("agent_message.send message must be a string");
     const text = payload.message.trim();
     if (!text) throw new Error("Agent session message cannot be empty");
-    const members = family(self, await this.members(slot.thread));
+    const listed = await this.members(slot.thread, slot.conversation === ROOT_CONVERSATION_ID);
+    const members = family(self, listed.all);
     if (typeof payload.target === "string") {
       if (payload.target !== "all") throw new Error("positional agent_message.send targets are not supported; use receiver_role and receiver_name");
       if (payload.receiver_role != null || payload.receiver_name != null) throw new Error("agent_message.send broadcast cannot be combined with receiver_role/receiver_name");
-      const settled = await Promise.allSettled(members.map(m => this.deliver(slot, self, m.relationship, m.item, text, mode)));
-      return { receipts: settled.map((r, i) => (r.status === "fulfilled" ? r.value : { target: members[i]!.item.member.id, error: r.reason instanceof Error ? r.reason.message : String(r.reason) })) };
+      // A broadcast stays among pi-host's own agents, as a Prime root's reaches only the roots its own daemon runs.
+      const local = members.filter(m => m.item.root?.kind !== "prime");
+      const settled = await Promise.allSettled(local.map(m => this.deliver(slot, self, m.relationship, m.item, text, mode)));
+      return { receipts: settled.map((r, i) => (r.status === "fulfilled" ? r.value : { target: local[i]!.item.member.id, error: r.reason instanceof Error ? r.reason.message : String(r.reason) })) };
     }
     const role = payload.receiver_role;
     if (role !== "parent" && role !== "sibling" && role !== "child") throw new Error('agent_message.send receiver_role must be "parent", "sibling", or "child"');
@@ -730,22 +757,28 @@ export class DurableRlm {
     if (role === "parent" && name != null) throw new Error("agent_message.send receiver_name must be omitted for parent messages");
     if (role !== "parent" && (typeof name !== "string" || !name.trim())) throw new Error("agent_message.send receiver_name is required for sibling and child messages");
     const wanted = typeof name === "string" ? name.trim() : undefined;
-    const matches = members.filter(m => m.relationship === role && (role === "parent" || m.item.member.name === wanted || m.item.member.id === wanted));
-    if (matches.length !== 1) throw new Error(matches.length === 0 ? `No ${role} matches ${role === "parent" ? "the current agent" : JSON.stringify(name)}` : `${role} selector ${JSON.stringify(name)} is ambiguous`);
+    // A full id or the exact name, never an id prefix (owner rule c149); a Prime root also answers to its full active session id.
+    const matches = members.filter(m => m.relationship === role && (role === "parent" || m.item.member.name === wanted || m.item.member.id === wanted
+      || (m.item.root?.kind === "prime" && m.item.root.activeId === wanted)));
+    if (matches.length === 0) {
+      const why = role === "sibling" && listed.missing ? ` (${listed.missing})` : "";
+      throw new Error(`No ${role} matches ${role === "parent" ? "the current agent" : JSON.stringify(name)}${why}`);
+    }
+    if (matches.length > 1) throw new Error(`${role} selector ${JSON.stringify(name)} is ambiguous: it names ${matches.map(m => described(m.item)).join(" and ")}; send to one full id`);
     return this.deliver(slot, self, matches[0]!.relationship, matches[0]!.item, text, mode);
   }
 
-  private async deliver(slot: Slot, self: Member, rel: Relationship, target: { member: Member; conversation?: number; thread: string }, text: string, mode: ReturnType<typeof parseMode>) {
+  private async deliver(slot: Slot, self: Member, rel: Relationship, target: Known, text: string, mode: ReturnType<typeof parseMode>) {
     const id = newMessageId();
-    // What the sender is to the target, which names the header as Prime's host builds it.
+    // What the sender is to the target, which names the header as Prime's host builds it; a Prime root also gets the full id to answer to.
     const back = relationship(target.member, self);
-    const content = `${header(self.name, back)}\n\n${text}`;
+    const content = `${target.root?.kind === "prime" ? piThreadHeader(self.name, self.id) : header(self.name, back)}\n\n${text}`;
     const whenBusy = mode === "follow_up" ? "followUp" as const : "steer" as const;
     const entry = { kind: "agent.message" as const, data: { from: self.id, via: "agent_message" } };
     const harness = this.harnessOf(slot.thread);
-    if (target.thread !== slot.thread.id) {
-      if (!slot.thread.submitRoot) throw new Error(`thread ${target.thread} is not reachable from here`);
-      await slot.thread.submitRoot(target.thread, { text: content, requestId: `agentmsg:${id}`, whenBusy, entry });
+    if (target.root) {
+      if (!slot.thread.submitRoot) throw new Error(`${described(target)} is not reachable from here`);
+      await slot.thread.submitRoot(target.root, { text: content, requestId: `agentmsg:${id}`, whenBusy, entry });
     } else if (rel === "child") {
       // A parent's message to its child runs like its task: the child's run end sends the parent a notice unless the child replied.
       await harness.commit(async tx => {
@@ -763,7 +796,8 @@ export class DurableRlm {
     }
     const from = endpoint(self.id, self.name, self.role, "agent");
     const to = endpoint(target.member.id, target.member.name, target.member.role);
-    return receipt({ id, from: { id: self.id, name: self.name, role: self.role }, text, mode, sentAt: Date.now() }, from, to, "started", []);
+    const sent = receipt({ id, from: { id: self.id, name: self.name, role: self.role }, text, mode, sentAt: Date.now() }, from, to, "started", []);
+    return target.root?.kind === "prime" ? { ...sent, host: target.root.box } : sent;
   }
 
   // ---- agent_observe.
@@ -775,15 +809,21 @@ export class DurableRlm {
     return view.messages.filter(m => m.role !== "system") as Message[];
   }
 
-  private async agentRow(thread: RlmThread, known: { member: Member; conversation?: number; thread: string }, isCurrent: boolean, rel?: Relationship): Promise<Record<string, unknown>> {
+  private async agentRow(thread: RlmThread, known: Known, isCurrent: boolean, rel?: Relationship): Promise<Record<string, unknown>> {
     const m = known.member;
     const base = {
       sessionId: m.id, sessionName: m.name, runtimeKind: m.role === "child" ? "subagent" : "top-level", isCurrent, isCompacting: false, attachedClients: 0,
       ...(m.parentId ? { parentActiveSessionId: m.parentId, parentSessionId: m.parentId } : {}),
       ...(rel ? { relationship: rel } : {}),
     };
+    // Another root's row comes from its listing; its messages are not read here (a Prime transcript lives on its own box).
+    if (known.root?.kind === "prime") {
+      const root = known.root;
+      return { ...(root.activeId ? { activeSessionId: root.activeId } : {}), ...base, kind: "prime", host: root.box, status: root.status, isStreaming: root.status === "running", queuedCount: 0,
+        isSessionActive: true };
+    }
     if (known.thread !== thread.id || known.conversation === undefined) {
-      return { ...base, status: "inactive", isStreaming: false, queuedCount: 0, isSessionActive: false };
+      return { ...base, kind: "pi", status: known.root?.status ?? "inactive", isStreaming: known.root?.status === "running", queuedCount: 0, isSessionActive: false };
     }
     const harness = this.harnessOf(thread);
     const running = Boolean((await harness.snapshot(LiveDoc, known.conversation as ConversationId, context))?.run);
@@ -802,26 +842,28 @@ export class DurableRlm {
   }
 
   private async listAgents(slot: Slot): Promise<Record<string, unknown>> {
-    const all = await this.members(slot.thread);
+    const { all, missing } = await this.members(slot.thread, slot.conversation === ROOT_CONVERSATION_ID);
     const self = all.find(m => m.thread === slot.thread.id && m.conversation === slot.conversation);
     if (!self) throw new Error("agent observation is not available in this conversation");
     const members = family(self.member, all);
     return {
       current: await this.agentRow(slot.thread, self, true),
       agents: await Promise.all(members.map(m => this.agentRow(slot.thread, m.item, false, m.relationship))),
+      ...(missing ? { missing } : {}),
     };
   }
 
-  private async resolve(slot: Slot, target: string): Promise<{ known: { member: Member; conversation?: number; thread: string }; rel?: Relationship; isCurrent: boolean }> {
-    const all = await this.members(slot.thread);
+  private async resolve(slot: Slot, target: string): Promise<{ known: Known; rel?: Relationship; isCurrent: boolean }> {
+    const { all } = await this.members(slot.thread, slot.conversation === ROOT_CONVERSATION_ID);
     const self = all.find(m => m.thread === slot.thread.id && m.conversation === slot.conversation)!;
     const wanted = target.trim();
     if (wanted === self.member.id || wanted === self.member.name) return { known: self, isCurrent: true };
     const members = family(self.member, all);
     const exact = members.filter(m => m.item.member.id === wanted || m.item.member.name === wanted);
-    const hits = exact.length > 0 ? exact : members.filter(m => wanted.length >= 4 && m.item.member.id.endsWith(wanted));
+    // The id suffix a child's agent id ends in (`<thread>:<conversation>`) stays a match for pi-host's own agents only (owner rule c149).
+    const hits = exact.length > 0 ? exact : members.filter(m => m.item.root?.kind !== "prime" && wanted.length >= 4 && m.item.member.id.endsWith(wanted));
     if (hits.length === 1) return { known: hits[0]!.item, rel: hits[0]!.relationship, isCurrent: false };
-    if (hits.length > 1) throw new Error(`agent selector ${JSON.stringify(target)} is ambiguous`);
+    if (hits.length > 1) throw new Error(`agent selector ${JSON.stringify(target)} is ambiguous: it names ${hits.map(m => described(m.item)).join(" and ")}`);
     if (all.some(m => m.member.id === wanted || m.member.name === wanted)) throw new Error("Agent reach is limited to parent, siblings, and children");
     throw new Error(`No agent matches ${JSON.stringify(target)}`);
   }

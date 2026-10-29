@@ -30,7 +30,8 @@ import { statusOf, ThreadIndex, type IndexedEntry, type SearchPage, type SearchQ
 import { headFor, parseSession } from "./import.ts";
 import { AgentMessageEntry, ChatDoc, threadEnv, threadRegistry } from "./registry.ts";
 import { SPEAKING_TOOLS, type PrimeChat } from "./prime-chat.ts";
-import { rlmChildName, type DurableRlm, type RlmThread } from "./rlm.ts";
+import { PrimeRoots } from "./prime-roots.ts";
+import { rlmChildName, type DurableRlm, type RlmThread, type RootRow } from "./rlm.ts";
 import { deliverHarnessDigest, type PrimePromptOptions } from "./prime-prompt.ts";
 
 const context: Context = BACKGROUND_CONTEXT;
@@ -67,6 +68,8 @@ export interface DurableThreadsOptions {
   chat?: PrimeChat;
   /** Prime's `ipython` and its RLM runtime (`DurableRlm.load`): every conversation then offers it, with one kernel each. */
   rlm?: DurableRlm;
+  /** The Prime root sessions a thread's root reaches with `agent_message` and `agent_observe`; default `new PrimeRoots()` with `rlm`, none for null. */
+  primeRoots?: PrimeRoots | null;
 }
 
 export interface ThreadInfo extends ThreadRow {
@@ -201,8 +204,10 @@ export class DurableThreads {
   private readonly now: () => number;
   private wakeTimer?: NodeJS.Timeout;
   private closing = false;
+  private readonly primeRoots: PrimeRoots | undefined;
 
   constructor(private readonly options: DurableThreadsOptions) {
+    this.primeRoots = options.primeRoots === null ? undefined : options.primeRoots ?? (options.rlm ? new PrimeRoots() : undefined);
     this.threadsDir = join(options.dir, "threads");
     mkdirSync(this.threadsDir, { recursive: true, mode: 0o700 });
     this.index = new ThreadIndex(join(options.dir, "index.sqlite"));
@@ -333,8 +338,17 @@ export class DurableThreads {
       id, file, name, harness,
       get cwd() { return cwd(); },
       submit: input => this.submit(id, { conversation: input.conversation, text: input.text, requestId: input.requestId, whenBusy: input.whenBusy, entry: input.entry }),
-      roots: () => this.list().map(row => ({ id: row.id, name: row.name, cwd: row.cwd })),
-      submitRoot: (thread, input) => this.submit(thread, { text: input.text, requestId: input.requestId, whenBusy: input.whenBusy, entry: input.entry }),
+      roots: async () => {
+        const threads: RootRow[] = this.list().map(row => ({ kind: "pi", id: row.id, name: row.name, cwd: row.cwd, status: row.status }));
+        if (!this.primeRoots) return { rows: threads };
+        const prime = await this.primeRoots.list();
+        return { rows: [...threads, ...prime.roots], ...(prime.missing ? { missing: prime.missing } : {}) };
+      },
+      submitRoot: async (root, input) => {
+        if (root.kind === "pi") return this.submit(root.id, { text: input.text, requestId: input.requestId, whenBusy: input.whenBusy, entry: input.entry });
+        if (!this.primeRoots) throw new Error(`Prime session ${root.id} is not reachable from here`);
+        return this.primeRoots.send(root.id, input.text);
+      },
       createSession: async input => {
         const created = await this.create({
           ...(input.name ? { name: input.name } : {}), ...(input.model ? { model: input.model } : {}), cwd: input.cwd,
