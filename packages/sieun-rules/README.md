@@ -11,7 +11,7 @@ auto-sns-agent is the one exception: its rules stay in that repo's `scripts/repo
 
 | Event | Module | Effect |
 | --- | --- | --- |
-| `tool_call` (`bash`, `ipython`) | `guard.ts` | Refuses a history rewrite in the sieun-pi checkout, an outside send without the owner's ok, and a resource cap the owner did not ask for. |
+| `tool_call` (`bash`, `ipython`) | `guard.ts` | Refuses a history rewrite in the sieun-pi checkout, an outside send without the owner's ok, a resource cap the owner did not ask for, and a kill by pattern. |
 | `tool_call` (`ipython`) | `kernel-guard.ts` | Installs `kernel-guard.py` in the Python kernel, which refuses an outside send at run time. |
 | `tool_call` (`ipython`) | `rlm-delete.ts` | In a subagent, makes `rlm.delete_subagent` wait until a child that already replied is idle. |
 | `tool_call` (`ipython`) | `kernel-guard.ts` | Also installs `kernel-own.py`, which records each path under `~/scratch` the kernel makes, on this box or on another one over ssh, in the session's `owned.json`, and refuses a recursive delete below `~/scratch` of a tree the job did not make (c130). An owner-less leftover goes through `job-leftovers.ts unowned` in `legacy/prime/user-history` instead. |
@@ -34,6 +34,12 @@ A launch needs both a Playwright or Puppeteer import and a `.launch(`, `launchPe
 The refusal points to the aside_browser skill and to us-metal02, where repo specs keep running, as they do in CI (c163).
 The kernel judges the same rule on each subprocess through `send-check.ts`, so a command built at run time is refused too.
 `GLOBAL_RULES_PLATFORM` stands in for `process.platform` in tests.
+
+`kill.ts` refuses a kill by pattern on every host: `pkill`, `killall`, and a `kill` fed by `pgrep`, `pidof` or `ps` through a pipe to `xargs`, a `$(...)`, a variable or a loop.
+On 10-29 at 04:24:48 KST a job on the owner's Mac ran `pkill -f 'svelte-check' -U $(id -u)`, macOS pkill read `-U` and 501 as more patterns, and it closed the Prime worker that held 43 sessions (board step p1266); at 05:44 KST another job ran `pkill -9 -f 'autopair-real-ig.mjs --local'` after a prompt note had banned it.
+A `kill` of a literal pid or process group, a pid from `$!` or a pid file, and `h.kill()` on a bash() handle pass, and the refusal points to them.
+It is a hard limit, because a stray kill is a destructive action on shared state (c98).
+The kernel judges the same rule on each subprocess through `send-check.ts`, so a command built at run time is refused too.
 
 `caps.ts` refuses a command that sets a memory, CPU, IO, task or priority cap (owner rule c107), because the box parity duty counts each one as `resource_limits_set` and every count so far came from a hand-typed command: `load-fakeprov.service` with `CPUQuota` on 10-22 (board step p143), and `docker run --cpus 8` at 20:56Z, 21:35Z and 21:54Z on 10-24.
 It covers `docker` or `podman` `run`, `create` and `update` with a cap flag such as `--cpus`, `-m` or `--pids-limit`, `systemd-run` with a cap property such as `-p CPUQuota=` or with `--nice`, `systemctl set-property` with a cap property, and `nice`, `renice`, `ionice`, `cpulimit` or `taskset` in front of a command.

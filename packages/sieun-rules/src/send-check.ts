@@ -21,7 +21,7 @@ export function judgeCheck(check: Check, record = false): { block: false } | { b
 		what ? [{ rule: "send", command, reason: refusal(what) }] : [];
 	const verdicts =
 		check.kind === "shell"
-			? judgeShellText(check.text, check.cwd).filter((v) => v.rule === "send" || v.rule === "cap" || v.rule === "browser")
+			? judgeShellText(check.text, check.cwd).filter((v) => v.rule === "send" || v.rule === "cap" || v.rule === "browser" || v.rule === "kill")
 			: check.kind === "http"
 				? push(httpSend(check.method, check.url, check.body ?? ""), `${check.method} ${check.url}`)
 				: push(mcpSend(check.server, check.tool, check.args), `mcp ${check.server} ${check.tool} ${check.args.slice(0, 300)}`);
