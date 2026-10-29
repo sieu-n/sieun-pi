@@ -1,0 +1,40 @@
+{
+  "name": "Public page scrapers",
+  "ownerWords": "그렇게 하고, 이 크롤러들 통계를 계속 모니터링하고, active하게 걔들이 쓰는 방식을 block해 as a duty. explicitly, just for the external DB-based pages suceptible to this",
+  "goal": "Scrapers do not load the logged-out virev.ai pages that read our database or crawler, or the images those pages show, so the prod crawler keeps its capacity for real users. In scope are /profile/*, the creator list pages (top-*, viral-*, *-influencer-rates, *-influencer-marketing and /influencers/*), the /tools result pages, the email finder, /live, /use-cases and /sitemap.xml pages, and the /api routes they call (/api/img, /api/ig-grid, /api/ig-tile, /api/avatar, /api/public/profile-card, /api/profile/autocomplete, /api/contact/resolve, the /api/public-tools lookups and /api/live). Marketing and static pages are out of scope. Search engines we want (Google, Bing, Apple, DuckDuckGo, OpenAI search, Perplexity, Naver, Yandex, Baidu, Seznam) keep their access when their IP checks out, and link previews keep their access to pages. On 10-28 and 10-29 a scraper on about 11,000 IPs pulled every post image of the profile pages through /api/img with the referer https://virev.ai/, 78% of /api/img origin calls on 10-29, and the crawler shed public media with 503 in 33 minutes of that day.",
+  "metrics": [
+    {
+      "key": "scraper_share_pct",
+      "label": "Share of origin calls to the public database pages and their images made by automated clients other than verified search engines and link previews, last 24 h (10-27, the quietest day from 10-22 to 10-29, read 14.5%; 10-29 read 75%)",
+      "op": "<=",
+      "target": 14.5,
+      "unit": "%",
+      "headline": true
+    },
+    {
+      "key": "crawler_shed_min",
+      "label": "Minutes in the last 24 h the prod crawler answered 10 or more public /api/media calls with 503 (the quiet day 10-28 06:00Z to 10-29 06:00Z read 3; 10-29 read 33)",
+      "op": "<=",
+      "target": 3,
+      "unit": " min"
+    },
+    {
+      "key": "real_user_image_ok_pct",
+      "label": "Share of real users' /api/img origin calls answered without a 5xx, last 24 h (10-27 read 99.6% and 10-28 read 99.4%; 10-29 read 98.1%)",
+      "op": ">=",
+      "target": 99.4,
+      "unit": "%"
+    }
+  ],
+  "precheck": {
+    "command": [
+      "node",
+      "--import",
+      "tsx",
+      "scripts/duties/public-page-scrapers.ts"
+    ],
+    "cwd": "../..",
+    "timeoutMs": 90000
+  },
+  "onMiss": "The precheck reads ClickHouse otel.otel_logs through Grafana's grafana_clickhouse source (the Vercel drain of service search, env production, and the caddy access log of crawler.virev.ai); read the same rows with `ops/bin/ch-ro` in auto-sns-agent when you need more columns. Each scraper_pattern item names the rule that flagged it, the UA family, calls, IPs, routes, referers and sample IPs; scripts/duties/public-page-scrapers.ts holds the rules and the route list. 1. Find the new pattern in the flagged rows: compare its referer, UA, Chrome majors, IP spread (calls per IP), the routes it hits and whether its page loads come before image bursts, against people's calls on the same routes, and look up the ASNs of its IPs (whois -h whois.cymru.com) when the UA and referer do not separate it. 2. Block it the cheapest way that spares real users and the wanted search engines. First a Vercel Firewall rule on project auto-sns-search, scope sieuns-projects: write the rule as JSON with action log, add it with `vercel firewall rules add --scope sieuns-projects --json \"$(cat <file>)\" --yes` and `vercel firewall publish --yes` from apps/search, let it run 15 to 30 min, then count the requests the rule logged in the drain (LogAttributes['vercel.proxy.wafRule'] names it) and check that none of them are people's calls (a virev.ai page referer with a current browser, a signed-in __session cookie, or a verified search engine IP). When it matches no real-user call, switch it with `vercel firewall rules edit <name> --action deny`, publish, and keep the rule JSON in ~/work/img-scraper/img-scraper-defense/. The owner pre-approved these firewall changes for this duty in msg mvtth6bs. ~/work/img-scraper/img-scraper-defense/NOTES.md and firewall-counts.md show the 10-29 rules and how the firewall credits a request only to the last rule it matches. Second, when the firewall cannot express the pattern or it should hold in code too, start one job that adds the check to apps/search (the isCrawlerLoadBot gate in lib/server/crawler-load-bots.ts runs before any render, /api/img has its own referer gate) and commits it on dev/sieun for the next promote; /api/ig-tile is a rewrite to the crawler that skips hooks, so block it in the firewall or the crawler's /public/media route. Never block a wanted search engine from its published IPs, and never put a rate limit in without a measured number. 3. Rerun the precheck with PUBLIC_SCRAPERS_END set to before the block and after it, and report what you blocked, the rule name, and the before and after numbers of the pattern and of the three metrics. When crawler_shed_min or real_user_image_ok_pct misses while scraper_share_pct is met, the shed has another cause: read the caddy 503 minutes in the flagged item and give it to the chat that owns the crawler. All on target: no message."
+}
