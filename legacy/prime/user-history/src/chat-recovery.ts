@@ -2,7 +2,7 @@ import { clockTime } from "./checkin-settings.ts";
 import { RETRY_BACKOFF_MS } from "./chat-checkin.ts";
 import { CHECK_IN_PREFIX, OWNER_RETRY_MARK, poolSlot, serverNote, turnStarter } from "./shared/chat-feed.ts";
 import { messageText } from "./shared/turns.ts";
-import type { ChatWait, ThreadMessage } from "./shared/types.ts";
+import type { ChatWait, ClaudeState, ThreadMessage } from "./shared/types.ts";
 import type { CheckInSetting } from "./checkin-settings.ts";
 
 /**
@@ -27,8 +27,7 @@ export function hungMessage(since: number, now: number): string {
 /** The queue lane of a chat's check-in: apart from the chat's own lane, where its revive runs, so a check-in that waits never holds a revive. */
 export const checkInLane = (id: string): string => `checkin:${id}`;
 
-/** The pool's answer about Claude now: whether any account can serve, and when the first one that cannot frees up (epoch ms, null when unknown). */
-export interface ClaudeState { serves: boolean; freeAt: number | null }
+export type { ClaudeState } from "./shared/pool-types.ts";
 
 /** An owner-started failed turn is restarted after 30 s, then on the usual schedule. A turn something else started waits 5 min first. */
 export const OWNER_RETRY_BACKOFF_MS: readonly number[] = [30_000, ...RETRY_BACKOFF_MS];

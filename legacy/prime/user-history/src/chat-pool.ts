@@ -4,9 +4,8 @@ import { realpath } from "node:fs/promises";
 import { createConnection } from "node:net";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { ClaudeState } from "./chat-recovery.ts";
 import { POOL_PRIORITIES, TURN_KINDS, type AccountAction, type AgentQueueReading, type AgentQueueSession, type AgentQueueWorking, type AgentQueuedSession, type AccountLogin, type AccountResets, type AccountsView, type PoolAccount, type PoolConfig, type PoolPriority, type PoolProvider, type PoolSetRecord,
-  type PoolResolution, type PoolSelection, type TurnKind, type PoolWait, type PoolWindow, type UsageRefresh, type UsageRefreshAccount } from "./shared/types.ts";
+  type PoolResolution, type PoolSelection, type TurnKind, type PoolWait, type PoolWindow, type UsageRefresh, type UsageRefreshAccount, type ClaudeState } from "./shared/pool-types.ts";
 
 /**
  * The installed pi-pool CLI (`~/.local/bin/pi-pool`, a link into ~/.local/share/pi-pool/current), never the copy in this checkout: the chat
