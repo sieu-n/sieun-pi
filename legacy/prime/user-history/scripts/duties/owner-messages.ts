@@ -1,7 +1,10 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
+import { type FlaggedSlice, HOST_AWAY, type PrecheckOutput } from "../../src/shared/chat-duties.ts";
+import { copyPath } from "../../src/host-catalogs.ts";
+import { peerReach, type PeerReach, readTailscaleStatus } from "../../src/host-reach.ts";
+import { loadHosts } from "../../src/hosts.ts";
 import { Projector } from "../../src/chat-projection.ts";
 import { readBranchPage, historyMessages } from "../../src/session-tail.ts";
 import { chatLines, lineId, OWNER_BURST_GAP_MS, OWNER_RETRY_MARK, serverNote } from "../../src/shared/chat-feed.ts";
@@ -21,7 +24,9 @@ import { fixRepos, gitCommitTime } from "./repeat-split.ts";
  *   verify runs read 57, 67, 14 and 41 while each labelling job left 0 or 1. A run whose job was cut (its `cut`) before it wrote a label line
  *   by its name had no chance: 4 of 6 d11 jobs from 10-22 14:45Z to 10-23 03:11Z were cut by credential_unavailable with no label, and the
  *   lines before them read 13, 9 and 9 misses. Every unlabeled line is flagged with its chat, wake and text.
- * - unanswered_bursts: his message bursts with no reply in the window that are older than ANSWER_GRACE_MS.
+ * - unanswered_bursts: his message bursts with no reply in the window that are older than ANSWER_GRACE_MS. A burst on another box's chat counts
+ *   only when this box's copy of its session file was complete past the grace (`copyThrough`); otherwise it is flagged `host_away`, so the
+ *   runner reruns the duty once that box is back, or `copy_behind` while the box is up and the copy has not caught up yet.
  * - noise_before_fix_24h, noise_after_fix_24h, noise_no_fix_24h: the noise lines by when the check for their kind landed (noise-split.ts), and
  *   needed_pct_24h's lastEventAt, the newest send, label or fix landing among them, so a miss on noise no run has newly seen only waits for the
  *   lines to leave the 24 h. A missed needed_pct_24h also flags `aging`: when the oldest noise line leaves and when the share meets the target
@@ -39,7 +44,9 @@ const ANSWER_GRACE_MS = 30 * 60_000;
  * label it: on 10-24 the 01:35Z run met, its job left the 00:54Z CI and RepoOps line unlabeled, and the 01:55Z run read unlabeled_lines 1.
  */
 const UNCOUNTED = "not counted yet, label it in this run even when every metric is met, since the next run counts it; ";
-const PLACES = [join(homedir(), ".prime/agent/sessions"), join(homedir(), ".cache/sieun-pi/hosts/mac/Users/sieunpark/.prime/agent/sessions")];
+/** Where each chat's session file is: this box's own sessions, then this box's copy of the Mac's (src/host-catalogs.ts). */
+const PLACES: { dir: string; host?: string }[] = [{ dir: join(homedir(), ".prime/agent/sessions") },
+  { dir: join(homedir(), ".cache/sieun-pi/hosts/mac/Users/sieunpark/.prime/agent/sessions"), host: "mac" }];
 
 const args = process.argv.slice(2);
 const opt = (name: string): string | undefined => args.includes(name) ? args[args.indexOf(name) + 1] : undefined;
@@ -74,12 +81,45 @@ async function branchSince(file: string, since: number): Promise<any[]> {
   return pages.flat();
 }
 
+/** Each box's reach on Tailscale, read once per run; a box reads online when hosts.json or Tailscale does not read, as in src/host-reach.ts. */
+let reaches: Promise<Map<string, PeerReach>> | undefined;
+async function reachOf(host: string): Promise<PeerReach> {
+  reaches ??= Promise.all([loadHosts(), readTailscaleStatus()])
+    .then(([registry, status]) => new Map(status ? registry.hosts.map(box => [box.name, peerReach(status, box.address)] as const) : []), () => new Map());
+  return (await reaches).get(host) ?? { online: true };
+}
+
+/** When `host`'s catalog copy last saw `chat`'s session change (its row's `modified`), found by line since a save puts each row on its own line. */
+function lastChange(host: string, chat: string): number {
+  let text = "";
+  try { text = readFileSync(copyPath(host), "utf8"); } catch { return NaN; }
+  const line = text.split("\n").find(row => row.includes(`"sessionId":"${chat}"`));
+  try { return Date.parse((JSON.parse(line!.replace(/,$/, "")) as { modified?: string }).modified ?? ""); } catch { return NaN; }
+}
+
+type Copy = { through: number; reach: PeerReach; written: number; changed: number };
+/**
+ * Until when this box's copy (`file`) of another box's session file holds every line that box wrote: up to now while the box is up and the
+ * copy was written after the session's last change in the catalog copy, else no later than the copy's last write, and no later than Tailscale's
+ * LastSeen while the box is offline. On 10-29 the owner wrote to designer bro on the Mac at 18:34:38Z, the Mac went offline at 18:39Z (LastSeen
+ * 18:53Z), the copy stopped at 18:35Z, and d11 read the burst as unanswered at 21:03Z though no reply could have reached this box.
+ */
+async function copyThrough(host: string, chat: string, file: string): Promise<Copy> {
+  const written = statSync(file).mtimeMs;
+  const changed = lastChange(host, chat);
+  const reach = await reachOf(host);
+  const seen = reach.online ? Infinity : Date.parse(reach.lastSeen ?? "") || written;
+  return { through: Math.min(seen, changed > written ? written : Infinity), reach, written, changed };
+}
+const iso = (ms: number): string => Number.isFinite(ms) ? new Date(ms).toISOString().slice(0, 19) + "Z" : "an unknown time";
+
 let needed = 0, unlabeled = 0, unanswered = 0;
 const flagged: FlaggedSlice[] = [];
 const noiseLines: { chat: string; at: number; labelled?: number; case: string; text: string }[] = [];
 for (const chat of chats) {
-  const file = PLACES.map(dir => join(dir, `${chat}.jsonl`)).find(existsSync);
-  if (!file) continue;
+  const place = PLACES.find(({ dir }) => existsSync(join(dir, `${chat}.jsonl`)));
+  if (!place) continue;
+  const file = join(place.dir, `${chat}.jsonl`);
   const messages = projector.messages(historyMessages(await branchSince(file, start - 6 * 3_600_000)));
   let owner = true, settled = true;
   const ownerTurn: boolean[] = [];
@@ -115,10 +155,21 @@ for (const chat of chats) {
     if (line.kind !== "user" || line.at < start || line.at > end - ANSWER_GRACE_MS) continue;
     const next = seq[k + 1];
     if (next?.kind === "user" && next.at - line.at < OWNER_BURST_GAP_MS) continue;
-    if (!seq.slice(k + 1).some(later => later.kind === "agent")) {
-      unanswered++;
-      flagged.push({ kind: "unanswered", chat, at: line.at, excerpt: `no reply to: ${line.text.replace(/\s+/g, " ").slice(0, 300)}` });
+    if (seq.slice(k + 1).some(later => later.kind === "agent")) continue;
+    const text = line.text.replace(/\s+/g, " ").slice(0, 300);
+    const due = line.at + ANSWER_GRACE_MS;
+    const copy = place.host ? await copyThrough(place.host, chat, file) : undefined;
+    if (place.host && copy && copy.through < due) {
+      flagged.push(copy.reach.online
+        ? { kind: "copy_behind", chat, at: line.at, excerpt: `no reply seen yet to: ${text}; this box's copy of the chat on ${place.host} was last written at ` +
+          `${iso(copy.written)}, before its last change at ${iso(copy.changed)}, so the burst counts once the copy catches up` }
+        : { kind: HOST_AWAY, host: place.host, chat, at: line.at, excerpt: `no reply seen yet to: ${text}; ${place.host} is offline on Tailscale, last seen ` +
+          `${iso(Date.parse(copy.reach.lastSeen ?? ""))}, before the reply grace ended at ${iso(due)}, so a reply there cannot be read here; the burst ` +
+          `counts once ${place.host} is back and the duty reruns then` });
+      continue;
     }
+    unanswered++;
+    flagged.push({ kind: "unanswered", chat, at: line.at, excerpt: `no reply to: ${text}` });
   }
 }
 const noise = await splitNoise(noiseLines, gitCommitTime(fixRepos("")));
