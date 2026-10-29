@@ -65,6 +65,16 @@ test("an LGTM 502 leaves both shares unmeasured, with the reason, and never 0", 
   assert.match(verdict.summary, /not measured: the precheck gave no value for cache_read_ratio_1h, cache_read_ratio_24h \(cache_read_ratio_1h not measured: LGTM did not answer/);
 });
 
+// On 10-29 at 03:25Z LGTM timed out on connect, and asking each window again took the d10 precheck to 559 s.
+test("an unreachable LGTM is asked once, and every window gets its error", async () => {
+  let asked = 0;
+  const unreachable: Prometheus = { query: async () => { asked += 1; throw new Error("LGTM unreachable: fetch failed (ETIMEDOUT)"); }, range: async () => [] };
+  const cache = await measureCache(unreachable, targets);
+  assert.equal(asked, 2, "only the first window's two queries go out");
+  assert.deepEqual(cache.metrics, {});
+  for (const key of keys) assert.match(cache.flagged.find(slice => slice.excerpt.startsWith(key))!.excerpt, /not measured: LGTM did not answer: LGTM unreachable: fetch failed \(ETIMEDOUT\)/);
+});
+
 test("a cache check that throws leaves both shares out of the harness output", async () => {
   const dataDir = mkdtempSync(join(tmpdir(), "cache-no-data-"));
   const output = await measureHarness({ roots: [], views: async () => [], dataDir, now: Date.parse("2026-10-19T15:30:00Z"),

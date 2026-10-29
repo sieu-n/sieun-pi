@@ -67,7 +67,11 @@ export const lgtmFailure = (keys: readonly CacheMetric[], error: unknown): Flagg
 export async function measureCache(prometheus: Prometheus, targets: Record<CacheMetric, number>): Promise<{ metrics: Partial<Record<CacheMetric, number>>; flagged: FlaggedSlice[] }> {
   const metrics: Partial<Record<CacheMetric, number>> = {};
   const flagged: FlaggedSlice[] = [];
+  // Every window asks the same LGTM, so once one query fails the next windows take its error unasked. On 10-29 at 03:25Z LGTM
+  // timed out on connect (ETIMEDOUT), each query waited out a connect and its retry, and asking both windows took the d10 precheck to 559 s.
+  let down: unknown;
   for (const [key, span] of Object.entries(WINDOWS) as [CacheMetric, string][]) {
+    if (down !== undefined) { flagged.push(lgtmFailure([key], down)); continue; }
     let tokens: Sample[], calls: Sample[];
     try {
       [tokens, calls] = await Promise.all([
@@ -75,6 +79,7 @@ export async function measureCache(prometheus: Prometheus, targets: Record<Cache
         prometheus.query(`sum by (provider, stop_reason) (increase(prime_agent_calls_total{${JOB}}[${span}]))`),
       ]);
     } catch (error) {
+      down = error;
       flagged.push(lgtmFailure([key], error));
       continue;
     }
