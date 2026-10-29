@@ -128,14 +128,19 @@ export function slotParkOf(lines: readonly string[], sessionId: string, now: num
   return poolPark(fileSlotPark(lines).park, sessionId, now, pool);
 }
 
-/** A file's open wait (`fileSlotPark`) checked against pi-pool now, as `slotParkOf` reads it. */
+/**
+ * A file's or row's open wait (`fileSlotPark`, `primePark`) checked against pi-pool now, as `slotParkOf` reads it. A wait whose resumeAt
+ * passed and that the pool lists neither queued nor working is over, Prime's labelled park too: a box that went offline keeps its last row,
+ * and on 10-29 the outbox held a message to designer bro on the Mac at 23:04Z "while the target waits for its pi-pool slot at 19:30:01Z".
+ * A labelled park with no resumeAt lasts until Prime clears it.
+ */
 export function poolPark(park: SlotPark | undefined, sessionId: string, now: number, pool: PoolQueue | null): SlotPark | null {
   if (!park) return null;
   if (!pool) return park;
   const queued = pool.queued.get(sessionId);
   if (queued) return { ...park, place: queued.position, total: queued.total };
   if (pool.working.has(sessionId)) return { ...park.since !== undefined ? { since: park.since } : {}, ...park.resumeAt !== undefined ? { resumeAt: park.resumeAt } : {}, starting: true };
-  return park.label !== undefined || (park.resumeAt !== undefined && park.resumeAt > now) ? park : null;
+  return (park.resumeAt !== undefined ? park.resumeAt > now : park.label !== undefined) ? park : null;
 }
 
 /** Prime's credential park on a summary row (load.3, schema 39 `SessionCredentialPark`): its times are ISO strings, as agent_observe gives them. */
