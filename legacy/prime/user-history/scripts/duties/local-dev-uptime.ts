@@ -8,7 +8,7 @@ import { pathToFileURL } from "node:url";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import { loadHosts, roleUrl } from "../../src/hosts.ts";
 import { treeMb, treePids } from "./demo-sandbox.ts";
-import { readWatch, type UsableMiss, unusable, type WatchLine } from "../../src/mac-usable-watch.ts";
+import { isLinuxReading, readWatch, type UsableMiss, unusable, type WatchLine } from "../../src/mac-usable-watch.ts";
 import { chatDataDir } from "../../src/owner-ok.ts";
 import { hostViews } from "./whole-system.ts";
 
@@ -208,7 +208,8 @@ export function macUnusableMinutes(lines: readonly WatchLine[]): { read: number;
   const missedIn = new Map<number, Set<UsableMiss>>();
   for (const line of lines) {
     const usable = hostViews(line).find(view => view.name === MAC_HOST)?.usable;
-    if (!usable) continue;
+    // The Mac writes no Linux reading, so a Linux one named the Mac is another box's (whole-system.ts UNNAMED_LINUX_HOST).
+    if (!usable || isLinuxReading(usable)) continue;
     const minute = Math.floor(Date.parse(line.at) / 60_000);
     read.add(minute);
     const missed = unusable(usable);
@@ -351,6 +352,34 @@ export function target(service: Service, env: Record<string, string>): { url: st
   return { url: base.replace(/\/+$/, "") + service.path };
 }
 
+/**
+ * Why a down local crawler does not answer, read from the newest boot of each compose `crawler-v3` container (`docker logs --since` its
+ * StartedAt): the supervisor's line with UNKNOWN_REVISION_MARKER (apps/crawler-v3/src/run/supervisor.py), which names a database revision
+ * that no file in apps/crawler-v3/alembic/versions holds. On 10-29 the crawler restarted on '0238_brand_lists', a draft another job applied
+ * and moved out of the checkout, and every /profile on :5174 answered profile:null while this duty only read the crawler as not answering.
+ */
+export const CRAWLER_SERVICE = "crawler-v3";
+export const UNKNOWN_REVISION_MARKER = "unknown alembic revision";
+
+/** The newest unknown-revision line of a container log, from "bootstrap failed" on, else undefined. */
+export function unknownRevisionLine(log: string): string | undefined {
+  const line = log.split("\n").findLast(candidate => candidate.includes(UNKNOWN_REVISION_MARKER));
+  if (line === undefined) return undefined;
+  const start = line.indexOf("bootstrap failed");
+  return (start < 0 ? line : line.slice(start)).trim();
+}
+
+export async function crawlerBootCause(deps: Pick<UptimeDeps, "exec">): Promise<string | undefined> {
+  const names = (await deps.exec("docker", ["ps", "-a", "--filter", `label=com.docker.compose.service=${CRAWLER_SERVICE}`, "--format", "{{.Names}}"]))
+    .split("\n").map(name => name.trim()).filter(Boolean);
+  for (const name of names) {
+    const started = (await deps.exec("docker", ["inspect", "-f", "{{.State.StartedAt}}", name])).trim();
+    const line = unknownRevisionLine(await deps.exec("docker", ["logs", "--since", started, name]));
+    if (line) return `container ${name}: ${line}`;
+  }
+  return undefined;
+}
+
 export async function measureUptime(deps: UptimeDeps, previous: UptimeState | undefined): Promise<{ output: PrecheckOutput; state?: UptimeState }> {
   const flagged: FlaggedSlice[] = [];
   const metrics: Record<string, number> & { servers_not_answering: number; restarts: number } = { servers_not_answering: 0, restarts: 0 };
@@ -370,6 +399,10 @@ export async function measureUptime(deps: UptimeDeps, previous: UptimeState | un
   }));
   metrics.servers_not_answering = answers.filter(answer => answer.kind === "down").length;
   flagged.push(...answers);
+  if (answers.some(answer => answer.kind === "down" && answer.excerpt.startsWith("crawler:"))) {
+    const cause = await crawlerBootCause(deps).catch((error: unknown) => `container log read failed: ${error instanceof Error ? error.message : String(error)}`);
+    if (cause) flagged.push({ at, kind: "crawler_boot", excerpt: `crawler: ${cause}`.slice(0, 300) });
+  }
   const { metrics: macMetrics, flagged: macFlagged, ...windows } = await mac;
   Object.assign(metrics, macMetrics);
   flagged.push(...macFlagged);
