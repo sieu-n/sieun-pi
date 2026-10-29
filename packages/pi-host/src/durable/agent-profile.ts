@@ -22,8 +22,8 @@ import { getLocalHarnessStateDir } from "./vendor/prime-harness.ts";
 
 /**
  * An `agent.ref` value: the agent's id, its folder on this box, and what the thread is to it. `work` is the agent's work thread, with `comm`
- * the id of its DM comm thread once the agent is split; `job` is a job filed under it; `comm` talks with the owner in room `room` (`dm_<slug>`)
- * and hands work to the work thread `work`.
+ * the id of its DM comm thread once the agent is split; `job` is a job filed under it; `comm` speaks for the agent in room `room` (a DM
+ * `dm_<slug>`, a channel `ch_` or a Solo room `so_`) and hands work to the work thread `work`.
  */
 export type AgentRef =
   | { agent: string; dir: string; role: "work"; comm?: string }
@@ -56,26 +56,59 @@ export const STOP_WORK_TOOL = "stop_work";
 /** The coding tools a comm thread does without: it reads files, and it hands any change to the work thread. */
 export const COMM_REMOVED_TOOLS = ["write", "edit", "bash", "subagent"] as const;
 
-/** The root conversation's instructions for a comm thread. */
+/** Whether a room is a group room, a channel (`ch_`) or a Solo room (`so_`), whose posts the owner and other agents share. */
+const isGroupRoom = (room: string): boolean => room.startsWith("ch_") || room.startsWith("so_");
+
+/** The root conversation's instructions for a comm thread: the DM text for a `dm_` room, the group text for a channel or a Solo room. */
 export function commInstructions(ref: { agent: string; room: string; work: string }): string {
-  const work = JSON.stringify(ref.work);
+  return isGroupRoom(ref.room) ? groupCommInstructions(ref) : dmCommInstructions(ref);
+}
+
+/** The steps a comm thread takes with its work thread, in a DM or a group room. */
+function workSteps(work: string): string[] {
+  return [
+    `Answer a status question from the work thread's state. Read it in ipython with \`await agent_observe.get_agent(${work})\` or \`await agent_observe.recent_messages(${work})\`, and read the board with chat_board. Never ask the work thread for its status.`,
+    `Hand any task that takes more than a minute to the work thread with \`await agent_message.send(task, receiver_role="sibling", receiver_name=${work})\`. Steer it the same way with \`mode="steer"\`, and stop its turn with stop_work.`,
+  ];
+}
+
+function dmCommInstructions(ref: { agent: string; room: string; work: string }): string {
+  const [status, hand] = workSteps(JSON.stringify(ref.work));
   return [
     `You are agent ${ref.agent}'s comm thread in room ${ref.room}. You talk with the owner. The work thread ${ref.work} does the agent's work.`,
     "",
-    `1. Answer a status question from the work thread's state. Read it in ipython with \`await agent_observe.get_agent(${work})\` or \`await agent_observe.recent_messages(${work})\`, and read the board with chat_board. Never ask the work thread for its status.`,
-    `2. Hand any task that takes more than a minute to the work thread with \`await agent_message.send(task, receiver_role="sibling", receiver_name=${work})\`. Steer it the same way with \`mode="steer"\`, and stop its turn with stop_work.`,
+    `1. ${status}`,
+    `2. ${hand}`,
     "3. A `[work-done ...]` or `[work-failed ...]` input is a notice from pi-host, not the owner's turn. Tell the owner about it only when he asked for that result or it needs his decision (c117). Otherwise end the turn without a message.",
     "4. Speak to the owner only with tell_owner. You do not edit files, so you have no write, edit, bash or subagent tool.",
   ].join("\n");
 }
 
-/** The root conversation's instructions for a work thread whose agent has a comm thread. */
+function groupCommInstructions(ref: { agent: string; room: string; work: string }): string {
+  const [status, hand] = workSteps(JSON.stringify(ref.work));
+  return [
+    `You are agent ${ref.agent}'s comm thread in room ${ref.room}, a group chat that the owner and other agents share. The work thread ${ref.work} does the agent's work.`,
+    "",
+    "1. Each post arrives with a header that names the room, the post's author and its hops. A Solo room's header also gives its agenda and members.",
+    "2. Every post reaches every member. Speak in the room only when the post concerns your agent or you add something no one said. Otherwise end the turn without a message, also when the owner's post is for another member or an agent's post needs nothing from you.",
+    "3. Speak only with tell_owner, one point per message in one or two short plain sentences. Name another member as @<name> to hand that member something.",
+    "4. An agent's post or a notice is not the owner's turn, so set why and about there. A message that answers the agenda or a question put to your agent is why \"answer\", with about naming that point.",
+    `5. ${status}`,
+    `6. ${hand}`,
+    "7. A `[work-done ...]` or `[work-failed ...]` input is a notice from pi-host. Tell the room about it only when the owner or a member asked for that result or it needs the owner's decision (c117). Otherwise end the turn without a message.",
+    "8. You do not edit files, so you have no write, edit, bash or subagent tool.",
+  ].join("\n");
+}
+
+/** The root conversation's instructions for a work thread whose agent has a comm thread; `comm` is the DM comm thread. */
 export function workInstructions(ref: { agent: string; comm: string }): string {
   return [
     `You are agent ${ref.agent}'s work thread. You do not talk with people, so you have no tell_owner tool.`,
-    `The comm thread ${ref.comm} talks with the owner and hands you tasks as agent messages.`,
-    `When a task finishes, fails or gets blocked, report to the comm thread with \`await agent_message.send(report, receiver_role="sibling", receiver_name=${JSON.stringify(ref.comm)})\`, and lead the report with the answer.`,
-    "If a handed task ends with no report, pi-host sends your last text to the comm thread for you.",
+    `Your agent has one comm thread per room, which talks there and hands you tasks as agent messages. The DM comm thread ${ref.comm} talks with the owner.`,
+    "When a task finishes, fails or gets blocked, report to the comm thread that handed it to you, and lead the report with the answer. " +
+      "Its message header `[agent-message from sibling:<name>]` names it, so send `await agent_message.send(report, receiver_role=\"sibling\", receiver_name=\"<name>\")` with that exact name.",
+    `Send a report no comm thread asked for to the DM comm thread with \`await agent_message.send(report, receiver_role="sibling", receiver_name=${JSON.stringify(ref.comm)})\`.`,
+    "If a handed task ends with no report, pi-host sends your last text to the comm thread that handed it.",
   ].join("\n");
 }
 

@@ -7,6 +7,9 @@
  * 3. A task the comm thread hands the work thread with agent_message.send that settles with no reply sends the comm thread one
  *    `[work-done: no-reply ...]` input, a task the work thread reported on sends none, and a hand-over cut by a pi-host restart sends its
  *    notice once.
+ * 4. A second comm thread of the agent, for a Solo room, gets the group instructions, hands the same work thread tasks, and gets the notice
+ *    of its own hand-over while the DM comm thread gets none; a report the work thread sends it by the name in the task's header counts as
+ *    its reply.
  */
 import { strict as assert } from "node:assert";
 import { cpSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
@@ -51,7 +54,8 @@ function turn(messages: readonly Message[]): { text: string; answered: boolean }
   return { text: at < 0 ? "" : textOf(messages[at]!.content as never), answered: messages.slice(at + 1).some(m => m.role === "toolResult") };
 }
 
-const ids = { work: "", comm: "" };
+const ids = { work: "", comm: "", room: "" };
+const ROOM_COMM = "vent · Solo relay";
 
 const STATUS_CODE = () => `
 import json
@@ -71,6 +75,7 @@ function workModel(messages: Message[]): ReturnType<typeof say> {
   if (text.includes("build the slow page")) return answered ? say("slow page built") : cell("import asyncio\nawait asyncio.sleep(3)");
   if (text.includes("build the page")) return say("page built");
   if (text.includes("write the report")) return answered ? say("sent the report") : send("report: written", () => ids.comm);
+  if (text.includes("write the room report")) return answered ? say("sent the room report") : send("room report: written", () => /sibling:([^\]]+)\]/.exec(text)![1]!);
   return say("ok");
 }
 
@@ -81,6 +86,8 @@ function commModel(messages: Message[]): ReturnType<typeof say> {
   if (text === "do the slow page") return answered ? say("handed") : send("build the slow page", () => ids.work);
   if (text === "do the page") return answered ? say("handed") : send("build the page", () => ids.work);
   if (text === "do the report") return answered ? say("handed") : send("write the report", () => ids.work);
+  if (text === "do the room page") return answered ? say("handed") : send("build the room page", () => ids.work);
+  if (text === "do the room report") return answered ? say("handed") : send("write the room report", () => ids.work);
   return say("noted");
 }
 
@@ -89,7 +96,7 @@ function threadsIn(name: string): DurableThreads {
     dir: join(dir, name),
     models: threadId => {
       const faux = fauxProvider({ provider: MODEL.provider, models: [{ id: MODEL.modelId }], tokensPerSecond: 0 });
-      faux.setResponses(Array.from({ length: 200 }, () => ({ messages }: { messages: Message[] }) => (threadId === ids.comm ? commModel(messages) : workModel(messages))));
+      faux.setResponses(Array.from({ length: 200 }, () => ({ messages }: { messages: Message[] }) => (threadId === ids.comm || threadId === ids.room ? commModel(messages) : workModel(messages))));
       const models = createModels();
       models.setProvider(faux.provider);
       return models;
@@ -153,6 +160,11 @@ test("an agent.ref sets the root's tools and instructions for its role in its co
     for (const name of ["write", "edit", "bash", "subagent"]) assert.ok(!tools.includes(name), name);
     assert.ok(tools.includes(STOP_WORK_TOOL) && tools.includes("read"), tools.join(", "));
     assert.match(commInstructions(comm), /comm thread in room dm_vent[\s\S]*receiver_name="w-1"[\s\S]*stop_work[\s\S]*c117[\s\S]*tell_owner/);
+    for (const room of ["so_1a2b3c4d", "ch_1a2b3c4d"]) {
+      const group = commInstructions({ ...comm, room });
+      assert.match(group, new RegExp(`comm thread in room ${room}, a group chat[\\s\\S]*header[\\s\\S]*concerns your agent[\\s\\S]*without a message[\\s\\S]*tell_owner[\\s\\S]*@<name>[\\s\\S]*why and about[\\s\\S]*receiver_name="w-1"[\\s\\S]*stop_work[\\s\\S]*c117`));
+      assert.doesNotMatch(group, /You talk with the owner\./);
+    }
 
     changes.length = 0;
     await threads.docPut(thread.id, "agent.ref", comm);
@@ -162,7 +174,7 @@ test("an agent.ref sets the root's tools and instructions for its role in its co
     await threads.docPut(thread.id, "agent.ref", work);
     const asWork = await state();
     assert.deepEqual([asWork.tools, asWork.modelTools, asWork.instructions], [{ remove: ["tell_owner"] }, undefined, workInstructions(work)]);
-    assert.match(workInstructions(work), /work thread[\s\S]*comm thread c-1[\s\S]*receiver_name="c-1"/);
+    assert.match(workInstructions(work), /work thread[\s\S]*comm thread c-1[\s\S]*comm thread that handed it[\s\S]*sibling:<name>[\s\S]*receiver_name="c-1"/);
 
     await threads.docPut(thread.id, "agent.ref", { agent: "ag_vent", dir: folder, role: "work" });
     const plain = await state();
@@ -267,6 +279,40 @@ test("a hand-over that a pi-host restart cuts sends its notice once after the re
     assert.match(notice!.text, /^\[work-done: no-reply agent:vent\]\n\nLast assistant text: slow page built$/);
     await until("the hand-over to end", async () => (await handsLive(threads)) === 0);
     assert.equal((await notices(threads)).length, 1);
+  } finally {
+    await threads.shutdown();
+  }
+});
+
+test("a Solo room's comm thread hands the same work thread tasks, gets its own notice, and counts a report sent by its header name", { timeout: 240_000 }, async () => {
+  const threads = threadsIn("room");
+  try {
+    await pair(threads);
+    ids.room = (await threads.create({ name: ROOM_COMM })).id;
+    const roomRef = { agent: "ag_vent", dir: folder, role: "comm", room: "so_1a2b3c4d", work: ids.work } as const;
+    await threads.docPut(ids.room, "agent.ref", roomRef);
+    const open = await threads.thread(ids.room);
+    assert.equal((await open.harness.snapshot(AgentDoc, ROOT_CONVERSATION_ID, context))?.instructions, commInstructions(roomRef));
+    const roomNotices = async () => inputs(await rootEntries(threads, ids.room)).filter(input => /^\[work-(done|failed)/.test(input.text));
+    const roomHands = async () => (await open.harness.inspect(context)).tasks.filter(task => task.record.kind === HAND_TASK).length;
+
+    await ask(threads, ids.room, "do the room page");
+    const [notice] = await until("the room's work-done notice", async () => {
+      const found = await roomNotices();
+      return found.length ? found : undefined;
+    });
+    assert.equal(notice!.text, "[work-done: no-reply agent:vent]\n\nLast assistant text: ok");
+    const handed = inputs(await rootEntries(threads, ids.work)).find(input => input.text.endsWith("build the room page"));
+    assert.equal(handed?.text, `[agent-message from sibling:${ROOM_COMM}]\n\nbuild the room page`);
+    assert.deepEqual(handed?.data, { from: ids.room, via: "agent_message" });
+    await until("the room hand-over to end", async () => (await roomHands()) === 0);
+
+    await ask(threads, ids.room, "do the room report");
+    await until("the work thread's room report", async () => inputs(await rootEntries(threads, ids.room)).find(input => input.text.endsWith("room report: written") && input.data?.from === ids.work));
+    await until("the second room hand-over to end", async () => (await roomHands()) === 0);
+    await open.harness.waitForIdle(context);
+    assert.equal((await roomNotices()).length, 1, "the reported task sends no notice");
+    assert.equal((await notices(threads)).length, 0, "the DM comm thread hears nothing of the room's tasks");
   } finally {
     await threads.shutdown();
   }

@@ -74,8 +74,8 @@ The commit that writes an `agent.ref` also sets the root conversation's agent fo
 
 | Role | `tools` | `modelTools` | `instructions` |
 |---|---|---|---|
-| comm | `{remove: ["write", "edit", "bash", "subagent"]}` | `{add: ["stop_work"]}` | the comm role text, naming the agent, the room and the work thread |
-| work with `comm` | `{remove: ["tell_owner"]}` | unset | the work role text, naming the agent and the comm thread |
+| comm | `{remove: ["write", "edit", "bash", "subagent"]}` | `{add: ["stop_work"]}` | the comm role text, naming the agent, the room and the work thread; a DM (`dm_`) gets the DM text, and a channel (`ch_`) or Solo room (`so_`) gets the group text, which says to speak only when the post concerns the agent or adds something |
+| work with `comm` | `{remove: ["tell_owner"]}` | unset | the work role text, naming the agent and its DM comm thread, with the rule to report to the comm thread that handed the task by the name in its message header |
 | work without `comm`, job | unset | unset | unset |
 
 1. pi-host records each value it wrote in the root's `agent.role` document, and it changes or clears a field only while that field is unset or still holds pi-host's value, so a filter something else set stays.
@@ -204,7 +204,7 @@ end
 2. `test/durable/owner-turn.test.ts` runs the real `pool/turns.py` queue in its own `PI_POOL_DIR` with one slot held and two runs queued, and checks that an agent input queues third while an owner input with `ownerTurn: true` is admitted as kind `owner` with no wait and answers, with each ticket over the socket and `durable_usage`'s four costs. `test/durable/owner-turn-settle.test.ts` slows each release by 1 s and checks that an owner input sent right after the last one settled is still admitted as kind `owner` and leaves no mark behind.
 3. `test/durable/child-turn.test.ts` runs the real `pool/turns.py` queue with a subagent whose first ask queues behind two blockers after its root's run ended, gives the child a slot, and checks that the child sends its request and the root answers its answer within 15 s.
 4. `test/durable/rlm.test.ts` runs Prime's `ipython` on a real kernel: state across turns, `rlm.spawn` at admission with the child's notice as a later input, a steer answered while a subagent child runs for 120 s, and a SIGKILL mid-cell that gives `interrupted` and then a fresh kernel.
-5. `test/durable/comm.test.ts` reads a running work thread from a comm thread's status turn with no change to the work conversation's entries, stops it with `stop_work`, checks the role fields, and checks that a handed task sends one work-done notice, none after a report, and one across a restart.
+5. `test/durable/comm.test.ts` reads a running work thread from a comm thread's status turn with no change to the work conversation's entries, stops it with `stop_work`, checks the role fields, checks that a handed task sends one work-done notice, none after a report, and one across a restart, and checks that a Solo room's comm thread gets the notice for the task it handed while the DM comm thread hears nothing.
 6. `test/durable/crash.test.ts` runs the crash cases of item 1 on one file without pi-host, with kills mid root stream, mid child stream and in a slot wait.
 7. The crash tests run on the faux provider behind the real pool wrapper and `pi-pool/test/fake-pool.mjs`, and `PI_DURABLE_REAL=1` adds a case on the real `claude-opus-5-5` through pi-pool.
 
