@@ -72,7 +72,7 @@ test("a tree the pool serves within the unload's minutes, or now, keeps its sess
   const tree = rootOf(row);
   const heldWith = async (slot: number | null) => (await providerWaits([row], at, TEN_MIN, reads(new Map([[tree, slot]])))).has(row.sessionId);
   assert.equal(await heldWith(at + TEN_MIN + MIN), true);
-  assert.equal(await heldWith(at + TEN_MIN - MIN), true, "it already waited 186 min, so a slot the pool names inside the unload's minutes no longer keeps it");
+  assert.equal(await heldWith(at + TEN_MIN - MIN), false, "its tree's own slot inside the unload's minutes keeps it, however long it waited: a stop makes it miss that cell");
   const fresh = { ...row, lastActivityAt: new Date(at - 5 * MIN).toISOString() };
   assert.equal((await providerWaits([fresh], at, TEN_MIN, reads(new Map([[tree, at + TEN_MIN - MIN]])))).has(row.sessionId), false,
     "a session 5 min into its wait whose slot comes before the unload's minutes are out stays in Prime's retry");

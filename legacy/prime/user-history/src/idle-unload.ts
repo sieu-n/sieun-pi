@@ -1,7 +1,7 @@
 import { dirname } from "node:path";
 import type { SessionSummary } from "prime-agent";
 import type { DaemonClient } from "./daemon-sdk.ts";
-import { poolFreeAt, type PoolStatus, type PoolThread, type ThreadParts, threadKey } from "./chat-pool.ts";
+import { accountSlot, poolFreeAt, type PoolStatus, type PoolThread, type ThreadParts, threadKey } from "./chat-pool.ts";
 import { lastTurnError } from "./held-turns.ts";
 import type { PrimeUpdate } from "./prime-update.ts";
 import type { UnloadReceipt } from "./unloaded.ts";
@@ -218,12 +218,17 @@ export function unloadPlan(rows: readonly SessionSummary[], input: PlanInput): S
  * the pool would serve sooner is left to Prime's retry and the job sweep's abort (ab65b511), which continue it in place. No hold is too long
  * to stop on: a chat's revive and the job sweep's resume pass (`resumeJobs`, --since-minutes 0) ask pi-pool again with no look-back.
  * A session that already waited the unload's minutes (`waitedMs`, since its last activity) stops on any hold the pool does not lift now, near
- * or not: at 16:18Z on 10-19 13 sessions sat 15 to 26 min in their retry on workers of their own (4.9 GB) while `pi-pool who` named a slot
- * that kept moving to about now (accounts were short, 12 to 81 trees waiting on each of 6), so no reading ever came past the window, and the
- * box OOM-killed 11 processes.
+ * or not, unless its tree holds its own pi-pool slot (`ownSlot`, epoch ms) within the unload's minutes. A stop there only delays the turn
+ * (c88): the session comes back through the resume pass after its slot, and a tree that started waiting later takes the cell. From 12:00Z on
+ * 10-28 to 02:17Z on 10-29 45 of the 55 pool-wait stops on us-metal02 came with the tree's slot under 15 min ahead, 01a1748f's 91 s and 3 s
+ * ahead at 00:34:29Z and 02:17:27Z, and the 19 that asked again did so 25 to 458 s after their slot; at 00:36:30Z 01a18508, parked later,
+ * took the cell 01a1748f missed. At 16:18Z on 10-19 13 sessions sat 15 to 26 min in their retry on workers of their own (4.9 GB) while
+ * `pi-pool who` named a slot that kept moving to about now, and the box OOM-killed 11 processes; a hold with no slot of the tree's own still
+ * stops after the unload's minutes.
  */
-export function poolHoldsPast(freeAt: number | null, now: number, idleMs: number, waitedMs = 0): boolean {
+export function poolHoldsPast(freeAt: number | null, now: number, idleMs: number, waitedMs = 0, ownSlot: number | null = null): boolean {
   if (freeAt === now) return false;
+  if (ownSlot !== null && ownSlot > now && ownSlot <= now + idleMs) return false;
   return waitedMs >= idleMs || freeAt === null || freeAt > now + idleMs;
 }
 
@@ -449,7 +454,8 @@ export async function providerWaits(rows: readonly SessionSummary[], now: number
     if (!parts) return [];
     const freeAt = poolFreeAt(parts, row.model!.provider, now);
     const waited = now - Date.parse(row.lastActivityAt ?? "");
-    return poolHoldsPast(freeAt, now, idleMs, Number.isFinite(waited) ? waited : 0) ? [[row.sessionId, freeAt] as const] : [];
+    const slot = accountSlot(parts, row.model!.provider);
+    return poolHoldsPast(freeAt, now, idleMs, Number.isFinite(waited) ? waited : 0, slot) ? [[row.sessionId, freeAt] as const] : [];
   }));
 }
 

@@ -1,6 +1,7 @@
 // At 16:18Z on 10-19 us-metal02 OOM-killed 11 processes, one inside prime-agent-daemon.service. 13 sessions sat 15 to 26 min in Prime's
 // provider retry, each on a worker of its own (4.9 GB in all), while `pi-pool who` named a slot that kept moving to about now: 6 accounts
 // served with 12 to 81 trees waiting on each. The unload stopped a retry only for a slot past its 15 min, so a rolling slot kept every one.
+// Since 10-29 a tree's own slot within the quiet window keeps the session (c88): a stop there only made it miss its cell.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { SessionSummary } from "prime-agent";
@@ -25,11 +26,22 @@ const reads = (slotAt: number | null, rows: readonly SessionSummary[]) => ({
       "openai-codex": part({ provider: "openai-codex", rows: [] }) } }] as const)) }),
 });
 
-test("a session that already waited the quiet window stops on a rolling slot, and one that just began waiting does not", async () => {
+test("a session that already waited the quiet window stops on a hold with no slot of its own, and keeps its worker for its own slot", async () => {
   const held = async (waitedMin: number, slotAt: number | null) => (await providerWaits([row(waitedMin)], at, QUIET, reads(slotAt, [row(waitedMin)]))).size === 1;
-  assert.equal(await held(26, at + 15_000), true, "26 min into its wait with the slot 15 s ahead, as at 16:18Z");
+  assert.equal(await held(26, at + 15_000), false, "26 min into its wait with its own slot 15 s ahead: a stop would bring it back after its cell");
+  assert.equal(await held(26, at + QUIET + MIN), true, "its own slot past the quiet window stops it");
   assert.equal(await held(5, at + 15_000), false, "5 min into its wait: Prime's retry may still get it the slot");
   assert.equal(await held(26, null), false, "the pool serves the tree now: Prime's retry and the job sweep continue it in place");
   assert.equal(poolHoldsPast(at + 30 * 60 * MIN, at, QUIET, 26 * MIN), true, "a hold a day away stops it too: the resume pass looks back with no limit");
   assert.equal(poolHoldsPast(null, at, QUIET, 26 * MIN), true, "a session 26 min into a wait with no time named is a hold too");
+  assert.equal(poolHoldsPast(at + 15_000, at, QUIET, 26 * MIN), true, "an account's free time is no place in line: the rolling hold of 10-19 still stops");
+});
+
+// 01a1748f, a low job tree, waited for claude21 from 00:18Z on 10-29 and got 00:36:00Z as its slot at 00:33:49Z. The unload stopped it at
+// 00:34:29Z, 91 s before its slot, and it asked again only at 00:43:38Z, when the resume pass continued it; 01a18508, parked later, took the
+// 00:36:30Z cell. At 02:17:27Z it was stopped 3 s before its 02:17:30Z slot and asked at 02:19:09Z.
+test("a job 16 min into its retry keeps its worker for its own slot 91 s ahead", () => {
+  const stop = Date.parse("2026-10-29T00:34:29Z");
+  assert.equal(poolHoldsPast(Date.parse("2026-10-29T00:36:00Z"), stop, QUIET, 16 * MIN, Date.parse("2026-10-29T00:36:00Z")), false);
+  assert.equal(poolHoldsPast(Date.parse("2026-10-29T02:17:30Z"), Date.parse("2026-10-29T02:17:27Z"), QUIET, 17 * MIN, Date.parse("2026-10-29T02:17:30Z")), false);
 });
