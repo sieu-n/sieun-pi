@@ -321,6 +321,35 @@ export interface ConfigFile {
   note?: string;
 }
 
+/** One entry of Prime's harness store (`harness_state.json`), as Prime's `rlm.harness` writes it. */
+export interface HarnessEntryView {
+  id: string;
+  kind: "memory" | "prompt" | "skill" | "subagent";
+  title: string;
+  content: string;
+  path: string;
+  /** Who wrote it: "agent" for `rlm.harness` in a kernel, "owner" for the Agents page. */
+  source: string;
+  createdAt: string;
+  updatedAt: string;
+  version: number;
+}
+
+/**
+ * An agent's folder (`~/.pi/agent/agents/<slug>/`, apps/chat/docs/agent-model.md phase 3): its brief and its memory. pi-host loads both into
+ * every thread of the agent, the brief as a Prime context file and the memory as the local store of Prime's harness digest.
+ */
+export interface AgentFolder {
+  agent: AgentId;
+  dir: string;
+  /** `brief.md`: the agent's responsibility in the owner's words. `text` is "" when the file is missing. */
+  brief: ConfigFile & { text: string };
+  /** `harness/harness_state.json`: the agent's local harness store; `count` is its entries, newest `updatedAt` first in `entries`. */
+  memory: ConfigFile & { entries: HarnessEntryView[] };
+}
+
+export interface MemoryInput { title: string; content: string; path?: string }
+
 /**
  * `GET /api/agents/:id/config`: one agent as a role, not a thread. Who it is and what it is for, where it runs, the data it shares with its
  * jobs (board, memory, instructions), and its swarm (jobs, channels, duties, check-in). Every field is read from where it lives; see API.md.
@@ -368,9 +397,11 @@ export interface AgentConfig {
     awaitingGo: number;
     openTodos: { id: string; text: string; at: string; step?: string }[];
   } | null;
+  /** The folder of the agent this card belongs to, shared by its work thread and every job; null for a root chat no agent holds. */
+  folder: AgentFolder | null;
   memory:
     | { kind: "none"; note: string; related: ConfigFile[] }
-    | { kind: "files"; files: ConfigFile[]; note?: string };
+    | { kind: "agent"; note: string; related: ConfigFile[] };
   instructions: { files: ConfigFile[]; note: string };
   swarm: {
     parent: { id: AgentId; name: string } | null;

@@ -3,8 +3,8 @@
  * message. Paths are relative, so the page works behind Vite's proxy on :5185 and from the server on :5184 alike.
  */
 import type {
-  AgentConfig, AgentId, AgentSummary, BoardOp, BoardRow, BoardView, Channel, ChannelInput, CheckInPatch, CheckInView, ChatAgent, ConversationHeader, ConversationId,
-  ConversationPatch, ConversationSummary, DutyAction, DutyRow, ForYouItem, HostsReport, Item, JobNode, Me, ModelCatalog, ProjectList, SearchQuery, SearchResult, SendRequest,
+  AgentConfig, AgentFolder, AgentId, AgentSummary, BoardOp, BoardRow, BoardView, Channel, ChannelInput, CheckInPatch, CheckInView, ChatAgent, ConversationHeader, ConversationId,
+  ConversationPatch, ConversationSummary, DutyAction, DutyRow, ForYouItem, HarnessEntryView, HostsReport, Item, JobNode, Me, MemoryInput, ModelCatalog, ProjectList, SearchQuery, SearchResult, SendRequest,
   SendResult, Sidebar, ThinkingLevel, TimelinePage, UsageReport, AccountsView,
 } from "./types.ts";
 
@@ -68,6 +68,14 @@ export const api = {
     call<AgentSummary>("POST", "/api/agents", input),
   /** One agent as a role: purpose, where it runs, its board, memory, instructions and swarm (API.md, Agents). */
   agentConfig: (id: AgentId) => call<AgentConfig>("GET", `/api/agents/${enc(id)}/config`),
+  /** The agent folder: its brief and its memory, which every thread of the agent loads (API.md, Agent folder). */
+  agentFolder: (id: AgentId) => call<AgentFolder>("GET", `/api/agents/${enc(id)}/folder`),
+  setBrief: (id: AgentId, text: string) => call<AgentFolder>("PUT", `/api/agents/${enc(id)}/brief`, { text }),
+  addMemory: (id: AgentId, input: MemoryInput) => call<AgentFolder>("POST", `/api/agents/${enc(id)}/memory`, input),
+  updateMemory: (id: AgentId, entry: string, input: MemoryInput, kind: HarnessEntryView["kind"] = "memory") =>
+    call<AgentFolder>("PUT", `/api/agents/${enc(id)}/memory/${enc(entry)}${query({ kind })}`, input),
+  deleteMemory: (id: AgentId, entry: string, kind: HarnessEntryView["kind"] = "memory") =>
+    call<AgentFolder>("DELETE", `/api/agents/${enc(id)}/memory/${enc(entry)}${query({ kind })}`),
   projects: () => call<ProjectList>("GET", "/api/projects"),
   /** These act on an agent through its DM (`PATCH` and abort of `/api/c/dm_<slug>`), and on a job or a root thread through itself. */
   setAgentCwd: (id: AgentId, cwd: string) => call<ConversationHeader>("PATCH", `/api/c/${enc(roomOf(id))}`, { cwd }),
