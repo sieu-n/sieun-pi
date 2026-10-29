@@ -152,7 +152,7 @@ subprocess.run(["scp", "/tmp/x", "us-metal02:/home/sieun/scratch/notes.txt"], ch
 `, { PATH: `${bin}:${process.env.PATH}` });
   const lines = readFileSync(calls, "utf8").trim().split("\n").map((line) => JSON.parse(line));
   const records = lines.filter((argv) => argv[0] === "ssh" && argv.some((word) => word.includes("journal.mjs")));
-  const script = (paths) => `r=$(git -C "$(dirname ${paths[0]})" rev-parse --show-toplevel) && node "$r/scripts/repo/agent/journal.mjs" record --session ${session} --tool prime-ssh ${paths.join(" ")}`;
+  const script = (paths) => `exec "\${SHELL:-sh}" -lc 'r=$(git -C "$(dirname ${paths[0]})" rev-parse --show-toplevel) && node "$r/scripts/repo/agent/journal.mjs" record --session ${session} --tool prime-ssh ${paths.join(" ")}'`;
   assert.deepEqual(records, [
     ["ssh", "-o", "BatchMode=yes", "-p", "2222", "us-metal02", script([`${repo}/apps/a.ts`])],
     ["ssh", "-o", "BatchMode=yes", "far", script([`${repo}/apps/one`, `${repo}/apps/two`])],

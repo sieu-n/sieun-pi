@@ -395,11 +395,12 @@ def remote_word(path: str) -> str:
 
 
 def record_command(destination: str, options: tuple, paths: list) -> list:
-    """The ssh argv that has the box journal the paths through its checkout's journal.mjs record."""
+    """The ssh argv that has the box journal the paths through its checkout's journal.mjs record. The script runs in the box's login shell,
+    because on us-metal02 node is on PATH only there, and a plain ssh command failed with `node: command not found` on 10-29."""
     words = [remote_word(p) for p in paths]
     script = (f'r=$(git -C "$(dirname {words[0]})" rev-parse --show-toplevel) && node "$r/scripts/repo/agent/journal.mjs" record '
               f"--session {shlex.quote(SESSION)} --tool prime-ssh {' '.join(words)}")
-    return ["ssh", "-o", "BatchMode=yes", *options, destination, script]
+    return ["ssh", "-o", "BatchMode=yes", *options, destination, f'exec "${{SHELL:-sh}}" -lc {shlex.quote(script)}']
 
 
 def record_remote(writes: list) -> None:
