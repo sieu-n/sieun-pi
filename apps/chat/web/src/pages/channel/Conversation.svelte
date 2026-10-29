@@ -354,7 +354,7 @@
   <IconButton icon="more" label={isChannel ? "Channel actions" : isSolo ? "Room actions" : isDm ? "Conversation actions" : "Chat actions"} size="sm" bind:element={menuAnchor} onclick={() => (menuOpen = !menuOpen)} />
 {/snippet}
 
-<section class="conversation" data-conversation={id} data-kind={kind}>
+<section class="conversation" class:slack={layout === "slack"} data-conversation={id} data-kind={kind}>
   <PanelHeader icon={isChannel ? "hash" : isSolo ? "users" : kind === "solo" ? "chat" : "robot"} {titleContent} {actions} />
   {#if isSolo && header}
     <div class="solo-bar" data-testid="solo-agenda">
@@ -449,6 +449,9 @@
     flex-direction: column;
     min-height: 0;
   }
+  .conversation.slack {
+    --timeline-measure: 100%;
+  }
   .conversation > :global(.panel-header) {
     border-bottom: 1px solid var(--border-standard);
   }
@@ -530,7 +533,7 @@
     display: flex;
     align-items: center;
     gap: 10px;
-    width: min(calc(100% - 32px), 52rem);
+    width: min(calc(100% - 32px), var(--timeline-measure, 52rem));
     margin: 0 auto 16px;
     padding: 12px 16px;
     border: 1px solid var(--border-standard);
@@ -557,7 +560,7 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    width: min(calc(100% - 32px), 52rem);
+    width: min(calc(100% - 32px), var(--timeline-measure, 52rem));
     height: 20px;
     margin: 0 auto 4px;
     padding: 0 12px;

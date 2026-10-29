@@ -314,7 +314,7 @@
     flex: none;
     flex-direction: column;
     gap: 16px;
-    width: min(calc(100% - 32px), 52rem);
+    width: min(calc(100% - 32px), var(--timeline-measure, 52rem));
     margin: 0 auto 16px;
     padding: 12px 6px 6px;
     border: 1px solid var(--border-standard);
