@@ -590,6 +590,12 @@ def manual_mark(tree):
     return {"manual": True} if tree.pin or tree.pool_pin else {}
 
 
+def budget_mark(d):
+    """{"budget": True} for a wait R6 holds on the tree's own account, for its parked and wait lines. On 10-29 01a17e52, out of moves,
+    waited on claude-virev12 from 19:15Z for its 20:10Z reset, and the Whole system duty read it as passed by trees that entered claude22."""
+    return {"budget": True} if d.budget else {}
+
+
 def schedule(state, key, provider, accounts, cfg, now, admit_now=True):
     """Run `decide` for this tree and write what it takes, under the pool flock
     the caller holds: an admission takes its cell, a wait its slot. With
@@ -605,7 +611,8 @@ def schedule(state, key, provider, accounts, cfg, now, admit_now=True):
         # tree enter now but for a cell, so a refusal with room is a turn held while the pool has accounts free.
         # `manual` marks a tree pinned to one account, which waits for that account outside Auto's order.
         base.log("parked", provider=provider, session=key.key, at=round(now, 1), account=d.slot_account.label,
-                 slot_at=round(d.slot_at), priority=tree.priority, room=[a.label for a in d.room], **manual_mark(tree))
+                 slot_at=round(d.slot_at), priority=tree.priority, room=[a.label for a in d.room], **manual_mark(tree),
+                 **budget_mark(d))
     elif tree.wait and admit_now:
         base.log("unparked", provider=provider, session=key.key, at=round(now, 1), account=d.account.label, **manual_mark(tree))
     if isinstance(d, sched.Admit) and admit_now:
@@ -627,7 +634,7 @@ def schedule(state, key, provider, accounts, cfg, now, admit_now=True):
         writer.set_wait(key, provider, d.slot_account.id, d.slot_at, now)
         base.log("wait", provider=provider, session=key.key, account=d.slot_account.label,
                  slot_at=iso(d.slot_at), priority=tree.priority, vend=d.vend and d.vend.label,
-                 left=d.left and d.left[1])
+                 left=d.left and d.left[1], **budget_mark(d))
         refill_left(state, tree, provider, accounts, cfg, now)
         return d, tree, True
     return d, tree, False

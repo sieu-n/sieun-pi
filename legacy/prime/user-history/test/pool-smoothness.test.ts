@@ -137,6 +137,17 @@ test("a tree pinned to its account neither passes nor is passed, as 01a11ba8 on 
   assert.deepEqual(smooth.overtaken, [{ session: "b", minutes: 0 }]);
 });
 
+test("a park R6 held on its own account is not passed while held, as 01a17e52 waiting for claude-virev12 from 19:15Z on 10-29", () => {
+  // 01a17e52, out of moves, parked at 19:15Z for claude-virev12's 20:10Z reset, and d7 read it as passed for 23.5 min by trees that entered claude22.
+  const budget = (line: string): string => JSON.stringify({ ...JSON.parse(line) as object, budget: true });
+  const smooth = readSmoothness([
+    budget(parked("a", "10:00:00")), parked("b", "10:05:00"), unparked("b", "10:20:00"), unparked("a", "10:50:00"),
+    budget(parked("c", "10:00:00")), budget(parked("c", "10:21:00")), parked("c", "10:25:00"), parked("d", "10:22:00"), unparked("d", "10:30:00"),
+    unparked("c", "10:55:00"),
+  ], new Set(), FROM, RUN);
+  assert.deepEqual(smooth.overtaken, [{ session: "a", minutes: 0 }, { session: "d", minutes: 0 }, { session: "c", minutes: 25 }]);
+});
+
 test("a vend with no unparked line before it ends the park, as 01a15ede's claude19 vend at 16:28Z on 10-22", () => {
   const vend = (session: string): string => JSON.stringify({ ts: "local", event: "vend", provider: "anthropic", account: "x", reason: "switch", session });
   const smooth = readSmoothness([

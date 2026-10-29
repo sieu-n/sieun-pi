@@ -957,6 +957,18 @@ class SwitchLog(unittest.TestCase):
         logged, _ = self.run_vend(state, [acct("x", five=100, five_reset_in=1800), acct("y", five=5)])
         self.assertEqual([kw["room"] for e, kw in logged if e == "parked"], [[]])
 
+    def test_a_refusal_by_the_move_budget_marks_its_parked_and_wait_lines(self):
+        """10-29: 01a17e52, out of moves, waited on claude-virev12 from 19:15Z for its 20:10Z reset, and the Whole system
+        duty read it as passed by later trees that entered claude22, since no line said R6 held it."""
+        state = empty_state()
+        put(state, KEY, on="x", priority="low", moves=[NOW - 60])
+        logged, _ = self.run_vend(state, [acct("x", five=100, five_reset_in=1800), acct("y", five=5)])
+        self.assertEqual([kw.get("budget") for e, kw in logged if e in ("parked", "wait")], [True, True])
+        state = empty_state()
+        put(state, KEY, on="b")
+        logged, _ = self.run_vend(state, [acct("a", five=100), acct("b", five=100)])
+        self.assertEqual([kw.get("budget") for e, kw in logged if e in ("parked", "wait")], [None, None])
+
     def test_a_tree_that_waited_logs_unparked_when_it_gets_an_account(self):
         state = empty_state()
         put(state, KEY, on="b")

@@ -112,6 +112,8 @@ class Wait:
     left: "tuple | None" = None
     # The accounts R1-R7 would admit this tree onto now but for a cell (R4).
     room: tuple = ()
+    # R6 holds the tree on its own account: it is out of moves, so it waits outside R5's order across accounts.
+    budget: bool = False
 
 
 @dataclasses.dataclass(frozen=True)
@@ -406,7 +408,7 @@ def decide(tree, accounts, book, cooldowns, cfg, now):
         slot_at = min(slot_at, deadline)
     if slot_at == float("inf"):
         return Blocked(manual, "busy") if manual else None
-    return Wait(slot_at, slot_account, vend, shadowed, left, room=tuple(candidates))
+    return Wait(slot_at, slot_account, vend, shadowed, left, room=tuple(candidates), budget=stuck)
 
 
 def in_use_counts(state, provider, now=None, window_sec=None):

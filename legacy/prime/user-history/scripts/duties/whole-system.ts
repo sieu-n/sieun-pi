@@ -506,8 +506,13 @@ export function readSmoothness(lines: readonly string[], heads: ReadonlySet<stri
   // `from` is when a park that ran on its own account got a 429 there, so the tree is held from then on. 01a11d25 parked at 21:12:02Z on 10-28
   // for claude-virev5 with vend claude5, its turn ran on claude5 and ended, and it asked nothing until claude5 refused it at 00:19:29Z; d7 read
   // it as passed for 186 min from 21:14Z.
-  const parks = new Map<string, { start: number; last: number; from?: number; ranks: { at: number; rank: number }[]; manual: boolean; served?: boolean }>();
-  const ended: { session: string; start: number; from: number; end: number; ranks: { at: number; rank: number }[]; led: boolean; served: boolean }[] = [];
+  // `held` is whether R6, the move budget, held the tree on its own account at each refusal (the parked line's `budget`): such a tree waits
+  // outside R5's order across accounts, so a later tree that entered another account meanwhile did not pass it. 01a17e52, out of moves,
+  // parked for claude-virev12's 20:10Z reset at 19:15Z on 10-29 and read as passed for 23.5 min by trees that entered claude22.
+  const parks = new Map<string, { start: number; last: number; from?: number; ranks: { at: number; rank: number }[]; held: { at: number; budget: boolean }[];
+    manual: boolean; served?: boolean }>();
+  const ended: { session: string; start: number; from: number; end: number; ranks: { at: number; rank: number }[]; held: { at: number; budget: boolean }[];
+    led: boolean; served: boolean }[] = [];
   // Whether each session's latest wait line named an account the hook vends meanwhile (`vend`, sched.Wait): such a tree's requests go out on
   // its own account while it waits for a better one, so it is served, and only a 429 on it (a `limited` line) leaves it unserved. At 00:59:37Z
   // on 10-24 the ops guy chat 01a11af8 parked for claude-virev7 at 01:00Z with vend claude20 (left budget_overrun), its head's turn ran on
@@ -524,7 +529,7 @@ export function readSmoothness(lines: readonly string[], heads: ReadonlySet<stri
     if (!line.includes('"turn_admitted"') && !line.includes('"turn_queued"') && !line.includes('"turn_dropped"') && !line.includes('"parked"') &&
       !line.includes('"unparked"') && !line.includes('"vend"') && !line.includes('"wait"') && !line.includes('"limited"') && !line.includes('"priority"')) continue;
     let entry: { ts?: unknown; event?: unknown; session?: unknown; at?: unknown; waited_s?: unknown; priority?: unknown; provider?: unknown; reason?: unknown; manual?: unknown;
-      vend?: unknown };
+      vend?: unknown; budget?: unknown };
     try { entry = JSON.parse(line) as typeof entry; } catch { continue; }
     if (typeof entry.session !== "string") continue;
     const head = heads.has(entry.session);
@@ -585,25 +590,27 @@ export function readSmoothness(lines: readonly string[], heads: ReadonlySet<stri
     // pinned to claude8, waited from 15:19Z for its 16:30Z reset and read as passed for 70 min by Auto trees that entered claude19.
     const manual = entry.manual === true;
     if (entry.event === "parked") {
-      const park = parks.get(entry.session) ?? { start: at, last: at, ranks: [], manual };
+      const park = parks.get(entry.session) ?? { start: at, last: at, ranks: [], held: [], manual };
       park.last = at;
       park.ranks.push({ at, rank: RANK[String(entry.priority)] ?? 1 });
+      park.held.push({ at, budget: entry.budget === true });
       park.manual ||= manual;
       parks.set(entry.session, park);
     } else if (entry.event === "unparked") {
       const park = parks.get(entry.session);
       parks.delete(entry.session);
       if (park && !park.manual && !manual) {
-        ended.push({ session: entry.session, start: park.start, from: park.from ?? park.start, end: at, ranks: park.ranks, led: led.get(entry.session) ?? false,
+        ended.push({ session: entry.session, start: park.start, from: park.from ?? park.start, end: at, ranks: park.ranks, held: park.held, led: led.get(entry.session) ?? false,
           served: park.served ?? vends.get(entry.session) ?? false });
       }
     }
   }
   const rankAt = (park: (typeof ended)[number], at: number) => (park.ranks.findLast(step => step.at <= at) ?? park.ranks[0])?.rank ?? 1;
+  const heldAt = (park: (typeof ended)[number], at: number) => (park.held.findLast(step => step.at <= at) ?? park.held[0])?.budget ?? false;
   const overtaken = ended.filter(park => park.end >= from && park.end < to).map(park => {
     if (park.served) return { session: park.session, minutes: 0 };
     const passed = ended.find(other => !other.led && other.end < park.end && other.end > park.from && other.start > park.start &&
-      rankAt(other, other.end) >= rankAt(park, other.end));
+      rankAt(other, other.end) >= rankAt(park, other.end) && !heldAt(park, other.end));
     return { session: park.session, minutes: passed ? Math.round((park.end - passed.end) / MINUTE * 10) / 10 : 0 };
   });
   return { headWaits, overtaken };
