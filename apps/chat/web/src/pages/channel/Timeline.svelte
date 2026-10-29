@@ -28,6 +28,12 @@
     canReply?: boolean;
     /** The side pane draws a tighter column. */
     compact?: boolean;
+    /** bubble is the chat look; slack draws channel rows as Slack does. */
+    layout?: "bubble" | "slack";
+    /** In slack layout, the intro drawn above the first post once no older posts are left, and as the empty state; a Solo room says room. */
+    beginning?: { name: string; purpose?: string | null; kind?: "channel" | "solo" } | null;
+    /** In a thread pane, the replies under the root; Timeline draws an "N replies" divider after the first row. */
+    replyCount?: number | null;
     statusOf?: (id: string) => Status | null;
     onretry: () => void;
     /** Retry and Discard on a send that was not delivered. */
@@ -42,10 +48,15 @@
   };
   let {
     items, loading, error, hasOlder, loadingOlder, loadOlder, focus, context, liveLabel = null, queue = null, openThread = null, canReply = false, compact = false,
+    layout = "bubble", beginning = null, replyCount = null,
     statusOf, onretry, onretrysend, ondiscardsend, onthread, oncopylink, onmention, onboardid, onartifact, onbottom,
   }: Props = $props();
 
   const rows = $derived(layoutRows(items));
+  const slack = $derived(layout === "slack");
+  const intro = $derived(slack && beginning && !hasOlder && !loadingOlder ? beginning : null);
+  const introName = $derived(intro ? (intro.kind === "solo" ? intro.name : `#${intro.name}`) : "");
+  const firstPost = $derived(rows.find((row) => row.kind === "post")?.key ?? null);
   const waitingId = $derived(queue ? waitingSend(items) : null);
   const liveId = $derived(items.findLast((item) => item.kind === "turn" && item.live)?.id ?? null);
   let scroller = $state<HTMLElement>();
@@ -131,7 +142,7 @@
         <p>Could not load messages. {error}</p>
         <Button variant="outline" size="sm" icon="refresh" onclick={onretry}>Retry messages</Button>
       </div>
-    {:else if !items.length}
+    {:else if !items.length && !intro}
       <div class="state empty">
         <p class="title">No messages yet.</p>
         <p>Start the conversation below.</p>
@@ -144,10 +155,17 @@
           <Button variant="ghost" size="sm" onclick={older}>Load older messages</Button>
         {/if}
       </div>
+      {#if intro}
+        <div class="intro" data-testid="channel-intro">
+          <h2 class="intro-name">{introName}</h2>
+          <p>This is the very beginning of the <span class="intro-channel">{introName}</span> {intro.kind === "solo" ? "room" : "channel"}.</p>
+          {#if intro.purpose}<p class="intro-purpose">{intro.purpose}</p>{/if}
+        </div>
+      {/if}
       <ol class="rows" bind:this={rowsEl}>
         {#each rows as row (row.key)}
           {#if row.kind === "day"}
-            <li class="day"><DayDivider at={row.at} /></li>
+            {#if !(slack && compact)}<li class="day"><DayDivider at={row.at} variant={slack ? "pill" : "calendar"} /></li>{/if}
           {:else if row.kind === "system"}
             <li data-message-id={row.item.id}>
               <SystemLine
@@ -160,6 +178,8 @@
               item={row.item}
               first={row.first}
               last={row.last}
+              {layout}
+              fullTime={slack && compact}
               {context}
               liveLabel={row.item.id === liveId ? liveLabel : null}
               queue={row.item.id === waitingId ? queue : null}
@@ -175,6 +195,11 @@
               {onboardid}
               {onartifact}
             />
+          {/if}
+          {#if replyCount && row.key === firstPost}
+            <li class="replies" data-testid="thread-replies-divider">
+              <span>{replyCount} {replyCount === 1 ? "reply" : "replies"}</span>
+            </li>
           {/if}
         {/each}
       </ol>
@@ -226,6 +251,47 @@
   }
   .day {
     list-style: none;
+  }
+  .intro {
+    width: min(100%, var(--timeline-measure, 52rem));
+    margin: 0 auto 8px;
+    padding: 24px 0 8px;
+    color: var(--text-subtle);
+    font: var(--text-body);
+    letter-spacing: var(--tracking-body);
+  }
+  .intro p {
+    margin: 0;
+  }
+  .intro-name {
+    margin: 0 0 8px;
+    color: var(--text-standard);
+    font: var(--text-heading);
+    font-weight: 700;
+    letter-spacing: var(--tracking-heading);
+    overflow-wrap: anywhere;
+  }
+  .intro-channel {
+    color: var(--text-message-link);
+  }
+  .intro-purpose {
+    margin-top: 4px;
+  }
+  .replies {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 4px 0;
+    color: var(--text-metadata);
+    font: var(--text-caption);
+    letter-spacing: var(--tracking-caption);
+    list-style: none;
+  }
+  .replies::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--border-standard);
   }
   .state {
     display: flex;

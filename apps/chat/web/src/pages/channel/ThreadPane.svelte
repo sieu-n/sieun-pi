@@ -20,8 +20,10 @@
     onmention?: (id: string, kind: string, e: MouseEvent) => void;
     onboardid?: (id: string, chatId: string, e: MouseEvent) => void;
     onartifact?: (target: string, e: MouseEvent) => void;
+    /** slack draws the root post, an "N replies" rule and the replies as Slack rows. */
+    layout?: "bubble" | "slack";
   };
-  let { channel = null, threadKey, context, statusOf, oncopylink, onthread, onmention, onboardid, onartifact }: Props = $props();
+  let { channel = null, threadKey, context, statusOf, oncopylink, onthread, onmention, onboardid, onartifact, layout = "bubble" }: Props = $props();
 
   // svelte-ignore state_referenced_locally
   const job = channel ? null : timeline(threadKey);
@@ -62,6 +64,8 @@
   {#key retry}
     <Timeline
       {items}
+      {layout}
+      replyCount={layout === "slack" && posts?.root ? posts.items.length : null}
       loading={job ? job.loading : (posts?.loading ?? false)}
       error={job ? job.error : (posts?.error ?? null)}
       hasOlder={!!job?.older}
@@ -82,7 +86,7 @@
     />
   {/key}
   <Composer
-    placeholder="Reply to thread"
+    placeholder={layout === "slack" ? "Reply…" : "Reply to thread"}
     agents={directory.agents}
     channels={directory.channels}
     working={job?.status === "working"}

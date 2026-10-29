@@ -49,7 +49,7 @@ Colors, chart series (`--chart-series-1` to `4`), type, radii, shadows, spacing,
 | Part | What it is | Main props |
 |---|---|---|
 | `Bubble` | A received or own message bubble, 8 px 16 px padding, about 21 px radius. | `own`, `position`, `footer` for reactions, `highlighted` |
-| `DayDivider` | The calendar glyph and a relative day label that updates at midnight. | `at` |
+| `DayDivider` | A relative day label that updates at midnight: the calendar glyph between two lines, or with `variant="pill"` Slack's thin full-width line and a centered rounded pill, as channels draw it. | `at`, `variant` calendar or pill |
 | `SystemLine` | A centered caption line with up to 3 small avatars. | `members`, `text` |
 | `Markdown` | Sanitized markdown with code blocks (language, Copy, a fold past 20 lines), tables with a sticky header, GitHub callouts, task lists, `<details>` folds, wiki, job, thread and file path pills, board id chips, mentions, GitHub cards, web links with the site icon, images with a lightbox, mermaid drawn when it scrolls near, and a streaming caret. | `text`, `inline`, `context`, `streaming`, `onartifact`, `onboardid`, `onmention` |
 | `Mermaid` | One mermaid diagram in the design tokens of the current color mode; a parse error goes to `onerror`, or shows with the source. | `source`, `onerror` |

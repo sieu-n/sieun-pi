@@ -22,6 +22,11 @@ export function timeLabel(t: number): string {
   return new Date(t).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
 }
 
+/** "9:41", for the hover gutter of a follow-up post, as Slack draws it. */
+export function clockLabel(t: number): string {
+  return timeLabel(t).replace(/\s?[AP]M$/, "");
+}
+
 /** "Yesterday at 8:10 PM" or "9:41 PM" for today. */
 export function stampLabel(t: number, now = Date.now()): string {
   const day = dayLabel(t, now);

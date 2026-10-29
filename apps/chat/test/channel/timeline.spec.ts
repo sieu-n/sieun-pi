@@ -86,6 +86,5 @@ test("an empty channel says so", async ({ page, request }) => {
   const created = await request.post("/api/rooms", { data: { kind: "channel", name: `empty-${Date.now().toString(36)}` } });
   const channel = (await created.json()) as { id: string };
   await open(page, `#/c/${channel.id}`);
-  await expect(conversation(page)).toContainText("No messages yet.");
-  await expect(conversation(page)).toContainText("Start the conversation below.");
+  await expect(page.getByTestId("channel-intro")).toContainText(`This is the very beginning of the #empty-`);
 });

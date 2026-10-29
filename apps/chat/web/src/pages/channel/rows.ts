@@ -10,7 +10,7 @@ export type Row<I extends RowSource> =
   | { kind: "system"; key: string; item: I }
   | { kind: "post"; key: string; item: I; first: boolean; last: boolean };
 
-/** Lays items, oldest first, out as day dividers, system lines and posts, where `first` shows the byline and `last` the avatar. */
+/** Lays items, oldest first, out as day dividers, system lines and posts, where `first` shows the byline, and the avatar in slack layout, and `last` the avatar in bubble layout. */
 export function layoutRows<I extends RowSource>(items: readonly I[]): Row<I>[] {
   const rows: Row<I>[] = [];
   let previous: I | null = null;

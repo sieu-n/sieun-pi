@@ -25,6 +25,7 @@
   import { toast } from "$lib/ui/toast.svelte";
   import type { Status } from "$lib/ui/types";
   import Composer from "./Composer.svelte";
+  import ChannelMembers from "./ChannelMembers.svelte";
   import ThreadPane from "./ThreadPane.svelte";
   import Timeline from "./Timeline.svelte";
   import { directory } from "./directory.svelte";
@@ -49,6 +50,8 @@
   const isDm = $derived(kind === "dm");
   /** A Solo room (`so_<id>`): its agenda is pinned on top, its members are edited here, and the owner closes it when the agenda is done. */
   const isSolo = $derived(isSoloRoom(id));
+  /** Channels and Solo rooms read like Slack; DMs and other chats keep the bubbles. */
+  const layout = $derived<"bubble" | "slack">(isChannel || isSolo ? "slack" : "bubble");
   const closedAt = $derived(header?.closedAt ?? null);
   /** A DM's agent works in its work thread, which `Open work thread` shows as today's transcript. */
   const workThread = $derived(header?.workThread ?? null);
@@ -96,11 +99,7 @@
   let paneKey: string | null = null;
   const threadTitle = $derived.by(() => {
     if (!threadParam) return "";
-    if (isChannel) {
-      const root = store.items.find((item) => item.id === threadParam);
-      const text = root && root.kind !== "system" ? root.text.replace(/\s+/g, " ").trim() : "";
-      return text ? (text.length > 40 ? `${text.slice(0, 39)}…` : text) : "Thread";
-    }
+    if (isChannel) return "Thread";
     for (const item of store.items) for (const job of jobsOf(item)) if (job.conversation === threadParam) return job.name;
     return jobs.byId(threadParam)?.name ?? "Thread";
   });
@@ -120,7 +119,7 @@
     }
     if (key) {
       paneKey = `thread:${key}`;
-      sidePanel.open({ key: paneKey, title, icon: isChannel ? "thread" : "robot", body: pane, onclose: () => {
+      sidePanel.open({ key: paneKey, title, icon: isChannel ? "thread" : "robot", body: pane, header: layout === "slack" ? threadHeader : undefined, onclose: () => {
         if (!leaving) router.setParams({ thread: null });
       } });
     } else if (board) {
@@ -288,6 +287,7 @@
       <ThreadPane
         channel={isChannel ? id : null}
         threadKey={threadParam}
+        {layout}
         {context}
         {statusOf}
         oncopylink={copyLink}
@@ -317,13 +317,24 @@
   {#if paneBoard}<IconButton icon="external" label="Open board page" size="sm" onclick={() => router.navigate(boardHref(paneBoard, boardFocus ?? undefined))} />{/if}
 {/snippet}
 
+{#snippet threadHeader()}
+  <PanelHeader icon={isChannel ? "thread" : "robot"} closeLabel="Close {threadTitle.toLowerCase()}" onclose={() => sidePanel.close()}>
+    {#snippet titleContent()}
+      <h2 class="t-label-sm">{threadTitle}</h2>
+      <span class="thread-room" data-testid="thread-room">{isChannel ? `#${name}` : name}</span>
+    {/snippet}
+  </PanelHeader>
+{/snippet}
+
 {#snippet titleContent()}
   <h1 class="title t-label-sm" data-testid="conversation-title">{name}</h1>
-  {#if header?.purpose}<span class="purpose">{header.purpose}</span>{/if}
+  {#if header?.purpose}<span class="purpose" title={header.purpose} data-testid="channel-purpose">{header.purpose}</span>{/if}
 {/snippet}
 
 {#snippet actions()}
-  {#if others.length}
+  {#if isChannel && header}
+    <ChannelMembers members={header.members} onopen={(agentId) => router.openConversation(agents.room(agentId))} />
+  {:else if others.length}
     <span class="members" title={others.map((m) => m.principal.name).join(", ")}>
       <AvatarStack members={others.map((m) => ({ id: m.principal.id, name: m.principal.name, kind: avatarKind(m.principal) }))} size={20} max={3} />
     </span>
@@ -366,6 +377,8 @@
   {/if}
   <Timeline
     {items}
+    {layout}
+    beginning={layout === "slack" && header ? { name, purpose: header.purpose ?? null, kind: isSolo ? "solo" : "channel" } : null}
     loading={store.loading}
     error={store.error}
     hasOlder={!!store.older}
@@ -447,6 +460,14 @@
   }
   .purpose {
     margin-left: 10px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-subtle);
+    font: var(--text-caption);
+  }
+  .thread-room {
+    margin-left: 8px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
