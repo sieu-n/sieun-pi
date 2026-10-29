@@ -78,7 +78,19 @@ export interface AgentSummary {
    * and hands it work. A comm thread is never an agent, a job or a solo chat, so no list shows it as one.
    */
   comm?: { room: RoomId; thread: string; status: RunStatus }[];
+  /** "away" while the chat server has no live link to the agent's box (`host`); absent on a server with one box. */
+  hostState?: AgentHostState;
 }
+
+/** Whether the chat server has a live link to a box's agent relay. */
+export type AgentHostState = "up" | "away";
+/** One box agents can run on, as `GET /api/agent-hosts` lists it; `since` is when its link last changed state. */
+export interface AgentHost {
+  box: string; label: string; self: boolean; state: AgentHostState; since?: Ms;
+  /** The box's home folder and project checkouts, the default first, once its relay said hello. */
+  home?: string; projects?: string[];
+}
+export interface AgentHostList { hosts: AgentHost[] }
 
 /** One row of the conversation directory, which the sidebar, search and the # typeahead read. */
 export interface ConversationSummary {
