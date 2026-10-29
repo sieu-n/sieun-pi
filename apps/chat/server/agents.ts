@@ -1,10 +1,13 @@
 /**
  * Agents as the chat server keeps them (apps/chat/docs/agent-model.md, phase 2): each `AgentRecord` in `agents.json` joined with its work
  * thread's live row into the `AgentSummary` the pages see, the thread ids that belong to each agent, new agents with their work thread and DM
- * room, and the migration that turns a root chat with no record into an agent (`migrate.ts`).
+ * room, the migration that turns a root chat with no record into an agent (`migrate.ts`), and the `agent.ref` doc that points each of an
+ * agent's threads at its folder (phase 3, `agent-folder.ts`).
  */
 import type { AgentId, AgentSummary, RunStatus, ThinkingLevel } from "../web/src/lib/api/types.ts";
+import { AGENT_REF_DOC, agentRef, sameRef, type AgentRef } from "./agent-folder.ts";
 import { freeSlug, type AgentRecord, type AgentStore } from "./agent-store.ts";
+import type { Config } from "./config.ts";
 import type { DurableThread, Host, TreeNode } from "./host/types.ts";
 import { migrateAgents } from "./migrate.ts";
 import type { Store } from "./store.ts";
@@ -50,14 +53,18 @@ export class Agents {
   private migrating?: Promise<void>;
   /** Root chats the last migration left without a record, so the poll does not start it again for them. */
   private tried = new Set<string>();
+  /** The `agent.ref` each thread holds as this server last read or wrote it, so a sweep reads a thread once per run. */
+  private refs = new Map<string, AgentRef>();
+  private sweeping?: Promise<void>;
 
   constructor(
     readonly store: AgentStore,
     readonly state: Store,
     readonly host: Host,
-    readonly box: string,
+    readonly config: Pick<Config, "box" | "agentsDir" | "agentRefs">,
     private readonly log: (line: string) => void = () => {},
   ) {}
+
 
   /** The agent an agent id, a DM room id or one of its thread ids belongs to. */
   record(id: string): AgentRecord | undefined {
@@ -88,7 +95,7 @@ export class Agents {
     if (known) return known;
     const slug = freeSlug(thread.name || "agent", new Set(this.store.agents.agents.map(a => a.slug)));
     const record: AgentRecord = {
-      id: `ag_${slug}`, slug, name: thread.name || slug, room: `dm_${slug}`, workThread: thread.id, host: this.box, home: thread.cwd, createdAt: thread.createdAt, archived: thread.archived,
+      id: `ag_${slug}`, slug, name: thread.name || slug, room: `dm_${slug}`, workThread: thread.id, host: this.config.box, home: thread.cwd, createdAt: thread.createdAt, archived: thread.archived,
     };
     this.store.agents.agents.push(record);
     this.store.agents.aliases[thread.id] = record.id;
@@ -96,6 +103,7 @@ export class Agents {
     this.store.rooms.feed[record.id] = { entry: 0, open: {} };
     this.store.saveAgents();
     this.store.saveRooms();
+    void this.putRef(thread.id, agentRef(this.config.agentsDir, record, "work"));
     return record;
   }
 
@@ -105,7 +113,42 @@ export class Agents {
     if (!record) return undefined;
     this.store.agents.aliases[thread] = record.id;
     this.store.saveAgents();
+    void this.putRef(thread, agentRef(this.config.agentsDir, record, thread === record.workThread ? "work" : "job"));
     return record.id;
+  }
+
+  /** The `agent.ref` each thread of each agent should hold: the work thread as "work", each root job thread aliased to it as "job". */
+  wantedRefs(): Map<string, AgentRef> {
+    const out = new Map<string, AgentRef>();
+    for (const record of this.list()) {
+      out.set(record.workThread, agentRef(this.config.agentsDir, record, "work"));
+      for (const thread of this.jobThreads(record)) out.set(thread, agentRef(this.config.agentsDir, record, "job"));
+    }
+    return out;
+  }
+
+  /**
+   * Writes `agent.ref` into every thread of every agent that pi-host lists (`listed`) and does not hold it yet, one sweep at a time. A
+   * thread whose ref this run already read or wrote is skipped, and one whose read or write failed is tried again on the next sweep. The
+   * server sweeps at start, after each thread list read and after the migration, so a new alias lands within one poll.
+   */
+  sweepRefs(listed: (thread: string) => boolean = () => true): Promise<void> {
+    if (!this.config.agentRefs) return Promise.resolve();
+    this.sweeping ??= (async () => {
+      for (const [thread, ref] of this.wantedRefs()) if (listed(thread)) await this.putRef(thread, ref);
+    })().finally(() => { this.sweeping = undefined; });
+    return this.sweeping;
+  }
+
+  /** Reads the thread's `agent.ref` and writes `ref` only when it is missing or different; a failure logs and never throws. */
+  private async putRef(thread: string, ref: AgentRef): Promise<void> {
+    if (!this.config.agentRefs || sameRef(this.refs.get(thread), ref)) return;
+    try {
+      if (!sameRef(await this.host.docGet(thread, AGENT_REF_DOC), ref)) await this.host.docPut(thread, AGENT_REF_DOC, ref);
+      this.refs.set(thread, ref);
+    } catch (error) {
+      this.log(`agent.ref for ${thread} (${ref.agent}) not written, next sweep tries again: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   /** Names and archived flags follow the work threads; answers whether a record changed. */

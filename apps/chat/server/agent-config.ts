@@ -8,9 +8,10 @@
  * | system text | pi-host's durable Preamble, `PRIME_BASE_PROMPT` in packages/pi-family/preamble.ts of the pi-host that runs |
  * | thread file | `<durable dir>/threads/<thread>.sqlite`, beside pi-host's `index.sqlite` |
  * | board | the `chat.board` document of its chat's root conversation, through `Boards` |
- * | duties, check-in | `<data dir>/boards/<chat>/duties.json`, and each duty's precheck state in `<data dir>/boards/<chat>/duties/` |
- * | memory | none of its own: pi-host's durable registry installs only the Preamble, coding tools and subagent (packages/pi-host/src/durable/registry.ts) |
- * | instructions | AGENTS.md and CLAUDE.md in its cwd and each folder above it, and `<agent dir>/AGENTS.md`; pi-durable loads none of them |
+ * | duties, check-in | `<data dir>/agents/<agent>/duties.json`, and each duty's precheck state in `<data dir>/agents/<agent>/duties/` |
+ * | folder | its agent's folder, `<agents dir>/<slug>/` with `brief.md` and the harness store (`agent-folder.ts`) |
+ * | memory | Prime's harness digest in pi-host: Prime's global store merged with the agent's store, or with the thread's own store when no agent holds it |
+ * | instructions | AGENTS.md or CLAUDE.md in its cwd and each folder above it, and `<agent dir>/AGENTS.md`, which pi-host loads through Prime's resource loader |
  * | usage | pi-host's `durable_usage` sums for the thread over the last 7 days |
  */
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
@@ -18,6 +19,8 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { AgentConfig, AgentId, ChatBoard, ConfigFile, PlanItem } from "../web/src/lib/api/types.ts";
 import type { Duty, DutyRunRecord } from "../web/src/lib/api/shared/chat-duties.ts";
+import { fileInfo, readAgentFolder } from "./agent-folder.ts";
+import type { AgentRecord } from "./agent-store.ts";
 import { NotFound, type App } from "./app.ts";
 import { judgedRun } from "../web/src/lib/api/shared/duty-card.ts";
 import { awaitingGo, BOARD_DOC, nextRun, type DutyFile } from "./boards.ts";
@@ -27,7 +30,6 @@ import { conversationIdOf, parseConversationId } from "./threads.ts";
 
 const DAY = 86_400_000;
 const PURPOSE_CAP = 1500;
-const PREVIEW_CAP = 400;
 
 /** Prime's agent dir, which pi-host runs with (`--agent-dir`): its harness store, AGENTS.md and skills. */
 export function primeAgentDir(app: App): string {
@@ -59,52 +61,34 @@ export function readPreamble(files = preambleFiles()): { text: string | null; so
   return { text: null, source: "packages/pi-family/preamble.ts (PRIME_BASE_PROMPT), not found on this box" };
 }
 
-export function fileInfo(label: string, path: string, opts: { preview?: boolean; loaded?: boolean; note?: string } = {}): ConfigFile {
-  let stat: ReturnType<typeof statSync> | undefined;
-  try {
-    stat = statSync(path);
-  } catch {
-    stat = undefined;
-  }
-  const out: ConfigFile = { label, path, exists: !!stat, size: stat?.isFile() ? stat.size : null, modifiedAt: stat ? stat.mtimeMs : null };
-  if (opts.preview && stat?.isFile()) {
-    try {
-      const head = readFileSync(path, "utf8").slice(0, 4000).split("\n").filter(line => line.trim()).slice(0, 6).join("\n");
-      out.preview = head.length > PREVIEW_CAP ? `${head.slice(0, PREVIEW_CAP - 1)}…` : head;
-    } catch {
-      // A file that cannot be read keeps its size and no preview.
-    }
-  }
-  if (opts.loaded !== undefined) out.loaded = opts.loaded;
-  if (opts.note) out.note = opts.note;
-  return out;
-}
-
-/** AGENTS.md and CLAUDE.md in `cwd` and each folder above it, nearest first, then the agent dir's global AGENTS.md. */
+/**
+ * The context files Prime's resource loader finds for `cwd`, nearest first, then the agent dir's global AGENTS.md. The loader takes one file
+ * per folder, AGENTS.md before CLAUDE.md, so a CLAUDE.md beside an AGENTS.md is listed as not loaded.
+ */
 export function instructionFiles(cwd: string, agentDir: string): ConfigFile[] {
   const out: ConfigFile[] = [];
   let dir = resolve(cwd || "/");
   for (;;) {
+    let taken = false;
     for (const name of ["AGENTS.md", "CLAUDE.md"]) {
       const path = join(dir, name);
-      if (existsSync(path)) out.push(fileInfo(dir === resolve(cwd) ? `${name} in its cwd` : `${name} above its cwd`, path, { preview: true, loaded: false }));
+      if (!existsSync(path)) continue;
+      const label = dir === resolve(cwd) ? `${name} in its cwd` : `${name} above its cwd`;
+      out.push(fileInfo(label, path, { preview: true, loaded: !taken, ...(taken ? { note: "Prime loads one file per folder, and the AGENTS.md beside it comes first." } : {}) }));
+      taken = true;
     }
     const up = dirname(dir);
     if (up === dir) break;
     dir = up;
   }
   const global = join(agentDir, "AGENTS.md");
-  if (existsSync(global)) out.push(fileInfo("Prime's global AGENTS.md", global, { preview: true, loaded: false }));
+  if (existsSync(global)) out.push(fileInfo("Prime's global AGENTS.md", global, { preview: true, loaded: true }));
   return out;
 }
 
-/** The continual harness store Prime and pi-rlm sessions read: `{entries: {memory, prompt, ...}}`, newest memories first. */
-function harnessStore(agentDir: string): ConfigFile {
-  const path = join(agentDir, "harness", "harness_state.json");
-  const info = fileInfo("Prime's continual harness (global)", path, {
-    loaded: false,
-    note: "Prime and pi-rlm sessions read and write these memories through their Python kernel; a pi-host durable thread has no kernel and never sees them.",
-  });
+/** A harness store with its memory count and newest three memory titles, read as `{entries: {memory, prompt, ...}}`. */
+function harnessStore(label: string, path: string, note: string): ConfigFile {
+  const info = fileInfo(label, path, { loaded: true, note });
   if (!info.exists) return info;
   try {
     const state = JSON.parse(readFileSync(path, "utf8")) as { entries?: { memory?: Record<string, { title?: string; updated_at?: string }> } };
@@ -159,6 +143,12 @@ export function homeChat(app: App, id: AgentId): string | null {
     thread = parseConversationId(meta.parent).thread;
   }
   return null;
+}
+
+/** The agent an agent id, DM room id, or any thread or conversation id of the agent or of a job under it belongs to. */
+export function agentRecordOf(app: App, id: string): AgentRecord | undefined {
+  const chat = homeChat(app, id);
+  return chat ? app.agents.record(chat) : undefined;
 }
 
 export async function agentConfig(app: App, id: AgentId): Promise<AgentConfig> {
@@ -238,8 +228,18 @@ export async function agentConfig(app: App, id: AgentId): Promise<AgentConfig> {
     return { everyMs: view.everyMs, paused: view.paused, nextAt: view.nextAt, lastAt: view.lastAt };
   })() : null;
 
-  // Data that outlives a turn: the duty precheck state files of its chat.
-  const related: ConfigFile[] = [harnessStore(agentDir)];
+  const record = chat ? app.agents.record(chat) : undefined;
+  const folder = record ? readAgentFolder(app.config.agentsDir, record) : null;
+
+  // Data that outlives a turn: Prime's global store, which pi-host's digest merges into every thread, the thread's own store when no agent
+  // holds it, and the duty precheck state files of its chat.
+  const related: ConfigFile[] = [harnessStore("Prime's continual harness (global)", join(agentDir, "harness", "harness_state.json"),
+    "Prime's global store. pi-host merges it into every thread's harness digest, as Prime does for its own sessions, and a kernel writes it with global_=True.")];
+  if (!record && durableDir) {
+    const session = conversation === 1 ? thread : `${thread}-${conversation}`;
+    related.push(harnessStore("its own harness store", join(durableDir, "session-artifacts", session, "harness", "harness_state.json"),
+      "No agent holds this thread, so its local store is its own, by Prime's rule for a session; its kernel's rlm.harness writes here."));
+  }
   if (chat && isChatRoot) {
     const stateDir = join(app.boards.dir(chat), "duties");
     let names: string[] = [];
@@ -270,15 +270,21 @@ export async function agentConfig(app: App, id: AgentId): Promise<AgentConfig> {
       project: !isNoProject(row.cwd, app.config.home), canMove: conversation === 1, thread, conversation, threadFile, dataDir: app.store.dir,
     },
     board: chat && board ? { chat, chatName: app.boards.nameOf(chat), own: chat === agent.id, ...boardSummary(board) } : null,
-    memory: {
+    folder,
+    memory: record ? {
+      kind: "agent",
+      note: `Its memory is the harness store in its agent's folder, which ${record.name}'s work thread, its jobs and every root job filed under it share. `
+        + "pi-host gives each of them Prime's harness digest of Prime's global store merged with this one, and their kernels' rlm.harness and refine.run() write it.",
+      related,
+    } : {
       kind: "none",
-      note: "A pi-host durable thread keeps no memory of its own. pi-host runs every thread with only the Prime preamble, the coding tools in its cwd and the "
-        + "subagent tool (packages/pi-host/src/durable/registry.ts), so what it knows past its transcript is its board and the files it reads.",
+      note: "No agent holds this thread, so its memory is Prime's harness digest of the global store merged with its own store, both listed here.",
       related,
     },
     instructions: {
       files: instructionFiles(row.cwd, agentDir),
-      note: "Its model sees only the system text above: pi-durable loads no AGENTS.md, CLAUDE.md or skill. These files reach it only when it reads them with its tools.",
+      note: "pi-host builds its system prompt with Prime's own builder, which puts these files in the Project Context part as Prime's resource loader finds "
+        + "them, global first, then each folder down to its cwd, and its agent's brief.md after them. An edit shows in its next request.",
     },
     swarm: {
       parent: agent.parent ?? null, jobs,

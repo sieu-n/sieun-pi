@@ -48,19 +48,22 @@ test("a chat's config names its purpose, host, cwd, board, memory, instructions 
   assert.equal(c.board.awaitingGo, (await s.get(`/api/agents/${agents.harness}/board`)).awaitingGo.length);
   assert.deepEqual(c.board.openTodos.map(t => t.id).sort(), ["t1", "t2"]);
 
-  assert.equal(c.memory.kind, "none");
-  assert.ok(c.memory.kind === "none" && /no memory of its own/.test(c.memory.note));
-  const harness = c.memory.kind === "none" ? c.memory.related.find(f => f.path.endsWith("harness_state.json")) : undefined;
+  assert.equal(c.folder?.agent, agents.harness);
+  assert.equal(c.folder?.dir, join(s.app.config.agentsDir, "ai-harness-developer-environment-vp"));
+  assert.equal(c.memory.kind, "agent");
+  assert.ok(c.memory.kind === "agent" && /harness store in its agent's folder/.test(c.memory.note));
+  const harness = c.memory.related.find(f => f.path.endsWith("harness_state.json"));
+  assert.equal(harness?.path, join(s.app.config.dataDir, "prime-agent", "harness", "harness_state.json"));
   assert.equal(harness?.count, 2);
-  assert.equal(harness?.loaded, false);
+  assert.equal(harness?.loaded, true, "pi-host's digest merges Prime's global store");
   assert.match(harness?.preview ?? "", /pi-pool slots free up/);
-  assert.ok(c.memory.kind === "none" && c.memory.related.some(f => f.label === "duty d1 precheck state" && f.exists && /downMinutes/.test(f.preview ?? "")));
+  assert.ok(c.memory.related.some(f => f.label === "duty d1 precheck state" && f.exists && /downMinutes/.test(f.preview ?? "")));
 
   const paths = c.instructions.files.map(f => f.path);
   assert.equal(paths[0], join(s.app.config.dataDir, "work", "harness", "AGENTS.md"), "the cwd's AGENTS.md comes first");
   assert.ok(paths.includes(join(s.app.config.dataDir, "work", "AGENTS.md")));
   assert.equal(paths.at(-1), join(s.app.config.dataDir, "prime-agent", "AGENTS.md"));
-  assert.ok(c.instructions.files.every(f => f.loaded === false && f.exists && (f.size ?? 0) > 0));
+  assert.ok(c.instructions.files.every(f => f.loaded === true && f.exists && (f.size ?? 0) > 0), "pi-host loads them through Prime's resource loader");
   assert.match(c.instructions.files[0]!.preview ?? "", /Ask the owner before a deploy/);
 
   const jobs = new Map(c.swarm.jobs.map(j => [j.id, j]));
@@ -85,6 +88,8 @@ test("a duty thread names its duty and the brief it was given, and shares its ch
   assert.equal(c.board?.own, false);
   assert.deepEqual(c.swarm.duties, [], "duties belong to the chat");
   assert.equal(c.swarm.parent?.id, agents.harness);
+  assert.equal(c.folder?.agent, agents.harness, "a duty thread shares its agent's folder");
+  assert.equal(c.memory.kind, "agent");
 });
 
 test("a job inside a thread reads its task as its purpose and its thread's board", async () => {

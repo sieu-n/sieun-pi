@@ -4,8 +4,10 @@
 import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { extname, join, normalize } from "node:path";
-import type { ChannelInput, ConversationPatch, SendRequest } from "../web/src/lib/api/types.ts";
-import { agentConfig } from "./agent-config.ts";
+import type { ChannelInput, ConversationPatch, MemoryInput, SendRequest } from "../web/src/lib/api/types.ts";
+import { agentConfig, agentRecordOf } from "./agent-config.ts";
+import { createEntry, deleteEntry, EntryExists, EntryMissing, HARNESS_KINDS, readAgentFolder, updateEntry, writeBrief, type HarnessKind } from "./agent-folder.ts";
+import type { AgentRecord } from "./agent-store.ts";
 import { App, MODELS, NotFound } from "./app.ts";
 import { LocalImageError, readLocalImage } from "./local-image.ts";
 import { CwdRefused } from "./projects.ts";
@@ -51,8 +53,29 @@ async function readBody(req: IncomingMessage): Promise<unknown> {
 
 const num = (value: string | null): number | undefined => (value === null || value === "" ? undefined : Number(value));
 
+/** A memory write's body: a title and content that are not blank, and an optional path, as Prime's harness requires. */
+function memoryInput(body: unknown): MemoryInput {
+  const { title, content, path } = (body ?? {}) as Record<string, unknown>;
+  if (typeof title !== "string" || !title.trim()) throw new BadRequest("A memory needs a title, a string that is not blank.");
+  if (typeof content !== "string" || !content.trim()) throw new BadRequest("A memory needs content, a string that is not blank.");
+  if (path !== undefined && (typeof path !== "string" || !path.trim())) throw new BadRequest("A memory's path is a string that is not blank when given.");
+  return { title, content, ...(path === undefined ? {} : { path }) };
+}
+
+/** `?kind=` of a harness entry, memory when absent. */
+function harnessKind(query: URLSearchParams): HarnessKind {
+  const kind = query.get("kind") ?? "memory";
+  if (!(HARNESS_KINDS as readonly string[]).includes(kind)) throw new BadRequest(`An entry's kind is one of ${HARNESS_KINDS.join(", ")}.`);
+  return kind as HarnessKind;
+}
+
 export function routes(app: App): Route[] {
   const str = (value: string | null): string | undefined => (value === null || value === "" ? undefined : value);
+  const folderAgent = (id: string): AgentRecord => {
+    const agent = agentRecordOf(app, id);
+    if (!agent) throw new NotFound(`No agent ${id}.`);
+    return agent;
+  };
   return [
     route("GET", "/api/ready", async () => ({ ready: true })),
     route("GET", "/api/me", async () => app.me()),
@@ -62,6 +85,29 @@ export function routes(app: App): Route[] {
     route("GET", "/api/models", async () => MODELS),
     route("GET", "/api/agents", async (_r, _p, q) => app.threads.agents({ archived: q.get("archived") === "1" })),
     route("GET", "/api/agents/:id/config", async (_r, p) => agentConfig(app, p.id!)),
+    route("GET", "/api/agents/:id/folder", async (_r, p) => readAgentFolder(app.config.agentsDir, folderAgent(p.id!))),
+    route("PUT", "/api/agents/:id/brief", async (_r, p, _q, body) => {
+      const agent = folderAgent(p.id!);
+      const { text } = ((await body()) ?? {}) as { text?: unknown };
+      if (typeof text !== "string") throw new BadRequest("A brief needs text, a string; empty text deletes it.");
+      writeBrief(app.config.agentsDir, agent, text);
+      return readAgentFolder(app.config.agentsDir, agent);
+    }),
+    route("POST", "/api/agents/:id/memory", async (_r, p, _q, body) => {
+      const agent = folderAgent(p.id!);
+      createEntry(app.config.agentsDir, agent, "memory", memoryInput(await body()));
+      return readAgentFolder(app.config.agentsDir, agent);
+    }),
+    route("PUT", "/api/agents/:id/memory/:entry", async (_r, p, q, body) => {
+      const agent = folderAgent(p.id!);
+      updateEntry(app.config.agentsDir, agent, harnessKind(q), p.entry!, memoryInput(await body()));
+      return readAgentFolder(app.config.agentsDir, agent);
+    }),
+    route("DELETE", "/api/agents/:id/memory/:entry", async (_r, p, q) => {
+      const agent = folderAgent(p.id!);
+      deleteEntry(app.config.agentsDir, agent, harnessKind(q), p.entry!);
+      return readAgentFolder(app.config.agentsDir, agent);
+    }),
     route("POST", "/api/agents", async (_r, _p, _q, body) => app.createAgent((await body()) as Parameters<App["createAgent"]>[0])),
     route("GET", "/api/projects", async () => app.projects()),
     route("GET", "/api/c/:id", async (_r, p) => app.header(p.id!)),
@@ -199,7 +245,7 @@ async function handle(app: App, table: Route[], req: IncomingMessage, res: Serve
     return serveWeb(app, path, res);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    const status = error instanceof NotFound ? 404 : error instanceof BadRequest || error instanceof CwdRefused || /^(No |A |An |Dates|around|after|.* is not in #)/.test(message) ? 400 : 500;
+    const status = error instanceof NotFound || error instanceof EntryMissing ? 404 : error instanceof EntryExists ? 409 : error instanceof BadRequest || error instanceof CwdRefused || /^(No |A |An |Dates|around|after|.* is not in #)/.test(message) ? 400 : 500;
     if (status === 500) app.log(`${req.method} ${path} failed: ${error instanceof Error ? error.stack : message}`);
     if (!res.headersSent) json(res, status, { error: message });
     else res.end();

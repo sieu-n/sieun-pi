@@ -29,6 +29,13 @@ export interface Config {
   home: string;
   /** Project checkouts a new agent can run in, first the default; `server/projects.ts` keeps the ones on this box. */
   projects: string[];
+  /** Where each agent's folder (`<slug>/brief.md`, `<slug>/harness/`) lives on this box: `APPS_CHAT_AGENTS_DIR`, else `~/.pi/agent/agents`. */
+  agentsDir: string;
+  /**
+   * Whether this server writes the `agent.ref` doc into its agents' threads. A test server on the live pi-host turns it off, because its
+   * temporary agents would point live threads at a temporary folder.
+   */
+  agentRefs: boolean;
 }
 
 /** The checkouts the agents work in on the Linux box and the Mac; APPS_CHAT_PROJECTS (colon-separated) replaces the list. */
@@ -36,9 +43,9 @@ export function defaultProjects(home: string): string[] {
   return [join(home, "src/sieun-pi"), join(home, "Documents/Github/auto-sns-agent"), join(home, "Documents/Github/sieun-pi")];
 }
 
-/** The fixture's home folder and projects, under its data dir, as `seedFixture` creates them. */
-export function fixtureFolders(dataDir: string): Pick<Config, "home" | "projects"> {
-  return { home: join(dataDir, "home"), projects: [join(dataDir, "work", "harness"), join(dataDir, "work", "crawler")] };
+/** The fixture's home folder, projects and agent folders, under its data dir, as `seedFixture` creates them. */
+export function fixtureFolders(dataDir: string): Pick<Config, "home" | "projects" | "agentsDir"> {
+  return { home: join(dataDir, "home"), projects: [join(dataDir, "work", "harness"), join(dataDir, "work", "crawler")], agentsDir: join(dataDir, "agent-folders") };
 }
 
 export function readConfig(argv = process.argv.slice(2), env = process.env): Config {
@@ -59,10 +66,11 @@ export function readConfig(argv = process.argv.slice(2), env = process.env): Con
   const fixture = values.fixture ?? env.APPS_CHAT_FIXTURE === "1";
   const runtime = env.XDG_RUNTIME_DIR ?? `/run/user/${process.getuid?.() ?? 1000}`;
   const home = homedir();
+  const dataDir = resolve(values["data-dir"] ?? env.APPS_CHAT_DATA_DIR ?? join(homedir(), ".pi/agent/chat"));
   return {
     port: Number(values.port ?? env.APPS_CHAT_PORT ?? 5184),
     listen: values.listen ?? "127.0.0.1",
-    dataDir: resolve(values["data-dir"] ?? env.APPS_CHAT_DATA_DIR ?? join(homedir(), ".pi/agent/chat")),
+    dataDir,
     socket: values.socket ?? env.PI_HOST_SOCKET ?? join(runtime, "pi-host/host.sock"),
     ...(fixture ? {} : { durableIndex: resolve(values["durable-index"] ?? env.PI_HOST_DURABLE_INDEX ?? join(homedir(), ".prime/agent/pi-host/durable/index.sqlite")) }),
     fixture,
@@ -73,6 +81,8 @@ export function readConfig(argv = process.argv.slice(2), env = process.env): Con
     version: values.version ?? env.APPS_CHAT_VERSION ?? releaseVersion(appDir),
     home,
     projects: env.APPS_CHAT_PROJECTS ? env.APPS_CHAT_PROJECTS.split(":").filter(Boolean) : defaultProjects(home),
+    agentsDir: resolve(env.APPS_CHAT_AGENTS_DIR ?? (fixture ? join(dataDir, "agent-folders") : join(home, ".pi/agent/agents"))),
+    agentRefs: true,
   };
 }
 

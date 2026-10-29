@@ -10,7 +10,9 @@ import type { Duty, DutyRunRecord } from "../../web/src/lib/api/shared/chat-duti
 import { richReply, type FixtureHost } from "../host/fixture.ts";
 import type { ContentBlock, EntryRecord, Message } from "../host/types.ts";
 import { runStamp } from "../duty-run.ts";
+import { createEntry, EntryExists, writeBrief } from "../agent-folder.ts";
 import { AgentStore } from "../agent-store.ts";
+import { fixtureFolders } from "../config.ts";
 import { writeJson, type ChannelRow, type Post, type StateFile } from "../store.ts";
 
 export const FIXTURE_IDS = {
@@ -301,6 +303,17 @@ export function seedFixture(host: FixtureHost, dataDir: string, now = Date.now()
     entries: { prompt: {}, skill: {}, subagent: {}, memory: { m1: memory("m1", "The Mac sleeps at night, so cross-box tests run in the day", at(3)), m2: memory("m2", "pi-pool slots free up at 07:00 KST", at(1)) } },
   });
   writeJson(join(dataDir, "agents", vp, "duties", "d1.state.json"), { lastSeenAt: new Date(at(0, -8)).toISOString(), downMinutes: 41 });
+
+  // Vent's agent folder: a brief and one memory its threads wrote, kept when a data dir is seeded again. The other agents start with an
+  // empty folder.
+  const ventRecord = store.agents.agents.find(a => a.slug === "vent")!;
+  const { agentsDir } = fixtureFolders(dataDir);
+  writeBrief(agentsDir, ventRecord, "Keep the canary relay answering every minute, and tell me when the Mac sleeps through a test window.\n");
+  try {
+    createEntry(agentsDir, ventRecord, "memory", { title: "The Mac sleeps from 01:00 to 07:00 KST", content: "Run cross-box relay tests in the day; a gap at night is the Mac asleep, not a relay fault." }, "agent");
+  } catch (error) {
+    if (!(error instanceof EntryExists)) throw error;
+  }
 
   // Keep one turn streaming for as long as the fixture runs.
   const stream = async () => {

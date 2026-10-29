@@ -64,7 +64,7 @@ export class App {
     this.store = new Store(config.dataDir);
     mkdirSync(this.store.imagePath(""), { recursive: true });
     this.agentStore = new AgentStore(config.dataDir);
-    this.agents = new Agents(this.agentStore, this.store, host, config.box, log);
+    this.agents = new Agents(this.agentStore, this.store, host, config, log);
     this.threads = new Threads(host, this.store, {
       agents: (changed, removed) => {
         for (const agent of changed) this.broadcast({ type: "agent", agent });
@@ -103,6 +103,7 @@ export class App {
     this.threads.onRefresh = () => {
       this.rooms.poll();
       this.migrateSoon();
+      this.sweepRefs();
     };
     this.channels = new Channels(this.store, host, this.threads, {
       queue: (target, place, listener) => this.queues.follow(target, place, listener),
@@ -193,8 +194,14 @@ export class App {
   private migrateSoon(): void {
     void this.agents.migrateIfNeeded(this.threads.threadsList(), this.config.dataDir, () => {
       this.roomsChanged();
+      this.sweepRefs();
       void this.threads.refresh().catch(() => undefined);
     });
+  }
+
+  /** Points each listed thread of each agent at its folder with an `agent.ref` doc (agents.ts), in the background. */
+  private sweepRefs(): void {
+    void this.agents.sweepRefs(thread => this.threads.thread(thread) !== undefined);
   }
 
   /** The agent a DM room id names, or NotFound. */

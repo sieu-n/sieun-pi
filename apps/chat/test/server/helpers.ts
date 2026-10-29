@@ -41,7 +41,10 @@ export interface LiveClient {
 export async function start(opts: { real?: boolean; wordMs?: number; url?: string; dataDir?: string; host?: FixtureHost } = {}): Promise<Running> {
   if (opts.url) return remote(opts.url);
   const dataDir = opts.dataDir ?? mkdtempSync(join(tmpdir(), "apps-chat-test-"));
-  const config = { ...readConfig([]), dataDir, port: 0, fixture: !opts.real, box: "test-box", ...(opts.real ? {} : fixtureFolders(dataDir)) };
+  const config = {
+    ...readConfig([]), dataDir, port: 0, fixture: !opts.real, box: "test-box",
+    ...(opts.real ? { agentsDir: join(dataDir, "agent-folders"), agentRefs: false } : fixtureFolders(dataDir)),
+  };
   const host = opts.host ?? (opts.real ? new PiHost(config.socket) : new FixtureHost());
   if (host instanceof FixtureHost && !opts.host) {
     host.wordMs = opts.wordMs ?? 0;
