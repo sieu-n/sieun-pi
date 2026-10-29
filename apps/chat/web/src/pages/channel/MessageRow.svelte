@@ -13,6 +13,7 @@
   import { conversationHref, router } from "$lib/router.svelte";
   import StepLine from "./StepLine.svelte";
   import ThreadPill from "./ThreadPill.svelte";
+  import { offlineText } from "$pages/agents/host-badge";
   import { avatarKind, deliveryText, isOwn, placeText, QUIET_TURN, runningTool } from "./present";
 
   type Props = {
@@ -56,6 +57,8 @@
    * one; a stored DM post has one while its delivery to the agent is on the way or failed.
    */
   const sendState = $derived(message?.send ?? (pending ? "sending" : null));
+  /** A DM send that waits on an away box shows "Queued, Mac is offline" in place of Sending… or Not delivered, since it goes when the box is back. */
+  const offline = $derived(sendState ? offlineText(message?.sendError) : null);
   /** A DM post's jobs, or the jobs a thread turn started, drawn as pills under it. */
   const jobs = $derived(turn?.jobs ?? message?.jobs ?? []);
   /** The work-thread turn behind an agent's DM post. */
@@ -71,7 +74,10 @@
   const notes = $derived([
     ...(message?.testSend ? [`Test send from ${message.testSend.by.name}, not from you. ${message.testSend.reason}`] : []),
     ...(waits ? [`${waits.charAt(0).toUpperCase()}${waits.slice(1)} for a working slot.`] : []),
-    ...(message?.deliveries.map(deliveryText).filter((text): text is string => !!text) ?? []),
+    ...(message?.deliveries
+      .filter((delivery) => !(offline && delivery.error === message.sendError))
+      .map(deliveryText)
+      .filter((text): text is string => !!text) ?? []),
   ]);
   let lightbox = $state<string | null>(null);
   let copied = $state(false);
@@ -106,7 +112,9 @@
 {/snippet}
 
 {#snippet tail()}
-  {#if sendState === "failed"}
+  {#if offline}
+    <p class="send-state queued" role="status" data-send-state="queued" title="It goes when the box is back.">{offline}</p>
+  {:else if sendState === "failed"}
     <p class="send-state failed" role="status" data-send-state="failed" title={message?.sendError ?? ""}>
       <span>Not delivered</span>
       <span aria-hidden="true">·</span>

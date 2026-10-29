@@ -1,5 +1,6 @@
 import type { AgentSummary, Delivery, ImageUpload, Item, Principal, Room, Step, TurnPlace } from "$lib/api";
 import type { MarkdownContext } from "$lib/ui/markdown";
+import { offlineText } from "../agents/host-badge.ts";
 import type { PickerItem } from "$lib/ui/types";
 
 export type TurnItem = Extract<Item, { kind: "turn" }>;
@@ -31,7 +32,10 @@ export function runningTool(steps: readonly Step[]): string | null {
 /** What a channel post's delivery shows under it; delivered and answered show nothing, since the reply shows itself. */
 export function deliveryText(delivery: Delivery): string | null {
   switch (delivery.state) {
-    case "queued": return `${delivery.name} was mentioned and ${placeText(delivery.queue ?? null) ?? "waits for a working slot"}.`;
+    case "queued": {
+      const offline = offlineText(delivery.error);
+      return offline ? `${delivery.name} was mentioned. ${offline}.` : `${delivery.name} was mentioned and ${placeText(delivery.queue ?? null) ?? "waits for a working slot"}.`;
+    }
     case "read": return `${delivery.name} is reading.`;
     case "no_reply": return `${delivery.name} read it and ended its turn with no reply.`;
     case "stopped": return "Stopped after 6 agent-to-agent hops with no post from you. Post or mention to continue.";

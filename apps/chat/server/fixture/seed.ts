@@ -63,7 +63,8 @@ const HOUR = 3600_000;
 const DAY = 24 * HOUR;
 const usage = (output: number) => ({ input: 40, output, cacheRead: 12_000, cacheWrite: 800, cost: { input: 0.00016, output: output * 0.00002, cacheRead: 0.0024, cacheWrite: 0.0064, total: 0.00896 + output * 0.00002 } });
 
-export function seedFixture(host: FixtureHost, dataDir: string, now = Date.now()): void {
+/** `box` is the chat's own box (`config.box`): the seeded agents run there, as a live agent does, so the web shows them no host badge. */
+export function seedFixture(host: FixtureHost, dataDir: string, now = Date.now(), box = "fixture"): void {
   const ids = FIXTURE_IDS;
   const at = (daysAgo: number, hours = 0) => now - daysAgo * DAY + hours * HOUR;
   type T = ReturnType<FixtureHost["addThread"]>;
@@ -214,7 +215,7 @@ export function seedFixture(host: FixtureHost, dataDir: string, now = Date.now()
     const id = `ag_${slug}`;
     const room = `dm_${slug}`;
     const tid = thread.row.id;
-    store.agents.agents.push({ id, slug, name: thread.row.name, room, workThread: tid, host: "fixture", home, createdAt: thread.row.createdAt, archived: thread.row.archived });
+    store.agents.agents.push({ id, slug, name: thread.row.name, room, workThread: tid, host: box, home, createdAt: thread.row.createdAt, archived: thread.row.archived });
     store.agents.aliases[tid] = id;
     store.rooms.rooms.push({ id: room, kind: "dm", agent: id, createdAt: thread.row.createdAt, archived: thread.row.archived });
     let lastPost: string | undefined;

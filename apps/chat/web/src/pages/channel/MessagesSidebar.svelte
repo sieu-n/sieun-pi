@@ -5,7 +5,7 @@
   import Menu from "$lib/ui/Menu.svelte";
   import type { Anchor } from "$lib/ui/floating";
   import type { MenuEntry } from "$lib/ui/menu";
-  import type { ConversationSummary } from "$lib/api";
+  import { agents, me, type ConversationSummary } from "$lib/api";
   import { conversationHref, hrefFor, router } from "$lib/router.svelte";
   import SidebarFrame from "$lib/shell/SidebarFrame.svelte";
   import SidebarSection from "$lib/shell/SidebarSection.svelte";
@@ -16,6 +16,7 @@
   import { renameDialog } from "$lib/shell/rename-dialog.svelte";
   import { CHANNEL_DRAG_TYPE, channelDrop, groupChannels, sidebarSections, visibleRows, type BuiltinSection, type SectionId } from "$lib/shell/sidebar-sections.svelte";
   import { forYouHref } from "$pages/board/chips";
+  import HostBadge from "$pages/agents/HostBadge.svelte";
 
   const current = $derived(router.conversationId);
   const names = (row: ConversationSummary): string[] => row.working.map((w) => w.name);
@@ -179,6 +180,10 @@
       >
         {#snippet leading()}
           <Avatar name={row.name} kind="agent" seed={row.agent ?? row.id} size={20} status={row.status === "working" ? "online" : row.status === "failed" ? "busy" : null} />
+        {/snippet}
+        {#snippet tag()}
+          {@const agent = row.agent ? agents.byId(row.agent) : undefined}
+          {#if agent}<HostBadge {agent} self={me.value?.host} />{/if}
         {/snippet}
       </SidebarRow>
     {/each}

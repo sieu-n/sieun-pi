@@ -25,8 +25,10 @@
     ondragstart?: (e: DragEvent) => void;
     /** Shown at the right end when the row has no typing dots, count or dot, such as a light count or a danger badge. */
     trailing?: Snippet;
+    /** Shown right after the label and always, such as the host badge of a DM whose agent runs on another box. */
+    tag?: Snippet;
   };
-  let { href, label, icon, leading, selected = false, unread = 0, fresh = false, working = [], title, oncontextmenu, actions, ondragstart, trailing }: Props = $props();
+  let { href, label, icon, leading, selected = false, unread = 0, fresh = false, working = [], title, oncontextmenu, actions, ondragstart, trailing, tag }: Props = $props();
   const workingLabel = $derived(working.length ? `${working.join(", ")} working in ${label}` : "");
 </script>
 
@@ -49,6 +51,7 @@
       {#if leading}{@render leading()}{:else if icon}<Icon name={icon} size={16} />{/if}
     </span>
     <span class="label">{label}</span>
+    {#if tag}{@render tag()}{/if}
     <span class="trail">
       {#if working.length}
         <span class="working" title={workingLabel}><TypingDots label={workingLabel} /></span>

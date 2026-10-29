@@ -1,7 +1,8 @@
 <script lang="ts">
-  import type { AgentSummary, ModelCatalog, ThinkingLevel } from "$lib/api";
+  import { me, type AgentSummary, type ModelCatalog, type ThinkingLevel } from "$lib/api";
   import { ModelPicker, IconButton, TypingDots, ageLabel, mascotSvg } from "$lib/ui";
   import { STATUS_LABEL, levelsFor, modelKey, modelOptions } from "./agents-model";
+  import HostBadge from "./HostBadge.svelte";
 
   type Props = {
     /** A registered agent; its jobs show only as the `jobs` line. */
@@ -84,6 +85,7 @@
   <span class="identity">
     <span class="name-row">
       <span class="name t-label" title={agent.name}>{agent.name}</span>
+      <HostBadge {agent} self={me.value?.host} />
     </span>
     <span class="status t-caption" data-status={agent.status}>
       {#if agent.status === "working" || agent.status === "sleeping"}

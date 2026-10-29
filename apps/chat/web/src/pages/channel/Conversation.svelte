@@ -26,6 +26,7 @@
   import { toast } from "$lib/ui/toast.svelte";
   import type { Status } from "$lib/ui/types";
   import AccountChip from "$pages/accounts/AccountChip.svelte";
+  import HostBadge from "$pages/agents/HostBadge.svelte";
   import Composer from "./Composer.svelte";
   import ChannelMembers from "./ChannelMembers.svelte";
   import ThreadPane from "./ThreadPane.svelte";
@@ -331,6 +332,7 @@
 
 {#snippet titleContent()}
   <h1 class="title t-label-sm" data-testid="conversation-title">{name}</h1>
+  {#if isDm && liveAgent}<span class="host"><HostBadge agent={liveAgent} self={me.value?.host} /></span>{/if}
   {#if header?.purpose}<span class="purpose" title={header.purpose} data-testid="channel-purpose">{header.purpose}</span>{/if}
 {/snippet}
 
@@ -466,6 +468,13 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .host {
+    display: inline-flex;
+    margin-left: 8px;
+  }
+  .host:empty {
+    display: none;
   }
   .purpose {
     margin-left: 10px;

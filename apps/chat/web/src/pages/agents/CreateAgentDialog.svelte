@@ -1,7 +1,8 @@
 <script lang="ts">
-  import { api, type AgentSummary, type ModelCatalog, type ProjectList, type ThinkingLevel } from "$lib/api";
-  import { Button, Dialog, Field, Input, ModelPicker, mascotSvg } from "$lib/ui";
+  import { api, type AgentHost, type AgentSummary, type ModelCatalog, type ProjectList, type ThinkingLevel } from "$lib/api";
+  import { Button, Dialog, Field, Input, ModelPicker, Select, mascotSvg } from "$lib/ui";
   import { levelsFor, modelOptions } from "./agents-model";
+  import { defaultHost, hostOptions, hostProjects } from "./host-badge";
   import ProjectPicker from "./ProjectPicker.svelte";
 
   type Props = {
@@ -21,6 +22,28 @@
   let touched = $state(false);
   let projects = $state<ProjectList | null>(null);
   let cwd = $state("");
+  /** The boxes that run pi-host, from `GET /api/agent-hosts`; the picker shows only when there is more than one. */
+  let hosts = $state<AgentHost[] | null>(null);
+  let host = $state("");
+
+  $effect(() => {
+    if (!open || hosts) return;
+    api.agentHosts().then(
+      (list) => {
+        hosts = list.hosts;
+        if (!host) host = defaultHost(list.hosts);
+      },
+      () => (hosts = []),
+    );
+  });
+  const picked = $derived(hosts?.find((row) => row.box === host) ?? null);
+  /** The chat's own box offers `GET /api/projects`; another box offers the folders its row of the host list names. */
+  const folders = $derived(picked && !picked.self ? hostProjects(picked) : projects);
+  function pickHost(next: string) {
+    touched = true;
+    host = next;
+    cwd = folders?.default ?? "";
+  }
 
   $effect(() => {
     if (!open || projects) return;
@@ -45,6 +68,7 @@
     name = "";
     model = catalog?.default.model ?? "";
     level = catalog?.default.thinkingLevel;
+    host = hosts ? defaultHost(hosts) : "";
     cwd = projects?.default ?? "";
     error = "";
     nameError = null;
@@ -66,7 +90,7 @@
     pending = true;
     error = "";
     try {
-      const agent = await api.createAgent({ name: name.trim(), ...(model ? { model } : {}), ...(level ? { thinkingLevel: level } : {}), ...(cwd.trim() ? { cwd: cwd.trim() } : {}) });
+      const agent = await api.createAgent({ name: name.trim(), ...(model ? { model } : {}), ...(level ? { thinkingLevel: level } : {}), ...(cwd.trim() ? { cwd: cwd.trim() } : {}), ...(picked && !picked.self ? { host: picked.box } : {}) });
       open = false;
       reset();
       oncreated(agent);
@@ -116,13 +140,21 @@
           }}
         />
       </div>
+      {#if hosts && hosts.length > 1}
+        <div class="setting">
+          <span class="t-body">Host</span>
+          <Select label="Host" id="create-agent-host" value={host} options={hostOptions(hosts)} disabled={pending} onchange={pickHost} />
+        </div>
+      {/if}
       <div class="setting">
         <span class="t-body">Project</span>
-        <ProjectPicker {projects} bind:value={cwd} disabled={pending || !projects} id="create-agent-project" onchange={() => (touched = true)} />
+        {#key host}
+          <ProjectPicker projects={folders} bind:value={cwd} disabled={pending || !folders} id="create-agent-project" onchange={() => (touched = true)} />
+        {/key}
       </div>
       <p class="hint t-caption">
-        A new agent is a new root thread on pi-host, in its project folder, whose AGENTS.md, skills and rules it reads.
-        {#if projects && !projects.default}No project folder is configured on this box, so name one.{/if}
+        A new agent is a new root thread on pi-host{#if hosts && hosts.length > 1}{" "}on the box you pick{/if}, in its project folder, whose AGENTS.md, skills and rules it reads.
+        {#if folders && !folders.default}No project folder is configured on this box, so name one.{/if}
         You can change its model and folder later from its card.
       </p>
     </div>

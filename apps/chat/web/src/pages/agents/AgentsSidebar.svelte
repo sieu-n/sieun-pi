@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { agents, connection, jobs } from "$lib/api";
+  import { agents, connection, jobs, me } from "$lib/api";
   import { Avatar, IconButton } from "$lib/ui";
   import { hrefFor, router } from "$lib/router.svelte";
   import SidebarFrame from "$lib/shell/SidebarFrame.svelte";
@@ -8,6 +8,7 @@
   import { folds } from "$lib/shell/folds.svelte";
   import { agentFromRoute, agentGroups, agentOfRoute, dotOf } from "./agents-model";
   import { createAgent } from "./create-agent.svelte";
+  import HostBadge from "./HostBadge.svelte";
 
   /** The agent whose page is open, also while one of its jobs is open. */
   const selected = $derived(router.route.page === "agents" ? agentOfRoute(agentFromRoute(router.route.rest), jobs.list) : null);
@@ -48,6 +49,7 @@
             {#snippet leading()}
               <Avatar name={agent.name} kind="agent" seed={agent.id} size={20} status={dotOf(agent.status)} />
             {/snippet}
+            {#snippet tag()}<HostBadge {agent} self={me.value?.host} />{/snippet}
           </SidebarRow>
         {/each}
       </SidebarSection>
