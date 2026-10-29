@@ -25,6 +25,8 @@
     onclose?: () => void;
     /** Extra rows under the list, for example a "Custom model" field or an effort control. */
     footer?: Snippet<[{ query: string; close: () => void }]>;
+    /** Rich content at the right of a row, such as usage meters and a state badge. It shows after `trailing`. */
+    rowEnd?: Snippet<[PickerItem]>;
     /**
      * Typeahead mode for a text box that keeps the caret, such as the composer's @ list: the list filters by `query`,
      * shows no search field, never takes focus, and reads ArrowUp, ArrowDown, Enter and Tab from `keys`.
@@ -46,6 +48,7 @@
     onselect,
     onclose,
     footer,
+    rowEnd,
     typeahead,
   }: Props = $props();
 
@@ -163,6 +166,7 @@
               {#if item.detail}<span class="detail">{item.detail}</span>{/if}
             </span>
             {#if item.trailing}<span class="trailing">{item.trailing}</span>{/if}
+            {#if rowEnd}<span class="row-end">{@render rowEnd(item)}</span>{/if}
             {#if selected.has(item.id)}<Icon name="check" size={16} />{/if}
           </button>
         {/each}
@@ -199,6 +203,7 @@
   }
   .option {
     display: flex;
+    flex: none;
     align-items: center;
     gap: 8px;
     min-height: 32px;
@@ -246,6 +251,12 @@
     font: var(--text-mono);
     letter-spacing: var(--tracking-mono);
     color: var(--text-metadata);
+  }
+  .row-end {
+    display: inline-flex;
+    flex: none;
+    align-items: center;
+    gap: 8px;
   }
   .empty {
     margin: 0;

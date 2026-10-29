@@ -25,6 +25,7 @@
   import type { MenuEntry } from "$lib/ui/menu";
   import { toast } from "$lib/ui/toast.svelte";
   import type { Status } from "$lib/ui/types";
+  import AccountChip from "$pages/accounts/AccountChip.svelte";
   import Composer from "./Composer.svelte";
   import ChannelMembers from "./ChannelMembers.svelte";
   import ThreadPane from "./ThreadPane.svelte";
@@ -334,6 +335,9 @@
 {/snippet}
 
 {#snippet actions()}
+  {#if header && (isDm || kind === "job" || (kind === "solo" && !isSolo))}
+    <AccountChip thread={id} model={header.model} />
+  {/if}
   {#if isChannel && header}
     <ChannelMembers members={header.members} onopen={(agentId) => router.openConversation(agents.room(agentId))} />
   {:else if others.length}

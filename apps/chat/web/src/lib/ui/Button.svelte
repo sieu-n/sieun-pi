@@ -17,6 +17,8 @@
     loading?: boolean;
     /** Render as a link. */
     href?: string;
+    /** The link's target; "_blank" opens a new tab, or the system browser in the Mac app, with no opener. */
+    target?: string;
     full?: boolean;
     /** The rendered button or link, for anchoring a Menu or Picker. */
     element?: HTMLElement | undefined;
@@ -29,6 +31,7 @@
     trailingIcon,
     loading = false,
     href,
+    target,
     full = false,
     disabled = false,
     type = "button",
@@ -51,7 +54,7 @@
 {/snippet}
 
 {#if href}
-  <a bind:this={element} class="btn {variant} {size} {className}" class:full {href} aria-disabled={disabled || loading} data-variant={variant}>
+  <a bind:this={element} class="btn {variant} {size} {className}" class:full {href} {target} rel={target === "_blank" ? "noopener noreferrer" : undefined} aria-disabled={disabled || loading} data-variant={variant}>
     {@render inner()}
   </a>
 {:else}

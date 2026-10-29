@@ -1,100 +1,14 @@
 /**
- * Usage, the pool and hosts. Usage sums pi-host's `durable_usage` rows; the pool runs the installed pi-pool CLI; hosts reads the
- * hosts registry and each box's relay. The pool parsers are copied from today's chat (legacy/prime/user-history/src/chat-pool.ts).
+ * Usage and hosts. Usage sums pi-host's `durable_usage` rows; hosts reads the hosts registry and each box's relay. The pool's
+ * accounts are server/accounts.ts.
  */
-import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { AccountResets, AccountsView, PoolAccount, PoolConfig, PoolProvider, PoolWindow } from "../web/src/lib/api/shared/types.ts";
 import type { HostsReport, HostView, MachineView, UsageReport, UsageRow } from "../web/src/lib/api/types.ts";
 import type { Host, UsageTotal } from "./host/types.ts";
 import { OWNER_ZONE_OFFSET_MS } from "./search.ts";
 import { statusOf, type Threads } from "./threads.ts";
-
-export function poolExecutable(env: Record<string, string | undefined> = process.env, home: string = homedir()): string {
-  return env.PI_POOL_BIN || join(home, ".local", "bin", "pi-pool");
-}
-export const pooledProviders = ["anthropic", "openai-codex"] as const;
-type PooledProvider = typeof pooledProviders[number];
-const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
-const percent = (value: unknown): number | null => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
-const isPooled = (value: string): value is PooledProvider => (pooledProviders as readonly string[]).includes(value);
-const epochMs = (value: unknown): number | null => typeof value === "number" && Number.isFinite(value) && value > 0 ? value * 1000 : null;
-const text = (value: unknown): string | null => typeof value === "string" && value ? value : null;
-const WINDOW_KINDS = new Set<unknown>(["session", "weekly", "model"]);
-
-function parseWindows(value: unknown): PoolWindow[] {
-  if (!Array.isArray(value)) return [];
-  return value.flatMap((entry: unknown): PoolWindow[] => {
-    if (!isRecord(entry) || !WINDOW_KINDS.has(entry.kind) || typeof entry.label !== "string") return [];
-    return [{ kind: entry.kind as PoolWindow["kind"], label: entry.label, pct: percent(entry.pct) ?? 0, resetsAt: epochMs(entry.resets_at) }];
-  });
-}
-
-const isoMs = (value: unknown): number | null => typeof value === "string" && !Number.isNaN(Date.parse(value)) ? Date.parse(value) : null;
-
-/** The `resets` entry of a Claude row from `pi-pool ls --json`, or null. Grants that do not parse are dropped, never guessed. */
-export function parseResets(value: unknown): AccountResets | null {
-  if (!isRecord(value)) return null;
-  const status = isRecord(value.status) ? value.status : null;
-  const grants = status && Array.isArray(status.grants) ? status.grants.flatMap(grant => {
-    if (!isRecord(grant) || !text(grant.id) || typeof grant.resets_total !== "number" || typeof grant.resets_left !== "number") return [];
-    return [{ id: grant.id as string, label: text(grant.label) ?? "", resetsTotal: grant.resets_total, resetsLeft: grant.resets_left,
-      startsAt: isoMs(grant.starts_at), endsAt: isoMs(grant.ends_at), clears: Array.isArray(grant.clears) ? grant.clears.filter((w): w is string => typeof w === "string") : [],
-      paused: grant.paused === true, usableNow: grant.usable_now === true, useRequiresLimit: grant.use_requires_limit !== false }];
-  }) : [];
-  const pending = isRecord(value.pending) && text(value.pending.grant_id) && typeof value.pending.created_at === "number"
-    ? { grantId: value.pending.grant_id as string, createdAt: value.pending.created_at * 1000 } : null;
-  return { checkedAt: status ? epochMs(value.checked_at) : null, eligible: status && typeof status.eligible === "boolean" ? status.eligible : null,
-    ineligibleReason: status ? text(status.ineligible_reason) : null, atLimit: status?.at_limit === true, cooldownUntil: status ? isoMs(status.cooldown_until) : null,
-    grants, nextGrantId: status ? text(status.next_grant_id) : null, error: text(value.error), errorAt: epochMs(value.error_at ?? (status ? null : value.checked_at)), pending };
-}
-
-export function parsePoolRows(value: unknown, provider: string): PoolAccount[] {
-  if (!isRecord(value) || value.provider !== provider || !Array.isArray(value.rows)) throw new Error("pi-pool returned an invalid listing");
-  return value.rows.map((row: unknown): PoolAccount => {
-    if (!isRecord(row) || typeof row.id !== "string" || !row.id || typeof row.email !== "string" || typeof row.usage !== "string" ||
-      !(row.reason === null || typeof row.reason === "string") || typeof row.usable !== "boolean" || typeof row.current !== "boolean" ||
-      typeof row.pinned !== "boolean") {
-      throw new Error("pi-pool returned an invalid account");
-    }
-    return { id: row.id, email: row.email, label: text(row.label) ?? row.email, usage: row.usage, reason: row.reason, usable: row.usable, current: row.current, pinned: row.pinned,
-      session_pct: percent(row.session_pct), weekly_pct: percent(row.weekly_pct), score: percent(row.score),
-      ...(typeof row.plan === "string" ? { plan: row.plan } : {}),
-      tier: text(row.tier), windows: parseWindows(row.windows), usageAt: epochMs(row.usage_at), cooldownUntil: epochMs(row.cooldown_until),
-      cooldownReason: text(row.cooldown_reason), limitedUntil: epochMs(row.limited_until), disabled: row.disabled === true,
-      sessions: typeof row.sessions === "number" && Number.isInteger(row.sessions) && row.sessions > 0 ? row.sessions : 0, ...("resets" in row ? { resets: parseResets(row.resets) } : {}) };
-  });
-}
-
-
-/** The numeric entries of `pi-pool config` (a JSON object); other entries (lists, switches) are dropped. Null for anything else. */
-export function parsePoolConfig(value: unknown): PoolConfig | null {
-  if (!isRecord(value)) return null;
-  return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, number] => typeof entry[1] === "number" && Number.isFinite(entry[1])));
-}
-
-function run(executable: string, args: string[], timeout = 20_000): Promise<string> {
-  return new Promise((resolve, reject) => {
-    execFile(executable, args, { timeout, maxBuffer: 8 * 1024 * 1024 }, (error, stdout, stderr) => {
-      if (error) reject(new Error(`${executable} ${args.join(" ")} failed: ${(String(stderr).trim() || error.message).slice(0, 300)}`));
-      else resolve(String(stdout));
-    });
-  });
-}
-
-export async function readPool(executable = poolExecutable()): Promise<AccountsView> {
-  const providers: PoolProvider[] = await Promise.all((["anthropic", "openai-codex"] as const).map(async provider => {
-    try {
-      return { provider, rows: parsePoolRows(JSON.parse(await run(executable, ["ls", "--json", "--provider", provider])), provider), resolution: null };
-    } catch (error) {
-      return { provider, rows: [], resolution: null, error: error instanceof Error ? error.message : String(error) };
-    }
-  }));
-  const poolConfig = await run(executable, ["config"]).then(out => parsePoolConfig(JSON.parse(out))).catch(() => null);
-  return { sessionId: null, checkedAt: new Date().toISOString(), providers, poolConfig };
-}
 
 /** One row's cost by kind, as pi-host sums it from each answer's own usage. */
 export const costOf = (total: UsageTotal): UsageRow["cost"] => ({
@@ -177,5 +91,3 @@ export async function hostsReport(host: Host, threads: Threads, box: string, soc
   }));
   return { checkedAt: Date.now(), registryError, hosts: [mine, ...views] };
 }
-
-export type { PoolConfig, PoolWindow, AccountResets, PoolAccount };

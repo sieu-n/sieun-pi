@@ -11,11 +11,11 @@ import { POOL_PRIORITIES, TURN_KINDS, type AccountAction, type AgentQueueReading
 /**
  * The installed pi-pool CLI (`~/.local/bin/pi-pool`, a link into ~/.local/share/pi-pool/current), never the copy in this checkout: the chat
  * must not run uncommitted pool edits (10-08: a half-written vend.py broke every session). PI_POOL_BIN names another one (tests run fakes).
+ * Every run reads it again, so a server can point it at a fake after this module loads (apps/chat's --fixture).
  */
 export function poolExecutable(env: Record<string, string | undefined> = process.env, home: string = homedir()): string {
   return env.PI_POOL_BIN || join(home, ".local", "bin", "pi-pool");
 }
-const executable = poolExecutable();
 export const pooledProviders = ["anthropic", "openai-codex"] as const;
 type PooledProvider = typeof pooledProviders[number];
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -111,7 +111,7 @@ function reportedError(stdout: string): string | null {
 
 function run(args: string[], timeout = 15000): Promise<string> {
   return new Promise((resolve, reject) => {
-    execFile(executable, args, { timeout, maxBuffer: 4 * 1024 * 1024, env: poolEnv() }, (error, stdout, stderr) => {
+    execFile(poolExecutable(), args, { timeout, maxBuffer: 4 * 1024 * 1024, env: poolEnv() }, (error, stdout, stderr) => {
       if (error) { reject(new Error("pi-pool failed: " + (String(stderr).trim() || reportedError(String(stdout)) || error.message).slice(0, 300))); return; }
       resolve(stdout);
     });
@@ -121,7 +121,7 @@ function run(args: string[], timeout = 15000): Promise<string> {
 /** For commands that answer in JSON on stdout whatever their exit code (`reset`, `resets`). */
 function runJson(args: string[], timeout: number): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
-    execFile(executable, args, { timeout, maxBuffer: 4 * 1024 * 1024, env: poolEnv() }, (error, stdout, stderr) => {
+    execFile(poolExecutable(), args, { timeout, maxBuffer: 4 * 1024 * 1024, env: poolEnv() }, (error, stdout, stderr) => {
       let value: unknown = null;
       try { value = JSON.parse(String(stdout)); } catch { /* reported below */ }
       if (isRecord(value)) { resolve(value); return; }
@@ -213,6 +213,7 @@ export function askHookd(socket: string, script: string, args: readonly string[]
 /** One pi-pool command as {code, out, err}: through hookd when it answers, else the CLI process, which is all that runs until hookd is installed. */
 async function poolPart(args: readonly string[], timeout = 15000): Promise<PoolPart> {
   const env = poolEnv();
+  const executable = poolExecutable();
   const script = await realpath(executable).catch(() => executable);
   const said = await askHookd(join(poolDir(), "hook.sock"), script, args, env);
   if (said) return said;
@@ -274,8 +275,13 @@ export class PoolStatusReader {
   private readonly pending = new Map<string, PoolThread>();
   /** The read of one thread by itself (`alone`) in flight, by thread key. */
   private readonly alone = new Map<string, Promise<void>>();
-  /** When this service last changed a session's record (`forgetSession`): a reading of the session from a read started before then is old. */
-  private readonly changed = new Map<string, number>();
+  /**
+   * When this service last changed a session's record (`forgetSession`), and how many reads had started by then: a reading of the session
+   * from one of those reads is old. The count decides, since a read can start in the same millisecond as the change.
+   */
+  private readonly changed = new Map<string, { at: number; reads: number }>();
+  /** How many reads have started. */
+  private started = 0;
   private next: Promise<void> | null = null;
   private running: Promise<void> = Promise.resolve();
   private lastStart = -Infinity;
@@ -333,7 +339,7 @@ export class PoolStatusReader {
    * class set dropped every reading on us-metal02, and api/accounts then waited 1.7 to 2.1 s for a new one.
    */
   forgetSession(session: string): void {
-    this.changed.set(session, this.now());
+    this.changed.set(session, { at: this.now(), reads: this.started });
     for (const key of [...this.threads.keys()]) if (key.startsWith(session + "|")) this.threads.delete(key);
   }
 
@@ -344,18 +350,18 @@ export class PoolStatusReader {
   }
 
   /** Keeps a snapshot that a read started at `at` gave, unless a pool change came since, or a newer reading is already kept. */
-  private land(generation: number, at: number, snapshot: PoolSnapshot): void {
+  private land(generation: number, at: number, reads: number, snapshot: PoolSnapshot): void {
     if (generation !== this.generation) return;
     this.error = null;
     if (!this.base || at >= this.base.at) this.base = { at, queue: snapshot.queue, config: snapshot.config };
     for (const { session, model, who, ls } of snapshot.threads) {
       const key = threadKey({ session, model });
-      if (session !== null && at <= (this.changed.get(session) ?? -Infinity)) continue;
+      if (session !== null && reads <= (this.changed.get(session)?.reads ?? -Infinity)) continue;
       if ((this.threads.get(key)?.at ?? -Infinity) > at) continue;
       this.threads.delete(key);
       this.threads.set(key, { at, parts: { who, ls } });
     }
-    for (const [session, when] of this.changed) if (when < at - CHANGE_MARK_MS) this.changed.delete(session);
+    for (const [session, mark] of this.changed) if (mark.at < at - CHANGE_MARK_MS) this.changed.delete(session);
     while (this.threads.size > KEPT_THREADS) this.threads.delete(this.threads.keys().next().value!);
   }
 
@@ -363,8 +369,8 @@ export class PoolStatusReader {
     const key = threadKey(thread);
     let reading = this.alone.get(key);
     if (!reading) {
-      const generation = this.generation, at = this.now();
-      reading = this.read([thread]).then(snapshot => this.land(generation, at, snapshot), error => { if (generation === this.generation) this.error = error; })
+      const generation = this.generation, at = this.now(), reads = ++this.started;
+      reading = this.read([thread]).then(snapshot => this.land(generation, at, reads, snapshot), error => { if (generation === this.generation) this.error = error; })
         .finally(() => this.alone.delete(key));
       this.alone.set(key, reading);
     }
@@ -381,8 +387,8 @@ export class PoolStatusReader {
       this.next = null;
       const asked = [...this.pending.values()];
       this.pending.clear();
-      const generation = this.generation, at = this.lastStart = this.now();
-      this.running = this.read(asked).then(snapshot => this.land(generation, at, snapshot), error => { this.error = error; });
+      const generation = this.generation, at = this.lastStart = this.now(), reads = ++this.started;
+      this.running = this.read(asked).then(snapshot => this.land(generation, at, reads, snapshot), error => { this.error = error; });
       await this.running;
     })();
     return this.next;
@@ -750,12 +756,12 @@ export class AccountLogins {
   private stopping: "cancel" | "deadline" | null = null;
   private timers: ReturnType<typeof setTimeout>[] = [];
   private readonly listeners = new Set<(login: AccountLogin | null) => void>();
-  private readonly executable: string;
+  private readonly executable: string | undefined;
   private readonly deadlineMs: number;
   private readonly graceMs: number;
 
   constructor(options: { executable?: string; deadlineMs?: number; graceMs?: number } = {}) {
-    this.executable = options.executable ?? executable;
+    this.executable = options.executable;
     this.deadlineMs = options.deadlineMs ?? 10 * 60_000;
     this.graceMs = options.graceMs ?? 10_000;
   }
@@ -773,7 +779,7 @@ export class AccountLogins {
     if (account !== null && (!account || account.startsWith("-") || account.length > 256)) throw new PoolError(400, "Choose an account.");
     if (loginRunning(this.login)) throw new PoolError(409, "Another sign-in is still running. Finish or cancel it first.");
     const seconds = Math.max(1, Math.floor(this.deadlineMs / 1000));
-    const child = spawn(this.executable, poolCommand.login(provider, account, seconds, off), { env: poolEnv(), stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(this.executable ?? poolExecutable(), poolCommand.login(provider, account, seconds, off), { env: poolEnv(), stdio: ["pipe", "pipe", "pipe"] });
     this.child = child;
     this.stopping = null;
     this.update({ id: randomUUID(), provider, account, status: "starting", url: null, manualUrl: null, code: null, paste: false, message: null });
@@ -894,11 +900,11 @@ export class UsageRefreshes {
   private readonly runs = new Map<string, UsageRefresh>();
   private readonly children = new Map<string, ChildProcess>();
   private readonly listeners = new Set<(refresh: UsageRefresh) => void>();
-  private readonly executable: string;
+  private readonly executable: string | undefined;
   private readonly deadlineMs: number;
 
   constructor(options: { executable?: string; deadlineMs?: number } = {}) {
-    this.executable = options.executable ?? executable;
+    this.executable = options.executable;
     this.deadlineMs = options.deadlineMs ?? 200_000;
   }
 
@@ -914,7 +920,7 @@ export class UsageRefreshes {
     if (!isPooled(provider)) throw new PoolError(400, "Choose a pooled provider.");
     if (account !== null && (!account || account.startsWith("-") || account.length > 256)) throw new PoolError(400, "Choose an account.");
     if (this.runs.get(provider)?.status === "running") throw new PoolError(409, "A usage refresh is still running for these accounts. Wait for it to finish.");
-    const child = spawn(this.executable, poolCommand.refresh(provider, account), { env: poolEnv(), stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(this.executable ?? poolExecutable(), poolCommand.refresh(provider, account), { env: poolEnv(), stdio: ["ignore", "pipe", "pipe"] });
     this.children.set(provider, child);
     const id = randomUUID();
     this.update({ id, provider, account, status: "running", accounts: [], message: null, startedAt: Date.now(), endedAt: null });

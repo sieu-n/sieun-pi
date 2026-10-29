@@ -164,6 +164,18 @@ test("a class set on one job's tree keeps every other thread's reading, and drop
   assert.ok((await job2).threads.has("job|"));
 });
 
+// apps/chat's api/accounts/priority reads the tree right after its class set; in the same millisecond the read landed nothing and the answer
+// was "pi-pool gave no reading" (10-30, the sw factory Accounts tab's server test).
+test("a read that starts in the same millisecond as a class set, after it, lands the tree's reading", async () => {
+  const pool = fakePool(), time = clock();
+  const status = new PoolStatusReader(pool.read, 2000, time.now, time.sleep);
+  status.forgetSession("job");
+  const view = listAccounts("job", null, { status, fresh: true });
+  await settle();
+  pool.calls[0]!.answer();
+  assert.equal(email(await view), "call1@a");
+});
+
 test("a pool change drops the readings, so the next ask waits for a new one", async () => {
   const pool = fakePool(), time = clock();
   const status = new PoolStatusReader(pool.read, 2000, time.now, time.sleep);

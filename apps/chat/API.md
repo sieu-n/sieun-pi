@@ -160,11 +160,33 @@ Pages call the server through `web/src/lib/api` (`import { api, timeline, agents
 | Call | Endpoint | Returns |
 |---|---|---|
 | `api.usage({days, thread, host})` | `GET /api/usage` | `UsageReport`: rows per thread and model with tokens and the cost of each kind, one row per local day by model, and the period before. |
-| `api.pool()` | `GET /api/pool` | `AccountsView` from the installed pi-pool CLI. |
+| `api.pool()` | `GET /api/pool` | `AccountsView` with no thread, from the pi-pool reading the Accounts endpoints share. |
 | `api.hosts()` | `GET /api/hosts` | `HostsReport`: each box's relay, pi-host, machine reading and threads. |
 | `api.corrections()` | `GET /api/corrections` | The owner's corrections ledger, read only. |
 
 1. Usage totals and each kind's cost (input, output, cache read, cache write) are pi-host's own sums from each answer's usage (`durable_usage`), with no estimate.
+
+## Accounts
+
+`server/accounts.ts` runs every pi-pool call through the old chat's own code (`legacy/prime/user-history/src/chat-pool.ts`), and `web/src/pages/accounts/api.ts` calls it. A `thread` is any id from the Ids table: an agent or DM reads as the agent's work thread, and a conversation as its root thread. pi-pool knows a root thread as the tree `pi-durable:<root thread id>`.
+
+| Call | Endpoint | Returns |
+|---|---|---|
+| `accountsApi.view({thread, model, fresh})` | `GET /api/accounts?thread=&model=&fresh=1` | `AccountsView` of the thread's tree, or of no thread; `sessionId` is the tree and `priority` its class. |
+| `accountsApi.action(action)` | `POST /api/accounts` | An `AccountAction` (`use`, `follow`, `pin`, `unpin`, `switch`, `disable`, `enable`, `remove`, `resets`, `reset`, `recheck`); `use` and `follow` name the thread in `id`. It answers that thread's `AccountsView`, or the pool's with the action's `notice`. |
+| `accountsApi.priority(thread, priority)` | `POST /api/accounts/priority` | `{thread, priority}` with high, normal or low; the thread's `AccountsView`. |
+| `accountsApi.login()` | `GET /api/accounts/login` | The last `AccountLogin`, or null. |
+| `accountsApi.startLogin(provider, account)` | `POST /api/accounts/login` | `{provider, account}`, where a null account adds one; the new `AccountLogin`. |
+| `accountsApi.pasteLogin(id, code)` | `POST /api/accounts/login/paste` | `{id, code}`: the callback URL or code for a Claude sign-in. |
+| `accountsApi.cancelLogin(id)` | `POST /api/accounts/login/cancel` | `{id}`: the login, which ends as cancelled. |
+| `accountsApi.refreshes()` | `GET /api/accounts/refresh` | `UsageRefresh[]`, the last run per provider. |
+| `accountsApi.startRefresh(provider, account)` | `POST /api/accounts/refresh` | `{provider, account}`, where a null account reads all; the new `UsageRefresh`. |
+
+1. The page polls the login and the refresh once a second while one runs; the server pushes nothing for them.
+2. A pi-pool failure answers 400 with the pool's message in `error`; a second login or refresh while one runs answers 409, and a paste to an ended login 404.
+3. A tree that never sent a request has no pool record. Its view is the pool's with a sentence in each resolution's `error`, and `use`, `follow` and a class set on it answer 409, because pi-pool takes a new tree only as a session uuid.
+4. Each POST writes one service log line with the action, the account, the thread and its tree, and the client's address and user agent.
+5. pi-host has no command that runs a failed turn again, so a thread moved to another account takes it at its next request or its next pool poll.
 
 ## Live stores
 
@@ -204,6 +226,7 @@ Pages call the server through `web/src/lib/api` (`import { api, timeline, agents
 5. The AI harness VP has two duties with runs and a check-in, in `agents/ag_ai-harness-developer-environment-vp/`.
 6. A DM post or a send to any thread gets an answer through `send_message`, which comes back to a DM as the agent's posts, the plain answer as two calls and every other as one (a channel or Solo room post always gets one, so two members answering each other add two posts a hop until the 6-hop cap), and the seeded turns and AI harness developer environment VP keep their plain-text answers, as agents from before the tool; a message with "quiet" writes a private note and sends nothing, "spawn" starts a job, "fail" ends in an error, "slow" takes a minute for Stop, "queue" waits 2 s at place 3 then 1 of 7 before it starts, "mermaid" answers with a diagram, "broken diagram" with a mermaid block that does not parse, and "rich" with an answer in every format the chat renders.
 7. The words canary, relay and migration repeat across days and authors for search.
+8. The pool is `server/fixture/fake-pi-pool.mjs`, with its state in `<data dir>/pi-pool/`: an account in each state, named by it (`claude-ready`, `claude-pinned`, `claude-off`, `claude-reauth`, `claude-terms`, `claude-refused`, `claude-cooldown`, `claude-limited`, `claude-depleted`, `claude-stale`, `claude-resets`, `claude-pending`, `codex-ready`, `codex-off`). The AI harness VP keeps a Manual pick at high class, Crawler VP waits for `claude-limited` at low class, and "New thread" has no pool record. A Claude sign-in takes any pasted line, and a Codex one shows the code ABCD-1234 and ends by itself. `GET /api/fixture/pi-pool` reads its state and `POST /api/fixture/pi-pool/reset` seeds it again.
 
 ## Host seam
 

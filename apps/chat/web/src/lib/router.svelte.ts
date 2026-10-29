@@ -6,6 +6,7 @@
  *   #/c                                     Messages with nothing open
  *   #/agents, #/agents/<sub>                Agents
  *   #/board, #/board/<sub>                  Board and For you
+ *   #/accounts?thread=<id>                  Accounts, the pi-pool accounts, optionally for one thread
  *   #/settings/<section>                    Settings, one section such as usage or hosts, opened from the avatar menu
  *   #/search?q=&from=&in=&after=&before=&sort=&type=   Full search results, opened with Enter in the Cmd K search
  *   #/ui                                    The lib/ui gallery, not in the top bar
@@ -13,7 +14,7 @@
  * The old #/usage and #/hosts links redirect to #/settings/usage and #/settings/hosts with their query kept.
  */
 
-export type PageId = "messages" | "agents" | "board" | "settings" | "search" | "ui";
+export type PageId = "messages" | "agents" | "board" | "accounts" | "settings" | "search" | "ui";
 
 export type Route = {
   page: PageId;
@@ -27,6 +28,7 @@ export const PAGES: readonly { id: PageId; label: string; segment: string; icon:
   { id: "messages", label: "Messages", segment: "c", icon: "messages" },
   { id: "agents", label: "Agents", segment: "agents", icon: "robot" },
   { id: "board", label: "Board", segment: "board", icon: "board" },
+  { id: "accounts", label: "Accounts", segment: "accounts", icon: "users" },
 ];
 
 /** Pages reachable by URL but not shown in the top bar. */

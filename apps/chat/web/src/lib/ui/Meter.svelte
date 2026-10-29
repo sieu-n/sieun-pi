@@ -22,7 +22,7 @@
   });
 </script>
 
-<div class="meter {level}" class:compact {title} role="meter" aria-label={label} aria-valuenow={p ?? undefined} aria-valuemin={0} aria-valuemax={100}>
+<div class="meter {level}" class:compact {title} role="meter" aria-label={label ?? title} aria-valuenow={p ?? undefined} aria-valuemin={0} aria-valuemax={100}>
   {#if label || !compact}
     <div class="head">
       {#if label}<span class="label">{label}</span>{/if}

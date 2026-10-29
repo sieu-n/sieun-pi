@@ -5,6 +5,7 @@
   import {
     JOB_KIND_LABEL, SECTIONS, STATUS_LABEL, bytesLabel, canArchive, everyLabel, levelsFor, modelKey, modelOptions, shortPath, type ConfigSection,
   } from "./agents-model";
+  import AccountChip from "$pages/accounts/AccountChip.svelte";
   import AgentBrief from "./AgentBrief.svelte";
   import AgentMemory from "./AgentMemory.svelte";
   import ProjectPicker from "./ProjectPicker.svelte";
@@ -155,6 +156,7 @@
           {#if agent.model}
             <ModelPicker models={options} value={current} efforts={levelsFor(catalog, current)} effort={agent.thinkingLevel ?? undefined}
               onchange={(next) => onmodel(agent, next.model, next.effort as ThinkingLevel | undefined)} />
+            <AccountChip thread={agent.id} model={agent.model} />
           {:else}
             <span class="t-caption">No model yet</span>
           {/if}

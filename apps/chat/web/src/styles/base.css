@@ -113,6 +113,7 @@ html[data-keyboard-navigation] :focus-visible {
   color: var(--neutral-1);
   font: var(--text-caption);
   letter-spacing: var(--tracking-caption);
+  white-space: pre-line;
   pointer-events: none;
 }
 :root[data-color-mode="dark"] .ui-tooltip {

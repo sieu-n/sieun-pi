@@ -157,7 +157,7 @@ flowchart LR
     </div>
     <Tabs variant="underline" items={[{ id: "one", label: "Your agents" }, { id: "two", label: "Jobs", badge: 4 }, { id: "three", label: "Marketplace", disabled: true }]} bind:value={tab} />
     <div class="row">
-      <Badge value={3} /><Badge value={120} tone="danger" /><Badge value="New" tone="accent" /><Badge value="Main agent" tone="outline" /><Badge dot />
+      <Badge value={3} /><Badge value={120} tone="danger" /><Badge value="New" tone="accent" /><Badge value="Main agent" tone="outline" /><Badge value="Cooldown" tone="warning" /><Badge value="2 resets" tone="success" /><Badge dot />
       <StatusDot status="online" /><StatusDot status="away" /><StatusDot status="offline" />
       <Chip label="Ann" prefix="from:" onremove={() => toast.show("removed")} />
       <Chip label="This conversation" icon="messages" onremove={() => {}} />

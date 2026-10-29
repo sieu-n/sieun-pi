@@ -4,7 +4,8 @@
   type Props = {
     /** A number shows as a count, capped at "99+". */
     value?: number | string | null;
-    tone?: "neutral" | "accent" | "danger" | "strong" | "outline";
+    /** warning and success are for states, such as an account in cooldown or a reset ready to use. */
+    tone?: "neutral" | "accent" | "danger" | "strong" | "outline" | "warning" | "success";
     /** A bare 8 px dot instead of a count. */
     dot?: boolean;
     children?: Snippet;
@@ -45,6 +46,14 @@
   }
   .danger {
     background: var(--border-danger);
+    color: #fff;
+  }
+  .warning {
+    background: var(--status-away);
+    color: #000;
+  }
+  .success {
+    background: var(--status-online);
     color: #fff;
   }
   .strong {

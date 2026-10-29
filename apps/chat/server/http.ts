@@ -12,7 +12,8 @@ import { App, MODELS, NotFound } from "./app.ts";
 import { LocalImageError, readLocalImage } from "./local-image.ts";
 import { CwdRefused } from "./projects.ts";
 import { readJson } from "./store.ts";
-import { usageReport, readPool, hostsReport } from "./usage.ts";
+import { usageReport, hostsReport } from "./usage.ts";
+import { accountRoutes, PoolError } from "./accounts.ts";
 
 type Params = Record<string, string>;
 type Handler = (req: IncomingMessage, params: Params, query: URLSearchParams, body: () => Promise<unknown>) => Promise<unknown>;
@@ -191,26 +192,10 @@ export function routes(app: App): Route[] {
     route("GET", "/api/for-you", async () => ({ items: await app.boards.forYou() })),
     route("GET", "/api/boards", async () => app.boards.index()),
     route("GET", "/api/usage", async (_r, _p, q) => usageReport(app.host, app.threads, app.config.box, { days: num(q.get("days")) ?? 7, thread: str(q.get("thread")), host: str(q.get("host")) })),
-    route("GET", "/api/pool", async () => (app.config.fixture ? fixturePool() : readPool())),
+    ...accountRoutes(app, route),
     route("GET", "/api/hosts", async () => hostsReport(app.host, app.threads, app.config.box, app.config.socket)),
     route("GET", "/api/corrections", async () => readJson(join(app.config.sharedDir, "corrections.json"), { corrections: [] })),
   ];
-}
-
-function fixturePool() {
-  const window = (label: string, pct: number, kind: "session" | "weekly") => ({ kind, label, pct, resetsAt: Date.now() + 3 * 3600_000 });
-  const row = (n: number, session: number, weekly: number, usable: boolean, reason: string | null) => ({
-    id: `acct-${n}`, email: `claude${n}@example.test`, label: `claude${n}@example.test`, usage: `${session}%/${weekly}%`, session_pct: session, weekly_pct: weekly, usable, reason,
-    current: n === 1, pinned: false, score: usable ? 100 - session : null, tier: "max 20x", windows: [window("5h", session, "session"), window("week", weekly, "weekly")],
-    usageAt: Date.now() - 60_000, cooldownUntil: reason === "cooldown" ? Date.now() + 900_000 : null, cooldownReason: reason, limitedUntil: null, disabled: false, sessions: usable ? 3 : 0,
-  });
-  return {
-    sessionId: null, checkedAt: new Date().toISOString(), poolConfig: { working_max: 20, tree_working_max: 60, admit_5h_max_pct: 100, seven_day_max_pct: 98 },
-    providers: [
-      { provider: "anthropic", rows: [row(1, 42, 61, true, null), row(2, 88, 70, true, null), row(3, 100, 99, false, "cooldown")], resolution: null },
-      { provider: "openai-codex", rows: [row(4, 10, 20, true, null)], resolution: null },
-    ],
-  };
 }
 
 export function serve(app: App): Server {
@@ -255,6 +240,7 @@ async function handle(app: App, table: Route[], req: IncomingMessage, res: Serve
     }
     return serveWeb(app, path, res);
   } catch (error) {
+    if (error instanceof PoolError && !res.headersSent) return json(res, error.status, { error: error.message });
     const message = error instanceof Error ? error.message : String(error);
     const status = error instanceof NotFound || error instanceof EntryMissing ? 404 : error instanceof EntryExists ? 409 : error instanceof BadRequest || error instanceof CwdRefused || /^(No |A |An |Dates|around|after|.* is not in (#|Solo "))/.test(message) ? 400 : 500;
     if (status === 500) app.log(`${req.method} ${path} failed: ${error instanceof Error ? error.stack : message}`);
