@@ -247,7 +247,7 @@ function sameKey(left: readonly unknown[], fixed: readonly unknown[], below: rea
   return true;
 }
 /** The fixed part of the key `project` builds for each row before it knows whether the row is kept: one array, written over for each row. */
-const scratchKey: unknown[] = Array.from({ length: 14 });
+const scratchKey: unknown[] = Array.from({ length: 13 });
 /**
  * How long a projection or a frame's fan-out holds the main thread before it lets the loop run (`setImmediate`). On a scratch serve on a copy of
  * the live data dir with its chats on 10-20, a projection's own code was a median 73 to 85 ms in one piece and the loop's longest delay a minute
@@ -320,17 +320,6 @@ const agentRowOf = new WeakMap<SessionRow, AgentRow>();
 
 export function isTopLevel(row: SessionSummary): boolean {
   return row.runtimeKind !== "subagent" && typeof row.rlmChildId !== "string" && !(typeof row.rlmDepth === "number" && row.rlmDepth > 0);
-}
-
-/**
- * Whether the only archive of another box's top-level row is the idle unload's stop at `unloadedAt` (unloaded.json): Prime's kill writes the
- * archived state even with origin idle_unload, and this box cannot rewrite another box's file. On 10-28 the Mac chat frontend bro was hidden from 17:20Z to
- * 18:02Z this way. Activity after the stop means a later archive did it, and an archive through this service drops the entry (forgetUnloaded).
- */
-export function unloadedOnly(row: SessionSummary, unloadedAt: number | undefined): boolean {
-  if (unloadedAt === undefined || row.lifecycle !== "archived" || row.activeSessionId !== undefined || !isTopLevel(row)) return false;
-  const last = Date.parse(row.lastActivityAt ?? row.modified ?? "");
-  return !Number.isFinite(last) || last <= unloadedAt;
 }
 
 /** Empty unnamed drafts and saved rows whose file is gone (moved or deleted after the daemon scanned it) stay out of the sidebar. */
@@ -864,7 +853,7 @@ export class Catalog {
   }, PROJECTION_LOG_MS).unref();
   private closed = false;
 
-  constructor(private readonly socketPath: string, private readonly readState: ChatReadState, private readonly labels: ChatLabels, private readonly chats: Pick<Chats, "ids" | "checkIns" | "links"> & Partial<Pick<Chats, "briefs" | "archivedIds" | "roster">> & { unloaded?: () => Promise<ReadonlyMap<string, number>> },
+  constructor(private readonly socketPath: string, private readonly readState: ChatReadState, private readonly labels: ChatLabels, private readonly chats: Pick<Chats, "ids" | "checkIns" | "links"> & Partial<Pick<Chats, "briefs" | "archivedIds" | "roster">>,
     private readonly origins: ThreadOrigins, private readonly hosts: HostCatalogs | null = null, copyFile: string | null = null, private readonly agentsFile: string | null = null) {
     this.client = new DaemonClient(socketPath);
     this.saved = agentsFile ? takeSavedAgents(agentsFile) : undefined;
@@ -1070,9 +1059,8 @@ export class Catalog {
       await wait(new Promise<void>(resolve => { setImmediate(resolve); }));
       slice = performance.now();
     };
-    const [state, labels, chats, checkIns, briefs, archivedByOwner, unloaded] = await wait(Promise.all([this.readState.snapshot().catch(() => null), this.labels.snapshot().catch(() => null),
-      this.chats.ids().catch(() => null), this.chats.checkIns().catch(() => null), this.chats.briefs?.().catch(() => null) ?? null, this.chats.archivedIds?.().catch(() => null) ?? null,
-      this.chats.unloaded?.().catch(() => null) ?? null]));
+    const [state, labels, chats, checkIns, briefs, archivedByOwner] = await wait(Promise.all([this.readState.snapshot().catch(() => null), this.labels.snapshot().catch(() => null),
+      this.chats.ids().catch(() => null), this.chats.checkIns().catch(() => null), this.chats.briefs?.().catch(() => null) ?? null, this.chats.archivedIds?.().catch(() => null) ?? null]));
     // The reads the chat loop below needs start now and run while the rows are built: one after another, each waited behind whatever else the
     // main thread ran, and on 10-19 live projections waited about as long as their own code ran (wall p90 100 to 133 ms, own code p90 58 to 66 ms).
     const startedAt = Date.now();
@@ -1112,7 +1100,6 @@ export class Catalog {
       const fixed = scratchKey;
       fixed[0] = row; fixed[1] = readAt; fixed[2] = baseline; fixed[3] = labelsFor; fixed[4] = schedule; fixed[5] = subtree.cost; fixed[6] = subtree.running;
       fixed[7] = subtree.total; fixed[8] = origin; fixed[9] = host; fixed[10] = archived; fixed[11] = this.heldLifecycle.get(row.sessionId); fixed[12] = working;
-      fixed[13] = unloaded?.get(row.sessionId);
       const below = working ? runningBelow(row, running) : NO_ROWS;
       const before = this.keptRows.get(row.sessionId);
       // A chat row gets its agents and counts written onto it below, so it is built again.
@@ -1130,9 +1117,6 @@ export class Catalog {
       // idle unload's kill does. This box cannot write another box's file, so on 10-28 the Mac chat frontend bro kept the archived state the
       // 17:11Z unload wrote, the 17:14Z release dropped the hold that covered it, and the 17:20Z Mac list hid it from the sidebar for 42 min.
       if (chat && !archived && held !== "archived") projected.archived = false;
-      // Only another box's row: keepListed rewrites a file on this box as active, so an archived row here was archived after the unload. On
-      // 10-28 47236480 without this check listed again 61 of this box's duty jobs archived after their unload.
-      else if (remote && projected.archived && held !== "archived" && unloadedOnly(row, unloaded?.get(row.sessionId))) projected.archived = false;
       // A chat the owner archived stays out of the sidebar when an agent message resumes its session; only his unarchive brings it back.
       if (archived) projected.archived = true;
       if (!chat) kept.set(row.sessionId, { key, row: projected });
