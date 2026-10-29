@@ -1,19 +1,19 @@
 <script lang="ts">
-  import { conversations } from "$lib/api";
+  import { agents, conversations } from "$lib/api";
   import { Button, PanelHeader } from "$lib/ui";
-  import { conversationHref, hrefFor, router } from "$lib/router.svelte";
+  import { hrefFor, router } from "$lib/router.svelte";
   import BoardPanel from "./BoardPanel.svelte";
-  import { boardHref } from "./chips";
+  import { boardHref, chatHref } from "./chips";
 
   let { chatId, focus = null }: { chatId: string; focus?: string | null } = $props();
-  const name = $derived(conversations.byId(chatId)?.name ?? "Board");
+  const name = $derived(agents.byId(chatId)?.name ?? conversations.byId(chatId)?.name ?? "Board");
 </script>
 
 <div class="page">
   <PanelHeader title={name} icon="board" level={1} divider>
     {#snippet actions()}
       <Button size="sm" variant="ghost" icon="arrow-left" href={hrefFor("board")}>All boards</Button>
-      <Button size="sm" variant="ghost" icon="messages" href={conversationHref(chatId)}>Open chat</Button>
+      <Button size="sm" variant="ghost" icon="messages" href={chatHref(chatId)}>Open chat</Button>
     {/snippet}
   </PanelHeader>
   <div class="scroll">

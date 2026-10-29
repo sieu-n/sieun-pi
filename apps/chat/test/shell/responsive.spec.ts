@@ -18,7 +18,7 @@ test("below 650 px the sidebar is a drawer that the toggle opens and a route cha
   await page.getByRole("button", { name: "Hide sidebar" }).click();
   await expect(nav).toBeVisible();
   expect(Math.round((await nav.boundingBox())!.width)).toBe(220);
-  await nav.getByRole("link", { name: "Vent", exact: true }).click();
+  await nav.locator('a[href="#/c/dm_vent"]').click();
   await expect(nav).toHaveCount(0);
 });
 

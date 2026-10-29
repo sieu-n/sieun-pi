@@ -15,8 +15,10 @@
     onmodel: (model: string, level: ThinkingLevel | undefined) => void;
     onfocus: () => void;
     element?: HTMLElement;
+    /** An agent's jobs as a short line, such as "3 jobs, 1 working". */
+    jobs?: string | null;
   };
-  let { agent, catalog, focusable, selected = false, now, onopen, onmenu, onmodel, onfocus, element = $bindable() }: Props = $props();
+  let { agent, catalog, focusable, selected = false, now, onopen, onmenu, onmodel, onfocus, element = $bindable(), jobs = null }: Props = $props();
 
   const art = $derived(mascotSvg(agent.name, `card-${agent.id.replace(/[^a-z0-9]/gi, "")}`));
   const backdrop = $derived(`url("data:image/svg+xml;utf8,${encodeURIComponent(mascotSvg(agent.name, "bd"))}")`);
@@ -90,6 +92,7 @@
       {/if}
       <span class="status-text">{status}</span>
       {#if agent.parent}<span class="sep">·</span><span class="parent" title="Started by {agent.parent.name}">in {agent.parent.name}</span>{/if}
+      {#if jobs}<span class="sep">·</span><span class="jobs" data-jobs>{jobs}</span>{/if}
     </span>
     <span class="model" data-card-control>
       {#if agent.model}
@@ -203,7 +206,8 @@
   .status[data-status="failed"] .status-text {
     color: var(--text-danger);
   }
-  .parent {
+  .parent,
+  .jobs {
     overflow: hidden;
     text-overflow: ellipsis;
     min-width: 0;

@@ -9,7 +9,8 @@
   import CreateAgentDialog from "./CreateAgentDialog.svelte";
   import NewAgentTile from "./NewAgentTile.svelte";
   import {
-    ACTION_LABEL, TABS, actionsFor, agentFromRoute, agentsIn, countsByTab, openTarget, sectionFromParams, tabFromRoute, type AgentsTab, type ConfigSection,
+    ACTION_LABEL, TABS, actionsFor, agentFromRoute, agentsIn, countsByTab, jobCounts, jobGroups, jobsLabel, openTarget, sectionFromParams, tabFromRoute,
+    type AgentsTab, type ConfigSection,
   } from "./agents-model";
 
   /** `#/agents/<id>` opens that agent's configuration in the side panel, over the tab it belongs to. */
@@ -31,7 +32,10 @@
   const all = $derived(agents.ready ? agents.list : (fetched ?? []));
   const configAgent = $derived(configId ? (all.find((agent) => agent.id === configId) ?? null) : null);
   const tab = $derived(tabFromRoute(router.route.rest, configAgent));
-  const shown = $derived(agentsIn(all, tab));
+  /** Your agents is one grid; Jobs groups each agent's jobs under its name, and the cards keep that order for the arrow keys. */
+  const groups = $derived(tab === "jobs" ? jobGroups(all) : [{ parent: null, jobs: agentsIn(all, tab) }]);
+  const shown = $derived(groups.flatMap((group) => group.jobs));
+  const jobsOf = $derived(jobCounts(all));
   const counts = $derived(countsByTab(all));
   const tabItems = $derived(TABS.map((item) => ({ ...item, badge: counts[item.id] || null, href: hrefFor("agents", item.id === "jobs" ? ["jobs"] : []) })));
 
@@ -64,7 +68,7 @@
     router.setParams({ section: next === "overview" ? null : next }, { replace: true });
   }
   function open(agent: AgentSummary) {
-    const target = openTarget(agent);
+    const target = openTarget(agent, (id) => agents.room(id));
     router.openConversation(target.id, target.thread ? { thread: target.thread } : {});
   }
   async function run(label: string, action: () => Promise<unknown>, done: string) {
@@ -193,7 +197,13 @@
       {:else}
         <div bind:this={grid} class="grid" role="grid" aria-label={tab === "jobs" ? "Jobs" : "Your agents"} tabindex="-1" onkeydown={onGridKey}>
           <div role="row" class="row">
-            {#each shown as agent (agent.id)}
+            {#each groups as group (group.parent?.id ?? "")}
+            {#if tab === "jobs"}
+              <h2 class="group t-label-sm" data-jobs-of={group.parent?.id ?? ""}>
+                {#if group.parent}<a href={hrefFor("agents", [group.parent.id])}>{group.parent.name}</a>{:else}Other jobs{/if}
+              </h2>
+            {/if}
+            {#each group.jobs as agent (agent.id)}
               <AgentCard
                 bind:this={cards[agent.id]}
                 bind:element={elements[agent.id]}
@@ -206,7 +216,9 @@
                 onopen={() => configure(agent)}
                 onmenu={(anchor) => (menu = { agent, anchor })}
                 onmodel={(model, level) => setModel(agent, model, level)}
+                jobs={agent.kind === "chat" ? jobsLabel(jobsOf.get(agent.id)) : null}
               />
+            {/each}
             {/each}
           </div>
         </div>
@@ -223,7 +235,7 @@
   onclose={() => (creating = false)}
   oncreated={(agent) => {
     toast.success(`Created ${agent.name}`);
-    router.openConversation(agent.id);
+    router.openConversation(agent.room ?? agents.room(agent.id));
   }}
 />
 
@@ -258,6 +270,22 @@
   }
   .row {
     display: contents;
+  }
+  .group {
+    grid-column: 1 / -1;
+    margin: var(--space-4) 0 0;
+    color: var(--text-subtle);
+  }
+  .group:first-child {
+    margin-top: 0;
+  }
+  .group a {
+    color: inherit;
+    text-decoration: none;
+  }
+  .group a:hover {
+    color: var(--text-standard);
+    text-decoration: underline;
   }
   .starts {
     display: grid;

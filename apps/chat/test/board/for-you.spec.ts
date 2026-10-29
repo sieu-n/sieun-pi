@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { CRAWLER, HARNESS, VENT, resetFixture } from "./helpers";
+import { CRAWLER, CRAWLER_AGENT, HARNESS_AGENT, VENT, resetFixture } from "./helpers";
 
 test.describe.configure({ mode: "serial" });
 test.beforeEach(async ({ request }) => { await resetFixture(request); });
@@ -21,18 +21,18 @@ test("For you lists every chat's open asks, newest first, with the chat, the ids
 test("a row opens the ask beside the list, with its choices, links and step", async ({ page }) => {
   await page.goto("/#/board/for-you");
   await rows(page).nth(0).getByRole("button", { name: /Open t1 from AI harness/ }).click();
-  await expect(page).toHaveURL(new RegExp(`#/board/for-you/${HARNESS}/t1$`));
+  await expect(page).toHaveURL(new RegExp(`#/board/for-you/${HARNESS_AGENT}/t1$`));
   const detail = page.getByRole("region", { name: "Ask" });
   await expect(detail.getByRole("button", { name: "Thursday 09:00" })).toBeVisible();
   await expect(detail.getByText("Cutover plan")).toBeVisible();
   await expect(detail.getByText("Deploy the chat to production")).toBeVisible();
-  await expect(detail.locator(`a[href="#/board/${HARNESS}?focus=p4"]`)).toBeVisible();
+  await expect(detail.locator(`a[href="#/board/${HARNESS_AGENT}?focus=p4"]`)).toBeVisible();
   await detail.getByRole("button", { name: "Close" }).click();
   await expect(page).toHaveURL(/#\/board\/for-you$/);
 });
 
 test("a choice answers the ask in place: it leaves the open list and shows in Done with the reply", async ({ page, request }) => {
-  await page.goto(`/#/board/for-you/${CRAWLER}/t1`);
+  await page.goto(`/#/board/for-you/${CRAWLER_AGENT}/t1`);
   await page.getByRole("region", { name: "Ask" }).getByRole("button", { name: "Raise it" }).click();
   await expect(rows(page)).toHaveCount(3);
   await expect(page.getByRole("region", { name: "Ask" })).toContainText("You: Raise it");
@@ -45,7 +45,7 @@ test("a choice answers the ask in place: it leaves the open list and shows in Do
 });
 
 test("a typed reply answers an ask that has no choices", async ({ page }) => {
-  await page.goto(`/#/board/for-you/${HARNESS}/t2`);
+  await page.goto(`/#/board/for-you/${HARNESS_AGENT}/t2`);
   const field = page.getByRole("textbox", { name: "Reply to t2" });
   await expect(field).toBeFocused();
   await field.fill("Looks good, ship it to staging");

@@ -10,14 +10,15 @@ test.beforeEach(async ({ page }) => {
   await expect(sidebar(page)).toBeVisible();
 });
 
-test("All shows Solo and Team, Solo hides Team, Team hides Solo", async ({ page }) => {
+test("All hides an empty Solo and shows Team, Solo hides Team, Team hides Solo", async ({ page }) => {
   const solo = sidebar(page).locator('[data-section="solo"]');
   const team = sidebar(page).locator('[data-section="team"]');
-  await expect(solo).toBeVisible();
   await expect(team).toBeVisible();
+  await expect(solo).toHaveCount(0);
 
   await filter(page, "Solo").click();
   await expect(solo).toBeVisible();
+  await expect(solo).toContainText("No solo rooms yet.");
   await expect(team).toHaveCount(0);
 
   await filter(page, "Team").click();
@@ -32,25 +33,28 @@ test("the filter choice survives a reload", async ({ page }) => {
   await expect(filter(page, "Team")).toHaveAttribute("aria-selected", "true");
 });
 
-test("a row opens its conversation and turns lime", async ({ page }) => {
+test("a row opens its agent's DM and turns lime", async ({ page }) => {
   const row = sidebar(page).getByRole("link", { name: "frontend bro" });
   await row.click();
-  await expect(page).toHaveURL(/#\/c\/0f1e0000-0000-4000-8000-000000000004$/);
+  await expect(page).toHaveURL(/#\/c\/dm_frontend-bro$/);
   await expect(row).toHaveAttribute("aria-current", "page");
   await expect(row).toHaveCSS("background-color", "rgb(190, 218, 54)");
 });
 
-test("opening a Solo chat while Team is on switches the filter to Solo", async ({ page }) => {
-  await filter(page, "Team").click();
-  await page.goto("/#/c/0f1e0000-0000-4000-8000-000000000001");
-  await expect(filter(page, "Solo")).toHaveAttribute("aria-selected", "true");
+test("opening a DM while Solo is on switches the filter to Team", async ({ page }) => {
+  await filter(page, "Solo").click();
+  await page.goto("/#/c/dm_vent");
+  await expect(filter(page, "Team")).toHaveAttribute("aria-selected", "true");
 });
 
-test("unread rows are bold and working rows show typing dots", async ({ page }) => {
+test("unread rows are bold and working rows show typing dots", async ({ page, request }) => {
   const crawler = sidebar(page).getByRole("link", { name: "Crawler VP" });
   await expect(crawler).toHaveAttribute("data-unread", "true");
   await expect(crawler).toHaveCSS("font-weight", "500");
-  await expect(sidebar(page).getByRole("link", { name: "Vent", exact: true })).toHaveCSS("font-weight", "400");
+  // Other specs post in DMs, so the read row is whichever DM has nothing new now.
+  const dms = ((await (await request.get("/api/sidebar")).json()) as { dms: { id: string; unread: number; hasNew: boolean; status: string }[] }).dms;
+  const read = dms.find((dm) => !dm.unread && !dm.hasNew && dm.status !== "working");
+  if (read) await expect(sidebar(page).locator(`a[href="#/c/${read.id}"]`)).toHaveCSS("font-weight", "400");
   const cutover = sidebar(page).getByRole("link", { name: "pi-cutover" });
   await expect(cutover).toHaveAttribute("data-working", "true");
   await expect(cutover.getByRole("status")).toHaveAttribute("aria-label", /working in pi-cutover/);

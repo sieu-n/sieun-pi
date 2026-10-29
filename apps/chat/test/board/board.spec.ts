@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { HARNESS, resetFixture } from "./helpers";
+import { HARNESS, HARNESS_AGENT, resetFixture } from "./helpers";
 
 test.describe.configure({ mode: "serial" });
 test.beforeEach(async ({ request }) => { await resetFixture(request); });
@@ -71,6 +71,6 @@ test("the board index lists every chat's plan, then duties and check-ins by when
   await expect(plans.locator("li")).toHaveCount(3);
   await expect(plans).toContainText("2 for you");
   await expect(page.getByText("Relay uptime").first()).toBeVisible();
-  await plans.locator(`a[data-chat="${HARNESS}"]`).click();
-  await expect(page).toHaveURL(new RegExp(`#/board/${HARNESS}$`));
+  await plans.locator(`a[data-chat="${HARNESS_AGENT}"]`).click();
+  await expect(page).toHaveURL(new RegExp(`#/board/${HARNESS_AGENT}$`));
 });

@@ -5,7 +5,7 @@
  * A send shows at once as the owner's message `r:<requestId>` (sending, then sent), as in Slack, and the real message replaces it when it
  * lands; nothing waits on the network before the composer takes the next message.
  */
-import { api, ApiError } from "./client.ts";
+import { api, ApiError, roomOf } from "./client.ts";
 import { live } from "./live.svelte.ts";
 import type {
   AgentId, AgentSummary, BoardOp, BoardView, ConversationHeader, ConversationId, ConversationSummary, ForYouItem, ImageUpload, Item, JobNode, Me,
@@ -21,6 +21,8 @@ const SEND_RETRIES = 3;
 /** A real owner message replaces a pending send with its text only if it is no older than this before it, so history never does. */
 const LAND_SLACK_MS = 60_000;
 const isPending = (item: Item): boolean => item.id.startsWith("r:");
+/** A DM room (`dm_<slug>`): its items are stored posts, and an owner post's delivery to the agent's work thread is its send line. */
+const isRoom = (id: ConversationId): boolean => id.startsWith("dm_");
 const sameText = (a: string, b: string): boolean => a.trim() === b.trim();
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -30,6 +32,23 @@ function optimistic(request: SendRequest): Item {
     text: request.text, images: (request.images ?? []).map(image => ({ url: `data:${image.mimeType};base64,${image.data}`, mimeType: image.mimeType })),
     mentions: request.mentions ?? [], deliveries: [], pending: true, send: "sending", requestId: request.requestId,
     ...(request.threadRoot ? { threadRoot: request.threadRoot } : {}),
+  };
+}
+
+/**
+ * A DM owner post's delivery as the line under it: Sending… while the chat server has not handed it to the work thread, Not delivered once
+ * that failed, and nothing once delivered. The delivery leaves `deliveries`, whose notes are for channel mentions.
+ */
+function roomPost(item: Item): Item {
+  if (item.kind !== "message" || item.author.id !== "owner" || isPending(item)) return item;
+  const delivery = item.deliveries[0];
+  const { send: _send, sendError: _error, ...rest } = item;
+  return {
+    ...rest,
+    deliveries: [],
+    ...(delivery?.state === "queued" ? { send: "sending" as const } : delivery?.state === "failed" ? { send: "failed" as const } : {}),
+    ...(delivery?.error ? { sendError: delivery.error } : {}),
+    ...(delivery?.queue ? { queue: delivery.queue } : {}),
   };
 }
 
@@ -106,9 +125,13 @@ class Sends {
     this.patch(id, { send: "failed", sendError: error });
   }
 
-  /** Sends a failed message again: from the request the page still holds, or through the server's outbox after a reload. */
+  /**
+   * Sends a failed message again: from the request the page still holds, or through the server after a reload or once it is a stored
+   * DM post, by its requestId.
+   */
   async retry(id: string): Promise<SendResult | undefined> {
-    const requestId = id.slice(2);
+    const item = this.read().find(i => i.id === id);
+    const requestId = (item?.kind === "message" && item.requestId) || id.slice(2);
     this.patch(id, { send: "sending", sendError: undefined });
     const request = this.requests.get(requestId);
     try {
@@ -167,7 +190,7 @@ class Global {
           break;
         }
         case "status": {
-          const agent = this.agents.find(a => a.id === event.conversation);
+          const agent = this.agents.find(a => a.id === event.conversation || a.room === event.conversation);
           if (agent) agent.status = event.status;
           const conversation = this.conversations.find(c => c.id === event.conversation);
           if (conversation) conversation.status = event.status;
@@ -215,6 +238,14 @@ export const agents = {
     global.start();
     return global.agents.find(a => a.id === id);
   },
+  /**
+   * The conversation that opens for an agent: its DM room, from its summary or, before the page has it, from its id. Any other id (a root
+   * thread no agent owns yet, a job) opens as itself.
+   */
+  room(id: AgentId): ConversationId {
+    global.start();
+    return global.agents.find(a => a.id === id)?.room ?? roomOf(id);
+  },
   get ready() {
     global.start();
     return global.ready;
@@ -256,10 +287,14 @@ export class Timeline {
   private stopWatch: (() => void) | undefined;
   private stopListen: (() => void) | undefined;
   readonly isChannel: boolean;
+  readonly isRoom: boolean;
   private readonly sends: Sends;
+  /** The newest delivery time seen per DM owner post, so a send answer that lands after a newer live update cannot roll it back. */
+  private readonly deliveredAt = new Map<string, number>();
 
   constructor(readonly id: ConversationId, opts: { around?: string } = {}) {
     this.isChannel = id.startsWith("ch_");
+    this.isRoom = isRoom(id);
     this.sends = new Sends(id, () => this.items, items => (this.items = items));
     this.stopListen = live.on(event => {
       if (event.type === "items" && event.conversation === id) this.upsert(event.items, event.removed);
@@ -288,7 +323,16 @@ export class Timeline {
 
   /** Adds or replaces items by id and drops `removed`. A pending send drops when the real message it became lands. */
   upsert(incoming: Item[], removed: string[] = []): void {
-    this.sends.merge(incoming.filter(item => !(this.isChannel && item.kind === "message" && item.threadRoot)), removed);
+    const shown = incoming.filter(item => !(this.isChannel && item.kind === "message" && item.threadRoot));
+    this.sends.merge(this.isRoom ? shown.filter(item => this.newest(item)).map(roomPost) : shown, removed);
+  }
+
+  private newest(item: Item): boolean {
+    const at = item.kind === "message" && item.author.id === "owner" ? item.deliveries[0]?.at : undefined;
+    if (at === undefined) return true;
+    if (at < (this.deliveredAt.get(item.id) ?? -Infinity)) return false;
+    this.deliveredAt.set(item.id, at);
+    return true;
   }
 
   async loadOlder(): Promise<void> {

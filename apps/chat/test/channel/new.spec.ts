@@ -21,7 +21,7 @@ test("New chat starts an agent from its first message", async ({ page }) => {
   const word = tag();
   await page.keyboard.type(`hello ${word}`);
   await page.keyboard.press("Enter");
-  await expect(page).not.toHaveURL(/new/);
+  await expect(page).toHaveURL(/#\/c\/dm_/);
   await expect(conversation(page).locator(".row.own").filter({ hasText: word })).toBeVisible();
 });
 

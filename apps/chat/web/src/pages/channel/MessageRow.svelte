@@ -10,6 +10,7 @@
   import { stampLabel, timeLabel } from "$lib/ui/datetime";
   import type { MarkdownContext } from "$lib/ui/markdown";
   import type { Status } from "$lib/ui/types";
+  import { conversationHref, router } from "$lib/router.svelte";
   import StepLine from "./StepLine.svelte";
   import ThreadPill from "./ThreadPill.svelte";
   import { avatarKind, deliveryText, isOwn, placeText, QUIET_TURN, runningTool } from "./present";
@@ -45,8 +46,16 @@
   const message = $derived(item.kind === "message" ? item : null);
   const live = $derived(turn?.live ?? false);
   const pending = $derived(message?.pending || item.id.startsWith("r:"));
-  /** A pending send draws at full strength, as in Slack, with one small line under it: Sending…, Sent, or Not delivered. */
-  const sendState = $derived(pending ? (message?.send ?? "sending") : null);
+  /**
+   * A send draws at full strength, as in Slack, with one small line under it: Sending…, Sent, or Not delivered. A pending send always has
+   * one; a stored DM post has one while its delivery to the agent is on the way or failed.
+   */
+  const sendState = $derived(message?.send ?? (pending ? "sending" : null));
+  /** A DM post's jobs, or the jobs a thread turn started, drawn as pills under it. */
+  const jobs = $derived(turn?.jobs ?? message?.jobs ?? []);
+  /** The work-thread turn behind an agent's DM post. */
+  const workHref = $derived(message?.work ? conversationHref(message.work.conversation, { messageId: message.work.around }) : null);
+  const why = $derived(message?.why ? `${message.why.charAt(0).toUpperCase()}${message.why.slice(1)}` : null);
   /** A turn of an agent that talks through send_message: one bubble per sent message, and its fold on a row of its own. */
   const sent = $derived(turn?.sent ?? null);
   const hasBubble = $derived(!!item.text || (turn ? turn.steps.length > 0 || live : item.images.length === 0));
@@ -118,6 +127,7 @@
       {/if}
       <div class="actions" role="toolbar" aria-label="Message actions">
         {#if canReply}<IconButton icon="reply" label="Reply in thread" size="sm" onclick={() => onthread(item.id)} />{/if}
+        {#if workHref && !why}<IconButton icon="robot" label="Show work" size="sm" onclick={() => workHref && router.navigate(workHref)} data-show-work />{/if}
         <IconButton icon="link" label="Copy link" size="sm" onclick={() => oncopylink(item)} />
         <IconButton icon={copied ? "check" : "copy"} label={copied ? "Copied" : "Copy message"} size="sm" onclick={copyText} />
       </div>
@@ -128,8 +138,10 @@
       <span>Not delivered</span>
       <span aria-hidden="true">·</span>
       <button type="button" onclick={() => onretrysend?.(item)}>Retry</button>
-      <span aria-hidden="true">·</span>
-      <button type="button" onclick={() => ondiscardsend?.(item)}>Discard</button>
+      {#if pending}
+        <span aria-hidden="true">·</span>
+        <button type="button" onclick={() => ondiscardsend?.(item)}>Discard</button>
+      {/if}
     </p>
   {:else if sendState === "sending"}
     <p class="send-state sending" data-send-state="sending" title={message?.sendError ?? ""}>Sending…</p>
@@ -140,8 +152,14 @@
     <p class="note danger" role="status">{turn.stop === "aborted" ? "Response stopped" : turn.error || "The answer failed"}</p>
   {/if}
   {#each notes as note (note)}<p class="note" data-note>{note}</p>{/each}
-  {#if turn}
-    {#each turn.jobs as job (job.conversation)}
+  {#if why}
+    <p class="meta" data-post-meta>
+      <span class="why" data-why={message?.why}>{why}</span>
+      {#if workHref}<span aria-hidden="true">·</span><a class="work" href={workHref} data-show-work>Show work</a>{/if}
+    </p>
+  {/if}
+  {#if jobs.length}
+    {#each jobs as job (job.conversation)}
       <ThreadPill
         {own}
         members={[{ id: job.conversation, name: job.name, kind: "agent" }]}
@@ -348,6 +366,33 @@
     font-weight: 500;
     text-decoration: underline;
     cursor: pointer;
+  }
+  .meta {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin: 2px 0 0 calc(var(--gutter) + var(--gap) + 16px);
+    font: var(--text-caption);
+    letter-spacing: var(--tracking-caption);
+    color: var(--text-metadata);
+  }
+  .own .meta {
+    align-self: flex-end;
+    margin: 2px calc(var(--gutter) + var(--gap) + 16px) 0 0;
+  }
+  .why {
+    padding: 0 6px;
+    border-radius: var(--radius-capsule);
+    background: var(--surface-inset);
+    color: var(--text-subtle);
+  }
+  .work {
+    color: var(--text-subtle);
+    text-decoration: none;
+  }
+  .work:hover {
+    color: var(--text-standard);
+    text-decoration: underline;
   }
   .note.danger {
     color: var(--text-danger);

@@ -1,8 +1,11 @@
-import { hrefFor } from "$lib/router.svelte";
-import type { ChatBoard } from "$lib/api";
+import { conversationHref, hrefFor } from "$lib/router.svelte";
+import { agents, type ChatBoard } from "$lib/api";
 
 /** The board page of one chat, focused on a step, an ask or a duty. */
 export const boardHref = (chatId: string, focus?: string): string => hrefFor("board", [chatId], { focus });
+
+/** The conversation of the agent a board belongs to: its DM. */
+export const chatHref = (chatId: string, opts: { thread?: string } = {}): string => conversationHref(agents.room(chatId), opts);
 
 /** One ask open in For you. */
 export const forYouHref = (chatId?: string, todoId?: string): string =>

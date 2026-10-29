@@ -24,7 +24,8 @@ test("a new agent runs in the project picked in the dialog, and its panel moves 
   await dialog.getByRole("textbox", { name: "Name" }).fill(name);
   await dialog.getByRole("button", { name: "Create agent" }).click();
   await expect(dialog).toHaveCount(0);
-  const id = decodeURIComponent(page.url().split("#/c/")[1]!);
+  await expect(page).toHaveURL(/#\/c\/dm_[^/?]+$/);
+  const id = `ag_${decodeURIComponent(page.url().split("#/c/")[1]!).slice(3)}`;
 
   try {
     await openAgents(page);

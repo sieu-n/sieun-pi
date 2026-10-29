@@ -7,6 +7,7 @@
   import { search } from "$lib/shell/search.svelte";
   import { sidePanel } from "$lib/shell/side-panel.svelte";
   import AvatarStack from "$lib/ui/AvatarStack.svelte";
+  import Button from "$lib/ui/Button.svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
   import Menu from "$lib/ui/Menu.svelte";
   import PanelHeader from "$lib/ui/PanelHeader.svelte";
@@ -38,6 +39,9 @@
   const summary = $derived(header?.summary ?? null);
   const kind = $derived(summary?.kind ?? (id.startsWith("ch_") ? "channel" : "solo"));
   const isChannel = $derived(kind === "channel");
+  const isDm = $derived(kind === "dm");
+  /** A DM's agent works in its work thread, which `Open work thread` shows as today's transcript. */
+  const workThread = $derived(header?.workThread ?? null);
   const name = $derived(summary?.name ?? "");
   const agent = $derived(header?.agent ?? null);
   const items = $derived(store.items);
@@ -46,10 +50,16 @@
   const liveLabel = $derived(waiting ? "Waiting for a model slot" : null);
   const others = $derived(header?.members.filter((m) => m.principal.id !== "owner") ?? []);
   const working = $derived(store.status === "working");
+  /** In a DM the dots show only while the agent works on the owner's turn: it works, and the newest post is his. */
+  const ownerTurn = $derived(items.findLast((item) => item.kind !== "system")?.author.id === "owner");
   const workingNames = $derived(
-    summary?.working.length ? summary.working.map((w) => w.name) : working && agent ? [agent.name] : working && others.length === 1 ? [others[0]!.principal.name] : [],
+    isDm
+      ? working && ownerTurn && agent ? [agent.name] : []
+      : summary?.working.length ? summary.working.map((w) => w.name) : working && agent ? [agent.name] : working && others.length === 1 ? [others[0]!.principal.name] : [],
   );
   const boardChat = $derived(isChannel ? (header?.homeChat ?? null) : agent?.kind === "chat" ? agent.id : null);
+
+  const jobsOf = (item: Item) => (item.kind === "turn" ? item.jobs : item.kind === "message" ? (item.jobs ?? []) : []);
 
   function statusOf(principal: string): Status | null {
     const status = agents.byId(principal)?.status;
@@ -65,7 +75,7 @@
       const text = root && root.kind !== "system" ? root.text.replace(/\s+/g, " ").trim() : "";
       return text ? (text.length > 40 ? `${text.slice(0, 39)}…` : text) : "Thread";
     }
-    for (const item of store.items) if (item.kind === "turn") for (const job of item.jobs) if (job.conversation === threadParam) return job.name;
+    for (const item of store.items) for (const job of jobsOf(item)) if (job.conversation === threadParam) return job.name;
     return agents.byId(threadParam)?.name ?? "Thread";
   });
 
@@ -144,14 +154,15 @@
 
   function onmention(target: string, mentionKind: string) {
     if (target === "owner") return;
-    if (mentionKind === "channel" || mentionKind === "agent") router.openConversation(target);
+    if (mentionKind === "channel") router.openConversation(target);
+    else if (mentionKind === "agent") router.openConversation(agents.room(target));
   }
 
   function onartifact(target: string, e: MouseEvent) {
     const [scheme, ...restParts] = target.split(":");
     const value = restParts.join(":");
     if (scheme === "job") {
-      for (const item of store.items) if (item.kind === "turn") for (const job of item.jobs) if (job.name === value || job.conversation.endsWith(`:${value}`)) return openThread(job.conversation);
+      for (const item of store.items) for (const job of jobsOf(item)) if (job.name === value || job.conversation.endsWith(`:${value}`)) return openThread(job.conversation);
       const byName = agents.list.find((a) => a.kind === "job" && a.name === value);
       if (byName) router.openConversation(byName.id);
       else toast.show(`No job named ${value} in this chat`);
@@ -244,13 +255,16 @@
       <AvatarStack members={others.map((m) => ({ id: m.principal.id, name: m.principal.name, kind: avatarKind(m.principal) }))} size={20} max={3} />
     </span>
   {/if}
+  {#if workThread}
+    <Button variant="ghost" size="sm" icon="robot" href={conversationHref(workThread)}>Open work thread</Button>
+  {/if}
   {#if working}
     <IconButton icon="stop" label="Stop" size="sm" onclick={stop} data-testid="header-stop" />
   {/if}
   {#if boardChat}
     <IconButton icon="board" label="Board" size="sm" pressed={!!boardParam} onclick={() => (boardParam ? router.setParams({ board: null }) : openBoard())} data-testid="board-button" />
   {/if}
-  <IconButton icon="more" label={isChannel ? "Channel actions" : "Chat actions"} size="sm" bind:element={menuAnchor} onclick={() => (menuOpen = !menuOpen)} />
+  <IconButton icon="more" label={isChannel ? "Channel actions" : isDm ? "Conversation actions" : "Chat actions"} size="sm" bind:element={menuAnchor} onclick={() => (menuOpen = !menuOpen)} />
 {/snippet}
 
 <section class="conversation" data-conversation={id} data-kind={kind}>

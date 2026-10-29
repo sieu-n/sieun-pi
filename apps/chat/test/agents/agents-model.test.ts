@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { ACTION_LABEL, actionsFor, agentFromRoute, agentsIn, bytesLabel, canArchive, countsByTab, everyLabel, levelsFor, modelOptions, openTarget, sectionFromParams, shortPath, tabFromRoute } from "../../web/src/pages/agents/agents-model.ts";
+import { ACTION_LABEL, actionsFor, agentFromRoute, agentsIn, bytesLabel, canArchive, countsByTab, everyLabel, jobCounts, jobGroups, jobsLabel, levelsFor, modelOptions, openTarget, sectionFromParams, shortPath, tabFromRoute } from "../../web/src/pages/agents/agents-model.ts";
 
 type Agent = Parameters<typeof agentsIn>[0][number];
 const agent = (over: Partial<Agent>): Agent => ({
@@ -30,10 +30,31 @@ test("Stop shows only while an agent works or waits", () => {
   assert.deepEqual(actionsFor(agent({ status: "failed" })), ["open", "model", "archive"]);
 });
 
-test("a job opens its parent chat with the job's pane, a chat opens itself", () => {
+test("an agent opens its DM, a job opens its agent's DM with the job's pane, and a thread no agent holds opens itself", () => {
+  const room = (id: string) => (id.startsWith("ag_") ? `dm_${id.slice(3)}` : id);
+  assert.deepEqual(openTarget(agent({ id: "ag_vent", room: "dm_vent" }), room), { id: "dm_vent" });
+  assert.deepEqual(openTarget(agent({ id: "ag_vent" }), room), { id: "dm_vent" });
+  assert.deepEqual(openTarget(agent({ id: "t1:4", kind: "job", parent: { id: "ag_vent", name: "Vent" } }), room), { id: "dm_vent", thread: "t1:4" });
+  assert.deepEqual(openTarget(agent({ id: "r2", kind: "job", parent: { id: "ag_vent", name: "Vent" } }), room), { id: "dm_vent", thread: "r2" });
   assert.deepEqual(openTarget(agent({ id: "t1" })), { id: "t1" });
-  assert.deepEqual(openTarget(agent({ id: "t1:4", kind: "job", parent: { id: "t1", name: "Vent" } })), { id: "t1", thread: "t1:4" });
-  assert.deepEqual(openTarget(agent({ id: "r2", kind: "job", parent: { id: "t1", name: "Vent" } })), { id: "t1", thread: "r2" });
+});
+
+test("Jobs groups each agent's jobs under it, newest group first, and an agent's card counts its live jobs", () => {
+  const vent = { id: "ag_vent", name: "Vent" };
+  const vp = { id: "ag_vp", name: "VP" };
+  const list = [
+    agent({ id: "ag_vent", room: "dm_vent" }),
+    agent({ id: "v:2", kind: "job", parent: vent, updatedAt: 2 }),
+    agent({ id: "v:3", kind: "job", parent: vent, status: "working", updatedAt: 1 }),
+    agent({ id: "p:2", kind: "job", parent: vp, updatedAt: 5 }),
+    agent({ id: "p:3", kind: "job", parent: vp, archived: true, updatedAt: 9 }),
+    agent({ id: "x", kind: "job", parent: null, updatedAt: 8 }),
+  ];
+  assert.deepEqual(jobGroups(list).map((group) => [group.parent?.id ?? null, group.jobs.map((job) => job.id)]), [["ag_vp", ["p:2"]], ["ag_vent", ["v:3", "v:2"]], [null, ["x"]]]);
+  const counts = jobCounts(list);
+  assert.equal(jobsLabel(counts.get("ag_vent")), "2 jobs, 1 working");
+  assert.equal(jobsLabel(counts.get("ag_vp")), "1 job");
+  assert.equal(jobsLabel(counts.get("ag_none")), null);
 });
 
 test("models are keyed provider/id with family labels and their levels", () => {

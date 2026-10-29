@@ -19,6 +19,9 @@ export async function listAgents(request: APIRequestContext): Promise<Agent[]> {
   return ((await response.json()) as Agent[]).filter((agent) => !agent.archived);
 }
 
+/** An agent's DM room: `ag_<slug>` talks in `dm_<slug>`; a job opens as itself. */
+export const roomOf = (id: string): string => (id.startsWith("ag_") ? `dm_${id.slice(3)}` : id);
+
 export const grid = (page: Page) => page.getByRole("grid");
 export const card = (page: Page, agent: Pick<Agent, "id">) => page.locator(`[role="gridcell"][data-agent-id="${agent.id}"]`);
 

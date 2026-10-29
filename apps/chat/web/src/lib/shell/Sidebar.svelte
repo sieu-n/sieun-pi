@@ -18,7 +18,8 @@
   ];
   const current = $derived(router.conversationId);
   const names = (row: ConversationSummary): string[] => row.working.map((w) => w.name);
-  const showSolo = $derived(sidebar.filter !== "team");
+  /** Solo holds only the rooms the server puts there, and hides when it has none, unless the owner picked the Solo filter. */
+  const showSolo = $derived(sidebar.filter === "solo" || (sidebar.filter === "all" && sidebar.data.solo.length > 0));
   const showTeam = $derived(sidebar.filter !== "solo");
   const forYouSelected = $derived(router.route.page === "board" && router.route.rest[0] === "for-you");
 
@@ -54,7 +55,7 @@
         {#each sidebar.data.solo as row (row.id)}
           <SidebarRow href={conversationHref(row.id)} label={row.name} icon="chat" selected={current === row.id} unread={row.unread} fresh={row.hasNew} working={names(row)} />
         {:else}
-          <SidebarRow href={hrefFor("messages", ["new"], { kind: "chat" })} label="New chat" icon="plus" />
+          <p class="empty">No solo rooms yet.</p>
         {/each}
       </section>
     {/if}
@@ -84,7 +85,15 @@
           <IconButton icon="plus" label="New message" size="xs" onclick={() => router.navigate(hrefFor("messages", ["new"], { kind: "dm" }))} />
         </div>
         {#each sidebar.data.dms as row (row.id)}
-          <SidebarRow href={conversationHref(row.id)} label={row.name} selected={current === row.id} unread={row.unread} fresh={row.hasNew} working={names(row)}>
+          <SidebarRow
+            href={conversationHref(row.id)}
+            label={row.name}
+            title={row.preview ? `${row.name}: ${row.preview}` : row.name}
+            selected={current === row.id}
+            unread={row.unread}
+            fresh={row.hasNew}
+            working={names(row)}
+          >
             {#snippet leading()}
               <Avatar name={row.name} kind="agent" seed={row.agent ?? row.id} size={20} status={row.status === "working" ? "online" : row.status === "failed" ? "busy" : null} />
             {/snippet}

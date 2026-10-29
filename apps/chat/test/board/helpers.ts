@@ -3,6 +3,9 @@ import type { APIRequestContext } from "@playwright/test";
 export const HARNESS = "0f1e0000-0000-4000-8000-000000000002";
 export const VENT = "0f1e0000-0000-4000-8000-000000000001";
 export const CRAWLER = "0f1e0000-0000-4000-8000-000000000003";
+/** The agents that hold those work threads (server/fixture/seed.ts FIXTURE_AGENTS); For you and board links name a board by its agent. */
+export const HARNESS_AGENT = "ag_ai-harness-developer-environment-vp";
+export const CRAWLER_AGENT = "ag_crawler-vp";
 
 const server = process.env.CHAT_SERVER_URL ?? "http://127.0.0.1:5186";
 

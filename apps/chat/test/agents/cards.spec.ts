@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { card, grid, listAgents, openAgents } from "./helpers.ts";
+import { card, grid, listAgents, openAgents, roomOf } from "./helpers.ts";
 
 // Chrome drops in-flight dev-server loads with ERR_NETWORK_CHANGED when the box's interfaces change, so one rerun covers that.
 test.describe.configure({ retries: 1 });
@@ -21,7 +21,7 @@ test("Your agents shows one card per chat with its name, model and status", asyn
   }
 });
 
-test("Jobs lists each job with its parent chat, working jobs first", async ({ page, request }) => {
+test("Jobs lists each job under its agent, working jobs first in each group", async ({ page, request }) => {
   const jobs = (await listAgents(request)).filter((agent) => agent.kind === "job");
   await openAgents(page);
   await page.getByRole("tab", { name: /Jobs/ }).click();
@@ -32,9 +32,13 @@ test("Jobs lists each job with its parent chat, working jobs first", async ({ pa
   }
   await expect(grid(page).getByRole("gridcell")).toHaveCount(jobs.length);
   for (const job of jobs) if (job.parent) await expect(card(page, job)).toContainText(`in ${job.parent.name}`);
-  const order = await grid(page).getByRole("gridcell").evaluateAll((cells) => cells.map((cell) => (cell as HTMLElement).dataset.status));
-  const firstIdle = order.indexOf("idle");
-  if (firstIdle >= 0) expect(order.slice(firstIdle).includes("working")).toBe(false);
+  const order = await grid(page).locator("[data-jobs-of], [role=gridcell]").evaluateAll((els) => els.map((el) => (el.tagName === "H2" ? "|" : (el as HTMLElement).dataset.status)));
+  for (const group of order.join(",").split("|")) {
+    const statuses = group.split(",").filter(Boolean);
+    const firstIdle = statuses.indexOf("idle");
+    if (firstIdle >= 0) expect(statuses.slice(firstIdle).includes("working")).toBe(false);
+  }
+  for (const job of jobs) if (job.parent) await expect(grid(page).locator(`[data-jobs-of="${job.parent.id}"]`)).toHaveText(job.parent.name);
 });
 
 test("the grid has Buzz's measures: a 768 px column, 192 px tracks, 244 px cards with a 24 px radius", async ({ page, request }) => {
@@ -51,7 +55,7 @@ test("the grid has Buzz's measures: a 768 px column, 192 px tracks, 244 px cards
   expect(Math.round(button.x + button.width - toolbar.x)).toBe(720);
 });
 
-test("a card opens its configuration, and Message opens a chat's conversation or a job's pane beside its parent", async ({ page, request }) => {
+test("a card opens its configuration, and Message opens an agent's DM or a job's pane beside its agent's DM", async ({ page, request }) => {
   const agents = await listAgents(request);
   const chat = agents.find((agent) => agent.kind === "chat");
   test.skip(!chat, "no chats on this server");
@@ -60,7 +64,7 @@ test("a card opens its configuration, and Message opens a chat's conversation or
   await expect(page).toHaveURL(new RegExp(`#/agents/${chat!.id}$`));
   await expect(card(page, chat!)).toHaveAttribute("aria-selected", "true");
   await page.getByTestId("agent-config").getByRole("button", { name: "Message" }).click();
-  await expect(page).toHaveURL(new RegExp(`#/c/${chat!.id}$`));
+  await expect(page).toHaveURL(new RegExp(`#/c/${roomOf(chat!.id)}$`));
   const job = agents.find((agent) => agent.kind === "job" && agent.parent);
   if (!job) return;
   await openAgents(page, "jobs");
@@ -68,7 +72,7 @@ test("a card opens its configuration, and Message opens a chat's conversation or
   await expect(page).toHaveURL(new RegExp(`#/agents/${encodeURIComponent(job.id)}$`));
   await expect(page.getByRole("tab", { name: /Jobs/ })).toHaveAttribute("aria-selected", "true");
   await page.getByTestId("agent-config").getByRole("button", { name: "Message" }).click();
-  await expect(page).toHaveURL(new RegExp(`#/c/${job.parent!.id}\\?thread=${encodeURIComponent(job.id)}$`));
+  await expect(page).toHaveURL(new RegExp(`#/c/${roomOf(job.parent!.id)}\\?thread=${encodeURIComponent(job.id)}$`));
 });
 
 test("the ... button and a right click open the same menu, with Stop only while working", async ({ page, request }) => {
@@ -88,7 +92,7 @@ test("the ... button and a right click open the same menu, with Stop only while 
   await first.click({ button: "right", position: { x: 40, y: 120 } });
   await expect(page.getByRole("menu").getByRole("menuitem", { name: "Message" })).toBeVisible();
   await page.getByRole("menu").getByRole("menuitem", { name: "Message" }).click();
-  await expect(page).toHaveURL(new RegExp(`#/c/${agents[0]!.id}$`));
+  await expect(page).toHaveURL(new RegExp(`#/c/${roomOf(agents[0]!.id)}$`));
 });
 
 test("Stop sends the abort for that agent", async ({ page, request }) => {
@@ -106,7 +110,7 @@ test("Stop sends the abort for that agent", async ({ page, request }) => {
   await openAgents(page);
   await card(page, working).getByRole("button", { name: `Actions for ${working.name}` }).click();
   await page.getByRole("menuitem", { name: "Stop" }).click();
-  await expect.poll(() => aborted).toBe(working.id);
+  await expect.poll(() => aborted).toBe(roomOf(working.id));
   await expect(page.getByText(`Stopped ${working.name}`)).toBeVisible();
 });
 

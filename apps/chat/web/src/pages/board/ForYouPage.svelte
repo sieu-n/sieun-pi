@@ -2,10 +2,10 @@
   import { onDestroy } from "svelte";
   import { api, forYou, type BoardOp } from "$lib/api";
   import { Avatar, Bubble, Button, EmptyState, IconButton, IdChip, LoadingText, Menu, NavItem, PanelHeader, SplitPane, stampLabel, toast, type MenuEntry } from "$lib/ui";
-  import { router, conversationHref } from "$lib/router.svelte";
+  import { router } from "$lib/router.svelte";
   import AskCard from "./AskCard.svelte";
   import PlanMark from "./PlanMark.svelte";
-  import { boardHref, forYouHref } from "./chips";
+  import { boardHref, chatHref, forYouHref } from "./chips";
   import { STATUS_LABEL as STEP_LABEL, type StepStatus } from "./model";
   import {
     DEFAULT_FILTER, STATUS_LABEL, TYPE_LABEL, emptyWords, filterSummary, itemKey, shortAge, visibleItems,
@@ -117,7 +117,7 @@
     {@const item = selected}
     <section class="ask-detail" aria-label="Ask">
       <PanelHeader closeLabel="Close" onclose={close} divider>
-        {#snippet titleContent()}<a class="detail-title t-label" href={conversationHref(item.chatId)}>{item.chatName}</a>{/snippet}
+        {#snippet titleContent()}<a class="detail-title t-label" href={chatHref(item.chatId)}>{item.chatName}</a>{/snippet}
       </PanelHeader>
       <div class="detail-body">
         <div class="message">
@@ -138,7 +138,7 @@
           </a>
         {/if}
         <div class="detail-actions">
-          <Button size="sm" variant="outline" icon="messages" href={conversationHref(item.chatId)}>Open chat</Button>
+          <Button size="sm" variant="outline" icon="messages" href={chatHref(item.chatId)}>Open chat</Button>
           <Button size="sm" variant="outline" icon="board" href={boardHref(item.chatId, item.todo.id)}>Open board</Button>
         </div>
       </div>

@@ -17,6 +17,15 @@ export class ApiError extends Error {
 
 const enc = encodeURIComponent;
 
+/** The DM room of an agent id: `ag_<slug>` has `dm_<slug>`. A job's or a root thread's id names its own conversation. */
+export const roomOf = (id: AgentId): ConversationId => (id.startsWith("ag_") ? `dm_${id.slice(3)}` : id);
+
+/**
+ * Where a board, its duties and its check-in live: `/api/agents/<id>` for an agent (`ag_<slug>`), and `/api/threads/<id>` for a root
+ * thread that no agent owns yet.
+ */
+const boardBase = (chat: string): string => (chat.startsWith("ag_") ? `/api/agents/${enc(chat)}` : `/api/threads/${enc(chat)}`);
+
 async function call<T>(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
   const response = await fetch(path, {
     method,
@@ -54,16 +63,18 @@ export const api = {
   models: () => call<ModelCatalog>("GET", "/api/models"),
 
   agents: (opts: { archived?: boolean } = {}) => call<AgentSummary[]>("GET", `/api/agents${query({ archived: opts.archived ? 1 : undefined })}`),
-  /** A new root thread: `kind` "job" with a `parent` files it under that chat as a job, which is not a DM. */
+  /** A new agent with its work thread and DM room (`room`); `kind` "job" with a `parent` files a root thread under that agent as a job instead. */
   createAgent: (input: { name?: string; model?: string; thinkingLevel?: ThinkingLevel; cwd?: string; kind?: "chat" | "job"; parent?: AgentId }) =>
     call<AgentSummary>("POST", "/api/agents", input),
   /** One agent as a role: purpose, where it runs, its board, memory, instructions and swarm (API.md, Agents). */
   agentConfig: (id: AgentId) => call<AgentConfig>("GET", `/api/agents/${enc(id)}/config`),
   projects: () => call<ProjectList>("GET", "/api/projects"),
-  setAgentCwd: (id: AgentId, cwd: string) => call<ConversationHeader>("PATCH", `/api/c/${enc(id)}`, { cwd }),
-  setAgentModel: (id: AgentId, model: string, thinkingLevel?: ThinkingLevel) => call<ConversationHeader>("PATCH", `/api/c/${enc(id)}`, { model, ...(thinkingLevel ? { thinkingLevel } : {}) }),
-  stopAgent: (id: AgentId) => call<{ ok: true }>("POST", `/api/c/${enc(id)}/abort`),
-  archiveAgent: (id: AgentId, archived = true) => call<ConversationHeader>("PATCH", `/api/c/${enc(id)}`, { archived }),
+  /** These act on an agent through its DM (`PATCH` and abort of `/api/c/dm_<slug>`), and on a job or a root thread through itself. */
+  setAgentCwd: (id: AgentId, cwd: string) => call<ConversationHeader>("PATCH", `/api/c/${enc(roomOf(id))}`, { cwd }),
+  setAgentModel: (id: AgentId, model: string, thinkingLevel?: ThinkingLevel) =>
+    call<ConversationHeader>("PATCH", `/api/c/${enc(roomOf(id))}`, { model, ...(thinkingLevel ? { thinkingLevel } : {}) }),
+  stopAgent: (id: AgentId) => call<{ ok: true }>("POST", `/api/c/${enc(roomOf(id))}/abort`),
+  archiveAgent: (id: AgentId, archived = true) => call<ConversationHeader>("PATCH", `/api/c/${enc(roomOf(id))}`, { archived }),
 
   header: (id: ConversationId) => call<ConversationHeader>("GET", `/api/c/${enc(id)}`),
   items: (id: ConversationId, opts: { before?: string; after?: string; around?: string; limit?: number } = {}) =>
@@ -91,16 +102,16 @@ export const api = {
   search: (params: SearchQuery) =>
     call<SearchResult>("GET", `/api/search${query({ ...params })}`),
 
-  board: (chat: string) => call<BoardView>("GET", `/api/threads/${enc(chat)}/board`),
-  boardOps: (chat: string, ops: BoardOp[]) => call<BoardView>("POST", `/api/threads/${enc(chat)}/board`, { ops }),
+  board: (chat: string) => call<BoardView>("GET", `${boardBase(chat)}/board`),
+  boardOps: (chat: string, ops: BoardOp[]) => call<BoardView>("POST", `${boardBase(chat)}/board`, { ops }),
   /** Copies a Prime chat's board, duties and check-in interval into the thread it moved to. */
   importPrime: (chat: string, prime: string) =>
     call<{ board: boolean; duties: number; runs: number; checkInMs: number | null }>("POST", `/api/threads/${enc(chat)}/import-prime`, { prime }),
-  chatAgents: (chat: string) => call<{ agents: ChatAgent[] }>("GET", `/api/threads/${enc(chat)}/agents`),
-  duties: (chat: string) => call<{ duties: DutyRow[] }>("GET", `/api/threads/${enc(chat)}/duties`),
-  dutyAction: (chat: string, action: DutyAction) => call<{ duties: DutyRow[] }>("POST", `/api/threads/${enc(chat)}/duties`, action),
-  checkIn: (chat: string) => call<CheckInView>("GET", `/api/threads/${enc(chat)}/check-in`),
-  setCheckIn: (chat: string, patch: CheckInPatch) => call<CheckInView>("POST", `/api/threads/${enc(chat)}/check-in`, patch),
+  chatAgents: (chat: string) => call<{ agents: ChatAgent[] }>("GET", `${boardBase(chat)}/agents`),
+  duties: (chat: string) => call<{ duties: DutyRow[] }>("GET", `${boardBase(chat)}/duties`),
+  dutyAction: (chat: string, action: DutyAction) => call<{ duties: DutyRow[] }>("POST", `${boardBase(chat)}/duties`, action),
+  checkIn: (chat: string) => call<CheckInView>("GET", `${boardBase(chat)}/check-in`),
+  setCheckIn: (chat: string, patch: CheckInPatch) => call<CheckInView>("POST", `${boardBase(chat)}/check-in`, patch),
   forYou: (signal?: AbortSignal) => call<{ items: ForYouItem[] }>("GET", "/api/for-you", undefined, signal),
   boards: () => call<BoardRow[]>("GET", "/api/boards"),
 

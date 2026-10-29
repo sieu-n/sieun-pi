@@ -5,10 +5,12 @@ import { defineConfig, devices } from "@playwright/test";
 /**
  * Browser specs for every page, one folder per builder under test/<area>.
  * The web dev build runs in fixture mode on 5187 and proxies /api to the chat server's fixture on 5186.
- * Run one area with `npx playwright test test/shell`.
+ * Run one area with `npx playwright test test/shell`. CHAT_WEB_PORT and CHAT_SERVER_URL move both, so two runs on one box use their own
+ * fixture: `CHAT_SERVER_URL=http://127.0.0.1:5690 CHAT_WEB_PORT=5691 npx playwright test test/dm`.
  */
 const WEB_PORT = Number(process.env.CHAT_WEB_PORT ?? 5187);
 const SERVER_URL = process.env.CHAT_SERVER_URL ?? "http://127.0.0.1:5186";
+const SERVER_PORT = Number(new URL(SERVER_URL).port || 80);
 
 export default defineConfig({
   testDir: "test",
@@ -35,7 +37,7 @@ export default defineConfig({
   ],
   webServer: [
     {
-      command: "npm run fixture",
+      command: `node --import tsx server/main.ts --fixture --port ${SERVER_PORT}`,
       url: `${SERVER_URL}/api/sidebar`,
       reuseExistingServer: true,
       timeout: 60_000,

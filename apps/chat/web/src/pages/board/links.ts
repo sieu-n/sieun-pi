@@ -1,6 +1,7 @@
 import { parseArtifactTarget, type ArtifactTarget } from "$lib/api/shared/artifact-link";
 import { wikiUrl } from "$lib/ui/markdown";
 import { router } from "$lib/router.svelte";
+import { chatHref } from "./chips";
 
 export interface LinkView { label: string; icon: string; target: ArtifactTarget | null; raw: string }
 
@@ -26,13 +27,13 @@ export function linkView(link: { label: string; target: string }): LinkView {
   return { label: link.label.trim() || labelOf(target, link.target), icon: ICONS[target?.kind ?? "broken"], target, raw: link.target };
 }
 
-/** Open a link: a wiki page or URL in a new tab, a thread or a chat's job in Messages. A file path has no page to open. */
+/** Open a link: a wiki page or URL in a new tab, a thread in Messages, or an agent's job beside its DM. A file path has no page to open. */
 export function openTarget(target: ArtifactTarget, chatId: string): void {
   switch (target.kind) {
     case "wiki": window.open(wikiUrl(target.path), "_blank", "noopener"); return;
     case "url": window.open(target.url, "_blank", "noopener"); return;
     case "thread": router.openConversation(target.sessionId, {}); return;
-    case "job": router.openConversation(chatId, { thread: target.name }); return;
+    case "job": router.navigate(chatHref(chatId, { thread: target.name })); return;
     case "file": return;
   }
 }

@@ -60,10 +60,45 @@ export const ACTION_LABEL: Record<CardAction, string> = {
   archive: "Archive",
 };
 
-/** Where Message goes: a chat's own conversation, or a job's pane beside its parent chat. */
-export function openTarget(agent: AgentSummary): { id: string; thread?: string } {
-  if (agent.kind === "job" && agent.parent) return { id: agent.parent.id, thread: agent.id };
-  return { id: agent.id };
+/**
+ * Where Message goes: an agent's DM, or a job's pane beside its agent's DM. `room` names the DM of an agent id (the `agents` store's
+ * `room`), and the agent's own `room` wins when the summary has one.
+ */
+export function openTarget(agent: AgentSummary, room: (id: string) => string = (id) => id): { id: string; thread?: string } {
+  if (agent.kind === "job" && agent.parent) return { id: room(agent.parent.id), thread: agent.id };
+  return { id: agent.room ?? room(agent.id) };
+}
+
+/** The Jobs tab: each agent's jobs under it, the agent with the newest job first, and in each group working jobs first. */
+export function jobGroups(agents: readonly AgentSummary[]): { parent: { id: string; name: string } | null; jobs: AgentSummary[] }[] {
+  const groups = new Map<string, { parent: { id: string; name: string } | null; jobs: AgentSummary[] }>();
+  for (const job of agentsIn(agents, "jobs")) {
+    const key = job.parent?.id ?? "";
+    const group = groups.get(key) ?? { parent: job.parent, jobs: [] };
+    group.jobs.push(job);
+    groups.set(key, group);
+  }
+  const newest = (jobs: readonly AgentSummary[]) => Math.max(...jobs.map((job) => job.updatedAt));
+  return [...groups.values()].sort((a, b) => (a.parent ? 0 : 1) - (b.parent ? 0 : 1) || newest(b.jobs) - newest(a.jobs));
+}
+
+/** How many live jobs each agent runs, and how many of them work now, for the line on its card. */
+export function jobCounts(agents: readonly AgentSummary[]): Map<string, { total: number; working: number }> {
+  const counts = new Map<string, { total: number; working: number }>();
+  for (const job of agents) {
+    if (job.kind !== "job" || job.archived || !job.parent) continue;
+    const count = counts.get(job.parent.id) ?? { total: 0, working: 0 };
+    count.total++;
+    if (job.status === "working") count.working++;
+    counts.set(job.parent.id, count);
+  }
+  return counts;
+}
+
+export function jobsLabel(count: { total: number; working: number } | undefined): string | null {
+  if (!count?.total) return null;
+  const jobs = `${count.total} ${count.total === 1 ? "job" : "jobs"}`;
+  return count.working ? `${jobs}, ${count.working} working` : jobs;
 }
 
 /** The catalog keys models as "provider/id", the form the server takes back. */
@@ -80,9 +115,6 @@ const familyLabel = (family: string): string => FAMILY[family] ?? family.charAt(
 export function levelsFor(catalog: ModelCatalog | null, key: string): string[] {
   return catalog?.models.find((model) => modelKey(model) === key)?.levels ?? [];
 }
-
-/** A chat root opens as a DM; a job keeps its place under its parent and opens there. */
-export const opensAsDm = (agent: AgentSummary): boolean => agent.kind === "chat" && agent.conversation === 1;
 
 /** Archive takes a root thread; a job inside a thread goes with its thread. */
 export const canArchive = (agent: AgentSummary): boolean => agent.conversation === 1;

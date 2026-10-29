@@ -4,7 +4,7 @@ import { card, openAgents, uniqueName } from "./helpers.ts";
 // Chrome drops in-flight dev-server loads with ERR_NETWORK_CHANGED when the box's interfaces change, so one rerun covers that.
 test.describe.configure({ retries: 1 });
 
-test("Create agent asks for a name, starts a root thread and opens its channel view", async ({ page, request }) => {
+test("Create agent asks for a name, makes the agent and opens its DM", async ({ page, request }) => {
   await openAgents(page);
   await page.getByRole("button", { name: "New agent" }).click();
   const dialog = page.getByRole("dialog", { name: "Create agent" });
@@ -17,10 +17,12 @@ test("Create agent asks for a name, starts a root thread and opens its channel v
   await dialog.getByRole("textbox", { name: "Name" }).fill(name);
   await dialog.getByRole("button", { name: "Create agent" }).click();
   await expect(dialog).toHaveCount(0);
-  await expect(page).toHaveURL(/#\/c\/[^/?]+$/);
-  const id = decodeURIComponent(page.url().split("#/c/")[1]!);
+  await expect(page).toHaveURL(/#\/c\/dm_[^/?]+$/);
+  const room = decodeURIComponent(page.url().split("#/c/")[1]!);
 
-  const created = ((await (await request.get("/api/agents")).json()) as { id: string; name: string; kind: string; model: { label: string } | null }[]).find((agent) => agent.id === id);
+  const created = ((await (await request.get("/api/agents")).json()) as { id: string; room?: string; name: string; kind: string; model: { label: string } | null }[]).find((agent) => agent.room === room);
+  const id = created!.id;
+  expect(id).toBe(`ag_${room.slice(3)}`);
   expect(created?.name).toBe(name);
   expect(created?.kind).toBe("chat");
 
