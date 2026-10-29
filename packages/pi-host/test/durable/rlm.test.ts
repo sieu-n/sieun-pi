@@ -10,6 +10,8 @@
  * 5. A pi-host kill mid-cell gives that call pi-durable's `interrupted`; the next call starts a fresh kernel with pi-rlm's reset note, and
  *    the old kernel is gone.
  * 6. A thread whose cwd changed moves its live kernel to the new folder before the next cell.
+ * 7. A kernel freed when idle comes back on the next call with Prime's restore line and no reset note, and a cell that comes while
+ *    the free stops it waits for a new kernel instead of attaching to the relay that is ending.
  */
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
@@ -88,6 +90,53 @@ test("a thread whose cwd changed moves its live kernel there before the next cel
   await harness.close(context);
   await rlm.closeThread("cwd", "idle");
   assert.deepEqual(out.map(r => r.text.trim()), [dir, moved]);
+});
+
+test("a kernel freed when idle comes back on the next call with Prime's restore line and no reset note", async () => {
+  const idle = await DurableRlm.load({ ...rlmOptions(dir), idleMs: 300 });
+  const { harness, root } = await openThread(join(dir, "threads", "idle.sqlite"), "idle", idle, ({ messages }) => {
+    const last = lastText(messages);
+    if (last === "set x") return cell("import os\nx = 41\nprint(os.getpid())");
+    if (/^\d+$/.test(last.trim())) return say("x is set");
+    if (last === "read x") return cell("print(x + 1)");
+    if (last.trim().endsWith("42")) return say("42");
+    return say(`unexpected: ${last.slice(0, 120)}`);
+  }, dir);
+  await (await root.submit({ type: "input", content: "set x" }, context)).wait(context);
+  const oldKernel = Number(results(await entriesOf(harness))[0]!.text.trim());
+  await until("the idle kernel to end", async () => !alive(oldKernel), 30_000);
+  await (await root.submit({ type: "input", content: "read x" }, context)).wait(context);
+  const out = results(await entriesOf(harness));
+  await harness.close(context);
+  await idle.shutdown();
+  const read = out[1]!.text;
+  assert.ok(!read.includes("ipython_kernel_reset"), read);
+  assert.match(read, /^\[python-state-restored\]\nYour Python kernel state was revived from your previous session\. These names are available again: [^\n]*\bx\b[^\n]*\n\n42\n$/);
+});
+
+test("a cell that comes while the idle free stops the kernel gets a new kernel, and its rlm.spawn returns", async () => {
+  const idle = await DurableRlm.load({ ...rlmOptions(dir), idleMs: 300 });
+  const { harness, root } = await openThread(join(dir, "threads", "idle-race.sqlite"), "race", idle, ({ messages }) => {
+    const first = firstUser(messages);
+    const last = lastText(messages);
+    if (first.startsWith("[task from parent]")) return say("ok");
+    if (last === "set x") return cell("x = 41\nprint('set')");
+    if (last.trim() === "set") return say("x is set");
+    if (last === "spawn") return cell(`print(x + 1)\nh = await rlm.spawn("say ok", name="helper")\nprint(h.name)`);
+    if (last.includes("helper")) return say("spawned");
+    if (last.startsWith("[child-exited")) return say("the helper is done");
+    return say(`unexpected: ${last.slice(0, 120)}`);
+  }, dir);
+  await (await root.submit({ type: "input", content: "set x" }, context)).wait(context);
+  await until("the idle free to start", async () => !idle.live().includes("race:1"), 30_000);
+  await (await root.submit({ type: "input", content: "spawn" }, context)).wait(context);
+  await until("the child's notice", async () => inputs(await entriesOf(harness)).some(i => i.text.startsWith("[child-exited")) && (await entriesOf(harness)).at(-1)?.kind === "pi.assistant", 60_000);
+  const out = results(await entriesOf(harness));
+  await harness.close(context);
+  await idle.shutdown();
+  const spawned = out[1]!.text;
+  assert.ok(!spawned.includes("ipython_kernel_reset"), spawned);
+  assert.match(spawned, /\n\n42\nhelper\n$/);
 });
 
 test("rlm.spawn returns at admission, the parent answers while the child works, and the child's notice or reply arrives as its own input", async () => {

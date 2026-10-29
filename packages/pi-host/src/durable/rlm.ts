@@ -5,8 +5,9 @@
  *
  * One kernel per conversation, started at its first `ipython` call and kept across turns while pi-host runs. A kernel is snapshotted
  * (`kernel-state.dill`, pi-rlm's format) after each settled run and freed once its conversation has had no cell and no run for
- * `idleMs` and no `bash()` handle is live (owner rule c92); the next call starts a fresh kernel, revives what the snapshot holds and says so
- * with pi-rlm's `<ipython_kernel_reset>` note. pi-host's stop frees every kernel the same way. A kill of pi-host leaves the relay
+ * `idleMs` and no `bash()` handle is live (owner rule c92); the next call starts a fresh kernel and revives what the snapshot holds with
+ * Prime's `[python-state-restored]` line alone. pi-host's stop frees every kernel the same way. Only a kernel that ended any other way
+ * (it died, or was stopped mid-cell) brings pi-rlm's `<ipython_kernel_reset>` note. A kill of pi-host leaves the relay
  * running with no client: the next process kills it before it starts that conversation's kernel, and the relay ends itself after
  * `idleMs` with no client (`PI_RLM_RELAY_TTL_S`). The cell a restart cut off is not replay-safe, so it gets pi-durable's `interrupted`.
  *
@@ -105,6 +106,8 @@ interface Start { kernel: Kernel; restarted: boolean; restore?: RestoreResult; s
 class Slot {
   kernel: Kernel | undefined;
   starting: Promise<Start> | undefined;
+  /** A free in flight. A start waits for it, because the old relay listens on the socket the new kernel would attach to until it ends. */
+  freeing: Promise<void> | undefined;
   /** The ipython call running now, for host requests that need its model catalog, and the children its cell spawned. */
   call: { api: ToolExecutionApi; spawned: number[] } | undefined;
   notices = new Map<number, Notice>();
@@ -245,6 +248,7 @@ export class DurableRlm {
   }
 
   private async ensure(slot: Slot, depth: number, progress: (text: string) => void): Promise<Start> {
+    while (slot.freeing) await slot.freeing;
     if (slot.kernel?.alive && !slot.starting) return { kernel: slot.kernel, restarted: false };
     slot.starting ??= this.start(slot, depth, progress).finally(() => (slot.starting = undefined));
     return slot.starting;
@@ -377,8 +381,9 @@ export class DurableRlm {
     if (!kernel?.alive || slot.call || slot.starting) return;
     const busy = await this.running(slot).catch(() => false) || (await this.liveHandles(kernel)) > 0;
     if (busy) return this.armIdle(slot);
+    if (slot.call) return;
     this.log(`${slot.session}: freeing the idle kernel`);
-    await this.free(slot, 60_000);
+    await this.free(slot, 60_000, true);
   }
 
   private async running(slot: Slot): Promise<boolean> {
@@ -403,13 +408,26 @@ export class DurableRlm {
     clearTimeout(timer);
   }
 
-  private async free(slot: Slot, snapshotMs: number): Promise<void> {
+  /**
+   * Snapshots and stops the kernel. Stopping an idle kernel is no exit, so the marker goes and the next start says only what the
+   * snapshot revived, as Prime does after a resume. A kernel stopped mid-cell keeps the marker, and the next start sends the reset note.
+   */
+  private async free(slot: Slot, snapshotMs: number, onlyIdle = false): Promise<void> {
+    while (slot.freeing) await slot.freeing;
     if (slot.idleTimer) clearTimeout(slot.idleTimer);
     slot.idleTimer = undefined;
-    await this.snapshot(slot, snapshotMs);
-    const kernel = slot.kernel;
-    slot.kernel = undefined;
-    await kernel?.shutdown().catch(() => undefined);
+    const run = async () => {
+      await this.snapshot(slot, snapshotMs);
+      // A cell that started while the idle free took its snapshot keeps the kernel.
+      if (onlyIdle && slot.call) return;
+      const kernel = slot.kernel;
+      slot.kernel = undefined;
+      const idle = Boolean(kernel?.alive && !kernel.busy && !slot.call);
+      await kernel?.shutdown().catch(() => undefined);
+      if (idle) rmSync(join(slot.artifactDir, MARKER), { force: true });
+    };
+    slot.freeing = run().finally(() => (slot.freeing = undefined));
+    await slot.freeing;
   }
 
   /**
