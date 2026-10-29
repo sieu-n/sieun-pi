@@ -56,21 +56,27 @@ def _resolve_api_key() -> str:
     return ""
 
 
-def _format_results(body: dict, query: str) -> str:
-    """Format the portal's {data: <DataForSEO envelope>, meta} body into text."""
+def _format_results(body: dict, query: str, num_results: int) -> str:
+    """Format the organic items of the portal's {data: <DataForSEO envelope>, meta} body into text.
+
+    The SERP also holds items such as people_also_ask with no title or URL, so only
+    organic items with a URL count, up to num_results.
+    """
     sections: list[str] = []
     data = body.get("data") or {}
     tasks = data.get("tasks") or []
     results = (tasks[0].get("result") or []) if tasks else []
     result = results[0] if results else {}
-    items = result.get("items") or []
+    items = [
+        item
+        for item in result.get("items") or []
+        if item.get("type", "organic") == "organic" and (item.get("url") or "").strip()
+    ][:num_results]
 
     for item in items:
         title = (item.get("title") or "").strip() or "Untitled"
         lines = [f"Result {item.get('rank_absolute', '?')}: {title}"]
-        url = (item.get("url") or "").strip()
-        if url:
-            lines.append(f"URL: {url}")
+        lines.append(f"URL: {item['url'].strip()}")
         snippet = (item.get("description") or "").strip()
         if snippet:
             lines.append(snippet)
@@ -177,7 +183,7 @@ async def run(
         if resp.status_code != 200:
             result = _friendly_http_error(resp.status_code, resp.text)
         else:
-            result = _format_results(resp.json(), query)
+            result = _format_results(resp.json(), query, max(1, min(100, num_results)))
     except Exception as e:  # noqa: BLE001 — a search tool must not raise into the agent loop
         result = f"Error searching for '{query}': {type(e).__name__}: {e}"
 

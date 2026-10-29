@@ -57,6 +57,22 @@ class RunTests(unittest.TestCase):
         self.assertIn("Result 1: Prime Intellect\nURL: https://www.primeintellect.ai/", out)
         self.assertIn("cost: 0.003 | balance left: 12.5", out)
 
+    def test_keeps_only_organic_items_with_a_url_up_to_num_results(self):
+        items = [
+            {"type": "organic", "rank_absolute": 1, "title": "A", "url": "https://a.example/"},
+            {"type": "people_also_ask", "rank_absolute": 2},
+            {"type": "organic", "rank_absolute": 3, "title": "No URL"},
+            {"type": "organic", "rank_absolute": 4, "title": "B", "url": "https://b.example/"},
+            {"type": "organic", "rank_absolute": 5, "title": "C", "url": "https://c.example/"},
+        ]
+        body = {"data": {"tasks": [{"result": [{"items": items}]}]}, "meta": {}}
+        out, _ = self.run_with(lambda request: httpx.Response(200, json=body), num_results=2)
+        self.assertIn("Result 1: A\nURL: https://a.example/", out)
+        self.assertIn("Result 4: B\nURL: https://b.example/", out)
+        self.assertNotIn("Untitled", out)
+        self.assertNotIn("No URL", out)
+        self.assertNotIn("https://c.example/", out)
+
     def test_google_down_returns_the_api_error_and_makes_no_other_request(self):
         for status in (429, 502, 504):
             body = json.dumps({"error": {"message": "Upstream error"}})
