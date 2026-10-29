@@ -26,12 +26,13 @@ const board = { v: 2, rev: 900, updatedAt: "2026-10-29T19:00:00Z", todos: [],
   plan: [{ id: "p2", text: "The 5180 app works for real", status: "doing", note: "Done when every step is done", children: steps }] } as unknown as ChatBoard;
 const rows = [{ id: SEP, name: "sep launch!!", host: "mac" }] as unknown as SessionRow[];
 const slotWait = "pi-pool: this session waits for its slot at 2026-10-29T19:45:00Z";
-const facts = (error: string | undefined): JobFact[] => steps.map(item => ({ key: `child-${item.id}`, name: item.job!, state: "failed", sessionId: item.sessionId!,
-  activityAt: now - 90 * MIN, ...error ? { error } : {} }));
+const facts = (error: string | undefined, wake?: string): JobFact[] => steps.map(item => ({ key: `child-${item.id}`, name: item.job!, state: wake ? "working" : "failed",
+  sessionId: item.sessionId!, activityAt: now - 90 * MIN, ...error ? { error } : {}, ...wake ? { wake } : {} }));
 
-for (const [why, error] of [["a pi-pool slot wait", slotWait], ["a provider error", "429 rate limited"]] as const) {
-  test(`a step whose job failed on ${why} on the offline Mac is held there: no orphan_steps, no stuck step, one host_held line each`, () => {
-    const precheck = checkInPrecheck(undefined, facts(error), board, now, { self: [SEP], rows, hosts: { chatHost: "mac", held: hostHolds([mac]) } });
+for (const [why, error, wake] of [["failed on a pi-pool slot wait", slotWait, undefined], ["failed on a provider error", "429 rate limited", undefined],
+  ["sleeps on a board.wake", undefined, "a check by 22:40Z"]] as const) {
+  test(`a step whose job ${why} on the offline Mac is held there: no orphan_steps, no stuck step, one host_held line each`, () => {
+    const precheck = checkInPrecheck(undefined, facts(error, wake), board, now, { self: [SEP], rows, hosts: { chatHost: "mac", held: hostHolds([mac]) } });
     const out = convergenceMisses(SEP, precheck.steps, precheck, {}, 15 * MIN, now);
     assert.equal(out.metrics.orphan_steps, 0);
     assert.equal(out.metrics.stuck_steps, 0);

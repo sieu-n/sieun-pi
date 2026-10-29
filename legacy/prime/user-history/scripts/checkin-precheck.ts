@@ -7,8 +7,8 @@
  * `--roster` reads only the daemon's live sessions (about 1 MB, under a second); the default full list is what the service reads, and can take
  * a minute under load. The chat's messages are the tail of its session file. Prints the step classes, the flagged items, the findings markdown and the check-in job's prompt.
  */
-import { copyFile, mkdtemp } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { copyFile, mkdtemp, readdir, readFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { getAgentDir } from "prime-agent";
 import { daemonList } from "../src/daemon-list.ts";
@@ -29,6 +29,9 @@ import { readBranchTail } from "../src/session-tail.ts";
 import { pendingWakes } from "../src/wakes.ts";
 import { prStates } from "../src/pr-states.ts";
 import { queueReader } from "../src/chat-turn-queue.ts";
+import { peerReach, readTailscaleStatus } from "../src/host-reach.ts";
+import { loadHosts, selfHost } from "../src/hosts.ts";
+import type { AwayHost } from "../src/shared/host-hold.ts";
 
 const chat = process.argv[2];
 if (!chat || chat.startsWith("-")) { process.stderr.write("usage: node --import tsx scripts/checkin-precheck.ts <chat id> [--roster]\n"); process.exit(2); }
@@ -37,13 +40,36 @@ const scratch = await mkdtemp(join(tmpdir(), "checkin-precheck-"));
 const copy = async (name: string) => { await copyFile(join(dataDir, name), join(scratch, name)).catch(() => {}); return join(scratch, name); };
 
 const all = !process.argv.includes("--roster");
-const summaries = parseSummaries(await daemonList({ all, listMs: 180_000 }));
+// The other boxes' rows come from their catalog copies, each tagged with its box, as the service's host catalogs merge them, so a chat on the
+// owner's Mac reads its jobs and its box here too. Until 10-30 this script read only this box's daemon, and sep launch!!'s p133 and p137 could
+// not show the hold the service gave them on the offline Mac.
+const mirror = join(homedir(), ".cache/sieun-pi/hosts");
+const copies = await Promise.all((await readdir(mirror).catch(() => [] as string[])).filter(name => name.endsWith(".sessions.json")).map(async name =>
+  ({ host: name.slice(0, -".sessions.json".length), rows: parseSummaries({ sessions: (JSON.parse(await readFile(join(mirror, name), "utf8").catch(() => "{}")) as { rows?: unknown[] }).rows ?? [] }) })));
+const local = parseSummaries(await daemonList({ all, listMs: 180_000 }));
+const hostOf = new Map<string, string>();
+for (const copy of copies) for (const row of copy.rows) if (!local.some(own => own.sessionId === row.sessionId)) hostOf.set(row.sessionId, copy.host);
+const summaries = [...local, ...copies.flatMap(copy => copy.rows.filter(row => hostOf.get(row.sessionId) === copy.host))];
 const children = summaries.filter(row => !isTopLevel(row));
 const byParent = childrenByParent(children);
 const top = new Map<string, (typeof summaries)[number]>();
 for (const row of summaries) if (isTopLevel(row) && isListed(row) && (!top.has(row.sessionId) || row.activeSessionId !== undefined)) top.set(row.sessionId, row);
 const chatIds = await new IdIndex(join(dataDir, "chats.json"), "Chat index").ids();
-const rows = [...top.values()].map(row => projectRow(row, undefined, 0, { subtree: subtreeOf(row, byParent), ...(chatIds.includes(row.sessionId) ? { chat: true } : {}) }));
+const rows = [...top.values()].map(row => {
+  const projected = projectRow(row, undefined, 0, { subtree: subtreeOf(row, byParent), ...(chatIds.includes(row.sessionId) ? { chat: true } : {}) });
+  const host = hostOf.get(row.sessionId);
+  return host ? { ...projected, host } : projected;
+});
+// A box Tailscale reads offline, as the service's `hostAway` reads it.
+const registry = await loadHosts().catch(() => null);
+const status = registry ? await readTailscaleStatus().catch(() => null) : null;
+const self = registry ? selfHost(registry)?.name : undefined;
+const hostAway = async (name: string): Promise<AwayHost | null> => {
+  const host = registry?.hosts.find(entry => entry.name === name);
+  if (!host || !status || name === self) return null;
+  const reach = peerReach(status, host.address);
+  return reach.online ? null : { name, ...reach.lastSeen ? { lastSeen: reach.lastSeen } : {} };
+};
 
 const index = new IdIndex(join(scratch, "chats.json"), "Chat index");
 await index.add(chat);
@@ -67,7 +93,7 @@ const source: CheckInSource = {
   dutyJobs: async id => (await duties.runs(id)).flatMap(run => run.job ? [run.job.id] : []),
   dutyRuns: id => duties.runs(id), prs: prStates(), held: now => readHeldTurns(dataDir, now),
   // pi-pool's queue, as the service's check-in reads it.
-  queue: queueReader(),
+  queue: queueReader(), hostAway,
   duty: { async lastCheckIn() { return undefined; }, async checkIn(_id, run) {
     printed = true;
     process.stdout.write(`classes ${JSON.stringify(run.classes)}\n`);

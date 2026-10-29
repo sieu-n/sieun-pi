@@ -71,24 +71,25 @@ export interface EndStateView { view: StepView; state: EndState; reason: string;
   hold?: HostHold }
 
 /**
- * The end state of one open leaf step, rules in order. A parked step (an owner correction in force) and a step whose owner is a working job or a
- * working thread are fine. Next a step whose job, in any other state, runs on a box that Tailscale reads offline is held there (`hostHeld`):
- * nothing on that box moves until it is back, so a slot wait or a report there moves nothing either. On 10-29 from 19:30Z sep launch!!'s p133
- * and p137 read moving on their jobs' failed pi-pool slot waits on the sleeping Mac, so the check-in flagged them orphan four runs in a row
- * and its job asked the owner on t65 to wake the Mac (c178). Then a step whose wait names a working job of this chat (`waitCarrier`, from
- * `facts`) and a step whose wait hands it to another chat's open step (`handedStep`) are fine; a step the chat owns is moving when it changed
- * within STEP_STALE_MS and waits on nothing. Next an explicit For you link (`heldByTodo`). Every other step is stuck, by what it waits on: the owner with no todo, a release, a CI run, another thread, an event,
- * a time; else its job ended or is gone, else it has no owner.
+ * The end state of one open leaf step, rules in order. A parked step (an owner correction in force) is fine. Next a step whose job runs on a box
+ * that Tailscale reads offline is held there (`hostHeld`), whatever its job's state reads: nothing on that box moves, wakes or reports until it
+ * is back, and its row is the last copy the box sent. On 10-29 from 19:30Z sep launch!!'s p133 and p137 read moving on their jobs' failed
+ * pi-pool slot waits on the sleeping Mac, so the check-in flagged them orphan four runs in a row and its job asked the owner on t65 to wake
+ * the Mac (c178). Then a step whose owner is a working job or a working thread, a step whose wait names a working job of this chat
+ * (`waitCarrier`, from `facts`) and a step whose wait hands it to another chat's open step (`handedStep`) are fine; a step the chat owns is
+ * moving when it changed within STEP_STALE_MS and waits on nothing. Next an explicit For you link (`heldByTodo`). Every other step is stuck,
+ * by what it waits on: the owner with no todo, a release, a CI run, another thread, an event, a time; else its job ended or is gone, else it
+ * has no owner.
  */
 export function endState(view: StepView, todos: Parameters<typeof heldByTodo>[1], rows: readonly (Pick<SessionRow, "id" | "name" | "archived"> & Partial<Pick<SessionRow, "host">>)[],
   self: ReadonlySet<string>, now: number, facts: readonly JobFact[] = [], movers: Movers = {}): EndStateView {
   const { item, owner, mine, cls } = view;
   const out = (state: EndState, reason: string): EndStateView => ({ view, state, reason });
   if (cls === "parked") return out("parked", `parked by ${view.parked ?? "an owner correction"}`);
-  if (owner?.stalled) return out("stalled_call", `${ownerLabel(owner)} ${stallWords(owner.stalled, now)}`);
-  if (owner?.state === "working") return out("moving", `${ownerLabel(owner)} ${capacityWait(owner) ?? (owner.wake ? `sleeps on ${owner.wake}` : "works on it")}`);
   const hold = hostHeld(view, rows, movers.hosts);
   if (hold) return { ...out("host", `${owner ? ownerLabel(owner) : `its job ${item.job}`} runs on ${holdWords(hold)}`), hold };
+  if (owner?.stalled) return out("stalled_call", `${ownerLabel(owner)} ${stallWords(owner.stalled, now)}`);
+  if (owner?.state === "working") return out("moving", `${ownerLabel(owner)} ${capacityWait(owner) ?? (owner.wake ? `sleeps on ${owner.wake}` : "works on it")}`);
   if (poolWait(owner)) return out("moving", `${ownerLabel(owner!)} waits for its slot in the token pool`);
   if (owner?.state === "unstarted" && owner.unstarted) return out("job_ended", `${ownerLabel(owner)} never started: Prime admitted it at ${zTime(owner.unstarted.at)} and its ` +
     `session has no first prompt${owner.unstarted.sentAt !== undefined ? `, though the chat service sent its brief at ${zTime(owner.unstarted.sentAt)}` : ""}`);
