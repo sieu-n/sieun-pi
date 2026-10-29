@@ -1,6 +1,6 @@
 # The agent model: agents, rooms, and comm and work threads
 
-Status: design, for the owner's review. Phases 1 and 2 are built; the rest is not, except where a line says "today".
+Status: design, for the owner's review. Phases 1, 2 and 3 are built; the rest is not, except where a line says "today".
 
 ## The answer
 
@@ -11,7 +11,7 @@ Status: design, for the owner's review. Phases 1 and 2 are built; the rest is no
 5. "So what is status?" asked mid-work starts a turn in the comm thread only. That turn reads the work thread's state and answers, and the worker's context never sees the question.
 6. The sidebar shows Solo rooms, Channels and DMs, and the DMs list holds agents only. Work threads, comm threads and jobs open from the Agents page and from job pills, never from the sidebar.
 7. There are three tiers. The chat server runs on metal only and owns messaging. A relay on each box delivers room messages to that box's pi-host and carries `send_message` back. pi-host runs the threads.
-8. We build it in six phases, each shippable alone. Phase 1 (`send_message`) is in progress. Phase 2 makes DMs real rooms owned by the chat server, and phase 4 adds the comm and work split.
+8. We build it in six phases, each shippable alone. Phases 1 to 3 are built: `send_message`, DMs as rooms the chat server owns, and the agent folder with its brief and memory. Phase 4 adds the comm and work split.
 
 ## What the owner asked for
 
@@ -38,7 +38,7 @@ Status: design, for the owner's review. Phases 1 and 2 are built; the rest is no
 | Channel | A room whose posts the chat server stores. A mention goes to the agent's thread as an `agent.message` input, and the turn's final answer is posted back. Hop cap 6. | `server/channels.ts`, `<data dir>/channels/<id>.jsonl` |
 | Board | The `chat.board` doc of each chat's root conversation in pi-host. | `server/boards.ts` |
 | Duties, check-in | `<data dir>/boards/<chat>/duties.json`. | `server/boards.ts`, `server/duty-run.ts` |
-| Agent config | Read from pi-host's thread row. Memory is `kind: "none"`, and every instruction file reads `loaded: false`. | `server/agent-config.ts` |
+| Agent config | Read from pi-host's thread row and the agent folder: the brief, the agent's harness store and Prime's global one, and the instruction files Prime's loader takes, each marked loaded. | `server/agent-config.ts`, `server/agent-folder.ts` |
 | Thread setup | Every thread gets Prime's preamble, the coding tools and `subagent`, and nothing else. | `packages/pi-host/src/durable/registry.ts` |
 | Hosts | The chat server talks to the local pi-host socket only. `/api/hosts` reads each box's prime-relay `GET /v1/host`. | `server/host/pi-host.ts`, `server/usage.ts` |
 
@@ -62,8 +62,8 @@ classDiagram
     duties and check-in
   }
   class Memory {
-    MEMORY.md index
-    notes
+    Prime harness store
+    memories and prompt notes
   }
   class Room {
     id dm_ ch_ so_
@@ -221,9 +221,7 @@ Every invited agent hears every post, and each speaks only when it has something
 | `steer_work` | `({to?: "main"\|<job>, text?, stop?: boolean}) => {state}` | yes | no | no | pi-host: submit with `whenBusy: "steer"`, or `durable_abort` |
 | `report` | `({text, kind: "progress"\|"done"\|"blocked"\|"question"}) => ok` | no | yes | yes (to its work thread) | pi-host: a notice into the comm threads that delegated, or the DM comm thread when none did |
 | `board` | `({ops?: BoardOp[]}) => BoardView text` | read, and owner-asked edits | yes | yes | chat-server API `POST /api/agents/:id/board {actor: "agent"}`, reached through the relay |
-| `memory_read` | `({path?, q?}) => text` | yes | yes | yes | pi-host: files in the agent folder |
-| `remember` | `({note}) => ok`, appends to `memory/inbox.md` | yes | yes | yes | pi-host |
-| `memory_write` | `({path, text, mode: "replace"\|"append"}) => ok` | no | yes | no | pi-host |
+| `rlm.harness` | Prime's kernel API: `create_memory`, `update_memory`, `delete_memory`, the prompt, skill and subagent calls, `search`, and `refine.run()` | yes | yes | yes | Prime's kernel, with `RLM_HARNESS_STATE_DIR` at the agent's store (section 3, built in phase 3) |
 | `room_history` | `({room?, before?, q?, limit?}) => posts` | yes | no | no | chat-server API `GET /api/rooms/:id/items`, through the relay |
 | `start_job` | `({name, brief, model?}) => {job}` | no | yes | no | pi-host: `durable_create` with `{agent, role: "job"}` and the first input |
 | `wake` | `({at?, run?, check?, every?, note}) => {wake}` | no | yes | yes | relay timers on the agent's box (today the chat server's `wakes/`) |
@@ -236,36 +234,41 @@ The comm thread stays thin because its tools are few and cheap, its inputs are o
 
 ## 3. Memory and instructions
 
-The agent folder lives on the agent's host, at `~/.pi/agent/agents/<slug>/`, next to the chat server's own `~/.pi/agent/chat`.
+Phase 3 is built this way. The agent folder lives on the agent's host, at `~/.pi/agent/agents/<slug>/`, next to the chat server's own `~/.pi/agent/chat`.
 
 | Path | Holds | Written by | Loaded into |
 |---|---|---|---|
-| `agent.json` | `{id, name, host, home, model, thinkingLevel, skills[], workThread, createdAt}` | the chat server, through the relay | every thread of the agent |
-| `brief.md` | The responsibility, in the owner's words, with what done looks like | the owner (Agents page), the agent with a `[board]`-style note to him | `agent` section of every thread |
-| `memory/MEMORY.md` | A short index of what the agent learned. Soft cap 2,000 tokens; an overrun is flagged and still loads (c98). | work and job threads | `memory` section of every thread |
-| `memory/*.md` | Topic notes, read on demand with `memory_read` | work and job threads | no, only on demand |
-| `memory/inbox.md` | Notes a comm thread kept, such as an owner preference | comm threads (`remember`) | the work thread's `memory` section, until it files them |
+| `brief.md` | The responsibility, in the owner's words, with what done looks like. Missing or blank means no brief. | the owner on the Agents card (`PUT /api/agents/:id/brief`) | every thread of the agent, as one more Prime context file |
+| `harness/harness_state.json` | The agent's memory: a Prime harness store in Prime's own format, with memories, prompt notes, skills and subagent specs | the agent's kernels through `rlm.harness` and `refine.run()`, and the owner on the Agents card (`/api/agents/:id/memory`) | every thread of the agent, through Prime's harness digest |
 
-The folder is a small git repo, and each memory write is a commit, so the Agents page can show what changed and the owner can revert it.
+The agent record stays in the chat server's `agents.json`. An `agent.json` on the box waits for phase 6, when the relay needs it there.
 
-The board stays with the chat server, at `~/.pi/agent/chat/agents/<id>/board.json` with `duties.json` beside it. For you sums over every agent, the owner edits boards from the web, and an offline Mac must not hide his todos. The relay writes each board change into pi-host as an `agent.board` doc, so `agent_status` reads it locally even while metal is out of reach.
+### Memory is Prime's harness store, not a second system
+
+Prime merges two stores into its harness digest: the global one in `~/.prime/agent/harness`, and a local one. Commit 76c5ceda gave each pi-host thread conversation its own local store, at `session-artifacts/<thread>[-<conversation>]/harness`, because in Prime a session is the unit.
+
+In this model the agent is the unit, so for a thread that belongs to an agent the agent's store takes the local slot. Its work thread, the child conversations in it and every root job filed under it read the same store in their digest, and their kernels get `RLM_HARNESS_STATE_DIR` set to it.
+
+So `rlm.harness.create_memory(...)` in any of them writes the agent's memory, and `global_=True` still writes the global store. Prime's two scopes, its digest code (`vendor/prime-harness.ts`) and its kernel API stay as they are, with no third level and no new tools.
+
+A thread no agent holds keeps its own store. No per-thread local store existed on us-metal02 when this shipped, so nothing moved.
+
+Each entry keeps its `version` and `updated_at`, and the store keeps Prime's refinement log, so the card shows who wrote each entry and when. The owner removes an entry from the card. The folder is not a git repo.
 
 ### How pi-host loads them
 
-`registry.ts` gains one extension, `AgentProfile` (`durable/agent-profile.ts`). A thread learns its agent from a `chat.doc` named `agent.ref` (`{agent, role: "comm"|"work"|"job", room?}`), which `durable_create` writes when it gets the new `agent`, `role` and `room` fields. Each section's `render` reads the file at request time, with an mtime cache.
+The chat server writes a `chat.doc` named `agent.ref`, `{agent, dir, role: "work"|"job"}`, into the root conversation of each work thread and each root job thread filed under an agent. It uses the existing `durable_doc_put`, when it makes an agent or files a job, and on each thread list read for any thread whose ref is missing or different. pi-host reads the root's ref for every conversation of the thread (`durable/agent-profile.ts`), and a ref of another shape reads as no agent.
 
-| Order | Section | Source |
+| Part | Where it goes | Source |
 |---|---|---|
-| 1 | `preamble` (untagged, first) | `PRIME_BASE_PROMPT`, unchanged, since Anthropic refuses a subscription token under another preamble (`open.ts`) |
-| 2 | `agent` | name, host, home, and `brief.md` |
-| 3 | `role` | the comm rules (`send_message` style, answer from state, delegate) or the work rules (board, jobs, report) |
-| 4 | `memory` | `memory/MEMORY.md` (+ `inbox.md` for work) |
-| 5 | `skills` | the name and description of each skill in `agent.json` from `~/.prime/agent/skills/<name>/SKILL.md`; the body is read on demand |
-| 6 | `instructions` | `AGENTS.md` and `CLAUDE.md` in the home dir and each folder above it, then the global `<agent dir>/AGENTS.md` that prime-sync links |
+| Prime's preamble and the rest of Prime's prompt | unchanged, preamble first | `prime-prompt.ts` |
+| `brief.md` | one more context file after the AGENTS.md files Prime's loader found, so Prime's own `buildSystemPrompt` renders it under its path in "# Project Context" | `agent-profile.ts` `briefFile` |
+| agent memory | the local store of Prime's harness digest: the root's digest message, a child's `harness` section, and the kernels' `RLM_HARNESS_STATE_DIR` | `agent-profile.ts` `conversationHarnessDir` |
+| AGENTS.md and CLAUDE.md | as before, through Prime's resource loader | `prime-prompt.ts` |
 
-The comm thread's tools filter (`AgentState.tools`) leaves out the writing coding tools. `agent-config.ts` then reports `memory: {kind: "agent-folder"}` and each instruction file as `loaded: true` with its size. A thread with no `agent.ref` (an old thread) keeps today's setup.
+The context section is not pinned, so a brief edit reaches the next request of every thread as a new `pi.system` entry that holds the `context` section alone, and an unchanged brief sends nothing new. A new memory reaches the next turn as a `[harness-digest update]`, as in Prime.
 
-Prime's harness memories in `~/.prime/agent/harness/harness_state.json` stay where they are. The Agents page lists them as related and not loaded, as today.
+The role section (comm or work rules) and a per-agent skills list wait for phase 4.
 
 ## 4. The three tiers
 
@@ -367,7 +370,7 @@ Each phase ships alone through `scripts/release-chat.mjs` (and pi-host's own ins
 |---|---|---|
 | 1. `send_message` (in progress) | Agents speak only when they mean to; the rest folds | pi-host 2 files, chat server 1, web 2 |
 | 2. Agents and DM rooms | Slack-like DMs whose messages the chat server owns; the DM list holds agents only; per-agent boards | chat server ~7, web ~6, pi-host 2, 1 script |
-| 3. Agent folder: brief and memory | Each agent knows its job and remembers; the Agents page shows host, home, brief, memory and board | pi-host 3, chat server 2, web 3 |
+| 3. Agent folder: brief and memory (built) | Each agent knows its job and remembers; the Agents page shows host, home, brief, memory and board | pi-host 3, chat server 2, web 3 |
 | 4. Comm and work split | "So what is status?" answered from state; the worker is never interrupted by chat | pi-host 4, chat server 2, web 2 |
 | 5. Solo rooms, and channels on rooms | Agenda group chats with invited agents | chat server 2, web 4 |
 | 6. Relay tier and the Mac | Agents on the Mac, through the same rooms | relay 3, pi-host 1, chat server 3, install 2 |
@@ -392,12 +395,22 @@ Built by another subagent in `packages/pi-host/src/durable/registry.ts`, plus a 
 
 ### Phase 3: Agent folder, brief and memory
 
-1. pi-host `durable/agent-profile.ts` (the sections in section 3), `agent.ref` written by `durable_create {agent, role, room}`, and the tools `memory_read`, `remember` and `memory_write`.
-2. The chat server creates and edits `agent.json` and `brief.md`. `agent-config.ts` reads the folder and reports what loaded.
-3. Agents page: Overview shows host, home, model and brief (editable); a Memory tab shows MEMORY.md, notes and history; a Board tab.
+Built and live on 2026-10-29: pi-host d3368356 (the folder in a163066e), apps/chat release-432f9e1 with the chat server in d4228e1c and the card in 33458d5b, and the purpose fix in 21da91d4.
+
+1. pi-host `durable/agent-profile.ts` reads `agent.ref` from a thread's root conversation, puts `brief.md` in as one more Prime context file, and makes the agent's harness store the local store of every conversation of the thread (section 3). The doc's earlier `memory_read`, `remember` and `memory_write` tools, `MEMORY.md` and `inbox.md` are dropped, because Prime's `rlm.harness` already does this.
+2. The chat server's `agent-folder.ts` reads and writes `brief.md` and the harness store in the format Prime's `harness.py` writes, and `agents.ts` writes `agent.ref` into each agent thread. `agent-config.ts` reports the folder and marks the brief, the stores and the instruction files loaded.
+3. The Agents card shows host, home, model and the brief (editable, offering the first input as starting text when empty) on Overview, the agent's memory with add, edit and delete and Prime's global store on Memory, and the board on Board. A job's card shows its agent's folder read-only.
 
 **Done when** a new thread's first request carries the brief, memory and AGENTS.md sections, an edit to `brief.md` shows in the next turn, and the Agents page shows host, home dir, memory and board for every agent.
-**Tests:** a pi-host test that captures the faux provider's system prompt (Prime's preamble stays first, and every section is present), a cache check that a turn with unchanged files keeps the same prompt prefix, and an `agent-config` spec.
+
+**Tests:** pi-host agent-profile 4/4, rlm 8/8, prime-prompt 5/5, prime-harness 5/5 and prime-chat 8/8; apps/chat agent-folder 5/5, agent-config 7/7, rooms 6/6 and migrate 4/4; Playwright `test/agents` 21/21, with folder.spec.ts 3/3.
+
+**Live walk** on :5184, in the box Chrome, on a throwaway agent "phase3 walk" made with `POST /api/agents` and archived after, with screenshots in `~/work/phase3/`:
+
+1. The brief written on its card and a memory added on its Memory tab reached its first request: the `pi.system` entry 12 holds the brief under `## /home/sieun/.pi/agent/agents/phase3-walk/brief.md` in its `context` section, and the full digest holds `[local:the_owner_s_favorite_fruit_is_quince]`. Asked through its DM, it answered both codewords with `tell_owner`, and the answer came back as its post.
+2. After a brief edit and a second memory on the card, the next turn wrote `pi.system` entry 21 with the `context` section alone, and a `[harness-digest update]` that adds the second memory. The agent answered with the new codeword and the new memory's code.
+3. Deleting the second memory on the card removed it from the store.
+4. vent's brief, edited on its card, sits in `~/.pi/agent/agents/vent/brief.md`, and its work thread and its six root job threads hold `agent.ref`.
 
 ### Phase 4: Comm and work split
 
@@ -430,6 +443,6 @@ Built by another subagent in `packages/pi-host/src/durable/registry.ts`, plus a 
 Each has a default, so work goes on without an answer.
 
 1. **How much DM history moves into the new rooms?** Default: the owner's messages and the agents' text answers from the last 30 days are copied in as posts, and anything older sits behind "Earlier, in the work thread".
-2. **May agents write their own memory without asking?** Default: yes. Every write is a git commit in the agent folder, the Agents page shows the history, and the owner reverts with one click.
+2. **May agents write their own memory without asking?** Default: yes, through Prime's `rlm.harness` as in Prime. The Agents card shows each entry with its author and time, and the owner deletes one there.
 3. **In a Solo room, does every agent hear every post, or only when mentioned?** Default: every invited agent hears every post and speaks only when it adds something, with the 6-hop cap; a channel keeps mention-only.
 4. **May the owner talk to a work thread directly?** Default: yes, from "Open work thread", where his message goes in as a labeled steer. The DM always goes through the comm thread.
