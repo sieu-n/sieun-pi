@@ -10,8 +10,8 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  * The Demo sandbox works duty's precheck (`node --import tsx scripts/duties/demo-sandbox.ts`) for the frontend chat: the 5180 demo
  * (apps/virev-demo in auto-sns-agent). No model call, no browser. Since 10-19 the demo runs only on the owner's Mac (owner: "for demo frontend
  * for now it should all be here"), so the duty's precheck command runs this script from the Mac's sieun-pi checkout over `ssh mac`. Its judged metrics (owner c75, 10-15: one headline plus at most 3):
- * - walk_problems, the headline: problems in the last offline walk of the 6 apps (demo-sandbox-walk.ts walks search, discover,
- *   analytics, campaigns, inbox and connections in two scenarios, plus the marketing pages, through the owner's Aside on the Mac, c177). Each outside request counts 1, each test that
+ * - walk_problems, the headline: problems in the last offline walk of the 8 app pages (demo-sandbox-walk.ts walks /app, search, dashboards,
+ *   campaigns, watchlist, outreach, inbox and connections in two scenarios, plus the marketing pages, through the owner's Aside on the Mac, c177). Each outside request counts 1, each test that
  *   failed for another reason counts 1, a missing walk or one over a day old counts 1, and so does a /configure probe without a 200. The owner: "no external connection should work
  *   off of internal fake database". This script reads the walk's Playwright-shaped JSON report from WALK_FILE and its stderr from WALK_ERR_FILE,
  *   and starts the next walk itself, detached (WALK_COMMAND), when the last one started over WALK_REFRESH_MS ago and none is running, so the

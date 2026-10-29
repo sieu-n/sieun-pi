@@ -40,7 +40,7 @@ const LAND_TIMEOUT_MS = 100_000;
 /** Each page's switch and load are timed this often, and d1 reads the fastest, so a busy moment spoils one try, not the page. */
 export const TRIES = 3;
 export const SCENARIOS = ["kbeauty-brand", "fresh-start"];
-export const PAGES = ["/app", "/app/search", "/app/discover", "/app/dashboards", "/app/campaigns", "/app/watchlist", "/app/outreach", "/app/inbox", "/app/connections"];
+export const PAGES = ["/app", "/app/search", "/app/dashboards", "/app/campaigns", "/app/watchlist", "/app/outreach", "/app/inbox", "/app/connections"];
 export const MARKETING_PAGES = ["/", "/pricing", "/privacy", "/sign-in"];
 /** An app's URL from before each app moved to /app/<app name> (owner, 10-22, ROUTE_MOVES in apps/virev-demo/overlay/src/lib/app-routes.js), which hooks.server.ts sends on with its path and query. */
 export const OLD_URL = { scenario: "kbeauty-brand", from: "/app/analytics/creators/heartleaf-toner-us?view=home", to: "/app/campaigns/heartleaf-toner-us" };

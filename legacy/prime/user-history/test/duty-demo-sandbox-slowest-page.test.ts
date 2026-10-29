@@ -23,9 +23,9 @@ const report = (...specs: ReturnType<typeof scenario>[]): WalkReport => ({ stats
 test("a page's time is the slower of its in-app switch and its load's long tasks, and the load's wall time through the link does not count", () => {
   assert.equal(pageMs(timing("/app/inbox")), 300);
   assert.equal(pageMs(timing("/app/analytics/creators", { loads: [load(2400)] })), 2400, "Creators before 7966ebbfd");
-  assert.equal(pageMs(timing("/app/discover", { switches: [{ ms: null, long_ms: 0 }] })), PAGE_TIMEOUT_MS, "a switch that never showed");
-  assert.equal(pageMs(timing("/app/discover", { loads: [{ ms: null, long_ms: 0 }] })), PAGE_TIMEOUT_MS, "a load that never showed");
-  assert.equal(pageMs(timing("/app/discover", { switches: [], loads: [] })), PAGE_TIMEOUT_MS, "a page the walk never timed");
+  assert.equal(pageMs(timing("/app/search", { switches: [{ ms: null, long_ms: 0 }] })), PAGE_TIMEOUT_MS, "a switch that never showed");
+  assert.equal(pageMs(timing("/app/search", { loads: [{ ms: null, long_ms: 0 }] })), PAGE_TIMEOUT_MS, "a load that never showed");
+  assert.equal(pageMs(timing("/app/search", { switches: [], loads: [] })), PAGE_TIMEOUT_MS, "a page the walk never timed");
 });
 
 // 10-20: with us-metal02 at load 242 on 80 cores, two walks back to back read 7.1 s and then 12.7 s of load long tasks, so one try measured the box.
