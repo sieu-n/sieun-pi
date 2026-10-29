@@ -101,16 +101,37 @@
       }
     },
     {
+      "id": "F33",
+      "title": "Base watch claims (watch.base_claims) switched off and on by hand around lost leases, with an off that never ended",
+      "designs": [
+        "01a11bd7-072f-7591-ad1d-f123c276cde5/p263",
+        "commit:f0b9983734",
+        "commit:f9a29ee879",
+        "commit:f66248ce11"
+      ],
+      "owner": "Prospect feature bro (01a11bd7) job 'd3 base claims toggles' (session 01a18587), step p263, split from F4 by d3 on 10-29, because F4's watch. prefix took every base claims write as a collab split repeat. Prod's watch.base_claims went off by hand on 10-07 for the GeoNode us-09 outage with no end (config_audit 11374), and 689,498 found creators waited unread until a hand write turned it on on 10-28 16:28Z (17142). Then the crawler ops train and alert triage switched it off and on four times in 2 h (17179, 17188, 17214, 17215), each time on a lease_lost count: 22 lease_lost from 16:35Z were missed renewals, which f0b9983734 (the jobs worker renews live leases) and f9a29ee879 (renewal skips a locked batch row) fix, and the rest were release fences (claim._FENCE after the watch release tick failed a batch's last open op). f66248ce11 makes watch.base_claims a guard in crawler-v3 control/hold_expiry.py, so a hand off carries an owner and an end (2 h unless named, or off_release next) and the API hold sweep writes the row back to the tier's default at that end, and jobs.run_batch returns fenced, logged at info, when the lease moved after the last open target settled, so lease_lost means targets were left open. measured: prod 10-28 19:51Z to 10-29 02:30Z, 29 runs logged lease_lost: 23 within 900 s of a watch release of the batch, 4 after a job cancel, and 2 after the batch finished, and only one of them (e0149a0e) was a real missed renewal with targets left open.",
+      "match": {
+        "config_key_prefixes": [
+          "watch.base_claims",
+          "watch.base_linked_profile_every_days",
+          "throttle.base_claim_percent",
+          "throttle.base_other_claim_percent"
+        ]
+      }
+    },
+    {
       "id": "F4",
       "title": "Collab slot split and re-read due times set by hand",
       "designs": [
         "p97"
       ],
-      "owner": "collab lane self balance, fair crawl queue, posts reread inside 24h (p91)",
+      "owner": "collab lane self balance, fair crawl queue, posts reread inside 24h (p91). Split on 10-29 (p263): watch.base_claims and the base claim shares are F33, so F4 matches only the collab split keys (watch.deep_walk_slot_share, queue.share_*), the monitor re-read keys and pause.watch and pause.jobs.",
       "match": {
         "config_key_prefixes": [
           "watch.deep_walk_slot_share",
-          "watch.",
+          "watch.monitor_",
+          "watch.walk_chunk_pages",
+          "queue.share_",
           "pause.watch",
           "pause.jobs"
         ]

@@ -463,3 +463,17 @@ test("a declared cap write counts only when its value differs from the default c
 test("the audit read selects each row's new value", () => {
   assert.match(auditSql(undefined, AT), /coalesce\(new_value, ''\) as new_value/);
 });
+
+test("watch.base_claims writes are F33 and wait on its prod release, and F4 keeps only the collab split and re-read keys", async () => {
+  const reg = await registry();
+  const fault = (keys: string[]) => { const verdict = classifyConfig({ actor: "api-key", writer: "ops-api", keys, text: "Crawler ops order" }, reg); return verdict.kind === "fault" && verdict.fault.id; };
+  assert.equal(fault(["throttle.base_other_claim_percent", "watch.base_linked_profile_every_days", "watch.base_claims"]), "F33");
+  assert.equal(fault(["watch.base_claims"]), "F33");
+  assert.equal(fault(["queue.share_collab"]), "F4");
+  assert.equal(fault(["watch.monitor_feed_pages"]), "F4");
+  // Audit 17179 of 10-28 18:02Z ran on a release that held none of F33's commits, so it is no repeat even once p263 is done.
+  const f33 = reg.faults.find(item => item.id === "F33")!;
+  const at = Date.parse("2026-10-28T18:02:00Z");
+  const deploys: Deploy[] = [{ at: Date.parse("2026-10-28T12:00:00Z"), release: "af356d4c0000" }];
+  assert.equal(designOnProd(f33, at, deploys, new Map([["af356d4c0000", new Set(["commit:f0b9983734"])]])), "not_live");
+});
