@@ -18,14 +18,15 @@ import { CHECK_IN_DUTY_ID, type DutyPrecheck, type DutyRunRecord, type FlaggedSl
 import { DutyStore } from "../../src/chat-duty-store.ts";
 import { D9_PUSH_PREFIX, serverNote } from "../../src/shared/chat-feed.ts";
 import type { ChatBoard, PlanItem } from "../../src/shared/types.ts";
-import { CHANGE_APPROACH_MISSES, fixStepStreak, metricStreaks } from "../../src/shared/duty-streak.ts";
+import { CHANGE_APPROACH_MISSES, fixStepStreak } from "../../src/shared/duty-streak.ts";
 import { countWindowMs } from "../../src/duty-push.ts";
 import { pendingWakes, type Wake } from "../../src/wakes.ts";
 import { hasDoneLine, upkeepWords } from "../../src/shared/upkeep-title.ts";
 import { stalledSince } from "../../src/shared/stalled-calls.ts";
 import { transientTurnError, turnErrorCause } from "../../src/turn-error.ts";
 import { turnError } from "../../src/shared/credential-wait.ts";
-import { daemonSessions, dutyFleet, type FleetDuty } from "./duty-fleet.ts";
+import { agingSince, agingUntil, daemonSessions, dutyFleet, type FleetDuty } from "./duty-fleet.ts";
+export { agingSince, agingUntil };
 import { catalogCopyFiles, copyHosts, type HostHeldStep, mirroredSessions, planCounts, planInputs, POOL_TAIL_BYTES } from "./whole-system.ts";
 import { stepSessions, withDescendantActivity } from "../../src/unmoved-steps.ts";
 import { loadHosts, selfHost } from "../../src/hosts.ts";
@@ -148,34 +149,6 @@ export function itemsAbove(board: ChatBoard | null, id: string): string[] {
     return undefined;
   };
   return find(board?.plan ?? [], []) ?? [];
-}
-
-/**
- * When a red duty misses only windowed counts with no new event since the run before (`MetricStreak.quietSince`, the duty runner's own quiet
- * read), the newest event any of them counts; otherwise undefined. Such a duty owes no fix job (`missLine` says to start none), but d9 listed
- * the AI harness chat's d10, repeat_corrections_7d 16 with every line before its fix, among its red examples, and its job pushed the chat for a
- * fix step on it at 07:50Z, 10:47Z and 14:12Z on 10-20. `runs` is the duty's own runs, newest first.
- */
-export function agingSince(runs: readonly DutyRunRecord[]): number | undefined {
-  const streaks = metricStreaks(runs);
-  if (!streaks.length || streaks.some(streak => streak.quietSince === undefined)) return undefined;
-  return Math.max(...streaks.map(streak => streak.quietSince!));
-}
-
-/**
- * When the last event an aging duty counts leaves its window (`countWindowMs` of each key), or undefined when a key names no window. The newest
- * event alone misled: at 22:25Z on 10-26 d9 said CI and RepoOps d5 aged out with its newest event at 02:35Z, and the chat read that as clearing
- * at 02:35Z on 10-27, while refused_lands_promotes_7d counts a refusal of 21:53Z on 10-25 until 21:53Z on 11-01.
- */
-export function agingUntil(runs: readonly DutyRunRecord[]): number | undefined {
-  if (agingSince(runs) === undefined) return undefined;
-  let until = 0;
-  for (const streak of metricStreaks(runs)) {
-    const window = countWindowMs(streak.key, streak);
-    if (window === undefined) return undefined;
-    until = Math.max(until, streak.quietSince! + window);
-  }
-  return until;
 }
 
 /**

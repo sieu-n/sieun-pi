@@ -16,6 +16,7 @@ import type { ChatBoard, ChildAgent, PlanItem, SessionRow } from "../../src/shar
 import { fixJobLive } from "../../src/shared/duty-fixes.ts";
 import { dutyHold, withBoardLinks } from "../../src/shared/todo-hold.ts";
 import { pendingWakes } from "../../src/wakes.ts";
+import { countWindowMs } from "../../src/duty-push.ts";
 import { daemonList, listRows } from "../../src/daemon-list.ts";
 
 /**
@@ -117,6 +118,12 @@ export interface FleetDuty {
   working?: string;
   /** Each missed metric's fix step and the open For you todo that holds it (`dutyHold`): the duty waits on the owner and is neither stuck nor pushed. */
   held?: string;
+  /**
+   * When a duty red only on quiet windowed counts clears (`agingUntil`), while that is still ahead: it waits on time and is not stuck. Until
+   * 10-29 the AI harness chat's d10, repeat_corrections_7d 10 with no new repeat since 18:02Z on 10-28, read as its one stuck duty at 07:16Z,
+   * while d9 said the same duty owed no fix job.
+   */
+  agingUntil?: number;
   stuck: boolean;
 }
 export interface DutyFleet {
@@ -190,6 +197,34 @@ function leadMetric(metrics: readonly DutyMetric[], streaks: readonly MetricStre
   return streaks.find(streak => streak.key === headline?.key) ?? [...streaks].sort((a, b) => b.misses - a.misses)[0];
 }
 
+/**
+ * When a red duty misses only windowed counts with no new event since the run before (`MetricStreak.quietSince`, the duty runner's own quiet
+ * read), the newest event any of them counts; otherwise undefined. Such a duty owes no fix job (`missLine` says to start none), but d9 listed
+ * the AI harness chat's d10, repeat_corrections_7d 16 with every line before its fix, among its red examples, and its job pushed the chat for a
+ * fix step on it at 07:50Z, 10:47Z and 14:12Z on 10-20. `runs` is the duty's own runs, newest first.
+ */
+export function agingSince(runs: readonly DutyRunRecord[]): number | undefined {
+  const streaks = metricStreaks(runs);
+  if (!streaks.length || streaks.some(streak => streak.quietSince === undefined)) return undefined;
+  return Math.max(...streaks.map(streak => streak.quietSince!));
+}
+
+/**
+ * When the last event an aging duty counts leaves its window (`countWindowMs` of each key), or undefined when a key names no window. The newest
+ * event alone misled: at 22:25Z on 10-26 d9 said CI and RepoOps d5 aged out with its newest event at 02:35Z, and the chat read that as clearing
+ * at 02:35Z on 10-27, while refused_lands_promotes_7d counts a refusal of 21:53Z on 10-25 until 21:53Z on 11-01.
+ */
+export function agingUntil(runs: readonly DutyRunRecord[]): number | undefined {
+  if (agingSince(runs) === undefined) return undefined;
+  let until = 0;
+  for (const streak of metricStreaks(runs)) {
+    const window = countWindowMs(streak.key, streak);
+    if (window === undefined) return undefined;
+    until = Math.max(until, streak.quietSince! + window);
+  }
+  return until;
+}
+
 /** The board's steps by id, and its open steps by their `duty` link (`<dutyId>/<metricKey>`). */
 function boardSteps(board: ChatBoard | null): { byId: Map<string, PlanItem>; linked: Map<string, PlanItem[]> } {
   const byId = new Map<string, PlanItem>();
@@ -240,6 +275,8 @@ export async function dutyFleet(options: { dataDir: string; now: number; session
       const lead = skippedLead(duty.metrics, skipped);
       if (lead) Object.assign(entry, { misses: skipped.length, skipped: true, metric: lead });
       if (!green && newest) {
+        const until = agingUntil(runs.filter(run => run.duty === duty.id));
+        if (until !== undefined && until > now) entry.agingUntil = until;
         board ??= await boards.read(id).catch(() => null);
         const { byId, linked } = boardSteps(board);
         // A run records its fixes when it runs, so the board says now whether a step closed since: a done or dropped step is never a fix.
@@ -291,7 +328,7 @@ export async function dutyFleet(options: { dataDir: string; now: number; session
           const job = fix === undefined ? runs.find(run => run.duty === duty.id && run.job)?.job : undefined;
           if (job && sessionRows(all).some(row => row.id === job.id && row.working)) entry.working = job.name;
           else if (fix !== undefined) entry.fix = fix.step;
-          else entry.stuck = long;
+          else entry.stuck = long && entry.agingUntil === undefined;
         }
       }
       duties.push(entry);
