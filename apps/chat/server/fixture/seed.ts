@@ -1,6 +1,6 @@
 /**
- * The fixture world: four chats, a root job, jobs inside threads, two channels, boards with plans and asks, duties and a check-in, spread
- * over the last five days with repeated words (canary, relay, migration) so search can rank, filter by date and by author.
+ * The fixture world: four agents with their DM rooms and work threads, a root job, jobs inside threads, two channels, boards with plans and
+ * asks, duties and a check-in, spread over the last five days with repeated words (canary, relay, migration) so search can rank, filter by date and by author.
  */
 import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -10,6 +10,7 @@ import type { Duty, DutyRunRecord } from "../../web/src/lib/api/shared/chat-duti
 import { richReply, type FixtureHost } from "../host/fixture.ts";
 import type { ContentBlock, EntryRecord, Message } from "../host/types.ts";
 import { runStamp } from "../duty-run.ts";
+import { AgentStore } from "../agent-store.ts";
 import { writeJson, type ChannelRow, type Post, type StateFile } from "../store.ts";
 
 export const FIXTURE_IDS = {
@@ -58,17 +59,17 @@ export function seedFixture(host: FixtureHost, dataDir: string, now = Date.now()
 
   // Vent: a finished turn with thinking and tool steps, an image, a mermaid answer, and a finished job.
   const vent = host.addThread({ id: ids.vent, name: "Vent", createdAt: at(5) });
-  user(vent, 1, "Why did the canary relay drop messages last night? Check the relay log.", at(5, 1));
+  const ventAsk = user(vent, 1, "Why did the canary relay drop messages last night? Check the relay log.", at(5, 1));
   assistant(vent, 1, [{ type: "thinking", thinking: "Read the relay log first, then the canary unit." }, { type: "toolCall", id: "call_v1", name: "bash", arguments: { command: "journalctl --user -u pi-host-relay --since yesterday | tail -50" } }], at(5, 1.01), "toolUse");
   toolResult(vent, 1, "call_v1", "bash", "Oct 27 02:10 relay: connection reset by peer (mac)\nOct 27 02:11 relay: reconnected", at(5, 1.02));
   assistant(vent, 1, [{ type: "toolCall", id: "call_v2", name: "read", arguments: { path: "/home/sieun/.config/pi-host-relay/boxes.json" } }], at(5, 1.03), "toolUse");
   toolResult(vent, 1, "call_v2", "read", '{"mac": "http://100.66.173.18:7791"}', at(5, 1.04));
-  assistant(vent, 1, [{ type: "text", text: "The canary relay lost the Mac for one minute at 02:10 and reconnected at 02:11. Nothing was dropped: the durable inbox replayed the two queued messages." }], at(5, 1.05));
-  user(vent, 1, "Here is the screenshot of the relay graph.", at(3, 2), true);
-  assistant(vent, 1, [{ type: "text", text: "The graph shows one gap at 02:10, the same minute as the relay reset." }], at(3, 2.01));
-  user(vent, 1, "Draw the migration flow as a mermaid diagram.", at(2, 5));
-  assistant(vent, 1, [{ type: "text", text: "Here is the migration flow:\n\n```mermaid\nflowchart LR\n  prime[Prime daemon] --> import[durable_import]\n  import --> pihost[pi-host thread]\n  pihost --> chat[apps/chat]\n```\n\nEach Prime thread becomes one pi-host thread file." }], at(2, 5.01));
-  user(vent, 1, "Spawn a job to read the canary logs from the last day.", at(1, 3));
+  const ventAnswer = assistant(vent, 1, [{ type: "text", text: "The canary relay lost the Mac for one minute at 02:10 and reconnected at 02:11. Nothing was dropped: the durable inbox replayed the two queued messages." }], at(5, 1.05));
+  const ventShot = user(vent, 1, "Here is the screenshot of the relay graph.", at(3, 2), true);
+  const ventGraph = assistant(vent, 1, [{ type: "text", text: "The graph shows one gap at 02:10, the same minute as the relay reset." }], at(3, 2.01));
+  const ventDraw = user(vent, 1, "Draw the migration flow as a mermaid diagram.", at(2, 5));
+  const ventFlow = assistant(vent, 1, [{ type: "text", text: "Here is the migration flow:\n\n```mermaid\nflowchart LR\n  prime[Prime daemon] --> import[durable_import]\n  import --> pihost[pi-host thread]\n  pihost --> chat[apps/chat]\n```\n\nEach Prime thread becomes one pi-host thread file." }], at(2, 5.01));
+  const ventSpawn = user(vent, 1, "Spawn a job to read the canary logs from the last day.", at(1, 3));
   assistant(vent, 1, [{ type: "text", text: "I'll hand the log read to a job." }, { type: "toolCall", id: "call_v3", name: "subagent", arguments: { task: "Read the canary logs from the last day and list every relay error" } }], at(1, 3.01), "toolUse");
   const ventJob = host.addChild(vent, 1, "Read the canary logs from the last day and list every relay error", at(1, 3.02));
   user(vent, ventJob.id, "Read the canary logs from the last day and list every relay error", at(1, 3.02));
@@ -76,14 +77,19 @@ export function seedFixture(host: FixtureHost, dataDir: string, now = Date.now()
   toolResult(vent, ventJob.id, "call_j1", "bash", "relay: ECONNREFUSED 100.66.173.18:7791 (2 times)", at(1, 3.04));
   assistant(vent, ventJob.id, [{ type: "text", text: "Two relay errors in the last day, both ECONNREFUSED to the Mac relay while it slept." }], at(1, 3.05));
   toolResult(vent, 1, "call_v3", "subagent", "Two relay errors in the last day, both ECONNREFUSED to the Mac relay while it slept.", at(1, 3.06), { conversationId: ventJob.id });
-  assistant(vent, 1, [{ type: "text", text: "The job found two relay errors, both while the Mac slept. The canary itself is fine." }], at(1, 3.07));
+  const ventFound = assistant(vent, 1, [{ type: "text", text: "The job found two relay errors, both while the Mac slept. The canary itself is fine." }], at(1, 3.07));
+  // A DM exchange after the move to rooms: the owner's post reached the thread, and the agent answered with one tell_owner call.
+  const ventPage = user(vent, 1, "Should the relay page me when the Mac sleeps?", at(0, -2));
+  const ventTell = assistant(vent, 1, [{ type: "toolCall", id: "call_v4", name: "tell_owner", arguments: { text: "No. The Mac sleeps every night, so a page would wake you for nothing; I log it and flag a gap over an hour on the board.", why: "answer" } }], at(0, -1.99), "toolUse");
+  toolResult(vent, 1, "call_v4", "tell_owner", "told the owner", at(0, -1.98));
+  assistant(vent, 1, [], at(0, -1.97));
 
   // AI harness VP: a running job and a turn that streams for as long as the fixture runs.
   const harness = host.addThread({ id: ids.harness, name: "AI harness developer environment VP", createdAt: at(4) });
   // An agent from before send_message: its endless turn keeps the typing dots and plain-text answers of such a thread.
   harness.plain = true;
-  user(harness, 1, "What still blocks the migration to pi-host?", at(4, 2));
-  assistant(harness, 1, [{ type: "text", text: "Two items block the migration: cross-box messaging and the canary send key. Both sit with CI and RepoOps." }], at(4, 2.01));
+  const harnessAsk = user(harness, 1, "What still blocks the migration to pi-host?", at(4, 2));
+  const harnessAnswer = assistant(harness, 1, [{ type: "text", text: "Two items block the migration: cross-box messaging and the canary send key. Both sit with CI and RepoOps." }], at(4, 2.01));
   agentMsg(harness, 1, ids.crawler, "#pi-cutover", "[#pi-cutover · post 3 from Crawler VP] The crawler still uses the old relay port.", at(2, 1));
   assistant(harness, 1, [{ type: "text", text: "Noted. I'll move the crawler to the new relay port after the canary run." }], at(2, 1.01));
   const harnessJob = host.addChild(harness, 1, "Rerun the cross-box test on the canary relay", at(0, -0.5), "running");
@@ -97,16 +103,16 @@ export function seedFixture(host: FixtureHost, dataDir: string, now = Date.now()
   mkdirSync(dataDir, { recursive: true });
   writeFileSync(shot, BOARD_SHOT);
   host.richImage = shot;
-  user(crawler, 1, "Where does the board panel work stand? Show me everything on one screen.", at(1, 5));
-  assistant(crawler, 1, [{ type: "text", text: richReply(shot, `${ids.vent}:${ventJob.id}`) }], at(1, 5.01));
-  user(crawler, 1, "Move the crawler to the new relay port.", at(1, 6));
+  const crawlerAsk = user(crawler, 1, "Where does the board panel work stand? Show me everything on one screen.", at(1, 5));
+  const crawlerRich = assistant(crawler, 1, [{ type: "text", text: richReply(shot, `${ids.vent}:${ventJob.id}`) }], at(1, 5.01));
+  const crawlerMove = user(crawler, 1, "Move the crawler to the new relay port.", at(1, 6));
   assistant(crawler, 1, [{ type: "text", text: "" }], at(1, 6.01), "error", { errorMessage: "pi-pool: no account can serve claude-opus-5-5 until 07:00" });
   crawler.row.status = "failed";
   crawler.row.failed = true;
 
   const frontend = host.addThread({ id: ids.frontend, name: "frontend bro", createdAt: at(2) });
-  user(frontend, 1, "Ship the board panel redesign to staging.", at(2, 4));
-  assistant(frontend, 1, [{ type: "text", text: "Shipped the board panel to staging. The canary build passed." }], at(2, 4.1));
+  const frontendAsk = user(frontend, 1, "Ship the board panel redesign to staging.", at(2, 4));
+  const frontendAnswer = assistant(frontend, 1, [{ type: "text", text: "Shipped the board panel to staging. The canary build passed." }], at(2, 4.1));
 
   // A root job of the AI harness VP, listed as a DM.
   const cutover = host.addThread({ id: ids.cutover, name: "pi cutover prep", createdAt: at(1) });
@@ -120,8 +126,8 @@ export function seedFixture(host: FixtureHost, dataDir: string, now = Date.now()
   assistant(uptimeDuty, 1, [{ type: "text", text: "Uptime dipped while the Mac slept for 41 minutes. Nothing to fix on this box; the next run should meet the target." }], dutyAt + 0.2 * HOUR);
 
   const archived = host.addThread({ id: ids.archived, name: "old relay probe", createdAt: at(6), archived: true });
-  user(archived, 1, "ping the relay", at(6, 1));
-  assistant(archived, 1, [{ type: "text", text: "The relay answers." }], at(6, 1.01));
+  const archivedAsk = user(archived, 1, "ping the relay", at(6, 1));
+  const archivedAnswer = assistant(archived, 1, [{ type: "text", text: "The relay answers." }], at(6, 1.01));
 
   // Boards.
   const step = (id: string, text: string, status: PlanItem["status"], extra: Partial<PlanItem> = {}, children: PlanItem[] = []): PlanItem => ({ id, text, status, children, ...extra });
@@ -155,12 +161,74 @@ export function seedFixture(host: FixtureHost, dataDir: string, now = Date.now()
     todos: [{ id: "t1", text: "Raise the crawler's pool class to high?", done: false, choices: ["Raise it", "Keep normal"], from: "agent", at: new Date(at(0, -5)).toISOString() }],
   } satisfies ChatBoard);
 
-  // The chat server's own files: thread kinds, DMs, read marks, channels, duties and the check-in.
+  // The chat server's own files: thread kinds, read marks, channels, duties and the check-in.
+  const vp = "ag_ai-harness-developer-environment-vp";
   const state: StateFile = {
-    // Crawler VP is a chat the owner opened as a DM. The Vent job in `dms` predates the rule that only a root chat is a DM, so it stays out.
-    v: 1, threads: { [ids.cutover]: { kind: "job", parent: ids.harness }, [ids.uptimeDuty]: { kind: "job", parent: ids.harness } }, dms: [ids.crawler, `${ids.vent}:${ventJob.id}`],
-    reads: { [ids.vent]: { at: at(1, 3.5) }, [ids.frontend]: { at: now }, [ids.cutoverChannel]: { at: at(1), seq: 4 } },
+    v: 1, threads: { [ids.cutover]: { kind: "job", parent: ids.harness }, [ids.uptimeDuty]: { kind: "job", parent: ids.harness } }, dms: [ids.crawler],
+    reads: {
+      [ids.vent]: { at: at(1, 3.5) }, [ids.frontend]: { at: now }, [ids.cutoverChannel]: { at: at(1), seq: 4 },
+      "dm_vent": { at: at(0, -2), seq: 9 }, "dm_frontend-bro": { at: now, seq: 2 }, [`dm_${vp.slice(3)}`]: { at: at(3), seq: 2 },
+    },
   };
+
+  // Agents and their DM rooms (agent-store.ts): every root chat is an agent, its root jobs alias to it, and its DM holds posts as the
+  // migration copies them, plus Vent's exchange from after the move, whose answer came from a tell_owner call.
+  const store = new AgentStore(dataDir);
+  const textOf = (entry: EntryRecord): string => {
+    const content = entry.model?.[0]?.content ?? "";
+    return typeof content === "string" ? content : content.flatMap(b => (b.type === "text" ? [b.text] : [])).join("\n");
+  };
+  type Draft = { input: EntryRecord; answer?: EntryRecord; why?: string; jobs?: string[]; delivered?: string; call?: { id: string; entry: EntryRecord; text: string } };
+  const agent = (thread: T, slug: string, home: string, drafts: Draft[]) => {
+    const id = `ag_${slug}`;
+    const room = `dm_${slug}`;
+    const tid = thread.row.id;
+    store.agents.agents.push({ id, slug, name: thread.row.name, room, workThread: tid, host: "fixture", home, createdAt: thread.row.createdAt, archived: thread.row.archived });
+    store.agents.aliases[tid] = id;
+    store.rooms.rooms.push({ id: room, kind: "dm", agent: id, createdAt: thread.row.createdAt, archived: thread.row.archived });
+    let lastPost: string | undefined;
+    for (const draft of drafts) {
+      const inputAt = draft.input.model?.[0]?.timestamp ?? now;
+      const images = draft.input.model?.[0]?.content;
+      const refs = Array.isArray(images) ? images.flatMap((b, i) => (b.type === "image" ? [{ url: `/api/images/${tid}/${draft.input.id}/${i}`, mimeType: b.mimeType }] : [])) : [];
+      const owner = store.append({
+        room, author: "owner", text: textOf(draft.input), images: refs, at: inputAt,
+        ...(draft.delivered
+          ? { requestId: draft.delivered }
+          : { requestId: `h:${tid}:${draft.input.id}`, imported: true }),
+      }).post;
+      if (draft.delivered) store.set(owner, { delivery: { target: id, state: "delivered", attempts: 1, at: inputAt, requestId: `d:${owner.id}:${id}` } });
+      const said = draft.call ?? (draft.answer ? { id: `t${draft.input.id}`, entry: draft.answer, text: textOf(draft.answer) } : undefined);
+      if (!said) continue;
+      lastPost = store.append({
+        room, author: id, text: said.text, images: [], at: said.entry.model?.[0]?.timestamp ?? inputAt,
+        requestId: draft.call ? `m:${tid}:${said.id}` : `h:${tid}:${said.id}`, ...(draft.call ? {} : { imported: true }),
+        source: { thread: tid, conversation: 1, entry: said.entry.id }, ...(draft.why ? { why: draft.why } : {}), ...(draft.jobs ? { jobs: draft.jobs } : {}),
+      }).post.id;
+    }
+    const mine = thread.entries.filter(e => e.conversationId === 1);
+    const lastInput = mine.findLast(e => e.kind === "pi.user" || e.kind === "agent.message");
+    const via = (lastInput?.data as { via?: string } | undefined)?.via ?? "";
+    store.rooms.feed[id] = {
+      entry: mine.at(-1)?.id ?? 0, open: {},
+      ...(lastInput ? { turn: { input: lastInput.id, channel: via.startsWith("#"), ...(lastPost ? { lastPost } : {}) } } : {}),
+    };
+  };
+  agent(vent, "vent", join(dataDir, "work", "vent"), [
+    { input: ventAsk, answer: ventAnswer },
+    { input: ventShot, answer: ventGraph },
+    { input: ventDraw, answer: ventFlow },
+    { input: ventSpawn, answer: ventFound, why: "done", jobs: [`${ids.vent}:${ventJob.id}`] },
+    { input: ventPage, delivered: "seed-dm-vent-page", why: "answer", call: { id: "call_v4", entry: ventTell, text: "No. The Mac sleeps every night, so a page would wake you for nothing; I log it and flag a gap over an hour on the board." } },
+  ]);
+  agent(harness, vp.slice(3), join(dataDir, "work", "harness"), [{ input: harnessAsk, answer: harnessAnswer, why: "blocker" }]);
+  store.agents.aliases[ids.cutover] = vp;
+  store.agents.aliases[ids.uptimeDuty] = vp;
+  agent(crawler, "crawler-vp", join(dataDir, "work", "crawler"), [{ input: crawlerAsk, answer: crawlerRich }, { input: crawlerMove }]);
+  agent(frontend, "frontend-bro", join(dataDir, "home"), [{ input: frontendAsk, answer: frontendAnswer }]);
+  agent(archived, "old-relay-probe", join(dataDir, "work", "vent"), [{ input: archivedAsk, answer: archivedAnswer }]);
+  store.saveAgents();
+  store.saveRooms();
   writeJson(join(dataDir, "state.json"), state);
   const member = (principal: string, wakeOn: "mention" | "all" = "mention") => ({ principal, role: principal === "owner" ? "owner" as const : "member" as const, wakeOn, addedAt: at(3) });
   const channels: ChannelRow[] = [
@@ -230,7 +298,7 @@ export function seedFixture(host: FixtureHost, dataDir: string, now = Date.now()
   const stream = async () => {
     for (;;) {
       const submission = { id: 900_000 + Math.floor(Math.random() * 99_999), conversationId: 1, type: "input", status: "placed" };
-      const input = host.append(harness, 1, { kind: "pi.user", model: [{ role: "user", content: [{ type: "text", text: "Keep reporting the cutover status while the canary test runs." }], timestamp: Date.now() }] });
+      const input = host.append(harness, 1, { kind: "agent.message", model: [{ role: "user", content: [{ type: "text", text: "[check-in] Keep reporting the cutover status while the canary test runs." }], timestamp: Date.now() }], data: { from: "board", via: "check-in" } });
       harness.submissions.set(submission.id, { ...submission, entry: input.id });
       await host.answer(harness, 1, harness.submissions.get(submission.id)!, "slow status", "The canary relay answers. Cross-box test 3 of 12 passed. The migration waits for the send key review. ".repeat(4));
       await new Promise(resolve => setTimeout(resolve, 5000));

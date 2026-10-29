@@ -17,12 +17,15 @@ export type Ms = number;
 
 /**
  * A conversation id names one timeline.
- * A root thread is its pi-host thread id, a job inside a thread is `<thread>:<conversation>`, and a channel is `ch_<id>`.
- * An agent's id is the id of its own conversation, so `/api/c/<agent id>` opens its transcript.
+ * An agent's DM room is `dm_<slug>`, a root thread is its pi-host thread id, a job inside a thread is `<thread>:<conversation>`, and a
+ * channel is `ch_<id>`. `/api/c/<thread id>` opens a work thread's or job's transcript.
  */
 export type ConversationId = string;
+/** An agent is `ag_<slug>`. A job keeps its conversation id, and a root thread that no agent record holds yet keeps its thread id. */
 export type AgentId = string;
 export type ChannelId = string;
+/** A room the chat server stores: `dm_<slug>` for an agent's DM. */
+export type RoomId = string;
 
 export type ConversationKind = "solo" | "dm" | "channel" | "job";
 /** A thread's or job's run state. pi-host says idle, running, sleeping or failed, and the server names running "working". */
@@ -65,6 +68,10 @@ export interface AgentSummary {
   /** Channels it is a member of. */
   channels: ChannelId[];
   host: string;
+  /** An agent's DM room, `dm_<slug>`. */
+  room?: RoomId;
+  /** An agent's home folder: its work thread's cwd when the agent was made. */
+  home?: string;
 }
 
 /** One row of the conversation directory, which the sidebar, search and the # typeahead read. */
@@ -89,11 +96,11 @@ export interface ConversationSummary {
 }
 
 export interface Sidebar {
-  /** Root threads the owner runs with agents, newest first. */
+  /** Root chats that no agent holds yet, newest first; agenda rooms join in phase 5. */
   solo: ConversationSummary[];
   /** Channels he is a member of, by name. */
   channels: ConversationSummary[];
-  /** Root chats he opened as DMs, newest first; jobs and duty threads never sit here. */
+  /** One DM room per agent (`dm_<slug>`), newest first; jobs and work threads never sit here. */
   dms: ConversationSummary[];
   /** Open For you todos across every chat. */
   forYou: number;
@@ -160,6 +167,12 @@ export type Item =
       requestId?: string;
       /** A pending send's place in pi-pool's turn queue; the live `queue` event updates it. */
       queue?: TurnPlace;
+      /** DM agent posts: the `why` of the tell_owner call (answer, done, decision, blocker, update). */
+      why?: string;
+      /** DM agent posts: "Show work" opens this conversation at `around` (`e<entry>`), the turn that holds the call. */
+      work?: { conversation: ConversationId; around: string };
+      /** DM agent posts: the jobs the post's turn started, drawn as job pills. */
+      jobs?: JobRef[];
     }
   | {
       kind: "turn"; id: string; at: Ms; author: Principal; text: string; live: boolean; steps: Step[]; images: ImageRef[]; jobs: JobRef[];
@@ -192,6 +205,8 @@ export interface ConversationHeader {
   thinkingLevel: ThinkingLevel | null;
   /** A thread's root agent, for a solo or dm conversation. */
   agent?: AgentSummary;
+  /** A DM: the agent's work thread, which "Open work thread" opens. */
+  workThread?: ConversationId;
   /** Live answer text that has not become an item yet. */
   partial?: LivePartial | null;
   /** While the conversation's run waits for a working slot: its place in pi-pool's turn queue. */
@@ -265,6 +280,7 @@ export interface JobNode { id: ConversationId; parent: ConversationId | null; na
 
 /** Board: a plan step that waits for the owner's go carries `awaitingGo`. */
 export interface BoardView { board: ChatBoard | null; awaitingGo: string[] }
+/** `chatId` is the agent id (or a thread id that no agent holds yet), and `chatName` the agent's name. */
 export interface ForYouItem { chatId: string; chatName: string; todo: OwnerTodo; step?: { id: string; text: string; status: PlanStatus } }
 export interface BoardRow {
   chatId: string; chatName: string; rev: number; progress: { done: number; total: number }; openAsks: number; needsGo: number;

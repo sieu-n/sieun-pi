@@ -222,10 +222,11 @@ describe("on the fixture", () => {
     }
   });
 
-  test("the seeded conversations from before the tool keep their text bubbles", async () => {
+  test("the seeded turns from before the first speaking call keep their text bubbles", async () => {
     const page = await s.get<TimelinePage>(`/api/c/${host.threadsById.values().next().value!.row.id}/items`);
-    assert.ok(turns(page.items).length > 0);
-    assert.ok(turns(page.items).every(t => t.sent === undefined));
-    assert.ok(turns(page.items).some(t => t.text.includes("The canary relay lost the Mac")));
+    const all = turns(page.items);
+    assert.ok(all.slice(0, -1).every(t => t.sent === undefined));
+    assert.ok(all.some(t => t.text.includes("The canary relay lost the Mac")));
+    assert.deepEqual(all.at(-1)!.sent, ["No. The Mac sleeps every night, so a page would wake you for nothing; I log it and flag a gap over an hour on the board."]);
   });
 });
