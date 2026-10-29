@@ -190,7 +190,8 @@ export async function agentConfig(app: App, id: AgentId): Promise<AgentConfig> {
   let purpose: AgentConfig["identity"]["purpose"] = null;
   const message = first?.model?.[0];
   if (first && message && (message.role === "user" || first.kind === "agent.message")) {
-    const text = typeof message.content === "string" ? message.content : message.content.flatMap(b => (b.type === "text" ? [b.text] : [])).join("\n");
+    const text = (first.kind === "pi.user" ? ownerText(first) : undefined)
+      ?? (typeof message.content === "string" ? message.content : message.content.flatMap(b => (b.type === "text" ? [b.text] : [])).join("\n"));
     const data = first.kind === "agent.message" ? (first.data as { from?: string; via?: string } | undefined) : undefined;
     const from = app.threads.principal(data?.from ?? "owner");
     purpose = {

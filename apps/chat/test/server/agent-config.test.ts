@@ -110,7 +110,7 @@ test("an imported thread's harness digest and tagged notices before the first me
   const user = (text: string) => ({ role: "user" as const, content: [{ type: "text" as const, text }], timestamp: Date.now() });
   host.append(thread, 1, { kind: "prime.custom", model: [user("[harness-digest]\n\nThe persistent memories produced across this session so far:")] });
   host.append(thread, 1, { kind: "pi.user", model: [user("[check-in] Read your board.")] });
-  host.append(thread, 1, { kind: "pi.user", model: [user("Own the relay page.")] });
+  host.append(thread, 1, { kind: "pi.user", model: [user('<skill name="poteto-mode" location="/x/SKILL.md">\nPoteto mode text.\n</skill>\n\nOwn the relay page.')] });
   const c = await config(made.id);
   assert.equal(c.identity.purpose?.text, "Own the relay page.");
   await s.send("PATCH", `/api/c/dm_imported`, { archived: true });
