@@ -452,7 +452,7 @@ export class ThreadIndex {
     if (!result.sent || entry.at < this.outboxSince) return undefined;
     const added = this.db.prepare(`INSERT OR IGNORE INTO outbox (thread, conversation, entry, tool_call_id, tool_name, request_id, text, to_room, why, at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(thread, Number(call.conversation), Number(call.entry), result.toolCallId, String(call.tool_name),
-      `m:${thread}:${result.toolCallId}`, String(call.text), call.to_room, call.why, entry.at);
+      `m:${thread}:${result.toolCallId}`, String(call.text), call.to_room ?? null, call.why ?? null, entry.at);
     if (!added.changes) return undefined;
     return feedRowOf(this.db.prepare("SELECT * FROM outbox WHERE seq = ?").get(Number(added.lastInsertRowid)) as Row);
   }
