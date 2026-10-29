@@ -51,6 +51,21 @@ test("a fresh agent's first check-in comes at its createdAt plus the interval, a
   assert.deepEqual(of(fresh), [createdAt + EVERY, createdAt + 2 * EVERY]);
 });
 
+test("a job that runs in the agent's work thread does not hold back its check-in, and a turn of its own does", async () => {
+  const createdAt = s.app.agents.record(fresh.id)!.createdAt;
+  const host = s.host as FixtureHost;
+  const thread = host.threadsById.get(fresh.thread)!;
+  host.addChild(thread, 1, "a long job", createdAt, "running");
+  thread.row.status = "running";
+  await s.app.threads.refresh();
+  await tick(createdAt + 3 * EVERY);
+  assert.deepEqual(of(fresh).at(-1), createdAt + 3 * EVERY);
+  thread.nodes[0]!.status = "running";
+  await s.app.threads.refresh();
+  await tick(createdAt + 5 * EVERY);
+  assert.deepEqual(of(fresh).at(-1), createdAt + 3 * EVERY);
+});
+
 test("a walk's test agent gets no check-in and its view shows none scheduled", async () => {
   const createdAt = s.app.agents.record(throwaway.id)!.createdAt;
   await tick(createdAt + 10 * EVERY);

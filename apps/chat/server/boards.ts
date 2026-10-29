@@ -574,7 +574,7 @@ export class Boards {
       const state = this.checkInState(chat, file);
       if (state) {
         const view = this.checkIn(chat);
-        if (view.nextAt !== null && view.nextAt <= now && this.threads.thread(this.threadOf(chat))?.status !== "running") {
+        if (view.nextAt !== null && view.nextAt <= now && !this.rootRunning(this.threadOf(chat))) {
           file.checkIn = { ...state, lastAt: now };
           dirty = true;
           await this.host.submit(this.threadOf(chat), {
@@ -592,6 +592,15 @@ export class Boards {
         void this.runDuty(chat, duty, "schedule");
       }
     }
+  }
+
+  /**
+   * Whether a work thread's own conversation runs a turn. pi-host reads a thread as running while any job conversation in it runs, and on
+   * 10-29 that kept agent factory's work thread, with two jobs live all day, from its first check-in for an hour after its turn ended.
+   */
+  private rootRunning(thread: string): boolean {
+    const root = this.threads.tree(thread).find(node => node.id === 1);
+    return root ? root.status === "running" : this.threads.thread(thread)?.status === "running";
   }
 
   get wakeDir(): string {
