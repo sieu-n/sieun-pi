@@ -477,3 +477,11 @@ test("watch.base_claims writes are F33 and wait on its prod release, and F4 keep
   const deploys: Deploy[] = [{ at: Date.parse("2026-10-28T12:00:00Z"), release: "af356d4c0000" }];
   assert.equal(designOnProd(f33, at, deploys, new Map([["af356d4c0000", new Set(["commit:f0b9983734"])]])), "not_live");
 });
+
+test("a hand contact_points.retract is F34, and the contact refresh's own drop is automatic", async () => {
+  const reg = await registry();
+  const hand = classifyConfig({ actor: "api-key", writer: "ops-api", keys: ["contact_points.retract"], text: "contact sweep 2026-10-29: wrong emails from guessed hub pages" }, reg);
+  assert.equal(hand.kind === "fault" && hand.fault.id, "F34");
+  const refresh = classifyConfig({ actor: "contact-refresh", writer: "contact-refresh", keys: ["contact_points.retract"], text: "contact/complete refresh of instagram/allure: its run refused the page these points came from" }, reg);
+  assert.equal(refresh.kind, "automatic");
+});
