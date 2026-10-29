@@ -196,20 +196,26 @@ export function checkInPrecheck(previous: CheckInMemory | undefined, facts: read
       { job: fact => threadPaused(fact, fact, paused),
         step: view => view.cls === "foryou" || view.cls === "parked" || waitBound(view) || heldByTodo(view.item, openTodos) || Date.parse(view.item.waitUntil ?? "") > now ||
           threadPaused(view.owner, view.item, paused) });
-  return { memory: { at: now, steps, since, goals: goals.memos, jobs: pushed.memos }, jobs: pushed.pushes, steps: goaled, scope: context.boardError ? [] : scopeMisses(board, context.handoffs ?? [], context.self ?? []), gates,
-    stalled: context.boardError ? [] : stalledSteps(goaled, steps, context.rows ?? [], self, now, context.train, movers).filter(stall => !onOthers.has(stall.view.item.id)),
-    goals: goals.pushes, blocked, done,
-    loose: context.boardError ? [] : looseGoals(board, facts), extra: extraGoals(goals.pushes), underClosed: context.boardError ? [] : openUnderClosed(board),
+  const end = context.boardError ? [] : withWaitHolds(goaled.map(view => endState(view, board?.todos ?? [], context.rows ?? [], self, now, facts, movers)));
+  // A step held on an offline box (`host_held`) is listed there alone: no job of the chat can be started, steered or read on that box until it is
+  // back, so every other per-step finding on it asks for what nobody can do. sep launch!!'s p124, whose job "5180 port plan" ran on the Mac,
+  // off Tailscale from 18:53Z on 10-29, read both host_held and stalled_steps ("act on it in this run") in 4 check-ins in a row.
+  const onHost = new Set(end.flatMap(entry => entry.hold ? [entry.view.item.id] : []));
+  const free = <T,>(list: readonly T[], id: (entry: T) => string): T[] => list.filter(entry => !onHost.has(id(entry)));
+  return { memory: { at: now, steps, since, goals: goals.memos, jobs: pushed.memos }, jobs: pushed.pushes, steps: goaled,
+    scope: context.boardError ? [] : free(scopeMisses(board, context.handoffs ?? [], context.self ?? []), miss => miss.item.id), gates: free(gates, gate => gate.item.id),
+    stalled: context.boardError ? [] : free(stalledSteps(goaled, steps, context.rows ?? [], self, now, context.train, movers), stall => stall.view.item.id).filter(stall => !onOthers.has(stall.view.item.id)),
+    goals: goals.pushes, blocked: free(blocked, block => block.view.item.id), done: free(done, found => found.item.id),
+    loose: context.boardError ? [] : looseGoals(board, facts), extra: extraGoals(goals.pushes), underClosed: context.boardError ? [] : free(openUnderClosed(board), found => found.item.id),
     held: context.boardError ? [] : heldElsewhere(goaled, board, context.rows ?? [], self, context.jobs, paused),
     noProgress: context.boardError ? null : noProgress(board, goaled, steps, since, context.rows ?? [], self, now, context.train, queued, { done, prs: doneFacts.prs }, movers),
-    waitsMet: context.boardError ? [] : [...waitsMet(goaled, board, context.rows ?? [], self, context.linked), ...deadRunWaits(goaled, context.train, now)],
-    stale: context.boardError ? [] : staleSteps(board, facts, item => steps[item.id] ? recordedAt(steps[item.id]!) : now, self, context.everyMs ?? CHECK_IN_MS, now,
-      context.rows ?? [], context.train),
+    waitsMet: context.boardError ? [] : free([...waitsMet(goaled, board, context.rows ?? [], self, context.linked), ...deadRunWaits(goaled, context.train, now)], met => met.view.item.id),
+    stale: context.boardError ? [] : free(staleSteps(board, facts, item => steps[item.id] ? recordedAt(steps[item.id]!) : now, self, context.everyMs ?? CHECK_IN_MS, now,
+      context.rows ?? [], context.train), entry => entry.item.id),
     fold, load: oneSessionLoad(goaled, context.jobs, context.subagents, new Set([...context.queued?.keys() ?? [], ...context.asleep ?? []]), now),
     heartbeats: redundantHeartbeats(context.heartbeats ?? [], context.duties ?? []), noDuty: context.boardError || !context.duties || context.noDuties ? [] : goalsWithoutDuty(board, context.duties, now), facts: notes,
-    noDoneLine: context.boardError ? [] : goalsWithoutDoneLine(board), risks: context.boardError ? [] : planRiskSteps(board),
-    metOpen: context.boardError ? [] : metOpenItems(board?.plan ?? []),
-    end: context.boardError ? [] : withWaitHolds(goaled.map(view => endState(view, board?.todos ?? [], context.rows ?? [], self, now, facts, movers))) };
+    noDoneLine: context.boardError ? [] : goalsWithoutDoneLine(board), risks: context.boardError ? [] : free(planRiskSteps(board), item => item.id),
+    metOpen: context.boardError ? [] : free(metOpenItems(board?.plan ?? []), found => found.item.id), end };
 }
 
 /** A job asleep on dead waits (`JobFact.deadWake`): the wake service did not send them, so the chat tells the job how its run ended. */
