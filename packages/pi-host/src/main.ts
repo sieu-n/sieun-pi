@@ -13,7 +13,7 @@ import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createModels } from "@earendil-works/pi-ai/models";
-import { DURABLE_SETTINGS, poolProvider, TurnQueue } from "@sieun-pi/pi-pool/durable";
+import { durableSettings, poolProvider, TurnQueue } from "@sieun-pi/pi-pool/durable";
 import { DurableCommands, DurableThreads } from "./durable/index.ts";
 import { loadPrimeChat, type PrimeChat } from "./durable/prime-chat.ts";
 import { promptTools } from "./durable/prime-prompt.ts";
@@ -98,7 +98,7 @@ const durable = values["no-durable"] ? undefined : new DurableCommands(new Durab
   defaultModel: values.model ? { provider, modelId: modelId.join("/") } : { provider: "anthropic", modelId: "claude-opus-5-5" },
   defaultThinkingLevel: "high",
   defaultCwd: values.cwd ? resolve(values.cwd) : homedir(),
-  settings: DURABLE_SETTINGS,
+  settings: threadId => durableSettings(`pi-durable:${threadId}`),
   inputSettled: (threadId, session, runContinues) => turns.release({ root: `pi-durable:${threadId}`, session }, runContinues),
   turns: {
     ownerTurn: (threadId, session) => turns.ownerTurn({ root: `pi-durable:${threadId}`, session }),

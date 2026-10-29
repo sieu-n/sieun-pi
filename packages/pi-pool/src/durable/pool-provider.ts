@@ -60,11 +60,41 @@ export const TURN_POLL_MS = 1000;
 export const TURN_RENEW_MS = 5 * 60_000;
 
 /**
- * Run settings for threads behind this provider: a turn-queue wait and a slot wait each end with one retryable error
- * that sends the request, so each takes one attempt of the retry budget, and the budget gets those two on top of
- * pi-durable's default, which stays for real request failures.
+ * The pool-handled failures of each conversation's current run, by tree root and then session: a 429 or an account
+ * refusal the pool took on, and each slot or turn wait that ends with the retryable error that sends the request. The
+ * pool's routing is no failure of the run, as `@sieun-pi/pi-family/retries` says for Pi sessions. On 10-29 at 08:03 KST
+ * agent factory's run met five 429s from the one account the pool had, each with a slot wait named, and pi-durable
+ * ended it as failed at attempt 5, so nothing woke it again until someone sent it a message.
  */
-export const DURABLE_SETTINGS: HarnessSettings = { retry: { maxRetries: DEFAULT_RETRY_POLICY.maxRetries + 2 } };
+const pooled = new Map<string, Map<string, number>>();
+
+function countPooled(key: TreeKey): void {
+  const sessions = pooled.get(key.root) ?? new Map<string, number>();
+  sessions.set(key.session, (sessions.get(key.session) ?? 0) + 1);
+  pooled.set(key.root, sessions);
+}
+
+function clearPooled(key: TreeKey): void {
+  const sessions = pooled.get(key.root);
+  sessions?.delete(key.session);
+  if (sessions?.size === 0) pooled.delete(key.root);
+}
+
+/** The most pool-handled retries any run of the tree has now. The budget is per file, so it follows its busiest run. */
+export function pooledRetries(root: string): number {
+  const sessions = pooled.get(root);
+  return sessions ? Math.max(0, ...sessions.values()) : 0;
+}
+
+/**
+ * Run settings for the thread behind `treeKey`: pi-durable's retry budget for real request failures, plus each
+ * pool-handled retry of the tree's busiest run, read at every retry, so a run that waits on the pool waits as long as
+ * the pool says and still fails after pi-durable's own count of other errors.
+ */
+export function durableSettings(treeKey: string, retry: Partial<typeof DEFAULT_RETRY_POLICY> = {}): HarnessSettings {
+  const base = { ...DEFAULT_RETRY_POLICY, ...retry };
+  return { get retry() { return { ...base, maxRetries: base.maxRetries + pooledRetries(treeKey) }; } };
+}
 
 type TurnPlace = { kind: "go" } | { kind: "wait"; position: number | null; total: number | null; askedAt: number };
 
@@ -238,9 +268,9 @@ function ended(final: AssistantMessage): AssistantMessageEventStream {
 }
 
 /** The deferred message of a slot wait, polled again at the slot or after WAIT_ASK_MS, whichever is first. */
-function slotWait(model: Model<Api>, wait: Extract<Vend, { kind: "wait" }>, now: number): AssistantMessage {
+function slotWait(model: Model<Api>, key: TreeKey, wait: Extract<Vend, { kind: "wait" }>, now: number): AssistantMessage {
   const pollAfterMs = Math.min(Math.max(1000, wait.retryAt * 1000 - now), WAIT_ASK_MS);
-  const deferred: DeferredHandle = { provider: model.provider, modelId: model.id, api: model.api, id: SLOT_HANDLE_ID, pollAfterMs, data: { retryAt: wait.retryAt, message: wait.message } };
+  const deferred: DeferredHandle = { provider: model.provider, modelId: model.id, api: model.api, id: SLOT_HANDLE_ID, pollAfterMs, data: { session: key.session, retryAt: wait.retryAt, message: wait.message } };
   return message(model, { stopReason: "deferred", deferred });
 }
 
@@ -271,7 +301,7 @@ export function poolProvider(opts: PoolProviderOptions): Provider {
         const got = place.kind === "wait" ? undefined : await vendOnce(bin, model.provider, env, options?.signal);
         if (place.kind === "wait" || got === undefined) final = turnWait(model, keyOf(options), place as Extract<TurnPlace, { kind: "wait" }>);
         else if (options?.signal?.aborted) final = message(model, { stopReason: "aborted", errorMessage: "Request aborted" });
-        else if (got.kind === "wait") final = slotWait(model, got, now());
+        else if (got.kind === "wait") final = slotWait(model, keyOf(options), got, now());
         else if (got.kind === "failed") final = noToken(model, got.reason);
         else {
           const events = run({ ...options, apiKey: got.token } as O);
@@ -279,11 +309,12 @@ export function poolProvider(opts: PoolProviderOptions): Provider {
             if (event.type !== "done" && event.type !== "error") out.push(event);
           }
           const result = await events.result();
-          final = (await rewriteFailure(result, callOf(env), undefined, now)) ?? result;
+          final = (await rewriteFailure(result, callOf(env), undefined, now, () => countPooled(keyOf(options)))) ?? result;
         }
       } catch (error) {
         final = message(model, { stopReason: "error", errorMessage: `pi-pool: ${error instanceof Error ? error.message : String(error)}` });
       }
+      if (final.stopReason === "stop" || final.stopReason === "length" || final.stopReason === "toolUse") clearPooled(keyOf(options));
       if (final.stopReason === "error" || final.stopReason === "aborted") out.push({ type: "error", reason: final.stopReason, error: final });
       else out.push({ type: "done", reason: final.stopReason as "stop" | "length" | "toolUse" | "deferred", message: final });
       out.end(final);
@@ -310,6 +341,7 @@ export function poolProvider(opts: PoolProviderOptions): Provider {
           const data = (handle.data ?? {}) as { session?: unknown; askedAt?: unknown };
           const key: TreeKey = { root: opts.treeKey, session: typeof data.session === "string" ? data.session : keyOf(options).session };
           const place = opts.turns ? await opts.turns.poll(key, Number(data.askedAt ?? 0)) : ({ kind: "go" } as const);
+          if (place.kind !== "wait") countPooled(key);
           const final = place.kind === "wait" ? turnWait(model, key, place) : message(model, { stopReason: "error", errorMessage: TURN_OPEN_TEXT });
           for await (const event of ended(final) as AsyncIterable<AssistantMessageEvent>) out.push(event);
           out.end(final);
@@ -319,8 +351,12 @@ export function poolProvider(opts: PoolProviderOptions): Provider {
       if (handle.id !== SLOT_HANDLE_ID) return ended(message(model, { stopReason: "error", errorMessage: `pi-pool: unknown deferred handle ${handle.id}` }));
       const out = createAssistantMessageEventStream();
       void (async () => {
-        const got = await vendOnce(bin, model.provider, envOf(options), options?.signal);
-        const final = got.kind === "wait" ? slotWait(model, got, now()) : got.kind === "failed" ? noToken(model, got.reason) : message(model, { stopReason: "error", errorMessage: SLOT_OPEN_TEXT });
+        // The poll's options carry no session id, so the wait's handle names the session that asked.
+        const data = (handle.data ?? {}) as { session?: unknown };
+        const key: TreeKey = { root: opts.treeKey, session: typeof data.session === "string" ? data.session : keyOf(options).session };
+        const got = await vendOnce(bin, model.provider, poolEnv(key, opts.agentDir), options?.signal);
+        if (got.kind === "token") countPooled(key);
+        const final = got.kind === "wait" ? slotWait(model, key, got, now()) : got.kind === "failed" ? noToken(model, got.reason) : message(model, { stopReason: "error", errorMessage: SLOT_OPEN_TEXT });
         const replay = ended(final);
         for await (const event of replay as AsyncIterable<AssistantMessageEvent>) out.push(event);
         out.end(final);

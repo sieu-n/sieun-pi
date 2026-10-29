@@ -47,7 +47,8 @@ export interface DurableThreadsOptions {
   defaultCwd: string;
   /** How long a file with no runnable work and no watcher stays open; default 10 minutes. */
   idleCloseMs?: number;
-  settings?: HarnessSettings;
+  /** Each thread's run settings, such as pi-pool's `durableSettings`, whose retry budget follows that thread's pool waits. */
+  settings?: (threadId: string) => HarnessSettings;
   /**
    * Called when an input of a conversation settles, with the conversation's provider session id and whether a run
    * still goes on in it; pi-host gives the session's pi-pool working slot back here.
@@ -302,7 +303,7 @@ export class DurableThreads {
         models: this.options.models(id),
         registry: prompt || chat || this.options.rlm ? threadRegistry(prompt, chat, { thread: { id, file }, ...(this.options.rlm ? { rlm: this.options.rlm.extension(this.rlmThread(id, file, name, cwd, () => openHarness)) } : {}) }) : this.registry,
         env: threadEnv(cwd),
-        ...(this.options.settings === undefined ? {} : { settings: this.options.settings }),
+        ...(this.options.settings === undefined ? {} : { settings: this.options.settings(id) }),
         onWake: next => {
           wake = next;
           if (state) this.onWake(state, next);

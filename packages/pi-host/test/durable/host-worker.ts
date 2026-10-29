@@ -11,7 +11,7 @@ import { fauxProvider } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { DURABLE_SETTINGS, poolProvider, TurnQueue } from "@sieun-pi/pi-pool/durable";
+import { durableSettings, poolProvider, TurnQueue } from "@sieun-pi/pi-pool/durable";
 import { fauxRespond, MODEL } from "./crash-scenario.ts";
 import { DurableCommands, DurableThreads } from "../../src/durable/index.ts";
 import { PiHost } from "../../src/host.ts";
@@ -41,7 +41,7 @@ function modelsFor(threadId: string) {
 
 const log = (line: string) => process.stderr.write(`${new Date().toISOString()} ${line}\n`);
 const threads = new DurableThreads({ dir: join(dir, "durable"), models: modelsFor, defaultModel: MODEL, defaultThinkingLevel: mode === "real" ? "high" : "off", defaultCwd: dir, log,
-  settings: DURABLE_SETTINGS,
+  settings: threadId => durableSettings(`pi-durable:${threadId}`),
   inputSettled: (threadId, session, runContinues) => turns.release({ root: `pi-durable:${threadId}`, session }, runContinues),
   turns: {
     ownerTurn: (threadId, session) => turns.ownerTurn({ root: `pi-durable:${threadId}`, session }),
