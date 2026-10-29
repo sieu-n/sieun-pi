@@ -480,7 +480,7 @@ export async function readCrawlerKey(envFile = "apps/search/.env"): Promise<stri
 }
 
 /** The staging crawler's read of one org's rows: the targets of the org's unpaused watches, keyed by the org's group id. */
-export const STAGING_GROUP_URL = "https://crawler-staging.virev.ai/api/watch-targets/summary/group";
+export const STAGING_GROUP_URL = "https://staging-crawler.virev.ai/api/watch-targets/summary/group";
 /** Rows one group page carries, the route's GROUP_PAGE_MAX (crawler-v3 watch_targets/tuning.py). */
 const GROUP_PAGE_ROWS = 5000;
 /** The crawler's opaque group id of an org, as Convex convex/search/watches/watchGroup.ts watchGroupId computes it. */

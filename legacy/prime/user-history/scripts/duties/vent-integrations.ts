@@ -14,7 +14,7 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  *   failure only, without the caller's own 4xx, the Claude account cap, refused and cancelled calls.
  * - prod_vent_behind_staging_h: hours since staging Vent first ran another build than prod Vent. Both builds come from /healthz `version`, and
  *   the time from the service.version of Vent's own OTel rows: the later of when prod first logged its build and when staging last logged it.
- * - vent_hosts_down: how many of vent.virev.ai and vent-staging.virev.ai do not answer 200 on /healthz.
+ * - vent_hosts_down: how many of vent.virev.ai and staging-vent.virev.ai do not answer 200 on /healthz.
  * - vent_key_refused_sources: how many source addresses sent prod Vent a call with a key that it refused as vent_unauthorized in 24 h, any
  *   caller, read from otel.vent_calls by client.address. The console leaves refused calls out, so from 02:09Z on 10-25 the prod host services
  *   exporter on us-metal01 (64.34.205.243) got 401 on every Railway and Vercel call with a key Vent did not know, the Railway and Vercel
@@ -45,7 +45,7 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
 
 const REPO = process.env.LLM_WIKI_REPO || join(homedir(), "Documents/Github/auto-sns-agent");
 export const UNMEASURED = 999999;
-export const HOSTS = { production: "https://vent.virev.ai", staging: "https://vent-staging.virev.ai" } as const;
+export const HOSTS = { production: "https://vent.virev.ai", staging: "https://staging-vent.virev.ai" } as const;
 const GRAFANA = "https://obs.virev.ai";
 const VENT_HEALTH = join(dirname(fileURLToPath(import.meta.url)), "vent-health.py");
 /** The ref whose apps/vent/src the lights are built with: what staging runs, and what prod runs after the next promote. */

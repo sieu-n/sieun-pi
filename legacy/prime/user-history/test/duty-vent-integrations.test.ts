@@ -15,7 +15,7 @@ const ALLOWED = ["claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1", "gp
 const NO_MODELS: ModelReads = { allowed: ALLOWED, rows: [] };
 const hosts = (production = "a478d04d0afa", staging = "a478d04d0afa", status = 200): IntegrationReads["hosts"] => ({
   production: { url: "https://vent.virev.ai", status, version: production },
-  staging: { url: "https://vent-staging.virev.ai", status: 200, version: staging },
+  staging: { url: "https://staging-vent.virev.ai", status: 200, version: staging },
 });
 
 test("call success counts only the console's success and failure classes, and red lights count with at most 3 items", () => {

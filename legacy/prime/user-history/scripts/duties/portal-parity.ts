@@ -11,7 +11,7 @@ import { checkCleanup } from "./test-org-cleanup.ts";
 /**
  * The api portal vp chat's "Portal matches crawler" precheck (`node --import tsx scripts/duties/portal-parity.ts`). No model call.
  * It answers the owner's "is all apis working that work in crawler api work for api portal? all working in prod?" on prod and staging:
- * 1. It reads four openapi.json files: crawler.virev.ai and crawler-staging.virev.ai (each env's crawler routes), api.virev.ai (prod) and
+ * 1. It reads four openapi.json files: crawler.virev.ai and staging-crawler.virev.ai (each env's crawler routes), api.virev.ai (prod) and
  *    staging-api.virev.ai (through the Vercel automation bypass).
  * 2. On each env it calls every documented non-DM /v1 operation once with its own docs example. Staging calls go out under throwaway test
  *    orgs that it seeds through the staging Convex /api/test/seed route and deletes again through /api/test/cleanup. Prod calls use
@@ -38,7 +38,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
  * every platform to /api/live/<network>/<op> (auto-sns-agent bcb1732a0d and the six commits after it) while prod kept the old routes until
  * the next promote, and the 10-28 00:02Z run scored staging against prod's crawler and counted 63 renamed routes as portal failures.
  */
-export const CRAWLER_OPENAPI: Record<"prod" | "staging", string> = { prod: "https://crawler.virev.ai/openapi.json", staging: "https://crawler-staging.virev.ai/openapi.json" };
+export const CRAWLER_OPENAPI: Record<"prod" | "staging", string> = { prod: "https://crawler.virev.ai/openapi.json", staging: "https://staging-crawler.virev.ai/openapi.json" };
 const PROD_OPENAPI = "https://api.virev.ai/openapi.json";
 /**
  * The prod org key: VIREV_API_KEY_PROD from the environment, else decrypted from apps/api-portal/.env with the repo's dotenvx.

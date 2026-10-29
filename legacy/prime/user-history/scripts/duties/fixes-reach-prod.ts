@@ -36,7 +36,7 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  */
 
 export const REPO = "sieu-n/auto-sns-agent";
-export const CRAWLERS = { staging: "https://crawler-staging.virev.ai/health", prod: "https://crawler.virev.ai/health" } as const;
+export const CRAWLERS = { staging: "https://staging-crawler.virev.ai/health", prod: "https://crawler.virev.ai/health" } as const;
 const HOUR_MS = 3_600_000;
 const DAY_MS = 24 * HOUR_MS;
 /** Conclusions that mean a run stopped on a fault; `cancelled` is a person or a newer run stopping it, so it is not counted. */
