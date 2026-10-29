@@ -10,7 +10,7 @@ import { join } from "node:path";
 import type { ChatBoard, PlanItem } from "../web/src/lib/api/types.ts";
 import {
   errorStreak, headlineMetric, hostAwayOf, judge, outputReadings, overrunWords, verdictMetrics, ERROR_RUNS_TARGET,
-  type Duty, type DutyRunRecord, type DutyTrigger, type FixLink, type FlaggedSlice, type PrecheckOutput,
+  type AfterMeasure, type Duty, type DutyRunRecord, type DutyTrigger, type FixLink, type FlaggedSlice, type PrecheckOutput,
 } from "../web/src/lib/api/shared/chat-duties.ts";
 import { metricStreaks, type MetricStreak } from "../web/src/lib/api/shared/duty-streak.ts";
 import { briefFindings } from "./brief-cap.ts";
@@ -27,12 +27,17 @@ export const runStamp = (at: number): string => {
 
 const message = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
-/** Runs the precheck in its cwd and returns its parsed OUTPUT_FILE; the state file moves forward only on a good run. */
-export async function precheck(duty: Duty, dir: string, outputFile: string, lastRuns: readonly DutyRunRecord[], log: (line: string) => void = () => {}): Promise<PrecheckOutput> {
+/**
+ * Runs the precheck in its cwd and returns its parsed OUTPUT_FILE; the state file moves forward only on a good run. An after-job measure
+ * (`after`) reads the state but keeps none, so the next run counts from the same point, and it has its own files, so it can run beside a run
+ * of the same duty. PRECHECK_MODE tells the precheck which one it is, as Prime's `Duties.precheck` does.
+ */
+export async function precheck(duty: Duty, dir: string, outputFile: string, lastRuns: readonly DutyRunRecord[], log: (line: string) => void = () => {},
+  mode: "run" | "after" = "run"): Promise<PrecheckOutput> {
   await mkdir(dir, { recursive: true, mode: 0o700 });
   const stateFile = join(dir, `${duty.id}.state.json`);
-  const nextState = join(dir, `${duty.id}.state.next.json`);
-  const lastRunsFile = join(dir, `${duty.id}.last-runs.json`);
+  const nextState = join(dir, `${duty.id}.state.${mode === "run" ? "next" : "after"}.json`);
+  const lastRunsFile = join(dir, `${duty.id}.last-runs${mode === "run" ? "" : ".after"}.json`);
   await copyFile(stateFile, nextState).catch(async () => writeFile(nextState, "{}", { mode: 0o600 }));
   await writeFile(lastRunsFile, JSON.stringify(lastRuns), { mode: 0o600 });
   await rm(outputFile, { force: true });
@@ -45,7 +50,7 @@ export async function precheck(duty: Duty, dir: string, outputFile: string, last
     await new Promise<void>((resolve, reject) => {
       execFile("/bin/sh", ["-c", 'exec "$0" "$@" </dev/null >/dev/null 2>"$PRECHECK_STDERR_FILE"', file, ...args], {
         cwd: duty.precheck.cwd, timeout: hardStopMs, killSignal: "SIGKILL",
-        env: { ...process.env, STATE_FILE: nextState, LAST_RUNS_FILE: lastRunsFile, OUTPUT_FILE: outputFile, PRECHECK_MODE: "run", PRECHECK_STDERR_FILE: stderrFile },
+        env: { ...process.env, STATE_FILE: nextState, LAST_RUNS_FILE: lastRunsFile, OUTPUT_FILE: outputFile, PRECHECK_MODE: mode, PRECHECK_STDERR_FILE: stderrFile },
       }, error => {
         if (!error) return resolve();
         reject(new Error(error.killed ? `stopped at its hard stop after ${Math.round(hardStopMs / 60_000)} min` : typeof error.code === "number" ? `exit ${error.code}` : error.message));
@@ -64,12 +69,37 @@ export async function precheck(duty: Duty, dir: string, outputFile: string, last
     if (typeof output !== "object" || output === null || typeof (output as { metrics?: unknown }).metrics !== "object" || (output as { metrics?: unknown }).metrics === null) {
       throw new Error("OUTPUT_FILE has no metrics object");
     }
-    await rename(nextState, stateFile);
+    if (mode === "run") await rename(nextState, stateFile);
     return output as PrecheckOutput;
   } finally {
     clearTimeout(pastTarget);
     await rm(nextState, { force: true });
   }
+}
+
+/**
+ * A run's re-measure after its own job ended (Prime's `Duties.afterMeasure`): the precheck once more in `after` mode, judged against the
+ * targets and the duty's last 10 measured runs. A precheck that fails gives an error measure, so the run still records that it was looked at.
+ */
+export async function measureAfter(input: { duty: Duty; dir: string; runs: readonly DutyRunRecord[]; now?: number; log?: (line: string) => void }): Promise<AfterMeasure> {
+  const { duty, dir } = input;
+  const at = input.now ?? Date.now();
+  const lastRuns = input.runs.filter(run => run.verdict !== "skipped").slice(0, 10);
+  try {
+    const output = await precheck(duty, dir, join(dir, `${duty.id}.after.json`), lastRuns, input.log, "after");
+    const readings = outputReadings(duty.readings, output);
+    const hostAway = hostAwayOf(output);
+    return { at, ...judge(duty.metrics, output, { now: at, runs: lastRuns }), ...(readings ? { readings } : {}), ...(hostAway ? { hostAway } : {}) };
+  } catch (error) {
+    return { at, verdict: "error", metrics: {}, summary: `the after-job measure failed: ${message(error).slice(0, 300)}` };
+  }
+}
+
+/** A measured run as the after-job measure of the run before it (Prime's `launch`), or null for an error or a skip. */
+export function asAfter(record: DutyRunRecord): AfterMeasure | null {
+  if (record.verdict !== "met" && record.verdict !== "missed") return null;
+  return { at: record.at, verdict: record.verdict, metrics: record.metrics, summary: record.summary,
+    ...(record.parts ? { parts: record.parts } : {}), ...(record.items ? { items: record.items } : {}), ...(record.readings ? { readings: record.readings } : {}) };
 }
 
 function walk(plan: readonly PlanItem[], visit: (item: PlanItem) => void): void {

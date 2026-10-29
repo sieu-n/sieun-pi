@@ -3,20 +3,20 @@
  * the board reducer copied from today's chat (web/src/lib/api/shared/chat-board.ts). Duties and the check-in clock live in the chat
  * server's data dir, and a due duty, check-in or wake reaches the chat as an input from "board". Wakes are server/wakes.ts.
  */
-import { copyFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { BoardOp, BoardRow, BoardView, ChatBoard, CheckInPatch, CheckInView, DutyAction, DutyRow, DutyView, ForYouItem, PlanItem } from "../web/src/lib/api/types.ts";
 import { applyBoardOp, BOARD_PREFIX, emptyBoard, needsGo, nextIds, parseBoard, parseBoardOps, stepGo } from "../web/src/lib/api/shared/chat-board.ts";
 import type { Duty, DutyRunRecord, DutySchedule, DutyTrigger } from "../web/src/lib/api/shared/chat-duties.ts";
 import { DEFAULT_MODEL } from "./config.ts";
-import { measure, runStamp } from "./duty-run.ts";
+import { asAfter, measure, measureAfter, runStamp } from "./duty-run.ts";
 import { dutyCard, judgedRun, missStreak } from "../web/src/lib/api/shared/duty-card.ts";
 import type { ChatAgent } from "../web/src/lib/api/shared/types.ts";
 import type { Host } from "./host/types.ts";
 import { readJson, writeJson, type Store } from "./store.ts";
 import { OWNER_ZONE_OFFSET_MS } from "./search.ts";
 import type { Threads } from "./threads.ts";
-import { armWake, startThreadWakes } from "./wakes.ts";
+import { armWake, startThreadWakes, wakeTarget } from "./wakes.ts";
 
 export const BOARD_DOC = "chat.board";
 const DEFAULT_CHECK_IN_MS = 120 * 60_000;
@@ -319,6 +319,12 @@ export class Boards {
   }
 
   private readonly dutyRuns = new Map<string, Promise<void>>();
+  /** The after-job measure going per `<chat>/<duty>` (`afterJob`); a due run of the duty waits for it, as in Prime's `Duties.afters`. */
+  private readonly afters = new Map<string, Promise<void>>();
+  /** Duty jobs whose first turn this process still waits on (`reportDutyJob`), so a thread list read before their submit cannot read them as ended. */
+  private readonly waiting = new Set<string>();
+  /** The duties whose last job's end is being read now (`jobEnded`), so a tick reads each once. */
+  private readonly endChecks = new Set<string>();
 
   /**
    * One duty run: the precheck, the judged record, and a duty job when something is due (`measure` in duty-run.ts). The job is a durable
@@ -328,7 +334,8 @@ export class Boards {
     const key = `${chat}/${duty.id}`;
     const going = this.dutyRuns.get(key);
     if (going) return going;
-    const run = this.runDutyOnce(chat, duty.id, trigger).catch(error => this.log(`duty ${key} failed: ${String(error)}`)).finally(() => {
+    // A run waits for the after-job measure going on the duty, so the two never run its precheck side by side (Prime's push waits the same way).
+    const run = (this.afters.get(key) ?? Promise.resolve()).then(() => this.runDutyOnce(chat, duty.id, trigger)).catch(error => this.log(`duty ${key} failed: ${String(error)}`)).finally(() => {
       this.dutyRuns.delete(key);
       this.events.duties(chat, this.duties(chat));
     });
@@ -367,6 +374,11 @@ export class Boards {
       }
     }
     const after = this.file(chat);
+    // The last job's run with no after-job measure yet takes this run's measure, as Prime's `launch` writes it, unless that job still works
+    // and this run started none, since then the job's own end measures it (`afterJob`).
+    const lastRun = (after.runs[dutyId] ?? []).filter(run => run.job).sort((a, b) => b.at - a.at)[0];
+    const measured = asAfter(record);
+    if (lastRun?.job && !lastRun.after && measured && (record.job || !working.has(lastRun.job.name))) lastRun.after = measured;
     after.runs[dutyId] = [record, ...(after.runs[dutyId] ?? [])].sort((a, b) => b.at - a.at).slice(0, 20);
     this.save(chat, after);
     this.log(`duty ${chat.slice(0, 8)}/${duty.id}: ${record.verdict}, ${record.summary}${record.job ? `, job ${record.job.name}` : ""}`);
@@ -377,6 +389,7 @@ export class Boards {
    * sent, or "nothing to report", posts nothing.
    */
   private async reportDutyJob(chat: string, duty: Duty, job: string, submission: number): Promise<void> {
+    this.waiting.add(job);
     try {
       const settled = await this.host.wait(job, submission);
       const text = (await this.threads.said(job, 1, settled)).map(m => m.text).join("\n\n");
@@ -384,9 +397,64 @@ export class Boards {
       await this.host.submit(chat, { text: `[duty ${duty.id}] ${text}`, whenBusy: "followUp", requestId: `duty-report:${job}`, entry: { kind: "agent.message", data: { from: job, via: `duty ${duty.id}` } } });
     } catch (error) {
       this.log(`duty ${chat}/${duty.id}: its job's report did not reach the chat: ${String(error)}`);
+    } finally {
+      this.waiting.delete(job);
+      await this.threads.refresh().catch(() => undefined);
+      void this.afterJob(chat, duty.id);
     }
   }
 
+  /**
+   * Whether a duty job has ended, as Prime's `jobs.ended` reads it: its thread is listed and idle with no wake set on it, in pi-host or in this
+   * server's wake files, and every conversation of its tree is idle, read from pi-host now. A failed job is not ended: its run keeps its own verdict.
+   */
+  private async jobEnded(job: string): Promise<boolean> {
+    const row = this.threads.thread(job);
+    if (!row || row.status !== "idle" || row.wakeAt !== undefined || this.waiting.has(job)) return false;
+    let names: string[] = [];
+    try { names = readdirSync(this.wakeDir).filter(name => name.endsWith(".json")); } catch { names = []; }
+    for (const name of names) {
+      const session = readJson<{ session?: unknown }>(join(this.wakeDir, name), {}).session;
+      if (typeof session === "string" && wakeTarget(session).thread === job) return false;
+    }
+    const nodes = await this.host.tree(job).catch(() => null);
+    return nodes !== null && nodes.every(node => node.status === "idle");
+  }
+
+  /**
+   * Measures a duty's last job's run again once that job has ended (Prime's `Duties.endJob` and `measureAfter`), and writes the measure into
+   * the run as `after`, which the card reads as the run's verdict and streak once its job's fixes are in (`effectiveRun`). Only the duty's newest
+   * run with a job is looked at; an older one gets the next run's measure (`runDutyOnce`). One measure goes per duty, and none beside a run of it.
+   */
+  afterJob(chat: string, dutyId: string): Promise<void> {
+    const key = `${chat}/${dutyId}`;
+    const going = this.afters.get(key);
+    if (going) return going;
+    if (this.dutyRuns.has(key) || this.endChecks.has(key)) return Promise.resolve();
+    const file = this.file(chat);
+    const duty = file.duties.find(d => d.id === dutyId);
+    const runs = [...(file.runs[dutyId] ?? [])].sort((a, b) => b.at - a.at);
+    const run = runs.find(entry => entry.job);
+    if (!duty || !run?.job || run.after) return Promise.resolve();
+    const job = run.job;
+    this.endChecks.add(key);
+    return this.jobEnded(job.id).catch(() => false).then(ended => {
+      this.endChecks.delete(key);
+      if (!ended || this.dutyRuns.has(key) || this.afters.has(key)) return;
+      const task = (async () => {
+        const after = await measureAfter({ duty, dir: join(this.store.dir, "boards", chat, "duties"), runs, log: this.log });
+        const latest = this.file(chat);
+        const target = latest.runs[dutyId]?.find(entry => entry.at === run.at);
+        if (!target || target.after) return;
+        target.after = after;
+        this.save(chat, latest);
+        this.log(`duty ${chat.slice(0, 8)}/${dutyId}: after its job ${job.name}, ${after.verdict}, ${after.summary}`);
+        this.events.duties(chat, this.duties(chat));
+      })().catch(error => this.log(`duty ${key}: the after-job measure of ${job.name} failed: ${String(error)}`)).finally(() => this.afters.delete(key));
+      this.afters.set(key, task);
+      return task;
+    });
+  }
 
   checkIn(chat: string): CheckInView {
     const state = this.file(chat).checkIn ?? { everyMs: DEFAULT_CHECK_IN_MS, pausedUntil: null, lastAt: null };
@@ -447,7 +515,8 @@ export class Boards {
       if (dirty) this.save(chat, file);
       // Each due duty runs on its own; runDuty writes the duties file itself, so the tick does not wait for a precheck.
       for (const duty of file.duties) {
-        if (duty.status !== "active") continue;
+        void this.afterJob(chat, duty.id);
+        if (duty.status !== "active" || this.afters.has(`${chat}/${duty.id}`)) continue;
         if (nextRun(duty.schedule, duty.lastRunAt ?? duty.createdAt) > now) continue;
         void this.runDuty(chat, duty, "schedule");
       }
