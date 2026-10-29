@@ -605,7 +605,7 @@ export interface WatchSource {
   feed?: (now: number, cut?: Promise<unknown>, unread?: string[]) => Promise<HostUsable | null>;
   /** This box's memory by group; absent, `memoryByGroup`, the reading Settings > Hosts draws. */
   memory?: typeof memoryByGroup;
-  /** This box's name in hosts.json, written on each line. */
+  /** This box's name in hosts.json, else its short hostname, written on each line. */
   host?: string;
   /** Every other box: its name, the daemon rows the catalog holds for it, and a read of its relay's POST /v1/watch for those workers. */
   remotes?: () => readonly RemoteWatch[];

@@ -1,4 +1,4 @@
-import { homedir } from "node:os";
+import { homedir, hostname } from "node:os";
 import { join } from "node:path";
 import { getAgentDir, SettingsManager } from "prime-agent";
 import { piHostJobsFile } from "./checkin-load.ts";
@@ -324,7 +324,9 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     .catch(error => { process.stderr.write(`boards: ${id}: ${error instanceof Error ? error.message : String(error)}\n`); });
   // Which other boxes Tailscale reads offline (src/host-reach.ts), for the watch and the outbox, which leave such a box alone until it is back.
   const reach = options.hosts?.reach ?? new HostReach({ addressOf: name => catalog.remoteHosts().find(({ host }) => host.name === name)?.host.address, log: dutyLog });
-  // One watch line a minute with this box's numbers and, through each relay, every other box's (src/mac-usable-watch.ts HostWatchLine).
+  // One watch line a minute with this box's numbers and, through each relay, every other box's (src/mac-usable-watch.ts HostWatchLine). Each
+  // line names its box, by the short hostname when hosts.json does not: release-516eb84 read no hosts.json from 20:11Z to 20:13Z on 10-29, wrote
+  // us-metal02's lines with no box, and d1 read them as the Mac's.
   const calls = new CallWatch();
   // A hung call's bash() commands, or else its cell, get stopped so the call returns, on a live serve only; the session hears why through the
   // outbox, which is made below and first used once a call has been silent an hour.
@@ -332,7 +334,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     log: dutyLog,
     tell: (session, root, text) => agentOutbox.deliver(session, text, root) });
   const stopWatch = ownChatsOnly && !replay ? async () => {} : startMacUsableWatch({ dataDir, rows: () => catalog.daemonRows(), chats: () => chats.ids(), title: id => catalog.title(id),
-    queue: queueReading, log: dutyLog, calls, ...scratch ? {} : { stop }, ...catalog.selfHostName() ? { host: catalog.selfHostName()! } : {},
+    queue: queueReading, log: dutyLog, calls, ...scratch ? {} : { stop }, host: catalog.selfHostName() ?? hostname().split(".")[0]!.toLowerCase(),
     remotes: () => catalog.remoteHosts().map(({ host, rows }) => ({ name: host.name, rows, read: pids => relayWatch(host, pids), reach: () => reach.reach(host.name) })) });
   // Every agent message the service sends waits on disk until the daemon takes it, and one that may have gone is looked for before it goes
   // again (src/agent-outbox.ts). A scratch serve keeps its own folder, so it never delivers the live service's messages.

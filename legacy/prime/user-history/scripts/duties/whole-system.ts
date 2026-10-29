@@ -52,6 +52,15 @@ export interface HostView { name: string; usable: HostUsable | null; workers: nu
   asideTabs?: AsideTabs }
 /** Lines written before 10-18 04:5xZ name no box, and the Mac wrote every one of them. */
 export const UNNAMED_HOST = "mac";
+/**
+ * The name of a line with no box whose own reading is a Linux one, which the Mac never writes. From 20:11:16Z to 20:13:28Z on 10-29
+ * release-516eb84 read no hosts.json, since its Mac entry carried a role it threw on, and wrote us-metal02's readings with no box; d1 counted the
+ * 20:11Z line, at 2.16 runnable a core, as a red Mac minute while the Mac was offline.
+ */
+export const UNNAMED_LINUX_HOST = "a Linux box with no name";
+/** The box that wrote `line`: its `host`, else the Mac for a Mac reading or none, else UNNAMED_LINUX_HOST. */
+export const lineHost = (line: Pick<WatchLine, "host" | "usable">): string =>
+  line.host ?? (line.usable && isLinuxReading(line.usable) ? UNNAMED_LINUX_HOST : UNNAMED_HOST);
 
 /** A Linux reading a line kept from before host-stats.ts read the CPU set, or a malformed one, is no reading (`parseLinuxReading`). */
 export const OLD_LINUX_READING = "an old-format or invalid Linux reading";
@@ -115,7 +124,7 @@ const OFFLINE_LAG_READS = 3;
 export function hostViews(line: WatchLine): HostView[] {
   const own = checked(line.usable);
   return [
-    { name: line.host ?? UNNAMED_HOST, usable: own.usable, workers: line.workers, workerGb: line.workerGb, top: line.top,
+    { name: lineHost(line), usable: own.usable, workers: line.workers, workerGb: line.workerGb, top: line.top,
       ...line.serviceGb === undefined ? {} : { serviceGb: line.serviceGb }, ...line.agents ? { agents: line.agents } : {}, ...own.error ? { error: own.error } : {},
       ...line.testBrowsers ? { testBrowsers: line.testBrowsers } : {}, ...line.strayServers ? { strayServers: line.strayServers } : {}, ...line.idlePm2 ? { idlePm2: line.idlePm2 } : {}, ...line.byWorker ? { byWorker: line.byWorker } : {},
       ...line.lingering ? { lingering: line.lingering } : {} },
@@ -1328,7 +1337,7 @@ export function measure(input: Inputs): PrecheckOutput {
       if (!view.usable && view.error === UNREAD_AT_STOP && usableAround(input.watch, view.name, from, to)) { count.usable++; continue; }
       if (!view.usable) { count.unknown++; unknown.push(view.error ? `${view.name} unread (${view.error.slice(0, 80)})` : `${view.name} no reading`); continue; }
       const found = unusable(view.usable);
-      const own = view.name === (line.host ?? UNNAMED_HOST);
+      const own = view.name === lineHost(line);
       const slow = found.includes("cpu")
         ? harnessSlow({ box: view.name, own, latency: line.chat, from, to, misses: input.workerMisses ?? [], faults: daemonFaults }) : [];
       // A CPU miss the harness stayed fast through is real job work on a busy box, a detail line and no fault (harness-slow.ts).
