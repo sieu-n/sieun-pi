@@ -68,6 +68,7 @@ import { BRIEFS_DIR, primeWorkers, recordModel, serviceBriefs, startBriefKeeper,
 import { readOwnersFor, startAlertBridge } from "./alert-bridge.ts";
 import { startBridgeWatch } from "./alert-bridge-health.ts";
 import { startAlertPoll } from "./alert-poll.ts";
+import { startUptimeWatch } from "./uptime-watch.ts";
 import { promptView, sessionFileFor } from "./prompt-view.ts";
 import { sessionFileOf, targetStateOf, type TargetState } from "./send-once.ts";
 import { AgentOutbox, stopRecords } from "./agent-outbox.ts";
@@ -400,6 +401,9 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     log: dutyLog, ...agentMessage });
   const stopBridgeWatch = !alertPoll ? () => {} : startBridgeWatch({ health: alertPoll.health, statusFile, configFile: grafanaConfig,
     alerting: alerting => alertPoll.alerting(alerting), log: dutyLog, ...agentMessage });
+  // The off-box page for crawler.virev.ai and api.virev.ai, which needs neither us-metal01 nor obs.virev.ai (src/uptime-watch.ts).
+  const stopUptime = ownChatsOnly ? () => {} : startUptimeWatch({ stateFile: join(dataDir, "uptime-watch.json"), overrideFile: join(dataDir, "uptime-targets.json"),
+    log: dutyLog, ...agentMessage });
   // An idle root job, dormant chat or subagent stops after the quiet window, a session that ended its task after ENDED_MS, a job or chat
   // asleep in Prime's provider retry once pi-pool holds its tree past the quiet window, and a job or chat in Prime's quota park at once,
   // since Prime's own sweeps fail under load and count a retry as work. A quiet worker that grew past RECYCLE_OWN_BYTES is recycled. Each sweep starts its stops at once and does not wait for a slow kill
@@ -536,6 +540,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       stopBriefs();
       stopAlerts();
       stopBridgeWatch();
+      stopUptime();
       alertPoll?.stop();
       unwatchBoards();
       unobserveCompaction();
