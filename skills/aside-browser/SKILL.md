@@ -1,6 +1,6 @@
 ---
 name: aside-browser
-description: "The browser for any web page task: open, read, click, fill, scrape, or screenshot sites and our own apps. On a Linux box every page opens in a headful Chrome on that box, and only a site that needs the owner's login opens in his Aside on the Mac."
+description: "The browser for any web page task: open, read, click, fill, scrape, or screenshot sites and our own apps. Every page that needs no login opens in a headful Chrome on a Linux box, also for a job on the owner's Mac, and only a site that needs his login opens in his Aside on the Mac."
 ---
 
 # aside-browser
@@ -8,6 +8,7 @@ description: "The browser for any web page task: open, read, click, fill, scrape
 On a Linux box, `open_tab(url)` and `run(code)` drive a headful Google Chrome on that box by default, with no flag.
 Each kernel gets its own Chrome on its own Xvfb display, with its own profile folder, and all three go away when the kernel exits.
 The owner's Aside browser on his Mac is the exception, used only for a site that needs one of his logins, and it is the only browser on the Mac itself.
+A kernel on the Mac drives a box Chrome on us-metal02 over ssh for every other page, and that Chrome reaches the Mac's own dev servers, such as `localhost:5180`, through an ssh SOCKS tunnel back to the Mac (`box/loopback.mjs`).
 Both browsers take the same Playwright-style REPL globals, so the same code runs in either.
 Aside has no Linux build, because aside.com/download offers only macOS and Windows and docs.aside.com/help/get-started names macOS 15.0 or later (checked 2026-10-27), and the Linux `aside` CLI only reaches a running Aside elsewhere.
 So the owner picked this split on 2026-10-27 (msg mvqbc3ep): his Aside on the Mac for pages that need his login, and the box's headful Chrome for pages with no login, such as local frontend checks.
@@ -169,16 +170,25 @@ On a Linux box the default is the box's own headful Chrome:
 6. When a box page lands on a sign-in page, the result says so, and only then you open it again with `open_tab(url, browser="aside")`.
 7. When an Aside page lands on a sign-in page, click its Sign in, Continue or Google button yourself before you decide no login is saved, because Chrome hides the owner's saved email and password from scripts and snapshots until a real click. On 10-19 a job read empty boxes on Cloudflare's sign-in page in Aside and asked the owner to sign in while Aside held his saved login (c129), so `open_tab` now says this on every Aside sign-in page.
 
-On the owner's Mac, or with `ASIDE_BROWSER_BOX=0`, every page opens in Aside, and nothing else may open a window there.
+On the owner's Mac the same split holds, and the box is us-metal02 (`ASIDE_BROWSER_BOX_HOST`):
+
+1. `open_tab(url)` for a page with no login starts this kernel's box runner on us-metal02 over `ssh -T`, which runs `box.mjs` from `~/.prime/agent/skills/aside-browser/box` there.
+2. That runner opens `ssh -D` back to the Mac (`ASIDE_BROWSER_LOOPBACK_HOST`, default `mac`) and sends Chrome's requests through it, so `http://localhost:5180`, `http://[::1]:5180` and `http://cc.localhost:5180` load the Mac's own servers with the Mac's uncommitted edits.
+3. The page renders on us-metal02, so it takes no memory in the owner's Aside, and `screenshot()` still writes its PNG on the Mac.
+4. The REPL's `fs` in a box tab is us-metal02's file system, so pass files back through `screenshot()` or the call's output.
+
+On 2026-10-29 the Mac read unusable from 14:42Z while agents' Aside tabs held 12 of 25 tabs at 4.22 GB (15:06Z) and 16 of 31 at 5.34 GB (15:21Z), nearly all on `localhost:5180` and `:5174`, and at 16:40Z at least 5 of the agents' local-app tabs had no owner record, so no park, job end or sweep could close them.
+A Mac page load takes longer this way, because each request crosses the ssh tunnel at about 190 ms: on 10-29 the 5174 landing page with 250 resources loaded in 22 s, and staging.virev.ai in 5.7 s.
+With `ASIDE_BROWSER_BOX=0` every page opens in Aside, and nothing else may open a window on the Mac.
 An agent on the Mac never launches a Playwright, Puppeteer or Chrome for Testing browser there either, headless included, because Mac browsers pushed its load to 110 to 170 and froze 5180 on 10-19.
 
 - A script browser, such as a rig that loads an unpacked extension into a persistent profile, runs on us-metal02: copy the files with `scp` or `rsync`, then run it with `ssh us-metal02`, which loads `playwright-core` from `~/.prime/agent/skills/aside-browser/box/node_modules` with the `no-netlink-chromium.py` wrapper there.
-- A check of the Mac's 5180 demo page, and the Chat page from the Mac duty's timing, run in an Aside tab through this skill, because every headless browser was removed on 10-27 and nobody adds one back (c177).
+- A check of the Mac's 5180 demo page runs in a box tab through this skill as above, and the Chat page from the Mac duty's timing runs in an Aside tab, because every headless browser was removed on 10-27 and nobody adds one back (c177).
 - The Whole system duty (d7) counts every Chrome for Testing and chrome-headless-shell on the Mac as `mac_test_browsers` and names the session that started each one.
 
 ## Browser rules
 
-- A box agent never sends non-login work to the Mac, so it never runs Playwright, a screenshot script or cua-driver over `ssh mac`, and never tunnels a Mac port to look at a page the box can serve itself.
+- A box agent never sends non-login work to the Mac, so it never runs Playwright, a screenshot script or cua-driver over `ssh mac`, and never tunnels a Mac port to look at a page the box can serve itself. The skill's own tunnel for a Mac kernel's box tab is the one exception, because only the Mac serves its uncommitted edits.
 - Repo Playwright specs and shot scripts on a box launch their own headful Chrome on a fresh Xvfb display, as the repo's `playwright.config.ts` files and `auto-sns-agent/packages/config/box-browser.mjs` set up.
 - Use no other browser automation, such as a CLI that launches a browser of its own.
 - If a skill, playbook or memory names another browser tool, or sends a box agent to Aside for a page that needs no login, change that text.

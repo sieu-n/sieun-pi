@@ -35,6 +35,7 @@ import os
 import re
 import shutil
 import select
+import shlex
 import socket
 import subprocess
 import sys
@@ -811,10 +812,24 @@ def _route(code: str) -> str | None:
     return None
 
 
+# On the owner's Mac a page that needs no login renders in a box Chrome on us-metal02, started over ssh, and that Chrome reaches the
+# Mac's own apps through an ssh SOCKS tunnel back to the Mac (box/loopback.mjs), so no job page takes a renderer in his Aside.
+# measured: at 15:06Z on 10-29 the Mac read unusable while agents' Aside tabs held 12 of 25 tabs at 4.22 GB, and 16 of 31 at 5.34 GB
+# at 15:21Z, nearly all on localhost:5180 and :5174, and at 16:40Z at least 5 of them had no owner record, so no park, job end or sweep closed them.
+REMOTE_BOX_DIR = "~/.prime/agent/skills/aside-browser/box"
+
+
+def _box_host() -> str:
+    """The ssh host that runs this kernel's box runner, or '' to run it here. ASIDE_BROWSER_BOX_HOST overrides it."""
+    return os.environ.get("ASIDE_BROWSER_BOX_HOST", "us-metal02" if sys.platform == "darwin" else "")
+
+
 def box_available() -> bool:
-    """The box runner works here: not the owner's Mac (Aside is local there), its playwright-core is installed, and ASIDE_BROWSER_BOX is not 0."""
-    if os.environ.get("ASIDE_BROWSER_BOX", "1") == "0" or sys.platform == "darwin":
+    """The box runner works: on the Mac, ssh reaches its host; elsewhere its playwright-core is installed here. ASIDE_BROWSER_BOX=0 turns it off."""
+    if os.environ.get("ASIDE_BROWSER_BOX", "1") == "0":
         return False
+    if _box_host():
+        return bool(shutil.which("ssh"))
     return bool(_node()) and os.path.isdir(os.path.join(BOX_DIR, "node_modules", "playwright-core"))
 
 
@@ -824,7 +839,7 @@ def _node() -> str | None:
 
 
 class _BoxRunner:
-    """One `node box.mjs` per kernel. It exits, and its tabs close, when the kernel's end of stdin closes."""
+    """One `node box.mjs` per kernel, here or on _box_host() over ssh. It exits, and its tabs close, when the kernel's end of stdin closes."""
 
     def __init__(self) -> None:
         self.proc: subprocess.Popen[str] | None = None
@@ -835,14 +850,23 @@ class _BoxRunner:
     def running(self) -> bool:
         return self.proc is not None and self.proc.poll() is None
 
-    def _start(self) -> subprocess.Popen[str]:
+    def _command(self) -> tuple[list[str], str | None]:
+        host = _box_host()
+        if host:
+            loopback = os.environ.get("ASIDE_BROWSER_LOOPBACK_HOST", "mac")
+            remote = f"cd {REMOTE_BOX_DIR} && BOX_LOOPBACK_VIA={shlex.quote(loopback)} exec node box.mjs"
+            return ["ssh", "-T", "-o", "BatchMode=yes", host, "bash", "-lc", shlex.quote(remote)], None
         node = _node()
         if not node:
             raise AsideError("no node binary for the box browser", "Open the page in Aside with browser='aside'.")
+        return [node, os.path.join(BOX_DIR, "box.mjs")], BOX_DIR
+
+    def _start(self) -> subprocess.Popen[str]:
+        command, cwd = self._command()
         fd, self.log = tempfile.mkstemp(prefix="aside-box-", suffix=".log")
         try:
             self.proc = subprocess.Popen(
-                [node, os.path.join(BOX_DIR, "box.mjs")], cwd=BOX_DIR, text=True, bufsize=1,
+                command, cwd=cwd, text=True, bufsize=1,
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=fd,
             )
         finally:
@@ -1216,6 +1240,10 @@ async def screenshot(path: str, full_page: bool = False, annotated: bool = False
         js = "const __shot = await annotatedScreenshot(page); const __buf = Buffer.from(__shot.base64Image, 'base64');"
     else:
         js = f"const __buf = await page.screenshot({{fullPage: {str(full_page).lower()}}});"
+    if _current() == "box":
+        # A box tab that has painted no frame since its load fails Page.captureScreenshot with "Unable to capture screenshot"; on 10-29
+        # a static page on us-metal02 failed 3 of 3 such shots straight after openTab and passed 3 of 3 after two animation frames.
+        js = "await page.evaluate(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))); " + js
     text = await _repl(_scoped(js + f" console.log({_js_string(_B64_MARK)} + __buf.toString('base64'))"), "screenshot")
     line = [l for l in text.splitlines() if l.startswith(_B64_MARK)]
     if not line:

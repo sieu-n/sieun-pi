@@ -492,12 +492,6 @@ class BrowserRoutingTests(Base):
             ab._browser = "box"
             self.assertEqual(self.run_routed(code)[0], "aside out", code)
 
-    def test_on_the_mac_everything_stays_in_aside(self):
-        ab._browser = None
-        with patch.object(ab.sys, "platform", "darwin"), patch.dict(os.environ, {"ASIDE_BROWSER_BOX": "1"}):
-            self.assertEqual(ab.browser_for("http://localhost:5180/"), "aside")
-            self.assertEqual(ab._current(), "aside")
-
 
 @unittest.skipUnless(shutil.which("node") and os.path.isdir(os.path.join(ab.BOX_DIR, "node_modules", "playwright-core")), "box runner not installed")
 class BoxBrowserTests(Base):
@@ -609,6 +603,95 @@ class BoxBrowserTests(Base):
             asyncio.run(asyncio.sleep(0.1))
         self.assertEqual(alive, [])
 
+
+class MacRemoteBoxTests(Base):
+    """10-29: the Mac read unusable while job tabs on localhost:5180 held up to 5.34 GB of the owner's Aside, so the Mac's box runs on us-metal02."""
+
+    def test_on_the_mac_a_local_app_page_goes_to_a_box_runner_on_us_metal02(self):
+        env = {k: v for k, v in os.environ.items() if k not in ("ASIDE_BROWSER_BOX_HOST", "ASIDE_BROWSER_LOOPBACK_HOST")}
+        env["ASIDE_BROWSER_BOX"] = "1"
+        with patch.dict(os.environ, env, clear=True), patch.object(ab.sys, "platform", "darwin"), patch.object(ab.shutil, "which", return_value="/usr/bin/ssh"):
+            self.assertTrue(ab.box_available())
+            self.assertEqual(ab.browser_for("http://localhost:5180/app/inbox"), "box")
+            self.assertEqual(ab.browser_for("http://cc.localhost:5180/app/inbox"), "box")
+            self.assertEqual(ab.browser_for("https://mail.google.com/mail/u/0/#inbox"), "aside")
+            command, cwd = ab._BoxRunner()._command()
+        self.assertEqual(command[:5], ["ssh", "-T", "-o", "BatchMode=yes", "us-metal02"])
+        self.assertIn("BOX_LOOPBACK_VIA=mac exec node box.mjs", command[-1])
+        self.assertIsNone(cwd)
+
+    def test_a_linux_box_still_runs_its_runner_here(self):
+        env = {k: v for k, v in os.environ.items() if k != "ASIDE_BROWSER_BOX_HOST"}
+        with patch.dict(os.environ, env, clear=True), patch.object(ab.sys, "platform", "linux"), patch.object(ab, "_node", return_value="/usr/bin/node"):
+            command, cwd = ab._BoxRunner()._command()
+        self.assertEqual(command, ["/usr/bin/node", os.path.join(ab.BOX_DIR, "box.mjs")])
+        self.assertEqual(cwd, ab.BOX_DIR)
+
+
+def _ssh_to_self() -> bool:
+    if not shutil.which("ssh"):
+        return False
+    return subprocess.run(["ssh", "-o", "BatchMode=yes", "localhost", "true"], capture_output=True).returncode == 0
+
+
+@unittest.skipUnless(sys.platform == "linux" and os.path.isdir(os.path.join(ab.BOX_DIR, "node_modules", "playwright-core")) and _ssh_to_self(),
+                     "needs the box runner and ssh to localhost")
+class RemoteBoxRunnerTests(Base):
+    """The Mac's path end to end with localhost standing in for both us-metal02 and the Mac: runner over ssh, page through ssh -D."""
+
+    def setUp(self):
+        super().setUp()
+        import http.server
+        import threading
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html")
+                self.end_headers()
+                self.wfile.write(b"<title>Mac app</title><h1>served on the loopback host</h1><button>Go</button>")
+
+            def log_message(self, *args):
+                pass
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.url = f"http://localhost:{self.server.server_address[1]}/"
+        self.remote = patch.dict(os.environ, {"ASIDE_BROWSER_BOX": "1", "ASIDE_BROWSER_BOX_HOST": "localhost", "ASIDE_BROWSER_LOOPBACK_HOST": "localhost"})
+        self.remote.start()
+        self.dir = patch.object(ab, "REMOTE_BOX_DIR", ab.BOX_DIR)
+        self.dir.start()
+        ab._browser = None
+
+    def tearDown(self):
+        if ab._box.proc:
+            ab._box.proc.kill()
+            ab._box.proc.wait()
+            for pipe in (ab._box.proc.stdin, ab._box.proc.stdout):
+                pipe.close()
+            ab._box.proc = None
+        self.dir.stop()
+        self.remote.stop()
+        self.server.shutdown()
+        self.server.server_close()
+        super().tearDown()
+
+    def test_a_local_app_page_renders_in_the_remote_runner_through_the_tunnel(self):
+        mcp = self.fake()
+        async def flow():
+            opened = await ab.open_tab(self.url)
+            text = await ab.run("return await page.evaluate(() => document.body.innerText)")
+            shot = await ab.screenshot(os.path.join(self.tmp.name, "remote.png"))
+            return opened, text, shot
+        opened, text, shot = self.call(flow())
+        self.assertIn('"targetId":"box-1"', opened)
+        self.assertEqual(text.split("\n")[0].strip(), "served on the loopback host")
+        with open(shot, "rb") as fh:
+            self.assertEqual(fh.read(4), b"\x89PNG")
+        self.assertEqual(ab._box.proc.args[:5], ["ssh", "-T", "-o", "BatchMode=yes", "localhost"])
+        tunnels = subprocess.run(["pgrep", "-f", "ssh -N -T -o BatchMode=yes -o ExitOnForwardFailure=yes -D 127.0.0.1:"], capture_output=True, text=True).stdout
+        self.assertTrue(tunnels.strip())
+        self.assertEqual(mcp.calls, [])
 
 
 class IdleParkTests(Base):

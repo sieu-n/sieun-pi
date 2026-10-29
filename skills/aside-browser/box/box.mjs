@@ -1,7 +1,7 @@
 // Headful Chrome on this host, on its own Xvfb display, with the Aside REPL's globals, so pages that need none of the owner's
 // logins render here instead of in his Aside window. aside_browser starts one runner per kernel and talks JSON lines on
 // stdin/stdout: {"id", "code"} in, {"id", "out"} or {"id", "error"} out. The runner exits when stdin closes, and its display,
-// browser and profile go with it.
+// browser and profile go with it. A kernel on the owner's Mac starts it here over ssh with BOX_LOOPBACK_VIA set (loopback.mjs).
 import { createInterface } from "node:readline";
 import { Buffer } from "node:buffer";
 import fs from "node:fs";
@@ -9,6 +9,7 @@ import os from "node:os";
 import path from "node:path";
 import { chromium } from "playwright-core";
 import { hasDisplayServer, startDisplay } from "./display.mjs";
+import { startLoopbackTunnel } from "./loopback.mjs";
 
 // Chrome's profile lives in a folder named for this runner's pid, because Playwright makes it under os.tmpdir() and a
 // SIGKILLed runner cannot remove it. Each start removes the folders of runners that are gone.
@@ -29,6 +30,8 @@ if (!hasDisplayServer()) {
   process.exit(1);
 }
 const screen = await startDisplay();
+const loopback = process.env.BOX_LOOPBACK_VIA ? await startLoopbackTunnel(process.env.BOX_LOOPBACK_VIA) : null;
+const proxy = loopback ? { proxy: loopback.proxy } : {};
 const chrome = process.env.BOX_CHROME || (fs.existsSync("/usr/bin/google-chrome") ? "/usr/bin/google-chrome" : chromium.executablePath());
 const env = { ...process.env, DISPLAY: screen.display };
 // Chromium fails every in-flight request with ERR_NETWORK_CHANGED when a host interface changes address. On us-metal02
@@ -36,10 +39,10 @@ const env = { ...process.env, DISPLAY: screen.display };
 // a Vite page rendered "500 Internal Error", while the wrapper that hides netlink from Chromium hit 0 and 4 of 4 loaded.
 // Chrome exits when the runner's end of its debugging pipe closes, so a SIGKILLed runner leaves no browser either.
 const browser = await chromium.launch(process.platform === "linux" && process.arch === "x64"
-  ? { headless: false, executablePath: new URL("./no-netlink-chromium.py", import.meta.url).pathname, env: { ...env, BOX_CHROMIUM: chrome } }
-  : { headless: false, executablePath: chrome, env });
+  ? { headless: false, executablePath: new URL("./no-netlink-chromium.py", import.meta.url).pathname, env: { ...env, BOX_CHROMIUM: chrome }, ...proxy }
+  : { headless: false, executablePath: chrome, env, ...proxy });
 let closing = false;
-browser.on("disconnected", () => { screen.close(); cleanup(); if (!closing) process.exit(1); });
+browser.on("disconnected", () => { screen.close(); loopback?.close(); cleanup(); if (!closing) process.exit(1); });
 const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
 const ids = new WeakMap();
 let next = 1;
@@ -124,4 +127,5 @@ for await (const line of rl) {
 closing = true;
 await browser.close();
 screen.close();
+loopback?.close();
 cleanup();
