@@ -17,7 +17,7 @@ const HASH_CONFIG = { "engage.canary_pct": "10", "engage.canary_offset": "65", "
 const run = (config: Record<string, string>): ReturnType<typeof report> => report({
   now: NOW, accounts: ACCOUNTS, config, errors: [],
   days: [{ day: "2026-10-17", accountId: 22, pages: 1900 }, { day: "2026-10-17", accountId: 35, pages: 1500 }, { day: "2026-10-17", accountId: 100, pages: 800 }],
-  deaths: [{ accountId: 22, at: NOW - 30 * 60_000, status: "challenged", code: "challenge_required", readBefore: true, pages24h: 1900 }],
+  deaths: [{ accountId: 22, at: NOW - 30 * 60_000, status: "challenged", code: "challenge_required", readBefore: true, pages24h: 1900, transition: true }],
 } satisfies EngageData, []);
 const canaryLine = (output: ReturnType<typeof report>): string => (output.flagged ?? []).find(flag => flag.kind === "canary" || flag.kind === "canary_short")!.excerpt;
 

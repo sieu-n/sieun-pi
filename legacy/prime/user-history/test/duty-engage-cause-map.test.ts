@@ -10,5 +10,13 @@ test("a checkpoint_required death after a served page is an Instagram kill, and 
 });
 
 test("a code the map does not hold stays unknown", () => {
-  assert.equal(causeOf({ code: "relogin_gone", readBefore: true }), "unknown");
+  assert.equal(causeOf({ code: "login_required", readBefore: true }), "unknown");
+});
+
+// prod 163 went relogin_gone on 10-28 09:53Z after 385 pages in 24 h, and prod 24 relogin_bad_password at 12:10Z; d1 called both "cause unknown".
+test("the re-login worker's verdicts carry their real causes", () => {
+  assert.equal(causeOf({ code: "relogin_gone", readBefore: true }), "instagram");
+  assert.equal(causeOf({ code: "relogin_gone", readBefore: false }), "first_login");
+  assert.equal(causeOf({ code: "relogin_bad_password", readBefore: true }), "bad_password");
+  assert.equal(causeOf({ code: "relogin_two_factor", readBefore: true }), "ours");
 });

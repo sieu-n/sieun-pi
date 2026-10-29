@@ -77,12 +77,22 @@ export type Cause = "instagram" | "first_login" | "bad_password" | "ours" | "unk
  * prod accounts 55 and 74 died with on 10-12: login_redirect (every usertags read answered 302 to the login page after both had served pages) and
  * instagram_session_killed. checkpoint_required is the jar check's verdict on prod 62, 262 and 267 on 10-18. The crawler's canary stop counts the same
  * map since auto-sns-agent a92e4b001, so a code missing here would stop the canary while d1 called the death unknown.
+ *
+ * The relogin_ codes come on top: the re-login worker's terminal verdicts (`_PHASE_STOPS` and `GONE` in
+ * apps/crawler-v3/src/platforms/instagram/engage/relogin.py), which it writes as a login event with outcome challenged and no transition, so the
+ * crawler map, which reads only transitions, never needs them. relogin_gone is an Instagram removal: prod 163 (ai80052) went relogin_gone on
+ * 10-28 09:53Z, and on 10-29 02:40Z its logged-out profile read "does not exist" exactly as the 9 g2g-T8KX accounts Instagram froze with
+ * account_suspended on read did. relogin_bad_password is a password Instagram no longer takes: prod 24 and 280 lost their sessions on 10-28 and
+ * Instagram refused the stored password, while 281 of the same batch re-logged in that day, and of the 11 T8KX accounts refused on 10-28 none
+ * logged in on its own exit 2 h later and 1 on a fresh exit 6 h later. A seedless two-factor screen is our missing seed, so ours.
  */
 export const CODE_CAUSES: Readonly<Record<string, Cause>> = {
   account_suspended: "instagram", action_blocked: "instagram", challenge: "instagram", challenge_required: "instagram", challenged: "instagram",
   checkpoint_required: "instagram", instagram_session_killed: "instagram", login_redirect: "instagram", sentry_block: "instagram", suspended_on_first_contact: "instagram",
   bad_password: "bad_password",
   budget_meter_failed: "ours", exit_pinned: "ours", exit_unusable: "ours", geo_blocked: "ours", proxy_blocked: "ours", transport: "ours",
+  relogin_account_not_found: "instagram", relogin_challenge: "instagram", relogin_disabled: "instagram", relogin_gone: "instagram", relogin_suspended: "instagram",
+  relogin_bad_password: "bad_password", relogin_two_factor: "ours",
 };
 /** The staging stall line's limit: the oldest due staging collab read waits at most this long. The launch VP's number. */
 export const STAGING_WAIT_MIN = 60;
@@ -113,8 +123,11 @@ export const unmeasured = (metric: Pick<DutyMetric, "op" | "target">): number =>
 
 /** Pages one prod account read on one full UTC day (YYYY-MM-DD). */
 export interface DayPages { day: string; accountId: number; pages: number }
-/** A dead-outcome event: Instagram's verdict when causeOf() says so. `pages24h` is what the account read in the 24 h before it. */
-export interface Death { accountId: number; at: number; status: string; code: string | null; readBefore: boolean; pages24h: number }
+/**
+ * A dead-outcome event: Instagram's verdict when causeOf() says so. `pages24h` is what the account read in the 24 h before it. `transition` is false
+ * for the re-login worker's verdicts, which leave the account parked, and crawler_v3_engage_deaths_24h counts only transitions.
+ */
+export interface Death { accountId: number; at: number; status: string; code: string | null; readBefore: boolean; pages24h: number; transition: boolean }
 export interface Account { id: number; status: string; reason?: string }
 /** Staging's due collab reads: tagged rows past next_due_at, unpaused and with no open claim, and the oldest one's wait in minutes. */
 export interface StagingDue { due: number; waitMin: number }
@@ -283,7 +296,7 @@ export function report(data: EngageData, dutyMetrics: readonly DutyMetric[]): Pr
     const reasonOf = (id: number): string => { const reason = data.accounts!.find(account => account.id === id)?.reason; return reason ? `; status_reason: ${reason}` : ""; };
     for (const death of day) flagged.push({ at: death.at, kind: "death",
       excerpt: `account ${death.accountId} went ${death.status} at ${utc(death.at)}, code ${death.code ?? "none"}, cause ${causeOf(death)}${roster.ids.has(death.accountId) ? ", canary" : ""}, ${fmt(death.pages24h)} pages in its last 24 h${death.readBefore ? "" : ", never read a page"}${reasonOf(death.accountId)}`.slice(0, 600) });
-    const instagram = killed(day);
+    const instagram = killed(day.filter(death => death.transition));
     if (data.deathGauge && Object.keys(data.deathGauge).length && (data.deathGauge.instagram ?? 0) !== instagram)
       flagged.push({ at, kind: "death_gauge", excerpt: `crawler_v3_engage_deaths_24h{cause="instagram"} reads ${data.deathGauge.instagram ?? "none"} while this precheck counts ${instagram}; the gauge sees the actor and from_status columns grafana_ro cannot, so trust the gauge and fix this precheck` });
     const pauses = Object.entries(data.config).filter(([key, value]) => key.startsWith("pause.engage") && value === "true").map(([key]) => key);
@@ -355,7 +368,7 @@ const STAGING_PAUSES_SQL = `select c.key, w.id, extract(epoch from w.ts) * 1000 
 left join lateral (select id, ts, actor, reason from config_audit a where a.key = c.key and a.old_value is distinct from a.new_value order by a.id desc limit 1) w on true
 where c.key like 'pause.%' and c.value = 'true' order by c.key`;
 const ACCOUNTS_SQL = "select id, status, status_reason as reason from ig_engage_accounts where world = 'prod' order by id";
-const DEATHS_SQL = `select e.account_id, extract(epoch from e.at) * 1000 as at, e.outcome, e.error_code,
+const DEATHS_SQL = `select e.account_id, extract(epoch from e.at) * 1000 as at, e.outcome, e.error_code, e.transition,
   exists (select 1 from ig_engage_read_log l where l.account_id = e.account_id and l.pages > 0 and l.at < e.at) as read_before,
   (select coalesce(sum(l.pages), 0) from ig_engage_read_log l where l.account_id = e.account_id and l.at <= e.at and l.at > e.at - interval '24 hours') as pages_24h
 from ig_engage_account_events e join ig_engage_accounts a on a.id = e.account_id where a.world = 'prod' and e.outcome in ${DEAD_SQL} order by e.at`;
@@ -399,11 +412,20 @@ where walk_done_at > now() - interval '24 hours'
 group by 1, 2;`;
 
 /**
+ * A re-login worker's terminal verdict on `v`, an ig_engage_account_events row: `stop()` in apps/crawler-v3/src/platforms/instagram/engage/relogin.py
+ * writes it as a non-transition login event with outcome challenged and a relogin_ code, and stops the jar (STOPPED_JAR in relogin_codes.py), so the
+ * worker never takes that account again. grafana_ro cannot read the jar's invalid_reason, so the event stands in for it. Such an account is a death
+ * that DEATHS_SQL counts with its CODE_CAUSES cause, not a stuck one: until 10-29 prod 24 and 163 read as both.
+ */
+export const RELOGIN_VERDICT_SQL = "v.kind = 'login' and not v.transition and v.outcome = 'challenged' and starts_with(v.error_code, 'relogin_')";
+
+/**
  * The stuck prod accounts, as stuckOf parses them: kind, account and since, then a redirect's reason, Location and count. A freeze for a shared exit is SHARED_EXIT_FREEZE in
- * apps/crawler-v3/src/platforms/instagram/engage/shared_exit_freeze.py, read on the account's last status change.
+ * apps/crawler-v3/src/platforms/instagram/engage/shared_exit_freeze.py, read on the account's last status change. A parked account with a dead jar is
+ * stuck unless the re-login worker gave a terminal verdict (RELOGIN_VERDICT_SQL) after its last status change.
  */
 export const STUCK_SQL = `with last_change as (
-  select distinct on (e.account_id) e.account_id, e.at, e.outcome, e.error_code from ig_engage_account_events e
+  select distinct on (e.account_id) e.account_id, e.id, e.at, e.outcome, e.error_code from ig_engage_account_events e
   join ig_engage_accounts a on a.id = e.account_id where a.world = 'prod' and e.transition order by e.account_id, e.id desc
 )
 select 'frozen_shared_exit' as kind, a.id, round(extract(epoch from e.at) * 1000) as since, '' as reason, '' as location, 0 as redirects from ig_engage_accounts a join last_change e on e.account_id = a.id
@@ -421,7 +443,8 @@ group by a.id, 4, 5
 union all
 select 'parked_dead_jar', a.id, round(extract(epoch from e.at) * 1000), '', '', 0 from ig_engage_accounts a join last_change e on e.account_id = a.id
 join ig_engage_browser_jars j on j.account_id = a.id
-where a.world = 'prod' and a.status = 'parked' and not j.valid and e.at < now() - interval '${STUCK_HOURS} hours';`;
+where a.world = 'prod' and a.status = 'parked' and not j.valid and e.at < now() - interval '${STUCK_HOURS} hours'
+  and not exists (select 1 from ig_engage_account_events v where v.account_id = a.id and v.id > e.id and ${RELOGIN_VERDICT_SQL});`;
 
 const STUCK_KINDS: ReadonlySet<string> = new Set<StuckKind>(["frozen_shared_exit", "parked_dead_jar"]);
 /** The redirect paths that mean a lost session, as _LOGIN_REDIRECT_PATHS in apps/crawler-v3/src/platforms/instagram/engage/classify.py. */
@@ -475,7 +498,7 @@ export const stagingPausesOf = (rows: Record<string, unknown>[]): StagingPause[]
 }));
 export const deathsOf = (rows: Record<string, unknown>[]): Death[] => rows.map(row => ({
   accountId: Number(row.account_id), at: Number(row.at), status: String(row.outcome), code: row.error_code == null ? null : String(row.error_code),
-  readBefore: row.read_before === true, pages24h: Number(row.pages_24h ?? 0),
+  readBefore: row.read_before === true, pages24h: Number(row.pages_24h ?? 0), transition: row.transition === true,
 }));
 export function deepWalksOf(tsv: string): DeepWalks {
   const walks: DeepWalks = { reached: 0, errors: {}, stuck: {}, retrying: {} };
