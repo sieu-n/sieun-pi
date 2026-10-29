@@ -1514,13 +1514,6 @@
    ]
   },
   {
-   "crawler": "GET /api/profiles/{username}/enrichment",
-   "group": "enrich_contact_intel",
-   "portal": [
-    "GET /v1/intelligence/profile/stored"
-   ]
-  },
-  {
    "crawler": "POST /api/profiles/{username}/enrich",
    "group": "enrich_contact_intel",
    "portal": [
@@ -1528,31 +1521,10 @@
    ]
   },
   {
-   "crawler": "GET /api/profiles/{username}/visual-snapshot",
-   "group": "enrich_contact_intel",
-   "portal": [
-    "GET /v1/intelligence/profile/visual-snapshot"
-   ]
-  },
-  {
    "crawler": "POST /api/profiles/{username}/visual-enrich",
    "group": "enrich_contact_intel",
    "portal": [
     "POST /v1/intelligence/profile/visual-enrich"
-   ]
-  },
-  {
-   "crawler": "POST /api/enrich/custom",
-   "group": "enrich_contact_intel",
-   "portal": [
-    "POST /v1/intelligence/custom/profiles"
-   ]
-  },
-  {
-   "crawler": "POST /api/enrich/custom/content",
-   "group": "enrich_contact_intel",
-   "portal": [
-    "POST /v1/intelligence/custom/content"
    ]
   },
   {
@@ -1572,80 +1544,10 @@
    ]
   },
   {
-   "crawler": "GET /api/profiles/{username}/contact",
-   "group": "enrich_contact_intel",
-   "portal": [
-    "GET /v1/intelligence/contact/stored"
-   ]
-  },
-  {
-   "crawler": "GET /api/tiktok/profiles/{username}/contact",
-   "group": "enrich_contact_intel",
-   "portal": [
-    "GET /v1/intelligence/contact/stored"
-   ]
-  },
-  {
-   "crawler": "GET /api/youtube/profiles/{handle}/contact",
-   "group": "enrich_contact_intel",
-   "portal": [
-    "GET /v1/intelligence/contact/stored"
-   ]
-  },
-  {
-   "crawler": "POST /api/creators/enrich",
-   "group": "enrich_contact_intel",
-   "portal": [
-    "POST /v1/intelligence/creator/enrich"
-   ]
-  },
-  {
    "crawler": "GET /api/brand-research/{username}/creators",
    "group": "enrich_contact_intel",
    "portal": [
     "GET /v1/intelligence/brand/creators"
-   ]
-  },
-  {
-   "crawler": "GET /api/brand-research/{username}/analytics",
-   "group": "enrich_contact_intel",
-   "portal": [
-    "GET /v1/intelligence/brand/analytics"
-   ]
-  },
-  {
-   "crawler": "GET /api/research/intel",
-   "group": "enrich_contact_intel",
-   "portal": [
-    "GET /v1/intelligence/research/questions"
-   ]
-  },
-  {
-   "crawler": "GET /api/research/intel/{question}",
-   "group": "enrich_contact_intel",
-   "portal": [
-    "GET /v1/intelligence/research/answer"
-   ]
-  },
-  {
-   "crawler": "GET /api/analytics/market",
-   "group": "enrich_contact_intel",
-   "portal": [
-    "GET /v1/intelligence/market"
-   ]
-  },
-  {
-   "crawler": "GET /api/analytics/creators/{username}/intel",
-   "group": "enrich_contact_intel",
-   "portal": [
-    "GET /v1/intelligence/creator/intel"
-   ]
-  },
-  {
-   "crawler": "GET /api/analytics/posts/trajectories",
-   "group": "enrich_contact_intel",
-   "portal": [
-    "GET /v1/intelligence/posts/trajectories"
    ]
   },
   {

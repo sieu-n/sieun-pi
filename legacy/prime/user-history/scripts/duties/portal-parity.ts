@@ -16,7 +16,7 @@ import { checkCleanup } from "./test-org-cleanup.ts";
  * 2. On each env it calls every documented non-DM /v1 operation once with its own docs example. Staging calls go out under throwaway test
  *    orgs that it seeds through the staging Convex /api/test/seed route and deletes again through /api/test/cleanup. Prod calls use
  *    VIREV_API_KEY_PROD and skip only the writes SPEC-93 never makes on prod. The paid reads SPEC-93 leaves out of its prod run for cost
- *    (intelligence profile, contact and custom reads) are called here once a UTC day, and the run output lists what each prod call cost.
+ *    (intelligence profile and contact reads) are called here once a UTC day, and the run output lists what each prod call cost.
  * 3. It sorts each answer: 2xx works, an `upstream_*` or `capacity_exhausted` code is a crawler cause (the portal passes crawler errors on that way), anything
  *    else is a portal cause, and a call it could not make or judge is unprobed. A page-1 answer with a cursor gets one page-2 call.
  * 4. It maps answers to crawler routes through portal-parity.routes.json: an env scores a route its own crawler lists, the route works there
