@@ -373,3 +373,44 @@ test("skills_or_tools_to_fix leaves out a fail only the owner can fix, which own
   const agent = toOutput([{ check: check("gh_auth"), outcome: { status: "fail", fixer: "agent", detail: "signed out", fix: "gh auth login" }, ms: 0 }], 0);
   assert.equal(withHarness(agent, { metrics: { skills_to_prune: 2 }, flagged: [] }).metrics.skills_or_tools_to_fix, 3);
 });
+
+const primeDaemon = CHECKS.find(check => check.id === "prime_daemon")!;
+const RELEASE = "0.9.8-test.14";
+const daemonDeps = (status: object[], list: ExecResult): Deps => ({
+  ...deps("linux"),
+  realpath: async () => `/home/sieun/.local/share/prime-agent/releases/${RELEASE}-linux-x64-7ef068e0/prime-agent`,
+  exec: async (_file, args) => args[0] === "status" ? { code: 0, stdout: JSON.stringify(status), stderr: "", ms: 0 } : list,
+});
+const listed = (sessions: object[]): ExecResult => ({ code: 0, stdout: JSON.stringify({ sessions }), stderr: "", ms: 0 });
+const idle = { lifecycle: "live", activity: "idle", isSessionActive: false };
+
+// 10-28 21:55Z: pid 3562417 missed the status hello at a quiet hour, so status read it stale with no version while it answered list with
+// every session idle, and the check failed it.
+test("prime_daemon passes a stale daemon that missed the hello but answers list with idle sessions", async () => {
+  const stale = [{ pid: 3562417, status: "stale", isDefault: true, pidSource: "listener" }];
+  const outcome = await primeDaemon.run(daemonDeps(stale, listed([idle, idle, { ...idle, lifecycle: "archived" }])));
+  assert.equal(outcome.status, "pass", JSON.stringify(outcome));
+  assert.match(outcome.detail, /3562417 answers list with 2 live sessions, 0 working/);
+});
+
+test("prime_daemon fails a daemon that answers no list, has no pid or runs another version", async () => {
+  const gone: ExecResult = { code: 1, stdout: "", stderr: "Cannot connect to the Prime Agent daemon", ms: 0 };
+  const cases: [object[], ExecResult, RegExp][] = [
+    [[{ pid: 3562417, status: "stale", isDefault: true }], gone, /missed the status hello and `prime-agent list --json` failed: exit 1/],
+    [[{ pid: 3562417, status: "stale", isDefault: true }], { code: 0, stdout: "{}", stderr: "", ms: 0 }, /no sessions list/],
+    [[{ status: "stale", isDefault: true }], listed([idle]), /no current default daemon \(status stale\)/],
+    [[{ pid: 3562417, status: "stale", isDefault: true, version: "0.9.8-test.11" }], listed([idle]), /status stale, version 0.9.8-test.11/],
+    [[{ status: "unreachable", isDefault: true }], listed([idle]), /status unreachable/],
+    [[], listed([idle]), /no current default daemon/],
+  ];
+  for (const [status, list, detail] of cases) {
+    const outcome = await primeDaemon.run(daemonDeps(status, list));
+    assert.equal(outcome.status, "fail", JSON.stringify({ status, outcome }));
+    assert.match(outcome.detail, detail);
+  }
+});
+
+test("prime_daemon passes a current daemon on the installed release", async () => {
+  const outcome = await primeDaemon.run(daemonDeps([{ pid: 3562417, status: "current", isDefault: true, version: RELEASE }], listed([])));
+  assert.deepEqual(outcome, { status: "pass", detail: `daemon ${RELEASE} pid 3562417` });
+});

@@ -301,13 +301,15 @@ async function pool(deps: Deps, provider: "anthropic" | "openai-codex"): Promise
   return PASS(counts);
 }
 
-async function liveSessions(deps: Deps): Promise<number> {
+/** The daemon's own session list, or why `prime-agent list --json` gave none. Only a running daemon answers it, idle sessions included. */
+async function daemonSessions(deps: Deps): Promise<{ live: number; working: number } | string> {
   const result = await deps.exec(paths(deps).prime, ["list", "--json"], { timeoutMs: CALL_TIMEOUT_MS });
-  if (result.code !== 0) return 0;
-  try {
-    const sessions = (parseJson(result.stdout) as { sessions?: { activeSessionId?: string; isSessionActive?: boolean }[] }).sessions ?? [];
-    return sessions.filter(session => session.activeSessionId && session.isSessionActive).length;
-  } catch { return 0; }
+  if (result.code !== 0) return failText(result);
+  let sessions: unknown;
+  try { sessions = (parseJson(result.stdout) as { sessions?: unknown }).sessions; } catch { /* reported below */ }
+  if (!Array.isArray(sessions)) return `no sessions list in ${brief(result.stdout, 120)}`;
+  const rows = sessions as { lifecycle?: string; isSessionActive?: boolean }[];
+  return { live: rows.filter(row => row.lifecycle === "live").length, working: rows.filter(row => row.isSessionActive).length };
 }
 
 async function cliLogin(deps: Deps, file: string, args: string[], ok: (result: ExecResult) => boolean, fix: string, cwd?: string): Promise<Outcome> {
@@ -496,12 +498,15 @@ export const CHECKS: readonly Check[] = [
     let daemons: { isDefault?: boolean; status?: string; version?: string; pid?: number }[] = [];
     try { daemons = parseJson(result.stdout) as typeof daemons; } catch { /* reported below */ }
     const daemon = Array.isArray(daemons) ? daemons.find(entry => entry.isDefault) ?? (daemons.length === 1 ? daemons[0] : undefined) : undefined;
-    if (daemon?.status === "stale" && daemon.pid) {
-      const live = await liveSessions(deps);
-      if (live > 0) return PASS(`daemon pid ${daemon.pid} serves ${live} live sessions; status said stale because a busy daemon misses the hello (prime-agent#1222)`);
+    const doctor = "run `prime-agent doctor --json` (read-only) and report; never doctor --fix or shutdown";
+    // status reads a daemon stale with no version when its hello misses a 1.5 s wait, which a loaded box causes (prime-agent#1222). On 10-28 at
+    // 21:55Z such a daemon answered list while none of its sessions was working, and a check that asked for a working session failed it.
+    if (daemon?.status === "stale" && daemon.pid && daemon.version === undefined) {
+      const sessions = await daemonSessions(deps);
+      if (typeof sessions === "string") return FAIL("agent", `daemon pid ${daemon.pid} missed the status hello and \`prime-agent list --json\` failed: ${sessions}`, doctor);
+      return PASS(`daemon pid ${daemon.pid} answers list with ${sessions.live} live sessions, ${sessions.working} working; status read stale because the hello missed its 1.5 s wait (prime-agent#1222)`);
     }
-    if (daemon?.status !== "current") return FAIL("agent", `no current default daemon (${daemon ? `status ${daemon.status}` : failText(result)})`,
-      "run `prime-agent doctor --json` (read-only) and report; never doctor --fix or shutdown");
+    if (daemon?.status !== "current") return FAIL("agent", `no current default daemon (${daemon ? `status ${daemon.status}${daemon.version ? `, version ${daemon.version}` : ""}` : failText(result)})`, doctor);
     const release = releaseVersion(basename(dirname(await deps.realpath(paths(deps).prime))));
     if (release && daemon.version !== release) return FAIL("owner", `the daemon runs ${daemon.version} and the installed release is ${release}`, "restart Prime Agent when no work is running");
     return PASS(`daemon ${daemon.version} pid ${daemon.pid}`);
